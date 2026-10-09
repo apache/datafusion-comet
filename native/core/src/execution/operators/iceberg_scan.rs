@@ -20,7 +20,7 @@
 use std::collections::HashMap;
 use std::fmt;
 use std::pin::Pin;
-use std::sync::Arc;
+use std::sync::{Arc, Mutex, OnceLock};
 use std::task::{Context, Poll};
 
 use arrow::array::{ArrayRef, RecordBatch, RecordBatchOptions};
@@ -29,7 +29,7 @@ use datafusion::common::tree_node::TreeNodeRecursion;
 use datafusion::common::{DataFusionError, Result as DFResult};
 use datafusion::execution::{RecordBatchStream, SendableRecordBatchStream, TaskContext};
 use datafusion::physical_expr::expressions::Column;
-use datafusion::physical_expr::{EquivalenceProperties, PhysicalExpr};
+use datafusion::physical_expr::{EquivalenceProperties, LexOrdering, PhysicalExpr};
 use datafusion::physical_plan::execution_plan::{Boundedness, EmissionType};
 use datafusion::physical_plan::metrics::{
     BaselineMetrics, Count, ExecutionPlanMetricsSet, MetricBuilder, MetricsSet,
@@ -38,7 +38,7 @@ use datafusion::physical_plan::{
     DisplayAs, DisplayFormatType, ExecutionPlan, Partitioning, PlanProperties,
 };
 use futures::{Stream, StreamExt, TryStreamExt};
-use iceberg::arrow::ScanMetrics;
+use iceberg::arrow::{ArrowReader, ScanMetrics};
 use iceberg::io::FileIO;
 use iceberg::Runtime as IcebergRuntime;
 use iceberg::{Error, ErrorKind};
@@ -83,6 +83,36 @@ pub struct IcebergScanExec {
     tasks: Vec<FileScanTask>,
     /// Number of data files to read concurrently
     data_file_concurrency_limit: usize,
+    /// FileIO (and, for S3, the JVM credential bridge behind it) built once at plan time and shared
+    /// across partitions. FileIO is cheap to clone (Arc-backed), so each `execute` clones this
+    /// rather than rebuilding the storage factory + credential bridge. This matters in the ordered
+    /// path, where the scan is one partition per file and `execute` is called once per file.
+    file_io: FileIO,
+    /// Table sort order Iceberg reported, translated against `output_schema`. `Some` makes this a
+    /// multi-partition scan: one sorted stream per task, which a SortPreservingMergeExec above
+    /// merges back into one sorted partition. It is also advertised in `plan_properties`. `None`
+    /// keeps the old single-partition unordered read (all tasks streamed together).
+    ///
+    /// Concurrency note: in the ordered path each partition reads exactly one task, so
+    /// `data_file_concurrency_limit` no longer bounds cross-file concurrency; instead the wrapping
+    /// SortPreservingMergeExec drives one reader per file to merge them. The planner only takes
+    /// this ordered/merge path when a partition has at most `sortMerge.maxFilesPerPartition` files;
+    /// above that it reads the partition unordered and wraps a spillable `SortExec`, so this fan-out
+    /// (one reader per file) is capped rather than unbounded. A finer, bound-driven admission scheme
+    /// that reads a subset of files at a time using per-file min/max is tracked in #5343.
+    /// `data_file_concurrency_limit` still bounds delete-file stats and the unordered path.
+    ordering: Option<LexOrdering>,
+    /// One ArrowReader shared across this scan's partitions, built lazily on the first `execute`
+    /// (it needs the session batch size). In the ordered path each partition reads one file, so
+    /// sharing the reader shares its `CachingDeleteFileLoader`: a delete file that applies to the
+    /// whole partition is downloaded and parsed once, not once per data file (#6524). `read()`
+    /// creates fresh `ScanMetrics` per call, so per-partition metrics stay separate, and the reader
+    /// is Arc-backed and cheap to clone.
+    reader: OnceLock<ArrowReader>,
+    /// Delete-file sizes (path -> bytes) stat'd once and shared across partitions, so the HEAD
+    /// request for a delete file shared by the partition is issued once rather than once per data
+    /// file (#6524). Guarded by a std Mutex; the lock is never held across an `.await`.
+    delete_file_sizes: Arc<Mutex<HashMap<String, u64>>>,
     /// Metrics
     metrics: ExecutionPlanMetricsSet,
 }
@@ -95,11 +125,35 @@ impl IcebergScanExec {
         catalog_name: String,
         tasks: Vec<FileScanTask>,
         data_file_concurrency_limit: usize,
+        ordering: Option<LexOrdering>,
     ) -> Result<Self, ExecutionError> {
         let output_schema = schema;
-        let plan_properties = Self::compute_properties(Arc::clone(&output_schema), 1);
+        // With an ordering, read each task as its own sorted stream on its own partition, so the
+        // SortPreservingMergeExec above can merge them. Without one, keep the single partition that
+        // reads every task. Comet only drives execute(0), so a multi-partition leaf with no merge
+        // above it would read only the first task.
+        let num_partitions = if ordering.is_some() {
+            tasks.len().max(1)
+        } else {
+            1
+        };
+        let plan_properties = Self::compute_properties(
+            Arc::clone(&output_schema),
+            num_partitions,
+            ordering.as_ref(),
+        );
 
         let metrics = ExecutionPlanMetricsSet::new();
+
+        // Build FileIO (and the S3 credential bridge) once here rather than per `execute`. In the
+        // ordered path `execute` is called once per file, so rebuilding it there would repeat the
+        // JNI/reflection credential-bridge construction for every file in the partition.
+        let file_io = load_file_io(
+            &catalog_properties,
+            &metadata_location,
+            &catalog_name,
+            AccessMode::Read,
+        )?;
 
         Ok(Self {
             metadata_location,
@@ -109,13 +163,28 @@ impl IcebergScanExec {
             catalog_name,
             tasks,
             data_file_concurrency_limit,
+            file_io,
+            ordering,
+            reader: OnceLock::new(),
+            delete_file_sizes: Arc::new(Mutex::new(HashMap::new())),
             metrics,
         })
     }
 
-    fn compute_properties(schema: SchemaRef, num_partitions: usize) -> Arc<PlanProperties> {
+    fn compute_properties(
+        schema: SchemaRef,
+        num_partitions: usize,
+        ordering: Option<&LexOrdering>,
+    ) -> Arc<PlanProperties> {
+        let eq_properties = match ordering {
+            Some(lex) => EquivalenceProperties::new_with_orderings(
+                Arc::clone(&schema),
+                std::iter::once(lex.iter().cloned()),
+            ),
+            None => EquivalenceProperties::new(Arc::clone(&schema)),
+        };
         Arc::new(PlanProperties::new(
-            EquivalenceProperties::new(schema),
+            eq_properties,
             Partitioning::UnknownPartitioning(num_partitions),
             EmissionType::Incremental,
             Boundedness::Bounded,
@@ -158,10 +227,18 @@ impl ExecutionPlan for IcebergScanExec {
 
     fn execute(
         &self,
-        _partition: usize,
+        partition: usize,
         context: Arc<TaskContext>,
     ) -> DFResult<SendableRecordBatchStream> {
-        self.execute_with_tasks(self.tasks.clone(), context)
+        // With a reported ordering this is a multi-partition operator: partition `i` reads only
+        // task `i` as its own sorted stream, and the SortPreservingMergeExec above merges them.
+        // Without one, the single partition reads every task together (legacy unordered path).
+        let tasks = if self.ordering.is_some() {
+            self.tasks.get(partition).cloned().into_iter().collect()
+        } else {
+            self.tasks.clone()
+        };
+        self.execute_with_tasks(tasks, partition, context)
     }
 
     fn metrics(&self) -> Option<MetricsSet> {
@@ -175,51 +252,63 @@ impl IcebergScanExec {
     fn execute_with_tasks(
         &self,
         tasks: Vec<FileScanTask>,
+        partition: usize,
         context: Arc<TaskContext>,
     ) -> DFResult<SendableRecordBatchStream> {
         let output_schema = Arc::clone(&self.output_schema);
-        let file_io = load_file_io(
-            &self.catalog_properties,
-            &self.metadata_location,
-            &self.catalog_name,
-            AccessMode::Read,
-        )?;
+        let file_io = self.file_io.clone();
         let batch_size = context.session_config().batch_size();
 
-        let metrics = IcebergScanMetrics::new(&self.metrics);
+        let metrics = IcebergScanMetrics::new(&self.metrics, partition);
         metrics.num_splits.add(tasks.len());
 
         // Fill delete-file sizes as the first step of the task stream so the stats run on the
         // iceberg runtime alongside the reads, not on the calling executor thread (see
-        // fill_delete_file_sizes).
+        // fill_delete_file_sizes). The size cache is shared across partitions so a delete file the
+        // whole partition shares is stat'd once, not once per data file (#6524).
         let fill_io = file_io.clone();
         let concurrency_limit = self.data_file_concurrency_limit;
+        let delete_sizes = Arc::clone(&self.delete_file_sizes);
         let task_stream = futures::stream::once(async move {
             let mut tasks = tasks;
-            Self::fill_delete_file_sizes(&mut tasks, &fill_io, concurrency_limit).await?;
+            Self::fill_delete_file_sizes(&mut tasks, &fill_io, concurrency_limit, &delete_sizes)
+                .await?;
             Ok::<_, Error>(futures::stream::iter(tasks.into_iter().map(Ok::<_, Error>)))
         })
         .try_flatten()
         .boxed();
 
-        // iceberg-rust's ArrowReader spawns IO/CPU work onto an iceberg::Runtime, which only needs
-        // a tokio handle. execute() runs on the JVM-called thread outside any tokio context, so we
-        // enter Comet's global runtime to capture its handle (this is where the stream is later
-        // polled). Capturing the handle rather than borrowing the runtime keeps it tear-downable
-        // via release_runtime.
-        let iceberg_runtime = {
-            let handle = get_runtime();
-            let _guard = handle.enter();
-            IcebergRuntime::try_current().map_err(|e| {
-                DataFusionError::Execution(format!("Failed to build Iceberg runtime: {e}"))
-            })?
+        // Build the ArrowReader once and share it across the scan's partitions, so the per-file
+        // streams share one CachingDeleteFileLoader (see the `reader` field, #6524). The first
+        // caller builds it; a later caller reuses that one, so the delete cache is shared. read()
+        // makes fresh ScanMetrics per call, so per-partition metrics stay separate.
+        let reader = match self.reader.get() {
+            Some(reader) => reader.clone(),
+            None => {
+                // iceberg-rust's ArrowReader spawns IO/CPU work onto an iceberg::Runtime, which only
+                // needs a tokio handle. execute() runs on the JVM-called thread outside any tokio
+                // context, so enter Comet's global runtime to capture its handle (this is where the
+                // stream is later polled). Capturing the handle rather than borrowing the runtime
+                // keeps it tear-downable via release_runtime.
+                let iceberg_runtime = {
+                    let handle = get_runtime();
+                    let _guard = handle.enter();
+                    IcebergRuntime::try_current().map_err(|e| {
+                        DataFusionError::Execution(format!("Failed to build Iceberg runtime: {e}"))
+                    })?
+                };
+                let built = iceberg::arrow::ArrowReaderBuilder::new(file_io, iceberg_runtime)
+                    .with_batch_size(batch_size)
+                    .with_data_file_concurrency_limit(self.data_file_concurrency_limit)
+                    .with_row_selection_enabled(true)
+                    .with_metadata_size_hint(512 * 1024) // Same as DataFusion's default
+                    .build();
+                // First caller wins; `set` is a no-op (returns Err) if another partition already set
+                // it, so every partition converges on one shared reader.
+                let _ = self.reader.set(built);
+                self.reader.get().expect("reader was just set").clone()
+            }
         };
-        let reader = iceberg::arrow::ArrowReaderBuilder::new(file_io, iceberg_runtime)
-            .with_batch_size(batch_size)
-            .with_data_file_concurrency_limit(self.data_file_concurrency_limit)
-            .with_row_selection_enabled(true)
-            .with_metadata_size_hint(512 * 1024) // Same as DataFusion's default
-            .build();
 
         // Pass all tasks to iceberg-rust at once to utilize its flatten_unordered
         // parallelization, avoiding overhead of single-task streams
@@ -259,8 +348,9 @@ impl IcebergScanExec {
         tasks: &mut [FileScanTask],
         file_io: &FileIO,
         concurrency_limit: usize,
+        size_cache: &Mutex<HashMap<String, u64>>,
     ) -> Result<(), Error> {
-        use datafusion::common::{HashMap, HashSet};
+        use datafusion::common::HashSet;
         use futures::TryStreamExt;
 
         // Dedup: the JVM pools delete-file lists, not individual files, so the same delete file
@@ -286,13 +376,26 @@ impl IcebergScanExec {
             return Ok(());
         }
 
+        // Only stat delete files not already sized on an earlier partition of this scan. The size
+        // cache is shared across partitions (#6524), so a delete file the whole partition shares is
+        // stat'd once, not once per data file. Snapshot the missing paths under the lock, then
+        // release it before the async stats below.
+        let to_stat: Vec<String> = {
+            let cache = size_cache.lock().unwrap();
+            needed
+                .iter()
+                .filter(|path| !cache.contains_key(path.as_str()))
+                .cloned()
+                .collect()
+        };
+
         // Bound the in-flight stats to match the downstream read concurrency (iceberg-rust uses
         // try_buffer_unordered at the same limit for delete-file loads). An unbounded fan-out
         // would burst N HEAD requests at once for no gain, since the reads are throttled anyway.
         // Guaranteed > 0 by COMET_ICEBERG_DATA_FILE_CONCURRENCY_LIMIT; buffer_unordered(0) would
         // never poll.
         debug_assert!(concurrency_limit > 0);
-        let sizes: Vec<(String, u64)> = futures::stream::iter(needed.into_iter().map(|path| {
+        let sizes: Vec<(String, u64)> = futures::stream::iter(to_stat.into_iter().map(|path| {
             let file_io = file_io.clone();
             async move {
                 let size = file_io
@@ -325,7 +428,18 @@ impl IcebergScanExec {
         .try_collect()
         .await?;
 
-        let size_map: HashMap<String, u64> = sizes.into_iter().collect();
+        // Record newly-stat'd sizes in the shared cache, then build the size map for every delete
+        // file this partition needs (cached + just stat'd). The lock is not held across any await.
+        let size_map: std::collections::HashMap<String, u64> = {
+            let mut cache = size_cache.lock().unwrap();
+            for (path, size) in sizes {
+                cache.insert(path, size);
+            }
+            needed
+                .iter()
+                .filter_map(|path| cache.get(path.as_str()).map(|&size| (path.clone(), size)))
+                .collect()
+        };
         // iceberg-rust 665c64e made `FileScanTask::deletes` a private field exposed only through
         // a read-only accessor, so a task's delete files can no longer be sized in place. Rebuild
         // each task that carries deletes with sized copies; tasks without deletes are untouched.
@@ -392,11 +506,11 @@ struct IcebergScanMetrics {
 }
 
 impl IcebergScanMetrics {
-    fn new(metrics: &ExecutionPlanMetricsSet) -> Self {
+    fn new(metrics: &ExecutionPlanMetricsSet, partition: usize) -> Self {
         Self {
-            baseline: BaselineMetrics::new(metrics, 0),
-            num_splits: MetricBuilder::new(metrics).counter("num_splits", 0),
-            bytes_scanned: MetricBuilder::new(metrics).counter("bytes_scanned", 0),
+            baseline: BaselineMetrics::new(metrics, partition),
+            num_splits: MetricBuilder::new(metrics).counter("num_splits", partition),
+            bytes_scanned: MetricBuilder::new(metrics).counter("bytes_scanned", partition),
         }
     }
 }
@@ -614,6 +728,7 @@ mod tests {
     use iceberg_storage_opendal::OpenDalStorageFactory;
 
     use super::IcebergScanExec;
+    use datafusion::physical_plan::ExecutionPlan;
 
     fn fs_file_io() -> FileIO {
         FileIOBuilder::new(Arc::new(OpenDalStorageFactory::Fs)).build()
@@ -714,7 +829,13 @@ mod tests {
             missing.to_str().unwrap(),
         )])];
 
-        let result = IcebergScanExec::fill_delete_file_sizes(&mut tasks, &fs_file_io(), 4).await;
+        let result = IcebergScanExec::fill_delete_file_sizes(
+            &mut tasks,
+            &fs_file_io(),
+            4,
+            &std::sync::Mutex::new(std::collections::HashMap::new()),
+        )
+        .await;
 
         assert!(
             result.is_err(),
@@ -734,9 +855,14 @@ mod tests {
         f.flush().unwrap();
 
         let mut tasks = vec![task_with_deletes(vec![delete_file(path.to_str().unwrap())])];
-        IcebergScanExec::fill_delete_file_sizes(&mut tasks, &fs_file_io(), 4)
-            .await
-            .unwrap();
+        IcebergScanExec::fill_delete_file_sizes(
+            &mut tasks,
+            &fs_file_io(),
+            4,
+            &std::sync::Mutex::new(std::collections::HashMap::new()),
+        )
+        .await
+        .unwrap();
 
         assert_eq!(tasks[0].deletes()[0].file_size_in_bytes, bytes.len() as u64);
     }
@@ -751,7 +877,13 @@ mod tests {
         std::fs::File::create(&path).unwrap(); // 0 bytes on disk
 
         let mut tasks = vec![task_with_deletes(vec![delete_file(path.to_str().unwrap())])];
-        let result = IcebergScanExec::fill_delete_file_sizes(&mut tasks, &fs_file_io(), 4).await;
+        let result = IcebergScanExec::fill_delete_file_sizes(
+            &mut tasks,
+            &fs_file_io(),
+            4,
+            &std::sync::Mutex::new(std::collections::HashMap::new()),
+        )
+        .await;
 
         assert!(
             result.is_err(),
@@ -764,9 +896,149 @@ mod tests {
     #[tokio::test]
     async fn fill_delete_file_sizes_noop_without_deletes() {
         let mut tasks = vec![task_with_deletes(vec![])];
-        IcebergScanExec::fill_delete_file_sizes(&mut tasks, &fs_file_io(), 4)
-            .await
-            .unwrap();
+        IcebergScanExec::fill_delete_file_sizes(
+            &mut tasks,
+            &fs_file_io(),
+            4,
+            &std::sync::Mutex::new(std::collections::HashMap::new()),
+        )
+        .await
+        .unwrap();
+    }
+
+    fn int_schema() -> arrow::datatypes::SchemaRef {
+        use arrow::datatypes::{DataType, Field, Schema};
+        Arc::new(Schema::new(vec![Field::new("a", DataType::Int32, false)]))
+    }
+
+    fn single_col_ordering() -> Option<datafusion::physical_expr::LexOrdering> {
+        use arrow::compute::SortOptions;
+        use datafusion::physical_expr::expressions::Column;
+        use datafusion::physical_expr::{LexOrdering, PhysicalSortExpr};
+        LexOrdering::new(vec![PhysicalSortExpr {
+            expr: Arc::new(Column::new("a", 0)),
+            options: SortOptions::default(),
+        }])
+    }
+
+    // Builds a scan over three empty-delete tasks with the given reported ordering.
+    fn exec_with_ordering(
+        ordering: Option<datafusion::physical_expr::LexOrdering>,
+    ) -> IcebergScanExec {
+        use std::collections::HashMap;
+        let tasks = vec![
+            task_with_deletes(vec![]),
+            task_with_deletes(vec![]),
+            task_with_deletes(vec![]),
+        ];
+        IcebergScanExec::new(
+            "metadata.json".to_string(),
+            int_schema(),
+            HashMap::new(),
+            "cat".to_string(),
+            tasks,
+            1,
+            ordering,
+        )
+        .unwrap()
+    }
+
+    // A reported ordering turns the scan into a multi-partition operator (one partition per task)
+    // so a SortPreservingMergeExec above can k-way merge the per-file sorted streams.
+    #[test]
+    fn reported_ordering_makes_scan_multi_partition() {
+        let exec = exec_with_ordering(single_col_ordering());
+        assert_eq!(exec.properties().partitioning.partition_count(), 3);
+    }
+
+    // Without a reported ordering the scan stays single-partition (Comet drives only execute(0),
+    // which must read every task), preserving the legacy unordered behaviour.
+    #[test]
+    fn no_ordering_keeps_single_partition() {
+        let exec = exec_with_ordering(None);
+        assert_eq!(exec.properties().partitioning.partition_count(), 1);
+    }
+
+    // The ordered scan reads each file as its own sorted partition and relies on
+    // SortPreservingMergeExec to k-way merge them into one globally sorted stream. This feeds known
+    // sorted partitions (with duplicate keys across partitions, and both asc and desc) into that
+    // merge with the same kind of LexOrdering the planner builds, and checks the output is globally
+    // sorted and complete. It is deterministic coverage of the merge that does not depend on an
+    // ordering-reporting Iceberg build (which is why the end-to-end suite's merge assertions cancel
+    // on the published Iceberg used in CI).
+    async fn merge_ints(input: Vec<Vec<i32>>, descending: bool) -> Vec<i32> {
+        use arrow::array::Int32Array;
+        use arrow::array::RecordBatch;
+        use arrow::compute::SortOptions;
+        use arrow::datatypes::{DataType, Field, Schema};
+        use datafusion::datasource::memory::MemorySourceConfig;
+        use datafusion::physical_expr::expressions::Column;
+        use datafusion::physical_expr::{LexOrdering, PhysicalSortExpr};
+        use datafusion::physical_plan::sorts::sort_preserving_merge::SortPreservingMergeExec;
+        use datafusion::prelude::SessionContext;
+        use futures::StreamExt;
+
+        let schema = Arc::new(Schema::new(vec![Field::new("id", DataType::Int32, false)]));
+        let partitions: Vec<Vec<RecordBatch>> = input
+            .into_iter()
+            .map(|vals| {
+                vec![RecordBatch::try_new(
+                    Arc::clone(&schema),
+                    vec![Arc::new(Int32Array::from(vals))],
+                )
+                .unwrap()]
+            })
+            .collect();
+        let source =
+            MemorySourceConfig::try_new_exec(&partitions, Arc::clone(&schema), None).unwrap();
+
+        let ordering = LexOrdering::new(vec![PhysicalSortExpr {
+            expr: Arc::new(Column::new("id", 0)),
+            options: SortOptions {
+                descending,
+                nulls_first: false,
+            },
+        }])
+        .unwrap();
+        let spm = SortPreservingMergeExec::new(ordering, source);
+        assert_eq!(spm.properties().partitioning.partition_count(), 1);
+
+        let ctx = SessionContext::new();
+        let mut stream = spm.execute(0, ctx.task_ctx()).unwrap();
+        let mut got = Vec::new();
+        while let Some(batch) = stream.next().await {
+            let batch = batch.unwrap();
+            let col = batch
+                .column(0)
+                .as_any()
+                .downcast_ref::<Int32Array>()
+                .unwrap();
+            (0..col.len()).for_each(|i| got.push(col.value(i)));
+        }
+        got
+    }
+
+    #[tokio::test]
+    async fn spm_merges_ascending_sorted_partitions() {
+        // Two individually-sorted partitions with duplicate keys across them.
+        let got = merge_ints(vec![vec![1, 3, 3, 5, 8], vec![2, 3, 6, 7]], false).await;
+        let mut expected = vec![1, 3, 3, 5, 8, 2, 3, 6, 7];
+        expected.sort_unstable();
+        assert_eq!(
+            got, expected,
+            "ascending merge must be globally sorted and complete"
+        );
+    }
+
+    #[tokio::test]
+    async fn spm_merges_descending_sorted_partitions() {
+        let got = merge_ints(vec![vec![8, 5, 3, 3, 1], vec![7, 6, 3, 2]], true).await;
+        let mut expected = vec![8, 5, 3, 3, 1, 7, 6, 3, 2];
+        expected.sort_unstable_by(|a, b| b.cmp(a));
+        assert_eq!(
+            got, expected,
+            "descending merge must be globally sorted and complete"
+        );
     }
 
     fn from_hex(s: &str) -> Vec<u8> {

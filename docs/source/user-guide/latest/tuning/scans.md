@@ -67,6 +67,13 @@ worked example and further discussion.
 ## Iceberg Scan Tuning
 
 Comet's native Iceberg scan (`spark.comet.scan.icebergNative.enabled`, enabled by default) reads each
-task's data files one at a time by default. For tables with many small files or high-latency storage,
-increase `spark.comet.scan.icebergNative.dataFileConcurrencyLimit` (default `1`; values of 2–8 are
-suggested) to overlap I/O across files at the cost of extra memory.
+task's data files one at a time by default on the unordered read path. For tables with many small files
+or high-latency storage, increase `spark.comet.scan.icebergNative.dataFileConcurrencyLimit` (default
+`1`; values of 2–8 are suggested) to overlap I/O across files at the cost of extra memory.
+
+This limit only bounds the unordered read. When reading a sorted Iceberg table that reports its
+ordering (`spark.sql.iceberg.planning.preserve-data-ordering`), each file becomes its own partition
+under the streaming merge, so a task can hold up to `spark.comet.scan.icebergNative.sortMerge.maxFilesPerPartition`
+(default `64`) readers open at once, regardless of `dataFileConcurrencyLimit`. To cap scan memory on a
+sorted table, lower `sortMerge.maxFilesPerPartition` (above it the scan reads unordered and sorts with a
+spillable sort instead of merging).

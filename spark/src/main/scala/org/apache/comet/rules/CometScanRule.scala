@@ -32,7 +32,7 @@ import scala.jdk.CollectionConverters._
 import org.apache.hadoop.conf.Configuration
 import org.apache.spark.internal.Logging
 import org.apache.spark.sql.SparkSession
-import org.apache.spark.sql.catalyst.expressions.{Attribute, DynamicPruningExpression, Expression, GenericInternalRow, InputFileBlockLength, InputFileBlockStart, InputFileName}
+import org.apache.spark.sql.catalyst.expressions.{Attribute, DynamicPruningExpression, Expression, GenericInternalRow, InputFileBlockLength, InputFileBlockStart, InputFileName, SortOrder}
 import org.apache.spark.sql.catalyst.rules.Rule
 import org.apache.spark.sql.catalyst.util.{sideBySide, ArrayBasedMapData, DateTimeUtils, GenericArrayData, MetadataColumnHelper}
 import org.apache.spark.sql.catalyst.util.ResolveDefaultColumns.getExistenceDefaultValues
@@ -50,6 +50,7 @@ import org.apache.comet.CometSparkSessionExtensions.{isCometLoaded, isSpark35Plu
 import org.apache.comet.iceberg.{CometIcebergNativeScanMetadata, IcebergReflection, IcebergStorageSchemes}
 import org.apache.comet.objectstore.NativeConfig
 import org.apache.comet.parquet.CometParquetUtils.{encryptionEnabled, isEncryptionConfigSupported, readFieldId}
+import org.apache.comet.serde.ExprOuterClass.Expr
 import org.apache.comet.serde.operator.{CometIcebergNativeScan, CometNativeScan}
 import org.apache.comet.shims.{CometTypeShim, ShimCometStreaming, ShimFileFormat, ShimSubqueryBroadcast}
 
@@ -1039,16 +1040,68 @@ case class CometScanRule(session: SparkSession)
           }
         }
 
+        // If Iceberg reports an ordering, EnsureRequirements may have already dropped the Sort
+        // above this scan (it decides that on the vanilla BatchScanExec, before Comet converts the
+        // scan). If the native scan cannot guarantee that ordering, reading unordered here would
+        // silently return wrong results, so stay on Spark -- its Iceberg reader produces the sorted
+        // output it promised. Evaluate the gate exactly once here and stash the result on the
+        // metadata; CometIcebergNativeScanExec.outputOrdering and the proto serde both read that
+        // stashed value, so the reported order cannot diverge from what native advertises.
+        val icebergReportsOrdering: Boolean = scanExec.ordering.exists(_.nonEmpty)
+        // reportedOrdering: the sort prefix Comet will advertise. stayNative: whether Comet may
+        // keep the scan native even when that prefix is shorter than Iceberg's full reported
+        // order --
+        // true when the whole order is honoured, or when the first field Comet cannot report is an
+        // unprojected attribute (nothing above can require an ordering that reaches it, so Spark
+        // dropped no Sort and an unordered read of the tail is correct). It is false when a
+        // projected UUID / transform blocks (Spark may already have dropped a Sort on it) or when
+        // the schema could not be read (we cannot rule out an unsafe sort key).
+        val (reportedOrdering: Seq[SortOrder], stayNative: Boolean) = {
+          if (!icebergReportsOrdering) {
+            (Nil, true)
+          } else {
+            IcebergReflection.orderingUnsafeColumns(metadata.tableSchema) match {
+              case Some(unsafe) =>
+                val decision = CometIcebergNativeScan
+                  .orderingDecision(scanExec.ordering, scanExec.output, unsafe)
+                (decision.reported, decision.stayNative)
+              case None => (Nil, false)
+            }
+          }
+        }
+        // Bind the reported prefix to proto now, against the same output the gate used, so the
+        // executor-side serde writes it directly and a binding drift becomes a planning-time
+        // fallback rather than a task-start failure. serializeReportedOrdering returns Some(Nil)
+        // for an empty prefix (the stay-native unordered read), so an empty prefix does not force a
+        // fallback on its own.
+        val reportedOrderingProto: Option[Seq[Expr]] =
+          CometIcebergNativeScan.serializeReportedOrdering(reportedOrdering, scanExec.output)
+        val orderingHonored: Boolean = {
+          val honored = stayNative && reportedOrderingProto.isDefined
+          if (!honored) {
+            fallbackReasons += "Iceberg reports a sort order the native scan cannot guarantee " +
+              "(a transform or unsafe-type sort key that a required ordering could reach, the " +
+              "schema could not be read, or the order could not be serialized); staying on Spark " +
+              "so the reported ordering is preserved"
+          }
+          honored
+        }
+
         if (schemaSupported && fileIOCompatible && formatVersionSupported &&
           defaultValuesSupported && schemaTypesSupported && encryptionKeyLengthSupported &&
           taskValidation.allParquet && allSupportedFilesystems && allLocationsOpenable &&
           metadataSchemeSupported && partitionTypesSupported && unifiedPartitionTypeSupported &&
           transformFunctionsSupported && deleteFileTypesSupported && dppSubqueriesSupported &&
-          nestedFieldsSupported) {
+          nestedFieldsSupported && orderingHonored) {
           CometBatchScanExec(
             scanExec.clone().asInstanceOf[BatchScanExec],
             runtimeFilters = scanExec.runtimeFilters,
-            nativeIcebergScanMetadata = Some(metadata))
+            nativeIcebergScanMetadata = Some(
+              metadata.copy(
+                reportedOrdering = reportedOrdering,
+                // Safe: orderingHonored is in the guard above, so when Iceberg reports an order we
+                // only reach here if the binding succeeded (Some).
+                reportedOrderingProto = reportedOrderingProto.getOrElse(Nil))))
         } else {
           withFallbackReasons(scanExec, fallbackReasons.toSet)
         }

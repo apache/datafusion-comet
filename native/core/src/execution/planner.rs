@@ -79,6 +79,7 @@ use datafusion::{
         limit::LocalLimitExec,
         projection::ProjectionExec,
         sorts::sort::SortExec,
+        sorts::sort_preserving_merge::SortPreservingMergeExec,
         ChildrenPropertiesMode, ExecutionPlan, ExecutionPlanProperties, ReplaceChildrenOptions,
     },
     prelude::SessionContext,
@@ -2159,26 +2160,102 @@ impl PhysicalPlanner {
                 let metadata_location = common.metadata_location.clone();
                 let catalog_name = common.catalog_name.clone();
                 let tasks = parse_file_scan_tasks_from_common(common, &scan.file_scan_tasks)?;
+                let tasks_len = tasks.len();
                 let data_file_concurrency_limit = common.data_file_concurrency_limit as usize;
+                let max_files_per_partition = common.max_files_per_partition as usize;
 
-                let iceberg_scan = IcebergScanExec::new(
+                // Table sort order Iceberg reported. Empty unless the order passed the identity gate
+                // in CometScanRule; the serde writes it regardless of sortMerge.enabled. When
+                // sortMerge is disabled the ordering is still reported (enabled=false only sets
+                // max_files_per_partition to 0, so the branch below takes the SortExec path) -- an
+                // empty list there would mean an unordered read under a Sort that Spark already
+                // dropped. The SortOrder children are bound references into required_schema, so build
+                // the LexOrdering against it.
+                let ordering: Option<LexOrdering> = if common.table_sort_orders.is_empty() {
+                    None
+                } else {
+                    let exprs = common
+                        .table_sort_orders
+                        .iter()
+                        .map(|expr| self.create_sort_expr(expr, Arc::clone(&required_schema)))
+                        .collect::<Result<Vec<PhysicalSortExpr>, ExecutionError>>()?;
+                    LexOrdering::new(exprs)
+                };
+
+                // A per-file-stream k-way merge opens one reader per file at once. Above the
+                // configured limit we instead read the partition unordered (bounded by
+                // data_file_concurrency_limit) and sort with a spillable SortExec, which bounds both
+                // open readers and memory. Both paths still produce sorted output, so the ordering
+                // Spark eliminated its Sort on is honoured either way. A limit of 0 (sortMerge
+                // disabled) always takes the sort path.
+                //
+                // A float/double sort key that PRECEDES another key also forces the sort path: the
+                // merge trusts each file to already be sorted under Spark's comparator, but Iceberg
+                // orders files with its own comparator, which distinguishes -0.0 from +0.0 while
+                // Spark's create_sort_expr treats them equal. So a file Iceberg considers sorted --
+                // e.g. (-0.0, 2) then (+0.0, 1) -- is out of order under the composite Spark
+                // comparator, and merging would preserve that wrong order (which can change results,
+                // e.g. a TakeOrderedAndProject that trusts the advertised ordering). The spillable
+                // SortExec re-sorts under Spark's comparator and is correct. A trailing float key is
+                // safe: signed-zero rows compare equal in Spark, so any order among them already
+                // satisfies the required ordering. A field whose type cannot be resolved is treated
+                // as unsafe (force the sort), so we never merge on an unverified key.
+                let ordering_merge_safe = ordering.as_ref().is_some_and(|lex| {
+                    let last = lex.len().saturating_sub(1);
+                    lex.iter().enumerate().all(|(i, sort_expr)| {
+                        i == last
+                            || matches!(
+                                sort_expr.expr.data_type(&required_schema),
+                                Ok(dt) if !matches!(dt, DataType::Float32 | DataType::Float64)
+                            )
+                    })
+                });
+                let use_merge = ordering_merge_safe && tasks_len <= max_files_per_partition;
+
+                // Only the merge path is multi-partition (one sorted stream per file). The sort
+                // fallback and the no-ordering path read a single unordered partition.
+                let scan_ordering = if use_merge { ordering.clone() } else { None };
+
+                let iceberg_scan: Arc<dyn ExecutionPlan> = Arc::new(IcebergScanExec::new(
                     metadata_location,
                     required_schema,
                     catalog_properties,
                     catalog_name,
                     tasks,
                     data_file_concurrency_limit,
-                )?;
+                    scan_ordering,
+                )?);
 
-                Ok((
-                    vec![],
-                    vec![],
-                    Arc::new(SparkPlan::new(
-                        spark_plan.plan_id,
-                        Arc::new(iceberg_scan),
-                        vec![],
-                    )),
-                ))
+                // Metrics of the underlying scan roll up via additional_native_plans so num_splits /
+                // bytes_scanned still surface under the single Spark scan node.
+                let result_plan = match ordering {
+                    Some(lex) if use_merge => {
+                        let spm: Arc<dyn ExecutionPlan> = Arc::new(
+                            SortPreservingMergeExec::new(lex, Arc::clone(&iceberg_scan))
+                                .with_round_robin_repartition(false),
+                        );
+                        SparkPlan::new_with_additional(
+                            spark_plan.plan_id,
+                            spm,
+                            vec![],
+                            vec![iceberg_scan],
+                        )
+                    }
+                    Some(lex) => {
+                        // Too many files to merge: single unordered read + spillable SortExec.
+                        let sort: Arc<dyn ExecutionPlan> =
+                            Arc::new(SortExec::new(lex, Arc::clone(&iceberg_scan)));
+                        SparkPlan::new_with_additional(
+                            spark_plan.plan_id,
+                            sort,
+                            vec![],
+                            vec![iceberg_scan],
+                        )
+                    }
+                    None => SparkPlan::new(spark_plan.plan_id, iceberg_scan, vec![]),
+                };
+
+                Ok((vec![], vec![], Arc::new(result_plan)))
             }
             OpStruct::ContribScan(contrib) => {
                 // Extension point for optional, out-of-tree contrib scans (Delta, Lance, ...). The
@@ -8025,6 +8102,255 @@ mod tests {
             err.to_string().contains("Non-empty FileScanTask partition"),
             "unexpected error: {err}"
         );
+    }
+
+    /// Builds an IcebergScan Operator with `num_files` file-scan tasks and a reported identity
+    /// ordering on a single Int column, so create_plan takes the sort-merge path.
+    fn iceberg_scan_op_with_ordering(num_files: usize, max_files_per_partition: u32) -> Operator {
+        let schema_json = serde_json::to_string(
+            &iceberg::spec::Schema::builder()
+                .with_schema_id(0)
+                .with_fields(vec![iceberg::spec::NestedField::required(
+                    1,
+                    "id",
+                    iceberg::spec::Type::Primitive(iceberg::spec::PrimitiveType::Int),
+                )
+                .into()])
+                .build()
+                .expect("schema"),
+        )
+        .expect("serialize schema");
+
+        let int_type = spark_expression::DataType {
+            type_id: 3, // Int32
+            type_info: None,
+        };
+
+        let required_schema = vec![spark_operator::SparkStructField {
+            name: "id".to_string(),
+            data_type: Some(int_type.clone()),
+            nullable: false,
+            metadata: Default::default(),
+        }];
+
+        // id ASC NULLS FIRST, as Expr { SortOrder { child: Bound(0) } }.
+        let sort_child = Expr {
+            expr_struct: Some(Bound(spark_expression::BoundReference {
+                index: 0,
+                datatype: Some(int_type),
+            })),
+            query_context: None,
+            expr_id: None,
+        };
+        let sort_order = Expr {
+            expr_struct: Some(ExprStruct::SortOrder(Box::new(
+                spark_expression::SortOrder {
+                    child: Some(Box::new(sort_child)),
+                    direction: 0,     // Ascending
+                    null_ordering: 0, // NullsFirst
+                },
+            ))),
+            query_context: None,
+            expr_id: None,
+        };
+
+        let common = spark_operator::IcebergScanCommon {
+            schema_pool: vec![schema_json],
+            project_field_ids_pool: vec![spark_operator::ProjectFieldIdList { field_ids: vec![1] }],
+            required_schema,
+            table_sort_orders: vec![sort_order],
+            max_files_per_partition,
+            ..Default::default()
+        };
+
+        let task = spark_operator::IcebergFileScanTask {
+            data_file_path: "file:///tmp/data.parquet".to_string(),
+            file_size_in_bytes: 100,
+            schema_idx: 0,
+            project_field_ids_idx: 0,
+            ..Default::default()
+        };
+
+        Operator {
+            plan_id: 1,
+            sql_text_pool: vec![],
+            children: vec![],
+            op_struct: Some(OpStruct::IcebergScan(spark_operator::IcebergScan {
+                common: Some(common),
+                file_scan_tasks: vec![task; num_files],
+            })),
+        }
+    }
+
+    // At or below the max-files-per-partition limit, a reported ordering makes the scan
+    // multi-partition and the planner wraps it in a SortPreservingMergeExec.
+    #[test]
+    fn iceberg_scan_merges_when_files_within_limit() {
+        let op = iceberg_scan_op_with_ordering(4, 64);
+        let planner = PhysicalPlanner::default();
+        let (_, _, plan) = planner.create_plan(&op, &mut vec![], 1).unwrap();
+        assert_eq!("SortPreservingMergeExec", plan.native_plan.name());
+    }
+
+    // Above the limit, merging would open too many readers at once, so the planner falls back to a
+    // single unordered read wrapped in a spillable SortExec (still sorted output).
+    #[test]
+    fn iceberg_scan_falls_back_to_sort_above_file_limit() {
+        let op = iceberg_scan_op_with_ordering(65, 64);
+        let planner = PhysicalPlanner::default();
+        let (_, _, plan) = planner.create_plan(&op, &mut vec![], 1).unwrap();
+        assert_eq!("SortExec", plan.native_plan.name());
+    }
+
+    // The limit that decides merge-vs-sort comes from the proto (common.max_files_per_partition),
+    // not a compiled-in constant, so a low limit must flip the same 3-file scan from merge to sort.
+    // This proves the value is actually read from the plan: with max_files_per_partition = 2, a
+    // 3-file partition exceeds the limit and takes the SortExec path.
+    #[test]
+    fn iceberg_scan_honors_max_files_per_partition_from_proto() {
+        let merge = iceberg_scan_op_with_ordering(3, 3);
+        let planner = PhysicalPlanner::default();
+        let (_, _, plan) = planner.create_plan(&merge, &mut vec![], 1).unwrap();
+        assert_eq!("SortPreservingMergeExec", plan.native_plan.name());
+
+        let sort = iceberg_scan_op_with_ordering(3, 2);
+        let (_, _, plan) = planner.create_plan(&sort, &mut vec![], 1).unwrap();
+        assert_eq!("SortExec", plan.native_plan.name());
+    }
+
+    // Builds an IcebergScan Operator whose sort order is `col_type_ids` (proto DataTypeId: 3=Int32,
+    // 6=Float64/Double), all ASC, over columns c0, c1, .... Lets the merge-vs-sort decision be
+    // exercised for a float key at any position.
+    fn iceberg_scan_op_with_typed_ordering(
+        col_type_ids: &[i32],
+        num_files: usize,
+        max_files_per_partition: u32,
+    ) -> Operator {
+        let iceberg_fields: Vec<_> = col_type_ids
+            .iter()
+            .enumerate()
+            .map(|(i, &tid)| {
+                let prim = if tid == 6 {
+                    iceberg::spec::PrimitiveType::Double
+                } else {
+                    iceberg::spec::PrimitiveType::Int
+                };
+                iceberg::spec::NestedField::required(
+                    (i + 1) as i32,
+                    format!("c{i}"),
+                    iceberg::spec::Type::Primitive(prim),
+                )
+                .into()
+            })
+            .collect();
+        let schema_json = serde_json::to_string(
+            &iceberg::spec::Schema::builder()
+                .with_schema_id(0)
+                .with_fields(iceberg_fields)
+                .build()
+                .expect("schema"),
+        )
+        .expect("serialize schema");
+
+        let required_schema: Vec<_> = col_type_ids
+            .iter()
+            .enumerate()
+            .map(|(i, &tid)| spark_operator::SparkStructField {
+                name: format!("c{i}"),
+                data_type: Some(spark_expression::DataType {
+                    type_id: tid,
+                    type_info: None,
+                }),
+                nullable: false,
+                metadata: Default::default(),
+            })
+            .collect();
+
+        // c0 ASC, c1 ASC, ... each a Bound reference at its own index, NULLS FIRST.
+        let sort_orders: Vec<Expr> = col_type_ids
+            .iter()
+            .enumerate()
+            .map(|(i, &tid)| Expr {
+                expr_struct: Some(ExprStruct::SortOrder(Box::new(
+                    spark_expression::SortOrder {
+                        child: Some(Box::new(Expr {
+                            expr_struct: Some(Bound(spark_expression::BoundReference {
+                                index: i as i32,
+                                datatype: Some(spark_expression::DataType {
+                                    type_id: tid,
+                                    type_info: None,
+                                }),
+                            })),
+                            query_context: None,
+                            expr_id: None,
+                        })),
+                        direction: 0,     // Ascending
+                        null_ordering: 0, // NullsFirst
+                    },
+                ))),
+                query_context: None,
+                expr_id: None,
+            })
+            .collect();
+
+        let field_ids: Vec<i32> = (1..=col_type_ids.len() as i32).collect();
+        let common = spark_operator::IcebergScanCommon {
+            schema_pool: vec![schema_json],
+            project_field_ids_pool: vec![spark_operator::ProjectFieldIdList { field_ids }],
+            required_schema,
+            table_sort_orders: sort_orders,
+            max_files_per_partition,
+            ..Default::default()
+        };
+
+        let task = spark_operator::IcebergFileScanTask {
+            data_file_path: "file:///tmp/data.parquet".to_string(),
+            file_size_in_bytes: 100,
+            schema_idx: 0,
+            project_field_ids_idx: 0,
+            ..Default::default()
+        };
+
+        Operator {
+            plan_id: 1,
+            sql_text_pool: vec![],
+            children: vec![],
+            op_struct: Some(OpStruct::IcebergScan(spark_operator::IcebergScan {
+                common: Some(common),
+                file_scan_tasks: vec![task; num_files],
+            })),
+        }
+    }
+
+    // A float/double sort key that PRECEDES another key is not merge-safe (Iceberg orders -0.0 <
+    // +0.0 while Spark treats them equal), so the planner routes it to the spillable SortExec even
+    // under the cap. Regression for the composite floating-point ordering P1 (PR #5331).
+    #[test]
+    fn iceberg_scan_uses_sort_for_leading_float_composite_ordering() {
+        let op = iceberg_scan_op_with_typed_ordering(&[6, 3], 3, 64); // (DOUBLE, INT)
+        let planner = PhysicalPlanner::default();
+        let (_, _, plan) = planner.create_plan(&op, &mut vec![], 1).unwrap();
+        assert_eq!("SortExec", plan.native_plan.name());
+    }
+
+    // A trailing float key is merge-safe: signed-zero rows are Spark-equal, so any order among them
+    // already satisfies the required ordering. It must still take the k-way merge under the cap.
+    #[test]
+    fn iceberg_scan_merges_for_trailing_float_ordering() {
+        let op = iceberg_scan_op_with_typed_ordering(&[3, 6], 3, 64); // (INT, DOUBLE)
+        let planner = PhysicalPlanner::default();
+        let (_, _, plan) = planner.create_plan(&op, &mut vec![], 1).unwrap();
+        assert_eq!("SortPreservingMergeExec", plan.native_plan.name());
+    }
+
+    // A single float key is the last (and only) key, so it is merge-safe and must merge under the
+    // cap -- guards the `i == last` carve-out from being dropped.
+    #[test]
+    fn iceberg_scan_merges_for_single_float_ordering() {
+        let op = iceberg_scan_op_with_typed_ordering(&[6], 3, 64); // (DOUBLE)
+        let planner = PhysicalPlanner::default();
+        let (_, _, plan) = planner.create_plan(&op, &mut vec![], 1).unwrap();
+        assert_eq!("SortPreservingMergeExec", plan.native_plan.name());
     }
 
     /// The planner promises DataFusion a native UDF's return type with every nested field nullable,

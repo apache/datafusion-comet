@@ -44,8 +44,9 @@ import org.apache.comet.DataTypeSupport.isComplexType
 import org.apache.comet.iceberg.{CometIcebergNativeScanMetadata, IcebergReflection}
 import org.apache.comet.objectstore.NativeConfig
 import org.apache.comet.serde.{CometOperatorSerde, OperatorOuterClass}
+import org.apache.comet.serde.ExprOuterClass.Expr
 import org.apache.comet.serde.OperatorOuterClass.{Operator, SparkStructField}
-import org.apache.comet.serde.QueryPlanSerde.serializeDataType
+import org.apache.comet.serde.QueryPlanSerde.{exprToProto, serializeDataType}
 
 object CometIcebergNativeScan extends CometOperatorSerde[CometBatchScanExec] with Logging {
 
@@ -945,6 +946,127 @@ object CometIcebergNativeScan extends CometOperatorSerde[CometBatchScanExec] wit
   }
 
   /**
+   * The longest leading prefix of an Iceberg-reported sort order that the native scan can honour
+   * (empty if even the first field cannot be reported). The single caller is CometScanRule, which
+   * pairs this with orderingDecision to decide fallback-vs-stay-native, then stashes the result
+   * on the scan metadata; CometIcebergNativeScanExec.outputOrdering (what tells Spark the scan is
+   * sorted) and the proto serialization both read that one stashed value, so the two always
+   * agree.
+   *
+   * v1 accepts only identity sort fields on top-level columns that are in the projection. Each
+   * SortOrder child must be an AttributeReference in `output`, and must serialize to proto.
+   * Transform sort fields (bucket/truncate/...) are not AttributeReferences, so the prefix stops
+   * at them. Checking exprToProto here, not just in the proto path, keeps the advertised order
+   * and the serialized order identical.
+   *
+   * We trust Iceberg on file-level sortedness. If it reports an ordering, SortOrderAnalyzer has
+   * already checked each file's sort_order_id matches the table order, so every file is sorted.
+   *
+   * We read scanExec.ordering (the raw reported order), not scanExec.outputOrdering. On Spark
+   * 3.4/3.5/4.0 outputOrdering blanks when multiple InputPartitions share a partition key
+   * (DataSourceV2ScanExecBase filters `ordering` on `groupedParts.forall(_.parts.length <= 1)`),
+   * NOT when a partition holds multiple files (note: Spark master no longer blanks at all, so
+   * this is version-specific). Iceberg's SortOrderAnalyzer.hasUniquePartitionKeys refuses to
+   * report in exactly that same case, so on the Iceberg path scanExec.ordering and
+   * scanExec.outputOrdering are equal and the many-files-in-one-partition case this merge targets
+   * is one Spark does not blank. Reading `ordering` therefore matches outputOrdering today; it
+   * leans on that Iceberg invariant to stay safe -- if a future Iceberg relaxes
+   * hasUniquePartitionKeys, switch this read to scanExec.outputOrdering on the versions that
+   * blank it.
+   *
+   * `unsafeColumns` are top-level columns whose Iceberg sort order can differ from Spark's
+   * comparison of the mapped Spark type (today: UUID, which Iceberg maps to StringType but sorts
+   * by its own comparator -- see IcebergReflection.orderingUnsafeColumns). A sort key on such a
+   * column is refused, because the files are sorted by an order the native string merge would not
+   * reproduce. This cannot be detected from the Spark type alone (UUID looks like a plain
+   * string), so the caller passes the names in.
+   */
+  def reportableOrdering(
+      ordering: Option[Seq[SortOrder]],
+      output: Seq[Attribute],
+      unsafeColumns: Set[String] = Set.empty): Seq[SortOrder] = {
+    // The longest leading run of reportable fields. Reporting a prefix is safe because Spark's
+    // SortOrder.orderingSatisfies matches positionally from index 0, so any required ordering above
+    // the scan can reach at most this prefix. Stopping at the first non-reportable field is right;
+    // whether Comet may still stay native there (vs fall back) is decided by orderingDecision.
+    ordering match {
+      case Some(orders) => orders.takeWhile(isReportable(_, output, unsafeColumns))
+      case None => Nil
+    }
+  }
+
+  /**
+   * The reportability gate's decision for CometScanRule: the sort prefix Comet will advertise
+   * (`reported`), plus whether Comet may stay on the native scan (`stayNative`) even when that
+   * prefix is shorter than Iceberg's full reported order.
+   *
+   * Comet may stay native iff the first field it cannot report is an unprojected attribute:
+   * nothing above the scan can require an ordering that reaches such a field (it is not in the
+   * output, and orderingSatisfies matches positionally from index 0), so Spark has dropped no
+   * Sort that depends on it, and an unordered read of the tail is correct -- Comet advertises
+   * just the safe prefix. A projected-but-unsafe field (a UUID, whose Iceberg byte order differs
+   * from Spark's string comparison) or a non-column transform can appear in a required ordering
+   * that Spark may already have eliminated a Sort on, so there Comet must fall back to Spark's
+   * own reader.
+   */
+  case class OrderingDecision(reported: Seq[SortOrder], stayNative: Boolean)
+
+  def orderingDecision(
+      ordering: Option[Seq[SortOrder]],
+      output: Seq[Attribute],
+      unsafeColumns: Set[String]): OrderingDecision = {
+    val reported = reportableOrdering(ordering, output, unsafeColumns)
+    val full = ordering.getOrElse(Nil)
+    val stayNative =
+      reported.length == full.length || // Iceberg reported nothing, or we honour the whole order
+        isUnprojectedAttribute(full(reported.length), output) // blocker is unprojected -> safe
+    OrderingDecision(reported, stayNative)
+  }
+
+  private def isUnprojectedAttribute(order: SortOrder, output: Seq[Attribute]): Boolean =
+    order.child match {
+      case a: AttributeReference => !output.exists(_.exprId == a.exprId)
+      case _ => false
+    }
+
+  private def isReportable(
+      order: SortOrder,
+      output: Seq[Attribute],
+      unsafeColumns: Set[String]): Boolean =
+    isIdentityProjected(order, output) && !isUnsafeColumn(order, unsafeColumns) &&
+      exprToProto(order, output).isDefined
+
+  private def isUnsafeColumn(order: SortOrder, unsafeColumns: Set[String]): Boolean =
+    order.child match {
+      case a: AttributeReference => unsafeColumns.contains(a.name)
+      case _ => false
+    }
+
+  private def isIdentityProjected(order: SortOrder, output: Seq[Attribute]): Boolean =
+    order.child match {
+      case a: AttributeReference => output.exists(_.exprId == a.exprId)
+      case _ => false
+    }
+
+  /**
+   * Binds the reported ordering to proto once, at planning time, against the same `output` the
+   * gate used. Returns None if any SortOrder fails to serialize, so CometScanRule can fall back
+   * to Spark cleanly instead of converting and then failing at task start. reportableOrdering
+   * already checks each order serializes against this output, so None here means the binding
+   * drifted -- treat the ordering as unreportable rather than raising at execution time.
+   */
+  def serializeReportedOrdering(
+      reportedOrdering: Seq[SortOrder],
+      output: Seq[Attribute]): Option[Seq[Expr]] = {
+    if (reportedOrdering.isEmpty) {
+      Some(Nil)
+    } else {
+      val protoOrders = reportedOrdering.map(exprToProto(_, output))
+      if (protoOrders.forall(_.isDefined)) Some(protoOrders.map(_.get)) else None
+    }
+  }
+
+  /**
    * Serializes partitions from inputRDD at execution time.
    *
    * Called after doPrepare() has resolved DPP subqueries. Builds pools and per-partition data in
@@ -1033,6 +1155,16 @@ object CometIcebergNativeScan extends CometOperatorSerde[CometBatchScanExec] wit
     commonBuilder.setMetadataLocation(metadata.metadataLocation)
     commonBuilder.setDataFileConcurrencyLimit(
       CometConf.COMET_ICEBERG_DATA_FILE_CONCURRENCY_LIMIT.get())
+    // sortMerge.enabled = false keeps the scan native and still honours the reported order, but
+    // via the spillable SortExec rather than the k-way merge. Express that as "merge at most 0
+    // files per partition" so the planner always takes the sort path; when enabled, carry the
+    // configured cap. Lives on the proto next to data_file_concurrency_limit, so the default is
+    // defined once (in CometConf) and the native side reads common.max_files_per_partition.
+    commonBuilder.setMaxFilesPerPartition(if (CometConf.COMET_ICEBERG_SORT_MERGE_ENABLED.get()) {
+      CometConf.COMET_ICEBERG_SORT_MERGE_MAX_FILES_PER_PARTITION.get()
+    } else {
+      0
+    })
     metadata.catalogName.foreach(commonBuilder.setCatalogName)
     (metadata.catalogProperties + ioTimeoutProperty()).foreach { case (key, value) =>
       commonBuilder.putCatalogProperties(key, value)
@@ -1045,6 +1177,13 @@ object CometIcebergNativeScan extends CometOperatorSerde[CometBatchScanExec] wit
         .setNullable(attr.nullable)
       serializeDataType(attr.dataType).foreach(field.setDataType)
       commonBuilder.addRequiredSchema(field.build())
+    }
+
+    // The reported ordering was bound to proto at planning time (metadata.reportedOrderingProto)
+    // against this same output, so a binding failure already fell the scan back to Spark in
+    // CometScanRule -- here we just write the pre-bound protos, no re-binding or exec-time throw.
+    if (metadata.reportedOrderingProto.nonEmpty) {
+      commonBuilder.addAllTableSortOrders(metadata.reportedOrderingProto.asJava)
     }
 
     // Load Iceberg classes once (avoid repeated class loading in loop)
