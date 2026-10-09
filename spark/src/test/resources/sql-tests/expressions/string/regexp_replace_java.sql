@@ -16,6 +16,7 @@
 -- under the License.
 
 -- Test regexp_replace via JVM regex engine
+-- Raw literals keep Spark from dropping regex backslashes such as '\d'.
 
 statement
 CREATE TABLE test_regexp_replace_java(s string) USING parquet
@@ -23,28 +24,28 @@ CREATE TABLE test_regexp_replace_java(s string) USING parquet
 statement
 INSERT INTO test_regexp_replace_java VALUES ('100-200'), ('abc'), (''), (NULL), ('phone 123-456-7890'), ('aabbcc')
 
-query
-SELECT regexp_replace(s, '\d+', 'X') FROM test_regexp_replace_java
+query expect_dispatch(regexp_replace)
+SELECT regexp_replace(s, r'\d+', 'X') FROM test_regexp_replace_java
 
-query
-SELECT regexp_replace(s, '\d+', 'X', 1) FROM test_regexp_replace_java
+query expect_dispatch(regexp_replace)
+SELECT regexp_replace(s, r'\d+', 'X', 1) FROM test_regexp_replace_java
 
 -- backreference in replacement
-query
-SELECT regexp_replace(s, '(\d+)-(\d+)', '$2-$1') FROM test_regexp_replace_java
+query expect_dispatch(regexp_replace)
+SELECT regexp_replace(s, r'(\d+)-(\d+)', '$2-$1') FROM test_regexp_replace_java
 
 -- backreference in pattern (Java-only)
-query
-SELECT regexp_replace(s, '(\w)\1', 'Z') FROM test_regexp_replace_java
+query expect_dispatch(regexp_replace)
+SELECT regexp_replace(s, r'(\w)\1', 'Z') FROM test_regexp_replace_java
 
 -- lookahead (Java-only)
-query
-SELECT regexp_replace(s, '\d+(?=-)', 'X') FROM test_regexp_replace_java
+query expect_dispatch(regexp_replace)
+SELECT regexp_replace(s, r'\d+(?=-)', 'X') FROM test_regexp_replace_java
 
 -- embedded flags (Java-only)
-query
+query expect_dispatch(regexp_replace)
 SELECT regexp_replace(s, '(?i)ABC', 'X') FROM test_regexp_replace_java
 
 -- literal arguments
-query
-SELECT regexp_replace('100-200', '(\d+)', 'X'), regexp_replace('abc', '(\d+)', 'X'), regexp_replace(NULL, '(\d+)', 'X')
+query expect_dispatch(regexp_replace)
+SELECT regexp_replace('100-200', r'(\d+)', 'X'), regexp_replace('abc', r'(\d+)', 'X'), regexp_replace(NULL, r'(\d+)', 'X')
