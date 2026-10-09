@@ -19,11 +19,15 @@
 
 package org.apache.spark.sql.comet.execution.arrow
 
+import java.util.concurrent.ConcurrentHashMap
+
 import scala.jdk.CollectionConverters._
 import scala.reflect.ClassTag
 
 import org.apache.arrow.c.{ArrowArrayStream, Data}
 import org.apache.arrow.memory.BufferAllocator
+import org.apache.arrow.vector.VectorSchemaRoot
+import org.apache.arrow.vector.dictionary.Dictionary
 import org.apache.arrow.vector.ipc.ArrowReader
 import org.apache.arrow.vector.types.pojo.{Field, FieldType, Schema}
 import org.apache.spark.TaskContext
@@ -233,16 +237,19 @@ object CometArrowStream extends Logging {
    * the JNI global ref that arrow-java holds on the stream's private data. Taking the stream
    * leaves a null release callback in the JVM's struct, and arrow-java's `release` skips a null
    * callback, so a stream native took is still released only once.
+   *
+   * The reader is wrapped so that what it throws while native pulls a batch stays available to
+   * [[inputFailure]] until the task completes.
    */
   def stream(
       name: String,
       readerFactory: BufferAllocator => ArrowReader): Iterator[ArrowArrayStream] = {
     val context = TaskContext.get()
     val allocator = CometArrowAllocator.newChildAllocator(name, 0, Long.MaxValue)
-    var reader: ArrowReader = null
+    var reader: FailureRecordingReader = null
     var arrowStream: ArrowArrayStream = null
     try {
-      reader = readerFactory(allocator)
+      reader = new FailureRecordingReader(allocator, readerFactory(allocator))
       arrowStream = ArrowArrayStream.allocateNew(allocator)
       Data.exportArrayStream(allocator, reader, arrowStream)
     } catch {
@@ -256,7 +263,9 @@ object CometArrowStream extends Logging {
     }
     if (context != null) {
       val streamRef = arrowStream
+      exportedReaders.put(streamRef, reader)
       context.addTaskCompletionListener[Unit] { _ =>
+        exportedReaders.remove(streamRef)
         // Release before close: `close` frees the struct that `release` reads.
         streamRef.release()
         streamRef.close()
@@ -264,6 +273,59 @@ object CometArrowStream extends Logging {
       }
     }
     Iterator.single(arrowStream)
+  }
+
+  /**
+   * The reader behind each stream exported by [[stream]] whose task has not completed yet, keyed
+   * by the stream object that its consumer holds as an input.
+   */
+  private val exportedReaders = new ConcurrentHashMap[ArrowArrayStream, FailureRecordingReader]()
+
+  /**
+   * What the reader behind `stream` threw while native pulled a batch from it, if anything. Arrow
+   * Java's exported stream catches that throwable and hands native only its text, so the native
+   * plan fails with a `CometNativeException` built from the text. The throwable itself is what
+   * the task would have thrown without Comet, so the plan's consumer rethrows it instead.
+   */
+  def inputFailure(stream: ArrowArrayStream): Option[Throwable] =
+    Option(exportedReaders.get(stream)).flatMap(reader => Option(reader.failure))
+
+  /**
+   * Forwards everything to `reader`, keeping the first throwable its `loadNextBatch` throws for
+   * [[inputFailure]]. Its own `ArrowReader` state is never initialized: every method that the
+   * stream exporter calls is forwarded, and so is `close`.
+   */
+  private final class FailureRecordingReader(allocator: BufferAllocator, reader: ArrowReader)
+      extends ArrowReader(allocator) {
+
+    @volatile var failure: Throwable = _
+
+    override def loadNextBatch(): Boolean =
+      try reader.loadNextBatch()
+      catch {
+        case t: Throwable =>
+          if (failure == null) failure = t
+          throw t
+      }
+
+    override def getVectorSchemaRoot(): VectorSchemaRoot = reader.getVectorSchemaRoot()
+
+    override def getDictionaryVectors(): java.util.Map[java.lang.Long, Dictionary] =
+      reader.getDictionaryVectors()
+
+    override def lookup(id: Long): Dictionary = reader.lookup(id)
+
+    override def getDictionaryIds(): java.util.Set[java.lang.Long] = reader.getDictionaryIds()
+
+    override def bytesRead(): Long = reader.bytesRead()
+
+    override def close(): Unit = reader.close()
+
+    override def close(closeReadSource: Boolean): Unit = reader.close(closeReadSource)
+
+    override protected def closeReadSource(): Unit = ()
+
+    override protected def readSchema(): Schema = reader.getVectorSchemaRoot().getSchema
   }
 
   /** Close a resource, swallowing any error, for use in rollback paths. Null-safe. */

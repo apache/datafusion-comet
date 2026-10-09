@@ -16,6 +16,7 @@
 -- under the License.
 
 -- Test regexp_extract via JVM regex engine
+-- Raw literals keep Spark from dropping regex backslashes such as '\d'.
 
 statement
 CREATE TABLE test_regexp_extract(s string) USING parquet
@@ -24,33 +25,33 @@ statement
 INSERT INTO test_regexp_extract VALUES ('abc123def'), ('no match'), (NULL), ('xyz789'), ('hello world'), ('aa')
 
 -- group 0: entire match
-query
-SELECT regexp_extract(s, '\d+', 0) FROM test_regexp_extract
+query expect_dispatch(regexp_extract)
+SELECT regexp_extract(s, r'\d+', 0) FROM test_regexp_extract
 
 -- group 1: first capturing group
-query
-SELECT regexp_extract(s, '([a-z]+)(\d+)', 1) FROM test_regexp_extract
+query expect_dispatch(regexp_extract)
+SELECT regexp_extract(s, r'([a-z]+)(\d+)', 1) FROM test_regexp_extract
 
 -- group 2: second capturing group
-query
-SELECT regexp_extract(s, '([a-z]+)(\d+)', 2) FROM test_regexp_extract
+query expect_dispatch(regexp_extract)
+SELECT regexp_extract(s, r'([a-z]+)(\d+)', 2) FROM test_regexp_extract
 
 -- no match returns empty string
-query
+query expect_dispatch(regexp_extract)
 SELECT regexp_extract(s, 'NOMATCH', 0) FROM test_regexp_extract
 
 -- backreference pattern (Java-only)
-query
-SELECT regexp_extract(s, '(\w)\1', 0) FROM test_regexp_extract
+query expect_dispatch(regexp_extract)
+SELECT regexp_extract(s, r'(\w)\1', 0) FROM test_regexp_extract
 
 -- lookahead (Java-only)
-query
-SELECT regexp_extract(s, 'abc(?=\d)', 0) FROM test_regexp_extract
+query expect_dispatch(regexp_extract)
+SELECT regexp_extract(s, r'abc(?=\d)', 0) FROM test_regexp_extract
 
 -- embedded flags (Java-only)
-query
+query expect_dispatch(regexp_extract)
 SELECT regexp_extract(s, '(?i)HELLO', 0) FROM test_regexp_extract
 
 -- literal arguments
-query
-SELECT regexp_extract('abc123', '(\d+)', 1), regexp_extract('no digits', '(\d+)', 1), regexp_extract(NULL, '(\d+)', 1)
+query expect_dispatch(regexp_extract)
+SELECT regexp_extract('abc123', r'(\d+)', 1), regexp_extract('no digits', r'(\d+)', 1), regexp_extract(NULL, r'(\d+)', 1)

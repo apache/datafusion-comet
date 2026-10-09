@@ -62,9 +62,9 @@ key is removed.
 ### Deprecated and Removed Settings
 
 Using `spark.comet.sparkToColumnar.enabled` and `spark.comet.sparkToColumnar.supportedOperatorList`
-to convert ranges, in-memory cached tables, RDDs and queries without a `FROM` clause to Arrow is
-deprecated, and will stop working in a future major release. Each of these now has a config of its
-own:
+to convert ranges, in-memory cached tables, RDDs, queries without a `FROM` clause and Data Source V1
+relations that are not file-based to Arrow is deprecated, and will stop working in a future major
+release. Each of these now has a config of its own:
 
 | Operator in the list | Config                                       |
 | -------------------- | -------------------------------------------- |
@@ -72,13 +72,16 @@ own:
 | `InMemoryTableScan`  | `spark.comet.convert.inMemoryCache.enabled`  |
 | `RDDScan`            | `spark.comet.convert.rdd.enabled`            |
 | `OneRowRelation`     | `spark.comet.convert.oneRowRelation.enabled` |
+| `RowDataSourceScan`  | `spark.comet.convert.rowDataSource.enabled`  |
 
 `spark.comet.sparkToColumnar.supportedOperatorList` now defaults to an empty list. When it is not
-set, `spark.comet.sparkToColumnar.enabled=true` still converts these four, and a list that names one
-of them still converts it, as before. In both cases the driver logs a warning that names the config
-to use instead. Before Spark 4.1, Spark plans a query without a `FROM` clause as an `RDDScan`, so on
-those versions `RDDScan` in the list also converted it. The list remains the way to convert other
-leaf operators, such as the scan of a Data Source V2 connector.
+set, `spark.comet.sparkToColumnar.enabled=true` still converts the first four, which the list named
+by default, and a list that names any of the five still converts it, as before. In both cases the
+driver logs a warning that names the config to use instead. Before Spark 4.1, Spark plans a query
+without a `FROM` clause as an `RDDScan`, so on those versions `RDDScan` in the list also converted
+it. `spark.comet.convert.oneRowRelation.enabled` is on by default, so such a query is now converted
+without either setting, and logs no warning. The list remains the way to convert other leaf
+operators, such as the scan of a Data Source V2 connector.
 
 ## Upgrading to Comet 1.1.0
 
