@@ -16,7 +16,7 @@
 // under the License.
 
 use crate::utils::array_with_timezone;
-use arrow::array::ArrayRef;
+use arrow::array::{new_null_array, ArrayRef};
 use arrow::compute::cast;
 use arrow::datatypes::{DataType, Schema, TimeUnit::Microsecond};
 use arrow::record_batch::RecordBatch;
@@ -142,6 +142,18 @@ impl PhysicalExpr for TimestampTruncExpr {
                 let scalar = ScalarValue::try_from_array(&relabel(result)?, 0)?;
                 Ok(ColumnarValue::Scalar(scalar))
             }
+            (ColumnarValue::Scalar(ts_scalar), ColumnarValue::Array(formats)) => {
+                let ts = ts_scalar.to_array_of_size(formats.len())?;
+                let result = timestamp_trunc_array_fmt_dyn(&resolve_tz(ts)?, &formats, wrap)?;
+                Ok(ColumnarValue::Array(relabel(result)?))
+            }
+            // A NULL format gives NULL, as in Spark.
+            (ColumnarValue::Array(ts), ColumnarValue::Scalar(Utf8(None))) => {
+                Ok(ColumnarValue::Array(new_null_array(&output_type, ts.len())))
+            }
+            (ColumnarValue::Scalar(_), ColumnarValue::Scalar(Utf8(None))) => {
+                Ok(ColumnarValue::Scalar(ScalarValue::try_from(&output_type)?))
+            }
             _ => Err(DataFusionError::Execution(
                 "Invalid input to function TimestampTrunc. \
                     Expected (Timestamp, Utf8)"
@@ -184,7 +196,9 @@ fn output_type(input: &DataType) -> DataType {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use arrow::array::{Array, AsArray, DictionaryArray, Int32Array, TimestampMicrosecondArray};
+    use arrow::array::{
+        Array, AsArray, DictionaryArray, Int32Array, StringArray, TimestampMicrosecondArray,
+    };
     use arrow::datatypes::{Field, Int32Type, TimestampMicrosecondType};
     use datafusion::physical_expr::expressions::{Column, Literal};
 
@@ -239,6 +253,70 @@ mod tests {
         assert_eq!(
             values.as_primitive::<TimestampMicrosecondType>().value(0),
             HOUR_IN_KOLKATA
+        );
+    }
+
+    /// Evaluates `date_trunc` in America/Los_Angeles with the given timestamp and format inputs.
+    fn trunc_in_los_angeles(
+        timestamp: Arc<dyn PhysicalExpr>,
+        format: Arc<dyn PhysicalExpr>,
+        batch: &RecordBatch,
+    ) -> ColumnarValue {
+        TimestampTruncExpr::new(timestamp, format, "America/Los_Angeles".to_string(), false)
+            .evaluate(batch)
+            .unwrap()
+    }
+
+    #[test]
+    fn literal_timestamp_with_a_format_column() {
+        // 2024-11-03 01:30 PDT, inside the overlap. DAY keeps the input's offset, YEAR does not
+        // depend on it, and a NULL format gives NULL.
+        let micros = 1_730_622_600_000_000;
+        let formats = StringArray::from(vec![Some("DAY"), Some("YEAR"), None]);
+        let schema = Schema::new(vec![Field::new("fmt", DataType::Utf8, true)]);
+        let batch = RecordBatch::try_new(Arc::new(schema), vec![Arc::new(formats)]).unwrap();
+        let timestamp = Literal::new(ScalarValue::TimestampMicrosecond(
+            Some(micros),
+            Some("UTC".into()),
+        ));
+        let ColumnarValue::Array(result) =
+            trunc_in_los_angeles(Arc::new(timestamp), Arc::new(Column::new("fmt", 0)), &batch)
+        else {
+            panic!("expected an array");
+        };
+        assert_eq!(result.data_type(), &utc_timestamp());
+        let result = result.as_primitive::<TimestampMicrosecondType>();
+        // 2024-11-03 00:00 PDT and 2024-01-01 00:00 PST.
+        assert_eq!(result.value(0), 1_730_617_200_000_000);
+        assert_eq!(result.value(1), 1_704_096_000_000_000);
+        assert!(result.is_null(2));
+    }
+
+    #[test]
+    fn null_literal_format_gives_null() {
+        let input = TimestampMicrosecondArray::from(vec![Some(MICROS), None]).with_timezone("UTC");
+        let schema = Schema::new(vec![Field::new("ts", utc_timestamp(), true)]);
+        let batch = RecordBatch::try_new(Arc::new(schema), vec![Arc::new(input)]).unwrap();
+        let null_format = || Arc::new(Literal::new(Utf8(None)));
+        let ColumnarValue::Array(result) =
+            trunc_in_los_angeles(Arc::new(Column::new("ts", 0)), null_format(), &batch)
+        else {
+            panic!("expected an array");
+        };
+        assert_eq!(result.data_type(), &utc_timestamp());
+        assert_eq!(result.null_count(), 2);
+
+        let timestamp = Arc::new(Literal::new(ScalarValue::TimestampMicrosecond(
+            Some(MICROS),
+            Some("UTC".into()),
+        )));
+        let ColumnarValue::Scalar(result) = trunc_in_los_angeles(timestamp, null_format(), &batch)
+        else {
+            panic!("expected a scalar");
+        };
+        assert_eq!(
+            result,
+            ScalarValue::TimestampMicrosecond(None, Some("UTC".into()))
         );
     }
 }

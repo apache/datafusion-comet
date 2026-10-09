@@ -896,9 +896,10 @@ where
     Ok(result)
 }
 
-/// The zone-aware scalar-format fallback for HOUR/DAY outside DataFusion 55.1's internal
-/// TimestampNanosecond range. UTC/NTZ coarse units use integer calendar arithmetic instead.
-/// Row-format paths continue to call the same underlying helpers.
+/// The zone-aware fallback for HOUR/DAY outside DataFusion 55.1's internal TimestampNanosecond
+/// range, for literal formats and format columns alike. UTC/NTZ coarse units use integer calendar
+/// arithmetic instead. Like every native local-time conversion, it stops applying DST after
+/// chrono-tz's last transition, around 2099, while Spark keeps applying the zone's rules (#6816).
 fn timestamp_trunc_legacy(
     array: &TimestampMicrosecondArray,
     format: &str,

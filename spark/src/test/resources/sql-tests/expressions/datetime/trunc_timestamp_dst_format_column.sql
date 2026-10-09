@@ -64,3 +64,11 @@ INSERT INTO test_trunc_fmt SELECT ts, fmt FROM test_trunc_fmt_ts CROSS JOIN test
 
 query expect_native(date_trunc)
 SELECT ts, fmt, date_trunc(fmt, ts) FROM test_trunc_fmt ORDER BY ts, fmt
+
+-- A NULL literal format gives NULL.
+query expect_native(date_trunc)
+SELECT ts, date_trunc(NULL, ts) FROM test_trunc_fmt_ts ORDER BY ts
+
+-- A literal timestamp with the format in a column. 2024-11-03 01:30 is in the US fall-back overlap.
+query expect_native(date_trunc)
+SELECT fmt, date_trunc(fmt, TIMESTAMP '2024-11-03 01:30:00') FROM test_trunc_fmt_unit ORDER BY fmt
