@@ -24,7 +24,7 @@ import org.apache.spark.sql.catalyst.expressions.RowOrdering
 import org.apache.spark.sql.catalyst.optimizer.{BuildLeft, BuildRight, BuildSide}
 import org.apache.spark.sql.catalyst.planning.ExtractEquiJoinKeys
 import org.apache.spark.sql.catalyst.plans.{ExistenceJoin, LeftSemi}
-import org.apache.spark.sql.catalyst.plans.logical.{BROADCAST, Join, JoinHint, LogicalPlan, SHUFFLE_HASH, SHUFFLE_MERGE, SHUFFLE_REPLICATE_NL}
+import org.apache.spark.sql.catalyst.plans.logical.{Join, JoinHint, JoinStrategyHint, LogicalPlan}
 import org.apache.spark.sql.execution.{SparkPlan, SparkStrategy}
 import org.apache.spark.sql.execution.adaptive.{BroadcastQueryStageExec, LogicalQueryStage}
 import org.apache.spark.sql.execution.joins.{ShuffledHashJoinExec, SortMergeJoinExec}
@@ -102,17 +102,20 @@ case class CometShuffledHashJoinStrategy(session: SparkSession)
     isBroadcastStage(join.left) || isBroadcastStage(join.right) ||
       canPlanAsBroadcastHashJoin(join, sqlConf) || hasStrategyHint(hint)
 
+  // Spark's LogicalQueryStageStrategy plans a join over a broadcast stage as a broadcast join,
+  // but runs after this strategy. canPlanAsBroadcastHashJoin can miss such a join, since it
+  // checks the stage's runtime size against the adaptive threshold, which can be lower or off.
+  // AQE then throws away a re-plan that hash joins the stage, with everything else it changed.
   private def isBroadcastStage(plan: LogicalPlan): Boolean = plan match {
     case LogicalQueryStage(_, _: BroadcastQueryStageExec) => true
     case _ => false
   }
 
-  // AQE's own hints, such as NO_BROADCAST_HASH and PREFER_SHUFFLE_HASH, do not count.
+  // The hints in JoinStrategyHint.strategies count, including a SHUFFLE_HASH that AQE sets;
+  // AQE's NO_BROADCAST_HASH and PREFER_SHUFFLE_HASH do not.
   private def hasStrategyHint(hint: JoinHint): Boolean =
-    Seq(hint.leftHint, hint.rightHint).flatten.flatMap(_.strategy).exists {
-      case BROADCAST | SHUFFLE_MERGE | SHUFFLE_HASH | SHUFFLE_REPLICATE_NL => true
-      case _ => false
-    }
+    Seq(hint.leftHint, hint.rightHint).exists(
+      _.exists(_.strategy.exists(JoinStrategyHint.strategies.contains)))
 
   private def declineReason(reason: String): String =
     s"Cannot rewrite SortMergeJoin to HashJoin: $reason"
