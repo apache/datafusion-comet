@@ -2861,21 +2861,27 @@ trait CometHashJoin {
       }
     }
 
-    // DataFusion may move unmatched probe rows for these shapes, so the native planner needs the
-    // ordering Spark reports for the join to restore it.
-    val outputOrdering = (join.joinType, join.buildSide) match {
-      case (LeftOuter, BuildRight) | (RightOuter, BuildLeft) if join.outputOrdering.nonEmpty =>
-        if (!supportedSortType(join, join.outputOrdering)) {
-          withFallbackReason(join, "Unsupported data type in hash join output ordering")
-          return None
-        }
-        val orders = join.outputOrdering.map(exprToProto(_, join.output))
-        if (orders.exists(_.isEmpty)) {
-          withFallbackReason(join, "hash join output ordering not supported")
-          return None
-        }
-        orders.flatten
-      case _ => Nil
+    // DataFusion may move unmatched probe rows for the outer shapes, and runs a null-aware anti
+    // join with Spark's streamed side as its build side, so the native planner needs the ordering
+    // Spark reports for the join to restore it.
+    val mayReorderStreamed = (join.joinType, join.buildSide) match {
+      case (LeftOuter, BuildRight) | (RightOuter, BuildLeft) => true
+      case (LeftAnti, BuildRight) => isNullAwareAntiJoin
+      case _ => false
+    }
+    val outputOrdering = if (mayReorderStreamed && join.outputOrdering.nonEmpty) {
+      if (!supportedSortType(join, join.outputOrdering)) {
+        withFallbackReason(join, "Unsupported data type in hash join output ordering")
+        return None
+      }
+      val orders = join.outputOrdering.map(exprToProto(_, join.output))
+      if (orders.exists(_.isEmpty)) {
+        withFallbackReason(join, "Unsupported expression in hash join output ordering")
+        return None
+      }
+      orders.flatten
+    } else {
+      Nil
     }
 
     val leftKeys = join.leftKeys.map(exprToProto(_, join.left.output))

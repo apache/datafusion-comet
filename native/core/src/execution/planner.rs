@@ -2711,7 +2711,8 @@ impl PhysicalPlanner {
 
                 // Spark reports the streamed side's ordering and may have removed a sort above
                 // the join on that basis. DataFusion keeps unmatched probe rows in probe order
-                // only when it sees the probe input sorted, so sort the output otherwise.
+                // only when it sees the probe input sorted, and does not keep a null-aware anti
+                // join's build order, so sort the output otherwise.
                 let native_plan = match self
                     .sort_unless_ordered(Arc::clone(&join_root), &join.output_ordering)?
                 {
@@ -6618,8 +6619,8 @@ mod tests {
             let (_, _, planned) = PhysicalPlanner::default()
                 .create_plan(&op, &mut vec![], 1)
                 .unwrap();
-            assert_ne!(
-                "SortExec",
+            assert_eq!(
+                "ProjectionExec",
                 planned.native_plan.name(),
                 "{smj_join_type:?}\n{}\n{:?}",
                 datafusion::physical_plan::displayable(planned.native_plan.as_ref()).indent(true),

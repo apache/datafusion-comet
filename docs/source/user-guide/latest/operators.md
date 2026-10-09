@@ -98,8 +98,8 @@ omitted from the tables below and may be reconsidered based on demand:
 
 | Operator                      | Status | Notes                                                                                                                                                                         |
 | ----------------------------- | ------ | ----------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| `BroadcastHashJoinExec`       | ✅     |                                                                                                                                                                               |
-| `ShuffledHashJoinExec`        | ✅     |                                                                                                                                                                               |
+| `BroadcastHashJoinExec`       | ✅     | Falls back to Spark when an outer or `NOT IN` join reports an output ordering whose type or expression Comet cannot sort natively.                                            |
+| `ShuffledHashJoinExec`        | ✅     | Falls back to Spark when an outer join reports an output ordering whose type or expression Comet cannot sort natively.                                                        |
 | `SortMergeJoinExec`           | ✅     | Supports `BINARY` join keys. Nested-type (struct, array, map) and collated-string join keys fall back to Spark.                                                               |
 | `BroadcastNestedLoopJoinExec` | ✅     | Falls back to Spark when the preserved side is broadcast (for example LEFT OUTER with BROADCAST on the left) ([#4429](https://github.com/apache/datafusion-comet/pull/4429)). |
 
