@@ -46,11 +46,12 @@ const MIN_BULK_APPEND_ELEMENTS: usize = 8;
 
 /// Element count from which an aligned nullable array that holds a null is appended with one copy
 /// of its values and a validity buffer built from its null bitset, instead of element by element.
-/// Building the two buffers takes four allocations, which cost as much as appending 40 to 55
-/// elements one by one, so shorter arrays stay on the loop: with the copy, arrays of 16 elements
-/// took 2.4 times as long and arrays of 32 elements 1.3 times. Arrays of 64 elements take 65% of
-/// the time with the copy for 4-byte elements and 85% for 8-byte ones, and arrays of 1024 a ninth
-/// and a third.
+/// Building the two buffers takes four allocations, which cost as much as appending about 50
+/// elements one by one, so shorter arrays stay on the loop. The `list_with_one_null` group of the
+/// `array_element_append` benchmark times lengths on both sides of the cutoff, and its doc comment
+/// shows how to compare the two paths. On an M3 Max with the system allocator, arrays of 32
+/// elements took 1.4 times as long with the copy, and arrays of 64 took 69% of the time for 4-byte
+/// elements and 86% for 8-byte ones.
 const MIN_BULK_NULLABLE_APPEND_ELEMENTS: usize = 64;
 
 /// Generates bulk append methods for primitive types in SparkUnsafeArray.
@@ -60,8 +61,10 @@ const MIN_BULK_NULLABLE_APPEND_ELEMENTS: usize = 64;
 /// - `null_bitset_ptr()` returns a pointer to `ceil(num_elements/64)` i64 words
 /// - These invariants are guaranteed by the SparkUnsafeArray layout from the JVM
 ///
-/// A timestamp appender also takes the column's timezone, because `append_array` requires the
-/// array's data type to match the builder's.
+/// A timestamp appender also takes `timezone`, which must be the builder's timezone, because
+/// `append_array` requires the array's data type to match the builder's. A mismatch panics in
+/// `append_array` for an aligned array of `MIN_BULK_NULLABLE_APPEND_ELEMENTS` or more elements that
+/// holds a null, and goes unnoticed for every other array.
 macro_rules! impl_append_to_builder {
     ($method_name:ident, $builder_type:ty, $element_type:ty, $arrow_type:ty
         $(, $timezone:ident)?) => {
@@ -220,7 +223,9 @@ impl SparkUnsafeArray {
     fn has_null(&self) -> bool {
         let null_words = self.null_bitset_ptr();
         // SAFETY: the null bitset holds ceil(num_elements/64) words. Spark zeroes the bits past
-        // the last element, and a stray one would only send the array down the per-element path.
+        // the last element. A stray one would send the array to the per-element loop, or to the
+        // validity buffer if it is aligned and long enough, and both ignore the bits past the
+        // last element.
         (0..self.num_elements.div_ceil(64))
             .any(|word| unsafe { null_words.add(word).read_unaligned() } != 0)
     }
