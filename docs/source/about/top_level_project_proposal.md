@@ -297,6 +297,7 @@ several Hadoop sub-projects became top-level projects, including Mahout, Avro, a
 
 - Tracking issue: [#6793][epic]
 - Discussion about creating an Apache Comet top-level project: [#5184][discussion]
+- Discussion of this proposal: [dev@datafusion.apache.org][discuss-thread]
 - Name search request: [PODLINGNAMESEARCH-255][name-search], with research in [#5291][name-issue]
 - Discussion on the Incubator list: [general@incubator.apache.org][incubator-thread]
 - Comet IP clearance: [arrow-datafusion-comet][ip-clearance]
@@ -309,6 +310,7 @@ several Hadoop sub-projects became top-level projects, including Mahout, Avro, a
 [datafusion-proposal]: https://docs.google.com/document/d/11WTNYS8KWScOt3ySTX39WVS6krPhUvHsuJRY9PZQx4g
 [datafusion-resolution]: https://www.apache.org/foundation/records/minutes/2024/board_minutes_2024_04_17.txt
 [datafusion-vote]: https://lists.apache.org/thread/tv8s8ootxf7nrsp3vo1mt8mtxxt5qcor
+[discuss-thread]: https://lists.apache.org/thread/0szsfkrog2jjr2x92zl78201zh131qzq
 [discussion]: https://github.com/apache/datafusion-comet/issues/5184
 [epic]: https://github.com/apache/datafusion-comet/issues/6793
 [incubator-thread]: https://lists.apache.org/thread/pdgry1ft252joqrbzdmog6134djo9xyc
