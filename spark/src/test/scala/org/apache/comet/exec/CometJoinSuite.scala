@@ -1321,6 +1321,7 @@ class CometJoinSuite extends CometTestBase {
                   case "broadcast" => assert(join.isInstanceOf[CometBroadcastHashJoinExec])
                   case _ => assert(join.isInstanceOf[CometHashJoinExec])
                 }
+                assert(join.nativeOp.getHashJoin.getOutputOrderingCount > 0)
                 if (batchSize < 1000) {
                   // Several batches per partition come back to the JVM from the native join.
                   val partitions = 2
@@ -1438,7 +1439,9 @@ class CometJoinSuite extends CometTestBase {
                     "(SELECT _1 FROM small)").sortWithinPartitions("k")
                 val (join, _) = checkJoinKeepsOrder(query, keyOrder(IntegerType, Ascending))
                 join match {
-                  case j: CometBroadcastHashJoinExec => assert(j.isNullAwareAntiJoin, j)
+                  case j: CometBroadcastHashJoinExec =>
+                    assert(j.isNullAwareAntiJoin, j)
+                    assert(j.nativeOp.getHashJoin.getOutputOrderingCount > 0)
                   case j => fail(s"expected a null-aware broadcast hash join: $j")
                 }
                 // The build side spans several batches per partition. Read on a fresh plan that
@@ -1459,21 +1462,17 @@ class CometJoinSuite extends CometTestBase {
     }
   }
 
-  test("only outer hash joins that can move unmatched streamed rows send their ordering") {
+  test("an inner hash join sends no streamed ordering") {
     withParquetTable((0 until 10000).map(i => (i % 100, i)), "big") {
       withParquetTable((0 until 10).map(i => (i * 10, i)), "small") {
         withSortedCache(spark.table("big"), $"_1") { streamed =>
           val build = spark.table("small").hint("shuffle_hash")
-          def query(joinType: String): DataFrame = streamed
-            .join(build, streamed("_1") === build("_1"), joinType)
+          def query: DataFrame = streamed
+            .join(build, streamed("_1") === build("_1"), "inner")
             .select(streamed("_1").as("k"), streamed("_2").as("v"), build("_2").as("w"))
             .sortWithinPartitions("k")
-          val (inner, _) = checkJoinKeepsOrder(query("inner"), keyOrder(IntegerType, Ascending))
+          val (inner, _) = checkJoinKeepsOrder(query, keyOrder(IntegerType, Ascending))
           assert(inner.nativeOp.getHashJoin.getOutputOrderingCount == 0)
-          val (leftOuter, buildSide) =
-            checkJoinKeepsOrder(query("left_outer"), keyOrder(IntegerType, Ascending))
-          assert(buildSide == BuildRight)
-          assert(leftOuter.nativeOp.getHashJoin.getOutputOrderingCount > 0)
         }
       }
     }
