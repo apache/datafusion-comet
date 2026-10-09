@@ -29,7 +29,7 @@ import org.apache.arrow.vector._
 import org.apache.arrow.vector.complex._
 import org.apache.arrow.vector.util.OversizedAllocationException
 import org.apache.spark.sql.catalyst.InternalRow
-import org.apache.spark.sql.catalyst.expressions.{SpecializedGetters, UnsafeArrayData, UnsafeRow}
+import org.apache.spark.sql.catalyst.expressions.{SpecializedGetters, UnsafeArrayData, UnsafeMapData, UnsafeRow}
 import org.apache.spark.sql.comet.util.Utils
 import org.apache.spark.sql.errors.QueryExecutionErrors
 import org.apache.spark.sql.execution.vectorized.{ConstantColumnVector, OffHeapColumnVector, OnHeapColumnVector, WritableColumnVector}
@@ -151,9 +151,17 @@ class ArrowWriter(val root: VectorSchemaRoot, fields: Array[ArrowFieldWriter]) {
 
   def write(row: InternalRow): Unit = {
     var i = 0
-    while (i < fields.length) {
-      fields(i).writeUnsafe(row, i)
-      i += 1
+    row match {
+      case unsafe: UnsafeRow =>
+        while (i < fields.length) {
+          fields(i).writeUnsafeRowField(unsafe, i)
+          i += 1
+        }
+      case _ =>
+        while (i < fields.length) {
+          fields(i).write(row, i)
+          i += 1
+        }
     }
     count += 1
   }
@@ -212,26 +220,62 @@ private[arrow] object ArrowFieldWriter {
   // Below this many rows the per-value loop is faster.
   val MinOnHeapBulkCopyRows = 32
 
+  // Below this many bytes, copying a word at a time beats Unsafe.copyMemory's checks and call.
+  // Most strings, and the elements of most arrays, are shorter.
+  private final val MaxWordCopyBytes = 64
+
+  /** Copies `length` bytes from `srcOffset` in `src` to the native address `dst`. */
+  def copyMemory(src: AnyRef, srcOffset: Long, dst: Long, length: Long): Unit = {
+    if (length > MaxWordCopyBytes || !Platform.unaligned()) {
+      Platform.copyMemory(src, srcOffset, null, dst, length)
+    } else {
+      var i = 0L
+      while (i + 8 <= length) {
+        Platform.putLong(null, dst + i, Platform.getLong(src, srcOffset + i))
+        i += 8
+      }
+      if (i + 4 <= length) {
+        Platform.putInt(null, dst + i, Platform.getInt(src, srcOffset + i))
+        i += 4
+      }
+      if (i + 2 <= length) {
+        Platform.putShort(null, dst + i, Platform.getShort(src, srcOffset + i))
+        i += 2
+      }
+      if (i < length) {
+        Platform.putByte(null, dst + i, Platform.getByte(src, srcOffset + i))
+      }
+    }
+  }
+
   /** Spark's own writable vectors, whose storage layout the columnar fast paths rely on. */
   def isSparkVector(input: ColumnVector): Boolean =
     input.isInstanceOf[OnHeapColumnVector] || input.isInstanceOf[OffHeapColumnVector]
 
+  // Arrow's setOne calls Unsafe.setMemory, which the JIT does not inline, so shorter runs of whole
+  // bytes are set one at a time.
+  private final val MinSetOneBytes = 64
+
   /** Marks bits `[start, start + numRows)` of `validity` as valid. */
   def setValid(validity: ArrowBuf, start: Int, numRows: Int): Unit = {
     val end = start + numRows
-    var i = start
-    while (i < end && (i & 7) != 0) {
-      BitVectorHelper.setBit(validity, i.toLong)
-      i += 1
-    }
-    val alignedEnd = end & ~7
-    if (i < alignedEnd) {
-      validity.setOne((i >> 3).toLong, ((alignedEnd - i) >> 3).toLong)
-      i = alignedEnd
-    }
-    while (i < end) {
-      BitVectorHelper.setBit(validity, i.toLong)
-      i += 1
+    val firstByte = (start + 7) >> 3
+    val endByte = end >> 3
+    if (firstByte >= endByte) {
+      // No whole byte, as for most of a map's entries.
+      writeBits(validity, start, -1L, numRows)
+    } else {
+      writeBits(validity, start, -1L, (firstByte << 3) - start)
+      if (endByte - firstByte >= MinSetOneBytes) {
+        validity.setOne(firstByte.toLong, (endByte - firstByte).toLong)
+      } else {
+        var b = firstByte
+        while (b < endByte) {
+          validity.setByte(b.toLong, 0xff)
+          b += 1
+        }
+      }
+      writeBits(validity, endByte << 3, -1L, end - (endByte << 3))
     }
   }
 
@@ -279,6 +323,37 @@ private[arrow] object ArrowFieldWriter {
       BitVectorHelper.setBit(buffer, index.toLong)
     } else {
       BitVectorHelper.unsetBit(buffer, index)
+    }
+  }
+
+  /** Writes the low `numBits` bits of `bits`, at most 64, to `[start, start + numBits)`. */
+  def writeBits(buffer: ArrowBuf, start: Int, bits: Long, numBits: Int): Unit = {
+    val end = start + numBits
+    var remaining = bits
+    var i = start
+    while (i < end) {
+      val shift = i & 7
+      val n = Math.min(8 - shift, end - i)
+      val mask = ((1 << n) - 1) << shift
+      val index = (i >> 3).toLong
+      buffer.setByte(index, (buffer.getByte(index) & ~mask) | ((remaining.toInt << shift) & mask))
+      remaining >>>= n
+      i += n
+    }
+  }
+
+  /**
+   * Sets the validity of the elements of `array` from bit `start` of `validity`. Spark keeps an
+   * unsafe array's null bits in 64-bit words after its element count, a set bit marking a null.
+   */
+  def writeArrayValidity(validity: ArrowBuf, start: Int, array: UnsafeArrayData): Unit = {
+    val numElements = array.numElements()
+    val nulls = array.getBaseOffset + 8
+    var i = 0
+    while (i < numElements) {
+      val nullBits = Platform.getLong(array.getBaseObject, nulls + (i >> 3))
+      writeBits(validity, start + i, ~nullBits, Math.min(64, numElements - i))
+      i += 64
     }
   }
 
@@ -386,12 +461,7 @@ private[arrow] object ArrowFieldWriter {
     if (numRows == 0) {
       return
     }
-    if (vector.getLastSet < outStart - 1) {
-      vector.fillEmpties(outStart)
-    }
-    while (vector.getValueCapacity < outStart + numRows) {
-      vector.reallocValidityAndOffsetBuffers()
-    }
+    reserveValues(vector, outStart, numRows)
     val offsets = vector.getOffsetBuffer
     val dataStart = vector.getStartOffset(outStart)
     val hasNull = input.hasNull
@@ -413,10 +483,7 @@ private[arrow] object ArrowFieldWriter {
           }
           next = offset + length
           end += length
-          if (end > Integer.MAX_VALUE) {
-            throw new OversizedAllocationException(
-              s"Arrow variable-width data would exceed ${Integer.MAX_VALUE} bytes")
-          }
+          checkDataEnd(end)
         }
       }
       offsets.setInt((outStart + i + 1).toLong * BaseVariableWidthVector.OFFSET_WIDTH, end.toInt)
@@ -467,12 +534,7 @@ private[arrow] object ArrowFieldWriter {
     if (numRows == 0) {
       return
     }
-    if (vector.getLastSet < outStart - 1) {
-      vector.fillEmpties(outStart)
-    }
-    while (vector.getValueCapacity < outStart + numRows) {
-      vector.reallocValidityAndOffsetBuffers()
-    }
+    reserveValues(vector, outStart, numRows)
     val offsets = vector.getOffsetBuffer
     val ids = input.getDictionaryIds
     val hasNull = input.hasNull
@@ -523,12 +585,30 @@ private[arrow] object ArrowFieldWriter {
     vector.setLastSet(outStart + numRows - 1)
   }
 
-  /** The data buffer of `vector`, grown to hold at least `end` bytes. */
-  private def reserveData(vector: BaseVariableWidthVector, end: Long): ArrowBuf = {
+  /** Rejects variable-width data ending at `end`, past what Arrow's 32-bit offsets address. */
+  def checkDataEnd(end: Long): Unit = {
     if (end > Integer.MAX_VALUE) {
       throw new OversizedAllocationException(
         s"Arrow variable-width data would exceed ${Integer.MAX_VALUE} bytes")
     }
+  }
+
+  /**
+   * Grows the validity and offset buffers of `vector` to hold values `[outStart, outStart +
+   * numValues)`, after filling in the offsets of any values skipped since the last one set.
+   */
+  def reserveValues(vector: BaseVariableWidthVector, outStart: Int, numValues: Int): Unit = {
+    if (vector.getLastSet < outStart - 1) {
+      vector.fillEmpties(outStart)
+    }
+    while (vector.getValueCapacity < outStart + numValues) {
+      vector.reallocValidityAndOffsetBuffers()
+    }
+  }
+
+  /** The data buffer of `vector`, grown to hold at least `end` bytes. */
+  def reserveData(vector: BaseVariableWidthVector, end: Long): ArrowBuf = {
+    checkDataEnd(end)
     if (vector.getDataBuffer.capacity < end) {
       vector.reallocDataBuffer(end)
     }
@@ -610,8 +690,20 @@ private[arrow] abstract class ArrowFieldWriter {
     count += 1
   }
 
-  def writeUnsafe(input: SpecializedGetters, ordinal: Int): Unit = {
-    write(input, ordinal)
+  /**
+   * Appends field `ordinal` of `row`. Most rows Spark produces are unsafe rows, and writers that
+   * can read one's memory directly override this.
+   */
+  private[arrow] def writeUnsafeRowField(row: UnsafeRow, ordinal: Int): Unit = write(row, ordinal)
+
+  /** Appends every element of `array`, which writers that can copy them in bulk override. */
+  private[arrow] def writeArrayElements(array: UnsafeArrayData): Unit = {
+    val numElements = array.numElements()
+    var i = 0
+    while (i < numElements) {
+      write(array, i)
+      i += 1
+    }
   }
 
   def writeCol(input: ColumnarArray): Unit = {
@@ -691,16 +783,22 @@ private[arrow] abstract class ArrowFieldWriter {
   }
 }
 
-private[arrow] abstract class FixedWidthArrowFieldWriter extends ArrowFieldWriter {
+/**
+ * `vector` is `valueVector`. The methods called per value read it through this field rather than
+ * the subclass's accessor, a virtual call.
+ */
+private[arrow] abstract class FixedWidthArrowFieldWriter(vector: BaseFixedWidthVector)
+    extends ArrowFieldWriter {
   import ArrowFieldWriter._
 
   override def valueVector: BaseFixedWidthVector
 
   protected def setValueUnsafe(input: SpecializedGetters, ordinal: Int): Unit
 
+  // Arrow keeps a fixed-width vector's capacity in a field, so checking it per value is cheap.
   protected def ensureCapacity(inputNumElements: Int): Unit = {
-    while (valueVector.getValueCapacity < inputNumElements) {
-      valueVector.reAlloc()
+    while (vector.getValueCapacity < inputNumElements) {
+      vector.reAlloc()
     }
   }
 
@@ -841,26 +939,75 @@ private[arrow] abstract class FixedWidthArrowFieldWriter extends ArrowFieldWrite
   }
 
   override def setNull(): Unit = {
-    valueVector.setNull(count)
+    vector.setNull(count)
   }
 
   protected def setNullUnsafe(): Unit = {
-    BitVectorHelper.unsetBit(valueVector.getValidityBuffer, count)
+    BitVectorHelper.unsetBit(vector.getValidityBuffer, count)
   }
 
-  override def writeUnsafe(input: SpecializedGetters, ordinal: Int): Unit = {
-    if (input.isNullAt(ordinal)) {
+  // The width of this type's values when Spark's unsafe formats hold the bits Arrow stores, at the
+  // vector's type width and little-endian: an unsafe row in an 8-byte slot, an unsafe array back
+  // to back. 0 for a type whose values need converting.
+  private val unsafeValueWidth: Int = vector match {
+    case _ if !LittleEndian => 0
+    case _: TinyIntVector | _: SmallIntVector | _: IntVector | _: DateDayVector |
+        _: IntervalYearVector | _: Float4Vector | _: BigIntVector | _: TimeStampMicroTZVector |
+        _: TimeStampMicroVector | _: DurationVector | _: TimeNanoVector | _: Float8Vector =>
+      vector.getTypeWidth
+    case _ => 0
+  }
+
+  override private[arrow] def writeUnsafeRowField(row: UnsafeRow, ordinal: Int): Unit = {
+    ensureCapacity(count + 1)
+    if (row.isNullAt(ordinal)) {
       setNullUnsafe()
+    } else if (unsafeValueWidth == 0) {
+      setValueUnsafe(row, ordinal)
     } else {
-      setValueUnsafe(input, ordinal)
+      val target = vector.getDataBufferAddress + count.toLong * unsafeValueWidth
+      unsafeValueWidth match {
+        case 8 => Platform.putLong(null, target, row.getLong(ordinal))
+        case 4 => Platform.putInt(null, target, row.getInt(ordinal))
+        case 2 => Platform.putShort(null, target, row.getShort(ordinal))
+        case _ => Platform.putByte(null, target, row.getByte(ordinal))
+      }
+      BitVectorHelper.setBit(vector.getValidityBuffer, count.toLong)
     }
     count += 1
+  }
+
+  override private[arrow] def writeArrayElements(array: UnsafeArrayData): Unit = {
+    val numElements = array.numElements()
+    ensureCapacity(count + numElements)
+    if (unsafeValueWidth == 0) {
+      var i = 0
+      while (i < numElements) {
+        if (array.isNullAt(i)) {
+          setNullUnsafe()
+        } else {
+          setValueUnsafe(array, i)
+        }
+        count += 1
+        i += 1
+      }
+    } else {
+      // The values are copied in one block, so what lands under a null element is whatever Spark
+      // left there, as with the columnar copies.
+      copyMemory(
+        array.getBaseObject,
+        array.getBaseOffset + UnsafeArrayData.calculateHeaderPortionInBytes(numElements),
+        vector.getDataBufferAddress + count.toLong * unsafeValueWidth,
+        numElements.toLong * unsafeValueWidth)
+      writeArrayValidity(vector.getValidityBuffer, count, array)
+      count += numElements
+    }
   }
 
   override def writeColumnSlice(input: ColumnVector, startRow: Int, numRows: Int): Unit = {
     ensureCapacity(count + numRows)
     if (copyValues(input, startRow, numRows)) {
-      writeValidity(valueVector.getValidityBuffer, count, input, startRow, numRows)
+      writeValidity(vector.getValidityBuffer, count, input, startRow, numRows)
       count += numRows
     } else {
       val slice = new ColumnarArray(input, startRow, numRows)
@@ -901,7 +1048,7 @@ private[arrow] abstract class FixedWidthArrowFieldWriter extends ArrowFieldWrite
 }
 
 private[arrow] class BooleanWriter(val valueVector: BitVector)
-    extends FixedWidthArrowFieldWriter {
+    extends FixedWidthArrowFieldWriter(valueVector) {
 
   override def setValue(input: SpecializedGetters, ordinal: Int): Unit = {
     valueVector.setSafe(count, if (input.getBoolean(ordinal)) 1 else 0)
@@ -949,10 +1096,25 @@ private[arrow] class BooleanWriter(val valueVector: BitVector)
     ArrowFieldWriter.writeValidity(valueVector.getValidityBuffer, count, input, startRow, numRows)
     count += numRows
   }
+
+  // An unsafe array holds a byte per value, each of which becomes a bit. Null elements get a
+  // clear bit, as in writeColumnSlice.
+  override private[arrow] def writeArrayElements(array: UnsafeArrayData): Unit = {
+    val numElements = array.numElements()
+    ensureCapacity(count + numElements)
+    val values = valueVector.getDataBuffer
+    var i = 0
+    while (i < numElements) {
+      ArrowFieldWriter.writeBit(values, count + i, !array.isNullAt(i) && array.getBoolean(i))
+      i += 1
+    }
+    ArrowFieldWriter.writeArrayValidity(valueVector.getValidityBuffer, count, array)
+    count += numElements
+  }
 }
 
 private[arrow] class ByteWriter(val valueVector: TinyIntVector)
-    extends FixedWidthArrowFieldWriter {
+    extends FixedWidthArrowFieldWriter(valueVector) {
 
   override def setValue(input: SpecializedGetters, ordinal: Int): Unit = {
     valueVector.setSafe(count, input.getByte(ordinal))
@@ -964,7 +1126,7 @@ private[arrow] class ByteWriter(val valueVector: TinyIntVector)
 }
 
 private[arrow] class ShortWriter(val valueVector: SmallIntVector)
-    extends FixedWidthArrowFieldWriter {
+    extends FixedWidthArrowFieldWriter(valueVector) {
 
   override def setValue(input: SpecializedGetters, ordinal: Int): Unit = {
     valueVector.setSafe(count, input.getShort(ordinal))
@@ -976,7 +1138,7 @@ private[arrow] class ShortWriter(val valueVector: SmallIntVector)
 }
 
 private[arrow] class IntegerWriter(val valueVector: IntVector)
-    extends FixedWidthArrowFieldWriter {
+    extends FixedWidthArrowFieldWriter(valueVector) {
 
   override def setValue(input: SpecializedGetters, ordinal: Int): Unit = {
     valueVector.setSafe(count, input.getInt(ordinal))
@@ -988,7 +1150,7 @@ private[arrow] class IntegerWriter(val valueVector: IntVector)
 }
 
 private[arrow] class LongWriter(val valueVector: BigIntVector)
-    extends FixedWidthArrowFieldWriter {
+    extends FixedWidthArrowFieldWriter(valueVector) {
 
   override def setValue(input: SpecializedGetters, ordinal: Int): Unit = {
     valueVector.setSafe(count, input.getLong(ordinal))
@@ -1000,7 +1162,7 @@ private[arrow] class LongWriter(val valueVector: BigIntVector)
 }
 
 private[arrow] class FloatWriter(val valueVector: Float4Vector)
-    extends FixedWidthArrowFieldWriter {
+    extends FixedWidthArrowFieldWriter(valueVector) {
 
   override def setValue(input: SpecializedGetters, ordinal: Int): Unit = {
     valueVector.setSafe(count, input.getFloat(ordinal))
@@ -1012,7 +1174,7 @@ private[arrow] class FloatWriter(val valueVector: Float4Vector)
 }
 
 private[arrow] class DoubleWriter(val valueVector: Float8Vector)
-    extends FixedWidthArrowFieldWriter {
+    extends FixedWidthArrowFieldWriter(valueVector) {
 
   override def setValue(input: SpecializedGetters, ordinal: Int): Unit = {
     valueVector.setSafe(count, input.getDouble(ordinal))
@@ -1031,7 +1193,7 @@ private[arrow] class DoubleWriter(val valueVector: Float8Vector)
  * that `getDecimal` would build is only built for a value that does not fit, to fail as before.
  */
 private[arrow] class DecimalWriter(val valueVector: DecimalVector, precision: Int, scale: Int)
-    extends FixedWidthArrowFieldWriter {
+    extends FixedWidthArrowFieldWriter(valueVector) {
   import ArrowFieldWriter.LittleEndian
 
   override def setValue(input: SpecializedGetters, ordinal: Int): Unit = {
@@ -1039,22 +1201,48 @@ private[arrow] class DecimalWriter(val valueVector: DecimalVector, precision: In
     setValueUnsafe(input, ordinal)
   }
 
+  // Spark's unsafe rows and arrays hold up to 18 digits as the unscaled long, and more as the
+  // unscaled bytes, which are read in place. An unsafe row's getDecimal does not check the long
+  // against the precision, but an unsafe array's does, so a long that does not fit is left to it.
   override protected def setValueUnsafe(input: SpecializedGetters, ordinal: Int): Unit = {
-    if (precision > Decimal.MAX_LONG_DIGITS && LittleEndian &&
-      (input.isInstanceOf[UnsafeRow] || input.isInstanceOf[UnsafeArrayData])) {
-      val bytes = input.getBinary(ordinal)
-      if (putBigEndianIfFits(count, bytes, Platform.BYTE_ARRAY_OFFSET.toLong, bytes.length)) {
-        BitVectorHelper.setBit(valueVector.getValidityBuffer, count.toLong)
-        return
+    val written = LittleEndian && (input match {
+      case row: UnsafeRow if precision <= Decimal.MAX_LONG_DIGITS =>
+        putLong(valueAddress, row.getLong(ordinal))
+        true
+      case array: UnsafeArrayData if precision <= Decimal.MAX_LONG_DIGITS =>
+        val unscaled = array.getLong(ordinal)
+        val fits = DecimalWriter.fitsPrecision(unscaled >> 63, unscaled, precision)
+        if (fits) {
+          putLong(valueAddress, unscaled)
+        }
+        fits
+      case row: UnsafeRow =>
+        putUnsafeBytesIfFits(row.getBaseObject, row.getBaseOffset, row.getLong(ordinal))
+      case array: UnsafeArrayData =>
+        putUnsafeBytesIfFits(array.getBaseObject, array.getBaseOffset, array.getLong(ordinal))
+      case _ => false
+    })
+    if (written) {
+      BitVectorHelper.setBit(valueVector.getValidityBuffer, count.toLong)
+    } else {
+      val decimal = input.getDecimal(ordinal, precision, scale)
+      if (decimal.changePrecision(precision, scale)) {
+        setUnscaled(count, decimal)
+      } else {
+        setNullUnsafe()
       }
     }
-    val decimal = input.getDecimal(ordinal, precision, scale)
-    if (decimal.changePrecision(precision, scale)) {
-      setUnscaled(count, decimal)
-    } else {
-      setNullUnsafe()
-    }
   }
+
+  private def valueAddress: Long =
+    valueVector.getDataBufferAddress + count.toLong * DecimalVector.TYPE_WIDTH
+
+  /**
+   * Writes the unscaled bytes that `offsetAndSize` locates in an unsafe row or array to value
+   * `count`, leaving validity alone, if they fit the precision. Returns whether it did.
+   */
+  private def putUnsafeBytesIfFits(base: AnyRef, baseOffset: Long, offsetAndSize: Long): Boolean =
+    putBigEndianIfFits(count, base, baseOffset + (offsetAndSize >> 32), offsetAndSize.toInt)
 
   /** Sets the value and validity of `index`, which must be within capacity. */
   private def setUnscaled(index: Int, decimal: Decimal): Unit = {
@@ -1082,7 +1270,7 @@ private[arrow] class DecimalWriter(val valueVector: DecimalVector, precision: In
    * whether it did.
    */
   private def putBigEndianIfFits(index: Int, base: AnyRef, offset: Long, length: Int): Boolean = {
-    if (length == 0 || length > DecimalVector.TYPE_WIDTH) {
+    if (length <= 0 || length > DecimalVector.TYPE_WIDTH) {
       return false
     }
     var low = if (Platform.getByte(base, offset) < 0) -1L else 0L
@@ -1208,11 +1396,125 @@ private[arrow] object DecimalWriter {
   }
 }
 
-private[arrow] class StringWriter(val valueVector: VarCharVector) extends ArrowFieldWriter {
+/**
+ * Writes strings or binaries. Spark's own vectors are copied in bulk, and its unsafe rows and
+ * arrays straight from their memory: both keep a value's offset and size in its fixed-length
+ * slot, so its bytes are copied without a `UTF8String` or Arrow's per-value setters. Other input
+ * goes through `setValue`.
+ */
+private[arrow] abstract class VariableWidthArrowFieldWriter extends ArrowFieldWriter {
+  import ArrowFieldWriter._
+
+  override def valueVector: BaseVariableWidthVector
 
   override def setNull(): Unit = {
     valueVector.setNull(count)
   }
+
+  override def writeColumnSlice(input: ColumnVector, startRow: Int, numRows: Int): Unit = {
+    input match {
+      case vector: WritableColumnVector if isSparkVector(vector) =>
+        if (vector.hasDictionary) {
+          writeDictionaryVariableWidth(
+            valueVector,
+            count,
+            vector,
+            startRow,
+            numRows,
+            dictionaryCache)
+        } else {
+          writeVariableWidth(valueVector, count, vector, startRow, numRows)
+        }
+        count += numRows
+      case _ =>
+        super.writeColumnSlice(input, startRow, numRows)
+    }
+  }
+
+  private val dictionaryCache = new DictionaryCache
+
+  override private[arrow] def startInputBatch(): Unit = dictionaryCache.clear()
+
+  override def reset(): Unit = {
+    super.reset()
+    dictionaryCache.clear()
+  }
+
+  // The value is checked before Arrow grows anything, so one that cannot be written changes
+  // nothing.
+  override private[arrow] def writeUnsafeRowField(row: UnsafeRow, ordinal: Int): Unit = {
+    if (row.isNullAt(ordinal)) {
+      setNull()
+    } else {
+      val offsetAndSize = row.getLong(ordinal)
+      val start = valueVector.getStartOffset(valueVector.getLastSet + 1)
+      val length = (checkedEnd(start.toLong, offsetAndSize) - start).toInt
+      // Grows the buffers, and gives null rows written since the last value their empty offsets.
+      valueVector.setValueLengthSafe(count, length)
+      copyMemory(
+        row.getBaseObject,
+        row.getBaseOffset + (offsetAndSize >> 32),
+        valueVector.getDataBuffer.memoryAddress + start,
+        length.toLong)
+      BitVectorHelper.setBit(valueVector.getValidityBuffer, count.toLong)
+    }
+    count += 1
+  }
+
+  // Every element is checked before anything changes, as one value is, so the buffers grow once
+  // and the bytes are copied without further checks.
+  override private[arrow] def writeArrayElements(array: UnsafeArrayData): Unit = {
+    val numElements = array.numElements()
+    if (numElements == 0) {
+      return
+    }
+    val start = valueVector.getStartOffset(valueVector.getLastSet + 1)
+    var end = start.toLong
+    var i = 0
+    while (i < numElements) {
+      if (!array.isNullAt(i)) {
+        end = checkedEnd(end, array.getLong(i))
+      }
+      i += 1
+    }
+    reserveValues(valueVector, count, numElements)
+    reserveData(valueVector, end)
+    val base = array.getBaseObject
+    val baseOffset = array.getBaseOffset
+    val data = valueVector.getDataBuffer.memoryAddress
+    val offsets = valueVector.getOffsetBuffer
+    var offset = start.toLong
+    i = 0
+    while (i < numElements) {
+      if (!array.isNullAt(i)) {
+        val offsetAndSize = array.getLong(i)
+        val length = offsetAndSize.toInt
+        copyMemory(base, baseOffset + (offsetAndSize >> 32), data + offset, length.toLong)
+        offset += length
+      }
+      offsets.setInt((count + i + 1).toLong * BaseVariableWidthVector.OFFSET_WIDTH, offset.toInt)
+      i += 1
+    }
+    writeArrayValidity(valueVector.getValidityBuffer, count, array)
+    valueVector.setLastSet(count + numElements - 1)
+    count += numElements
+  }
+
+  /** The end of a value written at `start` with the size packed into `offsetAndSize`. */
+  private def checkedEnd(start: Long, offsetAndSize: Long): Long = {
+    val length = offsetAndSize.toInt
+    if (length < 0) {
+      val kind = if (valueVector.isInstanceOf[VarCharVector]) "String" else "Binary"
+      throw new IllegalArgumentException(s"$kind length must be non-negative")
+    }
+    val end = start + length
+    checkDataEnd(end)
+    end
+  }
+}
+
+private[arrow] class StringWriter(val valueVector: VarCharVector)
+    extends VariableWidthArrowFieldWriter {
 
   override def setValue(input: SpecializedGetters, ordinal: Int): Unit = {
     val utf8 = input.getUTF8String(ordinal)
@@ -1233,35 +1535,6 @@ private[arrow] class StringWriter(val valueVector: VarCharVector) extends ArrowF
       valueVector.setSafe(count, utf8ByteBuffer, utf8ByteBuffer.position(), utf8.numBytes())
     }
   }
-
-  override def writeColumnSlice(input: ColumnVector, startRow: Int, numRows: Int): Unit = {
-    input match {
-      case vector: WritableColumnVector if ArrowFieldWriter.isSparkVector(vector) =>
-        if (vector.hasDictionary) {
-          ArrowFieldWriter.writeDictionaryVariableWidth(
-            valueVector,
-            count,
-            vector,
-            startRow,
-            numRows,
-            dictionaryCache)
-        } else {
-          ArrowFieldWriter.writeVariableWidth(valueVector, count, vector, startRow, numRows)
-        }
-        count += numRows
-      case _ =>
-        super.writeColumnSlice(input, startRow, numRows)
-    }
-  }
-
-  private val dictionaryCache = new DictionaryCache
-
-  override private[arrow] def startInputBatch(): Unit = dictionaryCache.clear()
-
-  override def reset(): Unit = {
-    super.reset()
-    dictionaryCache.clear()
-  }
 }
 
 private[arrow] class LargeStringWriter(val valueVector: LargeVarCharVector)
@@ -1279,44 +1552,12 @@ private[arrow] class LargeStringWriter(val valueVector: LargeVarCharVector)
   }
 }
 
-private[arrow] class BinaryWriter(val valueVector: VarBinaryVector) extends ArrowFieldWriter {
-
-  override def setNull(): Unit = {
-    valueVector.setNull(count)
-  }
+private[arrow] class BinaryWriter(val valueVector: VarBinaryVector)
+    extends VariableWidthArrowFieldWriter {
 
   override def setValue(input: SpecializedGetters, ordinal: Int): Unit = {
     val bytes = input.getBinary(ordinal)
     valueVector.setSafe(count, bytes, 0, bytes.length)
-  }
-
-  override def writeColumnSlice(input: ColumnVector, startRow: Int, numRows: Int): Unit = {
-    input match {
-      case vector: WritableColumnVector if ArrowFieldWriter.isSparkVector(vector) =>
-        if (vector.hasDictionary) {
-          ArrowFieldWriter.writeDictionaryVariableWidth(
-            valueVector,
-            count,
-            vector,
-            startRow,
-            numRows,
-            dictionaryCache)
-        } else {
-          ArrowFieldWriter.writeVariableWidth(valueVector, count, vector, startRow, numRows)
-        }
-        count += numRows
-      case _ =>
-        super.writeColumnSlice(input, startRow, numRows)
-    }
-  }
-
-  private val dictionaryCache = new DictionaryCache
-
-  override private[arrow] def startInputBatch(): Unit = dictionaryCache.clear()
-
-  override def reset(): Unit = {
-    super.reset()
-    dictionaryCache.clear()
   }
 }
 
@@ -1334,7 +1575,7 @@ private[arrow] class LargeBinaryWriter(val valueVector: LargeVarBinaryVector)
 }
 
 private[arrow] class DateWriter(val valueVector: DateDayVector)
-    extends FixedWidthArrowFieldWriter {
+    extends FixedWidthArrowFieldWriter(valueVector) {
 
   override def setValue(input: SpecializedGetters, ordinal: Int): Unit = {
     valueVector.setSafe(count, input.getInt(ordinal))
@@ -1346,7 +1587,7 @@ private[arrow] class DateWriter(val valueVector: DateDayVector)
 }
 
 private[arrow] class TimestampWriter(val valueVector: TimeStampMicroTZVector)
-    extends FixedWidthArrowFieldWriter {
+    extends FixedWidthArrowFieldWriter(valueVector) {
 
   override def setValue(input: SpecializedGetters, ordinal: Int): Unit = {
     valueVector.setSafe(count, input.getLong(ordinal))
@@ -1358,7 +1599,7 @@ private[arrow] class TimestampWriter(val valueVector: TimeStampMicroTZVector)
 }
 
 private[arrow] class TimestampNTZWriter(val valueVector: TimeStampMicroVector)
-    extends FixedWidthArrowFieldWriter {
+    extends FixedWidthArrowFieldWriter(valueVector) {
 
   override def setValue(input: SpecializedGetters, ordinal: Int): Unit = {
     valueVector.setSafe(count, input.getLong(ordinal))
@@ -1370,7 +1611,7 @@ private[arrow] class TimestampNTZWriter(val valueVector: TimeStampMicroVector)
 }
 
 private[arrow] class TimeNanoWriter(val valueVector: TimeNanoVector)
-    extends FixedWidthArrowFieldWriter {
+    extends FixedWidthArrowFieldWriter(valueVector) {
 
   override def setValue(input: SpecializedGetters, ordinal: Int): Unit = {
     valueVector.setSafe(count, input.getLong(ordinal))
@@ -1387,13 +1628,49 @@ private[arrow] class ArrayWriter(val valueVector: ListVector, val elementWriter:
   override def setNull(): Unit = {}
 
   override def setValue(input: SpecializedGetters, ordinal: Int): Unit = {
-    val array = input.getArray(ordinal)
+    input.getArray(ordinal) match {
+      case unsafe: UnsafeArrayData =>
+        writeElements(unsafe)
+      case array =>
+        val numElements = array.numElements()
+        valueVector.startNewValue(count)
+        var i = 0
+        while (i < numElements) {
+          elementWriter.write(array, i)
+          i += 1
+        }
+        valueVector.endValue(count, numElements)
+    }
+  }
+
+  // Each unsafe array gets a view of its own from Spark's getter. A view reused across values
+  // would keep the last row it read reachable after that row's values were copied.
+  override private[arrow] def writeUnsafeRowField(row: UnsafeRow, ordinal: Int): Unit = {
+    if (row.isNullAt(ordinal)) {
+      setNull()
+    } else {
+      writeElements(row.getArray(ordinal))
+    }
+    count += 1
+  }
+
+  override private[arrow] def writeArrayElements(array: UnsafeArrayData): Unit = {
+    val numElements = array.numElements()
     var i = 0
-    valueVector.startNewValue(count)
-    while (i < array.numElements()) {
-      elementWriter.write(array, i)
+    while (i < numElements) {
+      if (array.isNullAt(i)) {
+        setNull()
+      } else {
+        writeElements(array.getArray(i))
+      }
+      count += 1
       i += 1
     }
+  }
+
+  private def writeElements(array: UnsafeArrayData): Unit = {
+    valueVector.startNewValue(count)
+    elementWriter.writeArrayElements(array)
     valueVector.endValue(count, array.numElements())
   }
 
@@ -1449,11 +1726,48 @@ private[arrow] class StructWriter(
   }
 
   override def setValue(input: SpecializedGetters, ordinal: Int): Unit = {
-    val struct = input.getStruct(ordinal, children.length)
+    input.getStruct(ordinal, children.length) match {
+      case unsafe: UnsafeRow =>
+        writeFields(unsafe)
+      case struct =>
+        var i = 0
+        valueVector.setIndexDefined(count)
+        while (i < struct.numFields) {
+          children(i).write(struct, i)
+          i += 1
+        }
+    }
+  }
+
+  // Each unsafe struct gets a view of its own, as in ArrayWriter.
+  override private[arrow] def writeUnsafeRowField(row: UnsafeRow, ordinal: Int): Unit = {
+    if (row.isNullAt(ordinal)) {
+      setNull()
+    } else {
+      writeFields(row.getStruct(ordinal, children.length))
+    }
+    count += 1
+  }
+
+  override private[arrow] def writeArrayElements(array: UnsafeArrayData): Unit = {
+    val numElements = array.numElements()
     var i = 0
+    while (i < numElements) {
+      if (array.isNullAt(i)) {
+        setNull()
+      } else {
+        writeFields(array.getStruct(i, children.length))
+      }
+      count += 1
+      i += 1
+    }
+  }
+
+  private def writeFields(struct: UnsafeRow): Unit = {
     valueVector.setIndexDefined(count)
-    while (i < struct.numFields) {
-      children(i).write(struct, i)
+    var i = 0
+    while (i < children.length) {
+      children(i).writeUnsafeRowField(struct, i)
       i += 1
     }
   }
@@ -1524,19 +1838,65 @@ private[arrow] class MapWriter(
   override def setNull(): Unit = {}
 
   override def setValue(input: SpecializedGetters, ordinal: Int): Unit = {
-    val map = input.getMap(ordinal)
-    valueVector.startNewValue(count)
-    val keys = map.keyArray()
-    val values = map.valueArray()
+    input.getMap(ordinal) match {
+      case unsafe: UnsafeMapData =>
+        writeEntries(unsafe)
+      case map =>
+        val numElements = map.numElements()
+        valueVector.startNewValue(count)
+        val keys = map.keyArray()
+        val values = map.valueArray()
+        var i = 0
+        while (i < numElements) {
+          structVector.setIndexDefined(keyWriter.count)
+          keyWriter.write(keys, i)
+          valueWriter.write(values, i)
+          i += 1
+        }
+        valueVector.endValue(count, numElements)
+    }
+  }
+
+  // Each unsafe map gets a view of its own, as in ArrayWriter.
+  override private[arrow] def writeUnsafeRowField(row: UnsafeRow, ordinal: Int): Unit = {
+    if (row.isNullAt(ordinal)) {
+      setNull()
+    } else {
+      writeEntries(row.getMap(ordinal))
+    }
+    count += 1
+  }
+
+  override private[arrow] def writeArrayElements(array: UnsafeArrayData): Unit = {
+    val numElements = array.numElements()
     var i = 0
-    while (i < map.numElements()) {
-      structVector.setIndexDefined(keyWriter.count)
-      keyWriter.write(keys, i)
-      valueWriter.write(values, i)
+    while (i < numElements) {
+      if (array.isNullAt(i)) {
+        setNull()
+      } else {
+        writeEntries(array.getMap(i))
+      }
+      count += 1
       i += 1
     }
+  }
 
-    valueVector.endValue(count, map.numElements())
+  private def writeEntries(map: UnsafeMapData): Unit = {
+    val numElements = map.numElements()
+    valueVector.startNewValue(count)
+    if (numElements > 0) {
+      setEntriesValid(keyWriter.count, numElements)
+      keyWriter.writeArrayElements(map.keyArray())
+      valueWriter.writeArrayElements(map.valueArray())
+    }
+    valueVector.endValue(count, numElements)
+  }
+
+  /** Marks entries `[start, start + numEntries)` valid. */
+  private def setEntriesValid(start: Int, numEntries: Int): Unit = {
+    // Grows the validity buffer to the last entry.
+    structVector.setIndexDefined(start + numEntries - 1)
+    ArrowFieldWriter.setValid(structVector.getValidityBuffer, start, numEntries)
   }
 
   // Like ArrayWriter.writeColumnSlice, with the keys and values in Spark's two child vectors.
@@ -1547,9 +1907,7 @@ private[arrow] class MapWriter(
         val numEntries =
           ArrowFieldWriter.writeListOffsets(valueVector, count, vector, startRow, numRows)
         if (numEntries > 0) {
-          // Grows the entries' validity buffer, then marks every entry valid.
-          structVector.setIndexDefined(entryStart + numEntries - 1)
-          ArrowFieldWriter.setValid(structVector.getValidityBuffer, entryStart, numEntries)
+          setEntriesValid(entryStart, numEntries)
         }
         val keys = vector.getChild(0)
         val values = vector.getChild(1)
@@ -1600,7 +1958,7 @@ private[arrow] class NullWriter(val valueVector: NullVector) extends ArrowFieldW
 }
 
 private[arrow] class IntervalYearWriter(val valueVector: IntervalYearVector)
-    extends FixedWidthArrowFieldWriter {
+    extends FixedWidthArrowFieldWriter(valueVector) {
 
   override def setValue(input: SpecializedGetters, ordinal: Int): Unit = {
     valueVector.setSafe(count, input.getInt(ordinal))
@@ -1612,7 +1970,7 @@ private[arrow] class IntervalYearWriter(val valueVector: IntervalYearVector)
 }
 
 private[arrow] class DurationWriter(val valueVector: DurationVector)
-    extends FixedWidthArrowFieldWriter {
+    extends FixedWidthArrowFieldWriter(valueVector) {
 
   override def setValue(input: SpecializedGetters, ordinal: Int): Unit = {
     valueVector.setSafe(count, input.getLong(ordinal))
@@ -1624,7 +1982,7 @@ private[arrow] class DurationWriter(val valueVector: DurationVector)
 }
 
 private[arrow] class IntervalMonthDayNanoWriter(val valueVector: IntervalMonthDayNanoVector)
-    extends FixedWidthArrowFieldWriter {
+    extends FixedWidthArrowFieldWriter(valueVector) {
 
   override def setValue(input: SpecializedGetters, ordinal: Int): Unit = {
     val ci = input.getInterval(ordinal)
