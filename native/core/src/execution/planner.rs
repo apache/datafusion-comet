@@ -6392,23 +6392,37 @@ mod tests {
         task_ctx: Arc<datafusion::execution::TaskContext>,
         sides: [(Vec<i32>, Vec<i32>); 2],
     ) -> RecordBatch {
+        execute_join_batches(planned, task_ctx, sides.map(|side| vec![side])).await
+    }
+
+    /// Executes a planned join with Int32 (key, value) batches in place of each child scan.
+    async fn execute_join_batches(
+        planned: &crate::execution::spark_plan::SparkPlan,
+        task_ctx: Arc<datafusion::execution::TaskContext>,
+        sides: [Vec<(Vec<i32>, Vec<i32>)>; 2],
+    ) -> RecordBatch {
         use datafusion::common::tree_node::{Transformed, TreeNode};
 
         let replacements: Vec<(Arc<dyn ExecutionPlan>, Arc<dyn ExecutionPlan>)> = planned
             .children
             .iter()
             .zip(sides)
-            .map(|(child, (keys, values))| {
-                let batch = RecordBatch::try_new(
-                    child.schema(),
-                    vec![
-                        Arc::new(Int32Array::from(keys)),
-                        Arc::new(Int32Array::from(values)),
-                    ],
-                )
-                .unwrap();
+            .map(|(child, batches)| {
+                let batches: Vec<RecordBatch> = batches
+                    .into_iter()
+                    .map(|(keys, values)| {
+                        RecordBatch::try_new(
+                            child.schema(),
+                            vec![
+                                Arc::new(Int32Array::from(keys)),
+                                Arc::new(Int32Array::from(values)),
+                            ],
+                        )
+                        .unwrap()
+                    })
+                    .collect();
                 let input: Arc<dyn ExecutionPlan> =
-                    MemorySourceConfig::try_new_exec(&[vec![batch]], child.schema(), None).unwrap();
+                    MemorySourceConfig::try_new_exec(&[batches], child.schema(), None).unwrap();
                 (Arc::clone(&child.native_plan), input)
             })
             .collect();
@@ -6511,6 +6525,58 @@ mod tests {
         );
         assert_eq!("SortExec", planned.native_plan.name());
         assert_eq!(vec!["HashJoinExec"], additional_plan_names(&planned));
+    }
+
+    #[tokio::test]
+    async fn hash_join_sorts_null_aware_anti_join_output() {
+        // A null-aware anti join runs unswapped in CollectLeft mode, so DataFusion builds on the
+        // streamed left side. Keys spanning 1024 or more values skip its perfect hash path, and
+        // the hash path emits the unmatched rows in reverse batch order.
+        let int_type = create_proto_datatype();
+        let mut op = hash_join_on_first_columns(
+            spark_operator::JoinType::LeftAnti,
+            spark_operator::BuildSide::BuildRight,
+            [two_column_scan(&int_type), two_column_scan(&int_type)],
+            &int_type,
+            vec![ascending_nulls_first(typed_bound_reference(0, &int_type))],
+        );
+        let Some(OpStruct::HashJoin(join)) = op.op_struct.as_mut() else {
+            unreachable!()
+        };
+        join.null_aware_anti_join = true;
+        let ctx = SessionContext::new();
+        let task_ctx = ctx.task_ctx();
+        let planner = PhysicalPlanner::new(Arc::new(ctx), 0);
+        let (_, _, planned) = planner.create_plan(&op, &mut vec![], 1).unwrap();
+
+        assert_eq!("SortExec", planned.native_plan.name());
+        assert_eq!(vec!["HashJoinExec"], additional_plan_names(&planned));
+        let hash_join = planned.native_plan.children()[0]
+            .downcast_ref::<datafusion::physical_plan::joins::HashJoinExec>()
+            .unwrap();
+        assert_eq!(
+            &datafusion::common::JoinType::LeftAnti,
+            hash_join.join_type()
+        );
+        assert!(hash_join.null_aware);
+
+        let output = execute_join_batches(
+            &planned,
+            task_ctx,
+            [
+                vec![(vec![10, 20], vec![1, 2]), (vec![3000, 4000], vec![3, 4])],
+                vec![(vec![5], vec![500])],
+            ],
+        )
+        .await;
+        assert_eq!(
+            &Int32Array::from(vec![10, 20, 3000, 4000]) as &dyn Array,
+            output.column(0).as_ref()
+        );
+        assert_eq!(
+            &Int32Array::from(vec![1, 2, 3, 4]) as &dyn Array,
+            output.column(1).as_ref()
+        );
     }
 
     #[test]
