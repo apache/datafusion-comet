@@ -105,6 +105,8 @@ message DataType {
     // corresponding nested field. Currently used to carry parquet.field.id
     // through to the native side. Empty when no fields carry metadata.
     repeated FieldMetadata field_metadata = 4;
+    // Spark's validated single-field whole-value Variant scan request.
+    bool full_variant_request = 5;
   }
 
   message FieldMetadata {
