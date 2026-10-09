@@ -1504,8 +1504,11 @@ case class CometFilterExec(
   override protected def withNewChildInternal(newChild: SparkPlan): SparkPlan =
     this.copy(child = newChild)
 
+  private def conditionForDisplay: Expression =
+    CometExpressionDisplay.summarizeBloomLiterals(condition)
+
   override def stringArgs: Iterator[Any] =
-    Iterator(output, condition, child)
+    Iterator(output, conditionForDisplay, child)
 
   override def equals(obj: Any): Boolean = {
     obj match {
@@ -1524,7 +1527,7 @@ case class CometFilterExec(
     s"""
        |$formattedNodeName
        |${ExplainUtils.generateFieldString("Input", child.output)}
-       |Condition : ${condition}
+       |Condition : ${conditionForDisplay}
        |""".stripMargin
   }
 }
