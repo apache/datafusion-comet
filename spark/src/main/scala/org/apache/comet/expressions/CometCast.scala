@@ -19,6 +19,8 @@
 
 package org.apache.comet.expressions
 
+import scala.util.control.NonFatal
+
 import org.apache.spark.sql.catalyst.expressions.{Attribute, Cast, Expression, Literal}
 import org.apache.spark.sql.internal.SQLConf
 import org.apache.spark.sql.types.{ArrayType, DataType, DataTypes, DecimalType, MapType, NullType, StructType, TimestampNTZType, TimestampType}
@@ -97,15 +99,15 @@ object CometCast
   // would only duplicate the matrix and risk drifting from it.
 
   override def getSupportLevel(cast: Cast): SupportLevel = {
-    if (cast.child.isInstanceOf[Literal]) {
-      // A cast whose child is a literal is folded by Spark at planning time via `cast.eval()`
-      // (see `convert`), so the cast never executes natively and the result matches Spark by
-      // definition. `CometLiteral` then validates the resulting literal's data type, except
-      // for `VariantType` which must be rejected here: the fold produces a `Literal[VariantType]`
-      // that no downstream Comet serde can serialize.
-      if (isVariantType(cast.child.dataType) || isVariantType(cast.dataType)) {
-        return unsupported(cast.child.dataType, cast.dataType)
-      }
+    if (cast.child.isInstanceOf[Literal] &&
+      (isVariantType(cast.child.dataType) || isVariantType(cast.dataType))) {
+      // The fold below would produce a `Literal[VariantType]` that no downstream Comet serde
+      // can serialize.
+      unsupported(cast.child.dataType, cast.dataType)
+    } else if (foldLiteralCast(cast).isDefined) {
+      // A cast of a literal that evaluates successfully is folded at planning time (see
+      // `convert`), so the cast never executes natively and the result matches Spark by
+      // definition. `CometLiteral` then validates the resulting literal's data type.
       Compatible()
     } else if (CometTimeZone.nativeId(cast.timeZoneId).isEmpty) {
       CometTimeZone.supportLevel(cast.timeZoneId)
@@ -119,10 +121,10 @@ object CometCast
       inputs: Seq[Attribute],
       binding: Boolean): Option[ExprOuterClass.Expr] = {
     val cometEvalMode = evalMode(cast)
-    cast.child match {
-      case _: Literal =>
-        exprToProtoInternal(Literal.create(cast.eval(), cast.dataType), inputs, binding)
-      case _ =>
+    foldLiteralCast(cast) match {
+      case Some(folded) =>
+        exprToProtoInternal(folded, inputs, binding)
+      case None =>
         if (isAlwaysCastToNull(cast.child.dataType, cast.dataType, cometEvalMode)) {
           exprToProtoInternal(Literal.create(null, cast.dataType), inputs, binding)
         } else {
@@ -134,6 +136,25 @@ object CometCast
           }
         }
     }
+  }
+
+  /**
+   * Fold a cast of a literal into a literal, or return `None` when the child is not a literal or
+   * the cast fails to evaluate (for example `CAST('bad' AS BIGINT)` under ANSI).
+   *
+   * Spark's `ConstantFolding` leaves a failing cast unfolded when it sits in a conditional
+   * branch, because that branch may never run. Such a cast must not fail the query while Comet
+   * plans it: it is serialized as a regular cast instead, so the error is raised only when a row
+   * reaches it.
+   */
+  private def foldLiteralCast(cast: Cast): Option[Literal] = cast.child match {
+    case _: Literal =>
+      try {
+        Some(Literal.create(cast.eval(), cast.dataType))
+      } catch {
+        case NonFatal(_) => None
+      }
+    case _ => None
   }
 
 //  Some casts like date -> int/byte / long are always null. Terminate early in planning

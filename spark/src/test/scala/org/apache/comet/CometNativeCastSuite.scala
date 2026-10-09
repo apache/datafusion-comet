@@ -1416,6 +1416,29 @@ class CometNativeCastSuite extends CometTestBase with AdaptiveSparkPlanHelper {
     }
   }
 
+  test("(ansi) failing cast of a literal in an unreached branch does not fail planning") {
+    withSQLConf(SQLConf.ANSI_ENABLED.key -> "true") {
+      withTable("cast_literal_branch") {
+        Seq(0L, 1L, 2L).toDF("id").write.format("parquet").saveAsTable("cast_literal_branch")
+        // ConstantFolding leaves a failing cast unfolded inside a conditional branch, so it
+        // reaches Comet as a cast of a literal. No row chooses the branch, so Spark returns rows.
+        checkSparkAnswerAndOperator(sql("""SELECT id,
+            |  CASE WHEN id = 5 THEN CAST('bad' AS BIGINT) ELSE id END,
+            |  IF(id > 5, CAST(2147483648L AS INT), 0)
+            |FROM cast_literal_branch""".stripMargin))
+        // A row that chooses the branch raises Spark's error from the native cast.
+        checkSparkError(
+          sql(
+            "SELECT CASE WHEN id = 1 THEN CAST('bad' AS BIGINT) ELSE id END " +
+              "FROM cast_literal_branch"),
+          "CAST_INVALID_INPUT")
+        checkSparkError(
+          sql("SELECT IF(id > 1, CAST(2147483648L AS INT), 0) FROM cast_literal_branch"),
+          "CAST_OVERFLOW")
+      }
+    }
+  }
+
   test("cast StringType to TimestampType - UTC") {
     withSQLConf(SQLConf.SESSION_LOCAL_TIMEZONE.key -> "UTC") {
       val values = Seq(
