@@ -685,6 +685,8 @@ jobs:
     container:
       image: amd64/rust
     env:
+      TPC_SCALE_FACTOR: 1
+      TPC_NUM_PARTITIONS: 1
       JAVA_TOOL_OPTIONS: --add-exports=java.base/sun.nio.ch=ALL-UNNAMED --add-exports=java.base/sun.util.calendar=ALL-UNNAMED --add-opens=java.base/java.lang=ALL-UNNAMED --add-opens=java.base/java.lang.invoke=ALL-UNNAMED --add-opens=java.base/java.lang.reflect=ALL-UNNAMED --add-opens=java.base/java.io=ALL-UNNAMED --add-opens=java.base/java.net=ALL-UNNAMED --add-opens=java.base/java.nio=ALL-UNNAMED --add-opens=java.base/java.util=ALL-UNNAMED --add-opens=java.base/java.util.concurrent=ALL-UNNAMED --add-opens=java.base/java.util.concurrent.atomic=ALL-UNNAMED --add-opens=java.base/jdk.internal.ref=ALL-UNNAMED --add-opens=java.base/sun.nio.ch=ALL-UNNAMED --add-opens=java.base/sun.nio.cs=ALL-UNNAMED --add-opens=java.base/sun.security.action=ALL-UNNAMED --add-opens=java.base/sun.util.calendar=ALL-UNNAMED
     steps:
       - uses: actions/checkout@v7
@@ -712,26 +714,37 @@ jobs:
           restore-keys: |
             ${{ runner.os }}-java-maven-
 
-      - name: Cache TPC-H data
+      - name: Restore TPC-H data
         id: cache-tpch
-        uses: actions/cache@v6
+        uses: actions/cache/restore@v6
         with:
           path: ./tpch
-          key: tpch-${{ hashFiles('.github/workflows/pr_build_linux.yml') }}
+          key: tpch-sf${{ env.TPC_SCALE_FACTOR }}-p${{ env.TPC_NUM_PARTITIONS }}-${{ hashFiles('spark/src/test/scala/org/apache/spark/sql/GenTPCHData.scala') }}
 
       - name: Build project
         run: |
           ./mvnw -B -Prelease install -DskipTests
 
-      - name: Generate TPC-H data (SF=1)
+      - name: Generate TPC-H data
         if: steps.cache-tpch.outputs.cache-hit != 'true'
         run: |
-          cd spark && MAVEN_OPTS='-Xmx20g' ../mvnw -B -Prelease exec:java -Dexec.mainClass="org.apache.spark.sql.GenTPCHData" -Dexec.classpathScope="test" -Dexec.cleanupDaemonThreads="false" -Dexec.args="--location `pwd`/.. --scaleFactor 1 --numPartitions 1 --overwrite"
+          cd spark && MAVEN_OPTS='-Xmx20g' ../mvnw -B -Prelease exec:java -Dexec.mainClass="org.apache.spark.sql.GenTPCHData" -Dexec.classpathScope="test" -Dexec.cleanupDaemonThreads="false" -Dexec.args="--location `pwd`/.. --scaleFactor $TPC_SCALE_FACTOR --numPartitions $TPC_NUM_PARTITIONS --overwrite"
 
       - name: Run TPC-H queries
         if: ${{ !inputs.cache-refresh-only }}
         run: |
-          SPARK_HOME=`pwd` SPARK_TPCH_DATA=`pwd`/tpch/sf1_parquet ./mvnw -B -Prelease -Dsuites=org.apache.spark.sql.CometTPCHQuerySuite test
+          SPARK_HOME=`pwd` SPARK_TPCH_DATA=`pwd`/tpch/sf${TPC_SCALE_FACTOR}_parquet ./mvnw -B -Prelease -Dsuites=org.apache.spark.sql.CometTPCHQuerySuite test
+
+      # The dataset key includes the generator, scale factor and partition count.
+      # Main caches it like any other large entry. An entry written from a pull
+      # request or a `gh-readonly-queue/*` branch can never be restored by a
+      # later run and evicts main's from the shared budget.
+      - name: Save TPC-H data
+        if: ${{ github.ref == 'refs/heads/main' && steps.cache-tpch.outputs.cache-hit != 'true' }}
+        uses: actions/cache/save@v6
+        with:
+          path: ./tpch
+          key: tpch-sf${{ env.TPC_SCALE_FACTOR }}-p${{ env.TPC_NUM_PARTITIONS }}-${{ hashFiles('spark/src/test/scala/org/apache/spark/sql/GenTPCHData.scala') }}
 
       # Saved only on main: an entry written from a pull request or a
       # `gh-readonly-queue/*` branch cannot be restored by any later run, and
@@ -759,6 +772,8 @@ jobs:
     container:
       image: amd64/rust
     env:
+      TPC_SCALE_FACTOR: 1
+      TPC_NUM_PARTITIONS: 1
       JAVA_TOOL_OPTIONS: --add-exports=java.base/sun.nio.ch=ALL-UNNAMED --add-exports=java.base/sun.util.calendar=ALL-UNNAMED --add-opens=java.base/java.lang=ALL-UNNAMED --add-opens=java.base/java.lang.invoke=ALL-UNNAMED --add-opens=java.base/java.lang.reflect=ALL-UNNAMED --add-opens=java.base/java.io=ALL-UNNAMED --add-opens=java.base/java.net=ALL-UNNAMED --add-opens=java.base/java.nio=ALL-UNNAMED --add-opens=java.base/java.util=ALL-UNNAMED --add-opens=java.base/java.util.concurrent=ALL-UNNAMED --add-opens=java.base/java.util.concurrent.atomic=ALL-UNNAMED --add-opens=java.base/jdk.internal.ref=ALL-UNNAMED --add-opens=java.base/sun.nio.ch=ALL-UNNAMED --add-opens=java.base/sun.nio.cs=ALL-UNNAMED --add-opens=java.base/sun.security.action=ALL-UNNAMED --add-opens=java.base/sun.util.calendar=ALL-UNNAMED
     steps:
       - uses: actions/checkout@v7
@@ -786,12 +801,12 @@ jobs:
           restore-keys: |
             ${{ runner.os }}-java-maven-
 
-      - name: Cache TPC-DS data
+      - name: Restore TPC-DS data
         id: cache-tpcds
-        uses: actions/cache@v6
+        uses: actions/cache/restore@v6
         with:
-          path: ./tpcds-sf-1
-          key: tpcds-${{ hashFiles('.github/workflows/pr_build_linux.yml') }}
+          path: ./tpcds-sf-${{ env.TPC_SCALE_FACTOR }}
+          key: tpcds-sf${{ env.TPC_SCALE_FACTOR }}-p${{ env.TPC_NUM_PARTITIONS }}-1b7fb7529eda
 
       - name: Build project
         run: |
@@ -802,6 +817,7 @@ jobs:
         uses: actions/checkout@v7
         with:
           repository: databricks/tpcds-kit
+          ref: 1b7fb7529edae091684201fab142d956d6afd881
           path: ./tpcds-kit
 
       - name: Build tpcds-kit
@@ -811,15 +827,15 @@ jobs:
           update-alternatives --install /usr/bin/gcc gcc /usr/bin/gcc-12 120 --slave /usr/bin/g++ g++ /usr/bin/g++-12
           cd tpcds-kit/tools && make OS=LINUX
 
-      - name: Generate TPC-DS data (SF=1)
+      - name: Generate TPC-DS data
         if: steps.cache-tpcds.outputs.cache-hit != 'true'
         run: |
-          cd spark && MAVEN_OPTS='-Xmx20g' ../mvnw -B -Prelease exec:java -Dexec.mainClass="org.apache.spark.sql.GenTPCDSData" -Dexec.classpathScope="test" -Dexec.cleanupDaemonThreads="false" -Dexec.args="--dsdgenDir `pwd`/../tpcds-kit/tools --location `pwd`/../tpcds-sf-1 --scaleFactor 1 --numPartitions 1"
+          cd spark && MAVEN_OPTS='-Xmx20g' ../mvnw -B -Prelease exec:java -Dexec.mainClass="org.apache.spark.sql.GenTPCDSData" -Dexec.classpathScope="test" -Dexec.cleanupDaemonThreads="false" -Dexec.args="--dsdgenDir `pwd`/../tpcds-kit/tools --location `pwd`/../tpcds-sf-$TPC_SCALE_FACTOR --scaleFactor $TPC_SCALE_FACTOR --numPartitions $TPC_NUM_PARTITIONS"
 
       - name: Run TPC-DS queries (Sort merge join)
         if: ${{ !inputs.cache-refresh-only }}
         run: |
-          SPARK_HOME=`pwd` SPARK_TPCDS_DATA=`pwd`/tpcds-sf-1 ./mvnw -B -Prelease -Dsuites=org.apache.spark.sql.CometTPCDSQuerySuite test
+          SPARK_HOME=`pwd` SPARK_TPCDS_DATA=`pwd`/tpcds-sf-$TPC_SCALE_FACTOR ./mvnw -B -Prelease -Dsuites=org.apache.spark.sql.CometTPCDSQuerySuite test
         env:
           SPARK_TPCDS_JOIN_CONF: |
             spark.sql.autoBroadcastJoinThreshold=-1
@@ -828,7 +844,7 @@ jobs:
       - name: Run TPC-DS queries (Broadcast hash join)
         if: ${{ !inputs.cache-refresh-only }}
         run: |
-          SPARK_HOME=`pwd` SPARK_TPCDS_DATA=`pwd`/tpcds-sf-1 ./mvnw -B -Prelease -Dsuites=org.apache.spark.sql.CometTPCDSQuerySuite test
+          SPARK_HOME=`pwd` SPARK_TPCDS_DATA=`pwd`/tpcds-sf-$TPC_SCALE_FACTOR ./mvnw -B -Prelease -Dsuites=org.apache.spark.sql.CometTPCDSQuerySuite test
         env:
           SPARK_TPCDS_JOIN_CONF: |
             spark.sql.autoBroadcastJoinThreshold=10485760
@@ -836,11 +852,22 @@ jobs:
       - name: Run TPC-DS queries (Shuffled hash join)
         if: ${{ !inputs.cache-refresh-only }}
         run: |
-          SPARK_HOME=`pwd` SPARK_TPCDS_DATA=`pwd`/tpcds-sf-1 ./mvnw -B -Prelease -Dsuites=org.apache.spark.sql.CometTPCDSQuerySuite test
+          SPARK_HOME=`pwd` SPARK_TPCDS_DATA=`pwd`/tpcds-sf-$TPC_SCALE_FACTOR ./mvnw -B -Prelease -Dsuites=org.apache.spark.sql.CometTPCDSQuerySuite test
         env:
           SPARK_TPCDS_JOIN_CONF: |
             spark.sql.autoBroadcastJoinThreshold=-1
             spark.sql.join.forceApplyShuffledHashJoin=true
+
+      # The dataset key includes the generator, scale factor and partition count.
+      # Main caches it like any other large entry. An entry written from a pull
+      # request or a `gh-readonly-queue/*` branch can never be restored by a
+      # later run and evicts main's from the shared budget.
+      - name: Save TPC-DS data
+        if: ${{ github.ref == 'refs/heads/main' && steps.cache-tpcds.outputs.cache-hit != 'true' }}
+        uses: actions/cache/save@v6
+        with:
+          path: ./tpcds-sf-${{ env.TPC_SCALE_FACTOR }}
+          key: tpcds-sf${{ env.TPC_SCALE_FACTOR }}-p${{ env.TPC_NUM_PARTITIONS }}-1b7fb7529eda
 
       # Saved only on main: an entry written from a pull request or a
       # `gh-readonly-queue/*` branch cannot be restored by any later run, and
