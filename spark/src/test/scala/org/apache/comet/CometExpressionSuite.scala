@@ -294,9 +294,9 @@ class CometExpressionSuite extends CometTestBase with AdaptiveSparkPlanHelper {
   test("strict floating point: nested sort keeps NaN payloads and zero signs unchanged") {
     // As in the scalar test, a local relation keeps the raw bits that Parquet would canonicalize.
     // `d` is a primitive `Double`, so it is not nullable, and neither are the element of
-    // `array(d)` and the field of `named_struct('v', d)`. The `IF` key's element can be null, and
-    // strict mode admits it too, because its default null order places a null element where
-    // Spark does.
+    // `array(d)` and the field of `named_struct('v', d)`. The `IF` key's element is null on row
+    // 4, and strict mode admits it too, because its default null order sorts a null element first,
+    // where Spark does.
     val negNan = java.lang.Double.longBitsToDouble(0xfff8000000000002L)
     val posNan = java.lang.Double.longBitsToDouble(0x7ff8000000000002L)
     val rows = Seq((0, negNan), (1, posNan), (2, -0.0d), (3, 0.0d), (4, 1.0d))
@@ -309,10 +309,14 @@ class CometExpressionSuite extends CometTestBase with AdaptiveSparkPlanHelper {
     withSQLConf(
       CometConf.getExprAllowIncompatConfigKey("SortOrder") -> "false",
       CometConf.COMET_EXEC_STRICT_FLOATING_POINT.key -> "true") {
-      for ((key, value) <- Seq[(String, Row => Double)](
-          "array(d)" -> (_.getSeq[Double](1).head),
-          "named_struct('v', d)" -> (_.getStruct(1).getDouble(0)),
-          "array(IF(id < 0, CAST(NULL AS DOUBLE), d))" -> (_.getSeq[Double](1).head))) {
+      // The zeros are peers, and so are the two NaNs, which sort last.
+      for ((key, value, order) <- Seq[(String, Row => Option[Double], Seq[Int])](
+          ("array(d)", r => Some(r.getSeq[Double](1).head), Seq(2, 3, 4, 0, 1)),
+          ("named_struct('v', d)", r => Some(r.getStruct(1).getDouble(0)), Seq(2, 3, 4, 0, 1)),
+          (
+            "array(IF(id = 4, CAST(NULL AS DOUBLE), d))",
+            r => Option(r.getSeq[java.lang.Double](1).head).map(_.doubleValue),
+            Seq(4, 2, 3, 0, 1)))) {
         val query = s"SELECT id, $key AS k FROM strict_fp_nested_bits ORDER BY k, id"
         checkSparkAnswerAndOperator(
           sql(query),
@@ -321,12 +325,16 @@ class CometExpressionSuite extends CometTestBase with AdaptiveSparkPlanHelper {
 
         val actual = sql(query).collect().toSeq
         actual.foreach { row =>
-          assert(
-            java.lang.Double.doubleToRawLongBits(value(row)) == expected(row.getInt(0)),
-            s"row ${row.getInt(0)} had its floating-point bits rewritten by the sort on $key")
+          val id = row.getInt(0)
+          value(row) match {
+            case Some(v) =>
+              assert(
+                java.lang.Double.doubleToRawLongBits(v) == expected(id),
+                s"row $id had its floating-point bits rewritten by the sort on $key")
+            case None => assert(id == 4, s"row $id lost its value in the sort on $key")
+          }
         }
-        // The zeros are peers, and so are the two NaNs, which sort last.
-        assert(actual.map(_.getInt(0)) == Seq(2, 3, 4, 0, 1), s"sort on $key")
+        assert(actual.map(_.getInt(0)) == order, s"sort on $key")
       }
     }
   }
