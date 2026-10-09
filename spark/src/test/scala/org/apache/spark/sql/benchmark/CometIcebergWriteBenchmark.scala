@@ -529,6 +529,7 @@ object CometIcebergWriteBenchmark extends CometBenchmarkBase {
           qe: QueryExecution,
           exception: Exception): Unit = {}
     }
+    CometListenerBusUtils.waitUntilEmpty(spark.sparkContext)
     spark.listenerManager.register(listener)
     try {
       action
