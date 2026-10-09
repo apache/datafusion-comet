@@ -15,6 +15,11 @@
 // specific language governing permissions and limitations
 // under the License.
 
+mod read_adaptation;
+mod runtime_filter;
+
+pub(crate) use read_adaptation::is_infallible_read_adaptation;
+
 use crate::parquet::cast_column::CometCastColumnExpr;
 use crate::parquet::name_fold::{fold_name, fold_names, fold_schema_names};
 use crate::parquet::parquet_support::{
@@ -898,6 +903,19 @@ impl PhysicalExprAdapterFactory for SparkPhysicalExprAdapterFactory {
         logical_file_schema: SchemaRef,
         physical_file_schema: SchemaRef,
     ) -> DataFusionResult<Arc<dyn PhysicalExprAdapter>> {
+        Ok(Arc::new(self.create_adapter(
+            logical_file_schema,
+            physical_file_schema,
+        )?))
+    }
+}
+
+impl SparkPhysicalExprAdapterFactory {
+    fn create_adapter(
+        &self,
+        logical_file_schema: SchemaRef,
+        physical_file_schema: SchemaRef,
+    ) -> DataFusionResult<SparkPhysicalExprAdapter> {
         // Remap physical schema field names to match logical names by Parquet field id
         // (when the logical schema carries IDs and `use_field_id` is set) and/or by
         // case-insensitive name match. The DefaultPhysicalExprAdapter uses exact name
@@ -1015,7 +1033,7 @@ impl PhysicalExprAdapterFactory for SparkPhysicalExprAdapterFactory {
             Arc::clone(&adapted_physical_schema),
         )?;
 
-        Ok(Arc::new(SparkPhysicalExprAdapter {
+        Ok(SparkPhysicalExprAdapter {
             logical_file_schema,
             physical_file_schema: adapted_physical_schema,
             parquet_options: self.parquet_options.clone(),
@@ -1027,7 +1045,7 @@ impl PhysicalExprAdapterFactory for SparkPhysicalExprAdapterFactory {
             id_duplicate_roots,
             logical_folded,
             physical_folded,
-        }))
+        })
     }
 }
 

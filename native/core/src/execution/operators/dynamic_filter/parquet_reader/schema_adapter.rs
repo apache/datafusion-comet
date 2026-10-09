@@ -17,12 +17,15 @@
 
 //! Preserve per-file conversion errors when runtime reader filters are attached.
 
+use crate::parquet::schema_adapter::{
+    is_infallible_read_adaptation, SparkPhysicalExprAdapterFactory,
+};
 use std::sync::Arc;
 
 use arrow::datatypes::SchemaRef;
 use datafusion::common::tree_node::{Transformed, TransformedResult, TreeNode};
 use datafusion::common::Result;
-use datafusion::physical_expr::expressions::{lit, Column, DynamicFilterPhysicalExpr, Literal};
+use datafusion::physical_expr::expressions::{lit, Column, DynamicFilterPhysicalExpr};
 use datafusion::physical_expr::PhysicalExpr;
 use datafusion::physical_expr_adapter::{PhysicalExprAdapter, PhysicalExprAdapterFactory};
 
@@ -31,6 +34,7 @@ use datafusion::physical_expr_adapter::{PhysicalExprAdapter, PhysicalExprAdapter
 pub(super) struct RuntimeFilterSchemaAdapterFactory {
     inner: Arc<dyn PhysicalExprAdapterFactory>,
     read_columns: Vec<Column>,
+    spark_factory: Option<Arc<SparkPhysicalExprAdapterFactory>>,
 }
 
 impl RuntimeFilterSchemaAdapterFactory {
@@ -41,7 +45,16 @@ impl RuntimeFilterSchemaAdapterFactory {
         Self {
             inner,
             read_columns,
+            spark_factory: None,
         }
+    }
+
+    pub(super) fn with_spark_factory(
+        mut self,
+        factory: Option<Arc<SparkPhysicalExprAdapterFactory>>,
+    ) -> Self {
+        self.spark_factory = factory;
+        self
     }
 }
 
@@ -51,27 +64,21 @@ impl PhysicalExprAdapterFactory for RuntimeFilterSchemaAdapterFactory {
         logical_schema: SchemaRef,
         physical_schema: SchemaRef,
     ) -> Result<Arc<dyn PhysicalExprAdapter>> {
-        let inner = self
-            .inner
-            .create(logical_schema, Arc::clone(&physical_schema))?;
-        // DataFusion adapts predicates before projections and row-group pruning.
-        // Direct remapping and missing/default literals are safe. Other adaptations
-        // can reject nonempty batches or overflow, so let normal decoding run first.
-        // Spark's adapter can leave unresolved columns unchanged. Require rewritten
-        // column names to resolve in the original physical schema; case and field-ID
-        // remapping restore those names before returning the expression.
-        // Safe-adaptation and matching-schema optimizations are tracked in
-        // https://github.com/apache/datafusion-comet/issues/6123.
-        let allow_runtime_filter =
-            self.read_columns
-                .iter()
-                .all(|column| match inner.rewrite(Arc::new(column.clone())) {
-                    Ok(expr) if expr.is::<Literal>() => true,
-                    Ok(expr) => expr
-                        .downcast_ref::<Column>()
-                        .is_some_and(|column| physical_schema.index_of(column.name()).is_ok()),
-                    Err(_) => false,
-                });
+        let (inner, allow_runtime_filter) = if let Some(factory) = &self.spark_factory {
+            factory.create_with_read_safety(logical_schema, physical_schema, &self.read_columns)?
+        } else {
+            let inner = self
+                .inner
+                .create(logical_schema, Arc::clone(&physical_schema))?;
+            // Unknown factories must establish safety through their actual rewrites.
+            // Errors only disable pruning; normal decoding retains its error timing.
+            let allow_runtime_filter = self.read_columns.iter().all(|column| {
+                inner
+                    .rewrite(Arc::new(column.clone()))
+                    .is_ok_and(|expr| is_infallible_read_adaptation(&expr, &physical_schema))
+            });
+            (inner, allow_runtime_filter)
+        };
         Ok(Arc::new(RuntimeFilterSchemaAdapter {
             inner,
             allow_runtime_filter,
