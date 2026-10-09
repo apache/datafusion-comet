@@ -22,8 +22,6 @@
 -- row for id = 0 and id = 2.
 
 -- Config: spark.comet.exec.range.enabled=true
--- Config: spark.comet.sparkToColumnar.enabled=true
--- Config: spark.comet.sparkToColumnar.supportedOperatorList=Range
 -- Config: spark.sql.caseSensitive=false
 
 -- Float fields, which take Comet's own greatest and least
