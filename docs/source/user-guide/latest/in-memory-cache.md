@@ -205,6 +205,20 @@ all of them longs, is about 10% slower under either kind of operator. That cost 
 decompression. With the `none` codec, the same read is 2.7x faster than Spark's format with Comet
 operators above the scan, and 1.6x faster with a Spark operator above it.
 
+Building the cache is measured the same way, from the same source, with its rows produced either by
+Comet operators or by Spark operators. Comet's format is written straight from the Arrow batches of
+Comet operators, while Spark's is always built from rows, so above Comet operators it first converts
+their batches. Measured on an Apple M3 Max (JDK 17, Spark 4.1, release build):
+
+| Rows produced by | Spark's cache format | Comet's cache format, `zstd` | Comet's cache format, `none` |
+| ---------------- | -------------------: | ---------------------------: | ---------------------------: |
+| Comet operators  |              3285 ms |                       944 ms |                       601 ms |
+| Spark operators  |              3680 ms |                      2079 ms |                      1710 ms |
+
+Spark's format holds the relation in 217 MiB, and Comet's in 51 to 55 MiB with `zstd` and 315 MiB
+with `none`. So with the default codec, Comet's format builds 1.8x to 3.5x faster than Spark's and
+takes about a quarter of the memory.
+
 ## Kryo
 
 Spark serializes a cached batch with `spark.serializer` whenever the block leaves the heap: the
