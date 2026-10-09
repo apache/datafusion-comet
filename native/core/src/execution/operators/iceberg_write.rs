@@ -4832,6 +4832,27 @@ mod tests {
             rows: usize,
             payload_bytes: usize,
         ) -> RecordBatch {
+            payload_rows_from(first, &vec![region; rows], payload_bytes)
+        }
+
+        /// [`round_robin_batch_from`]'s rows, each with its own `payload_bytes`-byte payload.
+        fn round_robin_payload_batch_from(
+            first: usize,
+            rows: usize,
+            partitions: usize,
+            payload_bytes: usize,
+        ) -> RecordBatch {
+            let regions: Vec<String> = (0..rows)
+                .map(|row| format!("r{}", row % partitions))
+                .collect();
+            let regions: Vec<&str> = regions.iter().map(String::as_str).collect();
+            payload_rows_from(first, &regions, payload_bytes)
+        }
+
+        /// One row for each of `regions`, numbered from `first`, each with its own
+        /// `payload_bytes`-byte payload.
+        fn payload_rows_from(first: usize, regions: &[&str], payload_bytes: usize) -> RecordBatch {
+            let rows = regions.len();
             let ids: Vec<i32> = (first..first + rows).map(|id| id as i32).collect();
             let payloads: Vec<String> = (first..first + rows)
                 .map(|id| format!("{id:0>payload_bytes$}"))
@@ -4844,7 +4865,7 @@ mod tests {
                 ])),
                 vec![
                     Arc::new(Int32Array::from(ids)),
-                    Arc::new(StringArray::from(vec![region; rows])),
+                    Arc::new(StringArray::from(regions.to_vec())),
                     Arc::new(StringArray::from(payloads)),
                 ],
             )
@@ -5114,18 +5135,20 @@ mod tests {
             rows
         }
 
-        /// Writes `batches` into a fanout table twice: with a pool to spare, then with half the
-        /// most that first write reserved, which it can only fit by closing partitions early.
-        /// Returns both writes' data files and the second write's directory, after checking that
-        /// the second fit and gave its reservation back.
-        async fn fanout_write_in_half_the_pool(
+        /// Writes `batches` into a fanout table of `schema` twice: with a pool to spare, then with
+        /// a pool of the most that first write reserved divided by `divisor`, which it can only
+        /// fit by closing partitions early. Returns both writes' data files and the second write's
+        /// directory, after checking that the second fit and gave its reservation back.
+        async fn fanout_write_in_part_of_the_pool(
+            divisor: usize,
+            schema: Schema,
             batches: impl Fn() -> Vec<RecordBatch>,
             properties: impl Fn() -> WriterProperties,
         ) -> (Vec<DataFile>, Vec<DataFile>, TempDir) {
             let roomy = Arc::new(PeakMemoryPool::new(usize::MAX));
             let (_dir, written) = write_reserving_from(
                 &roomy,
-                iceberg_user_schema(),
+                schema.clone(),
                 ProtoIcebergWriterMode::IcebergWriterFanout,
                 batches(),
                 properties(),
@@ -5133,10 +5156,10 @@ mod tests {
             )
             .await;
             let roomy_files = written.unwrap();
-            let tight = Arc::new(PeakMemoryPool::new(roomy.peak() / 2));
+            let tight = Arc::new(PeakMemoryPool::new(roomy.peak() / divisor));
             let (dir, written) = write_reserving_from(
                 &tight,
-                iceberg_user_schema(),
+                schema,
                 ProtoIcebergWriterMode::IcebergWriterFanout,
                 batches(),
                 properties(),
@@ -5156,7 +5179,9 @@ mod tests {
             // Four batches, each a unit for every one of 16 partitions, so a partition closed
             // early gets more rows after it. One unit is one page, so every unit goes straight to
             // its partition's file.
-            let (roomy, tight, dir) = fanout_write_in_half_the_pool(
+            let (roomy, tight, dir) = fanout_write_in_part_of_the_pool(
+                2,
+                iceberg_user_schema(),
                 || {
                     (0..4)
                         .map(|batch| {
@@ -5182,12 +5207,46 @@ mod tests {
         /// file is open when the pool refuses: the write only fits by writing partitions out.
         #[tokio::test]
         async fn closing_a_partition_early_writes_out_the_rows_it_holds_back() {
-            let (roomy, tight, _dir) = fanout_write_in_half_the_pool(
+            let (roomy, tight, _dir) = fanout_write_in_part_of_the_pool(
+                2,
+                iceberg_user_schema(),
                 || vec![round_robin_batch(16 * ROWS_DIVISOR, 16)],
                 || WriterProperties::builder().build(),
             )
             .await;
             assert_eq!(record_counts(&tight), record_counts(&roomy));
+        }
+
+        /// Closing the partitions holding the most frees the most memory per file closed, so a
+        /// write short of memory closes few files. Here 16 or 64 partitions take turns through 32
+        /// batches, so every partition keeps getting rows, and the pool grants an eighth of what
+        /// the write needs. The write ends with between four and five files per partition,
+        /// however many partitions it has. Closing every partition at once would leave seven, and
+        /// closing them in the order they were first seen, or smallest first, seventeen.
+        #[tokio::test]
+        async fn a_fanout_write_short_of_memory_closes_the_partitions_holding_the_most() {
+            for partitions in [16, 64] {
+                let (roomy, tight, _dir) = fanout_write_in_part_of_the_pool(
+                    8,
+                    iceberg_payload_schema(),
+                    || {
+                        (0..32)
+                            .map(|batch| {
+                                round_robin_payload_batch_from(batch * 1024, 1024, partitions, 100)
+                            })
+                            .collect()
+                    },
+                    || WriterProperties::builder().build(),
+                )
+                .await;
+                assert_eq!(roomy.len(), partitions);
+                assert_eq!(rows_per_partition(&tight), rows_per_partition(&roomy));
+                assert!(
+                    tight.len() < 6 * partitions,
+                    "{} files for {partitions} partitions",
+                    tight.len()
+                );
+            }
         }
 
         /// A write whose open file outgrows what the pool grants, with no partition it can close

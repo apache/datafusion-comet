@@ -285,7 +285,8 @@ written less those. When they leave depends on the storage (`StorageWrites`). Af
 `PartitionFeed` holds, for the dictionary choice or for pacing (`InnerWriter::reserve`). When the
 pool refuses a fanout write, `reserve` writes out and closes the partitions holding the most, in
 their open file and their feed, until the resize succeeds, and `run_write_task` counts them in the
-`files_closed_early` metric. Each partition's files report to a child of the task's
+`files_closed_early` metric. Taking the largest first frees the most memory per file closed, so
+each refusal closes as few files as it can. Each partition's files report to a child of the task's
 `OpenFileMemory`, which is how `reserve` finds them. That is why the fanout path uses
 `FanoutPartitions` rather than iceberg-rust's `FanoutWriter`, which cannot close one partition's
 writer. A closed partition's next rows open a new file with the properties its first file used,

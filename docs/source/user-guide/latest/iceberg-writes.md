@@ -315,10 +315,13 @@ partition also holds the rows that have not reached its file yet. So a task writ
 partitions needs memory in proportion to them. When the pool cannot grant it, the task writes out
 and closes the partitions holding the most memory until what is left fits, and a closed
 partition's next rows open a new file. The write then finishes with more, smaller files than
-iceberg-java's would, and the `files closed early to free memory` metric of its
-`CometIcebergWrite` operator counts the files it closed early. Disabling the fanout writer
-(`write.spark.fanout.enabled=false`) avoids them: Spark then sorts each task's rows by partition,
-and the task keeps one file open at a time. A larger `spark.memory.offHeap.size` also helps.
+iceberg-java's would. When every partition keeps getting rows, a task given an eighth of the memory
+its partitions need writes about four files per partition instead of one, however many partitions
+it writes to. The `files closed early to free memory` metric of its `CometIcebergWrite` operator
+counts the files it closed early. Disabling the fanout writer (`write.spark.fanout.enabled=false`)
+avoids the extra files: Spark then sorts each task's rows by partition, and the task keeps one file
+open at a time. A larger `spark.memory.offHeap.size` also helps, and Iceberg's `rewrite_data_files`
+procedure compacts small files once they are written.
 
 A write that keeps one file open, unpartitioned or clustered, has no partition to close. When that
 file outgrows the pool, the task fails with a `CometNativeException` reading
