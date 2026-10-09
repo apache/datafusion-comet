@@ -17,7 +17,8 @@
 
 use crate::{Cast, EvalMode, IfExpr, NormalizeNaNAndZero, SparkCastOptions, SparkComparison};
 use arrow::array::{
-    downcast_primitive, Array, ArrayRef, AsArray, BooleanArray, GenericByteArray, PrimitiveArray,
+    downcast_primitive, new_empty_array, Array, ArrayRef, AsArray, BooleanArray, GenericByteArray,
+    PrimitiveArray,
 };
 use arrow::buffer::{BooleanBuffer, NullBuffer, OffsetBuffer, ScalarBuffer};
 use arrow::compute::nullif;
@@ -349,6 +350,13 @@ impl PhysicalExpr for CaseWhenExpr {
     }
 
     fn evaluate(&self, batch: &RecordBatch) -> Result<ColumnarValue> {
+        // No row chooses a branch, which both the eager and the lazy evaluation answer with a
+        // scalar NULL. A scalar from an empty batch is taken to mean the expression is constant,
+        // as IN does to build its list once, so return an empty array instead.
+        if batch.num_rows() == 0 {
+            let data_type = self.data_type(&batch.schema())?;
+            return Ok(ColumnarValue::Array(new_empty_array(&data_type)));
+        }
         match self
             .eager
             .get_or_init(|| self.eager_result_type(&batch.schema()))
@@ -1266,14 +1274,77 @@ mod tests {
         assert_eq!(scalar(expr), ScalarValue::Int64(None));
     }
 
+    /// A scalar from an empty batch is taken to mean the expression is constant, so a CASE that
+    /// depends on a column has to return an empty array, whichever branch it would choose.
     #[test]
-    fn empty_batch() {
+    fn empty_batch_returns_an_empty_array() {
         let batch = int_batch(vec![], vec![]);
         let schema = batch.schema();
         let a = col("a", &schema).unwrap();
         let b = col("b", &schema).unwrap();
-        let when_then = vec![(binary(Arc::clone(&a), Operator::Lt, lit(0i64)), a)];
-        check_against_case_expr(&batch, when_then, Some(b));
+        let null = || lit(ScalarValue::Int64(None));
+        let a_is_1 = || binary(Arc::clone(&a), Operator::Eq, lit(1i64));
+        let a_div_b = binary(Arc::clone(&a), Operator::Divide, Arc::clone(&b));
+        // The branches, the ELSE, and whether it is evaluated eagerly
+        type Case = (Vec<WhenThen>, Option<Arc<dyn PhysicalExpr>>, bool);
+        let cases: Vec<Case> = vec![
+            // IF(a = 1, NULL, a), as nullif(a, 1) is planned
+            (vec![(a_is_1(), null())], Some(Arc::clone(&a)), true),
+            // CASE WHEN a = 1 THEN a END
+            (vec![(a_is_1(), Arc::clone(&a))], None, true),
+            (vec![(a_is_1(), Arc::clone(&a))], Some(Arc::clone(&b)), true),
+            // A branch that can fail is evaluated lazily
+            (vec![(a_is_1(), a_div_b)], None, false),
+        ];
+        for (when_then, else_expr, eager) in cases {
+            let expr = CaseWhenExpr::try_new(when_then, else_expr).unwrap();
+            match expr.evaluate(&batch).unwrap() {
+                ColumnarValue::Array(array) => {
+                    assert_eq!(array.len(), 0, "{expr}");
+                    assert_eq!(array.data_type(), &DataType::Int64, "{expr}");
+                }
+                other => panic!("{expr} returned {other:?} for an empty batch"),
+            }
+            assert_eq!(expr.eager_result_type(&schema).is_some(), eager, "{expr}");
+        }
+    }
+
+    /// IN takes a candidate that returns a scalar for an empty batch as a constant.
+    #[test]
+    fn in_list_does_not_take_a_case_as_constant() {
+        let batch = int_batch(vec![Some(0), Some(1), Some(2)], vec![None, None, None]);
+        let schema = batch.schema();
+        let a = col("a", &schema).unwrap();
+        let if_a_is_1_null_else_a: Arc<dyn PhysicalExpr> = Arc::new(IfExpr::new(
+            binary(Arc::clone(&a), Operator::Eq, lit(1i64)),
+            lit(ScalarValue::Int64(None)),
+            Arc::clone(&a),
+        ));
+        let case_a_is_not_1_then_a: Arc<dyn PhysicalExpr> = Arc::new(
+            CaseWhenExpr::try_new(
+                vec![(
+                    binary(Arc::clone(&a), Operator::NotEq, lit(1i64)),
+                    Arc::clone(&a),
+                )],
+                None,
+            )
+            .unwrap(),
+        );
+        for candidate in [if_a_is_1_null_else_a, case_a_is_not_1_then_a] {
+            let expr = datafusion::physical_expr::expressions::in_list(
+                Arc::clone(&a),
+                vec![candidate],
+                &false,
+                &schema,
+            )
+            .unwrap();
+            let result = expr.evaluate(&batch).unwrap().into_array(3).unwrap();
+            assert_eq!(
+                result.as_boolean(),
+                &BooleanArray::from(vec![Some(true), None, Some(true)]),
+                "{expr}"
+            );
+        }
     }
 
     #[test]
