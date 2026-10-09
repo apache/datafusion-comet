@@ -39,7 +39,7 @@ import org.apache.spark.sql.comet._
 import org.apache.spark.sql.comet.execution.shuffle.{CometColumnarShuffle, CometNativeShuffle, CometShuffleExchangeExec}
 import org.apache.spark.sql.connector.catalog.InMemoryTableCatalog
 import org.apache.spark.sql.execution._
-import org.apache.spark.sql.execution.adaptive.{AdaptiveSparkPlanExec, AQEShuffleReadExec, BroadcastQueryStageExec, LogicalQueryStage}
+import org.apache.spark.sql.execution.adaptive.{AdaptiveSparkPlanExec, AQEShuffleReadExec, BroadcastQueryStageExec, LogicalQueryStage, QueryStageExec}
 import org.apache.spark.sql.execution.columnar.{CometInMemoryRelationHelper, InMemoryTableScanExec}
 import org.apache.spark.sql.execution.datasources.parquet.ParquetFileFormat
 import org.apache.spark.sql.execution.exchange.{BroadcastExchangeExec, BroadcastExchangeLike, ReusedExchangeExec, ShuffleExchangeExec, ShuffleExchangeLike}
@@ -297,6 +297,375 @@ class CometExecSuite extends CometTestBase {
             !cometPlan.toString().contains("CometColumnarShuffle"),
             "Should not use Comet columnar shuffle for stages with DPP scans")
         }
+      }
+    }
+  }
+
+  test("broadcast build side with unsupported text source goes native (#6008)") {
+    // A tiny lookup table read from a Text file (which Comet cannot scan natively) sits on the
+    // build side of a broadcast join over a large native probe. Without the auto-bridge the whole
+    // join stays on Spark. With spark.comet.convert.broadcastBuildSide.enabled (default on)
+    // the text leaf is bridged to Arrow so the broadcast and the join run natively.
+    assert(CometConf.COMET_CONVERT_BROADCAST_BUILD_SIDE_ENABLED.defaultValue.contains(true))
+    withTempDir { dir =>
+      val probePath = s"${dir.getAbsolutePath}/probe.parquet"
+      val allowPath = s"${dir.getAbsolutePath}/allow.txt"
+      withSQLConf(CometConf.COMET_ENABLED.key -> "false") {
+        spark
+          .range(0, 100)
+          .selectExpr("CAST(id AS STRING) AS key", "id AS v")
+          .write
+          .parquet(probePath)
+        spark
+          .range(0, 5)
+          .selectExpr("CAST(id AS STRING) AS value")
+          .write
+          .text(allowPath)
+      }
+
+      // Cover both the AQE and non-AQE planning paths - the tag pre-pass runs per stage under AQE.
+      for (aqe <- Seq(false, true)) {
+        withSQLConf(SQLConf.ADAPTIVE_EXECUTION_ENABLED.key -> aqe.toString) {
+          spark.read.parquet(probePath).createOrReplaceTempView("probe_6008")
+          spark.read.text(allowPath).createOrReplaceTempView("allow_6008")
+          val query =
+            "SELECT /*+ BROADCAST(a) */ p.v FROM probe_6008 p JOIN allow_6008 a ON p.key = a.value"
+
+          // Default: the text build side is bridged to Arrow and the join goes native. The plan is
+          // fully native (the bridge counts as a native leaf), so use checkSparkAnswerAndOperator -
+          // checkSparkAnswer would fail under COMET_STRICT_TESTING on a fully-native plan.
+          val (_, cometPlan) = checkSparkAnswerAndOperator(sql(query))
+          assert(
+            collect(cometPlan) { case s: CometSparkToColumnarExec => s }.nonEmpty,
+            s"aqe=$aqe: expected a CometSparkToColumnarExec on the text build side:\n" +
+              cometPlan.treeString)
+          assert(
+            collect(cometPlan) { case b: CometBroadcastExchangeExec => b }.nonEmpty,
+            s"aqe=$aqe: expected a CometBroadcastExchangeExec:\n${cometPlan.treeString}")
+          assert(
+            collect(cometPlan) { case j: CometBroadcastHashJoinExec => j }.nonEmpty,
+            s"aqe=$aqe: expected a CometBroadcastHashJoinExec:\n${cometPlan.treeString}")
+
+          // Off: the unsupported text leaf blocks native execution of the broadcast and the join.
+          withSQLConf(CometConf.COMET_CONVERT_BROADCAST_BUILD_SIDE_ENABLED.key -> "false") {
+            val (_, cometPlanOff) = checkSparkAnswer(sql(query))
+            assert(
+              collect(cometPlanOff) { case s: CometSparkToColumnarExec => s }.isEmpty,
+              s"aqe=$aqe: expected no CometSparkToColumnarExec when disabled:\n" +
+                cometPlanOff.treeString)
+            assert(
+              collect(cometPlanOff) { case b: CometBroadcastExchangeExec => b }.isEmpty,
+              s"aqe=$aqe: expected no CometBroadcastExchangeExec when disabled:\n" +
+                cometPlanOff.treeString)
+            assert(
+              collect(cometPlanOff) { case j: CometBroadcastHashJoinExec => j }.isEmpty,
+              s"aqe=$aqe: expected no CometBroadcastHashJoinExec when disabled:\n" +
+                cometPlanOff.treeString)
+          }
+        }
+      }
+    }
+  }
+
+  test("broadcast build side bridge is gated on broadcast-exchange conversion (#6008)") {
+    // The bridge is pointless when Comet broadcast exchange conversion is off: the broadcast (and
+    // so the join) cannot go native. With COMET_EXEC_BROADCAST_EXCHANGE_ENABLED=false the text
+    // build side must not be bridged even though broadcastBuildSide is on.
+    withTempDir { dir =>
+      val probePath = s"${dir.getAbsolutePath}/probe.parquet"
+      val allowPath = s"${dir.getAbsolutePath}/allow.txt"
+      withSQLConf(CometConf.COMET_ENABLED.key -> "false") {
+        spark
+          .range(0, 100)
+          .selectExpr("CAST(id AS STRING) AS key", "id AS v")
+          .write
+          .parquet(probePath)
+        spark.range(0, 5).selectExpr("CAST(id AS STRING) AS value").write.text(allowPath)
+      }
+      withSQLConf(
+        SQLConf.ADAPTIVE_EXECUTION_ENABLED.key -> "false",
+        CometConf.COMET_CONVERT_BROADCAST_BUILD_SIDE_ENABLED.key -> "true",
+        CometConf.COMET_EXEC_BROADCAST_EXCHANGE_ENABLED.key -> "false") {
+        spark.read.parquet(probePath).createOrReplaceTempView("probe_gate_6008")
+        spark.read.text(allowPath).createOrReplaceTempView("allow_gate_6008")
+        val (_, cometPlan) = checkSparkAnswer(sql("""
+            |SELECT /*+ BROADCAST(a) */ p.v
+            |FROM probe_gate_6008 p JOIN allow_gate_6008 a ON p.key = a.value
+            |""".stripMargin))
+        assert(
+          collect(cometPlan) { case s: CometSparkToColumnarExec => s }.isEmpty,
+          "with broadcast-exchange conversion off the build side must not be bridged:\n" +
+            cometPlan.treeString)
+      }
+    }
+  }
+
+  test("broadcast build side scan below an aggregate is bridged, shuffle stage is not (#6008)") {
+    // A file scan can sit BELOW build-side operators. Broadcasting an aggregated Text table puts a
+    // Text FileSourceScanExec under a partial aggregate + shuffle on the build side. The tag
+    // pre-pass walks the whole broadcast subtree, so the deep text scan must be bridged to Arrow,
+    // yet no query stage (e.g. the build-side shuffle under AQE) may be wrapped in the bridge.
+    withTempDir { dir =>
+      val allowPath = s"${dir.getAbsolutePath}/allow.txt"
+      val probePath = s"${dir.getAbsolutePath}/probe.parquet"
+      withSQLConf(CometConf.COMET_ENABLED.key -> "false") {
+        spark.range(0, 20).selectExpr("CAST(id % 5 AS STRING) AS value").write.text(allowPath)
+        spark
+          .range(0, 100)
+          .selectExpr("CAST(id % 5 AS STRING) AS key", "id AS v")
+          .write
+          .parquet(probePath)
+      }
+      spark.read.text(allowPath).createOrReplaceTempView("allow_agg_6008")
+      spark.read.parquet(probePath).createOrReplaceTempView("probe_agg_6008")
+      val query = """
+          |SELECT /*+ BROADCAST(d) */ p.v, d.n
+          |FROM probe_agg_6008 p
+          |JOIN (SELECT value AS k, COUNT(*) AS n FROM allow_agg_6008 GROUP BY value) d
+          |  ON p.key = d.k
+          |""".stripMargin
+      for (aqe <- Seq(false, true)) {
+        withSQLConf(
+          SQLConf.ADAPTIVE_EXECUTION_ENABLED.key -> aqe.toString,
+          SQLConf.AUTO_BROADCASTJOIN_THRESHOLD.key -> (10 * 1024 * 1024).toString) {
+          // The plan is fully native (the bridged text scan under the aggregate is a native leaf),
+          // so checkSparkAnswerAndOperator also pins that the text scan did get bridged - an
+          // un-bridged Spark scan would read as non-native and fail here. It is also strict-testing
+          // safe, unlike checkSparkAnswer on a fully-native plan.
+          val (_, cometPlan) = checkSparkAnswerAndOperator(sql(query))
+          // `collect` descends AQE query stages, so the bridge on the deep text scan is reachable
+          // under AQE too (it lives in the build-side shuffle stage). Assert it in both modes - and
+          // because checkSparkAnswerAndOperator only inspects the initial plan under AQE, this is
+          // the only thing that checks the final AQE plan.
+          assert(
+            collect(cometPlan) { case s: CometSparkToColumnarExec => s }.nonEmpty,
+            s"aqe=$aqe: expected the build-side text scan to be bridged:\n${cometPlan.treeString}")
+          // A query stage (the build-side shuffle) must never be wrapped in the bridge.
+          collect(cometPlan) { case s: CometSparkToColumnarExec => s.child }.foreach { child =>
+            assert(
+              !child.isInstanceOf[QueryStageExec],
+              s"aqe=$aqe: a QueryStageExec must not be bridged to Arrow:\n${cometPlan.treeString}")
+          }
+        }
+      }
+    }
+  }
+
+  test("per-format opt-out still wins on a broadcast build side (#6008)") {
+    // A CSV build side stays a Spark FileSourceScanExec and is tagged, but the CSV arm of
+    // shouldApplySparkToColumnar honors COMET_CONVERT_FROM_CSV_ENABLED and never calls the
+    // broadcast-build-side bypass. So with convert-from-csv off, the CSV build side must NOT be
+    // bridged and the join must stay on Spark, even with broadcastBuildSide enabled.
+    withTempDir { dir =>
+      val allowPath = s"${dir.getAbsolutePath}/allow.csv"
+      val probePath = s"${dir.getAbsolutePath}/probe.parquet"
+      withSQLConf(CometConf.COMET_ENABLED.key -> "false") {
+        spark.range(0, 5).selectExpr("CAST(id AS STRING) AS value").write.csv(allowPath)
+        spark
+          .range(0, 100)
+          .selectExpr("CAST(id AS STRING) AS key", "id AS v")
+          .write
+          .parquet(probePath)
+      }
+      withSQLConf(
+        SQLConf.ADAPTIVE_EXECUTION_ENABLED.key -> "false",
+        CometConf.COMET_CONVERT_FROM_CSV_ENABLED.key -> "false",
+        CometConf.COMET_CONVERT_BROADCAST_BUILD_SIDE_ENABLED.key -> "true") {
+        spark.read.csv(allowPath).createOrReplaceTempView("allow_csv_6008")
+        spark.read.parquet(probePath).createOrReplaceTempView("probe_csv_6008")
+        val (_, cometPlan) = checkSparkAnswer(sql("""
+            |SELECT /*+ BROADCAST(a) */ p.v
+            |FROM probe_csv_6008 p JOIN allow_csv_6008 a ON p.key = a._c0
+            |""".stripMargin))
+        assert(
+          collect(cometPlan) { case s: CometSparkToColumnarExec => s }.isEmpty,
+          "a CSV build side with convert-from-csv disabled must not be bridged:\n" +
+            cometPlan.treeString)
+      }
+    }
+  }
+
+  test("broadcast build side with an unsupported DSv2 scan goes native (#6008)") {
+    // Exercises the BatchScanExec arm: an unsupported-format scan (Text read as DSv2) on the build
+    // side is bridged so the join goes native. Keep parquet on the V1 list so the probe stays a
+    // native CometScan; drop text from the list so it is read as a DSv2 BatchScan/TextScan.
+    withTempDir { dir =>
+      val allowPath = s"${dir.getAbsolutePath}/allow.txt"
+      val probePath = s"${dir.getAbsolutePath}/probe.parquet"
+      withSQLConf(CometConf.COMET_ENABLED.key -> "false") {
+        spark.range(0, 5).selectExpr("CAST(id AS STRING) AS value").write.text(allowPath)
+        spark
+          .range(0, 100)
+          .selectExpr("CAST(id AS STRING) AS key", "id AS v")
+          .write
+          .parquet(probePath)
+      }
+      withSQLConf(
+        SQLConf.ADAPTIVE_EXECUTION_ENABLED.key -> "false",
+        SQLConf.USE_V1_SOURCE_LIST.key -> "parquet") {
+        spark.read.text(allowPath).createOrReplaceTempView("allow_v2_6008")
+        spark.read.parquet(probePath).createOrReplaceTempView("probe_v2_6008")
+        // Fully native (bridged DSv2 text build side + native parquet probe + native join), so use
+        // checkSparkAnswerAndOperator - strict-testing safe, unlike checkSparkAnswer here.
+        val (_, cometPlan) = checkSparkAnswerAndOperator(sql("""
+            |SELECT /*+ BROADCAST(a) */ p.v
+            |FROM probe_v2_6008 p JOIN allow_v2_6008 a ON p.key = a.value
+            |""".stripMargin))
+        assert(
+          collect(cometPlan) { case s: CometSparkToColumnarExec => s }.nonEmpty,
+          s"expected the DSv2 text build side to be bridged:\n${cometPlan.treeString}")
+        assert(
+          collect(cometPlan) { case j: CometBroadcastHashJoinExec => j }.nonEmpty,
+          s"expected the join to go native over the DSv2 build side:\n${cometPlan.treeString}")
+      }
+    }
+  }
+
+  test("broadcast join with an unsupported probe stays on Spark (#6008)") {
+    // Both sides are unsupported Text sources. The probe is not natively scannable, so the join
+    // cannot go native - and because the probe is not native, the build side must NOT be bridged
+    // either (bridging it would be useless and would break Spark's broadcast/DPP reuse). This pins
+    // the probe-native gate that fixed the DynamicPartitionPruningV2 regression.
+    withTempDir { dir =>
+      val probePath = s"${dir.getAbsolutePath}/probe.txt"
+      val allowPath = s"${dir.getAbsolutePath}/allow.txt"
+      withSQLConf(CometConf.COMET_ENABLED.key -> "false") {
+        spark.range(0, 100).selectExpr("CAST(id AS STRING) AS value").write.text(probePath)
+        spark.range(0, 5).selectExpr("CAST(id AS STRING) AS value").write.text(allowPath)
+      }
+      for (aqe <- Seq(false, true)) {
+        withSQLConf(SQLConf.ADAPTIVE_EXECUTION_ENABLED.key -> aqe.toString) {
+          spark.read.text(probePath).createOrReplaceTempView("probe_txt_6008")
+          spark.read.text(allowPath).createOrReplaceTempView("allow_txt_6008")
+          val (_, cometPlan) = checkSparkAnswer(sql("""
+              |SELECT /*+ BROADCAST(a) */ p.value
+              |FROM probe_txt_6008 p JOIN allow_txt_6008 a ON p.value = a.value
+              |""".stripMargin))
+          // The non-native probe must leave the build side un-bridged (the probe-native gate).
+          assert(
+            collect(cometPlan) { case s: CometSparkToColumnarExec => s }.isEmpty,
+            s"aqe=$aqe: a non-native probe must leave the build side un-bridged:\n" +
+              cometPlan.treeString)
+          assert(
+            collect(cometPlan) { case j: CometBroadcastHashJoinExec => j }.isEmpty,
+            s"aqe=$aqe: the join must stay on Spark when the probe is not native:\n" +
+              cometPlan.treeString)
+          assert(
+            collect(cometPlan) { case b: CometBroadcastExchangeExec => b }.isEmpty,
+            s"aqe=$aqe: the broadcast must stay on Spark when the join does not convert:\n" +
+              cometPlan.treeString)
+        }
+      }
+    }
+  }
+
+  test("broadcast build side on the left (BuildLeft) with a text source goes native (#6008)") {
+    // All other tests broadcast the right table (BuildRight). Put the small text table first and
+    // hint it so it becomes the left build side, exercising the BuildLeft arm of tagBuildIfProbeNative.
+    withTempDir { dir =>
+      val probePath = s"${dir.getAbsolutePath}/probe.parquet"
+      val allowPath = s"${dir.getAbsolutePath}/allow.txt"
+      withSQLConf(CometConf.COMET_ENABLED.key -> "false") {
+        spark
+          .range(0, 100)
+          .selectExpr("CAST(id AS STRING) AS key", "id AS v")
+          .write
+          .parquet(probePath)
+        spark.range(0, 5).selectExpr("CAST(id AS STRING) AS value").write.text(allowPath)
+      }
+      withSQLConf(SQLConf.ADAPTIVE_EXECUTION_ENABLED.key -> "false") {
+        spark.read.text(allowPath).createOrReplaceTempView("allow_bl_6008")
+        spark.read.parquet(probePath).createOrReplaceTempView("probe_bl_6008")
+        val (_, cometPlan) = checkSparkAnswerAndOperator(sql("""
+            |SELECT /*+ BROADCAST(a) */ p.v
+            |FROM allow_bl_6008 a JOIN probe_bl_6008 p ON a.value = p.key
+            |""".stripMargin))
+        assert(
+          collect(cometPlan) { case s: CometSparkToColumnarExec => s }.nonEmpty,
+          s"expected the text build side to be bridged:\n${cometPlan.treeString}")
+        assert(
+          collect(cometPlan) { case j: CometBroadcastHashJoinExec => j }.nonEmpty,
+          s"expected a CometBroadcastHashJoinExec:\n${cometPlan.treeString}")
+      }
+    }
+  }
+
+  test("broadcast nested loop join build side with a text source goes native (#6008)") {
+    // Exercises the BroadcastNestedLoopJoinExec arm of tagBroadcastBuildSideLeaves: an inequality
+    // join forces a BNLJ; the text build side is bridged so the BNLJ runs natively.
+    withTempDir { dir =>
+      val probePath = s"${dir.getAbsolutePath}/probe.parquet"
+      val allowPath = s"${dir.getAbsolutePath}/allow.txt"
+      withSQLConf(CometConf.COMET_ENABLED.key -> "false") {
+        spark.range(0, 100).selectExpr("id AS v", "CAST(id AS INT) AS k").write.parquet(probePath)
+        spark.range(0, 5).selectExpr("CAST(id AS STRING) AS value").write.text(allowPath)
+      }
+      withSQLConf(SQLConf.ADAPTIVE_EXECUTION_ENABLED.key -> "false") {
+        spark.read.text(allowPath).createOrReplaceTempView("allow_bnlj_6008")
+        spark.read.parquet(probePath).createOrReplaceTempView("probe_bnlj_6008")
+        val (_, cometPlan) = checkSparkAnswer(sql("""
+            |SELECT /*+ BROADCAST(a) */ p.v
+            |FROM probe_bnlj_6008 p JOIN allow_bnlj_6008 a ON p.k > CAST(a.value AS INT)
+            |""".stripMargin))
+        assert(
+          collect(cometPlan) { case s: CometSparkToColumnarExec => s }.nonEmpty,
+          s"expected the text build side to be bridged:\n${cometPlan.treeString}")
+        assert(
+          collect(cometPlan) { case j: CometBroadcastNestedLoopJoinExec => j }.nonEmpty,
+          s"expected a CometBroadcastNestedLoopJoinExec:\n${cometPlan.treeString}")
+      }
+    }
+  }
+
+  test("AQE DPP with a text dimension on the broadcast build side runs natively (#6008)") {
+    // A Text dimension on a broadcast build side joined to a PARTITIONED Parquet fact triggers DPP.
+    // The build-side bridge makes the join a CometBroadcastHashJoinExec; the DPP subquery's own
+    // build (the text scan) is not bridged, so CometPlanAdaptiveDynamicPruningFilters must NOT wrap
+    // it in a CometBroadcastExchangeExec (that crashed with "Comet execution only takes Arrow
+    // Arrays"). It falls back to a Spark DPP broadcast while the join stays native. See issue #6008.
+    assume(isSpark35Plus, "Native AQE DPP requires Spark 3.5+")
+    withSQLConf(
+      SQLConf.USE_V1_SOURCE_LIST.key -> "parquet",
+      SQLConf.ADAPTIVE_EXECUTION_ENABLED.key -> "true",
+      SQLConf.DYNAMIC_PARTITION_PRUNING_ENABLED.key -> "true",
+      SQLConf.DYNAMIC_PARTITION_PRUNING_REUSE_BROADCAST_ONLY.key -> "true") {
+      withTempDir { dir =>
+        val factPath = s"${dir.getAbsolutePath}/fact.parquet"
+        val dimPath = s"${dir.getAbsolutePath}/dim.txt"
+        withSQLConf(CometConf.COMET_ENABLED.key -> "false") {
+          spark
+            .range(0, 100)
+            .selectExpr("CAST(id % 10 AS STRING) AS fk", "id AS v")
+            .write
+            .partitionBy("fk")
+            .parquet(factPath)
+          spark.range(0, 10).selectExpr("CAST(id AS STRING) AS value").write.text(dimPath)
+        }
+        spark.read.parquet(factPath).createOrReplaceTempView("dpp_fact_txt")
+        spark.read.text(dimPath).createOrReplaceTempView("dpp_dim_txt")
+        // CAST(d.value AS INT) % 2 = 0 is a filter Spark cannot infer onto f.fk, so the fact is
+        // pruned only via a live DPP subquery (a filter Spark can push, like d.value < '5', would
+        // prune the fact statically and the test would pass even with DPP disabled).
+        val df = sql("""
+            |SELECT /*+ BROADCAST(d) */ f.v
+            |FROM dpp_fact_txt f JOIN dpp_dim_txt d ON f.fk = d.value
+            |WHERE CAST(d.value AS INT) % 2 = 0
+            |""".stripMargin)
+        // Must not crash, and must match Spark.
+        val (_, cometPlan) = checkSparkAnswer(df)
+        // The join still goes native over the bridged build side.
+        assert(
+          collect(cometPlan) { case j: CometBroadcastHashJoinExec => j }.nonEmpty,
+          s"expected the join to run natively:\n${cometPlan.treeString}")
+        // DPP is still live - the fact scan keeps a broadcast pruning subquery (Spark-side here,
+        // because the unbridged text dimension build is not native).
+        val dppSubqueries = collectWithSubqueries(cometPlan) {
+          case s: SubqueryBroadcastExec => s
+          case s: CometSubqueryBroadcastExec => s
+        }
+        assert(
+          dppSubqueries.nonEmpty,
+          s"expected a live DPP broadcast subquery on the fact scan:\n${cometPlan.treeString}")
       }
     }
   }

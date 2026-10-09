@@ -258,8 +258,17 @@ case object CometPlanAdaptiveDynamicPruningFilters
       // construct a fresh exchange wrapping the build subtree, then wrap in a new ASPE.
       // AQE's stageCache ensures the broadcast runs once via ReusedExchangeExec (same
       // canonical form as the join's exchange).
-      val (broadcastChild, isComet) = matchingJoin.get
+      val (broadcastChild, isCometJoin) = matchingJoin.get
       val buildSidePlan = adaptivePlan.executedPlan
+      // A Comet broadcast join can now arise from a build-side row->Arrow bridge (issue #6008)
+      // even when this DPP subquery's own build is a non-native, row-based scan (e.g. a Text
+      // dimension that was not under a Spark BroadcastExchange and so was never bridged). A
+      // CometBroadcastExchangeExec requires a native (CometVector) child - wrapping a row-based
+      // plan makes it fail at execution with "Comet execution only takes Arrow Arrays". So only
+      // build a Comet exchange when the join is Comet AND buildSidePlan is actually native;
+      // otherwise fall back to a Spark broadcast + SubqueryBroadcastExec (correct, loses only DPP
+      // broadcast reuse). Mirrors the non-AQE guard in CometExecRule.rewriteInSubqueryPlan.
+      val isComet = isCometJoin && isNativeBuildSide(buildSidePlan)
       logDebug(
         s"Matched DPP subquery '${sab.name}' to " +
           s"${if (isComet) "Comet" else "Spark"} broadcast: " +
@@ -349,6 +358,30 @@ case object CometPlanAdaptiveDynamicPruningFilters
     } else {
       subquery
     }
+  }
+
+  /**
+   * True when `plan` (a DPP subquery's build, taken from an AdaptiveSparkPlanExec.executedPlan)
+   * produces native Comet columnar output, so it is safe as a CometBroadcastExchangeExec child.
+   * Unwraps AQE stage wrappers and any columnar->row transition (mirrors the stripping in
+   * CometExecRule.rewriteInSubqueryPlan), then checks for a CometNativeExec. See issue #6008.
+   */
+  private def isNativeBuildSide(plan: SparkPlan): Boolean = {
+    val stripped = stripAQEPlan(plan) match {
+      case c2r: CometNativeColumnarToRowExec => c2r.child
+      case c2r: CometColumnarToRowExec => c2r.child
+      case WholeStageCodegenExec(c2r: CometColumnarToRowExec) =>
+        c2r.child match {
+          case InputAdapter(child) => child
+          case other => other
+        }
+      case other => other
+    }
+    // Any Comet plan that produces columnar (Arrow) output is a valid CometBroadcastExchangeExec
+    // child, not only CometNativeExec. CometUnionExec / CometCoalesceExec /
+    // CometTakeOrderedAndProjectExec extend CometExec and are columnar, and the join's own
+    // broadcast accepts them, so requiring CometNativeExec here would needlessly drop DPP reuse.
+    stripped.isInstanceOf[CometPlan] && stripped.supportsColumnar
   }
 
   /**

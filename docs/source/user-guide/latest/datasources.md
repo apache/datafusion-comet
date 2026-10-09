@@ -71,6 +71,16 @@ format other than Parquet, JSON and CSV, set `spark.comet.sparkToColumnar.enable
 operator in `spark.comet.sparkToColumnar.supportedOperatorList` by its Spark class name without the
 `Exec` suffix, such as `BatchScan` or `FileSourceScan`.
 
+One case is converted automatically: when the build (broadcast) side of a broadcast join is a file
+or V2 scan Comet cannot read natively - for example a small Text lookup table - and every scan on
+the probe side is already native, Comet converts that build-side scan to Arrow so the whole join
+runs natively over the large probe. This is controlled by
+`spark.comet.convert.broadcastBuildSide.enabled`, which is **on by default**, unlike the switches
+above. The build side is usually small, but an explicit `BROADCAST` hint or a selective filter above
+the scan can make the copied volume larger, and with dynamic partition pruning the dimension is read
+a second time for the pruning subquery. Set `spark.comet.convert.broadcastBuildSide.enabled=false` to
+keep such build sides on Spark.
+
 ### Spark-to-Comet conversion types
 
 Spark-to-Comet conversion supports `ARRAY<STRING>` and `MAP<STRING,STRING>` with binary

@@ -1186,6 +1186,20 @@ object CometConf extends ShimCometConf {
       .toSequence
       .createWithDefault(Nil)
 
+  val COMET_CONVERT_BROADCAST_BUILD_SIDE_ENABLED: ConfigEntry[Boolean] =
+    conf("spark.comet.convert.broadcastBuildSide.enabled")
+      .category(CATEGORY_EXEC)
+      .doc("When enabled, Comet converts a file or V2 scan that it cannot scan natively (for " +
+        "example a Text source) to Arrow when that scan feeds a broadcast join's build side and " +
+        "every scan on the probe side is already native, so the broadcast join runs natively " +
+        "over the large probe. The build side is usually small (auto-broadcasts are capped by " +
+        "the broadcast threshold), so the row to Arrow copy is usually cheap - though an " +
+        "explicit BROADCAST hint or a selective filter above the scan can make it larger. With " +
+        "dynamic partition pruning the dimension is also read a second time for the pruning " +
+        "subquery. Set this to false to keep such build sides on Spark.")
+      .booleanConf
+      .createWithDefault(true)
+
   val COMET_CASE_CONVERSION_ENABLED: ConfigEntry[Boolean] =
     conf("spark.comet.caseConversion.enabled")
       .category(CATEGORY_EXEC)
