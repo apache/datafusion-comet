@@ -92,6 +92,7 @@ Its module documentation is the reference. In short:
 | Helper                                                           | Rule                         | Use it to                                                                                                   |
 | ---------------------------------------------------------------- | ---------------------------- | ----------------------------------------------------------------------------------------------------------- |
 | `compare_floats`, `float_lt`, `float_gt`                         | SQL ordering                 | Compare values in a kernel that returns the original bits, as `array_min` and `greatest` do                 |
+| `compare_float_arrays`, `compare_float_array_scalar`             | SQL ordering                 | Compare a `FLOAT` or `DOUBLE` array with another or with a scalar in place, as `SparkComparison` does       |
 | `spark_comparator`, `spark_equality`                             | SQL ordering, at any depth   | Compare arrays and structs in place                                                                         |
 | `normalize_float`, `normalize_floats`, `normalize_nested_floats` | `NormalizeNaNAndZero`        | Normalize values before an Arrow kernel sorts, row-encodes, hashes or compares them                         |
 | `NormalizeNaNAndZero`, `NormalizeNestedFloats`                   | `NormalizeNaNAndZero`        | Wrap a key or operand expression. `wrap_if_needed` skips other types and keys that Spark already normalized |
@@ -112,15 +113,19 @@ normalized and the output keeps the original values.
   sort orders them the Spark way.
 - `spark_comparison` in `native/spark-expr/src/array_funcs/nested_comparison.rs` builds every native
   `=`, `<>`, `<=>`, `<`, `<=`, `>`, `>=` and `IS DISTINCT FROM`, whichever operator evaluates it. It
-  normalizes float operands, and folds a literal while the plan is built so that it stays a
-  literal. Nested `=` and `<>` compare in place with `spark_equality`.
-- A scan's pushed-down data filters leave a float column compared with a literal other than NaN
-  unwrapped (`FloatOperands::Raw`) so that Parquet pruning still recognizes it, but only while the
-  reader prunes with them without filtering rows. A bloom filter probe hashes the literal's bits, so
-  `=` against either zero becomes `= -0.0 OR = 0.0`. With
-  `spark.comet.parquet.rowFilterPushdown.enabled=true` they normalize both sides, because the
-  reader drops the rows a filter rejects, and a raw column would reject a stored NaN that Spark
-  matches ([#6702](https://github.com/apache/datafusion-comet/issues/6702)). Spark's own reader
+  compares the operands as they are, without normalized copies: `FLOAT` and `DOUBLE` with
+  `compare_float_arrays` and `compare_float_array_scalar`, and arrays and structs with
+  `spark_comparator`, or with `spark_equality` for `=`, `<>`, `<=>` and `IS DISTINCT FROM`. It
+  normalizes a literal while the plan is built so that it stays a literal. Operands of other types,
+  such as dictionary-encoded floats, are normalized and compared with Arrow's kernels.
+- A scan's pushed-down data filters keep a float column compared with a literal other than NaN as a
+  plain `BinaryExpr` (`FloatOperands::Raw`) so that Parquet pruning still recognizes it, but only
+  while the reader prunes with them without filtering rows. A bloom filter probe hashes the
+  literal's bits, so `=` against either zero becomes `= -0.0 OR = 0.0`. With
+  `spark.comet.parquet.rowFilterPushdown.enabled=true` they compare in Spark's ordering like every
+  other comparison, because the reader drops the rows a filter rejects, and a raw column would
+  reject a stored NaN that Spark matches
+  ([#6702](https://github.com/apache/datafusion-comet/issues/6702)). Spark's own reader
   keeps the two zeros apart in its dictionary and bloom filters, so it can skip a row group that
   Comet reads. A test of this pruning writes out the expected rows instead of comparing them with
   Spark's.
