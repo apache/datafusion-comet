@@ -18,6 +18,7 @@
 use arrow::array::Int64Array;
 use arrow::datatypes::{DataType, Field};
 use criterion::{criterion_group, criterion_main, Criterion};
+use datafusion::common::ScalarValue;
 use datafusion::physical_plan::ColumnarValue;
 use datafusion_comet_spark_expr::spark_sequence;
 use std::hint::black_box;
@@ -57,7 +58,7 @@ fn criterion_benchmark(c: &mut Criterion) {
     let mut group = c.benchmark_group("sequence");
 
     // Short sequences: per-row overhead dominates.
-    for elems in [2i64, 5] {
+    for elems in [1i64, 2, 5] {
         let args = args_with_len(elems, None);
         group.bench_function(format!("short_{elems}_elems"), |b| {
             b.iter(|| black_box(spark_sequence(&args, &return_type).unwrap()))
@@ -111,6 +112,33 @@ fn criterion_benchmark(c: &mut Criterion) {
         });
     }
 
+    // Explicit steps on one-element rows, and non-unit steps in both directions.
+    for (label, elems) in [
+        ("explicit_step_one_element", 1i64),
+        ("mixed_non_unit_steps", 17),
+    ] {
+        let start = Int64Array::from(vec![0i64; NUM_ROWS]);
+        let step = Int64Array::from(
+            (0..NUM_ROWS)
+                .map(|i| if i % 2 == 0 { 3i64 } else { -3 })
+                .collect::<Vec<_>>(),
+        );
+        let stop = Int64Array::from(
+            step.values()
+                .iter()
+                .map(|step| step * (elems - 1))
+                .collect::<Vec<_>>(),
+        );
+        let args = vec![
+            ColumnarValue::Array(Arc::new(start)),
+            ColumnarValue::Array(Arc::new(stop)),
+            ColumnarValue::Array(Arc::new(step)),
+        ];
+        group.bench_function(label, |b| {
+            b.iter(|| black_box(spark_sequence(&args, &return_type).unwrap()))
+        });
+    }
+
     // Error path: the boundary check rejects the first row.
     {
         let start = Int64Array::from(vec![0i64; NUM_ROWS]);
@@ -124,6 +152,48 @@ fn criterion_benchmark(c: &mut Criterion) {
         group.bench_function("error_illegal_boundaries", |b| {
             b.iter(|| black_box(spark_sequence(&args, &return_type).unwrap_err()))
         });
+    }
+
+    // Scalar steps avoid the cost of materialising an input column.
+    for elems in [1i64, 2, 5, 365, 10_000] {
+        let mut args = args_with_len(elems, None);
+        args.push(ColumnarValue::Scalar(ScalarValue::Int64(Some(1))));
+        group.bench_function(format!("scalar_step_{elems}_elems"), |b| {
+            b.iter(|| black_box(spark_sequence(&args, &return_type).unwrap()))
+        });
+    }
+
+    // Include the caller's expansion so scalar and array results do equivalent work.
+    for rows in [1, NUM_ROWS] {
+        for elems in [1i64, 5, 365] {
+            let args = vec![
+                ColumnarValue::Scalar(ScalarValue::Int64(Some(0))),
+                ColumnarValue::Scalar(ScalarValue::Int64(Some(elems - 1))),
+            ];
+            group.bench_function(format!("all_scalar_{rows}_rows_{elems}_elems"), |b| {
+                b.iter(|| {
+                    black_box(
+                        spark_sequence(&args, &return_type)
+                            .unwrap()
+                            .into_array(rows)
+                            .unwrap(),
+                    )
+                })
+            });
+        }
+    }
+
+    for (label, every) in [
+        ("sparse_nulls", 10usize),
+        ("dense_nulls", 2),
+        ("all_nulls", 1),
+    ] {
+        for elems in [1i64, 2, 5] {
+            let args = args_with_len(elems, Some(every));
+            group.bench_function(format!("{label}_{elems}_elems"), |b| {
+                b.iter(|| black_box(spark_sequence(&args, &return_type).unwrap()))
+            });
+        }
     }
 
     group.finish();
