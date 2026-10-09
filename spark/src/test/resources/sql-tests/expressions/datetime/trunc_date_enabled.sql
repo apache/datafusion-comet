@@ -22,6 +22,7 @@
 -- long as every format value is valid, the native results match Spark.
 
 -- Config: spark.comet.expression.TruncDate.allowIncompatible=true
+-- ExcludeRules: org.apache.spark.sql.catalyst.optimizer.NullPropagation
 
 statement
 CREATE TABLE test_trunc_date_fmt(d date, fmt string) USING parquet
@@ -29,5 +30,13 @@ CREATE TABLE test_trunc_date_fmt(d date, fmt string) USING parquet
 statement
 INSERT INTO test_trunc_date_fmt VALUES (date('2024-06-15'), 'year'), (date('2024-06-15'), 'month'), (date('2024-06-15'), 'quarter'), (date('2024-06-15'), 'week'), (NULL, 'year')
 
-query
+query expect_native(trunc)
 SELECT trunc(d, fmt) FROM test_trunc_date_fmt
+
+-- A literal date is broadcast across the format column, including dates before the epoch.
+query expect_native(trunc)
+SELECT fmt, trunc(DATE '2024-06-15', fmt), trunc(DATE '1969-12-31', fmt)
+FROM test_trunc_date_fmt
+
+query expect_native(trunc)
+SELECT fmt, trunc(CAST(NULL AS DATE), fmt) FROM test_trunc_date_fmt
