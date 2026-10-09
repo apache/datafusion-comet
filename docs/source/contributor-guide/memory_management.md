@@ -136,7 +136,16 @@ allocator before reading anything into the split.
 **The JVM shuffle allocator is an ordinary Spark consumer.** `CometShuffleMemoryAllocator.getInstance`
 returns `CometUnifiedShuffleMemoryAllocator`, a Spark `MemoryConsumer` drawing from
 `spark.memory.offHeap.size`, so shuffle pages are arbitrated against Spark's other consumers in the
-same task like any other allocation.
+same task like any other allocation. A page or pointer array allocation that waits in Spark for
+memory can wake up to find the task's entry gone from Spark's execution pool, because another
+consumer of the task released its last bytes in the meantime, and Spark then throws a
+`NoSuchElementException` ("key not found") instead of a grant
+([SPARK-59444](https://issues.apache.org/jira/browse/SPARK-59444)). The allocator retries that
+case, since the failed call was granted nothing, and after three attempts throws
+`SparkOutOfMemoryError`, which the shuffle writers handle like any other refused page. Only the
+shuffle allocator's callers are guarded this way. Spark's operators in the same task, such as its
+sorters and aggregates, can still hit the exception until Spark re-registers a waiting task in
+`ExecutionMemoryPool` ([apache/spark#58747](https://github.com/apache/spark/pull/58747)).
 
 Which allocator each call site uses, and who ends up charged for the bytes:
 
