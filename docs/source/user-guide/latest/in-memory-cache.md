@@ -25,8 +25,8 @@ format, which Comet operators cannot read. Under Comet's default settings the op
 cache scan then run on Spark. With `spark.comet.convert.inMemoryCache.enabled`, a
 `CometSparkColumnarToColumnar` above the scan converts each batch for Comet operators instead.
 
-This feature is **experimental and enabled by default** from Spark 3.5. To turn it off, set the
-config at startup, alongside the rest of Comet's configuration:
+This feature is **enabled by default** from Spark 3.5. To turn it off, set the config at startup,
+alongside the rest of Comet's configuration:
 
 ```shell
 $SPARK_HOME/bin/spark-shell \
@@ -277,9 +277,8 @@ The fused reader is faster than Spark's own format for the narrowest reads and w
 the others. The row reader takes up to 1.6 times as long, and it is the only reader for relations
 wider than `spark.sql.codegen.maxFields`: reading every column of relations of 100, 200 and 1500
 nullable `bigint` columns took 2.2 to 2.5 times as long as from Spark's format. A Spark operator
-above Comet's native cache scan does not pay this; see [Performance](#performance). These gaps are
-the main reason the feature is still described as experimental;
-[#5485](https://github.com/apache/datafusion-comet/issues/5485) tracks them.
+above Comet's native cache scan does not pay this; see [Performance](#performance).
+[#5485](https://github.com/apache/datafusion-comet/issues/5485) tracks these gaps.
 
 Comet's serializer exists because Spark's own Arrow cache format
 ([SPARK-57268](https://issues.apache.org/jira/browse/SPARK-57268)) is only available from Spark
