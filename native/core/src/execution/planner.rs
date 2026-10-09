@@ -6579,6 +6579,56 @@ mod tests {
     }
 
     #[test]
+    fn hash_join_over_a_native_sort_merge_join_adds_no_sort() {
+        // A sort merge join declares its key ordering, so a hash join streaming it keeps that
+        // ordering without a sort. Spark reports the merge join's left key as the ordering.
+        let int_type = create_proto_datatype();
+        let key = || ascending_nulls_first(typed_bound_reference(0, &int_type));
+        let sorted_scan = || Operator {
+            children: vec![two_column_scan(&int_type)],
+            op_struct: Some(OpStruct::Sort(spark_operator::Sort {
+                sort_orders: vec![key()],
+                ..Default::default()
+            })),
+            ..Default::default()
+        };
+        for smj_join_type in [
+            spark_operator::JoinType::Inner,
+            spark_operator::JoinType::LeftOuter,
+        ] {
+            let sort_merge_join = Operator {
+                children: vec![sorted_scan(), sorted_scan()],
+                op_struct: Some(OpStruct::SortMergeJoin(spark_operator::SortMergeJoin {
+                    left_join_keys: vec![typed_bound_reference(0, &int_type)],
+                    right_join_keys: vec![typed_bound_reference(0, &int_type)],
+                    join_type: smj_join_type as i32,
+                    sort_options: vec![key()],
+                    condition: None,
+                })),
+                ..Default::default()
+            };
+            // The merge join's left key is column 0 of the hash join output.
+            let op = hash_join_on_first_columns(
+                spark_operator::JoinType::LeftOuter,
+                spark_operator::BuildSide::BuildRight,
+                [sort_merge_join, two_column_scan(&int_type)],
+                &int_type,
+                vec![key()],
+            );
+            let (_, _, planned) = PhysicalPlanner::default()
+                .create_plan(&op, &mut vec![], 1)
+                .unwrap();
+            assert_ne!(
+                "SortExec",
+                planned.native_plan.name(),
+                "{smj_join_type:?}\n{}\n{:?}",
+                datafusion::physical_plan::displayable(planned.native_plan.as_ref()).indent(true),
+                planned.native_plan.properties().eq_properties
+            );
+        }
+    }
+
+    #[test]
     fn hash_join_without_output_ordering_adds_no_sort() {
         let int_type = create_proto_datatype();
         for (join_type, build_side, root) in [
