@@ -194,11 +194,11 @@ object CometExecRule {
 
   /**
    * Tag set on a scan leaf that sits on a broadcast join's build side. When
-   * `spark.comet.sparkToColumnar.broadcastBuildSide.enabled` is on, such a scan is bridged to
-   * Arrow with `CometSparkToColumnarExec` even when the general sparkToColumnar path is off, so
-   * the build branch and the broadcast join can run natively. The build side is usually small, so
-   * the row to Arrow copy is usually cheap - see `tagBroadcastBuildSideLeaves` for the caveats.
-   * See issue #6008.
+   * `spark.comet.convert.broadcastBuildSide.enabled` is on, such a scan is bridged to Arrow with
+   * `CometSparkToColumnarExec` even when the general sparkToColumnar path is off, so the build
+   * branch and the broadcast join can run natively. The build side is usually small, so the row
+   * to Arrow copy is usually cheap - see `tagBroadcastBuildSideLeaves` for the caveats. See issue
+   * #6008.
    */
   val BROADCAST_BUILD_SIDE_TAG: org.apache.spark.sql.catalyst.trees.TreeNodeTag[Unit] =
     org.apache.spark.sql.catalyst.trees.TreeNodeTag[Unit]("comet.broadcastBuildSideLeaf")
@@ -623,11 +623,13 @@ case class CometExecRule(session: SparkSession, queryStagePrep: Boolean = false)
             newPlan
               .getTagValue(CometExplainInfo.FALLBACK_REASONS)
               .foreach(reasons => withFallbackReasons(plan, reasons))
-            // return the original plan
-            plan
+            // The join stays on Spark, so undo any #6008 build-side bridge we inserted - otherwise
+            // a Spark broadcast is left wrapping Comet nodes, which wastes a row<->Arrow round trip
+            // and breaks DPP broadcast reuse against the subquery's unbridged copy.
+            revertBridgedBroadcasts(plan)
           }
         } else {
-          plan
+          revertBridgedBroadcasts(plan)
         }
 
       // For AQE shuffle stage on a Comet shuffle exchange
@@ -1558,7 +1560,7 @@ case class CometExecRule(session: SparkSession, queryStagePrep: Boolean = false)
    * runtime. See issue #6008.
    */
   private def broadcastBuildSideBridgeEnabled: Boolean =
-    CometConf.COMET_SPARK_TO_ARROW_BROADCAST_BUILD_SIDE_ENABLED.get(conf) &&
+    CometConf.COMET_CONVERT_BROADCAST_BUILD_SIDE_ENABLED.get(conf) &&
       CometConf.COMET_EXEC_BROADCAST_EXCHANGE_ENABLED.get(conf)
 
   /**
@@ -1603,22 +1605,52 @@ case class CometExecRule(session: SparkSession, queryStagePrep: Boolean = false)
       return
     }
     plan.foreach {
-      case j: BroadcastHashJoinExec => tagBuildIfProbeNative(j.buildSide, j.left, j.right)
-      case j: BroadcastNestedLoopJoinExec => tagBuildIfProbeNative(j.buildSide, j.left, j.right)
+      case j: BroadcastHashJoinExec =>
+        tagBuildIfProbeNative(
+          j.buildSide,
+          j.left,
+          j.right,
+          CometConf.COMET_EXEC_BROADCAST_HASH_JOIN_ENABLED)
+      case j: BroadcastNestedLoopJoinExec =>
+        tagBuildIfProbeNative(
+          j.buildSide,
+          j.left,
+          j.right,
+          CometConf.COMET_EXEC_BROADCAST_NESTED_LOOP_JOIN_ENABLED)
       case _ =>
     }
   }
 
-  /** Tag the build side's file-source scans, but only if the probe side is natively scannable. */
+  /**
+   * Tag the build side's file-source scans, but only if the join can actually become a native
+   * Comet broadcast join and the probe side is natively scannable. If the join cannot convert,
+   * the bridged (Comet) build subtree would be left under a Spark `BroadcastExchangeExec`, which
+   * both wastes a row to Arrow copy and breaks Spark's DPP broadcast reuse (the DPP subquery
+   * keeps an unbridged copy). We skip when:
+   *   - the join's own serde is disabled (`joinEnabled`), so it will stay on Spark; or
+   *   - the build-side `BroadcastExchangeExec` carries `SKIP_COMET_BROADCAST_TAG`, which
+   *     `CometSpark34AqeDppFallbackRule` sets on Spark 3.4 to keep the broadcast Spark-native so
+   *     `PlanAdaptiveDynamicPruningFilters` can match it (bridging it would turn DPP off). See
+   *     issue #6008.
+   */
   private def tagBuildIfProbeNative(
       buildSide: BuildSide,
       left: SparkPlan,
-      right: SparkPlan): Unit = {
+      right: SparkPlan,
+      joinEnabled: ConfigEntry[Boolean]): Unit = {
+    if (!joinEnabled.get(conf)) {
+      return
+    }
     val (buildPlan, probePlan) = buildSide match {
       case BuildLeft => (left, right)
       case BuildRight => (right, left)
     }
-    if (hasOnlyNativeScans(probePlan)) {
+    val skipForDpp = buildPlan match {
+      case b: BroadcastExchangeExec =>
+        b.getTagValue(CometExecRule.SKIP_COMET_BROADCAST_TAG).isDefined
+      case _ => false
+    }
+    if (!skipForDpp && hasOnlyNativeScans(probePlan)) {
       tagBuildSideScans(buildPlan)
     }
   }
@@ -1656,6 +1688,32 @@ case class CometExecRule(session: SparkSession, queryStagePrep: Boolean = false)
       case _ =>
     }
     sawNativeScan && !sawUnsupportedScan
+  }
+
+  /**
+   * Undo a #6008 build-side bridge in `plan`'s broadcast children when the broadcast join is left
+   * on Spark. Only a `BroadcastExchangeExec` whose subtree actually contains a
+   * `CometSparkToColumnarExec` is reverted; a legitimately native build (e.g. a Parquet
+   * `CometScanExec`) has no bridge and is left untouched, so this never disturbs a broadcast that
+   * is not part of this feature. See issue #6008.
+   */
+  private def revertBridgedBroadcasts(plan: SparkPlan): SparkPlan =
+    plan.withNewChildren(plan.children.map {
+      case b: BroadcastExchangeExec if b.exists(_.isInstanceOf[CometSparkToColumnarExec]) =>
+        b.withNewChildren(Seq(revertCometToSpark(b.child)))
+      case other => other
+    })
+
+  /**
+   * Rebuild a converted build-side subtree as its original Spark plan. The bridge
+   * (`CometScanWrapper(CometSparkToColumnarExec(sparkScan))`) collapses back to the Spark scan,
+   * and each Comet operator above it is replaced by its `originalPlan` with reverted children.
+   */
+  private def revertCometToSpark(plan: SparkPlan): SparkPlan = plan match {
+    case w: CometScanWrapper => revertCometToSpark(w.originalPlan)
+    case bridge: CometSparkToColumnarExec => revertCometToSpark(bridge.child)
+    case c: CometExec => c.originalPlan.withNewChildren(c.children.map(revertCometToSpark))
+    case other => other.withNewChildren(other.children.map(revertCometToSpark))
   }
 
   private def isSparkToArrowEnabled(conf: SQLConf, op: SparkPlan) = {

@@ -377,7 +377,11 @@ case object CometPlanAdaptiveDynamicPruningFilters
         }
       case other => other
     }
-    stripped.isInstanceOf[CometNativeExec]
+    // Any Comet plan that produces columnar (Arrow) output is a valid CometBroadcastExchangeExec
+    // child, not only CometNativeExec. CometUnionExec / CometCoalesceExec /
+    // CometTakeOrderedAndProjectExec extend CometExec and are columnar, and the join's own
+    // broadcast accepts them, so requiring CometNativeExec here would needlessly drop DPP reuse.
+    stripped.isInstanceOf[CometPlan] && stripped.supportsColumnar
   }
 
   /**

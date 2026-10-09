@@ -1186,17 +1186,17 @@ object CometConf extends ShimCometConf {
       .toSequence
       .createWithDefault(Nil)
 
-  val COMET_SPARK_TO_ARROW_BROADCAST_BUILD_SIDE_ENABLED: ConfigEntry[Boolean] =
-    conf("spark.comet.sparkToColumnar.broadcastBuildSide.enabled")
+  val COMET_CONVERT_BROADCAST_BUILD_SIDE_ENABLED: ConfigEntry[Boolean] =
+    conf("spark.comet.convert.broadcastBuildSide.enabled")
       .category(CATEGORY_EXEC)
-      .doc("When enabled, Comet automatically inserts a Spark to Arrow columnar conversion at " +
-        "a leaf that Comet cannot scan natively (for example a Text file source) when that " +
-        "leaf feeds a broadcast join's build side, so the build branch and the join can run " +
-        "natively over the large probe input. The build side is usually small (auto-broadcasts " +
-        "are capped by the broadcast threshold), so the row to Arrow copy is usually cheap - " +
-        "though an explicit BROADCAST hint or a selective filter above the scan can make it " +
-        "larger, so set this to false if that copy is not worth it. This does not require " +
-        s"`${COMET_SPARK_TO_ARROW_ENABLED.key}` to be enabled.")
+      .doc("When enabled, Comet converts a file or V2 scan that it cannot scan natively (for " +
+        "example a Text source) to Arrow when that scan feeds a broadcast join's build side and " +
+        "every scan on the probe side is already native, so the broadcast join runs natively " +
+        "over the large probe. The build side is usually small (auto-broadcasts are capped by " +
+        "the broadcast threshold), so the row to Arrow copy is usually cheap - though an " +
+        "explicit BROADCAST hint or a selective filter above the scan can make it larger. With " +
+        "dynamic partition pruning the dimension is also read a second time for the pruning " +
+        "subquery. Set this to false to keep such build sides on Spark.")
       .booleanConf
       .createWithDefault(true)
 
