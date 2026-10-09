@@ -1133,7 +1133,8 @@ struct FanoutPartitions {
 
 /// One partition of a fanout write.
 struct FanoutPartition {
-    /// Kept so held rows can still be written out at close.
+    /// What each of the partition's files is opened with: its first, and any it opens after
+    /// closing one early.
     key: PartitionKey,
     feed: PartitionFeed,
     /// The writer of the partition's open file, if it has one open.
@@ -1363,6 +1364,9 @@ impl InnerWriter {
                 Err(e) => refused = e,
             }
         }
+        // Not reached: everything a fanout write reserves belongs to one of its partitions, so
+        // once every partition holding memory is closed the resize is down to nothing, which the
+        // pool cannot refuse.
         Err(refused)
     }
 

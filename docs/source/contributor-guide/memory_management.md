@@ -379,10 +379,10 @@ An operator that never calls `try_grow` is invisible to the pool no matter how m
 
 Both native writers reserve what they hold between batches through a single consumer per task,
 `ParquetWriterExec[N]` or `IcebergWriteExec[N]`, resized after every batch. Neither can spill. A
-fanout Iceberg write can give memory back by closing partitions early, and does so when the pool
-refuses a resize, as described below. Otherwise, when the pool refuses a resize, the task fails
-with a `CometNativeException` whose message starts `Additional allocation failed for` and names the
-consumer. That is a task failure Spark can retry.
+fanout Iceberg write gives memory back instead, by closing partitions early when the pool refuses a
+resize, as described below, so the pool never fails it. When the pool refuses any other write's
+resize, the task fails with a `CometNativeException` whose message starts
+`Additional allocation failed for` and names the consumer. That is a task failure Spark can retry.
 Unreserved, the same memory would count only toward the container limit, where exceeding it kills
 the executor.
 

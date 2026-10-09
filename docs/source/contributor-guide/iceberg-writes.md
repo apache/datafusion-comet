@@ -289,9 +289,11 @@ their open file and their feed, until the resize succeeds, and `run_write_task` 
 `OpenFileMemory`, which is how `reserve` finds them. That is why the fanout path uses
 `FanoutPartitions` rather than iceberg-rust's `FanoutWriter`, which cannot close one partition's
 writer. A closed partition's next rows open a new file with the properties its first file used,
-which the partition keeps. A write the pool still refuses, with nothing left to close, fails the
-task, as an unpartitioned or clustered write always does. What the reserved figure covers, and what it misses,
-is described under [Native writers](memory_management.md#native-writers).
+which the partition keeps. The pool cannot fail a fanout write: everything the write reserves
+belongs to one of its partitions, so once all of them are closed it reserves nothing, and a resize
+down always succeeds. An unpartitioned or clustered write has no file it can close early, so a
+resize the pool refuses fails its task. What the reserved figure covers, and what it misses, is
+described under [Native writers](memory_management.md#native-writers).
 
 `FileIO` comes from `load_file_io` in `iceberg_common.rs`, shared with the native scan. It picks
 the storage backend from the data location's scheme and wires in Comet's S3 credential bridge when
