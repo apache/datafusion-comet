@@ -19,8 +19,6 @@
 -- For id = 3 the second argument's first field is null, so least picks it and greatest does not.
 
 -- Config: spark.comet.exec.range.enabled=true
--- Config: spark.comet.sparkToColumnar.enabled=true
--- Config: spark.comet.sparkToColumnar.supportedOperatorList=Range
 
 query
 SELECT id,

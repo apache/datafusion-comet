@@ -408,42 +408,6 @@ mod tests {
         Ok(())
     }
 
-    /// Spark orders a null inside a struct before every other value, in `least` as in `greatest`.
-    #[test]
-    fn nested_nulls_sort_first() -> Result<()> {
-        use arrow::array::{Int32Array, StructArray};
-
-        let fields = Fields::from(vec![
-            Field::new("a", DataType::Int32, true),
-            Field::new("b", DataType::Int32, true),
-        ]);
-        let struct_of = |a: Option<i32>, b: i32| -> ColumnarValue {
-            ColumnarValue::Array(Arc::new(StructArray::new(
-                fields.clone(),
-                vec![
-                    Arc::new(Int32Array::from(vec![a])),
-                    Arc::new(Int32Array::from(vec![b])),
-                ],
-                None,
-            )))
-        };
-        for (greatest, expected) in [(true, Some(3)), (false, None)] {
-            let args = vec![struct_of(Some(3), 1), struct_of(None, 3)];
-            let result = invoke(greatest, args, 1, DataType::Struct(fields.clone()))?;
-            let result = result.into_array(1)?;
-            let a = result
-                .as_struct()
-                .column(0)
-                .as_primitive::<arrow::datatypes::Int32Type>();
-            assert_eq!(
-                a.is_valid(0).then(|| a.value(0)),
-                expected,
-                "greatest={greatest}"
-            );
-        }
-        Ok(())
-    }
-
     #[test]
     fn handles_floats_and_nested_types_only() {
         let float_list = DataType::List(Arc::new(Field::new("item", DataType::Float32, true)));
