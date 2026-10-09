@@ -931,6 +931,35 @@ class CometCelebornShuffleReaderSuite extends CometTestBase {
     context.markTaskCompleted(None)
   }
 
+  test("a killed task stops at the next read of a local shuffle's direct-read stream") {
+    withSQLConf(
+      CometConf.COMET_EXEC_ENABLED.key -> "true",
+      CometConf.COMET_SHUFFLE_MODE.key -> "native",
+      CometConf.COMET_SHUFFLE_ENABLED.key -> "true",
+      "spark.sql.adaptive.enabled" -> "false") {
+      withParquetTable((0 until 12).map(i => (i, s"row-$i")), "local_direct_read_rows") {
+        val shuffled = sql("SELECT * FROM local_direct_read_rows").repartition(1, $"_1")
+        // Running the query writes the shuffle that the stream below reads again.
+        assert(shuffled.collect().length == 12)
+        val rdd = shuffled.queryExecution.executedPlan
+          .collectFirst { case exchange: CometShuffleExchangeExec =>
+            exchange.executeColumnar().asInstanceOf[CometShuffledBatchRDD]
+          }
+          .getOrElse(fail("Expected a native Comet shuffle exchange"))
+        val context = TaskContext.empty()
+        val blocks = rdd.computeAsShuffleBlockIterator(rdd.partitions.head, context)
+        try {
+          assert(blocks.hasNext() > 0)
+          context.markInterrupted("killed after the first batch")
+          intercept[TaskKilledException](blocks.hasNext())
+        } finally {
+          blocks.close()
+          context.markTaskCompleted(None)
+        }
+      }
+    }
+  }
+
   test("malformed native frames invalidate once before allocating or opening another reducer") {
     def header(length: Long, fields: Long): Array[Byte] = ByteBuffer
       .allocate(16)
