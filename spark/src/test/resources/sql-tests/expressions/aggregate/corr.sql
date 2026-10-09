@@ -37,3 +37,30 @@ INSERT INTO test_corr_nan VALUES (cast('NaN' as double), cast('NaN' as double), 
 
 query tolerance=1e-6
 SELECT grp, corr(x, y) FROM test_corr_nan GROUP BY grp ORDER BY grp
+
+-- A constant input makes Spark divide ck by sqrt(xMk * yMk) = 0
+-- https://github.com/apache/datafusion-comet/issues/6481
+statement
+CREATE TABLE test_corr_const(y double, x double, grp string) USING parquet
+
+statement
+INSERT INTO test_corr_const VALUES (0.0, 0.1, 'a'), (1.0, 0.1, 'a'), (2.0, 0.1, 'a'), (3.0, 0.1, 'a'), (4.0, 0.1, 'a'), (5.0, 0.1, 'a'), (1.0, 2.0, 'b'), (NULL, 3.0, 'c')
+
+query
+SELECT corr(y, x), corr(x, y) FROM test_corr_const WHERE grp = 'a'
+
+query
+SELECT grp, corr(y, x), corr(x, y) FROM test_corr_const GROUP BY grp ORDER BY grp
+
+statement
+SET spark.sql.ansi.enabled=true
+
+query expect_error(DIVIDE_BY_ZERO)
+SELECT corr(y, x) FROM test_corr_const WHERE grp = 'a'
+
+query expect_error(DIVIDE_BY_ZERO)
+SELECT grp, corr(x, y) FROM test_corr_const GROUP BY grp
+
+-- Spark checks for zero and one rows before dividing, even in ANSI mode
+query
+SELECT grp, corr(y, x) FROM test_corr_const WHERE grp <> 'a' GROUP BY grp ORDER BY grp

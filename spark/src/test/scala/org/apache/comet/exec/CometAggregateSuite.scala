@@ -24,11 +24,11 @@ import java.util.concurrent.atomic.AtomicLong
 import scala.util.Random
 
 import org.apache.hadoop.fs.Path
-import org.apache.spark.{CometListenerBusUtils, SparkConf}
+import org.apache.spark.{CometListenerBusUtils, SparkConf, SparkThrowable}
 import org.apache.spark.scheduler.{SparkListener, SparkListenerTaskEnd}
 import org.apache.spark.sql.{Column, CometTestBase, DataFrame, QueryTest, Row}
 import org.apache.spark.sql.catalyst.expressions.{Cast, Literal}
-import org.apache.spark.sql.catalyst.expressions.aggregate.{Final, Partial, PartialMerge, RegrR2}
+import org.apache.spark.sql.catalyst.expressions.aggregate.{Corr, Final, Partial, PartialMerge, RegrR2}
 import org.apache.spark.sql.catalyst.optimizer.EliminateSorts
 import org.apache.spark.sql.catalyst.plans.physical.{HashPartitioning, RangePartitioning}
 import org.apache.spark.sql.comet.{CometBaseAggregateExec, CometFilterExec, CometHashAggregateExec, CometNativeExec, CometProjectExec, CometSortAggregateExec, CometSortExec}
@@ -46,7 +46,7 @@ import org.apache.comet.CometConf
 import org.apache.comet.CometConf.COMET_EXEC_STRICT_FLOATING_POINT
 import org.apache.comet.CometSparkSessionExtensions.{isSpark35Plus, isSpark40Plus, isSpark41Plus}
 import org.apache.comet.rules.CometExecRule
-import org.apache.comet.serde.{CometRegrR2, ExprOuterClass, RegrSparkVersions}
+import org.apache.comet.serde.{CometCorr, CometRegrR2, ExprOuterClass, RegrSparkVersions}
 import org.apache.comet.testing.{DataGenOptions, FuzzDataGenerator, ParquetGenerator, SchemaGenOptions}
 
 /**
@@ -3257,6 +3257,96 @@ class CometAggregateSuite extends CometTestBase with AdaptiveSparkPlanHelper {
               assert(statsAggregates.exists(_.modes.contains(Partial)))
               assert(statsAggregates.exists(_.modes.contains(Final)))
               checkAnswer(sql(statsQuery), Seq(Row(null, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0)))
+            }
+          }
+        }
+      }
+    }
+  }
+
+  test("statistical aggregates corr preserves its captured evaluation mode") {
+    for (ansi <- Seq(false, true)) {
+      withSQLConf(SQLConf.ANSI_ENABLED.key -> ansi.toString) {
+        val expr = Corr(Literal(1.0), Literal(2.0))
+        withSQLConf(SQLConf.ANSI_ENABLED.key -> (!ansi).toString) {
+          val serialized = CometCorr.convert(
+            expr.toAggregateExpression(),
+            expr,
+            Seq.empty,
+            binding = false,
+            conf = SQLConf.get)
+          assert(serialized.isDefined)
+          val expected =
+            if (ansi) ExprOuterClass.EvalMode.ANSI else ExprOuterClass.EvalMode.LEGACY
+          assert(serialized.get.getCorrelation.getEvalMode == expected)
+        }
+      }
+    }
+  }
+
+  test("statistical aggregates corr zero denominator respects ANSI mode") {
+    // https://github.com/apache/datafusion-comet/issues/6481
+    withSQLConf(
+      SQLConf.ADAPTIVE_EXECUTION_ENABLED.key -> "false",
+      SQLConf.SHUFFLE_PARTITIONS.key -> "1",
+      SQLConf.FILES_MAX_PARTITION_BYTES.key -> "1048576",
+      SQLConf.FILES_OPEN_COST_IN_BYTES.key -> "1048576",
+      "spark.sql.files.minPartitionNum" -> "1",
+      CometConf.COMET_SHUFFLE_ENABLED.key -> "true",
+      CometConf.COMET_SHUFFLE_MODE.key -> "native") {
+      for (numPartitions <- Seq(1, 2)) {
+        withTempPath { path =>
+          // x is constant at 0.1, which binary floating point cannot represent exactly.
+          // Two files also exercise merging the partials in the final aggregate.
+          val files = if (numPartitions == 1) Seq(0 until 6) else Seq(0 until 3, 3 until 6)
+          files.foreach { ys =>
+            ys.map(y => (0, y.toDouble, 0.1))
+              .toDF("g", "y", "x")
+              .coalesce(1)
+              .write
+              .mode("append")
+              .parquet(path.getCanonicalPath)
+          }
+          withParquetTable(path.getCanonicalPath, "corr_constant") {
+            assert(spark.table("corr_constant").rdd.getNumPartitions == numPartitions)
+            for {
+              ansi <- Seq(false, true)
+              groupBy <- Seq("", " GROUP BY g")
+            } {
+              withSQLConf(SQLConf.ANSI_ENABLED.key -> ansi.toString) {
+                for (args <- Seq("y, x", "x, y", "x, x")) {
+                  val query = s"SELECT corr($args) FROM corr_constant" + groupBy
+                  val df = sql(query)
+                  val aggregates = stripAQEPlan(df.queryExecution.executedPlan).collect {
+                    case a: CometHashAggregateExec => a
+                  }
+                  assert(aggregates.size == 2)
+                  assert(aggregates.exists(_.modes.contains(Partial)))
+                  assert(aggregates.exists(_.modes.contains(Final)))
+                  // Spark divides ck by sqrt(xMk * yMk) = 0.
+                  if (ansi) {
+                    val error = checkSparkError(df, "DIVIDE_BY_ZERO")
+                    assert(error.getSqlState == "22012")
+                    val expected = withSQLConf(CometConf.COMET_ENABLED.key -> "false") {
+                      val failure = intercept[Throwable](sql(query).collect())
+                      causeChain(failure).collect { case e: SparkThrowable => e }.last
+                    }
+                    assert(
+                      error.getQueryContext.map(_.fragment()).toSeq ==
+                        expected.getQueryContext.map(_.fragment()).toSeq)
+                  } else {
+                    checkSparkAnswerAndOperator(df)
+                    checkCometAnswer(df, Seq(Row(null)))
+                  }
+                }
+
+                // The other statistical aggregates have no zero divisor here.
+                val statsQuery = "SELECT covar_pop(y, x), covar_samp(y, x), var_pop(x), " +
+                  "var_samp(x), stddev_pop(x), stddev_samp(x), corr(y, y) " +
+                  "FROM corr_constant" + groupBy
+                checkSparkAnswerAndOperator(statsQuery)
+                checkAnswer(sql(statsQuery), Seq(Row(0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 1.0)))
+              }
             }
           }
         }

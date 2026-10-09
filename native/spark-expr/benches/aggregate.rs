@@ -396,7 +396,14 @@ fn bench_statistical_aggregates(c: &mut Criterion) {
         ))
     });
     bench_f64_two_arg(c, "correlation", || {
-        Box::new(Correlation::new("corr", DataType::Float64, true))
+        Box::new(Correlation::new(
+            "corr",
+            DataType::Float64,
+            true,
+            EvalMode::Legacy,
+            None,
+            datafusion_comet_spark_expr::create_query_context_map(),
+        ))
     });
 
     bench_f64_one_arg(c, "percentile", DataType::Float64, || {

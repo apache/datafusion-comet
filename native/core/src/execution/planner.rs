@@ -3391,6 +3391,9 @@ impl PhysicalPlanner {
                     "correlation",
                     datatype,
                     expr.null_on_divide_by_zero,
+                    from_protobuf_eval_mode(expr.eval_mode)?,
+                    spark_expr.expr_id,
+                    Arc::clone(&self.query_context_registry),
                 ));
                 Self::create_aggr_func_expr("correlation", schema, vec![child1, child2], func)
             }

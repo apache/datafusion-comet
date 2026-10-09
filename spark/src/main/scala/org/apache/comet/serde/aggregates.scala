@@ -22,7 +22,7 @@ package org.apache.comet.serde
 import scala.jdk.CollectionConverters._
 
 import org.apache.spark.sql.catalyst.expressions.{Attribute, Cast, Divide, Expression, Literal}
-import org.apache.spark.sql.catalyst.expressions.aggregate.{AggregateExpression, ApproximatePercentile, Average, BitAndAgg, BitOrAgg, BitXorAgg, BloomFilterAggregate, CentralMomentAgg, CollectList, CollectSet, Complete, Corr, Count, Covariance, CovPopulation, CovSample, First, HyperLogLogPlusPlus, Last, Max, MaxBy, MaxMinBy, Min, MinBy, Mode, Partial, Percentile, RegrIntercept, RegrR2, RegrReplacement, RegrSlope, RegrSXY, StddevPop, StddevSamp, Sum, VariancePop, VarianceSamp}
+import org.apache.spark.sql.catalyst.expressions.aggregate.{AggregateExpression, AggregateFunction, ApproximatePercentile, Average, BitAndAgg, BitOrAgg, BitXorAgg, BloomFilterAggregate, CentralMomentAgg, CollectList, CollectSet, Complete, Corr, Count, Covariance, CovPopulation, CovSample, DeclarativeAggregate, First, HyperLogLogPlusPlus, Last, Max, MaxBy, MaxMinBy, Min, MinBy, Mode, Partial, Percentile, RegrIntercept, RegrR2, RegrReplacement, RegrSlope, RegrSXY, StddevPop, StddevSamp, Sum, VariancePop, VarianceSamp}
 import org.apache.spark.sql.catalyst.util.ArrayData
 import org.apache.spark.sql.comet.CometExecUtils
 import org.apache.spark.sql.internal.SQLConf
@@ -850,6 +850,19 @@ object CometApproxPercentile extends CometAggregateExpressionSerde[ApproximatePe
   }
 }
 
+private[serde] object CapturedEvalMode {
+
+  /**
+   * The mode of the `Divide` in an aggregate's evaluate expression. Divide captures its mode when
+   * Spark constructs the expression. Reading the current SQLConf could change semantics if ANSI
+   * mode has changed since then.
+   */
+  def ofDivide(expr: DeclarativeAggregate): Option[CometEvalMode.Value] =
+    expr.evaluateExpression.collectFirst { case divide: Divide =>
+      CometEvalModeUtil.fromSparkEvalMode(divide.evalMode)
+    }
+}
+
 object CometCorr extends CometAggregateExpressionSerde[Corr] {
   override def convert(
       aggExpr: AggregateExpression,
@@ -857,6 +870,19 @@ object CometCorr extends CometAggregateExpressionSerde[Corr] {
       inputs: Seq[Attribute],
       binding: Boolean,
       conf: SQLConf): Option[ExprOuterClass.AggExpr] = {
+    CapturedEvalMode.ofDivide(corr) match {
+      case Some(evalMode) => convertCorr(corr, inputs, binding, evalMode)
+      case None =>
+        withFallbackReason(aggExpr, "CORR division evaluation mode not supported")
+        None
+    }
+  }
+
+  private def convertCorr(
+      corr: Corr,
+      inputs: Seq[Attribute],
+      binding: Boolean,
+      evalMode: CometEvalMode.Value): Option[ExprOuterClass.AggExpr] = {
     val child1Expr = exprToProto(corr.x, inputs, binding)
     val child2Expr = exprToProto(corr.y, inputs, binding)
     val dataType = serializeDataType(corr.dataType)
@@ -867,6 +893,7 @@ object CometCorr extends CometAggregateExpressionSerde[Corr] {
       builder.setChild2(child2Expr.get)
       builder.setNullOnDivideByZero(corr.nullOnDivideByZero)
       builder.setDatatype(dataType.get)
+      builder.setEvalMode(evalModeToProto(evalMode))
 
       Some(
         ExprOuterClass.AggExpr
@@ -1009,12 +1036,7 @@ object CometRegrR2 extends CometAggregateExpressionSerde[RegrR2] with CometRegrB
       inputs: Seq[Attribute],
       binding: Boolean,
       conf: SQLConf): Option[ExprOuterClass.AggExpr] = {
-    // Divide captures its mode when Spark constructs the expression. Reading the
-    // current SQLConf could change semantics if ANSI mode has changed since then.
-    val evalMode = expr.evaluateExpression.collectFirst { case divide: Divide =>
-      CometEvalModeUtil.fromSparkEvalMode(divide.evalMode)
-    }
-    evalMode match {
+    CapturedEvalMode.ofDivide(expr) match {
       case Some(mode) =>
         convertRegr(
           aggExpr,
