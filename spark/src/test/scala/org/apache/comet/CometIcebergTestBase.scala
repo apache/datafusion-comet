@@ -237,6 +237,9 @@ trait CometIcebergTestBase { this: CometTestBase =>
       override def onFailure(funcName: String, qe: QueryExecution, exception: Exception): Unit =
         if (includeFailures) captured += qe.executedPlan
     }
+    // Events from earlier queries may still be queued; drain them so they do not reach the
+    // listener.
+    CometListenerBusUtils.waitUntilEmpty(spark.sparkContext)
     spark.listenerManager.register(listener)
     try {
       action
@@ -259,6 +262,7 @@ trait CometIcebergTestBase { this: CometTestBase =>
       override def onFailure(funcName: String, qe: QueryExecution, exception: Exception): Unit =
         captured += qe.executedPlan
     }
+    CometListenerBusUtils.waitUntilEmpty(spark.sparkContext)
     spark.listenerManager.register(listener)
     try {
       val error =
