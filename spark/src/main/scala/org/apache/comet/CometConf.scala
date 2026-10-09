@@ -182,6 +182,16 @@ object CometConf extends ShimCometConf {
       .booleanConf
       .createWithDefault(false)
 
+  val COMET_SCAN_TEXT_MAX_FILE_SIZE: ConfigEntry[Long] =
+    conf("spark.comet.scan.text.maxFileSize")
+      .category(CATEGORY_TESTING)
+      .doc("Maximum size of a single text file that the native Text scan will read. The native " +
+        "reader loads each file whole and does not reserve the buffer against the memory pool, " +
+        "so this bounds its peak memory; files larger than this fall back to Spark. The native " +
+        "Text scan targets small lookup tables such as a broadcast join's build side.")
+      .bytesConf(ByteUnit.BYTE)
+      .createWithDefault(64L * 1024 * 1024)
+
   val COMET_PARQUET_ROW_FILTER_PUSHDOWN_ENABLED: ConfigEntry[Boolean] =
     conf("spark.comet.parquet.rowFilterPushdown.enabled")
       .category(CATEGORY_PARQUET)

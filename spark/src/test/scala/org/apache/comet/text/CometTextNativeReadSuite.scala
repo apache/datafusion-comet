@@ -24,10 +24,12 @@ import java.nio.charset.StandardCharsets
 import java.nio.file.Files
 
 import org.apache.spark.sql.CometTestBase
+import org.apache.spark.sql.comet.CometTextNativeScanExec
 import org.apache.spark.sql.functions.input_file_name
 import org.apache.spark.sql.internal.SQLConf
 
 import org.apache.comet.CometConf
+import org.apache.comet.CometSparkSessionExtensions.isSpark41Plus
 
 class CometTextNativeReadSuite extends CometTestBase {
   private val TEST_TEXT_PATH = "src/test/resources/test-data/text-test-1.txt"
@@ -35,7 +37,9 @@ class CometTextNativeReadSuite extends CometTestBase {
   private def withTextConf(f: => Unit): Unit = {
     withSQLConf(
       CometConf.COMET_TEXT_V2_NATIVE_ENABLED.key -> "true",
-      SQLConf.USE_V1_SOURCE_LIST.key -> "")(f)
+      // Route only `text` through the V2 path; keep every other format on V1 so a Parquet probe
+      // side (used by the broadcast-join test) is not pushed through the unsupported V2 scan.
+      SQLConf.USE_V1_SOURCE_LIST.key -> "avro,csv,json,kafka,orc,parquet")(f)
   }
 
   test("native text read - lines to value column") {
@@ -65,8 +69,11 @@ class CometTextNativeReadSuite extends CometTestBase {
       val lines = (1 to 500).map(i => s"row-$i")
       Files.write(file.toPath, lines.mkString("\n").getBytes(StandardCharsets.UTF_8))
       withTextConf {
-        val got = spark.read.text(file.getAbsolutePath).collect().map(_.getString(0)).toSeq
+        val df = spark.read.text(file.getAbsolutePath)
+        // Assert the scan actually ran natively (a Spark fallback would also preserve order).
+        checkSparkAnswerAndOperator(df, Seq(classOf[CometTextNativeScanExec]))
         // checkSparkAnswer sorts both sides, so assert order explicitly here.
+        val got = df.collect().map(_.getString(0)).toSeq
         assert(got == lines, "native text scan must preserve within-file line order")
       }
     }
@@ -273,6 +280,111 @@ class CometTextNativeReadSuite extends CometTestBase {
       withTextConf {
         val df = spark.read.text(file.getAbsolutePath)
         checkSparkAnswerAndFallbackReason(df, "Comet does not support compressed text files")
+      }
+    }
+  }
+
+  test("native text read - fallback for .gzip/.zstd compressed files on Spark 4.1+") {
+    // Spark 4.1+ decompresses the non-standard .gzip/.zstd extensions (via HadoopCodecStreams);
+    // CompressionCodecFactory alone misses them, so the version-aware shim must catch them.
+    assume(isSpark41Plus, "Spark 4.1+ treats .gzip/.zstd as compressed")
+    withTempDir { dir =>
+      val gzip = new File(dir, "data.txt.gzip")
+      val out = new java.util.zip.GZIPOutputStream(new java.io.FileOutputStream(gzip))
+      out.write("a\nb\nc".getBytes(StandardCharsets.UTF_8))
+      out.close()
+      withTextConf {
+        checkSparkAnswerAndFallbackReason(
+          spark.read.text(gzip.getAbsolutePath),
+          "Comet does not support compressed text files")
+      }
+    }
+  }
+
+  test("native text read - fallback for line.maxlength") {
+    withTempDir { dir =>
+      val file = new File(dir, "lines.txt")
+      Files.write(file.toPath, "ab\nabcdefghij\nxy".getBytes(StandardCharsets.UTF_8))
+      withTextConf {
+        // As a per-read option the key reaches the scan's Hadoop conf (stripped), so Spark's line
+        // reader skips lines >= this length; the native reader does not, so Comet must fall back.
+        checkSparkAnswerAndFallbackReason(
+          spark.read
+            .option("mapreduce.input.linerecordreader.line.maxlength", "5")
+            .text(file.getAbsolutePath),
+          "mapreduce.input.linerecordreader.line.maxlength")
+      }
+    }
+  }
+
+  test("native text read - fallback for files larger than the size ceiling") {
+    withTempDir { dir =>
+      val file = new File(dir, "big.txt")
+      Files.write(file.toPath, ("x\n" * 1000).getBytes(StandardCharsets.UTF_8))
+      withSQLConf(
+        CometConf.COMET_TEXT_V2_NATIVE_ENABLED.key -> "true",
+        SQLConf.USE_V1_SOURCE_LIST.key -> "avro,csv,json,kafka,orc,parquet",
+        // Tiny ceiling so the ~2KB file exceeds it.
+        CometConf.COMET_SCAN_TEXT_MAX_FILE_SIZE.key -> "100") {
+        checkSparkAnswerAndFallbackReason(
+          spark.read.text(file.getAbsolutePath),
+          "does not read files larger than")
+      }
+    }
+  }
+
+  test("native text read - partition column fallback: value stays native, select * falls back") {
+    withTempDir { dir =>
+      // Partitioned layout: <dir>/p=1/a.txt
+      val part = new File(dir, "p=1")
+      part.mkdirs()
+      Files.write(new File(part, "a.txt").toPath, "x\ny".getBytes(StandardCharsets.UTF_8))
+      withTextConf {
+        // Selecting only `value` has no partition column -> stays native.
+        checkSparkAnswerAndOperator(spark.read.text(dir.getAbsolutePath).select("value"))
+        // Selecting the partition column `p` -> falls back to Spark.
+        checkSparkAnswerAndFallbackReason(
+          spark.read.text(dir.getAbsolutePath).selectExpr("value", "p"),
+          "Comet does not support partition columns in native Text scans")
+      }
+    }
+  }
+
+  test("native text read - multiple unsplit files across separate partitions") {
+    withTempDir { dir =>
+      (1 to 6).foreach { i =>
+        Files.write(
+          new File(dir, s"f$i.txt").toPath,
+          s"a$i\nb$i".getBytes(StandardCharsets.UTF_8))
+      }
+      withSQLConf(
+        CometConf.COMET_TEXT_V2_NATIVE_ENABLED.key -> "true",
+        SQLConf.USE_V1_SOURCE_LIST.key -> "avro,csv,json,kafka,orc,parquet",
+        // A large open cost keeps each small file in its own partition, exercising
+        // file_partitions[self.partition] beyond index 0.
+        SQLConf.FILES_MAX_PARTITION_BYTES.key -> "8",
+        SQLConf.FILES_OPEN_COST_IN_BYTES.key -> "1073741824") {
+        val df = spark.read.text(dir.getAbsolutePath)
+        assert(df.rdd.getNumPartitions > 1, "test requires files in separate partitions")
+        checkSparkAnswerAndOperator(df)
+      }
+    }
+  }
+
+  test("native text read - broadcast join with a text build side runs natively") {
+    withTempDir { dir =>
+      val lookup = new File(dir, "allow.txt")
+      Files.write(lookup.toPath, "k1\nk2\nk3".getBytes(StandardCharsets.UTF_8))
+      withSQLConf(
+        CometConf.COMET_TEXT_V2_NATIVE_ENABLED.key -> "true",
+        SQLConf.USE_V1_SOURCE_LIST.key -> "avro,csv,json,kafka,orc,parquet") {
+        withParquetTable((1 to 100).map(i => (i, s"k${i % 5}")), "facts") {
+          val lookupDf = spark.read.text(lookup.getAbsolutePath)
+          val facts = spark.table("facts")
+          // Small text build side broadcast-joined to a native Parquet probe side.
+          val joined = facts.join(lookupDf.hint("broadcast"), facts("_2") === lookupDf("value"))
+          checkSparkAnswerAndOperator(joined)
+        }
       }
     }
   }

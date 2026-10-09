@@ -19,6 +19,9 @@
 
 package org.apache.comet.shims
 
+import org.apache.hadoop.conf.Configuration
+import org.apache.hadoop.fs.Path
+import org.apache.spark.io.HadoopCodecStreams
 import org.apache.spark.sql.catalyst.expressions.Literal
 import org.apache.spark.sql.execution.datasources.{FileFormat, PartitionedFile}
 import org.apache.spark.sql.execution.datasources.parquet.ParquetFileFormat
@@ -29,6 +32,13 @@ object ShimFileFormat {
   // A name for a temporary column that holds row indexes computed by the file format reader
   // until they can be placed in the _metadata struct.
   val ROW_INDEX_TEMPORARY_COLUMN_NAME = ParquetFileFormat.ROW_INDEX_TEMPORARY_COLUMN_NAME
+
+  // Whether Spark's text/line readers would decompress this file. Spark 4.1+ resolves the codec
+  // through HadoopCodecStreams, which also treats the non-standard `.gzip` and `.zstd` extensions
+  // as compressed (CompressionCodecFactory alone misses those). Keep this in lockstep with the
+  // Spark version so the native text scan declines exactly the files Spark would decompress.
+  def isCompressedFile(hadoopConf: Configuration, path: Path): Boolean =
+    HadoopCodecStreams.getDecompressionCodec(hadoopConf, path).isDefined
 
   def findRowIndexColumnIndexInSchema(sparkSchema: StructType): Int =
     ParquetRowIndexUtil.findRowIndexColumnIndexInSchema(sparkSchema)
