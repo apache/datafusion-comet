@@ -613,13 +613,10 @@ class CometParquetWriterSuite extends CometParquetWriterTestBase {
 
       checkAnswer(spark.read.parquet(outputPath), df.collect())
       assertParquetCodec(outputPath, CompressionCodecName.GZIP)
-      if (isSpark40Plus) {
-        // Spark names the file; Comet fills it. The extension is the only externally visible
-        // statement of the codec, so it has to agree with the footer. (On 3.x the native writer
-        // invents a name with no codec suffix, so there is nothing to compare.)
-        listPartFileNames(outputPath).foreach { name =>
-          assert(name.endsWith(".gz.parquet"), s"Expected a gzip file name, got '$name'")
-        }
+      // Spark names the file; Comet fills it. The extension is the only externally visible
+      // statement of the codec, so it has to agree with the footer.
+      listPartFileNames(outputPath).foreach { name =>
+        assert(name.endsWith(".gz.parquet"), s"Expected a gzip file name, got '$name'")
       }
     }
   }
@@ -1237,16 +1234,13 @@ class CometParquetWriterSuite extends CometParquetWriterTestBase {
   }
 
   // ---------------------------------------------------------------------------------------------
-  // Spark 4.0+ only. These cover behavior that comes from leaving Spark's write framework in
-  // place, which is only possible where `V1WritesUtils.getWriteFilesOpt` matches the
-  // `WriteFilesExecBase` trait. See CometWriteFilesExec.
+  // Commit-protocol checks run on both writers. Tests requiring the surrounding Spark write
+  // command are gated to Spark 4.0+, where Comet replaces only WriteFilesExec.
   // ---------------------------------------------------------------------------------------------
 
   test("write creates a _SUCCESS marker") {
-    assume(isSpark40Plus, "Requires the WriteFilesExec seam")
     // https://github.com/apache/datafusion-comet/issues/2985 - the marker comes from
-    // HadoopMapReduceCommitProtocol.commitJob, which only runs because Comet leaves
-    // InsertIntoHadoopFsRelationCommand in the plan.
+    // HadoopMapReduceCommitProtocol.commitJob on both native writer paths.
     withTempPath { dir =>
       val outputPath = new File(dir, "output.parquet").getAbsolutePath
       withTempPath { srcDir =>
@@ -1266,7 +1260,6 @@ class CometParquetWriterSuite extends CometParquetWriterTestBase {
   }
 
   test("written file names follow Spark's naming convention") {
-    assume(isSpark40Plus, "Requires the WriteFilesExec seam")
     // The file name comes from FileCommitProtocol.newTaskTempFile and must be used verbatim:
     // part-<partition>-<uuid>-c<counter>.<codec>.parquet. Committers that track individual files
     // and tools that parse these names depend on it.
@@ -1295,12 +1288,9 @@ class CometParquetWriterSuite extends CometParquetWriterTestBase {
     }
   }
 
-  test("a custom output basename is honored on local storage") {
-    assume(isSpark40Plus, "Requires the WriteFilesExec seam")
-    // `escapedHdfsDestination` gates the basename on HDFS only, where the native URL parser would
-    // rename the file out from under the committer. Local writes hand the path to the native
-    // writer verbatim, so this is the control that keeps that guard from being widened: `part%foo`
-    // is declined on HDFS and has to keep working here.
+  test("local output basenames match Spark's version-specific commit protocol") {
+    // Spark 4.0+ honors the basename, including literal '%' on local storage where the path
+    // reaches the native writer verbatim. Spark 3.x ignores the option and always uses "part".
     Seq("out", "part%foo").foreach { basename =>
       withTempPath { dir =>
         val outputPath = new File(dir, "output.parquet").getAbsolutePath
@@ -1316,9 +1306,10 @@ class CometParquetWriterSuite extends CometParquetWriterTestBase {
           }
           val written =
             new File(outputPath).listFiles().map(_.getName).filter(_.endsWith(".parquet"))
+          val expectedBasename = if (isSpark40Plus) basename else "part"
           assert(
-            written.nonEmpty && written.forall(_.startsWith(s"$basename-")),
-            s"expected every data file to be named '$basename-...', found: " +
+            written.nonEmpty && written.forall(_.startsWith(s"$expectedBasename-")),
+            s"expected every data file to be named '$expectedBasename-...', found: " +
               written.mkString(", "))
           checkAnswer(spark.read.parquet(outputPath), df)
         }
@@ -1350,8 +1341,7 @@ class CometParquetWriterSuite extends CometParquetWriterTestBase {
   }
 
   test("dynamic partition overwrite falls back to Spark") {
-    assume(isSpark40Plus, "Requires the WriteFilesExec seam")
-    // A dynamic overwrite is a partitioned write, which CometWriteFiles declines - but the
+    // A dynamic overwrite is a partitioned write, which both native writers decline - but the
     // consequence of getting it wrong is silent data loss across untouched partitions, so assert
     // the fallback and the semantics explicitly rather than relying on the partitioning check.
     withTempPath { dir =>
@@ -1411,14 +1401,14 @@ class CometParquetWriterSuite extends CometParquetWriterTestBase {
   }
 
   test("empty input still writes a schema-only file (SPARK-23271)") {
-    assume(isSpark40Plus, "Requires the WriteFilesExec seam")
     // An empty input must still leave a schema behind for downstream readers: `spark.read.parquet`
     // of the output must see the write's schema, not fail. Comet reaches this in two ways - if the
-    // native child has one partition producing no batches, the partition-0 branch of executeTask
-    // writes a metadata-only file; if it produces zero partitions, doExecuteWrite swaps in a dummy
-    // single-partition RDD to get to the same branch. This test exercises the first; the
-    // zero-partition swap is reached by an AQE-collapsed empty relation and is covered by
-    // CometEmptyRelationParquetWriterSuite.
+    // native child has one partition producing no batches, the partition-0 branch of the write
+    // task writes a metadata-only file; if it produces zero partitions, the writer swaps in a
+    // dummy single-partition RDD to get to the same branch. Both CometWriteFilesExec (Spark 4.0+)
+    // and CometNativeWriteExec (Spark 3.x) do this. This test exercises the first; the
+    // zero-partition swap is covered by the empty-directory test below and, on Spark 4.0+,
+    // by CometEmptyRelationParquetWriterSuite.
     withTempPath { dir =>
       val outputPath = new File(dir, "output.parquet").getAbsolutePath
       val sourcePath = new File(dir, "source.parquet").getAbsolutePath
@@ -1435,6 +1425,31 @@ class CometParquetWriterSuite extends CometParquetWriterTestBase {
         val readBack = spark.read.parquet(outputPath)
         assert(readBack.count() == 0L)
         assert(readBack.schema.map(_.name) == Seq("id", "name"))
+      }
+    }
+  }
+
+  test("a zero-partition native scan writes a schema-only file (#5303)") {
+    withTempPath { dir =>
+      val source = new File(dir, "empty-source")
+      assert(source.mkdirs())
+      val output = new File(dir, "output")
+      withNativeWriter {
+        val empty = spark.read.schema("id INT, name STRING").parquet(source.getAbsolutePath)
+        val scans = collect(empty.queryExecution.executedPlan) { case scan: CometNativeScanExec =>
+          scan
+        }
+        assert(scans.size == 1, empty.queryExecution.executedPlan.toString)
+        assert(scans.head.executeColumnar().getNumPartitions == 0)
+
+        val plan = captureWritePlan(p => empty.write.parquet(p), output.getAbsolutePath)
+        assertHasCometNativeWriteExec(plan)
+        assert(new File(output, "_SUCCESS").isFile)
+        assert(listPartFileNames(output.getAbsolutePath).size == 1)
+        assert(!new File(output, "_temporary").exists())
+        val readBack = spark.read.parquet(output.getAbsolutePath)
+        assert(readBack.schema == empty.schema)
+        assert(readBack.collect().isEmpty)
       }
     }
   }
@@ -1487,8 +1502,7 @@ class CometParquetWriterSuite extends CometParquetWriterTestBase {
   }
 
   test("an empty partition writes no file and still commits") {
-    assume(isSpark40Plus, "Requires the WriteFilesExec seam")
-    // executeTask's `sparkPartitionId != 0 && !batches.hasNext` branch must skip newTaskTempFile
+    // The write task's `partitionId != 0 && !batches.hasNext` branch must skip newTaskTempFile
     // altogether and still commit the task, matching FileFormatWriter's EmptyDirectoryDataWriter.
     // Hash-partitioning into eight and keeping a single id leaves at most one partition with
     // rows, so at most two files can appear: that one, plus partition 0's schema-only file when
@@ -1547,8 +1561,7 @@ class CometParquetWriterSuite extends CometParquetWriterTestBase {
   }
 
   test("a failing task aborts and cleans up its staging file") {
-    assume(isSpark40Plus, "Requires the WriteFilesExec seam")
-    // CometWriteFilesExec.executeTask must call committer.abortTask and rethrow. Injecting the
+    // Both native writers must call committer.abortTask and rethrow. Injecting the
     // failure through the commit protocol rather than the data lets the write get as far as
     // creating a staging file, so the cleanup is actually observable.
     //
