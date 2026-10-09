@@ -5222,7 +5222,7 @@ mod tests {
         /// batches, so every partition keeps getting rows, and the pool grants an eighth of what
         /// the write needs. The write ends with between four and five files per partition,
         /// however many partitions it has. Closing every partition at once would leave seven, and
-        /// closing them in the order they were first seen, or smallest first, seventeen.
+        /// closing them in the order they were first seen, or smallest first, seventeen to twenty.
         #[tokio::test]
         async fn a_fanout_write_short_of_memory_closes_the_partitions_holding_the_most() {
             for partitions in [16, 64] {
