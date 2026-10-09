@@ -43,8 +43,10 @@ JVM shuffle (`CometColumnarExchange`) is used instead of native shuffle (`CometE
 1. **Shuffle mode is explicitly set to "jvm"**: When `spark.comet.shuffle.mode` is set to `jvm`.
 
 2. **Child plan is not a Comet native operator**: When the child plan is a Spark row-based operator
-   (not a `CometPlan`), JVM shuffle is the only option since native shuffle requires columnar input
-   from Comet operators.
+   (not a `CometPlan`), JVM shuffle is used, since native shuffle requires columnar input from
+   Comet operators. The exception is `spark.comet.convert.shuffleInput.enabled`, which converts
+   the child's rows to Arrow with `CometSparkToColumnarExec` so that native shuffle can take the
+   shuffle instead. See [When Native Shuffle is Used](native_shuffle.md#when-native-shuffle-is-used).
 
 3. **Unsupported partition key types**: `RangePartitioning` keys must be primitive, so a complex
    range key always falls back here. `HashPartitioning` keys must be primitive only by default:
@@ -195,7 +197,9 @@ writes the same Arrow IPC block format as native shuffle, so direct read applies
   depends on Spark's memory mode.
 - Off-heap mode gets `CometUnifiedShuffleMemoryAllocator`, an ordinary Spark `MemoryConsumer`
   drawing from `spark.memory.offHeap.size`. When it cannot acquire a page the writer spills to
-  disk.
+  disk. An allocation that loses the task's entry in Spark's execution pool while it waits
+  ([SPARK-59444](https://issues.apache.org/jira/browse/SPARK-59444)) is retried a few times before
+  it counts as a page that could not be acquired.
 - On-heap mode gets `CometUnboundedShuffleMemoryAllocator`, which keeps no budget and so never
   refuses a page. Nothing bounds these allocations, and memory pressure never triggers a spill.
   That mode exists only so the Spark SQL tests can run against Comet. See

@@ -94,6 +94,51 @@ fn criterion_benchmark(c: &mut Criterion) {
             create_batch(|i| format!("{:04}-{:02}-{:02}", 1970 + i % 60, i % 12 + 1, i % 28 + 1)),
         ),
         (
+            "time_only",
+            create_batch(|i| format!("T{:02}:{:02}:{:02}", i % 24, i % 60, i % 60)),
+        ),
+        (
+            "iso_z_suffix",
+            create_batch(|i| {
+                format!(
+                    "{:04}-{:02}-{:02}T12:34:56Z",
+                    1970 + i % 60,
+                    i % 12 + 1,
+                    i % 28 + 1
+                )
+            }),
+        ),
+        (
+            "named_tz_suffix",
+            create_batch(|i| {
+                format!(
+                    "{:04}-{:02}-{:02}T12:34:56 Europe/Moscow",
+                    1970 + i % 60,
+                    i % 12 + 1,
+                    i % 28 + 1
+                )
+            }),
+        ),
+        ("invalid", create_batch(|_| "not a timestamp".to_string())),
+        // A long malformed value. Rejecting it must cost a bounded prefix, not a scan of every
+        // digit before and again after the `Z` is stripped.
+        (
+            "long_digits_zone",
+            create_batch(|_| format!("{}Z", "1".repeat(1024))),
+        ),
+        // The parser only runs for non-null slots, so a mostly-null batch must not get slower.
+        (
+            "dense_nulls",
+            common::string_batch(BATCH_SIZE, 2, |i| {
+                format!(
+                    "{:04}-{:02}-{:02} 12:34:56",
+                    1970 + i % 60,
+                    i % 12 + 1,
+                    i % 28 + 1
+                )
+            }),
+        ),
+        (
             "padded",
             create_batch(|i| {
                 format!(
@@ -160,9 +205,14 @@ fn criterion_benchmark(c: &mut Criterion) {
             let mut group =
                 c.benchmark_group(format!("cast_string_to_{}/{}", target_name, mode_name));
             for (name, batch) in &batches {
-                // ANSI raises on the first invalid value, so timing it against a batch that is
-                // mostly invalid would measure the error path rather than the parser.
-                if mode == EvalMode::Ansi && matches!(*name, "mixed" | "date_only_zone") {
+                // ANSI raises on the first value the parser rejects, so timing it against a
+                // batch that holds one would measure the error path rather than the parser.
+                // `timestamp_ntz_parser` additionally rejects time-only strings.
+                let ansi_raises = matches!(
+                    *name,
+                    "mixed" | "invalid" | "date_only_zone" | "long_digits_zone"
+                ) || (*name == "time_only" && target_name == "timestamp_ntz");
+                if mode == EvalMode::Ansi && ansi_raises {
                     continue;
                 }
                 let cast = Cast::new(

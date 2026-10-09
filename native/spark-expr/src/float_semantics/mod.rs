@@ -37,10 +37,11 @@
 //!   [`hash_input`].
 //!
 //! A native expression must follow the rule of the Spark function it replaces, so build it from
-//! these helpers rather than a local copy. Where an Arrow kernel sorts, row-encodes or hashes the
-//! values, normalize them first: once `-0.0` is folded and NaN canonicalized, Arrow's total order
-//! agrees with `compareDoubles`. Where Comet compares values itself, or has to return the original
-//! bits as `array_min` does, use [`compare_floats`], [`float_lt`], [`float_gt`],
+//! these helpers rather than a local copy. Where an Arrow kernel sorts, row-encodes, hashes or
+//! compares the values, normalize them first: once `-0.0` is folded and NaN canonicalized, Arrow's
+//! total order agrees with `compareDoubles`. Comparison operands go through
+//! [`normalize_comparison_operand`]. Where Comet compares values itself, or has to return the
+//! original bits as `array_min` does, use [`compare_floats`], [`float_lt`], [`float_gt`],
 //! [`spark_comparator`] or [`spark_equality`]. Non-canonical NaNs are not a corner case: on x86-64
 //! every NaN that arithmetic produces at run time, such as `sqrt(-1)`, has the sign bit set.
 
@@ -48,9 +49,10 @@ mod compare;
 mod normalize;
 
 pub use compare::{spark_comparator, spark_equality};
+pub(crate) use normalize::is_nested_with_float_leaf;
 pub use normalize::{
-    has_float_leaf, normalize_floats, normalize_nested_floats, NormalizeNaNAndZero,
-    NormalizeNestedFloats,
+    has_float_leaf, normalize_comparison_operand, normalize_floats, normalize_nested_floats,
+    NormalizeNaNAndZero, NormalizeNestedFloats,
 };
 
 use num::Float;
@@ -134,6 +136,43 @@ pub(crate) const NEGATIVE_NAN: f64 = f64::from_bits(0xfff8_0000_0000_0000);
 /// A signaling NaN with a payload.
 #[cfg(test)]
 pub(crate) const PAYLOAD_NAN: f64 = f64::from_bits(0x7ff0_0000_0000_0001);
+
+/// Values on which Spark's ordering and IEEE 754 total order disagree, with neighbors and a null.
+#[cfg(test)]
+pub(crate) const EDGE_VALUES: [Option<f64>; 10] = [
+    Some(f64::NEG_INFINITY),
+    Some(-1.0),
+    Some(-0.0),
+    Some(0.0),
+    Some(1.0),
+    Some(f64::INFINITY),
+    Some(f64::NAN),
+    Some(NEGATIVE_NAN),
+    Some(PAYLOAD_NAN),
+    None,
+];
+
+/// Spark's `greatest` of `values` in order, or `least` if `greatest` is false, which is also how
+/// `Max` and `Min` update their buffer: nulls are skipped, and a value replaces the result only when
+/// [`compare_floats`] ranks it strictly before, so the first of equal values is kept.
+#[cfg(test)]
+pub(crate) fn spark_extreme(values: &[Option<f64>], greatest: bool) -> Option<f64> {
+    values
+        .iter()
+        .flatten()
+        .fold(None, |best, &value| match best {
+            None => Some(value),
+            Some(best) => {
+                let ordering = compare_floats(value, best);
+                let replace = if greatest {
+                    ordering.is_gt()
+                } else {
+                    ordering.is_lt()
+                };
+                Some(if replace { value } else { best })
+            }
+        })
+}
 
 #[cfg(test)]
 mod tests {

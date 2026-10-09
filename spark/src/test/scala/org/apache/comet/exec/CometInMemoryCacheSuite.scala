@@ -34,13 +34,14 @@ import org.apache.arrow.vector.compression.{CompressionCodec, CompressionUtil, N
 import org.apache.arrow.vector.types.pojo.ArrowType
 import org.apache.spark.CometDriverPlugin
 import org.apache.spark.SparkConf
-import org.apache.spark.sql.{CometTestBase, Observation, QueryTest, Row}
+import org.apache.spark.sql.{CometTestBase, DataFrame, Observation, QueryTest, Row}
 import org.apache.spark.sql.catalyst.expressions.{And, Attribute, AttributeReference, EqualTo, Expression, GreaterThan, GreaterThanOrEqual, LessThan, Literal}
 import org.apache.spark.sql.columnar.{CachedBatch, SimpleMetricsCachedBatch}
-import org.apache.spark.sql.comet.{CometBroadcastHashJoinExec, CometInMemoryTableScanExec, CometSortExec, CometSortMergeJoinExec}
+import org.apache.spark.sql.comet.{CometBroadcastHashJoinExec, CometInMemoryTableScanExec, CometSortAggregateExec, CometSortExec, CometSortMergeJoinExec}
 import org.apache.spark.sql.comet.execution.arrow.{ArrowCachedBatchSerializer, CometCachedBatchHelper}
+import org.apache.spark.sql.comet.execution.shuffle.CometCelebornShuffleManager
 import org.apache.spark.sql.comet.util.Utils
-import org.apache.spark.sql.execution.{FormattedMode, SortExec}
+import org.apache.spark.sql.execution.{ColumnarToRowExec, CometSparkPlanInfoHelper, FilterExec, FormattedMode, RowToColumnarExec, SortExec, SparkPlanInfo}
 import org.apache.spark.sql.execution.adaptive.{AdaptiveSparkPlanExec, AQEShuffleReadExec, QueryStageExec, ShuffleQueryStageExec}
 import org.apache.spark.sql.execution.columnar.{CometInMemoryRelationHelper, InMemoryRelation, InMemoryTableScanExec}
 import org.apache.spark.sql.execution.exchange.{Exchange, ReusedExchangeExec, ShuffleExchangeLike}
@@ -51,8 +52,9 @@ import org.apache.spark.sql.types._
 import org.apache.spark.sql.vectorized.{ColumnarBatch, ColumnVector}
 import org.apache.spark.storage.StorageLevel
 
-import org.apache.comet.{CometArrowAllocator, CometConf, ExtendedExplainInfo}
+import org.apache.comet.{CometArrowAllocator, CometConf, CometKryoRegistrator, ExtendedExplainInfo}
 import org.apache.comet.CometSparkSessionExtensions.{isSpark35Plus, isSpark40Plus}
+import org.apache.comet.rules.CometCacheColumnarRule
 import org.apache.comet.vector.{CometPlainVector, CometVector}
 
 class CometInMemoryCacheSuite extends CometTestBase {
@@ -97,6 +99,13 @@ class CometInMemoryCacheSuite extends CometTestBase {
     conf
   }
 
+  /**
+   * `withSQLConf` that also turns on the Spark-to-Arrow conversions, which this suite's conf
+   * leaves off, unlike CometTestBase's.
+   */
+  private def withConversions(pairs: (String, String)*)(f: => Unit): Unit =
+    withSQLConf(pairs ++ sparkToArrowConversionConfs(enabled = true): _*)(f)
+
   private def cachedBatchTypes(table: String): Array[String] = {
     val cached = spark.sharedState.cacheManager.lookupCachedData(spark.table(table)).get
     cached.cachedRepresentation.cacheBuilder.cachedColumnBuffers
@@ -121,13 +130,12 @@ class CometInMemoryCacheSuite extends CometTestBase {
 
   // The tests below are ported from Spark 4.1.2's AdaptiveQueryExecSuite; see each source link.
   private def withAQECache(f: => Unit): Unit = {
-    withSQLConf(
+    withConversions(
       SQLConf.ADAPTIVE_EXECUTION_ENABLED.key -> "true",
       SQLConf.CAN_CHANGE_CACHED_PLAN_OUTPUT_PARTITIONING.key -> "true",
       SQLConf.SHUFFLE_PARTITIONS.key -> "3",
       CometConf.COMET_SHUFFLE_MODE.key -> "jvm",
-      CometConf.COMET_EXEC_IN_MEMORY_CACHE_ENABLED.key -> "true",
-      "spark.comet.sparkToColumnar.enabled" -> "true") {
+      CometConf.COMET_EXEC_IN_MEMORY_CACHE_ENABLED.key -> "true") {
       try {
         f
       } finally {
@@ -187,6 +195,26 @@ class CometInMemoryCacheSuite extends CometTestBase {
         assert(collect(plan) { case s: CometInMemoryTableScanExec => s }.size == 1)
         assert(collect(plan) { case s: ShuffleQueryStageExec => s }.size == 1)
         assert(collect(plan) { case s: AQEShuffleReadExec => s }.isEmpty)
+      }
+    }
+  }
+
+  // https://github.com/apache/spark/blob/v4.1.2/sql/core/src/test/scala/org/apache/spark/sql/execution/adaptive/AdaptiveQueryExecSuite.scala#L3178-L3191
+  test("AQE SPARK-42101: coalesce the shuffle partitions of a union with a table cache stage") {
+    assume(isSpark35Plus, "Table-cache query stages require Spark 3.5+")
+    withAQECache {
+      withSQLConf(SQLConf.COALESCE_PARTITIONS_MIN_PARTITION_NUM.key -> "1") {
+        val cached = Seq(1).toDF("c").cache()
+        val df = Seq(2).toDF("c").repartition($"c").union(cached)
+        checkAnswer(df, Seq(Row(1), Row(2)))
+        val plan = df.queryExecution.executedPlan
+        assert(plan.asInstanceOf[AdaptiveSparkPlanExec].isFinalPlan)
+        assert(collect(plan) { case u: org.apache.spark.sql.comet.CometUnionExec => u }.size == 1)
+        assert(collect(plan) { case r @ AQEShuffleReadExec(_: ShuffleQueryStageExec, _) =>
+          r
+        }.size == 1)
+        assert(collect(plan) { case s: QueryStageExec if isTableCacheStage(s) => s }.size == 1)
+        assert(collect(plan) { case s: CometInMemoryTableScanExec => s }.size == 1)
       }
     }
   }
@@ -296,12 +324,11 @@ class CometInMemoryCacheSuite extends CometTestBase {
   }
 
   test("CometInMemoryTableScan over CometCachedBatch") {
-    withSQLConf(
+    withConversions(
       SQLConf.ADAPTIVE_EXECUTION_ENABLED.key -> "false",
       CometConf.COMET_SHUFFLE_MODE.key -> "jvm",
       SQLConf.CACHE_VECTORIZED_READER_ENABLED.key -> "true",
-      CometConf.COMET_EXEC_IN_MEMORY_CACHE_ENABLED.key -> "true",
-      "spark.comet.sparkToColumnar.enabled" -> "true") {
+      CometConf.COMET_EXEC_IN_MEMORY_CACHE_ENABLED.key -> "true") {
 
       spark.catalog.clearCache()
 
@@ -389,7 +416,7 @@ class CometInMemoryCacheSuite extends CometTestBase {
             // reason that the reporting for a query reading the cache must leave out.
             withSQLConf(
               CometConf.COMET_EXEC_RANGE_ENABLED.key -> "false",
-              CometConf.COMET_SPARK_TO_ARROW_ENABLED.key -> "false") {
+              CometConf.COMET_CONVERT_FROM_RANGE_ENABLED.key -> "false") {
               spark.catalog.cacheTable("explain_cached_plan")
             }
             val df = spark.sql("SELECT value, count(*) FROM explain_cached_plan GROUP BY value")
@@ -429,13 +456,56 @@ class CometInMemoryCacheSuite extends CometTestBase {
     }
   }
 
+  test("the SQL tab and event log draw the cached plan below CometInMemoryTableScan") {
+    // Spark builds both from SparkPlanInfo, which gives its own cache scan the cached plan as a
+    // child. See https://github.com/apache/datafusion-comet/issues/6463.
+    def scanInfos(info: SparkPlanInfo): Seq[SparkPlanInfo] =
+      (if (info.nodeName == "CometInMemoryTableScan") Seq(info) else Nil) ++
+        info.children.flatMap(scanInfos)
+
+    Seq("false", "true").foreach { aqe =>
+      withClue(s"AQE $aqe: ") {
+        withSQLConf(
+          SQLConf.ADAPTIVE_EXECUTION_ENABLED.key -> aqe,
+          CometConf.COMET_EXEC_IN_MEMORY_CACHE_ENABLED.key -> "true") {
+          withTempView("plan_info_cache") {
+            // The shuffle gives the cached plan an adaptive plan of its own when AQE is on.
+            spark
+              .range(1000)
+              .selectExpr("id % 10 AS k")
+              .groupBy("k")
+              .count()
+              .createOrReplaceTempView("plan_info_cache")
+            spark.catalog.cacheTable("plan_info_cache")
+            val df = spark.sql("SELECT * FROM plan_info_cache WHERE k > 1")
+            df.collect()
+            val plan = df.queryExecution.executedPlan
+            val scans = collect(plan) { case s: CometInMemoryTableScanExec => s }
+            assert(scans.size == 1, plan)
+            val sparkScan = scans.head.originalPlan
+            val cachedPlanInfo =
+              CometSparkPlanInfoHelper.fromSparkPlan(sparkScan.relation.cachedPlan)
+            // Spark's own scan of the cache sits below, and the cached plan below that.
+            val infos = scanInfos(CometSparkPlanInfoHelper.fromSparkPlan(plan))
+            assert(
+              infos.map(_.children.map(info => (info.nodeName, info.children))) ==
+                Seq(Seq((sparkScan.nodeName, Seq(cachedPlanInfo)))),
+              plan)
+            // Other walkers of subqueries stop at Spark's scan, as in Spark's own plans, so they
+            // do not find the cached plan's shuffle in this query, which has none of its own.
+            assert(collectWithSubqueries(plan) { case e: ShuffleExchangeLike => e }.isEmpty, plan)
+          }
+        }
+      }
+    }
+  }
+
   test("Comet in-memory cache disabled keeps SparkToColumnar fallback path") {
-    withSQLConf(
+    withConversions(
       SQLConf.ADAPTIVE_EXECUTION_ENABLED.key -> "false",
       CometConf.COMET_SHUFFLE_MODE.key -> "jvm",
       SQLConf.CACHE_VECTORIZED_READER_ENABLED.key -> "true",
-      CometConf.COMET_EXEC_IN_MEMORY_CACHE_ENABLED.key -> "true",
-      "spark.comet.sparkToColumnar.enabled" -> "true") {
+      CometConf.COMET_EXEC_IN_MEMORY_CACHE_ENABLED.key -> "true") {
 
       spark.catalog.clearCache()
 
@@ -452,12 +522,11 @@ class CometInMemoryCacheSuite extends CometTestBase {
           Array("org.apache.spark.sql.comet.execution.arrow.CometCachedBatch")))
     }
 
-    withSQLConf(
+    withConversions(
       SQLConf.ADAPTIVE_EXECUTION_ENABLED.key -> "false",
       CometConf.COMET_SHUFFLE_MODE.key -> "jvm",
       SQLConf.CACHE_VECTORIZED_READER_ENABLED.key -> "true",
-      CometConf.COMET_EXEC_IN_MEMORY_CACHE_ENABLED.key -> "false",
-      "spark.comet.sparkToColumnar.enabled" -> "true") {
+      CometConf.COMET_EXEC_IN_MEMORY_CACHE_ENABLED.key -> "false") {
 
       val df = spark.sql("SELECT key, count(*) FROM comet_cache_disabled GROUP BY key")
       checkAnswer(df, (0L until 1000L).map(i => Row(i, 1L)))
@@ -467,6 +536,187 @@ class CometInMemoryCacheSuite extends CometTestBase {
       assert(plan.contains("CometSparkColumnarToColumnar"))
 
       spark.catalog.clearCache()
+    }
+  }
+
+  test("Spark row consumers of Comet cache preserve values across batches") {
+    for {
+      adaptive <- Seq(false, true)
+      mode <- Seq("CODEGEN_ONLY", "NO_CODEGEN")
+      vectorized <- Seq(false, true)
+    } {
+      // Comet on with native execution off, so Spark operators consume the cache scan and the
+      // generated ones among them read its vectors through the fused transition.
+      withSQLConf(
+        CometConf.COMET_ENABLED.key -> "true",
+        CometConf.COMET_EXEC_IN_MEMORY_CACHE_ENABLED.key -> "true",
+        CometConf.COMET_EXEC_ENABLED.key -> "false",
+        CometConf.COMET_SHUFFLE_ENABLED.key -> "false",
+        SQLConf.ADAPTIVE_EXECUTION_ENABLED.key -> adaptive.toString,
+        SQLConf.CACHE_VECTORIZED_READER_ENABLED.key -> vectorized.toString,
+        SQLConf.COLUMN_BATCH_SIZE.key -> "7",
+        SQLConf.CODEGEN_FACTORY_MODE.key -> mode,
+        SQLConf.WHOLESTAGE_CODEGEN_ENABLED.key -> (mode == "CODEGEN_ONLY").toString,
+        SQLConf.AUTO_BROADCASTJOIN_THRESHOLD.key -> "-1",
+        SQLConf.SHUFFLE_PARTITIONS.key -> "2") {
+        val scalars = Seq(
+          "boolean",
+          "tinyint",
+          "smallint",
+          "int",
+          "bigint",
+          "float",
+          "double",
+          "decimal(10,2)",
+          "decimal(38,2)",
+          "date",
+          "timestamp",
+          "timestamp_ntz").zipWithIndex.map { case (dt, i) =>
+          val value = dt match {
+            case "date" | "timestamp" | "timestamp_ntz" =>
+              s"cast(date_add(DATE '2000-01-01', cast(id AS INT)) AS $dt)"
+            case _ => s"cast(id AS $dt)"
+          }
+          s"if(id % 3 = 0, null, $value) AS c$i"
+        }
+        val source = spark
+          .range(0, 41, 1, 2)
+          .selectExpr((Seq("id AS key") ++ scalars ++ Seq(
+            "if(id % 3 = 0, null, repeat(concat('字', id), cast(id + 1 AS INT))) AS s",
+            "if(id % 3 = 0, null, cast(concat('binary', id) AS BINARY)) AS b",
+            "if(id % 3 = 0, null, array(cast(id AS STRING), null)) AS a",
+            "if(id % 3 = 0, null, named_struct('x', id, 'a', array(cast(id AS STRING)))) AS st",
+            "if(id % 3 = 0, null, map('k', array(cast(id AS STRING), null))) AS m",
+            "null AS n")): _*)
+
+        // Each query, and whether a generated Spark operator consumes the cache scan directly.
+        // The other consumers (the query root, exchanges and limits) read the row iterator.
+        def queries(df: DataFrame): Seq[(DataFrame, Boolean)] = Seq(
+          // The generated filter reads every column, so this covers the whole type matrix.
+          df.filter($"key" >= 0) -> true,
+          df.select("*") -> false,
+          df.selectExpr("s AS renamed", "key", "b", "a", "st", "m") -> true,
+          df.orderBy($"s".desc, $"key") -> false,
+          df.join(spark.range(41).toDF("join_key"), $"key" === $"join_key")
+            .select(df("*")) -> false,
+          df.selectExpr("count(*)") -> true,
+          df.limit(1) -> false)
+
+        val expected = queries(source).map(_._1.collect().toSeq)
+        source.cache()
+        try {
+          assert(source.count() == 41)
+          val relation =
+            spark.sharedState.cacheManager.lookupCachedData(source).get.cachedRepresentation
+          val buffers = relation.cacheBuilder.cachedColumnBuffers.collect()
+          assert(buffers.length > 2)
+          assert(buffers.forall(_.getClass.getSimpleName == "CometCachedBatch"))
+          queries(source).zip(expected).foreach { case ((df, generatedConsumer), answer) =>
+            val plan = df.queryExecution.executedPlan
+            checkAnswer(df, answer)
+            // Inspected after execution, when an adaptive plan is final.
+            val scans = collect(plan) { case scan: InMemoryTableScanExec => scan }
+            assert(scans.nonEmpty && scans.forall(_.supportsColumnar == vectorized), plan)
+            val transitions = collect(plan) {
+              case c: ColumnarToRowExec if collect(c.child) { case s: InMemoryTableScanExec =>
+                    s
+                  }.nonEmpty =>
+                c
+            }
+            val fused = generatedConsumer && vectorized && mode == "CODEGEN_ONLY"
+            assert(transitions.size == (if (fused) 1 else 0), plan)
+          }
+        } finally source.unpersist(blocking = true)
+      }
+    }
+  }
+
+  test("Spark generated cache consumers respect runtime enable and codegen settings") {
+    val planOnly = Seq(
+      CometConf.COMET_EXPLAIN_PLAN_ONLY_ENABLED.key -> "true",
+      // Plan-only mode applies only while native execution is enabled.
+      CometConf.COMET_EXEC_ENABLED.key -> "true")
+    for {
+      adaptive <- Seq(false, true)
+      disabledSettings <- Seq(
+        Seq(CometConf.COMET_ENABLED.key -> "false"),
+        Seq(CometConf.COMET_EXEC_IN_MEMORY_CACHE_ENABLED.key -> "false"),
+        Seq(SQLConf.CODEGEN_FACTORY_MODE.key -> "NO_CODEGEN"),
+        Seq(SQLConf.WHOLESTAGE_CODEGEN_ENABLED.key -> "false"),
+        planOnly)
+    } {
+      withSQLConf(
+        CometConf.COMET_ENABLED.key -> "true",
+        CometConf.COMET_EXEC_IN_MEMORY_CACHE_ENABLED.key -> "true",
+        CometConf.COMET_EXEC_ENABLED.key -> "false",
+        CometConf.COMET_SHUFFLE_ENABLED.key -> "false",
+        SQLConf.ADAPTIVE_EXECUTION_ENABLED.key -> adaptive.toString,
+        SQLConf.CACHE_VECTORIZED_READER_ENABLED.key -> "true",
+        SQLConf.WHOLESTAGE_CODEGEN_ENABLED.key -> "true",
+        SQLConf.CODEGEN_FACTORY_MODE.key -> "CODEGEN_ONLY",
+        SQLConf.COLUMN_BATCH_SIZE.key -> "7",
+        SQLConf.SHUFFLE_PARTITIONS.key -> "2") {
+        val source = spark
+          .range(0, 41, 1, 2)
+          .selectExpr("id AS key", "if(id % 3 = 0, null, concat('字', id)) AS s")
+        def query = source
+          .filter("key >= 7")
+          .selectExpr("sum(key)", "sum(length(s))", "count(*)")
+        val expected = query.collect().toSeq
+        source.cache()
+        try {
+          val builder = spark.sharedState.cacheManager
+            .lookupCachedData(source)
+            .get
+            .cachedRepresentation
+            .cacheBuilder
+          // Materialize with fusion enabled, then disable and re-enable it on the same cache.
+          Seq(true, false, true).zipWithIndex.foreach { case (enabled, index) =>
+            val settings = if (enabled) Seq.empty else disabledSettings
+            withSQLConf(settings: _*) {
+              val cold = index == 0
+              val df = query
+              val plan = df.queryExecution.executedPlan
+              // Planning must not materialize the cache or replace AQE's cache-stage metadata.
+              assert(builder.isCachedColumnBuffersLoaded != cold, plan.toString)
+              // checkToRDD = false keeps checkAnswer from loading the cache with a query of its
+              // own, so the cold run's table-cache stage materializes and AQE re-plans above it.
+              QueryTest.checkAnswer(df, expected, checkToRDD = false)
+              assert(builder.isCachedColumnBuffersLoaded)
+              val transitions = collect(plan) {
+                case c: ColumnarToRowExec if collect(c.child) { case s: InMemoryTableScanExec =>
+                      s
+                    }.nonEmpty =>
+                  c
+              }
+              assert(transitions.size == (if (enabled) 1 else 0), plan.toString)
+              assert(collect(plan) { case s: CometInMemoryTableScanExec => s }.isEmpty)
+              if (adaptive && isSpark35Plus) {
+                assert(collect(plan) {
+                  case s: QueryStageExec
+                      if s.getClass.getSimpleName == "TableCacheQueryStageExec" =>
+                    s
+                }.size == 1)
+              }
+              val scan = collect(plan) { case s: InMemoryTableScanExec => s }.head
+              assert(scan.supportsColumnar)
+              // A cache scan can also be the root of a columnar request or already have a
+              // transition. Applying the rule again must preserve those input/output contracts.
+              Seq(scan, ColumnarToRowExec(scan), RowToColumnarExec(scan)).foreach { boundary =>
+                assert(CometCacheColumnarRule()(boundary).fastEquals(boundary))
+              }
+              // The plan-only preview shows the plan Comet would execute, so it still fuses a
+              // generated consumer that the executed plan leaves alone in plan-only mode.
+              val consumer = FilterExec(Literal.TrueLiteral, scan)
+              val fusedConsumer = FilterExec(Literal.TrueLiteral, ColumnarToRowExec(scan))
+              assert(CometCacheColumnarRule()(consumer).fastEquals(fusedConsumer) == enabled)
+              assert(
+                CometCacheColumnarRule(preview = true)(consumer).fastEquals(fusedConsumer) ==
+                  (enabled || disabledSettings == planOnly))
+            }
+          }
+        } finally source.unpersist(blocking = true)
+      }
     }
   }
 
@@ -484,12 +734,11 @@ class CometInMemoryCacheSuite extends CometTestBase {
     "named_struct('a', id, 'a', id + 1) AS payload")
 
   test("Comet cache serializer delegates unsupported types to Spark's cache format") {
-    withSQLConf(
+    withConversions(
       SQLConf.ADAPTIVE_EXECUTION_ENABLED.key -> "false",
       CometConf.COMET_SHUFFLE_MODE.key -> "jvm",
       SQLConf.CACHE_VECTORIZED_READER_ENABLED.key -> "true",
-      CometConf.COMET_EXEC_IN_MEMORY_CACHE_ENABLED.key -> "true",
-      "spark.comet.sparkToColumnar.enabled" -> "true") {
+      CometConf.COMET_EXEC_IN_MEMORY_CACHE_ENABLED.key -> "true") {
 
       for (column <- unsupportedForArrowCache) {
         spark.catalog.clearCache()
@@ -587,12 +836,11 @@ class CometInMemoryCacheSuite extends CometTestBase {
   }
 
   test("Comet in-memory cache handles multi-partition cache") {
-    withSQLConf(
+    withConversions(
       SQLConf.ADAPTIVE_EXECUTION_ENABLED.key -> "false",
       CometConf.COMET_SHUFFLE_MODE.key -> "jvm",
       SQLConf.CACHE_VECTORIZED_READER_ENABLED.key -> "true",
-      CometConf.COMET_EXEC_IN_MEMORY_CACHE_ENABLED.key -> "true",
-      "spark.comet.sparkToColumnar.enabled" -> "true") {
+      CometConf.COMET_EXEC_IN_MEMORY_CACHE_ENABLED.key -> "true") {
 
       spark.catalog.clearCache()
 
@@ -621,12 +869,11 @@ class CometInMemoryCacheSuite extends CometTestBase {
   }
 
   test("Comet in-memory cache handles empty cache") {
-    withSQLConf(
+    withConversions(
       SQLConf.ADAPTIVE_EXECUTION_ENABLED.key -> "false",
       CometConf.COMET_SHUFFLE_MODE.key -> "jvm",
       SQLConf.CACHE_VECTORIZED_READER_ENABLED.key -> "true",
-      CometConf.COMET_EXEC_IN_MEMORY_CACHE_ENABLED.key -> "true",
-      "spark.comet.sparkToColumnar.enabled" -> "true") {
+      CometConf.COMET_EXEC_IN_MEMORY_CACHE_ENABLED.key -> "true") {
 
       spark.catalog.clearCache()
 
@@ -647,12 +894,11 @@ class CometInMemoryCacheSuite extends CometTestBase {
   }
 
   test("Comet in-memory cache supports projection-only read") {
-    withSQLConf(
+    withConversions(
       SQLConf.ADAPTIVE_EXECUTION_ENABLED.key -> "false",
       CometConf.COMET_SHUFFLE_MODE.key -> "jvm",
       SQLConf.CACHE_VECTORIZED_READER_ENABLED.key -> "true",
-      CometConf.COMET_EXEC_IN_MEMORY_CACHE_ENABLED.key -> "true",
-      "spark.comet.sparkToColumnar.enabled" -> "true") {
+      CometConf.COMET_EXEC_IN_MEMORY_CACHE_ENABLED.key -> "true") {
 
       spark.catalog.clearCache()
 
@@ -684,13 +930,41 @@ class CometInMemoryCacheSuite extends CometTestBase {
     }
   }
 
-  test("Comet in-memory cache supports shuffle after cache read") {
+  test("sort aggregate over a sorted cache keeps its grouping-key order") {
+    // The cached relation reports its sort order, so Spark plans both sort aggregates and the
+    // ORDER BY without a SortExec, and the native aggregates read the cache through a scan that
+    // reports no order. NULL and an empty array hash alike, so DataFusion's grouping can emit
+    // the empty array after [1] unless the aggregate output is sorted natively.
     withSQLConf(
+      SQLConf.ADAPTIVE_EXECUTION_ENABLED.key -> "false",
+      CometConf.COMET_SHUFFLE_ENABLED.key -> "true",
+      CometConf.COMET_EXEC_IN_MEMORY_CACHE_ENABLED.key -> "true") {
+      try {
+        Seq[(Option[Seq[Int]], String)]((None, "n"), (Some(Seq.empty), "e"), (Some(Seq(1)), "o"))
+          .toDF("k", "v")
+          .coalesce(1)
+          .sortWithinPartitions("k")
+          .cache()
+          .createOrReplaceTempView("sorted_cache")
+
+        val df = sql("SELECT k, first(v) FROM sorted_cache GROUP BY k ORDER BY k")
+        checkAnswer(df, Seq(Row(null, "n"), Row(Seq.empty[Int], "e"), Row(Seq(1), "o")))
+        val plan = df.queryExecution.executedPlan
+        assert(collect(plan) { case s: CometInMemoryTableScanExec => s }.size == 1, plan)
+        assert(collect(plan) { case a: CometSortAggregateExec => a }.size == 2, plan)
+        assert(collect(plan) { case s @ (_: CometSortExec | _: SortExec) => s }.isEmpty, plan)
+      } finally {
+        spark.catalog.clearCache()
+      }
+    }
+  }
+
+  test("Comet in-memory cache supports shuffle after cache read") {
+    withConversions(
       SQLConf.ADAPTIVE_EXECUTION_ENABLED.key -> "false",
       CometConf.COMET_SHUFFLE_MODE.key -> "jvm",
       SQLConf.CACHE_VECTORIZED_READER_ENABLED.key -> "true",
-      CometConf.COMET_EXEC_IN_MEMORY_CACHE_ENABLED.key -> "true",
-      "spark.comet.sparkToColumnar.enabled" -> "true") {
+      CometConf.COMET_EXEC_IN_MEMORY_CACHE_ENABLED.key -> "true") {
 
       spark.catalog.clearCache()
 
@@ -868,12 +1142,11 @@ class CometInMemoryCacheSuite extends CometTestBase {
   }
 
   test("Comet in-memory cache supports stats-based batch pruning") {
-    withSQLConf(
+    withConversions(
       SQLConf.ADAPTIVE_EXECUTION_ENABLED.key -> "false",
       CometConf.COMET_SHUFFLE_MODE.key -> "jvm",
       SQLConf.CACHE_VECTORIZED_READER_ENABLED.key -> "true",
       CometConf.COMET_EXEC_IN_MEMORY_CACHE_ENABLED.key -> "true",
-      "spark.comet.sparkToColumnar.enabled" -> "true",
       "spark.sql.inMemoryColumnarStorage.batchSize" -> "100") {
 
       spark.catalog.clearCache()
@@ -951,12 +1224,11 @@ class CometInMemoryCacheSuite extends CometTestBase {
     // rows. With pruning off, every cached row must be decoded.
     def scanRowsFor(pruning: Boolean): (Long, Long) = {
       var result: (Long, Long) = (0L, 0L)
-      withSQLConf(
+      withConversions(
         SQLConf.ADAPTIVE_EXECUTION_ENABLED.key -> "false",
         CometConf.COMET_SHUFFLE_MODE.key -> "jvm",
         SQLConf.CACHE_VECTORIZED_READER_ENABLED.key -> "true",
         CometConf.COMET_EXEC_IN_MEMORY_CACHE_ENABLED.key -> "true",
-        "spark.comet.sparkToColumnar.enabled" -> "true",
         "spark.sql.inMemoryColumnarStorage.batchSize" -> "100",
         SQLConf.IN_MEMORY_PARTITION_PRUNING.key -> pruning.toString) {
 
@@ -999,12 +1271,11 @@ class CometInMemoryCacheSuite extends CometTestBase {
     // spill it to the DiskStore like any other cached block. Pins that: nothing is held in memory,
     // the bytes really do land on disk, every partition is cached, and the cache still reads back
     // through the native scan.
-    withSQLConf(
+    withConversions(
       SQLConf.ADAPTIVE_EXECUTION_ENABLED.key -> "false",
       CometConf.COMET_SHUFFLE_MODE.key -> "jvm",
       SQLConf.CACHE_VECTORIZED_READER_ENABLED.key -> "true",
-      CometConf.COMET_EXEC_IN_MEMORY_CACHE_ENABLED.key -> "true",
-      "spark.comet.sparkToColumnar.enabled" -> "true") {
+      CometConf.COMET_EXEC_IN_MEMORY_CACHE_ENABLED.key -> "true") {
 
       spark.catalog.clearCache()
       spark
@@ -1051,12 +1322,11 @@ class CometInMemoryCacheSuite extends CometTestBase {
     // So both paths must write "UTC". This is a label only -- Spark stores timestamps as micros
     // since the Unix epoch regardless of session timezone -- so values must be unaffected.
     Seq("America/Los_Angeles", "Asia/Kolkata").foreach { sessionTz =>
-      withSQLConf(
+      withConversions(
         SQLConf.ADAPTIVE_EXECUTION_ENABLED.key -> "false",
         CometConf.COMET_SHUFFLE_MODE.key -> "jvm",
         SQLConf.CACHE_VECTORIZED_READER_ENABLED.key -> "true",
         CometConf.COMET_EXEC_IN_MEMORY_CACHE_ENABLED.key -> "true",
-        "spark.comet.sparkToColumnar.enabled" -> "true",
         SQLConf.SESSION_LOCAL_TIMEZONE.key -> sessionTz) {
 
         spark.catalog.clearCache()
@@ -1133,6 +1403,7 @@ class CometInMemoryCacheSuite extends CometTestBase {
 
     val defaultConf = new SparkConf()
       .set(CometConf.COMET_EXEC_IN_MEMORY_CACHE_ENABLED.key, "true")
+      .set("spark.shuffle.manager", shuffleManager)
     val defaultExtraConfs = new ju.HashMap[String, String]()
 
     // With no user serializer configured, the plugin should install Comet's
@@ -1144,6 +1415,7 @@ class CometInMemoryCacheSuite extends CometTestBase {
 
     val userConf = new SparkConf()
       .set(CometConf.COMET_EXEC_IN_MEMORY_CACHE_ENABLED.key, "true")
+      .set("spark.shuffle.manager", shuffleManager)
       .set(serializerKey, userSerializer)
     val userExtraConfs = new ju.HashMap[String, String]()
 
@@ -1155,20 +1427,25 @@ class CometInMemoryCacheSuite extends CometTestBase {
     assert(!userExtraConfs.containsKey(serializerKey))
   }
 
-  test("Comet plugin installs its cache serializer only if Comet can scan the cache natively") {
+  /** Whether the Comet plugin installs its cache serializer for an application's `settings`. */
+  private def installsCacheSerializer(settings: (String, String)*): Boolean = {
     val serializerKey = StaticSQLConf.SPARK_CACHE_SERIALIZER.key
+    val conf = new SparkConf().setAll(settings)
+    val extraConfs = new ju.HashMap[String, String]()
+    CometDriverPlugin.maybeSetCacheSerializer(conf, extraConfs)
+    assert(conf.contains(serializerKey) == extraConfs.containsKey(serializerKey))
+    extraConfs.containsKey(serializerKey)
+  }
 
-    def installed(settings: (String, String)*): Boolean = {
-      val conf = new SparkConf().setAll(settings)
-      val extraConfs = new ju.HashMap[String, String]()
-      CometDriverPlugin.maybeSetCacheSerializer(conf, extraConfs)
-      assert(conf.contains(serializerKey) == extraConfs.containsKey(serializerKey))
-      extraConfs.containsKey(serializerKey)
-    }
-
+  test("Comet plugin installs its cache serializer only if Comet can scan the cache natively") {
     val cometOn = CometConf.COMET_ENABLED.key -> "true"
     val execOn = CometConf.COMET_EXEC_ENABLED.key -> "true"
     val cacheOn = CometConf.COMET_EXEC_IN_MEMORY_CACHE_ENABLED.key -> "true"
+    // Without Comet's shuffle manager Comet disables itself, which the next test covers.
+    val cometShuffle = "spark.shuffle.manager" -> shuffleManager
+
+    def installed(settings: (String, String)*): Boolean =
+      installsCacheSerializer(cometShuffle +: settings: _*)
 
     assert(installed(cometOn, execOn, cacheOn))
     // An application that starts with Comet or its native execution off can never plan
@@ -1186,13 +1463,91 @@ class CometInMemoryCacheSuite extends CometTestBase {
           CometConf.COMET_EXEC_ENABLED.defaultValue.get))
   }
 
+  test("Comet plugin keeps Spark's cache format where Comet disables itself or Kryo rejects it") {
+    val cometShuffle = "spark.shuffle.manager" -> shuffleManager
+
+    def installed(settings: (String, String)*): Boolean =
+      installsCacheSerializer(
+        Seq(
+          CometConf.COMET_ENABLED.key -> "true",
+          CometConf.COMET_EXEC_ENABLED.key -> "true",
+          CometConf.COMET_EXEC_IN_MEMORY_CACHE_ENABLED.key -> "true") ++ settings: _*)
+
+    assert(installed(cometShuffle))
+    // Comet shuffle is enabled by default, and Comet disables itself while it is unless the
+    // application runs one of Comet's shuffle managers.
+    assert(!installed())
+    assert(!installed("spark.shuffle.manager" -> "sort"))
+    assert(installed("spark.shuffle.manager" -> classOf[CometCelebornShuffleManager].getName))
+    // Without Comet shuffle, under the key or its deprecated name, the shuffle manager does not
+    // matter.
+    assert(installed(CometConf.COMET_SHUFFLE_ENABLED.key -> "false"))
+    assert(installed("spark.comet.exec.shuffle.enabled" -> "false"))
+
+    // Kryo with registration required rejects Comet's cached batch unless something registered
+    // it: CometKryoRegistrator, on its own or beside a registrator of the application's, or the
+    // application's own registrations.
+    val kryo = "spark.serializer" -> "org.apache.spark.serializer.KryoSerializer"
+    val registrationRequired = "spark.kryo.registrationRequired" -> "true"
+    val registrator = "spark.kryo.registrator"
+    val sparkOnly = classOf[SparkCachedBatchKryoRegistrator].getName
+    assert(!installed(cometShuffle, kryo, registrationRequired))
+    assert(!installed(cometShuffle, kryo, registrationRequired, registrator -> sparkOnly))
+    assert(
+      installed(
+        cometShuffle,
+        kryo,
+        registrationRequired,
+        registrator -> s"$sparkOnly, ${CometKryoRegistrator.CLASS_NAME}"))
+    assert(
+      installed(
+        cometShuffle,
+        kryo,
+        registrationRequired,
+        "spark.kryo.classesToRegister" -> ArrowCachedBatchSerializer.cachedBatchClass.getName))
+    // A registrator that cannot be loaded leaves only spark.kryo.registrator to go by.
+    assert(!installed(cometShuffle, kryo, registrationRequired, registrator -> "com.example.R"))
+    assert(
+      installed(
+        cometShuffle,
+        kryo,
+        registrationRequired,
+        registrator -> s"com.example.R, ${CometKryoRegistrator.CLASS_NAME}"))
+    // Without registrationRequired, Kryo writes the class name of anything unregistered instead.
+    assert(installed(cometShuffle, kryo))
+  }
+
+  test("Comet plugin finds the Kryo registrations Comet needs however they were made") {
+    def unregistered(settings: (String, String)*): Seq[Class[_]] =
+      CometDriverPlugin.unregisteredKryoClasses(new SparkConf().setAll(settings))
+
+    val kryo = "spark.serializer" -> "org.apache.spark.serializer.KryoSerializer"
+    val registrationRequired = "spark.kryo.registrationRequired" -> "true"
+    assert(unregistered().isEmpty)
+    assert(unregistered(kryo).isEmpty)
+    assert(
+      unregistered(kryo, registrationRequired).contains(
+        ArrowCachedBatchSerializer.cachedBatchClass))
+    assert(
+      unregistered(
+        kryo,
+        registrationRequired,
+        "spark.kryo.registrator" -> CometKryoRegistrator.CLASS_NAME).isEmpty)
+    assert(
+      unregistered(
+        kryo,
+        registrationRequired,
+        "spark.kryo.classesToRegister" -> CometKryoRegistrator.classes
+          .map(_.getName)
+          .mkString(",")).isEmpty)
+  }
+
   test("Comet in-memory cache supports empty projection scan") {
-    withSQLConf(
+    withConversions(
       SQLConf.ADAPTIVE_EXECUTION_ENABLED.key -> "false",
       CometConf.COMET_SHUFFLE_MODE.key -> "jvm",
       SQLConf.CACHE_VECTORIZED_READER_ENABLED.key -> "true",
-      CometConf.COMET_EXEC_IN_MEMORY_CACHE_ENABLED.key -> "true",
-      "spark.comet.sparkToColumnar.enabled" -> "true") {
+      CometConf.COMET_EXEC_IN_MEMORY_CACHE_ENABLED.key -> "true") {
 
       spark.catalog.clearCache()
 
@@ -1215,12 +1570,11 @@ class CometInMemoryCacheSuite extends CometTestBase {
   }
 
   private def withNativeCache(f: => Unit): Unit = {
-    withSQLConf(
+    withConversions(
       SQLConf.ADAPTIVE_EXECUTION_ENABLED.key -> "false",
       CometConf.COMET_SHUFFLE_MODE.key -> "jvm",
       SQLConf.CACHE_VECTORIZED_READER_ENABLED.key -> "true",
-      CometConf.COMET_EXEC_IN_MEMORY_CACHE_ENABLED.key -> "true",
-      "spark.comet.sparkToColumnar.enabled" -> "true") {
+      CometConf.COMET_EXEC_IN_MEMORY_CACHE_ENABLED.key -> "true") {
       spark.catalog.clearCache()
       try f
       finally spark.catalog.clearCache()
@@ -1456,12 +1810,11 @@ class CometInMemoryCacheSuite extends CometTestBase {
   }
 
   test("Comet in-memory cache pruning handles NaN floating-point values") {
-    withSQLConf(
+    withConversions(
       SQLConf.ADAPTIVE_EXECUTION_ENABLED.key -> "false",
       CometConf.COMET_SHUFFLE_MODE.key -> "jvm",
       SQLConf.CACHE_VECTORIZED_READER_ENABLED.key -> "true",
       CometConf.COMET_EXEC_IN_MEMORY_CACHE_ENABLED.key -> "true",
-      "spark.comet.sparkToColumnar.enabled" -> "true",
       "spark.sql.inMemoryColumnarStorage.batchSize" -> "2") {
 
       spark.catalog.clearCache()
@@ -1543,8 +1896,8 @@ class CometInMemoryCacheSuite extends CometTestBase {
         withSQLConf(
           Seq(
             CometConf.COMET_NATIVE_SCAN_ENABLED.key -> "false",
-            CometConf.COMET_SPARK_TO_ARROW_ENABLED.key -> "false",
-            SQLConf.PARQUET_VECTORIZED_READER_ENABLED.key -> "true") ++ extraConfs: _*) {
+            SQLConf.PARQUET_VECTORIZED_READER_ENABLED.key -> "true") ++
+            sparkToArrowConversionConfs(enabled = false) ++ extraConfs: _*) {
 
           spark.read.parquet(path.toString).createOrReplaceTempView(view)
           val expected = uncachedSparkAnswer(s"SELECT * FROM $view")
@@ -1692,11 +2045,10 @@ class CometInMemoryCacheSuite extends CometTestBase {
   private def withCachedProjection(view: String, columns: Seq[String], chunkSize: Option[Int])(
       f: (org.apache.spark.sql.execution.columnar.InMemoryRelation, Array[CachedBatch]) => Unit)
       : Unit = {
-    withSQLConf(
+    withConversions(
       Seq(
         SQLConf.ADAPTIVE_EXECUTION_ENABLED.key -> "false",
         CometConf.COMET_EXEC_IN_MEMORY_CACHE_ENABLED.key -> "true",
-        "spark.comet.sparkToColumnar.enabled" -> "true",
         SQLConf.CACHE_VECTORIZED_READER_ENABLED.key -> "true") ++
         chunkSize.map(CometConf.COMET_EXEC_IN_MEMORY_CACHE_CHUNK_SIZE.key -> _.toString): _*) {
 
@@ -1772,12 +2124,11 @@ class CometInMemoryCacheSuite extends CometTestBase {
     // -- the payload records no codec, so nothing is decompressed -- and shipped broken for a
     // while because the only tests that ran were on the default codec.
     Seq("none", "zstd").foreach { codec =>
-      withSQLConf(
+      withConversions(
         SQLConf.ADAPTIVE_EXECUTION_ENABLED.key -> "false",
         SQLConf.CACHE_VECTORIZED_READER_ENABLED.key -> "true",
         CometConf.COMET_EXEC_IN_MEMORY_CACHE_ENABLED.key -> "true",
-        CometConf.COMET_EXEC_IN_MEMORY_CACHE_COMPRESSION_CODEC.key -> codec,
-        "spark.comet.sparkToColumnar.enabled" -> "true") {
+        CometConf.COMET_EXEC_IN_MEMORY_CACHE_COMPRESSION_CODEC.key -> codec) {
 
         spark.catalog.clearCache()
         val view = s"codec_cache_$codec"
@@ -1867,12 +2218,11 @@ class CometInMemoryCacheSuite extends CometTestBase {
     assert(expectedNulls.length == 1000)
 
     Seq("none", "zstd").foreach { codec =>
-      withSQLConf(
+      withConversions(
         SQLConf.ADAPTIVE_EXECUTION_ENABLED.key -> "false",
         SQLConf.CACHE_VECTORIZED_READER_ENABLED.key -> "true",
         CometConf.COMET_EXEC_IN_MEMORY_CACHE_ENABLED.key -> "true",
-        CometConf.COMET_EXEC_IN_MEMORY_CACHE_COMPRESSION_CODEC.key -> codec,
-        "spark.comet.sparkToColumnar.enabled" -> "true") {
+        CometConf.COMET_EXEC_IN_MEMORY_CACHE_COMPRESSION_CODEC.key -> codec) {
 
         spark.catalog.clearCache()
         val view = s"null_cache_$codec"
@@ -2254,10 +2604,9 @@ class CometInMemoryCacheSuite extends CometTestBase {
     // the whole cache schema, or to a single placeholder column -- makes the emitted batches
     // disagree with the scan's declared output, which is wrong for any consumer that reads by
     // ordinal instead of by row count. See the join regression below.
-    withSQLConf(
+    withConversions(
       SQLConf.ADAPTIVE_EXECUTION_ENABLED.key -> "false",
       CometConf.COMET_EXEC_IN_MEMORY_CACHE_ENABLED.key -> "true",
-      "spark.comet.sparkToColumnar.enabled" -> "true",
       SQLConf.CACHE_VECTORIZED_READER_ENABLED.key -> "true") {
 
       spark.catalog.clearCache()
@@ -2292,10 +2641,9 @@ class CometInMemoryCacheSuite extends CometTestBase {
     // An empty-output cache scan can feed a join, not only a count-style aggregate. A join reads
     // its inputs by ordinal, so any column the scan emits beyond its declared output shifts the
     // right side's positions and silently produces wrong results rather than failing.
-    withSQLConf(
+    withConversions(
       SQLConf.ADAPTIVE_EXECUTION_ENABLED.key -> "false",
-      CometConf.COMET_EXEC_IN_MEMORY_CACHE_ENABLED.key -> "true",
-      "spark.comet.sparkToColumnar.enabled" -> "true") {
+      CometConf.COMET_EXEC_IN_MEMORY_CACHE_ENABLED.key -> "true") {
 
       spark.catalog.clearCache()
       val left = spark.range(10L, 13L).cache()
@@ -2330,11 +2678,10 @@ class CometInMemoryCacheSuite extends CometTestBase {
     // batches reaching serializeBatches from a shuffle or broadcast still carry independent
     // dictionary providers whose IDs collide, and re-encoding one with only the first column's
     // provider cannot resolve the later columns' IDs.
-    withSQLConf(
+    withConversions(
       SQLConf.ADAPTIVE_EXECUTION_ENABLED.key -> "false",
       CometConf.COMET_EXEC_IN_MEMORY_CACHE_ENABLED.key -> "true",
-      CometConf.COMET_SHUFFLE_MODE.key -> "jvm",
-      "spark.comet.sparkToColumnar.enabled" -> "true") {
+      CometConf.COMET_SHUFFLE_MODE.key -> "jvm") {
 
       spark.catalog.clearCache()
       val first = spark
@@ -2363,15 +2710,14 @@ class CometInMemoryCacheSuite extends CometTestBase {
     // CachedRDDBuilder.cachedColumnBuffers builds its RDD by executing the cached plan, so
     // touching it during planning runs jobs before the outer query is even submitted. With an
     // adaptively-cached relation that also finalizes the cached plan. EXPLAIN must launch nothing.
-    withSQLConf(
+    withConversions(
       SQLConf.ADAPTIVE_EXECUTION_ENABLED.key -> "true",
       // Spark caches through a session with some configs forced off, and on 3.4 that list still
       // includes AQE itself, so the cached plan comes back non-adaptive and there is nothing to
       // finalize. This conf is what decides that list; 3.5 defaults it on, and 4.0 stopped
       // disabling AQE either way. Setting it keeps the relation adaptive on every version.
       SQLConf.CAN_CHANGE_CACHED_PLAN_OUTPUT_PARTITIONING.key -> "true",
-      CometConf.COMET_EXEC_IN_MEMORY_CACHE_ENABLED.key -> "true",
-      "spark.comet.sparkToColumnar.enabled" -> "true") {
+      CometConf.COMET_EXEC_IN_MEMORY_CACHE_ENABLED.key -> "true") {
 
       spark.catalog.clearCache()
       val cached = spark.range(100).repartition(2).cache()
@@ -2610,11 +2956,10 @@ class CometInMemoryCacheSuite extends CometTestBase {
    * dictionary-encoded columns, which the writer has to decode before storing them.
    */
   private def withDictionaryCache(f: InMemoryRelation => Unit): Unit = {
-    withSQLConf(
+    withConversions(
       SQLConf.ADAPTIVE_EXECUTION_ENABLED.key -> "false",
       CometConf.COMET_EXEC_IN_MEMORY_CACHE_ENABLED.key -> "true",
-      CometConf.COMET_SHUFFLE_MODE.key -> "jvm",
-      "spark.comet.sparkToColumnar.enabled" -> "true") {
+      CometConf.COMET_SHUFFLE_MODE.key -> "jvm") {
 
       spark.catalog.clearCache()
       spark
@@ -2680,11 +3025,10 @@ class CometInMemoryCacheSuite extends CometTestBase {
     // past it and leaves in place the expression IDs of whichever occurrence of the relation
     // produced it. sameResult is what exchange and broadcast reuse are keyed on, so two
     // equivalent scans that compare unequal make a query shuffle and aggregate one cache twice.
-    withSQLConf(
+    withConversions(
       SQLConf.ADAPTIVE_EXECUTION_ENABLED.key -> "false",
       CometConf.COMET_EXEC_IN_MEMORY_CACHE_ENABLED.key -> "true",
-      CometConf.COMET_SHUFFLE_MODE.key -> "jvm",
-      "spark.comet.sparkToColumnar.enabled" -> "true") {
+      CometConf.COMET_SHUFFLE_MODE.key -> "jvm") {
 
       spark.catalog.clearCache()
       spark
