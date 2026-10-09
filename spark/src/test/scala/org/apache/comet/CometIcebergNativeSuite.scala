@@ -2351,7 +2351,8 @@ class CometIcebergNativeSuite
   // A pruned task schema still needs the columns iceberg-rust uses beyond the projection: the
   // partition source and the equality-delete key when the query projects neither. Tasks with
   // deletes read with the pruned schema too, and the tasks of every partition share the one schema
-  // that appending the partition source builds.
+  // that appending the partition source builds. VERSION AS OF reads of columns dropped, renamed,
+  // or swapped after the snapshot use the snapshot's names.
   test("nested schema pruning with deletes, partitions, and time travel") {
     assume(icebergAvailable, "Iceberg not available in classpath")
 
@@ -2404,37 +2405,58 @@ class CometIcebergNativeSuite
 
         val mor = "test_cat.db.nested_pruning_mor"
         spark.sql(s"""
-          CREATE TABLE $mor (id INT, c STRING, s STRUCT<a: INT, pad: STRING>)
+          CREATE TABLE $mor (
+            id INT, c STRING, r STRING, x INT, y INT, s STRUCT<a: INT, pad: STRING>)
           USING iceberg $morProperties
         """)
-        spark.sql(s"INSERT INTO $mor SELECT id, p, s FROM ($rows)")
+        spark.sql(s"""
+          INSERT INTO $mor
+          SELECT id, p, concat('r', CAST(id AS STRING)), id, -id, s FROM ($rows)
+        """)
         val snapshotBeforeDeletes = latestSnapshotId(mor)
         spark.sql(s"DELETE FROM $mor WHERE id % 10 = 0")
         val snapshotWithDeletes = latestSnapshotId(mor)
         commitEqualityDelete("test_cat", "db", "nested_pruning_mor", "id", 7, warehouseDir)
-        spark.sql(s"ALTER TABLE $mor DROP COLUMN c")
+        // Drop `c`, rename `r`, and swap the names of `x` and `y`.
+        Seq(
+          "DROP COLUMN c",
+          "RENAME COLUMN r TO r2",
+          "RENAME COLUMN x TO tmp",
+          "RENAME COLUMN y TO x",
+          "RENAME COLUMN tmp TO y").foreach(change => spark.sql(s"ALTER TABLE $mor $change"))
         checkPrunedNativeScan(s"SELECT id, s.a FROM $mor ORDER BY id")
         // The equality-delete key `id` is not projected. Iceberg gives the delete only to the data
         // file whose `id` range holds 7, so only that file's task appends `id`.
         checkPrunedNativeScan(s"SELECT s.a FROM $mor ORDER BY s.a")
         checkPrunedNativeScan(
           s"SELECT id, s.a FROM $mor VERSION AS OF $snapshotBeforeDeletes ORDER BY id")
-        // `c` was dropped after this snapshot, so the current table schema lacks it, and these
-        // tasks with deletes must read with the scan schema.
+        // The current table schema lacks `c` and names `r`, `x`, and `y` differently, so these
+        // tasks with deletes must read with the scan schema, which keeps the snapshot's names.
         checkPrunedNativeScan(
-          s"SELECT id, c, s.a FROM $mor VERSION AS OF $snapshotWithDeletes ORDER BY id")
+          s"SELECT id, c, r, x, y, s.a FROM $mor VERSION AS OF $snapshotWithDeletes ORDER BY id")
 
         val partitioned = "test_cat.db.nested_pruning_partitioned"
         spark.sql(s"""
-          CREATE TABLE $partitioned (id INT, p STRING, s STRUCT<a: INT, pad: STRING>)
+          CREATE TABLE $partitioned (id INT, p STRING, c STRING, s STRUCT<a: INT, pad: STRING>)
           USING iceberg PARTITIONED BY (p) $morProperties
         """)
-        spark.sql(s"INSERT INTO $partitioned $rows")
+        spark.sql(s"""
+          INSERT INTO $partitioned
+          SELECT id, p, concat('c', CAST(id AS STRING)), s FROM ($rows)
+        """)
         spark.sql(s"DELETE FROM $partitioned WHERE id % 10 = 0")
+        val partitionedSnapshot = latestSnapshotId(partitioned)
         // The partition source `p` is not projected. Every task appends it, and they share the
         // memoized result.
         checkPrunedNativeScan(s"SELECT id, s.a FROM $partitioned ORDER BY id", oneSchema = true)
         checkPrunedNativeScan(s"SELECT p, count(s.a) FROM $partitioned GROUP BY p ORDER BY p")
+        // Once `p` takes the dropped `c`'s name, the partition source's current name clashes with
+        // the snapshot's `c`, so it is appended under its older name.
+        spark.sql(s"ALTER TABLE $partitioned DROP COLUMN c")
+        spark.sql(s"ALTER TABLE $partitioned RENAME COLUMN p TO c")
+        checkPrunedNativeScan(
+          s"SELECT id, c, s.a FROM $partitioned VERSION AS OF $partitionedSnapshot ORDER BY id",
+          oneSchema = true)
 
         Seq(mor, partitioned).foreach(t => spark.sql(s"DROP TABLE $t"))
       }

@@ -719,8 +719,9 @@ object IcebergReflection extends Logging {
 
   /**
    * Returns a schema equal to `baseSchema` but guaranteed to contain `requiredFieldIds`. Any id
-   * not already present is resolved from the table's current schema, or from its schema history
-   * (`table.schemas()`) for a column since dropped, and appended.
+   * not already present is appended, resolved from the table's current schema, or from its schema
+   * history (`table.schemas()`) when the column has since been dropped or its current name is
+   * taken.
    *
    * Two callers need this: an equality delete may be keyed on a column since dropped from the
    * current schema (mirroring Iceberg-Java's `DeleteFilter.fileProjection`), and a partition
@@ -730,6 +731,7 @@ object IcebergReflection extends Logging {
    * CometScanRule is responsible for falling back before we get here.
    */
   def schemaWithRequiredFields(baseSchema: Any, table: Any, requiredFieldIds: Seq[Int]): Any = {
+    import scala.jdk.CollectionConverters._
     // `findFieldObject` searches recursively, so a source column already present as a nested field
     // (e.g. `s.region`) is not re-appended at the top level, which would create a duplicate field
     // id. Empty `requiredFieldIds` (the common non-partitioned, no-delete task) does no lookups.
@@ -741,23 +743,27 @@ object IcebergReflection extends Logging {
       logDebug(
         s"Native Iceberg scan schema is missing field id(s) ${missingIds.mkString(",")}; " +
           "resolving them from table schema history")
-      // table.schemas() lists the oldest schema first, so a column the table still has is looked
-      // up in the current schema before it, to keep its current name and type. An older name
-      // could clash with a column that took it over.
-      val schemas = getMethod(table.getClass, "schema").invoke(table) +: getAllSchemas(table)
-      val resolvedFields = missingIds.map { id =>
-        schemas.iterator
-          .map(findFieldObject(_, id))
-          .collectFirst { case Some(field) => field }
-          .getOrElse(throw new IllegalStateException(
-            s"Cannot resolve field id $id in table schema history"))
-      }
       val existing =
         getMethod(baseSchema.getClass, "columns")
           .invoke(baseSchema)
           .asInstanceOf[java.util.List[_]]
       val newColumns = new java.util.ArrayList[Any](existing)
-      resolvedFields.foreach(newColumns.add)
+      // A field is appended under a name it has had that the task schema does not use yet. The
+      // current schema comes first, to keep a live column's current name and type, and then
+      // table.schemas(), oldest first. A VERSION AS OF scan schema carries the snapshot's names,
+      // so a current name can clash with a column the snapshot still has.
+      val schemas = getMethod(table.getClass, "schema").invoke(table) +: getAllSchemas(table)
+      val names = scala.collection.mutable.Set(existing.asScala.map(fieldName).toSeq: _*)
+      missingIds.foreach { id =>
+        val (field, name) = schemas.iterator
+          .flatMap(findFieldObject(_, id))
+          .map(f => (f, fieldName(f)))
+          .find { case (_, n) => !names.contains(n) }
+          .getOrElse(throw new IllegalStateException(
+            s"Cannot resolve field id $id in table schema history under an unused name"))
+        names += name
+        newColumns.add(field)
+      }
       baseSchema.getClass
         .getConstructor(classOf[java.util.List[_]])
         .newInstance(newColumns)
