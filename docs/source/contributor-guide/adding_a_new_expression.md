@@ -560,6 +560,14 @@ pub fn spark_ceil(
 }
 ```
 
+#### Returning a scalar or an array
+
+Return `ColumnarValue::Scalar` only when the result is the same for every row, for example when all
+the inputs are scalars. That includes an empty batch: an expression whose result depends on a column
+must return an empty array there, not a scalar. `IN` evaluates its candidates on an empty batch to
+decide whether they are constants, and uses the value of a candidate that returns a scalar there for
+every row.
+
 #### Producing strings from arbitrary bytes
 
 Spark's `StringType` may contain bytes that are not valid UTF-8 (Spark stores them verbatim), but

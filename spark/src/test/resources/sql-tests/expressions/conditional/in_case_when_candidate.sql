@@ -20,8 +20,6 @@
 -- must not return a scalar NULL there, or IN compares every row against NULL.
 
 -- Config: spark.comet.exec.range.enabled=true
--- Config: spark.comet.sparkToColumnar.enabled=true
--- Config: spark.comet.sparkToColumnar.supportedOperatorList=Range
 
 query
 SELECT id, id IN (IF(id = 1, NULL, id)), id IN (nullif(id, 1), 5L) FROM range(0, 3)
@@ -29,10 +27,22 @@ SELECT id, id IN (IF(id = 1, NULL, id)), id IN (nullif(id, 1), 5L) FROM range(0,
 query
 SELECT id, id IN (CASE WHEN id = 1 THEN NULL ELSE id END) FROM range(0, 3)
 
+-- coalesce is planned as a CASE
+query
+SELECT id, id IN (coalesce(nullif(id, 1), 5L)) FROM range(0, 3)
+
 -- no ELSE
 query
 SELECT id, id IN (CASE WHEN id <> 1 THEN id END), id NOT IN (CASE WHEN id <> 1 THEN id END)
 FROM range(0, 3)
+
+query
+SELECT id, id IN (CASE WHEN id = 0 THEN id WHEN id = 2 THEN id END) FROM range(0, 3)
+
+-- A CASE that reads no column but that Spark cannot fold, because Comet plans
+-- spark_partition_id() as a literal
+query
+SELECT id, id IN (CASE WHEN spark_partition_id() = 0 THEN 1L END, 5L) FROM range(0, 3, 1, 1)
 
 -- nested operands
 query

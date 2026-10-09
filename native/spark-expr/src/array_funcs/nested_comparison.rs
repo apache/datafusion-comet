@@ -27,12 +27,11 @@ use arrow::buffer::{BooleanBuffer, NullBuffer};
 use arrow::compute::{not, or_kleene};
 use arrow::datatypes::{DataType, Schema};
 use arrow::record_batch::RecordBatch;
+use datafusion::common::tree_node::TreeNode;
 use datafusion::common::{internal_err, DFSchema, Result, ScalarValue};
 use datafusion::logical_expr::{ColumnarValue, Operator};
 use datafusion::physical_expr::expressions::{in_list, BinaryExpr, Column, InListExpr, Literal};
-use datafusion::physical_expr::utils::collect_columns;
 use datafusion::physical_expr::PhysicalExpr;
-use datafusion::physical_expr_common::physical_expr::is_volatile;
 use std::fmt::{Display, Formatter};
 use std::hash::{Hash, Hasher};
 use std::sync::Arc;
@@ -370,6 +369,9 @@ pub fn spark_in_list(
     schema: &Schema,
 ) -> Result<Arc<dyn PhysicalExpr>> {
     if !is_nested_with_float_leaf(&value.data_type(schema)?) || candidates.is_empty() {
+        // DataFusion takes a candidate as a constant when it returns a scalar for an empty
+        // batch, so an expression that reads a column must return an array there
+        // (apache/datafusion#26082)
         return in_list(value, candidates, &negated, schema);
     }
     validate_types(&value, &candidates, schema)?;
@@ -377,9 +379,14 @@ pub fn spark_in_list(
     let constants = candidates
         .iter()
         .map(|child| {
-            // A candidate that reads a column is not a constant, even if it returns a scalar
-            // for the empty batch
-            if is_volatile(child) || !collect_columns(child).is_empty() {
+            // Only a candidate built from literals is a constant. One that reads a column can
+            // still return a scalar for the empty batch.
+            let constant = !child
+                .exists(|e| {
+                    Ok(e.is_volatile_node() || (e.children().is_empty() && !e.is::<Literal>()))
+                })
+                .unwrap_or(true);
+            if !constant {
                 return None;
             }
             match child.evaluate(&empty).ok()? {
@@ -860,33 +867,16 @@ mod tests {
         ]));
         let batch = batch(l, r);
         let (a, b) = columns();
-        // CASE WHEN b IS NOT NULL THEN b END
-        let case_b: Arc<dyn PhysicalExpr> = Arc::new(crate::CaseWhenExpr::try_new(
-            vec![(
-                Arc::new(datafusion::physical_expr::expressions::IsNotNullExpr::new(
-                    Arc::clone(&b),
-                )),
-                Arc::clone(&b),
-            )],
-            None,
-        )?);
         // An expression of b that returns a scalar for an empty batch
-        let scalar_on_empty: Arc<dyn PhysicalExpr> = Arc::new(Probe {
+        let candidate: Arc<dyn PhysicalExpr> = Arc::new(Probe {
             child: b,
             volatile: false,
             scalar_on_empty: true,
             calls: Arc::new(std::sync::atomic::AtomicUsize::new(0)),
         });
-        for candidate in [case_b, scalar_on_empty] {
-            let expr = spark_in_list(
-                Arc::clone(&a),
-                vec![candidate],
-                false,
-                batch.schema().as_ref(),
-            )?;
-            assert!(expr.as_ref().is::<NestedPredicate>(), "{expr}");
-            assert_eq!(results(&expr, &batch), vec![Some(true), None]);
-        }
+        let expr = spark_in_list(a, vec![candidate], false, batch.schema().as_ref())?;
+        assert!(expr.as_ref().is::<NestedPredicate>(), "{expr}");
+        assert_eq!(results(&expr, &batch), vec![Some(true), None]);
         Ok(())
     }
 
