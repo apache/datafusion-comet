@@ -473,13 +473,9 @@ case class CometScanRule(session: SparkSession)
             s"Native Text scan requires ${COMET_EXEC_ENABLED.key} to be enabled")
         }
         // input_file_name/_block_start/_block_length read a thread-local that Spark's FileScanRDD
-        // sets; the native DataFusion scan does not, so they would return "" / -1. Same guard as
-        // the native Parquet path.
-        if (plan.exists(node =>
-            node.expressions.exists(_.exists {
-              case _: InputFileName | _: InputFileBlockStart | _: InputFileBlockLength => true
-              case _ => false
-            }))) {
+        // sets; the native DataFusion scan does not, so they would return "" / -1. Reuse the shared
+        // helper the Parquet gate uses so the two cannot drift.
+        if (CometScanRule.readsInputFileBlock(plan)) {
           return withFallbackReason(
             scanExec,
             "Native Text scan is not compatible with input_file_name, " +
@@ -514,14 +510,26 @@ case class CometScanRule(session: SparkSession)
           fallbackReasons += "Comet native Text scan does not support files split into byte " +
             "ranges (large files)"
         }
+        // The native reader loads each file whole and does not reserve the buffer against the
+        // memory pool, so bound the per-file size; larger files fall back to Spark. This keeps the
+        // feature to the small lookup tables it targets regardless of maxPartitionBytes.
+        val maxTextFileSize = COMET_SCAN_TEXT_MAX_FILE_SIZE.get()
+        val hasOversizedFile = scanExec.inputPartitions.exists {
+          case fp: FilePartition => fp.files.exists(_.length > maxTextFileSize)
+          case _ => false
+        }
+        if (hasOversizedFile) {
+          fallbackReasons += "Comet native Text scan does not read files larger than " +
+            s"${COMET_SCAN_TEXT_MAX_FILE_SIZE.key} ($maxTextFileSize bytes)"
+        }
         // Comet's native plan does not carry a compression codec, so the native reader would feed
-        // raw compressed bytes to the line splitter. Spark auto-detects a codec by file extension
-        // (e.g. .gz, .bz2). Fall back when any input file is compressed. Use the options-aware
-        // Hadoop conf so a codec registered via a per-read option is honored (as Spark does).
+        // raw compressed bytes to the line splitter. Spark auto-detects a codec by file extension.
+        // Use the options-aware Hadoop conf (so a per-read codec option is honored) and the
+        // version-aware ShimFileFormat.isCompressedFile, which on Spark 4.1+ also catches the
+        // non-standard .gzip/.zstd extensions that CompressionCodecFactory alone misses.
         val hadoopConf = session.sessionState.newHadoopConfWithOptions(scan.options.asScala.toMap)
-        val codecFactory = new org.apache.hadoop.io.compress.CompressionCodecFactory(hadoopConf)
         val hasCompressedFile = scan.fileIndex.inputFiles.exists { path =>
-          codecFactory.getCodec(new org.apache.hadoop.fs.Path(path)) != null
+          ShimFileFormat.isCompressedFile(hadoopConf, new org.apache.hadoop.fs.Path(path))
         }
         if (hasCompressedFile) {
           fallbackReasons += "Comet does not support compressed text files"
@@ -537,6 +545,15 @@ case class CometScanRule(session: SparkSession)
             "ignoreMissingFiles",
             false)) {
           fallbackReasons += "Comet native Text scan does not support ignoreMissingFiles"
+        }
+        // Spark's line reader skips any line at or over
+        // mapreduce.input.linerecordreader.line.maxlength (default unlimited); the key can come
+        // from spark.hadoop.*, core-site.xml, or a read option. The native reader does not
+        // truncate, so fall back when a finite limit is set.
+        if (hadoopConf.getInt("mapreduce.input.linerecordreader.line.maxlength", Int.MaxValue)
+            != Int.MaxValue) {
+          fallbackReasons += "Comet native Text scan does not support " +
+            "mapreduce.input.linerecordreader.line.maxlength"
         }
         // A wholetext file is never split (TextScan.isSplitable is false for wholeText), so the
         // split-file guard above does not bound it. Reading a very large file whole is unbounded
@@ -591,6 +608,15 @@ case class CometScanRule(session: SparkSession)
         if (rejectedPath.nonEmpty) {
           fallbackReasons += s"Native Text scan cannot open path '${rejectedPath.get.uri}': " +
             "object_store rejects it (e.g. an unsupported character in the path)"
+        }
+        // Native planning registers one object store per partition and strips the bucket from every
+        // key, so an S3-compliant alias scan spanning multiple buckets would read every file from
+        // the first bucket. Decline multi-bucket alias scans (same hazard the Parquet gate guards).
+        val scanBuckets = CometScanRule.aliasScanBuckets(roots)
+        if (scanBuckets.size > 1) {
+          fallbackReasons += "Native Text scan reads S3-compliant alias paths across multiple " +
+            s"buckets (${scanBuckets.toSeq.sorted.mkString(", ")}); Comet registers one object " +
+            "store per file partition and would read every file from the first file's bucket"
         }
         if (fallbackReasons.isEmpty) {
           CometBatchScanExec(

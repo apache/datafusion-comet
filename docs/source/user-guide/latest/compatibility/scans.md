@@ -89,8 +89,9 @@ The following limitations raise an error at scan time rather than falling back t
   query, or cast the column to `BINARY` before persisting, if you need to preserve non-UTF-8 bytes.
   By contrast, Comet decodes non-UTF-8 bytes at the JVM-to-native Arrow FFI boundaries using
   JVM-compatible replacement semantics. This covers native query input from the JVM-exported Arrow
-  stream (including JVM scans, shuffle reads, and `mapInArrow`), columnar-to-row conversion, and JVM
-  UDF results. It does not change the native Parquet reader: rejecting invalid UTF-8 there remains
+  stream (including JVM scans, shuffle reads, and `mapInArrow`), columnar-to-row conversion, JVM
+  UDF results, and the native text scan (which replaces invalid bytes in each line's `value` with
+  U+FFFD). It does not change the native Parquet reader: rejecting invalid UTF-8 there remains
   Gap A of [#4764](https://github.com/apache/datafusion-comet/issues/4764). See
   [Strings with non-UTF-8 bytes](index.md#strings-with-non-utf-8-bytes),
   [#4121](https://github.com/apache/datafusion-comet/issues/4121), and the tracking issue above.

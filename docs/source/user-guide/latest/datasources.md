@@ -55,10 +55,15 @@ Comet provides experimental Rust-based text scan support (a single `value: strin
 `spark.comet.scan.text.v2.enabled` is enabled, text files are read in Rust. This feature is experimental and
 performance benefits are workload-dependent. Only Spark's DataSource V2 text scan is accelerated, and Spark reads
 text through the V1 API by default, so also remove `text` from `spark.sql.sources.useV1SourceList`. The native scan
-falls back to Spark for cases it does not handle -- including partitioned tables, compressed files, files large
-enough that Spark splits them into byte ranges, `wholetext` files larger than roughly 2GB (capped at
-`min(spark.sql.files.maxPartitionBytes, 2GB)`), unsupported filesystem schemes, and `input_file_name()` or
+falls back to Spark for cases it does not handle -- including compressed files, files larger than
+`spark.comet.scan.text.maxFileSize` (64MB by default, since the reader loads each file whole), files Spark splits
+into byte ranges, unsupported filesystem schemes, and `input_file_name()` or
 `ignoreCorruptFiles`/`ignoreMissingFiles` usage. It targets small lookup tables such as a broadcast join's build side.
+Reading a partition column from a partitioned directory falls back to Spark, but selecting only `value` stays native.
+
+Text files are a common source of ill-formed UTF-8. The native reader replaces invalid byte sequences with the
+Unicode replacement character (U+FFFD), so byte-level comparisons and functions can differ from Spark on those rows;
+see [Strings with non-UTF-8 bytes](compatibility/scans.md) in the compatibility guide.
 
 ### Other Spark inputs
 
