@@ -475,13 +475,20 @@ The `MultiPartitionShuffleRepartitioner` holds:
 - `buffered_batches`, a `Vec<RecordBatch>` of incoming batches, alongside `partition_indices`
   recording which rows of those batches belong to each partition. Rows are not copied into
   per-partition buffers as they arrive.
-- `reservation`, a `MemoryReservation` charged for the bytes each buffered batch newly pins.
+- `reservation`, an `Arc<MemoryReservation>` shared with the local writer's spill metadata and
+  charged for the bytes each buffered batch newly pins.
   `pinned_buffers` tracks backing buffer start addresses so one allocation shared by many sliced
   batches is charged once rather than once per slice. Charging a per-batch size instead would
   overstate memory by the slice count and spill spuriously.
 - `max_buffer_bytes`, the optional fixed spill threshold described above. `None` leaves pool
   pressure as the only trigger.
 - `scratch`, reusable buffers for partition ID computation.
+
+The local writer charges the allocated capacity of both the outer range table and each partition's
+range vector to the shared reservation. Spilling releases the buffered input's charge while retaining
+the metadata charge. After a partition's spilled blocks have been copied into the output, its range
+vector is dropped and its charge released. The outer table remains charged until the writer drops.
+The fixed `max_buffer_bytes` threshold counts buffered input only.
 
 The spill file is owned by `PartitionedSpill` in `writers/local/spill.rs`. It holds one DataFusion
 `SpillFile`, created lazily on the first spill and shared by every output partition, and tracks per
