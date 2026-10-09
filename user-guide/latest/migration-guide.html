@@ -880,6 +880,32 @@ key is removed.</p>
 </section>
 <section id="upgrading-to-comet-1-2-0">
 <h2>Upgrading to Comet 1.2.0<a class="headerlink" href="#upgrading-to-comet-1-2-0" title="Link to this heading">#</a></h2>
+<p>Comet <code class="docutils literal notranslate"><span class="pre">1.2.0</span></code> makes no behavior changes that need a <code class="docutils literal notranslate"><span class="pre">spark.comet.legacy.*</span></code> key. The changes below
+need none either, but check whether any of them applies to your deployment.</p>
+<section id="in-memory-cache-enabled-by-default">
+<h3>In-Memory Cache Enabled by Default<a class="headerlink" href="#in-memory-cache-enabled-by-default" title="Link to this heading">#</a></h3>
+<p><code class="docutils literal notranslate"><span class="pre">spark.comet.exec.inMemoryCache.enabled</span></code> now defaults to <code class="docutils literal notranslate"><span class="pre">true</span></code> on Spark 3.5 and later. There, an
+application that loads <code class="docutils literal notranslate"><span class="pre">CometPlugin</span></code> now stores what it caches with <code class="docutils literal notranslate"><span class="pre">CACHE</span> <span class="pre">TABLE</span></code>, <code class="docutils literal notranslate"><span class="pre">df.cache()</span></code> or
+<code class="docutils literal notranslate"><span class="pre">df.persist()</span></code> in Comet’s Arrow format instead of Spark’s, and Comet scans it natively. On Spark 3.4
+the default stays <code class="docutils literal notranslate"><span class="pre">false</span></code>; see <a class="reference internal" href="in-memory-cache.html"><span class="std std-doc">In-Memory Cache</span></a> for why. The format does not
+change query results, but it can change performance. Spark’s own cache scan can read Comet’s format
+more slowly than Spark’s, which matters when a session turns Comet or its native execution off
+after caching, and Comet records a fallback reason on such a scan. See
+<a class="reference internal" href="in-memory-cache.html#limitations"><span class="std std-ref">In-Memory Cache</span></a>.</p>
+<p>The format is chosen once, when the application starts. To keep Spark’s format, set
+<code class="docutils literal notranslate"><span class="pre">spark.comet.exec.inMemoryCache.enabled=false</span></code> then. Comet also keeps Spark’s format without that
+setting when the application:</p>
+<ul class="simple">
+<li><p>starts with <code class="docutils literal notranslate"><span class="pre">spark.comet.enabled</span></code> or <code class="docutils literal notranslate"><span class="pre">spark.comet.exec.enabled</span></code> set to <code class="docutils literal notranslate"><span class="pre">false</span></code>.</p></li>
+<li><p>leaves Comet shuffle enabled without one of Comet’s shuffle managers, so that Comet disables
+itself.</p></li>
+<li><p>uses Kryo with <code class="docutils literal notranslate"><span class="pre">spark.kryo.registrationRequired=true</span></code> and has not registered Comet’s cached
+batch, because Kryo would reject it. To use Comet’s format, register Comet’s classes with
+<code class="docutils literal notranslate"><span class="pre">spark.kryo.registrator=org.apache.comet.CometKryoRegistrator</span></code>; see
+<a class="reference internal" href="in-memory-cache.html#kryo"><span class="std std-ref">Kryo</span></a>.</p></li>
+</ul>
+<p>An application that sets <code class="docutils literal notranslate"><span class="pre">spark.sql.cache.serializer</span></code> itself keeps the serializer it chose.</p>
+</section>
 <section id="deprecated-and-removed-settings">
 <h3>Deprecated and Removed Settings<a class="headerlink" href="#deprecated-and-removed-settings" title="Link to this heading">#</a></h3>
 <p>Using <code class="docutils literal notranslate"><span class="pre">spark.comet.sparkToColumnar.enabled</span></code> and <code class="docutils literal notranslate"><span class="pre">spark.comet.sparkToColumnar.supportedOperatorList</span></code>
@@ -1074,6 +1100,7 @@ release, review the release notes for the versions in between.</p>
     <ul class="visible nav section-nav flex-column">
 <li class="toc-h2 nav-item toc-entry"><a class="reference internal nav-link" href="#legacy-configuration-keys">Legacy Configuration Keys</a></li>
 <li class="toc-h2 nav-item toc-entry"><a class="reference internal nav-link" href="#upgrading-to-comet-1-2-0">Upgrading to Comet 1.2.0</a><ul class="nav section-nav flex-column">
+<li class="toc-h3 nav-item toc-entry"><a class="reference internal nav-link" href="#in-memory-cache-enabled-by-default">In-Memory Cache Enabled by Default</a></li>
 <li class="toc-h3 nav-item toc-entry"><a class="reference internal nav-link" href="#deprecated-and-removed-settings">Deprecated and Removed Settings</a></li>
 </ul>
 </li>

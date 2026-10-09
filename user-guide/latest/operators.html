@@ -927,8 +927,8 @@ omitted from the tables below and may be reconsidered based on demand:</p>
 <td><p>Disabled by default. Set <code class="docutils literal notranslate"><span class="pre">spark.comet.exec.range.enabled=true</span></code> to generate the rows of <code class="docutils literal notranslate"><span class="pre">spark.range</span></code> and SQL <code class="docutils literal notranslate"><span class="pre">range()</span></code> in native code, so the operators above them run natively. It can be slower than Spark when those operators are only cheap expressions, such as a filter, which Spark compiles together with the range into one loop. Ranges whose arithmetic overflows the <code class="docutils literal notranslate"><span class="pre">Long</span></code> range fall back to Spark.</p></td>
 </tr>
 <tr class="row-odd"><td><p><code class="docutils literal notranslate"><span class="pre">InMemoryTableScanExec</span></code></p></td>
-<td><p>⚠️</p></td>
-<td><p>Experimental, disabled by default. Set <code class="docutils literal notranslate"><span class="pre">spark.comet.exec.inMemoryCache.enabled=true</span></code> before the application starts so Comet installs its Arrow cache serializer. Relations with unsupported column types stay in Spark’s cache format and fall back. See <a class="reference internal" href="in-memory-cache.html"><span class="std std-doc">In-Memory Cache</span></a>.</p></td>
+<td><p>✅</p></td>
+<td><p>Enabled by default from Spark 3.5. Comet installs its Arrow cache serializer as the application starts if <code class="docutils literal notranslate"><span class="pre">spark.comet.exec.inMemoryCache.enabled</span></code> is true, its default except on Spark 3.4. Relations with unsupported column types stay in Spark’s cache format and fall back. See <a class="reference internal" href="in-memory-cache.html"><span class="std std-doc">In-Memory Cache</span></a>.</p></td>
 </tr>
 </tbody>
 </table>

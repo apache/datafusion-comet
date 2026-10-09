@@ -899,15 +899,14 @@ normalized; returned values retain their original NaN representations and zero s
 <p>Because those comparison keys match Spark, <code class="docutils literal notranslate"><span class="pre">spark.comet.exec.strictFloatingPoint=true</span></code> does not
 force a fallback for them: sort keys, window and rank order keys, and range partitioning keys all
 stay native under strict mode, whether the floats in them are scalar or nested.</p>
-<p>The exception is a key that nests floats in an array or struct whose type can hold a null element
-or field. Spark orders such a null below every other value, whatever the key’s <code class="docutils literal notranslate"><span class="pre">NULLS</span> <span class="pre">FIRST</span></code> or
-<code class="docutils literal notranslate"><span class="pre">NULLS</span> <span class="pre">LAST</span></code>. The native sort places it by that null order, so <code class="docutils literal notranslate"><span class="pre">ASC</span> <span class="pre">NULLS</span> <span class="pre">LAST</span></code> and
-<code class="docutils literal notranslate"><span class="pre">DESC</span> <span class="pre">NULLS</span> <span class="pre">FIRST</span></code> can differ from Spark, and a <code class="docutils literal notranslate"><span class="pre">RANGE</span></code> window frame orders it above every other
-value, so a running aggregate can span the whole partition
-(<a class="reference external" href="https://github.com/apache/datafusion-comet/issues/6476">#6476</a>,
-<a class="reference external" href="https://github.com/apache/datafusion-comet/issues/6477">#6477</a>). Strict mode makes those keys fall
-back to Spark. A key whose type cannot hold a null, such as <code class="docutils literal notranslate"><span class="pre">array(coalesce(x,</span> <span class="pre">0.0D))</span></code>, stays
-native.</p>
+<p>That includes a key that nests floats in an array or struct whose type can hold a null element or
+field. Spark orders such a null below every other value, whatever the key’s <code class="docutils literal notranslate"><span class="pre">NULLS</span> <span class="pre">FIRST</span></code> or
+<code class="docutils literal notranslate"><span class="pre">NULLS</span> <span class="pre">LAST</span></code>, so Comet falls back in every mode, not only in strict mode, for the two shapes where
+the native sort or window frame would place it differently: <code class="docutils literal notranslate"><span class="pre">ASC</span> <span class="pre">NULLS</span> <span class="pre">LAST</span></code> or <code class="docutils literal notranslate"><span class="pre">DESC</span> <span class="pre">NULLS</span> <span class="pre">FIRST</span></code>
+on such a key (<a class="reference external" href="https://github.com/apache/datafusion-comet/issues/6476">#6476</a>), and a <code class="docutils literal notranslate"><span class="pre">RANGE</span></code>
+window frame that has to find a row’s peers over it
+(<a class="reference external" href="https://github.com/apache/datafusion-comet/issues/6477">#6477</a>). The
+<a class="reference internal" href="operators.html"><span class="std std-doc">operator compatibility notes</span></a> describe both.</p>
 <p><code class="docutils literal notranslate"><span class="pre">array_min</span></code> and <code class="docutils literal notranslate"><span class="pre">array_max</span></code> use Spark-compatible native comparisons in both strict and non-strict
 floating-point modes. Signed zeros compare equal, and all NaN representations compare equal and
 greater than non-NaN values. The original first equal element is retained: for example,

@@ -861,11 +861,12 @@ infer the schema from.</p>
 <section id="in-memory-cache">
 <h2>In-Memory Cache<a class="headerlink" href="#in-memory-cache" title="Link to this heading">#</a></h2>
 <p>Comet can store cached relations (<code class="docutils literal notranslate"><span class="pre">df.cache()</span></code>, <code class="docutils literal notranslate"><span class="pre">CACHE</span> <span class="pre">TABLE</span></code>) in Arrow format and scan them
-natively. This is experimental and disabled by default; see <a class="reference internal" href="../in-memory-cache.html"><span class="std std-doc">In-Memory Cache</span></a>
-for how to enable it. Comet does not replace a <code class="docutils literal notranslate"><span class="pre">spark.sql.cache.serializer</span></code> that the application
-has already set. Relations whose schema Comet’s Arrow writer does not support are cached in
-Spark’s default format, and their scans fall back to Spark. Reads that feed Spark operators rather
-than Comet operators can be slower than Spark’s cache.</p>
+natively. This is enabled by default from Spark 3.5 but not on Spark 3.4; see
+<a class="reference internal" href="../in-memory-cache.html"><span class="std std-doc">In-Memory Cache</span></a> for how to turn it off or on. Comet does not replace a
+<code class="docutils literal notranslate"><span class="pre">spark.sql.cache.serializer</span></code> that the application has already set. Relations whose schema Comet’s
+Arrow writer does not support are cached in Spark’s default format, and their scans fall back to
+Spark. Reads that feed Spark operators rather than Comet operators can be slower than Spark’s
+cache.</p>
 <p>With Kryo and <code class="docutils literal notranslate"><span class="pre">spark.kryo.registrationRequired=true</span></code>, Comet needs its Kryo registrator whether or
 not the cache is enabled; see <a class="reference internal" href="../installation.html#kryo-serialization"><span class="std std-ref">Kryo serialization</span></a>.</p>
 </section>

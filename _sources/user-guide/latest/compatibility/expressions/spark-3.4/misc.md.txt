@@ -50,7 +50,6 @@ The following cases are not supported by Comet and always fall back to Spark, re
 The following incompatibilities cause `SortOrder` to fall back to Spark by default. Set `spark.comet.expression.SortOrder.allowIncompatible=true` to enable Comet acceleration despite these differences.
 
 - Sorting with `ASC NULLS LAST` or `DESC NULLS FIRST` on an array or struct that can hold a null element or field is not 100% compatible with Spark. Spark orders a null element or field below every other value, whatever the key's null order, while Comet's native sort places it by the null order ([#6476](https://github.com/apache/datafusion-comet/issues/6476)).
-- Sorting on floating-point values nested in an array or struct that can hold a null element or field is not 100% compatible with Spark when `spark.comet.exec.strictFloatingPoint=true`
 
 ## StaticInvoke
 

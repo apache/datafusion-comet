@@ -847,15 +847,20 @@ under the License.
 <h1>In-Memory Cache<a class="headerlink" href="#in-memory-cache" title="Link to this heading">#</a></h1>
 <p>Comet can store Spark’s in-memory cache (<code class="docutils literal notranslate"><span class="pre">CACHE</span> <span class="pre">TABLE</span></code>, <code class="docutils literal notranslate"><span class="pre">df.cache()</span></code>, <code class="docutils literal notranslate"><span class="pre">df.persist()</span></code>) in an Arrow
 format that Comet operators read directly. Without it, a cached table is stored in Spark’s own
-format and every scan of it has to convert each batch before Comet can continue, which shows up in
-the plan as a <code class="docutils literal notranslate"><span class="pre">CometSparkColumnarToColumnar</span></code> above the cache scan.</p>
-<p>This feature is <strong>experimental and disabled by default</strong>. Turn it on at startup, alongside the rest
-of Comet’s configuration:</p>
+format, which Comet operators cannot read. Under Comet’s default settings the operators above the
+cache scan then run on Spark. With <code class="docutils literal notranslate"><span class="pre">spark.comet.convert.inMemoryCache.enabled</span></code>, a
+<code class="docutils literal notranslate"><span class="pre">CometSparkColumnarToColumnar</span></code> above the scan converts each batch for Comet operators instead.</p>
+<p>This feature is <strong>enabled by default</strong> from Spark 3.5. To turn it off, set the config at startup,
+alongside the rest of Comet’s configuration:</p>
 <div class="highlight-shell notranslate"><div class="highlight"><pre><span></span><span class="nv">$SPARK_HOME</span>/bin/spark-shell<span class="w"> </span><span class="se">\</span>
 <span class="w">    </span>...<span class="w"> </span><span class="se">\</span>
-<span class="w">    </span>--conf<span class="w"> </span>spark.comet.exec.inMemoryCache.enabled<span class="o">=</span><span class="nb">true</span>
+<span class="w">    </span>--conf<span class="w"> </span>spark.comet.exec.inMemoryCache.enabled<span class="o">=</span><span class="nb">false</span>
 </pre></div>
 </div>
+<p>On Spark 3.4 it is disabled by default, and setting the config to <code class="docutils literal notranslate"><span class="pre">true</span></code> turns it on. Spark 3.4 has
+no hook for the rule through which Comet lets AQE coalesce the shuffle partitions of a union that
+Comet runs, so a union of a shuffle and a relation cached in Comet’s format keeps every shuffle
+partition there.</p>
 <p>It has to be set before the <code class="docutils literal notranslate"><span class="pre">SparkContext</span></code> starts. Comet’s driver plugin chooses
 <code class="docutils literal notranslate"><span class="pre">spark.sql.cache.serializer</span></code> once, while the context is initializing, so an application keeps the
 cache format it started with however the config is set afterwards. The plugin installs Comet’s
@@ -954,8 +959,8 @@ nowhere to record either that a column is dictionary encoded or the dictionary i
 </thead>
 <tbody>
 <tr class="row-even"><td><p><code class="docutils literal notranslate"><span class="pre">spark.comet.exec.inMemoryCache.enabled</span></code></p></td>
-<td><p><code class="docutils literal notranslate"><span class="pre">false</span></code></p></td>
-<td><p>Whether to store and scan Spark’s in-memory cache in Comet’s format. Read at startup.</p></td>
+<td><p><code class="docutils literal notranslate"><span class="pre">true</span></code></p></td>
+<td><p>Whether to store and scan Spark’s in-memory cache in Comet’s format. Read at startup. Defaults to <code class="docutils literal notranslate"><span class="pre">false</span></code> on Spark 3.4.</p></td>
 </tr>
 <tr class="row-odd"><td><p><code class="docutils literal notranslate"><span class="pre">spark.comet.exec.inMemoryCache.compression.codec</span></code></p></td>
 <td><p><code class="docutils literal notranslate"><span class="pre">zstd</span></code></p></td>
@@ -1057,10 +1062,120 @@ back to Spark row execution above the scan and the two columns stop measuring th
 <p>Read what this compares carefully. Comet execution is on in both columns, so the aggregation runs
 on Comet either way and only the cache-scan boundary moves: on the left, Spark’s
 <code class="docutils literal notranslate"><span class="pre">InMemoryTableScanExec</span></code> feeds those same Comet operators through a <code class="docutils literal notranslate"><span class="pre">CometSparkColumnarToColumnar</span></code>
-bridge; on the right, <code class="docutils literal notranslate"><span class="pre">CometInMemoryTableScan</span></code> feeds them directly. Both columns read the same
+bridge, which the benchmark turns on with <code class="docutils literal notranslate"><span class="pre">spark.comet.convert.inMemoryCache.enabled</span></code>; on the
+right, <code class="docutils literal notranslate"><span class="pre">CometInMemoryTableScan</span></code> feeds them directly. Both columns read the same
 Comet-written <code class="docutils literal notranslate"><span class="pre">CometCachedBatch</span></code>. These numbers are therefore “keep the cached scan native” against
 “fall back to a Spark cache scan and convert”, not Comet against Spark execution, and not a
-comparison with Spark’s own cache format. That comparison is under <a class="reference internal" href="#limitations">Limitations</a>.</p>
+comparison with Spark’s own cache format, which follows.</p>
+<section id="against-spark-s-cache-format">
+<h3>Against Spark’s cache format<a class="headerlink" href="#against-spark-s-cache-format" title="Link to this heading">#</a></h3>
+<p>What turning the feature on changes for a query that Comet runs is measured against Spark’s own
+cache format by the benchmark’s adaptive cases. Comet and AQE are on, Comet’s other settings are at
+their defaults, and the same 5M-row relation is cached in each format. The defaults leave
+<code class="docutils literal notranslate"><span class="pre">spark.comet.convert.inMemoryCache.enabled</span></code> off, so Comet operators cannot read Spark’s cache scan,
+and with Spark’s format the operators directly above the scan run on Spark. Measured on an AMD
+Ryzen 9 7950X3D (JDK 17, Spark 4.1, release build):</p>
+<div class="pst-scrollable-table-container"><table class="table">
+<thead>
+<tr class="row-odd"><th class="head"><p>Query shape</p></th>
+<th class="head text-right"><p>Spark’s cache format</p></th>
+<th class="head text-right"><p>Comet’s cache format</p></th>
+<th class="head text-right"><p>Relative</p></th>
+</tr>
+</thead>
+<tbody>
+<tr class="row-even"><td><p>Row count only (0 of 6)</p></td>
+<td class="text-right"><p>29 ms</p></td>
+<td class="text-right"><p>24 ms</p></td>
+<td class="text-right"><p>1.2x</p></td>
+</tr>
+<tr class="row-odd"><td><p>Narrow projection (1 of 6)</p></td>
+<td class="text-right"><p>52 ms</p></td>
+<td class="text-right"><p>34 ms</p></td>
+<td class="text-right"><p>1.5x</p></td>
+</tr>
+<tr class="row-even"><td><p>3 of 6 columns</p></td>
+<td class="text-right"><p>102 ms</p></td>
+<td class="text-right"><p>112 ms</p></td>
+<td class="text-right"><p>0.9x</p></td>
+</tr>
+<tr class="row-odd"><td><p>Full projection (6 of 6)</p></td>
+<td class="text-right"><p>299 ms</p></td>
+<td class="text-right"><p>224 ms</p></td>
+<td class="text-right"><p>1.3x</p></td>
+</tr>
+</tbody>
+</table>
+</div>
+<p>A Spark operator above the cache scan, standing in for any operator Comet does not support, is
+measured the same way, with Comet’s aggregate turned off. With Comet’s format, the native scan feeds
+that operator through a columnar-to-row transition:</p>
+<div class="pst-scrollable-table-container"><table class="table">
+<thead>
+<tr class="row-odd"><th class="head"><p>Query shape</p></th>
+<th class="head text-right"><p>Spark’s cache format</p></th>
+<th class="head text-right"><p>Comet’s cache format</p></th>
+<th class="head text-right"><p>Relative</p></th>
+</tr>
+</thead>
+<tbody>
+<tr class="row-even"><td><p>Row count only (0 of 6)</p></td>
+<td class="text-right"><p>39 ms</p></td>
+<td class="text-right"><p>16 ms</p></td>
+<td class="text-right"><p>2.4x</p></td>
+</tr>
+<tr class="row-odd"><td><p>Narrow projection (1 of 6)</p></td>
+<td class="text-right"><p>50 ms</p></td>
+<td class="text-right"><p>27 ms</p></td>
+<td class="text-right"><p>1.8x</p></td>
+</tr>
+<tr class="row-even"><td><p>3 of 6 columns</p></td>
+<td class="text-right"><p>97 ms</p></td>
+<td class="text-right"><p>112 ms</p></td>
+<td class="text-right"><p>0.9x</p></td>
+</tr>
+<tr class="row-odd"><td><p>Full projection (6 of 6)</p></td>
+<td class="text-right"><p>303 ms</p></td>
+<td class="text-right"><p>299 ms</p></td>
+<td class="text-right"><p>1.0x</p></td>
+</tr>
+</tbody>
+</table>
+</div>
+<p>Comet’s format is as fast or faster in every shape but one: the read of three of the six columns,
+all of them longs, is about 10% slower under either kind of operator. That cost is <code class="docutils literal notranslate"><span class="pre">zstd</span></code>
+decompression. With the <code class="docutils literal notranslate"><span class="pre">none</span></code> codec, the same read is 2.7x faster than Spark’s format with Comet
+operators above the scan, and 1.6x faster with a Spark operator above it.</p>
+<p>Building the cache is measured the same way, from the same source, with its rows produced either by
+Comet operators or by Spark operators. Comet’s format is written straight from the Arrow batches of
+Comet operators, while Spark’s is always built from rows, so above Comet operators it first converts
+their batches. Measured on an Apple M3 Max (JDK 17, Spark 4.1, release build):</p>
+<div class="pst-scrollable-table-container"><table class="table">
+<thead>
+<tr class="row-odd"><th class="head"><p>Rows produced by</p></th>
+<th class="head text-right"><p>Spark’s cache format</p></th>
+<th class="head text-right"><p>Comet’s cache format, <code class="docutils literal notranslate"><span class="pre">zstd</span></code></p></th>
+<th class="head text-right"><p>Comet’s cache format, <code class="docutils literal notranslate"><span class="pre">none</span></code></p></th>
+</tr>
+</thead>
+<tbody>
+<tr class="row-even"><td><p>Comet operators</p></td>
+<td class="text-right"><p>3285 ms</p></td>
+<td class="text-right"><p>944 ms</p></td>
+<td class="text-right"><p>601 ms</p></td>
+</tr>
+<tr class="row-odd"><td><p>Spark operators</p></td>
+<td class="text-right"><p>3680 ms</p></td>
+<td class="text-right"><p>2079 ms</p></td>
+<td class="text-right"><p>1710 ms</p></td>
+</tr>
+</tbody>
+</table>
+</div>
+<p>Spark’s format holds the relation in 217 MiB, and Comet’s in 51 to 55 MiB with <code class="docutils literal notranslate"><span class="pre">zstd</span></code> and 315 MiB
+with <code class="docutils literal notranslate"><span class="pre">none</span></code>. So with the default codec, Comet’s format builds 1.8x to 3.5x faster than Spark’s and
+takes about a quarter of the memory.</p>
+</section>
 </section>
 <section id="kryo">
 <h2>Kryo<a class="headerlink" href="#kryo" title="Link to this heading">#</a></h2>
@@ -1112,6 +1227,8 @@ own plan unchanged.</p></li>
 and operators that do not take part in code generation, such as exchanges and limits, or a query
 that returns the cached rows as they are.</p></li>
 </ul>
+<p>Whenever Spark’s scan reads Comet’s format, which also happens for a relation whose cached plan
+records <code class="docutils literal notranslate"><span class="pre">Dataset.observe</span></code> metrics, Comet records a fallback reason on the scan.</p>
 <p>Measured by the same benchmark over the same 5M-row relation, with native execution off so that
 Spark operators consume the cached data, Comet disabled for the row reader and enabled for the fused
 reader (Apple M4, JDK 17, Spark 4.1; the average of two runs):</p>
@@ -1150,9 +1267,9 @@ reader (Apple M4, JDK 17, Spark 4.1; the average of two runs):</p>
 <p>The fused reader is faster than Spark’s own format for the narrowest reads and within 20% of it for
 the others. The row reader takes up to 1.6 times as long, and it is the only reader for relations
 wider than <code class="docutils literal notranslate"><span class="pre">spark.sql.codegen.maxFields</span></code>: reading every column of relations of 100, 200 and 1500
-nullable <code class="docutils literal notranslate"><span class="pre">bigint</span></code> columns took 2.2 to 2.5 times as long as from Spark’s format. These gaps are why
-the feature is still off by default;
-<a class="reference external" href="https://github.com/apache/datafusion-comet/issues/5485">#5485</a> tracks them.</p>
+nullable <code class="docutils literal notranslate"><span class="pre">bigint</span></code> columns took 2.2 to 2.5 times as long as from Spark’s format. A Spark operator
+above Comet’s native cache scan does not pay this; see <a class="reference internal" href="#performance">Performance</a>.
+<a class="reference external" href="https://github.com/apache/datafusion-comet/issues/5485">#5485</a> tracks these gaps.</p>
 <p>Comet’s serializer exists because Spark’s own Arrow cache format
 (<a class="reference external" href="https://issues.apache.org/jira/browse/SPARK-57268">SPARK-57268</a>) is only available from Spark
 4.3, which Comet does not yet support.</p>
@@ -1209,7 +1326,10 @@ the feature is still off by default;
 <li class="toc-h2 nav-item toc-entry"><a class="reference internal nav-link" href="#what-changes-when-it-is-enabled">What changes when it is enabled</a></li>
 <li class="toc-h2 nav-item toc-entry"><a class="reference internal nav-link" href="#storage-format">Storage format</a></li>
 <li class="toc-h2 nav-item toc-entry"><a class="reference internal nav-link" href="#configuration">Configuration</a></li>
-<li class="toc-h2 nav-item toc-entry"><a class="reference internal nav-link" href="#performance">Performance</a></li>
+<li class="toc-h2 nav-item toc-entry"><a class="reference internal nav-link" href="#performance">Performance</a><ul class="nav section-nav flex-column">
+<li class="toc-h3 nav-item toc-entry"><a class="reference internal nav-link" href="#against-spark-s-cache-format">Against Spark’s cache format</a></li>
+</ul>
+</li>
 <li class="toc-h2 nav-item toc-entry"><a class="reference internal nav-link" href="#kryo">Kryo</a></li>
 <li class="toc-h2 nav-item toc-entry"><a class="reference internal nav-link" href="#limitations">Limitations</a></li>
 </ul>

@@ -564,7 +564,9 @@ Comet is enabled when we run the tests.</p>
 <li><p>Modify <code class="docutils literal notranslate"><span class="pre">project/SparkBuild.scala</span></code> so that, when Comet is enabled, the <code class="docutils literal notranslate"><span class="pre">sql</span></code> and <code class="docutils literal notranslate"><span class="pre">hive</span></code> test JVMs use
 <code class="docutils literal notranslate"><span class="pre">CometShuffleManager</span></code> as the default shuffle manager. Comet disables itself when its shuffle manager is not
 registered, so without this default the suites that build their own <code class="docutils literal notranslate"><span class="pre">SparkSession</span></code> or <code class="docutils literal notranslate"><span class="pre">SparkContext</span></code> would
-run without Comet</p></li>
+run without Comet. From Spark 3.5, where Comet’s cache format is the default, the same JVMs also default
+<code class="docutils literal notranslate"><span class="pre">spark.sql.cache.serializer</span></code> to Comet’s <code class="docutils literal notranslate"><span class="pre">ArrowCachedBatchSerializer</span></code>, because Spark keeps the first cache
+serializer it loads for the rest of the JVM</p></li>
 </ul>
 <p>Here are the steps involved in running the Spark SQL tests with Comet, using Spark 3.4.3 for this example.</p>
 <p><code class="docutils literal notranslate"><span class="pre">dev/local-ci.sh</span></code> runs all of the steps below the way CI runs them:</p>
