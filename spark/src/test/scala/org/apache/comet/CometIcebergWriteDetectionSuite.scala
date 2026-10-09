@@ -39,7 +39,7 @@ import org.apache.spark.sql.catalyst.InternalRow
 import org.apache.spark.sql.catalyst.expressions.{Attribute, AttributeReference}
 import org.apache.spark.sql.comet.{CometIcebergWriteExec, CometSparkToColumnarExec, IcebergWriteExec}
 import org.apache.spark.sql.execution.{ApplyColumnarRulesAndInsertTransitions, ColumnarToRowExec, CommandExecutionMode, LeafExecNode, SparkPlan}
-import org.apache.spark.sql.types.IntegerType
+import org.apache.spark.sql.types.{BinaryType, IntegerType}
 import org.apache.spark.sql.vectorized.ColumnarBatch
 
 import org.apache.comet.CometSparkSessionExtensions.{isSpark35Plus, isSpark40Plus}
@@ -542,6 +542,20 @@ class CometIcebergWriteDetectionSuite extends CometTestBase with CometIcebergTes
         partitionSpec = "",
         properties = Some("'write.data.path'='hdfs://nonexistent.invalid/iceberg/db/bad_scheme'"))
       assertUnsupportedContainsAllowingWriteFailure("bad_scheme", "storage scheme", "hdfs")
+    }
+  }
+
+  test("fall-back: mixed-case data location scheme (native opens the location verbatim)") {
+    // OpenDAL strips the scheme prefix from a path case-sensitively, so `S3://` cannot be opened
+    // natively even though `s3://` can. The gate must match the scheme verbatim and decline it.
+    withDetectionCatalog { dir =>
+      createTable(
+        dir,
+        "mixed_case_scheme",
+        partitionSpec = "",
+        properties =
+          Some("'write.data.path'='S3://nonexistent-bucket/iceberg/db/mixed_case_scheme'"))
+      assertUnsupportedContainsAllowingWriteFailure("mixed_case_scheme", "storage scheme", "S3")
     }
   }
 
@@ -1851,9 +1865,15 @@ class CometIcebergWriteDetectionSuite extends CometTestBase with CometIcebergTes
    * directly.
    */
   private def writeChildAfterTransitionRules(source: SparkPlan): SparkPlan = {
+    val child = CometSparkToColumnarExec(source)
+    val output = Seq(
+      AttributeReference(IcebergWriteExec.CommitMessageColumn, BinaryType, nullable = false)())
+    val originalPlan = IcebergWriteExec(null, output, child)
     val write = CometIcebergWriteExec(
       Operator.newBuilder().build(),
-      CometSparkToColumnarExec(source),
+      originalPlan,
+      child,
+      output,
       batchWrite = null,
       table = null,
       partitionSpecId = 0)

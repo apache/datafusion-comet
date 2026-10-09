@@ -29,8 +29,10 @@ executed.
 Supported parent joins and aggregates remain eligible for native execution. Global aggregates
 still return one row (`COUNT = 0`, `SUM = NULL`), and grouped aggregates return no rows. Independent
 operator restrictions and aggregate buffer compatibility checks still apply.
-Parquet writes whose input plans contain an empty relation use Spark's writer to preserve
-readable empty output files and their schema metadata.
+
+A native Parquet write over a native empty relation stays native. Like Spark's writer, it runs one
+task for the empty input, so the output still gets a schema-only Parquet file that readers can
+infer the schema from.
 
 ## In-Memory Cache
 
