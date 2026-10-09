@@ -29,7 +29,7 @@ import scala.jdk.CollectionConverters._
 
 import org.apache.arrow.compression.ZstdCompressionCodec
 import org.apache.arrow.memory.{ArrowBuf, BufferAllocator}
-import org.apache.arrow.vector.{BitVector, FixedSizeBinaryVector, IntVector, VarBinaryVector, VarCharVector}
+import org.apache.arrow.vector.{BigIntVector, BitVector, FixedSizeBinaryVector, IntVector, VarBinaryVector, VarCharVector}
 import org.apache.arrow.vector.compression.{CompressionCodec, CompressionUtil, NoCompressionCodec}
 import org.apache.arrow.vector.types.pojo.ArrowType
 import org.apache.spark.CometDriverPlugin
@@ -1275,6 +1275,8 @@ class CometInMemoryCacheSuite extends CometTestBase {
       SQLConf.ADAPTIVE_EXECUTION_ENABLED.key -> "false",
       CometConf.COMET_SHUFFLE_MODE.key -> "jvm",
       SQLConf.CACHE_VECTORIZED_READER_ENABLED.key -> "true",
+      CometConf.COMET_EXEC_IN_MEMORY_CACHE_DELTA_ENCODING_ENABLED.key -> "true",
+      CometConf.COMET_EXEC_IN_MEMORY_CACHE_COMPRESSION_CODEC.key -> "zstd",
       CometConf.COMET_EXEC_IN_MEMORY_CACHE_ENABLED.key -> "true") {
 
       spark.catalog.clearCache()
@@ -1294,6 +1296,10 @@ class CometInMemoryCacheSuite extends CometTestBase {
 
       val cached =
         spark.sharedState.cacheManager.lookupCachedData(spark.table("disk_cache")).get
+      assert(
+        cached.cachedRepresentation.cacheBuilder.cachedColumnBuffers
+          .collect()
+          .forall(b => CometCachedBatchHelper.columnsAreDeltaEncoded(b)(0)))
       val rddId = cached.cachedRepresentation.cacheBuilder.cachedColumnBuffers.id
       val info = spark.sparkContext.getRDDStorageInfo
         .find(_.id == rddId)
@@ -2747,6 +2753,115 @@ class CometInMemoryCacheSuite extends CometTestBase {
 
       cached.unpersist()
       spark.catalog.clearCache()
+    }
+  }
+
+  test("Comet in-memory cache skips delta encoding when disabled or uncompressed") {
+    for ((enabled, codec) <- Seq((false, "zstd"), (true, "none"))) {
+      withSQLConf(
+        CometConf.COMET_EXEC_IN_MEMORY_CACHE_ENABLED.key -> "true",
+        CometConf.COMET_EXEC_IN_MEMORY_CACHE_DELTA_ENCODING_ENABLED.key -> enabled.toString,
+        CometConf.COMET_EXEC_IN_MEMORY_CACHE_COMPRESSION_CODEC.key -> codec) {
+        val cached = spark.range(4096).toDF().cache()
+        try {
+          assert(cached.count() == 4096)
+          val relation =
+            spark.sharedState.cacheManager.lookupCachedData(cached).get.cachedRepresentation
+          val batches = relation.cacheBuilder.cachedColumnBuffers.collect()
+          assert(
+            batches.forall(b => !CometCachedBatchHelper.columnsAreDeltaEncoded(b).contains(true)))
+          checkAnswer(cached, (0L until 4096L).map(Row(_)))
+        } finally cached.unpersist()
+      }
+    }
+  }
+
+  test("Comet in-memory cache releases buffers when delta compression fails") {
+    val longs = new BigIntVector("l", CometArrowAllocator)
+    try {
+      longs.allocateNew(4096)
+      (0 until 4096).foreach(i => longs.set(i, i.toLong))
+      longs.setValueCount(4096)
+      val batch = new ColumnarBatch(Array[ColumnVector](new CometPlainVector(longs)), 4096)
+      // Validity and plain data succeed; delta compression fails with both the packed data
+      // and the scratch buffer live. Neither may escape the failure path.
+      val codec = new FailAfterCompressionCodec(succeedFor = 2)
+      val before = CometArrowAllocator.getAllocatedMemory
+      val thrown = intercept[Exception] {
+        CometCachedBatchHelper.serialize(batch, codec, CometArrowAllocator, deltaEncoding = true)
+      }
+      assert(causeChain(thrown).exists(t =>
+        Option(t.getMessage).contains(FailAfterCompressionCodec.Message)))
+      assert(codec.compressed == 2)
+      assert(CometArrowAllocator.getAllocatedMemory == before)
+    } finally longs.close()
+  }
+
+  test("Comet in-memory cache preserves delta-encoded longs across every reader") {
+    val random = new java.util.Random(5485)
+    val rows = (0 until 4096).map { i =>
+      // Cross the signed-long boundary; delta reconstruction must preserve wrapping arithmetic.
+      val value = Long.MaxValue - 2048 + i
+      Row(value, if (i % 7 == 0) null else value, random.nextLong(), s"value_${i % 11}")
+    }
+    val schema = new StructType()
+      .add("seq", LongType, nullable = false)
+      .add("nullable", LongType, nullable = true)
+      .add("random", LongType, nullable = false)
+      .add("text", StringType, nullable = false)
+    withSQLConf(
+      SQLConf.ADAPTIVE_EXECUTION_ENABLED.key -> "false",
+      CometConf.COMET_EXEC_IN_MEMORY_CACHE_ENABLED.key -> "true",
+      CometConf.COMET_EXEC_IN_MEMORY_CACHE_DELTA_ENCODING_ENABLED.key -> "true",
+      CometConf.COMET_EXEC_IN_MEMORY_CACHE_COMPRESSION_CODEC.key -> "zstd",
+      "spark.comet.sparkToColumnar.enabled" -> "true") {
+      spark.catalog.clearCache()
+      val cached = spark.createDataFrame(spark.sparkContext.parallelize(rows, 2), schema).cache()
+      try {
+        assert(cached.count() == rows.length)
+        val relation =
+          spark.sharedState.cacheManager.lookupCachedData(cached).get.cachedRepresentation
+        val batches = relation.cacheBuilder.cachedColumnBuffers.collect()
+        assert(batches.forall(b => CometCachedBatchHelper.columnsAreDeltaEncoded(b)(0)))
+        assert(batches.forall(b => CometCachedBatchHelper.columnsAreDeltaEncoded(b)(1)))
+        assert(batches.forall(b => !CometCachedBatchHelper.columnsAreDeltaEncoded(b)(2)))
+
+        val expected =
+          rows.map(r => Row(r.getLong(2), r.getLong(0), r.get(1), r.getLong(0), r.get(3)))
+        for ((native, vectorized) <- Seq((true, true), (false, true), (false, false))) {
+          withSQLConf(
+            CometConf.COMET_EXEC_ENABLED.key -> native.toString,
+            CometConf.COMET_EXEC_IN_MEMORY_CACHE_DELTA_ENCODING_ENABLED.key -> "false",
+            SQLConf.CACHE_VECTORIZED_READER_ENABLED.key -> vectorized.toString) {
+            val projected =
+              cached.selectExpr("random", "seq", "nullable", "seq AS repeated", "text")
+            checkAnswer(projected, expected)
+            val plan = projected.queryExecution.executedPlan
+            if (native) assert(plan.exists(_.isInstanceOf[CometInMemoryTableScanExec]))
+            else {
+              assert(plan.exists(_.isInstanceOf[InMemoryTableScanExec]))
+              assert(plan.exists(_.isInstanceOf[ColumnarToRowExec]) == vectorized)
+            }
+          }
+        }
+
+        // Bounds and null counts stay logical even though the payload contains deltas.
+        checkAnswer(
+          cached.filter(cached.col("seq") === Long.MinValue),
+          rows.filter(_.getLong(0) == Long.MinValue))
+        checkAnswer(cached.filter("nullable IS NULL"), rows.filter(_.isNullAt(1)))
+
+        // Re-caching decoded vectors must neither encode them twice nor change the original cache.
+        withSQLConf(
+          CometConf.COMET_EXEC_ENABLED.key -> "false",
+          CometConf.COMET_EXEC_IN_MEMORY_CACHE_ENABLED.key -> "false",
+          CometConf.COMET_EXEC_IN_MEMORY_CACHE_DELTA_ENCODING_ENABLED.key -> "false") {
+          val recached = cached.union(cached).cache()
+          try checkAnswer(recached, rows ++ rows)
+          finally recached.unpersist()
+          checkAnswer(cached, rows)
+        }
+      } finally cached.unpersist()
     }
   }
 

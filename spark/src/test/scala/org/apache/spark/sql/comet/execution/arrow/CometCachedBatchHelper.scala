@@ -52,6 +52,9 @@ import org.apache.spark.util.io.{ChunkedByteBuffer, ChunkedByteBufferOutputStrea
  */
 object CometCachedBatchHelper {
 
+  def columnsAreDeltaEncoded(batch: CachedBatch): Seq[Boolean] =
+    batch.asInstanceOf[CometCachedBatch].deltaEncoded.toSeq
+
   /** The raw cached payload: one encapsulated Arrow IPC record batch message and its body. */
   private def payload(batch: CachedBatch): ChunkedByteBuffer =
     batch.asInstanceOf[CometCachedBatch].bytes
@@ -122,8 +125,9 @@ object CometCachedBatchHelper {
       batch: ColumnarBatch,
       codec: CompressionCodec,
       allocator: BufferAllocator,
-      chunkSize: Int = 1024 * 1024): ChunkedByteBuffer =
-    CachedBatchIpc.serialize(batch, codec, allocator, chunkSize)._1
+      chunkSize: Int = 1024 * 1024,
+      deltaEncoding: Boolean = false): ChunkedByteBuffer =
+    CachedBatchIpc.serialize(batch, codec, allocator, chunkSize, deltaEncoding)._1
 
   /** A payload [[serialize]] wrote, as the cached batch the writer would have stored it in. */
   def cachedBatch(payload: ChunkedByteBuffer, numRows: Int): CachedBatch =
@@ -139,7 +143,7 @@ object CometCachedBatchHelper {
       selected: Array[Int],
       allocator: BufferAllocator): VectorSchemaRoot =
     new CachedBatchIpc.Projection(arrowFields(cacheSchema).toIndexedSeq, selected)
-      .load(payload(batch), allocator)
+      .load(payload(batch), allocator, batch.asInstanceOf[CometCachedBatch].deltaEncoded)
 
   /**
    * A cached batch whose payload records `codec` as the byte that compressed its body.
