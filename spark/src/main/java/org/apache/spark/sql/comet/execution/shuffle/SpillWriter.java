@@ -165,7 +165,7 @@ public abstract class SpillWriter {
     return true;
   }
 
-  /** Allocates initial memory page */
+  /** Allocates initial memory page. Only called after `spill()` has flushed this writer's data. */
   public void initialCurrentPage(int required) {
     assert (currentPage == null);
     try {
@@ -196,7 +196,7 @@ public abstract class SpillWriter {
     long currentChecksum = checksumEnabled ? checksum : 0L;
 
     long start = System.nanoTime();
-    int batchSize = (int) CometConf.COMET_COLUMNAR_SHUFFLE_BATCH_SIZE().get();
+    int batchSize = CometConf.jvmShuffleBatchSize();
     long[] results =
         nativeLib.writeSortedFileNative(
             addresses,

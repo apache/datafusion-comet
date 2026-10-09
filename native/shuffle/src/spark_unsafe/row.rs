@@ -17,10 +17,11 @@
 
 //! Utils for supporting native sort-based columnar shuffle.
 
+use crate::codec_context::ShuffleCodecContext;
 use crate::spark_unsafe::unsafe_object::{impl_primitive_accessors, SparkUnsafeObject};
 use crate::spark_unsafe::{
     list::append_list_element,
-    map::{append_map_elements, get_map_key_value_fields},
+    map::{append_map_elements, get_map_key_value_fields, map_key_value_fields},
 };
 use crate::writers::Checksum;
 use crate::writers::ShuffleBlockWriter;
@@ -29,7 +30,8 @@ use arrow::array::{
         ArrayBuilder, BinaryBuilder, BinaryDictionaryBuilder, BooleanBuilder, Date32Builder,
         Decimal128Builder, Float32Builder, Float64Builder, Int16Builder, Int32Builder,
         Int64Builder, Int8Builder, ListBuilder, MapBuilder, NullBuilder, StringBuilder,
-        StringDictionaryBuilder, StructBuilder, TimestampMicrosecondBuilder,
+        StringDictionaryBuilder, StructBuilder, Time64NanosecondBuilder,
+        TimestampMicrosecondBuilder,
     },
     types::Int32Type,
     Array, ArrayRef, RecordBatch, RecordBatchOptions,
@@ -278,6 +280,12 @@ pub(super) fn append_field(
                     .append_value(row.get_timestamp(idx))
             );
         }
+        DataType::Time64(TimeUnit::Nanosecond) => {
+            append_field_to_builder!(
+                Time64NanosecondBuilder,
+                |builder: &mut Time64NanosecondBuilder| builder.append_value(row.get_long(idx))
+            );
+        }
         DataType::Binary => {
             append_field_to_builder!(BinaryBuilder, |builder: &mut BinaryBuilder| builder
                 .append_value(row.get_binary(idx)));
@@ -437,6 +445,13 @@ fn append_nested_struct_fields_field_major(
                     TimestampMicrosecondBuilder,
                     field_idx,
                     |row: &SparkUnsafeRow, idx| row.get_timestamp(idx)
+                );
+            }
+            DataType::Time64(TimeUnit::Nanosecond) => {
+                process_field!(
+                    Time64NanosecondBuilder,
+                    field_idx,
+                    |row: &SparkUnsafeRow, idx| row.get_long(idx)
                 );
             }
             DataType::Binary => {
@@ -677,6 +692,9 @@ fn append_list_column_batch(
                 tz.clone()
             );
         }
+        DataType::Time64(TimeUnit::Nanosecond) => {
+            process_primitive_lists!(Time64NanosecondBuilder, append_time64s_to_builder);
+        }
         // For complex element types, fall back to per-row dispatch
         _ => {
             for i in row_start..row_end {
@@ -708,7 +726,7 @@ fn append_map_column_batch(
     map_builder: &mut MapBuilder<Box<dyn ArrayBuilder>, Box<dyn ArrayBuilder>>,
 ) -> Result<(), CometError> {
     let mut row = SparkUnsafeRow::new(schema);
-    let (key_field, value_field, _) = get_map_key_value_fields(field)?;
+    let (key_field, value_field) = map_key_value_fields(field)?;
     let key_type = key_field.data_type();
     let value_type = value_field.data_type();
 
@@ -899,6 +917,13 @@ fn append_struct_fields_field_major(
                     TimestampMicrosecondBuilder,
                     field_idx,
                     |row: &SparkUnsafeRow, idx| row.get_timestamp(idx)
+                );
+            }
+            DataType::Time64(TimeUnit::Nanosecond) => {
+                process_field!(
+                    Time64NanosecondBuilder,
+                    field_idx,
+                    |row: &SparkUnsafeRow, idx| row.get_long(idx)
                 );
             }
             DataType::Binary => {
@@ -1186,6 +1211,13 @@ fn append_columns(
                     .append_value(row.get_timestamp(idx))
             );
         }
+        DataType::Time64(TimeUnit::Nanosecond) => {
+            append_column_to_builder!(
+                Time64NanosecondBuilder,
+                |builder: &mut Time64NanosecondBuilder, row: &SparkUnsafeRow, idx| builder
+                    .append_value(row.get_long(idx))
+            );
+        }
         DataType::Map(field, _) => {
             let map_builder = downcast_builder_ref!(
                 MapBuilder<Box<dyn ArrayBuilder>, Box<dyn ArrayBuilder>>,
@@ -1287,6 +1319,9 @@ fn make_builders(
         DataType::Timestamp(TimeUnit::Microsecond, _) => {
             Box::new(TimestampMicrosecondBuilder::with_capacity(row_num).with_data_type(dt.clone()))
         }
+        DataType::Time64(TimeUnit::Nanosecond) => {
+            Box::new(Time64NanosecondBuilder::with_capacity(row_num))
+        }
         DataType::Map(field, _) => {
             let (key_field, value_field, map_field_names) = get_map_key_value_fields(field)?;
             let key_dt = key_field.data_type();
@@ -1374,6 +1409,9 @@ pub fn process_sorted_row_partition(
 
     // Single ipc_time accumulates encode + compression time across all batches.
     let ipc_time = Time::default();
+    // One context for every batch this call encodes; the JVM calls in once per sorted
+    // partition, so there is no wider native scope to hoist it to.
+    let mut codec_context = ShuffleCodecContext::default();
 
     while current_row < row_num {
         let n = std::cmp::min(batch_size, row_num - current_row);
@@ -1407,7 +1445,7 @@ pub fn process_sorted_row_partition(
         let mut cursor = Cursor::new(&mut frozen);
 
         let block_writer = ShuffleBlockWriter::try_new(batch.schema().as_ref(), codec.clone())?;
-        written += block_writer.write_batch(&batch, &mut cursor, &ipc_time)?;
+        written += block_writer.write_batch(&batch, &mut cursor, &mut codec_context, &ipc_time)?;
 
         if let Some(checksum) = &mut current_checksum {
             checksum.update(&mut cursor)?;

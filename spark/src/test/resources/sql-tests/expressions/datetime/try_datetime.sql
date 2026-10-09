@@ -18,7 +18,7 @@
 -- Tests for try_to_date, try_to_timestamp, and try_make_timestamp.
 -- These RuntimeReplaceable functions rewrite to Cast/GetTimestamp/MakeTimestamp(failOnError=false)
 -- and return NULL on invalid input instead of throwing.
--- try_to_date and try_make_timestamp are only available in Spark 4.1+, so gate the file.
+-- try_to_date is only available in Spark 4.1+, so gate the file.
 -- MinSparkVersion: 4.1
 -- Config: spark.sql.session.timeZone=UTC
 
@@ -43,32 +43,32 @@ INSERT INTO test_try_datetime_str VALUES
 -- try_to_date: column argument, no format
 -- ------------------------------------------------------------
 
--- column argument, default format, falls back to Spark
-query spark_answer_only
+-- column argument, default format
+query
 SELECT s, try_to_date(s) FROM test_try_datetime_str
 
 -- literal valid date
-query spark_answer_only
+query
 SELECT try_to_date('2024-06-15')
 
 -- literal invalid date -> NULL
-query spark_answer_only
+query
 SELECT try_to_date('2020-13-99')
 
 -- literal NULL -> NULL
-query spark_answer_only
+query
 SELECT try_to_date(NULL)
 
 -- column argument with explicit format
-query spark_answer_only
+query
 SELECT s, try_to_date(s, 'yyyy-MM-dd') FROM test_try_datetime_str
 
 -- literal with explicit format
-query spark_answer_only
+query
 SELECT try_to_date('15/06/2024', 'dd/MM/yyyy')
 
 -- literal invalid with format -> NULL
-query spark_answer_only
+query
 SELECT try_to_date('99/99/9999', 'dd/MM/yyyy')
 
 -- ------------------------------------------------------------
@@ -93,35 +93,35 @@ INSERT INTO test_try_datetime_ts VALUES
 -- ------------------------------------------------------------
 
 -- column argument, default format
-query spark_answer_only
+query
 SELECT s, try_to_timestamp(s) FROM test_try_datetime_ts
 
 -- literal valid timestamp
-query spark_answer_only
+query
 SELECT try_to_timestamp('2024-06-15 10:30:45')
 
 -- literal invalid timestamp -> NULL
-query spark_answer_only
+query
 SELECT try_to_timestamp('2020-13-99 25:61:61')
 
 -- literal NULL -> NULL
-query spark_answer_only
+query
 SELECT try_to_timestamp(NULL)
 
 -- column argument with explicit format
-query spark_answer_only
+query
 SELECT s, try_to_timestamp(s, 'yyyy-MM-dd HH:mm:ss') FROM test_try_datetime_ts
 
 -- literal with explicit format
-query spark_answer_only
+query
 SELECT try_to_timestamp('15/06/2024 10:30:45', 'dd/MM/yyyy HH:mm:ss')
 
 -- literal invalid with format -> NULL
-query spark_answer_only
+query
 SELECT try_to_timestamp('99/99/9999 99:99:99', 'dd/MM/yyyy HH:mm:ss')
 
 -- date-only string with date format
-query spark_answer_only
+query
 SELECT try_to_timestamp('2024-06-15', 'yyyy-MM-dd')
 
 -- ------------------------------------------------------------

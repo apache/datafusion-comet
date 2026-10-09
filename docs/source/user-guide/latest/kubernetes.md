@@ -21,12 +21,15 @@
 
 ## Comet Docker Images
 
-Run the following command from the root of this repository to build the Comet Docker image, or use a [published
-Docker image](https://hub.docker.com/r/apache/datafusion-comet).
+Run the following command from the root of this repository to build the Comet Docker image. The image is based on
+`apache/spark:4.1.3` and adds the Comet JAR for Spark 4.1 and Scala 2.13 to `$SPARK_HOME/jars`.
 
 ```shell
 docker build -t apache/datafusion-comet -f kube/Dockerfile .
 ```
+
+Push the image to a registry that your cluster can pull from, and use that image name in the `image` field of the
+examples below.
 
 ## Example Spark Submit
 
@@ -69,30 +72,33 @@ metadata:
 spec:
   type: Scala
   mode: cluster
-  image: apache/datafusion-comet:$COMET_VERSION-spark3.5.5-scala2.12-java11
+  image: apache/datafusion-comet
   imagePullPolicy: IfNotPresent
   mainClass: org.apache.spark.examples.SparkPi
-  mainApplicationFile: local:///opt/spark/examples/jars/spark-examples_2.13-4.1.2.jar
+  mainApplicationFile: local:///opt/spark/examples/jars/spark-examples_2.13-4.1.3.jar
   sparkConf:
-    "spark.executor.extraClassPath": "/opt/spark/jars/comet-spark-spark3.5_2.12-$COMET_VERSION.jar"
-    "spark.driver.extraClassPath": "/opt/spark/jars/comet-spark-spark3.5_2.12-$COMET_VERSION.jar"
+    "spark.executor.extraClassPath": "/opt/spark/jars/comet-spark-spark4.1_2.13-$COMET_VERSION.jar"
+    "spark.driver.extraClassPath": "/opt/spark/jars/comet-spark-spark4.1_2.13-$COMET_VERSION.jar"
     "spark.plugins": "org.apache.spark.CometPlugin"
+    "spark.memory.offHeap.enabled": "true"
+    "spark.memory.offHeap.size": "1g"
+    "spark.executor.memoryOverhead": "1g"
     "spark.comet.enabled": "true"
     "spark.comet.exec.enabled": "true"
-    "spark.comet.exec.shuffle.enabled": "true"
-    "spark.comet.exec.shuffle.mode": "auto"
+    "spark.comet.shuffle.enabled": "true"
+    "spark.comet.shuffle.mode": "auto"
     "spark.shuffle.manager": "org.apache.spark.sql.comet.execution.shuffle.CometShuffleManager"
-  sparkVersion: 4.1.2
+  sparkVersion: 4.1.3
   driver:
     labels:
-      version: 4.1.2
+      version: 4.1.3
     cores: 1
     coreLimit: 1200m
     memory: 512m
     serviceAccount: spark-operator-spark
   executor:
     labels:
-      version: 4.1.2
+      version: 4.1.3
     instances: 1
     cores: 1
     coreLimit: 1200m

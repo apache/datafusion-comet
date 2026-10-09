@@ -21,6 +21,7 @@ package org.apache.spark.sql.comet.execution.shuffle
 
 import java.util.concurrent.ConcurrentHashMap
 
+import scala.annotation.nowarn
 import scala.jdk.CollectionConverters._
 
 import org.apache.spark.ShuffleDependency
@@ -31,6 +32,7 @@ import org.apache.spark.internal.{config, Logging}
 import org.apache.spark.shuffle._
 import org.apache.spark.shuffle.api.ShuffleExecutorComponents
 import org.apache.spark.shuffle.sort.{BypassMergeSortShuffleHandle, SerializedShuffleHandle, SortShuffleManager, SortShuffleWriter}
+import org.apache.spark.sql.comet.PlanDataInjector
 import org.apache.spark.sql.internal.SQLConf
 import org.apache.spark.util.collection.OpenHashSet
 
@@ -164,6 +166,7 @@ class CometShuffleManager(conf: SparkConf) extends ShuffleManager with Logging {
     }
   }
 
+  @nowarn("msg=references private")
   override def getReader[K, C](
       handle: ShuffleHandle,
       startMapIndex: Int,
@@ -216,6 +219,7 @@ class CometShuffleManager(conf: SparkConf) extends ShuffleManager with Logging {
   }
 
   /** Get a writer for a given partition. Called on executors by map tasks. */
+  @nowarn("msg=references private")
   override def getWriter[K, V](
       handle: ShuffleHandle,
       mapId: Long,
@@ -282,12 +286,14 @@ class CometShuffleManager(conf: SparkConf) extends ShuffleManager with Logging {
         shuffleBlockResolver.removeDataByMap(shuffleId, mapTaskId)
       }
     }
+    PlanDataInjector.releasePreparedShuffle(shuffleId)
     true
   }
 
   /** Shut down this ShuffleManager. */
   override def stop(): Unit = {
-    shuffleBlockResolver.stop()
+    try shuffleBlockResolver.stop()
+    finally PlanDataInjector.releaseAll()
   }
 }
 
@@ -303,9 +309,10 @@ object CometShuffleManager extends Logging {
       val partitionCond = SortShuffleWriter.shouldBypassMergeSort(conf, dep)
 
       // Bypass merge sort if we have partition * cores fewer than
-      // `spark.comet.columnar.shuffle.async.max.thread.num`
+      // `spark.comet.shuffle.jvm.maxWritersPerExecutor`
       val executorCores = conf.get(config.EXECUTOR_CORES)
-      val maxThreads = CometConf.COMET_COLUMNAR_SHUFFLE_ASYNC_MAX_THREAD_NUM.get(SQLConf.get)
+      val maxThreads =
+        CometConf.COMET_SHUFFLE_JVM_MAX_WRITERS_PER_EXECUTOR.get(SQLConf.get)
       val threadCond = dep.partitioner.numPartitions * executorCores <= maxThreads
 
       // Comet columnar shuffle buffers rows in memory. If too many cores are used with

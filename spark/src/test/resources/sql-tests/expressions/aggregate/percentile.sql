@@ -100,10 +100,23 @@ CREATE TABLE test_percentile_special(v double) USING parquet
 
 statement
 INSERT INTO test_percentile_special VALUES
-  (double('-Infinity')), (-0.0), (0.0), (1.0), (double('Infinity')), (double('NaN'))
+  (double('-Infinity')), (double('-0.0')), (0.0), (1.0), (double('Infinity')), (double('NaN'))
 
 query
 SELECT percentile(v, 0.0), percentile(v, 0.5), percentile(v, 0.8), percentile(v, 1.0) FROM test_percentile_special
+
+-- The exact median selects zero itself. Keep the signs in separate groups so
+-- equal-valued zeros cannot make the result depend on tie or partition order.
+statement
+CREATE TABLE test_percentile_signed_zero(g int, f float, d double) USING parquet
+
+statement
+INSERT INTO test_percentile_signed_zero VALUES
+  (1, -1.0, -1.0), (1, float('-0.0'), double('-0.0')), (1, 1.0, 1.0),
+  (2, -1.0, -1.0), (2, float('0.0'), double('0.0')), (2, 1.0, 1.0)
+
+query
+SELECT g, percentile(f, 0.5), percentile(d, 0.5) FROM test_percentile_signed_zero GROUP BY g ORDER BY g
 
 -- ============================================================
 -- Unsupported forms fall back to Spark cleanly

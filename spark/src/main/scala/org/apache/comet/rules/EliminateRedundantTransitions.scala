@@ -19,17 +19,22 @@
 
 package org.apache.comet.rules
 
+import java.util.IdentityHashMap
+
 import org.apache.spark.sql.SparkSession
 import org.apache.spark.sql.catalyst.rules.Rule
 import org.apache.spark.sql.catalyst.util.sideBySide
-import org.apache.spark.sql.comet.{CometCollectLimitExec, CometColumnarToRowExec, CometMapInBatchExec, CometNativeColumnarToRowExec, CometNativeWriteExec, CometPlan, CometSparkToColumnarExec}
+import org.apache.spark.sql.comet.{CometCollectLimitExec, CometColumnarToRowExec, CometIcebergWriteExec, CometMapInBatchExec, CometNativeColumnarToRowExec, CometNativeWriteExec, CometPlan, CometRangeExec, CometSparkToColumnarExec}
 import org.apache.spark.sql.comet.execution.shuffle.{CometColumnarShuffle, CometShuffleExchangeExec}
 import org.apache.spark.sql.comet.shims.{MapInBatchInfo, ShimCometMapInBatch}
+import org.apache.spark.sql.comet.util.Utils.containsVariantType
 import org.apache.spark.sql.execution.{ColumnarToRowExec, RowToColumnarExec, SparkPlan}
 import org.apache.spark.sql.execution.adaptive.QueryStageExec
 import org.apache.spark.sql.execution.exchange.ReusedExchangeExec
 
 import org.apache.comet.CometConf
+import org.apache.comet.CometSparkSessionExtensions.{withFallbackReason, withInfo}
+import org.apache.comet.serde.NativeOptIn
 import org.apache.comet.shims.ShimSQLConf
 
 // This rule is responsible for eliminating redundant transitions between row-based and
@@ -47,12 +52,12 @@ import org.apache.comet.shims.ShimSQLConf
 // `CometExec`. However, for certain operators such as `CometCollectLimitExec` which overrides
 // `executeCollect`, the redundant `ColumnarToRowExec` makes the override ineffective.
 //
-// Note about the second case: When `spark.comet.sparkToColumnar.enabled` is set, Comet will add
-// `CometSparkToColumnarExec` on top of row-based operators first, but the downstream operator
-// only takes row-based input as it's a vanilla Spark operator(as Comet cannot convert it for
-// various reasons) or Spark requests row-based output such as a `collect` call. Spark will adds
-// another `ColumnarToRowExec` on top of `CometSparkToColumnarExec`. In this case, the pair could
-// be removed.
+// Note about the second case: When a Spark-to-Arrow conversion config is set, such as
+// `spark.comet.convert.parquet.enabled`, Comet will add `CometSparkToColumnarExec` on top of
+// row-based operators first, but the downstream operator only takes row-based input as it's a
+// vanilla Spark operator(as Comet cannot convert it for various reasons) or Spark requests
+// row-based output such as a `collect` call. Spark will adds another `ColumnarToRowExec` on top
+// of `CometSparkToColumnarExec`. In this case, the pair could be removed.
 case class EliminateRedundantTransitions(session: SparkSession)
     extends Rule[SparkPlan]
     with ShimCometMapInBatch
@@ -72,7 +77,20 @@ case class EliminateRedundantTransitions(session: SparkSession)
   }
 
   private def _apply(plan: SparkPlan): SparkPlan = {
-    val eliminatedPlan = plan transformUp {
+    // `hasCometNativeChild` scans the subtree below every `ColumnarToRowExec` it is asked about,
+    // so stacked transitions rescan the same nodes and the combined cost is quadratic in the plan
+    // size. The scan stops at the first Comet operator it finds, which keeps the common case
+    // cheap, but a stack of transitions over a Comet-free subtree walks all of it every time. The
+    // memo below makes that linear.
+    //
+    // It is keyed on identity rather than equality because `SparkPlan` equality and hashing are
+    // themselves subtree walks, and it is scoped to a single rule invocation because the rule
+    // instance lives for the whole session and must not retain plans. `transformUp` reuses the
+    // identity of subtrees it does not rewrite, so a rebuilt node still hits the memo one level
+    // down.
+    val containsCometPlanMemo = new IdentityHashMap[SparkPlan, java.lang.Boolean]()
+
+    val eliminatedPlan = stripIcebergWriteInputTransition(plan) transformUp {
       case ColumnarToRowExec(shuffleExchangeExec: CometShuffleExchangeExec)
           if plan.conf.adaptiveExecutionEnabled =>
         shuffleExchangeExec
@@ -89,7 +107,11 @@ case class EliminateRedundantTransitions(session: SparkSession)
       // Write should be final operation in the plan
       case ColumnarToRowExec(nativeWrite: CometNativeWriteExec) =>
         nativeWrite
-      case c @ ColumnarToRowExec(child) if hasCometNativeChild(child) =>
+      // A range that no native operator consumes would be generated natively only to be turned
+      // back into rows, so keep Spark's RangeExec, which whole-stage codegen fuses with its parent.
+      case ColumnarToRowExec(range: CometRangeExec) =>
+        range.originalPlan
+      case c @ ColumnarToRowExec(child) if hasCometNativeChild(child, containsCometPlanMemo) =>
         val op = createColumnarToRowExec(child)
         if (c.logicalLink.isEmpty) {
           op.unsetTagValue(SparkPlan.LOGICAL_PLAN_TAG)
@@ -102,6 +124,10 @@ case class EliminateRedundantTransitions(session: SparkSession)
         sparkToColumnar.child
       case CometNativeColumnarToRowExec(sparkToColumnar: CometSparkToColumnarExec) =>
         sparkToColumnar.child
+      case CometColumnarToRowExec(range: CometRangeExec) =>
+        range.originalPlan
+      case CometNativeColumnarToRowExec(range: CometRangeExec) =>
+        range.originalPlan
       case CometSparkToColumnarExec(child: CometSparkToColumnarExec) => child
       // Replace MapInBatchExec (PythonMapInArrowExec / MapInArrowExec / MapInPandasExec) that has
       // a ColumnarToRow child with CometMapInBatchExec, eliminating the input and output
@@ -110,17 +136,30 @@ case class EliminateRedundantTransitions(session: SparkSession)
       // 4.1+ matches the renamed `MapInArrowExec`.
       //
       // Falls back to vanilla Spark when `spark.sql.execution.arrow.useLargeVarTypes` is enabled:
-      // CometArrowPythonRunnerBase.copyVector does raw `setBytes` on each Arrow buffer, but Comet's
-      // source string/binary vectors always use 4-byte offsets while the destination root is
-      // allocated with 8-byte offsets when this conf is on. The buffer counts match but the
-      // offset width does not, so a direct memcpy would corrupt the offsets.
-      case EligibleMapInBatch(info, columnarChild) =>
-        CometMapInBatchExec(
-          info.func,
-          info.output,
-          columnarChild,
-          info.isBarrier,
-          info.pythonEvalType)
+      // Native Comet string/binary vectors use 4-byte offsets. The IPC schema follows these
+      // vectors, so the stream is internally consistent, but the worker would receive string /
+      // binary instead of the large_string / large_binary input types requested by this conf.
+      // Keep the fallback to preserve Spark's input type contract.
+      //
+      // `EligibleMapInBatch` matches whenever the operator would run natively if the feature were
+      // enabled. When it is disabled (the default) we leave the vanilla Spark operator in place
+      // but annotate it with a non-fallback `[COMET-INFO]` hint so the user knows the native path
+      // exists behind a config flag.
+      case p @ EligibleMapInBatch(info, columnarChild) =>
+        if (CometConf.COMET_PYARROW_UDF_ENABLED.get()) {
+          CometMapInBatchExec(
+            info.func,
+            info.output,
+            columnarChild,
+            info.isBarrier,
+            info.pythonEvalType)
+        } else {
+          withInfo(
+            p,
+            NativeOptIn.message(
+              "PyArrow UDFs (mapInArrow/mapInPandas)",
+              CometConf.COMET_PYARROW_UDF_ENABLED.key))
+        }
 
       // Spark adds `RowToColumnar` under Comet columnar shuffle. But it's redundant as the
       // shuffle takes row-based input.
@@ -146,12 +185,84 @@ case class EliminateRedundantTransitions(session: SparkSession)
     }
   }
 
-  private def hasCometNativeChild(op: SparkPlan): Boolean = {
+  /**
+   * True if the subtree rooted at `op` contains a Comet operator. `QueryStageExec` and
+   * `ReusedExchangeExec` are leaves for tree traversal, so the plan they wrap is unwrapped
+   * explicitly, and only at the root of the checked subtree.
+   */
+  private def hasCometNativeChild(
+      op: SparkPlan,
+      memo: IdentityHashMap[SparkPlan, java.lang.Boolean]): Boolean = {
     op match {
-      case c: QueryStageExec => hasCometNativeChild(c.plan)
-      case c: ReusedExchangeExec => hasCometNativeChild(c.child)
-      case _ => op.exists(_.isInstanceOf[CometPlan])
+      case c: QueryStageExec => hasCometNativeChild(c.plan, memo)
+      case c: ReusedExchangeExec => hasCometNativeChild(c.child, memo)
+      case _ => containsCometPlan(op, memo)
     }
+  }
+
+  /** Memoized equivalent of `op.exists(_.isInstanceOf[CometPlan])`. */
+  private def containsCometPlan(
+      op: SparkPlan,
+      memo: IdentityHashMap[SparkPlan, java.lang.Boolean]): Boolean = {
+    val cached = memo.get(op)
+    if (cached != null) {
+      cached.booleanValue()
+    } else {
+      val result = op.isInstanceOf[CometPlan] || op.children.exists(containsCometPlan(_, memo))
+      memo.put(op, result)
+      result
+    }
+  }
+
+  /**
+   * `CometIcebergWriteExec` is row-based (it emits the serialised Iceberg commit message) but
+   * consumes Arrow batches from its child over FFI, so Spark's
+   * `ApplyColumnarRulesAndInsertTransitions` inserts a columnar-to-row transition *underneath*
+   * it. Strip that transition so `doExecuteColumnar` sees the columnar child directly;
+   * `CometIcebergNativeWrite.requiresNativeChildren` already guarantees the child was
+   * Comet-native when the write was converted.
+   *
+   * The write deliberately does not tag itself as a `ColumnarToRowTransition` to suppress the
+   * insertion: Spark leaves such a node untouched, so the whole subtree below the write is never
+   * visited and the transitions the rest of that subtree needs are never inserted
+   * (https://github.com/apache/datafusion-comet/issues/5689).
+   *
+   * This runs as a separate pass *before* the main `transformUp`, not as an arm inside it,
+   * because the write's input transition has to be removed before the generic transition
+   * cancellation can consume it. `transformUp` visits children first, so the
+   * `ColumnarToRowExec(CometSparkToColumnarExec)` arm would otherwise rewrite the write's child
+   * before the write itself is visited, and that arm is destructive at this boundary:
+   *   - over a row source it drops the `CometSparkToColumnarExec` as well, leaving the write with
+   *     a row child and no Arrow producer at all;
+   *   - over a Spark-columnar source it keeps a `ColumnarToRowExec` but drops the Arrow bridge,
+   *     so the write would be handed Spark `ColumnarVector`s where the FFI adapter requires
+   *     `CometVector`s. That shape is reachable whenever a Spark-to-Arrow conversion config
+   *     admits the write's source: `CometSparkToColumnarExec.createExec` wraps it in a
+   *     `CometScanWrapper` (a `CometNativeExec`, so `requiresNativeChildren` accepts it), and
+   *     `CometExecRule` then unwraps the placeholder, leaving the bridge directly beneath the
+   *     write.
+   */
+  private def stripIcebergWriteInputTransition(plan: SparkPlan): SparkPlan = plan.transform {
+    case w: CometIcebergWriteExec =>
+      stripColumnarToRow(w.child).map(child => w.withNewChildren(Seq(child))).getOrElse(w)
+  }
+
+  /**
+   * Unwraps a columnar-to-row transition, returning the columnar child underneath it, or `None`
+   * when `plan` is not such a transition.
+   *
+   * The plain `ColumnarToRowExec` is what Spark's insertion pass produces and is the only form
+   * observed in the suites. The two Comet variants are handled as well because this rule is part
+   * of `postColumnarTransitions` and AQE applies those rules once per materialised stage plus
+   * once for the final plan, so it can be handed a plan whose transitions an earlier pass already
+   * rewrote. Missing a variant would not be caught at planning time -- the write would fail at
+   * runtime with `requires a columnar (Comet native) child`.
+   */
+  private def stripColumnarToRow(plan: SparkPlan): Option[SparkPlan] = plan match {
+    case CometNativeColumnarToRowExec(child) => Some(child)
+    case CometColumnarToRowExec(child) => Some(child)
+    case ColumnarToRowExec(child) => Some(child)
+    case _ => None
   }
 
   /**
@@ -174,24 +285,35 @@ case class EliminateRedundantTransitions(session: SparkSession)
   }
 
   /**
-   * Matches the plans this rule should rewrite to `CometMapInBatchExec`. Single extractor used in
-   * the `transformUp` arm above so the matchers and conf reads run once per visited plan. Returns
-   * `(info, columnarChild)` where `columnarChild` is the Comet columnar producer that
-   * `CometMapInBatchExec` will consume directly. Returns `None` (and the arm misses) when the
-   * conf is off, when `useLargeVarTypes` forces the fallback, when the plan is not one of the
-   * version-shimmed MapInArrow / MapInPandas operators, or when the child is not a Comet
-   * columnar-to-row transition we can strip.
+   * Matches the plans that could run natively as `CometMapInBatchExec`, independent of whether
+   * the `spark.comet.exec.pyarrowUDF.enabled` feature flag is set. The `transformUp` arm reads
+   * that flag to decide between rewriting the operator and merely annotating it with an opt-in
+   * hint. Single extractor so the matchers run once per visited plan. Returns `(info,
+   * columnarChild)` where `columnarChild` is the Comet columnar producer that
+   * `CometMapInBatchExec` will consume directly. Returns `None` (and the arm misses) when
+   * `useLargeVarTypes` forces the fallback, when the plan is not one of the version-shimmed
+   * MapInArrow / MapInPandas operators, or when the child is not a Comet columnar-to-row
+   * transition we can strip.
    */
   private object EligibleMapInBatch {
     def unapply(plan: SparkPlan): Option[(MapInBatchInfo, SparkPlan)] = {
-      if (!CometConf.COMET_PYARROW_UDF_ENABLED.get()) {
-        None
-      } else if (arrowUseLargeVarTypes(plan.conf)) {
+      if (arrowUseLargeVarTypes(plan.conf)) {
         None
       } else {
         matchMapInArrow(plan)
           .orElse(matchMapInPandas(plan))
-          .flatMap(info => extractColumnarChild(info.child).map(child => (info, child)))
+          .flatMap { info =>
+            // TODO: Remove this guard once Comet Python operators preserve Variant identity
+            // and Spark's Arrow layout for both input and output.
+            // https://github.com/apache/datafusion-comet/issues/5437
+            if ((info.output ++ info.child.output).exists(attr =>
+                containsVariantType(attr.dataType))) {
+              withFallbackReason(plan, "Comet Python operators do not support type VariantType")
+              None
+            } else {
+              extractColumnarChild(info.child).map(child => (info, child))
+            }
+          }
       }
     }
   }
@@ -200,10 +322,19 @@ case class EliminateRedundantTransitions(session: SparkSession)
    * Creates an appropriate columnar to row transition operator.
    *
    * If native columnar to row conversion is enabled and the schema is supported, uses
-   * CometNativeColumnarToRowExec. Otherwise falls back to CometColumnarToRowExec.
+   * CometNativeColumnarToRowExec. Variant uses Spark's conversion; other unsupported schemas use
+   * CometColumnarToRowExec.
    */
   private def createColumnarToRowExec(child: SparkPlan): SparkPlan = {
     val schema = child.schema
+    // TODO: Remove this fallback once Comet columnar-to-row conversion supports Variant getters
+    // and Spark's Variant UnsafeRow encoding.
+    // https://github.com/apache/datafusion-comet/issues/5436
+    if (containsVariantType(schema)) {
+      return withFallbackReason(
+        ColumnarToRowExec(child),
+        "Native columnar-to-row conversion does not support type VariantType")
+    }
     val useNative = CometConf.COMET_NATIVE_COLUMNAR_TO_ROW_ENABLED.get() &&
       CometNativeColumnarToRowExec.supportsSchema(schema)
 

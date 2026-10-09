@@ -23,7 +23,7 @@ import org.apache.spark.sql.catalyst.expressions.{Attribute, MapSort}
 import org.apache.spark.sql.types.MapType
 
 import org.apache.comet.CometConf
-import org.apache.comet.serde.QueryPlanSerde.{exprToProtoInternal, optExprWithFallbackReason, scalarFunctionExprToProtoWithReturnType, supportedScalarSortElementType}
+import org.apache.comet.serde.QueryPlanSerde.{exprToProtoInternal, scalarFunctionExprToProtoWithReturnType, supportedScalarSortElementType}
 
 object CometMapSort extends CometExpressionSerde[MapSort] {
 
@@ -57,6 +57,6 @@ object CometMapSort extends CometExpressionSerde[MapSort] {
       expr.dataType,
       failOnError = false,
       childExpr)
-    optExprWithFallbackReason(mapSortExpr, expr, expr.child)
+    mapSortExpr
   }
 }

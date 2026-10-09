@@ -28,15 +28,15 @@ import org.apache.spark.sql.execution.SparkPlan
 import org.apache.spark.sql.execution.metric.{SQLMetric, SQLMetrics}
 import org.apache.spark.sql.execution.window.WindowExec
 import org.apache.spark.sql.internal.SQLConf
-import org.apache.spark.sql.types.{DataType, DateType, Decimal, DecimalType, DoubleType, LongType, NumericType}
+import org.apache.spark.sql.types.{ArrayType, DataType, DateType, Decimal, DecimalType, DoubleType, LongType, MapType, NumericType, StructType}
 
 import com.google.common.base.Objects
 
 import org.apache.comet.{CometConf, ConfigEntry}
 import org.apache.comet.CometSparkSessionExtensions.withFallbackReason
-import org.apache.comet.serde.{AggSerde, CometOperatorSerde, LiteralOuterClass, OperatorOuterClass}
+import org.apache.comet.serde.{AggSerde, CometOperatorSerde, CometSortOrder, LiteralOuterClass, OperatorOuterClass}
 import org.apache.comet.serde.OperatorOuterClass.Operator
-import org.apache.comet.serde.QueryPlanSerde.{aggExprToProto, exprToProto, scalarFunctionExprToProto, serializeDataType}
+import org.apache.comet.serde.QueryPlanSerde.{aggExprToProto, exprToProto, liftFallbackReasons, scalarFunctionExprToProto, serializeDataType}
 
 object CometWindowExec extends CometOperatorSerde[WindowExec] {
 
@@ -49,12 +49,12 @@ object CometWindowExec extends CometOperatorSerde[WindowExec] {
       childOp: OperatorOuterClass.Operator*): Option[OperatorOuterClass.Operator] = {
     val output = op.child.output
 
-    val winExprs: Array[WindowExpressionInfo] = op.windowExpression.map { expr =>
+    val winExprs: Seq[WindowExpressionInfo] = op.windowExpression.map { expr =>
       extractWindowExpression(expr).getOrElse {
-        withFallbackReason(op, s"Unsupported window expression: $expr", expr)
+        withFallbackReason(op, s"Unsupported window expression: $expr")
         return None
       }
-    }.toArray
+    }
 
     if (winExprs.length != op.windowExpression.length) {
       withFallbackReason(op, "Unsupported window expression(s)")
@@ -62,6 +62,19 @@ object CometWindowExec extends CometOperatorSerde[WindowExec] {
     }
 
     val windowExprProto = winExprs.map(windowExprToProto(_, output, op.conf))
+
+    // `extractWindowExpression` rebuilds the tree for the decimal SUM / AVG shapes that Spark's
+    // `DecimalAggregates` rule wraps, so for those the node `windowExprToProto` tags is a copy the
+    // operator does not hold. Lift the reasons onto the operator's own expression, otherwise
+    // `CometExecRule.rollUpFallbackReasons` - which walks `op.expressions` - never sees them and
+    // strict mode reports the fallback as unexplained.
+    op.windowExpression.zip(winExprs).zip(windowExprProto).foreach {
+      case ((original, info), proto) =>
+        if (proto.isEmpty && !original.exists(_ eq info.windowExpression)) {
+          liftFallbackReasons(info.windowExpression, original)
+        }
+    }
+
     val partitionExprs = op.partitionSpec.map(exprToProto(_, op.child.output))
 
     val sortOrders = op.orderSpec.map(exprToProto(_, op.child.output))
@@ -69,21 +82,13 @@ object CometWindowExec extends CometOperatorSerde[WindowExec] {
     if (windowExprProto.forall(_.isDefined) && partitionExprs.forall(_.isDefined)
       && sortOrders.forall(_.isDefined)) {
       val windowBuilder = OperatorOuterClass.Window.newBuilder()
-      windowBuilder.addAllWindowExpr(windowExprProto.map(_.get).toIterable.asJava)
+      windowBuilder.addAllWindowExpr(windowExprProto.map(_.get).asJava)
       windowBuilder.addAllPartitionByList(partitionExprs.map(_.get).asJava)
       windowBuilder.addAllOrderByList(sortOrders.map(_.get).asJava)
       Some(builder.setWindow(windowBuilder).build())
     } else {
-      // Roll up reasons already attached to per-expression nodes so the Window
-      // operator itself carries a fallback attribution. Without this, the plan
-      // prints a bare `Window` and the real reason lives on a sub-expression
-      // that isn't obvious in the standard explain output.
-      val failing = winExprs.toSeq.zip(windowExprProto).collect { case (we, None) =>
-        we.windowExpression
-      } ++
-        op.partitionSpec.zip(partitionExprs).collect { case (e, None) => e } ++
-        op.orderSpec.zip(sortOrders).collect { case (e, None) => e }
-      withFallbackReason(op, failing: _*)
+      // Whichever of the window / partition / order expressions failed has already recorded its
+      // own reason; `CometExecRule.rollUpFallbackReasons` lifts it onto this operator.
       None
     }
   }
@@ -196,6 +201,15 @@ object CometWindowExec extends CometOperatorSerde[WindowExec] {
 
     val aggregateExpressions: Array[AggregateExpression] = windowExpr.flatMap { expr =>
       expr match {
+        // Spark 4.2 allows FILTER (WHERE ...) on a window aggregate. DataFusion window
+        // expressions have no filter, and the aggregate proto's filter field is only honored by
+        // the native aggregate operator, so serializing this window expression would silently
+        // evaluate the aggregate over every row of the frame and produce wrong results.
+        case agg: AggregateExpression if agg.filter.isDefined =>
+          withFallbackReason(
+            windowExpr,
+            "window aggregate with a FILTER (WHERE ...) clause is not supported")
+          None
         case agg: AggregateExpression =>
           agg.aggregateFunction match {
             case _: Count =>
@@ -204,28 +218,28 @@ object CometWindowExec extends CometOperatorSerde[WindowExec] {
               if (AggSerde.minMaxDataTypeSupported(min.dataType)) {
                 Some(agg)
               } else {
-                withFallbackReason(windowExpr, s"datatype ${min.dataType} is not supported", expr)
+                withFallbackReason(windowExpr, s"datatype ${min.dataType} is not supported")
                 None
               }
             case max: Max =>
               if (AggSerde.minMaxDataTypeSupported(max.dataType)) {
                 Some(agg)
               } else {
-                withFallbackReason(windowExpr, s"datatype ${max.dataType} is not supported", expr)
+                withFallbackReason(windowExpr, s"datatype ${max.dataType} is not supported")
                 None
               }
             case s: Sum =>
               if (AggSerde.sumDataTypeSupported(s.dataType)) {
                 Some(agg)
               } else {
-                withFallbackReason(windowExpr, s"datatype ${s.dataType} is not supported", expr)
+                withFallbackReason(windowExpr, s"datatype ${s.dataType} is not supported")
                 None
               }
             case a: Average =>
               if (AggSerde.avgDataTypeSupported(a.dataType)) {
                 Some(agg)
               } else {
-                withFallbackReason(windowExpr, s"datatype ${a.dataType} is not supported", expr)
+                withFallbackReason(windowExpr, s"datatype ${a.dataType} is not supported")
                 None
               }
             case _: First =>
@@ -236,8 +250,7 @@ object CometWindowExec extends CometOperatorSerde[WindowExec] {
               withFallbackReason(
                 windowExpr,
                 s"aggregate ${agg.aggregateFunction}" +
-                  " is not supported for window function",
-                expr)
+                  " is not supported for window function")
               None
           }
         case _ =>
@@ -268,7 +281,7 @@ object CometWindowExec extends CometOperatorSerde[WindowExec] {
       windowExpr.windowFunction match {
         case lag: Lag if !lag.default.isInstanceOf[Literal] =>
           // https://github.com/apache/datafusion-comet/issues/4268
-          withFallbackReason(windowExpr, "Lag default value must be a literal", lag.default)
+          withFallbackReason(windowExpr, "Lag default value must be a literal")
           (None, None, false)
         case lag: Lag =>
           val inputExpr = exprToProto(lag.input, output)
@@ -278,7 +291,7 @@ object CometWindowExec extends CometOperatorSerde[WindowExec] {
           (None, func, lag.ignoreNulls)
         case lead: Lead if !lead.default.isInstanceOf[Literal] =>
           // https://github.com/apache/datafusion-comet/issues/4268
-          withFallbackReason(windowExpr, "Lead default value must be a literal", lead.default)
+          withFallbackReason(windowExpr, "Lead default value must be a literal")
           (None, None, false)
         case lead: Lead =>
           val inputExpr = exprToProto(lead.input, output)
@@ -317,8 +330,7 @@ object CometWindowExec extends CometOperatorSerde[WindowExec] {
         case other =>
           withFallbackReason(
             windowExpr,
-            s"window function ${other.getClass.getSimpleName} is not supported",
-            other)
+            s"window function ${other.getClass.getSimpleName} is not supported")
           (None, None, false)
       }
     }
@@ -417,6 +429,43 @@ object CometWindowExec extends CometOperatorSerde[WindowExec] {
               case _ =>
             }
           case _ =>
+        }
+      case _ =>
+    }
+
+    // DataFusion finds a RANGE frame bound other than UNBOUNDED by comparing ORDER BY values,
+    // and its comparison cannot order an array of arrays or structs, or a struct holding an
+    // array, so execution fails with "Uncomparable values". Ranking functions and ROWS frames
+    // never compare values that way and stay native over the same keys. That includes CUME_DIST,
+    // whose RANGE frame DataFusion never reads.
+    // https://github.com/apache/datafusion/issues/24937
+    //
+    // The same comparison orders a null element or field above every other value, while the sort
+    // placed it below, as Spark does. Once the bound search passes a row whose key holds one, the
+    // frame of every later row runs to the end of the partition. So an ORDER BY key whose type
+    // can hold a null element or field falls back for these frames too, with the same exemptions.
+    // https://github.com/apache/datafusion-comet/issues/6477
+    f match {
+      case SpecifiedWindowFrame(RangeFrame, lb, ub)
+          if (lb != UnboundedPreceding || ub != UnboundedFollowing) &&
+            !windowExpr.windowFunction.isInstanceOf[CumeDist] =>
+        val orderTypes = windowExpr.windowSpec.orderSpec.map(_.dataType)
+        orderTypes.find(!isRangeComparable(_)) match {
+          case Some(dt) =>
+            withFallbackReason(
+              windowExpr,
+              s"RANGE frame on ${dt.catalogString} ORDER BY is not supported")
+            return None
+          case None =>
+        }
+        orderTypes.find(CometSortOrder.canHoldNestedNull) match {
+          case Some(dt) =>
+            withFallbackReason(
+              windowExpr,
+              s"RANGE frame on ${dt.catalogString} ORDER BY is not supported when the key " +
+                "can hold a null element or field")
+            return None
+          case None =>
         }
       case _ =>
     }
@@ -587,6 +636,21 @@ object CometWindowExec extends CometOperatorSerde[WindowExec] {
       op.orderSpec,
       op.child,
       SerializedPlan(None))
+  }
+
+  // Whether DataFusion can compare two ORDER BY values of `dataType` to find a RANGE frame
+  // bound. `ScalarValue::partial_cmp` compares an array's elements, and a struct's fields with
+  // nested structs flattened, using Arrow comparison kernels that reject nested values.
+  private def isRangeComparable(dataType: DataType): Boolean = dataType match {
+    case ArrayType(_: ArrayType | _: StructType | _: MapType, _) => false
+    case StructType(fields) =>
+      fields.forall { field =>
+        field.dataType match {
+          case _: ArrayType | _: MapType => false
+          case dt => isRangeComparable(dt)
+        }
+      }
+    case _ => true
   }
 
   // Folds a RANGE frame bound expression to a constant and serializes its

@@ -41,14 +41,35 @@ paths depending on whether the plan reads data from the JVM:
 **Async I/O path (no JVM data sources, e.g. Iceberg scans):** The DataFusion stream is spawned
 onto a tokio worker thread and batches are delivered to the executor thread via an `mpsc` channel.
 The executor thread parks in `blocking_recv()` until the next batch is ready. This avoids
-busy-polling on I/O-bound workloads.
+busy-polling on I/O-bound workloads. The channel closes when the task ends, and a task also ends
+when it is cancelled, as every task is when the runtime shuts down. So the task records that the
+stream has ended before it closes the channel, and a channel that closes without that record fails
+the Spark task instead of ending its output early.
 
-**JVM data source path (ScanExec present):** The executor thread calls `block_on()` and polls the
-DataFusion stream directly, interleaving `pull_input_batches()` calls on `Poll::Pending` to feed
-data from the JVM into ScanExec operators.
+**JVM data source path (ScanExec or ShuffleScanExec present):** The executor thread calls
+`block_on()` and polls the DataFusion stream directly. On `Poll::Pending` it calls
+`pull_input_batches()` to feed data from the JVM into the ScanExec and ShuffleScanExec operators,
+whose streams register the poll's waker and are woken by the refill. The stream is polled with a
+waker that also sets a flag. If the flag is still clear when the pull returns, the stream is
+waiting on native I/O, and the thread parks until a waker fires instead of busy-polling. If it is
+set, the loop polls again. It checks the flag rather than trusting the thread's parker because the
+pull can run another Comet plan on the same thread, and that plan's `block_on()` shares the parker
+and can consume the wake-up meant for the outer loop.
 
-In both cases, DataFusion operators execute on **tokio worker threads**, not on the Spark executor
-task thread. All Spark tasks on an executor share one tokio runtime.
+On the async I/O path, DataFusion operators execute on **tokio worker threads**. On the JVM data
+source path, `block_on()` polls them on the Spark executor task thread, and any tasks they spawn
+run on the shared runtime. All Spark tasks on an executor share one tokio runtime.
+
+When Spark closes a plan, `releasePlan` drops the plan's stream on the executor task thread on
+both paths. On the async I/O path it takes the stream from the task polling it, which waits only
+for a poll already in progress. Waiting for that task to be cancelled instead would wait for a
+free worker, and every worker can be tied up, for instance waiting in Spark's `acquireMemory` for
+the memory the stream holds. `releasePlan` then drops the plan and waits, for up to a second,
+until every memory reservation the plan made has been returned. Tasks that operators spawn, such as
+the ones a sort's merge reads its sorted runs through, are only aborted when the plan is dropped,
+and they return what they hold the next time they yield. This matters because Spark frees whatever
+a task still holds when the task ends and can hand that memory to another task, so memory a plan
+returns later was still in use while Spark counted it as free.
 
 ### Rules for native code
 
@@ -59,9 +80,11 @@ in the operator struct or be shared via `Arc`.
 **JNI calls work from any thread, but have overhead.** `JVMClasses::get_env()` calls
 `AttachCurrentThread`, which acquires JVM internal locks. The attachment is cached in
 thread-local storage and is only released when the worker thread itself exits, not when the
-`AttachGuard` is dropped. This is why the tokio runtime has to be shut down (releasing its
-worker threads) for the JVM to be able to exit. Acquiring the JVM locks on each `get_env()`
-call adds overhead, so avoid calling into the JVM on hot paths during stream execution.
+`AttachGuard` is dropped. Tokio runtime threads are attached as JVM daemon threads when they
+start (see `build_runtime`), so they do not prevent the JVM from exiting when an application
+returns from `main` without calling `SparkContext.stop()`. Acquiring the JVM locks on each
+`get_env()` call adds overhead, so avoid calling into the JVM on hot paths during stream
+execution.
 
 **Do not call `TaskContext.get()` from JVM callbacks during execution.** Spark's `TaskContext` is
 a `ThreadLocal` on the executor task thread. JVM methods invoked from tokio worker threads will
@@ -74,7 +97,10 @@ thereafter.
 call `acquireMemory()` / `releaseMemory()` via JNI whenever DataFusion operators grow or shrink
 memory reservations. This happens on whatever thread the operator is executing on. These calls
 are thread-safe (they use stored `GlobalRef`s, not thread-locals), but they do trigger
-`AttachCurrentThread`.
+`AttachCurrentThread`. Spark blocks `acquireMemory()` when the task has to wait for other tasks to
+release memory, so `SparkMemory` makes the call inside `tokio::task::block_in_place`. A worker
+blocked there hands its other tasks to another thread, and they keep running, including any that
+would release the memory.
 
 **Scalar subqueries call into the JVM.** `Subquery::evaluate()` calls static methods on
 `CometScalarSubquery` via JNI. These use a static `HashMap`, not thread-locals, so they are
@@ -90,7 +116,9 @@ The runtime is stored in a `Mutex<Option<Runtime>>` static and created lazily on
 is torn down on plugin shutdown (via `release_runtime`) so that the tokio worker threads exit
 and the JVM can shut down cleanly:
 
-- **Worker threads:** `num_cpus` by default, configurable via `COMET_WORKER_THREADS`
+- **Worker threads:** one per executor core by default (`spark.executor.cores`, or the thread
+  count of a `local[N]` or `local[*]` master, and one when `spark.executor.cores` is not set
+  outside local mode), configurable via `COMET_WORKER_THREADS`
 - **Max blocking threads:** 512 by default, configurable via `COMET_MAX_BLOCKING_THREADS`
 - All async I/O (S3, HTTP, Parquet reads) runs on worker threads as non-blocking futures
 
@@ -269,10 +297,10 @@ and `-Dtest=none`:
 ./mvnw test -Dtest=none -Dsuites="org.apache.comet.CometArrayExpressionSuite"
 
 # Run multiple suites (comma-separated, fully qualified)
-./mvnw test -Dtest=none -Dsuites="org.apache.comet.CometCastSuite,org.apache.comet.CometArrayExpressionSuite"
+./mvnw test -Dtest=none -Dsuites="org.apache.comet.CometNativeCastSuite,org.apache.comet.CometArrayExpressionSuite"
 
 # Run only tests whose name contains "valid" inside one suite
-./mvnw test -Dtest=none -Dsuites="org.apache.comet.CometCastSuite valid"
+./mvnw test -Dtest=none -Dsuites="org.apache.comet.CometNativeCastSuite valid"
 ```
 
 `-Dtest=none` tells the Surefire (JUnit) plugin to skip its tests; without it, Surefire still
@@ -405,10 +433,8 @@ from a clean IntelliJ configuration:
    PROFILES="-Pspark-4.0" make release
    ```
 
-   The `spark-4.0` profile sets Scala 2.13 and Java 17 properties. If you need to be explicit, use
-   `PROFILES="-Pspark-4.0 -Pscala-2.13 -Pjdk17" make release`.
-
-   The Maven profile is named `jdk17` in this project.
+   The `spark-4.0` profile sets the Scala 2.13 properties, and every profile targets Java 17. If you
+   need to be explicit, use `PROFILES="-Pspark-4.0 -Pscala-2.13" make release`.
 
    If the native build previously used a different JDK, clear Cargo's cached JNI link path before
    rebuilding:
@@ -474,10 +500,10 @@ However if the tests is related to the native side. Please make sure to run `mak
 
 Specify which ScalaTest suites to run with the `suites` argument and disable Surefire's JUnit
 discovery with `-Dtest=none`. For example, to run only the test cases containing _valid_ in
-their name from `org.apache.comet.CometCastSuite`:
+their name from `org.apache.comet.CometNativeCastSuite`:
 
 ```sh
-./mvnw test -Dtest=none -Dsuites="org.apache.comet.CometCastSuite valid"
+./mvnw test -Dtest=none -Dsuites="org.apache.comet.CometNativeCastSuite valid"
 ```
 
 See [Running a Specific ScalaTest Suite](#running-a-specific-scalatest-suite) above for the full
@@ -567,6 +593,12 @@ It is possible to debug both native and JVM code concurrently as described in th
 
 ## Submitting a Pull Request
 
+Use `git push` for normal updates to your PR branch. If you need to force push after a rebase
+or amend, use `git push --force-with-lease` instead of `git push --force` (or `-f`). This reduces
+the risk of accidentally overwriting another maintainer's commits when multiple people push
+to the same PR branch. If the lease check rejects the push, inspect and integrate the remote
+changes before retrying; do not switch to `--force` to bypass the check.
+
 Before submitting a pull request, follow this checklist to ensure your changes are ready:
 
 ### 1. Format Your Code
@@ -600,7 +632,17 @@ cargo clippy --color=never --all-targets --workspace -- -D warnings
 
 Make sure to resolve any Clippy warnings before submitting your pull request, as the CI/CD pipeline will fail if warnings are present.
 
-### 4. Run Tests
+### 4. Compile With Strict Scala Warnings (Recommended)
+
+The `Strict Scala warnings` job runs on every pull request and in the merge queue. It compiles the main and test sources with scalac warnings promoted to errors, so anything it reports fails the build — an `Int` widened into a `Long` metric, or a discarded builder result, for example. Reproduce it locally with:
+
+```sh
+./mvnw test-compile -Pspark-3.5 -Pstrict-warnings -DskipTests
+```
+
+Use the Spark 3.5 profile: it is the one the job runs, and the default build profile will not reproduce it. The default is Spark 4.1 on Scala 2.13, where `-Pstrict-warnings` still fails on warnings unrelated to your change (tracked in [#5893](https://github.com/apache/datafusion-comet/issues/5893)), and where the compiler reports a different set — an adapted argument list, for instance, is flagged under Scala 2.12 but not under 2.13.
+
+### 5. Run Tests
 
 Run the relevant tests for your changes:
 
@@ -615,7 +657,7 @@ make test-rust
 make test-jvm
 ```
 
-### 5. Register New Test Suites in CI
+### 6. Register New Test Suites in CI
 
 Comet's CI does not automatically discover test suites. Instead, test suites are explicitly listed
 in the GitHub Actions workflow files so they can be grouped by category and run as separate parallel
@@ -651,10 +693,26 @@ Choose the group that best matches the area your test covers:
 | `expressions` | Expression evaluation, casts, and Comet SQL Tests          |
 | `sql`         | SQL-level behavior tests                                   |
 
-**Important:** The suite lists in both workflow files must stay in sync. A separate CI check
-(`.github/workflows/pr_missing_suites.yml`) runs `dev/ci/check-suites.py` on every pull request.
-It scans for all `*Suite.scala` files in the repository and verifies that each one appears in both
-workflow files. If any suite is missing, this check will fail and block the PR.
+**Important:** The suite lists in both workflow files must stay in sync. The `preflight` job in
+`.github/workflows/ci.yml` runs `dev/ci/check-suites.py` on every pull request. It scans for all
+`*Suite.scala` files in the repository and verifies that each one appears in both workflow files.
+If any suite is missing, this check will fail and block the PR.
+
+A small number of suites are deliberately **not** run in CI, because they need infrastructure CI
+does not have or because running them there is not worth the cost. These are listed in the
+`ignore_list` in `dev/ci/check-suites.py`, and each one documents in its own scaladoc why it is
+excluded and how to run it. Run a manual suite with:
+
+```sh
+./mvnw test -Dtest=none -Dsuites="org.apache.comet.parquet.ParquetReadFromFakeHadoopFsSuite"
+```
+
+Only add a suite to that list with a good reason; the default is that a new suite runs in CI.
+
+On a pull request and in the merge queue the Linux build runs these suites against the default
+Spark profile (4.1) only; the nightly run covers the other Spark profiles, and the macOS suites
+only run in the merge queue by default. See [Continuous Integration](ci.md) for the three tiers
+and the labels that opt a pull request into a queue-only or nightly suite.
 
 ### Pre-PR Summary
 

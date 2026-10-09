@@ -16,7 +16,7 @@
 -- under the License.
 
 -- Convergent try_to_timestamp(string, format) behavior across all three policies.
--- MinSparkVersion: 4.0
+-- MinSparkVersion: 3.4
 -- ConfigMatrix: spark.sql.legacy.timeParserPolicy=LEGACY,CORRECTED,EXCEPTION
 -- Config: spark.sql.session.timeZone=UTC
 
@@ -26,10 +26,10 @@ CREATE TABLE test_try_to_ts_policy(s string) USING parquet
 statement
 INSERT INTO test_try_to_ts_policy VALUES ('2024-06-15 10:30:45'), ('1970-01-01 00:00:00'), (NULL), ('')
 
-query spark_answer_only
+query
 SELECT try_to_timestamp(s, 'yyyy-MM-dd HH:mm:ss') FROM test_try_to_ts_policy
 
-query spark_answer_only
+query
 SELECT try_to_timestamp(s) FROM test_try_to_ts_policy
 
 statement
@@ -38,11 +38,11 @@ CREATE TABLE test_try_to_ts_date_policy(s string) USING parquet
 statement
 INSERT INTO test_try_to_ts_date_policy VALUES ('2024-06-15'), ('1970-01-01'), (NULL)
 
-query spark_answer_only
+query
 SELECT try_to_timestamp(s, 'yyyy-MM-dd') FROM test_try_to_ts_date_policy
 
-query spark_answer_only
+query
 SELECT try_to_timestamp('2024-06-15', 'yyyy-MM-dd')
 
-query spark_answer_only
+query
 SELECT try_to_timestamp(NULL, 'yyyy-MM-dd')

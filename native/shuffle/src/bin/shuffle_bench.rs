@@ -35,7 +35,7 @@
 //!   --partitions 200 --codec lz4
 //! ```
 
-use arrow::datatypes::{DataType, SchemaRef};
+use arrow::datatypes::{DataType, Schema, SchemaRef};
 use clap::Parser;
 use datafusion::execution::config::SessionConfig;
 use datafusion::execution::runtime_env::RuntimeEnvBuilder;
@@ -45,7 +45,9 @@ use datafusion::physical_plan::common::collect;
 use datafusion::physical_plan::metrics::{MetricValue, MetricsSet};
 use datafusion::physical_plan::ExecutionPlan;
 use datafusion::prelude::{ParquetReadOptions, SessionContext};
-use datafusion_comet_shuffle::{CometPartitioning, CompressionCodec, ShuffleWriterExec};
+use datafusion_comet_shuffle::{
+    CometPartitioning, CompressionCodec, RoundRobinStrategy, ShuffleWriterExec,
+};
 use parquet::arrow::arrow_reader::ParquetRecordBatchReaderBuilder;
 use std::fs;
 use std::path::{Path, PathBuf};
@@ -98,13 +100,17 @@ struct Args {
     #[arg(long, default_value_t = 0)]
     warmup: usize,
 
-    /// Output directory for shuffle data/index files
+    /// Output directory for the shuffle data file
     #[arg(long, default_value = "/tmp/comet_shuffle_bench")]
     output_dir: PathBuf,
 
     /// Write buffer size in bytes
     #[arg(long, default_value_t = 1048576)]
     write_buffer_size: usize,
+
+    /// Maximum bytes buffered in memory before spilling (unset = spill on memory pressure only)
+    #[arg(long)]
+    max_buffer_bytes: Option<usize>,
 
     /// Limit rows processed per iteration (0 = no limit)
     #[arg(long, default_value_t = 0)]
@@ -122,7 +128,6 @@ fn main() {
     // Create output directory
     fs::create_dir_all(&args.output_dir).expect("Failed to create output directory");
     let data_file = args.output_dir.join("data.out");
-    let index_file = args.output_dir.join("index.out");
 
     let (schema, total_rows) = read_parquet_metadata(&args.input, args.limit);
 
@@ -185,7 +190,6 @@ fn main() {
                 &hash_col_indices,
                 &args,
                 data_file.to_str().unwrap(),
-                index_file.to_str().unwrap(),
             )
         };
         let data_size = fs::metadata(&data_file).map(|m| m.len()).unwrap_or(0);
@@ -249,7 +253,6 @@ fn main() {
     }
 
     let _ = fs::remove_file(&data_file);
-    let _ = fs::remove_file(&index_file);
 }
 
 fn print_shuffle_metrics(metrics: &MetricsSet, total_wall_time_secs: f64) {
@@ -394,7 +397,6 @@ fn run_shuffle_write(
     hash_col_indices: &[usize],
     args: &Args,
     data_file: &str,
-    index_file: &str,
 ) -> (f64, Option<MetricsSet>, Option<MetricsSet>) {
     let partitioning = build_partitioning(
         &args.partitioning,
@@ -413,9 +415,9 @@ fn run_shuffle_write(
             args.batch_size,
             args.memory_limit,
             args.write_buffer_size,
+            args.max_buffer_bytes,
             args.limit,
             data_file.to_string(),
-            index_file.to_string(),
         )
         .await
         .unwrap();
@@ -436,11 +438,23 @@ async fn execute_shuffle_write(
     batch_size: usize,
     memory_limit: Option<usize>,
     write_buffer_size: usize,
+    max_buffer_bytes: Option<usize>,
     limit: usize,
     data_file: String,
-    index_file: String,
 ) -> datafusion::common::Result<(MetricsSet, MetricsSet)> {
-    let config = SessionConfig::new().with_batch_size(batch_size);
+    let mut config = SessionConfig::new().with_batch_size(batch_size);
+    // Comet never hands the shuffle writer view types: the serde maps Spark `String` to `Utf8`,
+    // and the planner casts UDF results back from `Utf8View`/`BinaryView` to the non-view
+    // variants. DataFusion's parquet reader defaults `schema_force_view_types` to true, which
+    // would feed this benchmark a data shape production never produces -- and one the writer
+    // handles far worse, since a batch at or above `batch_size` rows bypasses the
+    // `BatchCoalescer` and an interleaved view array is serialized with the backing data
+    // buffers of every input batch it drew rows from.
+    config
+        .options_mut()
+        .execution
+        .parquet
+        .schema_force_view_types = false;
     let mut runtime_builder = RuntimeEnvBuilder::new();
     if let Some(mem_limit) = memory_limit {
         runtime_builder = runtime_builder.with_memory_limit(mem_limit, 1.0);
@@ -461,6 +475,9 @@ async fn execute_shuffle_write(
         .await
         .expect("Failed to create physical plan");
 
+    // The header schema is read straight from the file, so check what reaches the writer.
+    reject_view_types(&parquet_plan.schema());
+
     let input: Arc<dyn ExecutionPlan> = if parquet_plan
         .properties()
         .output_partitioning()
@@ -477,9 +494,9 @@ async fn execute_shuffle_write(
         partitioning,
         codec,
         data_file,
-        index_file,
         false,
         write_buffer_size,
+        max_buffer_bytes,
     )
     .expect("Failed to create ShuffleWriterExec");
 
@@ -530,7 +547,6 @@ fn run_concurrent_shuffle_writes(
             let task_dir = args.output_dir.join(format!("task_{task_id}"));
             fs::create_dir_all(&task_dir).expect("Failed to create task output directory");
             let data_file = task_dir.join("data.out").to_str().unwrap().to_string();
-            let index_file = task_dir.join("index.out").to_str().unwrap().to_string();
 
             let input_str = input_path.to_str().unwrap().to_string();
             let codec = codec.clone();
@@ -543,6 +559,7 @@ fn run_concurrent_shuffle_writes(
             let batch_size = args.batch_size;
             let memory_limit = args.memory_limit;
             let write_buffer_size = args.write_buffer_size;
+            let max_buffer_bytes = args.max_buffer_bytes;
             let limit = args.limit;
 
             handles.push(tokio::spawn(async move {
@@ -553,9 +570,9 @@ fn run_concurrent_shuffle_writes(
                     batch_size,
                     memory_limit,
                     write_buffer_size,
+                    max_buffer_bytes,
                     limit,
                     data_file,
-                    index_file,
                 )
                 .await
                 .unwrap()
@@ -583,7 +600,9 @@ fn build_partitioning(
 ) -> CometPartitioning {
     match scheme {
         "single" => CometPartitioning::SinglePartition,
-        "round-robin" => CometPartitioning::RoundRobin(num_partitions, 0),
+        "round-robin" => {
+            CometPartitioning::RoundRobin(num_partitions, RoundRobinStrategy::default())
+        }
         "hash" => {
             let exprs: Vec<Arc<dyn datafusion::physical_expr::PhysicalExpr>> = hash_col_indices
                 .iter()
@@ -622,6 +641,38 @@ fn parse_hash_columns(s: &str) -> Vec<usize> {
         .collect()
 }
 
+/// Fails the run if the schema reaching the shuffle writer carries Arrow view types, which
+/// Comet does not produce and this writer serializes with every backing buffer attached.
+fn reject_view_types(schema: &Schema) {
+    fn find_view(data_type: &DataType) -> Option<&DataType> {
+        match data_type {
+            DataType::Utf8View | DataType::BinaryView => Some(data_type),
+            DataType::List(field)
+            | DataType::LargeList(field)
+            | DataType::FixedSizeList(field, _)
+            | DataType::Map(field, _) => find_view(field.data_type()),
+            DataType::Struct(fields) => fields.iter().find_map(|f| find_view(f.data_type())),
+            DataType::Dictionary(_, values) => find_view(values),
+            _ => None,
+        }
+    }
+
+    let offenders = schema
+        .fields()
+        .iter()
+        .filter_map(|field| {
+            find_view(field.data_type()).map(|found| format!("{} ({found})", field.name()))
+        })
+        .collect::<Vec<_>>();
+
+    assert!(
+        offenders.is_empty(),
+        "Execution schema carries Arrow view types that Comet does not produce: {}. \
+         Re-check `schema_force_view_types` before trusting any measurement from this run.",
+        offenders.join(", ")
+    );
+}
+
 fn describe_schema(schema: &arrow::datatypes::Schema) -> String {
     let mut counts = std::collections::HashMap::new();
     for field in schema.fields() {
@@ -636,6 +687,9 @@ fn describe_schema(schema: &arrow::datatypes::Schema) -> String {
             | DataType::UInt64 => "int",
             DataType::Float16 | DataType::Float32 | DataType::Float64 => "float",
             DataType::Utf8 | DataType::LargeUtf8 => "string",
+            // named, not folded into "string"/"binary", so a view schema is visible in the header
+            DataType::Utf8View => "stringview",
+            DataType::BinaryView => "binaryview",
             DataType::Boolean => "bool",
             DataType::Date32 | DataType::Date64 => "date",
             DataType::Decimal128(_, _) | DataType::Decimal256(_, _) => "decimal",
@@ -674,5 +728,64 @@ fn format_bytes(bytes: usize) -> String {
         format!("{:.2} KiB", bytes as f64 / 1024.0)
     } else {
         format!("{bytes} B")
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::reject_view_types;
+    use arrow::datatypes::{DataType, Field, Fields, Schema};
+    use std::sync::Arc;
+
+    fn schema_of(data_type: DataType) -> Schema {
+        Schema::new(vec![
+            Field::new("plain", DataType::Int32, false),
+            Field::new("subject", data_type, true),
+        ])
+    }
+
+    #[test]
+    fn plain_schema_is_accepted() {
+        reject_view_types(&schema_of(DataType::Utf8));
+    }
+
+    #[test]
+    #[should_panic(expected = "subject (Utf8View)")]
+    fn top_level_string_view_is_rejected() {
+        reject_view_types(&schema_of(DataType::Utf8View));
+    }
+
+    #[test]
+    #[should_panic(expected = "subject (BinaryView)")]
+    fn top_level_binary_view_is_rejected() {
+        reject_view_types(&schema_of(DataType::BinaryView));
+    }
+
+    #[test]
+    #[should_panic(expected = "subject (Utf8View)")]
+    fn view_nested_in_a_list_is_rejected() {
+        reject_view_types(&schema_of(DataType::List(Arc::new(Field::new(
+            "item",
+            DataType::Utf8View,
+            true,
+        )))));
+    }
+
+    #[test]
+    #[should_panic(expected = "subject (Utf8View)")]
+    fn view_nested_in_a_struct_is_rejected() {
+        reject_view_types(&schema_of(DataType::Struct(Fields::from(vec![
+            Field::new("a", DataType::Int64, true),
+            Field::new("b", DataType::Utf8View, true),
+        ]))));
+    }
+
+    #[test]
+    #[should_panic(expected = "subject (Utf8View)")]
+    fn view_behind_a_dictionary_is_rejected() {
+        reject_view_types(&schema_of(DataType::Dictionary(
+            Box::new(DataType::Int32),
+            Box::new(DataType::Utf8View),
+        )));
     }
 }

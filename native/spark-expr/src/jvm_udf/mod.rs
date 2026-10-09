@@ -26,8 +26,10 @@ use arrow::record_batch::RecordBatch;
 
 use datafusion::common::Result as DFResult;
 use datafusion::logical_expr::ColumnarValue;
+use datafusion::physical_expr::expressions::Literal;
 use datafusion::physical_expr::PhysicalExpr;
 
+use datafusion_comet_common::{decode_string_arrays, zero_offsets};
 use datafusion_comet_jni_bridge::errors::{CometError, ExecutionError};
 use datafusion_comet_jni_bridge::JVMClasses;
 use jni::objects::{Global, JObject, JValue};
@@ -38,6 +40,12 @@ use jni::objects::{Global, JObject, JValue};
 pub struct JvmScalarUdfExpr {
     class_name: String,
     args: Vec<Arc<dyn PhysicalExpr>>,
+    /// The length-1 array sent for each argument that is a literal. Built once here, because
+    /// building it for every batch copies the value twice: `Literal::evaluate` clones it and
+    /// `to_array_of_size` copies the clone. The codegen dispatcher's serialized expression is
+    /// such a literal, several KB for a Scala UDF. `None` for any other argument, and for a
+    /// literal whose array cannot be built, which `evaluate` then reports.
+    literal_arrays: Vec<Option<ArrayRef>>,
     return_type: DataType,
     return_nullable: bool,
     /// Captured at `createPlan` time and threaded here by the planner. Passed through the
@@ -48,26 +56,50 @@ pub struct JvmScalarUdfExpr {
     /// Spark task is available; the bridge then leaves whatever `TaskContext.get()` already
     /// returns in place.
     task_context: Option<Arc<Global<JObject<'static>>>>,
+    /// Context `ClassLoader` of the driving Spark task thread, captured at `createPlan` time and
+    /// threaded here by the planner. See `CometUdfBridge.evaluate`, which installs it for the
+    /// duration of the call. `None` when no driving Spark task is available (unit tests, direct
+    /// native driver runs); the bridge then installs nothing.
+    class_loader: Option<Arc<Global<JObject<'static>>>>,
+    /// Index of the partition this native plan computes. See `CometUDF.evaluate`.
+    partition: i32,
+    /// Id of this native plan. See `CometUDF.evaluate`.
+    exec_context_id: i64,
 }
 
 impl JvmScalarUdfExpr {
+    #[allow(clippy::too_many_arguments)]
     pub fn new(
         class_name: String,
         args: Vec<Arc<dyn PhysicalExpr>>,
         return_type: DataType,
         return_nullable: bool,
         task_context: Option<Arc<Global<JObject<'static>>>>,
+        class_loader: Option<Arc<Global<JObject<'static>>>>,
+        partition: i32,
+        exec_context_id: i64,
     ) -> Self {
         debug_assert!(
             !class_name.is_empty(),
             "JvmScalarUdfExpr requires a non-empty class name"
         );
+        let literal_arrays = args
+            .iter()
+            .map(|arg| {
+                arg.downcast_ref::<Literal>()
+                    .and_then(|literal| literal.value().to_array_of_size(1).ok())
+            })
+            .collect();
         Self {
             class_name,
             args,
+            literal_arrays,
             return_type,
             return_nullable,
             task_context,
+            class_loader,
+            partition,
+            exec_context_id,
         }
     }
 }
@@ -126,17 +158,26 @@ impl PhysicalExpr for JvmScalarUdfExpr {
         let arrays: Vec<ArrayRef> = self
             .args
             .iter()
-            .map(|e| match e.evaluate(batch)? {
-                ColumnarValue::Array(a) => Ok(a),
-                ColumnarValue::Scalar(s) => s.to_array_of_size(1),
+            .zip(&self.literal_arrays)
+            .map(|(e, literal_array)| match literal_array {
+                Some(a) => Ok(Arc::clone(a)),
+                None => match e.evaluate(batch)? {
+                    ColumnarValue::Array(a) => Ok(a),
+                    ColumnarValue::Scalar(s) => s.to_array_of_size(1),
+                },
             })
             .collect::<DFResult<_>>()?;
 
         // The JVM writes into the out_array/out_schema slots and reads from the in_ slots.
+        // Arrow Java ignores `ArrowArray.offset` on import, so every level has to start at 0.
         let in_ffi_arrays: Vec<Box<FFI_ArrowArray>> = arrays
             .iter()
-            .map(|arr| Box::new(FFI_ArrowArray::new(&arr.to_data())))
-            .collect();
+            .map(|arr| {
+                let data = arr.to_data();
+                let data = zero_offsets(&data).map_err(|e| CometError::Arrow { source: e })?;
+                Ok(Box::new(FFI_ArrowArray::new(&data)))
+            })
+            .collect::<Result<_, CometError>>()?;
         let in_ffi_schemas: Vec<Box<FFI_ArrowSchema>> = arrays
             .iter()
             .map(|arr| {
@@ -197,14 +238,17 @@ impl PhysicalExpr for JvmScalarUdfExpr {
                 .set_region(env, 0, &in_sch_ptrs)
                 .map_err(|e| CometError::JNI { source: e })?;
 
-            // Resolve the TaskContext reference once before building the arg array so the
-            // borrow lives until `call_static_method_unchecked` returns. When no TaskContext
-            // was propagated, pass a null object so the bridge's null-guard leaves the thread-
-            // local alone.
-            let null_task_context = JObject::null();
+            // Resolve the TaskContext and ClassLoader references once before building the arg
+            // array so the borrows live until `call_static_method_unchecked` returns. Absent
+            // values are passed as a null object, which the bridge's null-guards skip.
+            let null_obj = JObject::null();
             let task_context_ref: &JObject = match &self.task_context {
                 Some(gref) => gref.as_obj(),
-                None => &null_task_context,
+                None => &null_obj,
+            };
+            let class_loader_ref: &JObject = match &self.class_loader {
+                Some(gref) => gref.as_obj(),
+                None => &null_obj,
             };
             let ret = unsafe {
                 env.call_static_method_unchecked(
@@ -218,7 +262,10 @@ impl PhysicalExpr for JvmScalarUdfExpr {
                         JValue::Long(out_arr_ptr).as_jni(),
                         JValue::Long(out_sch_ptr).as_jni(),
                         JValue::Int(batch.num_rows() as i32).as_jni(),
+                        JValue::Int(self.partition).as_jni(),
+                        JValue::Long(self.exec_context_id).as_jni(),
                         JValue::Object(task_context_ref).as_jni(),
+                        JValue::Object(class_loader_ref).as_jni(),
                     ],
                 )
             };
@@ -238,7 +285,10 @@ impl PhysicalExpr for JvmScalarUdfExpr {
         // exactly once when the Box drops at end of scope.
         let result_data = unsafe { from_ffi(*out_array, &out_schema) }
             .map_err(|e| CometError::Arrow { source: e })?;
-        Ok(ColumnarValue::Array(make_array(result_data)))
+        let imported = make_array(result_data);
+        let decoded =
+            decode_string_arrays(&imported).map_err(|e| CometError::Arrow { source: e })?;
+        Ok(ColumnarValue::Array(decoded))
     }
 
     fn children(&self) -> Vec<&Arc<dyn PhysicalExpr>> {
@@ -255,6 +305,54 @@ impl PhysicalExpr for JvmScalarUdfExpr {
             self.return_type.clone(),
             self.return_nullable,
             self.task_context.clone(),
+            self.class_loader.clone(),
+            self.partition,
+            self.exec_context_id,
         )))
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use arrow::array::{Array, BinaryArray};
+    use datafusion::common::ScalarValue;
+    use datafusion::physical_expr::expressions::Column;
+
+    #[test]
+    fn builds_literal_arguments_once() {
+        let bytes = vec![7u8; 4096];
+        let udf = JvmScalarUdfExpr::new(
+            "org.example.Udf".to_string(),
+            vec![
+                Arc::new(Literal::new(ScalarValue::Binary(Some(bytes.clone())))),
+                Arc::new(Column::new("a", 0)),
+            ],
+            DataType::Int64,
+            true,
+            None,
+            None,
+            0,
+            0,
+        );
+        let literal = udf.literal_arrays[0]
+            .as_ref()
+            .expect("a literal argument's array is built up front");
+        let literal = literal.as_any().downcast_ref::<BinaryArray>().unwrap();
+        assert_eq!(literal.len(), 1);
+        assert_eq!(literal.value(0), bytes.as_slice());
+        assert!(udf.literal_arrays[1].is_none());
+
+        // New children rebuild the arrays, so a position that no longer holds a literal does not
+        // keep sending the old literal's array.
+        let swapped = Arc::new(udf)
+            .with_new_children(vec![
+                Arc::new(Column::new("a", 0)),
+                Arc::new(Literal::new(ScalarValue::Binary(Some(bytes)))),
+            ])
+            .unwrap();
+        let swapped = swapped.downcast_ref::<JvmScalarUdfExpr>().unwrap();
+        assert!(swapped.literal_arrays[0].is_none());
+        assert!(swapped.literal_arrays[1].is_some());
     }
 }

@@ -15,6 +15,7 @@
 // specific language governing permissions and limitations
 // under the License.
 
+use crate::conversion_funcs::trim::trim_all;
 use arrow::array::{Array, StringArray, Time64NanosecondArray};
 use datafusion::common::{DataFusionError, Result};
 use datafusion::physical_plan::ColumnarValue;
@@ -80,26 +81,18 @@ pub fn spark_to_time(args: &[ColumnarValue], fail_on_error: bool) -> Result<Colu
 /// Parse a time string to nanoseconds from midnight, matching Spark's stringToTime behavior.
 /// Returns None for invalid input.
 fn string_to_time(s: &str) -> Option<i64> {
-    let trimmed = s.trim();
-    if trimmed.is_empty() {
-        return None;
-    }
+    // Spark's stringToTime calls UTF8String.trimRight before looking for AM/PM.
+    // Unlike trimAll, trimRight removes ASCII spaces only, so a control byte
+    // after AM/PM prevents the suffix from being recognized.
+    let right_trimmed = s.trim_end_matches(' ');
+    let bytes = right_trimmed.as_bytes();
+    let num_bytes = bytes.len();
 
-    // Spark's parseTimestampString gates the T-prefix branch on j == 0 (start of
-    // the trimmed string), so " T12:30" is rejected even though leading whitespace
-    // is trimmed: the original segment start differs from the trimmed position.
-    if trimmed.as_bytes()[0] == b'T' && s.as_bytes()[0].is_ascii_whitespace() {
-        return None;
-    }
-
-    let bytes = trimmed.as_bytes();
-    let num_chars = bytes.len();
-
-    // Detect AM/PM suffix
-    let (is_am, is_pm, has_suffix) = if num_chars > 2 {
-        let last = bytes[num_chars - 1];
+    // ASCII AM/PM suffix bytes cannot be UTF-8 continuation bytes, so byte indexing is safe.
+    let (is_am, is_pm, has_suffix) = if num_bytes > 2 {
+        let last = bytes[num_bytes - 1];
         if last == b'M' || last == b'm' {
-            let second_last = bytes[num_chars - 2];
+            let second_last = bytes[num_bytes - 2];
             let am = second_last == b'A' || second_last == b'a';
             let pm = second_last == b'P' || second_last == b'p';
             (am, pm, am || pm)
@@ -110,14 +103,24 @@ fn string_to_time(s: &str) -> Option<i64> {
         (false, false, false)
     };
 
-    // Strip AM/PM suffix (and optional space before it)
-    let time_str = if has_suffix {
-        let end = num_chars - 2;
-        let s = &trimmed[..end];
-        s.trim_end()
+    // Spark passes the remaining segment to parseTimestampString, which trims
+    // all ASCII control bytes and spaces, including DELETE, from both ends.
+    // Unicode whitespace is intentionally preserved and fails to parse.
+    let untrimmed_time = if has_suffix {
+        &right_trimmed[..num_bytes - 2]
     } else {
-        trimmed
+        right_trimmed
     };
+    let time_str = trim_all(untrimmed_time);
+    if time_str.is_empty() {
+        return None;
+    }
+
+    // parseTimestampString accepts a T-prefix only at the original segment
+    // start, before trimAll advances past any leading ASCII control bytes.
+    if time_str.starts_with('T') && !untrimmed_time.starts_with('T') {
+        return None;
+    }
 
     // Parse the time components
     let (hour, minute, second, micros) = parse_time_components(time_str)?;
@@ -162,7 +165,7 @@ fn string_to_time(s: &str) -> Option<i64> {
     Some(nanos)
 }
 
-/// Parse time components from a string like "HH:mm:ss.ffffff" or "T HH:mm:ss".
+/// Parse time components from a string like "HH:mm:ss.ffffff" or "T12".
 /// Returns (hour, minute, second, microseconds) or None if invalid.
 fn parse_time_components(s: &str) -> Option<(i32, i32, i32, i32)> {
     let bytes = s.as_bytes();
@@ -182,6 +185,11 @@ fn parse_time_components(s: &str) -> Option<(i32, i32, i32, i32)> {
     pos = new_pos;
     if hour < 0 {
         return None;
+    }
+
+    // Only a T prefix identifies an hour without a colon as a time in Spark.
+    if pos == bytes.len() && bytes[0] == b'T' {
+        return Some((hour, 0, 0, 0));
     }
 
     // Expect ':'
@@ -220,7 +228,7 @@ fn parse_time_components(s: &str) -> Option<(i32, i32, i32, i32)> {
     pos += 1;
 
     // Parse fractional seconds (up to 6 digits, pad with zeros)
-    let (micros, new_pos) = parse_fractional(bytes, pos)?;
+    let (micros, new_pos) = parse_fractional(bytes, pos);
     pos = new_pos;
 
     // Nothing should follow the fractional seconds (timezone not allowed for time)
@@ -257,8 +265,9 @@ fn parse_digits(bytes: &[u8], start: usize) -> Option<(i32, usize)> {
 }
 
 /// Parse fractional seconds (microseconds). Up to 6 digits, padded with zeros.
+/// Spark allows an empty fraction after the decimal point.
 /// Returns (microseconds, new_pos).
-fn parse_fractional(bytes: &[u8], start: usize) -> Option<(i32, usize)> {
+fn parse_fractional(bytes: &[u8], start: usize) -> (i32, usize) {
     let mut pos = start;
     let mut value: i32 = 0;
     let mut count = 0;
@@ -274,10 +283,6 @@ fn parse_fractional(bytes: &[u8], start: usize) -> Option<(i32, usize)> {
         }
     }
 
-    if count == 0 {
-        return None;
-    }
-
     // Skip any remaining digits beyond 6 (truncation)
     while pos < bytes.len() && bytes[pos].is_ascii_digit() {
         pos += 1;
@@ -289,7 +294,7 @@ fn parse_fractional(bytes: &[u8], start: usize) -> Option<(i32, usize)> {
         count += 1;
     }
 
-    Some((value, pos))
+    (value, pos)
 }
 
 #[cfg(test)]
@@ -388,6 +393,48 @@ mod tests {
     }
 
     #[test]
+    fn test_hour_only_t_prefix() {
+        for (input, hour) in [
+            ("T0", 0),
+            ("T1", 1),
+            ("T12", 12),
+            ("T23", 23),
+            ("T12 AM", 0),
+            ("T12 PM", 12),
+            ("T1pm", 13),
+            ("T1\tAM", 1),
+        ] {
+            assert_eq!(
+                string_to_time(input),
+                Some(hour * NANOS_PER_HOUR),
+                "{input:?}"
+            );
+        }
+        for input in [
+            "12", "12 AM", "T", "T001", "T24", "T0 AM", "T13 PM", "T12:", "T12.", " T12",
+            "T12 AM\t",
+        ] {
+            assert_eq!(string_to_time(input), None, "{input:?}");
+        }
+    }
+
+    #[test]
+    fn test_empty_fraction() {
+        for (input, expected) in [
+            ("12:30:45.", "12:30:45"),
+            ("T1:2:3.", "T1:2:3"),
+            ("12:30:45. AM", "12:30:45 AM"),
+            ("12:30:45.PM", "12:30:45 PM"),
+            ("12:30:45.\t", "12:30:45"),
+        ] {
+            assert_eq!(string_to_time(input), string_to_time(expected), "{input:?}");
+        }
+        for input in ["12:30.", "12:30:45..", "12:30:45.x", "12:30:45.Z"] {
+            assert_eq!(string_to_time(input), None, "{input:?}");
+        }
+    }
+
+    #[test]
     fn test_am_pm() {
         // 12:00:00 AM = midnight
         assert_eq!(string_to_time("12:00:00 AM"), Some(0));
@@ -478,5 +525,197 @@ mod tests {
         // the already-trimmed segment), so leading whitespace moves j past 0.
         assert_eq!(string_to_time("  T12:30:45"), None);
         assert_eq!(string_to_time(" T12:30"), None);
+    }
+
+    #[test]
+    fn test_spark_trim_all_control_bytes() {
+        for (time, after_hour) in [("12:30:45", "30:45"), ("12:30", "30")] {
+            let expected = string_to_time(time);
+
+            for byte in (0_u8..=0x20).chain(std::iter::once(0x7f)) {
+                let padding = char::from(byte);
+                for input in [
+                    format!("{padding}{time}"),
+                    format!("{time}{padding}"),
+                    format!("{padding}{time}{padding}"),
+                ] {
+                    assert_eq!(
+                        string_to_time(&input),
+                        expected,
+                        "padding byte 0x{byte:02X} in {input:?}"
+                    );
+                }
+
+                let interior = format!("12:{padding}{after_hour}");
+                assert_eq!(
+                    string_to_time(&interior),
+                    None,
+                    "interior padding byte 0x{byte:02X} in {interior:?}"
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn test_unicode_whitespace_is_not_trimmed() {
+        for padding in [
+            '\u{0085}', '\u{00a0}', '\u{1680}', '\u{2000}', '\u{2003}', '\u{2007}', '\u{2028}',
+            '\u{2029}', '\u{202f}', '\u{205f}', '\u{3000}',
+        ] {
+            assert!(padding.is_whitespace());
+
+            for input in [
+                format!("{padding}12:30:45"),
+                format!("12:30:45{padding}"),
+                format!("{padding}12:30:45{padding}"),
+                format!("12:{padding}30:45"),
+                format!("{padding}1:00:00 AM"),
+                format!("1:00:00{padding}AM"),
+                format!("1:00:00 AM{padding}"),
+            ] {
+                assert_eq!(
+                    string_to_time(&input),
+                    None,
+                    "Unicode whitespace U+{:04X} in {input:?}",
+                    padding as u32
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn test_am_pm_control_byte_trimming() {
+        for (suffix, expected) in [
+            ("AM", NANOS_PER_HOUR),
+            ("PM", 13 * NANOS_PER_HOUR),
+            ("am", NANOS_PER_HOUR),
+            ("pm", 13 * NANOS_PER_HOUR),
+        ] {
+            for byte in (0_u8..=0x20).chain(std::iter::once(0x7f)) {
+                let padding = char::from(byte);
+
+                for input in [
+                    format!("{padding}1:00:00 {suffix}"),
+                    format!("1:00:00{padding}{suffix}"),
+                    format!("{padding}1:00:00{padding}{suffix}"),
+                ] {
+                    assert_eq!(
+                        string_to_time(&input),
+                        Some(expected),
+                        "padding byte 0x{byte:02X} in {input:?}"
+                    );
+                }
+
+                let trailing = format!("1:00:00 {suffix}{padding}");
+                let expected_trailing = (byte == b' ').then_some(expected);
+                assert_eq!(
+                    string_to_time(&trailing),
+                    expected_trailing,
+                    "trailing padding byte 0x{byte:02X} in {trailing:?}"
+                );
+            }
+        }
+
+        assert_eq!(string_to_time("1:00:00 AM \t"), None);
+        assert_eq!(string_to_time("1:00:00 AM\t "), None);
+        assert_eq!(string_to_time("1:00:00 AM  "), Some(NANOS_PER_HOUR));
+    }
+
+    #[test]
+    fn test_t_prefix_rejects_all_leading_trimmed_bytes() {
+        let expected = string_to_time("T12:30:45");
+
+        for byte in (0_u8..=0x20).chain(std::iter::once(0x7f)) {
+            let padding = char::from(byte);
+            let leading = format!("{padding}T12:30:45");
+            let trailing = format!("T12:30:45{padding}");
+
+            assert_eq!(
+                string_to_time(&leading),
+                None,
+                "leading padding byte 0x{byte:02X} in {leading:?}"
+            );
+            assert_eq!(
+                string_to_time(&trailing),
+                expected,
+                "trailing padding byte 0x{byte:02X} in {trailing:?}"
+            );
+        }
+    }
+
+    #[test]
+    fn test_t_prefix_am_pm_control_byte_trimming() {
+        for (time, seconds) in [("T1:30", 0), ("T1:30:45", 45)] {
+            for (suffix, hour) in [("AM", 1), ("PM", 13), ("am", 1), ("pm", 13)] {
+                let expected =
+                    hour * NANOS_PER_HOUR + 30 * NANOS_PER_MINUTE + seconds * NANOS_PER_SECOND;
+
+                assert_eq!(string_to_time(&format!("{time} {suffix}")), Some(expected));
+
+                for byte in (0_u8..=0x20).chain(std::iter::once(0x7f)) {
+                    let padding = char::from(byte);
+
+                    for input in [
+                        format!("{padding}{time} {suffix}"),
+                        format!("{padding}{time}{padding}{suffix}"),
+                    ] {
+                        assert_eq!(
+                            string_to_time(&input),
+                            None,
+                            "leading padding byte 0x{byte:02X} in {input:?}"
+                        );
+                    }
+
+                    let before_suffix = format!("{time}{padding}{suffix}");
+                    assert_eq!(
+                        string_to_time(&before_suffix),
+                        Some(expected),
+                        "pre-suffix padding byte 0x{byte:02X} in {before_suffix:?}"
+                    );
+
+                    let after_suffix = format!("{time} {suffix}{padding}");
+                    assert_eq!(
+                        string_to_time(&after_suffix),
+                        (byte == b' ').then_some(expected),
+                        "post-suffix padding byte 0x{byte:02X} in {after_suffix:?}"
+                    );
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn test_spark_to_time_whitespace_error_modes() {
+        let input = StringArray::from(vec![
+            Some("\u{3000}12:30:45"),
+            Some("1:00:00 AM\t"),
+            Some("\u{1}12:30:45\u{7f}"),
+            Some("1:00:00\u{b}PM"),
+            None,
+        ]);
+        let args = [ColumnarValue::Array(Arc::new(input))];
+
+        assert!(matches!(
+            spark_to_time(&args, true),
+            Err(DataFusionError::Execution(message))
+                if message.contains("cannot be parsed to a TIME value")
+        ));
+
+        let ColumnarValue::Array(output) = spark_to_time(&args, false).unwrap() else {
+            panic!("spark_to_time should return an array");
+        };
+        let output = output
+            .as_any()
+            .downcast_ref::<Time64NanosecondArray>()
+            .unwrap();
+
+        assert!(output.is_null(0));
+        assert!(output.is_null(1));
+        assert_eq!(
+            output.value(2),
+            12 * NANOS_PER_HOUR + 30 * NANOS_PER_MINUTE + 45 * NANOS_PER_SECOND
+        );
+        assert_eq!(output.value(3), 13 * NANOS_PER_HOUR);
+        assert!(output.is_null(4));
     }
 }

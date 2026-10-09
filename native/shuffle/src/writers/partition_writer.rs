@@ -32,7 +32,7 @@ use arrow::record_batch::RecordBatch;
 /// ascending id order, then a single [`finish_all`](PartitionWriter::finish_all).
 ///
 /// [`LocalPartitionWriter`]: crate::writers::local::local_partition_writer::LocalPartitionWriter
-pub(crate) trait PartitionWriter: Send + Sync {
+pub(crate) trait PartitionWriter: Send {
     /// Stages the batches from `iter` for partition `pid` without finalizing it.
     ///
     /// Used to stream single-partition output and to stage multi-partition
@@ -68,4 +68,9 @@ pub(crate) trait PartitionWriter: Send + Sync {
     /// [`finish_partition`](PartitionWriter::finish_partition).
     fn finish_all(&mut self, metrics: &ShufflePartitionerMetrics)
         -> datafusion::common::Result<()>;
+
+    /// Marks the end of one burst of [`write`](PartitionWriter::write) calls (a spill
+    /// event), letting the writer drop transient encode state. Staging more batches
+    /// afterwards is still allowed.
+    fn write_burst_complete(&mut self) {}
 }

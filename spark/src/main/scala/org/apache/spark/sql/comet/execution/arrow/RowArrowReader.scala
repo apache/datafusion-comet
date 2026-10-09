@@ -26,20 +26,24 @@ import org.apache.spark.sql.catalyst.InternalRow
 
 /**
  * `ArrowReader` over an iterator of Spark `InternalRow`s, writing up to `maxRecordsPerBatch` rows
- * per call into the reader's stable VSR via `ArrowWriter`.
+ * per call into the reader's stable VSR via `ArrowWriter`. `onRows` is told each batch's row
+ * count, so a metric need not wrap the row iterator and pay a call per row.
  *
- * `ArrowWriter.create(root)` calls `vector.allocateNew()`, which releases any prior buffers and
- * allocates fresh ones. This is required for FFI safety: previously-exported batches retain their
- * buffers via the C release callback, so reusing those buffers in place would corrupt native
- * consumers still holding the prior batch.
+ * `ArrowWriter.create` calls `vector.allocateNew`, which releases any prior buffers and allocates
+ * fresh ones. This is required for FFI safety: previously-exported batches retain their buffers
+ * via the C release callback, so reusing those buffers in place would corrupt native consumers
+ * still holding the prior batch.
  */
 private[comet] class RowArrowReader(
     allocator: BufferAllocator,
     arrowSchema: Schema,
     rowIter: Iterator[InternalRow],
-    maxRecordsPerBatch: Long,
-    onConversionNs: Long => Unit = _ => ())
+    maxRecordsPerBatch: Int,
+    onConversionNs: Long => Unit = _ => (),
+    onRows: Int => Unit = _ => ())
     extends ArrowReader(allocator) {
+
+  require(maxRecordsPerBatch > 0, "Maximum records per batch must be positive")
 
   override protected def readSchema(): Schema = arrowSchema
 
@@ -55,15 +59,15 @@ private[comet] class RowArrowReader(
     }
 
     val startNs = System.nanoTime()
-    val writer = ArrowWriter.create(getVectorSchemaRoot)
-    var rowCount = 0L
-    while (rowIter.hasNext &&
-      (maxRecordsPerBatch <= 0 || rowCount < maxRecordsPerBatch)) {
+    val writer = ArrowWriter.create(getVectorSchemaRoot, maxRecordsPerBatch)
+    var rowCount = 0
+    while (rowIter.hasNext && rowCount < maxRecordsPerBatch) {
       writer.write(rowIter.next())
       rowCount += 1
     }
     writer.finish()
     onConversionNs(System.nanoTime() - startNs)
+    onRows(rowCount)
     true
   }
 }

@@ -17,7 +17,7 @@
 
 # Manual workflow that exercises Spark's Parquet WRITER test suites with
 # Comet's experimental native Parquet writer enabled (ENABLE_COMET_WRITE=true,
-# spark.comet.parquet.write.enabled). Self-contained — does not call
+# spark.comet.write.parquet.enabled). Self-contained — does not call
 # spark_sql_test_reusable.yml — so it can run on feature branches without
 # touching the standard CI matrix.
 #
@@ -70,8 +70,8 @@ jobs:
           # Mirrors ci.yml's per-version reusable invocations (default-on PR
           # versions only; 3.4 and 4.0 are label-gated and not offered here).
           case "${{ inputs.spark-version }}" in
-            3.5) spark_full=3.5.8; java=17 ;;
-            4.1) spark_full=4.1.2; java=17 ;;
+            3.5) spark_full=3.5.9; java=17 ;;
+            4.1) spark_full=4.1.3; java=17 ;;
             *) echo "Unsupported spark-version: ${{ inputs.spark-version }}" >&2; exit 1 ;;
           esac
           echo "spark-full=$spark_full" >> "$GITHUB_OUTPUT"
@@ -90,9 +90,7 @@ jobs:
             ~/.cargo/registry
             ~/.cargo/git
             native/target
-          key: ${{ runner.os }}-cargo-ci-${{ hashFiles('native/**/Cargo.lock', 'native/**/Cargo.toml') }}-${{ hashFiles('native/**/*.rs') }}
-          restore-keys: |
-            ${{ runner.os }}-cargo-ci-${{ hashFiles('native/**/Cargo.lock', 'native/**/Cargo.toml') }}-
+          key: ${{ runner.os }}-cargo-ci-${{ hashFiles('native/**/Cargo.lock', 'native/**/Cargo.toml') }}
 
       - name: Build native library (CI profile)
         run: |
@@ -116,6 +114,13 @@ jobs:
           spark-version: ${{ steps.resolve.outputs.spark-full }}
           spark-short-version: ${{ inputs.spark-version }}
           skip-native-build: true
+
+      - name: Pre-compile Spark SQL test classes
+        run: |
+          cd apache-spark
+          rm -rf /root/.m2/repository/org/apache/parquet
+          NOLINT_ON_COMPILE=true build/sbt -Dsbt.log.noformat=true -mem 3072 \
+            'sql/Test/compile'
 
       - name: Run Parquet writer tests
         run: |

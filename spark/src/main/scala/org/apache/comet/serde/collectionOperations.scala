@@ -20,9 +20,8 @@
 package org.apache.comet.serde
 
 import org.apache.spark.sql.catalyst.expressions.{Attribute, Reverse, Shuffle}
-import org.apache.spark.sql.types.ArrayType
+import org.apache.spark.sql.types.{ArrayType, BinaryType}
 
-import org.apache.comet.CometSparkSessionExtensions.withFallbackReason
 import org.apache.comet.serde.ExprOuterClass.Expr
 import org.apache.comet.serde.QueryPlanSerde.exprToProtoInternal
 import org.apache.comet.shims.CometTypeShim
@@ -39,12 +38,20 @@ object CometReverse
     "reverse does not support non-UTF8_BINARY collations " +
       "(https://github.com/apache/datafusion-comet/issues/2190)"
 
+  // Spark 4.2 also accepts binary and reverses its bytes. The native reverse UDF only takes
+  // strings, so there is no native path for it.
+  private val binaryReason = "reverse has no native implementation for binary input"
+
   override def getIncompatibleReasons(): Seq[String] =
     CometArrayReverse.getIncompatibleReasons() :+ collationReason
+
+  override def getUnsupportedReasons(): Seq[String] = Seq(binaryReason)
 
   override def getSupportLevel(expr: Reverse): SupportLevel = {
     if (expr.child.dataType.isInstanceOf[ArrayType]) {
       CometArrayReverse.getSupportLevel(expr)
+    } else if (expr.child.dataType == BinaryType) {
+      Unsupported(Some(binaryReason))
     } else if (hasNonDefaultStringCollation(expr.child.dataType)) {
       Incompatible(Some(collationReason))
     } else {
@@ -63,28 +70,35 @@ object CometReverse
 
 object CometShuffle extends CometExpressionSerde[Shuffle] with ArraysBase {
 
+  private val unresolvedSeedReason = "shuffle requires a resolved random seed"
+
+  override def getUnsupportedReasons(): Seq[String] = Seq(unresolvedSeedReason)
+
   // Comet reproduces Spark's random permutation exactly: the resolved seed is combined with the
   // partition index and drives the same MersenneTwister-based inside-out Fisher-Yates shuffle as
   // org.apache.spark.sql.catalyst.util.RandomIndicesGenerator, so results match Spark bit for bit.
-  override def getSupportLevel(expr: Shuffle): SupportLevel = childTypesSupportLevel(expr)
+  override def getSupportLevel(expr: Shuffle): SupportLevel = {
+    // In a resolved plan `randomSeed` is always defined (resolution requires it). Guard anyway,
+    // here rather than in `convert`, so the decline goes through the normal support-level path.
+    if (expr.randomSeed.isEmpty) {
+      Unsupported(Some(unresolvedSeedReason))
+    } else {
+      childTypesSupportLevel(expr)
+    }
+  }
 
   override def convert(expr: Shuffle, inputs: Seq[Attribute], binding: Boolean): Option[Expr] = {
-    // In a resolved plan `randomSeed` is always defined (resolution requires it). Guard anyway.
-    expr.randomSeed match {
-      case Some(seed) =>
-        exprToProtoInternal(expr.child, inputs, binding).map { child =>
-          ExprOuterClass.Expr
+    // getSupportLevel has already verified the seed is resolved.
+    val seed = expr.randomSeed.get
+    exprToProtoInternal(expr.child, inputs, binding).map { child =>
+      ExprOuterClass.Expr
+        .newBuilder()
+        .setShuffle(
+          ExprOuterClass.Shuffle
             .newBuilder()
-            .setShuffle(
-              ExprOuterClass.Shuffle
-                .newBuilder()
-                .setChild(child)
-                .setSeed(seed))
-            .build()
-        }
-      case None =>
-        withFallbackReason(expr, "shuffle requires a resolved random seed")
-        None
+            .setChild(child)
+            .setSeed(seed))
+        .build()
     }
   }
 }

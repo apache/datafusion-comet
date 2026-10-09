@@ -25,29 +25,54 @@ import org.apache.spark.sql.types.{ArrayType, DataType, DataTypes, DecimalType, 
 
 import org.apache.comet.CometConf
 import org.apache.comet.CometSparkSessionExtensions.{isSpark40Plus, withFallbackReason}
-import org.apache.comet.serde.{CometExpressionSerde, Compatible, ExprOuterClass, Incompatible, SupportLevel, Unsupported}
+import org.apache.comet.DataTypeSupport.isComplexType
+import org.apache.comet.serde.{CodegenDispatchFallback, CometExpressionSerde, CometTimeZone, Compatible, ExprOuterClass, Incompatible, SupportLevel, Unsupported}
 import org.apache.comet.serde.ExprOuterClass.Expr
 import org.apache.comet.serde.QueryPlanSerde.{evalModeToProto, exprToProtoInternal, serializeDataType}
-import org.apache.comet.shims.CometExprShim
+import org.apache.comet.shims.{CometExprShim, CometTypeShim}
 
-object CometCast extends CometExpressionSerde[Cast] with CometExprShim {
+object CometCast
+    extends CometExpressionSerde[Cast]
+    with CometExprShim
+    with CometTypeShim
+    with CodegenDispatchFallback {
 
-  // Shared with CometCastSuite so the asserted reason cannot drift from production.
+  // Shared with CometNativeCastSuite so the asserted reason cannot drift from production.
   private[comet] val negativeScaleDecimalToStringReason: String =
     "Negative-scale decimal requires spark.sql.legacy.allowNegativeScaleOfDecimal=true"
 
   // When `spark.sql.legacy.castComplexTypesToString.enabled` is true, Spark wraps maps and
   // structs with `[]` (instead of `{}`) when casting to string, and omits NULL elements of
-  // structs/maps/arrays (instead of rendering them as the literal "null"). Comet only
-  // implements the default formatting, so fall back to Spark for any array/map/struct to-string
-  // cast when the flag is enabled. The flag is internal in Spark 4.0 and defaults to false.
+  // structs/maps/arrays (instead of rendering them as the literal "null"). Comet's native
+  // cast only implements the default formatting, so with the flag enabled we route
+  // array/map/struct to-string casts through the JVM codegen dispatcher via
+  // `CodegenDispatchFallback`. The flag is internal in Spark 4.0 and defaults to false.
   private[comet] val legacyCastComplexTypesToStringReason: String =
     "spark.sql.legacy.castComplexTypesToString.enabled=true is not supported"
+
+  // The generic `Cast from $fromType to $toType is not supported` template is unhelpful for a
+  // collation rejection. An identity cast prints both sides identically, so it reads like a
+  // nonsensical refusal of a string-to-string cast unless the reader already knows collation is
+  // the cause. Named here, and shared with `CometCastCollatedStringSuite`, so the asserted reason
+  // cannot drift from production. Follows the phrasing the other collation reasons use, e.g.
+  // `CometReverse` in `collectionOperations.scala` and `ComparisonUtils` in `predicates.scala`.
+  private[comet] val nonDefaultCollationReason: String =
+    "Cast involving a non-default string collation is not supported " +
+      "(https://github.com/apache/datafusion-comet/issues/4489)"
 
   private def legacyCastComplexTypesToString: Boolean =
     SQLConf.get
       .getConfString("spark.sql.legacy.castComplexTypesToString.enabled", "false")
       .toBoolean
+
+  // Spark rounds the shortest decimal string form of the value (`Double.toString`) rather
+  // than its binary expansion, and Comet's native cast reproduces that. `Double.toString`
+  // only emits the shortest round-trip form on JDK 19 and later (JDK-4511638); older JDKs
+  // can emit an extra digit, so a value whose shortest form lands exactly on a rounding
+  // tie at the target scale can round differently there.
+  private val floatToDecimalJdkNote: String =
+    "Rounding matches Spark on JDK 19 and later. On older JDKs, Spark's own result may " +
+      "differ for values whose shortest decimal form falls exactly on a rounding tie"
 
   def supportedTypes: Seq[DataType] =
     Seq(
@@ -75,8 +100,15 @@ object CometCast extends CometExpressionSerde[Cast] with CometExprShim {
     if (cast.child.isInstanceOf[Literal]) {
       // A cast whose child is a literal is folded by Spark at planning time via `cast.eval()`
       // (see `convert`), so the cast never executes natively and the result matches Spark by
-      // definition. `CometLiteral` then validates the resulting literal's data type.
+      // definition. `CometLiteral` then validates the resulting literal's data type, except
+      // for `VariantType` which must be rejected here: the fold produces a `Literal[VariantType]`
+      // that no downstream Comet serde can serialize.
+      if (isVariantType(cast.child.dataType) || isVariantType(cast.dataType)) {
+        return unsupported(cast.child.dataType, cast.dataType)
+      }
       Compatible()
+    } else if (CometTimeZone.nativeId(cast.timeZoneId).isEmpty) {
+      CometTimeZone.supportLevel(cast.timeZoneId)
     } else {
       isSupported(cast.child.dataType, cast.dataType, cast.timeZoneId, evalMode(cast))
     }
@@ -98,7 +130,6 @@ object CometCast extends CometExpressionSerde[Cast] with CometExprShim {
           if (childExpr.isDefined) {
             castToProto(cast, cast.timeZoneId, cast.dataType, childExpr.get, cometEvalMode)
           } else {
-            withFallbackReason(cast, cast.child)
             None
           }
         }
@@ -130,8 +161,8 @@ object CometCast extends CometExpressionSerde[Cast] with CometExprShim {
       dt: DataType,
       childExpr: Expr,
       evalMode: CometEvalMode.Value): Option[Expr] = {
-    serializeDataType(dt) match {
-      case Some(dataType) =>
+    (serializeDataType(dt), CometTimeZone.nativeId(timeZoneId)) match {
+      case (Some(dataType), Some(timeZone)) =>
         val castBuilder = ExprOuterClass.Cast.newBuilder()
         castBuilder.setChild(childExpr)
         castBuilder.setDatatype(dataType)
@@ -140,15 +171,18 @@ object CometCast extends CometExpressionSerde[Cast] with CometExprShim {
           SQLConf.get
             .getConfString(CometConf.getExprAllowIncompatConfigKey(classOf[Cast]), "false")
             .toBoolean)
-        castBuilder.setTimezone(timeZoneId.getOrElse("UTC"))
+        castBuilder.setTimezone(timeZone)
         castBuilder.setIsSpark4Plus(isSpark40Plus)
         Some(
           ExprOuterClass.Expr
             .newBuilder()
             .setCast(castBuilder)
             .build())
-      case _ =>
+      case (None, _) =>
         withFallbackReason(expr, s"Unsupported datatype in castToProto: $dt")
+        None
+      case (_, None) =>
+        withFallbackReason(expr, CometTimeZone.unsupportedReason(timeZoneId))
         None
     }
   }
@@ -159,17 +193,43 @@ object CometCast extends CometExpressionSerde[Cast] with CometExprShim {
       timeZoneId: Option[String],
       evalMode: CometEvalMode.Value): SupportLevel = {
 
+    // Spark 4's `VariantType` (SPARK-45827) has no native counterpart in Comet, and the codegen
+    // dispatcher also cannot serialize `VariantType` in the data args or return type. The
+    // version-shimmed `isVariantType` returns false on Spark 3.x. Reporting `Unsupported` lets the
+    // `CodegenDispatchFallback` mixin try the dispatcher and then fall back to Spark cleanly.
+    if (isVariantType(fromType) || isVariantType(toType)) {
+      return unsupported(fromType, toType)
+    }
+
+    // Spark 4.0's collation metadata rides on `StringType`, but `serializeDataType` maps every
+    // `StringType` to the same proto id, so a non-default collation is dropped on the way into
+    // the native plan with no warning. Reject the cast outright rather than relying on the
+    // pattern matching below, which only misses collated types because `DataTypes.StringType` is
+    // the default-collation singleton and Scala pattern equality happens not to match. This runs
+    // above the `fromType == toType` shortcut so that an identity cast on a collated type is
+    // checked too, and `hasNonDefaultStringCollation` walks nested element, key, value, and field
+    // types. The version-shimmed helper returns false on Spark 3.x, where collation does not
+    // exist. See https://github.com/apache/datafusion-comet/issues/4489.
+    //
+    // `Unsupported` here means there is no native path, not that the plan falls back to Spark.
+    // `CodegenDispatchFallback` offers the cast to the JVM codegen dispatcher first, and that
+    // route is result-correct: see the note on `isSupportedDataType` in
+    // `CometBatchKernelCodegen` for why a collated string is safe to admit there.
+    if (hasNonDefaultStringCollation(fromType) || hasNonDefaultStringCollation(toType)) {
+      return Unsupported(Some(nonDefaultCollationReason))
+    }
+
     if (fromType == toType) {
       return Compatible()
     }
 
-    if (toType == DataTypes.StringType && legacyCastComplexTypesToString && (fromType
-        .isInstanceOf[ArrayType] || fromType.isInstanceOf[StructType] ||
-        fromType.isInstanceOf[MapType])) {
+    if (toType == DataTypes.StringType && isComplexType(fromType) &&
+      legacyCastComplexTypesToString) {
       return Unsupported(Some(legacyCastComplexTypesToStringReason))
     }
 
     (fromType, toType) match {
+      case (NullType, _) => Compatible()
       case (dt: ArrayType, _: ArrayType) if dt.elementType == NullType => Compatible()
       case (ArrayType(DataTypes.DateType, _), ArrayType(toElementType, _))
           if toElementType != DataTypes.IntegerType && toElementType != DataTypes.StringType =>
@@ -211,6 +271,14 @@ object CometCast extends CometExpressionSerde[Cast] with CometExprShim {
         canCastFromDouble(toType)
       case (from_struct: StructType, to_struct: StructType) =>
         from_struct.fields.zip(to_struct.fields).foreach { case (a, b) =>
+          // `convert` replaces a top-level cast that is always null (DATE to a numeric or boolean
+          // type in LEGACY mode) with a null literal, so the native cast never sees one. A struct
+          // field or map entry does reach it, and there DATE to INT reinterprets the day count
+          // (the kernel `unix_date` relies on) while the other targets raise an error. Arrays of
+          // dates have their own rule above.
+          if (isAlwaysCastToNull(a.dataType, b.dataType, evalMode)) {
+            return unsupported(fromType, toType)
+          }
           isSupported(a.dataType, b.dataType, timeZoneId, evalMode) match {
             case Compatible(_, _) =>
             // all good
@@ -221,11 +289,17 @@ object CometCast extends CometExpressionSerde[Cast] with CometExprShim {
         Compatible()
       case (from_map: MapType, to_map: MapType) =>
         // Native cast_map_to_map recursively casts keys and values, so support is
-        // determined by whether both inner casts are individually supported.
-        isSupported(from_map.keyType, to_map.keyType, timeZoneId, evalMode) match {
-          case Compatible(_, _) =>
-            isSupported(from_map.valueType, to_map.valueType, timeZoneId, evalMode)
-          case other => other
+        // determined by whether both inner casts are individually supported. As with struct
+        // fields, a key or value cast that is always null has no Spark-compatible native kernel.
+        if (isAlwaysCastToNull(from_map.keyType, to_map.keyType, evalMode) ||
+          isAlwaysCastToNull(from_map.valueType, to_map.valueType, evalMode)) {
+          unsupported(fromType, toType)
+        } else {
+          isSupported(from_map.keyType, to_map.keyType, timeZoneId, evalMode) match {
+            case Compatible(_, _) =>
+              isSupported(from_map.valueType, to_map.valueType, timeZoneId, evalMode)
+            case other => other
+          }
         }
       case (DataTypes.DateType, toType) => canCastFromDate(toType, evalMode)
       case _ => unsupported(fromType, toType)
@@ -329,10 +403,14 @@ object CometCast extends CometExpressionSerde[Cast] with CometExprShim {
   private def canCastFromBoolean(toType: DataType, evalMode: CometEvalMode.Value): SupportLevel =
     toType match {
       case DataTypes.ByteType | DataTypes.ShortType | DataTypes.IntegerType | DataTypes.LongType |
-          DataTypes.FloatType | DataTypes.DoubleType | _: DecimalType =>
+          DataTypes.FloatType | DataTypes.DoubleType =>
         Compatible()
       case _: TimestampType if evalMode == CometEvalMode.LEGACY =>
         Compatible()
+      // Boolean -> Decimal has no native path. It is a rare cast and getting the
+      // precision/scale/overflow behavior right in native code is not worth the complexity, so
+      // the `CodegenDispatchFallback` mixin routes it through Spark's own generated code inside
+      // the Comet pipeline instead.
       case _ => unsupported(DataTypes.BooleanType, toType)
     }
 
@@ -407,8 +485,7 @@ object CometCast extends CometExpressionSerde[Cast] with CometExprShim {
         DataTypes.IntegerType | DataTypes.LongType | DataTypes.TimestampType =>
       Compatible()
     case _: DecimalType =>
-      // https://github.com/apache/datafusion-comet/issues/1371
-      Incompatible(Some("There can be rounding differences"))
+      Compatible(Some(floatToDecimalJdkNote))
     case _ =>
       unsupported(DataTypes.FloatType, toType)
   }
@@ -418,8 +495,7 @@ object CometCast extends CometExpressionSerde[Cast] with CometExprShim {
         DataTypes.IntegerType | DataTypes.LongType | DataTypes.TimestampType =>
       Compatible()
     case _: DecimalType =>
-      // https://github.com/apache/datafusion-comet/issues/1371
-      Incompatible(Some("There can be rounding differences"))
+      Compatible(Some(floatToDecimalJdkNote))
     case _ => unsupported(DataTypes.DoubleType, toType)
   }
 

@@ -22,50 +22,43 @@ under the License.
 This page documents known issues and limitations specific to each supported Apache Spark version.
 
 For general compatibility information that applies across all Spark versions, see the other pages in this
-compatibility guide.
+compatibility guide. For the rule that governs how long each Spark minor is supported, see the
+[Apache Spark version support section](../../../about/versioning_policy.md#apache-spark-version-support)
+of the versioning policy.
 
 ## Spark 3.4
 
-Spark 3.4.3 is supported with Java 11/17 and Scala 2.12/2.13.
+Spark 3.4.3 is supported with Java 17 and Scala 2.12/2.13.
 
 ```{warning}
-Spark 3.4 support is deprecated as of the 1.0.0 release and will be removed in the 1.1.0 release.
+Spark 3.4 support is deprecated as of the 1.0.0 release and will be removed in a future release.
+Comet continues to build and publish Spark 3.4 binaries in the meantime, but Apache Spark's own
+SQL test suite no longer runs against Spark 3.4 automatically: it runs only when a contributor
+opts a pull request into it. Regressions specific to Spark 3.4 are therefore more likely to reach a
+release than on the other supported versions. We recommend moving to Spark 3.5 or later.
 ```
 
 ### Known Limitations
 
-- **Reading `TimestampLTZ` as `TimestampNTZ`**: Spark 3.4 raises an error for this operation
-  (SPARK-36182), but Comet's Parquet scan silently returns the raw UTC value instead.
-  See [Parquet Compatibility](scans.md#parquet-scan-limitations) for details.
-
-- **Unsupported Parquet type conversions**: Spark 3.4 raises schema incompatibility errors for
-  certain type mismatches (e.g., reading INT32 as BIGINT, decimal precision changes), but Comet's
-  Comet's Parquet scan may not detect these and could return unexpected values.
-  See [Parquet Compatibility](scans.md#parquet-scan-limitations) for details.
+- **Extra `SparkException` layer in Parquet schema mismatch errors**: when a Parquet read is
+  rejected because a file's type cannot be converted to the requested type, the error's cause chain
+  has one more `SparkException` layer than Spark's own reader produces.
+  See [Parquet Compatibility](scans.md#schema-mismatch-handling) for details.
 
 ## Spark 3.5
 
-Spark 3.5.8 is supported with Java 11/17 and Scala 2.12/2.13.
-
-```{warning}
-JDK 11 support is deprecated as of the 1.0.0 release and will be removed in the 1.1.0 release.
-We recommend moving to JDK 17 or later.
-```
+Spark 3.5.9 is supported with Java 17 and Scala 2.12/2.13.
 
 ### Known Limitations
 
-- **Reading `TimestampLTZ` as `TimestampNTZ`**: Spark 3.5 raises an error for this operation
-  (SPARK-36182), but Comet's Parquet scan silently returns the raw UTC value instead.
-  See [Parquet Compatibility](scans.md#parquet-scan-limitations) for details.
-
-- **Unsupported Parquet type conversions**: Spark 3.5 raises schema incompatibility errors for
-  certain type mismatches (e.g., reading INT32 as BIGINT, decimal precision changes), but Comet's
-  Comet's Parquet scan may not detect these and could return unexpected values.
-  See [Parquet Compatibility](scans.md#parquet-scan-limitations) for details.
+- **Extra `SparkException` layer in Parquet schema mismatch errors**: when a Parquet read is
+  rejected because a file's type cannot be converted to the requested type, the error's cause chain
+  has one more `SparkException` layer than Spark's own reader produces.
+  See [Parquet Compatibility](scans.md#schema-mismatch-handling) for details.
 
 ## Spark 4.0
 
-Spark 4.0.2 is supported with Java 17 and Scala 2.13.
+Spark 4.0.4 is supported with Java 17/21 and Scala 2.13.
 
 ### Known Limitations
 
@@ -74,7 +67,7 @@ Spark 4.0.2 is supported with Java 17 and Scala 2.13.
 
 ## Spark 4.1
 
-Spark 4.1.2 is supported with Java 17/21 and Scala 2.13.
+Spark 4.1.3 is supported with Java 17/21 and Scala 2.13.
 
 ### Known Limitations
 
@@ -87,11 +80,23 @@ Spark 4.1.2 is supported with Java 17/21 and Scala 2.13.
   Comet's scan runs. Workaround: project the column away, cast it to a concrete type before
   persisting, or read the file with Comet disabled for that query.
 
-## Spark 4.2 (Experimental)
+## Spark 4.2
 
-Spark 4.2.0-preview4 is provided as experimental support with Java 17 and Scala 2.13.
+Spark 4.2.0 is supported with Java 17 and Scala 2.13.
 
-```{warning}
-Spark 4.2 support is experimental and targets a preview release of Spark. It is intended for early
-evaluation only and should not be used in production.
-```
+### Known Limitations
+
+- **`FILTER` on window aggregates**: Spark 4.2 accepts a `FILTER (WHERE ...)` clause on an
+  aggregate function used as a window function. Comet does not support the clause there, so the
+  window operator falls back to Spark.
+- **Merged subqueries in `UNION` branches**
+  ([#4949](https://github.com/apache/datafusion-comet/issues/4949)): Spark 4.2 turns a single-row
+  aggregate in some queries, for example TPC-DS q77a, into a scalar subquery that returns a struct,
+  and reads its fields in a projection over a `OneRowRelation`. Comet does not support a
+  struct-typed scalar subquery result yet
+  ([#5834](https://github.com/apache/datafusion-comet/issues/5834)), so that projection, and the
+  union and the aggregates above it, fall back to Spark.
+- **ANSI arithmetic overflow**
+  ([#4967](https://github.com/apache/datafusion-comet/issues/4967)): Spark 4.2 changed some
+  ANSI-mode arithmetic overflow behavior, and Comet does not match these changes yet. See
+  [ANSI-mode error classes and messages](index.md#ansi-mode-error-classes-and-messages).

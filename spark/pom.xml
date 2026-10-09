@@ -26,7 +26,7 @@ under the License.
   <parent>
     <groupId>org.apache.datafusion</groupId>
     <artifactId>comet-parent-spark${spark.version.short}_${scala.binary.version}</artifactId>
-    <version>1.0.0-SNAPSHOT</version>
+    <version>1.2.0-SNAPSHOT</version>
     <relativePath>../pom.xml</relativePath>
   </parent>
 
@@ -59,6 +59,10 @@ under the License.
     <dependency>
       <groupId>org.apache.arrow</groupId>
       <artifactId>arrow-vector</artifactId>
+    </dependency>
+    <dependency>
+      <groupId>org.apache.arrow</groupId>
+      <artifactId>arrow-compression</artifactId>
     </dependency>
     <dependency>
       <groupId>org.scala-lang.modules</groupId>
@@ -108,6 +112,13 @@ under the License.
       <classifier>tests</classifier>
     </dependency>
     <dependency>
+      <!-- Test-only: provides an embedded Hive metastore so Iceberg's type=hive catalog can
+           create encrypted tables (only Hive wires the KMS-backed EncryptionManager). Version and
+           scope come from the parent pom's dependencyManagement. -->
+      <groupId>org.apache.spark</groupId>
+      <artifactId>spark-hive_${scala.binary.version}</artifactId>
+    </dependency>
+    <dependency>
       <groupId>junit</groupId>
       <artifactId>junit</artifactId>
       <scope>test</scope>
@@ -121,6 +132,18 @@ under the License.
           <artifactId>*</artifactId>
         </exclusion>
       </exclusions>
+    </dependency>
+    <!-- failureaccess: Guava's companion artifact (split out at Guava 27).
+         Guava's transitive deps are wildcard-excluded above to keep the
+         shaded production JAR small, which strips failureaccess too. At
+         test runtime any Guava call into futures (e.g. via Hadoop or
+         Spark internals) needs InternalFutureFailureAccess on the
+         classpath — explicitly pull it in here at test scope. -->
+    <dependency>
+      <groupId>com.google.guava</groupId>
+      <artifactId>failureaccess</artifactId>
+      <version>1.0.2</version>
+      <scope>test</scope>
     </dependency>
     <dependency>
       <groupId>org.codehaus.jackson</groupId>
@@ -177,6 +200,30 @@ under the License.
       <groupId>org.testcontainers</groupId>
       <artifactId>minio</artifactId>
     </dependency>
+    <!--
+      hadoop-aws (provided) compiles the built-in S3 credential adapters against the S3A provider
+      factory. Version-pinned per Spark profile via ${hadoop-aws.version} (3.3.x -> SDK v1,
+      3.4.x -> SDK v2). The matching AWS SDK is added, also provided, in the per-profile blocks
+      below (only one SDK is on the classpath per build). All are on the Spark/Hadoop runtime
+      classpath already, so provided keeps Comet from bundling a second copy.
+    -->
+    <dependency>
+      <groupId>org.apache.hadoop</groupId>
+      <artifactId>hadoop-aws</artifactId>
+      <version>${hadoop-aws.version}</version>
+      <scope>provided</scope>
+      <exclusions>
+        <!-- The SDK is supplied explicitly per profile; skip the giant bundles. -->
+        <exclusion>
+          <groupId>com.amazonaws</groupId>
+          <artifactId>aws-java-sdk-bundle</artifactId>
+        </exclusion>
+        <exclusion>
+          <groupId>software.amazon.awssdk</groupId>
+          <artifactId>bundle</artifactId>
+        </exclusion>
+      </exclusions>
+    </dependency>
     <!-- AWS SDK modules required by Iceberg's S3FileIO (see parent pom for details) -->
     <dependency>
       <groupId>software.amazon.awssdk</groupId>
@@ -203,17 +250,84 @@ under the License.
   </dependencies>
 
   <profiles>
+    <profile>
+      <id>celeborn-reflection-compatibility</id>
+      <dependencies>
+        <dependency>
+          <!-- Verify reflection against a released client without adding a production dependency. -->
+          <groupId>org.apache.celeborn</groupId>
+          <artifactId>celeborn-client-spark-3-shaded_${scala.binary.version}</artifactId>
+          <version>${celeborn.version}</version>
+          <scope>test</scope>
+        </dependency>
+      </dependencies>
+      <build>
+        <plugins>
+          <plugin>
+            <groupId>org.codehaus.mojo</groupId>
+            <artifactId>build-helper-maven-plugin</artifactId>
+            <executions>
+              <execution>
+                <id>add-celeborn-reflection-compatibility-test-source</id>
+                <phase>generate-test-sources</phase>
+                <goals>
+                  <goal>add-test-source</goal>
+                </goals>
+                <configuration>
+                  <sources>
+                    <source>src/test/celeborn-reflection-compatibility</source>
+                  </sources>
+                </configuration>
+              </execution>
+            </executions>
+          </plugin>
+        </plugins>
+      </build>
+    </profile>
+
     <!-- Iceberg dependencies vary by Spark version (Iceberg 1.8.1 for Spark 3.x, 1.10.0 for Spark 4.0, 1.11.0 for Spark 4.1) -->
     <profile>
       <id>spark-3.4</id>
       <dependencies>
+        <!--
+          AWS SDK v1 for the built-in S3 credential adapters (spark-3.x source set). hadoop-aws
+          3.3.4 links against the full v1 SDK (it ships the aws-java-sdk-bundle), so its S3AUtils
+          references the s3 model (API extraction at compile) and the DynamoDB model (the S3Guard
+          branch of translateException, at runtime). Supply both modules; core comes transitively
+          and gives the adapter com.amazonaws.auth.*. commons-logging is excluded because
+          jcl-over-slf4j already provides those classes (duplicate-class enforcer).
+        -->
+        <dependency>
+          <groupId>com.amazonaws</groupId>
+          <artifactId>aws-java-sdk-s3</artifactId>
+          <version>${aws-java-sdk-v1.version}</version>
+          <scope>provided</scope>
+          <exclusions>
+            <exclusion>
+              <groupId>commons-logging</groupId>
+              <artifactId>commons-logging</artifactId>
+            </exclusion>
+          </exclusions>
+        </dependency>
+        <dependency>
+          <groupId>com.amazonaws</groupId>
+          <artifactId>aws-java-sdk-dynamodb</artifactId>
+          <version>${aws-java-sdk-v1.version}</version>
+          <scope>provided</scope>
+          <exclusions>
+            <exclusion>
+              <groupId>commons-logging</groupId>
+              <artifactId>commons-logging</artifactId>
+            </exclusion>
+          </exclusions>
+        </dependency>
         <dependency>
           <groupId>org.apache.iceberg</groupId>
           <artifactId>iceberg-spark-runtime-${spark.version.short}_${scala.binary.version}</artifactId>
           <version>1.5.2</version>
           <scope>test</scope>
         </dependency>
-        <!-- Jetty 9.4.x for Spark 3.4 (JDK 11, javax.* packages) -->
+        <!-- Jetty 9.4.x for Spark 3.4 (javax.* packages) -->
         <dependency>
           <groupId>org.eclipse.jetty</groupId>
           <artifactId>jetty-server</artifactId>
@@ -231,14 +345,53 @@ under the License.
 
     <profile>
       <id>spark-3.5</id>
+      <!--
+        When `contrib-delta` is also active, pin Delta to 3.3.x (the latest
+        Delta line that targets Spark 3.5). Delta 4.x requires Spark 4.x.
+      -->
+      <properties>
+        <delta.version>3.3.2</delta.version>
+      </properties>
       <dependencies>
+        <!--
+          AWS SDK v1 for the built-in S3 credential adapters (spark-3.x source set). hadoop-aws
+          3.3.4 links against the full v1 SDK (it ships the aws-java-sdk-bundle), so its S3AUtils
+          references the s3 model (API extraction at compile) and the DynamoDB model (the S3Guard
+          branch of translateException, at runtime). Supply both modules; core comes transitively
+          and gives the adapter com.amazonaws.auth.*. commons-logging is excluded because
+          jcl-over-slf4j already provides those classes (duplicate-class enforcer).
+        -->
+        <dependency>
+          <groupId>com.amazonaws</groupId>
+          <artifactId>aws-java-sdk-s3</artifactId>
+          <version>${aws-java-sdk-v1.version}</version>
+          <scope>provided</scope>
+          <exclusions>
+            <exclusion>
+              <groupId>commons-logging</groupId>
+              <artifactId>commons-logging</artifactId>
+            </exclusion>
+          </exclusions>
+        </dependency>
+        <dependency>
+          <groupId>com.amazonaws</groupId>
+          <artifactId>aws-java-sdk-dynamodb</artifactId>
+          <version>${aws-java-sdk-v1.version}</version>
+          <scope>provided</scope>
+          <exclusions>
+            <exclusion>
+              <groupId>commons-logging</groupId>
+              <artifactId>commons-logging</artifactId>
+            </exclusion>
+          </exclusions>
+        </dependency>
         <dependency>
           <groupId>org.apache.iceberg</groupId>
           <artifactId>iceberg-spark-runtime-${spark.version.short}_${scala.binary.version}</artifactId>
           <version>1.8.1</version>
           <scope>test</scope>
         </dependency>
-        <!-- Jetty 9.4.x for Spark 3.5 (JDK 11, javax.* packages) -->
+        <!-- Jetty 9.4.x for Spark 3.5 (javax.* packages) -->
         <dependency>
           <groupId>org.eclipse.jetty</groupId>
           <artifactId>jetty-server</artifactId>
@@ -256,7 +409,23 @@ under the License.
 
     <profile>
       <id>spark-4.0</id>
+      <properties>
+        <!--
+          Delta dep version (only used when `-Pcontrib-delta` is also active).
+          Delta 4.1 requires Spark 4.1 internals (NoSuchMethodError on
+          ParserInterface.$init$ if used against Spark 4.0), so spark-4.0 pins
+          the 4.0.x line.
+        -->
+        <delta.version>4.0.0</delta.version>
+      </properties>
       <dependencies>
+        <!-- AWS SDK v2 for the built-in S3 credential adapters (spark-4.x source set). -->
+        <dependency>
+          <groupId>software.amazon.awssdk</groupId>
+          <artifactId>auth</artifactId>
+          <version>${amazon-awssdk-v2.version}</version>
+          <scope>provided</scope>
+        </dependency>
         <dependency>
           <groupId>org.apache.iceberg</groupId>
           <artifactId>iceberg-spark-runtime-${spark.version.short}_${scala.binary.version}</artifactId>
@@ -283,14 +452,25 @@ under the License.
       <activation>
         <activeByDefault>true</activeByDefault>
       </activation>
+      <properties>
+        <!-- Delta dep version (only used when `-Pcontrib-delta` is also active). -->
+        <delta.version>4.1.0</delta.version>
+      </properties>
       <dependencies>
+        <!-- AWS SDK v2 for the built-in S3 credential adapters (spark-4.x source set). -->
+        <dependency>
+          <groupId>software.amazon.awssdk</groupId>
+          <artifactId>auth</artifactId>
+          <version>${amazon-awssdk-v2.version}</version>
+          <scope>provided</scope>
+        </dependency>
         <dependency>
           <groupId>org.apache.iceberg</groupId>
           <artifactId>iceberg-spark-runtime-${spark.version.short}_${scala.binary.version}</artifactId>
           <version>1.11.0</version>
           <scope>test</scope>
         </dependency>
-        <!-- Jetty 11.x for Spark 4.1 (jakarta.servlet); matches Spark 4.1.2's jetty.version -->
+        <!-- Jetty 11.x for Spark 4.1 (jakarta.servlet); matches Spark 4.1.3's jetty.version -->
         <dependency>
           <groupId>org.eclipse.jetty</groupId>
           <artifactId>jetty-server</artifactId>
@@ -308,6 +488,13 @@ under the License.
     <profile>
       <id>spark-4.2</id>
       <dependencies>
+        <!-- AWS SDK v2 for the built-in S3 credential adapters (spark-4.x source set). -->
+        <dependency>
+          <groupId>software.amazon.awssdk</groupId>
+          <artifactId>auth</artifactId>
+          <version>${amazon-awssdk-v2.version}</version>
+          <scope>provided</scope>
+        </dependency>
         <!-- iceberg-spark-runtime-4.2 is not yet published; reuse the 4.0 runtime -->
         <dependency>
           <groupId>org.apache.iceberg</groupId>
@@ -315,7 +502,9 @@ under the License.
           <version>1.10.0</version>
           <scope>test</scope>
         </dependency>
-        <!-- Jetty 11.x for Spark 4.2 (jakarta.servlet); matches Spark 4.2.0-preview4's jetty.version -->
+        <!-- Jetty 11.x for Spark 4.2 (jakarta.servlet). Spark 4.2.0 itself ships Jetty 12, but
+             the Iceberg REST catalog test helper needs jetty-servlet, which Jetty 12 replaced
+             with the jetty-ee10-servlet artifact, so the test classpath stays on 11.x. -->
         <dependency>
           <groupId>org.eclipse.jetty</groupId>
           <artifactId>jetty-server</artifactId>
@@ -330,6 +519,105 @@ under the License.
         </dependency>
       </dependencies>
     </profile>
+    <!--
+      Delta Lake integration. Activates the contrib/delta/ subtree:
+        compiles contrib/delta/src/main/scala/ into comet-spark.jar
+        pulls in io.delta:delta-spark at compile/test scope so the contrib's
+          reflective helpers and tests have the types they need
+      Default builds (no -P) carry zero Delta surface. Pair with the matching
+      'features contrib-delta' Cargo flag when building the native library.
+    -->
+    <profile>
+      <id>contrib-delta</id>
+      <!--
+        Delta dep version is selected by the active Spark profile (each Spark
+        profile sets its matching `delta.version`): delta-spark 4.x for Spark
+        4.x, 3.3.x for Spark 3.5. A top-level `<delta.version>4.1.0</delta.version>`
+        default lives in the parent POM as a floor so Maven invocations that
+        don't activate any Spark profile (e.g. `mvn -Pcontrib-delta
+        spotless:apply`) still have a resolvable property; any active Spark
+        profile overrides that top-level default.
+
+        A Spark profile MUST be named explicitly alongside this one:
+        `-Pspark-4.1,contrib-delta`, not `-Pcontrib-delta`. Passing any `-P`
+        deactivates `activeByDefault` profiles, so a bare `-Pcontrib-delta`
+        silently drops what `spark-4.1` contributes: the test-scope
+        `iceberg-spark-runtime` and Jetty deps. Test compilation then fails on
+        unrelated-looking Iceberg errors (`object spark is not a member of
+        package org.apache.iceberg`) that say nothing about the real cause.
+
+        Maven cannot fix this by activating `spark-4.1` on the absence of a
+        property, because profile activation only sees user properties (-D) and
+        settings, never properties set by another profile. So the requirement is
+        enforced instead: the `requireActiveProfile` rule below fails fast with a
+        message naming the fix.
+      -->
+      <dependencies>
+        <dependency>
+          <groupId>io.delta</groupId>
+          <artifactId>delta-spark_${scala.binary.version}</artifactId>
+          <version>${delta.version}</version>
+          <scope>provided</scope>
+        </dependency>
+      </dependencies>
+      <build>
+        <plugins>
+          <plugin>
+            <groupId>org.apache.maven.plugins</groupId>
+            <artifactId>maven-enforcer-plugin</artifactId>
+            <version>${maven-enforcer-plugin.version}</version>
+            <executions>
+              <execution>
+                <id>contrib-delta-requires-spark-profile</id>
+                <goals>
+                  <goal>enforce</goal>
+                </goals>
+                <configuration>
+                  <rules>
+                    <requireActiveProfile>
+                      <profiles>spark-3.4,spark-3.5,spark-4.0,spark-4.1,spark-4.2</profiles>
+                      <all>false</all>
+                      <message>-Pcontrib-delta requires an explicit Spark profile, e.g. `-Pspark-4.1,contrib-delta`. Activating any profile turns off the activeByDefault Spark profile, which drops test-scope dependencies (iceberg-spark-runtime, Jetty) and breaks test compilation.</message>
+                    </requireActiveProfile>
+                  </rules>
+                </configuration>
+              </execution>
+            </executions>
+          </plugin>
+          <plugin>
+            <groupId>org.codehaus.mojo</groupId>
+            <artifactId>build-helper-maven-plugin</artifactId>
+            <executions>
+              <execution>
+                <id>add-contrib-delta-source</id>
+                <phase>generate-sources</phase>
+                <goals>
+                  <goal>add-source</goal>
+                </goals>
+                <configuration>
+                  <sources>
+                    <source>${project.parent.basedir}/contrib/delta/src/main/scala</source>
+                  </sources>
+                </configuration>
+              </execution>
+              <execution>
+                <id>add-contrib-delta-test-source</id>
+                <phase>generate-test-sources</phase>
+                <goals>
+                  <goal>add-test-source</goal>
+                </goals>
+                <configuration>
+                  <sources>
+                    <source>${project.parent.basedir}/contrib/delta/src/test/scala</source>
+                  </sources>
+                </configuration>
+              </execution>
+            </executions>
+          </plugin>
+        </plugins>
+      </build>
+    </profile>
+
     <profile>
       <id>generate-docs</id>
       <build>
@@ -446,6 +734,17 @@ under the License.
                     <exclude>log4j2.properties</exclude>
                     <exclude>arrow-git.properties</exclude>
                     <exclude>**/SparkFilterApi.*</exclude>
+                    <!-- The jar plugin leaves this module's jar alone when no class has changed,
+                         and shade has already replaced that jar with its own output, so a build
+                         without `clean` shades an already shaded jar. That jar holds the service
+                         file the transformer below relocated last time, arrow-compression's
+                         original relocates to the same name, and the transformer keys the two
+                         separately and writes the name twice, failing the build. Excluding the
+                         already relocated copy on the way in leaves exactly one. -->
+                    <exclude>META-INF/services/${comet.shade.packageName}.arrow.*</exclude>
+                    <!-- The IncludeResourceTransformer below writes this jar's NOTICE, so no input
+                         may supply one: shade would write META-INF/NOTICE twice. -->
+                    <exclude>META-INF/NOTICE</exclude>
                   </excludes>
                 </filter>
                 <filter>
@@ -490,6 +789,25 @@ under the License.
                   <shadedPattern>${comet.shade.packageName}.guava.thirdparty</shadedPattern>
                 </relocation>
               </relocations>
+              <transformers>
+                <!-- arrow-compression ships META-INF/services/org.apache.arrow.vector.compression.CompressionCodec$Factory.
+                     Copied verbatim, that file names Spark's own unshaded Arrow interface while
+                     pointing at a provider class that only exists here under the relocated name, so
+                     Spark's ServiceLoader lookup fails and takes CompressionCodec.Factory's static
+                     initializer down with it. This transformer relocates both the service file name
+                     and its contents. -->
+                <transformer
+                  implementation="org.apache.maven.plugins.shade.resource.ServicesResourceTransformer" />
+                <!-- The ASF parent POM generates a META-INF/NOTICE holding only the ASF boilerplate,
+                     and shade kept that one, so the attributions in NOTICE.txt (Apache Gluten) never
+                     reached the jar or the sources jar. Ship NOTICE.txt itself instead, which keeps
+                     the two in step without a second copy to maintain. -->
+                <transformer
+                  implementation="org.apache.maven.plugins.shade.resource.IncludeResourceTransformer">
+                  <resource>META-INF/NOTICE</resource>
+                  <file>${project.basedir}/../NOTICE.txt</file>
+                </transformer>
+              </transformers>
             </configuration>
           </execution>
         </executions>
@@ -527,6 +845,7 @@ under the License.
             <configuration>
               <sources>
                 <source>src/test/${shims.majorVerSrc}</source>
+                <source>src/test/${shims.minorPlusVerSrc}</source>
                 <source>src/test/${shims.minorVerSrc}</source>
               </sources>
             </configuration>

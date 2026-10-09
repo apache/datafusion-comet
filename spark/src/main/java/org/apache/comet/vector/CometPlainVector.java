@@ -27,6 +27,8 @@ import org.apache.arrow.c.CDataDictionaryProvider;
 import org.apache.arrow.vector.*;
 import org.apache.arrow.vector.util.TransferPair;
 import org.apache.parquet.Preconditions;
+import org.apache.spark.sql.types.DataTypes;
+import org.apache.spark.sql.vectorized.ColumnVector;
 import org.apache.spark.unsafe.Platform;
 import org.apache.spark.unsafe.types.UTF8String;
 
@@ -41,6 +43,7 @@ public class CometPlainVector extends CometDecodedVector {
   private final long valueBufferAddress;
   private final long offsetBufferAddress;
   private final boolean isBaseFixedWidthVector;
+  private final ColumnVector[] intervalChildren;
   // True when the variable-width offsets are 64-bit (LargeVarChar / LargeVarBinary) rather than
   // the usual 32-bit. PyArrow UDFs can hand back large_string / large_binary columns.
   private final boolean isLargeVarWidth;
@@ -72,6 +75,16 @@ public class CometPlainVector extends CometDecodedVector {
     } else {
       this.offsetBufferAddress = -1;
       this.isLargeVarWidth = false;
+    }
+    if (vector instanceof IntervalMonthDayNanoVector) {
+      this.intervalChildren =
+          new ColumnVector[] {
+            new IntervalChildVector(this, 0),
+            new IntervalChildVector(this, 1),
+            new IntervalChildVector(this, 2)
+          };
+    } else {
+      this.intervalChildren = null;
     }
   }
 
@@ -179,6 +192,14 @@ public class CometPlainVector extends CometDecodedVector {
   }
 
   @Override
+  public ColumnVector getChild(int ordinal) {
+    if (intervalChildren == null || ordinal < 0 || ordinal >= intervalChildren.length) {
+      return super.getChild(ordinal);
+    }
+    return intervalChildren[ordinal];
+  }
+
+  @Override
   public CDataDictionaryProvider getDictionaryProvider() {
     return null;
   }
@@ -203,5 +224,59 @@ public class CometPlainVector extends CometDecodedVector {
     long mostSigBits = bb.getLong();
     long leastSigBits = bb.getLong();
     return new UUID(mostSigBits, leastSigBits);
+  }
+
+  private static final class IntervalChildVector extends CometVector {
+    private final CometPlainVector parent;
+    private final int ordinal;
+
+    private IntervalChildVector(CometPlainVector parent, int ordinal) {
+      super(ordinal == 2 ? DataTypes.LongType : DataTypes.IntegerType);
+      this.parent = parent;
+      this.ordinal = ordinal;
+    }
+
+    @Override
+    public int getInt(int rowId) {
+      return Platform.getInt(null, parent.valueBufferAddress + rowId * 16L + ordinal * 4L);
+    }
+
+    @Override
+    public long getLong(int rowId) {
+      return Platform.getLong(null, parent.valueBufferAddress + rowId * 16L + 8L) / 1000L;
+    }
+
+    @Override
+    public boolean isNullAt(int rowId) {
+      return parent.isNullAt(rowId);
+    }
+
+    @Override
+    public boolean hasNull() {
+      return parent.hasNull();
+    }
+
+    @Override
+    public int numNulls() {
+      return parent.numNulls();
+    }
+
+    @Override
+    public int numValues() {
+      return parent.numValues();
+    }
+
+    @Override
+    public ValueVector getValueVector() {
+      return parent.getValueVector();
+    }
+
+    @Override
+    public CometVector slice(int offset, int length) {
+      throw new UnsupportedOperationException("Interval child vectors cannot be sliced");
+    }
+
+    @Override
+    public void close() {}
   }
 }

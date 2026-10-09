@@ -46,12 +46,14 @@ pub enum OperatorType {
     Scan,
     NativeScan,
     IcebergScan,
+    IcebergWrite,
     Projection,
     Filter,
     HashAgg,
     Limit,
     Sort,
     ShuffleWriter,
+    ShuffleScan,
     ParquetWriter,
     Expand,
     SortMergeJoin,
@@ -118,6 +120,8 @@ impl OperatorRegistry {
     /// Register all operator builders
     fn register_all_operators(&mut self) {
         self.register_projection_operators();
+        self.register_shuffle_operators();
+        self.register_write_operators();
     }
 
     /// Register projection operators
@@ -126,6 +130,26 @@ impl OperatorRegistry {
 
         self.builders
             .insert(OperatorType::Projection, Box::new(ProjectionBuilder));
+    }
+
+    /// Register shuffle operators
+    fn register_shuffle_operators(&mut self) {
+        use super::shuffle::{ShuffleScanBuilder, ShuffleWriterBuilder};
+
+        self.builders
+            .insert(OperatorType::ShuffleWriter, Box::new(ShuffleWriterBuilder));
+        self.builders
+            .insert(OperatorType::ShuffleScan, Box::new(ShuffleScanBuilder));
+    }
+
+    /// Register write operators
+    fn register_write_operators(&mut self) {
+        use super::write::{IcebergWriteBuilder, ParquetWriterBuilder};
+
+        self.builders
+            .insert(OperatorType::IcebergWrite, Box::new(IcebergWriteBuilder));
+        self.builders
+            .insert(OperatorType::ParquetWriter, Box::new(ParquetWriterBuilder));
     }
 }
 
@@ -142,6 +166,7 @@ fn get_operator_type(spark_operator: &Operator) -> Option<OperatorType> {
         OpStruct::Scan(_) => Some(OperatorType::Scan),
         OpStruct::NativeScan(_) => Some(OperatorType::NativeScan),
         OpStruct::IcebergScan(_) => Some(OperatorType::IcebergScan),
+        OpStruct::IcebergWrite(_) => Some(OperatorType::IcebergWrite),
         OpStruct::ShuffleWriter(_) => Some(OperatorType::ShuffleWriter),
         OpStruct::ParquetWriter(_) => Some(OperatorType::ParquetWriter),
         OpStruct::Expand(_) => Some(OperatorType::Expand),
@@ -150,7 +175,17 @@ fn get_operator_type(spark_operator: &Operator) -> Option<OperatorType> {
         OpStruct::Window(_) => Some(OperatorType::Window),
         OpStruct::Explode(_) => None, // Not yet in OperatorType enum
         OpStruct::CsvScan(_) => Some(OperatorType::CsvScan),
-        OpStruct::ShuffleScan(_) => None, // Not yet in OperatorType enum
+        OpStruct::ShuffleScan(_) => Some(OperatorType::ShuffleScan),
         OpStruct::BroadcastNestedLoopJoin(_) => None,
+        OpStruct::RangeScan(_) => None,
+        OpStruct::Sample(_) => None,    // Not yet in OperatorType enum
+        OpStruct::MergeRows(_) => None, // Not yet in OperatorType enum
+        // Generic extension point for out-of-tree contrib scans (Delta, Lance, ...); not in
+        // OperatorType enum. The arm stays unconditional even in non-contrib builds because the
+        // proto enum is generated regardless of cargo features and Rust requires an exhaustive
+        // match. No contrib-specific logic lives here -- we just signal "no OperatorType mapping"
+        // so the supports-mixed-codegen check skips it.
+        OpStruct::ContribScan(_) => None,
+        OpStruct::WindowGroupLimit(_) => None, // Not yet in OperatorType enum
     }
 }

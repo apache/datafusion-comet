@@ -19,7 +19,7 @@
 -- try_to_timestamp swallows DateTimeException/ParseException, but SparkUpgradeException
 -- raised by checkParsedDiff propagates through the catch -- so the EXCEPTION case still
 -- throws on legacy/new divergent inputs.
--- MinSparkVersion: 4.0
+-- MinSparkVersion: 3.4
 -- Config: spark.sql.legacy.timeParserPolicy=EXCEPTION
 -- Config: spark.sql.session.timeZone=UTC
 
@@ -28,6 +28,16 @@ CREATE TABLE test_try_to_ts_exception(s string) USING parquet
 
 statement
 INSERT INTO test_try_to_ts_exception VALUES ('2024-1-1')
+
+statement
+CREATE TABLE test_try_to_ts_exception_valid(s string) USING parquet
+
+statement
+INSERT INTO test_try_to_ts_exception_valid VALUES ('2024-01-01')
+
+-- A successful codegen-dispatch query guards against the error case passing via Spark fallback.
+query
+SELECT try_to_timestamp(s, 'yyyy-MM-dd') FROM test_try_to_ts_exception_valid
 
 query expect_error(INCONSISTENT_BEHAVIOR_CROSS_VERSION)
 SELECT try_to_timestamp(s, 'yyyy-MM-dd') FROM test_try_to_ts_exception

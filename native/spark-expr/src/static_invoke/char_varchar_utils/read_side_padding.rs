@@ -202,11 +202,13 @@ fn spark_read_side_padding_internal<T: OffsetSizeTrait>(
 
             // Every row is padded to its target length, so the sum of the target
             // lengths sizes the output (exactly, for ASCII input), except when a
-            // row is longer than its target and passes through untruncated.
+            // row is longer than its target and passes through untruncated. Null
+            // lengths produce null rows and are skipped: the values under null
+            // slots are unspecified and must not size the output.
             let mut data_capacity = 0usize;
             let mut max_length = 0usize;
-            for length in int_pad_array.values() {
-                let length = (*length).max(0) as usize;
+            for length in int_pad_array.iter().flatten() {
+                let length = length.max(0) as usize;
                 data_capacity = data_capacity.saturating_add(length);
                 max_length = max_length.max(length);
             }
@@ -222,15 +224,16 @@ fn spark_read_side_padding_internal<T: OffsetSizeTrait>(
             };
 
             for (string, length) in string_array.iter().zip(int_pad_array) {
-                let length = length.unwrap();
-                match string {
-                    Some(string) => {
+                match (string, length) {
+                    (Some(string), Some(length)) => {
                         if length >= 0 {
                             padder.append(&mut builder, string, length as usize);
                         } else {
                             builder.append_value("");
                         }
                     }
+                    // Spark's StringRPad/StringLPad are null-intolerant: a null
+                    // string or a null length yields a null row.
                     _ => builder.append_null(),
                 }
             }
@@ -399,6 +402,10 @@ mod tests {
         ColumnarValue::Scalar(ScalarValue::Utf8(Some(pad.to_string())))
     }
 
+    fn len_array(lengths: &[Option<i32>]) -> ColumnarValue {
+        ColumnarValue::Array(Arc::new(Int32Array::from(lengths.to_vec())) as ArrayRef)
+    }
+
     #[test]
     fn rpad_default_padding() {
         let args = vec![
@@ -491,5 +498,98 @@ mod tests {
             result_values(spark_lpad(&args).unwrap()),
             vec![Some("a".to_string()), Some("  abc".to_string()), None]
         );
+    }
+
+    #[test]
+    fn rpad_null_length_yields_null_row() {
+        // Spark's StringRPad is null-intolerant: a NULL length makes only that
+        // row NULL, the other rows are padded or truncated as usual.
+        let strings = [Some("abc"), Some("abc"), Some("abcdef"), Some("abc")];
+        let lengths = [Some(5), None, Some(2), Some(-1)];
+        // 2 args (default pad of ' ')
+        let args = vec![utf8(&strings), len_array(&lengths)];
+        assert_eq!(
+            result_values(spark_rpad(&args).unwrap()),
+            vec![
+                Some("abc  ".to_string()),
+                None,
+                Some("ab".to_string()),
+                Some("".to_string()),
+            ]
+        );
+        // 3 args
+        let args = vec![utf8(&strings), len_array(&lengths), pad_scalar("xy")];
+        assert_eq!(
+            result_values(spark_rpad(&args).unwrap()),
+            vec![
+                Some("abcxy".to_string()),
+                None,
+                Some("ab".to_string()),
+                Some("".to_string()),
+            ]
+        );
+        // read-side padding takes the same path, without truncation
+        let args = vec![utf8(&strings), len_array(&lengths)];
+        assert_eq!(
+            result_values(spark_read_side_padding(&args).unwrap()),
+            vec![
+                Some("abc  ".to_string()),
+                None,
+                Some("abcdef".to_string()),
+                Some("".to_string()),
+            ]
+        );
+    }
+
+    #[test]
+    fn lpad_null_length_yields_null_row() {
+        let strings = [Some("abc"), Some("abc"), Some("abcdef"), Some("abc")];
+        let lengths = [Some(5), None, Some(2), Some(-1)];
+        // 2 args (default pad of ' ')
+        let args = vec![utf8(&strings), len_array(&lengths)];
+        assert_eq!(
+            result_values(spark_lpad(&args).unwrap()),
+            vec![
+                Some("  abc".to_string()),
+                None,
+                Some("ab".to_string()),
+                Some("".to_string()),
+            ]
+        );
+        // 3 args
+        let args = vec![utf8(&strings), len_array(&lengths), pad_scalar("xy")];
+        assert_eq!(
+            result_values(spark_lpad(&args).unwrap()),
+            vec![
+                Some("xyabc".to_string()),
+                None,
+                Some("ab".to_string()),
+                Some("".to_string()),
+            ]
+        );
+    }
+
+    #[test]
+    fn null_string_and_null_length_yields_null_row() {
+        let strings = [None, None, Some("abc")];
+        let lengths = [None, Some(4), None];
+        let args = vec![utf8(&strings), len_array(&lengths)];
+        assert_eq!(
+            result_values(spark_rpad(&args).unwrap()),
+            vec![None, None, None]
+        );
+        let args = vec![utf8(&strings), len_array(&lengths), pad_scalar("x")];
+        assert_eq!(
+            result_values(spark_lpad(&args).unwrap()),
+            vec![None, None, None]
+        );
+    }
+
+    #[test]
+    fn all_null_lengths_yield_all_null_rows() {
+        let args = vec![utf8(&[Some("abc"), Some("")]), len_array(&[None, None])];
+        assert_eq!(result_values(spark_rpad(&args).unwrap()), vec![None, None]);
+        let args = vec![utf8(&[Some("abc"), Some("")]), len_array(&[None, None])];
+        assert_eq!(result_values(spark_lpad(&args).unwrap()), vec![None, None]);
     }
 }

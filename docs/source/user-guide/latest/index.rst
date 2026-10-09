@@ -28,8 +28,8 @@ types, operators, and expressions that Comet supports, along with a compatibilit
 known differences from Apache Spark.
 
 Operational topics include reading and understanding Comet query plans, tuning, available metrics,
-and integration guides for Apache Iceberg and Kubernetes. Select a topic from the navigation menu
-to read more.
+and integration guides for Apache Iceberg, Apache Celeborn, and Kubernetes. Select a topic from
+the navigation menu to read more.
 
 .. _toc.user-guide-links-$COMET_VERSION:
 .. toctree::
@@ -39,6 +39,7 @@ to read more.
 
    Installing Comet <installation>
    Configuration Settings <configs>
+   Upgrading Comet <migration-guide>
 
 .. toctree::
    :maxdepth: 1
@@ -50,6 +51,7 @@ to read more.
    Supported Operators <operators>
    Supported Expressions <expressions>
    ScalaUDF and Java UDF Support <scala_java_udfs>
+   Custom Rust UDFs <rust_udfs>
 
 .. toctree::
    :maxdepth: 1
@@ -71,9 +73,22 @@ to read more.
    :hidden:
 
    Understanding Comet Plans <understanding-comet-plans>
-   Tuning Guide <tuning>
    Metrics Guide <metrics>
+   In-Memory Cache <in-memory-cache>
    PyArrow UDF Acceleration <pyarrow-udfs>
+
+.. toctree::
+   :maxdepth: 1
+   :caption: Tuning
+   :hidden:
+
+   Overview <tuning>
+   Memory <tuning/memory>
+   Shuffle <tuning/shuffle>
+   Celeborn Shuffle <tuning/celeborn>
+   Scans <tuning/scans>
+   Operators <tuning/operators>
+   Row/Columnar Transitions <tuning/transitions>
 
 .. toctree::
    :maxdepth: 1
@@ -81,6 +96,8 @@ to read more.
    :hidden:
 
    Iceberg Guide <iceberg>
+   Iceberg Writes <iceberg-writes>
+   Celeborn Guide <celeborn>
    S3 Credential Providers <s3-credential-providers>
    Kubernetes Guide <kubernetes>
 

@@ -31,13 +31,14 @@ import org.apache.spark.sql.comet.execution.arrow.{CometArrowStream, CometNative
 import org.apache.spark.sql.comet.util.Utils
 import org.apache.spark.sql.execution.{LeafExecNode, LocalTableScanExec}
 import org.apache.spark.sql.execution.metric.{SQLMetric, SQLMetrics}
-import org.apache.spark.sql.types.{DataType, NullType}
+import org.apache.spark.sql.types.{DataType, StructType}
 
 import com.google.common.base.Objects
 
 import org.apache.comet.{CometConf, ConfigEntry, DataTypeSupport}
 import org.apache.comet.CometSparkSessionExtensions.withFallbackReason
 import org.apache.comet.serde.OperatorOuterClass.Operator
+import org.apache.comet.serde.QueryPlanSerde.supportedDataType
 import org.apache.comet.serde.operator.CometSink
 
 case class CometLocalTableScanExec(
@@ -51,12 +52,12 @@ case class CometLocalTableScanExec(
   override lazy val metrics: Map[String, SQLMetric] = Map(
     "numOutputRows" -> SQLMetrics.createMetric(sparkContext, "number of output rows"))
 
-  @transient private lazy val unsafeRows: Array[InternalRow] = {
+  @transient private lazy val unsafeRows: IndexedSeq[InternalRow] = {
     if (rows.isEmpty) {
-      Array.empty
+      IndexedSeq.empty
     } else {
       val proj = UnsafeProjection.create(output, output)
-      rows.map(r => proj(r).copy()).toArray
+      rows.iterator.map(r => proj(r).copy()).toIndexedSeq
     }
   }
 
@@ -76,7 +77,15 @@ case class CometLocalTableScanExec(
       consume: (String, BufferAllocator => ArrowReader) => Iterator[T]): RDD[T] = {
     val numOutputRows = longMetric("numOutputRows")
     val maxRecordsPerBatch = CometConf.COMET_BATCH_SIZE.get(conf)
-    val sparkSchema = originalPlan.schema
+    // Normalize nested child-field nullability. An in-memory Seq/Map encodes array elements and
+    // map values as non-null (containsNull=false / valueContainsNull=false), but Comet expression
+    // serdes promise nullable children, so feeding a non-null child from the local scan into a
+    // native kernel fails the planned-vs-actual type assertion (issue #4789). Widening children to
+    // nullable is always safe: the row data contains no nulls, and Arrow map keys stay non-null via
+    // Utils.toArrowField. This must agree with the widened scan schema declared in
+    // CometLocalTableScanExec.scanFieldType so the native ScanExec does not cast the batch back.
+    val sparkSchema =
+      StructType(originalPlan.schema.map(f => f.copy(dataType = f.dataType.asNullable)))
     rdd.mapPartitionsInternal { rowIter =>
       val arrowSchema = Utils.toArrowSchema(sparkSchema, CometArrowStream.NATIVE_TIMEZONE)
       consume(
@@ -84,8 +93,9 @@ case class CometLocalTableScanExec(
         new RowArrowReader(
           _,
           arrowSchema,
-          CometArrowStream.countingIterator(rowIter, (_: InternalRow) => numOutputRows.add(1)),
-          maxRecordsPerBatch))
+          rowIter,
+          maxRecordsPerBatch,
+          onRows = rows => numOutputRows.add(rows.toLong)))
     }
   }
 
@@ -118,15 +128,29 @@ object CometLocalTableScanExec extends CometSink[LocalTableScanExec] with DataTy
   override def enabledConfig: Option[ConfigEntry[Boolean]] = Some(
     CometConf.COMET_EXEC_LOCAL_TABLE_SCAN_ENABLED)
 
-  // ArrowWriter (used by RowArrowReader) handles NullType via Utils.toArrowType + NullWriter;
-  // other types off DataTypeSupport's allow list (TimeType, intervals, ...) have no ArrowWriter
-  // coverage and must fall back to Spark.
+  // Widen nested child-field nullability in the declared scan schema so it matches both the widened
+  // Arrow batch produced by CometLocalTableScanExec and the nullable children promised by
+  // downstream expression serdes (issue #4789).
+  override protected def scanFieldType(dt: DataType): DataType = dt.asNullable
+
+  // RowArrowReader handles NullType, intervals, and TimeType (through TimeNanoWriter).
+  // Non-default string collations remain unsupported here, matching DataTypeSupport's
+  // existing local-scan boundary.
   override def isTypeSupported(
       dt: DataType,
       name: String,
-      fallbackReasons: ListBuffer[String]): Boolean = dt match {
-    case _: NullType => true
-    case _ => super.isTypeSupported(dt, name, fallbackReasons)
+      fallbackReasons: ListBuffer[String]): Boolean = {
+    val supported = supportedDataType(
+      dt,
+      allowComplex = true,
+      allowIntervals = true,
+      allowAnyStringType = false,
+      // Java Arrow keys struct children by name; declining here hands the struct to
+      // DataTypeSupport, which records the duplicate-field-name fallback reason.
+      allowDuplicateStructFieldNames = false)
+    // DataTypeSupport accepts no type that supportedDataType rejects here, so the super call
+    // cannot widen the accepted set; it only records the fallback reason for rejected types.
+    if (supported) true else super.isTypeSupported(dt, name, fallbackReasons)
   }
 
   override def convert(

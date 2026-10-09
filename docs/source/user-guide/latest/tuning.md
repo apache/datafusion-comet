@@ -19,205 +19,53 @@ under the License.
 
 # Comet Tuning Guide
 
-Comet provides some tuning options to help you get the best performance from your queries.
+Comet provides some tuning options to help you get the best performance from your queries. Every
+deployment needs to configure how much memory Comet can use, so start with memory tuning. The
+guide is split into the following pages:
+
+- [Memory Tuning](tuning/memory.md): configuring Comet's off-heap memory pool and the executor
+  memory overhead, choosing a memory pool, batch size, and limiting spill disk usage.
+- [Shuffle Tuning](tuning/shuffle.md): enabling Comet shuffle, the native and columnar shuffle
+  implementations, and shuffle compression.
+- [Remote Shuffle with Celeborn](tuning/celeborn.md): bounding frame sizes and memory admission
+  for native remote shuffle.
+- [Scan Tuning](tuning/scans.md): Parquet filter pushdown, Parquet split sizing, and Iceberg data
+  file concurrency.
+- [Operator Tuning](tuning/operators.md): joins, adaptive partial aggregation, and sorting on
+  floating-point values.
+- [Reducing Row/Columnar Conversion Overhead](tuning/transitions.md): stages in which many
+  operators fall back to Spark.
+
+## Nested and Wide Data
+
+Rows with many columns, long strings, or nested columns such as arrays of structs make every batch
+larger, so queries over such data spill more. For these workloads:
+
+- Choose the codec for spill files from native sorts, aggregations, and joins, which Comet
+  compresses with `lz4` by default. See
+  [Compressing Spill Files](tuning/memory.md#compressing-spill-files).
+- Lower the batch size if wide batches cause spilling or out-of-memory errors. See
+  [Batch Size](tuning/memory.md#batch-size).
+- Check which shuffles can run natively when partitioning keys are nested. See
+  [Native Shuffle](tuning/shuffle.md#native-shuffle).
+- Watch for row/columnar conversions, which are expensive for such schemas. See
+  [Wide or Deeply Nested Schemas](tuning/transitions.md#wide-or-deeply-nested-schemas).
 
 ## Configuring Tokio Runtime
 
-Comet uses a global tokio runtime per executor process using tokio's defaults of one worker thread per core and a
-maximum of 512 blocking threads. These values can be overridden using the environment variables `COMET_WORKER_THREADS`
-and `COMET_MAX_BLOCKING_THREADS`.
+Comet uses a global tokio runtime per executor process. By default it starts one worker thread per executor core
+(`spark.executor.cores`, or the thread count of `local[N]` and `local[*]` masters) and allows up to 512 blocking
+threads, which is tokio's default. If `spark.executor.cores` is not set outside local mode, Comet starts a single
+worker thread. These values can be overridden using the environment variables `COMET_WORKER_THREADS` and
+`COMET_MAX_BLOCKING_THREADS`.
 
-It is recommended that `COMET_WORKER_THREADS` be set to the number of executor cores. This may not be necessary
-in some environments, such as Kubernetes, where the number of cores allocated to a pod will already be equal to the
-number of executor cores.
+## Metrics Overhead
 
-## Memory Tuning
-
-It is necessary to specify how much memory Comet can use in addition to memory already allocated to Spark. In some
-cases, it may be possible to reduce the amount of memory allocated to Spark so that overall memory allocation is
-the same or lower than the original configuration. In other cases, enabling Comet may require allocating more memory
-than before. See the [Determining How Much Memory to Allocate] section for more details.
-
-[Determining How Much Memory to Allocate]: #determining-how-much-memory-to-allocate
-
-### Configuring Comet Memory
-
-Comet shares an off-heap memory pool with Spark. The size of the pool is
-specified by `spark.memory.offHeap.size`.
-
-Comet's memory accounting isn't 100% accurate and this can result in Comet using more memory than it reserves,
-leading to out-of-memory exceptions. To work around this issue, it is possible to
-set `spark.comet.exec.memoryPool.fraction` to a value less than `1.0` to restrict the amount of memory that can be
-reserved by Comet.
-
-For more details about Spark off-heap memory mode, please refer to [Spark documentation].
-
-[Spark documentation]: https://spark.apache.org/docs/latest/configuration.html
-
-Comet implements multiple memory pool implementations. The type of pool can be specified with `spark.comet.exec.memoryPool`.
-
-The valid pool types are:
-
-- `fair_unified` (default when `spark.memory.offHeap.enabled=true` is set)
-- `greedy_unified`
-
-Both pool types are shared across all native execution contexts within the same Spark task. When
-Comet executes a shuffle, it runs two native execution contexts concurrently (e.g. one for
-pre-shuffle operators and one for the shuffle writer). The shared pool ensures that the combined
-memory usage stays within the per-task limit.
-
-The `fair_unified` pool prevents operators from using more than an even fraction of the available memory
-(i.e. `pool_size / num_reservations`). This pool works best when you know beforehand
-the query has multiple operators that will likely all need to spill. Sometimes it will cause spills even
-when there is sufficient memory in order to leave enough memory for other operators.
-
-The `greedy_unified` pool type implements a greedy first-come first-serve limit. This pool works well for queries that do not
-need to spill or have a single spillable operator.
-
-[shuffle]: #shuffle
-[Advanced Memory Tuning]: #advanced-memory-tuning
-
-### Determining How Much Memory to Allocate
-
-Generally, increasing the amount of memory allocated to Comet will improve query performance by reducing the
-amount of time spent spilling to disk, especially for aggregate, join, and shuffle operations. Allocating insufficient
-memory can result in out-of-memory errors. This is no different from allocating memory in Spark and the amount of
-memory will vary for different workloads, so some experimentation will be required.
-
-Here is a real-world example, based on running benchmarks derived from TPC-H, running on a single executor against
-local Parquet files using the 100 GB data set.
-
-Baseline Spark Performance
-
-- Spark completes the benchmark in 632 seconds with 8 cores and 8 GB RAM
-- With less than 8 GB RAM, performance degrades due to spilling
-- Spark can complete the benchmark with as little as 3 GB of RAM, but with worse performance (744 seconds)
-
-Comet Performance
-
-- Comet requires at least 5 GB of RAM, but performance at this level
-  is around 340 seconds, which is significantly faster than Spark with any amount of RAM
-- Comet running in off-heap with 8 cores completes the benchmark in 295 seconds, more than 2x faster than Spark
-- It is worth noting that running Comet with only 4 cores and 4 GB RAM completes the benchmark in 520 seconds,
-  providing better performance than Spark for half the resource
-
-It may be possible to reduce Comet's memory overhead by reducing batch sizes or increasing number of partitions.
-
-## Optimizing Sorting on Floating-Point Values
-
-Sorting on floating-point data types (or complex types containing floating-point values) is not compatible with
-Spark if the data contains both zero and negative zero. This is likely an edge case that is not of concern for many users
-and sorting on floating-point data can be enabled by setting `spark.comet.expression.SortOrder.allowIncompatible=true`.
-
-## Optimizing Joins
-
-Spark often chooses `SortMergeJoin` over `ShuffledHashJoin` for stability reasons. If the build-side of a
-`ShuffledHashJoin` is very large then it could lead to OOM in Spark.
-
-Vectorized query engines tend to perform better with `ShuffledHashJoin`, so for best performance it is often preferable
-to configure Comet to convert `SortMergeJoin` to `ShuffledHashJoin`. Comet does not yet provide spill-to-disk for
-`ShuffledHashJoin` so this could result in OOM. Also, `SortMergeJoin` may still be faster in some cases. It is best
-to test with both for your specific workloads.
-
-To configure Comet to convert `SortMergeJoin` to `ShuffledHashJoin`, set `spark.comet.exec.replaceSortMergeJoin=true`.
-
-## Shuffle
-
-Comet provides accelerated shuffle implementations that can be used to improve the performance of your queries.
-
-To enable Comet shuffle, set the following configuration in your Spark configuration:
-
-```
-spark.shuffle.manager=org.apache.spark.sql.comet.execution.shuffle.CometShuffleManager
-spark.comet.exec.shuffle.enabled=true
-```
-
-`spark.shuffle.manager` is a Spark static configuration which cannot be changed at runtime.
-It must be set before the Spark context is created. You can enable or disable Comet shuffle
-at runtime by setting `spark.comet.exec.shuffle.enabled` to `true` or `false`.
-Once it is disabled, Comet will fall back to the default Spark shuffle manager.
-
-### Shuffle Implementations
-
-Comet provides two shuffle implementations: Native Shuffle and Columnar Shuffle. Comet will first try to use Native
-Shuffle and if that is not possible it will try to use Columnar Shuffle. If neither can be applied, it will fall
-back to Spark for shuffle operations.
-
-#### Native Shuffle
-
-Comet provides a fully native shuffle implementation, which generally provides the best performance. Native shuffle
-supports `HashPartitioning`, `RangePartitioning` and `SinglePartitioning` but currently only supports primitive type
-partitioning keys. Columns that are not partitioning keys may contain complex types like maps, structs, and arrays.
-
-#### Columnar (JVM) Shuffle
-
-Comet Columnar shuffle is JVM-based and supports `HashPartitioning`, `RoundRobinPartitioning`, `RangePartitioning`, and
-`SinglePartitioning`. This shuffle implementation supports complex data types as partitioning keys.
-
-By default, Comet will convert a Spark `ShuffleExchangeExec` to columnar shuffle even when the shuffle's child is a
-non-Comet (Spark) plan. The benefit is that the next query stage can start as native Comet execution, since the
-shuffle output is already in Arrow format. The cost is a row to columnar conversion at the shuffle boundary on the
-write side. To restrict columnar shuffle to cases where the child is already a Comet plan, set
-`spark.comet.exec.shuffle.convertFromSparkPlan.enabled=false`. Shuffles whose child is a Spark plan will then be left
-as native Spark shuffles, which avoids the row to columnar conversion but means the downstream stage will also start
-on Spark.
-
-#### Automatic Revert to Spark Shuffle
-
-When a Comet columnar shuffle ends up between two non-Comet operators (for example, a partial/final hash aggregate
-pair that Comet could not convert), Comet reverts it to Spark's built-in shuffle. Keeping columnar shuffle between
-two row-based operators would add `row -> Arrow -> shuffle -> Arrow -> row` conversions with no Comet consumer on
-either side to benefit from columnar output.
-
-This shifts the affected shuffles from Comet's off-heap memory pool back to the JVM execution memory pool. Clusters
-tuned for a small JVM heap may see `ExternalSorter` spills on queries where this revert fires. Shuffle I/O may also
-grow marginally because Spark's row-based serializer generally compresses less well than Comet's Arrow IPC format.
-
-Each revert is logged at `INFO` level on the driver as `Reverting Comet columnar shuffle to Spark shuffle between
-<parent> and <child>`, which lets you correlate any unexpected behavior with this optimization.
-
-This optimization is enabled by default and can be disabled by setting
-`spark.comet.exec.shuffle.revertRedundantColumnar.enabled=false`, in which case Comet will keep the columnar shuffle
-even when both its parent and child are non-Comet operators.
-
-### Shuffle Compression
-
-By default, Spark compresses shuffle files using LZ4 compression. Comet overrides this behavior with ZSTD compression.
-Compression can be disabled by setting `spark.shuffle.compress=false`, which may result in faster shuffle times in
-certain environments, such as single-node setups with fast NVMe drives, at the expense of increased disk space usage.
-
-### Parquet Native Scans
-
-Spark and DataFusion's native Parquet scans use different rules to decide which row groups belong to a
-given scan range (split). Spark assigns a row group to a split if the row group's start offset falls
-within `[split.start, split.start + split.length)`, guaranteeing that every task Spark plans reads at
-least one row group when the file layout permits. DataFusion's `prune_by_range` also checks whether a
-row group's start offset falls within the split's byte range, but because row group sizes are not aligned
-with Spark's split boundaries, the two systems can disagree on which split "owns" a given row group.
-
-When a file contains row groups whose sizes are close to `spark.sql.files.maxPartitionBytes`, this
-mismatch can leave some Comet scan tasks with no row groups to read. Those tasks still load Parquet
-metadata but return zero rows, while neighboring tasks end up reading more row groups than Spark
-intended. The overall effect is that Comet uses only a fraction of the parallelism that Spark planned
-for the scan stage, and end-to-end scan latency increases even though the total amount of data read
-is unchanged.
-
-Symptoms to look for:
-
-- A subset of scan tasks completes almost immediately and reports 0 input rows, while the remaining
-  tasks read noticeably more rows than the equivalent Spark tasks would.
-- The Comet scan stage has the same number of planned tasks as Spark but a much lower count of tasks
-  that actually do work.
-
-Workaround: lower `spark.sql.files.maxPartitionBytes` so that each split is smaller than a single row
-group. For example, if the file's row groups are around 120 MB and `spark.sql.files.maxPartitionBytes`
-is left at the 128 MB default, most splits will contain at most one row group boundary and the
-mismatch is amplified; setting `spark.sql.files.maxPartitionBytes` below 120 MB (for example, 64 MB)
-distributes row groups across more splits and reduces the number of idle tasks. Smaller values produce
-more splits overall, so some idle tasks may remain — tune the value against your file layout.
-
-See [issue #3817](https://github.com/apache/datafusion-comet/issues/3817#issuecomment-4193279630) for a
-worked example and further discussion.
+The SQL metrics described in [Metrics](metrics.md) are always collected. Setting `spark.comet.metrics.enabled=true`
+additionally publishes plan-coverage counters (`operators.native`, `operators.spark`, `queries.planned`,
+`transitions`, and `acceleration.ratio`) through Spark's metrics system under the `comet` source. It is disabled by
+default because it walks every executed plan on the driver after each query, and the counters are only useful with an
+external sink (for example Prometheus) configured. This setting must be applied before the `SparkSession` is created.
 
 ## Explain Plan
 
