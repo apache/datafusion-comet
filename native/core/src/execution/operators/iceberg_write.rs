@@ -230,8 +230,14 @@ impl OpenFileMemory {
         self.bytes.load(Ordering::Relaxed)
     }
 
-    /// A counter for one fanout partition's files, which also counts towards this one.
+    /// A counter for one fanout partition's files, which also counts towards this one. Only the
+    /// task's total has children: a share counts towards its own counter and that counter's
+    /// parent, so a child's child would never reach the total `run_write_task` reserves.
     fn child(&self) -> OpenFileMemory {
+        debug_assert!(
+            self.parent.is_none(),
+            "a child's child would not count towards the task's total"
+        );
         OpenFileMemory {
             bytes: Arc::default(),
             parent: Some(Arc::clone(&self.bytes)),
@@ -1126,6 +1132,10 @@ struct FanoutPartitions {
     /// partition still holding makes its choice from the rows it has. A task fanning out to many
     /// partitions that each get less than a page would otherwise hold all of its rows back,
     /// uncompressed, until it closed.
+    ///
+    /// Always the sum of the feeds' [`PartitionFeed::held_bytes`], kept in step wherever a feed
+    /// changes what it holds back: a push, the release once the limit is reached, and an early
+    /// close. `write` checks this in debug builds.
     held_bytes: usize,
     /// The data files of the partitions closed early.
     closed: Vec<DataFile>,
@@ -1158,22 +1168,21 @@ impl FanoutPartition {
         builder: &PartitionWriterBuilder,
         unit: RecordBatch,
     ) -> iceberg::Result<()> {
-        if self.writer.is_none() {
-            let properties = self
-                .properties
-                .get_or_insert_with(|| builder.properties.take(Some(self.key.data())))
-                .clone();
-            self.writer = Some(
-                builder
-                    .build_with(Some(self.key.clone()), properties, self.memory.clone())
-                    .await?,
-            );
-        }
-        self.writer
-            .as_mut()
-            .expect("the partition's file was opened above")
-            .write(unit)
-            .await
+        let writer = match self.writer.as_mut() {
+            Some(writer) => writer,
+            None => {
+                let properties = self
+                    .properties
+                    .get_or_insert_with(|| builder.properties.take(Some(self.key.data())))
+                    .clone();
+                self.writer.insert(
+                    builder
+                        .build_with(Some(self.key.clone()), properties, self.memory.clone())
+                        .await?,
+                )
+            }
+        };
+        writer.write(unit).await
     }
 
     /// Writes out every row the partition still holds back and closes its file, returning that
@@ -1254,12 +1263,22 @@ impl FanoutPartitions {
             }
             self.held_bytes = 0;
         }
+        debug_assert_eq!(
+            self.held_bytes,
+            self.partitions
+                .iter()
+                .map(|partition| partition.feed.held_bytes())
+                .sum::<usize>(),
+            "the held-back total drifted from what the feeds hold back"
+        );
         Ok(())
     }
 
     /// The partitions holding memory, as indexes into `partitions`, the most first. Of two holding
     /// as much, the one seen first comes first, so which files a write closes early does not
-    /// depend on `HashMap` order.
+    /// depend on `HashMap` order. Indexes rather than references, because `reserve` closes each
+    /// partition it picks while it walks the ranking, and a close borrows the whole
+    /// `FanoutPartitions` mutably.
     fn by_memory(&self) -> Vec<usize> {
         let mut holding: Vec<(usize, usize)> = self
             .partitions
@@ -4832,7 +4851,7 @@ mod tests {
             rows: usize,
             payload_bytes: usize,
         ) -> RecordBatch {
-            payload_rows_from(first, &vec![region; rows], payload_bytes)
+            payload_rows_from(first, vec![region; rows], payload_bytes)
         }
 
         /// [`round_robin_batch_from`]'s rows, each with its own `payload_bytes`-byte payload.
@@ -4846,12 +4865,16 @@ mod tests {
                 .map(|row| format!("r{}", row % partitions))
                 .collect();
             let regions: Vec<&str> = regions.iter().map(String::as_str).collect();
-            payload_rows_from(first, &regions, payload_bytes)
+            payload_rows_from(first, regions, payload_bytes)
         }
 
         /// One row for each of `regions`, numbered from `first`, each with its own
         /// `payload_bytes`-byte payload.
-        fn payload_rows_from(first: usize, regions: &[&str], payload_bytes: usize) -> RecordBatch {
+        fn payload_rows_from(
+            first: usize,
+            regions: Vec<&str>,
+            payload_bytes: usize,
+        ) -> RecordBatch {
             let rows = regions.len();
             let ids: Vec<i32> = (first..first + rows).map(|id| id as i32).collect();
             let payloads: Vec<String> = (first..first + rows)
@@ -4865,7 +4888,7 @@ mod tests {
                 ])),
                 vec![
                     Arc::new(Int32Array::from(ids)),
-                    Arc::new(StringArray::from(regions.to_vec())),
+                    Arc::new(StringArray::from(regions)),
                     Arc::new(StringArray::from(payloads)),
                 ],
             )
