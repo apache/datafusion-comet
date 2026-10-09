@@ -34,7 +34,7 @@ import org.apache.parquet.hadoop.util.HadoopInputFile
 import org.apache.parquet.schema.{MessageType, Type}
 import org.apache.spark.internal.io.FileCommitProtocol
 import org.apache.spark.sql.{AnalysisException, DataFrame, Row, SaveMode}
-import org.apache.spark.sql.catalyst.InternalRow
+import org.apache.spark.sql.catalyst.{InternalRow, TableIdentifier}
 import org.apache.spark.sql.comet.{CometBatchScanExec, CometNativeColumnarToRowExec, CometNativeScanExec, CometNativeWriteExec, CometScanExec, CometSparkToColumnarExec, CometWriteFilesExec}
 import org.apache.spark.sql.execution.{ColumnarToRowTransition, FileSourceScanExec, SparkPlan, SQLExecution}
 import org.apache.spark.sql.execution.command.DataWritingCommandExec
@@ -1318,9 +1318,9 @@ class CometParquetWriterSuite extends CometParquetWriterTestBase {
   }
 
   test("INSERT INTO ... SELECT is visible to subsequent reads") {
-    assume(isSpark40Plus, "Requires the WriteFilesExec seam")
     // https://github.com/apache/datafusion-comet/issues/3521 - reads returned no rows because the
-    // bespoke write path never refreshed the catalog cache. Spark's command does that itself.
+    // bespoke write path never refreshed the catalog cache. On Spark 4.0+ Spark's command does
+    // that itself; on 3.x CometNativeWriteExec repeats it after the job commits.
     withTable("comet_write_target", "comet_write_source") {
       withNativeWriter {
         sql("CREATE TABLE comet_write_source(id bigint, name string) USING parquet")
@@ -1337,6 +1337,122 @@ class CometParquetWriterSuite extends CometParquetWriterTestBase {
             sql("INSERT INTO comet_write_target SELECT id, name FROM comet_write_source")))
       }
       checkAnswer(spark.table("comet_write_target"), Row(1L, "a") :: Row(2L, "b") :: Nil)
+    }
+  }
+
+  test("a native overwrite of a cached path recaches the data") {
+    withTempPath { dir =>
+      val target = new File(dir, "target").getAbsolutePath
+      val source = new File(dir, "source").getAbsolutePath
+      withSQLConf(CometConf.COMET_ENABLED.key -> "false") {
+        spark.range(0, 5).write.parquet(target)
+        spark.range(100, 103).write.parquet(source)
+      }
+      val cached = spark.read.parquet(target).cache()
+      try {
+        assert(cached.count() == 5)
+        withNativeWriter {
+          assertHasCometNativeWriteExec(
+            captureWritePlan(
+              spark.read.parquet(source).write.mode(SaveMode.Overwrite).parquet(target)))
+        }
+        // Spark recaches every cached plan that reads the output path once the write commits.
+        checkAnswer(cached, (100L until 103L).map(Row(_)))
+      } finally {
+        cached.unpersist()
+      }
+    }
+  }
+
+  test("a native write rejects case-insensitively duplicate column names") {
+    withTempPath { dir =>
+      val source = new File(dir, "source").getAbsolutePath
+      val target = new File(dir, "target")
+      withSQLConf(CometConf.COMET_ENABLED.key -> "false") {
+        spark.range(3).selectExpr("id AS a", "id AS b").write.parquet(source)
+      }
+      withNativeWriter {
+        val e = intercept[AnalysisException] {
+          spark.read
+            .parquet(source)
+            .selectExpr("a", "b AS A")
+            .write
+            .mode(SaveMode.Overwrite)
+            .parquet(target.getAbsolutePath)
+        }
+        assert(e.getMessage.contains("COLUMN_ALREADY_EXISTS"), e.getMessage)
+      }
+      assert(!target.exists(), "nothing may be written when the columns are rejected")
+    }
+  }
+
+  test("a native INSERT into a cached table recaches the table") {
+    withTable("comet_write_target", "comet_write_source") {
+      sql("CREATE TABLE comet_write_source(id bigint) USING parquet")
+      sql("CREATE TABLE comet_write_target(id bigint) USING parquet")
+      withSQLConf(CometConf.COMET_ENABLED.key -> "false") {
+        sql("INSERT INTO comet_write_source VALUES (1), (2)")
+        sql("INSERT INTO comet_write_target VALUES (0)")
+      }
+      sql("CACHE TABLE comet_write_target")
+      try {
+        checkAnswer(spark.table("comet_write_target"), Row(0L))
+        withNativeWriter {
+          assertHasCometNativeWriteExec(
+            captureWritePlan(
+              sql("INSERT INTO comet_write_target SELECT id FROM comet_write_source")))
+        }
+        checkAnswer(spark.table("comet_write_target"), Seq(Row(0L), Row(1L), Row(2L)))
+      } finally {
+        sql("UNCACHE TABLE IF EXISTS comet_write_target")
+      }
+    }
+  }
+
+  for {
+    autoUpdate <- Seq(true, false)
+    overwrite <- Seq(false, true)
+  } {
+    val insert = if (overwrite) "INSERT OVERWRITE" else "INSERT INTO"
+    test(s"native $insert maintains table stats with size autoUpdate=$autoUpdate") {
+      withTable("comet_write_target", "comet_write_source") {
+        withSQLConf(SQLConf.AUTO_SIZE_UPDATE_ENABLED.key -> autoUpdate.toString) {
+          sql("CREATE TABLE comet_write_source(id bigint) USING parquet")
+          sql("CREATE TABLE comet_write_target(id bigint) USING parquet")
+          withSQLConf(CometConf.COMET_ENABLED.key -> "false") {
+            sql("INSERT INTO comet_write_source SELECT id FROM range(100)")
+            sql("INSERT INTO comet_write_target VALUES (0)")
+          }
+          sql("ANALYZE TABLE comet_write_target COMPUTE STATISTICS NOSCAN")
+          val target = TableIdentifier("comet_write_target")
+          val catalog = spark.sessionState.catalog
+          val statsBefore = catalog.getTableMetadata(target).stats
+          assert(statsBefore.isDefined)
+
+          withNativeWriter {
+            assertHasCometNativeWriteExec(
+              captureWritePlan(
+                sql(s"$insert comet_write_target SELECT id FROM comet_write_source")))
+          }
+
+          // Mirrors CommandUtils.updateTableStats, which Spark runs after the write commits.
+          val statsAfter = catalog.getTableMetadata(target).stats
+          if (autoUpdate) {
+            val location = new Path(catalog.getTableMetadata(target).location)
+            val fs = location.getFileSystem(spark.sessionState.newHadoopConf())
+            val dataSize = fs
+              .listStatus(location)
+              .filterNot(f =>
+                f.getPath.getName.startsWith("_") || f.getPath.getName.startsWith("."))
+              .map(_.getLen)
+              .sum
+            assert(statsAfter.map(_.sizeInBytes) == Some(BigInt(dataSize)))
+            assert(statsAfter != statsBefore)
+          } else {
+            assert(statsAfter.isEmpty, s"stale stats were left in place: $statsAfter")
+          }
+        }
+      }
     }
   }
 
