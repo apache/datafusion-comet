@@ -1026,6 +1026,9 @@ message HashJoin {
   // Opt-in completed-build filtering of probe batches and eligible native Parquet readers.
   // Older serialized plans leave it false.
   bool dynamic_filter_enabled = 10;
+  // SortOrder exprs bound to the join output that Spark reports as its output ordering.
+  // Empty when Spark reports no ordering or the native plan does not need to keep it.
+  repeated spark.spark_expression.Expr output_ordering = 11;
 }
 
 message SortMergeJoin {
