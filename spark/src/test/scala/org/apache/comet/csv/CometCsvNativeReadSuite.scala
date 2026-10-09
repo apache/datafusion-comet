@@ -162,7 +162,9 @@ class CometCsvNativeReadSuite extends CometTestBase {
           "input_file_block_start()",
           "input_file_block_length()",
           "id")
-        val (_, plan) = checkSparkAnswerAndFallbackReason(df, "input_file_name")
+        val (_, plan) = checkSparkAnswerAndFallbackReason(
+          df,
+          "Native V2 scan is not compatible with input_file_name")
         assert(
           collect(plan) { case s: CometCsvNativeScanExec => s }.isEmpty,
           s"Expected Spark's CSV reader but found CometCsvNativeScanExec. Plan:\n$plan")
