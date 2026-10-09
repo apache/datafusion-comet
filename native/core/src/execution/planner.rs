@@ -1235,22 +1235,17 @@ impl PhysicalPlanner {
         }
     }
 
-    /// Returns a sort of `plan` by the SortOrder exprs in `ordering`, or `None` when `ordering`
-    /// is empty or the plan's equivalence properties already satisfy it.
+    /// Returns a sort of `plan` by `ordering`, or `None` when `ordering` is empty or the plan's
+    /// equivalence properties already satisfy it. Operators whose Spark counterpart reports an
+    /// output ordering use this to sort their output when the native plan does not keep it.
     fn sort_unless_ordered(
-        &self,
         plan: Arc<dyn ExecutionPlan>,
-        ordering: &[Expr],
+        ordering: Vec<PhysicalSortExpr>,
     ) -> Result<Option<Arc<dyn ExecutionPlan>>, ExecutionError> {
-        let schema = plan.schema();
-        let sort_exprs = ordering
-            .iter()
-            .map(|expr| self.create_sort_expr(expr, Arc::clone(&schema)))
-            .collect::<Result<Vec<_>, _>>()?;
-        let Some(lex_ordering) = LexOrdering::new(sort_exprs.clone()) else {
+        let Some(lex_ordering) = LexOrdering::new(ordering.clone()) else {
             return Ok(None);
         };
-        if plan.equivalence_properties().ordering_satisfy(sort_exprs)? {
+        if plan.equivalence_properties().ordering_satisfy(ordering)? {
             return Ok(None);
         }
         Ok(Some(Arc::new(SortExec::new(lex_ordering, plan))))
@@ -1722,14 +1717,8 @@ impl PhysicalPlanner {
                             )
                         })
                         .collect();
-                    if !aggregate
-                        .equivalence_properties()
-                        .ordering_satisfy(ordering.clone())?
+                    if let Some(sort) = Self::sort_unless_ordered(Arc::clone(&aggregate), ordering)?
                     {
-                        let sort: Arc<dyn ExecutionPlan> = Arc::new(SortExec::new(
-                            LexOrdering::new(ordering).unwrap(),
-                            Arc::clone(&aggregate),
-                        ));
                         return Ok((
                             scans,
                             shuffle_scans,
@@ -2713,15 +2702,20 @@ impl PhysicalPlanner {
                 // the join on that basis. DataFusion keeps unmatched probe rows in probe order
                 // only when it sees the probe input sorted, and does not keep a null-aware anti
                 // join's build order, so sort the output otherwise.
-                let native_plan = match self
-                    .sort_unless_ordered(Arc::clone(&join_root), &join.output_ordering)?
-                {
-                    Some(sort) => {
-                        additional_native_plans.push(join_root);
-                        sort
-                    }
-                    None => join_root,
-                };
+                let join_schema = join_root.schema();
+                let output_ordering = join
+                    .output_ordering
+                    .iter()
+                    .map(|expr| self.create_sort_expr(expr, Arc::clone(&join_schema)))
+                    .collect::<Result<Vec<_>, _>>()?;
+                let native_plan =
+                    match Self::sort_unless_ordered(Arc::clone(&join_root), output_ordering)? {
+                        Some(sort) => {
+                            additional_native_plans.push(join_root);
+                            sort
+                        }
+                        None => join_root,
+                    };
 
                 Ok((
                     scans,
