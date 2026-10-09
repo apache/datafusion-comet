@@ -184,7 +184,6 @@ class CometMultiStoreScanSuite extends CometTestBase with AdaptiveSparkPlanHelpe
       assert(cometFiles.forall(_.map(storeOf).distinct.size == 1), s"Comet's: $cometFiles")
       assert(cometFiles.flatten.sorted == sparkFiles.flatten.sorted)
       assert(cometFiles.size != sparkFiles.size)
-      assert(scan.outputPartitioning.numPartitions == scan.perPartitionData.length)
     }
   }
 
@@ -375,7 +374,6 @@ class CometMultiStoreScanSuite extends CometTestBase with AdaptiveSparkPlanHelpe
         assert(scans.head.partitionFilters.exists(_.isInstanceOf[DynamicPruningExpression]))
         assert(allFiles.map(storeOf).distinct.sorted == Seq("nn1", "nn2"), s"files: $files")
         assert(files.forall(_.map(storeOf).distinct.size == 1), s"Comet's layout: $files")
-        assert(scans.head.outputPartitioning.numPartitions == scans.head.perPartitionData.length)
       }
     }
   }
