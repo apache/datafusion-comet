@@ -3303,6 +3303,8 @@ class CometAggregateSuite extends CometTestBase with AdaptiveSparkPlanHelper {
    * left to the message parameters: Spark 4.2 normalizes `long overflow` to `overflow`.
    */
   private def assertAnsiSumOverflowMatchesSpark(df: DataFrame): Unit = {
+    // Without this, a SUM that fell back to Spark would compare Spark's error with itself.
+    checkCometOperators(stripAQEPlan(df.queryExecution.executedPlan))
     val (sparkError, cometError) = checkSparkAnswerMaybeThrows(df)
     def structured(error: Option[Throwable]): SparkThrowable with Throwable = {
       val failure = error.getOrElse(fail("Expected SUM overflow in ANSI mode"))
@@ -3425,13 +3427,7 @@ class CometAggregateSuite extends CometTestBase with AdaptiveSparkPlanHelper {
           "tbl") {
           val res = sql("SELECT _2, SUM(_1) FROM tbl GROUP BY _2").repartition(2)
           if (ansiEnabled) {
-            checkSparkAnswerMaybeThrows(res) match {
-              case (Some(sparkExc), Some(cometExc)) =>
-                assert(sparkExc.getMessage.contains("ARITHMETIC_OVERFLOW"))
-                assert(cometExc.getMessage.contains("ARITHMETIC_OVERFLOW"))
-              case _ =>
-                fail("Exception should be thrown for Long overflow with GROUP BY in ANSI mode")
-            }
+            assertAnsiSumOverflowMatchesSpark(res)
           } else {
             checkSparkAnswerAndOperator(res)
           }
@@ -3442,13 +3438,7 @@ class CometAggregateSuite extends CometTestBase with AdaptiveSparkPlanHelper {
           "tbl") {
           val res = sql("SELECT _2, SUM(_1) FROM tbl GROUP BY _2")
           if (ansiEnabled) {
-            checkSparkAnswerMaybeThrows(res) match {
-              case (Some(sparkExc), Some(cometExc)) =>
-                assert(sparkExc.getMessage.contains("ARITHMETIC_OVERFLOW"))
-                assert(cometExc.getMessage.contains("ARITHMETIC_OVERFLOW"))
-              case _ =>
-                fail("Exception should be thrown for Long underflow with GROUP BY in ANSI mode")
-            }
+            assertAnsiSumOverflowMatchesSpark(res)
           } else {
             checkSparkAnswerAndOperator(res)
           }

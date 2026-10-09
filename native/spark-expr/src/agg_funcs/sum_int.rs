@@ -1044,12 +1044,6 @@ mod tests {
                 json["params"],
                 serde_json::json!({"fromType": "long", "functionName": "try_add"})
             );
-            assert_eq!(
-                error.to_string(),
-                "[ARITHMETIC_OVERFLOW] long overflow. Use 'try_add' to tolerate overflow and \
-                 return NULL instead. If necessary set \"spark.sql.ansi.enabled\" to \"false\" \
-                 to bypass this error."
-            );
         }
 
         for (first, second) in [(i64::MAX, 1), (i64::MIN, -1)] {
