@@ -24,6 +24,7 @@ use crate::parquet::parquet_support::{
 };
 use crate::parquet::schema_adapter::SparkPhysicalExprAdapterFactory;
 use arrow::datatypes::{Field, FieldRef, SchemaRef};
+use datafusion::common::tree_node::TreeNode;
 use datafusion::config::{ParquetOptions, TableParquetOptions};
 use datafusion::datasource::listing::PartitionedFile;
 use datafusion::datasource::physical_plan::{
@@ -36,6 +37,7 @@ use datafusion::physical_expr::PhysicalExpr;
 use datafusion::physical_expr_adapter::PhysicalExprAdapterFactory;
 use datafusion::prelude::SessionContext;
 use datafusion::scalar::ScalarValue;
+use datafusion_comet_spark_expr::jvm_udf::JvmScalarUdfExpr;
 use datafusion_comet_spark_expr::EvalMode;
 use datafusion_datasource::TableSchema;
 use parquet::variant::VariantType;
@@ -83,7 +85,7 @@ pub(crate) fn init_datasource_exec(
     session_ctx: &Arc<SessionContext>,
     encryption_enabled: bool,
     use_field_id: bool,
-    ignore_missing_field_id: bool,
+    require_field_ids: bool,
 ) -> Result<Arc<DataSourceExec>, ExecutionError> {
     // Computed once and reused below for `try_pushdown_filters`. `copied_config()` clones only
     // `SessionConfig` (an `Arc<ConfigOptions>` plus a small extensions map); `SessionContext::
@@ -101,7 +103,6 @@ pub(crate) fn init_datasource_exec(
         &session_config.options().execution.parquet,
     );
     spark_parquet_options.use_field_id = use_field_id;
-    spark_parquet_options.ignore_missing_field_id = ignore_missing_field_id;
     // Spark can discard filtered-out values before timestamp conversion using statistics,
     // dictionary, and row-level filters. Comet cannot mirror every pruning path, so applying
     // checked conversion in a filtered scan can fail on values Spark never reads. Preserve the
@@ -194,7 +195,16 @@ pub(crate) fn init_datasource_exec(
             scan_io_source,
             parquet_source.metrics(),
         )
-        .with_spark_variant_schema(projects_variant),
+        .with_spark_variant_schema(projects_variant)
+        .with_require_field_ids(require_field_ids)
+        .with_conversion_check(
+            Arc::clone(&required_schema),
+            spark_parquet_options.clone(),
+            session_config.options().execution.parquet.pushdown_filters
+                && data_filters
+                    .as_ref()
+                    .is_some_and(|filters| !filters.is_empty()),
+        ),
     );
     parquet_source = parquet_source.with_parquet_file_reader_factory(reader_factory);
 
@@ -208,7 +218,14 @@ pub(crate) fn init_datasource_exec(
     // config only gates per-row `RowFilter` evaluation. We discard
     // `propagation.parent_pushdown_result` because Spark's Filter above the
     // scan re-evaluates every dataFilter, so No-classified filters stay
-    // correct without us inserting a FilterExec here.
+    // correct without us inserting a FilterExec here. That also makes it safe
+    // to drop the filters that call into the JVM first; see `calls_jvm`.
+    let data_filters = data_filters.map(|filters| {
+        filters
+            .into_iter()
+            .filter(|filter| !calls_jvm(filter))
+            .collect::<Vec<_>>()
+    });
     let file_source: Arc<dyn FileSource> = match data_filters {
         Some(filters) if !filters.is_empty() => {
             let propagation =
@@ -245,6 +262,16 @@ pub(crate) fn init_datasource_exec(
     let data_source_exec = Arc::new(DataSourceExec::new(Arc::new(file_scan_config)));
 
     Ok(data_source_exec)
+}
+
+/// Whether `expr` evaluates any part of itself in the JVM. Such a filter is kept out of the scan:
+/// DataFusion's parquet `RowFilter` flattens an evaluation error to a string, which drops the Java
+/// throwable a JVM UDF raises (e.g. a Spark `SparkIllegalArgumentException`) and surfaces it as a
+/// generic `CometNativeException`. Spark's Filter above the scan evaluates the predicate anyway, and
+/// a JVM call is opaque to row-group, page-index, and bloom-filter pruning, so nothing is lost.
+fn calls_jvm(expr: &Arc<dyn PhysicalExpr>) -> bool {
+    expr.exists(|e| Ok(e.downcast_ref::<JvmScalarUdfExpr>().is_some()))
+        .unwrap_or(true)
 }
 
 // Registration URLs use a reserved suffix to distinguish backend/configuration
@@ -379,6 +406,29 @@ mod tests {
     use parquet::file::properties::{EnabledStatistics, WriterProperties};
     use std::fs::File;
     use std::time::Duration;
+
+    #[test]
+    fn calls_jvm_finds_a_nested_jvm_udf() {
+        let column: Arc<dyn PhysicalExpr> = Arc::new(Column::new("a", 0));
+        let udf: Arc<dyn PhysicalExpr> = Arc::new(JvmScalarUdfExpr::new(
+            "org.example.Udf".to_string(),
+            vec![Arc::clone(&column)],
+            DataType::Int32,
+            true,
+            None,
+            None,
+            0,
+            0,
+        ));
+        let literal: Arc<dyn PhysicalExpr> = Arc::new(Literal::new(ScalarValue::Int32(Some(1))));
+        let nested: Arc<dyn PhysicalExpr> =
+            Arc::new(BinaryExpr::new(udf, Operator::Gt, Arc::clone(&literal)));
+        let native: Arc<dyn PhysicalExpr> =
+            Arc::new(BinaryExpr::new(column, Operator::Gt, literal));
+
+        assert!(calls_jvm(&nested));
+        assert!(!calls_jvm(&native));
+    }
 
     fn write_scan_io_fixture() -> (String, SchemaRef) {
         let schema = Arc::new(Schema::new(vec![
@@ -1296,6 +1346,79 @@ mod tests {
         assert!(bloom_bytes > 0);
         assert_eq!(scan_metric(&scan, "scan_io_data_bytes"), 0);
         assert!(scan_metric(&scan, "scan_io_metadata_bytes") >= bloom_bytes);
+    }
+
+    /// A bloom filter holds the bits of each value, so `-0.0` and `0.0` are separate entries in it,
+    /// while Spark's `=` matches either zero. A data filter that only prunes (no row-level
+    /// pushdown) probes the filter for both zeros, so the row group holding `-0.0` and no `0.0`
+    /// is read for `d = 0.0` and for `d = -0.0`, and a value the filter does not hold still
+    /// prunes it. The column statistics cover all three values, so only the bloom filter prunes.
+    #[tokio::test]
+    async fn bloom_filter_pruning_matches_either_signed_zero() {
+        use arrow::array::Float64Array;
+        use datafusion::physical_plan::metrics::MetricValue;
+        use datafusion_comet_spark_expr::{spark_comparison, FloatOperands};
+
+        let schema = Arc::new(Schema::new(vec![Field::new("d", DataType::Float64, false)]));
+        let batch = RecordBatch::try_new(
+            Arc::clone(&schema),
+            vec![Arc::new(Float64Array::from(vec![-1.0, -0.0, 1.0]))],
+        )
+        .unwrap();
+        let filename = get_temp_filename()
+            .as_path()
+            .as_os_str()
+            .to_str()
+            .unwrap()
+            .to_string();
+        let props = WriterProperties::builder()
+            .set_bloom_filter_enabled(true)
+            .build();
+        let file = File::create(&filename).unwrap();
+        let mut writer = ArrowWriter::try_new(file, Arc::clone(&schema), Some(props)).unwrap();
+        writer.write(&batch).unwrap();
+        writer.close().unwrap();
+
+        let session_ctx = Arc::new(SessionContext::new());
+        for (value, read) in [(-0.0, true), (0.0, true), (0.5, false)] {
+            let filter = spark_comparison(
+                Arc::new(Column::new("d", 0)),
+                Operator::Eq,
+                Arc::new(Literal::new(ScalarValue::Float64(Some(value)))),
+                &schema,
+                FloatOperands::Raw,
+            )
+            .unwrap();
+            let scan = init_test_scan(
+                Arc::clone(&schema),
+                Arc::clone(&schema),
+                PartitionedFile::from_path(filename.clone()).unwrap(),
+                None,
+                Some(vec![filter]),
+                &session_ctx,
+            );
+            let mut stream = scan.execute(0, session_ctx.task_ctx()).unwrap();
+            let mut rows = 0;
+            while let Some(batch) = stream.next().await {
+                rows += batch.unwrap().num_rows();
+            }
+            let bloom_filter = scan
+                .metrics()
+                .unwrap()
+                .sum_by_name("row_groups_pruned_bloom_filter");
+            let Some(MetricValue::PruningMetrics {
+                pruning_metrics, ..
+            }) = bloom_filter
+            else {
+                panic!("missing bloom filter pruning metrics: {bloom_filter:?}");
+            };
+            let expected = if read { (0, 1, 3) } else { (1, 0, 0) };
+            assert_eq!(
+                (pruning_metrics.pruned(), pruning_metrics.matched(), rows),
+                expected,
+                "d = {value:?}"
+            );
+        }
     }
 
     #[tokio::test]

@@ -22,21 +22,142 @@ package org.apache.comet
 import scala.util.Random
 
 import org.apache.hadoop.fs.Path
+import org.apache.spark.SparkException
 import org.apache.spark.sql.CometTestBase
-import org.apache.spark.sql.catalyst.expressions.{ArrayAppend, ArrayExcept, ArrayInsert, ArrayIntersect, ArrayJoin, ArrayRepeat}
+import org.apache.spark.sql.catalyst.expressions.{ArrayAppend, ArrayDistinct, ArrayExcept, ArrayInsert, ArrayIntersect, ArrayJoin, ArrayMax, ArrayMin, ArrayRepeat, ArrayUnion}
 import org.apache.spark.sql.catalyst.expressions.{ArrayContains, ArrayRemove}
 import org.apache.spark.sql.catalyst.expressions.{AttributeReference, Cast, CreateArray, ElementAt, Literal, MonotonicallyIncreasingID}
 import org.apache.spark.sql.execution.adaptive.AdaptiveSparkPlanHelper
 import org.apache.spark.sql.functions._
 import org.apache.spark.sql.internal.SQLConf
-import org.apache.spark.sql.types.{ArrayType, StringType}
+import org.apache.spark.sql.types.{ArrayType, DoubleType, FloatType, IntegerType, StringType, StructType}
 
 import org.apache.comet.CometSparkSessionExtensions.{isSpark35Plus, isSpark40Plus}
 import org.apache.comet.DataTypeSupport.isComplexType
-import org.apache.comet.serde.{CometArrayExcept, CometArrayJoin, CometArrayRemove, CometArrayReverse, CometFlatten, Compatible, ExprOuterClass, Incompatible}
+import org.apache.comet.serde.{ArraySetSupport, CometArrayDistinct, CometArrayExcept, CometArrayJoin, CometArrayRemove, CometArrayReverse, CometArrayUnion, CometFlatten, Compatible, ExprOuterClass, Incompatible}
 import org.apache.comet.testing.{DataGenOptions, ParquetGenerator, SchemaGenOptions}
 
 class CometArrayExpressionSuite extends CometTestBase with AdaptiveSparkPlanHelper {
+
+  test("array set signed-zero Spark patch versions") {
+    // Only 4.2.0 normalizes the arguments in the plan. Earlier releases do not normalize them, and
+    // 4.0.5+, 4.1.4+ and 4.2.1+ normalize during evaluation instead (SPARK-59602).
+    Seq(
+      "3.4.3",
+      "3.5.9",
+      "4.0.4",
+      "4.0.5",
+      "4.0.10",
+      "4.1.3",
+      "4.1.4",
+      "4.1.10",
+      "4.2.1",
+      "4.2.1-SNAPSHOT",
+      "4.2.10",
+      "4.3.0",
+      "5.0.0").foreach { version =>
+      assert(!ArraySetSupport.normalizesArgumentsInPlan(version), version)
+    }
+    Seq("4.2.0", "4.2.0-SNAPSHOT").foreach { version =>
+      assert(ArraySetSupport.normalizesArgumentsInPlan(version), version)
+    }
+  }
+
+  test("array set signed-zero support levels") {
+    // This test covers element-type detection; the preceding test pins the version boundaries.
+    val fixed = ArraySetSupport.normalizesArgumentsInPlan(org.apache.spark.SPARK_VERSION)
+    Seq(FloatType, DoubleType, ArrayType(FloatType), new StructType().add("x", DoubleType))
+      .foreach { elementType =>
+        val child = AttributeReference("a", ArrayType(elementType))()
+        val expected =
+          if (fixed) Compatible() else Incompatible(Some(ArraySetSupport.floatingPointReason))
+        assert(CometArrayDistinct.getSupportLevel(ArrayDistinct(child)) == expected)
+        assert(CometArrayUnion.getSupportLevel(ArrayUnion(child, child)) == expected)
+      }
+    Seq(IntegerType, StringType, ArrayType(IntegerType)).foreach { elementType =>
+      val child = AttributeReference("a", ArrayType(elementType))()
+      assert(CometArrayDistinct.getSupportLevel(ArrayDistinct(child)) == Compatible())
+      assert(CometArrayUnion.getSupportLevel(ArrayUnion(child, child)) == Compatible())
+    }
+  }
+
+  test("array set signed-zero fallback and native opt-in") {
+    withSQLConf(
+      SQLConf.OPTIMIZER_EXCLUDED_RULES.key ->
+        "org.apache.spark.sql.catalyst.optimizer.ConstantFolding") {
+      Seq("float", "double").foreach { dataType =>
+        Seq(
+          "array_distinct" -> s"array($dataType('0.0'), $dataType('-0.0'))",
+          "array_union" -> s"array($dataType('0.0')), array($dataType('-0.0'))")
+          .foreach { case (function, arguments) =>
+            val query = s"SELECT $function($arguments)"
+            if (ArraySetSupport.normalizesArgumentsInPlan(org.apache.spark.SPARK_VERSION)) {
+              checkSparkAnswerAndOperator(query)
+            } else {
+              checkSparkAnswerAndFallbackReason(query, "SPARK-54918")
+            }
+          }
+      }
+      Seq(classOf[ArrayDistinct], classOf[ArrayUnion]).foreach { exprClass =>
+        withSQLConf(CometConf.getExprAllowIncompatConfigKey(exprClass) -> "true") {
+          val query = if (exprClass == classOf[ArrayDistinct]) {
+            "SELECT array_distinct(array(double('1.0'), double('1.0')))"
+          } else {
+            "SELECT array_union(array(double('1.0')), array(double('1.0')))"
+          }
+          checkSparkAnswerAndOperator(query)
+        }
+      }
+    }
+  }
+
+  test("array set noncanonical NaN normalization") {
+    withTempDir { dir =>
+      withTempView("array_set_nan") {
+        sql("SELECT float('NaN') AS f, double('NaN') AS d").write.parquet(dir + "/data")
+        spark.read.parquet(dir + "/data").createOrReplaceTempView("array_set_nan")
+        // Negate scanned values because Parquet canonicalizes NaNs on write.
+        Seq("f", "d").foreach { column =>
+          Seq(
+            s"array_distinct(array($column, -$column))",
+            s"array_union(array($column), array(-$column))").foreach { expression =>
+            val query = s"SELECT size($expression) FROM array_set_nan"
+            if (ArraySetSupport.normalizesArgumentsInPlan(org.apache.spark.SPARK_VERSION)) {
+              checkSparkAnswerAndOperator(query)
+            } else {
+              checkSparkAnswerAndFallbackReason(query, "SPARK-54918")
+            }
+          }
+        }
+      }
+    }
+  }
+
+  test("array set nested signed-zero normalization") {
+    withTempDir { dir =>
+      withTempView("array_set_zero") {
+        sql("SELECT float('0.0') AS f, double('0.0') AS d").write.parquet(dir + "/data")
+        spark.read.parquet(dir + "/data").createOrReplaceTempView("array_set_zero")
+        // Spark deduplicates nested -0.0 and 0.0 on every version, while the native kernels only
+        // normalize flat zeros.
+        Seq("f", "d").foreach { column =>
+          Seq(
+            s"array_distinct(array(array($column), array(-$column)))",
+            s"array_distinct(array(named_struct('x', $column), named_struct('x', -$column)))",
+            s"array_union(array(array($column)), array(array(-$column)))",
+            s"array_union(array(named_struct('x', $column)), array(named_struct('x', -$column)))")
+            .foreach { expression =>
+              val query = s"SELECT $expression FROM array_set_zero"
+              if (ArraySetSupport.normalizesArgumentsInPlan(org.apache.spark.SPARK_VERSION)) {
+                checkSparkAnswerAndOperator(query)
+              } else {
+                checkSparkAnswerAndFallbackReason(query, "SPARK-54918")
+              }
+            }
+        }
+      }
+    }
+  }
 
   test("array_remove - integer") {
     withSQLConf(CometConf.getExprAllowIncompatConfigKey(classOf[ArrayRemove]) -> "true") {
@@ -112,7 +233,6 @@ class CometArrayExpressionSuite extends CometTestBase with AdaptiveSparkPlanHelp
         }
         withSQLConf(
           CometConf.COMET_NATIVE_SCAN_ENABLED.key -> "false",
-          CometConf.COMET_SPARK_TO_ARROW_ENABLED.key -> "true",
           CometConf.COMET_CONVERT_FROM_PARQUET_ENABLED.key -> "true") {
           val table = spark.read.parquet(filename)
           table.createOrReplaceTempView("t1")
@@ -391,7 +511,6 @@ class CometArrayExpressionSuite extends CometTestBase with AdaptiveSparkPlanHelp
       }
       withSQLConf(
         CometConf.COMET_NATIVE_SCAN_ENABLED.key -> "false",
-        CometConf.COMET_SPARK_TO_ARROW_ENABLED.key -> "true",
         CometConf.COMET_CONVERT_FROM_PARQUET_ENABLED.key -> "true") {
         withTempView("t1", "t2") {
           val table = spark.read.parquet(filename)
@@ -631,6 +750,80 @@ class CometArrayExpressionSuite extends CometTestBase with AdaptiveSparkPlanHelp
     }
   }
 
+  test("array extrema - collations fall back when the dispatcher is disabled") {
+    assume(isSpark40Plus)
+    withParquetTable(Seq(("a", "B"), ("B", "a"), ("A", "a")), "collated_extrema") {
+      val a = "CAST(_1 AS STRING COLLATE UTF8_LCASE)"
+      val b = "CAST(_2 AS STRING COLLATE UTF8_LCASE)"
+      val inputs = Seq(
+        s"array($a, $b)",
+        s"array(named_struct('s', array($a)), named_struct('s', array($b)))")
+      withSQLConf(
+        CometConf.COMET_SCALA_UDF_CODEGEN_ENABLED.key -> "false",
+        CometConf.getExprAllowIncompatConfigKey(classOf[ArrayMin]) -> "false",
+        CometConf.getExprAllowIncompatConfigKey(classOf[ArrayMax]) -> "false") {
+        for (function <- Seq("array_min", "array_max"); input <- inputs) {
+          checkSparkAnswerAndFallbackReason(
+            s"SELECT $function($input) FROM collated_extrema",
+            "Array extrema use binary string ordering")
+        }
+      }
+    }
+  }
+
+  test("array extrema - runtime NaN representations") {
+    withParquetTable(Seq((Float.NaN, Double.NaN)), "floating_point_extrema") {
+      for (strict <- Seq(false, true)) {
+        withSQLConf(
+          CometConf.COMET_EXEC_STRICT_FLOATING_POINT.key -> strict.toString,
+          CometConf.COMET_SCALA_UDF_CODEGEN_ENABLED.key -> "false",
+          CometConf.getExprAllowIncompatConfigKey(classOf[ArrayMin]) -> "false",
+          CometConf.getExprAllowIncompatConfigKey(classOf[ArrayMax]) -> "false") {
+          for (function <- Seq("array_min", "array_max")) {
+            // Parquet canonicalizes NaNs. Negating the column after the scan supplies a
+            // different representation at runtime; ordinary SQL equality cannot check
+            // that extrema preserve the bits of the first equal NaN.
+            val query = sql(s"""
+              SELECT $function(array(-_1, _1)), $function(array(_1, -_1)),
+                     $function(array(-_2, _2)), $function(array(_2, -_2)),
+                     $function(array(-_1, CAST(1 AS FLOAT))),
+                     $function(array(-_2, CAST(1 AS DOUBLE))),
+                     $function(array(named_struct('v', -_1, 'n', 1),
+                                     named_struct('v', _1, 'n', 1))).v,
+                     $function(array(named_struct('v', -_2, 'n', 1),
+                                     named_struct('v', _2, 'n', 1))).v
+              FROM floating_point_extrema
+            """)
+            checkSparkAnswerAndOperator(query)
+            val row = query.head()
+            val floatBits = java.lang.Float.floatToRawIntBits(Float.NaN)
+            val doubleBits = java.lang.Double.doubleToRawLongBits(Double.NaN)
+            val negativeFloatBits = floatBits | Int.MinValue
+            val negativeDoubleBits = doubleBits | Long.MinValue
+            assert(java.lang.Float.floatToRawIntBits(row.getFloat(0)) == negativeFloatBits)
+            assert(java.lang.Float.floatToRawIntBits(row.getFloat(1)) == floatBits)
+            assert(java.lang.Double.doubleToRawLongBits(row.getDouble(2)) == negativeDoubleBits)
+            assert(java.lang.Double.doubleToRawLongBits(row.getDouble(3)) == doubleBits)
+            val expectedFloatBits = if (function == "array_min") {
+              java.lang.Float.floatToRawIntBits(1.0f)
+            } else {
+              negativeFloatBits
+            }
+            val expectedDoubleBits = if (function == "array_min") {
+              java.lang.Double.doubleToRawLongBits(1.0d)
+            } else {
+              negativeDoubleBits
+            }
+            assert(java.lang.Float.floatToRawIntBits(row.getFloat(4)) == expectedFloatBits)
+            assert(java.lang.Double.doubleToRawLongBits(row.getDouble(5)) == expectedDoubleBits)
+            assert(java.lang.Float.floatToRawIntBits(row.getFloat(6)) == negativeFloatBits)
+            assert(java.lang.Double.doubleToRawLongBits(row.getDouble(7)) == negativeDoubleBits)
+          }
+        }
+      }
+    }
+  }
+
   test("arrays_overlap - runtime NaN representations") {
     val floatNaN = java.lang.Float.intBitsToFloat(0x7fc01234 | Int.MinValue)
     val doubleNaN = java.lang.Double.longBitsToDouble(0x7ff8000000001234L | Long.MinValue)
@@ -830,7 +1023,6 @@ class CometArrayExpressionSuite extends CometTestBase with AdaptiveSparkPlanHelp
       }
       withSQLConf(
         CometConf.COMET_NATIVE_SCAN_ENABLED.key -> "false",
-        CometConf.COMET_SPARK_TO_ARROW_ENABLED.key -> "true",
         CometConf.COMET_CONVERT_FROM_PARQUET_ENABLED.key -> "true") {
         withTempView("t1", "t2") {
           val table = spark.read.parquet(filename)
@@ -926,7 +1118,6 @@ class CometArrayExpressionSuite extends CometTestBase with AdaptiveSparkPlanHelp
       }
       withSQLConf(
         CometConf.COMET_NATIVE_SCAN_ENABLED.key -> "false",
-        CometConf.COMET_SPARK_TO_ARROW_ENABLED.key -> "true",
         CometConf.COMET_CONVERT_FROM_PARQUET_ENABLED.key -> "true") {
         withTempView("t1", "t2") {
           val table = spark.read.parquet(filename)
@@ -977,7 +1168,6 @@ class CometArrayExpressionSuite extends CometTestBase with AdaptiveSparkPlanHelp
       }
       withSQLConf(
         CometConf.COMET_NATIVE_SCAN_ENABLED.key -> "false",
-        CometConf.COMET_SPARK_TO_ARROW_ENABLED.key -> "true",
         CometConf.COMET_CONVERT_FROM_PARQUET_ENABLED.key -> "true") {
         withTempView("t1", "t2") {
           val table = spark.read.parquet(filename)
@@ -1189,12 +1379,10 @@ class CometArrayExpressionSuite extends CometTestBase with AdaptiveSparkPlanHelp
     }
   }
 
-  // The tests below deliberately live in this suite, not a `sql-tests` fixture: constant folding is
-  // enabled by default here, so each `map(...)` collapses to a MapType Literal and the outer
-  // `array(...)` reaches `CometCreateArray` with folded-Literal children, which `CometLiteral`
-  // rebuilds as an equivalent `CreateMap` of primitive literals -- the folded-literal expansion path
-  // under review. `CometSqlFileTestSuite` force-disables `ConstantFolding`, so an equivalent SQL
-  // fixture would only exercise the constructor path (which `create_array.sql` already covers).
+  // These tests exercise folded complex literals, including CometLiteral's expansion to native
+  // constructors. SQL fixtures need `-- ConstantFolding: enabled` to reach that same path.
+  // folded_array_map_literals.sql covers the mixed map/NULL array; the remaining conversions are
+  // tracked in #6628.
   test("array of folded map literals with array values (multirow)") {
     withParquetTable((0 until 3).map(i => (i, i.toLong)), "tbl") {
       checkSparkAnswerAndOperator(
@@ -1239,17 +1427,6 @@ class CometArrayExpressionSuite extends CometTestBase with AdaptiveSparkPlanHelp
     withParquetTable((0 until 3).map(i => (i, i.toLong)), "tbl") {
       checkSparkAnswerAndOperator(
         "SELECT array(map(1, CAST(NULL AS INT)), map(2, 3)) AS arr FROM tbl")
-    }
-  }
-
-  // A NULL element sits next to a populated one inside a single folded
-  // `ArrayType(MapType(IntegerType, IntegerType, false), containsNull = true)` literal. The null
-  // slot serializes as a typed null literal carrying the declared map type, so the rebuilt sibling
-  // has to report that same type for `make_array` to accept the pair.
-  test("folded array mixing a map literal and a NULL element (multirow)") {
-    withParquetTable((0 until 3).map(i => (i, i.toLong)), "tbl") {
-      checkSparkAnswerAndOperator("SELECT array(map(1, 2), NULL) AS arr FROM tbl")
-      checkSparkAnswerAndOperator("SELECT array(NULL, map(1, 2)) AS arr FROM tbl")
     }
   }
 
@@ -1518,6 +1695,27 @@ class CometArrayExpressionSuite extends CometTestBase with AdaptiveSparkPlanHelp
         // split(NULL, ...) yields a null array; arr[0] on a null array must return NULL
         // rather than failing the non-nullable schema validation in native execution.
         checkSparkAnswerAndOperator(sql("SELECT split(s, ',')[0] FROM test_split_null"))
+      }
+    }
+  }
+
+  // 8192 rows of sequence(0, 262143) put 8192 * 262144 = 2^31 elements in one batch, one past
+  // the Int.MaxValue limit of Arrow's i32 list offsets. Spark builds one array per row and
+  // completes; Comet fails the batch and points at spark.comet.batchSize. The lower batch size
+  // is kept small because each successful batch materializes its elements in native memory.
+  test("sequence over the per-batch element limit fails until the batch size is lowered") {
+    withTable("t_seq_ceiling") {
+      sql("CREATE TABLE t_seq_ceiling(a INT, b INT) USING parquet")
+      sql("INSERT INTO t_seq_ceiling SELECT 0, 262143 FROM range(0, 8192, 1, 1)")
+      val query = "SELECT sum(CAST(size(sequence(a, b)) AS BIGINT)) FROM t_seq_ceiling"
+      withSQLConf(CometConf.COMET_ENABLED.key -> "false") {
+        assert(sql(query).collect().map(_.getLong(0)).toSeq == Seq(2147483648L))
+      }
+      val e = intercept[SparkException](sql(query).collect())
+      assert(e.getMessage.contains("2147483648"), e.getMessage)
+      assert(e.getMessage.contains("spark.comet.batchSize"), e.getMessage)
+      withSQLConf(CometConf.COMET_BATCH_SIZE.key -> "256") {
+        checkSparkAnswerAndOperator(query)
       }
     }
   }

@@ -1474,7 +1474,7 @@ dependencies = [
 
 [[package]]
 name = "comet-contrib-delta"
-version = "0.18.0"
+version = "1.2.0"
 dependencies = [
  "datafusion",
  "datafusion-comet-proto",
@@ -1482,10 +1482,25 @@ dependencies = [
 
 [[package]]
 name = "comet-contrib-lance"
-version = "1.1.0"
+version = "1.2.0"
 dependencies = [
  "datafusion",
  "datafusion-comet-proto",
+]
+
+[[package]]
+name = "comet-test-udfs"
+version = "1.2.0"
+dependencies = [
+ "arrow",
+ "comet-udf-sdk",
+]
+
+[[package]]
+name = "comet-udf-sdk"
+version = "1.2.0"
+dependencies = [
+ "arrow",
 ]
 
 [[package]]
@@ -1964,21 +1979,29 @@ dependencies = [
 
 [[package]]
 name = "datafusion-comet"
-version = "1.1.0"
+version = "1.2.0"
 dependencies = [
  "arrow",
  "assertables",
  "async-trait",
  "aws-config",
  "aws-credential-types",
+ "aws-sdk-sts",
+ "aws-smithy-runtime-api",
+ "aws-smithy-types",
  "base64 0.23.1",
  "bytes",
+ "chrono-tz",
  "comet-contrib-delta",
  "comet-contrib-lance",
+ "comet-test-udfs",
+ "comet-udf-sdk",
+ "crc32fast",
  "criterion",
  "datafusion",
  "datafusion-comet-common",
  "datafusion-comet-jni-bridge",
+ "datafusion-comet-operators",
  "datafusion-comet-proto",
  "datafusion-comet-shuffle",
  "datafusion-comet-spark-expr",
@@ -1990,11 +2013,13 @@ dependencies = [
  "hdfs-sys",
  "hdrs",
  "hex",
+ "http 1.5.0",
  "iceberg",
  "iceberg-storage-opendal",
  "itertools 0.15.0",
  "jni 0.22.4",
  "lazy_static",
+ "libloading",
  "log",
  "log4rs",
  "mimalloc",
@@ -2010,6 +2035,7 @@ dependencies = [
  "procfs",
  "prost",
  "rand 0.10.2",
+ "reqsign-aws-v4",
  "reqsign-core",
  "reqwest 0.12.28",
  "serde",
@@ -2025,7 +2051,7 @@ dependencies = [
 
 [[package]]
 name = "datafusion-comet-common"
-version = "1.1.0"
+version = "1.2.0"
 dependencies = [
  "arrow",
  "datafusion",
@@ -2037,7 +2063,7 @@ dependencies = [
 
 [[package]]
 name = "datafusion-comet-jni-bridge"
-version = "1.1.0"
+version = "1.2.0"
 dependencies = [
  "arrow",
  "assertables",
@@ -2050,12 +2076,27 @@ dependencies = [
  "paste",
  "prost",
  "regex",
+ "serde_json",
  "thiserror 2.0.20",
 ]
 
 [[package]]
+name = "datafusion-comet-operators"
+version = "1.2.0"
+dependencies = [
+ "arrow",
+ "criterion",
+ "datafusion",
+ "datafusion-comet-common",
+ "datafusion-comet-spark-expr",
+ "futures",
+ "parking_lot",
+ "tokio",
+]
+
+[[package]]
 name = "datafusion-comet-proto"
-version = "1.1.0"
+version = "1.2.0"
 dependencies = [
  "prost",
  "prost-build",
@@ -2063,7 +2104,7 @@ dependencies = [
 
 [[package]]
 name = "datafusion-comet-shuffle"
-version = "1.1.0"
+version = "1.2.0"
 dependencies = [
  "arrow",
  "arrow-data",
@@ -2093,7 +2134,7 @@ dependencies = [
 
 [[package]]
 name = "datafusion-comet-spark-expr"
-version = "1.1.0"
+version = "1.2.0"
 dependencies = [
  "arrow",
  "base64 0.23.1",
@@ -2102,15 +2143,20 @@ dependencies = [
  "datafusion",
  "datafusion-comet-common",
  "datafusion-comet-jni-bridge",
+ "datafusion-functions",
  "datafusion-spark",
+ "datasketches",
  "futures",
  "jni 0.22.4",
+ "memchr",
  "num",
+ "paste",
  "rand 0.10.2",
  "regex",
  "ryu",
  "serde",
  "serde_json",
+ "smallvec",
  "tokio",
  "twox-hash",
  "uuid",
@@ -2710,6 +2756,12 @@ dependencies = [
 ]
 
 [[package]]
+name = "datasketches"
+version = "0.3.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "46c4cf71a36b46dcfc00e5014c0c20ccad2b1b6a008304d7d57d2749b2d41b3d"
+
+[[package]]
 name = "debugid"
 version = "0.8.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -2864,12 +2916,6 @@ dependencies = [
 ]
 
 [[package]]
-name = "dissimilar"
-version = "1.0.11"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "aeda16ab4059c5fd2a83f2b9c9e9c981327b18aa8e3b313f7e6563799d4f093e"
-
-[[package]]
 name = "dlv-list"
 version = "0.5.2"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -2967,16 +3013,6 @@ checksum = "8be9f3dfaaffdae2972880079a491a1a8bb7cbed0b8dd7a347f668b4150a3b93"
 dependencies = [
  "event-listener 5.4.2",
  "pin-project-lite",
-]
-
-[[package]]
-name = "expect-test"
-version = "1.5.1"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "63af43ff4431e848fb47472a920f14fa71c24de13255a5692e93d4e90302acb0"
-dependencies = [
- "dissimilar",
- "once_cell",
 ]
 
 [[package]]
@@ -3324,9 +3360,9 @@ dependencies = [
 
 [[package]]
 name = "hdfs-sys"
-version = "0.3.0"
+version = "0.3.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "33e2d5cefba2d51a26b44d2a493f963a32725a0f6593c91be4a610ad449c49cb"
+checksum = "18138c3dacdf0e95f834369f996b21d2b6fa99e71787ef45e2ece09b37bd1dd1"
 dependencies = [
  "cc",
  "java-locator",
@@ -3545,7 +3581,7 @@ dependencies = [
 [[package]]
 name = "iceberg"
 version = "0.10.1"
-source = "git+https://github.com/apache/iceberg-rust?rev=bb1e4a4861f02377489eff818b75138f414c4cb0#bb1e4a4861f02377489eff818b75138f414c4cb0"
+source = "git+https://github.com/apache/iceberg-rust?rev=af1da4c5bc86178c38c1c6db0578bdd9fb7021e3#af1da4c5bc86178c38c1c6db0578bdd9fb7021e3"
 dependencies = [
  "aes-gcm",
  "anyhow",
@@ -3568,7 +3604,6 @@ dependencies = [
  "chrono",
  "crc32fast",
  "derive_builder",
- "expect-test",
  "fastnum",
  "flate2",
  "fnv",
@@ -3604,7 +3639,7 @@ dependencies = [
 [[package]]
 name = "iceberg-property-macro"
 version = "0.10.1"
-source = "git+https://github.com/apache/iceberg-rust?rev=bb1e4a4861f02377489eff818b75138f414c4cb0#bb1e4a4861f02377489eff818b75138f414c4cb0"
+source = "git+https://github.com/apache/iceberg-rust?rev=af1da4c5bc86178c38c1c6db0578bdd9fb7021e3#af1da4c5bc86178c38c1c6db0578bdd9fb7021e3"
 dependencies = [
  "proc-macro2",
  "quote",
@@ -3614,7 +3649,7 @@ dependencies = [
 [[package]]
 name = "iceberg-storage-opendal"
 version = "0.10.1"
-source = "git+https://github.com/apache/iceberg-rust?rev=bb1e4a4861f02377489eff818b75138f414c4cb0#bb1e4a4861f02377489eff818b75138f414c4cb0"
+source = "git+https://github.com/apache/iceberg-rust?rev=af1da4c5bc86178c38c1c6db0578bdd9fb7021e3#af1da4c5bc86178c38c1c6db0578bdd9fb7021e3"
 dependencies = [
  "anyhow",
  "async-trait",
@@ -3622,6 +3657,7 @@ dependencies = [
  "cfg-if",
  "futures",
  "iceberg",
+ "iceberg-property-macro",
  "opendal",
  "reqsign-aws-v4",
  "reqsign-core",
@@ -5925,9 +5961,9 @@ dependencies = [
 
 [[package]]
 name = "rustls"
-version = "0.23.44"
+version = "0.23.45"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "6725596c3f2c3a0aef021139e145d4eafe314a6623e4680ca83852b2c67ab2ba"
+checksum = "0d41d731c7d2f962d1ccc364cec258de3c0e93b38c2fb3ba97ac74513048d634"
 dependencies = [
  "aws-lc-rs",
  "once_cell",
@@ -6551,7 +6587,7 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "32497e9a4c7b38532efcdebeef879707aa9f794296a4f0244f6f69e9bc8574bd"
 dependencies = [
  "fastrand",
- "getrandom 0.4.3",
+ "getrandom 0.3.4",
  "once_cell",
  "rustix",
  "windows-sys 0.61.2",

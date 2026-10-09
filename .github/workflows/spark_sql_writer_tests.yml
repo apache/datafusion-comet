@@ -17,7 +17,7 @@
 
 # Manual workflow that exercises Spark's Parquet WRITER test suites with
 # Comet's experimental native Parquet writer enabled (ENABLE_COMET_WRITE=true,
-# spark.comet.parquet.write.enabled). Self-contained — does not call
+# spark.comet.write.parquet.enabled). Self-contained — does not call
 # spark_sql_test_reusable.yml — so it can run on feature branches without
 # touching the standard CI matrix.
 #
@@ -90,9 +90,7 @@ jobs:
             ~/.cargo/registry
             ~/.cargo/git
             native/target
-          key: ${{ runner.os }}-cargo-ci-${{ hashFiles('native/**/Cargo.lock', 'native/**/Cargo.toml') }}-${{ hashFiles('native/**/*.rs') }}
-          restore-keys: |
-            ${{ runner.os }}-cargo-ci-${{ hashFiles('native/**/Cargo.lock', 'native/**/Cargo.toml') }}-
+          key: ${{ runner.os }}-cargo-ci-${{ hashFiles('native/**/Cargo.lock', 'native/**/Cargo.toml') }}
 
       - name: Build native library (CI profile)
         run: |
@@ -116,6 +114,13 @@ jobs:
           spark-version: ${{ steps.resolve.outputs.spark-full }}
           spark-short-version: ${{ inputs.spark-version }}
           skip-native-build: true
+
+      - name: Pre-compile Spark SQL test classes
+        run: |
+          cd apache-spark
+          rm -rf /root/.m2/repository/org/apache/parquet
+          NOLINT_ON_COMPILE=true build/sbt -Dsbt.log.noformat=true -mem 3072 \
+            'sql/Test/compile'
 
       - name: Run Parquet writer tests
         run: |
