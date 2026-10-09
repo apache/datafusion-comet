@@ -2861,6 +2861,23 @@ trait CometHashJoin {
       }
     }
 
+    // DataFusion may move unmatched probe rows for these shapes, so the native planner needs the
+    // ordering Spark reports for the join to restore it.
+    val outputOrdering = (join.joinType, join.buildSide) match {
+      case (LeftOuter, BuildRight) | (RightOuter, BuildLeft) if join.outputOrdering.nonEmpty =>
+        if (!supportedSortType(join, join.outputOrdering)) {
+          withFallbackReason(join, "Unsupported data type in hash join output ordering")
+          return None
+        }
+        val orders = join.outputOrdering.map(exprToProto(_, join.output))
+        if (orders.exists(_.isEmpty)) {
+          withFallbackReason(join, "hash join output ordering not supported")
+          return None
+        }
+        orders.flatten
+      case _ => Nil
+    }
+
     val leftKeys = join.leftKeys.map(exprToProto(_, join.left.output))
     val rightKeys = join.rightKeys.map(exprToProto(_, join.right.output))
 
@@ -2876,6 +2893,7 @@ trait CometHashJoin {
         else OperatorOuterClass.BuildSide.BuildRight)
         .setNullAwareAntiJoin(isNullAwareAntiJoin)
         .setDynamicFilterEnabled(CometConf.COMET_EXEC_JOIN_DYNAMIC_FILTER_ENABLED.get(join.conf))
+        .addAllOutputOrdering(outputOrdering.asJava)
       condition.foreach(joinBuilder.setCondition)
       Some(builder.setHashJoin(joinBuilder).build())
     } else {

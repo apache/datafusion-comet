@@ -26,21 +26,21 @@ import org.apache.hadoop.fs.Path
 import org.apache.parquet.hadoop.ParquetFileReader
 import org.apache.parquet.hadoop.util.HadoopInputFile
 import org.apache.spark.SparkException
-import org.apache.spark.sql.{CometTestBase, DataFrame, Row}
+import org.apache.spark.sql.{Column, CometTestBase, DataFrame, Row}
 import org.apache.spark.sql.catalyst.TableIdentifier
 import org.apache.spark.sql.catalyst.analysis.UnresolvedRelation
-import org.apache.spark.sql.catalyst.expressions.{And, AttributeReference, DynamicPruningExpression, IsNotNull}
-import org.apache.spark.sql.catalyst.optimizer.{BuildLeft, BuildRight}
+import org.apache.spark.sql.catalyst.expressions.{And, Ascending, AttributeReference, BoundReference, Descending, DynamicPruningExpression, InterpretedOrdering, IsNotNull, SortDirection, SortOrder}
+import org.apache.spark.sql.catalyst.optimizer.{BuildLeft, BuildRight, BuildSide}
 import org.apache.spark.sql.catalyst.plans.Inner
 import org.apache.spark.sql.catalyst.plans.logical.Join
-import org.apache.spark.sql.comet.{CometBroadcastExchangeExec, CometBroadcastHashJoinExec, CometBroadcastNestedLoopJoinExec, CometFilterExec, CometHashJoinExec, CometNativeScanExec, CometSortExec, CometSortMergeJoinExec, CometUnionExec, CometWindowExec}
+import org.apache.spark.sql.comet.{CometBinaryExec, CometBroadcastExchangeExec, CometBroadcastHashJoinExec, CometBroadcastNestedLoopJoinExec, CometFilterExec, CometHashJoinExec, CometNativeScanExec, CometSortExec, CometSortMergeJoinExec, CometUnionExec, CometWindowExec}
 import org.apache.spark.sql.execution.{ColumnarToRowTransition, InputAdapter, LocalTableScanExec, SortExec, SparkPlan, WholeStageCodegenExec}
 import org.apache.spark.sql.execution.adaptive.{AdaptiveSparkPlanExec, AQEShuffleReadExec, QueryStageExec}
 import org.apache.spark.sql.execution.datasources.SchemaColumnConvertNotSupportedException
 import org.apache.spark.sql.execution.exchange.{ReusedExchangeExec, ShuffleExchangeLike}
 import org.apache.spark.sql.execution.joins.{ShuffledHashJoinExec, SortMergeJoinExec}
 import org.apache.spark.sql.internal.SQLConf
-import org.apache.spark.sql.types.{ArrayType, IntegerType, MetadataBuilder, StructField, StructType}
+import org.apache.spark.sql.types.{ArrayType, DataType, DoubleType, IntegerType, MetadataBuilder, StructField, StructType}
 
 import org.apache.comet.{CometConf, CometExplainInfo, ExtendedExplainInfo}
 import org.apache.comet.CometSparkSessionExtensions.{hasFallbackReason, isSpark35Plus}
@@ -1214,6 +1214,169 @@ class CometJoinSuite extends CometTestBase {
               "FROM big JOIN small ON big._1 = small._1")
           assert(collect(cometPlan) { case j: CometHashJoinExec => j }.nonEmpty, cometPlan)
           assert(collect(cometPlan) { case w: CometWindowExec => w }.nonEmpty, cometPlan)
+        }
+      }
+    }
+  }
+
+  // A hash join reports its streamed side's ordering, so Spark drops a sort above it when the
+  // streamed side already arrives partitioned and sorted. Here that side is a cached table that
+  // reaches the native join through Comet's JVM to native conversion.
+  private def withSortedCache(data: DataFrame, order: Column*)(f: DataFrame => Unit): Unit = {
+    withSQLConf(
+      CometConf.COMET_CONVERT_FROM_IN_MEMORY_CACHE_ENABLED.key -> "true",
+      SQLConf.ADAPTIVE_EXECUTION_ENABLED.key -> "false",
+      SQLConf.AUTO_BROADCASTJOIN_THRESHOLD.key -> "-1",
+      SQLConf.SHUFFLE_PARTITIONS.key -> "2") {
+      val cached = data.repartition(2, data("_1")).sortWithinPartitions(order: _*).cache()
+      try {
+        cached.count()
+        f(cached)
+      } finally {
+        cached.unpersist()
+      }
+    }
+  }
+
+  /**
+   * Checks the query's rows against Spark and that every partition is sorted by `order`, which is
+   * bound to the query's output. Returns the plan's single native hash join and its build side.
+   */
+  private def checkJoinKeepsOrder(
+      query: => DataFrame,
+      order: SortOrder): (CometBinaryExec, BuildSide) = {
+    // withSQLConf returns Unit on Spark 3.x, so the expected rows are assigned inside it.
+    var expected = Seq.empty[String]
+    withSQLConf(CometConf.COMET_ENABLED.key -> "false") {
+      expected = query.collect().map(_.toString).sorted.toSeq
+    }
+    val df = query
+    val rows = df.collect()
+    assert(rows.map(_.toString).sorted.toSeq == expected)
+    val plan = df.queryExecution.executedPlan
+    val joins = collect(plan) {
+      case j: CometHashJoinExec => (j, j.buildSide)
+      case j: CometBroadcastHashJoinExec => (j, j.buildSide)
+    }
+    assert(joins.length == 1, plan)
+    // Read before the plan runs again below, so the count covers the one run above.
+    assert(joins.head._1.metrics("output_rows").value == rows.length, plan)
+    val ordering = new InterpretedOrdering(Seq(order))
+    df.queryExecution.toRdd.map(_.copy()).glom().collect().zipWithIndex.foreach {
+      case (part, i) =>
+        val outOfOrder = part.zip(part.drop(1)).indexWhere { case (a, b) => ordering.gt(a, b) }
+        assert(outOfOrder < 0, s"partition $i is out of order at row $outOfOrder\n$plan")
+    }
+    joins.head
+  }
+
+  private def keyOrder(dataType: DataType, direction: SortDirection): SortOrder =
+    SortOrder(BoundReference(0, dataType, nullable = true), direction)
+
+  private val streamedOrderCases =
+    (for (hint <- Seq("shuffle_hash", "broadcast"); joinType <- Seq("left_outer", "right_outer"))
+      yield (hint, joinType, false, false)) ++ Seq(
+      ("shuffle_hash", "left_outer", true, false),
+      ("shuffle_hash", "right_outer", false, true))
+
+  for ((hint, joinType, withCondition, adaptive) <- streamedOrderCases) {
+    test(
+      s"$hint $joinType join keeps a cached streamed side's order, " +
+        s"condition=$withCondition, AQE=$adaptive") {
+      withParquetTable((0 until 10000).map(i => (i % 100, i)), "big") {
+        withParquetTable((0 until 10).map(i => (i * 10, i)), "small") {
+          withSortedCache(spark.table("big"), $"_1") { streamed =>
+            val build = spark.table("small").hint(hint)
+            val keys = streamed("_1") === build("_1")
+            val on = if (withCondition) keys && build("_2") > 3 else keys
+            def query: DataFrame = {
+              val joined =
+                if (joinType == "left_outer") streamed.join(build, on, joinType)
+                else build.join(streamed, on, joinType)
+              joined
+                .select(streamed("_1").as("k"), streamed("_2").as("v"), build("_2").as("w"))
+                .sortWithinPartitions("k")
+            }
+            withSQLConf(SQLConf.ADAPTIVE_EXECUTION_ENABLED.key -> adaptive.toString) {
+              val (_, buildSide) = checkJoinKeepsOrder(query, keyOrder(IntegerType, Ascending))
+              assert(buildSide == (if (joinType == "left_outer") BuildRight else BuildLeft))
+            }
+          }
+        }
+      }
+    }
+  }
+
+  test("shuffle_hash join keeps a descending, nulls last streamed order with null keys") {
+    val data = (0 until 10000).map(i => (if (i % 7 == 0) None else Some(i % 100), i))
+    withParquetTable(data, "big") {
+      withParquetTable((0 until 10).map(i => (i * 10, i)), "small") {
+        withSortedCache(spark.table("big"), $"_1".desc_nulls_last) { streamed =>
+          val build = spark.table("small").hint("shuffle_hash")
+          checkJoinKeepsOrder(
+            streamed
+              .join(build, streamed("_1") === build("_1"), "left_outer")
+              .select(streamed("_1").as("k"), streamed("_2").as("v"), build("_2").as("w"))
+              .sortWithinPartitions($"k".desc_nulls_last),
+            keyOrder(IntegerType, Descending))
+        }
+      }
+    }
+  }
+
+  test("shuffle_hash join keeps a descending streamed order on a double with NaN and -0.0") {
+    def d(i: Int): Option[Double] = i % 9 match {
+      case 0 => None
+      case 1 => Some(Double.NaN)
+      case 2 => Some(-0.0)
+      case 3 => Some(0.0)
+      case _ => Some(i % 50 - 25.5)
+    }
+    withParquetTable((0 until 10000).map(i => (i % 100, i, d(i))), "big") {
+      withParquetTable((0 until 10).map(i => (i * 10, i)), "small") {
+        withSortedCache(spark.table("big"), $"_3".desc_nulls_last) { streamed =>
+          val build = spark.table("small").hint("shuffle_hash")
+          checkJoinKeepsOrder(
+            streamed
+              .join(build, streamed("_1") === build("_1"), "left_outer")
+              .select(streamed("_3").as("d"), streamed("_2").as("v"), build("_2").as("w"))
+              .sortWithinPartitions($"d".desc_nulls_last),
+            keyOrder(DoubleType, Descending))
+        }
+      }
+    }
+  }
+
+  test("only outer hash joins that can move unmatched streamed rows send their ordering") {
+    withParquetTable((0 until 10000).map(i => (i % 100, i)), "big") {
+      withParquetTable((0 until 10).map(i => (i * 10, i)), "small") {
+        withSortedCache(spark.table("big"), $"_1") { streamed =>
+          val build = spark.table("small").hint("shuffle_hash")
+          def query(joinType: String): DataFrame = streamed
+            .join(build, streamed("_1") === build("_1"), joinType)
+            .select(streamed("_1").as("k"), streamed("_2").as("v"), build("_2").as("w"))
+            .sortWithinPartitions("k")
+          val (inner, _) = checkJoinKeepsOrder(query("inner"), keyOrder(IntegerType, Ascending))
+          assert(inner.nativeOp.getHashJoin.getOutputOrderingCount == 0)
+          val (leftOuter, buildSide) =
+            checkJoinKeepsOrder(query("left_outer"), keyOrder(IntegerType, Ascending))
+          assert(buildSide == BuildRight)
+          assert(leftOuter.nativeOp.getHashJoin.getOutputOrderingCount > 0)
+        }
+      }
+    }
+  }
+
+  test("hash join falls back when its streamed ordering has an unsupported sort type") {
+    withParquetTable((0 until 1000).map(i => (i % 100, i, (i % 13, i.toString))), "big") {
+      withParquetTable((0 until 10).map(i => (i * 10, i)), "small") {
+        withSortedCache(spark.table("big"), $"_3") { streamed =>
+          val build = spark.table("small").hint("shuffle_hash")
+          checkSparkAnswerAndFallbackReason(
+            streamed
+              .join(build, streamed("_1") === build("_1"), "left_outer")
+              .select(streamed("_3").as("s"), streamed("_2").as("v"), build("_2").as("w")),
+            "Unsupported data type in hash join output ordering")
         }
       }
     }
