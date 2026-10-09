@@ -1322,10 +1322,8 @@ class CometJoinSuite extends CometTestBase {
                   case _ => assert(join.isInstanceOf[CometHashJoinExec])
                 }
                 if (batchSize < 1000) {
-                  // Several batches per partition reach the native join and its sort, and
-                  // several come back to the JVM.
+                  // Several batches per partition come back to the JVM from the native join.
                   val partitions = 2
-                  assert(join.metrics("output_batches").value > partitions)
                   val plan = query.queryExecution.executedPlan
                   val batches = collectFirst(plan) { case c: ColumnarToRowTransition =>
                     SQLExecution.withSQLConfPropagated(spark) {
@@ -1399,9 +1397,8 @@ class CometJoinSuite extends CometTestBase {
     }
   }
 
-  // The streamed side is sorted inside the native plan, so DataFusion sees its ordering and keeps
-  // unmatched probe rows in place without an extra sort. EliminateSorts would drop that sort as
-  // one below a join.
+  // The streamed side is sorted inside the native plan, and the join's output keeps that order in
+  // every partition. EliminateSorts would drop that sort as one below a join.
   test("shuffle_hash join keeps a natively sorted streamed side's order") {
     withSQLConf(
       SQLConf.OPTIMIZER_EXCLUDED_RULES.key -> EliminateSorts.ruleName,
@@ -1436,14 +1433,24 @@ class CometJoinSuite extends CometTestBase {
             withSQLConf(SQLConf.AUTO_BROADCASTJOIN_THRESHOLD.key -> "10485760") {
               withTempView("streamed") {
                 streamed.createOrReplaceTempView("streamed")
-                val (join, _) = checkJoinKeepsOrder(
+                def query: DataFrame =
                   sql("SELECT _1 AS k, _2 AS v FROM streamed WHERE _1 NOT IN " +
-                    "(SELECT _1 FROM small)").sortWithinPartitions("k"),
-                  keyOrder(IntegerType, Ascending))
+                    "(SELECT _1 FROM small)").sortWithinPartitions("k")
+                val (join, _) = checkJoinKeepsOrder(query, keyOrder(IntegerType, Ascending))
                 join match {
                   case j: CometBroadcastHashJoinExec => assert(j.isNullAwareAntiJoin, j)
                   case j => fail(s"expected a null-aware broadcast hash join: $j")
                 }
+                // The build side spans several batches per partition. Read on a fresh plan that
+                // runs once, so the count covers that run alone.
+                val partitions = 2
+                val df = query
+                assert(df.collect().nonEmpty)
+                val plan = df.queryExecution.executedPlan
+                val buildBatches = collectFirst(plan) { case j: CometBroadcastHashJoinExec =>
+                  j.metrics("build_input_batches").value
+                }
+                assert(buildBatches.exists(_ > partitions), plan)
               }
             }
           }

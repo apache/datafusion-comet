@@ -105,7 +105,8 @@ omitted from the tables below and may be reconsidered based on demand:
 
 `ExistenceJoin` (produced when `EXISTS` / `IN` is combined with another predicate via `OR`) runs
 natively on `BroadcastHashJoinExec` and `ShuffledHashJoinExec`. Existence sort-merge joins, residual
-(non-equi) join conditions, computed (non-column) join keys, and `NOT IN` fall back to Spark.
+(non-equi) join conditions, and computed (non-column) join keys fall back to Spark. So does `NOT IN`
+combined with `OR`, which Spark plans as an existence `BroadcastNestedLoopJoinExec`.
 
 ## Exchanges
 
