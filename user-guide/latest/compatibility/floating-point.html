@@ -850,16 +850,17 @@ However, one exception is comparison. Spark does not normalize NaN and zero when
 because they are handled well in Spark (e.g., <code class="docutils literal notranslate"><span class="pre">SQLOrderingUtil.compareFloats</span></code>). But the comparison
 functions of arrow-rs used by DataFusion do not normalize NaN and zero (e.g., <a class="reference external" href="https://docs.rs/arrow/latest/arrow/compute/kernels/cmp/fn.eq.html#">arrow::compute::kernels::cmp::eq</a>).
 For <code class="docutils literal notranslate"><span class="pre">FLOAT</span></code> and <code class="docutils literal notranslate"><span class="pre">DOUBLE</span></code> comparisons (<code class="docutils literal notranslate"><span class="pre">=</span></code>, <code class="docutils literal notranslate"><span class="pre">&lt;&gt;</span></code>, <code class="docutils literal notranslate"><span class="pre">&lt;=&gt;</span></code>, <code class="docutils literal notranslate"><span class="pre">&lt;</span></code>, <code class="docutils literal notranslate"><span class="pre">&lt;=</span></code>, <code class="docutils literal notranslate"><span class="pre">&gt;</span></code> and <code class="docutils literal notranslate"><span class="pre">&gt;=</span></code>), Comet
-normalizes both operands before native execution, including noncanonical NaN literals. This
-applies wherever a comparison appears: projections, filters, aggregate arguments and <code class="docutils literal notranslate"><span class="pre">FILTER</span></code>
-clauses, join conditions, sort keys, and generator arguments.</p>
+compares the operands in Spark’s order natively, including noncanonical NaNs: <code class="docutils literal notranslate"><span class="pre">-0.0</span></code> equals
+<code class="docutils literal notranslate"><span class="pre">0.0</span></code>, all NaNs are equal, and NaN sorts above every other value. This applies wherever a
+comparison appears: projections, filters, aggregate arguments and <code class="docutils literal notranslate"><span class="pre">FILTER</span></code> clauses, join
+conditions, sort keys, and generator arguments.</p>
 <p>A native Parquet scan prunes row groups and pages with its data filters. So that this pruning
 still applies, a <code class="docutils literal notranslate"><span class="pre">FLOAT</span></code> or <code class="docutils literal notranslate"><span class="pre">DOUBLE</span></code> column compared with a constant other than NaN in a data
 filter is compared without normalizing the column, and the filter above the scan evaluates the
-comparison again with Spark’s semantics. Every other comparison in a data filter is normalized.
+comparison again with Spark’s semantics. Every other comparison in a data filter follows Spark’s semantics.
 Bloom filters store <code class="docutils literal notranslate"><span class="pre">-0.0</span></code> and <code class="docutils literal notranslate"><span class="pre">0.0</span></code> separately, so <code class="docutils literal notranslate"><span class="pre">=</span></code> against either zero checks them for both.
 With <code class="docutils literal notranslate"><span class="pre">spark.comet.parquet.rowFilterPushdown.enabled=true</span></code> the scan also drops the rows its data
-filters reject, so every comparison in a data filter is normalized, and a <code class="docutils literal notranslate"><span class="pre">FLOAT</span></code> or <code class="docutils literal notranslate"><span class="pre">DOUBLE</span></code>
+filters reject, so every comparison in a data filter follows Spark’s semantics, and a <code class="docutils literal notranslate"><span class="pre">FLOAT</span></code> or <code class="docutils literal notranslate"><span class="pre">DOUBLE</span></code>
 comparison in a data filter does not prune row groups or pages
 (<a class="reference external" href="https://github.com/apache/datafusion-comet/issues/6702">#6702</a>).</p>
 <p>Spark’s own Parquet reader keeps <code class="docutils literal notranslate"><span class="pre">-0.0</span></code> and <code class="docutils literal notranslate"><span class="pre">0.0</span></code> apart when it prunes row groups with dictionaries
@@ -879,9 +880,9 @@ or structs; see <a class="reference external" href="https://github.com/apache/da
 <p>For arrays and structs containing <code class="docutils literal notranslate"><span class="pre">FLOAT</span></code> or <code class="docutils literal notranslate"><span class="pre">DOUBLE</span></code>, native <code class="docutils literal notranslate"><span class="pre">=</span></code>, <code class="docutils literal notranslate"><span class="pre">&lt;&gt;</span></code>, <code class="docutils literal notranslate"><span class="pre">IN</span></code>, and <code class="docutils literal notranslate"><span class="pre">NOT</span> <span class="pre">IN</span></code>
 compare signed zeros as equal and all NaN representations as equal, matching Spark. This also
 covers single-candidate membership that Spark rewrites into equality. <code class="docutils literal notranslate"><span class="pre">&lt;=&gt;</span></code>, <code class="docutils literal notranslate"><span class="pre">&lt;</span></code>, <code class="docutils literal notranslate"><span class="pre">&lt;=</span></code>, <code class="docutils literal notranslate"><span class="pre">&gt;</span></code>, and
-<code class="docutils literal notranslate"><span class="pre">&gt;=</span></code> normalize the floating-point values inside both operands first, so they follow Spark’s order
-too, in which NaN sorts above every other value.</p>
-<p>Equality and dynamic membership compare nested elements directly and stop at the first mismatch.
+<code class="docutils literal notranslate"><span class="pre">&gt;=</span></code> follow Spark’s order too, in which NaN sorts above every other value.</p>
+<p>Comparisons and dynamic membership compare nested elements directly and stop at the first
+mismatch.
 Constant membership sets use normalized comparison values for static lookup. These operations
 preserve SQL null semantics and do not change the values returned by projections.</p>
 </section>

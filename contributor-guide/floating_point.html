@@ -664,27 +664,31 @@ Its module documentation is the reference. In short:</p>
 <td><p>SQL ordering</p></td>
 <td><p>Compare values in a kernel that returns the original bits, as <code class="docutils literal notranslate"><span class="pre">array_min</span></code> and <code class="docutils literal notranslate"><span class="pre">greatest</span></code> do</p></td>
 </tr>
-<tr class="row-odd"><td><p><code class="docutils literal notranslate"><span class="pre">spark_comparator</span></code>, <code class="docutils literal notranslate"><span class="pre">spark_equality</span></code></p></td>
+<tr class="row-odd"><td><p><code class="docutils literal notranslate"><span class="pre">compare_float_arrays</span></code>, <code class="docutils literal notranslate"><span class="pre">compare_float_array_scalar</span></code></p></td>
+<td><p>SQL ordering</p></td>
+<td><p>Compare a <code class="docutils literal notranslate"><span class="pre">FLOAT</span></code> or <code class="docutils literal notranslate"><span class="pre">DOUBLE</span></code> array with another or with a scalar in place, as <code class="docutils literal notranslate"><span class="pre">SparkComparison</span></code> does</p></td>
+</tr>
+<tr class="row-even"><td><p><code class="docutils literal notranslate"><span class="pre">spark_comparator</span></code>, <code class="docutils literal notranslate"><span class="pre">spark_equality</span></code></p></td>
 <td><p>SQL ordering, at any depth</p></td>
 <td><p>Compare arrays and structs in place</p></td>
 </tr>
-<tr class="row-even"><td><p><code class="docutils literal notranslate"><span class="pre">normalize_float</span></code>, <code class="docutils literal notranslate"><span class="pre">normalize_floats</span></code>, <code class="docutils literal notranslate"><span class="pre">normalize_nested_floats</span></code></p></td>
+<tr class="row-odd"><td><p><code class="docutils literal notranslate"><span class="pre">normalize_float</span></code>, <code class="docutils literal notranslate"><span class="pre">normalize_floats</span></code>, <code class="docutils literal notranslate"><span class="pre">normalize_nested_floats</span></code></p></td>
 <td><p><code class="docutils literal notranslate"><span class="pre">NormalizeNaNAndZero</span></code></p></td>
 <td><p>Normalize values before an Arrow kernel sorts, row-encodes, hashes or compares them</p></td>
 </tr>
-<tr class="row-odd"><td><p><code class="docutils literal notranslate"><span class="pre">NormalizeNaNAndZero</span></code>, <code class="docutils literal notranslate"><span class="pre">NormalizeNestedFloats</span></code></p></td>
+<tr class="row-even"><td><p><code class="docutils literal notranslate"><span class="pre">NormalizeNaNAndZero</span></code>, <code class="docutils literal notranslate"><span class="pre">NormalizeNestedFloats</span></code></p></td>
 <td><p><code class="docutils literal notranslate"><span class="pre">NormalizeNaNAndZero</span></code></p></td>
 <td><p>Wrap a key or operand expression. <code class="docutils literal notranslate"><span class="pre">wrap_if_needed</span></code> skips other types and keys that Spark already normalized</p></td>
 </tr>
-<tr class="row-even"><td><p><code class="docutils literal notranslate"><span class="pre">canonicalize_nan</span></code></p></td>
+<tr class="row-odd"><td><p><code class="docutils literal notranslate"><span class="pre">canonicalize_nan</span></code></p></td>
 <td><p><code class="docutils literal notranslate"><span class="pre">java.lang.Double.equals</span></code></p></td>
 <td><p>Key a hash set or map the way boxed Java values do</p></td>
 </tr>
-<tr class="row-odd"><td><p><code class="docutils literal notranslate"><span class="pre">compare_floats_java</span></code></p></td>
+<tr class="row-even"><td><p><code class="docutils literal notranslate"><span class="pre">compare_floats_java</span></code></p></td>
 <td><p><code class="docutils literal notranslate"><span class="pre">java.lang.Double.compare</span></code></p></td>
 <td><p>Sort the way <code class="docutils literal notranslate"><span class="pre">java.util.Arrays.sort</span></code> sorts a primitive array</p></td>
 </tr>
-<tr class="row-even"><td><p><code class="docutils literal notranslate"><span class="pre">hash_input</span></code></p></td>
+<tr class="row-odd"><td><p><code class="docutils literal notranslate"><span class="pre">hash_input</span></code></p></td>
 <td><p><code class="docutils literal notranslate"><span class="pre">Murmur3Hash</span></code> and <code class="docutils literal notranslate"><span class="pre">XxHash64</span></code></p></td>
 <td><p>Get the value to hash in place of a float</p></td>
 </tr>
@@ -705,15 +709,19 @@ window order and partition keys, and the partition keys of <code class="docutils
 sort orders them the Spark way.</p></li>
 <li><p><code class="docutils literal notranslate"><span class="pre">spark_comparison</span></code> in <code class="docutils literal notranslate"><span class="pre">native/spark-expr/src/array_funcs/nested_comparison.rs</span></code> builds every native
 <code class="docutils literal notranslate"><span class="pre">=</span></code>, <code class="docutils literal notranslate"><span class="pre">&lt;&gt;</span></code>, <code class="docutils literal notranslate"><span class="pre">&lt;=&gt;</span></code>, <code class="docutils literal notranslate"><span class="pre">&lt;</span></code>, <code class="docutils literal notranslate"><span class="pre">&lt;=</span></code>, <code class="docutils literal notranslate"><span class="pre">&gt;</span></code>, <code class="docutils literal notranslate"><span class="pre">&gt;=</span></code> and <code class="docutils literal notranslate"><span class="pre">IS</span> <span class="pre">DISTINCT</span> <span class="pre">FROM</span></code>, whichever operator evaluates it. It
-normalizes float operands, and folds a literal while the plan is built so that it stays a
-literal. Nested <code class="docutils literal notranslate"><span class="pre">=</span></code> and <code class="docutils literal notranslate"><span class="pre">&lt;&gt;</span></code> compare in place with <code class="docutils literal notranslate"><span class="pre">spark_equality</span></code>.</p></li>
-<li><p>A scan’s pushed-down data filters leave a float column compared with a literal other than NaN
-unwrapped (<code class="docutils literal notranslate"><span class="pre">FloatOperands::Raw</span></code>) so that Parquet pruning still recognizes it, but only while the
-reader prunes with them without filtering rows. A bloom filter probe hashes the literal’s bits, so
-<code class="docutils literal notranslate"><span class="pre">=</span></code> against either zero becomes <code class="docutils literal notranslate"><span class="pre">=</span> <span class="pre">-0.0</span> <span class="pre">OR</span> <span class="pre">=</span> <span class="pre">0.0</span></code>. With
-<code class="docutils literal notranslate"><span class="pre">spark.comet.parquet.rowFilterPushdown.enabled=true</span></code> they normalize both sides, because the
-reader drops the rows a filter rejects, and a raw column would reject a stored NaN that Spark
-matches (<a class="reference external" href="https://github.com/apache/datafusion-comet/issues/6702">#6702</a>). Spark’s own reader
+compares the operands as they are, without normalized copies: <code class="docutils literal notranslate"><span class="pre">FLOAT</span></code> and <code class="docutils literal notranslate"><span class="pre">DOUBLE</span></code> with
+<code class="docutils literal notranslate"><span class="pre">compare_float_arrays</span></code> and <code class="docutils literal notranslate"><span class="pre">compare_float_array_scalar</span></code>, and arrays and structs with
+<code class="docutils literal notranslate"><span class="pre">spark_comparator</span></code>, or with <code class="docutils literal notranslate"><span class="pre">spark_equality</span></code> for <code class="docutils literal notranslate"><span class="pre">=</span></code>, <code class="docutils literal notranslate"><span class="pre">&lt;&gt;</span></code>, <code class="docutils literal notranslate"><span class="pre">&lt;=&gt;</span></code> and <code class="docutils literal notranslate"><span class="pre">IS</span> <span class="pre">DISTINCT</span> <span class="pre">FROM</span></code>. It
+normalizes a literal while the plan is built so that it stays a literal. Operands of other types,
+such as dictionary-encoded floats, are normalized and compared with Arrow’s kernels.</p></li>
+<li><p>A scan’s pushed-down data filters keep a float column compared with a literal other than NaN as a
+plain <code class="docutils literal notranslate"><span class="pre">BinaryExpr</span></code> (<code class="docutils literal notranslate"><span class="pre">FloatOperands::Raw</span></code>) so that Parquet pruning still recognizes it, but only
+while the reader prunes with them without filtering rows. A bloom filter probe hashes the
+literal’s bits, so <code class="docutils literal notranslate"><span class="pre">=</span></code> against either zero becomes <code class="docutils literal notranslate"><span class="pre">=</span> <span class="pre">-0.0</span> <span class="pre">OR</span> <span class="pre">=</span> <span class="pre">0.0</span></code>. With
+<code class="docutils literal notranslate"><span class="pre">spark.comet.parquet.rowFilterPushdown.enabled=true</span></code> they compare in Spark’s ordering like every
+other comparison, because the reader drops the rows a filter rejects, and a raw column would
+reject a stored NaN that Spark matches
+(<a class="reference external" href="https://github.com/apache/datafusion-comet/issues/6702">#6702</a>). Spark’s own reader
 keeps the two zeros apart in its dictionary and bloom filters, so it can skip a row group that
 Comet reads. A test of this pruning writes out the expected rows instead of comparing them with
 Spark’s.</p></li>
