@@ -105,7 +105,7 @@ class CometDeltaNativeScanSuite extends CometDeltaTestBase {
       val path = dir.getAbsolutePath
       for (i <- 0 until 4) {
         spark
-          .range(i * 100, (i + 1) * 100)
+          .range(i * 100L, (i + 1) * 100L)
           .selectExpr("id", "id * 3 as v")
           .write
           .format("delta")
@@ -2278,7 +2278,7 @@ class CometDeltaNativeScanSuite extends CometDeltaTestBase {
                    |TBLPROPERTIES ('delta.checkpointInterval' = '3')""".stripMargin)
       for (i <- 0 until 5) {
         spark
-          .range(i * 10, (i + 1) * 10)
+          .range(i * 10L, (i + 1) * 10L)
           .selectExpr("id", "id * 2 as v")
           .write
           .format("delta")
@@ -2400,7 +2400,7 @@ class CometDeltaNativeScanSuite extends CometDeltaTestBase {
                    |  'delta.checkpointInterval' = '3')""".stripMargin)
       for (i <- 0 until 5) {
         spark
-          .range(i * 10, (i + 1) * 10)
+          .range(i * 10L, (i + 1) * 10L)
           .selectExpr("id", "id * 2 as v")
           .write
           .format("delta")
@@ -2623,12 +2623,6 @@ class CometDeltaNativeScanSuite extends CometDeltaTestBase {
       }
     }
   }
-
-  /** Fallback reason strings for every declined Delta scan node in `df`'s (executed) plan. */
-  private def deltaDeclineReasons(df: DataFrame): Seq[String] =
-    collectWithSubqueries(stripAQEPlan(df.queryExecution.executedPlan)) {
-      case f: FileSourceScanExec if DeltaScanSupport.isDeltaScan(f) => f
-    }.flatMap(f => new ExtendedExplainInfo().getFallbackReasons(f))
 
   test(
     "a non-ASCII case-insensitive column name claims the native Delta scan with correct " +

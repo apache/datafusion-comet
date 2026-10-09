@@ -1162,19 +1162,19 @@ class DeltaScanContribSuite extends CometDeltaTestBase {
   }
 
   test("s3ConfigDivergenceReason declines when a long-form bucket credential holds a Hadoop " +
-    "${...} reference that DOES resolve, with nothing else set (substitution alone does not " +
+    s"$${...} reference that DOES resolve, with nothing else set (substitution alone does not " +
     "erase the long-form divergence: native's short-then-global read never consults the long " +
     "form regardless of what it expands to), naming the base key and bucket but never a value") {
     val conf = new Configuration(false)
     conf.set("review.longFormAccess", "AKIALONGRESOLVED")
-    conf.set("fs.s3a.bucket.mybucket.fs.s3a.access.key", "${review.longFormAccess}")
+    conf.set("fs.s3a.bucket.mybucket.fs.s3a.access.key", s"$${review.longFormAccess}")
     val reason = DeltaScanSupport
       .s3ConfigDivergenceReason(conf, Seq(new URI("s3a://mybucket/part-0.parquet")))
     assert(reason.isDefined)
     assert(reason.get.contains("fs.s3a.access.key"))
     assert(reason.get.contains("mybucket"))
     assert(!reason.get.contains("AKIALONGRESOLVED"))
-    assert(!reason.get.contains("${review.longFormAccess}"))
+    assert(!reason.get.contains(s"$${review.longFormAccess}"))
   }
 
   test(
@@ -1235,7 +1235,7 @@ class DeltaScanContribSuite extends CometDeltaTestBase {
       "bucket options, still resolves the global one), naming the base key and bucket but " +
       "never a credential value") {
     val conf = new Configuration(false)
-    conf.set("fs.s3a.bucket.mybucket.access.key", "${fs.s3a.custom.ref}")
+    conf.set("fs.s3a.bucket.mybucket.access.key", s"$${fs.s3a.custom.ref}")
     conf.set("fs.s3a.bucket.mybucket.custom.ref", "bucket-scoped-value")
     conf.set("fs.s3a.custom.ref", "global-value")
 
@@ -1261,7 +1261,7 @@ class DeltaScanContribSuite extends CometDeltaTestBase {
       "bucket-scoped key whose propagated value happens to equal the global value (no actual " +
       "divergence, despite the same shadowing mechanism as the declining case above)") {
     val conf = new Configuration(false)
-    conf.set("fs.s3a.bucket.mybucket.access.key", "${fs.s3a.custom.ref}")
+    conf.set("fs.s3a.bucket.mybucket.access.key", s"$${fs.s3a.custom.ref}")
     conf.set("fs.s3a.bucket.mybucket.custom.ref", "same-value")
     conf.set("fs.s3a.custom.ref", "same-value")
     assert(
@@ -1272,9 +1272,9 @@ class DeltaScanContribSuite extends CometDeltaTestBase {
 
   test(
     "s3ConfigDivergenceReason declines, without any keystore I/O, when a bucket-scoped " +
-      "long-form credential-provider-path key (Arm A) is itself set via a ${...} reference to " +
-      "another bucket-scoped key that Hadoop's real propagate-then-resolve order shadows the " +
-      "global value with -- naming only the provider path key and bucket, never either " +
+      s"long-form credential-provider-path key (Arm A) is itself set via a $${...} reference " +
+      "to another bucket-scoped key that Hadoop's real propagate-then-resolve order shadows " +
+      "the global value with -- naming only the provider path key and bucket, never either " +
       "resolved path") {
     // Uses the LONG form (fs.s3a.bucket.B.fs.s3a.security.credential.provider.path), not the
     // short form, deliberately: propagateBucketOptions folds ANY fs.s3a.bucket.B.<rest> key into
@@ -1288,7 +1288,7 @@ class DeltaScanContribSuite extends CometDeltaTestBase {
     val conf = new Configuration(false)
     conf.set(
       "fs.s3a.bucket.mybucket.fs.s3a.security.credential.provider.path",
-      "${fs.s3a.custom.ref}")
+      s"$${fs.s3a.custom.ref}")
     conf.set(
       "fs.s3a.bucket.mybucket.custom.ref",
       "jceks://file/does-not-exist-bucket-scoped.jceks")
@@ -1395,7 +1395,7 @@ class DeltaScanContribSuite extends CometDeltaTestBase {
   }
 
   test(
-    "s3ConfigDivergenceReason declines when a per-bucket override redirects the ${...} " +
+    s"s3ConfigDivergenceReason declines when a per-bucket override redirects the $${...} " +
       "reference inside the short-form bucket endpoint while a long-form endpoint alias holds " +
       "the value native resolves (Hadoop's endpoint consumer is propagateBucketOptions plus " +
       "plain Configuration#get, which follows the redirected reference and never reads the " +
@@ -1403,7 +1403,7 @@ class DeltaScanContribSuite extends CometDeltaTestBase {
     val conf = new Configuration(false)
     conf.set("fs.s3a.custom.ref", "https://store-a.example")
     conf.set("fs.s3a.bucket.data-bucket.custom.ref", "https://store-b.example")
-    conf.set("fs.s3a.bucket.data-bucket.endpoint", "${fs.s3a.custom.ref}")
+    conf.set("fs.s3a.bucket.data-bucket.endpoint", s"$${fs.s3a.custom.ref}")
     conf.set("fs.s3a.bucket.data-bucket.fs.s3a.endpoint", "https://store-a.example")
 
     // Real Hadoop code, not a Comet stand-in: propagation overwrites the global referent with
@@ -1424,11 +1424,11 @@ class DeltaScanContribSuite extends CometDeltaTestBase {
 
   test(
     "control: s3ConfigDivergenceReason passes the same endpoint shape without the per-bucket " +
-      "referent override (the ${...} reference expands identically with and without " +
+      s"referent override (the $${...} reference expands identically with and without " +
       "bucket-option propagation, so Hadoop's plain-get endpoint read and native agree)") {
     val conf = new Configuration(false)
     conf.set("fs.s3a.custom.ref", "https://store-a.example")
-    conf.set("fs.s3a.bucket.data-bucket.endpoint", "${fs.s3a.custom.ref}")
+    conf.set("fs.s3a.bucket.data-bucket.endpoint", s"$${fs.s3a.custom.ref}")
     conf.set("fs.s3a.bucket.data-bucket.fs.s3a.endpoint", "https://store-a.example")
     assert(
       DeltaScanSupport
@@ -1746,7 +1746,7 @@ class DeltaScanContribSuite extends CometDeltaTestBase {
       "the class-support check does, so no divergence exists to decline)") {
     val conf = new Configuration(false)
     conf.set("review.provider", "org.apache.hadoop.fs.s3a.SimpleAWSCredentialsProvider")
-    conf.set("fs.s3a.aws.credentials.provider", "${review.provider}")
+    conf.set("fs.s3a.aws.credentials.provider", s"$${review.provider}")
     assert(
       DeltaScanSupport
         .providerClassGateReason(conf, Seq(new URI("s3a://mybucket/part-0.parquet")))
@@ -1762,7 +1762,7 @@ class DeltaScanContribSuite extends CometDeltaTestBase {
       "fs.s3a.aws.credentials.provider",
       "org.apache.hadoop.fs.s3a.SimpleAWSCredentialsProvider")
     conf.set("review.bucketProvider", "org.apache.hadoop.fs.s3a.SimpleAWSCredentialsProvider")
-    conf.set("fs.s3a.bucket.mybucket.aws.credentials.provider", "${review.bucketProvider}")
+    conf.set("fs.s3a.bucket.mybucket.aws.credentials.provider", s"$${review.bucketProvider}")
     assert(
       DeltaScanSupport
         .providerClassGateReason(conf, Seq(new URI("s3a://mybucket/part-0.parquet")))
@@ -1777,7 +1777,7 @@ class DeltaScanContribSuite extends CometDeltaTestBase {
       "fs.s3a.aws.credentials.provider",
       "org.apache.hadoop.fs.s3a.auth.AssumedRoleCredentialProvider")
     conf.set("review.baseProvider", "org.apache.hadoop.fs.s3a.SimpleAWSCredentialsProvider")
-    conf.set("fs.s3a.assumed.role.credentials.provider", "${review.baseProvider}")
+    conf.set("fs.s3a.assumed.role.credentials.provider", s"$${review.baseProvider}")
     assert(
       DeltaScanSupport
         .providerClassGateReason(conf, Seq(new URI("s3a://mybucket/part-0.parquet")))
@@ -1811,16 +1811,16 @@ class DeltaScanContribSuite extends CometDeltaTestBase {
       "(not routed through s3ConfigDivergenceReason, which masks this for the same keys when " +
       "checked first -- this pins the gate's OWN containment, not that coupling)") {
     val conf = new Configuration(false)
-    conf.set("fs.s3a.aws.credentials.provider", "${fs.s3a.assumed.role.credentials.provider}")
-    conf.set("fs.s3a.assumed.role.credentials.provider", "${fs.s3a.aws.credentials.provider}")
+    conf.set("fs.s3a.aws.credentials.provider", s"$${fs.s3a.assumed.role.credentials.provider}")
+    conf.set("fs.s3a.assumed.role.credentials.provider", s"$${fs.s3a.aws.credentials.provider}")
     val reason =
       DeltaScanSupport
         .providerClassGateReason(conf, Seq(new URI("s3a://mybucket/part-0.parquet")))
     assert(reason.isDefined)
     assert(reason.get.contains("fs.s3a.aws.credentials.provider"))
     assert(reason.get.contains("IllegalStateException"))
-    assert(!reason.get.contains("${fs.s3a.assumed.role.credentials.provider}"))
-    assert(!reason.get.contains("${fs.s3a.aws.credentials.provider}"))
+    assert(!reason.get.contains(s"$${fs.s3a.assumed.role.credentials.provider}"))
+    assert(!reason.get.contains(s"$${fs.s3a.aws.credentials.provider}"))
   }
 
   test(
@@ -1865,7 +1865,7 @@ class DeltaScanContribSuite extends CometDeltaTestBase {
       "extraction forwards the SAME expanded value this comparator reads, so both sides agree)") {
     val conf = new Configuration(false)
     conf.set("review.access", "AKIAEXAMPLE")
-    conf.set("fs.s3a.access.key", "${review.access}")
+    conf.set("fs.s3a.access.key", s"$${review.access}")
     assert(
       DeltaScanSupport
         .s3ConfigDivergenceReason(conf, Seq(new URI("s3a://mybucket/part-0.parquet")))
@@ -1888,7 +1888,7 @@ class DeltaScanContribSuite extends CometDeltaTestBase {
     "s3ConfigDivergenceReason passes when a credential key references an undefined variable " +
       "(Hadoop leaves the literal unresolved, so native and Hadoop see the identical value)") {
     val conf = new Configuration(false)
-    conf.set("fs.s3a.access.key", "${undefined.var}")
+    conf.set("fs.s3a.access.key", s"$${undefined.var}")
     assert(
       DeltaScanSupport
         .s3ConfigDivergenceReason(conf, Seq(new URI("s3a://mybucket/part-0.parquet")))
@@ -1901,7 +1901,7 @@ class DeltaScanContribSuite extends CometDeltaTestBase {
       "beyond the plain global key)") {
     val conf = new Configuration(false)
     conf.set("review.secret", "topSecretValue")
-    conf.set("fs.s3a.bucket.mybucket.secret.key", "${review.secret}")
+    conf.set("fs.s3a.bucket.mybucket.secret.key", s"$${review.secret}")
     assert(
       DeltaScanSupport
         .s3ConfigDivergenceReason(conf, Seq(new URI("s3a://mybucket/part-0.parquet")))
@@ -1915,7 +1915,7 @@ class DeltaScanContribSuite extends CometDeltaTestBase {
       "an undefined variable, not a MAX_SUBST failure)") {
     val conf = new Configuration(false)
     conf.set("fs.s3a.secret.key", "realSecretValue")
-    conf.set("fs.s3a.access.key", "${fs.s3a.access.key}")
+    conf.set("fs.s3a.access.key", s"$${fs.s3a.access.key}")
     val reason = DeltaScanSupport
       .s3ConfigDivergenceReason(conf, Seq(new URI("s3a://mybucket/part-0.parquet")))
     assert(
@@ -1927,10 +1927,10 @@ class DeltaScanContribSuite extends CometDeltaTestBase {
   test(
     "s3ConfigDivergenceReason declines rather than throws when two credential keys form a " +
       "mutual Hadoop variable-reference cycle (Configuration#get raises IllegalStateException " +
-      "once ${...} substitution recurses past Hadoop's MAX_SUBST bound)") {
+      s"once $${...} substitution recurses past Hadoop's MAX_SUBST bound)") {
     val conf = new Configuration(false)
-    conf.set("fs.s3a.access.key", "${fs.s3a.secret.key}")
-    conf.set("fs.s3a.secret.key", "${fs.s3a.access.key}")
+    conf.set("fs.s3a.access.key", s"$${fs.s3a.secret.key}")
+    conf.set("fs.s3a.secret.key", s"$${fs.s3a.access.key}")
     val reason = DeltaScanSupport
       .s3ConfigDivergenceReason(conf, Seq(new URI("s3a://mybucket/part-0.parquet")))
     assert(reason.isDefined)
@@ -2052,13 +2052,13 @@ class DeltaScanContribSuite extends CometDeltaTestBase {
     val conf = new Configuration(false)
     conf.set("fs.s3a.custom.ref", globalRef)
     bucketRef.foreach(conf.set("fs.s3a.bucket.data-bucket.custom.ref", _))
-    conf.set(algorithmKey, "${fs.s3a.custom.ref}")
+    conf.set(algorithmKey, s"$${fs.s3a.custom.ref}")
     conf
   }
 
   test(
     "unsupportedEncryptionAlgorithmReason declines SSE-C that a bucket override selects " +
-      "through a ${...} reference, resolving the algorithm on the propagated view as Hadoop " +
+      s"through a $${...} reference, resolving the algorithm on the propagated view as Hadoop " +
       "does, and never names the customer key") {
     val customerKey = "c3VwZXItc2VjcmV0LWN1c3RvbWVyLWtleQ=="
     for (algorithmKey <- EncryptionAlgorithmKeys) {
@@ -2075,7 +2075,7 @@ class DeltaScanContribSuite extends CometDeltaTestBase {
   }
 
   test(
-    "unsupportedEncryptionAlgorithmReason passes AES256 selected through a ${...} reference " +
+    s"unsupportedEncryptionAlgorithmReason passes AES256 selected through a $${...} reference " +
       "when no bucket override redirects it") {
     for (algorithmKey <- EncryptionAlgorithmKeys) {
       val conf = referencedAlgorithmConf(algorithmKey, "AES256", None)
@@ -2088,7 +2088,7 @@ class DeltaScanContribSuite extends CometDeltaTestBase {
 
   test(
     "unsupportedEncryptionAlgorithmReason passes SSE-KMS that a bucket override selects " +
-      "through a ${...} reference (both views resolve an allowlisted algorithm)") {
+      s"through a $${...} reference (both views resolve an allowlisted algorithm)") {
     for (algorithmKey <- EncryptionAlgorithmKeys) {
       val conf = referencedAlgorithmConf(algorithmKey, "AES256", Some("SSE-KMS"))
       assert(hadoopEncryptionAlgorithm(conf, "data-bucket") == "SSE-KMS")
@@ -2115,7 +2115,7 @@ class DeltaScanContribSuite extends CometDeltaTestBase {
     "unsupportedEncryptionAlgorithmReason never prints an algorithm value that expands to the " +
       "customer key, whether the propagated or the raw view resolves it") {
     val customerKey = "TESTKEY-NEVER-PRINT-123"
-    val keyRef = "${fs.s3a.encryption.key}"
+    val keyRef = s"$${fs.s3a.encryption.key}"
     // (global ref, bucket ref): both views, propagated view only, raw view only.
     val shapes = Seq((keyRef, None), ("AES256", Some(keyRef)), (keyRef, Some("AES256")))
     for (algorithmKey <- EncryptionAlgorithmKeys; (globalRef, bucketRef) <- shapes) {
@@ -2135,7 +2135,7 @@ class DeltaScanContribSuite extends CometDeltaTestBase {
     for (key <- providerKeys) {
       val conf = new Configuration(false)
       conf.set("fs.s3a.secret.key", secret)
-      conf.set(key, "${fs.s3a.secret.key}")
+      conf.set(key, s"$${fs.s3a.secret.key}")
       val reason = DeltaScanSupport
         .providerClassGateReason(conf, Seq(new URI("s3a://mybucket/part-0.parquet")))
       assert(reason.isDefined, s"expected a decline for $key")
@@ -2727,7 +2727,7 @@ class DeltaScanContribSuite extends CometDeltaTestBase {
       "class declares is either compared by AllS3ConfigKeys or individually documented as " +
       "exempt") {
     val constantsClassName = "org.apache.hadoop.fs.s3a.Constants"
-    val constantsClass =
+    val constantsClass: Option[Class[_]] =
       try {
         Some(Class.forName(constantsClassName))
       } catch {

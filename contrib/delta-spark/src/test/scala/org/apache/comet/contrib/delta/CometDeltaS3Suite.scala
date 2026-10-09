@@ -246,8 +246,8 @@ class CometDeltaS3Suite extends CometDeltaTestBase with CometS3TestBase with Log
   }
 
   test(
-    "S3 credentials configured via a Hadoop ${...} variable reference (fs.s3a.access.key = " +
-      "${review.access}, fs.s3a.secret.key = ${review.secret}) claim natively and read " +
+    s"S3 credentials configured via a Hadoop $${...} variable reference (fs.s3a.access.key = " +
+      s"$${review.access}, fs.s3a.secret.key = $${review.secret}) claim natively and read " +
       "correct rows against a real MinIO bucket") {
     assume(dockerAvailable, "Docker is not available; skipping MinIO-backed Delta test")
 
@@ -264,8 +264,8 @@ class CometDeltaS3Suite extends CometDeltaTestBase with CometS3TestBase with Log
     val priorSecretKey = Option(hadoopConf.get("fs.s3a.secret.key"))
     hadoopConf.set("review.access", userName)
     hadoopConf.set("review.secret", password)
-    hadoopConf.set("fs.s3a.access.key", "${review.access}")
-    hadoopConf.set("fs.s3a.secret.key", "${review.secret}")
+    hadoopConf.set("fs.s3a.access.key", s"$${review.access}")
+    hadoopConf.set("fs.s3a.secret.key", s"$${review.secret}")
     try {
       val path = tablePath(reviewRefBucketName, "review-ref-table")
       spark.range(0, 200).selectExpr("id", "id * 2 as v").write.format("delta").save(path)
