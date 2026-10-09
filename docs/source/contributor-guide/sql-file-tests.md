@@ -98,6 +98,9 @@ Sets a Spark SQL config for all queries in the file.
 -- Config: spark.sql.ansi.enabled=true
 ```
 
+The first `=` separates the key from the value. Values containing `=`, such as base64
+encryption keys, are preserved. An empty value is allowed; the key must be non-empty.
+
 #### `ConfigMatrix`
 
 Runs the entire file once per combination of values. Multiple `ConfigMatrix` lines produce a
@@ -116,6 +119,47 @@ sql-file: expressions/conditional/in_set.sql [spark.sql.optimizer.inSetConversio
 
 Only add a `ConfigMatrix` directive when there is a real reason to run the test under
 multiple configurations. Do not add `ConfigMatrix` directives speculatively.
+
+Values are comma-separated and must be non-empty. As with `Config`, any `=` within a
+value is preserved. A matrix value overrides a `Config` value for the same key.
+
+#### `ExcludeRules`
+
+Adds fully qualified optimizer rule names to the exclusion list. Constant folding remains
+disabled by default.
+
+```sql
+-- ExcludeRules: org.apache.spark.sql.catalyst.optimizer.NullPropagation
+-- ExcludeRules: org.apache.spark.sql.catalyst.optimizer.ConvertToLocalRelation
+```
+
+Repeated lines are combined, and duplicate rules are removed. Rules declared through
+`Config: spark.sql.optimizer.excludedRules=...` are also retained; a matrix selects the
+value of that config before `ExcludeRules` and the default exclusion are added. Unknown
+rules and rules Spark does not permit excluding fail the fixture rather than silently
+leaving the optimizer unchanged.
+
+Exclude `NullPropagation` when the test needs a NULL argument to reach an expression.
+Disabling ConstantFolding alone does not prevent Spark from replacing `abs(NULL)` with a
+NULL literal.
+
+#### `ConstantFolding`
+
+Lets Spark fold constants for a fixture that tests folded complex literals.
+
+```sql
+-- ConstantFolding: enabled
+```
+
+`disabled` is the default. With `enabled`, an all-literal `array(...)`, `map(...)` or
+`named_struct(...)` can become a complex `Literal` before Comet sees it. This exercises
+Comet's literal handling, rather than its expression constructors. Ordinary all-literal
+function queries may instead fold away entirely; use column inputs when those functions
+must execute in Comet. Combining `enabled` with an explicit ConstantFolding exclusion
+is rejected as contradictory. Repeated `ConstantFolding` directives must agree.
+
+Malformed configuration directives fail that fixture with its file path and source line
+instead of being treated as ordinary comments. Other fixtures still run.
 
 #### `MinSparkVersion`
 
@@ -147,6 +191,34 @@ CREATE TABLE my_table(x int, y double) USING parquet
 statement
 INSERT INTO my_table VALUES (1, 2.0), (3, 4.0), (NULL, NULL)
 ```
+
+Use `SET` statements to change SQL configs between queries:
+
+```sql
+-- Starts with the fixture default, ANSI disabled.
+query
+SELECT CAST(v AS INT) FROM my_strings
+
+statement
+SET spark.sql.ansi.enabled=true
+
+query expect_error(CAST_INVALID_INPUT)
+SELECT CAST(v AS INT) FROM my_strings
+```
+
+All SQLConf changes are restored when the fixture finishes, including on failure and
+between matrix combinations. Keys changed by `SET` need not also appear in `Config`.
+`RESET` is restored too, but it removes the selected setting for the remaining queries;
+`RESET` without a key also resets the harness's ANSI and optimizer settings. A mid-file
+`SET spark.sql.optimizer.excludedRules=...` replaces the whole exclusion list, including
+the default ConstantFolding exclusion.
+
+Enabling the codegen dispatcher through `SET` still requires a non-error sentinel when
+the file contains `expect_error`, just as enabling it through `Config` does. Run that
+sentinel under the same settings as the error query.
+
+This isolation covers SQL configs, not `USE`, temporary views or functions, or SQL
+session variables. Manage those separately.
 
 ### Queries
 
@@ -345,7 +417,9 @@ planning, so Comet would never see them. However, `CometSqlFileTestSuite` automa
 disables constant folding (by excluding `ConstantFolding` from the optimizer rules), so
 all-literal queries are evaluated by Comet's native engine. This means you can use the
 default `query` mode for all-literal cases and they will be tested natively just like
-column-based queries.
+column-based queries, subject to other optimizer rewrites such as `NullPropagation` and
+Comet's own plan-time literal handling. `ConstantFolding: enabled` opts out of the default
+exclusion for fixtures that deliberately test folded literals.
 
 #### Cover edge cases
 
