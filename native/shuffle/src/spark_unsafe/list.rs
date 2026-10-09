@@ -496,7 +496,7 @@ mod test {
         let base = unsafe { (words.as_mut_ptr() as *mut u8).add(shift) };
         unsafe { std::ptr::copy_nonoverlapping(bytes.as_ptr(), base, bytes.len()) };
         let array = SparkUnsafeArray::new(base as i64);
-        let mut builder = PrimitiveBuilder::<T>::new();
+        let mut builder = PrimitiveBuilder::<T>::new().with_data_type(data_type.clone());
         append_to_builder::<true>(&data_type, &mut builder, &array).unwrap();
         builder.finish().iter().map(|v| v.map(Into::into)).collect()
     }
@@ -544,6 +544,15 @@ mod test {
                 assert_eq!(
                     round_trip::<TimestampMicrosecondType>(
                         DataType::Timestamp(TimeUnit::Microsecond, None),
+                        values,
+                        shift
+                    ),
+                    *values
+                );
+                // The builder carries the column's timezone, which `append_array` checks.
+                assert_eq!(
+                    round_trip::<TimestampMicrosecondType>(
+                        DataType::Timestamp(TimeUnit::Microsecond, Some("America/Denver".into())),
                         values,
                         shift
                     ),
