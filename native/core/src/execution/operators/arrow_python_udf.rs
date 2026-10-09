@@ -25,6 +25,9 @@ use datafusion::common::{exec_err, Result};
 use datafusion::execution::TaskContext;
 use datafusion::physical_expr::{EquivalenceProperties, PhysicalExpr};
 use datafusion::physical_plan::execution_plan::EmissionType;
+use datafusion::physical_plan::metrics::{
+    BaselineMetrics, ExecutionPlanMetricsSet, MetricBuilder, MetricsSet, Time,
+};
 use datafusion::physical_plan::stream::RecordBatchStreamAdapter;
 use datafusion::physical_plan::{
     apply_expression_roots, DisplayAs, DisplayFormatType, ExecutionPlan, ExecutionPlanProperties,
@@ -54,8 +57,10 @@ pub struct ArrowPythonUdfExec {
     specs: Vec<ArrowPythonUdfSpec>,
     max_records_per_batch: usize,
     max_bytes_per_batch: usize,
+    accept_array_like_results: bool,
     schema: SchemaRef,
     cache: Arc<PlanProperties>,
+    metrics: ExecutionPlanMetricsSet,
 }
 
 impl ArrowPythonUdfExec {
@@ -64,6 +69,7 @@ impl ArrowPythonUdfExec {
         specs: Vec<ArrowPythonUdfSpec>,
         max_records_per_batch: i32,
         max_bytes_per_batch: i64,
+        accept_array_like_results: bool,
     ) -> Result<Self> {
         if specs.is_empty() {
             return exec_err!("ArrowPythonUdfExec requires at least one UDF");
@@ -99,8 +105,10 @@ impl ArrowPythonUdfExec {
             specs,
             max_records_per_batch: max_records_per_batch.max(0) as usize,
             max_bytes_per_batch: max_bytes_per_batch.max(0) as usize,
+            accept_array_like_results,
             schema,
             cache,
+            metrics: ExecutionPlanMetricsSet::new(),
         })
     }
 
@@ -208,6 +216,7 @@ impl ArrowPythonUdfExec {
         Ok(low)
     }
 
+    #[allow(clippy::too_many_arguments)]
     fn evaluate_batch(
         specs: &[ArrowPythonUdfSpec],
         workers: &[ArrowPythonUdf],
@@ -216,6 +225,7 @@ impl ArrowPythonUdfExec {
         args: &[Vec<ArrayRef>],
         offset: usize,
         length: usize,
+        python_time: &Time,
     ) -> Result<RecordBatch> {
         let mut columns = batch.slice(offset, length).columns().to_vec();
         for ((spec, worker), function_args) in specs.iter().zip(workers).zip(args) {
@@ -223,6 +233,7 @@ impl ArrowPythonUdfExec {
                 .iter()
                 .map(|array| array.slice(offset, length))
                 .collect();
+            let _timer = python_time.timer();
             columns.push(worker.evaluate_named(&sliced_args, &spec.arg_names, length)?);
         }
         Ok(RecordBatch::try_new(schema, columns)?)
@@ -265,6 +276,10 @@ impl ExecutionPlan for ArrowPythonUdfExec {
         apply_expression_roots(self.specs.iter().flat_map(|spec| spec.args.iter()), f)
     }
 
+    fn metrics(&self) -> Option<MetricsSet> {
+        Some(self.metrics.clone_inner())
+    }
+
     fn with_new_children(
         self: Arc<Self>,
         children: Vec<Arc<dyn ExecutionPlan>>,
@@ -277,6 +292,7 @@ impl ExecutionPlan for ArrowPythonUdfExec {
             self.specs.clone(),
             self.max_records_per_batch as i32,
             self.max_bytes_per_batch as i64,
+            self.accept_array_like_results,
         )?))
     }
 
@@ -295,6 +311,7 @@ impl ExecutionPlan for ArrowPythonUdfExec {
                     spec.return_type.clone(),
                     true,
                     true,
+                    self.accept_array_like_results,
                     &spec.python_version,
                 )
             })
@@ -304,16 +321,21 @@ impl ExecutionPlan for ArrowPythonUdfExec {
         let schema = Arc::clone(&self.schema);
         let max_records_per_batch = self.max_records_per_batch;
         let max_bytes_per_batch = self.max_bytes_per_batch;
+        let baseline = BaselineMetrics::new(&self.metrics, partition);
+        let python_time = MetricBuilder::new(&self.metrics).subset_time("python_time", partition);
         let stream = input.flat_map(move |batch| {
             let workers = Arc::clone(&workers);
             let specs = Arc::clone(&specs);
             let schema = Arc::clone(&schema);
+            let baseline = baseline.clone();
+            let python_time = python_time.clone();
             let (batch, args, mut error) = match batch {
                 // Spark's Arrow writer does not invoke a scalar UDF for an empty input
                 // batch. Native scans may still emit one, so skip it before evaluating
                 // arguments or entering Python.
                 Ok(batch) if batch.num_rows() == 0 => (None, None, None),
                 Ok(batch) => {
+                    let _timer = baseline.elapsed_compute().timer();
                     match tokio::task::block_in_place(|| Self::evaluate_args(&specs, &batch)) {
                         Ok(args) => (Some(batch), Some(args), None),
                         Err(error) => (None, None, Some(error)),
@@ -337,6 +359,7 @@ impl ExecutionPlan for ArrowPythonUdfExec {
                 if offset == batch.num_rows() {
                     return None;
                 }
+                let _timer = baseline.elapsed_compute().timer();
                 let length = match Self::next_batch_length(
                     args,
                     offset,
@@ -361,9 +384,13 @@ impl ExecutionPlan for ArrowPythonUdfExec {
                         args,
                         offset,
                         length,
+                        &python_time,
                     )
                 });
                 offset += length;
+                if let Ok(batch) = &result {
+                    baseline.record_output(batch.num_rows());
+                }
                 Some(result)
             }))
         });

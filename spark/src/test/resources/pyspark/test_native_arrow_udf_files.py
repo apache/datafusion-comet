@@ -19,6 +19,7 @@
 """Verify that Spark-distributed files keep scalar Arrow UDFs on Python workers."""
 
 import os
+import zipfile
 
 import pyarrow as pa
 import pytest
@@ -54,9 +55,11 @@ def spark():
         session.stop()
 
 
-@pytest.mark.parametrize("file_kind", ["python", "data"])
+@pytest.mark.parametrize("file_kind", ["python", "data", "archive"])
 def test_spark_added_files_use_python_worker(spark, tmp_path, file_kind):
-    assert spark.sparkContext._jsc.sc().listFiles().size() == 0
+    jsc = spark.sparkContext._jsc.sc()
+    assert jsc.listFiles().size() == 0
+    assert jsc.listArchives().size() == 0
     if file_kind == "python":
         helper = tmp_path / "comet_arrow_udf_helper.py"
         helper.write_text("def offset():\n    return 7\n")
@@ -71,7 +74,7 @@ def test_spark_added_files_use_python_worker(spark, tmp_path, file_kind):
                 type=pa.int64(),
             )
 
-    else:
+    elif file_kind == "data":
         data = tmp_path / "comet_arrow_udf_offset.txt"
         data.write_text("7\n")
         spark.sparkContext.addFile(str(data))
@@ -84,7 +87,22 @@ def test_spark_added_files_use_python_worker(spark, tmp_path, file_kind):
                 [value + offset for value in values.to_pylist()], type=pa.int64()
             )
 
-    assert spark.sparkContext._jsc.sc().listFiles().size() == 1
+    else:
+        archive = tmp_path / "comet_arrow_udf_archive.zip"
+        with zipfile.ZipFile(archive, "w") as zipped:
+            zipped.writestr("offset.txt", "7\n")
+        spark.sparkContext.addArchive(str(archive))
+
+        @arrow_udf("long")
+        def add_offset(values):
+            extracted = SparkFiles.get("comet_arrow_udf_archive.zip")
+            with open(os.path.join(extracted, "offset.txt")) as source:
+                offset = int(source.read())
+            return pa.array(
+                [value + offset for value in values.to_pylist()], type=pa.int64()
+            )
+
+    assert jsc.listFiles().size() + jsc.listArchives().size() == 1
     result = spark.range(2).select(add_offset("id"))
     plan = result._jdf.queryExecution().executedPlan().toString()
     assert "ArrowEvalPython" in plan

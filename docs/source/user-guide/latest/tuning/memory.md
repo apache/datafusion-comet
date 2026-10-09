@@ -146,11 +146,11 @@ Comet native memory usage: allocated 5412.3 MiB, reserved 3890.0 MiB (16 native 
   whether or not a pool tracks it. It excludes allocations made by native libraries outside that
   allocator, including the embedded Python interpreter and PyArrow when native Arrow UDFs are
   enabled.
-- `reserved` is the part that Comet's memory pools track. It is charged against
-  `spark.memory.offHeap.size`, so the container already has room for it. A pool sometimes has to
-  track memory that Spark could not grant, such as a spilled batch read back from disk while the
-  off-heap memory is full. `reserved` leaves that memory out, since nothing charges it against
-  `spark.memory.offHeap.size`.
+- `reserved` is the part that Comet's memory pools have reserved from Spark's off-heap memory. It is
+  charged against `spark.memory.offHeap.size`, so the container already has room for it. A pool
+  sometimes has to track memory that Spark could not grant, such as a spilled batch read back from
+  disk while the off-heap memory is full. `reserved` leaves that memory out, since nothing charges it
+  against `spark.memory.offHeap.size`.
 - `JVM Arrow allocated` is the Arrow memory Comet holds on the JVM side, such as batches read from
   Comet's in-memory cache, broadcast data, and batches exchanged with native code or Python workers.
   The part imported from native was allocated by Comet's native code, so `allocated` already counts

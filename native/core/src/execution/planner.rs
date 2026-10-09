@@ -1514,6 +1514,7 @@ impl PhysicalPlanner {
                     specs,
                     udf.max_records_per_batch,
                     udf.max_bytes_per_batch,
+                    udf.accept_array_like_results,
                 )?);
                 Ok((
                     scans,

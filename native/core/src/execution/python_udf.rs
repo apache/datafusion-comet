@@ -24,9 +24,10 @@ use arrow::array::{make_array, Array, ArrayRef};
 use arrow::datatypes::DataType;
 use arrow::error::{ArrowError, Result};
 use arrow::ffi::{from_ffi, FFI_ArrowArray, FFI_ArrowSchema};
+use datafusion_comet_common::decode_string_arrays;
 use pyo3::ffi::Py_uintptr_t;
 use pyo3::prelude::*;
-use pyo3::types::{PyBytes, PyTuple};
+use pyo3::types::{PyBytes, PyList, PyTuple};
 
 fn initialize_python() -> Result<()> {
     use std::ffi::CStr;
@@ -146,14 +147,19 @@ pub struct ArrowPythonUdf {
     return_type: DataType,
     allow_cast: bool,
     safe_cast: bool,
+    accept_array_like: bool,
 }
 
 impl ArrowPythonUdf {
+    /// `accept_array_like` follows Spark 4.2, whose worker passes the result through
+    /// `pyarrow.RecordBatch.from_arrays` and therefore accepts lists and NumPy arrays.
+    /// Spark 4.1 requires the UDF to return a `pyarrow.Array`.
     pub fn from_command(
         command: &[u8],
         return_type: DataType,
         allow_cast: bool,
         safe_cast: bool,
+        accept_array_like: bool,
         python_version: &str,
     ) -> Result<Self> {
         make_python_symbols_global()?;
@@ -204,6 +210,7 @@ impl ArrowPythonUdf {
                 return_type,
                 allow_cast,
                 safe_cast,
+                accept_array_like,
             })
         })
     }
@@ -274,12 +281,25 @@ impl ArrowPythonUdf {
                     PyTuple::new(py, positional).map_err(python_error)?,
                     Some(&kwargs),
                 )
-                .map_err(python_error)?;
-            if !result.is_instance(&array_class).map_err(python_error)? {
+                .map_err(|error| python_traceback_error(py, error))?;
+            let result = if self.accept_array_like {
+                // Spark 4.2 builds its output batch with `RecordBatch.from_arrays`,
+                // which converts lists and NumPy arrays and rejects chunked arrays.
+                let arrays = PyList::new(py, [result]).map_err(python_error)?;
+                let names = PyList::new(py, ["_0"]).map_err(python_error)?;
+                pa.getattr("RecordBatch")
+                    .map_err(python_error)?
+                    .call_method1("from_arrays", (arrays, names))
+                    .map_err(|error| python_traceback_error(py, error))?
+                    .call_method1("column", (0,))
+                    .map_err(python_error)?
+            } else if result.is_instance(&array_class).map_err(python_error)? {
+                result
+            } else {
                 return Err(ArrowError::ComputeError(
                     "Arrow UDF must return a pyarrow.Array".to_string(),
                 ));
-            }
+            };
             let result_len = result.len().map_err(python_error)?;
             if result_len != num_rows {
                 return Err(ArrowError::ComputeError(format!(
@@ -327,7 +347,8 @@ impl ArrowPythonUdf {
                 )
                 .map_err(python_error)?;
             // SAFETY: PyArrow filled both C Data structs and transferred ownership
-            // of the array to `out_array`; Arrow validates the schema and buffers.
+            // of the array to `out_array`. `from_ffi` checks the schema but builds the
+            // array without validating its buffers, so string data is checked below.
             let data = unsafe { from_ffi(out_array, &out_schema) }?;
             if data.data_type() != &self.return_type {
                 return Err(ArrowError::ComputeError(format!(
@@ -336,7 +357,9 @@ impl ArrowPythonUdf {
                     self.return_type
                 )));
             }
-            Ok(make_array(data))
+            // An unsafe PyArrow cast can return a string array with invalid UTF-8.
+            // Decode it the same way as arrays imported from the JVM.
+            decode_string_arrays(&make_array(data))
         })
     }
 }
@@ -345,10 +368,27 @@ fn python_error(error: impl std::fmt::Display) -> ArrowError {
     ArrowError::ComputeError(format!("Arrow UDF Python error: {error}"))
 }
 
+/// Formats an exception raised by user code with its Python traceback, as Spark's
+/// `PythonException` message does.
+fn python_traceback_error(py: Python<'_>, error: PyErr) -> ArrowError {
+    let formatted = py.import("traceback").and_then(|traceback| {
+        traceback
+            .call_method1("format_exception", (error.value(py),))?
+            .extract::<Vec<String>>()
+    });
+    match formatted {
+        Ok(lines) => ArrowError::ComputeError(format!(
+            "Arrow UDF Python error: {}",
+            lines.concat().trim_end()
+        )),
+        Err(_) => python_error(error),
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
-    use arrow::array::{Int32Array, Int64Array};
+    use arrow::array::{Int32Array, Int64Array, StringArray};
     use std::sync::Arc;
 
     fn pickled_command(py: Python<'_>, module: &str, function: &str) -> Vec<u8> {
@@ -368,7 +408,8 @@ mod tests {
         Python::attach(|py| {
             let command = pickled_command(py, "pyarrow.compute", "negate");
             let udf =
-                ArrowPythonUdf::from_command(&command, DataType::Int64, false, true, "").unwrap();
+                ArrowPythonUdf::from_command(&command, DataType::Int64, false, true, false, "")
+                    .unwrap();
             let input: ArrayRef = Arc::new(Int64Array::from(vec![Some(1), None, Some(3)]));
             let result = udf.evaluate(&[input], 3).unwrap();
             let expected = Int64Array::from(vec![Some(-1), None, Some(-3)]);
@@ -382,7 +423,8 @@ mod tests {
         Python::attach(|py| {
             let command = pickled_command(py, "builtins", "len");
             let udf =
-                ArrowPythonUdf::from_command(&command, DataType::Int64, false, true, "").unwrap();
+                ArrowPythonUdf::from_command(&command, DataType::Int64, false, true, false, "")
+                    .unwrap();
             let input: ArrayRef = Arc::new(Int64Array::from(vec![1, 2]));
             assert!(udf.evaluate(&[Arc::clone(&input)], 1).is_err());
             assert!(udf
@@ -414,12 +456,14 @@ mod tests {
             let input: ArrayRef = Arc::new(Int64Array::from(vec![1, 2]));
             let names = vec!["x".to_string(), "y".to_string()];
             let strict =
-                ArrowPythonUdf::from_command(&command, DataType::Int32, false, true, "").unwrap();
+                ArrowPythonUdf::from_command(&command, DataType::Int32, false, true, false, "")
+                    .unwrap();
             assert!(strict
                 .evaluate_named(&[Arc::clone(&input), Arc::clone(&input)], &names, 2)
                 .is_err());
             let cast =
-                ArrowPythonUdf::from_command(&command, DataType::Int32, true, true, "").unwrap();
+                ArrowPythonUdf::from_command(&command, DataType::Int32, true, true, false, "")
+                    .unwrap();
             let result = cast
                 .evaluate_named(&[Arc::clone(&input), input], &names, 2)
                 .unwrap();
@@ -433,7 +477,8 @@ mod tests {
         Python::attach(|py| {
             let command = pickled_command(py, "pyarrow.compute", "drop_null");
             let udf =
-                ArrowPythonUdf::from_command(&command, DataType::Int64, true, true, "").unwrap();
+                ArrowPythonUdf::from_command(&command, DataType::Int64, true, true, false, "")
+                    .unwrap();
             let input: ArrayRef = Arc::new(Int64Array::from(vec![Some(1), None]));
             assert!(udf
                 .evaluate(&[input], 2)
@@ -443,9 +488,88 @@ mod tests {
         });
     }
 
+    fn cloudpickled_lambda(py: Python<'_>, source: &std::ffi::CStr) -> Vec<u8> {
+        let callable = py.eval(source, None, None).unwrap();
+        py.import("cloudpickle")
+            .unwrap()
+            .call_method1("dumps", ((callable.unbind(), py.None()),))
+            .unwrap()
+            .extract()
+            .unwrap()
+    }
+
+    #[test]
+    fn accepts_array_like_results_only_when_requested() {
+        initialize_python().unwrap();
+        Python::attach(|py| {
+            let command = cloudpickled_lambda(py, c"lambda a: a.to_pylist()");
+            let input: ArrayRef = Arc::new(Int64Array::from(vec![Some(1), None, Some(3)]));
+            let spark_41 =
+                ArrowPythonUdf::from_command(&command, DataType::Int64, true, true, false, "")
+                    .unwrap();
+            assert!(spark_41
+                .evaluate(&[Arc::clone(&input)], 3)
+                .unwrap_err()
+                .to_string()
+                .contains("pyarrow.Array"));
+            let spark_42 =
+                ArrowPythonUdf::from_command(&command, DataType::Int64, true, true, true, "")
+                    .unwrap();
+            let result = spark_42.evaluate(&[Arc::clone(&input)], 3).unwrap();
+            assert_eq!(
+                result.as_ref(),
+                &Int64Array::from(vec![Some(1), None, Some(3)])
+            );
+
+            let chunked =
+                cloudpickled_lambda(py, c"lambda a: __import__('pyarrow').chunked_array([a])");
+            let spark_42 =
+                ArrowPythonUdf::from_command(&chunked, DataType::Int64, true, true, true, "")
+                    .unwrap();
+            assert!(spark_42.evaluate(&[input], 3).is_err());
+        });
+    }
+
+    #[test]
+    fn decodes_invalid_utf8_in_string_results() {
+        initialize_python().unwrap();
+        Python::attach(|py| {
+            let command = cloudpickled_lambda(
+                py,
+                c"lambda a: __import__('pyarrow').array([b'ok', b'\\xff'], __import__('pyarrow').binary()).cast(__import__('pyarrow').string(), safe=False)",
+            );
+            let udf = ArrowPythonUdf::from_command(&command, DataType::Utf8, true, true, false, "")
+                .unwrap();
+            let input: ArrayRef = Arc::new(Int64Array::from(vec![1, 2]));
+            let result = udf.evaluate(&[input], 2).unwrap();
+            let strings = result.as_any().downcast_ref::<StringArray>().unwrap();
+            assert_eq!(strings.value(0), "ok");
+            assert!(std::str::from_utf8(strings.value(1).as_bytes()).is_ok());
+        });
+    }
+
+    #[test]
+    fn reports_python_traceback_for_udf_errors() {
+        initialize_python().unwrap();
+        Python::attach(|py| {
+            let command = cloudpickled_lambda(py, c"lambda a: 1 // 0");
+            let udf =
+                ArrowPythonUdf::from_command(&command, DataType::Int64, true, true, false, "")
+                    .unwrap();
+            let input: ArrayRef = Arc::new(Int64Array::from(vec![1]));
+            let error = udf.evaluate(&[input], 1).unwrap_err().to_string();
+            assert!(
+                error.contains("Traceback (most recent call last)"),
+                "{error}"
+            );
+            assert!(error.contains("line 1"), "{error}");
+            assert!(error.contains("ZeroDivisionError"), "{error}");
+        });
+    }
+
     #[test]
     fn rejects_mismatched_python_version() {
-        let error = ArrowPythonUdf::from_command(&[], DataType::Int64, true, true, "0.0")
+        let error = ArrowPythonUdf::from_command(&[], DataType::Int64, true, true, false, "0.0")
             .err()
             .unwrap();
         assert!(error.to_string().contains("requires Python 0.0"));

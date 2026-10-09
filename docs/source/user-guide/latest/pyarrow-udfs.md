@@ -109,7 +109,10 @@ query does not use an Arrow UDF.
 Comet passes each argument as a `pyarrow.Array` through the Arrow C Data Interface, invokes the
 pickled Python function with PyO3, and appends the result array to the input batch. It checks the
 result length and safely casts it to the declared return type, matching Spark's scalar Arrow UDF
-serializer. It splits larger input batches according to
+serializer. On Spark 4.1 the function must return a `pyarrow.Array`; on Spark 4.2 it may also
+return anything `pyarrow.RecordBatch.from_arrays` accepts, such as a list or a NumPy array. Invalid
+UTF-8 in a returned string array, which an unsafe PyArrow cast can produce, is replaced as it is for
+other strings that Comet imports. It splits larger input batches according to
 `spark.sql.execution.arrow.maxRecordsPerBatch` and
 `spark.sql.execution.arrow.maxBytesPerBatch`. A native worker is created per partition.
 
@@ -121,7 +124,11 @@ modules. Spark serializes the callable and a PySpark return type with `pyspark.c
 `pyspark` is required even when the callable itself only uses PyArrow. Build the `python-udf`
 feature against the same Python major/minor version used by PySpark workers. Install those packages
 into that Python environment and ensure the executor process can find them through the embedded
-interpreter's `sys.path` (for example, by setting `PYTHONPATH` before launching the executor).
+interpreter's `sys.path`, for example by setting `PYTHONPATH` in the executor's environment. On a
+cluster manager, `spark.executorEnv.PYTHONPATH` does this and keeps the native path enabled. In
+local mode the executor runs in the driver process, which Spark does not launch with
+`spark.executorEnv.*`, so a query stays on Spark's worker path unless the driver's own environment
+already has the same value.
 `PYSPARK_PYTHON` selects the external worker executable; it does not select or configure the
 embedded interpreter. The worker-only `pyspark.zip` path is not automatically added to it. The
 feature and config are disabled by default. Without either, `ArrowEvalPythonExec` stays on Spark's
@@ -130,12 +137,13 @@ normal path.
 The initial native path accepts scalar `@arrow_udf` calls with regular or named arguments and
 multiple independent UDFs in one `ArrowEvalPythonExec`. Chained Python UDFs, broadcast variables,
 Python includes, per-function environment overrides other than Spark's default
-`PYTHONHASHSEED=0`, and `spark.sql.execution.arrow.useLargeVarTypes=true` stay on Spark's path.
+`PYTHONHASHSEED=0` and `spark.executorEnv.*` entries, `spark.sql.pyspark.worker.logging.enabled`,
+and `spark.sql.execution.arrow.useLargeVarTypes=true` stay on Spark's path.
 UDFs that capture a PySpark accumulator also stay on Spark's worker path so their task updates
 reach the driver.
 Queries also stay on Spark's Python worker path when the Spark context has files added through
-`addPyFile` or `addFile`, because the embedded interpreter does not receive Spark's per-task file
-setup.
+`addPyFile`, `addFile`, or `addArchive`, because the embedded interpreter does not receive Spark's
+per-task file setup.
 The embedded interpreter starts with the same default hash seed as Spark's Python workers.
 Iterator Arrow UDFs,
 ordinary `udf(..., useArrow=True)`, scalar pandas UDFs, and `mapInArrow` are separate execution
@@ -153,7 +161,12 @@ lock, so multiple partitions may be slower than Spark's separate Python workers;
 that release the lock can still run concurrently. Python execution stays synchronous on JVM input
 paths and hands off other async tasks when it runs on a Tokio worker. `pyspark.TaskContext.get()`
 returns `None` inside a native UDF. A native extension crash or `os._exit` terminates the executor
-process. The embedded Python interpreter and PyArrow allocate outside Comet's memory pool. Those
+process. Killing a task does not interrupt a running Python call: Spark stops its Python worker
+`spark.python.task.killTimeout` after interrupting the task, but a native UDF runs on the task
+thread until it returns, so a cancelled job or the losing copy of a speculative task keeps its core
+and competes for the interpreter lock until then. A failing UDF reports its Python traceback in a
+Comet native error rather than in Spark's `PythonException`. The operator reports the time spent in
+Python as its `python_time` metric. The embedded Python interpreter and PyArrow allocate outside Comet's memory pool. Those
 allocations are also absent from the executor's `Comet native memory usage: allocated` figure and
 are not limited by `spark.executor.pyspark.memory`. Budget them in executor memory overhead in
 addition to the [memory log estimate](tuning/memory.md#sizing-the-overhead-from-the-memory-usage-log).

@@ -802,7 +802,7 @@ message Projection {
   repeated spark.spark_expression.Expr project_list = 1;
 }
 
-// Spark 4.1 scalar @arrow_udf evaluation. The input columns pass through, and
+// Spark 4.1+ scalar @arrow_udf evaluation. The input columns pass through, and
 // one result column is appended for each function in order.
 message ArrowPythonUdf {
   repeated ArrowPythonFunction functions = 1;
@@ -811,6 +811,9 @@ message ArrowPythonUdf {
   int32 max_records_per_batch = 2;
   // Spark also stops a batch once its Arrow input buffers reach this size.
   int64 max_bytes_per_batch = 3;
+  // Spark 4.2 accepts any result that pyarrow.RecordBatch.from_arrays accepts,
+  // such as a list or NumPy array. Spark 4.1 requires a pyarrow.Array.
+  bool accept_array_like_results = 4;
 }
 
 message ArrowPythonFunction {

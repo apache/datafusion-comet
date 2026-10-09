@@ -23,16 +23,61 @@ import java.util.{Base64, Collections}
 
 import scala.sys.process._
 
+import org.apache.hadoop.fs.Path
+import org.apache.parquet.hadoop.ParquetFileReader
+import org.apache.parquet.hadoop.util.HadoopInputFile
 import org.apache.spark.api.python.{PythonEvalType, SimplePythonFunction}
-import org.apache.spark.sql.{CometTestBase, Row}
-import org.apache.spark.sql.execution.python.UserDefinedPythonFunction
-import org.apache.spark.sql.functions.{array, expr, lit, map, struct, when}
+import org.apache.spark.sql.{CometTestBase, DataFrame, Row}
+import org.apache.spark.sql.execution.python.{ArrowEvalPythonExec, UserDefinedPythonFunction}
+import org.apache.spark.sql.functions.{array, col, expr, length, lit, map, struct, when}
 import org.apache.spark.sql.internal.SQLConf
 import org.apache.spark.sql.types.{ArrayType, BinaryType, BooleanType, ByteType, CalendarIntervalType, DataType, DateType, DecimalType, DoubleType, FloatType, IntegerType, LongType, MapType, ShortType, StringType, StructField, StructType, TimestampNTZType, TimestampType, TimeType, VariantType, YearMonthIntervalType}
 
-import org.apache.comet.{CometConf, NativeBase}
+import org.apache.comet.{CometConf, CometExplainInfo, NativeBase}
+import org.apache.comet.CometSparkSessionExtensions.isSpark42Plus
 
 class CometArrowPythonUdfSuite extends CometTestBase {
+
+  private def python: String = sys.env.getOrElse("PYSPARK_PYTHON", "python3")
+
+  private def pythonVersion: String =
+    Seq(python, "-c", "import sys; print('%d.%d' % sys.version_info[:2])").!!.trim
+
+  /** Pickles `(function, returnType)` with PySpark's cloudpickle, as PySpark does. */
+  private def pickledCommand(function: String, returnType: String): Array[Byte] = {
+    val code =
+      "import base64, pyspark.cloudpickle as cloudpickle, pyarrow as pa, " +
+        "pyarrow.compute as pc; from pyspark.sql.types import *; " +
+        s"print(base64.b64encode(cloudpickle.dumps(($function, $returnType))).decode())"
+    Base64.getDecoder.decode(Seq(python, "-c", code).!!.trim)
+  }
+
+  private def arrowUdf(
+      name: String,
+      command: Array[Byte],
+      returnType: DataType,
+      evalType: Int = PythonEvalType.SQL_SCALAR_ARROW_UDF,
+      env: java.util.Map[String, String] = Collections.emptyMap[String, String]()) = {
+    val function = SimplePythonFunction(
+      command,
+      env,
+      Collections.emptyList[String](),
+      python,
+      pythonVersion,
+      Collections.emptyList(),
+      null)
+    UserDefinedPythonFunction(name, function, returnType, evalType, udfDeterministic = true)
+  }
+
+  private def isNative(df: DataFrame): Boolean =
+    df.queryExecution.executedPlan.collect { case _: CometArrowEvalPythonExec => true }.nonEmpty
+
+  private def fallbackReasons(df: DataFrame): Set[String] =
+    df.queryExecution.executedPlan
+      .collectFirst { case op: ArrowEvalPythonExec =>
+        op.getTagValue(CometExplainInfo.FALLBACK_REASONS).getOrElse(Set.empty[String])
+      }
+      .getOrElse(Set.empty)
 
   test("scalar Arrow UDF falls back when the native feature is unavailable") {
     assume(!NativeBase.supportsPythonUdf())
@@ -208,8 +253,13 @@ class CometArrowPythonUdfSuite extends CometTestBase {
       (DateType, "DateType()", "2024-01-02"),
       (TimestampNTZType, "TimestampNTZType()", "2024-01-02 03:04:05.123456"))
 
-    withSQLConf(SQLConf.ADAPTIVE_EXECUTION_ENABLED.key -> "false") {
-      val source = spark.range(2)
+    // Three-row Arrow batches over eight rows pass every type to Python at non-zero
+    // offsets (booleans at offsets that are not byte aligned), and identity results
+    // return to the JVM as slices.
+    withSQLConf(
+      SQLConf.ADAPTIVE_EXECUTION_ENABLED.key -> "false",
+      SQLConf.ARROW_EXECUTION_MAX_RECORDS_PER_BATCH.key -> "3") {
+      val source = spark.range(0, 8, 1, 1)
       cases.foreach { case (dataType, pythonType, value) =>
         val code =
           "import base64, pyspark.cloudpickle as cloudpickle, pyarrow as pa; " +
@@ -238,7 +288,7 @@ class CometArrowPythonUdfSuite extends CometTestBase {
         val identity = arrowUdf("identity_arrow", commands.head, dataType)
         val describeType = arrowUdf("arrow_input_type", commands(1), StringType)
         val input = source.select(
-          when(source.col("id") === 1L, lit(null).cast(dataType))
+          when(source.col("id") % 3L === 1L, lit(null).cast(dataType))
             .otherwise(lit(value).cast(dataType))
             .as("value"))
         val expected =
@@ -307,6 +357,11 @@ class CometArrowPythonUdfSuite extends CometTestBase {
         val plan = source.select(arrowUdf(LongType)(source.col("id"))).queryExecution.executedPlan
         assert(plan.collect { case _: CometArrowEvalPythonExec => true }.isEmpty)
       }
+      withSQLConf(SQLConf.PYTHON_WORKER_LOGGING_ENABLED.key -> "true") {
+        val df = source.select(arrowUdf(LongType)(source.col("id")))
+        assert(!isNative(df))
+        assert(fallbackReasons(df).exists(_.contains("Python worker logging")))
+      }
 
       Seq(
         Collections.singletonMap("PYTHONHASHSEED", "123"),
@@ -327,6 +382,174 @@ class CometArrowPythonUdfSuite extends CometTestBase {
           udfDeterministic = true)
         val plan = source.select(udf(source.col("id"))).queryExecution.executedPlan
         assert(plan.collect { case _: CometArrowEvalPythonExec => true }.isEmpty)
+      }
+    }
+  }
+
+  test("native Arrow UDF falls back with a reason that fits the UDF") {
+    val command = Array.emptyByteArray
+    withSQLConf(SQLConf.ADAPTIVE_EXECUTION_ENABLED.key -> "false") {
+      val source = spark.range(1)
+      val pandas = source.select(
+        arrowUdf("pandas", command, LongType, PythonEvalType.SQL_SCALAR_PANDAS_UDF)(
+          source.col("id")))
+      val pandasReasons = fallbackReasons(pandas)
+      assert(pandasReasons.exists(_.contains("Only scalar @arrow_udf")), pandasReasons)
+      assert(
+        !pandasReasons.exists(_.contains(CometConf.COMET_NATIVE_ARROW_PYTHON_UDF_ENABLED.key)),
+        pandasReasons)
+
+      if (NativeBase.supportsPythonUdf()) {
+        withSQLConf(CometConf.COMET_NATIVE_ARROW_PYTHON_UDF_ENABLED.key -> "false") {
+          val arrow = source.select(arrowUdf("arrow", command, LongType)(source.col("id")))
+          assert(
+            fallbackReasons(arrow).exists(
+              _.contains(CometConf.COMET_NATIVE_ARROW_PYTHON_UDF_ENABLED.key)))
+        }
+      }
+    }
+  }
+
+  test("native Arrow UDF accepts spark.executorEnv entries set on the executor") {
+    assume(NativeBase.supportsPythonUdf(), "native library was built without python-udf")
+
+    val (key, value) = sys.env.find(_._1 == "PATH").get
+    val conf = spark.sparkContext.conf
+    withSQLConf(
+      CometConf.COMET_NATIVE_ARROW_PYTHON_UDF_ENABLED.key -> "true",
+      SQLConf.ADAPTIVE_EXECUTION_ENABLED.key -> "false") {
+      val source = spark.range(1)
+      def plan(env: (String, String)) =
+        source.select(
+          arrowUdf(
+            "env",
+            Array.emptyByteArray,
+            LongType,
+            env = Collections.singletonMap(env._1, env._2))(source.col("id")))
+      try {
+        assert(!isNative(plan(key -> value)))
+        conf.set(s"spark.executorEnv.$key", value)
+        assert(isNative(plan(key -> value)))
+        // This test runs in local mode, where the executor is the driver process.
+        conf.set("spark.executorEnv.COMET_ARROW_UDF_UNSET", "value")
+        assert(!isNative(plan("COMET_ARROW_UDF_UNSET" -> "value")))
+        // The embedded interpreter cannot honor another hash seed.
+        conf.set("spark.executorEnv.PYTHONHASHSEED", "123")
+        assert(!isNative(plan("PYTHONHASHSEED" -> "123")))
+      } finally {
+        conf.remove(s"spark.executorEnv.$key")
+        conf.remove("spark.executorEnv.COMET_ARROW_UDF_UNSET")
+        conf.remove("spark.executorEnv.PYTHONHASHSEED")
+      }
+    }
+  }
+
+  test("native Arrow UDF reads a multi-row-group Parquet scan and reports metrics") {
+    assume(NativeBase.supportsPythonUdf(), "native library was built without python-udf")
+
+    val negate = arrowUdf("negate_arrow", pickledCommand("pc.negate", "LongType()"), LongType)
+    withTempPath { dir =>
+      val path = dir.getCanonicalPath
+      spark
+        .range(0, 5000, 1, 1)
+        .write
+        .option("parquet.block.size", 512)
+        .parquet(path)
+      val rowGroups = dir.listFiles().filter(_.getName.endsWith(".parquet")).map { file =>
+        val reader = ParquetFileReader.open(HadoopInputFile
+          .fromPath(new Path(file.getCanonicalPath), spark.sessionState.newHadoopConf()))
+        try reader.getRowGroups.size
+        finally reader.close()
+      }
+      assert(rowGroups.sum > 1)
+
+      withSQLConf(
+        SQLConf.ADAPTIVE_EXECUTION_ENABLED.key -> "false",
+        SQLConf.ARROW_EXECUTION_MAX_RECORDS_PER_BATCH.key -> "777") {
+        val input = spark.read.parquet(path)
+        val expected =
+          withSQLConf(CometConf.COMET_NATIVE_ARROW_PYTHON_UDF_ENABLED.key -> "false") {
+            input.select(col("id"), negate(col("id"))).collect().toSeq
+          }
+        withSQLConf(CometConf.COMET_NATIVE_ARROW_PYTHON_UDF_ENABLED.key -> "true") {
+          val df = input.select(col("id"), negate(col("id")))
+          assert(isNative(df))
+          checkAnswer(df, expected)
+          val node = df.queryExecution.executedPlan.collectFirst {
+            case op: CometArrowEvalPythonExec => op
+          }.get
+          assert(node.metrics("output_rows").value == 5000)
+          assert(node.metrics("python_time").value > 0)
+          assert(node.metrics("elapsed_compute").value >= node.metrics("python_time").value)
+        }
+      }
+    }
+  }
+
+  test("native Arrow UDF decodes invalid UTF-8 returned by an unsafe cast") {
+    assume(NativeBase.supportsPythonUdf(), "native library was built without python-udf")
+
+    val unsafeCast = arrowUdf(
+      "unsafe_utf8",
+      pickledCommand("lambda a: pc.cast(a, pa.string(), safe=False)", "StringType()"),
+      StringType)
+    withSQLConf(SQLConf.ADAPTIVE_EXECUTION_ENABLED.key -> "false") {
+      val input = spark
+        .range(0, 3, 1, 1)
+        .select(expr("CASE id WHEN 0 THEN X'6F6B' WHEN 1 THEN X'FF' ELSE X'61FF62' END").as("b"))
+      def query = {
+        val result = input.select(unsafeCast(col("b")).as("s"))
+        result.select(col("s"), length(col("s")))
+      }
+      val expected =
+        withSQLConf(CometConf.COMET_NATIVE_ARROW_PYTHON_UDF_ENABLED.key -> "false") {
+          query.collect().toSeq
+        }
+      withSQLConf(CometConf.COMET_NATIVE_ARROW_PYTHON_UDF_ENABLED.key -> "true") {
+        val df = query
+        assert(isNative(df))
+        checkAnswer(df, expected)
+      }
+    }
+  }
+
+  test("native Arrow UDF errors include the Python traceback") {
+    assume(NativeBase.supportsPythonUdf(), "native library was built without python-udf")
+
+    val failing = arrowUdf("failing", pickledCommand("lambda a: 1 // 0", "LongType()"), LongType)
+    withSQLConf(
+      CometConf.COMET_NATIVE_ARROW_PYTHON_UDF_ENABLED.key -> "true",
+      SQLConf.ADAPTIVE_EXECUTION_ENABLED.key -> "false") {
+      val df = spark.range(1).select(failing(col("id")))
+      assert(isNative(df))
+      val message = intercept[Exception](df.collect()).getMessage
+      assert(message.contains("Traceback (most recent call last)"), message)
+      assert(message.contains("ZeroDivisionError"), message)
+    }
+  }
+
+  test("native Arrow UDF accepts array-like results on Spark 4.2") {
+    assume(NativeBase.supportsPythonUdf(), "native library was built without python-udf")
+    assume(isSpark42Plus, "Spark 4.1 requires a pyarrow.Array result")
+
+    val toList =
+      arrowUdf("to_list", pickledCommand("lambda a: a.to_pylist()", "LongType()"), LongType)
+    val toNumpy = arrowUdf(
+      "to_numpy",
+      pickledCommand("lambda a: a.to_numpy(zero_copy_only=False) * 2", "LongType()"),
+      LongType)
+    withSQLConf(SQLConf.ADAPTIVE_EXECUTION_ENABLED.key -> "false") {
+      val source = spark.range(1, 5, 1, 1)
+      def query = source.select(toList(col("id")), toNumpy(col("id")))
+      val expected =
+        withSQLConf(CometConf.COMET_NATIVE_ARROW_PYTHON_UDF_ENABLED.key -> "false") {
+          query.collect().toSeq
+        }
+      assert(expected == Seq(Row(1L, 2L), Row(2L, 4L), Row(3L, 6L), Row(4L, 8L)))
+      withSQLConf(CometConf.COMET_NATIVE_ARROW_PYTHON_UDF_ENABLED.key -> "true") {
+        val df = query
+        assert(isNative(df))
+        checkAnswer(df, expected)
       }
     }
   }

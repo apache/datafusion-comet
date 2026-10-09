@@ -459,7 +459,7 @@ object CometConf extends ShimCometConf {
     conf("spark.comet.exec.nativeArrowPythonUDF.enabled")
       .category(CATEGORY_EXEC)
       .doc(
-        "Experimental: execute Spark 4.1 scalar @arrow_udf functions inside the Comet native " +
+        "Experimental: execute Spark 4.1+ scalar @arrow_udf functions inside the Comet native " +
           "pipeline via PyO3. Requires a native library built with the python-udf Cargo feature " +
           "and a compatible Python/PyArrow installation on every executor.")
       .booleanConf

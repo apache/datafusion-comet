@@ -27,6 +27,7 @@ import org.apache.spark.api.python.PythonEvalType
 import org.apache.spark.sql.SparkSession
 import org.apache.spark.sql.catalyst.expressions.{Attribute, AttributeSet, Expression, NamedArgumentExpression, NamedExpression, PythonUDF}
 import org.apache.spark.sql.execution.{PartitioningPreservingUnaryExecNode, SparkPlan}
+import org.apache.spark.sql.execution.metric.{SQLMetric, SQLMetrics}
 import org.apache.spark.sql.execution.python.ArrowEvalPythonExec
 import org.apache.spark.sql.types.{BinaryType, BooleanType, ByteType, DataType, DateType, DecimalType, DoubleType, FloatType, IntegerType, LongType, ShortType, StringType, TimestampNTZType}
 
@@ -34,19 +35,33 @@ import com.google.common.base.Objects
 import com.google.protobuf.ByteString
 
 import org.apache.comet.{CometConf, ConfigEntry, NativeBase}
-import org.apache.comet.CometSparkSessionExtensions.withFallbackReason
+import org.apache.comet.CometSparkSessionExtensions.{isSpark42Plus, withFallbackReason}
 import org.apache.comet.serde.{CometOperatorSerde, Compatible, OperatorOuterClass, QueryPlanSerde, SupportLevel, Unsupported}
 import org.apache.comet.serde.OperatorOuterClass.Operator
 
 /** Native execution for Spark 4.1+ scalar `@arrow_udf` functions. */
 object CometArrowEvalPythonExec extends CometOperatorSerde[ArrowEvalPythonExec] {
 
-  // SparkContext adds this entry even when the user has not configured a Python
-  // environment. Keep other overrides on Spark's worker path.
-  private def hasUnsupportedEnvironment(env: java.util.Map[String, String]): Boolean =
-    env != null && env.asScala.exists { case (key, value) =>
-      key != "PYTHONHASHSEED" || value != "0"
+  private val ExecutorEnvPrefix = "spark.executorEnv."
+
+  // SparkContext adds PYTHONHASHSEED=0 even when the user has not configured a Python
+  // environment, and copies every spark.executorEnv.* entry into each function's
+  // environment. Cluster managers already set those entries on the executor process
+  // that hosts the embedded interpreter. A local-mode executor runs in the driver
+  // process, which Spark does not launch with them, so there they must already be
+  // set in its environment. Keep other overrides on Spark's worker path.
+  private def hasUnsupportedEnvironment(
+      env: java.util.Map[String, String],
+      session: SparkSession): Boolean = {
+    lazy val sc = session.sparkContext
+    env != null && env.asScala.exists {
+      // The embedded interpreter always starts with hash seed 0.
+      case ("PYTHONHASHSEED", value) => value != "0"
+      case (key, value) =>
+        !sc.getConf.getOption(ExecutorEnvPrefix + key).contains(value) ||
+        (sc.isLocal && !sys.env.get(key).contains(value))
     }
+  }
 
   // PySpark's Accumulator.__reduce__ serializes a reference to
   // pyspark.accumulators._deserialize_accumulator. Spark's worker forwards its
@@ -67,15 +82,16 @@ object CometArrowEvalPythonExec extends CometOperatorSerde[ArrowEvalPythonExec] 
     case _ => false
   }
 
-  override def enabledConfig: Option[ConfigEntry[Boolean]] =
-    Some(CometConf.COMET_NATIVE_ARROW_PYTHON_UDF_ENABLED)
+  // The config is checked at the end of getSupportLevel instead, so that a fallback
+  // reason only suggests enabling it for UDFs that this build could run natively.
+  override def enabledConfig: Option[ConfigEntry[Boolean]] = None
 
   override def getSupportLevel(op: ArrowEvalPythonExec): SupportLevel = {
-    if (!NativeBase.supportsPythonUdf()) {
-      return Unsupported(Some("Native library lacks the python-udf feature"))
-    }
     if (op.evalType != PythonEvalType.SQL_SCALAR_ARROW_UDF) {
       return Unsupported(Some("Only scalar @arrow_udf is supported"))
+    }
+    if (!NativeBase.supportsPythonUdf()) {
+      return Unsupported(Some("Native library lacks the python-udf feature"))
     }
     if (op.udfs.isEmpty || op.udfs.length != op.resultAttrs.length) {
       return Unsupported(Some("Arrow UDF functions and result attributes do not match"))
@@ -86,8 +102,17 @@ object CometArrowEvalPythonExec extends CometOperatorSerde[ArrowEvalPythonExec] 
     if (op.conf.pythonUDFProfiler.nonEmpty) {
       return Unsupported(Some("Arrow UDF profiling is not supported in-process"))
     }
-    if (SparkSession.active.sparkContext.listFiles().nonEmpty) {
+    // Spark's worker forwards Python logging records to the session only when this is
+    // set; the embedded interpreter has no such forwarding.
+    if (op.conf.pythonWorkerLoggingEnabled) {
+      return Unsupported(Some("Python worker logging is not supported in-process"))
+    }
+    val session = SparkSession.active
+    if (session.sparkContext.listFiles().nonEmpty) {
       return Unsupported(Some("Spark-added files are not supported in-process"))
+    }
+    if (session.sparkContext.listArchives().nonEmpty) {
+      return Unsupported(Some("Spark-added archives are not supported in-process"))
     }
     if (op.udfs.exists(_.children.exists(expr => !hasCompatibleArrowSchema(expr.dataType))) ||
       op.resultAttrs.exists(attr => !hasCompatibleArrowSchema(attr.dataType))) {
@@ -100,12 +125,17 @@ object CometArrowEvalPythonExec extends CometOperatorSerde[ArrowEvalPythonExec] 
         "Arrow UDF Python includes are not supported in-process"
       case udf if hasSerializedAccumulator(udf.func.command) =>
         "Arrow UDF accumulators are not supported in-process"
-      case udf if hasUnsupportedEnvironment(udf.func.envVars) =>
+      case udf if hasUnsupportedEnvironment(udf.func.envVars, session) =>
         "Arrow UDF Python environment overrides are not supported in-process"
       case udf if udf.children.exists(_.find(_.isInstanceOf[PythonUDF]).nonEmpty) =>
         "Chained Arrow UDFs are not supported in-process"
     } match {
       case Some(reason) => Unsupported(Some(reason))
+      case None if !CometConf.COMET_NATIVE_ARROW_PYTHON_UDF_ENABLED.get(op.conf) =>
+        Unsupported(
+          Some(
+            "Native scalar Arrow UDF execution is disabled. Set " +
+              s"${CometConf.COMET_NATIVE_ARROW_PYTHON_UDF_ENABLED.key}=true to enable it."))
       case None => Compatible(None)
     }
   }
@@ -152,6 +182,7 @@ object CometArrowEvalPythonExec extends CometOperatorSerde[ArrowEvalPythonExec] 
         .addAllFunctions(functions.map(_.get).asJava)
         .setMaxRecordsPerBatch(op.conf.arrowMaxRecordsPerBatch)
         .setMaxBytesPerBatch(op.conf.arrowMaxBytesPerBatch)
+        .setAcceptArrayLikeResults(isSpark42Plus)
       Some(builder.setArrowPythonUdf(native).build())
     }
   }
@@ -179,6 +210,11 @@ case class CometArrowEvalPythonExec(
     with PartitioningPreservingUnaryExecNode {
 
   override def producedAttributes: AttributeSet = AttributeSet(resultAttrs)
+
+  override lazy val metrics: Map[String, SQLMetric] =
+    CometMetricNode.baselineMetrics(sparkContext) ++ Map(
+      "python_time" -> SQLMetrics
+        .createNanoTimingMetric(sparkContext, "time spent in Python UDFs"))
 
   // Never render nativeOp: it contains the pickled Python command and can also
   // contain scan credentials in its child operators.
