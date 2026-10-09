@@ -396,19 +396,29 @@ index 56e9520fdab..917932336df 100644
            spark.range(100).write.saveAsTable(s"$dbName.$table2Name")
  
 diff --git a/sql/core/src/test/scala/org/apache/spark/sql/DataFrameSetOperationsSuite.scala b/sql/core/src/test/scala/org/apache/spark/sql/DataFrameSetOperationsSuite.scala
-index 747f43fa2a7..2e52a4acb79 100644
+index 747f43fa2a7..1b76251f0bd 100644
 --- a/sql/core/src/test/scala/org/apache/spark/sql/DataFrameSetOperationsSuite.scala
 +++ b/sql/core/src/test/scala/org/apache/spark/sql/DataFrameSetOperationsSuite.scala
-@@ -1398,7 +1398,8 @@ class DataFrameSetOperationsSuite extends QueryTest
-       Row(Row(Seq(Seq(Row(null, "ba"))))) :: Nil)
-   }
+@@ -1417,11 +1417,14 @@ class DataFrameSetOperationsSuite extends QueryTest
  
--  test("SPARK-37371: UnionExec should support columnar if all children support columnar") {
-+  test("SPARK-37371: UnionExec should support columnar if all children support columnar",
-+    IgnoreComet("Comet replaces the cache scans and the union with its own operators")) {
-     def checkIfColumnar(
-         plan: SparkPlan,
-         targetPlan: (SparkPlan) => Boolean,
+         val union = df1.union(df2)
+         union.collect()
+-        checkIfColumnar(union.queryExecution.executedPlan,
+-          _.isInstanceOf[InMemoryTableScanExec], supported)
+-        checkIfColumnar(union.queryExecution.executedPlan,
+-          _.isInstanceOf[InMemoryTableScanExec], supported)
+-        checkIfColumnar(union.queryExecution.executedPlan, _.isInstanceOf[UnionExec], supported)
++        // Comet replaces the cache scans and the union with its own operators.
++        if (!isCometEnabled) {
++          checkIfColumnar(union.queryExecution.executedPlan,
++            _.isInstanceOf[InMemoryTableScanExec], supported)
++          checkIfColumnar(union.queryExecution.executedPlan,
++            _.isInstanceOf[InMemoryTableScanExec], supported)
++          checkIfColumnar(union.queryExecution.executedPlan, _.isInstanceOf[UnionExec], supported)
++        }
+         checkAnswer(union, Row(1) :: Row(2) :: Row(3) :: Row(4) :: Row(5) :: Row(6) :: Nil)
+ 
+         val nonColumnarUnion = df1.union(Seq(7, 8, 9).toDF("k"))
 diff --git a/sql/core/src/test/scala/org/apache/spark/sql/DataFrameSuite.scala b/sql/core/src/test/scala/org/apache/spark/sql/DataFrameSuite.scala
 index 7ee18df3756..d09f70e5d99 100644
 --- a/sql/core/src/test/scala/org/apache/spark/sql/DataFrameSuite.scala

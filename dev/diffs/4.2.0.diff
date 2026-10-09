@@ -628,7 +628,7 @@ index 9733d51a91c..395a108abc8 100644
            spark.range(100).write.saveAsTable(s"$dbName.$table2Name")
  
 diff --git a/sql/core/src/test/scala/org/apache/spark/sql/DataFrameSetOperationsSuite.scala b/sql/core/src/test/scala/org/apache/spark/sql/DataFrameSetOperationsSuite.scala
-index d838ba4c234..4661d627a55 100644
+index d838ba4c234..95ba4076c4d 100644
 --- a/sql/core/src/test/scala/org/apache/spark/sql/DataFrameSetOperationsSuite.scala
 +++ b/sql/core/src/test/scala/org/apache/spark/sql/DataFrameSetOperationsSuite.scala
 @@ -23,10 +23,11 @@ import java.util.Locale
@@ -644,17 +644,24 @@ index d838ba4c234..4661d627a55 100644
  import org.apache.spark.sql.functions._
  import org.apache.spark.sql.internal.SQLConf
  import org.apache.spark.sql.test.{ExamplePoint, ExamplePointUDT, SharedSparkSession, SQLTestData}
-@@ -1475,7 +1476,8 @@ class DataFrameSetOperationsSuite extends SharedSparkSession with AdaptiveSparkP
-       Row(Row(Seq(Seq(Row(null, "ba"))))) :: Nil)
-   }
+@@ -1496,9 +1497,13 @@ class DataFrameSetOperationsSuite extends SharedSparkSession with AdaptiveSparkP
  
--  test("SPARK-37371: UnionExec should support columnar if all children support columnar") {
-+  test("SPARK-37371: UnionExec should support columnar if all children support columnar",
-+    IgnoreComet("Comet replaces the cache scans and the union with its own operators")) {
-     def checkIfColumnar(
-         plan: SparkPlan,
-         targetPlan: (SparkPlan) => Boolean,
-@@ -1518,11 +1520,12 @@ class DataFrameSetOperationsSuite extends SharedSparkSession with AdaptiveSparkP
+         val union = df1.union(df2)
+         union.collect()
+-        checkIfColumnar(union.queryExecution.executedPlan,
+-          _.isInstanceOf[InMemoryTableScanExec], supported, 2)
+-        checkIfColumnar(union.queryExecution.executedPlan, _.isInstanceOf[UnionExec], supported, 1)
++        // Comet replaces the cache scans and the union with its own operators.
++        if (!isCometEnabled) {
++          checkIfColumnar(union.queryExecution.executedPlan,
++            _.isInstanceOf[InMemoryTableScanExec], supported, 2)
++          checkIfColumnar(union.queryExecution.executedPlan,
++            _.isInstanceOf[UnionExec], supported, 1)
++        }
+         checkAnswer(union, Row(1) :: Row(2) :: Row(3) :: Row(4) :: Row(5) :: Row(6) :: Nil)
+ 
+         val nonColumnarUnion = df1.union(Seq(7, 8, 9).toDF("k"))
+@@ -1518,11 +1523,12 @@ class DataFrameSetOperationsSuite extends SharedSparkSession with AdaptiveSparkP
        val union = df1.repartition($"a").union(df2.repartition($"a"))
        val unionExec = union.queryExecution.executedPlan.collect {
          case u: UnionExec => u
@@ -668,7 +675,7 @@ index d838ba4c234..4661d627a55 100644
        }
        assert(shuffle.size == 1)
  
-@@ -1553,11 +1556,12 @@ class DataFrameSetOperationsSuite extends SharedSparkSession with AdaptiveSparkP
+@@ -1553,11 +1559,12 @@ class DataFrameSetOperationsSuite extends SharedSparkSession with AdaptiveSparkP
          val union = df1.repartition($"a").union(df2.repartition($"d"))
          val unionExec = union.queryExecution.executedPlan.collect {
            case u: UnionExec => u
@@ -682,7 +689,7 @@ index d838ba4c234..4661d627a55 100644
          }
          assert(shuffle.size == 1)
  
-@@ -1572,10 +1576,10 @@ class DataFrameSetOperationsSuite extends SharedSparkSession with AdaptiveSparkP
+@@ -1572,10 +1579,10 @@ class DataFrameSetOperationsSuite extends SharedSparkSession with AdaptiveSparkP
          // Avoid unnecessary shuffle if union output partitioning is enabled
          val shuffledUnion = union.repartition($"a")
          val shuffleNumBefore = union.queryExecution.executedPlan.collect {
@@ -695,7 +702,7 @@ index d838ba4c234..4661d627a55 100644
          }
  
          if (enabled) {
-@@ -1604,6 +1608,7 @@ class DataFrameSetOperationsSuite extends SharedSparkSession with AdaptiveSparkP
+@@ -1604,6 +1611,7 @@ class DataFrameSetOperationsSuite extends SharedSparkSession with AdaptiveSparkP
          val union = df1.repartitionByRange($"a").union(df2.repartitionByRange($"d"))
          val unionExec = union.queryExecution.executedPlan.collect {
            case u: UnionExec => u
