@@ -19,11 +19,11 @@
 
 package org.apache.comet
 
-import java.io.{File, IOException}
+import java.io.File
 import java.net.URI
 import java.nio.charset.StandardCharsets.UTF_8
 import java.util.UUID
-import java.util.concurrent.atomic.{AtomicInteger, AtomicLong}
+import java.util.concurrent.atomic.AtomicLong
 
 import scala.jdk.CollectionConverters._
 
@@ -45,7 +45,7 @@ import org.apache.spark.sql.internal.SQLConf
 import org.apache.spark.sql.types.{ArrayType, IntegerType, StringType, StructType, TimestampType}
 
 import org.apache.comet.CometSparkSessionExtensions.{isSpark35Plus, isSpark40Plus, isSpark41Plus, isSpark42Plus}
-import org.apache.comet.cloud.s3.TestCometS3LocationScopedCredentialProvider
+import org.apache.comet.cloud.s3.MinioLocationScopedCredentialProvider
 import org.apache.comet.iceberg.{IcebergReflection, RESTCatalogHelper}
 import org.apache.comet.serde.{OperatorOuterClass, QueryPlanSerde}
 import org.apache.comet.testing.{FuzzDataGenerator, SchemaGenOptions}
@@ -5236,7 +5236,7 @@ class CometIcebergNativeSuite
     }
   }
 
-  test("DPP - empty Iceberg scan does not request unavailable S3 policy locations") {
+  test("DPP - empty Iceberg scan does not request S3 policy locations") {
     // Exercise the empty executor scan emitted when DPP preserves Spark's last partition.
     // A fresh catalog/bucket prevents a previously initialized FileIO from hiding the call.
     val identity = UUID.randomUUID().toString
@@ -5247,7 +5247,7 @@ class CometIcebergNativeSuite
       .setDataFileConcurrencyLimit(1)
       .putCatalogProperties(
         "s3.comet.credential.provider.class",
-        classOf[TestCometS3LocationScopedCredentialProvider].getName)
+        classOf[MinioLocationScopedCredentialProvider].getName)
       .addRequiredSchema(
         OperatorOuterClass.SparkStructField
           .newBuilder()
@@ -5264,37 +5264,25 @@ class CometIcebergNativeSuite
     val result = spark.sparkContext
       .parallelize(Seq(1), 1)
       .mapPartitions { _ =>
-        val provider = classOf[TestCometS3LocationScopedCredentialProvider]
-        val failureField = provider.getDeclaredField("throwOnNextLocationCall")
-        failureField.setAccessible(true)
-        val countField = provider.getDeclaredField("locationCallCount")
-        countField.setAccessible(true)
-        val calls = countField.get(null).asInstanceOf[AtomicInteger]
-        calls.set(0)
-        failureField.set(null, new IOException("empty scan policy source unavailable"))
-
+        MinioLocationScopedCredentialProvider.resetCounters()
+        val iterator = new CometExecIterator(
+          CometExec.newIterId,
+          Array.empty[Object],
+          1,
+          planBytes,
+          CometMetricNode(Map.empty),
+          1,
+          0)
         try {
-          val iterator = new CometExecIterator(
-            CometExec.newIterId,
-            Array.empty[Object],
-            1,
-            planBytes,
-            CometMetricNode(Map.empty),
-            1,
-            0)
-          try {
-            var rows = 0L
-            while (iterator.hasNext) {
-              val batch = iterator.next()
-              rows += batch.numRows()
-              batch.close()
-            }
-            Iterator.single((rows, calls.get()))
-          } finally {
-            iterator.close()
+          var rows = 0L
+          while (iterator.hasNext) {
+            val batch = iterator.next()
+            rows += batch.numRows()
+            batch.close()
           }
+          Iterator.single((rows, MinioLocationScopedCredentialProvider.locationCallCount()))
         } finally {
-          failureField.set(null, null)
+          iterator.close()
         }
       }
       .collect()
