@@ -34,24 +34,18 @@ description: >-
 runs:
   using: "composite"
   steps:
-    # The wrapper installs distributions under $MAVEN_USER_HOME, defaulting to
-    # the JVM's user.home, which comes from the passwd entry rather than $HOME.
-    # In the Linux job containers that is /root while $HOME is /github/home, so
-    # the cache action's `~` misses the installation; on a hosted runner it is
-    # /home/runner, and /root is unreadable. Listing both directories does not
-    # work either: actions/cache abandons the whole save when any listed path
-    # cannot be stat'ed, so hosted runners never saved anything. Ask the JVM
-    # for the one directory that applies and use it for both restore and save.
+    # The script-only wrapper installs distributions under $MAVEN_USER_HOME,
+    # defaulting to $HOME/.m2 (see the MAVEN_USER_HOME line in ./mvnw). Compute
+    # the directory with the same expression here, so restore and save look
+    # where the wrapper actually writes. The earlier jar-based wrapper used the
+    # JVM's user.home instead, which differs from $HOME in the Linux job
+    # containers (/root versus /github/home); the shell default has no such
+    # split, and it is also what the cache action's `~` would expand to.
     - name: Locate Maven distribution directory
       id: maven-dists
       shell: bash
       run: |
-        java_cmd=java
-        if [ -n "${JAVA_HOME:-}" ]; then
-          java_cmd="$JAVA_HOME/bin/java"
-        fi
-        user_home=$("$java_cmd" -XshowSettings:properties -version 2>&1 | sed -n 's/^ *user\.home = //p')
-        dists="${MAVEN_USER_HOME:-${user_home:-$HOME}/.m2}/wrapper/dists"
+        dists="${MAVEN_USER_HOME:-$HOME/.m2}/wrapper/dists"
         echo "Maven distributions live under $dists"
         echo "path=$dists" >> "$GITHUB_OUTPUT"
 
