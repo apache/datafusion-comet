@@ -836,9 +836,10 @@ abstract class CometColumnarShuffleSuite extends CometTestBase with AdaptiveSpar
     }
   }
 
-  // A struct containing a double is orderable by the JVM, but CometSortOrder reports Incompatible
-  // for nested floating point under strict mode. The columnar path never sends the sort order to
-  // native code, so that verdict must not gate it (#5971).
+  // The struct is orderable by the JVM, but CometSortOrder reports Incompatible for it: its
+  // fields are nullable, so canHoldNestedNull holds, and with the default null ordering the rule
+  // falls through to the strict floating-point case (#6476). The columnar path never sends the
+  // sort order to native code, so that verdict must not gate it (#5971).
   test("range partitioning on a nested floating-point key uses columnar shuffle") {
     withSQLConf(
       CometConf.COMET_EXEC_STRICT_FLOATING_POINT.key -> "true",
@@ -882,8 +883,9 @@ abstract class CometColumnarShuffleSuite extends CometTestBase with AdaptiveSpar
     withParquetTable((0 until 20).map(i => (i, (i % 4).toString)), "coll_above_tbl") {
       // The stored column is a plain string, so CometScanRule keeps the scan native and the
       // collation is applied in a Project above it. The shuffle itself would be fine -- the
-      // partition id comes from Spark's collation-aware Murmur3Hash on the JVM -- but declining
-      // the exchange is what keeps the stage, and so CometSort, off the collated key (#1947).
+      // partition id comes from Spark's collation-aware Murmur3Hash on the JVM -- but the
+      // columnar gate declines a collated hash key, and CometCollationSuite pins the reasons it
+      // emits (#1947).
       val df = sql("SELECT _1, _2 COLLATE UTF8_LCASE AS c FROM coll_above_tbl")
         .repartition(4, col("c"))
       checkShuffleAnswer(df, 0)

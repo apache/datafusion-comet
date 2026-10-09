@@ -67,8 +67,9 @@ JVM shuffle (`CometColumnarExchange`) is used instead of native shuffle (`CometE
 
 Collated strings are the exception. A hash or range key whose type is a non-`UTF8_BINARY`
 collated string is declined by both Comet paths, so the exchange stays a plain Spark
-`Exchange`. That fallback is deliberate: it also keeps the rest of the stage off Comet, which
-is currently what stops `CometSort` from ordering such a key by raw bytes.
+`Exchange`. `CometCollationSuite` treats that fallback as the primary line of defense for
+collated keys and pins the reasons it emits. The operators above the exchange decline collated
+keys independently, so this is one guard among several rather than the only one.
 
 ## Input Handling
 

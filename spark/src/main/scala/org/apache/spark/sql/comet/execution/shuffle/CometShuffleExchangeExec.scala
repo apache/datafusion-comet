@@ -820,12 +820,12 @@ object CometShuffleExchangeExec
     partitioning match {
       case HashPartitioning(expressions, _) =>
         // Not a shuffle-correctness check: the partition id here comes from Spark's own
-        // collation-aware Murmur3Hash, evaluated on the JVM. What this rejection does is keep the
-        // whole stage off Comet, and that is what keeps CometSort away from the collated key --
-        // supportedSortType only type-checks single-column sorts, so a multi-column collated sort
-        // otherwise reaches Comet and compares raw bytes (#1947). This covers hash and range
-        // partitioning only -- SinglePartition and round robin have no such check, and the sort
-        // gap itself is tracked in #6158.
+        // collation-aware Murmur3Hash, evaluated on the JVM. The rejection keeps the stage off
+        // Comet, and CometCollationSuite treats it as the primary line of defense for collated
+        // keys and pins the reasons it emits (#1947). It is not the only guard any more: since
+        // #6206 supportedSortType declines a non-default collation anywhere in a sort key, and
+        // the aggregate serdes decline one as well. It covers hash and range partitioning only;
+        // SinglePartition and round robin have no such check.
         for (dt <- expressions.map(_.dataType).distinct) {
           if (isStringCollationType(dt)) {
             reasons += s"unsupported hash partitioning data type for columnar shuffle: $dt"
@@ -837,8 +837,7 @@ object CometShuffleExchangeExec
       // we already checked that the input types are supported
       case RangePartitioning(orderings, _) =>
         // Same as the hash branch above: LazilyGeneratedOrdering already orders collated strings
-        // correctly here, and the fallback is what currently keeps CometSort off the collated
-        // key (#6158).
+        // correctly here, and the rejection is the shuffle-level guard CometCollationSuite pins.
         for (dt <- orderings.map(_.dataType).distinct) {
           if (isStringCollationType(dt)) {
             reasons += s"unsupported range partitioning data type for columnar shuffle: $dt"
