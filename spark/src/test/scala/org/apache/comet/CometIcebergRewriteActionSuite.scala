@@ -373,6 +373,7 @@ class CometIcebergRewriteActionSuite extends CometTestBase with CometIcebergTest
         case _ =>
       }
     }
+    CometListenerBusUtils.waitUntilEmpty(spark.sparkContext)
     spark.sparkContext.addSparkListener(listener)
     try {
       body

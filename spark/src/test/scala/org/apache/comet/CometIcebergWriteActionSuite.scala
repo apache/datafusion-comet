@@ -3567,6 +3567,8 @@ class CometIcebergWriteActionSuite
           override def onTaskEnd(taskEnd: SparkListenerTaskEnd): Unit =
             if (taskEnd.reason == Success) JobAbortGate.taskFinished()
         }
+        // Drain the setup writes' task-end events first, or they can count toward the gate.
+        CometListenerBusUtils.waitUntilEmpty(spark.sparkContext)
         spark.sparkContext.addSparkListener(listener)
         try {
           val run = () =>
@@ -4475,6 +4477,8 @@ class CometIcebergWriteActionSuite
       val listener = new IcebergWriteReportListener(
         new SparkConf()
           .set(CometConf.COMET_ICEBERG_WRITE_REPORT_DIR.key, reportDir.getAbsolutePath))
+      // Drain the setup writes' events first, or they can reach the listener and be reported.
+      CometListenerBusUtils.waitUntilEmpty(spark.sparkContext)
       spark.listenerManager.register(listener)
       try {
         action
