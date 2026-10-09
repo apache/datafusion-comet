@@ -266,7 +266,9 @@ reference in that doc is the only place they are documented.
 3. **Wrong return type**, it must match Spark exactly
 4. **Tests in the wrong framework**, Scala tests where a SQL file test would do
 5. **Missing `getSupportLevel`**, divergences left undeclared rather than marked `Incompatible`
-6. **Version-specific Spark behavior implemented once**, with no shim
+6. **Version-specific Spark behavior implemented once**, with no shim, or a shim whose protobuf
+   field or native parameter is named for the Spark version (`spark_420_plus`) instead of the
+   behavior (`wrap_second_millisecond_overflow`)
 7. **Name collides with a DataFusion built-in** and no explicit return type
 8. **Timestamp result mislabelled**, with the session timezone or no timezone instead of `"UTC"`.
    It only shows once the result is compared or fed to another expression.

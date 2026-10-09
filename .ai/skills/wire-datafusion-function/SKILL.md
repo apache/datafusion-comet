@@ -102,6 +102,8 @@ Helpers from `QueryPlanSerde`:
 - `optExprWithInfo(optExpr, expr, children*)` — wrap final result; propagates "why we couldn't convert" tags.
 - `withInfo(expr, "reason")` — tag a fallback when returning `None`.
 
+If the Spark behavior you are matching varies by Spark version, resolve the version in Scala and pass the native side a parameter named for the behavior, not the version (see "Name the behavior, not the Spark version" in `adding_a_new_expression.md`).
+
 `getSupportLevel` returning `Incompatible(Some("…"))` gates behind `spark.comet.expr.<name>.allowIncompatible=true`. `Unsupported(…)` always falls back.
 
 ### 4. Register the UDF (Pattern B only)
