@@ -28,10 +28,10 @@ import org.apache.spark.{SparkConf, SparkEnv, TaskContext}
 import org.apache.spark.sql.{CometTestBase, Row}
 import org.apache.spark.sql.api.java.UDF1
 import org.apache.spark.sql.catalyst.InternalRow
-import org.apache.spark.sql.catalyst.expressions.{Add, Alias, ApplyFunctionExpression, AttributeReference, AttributeSeq, BindReferences, BoundReference, Cast, CreateArray, CreateMap, CreateNamedStruct, Expression, GenericInternalRow, Hypot, Literal, MapConcat, ScalaUDF}
+import org.apache.spark.sql.catalyst.expressions.{Add, Alias, ApplyFunctionExpression, AttributeReference, AttributeSeq, BindReferences, BoundReference, Cast, CreateArray, CreateMap, CreateNamedStruct, EvalMode, Expression, GenericInternalRow, Hypot, Literal, MapConcat, MapKeys, ScalaUDF}
 import org.apache.spark.sql.catalyst.expressions.aggregate.{Final, Partial}
 import org.apache.spark.sql.catalyst.expressions.objects.{Invoke, StaticInvoke}
-import org.apache.spark.sql.catalyst.util.GenericArrayData
+import org.apache.spark.sql.catalyst.util.{ArrayBasedMapData, GenericArrayData, MapData}
 import org.apache.spark.sql.comet.{CometFilterExec, CometHashAggregateExec, CometProjectExec}
 import org.apache.spark.sql.connector.catalog.{Identifier, InMemoryCatalog}
 import org.apache.spark.sql.connector.catalog.functions.{BoundFunction, ScalarFunction, UnboundFunction}
@@ -1025,6 +1025,85 @@ class CometCodegenSuite
         checkSparkAnswerAndOperator(sql("SELECT javaLen(s) FROM t"))
       }
       assertKernelSignaturePresent(Seq(classOf[VarCharVector]), IntegerType)
+    }
+  }
+
+  test("canHandle refuses a TRY cast whose map key cast can fail") {
+    // https://github.com/apache/datafusion-comet/issues/6172
+    def refused(from: DataType, to: DataType, mode: EvalMode.Value = EvalMode.TRY): Boolean =
+      CometBatchKernelCodegen
+        .canHandle(Cast(BoundReference(0, from, nullable = true), to, None, mode))
+        .exists(_.contains("null map key"))
+    def map(k: DataType): MapType = MapType(k, IntegerType)
+
+    // Narrowing can overflow, and date to timestamp can overflow for extreme dates even though
+    // Spark counts it as an upcast.
+    assert(refused(map(LongType), map(IntegerType)))
+    assert(refused(map(DateType), map(TimestampType)))
+    assert(refused(map(StringType), map(IntegerType)))
+    // Widening numeric, integral to a wide enough decimal, and numeric to string cannot fail.
+    assert(!refused(map(IntegerType), map(LongType)))
+    assert(!refused(map(LongType), map(DecimalType(20, 0))))
+    assert(!refused(map(IntegerType), map(StringType)))
+    // The list takes a long as 20 digits, as Spark's own `DecimalType.forType` does, so
+    // decimal(19, 0) is refused even though every long fits. That is only conservative.
+    assert(refused(map(LongType), map(DecimalType(19, 0))))
+    // Only TRY turns a failing key cast into a null key.
+    assert(!refused(map(LongType), map(IntegerType), EvalMode.LEGACY))
+    assert(!refused(map(LongType), map(IntegerType), EvalMode.ANSI))
+    // Reached at any depth: inside an array, a struct field and a map value.
+    assert(refused(ArrayType(map(LongType)), ArrayType(map(IntegerType))))
+    assert(
+      refused(
+        StructType(Seq(StructField("a", IntegerType), StructField("m", map(LongType)))),
+        StructType(Seq(StructField("a", IntegerType), StructField("m", map(IntegerType))))))
+    assert(refused(MapType(IntegerType, map(LongType)), MapType(IntegerType, map(IntegerType))))
+    // Only refused when the output can carry a map. Inside the kernel it is Spark's own code.
+    val narrowing =
+      Cast(
+        BoundReference(0, map(LongType), nullable = true),
+        map(IntegerType),
+        None,
+        EvalMode.TRY)
+    assert(CometBatchKernelCodegen.canHandle(MapKeys(narrowing)).isEmpty)
+
+    // A TRY cast over a foldable map is folded into a literal that already holds the null key.
+    def nullKeyMap: MapData =
+      new ArrayBasedMapData(
+        new GenericArrayData(Array[Any](1, null)),
+        new GenericArrayData(Array[Any](10, 20)))
+    def literalRefused(lit: Literal): Boolean =
+      CometBatchKernelCodegen.canHandle(lit).exists(_.contains("null map key"))
+    assert(literalRefused(Literal(nullKeyMap, map(IntegerType))))
+    assert(
+      literalRefused(
+        Literal(new GenericArrayData(Array[Any](nullKeyMap)), ArrayType(map(IntegerType)))))
+    assert(
+      literalRefused(
+        Literal(
+          InternalRow(1, nullKeyMap),
+          StructType(Seq(StructField("a", IntegerType), StructField("m", map(IntegerType)))))))
+    assert(
+      !literalRefused(
+        Literal(
+          new ArrayBasedMapData(
+            new GenericArrayData(Array[Any](1, 2)),
+            new GenericArrayData(Array[Any](10, 20))),
+          map(IntegerType))))
+  }
+
+  test("a TRY cast over a foldable map with a failing key falls back") {
+    // https://github.com/apache/datafusion-comet/issues/6172
+    // `ConstantFolding` turns the cast into a literal that already holds the null key, so no
+    // `Cast` is left for the guard. The SQL file tests run with constant folding off.
+    withTable("t") {
+      sql("CREATE TABLE t(id int) USING parquet")
+      sql("INSERT INTO t VALUES (1), (2)")
+      checkSparkAnswerAndFallbackReason(
+        """SELECT id, map_keys(transform_values(
+          |  try_cast(map(1L, 10, 9999999999L, 20) AS map<int, int>), (k, v) -> v + id))
+          |FROM t ORDER BY id""".stripMargin,
+        "the output can carry a null map key")
     }
   }
 
