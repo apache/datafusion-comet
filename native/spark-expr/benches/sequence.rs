@@ -165,7 +165,7 @@ fn criterion_benchmark(c: &mut Criterion) {
 
     // Include the caller's expansion so scalar and array results do equivalent work.
     for rows in [1, NUM_ROWS] {
-        for elems in [1i64, 5, 365] {
+        for elems in [1i64, 2, 5, 365, 10_000] {
             let args = vec![
                 ColumnarValue::Scalar(ScalarValue::Int64(Some(0))),
                 ColumnarValue::Scalar(ScalarValue::Int64(Some(elems - 1))),
