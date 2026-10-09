@@ -50,6 +50,11 @@ case class CometCsvNativeScanExec(
 
   override val nodeName: String = "CometCsvNativeScan"
 
+  // Show only the semantic output in EXPLAIN / the SQL tab / the event log; the default would
+  // print the whole `nativeOp` protobuf, which carries every input file path. Mirrors
+  // CometNativeScanExec.
+  override def stringArgs: Iterator[Any] = Iterator(output)
+
   override def outputPartitioning: Partitioning = UnknownPartitioning(
     originalPlan.inputPartitions.length)
 

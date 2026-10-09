@@ -246,77 +246,31 @@ case class CometScanRule(session: SparkSession)
       return None
     }
     // Comet's native readers go through object_store, which only understands a fixed set of URL
-    // schemes. A custom Hadoop FileSystem (e.g. registered via spark.hadoop.fs.<scheme>.impl) would
-    // surface at execution time as `Generic URL error: Unable to recognise URL "..."`. Decline here
-    // so Spark's reader -- which goes through the Hadoop FS API and can resolve custom schemes --
-    // handles the scan. Whether object_store recognizes a scheme is answered by the native layer
-    // itself (`NativeBase.isObjectStoreSchemeSupported`) rather than a hardcoded list, so the
-    // planner can't drift from object_store's actual support.
-    //
-    // EXCEPT schemes the user routes through libhdfs via `spark.hadoop.fs.comet.libhdfs.schemes`
-    // (e.g. `hdfs`, or a test `fake`): those ARE natively readable through the libhdfs object_store
-    // bridge, so they must NOT be declined here. The claim decision is guarded in CI by
-    // CometScanSchemeFallbackSuite; end-to-end execution through libhdfs is guarded by
-    // ParquetReadFromFakeHadoopFsSuite, which is a manual suite (see its scaladoc).
-    //
-    // The default mirrors the native side: when the config is unset, `is_hdfs_scheme`
-    // (native/core/src/parquet/parquet_support.rs) treats `hdfs` as natively readable, and
-    // `create_hdfs_object_store` is in the default build (`default = ["hdfs-opendal"]`). If we
-    // defaulted to an empty set here, a plain `hdfs://` V1 scan would be declined and fall back to
-    // Spark even though native can read it -- a silent regression for HDFS users in the default
-    // configuration. So default to `Set("hdfs")` to stay in lockstep with the native default.
-    val libhdfsSchemes: Set[String] = COMET_LIBHDFS_SCHEMES.get() match {
-      case Some(s) => NativeConfig.parseSchemeSet(s)
-      case None => Set("hdfs")
-    }
-    // Opt-in S3-compliant alias schemes (e.g. `blob`) from `fs.comet.s3Compliant.schemes`. Read
-    // from the Hadoop config rather than SQLConf (unlike COMET_LIBHDFS_SCHEMES above) so
-    // `core-site.xml` is honored. The native object_store gate no longer claims aliases, so admit
-    // them here where the Hadoop config is available.
-    val s3CompliantSchemes = NativeConfig.resolveS3CompliantSchemes(hadoopConf)
-
-    // Classify each root path once; see RootPathInfo.
-    val roots = CometScanRule.classifyRootPaths(
-      r.location.rootPaths.map(_.toUri),
-      libhdfsSchemes,
-      s3CompliantSchemes)
-
-    val unsupportedFsSchemes = roots.iterator.flatMap { root =>
-      root.scheme.filter(_ =>
-        !root.isLibhdfs && !CometScanRule.isNativelyReadableScheme(root.uri, s3CompliantSchemes))
-    }.toSet
-    if (unsupportedFsSchemes.nonEmpty) {
+    // schemes; a custom Hadoop FileSystem would hard-fail at execution. The shared helper
+    // classifies the root paths (honoring libhdfs and S3-compliant aliases) and reports
+    // unsupported schemes, multi-bucket alias scans, and object_store-rejected paths. The scheme
+    // claim decision is guarded in CI by CometScanSchemeFallbackSuite; libhdfs end-to-end by
+    // ParquetReadFromFakeHadoopFsSuite.
+    val rootIssues =
+      CometScanRule.checkObjectStoreRootPaths(r.location.rootPaths.map(_.toUri), hadoopConf)
+    if (rootIssues.unsupportedSchemes.nonEmpty) {
       withFallbackReason(
         scanExec,
-        s"Unsupported filesystem schemes: ${unsupportedFsSchemes.mkString(", ")}")
+        s"Unsupported filesystem schemes: ${rootIssues.unsupportedSchemes.mkString(", ")}")
       return None
     }
-    // More than one bucket cannot be served by the single object store native planning registers
-    // per FilePartition; see aliasScanBuckets. Scoped to alias scans: plain multi-bucket `s3://`
-    // has the same flaw today and silently declining it would newly fall back scans that work by
-    // luck, so that widening is left as a separate decision. Note the sibling Iceberg guard
-    // (dataFileBuckets, below) is NOT so scoped -- it declines multi-bucket `s3a://` too.
-    val scanBuckets = CometScanRule.aliasScanBuckets(roots)
-    if (scanBuckets.size > 1) {
+    if (rootIssues.multiBucket.nonEmpty) {
       withFallbackReason(
         scanExec,
         "Native Parquet scan reads S3-compliant alias paths across multiple buckets " +
-          s"(${scanBuckets.toSeq.sorted.mkString(", ")}); Comet registers one object store " +
-          "per file partition and would read every file from the first file's bucket")
+          s"(${rootIssues.multiBucket.toSeq.sorted.mkString(", ")}); Comet registers one object " +
+          "store per file partition and would read every file from the first file's bucket")
       return None
     }
-    // A scheme object_store recognizes can still carry a path it rejects (e.g. a directory whose
-    // name contains a newline -> `%0A` in the URI), which native execution would hard-fail on.
-    // Only object_store-native schemes are probed: aliases (normalized to s3:// natively) and
-    // libhdfs schemes route elsewhere. Root paths only -- a rejected character deeper in the tree
-    // still fails at execution.
-    val rejectedPath = roots.find(root =>
-      root.scheme.isDefined && !root.isLibhdfs && !root.isAlias &&
-        !CometScanRule.objectStoreAcceptsPath(root.uri))
-    if (rejectedPath.nonEmpty) {
+    if (rootIssues.rejectedPath.nonEmpty) {
       withFallbackReason(
         scanExec,
-        s"Native Parquet scan cannot open path '${rejectedPath.get.uri}': object_store " +
+        s"Native Parquet scan cannot open path '${rootIssues.rejectedPath.get}': object_store " +
           "rejects it (e.g. an unsupported character in the path)")
       return None
     }
@@ -577,46 +531,25 @@ case class CometScanRule(session: SparkSession)
           }
         }
         // Comet's native reader opens files through object_store, which only understands a fixed
-        // set of URL schemes. A text file on a custom Hadoop scheme (viewfs://, oss://, ...) would
-        // be claimed here then hard-fail at execution, whereas Spark reads it via the Hadoop FS
-        // API. Decline such schemes (same gate as the native Parquet path); hdfs:// routes through
-        // libhdfs and is left to native.
-        val libhdfsSchemes: Set[String] = COMET_LIBHDFS_SCHEMES.get() match {
-          case Some(s) => NativeConfig.parseSchemeSet(s)
-          case None => Set("hdfs")
-        }
-        val s3CompliantSchemes = NativeConfig.resolveS3CompliantSchemes(hadoopConf)
-        val roots = CometScanRule.classifyRootPaths(
+        // set of URL schemes. A text file on a custom Hadoop scheme (viewfs://, oss://, ...), a
+        // multi-bucket S3-compliant alias scan, or a path object_store rejects would be claimed
+        // here then hard-fail at execution, whereas Spark reads it via the Hadoop FS API. Use the
+        // same shared gate as the native Parquet path; hdfs:// routes through libhdfs.
+        val rootIssues = CometScanRule.checkObjectStoreRootPaths(
           scan.fileIndex.rootPaths.map(_.toUri),
-          libhdfsSchemes,
-          s3CompliantSchemes)
-        val unsupportedFsSchemes = roots.iterator.flatMap { root =>
-          root.scheme.filter(_ =>
-            !root.isLibhdfs && !CometScanRule.isNativelyReadableScheme(
-              root.uri,
-              s3CompliantSchemes))
-        }.toSet
-        if (unsupportedFsSchemes.nonEmpty) {
+          hadoopConf)
+        if (rootIssues.unsupportedSchemes.nonEmpty) {
           fallbackReasons +=
-            s"Unsupported filesystem schemes: ${unsupportedFsSchemes.mkString(", ")}"
+            s"Unsupported filesystem schemes: ${rootIssues.unsupportedSchemes.mkString(", ")}"
         }
-        // A recognized scheme can still carry a path object_store rejects (e.g. a newline -> %0A),
-        // which native execution would hard-fail on. Root paths only.
-        val rejectedPath = roots.find(root =>
-          root.scheme.isDefined && !root.isLibhdfs && !root.isAlias &&
-            !CometScanRule.objectStoreAcceptsPath(root.uri))
-        if (rejectedPath.nonEmpty) {
-          fallbackReasons += s"Native Text scan cannot open path '${rejectedPath.get.uri}': " +
-            "object_store rejects it (e.g. an unsupported character in the path)"
-        }
-        // Native planning registers one object store per partition and strips the bucket from every
-        // key, so an S3-compliant alias scan spanning multiple buckets would read every file from
-        // the first bucket. Decline multi-bucket alias scans (same hazard the Parquet gate guards).
-        val scanBuckets = CometScanRule.aliasScanBuckets(roots)
-        if (scanBuckets.size > 1) {
+        if (rootIssues.multiBucket.nonEmpty) {
           fallbackReasons += "Native Text scan reads S3-compliant alias paths across multiple " +
-            s"buckets (${scanBuckets.toSeq.sorted.mkString(", ")}); Comet registers one object " +
-            "store per file partition and would read every file from the first file's bucket"
+            s"buckets (${rootIssues.multiBucket.toSeq.sorted.mkString(", ")}); Comet registers " +
+            "one object store per file partition and would read every file from the first bucket"
+        }
+        rootIssues.rejectedPath.foreach { uri =>
+          fallbackReasons += s"Native Text scan cannot open path '$uri': " +
+            "object_store rejects it (e.g. an unsupported character in the path)"
         }
         if (fallbackReasons.isEmpty) {
           CometBatchScanExec(
@@ -1415,6 +1348,49 @@ object CometScanRule extends Logging {
         isAlias = scheme.exists(s3CompliantSchemes.contains),
         bucket = NativeConfig.bucketForUri(uri, s3CompliantSchemes))
     }
+
+  /**
+   * The object_store scheme/bucket/path problems that make a set of root paths unreadable by
+   * Comet's native file scans (shared by the Parquet V1 gate and the Text V2 gate). Each caller
+   * formats its own fallback message from these findings.
+   *
+   *   - `unsupportedSchemes`: schemes object_store does not natively read and that are not routed
+   *     through libhdfs (a custom Hadoop FileSystem would hard-fail at execution).
+   *   - `multiBucket`: the S3-compliant alias buckets when a scan spans more than one; native
+   *     planning registers one object store per FilePartition and would read every file from the
+   *     first file's bucket. Empty when a single bucket (or no alias) is used.
+   *   - `rejectedPath`: a root whose recognized scheme carries a path object_store rejects (e.g.
+   *     a newline -> `%0A`), which native execution cannot open.
+   */
+  private[rules] case class RootPathIssues(
+      unsupportedSchemes: Set[String],
+      multiBucket: Set[String],
+      rejectedPath: Option[URI])
+
+  private[rules] def checkObjectStoreRootPaths(
+      rootUris: Seq[URI],
+      hadoopConf: Configuration): RootPathIssues = {
+    // Schemes routed through libhdfs are natively readable; default to Set("hdfs") to match the
+    // native side (see the Parquet gate's comment). S3-compliant aliases come from the Hadoop
+    // config so core-site.xml is honored.
+    val libhdfsSchemes: Set[String] = COMET_LIBHDFS_SCHEMES.get() match {
+      case Some(s) => NativeConfig.parseSchemeSet(s)
+      case None => Set("hdfs")
+    }
+    val s3CompliantSchemes = NativeConfig.resolveS3CompliantSchemes(hadoopConf)
+    val roots = classifyRootPaths(rootUris, libhdfsSchemes, s3CompliantSchemes)
+    val unsupportedSchemes = roots.iterator.flatMap { root =>
+      root.scheme.filter(_ =>
+        !root.isLibhdfs && !isNativelyReadableScheme(root.uri, s3CompliantSchemes))
+    }.toSet
+    val buckets = aliasScanBuckets(roots)
+    val rejectedPath = roots
+      .find(root =>
+        root.scheme.isDefined && !root.isLibhdfs && !root.isAlias &&
+          !objectStoreAcceptsPath(root.uri))
+      .map(_.uri)
+    RootPathIssues(unsupportedSchemes, if (buckets.size > 1) buckets else Set.empty, rejectedPath)
+  }
 
   /**
    * The distinct buckets this scan's root paths address, or empty when none of them uses an
