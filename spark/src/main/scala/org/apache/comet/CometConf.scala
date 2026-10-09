@@ -178,10 +178,12 @@ object CometConf extends ShimCometConf {
         "When enabled, the native Parquet reader evaluates pushed filters during decode " +
           "and lazily materializes projected columns for surviving rows (DataFusion's " +
           "pushdown_filters / late-materialization). Format-level pruning (row-group " +
-          "statistics, page index, bloom filters) is independent of this flag and runs " +
-          "whenever Spark's spark.sql.parquet.filterPushdown is enabled. Disabling this " +
-          "flag still lets format-level pruning work; the per-row eval falls back to " +
-          "the CometFilter operator above the scan.")
+          "statistics, page index, bloom filters) runs whenever Spark's " +
+          "spark.sql.parquet.filterPushdown is enabled, except that while this flag is " +
+          "enabled, a pushed filter that compares FLOAT or DOUBLE values does not prune, " +
+          "because the reader must evaluate it with Spark's NaN and signed-zero semantics. " +
+          "Disabling this flag still lets format-level pruning work; the per-row eval falls " +
+          "back to the CometFilter operator above the scan.")
       .booleanConf
       .createWithDefault(false)
 
@@ -268,6 +270,20 @@ object CometConf extends ShimCometConf {
         "Spark. This pays off when the operators above do enough work, such as an " +
         "aggregation over many groups, and can be slower when they are cheap, such as an " +
         "aggregation over a few groups after a selective filter.")
+      .booleanConf
+      .createWithDefault(false)
+
+  val COMET_CONVERT_FROM_SHUFFLE_INPUT_ENABLED: ConfigEntry[Boolean] =
+    conf("spark.comet.convert.shuffleInput.enabled")
+      .category(CATEGORY_EXEC)
+      .doc(
+        "When enabled, a shuffle that would use Comet's JVM columnar shuffle because its input " +
+          "comes from a Spark operator converts that input to Arrow format and uses Comet " +
+          "native shuffle instead. This applies only where native shuffle supports the " +
+          "partitioning and Comet can convert all of the input's columns, which rules out " +
+          "calendar intervals. A shuffle that hashes a decimal wider than 18 digits, or a " +
+          "string or a value computed from a string, stays on the JVM columnar shuffle, so " +
+          "that it partitions rows as Spark does.")
       .booleanConf
       .createWithDefault(false)
 
@@ -543,6 +559,22 @@ object CometConf extends ShimCometConf {
       .booleanConf
       .createWithDefault(false)
 
+  val COMET_FORCE_SHJ_MAX_BUILD_SIZE: OptionalConfigEntry[Long] =
+    conf(s"$COMET_EXEC_CONFIG_PREFIX.forceShuffledHashJoin.maxBuildSize")
+      .category(CATEGORY_EXEC)
+      .doc(s"The build side size below which `${COMET_FORCE_SHJ.key}` converts a " +
+        "SortMergeJoin to ShuffledHashJoin. The size is Spark's planning estimate of the build " +
+        "child, or under AQE the materialized shuffle size of the build side. A build side at " +
+        "or over this size, or one with no statistics, keeps the SortMergeJoin. When unset, " +
+        "Spark's own rule applies: `spark.sql.autoBroadcastJoinThreshold` times the initial " +
+        "shuffle partition count (`spark.sql.adaptive.coalescePartitions.initialPartitionNum` " +
+        "when AQE and partition coalescing are both on and it is set, else " +
+        "`spark.sql.shuffle.partitions`). When broadcasts are disabled with a non-positive " +
+        "threshold, Spark's default threshold of 10 MB is used instead. A " +
+        s"non-positive value removes the limit. $TUNING_GUIDE.")
+      .bytesConf(ByteUnit.BYTE)
+      .createOptional
+
   val COMET_EXEC_AGGREGATE_SKIP_PARTIAL_ENABLED: ConfigEntry[Boolean] =
     conf(s"$COMET_EXEC_CONFIG_PREFIX.aggregate.skipPartial.enabled")
       .category(CATEGORY_EXEC)
@@ -726,14 +758,14 @@ object CometConf extends ShimCometConf {
     conf("spark.comet.shuffle.revertRedundantColumnar.enabled")
       .withAlternative(s"$COMET_EXEC_CONFIG_PREFIX.shuffle.revertRedundantColumnar.enabled")
       .category(CATEGORY_SHUFFLE)
-      .doc(
-        "When enabled, Comet reverts a `CometShuffleExchangeExec` with `CometColumnarShuffle` " +
-          "back to Spark's `ShuffleExchangeExec` when both its parent and child are non-Comet " +
-          "hash aggregate operators. This avoids a redundant " +
-          "row -> Arrow -> shuffle -> Arrow -> row conversion when no Comet operator on either " +
-          "side can consume columnar output. Disable to keep Comet columnar shuffle even in " +
-          "that case, which preserves Comet's off-heap shuffle memory accounting at the cost of " +
-          "the extra conversion.")
+      .doc("When enabled, Comet reverts a `CometShuffleExchangeExec` with `CometColumnarShuffle` " +
+        "back to Spark's `ShuffleExchangeExec` when both its parent and child are non-Comet " +
+        "aggregate operators. The same applies to a native shuffle whose input " +
+        s"`${COMET_CONVERT_FROM_SHUFFLE_INPUT_ENABLED.key}` converted. This avoids a redundant " +
+        "row -> Arrow -> shuffle -> Arrow -> row conversion when no Comet operator on either " +
+        "side can consume columnar output. Disable to keep the Comet shuffle even in " +
+        "that case, which preserves Comet's off-heap shuffle memory accounting at the cost of " +
+        "the extra conversion.")
       .booleanConf
       .createWithDefault(true)
 
@@ -1264,6 +1296,19 @@ object CometConf extends ShimCometConf {
           "error out.")
       .bytesConf(ByteUnit.BYTE)
       .createWithDefault(100L * 1024 * 1024 * 1024) // 100 GB
+
+  // Used on native side. Check spark_config.rs how the config is used
+  val COMET_EXEC_SPILL_COMPRESSION_CODEC: ConfigEntry[String] =
+    conf(s"$COMET_EXEC_CONFIG_PREFIX.spill.compression.codec")
+      .category(CATEGORY_TUNING)
+      .doc(
+        "The codec used to compress the files that native sorts, aggregations, and joins " +
+          "spill to disk. lz4 and zstd are supported, and none disables compression. zstd " +
+          "writes smaller files than lz4 but uses more CPU. Comet's shuffle writers use " +
+          s"${COMET_SHUFFLE_COMPRESSION_CODEC.key} instead. $TUNING_GUIDE.")
+      .stringConf
+      .checkValues(Set("lz4", "zstd", "none"))
+      .createWithDefault("lz4")
 
   val COMET_RESPECT_DATAFUSION_CONFIGS: ConfigEntry[Boolean] =
     conf(s"$COMET_EXEC_CONFIG_PREFIX.respectDataFusionConfigs")
