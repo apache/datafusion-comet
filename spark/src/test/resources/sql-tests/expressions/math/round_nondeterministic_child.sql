@@ -16,6 +16,7 @@
 -- under the License.
 
 -- Config: spark.sql.ansi.enabled=false
+-- Config: spark.comet.batchSize=2
 
 -- Two identical nondeterministic dispatched subtrees in one projection must each keep their own
 -- state, as they do in Spark. round over a double goes through the codegen dispatcher, so a and b
@@ -24,6 +25,7 @@
 -- continue a's random sequence instead of restarting it.
 
 -- One partition writes one file, so all 8 rows draw from a single seeded generator per column.
+-- Batches of 2 rows make each copy carry its generator state across batches.
 statement
 CREATE TABLE test_round_rand(id bigint) USING parquet
 

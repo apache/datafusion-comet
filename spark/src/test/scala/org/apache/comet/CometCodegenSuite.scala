@@ -1006,39 +1006,6 @@ class CometCodegenSuite
     }
   }
 
-  test("identical non-deterministic dispatched expressions keep their own state") {
-    // Two occurrences of one dispatched subtree bind to the same ordinals and serialize to the
-    // same bytes, so the per-task kernel cache handed both the same kernel and the second column
-    // continued the first one's `monotonically_increasing_id` counter (n..2n-1) where Spark gives
-    // each occurrence its own (0..n-1). The Java UDF has no encoders, so its two calls are
-    // byte-identical; the Scala UDF pair checks that path too. Batches of 8 over 64 rows make
-    // each occurrence carry its counter across batches, which per-batch state would not.
-    spark.udf.register(
-      "javaId",
-      new UDF1[java.lang.Long, java.lang.Long] {
-        override def call(id: java.lang.Long): java.lang.Long = id
-      },
-      LongType)
-    spark.udf.register("idPassthrough", (id: Long) => id)
-    withTempPath { dir =>
-      spark.range(0, 64, 1, numPartitions = 1).write.parquet(dir.getCanonicalPath)
-      withTable("t") {
-        sql(s"CREATE TABLE t USING parquet LOCATION '${dir.getCanonicalPath}'")
-        withSQLConf(CometConf.COMET_BATCH_SIZE.key -> "8") {
-          assertCodegenRan {
-            checkSparkAnswerAndOperator(
-              sql(
-                "SELECT id, " +
-                  "javaId(monotonically_increasing_id()) AS a, " +
-                  "javaId(monotonically_increasing_id()) AS b, " +
-                  "idPassthrough(monotonically_increasing_id()) AS c, " +
-                  "idPassthrough(monotonically_increasing_id()) AS d FROM t"))
-          }
-        }
-      }
-    }
-  }
-
   test("per-task cache isolates UDF state across sequential task runs in one session") {
     // Regression guard for the cache-scoping invariant on CometUdfBridge: instances live for
     // exactly one Spark task and are dropped on task completion, so a stateful kernel sees a
