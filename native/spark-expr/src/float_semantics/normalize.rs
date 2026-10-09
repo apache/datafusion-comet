@@ -257,7 +257,7 @@ pub fn normalize_floats(array: &ArrayRef) -> ArrayRef {
 }
 
 /// Applies [`normalize_float`] to a Float32 or Float64 scalar. Other scalars are returned as is.
-fn normalize_float_scalar(value: ScalarValue) -> ScalarValue {
+pub(crate) fn normalize_float_scalar(value: ScalarValue) -> ScalarValue {
     match value {
         ScalarValue::Float32(v) => ScalarValue::Float32(v.map(normalize_float)),
         ScalarValue::Float64(v) => ScalarValue::Float64(v.map(normalize_float)),
