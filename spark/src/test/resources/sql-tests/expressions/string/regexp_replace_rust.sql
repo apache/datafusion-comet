@@ -17,6 +17,7 @@
 
 -- Test regexp_replace() with Rust regexp engine
 -- Opt in to the native (rust) regexp engine. Without this, it runs through the codegen dispatcher.
+-- Raw literals keep Spark from dropping regex backslashes such as '\d'.
 -- Config: spark.comet.expression.RegExpReplace.allowIncompatible=true
 
 statement
@@ -25,12 +26,12 @@ CREATE TABLE test_regexp_replace_enabled(s string) USING parquet
 statement
 INSERT INTO test_regexp_replace_enabled VALUES ('100-200'), ('abc'), (''), (NULL), ('phone 123-456-7890')
 
-query
-SELECT regexp_replace(s, '(\d+)', 'X') FROM test_regexp_replace_enabled
+query expect_native(regexp_replace)
+SELECT regexp_replace(s, r'(\d+)', 'X') FROM test_regexp_replace_enabled
 
-query
-SELECT regexp_replace(s, '(\d+)', 'X', 1) FROM test_regexp_replace_enabled
+query expect_native(regexp_replace)
+SELECT regexp_replace(s, r'(\d+)', 'X', 1) FROM test_regexp_replace_enabled
 
 -- literal + literal + literal
-query
-SELECT regexp_replace('100-200', '(\d+)', 'X'), regexp_replace('abc', '(\d+)', 'X'), regexp_replace(NULL, '(\d+)', 'X')
+query expect_native(regexp_replace)
+SELECT regexp_replace('100-200', r'(\d+)', 'X'), regexp_replace('abc', r'(\d+)', 'X'), regexp_replace(NULL, r'(\d+)', 'X')
