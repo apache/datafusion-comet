@@ -1276,14 +1276,19 @@ object CometIcebergNativeScan extends CometOperatorSerde[CometBatchScanExec] wit
         // Spark's BatchScanExec.inputRDD returns sparkContext.parallelize(empty, 1) when
         // DPP filtering removes all input partitions. That ParallelCollectionRDD is the only
         // non-DataSourceRDD shape its inputRDD produces, so reaching this branch means "DPP
-        // pruned everything"; emit no per-partition data and let native execution return empty.
+        // pruned everything". Preserve its empty execution partition so global aggregates still
+        // run. In Spark 3.4, a single-split scan can have no exchange between partial and final
+        // aggregates, so dropping the partition would incorrectly produce no result row.
         // Re-querying scan.toBatch.planInputPartitions() to verify is unreliable because
         // Iceberg's Scan state after filter() doesn't always reflect post-DPP partitions on
         // a re-call (V2 scan state is one-shot for the materialized inputRDD). Matched by class
         // name because ParallelCollectionRDD is private[spark].
         logDebug(
           "BatchScanExec.inputRDD is ParallelCollectionRDD (DPP pruned all partitions); " +
-            "skipping per-partition serialization")
+            "preserving empty execution partitions")
+        other.partitions.foreach { _ =>
+          perPartitionBuilders += OperatorOuterClass.IcebergScan.getDefaultInstance
+        }
       case other =>
         throw new IllegalStateException(
           "Expected DataSourceRDD or ParallelCollectionRDD from BatchScanExec, " +

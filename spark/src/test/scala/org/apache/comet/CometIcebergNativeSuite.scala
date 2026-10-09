@@ -19,10 +19,11 @@
 
 package org.apache.comet
 
-import java.io.File
+import java.io.{File, IOException}
 import java.net.URI
 import java.nio.charset.StandardCharsets.UTF_8
-import java.util.concurrent.atomic.AtomicLong
+import java.util.UUID
+import java.util.concurrent.atomic.{AtomicInteger, AtomicLong}
 
 import scala.jdk.CollectionConverters._
 
@@ -41,11 +42,12 @@ import org.apache.spark.sql.execution.datasources.v2.BatchScanExec
 import org.apache.spark.sql.execution.exchange.{ReusedExchangeExec, ShuffleExchangeExec, ShuffleExchangeLike}
 import org.apache.spark.sql.functions.col
 import org.apache.spark.sql.internal.SQLConf
-import org.apache.spark.sql.types.{ArrayType, StringType, StructType, TimestampType}
+import org.apache.spark.sql.types.{ArrayType, IntegerType, StringType, StructType, TimestampType}
 
 import org.apache.comet.CometSparkSessionExtensions.{isSpark35Plus, isSpark40Plus, isSpark41Plus, isSpark42Plus}
+import org.apache.comet.cloud.s3.TestCometS3LocationScopedCredentialProvider
 import org.apache.comet.iceberg.{IcebergReflection, RESTCatalogHelper}
-import org.apache.comet.serde.OperatorOuterClass
+import org.apache.comet.serde.{OperatorOuterClass, QueryPlanSerde}
 import org.apache.comet.testing.{FuzzDataGenerator, SchemaGenOptions}
 
 /**
@@ -5148,6 +5150,156 @@ class CometIcebergNativeSuite
         spark.sql("DROP TABLE aqe_cat.db.fallback_fact")
       }
     }
+  }
+
+  Seq(false, true).foreach { aqeEnabled =>
+    test(s"DPP - global aggregate after pruning a single split (AQE=$aqeEnabled)") {
+      assume(icebergAvailable, "Iceberg not available")
+      withTempIcebergDir { warehouseDir =>
+        val dimDir = new File(warehouseDir, "dim_parquet")
+        withSQLConf(
+          "spark.sql.catalog.aqe_cat" -> "org.apache.iceberg.spark.SparkCatalog",
+          "spark.sql.catalog.aqe_cat.type" -> "hadoop",
+          "spark.sql.catalog.aqe_cat.warehouse" -> warehouseDir.getAbsolutePath,
+          SQLConf.ADAPTIVE_EXECUTION_ENABLED.key -> aqeEnabled.toString,
+          SQLConf.DYNAMIC_PARTITION_PRUNING_ENABLED.key -> "true",
+          CometConf.COMET_ENABLED.key -> "true",
+          CometConf.COMET_EXEC_ENABLED.key -> "true",
+          CometConf.COMET_ICEBERG_NATIVE_ENABLED.key -> "true") {
+          val factTable = "aqe_cat.db.single_split_dpp_fact"
+          spark.sql(s"""
+            CREATE TABLE $factTable (amount INT, store_id INT)
+            USING iceberg PARTITIONED BY (store_id)
+          """)
+          try {
+            spark
+              .range(100)
+              .selectExpr("CAST(id AS INT) AS amount", "5 AS store_id")
+              .coalesce(1)
+              .writeTo(factTable)
+              .append()
+
+            // The regression requires one original split: Spark 3.4 can then omit the
+            // exchange between the partial and final global aggregates.
+            val unprunedPlan = spark.table(factTable).queryExecution.executedPlan
+            assertSingleNativeScan(unprunedPlan)
+            val unprunedScan = collectIcebergNativeScans(unprunedPlan).head
+            assert(unprunedScan.numPartitions == 1, s"Expected one split:\n$unprunedPlan")
+            assert(
+              unprunedScan.perPartitionData
+                .map(OperatorOuterClass.IcebergScan.parseFrom(_).getFileScanTasksCount)
+                .sum == 1,
+              s"Expected one file scan task before pruning:\n$unprunedPlan")
+
+            spark
+              .range(1)
+              .selectExpr("99 AS store_id", "'X' AS country")
+              .write
+              .parquet(dimDir.getAbsolutePath)
+            withTempView("single_split_dim") {
+              spark.read
+                .parquet(dimDir.getAbsolutePath)
+                .createOrReplaceTempView("single_split_dim")
+              val query = s"""SELECT /*+ BROADCAST(d) */ COUNT(*), SUM(f.amount)
+                |FROM $factTable f JOIN single_split_dim d ON f.store_id = d.store_id
+                |WHERE d.country = 'X'""".stripMargin
+              val expected = Seq(Row(0L, null))
+              withSQLConf(CometConf.COMET_ENABLED.key -> "false") {
+                checkAnswer(spark.sql(query), expected)
+              }
+              val df = spark.sql(query)
+              checkCometAnswer(df, expected)
+
+              val plan = df.queryExecution.executedPlan
+              assertSingleNativeScan(plan)
+              val scan = collectIcebergNativeScans(plan).head
+              if (!isSpark35Plus) {
+                assert(
+                  collect(plan) { case exchange: ShuffleExchangeLike => exchange }.isEmpty,
+                  s"Expected the single-split aggregate to run without a shuffle:\n$plan")
+                assert(scan.numPartitions == 1, s"Expected one empty execution partition:\n$plan")
+              }
+              assert(
+                collectIcebergDPPSubqueries(plan).nonEmpty,
+                s"Expected executable DPP on the native scan:\n$plan")
+              assert(
+                scan.perPartitionData
+                  .forall(OperatorOuterClass.IcebergScan.parseFrom(_).getFileScanTasksCount == 0),
+                s"Expected DPP to prune all file scan tasks:\n$plan")
+              assert(scan.metrics("num_splits").value == 0, "Pruned files must not be read")
+            }
+          } finally {
+            spark.sql(s"DROP TABLE $factTable")
+          }
+        }
+      }
+    }
+  }
+
+  test("DPP - empty Iceberg scan does not request unavailable S3 policy locations") {
+    // Exercise the empty executor scan emitted when DPP preserves Spark's last partition.
+    // A fresh catalog/bucket prevents a previously initialized FileIO from hiding the call.
+    val identity = UUID.randomUUID().toString
+    val common = OperatorOuterClass.IcebergScanCommon
+      .newBuilder()
+      .setMetadataLocation(s"s3://empty-scan-$identity/table/metadata/v1.metadata.json")
+      .setCatalogName(s"empty_scan_$identity")
+      .setDataFileConcurrencyLimit(1)
+      .putCatalogProperties(
+        "s3.comet.credential.provider.class",
+        classOf[TestCometS3LocationScopedCredentialProvider].getName)
+      .addRequiredSchema(
+        OperatorOuterClass.SparkStructField
+          .newBuilder()
+          .setName("amount")
+          .setNullable(true)
+          .setDataType(QueryPlanSerde.serializeDataType(IntegerType).get))
+      .build()
+    val planBytes = OperatorOuterClass.Operator
+      .newBuilder()
+      .setIcebergScan(OperatorOuterClass.IcebergScan.newBuilder().setCommon(common))
+      .build()
+      .toByteArray
+
+    val result = spark.sparkContext
+      .parallelize(Seq(1), 1)
+      .mapPartitions { _ =>
+        val provider = classOf[TestCometS3LocationScopedCredentialProvider]
+        val failureField = provider.getDeclaredField("throwOnNextLocationCall")
+        failureField.setAccessible(true)
+        val countField = provider.getDeclaredField("locationCallCount")
+        countField.setAccessible(true)
+        val calls = countField.get(null).asInstanceOf[AtomicInteger]
+        calls.set(0)
+        failureField.set(null, new IOException("empty scan policy source unavailable"))
+
+        try {
+          val iterator = new CometExecIterator(
+            CometExec.newIterId,
+            Array.empty[Object],
+            1,
+            planBytes,
+            CometMetricNode(Map.empty),
+            1,
+            0)
+          try {
+            var rows = 0L
+            while (iterator.hasNext) {
+              val batch = iterator.next()
+              rows += batch.numRows()
+              batch.close()
+            }
+            Iterator.single((rows, calls.get()))
+          } finally {
+            iterator.close()
+          }
+        } finally {
+          failureField.set(null, null)
+        }
+      }
+      .collect()
+
+    assert(result.toSeq == Seq((0L, 0)), s"Expected no rows or policy requests: ${result.toSeq}")
   }
 
   test("AQE DPP - empty broadcast result prunes all partitions") {
