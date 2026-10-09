@@ -163,7 +163,5 @@ SELECT date_trunc('HOUR', ts) FROM test_trunc_ts_overflow
 query expect_error(long overflow)
 SELECT date_trunc('DAY', ts) FROM test_trunc_ts_overflow
 
--- Spark intentionally wraps Long subtraction for SECOND/MILLISECOND at the lower bound.
-query expect_native(date_trunc)
-SELECT date_trunc('SECOND', ts), date_trunc('MILLISECOND', ts)
-FROM test_trunc_ts_overflow
+-- SECOND/MILLISECOND at the lower bound depend on the Spark version. See
+-- trunc_timestamp_fine_overflow.sql and trunc_timestamp_fine_overflow_spark42.sql.
