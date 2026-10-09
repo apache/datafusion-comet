@@ -1183,10 +1183,10 @@ impl PhysicalPlanner {
     /// they reject, which Spark's Filter above the scan then never sees.
     ///
     /// Without row-level pushdown the filters only prune, and pruning only recognizes a column
-    /// compared with a literal, so that shape keeps the raw column ([`FloatOperands::Raw`]). With
-    /// it, every operand is normalized and float comparisons give up pruning: a raw column would
-    /// drop a stored NaN that Spark matches, such as one with the sign bit set, which Arrow orders
-    /// below every other value.
+    /// compared with a literal, so that shape stays a plain comparison of the raw column
+    /// ([`FloatOperands::Raw`]). With it, every float comparison follows Spark's ordering and
+    /// gives up pruning: a raw column would drop a stored NaN that Spark matches, such as one with
+    /// the sign bit set, which Arrow orders below every other value.
     fn data_filter_float_operands(&self) -> FloatOperands {
         if self
             .session_ctx
@@ -5916,12 +5916,13 @@ mod tests {
         assert_eq!(0, filter_exec.additional_native_plans.len());
     }
 
-    /// Comparisons normalize float operands, except in the data filters that a scan pushes into
-    /// the Parquet reader, where pruning has to see the column itself.
+    /// Comparisons follow Spark's float ordering without normalizing their operands, except in the
+    /// data filters that a scan pushes into the Parquet reader, where pruning has to see a plain
+    /// comparison of the column.
     #[test]
     fn scan_data_filters_compare_float_columns_directly() {
         use datafusion::physical_expr::expressions::BinaryExpr;
-        use datafusion_comet_spark_expr::NormalizeNaNAndZero;
+        use datafusion_comet_spark_expr::SparkComparison;
         let double = spark_expression::DataType {
             type_id: 6,
             type_info: None,
@@ -5943,30 +5944,29 @@ mod tests {
             })))),
         })));
         let schema = Arc::new(Schema::new(vec![Field::new("d", DataType::Float64, true)]));
-        let left_operand = |expr: Arc<dyn PhysicalExpr>| {
-            let comparison = expr.downcast_ref::<BinaryExpr>().expect("a comparison");
-            Arc::clone(comparison.left())
-        };
         let planner = PhysicalPlanner::default();
         let comparison = planner.create_expr(&expr, Arc::clone(&schema)).unwrap();
-        assert!(left_operand(comparison)
-            .downcast_ref::<NormalizeNaNAndZero>()
-            .is_some());
+        let comparison = comparison
+            .downcast_ref::<SparkComparison>()
+            .expect("a Spark comparison");
+        assert!(comparison.left().downcast_ref::<Column>().is_some());
         let data_filter = planner
             .create_data_filter(&expr, schema, planner.data_filter_float_operands())
             .unwrap();
-        assert!(left_operand(data_filter).downcast_ref::<Column>().is_some());
+        let data_filter = data_filter
+            .downcast_ref::<BinaryExpr>()
+            .expect("a plain comparison");
+        assert!(data_filter.left().downcast_ref::<Column>().is_some());
     }
 
     /// With row-level pushdown the Parquet reader drops the rows a data filter rejects, so the
-    /// filter normalizes the column as well as the literal. A raw column would drop a stored NaN
-    /// whose bits differ from the normalized literal, and a stored NaN with the sign bit set
-    /// under any ordering comparison, both of which Spark matches.
+    /// filter compares the column in Spark's ordering rather than as it is. A raw column would drop
+    /// a stored NaN whose bits differ from the normalized literal, and a stored NaN with the sign
+    /// bit set under any ordering comparison, both of which Spark matches.
     #[test]
-    fn scan_data_filters_normalize_float_columns_with_row_level_pushdown() {
+    fn scan_data_filters_follow_spark_ordering_with_row_level_pushdown() {
         use arrow::array::{AsArray, BooleanArray};
-        use datafusion::physical_expr::expressions::BinaryExpr;
-        use datafusion_comet_spark_expr::{FloatOperands, NormalizeNaNAndZero};
+        use datafusion_comet_spark_expr::{FloatOperands, SparkComparison};
         let double = spark_expression::DataType {
             type_id: 6,
             type_info: None,
@@ -6019,13 +6019,7 @@ mod tests {
                     planner.data_filter_float_operands(),
                 )
                 .unwrap();
-            let comparison = data_filter
-                .downcast_ref::<BinaryExpr>()
-                .expect("a comparison");
-            assert!(comparison
-                .left()
-                .downcast_ref::<NormalizeNaNAndZero>()
-                .is_some());
+            assert!(data_filter.downcast_ref::<SparkComparison>().is_some());
             let matched = data_filter.evaluate(&batch).unwrap().into_array(3).unwrap();
             assert_eq!(matched.as_boolean(), &BooleanArray::from(expected.to_vec()));
         }
