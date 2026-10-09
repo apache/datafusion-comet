@@ -30,6 +30,14 @@ to configure Comet to convert `SortMergeJoin` to `ShuffledHashJoin`. Comet does 
 to test with both for your specific workloads.
 
 To configure Comet to convert `SortMergeJoin` to `ShuffledHashJoin`, set `spark.comet.exec.forceShuffledHashJoin=true`.
+The conversion only happens when the build side is under a size limit, and a join whose build side has no statistics
+is left as a `SortMergeJoin`. The size is Spark's planning estimate of the build side, or under AQE the materialized
+shuffle size of the build side. By default the limit is Spark's own rule for choosing a `ShuffledHashJoin`:
+`spark.sql.autoBroadcastJoinThreshold` times the initial shuffle partition count
+(`spark.sql.adaptive.coalescePartitions.initialPartitionNum` when AQE and partition coalescing are both on and it is
+set, else `spark.sql.shuffle.partitions`). When broadcasts are disabled with a non-positive threshold, Spark's default
+threshold of 10 MB is used instead. Set `spark.comet.exec.forceShuffledHashJoin.maxBuildSize` to a size in bytes to use a fixed
+limit, or to a non-positive value to convert every eligible join regardless of size.
 
 ### Join Runtime Filters
 
@@ -149,16 +157,17 @@ See [TopK metrics](../metrics.md#local-topk).
 
 ## Optimizing Sorting on Floating-Point Values
 
-Comet normalizes NaN payloads and signed zeros in scalar `FLOAT` and `DOUBLE` ordering keys, so `ORDER BY`, window
-ordering and range partitioning on them match Spark and stay native even with
-`spark.comet.exec.strictFloatingPoint=true`. Only the comparison key is normalized; returned values keep their original
-NaN representation and zero sign.
+Comet normalizes NaN payloads and signed zeros in `FLOAT` and `DOUBLE` ordering keys, including floating-point values
+nested in arrays and structs, so `ORDER BY`, window ordering and range partitioning on them match Spark and stay native
+even with `spark.comet.exec.strictFloatingPoint=true`. Only the comparison key is normalized; returned values keep their
+original NaN representation and zero sign.
 
-Floating-point values nested in arrays, structs, or maps are compared with Arrow's raw total ordering instead, which can
-differ from Spark when the data contains both zero and negative zero, or more than one NaN representation. This is likely
-an edge case that is not of concern for many users. Setting `spark.comet.exec.strictFloatingPoint=true` makes those
-nested cases fall back to Spark, and they can be forced back onto the native path with
-`spark.comet.expression.SortOrder.allowIncompatible=true`.
+The exception is a key that nests floating-point values in an array or struct whose type can hold a null element or
+field. Spark orders such a null below every other value, and the native sort and `RANGE` window frames do not
+([#6476](https://github.com/apache/datafusion-comet/issues/6476),
+[#6477](https://github.com/apache/datafusion-comet/issues/6477)), so
+`spark.comet.exec.strictFloatingPoint=true` makes those keys fall back to Spark. They can be forced back onto the
+native path with `spark.comet.expression.SortOrder.allowIncompatible=true`.
 
 `sort_array` sorts array elements rather than ordering rows. It follows Spark's floating-point ordering as well, so it
 also stays native with `spark.comet.exec.strictFloatingPoint=true`.

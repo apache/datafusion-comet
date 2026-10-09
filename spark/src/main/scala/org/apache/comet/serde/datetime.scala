@@ -21,12 +21,12 @@ package org.apache.comet.serde
 
 import java.util.Locale
 
-import org.apache.spark.sql.catalyst.expressions.{AddMonths, Attribute, Cast, ConvertTimezone, DateAdd, DateDiff, DateFormatClass, DateFromUnixDate, DateSub, DayOfMonth, DayOfWeek, DayOfYear, Days, DivideDTInterval, Expression, FromUTCTimestamp, GetDateField, GetTimestamp, Hour, Hours, LastDay, Literal, MakeDate, MakeDTInterval, MakeInterval, MakeTimestamp, MakeYMInterval, MicrosToTimestamp, MillisToTimestamp, Minute, Month, MonthsBetween, MultiplyDTInterval, NextDay, PreciseTimestampConversion, Quarter, Second, SecondsToTimestamp, TimestampAdd, TimestampDiff, ToUnixTimestamp, ToUTCTimestamp, TruncDate, TruncTimestamp, UnixDate, UnixMicros, UnixMillis, UnixSeconds, UnixTimestamp, WeekDay, WeekOfYear, Year}
-import org.apache.spark.sql.internal.SQLConf
+import org.apache.spark.sql.catalyst.expressions.{AddMonths, Attribute, Cast, ConvertTimezone, DateAdd, DateDiff, DateFormatClass, DateFromUnixDate, DateSub, DayOfMonth, DayOfWeek, DayOfYear, Days, DivideDTInterval, Expression, FromUTCTimestamp, GetDateField, GetTimestamp, Hour, Hours, LastDay, Literal, MakeDate, MakeDTInterval, MakeInterval, MakeTimestamp, MakeYMInterval, MicrosToTimestamp, MillisToTimestamp, Minute, Month, MonthsBetween, MultiplyDTInterval, MultiplyYMInterval, NextDay, PreciseTimestampConversion, Quarter, Second, SecondsToTimestamp, TimestampAdd, TimestampDiff, ToUnixTimestamp, ToUTCTimestamp, TruncDate, TruncTimestamp, UnixDate, UnixMicros, UnixMillis, UnixSeconds, UnixTimestamp, WeekDay, WeekOfYear, Year}
 import org.apache.spark.sql.types.{CalendarIntervalType, DataType, DateType, DoubleType, FloatType, IntegerType, LongType, StringType, TimestampNTZType, TimestampType}
 import org.apache.spark.unsafe.types.UTF8String
 
 import org.apache.comet.CometConf
+import org.apache.comet.CometSparkSessionExtensions.isSpark42Plus
 import org.apache.comet.expressions.{CometCast, CometEvalMode}
 import org.apache.comet.serde.CometGetDateField.CometGetDateField
 import org.apache.comet.serde.ExprOuterClass.Expr
@@ -644,6 +644,10 @@ object CometTruncTimestamp
       builder.setChild(childExpr.get)
       builder.setFormat(formatExpr.get)
       builder.setTimezone(timeZone.get)
+      // Spark 4.2.0 (SPARK-56663) raises `long overflow` when SECOND or MILLISECOND truncation
+      // falls below the smallest timestamp; earlier versions wrap the Long subtraction. The
+      // native side has to match whichever Spark we are running against.
+      builder.setWrapSecondMillisecondOverflow(!isSpark42Plus)
 
       Some(
         ExprOuterClass.Expr
@@ -822,8 +826,14 @@ object CometHours extends CometExpressionSerde[Hours] {
  * For DateType: dates are internally stored as days since epoch, so this is a simple cast to
  * integer (same as CometUnixDate).
  *
- * For TimestampType: uses a timezone-aware Cast(Timestamp to Date) followed by Cast(Date to Int).
- * The first cast respects the session timezone to correctly determine the date boundary.
+ * For TimestampType: uses Cast(Timestamp to Date) in UTC followed by Cast(Date to Int). Spark
+ * cannot evaluate `days` itself, so this counts days in UTC like [[CometHours]] and Iceberg's
+ * `days` transform, rather than in the session timezone.
+ *
+ * The cast is a true floor, as [[CometHours]] is. Iceberg's `DateTimeUtil.microsToDays` differs
+ * in one case: it puts a pre-1970 timestamp exactly 999999 microseconds past midnight, such as
+ * `1969-01-01 00:00:00.999999`, in the previous day. Comet's native kernel for Iceberg's own
+ * `days` function matches Iceberg there, and this cast does not.
  */
 object CometDays extends CometExpressionSerde[Days] {
 
@@ -846,9 +856,8 @@ object CometDays extends CometExpressionSerde[Days] {
     val dateExprOpt = expr.child.dataType match {
       case DateType => childExpr
       case TimestampType =>
-        val timezone = SQLConf.get.sessionLocalTimeZone
         childExpr.flatMap { child =>
-          CometCast.castToProto(expr, Some(timezone), DateType, child, CometEvalMode.LEGACY)
+          CometCast.castToProto(expr, Some("UTC"), DateType, child, CometEvalMode.LEGACY)
         }
       case _ => None
     }
@@ -893,6 +902,8 @@ object CometToUnixTimestamp extends CometCodegenDispatch[ToUnixTimestamp]
 object CometGetTimestamp extends CometCodegenDispatch[GetTimestamp]
 
 object CometMakeYMInterval extends CometCodegenDispatch[MakeYMInterval]
+
+object CometMultiplyYMInterval extends CometCodegenDispatch[MultiplyYMInterval]
 
 object CometMakeDTInterval extends CometCodegenDispatch[MakeDTInterval]
 

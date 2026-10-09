@@ -20,38 +20,80 @@
 package org.apache.comet.serde
 
 import org.apache.spark.sql.catalyst.expressions.{Ascending, Attribute, Descending, NullsFirst, NullsLast, SortOrder}
-import org.apache.spark.sql.types.{DoubleType, FloatType}
+import org.apache.spark.sql.types.{ArrayType, DataType, StructType}
 
 import org.apache.comet.CometConf
 import org.apache.comet.serde.QueryPlanSerde.exprToProtoInternal
 
+/**
+ * The key of a Sort, TopK, Window, WindowGroupLimit or range partitioning.
+ *
+ * Arrow orders floats by IEEE 754 total order, so the native side normalizes a `FLOAT` or
+ * `DOUBLE` key, and an array or struct key with a float at any depth, before comparing: NaN
+ * payloads fold together and signed zeros tie, as in Spark's `SQLOrderingUtil`. Only the
+ * comparison key is normalized; returned values keep their original NaN representation and zero
+ * sign. So floats alone never make a key incompatible, in strict floating-point mode either.
+ * Nested nulls can, as below.
+ *
+ * Spark orders a null element or field below every other value, whatever the key's null order.
+ * The native sort takes its place from the key's null order, so a key whose type can hold one is
+ * incompatible under `ASC NULLS LAST` and `DESC NULLS FIRST`, with floats or without. The default
+ * null orders, `ASC NULLS FIRST` and `DESC NULLS LAST`, place it where Spark does.
+ * https://github.com/apache/datafusion-comet/issues/6476
+ *
+ * A `RANGE` window frame orders such a null above every other value, so its frames can differ
+ * from Spark too. Strict mode keeps the fallback it applied to every nested float key before they
+ * were normalized, for the keys that can hit this.
+ * https://github.com/apache/datafusion-comet/issues/6477
+ */
 object CometSortOrder extends CometExpressionSerde[SortOrder] {
 
   /**
-   * Subject of both the runtime fallback reason and the generated compatibility docs. Shared so
+   * Subjects of both the runtime fallback reasons and the generated compatibility docs. Shared so
    * the two cannot describe the policy differently.
    */
-  private val nestedFloatingPointSort =
-    "Sorting on floating-point values nested in arrays, structs, or maps"
+  private val nestedNullOrderSort =
+    "Sorting with `ASC NULLS LAST` or `DESC NULLS FIRST` on an array or struct that can hold a " +
+      "null element or field"
+
+  private val nestedNullOrderReason =
+    s"$nestedNullOrderSort is not 100% compatible with Spark. Spark orders a null element or " +
+      "field below every other value, whatever the key's null order, while Comet's native sort " +
+      "places it by the null order " +
+      "([#6476](https://github.com/apache/datafusion-comet/issues/6476))."
+
+  private val nullableNestedFloatingPointSort =
+    "Sorting on floating-point values nested in an array or struct that can hold a null " +
+      "element or field"
 
   override def getIncompatibleReasons(): Seq[String] = Seq(
-    s"$nestedFloatingPointSort is not 100% compatible with Spark when " +
+    nestedNullOrderReason,
+    s"$nullableNestedFloatingPointSort is not 100% compatible with Spark when " +
       s"`${CometConf.COMET_EXEC_STRICT_FLOATING_POINT.key}=true`")
 
-  override def getSupportLevel(expr: SortOrder): SupportLevel = expr.child.dataType match {
-    // Scalar FLOAT/DOUBLE comparison keys are normalized natively (NaN payloads folded together,
-    // signed zeros tied) for Sort, TopK, Window, WindowGroupLimit, and range partitioning, which
-    // matches Spark's SQLOrderingUtil. Only the comparison key is normalized; returned values keep
-    // their original NaN representation and zero sign. So these are compatible even in strict mode.
-    case _: FloatType | _: DoubleType => Compatible()
-    // Floating-point values nested in arrays, structs, or maps are still compared with Arrow's raw
-    // total ordering, under which -0.0 sorts below 0.0 and a sign-bit NaN sorts below -Infinity.
-    // https://github.com/apache/datafusion-comet/issues/5507
-    case dt =>
+  override def getSupportLevel(expr: SortOrder): SupportLevel = {
+    val dataType = expr.child.dataType
+    if (!canHoldNestedNull(dataType)) {
+      Compatible()
+    } else if (expr.nullOrdering != expr.direction.defaultNullOrdering) {
+      Incompatible(Some(nestedNullOrderReason))
+    } else {
       SupportLevel
-        .strictFloatingPointReason(dt, nestedFloatingPointSort)
+        .strictFloatingPointReason(dataType, nullableNestedFloatingPointSort)
         .map(reason => Incompatible(Some(reason)))
         .getOrElse(Compatible())
+    }
+  }
+
+  /**
+   * Whether a value of `dataType` can hold a null below its top level: an array element or a
+   * struct field, at any depth. The key being null is not one: both engines place that by the
+   * key's null order.
+   */
+  def canHoldNestedNull(dataType: DataType): Boolean = dataType match {
+    case ArrayType(elementType, containsNull) => containsNull || canHoldNestedNull(elementType)
+    case StructType(fields) => fields.exists(f => f.nullable || canHoldNestedNull(f.dataType))
+    case _ => false
   }
 
   override def convert(

@@ -37,6 +37,7 @@ import org.apache.parquet.hadoop.example.{ExampleParquetWriter, GroupWriteSuppor
 import org.apache.parquet.schema.{MessageType, MessageTypeParser}
 import org.apache.spark._
 import org.apache.spark.internal.config.{MEMORY_OFFHEAP_ENABLED, MEMORY_OFFHEAP_SIZE, SHUFFLE_MANAGER}
+import org.apache.spark.rdd.RDD
 import org.apache.spark.sql.catalyst.plans.logical
 import org.apache.spark.sql.catalyst.util.sideBySide
 import org.apache.spark.sql.comet.CometPlanChecker
@@ -45,6 +46,7 @@ import org.apache.spark.sql.execution._
 import org.apache.spark.sql.execution.adaptive.{AdaptiveSparkPlanExec, AdaptiveSparkPlanHelper, AQEShuffleReadExec, QueryStageExec}
 import org.apache.spark.sql.execution.exchange.ReusedExchangeExec
 import org.apache.spark.sql.internal._
+import org.apache.spark.sql.sources.{BaseRelation, TableScan}
 import org.apache.spark.sql.test._
 import org.apache.spark.sql.types.{DecimalType, StructType}
 
@@ -76,6 +78,31 @@ abstract class CometTestBase
     assert(reused.nonEmpty, s"$clue:\n$plan")
   }
 
+  /**
+   * Sets each Spark-to-Arrow conversion that [[sparkConf]] turns on to `enabled`. All but the
+   * `OneRowRelation` conversion are off by default. These are the conversions
+   * `spark.comet.sparkToColumnar.enabled` stood for before each had a config of its own.
+   */
+  protected def sparkToArrowConversionConfs(enabled: Boolean): Seq[(String, String)] =
+    Seq(
+      CometConf.COMET_CONVERT_FROM_RANGE_ENABLED,
+      CometConf.COMET_CONVERT_FROM_IN_MEMORY_CACHE_ENABLED,
+      CometConf.COMET_CONVERT_FROM_RDD_ENABLED,
+      CometConf.COMET_CONVERT_FROM_ONE_ROW_RELATION_ENABLED).map(_.key -> enabled.toString)
+
+  /**
+   * A DataFrame over `rows` that Spark scans with a `RowDataSourceScanExec`, as it does a Data
+   * Source V1 relation that is not file-based, such as a JDBC table.
+   */
+  protected def rowDataSourceDataFrame(rowSchema: StructType, rows: Seq[Row]): DataFrame = {
+    val session = spark
+    session.baseRelationToDataFrame(new BaseRelation with TableScan {
+      override def sqlContext: SQLContext = session.sqlContext
+      override def schema: StructType = rowSchema
+      override def buildScan(): RDD[Row] = session.sparkContext.parallelize(rows, 1)
+    })
+  }
+
   protected def sparkConf: SparkConf = {
     val conf = new SparkConf()
     conf.set("spark.hadoop.fs.file.impl", classOf[DebugFilesystem].getName)
@@ -90,7 +117,7 @@ abstract class CometTestBase
     conf.set(CometConf.COMET_ONHEAP_ENABLED.key, "true")
     conf.set(CometConf.COMET_EXEC_ENABLED.key, "true")
     conf.set(CometConf.COMET_SHUFFLE_ENABLED.key, "true")
-    conf.set(CometConf.COMET_SPARK_TO_ARROW_ENABLED.key, "true")
+    conf.setAll(sparkToArrowConversionConfs(enabled = true))
     conf.set(CometConf.COMET_NATIVE_SCAN_ENABLED.key, "true")
     conf.set(CometConf.COMET_PARQUET_UNSIGNED_SMALL_INT_CHECK.key, "false")
     conf.set(CometConf.COMET_SCAN_ALLOW_DISABLED_PARQUET_VECTORIZED_READER.key, "true")

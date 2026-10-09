@@ -22,8 +22,10 @@ package org.apache.comet.serde
 import scala.annotation.tailrec
 import scala.jdk.CollectionConverters._
 
-import org.apache.spark.sql.catalyst.expressions.{And, ArrayAggregate, ArrayAppend, ArrayContains, ArrayExcept, ArrayExists, ArrayFilter, ArrayForAll, ArrayInsert, ArrayIntersect, ArrayJoin, ArrayMax, ArrayMin, ArrayPosition, ArrayRemove, ArraySort, ArraysOverlap, ArraysZip, ArrayTransform, ArrayUnion, Attribute, BoundReference, Cast, CreateArray, ElementAt, EmptyRow, Expression, Flatten, GetArrayItem, IsNotNull, IsNull, LambdaFunction, Literal, NamedLambdaVariable, Reverse, Sequence, Size, Slice, SortArray, ZipWith}
+import org.apache.spark.SPARK_VERSION
+import org.apache.spark.sql.catalyst.expressions.{And, ArrayAggregate, ArrayAppend, ArrayContains, ArrayDistinct, ArrayExcept, ArrayExists, ArrayFilter, ArrayForAll, ArrayInsert, ArrayIntersect, ArrayJoin, ArrayMax, ArrayMin, ArrayPosition, ArrayRemove, ArraySort, ArraysOverlap, ArraysZip, ArrayTransform, ArrayUnion, Attribute, BoundReference, Cast, CreateArray, ElementAt, EmptyRow, Expression, Flatten, GetArrayItem, IsNotNull, IsNull, LambdaFunction, Literal, NamedLambdaVariable, Reverse, Sequence, Size, Slice, SortArray, ZipWith}
 import org.apache.spark.sql.catalyst.util.GenericArrayData
+import org.apache.spark.sql.comet.util.Utils
 import org.apache.spark.sql.internal.SQLConf
 import org.apache.spark.sql.types._
 
@@ -113,15 +115,24 @@ object CometArrayAppend extends CometExpressionSerde[ArrayAppend] with ArraysBas
 
 object CometArrayContains
     extends CometExpressionSerde[ArrayContains]
+    with CometTypeShim
     with CodegenDispatchFallback {
+
+  override def hasConditionalNativeDefault: Boolean = true
 
   private val floatingPointReason: String =
     "Spark compares array elements with ordering.equiv, so -0.0 matches +0.0 and all NaNs match " +
       "each other; Comet's native array_contains compares the raw Arrow values bitwise"
 
-  override def getIncompatibleReasons(): Seq[String] = Seq(floatingPointReason)
+  private val collationReason: String =
+    ArrayElementEqualitySupport.collationReason("array_contains")
+
+  override def getIncompatibleReasons(): Seq[String] = Seq(floatingPointReason, collationReason)
 
   override def getSupportLevel(expr: ArrayContains): SupportLevel = expr.left.dataType match {
+    // See ArrayElementEqualitySupport: bytewise string comparison ignores the collation.
+    case ArrayType(elementType, _) if hasNonDefaultStringCollation(elementType) =>
+      Incompatible(Some(collationReason))
     // Native array_contains compares floating-point elements bitwise, disagreeing with Spark for
     // -0.0/+0.0 and NaN. Report Incompatible (not Unsupported) for float/double element types (at
     // any nesting level) so the expression routes through the JVM codegen dispatcher (Spark's own
@@ -307,7 +318,19 @@ object CometArrayMin extends CometExpressionSerde[ArrayMin] with CodegenDispatch
   }
 }
 
-object CometArraysOverlap extends CometExpressionSerde[ArraysOverlap] {
+object CometArraysOverlap
+    extends CometExpressionSerde[ArraysOverlap]
+    with CodegenDispatchFallback {
+
+  override def hasConditionalNativeDefault: Boolean = true
+
+  override def getIncompatibleReasons(): Seq[String] =
+    Seq(ArrayElementEqualitySupport.collationReason("arrays_overlap"))
+
+  // Both inputs share one element type, so checking the left side is enough.
+  override def getSupportLevel(expr: ArraysOverlap): SupportLevel =
+    ArrayElementEqualitySupport.getSupportLevel("arrays_overlap", expr.left.dataType)
+
   override def convert(
       expr: ArraysOverlap,
       inputs: Seq[Attribute],
@@ -536,7 +559,80 @@ object CometSlice extends CometExpressionSerde[Slice] {
   }
 }
 
+/**
+ * Support level for native array kernels that compare elements for equality (membership, overlap,
+ * dedup). They compare strings by raw bytes, so a non-UTF8_BINARY collation (for example
+ * UTF8_LCASE, where 'a' equals 'A') gives wrong answers, and these cases report Incompatible.
+ * Serdes with a boolean result mix in CodegenDispatchFallback, so the JVM codegen dispatcher runs
+ * Spark's collation-aware comparison. Array-valued serdes fall back instead (see
+ * ArraySetSupport).
+ */
+private object ArrayElementEqualitySupport extends CometTypeShim {
+  def collationReason(name: String): String =
+    "Spark compares non-UTF8_BINARY collated string elements under their collation, while " +
+      s"Comet's native $name compares raw bytes"
+
+  def collationSupportLevel(name: String, arrayType: DataType): Option[SupportLevel] =
+    if (hasNonDefaultStringCollation(arrayType)) {
+      Some(Incompatible(Some(collationReason(name))))
+    } else {
+      None
+    }
+
+  def getSupportLevel(name: String, arrayType: DataType): SupportLevel =
+    collationSupportLevel(name, arrayType).getOrElse(Compatible())
+}
+
+private[comet] object ArraySetSupport {
+  val floatingPointReason: String =
+    "Floating-point elements match Spark's signed-zero and NaN semantics natively only on " +
+      "Spark 4.2.0, whose optimizer normalizes the arguments (SPARK-54918)"
+
+  // The native kernels match Spark only when the plan has already normalized the arguments, and
+  // only Spark 4.2.0 does that (SPARK-54918). Earlier releases keep flat signed zeros apart.
+  // From 4.0.5, 4.1.4 and 4.2.1, SPARK-59602 normalizes during evaluation instead, which the
+  // native kernels do not match for NaN payloads or nested zeros. A top-level
+  // KnownFloatingPointNormalized marker cannot replace the version check: Spark also normalizes
+  // CreateArray, If, CaseWhen, and Coalesce recursively without wrapping the resulting array.
+  def normalizesArgumentsInPlan(version: String): Boolean =
+    Utils.majorMinorPatchVersion(version).contains((4, 2, 0))
+
+  def supportLevel(dataType: DataType): SupportLevel = {
+    if (SupportLevel.containsType(dataType, classOf[FloatType], classOf[DoubleType]) &&
+      !normalizesArgumentsInPlan(SPARK_VERSION)) {
+      Incompatible(Some(floatingPointReason))
+    } else {
+      Compatible()
+    }
+  }
+
+  /** Collated string elements are also Incompatible; see ArrayElementEqualitySupport. */
+  def supportLevel(name: String, dataType: DataType): SupportLevel =
+    ArrayElementEqualitySupport
+      .collationSupportLevel(name, dataType)
+      .getOrElse(supportLevel(dataType))
+
+  def incompatibleReasons(name: String): Seq[String] =
+    Seq(floatingPointReason, ArrayElementEqualitySupport.collationReason(name))
+}
+
+// Use projection fallback to avoid codegen dispatch overhead for array-valued results.
+// The native implementation remains available through opt-in.
+object CometArrayDistinct extends CometScalarFunction[ArrayDistinct]("array_distinct") {
+  override def getIncompatibleReasons(): Seq[String] =
+    ArraySetSupport.incompatibleReasons("array_distinct")
+
+  override def getSupportLevel(expr: ArrayDistinct): SupportLevel =
+    ArraySetSupport.supportLevel("array_distinct", expr.dataType)
+}
+
 object CometArrayUnion extends CometExpressionSerde[ArrayUnion] {
+  override def getIncompatibleReasons(): Seq[String] =
+    ArraySetSupport.incompatibleReasons("array_union")
+
+  override def getSupportLevel(expr: ArrayUnion): SupportLevel =
+    ArraySetSupport.supportLevel("array_union", expr.dataType)
+
   override def convert(
       expr: ArrayUnion,
       inputs: Seq[Attribute],
