@@ -484,6 +484,7 @@ fn op_name(op: &OpStruct) -> &'static str {
         OpStruct::ParquetWriter(_) => "ParquetWriter",
         OpStruct::Explode(_) => "Explode",
         OpStruct::CsvScan(_) => "CsvScan",
+        OpStruct::TextScan(_) => "TextScan",
         OpStruct::ShuffleScan(_) => "ShuffleScan",
         OpStruct::BroadcastNestedLoopJoin(_) => "BroadcastNestedLoopJoin",
         OpStruct::Sample(_) => "Sample",
