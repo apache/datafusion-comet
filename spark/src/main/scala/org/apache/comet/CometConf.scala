@@ -559,6 +559,22 @@ object CometConf extends ShimCometConf {
       .booleanConf
       .createWithDefault(false)
 
+  val COMET_FORCE_SHJ_MAX_BUILD_SIZE: OptionalConfigEntry[Long] =
+    conf(s"$COMET_EXEC_CONFIG_PREFIX.forceShuffledHashJoin.maxBuildSize")
+      .category(CATEGORY_EXEC)
+      .doc(s"The build side size below which `${COMET_FORCE_SHJ.key}` converts a " +
+        "SortMergeJoin to ShuffledHashJoin. The size is Spark's planning estimate of the build " +
+        "child, or under AQE the materialized shuffle size of the build side. A build side at " +
+        "or over this size, or one with no statistics, keeps the SortMergeJoin. When unset, " +
+        "Spark's own rule applies: `spark.sql.autoBroadcastJoinThreshold` times the initial " +
+        "shuffle partition count (`spark.sql.adaptive.coalescePartitions.initialPartitionNum` " +
+        "when AQE and partition coalescing are both on and it is set, else " +
+        "`spark.sql.shuffle.partitions`). When broadcasts are disabled with a non-positive " +
+        "threshold, Spark's default threshold of 10 MB is used instead. A " +
+        s"non-positive value removes the limit. $TUNING_GUIDE.")
+      .bytesConf(ByteUnit.BYTE)
+      .createOptional
+
   val COMET_EXEC_AGGREGATE_SKIP_PARTIAL_ENABLED: ConfigEntry[Boolean] =
     conf(s"$COMET_EXEC_CONFIG_PREFIX.aggregate.skipPartial.enabled")
       .category(CATEGORY_EXEC)
