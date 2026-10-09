@@ -386,7 +386,8 @@ The release process does this before tagging each release candidate; see
 ## Reproducing a suite failure locally
 
 `dev/local-ci.sh` builds the same sandbox a runner builds and runs the Spark SQL or Iceberg
-workflow:
+targets. Iceberg extensions are an exception to job parity: the local runner runs them unsharded,
+while CI uses four extensions shards:
 
 ```sh
 dev/local-ci.sh spark                # everything the Spark job runs
@@ -399,7 +400,9 @@ dev/local-ci.sh --print-config       # what it read from ci.yml and dev/ci
 
 The version defaults to the one the merge queue gates on. That, the matrix rows and the shard count
 are read from the workflow files and from `dev/ci/`, so a local shard runs what the CI shard of the
-same name runs. It prepares first (native build, Comet install, patched Spark or Iceberg source
+same name runs for Spark SQL and Iceberg core tests. To reproduce an extensions shard, use the
+[direct Gradle recipe](iceberg-spark-tests.md#reproducing-an-extensions-shard). The local runner
+prepares first (native build, Comet install, patched Spark or Iceberg source
 under `$COMET_LOCAL_CI_HOME`, default `/tmp/comet-local-ci`), then runs the tests, compiling only
 the sbt projects the selected rows need.
 
