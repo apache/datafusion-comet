@@ -1372,14 +1372,17 @@ class CometParquetWriterSuite extends CometParquetWriterTestBase {
         spark.range(3).selectExpr("id AS a", "id AS b").write.parquet(source)
       }
       withNativeWriter {
-        val e = intercept[AnalysisException] {
+        val (plan, e) = captureFailedWritePlan(
           spark.read
             .parquet(source)
             .selectExpr("a", "b AS A")
             .write
             .mode(SaveMode.Overwrite)
-            .parquet(target.getAbsolutePath)
-        }
+            .parquet(target.getAbsolutePath))
+        // Spark's own writer rejects these columns too, so a fallback would also pass the checks
+        // below without exercising the native writer's check.
+        assertHasCometNativeWriteExec(plan)
+        assert(e.isInstanceOf[AnalysisException], e)
         assert(e.getMessage.contains("COLUMN_ALREADY_EXISTS"), e.getMessage)
       }
       assert(!target.exists(), "nothing may be written when the columns are rejected")
