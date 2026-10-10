@@ -36,6 +36,8 @@ publish = false
 
 [dependencies]
 arrow = { workspace = true }
+pyo3 = { version = "0.28.3", optional = true, features = ["auto-initialize"] }
+libc = { version = "0.2", optional = true }
 base64 = "0.23.0"
 chrono-tz = { workspace = true }
 bytes = { workspace = true }
@@ -123,6 +125,7 @@ reqsign-aws-v4 = "3"
 [features]
 backtrace = ["datafusion/backtrace"]
 default = ["hdfs-opendal"]
+python-udf = ["dep:pyo3", "dep:libc"]
 contrib-lance = ["dep:comet-contrib-lance"]
 hdfs-opendal = ["opendal/services-hdfs", "object_store_opendal", "hdfs-sys"]
 jemalloc = ["tikv-jemallocator", "tikv-jemalloc-ctl"]

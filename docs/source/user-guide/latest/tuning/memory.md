@@ -142,8 +142,10 @@ one line every 10 seconds for the whole executor:
 Comet native memory usage: allocated 5412.3 MiB, reserved 3890.0 MiB (16 native plans, 8 memory pools); JVM Arrow allocated 310.4 MiB, 96.2 MiB of it imported from native
 ```
 
-- `allocated` is the memory that Comet's native code has allocated and not yet freed, whether or not
-  a pool tracks it.
+- `allocated` is the memory allocated through Comet's Rust global allocator and not yet freed,
+  whether or not a pool tracks it. It excludes allocations made by native libraries outside that
+  allocator, including the embedded Python interpreter and PyArrow when native Arrow UDFs are
+  enabled.
 - `reserved` is the part that Comet's memory pools have reserved from Spark's off-heap memory. It is
   charged against `spark.memory.offHeap.size`, so the container already has room for it. A pool
   sometimes has to track memory that Spark could not grant, such as a spilled batch read back from
@@ -174,7 +176,11 @@ alongside the JVM's own non-heap memory. To size the overhead from it:
    non-heap memory, and add the most untracked memory seen on any executor.
 3. Add a margin on top. The log can miss the true peak between samples, and none of the figures
    includes the allocator's fragmentation and retained pages, or memory allocated by native C
-   libraries such as zstd.
+   libraries such as zstd. With native Arrow UDFs, budget the embedded Python interpreter and
+   PyArrow allocations in addition to the untracked memory calculated from the log. A PyArrow
+   result buffer later imported into the JVM can appear in the `imported from native` figure that
+   the estimate subtracts, even though Rust's `allocated` does not count it. Use the executor's
+   peak resident memory to size this additional overhead.
 
 For example, a 16 GiB executor derives an overhead of 1638 MiB. If the line above has the most
 untracked memory in its log, that is 5412.3 + (310.4 - 96.2) - 3890.0 = 1736.5 MiB. The overhead

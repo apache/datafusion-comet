@@ -231,6 +231,7 @@ jobs:
               org.apache.comet.exec.CometJoinSuite
               org.apache.comet.exec.CometTypedDatasetSuite
               org.apache.spark.sql.comet.CometMapInBatchSuite
+              org.apache.spark.sql.comet.CometArrowPythonUdfSuite
               org.apache.spark.sql.execution.python.CometArrowPythonRunnerSuite
               org.apache.comet.CometNativeSuite
               org.apache.comet.CometConfSuite

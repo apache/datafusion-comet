@@ -141,10 +141,11 @@ natively on `BroadcastHashJoinExec` and `ShuffledHashJoinExec`. Existence sort-m
 
 ## Python and UDF
 
-| Operator                                           | Status | Notes                                                                                                                                                                                                    |
-| -------------------------------------------------- | ------ | -------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| `MapInArrowExec`, `MapInPandasExec`                | ⚠️     | Spark 4.0 and later. Experimental, disabled by default (`spark.comet.exec.pyarrowUDF.enabled`). See [PyArrow UDF Acceleration](pyarrow-udfs.md).                                                         |
-| `ArrowEvalPythonExec`, `FlatMapGroupsInPandasExec` | 🔜     | Scalar `@pandas_udf` ([#5386](https://github.com/apache/datafusion-comet/issues/5386)) and grouped `applyInPandas` ([#5123](https://github.com/apache/datafusion-comet/issues/5123)) fall back to Spark. |
+| Operator                                                       | Status | Notes                                                                                                                                                                                                    |
+| -------------------------------------------------------------- | ------ | -------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `ArrowEvalPythonExec` for scalar `@arrow_udf` (Spark 4.1+)     | ⚠️     | Experimental native PyO3 path, requires the `python-udf` feature and `spark.comet.exec.nativeArrowPythonUDF.enabled`. See [PyArrow UDF Acceleration](pyarrow-udfs.md).                                   |
+| `MapInArrowExec`, `MapInPandasExec`                            | ⚠️     | Spark 4.0 and later. Experimental, disabled by default (`spark.comet.exec.pyarrowUDF.enabled`). See [PyArrow UDF Acceleration](pyarrow-udfs.md).                                                         |
+| Other `ArrowEvalPythonExec` types, `FlatMapGroupsInPandasExec` | 🔜     | Scalar `@pandas_udf` ([#5386](https://github.com/apache/datafusion-comet/issues/5386)) and grouped `applyInPandas` ([#5123](https://github.com/apache/datafusion-comet/issues/5123)) fall back to Spark. |
 
 ## See also
 

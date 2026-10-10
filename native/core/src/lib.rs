@@ -183,6 +183,14 @@ fn logger_config(log_conf_path: &str, log_level: &str) -> CometResult<Config> {
 }
 
 #[no_mangle]
+pub extern "system" fn Java_org_apache_comet_NativeBase_nativeSupportsPythonUdf(
+    _: EnvUnowned,
+    _: JClass,
+) -> jni::sys::jboolean {
+    cfg!(feature = "python-udf")
+}
+
+#[no_mangle]
 /// Releases the global Tokio runtime used by Comet native execution.
 pub extern "system" fn Java_org_apache_comet_NativeBase_release(_e: EnvUnowned, _class: JClass) {
     execution::jni_api::release_runtime();
