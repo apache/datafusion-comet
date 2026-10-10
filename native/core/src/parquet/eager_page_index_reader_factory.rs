@@ -1341,7 +1341,7 @@ mod tests {
             false,
         )]));
         let mut options =
-            SparkParquetOptions::new(datafusion_comet_spark_expr::EvalMode::Legacy, "UTC", false);
+            SparkParquetOptions::new(datafusion_comet_spark_expr::EvalMode::Legacy, "UTC");
         options.case_sensitive = false;
         let factory = EagerPageIndexReaderFactory::new(
             store,

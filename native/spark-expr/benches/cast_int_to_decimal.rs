@@ -56,7 +56,7 @@ fn cast(col: &str, to: DataType, mode: EvalMode) -> Cast {
     Cast::new(
         Arc::new(Column::new(col, 0)),
         to,
-        SparkCastOptions::new_without_timezone(mode, false),
+        SparkCastOptions::new_without_timezone(mode),
         None,
         None,
     )
