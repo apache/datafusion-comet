@@ -228,3 +228,137 @@ fn null_scalar_lengths_do_not_copy_scalar_strings() {
         }
     }
 }
+
+#[test]
+fn empty_scalar_pad_does_not_allocate_for_large_scalar_lengths() {
+    for pad in [spark_lpad, spark_rpad, spark_read_side_padding] {
+        for large in [false, true] {
+            let args = [
+                ColumnarValue::Scalar(string_scalar(large, Some("abc".to_string()))),
+                ColumnarValue::Scalar(ScalarValue::Int32(Some(2 * 1024 * 1024))),
+                ColumnarValue::Scalar(ScalarValue::Utf8(Some(String::new()))),
+            ];
+            let ColumnarValue::Scalar(result) = measured_padding(pad, &args) else {
+                panic!("scalar lengths must produce a scalar");
+            };
+            assert_eq!(result, string_scalar(large, Some("abc".to_string())));
+        }
+    }
+}
+
+#[test]
+fn short_scalar_lengths_do_not_copy_entire_scalar_strings() {
+    for pad in [spark_lpad, spark_rpad] {
+        for large in [false, true] {
+            for length in [0, 3] {
+                for pattern in [None, Some("öx"), Some("")] {
+                    let mut args = vec![
+                        ColumnarValue::Scalar(string_scalar(
+                            large,
+                            Some("x".repeat(2 * 1024 * 1024)),
+                        )),
+                        ColumnarValue::Scalar(ScalarValue::Int32(Some(length))),
+                    ];
+                    if let Some(pattern) = pattern {
+                        args.push(ColumnarValue::Scalar(ScalarValue::Utf8(Some(
+                            pattern.to_string(),
+                        ))));
+                    }
+                    let ColumnarValue::Scalar(result) = measured_padding(pad, &args) else {
+                        panic!("scalar lengths must produce a scalar");
+                    };
+                    assert_eq!(
+                        result,
+                        string_scalar(large, Some("x".repeat(length as usize)))
+                    );
+                }
+            }
+        }
+    }
+}
+
+#[test]
+fn negative_scalar_read_side_lengths_preserve_scalar_strings() {
+    for large in [false, true] {
+        for length in [i32::MIN, -1] {
+            for pattern in [None, Some("öx"), Some("")] {
+                let mut args = vec![
+                    ColumnarValue::Scalar(string_scalar(large, Some("é🙂abc".to_string()))),
+                    ColumnarValue::Scalar(ScalarValue::Int32(Some(length))),
+                ];
+                if let Some(pattern) = pattern {
+                    args.push(ColumnarValue::Scalar(ScalarValue::Utf8(Some(
+                        pattern.to_string(),
+                    ))));
+                }
+                let ColumnarValue::Scalar(result) = spark_read_side_padding(&args).unwrap() else {
+                    panic!("scalar lengths must produce a scalar");
+                };
+                assert_eq!(result, string_scalar(large, Some("é🙂abc".to_string())));
+            }
+        }
+    }
+}
+
+fn assert_scalar_pad_preparation_is_bounded(scalar_length: bool, lengths: &[i32]) {
+    for (pad, (truncate, is_left_pad)) in [spark_lpad, spark_rpad, spark_read_side_padding]
+        .into_iter()
+        .zip([(true, true), (true, false), (false, false)])
+    {
+        for large in [false, true] {
+            for &length in lengths {
+                let expected = if length == 4 {
+                    if is_left_pad {
+                        "xabc"
+                    } else {
+                        "abcx"
+                    }
+                } else if !truncate {
+                    "abc"
+                } else if length == 0 {
+                    ""
+                } else {
+                    "a"
+                };
+                let args = [
+                    ColumnarValue::Scalar(string_scalar(large, Some("abc".to_string()))),
+                    if scalar_length {
+                        ColumnarValue::Scalar(ScalarValue::Int32(Some(length)))
+                    } else {
+                        length_array(vec![Some(length)])
+                    },
+                    ColumnarValue::Scalar(ScalarValue::Utf8(Some("x".repeat(2 * 1024 * 1024)))),
+                ];
+                let result = measured_padding(pad, &args);
+                if scalar_length {
+                    let ColumnarValue::Scalar(result) = result else {
+                        panic!("scalar lengths must produce a scalar");
+                    };
+                    assert_eq!(result, string_scalar(large, Some(expected.to_string())));
+                } else {
+                    assert_array_result(result, large, &[Some(expected)]);
+                }
+            }
+        }
+    }
+}
+
+#[test]
+fn unused_scalar_pad_does_not_allocate_for_scalar_lengths() {
+    assert_scalar_pad_preparation_is_bounded(true, &[0, 1]);
+}
+
+#[test]
+fn unused_scalar_pad_does_not_allocate_for_array_lengths() {
+    assert_scalar_pad_preparation_is_bounded(false, &[0, 1]);
+}
+
+#[test]
+fn tiny_scalar_padding_does_not_prepare_entire_scalar_pad() {
+    assert_scalar_pad_preparation_is_bounded(true, &[4]);
+}
+
+#[test]
+fn tiny_array_padding_does_not_prepare_entire_scalar_pad() {
+    assert_scalar_pad_preparation_is_bounded(false, &[4]);
+}

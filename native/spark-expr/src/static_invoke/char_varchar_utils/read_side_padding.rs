@@ -76,29 +76,40 @@ fn spark_read_side_padding2(
                     None => ColumnarValue::Scalar(ScalarValue::try_from(&string.data_type())?),
                 });
             }
-            if let Some(lengths) = length_array {
-                let pad = match rest {
-                    [_, ColumnarValue::Scalar(ScalarValue::Utf8(Some(pad)))] => pad.as_str(),
-                    _ => SPACE,
-                };
-                let lengths = lengths.as_primitive::<Int32Type>();
-                return match string {
-                    ScalarValue::Utf8(Some(string)) => {
-                        spark_pad_scalar_string::<i32>(string, lengths, pad, truncate, is_left_pad)
-                    }
-                    ScalarValue::LargeUtf8(Some(string)) => {
-                        spark_pad_scalar_string::<i64>(string, lengths, pad, truncate, is_left_pad)
-                    }
-                    _ => unreachable!("null strings returned above"),
-                };
+            let pad = match rest {
+                [_, ColumnarValue::Scalar(ScalarValue::Utf8(Some(pad)))] => pad.as_str(),
+                _ => SPACE,
+            };
+            let scalar_lengths;
+            let lengths = match length_array {
+                Some(lengths) => lengths.as_primitive::<Int32Type>(),
+                None => {
+                    let ColumnarValue::Scalar(ScalarValue::Int32(Some(length))) = &rest[0] else {
+                        unreachable!("non-null Int32 lengths are checked above");
+                    };
+                    // Match the existing scalar-length kernel: negative lengths
+                    // become zero, which keeps read-side padding non-truncating.
+                    scalar_lengths = Int32Array::from(vec![(*length).max(0)]);
+                    &scalar_lengths
+                }
+            };
+            let result = match string {
+                ScalarValue::Utf8(Some(string)) => {
+                    spark_pad_scalar_string::<i32>(string, lengths, pad, truncate, is_left_pad)
+                }
+                ScalarValue::LargeUtf8(Some(string)) => {
+                    spark_pad_scalar_string::<i64>(string, lengths, pad, truncate, is_left_pad)
+                }
+                _ => unreachable!("null strings returned above"),
+            }?;
+            if length_array.is_some() {
+                Ok(result)
+            } else {
+                let array = result.to_array(1)?;
+                Ok(ColumnarValue::Scalar(ScalarValue::try_from_array(
+                    &array, 0,
+                )?))
             }
-            let mut array_args = args.to_vec();
-            array_args[0] = ColumnarValue::Array(string.to_array_of_size(1)?);
-            let result = spark_read_side_padding2(&array_args, truncate, is_left_pad)?;
-            let array = result.to_array(1)?;
-            Ok(ColumnarValue::Scalar(ScalarValue::try_from_array(
-                &array, 0,
-            )?))
         }
         [ColumnarValue::Array(array), ColumnarValue::Scalar(ScalarValue::Int32(None))]
         | [ColumnarValue::Array(array), ColumnarValue::Scalar(ScalarValue::Int32(None)), ColumnarValue::Scalar(ScalarValue::Utf8(_))] => {
@@ -293,8 +304,14 @@ fn spark_pad_scalar_string<T: OffsetSizeTrait>(
         max_padding = max_padding.max(padding);
     }
     let mut builder = GenericStringBuilder::<T>::with_capacity(lengths.len(), data_capacity);
+    // Only this prefix can contribute to any output. Avoid copying and indexing
+    // an arbitrarily large pattern when the result needs few or no pad characters.
+    let pad_end = pad_string
+        .char_indices()
+        .nth(max_padding)
+        .map_or(pad_string.len(), |(offset, _)| offset);
     let padder = Padder {
-        pad: PadPattern::new(pad_string, max_padding),
+        pad: PadPattern::new(&pad_string[..pad_end], max_padding),
         ascii,
         truncate,
         is_left_pad,

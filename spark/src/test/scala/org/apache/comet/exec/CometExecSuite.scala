@@ -2555,6 +2555,13 @@ class CometExecSuite extends CometTestBase {
                 }
               }
               if (isPadding) {
+                // An empty pad keeps the short scalar even when the target length is large.
+                checkSparkAnswerAndImpl(
+                  sql(
+                    s"SELECT id, $function((SELECT max(s) FROM scalar_consumer), " +
+                      s"1000000, ''), $function((SELECT min(s) FROM scalar_consumer), " +
+                      "1000000, '') FROM scalar_consumer"),
+                  native = Seq(function))
                 // A scalar string must also broadcast to a row-varying length argument.
                 checkSparkAnswerAndImpl(
                   sql(s"SELECT id, $function((SELECT max(s) FROM scalar_consumer), " +
