@@ -2792,6 +2792,57 @@ class CometCodegenSuite
     }
   }
 
+  test("divide-by-zero through dispatched ScalaUDF surfaces SparkArithmeticException (#4517)") {
+    // When a ScalaUDF is dispatched into the native plan and the outer expression divides
+    // by the UDF result, the error must surface as SparkArithmeticException(DIVIDE_BY_ZERO),
+    // not as CometNativeException.  Verifies the JNI bridge correctly unwraps the
+    // DataFusion error chain even when DataFusion 53+ wraps it in Context/External layers.
+    assertDispatchedUdfArithmeticError("SELECT 1 / identity_int(a) FROM t", "DIVIDE_BY_ZERO")
+  }
+
+  test("integer overflow through dispatched ScalaUDF surfaces SparkArithmeticException (#4517)") {
+    // Same path as the divide-by-zero case, but a different SparkError variant, so a
+    // misclassification in the JNI bridge cannot pass both tests.
+    assertDispatchedUdfArithmeticError(
+      "SELECT identity_int(a) + 2147483647 FROM t",
+      "ARITHMETIC_OVERFLOW")
+  }
+
+  /**
+   * Runs `query` over `t (a INT)` holding 0 and 1 with ANSI enabled, where the query applies
+   * native arithmetic to the result of the dispatched ScalaUDF `identity_int`, and asserts the
+   * failure surfaces as `SparkArithmeticException` carrying `errorClass`.
+   */
+  private def assertDispatchedUdfArithmeticError(query: String, errorClass: String): Unit = {
+    spark.udf.register("identity_int", (i: java.lang.Integer) => i)
+    withSQLConf(SQLConf.ANSI_ENABLED.key -> "true") {
+      withTable("t") {
+        sql("CREATE TABLE t (a INT) USING parquet")
+        sql("INSERT INTO t VALUES (0), (1)")
+        CometScalaUDFCodegen.resetStats()
+        val e = intercept[Throwable](sql(query).collect())
+        val after = CometScalaUDFCodegen.stats()
+        assert(
+          after.compileCount + after.cacheHitCount >= 1,
+          s"expected codegen dispatcher activity, got $after")
+        val chain = Iterator.iterate(e)(_.getCause).takeWhile(_ != null).toList
+        val names = chain.map(_.getClass.getName)
+        assert(
+          names.exists(_.contains("SparkArithmeticException")),
+          s"expected SparkArithmeticException in cause chain, got: $names\n${e.getMessage}")
+        assert(
+          !names.exists(_.contains("CometNativeException")),
+          s"CometNativeException leaked across the JNI boundary: $names\n${e.getMessage}")
+        // Verify the error class is preserved end-to-end through the
+        // SparkErrorWithContext → CometQueryExecutionException → SparkErrorConverter pipeline.
+        val sparkEx = chain.find(_.getClass.getName.contains("SparkArithmeticException")).get
+        assert(
+          sparkEx.getMessage.contains(errorClass),
+          s"expected $errorClass error class in exception message, got: ${sparkEx.getMessage}")
+      }
+    }
+  }
+
   test("Invoke routes through the codegen dispatcher (#5575)") {
     // `Invoke` has no serde of its own beyond the catch-all, so this also pins the registration:
     // reaching a `JvmScalarUdf` proto means `QueryPlanSerde` resolved `CometInvoke`. The target is

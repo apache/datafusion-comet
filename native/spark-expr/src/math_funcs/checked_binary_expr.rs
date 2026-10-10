@@ -25,6 +25,7 @@ use arrow::record_batch::RecordBatch;
 use datafusion::common::DataFusionError;
 use datafusion::logical_expr::ColumnarValue;
 use datafusion::physical_expr::PhysicalExpr;
+use datafusion_comet_common::error_chain;
 
 use crate::{QueryContext, SparkError, SparkErrorWithContext};
 
@@ -94,19 +95,20 @@ impl PhysicalExpr for CheckedBinaryExpr {
     }
 
     fn evaluate(&self, batch: &RecordBatch) -> datafusion::common::Result<ColumnarValue> {
-        let result = self.child.evaluate(batch);
-
-        // If there's an error and we have query_context, wrap it
-        match result {
-            Err(DataFusionError::External(e)) if self.query_context.is_some() => {
-                if let Some(spark_err) = e.downcast_ref::<SparkError>() {
-                    let wrapped = SparkErrorWithContext::with_context(
-                        spark_err.clone(),
-                        Arc::clone(self.query_context.as_ref().unwrap()),
-                    );
-                    Err(DataFusionError::External(Box::new(wrapped)))
-                } else {
-                    Err(DataFusionError::External(e))
+        match self.child.evaluate(batch) {
+            Err(e) if self.query_context.is_some() => {
+                let spark_err = error_chain(&e)
+                    .find_map(|e| e.downcast_ref::<SparkError>())
+                    .cloned();
+                match spark_err {
+                    Some(spark_err) => {
+                        let wrapped = SparkErrorWithContext::with_context(
+                            spark_err,
+                            Arc::clone(self.query_context.as_ref().unwrap()),
+                        );
+                        Err(DataFusionError::External(Box::new(wrapped)))
+                    }
+                    None => Err(e),
                 }
             }
             other => other,

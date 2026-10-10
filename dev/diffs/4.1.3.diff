@@ -1603,7 +1603,7 @@ index 74cdee49e55..da1e9bd966a 100644
        df.collect()
          .map(_.getString(0))
 diff --git a/sql/core/src/test/scala/org/apache/spark/sql/SQLQueryTestSuite.scala b/sql/core/src/test/scala/org/apache/spark/sql/SQLQueryTestSuite.scala
-index 23f0144dcec..40d536bb23a 100644
+index 23f0144dcec..f78e2afa78e 100644
 --- a/sql/core/src/test/scala/org/apache/spark/sql/SQLQueryTestSuite.scala
 +++ b/sql/core/src/test/scala/org/apache/spark/sql/SQLQueryTestSuite.scala
 @@ -166,7 +166,11 @@ class SQLQueryTestSuite extends QueryTest with SharedSparkSession with SQLHelper
@@ -1619,21 +1619,22 @@ index 23f0144dcec..40d536bb23a 100644
    ) ++ otherIgnoreList
    /** List of test cases that require TPCDS table schemas to be loaded. */
    private def requireTPCDSCases: Seq[String] = Seq("pipe-operators.sql")
-@@ -682,9 +686,24 @@ class SQLQueryTestSuite extends QueryTest with SharedSparkSession with SQLHelper
+@@ -682,9 +686,25 @@ class SQLQueryTestSuite extends QueryTest with SharedSparkSession with SQLHelper
          s"Schema did not match for query #$i\n${expected.sql}: $output") {
          output.schema
        }
 -      assertResult(expected.output, s"Result did not match" +
-+      // Comet may surface errors as `CometNativeException` instead of the matching Spark
-+      // exception class when a `ScalaUDF` dispatched into the native plan evaluates a
-+      // divide-by-zero (DataFusion wraps the typed error so the JNI bridge cannot downcast it).
-+      // Same category, different surface. Collapse both sides to a placeholder when this happens
-+      // so the literal compare passes.
-+      // Tracking issue: https://github.com/apache/datafusion-comet/issues/4517
++      // With parquet filter pushdown, DataFusion 54/55 formats an error raised while
++      // evaluating a pushed-down predicate into a string, so a divide-by-zero from a
++      // `ScalaUDF` dispatched into the native plan surfaces as `CometNativeException`
++      // instead of `SparkArithmeticException`. Collapse both sides to a placeholder in that
++      // case only. Remove once Comet uses a DataFusion release that includes
++      // https://github.com/apache/datafusion/pull/24638.
 +      val (expectedOut, actualOut) = if (isCometEnabled &&
 +          expected.output.startsWith("org.apache.spark.SparkArithmeticException") &&
 +          expected.output.contains("\"DIVIDE_BY_ZERO\"") &&
 +          output.output.startsWith("org.apache.comet.CometNativeException") &&
++          output.output.contains("Error evaluating filter predicate") &&
 +          output.output.contains("DivideByZero")) {
 +        ("[DIVIDE_BY_ZERO]", "[DIVIDE_BY_ZERO]")
 +      } else {
