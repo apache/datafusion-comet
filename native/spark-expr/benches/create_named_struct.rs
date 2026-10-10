@@ -32,13 +32,15 @@ fn criterion_benchmark(c: &mut Criterion) {
         Field::new("a", DataType::Int64, true),
         Field::new("b", DataType::Int64, true),
     ]));
-    let expr = CreateNamedStruct::new(
+    let expr = CreateNamedStruct::try_new(
         vec![
             Arc::new(Column::new("a", 0)) as Arc<dyn PhysicalExpr>,
             Arc::new(Column::new("b", 1)),
         ],
         vec!["x".to_string(), "y".to_string()],
-    );
+        vec![true, true],
+    )
+    .unwrap();
 
     let mut group = c.benchmark_group("create_named_struct");
     for rows in ROW_COUNTS {

@@ -617,6 +617,8 @@ message BloomFilterMightContain {
 message CreateNamedStruct {
   repeated Expr values = 1;
   repeated string names = 2;
+  // Catalyst field nullability, in the same order as values and names.
+  repeated bool field_nullable = 3;
 }
 
 message GetStructField {

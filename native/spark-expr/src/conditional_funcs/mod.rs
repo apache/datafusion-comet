@@ -18,5 +18,8 @@
 mod case_when;
 mod if_expr;
 
-pub use case_when::{create_case_when, create_if_expr, CaseWhenExpr};
+pub use case_when::{
+    cast_to_common_type, create_case_when, create_if_expr, positional_common_type, CaseWhenExpr,
+    PositionalTypeCoercion,
+};
 pub use if_expr::IfExpr;

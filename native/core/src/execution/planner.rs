@@ -142,11 +142,12 @@ use datafusion_comet_proto::{
     },
 };
 use datafusion_comet_spark_expr::{
-    create_case_when, create_if_expr, jvm_udf::JvmScalarUdfExpr, spark_in_list, ApproxPercentile,
-    ArrayInsert, Avg, AvgDecimal, Cast, CheckOverflow, Correlation, Covariance, CreateNamedStruct,
-    DecimalRescaleCheckOverflow, FloatOperands, GetArrayStructFields, GetStructField, HllPlusPlus,
-    HllSketchAgg, HllUnionAgg, IfExpr, ListExtract, MaxMinBy, Mode, NormalizeNaNAndZero,
-    NormalizeNestedFloats, Regr, RegrType, SparkCastOptions, SparkMinMax, Stddev, SumDecimal,
+    cast_to_common_type, create_case_when, create_if_expr, jvm_udf::JvmScalarUdfExpr,
+    positional_common_type, spark_in_list, ApproxPercentile, ArrayInsert, Avg, AvgDecimal, Cast,
+    CheckOverflow, Correlation, Covariance, CreateNamedStruct, DecimalRescaleCheckOverflow,
+    FloatOperands, GetArrayStructFields, GetStructField, HllPlusPlus, HllSketchAgg, HllUnionAgg,
+    IfExpr, ListExtract, MaxMinBy, Mode, NormalizeNaNAndZero, NormalizeNestedFloats,
+    PositionalTypeCoercion, Regr, RegrType, SparkCastOptions, SparkMinMax, Stddev, SumDecimal,
     ToJson, UnboundColumn, Variance, WideDecimalBinaryExpr, WideDecimalOp,
 };
 use itertools::Itertools;
@@ -840,13 +841,43 @@ impl PhysicalPlanner {
                     .map_err(|e| e.into())
             }
             ExprStruct::In(expr) => {
-                let value =
+                let mut value =
                     self.create_expr(expr.in_value.as_ref().unwrap(), Arc::clone(&input_schema))?;
-                let list = expr
+                let mut list = expr
                     .lists
                     .iter()
                     .map(|x| self.create_expr(x, Arc::clone(&input_schema)))
                     .collect::<Result<Vec<_>, _>>()?;
+
+                let value_type = value.data_type(&input_schema)?;
+                if matches!(
+                    value_type,
+                    DataType::Struct(_) | DataType::List(_) | DataType::Map(_, _)
+                ) {
+                    let list_types = list
+                        .iter()
+                        .map(|item| item.data_type(&input_schema))
+                        .collect::<datafusion::common::Result<Vec<_>>>()?;
+                    // A later candidate can widen nullability, so choose the common type before
+                    // casting any operand. Spark compares all struct fields by position in IN.
+                    let target = list_types
+                        .iter()
+                        .try_fold(value_type.clone(), |target, item| {
+                            positional_common_type(
+                                &target,
+                                item,
+                                PositionalTypeCoercion::MetadataOnly,
+                            )
+                        });
+                    if let Some(target) = target {
+                        value = cast_to_common_type(value, &value_type, &target);
+                        list = list
+                            .into_iter()
+                            .zip(list_types)
+                            .map(|(item, item_type)| cast_to_common_type(item, &item_type, &target))
+                            .collect();
+                    }
+                }
 
                 spark_in_list(value, list, expr.negated, input_schema.as_ref())
                     .map_err(|e| e.into())
@@ -909,7 +940,11 @@ impl PhysicalPlanner {
                     .map(|expr| self.create_expr(expr, Arc::clone(&input_schema)))
                     .collect::<Result<Vec<_>, _>>()?;
                 let names = expr.names.clone();
-                Ok(Arc::new(CreateNamedStruct::new(values, names)))
+                Ok(Arc::new(CreateNamedStruct::try_new(
+                    values,
+                    names,
+                    expr.field_nullable.clone(),
+                )?))
             }
             ExprStruct::GetStructField(expr) => {
                 let child =
@@ -1429,13 +1464,12 @@ impl PhysicalPlanner {
         }
     }
 
-    /// DataFusion's nested comparison kernel (`apply_cmp_for_nested`) requires both operands to
-    /// have identical data types, including nested field nullability, whereas Spark comparisons
-    /// ignore nullability. When a comparison's operands are nested types that differ only in
-    /// nullability (e.g. a higher-order `transform` produces `List(non-null Struct)` while the
-    /// other side is `List(nullable Struct)`), cast both to their nullability-union type so the
-    /// kernel accepts them. Non-comparison ops and non-nested or already-matching types are left
-    /// untouched.
+    /// Align compatible nested comparison operands by position, as Spark does. Comet's
+    /// float-aware equality validator requires matching struct names; DataFusion's nested
+    /// comparison kernel ignores names but checks nested nullability. Both therefore need
+    /// compatible metadata. Use Comet's positional cast: Arrow's name-based struct cast can
+    /// reorder values and silently change ordering or null-safe equality results.
+    /// Non-comparison operations and unsupported physical layouts are left untouched.
     pub fn reconcile_nested_comparison_types(
         left: Arc<dyn PhysicalExpr>,
         right: Arc<dyn PhysicalExpr>,
@@ -1443,47 +1477,31 @@ impl PhysicalPlanner {
         input_schema: &SchemaRef,
     ) -> (Arc<dyn PhysicalExpr>, Arc<dyn PhysicalExpr>) {
         use DataFusionOperator::*;
-        let is_cmp = matches!(
+        if !matches!(
             op,
             Eq | NotEq | Lt | LtEq | Gt | GtEq | IsDistinctFrom | IsNotDistinctFrom
-        );
-        if !is_cmp {
+        ) {
             return (left, right);
         }
         let (lt, rt) = match (left.data_type(input_schema), right.data_type(input_schema)) {
             (Ok(lt), Ok(rt)) => (lt, rt),
             _ => return (left, right),
         };
-        // Only nested types route through `apply_cmp_for_nested`; primitives coerce fine.
-        let nested = matches!(
+        // Spark arrays are represented as List, not LargeList or FixedSizeList.
+        if !matches!(
             lt,
-            DataType::List(_)
-                | DataType::LargeList(_)
-                | DataType::FixedSizeList(_, _)
-                | DataType::Struct(_)
-                | DataType::Map(_, _)
-        );
-        if !nested || lt.equals_datatype(&rt) {
-            return (left, right);
-        }
-        // `Field::try_merge` unions nullability recursively while preserving structure (and the
-        // Map/list invariants). Bail out unchanged if the structures are genuinely incompatible.
-        let mut merged = Field::new("c", lt.clone(), true);
-        if merged
-            .try_merge(&Field::new("c", rt.clone(), true))
-            .is_err()
+            DataType::List(_) | DataType::Struct(_) | DataType::Map(_, _)
+        ) || lt == rt
         {
             return (left, right);
         }
-        let target = merged.data_type().clone();
-        let cast_to_target = |e: Arc<dyn PhysicalExpr>, dt: &DataType| -> Arc<dyn PhysicalExpr> {
-            if dt.equals_datatype(&target) {
-                e
-            } else {
-                Arc::new(CastExpr::new(e, target.clone(), None))
-            }
-        };
-        (cast_to_target(left, &lt), cast_to_target(right, &rt))
+        match positional_common_type(&lt, &rt, PositionalTypeCoercion::MetadataOnly) {
+            Some(target) => (
+                cast_to_common_type(left, &lt, &target),
+                cast_to_common_type(right, &rt, &target),
+            ),
+            None => (left, right),
+        }
     }
 
     /// Create a DataFusion physical plan from Spark physical plan. There is a level of
@@ -5270,6 +5288,7 @@ mod tests {
         let value = spark_expression::CreateNamedStruct {
             names: vec!["value".to_string(), "metadata".to_string()],
             values: vec![bytes(vec![0]), bytes(vec![1, 0, 0])],
+            field_nullable: vec![false, false],
         };
         let default_expr = |value| Expr {
             expr_struct: Some(ExprStruct::CreateNamedStruct(value)),
