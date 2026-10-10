@@ -312,9 +312,14 @@ Per-bucket `fs.s3a.bucket.<bucket>.*` keys are split into a complete bucket name
 suffix. `fs.s3a.bucket.target.other.endpoint` belongs to bucket `target.other`, so it does not
 make a write to `target` ineligible.
 The Hadoop check excludes keys whose only source is Hadoop's built-in `core-default.xml`, while
-retaining programmatic, site-XML, and custom `*-default.xml` settings. It also ignores Spark's
-session-wide S3A vectored-read and `downgrade.syncable.exceptions` settings, which cannot affect a
-data-file write request. Keep those allowlists aligned when adding storage support. Reaching
+retaining programmatic, site-XML, and custom `*-default.xml` settings. It also ignores the keys in
+`IgnoredHadoopS3Keys`: Spark's session-wide S3A vectored-read and `downgrade.syncable.exceptions`
+settings, plus the committer, `bulk.delete.page.size` and `experimental.input.fadvise` settings that
+deployments set cluster-wide (Spark 4.1 sets two of the committer keys itself). A key belongs on
+that list only if S3A would not apply it to a data-file write request. Settings that S3A does apply,
+such as encryption, ACLs, storage class, signing and the credentials provider, must keep falling
+back. The list matches the exact key, so a per-bucket spelling is not ignored. Keep those
+allowlists aligned when adding storage support. Reaching
 `FileIOBuilder.with_prop` is not proof of support: the builder accepts unknown properties and the
 backend ignores them. A fallback reason must contain property names only, never values.
 
