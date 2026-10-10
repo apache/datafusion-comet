@@ -15,13 +15,15 @@
 -- specific language governing permissions and limitations
 -- under the License.
 
--- Spark 4.2 (SPARK-56663) raises when SECOND or MILLISECOND truncation falls below
+-- Spark 4.2 and later (SPARK-56663) raise when SECOND or MILLISECOND truncation falls below
 -- Long.MinValue, like every other unit. trunc_timestamp_fine_overflow.sql covers 4.1 and
 -- earlier, where Spark wraps the Long subtraction instead.
 -- MinSparkVersion: 4.2
 
 -- Use microsecond storage to preserve the extreme value without an INT96 conversion.
 -- Config: spark.sql.session.timeZone=UTC
+-- A format column is Incompatible, because an invalid format throws instead of returning NULL.
+-- Config: spark.comet.expression.TruncTimestamp.allowIncompatible=true
 -- Config: spark.sql.parquet.int96RebaseModeInWrite=CORRECTED
 -- Config: spark.sql.parquet.datetimeRebaseModeInWrite=CORRECTED
 -- Config: spark.sql.parquet.outputTimestampType=TIMESTAMP_MICROS
@@ -47,3 +49,23 @@ SELECT date_trunc('SECOND', ts) FROM test_trunc_ts_fine_overflow
 
 query expect_error(long overflow)
 SELECT date_trunc('MILLISECOND', ts) FROM test_trunc_ts_fine_overflow
+
+statement
+CREATE TABLE test_trunc_ts_fine_overflow_fmt(ts timestamp, fmt string) USING parquet
+
+statement
+INSERT INTO test_trunc_ts_fine_overflow_fmt VALUES
+  (timestamp_micros(-9223372036854775808), 'SECOND'),
+  (timestamp_micros(-9223372036854775808), 'MILLISECOND'),
+  (timestamp('2024-05-17 12:34:56.123456'), 'SECOND')
+
+-- With the format in a column. The first query shows it runs natively.
+query expect_native(date_trunc)
+SELECT date_trunc(fmt, ts) FROM test_trunc_ts_fine_overflow_fmt
+WHERE ts > timestamp_micros(-9223372036854775808)
+
+query expect_error(long overflow)
+SELECT date_trunc(fmt, ts) FROM test_trunc_ts_fine_overflow_fmt
+
+query expect_error(long overflow)
+SELECT date_trunc(fmt, ts) FROM test_trunc_ts_fine_overflow_fmt WHERE fmt = 'MILLISECOND'

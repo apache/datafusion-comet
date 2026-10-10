@@ -376,9 +376,11 @@ object CometConf extends ShimCometConf {
       .category(CATEGORY_EXEC)
       .doc(
         "Whether to enable Comet native scans and fused Spark reads of in-memory cached tables. " +
-          "Requires spark.comet.enabled=true. At startup, this setting also decides whether " +
-          "CometDriverPlugin installs Comet's cache serializer, which stores cached data in " +
-          "Arrow format. The plugin installs it only if spark.comet.enabled and " +
+          "Requires spark.comet.enabled=true. Defaults to true from Spark 3.5 and to false on " +
+          "Spark 3.4, where AQE cannot coalesce the shuffle partitions of a union that Comet " +
+          "runs with a cached relation in one branch. At startup, this setting also decides " +
+          "whether CometDriverPlugin installs Comet's cache serializer, which stores cached " +
+          "data in Arrow format. The plugin installs it only if spark.comet.enabled and " +
           "spark.comet.exec.enabled are also enabled at startup, and only with one of Comet's " +
           "shuffle managers while Comet shuffle is enabled. " +
           "Because spark.sql.cache.serializer is a " +
@@ -399,7 +401,9 @@ object CometConf extends ShimCometConf {
           "soon as it is serialized, including the disk half of the default " +
           "MEMORY_AND_DISK storage level.")
       .booleanConf
-      .createWithDefault(false)
+      // CometCoalesceShufflePartitions needs a query-stage optimizer rule hook, which Spark 3.4
+      // lacks.
+      .createWithDefault(CometSparkSessionExtensions.isSpark35Plus)
 
   val COMET_EXEC_IN_MEMORY_CACHE_COMPRESSION_CODEC: ConfigEntry[String] =
     conf("spark.comet.exec.inMemoryCache.compression.codec")
@@ -1224,9 +1228,7 @@ object CometConf extends ShimCometConf {
         "When enabled, fall back to Spark for floating-point operations that may differ from " +
           "Spark, such as comparing -0.0 and 0.0. `ORDER BY`, window ordering and range " +
           "partitioning keys are unaffected, including floating-point values nested in arrays " +
-          "and structs, because Comet normalizes those comparison keys to match Spark. The " +
-          "exception is a nested key whose type can hold a null element or field, which falls " +
-          "back until the native sort and window frames order those nulls as Spark does. " +
+          "and structs, because Comet normalizes those comparison keys to match Spark. " +
           "`sort_array` is unaffected too, because it follows Spark's ordering. " +
           s"$COMPAT_GUIDE.")
       .booleanConf
