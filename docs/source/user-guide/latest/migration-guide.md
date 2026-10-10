@@ -62,6 +62,31 @@ key is removed.
 Comet `1.2.0` makes no behavior changes that need a `spark.comet.legacy.*` key. The changes below
 need none either, but check whether any of them applies to your deployment.
 
+### In-Memory Cache Enabled by Default
+
+`spark.comet.exec.inMemoryCache.enabled` now defaults to `true` on Spark 3.5 and later. There, an
+application that loads `CometPlugin` now stores what it caches with `CACHE TABLE`, `df.cache()` or
+`df.persist()` in Comet's Arrow format instead of Spark's, and Comet scans it natively. On Spark 3.4
+the default stays `false`; see [In-Memory Cache](in-memory-cache.md) for why. The format does not
+change query results, but it can change performance. Spark's own cache scan can read Comet's format
+more slowly than Spark's, which matters when a session turns Comet or its native execution off
+after caching, and Comet records a fallback reason on such a scan. See
+[In-Memory Cache](in-memory-cache.md#limitations).
+
+The format is chosen once, when the application starts. To keep Spark's format, set
+`spark.comet.exec.inMemoryCache.enabled=false` then. Comet also keeps Spark's format without that
+setting when the application:
+
+- starts with `spark.comet.enabled` or `spark.comet.exec.enabled` set to `false`.
+- leaves Comet shuffle enabled without one of Comet's shuffle managers, so that Comet disables
+  itself.
+- uses Kryo with `spark.kryo.registrationRequired=true` and has not registered Comet's cached
+  batch, because Kryo would reject it. To use Comet's format, register Comet's classes with
+  `spark.kryo.registrator=org.apache.comet.CometKryoRegistrator`; see
+  [Kryo](in-memory-cache.md#kryo).
+
+An application that sets `spark.sql.cache.serializer` itself keeps the serializer it chose.
+
 ### S3 Request Addressing
 
 Comet's native Parquet and CSV scans now address S3 requests the way Hadoop S3A does (native

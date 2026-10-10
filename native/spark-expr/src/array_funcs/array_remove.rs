@@ -17,7 +17,7 @@
 
 use std::sync::Arc;
 
-use super::with_values;
+use super::{set_bits_before, with_values};
 use crate::float_semantics::{compare_floats, spark_equality};
 use arrow::array::{
     Array, ArrayRef, AsArray, BooleanArray, BooleanBufferBuilder, ListArray, PrimitiveArray,
@@ -152,22 +152,9 @@ where
 }
 
 /// The offsets of the elements that `keep` keeps, for a `keep` that starts at `offsets[0]`: the
-/// number of its set bits before each offset, counted a word at a time in one pass.
+/// number of its set bits before each offset.
 fn kept_offsets(keep: &BooleanBuffer, offsets: &OffsetBuffer<i32>) -> OffsetBuffer<i32> {
-    let chunks = keep.inner().bit_chunks(keep.offset(), keep.len());
-    let mut words = chunks.iter_padded();
-    let (mut word, mut word_start, mut before_word) = (words.next().unwrap_or(0), 0, 0);
-    let kept = offsets.iter().map(|offset| {
-        let end = (offset - offsets[0]) as usize;
-        while end >= word_start + 64 {
-            before_word += word.count_ones() as usize;
-            word = words.next().unwrap_or(0);
-            word_start += 64;
-        }
-        let below_end = word & ((1u64 << (end - word_start)) - 1);
-        (before_word + below_end.count_ones() as usize) as i32
-    });
-    OffsetBuffer::new(kept.collect::<Vec<i32>>().into())
+    OffsetBuffer::new(set_bits_before(keep, offsets).into())
 }
 
 /// Copies the floats of each row that are null or differ from the row's value in Spark's
