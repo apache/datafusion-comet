@@ -21,14 +21,13 @@ package org.apache.spark.sql.comet.execution.shuffle
 
 import java.io.{EOFException, InputStream}
 import java.nio.{ByteBuffer, ByteOrder}
-import java.nio.channels.{Channels, ReadableByteChannel}
 
 import scala.util.control.NonFatal
 
 import org.apache.spark.sql.execution.metric.SQLMetric
 import org.apache.spark.sql.vectorized.ColumnarBatch
 
-import org.apache.comet.{CometShuffleReadFailureHandler, Native}
+import org.apache.comet.{CometShuffleBlockIterator, CometShuffleReadFailureHandler, Native}
 import org.apache.comet.vector.NativeUtil
 
 /**
@@ -42,7 +41,8 @@ case class NativeBatchDecoderIterator(
     nativeLib: Native,
     nativeUtil: NativeUtil,
     tracingEnabled: Boolean,
-    expectedSchema: Option[Array[Byte]] = None)
+    expectedSchema: Option[Array[Byte]] = None,
+    readBufferSize: Int = CometShuffleBlockIterator.DEFAULT_READ_BUFFER_SIZE)
     extends Iterator[ColumnarBatch] {
 
   // One consumer reads this iterator, while task completion may close it from another thread.
@@ -60,15 +60,9 @@ case class NativeBatchDecoderIterator(
 
   import NativeBatchDecoderIterator._
 
-  private val channel: ReadableByteChannel = if (in != null) {
-    Channels.newChannel(in)
-  } else {
-    null
-  }
-
   override def hasNext: Boolean = {
     synchronized {
-      if (channel == null || isClosed) {
+      if (in == null || isClosed) {
         return false
       }
       if (batch.isDefined) {
@@ -172,7 +166,7 @@ case class NativeBatchDecoderIterator(
   private def readNextBlock(): Option[(Int, ByteBuffer, Int)] = {
     // read compressed batch size from header
     longBuf.clear()
-    while (longBuf.hasRemaining && channel.read(longBuf) >= 0) {}
+    CometShuffleBlockIterator.readFully(in, longBuf, readBufferSize)
 
     // If we reach the end of the stream, we are done, or if we read partial length
     // then the stream is corrupted.
@@ -189,7 +183,7 @@ case class NativeBatchDecoderIterator(
 
     // read field count from header
     longBuf.clear()
-    while (longBuf.hasRemaining && channel.read(longBuf) >= 0) {}
+    CometShuffleBlockIterator.readFully(in, longBuf, readBufferSize)
     if (longBuf.hasRemaining) {
       throw new EOFException("Data corrupt: unexpected EOF while reading field count")
     }
@@ -214,7 +208,7 @@ case class NativeBatchDecoderIterator(
     }
     dataBuf.clear()
     dataBuf.limit(bytesToRead.toInt)
-    while (dataBuf.hasRemaining && channel.read(dataBuf) >= 0) {}
+    CometShuffleBlockIterator.readFully(in, dataBuf, readBufferSize)
     if (dataBuf.hasRemaining) {
       throw new EOFException("Data corrupt: unexpected EOF while reading compressed batch")
     }

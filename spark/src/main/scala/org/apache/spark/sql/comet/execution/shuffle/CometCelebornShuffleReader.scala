@@ -122,7 +122,8 @@ private[shuffle] final class CometCelebornShuffleReader[K, C](
           new Native(),
           nativeUtil,
           CometConf.COMET_TRACING_ENABLED.get(),
-          Some(serializedSchema))
+          Some(serializedSchema),
+          CometConf.COMET_SHUFFLE_READ_BUFFER_SIZE.get().toInt)
       } catch {
         case NonFatal(failure) =>
           Utils.tryWithSafeFinally(throw failure) {
