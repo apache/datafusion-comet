@@ -19,6 +19,8 @@
 
 package org.apache.comet.expressions
 
+import scala.util.control.NonFatal
+
 import org.apache.spark.sql.catalyst.expressions.{Attribute, Cast, Expression, Literal}
 import org.apache.spark.sql.internal.SQLConf
 import org.apache.spark.sql.types.{ArrayType, DataType, DataTypes, DecimalType, MapType, NullType, StructType, TimestampNTZType, TimestampType}
@@ -40,6 +42,10 @@ object CometCast
   // Shared with CometNativeCastSuite so the asserted reason cannot drift from production.
   private[comet] val negativeScaleDecimalToStringReason: String =
     "Negative-scale decimal requires spark.sql.legacy.allowNegativeScaleOfDecimal=true"
+
+  private[comet] val literalCastConditionalEvalReason: String =
+    "Cast of a literal threw during planning; Spark leaves it for conditional evaluation " +
+      "so it may never be reached at runtime."
 
   // When `spark.sql.legacy.castComplexTypesToString.enabled` is true, Spark wraps maps and
   // structs with `[]` (instead of `{}`) when casting to string, and omits NULL elements of
@@ -98,9 +104,9 @@ object CometCast
 
   override def getSupportLevel(cast: Cast): SupportLevel = {
     if (cast.child.isInstanceOf[Literal]) {
-      // A cast whose child is a literal is folded by Spark at planning time via `cast.eval()`
-      // (see `convert`), so the cast never executes natively and the result matches Spark by
-      // definition. `CometLiteral` then validates the resulting literal's data type, except
+      // A successfully evaluated literal cast is folded via `cast.eval()` (see `convert`).
+      // Spark can leave a throwing literal cast in an unvisited conditional branch, so `convert`
+      // falls back when evaluation fails. `CometLiteral` validates a folded literal, except
       // for `VariantType` which must be rejected here: the fold produces a `Literal[VariantType]`
       // that no downstream Comet serde can serialize.
       if (isVariantType(cast.child.dataType) || isVariantType(cast.dataType)) {
@@ -121,7 +127,19 @@ object CometCast
     val cometEvalMode = evalMode(cast)
     cast.child match {
       case _: Literal =>
-        exprToProtoInternal(Literal.create(cast.eval(), cast.dataType), inputs, binding)
+        val value =
+          try {
+            cast.eval()
+          } catch {
+            case NonFatal(_) =>
+              // ConstantFolding.tryFold leaves failed conditional expressions unfolded. Its
+              // FAILED_TO_EVALUATE tag is private[sql], so evaluate defensively here instead.
+              // Deliberately keep this in convert: a codegen-dispatched projection evaluates
+              // a whole batch and can reach a throwing row that Spark skips under LIMIT.
+              withFallbackReason(cast, literalCastConditionalEvalReason)
+              return None
+          }
+        exprToProtoInternal(Literal.create(value, cast.dataType), inputs, binding)
       case _ =>
         if (isAlwaysCastToNull(cast.child.dataType, cast.dataType, cometEvalMode)) {
           exprToProtoInternal(Literal.create(null, cast.dataType), inputs, binding)

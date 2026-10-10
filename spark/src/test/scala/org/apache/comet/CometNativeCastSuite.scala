@@ -29,8 +29,9 @@ import scala.util.Random
 import org.apache.hadoop.fs.Path
 import org.apache.spark.SparkConf
 import org.apache.spark.sql.{CometTestBase, DataFrame, Row, SaveMode}
-import org.apache.spark.sql.catalyst.expressions.Cast
+import org.apache.spark.sql.catalyst.expressions.{Cast, Literal}
 import org.apache.spark.sql.catalyst.parser.ParseException
+import org.apache.spark.sql.comet.{CometNativeScanExec, CometProjectExec}
 import org.apache.spark.sql.execution.adaptive.AdaptiveSparkPlanHelper
 import org.apache.spark.sql.functions.{col, monotonically_increasing_id}
 import org.apache.spark.sql.internal.SQLConf
@@ -64,6 +65,70 @@ import org.apache.comet.serde.{Compatible, Incompatible, Unsupported}
 class CometNativeCastSuite extends CometTestBase with AdaptiveSparkPlanHelper {
 
   import testImplicits._
+
+  test("literal cast failure in an unvisited conditional branch does not fail planning") {
+    withTempPath { path =>
+      withSQLConf(CometConf.COMET_ENABLED.key -> "false") {
+        spark
+          .range(2)
+          .selectExpr("id", "CAST(id AS STRING) AS value")
+          .coalesce(1)
+          .write
+          .parquet(path.getCanonicalPath)
+      }
+      withSQLConf(SQLConf.ANSI_ENABLED.key -> "true") {
+        withParquetTable(path.getCanonicalPath, "cast_branch_rows") {
+          val cast = "CAST(IF(id = 1, 'bad', value) AS INT)"
+          val masked = s"SELECT $cast AS parsed FROM cast_branch_rows LIMIT 1"
+          withSQLConf(CometConf.COMET_ENABLED.key -> "false") {
+            assert(sql(masked).collect().toSeq == Seq(Row(0)))
+          }
+          // ConstantFolding must leave the throwing literal cast inside the conditional.
+          val badCasts = sql(masked).queryExecution.optimizedPlan
+            .flatMap(_.expressions)
+            .flatMap(_.collect {
+              case c: Cast
+                  if c.child.isInstanceOf[Literal] &&
+                    Option(c.child.asInstanceOf[Literal].value).exists(_.toString == "bad") =>
+                c
+            })
+          assert(badCasts.nonEmpty)
+          val (_, plan) =
+            checkSparkAnswerAndFallbackReason(masked, CometCast.literalCastConditionalEvalReason)
+          assert(collect(plan) { case scan: CometNativeScanExec => scan }.nonEmpty)
+          checkSparkError(
+            sql(s"SELECT $cast FROM cast_branch_rows"),
+            "CAST_INVALID_INPUT",
+            checkNative = false)
+        }
+      }
+    }
+  }
+
+  test("successful literal casts and non-ANSI invalid casts retain native projection") {
+    withParquetTable(Seq(Tuple1(0), Tuple1(1)), "cast_branch_controls") {
+      for (ansi <- Seq("true", "false")) {
+        withSQLConf(SQLConf.ANSI_ENABLED.key -> ansi) {
+          val query = "SELECT CAST(IF(_1 = 1, '1', CAST(_1 AS STRING)) AS INT) " +
+            "FROM cast_branch_controls"
+          val (_, plan) = checkSparkAnswerAndOperator(sql(query))
+          assert(collect(plan) { case project: CometProjectExec => project }.nonEmpty)
+          assert(
+            !plan.exists(_.getTagValue(CometExplainInfo.FALLBACK_REASONS)
+              .exists(_.contains(CometCast.literalCastConditionalEvalReason))))
+        }
+      }
+      withSQLConf(SQLConf.ANSI_ENABLED.key -> "false") {
+        val query = "SELECT CAST(IF(_1 = 1, 'bad', CAST(_1 AS STRING)) AS INT) " +
+          "FROM cast_branch_controls"
+        val (_, plan) = checkSparkAnswerAndOperator(sql(query))
+        assert(collect(plan) { case project: CometProjectExec => project }.nonEmpty)
+        assert(
+          !plan.exists(_.getTagValue(CometExplainInfo.FALLBACK_REASONS)
+            .exists(_.contains(CometCast.literalCastConditionalEvalReason))))
+      }
+    }
+  }
 
   // Casts in this suite predominantly test non-ANSI semantics (silent overflow/null on
   // invalid input); tests that target ANSI behavior opt in explicitly via withSQLConf.
