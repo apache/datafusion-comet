@@ -86,6 +86,7 @@ fn scan(
         false,
         false,
         false,
+        false,
     )
     .unwrap()
 }

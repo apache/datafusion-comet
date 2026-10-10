@@ -86,6 +86,7 @@ pub(crate) fn init_datasource_exec(
     encryption_enabled: bool,
     use_field_id: bool,
     require_field_ids: bool,
+    ignore_variant_annotation: bool,
 ) -> Result<Arc<DataSourceExec>, ExecutionError> {
     // Computed once and reused below for `try_pushdown_filters`. `copied_config()` clones only
     // `SessionConfig` (an `Arc<ConfigOptions>` plus a small extensions map); `SessionContext::
@@ -103,6 +104,7 @@ pub(crate) fn init_datasource_exec(
         &session_config.options().execution.parquet,
     );
     spark_parquet_options.use_field_id = use_field_id;
+    spark_parquet_options.ignore_variant_annotation = ignore_variant_annotation;
     // Spark can discard filtered-out values before timestamp conversion using statistics,
     // dictionary, and row-level filters. Comet cannot mirror every pruning path, so applying
     // checked conversion in a filtered scan can fail on values Spark never reads. Preserve the
@@ -240,7 +242,8 @@ pub(crate) fn init_datasource_exec(
     };
 
     let expr_adapter_factory: Arc<dyn PhysicalExprAdapterFactory> = Arc::new(
-        SparkPhysicalExprAdapterFactory::new(spark_parquet_options, default_values),
+        SparkPhysicalExprAdapterFactory::new(spark_parquet_options, default_values)
+            .with_required_schema(Arc::clone(&required_schema)),
     );
 
     let file_groups = file_groups
@@ -499,6 +502,7 @@ mod tests {
             false,
             false,
             false,
+            false,
         )
         .unwrap()
     }
@@ -676,6 +680,7 @@ mod tests {
             false,
             false,
             &session_ctx,
+            false,
             false,
             false,
             false,
