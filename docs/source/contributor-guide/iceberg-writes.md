@@ -30,16 +30,19 @@ does not repeat those lists; it explains the code that implements them.
 
 ## Overview
 
-Two flags, each of which builds on the one before it:
+Two layers, the second built on the first, both switched by `spark.comet.write.iceberg.enabled`:
 
-| Flag                                              | What it changes                                                                                                                         |
-| ------------------------------------------------- | --------------------------------------------------------------------------------------------------------------------------------------- |
-| `spark.comet.write.iceberg.splitOperator.enabled` | The plan shape. Spark's single V2 write operator becomes `IcebergCommit` over `IcebergWrite`. iceberg-java still writes the data files. |
-| `spark.comet.write.iceberg.enabled`               | Who writes the data files. An eligible `IcebergWrite` becomes `CometIcebergWrite`, which writes Parquet with iceberg-rust.              |
+| Layer                   | What it changes                                                                                                                                 |
+| ----------------------- | ----------------------------------------------------------------------------------------------------------------------------------------------- |
+| The split-operator plan | The plan shape. Spark's single V2 write operator becomes `IcebergCommit` over `IcebergWrite`, and iceberg-java writes the data files inside it. |
+| The native writer       | Who writes the data files. An eligible `IcebergWrite` becomes `CometIcebergWrite`, which writes Parquet with iceberg-rust.                      |
 
-The native flag does nothing without the split flag, because it converts a node only the split plan
-creates. Both default to `false`. The roadmap for making them the default, and the criteria for it,
-are tracked in [#5644](https://github.com/apache/datafusion-comet/issues/5644) under the epic
+The flag defaults to `true` since Comet 1.2.0, so a change to the split plan reaches every Iceberg
+write and a change to the native writer reaches every eligible one. Set to `false`, it plans Spark's
+own write operator. The testing-only `spark.comet.write.iceberg.splitOperator.enabled` plans the
+split operator with the native writer off, which the suites use to compare the two writers under
+the same plan. The rollout and its criteria are tracked in
+[#5644](https://github.com/apache/datafusion-comet/issues/5644) under the epic
 [#5649](https://github.com/apache/datafusion-comet/issues/5649).
 
 One rule runs through the whole native path: **the native writer must produce the outcome
@@ -70,13 +73,13 @@ IcebergCommit                 driver: collect task commit messages, BatchWrite.c
    +- <input query>           scans, projects, exchanges, sorts; inside AQE with or without the split
 ```
 
-| Component                                                                                                                            | Location                                           | Role                                                                                                                                                                                                                                 |
-| ------------------------------------------------------------------------------------------------------------------------------------ | -------------------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------ |
-| `IcebergWriteStrategy`                                                                                                               | `spark/src/main/scala/org/apache/comet/iceberg/`   | Planner strategy. Matches `AppendData`, `OverwriteByExpression`, `OverwritePartitionsDynamic`, `ReplaceData` (and Iceberg's own `ReplaceIcebergData`, which Iceberg 1.5.2 plans on Spark 3.4), plus Spark 3.5+ Iceberg `WriteDelta`. |
-| `IcebergWriteLogical`                                                                                                                | same                                               | Logical anchor for the writer, so AQE re-plans re-emit only the writer and not a second committer.                                                                                                                                   |
-| `IcebergWriteExec`                                                                                                                   | `spark/src/main/scala/org/apache/spark/sql/comet/` | JVM writer. Runs iceberg-java's `DataWriter` or, for `WriteDelta`, `DeltaWriter` per task and returns the serialized `WriterCommitMessage` as one binary row.                                                                        |
-| `IcebergCommitExec`                                                                                                                  | same                                               | Driver committer. A `V2CommandExec`, so `run()` is memoized and the commit happens once.                                                                                                                                             |
-| `IcebergReplaceDataShim`, `IcebergDeltaLogicalShim`, `IcebergDeltaWriterShim`, `IcebergRefreshCacheShim`, `IcebergDriverMetricsShim` | `spark/src/main/spark-*/org/apache/comet/iceberg/` | Version differences: operation-coded `ReplaceData` / `WriteDelta` rows, cache refresh by name on 4.1+, driver metric reporting.                                                                                                      |
+| Component                                                                                                                            | Location                                           | Role                                                                                                                                                                                                                                                              |
+| ------------------------------------------------------------------------------------------------------------------------------------ | -------------------------------------------------- | ----------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `IcebergWriteStrategy`                                                                                                               | `spark/src/main/scala/org/apache/comet/iceberg/`   | Planner strategy. Matches `AppendData`, `OverwriteByExpression`, `OverwritePartitionsDynamic`, `ReplaceData` (and Iceberg's own `ReplaceIcebergData`, which Iceberg 1.5.2 plans on Spark 3.4), plus Spark 3.5+ Iceberg `WriteDelta` under the testing split flag. |
+| `IcebergWriteLogical`                                                                                                                | same                                               | Logical anchor for the writer, so AQE re-plans re-emit only the writer and not a second committer.                                                                                                                                                                |
+| `IcebergWriteExec`                                                                                                                   | `spark/src/main/scala/org/apache/spark/sql/comet/` | JVM writer. Runs iceberg-java's `DataWriter` or, for `WriteDelta`, `DeltaWriter` per task and returns the serialized `WriterCommitMessage` as one binary row.                                                                                                     |
+| `IcebergCommitExec`                                                                                                                  | same                                               | Driver committer. A `V2CommandExec`, so `run()` is memoized and the commit happens once.                                                                                                                                                                          |
+| `IcebergReplaceDataShim`, `IcebergDeltaLogicalShim`, `IcebergDeltaWriterShim`, `IcebergRefreshCacheShim`, `IcebergDriverMetricsShim` | `spark/src/main/spark-*/org/apache/comet/iceberg/` | Version differences: operation-coded `ReplaceData` / `WriteDelta` rows, cache refresh by name on 4.1+, driver metric reporting.                                                                                                                                   |
 
 Things to know before changing this layer:
 
@@ -94,8 +97,10 @@ Things to know before changing this layer:
   position-delta write do not ask for one; the checks in `buildTwoOp` and `buildDeltaTwoOp`
   are defensive.
 - **WriteDelta stays JVM-backed.** Spark 3.5+ merge-on-read commands are intercepted by the split
-  plan, but `IcebergWriteExec` delegates their rows to Iceberg's JVM `DeltaWriter`; the native
-  Iceberg writer is explicitly declined. Spark 3.4 `WriteDelta` keeps Spark's plan.
+  plan only when the testing flag `spark.comet.write.iceberg.splitOperator.enabled` is on, and then
+  `IcebergWriteExec` delegates their rows to Iceberg's JVM `DeltaWriter`; the native Iceberg writer
+  is explicitly declined. Since the split plan gives such a write nothing over Spark's operator,
+  `spark.comet.write.iceberg.enabled` alone leaves it on Spark's plan, as does Spark 3.4.
 - **What is not intercepted:** streaming writes and CTAS/RTAS on Spark 3.4. Those keep Spark's plan.
 
 On Spark 4.1+, `IcebergWriteSummaryShim` finds either Spark's `MergeRowsExec` or
@@ -444,7 +449,7 @@ When writing a native-write test:
 - **Check storage state for failure tests**, not only the table: list the files under the data
   location and compare them with what the manifests reference.
 
-The upstream Iceberg Spark tests also run with both flags and `localTableScan` enabled (see
+The upstream Iceberg Spark tests also run with the native writer and `localTableScan` enabled (see
 [Running Iceberg Spark Tests](iceberg-spark-tests.md)). They are a broad regression net, but they do
 not assert which writer ran, and Comet's fallback reasons do not appear in their CI logs, so a green
 run is not evidence that the native writer handled a given test

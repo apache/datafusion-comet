@@ -111,6 +111,36 @@ it. `spark.comet.convert.oneRowRelation.enabled` is on by default, so such a que
 without either setting, and logs no warning. The list remains the way to convert other leaf
 operators, such as the scan of a Data Source V2 connector.
 
+### Iceberg Writes
+
+`spark.comet.write.iceberg.enabled` now defaults to `true`. Comet plans an Iceberg `INSERT INTO`,
+`INSERT OVERWRITE`, and copy-on-write `DELETE`, `UPDATE` or `MERGE` as two operators, `IcebergWrite`
+under `IcebergCommit`, in place of Spark's single V2 write operator, and writes the data files of
+each eligible write natively with iceberg-rust. A write that is not eligible still uses
+iceberg-java's writer, and iceberg-java still commits every write. The table holds the same rows,
+but natively written files differ from iceberg-java's in the ways listed under
+[Accepted divergences](iceberg-writes.md#accepted-divergences), and explain output and the Spark UI
+show the new operators. Set `spark.comet.write.iceberg.enabled=false` to plan Spark's own operator,
+as in Comet 1.1.0. Comet 1.1.0 named this setting `spark.comet.iceberg.write.enabled`, in the
+testing category, and Comet now ignores that name, so a deployment that set it to `false` gets the
+new default unless it sets `spark.comet.write.iceberg.enabled=false`.
+`spark.comet.write.iceberg.splitOperator.enabled` is now a testing setting, and setting it to
+`false` does not turn the split operator off. See [Iceberg Writes](iceberg-writes.md).
+
+To compute the Iceberg metrics of a natively written file, Comet reads the file's Parquet footer
+back from storage, where iceberg-java's writer takes them from memory. On S3 or GCS that is two GET
+requests per file, which adds up for a write that produces many small files. See
+[Native Parquet write eligibility](iceberg-writes.md#native-parquet-write-eligibility).
+
+The native writer's buffers count against Comet's off-heap memory pool, where iceberg-java's buffers
+sit on the JVM heap. A fanout write keeps a data file open for every partition a task writes to, and
+each open file holds the row group it is writing, so a task that writes to many partitions can need
+more memory than the pool grants it. The task then fails with
+`Additional allocation failed for IcebergWriteExec`. Disabling the fanout writer
+(`write.spark.fanout.enabled=false`), a smaller `write.parquet.row-group-size-bytes` or a larger
+`spark.memory.offHeap.size` lets such a write fit, and `spark.comet.write.iceberg.enabled=false`
+writes it with iceberg-java as before. See [Failure handling](iceberg-writes.md#failure-handling).
+
 ## Upgrading to Comet 1.1.0
 
 Comet `1.1.0` makes no behavior changes that need a `spark.comet.legacy.*` key. The changes below

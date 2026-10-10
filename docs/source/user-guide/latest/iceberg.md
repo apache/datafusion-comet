@@ -197,8 +197,9 @@ The following scenarios will fall back to the JVM Iceberg reader:
   change. The check uses the table's schema history, so the fallback stays after those files are
   rewritten
 
-Writes are not covered by this list. By default Iceberg writes use Spark's own writer; see
-[Iceberg Writes](iceberg-writes.md) for the experimental native writer and when it applies.
+Writes are not covered by this list. By default Comet plans an Iceberg write with its split-operator
+plan and writes eligible data files natively; see [Iceberg Writes](iceberg-writes.md) for the plan,
+the native writer, and when each applies.
 
 ### Iceberg UDFs
 
