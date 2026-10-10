@@ -770,6 +770,14 @@ before asking other consumers to spill, so when a spill throws, the task has bee
 the call never returns. Nothing releases them until Spark’s final task cleanup, so they are headroom
 nobody can use for the rest of the task. Any caller that swallows the exception has to reconcile
 that grant, and the only figure available for doing so is the task-wide one above.</p>
+<p><strong>A parked acquire can wake up to a missing task entry.</strong> Spark removes the task’s <code class="docutils literal notranslate"><span class="pre">memoryForTask</span></code>
+entry when its balance reaches zero, and an acquire that was waiting in <code class="docutils literal notranslate"><span class="pre">lock.wait()</span></code> and wakes
+afterwards throws a <code class="docutils literal notranslate"><span class="pre">NoSuchElementException</span></code> (“key not found” and the task id) instead of a grant.
+<code class="docutils literal notranslate"><span class="pre">CometTaskMemoryManager</span></code> retries that one case. A missing entry means the task held nothing from
+Spark at that moment, so the failed call has no partial grant to reconcile, and the retry registers
+the task again and waits for its share as the first call would have. After a few attempts it returns
+a zero grant, which the native side treats as a refusal and spills. JVM consumers that call
+<code class="docutils literal notranslate"><span class="pre">allocatePage</span></code> directly are not covered; that gap is tracked in #6304.</p>
 <p><strong>A consumer whose <code class="docutils literal notranslate"><span class="pre">spill</span></code> returns zero takes budget it can never give back.</strong>
 <code class="docutils literal notranslate"><span class="pre">NativeMemoryConsumer.spill</span></code> returns <code class="docutils literal notranslate"><span class="pre">0</span></code>, so Spark can select it as a spill victim and reclaim
 nothing from it; it is only ever a spill trigger. The bytes it holds are real, so other consumers in
