@@ -136,6 +136,29 @@ fn criterion_benchmark(c: &mut Criterion) {
         group.finish();
     }
 
+    // str -> decimal with non-ASCII digits, which take the normalization path in
+    // `parse_string_to_decimal` instead of the pure-ASCII fast path
+    let spark_cast_options = SparkCastOptions::new(EvalMode::Legacy, "", false);
+    let cast = Cast::new(
+        expr.clone(),
+        DataType::Decimal128(38, 10),
+        spark_cast_options,
+        None,
+        None,
+    );
+    let mut group = c.benchmark_group("cast_string_to_decimal_unicode/legacy");
+    for (name, zero, every_other) in [
+        ("fullwidth", '\u{FF10}', false),
+        ("mixed_ascii_fullwidth", '\u{FF10}', true),
+        ("arabic_indic", '\u{0660}', false),
+    ] {
+        let batch = create_unicode_decimal_cast_string_batch(zero, every_other);
+        group.bench_function(name, |b| {
+            b.iter(|| cast.evaluate(&batch).unwrap());
+        });
+    }
+    group.finish();
+
     // str -> boolean and str -> float benchmarks, with and without the leading/trailing
     // whitespace that exercises the trim helpers in `conversion_funcs::trim`
     let bool_batch = create_boolean_string_batch(false);
@@ -249,6 +272,29 @@ fn create_decimal_cast_string_batch() -> RecordBatch {
                 format!("0.{:05}", rng.random_range(0..100_000u32))
             }
         }
+    })
+}
+
+/// Create batch of decimal strings whose digits are re-spelled in the script whose zero is
+/// `zero`, either all of them or every other one (mixing with ASCII)
+fn create_unicode_decimal_cast_string_batch(zero: char, every_other: bool) -> RecordBatch {
+    let mut rng = StdRng::seed_from_u64(42);
+    string_batch(8192, 10, move |_| {
+        let ascii = format!(
+            "-{}.{}",
+            rng.random_range(0..1_000_000_000u32),
+            rng.random_range(0..1_000_000_000u32)
+        );
+        ascii
+            .chars()
+            .enumerate()
+            .map(|(i, c)| match c.to_digit(10) {
+                Some(d) if !every_other || i % 2 == 0 => {
+                    char::from_u32(u32::from(zero) + d).unwrap()
+                }
+                _ => c,
+            })
+            .collect()
     })
 }
 
