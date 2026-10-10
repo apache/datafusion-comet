@@ -1422,11 +1422,14 @@ class CometNativeCastSuite extends CometTestBase with AdaptiveSparkPlanHelper {
         Seq(0L, 1L, 2L).toDF("id").write.format("parquet").saveAsTable("cast_literal_branch")
         // ConstantFolding leaves a failing cast unfolded inside a conditional branch, so it
         // reaches Comet as a cast of a literal. No row chooses the branch, so Spark returns rows.
-        checkSparkAnswerAndOperator(sql("""SELECT id,
+        // Comet runs Spark's own Cast through the codegen dispatcher, not a native cast.
+        checkSparkAnswerAndImpl(
+          sql("""SELECT id,
             |  CASE WHEN id = 5 THEN CAST('bad' AS BIGINT) ELSE id END,
             |  IF(id > 5, CAST(2147483648L AS INT), 0)
-            |FROM cast_literal_branch""".stripMargin))
-        // A row that chooses the branch raises Spark's error from the native cast.
+            |FROM cast_literal_branch""".stripMargin),
+          dispatched = Seq("cast"))
+        // A row that chooses the branch raises Spark's error.
         checkSparkError(
           sql(
             "SELECT CASE WHEN id = 1 THEN CAST('bad' AS BIGINT) ELSE id END " +
@@ -1435,6 +1438,19 @@ class CometNativeCastSuite extends CometTestBase with AdaptiveSparkPlanHelper {
         checkSparkError(
           sql("SELECT IF(id > 1, CAST(2147483648L AS INT), 0) FROM cast_literal_branch"),
           "CAST_OVERFLOW")
+        // Spark's own evaluation decides the failure, whatever it is. This string's scale fits
+        // in an int, so it parses, but rounding it to the target scale fails in Spark.
+        val df = sql(
+          "SELECT CASE WHEN id = 1 THEN CAST('1e-2147483647' AS DECIMAL(10,2)) " +
+            "ELSE CAST(0 AS DECIMAL(10,2)) END FROM cast_literal_branch")
+        checkCometOperators(stripAQEPlan(df.queryExecution.executedPlan))
+        val (sparkError, cometError) = checkSparkAnswerMaybeThrows(df)
+        def rootCause(e: Throwable): Throwable =
+          Iterator.iterate(e)(_.getCause).takeWhile(_ != null).toSeq.last
+        val expected = rootCause(sparkError.getOrElse(fail("Spark did not fail")))
+        val actual = rootCause(cometError.getOrElse(fail("Comet did not fail")))
+        assert(actual.getClass == expected.getClass, s"Spark: $expected, Comet: $actual")
+        assert(actual.getMessage == expected.getMessage)
       }
     }
   }

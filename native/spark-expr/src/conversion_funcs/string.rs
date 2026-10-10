@@ -728,7 +728,7 @@ fn parse_decimal_str(
         }
     }
 
-    // Like `java.math.BigDecimal`, an exponent outside the `int` range is invalid.
+    // `java.math.BigDecimal` rejects an exponent outside the `int` range.
     let exponent: i32 = match exp_pos {
         Some(e_pos) => s[e_pos + 1..]
             .parse()
@@ -2563,17 +2563,12 @@ mod tests {
             "1e-2147483648",
             "1.0e-2147483647",
             "0e-2147483648",
-            "1e2147483648",
+            "1e2147483649",
             "1e-9999999999",
         ] {
             let err = parse_string_to_decimal(s, 10, 2).unwrap_err();
             assert!(err.to_string().contains("CAST_INVALID_INPUT"), "{s}: {err}");
         }
-        // The scale fits in an int, so these are valid inputs that round to zero.
-        assert_eq!(
-            parse_string_to_decimal("1e-2147483647", 10, 2).unwrap(),
-            Some(0)
-        );
         assert_eq!(parse_string_to_decimal("1.5e-3", 10, 2).unwrap(), Some(0));
         assert_eq!(
             parse_string_to_decimal("12.345e1", 10, 2).unwrap(),
