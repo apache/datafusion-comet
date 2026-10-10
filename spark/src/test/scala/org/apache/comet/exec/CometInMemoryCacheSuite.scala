@@ -1437,6 +1437,12 @@ class CometInMemoryCacheSuite extends CometTestBase {
     extraConfs.containsKey(serializerKey)
   }
 
+  test("Comet's cache format is the default from Spark 3.5 and opt-in on Spark 3.4") {
+    // Spark 3.4 has no hook for CometCoalesceShufflePartitions, so AQE could not coalesce the
+    // shuffled branch of a Comet union whose other branch reads a cache in Comet's format.
+    assert(CometConf.COMET_EXEC_IN_MEMORY_CACHE_ENABLED.defaultValue.get == isSpark35Plus)
+  }
+
   test("Comet plugin installs its cache serializer only if Comet can scan the cache natively") {
     val cometOn = CometConf.COMET_ENABLED.key -> "true"
     val execOn = CometConf.COMET_EXEC_ENABLED.key -> "true"

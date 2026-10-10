@@ -375,9 +375,11 @@ object CometConf extends ShimCometConf {
       .category(CATEGORY_EXEC)
       .doc(
         "Whether to enable Comet native scans and fused Spark reads of in-memory cached tables. " +
-          "Requires spark.comet.enabled=true. At startup, this setting also decides whether " +
-          "CometDriverPlugin installs Comet's cache serializer, which stores cached data in " +
-          "Arrow format. The plugin installs it only if spark.comet.enabled and " +
+          "Requires spark.comet.enabled=true. Defaults to true from Spark 3.5 and to false on " +
+          "Spark 3.4, where AQE cannot coalesce the shuffle partitions of a union that Comet " +
+          "runs with a cached relation in one branch. At startup, this setting also decides " +
+          "whether CometDriverPlugin installs Comet's cache serializer, which stores cached " +
+          "data in Arrow format. The plugin installs it only if spark.comet.enabled and " +
           "spark.comet.exec.enabled are also enabled at startup, and only with one of Comet's " +
           "shuffle managers while Comet shuffle is enabled. " +
           "Because spark.sql.cache.serializer is a " +
@@ -398,7 +400,9 @@ object CometConf extends ShimCometConf {
           "soon as it is serialized, including the disk half of the default " +
           "MEMORY_AND_DISK storage level.")
       .booleanConf
-      .createWithDefault(false)
+      // CometCoalesceShufflePartitions needs a query-stage optimizer rule hook, which Spark 3.4
+      // lacks.
+      .createWithDefault(CometSparkSessionExtensions.isSpark35Plus)
 
   val COMET_EXEC_IN_MEMORY_CACHE_COMPRESSION_CODEC: ConfigEntry[String] =
     conf("spark.comet.exec.inMemoryCache.compression.codec")
@@ -558,6 +562,22 @@ object CometConf extends ShimCometConf {
         s"for improved performance. This feature is not stable yet. $TUNING_GUIDE.")
       .booleanConf
       .createWithDefault(false)
+
+  val COMET_FORCE_SHJ_MAX_BUILD_SIZE: OptionalConfigEntry[Long] =
+    conf(s"$COMET_EXEC_CONFIG_PREFIX.forceShuffledHashJoin.maxBuildSize")
+      .category(CATEGORY_EXEC)
+      .doc(s"The build side size below which `${COMET_FORCE_SHJ.key}` converts a " +
+        "SortMergeJoin to ShuffledHashJoin. The size is Spark's planning estimate of the build " +
+        "child, or under AQE the materialized shuffle size of the build side. A build side at " +
+        "or over this size, or one with no statistics, keeps the SortMergeJoin. When unset, " +
+        "Spark's own rule applies: `spark.sql.autoBroadcastJoinThreshold` times the initial " +
+        "shuffle partition count (`spark.sql.adaptive.coalescePartitions.initialPartitionNum` " +
+        "when AQE and partition coalescing are both on and it is set, else " +
+        "`spark.sql.shuffle.partitions`). When broadcasts are disabled with a non-positive " +
+        "threshold, Spark's default threshold of 10 MB is used instead. A " +
+        s"non-positive value removes the limit. $TUNING_GUIDE.")
+      .bytesConf(ByteUnit.BYTE)
+      .createOptional
 
   val COMET_EXEC_AGGREGATE_SKIP_PARTIAL_ENABLED: ConfigEntry[Boolean] =
     conf(s"$COMET_EXEC_CONFIG_PREFIX.aggregate.skipPartial.enabled")
@@ -1207,9 +1227,7 @@ object CometConf extends ShimCometConf {
         "When enabled, fall back to Spark for floating-point operations that may differ from " +
           "Spark, such as comparing -0.0 and 0.0. `ORDER BY`, window ordering and range " +
           "partitioning keys are unaffected, including floating-point values nested in arrays " +
-          "and structs, because Comet normalizes those comparison keys to match Spark. The " +
-          "exception is a nested key whose type can hold a null element or field, which falls " +
-          "back until the native sort and window frames order those nulls as Spark does. " +
+          "and structs, because Comet normalizes those comparison keys to match Spark. " +
           "`sort_array` is unaffected too, because it follows Spark's ordering. " +
           s"$COMPAT_GUIDE.")
       .booleanConf
