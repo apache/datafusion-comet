@@ -461,38 +461,83 @@ fn cast_string_to_decimal256_impl(
     ))
 }
 
-/// Normalize fullwidth Unicode digits (U+FF10–U+FF19) to their ASCII equivalents.
+/// Code point of the zero of each run of ten non-ASCII decimal digits (Unicode general
+/// category `Nd`) in the Basic Multilingual Plane, in ascending order. Every run is contiguous,
+/// so the digit at `zero + n` has value `n`.
 ///
-/// Spark's UTF8String parser treats fullwidth digits as numerically equivalent to
-/// ASCII digits, e.g. "１２３.４５" parses as 123.45. Each fullwidth digit encodes
-/// to exactly three UTF-8 bytes: [0xEF, 0xBC, 0x90+n] for digit n. The ASCII
-/// equivalent is 0x30+n, so the conversion is: third_byte - 0x60.
+/// This is the set of `char`s for which Java's `Character.isDigit(char)` is true, minus ASCII.
+/// It is identical under JDK 17 (Unicode 13) and JDK 21 (Unicode 15); all `Nd` digits added
+/// since lie outside the BMP.
+const BMP_NON_ASCII_DIGIT_ZEROS: [u16; 36] = [
+    0x0660, // Arabic-Indic
+    0x06F0, // Extended Arabic-Indic
+    0x07C0, // NKo
+    0x0966, // Devanagari
+    0x09E6, // Bengali
+    0x0A66, // Gurmukhi
+    0x0AE6, // Gujarati
+    0x0B66, // Oriya
+    0x0BE6, // Tamil
+    0x0C66, // Telugu
+    0x0CE6, // Kannada
+    0x0D66, // Malayalam
+    0x0DE6, // Sinhala Lith
+    0x0E50, // Thai
+    0x0ED0, // Lao
+    0x0F20, // Tibetan
+    0x1040, // Myanmar
+    0x1090, // Myanmar Shan
+    0x17E0, // Khmer
+    0x1810, // Mongolian
+    0x1946, // Limbu
+    0x19D0, // New Tai Lue
+    0x1A80, // Tai Tham Hora
+    0x1A90, // Tai Tham Tham
+    0x1B50, // Balinese
+    0x1BB0, // Sundanese
+    0x1C40, // Lepcha
+    0x1C50, // Ol Chiki
+    0xA620, // Vai
+    0xA8D0, // Saurashtra
+    0xA900, // Kayah Li
+    0xA9D0, // Javanese
+    0xA9F0, // Myanmar Tai Laing
+    0xAA50, // Cham
+    0xABF0, // Meetei Mayek
+    0xFF10, // Fullwidth
+];
+
+/// The value of `c` if it is a non-ASCII decimal digit that Java's `BigDecimal` accepts.
 ///
-/// All other bytes (ASCII or other multi-byte sequences) are passed through
-/// unchanged, so the output is valid UTF-8 whenever the input is.
-fn normalize_fullwidth_digits(s: &str) -> String {
-    let bytes = s.as_bytes();
-    let mut out = Vec::with_capacity(s.len());
-    let mut i = 0;
-    while i < bytes.len() {
-        if i + 2 < bytes.len()
-            && bytes[i] == 0xEF
-            && bytes[i + 1] == 0xBC
-            && bytes[i + 2] >= 0x90
-            && bytes[i + 2] <= 0x99
-        {
-            // e.g. 0x91 - 0x60 = 0x31 = b'1'
-            out.push(bytes[i + 2] - 0x60);
-            i += 3;
-        } else {
-            out.push(bytes[i]);
-            i += 1;
-        }
+/// `BigDecimal` scans UTF-16 code units and tests each with `Character.isDigit(char)`, so only
+/// BMP digits count: a supplementary digit such as U+1D7CE MATHEMATICAL BOLD DIGIT ZERO is a
+/// surrogate pair, neither half of which is a digit, and the parse fails.
+#[inline]
+fn non_ascii_digit_value(c: char) -> Option<u8> {
+    let cp = u32::from(c);
+    if cp > 0xFFFF {
+        return None;
     }
-    // SAFETY: we only replace valid 3-byte UTF-8 sequences [EF BC 9X] with a
-    // single ASCII byte; all other bytes are copied unchanged, preserving the
-    // UTF-8 invariant of the input.
-    unsafe { String::from_utf8_unchecked(out) }
+    let idx = BMP_NON_ASCII_DIGIT_ZEROS.partition_point(|&zero| u32::from(zero) <= cp);
+    let zero = u32::from(BMP_NON_ASCII_DIGIT_ZEROS[idx.checked_sub(1)?]);
+    let value = cp - zero;
+    (value < 10).then_some(value as u8)
+}
+
+/// Replace every non-ASCII decimal digit that Java's `BigDecimal` accepts with its ASCII
+/// equivalent, e.g. "١٢٣.٤٥" and "１２３.４５" both become "123.45".
+///
+/// Spark parses decimals with `new java.math.BigDecimal(str)`, which reads each digit through
+/// `Character.digit(c, 10)` in both the mantissa and the exponent, so digits from any script
+/// can be mixed freely ("1٢e३" is 12000). All other characters are kept unchanged and are
+/// rejected later by [`parse_decimal_str`].
+fn normalize_unicode_digits(s: &str) -> String {
+    s.chars()
+        .map(|c| match non_ascii_digit_value(c) {
+            Some(d) => char::from(b'0' + d),
+            None => c,
+        })
+        .collect()
 }
 
 /// Powers of ten that fit in an `i128` (`10^0` through `10^38`).
@@ -585,13 +630,13 @@ fn parse_string_to_decimal(input_str: &str, precision: u8, scale: i8) -> SparkRe
     // producing NULL.
     let trimmed = trim_java_string(input_str);
 
-    // Normalize fullwidth digits to ASCII. Fast path skips the allocation for
-    // pure-ASCII strings, which is the common case.
+    // Normalize non-ASCII digits (Arabic-Indic, Devanagari, fullwidth, ...) to ASCII. Fast path
+    // skips the allocation for pure-ASCII strings, which is the common case.
     let normalized;
     let trimmed = if trimmed.is_ascii() {
         trimmed
     } else {
-        normalized = normalize_fullwidth_digits(trimmed);
+        normalized = normalize_unicode_digits(trimmed);
         normalized.as_str()
     };
 
@@ -2333,6 +2378,89 @@ mod tests {
         // of panicking on 10_i128.pow(fractional_scale).
         let over_long = format!("0.{}", "0".repeat(40));
         assert!(parse_string_to_decimal(&over_long, 38, 10).is_err());
+    }
+
+    #[test]
+    fn test_non_ascii_digit_value() {
+        for &zero in BMP_NON_ASCII_DIGIT_ZEROS.iter() {
+            for n in 0..10u8 {
+                let c = char::from_u32(u32::from(zero) + u32::from(n)).unwrap();
+                assert_eq!(non_ascii_digit_value(c), Some(n), "{c:?}");
+            }
+            // The code point just past each run is not a digit of that run.
+            let after = char::from_u32(u32::from(zero) + 10).unwrap();
+            assert_eq!(non_ascii_digit_value(after), None, "{after:?}");
+        }
+        for c in [
+            '0',
+            '9',
+            'a',
+            '.',
+            '\u{065F}', // just before Arabic-Indic zero
+            '\u{00B2}', // SUPERSCRIPT TWO (No)
+            '\u{2163}', // ROMAN NUMERAL FOUR (Nl)
+            '\u{2460}', // CIRCLED DIGIT ONE (No)
+            '\u{066B}', // ARABIC DECIMAL SEPARATOR
+            '\u{FFFF}',
+            '\u{1D7CE}', // MATHEMATICAL BOLD DIGIT ZERO: Nd, but outside the BMP
+            '\u{104A3}', // OSMANYA DIGIT THREE: Nd, but outside the BMP
+        ] {
+            assert_eq!(non_ascii_digit_value(c), None, "{c:?}");
+        }
+    }
+
+    #[test]
+    fn test_parse_string_to_decimal_unicode_digits() {
+        // Expected values come from `new java.math.BigDecimal(s)` on JDK 17, which is what
+        // Spark's Decimal.fromString / fromStringANSI call.
+        let ok = |s: &str, precision: u8, scale: i8| {
+            parse_string_to_decimal(s, precision, scale)
+                .unwrap()
+                .unwrap()
+        };
+        assert_eq!(ok("٣", 10, 2), 300); // Arabic-Indic
+        assert_eq!(ok("۳", 10, 2), 300); // Extended Arabic-Indic
+        assert_eq!(ok("३", 10, 2), 300); // Devanagari
+        assert_eq!(ok("৩", 10, 2), 300); // Bengali
+        assert_eq!(ok("๓", 10, 2), 300); // Thai
+        assert_eq!(ok("߃", 10, 2), 300); // NKo
+        assert_eq!(ok("꧓", 10, 2), 300); // Javanese
+        assert_eq!(ok("１２３.４５", 10, 2), 12345); // Fullwidth
+        assert_eq!(ok("1٣", 10, 2), 1300);
+        assert_eq!(ok("-٣", 10, 2), -300);
+        assert_eq!(ok("+٣.٣٣", 10, 2), 333);
+        assert_eq!(ok(".٣", 10, 2), 30);
+        assert_eq!(ok("١٢٣.٤٥٥", 10, 2), 12346); // HALF_UP rounding
+        assert_eq!(ok("1e٣", 10, 2), 100000); // non-ASCII exponent digits
+        assert_eq!(ok("1E-٣", 10, 3), 1);
+        assert_eq!(ok("1e+٣", 10, 2), 100000);
+        assert_eq!(ok("1٢e३", 10, 0), 12000); // mixed scripts
+        assert_eq!(ok(" \t٣\n", 10, 2), 300); // ASCII trim still applies
+        assert_eq!(ok(&"٣".repeat(20), 38, 0), 33333333333333333333);
+
+        // Rejected by BigDecimal: not Nd, or Nd outside the BMP.
+        for s in [
+            "\u{1D7D0}", // MATHEMATICAL BOLD DIGIT TWO
+            "1\u{1D7D0}",
+            "1e\u{1D7D0}",
+            "\u{2163}",   // ROMAN NUMERAL FOUR
+            "\u{00B2}",   // SUPERSCRIPT TWO
+            "١\u{066B}٥", // ARABIC DECIMAL SEPARATOR is not '.'
+            "\u{00A0}٣",  // non-ASCII whitespace is not trimmed
+        ] {
+            // The error reports the original string, not the normalized one.
+            match parse_string_to_decimal(s, 10, 2) {
+                Err(SparkError::CastInvalidValue { value, .. }) => assert_eq!(value, s),
+                other => panic!("{s:?}: {other:?}"),
+            }
+        }
+
+        // Overflow is reported as such, not as an invalid input.
+        let err = parse_string_to_decimal("٣٣٣٣٣٣٣٣٣", 10, 2).unwrap_err();
+        assert!(
+            matches!(err, SparkError::NumericValueOutOfRange { .. }),
+            "{err}"
+        );
     }
 
     #[test]

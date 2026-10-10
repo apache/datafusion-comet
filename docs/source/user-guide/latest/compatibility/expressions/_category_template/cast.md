@@ -64,8 +64,11 @@ including:
   `java.lang.String.trim` that Spark applies before handing the value to `BigDecimal`.
 - Null bytes (`\u0000`) at the start or end of a string are therefore trimmed. Null bytes
   embedded in the middle of a string produce `NULL`.
-- Fullwidth Unicode digits (U+FF10–U+FF19, e.g. `１２３.４５`) are treated as their ASCII
-  equivalents, so `CAST('１２３.４５' AS DECIMAL(10,2))` returns `123.45`.
+- Non-ASCII decimal digits that Java's `BigDecimal` accepts, i.e. every Unicode `Nd` digit in
+  the Basic Multilingual Plane (fullwidth `１２３.４５`, Arabic-Indic `١٢٣`, Devanagari `१२३`,
+  ...), are treated as their ASCII equivalents in both the mantissa and the exponent, so
+  `CAST('١٢٣.٤٥' AS DECIMAL(10,2))` returns `123.45`. Digits outside the Basic Multilingual
+  Plane, such as U+1D7CE MATHEMATICAL BOLD DIGIT ZERO, are rejected as they are by Spark.
 - Scientific notation (e.g. `1.23E+5`) is supported.
 - Special values (`inf`, `infinity`, `nan`) produce `NULL`.
 
