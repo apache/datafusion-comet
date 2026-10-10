@@ -16,11 +16,11 @@
 -- under the License.
 
 -- Strict floating-point mode and sort or window keys that nest floats in arrays and structs.
--- nested_float_order_keys.sql checks that Comet normalizes those floats to match Spark. Strict
--- mode still declines a key whose type can hold a null element or field, because Spark orders
--- such a null below every value whatever the key's null order, the native sort places it by the
--- null order (#6476), and a RANGE window frame orders it above every value (#6477). A key whose
--- type cannot hold a null stays native.
+-- nested_float_order_keys.sql checks that Comet normalizes those floats to match Spark, so strict
+-- mode runs these keys natively too. Spark orders a null element or field below every other
+-- value, whatever the key's null order. Comet falls back, in every mode, for the two shapes where
+-- that differs: `ASC NULLS LAST` or `DESC NULLS FIRST` on a key whose type can hold such a null
+-- (#6476), and a RANGE window frame that has to find a row's peers over such a key (#6477).
 --
 -- The test harness admits incompatible sort orders by default, so turn that off to check the
 -- shipped policy.
@@ -42,10 +42,11 @@ INSERT INTO nested_float_strict VALUES
   (8, 1, NULL, NULL, false),
   (9, 2, double('-Infinity'), float('-Infinity'), false)
 
--- Keys over the nullable columns can hold a null element or field, whether or not any row does,
--- so they fall back, and Spark's answers come back. Row 8 holds one. Native, ORDER BY array(d)
--- NULLS LAST puts row 8 last, where Spark puts it first, and the running sum spans the whole
--- partition on row 8 and every row after it.
+-- Keys over the nullable columns can hold a null element or field, whether or not any row does.
+-- Row 8 holds one. Under a non-default null order, or in a RANGE frame that finds a row's peers,
+-- they fall back, and Spark's answers come back. Native, ORDER BY array(d) NULLS LAST would put
+-- row 8 last, where Spark puts it first, and the running sum would span the whole partition on
+-- row 8 and every row after it.
 query expect_fallback(can hold a null element or field)
 SELECT id FROM nested_float_strict ORDER BY array(d) NULLS LAST, id
 
@@ -56,24 +57,50 @@ query expect_fallback(can hold a null element or field)
 SELECT id FROM nested_float_strict ORDER BY named_struct('x', f) DESC NULLS FIRST, id
 
 query expect_fallback(can hold a null element or field)
+SELECT id, RANK() OVER (ORDER BY array(IF(s, -d, d)) DESC NULLS FIRST, id) AS r
+FROM nested_float_strict
+
+-- The default null orders place a null element or field where Spark does, so the same keys run
+-- natively in a Sort, a TopK, ranking functions, a rank limit, a ROWS frame and a RANGE frame
+-- bounded only by the partition. Row 8's null element sorts first ascending and last descending.
+-- IF(s, ...) makes row 1 a -0.0 and row 5 a NaN with the sign bit set.
+query
+SELECT id FROM nested_float_strict ORDER BY array(IF(s, -d, d)), id
+
+query
+SELECT id FROM nested_float_strict ORDER BY named_struct('x', IF(s, -f, f)) DESC, id
+
+query
 SELECT id FROM nested_float_strict ORDER BY array(IF(s, -d, d)), id LIMIT 4
 
-query expect_fallback(can hold a null element or field)
+query
 SELECT id,
   RANK() OVER (PARTITION BY g ORDER BY named_struct('x', IF(s, -d, d))) AS r,
   DENSE_RANK() OVER (ORDER BY array(IF(s, -f, f)) DESC) AS dr
 FROM nested_float_strict
 
-query expect_fallback(can hold a null element or field)
+query
 SELECT id FROM (
   SELECT id, RANK() OVER (ORDER BY array(IF(s, -d, d))) AS r FROM nested_float_strict
 ) WHERE r <= 3
 
+query
+SELECT id,
+  SUM(id) OVER (ORDER BY array(IF(s, -d, d)), id
+                ROWS BETWEEN UNBOUNDED PRECEDING AND CURRENT ROW) AS running,
+  SUM(id) OVER (PARTITION BY g ORDER BY named_struct('x', IF(s, -f, f))
+                RANGE BETWEEN UNBOUNDED PRECEDING AND UNBOUNDED FOLLOWING) AS total
+FROM nested_float_strict
+
 -- coalesce with a literal is never null, so an array or struct of it cannot hold a null, and
--- these keys stay native. Row 8 becomes a third zero. Each ORDER BY ends with a unique
--- tiebreaker, so peers come out in its order, and the running sums need no null row to leave out.
+-- these keys stay native under any null order and in RANGE frames. Row 8 becomes a third zero.
+-- Each ORDER BY ends with a unique tiebreaker, so peers come out in its order, and the running
+-- sums need no null row to leave out.
 query
 SELECT id FROM nested_float_strict ORDER BY array(coalesce(IF(s, -d, d), 0.0D)), id DESC
+
+query
+SELECT id FROM nested_float_strict ORDER BY array(coalesce(IF(s, -d, d), 0.0D)) NULLS LAST, id
 
 query
 SELECT id FROM nested_float_strict ORDER BY named_struct('x', coalesce(IF(s, -f, f), 0.0F)) DESC, id

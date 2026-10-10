@@ -15,7 +15,9 @@
 // specific language governing permissions and limitations
 // under the License.
 
-use arrow::array::{Array, DictionaryArray, Int32Array, RecordBatch, TimestampMicrosecondArray};
+use arrow::array::{
+    Array, DictionaryArray, Int32Array, RecordBatch, StringArray, TimestampMicrosecondArray,
+};
 use arrow::datatypes::{DataType, Field, Int32Type, Schema, TimeUnit};
 use criterion::{criterion_group, criterion_main, BenchmarkId, Criterion};
 use datafusion::physical_expr::expressions::{lit, Column};
@@ -149,6 +151,63 @@ fn criterion_benchmark(c: &mut Criterion) {
                 BenchmarkId::from_parameter(format!("YEAR/{rows}/{tag}")),
                 &batch,
                 |b, batch| b.iter(|| black_box(expr.evaluate(black_box(batch)))),
+            );
+        }
+    }
+    group.finish();
+
+    // Formats from a column: one format for every row, and every unit mixed across the rows.
+    // Daytime instants (16:00 to 22:00 UTC) avoid DST transitions, so older kernels can be
+    // measured on the same input.
+    let mut group = c.benchmark_group("timestamp_trunc_format_column");
+    let rows = 8_192;
+    let units = [
+        "YEAR",
+        "QUARTER",
+        "MONTH",
+        "WEEK",
+        "DAY",
+        "HOUR",
+        "MINUTE",
+        "SECOND",
+        "MILLISECOND",
+        "MICROSECOND",
+    ];
+    for timezone in ["UTC", "America/Los_Angeles"] {
+        let schema = Arc::new(Schema::new(vec![
+            Field::new(
+                "a",
+                DataType::Timestamp(TimeUnit::Microsecond, Some(timezone.into())),
+                true,
+            ),
+            Field::new("fmt", DataType::Utf8, true),
+        ]));
+        let timestamps = TimestampMicrosecondArray::from_iter_values((0..rows).map(|i| {
+            BASE_MICROS
+                + (i % 366) as i64 * MICROS_PER_DAY
+                + 57_600_000_000
+                + (i as i64 * 1_234_567) % 21_600_000_000
+        }))
+        .with_timezone(timezone);
+        for (tag, unit) in [("YEAR", Some(0)), ("HOUR", Some(5)), ("mixed", None)] {
+            let formats = StringArray::from_iter_values(
+                (0..rows).map(|i| units[unit.unwrap_or(i % units.len())]),
+            );
+            let batch = RecordBatch::try_new(
+                Arc::clone(&schema),
+                vec![Arc::new(timestamps.clone()), Arc::new(formats)],
+            )
+            .unwrap();
+            let expr = TimestampTruncExpr::new(
+                Arc::new(Column::new("a", 0)),
+                Arc::new(Column::new("fmt", 1)),
+                timezone.to_string(),
+                true,
+            );
+            group.bench_with_input(
+                BenchmarkId::from_parameter(format!("{timezone}/{tag}/{rows}")),
+                &batch,
+                |b, batch| b.iter(|| black_box(expr.evaluate(black_box(batch)).unwrap())),
             );
         }
     }
