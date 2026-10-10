@@ -40,7 +40,8 @@ import org.apache.comet.testing.{DataGenOptions, FuzzDataGenerator, SchemaGenOpt
 /**
  * Benchmark to measure Comet shuffle performance. To run this benchmark:
  * `SPARK_GENERATE_BENCHMARK_FILES=1 make benchmark-org.apache.spark.sql.benchmark.CometShuffleBenchmark`
- * Add `-- --nested-hash-only` to run just the nested hash key cases.
+ * Add `-- --nested-hash-only` to run just the nested hash key cases, or `-- --nested-only` to run
+ * every group that shuffles nested types.
  * Results will be written to "spark/benchmarks/CometShuffleBenchmark-**results.txt".
  */
 // spotless:on
@@ -639,6 +640,8 @@ object CometShuffleBenchmark extends CometBenchmarkBase {
 
     runNestedHashKeyBenchmarks()
 
+    runNestedShapeBenchmarks()
+
     runBenchmarkWithTable("Shuffle on array", 1024 * 1024 * 1) { v =>
       benchmarkTypes.foreach { dataType =>
         Seq(5, manyPartitions).foreach { partitionNum =>
@@ -653,6 +656,10 @@ object CometShuffleBenchmark extends CometBenchmarkBase {
           shuffleStructBenchmark(v, dataType, partitionNum)
         }
       }
+    }
+
+    if (mainArgs.contains("--nested-only")) {
+      return
     }
 
     runBenchmarkWithTable("Dictionary Shuffle", 1024 * 1024 * 1) { v =>
@@ -717,6 +724,63 @@ object CometShuffleBenchmark extends CometBenchmarkBase {
         .foreach { dataType =>
           shuffleRangePartitionBenchmark(v, dataType, 20, manyPartitions)
         }
+    }
+  }
+
+  /**
+   * Nested shapes the single-type array and struct groups above do not reach: collections of
+   * strings and structs, maps, nulls at every level, and structs with variable-width fields. Each
+   * shape is repartitioned by a round-robin so the shuffle moves the whole column.
+   */
+  private def runNestedShapeBenchmarks(): Unit = {
+    val numRows = 1024 * 1024
+    val shapes: Seq[(String, String)] = Seq(
+      "array<string>" ->
+        "array(concat('a_', cast(id as string)), concat('b_', cast(id as string)), 'c')",
+      "array<struct<int,string>>" ->
+        ("transform(sequence(0, cast(id % 4 as int)), i -> named_struct('i', cast(id as int) + i, " +
+          "'s', concat('n_', cast(id as string))))"),
+      "array<array<int>>" ->
+        ("transform(sequence(0, cast(id % 3 as int)), i -> transform(sequence(0, " +
+          "cast(id % 5 as int)), j -> cast(id as int) + i + j))"),
+      "array<int> (100 elements)" ->
+        "transform(sequence(1, 100), i -> cast(id % 1000 as int) + i)",
+      "map<string,int>" -> "map('k1', cast(id as int), 'k2', cast(id + 1 as int))",
+      "map<int,array<string>>" ->
+        "map(cast(id % 10 as int), array(concat('v_', cast(id as string)), 'x'))",
+      "struct<int,string,string,long>" ->
+        ("named_struct('i', cast(id as int), 's1', concat('s1_', cast(id as string)), " +
+          "'s2', concat('s2_', cast(id as string)), 'l', id)"),
+      "nullable struct, nullable fields" ->
+        ("if(id % 5 = 0, null, named_struct('i', if(id % 3 = 0, null, cast(id as int)), " +
+          "'s', if(id % 4 = 0, null, concat('s_', cast(id as string)))))"),
+      "nullable array<int> with null elements" ->
+        ("if(id % 6 = 0, null, array(cast(id as int), if(id % 3 = 0, null, cast(id + 1 as int)), " +
+          "cast(id + 2 as int)))"),
+      "struct<array<struct<long,string>>,string>" ->
+        ("named_struct('items', transform(sequence(0, cast(id % 3 as int)), i -> " +
+          "named_struct('k', id + i, 'v', concat('v_', cast(i as string)))), " +
+          "'label', concat('l_', cast(id as string)))"))
+
+    shapes.foreach { case (name, expr) =>
+      withTempPath { dir =>
+        val filename = dir.getCanonicalPath + "/nested.parquet"
+        withSQLConf(CometConf.COMET_ENABLED.key -> "false") {
+          spark
+            .range(numRows.toLong)
+            .selectExpr("id AS key", s"$expr AS c")
+            .write
+            .mode(SaveMode.Overwrite)
+            .parquet(filename)
+        }
+        Seq(5, manyPartitions).foreach { partitionNum =>
+          shuffleDeeplyNestedBenchmark(
+            s"$name, partitionNum=$partitionNum",
+            filename,
+            numRows,
+            partitionNum)
+        }
+      }
     }
   }
 

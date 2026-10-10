@@ -379,6 +379,140 @@ object CometColumnarToRowBenchmark extends CometBenchmarkBase {
   }
 
   /**
+   * Nested columns that contain nulls at every level: null structs, null arrays and maps, empty
+   * arrays, and null elements. The other nested benchmarks use `range`-derived values that are
+   * never null, so they only exercise the all-valid fast paths.
+   */
+  def nullableNestedTypesBenchmark(values: Int): Unit = {
+    val benchmark =
+      new Benchmark("Columnar to Row - Nullable Nested Types", values.toLong, output = output)
+
+    withTempPath { dir =>
+      withTempTable("parquetV1Table") {
+        val df = spark
+          .range(values.toLong)
+          .selectExpr(
+            "id",
+            // Null parent struct, nullable fields
+            """if(id % 7 = 0, null, named_struct(
+              'a', if(id % 5 = 0, null, cast(id as int)),
+              'b', if(id % 3 = 0, null, concat('s_', cast(id as string))))) as nullable_struct""",
+            // Null array, empty array, and null elements
+            """case
+              when id % 6 = 0 then cast(null as array<int>)
+              when id % 6 = 1 then cast(array() as array<int>)
+              else array(
+                cast(id as int), if(id % 3 = 0, null, cast(id + 1 as int)), cast(id + 2 as int))
+            end as nullable_int_array""",
+            // Null array, with null string elements
+            """if(id % 6 = 0, null, array(
+              concat('a_', cast(id as string)),
+              if(id % 4 = 0, null, concat('b_', cast(id as string))))) as nullable_str_array""",
+            // Null map, null values
+            """if(id % 8 = 0, null, map(
+              'k1', if(id % 3 = 0, null, cast(id as int)),
+              'k2', cast(id + 1 as int))) as nullable_map""",
+            // Nullable struct nested in a nullable struct
+            """if(id % 9 = 0, null, named_struct(
+              'inner', if(id % 4 = 0, null, named_struct(
+                'x', cast(id as double),
+                'y', if(id % 2 = 0, null, concat('y_', cast(id as string))))),
+              'n', cast(id % 100 as int))) as nullable_nested_struct""")
+
+        prepareTable(dir, df)
+        val query = "SELECT * FROM parquetV1Table"
+        addC2RBenchmarkCases(benchmark, query)
+        benchmark.run()
+      }
+    }
+  }
+
+  /**
+   * Collections of nested elements: arrays of structs, arrays of arrays, structs holding arrays
+   * of structs, maps with struct values, and nested collections of decimals, timestamps and
+   * binary. Arrays have variable lengths so the offsets are not uniform.
+   */
+  def nestedCollectionsBenchmark(values: Int): Unit = {
+    val benchmark =
+      new Benchmark("Columnar to Row - Nested Collections", values.toLong, output = output)
+
+    withTempPath { dir =>
+      withTempTable("parquetV1Table") {
+        val df = spark
+          .range(values.toLong)
+          .selectExpr(
+            "id",
+            // Array of structs, 1 to 4 elements
+            """transform(sequence(0, cast(id % 4 as int)), i -> named_struct(
+              'id', cast(id as int) + i,
+              'name', concat('item_', cast(id as string)),
+              'score', cast(id % 100 as double))) as array_of_structs""",
+            // Array of arrays
+            """transform(sequence(0, cast(id % 3 as int)), i ->
+              transform(sequence(0, cast(id % 5 as int)), j -> cast(id as int) + i + j))
+              as array_of_arrays""",
+            // Struct holding an array of structs
+            """named_struct(
+              'label', concat('l_', cast(id as string)),
+              'items', transform(sequence(0, cast(id % 3 as int)), i -> named_struct(
+                'k', cast(id as long) + i,
+                'v', concat('v_', cast(i as string))))) as struct_of_array_of_structs""",
+            // Map with struct values
+            """map(
+              'first', named_struct('a', cast(id as int), 'b', concat('x_', cast(id as string))),
+              'second', named_struct('a', cast(id + 1 as int), 'b', 'y')) as map_of_structs""",
+            // Decimals, timestamps and binary inside nested types
+            """named_struct(
+              'dec', cast(id as decimal(18, 2)),
+              'big_dec', cast(id as decimal(38, 10)),
+              'ts', timestamp_micros(id * 1000000),
+              'bin', cast(concat('bin_', cast(id as string)) as binary),
+              'date', date_add(to_date('2024-01-01'), cast(id % 365 as int))) as struct_of_temporal""",
+            """array(
+              cast(id as decimal(10, 2)), cast(id + 1 as decimal(10, 2))) as decimal_array""",
+            """array(
+              timestamp_micros(id * 1000000), timestamp_micros(id * 1000000 + 1)) as ts_array""")
+
+        prepareTable(dir, df)
+        val query = "SELECT * FROM parquetV1Table"
+        addC2RBenchmarkCases(benchmark, query)
+        benchmark.run()
+      }
+    }
+  }
+
+  /**
+   * Collections with many elements per row. The other nested benchmarks use 2 to 5 elements,
+   * which measures per-row overhead; here the per-element cost dominates.
+   */
+  def largeCollectionsBenchmark(values: Int): Unit = {
+    val benchmark =
+      new Benchmark("Columnar to Row - Large Collections", values.toLong, output = output)
+
+    withTempPath { dir =>
+      withTempTable("parquetV1Table") {
+        val df = spark
+          .range(values.toLong)
+          .selectExpr(
+            "id",
+            // 100 ints
+            "transform(sequence(1, 100), i -> cast(id % 1000 as int) + i) as big_int_array",
+            // 20 strings
+            "transform(sequence(1, 20), i -> concat('e', cast(i as string), '_', cast(id as string))) as big_str_array",
+            // 20 entries
+            "map_from_arrays(transform(sequence(1, 20), i -> cast(i as int)), transform(sequence(1, 20), i -> cast(id + i as double))) as big_map",
+            // 10 structs
+            "transform(sequence(1, 10), i -> named_struct('i', i, 'v', cast(id + i as long))) as big_struct_array")
+
+        prepareTable(dir, df)
+        val query = "SELECT * FROM parquetV1Table"
+        addC2RBenchmarkCases(benchmark, query)
+        benchmark.run()
+      }
+    }
+  }
+
+  /**
    * Benchmark with wide rows (many columns) to stress test row conversion.
    */
   def wideRowsBenchmark(values: Int): Unit = {
@@ -504,6 +638,19 @@ object CometColumnarToRowBenchmark extends CometBenchmarkBase {
 
     runBenchmark("Columnar to Row Conversion - Complex Nested Types") {
       complexNestedTypesBenchmark(numRows)
+    }
+
+    runBenchmark("Columnar to Row Conversion - Nullable Nested Types") {
+      nullableNestedTypesBenchmark(numRows)
+    }
+
+    runBenchmark("Columnar to Row Conversion - Nested Collections") {
+      nestedCollectionsBenchmark(numRows)
+    }
+
+    // 100-element arrays make each row large, so use fewer rows to keep the data set small.
+    runBenchmark("Columnar to Row Conversion - Large Collections") {
+      largeCollectionsBenchmark(numRows / 8)
     }
 
     runBenchmark("Columnar to Row Conversion - Wide Rows") {
