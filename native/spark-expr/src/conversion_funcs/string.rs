@@ -2041,22 +2041,13 @@ fn date_parser(date_str: &str, eval_mode: EvalMode) -> SparkResult<Option<i32>> 
     ) -> SparkResult<Option<i32>> {
         // Spark builds a `LocalDate` and narrows its epoch day to an `Int`, so an invalid
         // calendar date or an epoch day that overflows `i32` both yield `None` there, which
-        // `stringToDateAnsi` turns into CAST_INVALID_INPUT.
-        let Some(days) = ymd_to_epoch_day(year, month, day).and_then(|d| i32::try_from(d).ok())
-        else {
-            return return_result(date_str, eval_mode);
-        };
-        // Spark accepts years beyond what chrono can represent, and downstream date kernels
-        // cannot handle those values, so Comet keeps returning null for them in every eval mode
-        // rather than raising. This is a Comet limitation, not a malformed input.
-        //
-        // The bound is chrono's representable year range: `NaiveDate::MIN` is `-262143-01-01`
-        // and `NaiveDate::MAX` is `262142-12-31`
-        // (https://docs.rs/chrono/latest/chrono/naive/struct.NaiveDate.html#associatedconstant.MIN).
-        if !(-262143..=262142).contains(&year) {
-            return Ok(None);
+        // `stringToDateAnsi` turns into CAST_INVALID_INPUT. `ymd_to_epoch_day` does not go
+        // through chrono, so years past chrono's `NaiveDate` range (+/-262142) still produce
+        // the epoch day Spark returns, up to the `i32` limit (about year +/-5881580).
+        match ymd_to_epoch_day(year, month, day).and_then(|d| i32::try_from(d).ok()) {
+            Some(days) => Ok(Some(days)),
+            None => return_result(date_str, eval_mode),
         }
-        Ok(Some(days))
     }
     // end local functions
 
@@ -4152,28 +4143,27 @@ mod tests {
         }
     }
 
-    /// Asserts every date parses to null in legacy and try mode. When `expect_ansi_error` is set,
-    /// ANSI mode must raise CAST_INVALID_INPUT; otherwise ANSI mode must also return null.
-    fn assert_dates(dates: &[&str], expect_ansi_error: bool) {
+    /// Malformed input: null in legacy and try mode, CAST_INVALID_INPUT in ANSI mode.
+    fn assert_null_or_ansi_error(dates: &[&str]) {
         for &date in dates {
-            for eval_mode in [EvalMode::Legacy, EvalMode::Try, EvalMode::Ansi] {
-                if expect_ansi_error && eval_mode == EvalMode::Ansi {
-                    assert!(date_parser(date, eval_mode).is_err(), "{date}");
-                } else {
-                    assert_eq!(date_parser(date, eval_mode).unwrap(), None, "{date}");
-                }
+            for eval_mode in [EvalMode::Legacy, EvalMode::Try] {
+                assert_eq!(date_parser(date, eval_mode).unwrap(), None, "{date}");
             }
+            assert!(date_parser(date, EvalMode::Ansi).is_err(), "{date}");
         }
     }
 
-    /// Malformed input: null in legacy and try mode, CAST_INVALID_INPUT in ANSI mode.
-    fn assert_null_or_ansi_error(dates: &[&str]) {
-        assert_dates(dates, true);
-    }
-
-    /// Input Spark parses successfully but Comet cannot represent: null in every eval mode.
-    fn assert_null_in_all_modes(dates: &[&str]) {
-        assert_dates(dates, false);
+    /// Valid input: the same epoch day in every eval mode.
+    fn assert_epoch_days(cases: &[(&str, i32)]) {
+        for &(date, expected) in cases {
+            for eval_mode in [EvalMode::Legacy, EvalMode::Try, EvalMode::Ansi] {
+                assert_eq!(
+                    date_parser(date, eval_mode).unwrap(),
+                    Some(expected),
+                    "{date}"
+                );
+            }
+        }
     }
 
     #[test]
@@ -4218,21 +4208,40 @@ mod tests {
             }
         }
 
-        //Naive Date only supports years 262142 AD to 262143 BC. Spark parses these fine, so
-        //they are a Comet limitation rather than malformed input and stay null in ANSI mode.
-        assert_null_in_all_modes(&[
-            "-262144-1-1",
-            "262143-01-1",
-            "262143-1-1",
-            "262143-01-1 ",
-            "262143-01-01T ",
-            "262143-1-01T 1234",
-            "-0973250",
+        // Years past chrono's `NaiveDate` range (+/-262142) still parse: Spark accepts a year of
+        // up to 7 digits and only rejects dates whose epoch day overflows `Int`.
+        assert_epoch_days(&[
+            ("-262144-1-1", -96465658),
+            ("262143-01-1", 95026237),
+            ("262143-1-1", 95026237),
+            ("262143-01-1 ", 95026237),
+            ("262143-01-01T ", 95026237),
+            ("262143-1-01T 1234", 95026237),
+            ("-0973250", -356191791),
+            ("294248-01-01", 106752347),
+            ("-290309-01-01", -106752712),
+            ("999999-01-01", 364522607),
+            ("+1000000-01-01", 364522972),
+            ("1000000-01-01T00:00:00", 364522972),
+            // Leap day in a year divisible by 400, past chrono's range.
+            ("300000-02-29", 108853281),
+            // The last and first days whose epoch day fits in `i32`.
+            ("5881580-07-11", i32::MAX),
+            ("-5877641-06-23", i32::MIN),
         ]);
 
-        //years whose epoch day overflows i32 are rejected by Spark too (localDateToDays uses
-        //Math.toIntExact), so ANSI mode must raise rather than return null
-        assert_null_or_ansi_error(&["9999999-01-01", "-9999999-01-01"]);
+        // One day past either `i32` boundary, and years whose epoch day overflows `i32`, are
+        // rejected by Spark too (localDateToDays uses Math.toIntExact), so ANSI mode must raise.
+        assert_null_or_ansi_error(&[
+            "5881580-07-12",
+            "-5877641-06-22",
+            "9999999-01-01",
+            "-9999999-01-01",
+        ]);
+        // An invalid calendar date past chrono's range is still malformed.
+        assert_null_or_ansi_error(&["300001-02-29", "1000000-13-01"]);
+        // A year of 8 digits is malformed even with leading zeros.
+        assert_null_or_ansi_error(&["00002020-01-01", "10000000-01-01"]);
 
         // Canonical `yyyy-mm-dd` shape with invalid calendar dates exercises the fast path.
         // Spark's LocalDate.of rejects these, so ANSI mode must raise (issue #5012).

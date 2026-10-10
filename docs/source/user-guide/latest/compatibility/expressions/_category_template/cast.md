@@ -71,10 +71,10 @@ including:
 
 ## String to Date
 
-Comet's native `CAST(string AS DATE)` implementation matches Apache Spark's behavior for years
-between 262143 BC and 262142 AD. This range limitation comes from the underlying chrono library's
-`NaiveDate` type. Spark itself supports a wider range. All three eval modes (Legacy, ANSI, Try)
-are supported.
+Comet's native `CAST(string AS DATE)` implementation matches Apache Spark's behavior, including
+years past the range of chrono's `NaiveDate` (262143 BC to 262142 AD): like Spark, any date whose
+day count since 1970-01-01 fits in a 32-bit integer parses. All three eval modes (Legacy, ANSI,
+Try) are supported.
 
 Supported input formats match Spark exactly:
 
