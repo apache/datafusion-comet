@@ -166,10 +166,10 @@ private[codegen] object CometBatchKernelCodegenInput extends CometTypeShim {
         val fastPath = emitDecimalFastBodyUnsafe(valueAddr, "this.rowIdx", "        ")
         val slowPath = emitDecimalSlowBody(slowField, "this.rowIdx", "        ")
         val body = known match {
-          case Some(dt) if dt.precision <= Decimal.MAX_LONG_DIGITS => fastPath
+          case Some(dt) if canReadDecimalAsUnscaledLong(dt) => fastPath
           case Some(_) => slowPath
           case None =>
-            s"""        if (precision <= ${Decimal.MAX_LONG_DIGITS}) {
+            s"""        if (precision <= ${Decimal.MAX_LONG_DIGITS} && scale >= 0) {
                |$fastPath
                |        } else {
                |$slowPath
@@ -244,6 +244,18 @@ private[codegen] object CometBatchKernelCodegenInput extends CometTypeShim {
        """.stripMargin
     }
   }
+
+  /**
+   * True when a decimal column can be read through the unscaled-long fast path.
+   *
+   * `Decimal.createUnsafe` produces a long-backed `Decimal` whose `decimalVal` is null, and
+   * Spark's conversions then index `Decimal.POW_10(scale)`. That throws for a negative scale,
+   * which `spark.sql.legacy.allowNegativeScaleOfDecimal=true` allows, so a `try_cast` would
+   * silently return NULL and a plain cast would fail. The `BigDecimal`-backed reader has no such
+   * assumption, so negative scales take it regardless of precision.
+   */
+  private def canReadDecimalAsUnscaledLong(dt: DecimalType): Boolean =
+    dt.precision <= Decimal.MAX_LONG_DIGITS && dt.scale >= 0
 
   private def emitDecimalSlowBody(field: String, idx: String, ind: String): String = {
     val cont = ind + "    "
@@ -739,7 +751,7 @@ private[codegen] object CometBatchKernelCodegenInput extends CometTypeShim {
            |      }""".stripMargin
       case dt: DecimalType =>
         val body =
-          if (dt.precision <= Decimal.MAX_LONG_DIGITS) {
+          if (canReadDecimalAsUnscaledLong(dt)) {
             emitDecimalFastBodyUnsafe(s"${childField}_valueAddr", "startIndex + i", "        ")
           } else {
             emitDecimalSlowBody(childField, "startIndex + i", "        ")
@@ -969,7 +981,7 @@ private[codegen] object CometBatchKernelCodegenInput extends CometTypeShim {
         val dt = f.sparkType.asInstanceOf[DecimalType]
         val field = s"${path}_f$fi"
         val body =
-          if (dt.precision <= Decimal.MAX_LONG_DIGITS) {
+          if (canReadDecimalAsUnscaledLong(dt)) {
             emitDecimalFastBodyUnsafe(s"${field}_valueAddr", "this.rowIdx", "          ")
           } else {
             emitDecimalSlowBody(field, "this.rowIdx", "          ")
