@@ -23,7 +23,7 @@ use crate::partitioners::partitioned_batch_iterator::{
 use crate::partitioners::ShufflePartitioner;
 use crate::writers::PartitionWriter;
 use crate::{comet_partitioning, CometPartitioning, RoundRobinStrategy};
-use arrow::array::{Array, ArrayData, ArrayRef, RecordBatch};
+use arrow::array::{Array, ArrayData, RecordBatch};
 use datafusion::common::utils::proxy::VecAllocExt;
 use datafusion::common::{DataFusionError, HashSet};
 use datafusion::execution::memory_pool::{MemoryConsumer, MemoryReservation};
@@ -424,16 +424,14 @@ impl<T: PartitionWriter> MultiPartitionShuffleRepartitioner<T> {
                     } else {
                         (*max_hash_columns).min(input.num_columns())
                     };
-                    let columns_to_hash: Vec<ArrayRef> = (0..num_columns_to_hash)
-                        .map(|i| Arc::clone(input.column(i)))
-                        .collect();
+                    let columns_to_hash = &input.columns()[..num_columns_to_hash];
 
                     // Use identical seed as Spark hash partitioning.
                     let hashes_buf = &mut scratch.hashes_buf[..num_rows];
                     hashes_buf.fill(42_u32);
 
                     // Compute hash for selected columns
-                    create_murmur3_hashes(&columns_to_hash, hashes_buf)?;
+                    create_murmur3_hashes(columns_to_hash, hashes_buf)?;
 
                     // Assign partition IDs based on hash (same as hash partitioning)
                     let partition_ids = &mut scratch.partition_ids[..num_rows];
@@ -736,7 +734,7 @@ impl<T: PartitionWriter> Debug for MultiPartitionShuffleRepartitioner<T> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use arrow::array::Int64Array;
+    use arrow::array::{ArrayRef, Int64Array};
     use datafusion::physical_plan::metrics::ExecutionPlanMetricsSet;
 
     #[derive(Default)]

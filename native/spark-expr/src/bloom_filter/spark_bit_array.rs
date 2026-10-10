@@ -62,8 +62,8 @@ impl SparkBitArray {
         self.data.len()
     }
 
-    pub fn data(&self) -> Vec<u64> {
-        self.data.clone()
+    pub fn data(&self) -> &[u64] {
+        &self.data
     }
 
     /// Number of set bits in the array. Mirrors Spark's `BitArray.cardinality()`.

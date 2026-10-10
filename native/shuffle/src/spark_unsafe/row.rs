@@ -37,7 +37,7 @@ use arrow::array::{
     Array, ArrayRef, RecordBatch, RecordBatchOptions,
 };
 use arrow::compute::cast;
-use arrow::datatypes::{DataType, Field, Schema, TimeUnit};
+use arrow::datatypes::{DataType, Field, Schema, SchemaRef, TimeUnit};
 use arrow::error::ArrowError;
 use datafusion::physical_plan::metrics::Time;
 use datafusion_comet_jni_bridge::errors::CometError;
@@ -380,6 +380,10 @@ fn append_nested_struct_fields_field_major(
 ) -> Result<(), CometError> {
     let num_rows = row_addresses.len();
     let mut row = SparkUnsafeRow::new_with_num_fields(fields.len());
+    // Reused by every nested struct field. The recursive call only borrows them.
+    let mut nested_addresses: Vec<jlong> = Vec::new();
+    let mut nested_sizes: Vec<jint> = Vec::new();
+    let mut nested_is_null: Vec<bool> = Vec::new();
 
     // Helper macro for processing primitive fields
     macro_rules! process_field {
@@ -517,9 +521,12 @@ fn append_nested_struct_fields_field_major(
                 let nested_builder = get_field_builder!(struct_builder, StructBuilder, field_idx);
 
                 // Collect nested struct addresses and sizes in one pass, building validity
-                let mut nested_addresses: Vec<jlong> = Vec::with_capacity(num_rows);
-                let mut nested_sizes: Vec<jint> = Vec::with_capacity(num_rows);
-                let mut nested_is_null: Vec<bool> = Vec::with_capacity(num_rows);
+                nested_addresses.clear();
+                nested_sizes.clear();
+                nested_is_null.clear();
+                nested_addresses.reserve(num_rows);
+                nested_sizes.reserve(num_rows);
+                nested_is_null.reserve(num_rows);
 
                 for row_idx in 0..num_rows {
                     if struct_is_null[row_idx] {
@@ -833,6 +840,11 @@ fn append_struct_fields_field_major(
         }
     }
 
+    // Reused by every nested struct field. The recursive call only borrows them.
+    let mut nested_addresses: Vec<jlong> = Vec::new();
+    let mut nested_sizes: Vec<jint> = Vec::new();
+    let mut nested_is_null: Vec<bool> = Vec::new();
+
     // Helper macro for processing primitive fields
     macro_rules! process_field {
         ($builder_type:ty, $field_idx:expr, $get_value:expr) => {{
@@ -966,9 +978,12 @@ fn append_struct_fields_field_major(
                 let nested_builder = get_field_builder!(struct_builder, StructBuilder, field_idx);
 
                 // Collect nested struct addresses and sizes in one pass, building validity
-                let mut nested_addresses: Vec<jlong> = Vec::with_capacity(num_rows);
-                let mut nested_sizes: Vec<jint> = Vec::with_capacity(num_rows);
-                let mut nested_is_null: Vec<bool> = Vec::with_capacity(num_rows);
+                nested_addresses.clear();
+                nested_sizes.clear();
+                nested_is_null.clear();
+                nested_addresses.reserve(num_rows);
+                nested_sizes.reserve(num_rows);
+                nested_is_null.reserve(num_rows);
 
                 for (row_idx, i) in (row_start..row_end).enumerate() {
                     if struct_is_null[row_idx] {
@@ -1370,7 +1385,7 @@ pub fn process_sorted_row_partition(
 
     // Create builders once and reuse them across batches.
     // After finish() is called, builders are reset and can be reused.
-    let mut data_builders: Vec<Box<dyn ArrayBuilder>> = vec![];
+    let mut data_builders: Vec<Box<dyn ArrayBuilder>> = Vec::with_capacity(schema.len());
     schema.iter().try_for_each(|dt| {
         make_builders(dt, batch_size, prefer_dictionary_ratio)
             .map(|builder| data_builders.push(builder))?;
@@ -1391,6 +1406,8 @@ pub fn process_sorted_row_partition(
     // One context for every batch this call encodes; the JVM calls in once per sorted
     // partition, so there is no wider native scope to hoist it to.
     let mut codec_context = ShuffleCodecContext::default();
+    // The block writer pre-encodes the batch schema, so it is kept until the schema changes.
+    let mut block_writer: Option<(SchemaRef, ShuffleBlockWriter)> = None;
 
     while current_row < row_num {
         let n = std::cmp::min(batch_size, row_num - current_row);
@@ -1423,8 +1440,17 @@ pub fn process_sorted_row_partition(
         frozen.clear();
         let mut cursor = Cursor::new(&mut frozen);
 
-        let block_writer = ShuffleBlockWriter::try_new(batch.schema().as_ref(), codec.clone())?;
-        written += block_writer.write_batch(&batch, &mut cursor, &mut codec_context, &ipc_time)?;
+        // The schema changes between batches when a dictionary-encoded column falls back to a
+        // plain array (see `builder_to_array`).
+        if block_writer
+            .as_ref()
+            .is_none_or(|(cached, _)| cached != batch.schema_ref())
+        {
+            let writer = ShuffleBlockWriter::try_new(batch.schema_ref(), codec.clone())?;
+            block_writer = Some((batch.schema(), writer));
+        }
+        let (_, writer) = block_writer.as_ref().expect("block writer is set above");
+        written += writer.write_batch(&batch, &mut cursor, &mut codec_context, &ipc_time)?;
 
         if let Some(checksum) = &mut current_checksum {
             checksum.update(&mut cursor)?;

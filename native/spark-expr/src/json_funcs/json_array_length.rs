@@ -105,9 +105,7 @@ fn spark_json_array_length_scalar(scalar: &ScalarValue) -> Result<ScalarValue> {
 }
 
 fn spark_json_array_length_scalar_inner(json_str: &Option<String>) -> Result<ScalarValue> {
-    let array_length = json_str
-        .clone()
-        .and_then(|json_str| get_json_array_length(&json_str));
+    let array_length = json_str.as_deref().and_then(get_json_array_length);
     Ok(ScalarValue::Int32(array_length))
 }
 
