@@ -2502,7 +2502,7 @@ class CometExecSuite extends CometTestBase {
       withTempPath { dir =>
         withSQLConf(SESSION_LOCAL_TIMEZONE.key -> "UTC") {
           spark
-            .range(numRows)
+            .range(numRows.toLong)
             .selectExpr(
               "id",
               "CASE WHEN id % 3 = 0 THEN TIMESTAMP '1969-12-31 23:59:59.123456' " +
