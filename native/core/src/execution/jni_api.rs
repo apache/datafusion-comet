@@ -1517,20 +1517,19 @@ fn log_plan_metrics(exec_context: &ExecutionContext, stage_id: jint, partition: 
     }
 }
 
-fn convert_datatype_arrays(
+fn convert_field_arrays(
     env: &mut Env,
     serialized_datatypes: JObjectArray,
-) -> JNIResult<Vec<ArrowDataType>> {
+) -> JNIResult<Vec<arrow::datatypes::Field>> {
     let array_len = serialized_datatypes.len(env)?;
-    let mut res: Vec<ArrowDataType> = Vec::new();
+    let mut res = Vec::with_capacity(array_len);
 
     for i in 0..array_len {
         let inner_array = serialized_datatypes.get_element(env, i)?;
         let inner_array = unsafe { JByteArray::from_raw(&*env, inner_array.into_raw()) };
         let bytes = env.convert_byte_array(inner_array)?;
         let data_type = serde::deserialize_data_type(bytes.as_slice()).unwrap();
-        let arrow_dt = to_arrow_datatype(&data_type);
-        res.push(arrow_dt);
+        res.push(serde::to_arrow_field("", &data_type, true));
     }
 
     Ok(res)
@@ -1632,7 +1631,10 @@ pub unsafe extern "system" fn Java_org_apache_comet_Native_writeSortedFileNative
             "writeSortedFileNative",
             tracing_enabled != JNI_FALSE,
             || {
-                let data_types = convert_datatype_arrays(env, serialized_datatypes)?;
+                let data_types = convert_field_arrays(env, serialized_datatypes)?
+                    .into_iter()
+                    .map(|field| field.data_type().clone())
+                    .collect::<Vec<_>>();
                 let row_addresses = row_addresses.get_elements(env, ReleaseMode::NoCopyBack)?;
                 let row_sizes = row_sizes.get_elements(env, ReleaseMode::NoCopyBack)?;
                 let output_path: String = file_path.try_to_string(env).unwrap();
@@ -2007,7 +2009,7 @@ pub unsafe extern "system" fn Java_org_apache_comet_Native_columnarToRowInit(
 ) -> jlong {
     try_unwrap_or_throw(&e, |env| {
         // Deserialize the schema
-        let schema = convert_datatype_arrays(env, serialized_schema)?;
+        let schema = convert_field_arrays(env, serialized_schema)?;
 
         // Create the context
         let ctx = Box::new(ColumnarToRowContext::new(schema, batch_size as usize));
@@ -3339,9 +3341,12 @@ mod tests {
             .iter_mut()
             .map(|schema| schema.as_mut() as *mut FFI_ArrowSchema as i64)
             .collect();
-        let types = columns.iter().map(|c| c.data_type().clone()).collect();
+        let fields = columns
+            .iter()
+            .map(|c| arrow::datatypes::Field::new("", c.data_type().clone(), true))
+            .collect();
 
-        let mut ctx = ColumnarToRowContext::new(types, 8);
+        let mut ctx = ColumnarToRowContext::new(fields, 8);
         let converted =
             unsafe { columnar_to_row_convert(&mut ctx, &array_addrs, &schema_addrs, num_rows) };
         // The call takes ownership of the exported structs, so they must not be released again.
@@ -3371,8 +3376,11 @@ mod tests {
         ];
         let (offsets, lengths, rows) = convert_exported(&columns, 3).unwrap();
 
-        let types = columns.iter().map(|c| c.data_type().clone()).collect();
-        let mut expected_ctx = ColumnarToRowContext::new(types, 8);
+        let fields = columns
+            .iter()
+            .map(|c| arrow::datatypes::Field::new("", c.data_type().clone(), true))
+            .collect();
+        let mut expected_ctx = ColumnarToRowContext::new(fields, 8);
         let (expected_buffer, expected_offsets, expected_lengths) =
             expected_ctx.convert(&columns, 3).unwrap();
         assert_eq!(offsets, expected_offsets);
@@ -3389,7 +3397,10 @@ mod tests {
         let column: ArrayRef = Arc::new(Int32Array::from(vec![1, 2]));
         let mut ffi_array = Box::new(FFI_ArrowArray::new(&column.to_data()));
         let array_addrs = [ffi_array.as_mut() as *mut FFI_ArrowArray as i64];
-        let mut ctx = ColumnarToRowContext::new(vec![DataType::Int32], 8);
+        let mut ctx = ColumnarToRowContext::new(
+            vec![arrow::datatypes::Field::new("", DataType::Int32, true)],
+            8,
+        );
         // Rejected before any struct is imported, so the export is still released on drop.
         let error = unsafe { columnar_to_row_convert(&mut ctx, &array_addrs, &[], 2) }
             .expect_err("mismatched addresses are rejected");

@@ -274,6 +274,12 @@ query expect_fallback(unsupported expression)
 SELECT unsupported_func(v) FROM test_table
 ```
 
+#### `query expect_operator(<class>)`
+
+Compares results with Spark and requires a plan node by its class name, for example
+`query expect_operator(CometNativeColumnarToRowExec)`. Use this when matching results alone
+would miss an operator falling back to Spark.
+
 #### `query expect_dispatch(<names>)` / `query expect_native(<names>)`
 
 Checks results and coverage like a plain `query`, and additionally asserts how Comet evaluated

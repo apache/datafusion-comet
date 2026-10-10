@@ -21,6 +21,8 @@
 -- Config: spark.sql.variant.allowReadingShredded=false
 -- Config: spark.sql.variant.pushVariantIntoScan=false
 -- Config: spark.sql.variant.writeShredding.enabled=false
+-- Config: spark.sql.variant.forceShreddingSchemaForTest=a INT
+-- Config: spark.comet.exec.columnarToRow.native.enabled=false
 
 statement
 CREATE TABLE test_variant(id INT, v VARIANT, tail STRING) USING parquet
@@ -143,3 +145,43 @@ INSERT INTO test_plain_variant_shape VALUES
 -- An ordinary binary struct with Variant-like field names is not a logical Variant.
 query
 SELECT payload FROM test_plain_variant_shape ORDER BY id
+
+-- Arrow Variant storage must reach Spark UnsafeRow through native C2R.
+statement
+SET spark.sql.variant.allowReadingShredded=true
+
+statement
+SET spark.comet.exec.columnarToRow.native.enabled=true
+
+statement
+INSERT INTO test_variant VALUES
+  (5, parse_json('[1,"text",false]'), 'array'),
+  (6, parse_json('42'), 'scalar'),
+  (7, parse_json('{}'), 'empty-object'),
+  (8, parse_json('[]'), 'empty-array')
+
+-- Selecting only Variant or placing siblings on either side previously used Spark C2R.
+query expect_operator(CometNativeColumnarToRowExec)
+SELECT v FROM test_variant
+
+query expect_operator(CometNativeColumnarToRowExec)
+SELECT id, v, tail FROM test_variant
+
+query expect_operator(CometNativeColumnarToRowExec)
+SELECT v, tail, id FROM test_variant
+
+statement
+SET spark.sql.variant.writeShredding.enabled=true
+
+statement
+CREATE TABLE test_variant_c2r_shredded USING parquet AS SELECT * FROM test_variant
+
+query expect_operator(CometNativeColumnarToRowExec)
+SELECT id, v, tail FROM test_variant_c2r_shredded
+
+-- Disabling native conversion still produces the same rows through Spark C2R.
+statement
+SET spark.comet.exec.columnarToRow.native.enabled=false
+
+query expect_operator(ColumnarToRowExec)
+SELECT id, v, tail FROM test_variant_c2r_shredded

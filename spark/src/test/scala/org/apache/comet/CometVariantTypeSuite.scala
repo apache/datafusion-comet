@@ -71,7 +71,7 @@ class CometVariantTypeSuite extends AnyFunSuite {
         assert(!QueryPlanSerde.supportedDataType(variantType))
         assert(!QueryPlanSerde.supportedDataType(ArrayType(variantType), allowComplex = true))
         assert(
-          !CometNativeColumnarToRowExec.supportsSchema(
+          CometNativeColumnarToRowExec.supportsSchema(
             StructType(Seq(StructField("v", variantType)))))
         assert(
           !CometNativeColumnarToRowExec.supportsSchema(
