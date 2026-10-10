@@ -163,8 +163,10 @@ fn create_spark_unsafe_array_with_one_null(
         buffer[offset..offset + width].copy_from_slice(&(i as i64).to_le_bytes()[..width]);
     }
     buffer
-        .chunks_exact(8)
-        .map(|word| u64::from_ne_bytes(word.try_into().unwrap()))
+        .as_chunks::<8>()
+        .0
+        .iter()
+        .map(|word| u64::from_ne_bytes(*word))
         .collect()
 }
 
