@@ -1026,6 +1026,38 @@ object CometIcebergNativeScan extends CometOperatorSerde[CometBatchScanExec] wit
     val pageIndexUnsupportedColumns =
       IcebergReflection.pageIndexUnsupportedColumns(metadata.tableSchema)
 
+    // iceberg-rust reads every leaf of a projected column that the task schema holds. Reading with
+    // the pruned scan schema skips the nested fields Spark's schema pruning removed, which the
+    // table schema would read and decode only to drop later.
+    val nestedSchemaPruningEnabled = CometConf.COMET_ICEBERG_NESTED_SCHEMA_PRUNING_ENABLED.get()
+    // Partition sources and equality-delete keys that the task schema lacks are appended at its
+    // top level. A nested one that the query pruned away would land outside its struct, so a task
+    // that needs one reads with the full schema instead.
+    val canUsePrunedSchemaCache = mutable.HashMap[Seq[Int], Boolean]()
+    def canUsePrunedSchema(requiredFieldIds: Seq[Int]): Boolean =
+      nestedSchemaPruningEnabled && (requiredFieldIds.isEmpty ||
+        canUsePrunedSchemaCache.getOrElseUpdate(
+          requiredFieldIds,
+          requiredFieldIds.forall { id =>
+            IcebergReflection.findFieldObject(metadata.prunedScanSchema, id).isDefined ||
+            !IcebergReflection.isNestedField(metadata.tableSchema, id)
+          }))
+    // schemaWithRequiredFields builds a new Schema whenever it appends a column. Memoize it by
+    // base schema (Iceberg's Schema compares by identity) and ids, so tasks that need the same
+    // columns share one schema object, and with it one schema pool entry. Most tasks need no extra
+    // columns, so they skip both lookups.
+    val requiredFieldsCache = mutable.HashMap[(AnyRef, Seq[Int]), AnyRef]()
+    def withRequiredFields(baseSchema: AnyRef, requiredFieldIds: Seq[Int]): AnyRef =
+      if (requiredFieldIds.isEmpty) {
+        baseSchema
+      } else {
+        requiredFieldsCache.getOrElseUpdate(
+          (baseSchema, requiredFieldIds),
+          IcebergReflection
+            .schemaWithRequiredFields(baseSchema, metadata.table, requiredFieldIds)
+            .asInstanceOf[AnyRef])
+      }
+
     val perPartitionBuilders = mutable.ArrayBuffer[OperatorOuterClass.IcebergScan]()
 
     var totalTasks = 0
@@ -1130,35 +1162,22 @@ object CometIcebergNativeScan extends CometOperatorSerde[CometBatchScanExec] wit
                 // verbatim for iceberg-rust to decode. Unencrypted files leave the field unset.
                 keyMetadataBytes(keyMetadataMethod, dataFile).foreach(taskBuilder.setKeyMetadata)
 
-                val taskSchema = taskSchemaMethod.invoke(task)
-
                 val deletes =
                   IcebergReflection.getDeleteFilesFromTask(task, fileScanTaskClass)
                 val hasDeletes = !deletes.isEmpty
 
-                val baseSchema: AnyRef =
+                // An equality delete may be keyed on a column dropped from the current schema
+                // (schema evolution). iceberg-rust must read that column to apply the delete,
+                // so union the equality-delete field ids into the task schema, resolving any
+                // dropped ones from the table's schema history (mirrors Iceberg-Java's
+                // DeleteFilter.fileProjection).
+                val equalityFieldIds =
                   if (hasDeletes) {
-                    // An equality delete may be keyed on a column dropped from the current schema
-                    // (schema evolution). iceberg-rust must read that column to apply the delete,
-                    // so union the equality-delete field ids into the task schema, resolving any
-                    // dropped ones from the table's schema history (mirrors Iceberg-Java's
-                    // DeleteFilter.fileProjection).
-                    val equalityFieldIds = deletes.asScala.flatMap { df =>
+                    deletes.asScala.flatMap { df =>
                       requiredEqualityFieldIds(deleteFileClass, df).asScala.map(_.intValue())
                     }.toSeq
-                    if (equalityFieldIds.nonEmpty) {
-                      IcebergReflection
-                        .schemaWithRequiredFields(taskSchema, metadata.table, equalityFieldIds)
-                        .asInstanceOf[AnyRef]
-                    } else {
-                      taskSchema
-                    }
                   } else {
-                    if (hasHistoricalColumns) {
-                      metadata.scanSchema.asInstanceOf[AnyRef]
-                    } else {
-                      metadata.tableSchema.asInstanceOf[AnyRef]
-                    }
+                    Nil
                   }
 
                 // iceberg-rust validates a FileScanTask by resolving its partition spec against
@@ -1166,13 +1185,20 @@ object CometIcebergNativeScan extends CometOperatorSerde[CometBatchScanExec] wit
                 // columns present even when the query projects them out (e.g. selecting only
                 // _spec_id / _partition). Union them in. project_field_ids still drives the read,
                 // so these columns are not materialized into the output.
-                val schema: AnyRef =
-                  IcebergReflection
-                    .schemaWithRequiredFields(
-                      baseSchema,
-                      metadata.table,
-                      IcebergReflection.partitionSourceFieldIds(task, fileScanTaskClass))
-                    .asInstanceOf[AnyRef]
+                val requiredFieldIds = equalityFieldIds ++
+                  IcebergReflection.partitionSourceFieldIds(task, fileScanTaskClass)
+
+                val baseSchema: AnyRef =
+                  if (canUsePrunedSchema(requiredFieldIds)) {
+                    metadata.prunedScanSchema.asInstanceOf[AnyRef]
+                  } else if (hasDeletes) {
+                    taskSchemaMethod.invoke(task)
+                  } else if (hasHistoricalColumns) {
+                    metadata.scanSchema.asInstanceOf[AnyRef]
+                  } else {
+                    metadata.tableSchema.asInstanceOf[AnyRef]
+                  }
+                val schema: AnyRef = withRequiredFields(baseSchema, requiredFieldIds)
 
                 val schemaIdx = schemaToPoolIndex.getOrElseUpdate(
                   schema, {

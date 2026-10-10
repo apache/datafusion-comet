@@ -95,8 +95,6 @@ object CometIcebergNativeWrite extends CometOperatorSerde[IcebergWriteExec] {
   // scheme reads its bucket from the URL host (`requireSupportedStorageScheme`).
   private val LocalStorageSchemes: Set[String] = Set("file", "memory")
   private val MaxSupportedFormatVersion = 3
-  // The Iceberg spec reserves field ids above `Integer.MAX_VALUE - 200` for metadata columns.
-  private val MaxDataFieldId = Int.MaxValue - 200
   private val ParquetWritePropertyPrefix = "write.parquet."
   private val ParquetMrPropertyPrefix = "parquet."
   private val CometS3CredentialProviderClassProperty =
@@ -498,7 +496,7 @@ object CometIcebergNativeWrite extends CometOperatorSerde[IcebergWriteExec] {
       case None => Some("could not resolve the write schema's field ids")
       case Some(fields) =>
         fields.collectFirst {
-          case (name, id) if id > MaxDataFieldId =>
+          case (name, id) if id > IcebergReflection.MaxDataFieldId =>
             s"write schema includes metadata column $name, which iceberg-java fills with row " +
               "lineage and the native writer does not write"
         }
