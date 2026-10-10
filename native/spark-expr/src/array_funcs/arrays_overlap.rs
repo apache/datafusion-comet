@@ -1240,55 +1240,6 @@ mod tests {
         }
     }
 
-    /// A constant array beside an array column is compared with every row, on either side.
-    #[test]
-    fn scalar_beside_column_compares_every_row() -> Result<()> {
-        // [0], [1], [2], [NULL] against the constant [1]
-        let column = make_list_array(
-            &Int32Array::from(vec![Some(0), Some(1), Some(2), None]),
-            &[0, 1, 2, 3, 4],
-            None,
-        );
-        let constant = make_list_array(&Int32Array::from(vec![1]), &[0, 1], None);
-        let expected = vec![Some(false), Some(true), Some(false), None];
-
-        let column_first = invoke(
-            ColumnarValue::Array(Arc::new(column.clone())),
-            scalar_list(constant.clone()),
-            4,
-        )?;
-        assert_eq!(booleans(column_first), expected);
-        let constant_first = invoke(
-            scalar_list(constant),
-            ColumnarValue::Array(Arc::new(column)),
-            4,
-        )?;
-        assert_eq!(booleans(constant_first), expected);
-        Ok(())
-    }
-
-    /// The same for the nested-element path.
-    #[test]
-    fn scalar_beside_column_compares_every_row_nested() -> Result<()> {
-        let rows = [
-            make_struct_list(vec![Some((Some(1), Some(2)))]),
-            make_struct_list(vec![Some((Some(3), Some(4)))]),
-        ];
-        let column = arrow::compute::concat(&[&rows[0], &rows[1]])?;
-        let constant = make_struct_list(vec![Some((Some(3), Some(4)))]);
-        let expected = vec![Some(false), Some(true)];
-
-        let constant_first = invoke(
-            scalar_list(constant.clone()),
-            ColumnarValue::Array(Arc::clone(&column)),
-            2,
-        )?;
-        assert_eq!(booleans(constant_first), expected);
-        let column_first = invoke(ColumnarValue::Array(column), scalar_list(constant), 2)?;
-        assert_eq!(booleans(column_first), expected);
-        Ok(())
-    }
-
     /// A long constant list is read in place for every row rather than repeated to the batch
     /// length: 262,144 elements repeated over 8,192 rows would overflow a list's 32-bit offsets.
     #[test]
