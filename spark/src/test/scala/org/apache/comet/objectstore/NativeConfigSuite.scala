@@ -26,7 +26,7 @@ import org.scalatest.matchers.should.Matchers
 
 import org.apache.hadoop.conf.Configuration
 
-import org.apache.comet.CometConf.COMET_S3_COMPLIANT_SCHEMES_KEY
+import org.apache.comet.CometConf.{COMET_LIBHDFS_SCHEMES_KEY, COMET_S3_COMPLIANT_SCHEMES_KEY}
 
 class NativeConfigSuite extends AnyFunSuite with Matchers {
 
@@ -342,6 +342,15 @@ class NativeConfigSuite extends AnyFunSuite with Matchers {
         NativeConfig.bucketForUri(new URI(uri), schemes) shouldBe expected
       }
     }
+  }
+
+  test("resolveLibhdfsSchemes - hdfs when unset or blank, otherwise the configured list") {
+    val conf = new Configuration(false)
+    NativeConfig.resolveLibhdfsSchemes(conf) shouldBe Set("hdfs")
+    conf.set(COMET_LIBHDFS_SCHEMES_KEY, "  ")
+    NativeConfig.resolveLibhdfsSchemes(conf) shouldBe Set("hdfs")
+    conf.set(COMET_LIBHDFS_SCHEMES_KEY, " S3A , fake ")
+    NativeConfig.resolveLibhdfsSchemes(conf) shouldBe Set("s3a", "fake")
   }
 
   test("resolveS3CompliantSchemes - comma list is trimmed and lowercased, empty means none") {

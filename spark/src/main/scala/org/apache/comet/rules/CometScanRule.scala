@@ -252,26 +252,13 @@ case class CometScanRule(session: SparkSession)
     // itself (`NativeBase.isObjectStoreSchemeSupported`) rather than a hardcoded list, so the
     // planner can't drift from object_store's actual support.
     //
-    // EXCEPT schemes the user routes through libhdfs via `spark.hadoop.fs.comet.libhdfs.schemes`
-    // (e.g. `hdfs`, or a test `fake`): those ARE natively readable through the libhdfs object_store
-    // bridge, so they must NOT be declined here. The claim decision is guarded in CI by
-    // CometScanSchemeFallbackSuite; end-to-end execution through libhdfs is guarded by
-    // ParquetReadFromFakeHadoopFsSuite, which is a manual suite (see its scaladoc).
-    //
-    // The default mirrors the native side: when the config is unset, `is_hdfs_scheme`
-    // (native/core/src/parquet/parquet_support.rs) treats `hdfs` as natively readable, and
-    // `create_hdfs_object_store` is in the default build (`default = ["hdfs-opendal"]`). If we
-    // defaulted to an empty set here, a plain `hdfs://` V1 scan would be declined and fall back to
-    // Spark even though native can read it -- a silent regression for HDFS users in the default
-    // configuration. So default to `Set("hdfs")` to stay in lockstep with the native default.
-    val libhdfsSchemes: Set[String] = COMET_LIBHDFS_SCHEMES.get() match {
-      case Some(s) => NativeConfig.parseSchemeSet(s)
-      case None => Set("hdfs")
-    }
+    // EXCEPT schemes native routes through libhdfs. The list comes from the scan's Hadoop conf, as
+    // native reads it, and defaults to `hdfs`.
+    val libhdfsSchemes = NativeConfig.resolveLibhdfsSchemes(hadoopConf)
     // Opt-in S3-compliant alias schemes (e.g. `blob`) from `fs.comet.s3Compliant.schemes`. Read
-    // from the Hadoop config rather than SQLConf (unlike COMET_LIBHDFS_SCHEMES above) so
-    // `core-site.xml` is honored. The native object_store gate no longer claims aliases, so admit
-    // them here where the Hadoop config is available.
+    // from the Hadoop config, like the libhdfs list above, so `core-site.xml` is honored. The
+    // native object_store gate no longer claims aliases, so admit them here where the Hadoop
+    // config is available.
     val s3CompliantSchemes = NativeConfig.resolveS3CompliantSchemes(hadoopConf)
 
     // Classify each root path once; see RootPathInfo.
