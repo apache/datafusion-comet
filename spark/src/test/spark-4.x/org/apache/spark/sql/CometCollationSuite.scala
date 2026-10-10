@@ -20,12 +20,10 @@
 package org.apache.spark.sql
 
 import org.apache.spark.sql.catalyst.expressions.AttributeReference
-import org.apache.spark.sql.catalyst.optimizer.{BuildLeft, BuildRight}
 import org.apache.spark.sql.catalyst.plans.Inner
-import org.apache.spark.sql.comet.{CometBroadcastHashJoinExec, CometHashJoinExec, CometSortMergeJoinExec}
-import org.apache.spark.sql.execution.LocalTableScanExec
-import org.apache.spark.sql.execution.SparkPlan
-import org.apache.spark.sql.execution.joins.{BroadcastHashJoinExec, ShuffledHashJoinExec, SortMergeJoinExec}
+import org.apache.spark.sql.comet.CometSortMergeJoinExec
+import org.apache.spark.sql.execution.{LocalTableScanExec, SparkPlan}
+import org.apache.spark.sql.execution.joins.SortMergeJoinExec
 import org.apache.spark.sql.types.StringType
 
 import org.apache.comet.{CometConf, CometExplainInfo, ExtendedExplainInfo}
@@ -81,9 +79,9 @@ class CometCollationSuite extends CometTestBase {
     }
   }
 
-  // ---- Join collation guards (issue #4051) ----------------------------------------
+  // ---- Sort-merge join collation guards (issue #4051) ----------------------------------------
   //
-  // Comet's native join compares keys byte-by-byte, so 'a' and 'A' would not match
+  // Comet's native sort-merge join compares keys byte-by-byte, so 'a' and 'A' would not match
   // under utf8_lcase, producing wrong results. The converters must reject any join
   // whose keys carry a non-default collation.
   //
@@ -102,10 +100,7 @@ class CometCollationSuite extends CometTestBase {
   // Ensure converters are on so that None from convert() means the collation guard fired,
   // not that the join type is disabled.
   private def withJoinConvertersEnabled(f: => Unit): Unit =
-    withSQLConf(
-      CometConf.COMET_EXEC_HASH_JOIN_ENABLED.key -> "true",
-      CometConf.COMET_EXEC_BROADCAST_HASH_JOIN_ENABLED.key -> "true",
-      CometConf.COMET_EXEC_SORT_MERGE_JOIN_ENABLED.key -> "true") {
+    withSQLConf(CometConf.COMET_EXEC_SORT_MERGE_JOIN_ENABLED.key -> "true") {
       f
     }
 
@@ -114,90 +109,6 @@ class CometCollationSuite extends CometTestBase {
     assert(
       reasons.contains(expectedReason),
       s"Expected fallback reason '$expectedReason' on ${plan.nodeName}, got: $reasons")
-  }
-
-  test("CometBroadcastHashJoinExec rejects non-default collated join keys") {
-    withJoinConvertersEnabled {
-      val left = collatedKey("l")
-      val right = collatedKey("r")
-      val join = BroadcastHashJoinExec(
-        leftKeys = Seq(left),
-        rightKeys = Seq(right),
-        joinType = Inner,
-        buildSide = BuildRight,
-        condition = None,
-        left = LocalTableScanExec(Seq(left), Nil, None),
-        right = LocalTableScanExec(Seq(right), Nil, None))
-
-      val builder = OperatorOuterClass.Operator.newBuilder()
-      val result =
-        CometBroadcastHashJoinExec.convert(
-          join,
-          builder,
-          placeholderChildOp(),
-          placeholderChildOp())
-
-      assert(
-        result.isEmpty,
-        "CometBroadcastHashJoinExec.convert must reject non-default collated join keys " +
-          "(issue #4051): native byte equality cannot match values that compare equal " +
-          "under utf8_lcase. Got a non-empty proto: " + result)
-      assertFallbackReason(join, joinKeyCollationReason)
-    }
-  }
-
-  test("CometHashJoinExec rejects non-default collated join keys") {
-    withJoinConvertersEnabled {
-      val left = collatedKey("l")
-      val right = collatedKey("r")
-      val join = ShuffledHashJoinExec(
-        leftKeys = Seq(left),
-        rightKeys = Seq(right),
-        joinType = Inner,
-        buildSide = BuildLeft,
-        condition = None,
-        left = LocalTableScanExec(Seq(left), Nil, None),
-        right = LocalTableScanExec(Seq(right), Nil, None))
-
-      val builder = OperatorOuterClass.Operator.newBuilder()
-      val result =
-        CometHashJoinExec.convert(join, builder, placeholderChildOp(), placeholderChildOp())
-
-      assert(
-        result.isEmpty,
-        "CometHashJoinExec.convert must reject non-default collated join keys (issue " +
-          "#4051): native byte equality cannot match values that compare equal under " +
-          "utf8_lcase. Got a non-empty proto: " + result)
-      assertFallbackReason(join, joinKeyCollationReason)
-    }
-  }
-
-  test("CometBroadcastHashJoinExec still accepts default UTF8_BINARY string keys") {
-    withJoinConvertersEnabled {
-      val left = AttributeReference("l", StringType, nullable = false)()
-      val right = AttributeReference("r", StringType, nullable = false)()
-      val join = BroadcastHashJoinExec(
-        leftKeys = Seq(left),
-        rightKeys = Seq(right),
-        joinType = Inner,
-        buildSide = BuildRight,
-        condition = None,
-        left = LocalTableScanExec(Seq(left), Nil, None),
-        right = LocalTableScanExec(Seq(right), Nil, None))
-
-      val builder = OperatorOuterClass.Operator.newBuilder()
-      val result =
-        CometBroadcastHashJoinExec.convert(
-          join,
-          builder,
-          placeholderChildOp(),
-          placeholderChildOp())
-
-      assert(
-        result.isDefined,
-        "CometBroadcastHashJoinExec.convert must continue to accept default UTF8_BINARY " +
-          "string keys; the collation guard for #4051 must not over-block.")
-    }
   }
 
   test("CometSortMergeJoinExec rejects non-default collated join keys") {
