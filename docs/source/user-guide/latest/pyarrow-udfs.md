@@ -117,7 +117,9 @@ other strings that Comet imports. It splits larger input batches according to
 `spark.sql.execution.arrow.maxBytesPerBatch`. A native worker is created per partition.
 
 Each partition unpickles its own callable. Imported modules and their global state are shared by
-concurrent tasks in the executor's embedded Python interpreter.
+concurrent tasks in the executor's embedded Python interpreter. Comet imports PyArrow and unpickles
+callables one at a time, but imports that a UDF performs while it runs can happen concurrently in
+several tasks.
 
 The executor's embedded Python must be able to import `pyspark`, `pyarrow`, and the user's Python
 modules. Spark serializes the callable and a PySpark return type with `pyspark.cloudpickle`, so

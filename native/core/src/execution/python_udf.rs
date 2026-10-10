@@ -27,7 +27,15 @@ use arrow::ffi::{from_ffi, FFI_ArrowArray, FFI_ArrowSchema};
 use datafusion_comet_common::decode_string_arrays;
 use pyo3::ffi::Py_uintptr_t;
 use pyo3::prelude::*;
+use pyo3::sync::MutexExt;
 use pyo3::types::{PyBytes, PyList, PyTuple};
+use std::sync::{Mutex, PoisonError};
+
+// Tasks create their callables concurrently. Concurrent first imports of a package
+// can hand a thread a partially initialized module (observed with PyArrow on Python
+// 3.10), so callables are unpickled one at a time. Take it with `lock_py_attached`,
+// which waits for the lock without holding the GIL.
+static IMPORT_LOCK: Mutex<()> = Mutex::new(());
 
 fn initialize_python() -> Result<()> {
     use std::ffi::CStr;
@@ -67,8 +75,15 @@ fn initialize_python() -> Result<()> {
                 if !error.is_empty() {
                     return Err(error);
                 }
+                // No other thread can run Python before PyEval_SaveThread releases
+                // the GIL, so importing PyArrow here cannot race with another import.
+                let imported = Python::attach(|py| {
+                    py.import("pyarrow")
+                        .map(drop)
+                        .map_err(|error| format!("cannot import pyarrow: {error}"))
+                });
                 pyo3::ffi::PyEval_SaveThread();
-                Ok(())
+                imported
             }
         })
         .clone()
@@ -188,6 +203,9 @@ impl ArrowPythonUdf {
                     )));
                 }
             }
+            let _imports = IMPORT_LOCK
+                .lock_py_attached(py)
+                .unwrap_or_else(PoisonError::into_inner);
             let pickle = py.import("pickle").map_err(python_error)?;
             let loaded = pickle
                 .call_method1("loads", (PyBytes::new(py, command),))
@@ -369,11 +387,15 @@ fn python_error(error: impl std::fmt::Display) -> ArrowError {
 }
 
 /// Formats an exception raised by user code with its Python traceback, as Spark's
-/// `PythonException` message does.
+/// `PythonException` message does. Before Python 3.12, PyO3 keeps the traceback
+/// apart from the exception value, so pass the type, value and traceback explicitly.
 fn python_traceback_error(py: Python<'_>, error: PyErr) -> ArrowError {
     let formatted = py.import("traceback").and_then(|traceback| {
         traceback
-            .call_method1("format_exception", (error.value(py),))?
+            .call_method1(
+                "format_exception",
+                (error.get_type(py), error.value(py), error.traceback(py)),
+            )?
             .extract::<Vec<String>>()
     });
     match formatted {
@@ -392,6 +414,9 @@ mod tests {
     use std::sync::Arc;
 
     fn pickled_command(py: Python<'_>, module: &str, function: &str) -> Vec<u8> {
+        let _imports = IMPORT_LOCK
+            .lock_py_attached(py)
+            .unwrap_or_else(PoisonError::into_inner);
         let pickle = py.import("pickle").unwrap();
         let module = py.import(module).unwrap();
         let callable = module.getattr(function).unwrap();
@@ -427,11 +452,8 @@ mod tests {
                     .unwrap();
             let input: ArrayRef = Arc::new(Int64Array::from(vec![1, 2]));
             assert!(udf.evaluate(&[Arc::clone(&input)], 1).is_err());
-            assert!(udf
-                .evaluate(&[input], 2)
-                .unwrap_err()
-                .to_string()
-                .contains("pyarrow.Array"));
+            let error = udf.evaluate(&[input], 2).unwrap_err().to_string();
+            assert!(error.contains("pyarrow.Array"), "{error}");
         });
     }
 
@@ -439,20 +461,11 @@ mod tests {
     fn supports_named_arguments_and_safe_cast() {
         initialize_python().unwrap();
         Python::attach(|py| {
-            let callable = py
-                .eval(
-                    c"lambda *, x, y: __import__('pyarrow.compute', fromlist=['add']).add(x, y)",
-                    None,
-                    None,
-                )
-                .unwrap();
-            let command: Vec<u8> = py
-                .import("cloudpickle")
-                .unwrap()
-                .call_method1("dumps", ((callable.unbind(), py.None()),))
-                .unwrap()
-                .extract()
-                .unwrap();
+            // Capture the module so that unpickling, not the call, imports it.
+            let command = cloudpickled_lambda(
+                py,
+                c"(lambda pc: lambda *, x, y: pc.add(x, y))(__import__('pyarrow.compute', fromlist=['add']))",
+            );
             let input: ArrayRef = Arc::new(Int64Array::from(vec![1, 2]));
             let names = vec!["x".to_string(), "y".to_string()];
             let strict =
@@ -489,6 +502,9 @@ mod tests {
     }
 
     fn cloudpickled_lambda(py: Python<'_>, source: &std::ffi::CStr) -> Vec<u8> {
+        let _imports = IMPORT_LOCK
+            .lock_py_attached(py)
+            .unwrap_or_else(PoisonError::into_inner);
         let callable = py.eval(source, None, None).unwrap();
         py.import("cloudpickle")
             .unwrap()
