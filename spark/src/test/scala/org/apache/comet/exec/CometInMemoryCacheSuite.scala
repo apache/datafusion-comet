@@ -1214,6 +1214,53 @@ class CometInMemoryCacheSuite extends CometTestBase {
     }
   }
 
+  test("Comet in-memory cache counts the partitions and batches a scan reads") {
+    // Spark's PartitionBatchPruningSuite reads these accumulators to check that pruning skipped
+    // the batches it should have; the answer alone cannot tell a pruned batch from a decoded and
+    // filtered one.
+    // With AQE the scan sits inside a table cache stage on Spark 3.5+, and the instance that ran
+    // has to be the one the final plan holds.
+    Seq(false, true).foreach { adaptive =>
+      withSQLConf(
+        SQLConf.ADAPTIVE_EXECUTION_ENABLED.key -> adaptive.toString,
+        SQLConf.IN_MEMORY_TABLE_SCAN_STATISTICS_ENABLED.key -> "true",
+        SQLConf.COLUMN_BATCH_SIZE.key -> "50",
+        CometConf.COMET_EXEC_IN_MEMORY_CACHE_ENABLED.key -> "true") {
+        try {
+          // 10 partitions of 2 batches each.
+          spark
+            .range(0, 1000, 1, 10)
+            .selectExpr("id as key", "id % 7 as value")
+            .createOrReplaceTempView("counted_cache")
+          spark.catalog.cacheTable("counted_cache")
+          spark.table("counted_cache").count()
+
+          def readCounts(query: String, pruning: Boolean): (Long, Long) =
+            withSQLConf(SQLConf.IN_MEMORY_PARTITION_PRUNING.key -> pruning.toString) {
+              val df = spark.sql(query)
+              df.collect()
+              val scans = collect(df.queryExecution.executedPlan) {
+                case s: CometInMemoryTableScanExec => s
+              }
+              assert(scans.size == 1, df.queryExecution.executedPlan)
+              (scans.head.readPartitions.value, scans.head.readBatches.value)
+            }
+
+          val narrow = "SELECT key FROM counted_cache WHERE key >= 900 AND key < 905"
+          assert(readCounts(narrow, pruning = true) == ((1L, 1L)))
+          assert(readCounts(narrow, pruning = false) == ((10L, 20L)))
+          assert(
+            readCounts("SELECT key FROM counted_cache WHERE key < 0", pruning = true) == ((
+              0L,
+              0L)))
+          assert(readCounts("SELECT key FROM counted_cache", pruning = true) == ((10L, 20L)))
+        } finally {
+          spark.catalog.clearCache()
+        }
+      }
+    }
+  }
+
   test("Comet in-memory cache honors inMemoryColumnarStorage.partitionPruning=false") {
     // CometInMemoryTableScanExec applies the serializer's stats filter before decoding, the same
     // way Spark's InMemoryTableScanExec.filteredCachedBatches does. Spark gates that on
