@@ -90,6 +90,16 @@ Native shuffle (`CometExchange`) is selected when all of the following condition
      ([#5994](https://github.com/apache/datafusion-comet/issues/5994)). Without the conversion
      this shuffle would have used JVM shuffle, and a join partner may still use it.
 
+5. **Partition key expressions convert to protobuf**: native shuffle serializes the partitioning
+   into its protobuf plan, so every `HashPartitioning` expression and every `RangePartitioning`
+   sort order has to convert through `QueryPlanSerde.exprToProto`. An expression Comet has no
+   serde for, or whose serde reports it incompatible, disqualifies native shuffle even when the
+   key's type is supported. One example is the `mapsort(...)` wrapper Spark 4.0 and later adds
+   around a map used as a shuffle key: `CometMapSort` supports scalar map keys only, so a map with
+   array or struct keys fails this check and the exchange falls back to JVM shuffle even with
+   nested hash keys enabled. JVM shuffle has no such requirement because it evaluates the key on
+   the JVM; see [When JVM Shuffle is Used](jvm_shuffle.md#when-jvm-shuffle-is-used).
+
 ## Architecture
 
 ```
