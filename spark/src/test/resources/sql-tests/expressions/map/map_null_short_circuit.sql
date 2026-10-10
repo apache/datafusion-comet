@@ -45,3 +45,19 @@ SELECT m[CAST(s AS INT)] FROM map_null_short_circuit
 -- Where the map is not NULL, the key is evaluated and raises as in Spark
 query expect_error(CAST_INVALID_INPUT)
 SELECT m[CAST(s || 'x' AS INT)] FROM map_null_short_circuit
+
+-- map_from_arrays builds a map rather than reading one, but it is null-intolerant too: Spark skips
+-- the values where the keys are NULL. Comet guards it with CASE WHEN keys IS NOT NULL instead.
+statement
+CREATE TABLE map_from_arrays_null_short_circuit(k array<int>, s string) USING parquet
+
+statement
+INSERT INTO map_from_arrays_null_short_circuit SELECT /*+ COALESCE(1) */ * FROM VALUES
+  (NULL, 'bad'),
+  (array(1), '10'),
+  (NULL, 'worse'),
+  (array(2), '20')
+  AS v(k, s)
+
+query
+SELECT map_from_arrays(k, array(CAST(s AS INT))) FROM map_from_arrays_null_short_circuit

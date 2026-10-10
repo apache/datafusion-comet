@@ -22,11 +22,13 @@
 -- https://github.com/apache/datafusion-comet/issues/6613
 
 -- MinSparkVersion: 4.0
+-- Config: spark.comet.batchSize=8192
 
 statement
 CREATE TABLE array_null_short_circuit_shuffle(id bigint, a array<int>, b array<int>) USING parquet
 
--- A single file, which the scan reads in batches of 8192 rows. Only the second batch has NULL arrays.
+-- A single file, which the scan reads in batches of 8192 rows (the batch size is pinned above). Only
+-- the second batch has NULL arrays.
 statement
 INSERT INTO array_null_short_circuit_shuffle
 SELECT id, IF(id >= 8192 AND id % 2 = 0, NULL, array(0)), array(1, 2, 3, 4)

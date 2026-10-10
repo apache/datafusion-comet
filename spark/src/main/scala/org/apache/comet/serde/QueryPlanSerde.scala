@@ -1307,16 +1307,22 @@ object QueryPlanSerde extends Logging with CometExprShim with CometTypeShim {
    * projection or an aggregation evaluates each of them for every row, before the expressions
    * that use them. They are treated that way for every operator, and whatever
    * `spark.sql.subexpressionElimination.enabled` says, which only keeps them evaluated for every
-   * row where Spark might not.
+   * row where Spark might not. They are found on the first `canShortCircuitNulls` call for the
+   * operator, so an operator without an argument to skip never runs `EquivalentExpressions`.
    */
-  private val sharedSubexpressions = new DynamicVariable[Seq[Expression]](Nil)
+  private val sharedSubexpressions = new DynamicVariable[Option[SharedSubexpressions]](None)
+
+  private final class SharedSubexpressions(expressions: Seq[Expression]) {
+    lazy val common: Seq[Expression] = {
+      val equivalence = new EquivalentExpressions
+      expressions.foreach(equivalence.addExprTree(_))
+      equivalence.getCommonSubexpressions
+    }
+  }
 
   /** Runs `f`, which serializes an operator whose expressions are `expressions`. */
-  def withSharedSubexpressions[T](expressions: Seq[Expression])(f: => T): T = {
-    val equivalence = new EquivalentExpressions
-    expressions.foreach(equivalence.addExprTree(_))
-    sharedSubexpressions.withValue(equivalence.getCommonSubexpressions)(f)
-  }
+  def withSharedSubexpressions[T](expressions: Seq[Expression])(f: => T): T =
+    sharedSubexpressions.withValue(Some(new SharedSubexpressions(expressions)))(f)
 
   /**
    * Whether native execution may skip the arguments of `expr` after the first on the rows where
@@ -1326,8 +1332,12 @@ object QueryPlanSerde extends Logging with CometExprShim with CometTypeShim {
    * array is NULL.
    */
   def canShortCircuitNulls(expr: Expression): Boolean = {
-    val shared = sharedSubexpressions.value
-    !expr.children.tail.exists(_.exists(e => shared.exists(_.semanticEquals(e))))
+    val later = expr.children.tail
+    // Subexpression elimination never shares a leaf, such as a column or a literal
+    later.forall(_.isInstanceOf[LeafExpression]) || {
+      val shared = sharedSubexpressions.value.map(_.common).getOrElse(Nil)
+      !later.exists(_.exists(e => shared.exists(_.semanticEquals(e))))
+    }
   }
 
   /**
