@@ -1279,7 +1279,7 @@ expressions. The following function families are <strong>not currently planned</
 <tr class="row-odd"><td><p><code class="docutils literal notranslate"><span class="pre">array_contains</span></code></p></td>
 <td><p>✅</p></td>
 <td><p>Hybrid</p></td>
-<td><p>Float/double element arrays and non-default string collations route through the JVM codegen dispatcher by default; the native path is opt-in via allowIncompatible</p></td>
+<td><p>Flat float/double element arrays use a native kernel with Spark’s equality; nested float elements, non-default string collations, and a value that is not a literal or column over a nullable array, route through the JVM codegen dispatcher</p></td>
 </tr>
 <tr class="row-even"><td><p><code class="docutils literal notranslate"><span class="pre">array_distinct</span></code></p></td>
 <td><p>✅</p></td>

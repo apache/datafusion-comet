@@ -957,8 +957,12 @@ reports 4.2.0 but includes SPARK-59602 still runs natively; set
 <code class="docutils literal notranslate"><span class="pre">spark.comet.expression.ArrayDistinct.enabled=false</span></code> and
 <code class="docutils literal notranslate"><span class="pre">spark.comet.expression.ArrayUnion.enabled=false</span></code> on such a build.</p>
 </section>
-<section id="array-remove-and-sort-array">
-<h2><code class="docutils literal notranslate"><span class="pre">array_remove</span></code> and <code class="docutils literal notranslate"><span class="pre">sort_array</span></code><a class="headerlink" href="#array-remove-and-sort-array" title="Link to this heading">#</a></h2>
+<section id="array-contains-array-remove-and-sort-array">
+<h2><code class="docutils literal notranslate"><span class="pre">array_contains</span></code>, <code class="docutils literal notranslate"><span class="pre">array_remove</span></code> and <code class="docutils literal notranslate"><span class="pre">sort_array</span></code><a class="headerlink" href="#array-contains-array-remove-and-sort-array" title="Link to this heading">#</a></h2>
+<p><code class="docutils literal notranslate"><span class="pre">array_contains</span></code> compares <code class="docutils literal notranslate"><span class="pre">FLOAT</span></code> and <code class="docutils literal notranslate"><span class="pre">DOUBLE</span></code> elements as Spark does: <code class="docutils literal notranslate"><span class="pre">-0.0</span></code> equals <code class="docutils literal notranslate"><span class="pre">0.0</span></code>, and all
+NaN representations are equal, inside nested arrays and structs too. The result keeps Spark’s
+three-valued form: null when nothing matches and the array holds a null element. Flat arrays run a
+native kernel; nested float elements go through the codegen dispatcher.</p>
 <p><code class="docutils literal notranslate"><span class="pre">array_remove</span></code> compares <code class="docutils literal notranslate"><span class="pre">FLOAT</span></code> and <code class="docutils literal notranslate"><span class="pre">DOUBLE</span></code> elements as Spark does: <code class="docutils literal notranslate"><span class="pre">-0.0</span></code> equals <code class="docutils literal notranslate"><span class="pre">0.0</span></code>, and all
 NaN representations are equal, inside nested arrays too. The elements it keeps retain their
 original NaN representations and zero signs.</p>
@@ -966,7 +970,7 @@ original NaN representations and zero signs.</p>
 representations tie, and keeps equal elements in their original order. In an array whose elements
 can be null, such as one built from nullable columns, <code class="docutils literal notranslate"><span class="pre">-0.0</span></code> and <code class="docutils literal notranslate"><span class="pre">0.0</span></code> therefore tie. Sorting an
 array whose elements cannot be null in ascending order, Spark’s generated code puts <code class="docutils literal notranslate"><span class="pre">-0.0</span></code> before
-<code class="docutils literal notranslate"><span class="pre">0.0</span></code>, and so does Comet. Both expressions run natively in strict floating-point mode.</p>
+<code class="docutils literal notranslate"><span class="pre">0.0</span></code>, and so does Comet. All three expressions run natively in strict floating-point mode.</p>
 </section>
 </section>
 
@@ -1021,7 +1025,7 @@ array whose elements cannot be null in ascending order, Spark’s generated code
 <li class="toc-h2 nav-item toc-entry"><a class="reference internal nav-link" href="#ordering-nan-and-signed-zero-0-0-vs-0-0">Ordering: NaN and signed zero (<code class="docutils literal notranslate"><span class="pre">-0.0</span></code> vs <code class="docutils literal notranslate"><span class="pre">+0.0</span></code>)</a></li>
 <li class="toc-h2 nav-item toc-entry"><a class="reference internal nav-link" href="#min-max-greatest-and-least"><code class="docutils literal notranslate"><span class="pre">min</span></code>, <code class="docutils literal notranslate"><span class="pre">max</span></code>, <code class="docutils literal notranslate"><span class="pre">greatest</span></code>, and <code class="docutils literal notranslate"><span class="pre">least</span></code></a></li>
 <li class="toc-h2 nav-item toc-entry"><a class="reference internal nav-link" href="#array-distinct-and-union">Array distinct and union</a></li>
-<li class="toc-h2 nav-item toc-entry"><a class="reference internal nav-link" href="#array-remove-and-sort-array"><code class="docutils literal notranslate"><span class="pre">array_remove</span></code> and <code class="docutils literal notranslate"><span class="pre">sort_array</span></code></a></li>
+<li class="toc-h2 nav-item toc-entry"><a class="reference internal nav-link" href="#array-contains-array-remove-and-sort-array"><code class="docutils literal notranslate"><span class="pre">array_contains</span></code>, <code class="docutils literal notranslate"><span class="pre">array_remove</span></code> and <code class="docutils literal notranslate"><span class="pre">sort_array</span></code></a></li>
 </ul>
   </nav></div>
 

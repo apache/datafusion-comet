@@ -146,7 +146,12 @@ reports 4.2.0 but includes SPARK-59602 still runs natively; set
 `spark.comet.expression.ArrayDistinct.enabled=false` and
 `spark.comet.expression.ArrayUnion.enabled=false` on such a build.
 
-## `array_remove` and `sort_array`
+## `array_contains`, `array_remove` and `sort_array`
+
+`array_contains` compares `FLOAT` and `DOUBLE` elements as Spark does: `-0.0` equals `0.0`, and all
+NaN representations are equal, inside nested arrays and structs too. The result keeps Spark's
+three-valued form: null when nothing matches and the array holds a null element. Flat arrays run a
+native kernel; nested float elements go through the codegen dispatcher.
 
 `array_remove` compares `FLOAT` and `DOUBLE` elements as Spark does: `-0.0` equals `0.0`, and all
 NaN representations are equal, inside nested arrays too. The elements it keeps retain their
@@ -156,4 +161,4 @@ original NaN representations and zero signs.
 representations tie, and keeps equal elements in their original order. In an array whose elements
 can be null, such as one built from nullable columns, `-0.0` and `0.0` therefore tie. Sorting an
 array whose elements cannot be null in ascending order, Spark's generated code puts `-0.0` before
-`0.0`, and so does Comet. Both expressions run natively in strict floating-point mode.
+`0.0`, and so does Comet. All three expressions run natively in strict floating-point mode.
