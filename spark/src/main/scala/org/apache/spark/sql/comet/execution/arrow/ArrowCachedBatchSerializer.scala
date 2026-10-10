@@ -39,7 +39,7 @@ import org.apache.spark.unsafe.types.UTF8String
 import org.apache.spark.util.io.ChunkedByteBuffer
 
 import org.apache.comet.{CometArrowAllocator, CometConf, DataTypeSupport}
-import org.apache.comet.vector.NativeUtil
+import org.apache.comet.vector.{CometDecodedVector, NativeUtil}
 
 /**
  * Cached batch format used when Comet writes Spark in-memory cache data.
@@ -130,7 +130,10 @@ class ArrowCachedBatchSerializer extends SimpleMetricsCachedBatchSerializer {
     var c = 0
     while (c < numCols) {
       val col = batch.column(c)
+      val knownNulls = arrowNullCount(col, numRows)
       val (min, max, nullCount) = attrs(c).dataType match {
+        // Every row is null, so there are no bounds and nothing to read.
+        case _ if knownNulls == numRows => (null, null, numRows)
         case BooleanType => gatherBooleanStats(col, numRows)
         case ByteType => gatherByteStats(col, numRows)
         case ShortType => gatherShortStats(col, numRows)
@@ -144,13 +147,7 @@ class ArrowCachedBatchSerializer extends SimpleMetricsCachedBatchSerializer {
         case _: StringType => gatherStringStats(col, numRows, orderings(c))
         case other =>
           assert(!tracksBounds(other), s"Missing cache bounds implementation for $other")
-          var nullCount = 0
-          var r = 0
-          while (r < numRows) {
-            if (col.isNullAt(r)) nullCount += 1
-            r += 1
-          }
-          (null, null, nullCount)
+          (null, null, if (knownNulls >= 0) knownNulls else countNulls(col, numRows))
       }
       if (nullCount < numRows) {
         lower(c) = min
@@ -161,6 +158,29 @@ class ArrowCachedBatchSerializer extends SimpleMetricsCachedBatchSerializer {
     }
 
     (lower, upper, nulls)
+  }
+
+  // The column's null count if its Arrow vector already holds one, or -1 if only a pass over the
+  // rows can tell.
+  //
+  // A CometDecodedVector takes its null count from Arrow once, when it is built, and its isNullAt
+  // answers from the same validity bitmap, so the two agree whenever the vector holds exactly the
+  // batch's rows. Spark's own vectors do not qualify: its vectorized Parquet reader marks a column
+  // missing from the file all-null, and that vector's numNulls is then 0 while isNullAt is true
+  // for every row.
+  private def arrowNullCount(col: ColumnVector, numRows: Int): Int = col match {
+    case v: CometDecodedVector if v.numValues() == numRows => v.numNulls()
+    case _ => -1
+  }
+
+  private def countNulls(col: ColumnVector, numRows: Int): Int = {
+    var nullCount = 0
+    var r = 0
+    while (r < numRows) {
+      if (col.isNullAt(r)) nullCount += 1
+      r += 1
+    }
+    nullCount
   }
 
   // Keep each loop specialized and box only its final bounds. r == nullCount identifies

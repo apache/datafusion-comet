@@ -24,19 +24,23 @@ import java.nio.charset.StandardCharsets
 import org.apache.spark.SparkConf
 import org.apache.spark.benchmark.Benchmark
 import org.apache.spark.sql.SparkSession
-import org.apache.spark.sql.catalyst.expressions.AttributeReference
+import org.apache.spark.sql.catalyst.InternalRow
+import org.apache.spark.sql.catalyst.expressions.{Attribute, AttributeReference, GenericInternalRow}
+import org.apache.spark.sql.catalyst.util.GenericArrayData
 import org.apache.spark.sql.comet.CometInMemoryTableScanExec
-import org.apache.spark.sql.comet.execution.arrow.{ArrowCachedBatchSerializer, CometCachedBatchHelper}
+import org.apache.spark.sql.comet.execution.arrow.{ArrowCachedBatchSerializer, CometArrowConverters, CometArrowStream, CometCachedBatchHelper}
+import org.apache.spark.sql.comet.util.Utils
 import org.apache.spark.sql.execution.ColumnarToRowExec
 import org.apache.spark.sql.execution.adaptive.AdaptiveSparkPlanExec
 import org.apache.spark.sql.execution.aggregate.HashAggregateExec
 import org.apache.spark.sql.execution.columnar.{CometInMemoryRelationHelper, DefaultCachedBatch, DefaultCachedBatchSerializer, InMemoryRelation, InMemoryTableScanExec}
 import org.apache.spark.sql.execution.vectorized.OnHeapColumnVector
 import org.apache.spark.sql.internal.{SQLConf, StaticSQLConf}
-import org.apache.spark.sql.types.{DataType, LongType, StringType}
+import org.apache.spark.sql.types.{ArrayType, BinaryType, DataType, IntegerType, LongType, StringType, StructType}
 import org.apache.spark.sql.vectorized.{ColumnarBatch, ColumnVector}
+import org.apache.spark.unsafe.types.UTF8String
 
-import org.apache.comet.{CometConf, CometSparkSessionExtensions}
+import org.apache.comet.{CometArrowAllocator, CometConf, CometSparkSessionExtensions}
 
 object CometInMemoryCacheBenchmark extends CometBenchmarkBase {
   private val numRows = 5 * 1000 * 1000
@@ -747,8 +751,28 @@ object CometInMemoryCacheBenchmark extends CometBenchmarkBase {
       .collectFirst { case r: InMemoryRelation => r }
       .getOrElse(sys.error(s"$view is not cached"))
 
+  // Each case measures this collector across commits; Spark's default cache has its own collector.
   private def runStatsBenchmark(): Unit = {
     val batchSize = 10000
+    val serializer = new ArrowCachedBatchSerializer
+
+    def addStatsCase(
+        benchmark: Benchmark,
+        name: String,
+        batch: ColumnarBatch,
+        attrs: Seq[Attribute]): Unit = {
+      // Resolved outside the timed loop because that is where the serializer resolves it: once
+      // per partition, not once per batch.
+      val orderings = serializer.boundsOrderings(attrs)
+      benchmark.addCase(name) { _ =>
+        var i = 0
+        while (i < numRows / batchSize) {
+          statsResult = serializer.gatherColumnStats(batch, attrs, orderings)
+          i += 1
+        }
+      }
+    }
+
     val types: Seq[DataType] = Seq.fill(3)(LongType) ++ Seq.fill(3)(StringType)
     val attrs = types.zipWithIndex.map { case (dt, i) => AttributeReference(s"c$i", dt)() }
     val columns = types.map(dt => new OnHeapColumnVector(batchSize, dt))
@@ -764,22 +788,56 @@ object CometInMemoryCacheBenchmark extends CometBenchmarkBase {
         columns(5).putByteArray(r, s"str_c_$r".getBytes(StandardCharsets.UTF_8))
         r += 1
       }
-      val serializer = new ArrowCachedBatchSerializer
-      // Resolved outside the timed loop because that is where the serializer resolves it: once
-      // per partition, not once per batch.
-      val orderings = serializer.boundsOrderings(attrs)
-      val benchmark =
-        new Benchmark("in-memory cache statistics", numRows.toLong, output = output)
-      // One case measures this collector across commits; Spark's default cache has its own collector.
-      benchmark.addCase("Comet statistics collector") { _ =>
-        var i = 0
-        while (i < numRows / batchSize) {
-          statsResult = serializer.gatherColumnStats(batch, attrs, orderings)
-          i += 1
-        }
-      }
-      benchmark.run()
+      // The same values in Comet's Arrow vectors. Spark's vectors are what the collector reads
+      // from Spark's vectorized readers, and Arrow vectors are what it reads from Comet operators
+      // and from the row write path.
+      val arrowBatch = CometArrowConverters.columnarBatchToArrowBatch(
+        batch,
+        Utils.toArrowSchema(Utils.fromAttributes(attrs), CometArrowStream.NATIVE_TIMEZONE),
+        CometArrowAllocator)
+      try {
+        val benchmark =
+          new Benchmark("in-memory cache statistics", numRows.toLong, output = output)
+        addStatsCase(benchmark, "Spark vectors", batch, attrs)
+        addStatsCase(benchmark, "Arrow vectors", arrowBatch, attrs)
+        benchmark.run()
+      } finally arrowBatch.close()
     } finally batch.close()
+
+    // Columns that record only a null count, with one row in ten null.
+    val nestedTypes: Seq[DataType] = Seq(
+      new StructType().add("a", LongType).add("b", StringType),
+      ArrayType(IntegerType),
+      BinaryType)
+    val nestedAttrs = nestedTypes.zipWithIndex.map { case (dt, i) =>
+      AttributeReference(s"n$i", dt)()
+    }
+    val rows = Iterator.tabulate(batchSize) { r =>
+      if (r % 10 == 0) {
+        new GenericInternalRow(nestedTypes.length)
+      } else {
+        InternalRow(
+          InternalRow(r.toLong, UTF8String.fromString(s"str_$r")),
+          new GenericArrayData(Array[Any](r, r + 1)),
+          s"bin_$r".getBytes(StandardCharsets.UTF_8))
+      }
+    }
+    val nestedBatch = CometArrowConverters
+      .rowToArrowBatchIter(
+        rows,
+        Utils.fromAttributes(nestedAttrs),
+        batchSize,
+        CometArrowStream.NATIVE_TIMEZONE,
+        CometArrowAllocator)
+      .next()
+    try {
+      val benchmark = new Benchmark(
+        "in-memory cache statistics, nested and binary columns",
+        numRows.toLong,
+        output = output)
+      addStatsCase(benchmark, "Arrow vectors", nestedBatch, nestedAttrs)
+      benchmark.run()
+    } finally nestedBatch.close()
   }
 
   private def runCacheBenchmark(
