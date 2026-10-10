@@ -20,6 +20,7 @@
 package org.apache.comet.exec
 
 import java.{util => ju}
+import java.io.ByteArrayInputStream
 import java.nio.charset.StandardCharsets
 
 import scala.concurrent.{Await, Future}
@@ -32,8 +33,8 @@ import org.apache.arrow.memory.{ArrowBuf, BufferAllocator}
 import org.apache.arrow.vector.{BitVector, FixedSizeBinaryVector, IntVector, VarBinaryVector, VarCharVector}
 import org.apache.arrow.vector.compression.{CompressionCodec, CompressionUtil, NoCompressionCodec}
 import org.apache.arrow.vector.types.pojo.ArrowType
+import org.apache.spark.{SparkConf, SparkException}
 import org.apache.spark.CometDriverPlugin
-import org.apache.spark.SparkConf
 import org.apache.spark.sql.{CometTestBase, DataFrame, Observation, QueryTest, Row}
 import org.apache.spark.sql.catalyst.expressions.{And, Attribute, AttributeReference, EqualTo, Expression, GreaterThan, GreaterThanOrEqual, LessThan, Literal}
 import org.apache.spark.sql.columnar.{CachedBatch, SimpleMetricsCachedBatch}
@@ -56,6 +57,8 @@ import org.apache.comet.{CometArrowAllocator, CometConf, CometKryoRegistrator, E
 import org.apache.comet.CometSparkSessionExtensions.{isSpark35Plus, isSpark40Plus}
 import org.apache.comet.rules.CometCacheColumnarRule
 import org.apache.comet.vector.{CometPlainVector, CometVector}
+
+import net.jpountz.lz4.LZ4FrameInputStream
 
 class CometInMemoryCacheSuite extends CometTestBase {
 
@@ -2129,7 +2132,7 @@ class CometInMemoryCacheSuite extends CometTestBase {
     // Every codec the config accepts, not just the default. `none` takes a different path on read
     // -- the payload records no codec, so nothing is decompressed -- and shipped broken for a
     // while because the only tests that ran were on the default codec.
-    Seq("none", "zstd").foreach { codec =>
+    Seq("none", "zstd", "lz4").foreach { codec =>
       withConversions(
         SQLConf.ADAPTIVE_EXECUTION_ENABLED.key -> "false",
         SQLConf.CACHE_VECTORIZED_READER_ENABLED.key -> "true",
@@ -2173,6 +2176,103 @@ class CometInMemoryCacheSuite extends CometTestBase {
 
         spark.catalog.clearCache()
       }
+    }
+  }
+
+  test("Comet in-memory cache writes lz4 buffers as standard LZ4 frames") {
+    // Arrow's LZ4_FRAME codec is the standard LZ4 frame format, so check what the codec writes
+    // against lz4-java's own frame reader rather than against the codec that wrote it. The inputs
+    // span the codec's 4 MiB block: a buffer of one block, and one of three whose first block is
+    // incompressible, which a frame stores verbatim.
+    val random = new scala.util.Random(7)
+    def compressible(n: Int): Array[Byte] = Array.tabulate[Byte](n)(i => (i / 16).toByte)
+    val inputs = Seq(
+      "one block" -> compressible(100 * 1000),
+      "three blocks" ->
+        (Array.fill[Byte](4 << 20)(random.nextInt().toByte) ++ compressible(5 << 20)))
+    val codec = CometCachedBatchHelper.compressionCodec("lz4")
+    assert(codec.getCodecType == CompressionUtil.CodecType.LZ4_FRAME)
+
+    val allocator = CometArrowAllocator.newChildAllocator("lz4-frames", 0, Long.MaxValue)
+    try {
+      inputs.foreach { case (label, data) =>
+        val plain = allocator.buffer(data.length.toLong)
+        plain.setBytes(0, data)
+        plain.writerIndex(data.length.toLong)
+        // Takes ownership of `plain`.
+        val packed = codec.compress(allocator, plain)
+        try {
+          // Arrow prefixes a compressed buffer with its uncompressed length, and a buffer it
+          // stored verbatim with -1.
+          assert(packed.getLong(0) == data.length, s"$label was stored verbatim")
+          val frame = new Array[Byte]((packed.writerIndex() - 8).toInt)
+          packed.getBytes(8, frame)
+          val in = new LZ4FrameInputStream(new ByteArrayInputStream(frame))
+          val decoded =
+            try in.readAllBytes()
+            finally in.close()
+          assert(decoded.sameElements(data), s"lz4-java read $label back differently")
+        } finally {
+          packed.close()
+        }
+      }
+      assert(allocator.getAllocatedMemory == 0)
+    } finally {
+      allocator.close()
+    }
+  }
+
+  test("Comet in-memory cache rejects a corrupt lz4 frame without leaking") {
+    // A corrupt frame has to fail as itself, naming the codec, and release the buffer it was
+    // decoding into. Offsets are from the LZ4 frame format behind Arrow's 8-byte
+    // uncompressed-length prefix: the frame's 4-byte magic number at 8, then a 3-byte frame
+    // descriptor, then the first block's 4-byte length at 15. A frame ends with a 4-byte end
+    // mark. Truncated frames are decoded from copies of exactly their length, so reading past
+    // one is an error of its own rather than a read of the bytes that follow.
+    val data = Array.tabulate[Byte](100 * 1000)(i => (i / 16).toByte)
+    val codec = CometCachedBatchHelper.compressionCodec("lz4")
+
+    val allocator = CometArrowAllocator.newChildAllocator("lz4-corrupt", 0, Long.MaxValue)
+    try {
+      def truncated(frame: ArrowBuf, length: Long): ArrowBuf = {
+        val copy = allocator.buffer(length)
+        copy.setBytes(0, frame, 0, length)
+        copy.writerIndex(length)
+        copy
+      }
+      // Each corruption returns the buffer to decode: the frame itself, or a truncated copy.
+      val corruptions: Seq[(String, ArrowBuf => ArrowBuf)] = Seq(
+        "a buffer that is not an LZ4 frame" -> { b => b.setInt(8, 0); b },
+        "a frame cut off inside its header" -> (b => truncated(b, 12)),
+        "a frame cut off before its end mark" -> (b => truncated(b, b.writerIndex() - 4)),
+        "a block that runs past the end of the frame" -> { b => b.setInt(15, 0x7fffff00); b },
+        "a frame that decodes to less than its recorded length" -> { b =>
+          b.setLong(0, data.length + 1L); b
+        },
+        "a frame that decodes to more than its recorded length" -> { b =>
+          b.setLong(0, data.length - 1L); b
+        })
+
+      corruptions.foreach { case (label, corrupt) =>
+        val plain = allocator.buffer(data.length.toLong)
+        plain.setBytes(0, data)
+        plain.writerIndex(data.length.toLong)
+        val packed = codec.compress(allocator, plain)
+        assert(packed.getLong(0) == data.length, "the test needs a compressed buffer")
+        val input = corrupt(packed)
+        try {
+          val thrown = intercept[SparkException](codec.decompress(allocator, input).close())
+          assert(thrown.getMessage.contains("LZ4"), s"$label failed with: $thrown")
+        } finally {
+          // A failed decompress leaves its input to the caller, as Arrow's own codecs do.
+          Seq(packed, input).distinct.foreach { b =>
+            if (b.getReferenceManager.getRefCount > 0) b.close()
+          }
+        }
+        assert(allocator.getAllocatedMemory == 0, s"$label leaked")
+      }
+    } finally {
+      allocator.close()
     }
   }
 
@@ -2771,8 +2871,12 @@ class CometInMemoryCacheSuite extends CometTestBase {
     // reachable from nothing the failure path can see. The second is the one that catches a leak
     // in `VectorLoader`; the first is the one that catches a cleanup path releasing the shared
     // body twice. Both run over a multi-chunk payload too, where the copy into the body walks
-    // several chunks before the failure.
-    chunkSizes.foreach { case (_, chunkSize) =>
+    // several chunks before the failure, and under each codec that compresses, since each fails
+    // in a decoder of its own.
+    for {
+      codec <- Seq("zstd", "lz4")
+      (_, chunkSize) <- chunkSizes
+    } withSQLConf(CometConf.COMET_EXEC_IN_MEMORY_CACHE_COMPRESSION_CODEC.key -> codec) {
       withProjectionCache(chunkSize) { (relation, batches) =>
         val cacheSchema = Utils.fromAttributes(relation.output)
         val pristine = CometCachedBatchHelper.snapshotPayloads(batches)
@@ -2801,7 +2905,7 @@ class CometInMemoryCacheSuite extends CometTestBase {
           }
           assert(
             CometArrowAllocator.getAllocatedMemory == before,
-            s"everything allocated before a failure in $where must be released")
+            s"everything allocated before a failure in $where under $codec must be released")
         }
       }
     }
