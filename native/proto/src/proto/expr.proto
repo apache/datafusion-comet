@@ -598,8 +598,8 @@ message TruncTimestamp {
   Expr child = 2;
   string timezone = 3;
   // Whether SECOND and MILLISECOND truncation wraps when the result would fall below the
-  // smallest timestamp. Spark before 4.2.0 wraps the Long subtraction; 4.2.0 (SPARK-56663)
-  // raises `long overflow` like every other unit. This tracks the Spark version Comet is
+  // smallest timestamp. Spark before 4.2.0 wraps the Long subtraction; 4.2.0 and later
+  // (SPARK-56663) raise `long overflow` like every other unit. This tracks the Spark version Comet is
   // running against.
   bool wrap_second_millisecond_overflow = 4;
 }
