@@ -165,7 +165,7 @@ impl Accumulator for SparkBloomFilter {
     }
 
     fn size(&self) -> usize {
-        std::mem::size_of_val(self)
+        std::mem::size_of_val(self) + self.heap_size()
     }
 
     fn state(&mut self) -> Result<Vec<ScalarValue>> {
@@ -213,5 +213,14 @@ mod tests {
             acc.evaluate().unwrap(),
             ScalarValue::Binary(Some(_))
         ));
+    }
+
+    /// `size()` has to include the bit array the filter allocates up front, not only the struct.
+    #[test]
+    fn size_counts_bit_array() {
+        let num_bits = 1 << 20;
+        let num_hash = spark_bloom_filter::optimal_num_hash_functions(100, num_bits);
+        let acc = SparkBloomFilter::new(SparkBloomFilterVersion::V1, num_hash, num_bits, 0);
+        assert!(acc.size() >= num_bits as usize / 8);
     }
 }

@@ -532,7 +532,7 @@ impl GroupsAccumulator for SumIntGroupsAccumulatorLegacy {
     }
 
     fn size(&self) -> usize {
-        std::mem::size_of_val(self)
+        self.sums.capacity() * std::mem::size_of::<Option<i64>>()
     }
 }
 
@@ -685,7 +685,7 @@ impl GroupsAccumulator for SumIntGroupsAccumulatorAnsi {
     }
 
     fn size(&self) -> usize {
-        std::mem::size_of_val(self)
+        self.sums.capacity() * std::mem::size_of::<Option<i64>>()
     }
 }
 
@@ -893,7 +893,8 @@ impl GroupsAccumulator for SumIntGroupsAccumulatorTry {
     }
 
     fn size(&self) -> usize {
-        std::mem::size_of_val(self)
+        self.sums.capacity() * std::mem::size_of::<Option<i64>>()
+            + self.has_all_nulls.capacity() * std::mem::size_of::<bool>()
     }
 }
 
@@ -1016,5 +1017,44 @@ mod tests {
         ]));
         acc.merge_batch(&[states]).unwrap();
         assert_eq!(acc.evaluate().unwrap(), ScalarValue::Int64(Some(60)));
+    }
+
+    /// DataFusion sizes a grouped aggregate's memory reservation from `GroupsAccumulator::size()`,
+    /// so it has to include the per-group state, not just the struct holding the `Vec` headers.
+    fn assert_size_covers_group_state(acc: &mut dyn GroupsAccumulator, bytes_per_group: usize) {
+        const NUM_GROUPS: usize = 1_000_000;
+        let values: ArrayRef = Arc::new(Int64Array::from_iter_values(0..NUM_GROUPS as i64));
+        let group_indices: Vec<usize> = (0..NUM_GROUPS).collect();
+        acc.update_batch(&[values], &group_indices, None, NUM_GROUPS)
+            .unwrap();
+        assert!(
+            acc.size() >= NUM_GROUPS * bytes_per_group,
+            "size() reported {} bytes for {NUM_GROUPS} groups",
+            acc.size()
+        );
+    }
+
+    #[test]
+    fn test_legacy_size_counts_group_state() {
+        assert_size_covers_group_state(
+            &mut SumIntGroupsAccumulatorLegacy::new(),
+            std::mem::size_of::<Option<i64>>(),
+        );
+    }
+
+    #[test]
+    fn test_ansi_size_counts_group_state() {
+        assert_size_covers_group_state(
+            &mut SumIntGroupsAccumulatorAnsi::new(),
+            std::mem::size_of::<Option<i64>>(),
+        );
+    }
+
+    #[test]
+    fn test_try_size_counts_group_state() {
+        assert_size_covers_group_state(
+            &mut SumIntGroupsAccumulatorTry::new(),
+            std::mem::size_of::<Option<i64>>() + std::mem::size_of::<bool>(),
+        );
     }
 }
