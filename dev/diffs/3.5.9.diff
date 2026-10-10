@@ -2461,7 +2461,7 @@ index 2c73622739a..5d0efeb263a 100644
  
      val d1 = spark.range(1).withColumn("key", expr("id % 100"))
 diff --git a/sql/core/src/test/scala/org/apache/spark/sql/execution/columnar/PartitionBatchPruningSuite.scala b/sql/core/src/test/scala/org/apache/spark/sql/execution/columnar/PartitionBatchPruningSuite.scala
-index 885286843a1..f0f805a6cd9 100644
+index 885286843a1..6e9d6690374 100644
 --- a/sql/core/src/test/scala/org/apache/spark/sql/execution/columnar/PartitionBatchPruningSuite.scala
 +++ b/sql/core/src/test/scala/org/apache/spark/sql/execution/columnar/PartitionBatchPruningSuite.scala
 @@ -17,6 +17,7 @@
@@ -2472,60 +2472,22 @@ index 885286843a1..f0f805a6cd9 100644
  import org.apache.spark.sql.execution.adaptive.AdaptiveSparkPlanHelper
  import org.apache.spark.sql.internal.SQLConf
  import org.apache.spark.sql.test.SharedSparkSession
-@@ -181,11 +182,16 @@ class PartitionBatchPruningSuite extends SharedSparkSession with AdaptiveSparkPl
-     val result = df.collect().map(_(0)).toArray
-     assert(result.length === 1)
+@@ -183,6 +184,7 @@ class PartitionBatchPruningSuite extends SharedSparkSession with AdaptiveSparkPl
  
--    val (readPartitions, readBatches) = collect(df.queryExecution.executedPlan) {
--        case in: InMemoryTableScanExec => (in.readPartitions.value, in.readBatches.value)
--      }.head
--    assert(readPartitions === 5)
--    assert(readBatches === 10)
-+    val scans = collect(df.queryExecution.executedPlan) { case in: InMemoryTableScanExec => in }
-+    // Comet's cache scan has none of these test-only accumulators, so there is nothing to count.
-+    if (scans.isEmpty) {
-+      assert(collect(df.queryExecution.executedPlan) {
-+        case c: CometInMemoryTableScanExec => c
-+      }.nonEmpty)
-+    } else {
-+      assert(scans.head.readPartitions.value === 5)
-+      assert(scans.head.readBatches.value === 10)
-+    }
-   }
+     val (readPartitions, readBatches) = collect(df.queryExecution.executedPlan) {
+         case in: InMemoryTableScanExec => (in.readPartitions.value, in.readBatches.value)
++        case in: CometInMemoryTableScanExec => (in.readPartitions.value, in.readBatches.value)
+       }.head
+     assert(readPartitions === 5)
+     assert(readBatches === 10)
+@@ -204,6 +206,7 @@ class PartitionBatchPruningSuite extends SharedSparkSession with AdaptiveSparkPl
  
-   def checkBatchPruning(
-@@ -202,14 +208,23 @@ class PartitionBatchPruningSuite extends SharedSparkSession with AdaptiveSparkPl
-         df.collect().map(_(0)).toArray
-       }
+       val (readPartitions, readBatches) = collect(df.queryExecution.executedPlan) {
+         case in: InMemoryTableScanExec => (in.readPartitions.value, in.readBatches.value)
++        case in: CometInMemoryTableScanExec => (in.readPartitions.value, in.readBatches.value)
+       }.head
  
--      val (readPartitions, readBatches) = collect(df.queryExecution.executedPlan) {
--        case in: InMemoryTableScanExec => (in.readPartitions.value, in.readBatches.value)
--      }.head
--
--      assert(readBatches === expectedReadBatches, s"Wrong number of read batches: $queryExecution")
--      assert(
--        readPartitions === expectedReadPartitions,
--        s"Wrong number of read partitions: $queryExecution")
-+      val scans = collect(df.queryExecution.executedPlan) { case in: InMemoryTableScanExec => in }
-+      // Comet's cache scan prunes on the same statistics, but has none of these test-only
-+      // accumulators to read, so only the answer above is checked for it.
-+      if (scans.isEmpty) {
-+        assert(collect(df.queryExecution.executedPlan) {
-+          case c: CometInMemoryTableScanExec => c
-+        }.nonEmpty)
-+      } else {
-+        val readPartitions = scans.head.readPartitions.value
-+        val readBatches = scans.head.readBatches.value
-+        assert(
-+          readBatches === expectedReadBatches,
-+          s"Wrong number of read batches: $queryExecution")
-+        assert(
-+          readPartitions === expectedReadPartitions,
-+          s"Wrong number of read partitions: $queryExecution")
-+      }
-     }
-   }
- }
+       assert(readBatches === expectedReadBatches, s"Wrong number of read batches: $queryExecution")
 diff --git a/sql/core/src/test/scala/org/apache/spark/sql/execution/datasources/SchemaPruningSuite.scala b/sql/core/src/test/scala/org/apache/spark/sql/execution/datasources/SchemaPruningSuite.scala
 index fd52d038ca6..154c800be67 100644
 --- a/sql/core/src/test/scala/org/apache/spark/sql/execution/datasources/SchemaPruningSuite.scala
