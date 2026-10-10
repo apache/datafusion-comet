@@ -1235,7 +1235,9 @@ class CometInMemoryCacheSuite extends CometTestBase {
           spark.catalog.cacheTable("counted_cache")
           spark.table("counted_cache").count()
 
-          def readCounts(query: String, pruning: Boolean): (Long, Long) =
+          // withSQLConf returns Unit on Spark 3.x, so the counts leave it through a local.
+          def readCounts(query: String, pruning: Boolean): (Long, Long) = {
+            var counts: (Long, Long) = null
             withSQLConf(SQLConf.IN_MEMORY_PARTITION_PRUNING.key -> pruning.toString) {
               val df = spark.sql(query)
               df.collect()
@@ -1243,8 +1245,10 @@ class CometInMemoryCacheSuite extends CometTestBase {
                 case s: CometInMemoryTableScanExec => s
               }
               assert(scans.size == 1, df.queryExecution.executedPlan)
-              (scans.head.readPartitions.value, scans.head.readBatches.value)
+              counts = (scans.head.readPartitions.value, scans.head.readBatches.value)
             }
+            counts
+          }
 
           val narrow = "SELECT key FROM counted_cache WHERE key >= 900 AND key < 905"
           assert(readCounts(narrow, pruning = true) == ((1L, 1L)))
