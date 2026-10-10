@@ -27,7 +27,7 @@ import scala.util.Random
 import org.apache.spark.SparkConf
 import org.apache.spark.benchmark.Benchmark
 import org.apache.spark.sql.{Column, SaveMode, SparkSession}
-import org.apache.spark.sql.comet.execution.shuffle.{CometNativeShuffle, CometShuffleExchangeExec}
+import org.apache.spark.sql.comet.execution.shuffle.{CometColumnarShuffle, CometNativeShuffle, CometShuffleExchangeExec, ShuffleType}
 import org.apache.spark.sql.internal.SQLConf
 import org.apache.spark.sql.types._
 
@@ -467,18 +467,40 @@ object CometShuffleBenchmark extends CometBenchmarkBase {
         }
       }
 
-      for (shuffle <- Seq("jvm", "native")) {
-        benchmark.addCase(s"Comet ($shuffle Shuffle)") { _ =>
-          withSQLConf(
-            CometConf.COMET_ENABLED.key -> "true",
-            CometConf.COMET_EXEC_ENABLED.key -> "true",
-            CometConf.COMET_SHUFFLE_ENABLED.key -> "true",
-            CometConf.COMET_SHUFFLE_MODE.key -> shuffle) {
-            spark
-              .sql(sql)
-              .repartition(partitionNum)
-              .noop()
+      // `repartition(n)` plans a round-robin, which native shuffle only takes with its flag on.
+      val shuffles = Seq(
+        ("jvm", CometColumnarShuffle, Nil),
+        (
+          "native",
+          CometNativeShuffle,
+          Seq(CometConf.COMET_SHUFFLE_NATIVE_ROUND_ROBIN_PARTITIONING_ENABLED.key -> "true")))
+      for ((shuffle, shuffleType, flags) <- shuffles) {
+        val configs = Seq(
+          CometConf.COMET_ENABLED.key -> "true",
+          CometConf.COMET_EXEC_ENABLED.key -> "true",
+          CometConf.COMET_SHUFFLE_ENABLED.key -> "true",
+          CometConf.COMET_SHUFFLE_MODE.key -> shuffle) ++ flags
+        // Check outside the timer which shuffle the arm plans. One that falls back to Spark's
+        // shuffle, as native shuffle does under a Spark scan, would be timed under the wrong name.
+        var planned: Seq[ShuffleType] = Nil
+        withSQLConf(configs: _*) {
+          planned =
+            collect(spark.sql(sql).repartition(partitionNum).queryExecution.executedPlan) {
+              case exchange: CometShuffleExchangeExec => exchange.shuffleType
+            }
+        }
+        if (planned == Seq(shuffleType)) {
+          benchmark.addCase(s"Comet ($shuffle Shuffle)") { _ =>
+            withSQLConf(configs: _*) {
+              spark
+                .sql(sql)
+                .repartition(partitionNum)
+                .noop()
+            }
           }
+        } else {
+          val found = if (planned.isEmpty) "Spark shuffle" else planned.mkString(", ")
+          benchmark.out.println(s"Skipping Comet ($shuffle Shuffle) for $name: it plans $found")
         }
       }
 
