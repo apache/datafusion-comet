@@ -1506,10 +1506,10 @@ class CometIcebergWriteDetectionSuite extends CometTestBase with CometIcebergTes
     // apart as iceberg-java does. A nested source field resolves the same way.
     withDetectionCatalog { _ =>
       Seq(
-        "part_float" -> ("v FLOAT", "v", "CAST(1.5 AS FLOAT)"),
-        "part_double" -> ("v DOUBLE", "v", "1.5D"),
-        "part_nested" -> ("s STRUCT<v: DOUBLE>", "s.v", "named_struct('v', 1.5D)")).foreach {
-        case (table, (column, partitionField, value)) =>
+        ("part_float", "v FLOAT", "v", "CAST(1.5 AS FLOAT)"),
+        ("part_double", "v DOUBLE", "v", "1.5D"),
+        ("part_nested", "s STRUCT<v: DOUBLE>", "s.v", "named_struct('v', 1.5D)")).foreach {
+        case (table, column, partitionField, value) =>
           spark.sql(s"""
             CREATE TABLE $catalog.$ns.$table (id INT, $column)
             USING iceberg PARTITIONED BY ($partitionField)
