@@ -164,6 +164,7 @@ jobs:
             value: |
               org.apache.comet.parquet.CometParquetWriterSuite
               org.apache.comet.parquet.CometEmptyRelationParquetWriterSuite
+              org.apache.spark.sql.comet.CometNativeWriteSuite
               org.apache.comet.parquet.ParquetReadV1Suite
               org.apache.comet.parquet.ParquetTimestampLtzAsNtzSuite
               org.apache.spark.sql.comet.ParquetEncryptionITCase
@@ -208,6 +209,7 @@ jobs:
               org.apache.comet.exec.CometShuffleManagerSuite
               org.apache.comet.exec.DisableAQECometShuffleSuite
               org.apache.spark.shuffle.comet.CometUnboundedShuffleMemoryAllocatorSuite
+              org.apache.spark.shuffle.comet.CometUnifiedShuffleMemoryAllocatorSuite
               org.apache.spark.shuffle.sort.SpillSorterSuite
           - name: "exec"
             value: |

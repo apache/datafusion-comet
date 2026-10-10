@@ -214,10 +214,10 @@ class CometWindowExecSuite extends CometTestBase {
     assume(isSpark35Plus, "WindowGroupLimit was added in Spark 3.5")
     // The native RANK and DENSE_RANK find ties by byte equality, on order keys that the native
     // planner has normalized, nested floats included. So [-0.0] and [0.0] are peers, and the
-    // cutoff keeps both rows, as Spark does (#5507). Strict floating-point mode declines a nested
-    // key whose type can hold a null element or field (#6476, #6477), and these columns, read
-    // back from Parquet, can. ROW_NUMBER never compares peers, and Spark normalizes nested
-    // floating-point partition keys itself.
+    // cutoff keeps both rows, as Spark does (#5507). These keys, read back from Parquet, can hold
+    // a null element, but their default null order places it where Spark does (#6476), so they
+    // stay native in strict floating-point mode too. ROW_NUMBER never compares peers, and Spark
+    // normalizes nested floating-point partition keys itself.
     withTempDir { dir =>
       val path = new Path(dir.toString, "nested_float_order").toString
       Seq((1, -0.0f, -0.0d), (2, 0.0f, 0.0d), (3, 1.0f, 1.0d))
@@ -248,7 +248,7 @@ class CometWindowExecSuite extends CometTestBase {
           assert(rankLimit().collect().map(_.getInt(0)).sorted.toSeq == Seq(1, 2))
 
           withSQLConf(CometConf.COMET_EXEC_STRICT_FLOATING_POINT.key -> "true") {
-            checkSparkAnswerAndFallbackReason(rankLimit(), "can hold a null element or field")
+            checkSparkAnswerAndOperator(rankLimit(), Seq(classOf[CometWindowGroupLimitExec]))
             assert(rankLimit().collect().map(_.getInt(0)).sorted.toSeq == Seq(1, 2))
           }
         }
