@@ -290,13 +290,13 @@ case class CometScanRule(session: SparkSession)
         s"Unsupported filesystem schemes: ${unsupportedFsSchemes.mkString(", ")}")
       return None
     }
-    // An early answer from the root paths. CometNativeScan.convert decides, over the listed
-    // files and with the scheme lists from the Hadoop conf that native uses.
+    // An early check on the root paths, with both scheme lists from the Hadoop conf as native
+    // reads them (not libhdfsSchemes above). CometNativeScan.convert checks the listed files.
     val multiStoreReason = CometScanUtils.multiStoreFallbackReason(
       "Native Parquet scan",
       roots.map(_.uri),
       s3CompliantSchemes,
-      libhdfsSchemes,
+      NativeConfig.resolveLibhdfsSchemes(hadoopConf),
       scanExec.bucketedScan)
     if (multiStoreReason.nonEmpty) {
       withFallbackReason(scanExec, multiStoreReason.get)

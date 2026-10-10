@@ -40,8 +40,8 @@ import org.apache.spark.sql.execution.exchange.ShuffleExchangeLike
 import org.apache.spark.sql.internal.SQLConf
 import org.apache.spark.sql.types.{IntegerType, StructType}
 
-import org.apache.comet.CometConf
-import org.apache.comet.CometConf.COMET_S3_COMPLIANT_SCHEMES_KEY
+import org.apache.comet.{CometConf, ExtendedExplainInfo}
+import org.apache.comet.CometConf.{COMET_LIBHDFS_SCHEMES_KEY, COMET_S3_COMPLIANT_SCHEMES_KEY}
 import org.apache.comet.hadoop.fs.FakeHdfsAuthorityFileSystem
 import org.apache.comet.objectstore.NativeConfig
 
@@ -58,6 +58,10 @@ class CometMultiStoreScanSuite extends CometTestBase with AdaptiveSparkPlanHelpe
     val conf = super.sparkConf
     conf.set("spark.hadoop.fs.hdfs.impl", classOf[FakeHdfsAuthorityFileSystem].getName)
     conf.set("spark.hadoop.fs.hdfs.impl.disable.cache", "true")
+    Seq("s3a", "blob").foreach { scheme =>
+      conf.set(s"spark.hadoop.fs.$scheme.impl", classOf[FakeHdfsAuthorityFileSystem].getName)
+      conf.set(s"spark.hadoop.fs.$scheme.impl.disable.cache", "true")
+    }
     conf
   }
 
@@ -95,6 +99,9 @@ class CometMultiStoreScanSuite extends CometTestBase with AdaptiveSparkPlanHelpe
 
   private def hdfs(nameNode: String, name: String): String =
     s"hdfs://$nameNode${rootDir.getAbsolutePath}/$name"
+
+  private def bucket(scheme: String, name: String): String =
+    s"$scheme://bucket${rootDir.getAbsolutePath}/$name"
 
   private def local(name: String): String = s"file://${rootDir.getAbsolutePath}/$name"
 
@@ -278,6 +285,33 @@ class CometMultiStoreScanSuite extends CometTestBase with AdaptiveSparkPlanHelpe
       val options = csvScan.getObjectStoreOptionsMap.asScala
       assert(options.get(forwardedMarker._1).contains(forwardedMarker._2))
       assertPlanHidesForwardedOptions(df)
+    }
+  }
+
+  test("parquet scan reads the scheme lists from the Hadoop conf") {
+    // The lists are set only as Hadoop keys, as core-site.xml would set them, so the rule's
+    // SQLConf entry does not see them. With them, `blob` is served by libhdfs, so `s3a` and
+    // `blob` are two stores that share no settings.
+    val s3CompliantSchemes = Set("blob")
+    val libhdfsSchemes = Set("hdfs", "blob")
+    val (a, b) = (bucket("s3a", "hadoop-conf-a"), bucket("blob", "hadoop-conf-b"))
+    writeIds(a, 0)
+    writeIds(b, 10)
+    def store(path: String): String =
+      NativeConfig.objectStoreKey(new URI(path), s3CompliantSchemes, libhdfsSchemes).toString
+    val schemeLists = Seq(
+      COMET_S3_COMPLIANT_SCHEMES_KEY -> s3CompliantSchemes.mkString(","),
+      COMET_LIBHDFS_SCHEMES_KEY -> libhdfsSchemes.mkString(","))
+    withSQLConf(nativeScan ++ onePartition ++ schemeLists: _*) {
+      def df: DataFrame = spark.read.parquet(a, b)
+      val sparkFiles = sparkLayout(df)
+      assert(sparkFiles.exists(_.map(store).distinct.size > 1), s"Spark's: $sparkFiles")
+      val reasons = new ExtendedExplainInfo().getFallbackReasons(df.queryExecution.executedPlan)
+      assert(ruleClaims(df).size == 1, s"fallback reasons: $reasons")
+      val files = nativeParquetScan(df).perPartitionFilePaths.toSeq
+      assert(files.forall(_.map(store).distinct.size == 1), s"Comet's: $files")
+      val stores = files.flatten.map(store).distinct.sorted
+      assert(stores == Seq("blob://bucket (libhdfs)", "s3://bucket"), s"Comet's: $files")
     }
   }
 
