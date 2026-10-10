@@ -44,6 +44,11 @@ query
 SELECT id, CASE WHEN id = 5 THEN CAST('NaNF' AS DOUBLE) ELSE 0D END,
   IF(id > 5, CAST('InfinityD' AS FLOAT), 0F) FROM test_cast_literal_ansi
 
+-- java.math.BigDecimal rejects a scale outside the int range
+query
+SELECT id, CASE WHEN id = 5 THEN CAST('1e-2147483648' AS DECIMAL(10,2))
+  ELSE CAST(0 AS DECIMAL(10,2)) END FROM test_cast_literal_ansi
+
 -- a cast of a literal that does not fail is still accepted
 query
 SELECT id, CASE WHEN id = 1 THEN CAST('7' AS BIGINT) ELSE id END FROM test_cast_literal_ansi
@@ -57,6 +62,10 @@ SELECT id, CASE WHEN id = 1 THEN CAST('NaNF' AS DOUBLE) ELSE 0D END FROM test_ca
 
 query expect_error(CAST_INVALID_INPUT)
 SELECT id, IF(id > 1, CAST('InfinityD' AS FLOAT), 0F) FROM test_cast_literal_ansi
+
+query expect_error(CAST_INVALID_INPUT)
+SELECT id, CASE WHEN id = 1 THEN CAST('1e-2147483648' AS DECIMAL(10,2))
+  ELSE CAST(0 AS DECIMAL(10,2)) END FROM test_cast_literal_ansi
 
 query expect_error(CAST_OVERFLOW)
 SELECT id, IF(id > 1, CAST(2147483648L AS INT), 0) FROM test_cast_literal_ansi
@@ -72,3 +81,13 @@ INSERT INTO test_cast_float_special VALUES ('NaNF'), ('NaND'), ('nanf'), ('-nan'
 
 query
 SELECT s, try_cast(s AS DOUBLE), try_cast(s AS FLOAT) FROM test_cast_float_special
+
+statement
+CREATE TABLE test_cast_decimal_scale(s string) USING parquet
+
+statement
+INSERT INTO test_cast_decimal_scale VALUES ('1e-2147483648'), ('1.0e-2147483647'),
+  ('0e-2147483648'), ('1e2147483648'), ('1e-9999999999'), ('1.5e-3'), ('12.345e1'), (NULL)
+
+query
+SELECT s, try_cast(s AS DECIMAL(10,2)) FROM test_cast_decimal_scale
