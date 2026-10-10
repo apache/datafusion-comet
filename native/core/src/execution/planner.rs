@@ -583,7 +583,9 @@ impl PhysicalPlanner {
                 )))
             }
             ExprStruct::Literal(literal) => {
-                let data_type = to_arrow_datatype(literal.datatype.as_ref().unwrap());
+                let literal_field =
+                    to_arrow_field("lit", literal.datatype.as_ref().unwrap(), literal.is_null);
+                let data_type = literal_field.data_type().clone();
                 let scalar_value = if literal.is_null {
                     match data_type {
                         DataType::Boolean => ScalarValue::Boolean(None),
@@ -661,6 +663,16 @@ impl PhysicalPlanner {
                         Value::DoubleVal(value) => ScalarValue::Float64(Some(*value)),
                         Value::StringVal(value) => ScalarValue::Utf8(Some(value.clone())),
                         Value::BytesVal(value) => ScalarValue::Binary(Some(value.clone())),
+                        Value::VariantVal(value) => {
+                            if literal.datatype.as_ref().unwrap().type_id != spark_expression::data_type::DataTypeId::Variant as i32 {
+                                return Err(GeneralError("Variant literal requires Variant datatype".to_string()));
+                            }
+                            let DataType::Struct(fields) = data_type else { unreachable!() };
+                            ScalarStructBuilder::new()
+                                .with_scalar(Arc::clone(&fields[0]), ScalarValue::Binary(Some(value.value.clone())))
+                                .with_scalar(Arc::clone(&fields[1]), ScalarValue::Binary(Some(value.metadata.clone())))
+                                .build()?
+                        }
                         Value::DecimalVal(value) => {
                             let big_integer = BigInt::from_signed_bytes_be(value);
                             let integer = big_integer.to_i128().ok_or_else(|| {
@@ -691,7 +703,10 @@ impl PhysicalPlanner {
                         }
                     }
                 };
-                Ok(Arc::new(DataFusionLiteral::new(scalar_value)))
+                Ok(Arc::new(DataFusionLiteral::new_with_metadata(
+                    scalar_value,
+                    Some(literal_field.metadata().into()),
+                )))
             }
             ExprStruct::Cast(expr) => {
                 let child = self.create_expr(expr.child.as_ref().unwrap(), input_schema)?;
@@ -809,6 +824,17 @@ impl PhysicalPlanner {
                     ))),
                     _ => func,
                 }
+            }
+            ExprStruct::VariantGet(expr) => {
+                let child =
+                    self.create_expr(expr.child.as_ref().unwrap(), Arc::clone(&input_schema))?;
+                Ok(Arc::new(
+                    crate::execution::expressions::variant_get::VariantGet::try_new(
+                        child,
+                        expr,
+                        &input_schema,
+                    )?,
+                ))
             }
             ExprStruct::CaseWhen(case_when) => {
                 let when_then_pairs = case_when

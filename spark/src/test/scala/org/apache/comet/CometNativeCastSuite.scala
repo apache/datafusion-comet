@@ -572,12 +572,9 @@ class CometNativeCastSuite extends CometTestBase with AdaptiveSparkPlanHelper {
       DataTypes.LongType,
       useDataFrameDiff = true)
     // Long.MaxValue.toFloat == 2^63 is accepted by Spark and saturates to Long.MaxValue.
-    // TODO: try_cast is not compared for this value because the native TRY path goes through
-    // Arrow's cast, which returns NULL for 2^63 where Spark returns Long.MaxValue
     castTest(
       withNulls(Seq(Long.MaxValue.toFloat)).toDF("a"),
       DataTypes.LongType,
-      testTry = false,
       useDataFrameDiff = true)
     Seq(
       Math.nextUp(Long.MaxValue.toFloat),
@@ -722,12 +719,9 @@ class CometNativeCastSuite extends CometTestBase with AdaptiveSparkPlanHelper {
       DataTypes.LongType,
       useDataFrameDiff = true)
     // Long.MaxValue.toDouble == 2^63 is accepted by Spark and saturates to Long.MaxValue.
-    // TODO: try_cast is not compared for this value because the native TRY path goes through
-    // Arrow's cast, which returns NULL for 2^63 where Spark returns Long.MaxValue
     castTest(
       withNulls(Seq(Long.MaxValue.toDouble)).toDF("a"),
       DataTypes.LongType,
-      testTry = false,
       useDataFrameDiff = true)
     Seq(
       Math.nextUp(Long.MaxValue.toDouble),
@@ -1162,6 +1156,13 @@ class CometNativeCastSuite extends CometTestBase with AdaptiveSparkPlanHelper {
   }
 
   val specialValues: Seq[String] = Seq(
+    "0x1.0p0",
+    " +0X.8P+2F ",
+    "-0x0p0D",
+    "0x1.00000100000001p0",
+    "0x1p1024",
+    "0x1p-1074",
+    "0x1p+",
     "1.5f",
     "1.5F",
     "2.0d",

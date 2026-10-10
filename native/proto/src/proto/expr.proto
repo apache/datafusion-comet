@@ -95,6 +95,7 @@ message Expr {
     RandStr rand_str = 73;
     Uuid uuid = 74;
     NativeScalarUdf native_scalar_udf = 75;
+    VariantGet variant_get = 76;
   }
 
   reserved 20;
@@ -105,6 +106,25 @@ message Expr {
 
   // Unique expression ID for context lookup during error creation
   optional uint64 expr_id = 91;
+}
+
+// Spark parses a foldable Variant path once before serializing the expression.
+message VariantGet {
+  Expr child = 1;
+  repeated VariantPathSegment path = 2;
+  DataType datatype = 3;
+  bool fail_on_error = 4;
+  string timezone = 5;
+  string target_sql = 6;
+  string path_sql = 7;
+  uint32 size_limit = 8;
+}
+
+message VariantPathSegment {
+  oneof segment {
+    string key = 1;
+    uint32 index = 2;
+  }
 }
 
 // QueryContext provides SQL query context for error messages.

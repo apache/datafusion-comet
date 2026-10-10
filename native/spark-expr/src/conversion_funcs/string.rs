@@ -27,6 +27,7 @@ use arrow::datatypes::{
     Float64Type, Int16Type, Int32Type, Int64Type, Int8Type, TimestampMicrosecondType,
 };
 use chrono::{LocalResult, NaiveDate, NaiveTime, Offset, TimeZone, Timelike};
+use lexical_parse_float::{FromLexicalWithOptions, NumberFormatBuilder, Options};
 use num::traits::CheckedNeg;
 use num::{CheckedSub, Integer};
 use std::num::Wrapping;
@@ -196,7 +197,7 @@ fn cast_string_to_float_impl<T: ArrowPrimitiveType>(
     type_name: &str,
 ) -> SparkResult<ArrayRef>
 where
-    T::Native: FromStr + num::Float,
+    T::Native: FromStr + num::Float + FromLexicalWithOptions<Options = Options>,
 {
     let arr = array
         .as_any()
@@ -231,7 +232,7 @@ where
 /// helper to parse floats from string inputs
 fn parse_string_to_float<F>(s: &str) -> Option<F>
 where
-    F: FromStr + num::Float,
+    F: FromStr + num::Float + FromLexicalWithOptions<Options = Options>,
 {
     // Handle +inf / -inf
     if s.eq_ignore_ascii_case("inf")
@@ -254,7 +255,44 @@ where
         } else {
             s
         };
-    // Rust's parse logic already handles scientific notations so we just rely on it
+    let unsigned = pruned_float_str
+        .strip_prefix(['+', '-'])
+        .unwrap_or(pruned_float_str);
+    if unsigned.starts_with("0x") || unsigned.starts_with("0X") {
+        // lexical 1.0.6's fast path cannot mix radix 16 with a binary exponent. Expand
+        // only the significand, preserving exact bits and rounding at the target width.
+        // Remove after https://github.com/Alexhuszagh/rust-lexical/issues/87 is fixed.
+        let (mantissa, exponent) = unsigned[2..].split_once(['p', 'P'])?;
+        let mut binary = String::new();
+        if pruned_float_str.starts_with('-') {
+            binary.push('-');
+        }
+        for digit in mantissa.bytes() {
+            if digit == b'.' {
+                binary.push('.');
+            } else {
+                let digit = char::from(digit).to_digit(16)?;
+                for bit in (0..4).rev() {
+                    binary.push(char::from(b'0' + ((digit >> bit) & 1) as u8));
+                }
+            }
+        }
+        binary.push('p');
+        binary.push_str(exponent);
+        const BINARY: u128 = NumberFormatBuilder::new()
+            .mantissa_radix(2)
+            .exponent_base(std::num::NonZeroU8::new(2))
+            .exponent_radix(std::num::NonZeroU8::new(10))
+            .required_exponent_notation(true)
+            .no_special(true)
+            .build_strict();
+        return F::from_lexical_with_options::<BINARY>(
+            binary.as_bytes(),
+            &lexical_parse_float::options::HEX_FLOAT,
+        )
+        .ok();
+    }
+    // Rust's parse logic handles decimal scientific notation.
     pruned_float_str.parse::<F>().ok()
 }
 
@@ -2156,7 +2194,7 @@ mod tests {
     use super::*;
     use crate::cast::cast_array;
     use crate::SparkCastOptions;
-    use arrow::array::{DictionaryArray, Int32Array, StringArray};
+    use arrow::array::{AsArray, DictionaryArray, Int32Array, StringArray};
     use arrow::datatypes::TimeUnit;
     use datafusion::common::Result as DataFusionResult;
     use regex::Regex;
@@ -2510,6 +2548,73 @@ mod tests {
     #[test]
     fn test_cast_string_to_boolean_trim_parity() {
         assert_trim_parity(&DataType::Boolean, "true", trim_all);
+    }
+
+    #[test]
+    fn hexadecimal_float_casts() {
+        let cases = [
+            ("0x1.0p0", 1.0_f32, 1.0_f64),
+            (" +0X.8P+2F\t", 2.0, 2.0),
+            ("0xAp-1", 5.0, 5.0),
+            ("-0x1.p-1d", -0.5, -0.5),
+            ("-0x0p0D", -0.0, -0.0),
+            ("0x1.fffffep127", f32::MAX, f32::MAX as f64),
+            ("0x1.fffffffffffffp1023", f32::INFINITY, f64::MAX),
+            ("0x1p1024", f32::INFINITY, f64::INFINITY),
+            ("-0x1p9999999999", f32::NEG_INFINITY, f64::NEG_INFINITY),
+            ("0x1p-149", f32::from_bits(1), 2.0_f64.powi(-149)),
+            ("0x1p-1074", 0.0, f64::from_bits(1)),
+            ("-0x1p-9999999999", -0.0, -0.0),
+            ("0x1.000001p0", 1.0, 1.0 + 2.0_f64.powi(-24)),
+            // Above the FLOAT midpoint, but rounding to DOUBLE first loses the last bit.
+            (
+                "0x1.00000100000001p0",
+                f32::from_bits(0x3f800001),
+                1.0 + 2.0_f64.powi(-24),
+            ),
+        ];
+        let array: ArrayRef = Arc::new(StringArray::from_iter(
+            cases.iter().map(|(s, _, _)| Some(*s)).chain([None]),
+        ));
+        for mode in [EvalMode::Legacy, EvalMode::Try, EvalMode::Ansi] {
+            let floats = cast_string_to_float(&array, &DataType::Float32, mode).unwrap();
+            let doubles = cast_string_to_float(&array, &DataType::Float64, mode).unwrap();
+            for (i, (s, f, d)) in cases.iter().enumerate() {
+                assert!(!floats.is_null(i), "{s}");
+                assert!(!doubles.is_null(i), "{s}");
+                assert_eq!(
+                    floats.as_primitive::<Float32Type>().value(i).to_bits(),
+                    f.to_bits(),
+                    "{s}"
+                );
+                assert_eq!(
+                    doubles.as_primitive::<Float64Type>().value(i).to_bits(),
+                    d.to_bits(),
+                    "{s}"
+                );
+            }
+            assert!(floats.is_null(cases.len()));
+            assert!(doubles.is_null(cases.len()));
+            for invalid in [
+                "0x1",
+                "0x.p0",
+                "0x1p",
+                "0x1p+",
+                "0x1p0ff",
+                "0x1_p0",
+                "0x1p0 junk",
+            ] {
+                let array: ArrayRef = Arc::new(StringArray::from(vec![invalid]));
+                for target in [DataType::Float32, DataType::Float64] {
+                    let result = cast_string_to_float(&array, &target, mode);
+                    if mode == EvalMode::Ansi {
+                        assert!(result.is_err(), "{invalid}");
+                    } else {
+                        assert!(result.unwrap().is_null(0), "{invalid}");
+                    }
+                }
+            }
+        }
     }
 
     #[test]

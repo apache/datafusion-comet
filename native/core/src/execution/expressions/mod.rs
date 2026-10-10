@@ -26,6 +26,7 @@ pub mod partition;
 pub mod random;
 pub mod strings;
 pub mod temporal;
+pub mod variant_get;
 
 pub use datafusion_comet_spark_expr::EvalMode;
 

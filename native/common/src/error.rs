@@ -26,6 +26,23 @@ pub enum SparkError {
     )]
     MalformedVariant,
 
+    #[error("[UNKNOWN_PRIMITIVE_TYPE_IN_VARIANT] Unknown primitive type {id} in Variant.")]
+    UnknownPrimitiveTypeInVariant { id: u8 },
+
+    #[error(
+        "[VARIANT_CONSTRUCTOR_SIZE_LIMIT] Variant value or metadata exceeds Spark's size limit."
+    )]
+    VariantConstructorSizeLimit,
+
+    #[error("[INVALID_VARIANT_CAST] Cannot cast the Variant value into {data_type}.")]
+    InvalidVariantCast {
+        value: String,
+        metadata: String,
+        path: String,
+        timezone: String,
+        data_type: String,
+    },
+
     // This list was generated from the Spark code. Many of the exceptions are not yet used by Comet
     #[error("[CAST_INVALID_INPUT] The value '{value}' of the type \"{from_type}\" cannot be cast to \"{to_type}\" \
         because it is malformed. Correct the value as per the syntax, or change its target type. \
@@ -341,6 +358,9 @@ impl SparkError {
     pub(crate) fn error_type_name(&self) -> &'static str {
         match self {
             SparkError::MalformedVariant => "MalformedVariant",
+            SparkError::UnknownPrimitiveTypeInVariant { .. } => "UnknownPrimitiveTypeInVariant",
+            SparkError::VariantConstructorSizeLimit => "VariantConstructorSizeLimit",
+            SparkError::InvalidVariantCast { .. } => "InvalidVariantCast",
             SparkError::CastInvalidValue { .. } => "CastInvalidValue",
             SparkError::InvalidInputInCastToDatetime { .. } => "InvalidInputInCastToDatetime",
             SparkError::NumericValueOutOfRange { .. } => "NumericValueOutOfRange",
@@ -401,6 +421,17 @@ impl SparkError {
     /// Extract parameters as JSON value
     pub(crate) fn params_as_json(&self) -> serde_json::Value {
         match self {
+            SparkError::UnknownPrimitiveTypeInVariant { id } => serde_json::json!({"id": id}),
+            SparkError::InvalidVariantCast {
+                value,
+                metadata,
+                path,
+                timezone,
+                data_type,
+            } => {
+                serde_json::json!({"value": value, "metadata": metadata, "path": path,
+                    "timezone": timezone, "dataType": data_type})
+            }
             SparkError::CastInvalidValue {
                 value,
                 from_type,
@@ -726,6 +757,9 @@ impl SparkError {
 
             // RuntimeException
             SparkError::MalformedVariant
+            | SparkError::UnknownPrimitiveTypeInVariant { .. }
+            | SparkError::VariantConstructorSizeLimit
+            | SparkError::InvalidVariantCast { .. }
             | SparkError::CannotParseDecimal
             | SparkError::DuplicatedMapKey { .. }
             | SparkError::NullMapKey
@@ -798,6 +832,11 @@ impl SparkError {
     pub(crate) fn error_class(&self) -> Option<&'static str> {
         match self {
             SparkError::MalformedVariant => Some("MALFORMED_VARIANT"),
+            SparkError::UnknownPrimitiveTypeInVariant { .. } => {
+                Some("UNKNOWN_PRIMITIVE_TYPE_IN_VARIANT")
+            }
+            SparkError::VariantConstructorSizeLimit => Some("VARIANT_CONSTRUCTOR_SIZE_LIMIT"),
+            SparkError::InvalidVariantCast { .. } => Some("INVALID_VARIANT_CAST"),
             // Cast errors
             SparkError::CastInvalidValue { .. } => Some("CAST_INVALID_INPUT"),
             SparkError::InvalidInputInCastToDatetime { .. } => Some("CAST_INVALID_INPUT"),

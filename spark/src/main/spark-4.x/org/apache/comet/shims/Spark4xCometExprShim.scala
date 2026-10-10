@@ -24,11 +24,13 @@ import org.apache.spark.sql.catalyst.expressions.aggregate.{HllSketchAgg, HllUni
 import org.apache.spark.sql.catalyst.expressions.json.{JsonExpressionUtils, StructsToJsonEvaluator}
 import org.apache.spark.sql.catalyst.expressions.objects.{Invoke, StaticInvoke}
 import org.apache.spark.sql.catalyst.expressions.url.ParseUrlEvaluator
+import org.apache.spark.sql.catalyst.expressions.variant.VariantGet
+import org.apache.spark.sql.types.VariantType
 
-import org.apache.comet.CometExplainInfo
+import org.apache.comet.{CometConf, CometExplainInfo}
 import org.apache.comet.expressions.CometEvalMode
-import org.apache.comet.serde.{CometAggregateExpressionSerde, CometExpressionSerde, CometHllSketchAgg, CometHllSketchEstimate, CometHllUnion, CometHllUnionAgg, CometListAgg, CometMapSort, CometRandStr, CometToPrettyString}
-import org.apache.comet.serde.ExprOuterClass.Expr
+import org.apache.comet.serde.{CometAggregateExpressionSerde, CometExpressionSerde, CometHllSketchAgg, CometHllSketchEstimate, CometHllUnion, CometHllUnionAgg, CometListAgg, CometMapSort, CometRandStr, CometToPrettyString, CometVariantGet, CometVariantInput}
+import org.apache.comet.serde.ExprOuterClass.{Expr, UnaryExpr}
 import org.apache.comet.serde.QueryPlanSerde.exprToProtoInternal
 
 /**
@@ -47,6 +49,7 @@ trait Spark4xCometExprShim extends CometExprShim4x {
     Map.empty
   def sparkVersionSpecificMiscExpressions: Map[Class[_ <: Expression], CometExpressionSerde[_]] =
     Map(
+      classOf[VariantGet] -> CometVariantGet,
       classOf[ToPrettyString] -> CometToPrettyString,
       classOf[HllSketchEstimate] -> CometHllSketchEstimate,
       classOf[HllUnion] -> CometHllUnion)
@@ -75,6 +78,18 @@ trait Spark4xCometExprShim extends CometExprShim4x {
         // Strip the wrapper and recurse; CometArrayFilter's fast path detects the
         // `x -> x IS NOT NULL` lambda and dispatches to CometArrayCompact.
         exprToProtoInternal(knc.child, inputs, binding)
+
+      // Spark infers these guards for null-intolerant Variant predicates in filters.
+      // They inspect the parent null bitmap without interpreting Variant bytes.
+      case e: IsNull if e.child.dataType == VariantType && CometConf.isExprEnabled("IsNull") =>
+        CometVariantInput.convert(e.child, inputs, binding).map { child =>
+          Expr.newBuilder().setIsNull(UnaryExpr.newBuilder().setChild(child)).build()
+        }
+      case e: IsNotNull
+          if e.child.dataType == VariantType && CometConf.isExprEnabled("IsNotNull") =>
+        CometVariantInput.convert(e.child, inputs, binding).map { child =>
+          Expr.newBuilder().setIsNotNull(UnaryExpr.newBuilder().setChild(child)).build()
+        }
 
       // On Spark 4.0+, RuntimeReplaceable expressions (StructsToJson, ParseUrl) become
       // Invoke(Literal(Evaluator), "evaluate", ...). Reconstruct the original expression and
