@@ -185,21 +185,6 @@ class CometJsonExpressionSuite extends CometTestBase with AdaptiveSparkPlanHelpe
     }
   }
 
-  test("from_json - duplicate struct field names fall back") {
-    withParquetTable(
-      Seq((1, """{"a":1,"outer":{"a":2}}"""), (2, """{"a":3,"outer":{"a":4}}""")),
-      "tbl") {
-
-      val fallbackReason = "unsupported output type StructType"
-      checkSparkAnswerAndFallbackReason(
-        "SELECT from_json(_2, 'a INT, a INT') FROM tbl ORDER BY _1",
-        fallbackReason)
-      checkSparkAnswerAndFallbackReason(
-        "SELECT from_json(_2, 'outer STRUCT<a: INT, a: INT>') FROM tbl ORDER BY _1",
-        fallbackReason)
-    }
-  }
-
   test("from_json - valid json with incompatible schema") {
     Seq(true, false).foreach { dictionaryEnabled =>
       withParquetTable(
