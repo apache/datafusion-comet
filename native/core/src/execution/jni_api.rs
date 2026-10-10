@@ -2636,6 +2636,7 @@ mod tests {
                         }],
                         return_type: None,
                         fail_on_error: false,
+                        null_short_circuit: false,
                     })),
                     query_context: None,
                     expr_id: None,

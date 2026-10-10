@@ -119,8 +119,10 @@ impl Cast {
         }
     }
 
-    /// Whether the cast cannot fail for any value, in any eval mode: a cast to the child's own
-    /// type, from NULL, or to a wider number. `cast_array` rejects a dictionary target first.
+    /// Whether the cast cannot fail for any value: a cast to the child's own type, from NULL, or to
+    /// a wider number, in any eval mode, or a cast from a string to an integer in LEGACY or TRY
+    /// mode, which returns NULL for a string it cannot parse. `cast_array` rejects a dictionary
+    /// target first.
     pub(crate) fn is_infallible(&self, input_schema: &Schema) -> bool {
         use DataType::*;
         let Ok(from) = self.child.data_type(input_schema) else {
@@ -136,7 +138,10 @@ impl Cast {
                         | (Int32, Int64 | Float32 | Float64)
                         | (Int64, Float32 | Float64)
                         | (Float32, Float64)
-                ))
+                )
+                || (matches!(from, Utf8 | LargeUtf8)
+                    && matches!(self.data_type, Int8 | Int16 | Int32 | Int64)
+                    && self.cast_options.eval_mode != EvalMode::Ansi))
     }
 }
 

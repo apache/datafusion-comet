@@ -390,7 +390,7 @@ impl PhysicalExpr for CaseWhenExpr {
 /// That holds when it can neither fail nor return something different for seeing more rows: a
 /// column, a literal, and comparisons, boolean logic, null checks, widening casts and wrapping
 /// arithmetic over them. Anything else, including every function, is assumed to be able to fail.
-fn is_infallible(expr: &Arc<dyn PhysicalExpr>, input_schema: &Schema) -> bool {
+pub(super) fn is_infallible(expr: &Arc<dyn PhysicalExpr>, input_schema: &Schema) -> bool {
     if expr.is::<Column>() || expr.is::<Literal>() {
         return true;
     }
@@ -1147,6 +1147,7 @@ mod tests {
             Field::new("d", DataType::Float64, true),
             Field::new("e", DataType::Float64, true),
             Field::new("s", DataType::Utf8, true),
+            Field::new("ls", DataType::LargeUtf8, true),
             Field::new("dec", DataType::Decimal128(10, 2), true),
             Field::new("l", list_of(DataType::Float64), true),
             Field::new("m", list_of(DataType::Float64), true),
@@ -1160,15 +1161,17 @@ mod tests {
             ),
         ]);
         let c = |name: &str| col(name, &schema).unwrap();
-        let cast = |e: Arc<dyn PhysicalExpr>, to: DataType| -> Arc<dyn PhysicalExpr> {
-            Arc::new(Cast::new(
+        let cast_in = |mode: EvalMode, e: Arc<dyn PhysicalExpr>, to: DataType| {
+            let cast: Arc<dyn PhysicalExpr> = Arc::new(Cast::new(
                 e,
                 to,
-                SparkCastOptions::new_without_timezone(EvalMode::Ansi, false),
+                SparkCastOptions::new_without_timezone(mode, false),
                 None,
                 None,
-            ))
+            ));
+            cast
         };
+        let cast = |e: Arc<dyn PhysicalExpr>, to: DataType| cast_in(EvalMode::Ansi, e, to);
         let infallible = |e: Arc<dyn PhysicalExpr>| is_infallible(&e, &schema);
         // A comparison as the planner builds it, which follows Spark's ordering for floats
         let compare = |left: &str, op: Operator, right: Arc<dyn PhysicalExpr>| {
@@ -1225,9 +1228,32 @@ mod tests {
         assert!(!infallible(checked));
         // Decimal arithmetic can overflow
         assert!(!infallible(binary(c("dec"), Operator::Plus, c("dec"))));
-        // Narrowing and parsing casts can fail
+        // Narrowing and parsing casts can fail under ANSI
         assert!(!infallible(cast(c("i"), DataType::Int32)));
         assert!(!infallible(cast(c("s"), DataType::Int32)));
+        // A string that LEGACY or TRY mode cannot parse as an integer becomes NULL instead
+        for mode in [EvalMode::Legacy, EvalMode::Try] {
+            for to in [
+                DataType::Int8,
+                DataType::Int16,
+                DataType::Int32,
+                DataType::Int64,
+            ] {
+                assert!(
+                    infallible(cast_in(mode, c("s"), to.clone())),
+                    "{mode:?} {to}"
+                );
+                assert!(
+                    infallible(cast_in(mode, c("ls"), to.clone())),
+                    "{mode:?} {to}"
+                );
+            }
+            // Other string casts are not claimed
+            assert!(
+                !infallible(cast_in(mode, c("s"), DataType::Float64)),
+                "{mode:?}"
+            );
+        }
         // So can anything built from a part that can fail
         assert!(!infallible(binary(
             binary(c("i"), Operator::Divide, c("i")),
