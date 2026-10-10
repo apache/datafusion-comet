@@ -604,7 +604,7 @@ to Spark ([#2837](https://github.com/apache/datafusion-comet/issues/2837)). Enab
 | `regexp_replace` | ✅ | Hybrid |  |
 | `regexp_substr` | ✅ | — | Rewrites to `nullif(regexp_extract(...), '')`; `regexp_extract` routes through the JVM codegen dispatcher by default |
 | `repeat` | ✅ | Native |  |
-| `replace` | ✅ | Hybrid |  |
+| `replace` | ✅ | Hybrid | Native by default for a direct string column with a non-empty, valid UTF-8 search literal and either a replacement literal (both at most 64 KiB) or a replacement column (search at most 256 bytes and at most 8 MiB when broadcast per batch), under UTF8_BINARY collation; other cases use the JVM codegen dispatcher by default |
 | `right` | ✅ | Native |  |
 | `rpad` | ✅ | Hybrid | String inputs use the native kernel with a column string and literal padding; literal strings and column padding use codegen dispatch. Binary inputs use codegen dispatch. |
 | `rtrim` | ✅ | Hybrid | Non-UTF8_BINARY collated input with a trim string routes through the JVM codegen dispatcher; other input runs natively |
