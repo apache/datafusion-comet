@@ -147,4 +147,33 @@ class CometCsvNativeReadSuite extends CometTestBase {
       }
     }
   }
+
+  // https://github.com/apache/datafusion-comet/issues/6707. These functions read
+  // InputFileBlockHolder, which the native CSV scan does not set.
+  test("Native csv read - input_file_name falls back to Spark's reader") {
+    withTempPath { dir =>
+      spark.range(30).repartition(3).write.csv(dir.toString)
+      withSQLConf(
+        CometConf.COMET_CSV_V2_NATIVE_ENABLED.key -> "true",
+        SQLConf.USE_V1_SOURCE_LIST.key -> "") {
+        val read = spark.read.schema("id LONG").csv(dir.toString)
+        val df = read.selectExpr(
+          "input_file_name()",
+          "input_file_block_start()",
+          "input_file_block_length()",
+          "id")
+        val (_, plan) = checkSparkAnswerAndFallbackReason(
+          df,
+          "Native V2 scan is not compatible with input_file_name")
+        assert(
+          collect(plan) { case s: CometCsvNativeScanExec => s }.isEmpty,
+          s"Expected Spark's CSV reader but found CometCsvNativeScanExec. Plan:\n$plan")
+        // Without these functions the scan stays native
+        val (_, nativePlan) = checkSparkAnswer(read.where("id >= 0"))
+        assert(
+          collect(nativePlan) { case s: CometCsvNativeScanExec => s }.nonEmpty,
+          s"Expected CometCsvNativeScanExec. Plan:\n$nativePlan")
+      }
+    }
+  }
 }
