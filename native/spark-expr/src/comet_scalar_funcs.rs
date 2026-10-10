@@ -317,8 +317,9 @@ pub fn create_comet_physical_fun_with_eval_mode(
         // SparkMakeTime already throws on invalid input, so accept the flag here rather
         // than falling through to the registry fail-closed path.
         "make_time" => Ok(Arc::new(ScalarUDF::new_from_impl(SparkMakeTime::new()))),
-        // Floats, and arrays and structs holding them, need Spark's float ordering. Other types
-        // keep DataFusion's `greatest` and `least` from the registry.
+        // Floats need Spark's float ordering, and arrays and structs also Spark's ordering of the
+        // nulls inside them. Other types keep DataFusion's `greatest` and `least` from the
+        // registry.
         "greatest" | "least" if SparkGreatestLeast::handles(&data_type) => Ok(Arc::new(
             ScalarUDF::new_from_impl(SparkGreatestLeast::new(fun_name == "greatest")),
         )),
