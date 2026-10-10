@@ -5236,6 +5236,142 @@ class CometIcebergNativeSuite
     }
   }
 
+  for {
+    aqeEnabled <- Seq(false, true)
+    prunedSide <- Seq("a", "b")
+  } {
+    test(s"DPP - single-split sort-merge join (AQE=$aqeEnabled, pruned=$prunedSide)") {
+      assume(icebergAvailable, "Iceberg not available")
+      withTempIcebergDir { warehouseDir =>
+        val dimDir = new File(warehouseDir, "dim_parquet")
+        withSQLConf(
+          "spark.sql.catalog.aqe_cat" -> "org.apache.iceberg.spark.SparkCatalog",
+          "spark.sql.catalog.aqe_cat.type" -> "hadoop",
+          "spark.sql.catalog.aqe_cat.warehouse" -> warehouseDir.getAbsolutePath,
+          SQLConf.ADAPTIVE_EXECUTION_ENABLED.key -> aqeEnabled.toString,
+          SQLConf.AUTO_BROADCASTJOIN_THRESHOLD.key -> "-1",
+          SQLConf.ADAPTIVE_AUTO_BROADCASTJOIN_THRESHOLD.key -> "-1",
+          SQLConf.DYNAMIC_PARTITION_PRUNING_ENABLED.key -> "true",
+          CometConf.COMET_ENABLED.key -> "true",
+          CometConf.COMET_EXEC_ENABLED.key -> "true",
+          CometConf.COMET_ICEBERG_NATIVE_ENABLED.key -> "true",
+          CometConf.COMET_EXEC_SORT_MERGE_JOIN_ENABLED.key -> "true",
+          CometConf.COMET_FORCE_SHJ.key -> "false") {
+          val factA = "aqe_cat.db.single_split_join_a"
+          val factB = "aqe_cat.db.single_split_join_b"
+          val tables = Seq(factA, factB)
+          def fileTaskCount(scan: CometIcebergNativeScanExec): Int =
+            scan.perPartitionData
+              .map(OperatorOuterClass.IcebergScan.parseFrom(_).getFileScanTasksCount)
+              .sum
+
+          try {
+            tables.foreach { table =>
+              spark.sql(s"""
+                CREATE TABLE $table (id INT, v INT, store_id INT)
+                USING iceberg PARTITIONED BY (store_id)
+              """)
+              spark
+                .range(100)
+                .selectExpr("CAST(id AS INT) AS id", "CAST(id AS INT) AS v", "5 AS store_id")
+                .coalesce(1)
+                .writeTo(table)
+                .append()
+
+              val unprunedPlan = spark.table(table).queryExecution.executedPlan
+              assertSingleNativeScan(unprunedPlan)
+              val scan = collectIcebergNativeScans(unprunedPlan).head
+              assert(scan.numPartitions == 1, s"Expected one split for $table:\n$unprunedPlan")
+              assert(
+                fileTaskCount(scan) == 1,
+                s"Expected one file task for $table:\n$unprunedPlan")
+            }
+
+            spark
+              .range(1)
+              .selectExpr("99 AS store_id", "'X' AS country")
+              .write
+              .parquet(dimDir.getAbsolutePath)
+            withTempView("single_split_join_dim") {
+              spark.read
+                .parquet(dimDir.getAbsolutePath)
+                .createOrReplaceTempView("single_split_join_dim")
+              val query = s"""SELECT /*+ BROADCAST(d), MERGE(a, b) */ COUNT(*), SUM(b.v)
+                |FROM $factA a JOIN $factB b ON a.id = b.id
+                |JOIN single_split_join_dim d ON $prunedSide.store_id = d.store_id
+                |WHERE d.country = 'X'""".stripMargin
+              val expected = Seq(Row(0L, null))
+              withSQLConf(CometConf.COMET_ENABLED.key -> "false") {
+                checkAnswer(spark.sql(query), expected)
+              }
+              val df = spark.sql(query)
+              val initialPlan = df.queryExecution.executedPlan
+              assert(
+                collectIcebergNativeScans(initialPlan).size == 2,
+                s"Expected two native Iceberg scans before execution:\n$initialPlan")
+              assert(
+                collectIcebergDPPSubqueries(initialPlan).size == 1,
+                s"Expected DPP on exactly one scan before execution:\n$initialPlan")
+              assert(
+                collect(initialPlan) { case join: CometSortMergeJoinExec => join }.size == 1,
+                s"Expected a native sort-merge join before execution:\n$initialPlan")
+              checkCometAnswer(df, expected)
+
+              val plan = df.queryExecution.executedPlan
+              val scans = collectIcebergNativeScans(plan)
+              if (isSpark35Plus && aqeEnabled && scans.isEmpty) {
+                // Newer Spark versions shuffle the join inputs, allowing AQE to replace
+                // the join and its scans with an empty relation after DPP prunes one input.
+                // This checks result compatibility; the SinglePartition regression assertions
+                // below target Spark 3.4, where both scans must remain in one native block.
+                assert(
+                  collect(plan) { case empty: CometEmptyRelationExec => empty }.nonEmpty,
+                  s"Expected AQE to replace the pruned join with an empty relation:\n$plan")
+              } else {
+                assert(scans.size == 2, s"Expected two native Iceberg scans:\n$plan")
+                val prunedScans = scans.filter(scan => collectIcebergDPPSubqueries(scan).nonEmpty)
+                assert(prunedScans.size == 1, s"Expected DPP on exactly one scan:\n$plan")
+                val prunedScan = prunedScans.head
+                assert(
+                  fileTaskCount(prunedScan) == 0,
+                  s"Expected all file tasks to be pruned:\n$plan")
+                assert(
+                  prunedScan.metrics("num_splits").value == 0,
+                  "Pruned files must not be read")
+                assert(
+                  scans.filterNot(_ eq prunedScan).map(fileTaskCount) == Seq(1),
+                  s"Expected the other scan to retain its file task:\n$plan")
+              }
+
+              if (!isSpark35Plus) {
+                val join = collectFirst(plan) { case j: CometSortMergeJoinExec => j }
+                  .getOrElse(fail(s"Expected a native sort-merge join:\n$plan"))
+                assert(
+                  collect(join) { case exchange: ShuffleExchangeLike => exchange }.isEmpty,
+                  s"Expected no shuffle between the join and its scans:\n$plan")
+                val inputs = scala.collection.mutable.ArrayBuffer.empty[SparkPlan]
+                join.foreachUntilCometInput(join)(input => inputs += input)
+                val nativeScans = inputs.collect { case scan: CometIcebergNativeScanExec => scan }
+                assert(nativeScans.size == 2, s"Expected both scans in one native block:\n$plan")
+                assert(
+                  nativeScans.forall(_.numPartitions == 1),
+                  s"Expected both scans to retain one execution partition:\n$plan")
+                // Check execution input order, not just SQL aliases: pruning either input used
+                // to fail differently when its partition array was empty but the other was not.
+                val expectedTaskCounts = if (prunedSide == "a") Seq(0, 1) else Seq(1, 0)
+                assert(
+                  nativeScans.map(fileTaskCount).toSeq == expectedTaskCounts,
+                  s"Unexpected file tasks in native input order:\n$plan")
+              }
+            }
+          } finally {
+            tables.foreach(table => spark.sql(s"DROP TABLE IF EXISTS $table"))
+          }
+        }
+      }
+    }
+  }
+
   test("DPP - empty Iceberg scan does not request S3 policy locations") {
     // Exercise the empty executor scan emitted when DPP preserves Spark's last partition.
     // A fresh catalog/bucket prevents a previously initialized FileIO from hiding the call.
