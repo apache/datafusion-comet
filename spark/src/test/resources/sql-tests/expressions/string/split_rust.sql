@@ -37,3 +37,9 @@ SELECT split(s, '::', -1) FROM test_split_rust_enabled
 -- literal arguments
 query
 SELECT split('a,b,c', ',', -1), split('hello', ',', -1), split(NULL, ',', -1)
+
+-- regex delimiter (must NOT take the literal fast path)
+SELECT split('foo123bar456baz', '\\d+');
+
+-- multi-byte delimiter
+SELECT split('a→b→c', '→');
