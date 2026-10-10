@@ -21,18 +21,20 @@ package org.apache.spark.shuffle.comet;
 
 import java.io.IOException;
 import java.util.Map;
-import java.util.NoSuchElementException;
 import java.util.function.Supplier;
 
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
+import org.apache.spark.TaskContext;
 import org.apache.spark.memory.MemoryConsumer;
 import org.apache.spark.memory.MemoryMode;
 import org.apache.spark.memory.SparkOutOfMemoryError;
 import org.apache.spark.memory.TaskMemoryManager;
 import org.apache.spark.unsafe.array.LongArray;
 import org.apache.spark.unsafe.memory.MemoryBlock;
+
+import org.apache.comet.MissingTaskEntryRetry;
 
 /**
  * A simple memory allocator used by `CometShuffleExternalSorter` to allocate memory blocks which
@@ -49,11 +51,12 @@ public final class CometUnifiedShuffleMemoryAllocator extends CometShuffleMemory
   private static final Logger logger =
       LoggerFactory.getLogger(CometUnifiedShuffleMemoryAllocator.class);
 
-  /** Attempts at an allocation whose task entry Spark keeps losing, see retryMissingTaskEntry. */
-  private static final int MAX_ALLOCATE_ATTEMPTS = 3;
+  /** The task's context, or null outside a task; see retryMissingTaskEntry. */
+  private final TaskContext taskContext;
 
   CometUnifiedShuffleMemoryAllocator(TaskMemoryManager taskMemoryManager, long pageSize) {
     super(taskMemoryManager, pageSize, MemoryMode.OFF_HEAP);
+    this.taskContext = TaskContext.get();
     if (taskMemoryManager.getTungstenMemoryMode() != MemoryMode.OFF_HEAP) {
       throw new IllegalArgumentException(
           "CometUnifiedShuffleMemoryAllocator should be used with off-heap "
@@ -83,31 +86,17 @@ public final class CometUnifiedShuffleMemoryAllocator extends CometShuffleMemory
 
   /**
    * Runs an allocation through Spark, retrying when an allocation waiting in Spark lost the task's
-   * entry. Spark removes a task's entry from its execution pool when the task's balance reaches
-   * zero, and an allocation that was waiting for memory then fails when it wakes up with a
-   * NoSuchElementException ("key not found: " and the task id). Releases take no task monitor, so a
-   * native consumer or another JVM consumer of the same task can empty the balance while an
-   * allocation waits. The failed call was granted nothing and took no page, because Spark only
-   * drops the entry at a zero balance, so trying again is safe: it registers the task again and
-   * waits for its share as Spark would have. After a few failed attempts the allocation fails with
-   * a SparkOutOfMemoryError, which the shuffle writers handle like any other refused page, caused
-   * by the last attempt's exception. The Spark issue is SPARK-59444.
+   * entry; see {@link MissingTaskEntryRetry}. When the retries run out, or the task has ended, the
+   * allocation fails with a SparkOutOfMemoryError, which the shuffle writers handle like any other
+   * refused page, caused by the last attempt's exception.
    */
   private <T> T retryMissingTaskEntry(long required, Supplier<T> allocation) {
-    for (int attempt = 1; ; attempt++) {
-      try {
-        return allocation.get();
-      } catch (NoSuchElementException e) {
-        if (!isMissingTaskEntry(e)) {
-          throw e;
-        }
-        if (attempt >= MAX_ALLOCATE_ATTEMPTS) {
-          logger.warn(
-              "Lost the task's execution memory entry in Spark on {} attempts to allocate {} "
-                  + "bytes, refusing the allocation",
-              attempt,
-              required,
-              e);
+    return MissingTaskEntryRetry.retry(
+        logger,
+        taskContext,
+        required,
+        allocation,
+        e -> {
           SparkOutOfMemoryError error =
               new SparkOutOfMemoryError(
                   "UNABLE_TO_ACQUIRE_MEMORY",
@@ -116,30 +105,7 @@ public final class CometUnifiedShuffleMemoryAllocator extends CometShuffleMemory
                       "receivedBytes", String.valueOf(0)));
           error.initCause(e);
           throw error;
-        }
-        logger.info(
-            "Lost the task's execution memory entry in Spark while waiting to allocate {} bytes, "
-                + "trying again",
-            required);
-      }
-    }
-  }
-
-  /**
-   * Whether {@code e} is Spark's execution pool failing to find the task's entry. The task id is
-   * not available here, so this matches the message prefix and the pool's stack frame.
-   */
-  private static boolean isMissingTaskEntry(NoSuchElementException e) {
-    String message = e.getMessage();
-    if (message == null || !message.startsWith("key not found: ")) {
-      return false;
-    }
-    for (StackTraceElement frame : e.getStackTrace()) {
-      if ("org.apache.spark.memory.ExecutionMemoryPool".equals(frame.getClassName())) {
-        return true;
-      }
-    }
-    return false;
+        });
   }
 
   public synchronized long free(MemoryBlock block) {

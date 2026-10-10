@@ -137,15 +137,10 @@ allocator before reading anything into the split.
 returns `CometUnifiedShuffleMemoryAllocator`, a Spark `MemoryConsumer` drawing from
 `spark.memory.offHeap.size`, so shuffle pages are arbitrated against Spark's other consumers in the
 same task like any other allocation. A page or pointer array allocation that waits in Spark for
-memory can wake up to find the task's entry gone from Spark's execution pool, because another
-consumer of the task released its last bytes in the meantime, and Spark then throws a
-`NoSuchElementException` ("key not found") instead of a grant
-([SPARK-59444](https://issues.apache.org/jira/browse/SPARK-59444)). The allocator retries that
-case, since the failed call was granted nothing, and after three attempts throws
-`SparkOutOfMemoryError`, which the shuffle writers handle like any other refused page. Only the
-shuffle allocator's callers are guarded this way. Spark's operators in the same task, such as its
-sorters and aggregates, can still hit the exception until Spark re-registers a waiting task in
-`ExecutionMemoryPool` ([apache/spark#58747](https://github.com/apache/spark/pull/58747)).
+memory can wake up to find the task's entry gone from Spark's execution pool; see
+[Constraints on a Comet memory consumer](#constraints-on-a-comet-memory-consumer). The allocator
+retries it, and after three attempts throws `SparkOutOfMemoryError`, which the shuffle writers
+handle like any other refused page.
 
 Which allocator each call site uses, and who ends up charged for the bytes:
 
@@ -216,12 +211,22 @@ that grant, and the only figure available for doing so is the task-wide one abov
 
 **A parked acquire can wake up to a missing task entry.** Spark removes the task's `memoryForTask`
 entry when its balance reaches zero, and an acquire that was waiting in `lock.wait()` and wakes
-afterwards throws a `NoSuchElementException` ("key not found" and the task id) instead of a grant.
-`CometTaskMemoryManager` retries that one case. A missing entry means the task held nothing from
-Spark at that moment, so the failed call has no partial grant to reconcile, and the retry registers
-the task again and waits for its share as the first call would have. After a few attempts it returns
-a zero grant, which the native side treats as a refusal and spills. JVM consumers that call
-`allocatePage` directly are not covered; that gap is tracked in #6304.
+afterwards throws a `NoSuchElementException` ("key not found" and the task id) instead of a grant
+([SPARK-59444](https://issues.apache.org/jira/browse/SPARK-59444)). Releases take no task monitor,
+so another native thread or plan, or a JVM consumer of the same task, can empty the balance while an
+acquire waits. Both of Comet's consumers that ask Spark directly, `CometTaskMemoryManager` and the
+JVM shuffle allocator, retry that one case through `MissingTaskEntryRetry`. A missing entry means
+the task held nothing from Spark at that moment, so the failed call has no partial grant to
+reconcile, and the retry registers the task again and waits for its share as the first call would
+have. After three attempts `CometTaskMemoryManager` returns a zero grant. `try_grow` treats that as
+a refusal and the operator spills, while `grow` records the request as overcommit. The shuffle
+allocator throws `SparkOutOfMemoryError` instead. Both refuse without retrying once the task has
+completed or been killed: releasing a native plan at the end of the task can empty the balance under
+a Tokio worker still waiting in Spark, and a retry would register the ended task again and could wait
+for other tasks while holding the `TaskMemoryManager` monitor that Spark's final cleanup needs.
+Spark's own operators in the same task, such as
+its sorters and aggregates, are not guarded and can still hit the exception until Spark re-registers
+a waiting task in `ExecutionMemoryPool` ([apache/spark#58747](https://github.com/apache/spark/pull/58747)).
 
 **A consumer whose `spill` returns zero takes budget it can never give back.**
 `NativeMemoryConsumer.spill` returns `0`, so Spark can select it as a spill victim and reclaim
