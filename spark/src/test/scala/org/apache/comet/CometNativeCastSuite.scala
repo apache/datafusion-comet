@@ -2032,7 +2032,7 @@ class CometNativeCastSuite extends CometTestBase with AdaptiveSparkPlanHelper {
     }
   }
 
-  test("cast to a struct with duplicate field names falls back") {
+  test("cast to a struct with duplicate field names is unsupported") {
     val sourceType = StructType(Seq(StructField("p", IntegerType), StructField("q", IntegerType)))
     val duplicateTarget =
       StructType(Seq(StructField("x", IntegerType), StructField("x", IntegerType)))
@@ -2054,11 +2054,6 @@ class CometNativeCastSuite extends CometTestBase with AdaptiveSparkPlanHelper {
         .isSupported(sourceType, uniqueTarget, None, CometEvalMode.LEGACY)
         .isInstanceOf[Compatible])
 
-    val input = spark
-      .range(3)
-      .selectExpr("named_struct('p', CAST(id AS INT), 'q', CAST(id + 10 AS INT)) AS s")
-
-    checkSparkAnswerAndFallbackReason(input.select(col("s").cast(duplicateTarget)), reason)
   }
 
   test("cast between decimals with different precision and scale") {
