@@ -214,6 +214,153 @@ fn build_map_row(num_entries: usize) -> Vec<u8> {
     data
 }
 
+// ─── Generic UnsafeRow builder ──────────────────────────────────────────────
+
+/// A value to encode in Spark's UnsafeRow / UnsafeArrayData layout. Used for the
+/// nested shapes whose layout is too involved to hand-roll, such as collections of
+/// strings or structs.
+enum Value {
+    Int64(i64),
+    Utf8(String),
+    Null,
+    Struct(Vec<Value>),
+    List(Vec<Value>),
+    Map(Vec<(Value, Value)>),
+}
+
+fn pad_to_8(buf: &mut Vec<u8>) {
+    while !buf.len().is_multiple_of(8) {
+        buf.push(0);
+    }
+}
+
+/// Append the variable-length payload of `value` to `buf` and return the
+/// `(offset, size)` pointer for it, with `offset` relative to the start of `buf`.
+/// Returns `None` for fixed-width values, which live in the slot itself.
+fn append_variable(buf: &mut Vec<u8>, value: &Value) -> Option<(usize, usize)> {
+    let payload = match value {
+        Value::Int64(_) | Value::Null => return None,
+        Value::Utf8(s) => s.as_bytes().to_vec(),
+        Value::Struct(fields) => encode_struct(fields),
+        Value::List(elements) => encode_list(elements),
+        Value::Map(entries) => encode_map(entries),
+    };
+    let offset = buf.len();
+    let size = payload.len();
+    buf.extend_from_slice(&payload);
+    pad_to_8(buf);
+    Some((offset, size))
+}
+
+/// Encode a struct (or a top-level row) with 8-byte slots per field.
+fn encode_struct(fields: &[Value]) -> Vec<u8> {
+    let bitset = SparkUnsafeRow::get_row_bitset_width(fields.len());
+    let mut buf = vec![0u8; bitset + fields.len() * 8];
+    for (i, field) in fields.iter().enumerate() {
+        let slot = bitset + i * 8;
+        match field {
+            Value::Null => buf[i / 64 * 8 + (i % 64) / 8] |= 1 << (i % 8),
+            Value::Int64(v) => buf[slot..slot + 8].copy_from_slice(&v.to_le_bytes()),
+            other => {
+                let (offset, size) = append_variable(&mut buf, other).unwrap();
+                write_pointer(&mut buf, slot, offset, size);
+            }
+        }
+    }
+    buf
+}
+
+/// Encode an UnsafeArrayData: element count, null bitset, 8-byte slots, then
+/// the variable-length payloads.
+fn encode_list(elements: &[Value]) -> Vec<u8> {
+    let n = elements.len();
+    let bitset = null_bitset_size(n);
+    let slots = ARRAY_HEADER_SIZE + bitset;
+    let mut buf = vec![0u8; slots + n * 8];
+    buf[..ARRAY_HEADER_SIZE].copy_from_slice(&(n as i64).to_le_bytes());
+    for (i, element) in elements.iter().enumerate() {
+        let slot = slots + i * 8;
+        match element {
+            Value::Null => buf[ARRAY_HEADER_SIZE + i / 64 * 8 + (i % 64) / 8] |= 1 << (i % 8),
+            Value::Int64(v) => buf[slot..slot + 8].copy_from_slice(&v.to_le_bytes()),
+            other => {
+                let (offset, size) = append_variable(&mut buf, other).unwrap();
+                write_pointer(&mut buf, slot, offset, size);
+            }
+        }
+    }
+    buf
+}
+
+/// Encode an UnsafeMapData: key-array size, key array, value array.
+fn encode_map(entries: &[(Value, Value)]) -> Vec<u8> {
+    let keys = encode_list(
+        &entries
+            .iter()
+            .map(|(k, _)| clone_value(k))
+            .collect::<Vec<_>>(),
+    );
+    let values = encode_list(
+        &entries
+            .iter()
+            .map(|(_, v)| clone_value(v))
+            .collect::<Vec<_>>(),
+    );
+    let mut buf = Vec::with_capacity(ARRAY_HEADER_SIZE + keys.len() + values.len());
+    buf.extend_from_slice(&(keys.len() as i64).to_le_bytes());
+    buf.extend_from_slice(&keys);
+    buf.extend_from_slice(&values);
+    buf
+}
+
+fn clone_value(value: &Value) -> Value {
+    match value {
+        Value::Int64(v) => Value::Int64(*v),
+        Value::Utf8(s) => Value::Utf8(s.clone()),
+        Value::Null => Value::Null,
+        Value::Struct(f) => Value::Struct(f.iter().map(clone_value).collect()),
+        Value::List(e) => Value::List(e.iter().map(clone_value).collect()),
+        Value::Map(e) => Value::Map(
+            e.iter()
+                .map(|(k, v)| (clone_value(k), clone_value(v)))
+                .collect(),
+        ),
+    }
+}
+
+/// Encode a single-column top-level row holding `column`.
+fn build_row(column: Value) -> Vec<u8> {
+    encode_struct(&[column])
+}
+
+fn utf8_field(name: &str) -> Field {
+    Field::new(name, ArrowDataType::Utf8, true)
+}
+
+fn int64_field(name: &str) -> Field {
+    Field::new(name, ArrowDataType::Int64, true)
+}
+
+fn list_of(element: ArrowDataType) -> ArrowDataType {
+    ArrowDataType::List(Arc::new(Field::new("item", element, true)))
+}
+
+fn struct_of(fields: Vec<Field>) -> ArrowDataType {
+    ArrowDataType::Struct(Fields::from(fields))
+}
+
+fn map_of(key: ArrowDataType, value: ArrowDataType) -> ArrowDataType {
+    let entries = Field::new(
+        "entries",
+        struct_of(vec![
+            Field::new("key", key, false),
+            Field::new("value", value, true),
+        ]),
+        false,
+    );
+    ArrowDataType::Map(Arc::new(entries), false)
+}
+
 // ─── Benchmark runner ───────────────────────────────────────────────────────
 
 /// Common benchmark harness: wraps raw row bytes in SparkUnsafeRow and runs
@@ -377,6 +524,287 @@ fn benchmark_map_conversion(c: &mut Criterion) {
     group.finish();
 }
 
+/// Collections whose elements are variable-length or nested: strings, structs, and lists, plus
+/// int64 lists where some elements are null.
+fn benchmark_nested_collections(c: &mut Criterion) {
+    let mut group = c.benchmark_group("nested_collections");
+
+    for num_rows in [1000, 10000] {
+        let param = format!("rows_{num_rows}");
+
+        // List<Utf8>, 10 and 50 elements
+        for n in [10, 50] {
+            let rows: Vec<Vec<u8>> = (0..num_rows)
+                .map(|r| {
+                    build_row(Value::List(
+                        (0..n)
+                            .map(|i| Value::Utf8(format!("element_{r}_{i}")))
+                            .collect(),
+                    ))
+                })
+                .collect();
+            run_benchmark(
+                &mut group,
+                &format!("list_utf8_elements_{n}"),
+                &param,
+                &[list_of(ArrowDataType::Utf8)],
+                &rows,
+                1,
+            );
+        }
+
+        // List<Int64>, 100 elements, every 10th element null
+        let rows: Vec<Vec<u8>> = (0..num_rows)
+            .map(|_| {
+                build_row(Value::List(
+                    (0..100)
+                        .map(|i| {
+                            if i % 10 == 0 {
+                                Value::Null
+                            } else {
+                                Value::Int64(i * 100)
+                            }
+                        })
+                        .collect(),
+                ))
+            })
+            .collect();
+        run_benchmark(
+            &mut group,
+            "list_int64_10pct_null_elements_100",
+            &param,
+            &[list_of(ArrowDataType::Int64)],
+            &rows,
+            1,
+        );
+
+        // List<Struct<Int64, Utf8>>, 10 elements
+        let rows: Vec<Vec<u8>> = (0..num_rows)
+            .map(|r| {
+                build_row(Value::List(
+                    (0..10)
+                        .map(|i| {
+                            Value::Struct(vec![
+                                Value::Int64(i),
+                                Value::Utf8(format!("name_{r}_{i}")),
+                            ])
+                        })
+                        .collect(),
+                ))
+            })
+            .collect();
+        run_benchmark(
+            &mut group,
+            "list_struct_elements_10",
+            &param,
+            &[list_of(struct_of(vec![
+                int64_field("id"),
+                utf8_field("name"),
+            ]))],
+            &rows,
+            1,
+        );
+
+        // List<List<Int64>>, 10 x 10
+        let rows: Vec<Vec<u8>> = (0..num_rows)
+            .map(|_| {
+                build_row(Value::List(
+                    (0..10)
+                        .map(|_| Value::List((0..10).map(|i| Value::Int64(i * 100)).collect()))
+                        .collect(),
+                ))
+            })
+            .collect();
+        run_benchmark(
+            &mut group,
+            "list_list_10x10",
+            &param,
+            &[list_of(list_of(ArrowDataType::Int64))],
+            &rows,
+            1,
+        );
+    }
+
+    group.finish();
+}
+
+/// Structs that mix strings, nulls and nested collections.
+fn benchmark_mixed_struct_conversion(c: &mut Criterion) {
+    let mut group = c.benchmark_group("mixed_struct_conversion");
+
+    for num_rows in [1000, 10000] {
+        let param = format!("rows_{num_rows}");
+
+        // Struct<Int64, Utf8, Utf8, Int64> with a null in every fourth row's string field
+        let rows: Vec<Vec<u8>> = (0..num_rows)
+            .map(|r| {
+                build_row(Value::Struct(vec![
+                    Value::Int64(r),
+                    Value::Utf8(format!("name_{r}")),
+                    if r % 4 == 0 {
+                        Value::Null
+                    } else {
+                        Value::Utf8(format!("description_for_row_{r}"))
+                    },
+                    Value::Int64(r * 2),
+                ]))
+            })
+            .collect();
+        run_benchmark(
+            &mut group,
+            "struct_with_strings",
+            &param,
+            &[struct_of(vec![
+                int64_field("id"),
+                utf8_field("name"),
+                utf8_field("desc"),
+                int64_field("n"),
+            ])],
+            &rows,
+            1,
+        );
+
+        // Struct<Struct<Int64, Utf8>, Struct<Utf8, Int64>>, two levels with strings
+        let rows: Vec<Vec<u8>> = (0..num_rows)
+            .map(|r| {
+                build_row(Value::Struct(vec![
+                    Value::Struct(vec![Value::Int64(r), Value::Utf8(format!("a_{r}"))]),
+                    Value::Struct(vec![Value::Utf8(format!("b_{r}")), Value::Int64(r)]),
+                ]))
+            })
+            .collect();
+        run_benchmark(
+            &mut group,
+            "nested_struct_with_strings",
+            &param,
+            &[struct_of(vec![
+                Field::new(
+                    "l",
+                    struct_of(vec![int64_field("id"), utf8_field("s")]),
+                    true,
+                ),
+                Field::new(
+                    "r",
+                    struct_of(vec![utf8_field("s"), int64_field("id")]),
+                    true,
+                ),
+            ])],
+            &rows,
+            1,
+        );
+
+        // Struct<List<Int64>, Utf8>
+        let rows: Vec<Vec<u8>> = (0..num_rows)
+            .map(|r| {
+                build_row(Value::Struct(vec![
+                    Value::List((0..10).map(|i| Value::Int64(i * 100)).collect()),
+                    Value::Utf8(format!("label_{r}")),
+                ]))
+            })
+            .collect();
+        run_benchmark(
+            &mut group,
+            "struct_with_list",
+            &param,
+            &[struct_of(vec![
+                Field::new("values", list_of(ArrowDataType::Int64), true),
+                utf8_field("label"),
+            ])],
+            &rows,
+            1,
+        );
+    }
+
+    group.finish();
+}
+
+/// Maps with string keys or values, and with null values.
+fn benchmark_map_variants(c: &mut Criterion) {
+    let mut group = c.benchmark_group("map_variants");
+
+    for num_rows in [1000, 10000] {
+        let param = format!("rows_{num_rows}");
+
+        // Map<Utf8, Utf8>, 10 entries
+        let rows: Vec<Vec<u8>> = (0..num_rows)
+            .map(|r| {
+                build_row(Value::Map(
+                    (0..10)
+                        .map(|i| {
+                            (
+                                Value::Utf8(format!("key_{i}")),
+                                Value::Utf8(format!("value_{r}_{i}")),
+                            )
+                        })
+                        .collect(),
+                ))
+            })
+            .collect();
+        run_benchmark(
+            &mut group,
+            "utf8_utf8_entries_10",
+            &param,
+            &[map_of(ArrowDataType::Utf8, ArrowDataType::Utf8)],
+            &rows,
+            1,
+        );
+
+        // Map<Utf8, Int64>, 10 entries, every third value null
+        let rows: Vec<Vec<u8>> = (0..num_rows)
+            .map(|_| {
+                build_row(Value::Map(
+                    (0..10)
+                        .map(|i| {
+                            (
+                                Value::Utf8(format!("key_{i}")),
+                                if i % 3 == 0 {
+                                    Value::Null
+                                } else {
+                                    Value::Int64(i * 100)
+                                },
+                            )
+                        })
+                        .collect(),
+                ))
+            })
+            .collect();
+        run_benchmark(
+            &mut group,
+            "utf8_int64_null_values_entries_10",
+            &param,
+            &[map_of(ArrowDataType::Utf8, ArrowDataType::Int64)],
+            &rows,
+            1,
+        );
+
+        // Map<Int64, List<Int64>>, 5 entries of 10 elements
+        let rows: Vec<Vec<u8>> = (0..num_rows)
+            .map(|_| {
+                build_row(Value::Map(
+                    (0..5)
+                        .map(|i| {
+                            (
+                                Value::Int64(i),
+                                Value::List((0..10).map(|j| Value::Int64(j * 100)).collect()),
+                            )
+                        })
+                        .collect(),
+                ))
+            })
+            .collect();
+        run_benchmark(
+            &mut group,
+            "int64_list_entries_5",
+            &param,
+            &[map_of(ArrowDataType::Int64, list_of(ArrowDataType::Int64))],
+            &rows,
+            1,
+        );
+    }
+
+    group.finish();
+}
+
 fn config() -> Criterion {
     Criterion::default()
 }
@@ -387,6 +815,9 @@ criterion_group! {
     targets = benchmark_primitive_columns,
               benchmark_struct_conversion,
               benchmark_list_conversion,
-              benchmark_map_conversion
+              benchmark_map_conversion,
+              benchmark_nested_collections,
+              benchmark_mixed_struct_conversion,
+              benchmark_map_variants
 }
 criterion_main!(benches);
