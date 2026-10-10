@@ -48,15 +48,15 @@
 - Spark 3.5.8 (audited 2026-05-27): baseline. `ArrayContains(left, right) extends BinaryExpression with NullIntolerant with Predicate`; `inputTypes` uses `findWiderTypeWithoutStringPromotionForTwo`. Wired as `CometScalarFunction("array_contains")`.
 - Spark 4.0.1 (audited 2026-05-27): `NullIntolerant` trait replaced by `nullIntolerant: Boolean`; `checkInputDataTypes` adopts `DataTypeUtils.sameType` (collation-aware in 4.x).
 - Spark 4.1.1 (audited 2026-05-27): identical to 4.0.1.
-- Float/double arrays containing NaN and signed zero match Spark; DataFusion canonicalizes them the same way as Spark's `SQLOrderingUtil`.
+- Spark 3.4, 3.5, 4.0, 4.1, 4.2 (2026-10-02, [#6520](https://github.com/apache/datafusion-comet/issues/6520)): datafusion-spark's `array_contains` compares floats by their bits, where Spark's `genEqual` treats `-0.0` as `0.0` and all NaNs as equal. Flat `FLOAT` and `DOUBLE` arrays now run through Comet's `spark_array_contains`, which applies Spark's equality, instead of the codegen dispatcher. Nested float elements stay on the dispatcher, where Spark's generated code is faster and keeps string collations, as does a value other than a literal or column read over a nullable array, which Spark skips for a null array. Tracked upstream as [apache/datafusion#25981](https://github.com/apache/datafusion/issues/25981).
 
 ## array_distinct
 
 - Spark 3.4.3 (audited 2026-05-27): identical to 3.5.8.
-- Spark 3.5.8 (audited 2026-05-27): baseline. `ArrayDistinct(child)` over `ArraySetLike`; uses `SQLOpenHashSet` so NaN and `+0.0`/`-0.0` are canonicalized. Wired as `CometScalarFunction("array_distinct")`.
+- Spark 3.5.8 (audited 2026-05-27): baseline. `ArrayDistinct(child)` over `ArraySetLike`; uses `SQLOpenHashSet`, which merges NaNs but keeps `+0.0` and `-0.0` distinct. Wired as `CometScalarFunction("array_distinct")`.
 - Spark 4.0.1 (audited 2026-05-27): `NullIntolerant` -> `nullIntolerant` field refactor.
 - Spark 4.1.1 (audited 2026-05-27): identical to 4.0.1.
-- Float/double arrays containing NaN and signed zero match Spark; DataFusion canonicalizes them like Spark's `SQLOpenHashSet`.
+- Float/double element types run natively only on Spark 4.2.0, which normalizes the arguments in the plan (SPARK-54918); every other version falls back by default. See [Array distinct and union](../../user-guide/latest/compatibility/floating-point.md#array-distinct-and-union).
 
 ## array_except
 
@@ -141,7 +141,7 @@
 - Spark 3.5.8 (audited 2026-05-27): baseline. `ArrayUnion(left, right) extends ArrayBinaryLike with ComplexTypeMergingExpression`; result is left-side distinct elements followed by new right-side elements. Wired as `CometScalarFunction("array_union")`.
 - Spark 4.0.1 (audited 2026-05-27): `nullIntolerant = true` moves into `ArrayBinaryLike`; overflow path uses `arrayFunctionWithElementsExceedLimitError`.
 - Spark 4.1.1 (audited 2026-05-27): identical to 4.0.1.
-- Float/double NaN and signed-zero canonicalization matches `array_distinct`. Result element ordering also matches Spark (left-side distinct elements followed by new right-side elements).
+- Float/double element types follow the same Spark 4.2.0-only gate as `array_distinct`. Result element ordering matches Spark (left-side distinct elements followed by new right-side elements).
 
 ## arrays_overlap
 
