@@ -644,9 +644,9 @@ object CometTruncTimestamp
       builder.setChild(childExpr.get)
       builder.setFormat(formatExpr.get)
       builder.setTimezone(timeZone.get)
-      // Spark 4.2.0 (SPARK-56663) raises `long overflow` when SECOND or MILLISECOND truncation
-      // falls below the smallest timestamp; earlier versions wrap the Long subtraction. The
-      // native side has to match whichever Spark we are running against.
+      // Spark 4.2.0 and later (SPARK-56663) raise `long overflow` when SECOND or MILLISECOND
+      // truncation falls below the smallest timestamp; earlier versions wrap the Long
+      // subtraction. The native side has to match whichever Spark we are running against.
       builder.setWrapSecondMillisecondOverflow(!isSpark42Plus)
 
       Some(

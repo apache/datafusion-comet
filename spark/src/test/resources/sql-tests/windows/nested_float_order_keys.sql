@@ -24,8 +24,8 @@
 -- total order sorts below -Infinity. Each ORDER BY ends with a unique tiebreaker, so peers come
 -- out in the tiebreaker's order.
 
--- Strict floating-point mode declines these keys, because their types can hold a null element or
--- field: see nested_float_order_keys_strict.sql.
+-- Strict floating-point mode runs these keys natively too. nested_float_order_keys_strict.sql covers
+-- that, along with the null orders and RANGE frames that fall back in every mode.
 
 statement
 CREATE TABLE nested_float_keys(id INT, g INT, d DOUBLE, f FLOAT, s BOOLEAN) USING parquet

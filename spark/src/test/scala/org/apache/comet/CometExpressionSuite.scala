@@ -242,11 +242,10 @@ class CometExpressionSuite extends CometTestBase with AdaptiveSparkPlanHelper {
     }
   }
 
-  // Floats nested in array and struct sort keys are normalized natively as well, but strict mode
-  // declines a key whose type can hold a null element or field: Spark orders that null below
-  // every value whatever the key's null order, and the native sort places it by the null order
-  // (#6476). Every field the generator makes is nullable, so these sorts fall back. A unique `id`
-  // sorted last makes the ordering total, as above.
+  // Floats nested in array and struct sort keys are normalized natively, in strict mode too. A key
+  // whose type can hold a null element or field sorts natively under the default null order, which
+  // agrees with Spark's. Every field the generator makes is nullable. A unique `id` sorted last
+  // makes the ordering total, as above.
   private def checkStrictNestedFloatingPointSort(schema: StructType): Unit = {
     val df = FuzzDataGenerator.generateDataFrame(
       new Random(42),
@@ -260,21 +259,15 @@ class CometExpressionSuite extends CometTestBase with AdaptiveSparkPlanHelper {
       df.withColumn("id", monotonically_increasing_id()).write.parquet(path)
       spark.read.parquet(path).createOrReplaceTempView("tbl")
 
-      withSQLConf(
-        CometConf.getExprAllowIncompatConfigKey("SortOrder") -> "false",
-        CometConf.COMET_EXEC_STRICT_FLOATING_POINT.key -> "true") {
-        checkSparkAnswerAndFallbackReason(
-          sql("select * from tbl order by 1, 2, 3"),
-          "can hold a null element or field")
-      }
-
-      // The default null order agrees with Spark's, so opting in keeps the sort native and right.
-      withSQLConf(
-        CometConf.getExprAllowIncompatConfigKey("SortOrder") -> "true",
-        CometConf.COMET_EXEC_STRICT_FLOATING_POINT.key -> "true") {
-        checkSparkAnswerAndOperator(
-          sql("select * from tbl order by 1, 2, 3"),
-          Seq(classOf[CometSortExec]))
+      // The sort stays native whether or not incompatible expressions are allowed.
+      Seq("false", "true").foreach { allowIncompat =>
+        withSQLConf(
+          CometConf.getExprAllowIncompatConfigKey("SortOrder") -> allowIncompat,
+          CometConf.COMET_EXEC_STRICT_FLOATING_POINT.key -> "true") {
+          checkSparkAnswerAndOperator(
+            sql("select * from tbl order by 1, 2, 3"),
+            Seq(classOf[CometSortExec]))
+        }
       }
     }
   }
@@ -301,8 +294,9 @@ class CometExpressionSuite extends CometTestBase with AdaptiveSparkPlanHelper {
   test("strict floating point: nested sort keeps NaN payloads and zero signs unchanged") {
     // As in the scalar test, a local relation keeps the raw bits that Parquet would canonicalize.
     // `d` is a primitive `Double`, so it is not nullable, and neither are the element of
-    // `array(d)` and the field of `named_struct('v', d)`: these keys cannot hold a null, and
-    // strict mode admits them.
+    // `array(d)` and the field of `named_struct('v', d)`. The `IF` key's element is null on row
+    // 4, and strict mode admits it too, because its default null order sorts a null element first,
+    // where Spark does.
     val negNan = java.lang.Double.longBitsToDouble(0xfff8000000000002L)
     val posNan = java.lang.Double.longBitsToDouble(0x7ff8000000000002L)
     val rows = Seq((0, negNan), (1, posNan), (2, -0.0d), (3, 0.0d), (4, 1.0d))
@@ -315,9 +309,14 @@ class CometExpressionSuite extends CometTestBase with AdaptiveSparkPlanHelper {
     withSQLConf(
       CometConf.getExprAllowIncompatConfigKey("SortOrder") -> "false",
       CometConf.COMET_EXEC_STRICT_FLOATING_POINT.key -> "true") {
-      for ((key, value) <- Seq[(String, Row => Double)](
-          "array(d)" -> (_.getSeq[Double](1).head),
-          "named_struct('v', d)" -> (_.getStruct(1).getDouble(0)))) {
+      // The zeros are peers, and so are the two NaNs, which sort last.
+      for ((key, value, order) <- Seq[(String, Row => Option[Double], Seq[Int])](
+          ("array(d)", r => Some(r.getSeq[Double](1).head), Seq(2, 3, 4, 0, 1)),
+          ("named_struct('v', d)", r => Some(r.getStruct(1).getDouble(0)), Seq(2, 3, 4, 0, 1)),
+          (
+            "array(IF(id = 4, CAST(NULL AS DOUBLE), d))",
+            r => Option(r.getSeq[java.lang.Double](1).head).map(_.doubleValue),
+            Seq(4, 2, 3, 0, 1)))) {
         val query = s"SELECT id, $key AS k FROM strict_fp_nested_bits ORDER BY k, id"
         checkSparkAnswerAndOperator(
           sql(query),
@@ -326,12 +325,16 @@ class CometExpressionSuite extends CometTestBase with AdaptiveSparkPlanHelper {
 
         val actual = sql(query).collect().toSeq
         actual.foreach { row =>
-          assert(
-            java.lang.Double.doubleToRawLongBits(value(row)) == expected(row.getInt(0)),
-            s"row ${row.getInt(0)} had its floating-point bits rewritten by the sort on $key")
+          val id = row.getInt(0)
+          value(row) match {
+            case Some(v) =>
+              assert(
+                java.lang.Double.doubleToRawLongBits(v) == expected(id),
+                s"row $id had its floating-point bits rewritten by the sort on $key")
+            case None => assert(id == 4, s"row $id lost its value in the sort on $key")
+          }
         }
-        // The zeros are peers, and so are the two NaNs, which sort last.
-        assert(actual.map(_.getInt(0)) == Seq(2, 3, 4, 0, 1), s"sort on $key")
+        assert(actual.map(_.getInt(0)) == order, s"sort on $key")
       }
     }
   }
