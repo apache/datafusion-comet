@@ -1330,6 +1330,12 @@ class CometNativeCastSuite extends CometTestBase with AdaptiveSparkPlanHelper {
       "-262143-12-31T",
       "-262143-12-31T ",
       "-262143-12-31T 123123123",
+      // years past chrono's NaiveDate range
+      "262143-01-01",
+      "-262144-12-31",
+      "999999-12-31",
+      "1000000-01-01",
+      "+1000000-01-01T 1234",
       "2020",
       "2020-1",
       "2020-1-1",
@@ -1383,14 +1389,13 @@ class CometNativeCastSuite extends CometTestBase with AdaptiveSparkPlanHelper {
       "\r\n 962 \r\n",
       "\r\n 62 \r\n")
 
-    // due to limitations of NaiveDate we only support years between 262143 BC and 262142 AD
-    // Filter out strings where the leading digit sequence represents a year > 262142.
-    // All 5-digit years (10000-99999) are within bounds; only 6-digit years may exceed the limit.
+    // Spark cannot convert a date within about a century of the Int epoch-day limit (year
+    // 5881580) to java.sql.Date when collecting, so leave out 7-digit years near it.
     val fuzzDates = gen
       .generateStrings(dataSize, datePattern, 8)
       .filterNot { str =>
         val yearStr = str.trim.takeWhile(_.isDigit)
-        yearStr.length > 6 || (yearStr.length == 6 && yearStr.toInt > 262142)
+        yearStr.length == 7 && yearStr.toInt >= 5800000
       }
     castTest((validDates ++ invalidDates ++ fuzzDates).toDF("a"), DataTypes.DateType)
   }
