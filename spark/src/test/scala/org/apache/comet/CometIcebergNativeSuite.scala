@@ -2458,7 +2458,24 @@ class CometIcebergNativeSuite
           s"SELECT id, c, s.a FROM $partitioned VERSION AS OF $partitionedSnapshot ORDER BY id",
           oneSchema = true)
 
-        Seq(mor, partitioned).foreach(t => spark.sql(s"DROP TABLE $t"))
+        // Two partition sources renamed into each other's names: `q` takes the dropped `c`'s name
+        // and `p` takes `q`'s. Names picked one field at a time clash here, so both are appended
+        // as one older schema names them.
+        val twoSources = "test_cat.db.nested_pruning_two_sources"
+        spark.sql(s"""
+          CREATE TABLE $twoSources (id INT, p INT, q INT, c INT, s STRUCT<a: INT, pad: STRING>)
+          USING iceberg PARTITIONED BY (bucket(4, p), bucket(4, q))
+        """)
+        spark.sql(s"INSERT INTO $twoSources SELECT id, id % 3, id % 5, id * 10, s FROM ($rows)")
+        val twoSourcesSnapshot = latestSnapshotId(twoSources)
+        Seq("DROP COLUMN c", "RENAME COLUMN q TO c", "RENAME COLUMN p TO q").foreach { change =>
+          spark.sql(s"ALTER TABLE $twoSources $change")
+        }
+        checkPrunedNativeScan(
+          s"SELECT id, c, s.a FROM $twoSources VERSION AS OF $twoSourcesSnapshot ORDER BY id",
+          oneSchema = true)
+
+        Seq(mor, partitioned, twoSources).foreach(t => spark.sql(s"DROP TABLE $t"))
       }
     }
   }

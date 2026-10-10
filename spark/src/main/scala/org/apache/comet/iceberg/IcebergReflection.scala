@@ -718,10 +718,10 @@ object IcebergReflection extends Logging {
         .invoke(schema, fieldId.asInstanceOf[AnyRef]))
 
   /**
-   * Returns a schema equal to `baseSchema` but guaranteed to contain `requiredFieldIds`. Any id
-   * not already present is appended, resolved from the table's current schema, or from its schema
-   * history (`table.schemas()`) when the column has since been dropped or its current name is
-   * taken.
+   * Returns a schema equal to `baseSchema` but guaranteed to contain `requiredFieldIds`. The ids
+   * not already present are appended as they are in one schema: the table's current schema, or
+   * the newest schema in its history (`table.schemas()`) that has them all under names
+   * `baseSchema` does not use.
    *
    * Two callers need this: an equality delete may be keyed on a column since dropped from the
    * current schema (mirroring Iceberg-Java's `DeleteFilter.fileProjection`), and a partition
@@ -747,23 +747,27 @@ object IcebergReflection extends Logging {
         getMethod(baseSchema.getClass, "columns")
           .invoke(baseSchema)
           .asInstanceOf[java.util.List[_]]
-      val newColumns = new java.util.ArrayList[Any](existing)
-      // A field is appended under a name it has had that the task schema does not use yet. The
-      // current schema comes first, to keep a live column's current name and type, and then
-      // table.schemas(), oldest first. A VERSION AS OF scan schema carries the snapshot's names,
-      // so a current name can clash with a column the snapshot still has.
-      val schemas = getMethod(table.getClass, "schema").invoke(table) +: getAllSchemas(table)
-      val names = scala.collection.mutable.Set(existing.asScala.map(fieldName).toSeq: _*)
-      missingIds.foreach { id =>
-        val (field, name) = schemas.iterator
-          .flatMap(findFieldObject(_, id))
-          .map(f => (f, fieldName(f)))
-          .find { case (_, n) => !names.contains(n) }
-          .getOrElse(throw new IllegalStateException(
-            s"Cannot resolve field id $id in table schema history under an unused name"))
-        names += name
-        newColumns.add(field)
-      }
+      val existingNames = existing.asScala.map(fieldName).toSet
+      // Taking every field from one schema keeps their names apart, which a name picked per field
+      // cannot promise once columns have been renamed into each other's names. A VERSION AS OF
+      // scan schema carries the snapshot's names, so a schema also must not name a field like a
+      // column `baseSchema` has. The current schema comes first, to keep current names, and then
+      // the others newest first, so that a promoted column keeps its widest type.
+      val schemas = getMethod(table.getClass, "schema").invoke(table) +:
+        getAllSchemas(table).reverse
+      val resolvedFields = schemas.iterator
+        .map(schema => missingIds.flatMap(findFieldObject(schema, _)))
+        .find { fields =>
+          val names = fields.map(fieldName)
+          fields.length == missingIds.length && names.distinct.length == names.length &&
+          !names.exists(existingNames.contains)
+        }
+        .getOrElse(throw new IllegalStateException(
+          s"Cannot resolve field ids ${missingIds.mkString(",")} from one schema in the table " +
+            "schema history under names the task schema does not use"))
+      val newColumns = new java.util.ArrayList[Any](existing.size + resolvedFields.length)
+      newColumns.addAll(existing)
+      resolvedFields.foreach(newColumns.add)
       baseSchema.getClass
         .getConstructor(classOf[java.util.List[_]])
         .newInstance(newColumns)

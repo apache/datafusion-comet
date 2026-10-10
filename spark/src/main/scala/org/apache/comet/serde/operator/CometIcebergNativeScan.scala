@@ -1035,22 +1035,28 @@ object CometIcebergNativeScan extends CometOperatorSerde[CometBatchScanExec] wit
     // that needs one reads with the full schema instead.
     val canUsePrunedSchemaCache = mutable.HashMap[Seq[Int], Boolean]()
     def canUsePrunedSchema(requiredFieldIds: Seq[Int]): Boolean =
-      nestedSchemaPruningEnabled && canUsePrunedSchemaCache.getOrElseUpdate(
-        requiredFieldIds,
-        requiredFieldIds.forall { id =>
-          IcebergReflection.findFieldObject(metadata.prunedScanSchema, id).isDefined ||
-          !IcebergReflection.isNestedField(metadata.tableSchema, id)
-        })
+      nestedSchemaPruningEnabled && (requiredFieldIds.isEmpty ||
+        canUsePrunedSchemaCache.getOrElseUpdate(
+          requiredFieldIds,
+          requiredFieldIds.forall { id =>
+            IcebergReflection.findFieldObject(metadata.prunedScanSchema, id).isDefined ||
+            !IcebergReflection.isNestedField(metadata.tableSchema, id)
+          }))
     // schemaWithRequiredFields builds a new Schema whenever it appends a column. Memoize it by
     // base schema (Iceberg's Schema compares by identity) and ids, so tasks that need the same
-    // columns share one schema object, and with it one schema pool entry.
+    // columns share one schema object, and with it one schema pool entry. Most tasks need no extra
+    // columns, so they skip both lookups.
     val requiredFieldsCache = mutable.HashMap[(AnyRef, Seq[Int]), AnyRef]()
     def withRequiredFields(baseSchema: AnyRef, requiredFieldIds: Seq[Int]): AnyRef =
-      requiredFieldsCache.getOrElseUpdate(
-        (baseSchema, requiredFieldIds),
-        IcebergReflection
-          .schemaWithRequiredFields(baseSchema, metadata.table, requiredFieldIds)
-          .asInstanceOf[AnyRef])
+      if (requiredFieldIds.isEmpty) {
+        baseSchema
+      } else {
+        requiredFieldsCache.getOrElseUpdate(
+          (baseSchema, requiredFieldIds),
+          IcebergReflection
+            .schemaWithRequiredFields(baseSchema, metadata.table, requiredFieldIds)
+            .asInstanceOf[AnyRef])
+      }
 
     val perPartitionBuilders = mutable.ArrayBuffer[OperatorOuterClass.IcebergScan]()
 
@@ -1165,9 +1171,14 @@ object CometIcebergNativeScan extends CometOperatorSerde[CometBatchScanExec] wit
                 // so union the equality-delete field ids into the task schema, resolving any
                 // dropped ones from the table's schema history (mirrors Iceberg-Java's
                 // DeleteFilter.fileProjection).
-                val equalityFieldIds = deletes.asScala.flatMap { df =>
-                  requiredEqualityFieldIds(deleteFileClass, df).asScala.map(_.intValue())
-                }.toSeq
+                val equalityFieldIds =
+                  if (hasDeletes) {
+                    deletes.asScala.flatMap { df =>
+                      requiredEqualityFieldIds(deleteFileClass, df).asScala.map(_.intValue())
+                    }.toSeq
+                  } else {
+                    Nil
+                  }
 
                 // iceberg-rust validates a FileScanTask by resolving its partition spec against
                 // the task schema, so a task carrying a partition spec needs that spec's source
