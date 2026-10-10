@@ -16,8 +16,8 @@
 // under the License.
 
 use arrow::array::{
-    new_null_array, Array, ArrayRef, BooleanBufferBuilder, MapArray, NullBufferBuilder, Scalar,
-    UInt32Array,
+    new_null_array, Array, ArrayRef, AsArray, BooleanBufferBuilder, MapArray, NullBufferBuilder,
+    Scalar, UInt32Array,
 };
 use arrow::buffer::BooleanBuffer;
 use arrow::compute::kernels::cmp::eq;
@@ -29,6 +29,8 @@ use datafusion::logical_expr::{
     ColumnarValue, ScalarFunctionArgs, ScalarUDFImpl, Signature, Volatility,
 };
 use std::sync::Arc;
+
+use crate::array_gather::{compact_nested_buffers, take_nested_values, take_selected_lists};
 
 /// Spark's map lookup: `GetMapValue` (`m[k]`) and `element_at(<map>, k)`.
 ///
@@ -42,7 +44,7 @@ use std::sync::Arc;
 ///     other Comet map kernel and slower than Spark itself
 ///     ([#5795](https://github.com/apache/datafusion-comet/issues/5795)). Here a single Arrow
 ///     `eq` covers the whole batch of entries at once, the per-row work is a bit scan over the
-///     resulting mask, and the values are gathered with one `take`.
+///     resulting mask, and the selected value ranges are gathered once.
 ///
 /// Spark's own lookup returns the first entry whose key compares equal, so the mask scan stops at
 /// the first match too. A missing key, a `NULL` map row, and a `NULL` lookup key all produce
@@ -206,6 +208,28 @@ fn spark_map_extract(
     // representation the format permits rather than one known to arrive here. Guard it anyway:
     // Spark returns NULL for a NULL map under both ANSI modes, for `element_at` and `GetMapValue`
     // alike, and only `element_at` has a nullable-input guard upstream of this kernel.
+    if matches!(value_type, DataType::List(_) | DataType::LargeList(_)) {
+        let selected = (0..num_rows).map(|row| {
+            if map_array.is_null(row) {
+                return None;
+            }
+            let start = offsets[row] as usize - entries_start;
+            let end = offsets[row + 1] as usize - entries_start;
+            (start..end)
+                .find(|&i| matched.value(i))
+                .map(|i| i + entries_start)
+        });
+        let result = match value_type {
+            DataType::List(_) => {
+                take_selected_lists(map_array.values().as_list::<i32>(), selected)?
+            }
+            DataType::LargeList(_) => {
+                take_selected_lists(map_array.values().as_list::<i64>(), selected)?
+            }
+            _ => unreachable!(),
+        };
+        return Ok(ColumnarValue::Array(compact_nested_buffers(result)));
+    }
     let map_nulls = map_array.nulls();
     let mut indices = vec![0u32; num_rows];
     let mut nulls = NullBufferBuilder::new(num_rows);
@@ -224,11 +248,8 @@ fn spark_map_extract(
     }
     let indices = UInt32Array::new(indices.into(), nulls.finish());
 
-    Ok(ColumnarValue::Array(take(
-        map_array.values(),
-        &indices,
-        None,
-    )?))
+    let result = take_nested_values(map_array.values(), &indices)?;
+    Ok(ColumnarValue::Array(compact_nested_buffers(result)))
 }
 
 /// Reject a lookup key this kernel cannot compare against `key_type`.
@@ -659,5 +680,135 @@ mod tests {
         .unwrap();
         let result = result.as_any().downcast_ref::<Int32Array>().unwrap();
         assert_eq!(result.value(0), 22);
+    }
+
+    fn skewed_nested_values(selected_len: usize) -> Vec<ArrayRef> {
+        use arrow::array::{LargeListArray, ListArray};
+        const ROWS: usize = 8192;
+        let offsets =
+            OffsetBuffer::<i32>::from_lengths((0..ROWS).flat_map(|_| [selected_len, 128]));
+        let values: ArrayRef = Arc::new(Int32Array::from_iter_values(0..*offsets.last().unwrap()));
+        let field = Arc::new(Field::new("item", DataType::Int32, true));
+        let lists: ArrayRef = Arc::new(ListArray::new(
+            Arc::clone(&field),
+            offsets.clone(),
+            Arc::clone(&values),
+            None,
+        ));
+        let large_lists: ArrayRef = Arc::new(LargeListArray::new(
+            field,
+            OffsetBuffer::<i64>::from_lengths((0..ROWS).flat_map(|_| [selected_len, 128])),
+            Arc::clone(&values),
+            None,
+        ));
+        let structs: ArrayRef = Arc::new(StructArray::new(
+            vec![Arc::new(Field::new(
+                "items",
+                lists.data_type().clone(),
+                true,
+            ))]
+            .into(),
+            vec![Arc::clone(&lists)],
+            None,
+        ));
+        let maps: ArrayRef = Arc::new(map_of(Arc::clone(&values), values, offsets.to_vec(), None));
+        const WIDTH: usize = 8;
+        let inner_offsets = OffsetBuffer::<i32>::from_lengths((0..ROWS).flat_map(|_| {
+            std::iter::repeat_n(selected_len, WIDTH).chain(std::iter::repeat_n(128, WIDTH))
+        }));
+        let inner: ArrayRef = Arc::new(ListArray::new(
+            Arc::new(Field::new("item", DataType::Int32, true)),
+            inner_offsets.clone(),
+            Arc::new(Int32Array::from_iter_values(
+                0..*inner_offsets.last().unwrap(),
+            )),
+            Some(
+                (0..2 * ROWS * WIDTH)
+                    .map(|i| i % 13 != 0)
+                    .collect::<NullBuffer>(),
+            ),
+        ));
+        let deep: ArrayRef = Arc::new(ListArray::new(
+            Arc::new(Field::new("item", inner.data_type().clone(), true)),
+            OffsetBuffer::from_lengths(std::iter::repeat_n(WIDTH, 2 * ROWS)),
+            inner,
+            Some((0..2 * ROWS).map(|i| i % 7 != 0).collect::<NullBuffer>()),
+        ));
+        vec![lists, large_lists, structs, maps, deep]
+    }
+
+    #[test]
+    fn nested_lookup_retained_capacity() -> DataFusionResult<()> {
+        use arrow::array::MutableArrayData;
+        const ROWS: usize = 8192;
+        for selected_len in [0, 1] {
+            for values in skewed_nested_values(selected_len) {
+                for nullable in [false, true] {
+                    let map = map_of(
+                        Arc::new(Int32Array::from_iter_values((0..ROWS).flat_map(|_| [1, 2]))),
+                        Arc::clone(&values),
+                        (0..=ROWS).map(|row| 2 * row as i32).collect(),
+                        nullable.then(|| (0..ROWS).map(|row| row % 4 != 0).collect::<NullBuffer>()),
+                    );
+                    for sliced in [false, true] {
+                        let map = if sliced {
+                            map.slice(3, ROWS - 5)
+                        } else {
+                            map.clone()
+                        };
+                        let rows = map.len();
+                        for lookup in [
+                            ColumnarValue::Scalar(ScalarValue::Int32(Some(1))),
+                            ColumnarValue::Array(Arc::new(Int32Array::from_iter((0..rows).map(
+                                |row| match row % 11 {
+                                    0 => None,
+                                    1 => Some(3),
+                                    _ => Some(1),
+                                },
+                            )))),
+                            ColumnarValue::Scalar(ScalarValue::Int32(Some(3))),
+                            ColumnarValue::Scalar(ScalarValue::Int32(None)),
+                        ] {
+                            let data = values.to_data();
+                            let mut expected = MutableArrayData::new(vec![&data], true, 0);
+                            for row in 0..rows {
+                                let found = match &lookup {
+                                    ColumnarValue::Scalar(ScalarValue::Int32(key)) => {
+                                        *key == Some(1)
+                                    }
+                                    ColumnarValue::Array(keys) => {
+                                        let keys =
+                                            keys.as_any().downcast_ref::<Int32Array>().unwrap();
+                                        keys.is_valid(row) && keys.value(row) == 1
+                                    }
+                                    _ => unreachable!(),
+                                };
+                                if map.is_null(row) || !found {
+                                    expected.try_extend_nulls(1)?;
+                                } else {
+                                    let index = map.value_offsets()[row] as usize;
+                                    expected.try_extend(0, index, index + 1)?;
+                                }
+                            }
+                            let expected = arrow::array::make_array(expected.freeze());
+                            let input = map.to_data();
+                            let result = spark_map_extract(
+                                &ColumnarValue::Array(Arc::new(map.clone())),
+                                &lookup,
+                                rows,
+                            )?
+                            .into_array(rows)?;
+                            result.to_data().validate_full()?;
+                            assert_eq!(result.to_data(), expected.to_data());
+                            assert_eq!(map.to_data(), input);
+                            assert!(result.get_buffer_memory_size() <= 2 * expected.get_buffer_memory_size() + 64,
+                                "{:?}, selected_len={selected_len}, nullable={nullable}, sliced={sliced}: retained {} bytes vs {} for row-wise gather",
+                                values.data_type(), result.get_buffer_memory_size(), expected.get_buffer_memory_size());
+                        }
+                    }
+                }
+            }
+        }
+        Ok(())
     }
 }
