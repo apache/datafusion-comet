@@ -1026,6 +1026,11 @@ message HashJoin {
   // Opt-in completed-build filtering of probe batches and eligible native Parquet readers.
   // Older serialized plans leave it false.
   bool dynamic_filter_enabled = 10;
+  // The streamed side's sort order, as `SortOrder` expressions over its output, when Spark
+  // reports that order for the join and the native join keeps it only if the probe input
+  // declares it: a left outer join built on the right, or a right outer join built on the left.
+  // Empty otherwise.
+  repeated spark.spark_expression.Expr streamed_sort_orders = 11;
 }
 
 message SortMergeJoin {

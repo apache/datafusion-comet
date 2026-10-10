@@ -37,6 +37,7 @@ mod lance_scan;
 use crate::execution::operators::init_csv_datasource_exec;
 use crate::execution::operators::DynamicFilterJoinExec;
 use crate::execution::operators::IcebergScanExec;
+use crate::execution::operators::SortedInputExec;
 use crate::execution::operators::TopKReaderFilterExec;
 use crate::execution::{
     operators::{
@@ -2629,8 +2630,21 @@ impl PhysicalPlanner {
                     *probe = Self::prepare_probe_filter_for_runtime_reader(Arc::clone(probe));
                 }
 
-                let left = Arc::clone(&join_params.left.native_plan);
-                let right = Arc::clone(&join_params.right.native_plan);
+                let mut left = Arc::clone(&join_params.left.native_plan);
+                let mut right = Arc::clone(&join_params.right.native_plan);
+
+                // Spark dropped any sort above this join that the streamed side's order
+                // satisfies, and the native join keeps that order only if the probe input
+                // declares it; see `SortedInputExec`.
+                if !join.streamed_sort_orders.is_empty() {
+                    let probe = if join.build_side == BuildSide::BuildLeft as i32 {
+                        &mut right
+                    } else {
+                        &mut left
+                    };
+                    *probe =
+                        self.with_declared_order(Arc::clone(probe), &join.streamed_sort_orders)?;
+                }
 
                 // Null-aware anti-join must run in CollectLeft mode. In Partitioned mode
                 // each partition only sees per-partition null/emptiness state, which can
@@ -2919,6 +2933,27 @@ impl PhysicalPlanner {
         let mut prepared = plan.as_ref().clone();
         prepared.native_plan = Arc::new(CometFilterExec::from_datafusion(filter.clone()));
         Arc::new(prepared)
+    }
+
+    /// `plan`, declaring `sort_orders` as the order its rows arrive in, unless it already
+    /// declares one. Spark's plan knows the order of an input that enters the native plan from
+    /// the JVM, but the `ScanExec` it arrives through declares none.
+    fn with_declared_order(
+        &self,
+        plan: Arc<dyn ExecutionPlan>,
+        sort_orders: &[Expr],
+    ) -> Result<Arc<dyn ExecutionPlan>, ExecutionError> {
+        if plan.output_ordering().is_some() {
+            return Ok(plan);
+        }
+        let exprs = sort_orders
+            .iter()
+            .map(|expr| self.create_sort_expr(expr, plan.schema()))
+            .collect::<Result<Vec<_>, _>>()?;
+        match LexOrdering::new(exprs) {
+            Some(ordering) => Ok(Arc::new(SortedInputExec::new(plan, ordering))),
+            None => Ok(plan),
+        }
     }
 
     /// Attach after choosing the final build side, including the projection emitted
@@ -6006,6 +6041,7 @@ mod tests {
                 build_side: 0,
                 null_aware_anti_join: false,
                 dynamic_filter_enabled: false,
+                streamed_sort_orders: vec![],
             })),
         };
 

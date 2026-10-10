@@ -2864,6 +2864,30 @@ trait CometHashJoin {
     val leftKeys = join.leftKeys.map(exprToProto(_, join.left.output))
     val rightKeys = join.rightKeys.map(exprToProto(_, join.right.output))
 
+    // Spark reports the streamed side's order as the join's, and drops a sort above the join
+    // that it satisfies. DataFusion's hash join keeps the unmatched probe rows of a right outer
+    // join in place only when the probe input declares an order, and otherwise moves them after
+    // the matched rows of each batch. Comet builds on the build side, so a left outer join built
+    // on the right and a right outer join built on the left both run as that right outer join,
+    // and an input sorted outside the native plan, a relation sorted before it was cached for
+    // instance, declares no order to DataFusion. Send the order so the native join declares it
+    // on the probe input; see SortedInputExec. Every other join type keeps the probe order as
+    // it is.
+    val streamedSortOrders = (join.joinType, join.buildSide) match {
+      case (LeftOuter, BuildRight) | (RightOuter, BuildLeft) if join.outputOrdering.nonEmpty =>
+        val streamed = if (join.buildSide == BuildRight) join.left else join.right
+        val orders = join.outputOrdering.map(exprToProto(_, streamed.output))
+        if (orders.exists(_.isEmpty)) {
+          withFallbackReason(
+            join,
+            "the streamed side's sort order, which this outer join has to keep, cannot be " +
+              "expressed natively")
+          return None
+        }
+        orders.flatten
+      case _ => Nil
+    }
+
     if (leftKeys.forall(_.isDefined) &&
       rightKeys.forall(_.isDefined) &&
       childOp.nonEmpty) {
@@ -2876,6 +2900,7 @@ trait CometHashJoin {
         else OperatorOuterClass.BuildSide.BuildRight)
         .setNullAwareAntiJoin(isNullAwareAntiJoin)
         .setDynamicFilterEnabled(CometConf.COMET_EXEC_JOIN_DYNAMIC_FILTER_ENABLED.get(join.conf))
+        .addAllStreamedSortOrders(streamedSortOrders.asJava)
       condition.foreach(joinBuilder.setCondition)
       Some(builder.setHashJoin(joinBuilder).build())
     } else {

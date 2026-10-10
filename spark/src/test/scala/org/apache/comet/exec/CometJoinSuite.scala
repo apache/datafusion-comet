@@ -33,7 +33,7 @@ import org.apache.spark.sql.catalyst.expressions.{And, AttributeReference, Dynam
 import org.apache.spark.sql.catalyst.optimizer.{BuildLeft, BuildRight}
 import org.apache.spark.sql.catalyst.plans.Inner
 import org.apache.spark.sql.catalyst.plans.logical.Join
-import org.apache.spark.sql.comet.{CometBroadcastExchangeExec, CometBroadcastHashJoinExec, CometBroadcastNestedLoopJoinExec, CometFilterExec, CometHashJoinExec, CometNativeScanExec, CometSortExec, CometSortMergeJoinExec, CometUnionExec, CometWindowExec}
+import org.apache.spark.sql.comet.{CometBroadcastExchangeExec, CometBroadcastHashJoinExec, CometBroadcastNestedLoopJoinExec, CometFilterExec, CometHashJoinExec, CometNativeScanExec, CometSortExec, CometSortMergeJoinExec, CometSparkToColumnarExec, CometUnionExec, CometWindowExec}
 import org.apache.spark.sql.execution.{ColumnarToRowTransition, InputAdapter, LocalTableScanExec, SortExec, SparkPlan, WholeStageCodegenExec}
 import org.apache.spark.sql.execution.adaptive.{AdaptiveSparkPlanExec, AQEShuffleReadExec, QueryStageExec}
 import org.apache.spark.sql.execution.datasources.SchemaColumnConvertNotSupportedException
@@ -2147,6 +2147,63 @@ class CometJoinSuite extends CometTestBase {
                   s"Expected each scan to be pruned dynamically:\n$pruned")
               }
             }
+          }
+        }
+      }
+    }
+  }
+
+  test("outer hash joins keep a streamed side sorted outside the native plan in order") {
+    // Spark drops the sort above the join because the join reports the streamed side's order,
+    // and the streamed side arrives sorted through a JVM input, which declares no order to
+    // DataFusion unless the planner declares it on the join's probe input; see
+    // CometHashJoin.doConvert. CometInMemoryCacheSuite covers the native cache scan.
+    withSQLConf(
+      SQLConf.ADAPTIVE_EXECUTION_ENABLED.key -> "false",
+      SQLConf.AUTO_BROADCASTJOIN_THRESHOLD.key -> "-1",
+      SQLConf.SHUFFLE_PARTITIONS.key -> "2",
+      CometConf.COMET_EXEC_IN_MEMORY_CACHE_ENABLED.key -> "false",
+      CometConf.COMET_CONVERT_FROM_IN_MEMORY_CACHE_ENABLED.key -> "true") {
+      withParquetTable((0 until 10000).map(i => (i % 100, i)), "big") {
+        withParquetTable((0 until 10).map(i => (i * 10, i)), "small") {
+          try {
+            val streamed =
+              spark.table("big").repartition(2, $"_1").sortWithinPartitions("_1").cache()
+            streamed.count()
+            val build = spark.table("small")
+
+            def sortedPartitions(df: DataFrame): Array[Boolean] =
+              df.queryExecution.toRdd
+                .mapPartitions { it =>
+                  val keys = it.map(_.getInt(0)).toArray
+                  Iterator(keys.sameElements(keys.sorted))
+                }
+                .collect()
+
+            val expected = (0 until 10000).map { i =>
+              val k = i % 100
+              Row(k, i, if (k % 10 == 0) k / 10 else null)
+            }
+
+            Seq(
+              "shuffle_hash" -> classOf[CometHashJoinExec],
+              "broadcast" -> classOf[CometBroadcastHashJoinExec]).foreach {
+              case (hint, joinClass) =>
+                val df = streamed
+                  .join(build.hint(hint), streamed("_1") === build("_1"), "left_outer")
+                  .select(streamed("_1").as("k"), streamed("_2").as("v"), build("_2").as("w"))
+                  .sortWithinPartitions("k")
+                val plan = df.queryExecution.executedPlan
+                assert(collect(plan) { case j if j.getClass == joinClass => j }.size == 1, plan)
+                assert(collect(plan) { case c: CometSparkToColumnarExec => c }.size == 1, plan)
+                assert(
+                  collect(plan) { case s @ (_: CometSortExec | _: SortExec) => s }.isEmpty,
+                  plan)
+                assert(df.collect().toSet == expected.toSet)
+                assert(sortedPartitions(df).forall(identity), plan)
+            }
+          } finally {
+            spark.catalog.clearCache()
           }
         }
       }
