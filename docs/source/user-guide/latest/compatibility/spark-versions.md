@@ -89,13 +89,14 @@ Spark 4.2.0 is supported with Java 17 and Scala 2.13.
 - **`FILTER` on window aggregates**: Spark 4.2 accepts a `FILTER (WHERE ...)` clause on an
   aggregate function used as a window function. Comet does not support the clause there, so the
   window operator falls back to Spark.
-- **Merged subqueries in `UNION` branches**
-  ([#4949](https://github.com/apache/datafusion-comet/issues/4949)): Spark 4.2 turns a single-row
-  aggregate in some queries, for example TPC-DS q77a, into a scalar subquery that returns a struct,
-  and reads its fields in a projection over a `OneRowRelation`. Comet does not support a
-  struct-typed scalar subquery result yet
-  ([#5834](https://github.com/apache/datafusion-comet/issues/5834)), so that projection, and the
-  union and the aggregates above it, fall back to Spark.
+- **Merged subqueries with duplicate field names**
+  ([#4949](https://github.com/apache/datafusion-comet/issues/4949)): Spark 4.2 can merge
+  single-row aggregates in `UNION` branches into a struct-typed scalar subquery. Comet supports
+  these results when their fields have distinct names and supported types. If the merged struct
+  repeats a field name, its consuming projection still falls back to Spark and can also prevent
+  native execution of the union and downstream aggregates. For example,
+  `SELECT sum(s) FROM (SELECT max(a) AS s FROM t UNION ALL SELECT min(b) AS s FROM t)`
+  repeats the field name `s`.
 - **ANSI arithmetic overflow**
   ([#4967](https://github.com/apache/datafusion-comet/issues/4967)): Spark 4.2 changed some
   ANSI-mode arithmetic overflow behavior, and Comet does not match these changes yet. See

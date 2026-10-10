@@ -15,7 +15,7 @@
 -- specific language governing permissions and limitations
 -- under the License.
 
--- Config: spark.sql.session.timeZone=UTC
+-- ConfigMatrix: spark.sql.session.timeZone=UTC,America/Los_Angeles
 
 statement
 CREATE TABLE test_struct_subq(
@@ -59,6 +59,13 @@ query
 SELECT id, s.flag, s.tiny, s.small, s.number, s.large, s.single, s.dbl,
        s.amount, s.compact, s.text, s.bytes, s.day, s.instant, s.local_time,
        s.nested.last, s.nested.first
+FROM (SELECT id, (SELECT payload FROM test_struct_subq WHERE id = 1) AS s
+      FROM test_struct_subq)
+
+-- Consume the timestamp under each session zone, rather than only displaying it.
+query
+SELECT id, CAST(s.instant AS STRING),
+       s.instant = TIMESTAMP '1969-12-31 23:59:59.123456'
 FROM (SELECT id, (SELECT payload FROM test_struct_subq WHERE id = 1) AS s
       FROM test_struct_subq)
 

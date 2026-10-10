@@ -2488,6 +2488,94 @@ class CometExecSuite extends CometTestBase {
     }
   }
 
+  Seq("hour", "minute", "second", "unix_timestamp", "lpad", "rpad").foreach { function =>
+    test(s"native functions consume scalar subqueries: $function") {
+      val numRows = 128
+      val isPadding = function == "lpad" || function == "rpad"
+      val column = if (isPadding) "s" else "ts"
+      def applyFunction(argument: String, empty: Boolean): String = {
+        // Runtime NULL strings should not allocate a buffer for this large length.
+        val length = if (empty) 1000000 else 8
+        if (isPadding) s"$function($argument, $length, '0')" else s"$function($argument)"
+      }
+
+      withTempPath { dir =>
+        withSQLConf(SESSION_LOCAL_TIMEZONE.key -> "UTC") {
+          spark
+            .range(numRows)
+            .selectExpr(
+              "id",
+              "CASE WHEN id % 3 = 0 THEN TIMESTAMP '1969-12-31 23:59:59.123456' " +
+                "WHEN id % 3 = 1 THEN TIMESTAMP '2024-03-10 10:30:45.654321' END AS ts",
+              "CASE WHEN id % 3 = 0 THEN 'é' WHEN id % 3 = 1 THEN '中文' END AS s")
+            .coalesce(1)
+            .write
+            .parquet(dir.getCanonicalPath)
+        }
+        for (zone <- Seq("UTC", "America/Los_Angeles")) {
+          withSQLConf(
+            SESSION_LOCAL_TIMEZONE.key -> zone,
+            SQLConf.ADAPTIVE_EXECUTION_ENABLED.key -> "false",
+            SQLConf.SUBQUERY_REUSE_ENABLED.key -> "true",
+            CometConf.COMET_BATCH_SIZE.key -> "64",
+            CometConf.COMET_SHUFFLE_MODE.key -> "jvm") {
+            withParquetTable(dir.getCanonicalPath, "scalar_consumer") {
+              // Test plain and merged subqueries, including runtime NULL aggregate results.
+              for (merged <- Seq(true, false); empty <- Seq(false, true)) {
+                val filter = if (empty) " WHERE id < 0" else ""
+                val maximum = s"(SELECT max($column) FROM scalar_consumer$filter)"
+                val minimum = s"(SELECT min($column) FROM scalar_consumer$filter)"
+                val expressions = Seq(applyFunction(maximum, empty)) ++
+                  (if (merged) Seq(applyFunction(minimum, empty)) else Seq.empty)
+                val df = sql(s"SELECT id, ${expressions.mkString(", ")} FROM scalar_consumer")
+                val structFields = df.queryExecution.optimizedPlan.flatMap { plan =>
+                  plan.expressions.flatMap(_.collect {
+                    case field @ GetStructField(s: LogicalScalarSubquery, _, _)
+                        if s.dataType.isInstanceOf[StructType] =>
+                      field
+                  })
+                }
+                assert(structFields.nonEmpty == merged, df.queryExecution.optimizedPlan.toString)
+                val (_, cometPlan) = checkSparkAnswerAndImpl(df, native = Seq(function))
+                val consumers = stripAQEPlan(cometPlan).collect {
+                  case p: CometProjectExec if p.projectList.exists(_.exists {
+                        case _: ScalarSubquery => true
+                        case _ => false
+                      }) =>
+                    p
+                }
+                assert(consumers.nonEmpty, cometPlan.toString)
+                consumers.foreach { projection =>
+                  val sizes = projection
+                    .executeColumnar()
+                    .mapPartitions(batches => batches.map(_.numRows()))
+                    .collect()
+                  assert(sizes.sum == numRows)
+                  assert(sizes.exists(_ > 1), sizes.mkString(", "))
+                }
+              }
+              if (isPadding) {
+                // A scalar string must also broadcast to a row-varying length argument.
+                checkSparkAnswerAndImpl(
+                  sql(s"SELECT id, $function((SELECT max(s) FROM scalar_consumer), " +
+                    "CAST(id % 5 AS INT), '0') FROM scalar_consumer"),
+                  native = Seq(function))
+                // Reuse a long Unicode scalar with short, negative and NULL lengths.
+                checkSparkAnswerAndImpl(
+                  sql(
+                    s"SELECT id, $function(" +
+                      "(SELECT repeat(max(s), 32768) FROM scalar_consumer), " +
+                      "CASE WHEN id % 5 = 0 THEN NULL ELSE CAST(id % 5 - 2 AS INT) END, " +
+                      "'öx') FROM scalar_consumer"),
+                  native = Seq(function))
+              }
+            }
+          }
+        }
+      }
+    }
+  }
+
   test("struct scalar subquery with nested Parquet field IDs") {
     import org.apache.spark.sql.types.{IntegerType, LongType, MetadataBuilder, StringType, StructField}
 

@@ -63,7 +63,9 @@ object CometArrowConverters extends Logging {
     val schema = StructType(Seq(StructField("value", dataType, nullable = true)))
     val output = new ByteArrayOutputStream()
     Using.resource(
-      VectorSchemaRoot.create(Utils.toArrowSchema(schema, "UTC"), CometArrowAllocator)) { root =>
+      VectorSchemaRoot.create(
+        Utils.toArrowSchema(schema, CometArrowStream.NATIVE_TIMEZONE),
+        CometArrowAllocator)) { root =>
       val rowWriter = ArrowWriter.create(root, 1)
       rowWriter.write(InternalRow(normalizeScalarSubqueryRow(row, dataType)))
       rowWriter.finish()
