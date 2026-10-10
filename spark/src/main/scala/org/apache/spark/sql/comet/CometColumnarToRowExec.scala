@@ -77,7 +77,8 @@ case class CometColumnarToRowExec(child: SparkPlan)
     // plan (this) in the closure.
     val localOutput = this.output
     child.executeColumnar().mapPartitionsInternal { batches =>
-      val toUnsafe = UnsafeProjection.create(localOutput, localOutput)
+      // Outside whole-stage codegen this runs once per partition, so reuse the generated class.
+      val toUnsafe = CometUnsafeProjection.create(localOutput)
       batches.flatMap { batch =>
         numInputBatches += 1
         numOutputRows += batch.numRows().toLong
