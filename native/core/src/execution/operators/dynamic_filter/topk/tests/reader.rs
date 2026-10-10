@@ -16,7 +16,7 @@
 // under the License.
 
 use super::*;
-use datafusion::datasource::physical_plan::ParquetSource;
+use crate::execution::operators::dynamic_filter::parquet_reader::concrete_parquet_source;
 use datafusion_datasource::file::FileSource;
 
 fn reader_filter(expression: &Arc<dyn PhysicalExpr>) -> Option<&DynamicFilterPhysicalExpr> {
@@ -50,7 +50,9 @@ async fn live_threshold_reaches_remapped_parquet_column_and_prunes_later_groups(
         .input()
         .downcast_ref::<DataSourceExec>()
         .unwrap();
-    let (_, source) = reader.downcast_to_file_source::<ParquetSource>().unwrap();
+    let (_, source, wrapped) = concrete_parquet_source(reader).unwrap();
+    // The rebuilt source keeps the read-error context of a native Parquet scan.
+    assert!(wrapped);
     let expression = source.filter().unwrap();
     let consumer = reader_filter(&expression).unwrap();
     assert_eq!(consumer.expression_id(), producer.expression_id());
