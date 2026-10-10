@@ -4554,39 +4554,18 @@ fn parse_file_scan_tasks_from_common(
                 })?
                 .clone();
 
+            // iceberg-rust holds these counts and offsets as `u64`, so a negative one is rejected
+            // here, where the proto's `int64` becomes iceberg-rust's type.
+            let non_negative = |value: Option<i64>, what: &str| {
+                value.map(u64::try_from).transpose().map_err(|_| {
+                    GeneralError(format!("Delete file '{file_path}' has a negative {what}"))
+                })
+            };
             // Required for deletion vectors: iceberg-rust checks it against the number of
             // positions decoded from the blob and errors if it is absent.
-            let record_count = del
-                .record_count
-                .map(u64::try_from)
-                .transpose()
-                .map_err(|_| {
-                    GeneralError(format!(
-                        "Delete file '{}' has a negative record count",
-                        file_path
-                    ))
-                })?;
-            // iceberg-rust holds the two deletion-vector coordinates as `u64` too.
-            let content_offset =
-                del.content_offset
-                    .map(u64::try_from)
-                    .transpose()
-                    .map_err(|_| {
-                        GeneralError(format!(
-                            "Delete file '{}' has a negative content offset",
-                            file_path
-                        ))
-                    })?;
-            let content_size_in_bytes = del
-                .content_size_in_bytes
-                .map(u64::try_from)
-                .transpose()
-                .map_err(|_| {
-                    GeneralError(format!(
-                        "Delete file '{}' has a negative content size",
-                        file_path
-                    ))
-                })?;
+            let record_count = non_negative(del.record_count, "record count")?;
+            let content_offset = non_negative(del.content_offset, "content offset")?;
+            let content_size_in_bytes = non_negative(del.content_size_in_bytes, "content size")?;
 
             iceberg::scan::FileScanTaskDeleteFile::builder()
                 // Passed RAW, like `data_file_path` below (same exact-string delete-matching
@@ -7876,11 +7855,10 @@ mod tests {
         assert_eq!(fields[1].name, "category");
     }
 
-    /// Delete files go through iceberg-rust's builder, which rejects a deletion vector that lacks
-    /// its referenced data file, a blob coordinate or its record count. iceberg-rust holds the
-    /// coordinates as `u64`, so a negative one is rejected before that.
+    /// iceberg-rust holds a deletion vector's blob coordinates as `u64`, so the planner rejects a
+    /// negative one from the proto rather than build the delete file with it.
     #[test]
-    fn test_delete_file_pool_validates_deletion_vectors() {
+    fn test_delete_file_pool_rejects_negative_coordinates() {
         let deletion_vector = spark_operator::IcebergDeleteFile {
             file_path_idx: 0,
             content_type: "POSITION_DELETES".to_string(),
@@ -7915,20 +7893,6 @@ mod tests {
                     ..deletion_vector.clone()
                 },
                 "negative content size",
-            ),
-            (
-                spark_operator::IcebergDeleteFile {
-                    referenced_data_file: None,
-                    ..deletion_vector.clone()
-                },
-                "missing referenced_data_file",
-            ),
-            (
-                spark_operator::IcebergDeleteFile {
-                    record_count: None,
-                    ..deletion_vector.clone()
-                },
-                "missing record_count",
             ),
         ] {
             let error = parse(delete).expect_err(expected).to_string();

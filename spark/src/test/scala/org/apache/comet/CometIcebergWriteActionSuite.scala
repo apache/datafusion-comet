@@ -2217,9 +2217,8 @@ class CometIcebergWriteActionSuite
             "f=0.0/d=-0.0",
             "f=-0.0/d=-0.0",
             "f=NaN/d=NaN"))
-        assert(
-          committedPartitions(nativeTable) == committedPartitions(jvmTable),
-          s"fanout=$fanout: ${committedPartitions(nativeTable)}")
+        val committed = committedPartitions(nativeTable)
+        assert(committed == committedPartitions(jvmTable), s"fanout=$fanout: $committed")
 
         // Iceberg prunes on the partition value, so a merged partition changes what a read
         // returns.
@@ -2300,9 +2299,8 @@ class CometIcebergWriteActionSuite
         val dirs = partitionDirs(warehouseDir, nativeTable)
         assert(dirs == partitionDirs(warehouseDir, jvmTable), s"decimal($decimalType): $dirs")
         assert(dirs == Set("d1=123.45/d2=-6.78", "d1=0.00/d2=1.10"))
-        assert(
-          committedPartitions(nativeTable) == committedPartitions(jvmTable),
-          s"decimal($decimalType): ${committedPartitions(nativeTable)}")
+        val committed = committedPartitions(nativeTable)
+        assert(committed == committedPartitions(jvmTable), s"decimal($decimalType): $committed")
       }
     }
   }
@@ -2357,16 +2355,9 @@ class CometIcebergWriteActionSuite
           s"native: $nativeDirs")
 
         // The committed partition values, not just their spelling in the path.
-        def partitionValues(table: String): Seq[String] = spark
-          .sql(s"SELECT CAST(partition AS STRING) FROM $catalog.$ns.$table.files")
-          .collect()
-          .map(_.getString(0))
-          .toSeq
-          .sorted
-        assert(
-          partitionValues(nativeTable) == partitionValues(jvmTable),
-          s"native: ${partitionValues(nativeTable)}")
-        assert(!partitionValues(nativeTable).exists(_.contains("null")))
+        val committed = committedPartitions(nativeTable)
+        assert(committed == committedPartitions(jvmTable), s"native: $committed")
+        assert(!committed.exists(_.contains("null")))
 
         // `java.sql.Date` cannot hold these dates (`collect` overflows rebasing them), so read
         // them back as `LocalDate` and `Instant`.
@@ -4118,15 +4109,6 @@ class CometIcebergWriteActionSuite
    * location. Comparing this set between a natively-written table and a JVM-written twin pins the
    * on-disk layout against iceberg-java's `PartitionSpec#partitionToPath`.
    */
-  /** Each data file's committed partition value and record count, sorted. */
-  private def committedPartitions(tableName: String): Seq[String] =
-    spark
-      .sql(s"SELECT CAST(partition AS STRING), record_count FROM $catalog.$ns.$tableName.files")
-      .collect()
-      .map(_.toString)
-      .toSeq
-      .sorted
-
   private def partitionDirs(warehouseDir: File, tableName: String): Set[String] = {
     val location = warehouseDir.toURI.toString.stripSuffix("/")
     spark
@@ -4139,6 +4121,15 @@ class CometIcebergWriteActionSuite
       }
       .toSet
   }
+
+  /** Each data file's committed partition value and record count, sorted. */
+  private def committedPartitions(tableName: String): Seq[String] =
+    spark
+      .sql(s"SELECT CAST(partition AS STRING), record_count FROM $catalog.$ns.$tableName.files")
+      .collect()
+      .map(_.toString)
+      .toSeq
+      .sorted
 
   /**
    * The table's NaN counts summed over its data files, keyed by field id. Two tables created from

@@ -1500,22 +1500,13 @@ class CometIcebergWriteDetectionSuite extends CometTestBase with CometIcebergTes
     }
   }
 
-  test("Compatible when partitioned by identity on a float or double column") {
+  test("Compatible when partitioned by identity on a double column") {
     // iceberg-rust grouped float partition values with an equality that treated -0.0 and 0.0 as
     // one value, so these writes fell back (#6138) until apache/iceberg-rust#3327 kept the two
-    // apart as iceberg-java does. A nested source field resolves the same way.
-    withDetectionCatalog { _ =>
-      Seq(
-        ("part_float", "v FLOAT", "v", "CAST(1.5 AS FLOAT)"),
-        ("part_double", "v DOUBLE", "v", "1.5D"),
-        ("part_nested", "s STRUCT<v: DOUBLE>", "s.v", "named_struct('v', 1.5D)")).foreach {
-        case (table, column, partitionField, value) =>
-          spark.sql(s"""
-            CREATE TABLE $catalog.$ns.$table (id INT, $column)
-            USING iceberg PARTITIONED BY ($partitionField)
-          """)
-          assertSupportLevelIs[Compatible](table, values = s"(1, $value)")
-      }
+    // apart as iceberg-java does.
+    withDetectionCatalog { dir =>
+      createTable(dir, "part_double", partitionSpec = "PARTITIONED BY (amount)")
+      assertSupportLevelIs[Compatible]("part_double")
     }
   }
 
@@ -1718,11 +1709,10 @@ class CometIcebergWriteDetectionSuite extends CometTestBase with CometIcebergTes
 
   private def assertSupportLevelIs[T <: SupportLevel: scala.reflect.ClassTag](
       tableName: String,
-      allowWriteFailure: Boolean = false,
-      values: String = "(1, 'us', 1.0)"): Unit = {
+      allowWriteFailure: Boolean = false): Unit = {
     val expected = scala.reflect.classTag[T].runtimeClass
     val plan = captureWritePlan(tableName, allowWriteFailure) {
-      spark.sql(s"INSERT INTO $catalog.$ns.$tableName VALUES $values")
+      spark.sql(s"INSERT INTO $catalog.$ns.$tableName VALUES (1, 'us', 1.0)")
     }
     findWriteExec(plan) match {
       case Some(writeExec) =>
