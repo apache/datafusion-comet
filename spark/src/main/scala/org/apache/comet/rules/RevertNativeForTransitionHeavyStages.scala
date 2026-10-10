@@ -65,8 +65,7 @@ case class RevertNativeForTransitionHeavyStages(session: SparkSession, wholePlan
       case exchange: ShuffleExchangeLike =>
         revertShuffleStageIfNeeded(exchange).getOrElse(plan)
       case _ =>
-        // Result stage: its output is collected as rows.
-        revertStageIfNeeded(plan, outputColumnar = false).getOrElse(plan)
+        revertResultStageIfNeeded(plan).getOrElse(plan)
     }
   }
 
@@ -74,9 +73,18 @@ case class RevertNativeForTransitionHeavyStages(session: SparkSession, wholePlan
     val withRevertedStages = plan.transformUp { case exchange: ShuffleExchangeLike =>
       revertShuffleStageIfNeeded(exchange).getOrElse(exchange)
     }
-    revertStageIfNeeded(withRevertedStages, outputColumnar = false)
-      .getOrElse(withRevertedStages)
+    revertResultStageIfNeeded(withRevertedStages).getOrElse(withRevertedStages)
   }
+
+  /**
+   * Reverts the result stage if needed, keeping the output format its consumer reads. That is
+   * usually rows, but on Spark 4.0+, when the cache serializer accepts columnar input, as Comet's
+   * does, Spark marks a cached `AdaptiveSparkPlanExec` columnar and AQE plans its final stage to
+   * output columnar batches. Only then does Spark's transition insertion leave a columnar-only
+   * root; when rows are wanted it puts a columnar-to-row transition on top.
+   */
+  private def revertResultStageIfNeeded(plan: SparkPlan): Option[SparkPlan] =
+    revertStageIfNeeded(plan, outputColumnar = plan.supportsColumnar && !plan.supportsRowBased)
 
   /**
    * Reverts the stage below a shuffle if needed and returns the shuffle over the reverted stage.
