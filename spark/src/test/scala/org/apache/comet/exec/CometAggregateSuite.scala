@@ -3327,13 +3327,15 @@ class CometAggregateSuite extends CometTestBase with AdaptiveSparkPlanHelper {
                   if (ansi) {
                     val error = checkSparkError(df, "DIVIDE_BY_ZERO")
                     assert(error.getSqlState == "22012")
-                    val expected = withSQLConf(CometConf.COMET_ENABLED.key -> "false") {
+                    // withSQLConf returns Unit on Spark 3.x, so compare inside the block.
+                    withSQLConf(CometConf.COMET_ENABLED.key -> "false") {
                       val failure = intercept[Throwable](sql(query).collect())
-                      causeChain(failure).collect { case e: SparkThrowable => e }.last
-                    }
-                    assert(
-                      error.getQueryContext.map(_.fragment()).toSeq ==
+                      val expected = causeChain(failure).collect { case e: SparkThrowable =>
+                        e
+                      }.last
+                      assert(error.getQueryContext.map(_.fragment()).toSeq ==
                         expected.getQueryContext.map(_.fragment()).toSeq)
+                    }
                   } else {
                     checkSparkAnswerAndOperator(df)
                     checkCometAnswer(df, Seq(Row(null)))
