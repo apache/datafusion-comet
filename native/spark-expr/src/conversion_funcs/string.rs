@@ -244,7 +244,8 @@ where
     if s.eq_ignore_ascii_case("-inf") || s.eq_ignore_ascii_case("-infinity") {
         return Some(F::neg_infinity());
     }
-    if s.eq_ignore_ascii_case("nan") {
+    // `Double.parseDouble` also accepts a signed `NaN`, but only in this exact case
+    if s.eq_ignore_ascii_case("nan") || s == "+NaN" || s == "-NaN" {
         return Some(F::nan());
     }
     // Remove D/F suffix if present
@@ -254,6 +255,15 @@ where
         } else {
             s
         };
+    // Every special value Spark accepts is handled above. Java only allows the suffix after a
+    // decimal number, so reject anything else before Rust's parser, which also accepts
+    // `nan`, `inf` and `infinity` in any case (e.g. `NaNF` or `-nan`).
+    if !pruned_float_str
+        .bytes()
+        .all(|b| b.is_ascii_digit() || matches!(b, b'.' | b'e' | b'E' | b'+' | b'-'))
+    {
+        return None;
+    }
     // Rust's parse logic already handles scientific notations so we just rely on it
     pruned_float_str.parse::<F>().ok()
 }
@@ -616,9 +626,9 @@ fn parse_string_to_decimal(input_str: &str, precision: u8, scale: i8) -> SparkRe
         return Ok(Some(0));
     }
 
-    // scale adjustment
-    let target_scale = scale as i32;
-    let scale_adjustment = target_scale - exponent;
+    // scale adjustment, in i64 so that an exponent near the i32 bounds cannot wrap
+    let target_scale = scale as i64;
+    let scale_adjustment = target_scale - exponent as i64;
 
     let scaled_value = if scale_adjustment >= 0 {
         // Need to multiply (increase scale) but return None if scale is too high to fit i128
@@ -629,10 +639,10 @@ fn parse_string_to_decimal(input_str: &str, precision: u8, scale: i8) -> SparkRe
         mantissa.checked_mul(pow10_i128(scale_adjustment as u32).unwrap())
     } else {
         // Need to divide (decrease scale)
-        let abs_scale_adjustment = (-scale_adjustment) as u32;
-        if abs_scale_adjustment > 38 {
+        if -scale_adjustment > 38 {
             return Ok(Some(0));
         }
+        let abs_scale_adjustment = (-scale_adjustment) as u32;
 
         // Bounded above, so pow10_i128 always returns Some. The adjustment is at least 1
         // here, so the divisor is a power of ten no smaller than 10.
@@ -718,6 +728,7 @@ fn parse_decimal_str(
         }
     }
 
+    // `java.math.BigDecimal` rejects an exponent outside the `int` range.
     let exponent: i32 = match exp_pos {
         Some(e_pos) => s[e_pos + 1..]
             .parse()
@@ -740,7 +751,7 @@ fn parse_decimal_str(
     let integral_value = digits_to_i128(integral_part)
         .ok_or_else(|| invalid_decimal_cast(original_str, precision, scale))?;
 
-    let fractional_scale = fractional_part.len() as i32;
+    let fractional_scale = fractional_part.len() as i64;
     let fractional_value = digits_to_i128(fractional_part)
         .ok_or_else(|| invalid_decimal_cast(original_str, precision, scale))?;
 
@@ -755,7 +766,10 @@ fn parse_decimal_str(
     let final_mantissa = if negative { -mantissa } else { mantissa };
     // final scale = fractional_scale - exponent
     // For example : "1.23E-5" has fractional_scale=2, exponent=-5, so scale = 2 - (-5) = 7
-    let final_scale = fractional_scale - exponent;
+    // `java.math.BigDecimal` rejects a scale outside the `int` range ("Scale out of range"),
+    // which Spark reports as an invalid input.
+    let final_scale = i32::try_from(fractional_scale - exponent as i64)
+        .map_err(|_| invalid_decimal_cast(original_str, precision, scale))?;
     Ok((final_mantissa, final_scale))
 }
 
@@ -2538,6 +2552,66 @@ mod tests {
             DataType::Decimal128(10, 2),
         ] {
             assert_trim_parity(&to_type, "1.5", trim_java_string);
+        }
+    }
+
+    /// `java.math.BigDecimal` rejects an exponent or a resulting scale outside the `int` range,
+    /// which Spark reports as an invalid input. The scale must not wrap around in i32.
+    #[test]
+    fn test_parse_string_to_decimal_scale_out_of_int_range() {
+        for s in [
+            "1e-2147483648",
+            "1.0e-2147483647",
+            "0e-2147483648",
+            "1e2147483649",
+            "1e-9999999999",
+        ] {
+            let err = parse_string_to_decimal(s, 10, 2).unwrap_err();
+            assert!(err.to_string().contains("CAST_INVALID_INPUT"), "{s}: {err}");
+        }
+        assert_eq!(parse_string_to_decimal("1.5e-3", 10, 2).unwrap(), Some(0));
+        assert_eq!(
+            parse_string_to_decimal("12.345e1", 10, 2).unwrap(),
+            Some(12345)
+        );
+    }
+
+    /// Mirrors `Double.parseDouble` / `Float.parseFloat` followed by Spark's
+    /// `Cast.processFloatingPointSpecialLiterals`: a D/F suffix is only allowed after a decimal
+    /// number, and a signed `NaN` only in that exact case.
+    #[test]
+    fn test_parse_string_to_float_special_values() {
+        for s in [
+            "NaNF",
+            "NaND",
+            "nanf",
+            "-nan",
+            "+nan",
+            "InfinityD",
+            "infF",
+            "+InfinityF",
+        ] {
+            assert_eq!(parse_string_to_float::<f64>(s), None, "{s}");
+            assert_eq!(parse_string_to_float::<f32>(s), None, "{s}");
+        }
+        for s in ["NaN", "nan", "+NaN", "-NaN"] {
+            assert!(parse_string_to_float::<f64>(s).unwrap().is_nan(), "{s}");
+            assert!(parse_string_to_float::<f32>(s).unwrap().is_nan(), "{s}");
+        }
+        for (s, expected) in [
+            ("Infinity", f64::INFINITY),
+            ("+inf", f64::INFINITY),
+            ("-Inf", f64::NEG_INFINITY),
+            ("1e400", f64::INFINITY),
+            ("1.5d", 1.5),
+            ("-.5D", -0.5),
+            ("5.f", 5.0),
+            ("1e5d", 100000.0),
+        ] {
+            assert_eq!(parse_string_to_float::<f64>(s), Some(expected), "{s}");
+        }
+        for s in ["d", "1.0dd", "e5", "1e", "Infinit"] {
+            assert_eq!(parse_string_to_float::<f64>(s), None, "{s}");
         }
     }
 
