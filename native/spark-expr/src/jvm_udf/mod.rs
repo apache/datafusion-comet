@@ -208,7 +208,6 @@ impl PhysicalExpr for JvmScalarUdfExpr {
         let out_arr_ptr = out_array.as_mut() as *mut FFI_ArrowArray as i64;
         let out_sch_ptr = out_schema.as_mut() as *mut FFI_ArrowSchema as i64;
 
-        let class_name = self.class_name.clone();
         let n_args = arrays.len();
 
         JVMClasses::with_env(|env| {
@@ -221,7 +220,7 @@ impl PhysicalExpr for JvmScalarUdfExpr {
             })?;
 
             let jclass_name = env
-                .new_string(&class_name)
+                .new_string(&self.class_name)
                 .map_err(|e| CometError::JNI { source: e })?;
 
             let in_arr_java = env

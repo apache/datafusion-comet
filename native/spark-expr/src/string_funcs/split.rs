@@ -445,18 +445,24 @@ fn push_split_parts<O: OffsetSizeTrait>(
     builder: &mut GenericStringBuilder<O>,
 ) {
     if limit == 0 {
-        // limit = 0: split all, drop trailing empties. Need to know the end
-        // before pushing, so collect borrowed slices first (no string copies).
-        let mut parts: Vec<&str> = regex.split(string).collect();
-        while parts.last().is_some_and(|s| s.is_empty()) {
-            parts.pop();
-        }
-        if parts.is_empty() {
-            builder.append_value("");
-        } else {
-            for p in parts {
-                builder.append_value(p);
+        // limit = 0: split all, drop trailing empties. Empty parts are held back until a
+        // non-empty part follows, so the trailing ones are never appended.
+        let mut pending_empty = 0;
+        let mut appended = false;
+        for part in regex.split(string) {
+            if part.is_empty() {
+                pending_empty += 1;
+            } else {
+                for _ in 0..pending_empty {
+                    builder.append_value("");
+                }
+                pending_empty = 0;
+                builder.append_value(part);
+                appended = true;
             }
+        }
+        if !appended {
+            builder.append_value("");
         }
     } else if limit > 0 {
         // limit > 0: at most limit-1 splits.

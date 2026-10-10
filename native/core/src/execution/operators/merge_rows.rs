@@ -16,6 +16,7 @@
 // under the License.
 
 use arrow::array::{Array, ArrayRef, BooleanArray, Int64Array, RecordBatch};
+use arrow::buffer::BooleanBuffer;
 use arrow::compute::kernels::boolean::{and, and_not, not};
 use arrow::compute::{filter_record_batch, prep_null_mask_filter};
 use arrow::datatypes::{DataType, SchemaRef};
@@ -503,7 +504,7 @@ fn run_group(
         // predicates that Spark would never evaluate after an earlier clause matched.
         let fire = match instr.condition.evaluate(&current)? {
             ColumnarValue::Scalar(ScalarValue::Boolean(Some(true))) => {
-                BooleanArray::from(vec![true; current.num_rows()])
+                BooleanArray::new(BooleanBuffer::new_set(current.num_rows()), None)
             }
             ColumnarValue::Scalar(ScalarValue::Boolean(Some(false) | None)) => continue,
             value => value
