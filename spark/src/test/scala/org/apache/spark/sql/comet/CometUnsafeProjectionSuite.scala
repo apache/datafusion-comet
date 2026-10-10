@@ -135,7 +135,7 @@ class CometUnsafeProjectionSuite extends CometTestBase with AdaptiveSparkPlanHel
 
   test("keeps the most recently used classes") {
     withCodegenOnly() {
-      val layouts = Seq.fill(CometUnsafeProjection.MaxCachedClasses + 1) {
+      val layouts = Seq.fill(GeneratedClassCache.MaxEntries + 1) {
         val name = s"f_${UUID.randomUUID().toString.replace("-", "")}"
         Seq(AttributeReference("c", StructType(Seq(StructField(name, IntegerType))))())
       }

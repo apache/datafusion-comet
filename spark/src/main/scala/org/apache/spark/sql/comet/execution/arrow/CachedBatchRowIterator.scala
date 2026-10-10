@@ -23,6 +23,7 @@ import org.apache.spark.sql.catalyst.InternalRow
 import org.apache.spark.sql.catalyst.expressions.{Attribute, BoundReference, CodeGeneratorWithInterpretedFallback, InterpretedUnsafeProjection, LeafExpression, UnsafeProjection}
 import org.apache.spark.sql.catalyst.expressions.codegen._
 import org.apache.spark.sql.catalyst.expressions.codegen.Block._
+import org.apache.spark.sql.comet.{ColumnLayout, CometUnsafeProjection, GeneratedClassCache}
 import org.apache.spark.sql.internal.SQLConf
 import org.apache.spark.sql.types.DataType
 import org.apache.spark.sql.vectorized.{ColumnarBatch, ColumnVector}
@@ -37,6 +38,12 @@ import org.apache.spark.sql.vectorized.{ColumnarBatch, ColumnVector}
  * splits the field writes of a wide projection into methods of bounded size, as it does for any
  * Spark projection. If a generated method still exceeds the huge-method limit, the reader backs
  * off the way WholeStageCodegenExec does, here to Spark's projection of each batch row.
+ *
+ * Spark reads a cache through this path, once per partition, when it does not read the cache as
+ * batches, which is always the case for a schema with more fields than
+ * `spark.sql.codegen.maxFields`, nested fields included. For such a schema generating the source
+ * can take longer than reading a partition's rows, so the reader's class is generated once per
+ * executor for each column layout.
  */
 private[arrow] class CachedBatchRowIterator(attributes: Seq[Attribute])
     extends CodeGeneratorWithInterpretedFallback[Iterator[ColumnarBatch], Iterator[InternalRow]] {
@@ -47,6 +54,35 @@ private[arrow] class CachedBatchRowIterator(attributes: Seq[Attribute])
 
   override protected def createCodeGeneratedObject(
       batches: Iterator[ColumnarBatch]): Iterator[InternalRow] = {
+    val reader = CachedBatchRowIterator.readers.getOrGenerate(ColumnLayout.of(attributes)) {
+      val generated = generate()
+      // Instances of a shared class share its references other than the batches, so share only
+      // a class that has no others.
+      (generated, generated.references.length == 1)
+    }
+    // Honor spark.sql.codegen.hugeMethodLimit as whole-stage codegen does, but never go above
+    // HotSpot's own limit: the config defaults to the largest method the JVM accepts, while this
+    // runs once per row and HotSpot never JIT-compiles a method longer than
+    // DEFAULT_JVM_HUGE_METHOD_LIMIT bytes.
+    val limit =
+      math.min(SQLConf.get.hugeMethodLimit, CodeGenerator.DEFAULT_JVM_HUGE_METHOD_LIMIT)
+    if (reader.maxMethodCodeSize > limit) {
+      logInfo(
+        s"Generated cache reader for ${attributes.length} columns has a " +
+          s"${reader.maxMethodCodeSize}-byte method, above the $limit-byte limit; " +
+          "projecting cached rows with UnsafeProjection instead")
+      new ProjectedRows(batches, CometUnsafeProjection.create(attributes))
+    } else {
+      reader.newIterator(batches)
+    }
+  }
+
+  override protected def createInterpretedObject(
+      batches: Iterator[ColumnarBatch]): Iterator[InternalRow] =
+    new ProjectedRows(batches, InterpretedUnsafeProjection.createProjection(fields))
+
+  /** Generates and compiles the reader's class, which takes its batches as a reference. */
+  private def generate(): CachedBatchRowIterator.GeneratedReader = {
     val ctx = new CodegenContext
     val vectorClass = classOf[ColumnVector].getName
     val batchClass = classOf[ColumnarBatch].getName
@@ -62,7 +98,9 @@ private[arrow] class CachedBatchRowIterator(attributes: Seq[Attribute])
     // With ctx.currentVars unset, GenerateUnsafeProjection splits the field writes into methods
     // that take the input row as their argument. The reads above ignore it.
     val projection = GenerateUnsafeProjection.createCode(ctx, reads)
-    val batchesRef = ctx.addReferenceObj("batches", batches, "scala.collection.Iterator")
+    // Each instance gets its own batches, set in a copy of the references.
+    val batchesIndex = ctx.references.length
+    val batchesRef = ctx.addReferenceObj("batches", null, "scala.collection.Iterator")
     val code = s"""
       public Object generate(Object[] references) {
         return new SpecificCachedBatchRowIterator(references);
@@ -105,26 +143,37 @@ private[arrow] class CachedBatchRowIterator(attributes: Seq[Attribute])
     """
     val (compiled, stats) =
       CodeGenerator.compile(new CodeAndComment(code, ctx.getPlaceHolderToComments()))
-    // Honor spark.sql.codegen.hugeMethodLimit as whole-stage codegen does, but never go above
-    // HotSpot's own limit: the config defaults to the largest method the JVM accepts, while this
-    // runs once per row and HotSpot never JIT-compiles a method longer than
-    // DEFAULT_JVM_HUGE_METHOD_LIMIT bytes.
-    val limit =
-      math.min(SQLConf.get.hugeMethodLimit, CodeGenerator.DEFAULT_JVM_HUGE_METHOD_LIMIT)
-    if (stats.maxMethodCodeSize > limit) {
-      logInfo(
-        s"Generated cache reader for ${attributes.length} columns has a " +
-          s"${stats.maxMethodCodeSize}-byte method, above the $limit-byte limit; " +
-          "projecting cached rows with UnsafeProjection instead")
-      new ProjectedRows(batches, UnsafeProjection.create(fields))
-    } else {
-      compiled.generate(ctx.references.toArray).asInstanceOf[Iterator[InternalRow]]
+    CachedBatchRowIterator.GeneratedReader(
+      compiled,
+      stats.maxMethodCodeSize,
+      ctx.references.toArray,
+      batchesIndex)
+  }
+}
+
+private[arrow] object CachedBatchRowIterator {
+
+  /**
+   * A compiled reader class, the size of its largest method, and the objects its instances
+   * reference, with a null slot at `batchesIndex` for each instance's batches.
+   */
+  private case class GeneratedReader(
+      generatedClass: GeneratedClass,
+      maxMethodCodeSize: Int,
+      references: Array[Any],
+      batchesIndex: Int) {
+
+    def newIterator(batches: Iterator[ColumnarBatch]): Iterator[InternalRow] = {
+      val instanceReferences = references.clone()
+      instanceReferences(batchesIndex) = batches
+      generatedClass.generate(instanceReferences).asInstanceOf[Iterator[InternalRow]]
     }
   }
 
-  override protected def createInterpretedObject(
-      batches: Iterator[ColumnarBatch]): Iterator[InternalRow] =
-    new ProjectedRows(batches, InterpretedUnsafeProjection.createProjection(fields))
+  private val readers = new GeneratedClassCache[ColumnLayout, GeneratedReader]()
+
+  /** How many reader classes this executor has generated, for tests. */
+  private[arrow] def generatedClassCount: Long = readers.generatedCount
 }
 
 /**

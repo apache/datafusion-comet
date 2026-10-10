@@ -19,13 +19,8 @@
 
 package org.apache.spark.sql.comet
 
-import java.util.{LinkedHashMap => JLinkedHashMap, Map => JMap}
-import java.util.concurrent.atomic.AtomicLong
-
 import org.apache.spark.sql.catalyst.expressions.{Attribute, BoundReference, CodeGeneratorWithInterpretedFallback, InterpretedUnsafeProjection, UnsafeProjection}
 import org.apache.spark.sql.catalyst.expressions.codegen.{CodeAndComment, CodeFormatter, CodegenContext, CodeGenerator, GeneratedClass, GenerateUnsafeProjection}
-import org.apache.spark.sql.internal.SQLConf
-import org.apache.spark.sql.types.DataType
 
 /**
  * Creates the projection that copies each row of a batch into an UnsafeRow, as
@@ -47,25 +42,16 @@ import org.apache.spark.sql.types.DataType
 private[comet] object CometUnsafeProjection
     extends CodeGeneratorWithInterpretedFallback[Seq[BoundReference], UnsafeProjection] {
 
-  /**
-   * What the generated source depends on: the type and nullability of each column, and the method
-   * size at which `CodegenContext.splitExpressions` splits the field writes.
-   */
-  private case class Layout(columns: Seq[(DataType, Boolean)], methodSplitThreshold: Int)
-
-  /** The same bound as Spark's compiled class cache, `spark.sql.codegen.cache.maxEntries`. */
-  private[comet] val MaxCachedClasses = 100
-
-  /** Least recently used first. Guarded by `classes.synchronized`. */
-  private val classes = new JLinkedHashMap[Layout, GeneratedClass](16, 0.75f, true) {
-    override def removeEldestEntry(eldest: JMap.Entry[Layout, GeneratedClass]): Boolean =
-      size() > MaxCachedClasses
+  /** A compiled projection class and the objects its instances reference. */
+  private case class Generated(generatedClass: GeneratedClass, references: Array[Any]) {
+    def newProjection(): UnsafeProjection =
+      generatedClass.generate(references).asInstanceOf[UnsafeProjection]
   }
 
-  private val classesGenerated = new AtomicLong(0)
+  private val classes = new GeneratedClassCache[ColumnLayout, Generated]()
 
   /** How many projection classes this executor has generated, for tests. */
-  private[comet] def generatedClassCount: Long = classesGenerated.get()
+  private[comet] def generatedClassCount: Long = classes.generatedCount
 
   /** A projection of rows with the columns of `output` to UnsafeRows. */
   def create(output: Seq[Attribute]): UnsafeProjection =
@@ -74,34 +60,24 @@ private[comet] object CometUnsafeProjection
     })
 
   override protected def createCodeGeneratedObject(
-      columns: Seq[BoundReference]): UnsafeProjection = {
-    val layout =
-      Layout(columns.map(c => (c.dataType, c.nullable)), SQLConf.get.methodSplitThreshold)
-    val cached = classes.synchronized(classes.get(layout))
-    if (cached != null) {
-      cached.generate(Array.empty[Any]).asInstanceOf[UnsafeProjection]
-    } else {
-      // Generated outside the lock: tasks that miss on the same layout at once each generate
-      // it, as every task does with UnsafeProjection.create.
-      val (generated, references) = generate(columns)
-      // A stored class is instantiated without references, so store only one that needs none.
-      // GenerateUnsafeProjection references no objects for bound columns.
-      if (references.isEmpty) {
-        val _ = classes.synchronized(classes.putIfAbsent(layout, generated))
+      columns: Seq[BoundReference]): UnsafeProjection =
+    classes
+      .getOrGenerate(ColumnLayout.of(columns)) {
+        val generated = generate(columns)
+        // Instances of a shared class share its references, so share only a class that has
+        // none. GenerateUnsafeProjection references no objects for bound columns.
+        (generated, generated.references.isEmpty)
       }
-      generated.generate(references).asInstanceOf[UnsafeProjection]
-    }
-  }
+      .newProjection()
 
   override protected def createInterpretedObject(columns: Seq[BoundReference]): UnsafeProjection =
     InterpretedUnsafeProjection.createProjection(columns)
 
   /**
    * Generates and compiles the class that `GenerateUnsafeProjection.create` does, from the same
-   * template, which is repeated here because that method returns only an instance. Returns the
-   * class with the objects its instances reference.
+   * template, which is repeated here because that method returns only an instance.
    */
-  private def generate(columns: Seq[BoundReference]): (GeneratedClass, Array[Any]) = {
+  private def generate(columns: Seq[BoundReference]): Generated = {
     val ctx = new CodegenContext
     val eval = GenerateUnsafeProjection.createCode(ctx, columns)
     val body =
@@ -140,7 +116,6 @@ private[comet] object CometUnsafeProjection
     val code = CodeFormatter.stripOverlappingComments(
       new CodeAndComment(body, ctx.getPlaceHolderToComments()))
     val (generatedClass, _) = CodeGenerator.compile(code)
-    classesGenerated.incrementAndGet()
-    (generatedClass, ctx.references.toArray)
+    Generated(generatedClass, ctx.references.toArray)
   }
 }
