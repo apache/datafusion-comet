@@ -15,9 +15,10 @@
 // specific language governing permissions and limitations
 // under the License.
 
-use super::SparkArrayExtrema;
+use super::{SparkArrayExtrema, Utf8Collation};
 use arrow::array::{
-    Array, ArrayRef, Float64Array, Int32Array, ListArray, PrimitiveArray, StringArray, StructArray,
+    Array, ArrayRef, Float64Array, Int32Array, LargeStringArray, ListArray, PrimitiveArray,
+    StringArray, StringViewArray, StructArray,
 };
 use arrow::buffer::{NullBuffer, OffsetBuffer};
 use arrow::datatypes::{DataType, Field, Float32Type, Float64Type, Int32Type};
@@ -26,7 +27,10 @@ use datafusion::logical_expr::{ColumnarValue, ScalarFunctionArgs, ScalarUDFImpl}
 use std::sync::Arc;
 
 fn invoke(input: ColumnarValue, is_min: bool) -> ColumnarValue {
-    let udf = SparkArrayExtrema::new(is_min);
+    invoke_udf(input, &SparkArrayExtrema::new(is_min))
+}
+
+fn invoke_udf(input: ColumnarValue, udf: &SparkArrayExtrema) -> ColumnarValue {
     let input_type = input.data_type();
     let return_type = udf.return_type(std::slice::from_ref(&input_type)).unwrap();
     let number_rows = match &input {
@@ -441,5 +445,193 @@ fn empty_string_batch_retains_element_type() {
         let result = extrema(&input, is_min);
         assert!(result.is_empty());
         assert_eq!(result.data_type(), &input.value_type());
+    }
+}
+
+#[test]
+fn utf8_collations_preserve_original_winners_across_string_layouts() {
+    let values = vec![
+        Some("unused"),
+        Some("B"),
+        Some("a"),
+        Some("x "),
+        Some("x"),
+        None,
+        None,
+    ];
+    let layouts: Vec<ArrayRef> = vec![
+        Arc::new(StringArray::from(values.clone())),
+        Arc::new(LargeStringArray::from(values.clone())),
+        Arc::new(StringViewArray::from(values)),
+    ];
+    for values in layouts {
+        let input = ListArray::new(
+            Arc::new(Field::new_list_field(values.data_type().clone(), true)),
+            OffsetBuffer::new(vec![0, 1, 3, 5, 7, 7, 7].into()),
+            values,
+            Some(NullBuffer::from(vec![true, true, true, true, true, false])),
+        )
+        .slice(1, 5);
+        for (name, min, max) in [
+            (None, [Some("B"), Some("x")], [Some("a"), Some("x ")]),
+            (
+                Some("UTF8_BINARY"),
+                [Some("B"), Some("x")],
+                [Some("a"), Some("x ")],
+            ),
+            (
+                Some("UTF8_BINARY_RTRIM"),
+                [Some("B"), Some("x ")],
+                [Some("a"), Some("x ")],
+            ),
+            (
+                Some("UTF8_LCASE"),
+                [Some("a"), Some("x")],
+                [Some("B"), Some("x ")],
+            ),
+            (
+                Some("UTF8_LCASE_RTRIM"),
+                [Some("a"), Some("x ")],
+                [Some("B"), Some("x ")],
+            ),
+        ] {
+            for (is_min, expected) in [(true, min), (false, max)] {
+                let udf = match name {
+                    Some(name) => {
+                        SparkArrayExtrema::with_collations(is_min, &[name.into()], 16).unwrap()
+                    }
+                    None => SparkArrayExtrema::new(is_min),
+                };
+                let ColumnarValue::Array(result) =
+                    invoke_udf(ColumnarValue::Array(Arc::new(input.clone())), &udf)
+                else {
+                    panic!("expected array result")
+                };
+                for row in 0..input.len() {
+                    let scalar = ScalarValue::try_from_array(&input, row).unwrap();
+                    let ColumnarValue::Scalar(actual) =
+                        invoke_udf(ColumnarValue::Scalar(scalar), &udf)
+                    else {
+                        panic!("expected scalar result")
+                    };
+                    assert_eq!(actual, ScalarValue::try_from_array(&result, row).unwrap());
+                }
+                let result =
+                    arrow::compute::cast(&result, &arrow::datatypes::DataType::Utf8).unwrap();
+                let result = result.as_any().downcast_ref::<StringArray>().unwrap();
+                assert_eq!(
+                    result.iter().collect::<Vec<_>>(),
+                    vec![expected[0], expected[1], None, None, None]
+                );
+            }
+        }
+    }
+}
+
+#[test]
+fn string_view_results_release_losing_buffers() {
+    for is_min in [true, false] {
+        let (winning, losing) = if is_min { ("A", "z") } else { ("z", "A") };
+        let loser = losing.repeat(1024 * 1024);
+        for winner in [winning.to_owned(), winning.repeat(64)] {
+            let input = list(
+                Arc::new(StringViewArray::from(vec![winner.as_str(), loser.as_str()])),
+                &[0, 2],
+            );
+            for udf in [
+                SparkArrayExtrema::new(is_min),
+                SparkArrayExtrema::with_collations(is_min, &["UTF8_LCASE".into()], 16).unwrap(),
+            ] {
+                let ColumnarValue::Array(result) =
+                    invoke_udf(ColumnarValue::Array(Arc::new(input.clone())), &udf)
+                else {
+                    panic!("expected array result")
+                };
+                let result = result.as_any().downcast_ref::<StringViewArray>().unwrap();
+                assert_eq!(result.value(0), winner);
+                assert!(result.get_buffer_memory_size() < 1024);
+            }
+        }
+    }
+}
+
+#[test]
+fn utf8_lcase_uses_spark_unicode_version_and_space_trimming() {
+    use std::cmp::Ordering::{Equal, Greater, Less};
+    for version in [16, 17] {
+        for (left, right, expected) in [
+            ("İ", "i\u{307}", Equal),
+            ("ς", "σ", Equal),
+            ("K", "k", Equal),
+            ("abİx", "ABi\u{307}y", Less),
+            ("abK", "ABk", Equal),
+            ("ab", "ABΣ", Less),
+            ("aΣ", "B", Less),
+            ("\u{10400}", "\u{10428}", Equal),
+            ("é", "e", Greater),
+            ("A ", "a", Greater),
+        ] {
+            assert_eq!(Utf8Collation::Lcase.compare(left, right, version), expected);
+            assert_eq!(
+                Utf8Collation::Lcase.compare(right, left, version),
+                expected.reverse()
+            );
+        }
+        assert_eq!(Utf8Collation::LcaseRtrim.compare("A ", "a", version), Equal);
+        assert_eq!(
+            Utf8Collation::LcaseRtrim.compare("A\t", "a", version),
+            Greater
+        );
+        assert_eq!(
+            Utf8Collation::LcaseRtrim.compare("A\u{a0}", "a", version),
+            Greater
+        );
+    }
+}
+
+#[test]
+fn utf8_lcase_unicode_17_mappings_are_version_gated() {
+    use std::cmp::Ordering::{Equal, Less};
+    let pairs = [
+        ("\u{a7ce}", "\u{a7cf}"),
+        ("\u{a7d2}", "\u{a7d3}"),
+        ("\u{a7d4}", "\u{a7d5}"),
+        ("\u{16ea0}", "\u{16ebb}"),
+        ("\u{16ea1}", "\u{16ebc}"),
+        ("\u{16ea2}", "\u{16ebd}"),
+        ("\u{16ea3}", "\u{16ebe}"),
+        ("\u{16ea4}", "\u{16ebf}"),
+        ("\u{16ea5}", "\u{16ec0}"),
+        ("\u{16ea6}", "\u{16ec1}"),
+        ("\u{16ea7}", "\u{16ec2}"),
+        ("\u{16ea8}", "\u{16ec3}"),
+        ("\u{16ea9}", "\u{16ec4}"),
+        ("\u{16eaa}", "\u{16ec5}"),
+        ("\u{16eab}", "\u{16ec6}"),
+        ("\u{16eac}", "\u{16ec7}"),
+        ("\u{16ead}", "\u{16ec8}"),
+        ("\u{16eae}", "\u{16ec9}"),
+        ("\u{16eaf}", "\u{16eca}"),
+        ("\u{16eb0}", "\u{16ecb}"),
+        ("\u{16eb1}", "\u{16ecc}"),
+        ("\u{16eb2}", "\u{16ecd}"),
+        ("\u{16eb3}", "\u{16ece}"),
+        ("\u{16eb4}", "\u{16ecf}"),
+        ("\u{16eb5}", "\u{16ed0}"),
+        ("\u{16eb6}", "\u{16ed1}"),
+        ("\u{16eb7}", "\u{16ed2}"),
+        ("\u{16eb8}", "\u{16ed3}"),
+    ];
+    for (upper, lower) in pairs {
+        for (version, expected) in [(16, Less), (17, Equal)] {
+            assert_eq!(
+                Utf8Collation::Lcase.compare(upper, lower, version),
+                expected
+            );
+            assert_eq!(
+                Utf8Collation::Lcase.compare(lower, upper, version),
+                expected.reverse()
+            );
+        }
     }
 }

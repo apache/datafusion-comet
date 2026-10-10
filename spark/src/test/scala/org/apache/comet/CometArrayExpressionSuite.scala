@@ -750,11 +750,34 @@ class CometArrayExpressionSuite extends CometTestBase with AdaptiveSparkPlanHelp
     }
   }
 
-  test("array extrema - collations fall back when the dispatcher is disabled") {
+  test("array extrema - UTF8_LCASE retains its result collation") {
+    assume(isSpark40Plus)
+    val values = Seq(
+      ("B", "a"),
+      ("A", "a"),
+      // This case pair was added in Unicode 17; older Spark ICU versions keep it distinct.
+      ("\uA7CE", "\uA7CF"))
+    withParquetTable(values, "collated_extrema") {
+      withSQLConf(
+        CometConf.COMET_SCALA_UDF_CODEGEN_ENABLED.key -> "true",
+        CometConf.getExprAllowIncompatConfigKey(classOf[ArrayMin]) -> "false",
+        CometConf.getExprAllowIncompatConfigKey(classOf[ArrayMax]) -> "false") {
+        val a = "CAST(_1 AS STRING COLLATE UTF8_LCASE)"
+        val b = "CAST(_2 AS STRING COLLATE UTF8_LCASE)"
+        // The result retains its collation when used by another native comparison.
+        val query = s"SELECT array_max(array($a, $b)), " +
+          s"array_min(array(array_max(array($a, $b)), $b)) FROM collated_extrema"
+        checkSparkAnswerAndImpl(sql(query), native = Seq("array_min", "array_max"))
+        checkSparkSchema(sql(query))
+      }
+    }
+  }
+
+  test("array extrema - ICU collations fall back when the dispatcher is disabled") {
     assume(isSpark40Plus)
     withParquetTable(Seq(("a", "B"), ("B", "a"), ("A", "a")), "collated_extrema") {
-      val a = "CAST(_1 AS STRING COLLATE UTF8_LCASE)"
-      val b = "CAST(_2 AS STRING COLLATE UTF8_LCASE)"
+      val a = "CAST(_1 AS STRING COLLATE UNICODE_CI)"
+      val b = "CAST(_2 AS STRING COLLATE UNICODE_CI)"
       val inputs = Seq(
         s"array($a, $b)",
         s"array(named_struct('s', array($a)), named_struct('s', array($b)))")
@@ -765,7 +788,35 @@ class CometArrayExpressionSuite extends CometTestBase with AdaptiveSparkPlanHelp
         for (function <- Seq("array_min", "array_max"); input <- inputs) {
           checkSparkAnswerAndFallbackReason(
             s"SELECT $function($input) FROM collated_extrema",
-            "Array extrema use binary string ordering")
+            "Array extrema support UTF8_BINARY, UTF8_LCASE, and UTF8_LCASE_RTRIM")
+        }
+      }
+    }
+  }
+
+  test("array extrema - binary RTRIM retains Spark comparison with either dispatch setting") {
+    assume(isSpark40Plus)
+    withParquetTable(Seq(("x ", "x"), ("x", "x "), ("a", "B")), "trimmed_extrema") {
+      val a = "CAST(_1 AS STRING COLLATE UTF8_BINARY_RTRIM)"
+      val b = "CAST(_2 AS STRING COLLATE UTF8_BINARY_RTRIM)"
+      for (dispatch <- Seq("false", "true"); allowIncompatible <- Seq("false", "true")) {
+        withSQLConf(
+          CometConf.COMET_SCALA_UDF_CODEGEN_ENABLED.key -> dispatch,
+          CometConf.getExprAllowIncompatConfigKey(classOf[ArrayMin]) -> allowIncompatible,
+          CometConf.getExprAllowIncompatConfigKey(classOf[ArrayMax]) -> allowIncompatible) {
+          for (function <- Seq("array_min", "array_max");
+            input <- Seq(
+              s"array($a, $b)",
+              s"array(named_struct('s', array($a)), named_struct('s', array($b)))")) {
+            val query = s"SELECT $function($input) FROM trimmed_extrema"
+            if (dispatch == "true") {
+              checkSparkAnswerAndImpl(sql(query), dispatched = Seq(function))
+            } else {
+              checkSparkAnswerAndFallbackReason(
+                query,
+                "UTF8_BINARY_RTRIM array extrema use Spark's comparator.")
+            }
+          }
         }
       }
     }

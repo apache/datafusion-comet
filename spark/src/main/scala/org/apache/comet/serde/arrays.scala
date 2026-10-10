@@ -298,16 +298,57 @@ object CometArrayIntersect
 
 private object ArrayExtremaSupport extends CometTypeShim {
   val incompatReason: String =
-    "Array extrema use binary string ordering for non-UTF8_BINARY collations " +
+    "Array extrema support UTF8_BINARY, UTF8_LCASE, and UTF8_LCASE_RTRIM natively; " +
+      "UTF8_LCASE requires Unicode 16 or 17. Other collations use binary ordering when opted in " +
       "(https://github.com/apache/datafusion-comet/issues/4496)."
 
-  def getSupportLevel(elementType: DataType): SupportLevel = {
-    if (hasNonDefaultStringCollation(elementType)) {
-      // The dispatcher runs Spark's own comparison with the original collation IDs, including
-      // strings nested in arrays or structs. Keep the native bytewise comparison opt-in only.
-      Incompatible(Some(incompatReason))
-    } else {
+  val binaryRtrimReason: String =
+    "UTF8_BINARY_RTRIM array extrema use Spark's comparator."
+
+  private def stringCollations(dt: DataType): Seq[String] = dt match {
+    case stringType: StringType => Seq(stringCollationName(stringType))
+    case ArrayType(elementType, _) => stringCollations(elementType)
+    case StructType(fields) => fields.toSeq.flatMap(f => stringCollations(f.dataType))
+    case _ => Seq.empty
+  }
+
+  private def supportsCollations(collations: Seq[String]): Boolean = collations.forall {
+    case "UTF8_BINARY" | "UTF8_BINARY_RTRIM" => true
+    case "UTF8_LCASE" | "UTF8_LCASE_RTRIM" =>
+      collationUnicodeVersion == 16 || collationUnicodeVersion == 17
+    case _ => false
+  }
+
+  def getSupportLevel(elementType: DataType): SupportLevel =
+    // Keep this path on the dispatcher until its native performance regression is resolved.
+    // Use Unsupported so allowIncompatible cannot silently change its comparison semantics.
+    if (stringCollations(elementType).contains("UTF8_BINARY_RTRIM")) {
+      Unsupported(Some(binaryRtrimReason))
+    } else if (supportsCollations(stringCollations(elementType))) {
       Compatible()
+    } else {
+      Incompatible(Some(incompatReason))
+    }
+
+  def convert(
+      expr: Expression,
+      inputs: Seq[Attribute],
+      binding: Boolean,
+      isMin: Boolean): Option[ExprOuterClass.Expr] = {
+    val collations = stringCollations(expr.dataType)
+    exprToProtoInternal(expr.children.head, inputs, binding).map { child =>
+      val builder = ExprOuterClass.ArrayExtrema
+        .newBuilder()
+        .setChild(child)
+        .setIsMin(isMin)
+      // Preserve the existing binary comparison when unsupported collations are explicitly
+      // opted in. By default those expressions use the JVM dispatcher.
+      if (!collations.forall(_ == "UTF8_BINARY") && supportsCollations(collations)) {
+        builder
+          .addAllStringCollations(collations.asJava)
+          .setCollationUnicodeVersion(collationUnicodeVersion)
+      }
+      ExprOuterClass.Expr.newBuilder().setArrayExtrema(builder).build()
     }
   }
 }
@@ -317,19 +358,16 @@ object CometArrayMax extends CometExpressionSerde[ArrayMax] with CodegenDispatch
 
   override def getIncompatibleReasons(): Seq[String] = Seq(ArrayExtremaSupport.incompatReason)
 
+  override def getUnsupportedReasons(): Seq[String] = Seq(ArrayExtremaSupport.binaryRtrimReason)
+
   override def getSupportLevel(expr: ArrayMax): SupportLevel =
     ArrayExtremaSupport.getSupportLevel(expr.dataType)
 
   override def convert(
       expr: ArrayMax,
       inputs: Seq[Attribute],
-      binding: Boolean): Option[ExprOuterClass.Expr] = {
-    val arrayExprProto = exprToProtoInternal(expr.children.head, inputs, binding)
-
-    val arrayMaxScalarExpr =
-      scalarFunctionExprToProto("array_max", arrayExprProto)
-    arrayMaxScalarExpr
-  }
+      binding: Boolean): Option[ExprOuterClass.Expr] =
+    ArrayExtremaSupport.convert(expr, inputs, binding, isMin = false)
 }
 
 object CometArrayMin extends CometExpressionSerde[ArrayMin] with CodegenDispatchFallback {
@@ -337,18 +375,16 @@ object CometArrayMin extends CometExpressionSerde[ArrayMin] with CodegenDispatch
 
   override def getIncompatibleReasons(): Seq[String] = Seq(ArrayExtremaSupport.incompatReason)
 
+  override def getUnsupportedReasons(): Seq[String] = Seq(ArrayExtremaSupport.binaryRtrimReason)
+
   override def getSupportLevel(expr: ArrayMin): SupportLevel =
     ArrayExtremaSupport.getSupportLevel(expr.dataType)
 
   override def convert(
       expr: ArrayMin,
       inputs: Seq[Attribute],
-      binding: Boolean): Option[ExprOuterClass.Expr] = {
-    val arrayExprProto = exprToProtoInternal(expr.children.head, inputs, binding)
-
-    val arrayMinScalarExpr = scalarFunctionExprToProto("array_min", arrayExprProto)
-    arrayMinScalarExpr
-  }
+      binding: Boolean): Option[ExprOuterClass.Expr] =
+    ArrayExtremaSupport.convert(expr, inputs, binding, isMin = true)
 }
 
 object CometArraysOverlap
