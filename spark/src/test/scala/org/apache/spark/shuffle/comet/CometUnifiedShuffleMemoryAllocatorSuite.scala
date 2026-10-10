@@ -21,7 +21,7 @@ package org.apache.spark.shuffle.comet
 
 import org.apache.logging.log4j.Level
 import org.apache.logging.log4j.core.LogEvent
-import org.apache.spark.{CometTaskMemoryManager, TaskMemoryTestUtils}
+import org.apache.spark.{CometTaskMemoryManager, TaskContext, TaskContextImpl, TaskMemoryTestUtils}
 import org.apache.spark.memory.SparkOutOfMemoryError
 
 class CometUnifiedShuffleMemoryAllocatorSuite extends TaskMemoryTestUtils {
@@ -75,6 +75,26 @@ class CometUnifiedShuffleMemoryAllocatorSuite extends TaskMemoryTestUtils {
       assert(allocator.getUsed == 0L)
       assert(taskMemoryManager.getMemoryConsumptionForThisTask == 0L)
       assert(taskMemoryManager.cleanUpAllAllocatedMemory() == 0L)
+    }
+  }
+
+  test("an allocation that loses its task entry after the task ended is not made again") {
+    for ((allocation, requested) <- allocations.zip(Seq("20", "24"))) {
+      val taskMemoryManager = new FailingTaskMemoryManager(
+        () => noSuchElement("key not found: 0", fromExecutionMemoryPool = true),
+        failures = Int.MaxValue)
+      withTaskContext(taskMemoryManager) { _ =>
+        val allocator = new CometUnifiedShuffleMemoryAllocator(taskMemoryManager, PageSize)
+        TaskContext.get().asInstanceOf[TaskContextImpl].markTaskCompleted(None)
+        val events = logEvents(Level.INFO) {
+          val thrown = intercept[SparkOutOfMemoryError](allocation(allocator))
+          assert(thrown.getMessageParameters.get("requestedBytes") == requested)
+          assert(thrown.getCause eq taskMemoryManager.errors.last)
+        }
+        assert(events.map(_.getLevel) == Seq(Level.INFO), messages(events))
+        assert(taskMemoryManager.calls.get == 1)
+        assert(allocator.getUsed == 0L)
+      }
     }
   }
 

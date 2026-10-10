@@ -26,6 +26,7 @@ import java.util.function.Supplier;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
+import org.apache.spark.TaskContext;
 import org.apache.spark.memory.MemoryConsumer;
 import org.apache.spark.memory.MemoryMode;
 import org.apache.spark.memory.SparkOutOfMemoryError;
@@ -50,8 +51,12 @@ public final class CometUnifiedShuffleMemoryAllocator extends CometShuffleMemory
   private static final Logger logger =
       LoggerFactory.getLogger(CometUnifiedShuffleMemoryAllocator.class);
 
+  /** The task's context, or null outside a task; see retryMissingTaskEntry. */
+  private final TaskContext taskContext;
+
   CometUnifiedShuffleMemoryAllocator(TaskMemoryManager taskMemoryManager, long pageSize) {
     super(taskMemoryManager, pageSize, MemoryMode.OFF_HEAP);
+    this.taskContext = TaskContext.get();
     if (taskMemoryManager.getTungstenMemoryMode() != MemoryMode.OFF_HEAP) {
       throw new IllegalArgumentException(
           "CometUnifiedShuffleMemoryAllocator should be used with off-heap "
@@ -81,13 +86,14 @@ public final class CometUnifiedShuffleMemoryAllocator extends CometShuffleMemory
 
   /**
    * Runs an allocation through Spark, retrying when an allocation waiting in Spark lost the task's
-   * entry; see {@link MissingTaskEntryRetry}. When the retries run out the allocation fails with a
-   * SparkOutOfMemoryError, which the shuffle writers handle like any other refused page, caused by
-   * the last attempt's exception.
+   * entry; see {@link MissingTaskEntryRetry}. When the retries run out, or the task has ended, the
+   * allocation fails with a SparkOutOfMemoryError, which the shuffle writers handle like any other
+   * refused page, caused by the last attempt's exception.
    */
   private <T> T retryMissingTaskEntry(long required, Supplier<T> allocation) {
     return MissingTaskEntryRetry.retry(
         logger,
+        taskContext,
         required,
         allocation,
         e -> {

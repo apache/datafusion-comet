@@ -220,7 +220,11 @@ the task held nothing from Spark at that moment, so the failed call has no parti
 reconcile, and the retry registers the task again and waits for its share as the first call would
 have. After three attempts `CometTaskMemoryManager` returns a zero grant. `try_grow` treats that as
 a refusal and the operator spills, while `grow` records the request as overcommit. The shuffle
-allocator throws `SparkOutOfMemoryError` instead. Spark's own operators in the same task, such as
+allocator throws `SparkOutOfMemoryError` instead. Both refuse without retrying once the task has
+completed or been killed: releasing a native plan at the end of the task can empty the balance under
+a Tokio worker still waiting in Spark, and a retry would register the ended task again and could wait
+for other tasks while holding the `TaskMemoryManager` monitor that Spark's final cleanup needs.
+Spark's own operators in the same task, such as
 its sorters and aggregates, are not guarded and can still hit the exception until Spark re-registers
 a waiting task in `ExecutionMemoryPool` ([apache/spark#58747](https://github.com/apache/spark/pull/58747)).
 

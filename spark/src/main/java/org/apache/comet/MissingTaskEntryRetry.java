@@ -26,6 +26,8 @@ import java.util.function.Supplier;
 
 import org.slf4j.Logger;
 
+import org.apache.spark.TaskContext;
+
 /**
  * Retries a request for execution memory that Spark failed because the task's entry was gone from
  * its execution pool.
@@ -39,6 +41,12 @@ import org.slf4j.Logger;
  * grant. So trying again is safe: it registers the task again and waits for its share as Spark
  * would have. Nothing here holds a lock across attempts, so a retry parks in Spark exactly as the
  * first attempt did. The Spark issue is SPARK-59444.
+ *
+ * <p>A request of a task that has completed or been killed is refused instead of retried. Releasing
+ * a native plan when the task ends gives back the plan's memory while a Tokio worker may still wait
+ * in Spark for it, and when that empties the task's balance the worker loses the entry. Retried, it
+ * would register the ended task again and could wait for other tasks to release memory, holding the
+ * TaskMemoryManager monitor that Spark's final cleanup of the task needs.
  */
 public final class MissingTaskEntryRetry {
 
@@ -49,35 +57,40 @@ public final class MissingTaskEntryRetry {
 
   /**
    * Runs {@code request}, a call that asks Spark for {@code required} bytes for task {@code
-   * taskAttemptId}, and retries it when it lost that task's entry. See {@link #retry(Logger, long,
-   * Supplier, Function)}.
+   * taskAttemptId}, and retries it when it lost that task's entry. See {@link #retry(Logger,
+   * TaskContext, long, Supplier, Function)}.
    */
   public static <T> T retry(
       Logger logger,
+      TaskContext context,
       long taskAttemptId,
       long required,
       Supplier<T> request,
       Function<NoSuchElementException, T> refuse) {
-    return retry(logger, OptionalLong.of(taskAttemptId), required, request, refuse);
+    return retry(logger, context, OptionalLong.of(taskAttemptId), required, request, refuse);
   }
 
   /**
    * Runs {@code request}, a call that asks Spark for {@code required} bytes, and retries it when it
    * lost the task's entry. Without the task id, any task's missing entry counts. Other exceptions
    * are rethrown. After {@link #MAX_ATTEMPTS} attempts that all lost the entry, returns what {@code
-   * refuse} makes of the last attempt's exception, or throws what it throws. Both the retries and
-   * the refusal are logged to {@code logger}.
+   * refuse} makes of the last attempt's exception, or throws what it throws. It does the same
+   * without retrying once {@code context}, the task's context or null when there is none, says the
+   * task has completed or been killed. Both the retries and the refusal are logged to {@code
+   * logger}.
    */
   public static <T> T retry(
       Logger logger,
+      TaskContext context,
       long required,
       Supplier<T> request,
       Function<NoSuchElementException, T> refuse) {
-    return retry(logger, OptionalLong.empty(), required, request, refuse);
+    return retry(logger, context, OptionalLong.empty(), required, request, refuse);
   }
 
   private static <T> T retry(
       Logger logger,
+      TaskContext context,
       OptionalLong taskAttemptId,
       long required,
       Supplier<T> request,
@@ -90,6 +103,14 @@ public final class MissingTaskEntryRetry {
           throw e;
         }
         String task = taskAttemptId.isPresent() ? "Task " + taskAttemptId.getAsLong() : "The task";
+        if (hasEnded(context)) {
+          logger.info(
+              "{} lost its execution memory entry in Spark while waiting to acquire {} bytes after "
+                  + "it ended, refusing the request",
+              task,
+              required);
+          return refuse.apply(e);
+        }
         if (attempt >= MAX_ATTEMPTS) {
           logger.warn(
               "{} lost its execution memory entry in Spark on {} attempts to acquire {} bytes, "
@@ -107,6 +128,15 @@ public final class MissingTaskEntryRetry {
             required);
       }
     }
+  }
+
+  /**
+   * Whether the task has completed or been killed. TaskContextImpl.isCompleted takes the context's
+   * monitor, but Spark runs the task's completion listeners, which release native plans, without
+   * holding it.
+   */
+  private static boolean hasEnded(TaskContext context) {
+    return context != null && (context.isInterrupted() || context.isCompleted());
   }
 
   /**

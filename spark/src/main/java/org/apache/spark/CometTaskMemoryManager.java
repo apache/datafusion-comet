@@ -45,6 +45,9 @@ public class CometTaskMemoryManager {
 
   private final long taskAttemptId;
 
+  /** The task's context, read from native threads, which have none of their own. */
+  private final TaskContext taskContext;
+
   public final TaskMemoryManager internal;
   private final NativeMemoryConsumer nativeMemoryConsumer;
   private final AtomicLong used = new AtomicLong();
@@ -52,7 +55,8 @@ public class CometTaskMemoryManager {
   public CometTaskMemoryManager(long id, long taskAttemptId) {
     this.id = id;
     this.taskAttemptId = taskAttemptId;
-    this.internal = TaskContext$.MODULE$.get().taskMemoryManager();
+    this.taskContext = TaskContext$.MODULE$.get();
+    this.internal = taskContext.taskMemoryManager();
     this.nativeMemoryConsumer = new NativeMemoryConsumer();
   }
 
@@ -98,12 +102,13 @@ public class CometTaskMemoryManager {
 
   /**
    * Acquires from Spark, retrying when an acquire waiting in Spark lost the task's entry; see
-   * {@link MissingTaskEntryRetry}. When the retries run out the grant is refused, which the native
-   * pools treat like any other refusal.
+   * {@link MissingTaskEntryRetry}. When the retries run out, or the task has ended, the grant is
+   * refused, which the native pools treat like any other refusal.
    */
   private long acquireFromSpark(long size) {
     return MissingTaskEntryRetry.retry(
         logger,
+        taskContext,
         taskAttemptId,
         size,
         () -> internal.acquireExecutionMemory(size, nativeMemoryConsumer),

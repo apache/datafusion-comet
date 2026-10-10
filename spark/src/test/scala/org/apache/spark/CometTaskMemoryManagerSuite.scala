@@ -19,6 +19,9 @@
 
 package org.apache.spark
 
+import java.util.concurrent.TimeUnit
+import java.util.concurrent.atomic.AtomicReference
+
 import org.apache.logging.log4j.Level
 import org.apache.logging.log4j.core.LogEvent
 import org.apache.spark.memory.{MemoryConsumer, TaskMemoryManager, TestMemoryManager}
@@ -146,6 +149,57 @@ class CometTaskMemoryManagerSuite extends TaskMemoryTestUtils {
           manager.releaseMemory(20L)
           assert(taskMemoryManager.getMemoryConsumptionForThisTask == 0L)
         })
+    }
+  }
+
+  for ((state, end) <- Seq[(String, TaskContextImpl => Unit)](
+      ("completed", _.markTaskCompleted(None)),
+      ("was killed", _.markInterrupted("killed")))) {
+    test(s"an acquire that loses its task entry after the task $state is not made again") {
+      val memoryManager = offHeapMemoryManager()
+      val otherTask = new OffHeapConsumer(new TaskMemoryManager(memoryManager, 1L))
+
+      withTaskContext(new TaskMemoryManager(memoryManager, 0L)) { taskMemoryManager =>
+        val manager = new CometTaskMemoryManager(1L, 0L)
+        assert(otherTask.acquireMemory(90L) == 90L)
+        assert(manager.acquireMemory(10L) == 10L)
+
+        val granted = new AtomicReference[java.lang.Long]()
+        val failure = new AtomicReference[Throwable]()
+        val acquire = new Thread(() =>
+          try granted.set(manager.acquireMemory(20L))
+          catch { case t: Throwable => failure.set(t) })
+        acquire.setDaemon(true)
+        // Spark's executor frees what the task still holds once the task has ended, under the
+        // task memory manager's monitor, which a parked acquire holds.
+        val cleanUp = new Thread(() => taskMemoryManager.cleanUpAllAllocatedMemory())
+        cleanUp.setDaemon(true)
+
+        try {
+          acquire.start()
+          awaitWaitingInSpark(acquire)
+          // The task ends and releasing its plan gives back the task's last bytes while a native
+          // thread still waits in Spark, as releasePlan does when it drops a plan's stream.
+          end(TaskContext.get().asInstanceOf[TaskContextImpl])
+          manager.releaseMemory(10L)
+          acquire.join(TimeUnit.SECONDS.toMillis(TimeoutSeconds))
+          // Parked again, the acquire would wait for the other task while holding the monitor.
+          assert(!acquire.isAlive, s"the acquire is ${acquire.getState} after the task $state")
+          cleanUp.start()
+          cleanUp.join(TimeUnit.SECONDS.toMillis(TimeoutSeconds))
+          assert(!cleanUp.isAlive, s"the clean up is ${cleanUp.getState}")
+        } finally {
+          // Free the other task's memory so that neither thread outlives a failed test.
+          otherTask.freeMemory(otherTask.getUsed)
+          acquire.join(TimeUnit.SECONDS.toMillis(TimeoutSeconds))
+          cleanUp.join(TimeUnit.SECONDS.toMillis(TimeoutSeconds))
+        }
+
+        assert(failure.get == null, s"the acquire failed: ${failure.get}")
+        assert(granted.get == 0L)
+        assert(manager.getUsed == 0L)
+        assert(taskMemoryManager.getMemoryConsumptionForThisTask == 0L)
+      }
     }
   }
 
