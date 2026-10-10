@@ -532,12 +532,40 @@ fn non_ascii_digit_value(c: char) -> Option<u8> {
 /// can be mixed freely ("1٢e३" is 12000). All other characters are kept unchanged and are
 /// rejected later by [`parse_decimal_str`].
 fn normalize_unicode_digits(s: &str) -> String {
-    s.chars()
-        .map(|c| match non_ascii_digit_value(c) {
-            Some(d) => char::from(b'0' + d),
-            None => c,
-        })
-        .collect()
+    // Every non-ASCII digit is at least two UTF-8 bytes and becomes one, so the output is
+    // never longer than the input.
+    let mut out = Vec::with_capacity(s.len());
+    let bytes = s.as_bytes();
+    let mut i = 0;
+    while i < bytes.len() {
+        let b = bytes[i];
+        // ASCII (including mixed ASCII/fullwidth input) and fullwidth digits, encoded as
+        // [0xEF, 0xBC, 0x90 + n], are the common cases, so they skip the table lookup.
+        if b.is_ascii() {
+            out.push(b);
+            i += 1;
+        } else if b == 0xEF
+            && bytes.get(i + 1) == Some(&0xBC)
+            && matches!(bytes.get(i + 2), Some(0x90..=0x99))
+        {
+            // e.g. 0x91 - 0x60 = 0x31 = b'1'
+            out.push(bytes[i + 2] - 0x60);
+            i += 3;
+        } else {
+            // `i` is on a char boundary: every branch above advances by a whole char.
+            let mut rest = s[i..].chars();
+            let c = rest.next().unwrap();
+            let next = bytes.len() - rest.as_str().len();
+            match non_ascii_digit_value(c) {
+                Some(d) => out.push(b'0' + d),
+                None => out.extend_from_slice(&bytes[i..next]),
+            }
+            i = next;
+        }
+    }
+    // SAFETY: every branch either copies a whole UTF-8 encoded char unchanged or replaces it
+    // with a single ASCII byte, so the output is valid UTF-8 because the input is.
+    unsafe { String::from_utf8_unchecked(out) }
 }
 
 /// Powers of ten that fit in an `i128` (`10^0` through `10^38`).
