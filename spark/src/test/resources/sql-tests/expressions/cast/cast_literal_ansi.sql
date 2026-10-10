@@ -39,6 +39,11 @@ SELECT id, IF(id > 5, CAST('2147483648' AS INT), 0) FROM test_cast_literal_ansi
 query
 SELECT id, COALESCE(id, CAST('bad' AS INT)) FROM test_cast_literal_ansi
 
+-- Java only allows a D/F suffix after a decimal number, so these special values are invalid
+query
+SELECT id, CASE WHEN id = 5 THEN CAST('NaNF' AS DOUBLE) ELSE 0D END,
+  IF(id > 5, CAST('InfinityD' AS FLOAT), 0F) FROM test_cast_literal_ansi
+
 -- a cast of a literal that does not fail is still accepted
 query
 SELECT id, CASE WHEN id = 1 THEN CAST('7' AS BIGINT) ELSE id END FROM test_cast_literal_ansi
@@ -47,5 +52,23 @@ SELECT id, CASE WHEN id = 1 THEN CAST('7' AS BIGINT) ELSE id END FROM test_cast_
 query expect_error(CAST_INVALID_INPUT)
 SELECT id, CASE WHEN id = 1 THEN CAST('bad' AS BIGINT) ELSE id END FROM test_cast_literal_ansi
 
+query expect_error(CAST_INVALID_INPUT)
+SELECT id, CASE WHEN id = 1 THEN CAST('NaNF' AS DOUBLE) ELSE 0D END FROM test_cast_literal_ansi
+
+query expect_error(CAST_INVALID_INPUT)
+SELECT id, IF(id > 1, CAST('InfinityD' AS FLOAT), 0F) FROM test_cast_literal_ansi
+
 query expect_error(CAST_OVERFLOW)
 SELECT id, IF(id > 1, CAST(2147483648L AS INT), 0) FROM test_cast_literal_ansi
+
+-- The same floating-point parsing applies to a column. Only the exact-case signed NaN is valid.
+statement
+CREATE TABLE test_cast_float_special(s string) USING parquet
+
+statement
+INSERT INTO test_cast_float_special VALUES ('NaNF'), ('NaND'), ('nanf'), ('-nan'), ('+nan'),
+  ('-NaN'), ('+NaN'), ('NaN'), ('InfinityD'), ('infF'), ('-InfinityF'), ('Infinity'), ('-inf'),
+  ('1.5d'), ('-.5F'), ('1e5d'), ('d'), ('1.0dd'), (NULL)
+
+query
+SELECT s, try_cast(s AS DOUBLE), try_cast(s AS FLOAT) FROM test_cast_float_special

@@ -244,7 +244,8 @@ where
     if s.eq_ignore_ascii_case("-inf") || s.eq_ignore_ascii_case("-infinity") {
         return Some(F::neg_infinity());
     }
-    if s.eq_ignore_ascii_case("nan") {
+    // `Double.parseDouble` also accepts a signed `NaN`, but only in this exact case
+    if s.eq_ignore_ascii_case("nan") || s == "+NaN" || s == "-NaN" {
         return Some(F::nan());
     }
     // Remove D/F suffix if present
@@ -254,6 +255,15 @@ where
         } else {
             s
         };
+    // Every special value Spark accepts is handled above. Java only allows the suffix after a
+    // decimal number, so reject anything else before Rust's parser, which also accepts
+    // `nan`, `inf` and `infinity` in any case (e.g. `NaNF` or `-nan`).
+    if !pruned_float_str
+        .bytes()
+        .all(|b| b.is_ascii_digit() || matches!(b, b'.' | b'e' | b'E' | b'+' | b'-'))
+    {
+        return None;
+    }
     // Rust's parse logic already handles scientific notations so we just rely on it
     pruned_float_str.parse::<F>().ok()
 }
@@ -2538,6 +2548,45 @@ mod tests {
             DataType::Decimal128(10, 2),
         ] {
             assert_trim_parity(&to_type, "1.5", trim_java_string);
+        }
+    }
+
+    /// Mirrors `Double.parseDouble` / `Float.parseFloat` followed by Spark's
+    /// `Cast.processFloatingPointSpecialLiterals`: a D/F suffix is only allowed after a decimal
+    /// number, and a signed `NaN` only in that exact case.
+    #[test]
+    fn test_parse_string_to_float_special_values() {
+        for s in [
+            "NaNF",
+            "NaND",
+            "nanf",
+            "-nan",
+            "+nan",
+            "InfinityD",
+            "infF",
+            "+InfinityF",
+        ] {
+            assert_eq!(parse_string_to_float::<f64>(s), None, "{s}");
+            assert_eq!(parse_string_to_float::<f32>(s), None, "{s}");
+        }
+        for s in ["NaN", "nan", "+NaN", "-NaN"] {
+            assert!(parse_string_to_float::<f64>(s).unwrap().is_nan(), "{s}");
+            assert!(parse_string_to_float::<f32>(s).unwrap().is_nan(), "{s}");
+        }
+        for (s, expected) in [
+            ("Infinity", f64::INFINITY),
+            ("+inf", f64::INFINITY),
+            ("-Inf", f64::NEG_INFINITY),
+            ("1e400", f64::INFINITY),
+            ("1.5d", 1.5),
+            ("-.5D", -0.5),
+            ("5.f", 5.0),
+            ("1e5d", 100000.0),
+        ] {
+            assert_eq!(parse_string_to_float::<f64>(s), Some(expected), "{s}");
+        }
+        for s in ["d", "1.0dd", "e5", "1e", "Infinit"] {
+            assert_eq!(parse_string_to_float::<f64>(s), None, "{s}");
         }
     }
 
