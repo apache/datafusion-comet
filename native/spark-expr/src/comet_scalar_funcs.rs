@@ -28,6 +28,7 @@ use crate::math_funcs::pow::spark_pow;
 use crate::math_funcs::signum::spark_signum;
 use crate::math_funcs::sqrt::spark_sqrt;
 use crate::math_funcs::SparkGreatestLeast;
+use crate::variant_funcs::{spark_is_valid_variant, spark_is_variant_null};
 use crate::{
     spark_ceil, spark_day_name, spark_decimal_div, spark_decimal_integral_div, spark_floor,
     spark_isnan, spark_lpad, spark_make_decimal, spark_month_name, spark_read_side_padding,
@@ -124,6 +125,14 @@ pub fn create_comet_physical_fun_with_eval_mode(
 ) -> Result<Arc<ScalarUDF>, DataFusionError> {
     let fail_on_error = fail_on_error.unwrap_or(false);
     match fun_name {
+        "is_variant_null" => {
+            let func = Arc::new(spark_is_variant_null);
+            make_comet_scalar_udf!("is_variant_null", func, without data_type)
+        }
+        "is_valid_variant" => {
+            let func = Arc::new(spark_is_valid_variant);
+            make_comet_scalar_udf!("is_valid_variant", func, without data_type)
+        }
         "spark_concat_ws" => Ok(Arc::new(ScalarUDF::new_from_impl(
             crate::string_funcs::CometConcatWs::default(),
         ))),

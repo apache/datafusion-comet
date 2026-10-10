@@ -77,6 +77,8 @@ trait CometTypeShim {
 
   def variantType: Option[DataType] = Some(VariantType)
 
+  def variantSizeLimit: Int = org.apache.spark.types.variant.VariantUtil.SIZE_LIMIT
+
   def isTimeType(dt: DataType): Boolean =
     dt.getClass.getSimpleName.startsWith("TimeType")
 

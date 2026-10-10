@@ -112,12 +112,18 @@ Direct projection requires explicit configuration on every supported Spark versi
 `spark.sql.variant.pushVariantIntoScan=false` (defaults to true in Spark 4.1+), with the default
 Parquet timestamp inference settings. Support for Spark's whole-value pushdown rewrite is tracked
 by [#5519](https://github.com/apache/datafusion-comet/issues/5519). Nested Variant columns, pushed-down
-Variant field extraction, expressions, writes, shuffle and spill, Python operators, encrypted
+Variant field extraction, writes, shuffle and spill, Python operators, encrypted
 files, and Iceberg scans that read a Variant column fall back to Spark. Iceberg scans of tables
 whose Variant columns the query does not read run natively. Spark also handles columnar-to-row
 conversion of the native scan output and strict reads with `allowReadingShredded=false`. Broader
 support is tracked by [#4295](https://github.com/apache/datafusion-comet/issues/4295) and
 [#3983](https://github.com/apache/datafusion-comet/issues/3983).
+
+Projections and filters support `is_variant_null` (Spark 4.0+) and `is_valid_variant` (Spark 4.2+)
+on top-level Variant columns and literals. Other Variant expressions fall back. The predicates
+preserve Spark's distinct handling of SQL NULL, Variant null, and malformed bytes. Unshredded
+scans pass payloads to the predicates after checking required children, metadata version and
+Spark's size limit. Shredded inputs still require reconstruction before evaluation.
 
 Shredded reconstruction can be slower than Spark's reader; see the
 [focused scan and allocation measurements in PR #5868](https://github.com/apache/datafusion-comet/pull/5868).

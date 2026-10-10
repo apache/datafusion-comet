@@ -52,6 +52,8 @@ trait CometTypeShim {
   // Spark 4 feature; VariantType doesn't exist in Spark 3.x.
   def variantType: Option[DataType] = None
 
+  def variantSizeLimit: Int = 0
+
   // Spark 4.1 feature; TimeType doesn't exist in Spark 3.x.
   def isTimeType(dt: DataType): Boolean = false
 

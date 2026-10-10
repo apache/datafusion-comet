@@ -583,7 +583,9 @@ impl PhysicalPlanner {
                 )))
             }
             ExprStruct::Literal(literal) => {
-                let data_type = to_arrow_datatype(literal.datatype.as_ref().unwrap());
+                let literal_field =
+                    to_arrow_field("lit", literal.datatype.as_ref().unwrap(), literal.is_null);
+                let data_type = literal_field.data_type().clone();
                 let scalar_value = if literal.is_null {
                     match data_type {
                         DataType::Boolean => ScalarValue::Boolean(None),
@@ -661,6 +663,16 @@ impl PhysicalPlanner {
                         Value::DoubleVal(value) => ScalarValue::Float64(Some(*value)),
                         Value::StringVal(value) => ScalarValue::Utf8(Some(value.clone())),
                         Value::BytesVal(value) => ScalarValue::Binary(Some(value.clone())),
+                        Value::VariantVal(value) => {
+                            if literal.datatype.as_ref().unwrap().type_id != spark_expression::data_type::DataTypeId::Variant as i32 {
+                                return Err(GeneralError("Variant literal requires Variant datatype".to_string()));
+                            }
+                            let DataType::Struct(fields) = data_type else { unreachable!() };
+                            ScalarStructBuilder::new()
+                                .with_scalar(Arc::clone(&fields[0]), ScalarValue::Binary(Some(value.value.clone())))
+                                .with_scalar(Arc::clone(&fields[1]), ScalarValue::Binary(Some(value.metadata.clone())))
+                                .build()?
+                        }
                         Value::DecimalVal(value) => {
                             let big_integer = BigInt::from_signed_bytes_be(value);
                             let integer = big_integer.to_i128().ok_or_else(|| {
@@ -691,7 +703,10 @@ impl PhysicalPlanner {
                         }
                     }
                 };
-                Ok(Arc::new(DataFusionLiteral::new(scalar_value)))
+                Ok(Arc::new(DataFusionLiteral::new_with_metadata(
+                    scalar_value,
+                    Some(literal_field.metadata().into()),
+                )))
             }
             ExprStruct::Cast(expr) => {
                 let child = self.create_expr(expr.child.as_ref().unwrap(), input_schema)?;
@@ -2049,6 +2064,7 @@ impl PhysicalPlanner {
                     common.encryption_enabled,
                     common.use_field_id,
                     common.require_field_ids,
+                    common.variant_size_limit as usize,
                 )?;
                 Ok((
                     vec![],
@@ -3901,6 +3917,14 @@ impl PhysicalPlanner {
             .collect::<Result<Vec<_>, _>>()?;
 
         let fun_name = &expr.func;
+        if matches!(fun_name.as_str(), "is_variant_null" | "is_valid_variant")
+            && (args.len() != 1
+                || !args[0]
+                    .return_field(&input_schema)?
+                    .has_valid_extension_type::<parquet::variant::VariantType>())
+        {
+            return Err(GeneralError(format!("{fun_name} requires a Variant input")));
+        }
         // `map_entries` needs its argument's entry `value` field widened to nullable first (only
         // that outer field). See `widen_map_entry_value_nullable`.
         let args = if fun_name == "map_entries" {
@@ -5298,6 +5322,77 @@ mod tests {
         let field = schema.field(0);
         assert!(field.has_valid_extension_type::<VariantType>());
         assert_eq!(field.metadata().get("source"), Some(&"spark".to_string()));
+    }
+
+    #[test]
+    fn variant_predicates_require_logical_variant_inputs() {
+        let planner = PhysicalPlanner::new(Arc::new(SessionContext::new()), 0);
+        let datatype = spark_expression::DataType {
+            type_id: spark_expression::data_type::DataTypeId::Variant as i32,
+            type_info: None,
+        };
+        let field = super::to_arrow_field("v", &datatype, true);
+        let bound = Expr {
+            expr_struct: Some(Bound(spark_expression::BoundReference {
+                index: 0,
+                datatype: Some(datatype.clone()),
+            })),
+            ..Default::default()
+        };
+        for name in ["is_variant_null", "is_valid_variant"] {
+            let predicate = |arg| spark_expression::ScalarFunc {
+                func: name.to_string(),
+                args: vec![arg],
+                return_type: Some(spark_expression::DataType {
+                    type_id: spark_expression::data_type::DataTypeId::Bool as i32,
+                    type_info: None,
+                }),
+                ..Default::default()
+            };
+            for (field, expected) in [
+                (field.clone(), true),
+                (Field::new("v", field.data_type().clone(), true), false),
+                (
+                    field
+                        .clone()
+                        .with_metadata(std::collections::HashMap::from([(
+                            "ARROW:extension:name".to_string(),
+                            "example.variant".to_string(),
+                        )])),
+                    false,
+                ),
+            ] {
+                let result = planner.create_scalar_function_expr(
+                    &predicate(bound.clone()),
+                    Arc::new(Schema::new(vec![field])),
+                );
+                assert_eq!(result.is_ok(), expected, "{name}: {result:?}");
+            }
+            for is_null in [false, true] {
+                let input = Expr {
+                    expr_struct: Some(ExprStruct::Literal(spark_expression::Literal {
+                        datatype: Some(datatype.clone()),
+                        is_null,
+                        value: Some(literal::Value::VariantVal(
+                            spark_expression::VariantLiteral {
+                                value: vec![0],
+                                metadata: vec![1, 0, 0],
+                            },
+                        )),
+                    })),
+                    ..Default::default()
+                };
+                let schema = Arc::new(Schema::empty());
+                let literal = planner.create_expr(&input, Arc::clone(&schema)).unwrap();
+                assert!(literal
+                    .return_field(&schema)
+                    .unwrap()
+                    .has_valid_extension_type::<VariantType>());
+                assert!(planner
+                    .create_scalar_function_expr(&predicate(input), schema)
+                    .is_ok());
+            }
+        }
     }
 
     fn create_sort_order(index: i32, type_id: i32, descending: bool, nulls_first: bool) -> Expr {

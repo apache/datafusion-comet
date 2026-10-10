@@ -40,8 +40,14 @@ message Literal {
     bytes bytes_val = 9;
     bytes decimal_val = 10;
     ListLiteral list_val = 11;
+    VariantLiteral variant_val = 14;
   }
 
   DataType datatype = 12;
   bool is_null = 13;
+}
+
+message VariantLiteral {
+  bytes value = 1;
+  bytes metadata = 2;
 }
