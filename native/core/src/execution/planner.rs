@@ -4566,34 +4566,58 @@ fn parse_file_scan_tasks_from_common(
                         file_path
                     ))
                 })?;
+            // iceberg-rust holds the two deletion-vector coordinates as `u64` too.
+            let content_offset =
+                del.content_offset
+                    .map(u64::try_from)
+                    .transpose()
+                    .map_err(|_| {
+                        GeneralError(format!(
+                            "Delete file '{}' has a negative content offset",
+                            file_path
+                        ))
+                    })?;
+            let content_size_in_bytes = del
+                .content_size_in_bytes
+                .map(u64::try_from)
+                .transpose()
+                .map_err(|_| {
+                    GeneralError(format!(
+                        "Delete file '{}' has a negative content size",
+                        file_path
+                    ))
+                })?;
 
-            Ok(iceberg::scan::FileScanTaskDeleteFile {
+            iceberg::scan::FileScanTaskDeleteFile::builder()
                 // Passed RAW, like `data_file_path` below (same exact-string delete-matching
                 // constraint -- see there).
-                file_path,
-                file_type,
-                file_format,
+                .with_file_path(file_path)
+                .with_file_type(file_type)
+                .with_file_format(file_format)
                 // Not serialized; filled in by IcebergScanExec::fill_delete_file_sizes.
-                file_size_in_bytes: 0,
-                partition_spec_id: del.partition_spec_id,
-                equality_ids: if del.equality_ids.is_empty() {
+                .with_file_size_in_bytes(0)
+                .with_partition_spec_id(del.partition_spec_id)
+                .with_equality_ids(if del.equality_ids.is_empty() {
                     None
                 } else {
                     Some(del.equality_ids.clone())
-                },
+                })
                 // Deletion-vector coordinates, which the serde sets only when file_format is
                 // PUFFIN. referenced_data_file names the data file the vector applies to; the other
                 // two locate the deletion-vector-v1 blob in its Puffin file. file_format above is
                 // the discriminator, since Iceberg also populates referencedDataFile on
                 // file-scoped Parquet position deletes.
-                referenced_data_file: del.referenced_data_file.clone(),
-                content_offset: del.content_offset,
-                content_size_in_bytes: del.content_size_in_bytes,
-                record_count,
+                .with_referenced_data_file(del.referenced_data_file.clone())
+                .with_content_offset(content_offset)
+                .with_content_size_in_bytes(content_size_in_bytes)
+                .with_record_count(record_count)
                 // Plaintext StandardKeyMetadata forwarded verbatim from the JVM; decoded by
                 // iceberg-rust with no KMS unwrap. None for unencrypted delete files.
-                key_metadata: del.key_metadata.clone().map(Vec::into_boxed_slice),
-            })
+                .with_key_metadata(del.key_metadata.clone().map(Vec::into_boxed_slice))
+                // Rejects a deletion vector that lacks its referenced data file, either blob
+                // coordinate or its record count.
+                .build()
+                .map_err(|e| GeneralError(format!("Invalid Iceberg delete file: {e}")))
         })
         .collect::<Result<Vec<_>, ExecutionError>>()?;
 
@@ -7850,6 +7874,69 @@ mod tests {
         // pool before spec_id 0's entry.
         assert_eq!(fields[0].name, "region_new");
         assert_eq!(fields[1].name, "category");
+    }
+
+    /// Delete files go through iceberg-rust's builder, which rejects a deletion vector that lacks
+    /// its referenced data file, a blob coordinate or its record count. iceberg-rust holds the
+    /// coordinates as `u64`, so a negative one is rejected before that.
+    #[test]
+    fn test_delete_file_pool_validates_deletion_vectors() {
+        let deletion_vector = spark_operator::IcebergDeleteFile {
+            file_path_idx: 0,
+            content_type: "POSITION_DELETES".to_string(),
+            file_format: "PUFFIN".to_string(),
+            referenced_data_file: Some("file:///tmp/data.parquet".to_string()),
+            content_offset: Some(4),
+            content_size_in_bytes: Some(40),
+            record_count: Some(2),
+            ..Default::default()
+        };
+        let parse = |delete: spark_operator::IcebergDeleteFile| {
+            let proto_common = spark_operator::IcebergScanCommon {
+                delete_file_path_pool: vec!["file:///tmp/dv.puffin".to_string()],
+                delete_file_pool: vec![delete],
+                ..Default::default()
+            };
+            parse_file_scan_tasks_from_common(&proto_common, &[]).map(|_| ())
+        };
+
+        assert!(parse(deletion_vector.clone()).is_ok());
+        for (delete, expected) in [
+            (
+                spark_operator::IcebergDeleteFile {
+                    content_offset: Some(-1),
+                    ..deletion_vector.clone()
+                },
+                "negative content offset",
+            ),
+            (
+                spark_operator::IcebergDeleteFile {
+                    content_size_in_bytes: Some(-1),
+                    ..deletion_vector.clone()
+                },
+                "negative content size",
+            ),
+            (
+                spark_operator::IcebergDeleteFile {
+                    referenced_data_file: None,
+                    ..deletion_vector.clone()
+                },
+                "missing referenced_data_file",
+            ),
+            (
+                spark_operator::IcebergDeleteFile {
+                    record_count: None,
+                    ..deletion_vector.clone()
+                },
+                "missing record_count",
+            ),
+        ] {
+            let error = parse(delete).expect_err(expected).to_string();
+            assert!(
+                error.contains(expected),
+                "expected '{expected}' in: {error}"
+            );
+        }
     }
 
     #[test]

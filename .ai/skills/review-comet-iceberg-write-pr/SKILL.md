@@ -107,8 +107,8 @@ only the latest.
       that starts trusting iceberg-rust's metrics, or adds a native-tracked value beyond float and
       double NaN counts and bounds, needs a strong reason.
 - [ ] **Value semantics match, not only formats.** iceberg-rust compares and hashes partition values
-      with its own rules: `OrderedFloat` treats `-0.0` and `0.0` as equal where Java's
-      `Float.compare` does not
+      with its own rules: until apache/iceberg-rust#3327 its `OrderedFloat` equality treated
+      `-0.0` and `0.0` as equal where Java's `Float.compare` does not
       ([#6138](https://github.com/apache/datafusion-comet/issues/6138)). Check equality, hashing,
       ordering and rendering for float, double, timestamp, timestamptz, binary and decimal.
 - [ ] **Timestamp partition values are UTC.** Iceberg's `years`, `months`, `days` and `hours`

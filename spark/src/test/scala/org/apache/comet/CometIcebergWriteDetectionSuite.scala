@@ -1500,92 +1500,22 @@ class CometIcebergWriteDetectionSuite extends CometTestBase with CometIcebergTes
     }
   }
 
-  test("fall-back: identity partition on a float or double column") {
-    // iceberg-rust groups float partition values with an equality that treats -0.0 and 0.0 as one
-    // value, where iceberg-java keeps them apart (#6138).
+  test("Compatible when partitioned by identity on a float or double column") {
+    // iceberg-rust grouped float partition values with an equality that treated -0.0 and 0.0 as
+    // one value, so these writes fell back (#6138) until apache/iceberg-rust#3327 kept the two
+    // apart as iceberg-java does. A nested source field resolves the same way.
     withDetectionCatalog { _ =>
-      Seq("float" -> "FLOAT", "double" -> "DOUBLE").foreach { case (typeName, sqlType) =>
-        val table = s"part_$typeName"
-        spark.sql(s"""
-          CREATE TABLE $catalog.$ns.$table (id INT, v $sqlType)
-          USING iceberg PARTITIONED BY (v)
-        """)
-        val writeExec = captureWriteExec(table, allowWriteFailure = false) {
-          spark.sql(s"INSERT INTO $catalog.$ns.$table VALUES (1, CAST(1.5 AS $sqlType))")
-        }
-        assertUnsupportedContains(writeExec, table, "partition field v", typeName, "-0.0")
+      Seq(
+        "part_float" -> ("v FLOAT", "v", "CAST(1.5 AS FLOAT)"),
+        "part_double" -> ("v DOUBLE", "v", "1.5D"),
+        "part_nested" -> ("s STRUCT<v: DOUBLE>", "s.v", "named_struct('v', 1.5D)")).foreach {
+        case (table, (column, partitionField, value)) =>
+          spark.sql(s"""
+            CREATE TABLE $catalog.$ns.$table (id INT, $column)
+            USING iceberg PARTITIONED BY ($partitionField)
+          """)
+          assertSupportLevelIs[Compatible](table, values = s"(1, $value)")
       }
-    }
-  }
-
-  test("fall-back: identity partition on a nested double field") {
-    // The source of a partition field can be nested inside a struct. `Schema.findField` resolves
-    // a nested id too, so the rule must not fail open for it.
-    withDetectionCatalog { _ =>
-      spark.sql(s"""
-        CREATE TABLE $catalog.$ns.part_nested (id INT, s STRUCT<v: DOUBLE>)
-        USING iceberg PARTITIONED BY (s.v)
-      """)
-      val writeExec = captureWriteExec("part_nested", allowWriteFailure = false) {
-        spark.sql(s"INSERT INTO $catalog.$ns.part_nested VALUES (1, named_struct('v', 1.5D))")
-      }
-      assertUnsupportedContains(writeExec, "part_nested", "partition field s.v", "double", "-0.0")
-    }
-  }
-
-  test("fall-back: double identity partition beside a dropped partition field") {
-    // A format-version-1 spec keeps a dropped partition field as a `void` transform, and that
-    // field's source column can be dropped afterwards. The surviving double field must still be
-    // found, whatever the dropped one does to the spec's partition type.
-    withDetectionCatalog { dir =>
-      createTable(
-        dir,
-        "part_dropped",
-        partitionSpec = "PARTITIONED BY (region, amount)",
-        properties = Some("'format-version'='1'"))
-      // Loaded afresh for each change: the insert in between commits through another handle.
-      def table: org.apache.iceberg.Table =
-        loadIcebergTable(spark, catalog, ns, "part_dropped")
-          .asInstanceOf[org.apache.iceberg.Table]
-      table.updateSpec().removeField("region").commit()
-      spark.sql(s"REFRESH TABLE $catalog.$ns.part_dropped")
-      assertUnsupportedContains("part_dropped", "partition field amount", "double", "-0.0")
-
-      // Iceberg before 1.11 cannot plan a write once the `void` field's source column is gone.
-      // On 1.11 iceberg-java plans it but cannot build a partition key for a spec that mixes that
-      // field with a live one, so the write itself fails on either path; only the gate's decision
-      // is checked.
-      if (icebergVersionAtLeast(1, 11)) {
-        table.updateSchema().deleteColumn("region").commit()
-        spark.sql(s"REFRESH TABLE $catalog.$ns.part_dropped")
-        val writeExec = captureWriteExec("part_dropped", allowWriteFailure = true) {
-          spark.sql(s"INSERT INTO $catalog.$ns.part_dropped VALUES (2, 2.0)")
-        }
-        assertUnsupportedContains(
-          writeExec,
-          "part_dropped",
-          "partition field amount",
-          "double",
-          "-0.0")
-      }
-    }
-  }
-
-  test("Compatible when a dropped double partition field remains as void") {
-    // The `void` field only ever holds null, so there are no signed zeros to keep apart.
-    withDetectionCatalog { dir =>
-      createTable(
-        dir,
-        "part_void",
-        partitionSpec = "PARTITIONED BY (amount)",
-        properties = Some("'format-version'='1'"))
-      loadIcebergTable(spark, catalog, ns, "part_void")
-        .asInstanceOf[org.apache.iceberg.Table]
-        .updateSpec()
-        .removeField("amount")
-        .commit()
-      spark.sql(s"REFRESH TABLE $catalog.$ns.part_void")
-      assertSupportLevelIs[Compatible]("part_void")
     }
   }
 
@@ -1788,10 +1718,11 @@ class CometIcebergWriteDetectionSuite extends CometTestBase with CometIcebergTes
 
   private def assertSupportLevelIs[T <: SupportLevel: scala.reflect.ClassTag](
       tableName: String,
-      allowWriteFailure: Boolean = false): Unit = {
+      allowWriteFailure: Boolean = false,
+      values: String = "(1, 'us', 1.0)"): Unit = {
     val expected = scala.reflect.classTag[T].runtimeClass
     val plan = captureWritePlan(tableName, allowWriteFailure) {
-      spark.sql(s"INSERT INTO $catalog.$ns.$tableName VALUES (1, 'us', 1.0)")
+      spark.sql(s"INSERT INTO $catalog.$ns.$tableName VALUES $values")
     }
     findWriteExec(plan) match {
       case Some(writeExec) =>
