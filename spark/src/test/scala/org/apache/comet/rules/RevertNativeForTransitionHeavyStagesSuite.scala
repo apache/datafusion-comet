@@ -22,21 +22,24 @@ package org.apache.comet.rules
 import java.util.concurrent.{CountDownLatch, TimeUnit}
 import java.util.concurrent.atomic.AtomicReference
 
+import org.apache.spark.SparkConf
 import org.apache.spark.sql.{CometTestBase, Row, SaveMode}
 import org.apache.spark.sql.catalyst.expressions.{AttributeReference, Literal}
 import org.apache.spark.sql.catalyst.expressions.aggregate.{Final, Partial}
 import org.apache.spark.sql.comet._
+import org.apache.spark.sql.comet.execution.arrow.ArrowCachedBatchSerializer
 import org.apache.spark.sql.comet.execution.shuffle.CometShuffleExchangeExec
 import org.apache.spark.sql.execution._
 import org.apache.spark.sql.execution.adaptive.{AQEShuffleReadExec, QueryStageExec, ShuffleQueryStageExec}
+import org.apache.spark.sql.execution.columnar.CometInMemoryRelationHelper
 import org.apache.spark.sql.execution.command.DataWritingCommandExec
 import org.apache.spark.sql.execution.datasources.WriteFilesExec
-import org.apache.spark.sql.internal.SQLConf
+import org.apache.spark.sql.internal.{SQLConf, StaticSQLConf}
 import org.apache.spark.sql.types.BinaryType
 import org.apache.spark.sql.util.QueryExecutionListener
 
 import org.apache.comet.CometConf
-import org.apache.comet.CometSparkSessionExtensions.isSpark35Plus
+import org.apache.comet.CometSparkSessionExtensions.{isSpark35Plus, isSpark40Plus}
 import org.apache.comet.serde.OperatorOuterClass.Operator
 
 private case class AliasingFallbackCometExec(
@@ -49,6 +52,26 @@ private case class AliasingFallbackCometExec(
 }
 
 class RevertNativeForTransitionHeavyStagesSuite extends CometTestBase {
+
+  // Spark 4.0+ builds a cache through columnar output only when the cache serializer accepts
+  // columnar input, so this suite installs Comet's. `InMemoryRelation` memoizes the serializer
+  // per JVM: reset it before this suite so the conf below takes effect, and after it so this
+  // suite does not pin Comet's serializer for the suites that follow.
+  override protected def beforeAll(): Unit = {
+    CometInMemoryRelationHelper.clearSerializer()
+    super.beforeAll()
+  }
+
+  override protected def afterAll(): Unit = {
+    try {
+      super.afterAll()
+    } finally {
+      CometInMemoryRelationHelper.clearSerializer()
+    }
+  }
+
+  override protected def sparkConf: SparkConf = super.sparkConf
+    .set(StaticSQLConf.SPARK_CACHE_SERIALIZER.key, classOf[ArrowCachedBatchSerializer].getName)
 
   private def cometIcebergWrite(child: SparkPlan): CometIcebergWriteExec = {
     val output = Seq(
@@ -799,6 +822,49 @@ class RevertNativeForTransitionHeavyStagesSuite extends CometTestBase {
         }
         assert(scan.supportsColumnar, s"the reverted scan must use its columnar path:\n$scan")
         assert(countCometExecs(executedPlan) == 0, s"the stage must be reverted:\n$executedPlan")
+      }
+    }
+  }
+
+  // https://github.com/apache/datafusion-comet/issues/6687
+  test("transition-heavy revert restores columnar output for a cached AQE result stage") {
+    assume(isSpark40Plus, "Spark builds a cache from AQE's columnar output only from 4.0")
+    withSQLConf(
+      SQLConf.ADAPTIVE_EXECUTION_ENABLED.key -> "true",
+      CometConf.COMET_EXEC_TRANSITION_REVERT_ENABLED.key -> "true",
+      CometConf.COMET_EXEC_TRANSITION_REVERT_MAX_TRANSITIONS.key -> "0",
+      // A Spark filter over the native final aggregate puts a transition in the result stage.
+      CometConf.COMET_EXEC_FILTER_ENABLED.key -> "false") {
+      withParquetTable((0 until 100).map(i => (i, i % 10)), "tbl") {
+        val query =
+          "SELECT _2, s FROM (SELECT _2, sum(_1) AS s FROM tbl GROUP BY _2) WHERE s > 10"
+        // Take Spark's answer first: once cached, the cache serves every read of the query.
+        var expected = Array.empty[Row]
+        withSQLConf(CometConf.COMET_ENABLED.key -> "false") {
+          expected = sql(query).collect()
+        }
+        val cached = spark.sql(query).cache()
+        try {
+          checkAnswer(cached, expected)
+          val cachedPlan = spark.sharedState.cacheManager
+            .lookupCachedData(cached)
+            .get
+            .cachedRepresentation
+            .cacheBuilder
+            .cachedPlan
+          assert(
+            cachedPlan.supportsColumnar,
+            s"the cache must be built from columnar output:\n$cachedPlan")
+          val resultStage = stripAQEPlan(cachedPlan)
+          assert(
+            countCometExecs(resultStage) == 0,
+            s"the result stage must be reverted:\n$resultStage")
+          assert(
+            resultStage.supportsColumnar,
+            s"the reverted result stage must stay columnar:\n$resultStage")
+        } finally {
+          cached.unpersist()
+        }
       }
     }
   }
