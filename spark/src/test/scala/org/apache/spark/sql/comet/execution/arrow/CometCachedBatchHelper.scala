@@ -33,6 +33,7 @@ import org.apache.arrow.vector.ipc.{ReadChannel, WriteChannel}
 import org.apache.arrow.vector.ipc.message.{ArrowBodyCompression, ArrowRecordBatch, MessageMetadataResult, MessageSerializer}
 import org.apache.arrow.vector.types.pojo.Field
 import org.apache.spark.sql.catalyst.InternalRow
+import org.apache.spark.sql.catalyst.expressions.Attribute
 import org.apache.spark.sql.columnar.CachedBatch
 import org.apache.spark.sql.comet.util.Utils
 import org.apache.spark.sql.types.StructType
@@ -128,6 +129,18 @@ object CometCachedBatchHelper {
   /** A payload [[serialize]] wrote, as the cached batch the writer would have stored it in. */
   def cachedBatch(payload: ChunkedByteBuffer, numRows: Int): CachedBatch =
     CometCachedBatch(numRows, InternalRow.empty, payload)
+
+  /**
+   * The lower bounds, upper bounds and null counts the writer records for `batch`, one entry per
+   * column. Another thin shim, for tests that hand the statistics collector a batch no plan
+   * produces.
+   */
+  def columnStats(
+      batch: ColumnarBatch,
+      attrs: Seq[Attribute]): (Array[Any], Array[Any], Array[Int]) = {
+    val serializer = new ArrowCachedBatchSerializer
+    serializer.gatherColumnStats(batch, attrs, serializer.boundsOrderings(attrs))
+  }
 
   /**
    * Decode the `selected` columns of a cached batch the way a scan does, into a root the caller
