@@ -18,8 +18,10 @@
 use arrow::array::Int64Array;
 use arrow::datatypes::{DataType, Field};
 use criterion::{criterion_group, criterion_main, Criterion};
+use datafusion::common::{config::ConfigOptions, ScalarValue};
+use datafusion::logical_expr::{ScalarFunctionArgs, ScalarUDF};
 use datafusion::physical_plan::ColumnarValue;
-use datafusion_comet_spark_expr::spark_sequence;
+use datafusion_comet_spark_expr::{SequenceMemoryPool, SparkSequence};
 use std::hint::black_box;
 use std::sync::Arc;
 
@@ -53,6 +55,12 @@ fn args_with_len(elems_per_row: i64, null_every: Option<usize>) -> Vec<ColumnarV
 
 fn criterion_benchmark(c: &mut Criterion) {
     let return_type = list_of_i64();
+    // Raise the isolated benchmark allowance explicitly: 8192 x 10000 i64 elements exceed
+    // the 256 MiB production default. The safety ceiling has separate refusal tests.
+    let udf = SparkSequence::new(
+        return_type.clone(),
+        SequenceMemoryPool::new(1024 * 1024 * 1024),
+    );
 
     let mut group = c.benchmark_group("sequence");
 
@@ -60,7 +68,7 @@ fn criterion_benchmark(c: &mut Criterion) {
     for elems in [2i64, 5] {
         let args = args_with_len(elems, None);
         group.bench_function(format!("short_{elems}_elems"), |b| {
-            b.iter(|| black_box(spark_sequence(&args, &return_type).unwrap()))
+            b.iter(|| black_box(udf.evaluate(&args, NUM_ROWS).unwrap()))
         });
     }
 
@@ -69,7 +77,7 @@ fn criterion_benchmark(c: &mut Criterion) {
     for elems in [365i64, 10_000] {
         let args = args_with_len(elems, None);
         group.bench_function(format!("long_{elems}_elems"), |b| {
-            b.iter(|| black_box(spark_sequence(&args, &return_type).unwrap()))
+            b.iter(|| black_box(udf.evaluate(&args, NUM_ROWS).unwrap()))
         });
     }
 
@@ -84,7 +92,7 @@ fn criterion_benchmark(c: &mut Criterion) {
             ColumnarValue::Array(Arc::new(step)),
         ];
         group.bench_function("descending_365_elems", |b| {
-            b.iter(|| black_box(spark_sequence(&args, &return_type).unwrap()))
+            b.iter(|| black_box(udf.evaluate(&args, NUM_ROWS).unwrap()))
         });
     }
 
@@ -99,7 +107,7 @@ fn criterion_benchmark(c: &mut Criterion) {
             ColumnarValue::Array(Arc::new(step)),
         ];
         group.bench_function("zero_step_start_eq_stop", |b| {
-            b.iter(|| black_box(spark_sequence(&args, &return_type).unwrap()))
+            b.iter(|| black_box(udf.evaluate(&args, NUM_ROWS).unwrap()))
         });
     }
 
@@ -107,7 +115,7 @@ fn criterion_benchmark(c: &mut Criterion) {
     for (label, every) in [("sparse_nulls", 10usize), ("dense_nulls", 2)] {
         let args = args_with_len(365, Some(every));
         group.bench_function(format!("{label}_365_elems"), |b| {
-            b.iter(|| black_box(spark_sequence(&args, &return_type).unwrap()))
+            b.iter(|| black_box(udf.evaluate(&args, NUM_ROWS).unwrap()))
         });
     }
 
@@ -122,8 +130,60 @@ fn criterion_benchmark(c: &mut Criterion) {
             ColumnarValue::Array(Arc::new(step)),
         ];
         group.bench_function("error_illegal_boundaries", |b| {
-            b.iter(|| black_box(spark_sequence(&args, &return_type).unwrap_err()))
+            b.iter(|| black_box(udf.evaluate(&args, NUM_ROWS).unwrap_err()))
         });
+    }
+
+    // Scalar steps must not allocate a full input column.
+    for elems in [2i64, 5, 365, 10_000] {
+        let mut args = args_with_len(elems, None);
+        args.push(ColumnarValue::Scalar(ScalarValue::Int64(Some(1))));
+        group.bench_function(format!("scalar_step_{elems}_elems"), |b| {
+            b.iter(|| black_box(udf.evaluate(&args, NUM_ROWS).unwrap()))
+        });
+    }
+
+    // Exercise the physical UDF and the caller's expansion of a scalar result. Both the
+    // baseline and candidate must produce the complete requested batch.
+    let scalar_udf = Arc::new(ScalarUDF::new_from_impl(SparkSequence::new(
+        return_type.clone(),
+        SequenceMemoryPool::new(1024 * 1024 * 1024),
+    )));
+    let return_field = Arc::new(Field::new("result", return_type.clone(), true));
+    let config_options = Arc::new(ConfigOptions::default());
+    for rows in [1, NUM_ROWS] {
+        for elems in [2i64, 5, 365, 10_000] {
+            let args = vec![
+                ColumnarValue::Scalar(ScalarValue::Int64(Some(0))),
+                ColumnarValue::Scalar(ScalarValue::Int64(Some(elems - 1))),
+            ];
+            group.bench_function(format!("all_scalar_{rows}_rows_{elems}_elems"), |b| {
+                b.iter(|| {
+                    black_box(
+                        scalar_udf
+                            .invoke_with_args(ScalarFunctionArgs {
+                                args: args.clone(),
+                                arg_fields: vec![],
+                                number_rows: rows,
+                                return_field: Arc::clone(&return_field),
+                                config_options: Arc::clone(&config_options),
+                            })
+                            .unwrap()
+                            .into_array(rows)
+                            .unwrap(),
+                    )
+                })
+            });
+        }
+    }
+
+    for (label, every) in [("sparse_nulls", 10usize), ("dense_nulls", 2)] {
+        for elems in [2i64, 5] {
+            let args = args_with_len(elems, Some(every));
+            group.bench_function(format!("{label}_{elems}_elems"), |b| {
+                b.iter(|| black_box(udf.evaluate(&args, NUM_ROWS).unwrap()))
+            });
+        }
     }
 
     group.finish();

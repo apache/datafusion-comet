@@ -549,6 +549,7 @@ struct ExecutionContext {
     pub plan_creation_time: Duration,
     /// DataFusion SessionContext
     pub session_ctx: Arc<SessionContext>,
+    sequence_memory: Arc<datafusion_comet_spark_expr::SequenceMemoryPool>,
     /// Whether to enable additional debugging checks & messages
     pub debug_native: bool,
     /// Whether to write native plans with metrics to stdout
@@ -611,6 +612,22 @@ pub unsafe extern "system" fn Java_org_apache_comet_Native_createPlan(
         let bytes = env.convert_byte_array(serialized_spark_configs)?;
         let spark_configs = serde::deserialize_config(bytes.as_slice())?;
         let spark_config: HashMap<String, String> = spark_configs.entries.into_iter().collect();
+
+        // This value is resolved from the executor SparkConf on the JVM, overriding SQLConf.
+        // Share live bytes process-wide while retaining the limit of this executor context.
+        let sequence_limit = spark_config
+            .get(datafusion_comet_spark_expr::SEQUENCE_MAX_BYTES_CONFIG)
+            .map(|value| value.parse::<usize>())
+            .transpose()
+            .map_err(|error| CometError::Config(format!("Invalid sequence allowance: {error}")))?
+            .unwrap_or(datafusion_comet_spark_expr::DEFAULT_SEQUENCE_MAX_BYTES);
+        if sequence_limit == 0 {
+            return Err(CometError::Config(
+                "Sequence allowance must be positive".to_string(),
+            ));
+        }
+        let sequence_memory =
+            datafusion_comet_spark_expr::SequenceMemoryPool::executor(sequence_limit);
 
         // Initialize the tokio runtime with spark.executor.cores as the default
         // worker thread count, falling back to 1 if not set.
@@ -762,6 +779,7 @@ pub unsafe extern "system" fn Java_org_apache_comet_Native_createPlan(
                 metrics_last_update_time: Instant::now(),
                 plan_creation_time,
                 session_ctx: session,
+                sequence_memory,
                 debug_native,
                 explain_native,
                 tracing_enabled,
@@ -1288,6 +1306,7 @@ pub unsafe extern "system" fn Java_org_apache_comet_Native_executePlan(
                 let planner =
                     PhysicalPlanner::new(Arc::clone(&exec_context.session_ctx), partition)
                         .with_exec_id(exec_context_id)
+                        .with_sequence_memory(Arc::clone(&exec_context.sequence_memory))
                         .with_sql_text_pool(&exec_context.spark_plan)
                         .with_task_context(exec_context.task_context.clone())
                         .with_class_loader(exec_context.class_loader.clone())

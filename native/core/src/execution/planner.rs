@@ -350,6 +350,7 @@ pub struct PhysicalPlanner {
     /// How comparisons treat floating-point operands. `Raw` only while planning a scan's data
     /// filters; see [`Self::create_data_filter`].
     float_operands: FloatOperands,
+    sequence_memory: Arc<datafusion_comet_spark_expr::SequenceMemoryPool>,
 }
 
 impl Default for PhysicalPlanner {
@@ -370,7 +371,18 @@ impl PhysicalPlanner {
             class_loader: None,
             shuffle_partition_pusher: None,
             float_operands: FloatOperands::Normalize,
+            sequence_memory: datafusion_comet_spark_expr::SequenceMemoryPool::executor(
+                datafusion_comet_spark_expr::DEFAULT_SEQUENCE_MAX_BYTES,
+            ),
         }
+    }
+
+    pub fn with_sequence_memory(
+        mut self,
+        pool: Arc<datafusion_comet_spark_expr::SequenceMemoryPool>,
+    ) -> Self {
+        self.sequence_memory = pool;
+        self
     }
 
     /// Load the SQL text pool from the root operator of the plan about to be planned. Must be
@@ -3984,12 +3996,22 @@ impl PhysicalPlanner {
                 }
             };
 
-        let fun_expr = create_comet_physical_fun(
-            fun_name,
-            data_type.clone(),
-            &self.session_ctx.state(),
-            Some(expr.fail_on_error),
-        )?;
+        let fun_expr = if fun_name == "spark_sequence" {
+            Arc::new(datafusion::logical_expr::ScalarUDF::new_from_impl(
+                datafusion_comet_spark_expr::SparkSequence::new(
+                    data_type.clone(),
+                    Arc::clone(&self.sequence_memory),
+                )
+                .with_task_context(self.task_context.clone())?,
+            ))
+        } else {
+            create_comet_physical_fun(
+                fun_name,
+                data_type.clone(),
+                &self.session_ctx.state(),
+                Some(expr.fail_on_error),
+            )?
+        };
 
         let args = args
             .into_iter()
@@ -6439,6 +6461,60 @@ mod tests {
         spark_expression::DataType {
             type_id: 3,
             type_info: None,
+        }
+    }
+
+    #[test]
+    fn sequence_planner_uses_executor_admission() {
+        use datafusion_comet_spark_expr::SequenceMemoryPool;
+        use spark_expression::data_type::{data_type_info::DatatypeStruct, DataTypeInfo, ListInfo};
+        let array_type = spark_expression::DataType {
+            type_id: 14,
+            type_info: Some(Box::new(DataTypeInfo {
+                datatype_struct: Some(DatatypeStruct::List(Box::new(ListInfo {
+                    element_type: Some(Box::new(create_proto_datatype())),
+                    contains_null: false,
+                    element_field_id: None,
+                }))),
+            })),
+        };
+        let expr = spark_expression::ScalarFunc {
+            func: "spark_sequence".into(),
+            args: vec![create_bound_reference(0), create_bound_reference(1)],
+            return_type: Some(array_type),
+            fail_on_error: false,
+        };
+        let schema = Arc::new(Schema::new(vec![
+            Field::new("a", DataType::Int32, false),
+            Field::new("b", DataType::Int32, false),
+        ]));
+        let batch = RecordBatch::try_new(
+            Arc::clone(&schema),
+            vec![
+                Arc::new(Int32Array::from(vec![1, 2])),
+                Arc::new(Int32Array::from(vec![3, 4])),
+            ],
+        )
+        .unwrap();
+        for limit in [0, 1024] {
+            let pool = SequenceMemoryPool::new(limit);
+            let planner = PhysicalPlanner::default().with_sequence_memory(Arc::clone(&pool));
+            let physical = planner
+                .create_scalar_function_expr(&expr, Arc::clone(&schema))
+                .unwrap();
+            let result = physical.evaluate(&batch);
+            if limit == 0 {
+                assert!(matches!(
+                    result,
+                    Err(DataFusionError::ResourcesExhausted(_))
+                ));
+            } else {
+                let result = result.unwrap().into_array(2).unwrap();
+                assert_eq!(result.len(), 2);
+                assert!(pool.reserved() > 0);
+                drop(result);
+            }
+            assert_eq!(pool.reserved(), 0);
         }
     }
 

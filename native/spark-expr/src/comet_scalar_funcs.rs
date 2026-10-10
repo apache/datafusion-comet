@@ -31,8 +31,8 @@ use crate::math_funcs::SparkGreatestLeast;
 use crate::{
     spark_ceil, spark_day_name, spark_decimal_div, spark_decimal_integral_div, spark_floor,
     spark_isnan, spark_lpad, spark_make_decimal, spark_month_name, spark_read_side_padding,
-    spark_round, spark_rpad, spark_sequence, spark_to_time, spark_unhex, spark_unscaled_value,
-    EvalMode, SparkArrayExtrema, SparkArrayPositionFunc, SparkArrayRemove, SparkArraySlice,
+    spark_round, spark_rpad, spark_to_time, spark_unhex, spark_unscaled_value, EvalMode,
+    SparkArrayExtrema, SparkArrayPositionFunc, SparkArrayRemove, SparkArraySlice,
     SparkArraysOverlap, SparkContains, SparkDateDiff, SparkDateFromUnixDate, SparkDateTrunc,
     SparkDayOfWeek, SparkFlatten, SparkFloatArrayContains, SparkIcebergBucket,
     SparkIcebergTemporalTransform, SparkIcebergTruncate, SparkMakeDate, SparkMakeInterval,
@@ -130,9 +130,12 @@ pub fn create_comet_physical_fun_with_eval_mode(
         "ceil" => {
             make_comet_scalar_udf!("ceil", spark_ceil, data_type)
         }
-        "spark_sequence" => {
-            make_comet_scalar_udf!("spark_sequence", spark_sequence, data_type)
-        }
+        "spark_sequence" => Ok(Arc::new(ScalarUDF::new_from_impl(
+            crate::SparkSequence::new(
+                data_type,
+                crate::SequenceMemoryPool::executor(crate::DEFAULT_SEQUENCE_MAX_BYTES),
+            ),
+        ))),
         "floor" => {
             make_comet_scalar_udf!("floor", spark_floor, data_type)
         }

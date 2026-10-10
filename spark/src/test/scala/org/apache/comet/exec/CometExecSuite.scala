@@ -112,6 +112,26 @@ class CometExecSuite extends CometTestBase {
     }
   }
 
+  test("sequence allowance comes from executor SparkConf rather than SQLConf") {
+    val key = CometConf.COMET_SEQUENCE_MAX_BYTES_PER_EXECUTOR.key
+    val conf = new org.apache.spark.SparkConf(false)
+    assert(CometExecIterator.sequenceMaxBytes(conf) == 256L * 1024 * 1024)
+    conf.set(key, "64m")
+    assert(CometExecIterator.sequenceMaxBytes(conf) == 64L * 1024 * 1024)
+    for (invalid <- Seq("0", "-1", "not-a-size")) {
+      conf.set(key, invalid)
+      intercept[IllegalArgumentException](CometExecIterator.sequenceMaxBytes(conf))
+    }
+    val expected = CometExecIterator.sequenceMaxBytes(org.apache.spark.SparkEnv.get.conf)
+    for (sessionValue <- Seq("1", "4g")) {
+      withSQLConf(key -> sessionValue) {
+        val entries =
+          ConfigMap.parseFrom(CometExecIterator.serializeCometSQLConfs()).getEntriesMap
+        assert(entries.get(key) == expected.toString)
+      }
+    }
+  }
+
   test("native sort spill files are compressed with the default spill codec") {
     val numRows = 20000
     val compressibleValue = "native-sort-spill-compression-" * 8

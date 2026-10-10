@@ -850,6 +850,11 @@ object CometExecIterator extends Logging {
   private def cometSqlConfs: Map[String, String] =
     SQLConf.get.getAllConfs.filter(_._1.startsWith(CometConf.COMET_PREFIX))
 
+  def sequenceMaxBytes(conf: SparkConf): Long = {
+    val entry = CometConf.COMET_SEQUENCE_MAX_BYTES_PER_EXECUTOR
+    conf.getOption(entry.key).map(entry.valueConverter).getOrElse(entry.defaultValue.get)
+  }
+
   def serializeCometSQLConfs(): Array[Byte] = {
     val builder = ConfigMap.newBuilder()
     cometSqlConfs.foreach { case (k, v) =>
@@ -882,6 +887,12 @@ object CometExecIterator extends Logging {
       CometConf.COMET_TRACING_ENABLED).foreach { entry =>
       builder.putEntries(entry.key, entry.get(SQLConf.get).toString)
     }
+
+    // Executor-wide admission must never take a SQL session's larger allowance. Overwrite any
+    // raw SQLConf entry above with the authoritative startup SparkConf value, including default.
+    builder.putEntries(
+      CometConf.COMET_SEQUENCE_MAX_BYTES_PER_EXECUTOR.key,
+      sequenceMaxBytes(SparkEnv.get.conf).toString)
 
     builder.build().toByteArray
   }

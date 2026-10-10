@@ -25,6 +25,48 @@ mod tests {
     use datafusion_comet_spark_expr::create_comet_physical_fun;
     use datafusion_comet_spark_expr::register_all_comet_functions;
 
+    #[tokio::test]
+    async fn sequence_scalar_folding_cannot_bypass_full_batch_admission() -> Result<()> {
+        use arrow::datatypes::Field;
+        use datafusion::logical_expr::{ScalarUDF, Volatility};
+        use datafusion_comet_spark_expr::{SequenceMemoryPool, SparkSequence};
+        use std::sync::Arc;
+
+        let data_type = DataType::List(Arc::new(Field::new_list_field(DataType::Int64, false)));
+        let ctx = SessionContext::new();
+        let registered =
+            create_comet_physical_fun("spark_sequence", data_type.clone(), &ctx.state(), None)?;
+        assert_eq!(registered.signature().volatility, Volatility::Volatile);
+        // One row fits; eight rows need more than 256 bytes. A folded list scalar followed by
+        // broadcasting would succeed outside admission, whereas native full-batch generation fails.
+        let pool = SequenceMemoryPool::new(256);
+        ctx.register_udf(ScalarUDF::new_from_impl(SparkSequence::new(
+            data_type,
+            Arc::clone(&pool),
+        )));
+        let frame = ctx.sql("SELECT spark_sequence(1::BIGINT, 5::BIGINT) FROM (VALUES (1), (2), (3), (4), (5), (6), (7), (8)) AS t(x)").await?;
+        let plan = frame.clone().into_optimized_plan()?;
+        assert!(plan.to_string().contains("spark_sequence"));
+        assert_eq!(pool.reserved(), 0);
+        assert!(frame
+            .collect()
+            .await
+            .unwrap_err()
+            .to_string()
+            .contains("executor allowance"));
+        assert_eq!(pool.reserved(), 0);
+        let batches = ctx
+            .sql("SELECT spark_sequence(1::BIGINT, 5::BIGINT)")
+            .await?
+            .collect()
+            .await?;
+        assert_eq!(batches[0].num_rows(), 1);
+        assert!(pool.reserved() > 0);
+        drop(batches);
+        assert_eq!(pool.reserved(), 0);
+        Ok(())
+    }
+
     #[test]
     fn test_concat_ws_runtime_scalars() -> Result<()> {
         use arrow::datatypes::Field;
