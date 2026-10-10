@@ -17,10 +17,11 @@
 
 //! Utils for supporting native sort-based columnar shuffle.
 
+use crate::codec_context::ShuffleCodecContext;
 use crate::spark_unsafe::unsafe_object::{impl_primitive_accessors, SparkUnsafeObject};
 use crate::spark_unsafe::{
     list::append_list_element,
-    map::{append_map_elements, get_map_key_value_fields},
+    map::{append_map_elements, get_map_key_value_fields, map_key_value_fields},
 };
 use crate::writers::Checksum;
 use crate::writers::ShuffleBlockWriter;
@@ -38,7 +39,6 @@ use arrow::array::{
 use arrow::compute::cast;
 use arrow::datatypes::{DataType, Field, Schema, TimeUnit};
 use arrow::error::ArrowError;
-use arrow::ipc::writer::IpcWriteContext;
 use datafusion::physical_plan::metrics::Time;
 use datafusion_comet_jni_bridge::errors::CometError;
 use jni::sys::{jint, jlong};
@@ -705,7 +705,7 @@ fn append_map_column_batch(
     map_builder: &mut MapBuilder<Box<dyn ArrayBuilder>, Box<dyn ArrayBuilder>>,
 ) -> Result<(), CometError> {
     let mut row = SparkUnsafeRow::new(schema);
-    let (key_field, value_field, _) = get_map_key_value_fields(field)?;
+    let (key_field, value_field) = map_key_value_fields(field)?;
     let key_type = key_field.data_type();
     let value_type = value_field.data_type();
 
@@ -1388,7 +1388,9 @@ pub fn process_sorted_row_partition(
 
     // Single ipc_time accumulates encode + compression time across all batches.
     let ipc_time = Time::default();
-    let mut compression_context = IpcWriteContext::default();
+    // One context for every batch this call encodes; the JVM calls in once per sorted
+    // partition, so there is no wider native scope to hoist it to.
+    let mut codec_context = ShuffleCodecContext::default();
 
     while current_row < row_num {
         let n = std::cmp::min(batch_size, row_num - current_row);
@@ -1422,8 +1424,7 @@ pub fn process_sorted_row_partition(
         let mut cursor = Cursor::new(&mut frozen);
 
         let block_writer = ShuffleBlockWriter::try_new(batch.schema().as_ref(), codec.clone())?;
-        written +=
-            block_writer.write_batch(&batch, &mut cursor, &mut compression_context, &ipc_time)?;
+        written += block_writer.write_batch(&batch, &mut cursor, &mut codec_context, &ipc_time)?;
 
         if let Some(checksum) = &mut current_checksum {
             checksum.update(&mut cursor)?;

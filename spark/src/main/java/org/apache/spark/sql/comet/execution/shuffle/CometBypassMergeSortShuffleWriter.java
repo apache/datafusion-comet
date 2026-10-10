@@ -171,7 +171,6 @@ final class CometBypassMergeSortShuffleWriter<K, V> extends ShuffleWriter<K, V>
 
       allocator =
           CometShuffleMemoryAllocator.getInstance(
-              conf,
               memoryManager,
               Math.min(
                   CometShuffleExternalSorter.MAXIMUM_PAGE_SIZE_BYTES,

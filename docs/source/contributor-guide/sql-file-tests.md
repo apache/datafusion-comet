@@ -98,6 +98,9 @@ Sets a Spark SQL config for all queries in the file.
 -- Config: spark.sql.ansi.enabled=true
 ```
 
+The first `=` separates the key from the value. Values containing `=`, such as base64
+encryption keys, are preserved. An empty value is allowed; the key must be non-empty.
+
 #### `ConfigMatrix`
 
 Runs the entire file once per combination of values. Multiple `ConfigMatrix` lines produce a
@@ -117,12 +120,63 @@ sql-file: expressions/conditional/in_set.sql [spark.sql.optimizer.inSetConversio
 Only add a `ConfigMatrix` directive when there is a real reason to run the test under
 multiple configurations. Do not add `ConfigMatrix` directives speculatively.
 
+Values are comma-separated and must be non-empty. As with `Config`, any `=` within a
+value is preserved. A matrix value overrides a `Config` value for the same key.
+
+#### `ExcludeRules`
+
+Adds fully qualified optimizer rule names to the exclusion list. Constant folding remains
+disabled by default.
+
+```sql
+-- ExcludeRules: org.apache.spark.sql.catalyst.optimizer.NullPropagation
+-- ExcludeRules: org.apache.spark.sql.catalyst.optimizer.ConvertToLocalRelation
+```
+
+Repeated lines are combined, and duplicate rules are removed. Rules declared through
+`Config: spark.sql.optimizer.excludedRules=...` are also retained; a matrix selects the
+value of that config before `ExcludeRules` and the default exclusion are added. Unknown
+rules and rules Spark does not permit excluding fail the fixture rather than silently
+leaving the optimizer unchanged.
+
+Exclude `NullPropagation` when the test needs a NULL argument to reach an expression.
+Disabling ConstantFolding alone does not prevent Spark from replacing `abs(NULL)` with a
+NULL literal.
+
+#### `ConstantFolding`
+
+Lets Spark fold constants for a fixture that tests folded complex literals.
+
+```sql
+-- ConstantFolding: enabled
+```
+
+`disabled` is the default. With `enabled`, an all-literal `array(...)`, `map(...)` or
+`named_struct(...)` can become a complex `Literal` before Comet sees it. This exercises
+Comet's literal handling, rather than its expression constructors. Ordinary all-literal
+function queries may instead fold away entirely; use column inputs when those functions
+must execute in Comet. Combining `enabled` with an explicit ConstantFolding exclusion
+is rejected as contradictory. Repeated `ConstantFolding` directives must agree.
+
+Malformed configuration directives fail that fixture with its file path and source line
+instead of being treated as ordinary comments. Other fixtures still run.
+
 #### `MinSparkVersion`
 
 Skips the file when running on a Spark version older than the specified version.
 
 ```sql
 -- MinSparkVersion: 3.5
+```
+
+#### `MaxSparkVersion`
+
+Skips the file when running on a Spark version newer than the specified version (inclusive of
+that version). Use it together with `MinSparkVersion` in a paired fixture when a behavior
+changed between versions and each range needs its own expected output or error class.
+
+```sql
+-- MaxSparkVersion: 3.5
 ```
 
 ### Statements
@@ -137,6 +191,34 @@ CREATE TABLE my_table(x int, y double) USING parquet
 statement
 INSERT INTO my_table VALUES (1, 2.0), (3, 4.0), (NULL, NULL)
 ```
+
+Use `SET` statements to change SQL configs between queries:
+
+```sql
+-- Starts with the fixture default, ANSI disabled.
+query
+SELECT CAST(v AS INT) FROM my_strings
+
+statement
+SET spark.sql.ansi.enabled=true
+
+query expect_error(CAST_INVALID_INPUT)
+SELECT CAST(v AS INT) FROM my_strings
+```
+
+All SQLConf changes are restored when the fixture finishes, including on failure and
+between matrix combinations. Keys changed by `SET` need not also appear in `Config`.
+`RESET` is restored too, but it removes the selected setting for the remaining queries;
+`RESET` without a key also resets the harness's ANSI and optimizer settings. A mid-file
+`SET spark.sql.optimizer.excludedRules=...` replaces the whole exclusion list, including
+the default ConstantFolding exclusion.
+
+Enabling the codegen dispatcher through `SET` still requires a non-error sentinel when
+the file contains `expect_error`, just as enabling it through `Config` does. Run that
+sentinel under the same settings as the error query.
+
+This isolation covers SQL configs, not `USE`, temporary views or functions, or SQL
+session variables. Manage those separately.
 
 ### Queries
 
@@ -192,6 +274,35 @@ query expect_fallback(unsupported expression)
 SELECT unsupported_func(v) FROM test_table
 ```
 
+#### `query expect_dispatch(<names>)` / `query expect_native(<names>)`
+
+Checks results and coverage like a plain `query`, and additionally asserts how Comet evaluated
+the named expressions.
+
+Comet runs an expression either natively (a DataFusion expression) or through the JVM codegen
+dispatcher (Spark's own `doGenCode` compiled into an Arrow batch kernel). Both produce
+Spark-matching results, so a plain `query` cannot tell them apart. Use these modes on fixtures
+where the mechanism is the point of the test, typically an expression whose support depends on
+its argument type.
+
+```sql
+-- BinaryType has no native path and must route through the dispatcher
+query expect_dispatch(bit_length)
+SELECT bit_length(b) FROM test_bit_length_binary
+
+-- StringType must stay on the native path
+query expect_native(bit_length)
+SELECT bit_length(s) FROM test_bit_length
+```
+
+Names are comma-separated. A name is the expression's `prettyName` lowercased (`bit_length`,
+`octet_length`, `rlike`), which is not always the SQL alias used to invoke it. Naming an
+expression asserts both that it ran through the expected mechanism and that it did not run
+through the other one.
+
+A query carries one mode, so a query mixing a native and a dispatched expression has to be split
+into two queries, one per mode.
+
 #### `query ignore(<reason>)`
 
 Skips the query entirely. Use this for queries that hit known bugs. The reason should be a
@@ -243,6 +354,11 @@ SELECT array(1, 2, 3)[10]
    when you expect Comet to run the expression natively. Use `query spark_answer_only` when
    native execution is not yet expected.
 
+   If the expression's serde routes some input types to a native DataFusion expression and
+   others through the JVM codegen dispatcher, use `expect_native(...)` and `expect_dispatch(...)`
+   for those queries. A plain `query` cannot tell the two mechanisms apart, so the split is
+   otherwise untested.
+
 6. Run the tests to verify:
 
    ```shell
@@ -250,6 +366,17 @@ SELECT array(1, 2, 3)[10]
    ```
 
 ### Tips for writing thorough tests
+
+#### Pin the mechanism where the serde chooses one
+
+Reach for `expect_native(...)` / `expect_dispatch(...)` whenever the fixture's own comments
+explain which path an input takes. That comment is a claim about behavior, and these modes are
+what turn it into a test. Expressions worth annotating are the ones whose support level depends
+on argument type or on a config: `round` (float and double dispatch, decimal and integral stay
+native), `lower` / `upper` (dispatch by default), and anything mixing in `CodegenDispatchFallback`.
+
+A query carries a single mode, so a query that mixes both mechanisms has to be split. That split
+is usually worth doing on its own: it forces you to say which argument takes which path.
 
 #### Cover all combinations of literal and column arguments
 
@@ -290,7 +417,9 @@ planning, so Comet would never see them. However, `CometSqlFileTestSuite` automa
 disables constant folding (by excluding `ConstantFolding` from the optimizer rules), so
 all-literal queries are evaluated by Comet's native engine. This means you can use the
 default `query` mode for all-literal cases and they will be tested natively just like
-column-based queries.
+column-based queries, subject to other optimizer rewrites such as `NullPropagation` and
+Comet's own plan-time literal handling. `ConstantFolding: enabled` opts out of the default
+exclusion for fixtures that deliberately test folded literals.
 
 #### Cover edge cases
 
