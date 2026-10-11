@@ -994,24 +994,13 @@ case class CometExecRule(session: SparkSession, queryStagePrep: Boolean = false)
     } else {
       val normalizedPlan = normalizeDivisors(plan)
 
-      // The rewrite removes the sorts of each join it converts, so put back any sort a kept
-      // operator above still needs. This runs before transform(), which converts the sorts it
-      // adds like any other SortExec.
-      val planWithJoinRewritten = if (CometConf.COMET_FORCE_SHJ.get()) {
-        RewriteJoin.restoreRequiredOrdering(normalizedPlan.transformUp { case p =>
-          RewriteJoin.rewrite(p, conf)
-        })
-      } else {
-        normalizedPlan
-      }
-
       // Tag Partial aggregates that must not be converted to Comet because a
       // corresponding Final or PartialMerge cannot be converted and the intermediate buffer
       // formats are incompatible. This runs before transform() so the tags are checked
       // during the bottom-up conversion. Tags persist through AQE stage creation.
-      tagUnsafePartialAggregates(planWithJoinRewritten)
+      tagUnsafePartialAggregates(normalizedPlan)
 
-      var newPlan = revertUnsafePartialAggregates(transform(planWithJoinRewritten))
+      var newPlan = revertUnsafePartialAggregates(transform(normalizedPlan))
 
       // if the plan cannot be run fully natively then explain why (when appropriate
       // config is enabled)
