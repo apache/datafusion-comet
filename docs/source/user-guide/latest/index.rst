@@ -95,6 +95,7 @@ the navigation menu to read more.
    :caption: Integrations
    :hidden:
 
+   Delta Lake <delta>
    Iceberg Guide <iceberg>
    Iceberg Writes <iceberg-writes>
    Celeborn Guide <celeborn>

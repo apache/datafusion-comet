@@ -17,16 +17,24 @@
 # specific language governing permissions and limitations
 # under the License.
 #
-# Verify the `contrib-delta` build gate keeps Delta surface out of default builds.
+# Verify the split between the two Delta features of the native library and the JVM build:
+# the kernel-backed `comet-contrib-delta` crate (Cargo feature `contrib-delta`, Maven profile
+# `contrib-delta`) stays out of every shipped build, while the small default-on `delta` Cargo
+# feature (deletion-vector decoding for the JVM-planned scan) is deliberately in.
 #
 # Three independent layers are checked:
-#   1. Cargo: default `cargo build` doesn't compile `comet-contrib-delta` and
-#      doesn't pull `delta_kernel` into the dependency tree.
+#   1. Cargo: the default feature set, which is the tree every shipped build compiles, pulls
+#      neither `comet-contrib-delta` nor `delta_kernel`; the same holds with
+#      `--no-default-features`.
 #   2. Maven: default `mvn ... package` doesn't compile any
 #      `org/apache/comet/contrib/` classes and doesn't pull `io.delta:*` deps.
-#   3. Symbols: the resulting `libcomet` (`.so` on Linux, `.dylib` on macOS) from the default
-#      build carries no `comet_contrib_delta`/`delta_kernel`/etc. symbols, and the
-#      contrib-enabled build carries some (so the pattern is known to still match).
+#   3. Symbols: the default `libcomet` (`.so` on Linux, `.dylib` on macOS) carries no
+#      `comet_contrib_delta`/`delta_kernel`/etc. symbols and does carry the default-on
+#      deletion-vector decoder, whose symbol footprint is pinned so the feature cannot quietly
+#      grow into a kernel dependency; the contrib-enabled build carries the contrib symbols.
+#      File sizes are reported for information only: on an unstripped debug library the
+#      contrib code is far smaller than build-to-build layout noise, so a size comparison
+#      cannot tell the two apart.
 #
 # Exit non-zero on the first failure. Designed to be wired into CI so a future
 # change that leaks Delta into core gets caught immediately.
@@ -73,25 +81,34 @@ hdr()   { printf '\n\033[36m==> %s\033[0m\n' "$*"; }
 
 # ---- Cargo gate -----------------------------------------------------------
 
-hdr "Cargo: default build does not depend on comet-contrib-delta / delta_kernel"
+hdr "Cargo: no shipped feature set depends on comet-contrib-delta / delta_kernel"
 cd "$NATIVE_DIR"
-TREE_DEFAULT="$(cargo tree -p datafusion-comet --no-default-features 2>/dev/null)"
 # Anti-vacuous (mirrors the Maven gate below): a failing `cargo tree` yields empty output, and the
 # command-substitution failure doesn't trip `set -e` in an assignment -- so assert the root crate we
 # KNOW is always present before concluding "no Delta deps", otherwise a broken cargo-tree run would
 # pass the leak check vacuously. (`datafusion-comet ` with a trailing space matches only the root
 # crate line, not `datafusion-comet-proto`/`-common`.)
-if ! grep -q 'datafusion-comet ' <<<"$TREE_DEFAULT"; then
-  red "FAIL: default cargo tree produced no datafusion-comet entry (cargo tree likely failed;"
-  red "      refusing to conclude 'no Delta deps' vacuously)"
-  exit 1
-fi
-if grep -qE 'comet-contrib-delta|delta_kernel|delta-kernel' <<<"$TREE_DEFAULT"; then
-  red "FAIL: default cargo tree contains Delta-related deps:"
-  grep -E 'comet-contrib-delta|delta_kernel|delta-kernel' <<<"$TREE_DEFAULT"
-  exit 1
-fi
-green "OK: cargo tree default is clean of contrib + kernel"
+check_tree_clean() { # args: label, then extra `cargo tree` flags
+  local label="$1"
+  shift
+  local tree
+  tree="$(cargo tree -p datafusion-comet "$@" 2>/dev/null)"
+  if ! grep -q 'datafusion-comet ' <<<"$tree"; then
+    red "FAIL: $label cargo tree produced no datafusion-comet entry (cargo tree likely failed;"
+    red "      refusing to conclude 'no Delta deps' vacuously)"
+    exit 1
+  fi
+  if grep -qE 'comet-contrib-delta|delta_kernel|delta-kernel' <<<"$tree"; then
+    red "FAIL: $label cargo tree contains Delta-related deps:"
+    grep -E 'comet-contrib-delta|delta_kernel|delta-kernel' <<<"$tree"
+    exit 1
+  fi
+  green "OK: $label cargo tree is clean of contrib + kernel"
+}
+# The default feature set is what every shipped build compiles and includes the `delta`
+# feature; `--no-default-features` is the slim opt-out and must stay clean too.
+check_tree_clean "default-features"
+check_tree_clean "--no-default-features" --no-default-features
 
 TREE_CONTRIB="$(cargo tree -p datafusion-comet --features contrib-delta 2>/dev/null)"
 # The build-gate unit ships a STUB contrib crate, so the gated tree pulls in
@@ -227,7 +244,7 @@ green "OK: default build registers no contrib services (empty ServiceLoader regi
 
 # ---- libcomet symbol gate -------------------------------------------------
 
-hdr "libcomet: default build has no Delta symbols"
+hdr "libcomet: default build has the delta feature and no contrib symbols, contrib build has them"
 cd "$NATIVE_DIR"
 # The cdylib extension is platform-specific: `libcomet.so` on Linux (CI), `libcomet.dylib` on
 # macOS. Find whichever the build produced; `stat`/`nm` flags also differ across the two.
@@ -250,6 +267,27 @@ lib_size() { stat -c%s "$1" 2>/dev/null || stat -f%z "$1"; }
 delta_syms() {
   nm "$1" 2>/dev/null | grep -ciE 'comet_contrib_delta|delta_kernel|deltadvfilter|deltasynthetic' || true
 }
+# Symbols of the default-on `delta` feature: the deletion-vector decoder and the planner arms
+# that use it. These are what the default build is meant to carry.
+DELTA_FEATURE_PATTERN='delta_dv|delta_scan|delta_spark_scan'
+delta_feature_syms() {
+  nm "$1" 2>/dev/null | grep -ciE "$DELTA_FEATURE_PATTERN" || true
+}
+# Total size in bytes of the default-on `delta` feature's symbols. GNU nm reports sizes with
+# `-S`; Mach-O nm always reports zero, so on macOS this returns 0 and the pin below is skipped.
+delta_feature_bytes() {
+  local total=0 size rest
+  while read -r _ size rest; do
+    # Undefined symbols carry no size column; skip anything that is not a hex size.
+    [[ "$size" =~ ^[0-9a-fA-F]+$ && -n "$rest" ]] || continue
+    total=$((total + 16#$size))
+  done < <(nm -S "$1" 2>/dev/null | grep -iE "$DELTA_FEATURE_PATTERN" || true)
+  echo "$total"
+}
+# Upper bound for that footprint in an unstripped debug library. It measures 84 KB across 372
+# symbols on Linux; the cap leaves room for toolchain drift but not for a kernel-sized
+# dependency riding in through the `delta` feature.
+DELTA_FEATURE_MAX_BYTES=$((512 * 1024))
 
 # `nm` is the only direct measurement this section makes, so a missing `nm` has to fail rather
 # than silently skip -- same anti-vacuous discipline as the cargo-tree and effective-pom guards
@@ -272,10 +310,29 @@ fi
 SIZE_DEFAULT="$(lib_size "$LIB_DEFAULT")"
 EXT_SYMS="$(delta_syms "$LIB_DEFAULT")"
 if [[ "$EXT_SYMS" -ne 0 ]]; then
-  red "FAIL: default libcomet contains $EXT_SYMS Delta-related symbols"
+  red "FAIL: default libcomet contains $EXT_SYMS contrib/kernel Delta symbols"
   exit 1
 fi
-green "OK: default libcomet has 0 Delta symbols (size=$SIZE_DEFAULT bytes)"
+green "OK: default libcomet has 0 contrib/kernel symbols (size=$SIZE_DEFAULT bytes)"
+
+# The default-on `delta` feature must be present and stay small. A default library without
+# the decoder means the feature was dropped from the default set; a footprint above the cap
+# means something far larger than the decoder now rides in through it.
+FEATURE_SYMS="$(delta_feature_syms "$LIB_DEFAULT")"
+if [[ "$FEATURE_SYMS" -lt 1 ]]; then
+  red "FAIL: default libcomet carries no delta feature symbols; the default-on delta feature is missing"
+  exit 1
+fi
+FEATURE_BYTES="$(delta_feature_bytes "$LIB_DEFAULT")"
+if [[ "$FEATURE_BYTES" -gt 0 ]]; then
+  if [[ "$FEATURE_BYTES" -gt "$DELTA_FEATURE_MAX_BYTES" ]]; then
+    red "FAIL: default-on delta feature symbols total $FEATURE_BYTES bytes, above the $DELTA_FEATURE_MAX_BYTES byte cap"
+    exit 1
+  fi
+  green "OK: default libcomet carries the delta feature ($FEATURE_SYMS symbols, $FEATURE_BYTES bytes, cap $DELTA_FEATURE_MAX_BYTES)"
+else
+  green "OK: default libcomet carries the delta feature ($FEATURE_SYMS symbols; nm reports no sizes on this platform, footprint cap not checked)"
+fi
 
 cargo build -j 4 -p datafusion-comet --features contrib-delta >/dev/null 2>&1
 LIB_CONTRIB="$(comet_lib)"
@@ -310,8 +367,9 @@ green "OK: contrib-enabled libcomet has $CONTRIB_SYMS Delta symbols (size=$SIZE_
 # ---- Summary --------------------------------------------------------------
 
 hdr "All gate checks passed"
-echo "  default cargo:  no comet-contrib-delta, no delta_kernel"
+echo "  default cargo:  no comet-contrib-delta, no delta_kernel (default and --no-default-features)"
 echo "  default mvn:    no io.delta:*, no contrib/delta classes"
-echo "  default dylib:  0 Delta symbols (contrib build has $CONTRIB_SYMS)"
+echo "  default dylib:  delta feature present ($FEATURE_SYMS symbols), 0 contrib/kernel symbols"
+echo "  contrib dylib:  $CONTRIB_SYMS contrib/kernel symbols"
 echo
 echo "Run with: dev/verify-contrib-delta-gate.sh"
