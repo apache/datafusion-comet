@@ -1053,6 +1053,11 @@ fn prepare_datafusion_session_context(
         }
     }
 
+    // The planner reads this back to decide whether a plan may load a native UDF library.
+    session_config = session_config.with_extension(Arc::new(
+        crate::execution::c_udf::policy::NativeUdfPolicy::from_spark_config(spark_config),
+    ));
+
     configure_skip_partial_aggregation(
         &mut session_config,
         spark_plan,

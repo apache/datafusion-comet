@@ -629,6 +629,37 @@ object CometConf extends ShimCometConf {
       .booleanConf
       .createWithDefault(false)
 
+  // Used on native side. Check spark_config.rs how the config is used
+  val COMET_NATIVE_UDF_ENABLED: ConfigEntry[Boolean] =
+    conf("spark.comet.nativeUdf.enabled")
+      .category(CATEGORY_EXEC)
+      .doc(
+        "Whether native UDF libraries may be loaded. A native UDF is a shared library that " +
+          "runs with the full privileges of the JVM process, so an operator who does not want " +
+          "any can turn the feature off. When false, `CometNativeUDF.register` fails on the " +
+          "driver, and a plan that names a native UDF library fails on the executor rather " +
+          "than loading it.")
+      .booleanConf
+      .createWithDefault(true)
+
+  // Used on native side. Check spark_config.rs how the config is used
+  val COMET_NATIVE_UDF_ALLOWED_PATHS: ConfigEntry[Seq[String]] =
+    conf("spark.comet.nativeUdf.allowedPaths")
+      .category(CATEGORY_EXEC)
+      .doc(
+        "A comma-separated list of directories that native UDF libraries may be loaded from. " +
+          "When set, a library is loaded only if its path is absolute and, after symlinks and " +
+          "`..` are resolved, lies under one of these directories, which are themselves " +
+          "resolved the same way. A path outside them fails on the driver at registration and " +
+          "again on the executor. When empty, any path is allowed. This limits which files " +
+          "Comet will load, not what the code in them does, and it cannot protect against a " +
+          "file that is replaced after the check, so the directories should be writable only " +
+          "by trusted users. Like any session config, it can be changed by a user who can " +
+          "set Spark configs.")
+      .stringConf
+      .toSequence
+      .createWithDefault(Nil)
+
   val COMET_SCALA_UDF_CODEGEN_ENABLED: ConfigEntry[Boolean] =
     conf("spark.comet.exec.scalaUDF.codegen.enabled")
       .category(CATEGORY_EXEC)

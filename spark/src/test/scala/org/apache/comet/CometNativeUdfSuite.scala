@@ -20,6 +20,7 @@
 package org.apache.comet
 
 import java.io.File
+import java.nio.file.Files
 import java.util.Locale
 
 import org.apache.spark.sql.{AnalysisException, CometTestBase}
@@ -27,7 +28,7 @@ import org.apache.spark.sql.comet.CometProjectExec
 import org.apache.spark.sql.functions.{col, expr, struct}
 import org.apache.spark.sql.types._
 
-import org.apache.comet.udf.{CometNativeUDF, CometNativeUdfAbiException, CometNativeUdfLoadException}
+import org.apache.comet.udf.{CometNativeUDF, CometNativeUdfAbiException, CometNativeUdfLoadException, CometNativeUdfNotAllowedException}
 
 /**
  * End-to-end integration suite: register a native UDF, run a Spark query, verify the result.
@@ -191,6 +192,73 @@ class CometNativeUdfSuite extends CometTestBase {
     assert(row.map(_.getLong(0)).toSeq == Seq(1L, 2L, 3L))
     assert(row.map(_.getLong(1)).toSeq == Seq(0L, 1L, 2L))
     assert(row.forall(r => Option(r.getString(2)).exists(_.nonEmpty)))
+  }
+
+  test("registration is refused when native UDFs are disabled") {
+    withSQLConf(CometConf.COMET_NATIVE_UDF_ENABLED.key -> "false") {
+      val e = intercept[CometNativeUdfNotAllowedException] {
+        CometNativeUDF.register(spark, "add_one_c", libPath, Seq(LongType), LongType)
+      }
+      assert(e.getMessage.contains(CometConf.COMET_NATIVE_UDF_ENABLED.key), e.getMessage)
+    }
+  }
+
+  test("registration is refused for a library outside allowedPaths") {
+    val elsewhere = Files.createTempDirectory("comet-udf-elsewhere")
+    try {
+      withSQLConf(CometConf.COMET_NATIVE_UDF_ALLOWED_PATHS.key -> elsewhere.toString) {
+        val e = intercept[CometNativeUdfNotAllowedException] {
+          CometNativeUDF.register(spark, "add_one_c", libPath, Seq(LongType), LongType)
+        }
+        assert(e.getMessage.contains(CometConf.COMET_NATIVE_UDF_ALLOWED_PATHS.key), e.getMessage)
+      }
+    } finally {
+      Files.delete(elsewhere)
+    }
+  }
+
+  test("a library under allowedPaths registers and runs") {
+    val libDir = new File(libPath).getAbsoluteFile.getParent
+    val elsewhere = Files.createTempDirectory("comet-udf-elsewhere")
+    try {
+      withSQLConf(
+        CometConf.COMET_NATIVE_UDF_ALLOWED_PATHS.key -> s"${elsewhere.toString},$libDir") {
+        CometNativeUDF.register(spark, "add_one_c", libPath, Seq(LongType), LongType)
+        val out = spark.range(0, 3).selectExpr("add_one_c(id) AS y").collect().map(_.getLong(0))
+        assert(out.toSeq == Seq(1L, 2L, 3L))
+      }
+    } finally {
+      Files.delete(elsewhere)
+    }
+  }
+
+  test("the executor applies the policy to a plan that was built without it") {
+    // Registered under the default policy, as a plan built by another driver would be. The policy
+    // in force when the query runs is what the native side enforces.
+    CometNativeUDF.register(spark, "add_one_c", libPath, Seq(LongType), LongType)
+    withSQLConf(CometConf.COMET_NATIVE_UDF_ENABLED.key -> "false") {
+      val e = intercept[Exception] {
+        spark.range(0, 3).selectExpr("add_one_c(id) AS y").collect()
+      }
+      assert(
+        stackTraceContains(e, s"${CometConf.COMET_NATIVE_UDF_ENABLED.key}=false"),
+        s"unexpected error: $e")
+    }
+    val elsewhere = Files.createTempDirectory("comet-udf-elsewhere")
+    try {
+      withSQLConf(CometConf.COMET_NATIVE_UDF_ALLOWED_PATHS.key -> elsewhere.toString) {
+        val e = intercept[Exception] {
+          spark.range(0, 3).selectExpr("add_one_c(id) AS y").collect()
+        }
+        assert(
+          stackTraceContains(e, CometConf.COMET_NATIVE_UDF_ALLOWED_PATHS.key),
+          s"unexpected error: $e")
+      }
+    } finally {
+      Files.delete(elsewhere)
+    }
+    val out = spark.range(0, 3).selectExpr("add_one_c(id) AS y").collect().map(_.getLong(0))
+    assert(out.toSeq == Seq(1L, 2L, 3L))
   }
 
   test("a missing library is reported as a load failure") {
