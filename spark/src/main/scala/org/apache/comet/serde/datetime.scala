@@ -26,6 +26,7 @@ import org.apache.spark.sql.types.{CalendarIntervalType, DataType, DateType, Dou
 import org.apache.spark.unsafe.types.UTF8String
 
 import org.apache.comet.CometConf
+import org.apache.comet.CometSparkSessionExtensions.isSpark42Plus
 import org.apache.comet.expressions.{CometCast, CometEvalMode}
 import org.apache.comet.serde.CometGetDateField.CometGetDateField
 import org.apache.comet.serde.ExprOuterClass.Expr
@@ -68,7 +69,6 @@ trait CometExprGetDateField[T <: GetDateField] {
               .setChild(e)
               .setDatatype(serializeDataType(IntegerType).get)
               .setEvalMode(ExprOuterClass.EvalMode.LEGACY)
-              .setAllowIncompat(false)
               .build())
           .build()
       })
@@ -502,7 +502,6 @@ object CometUnixDate extends CometExpressionSerde[UnixDate] {
             .setChild(child)
             .setDatatype(serializeDataType(IntegerType).get)
             .setEvalMode(ExprOuterClass.EvalMode.LEGACY)
-            .setAllowIncompat(false)
             .build())
         .build()
     }
@@ -643,6 +642,10 @@ object CometTruncTimestamp
       builder.setChild(childExpr.get)
       builder.setFormat(formatExpr.get)
       builder.setTimezone(timeZone.get)
+      // Spark 4.2.0 and later (SPARK-56663) raise `long overflow` when SECOND or MILLISECOND
+      // truncation falls below the smallest timestamp; earlier versions wrap the Long
+      // subtraction. The native side has to match whichever Spark we are running against.
+      builder.setWrapSecondMillisecondOverflow(!isSpark42Plus)
 
       Some(
         ExprOuterClass.Expr
@@ -867,7 +870,6 @@ object CometDays extends CometExpressionSerde[Days] {
             .setChild(dateExpr)
             .setDatatype(serializeDataType(IntegerType).get)
             .setEvalMode(ExprOuterClass.EvalMode.LEGACY)
-            .setAllowIncompat(false)
             .build())
         .build()
     }

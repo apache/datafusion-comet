@@ -434,7 +434,8 @@ message Cast {
   DataType datatype = 2;
   string timezone = 3;
   EvalMode eval_mode = 4;
-  bool allow_incompat = 5;
+  reserved 5;
+  reserved "allow_incompat";
   // True when running against Spark 4.0+. Controls version-specific cast behaviour
   // such as the handling of leading whitespace before T-prefixed time-only strings.
   bool is_spark4_plus = 6;
@@ -597,6 +598,11 @@ message TruncTimestamp {
   Expr format = 1;
   Expr child = 2;
   string timezone = 3;
+  // Whether SECOND and MILLISECOND truncation wraps when the result would fall below the
+  // smallest timestamp. Spark before 4.2.0 wraps the Long subtraction; 4.2.0 and later
+  // (SPARK-56663) raise `long overflow` like every other unit. This tracks the Spark version Comet is
+  // running against.
+  bool wrap_second_millisecond_overflow = 4;
 }
 
 message Subquery {

@@ -460,6 +460,7 @@ jobs:
             value: |
               org.apache.comet.parquet.CometParquetWriterSuite
               org.apache.comet.parquet.CometEmptyRelationParquetWriterSuite
+              org.apache.spark.sql.comet.CometNativeWriteSuite
               org.apache.comet.parquet.ParquetReadV1Suite
               org.apache.comet.parquet.ParquetTimestampLtzAsNtzSuite
               org.apache.spark.sql.comet.ParquetEncryptionITCase
@@ -486,6 +487,7 @@ jobs:
               org.apache.comet.exec.CometShuffle4_0Suite
               org.apache.comet.exec.CometNativeColumnarToRowSuite
               org.apache.comet.exec.CometNativeShuffleSuite
+              org.apache.comet.exec.CometShuffleInputConversionSuite
               org.apache.comet.shuffle.CelebornShufflePartitionPusherSuite
               org.apache.spark.sql.comet.execution.shuffle.CometCelebornShuffleManagerSuite
               org.apache.spark.sql.comet.execution.shuffle.CometCelebornNativeShuffleWriterSuite
@@ -503,6 +505,7 @@ jobs:
               org.apache.comet.exec.CometShuffleManagerSuite
               org.apache.comet.exec.DisableAQECometShuffleSuite
               org.apache.spark.shuffle.comet.CometUnboundedShuffleMemoryAllocatorSuite
+              org.apache.spark.shuffle.comet.CometUnifiedShuffleMemoryAllocatorSuite
               org.apache.spark.shuffle.sort.SpillSorterSuite
           - name: "exec"
             value: |
@@ -563,6 +566,7 @@ jobs:
               org.apache.spark.sql.comet.PlanDataInjectorShuffleLifecycleSuite
               org.apache.spark.sql.comet.CometDecimalArithmeticViewSuite
               org.apache.spark.sql.comet.CometDecimalPromotionSuite
+              org.apache.spark.sql.comet.DecimalPrecisionSuite
               org.apache.spark.sql.comet.CometScanWithPlanDataSuite
               org.apache.spark.sql.comet.util.UtilsSuite
               org.apache.comet.vector.NativeUtilSuite

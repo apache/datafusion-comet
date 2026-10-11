@@ -52,9 +52,8 @@
 //! `ignoreMissing` is set, and it walks the raw `MessageType` to decide. That walk has to run
 //! over the Parquet schema rather than the Arrow schema the schema adapter is handed later,
 //! because an id on a repeated `list` or `key_value` group, or on the message root, never
-//! reaches an Arrow field. Until apache/datafusion#24790, which is not in DataFusion 55.1.0,
-//! the INT96 coercion also rebuilt container fields without their metadata, so a struct id could
-//! vanish on the way to Arrow as well.
+//! reaches an Arrow field. DataFusion 55.2.0 preserves container metadata through INT96 coercion
+//! (apache/datafusion#24790), so struct ids no longer vanish on the way to Arrow.
 //!
 //! The second is the Variant footer rewrite, `with_spark_arrow_schema`, which replaces the
 //! Arrow schema hint in the footer for scans that project Variant.
@@ -1341,7 +1340,7 @@ mod tests {
             false,
         )]));
         let mut options =
-            SparkParquetOptions::new(datafusion_comet_spark_expr::EvalMode::Legacy, "UTC", false);
+            SparkParquetOptions::new(datafusion_comet_spark_expr::EvalMode::Legacy, "UTC");
         options.case_sensitive = false;
         let factory = EagerPageIndexReaderFactory::new(
             store,
