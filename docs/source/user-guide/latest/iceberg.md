@@ -107,6 +107,11 @@ primitive predicates still prune row groups and pages, while the post-scan filte
 complete condition. `OR` requires a safely pushable predicate from both branches, and expressions
 inside `NOT` must convert completely before they can be pushed.
 
+Comparisons and `IN` predicates on `FLOAT` and `DOUBLE` columns are evaluated after the native
+scan. They are not pushed into iceberg-rust because its floating-point ordering differs from
+Spark's for signed zeros and NaNs. This applies to standalone predicates as well as predicates
+inside `AND`, `OR`, and `NOT`. Null checks on these columns can still be pushed down.
+
 **Partitioning:**
 
 - Standard partitioning with partition pruning

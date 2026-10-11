@@ -3759,6 +3759,73 @@ class CometIcebergNativeSuite
     }
   }
 
+  test("floating-point residuals preserve signed zeros in native scans") {
+    assume(icebergAvailable, "Iceberg not available in classpath")
+
+    withHadoopCatalog("test_cat") {
+      withSQLConf(
+        CometConf.COMET_ENABLED.key -> "true",
+        CometConf.COMET_EXEC_ENABLED.key -> "true",
+        CometConf.COMET_ICEBERG_NATIVE_ENABLED.key -> "true") {
+        val table = "test_cat.db.floating_residual_test"
+        spark.sql(s"CREATE TABLE $table (id INT, f FLOAT, d DOUBLE, l ARRAY<INT>) USING iceberg")
+        try {
+          withSQLConf(CometConf.COMET_ENABLED.key -> "false") {
+            // One file containing both zeros keeps file pruning from deciding the comparison.
+            // Distinct ids make a missing signed-zero row observable without comparing floats.
+            spark
+              .sql("""
+                SELECT id, CAST(v AS FLOAT) AS f, CAST(v AS DOUBLE) AS d, l
+                FROM VALUES
+                  (1, '-0.0', array(1)),
+                  (2, '0.0', array(1)),
+                  (3, '1.0', CAST(NULL AS ARRAY<INT>)),
+                  (4, '-1.0', array(1)),
+                  (5, NULL, array(1)),
+                  (6, 'NaN', array(1))
+                AS input(id, v, l)
+              """)
+              .coalesce(1)
+              .write
+              .format("iceberg")
+              .mode("append")
+              .saveAsTable(table)
+            assert(spark.sql(s"SELECT file_path FROM $table.files").collect().length == 1)
+            val rows = spark.sql(s"SELECT id, f, d FROM $table").collect().sortBy(_.getInt(0))
+            assert(java.lang.Float.floatToRawIntBits(rows(0).getFloat(1)) == Int.MinValue)
+            assert(java.lang.Double.doubleToRawLongBits(rows(0).getDouble(2)) == Long.MinValue)
+            assert(java.lang.Float.floatToRawIntBits(rows(1).getFloat(1)) == 0)
+            assert(java.lang.Double.doubleToRawLongBits(rows(1).getDouble(2)) == 0L)
+          }
+
+          for ((column, dataType) <- Seq("f" -> "FLOAT", "d" -> "DOUBLE")) {
+            val zero = s"CAST(0 AS $dataType)"
+            val negativeZero = s"CAST('-0.0' AS $dataType)"
+            val one = s"CAST(1 AS $dataType)"
+            val predicates = Seq(
+              s"$column = $zero",
+              s"$column = $negativeZero",
+              s"$column >= $zero",
+              s"$column <= $negativeZero",
+              s"$column IN ($zero, $one)",
+              s"NOT ($column < $zero)",
+              s"NOT ($column = $one)",
+              s"$column = $zero OR id = 3",
+              s"NOT ($column = $zero AND id > 1)",
+              s"$column IS NULL",
+              s"$column IS NOT NULL")
+            for (predicate <- predicates;
+              prefix <- Seq("", "l IS NOT NULL AND ")) {
+              checkIcebergNativeScan(s"SELECT id FROM $table WHERE $prefix($predicate)")
+            }
+          }
+        } finally {
+          spark.sql(s"DROP TABLE $table")
+        }
+      }
+    }
+  }
+
   // A residual can arrive as NOT over an AND that mixes a supported conjunct with an unsupported
   // (FIXED_LEN_BYTE_ARRAY) one. Dropping only the unsupported conjunct is safe in positive
   // position (it weakens the pruning predicate), but under a NOT it strengthens it: NOT(id < 200
@@ -6305,10 +6372,8 @@ class CometIcebergNativeSuite
     }
   }
 
-  // Mirrors TestSelect.simpleTypesInFilter. A predicate literal on a FLOAT column is carried as a
-  // double, and iceberg-rust's Datum::to() has no double-to-float arm, so binding the residual to
-  // the schema fails. The residual only drives row-group pruning, so the native scan skips the
-  // failed pushdown and the post-scan CometFilter still enforces correctness.
+  // Mirrors TestSelect.simpleTypesInFilter. Float comparisons stay in the post-scan filter,
+  // including when the predicate literal is a double rather than the column's float type.
   test("float column compared to a double predicate literal") {
     assume(icebergAvailable, "Iceberg not available in classpath")
     withTempIcebergDir { warehouseDir =>

@@ -889,8 +889,8 @@ object CometIcebergNativeScan extends CometOperatorSerde[CometBatchScanExec] wit
 
   /**
    * Builds a predicate literal from its Iceberg value and the column's Spark type. Returns None
-   * for null (IS NULL is a separate op) and for Spark types this serde does not map to an
-   * IcebergLiteral, so the predicate degrades to no pushdown rather than an incorrect one.
+   * for null (IS NULL is a separate op) and for Spark types that cannot be mapped safely to an
+   * IcebergLiteral, including floats whose comparison semantics differ in the native reader.
    * Columns backed by Parquet FIXED_LEN_BYTE_ARRAY (decimal/uuid/fixed) or BYTE_ARRAY (binary)
    * are dropped earlier by the column gate in icebergExprToProto and never reach here.
    */
@@ -908,9 +908,10 @@ object CometIcebergNativeScan extends CometOperatorSerde[CometBatchScanExec] wit
       case _: ByteType | _: ShortType | _: IntegerType =>
         builder.setIntVal(value.asInstanceOf[java.lang.Number].intValue())
       case _: LongType => builder.setLongVal(value.asInstanceOf[java.lang.Number].longValue())
-      case _: FloatType => builder.setFloatVal(value.asInstanceOf[java.lang.Number].floatValue())
-      case _: DoubleType =>
-        builder.setDoubleVal(value.asInstanceOf[java.lang.Number].doubleValue())
+      // iceberg-rust filters rows with Arrow's total ordering, which distinguishes signed zeros
+      // and orders NaNs differently from Spark. The post-scan filter cannot recover
+      // matching rows discarded here. Float/double null checks do not use literals and stay safe.
+      case _: FloatType | _: DoubleType => return None
       case _: DateType => builder.setDateVal(value.asInstanceOf[java.lang.Number].intValue())
       case _: StringType => builder.setStringVal(value.toString)
       case _: TimestampType =>

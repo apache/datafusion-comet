@@ -27,7 +27,7 @@ import org.scalatest.matchers.should.Matchers
 import org.apache.iceberg.{DeleteFile, FileContent}
 import org.apache.iceberg.expressions.Expressions
 import org.apache.spark.sql.catalyst.expressions.AttributeReference
-import org.apache.spark.sql.types.{ArrayType, IntegerType, MapType, StringType, StructType}
+import org.apache.spark.sql.types.{ArrayType, DoubleType, FloatType, IntegerType, MapType, StringType, StructType}
 
 import org.apache.comet.iceberg.IcebergReflection
 
@@ -132,6 +132,40 @@ class CometIcebergNativeScanSuite extends AnyFunSuite with Matchers {
         withClue(s"$dataType: $residual: ") {
           CometIcebergNativeScan.serializeResidual(residual, output, Set.empty) shouldBe expected
         }
+      }
+    }
+  }
+
+  test("floating-point comparisons are not pushed, including under AND, OR and NOT") {
+    val supported = Expressions.greaterThan("value", Integer.valueOf(5))
+    val expected = serialize(supported)
+    for (dataType <- Seq(FloatType, DoubleType)) {
+      val output = intColumn :+ AttributeReference("floating", dataType)()
+      def convert(expr: Any) =
+        CometIcebergNativeScan.serializeResidual(expr, output, Set.empty)
+
+      // Cover ordinary literals too: the column may contain signed zeros or any NaN payload.
+      for (value <- Seq(-0.0, 0.0, 1.0, Double.NegativeInfinity, Double.PositiveInfinity);
+        predicate <- Seq(
+          Expressions.equal("floating", Double.box(value)),
+          Expressions.notEqual("floating", Double.box(value)),
+          Expressions.lessThan("floating", Double.box(value)),
+          Expressions.lessThanOrEqual("floating", Double.box(value)),
+          Expressions.greaterThan("floating", Double.box(value)),
+          Expressions.greaterThanOrEqual("floating", Double.box(value)),
+          Expressions.in("floating", Double.box(value), Double.box(2.0)))) {
+        withClue(s"$dataType: $predicate: ") {
+          convert(predicate).isEmpty shouldBe true
+          convert(Expressions.and(supported, predicate)) shouldBe expected
+          convert(Expressions.and(predicate, supported)) shouldBe expected
+          convert(Expressions.or(supported, predicate)).isEmpty shouldBe true
+          convert(Expressions.not(predicate)).isEmpty shouldBe true
+          convert(Expressions.not(Expressions.and(supported, predicate))).isEmpty shouldBe true
+        }
+      }
+      for (predicate <- Seq(Expressions.isNull("floating"), Expressions.notNull("floating"))) {
+        convert(predicate).nonEmpty shouldBe true
+        convert(Expressions.not(predicate)).nonEmpty shouldBe true
       }
     }
   }
