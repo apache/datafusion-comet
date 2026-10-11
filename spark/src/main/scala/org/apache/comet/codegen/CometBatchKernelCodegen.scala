@@ -176,7 +176,8 @@ object CometBatchKernelCodegen extends Logging with CometExprTraitShim with Come
     //
     // Nondeterministic / stateful expressions are accepted: each cache entry holds one kernel
     // instance with a single `init(partitionIndex)` call, so `Rand` / `MonotonicallyIncreasingID`
-    // state advances correctly across batches.
+    // state advances correctly across batches, and each occurrence gets its own entry
+    // (`DispatchOccurrence`).
     //
     // `ExecSubqueryExpression` (`ScalarSubquery`, `InSubqueryExec`): rejected. The tree is
     // closure-serialized at plan time, before Spark has run the subquery, so the deserialized
