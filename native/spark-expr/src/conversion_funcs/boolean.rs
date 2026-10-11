@@ -67,7 +67,7 @@ mod tests {
     }
 
     fn test_input_spark_opts() -> SparkCastOptions {
-        SparkCastOptions::new(EvalMode::Legacy, "Asia/Kolkata", false)
+        SparkCastOptions::new(EvalMode::Legacy, "Asia/Kolkata")
     }
 
     #[test]
