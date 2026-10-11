@@ -839,7 +839,7 @@ class CometTemporalExpressionSuite extends CometTestBase with AdaptiveSparkPlanH
       withSQLConf(SQLConf.SESSION_LOCAL_TIMEZONE.key -> timezone) {
         checkDays(
           tsDF.select(col("ts"), getColumnFromExpression(Days(UnresolvedAttribute("ts")))),
-          tsDF.selectExpr("ts", "unix_date(cast(ts as date))"))
+          tsDF.selectExpr("ts", "cast(floor(unix_micros(ts) / 86400000000D) as int)"))
       }
     }
   }
@@ -885,8 +885,16 @@ class CometTemporalExpressionSuite extends CometTestBase with AdaptiveSparkPlanH
                 java.sql.Timestamp.valueOf("2024-06-15 10:30:00"),
                 DataTypes.TimestampType)))),
         dummyDF.selectExpr(
-          "unix_date(cast(TIMESTAMP('1970-01-01 00:00:00') as date))",
-          "unix_date(cast(TIMESTAMP('2024-06-15 10:30:00') as date))"))
+          "cast(floor(unix_micros(TIMESTAMP('1970-01-01 00:00:00')) / 86400000000D) as int)",
+          "cast(floor(unix_micros(TIMESTAMP('2024-06-15 10:30:00')) / 86400000000D) as int)"))
+
+      // One microsecond before the epoch. Days are counted in UTC and floored, so this is day -1
+      // even though it is already 1970-01-01 in Asia/Tokyo.
+      withSQLConf(SQLConf.SESSION_LOCAL_TIMEZONE.key -> "Asia/Tokyo") {
+        checkDays(
+          dummyDF.select(getColumnFromExpression(Days(Literal(-1L, DataTypes.TimestampType)))),
+          dummyDF.selectExpr("-1"))
+      }
 
       // Null handling
       checkDays(

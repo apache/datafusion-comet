@@ -19,21 +19,21 @@
 
 package org.apache.comet.serde.operator
 
+import java.lang.reflect.InvocationTargetException
+
 import scala.jdk.CollectionConverters._
 
 import org.scalatest.funsuite.AnyFunSuite
 import org.scalatest.matchers.should.Matchers
 
+import org.apache.iceberg.{DeleteFile, FileContent}
 import org.apache.iceberg.expressions.Expressions
 import org.apache.spark.sql.catalyst.expressions.AttributeReference
 import org.apache.spark.sql.types.{ArrayType, IntegerType, MapType, StringType, StructType}
 
-/**
- * Unit tests for [[CometIcebergNativeScan.hadoopToIcebergS3Properties]]. The pinned iceberg-rust
- * S3 parser reads ONLY global `s3.*` keys (never `s3.bucket.*`), so the function drops per-bucket
- * keys and promotes just the TARGET bucket's keys to global `s3.*`. Pure-function assertions, so
- * a lightweight `AnyFunSuite` (no Spark session) suffices.
- */
+import org.apache.comet.iceberg.IcebergReflection
+
+/** Unit tests for Iceberg native-scan serde helpers that do not require a Spark session. */
 class CometIcebergNativeScanSuite extends AnyFunSuite with Matchers {
 
   test("complex type null residuals are not serialized") {
@@ -487,21 +487,65 @@ class CometIcebergNativeScanSuite extends AnyFunSuite with Matchers {
       "hadoop.dfs.namenode.rpc-address.ns9.a" -> "host-a.example.com:8020",
       "hadoop.dfs.namenode.rpc-address.ns9.b" -> "hdfs://host-b.example.com:8020")
     hdfsReason("hdfs://ns9/warehouse", catalogProperties = declared) shouldBe None
-    def undeclared(props: Map[String, String]): Unit = {
-      val reason = hdfsReason("hdfs://ns9/warehouse", catalogProperties = props)
-      reason.getOrElse(fail(s"expected a reason for $props")) should include("hdfs.name-node.ns9")
-      reason.get should not include "is not host:port"
-    }
-    // iceberg-rust rejects a declared NameNode whose rpc-address is missing or portless.
-    undeclared(declared - "hadoop.dfs.namenode.rpc-address.ns9.b")
-    undeclared(declared + ("hadoop.dfs.namenode.rpc-address.ns9.b" -> "host-b.example.com"))
-    // An empty id list declares nothing.
-    undeclared(Map("hadoop.dfs.ha.namenodes.ns9" -> " , "))
-    // The hadoop.* keys win over the sugar, so a sugar entry does not repair them.
-    undeclared(
+    // iceberg-rust validates every declaration when it builds the storage, so an incomplete one
+    // fails all I/O: a NameNode whose rpc-address is missing or portless, or no NameNodes at all.
+    def invalid(props: Map[String, String], fragment: String): Unit =
+      hdfsReason("hdfs://ns9/warehouse", catalogProperties = props)
+        .getOrElse(fail(s"expected a reason for $props")) should include(fragment)
+    invalid(
+      declared - "hadoop.dfs.namenode.rpc-address.ns9.b",
+      "nameservice 'ns9' declares NameNode 'b' but dfs.namenode.rpc-address.ns9.b is missing")
+    invalid(
+      declared + ("hadoop.dfs.namenode.rpc-address.ns9.b" -> "host-b.example.com"),
+      "dfs.namenode.rpc-address.ns9.b is missing or not host:port")
+    invalid(Map("hadoop.dfs.ha.namenodes.ns9" -> " , "), "'ns9' is declared with no NameNodes")
+    // The hadoop.* keys win over the sugar key by key: the explicit id list stands, and the
+    // sugar's `nn0` rpc-address does not serve id `a`.
+    invalid(
       Map(
         "hadoop.dfs.ha.namenodes.ns9" -> "a",
-        "hdfs.name-node.ns9" -> "host-a.example.com:8020"))
+        "hdfs.name-node.ns9" -> "host-a.example.com:8020"),
+      "declares NameNode 'a'")
+    // ... but where the explicit ids are the sugar's own `nn<i>`, its rpc-addresses fill them in.
+    hdfsReason(
+      "hdfs://ns9/warehouse",
+      catalogProperties = Map(
+        "hadoop.dfs.ha.namenodes.ns9" -> "nn0,nn1",
+        "hdfs.name-node.ns9" -> "host-a.example.com:8020,host-b.example.com:8020")) shouldBe None
+  }
+
+  test("an incomplete declaration of another nameservice is declined for every location") {
+    // iceberg-rust validates every declared nameservice when it builds the storage.
+    hdfsReason(
+      "hdfs://nn.example.com:8020/w",
+      catalogProperties = Map("hadoop.dfs.ha.namenodes.other" -> "x"))
+      .getOrElse(fail("expected a reason")) should include(
+      "nameservice 'other' declares NameNode 'x'")
+  }
+
+  test("a forwarded fs.defaultFS must be an HDFS host:port unless hdfs.name-node is set") {
+    // A logical default filesystem, as HA clusters write it, is rejected by iceberg-rust at
+    // storage build even when that nameservice is declared, failing every path.
+    val logical = Map(
+      "hadoop.fs.defaultFS" -> "hdfs://ns1",
+      "hdfs.name-node.ns1" -> "host-a.example.com:8020")
+    hdfsReason("hdfs://ns1/w", catalogProperties = logical)
+      .getOrElse(fail("expected a reason")) should include("fs.defaultFS 'hdfs://ns1'")
+    hdfsReason(
+      "hdfs://nn.example.com:8020/w",
+      catalogProperties = Map("hadoop.fs.defaultFS" -> "s3a://bucket")).isDefined shouldBe true
+    // The global hdfs.name-node takes precedence over it, so then it is never read.
+    hdfsReason(
+      "hdfs://ns1/w",
+      catalogProperties = logical + ("hdfs.name-node" -> "host-a.example.com:8020")) shouldBe None
+    // An HDFS host:port default filesystem, or a blank one, is fine.
+    for (defaultFs <- Seq("hdfs://nn.example.com:8020", "nn.example.com:8020/", " ")) {
+      withClue(s"fs.defaultFS=$defaultFs: ") {
+        hdfsReason(
+          "hdfs://nn.example.com:8020/w",
+          catalogProperties = Map("hadoop.fs.defaultFS" -> defaultFs)) shouldBe None
+      }
+    }
   }
 
   test("a NameNode entry that is not host:port is declined, in any hdfs.name-node key") {
@@ -687,4 +731,159 @@ class CometIcebergNativeScanSuite extends AnyFunSuite with Matchers {
 
   private def confMap(conf: org.apache.hadoop.conf.Configuration): Map[String, String] =
     conf.getPropsWithPrefix("").asScala.toMap
+
+  private def keyMetadataMethod(clazz: Class[_]) = clazz.getMethod("keyMetadata")
+
+  private def serializeDeleteFile(file: AnyRef) =
+    CometIcebergNativeScan.serializeDeleteFile(
+      file,
+      file.getClass,
+      file.getClass,
+      keyMetadataMethod(file.getClass),
+      _ => 0)
+
+  test("required Iceberg delete-file accessors are present") {
+    Seq("content", "specId", "equalityFieldIds").foreach { accessor =>
+      IcebergReflection.findMethod(classOf[DeleteFile], accessor).isDefined shouldBe true
+    }
+  }
+
+  test("Iceberg delete content names match native serde literals") {
+    FileContent.POSITION_DELETES.toString shouldBe IcebergReflection.ContentTypes.POSITION_DELETES
+    FileContent.EQUALITY_DELETES.toString shouldBe IcebergReflection.ContentTypes.EQUALITY_DELETES
+  }
+
+  test("position-delete file with null equality ids serializes without equality ids") {
+    val proto = serializeDeleteFile(new PositionDeleteFile)
+    proto.getContentType shouldBe "POSITION_DELETES"
+    proto.getPartitionSpecId shouldBe 7
+    proto.getEqualityIdsCount shouldBe 0
+    proto.getFilePathIdx shouldBe 0
+  }
+
+  test("equality-delete file serializes declared equality ids") {
+    val proto = serializeDeleteFile(new EqualityDeleteFile)
+    proto.getContentType shouldBe "EQUALITY_DELETES"
+    proto.getEqualityIdsCount shouldBe 2
+    proto.getEqualityIds(0) shouldBe 3
+    proto.getEqualityIds(1) shouldBe 5
+  }
+
+  test("equality-delete file with null equality ids is fatal") {
+    val ex =
+      intercept[IllegalStateException](serializeDeleteFile(new EqualityDeleteFileWithNullIds))
+    ex.getMessage shouldBe
+      "Iceberg equality delete file 's3://bucket/eq-null-ids.parquet' has no equality field IDs"
+  }
+
+  test("equality-delete file with empty equality ids is fatal") {
+    val ex =
+      intercept[IllegalStateException](serializeDeleteFile(new EqualityDeleteFileWithEmptyIds))
+    ex.getMessage shouldBe
+      "Iceberg equality delete file 's3://bucket/eq-empty-ids.parquet' has no equality field IDs"
+  }
+
+  test("content invocation failure propagates instead of defaulting to position deletes") {
+    val ex =
+      intercept[InvocationTargetException](serializeDeleteFile(new ThrowingContentDeleteFile))
+    ex.getCause.getMessage shouldBe "content boom"
+  }
+
+  test("spec id invocation failure propagates instead of defaulting to zero") {
+    val ex =
+      intercept[InvocationTargetException](serializeDeleteFile(new ThrowingSpecIdDeleteFile))
+    ex.getCause.getMessage shouldBe "spec boom"
+  }
+
+  test("equality-id invocation failure propagates instead of dropping ids") {
+    val ex =
+      intercept[InvocationTargetException](serializeDeleteFile(new ThrowingEqualityIdsDeleteFile))
+    ex.getCause.getMessage shouldBe "ids boom"
+  }
+
+  test("missing content accessor is fatal") {
+    assertThrows[NoSuchMethodException](serializeDeleteFile(new NoContentAccessorDeleteFile))
+  }
+
+  test("missing equality-id accessor is fatal") {
+    assertThrows[NoSuchMethodException](serializeDeleteFile(new NoEqualityIdsAccessorDeleteFile))
+  }
+
+  test("missing delete-file path accessor is fatal") {
+    val ex = intercept[RuntimeException](serializeDeleteFile(new NoPathAccessorDeleteFile))
+    ex.getMessage should include("Neither location() nor path() is declared")
+  }
+
+  private abstract class BaseDeleteFile {
+    def location(): String
+    def format(): String = "PARQUET"
+    def recordCount(): java.lang.Long = java.lang.Long.valueOf(1L)
+    def keyMetadata(): java.nio.ByteBuffer = null
+  }
+
+  private class PositionDeleteFile extends BaseDeleteFile {
+    override def location(): String = "s3://bucket/pos-delete.parquet"
+    def content(): String = "POSITION_DELETES"
+    def specId(): Int = 7
+    def equalityFieldIds(): java.util.List[Integer] = null
+  }
+
+  private class EqualityDeleteFile extends BaseDeleteFile {
+    override def location(): String = "s3://bucket/eq-delete.parquet"
+    def content(): String = "EQUALITY_DELETES"
+    def specId(): Int = 0
+    def equalityFieldIds(): java.util.List[Integer] =
+      java.util.List.of(Integer.valueOf(3), Integer.valueOf(5))
+  }
+
+  private class EqualityDeleteFileWithNullIds extends BaseDeleteFile {
+    override def location(): String = "s3://bucket/eq-null-ids.parquet"
+    def content(): String = "EQUALITY_DELETES"
+    def specId(): Int = 0
+    def equalityFieldIds(): java.util.List[Integer] = null
+  }
+
+  private class EqualityDeleteFileWithEmptyIds extends BaseDeleteFile {
+    override def location(): String = "s3://bucket/eq-empty-ids.parquet"
+    def content(): String = "EQUALITY_DELETES"
+    def specId(): Int = 0
+    def equalityFieldIds(): java.util.List[Integer] = java.util.List.of[Integer]()
+  }
+
+  private class ThrowingContentDeleteFile extends BaseDeleteFile {
+    override def location(): String = "s3://bucket/d.parquet"
+    def content(): String = throw new RuntimeException("content boom")
+    def specId(): Int = 0
+    def equalityFieldIds(): java.util.List[Integer] = null
+  }
+
+  private class ThrowingSpecIdDeleteFile extends BaseDeleteFile {
+    override def location(): String = "s3://bucket/d.parquet"
+    def content(): String = "POSITION_DELETES"
+    def specId(): Int = throw new RuntimeException("spec boom")
+    def equalityFieldIds(): java.util.List[Integer] = null
+  }
+
+  private class ThrowingEqualityIdsDeleteFile extends BaseDeleteFile {
+    override def location(): String = "s3://bucket/d.parquet"
+    def content(): String = "EQUALITY_DELETES"
+    def specId(): Int = 0
+    def equalityFieldIds(): java.util.List[Integer] = throw new RuntimeException("ids boom")
+  }
+
+  private class NoContentAccessorDeleteFile extends BaseDeleteFile {
+    override def location(): String = "s3://bucket/d.parquet"
+    def specId(): Int = 0
+    def equalityFieldIds(): java.util.List[Integer] = null
+  }
+
+  private class NoEqualityIdsAccessorDeleteFile extends BaseDeleteFile {
+    override def location(): String = "s3://bucket/d.parquet"
+    def content(): String = "EQUALITY_DELETES"
+    def specId(): Int = 0
+  }
+
+  private class NoPathAccessorDeleteFile {
+    def keyMetadata(): java.nio.ByteBuffer = null
+  }
 }

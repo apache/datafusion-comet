@@ -204,6 +204,8 @@ The following cases fall back to Spark at planning, instead of failing on an exe
 - A nameservice whose NameNodes are found through DNS (`dfs.client.failover.resolve-needed.<nameservice>=true`) falls back: the native client dials each `rpc-address` once and does not expand a name to its addresses, so it would keep a single failover target.
 - A portless authority that is not a plain ASCII host or nameservice name (an IPv6 literal without a port, or a non-ASCII name) falls back, because iceberg-rust looks such names up in a rewritten form.
 - An `hdfs.port` that is not a port, an `hdfs.host` that does not form `host:port` with it, or a bare `hadoop.` property falls back, because iceberg-rust rejects them for every path when it opens the storage.
+- For the same reason, an incomplete nameservice declaration passed as `hadoop.dfs.ha.namenodes.<nameservice>` falls back, even for a location in another nameservice: every NameNode it lists needs a `host:port` `hadoop.dfs.namenode.rpc-address.<nameservice>.<nn>`.
+- A catalog that forwards `hadoop.fs.defaultFS` falls back unless that value is an HDFS `host:port` or the catalog also sets `hdfs.name-node`. A logical default filesystem such as `hdfs://nameservice1` is rejected by iceberg-rust even when the nameservice is declared.
 - A catalog that declares a nameservice named `nameservice` (as `hdfs.name-node.nameservice` or `hadoop.dfs.ha.namenodes.nameservice`) falls back for any other location, because that is the name of the client's own synthetic nameservice and the declaration would replace its NameNodes.
 
 A host, with or without a port, is not validated, so a mistyped host still fails when a task first opens a file.

@@ -283,6 +283,19 @@ object CometIcebergNativeScan extends CometOperatorSerde[CometBatchScanExec] wit
     IcebergReflection.findMethod(clazz, methodName).flatMap(m => Option(m.invoke(deleteFile)))
 
   /**
+   * Reads equality-delete field IDs for the native serde path. The accessor is required on every
+   * supported Iceberg DeleteFile API, so a missing method or invocation failure must propagate. A
+   * null return is distinct: Iceberg uses it for files without equality keys.
+   */
+  private def requiredEqualityFieldIds(
+      deleteFileClass: Class[_],
+      deleteFile: Any): java.util.List[Integer] = {
+    val method = IcebergReflection.getMethod(deleteFileClass, "equalityFieldIds")
+    val ids = method.invoke(deleteFile).asInstanceOf[java.util.List[Integer]]
+    if (ids == null) new java.util.ArrayList[Integer]() else ids
+  }
+
+  /**
    * Extracts delete files from an Iceberg FileScanTask as a list (for deduplication).
    *
    * Delete-file size is not serialized; the native scan stats each file for it (see
@@ -301,97 +314,15 @@ object CometIcebergNativeScan extends CometOperatorSerde[CometBatchScanExec] wit
 
       val deletes = IcebergReflection.getDeleteFilesFromTask(task, fileScanTaskClass)
 
-      deletes.asScala.map { deleteFile =>
-        // The path is the one essential field. A delete file we cannot locate cannot be applied,
-        // and silently skipping it would leak deleted rows, so treat a missing path as fatal.
-        val deletePath = IcebergReflection
-          .extractFileLocation(contentFileClass, deleteFile)
-          .getOrElse(
-            throw new RuntimeException(
-              "Neither location() nor path() is declared on this Iceberg version's " +
-                "ContentFile -- cannot extract delete file path from FileScanTask"))
-
-        val deleteBuilder = OperatorOuterClass.IcebergDeleteFile.newBuilder()
-        deleteBuilder.setFilePathIdx(internPath(deletePath))
-
-        val contentType =
-          try {
-            val contentMethod = IcebergReflection.getMethod(deleteFileClass, "content")
-            val content = contentMethod.invoke(deleteFile)
-            content.toString match {
-              case IcebergReflection.ContentTypes.POSITION_DELETES =>
-                IcebergReflection.ContentTypes.POSITION_DELETES
-              case IcebergReflection.ContentTypes.EQUALITY_DELETES =>
-                IcebergReflection.ContentTypes.EQUALITY_DELETES
-              case other => other
-            }
-          } catch {
-            case _: Exception =>
-              IcebergReflection.ContentTypes.POSITION_DELETES
-          }
-        deleteBuilder.setContentType(contentType)
-
-        // "PARQUET", or "PUFFIN" for a V3 deletion vector. iceberg-rust selects its
-        // deletion-vector reader on this, and a wrong value reads a Puffin blob as Parquet, so an
-        // undeterminable format is fatal: by serde time there is no fallback left.
-        val fileFormat = IcebergReflection
-          .getFileFormat(contentFileClass, deleteFile)
-          .getOrElse(
-            throw new RuntimeException(
-              "ContentFile.format() is not declared on this Iceberg version -- cannot tell a " +
-                "deletion vector from a Parquet delete file"))
-        deleteBuilder.setFileFormat(fileFormat)
-
-        val specId =
-          try {
-            val specIdMethod = IcebergReflection.getMethod(deleteFileClass, "specId")
-            specIdMethod.invoke(deleteFile).asInstanceOf[Int]
-          } catch {
-            case _: Exception => 0
-          }
-        deleteBuilder.setPartitionSpecId(specId)
-
-        try {
-          val equalityIdsMethod =
-            IcebergReflection.getMethod(deleteFileClass, "equalityFieldIds")
-          val equalityIds = equalityIdsMethod
-            .invoke(deleteFile)
-            .asInstanceOf[java.util.List[Integer]]
-          deleteBuilder.addAllEqualityIds(equalityIds)
-        } catch {
-          case _: Exception =>
-        }
-
-        // Gated on the format, not on the accessors returning a value: Iceberg also sets
-        // referencedDataFile on file-scoped Parquet position deletes, where iceberg-rust ignores
-        // it. Forwarding it there would serialize a data-file path per delete file that nothing
-        // reads, and would invite keying deletion-vector detection on the field instead of on
-        // fileFormat, which is the only discriminator.
-        if (fileFormat.equalsIgnoreCase(IcebergReflection.FileFormats.PUFFIN)) {
-          deletionVectorField(deleteFileClass, "referencedDataFile", deleteFile)
-            .foreach(p => deleteBuilder.setReferencedDataFile(p.asInstanceOf[String]))
-          deletionVectorField(deleteFileClass, "contentOffset", deleteFile)
-            .foreach(o => deleteBuilder.setContentOffset(o.asInstanceOf[java.lang.Long]))
-          deletionVectorField(deleteFileClass, "contentSizeInBytes", deleteFile)
-            .foreach(s => deleteBuilder.setContentSizeInBytes(s.asInstanceOf[java.lang.Long]))
-        }
-
-        // recordCount is declared on ContentFile, so it is present on every supported Iceberg
-        // version and a lookup failure is a real defect rather than an old-version absence.
-        // iceberg-rust rejects a deletion vector without it, since it checks the count against
-        // the cardinality it decodes from the blob.
-        deleteBuilder.setRecordCount(
-          IcebergReflection
-            .getMethod(contentFileClass, "recordCount")
-            .invoke(deleteFile)
-            .asInstanceOf[java.lang.Long])
-
-        // Encrypted delete files carry a plaintext StandardKeyMetadata blob; forward it verbatim.
-        // Unencrypted delete files leave the field unset.
-        keyMetadataBytes(keyMetadataMethod, deleteFile).foreach(deleteBuilder.setKeyMetadata)
-
-        deleteBuilder.build()
-      }.toSeq
+      deletes.asScala
+        .map(
+          serializeDeleteFile(
+            _,
+            contentFileClass,
+            deleteFileClass,
+            keyMetadataMethod,
+            internPath))
+        .toSeq
     } catch {
       case e: Exception =>
         val msg =
@@ -400,6 +331,85 @@ object CometIcebergNativeScan extends CometOperatorSerde[CometBatchScanExec] wit
         logError(msg)
         throw new RuntimeException(msg, e)
     }
+  }
+
+  /**
+   * Serializes a single Iceberg DeleteFile to protobuf.
+   *
+   * Required delete metadata must never fall back to guessed values after native execution has
+   * been selected. Missing accessors and invocation failures therefore propagate.
+   */
+  private[operator] def serializeDeleteFile(
+      deleteFile: Any,
+      contentFileClass: Class[_],
+      deleteFileClass: Class[_],
+      keyMetadataMethod: java.lang.reflect.Method,
+      internPath: String => Int): OperatorOuterClass.IcebergDeleteFile = {
+    val deletePath = IcebergReflection
+      .extractFileLocation(contentFileClass, deleteFile)
+      .getOrElse(
+        throw new RuntimeException(
+          "Neither location() nor path() is declared on this Iceberg version's " +
+            "ContentFile -- cannot extract delete file path from FileScanTask"))
+
+    val deleteBuilder = OperatorOuterClass.IcebergDeleteFile.newBuilder()
+    deleteBuilder.setFilePathIdx(internPath(deletePath))
+
+    val contentMethod = IcebergReflection.getMethod(deleteFileClass, "content")
+    val contentType = contentMethod.invoke(deleteFile).toString
+    deleteBuilder.setContentType(contentType)
+
+    // "PARQUET", or "PUFFIN" for a V3 deletion vector. iceberg-rust selects its
+    // deletion-vector reader on this, and a wrong value reads a Puffin blob as Parquet, so an
+    // undeterminable format is fatal: by serde time there is no fallback left.
+    val fileFormat = IcebergReflection
+      .getFileFormat(contentFileClass, deleteFile)
+      .getOrElse(
+        throw new RuntimeException(
+          "ContentFile.format() is not declared on this Iceberg version -- cannot tell a " +
+            "deletion vector from a Parquet delete file"))
+    deleteBuilder.setFileFormat(fileFormat)
+
+    val specIdMethod = IcebergReflection.getMethod(deleteFileClass, "specId")
+    deleteBuilder.setPartitionSpecId(specIdMethod.invoke(deleteFile).asInstanceOf[Int])
+
+    val equalityFieldIds = requiredEqualityFieldIds(deleteFileClass, deleteFile)
+    val isEqualityDelete = contentType == IcebergReflection.ContentTypes.EQUALITY_DELETES
+    if (isEqualityDelete && equalityFieldIds.isEmpty) {
+      throw new IllegalStateException(
+        s"Iceberg equality delete file '$deletePath' has no equality field IDs")
+    }
+    deleteBuilder.addAllEqualityIds(equalityFieldIds)
+
+    // Gated on the format, not on the accessors returning a value: Iceberg also sets
+    // referencedDataFile on file-scoped Parquet position deletes, where iceberg-rust ignores
+    // it. Forwarding it there would serialize a data-file path per delete file that nothing
+    // reads, and would invite keying deletion-vector detection on the field instead of on
+    // fileFormat, which is the only discriminator.
+    if (fileFormat.equalsIgnoreCase(IcebergReflection.FileFormats.PUFFIN)) {
+      deletionVectorField(deleteFileClass, "referencedDataFile", deleteFile)
+        .foreach(p => deleteBuilder.setReferencedDataFile(p.asInstanceOf[String]))
+      deletionVectorField(deleteFileClass, "contentOffset", deleteFile)
+        .foreach(o => deleteBuilder.setContentOffset(o.asInstanceOf[java.lang.Long]))
+      deletionVectorField(deleteFileClass, "contentSizeInBytes", deleteFile)
+        .foreach(s => deleteBuilder.setContentSizeInBytes(s.asInstanceOf[java.lang.Long]))
+    }
+
+    // recordCount is declared on ContentFile, so it is present on every supported Iceberg
+    // version and a lookup failure is a real defect rather than an old-version absence.
+    // iceberg-rust rejects a deletion vector without it, since it checks the count against
+    // the cardinality it decodes from the blob.
+    deleteBuilder.setRecordCount(
+      IcebergReflection
+        .getMethod(contentFileClass, "recordCount")
+        .invoke(deleteFile)
+        .asInstanceOf[java.lang.Long])
+
+    // Encrypted delete files carry a plaintext StandardKeyMetadata blob; forward it verbatim.
+    // Unencrypted delete files leave the field unset.
+    keyMetadataBytes(keyMetadataMethod, deleteFile).foreach(deleteBuilder.setKeyMetadata)
+
+    deleteBuilder.build()
   }
 
   /**
@@ -676,12 +686,17 @@ object CometIcebergNativeScan extends CometOperatorSerde[CometBatchScanExec] wit
    *   - a portless authority needs a declaration, `hdfs.name-node.<authority>` or
    *     `hadoop.dfs.ha.namenodes.<authority>` with a `host:port` rpc-address per NameNode;
    *   - the rest of the HDFS storage configuration must parse (`hdfs.host`, `hdfs.port`, no bare
-   *     `hadoop.` key), and no nameservice may be declared under the name opendal gives its own
-   *     synthetic one, `nameservice`, unless it is the location's own.
+   *     `hadoop.` key, every declared nameservice complete, and a forwarded `fs.defaultFS` an
+   *     HDFS `host:port` unless the global `hdfs.name-node` is set), and no nameservice may be
+   *     declared under the name opendal gives its own synthetic one, `nameservice`, unless it is
+   *     the location's own.
    *
    * Known limits it cannot see: Kerberos delegation tokens (the native client presents the
    * synthetic service `ha-hdfs:nameservice`) and NameNodes that stop answering without refusing
    * connections (the native client has no NameNode connect or RPC timeout).
+   *
+   * Mirrors `hdfs_native_config_parse_with` and `hdfs_native_effective_name_node` in
+   * iceberg-storage-opendal at the pinned revision; re-check it when the pin moves.
    *
    * @param uri
    *   the location whose authority names the NameNode (the data location when known)
@@ -705,9 +720,12 @@ object CometIcebergNativeScan extends CometOperatorSerde[CometBatchScanExec] wit
           "hadoop.fs.defaultFS is set")
     }
 
+    // The Hadoop options iceberg-rust builds from the properties, declarations expanded.
+    lazy val options = hdfsNativeOptions(catalogProperties)
     invalidNameNodeProperty(catalogProperties)
       .orElse(invalidHdfsStorageProperty(catalogProperties))
-      .orElse(syntheticNameserviceCollision(catalogProperties, authority))
+      .orElse(invalidHdfsDeclaration(catalogProperties, options))
+      .orElse(syntheticNameserviceCollision(options, authority))
       .orElse {
         if (authority.contains("@")) {
           Some(
@@ -719,7 +737,7 @@ object CometIcebergNativeScan extends CometOperatorSerde[CometBatchScanExec] wit
           Some(
             s"HDFS location authority '$authority' is neither host:port (port 1-65535) nor a " +
               "nameservice name")
-        } else if (isDeclared(catalogProperties, authority)) {
+        } else if (options.contains(s"dfs.ha.namenodes.$authority")) {
           None
         } else {
           val source = if (resolvesNameNodesThroughDns(hadoopConf, authority)) {
@@ -836,11 +854,9 @@ object CometIcebergNativeScan extends CometOperatorSerde[CometBatchScanExec] wit
 
   /** A declaration of opendal's synthetic nameservice name for a location that is not it. */
   private def syntheticNameserviceCollision(
-      catalogProperties: Map[String, String],
+      options: Map[String, String],
       authority: String): Option[String] = {
-    val declared =
-      catalogProperties.contains(nameNodeDeclarationKey(OpendalSyntheticNameservice)) ||
-        catalogProperties.contains(s"hadoop.dfs.ha.namenodes.$OpendalSyntheticNameservice")
+    val declared = options.contains(s"dfs.ha.namenodes.$OpendalSyntheticNameservice")
     if (declared && authority != OpendalSyntheticNameservice) {
       Some(
         s"a nameservice named '$OpendalSyntheticNameservice' is declared, the name Comet's " +
@@ -897,24 +913,82 @@ object CometIcebergNativeScan extends CometOperatorSerde[CometBatchScanExec] wit
       .headOption
 
   /**
-   * Whether the catalog properties declare a portless authority the way iceberg-rust reads it:
-   * Hadoop's `hadoop.dfs.ha.namenodes.<ns>` keys win over the `hdfs.name-node.<ns>` sugar.
+   * The Hadoop options iceberg-rust builds from the catalog properties
+   * (`hdfs_native_config_parse_with`): the `hadoop.*` keys with the prefix stripped, then each
+   * well-formed `hdfs.name-node.<ns>` expanded into `dfs.ha.namenodes.<ns>` = `nn0,nn1,..` and a
+   * `dfs.namenode.rpc-address.<ns>.nn<i>` per entry, an explicit key winning over the expansion
+   * key by key. A malformed declaration is reported by [[invalidNameNodeProperty]] first.
    */
-  private def isDeclared(catalogProperties: Map[String, String], nameservice: String): Boolean =
-    catalogProperties.get(s"hadoop.dfs.ha.namenodes.$nameservice") match {
-      case Some(ids) =>
-        val nnIds = ids.split(",").toSeq.map(_.trim).filter(_.nonEmpty)
-        nnIds.nonEmpty && nnIds.forall { nnId =>
-          catalogProperties
-            .get(s"hadoop.dfs.namenode.rpc-address.$nameservice.$nnId")
-            .flatMap(hdfsNameNode)
-            .isDefined
-        }
-      case None =>
-        catalogProperties
-          .get(nameNodeDeclarationKey(nameservice))
-          .exists(_.split(",").exists(_.trim.nonEmpty))
+  private def hdfsNativeOptions(catalogProperties: Map[String, String]): Map[String, String] = {
+    val options = mutable.Map[String, String]()
+    catalogProperties.foreach { case (key, value) =>
+      if (key.startsWith("hadoop.") && key.length > "hadoop.".length) {
+        options(key.stripPrefix("hadoop.")) = value
+      }
     }
+    catalogProperties.toSeq.sortBy(_._1).foreach { case (key, value) =>
+      if (key.startsWith(s"$HdfsNameNodeKey.")) {
+        val nameservice = key.stripPrefix(s"$HdfsNameNodeKey.")
+        val entries = value.split(",").toSeq.map(_.trim).filter(_.nonEmpty).flatMap(hdfsNameNode)
+        if (nameservice.nonEmpty && entries.nonEmpty) {
+          val ids = entries.indices.map(i => s"nn$i")
+          options.getOrElseUpdate(s"dfs.ha.namenodes.$nameservice", ids.mkString(","))
+          ids.zip(entries).foreach { case (id, entry) =>
+            options.getOrElseUpdate(
+              s"dfs.namenode.rpc-address.$nameservice.$id",
+              entry.stripPrefix("hdfs://"))
+          }
+        }
+      }
+    }
+    options.toMap
+  }
+
+  /**
+   * What iceberg-rust validates in the expanded options when it builds the storage, failing every
+   * path through it: each declared nameservice must list NameNodes, each with a `host:port`
+   * rpc-address, and a forwarded `fs.defaultFS` must be an HDFS `host:port` unless the global
+   * `hdfs.name-node` is set (a logical one is rejected even when declared).
+   */
+  private def invalidHdfsDeclaration(
+      catalogProperties: Map[String, String],
+      options: Map[String, String]): Option[String] = {
+    val declarations = options.toSeq.sortBy(_._1).iterator.flatMap { case (key, ids) =>
+      val nameservice = key.stripPrefix("dfs.ha.namenodes.")
+      if (!key.startsWith("dfs.ha.namenodes.") || nameservice.isEmpty) {
+        None
+      } else {
+        val nnIds = ids.split(",").toSeq.map(_.trim).filter(_.nonEmpty)
+        if (nnIds.isEmpty) {
+          Some(s"HDFS nameservice '$nameservice' is declared with no NameNodes")
+        } else {
+          nnIds
+            .find { nnId =>
+              options
+                .get(s"dfs.namenode.rpc-address.$nameservice.$nnId")
+                .flatMap(hdfsNameNode)
+                .isEmpty
+            }
+            .map { nnId =>
+              s"HDFS nameservice '$nameservice' declares NameNode '$nnId' but " +
+                s"dfs.namenode.rpc-address.$nameservice.$nnId is missing or not host:port"
+            }
+        }
+      }
+    }
+    val hasGlobalNameNode = catalogProperties
+      .get(HdfsNameNodeKey)
+      .exists(_.split(",").exists(_.trim.nonEmpty))
+    def defaultFs = options
+      .get("fs.defaultFS")
+      .map(_.trim)
+      .filter(defaultFs => defaultFs.nonEmpty && hdfsNameNode(defaultFs).isEmpty)
+      .map { defaultFs =>
+        s"the forwarded fs.defaultFS '$defaultFs' is not an HDFS host:port, which Comet's " +
+          "native HDFS client rejects for every path unless the catalog sets hdfs.name-node"
+      }
+    declarations.toSeq.headOption.orElse(if (hasGlobalNameNode) None else defaultFs)
+  }
 
   /**
    * Transforms Hadoop S3A configuration keys to Iceberg FileIO property keys.
@@ -1452,10 +1526,7 @@ object CometIcebergNativeScan extends CometOperatorSerde[CometBatchScanExec] wit
                     // dropped ones from the table's schema history (mirrors Iceberg-Java's
                     // DeleteFilter.fileProjection).
                     val equalityFieldIds = deletes.asScala.flatMap { df =>
-                      IcebergReflection
-                        .getEqualityFieldIds(deleteFileClass, df)
-                        .asScala
-                        .map(_.asInstanceOf[java.lang.Integer].intValue())
+                      requiredEqualityFieldIds(deleteFileClass, df).asScala.map(_.intValue())
                     }.toSeq
                     if (equalityFieldIds.nonEmpty) {
                       IcebergReflection

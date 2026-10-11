@@ -27,7 +27,7 @@ import org.apache.spark.sql.SparkSession
 import org.apache.spark.sql.catalyst.expressions.{Attribute, Expression, SortOrder}
 import org.apache.spark.sql.catalyst.plans.QueryPlan
 import org.apache.spark.sql.catalyst.plans.physical.{Partitioning, UnknownPartitioning}
-import org.apache.spark.sql.execution.SQLExecution
+import org.apache.spark.sql.execution.{SparkPlan, SQLExecution}
 import org.apache.spark.sql.execution.datasources.v2.BatchScanExec
 import org.apache.spark.sql.execution.metric.{SQLMetric, SQLMetrics}
 import org.apache.spark.sql.vectorized.ColumnarBatch
@@ -64,6 +64,14 @@ case class CometIcebergNativeScanExec(
     scanHashCode: Int,
     @transient nativeIcebergScanMetadata: CometIcebergNativeScanMetadata)
     extends CometLeafExec {
+
+  override def sparkFallback(newChildren: Seq[SparkPlan]): SparkPlan = {
+    // Native execution rebuilds originalPlan from the live runtimeFilters during partition
+    // serialization. Reversion skips that path, so carry the executable DPP filters across here.
+    val restoredScan = originalPlan.copy(runtimeFilters = runtimeFilters)
+    originalPlan.logicalLink.foreach(restoredScan.setLogicalLink)
+    restoredScan
+  }
 
   override val supportsColumnar: Boolean = true
 

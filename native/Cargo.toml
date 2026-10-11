@@ -44,11 +44,11 @@ arrow-select = { version = "59.2.0" }
 async-trait = { version = "0.1" }
 bytes = { version = "1.11.1" }
 parquet = { version = "59.2.0", default-features = false, features = ["experimental"] }
-datafusion = { version = "55.1.0", default-features = false, features = ["unicode_expressions", "crypto_expressions", "nested_expressions", "parquet"] }
-datafusion-datasource = { version = "55.1.0" }
-datafusion-functions = { version = "55.1.0", default-features = false, features = ["datetime_expressions"] }
-datafusion-physical-expr-adapter = { version = "55.1.0" }
-datafusion-spark = { version = "55.1.0", features = ["core"] }
+datafusion = { version = "55.2.0", default-features = false, features = ["unicode_expressions", "crypto_expressions", "nested_expressions", "parquet"] }
+datafusion-datasource = { version = "55.2.0" }
+datafusion-functions = { version = "55.2.0", default-features = false, features = ["datetime_expressions"] }
+datafusion-physical-expr-adapter = { version = "55.2.0" }
+datafusion-spark = { version = "55.2.0", features = ["core"] }
 datafusion-comet-spark-expr = { path = "spark-expr" }
 datafusion-comet-common = { path = "common" }
 datafusion-comet-jni-bridge = { path = "jni-bridge" }
@@ -87,8 +87,8 @@ aws-sdk-sts = { version = "1.114.0", default-features = false }
 # the author's fork instead of an apache revision. The head contains the revision main pins
 # (af1da4c5), the HDFS commits, and the newer apache/iceberg-rust main commits the PR has merged.
 # Retarget at apache/iceberg-rust once #3111 merges.
-iceberg = { git = "https://github.com/mixermt/iceberg-rust", rev = "ef451b66ca2dbc783a9ac2826a5046b1645b9baa" }
-iceberg-storage-opendal = { git = "https://github.com/mixermt/iceberg-rust", rev = "ef451b66ca2dbc783a9ac2826a5046b1645b9baa", features = ["opendal-memory", "opendal-fs", "opendal-s3", "opendal-gcs", "opendal-oss", "opendal-azdls", "opendal-hdfs-native"] }
+iceberg = { git = "https://github.com/mixermt/iceberg-rust", rev = "0145ca6b6bce85a0cd52dda2636f0402e55969f8" }
+iceberg-storage-opendal = { git = "https://github.com/mixermt/iceberg-rust", rev = "0145ca6b6bce85a0cd52dda2636f0402e55969f8", features = ["opendal-memory", "opendal-fs", "opendal-s3", "opendal-gcs", "opendal-oss", "opendal-azdls", "opendal-hdfs-native"] }
 reqsign-core = "3"
 
 [profile.release]

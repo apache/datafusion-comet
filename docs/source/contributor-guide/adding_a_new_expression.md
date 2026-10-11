@@ -408,6 +408,7 @@ For full documentation on the test file format, including directives like `Confi
 
 - **Cover both column references and literals.** Comet often uses different code paths for each. The Comet SQL Tests suite automatically disables constant folding, so all-literal queries are evaluated natively.
 - **Include edge cases** such as `NULL`, empty strings, boundary values, `NaN`, and multibyte UTF-8 characters.
+- **For `FLOAT` and `DOUBLE` input, include `-0.0` and a NaN with the sign bit set.** [Floating-Point Semantics](floating_point.md) explains which Spark rule an expression follows and how to test it.
 - **Keep one file per expression** to make failures easy to locate.
 - **Pin the mechanism when it depends on the input.** If your serde routes some input types natively and others through the JVM codegen dispatcher, say so with `expect_native(...)` and `expect_dispatch(...)`. A plain `query` cannot tell the two apart, so without these a later change that swaps one for the other passes silently. See [Comet SQL Tests](sql-file-tests.md).
 

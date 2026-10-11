@@ -37,21 +37,27 @@
 //!   [`hash_input`].
 //!
 //! A native expression must follow the rule of the Spark function it replaces, so build it from
-//! these helpers rather than a local copy. Where an Arrow kernel sorts, row-encodes or hashes the
-//! values, normalize them first: once `-0.0` is folded and NaN canonicalized, Arrow's total order
-//! agrees with `compareDoubles`. Where Comet compares values itself, or has to return the original
-//! bits as `array_min` does, use [`compare_floats`], [`float_lt`], [`float_gt`],
-//! [`spark_comparator`] or [`spark_equality`]. Non-canonical NaNs are not a corner case: on x86-64
-//! every NaN that arithmetic produces at run time, such as `sqrt(-1)`, has the sign bit set.
+//! these helpers rather than a local copy. Where an Arrow kernel sorts, row-encodes, hashes or
+//! compares the values, normalize them first: once `-0.0` is folded and NaN canonicalized, Arrow's
+//! total order agrees with `compareDoubles`. Where Comet compares values itself, or has to return
+//! the original bits as `array_min` does, use [`compare_floats`], [`float_lt`], [`float_gt`],
+//! [`spark_comparator`] or [`spark_equality`]. The comparison operators compare in place too, with
+//! the kernels in `kernels` for flat floats and with [`spark_comparator`] and [`spark_equality`]
+//! for lists and structs. Non-canonical NaNs are not a corner case: on x86-64 every NaN that
+//! arithmetic produces at run time, such as `sqrt(-1)`, has the sign bit set.
 
 mod compare;
+mod kernels;
 mod normalize;
 
 pub use compare::{spark_comparator, spark_equality};
+pub(crate) use compare::{spark_comparator_ignoring_nulls, spark_equality_ignoring_nulls};
+pub(crate) use kernels::{compare_float_array_scalar, compare_float_arrays, comparison_with_nulls};
 pub use normalize::{
-    has_float_leaf, normalize_floats, normalize_nested_floats, NormalizeNaNAndZero,
-    NormalizeNestedFloats,
+    has_float_leaf, normalize_comparison_operand, normalize_floats, normalize_nested_floats,
+    NormalizeNaNAndZero, NormalizeNestedFloats,
 };
+pub(crate) use normalize::{is_nested_with_float_leaf, normalize_float_scalar};
 
 use num::Float;
 use std::cmp::Ordering;

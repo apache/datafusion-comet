@@ -39,7 +39,7 @@ import org.apache.spark.sql.catalyst.InternalRow
 import org.apache.spark.sql.catalyst.expressions.{Attribute, AttributeReference}
 import org.apache.spark.sql.comet.{CometIcebergWriteExec, CometSparkToColumnarExec, IcebergWriteExec}
 import org.apache.spark.sql.execution.{ApplyColumnarRulesAndInsertTransitions, ColumnarToRowExec, CommandExecutionMode, LeafExecNode, SparkPlan}
-import org.apache.spark.sql.types.IntegerType
+import org.apache.spark.sql.types.{BinaryType, IntegerType}
 import org.apache.spark.sql.vectorized.ColumnarBatch
 
 import org.apache.comet.CometSparkSessionExtensions.{isSpark35Plus, isSpark40Plus}
@@ -619,6 +619,20 @@ class CometIcebergWriteDetectionSuite extends CometTestBase with CometIcebergTes
     }
   }
 
+  test("fall-back: mixed-case data location scheme (native opens the location verbatim)") {
+    // OpenDAL strips the scheme prefix from a path case-sensitively, so `S3://` cannot be opened
+    // natively even though `s3://` can. The gate must match the scheme verbatim and decline it.
+    withDetectionCatalog { dir =>
+      createTable(
+        dir,
+        "mixed_case_scheme",
+        partitionSpec = "",
+        properties =
+          Some("'write.data.path'='S3://nonexistent-bucket/iceberg/db/mixed_case_scheme'"))
+      assertUnsupportedContainsAllowingWriteFailure("mixed_case_scheme", "storage scheme", "S3")
+    }
+  }
+
   test("fall-back: hostless hdfs:/ data location is read as hdfs, not file") {
     // Hadoop normalises `hdfs:///p` to `hdfs:/p`; with no `://` the gate used to call it `file`.
     // hdfs is a supported scheme on this branch, so the missing authority is what declines it.
@@ -831,6 +845,23 @@ class CometIcebergWriteDetectionSuite extends CometTestBase with CometIcebergTes
       assert(unsupported == expected, unsupported)
       assert(!unsupported.exists(_.contains(secret)), unsupported)
     }
+  }
+
+  test("cluster-wide S3A delete, read and committer defaults do not block a native write") {
+    val hadoopConf = new Configuration(false)
+    Seq(
+      "fs.s3a.bulk.delete.page.size" -> "1000",
+      "fs.s3a.experimental.input.fadvise" -> "random",
+      "fs.s3a.committer.magic.enabled" -> "true",
+      "fs.s3a.committer.name" -> "magic",
+      "fs.s3a.committer.threads" -> "8").foreach { case (k, v) => hadoopConf.set(k, v) }
+    assert(
+      CometIcebergNativeWrite.unsupportedHadoopS3Settings(hadoopConf, Some("target")).isEmpty)
+
+    hadoopConf.set("fs.s3a.encryption.algorithm", "SSE-KMS")
+    assert(
+      CometIcebergNativeWrite.unsupportedHadoopS3Settings(hadoopConf, Some("target")) == Seq(
+        "fs.s3a.encryption.algorithm"))
   }
 
   test("Hadoop S3A built-in defaults are ignored but custom resources are effective") {
@@ -1926,9 +1957,15 @@ class CometIcebergWriteDetectionSuite extends CometTestBase with CometIcebergTes
    * directly.
    */
   private def writeChildAfterTransitionRules(source: SparkPlan): SparkPlan = {
+    val child = CometSparkToColumnarExec(source)
+    val output = Seq(
+      AttributeReference(IcebergWriteExec.CommitMessageColumn, BinaryType, nullable = false)())
+    val originalPlan = IcebergWriteExec(null, output, child)
     val write = CometIcebergWriteExec(
       Operator.newBuilder().build(),
-      CometSparkToColumnarExec(source),
+      originalPlan,
+      child,
+      output,
       batchWrite = null,
       table = null,
       partitionSpecId = 0)

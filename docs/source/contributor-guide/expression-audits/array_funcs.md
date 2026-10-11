@@ -48,7 +48,7 @@
 - Spark 3.5.8 (audited 2026-05-27): baseline. `ArrayContains(left, right) extends BinaryExpression with NullIntolerant with Predicate`; `inputTypes` uses `findWiderTypeWithoutStringPromotionForTwo`. Wired as `CometScalarFunction("array_contains")`.
 - Spark 4.0.1 (audited 2026-05-27): `NullIntolerant` trait replaced by `nullIntolerant: Boolean`; `checkInputDataTypes` adopts `DataTypeUtils.sameType` (collation-aware in 4.x).
 - Spark 4.1.1 (audited 2026-05-27): identical to 4.0.1.
-- Float/double arrays containing NaN and signed zero match Spark; DataFusion canonicalizes them the same way as Spark's `SQLOrderingUtil`.
+- Spark 3.4, 3.5, 4.0, 4.1, 4.2 (2026-10-02, [#6520](https://github.com/apache/datafusion-comet/issues/6520)): datafusion-spark's `array_contains` compares floats by their bits, where Spark's `genEqual` treats `-0.0` as `0.0` and all NaNs as equal. Flat `FLOAT` and `DOUBLE` arrays now run through Comet's `spark_array_contains`, which applies Spark's equality, instead of the codegen dispatcher. Nested float elements stay on the dispatcher, where Spark's generated code is faster and keeps string collations, as does a value other than a literal or column read over a nullable array, which Spark skips for a null array. Tracked upstream as [apache/datafusion#25981](https://github.com/apache/datafusion/issues/25981).
 
 ## array_distinct
 

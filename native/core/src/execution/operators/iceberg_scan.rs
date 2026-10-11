@@ -230,7 +230,7 @@ impl IcebergScanExec {
         let scan_metrics = scan_result.metrics().clone();
         let stream = scan_result.stream();
 
-        let spark_options = SparkParquetOptions::new(EvalMode::Legacy, "UTC", false);
+        let spark_options = SparkParquetOptions::new(EvalMode::Legacy, "UTC");
         let adapter_factory = SparkPhysicalExprAdapterFactory::new(spark_options, None);
 
         let adapted_stream =
@@ -272,14 +272,14 @@ impl IcebergScanExec {
                 // Delete-file sizes are never serialized, so they always arrive as 0. If we ever
                 // trust manifest sizes (pending the unreleased apache/iceberg#12554 fix), skip
                 // already-sized files here instead of asserting.
-                debug_assert_eq!(delete.file_size_in_bytes, 0);
+                debug_assert_eq!(delete.file_size_in_bytes(), 0);
                 // A deletion vector is range-read from content_offset, and iceberg-rust consults
                 // file_size_in_bytes only on the Parquet delete path. Statting the Puffin file
                 // would be one HEAD per file per Spark partition for a value nothing reads.
-                if delete.file_format == DataFileFormat::Puffin {
+                if delete.file_format() == DataFileFormat::Puffin {
                     continue;
                 }
-                needed.insert(delete.file_path.clone());
+                needed.insert(delete.file_path().to_string());
             }
         }
         if needed.is_empty() {
@@ -336,17 +336,35 @@ impl IcebergScanExec {
             let deletes = task
                 .deletes()
                 .iter()
-                .map(|delete| {
-                    let mut delete = delete.clone();
-                    if let Some(&size) = size_map.get(&delete.file_path) {
-                        delete.file_size_in_bytes = size;
-                    }
-                    delete
+                .map(|delete| match size_map.get(delete.file_path()) {
+                    Some(&size) => Self::with_file_size(delete, size),
+                    None => Ok(delete.clone()),
                 })
-                .collect::<Vec<_>>();
+                .collect::<Result<Vec<_>, Error>>()?;
             *task = Self::rebuild_task_with_deletes(task, deletes)?;
         }
         Ok(())
+    }
+
+    /// A copy of `delete` with its file size set. `FileScanTaskDeleteFile`'s fields are private
+    /// with no mutator, so the copy is built through its builder, which re-runs its validation.
+    fn with_file_size(
+        delete: &FileScanTaskDeleteFile,
+        file_size_in_bytes: u64,
+    ) -> Result<FileScanTaskDeleteFile, Error> {
+        FileScanTaskDeleteFile::builder()
+            .with_file_path(delete.file_path().to_string())
+            .with_file_size_in_bytes(file_size_in_bytes)
+            .with_file_type(delete.file_type())
+            .with_file_format(delete.file_format())
+            .with_partition_spec_id(delete.partition_spec_id())
+            .with_equality_ids(delete.equality_ids().map(<[i32]>::to_vec))
+            .with_referenced_data_file(delete.referenced_data_file().map(str::to_string))
+            .with_content_offset(delete.content_offset())
+            .with_content_size_in_bytes(delete.content_size_in_bytes())
+            .with_record_count(delete.record_count())
+            .with_key_metadata(delete.key_metadata().map(Box::<[u8]>::from))
+            .build()
     }
 
     /// Rebuilds a [`FileScanTask`] carrying a new set of delete files.
@@ -630,7 +648,7 @@ mod tests {
             Field::new("a", DataType::Int64, false),
             Field::new("b", DataType::Int64, false),
         ]));
-        let mut options = super::SparkParquetOptions::new(super::EvalMode::Legacy, "UTC", false);
+        let mut options = super::SparkParquetOptions::new(super::EvalMode::Legacy, "UTC");
         options.case_sensitive = true;
         let factory = super::SparkPhysicalExprAdapterFactory::new(options, None);
         for name in ["a", "b"] {
@@ -690,19 +708,14 @@ mod tests {
     }
 
     fn delete_file(path: &str) -> FileScanTaskDeleteFile {
-        FileScanTaskDeleteFile {
-            file_path: path.to_string(),
-            file_type: DataContentType::PositionDeletes,
-            file_format: DataFileFormat::Parquet,
-            file_size_in_bytes: 0,
-            partition_spec_id: 0,
-            equality_ids: None,
-            referenced_data_file: None,
-            content_offset: None,
-            content_size_in_bytes: None,
-            record_count: None,
-            key_metadata: None,
-        }
+        FileScanTaskDeleteFile::builder()
+            .with_file_path(path.to_string())
+            .with_file_type(DataContentType::PositionDeletes)
+            .with_file_format(DataFileFormat::Parquet)
+            .with_file_size_in_bytes(0)
+            .with_partition_spec_id(0)
+            .build()
+            .unwrap()
     }
 
     // A delete file we cannot stat must fail the scan, not be silently read with a missing/0 size.
@@ -720,7 +733,7 @@ mod tests {
             result.is_err(),
             "expected an error when a delete file cannot be statted"
         );
-        assert_eq!(tasks[0].deletes()[0].file_size_in_bytes, 0);
+        assert_eq!(tasks[0].deletes()[0].file_size_in_bytes(), 0);
     }
 
     // The real on-disk size is filled in from the FileIO, replacing the 0 placeholder.
@@ -738,7 +751,10 @@ mod tests {
             .await
             .unwrap();
 
-        assert_eq!(tasks[0].deletes()[0].file_size_in_bytes, bytes.len() as u64);
+        assert_eq!(
+            tasks[0].deletes()[0].file_size_in_bytes(),
+            bytes.len() as u64
+        );
     }
 
     // A present-but-undersized delete file (0-byte object, truncated write, or a HEAD with no
@@ -757,7 +773,7 @@ mod tests {
             result.is_err(),
             "expected an error when a delete file is below the Parquet footer minimum"
         );
-        assert_eq!(tasks[0].deletes()[0].file_size_in_bytes, 0);
+        assert_eq!(tasks[0].deletes()[0].file_size_in_bytes(), 0);
     }
 
     // No deletes means no stats and no error.
