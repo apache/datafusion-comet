@@ -734,7 +734,16 @@ mod tests {
             inner,
             Some((0..2 * ROWS).map(|i| i % 7 != 0).collect::<NullBuffer>()),
         ));
-        vec![lists, large_lists, structs, maps, deep]
+        let strings: ArrayRef = Arc::new(StringArray::from_iter(
+            (0..*offsets.last().unwrap()).map(|i| (i % 7 != 0).then_some("é")),
+        ));
+        let string_lists: ArrayRef = Arc::new(ListArray::new(
+            Arc::new(Field::new("item", DataType::Utf8, true)),
+            offsets,
+            strings,
+            None,
+        ));
+        vec![lists, large_lists, structs, maps, deep, string_lists]
     }
 
     #[test]

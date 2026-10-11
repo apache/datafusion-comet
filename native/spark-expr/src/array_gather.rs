@@ -19,14 +19,15 @@
 
 use std::sync::Arc;
 
+use arrow::array::types::{BinaryType, ByteArrayType, LargeBinaryType, LargeUtf8Type, Utf8Type};
 use arrow::array::{
     make_array, Array, ArrayData, ArrayRef, AsArray, BooleanArray, BooleanBufferBuilder,
-    GenericListArray, ListArray, MapArray, MutableArrayData, NullBufferBuilder, OffsetSizeTrait,
-    PrimitiveArray, StructArray, UInt32Array,
+    GenericByteArray, GenericListArray, ListArray, MapArray, MutableArrayData, NullBufferBuilder,
+    OffsetSizeTrait, PrimitiveArray, StructArray, UInt32Array,
 };
 use arrow::buffer::{NullBuffer, OffsetBuffer};
 use arrow::compute::take;
-use arrow::datatypes::{ArrowPrimitiveType, DataType, FieldRef};
+use arrow::datatypes::{ArrowNativeType, ArrowPrimitiveType, DataType, FieldRef};
 use arrow::error::{ArrowError, Result};
 
 /// Keep the Arrow gather fast path, then release excess owned capacity without
@@ -303,6 +304,45 @@ macro_rules! copy_primitive_helper {
         copy_primitive::<$t>($values, $ranges, $len)
     };
 }
+
+fn copy_bytes<T: ByteArrayType>(
+    values: &dyn Array,
+    ranges: &[(usize, usize)],
+    len: usize,
+) -> Result<ArrayRef> {
+    let typed = values.as_bytes::<T>();
+    let input = typed.value_offsets();
+    let mut offsets = Vec::with_capacity(len + 1);
+    offsets.push(T::Offset::usize_as(0));
+    let mut length = 0usize;
+    for &(start, end) in ranges {
+        let first = input[start].as_usize();
+        for offset in &input[start + 1..end + 1] {
+            offsets.push(T::Offset::usize_as(length + offset.as_usize() - first));
+        }
+        length += input[end].as_usize() - first;
+    }
+    // Check before allocating or copying bytes, including repeated selections.
+    T::Offset::from_usize(length).ok_or(ArrowError::OffsetOverflowError(length))?;
+    debug_assert_eq!(offsets.len(), len + 1);
+    let mut bytes = Vec::with_capacity(length);
+    for &(start, end) in ranges {
+        bytes
+            .extend_from_slice(&typed.value_data()[input[start].as_usize()..input[end].as_usize()]);
+    }
+    // SAFETY: ranges contain exactly `len` values from a valid input. Rebased offsets
+    // start at zero, are monotonic, fit the offset type and end at bytes.len(). Copies
+    // preserve string boundaries and UTF-8, including hidden bytes under nulls. The
+    // validity has the same length. Revalidating UTF-8 would scan all copied bytes again.
+    Ok(Arc::new(unsafe {
+        GenericByteArray::<T>::new_unchecked(
+            OffsetBuffer::new(offsets.into()),
+            bytes.into(),
+            range_nulls(values, ranges, len),
+        )
+    }))
+}
+
 fn copy_list_ranges<O: OffsetSizeTrait>(
     values: &GenericListArray<O>,
     ranges: &[(usize, usize)],
@@ -348,6 +388,10 @@ fn copy_list_ranges<O: OffsetSizeTrait>(
 fn copy_ranges(values: &dyn Array, ranges: &[(usize, usize)], len: usize) -> Result<ArrayRef> {
     arrow::array::downcast_primitive! {
         values.data_type() => (copy_primitive_helper, values, ranges, len),
+        DataType::Utf8 => copy_bytes::<Utf8Type>(values, ranges, len),
+        DataType::LargeUtf8 => copy_bytes::<LargeUtf8Type>(values, ranges, len),
+        DataType::Binary => copy_bytes::<BinaryType>(values, ranges, len),
+        DataType::LargeBinary => copy_bytes::<LargeBinaryType>(values, ranges, len),
         _ => copy_nested_ranges(values, ranges, len)
     }
 }
@@ -520,16 +564,14 @@ mod tests {
             Some(6),
             Some(7),
         ]));
-        let strings: ArrayRef = Arc::new(StringArray::from(vec![
-            Some("skip"),
-            Some("a"),
-            None,
-            Some("é"),
-            Some("longer"),
-            None,
-            Some(""),
-            Some("tail"),
-        ]));
+        let strings = StringArray::from(vec![
+            "skip", "a", "hidden", "é", "longer", "hidden", "", "tail",
+        ]);
+        let strings: ArrayRef = Arc::new(StringArray::new(
+            strings.offsets().clone(),
+            strings.values().clone(),
+            Some(vec![true, true, false, true, true, false, true, true].into()),
+        ));
         let decimals: ArrayRef = Arc::new(
             Decimal128Array::from(vec![
                 Some(-1),
@@ -556,7 +598,22 @@ mod tests {
             ])
             .with_timezone("UTC"),
         );
-        for child in [numbers, strings, decimals, timestamps] {
+        let mut children = vec![numbers, Arc::clone(&strings), decimals, timestamps];
+        for data_type in [DataType::LargeUtf8, DataType::Binary, DataType::LargeBinary] {
+            children.push(arrow::compute::cast(&strings, &data_type)?);
+        }
+        children.push(Arc::new(ListArray::new(
+            Arc::new(Field::new("item", DataType::Utf8, true)),
+            OffsetBuffer::from_lengths(std::iter::repeat_n(1, strings.len())),
+            Arc::clone(&strings),
+            None,
+        )));
+        children.push(Arc::new(StructArray::new(
+            vec![Arc::new(Field::new("text", DataType::Utf8, true))].into(),
+            vec![Arc::clone(&strings)],
+            None,
+        )));
+        for child in children {
             let child = child.slice(1, 6);
             let lists: ArrayRef = Arc::new(ListArray::new(
                 Arc::new(Field::new("item", child.data_type().clone(), true)),
@@ -574,7 +631,29 @@ mod tests {
             assert_eq!(actual.to_data(), expected.to_data());
             assert_eq!(lists.to_data(), input);
         }
+        let copied = copy_ranges(strings.as_ref(), &[(1, 4)], 3)?;
+        assert_eq!(
+            copied.as_string::<i32>().value_data(),
+            "ahiddené".as_bytes()
+        );
         Ok(())
+    }
+
+    #[test]
+    fn byte_gather_reports_offset_overflow_before_copying() {
+        let bytes = "x".repeat(1024 * 1024);
+        let values: ArrayRef = Arc::new(ListArray::new(
+            Arc::new(Field::new("item", DataType::Utf8, true)),
+            OffsetBuffer::from_lengths([1]),
+            Arc::new(StringArray::from(vec![bytes.as_str()])),
+            None,
+        ));
+        // Repeating a 1 MiB value would require 2 GiB of output, beyond an i32 offset.
+        let indices = UInt32Array::from(vec![0; 2048]);
+        assert!(matches!(
+            take_nested_values(&values, &indices),
+            Err(ArrowError::OffsetOverflowError(_))
+        ));
     }
     #[test]
     fn list_gather_reports_offset_overflow_before_copying_children() {

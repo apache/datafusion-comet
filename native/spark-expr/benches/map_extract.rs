@@ -26,7 +26,7 @@
 //! rather than assuming a permanent gap. Comet's kernel avoids the `ListExtract`
 //! unwrapping pass required by DataFusion's array-valued result.
 
-use arrow::array::builder::{MapBuilder, StringBuilder};
+use arrow::array::builder::{Int32Builder, ListBuilder, MapBuilder, StringBuilder};
 use arrow::array::{
     Array, ArrayRef, Int32Array, LargeListArray, ListArray, MapArray, MapFieldNames, StringArray,
     StructArray,
@@ -291,5 +291,73 @@ fn nested_benchmark(c: &mut Criterion) {
     group.finish();
 }
 
-criterion_group!(benches, criterion_benchmark, nested_benchmark);
+fn nested_string_benchmark(c: &mut Criterion) {
+    let comet = SparkMapExtract::new();
+    let mut group = c.benchmark_group("map_extract_nested_string");
+    for (shape, selected_len, other_len, width) in [
+        ("short", 1, 1, 1),
+        ("skewed", 1, 128, 1),
+        ("empty", 0, 128, 1),
+        ("long", 1, 1, 128),
+    ] {
+        let text = "x".repeat(width);
+        for null_percent in [0, 25, 75] {
+            for retain_null_entries in [false, true] {
+                if null_percent == 0 && retain_null_entries {
+                    continue;
+                }
+                let mut builder = MapBuilder::new(
+                    None,
+                    Int32Builder::new(),
+                    ListBuilder::new(StringBuilder::new()),
+                );
+                for row in 0..BATCH_SIZE {
+                    let valid = row % 4 >= null_percent / 25;
+                    if valid || retain_null_entries {
+                        for (key, len) in [(1, selected_len), (2, other_len)] {
+                            builder.keys().append_value(key);
+                            for _ in 0..len {
+                                builder.values().values().append_value(&text);
+                            }
+                            builder.values().append(true);
+                        }
+                    }
+                    builder.append(valid).unwrap();
+                }
+                let map = builder.finish();
+                let field = Arc::new(Field::new("result", map.value_type().clone(), true));
+                let map = ColumnarValue::Array(Arc::new(map));
+                for (key_shape, key) in [
+                    ("scalar", ColumnarValue::Scalar(ScalarValue::Int32(Some(1)))),
+                    (
+                        "column",
+                        ColumnarValue::Array(Arc::new(Int32Array::from(vec![1; BATCH_SIZE]))),
+                    ),
+                ] {
+                    let args = vec![map.clone(), key];
+                    group.bench_with_input(
+                        BenchmarkId::new(
+                            format!("{shape}/{key_shape}/{null_percent}%-nulls"),
+                            if retain_null_entries {
+                                "retained"
+                            } else {
+                                "empty"
+                            },
+                        ),
+                        &args,
+                        |b, args| b.iter(|| call(&comet, args, &field)),
+                    );
+                }
+            }
+        }
+    }
+    group.finish();
+}
+
+criterion_group!(
+    benches,
+    criterion_benchmark,
+    nested_benchmark,
+    nested_string_benchmark
+);
 criterion_main!(benches);

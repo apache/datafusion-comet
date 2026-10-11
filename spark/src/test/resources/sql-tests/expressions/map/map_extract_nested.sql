@@ -52,3 +52,29 @@ SELECT element_at(m, 3), element_at(d, 3), element_at(s, 3), element_at(mm, 3) F
 
 query expect_native(element_at)
 SELECT element_at(m, k), element_at(d, k), element_at(s, k), element_at(mm, k) FROM test_map_extract_nested WHERE k IS NULL
+
+statement
+CREATE TABLE test_map_extract_nested_bytes(m map<int,array<string>>, b map<int,array<binary>>, s map<int,struct<text:string>>, k int) USING parquet
+
+statement
+INSERT INTO test_map_extract_nested_bytes VALUES
+  (map(1, array('é', NULL, ''), 2, array_repeat('unselected', 128)), map(1, array(X'00FF', NULL, X''), 2, array_repeat(X'0102', 128)), map(1, named_struct('text', 'é'), 2, named_struct('text', 'unselected')), 1),
+  (map(1, array(), 2, array_repeat('unselected', 128)), map(1, array(), 2, array_repeat(X'0102', 128)), map(1, named_struct('text', NULL)), 1),
+  (map(1, NULL), map(1, NULL), map(1, NULL), 1),
+  (NULL, NULL, NULL, 1),
+  (map(), map(), map(), 1),
+  (map(1, array('a')), map(1, array(X'01')), map(1, named_struct('text', 'a')), NULL),
+  (map(1, array('a')), map(1, array(X'01')), map(1, named_struct('text', 'a')), 3),
+  (map(1, array('a'), 2, array('b', 'c')), map(1, array(X'01'), 2, array(X'02', X'03')), map(1, named_struct('text', 'a'), 2, named_struct('text', 'b')), 2)
+
+query expect_native(getmapvalue)
+SELECT m[k], b[k], s[k] FROM test_map_extract_nested_bytes
+
+query expect_native(getmapvalue)
+SELECT m[1], b[1], s[1] FROM test_map_extract_nested_bytes
+
+query expect_native(element_at)
+SELECT element_at(m, k), element_at(b, k), element_at(s, k) FROM test_map_extract_nested_bytes
+
+query expect_native(element_at)
+SELECT element_at(m, 1), element_at(b, 1), element_at(s, 1) FROM test_map_extract_nested_bytes
