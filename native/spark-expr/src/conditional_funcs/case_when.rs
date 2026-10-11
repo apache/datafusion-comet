@@ -385,12 +385,27 @@ impl PhysicalExpr for CaseWhenExpr {
     }
 }
 
-/// Whether `expr` can be evaluated for rows that Spark would not evaluate it for.
+/// Whether `expr` can be evaluated for rows that Spark would not evaluate it for, at little cost.
 ///
-/// That holds when it can neither fail nor return something different for seeing more rows: a
-/// column, a literal, and comparisons, boolean logic, null checks, widening casts and wrapping
-/// arithmetic over them. Anything else, including every function, is assumed to be able to fail.
+/// That holds when it can neither fail nor return something different for seeing more rows, and is
+/// cheap: a column, a literal, and comparisons, boolean logic, null checks, widening casts and
+/// wrapping arithmetic over them. Anything else, including every function and a cast that parses a
+/// string, is treated as able to fail. `CASE` uses this to decide whether to evaluate every branch
+/// over the whole batch, which pays off only when that costs little more than selecting rows.
 pub(super) fn is_infallible(expr: &Arc<dyn PhysicalExpr>, input_schema: &Schema) -> bool {
+    infallible(expr, input_schema, false)
+}
+
+/// Whether `expr` can be evaluated for rows that Spark would not evaluate it for, at any cost: what
+/// [`is_infallible`] accepts, and casts that [`Cast::cannot_fail`] accepts beyond it, such as a
+/// LEGACY or TRY cast from a string to an integer, which returns NULL for a string it cannot parse.
+/// `NullShortCircuit` uses this, since it masks an argument only to keep it from failing on rows
+/// that Spark skips.
+pub(super) fn cannot_fail(expr: &Arc<dyn PhysicalExpr>, input_schema: &Schema) -> bool {
+    infallible(expr, input_schema, true)
+}
+
+fn infallible(expr: &Arc<dyn PhysicalExpr>, input_schema: &Schema, parsing: bool) -> bool {
     if expr.is::<Column>() || expr.is::<Literal>() {
         return true;
     }
@@ -399,7 +414,11 @@ pub(super) fn is_infallible(expr: &Arc<dyn PhysicalExpr>, input_schema: &Schema)
     } else if let Some(comparison) = expr.downcast_ref::<SparkComparison>() {
         comparison.is_infallible(input_schema)
     } else if let Some(cast) = expr.downcast_ref::<Cast>() {
-        cast.is_infallible(input_schema)
+        if parsing {
+            cast.cannot_fail(input_schema)
+        } else {
+            cast.is_infallible(input_schema)
+        }
     } else if let Some(normalize) = expr.downcast_ref::<NormalizeNaNAndZero>() {
         normalize.is_infallible()
     } else if let Some(not) = expr.downcast_ref::<NotExpr>() {
@@ -417,7 +436,7 @@ pub(super) fn is_infallible(expr: &Arc<dyn PhysicalExpr>, input_schema: &Schema)
         && expr
             .children()
             .into_iter()
-            .all(|child| is_infallible(child, input_schema))
+            .all(|child| infallible(child, input_schema, parsing))
 }
 
 fn binary_is_infallible(binary: &BinaryExpr, input_schema: &Schema) -> bool {
@@ -1231,7 +1250,8 @@ mod tests {
         // Narrowing and parsing casts can fail under ANSI
         assert!(!infallible(cast(c("i"), DataType::Int32)));
         assert!(!infallible(cast(c("s"), DataType::Int32)));
-        // A string that LEGACY or TRY mode cannot parse as an integer becomes NULL instead
+        // A string that LEGACY or TRY mode cannot parse as an integer becomes NULL, so the cast
+        // cannot fail. Parsing costs too much for CASE to do it for rows it would skip, though.
         for mode in [EvalMode::Legacy, EvalMode::Try] {
             for to in [
                 DataType::Int8,
@@ -1239,21 +1259,19 @@ mod tests {
                 DataType::Int32,
                 DataType::Int64,
             ] {
-                assert!(
-                    infallible(cast_in(mode, c("s"), to.clone())),
-                    "{mode:?} {to}"
-                );
-                assert!(
-                    infallible(cast_in(mode, c("ls"), to.clone())),
-                    "{mode:?} {to}"
-                );
+                for column in ["s", "ls"] {
+                    let parse = cast_in(mode, c(column), to.clone());
+                    assert!(!infallible(Arc::clone(&parse)), "{mode:?} {column} {to}");
+                    assert!(cannot_fail(&parse, &schema), "{mode:?} {column} {to}");
+                }
             }
             // Other string casts are not claimed
             assert!(
-                !infallible(cast_in(mode, c("s"), DataType::Float64)),
+                !cannot_fail(&cast_in(mode, c("s"), DataType::Float64), &schema),
                 "{mode:?}"
             );
         }
+        assert!(!cannot_fail(&cast(c("s"), DataType::Int32), &schema));
         // So can anything built from a part that can fail
         assert!(!infallible(binary(
             binary(c("i"), Operator::Divide, c("i")),

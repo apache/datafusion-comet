@@ -15,7 +15,7 @@
 // specific language governing permissions and limitations
 // under the License.
 
-use super::case_when::is_infallible;
+use super::case_when::cannot_fail;
 use arrow::array::{new_null_array, Array, BooleanArray};
 use arrow::buffer::NullBuffer;
 use arrow::datatypes::{DataType, FieldRef, Schema};
@@ -66,7 +66,7 @@ impl NullShortCircuit {
             .children()
             .iter()
             .enumerate()
-            .map(|(i, arg)| i > 0 && !is_infallible(arg, input_schema))
+            .map(|(i, arg)| i > 0 && !cannot_fail(arg, input_schema))
             .collect::<Vec<_>>();
         if !masked.contains(&true) {
             return Ok(inner);
@@ -487,6 +487,19 @@ mod tests {
         );
         let wrapped = NullShortCircuit::wrap(Arc::clone(&widened), &schema).unwrap();
         assert!(Arc::ptr_eq(&widened, &wrapped));
+        // With ANSI off, a string that the cast cannot parse becomes NULL, so it cannot fail either
+        let parsed = array_position(
+            col("a", &schema).unwrap(),
+            Arc::new(Cast::new(
+                col("s", &schema).unwrap(),
+                DataType::Int32,
+                SparkCastOptions::new_without_timezone(EvalMode::Legacy, false),
+                None,
+                None,
+            )),
+        );
+        let wrapped = NullShortCircuit::wrap(Arc::clone(&parsed), &schema).unwrap();
+        assert!(Arc::ptr_eq(&parsed, &wrapped));
     }
 
     #[test]
