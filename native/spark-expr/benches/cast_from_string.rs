@@ -138,7 +138,7 @@ fn criterion_benchmark(c: &mut Criterion) {
 
     // str -> decimal with non-ASCII digits, which take the normalization path in
     // `parse_string_to_decimal` instead of the pure-ASCII fast path
-    let spark_cast_options = SparkCastOptions::new(EvalMode::Legacy, "", false);
+    let spark_cast_options = SparkCastOptions::new(EvalMode::Legacy, "");
     let cast = Cast::new(
         expr.clone(),
         DataType::Decimal128(38, 10),
