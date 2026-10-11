@@ -15,7 +15,7 @@
 // specific language governing permissions and limitations
 // under the License.
 
-use crate::float_semantics::{float_gt, float_lt, spark_comparator};
+use crate::float_semantics::{float_gt, float_lt, has_float_leaf, spark_comparator};
 use arrow::array::{Array, ArrayRef, AsArray, BooleanArray, PrimitiveArray};
 use arrow::buffer::{BooleanBuffer, NullBuffer, ScalarBuffer};
 use arrow::compute::cast;
@@ -93,28 +93,59 @@ impl SparkGreatestLeast {
         }
     }
 
-    /// Replaces each run of adjacent constant arguments with the one constant the run picks, so
-    /// that a run is compared once rather than broadcast and compared row by row for each of its
-    /// constants. The result is the first argument that no later argument ranks strictly before,
-    /// and picking within a run keeps that, so equal floats such as `-0.0` and `0.0` still resolve
-    /// to the earlier argument. Constants that are not adjacent stay apart for the same reason.
-    /// `to_array` turns a constant into a one-row array of the result type.
-    fn merge_constant_runs(
+    /// Reduces the constant arguments, so that each group of them is compared once rather than
+    /// broadcast and compared row by row for each constant. The result is the first argument that
+    /// no later argument ranks strictly before. Equal values of a type without a float leaf are
+    /// identical, so all of its constants reduce to one wherever they are. With a float leaf,
+    /// equal values such as `-0.0` and `0.0` differ, so only adjacent constants reduce, which
+    /// keeps the earlier of equal arguments. The reduction keeps the selected constant itself
+    /// rather than a copy. `to_array` turns a constant into a one-row array of the result type.
+    fn merge_constants(
         &self,
         args: &[ColumnarValue],
+        data_type: &DataType,
         to_array: impl Fn(&ColumnarValue) -> Result<ArrayRef>,
     ) -> Result<Vec<ColumnarValue>> {
+        let across_columns = !has_float_leaf(data_type);
         let mut merged: Vec<ColumnarValue> = Vec::with_capacity(args.len());
+        // The position in `merged` of the constant that the next constant reduces into
+        let mut target: Option<usize> = None;
         for arg in args {
-            match (merged.last_mut(), arg) {
-                (Some(previous @ ColumnarValue::Scalar(_)), ColumnarValue::Scalar(_)) => {
-                    let picked = self.pick(&to_array(previous)?, &to_array(arg)?)?;
-                    *previous = ColumnarValue::Scalar(ScalarValue::try_from_array(&picked, 0)?);
+            match (arg, target) {
+                (ColumnarValue::Scalar(_), Some(i)) => {
+                    if self.replaces(&to_array(&merged[i])?, &to_array(arg)?)? {
+                        merged[i] = arg.clone();
+                    }
                 }
-                _ => merged.push(arg.clone()),
+                (ColumnarValue::Scalar(_), None) => {
+                    target = Some(merged.len());
+                    merged.push(arg.clone());
+                }
+                (ColumnarValue::Array(_), _) => {
+                    if !across_columns {
+                        target = None;
+                    }
+                    merged.push(arg.clone());
+                }
             }
         }
         Ok(merged)
+    }
+
+    /// Whether the one-row `candidate` replaces the one-row `current`, as in [`Self::pick`].
+    fn replaces(&self, current: &ArrayRef, candidate: &ArrayRef) -> Result<bool> {
+        if candidate.is_null(0) {
+            return Ok(false);
+        }
+        if current.is_null(0) {
+            return Ok(true);
+        }
+        let ordering = spark_comparator(candidate.as_ref(), current.as_ref())?(0, 0);
+        Ok(if self.greatest {
+            ordering.is_gt()
+        } else {
+            ordering.is_lt()
+        })
     }
 
     fn pick_floats<T>(
@@ -217,7 +248,7 @@ impl ScalarUDFImpl for SparkGreatestLeast {
                 cast(&array, data_type)?
             })
         };
-        let args = self.merge_constant_runs(&args.args, |arg| to_array(arg, 1))?;
+        let args = self.merge_constants(&args.args, data_type, |arg| to_array(arg, 1))?;
         let mut result = to_array(&args[0], rows)?;
         for arg in &args[1..] {
             result = self.pick(&result, &to_array(arg, rows)?)?;
@@ -433,10 +464,11 @@ mod tests {
         Ok(())
     }
 
-    /// Adjacent constants merge into one in argument order, so the earlier of equal floats wins,
-    /// and a null inside a list ranks first. Constants that a column separates stay apart.
+    /// Float constants merge only when adjacent, in argument order, so the earlier of equal floats
+    /// wins. Constants of a type without a float leaf merge across columns, and a null inside a
+    /// list ranks first. The merged constant is one of the original constants.
     #[test]
-    fn adjacent_constants_merge_in_argument_order() -> Result<()> {
+    fn constants_merge_in_spark_order() -> Result<()> {
         use arrow::array::Int32Array;
 
         let float = |v: f64| ColumnarValue::Scalar(ScalarValue::Float64(Some(v)));
@@ -451,7 +483,7 @@ mod tests {
                 column.clone(),
                 float(1.0),
             ];
-            let merged = function.merge_constant_runs(&args, to_array)?;
+            let merged = function.merge_constants(&args, &DataType::Float64, to_array)?;
             assert_eq!(merged.len(), 4, "greatest={greatest}");
             match &merged[1] {
                 ColumnarValue::Scalar(ScalarValue::Float64(Some(v))) => {
@@ -477,18 +509,28 @@ mod tests {
             ColumnarValue::Scalar(ScalarValue::try_from_array(&list(vec![values]), 0).unwrap())
         };
         let args = vec![
-            ColumnarValue::Array(list(vec![vec![Some(0)], vec![Some(5)]])),
             constant(vec![Some(1), Some(0)]),
+            ColumnarValue::Array(list(vec![vec![Some(0)], vec![Some(5)]])),
             constant(vec![Some(1), None]),
             constant(vec![Some(1), Some(0)]),
         ];
         // `[1, NULL]` ranks below `[1, 0]`, and both rank between `[0]` and `[5]`.
-        for (greatest, expected) in [
-            (true, vec![vec![Some(1), Some(0)], vec![Some(5)]]),
-            (false, vec![vec![Some(0)], vec![Some(1), None]]),
+        for (greatest, kept, expected) in [
+            (true, 0, vec![vec![Some(1), Some(0)], vec![Some(5)]]),
+            (false, 2, vec![vec![Some(0)], vec![Some(1), None]]),
         ] {
-            let merged = SparkGreatestLeast::new(greatest).merge_constant_runs(&args, to_array)?;
+            let merged =
+                SparkGreatestLeast::new(greatest).merge_constants(&args, &list_type, to_array)?;
             assert_eq!(merged.len(), 2, "greatest={greatest}");
+            match (&merged[0], &args[kept]) {
+                (
+                    ColumnarValue::Scalar(ScalarValue::List(m)),
+                    ColumnarValue::Scalar(ScalarValue::List(a)),
+                ) => {
+                    assert!(Arc::ptr_eq(m, a), "greatest={greatest}")
+                }
+                other => panic!("expected list constants, got {other:?}"),
+            }
             let result = invoke(greatest, args.clone(), 2, list_type.clone())?.into_array(2)?;
             let expected = list(expected);
             assert_eq!(result.as_ref(), expected.as_ref(), "greatest={greatest}");

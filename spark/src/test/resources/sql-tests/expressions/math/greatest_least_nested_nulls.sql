@@ -39,3 +39,10 @@ SELECT id,
   least(array(named_struct('a', CAST(id AS INT), 'b', 1)),
     array(named_struct('a', IF(id = 3, NULL, 0), 'b', 3)))
 FROM range(4)
+
+-- Constants on both sides of a column, one with a null inside it
+query
+SELECT id,
+  greatest(array(1, NULL), array(CAST(id AS INT), 1), array(1, 0)),
+  least(array(1, NULL), array(CAST(id AS INT), 1), array(1, 0))
+FROM range(4)
