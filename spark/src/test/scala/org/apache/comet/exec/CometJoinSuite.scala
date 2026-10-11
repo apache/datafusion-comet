@@ -527,6 +527,75 @@ class CometJoinSuite extends CometTestBase {
     }
   }
 
+  test("join dynamic filter crosses deterministic residuals only with explicit opt-in") {
+    withTempPath { probePath =>
+      withSQLConf(
+        CometConf.COMET_BATCH_SIZE.key -> "1",
+        CometConf.COMET_EXEC_JOIN_DYNAMIC_FILTER_ENABLED.key -> "true",
+        SQLConf.ADAPTIVE_EXECUTION_ENABLED.key -> "false",
+        SQLConf.AUTO_BROADCASTJOIN_THRESHOLD.key -> "-1",
+        SQLConf.LEAF_NODE_DEFAULT_PARALLELISM.key -> "1") {
+        spark
+          .range(0, 10000, 1, 1)
+          .selectExpr("id AS payload", "CAST(id AS INT) AS probe_key")
+          .write
+          .option("parquet.block.size", "1024")
+          .parquet(probePath.getCanonicalPath)
+        withParquetTable(probePath.getCanonicalPath, "dynamic_residual_probe") {
+          // Key 2506 cannot pass the residual, although it belongs to the join domain.
+          withParquetTable(Seq(Tuple1(2500), Tuple1(2506)), "dynamic_residual_build") {
+            for (buildLeft <- Seq(false, true)) {
+              val from = if (buildLeft) {
+                "dynamic_residual_build b JOIN dynamic_residual_probe p"
+              } else {
+                "dynamic_residual_probe p JOIN dynamic_residual_build b"
+              }
+              val query = "SELECT /*+ BROADCAST(b) */ p.probe_key, p.payload FROM " + from +
+                " ON p.probe_key = b._1 WHERE pmod(p.payload, 7) > 0"
+              var unfilteredBytes = 0L
+              for (allowed <- Seq(false, true)) {
+                withSQLConf(
+                  CometConf.COMET_EXEC_JOIN_DYNAMIC_FILTER_ALLOW_DETERMINISTIC_FILTER_PUSHDOWN.key -> allowed.toString) {
+                  val (_, plan) = checkSparkAnswerAndOperator(
+                    sql(query),
+                    Seq(classOf[CometBroadcastHashJoinExec], classOf[CometNativeScanExec]))
+                  checkAnswer(sql(query), Seq(Row(2500, 2500L)))
+                  val joins = collect(plan) { case join: CometBroadcastHashJoinExec => join }
+                  assert(joins.size == 1)
+                  val filters = collect(plan) {
+                    case filter: CometFilterExec if filter.output.exists(_.name == "probe_key") =>
+                      filter
+                  }
+                  assert(filters.size == 1, s"Expected one native residual filter:\n$plan")
+                  assert(filters.head.condition.deterministic)
+                  assert(filters.head.nativeOp.getFilter.getAllowRuntimeFilterPushdown == allowed)
+                  val scans = collect(plan) {
+                    case scan: CometNativeScanExec if scan.output.exists(_.name == "probe_key") =>
+                      scan
+                  }
+                  assert(scans.size == 1)
+                  val metrics = scans.head.metrics
+                  val bytes = metrics("bytes_scanned").value
+                  assert(joins.head.metrics("output_rows").value == 1L)
+                  assert(filters.head.metrics("output_rows").value > 0L)
+                  if (allowed) {
+                    assert(joins.head.metrics("dynamic_filter_join_filters_attached").value > 0L)
+                    assert(metrics("row_groups_pruned_statistics").value > 0L)
+                    assert(bytes < unfilteredBytes)
+                  } else {
+                    unfilteredBytes = bytes
+                    assert(joins.head.metrics("dynamic_filter_join_filters_attached").value == 0L)
+                    assert(joins.head.metrics("dynamic_filter_join_filters_skipped").value > 0L)
+                  }
+                }
+              }
+            }
+          }
+        }
+      }
+    }
+  }
+
   test("join dynamic filter preserves Parquet schema conversion errors") {
     withTempPath { probePath =>
       withSQLConf(
@@ -548,14 +617,18 @@ class CometJoinSuite extends CometTestBase {
             .parquet(probePath.getCanonicalPath)
             .createOrReplaceTempView("dynamic_schema_probe")
           withParquetTable(Seq(Tuple1(0)), "dynamic_schema_build") {
-            for ((comet, dynamicFilter) <- Seq((false, false), (true, false), (true, true))) {
+            for {
+              (comet, dynamicFilter) <- Seq((false, false), (true, false), (true, true))
+              allowed <- Seq(false, true)
+            } {
               withSQLConf(
                 CometConf.COMET_ENABLED.key -> comet.toString,
+                CometConf.COMET_EXEC_JOIN_DYNAMIC_FILTER_ALLOW_DETERMINISTIC_FILTER_PUSHDOWN.key -> allowed.toString,
                 CometConf.COMET_EXEC_JOIN_DYNAMIC_FILTER_ENABLED.key -> dynamicFilter.toString) {
                 val df = sql(
                   "SELECT /*+ BROADCAST(b) */ p.probe_key, p.payload " +
                     "FROM dynamic_schema_probe p JOIN dynamic_schema_build b " +
-                    "ON p.probe_key = b._1")
+                    "ON p.probe_key = b._1 WHERE pmod(p.payload, 2) >= 0")
                 val plan = df.queryExecution.executedPlan
                 if (comet) {
                   val joins = collect(plan) { case join: CometBroadcastHashJoinExec => join }
@@ -587,6 +660,7 @@ class CometJoinSuite extends CometTestBase {
     withTempPath { probePath =>
       withSQLConf(
         CometConf.COMET_BATCH_SIZE.key -> "16",
+        CometConf.COMET_EXEC_JOIN_DYNAMIC_FILTER_ALLOW_DETERMINISTIC_FILTER_PUSHDOWN.key -> "true",
         SQLConf.ADAPTIVE_EXECUTION_ENABLED.key -> "false",
         SQLConf.AUTO_BROADCASTJOIN_THRESHOLD.key -> "-1",
         SQLConf.LEAF_NODE_DEFAULT_PARALLELISM.key -> "1") {
