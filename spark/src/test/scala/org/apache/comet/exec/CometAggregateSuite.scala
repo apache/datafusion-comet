@@ -254,9 +254,7 @@ class CometAggregateSuite extends CometTestBase with AdaptiveSparkPlanHelper {
       SQLConf.ADAPTIVE_EXECUTION_ENABLED.key -> "false",
       SQLConf.SHUFFLE_PARTITIONS.key -> "1",
       CometConf.COMET_BATCH_SIZE.key -> "1024",
-      CometConf.COMET_OFFHEAP_MEMORY_POOL_FRACTION.key -> "0.002",
-      CometConf.COMET_RESPECT_DATAFUSION_CONFIGS.key -> "true",
-      "spark.comet.datafusion.execution.sort_spill_reservation_bytes" -> "65536")(f)
+      CometConf.COMET_OFFHEAP_MEMORY_POOL_FRACTION.key -> "0.002")(f)
   }
 
   test("PartialMerge that runs short of memory keeps one row per key (issue #6857)") {
@@ -313,12 +311,13 @@ class CometAggregateSuite extends CometTestBase with AdaptiveSparkPlanHelper {
     val expected = (0 until 4096).map { k =>
       Row(k, 2L, (0 until 8).map(j => padded(k + 4096 * j)).sorted)
     }
+    val localRows = rows.toDF("k", "d", "s")
     withTempPath { dir =>
       val path = dir.getCanonicalPath
-      rows.toDF("k", "d", "s").write.parquet(path)
+      localRows.write.parquet(path)
       for (sparkPartial <- Seq(false, true)) {
         withDistinctMergeMemoryPressure {
-          val source = if (sparkPartial) rows.toDF("k", "d", "s") else spark.read.parquet(path)
+          val source = if (sparkPartial) localRows else spark.read.parquet(path)
           val df =
             source.groupBy("k").agg(count_distinct(col("d")), sort_array(collect_list("s")))
           checkCometAnswer(df, expected)

@@ -33,7 +33,7 @@ use std::hash::{Hash, Hasher};
 use std::sync::Arc;
 
 use arrow::array::{ArrayRef, BooleanArray, StructArray};
-use arrow::datatypes::{DataType, Field, FieldRef, Fields};
+use arrow::datatypes::{DataType, Field, FieldRef, Fields, Schema};
 use datafusion::common::{internal_err, Result};
 use datafusion::logical_expr::function::AccumulatorArgs;
 use datafusion::logical_expr::function::StateFieldsArgs;
@@ -42,7 +42,9 @@ use datafusion::logical_expr::{
     Signature, Volatility,
 };
 use datafusion::physical_expr::aggregate::AggregateFunctionExpr;
-use datafusion::physical_expr::{expressions::Column, PhysicalExpr};
+use datafusion::physical_expr::{
+    expressions::Column, GroupsAccumulatorAdapter, PhysicalExpr, PhysicalSortExpr,
+};
 use datafusion::physical_plan::{projection::ProjectionExec, ExecutionPlan};
 use datafusion::scalar::ScalarValue;
 use datafusion_comet_spark_expr::GetStructField;
@@ -190,18 +192,26 @@ impl AggregateUDFImpl for MergeAsPartialUDF {
         }))
     }
 
-    fn groups_accumulator_supported(&self, args: AccumulatorArgs) -> bool {
-        self.inner_udf
-            .groups_accumulator_supported(self.inner_accumulator_args(args))
+    fn groups_accumulator_supported(&self, _args: AccumulatorArgs) -> bool {
+        // An inner aggregate without a GroupsAccumulator gets an adapter below, so that Single
+        // mode emits its states a column at a time rather than evaluating each group to a struct.
+        true
     }
 
     fn create_groups_accumulator(
         &self,
         args: AccumulatorArgs,
     ) -> Result<Box<dyn GroupsAccumulator>> {
-        let inner_acc = self
+        let inner_args = self.inner_accumulator_args(args);
+        let inner_acc: Box<dyn GroupsAccumulator> = if self
             .inner_udf
-            .create_groups_accumulator(self.inner_accumulator_args(args))?;
+            .groups_accumulator_supported(inner_args.clone())
+        {
+            self.inner_udf.create_groups_accumulator(inner_args)?
+        } else {
+            let factory = InnerAccumulatorFactory::new(&self.inner_udf, &inner_args);
+            Box::new(GroupsAccumulatorAdapter::new(move || factory.create()))
+        };
         Ok(Box::new(MergeAsPartialGroupsAccumulator {
             inner: inner_acc,
             state_decoder: self.state_decoder.clone(),
@@ -219,6 +229,52 @@ impl AggregateUDFImpl for MergeAsPartialUDF {
 
     fn is_descending(&self) -> Option<bool> {
         None
+    }
+}
+
+/// Owned copies of the arguments that build an inner row accumulator, which a
+/// `GroupsAccumulatorAdapter` does for each new group, after `AccumulatorArgs` has gone.
+struct InnerAccumulatorFactory {
+    udf: AggregateUDF,
+    return_field: FieldRef,
+    schema: Schema,
+    ignore_nulls: bool,
+    order_bys: Vec<PhysicalSortExpr>,
+    is_reversed: bool,
+    name: String,
+    is_distinct: bool,
+    exprs: Vec<Arc<dyn PhysicalExpr>>,
+    expr_fields: Vec<FieldRef>,
+}
+
+impl InnerAccumulatorFactory {
+    fn new(udf: &AggregateUDF, args: &AccumulatorArgs) -> Self {
+        Self {
+            udf: udf.clone(),
+            return_field: Arc::clone(&args.return_field),
+            schema: args.schema.clone(),
+            ignore_nulls: args.ignore_nulls,
+            order_bys: args.order_bys.to_vec(),
+            is_reversed: args.is_reversed,
+            name: args.name.to_string(),
+            is_distinct: args.is_distinct,
+            exprs: args.exprs.to_vec(),
+            expr_fields: args.expr_fields.to_vec(),
+        }
+    }
+
+    fn create(&self) -> Result<Box<dyn Accumulator>> {
+        self.udf.accumulator(AccumulatorArgs {
+            return_field: Arc::clone(&self.return_field),
+            schema: &self.schema,
+            ignore_nulls: self.ignore_nulls,
+            order_bys: &self.order_bys,
+            is_reversed: self.is_reversed,
+            name: &self.name,
+            is_distinct: self.is_distinct,
+            exprs: &self.exprs,
+            expr_fields: &self.expr_fields,
+        })
     }
 }
 

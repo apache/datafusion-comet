@@ -1684,16 +1684,14 @@ impl PhysicalPlanner {
                     )?,
                 );
 
-                // A PartialMerge runs as Single, so unpack the states it evaluates to into the
-                // state columns that Spark expects of it.
-                let mut output = Arc::clone(&aggregate);
+                let mut output = aggregate;
                 let mut additional_native_plans = vec![];
                 if proto_mode == ProtoAggregateMode::PartialMerge {
+                    additional_native_plans.push(Arc::clone(&output));
                     output = crate::execution::merge_as_partial::unpack_state_structs(
                         output,
                         agg.grouping_exprs.len(),
                     )?;
-                    additional_native_plans.push(Arc::clone(&aggregate));
                 }
 
                 // Spark's SortAggregateExec reports its output as ordered by the grouping keys,
@@ -6328,14 +6326,20 @@ mod tests {
 
     #[tokio::test]
     async fn partial_merge_runs_as_single_and_emits_merged_states() {
-        use arrow::array::Int64Array;
+        use arrow::array::{BooleanArray, Int64Array};
+        use datafusion::assert_batches_sorted_eq;
         use datafusion::common::tree_node::{Transformed, TreeNode};
         use datafusion::physical_plan::aggregates::{AggregateExec, AggregateMode};
         use spark_expression::agg_expr::ExprStruct as AggExprStruct;
 
-        // A Spark PartialMerge of max(v) and count(v) grouped by k, over [k, max state, count state].
+        // A Spark PartialMerge of max(v), count(v) and first(v) grouped by k, over k and their
+        // states. DataFusion's first has no GroupsAccumulator without an ordering.
         let int64 = spark_expression::DataType {
             type_id: 4,
+            type_info: None,
+        };
+        let boolean = spark_expression::DataType {
+            type_id: 0,
             type_info: None,
         };
         let v = Expr {
@@ -6350,7 +6354,13 @@ mod tests {
             plan_id: 1,
             children: vec![Operator {
                 op_struct: Some(OpStruct::Scan(spark_operator::Scan {
-                    fields: vec![int64.clone(); 3],
+                    fields: vec![
+                        int64.clone(),
+                        int64.clone(),
+                        int64.clone(),
+                        int64.clone(),
+                        boolean.clone(),
+                    ],
                     source: String::new(),
                 })),
                 ..Default::default()
@@ -6377,9 +6387,17 @@ mod tests {
                         })),
                         ..Default::default()
                     },
+                    spark_expression::AggExpr {
+                        expr_struct: Some(AggExprStruct::First(spark_expression::First {
+                            child: Some(v.clone()),
+                            datatype: Some(int64.clone()),
+                            ignore_nulls: false,
+                        })),
+                        ..Default::default()
+                    },
                 ],
                 mode,
-                expr_modes: vec![partial_merge; 2],
+                expr_modes: vec![partial_merge; 3],
                 initial_input_buffer_offset: 1,
                 ..Default::default()
             })),
@@ -6422,6 +6440,14 @@ mod tests {
                     Some(1),
                 ])),
                 Arc::new(Int64Array::from(vec![1, 2, 3, 0, 4])),
+                Arc::new(Int64Array::from(vec![
+                    Some(100),
+                    None,
+                    Some(101),
+                    Some(200),
+                    None,
+                ])),
+                Arc::new(BooleanArray::from(vec![true, false, true, true, false])),
             ],
         )
         .unwrap();
@@ -6440,21 +6466,18 @@ mod tests {
         let results = collect(native_plan.execute(0, task_ctx).unwrap())
             .await
             .unwrap();
-        let output = arrow::compute::concat_batches(&results[0].schema(), &results).unwrap();
-        let column = |idx: usize| {
-            output
-                .column(idx)
-                .as_any()
-                .downcast_ref::<Int64Array>()
-                .unwrap()
-                .clone()
-        };
-        let (keys, maxes, counts) = (column(0), column(1), column(2));
-        let mut rows: Vec<_> = (0..output.num_rows())
-            .map(|row| (keys.value(row), maxes.value(row), counts.value(row)))
-            .collect();
-        rows.sort();
-        assert_eq!(vec![(1, 10, 4), (2, 5, 2), (3, 1, 4)], rows);
+        assert_batches_sorted_eq!(
+            [
+                "+-------+------------+--------------+--------------------+---------------------------+",
+                "| col_0 | max[value] | count[count] | first[first_value] | first[first_value_is_set] |",
+                "+-------+------------+--------------+--------------------+---------------------------+",
+                "| 1     | 10         | 4            | 100                | true                      |",
+                "| 2     | 5          | 2            | 200                | true                      |",
+                "| 3     | 1          | 4            |                    | false                     |",
+                "+-------+------------+--------------+--------------------+---------------------------+",
+            ],
+            &results
+        );
     }
 
     #[tokio::test]
