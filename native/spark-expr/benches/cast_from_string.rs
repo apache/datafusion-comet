@@ -41,7 +41,7 @@ fn criterion_benchmark(c: &mut Criterion) {
     let expr = Arc::new(Column::new("a", 0));
 
     for (mode, mode_name) in EVAL_MODES {
-        let spark_cast_options = SparkCastOptions::new(mode, "", false);
+        let spark_cast_options = SparkCastOptions::new(mode, "");
         let cast_to_i8 = Cast::new(
             expr.clone(),
             DataType::Int8,
@@ -88,7 +88,7 @@ fn criterion_benchmark(c: &mut Criterion) {
     }
 
     // Benchmark decimal truncation (Legacy mode only)
-    let spark_cast_options = SparkCastOptions::new(EvalMode::Legacy, "", false);
+    let spark_cast_options = SparkCastOptions::new(EvalMode::Legacy, "");
     let cast_to_i32 = Cast::new(
         expr.clone(),
         DataType::Int32,
@@ -116,7 +116,7 @@ fn criterion_benchmark(c: &mut Criterion) {
     // str -> decimal benchmark
     let decimal_string_batch = create_decimal_cast_string_batch();
     for (mode, mode_name) in EVAL_MODES {
-        let spark_cast_options = SparkCastOptions::new(mode, "", false);
+        let spark_cast_options = SparkCastOptions::new(mode, "");
         let mut group = c.benchmark_group(format!("cast_string_to_decimal/{}", mode_name));
         for (data_type, name) in [
             (DataType::Decimal128(38, 10), "decimal_38_10"),
@@ -143,7 +143,7 @@ fn criterion_benchmark(c: &mut Criterion) {
     let float_batch = create_float_string_batch(false);
     let float_padded_batch = create_float_string_batch(true);
     for (mode, mode_name) in EVAL_MODES {
-        let spark_cast_options = SparkCastOptions::new(mode, "", false);
+        let spark_cast_options = SparkCastOptions::new(mode, "");
         let mut group = c.benchmark_group(format!("cast_string_to_bool_and_float/{}", mode_name));
         for (data_type, name, batch) in [
             (DataType::Boolean, "boolean", &bool_batch),

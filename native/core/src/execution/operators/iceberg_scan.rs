@@ -230,7 +230,7 @@ impl IcebergScanExec {
         let scan_metrics = scan_result.metrics().clone();
         let stream = scan_result.stream();
 
-        let spark_options = SparkParquetOptions::new(EvalMode::Legacy, "UTC", false);
+        let spark_options = SparkParquetOptions::new(EvalMode::Legacy, "UTC");
         let adapter_factory = SparkPhysicalExprAdapterFactory::new(spark_options, None);
 
         let adapted_stream =
@@ -630,7 +630,7 @@ mod tests {
             Field::new("a", DataType::Int64, false),
             Field::new("b", DataType::Int64, false),
         ]));
-        let mut options = super::SparkParquetOptions::new(super::EvalMode::Legacy, "UTC", false);
+        let mut options = super::SparkParquetOptions::new(super::EvalMode::Legacy, "UTC");
         options.case_sensitive = true;
         let factory = super::SparkPhysicalExprAdapterFactory::new(options, None);
         for name in ["a", "b"] {
