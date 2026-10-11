@@ -105,6 +105,11 @@ under the License.
          Hadoop 3.4.x's CredentialProviderListFactory); the spark-3.4 / spark-3.5 profiles override
          it down to 3.3.x (SDK v1). hadoop.version itself (hadoop-client) is not changed. -->
     <hadoop-aws.version>3.4.1</hadoop-aws.version>
+    <!-- hadoop-azure, test scope, so the ABFS authentication tests run against the same
+         hadoop-azure the Spark profile's hadoop-client-api resolves (main code reaches it by
+         reflection only). Each Spark profile pins it to its Hadoop line; override with
+         -Dhadoop-azure.version to test another release. -->
+    <hadoop-azure.version>3.4.2</hadoop-azure.version>
     <jni.dir>${project.basedir}/../native/target/debug</jni.dir>
     <platform>darwin</platform>
     <arch>x86_64</arch>
@@ -705,6 +710,7 @@ under the License.
         <spark.version>3.4.3</spark.version>
         <spark.version.short>3.4</spark.version.short>
         <hadoop-aws.version>3.3.4</hadoop-aws.version>
+        <hadoop-azure.version>3.3.4</hadoop-azure.version>
         <parquet.version>1.13.1</parquet.version>
         <semanticdb.version>4.8.8</semanticdb.version>
         <slf4j.version>2.0.6</slf4j.version>
@@ -725,6 +731,7 @@ under the License.
         <spark.version>3.5.9</spark.version>
         <spark.version.short>3.5</spark.version.short>
         <hadoop-aws.version>3.3.4</hadoop-aws.version>
+        <hadoop-azure.version>3.3.4</hadoop-azure.version>
         <parquet.version>1.13.1</parquet.version>
         <semanticdb.version>4.8.8</semanticdb.version>
         <slf4j.version>2.0.7</slf4j.version>
@@ -744,6 +751,7 @@ under the License.
         <scala.binary.version>2.13</scala.binary.version>
         <spark.version>4.0.4</spark.version>
         <spark.version.short>4.0</spark.version.short>
+        <hadoop-azure.version>3.4.1</hadoop-azure.version>
         <parquet.version>1.15.2</parquet.version>
         <semanticdb.version>4.13.10</semanticdb.version>
         <slf4j.version>2.0.16</slf4j.version>
@@ -766,6 +774,7 @@ under the License.
         <scala.binary.version>2.13</scala.binary.version>
         <spark.version>4.1.3</spark.version>
         <spark.version.short>4.1</spark.version.short>
+        <hadoop-azure.version>3.4.2</hadoop-azure.version>
         <parquet.version>1.16.0</parquet.version>
         <semanticdb.version>4.13.10</semanticdb.version>
         <slf4j.version>2.0.17</slf4j.version>
@@ -786,6 +795,7 @@ under the License.
         <scala.binary.version>2.13</scala.binary.version>
         <spark.version>4.2.0</spark.version>
         <spark.version.short>4.2</spark.version.short>
+        <hadoop-azure.version>3.5.0</hadoop-azure.version>
         <parquet.version>1.17.0</parquet.version>
         <semanticdb.version>4.13.10</semanticdb.version>
         <slf4j.version>2.0.17</slf4j.version>
@@ -1023,6 +1033,9 @@ under the License.
               <!-- Optional override for CometNativeUdfSuite; the suite finds the cdylib under
                    native/target on its own when this is not set. -->
               <comet.test.udfs.lib>${comet.test.udfs.lib}</comet.test.udfs.lib>
+              <!-- Set to a directory to make AbfsAuthParitySuite record its expectation file for
+                   the hadoop-azure on the classpath instead of asserting against it. -->
+              <comet.abfs.parity.record>${comet.abfs.parity.record}</comet.abfs.parity.record>
             </systemProperties>
           </configuration>
           <executions>

@@ -1339,7 +1339,11 @@ mod tests {
     fn isolates_azure_containers_in_cache_and_shared_runtime() {
         use datafusion::execution::runtime_env::RuntimeEnvBuilder;
 
-        let options = HashMap::from([("fs.azure.account.key".into(), "c2VjcmV0".into())]);
+        let options = HashMap::from([
+            ("comet.azure.resolution".into(), "resolved".into()),
+            ("comet.azure.auth.type".into(), "SharedKey".into()),
+            ("fs.azure.account.key".into(), "c2VjcmV0".into()),
+        ]);
         let runtime = RuntimeEnvBuilder::new()
             .with_object_store_registry(Arc::new(super::CometObjectStoreRegistry::default()))
             .build_arc()
