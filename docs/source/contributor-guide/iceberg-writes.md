@@ -395,8 +395,9 @@ Useful places to look when checking parity:
 - `CometIcebergWriteActionSuite` writes the same data through both writers into sibling tables and
   compares rows, `readable_metrics` and partition paths.
 - iceberg-rust's own code, at the pinned revision. iceberg-rust makes different choices from
-  iceberg-java in places that matter to the table's contents, for example grouping partition keys
-  with `OrderedFloat`, which treats `-0.0` and `0.0` as equal
+  iceberg-java in places that matter to the table's contents. For example, until
+  [apache/iceberg-rust#3327](https://github.com/apache/iceberg-rust/pull/3327) it grouped
+  partition keys with `OrderedFloat`, which treats `-0.0` and `0.0` as equal
   ([#6138](https://github.com/apache/datafusion-comet/issues/6138)). Check how iceberg-rust
   compares, hashes and renders values, not only what it writes.
 

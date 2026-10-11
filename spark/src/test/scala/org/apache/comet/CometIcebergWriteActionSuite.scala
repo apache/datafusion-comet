@@ -2172,51 +2172,74 @@ class CometIcebergWriteActionSuite
     }
   }
 
-  // https://github.com/apache/datafusion-comet/issues/6138. iceberg-rust compares float partition
-  // values with an equality that treats -0.0 and 0.0 as one value, so its writers filed both under
-  // whichever arrived first, and a read that pruned on the other value lost rows. iceberg-java
-  // keeps the two apart, so these writes fall back until iceberg-rust does too.
-  test("signed-zero float and double identity partitions match iceberg-java") {
+  // https://github.com/apache/datafusion-comet/issues/6138. iceberg-rust compared float partition
+  // values with an equality that treated -0.0 and 0.0 as one value, so its writers filed both
+  // under whichever arrived first, and a read that pruned on the other value lost rows. Since
+  // apache/iceberg-rust#3327 it keeps them apart and puts every NaN in one partition, as
+  // iceberg-java does. One shuffle partition puts every row in one task, so the values meet in one
+  // writer. The fanout writer gets them interleaved. The clustered writer gets each partition's
+  // rows together: Spark's sort ties -0.0 with 0.0, so a zero that repeats could come back
+  // unclustered, which iceberg-java rejects too.
+  test("signed-zero and NaN float and double identity partitions match iceberg-java") {
     assumeNativeAcceleration()
     withIcebergCatalog { warehouseDir =>
-      Seq("zero_native", "zero_jvm").foreach { table =>
-        spark.sql(s"""
-          CREATE TABLE $catalog.$ns.$table (id INT, f FLOAT, d DOUBLE)
-          USING iceberg PARTITIONED BY (f, d)
-        """)
+      val (negF, posF, nanF) =
+        ("CAST('-0.0' AS FLOAT)", "CAST(0.0 AS FLOAT)", "CAST('NaN' AS FLOAT)")
+      val (negD, posD, nanD) = ("CAST('-0.0' AS DOUBLE)", "0.0D", "CAST('NaN' AS DOUBLE)")
+      val zeros = Seq((negF, posD), (posF, posD), (posF, negD), (negF, negD))
+      val nans = Seq((nanF, nanD), (s"-$nanF", s"-$nanD"))
+      val interleaved = zeros ++ nans ++ zeros.reverse ++ nans
+      Seq("true" -> interleaved, "false" -> (zeros ++ nans)).foreach { case (fanout, rows) =>
+        val (nativeTable, jvmTable) = (s"zero_native_$fanout", s"zero_jvm_$fanout")
+        Seq(nativeTable, jvmTable).foreach { table =>
+          spark.sql(s"""
+            CREATE TABLE $catalog.$ns.$table (id INT, f FLOAT, d DOUBLE)
+            USING iceberg PARTITIONED BY (f, d)
+            TBLPROPERTIES (
+              'write.spark.fanout.enabled'='$fanout', 'write.distribution-mode'='hash')
+          """)
+        }
+        val ids = rows.indices.map(_ + 1)
+        val values = rows.zip(ids).map { case ((f, d), id) => s"($id, $f, $d)" }.mkString(", ")
+        withSQLConf(SQLConf.SHUFFLE_PARTITIONS.key -> "1") {
+          assertNativeWriteEngages(nativeTable, ids) {
+            spark.sql(s"INSERT INTO $catalog.$ns.$nativeTable VALUES $values")
+          }
+          spark.sql(s"INSERT INTO $catalog.$ns.$jvmTable VALUES $values")
+        }
+
+        val dirs = partitionDirs(warehouseDir, nativeTable)
+        assert(dirs == partitionDirs(warehouseDir, jvmTable), s"fanout=$fanout: $dirs")
+        assert(
+          dirs == Set(
+            "f=-0.0/d=0.0",
+            "f=0.0/d=0.0",
+            "f=0.0/d=-0.0",
+            "f=-0.0/d=-0.0",
+            "f=NaN/d=NaN"))
+        val committed = committedPartitions(nativeTable)
+        assert(committed == committedPartitions(jvmTable), s"fanout=$fanout: $committed")
+
+        // Iceberg prunes on the partition value, so a merged partition changes what a read
+        // returns.
+        Seq(s"f = $negF", s"f = $posF", s"d = $negD", s"d = $posD", s"d = $nanD", "isnan(f)")
+          .foreach { predicate =>
+            def matching(table: String): Seq[Int] =
+              spark
+                .sql(s"SELECT id FROM $catalog.$ns.$table WHERE $predicate")
+                .collect()
+                .map(_.getInt(0))
+                .sorted
+                .toSeq
+            assert(matching(nativeTable) == matching(jvmTable), s"fanout=$fanout, $predicate")
+          }
       }
-      val values =
-        "(1, CAST('-0.0' AS FLOAT), 0.0D), " +
-          "(2, CAST(0.0 AS FLOAT), 0.0D), " +
-          "(3, CAST(0.0 AS FLOAT), CAST('-0.0' AS DOUBLE))"
-
-      assertNativeWriteDoesNotEngage("zero_native", Seq(1, 2, 3)) {
-        spark.sql(s"INSERT INTO $catalog.$ns.zero_native VALUES $values")
-      }
-      spark.sql(s"INSERT INTO $catalog.$ns.zero_jvm VALUES $values")
-
-      val dirs = partitionDirs(warehouseDir, "zero_native")
-      assert(dirs == partitionDirs(warehouseDir, "zero_jvm"), s"native enabled: $dirs")
-      assert(dirs == Set("f=-0.0/d=0.0", "f=0.0/d=0.0", "f=0.0/d=-0.0"))
-
-      // Iceberg prunes on the partition value, so a merged partition changes what a read returns.
-      def idsWhereDIsZero(table: String): Seq[Int] =
-        spark
-          .sql(s"SELECT id FROM $catalog.$ns.$table WHERE d = 0.0D")
-          .collect()
-          .map(_.getInt(0))
-          .sorted
-          .toSeq
-      assert(idsWhereDIsZero("zero_native") == idsWhereDIsZero("zero_jvm"))
     }
   }
 
   // iceberg-java renders a `float` or `double` partition value with `Float.toString` /
   // `Double.toString`. Rust's `Display` spelled `Double.MAX_VALUE` as 309 digits instead, past the
-  // 255-byte limit on one path component (apache/datafusion-comet#5836). Float and double identity
-  // partitions now fall back (#6138), so this checks that the fallback keeps iceberg-java's
-  // layout; the unit tests in `iceberg_partition_path.rs` cover how the native writer renders
-  // these values.
+  // 255-byte limit on one path component (apache/datafusion-comet#5836).
   test("float and double partition paths match iceberg-java") {
     assumeNativeAcceleration()
     withIcebergCatalog { warehouseDir =>
@@ -2234,7 +2257,7 @@ class CometIcebergWriteActionSuite
           "(3, CAST(3.4028235E38 AS FLOAT), CAST(4.9E-324 AS DOUBLE)), " +
           "(4, CAST(0.001 AS FLOAT), CAST(1.0E20 AS DOUBLE))"
 
-      assertNativeWriteDoesNotEngage("float_path_native", Seq(1, 2, 3, 4)) {
+      assertNativeWriteEngages("float_path_native", Seq(1, 2, 3, 4)) {
         spark.sql(s"INSERT INTO $catalog.$ns.float_path_native VALUES $values")
       }
       spark.sql(s"INSERT INTO $catalog.$ns.float_path_jvm VALUES $values")
@@ -2247,6 +2270,38 @@ class CometIcebergWriteActionSuite
           "f=-0.5/d=1.7976931348623157E308",
           "f=3.4028235E38/d=4.9E-324",
           "f=0.001/d=1.0E20"))
+    }
+  }
+
+  // Two partition fields of the same decimal type share one named Avro type, `decimal_10_2`.
+  // iceberg-rust defined it once per field, which the Avro specification forbids, until it moved
+  // to apache-avro 0.22 (apache/iceberg-rust#3354). iceberg-java reads each native task's manifest
+  // back, so this checks it still can. `decimal(38, 2)` covers the fixed-length encoding.
+  test("two decimal identity partitions of the same type match iceberg-java") {
+    assumeNativeAcceleration()
+    withIcebergCatalog { warehouseDir =>
+      Seq("10, 2", "38, 2").foreach { decimalType =>
+        val suffix = decimalType.replace(", ", "_")
+        val (nativeTable, jvmTable) = (s"decimal_native_$suffix", s"decimal_jvm_$suffix")
+        Seq(nativeTable, jvmTable).foreach { table =>
+          spark.sql(s"""
+            CREATE TABLE $catalog.$ns.$table (
+              id INT, d1 DECIMAL($decimalType), d2 DECIMAL($decimalType))
+            USING iceberg PARTITIONED BY (d1, d2)
+          """)
+        }
+        val values = "(1, 123.45, -6.78), (2, 0.00, 1.10)"
+        assertNativeWriteEngages(nativeTable, Seq(1, 2)) {
+          spark.sql(s"INSERT INTO $catalog.$ns.$nativeTable VALUES $values")
+        }
+        spark.sql(s"INSERT INTO $catalog.$ns.$jvmTable VALUES $values")
+
+        val dirs = partitionDirs(warehouseDir, nativeTable)
+        assert(dirs == partitionDirs(warehouseDir, jvmTable), s"decimal($decimalType): $dirs")
+        assert(dirs == Set("d1=123.45/d2=-6.78", "d1=0.00/d2=1.10"))
+        val committed = committedPartitions(nativeTable)
+        assert(committed == committedPartitions(jvmTable), s"decimal($decimalType): $committed")
+      }
     }
   }
 
@@ -2300,16 +2355,9 @@ class CometIcebergWriteActionSuite
           s"native: $nativeDirs")
 
         // The committed partition values, not just their spelling in the path.
-        def partitionValues(table: String): Seq[String] = spark
-          .sql(s"SELECT CAST(partition AS STRING) FROM $catalog.$ns.$table.files")
-          .collect()
-          .map(_.getString(0))
-          .toSeq
-          .sorted
-        assert(
-          partitionValues(nativeTable) == partitionValues(jvmTable),
-          s"native: ${partitionValues(nativeTable)}")
-        assert(!partitionValues(nativeTable).exists(_.contains("null")))
+        val committed = committedPartitions(nativeTable)
+        assert(committed == committedPartitions(jvmTable), s"native: $committed")
+        assert(!committed.exists(_.contains("null")))
 
         // `java.sql.Date` cannot hold these dates (`collect` overflows rebasing them), so read
         // them back as `LocalDate` and `Instant`.
@@ -4073,6 +4121,15 @@ class CometIcebergWriteActionSuite
       }
       .toSet
   }
+
+  /** Each data file's committed partition value and record count, sorted. */
+  private def committedPartitions(tableName: String): Seq[String] =
+    spark
+      .sql(s"SELECT CAST(partition AS STRING), record_count FROM $catalog.$ns.$tableName.files")
+      .collect()
+      .map(_.toString)
+      .toSeq
+      .sorted
 
   /**
    * The table's NaN counts summed over its data files, keyed by field id. Two tables created from

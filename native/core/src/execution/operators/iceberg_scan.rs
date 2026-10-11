@@ -272,14 +272,14 @@ impl IcebergScanExec {
                 // Delete-file sizes are never serialized, so they always arrive as 0. If we ever
                 // trust manifest sizes (pending the unreleased apache/iceberg#12554 fix), skip
                 // already-sized files here instead of asserting.
-                debug_assert_eq!(delete.file_size_in_bytes, 0);
+                debug_assert_eq!(delete.file_size_in_bytes(), 0);
                 // A deletion vector is range-read from content_offset, and iceberg-rust consults
                 // file_size_in_bytes only on the Parquet delete path. Statting the Puffin file
                 // would be one HEAD per file per Spark partition for a value nothing reads.
-                if delete.file_format == DataFileFormat::Puffin {
+                if delete.file_format() == DataFileFormat::Puffin {
                     continue;
                 }
-                needed.insert(delete.file_path.clone());
+                needed.insert(delete.file_path().to_string());
             }
         }
         if needed.is_empty() {
@@ -336,17 +336,39 @@ impl IcebergScanExec {
             let deletes = task
                 .deletes()
                 .iter()
-                .map(|delete| {
-                    let mut delete = delete.clone();
-                    if let Some(&size) = size_map.get(&delete.file_path) {
-                        delete.file_size_in_bytes = size;
-                    }
-                    delete
+                .map(|delete| match size_map.get(delete.file_path()) {
+                    Some(&size) => Self::sized_delete_file(delete, size),
+                    None => Ok(delete.clone()),
                 })
-                .collect::<Vec<_>>();
+                .collect::<Result<Vec<_>, Error>>()?;
             *task = Self::rebuild_task_with_deletes(task, deletes)?;
         }
         Ok(())
+    }
+
+    /// Copies a delete file with its size set to `size`.
+    ///
+    /// iceberg-rust 1f3bc34 made `FileScanTaskDeleteFile`'s fields private too, so, as for the
+    /// task in [`Self::rebuild_task_with_deletes`], the copy goes through the builder, forwarding
+    /// every other field through its public accessors. The builder repeats the delete file's
+    /// validation on `build()`.
+    fn sized_delete_file(
+        delete: &FileScanTaskDeleteFile,
+        size: u64,
+    ) -> Result<FileScanTaskDeleteFile, Error> {
+        FileScanTaskDeleteFile::builder()
+            .with_file_path(delete.file_path().to_string())
+            .with_file_size_in_bytes(size)
+            .with_file_type(delete.file_type())
+            .with_file_format(delete.file_format())
+            .with_partition_spec_id(delete.partition_spec_id())
+            .with_equality_ids(delete.equality_ids().map(<[i32]>::to_vec))
+            .with_referenced_data_file(delete.referenced_data_file().map(str::to_string))
+            .with_content_offset(delete.content_offset())
+            .with_content_size_in_bytes(delete.content_size_in_bytes())
+            .with_record_count(delete.record_count())
+            .with_key_metadata(delete.key_metadata().map(Box::from))
+            .build()
     }
 
     /// Rebuilds a [`FileScanTask`] carrying a new set of delete files.
@@ -690,19 +712,42 @@ mod tests {
     }
 
     fn delete_file(path: &str) -> FileScanTaskDeleteFile {
-        FileScanTaskDeleteFile {
-            file_path: path.to_string(),
-            file_type: DataContentType::PositionDeletes,
-            file_format: DataFileFormat::Parquet,
-            file_size_in_bytes: 0,
-            partition_spec_id: 0,
-            equality_ids: None,
-            referenced_data_file: None,
-            content_offset: None,
-            content_size_in_bytes: None,
-            record_count: None,
-            key_metadata: None,
-        }
+        FileScanTaskDeleteFile::builder()
+            .with_file_path(path.to_string())
+            .with_file_type(DataContentType::PositionDeletes)
+            .with_file_format(DataFileFormat::Parquet)
+            .with_file_size_in_bytes(0)
+            .with_partition_spec_id(0)
+            .build()
+            .unwrap()
+    }
+
+    // The sized copy differs from the original in its size alone. Every optional field is set, so
+    // one the copy failed to forward would show up as a difference.
+    #[test]
+    fn sized_delete_file_keeps_every_other_field() {
+        let original = FileScanTaskDeleteFile::builder()
+            .with_file_path("s3://bucket/eq-delete.parquet".to_string())
+            .with_file_type(DataContentType::EqualityDeletes)
+            .with_file_format(DataFileFormat::Parquet)
+            .with_file_size_in_bytes(0)
+            .with_partition_spec_id(3)
+            .with_equality_ids(Some(vec![1, 4]))
+            .with_referenced_data_file(Some("s3://bucket/data.parquet".to_string()))
+            .with_content_offset(Some(4))
+            .with_content_size_in_bytes(Some(40))
+            .with_record_count(Some(7))
+            .with_key_metadata(Some(Box::from(&b"key"[..])))
+            .build()
+            .unwrap();
+
+        let sized = IcebergScanExec::sized_delete_file(&original, 1234).unwrap();
+
+        assert_eq!(sized.file_size_in_bytes(), 1234);
+        assert_eq!(
+            IcebergScanExec::sized_delete_file(&sized, 0).unwrap(),
+            original
+        );
     }
 
     // A delete file we cannot stat must fail the scan, not be silently read with a missing/0 size.
@@ -720,7 +765,7 @@ mod tests {
             result.is_err(),
             "expected an error when a delete file cannot be statted"
         );
-        assert_eq!(tasks[0].deletes()[0].file_size_in_bytes, 0);
+        assert_eq!(tasks[0].deletes()[0].file_size_in_bytes(), 0);
     }
 
     // The real on-disk size is filled in from the FileIO, replacing the 0 placeholder.
@@ -738,7 +783,10 @@ mod tests {
             .await
             .unwrap();
 
-        assert_eq!(tasks[0].deletes()[0].file_size_in_bytes, bytes.len() as u64);
+        assert_eq!(
+            tasks[0].deletes()[0].file_size_in_bytes(),
+            bytes.len() as u64
+        );
     }
 
     // A present-but-undersized delete file (0-byte object, truncated write, or a HEAD with no
@@ -757,7 +805,7 @@ mod tests {
             result.is_err(),
             "expected an error when a delete file is below the Parquet footer minimum"
         );
-        assert_eq!(tasks[0].deletes()[0].file_size_in_bytes, 0);
+        assert_eq!(tasks[0].deletes()[0].file_size_in_bytes(), 0);
     }
 
     // No deletes means no stats and no error.
