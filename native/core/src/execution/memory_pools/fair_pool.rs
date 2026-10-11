@@ -243,11 +243,11 @@ impl MemoryPool for CometFairMemoryPool {
                 state.charge(consumer, additional);
             }
 
-            // Spark is asked for the request plus any outstanding overcommit, and a full grant
-            // repays the overcommit. A short grant stays with Spark until this pool hands it
-            // back below, so the bytes can stay charged meanwhile. The JVM call can panic inside
-            // its JNI frame; the optimistic reservation must not outlive it, or the leaked bytes
-            // poison the task-shared pool for every other consumer.
+            // Spark is asked for the request plus the overcommit no other try_grow in flight is
+            // asking for, and a full grant repays it. A short grant stays with Spark until this
+            // pool hands it back below, so the bytes can stay charged meanwhile. The JVM call can
+            // panic inside its JNI frame; the optimistic reservation must not outlive it, or the
+            // leaked bytes poison the task-shared pool for every other consumer.
             let refusal = match std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
                 self.spark.try_acquire_leaving_a_short_grant(additional)
             })) {
@@ -284,9 +284,10 @@ impl MemoryPool for CometFairMemoryPool {
             }
 
             return resources_err!(
-                "Failed to acquire {} bytes plus {} bytes overcommitted, only got {} bytes. Reserved: {} bytes",
+                "Failed to acquire {} bytes plus {} of {} bytes overcommitted, only got {} bytes. Reserved: {} bytes",
                 additional,
                 refusal.overcommit,
+                self.spark.overcommit(),
                 granted,
                 self.reserved()
             );
@@ -401,6 +402,8 @@ mod tests {
         lock: Condvar,
         releases: AtomicUsize,
         acquires: AtomicUsize,
+        /// The size of every acquire, in the order they reached Spark.
+        requests: Mutex<Vec<usize>>,
         /// `CometTaskMemoryManager.used`: bytes granted and not yet released. This is what the
         /// JVM checks for leaked reservations once the task's last plan has closed.
         used: AtomicI64,
@@ -418,6 +421,8 @@ mod tests {
         acquire_gate: Gate,
         /// Pauses a release before it takes the pool monitor, like the JNI hop.
         release_gate: Gate,
+        /// Pauses an acquire after Spark has granted it, before the pool sees the answer.
+        granted_gate: Gate,
         /// Announces every trip into `lock.wait()`, so a waiter that is woken and parks again
         /// announces twice.
         parked: (Sender<()>, Mutex<Receiver<()>>),
@@ -434,6 +439,7 @@ mod tests {
                 lock: Condvar::new(),
                 releases: AtomicUsize::new(0),
                 acquires: AtomicUsize::new(0),
+                requests: Mutex::new(Vec::new()),
                 used: AtomicI64::new(0),
                 short_every: 0,
                 fail_acquire: AtomicBool::new(false),
@@ -441,6 +447,7 @@ mod tests {
                 panic_acquire: AtomicBool::new(false),
                 acquire_gate: Gate::new(),
                 release_gate: Gate::new(),
+                granted_gate: Gate::new(),
                 parked: (parked.0, Mutex::new(parked.1)),
             }
         }
@@ -524,6 +531,7 @@ mod tests {
         /// Spark's `acquireExecutionMemory` for this task.
         fn grant(&self, additional: usize) -> CometResult<i64> {
             let n = self.acquires.fetch_add(1, SeqCst) + 1;
+            self.requests.lock().push(additional);
             if self.fail_acquire.load(SeqCst) {
                 return Err(CometError::Internal("injected acquire failure".to_string()));
             }
@@ -603,6 +611,7 @@ mod tests {
         fn acquire(&self, additional: usize) -> CometResult<i64> {
             let granted = self.grant(additional)?;
             self.used.fetch_add(granted, SeqCst);
+            self.granted_gate.pass();
             Ok(granted)
         }
 
@@ -647,6 +656,27 @@ mod tests {
             50,
             "a refused try_grow repays no overcommit"
         );
+    }
+
+    /// A try_grow refused while another one in flight is asking Spark for the debt reports the
+    /// overcommit outstanding, not only the part it asked for itself.
+    #[test]
+    fn try_grow_refusal_reports_debt_another_try_grow_is_asking_for() {
+        let fake = FakeSpark::with(100);
+        let pool: Arc<dyn MemoryPool> =
+            Arc::new(CometFairMemoryPool::with_spark(fake.memory(), 10_000));
+        let first = MemoryConsumer::new("first").register(&pool);
+        let second = MemoryConsumer::new("second").register(&pool);
+        // Spark grants 100 of the 150 bytes, so 50 are owed and Spark is full.
+        first.grow(150);
+
+        let (err_tx, err_rx) = channel();
+        fake.during_next_acquire(move || {
+            let _ = err_tx.send(second.try_grow(1).unwrap_err().to_string());
+        });
+        assert!(first.try_grow(5).is_err());
+        let err = err_rx.recv().unwrap();
+        assert!(err.contains("plus 0 of 50 bytes overcommitted"), "{err}");
     }
 
     #[test]
@@ -1621,6 +1651,74 @@ mod tests {
         drop(holder);
         drop(grower);
         drop(pool);
+        assert_eq!(stub.outstanding(), 0);
+    }
+
+    /// Two try_grows of one task race on the same overcommit. The first asks Spark for its byte
+    /// plus the one byte owed and is held after Spark grants both, before it repays the debt.
+    /// The second must ask for its own byte only and finish while the first is held: one byte is
+    /// free, and a two byte request parks below the task's minimum share with nothing left to
+    /// wake it once the debt is repaid.
+    #[test]
+    fn concurrent_try_grows_ask_spark_for_the_overcommit_once() {
+        let stub = Arc::new(StubTaskMemory::new(100));
+        let fair = fair_pool_with(&stub, 100);
+        let pool: Arc<dyn MemoryPool> = Arc::clone(&fair) as _;
+        let first = MemoryConsumer::new("first").register(&pool);
+        let second = MemoryConsumer::new("second").register(&pool);
+        // Three active tasks: 16 bytes free and a 16 byte minimum share, so a 17 byte grow is
+        // granted 16 and one byte is owed.
+        stub.task_holds(OTHER_TASK, 83);
+        stub.task_holds(THIRD_TASK, 1);
+        first.grow(17);
+        assert_eq!(stub.outstanding(), 16);
+        assert_eq!(fair.overcommit(), 1);
+        // Two active tasks, a 25 byte minimum share and 3 bytes free.
+        stub.task_releases(THIRD_TASK, 1);
+        stub.other_task_releases(2);
+
+        stub.granted_gate.arm();
+        let first_thread = thread::spawn(move || first.try_grow(1).map(|()| first));
+        stub.granted_gate
+            .wait_entered("first try_grow after its grant");
+        stub.granted_gate.disarm();
+
+        let (second_done_tx, second_done_rx) = channel();
+        let second_thread = thread::spawn(move || {
+            let result = second.try_grow(1);
+            let _ = second_done_tx.send(());
+            result.map(|()| second)
+        });
+        // The first is still held at the gate. Wait well below the stub's WAIT_TIMEOUT, so a
+        // request parked in Spark shows up here rather than as a stub panic.
+        let second_done_while_first_held =
+            second_done_rx.recv_timeout(Duration::from_secs(2)).is_ok();
+        stub.granted_gate.open();
+        let requests = stub.requests.lock().clone();
+        if !second_done_while_first_held {
+            // The first repaying the debt wakes nothing parked in Spark, so free memory to let
+            // both threads finish before the assertions below fail.
+            stub.other_task_releases(10);
+        }
+        let first = first_thread.join().unwrap().expect("first try_grow");
+        let second_result = second_thread.join();
+
+        assert!(
+            second_done_while_first_held,
+            "the second try_grow did not finish while the first was held after its grant"
+        );
+        assert_eq!(requests, vec![17, 2, 1]);
+        let second = second_result.unwrap().expect("second try_grow");
+        assert_eq!(fair.overcommit(), 0);
+        assert_eq!(fair.spark.claimed(), 0);
+        assert_eq!(
+            stub.outstanding() as usize + fair.overcommit(),
+            pool.reserved(),
+            "Spark's grant plus the overcommit is what the pool recorded"
+        );
+        assert_eq!(pool.reserved(), 19);
+        drop(first);
+        drop(second);
         assert_eq!(stub.outstanding(), 0);
     }
 

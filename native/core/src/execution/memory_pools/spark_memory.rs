@@ -15,13 +15,11 @@
 // specific language governing permissions and limitations
 // under the License.
 
-use std::sync::{
-    atomic::{AtomicUsize, Ordering::Relaxed},
-    Arc,
-};
+use std::sync::Arc;
 
 use jni::objects::{Global, JObject};
 use log::warn;
+use parking_lot::Mutex;
 
 use crate::{errors::CometResult, jvm_bridge::JVMClasses};
 
@@ -58,8 +56,17 @@ impl SparkMemoryManager for JniMemoryManager {
 /// such as a spilled batch read back from disk. When Spark grants less than [`Self::acquire`]
 /// asked for, the shortfall is carried as overcommit rather than failing. [`Self::release`] repays
 /// it before returning anything to Spark, so Spark is never handed back more than it granted.
-/// While any is outstanding, [`Self::try_acquire`] also asks Spark for it, so a pool refuses
-/// `try_grow` until Spark can cover both the request and the debt, and the operator spills.
+/// While any is outstanding, [`Self::try_acquire`] also asks Spark for the part no other call is
+/// asking for, so a `try_grow` that carries debt is refused unless Spark covers both, and the
+/// operator spills.
+///
+/// A `try_acquire` claims the debt that no other `try_acquire` in flight is asking Spark for,
+/// and succeeds once Spark covers the request plus that claim. Debt already claimed is not asked
+/// for twice, and a refused claim is given up for the next `try_acquire` to take.
+///
+/// A release while a claim's request is parked in Spark leaves it too large: it waits until memory
+/// frees or the number of active tasks changes, and may come back short and be refused. Handing
+/// the claim to Spark on release would break the invariant below whenever the claim is refused.
 ///
 /// # Invariant
 ///
@@ -71,20 +78,62 @@ impl SparkMemoryManager for JniMemoryManager {
 /// three things:
 ///
 /// - `overcommit` only grows by bytes that are being recorded in the same call.
-/// - Each repayment takes its share of `overcommit` in a single atomic update, so two concurrent
+/// - Each repayment takes its share of `overcommit` under the ledger's lock, so two concurrent
 ///   calls can never repay the same debt.
 /// - A caller never releases more than it recorded. DataFusion guarantees this, because a shrink
 ///   cannot exceed the reservation it comes from.
 pub(super) struct SparkMemory {
     manager: Box<dyn SparkMemoryManager>,
-    overcommit: AtomicUsize,
+    /// Held only for arithmetic, never across a call to Spark.
+    ledger: Mutex<Ledger>,
     task_attempt_id: i64,
+}
+
+#[derive(Default)]
+struct Ledger {
+    /// Bytes recorded without Spark's grant.
+    overcommit: usize,
+    /// Debt that `try_acquire` calls in flight have put into their Spark requests. A release
+    /// can repay that debt meanwhile, so this can exceed `overcommit`.
+    claimed: usize,
+}
+
+/// Debt one `try_acquire` has put into its Spark request. Dropped without [`Claim::settle`],
+/// as on a refusal, an error or a panic, it gives the debt back for another `try_acquire`.
+struct Claim<'a> {
+    ledger: &'a Mutex<Ledger>,
+    bytes: usize,
+    settled: bool,
+}
+
+impl Claim<'_> {
+    /// Repays what is still owed of the claim once Spark has granted it, and returns the part a
+    /// release repaid meanwhile, which Spark granted for nothing.
+    fn settle(mut self) -> usize {
+        self.settled = true;
+        if self.bytes == 0 {
+            return 0;
+        }
+        let mut ledger = self.ledger.lock();
+        let owed = self.bytes.min(ledger.overcommit);
+        ledger.overcommit -= owed;
+        ledger.claimed -= self.bytes;
+        self.bytes - owed
+    }
+}
+
+impl Drop for Claim<'_> {
+    fn drop(&mut self) {
+        if !self.settled && self.bytes > 0 {
+            self.ledger.lock().claimed -= self.bytes;
+        }
+    }
 }
 
 /// Why [`SparkMemory::try_acquire`] refused a request.
 #[derive(Debug, PartialEq, Eq)]
 pub(super) struct Refusal {
-    /// Outstanding overcommit that was asked for on top of the request.
+    /// Overcommit this call claimed and asked for on top of the request.
     pub(super) overcommit: usize,
     /// What Spark granted toward the request and the overcommit together, which can exceed
     /// the request.
@@ -99,7 +148,7 @@ impl SparkMemory {
     pub(super) fn with_manager(manager: Box<dyn SparkMemoryManager>, task_attempt_id: i64) -> Self {
         Self {
             manager,
-            overcommit: AtomicUsize::new(0),
+            ledger: Mutex::default(),
             task_attempt_id,
         }
     }
@@ -114,8 +163,8 @@ impl SparkMemory {
         self.manager.as_ref()
     }
 
-    /// Acquires `size` bytes plus any outstanding overcommit, or nothing. A full grant repays the
-    /// overcommit; a partial one is handed back and reported as a [`Refusal`].
+    /// Acquires `size` bytes plus the overcommit it claims, or nothing. A full grant repays that
+    /// debt; a partial one is handed back and reported as a [`Refusal`].
     pub(super) fn try_acquire(&self, size: usize) -> CometResult<Result<(), Refusal>> {
         let refusal = match self.try_acquire_leaving_a_short_grant(size)? {
             Ok(()) => return Ok(Ok(())),
@@ -134,22 +183,20 @@ impl SparkMemory {
         &self,
         size: usize,
     ) -> CometResult<Result<(), Refusal>> {
-        let debt = self.overcommit.load(Relaxed);
-        let request = size.saturating_add(debt);
+        let claim = self.claim_debt();
+        let request = size.saturating_add(claim.bytes);
         let granted = granted(request, self.ask_spark(request)?);
         if granted < request {
             return Ok(Err(Refusal {
-                overcommit: debt,
+                overcommit: claim.bytes,
                 granted,
             }));
         }
-        if debt > 0 {
-            // A concurrent release may have repaid part of the debt since it was read, in which
-            // case Spark granted more than is still owed and the excess goes back.
-            let owed = self.repay(debt);
-            if owed < debt {
-                self.manager.release(debt - owed)?;
-            }
+        // A concurrent release may have repaid part of the claim while Spark was asked for it,
+        // and Spark gets that part back.
+        let excess = claim.settle();
+        if excess > 0 {
+            self.manager.release(excess)?;
         }
         Ok(Ok(()))
     }
@@ -168,7 +215,7 @@ impl SparkMemory {
             }
         };
         if granted < size {
-            self.overcommit.fetch_add(size - granted, Relaxed);
+            self.ledger.lock().overcommit += size - granted;
         }
     }
 
@@ -182,7 +229,24 @@ impl SparkMemory {
     }
 
     pub(super) fn overcommit(&self) -> usize {
-        self.overcommit.load(Relaxed)
+        self.ledger.lock().overcommit
+    }
+
+    #[cfg(test)]
+    pub(super) fn claimed(&self) -> usize {
+        self.ledger.lock().claimed
+    }
+
+    /// Claims the debt that no other `try_acquire` in flight is asking Spark for.
+    fn claim_debt(&self) -> Claim<'_> {
+        let mut ledger = self.ledger.lock();
+        let bytes = ledger.overcommit.saturating_sub(ledger.claimed);
+        ledger.claimed += bytes;
+        Claim {
+            ledger: &self.ledger,
+            bytes,
+            settled: false,
+        }
     }
 
     /// Asks Spark for `size` bytes and returns how many it granted.
@@ -195,12 +259,12 @@ impl SparkMemory {
         tokio::task::block_in_place(|| self.manager.acquire(size))
     }
 
-    /// Takes up to `size` bytes off the overcommit in one atomic step and returns how many.
+    /// Takes up to `size` bytes off the overcommit and returns how many.
     fn repay(&self, size: usize) -> usize {
-        let debt = self
-            .overcommit
-            .update(Relaxed, Relaxed, |debt| debt.saturating_sub(size));
-        debt.min(size)
+        let mut ledger = self.ledger.lock();
+        let owed = size.min(ledger.overcommit);
+        ledger.overcommit -= owed;
+        owed
     }
 }
 
@@ -215,6 +279,7 @@ pub(super) mod fake {
     use super::*;
     use crate::errors::CometError;
     use parking_lot::Mutex;
+    use std::sync::atomic::{AtomicBool, Ordering::Relaxed};
 
     /// Grants up to `limit` bytes in total and records every release. Panics if it is handed
     /// back more than it granted, which is the guarantee the pools must keep.
@@ -223,7 +288,8 @@ pub(super) mod fake {
         limit: Mutex<usize>,
         held: Mutex<usize>,
         released: Mutex<Vec<usize>>,
-        fail: bool,
+        requests: Mutex<Vec<usize>>,
+        fail: AtomicBool,
         during_acquire: Mutex<Option<Box<dyn FnOnce() + Send>>>,
     }
 
@@ -237,9 +303,14 @@ pub(super) mod fake {
 
         pub(in crate::execution::memory_pools) fn failing() -> Arc<Self> {
             Arc::new(Self {
-                fail: true,
+                fail: AtomicBool::new(true),
                 ..Default::default()
             })
+        }
+
+        /// Makes every acquire from now on fail, or succeed again.
+        pub(in crate::execution::memory_pools) fn fail_acquires(&self, fail: bool) {
+            self.fail.store(fail, Relaxed);
         }
 
         pub(in crate::execution::memory_pools) fn set_limit(&self, limit: usize) {
@@ -264,6 +335,11 @@ pub(super) mod fake {
             self.released.lock().clone()
         }
 
+        /// The size of every acquire, in the order they reached Spark.
+        pub(in crate::execution::memory_pools) fn requests(&self) -> Vec<usize> {
+            self.requests.lock().clone()
+        }
+
         pub(in crate::execution::memory_pools) fn memory(self: &Arc<Self>) -> SparkMemory {
             SparkMemory::with_manager(Box::new(Arc::clone(self)), 0)
         }
@@ -271,12 +347,13 @@ pub(super) mod fake {
 
     impl SparkMemoryManager for Arc<FakeSpark> {
         fn acquire(&self, size: usize) -> CometResult<i64> {
+            self.requests.lock().push(size);
             // Run before taking any other lock, so `f` can call back into this fake.
             let during = self.during_acquire.lock().take();
             if let Some(f) = during {
                 f();
             }
-            if self.fail {
+            if self.fail.load(Relaxed) {
                 return Err(CometError::Internal("jni".to_string()));
             }
             let limit = *self.limit.lock();
@@ -376,6 +453,193 @@ mod tests {
         assert_eq!(fake.held(), 80);
         spark.release(80).unwrap();
         assert_eq!(fake.held(), 0);
+    }
+
+    /// Spark grants 0 of a 5 byte grow, so 5 bytes are owed and Spark then has room for more.
+    fn five_bytes_owed() -> (Arc<FakeSpark>, Arc<SparkMemory>) {
+        let fake = FakeSpark::with(0);
+        let spark = Arc::new(fake.memory());
+        spark.acquire(5);
+        assert_eq!(spark.overcommit(), 5);
+        fake.set_limit(1_000);
+        (fake, spark)
+    }
+
+    #[test]
+    fn concurrent_try_acquires_ask_spark_for_the_debt_once() {
+        let (fake, spark) = five_bytes_owed();
+        // A second try_acquire runs while the first waits on Spark with the debt in its request.
+        let other = Arc::clone(&spark);
+        fake.during_next_acquire(move || assert_eq!(other.try_acquire(1).unwrap(), Ok(())));
+        assert_eq!(spark.try_acquire(1).unwrap(), Ok(()));
+        assert_eq!(fake.requests(), vec![5, 6, 1]);
+        assert!(fake.released().is_empty(), "nothing was granted twice");
+        assert_eq!(spark.overcommit(), 0);
+        assert_eq!(spark.claimed(), 0);
+        assert_eq!(fake.held(), 7);
+    }
+
+    #[test]
+    fn refused_try_acquire_leaves_the_debt_for_the_next_one() {
+        let (fake, spark) = five_bytes_owed();
+        fake.set_limit(3);
+        assert_eq!(
+            spark.try_acquire(1).unwrap(),
+            Err(Refusal {
+                overcommit: 5,
+                granted: 3
+            })
+        );
+        assert_eq!(spark.claimed(), 0);
+        fake.set_limit(1_000);
+        assert_eq!(spark.try_acquire(1).unwrap(), Ok(()));
+        assert_eq!(fake.requests(), vec![5, 6, 6]);
+        assert_eq!(spark.overcommit(), 0);
+        assert_eq!(fake.held(), 6);
+    }
+
+    #[test]
+    fn failed_try_acquire_leaves_the_debt_for_the_next_one() {
+        let (fake, spark) = five_bytes_owed();
+        fake.fail_acquires(true);
+        assert!(spark.try_acquire(1).is_err());
+        assert_eq!(spark.claimed(), 0);
+        fake.fail_acquires(false);
+        assert_eq!(spark.try_acquire(1).unwrap(), Ok(()));
+        assert_eq!(fake.requests(), vec![5, 6, 6]);
+        assert_eq!(spark.overcommit(), 0);
+        assert_eq!(fake.held(), 6);
+    }
+
+    #[test]
+    fn panicking_try_acquire_leaves_the_debt_for_the_next_one() {
+        let (fake, spark) = five_bytes_owed();
+        fake.during_next_acquire(|| panic!("injected Spark panic"));
+        let panic = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| spark.try_acquire(1)));
+        assert!(panic.is_err());
+        assert_eq!(spark.claimed(), 0);
+        assert_eq!(spark.try_acquire(1).unwrap(), Ok(()));
+        assert_eq!(fake.requests(), vec![5, 6, 6]);
+        assert_eq!(spark.overcommit(), 0);
+        assert_eq!(fake.held(), 6);
+    }
+
+    /// A release shrinks the debt under a claim of 5 bytes to 1, and a grow that Spark grants
+    /// none of then adds 3. The claim still covers all 4 bytes owed, so a try_acquire made
+    /// meanwhile claims none of them, and the claim repays all 4 when it settles.
+    #[test]
+    fn try_acquire_claims_no_debt_an_earlier_claim_still_covers() {
+        let (fake, spark) = five_bytes_owed();
+        let (inner_fake, inner_spark) = (Arc::clone(&fake), Arc::clone(&spark));
+        fake.during_next_acquire(move || {
+            inner_spark.release(4).unwrap();
+            assert_eq!(inner_spark.overcommit(), 1);
+            assert_eq!(inner_spark.claimed(), 5);
+            inner_fake.set_limit(0);
+            inner_spark.acquire(3);
+            inner_fake.set_limit(1_000);
+            assert_eq!(inner_spark.overcommit(), 4);
+            assert_eq!(inner_spark.try_acquire(1).unwrap(), Ok(()));
+            assert_eq!(inner_spark.overcommit(), 4);
+            assert_eq!(inner_spark.claimed(), 5);
+        });
+        assert_eq!(spark.try_acquire(1).unwrap(), Ok(()));
+
+        // The second try_acquire asked for its own byte only.
+        assert_eq!(fake.requests(), vec![5, 6, 3, 1]);
+        // The claim repaid the 4 bytes owed, and Spark gets back the byte the release repaid.
+        assert_eq!(fake.released(), vec![1]);
+        assert_eq!(spark.overcommit(), 0);
+        assert_eq!(spark.claimed(), 0);
+        // 5 + 1 + 3 + 1 recorded and 4 released.
+        assert_eq!(fake.held() + spark.overcommit(), 6);
+        spark.release(6).unwrap();
+        assert_eq!(fake.held(), 0);
+    }
+
+    /// Two try_acquires are in flight, the first asking for 3 bytes owed and the second for the
+    /// 2 owed since. A release then repays 4 of the 5 bytes. Whichever settles first repays the
+    /// byte still owed, and Spark gets back exactly the bytes it granted that nothing owes.
+    #[test]
+    fn release_during_two_claims_hands_spark_back_only_the_excess() {
+        let fake = FakeSpark::with(10);
+        let spark = Arc::new(fake.memory());
+        spark.acquire(13);
+        assert_eq!(spark.overcommit(), 3);
+
+        let (inner_fake, inner_spark) = (Arc::clone(&fake), Arc::clone(&spark));
+        fake.during_next_acquire(move || {
+            // 2 more bytes owed while the first claim waits on Spark.
+            inner_fake.set_limit(13);
+            inner_spark.acquire(5);
+            assert_eq!(inner_spark.overcommit(), 5);
+            inner_fake.set_limit(1_000);
+            // The second claim waits on Spark when the release lands.
+            let releaser = Arc::clone(&inner_spark);
+            inner_fake.during_next_acquire(move || releaser.release(4).unwrap());
+            assert_eq!(inner_spark.try_acquire(1).unwrap(), Ok(()));
+        });
+        assert_eq!(spark.try_acquire(1).unwrap(), Ok(()));
+
+        assert_eq!(fake.requests(), vec![13, 4, 5, 3]);
+        // The second settled first and repaid the byte still owed: 1 of its 2 bytes and all 3
+        // of the first's go back.
+        assert_eq!(fake.released(), vec![1, 3]);
+        assert_eq!(spark.overcommit(), 0);
+        assert_eq!(spark.claimed(), 0);
+        // 13 + 5 + 1 + 1 recorded and 4 released.
+        assert_eq!(fake.held(), 16);
+        spark.release(16).unwrap();
+        assert_eq!(fake.held(), 0);
+    }
+
+    /// Threads acquire, try_acquire and release at random while Spark's headroom moves. FakeSpark
+    /// panics if it is handed back more than it granted, and once the threads stop, Spark's
+    /// grant plus the overcommit must equal the bytes recorded.
+    #[test]
+    fn concurrent_callers_keep_the_ledger_balanced() {
+        use rand::{rngs::StdRng, RngExt, SeedableRng};
+        use std::thread;
+
+        let fake = FakeSpark::with(500);
+        let spark = Arc::new(fake.memory());
+        let threads: Vec<_> = (0..4)
+            .map(|seed| {
+                let (fake, spark) = (Arc::clone(&fake), Arc::clone(&spark));
+                thread::spawn(move || {
+                    let mut rng = StdRng::seed_from_u64(seed);
+                    let mut recorded = 0;
+                    for _ in 0..5_000 {
+                        let size = rng.random_range(1..100);
+                        match rng.random_range(0..4) {
+                            0 => {
+                                spark.acquire(size);
+                                recorded += size;
+                            }
+                            1 => {
+                                if spark.try_acquire(size).unwrap().is_ok() {
+                                    recorded += size;
+                                }
+                            }
+                            2 if recorded > 0 => {
+                                let size = rng.random_range(1..=recorded);
+                                spark.release(size).unwrap();
+                                recorded -= size;
+                            }
+                            _ => fake.set_limit(rng.random_range(0..1_000)),
+                        }
+                    }
+                    recorded
+                })
+            })
+            .collect();
+        let recorded: usize = threads.into_iter().map(|t| t.join().unwrap()).sum();
+
+        assert_eq!(spark.claimed(), 0);
+        assert_eq!(fake.held() + spark.overcommit(), recorded);
+        spark.release(recorded).unwrap();
+        assert_eq!(fake.held(), 0);
+        assert_eq!(spark.overcommit(), 0);
     }
 
     #[test]

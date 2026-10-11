@@ -313,8 +313,14 @@ JNI, which goes through Spark's ordinary `TaskMemoryManager`. That means:
 - `grow` cannot fail, so when Spark grants less than asked the pool records the full amount anyway
   and carries the shortfall as _overcommit_ (`spark_memory.rs`). A later `shrink` repays the
   overcommit before returning anything to Spark, so Spark is never handed back more than it
-  granted. While overcommit is outstanding, `try_grow` asks Spark for it on top of the request and
-  is refused unless Spark can cover both, so operators spill until the debt is repaid. Both pools'
+  granted. Each `try_grow` asks Spark for the debt no other `try_grow` in flight is already asking
+  for, on top of its own request, and is refused unless Spark covers both. A release that repays
+  the debt while such a request is parked in Spark leaves the request larger than needed, because
+  Spark cannot shrink a parked request. It waits until other memory frees or the number of active
+  tasks changes, so the task can be held up until an unrelated task releases memory, and the
+  request may then come back short and be refused. Any request that carries debt has this window,
+  with or without a second `try_grow`. Closing it would mean handing claimed debt to Spark on
+  release, which gives Spark back bytes it never granted if the claim is then refused. Both pools'
   `Display` output and their `try_grow` errors report the current overcommit.
 
 `CometFairMemoryPool` additionally applies two local checks before it asks Spark, and refuses the
@@ -376,6 +382,10 @@ Neither window admits a `try_grow` that the two checks would have refused. A ref
 `ResourcesExhausted` error, which a spillable operator answers by spilling. `grow` is never refused:
 it is not subject to either check, and whatever Spark declines of it becomes overcommit, as
 described above.
+
+The overcommit window in [The unified pools](#the-unified-pools) never admits a request these checks
+would refuse either, but unlike these two it can delay one: it can hold a `try_grow` until an
+unrelated task frees memory. It applies to both pools.
 
 ### Task-shared pools and their lifetime
 
