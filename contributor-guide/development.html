@@ -1096,6 +1096,50 @@ To regenerate the golden files, you can run the following commands.</p>
 </pre></div>
 </div>
 </section>
+<section id="abfs-authentication-parity-files">
+<h3>ABFS Authentication Parity Files<a class="headerlink" href="#abfs-authentication-parity-files" title="Link to this heading">#</a></h3>
+<p><code class="docutils literal notranslate"><span class="pre">AbfsAuthParitySuite</span></code> pins how <code class="docutils literal notranslate"><span class="pre">AbfsAuthResolver</span></code> resolves Azure ABFS authentication on each
+hadoop-azure release. <code class="docutils literal notranslate"><span class="pre">spark/src/test/resources/abfs-auth-parity/expected-&lt;version&gt;.json</span></code> holds,
+for every case in <code class="docutils literal notranslate"><span class="pre">AbfsAuthParityCases</span></code>, the outcome kind (<code class="docutils literal notranslate"><span class="pre">resolved</span></code>, <code class="docutils literal notranslate"><span class="pre">unconfigured</span></code>, <code class="docutils literal notranslate"><span class="pre">declined</span></code>,
+<code class="docutils literal notranslate"><span class="pre">failed</span></code>), the auth type, the provider class, the error class and the forwarded values, with
+secrets stored as SHA-256 digests. The suite picks the file from the hadoop-azure on the test
+classpath, so each Spark profile checks one version:</p>
+<div class="pst-scrollable-table-container"><table class="table">
+<thead>
+<tr class="row-odd"><th class="head"><p>Profile</p></th>
+<th class="head"><p>hadoop-azure</p></th>
+</tr>
+</thead>
+<tbody>
+<tr class="row-even"><td><p><code class="docutils literal notranslate"><span class="pre">-Pspark-3.5</span></code></p></td>
+<td><p>3.3.4</p></td>
+</tr>
+<tr class="row-odd"><td><p><code class="docutils literal notranslate"><span class="pre">-Pspark-4.0</span></code></p></td>
+<td><p>3.4.1</p></td>
+</tr>
+<tr class="row-even"><td><p><code class="docutils literal notranslate"><span class="pre">-Pspark-4.1</span></code></p></td>
+<td><p>3.4.2</p></td>
+</tr>
+<tr class="row-odd"><td><p><code class="docutils literal notranslate"><span class="pre">-Pspark-4.2</span></code></p></td>
+<td><p>3.5.0</p></td>
+</tr>
+</tbody>
+</table>
+</div>
+<p>A new case or a hadoop-azure bump requires re-recording all four files. Run the suite once per
+profile with <code class="docutils literal notranslate"><span class="pre">-Dcomet.abfs.parity.record=&lt;dir&gt;</span></code> and copy the written files into the resources
+directory:</p>
+<div class="highlight-sh notranslate"><div class="highlight"><pre><span></span>./mvnw<span class="w"> </span>-Pspark-3.5<span class="w"> </span><span class="nb">test</span><span class="w"> </span>-Dtest<span class="o">=</span>none<span class="w"> </span>-Dsuites<span class="o">=</span>org.apache.comet.objectstore.AbfsAuthParitySuite<span class="w"> </span>-Dsurefire.failIfNoSpecifiedTests<span class="o">=</span><span class="nb">false</span><span class="w"> </span>-Dcomet.abfs.parity.record<span class="o">=</span>&lt;dir&gt;
+./mvnw<span class="w"> </span>-Pspark-4.0<span class="w"> </span><span class="nb">test</span><span class="w"> </span>-Dtest<span class="o">=</span>none<span class="w"> </span>-Dsuites<span class="o">=</span>org.apache.comet.objectstore.AbfsAuthParitySuite<span class="w"> </span>-Dsurefire.failIfNoSpecifiedTests<span class="o">=</span><span class="nb">false</span><span class="w"> </span>-Dcomet.abfs.parity.record<span class="o">=</span>&lt;dir&gt;
+./mvnw<span class="w"> </span>-Pspark-4.1<span class="w"> </span><span class="nb">test</span><span class="w"> </span>-Dtest<span class="o">=</span>none<span class="w"> </span>-Dsuites<span class="o">=</span>org.apache.comet.objectstore.AbfsAuthParitySuite<span class="w"> </span>-Dsurefire.failIfNoSpecifiedTests<span class="o">=</span><span class="nb">false</span><span class="w"> </span>-Dcomet.abfs.parity.record<span class="o">=</span>&lt;dir&gt;
+./mvnw<span class="w"> </span>-Pspark-4.2<span class="w"> </span><span class="nb">test</span><span class="w"> </span>-Dtest<span class="o">=</span>none<span class="w"> </span>-Dsuites<span class="o">=</span>org.apache.comet.objectstore.AbfsAuthParitySuite<span class="w"> </span>-Dsurefire.failIfNoSpecifiedTests<span class="o">=</span><span class="nb">false</span><span class="w"> </span>-Dcomet.abfs.parity.record<span class="o">=</span>&lt;dir&gt;
+</pre></div>
+</div>
+<p>The per-version pins in the cases and the cross-check against a real <code class="docutils literal notranslate"><span class="pre">AzureBlobFileSystem</span></code>
+still assert while recording, so a recorded file cannot contradict what hadoop-azure does. The
+file is written only when every case ran. Review the diff of the regenerated files before
+committing them: each line that changes is a behaviour change on that hadoop-azure release.</p>
+</section>
 </section>
 <section id="benchmark">
 <h2>Benchmark<a class="headerlink" href="#benchmark" title="Link to this heading">#</a></h2>
@@ -1354,6 +1398,7 @@ make<span class="w"> </span><span class="nb">test</span><span class="w">     </s
 <li class="toc-h2 nav-item toc-entry"><a class="reference internal nav-link" href="#plan-stability-testing">Plan Stability Testing</a><ul class="nav section-nav flex-column">
 <li class="toc-h3 nav-item toc-entry"><a class="reference internal nav-link" href="#using-the-helper-script">Using the Helper Script</a></li>
 <li class="toc-h3 nav-item toc-entry"><a class="reference internal nav-link" href="#manual-instructions">Manual Instructions</a></li>
+<li class="toc-h3 nav-item toc-entry"><a class="reference internal nav-link" href="#abfs-authentication-parity-files">ABFS Authentication Parity Files</a></li>
 </ul>
 </li>
 <li class="toc-h2 nav-item toc-entry"><a class="reference internal nav-link" href="#benchmark">Benchmark</a></li>

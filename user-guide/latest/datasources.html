@@ -1254,103 +1254,82 @@ iceberg-java.</p>
 <h2>Azure<a class="headerlink" href="#azure" title="Link to this heading">#</a></h2>
 <p>Comet’s Parquet scan reads Azure Data Lake Storage Gen2 (ADLS Gen2) through the
 <a class="reference external" href="https://crates.io/crates/object_store"><code class="docutils literal notranslate"><span class="pre">object_store</span></code> crate</a>, using the <code class="docutils literal notranslate"><span class="pre">abfs</span></code> and <code class="docutils literal notranslate"><span class="pre">abfss</span></code> URL schemes.
-As with S3, standard Hadoop ABFS configurations (the <code class="docutils literal notranslate"><span class="pre">fs.azure.*</span></code> keys you already set in <code class="docutils literal notranslate"><span class="pre">core-site.xml</span></code> or via <code class="docutils literal notranslate"><span class="pre">spark.hadoop.*</span></code>) are translated into the <code class="docutils literal notranslate"><span class="pre">object_store</span></code> crate’s format, so existing configurations continue to work.</p>
-<p>URLs use the same shape Spark and Hadoop emit: <code class="docutils literal notranslate"><span class="pre">abfss://&lt;container&gt;&#64;&lt;account&gt;.dfs.core.windows.net/&lt;path&gt;</span></code>. The account is taken from the host and the container from the URL user-info. The <code class="docutils literal notranslate"><span class="pre">wasb</span></code>, <code class="docutils literal notranslate"><span class="pre">wasbs</span></code>, <code class="docutils literal notranslate"><span class="pre">az</span></code>, <code class="docutils literal notranslate"><span class="pre">azure</span></code>, and <code class="docutils literal notranslate"><span class="pre">adl</span></code> schemes are not supported by the native scan.</p>
+The Hadoop ABFS configuration you already have (the <code class="docutils literal notranslate"><span class="pre">fs.azure.*</span></code> keys in <code class="docutils literal notranslate"><span class="pre">core-site.xml</span></code> or under <code class="docutils literal notranslate"><span class="pre">spark.hadoop.*</span></code>) authenticates the native scan as well, so an existing setup keeps working.</p>
+<p>URLs use the shape Spark and Hadoop emit: <code class="docutils literal notranslate"><span class="pre">abfss://&lt;container&gt;&#64;&lt;account&gt;.dfs.core.windows.net/&lt;path&gt;</span></code>. The <code class="docutils literal notranslate"><span class="pre">wasb</span></code>, <code class="docutils literal notranslate"><span class="pre">wasbs</span></code>, <code class="docutils literal notranslate"><span class="pre">az</span></code>, <code class="docutils literal notranslate"><span class="pre">azure</span></code>, and <code class="docutils literal notranslate"><span class="pre">adl</span></code> schemes are not supported by the native scan.</p>
 <section id="id2">
 <h3>Root CA Certificates<a class="headerlink" href="#id2" title="Link to this heading">#</a></h3>
 <p>Azure scans discover Root CA Certificates the same way S3 scans do. See <a class="reference internal" href="#root-ca-certificates">Root CA Certificates</a> above. The Rust-based scan uses system Root CA Certificates rather than the Java Trust Store.</p>
 </section>
-<section id="supported-authentication">
-<h3>Supported Authentication<a class="headerlink" href="#supported-authentication" title="Link to this heading">#</a></h3>
-<p>Comet first calls <code class="docutils literal notranslate"><span class="pre">MicrosoftAzureBuilder::from_env()</span></code>, so any <code class="docutils literal notranslate"><span class="pre">AZURE_*</span></code> environment variables (<code class="docutils literal notranslate"><span class="pre">AZURE_CLIENT_ID</span></code>, <code class="docutils literal notranslate"><span class="pre">AZURE_TENANT_ID</span></code>, <code class="docutils literal notranslate"><span class="pre">AZURE_FEDERATED_TOKEN_FILE</span></code>, <code class="docutils literal notranslate"><span class="pre">AZURE_AUTHORITY_HOST</span></code>, <code class="docutils literal notranslate"><span class="pre">AZURE_STORAGE_*</span></code>) are honored out of the box. This is what makes AKS Workload Identity work in a stock pod with no extra configuration. Any Hadoop <code class="docutils literal notranslate"><span class="pre">fs.azure.*</span></code> keys below are then applied on top, overriding the environment.</p>
+<section id="authentication-is-resolved-by-hadoop">
+<h3>Authentication is resolved by Hadoop<a class="headerlink" href="#authentication-is-resolved-by-hadoop" title="Link to this heading">#</a></h3>
+<p>For each <code class="docutils literal notranslate"><span class="pre">abfs</span></code> or <code class="docutils literal notranslate"><span class="pre">abfss</span></code> path, the Spark driver asks the hadoop-azure library on its classpath which authentication mechanism applies to that container and account, and which values it needs. The question goes to the same <code class="docutils literal notranslate"><span class="pre">AbfsConfiguration</span></code> the ABFS <code class="docutils literal notranslate"><span class="pre">FileSystem</span></code> uses, so every Hadoop rule holds: account-scoped keys (<code class="docutils literal notranslate"><span class="pre">&lt;key&gt;.&lt;account</span> <span class="pre">host&gt;</span></code>), container-scoped keys (<code class="docutils literal notranslate"><span class="pre">&lt;key&gt;.&lt;container&gt;.&lt;account</span> <span class="pre">host&gt;</span></code>, hadoop-azure 3.4.2 and later), credential providers behind <code class="docutils literal notranslate"><span class="pre">hadoop.security.credential.provider.path</span></code> (a JCEKS keystore, for example) and <code class="docutils literal notranslate"><span class="pre">${...}</span></code> substitution behave exactly as they do for Spark’s own reads. This holds for the hadoop-azure matching each Spark line’s Hadoop: 3.3.4 with Spark 3.4 and 3.5, 3.4.1 with 4.0, 3.4.2 with 4.1, 3.5.0 with 4.2.</p>
+<p>The native scan receives the resolved values and builds the <code class="docutils literal notranslate"><span class="pre">object_store</span></code> client from them. It reads no <code class="docutils literal notranslate"><span class="pre">fs.azure.*</span></code> key of its own. A scan whose files span more than one ABFS container or account, or that mixes <code class="docutils literal notranslate"><span class="pre">abfs</span></code>/<code class="docutils literal notranslate"><span class="pre">abfss</span></code> paths with other schemes, falls back to Spark’s own scan.</p>
+<p>hadoop-azure must be on the driver classpath. It already is whenever Spark can list the path. When it is missing, the scan fails with an error that says so.</p>
+<section id="mechanisms">
+<h4>Mechanisms<a class="headerlink" href="#mechanisms" title="Link to this heading">#</a></h4>
 <div class="pst-scrollable-table-container"><table class="table">
 <thead>
-<tr class="row-odd"><th class="head"><p>Authentication method</p></th>
-<th class="head"><p>Hadoop keys</p></th>
+<tr class="row-odd"><th class="head"><p>Hadoop mechanism</p></th>
+<th class="head"><p>Native scan</p></th>
+<th class="head"><p>Keys the native scan receives</p></th>
 </tr>
 </thead>
 <tbody>
-<tr class="row-even"><td><p>Shared account key</p></td>
-<td><p><code class="docutils literal notranslate"><span class="pre">fs.azure.account.key</span></code></p></td>
+<tr class="row-even"><td><p><code class="docutils literal notranslate"><span class="pre">SharedKey</span></code> (Hadoop’s default when <code class="docutils literal notranslate"><span class="pre">fs.azure.account.auth.type</span></code> is unset), with any configured <code class="docutils literal notranslate"><span class="pre">fs.azure.account.keyprovider</span></code></p></td>
+<td><p>Supported</p></td>
+<td><p><code class="docutils literal notranslate"><span class="pre">fs.azure.account.key</span></code>. Hadoop’s key provider runs on the driver and the key it returns is forwarded</p></td>
 </tr>
-<tr class="row-odd"><td><p>OAuth2 client credentials</p></td>
-<td><p><code class="docutils literal notranslate"><span class="pre">fs.azure.account.oauth2.client.id</span></code>, <code class="docutils literal notranslate"><span class="pre">fs.azure.account.oauth2.client.secret</span></code>, <code class="docutils literal notranslate"><span class="pre">fs.azure.account.oauth2.client.endpoint</span></code> (tenant id is extracted from the endpoint URL)</p></td>
+<tr class="row-odd"><td><p><code class="docutils literal notranslate"><span class="pre">OAuth</span></code> with <code class="docutils literal notranslate"><span class="pre">ClientCredsTokenProvider</span></code></p></td>
+<td><p>Supported</p></td>
+<td><p><code class="docutils literal notranslate"><span class="pre">fs.azure.account.oauth2.client.id</span></code>, <code class="docutils literal notranslate"><span class="pre">fs.azure.account.oauth2.client.secret</span></code>, <code class="docutils literal notranslate"><span class="pre">fs.azure.account.oauth2.client.endpoint</span></code> (the tenant and authority host come from the endpoint URL)</p></td>
 </tr>
-<tr class="row-even"><td><p>Managed identity (MSI)</p></td>
-<td><p><code class="docutils literal notranslate"><span class="pre">fs.azure.account.oauth2.msi.tenant</span></code>, <code class="docutils literal notranslate"><span class="pre">fs.azure.account.oauth2.msi.endpoint</span></code>, <code class="docutils literal notranslate"><span class="pre">fs.azure.account.oauth2.msi.authority</span></code></p></td>
+<tr class="row-even"><td><p><code class="docutils literal notranslate"><span class="pre">OAuth</span></code> with <code class="docutils literal notranslate"><span class="pre">MsiTokenProvider</span></code></p></td>
+<td><p>Supported</p></td>
+<td><p><code class="docutils literal notranslate"><span class="pre">fs.azure.account.oauth2.msi.endpoint</span></code>, plus <code class="docutils literal notranslate"><span class="pre">fs.azure.account.oauth2.client.id</span></code> when set. <code class="docutils literal notranslate"><span class="pre">fs.azure.account.oauth2.msi.tenant</span></code> and <code class="docutils literal notranslate"><span class="pre">fs.azure.account.oauth2.msi.authority</span></code> are accepted but unused: <code class="docutils literal notranslate"><span class="pre">object_store</span></code>’s IMDS provider sends only the client id to the endpoint</p></td>
 </tr>
-<tr class="row-odd"><td><p>Workload Identity</p></td>
-<td><p><code class="docutils literal notranslate"><span class="pre">fs.azure.account.oauth2.client.id</span></code>, <code class="docutils literal notranslate"><span class="pre">fs.azure.account.oauth2.msi.tenant</span></code>, <code class="docutils literal notranslate"><span class="pre">fs.azure.account.oauth2.token.file</span></code></p></td>
+<tr class="row-odd"><td><p><code class="docutils literal notranslate"><span class="pre">OAuth</span></code> with <code class="docutils literal notranslate"><span class="pre">WorkloadIdentityTokenProvider</span></code> (hadoop-azure 3.4.1 and later)</p></td>
+<td><p>Supported</p></td>
+<td><p><code class="docutils literal notranslate"><span class="pre">fs.azure.account.oauth2.client.id</span></code>, <code class="docutils literal notranslate"><span class="pre">fs.azure.account.oauth2.msi.tenant</span></code>, <code class="docutils literal notranslate"><span class="pre">fs.azure.account.oauth2.token.file</span></code>, <code class="docutils literal notranslate"><span class="pre">fs.azure.account.oauth2.msi.authority</span></code> (the last two take Hadoop’s defaults when unset)</p></td>
 </tr>
-<tr class="row-even"><td><p>SAS token</p></td>
-<td><p><code class="docutils literal notranslate"><span class="pre">fs.azure.sas.&lt;container&gt;.&lt;account&gt;</span></code></p></td>
+<tr class="row-even"><td><p><code class="docutils literal notranslate"><span class="pre">SAS</span></code> with the fixed token (hadoop-azure 3.4.1 and later)</p></td>
+<td><p>Supported</p></td>
+<td><p><code class="docutils literal notranslate"><span class="pre">fs.azure.sas.fixed.token</span></code></p></td>
+</tr>
+<tr class="row-odd"><td><p><code class="docutils literal notranslate"><span class="pre">OAuth</span></code> with <code class="docutils literal notranslate"><span class="pre">RefreshTokenBasedTokenProvider</span></code> or <code class="docutils literal notranslate"><span class="pre">UserPasswordTokenProvider</span></code></p></td>
+<td><p>Not supported</p></td>
+<td><p></p></td>
+</tr>
+<tr class="row-even"><td><p><code class="docutils literal notranslate"><span class="pre">SAS</span></code> with a <code class="docutils literal notranslate"><span class="pre">fs.azure.sas.token.provider.type</span></code> class</p></td>
+<td><p>Not supported</p></td>
+<td><p></p></td>
+</tr>
+<tr class="row-odd"><td><p><code class="docutils literal notranslate"><span class="pre">fs.azure.account.auth.type=Custom</span></code></p></td>
+<td><p>Not supported</p></td>
+<td><p></p></td>
+</tr>
+<tr class="row-even"><td><p><code class="docutils literal notranslate"><span class="pre">WorkloadIdentityTokenProvider</span></code> with a <code class="docutils literal notranslate"><span class="pre">fs.azure.account.oauth2.client.assertion.provider.type</span></code> (hadoop-azure 3.5.0 and later)</p></td>
+<td><p>Not supported</p></td>
+<td><p></p></td>
+</tr>
+<tr class="row-odd"><td><p><code class="docutils literal notranslate"><span class="pre">UserboundSASWithOAuth</span></code> (hadoop-azure 3.5.0 and later)</p></td>
+<td><p>Not supported</p></td>
+<td><p></p></td>
 </tr>
 </tbody>
 </table>
 </div>
+<p>Custom provider classes hand each token request to Java code the native scan cannot call, and the refresh token and user password flows have no <code class="docutils literal notranslate"><span class="pre">object_store</span></code> counterpart. When Hadoop selects one of these, the scan fails with an error naming the auth type and, where one is configured, the class. Configure a supported mechanism for that account, or keep the path on Spark’s own scan. Values arrive as Hadoop resolved them, trimmed and defaulted where the ABFS driver trims and defaults them, so the store sees what the driver would have used.</p>
+<p>Client credentials and Workload Identity token requests go over HTTPS only. The managed identity request goes to the IMDS endpoint over HTTP, as Hadoop’s does. For client credentials, Hadoop posts to <code class="docutils literal notranslate"><span class="pre">fs.azure.account.oauth2.client.endpoint</span></code> as given, while <code class="docutils literal notranslate"><span class="pre">object_store</span></code> posts to <code class="docutils literal notranslate"><span class="pre">&lt;authority</span> <span class="pre">host&gt;/&lt;tenant&gt;/oauth2/v2.0/token</span></code>. Comet takes the tenant from the path segment before the last <code class="docutils literal notranslate"><span class="pre">oauth2</span></code> and everything before that segment as the authority host, so a v1 <code class="docutils literal notranslate"><span class="pre">/oauth2/token</span></code> endpoint and a proxy with a path prefix both resolve. The token request path is always the v2.0 one. An <code class="docutils literal notranslate"><span class="pre">http://</span></code> endpoint fails.</p>
 </section>
-<section id="hadoop-to-object-store-key-mapping">
-<h3>Hadoop-to-object_store key mapping<a class="headerlink" href="#hadoop-to-object-store-key-mapping" title="Link to this heading">#</a></h3>
-<p>Internally, each Hadoop key is translated into a specific <code class="docutils literal notranslate"><span class="pre">AzureConfigKey</span></code> on the underlying <code class="docutils literal notranslate"><span class="pre">object_store</span></code> <code class="docutils literal notranslate"><span class="pre">MicrosoftAzureBuilder</span></code>:</p>
-<div class="pst-scrollable-table-container"><table class="table">
-<thead>
-<tr class="row-odd"><th class="head"><p>Hadoop key (account-scoped suffix omitted)</p></th>
-<th class="head"><p><code class="docutils literal notranslate"><span class="pre">AzureConfigKey</span></code></p></th>
-</tr>
-</thead>
-<tbody>
-<tr class="row-even"><td><p><code class="docutils literal notranslate"><span class="pre">fs.azure.account.key</span></code></p></td>
-<td><p><code class="docutils literal notranslate"><span class="pre">AccessKey</span></code></p></td>
-</tr>
-<tr class="row-odd"><td><p><code class="docutils literal notranslate"><span class="pre">fs.azure.account.oauth2.client.id</span></code></p></td>
-<td><p><code class="docutils literal notranslate"><span class="pre">ClientId</span></code></p></td>
-</tr>
-<tr class="row-even"><td><p><code class="docutils literal notranslate"><span class="pre">fs.azure.account.oauth2.client.secret</span></code></p></td>
-<td><p><code class="docutils literal notranslate"><span class="pre">ClientSecret</span></code></p></td>
-</tr>
-<tr class="row-odd"><td><p><code class="docutils literal notranslate"><span class="pre">fs.azure.account.oauth2.client.endpoint</span></code></p></td>
-<td><p><code class="docutils literal notranslate"><span class="pre">AuthorityId</span></code> (from URL)</p></td>
-</tr>
-<tr class="row-even"><td><p><code class="docutils literal notranslate"><span class="pre">fs.azure.account.oauth2.msi.tenant</span></code></p></td>
-<td><p><code class="docutils literal notranslate"><span class="pre">AuthorityId</span></code></p></td>
-</tr>
-<tr class="row-odd"><td><p><code class="docutils literal notranslate"><span class="pre">fs.azure.account.oauth2.msi.endpoint</span></code></p></td>
-<td><p><code class="docutils literal notranslate"><span class="pre">MsiEndpoint</span></code></p></td>
-</tr>
-<tr class="row-even"><td><p><code class="docutils literal notranslate"><span class="pre">fs.azure.account.oauth2.msi.authority</span></code></p></td>
-<td><p><code class="docutils literal notranslate"><span class="pre">AuthorityHost</span></code></p></td>
-</tr>
-<tr class="row-odd"><td><p><code class="docutils literal notranslate"><span class="pre">fs.azure.account.oauth2.token.file</span></code></p></td>
-<td><p><code class="docutils literal notranslate"><span class="pre">FederatedTokenFile</span></code></p></td>
-</tr>
-<tr class="row-even"><td><p><code class="docutils literal notranslate"><span class="pre">fs.azure.sas.&lt;container&gt;.&lt;account&gt;</span></code></p></td>
-<td><p><code class="docutils literal notranslate"><span class="pre">SasKey</span></code></p></td>
-</tr>
-</tbody>
-</table>
-</div>
-<p>Anything beyond these keys is not translated and falls through to whatever <code class="docutils literal notranslate"><span class="pre">from_env()</span></code> or the URL itself provided.</p>
 </section>
-<section id="tenant-id-resolution">
-<h3>Tenant id resolution<a class="headerlink" href="#tenant-id-resolution" title="Link to this heading">#</a></h3>
-<p><code class="docutils literal notranslate"><span class="pre">AuthorityId</span></code> (the AAD tenant id) can be supplied in two ways:</p>
-<ul class="simple">
-<li><p><strong>Directly</strong>, via <code class="docutils literal notranslate"><span class="pre">fs.azure.account.oauth2.msi.tenant</span></code>.</p></li>
-<li><p><strong>Indirectly</strong>, via <code class="docutils literal notranslate"><span class="pre">fs.azure.account.oauth2.client.endpoint</span></code>, which is a full token URL such as <code class="docutils literal notranslate"><span class="pre">https://login.microsoftonline.com/&lt;tenant&gt;/oauth2/token</span></code>. Comet extracts the tenant id from the first path segment of that URL.</p></li>
-</ul>
-<p>If both are set, the value from <code class="docutils literal notranslate"><span class="pre">msi.tenant</span></code> wins.</p>
+<section id="environment-variables">
+<h3>Environment variables<a class="headerlink" href="#environment-variables" title="Link to this heading">#</a></h3>
+<p>The <code class="docutils literal notranslate"><span class="pre">AZURE_*</span></code> variables (<code class="docutils literal notranslate"><span class="pre">AZURE_CLIENT_ID</span></code>, <code class="docutils literal notranslate"><span class="pre">AZURE_TENANT_ID</span></code>, <code class="docutils literal notranslate"><span class="pre">AZURE_FEDERATED_TOKEN_FILE</span></code>, <code class="docutils literal notranslate"><span class="pre">AZURE_STORAGE_ACCOUNT_KEY</span></code>, <code class="docutils literal notranslate"><span class="pre">AZURE_USE_AZURE_CLI</span></code>, and the others <code class="docutils literal notranslate"><span class="pre">object_store</span></code> reads) and <code class="docutils literal notranslate"><span class="pre">IDENTITY_ENDPOINT</span></code> are read only when Hadoop configures no authentication for the account at all: none of <code class="docutils literal notranslate"><span class="pre">fs.azure.account.auth.type</span></code>, <code class="docutils literal notranslate"><span class="pre">fs.azure.account.key</span></code>, <code class="docutils literal notranslate"><span class="pre">fs.azure.account.keyprovider</span></code>, <code class="docutils literal notranslate"><span class="pre">fs.azure.shellkeyprovider.script</span></code>, <code class="docutils literal notranslate"><span class="pre">fs.azure.account.oauth.provider.type</span></code>, <code class="docutils literal notranslate"><span class="pre">fs.azure.sas.token.provider.type</span></code>, <code class="docutils literal notranslate"><span class="pre">fs.azure.sas.fixed.token</span></code> or any <code class="docutils literal notranslate"><span class="pre">fs.azure.account.oauth2.*</span></code> key resolves for it. That case is what lets AKS Workload Identity work with no Hadoop configuration for tables whose files Spark does not list through Hadoop, such as Iceberg tables. A plain Parquet path still needs Hadoop configured for Spark’s own listing.</p>
+<p>Once Hadoop names anything, only the resolved values reach the store. A resolution error (a missing mandatory key, an invalid account key, an unknown provider class) fails the scan with Hadoop’s exception. Messages that could quote a credential, such as the key provider’s, are kept in the Spark driver log and the scan error names the exception class. The environment is never a fallback. One read happens inside <code class="docutils literal notranslate"><span class="pre">object_store</span></code> rather than Comet: under a resolved managed identity, its IMDS provider picks up <code class="docutils literal notranslate"><span class="pre">IDENTITY_HEADER</span></code> when it fetches a token.</p>
 </section>
-<section id="account-scoped-key-lookup-order">
-<h3>Account-scoped key lookup order<a class="headerlink" href="#account-scoped-key-lookup-order" title="Link to this heading">#</a></h3>
-<p>Account-scoped keys take precedence over global ones, mirroring Hadoop ABFS’s own precedence. For each Hadoop key above, Comet probes the following names in order and uses the first match:</p>
-<ol class="arabic simple">
-<li><p><code class="docutils literal notranslate"><span class="pre">&lt;key&gt;.&lt;account&gt;.dfs.core.windows.net</span></code></p></li>
-<li><p><code class="docutils literal notranslate"><span class="pre">&lt;key&gt;.&lt;account&gt;.blob.core.windows.net</span></code></p></li>
-<li><p><code class="docutils literal notranslate"><span class="pre">&lt;key&gt;.&lt;account&gt;</span></code></p></li>
-<li><p><code class="docutils literal notranslate"><span class="pre">&lt;key&gt;</span></code> (unscoped / global)</p></li>
-</ol>
-<p>The SAS namespace follows the same shape with the container inlined into the key name: <code class="docutils literal notranslate"><span class="pre">fs.azure.sas.&lt;container&gt;.&lt;account&gt;.dfs.core.windows.net</span></code>, then <code class="docutils literal notranslate"><span class="pre">fs.azure.sas.&lt;container&gt;.&lt;account&gt;.blob.core.windows.net</span></code>, then <code class="docutils literal notranslate"><span class="pre">fs.azure.sas.&lt;container&gt;.&lt;account&gt;</span></code>.</p>
-<p>The Hadoop values, when present, override anything already picked up from the <code class="docutils literal notranslate"><span class="pre">AZURE_*</span></code> environment.</p>
+<section id="credentials-in-transit">
+<h3>Credentials in transit<a class="headerlink" href="#credentials-in-transit" title="Link to this heading">#</a></h3>
+<p>The resolved values travel in the native plan from the driver to the executors, as the static <code class="docutils literal notranslate"><span class="pre">fs.s3a.access.key</span></code> and <code class="docutils literal notranslate"><span class="pre">fs.s3a.secret.key</span></code> values of an S3 configuration do. Spark’s RPC channel is plaintext by default. <code class="docutils literal notranslate"><span class="pre">spark.network.crypto.enabled</span></code> or <code class="docutils literal notranslate"><span class="pre">spark.ssl.rpc.enabled</span></code> protects it. See <a class="reference internal" href="s3-credential-providers.html#wire-encryption"><span class="std std-ref">Wire encryption</span></a>.</p>
 </section>
 <section id="id3">
 <h3>Examples<a class="headerlink" href="#id3" title="Link to this heading">#</a></h3>
@@ -1362,40 +1341,58 @@ As with S3, standard Hadoop ABFS configurations (the <code class="docutils liter
 </pre></div>
 </div>
 <p><strong>Example 2: Workload Identity (AKS)</strong></p>
-<p>In an AKS pod with Workload Identity enabled, the <code class="docutils literal notranslate"><span class="pre">AZURE_*</span></code> environment variables injected by the webhook are picked up automatically, so no Comet-specific configuration is required. To set the values explicitly instead:</p>
+<p>In an AKS pod with Workload Identity enabled and no <code class="docutils literal notranslate"><span class="pre">fs.azure.*</span></code> authentication configured, the <code class="docutils literal notranslate"><span class="pre">AZURE_*</span></code> variables the webhook injects are picked up, so nothing Comet-specific is needed. To configure it through Hadoop instead (hadoop-azure 3.4.1 and later):</p>
 <div class="highlight-shell notranslate"><div class="highlight"><pre><span></span><span class="nv">$SPARK_HOME</span>/bin/spark-shell<span class="w"> </span><span class="se">\</span>
 ...
+--conf<span class="w"> </span>spark.hadoop.fs.azure.account.auth.type.myaccount.dfs.core.windows.net<span class="o">=</span>OAuth<span class="w"> </span><span class="se">\</span>
+--conf<span class="w"> </span>spark.hadoop.fs.azure.account.oauth.provider.type.myaccount.dfs.core.windows.net<span class="o">=</span>org.apache.hadoop.fs.azurebfs.oauth2.WorkloadIdentityTokenProvider<span class="w"> </span><span class="se">\</span>
 --conf<span class="w"> </span>spark.hadoop.fs.azure.account.oauth2.client.id.myaccount.dfs.core.windows.net<span class="o">=</span>&lt;client-id&gt;<span class="w"> </span><span class="se">\</span>
---conf<span class="w"> </span>spark.hadoop.fs.azure.account.oauth2.msi.tenant.myaccount.dfs.core.windows.net<span class="o">=</span>&lt;tenant-id&gt;<span class="w"> </span><span class="se">\</span>
---conf<span class="w"> </span>spark.hadoop.fs.azure.account.oauth2.token.file.myaccount.dfs.core.windows.net<span class="o">=</span>/var/run/secrets/azure/tokens/azure-identity-token
+--conf<span class="w"> </span>spark.hadoop.fs.azure.account.oauth2.msi.tenant.myaccount.dfs.core.windows.net<span class="o">=</span>&lt;tenant-id&gt;
 ...
 </pre></div>
 </div>
-<p><strong>Example 3: OAuth2 client credentials with tenant embedded in the endpoint URL</strong></p>
-<p>If only <code class="docutils literal notranslate"><span class="pre">fs.azure.account.oauth2.client.endpoint</span></code> is set, the tenant id is parsed from the endpoint path automatically — there is no need to set <code class="docutils literal notranslate"><span class="pre">msi.tenant</span></code> separately.</p>
+<p>The token file defaults to <code class="docutils literal notranslate"><span class="pre">/var/run/secrets/azure/tokens/azure-identity-token</span></code>, the path AKS mounts. Set <code class="docutils literal notranslate"><span class="pre">fs.azure.account.oauth2.token.file</span></code> for another location.</p>
+<p><strong>Example 3: OAuth2 client credentials</strong></p>
+<p>The tenant comes from the endpoint URL, so <code class="docutils literal notranslate"><span class="pre">fs.azure.account.oauth2.msi.tenant</span></code> is not needed:</p>
 <div class="highlight-shell notranslate"><div class="highlight"><pre><span></span><span class="nv">$SPARK_HOME</span>/bin/spark-shell<span class="w"> </span><span class="se">\</span>
 ...
+--conf<span class="w"> </span>spark.hadoop.fs.azure.account.auth.type.myaccount.dfs.core.windows.net<span class="o">=</span>OAuth<span class="w"> </span><span class="se">\</span>
+--conf<span class="w"> </span>spark.hadoop.fs.azure.account.oauth.provider.type.myaccount.dfs.core.windows.net<span class="o">=</span>org.apache.hadoop.fs.azurebfs.oauth2.ClientCredsTokenProvider<span class="w"> </span><span class="se">\</span>
 --conf<span class="w"> </span>spark.hadoop.fs.azure.account.oauth2.client.id.myaccount.dfs.core.windows.net<span class="o">=</span>&lt;client-id&gt;<span class="w"> </span><span class="se">\</span>
 --conf<span class="w"> </span>spark.hadoop.fs.azure.account.oauth2.client.secret.myaccount.dfs.core.windows.net<span class="o">=</span>&lt;client-secret&gt;<span class="w"> </span><span class="se">\</span>
 --conf<span class="w"> </span>spark.hadoop.fs.azure.account.oauth2.client.endpoint.myaccount.dfs.core.windows.net<span class="o">=</span>https://login.microsoftonline.com/&lt;tenant-id&gt;/oauth2/token
 ...
 </pre></div>
 </div>
-<p><strong>Example 4: SAS token scoped to a container</strong></p>
+<p><strong>Example 4: SAS token</strong></p>
+<p>Hadoop’s ABFS driver (3.4.1 and later) reads the fixed token under <code class="docutils literal notranslate"><span class="pre">fs.azure.account.auth.type=SAS</span></code>, and the native scan receives the same value, so one configuration serves the driver and the executors:</p>
 <div class="highlight-shell notranslate"><div class="highlight"><pre><span></span><span class="nv">$SPARK_HOME</span>/bin/spark-shell<span class="w"> </span><span class="se">\</span>
 ...
---conf<span class="w"> </span>spark.hadoop.fs.azure.sas.mycontainer.myaccount.dfs.core.windows.net<span class="o">=</span><span class="s1">'sv=2020-08-04&amp;sig=...'</span>
+--conf<span class="w"> </span>spark.hadoop.fs.azure.account.auth.type.myaccount.dfs.core.windows.net<span class="o">=</span>SAS<span class="w"> </span><span class="se">\</span>
+--conf<span class="w"> </span>spark.hadoop.fs.azure.sas.fixed.token.myaccount.dfs.core.windows.net<span class="o">=</span><span class="s1">'sv=2020-08-04&amp;sig=...'</span>
 ...
 </pre></div>
 </div>
+<p>To give one container its own token on hadoop-azure 3.4.2 and later, set <code class="docutils literal notranslate"><span class="pre">fs.azure.sas.fixed.token.mycontainer.myaccount.dfs.core.windows.net</span></code>. Hadoop reads it before the account-level key, and the native scan receives whichever one Hadoop picked. The OAuth keys take the same container-scoped form on those versions.</p>
+</section>
+<section id="changes-from-comet-1-1">
+<h3>Changes from Comet 1.1<a class="headerlink" href="#changes-from-comet-1-1" title="Link to this heading">#</a></h3>
+<p>Comet 1.1 started from the environment and overlaid the Hadoop keys it found by probing the account name under two endpoint suffixes and bare. Now Hadoop decides. What this changes:</p>
+<ul class="simple">
+<li><p>Container-scoped keys work on hadoop-azure 3.4.2 and later, as they do for Spark.</p></li>
+<li><p>Transport variables such as <code class="docutils literal notranslate"><span class="pre">AZURE_STORAGE_ENDPOINT</span></code> and <code class="docutils literal notranslate"><span class="pre">AZURE_ALLOW_HTTP</span></code> no longer apply beside a Hadoop mechanism. They are read only when Hadoop configures none.</p></li>
+<li><p>The WASB key <code class="docutils literal notranslate"><span class="pre">fs.azure.sas.&lt;container&gt;.&lt;account&gt;</span></code>, which the ABFS driver never read, is no longer read by the native scan either. Use <code class="docutils literal notranslate"><span class="pre">fs.azure.sas.fixed.token</span></code>, which the native scan now reads.</p></li>
+<li><p>A lower-case <code class="docutils literal notranslate"><span class="pre">oauth</span></code> auth type, or OAuth keys without <code class="docutils literal notranslate"><span class="pre">fs.azure.account.auth.type</span></code>, fail the way they fail for Spark. In the second case Hadoop defaults to <code class="docutils literal notranslate"><span class="pre">SharedKey</span></code> and the key provider fails. On hadoop-azure 3.4.1 and later the driver log names the missing key. 3.3.4 reports only <code class="docutils literal notranslate"><span class="pre">Failure</span> <span class="pre">to</span> <span class="pre">initialize</span> <span class="pre">configuration</span></code>.</p></li>
+<li><p>A configured mechanism the native scan cannot build fails with an error instead of silently reading the environment.</p></li>
+</ul>
 </section>
 <section id="id4">
 <h3>Limitations<a class="headerlink" href="#id4" title="Link to this heading">#</a></h3>
 <ol class="arabic simple">
-<li><p><strong>Partial Hadoop ABFS configuration support</strong>: Only the <code class="docutils literal notranslate"><span class="pre">fs.azure.*</span></code> keys listed above are translated and applied to the underlying <code class="docutils literal notranslate"><span class="pre">object_store</span></code> crate.</p></li>
+<li><p><strong>Authentication keys only</strong>: Only the keys in the table above reach the native store. Other <code class="docutils literal notranslate"><span class="pre">fs.azure.*</span></code> settings (read-ahead, retries, HTTP tuning) do not apply to the native scan.</p></li>
 <li><p><strong>Supported schemes</strong>: Only <code class="docutils literal notranslate"><span class="pre">abfs</span></code> and <code class="docutils literal notranslate"><span class="pre">abfss</span></code> are routed to the native Azure store. <code class="docutils literal notranslate"><span class="pre">wasb[s]</span></code>, <code class="docutils literal notranslate"><span class="pre">az</span></code>, <code class="docutils literal notranslate"><span class="pre">azure</span></code>, and <code class="docutils literal notranslate"><span class="pre">adl</span></code> are not supported. <code class="docutils literal notranslate"><span class="pre">wasb[s]</span></code> is not recognised by <code class="docutils literal notranslate"><span class="pre">object_store</span></code> at all; <code class="docutils literal notranslate"><span class="pre">az</span></code>, <code class="docutils literal notranslate"><span class="pre">azure</span></code>, and <code class="docutils literal notranslate"><span class="pre">adl</span></code> are recognised by <code class="docutils literal notranslate"><span class="pre">object_store</span></code> but treat the URL host as the <em>container</em> rather than the <em>account</em>, which is incompatible with Hadoop’s account-scoped configuration keys.</p></li>
 <li><p><strong>URL shape</strong>: URLs must include the account in the host, i.e. <code class="docutils literal notranslate"><span class="pre">abfss://&lt;container&gt;&#64;&lt;account&gt;.dfs.core.windows.net/&lt;path&gt;</span></code>. Bare <code class="docutils literal notranslate"><span class="pre">abfs://&lt;container&gt;/&lt;path&gt;</span></code> (fsspec-style, no account in the URL) is not supported because Comet cannot resolve the storage account name.</p></li>
-<li><p><strong>Endpoint suffixes for account-scoped lookup</strong>: Comet probes for account-scoped keys under <code class="docutils literal notranslate"><span class="pre">dfs.core.windows.net</span></code> and <code class="docutils literal notranslate"><span class="pre">blob.core.windows.net</span></code>. Custom or sovereign-cloud endpoint suffixes (e.g. <code class="docutils literal notranslate"><span class="pre">dfs.core.chinacloudapi.cn</span></code>, Fabric endpoints) are not probed; use the unscoped <code class="docutils literal notranslate"><span class="pre">&lt;key&gt;.&lt;account&gt;</span></code> form for those.</p></li>
+<li><p><strong>Endpoint hosts</strong>: <code class="docutils literal notranslate"><span class="pre">object_store</span></code> builds an Azure store only for hosts under <code class="docutils literal notranslate"><span class="pre">dfs.core.windows.net</span></code>, <code class="docutils literal notranslate"><span class="pre">blob.core.windows.net</span></code>, <code class="docutils literal notranslate"><span class="pre">dfs.fabric.microsoft.com</span></code> and <code class="docutils literal notranslate"><span class="pre">blob.fabric.microsoft.com</span></code>. Sovereign-cloud endpoints such as <code class="docutils literal notranslate"><span class="pre">dfs.core.chinacloudapi.cn</span></code> are not supported, whatever keys are configured for them.</p></li>
 </ol>
 </section>
 </section>
@@ -1478,11 +1475,14 @@ As with S3, standard Hadoop ABFS configurations (the <code class="docutils liter
 </li>
 <li class="toc-h2 nav-item toc-entry"><a class="reference internal nav-link" href="#azure">Azure</a><ul class="nav section-nav flex-column">
 <li class="toc-h3 nav-item toc-entry"><a class="reference internal nav-link" href="#id2">Root CA Certificates</a></li>
-<li class="toc-h3 nav-item toc-entry"><a class="reference internal nav-link" href="#supported-authentication">Supported Authentication</a></li>
-<li class="toc-h3 nav-item toc-entry"><a class="reference internal nav-link" href="#hadoop-to-object-store-key-mapping">Hadoop-to-object_store key mapping</a></li>
-<li class="toc-h3 nav-item toc-entry"><a class="reference internal nav-link" href="#tenant-id-resolution">Tenant id resolution</a></li>
-<li class="toc-h3 nav-item toc-entry"><a class="reference internal nav-link" href="#account-scoped-key-lookup-order">Account-scoped key lookup order</a></li>
+<li class="toc-h3 nav-item toc-entry"><a class="reference internal nav-link" href="#authentication-is-resolved-by-hadoop">Authentication is resolved by Hadoop</a><ul class="nav section-nav flex-column">
+<li class="toc-h4 nav-item toc-entry"><a class="reference internal nav-link" href="#mechanisms">Mechanisms</a></li>
+</ul>
+</li>
+<li class="toc-h3 nav-item toc-entry"><a class="reference internal nav-link" href="#environment-variables">Environment variables</a></li>
+<li class="toc-h3 nav-item toc-entry"><a class="reference internal nav-link" href="#credentials-in-transit">Credentials in transit</a></li>
 <li class="toc-h3 nav-item toc-entry"><a class="reference internal nav-link" href="#id3">Examples</a></li>
+<li class="toc-h3 nav-item toc-entry"><a class="reference internal nav-link" href="#changes-from-comet-1-1">Changes from Comet 1.1</a></li>
 <li class="toc-h3 nav-item toc-entry"><a class="reference internal nav-link" href="#id4">Limitations</a></li>
 </ul>
 </li>
