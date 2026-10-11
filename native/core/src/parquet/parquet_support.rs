@@ -87,8 +87,6 @@ pub struct SparkParquetOptions {
     /// session local timezone by an analyzer in Spark.
     // TODO we should change timezone to Tz to avoid repeated parsing
     pub timezone: String,
-    /// Allow casts that are supported but not guaranteed to be 100% compatible
-    pub allow_incompat: bool,
     /// Support casting unsigned ints to signed ints (used by Parquet SchemaAdapter)
     pub allow_cast_unsigned_ints: bool,
     /// Whether to read dates/timestamps that were written in the legacy hybrid Julian + Gregorian calendar as it is. If false, throw exceptions instead. If the spark type is TimestampNTZ, this should be true.
@@ -121,11 +119,10 @@ pub struct SparkParquetOptions {
 }
 
 impl SparkParquetOptions {
-    pub fn new(eval_mode: EvalMode, timezone: &str, allow_incompat: bool) -> Self {
+    pub fn new(eval_mode: EvalMode, timezone: &str) -> Self {
         Self {
             eval_mode,
             timezone: timezone.to_string(),
-            allow_incompat,
             allow_cast_unsigned_ints: false,
             use_legacy_date_timestamp_or_ntz: false,
             case_sensitive: false,
@@ -137,11 +134,10 @@ impl SparkParquetOptions {
         }
     }
 
-    pub fn new_without_timezone(eval_mode: EvalMode, allow_incompat: bool) -> Self {
+    pub fn new_without_timezone(eval_mode: EvalMode) -> Self {
         Self {
             eval_mode,
             timezone: "".to_string(),
-            allow_incompat,
             allow_cast_unsigned_ints: false,
             use_legacy_date_timestamp_or_ntz: false,
             case_sensitive: false,
@@ -1405,7 +1401,7 @@ mod tests {
         let err = spark_parquet_convert(
             ColumnarValue::Array(Arc::new(array)),
             &to_type,
-            &SparkParquetOptions::new(EvalMode::Legacy, "UTC", false),
+            &SparkParquetOptions::new(EvalMode::Legacy, "UTC"),
         )
         .expect_err("array<int> -> int must be an error");
         assert!(
@@ -1513,7 +1509,7 @@ mod tests {
         use datafusion_comet_spark_expr::EvalMode;
         use std::sync::Arc;
 
-        let options = SparkParquetOptions::new(EvalMode::Legacy, "UTC", false);
+        let options = SparkParquetOptions::new(EvalMode::Legacy, "UTC");
         let overflow_millis = 9_223_372_036_854_776_i64;
         let millis: ArrayRef = Arc::new(TimestampMillisecondArray::from(vec![
             Some(overflow_millis),
@@ -1633,7 +1629,7 @@ mod tests {
         ));
         let target = DataType::Struct(target_fields.into());
         let input: ArrayRef = Arc::new(input);
-        let options = SparkParquetOptions::new(EvalMode::Legacy, "UTC", false);
+        let options = SparkParquetOptions::new(EvalMode::Legacy, "UTC");
         let output = parquet_convert_array(Arc::clone(&input), &target, &options).unwrap();
         assert_eq!(output.data_type(), &target);
         assert!(output.is_null(0));
@@ -1682,7 +1678,7 @@ mod tests {
 
         for timezone in [None::<Arc<str>>, Some(Arc::from("UTC"))] {
             for overflow in [i64::MAX, i64::MIN] {
-                let options = SparkParquetOptions::new(EvalMode::Legacy, "UTC", false);
+                let options = SparkParquetOptions::new(EvalMode::Legacy, "UTC");
                 let millis: ArrayRef = Arc::new(
                     TimestampMillisecondArray::from(vec![overflow, 7, overflow])
                         .with_timezone_opt(timezone.clone()),
@@ -1822,7 +1818,7 @@ mod tests {
         use datafusion_comet_spark_expr::EvalMode;
         use std::sync::Arc;
 
-        let options = SparkParquetOptions::new(EvalMode::Legacy, "UTC", false);
+        let options = SparkParquetOptions::new(EvalMode::Legacy, "UTC");
         for timezone in [None::<Arc<str>>, Some(Arc::from("UTC"))] {
             for overflow in [i64::MIN, i64::MAX] {
                 let values: ArrayRef = Arc::new(
@@ -1918,7 +1914,7 @@ mod tests {
         use datafusion_comet_spark_expr::EvalMode;
         use std::sync::Arc;
 
-        let options = SparkParquetOptions::new(EvalMode::Legacy, "UTC", false);
+        let options = SparkParquetOptions::new(EvalMode::Legacy, "UTC");
         let values: ArrayRef = Arc::new(TimestampMillisecondArray::from(vec![
             i64::MAX,
             7,
@@ -2125,7 +2121,7 @@ mod tests {
         ));
         let to_type = struct_type_with_field_id(vec![("f", DataType::Int32, 1)]);
 
-        let mut opts = SparkParquetOptions::new(EvalMode::Legacy, "UTC", false);
+        let mut opts = SparkParquetOptions::new(EvalMode::Legacy, "UTC");
         opts.use_field_id = true;
 
         let err = parquet_convert_array(from, &to_type, &opts).unwrap_err();
@@ -2165,7 +2161,7 @@ mod tests {
         ));
         let to_type = struct_type_with_field_id(vec![("f", DataType::Int32, 2)]);
 
-        let mut opts = SparkParquetOptions::new(EvalMode::Legacy, "UTC", false);
+        let mut opts = SparkParquetOptions::new(EvalMode::Legacy, "UTC");
         opts.use_field_id = true;
 
         let result = parquet_convert_array(from, &to_type, &opts).unwrap();

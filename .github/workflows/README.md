@@ -499,6 +499,13 @@ before any test has started. Once `Required Checks` is a required context
 which is why plain network flakes are worth retrying rather than re-running
 the whole pipeline by hand.
 
+**Source license check.** `preflight` creates an unsigned source tarball from
+the checked-out commit and runs the same RAT script and exclusion list used to
+create a release candidate. `dev/release/create-source-tarball.sh` is shared by
+CI and `create-tarball.sh`, so CI checks the files that will actually ship
+rather than maintaining a separate Maven RAT configuration. `make rat` runs
+the same check locally against `HEAD`.
+
 **Maven wrapper bootstrap.** `./mvnw` downloads the Maven distribution itself on
 a cold runner, and a blip from `repo.maven.apache.org` fails the job before
 anything is compiled. `./.github/actions/maven-bootstrap` caches that
@@ -510,10 +517,9 @@ bootstrap, never compilation or test execution.
 `./.github/actions/setup-builder` and `./.github/actions/setup-macos-builder`
 run it as their last step, once the JDK is on PATH, so every job that goes
 through either of them is covered without a step of its own; that includes
-the `java-test`, `rust-test` and `setup-spark-builder` callers. `preflight` in
-`ci.yml` uses no setup action and calls it directly before the RAT check. A
-new job that runs `./mvnw` without going through a setup action needs the
-step before its first Maven use.
+the `java-test`, `rust-test` and `setup-spark-builder` callers. A new job that
+runs `./mvnw` without going through a setup action needs the step before its
+first Maven use.
 
 ## Merge queue
 

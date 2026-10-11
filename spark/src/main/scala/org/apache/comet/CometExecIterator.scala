@@ -26,6 +26,7 @@ import java.util.concurrent.atomic.AtomicBoolean
 
 import scala.util.control.NonFatal
 
+import org.apache.arrow.c.ArrowArrayStream
 import org.apache.arrow.memory.BufferAllocator
 import org.apache.hadoop.conf.Configuration
 import org.apache.spark._
@@ -33,6 +34,7 @@ import org.apache.spark.broadcast.Broadcast
 import org.apache.spark.internal.Logging
 import org.apache.spark.network.util.ByteUnit
 import org.apache.spark.sql.comet.CometMetricNode
+import org.apache.spark.sql.comet.execution.arrow.CometArrowStream
 import org.apache.spark.sql.internal.SQLConf
 import org.apache.spark.sql.vectorized._
 import org.apache.spark.util.SerializableConfiguration
@@ -43,6 +45,7 @@ import org.apache.comet.exceptions.CometQueryExecutionException
 import org.apache.comet.parquet.CometFileKeyUnwrapper
 import org.apache.comet.serde.Config.ConfigMap
 import org.apache.comet.shuffle.ShufflePartitionPusher
+import org.apache.comet.udf.CometUdfBridge
 import org.apache.comet.vector.NativeUtil
 
 /**
@@ -224,6 +227,17 @@ class CometExecIterator(
 
   CometExecIterator.startMemoryUsageLog()
 
+  /**
+   * Matches any throwable once a JVM input of this plan has failed, and extracts what that input
+   * threw. Native saw only its text. See `CometArrowStream.inputFailure`.
+   */
+  private object InputFailure {
+    def unapply(nativeFailure: Throwable): Option[Throwable] =
+      inputObjects.iterator
+        .collect { case stream: ArrowArrayStream => CometArrowStream.inputFailure(stream) }
+        .collectFirst { case Some(failure) => failure }
+  }
+
   private def getNextBatch: Option[ColumnarBatch] = {
     assert(partitionIndex >= 0 && partitionIndex < numParts)
 
@@ -246,6 +260,10 @@ class CometExecIterator(
 
       result
     } catch {
+      // Native saw only the text of what a JVM input threw, so rethrow the exception itself.
+      case InputFailure(failure) =>
+        throw failure
+
       // Handle CometQueryExecutionException with JSON payload first
       case e: CometQueryExecutionException =>
         logError(s"Native execution for task $taskAttemptId failed", e)
@@ -338,6 +356,10 @@ class CometExecIterator(
       // execution context frees this plan's task-shared memory pool reference and several JNI
       // global refs.
       attempt(nativeLib.releasePlan(plan))
+
+      // Drops what the task's JVM UDFs keep for this plan, such as its dispatched kernels. `id` is
+      // the plan id the native plan passed them.
+      attempt(CometUdfBridge.releasePlan(taskAttemptId, id))
 
       // Run the diagnostics even when teardown failed: a failed teardown is exactly when the
       // non-zero memory usage warning below is most informative.
@@ -853,6 +875,7 @@ object CometExecIterator extends Logging {
       CometConf.COMET_DEBUG_ENABLED,
       CometConf.COMET_DEBUG_MEMORY_ENABLED,
       CometConf.COMET_EXEC_AGGREGATE_SKIP_PARTIAL_ENABLED,
+      CometConf.COMET_EXEC_SPILL_COMPRESSION_CODEC,
       CometConf.COMET_EXPLAIN_NATIVE_ENABLED,
       CometConf.COMET_MAX_TEMP_DIRECTORY_SIZE,
       CometConf.COMET_PARQUET_ROW_FILTER_PUSHDOWN_ENABLED,
