@@ -28,13 +28,14 @@ import org.apache.spark.{SparkConf, SparkEnv, TaskContext}
 import org.apache.spark.sql.{CometTestBase, Row}
 import org.apache.spark.sql.api.java.UDF1
 import org.apache.spark.sql.catalyst.InternalRow
-import org.apache.spark.sql.catalyst.expressions.{Add, Alias, ApplyFunctionExpression, AttributeReference, AttributeSeq, BindReferences, BoundReference, Cast, CreateArray, CreateMap, CreateNamedStruct, Expression, GenericInternalRow, Hypot, If, IsNull, LessThan, Literal, MapConcat, Or, Rand, ScalaUDF}
+import org.apache.spark.sql.catalyst.expressions.{Add, Alias, ApplyFunctionExpression, AttributeReference, AttributeSeq, BindReferences, BoundReference, Cast, CreateArray, CreateMap, CreateNamedStruct, Expression, GenericInternalRow, GetStructField, Hypot, If, IsNull, LessThan, Literal, MapConcat, Or, Rand, ScalarSubquery => LogicalScalarSubquery, ScalaUDF}
 import org.apache.spark.sql.catalyst.expressions.aggregate.{Final, Partial}
 import org.apache.spark.sql.catalyst.expressions.objects.{Invoke, StaticInvoke}
 import org.apache.spark.sql.catalyst.util.GenericArrayData
 import org.apache.spark.sql.comet.{CometFilterExec, CometHashAggregateExec, CometProjectExec}
 import org.apache.spark.sql.connector.catalog.{Identifier, InMemoryCatalog}
 import org.apache.spark.sql.connector.catalog.functions.{BoundFunction, ScalarFunction, UnboundFunction}
+import org.apache.spark.sql.execution.ProjectExec
 import org.apache.spark.sql.execution.adaptive.AdaptiveSparkPlanHelper
 import org.apache.spark.sql.internal.SQLConf
 import org.apache.spark.sql.types._
@@ -1867,14 +1868,8 @@ class CometCodegenSuite
   }
 
   test("ScalaUDF composed with reused scalar subquery across projection and filter") {
-    // The same scalar subquery appears in two sites: the projection (which the dispatcher
-    // compiles into a fused kernel) and the filter (a separate operator). Each site holds its
-    // own `ScalarSubquery` expression instance with its own `@volatile result` field. Each
-    // surrounding operator's inherited `SparkPlan.waitForSubqueries` populates its instance's
-    // `result` before the dispatcher's bridge serializes the expression. The populated value
-    // travels through closure serialization into the cache key's bytes, so different subquery
-    // values compile distinct kernels. Exercises the full subquery-correctness invariant
-    // documented on `CometBatchKernelCodegen.canHandle`.
+    // The subquery remains outside each dispatched UDF tree, so Comet's native subquery path
+    // can evaluate it alongside the dispatched UDFs in both the projection and the filter.
     spark.udf.register("addOne", (i: Int) => i + 1)
     withTable("t", "t2") {
       sql("CREATE TABLE t (x INT) USING parquet")
@@ -1884,6 +1879,51 @@ class CometCodegenSuite
       checkSparkAnswerAndOperator(
         sql("SELECT addOne(x) + (SELECT max(v) FROM t2) AS r " +
           "FROM t WHERE addOne(x) < (SELECT max(v) FROM t2) * 2"))
+    }
+  }
+
+  for (reuseEnabled <- Seq(false, true)) {
+    test(s"ScalaUDF with scalar subquery arguments falls back (subquery reuse=$reuseEnabled)") {
+      spark.udf.register("plus1", (i: Int) => i + 1)
+      withTable("t") {
+        sql("CREATE TABLE t (a INT) USING parquet")
+        sql("INSERT INTO t VALUES (1), (2), (3), (4), (5)")
+        withSQLConf(
+          SQLConf.ADAPTIVE_EXECUTION_ENABLED.key -> "false",
+          SQLConf.SUBQUERY_REUSE_ENABLED.key -> reuseEnabled.toString) {
+          // With reuse enabled, Spark merges the aggregates into one struct-valued subquery
+          // and extracts its fields inside the primitive UDF arguments.
+          val df = sql(
+            "SELECT plus1((SELECT max(a) FROM t)), " +
+              "plus1((SELECT min(a) FROM t)) FROM t")
+          val mergedFields = df.queryExecution.optimizedPlan.collect { case p =>
+            p.expressions.flatMap(_.collect {
+              case g @ GetStructField(s: LogicalScalarSubquery, _, _)
+                  if s.dataType.isInstanceOf[StructType] =>
+                g
+            })
+          }.flatten
+          if (reuseEnabled) {
+            assert(mergedFields.map(_.ordinal).toSet == Set(0, 1))
+            assert(mergedFields.forall(_.child.dataType.asInstanceOf[StructType].length == 2))
+          } else {
+            assert(mergedFields.isEmpty)
+          }
+
+          CometScalaUDFCodegen.resetStats()
+          val (_, cometPlan) = checkSparkAnswerAndFallbackReason(
+            df,
+            "codegen dispatch: expression ScalarSubquery not supported")
+          assert(stripAQEPlan(cometPlan).exists {
+            case p: ProjectExec => p.projectList.exists(_.exists(_.isInstanceOf[ScalaUDF]))
+            case _ => false
+          })
+          val after = CometScalaUDFCodegen.stats()
+          assert(
+            after.compileCount == 0 && after.cacheHitCount == 0,
+            s"expected scalar subquery arguments to bypass the dispatcher, got $after")
+        }
+      }
     }
   }
 

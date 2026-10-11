@@ -20,9 +20,7 @@ use arrow::array::{Array, ArrayRef, Decimal128Array, Int32Array, TimestampMicros
 use arrow::compute::{date_part, DatePart};
 use arrow::datatypes::{DataType, Int32Type, TimeUnit::Microsecond};
 use datafusion::common::cast::as_time64_nanosecond_array;
-use datafusion::common::{
-    internal_datafusion_err, utils::take_function_args, DataFusionError, Result, ScalarValue,
-};
+use datafusion::common::{internal_datafusion_err, utils::take_function_args, Result, ScalarValue};
 use datafusion::logical_expr::{
     ColumnarValue, ScalarFunctionArgs, ScalarUDFImpl, Signature, Volatility,
 };
@@ -131,30 +129,29 @@ macro_rules! extract_date_part {
                 &self,
                 args: ScalarFunctionArgs,
             ) -> datafusion::common::Result<ColumnarValue> {
-                let args: [ColumnarValue; 1] = args.args.try_into().map_err(|_| {
+                let [arg]: [ColumnarValue; 1] = args.args.try_into().map_err(|_| {
                     internal_datafusion_err!(concat!($fn_name, " expects exactly one argument"))
                 })?;
-
-                match args {
-                    [ColumnarValue::Array(array)] => {
+                let is_scalar = matches!(arg, ColumnarValue::Scalar(_));
+                let array = arg.into_array(1)?;
+                let result: ArrayRef =
+                    if let Some(micros) = micros_without_offset(&array, &self.timezone) {
                         // Fast path: when no offset applies the field is arithmetic on the stored
                         // microseconds, so no calendar datetime is built per row. `unary` carries
                         // the null buffer over untouched.
-                        if let Some(micros) = micros_without_offset(&array, &self.timezone) {
-                            // `unary` evaluates every slot and vectorizes; `unary_opt` visits
-                            // only valid indices but costs more per element. The `date_part`
-                            // path this replaces uses `unary_opt`, so an almost entirely null
-                            // batch was nearly free there. Skipping only pays off once most of
-                            // the batch is null, so switch on density rather than on the mere
-                            // presence of a null.
-                            let result: Int32Array = if micros.null_count() * 2 <= micros.len() {
-                                micros.unary::<_, Int32Type>($kernel)
-                            } else {
-                                micros.unary_opt::<_, Int32Type>(|v| Some($kernel(v)))
-                            };
-                            return Ok(ColumnarValue::Array(Arc::new(result)));
-                        }
-
+                        // `unary` evaluates every slot and vectorizes; `unary_opt` visits
+                        // only valid indices but costs more per element. The `date_part`
+                        // path this replaces uses `unary_opt`, so an almost entirely null
+                        // batch was nearly free there. Skipping only pays off once most of
+                        // the batch is null, so switch on density rather than on the mere
+                        // presence of a null.
+                        let result: Int32Array = if micros.null_count() * 2 <= micros.len() {
+                            micros.unary::<_, Int32Type>($kernel)
+                        } else {
+                            micros.unary_opt::<_, Int32Type>(|v| Some($kernel(v)))
+                        };
+                        Arc::new(result)
+                    } else {
                         // TimestampNTZ values are stored as local wall-clock time, so the date
                         // part is extracted directly. Timezone-aware timestamps are stored in UTC
                         // and must be shifted to the session timezone first.
@@ -170,12 +167,14 @@ macro_rules! extract_date_part {
                                 )),
                             )?
                         };
-                        let result = date_part(&array, DatePart::$date_part_variant)?;
-                        Ok(ColumnarValue::Array(result))
-                    }
-                    _ => Err(DataFusionError::Execution(
-                        concat!($fn_name, "(scalar) should be fold in Spark JVM side.").to_string(),
-                    )),
+                        date_part(&array, DatePart::$date_part_variant)?
+                    };
+                if is_scalar {
+                    Ok(ColumnarValue::Scalar(ScalarValue::try_from_array(
+                        &result, 0,
+                    )?))
+                } else {
+                    Ok(ColumnarValue::Array(result))
                 }
             }
 
@@ -332,6 +331,56 @@ mod tests {
         match udf.invoke_with_args(args).unwrap() {
             ColumnarValue::Array(arr) => arr.as_any().downcast_ref::<Int32Array>().unwrap().clone(),
             _ => panic!("Expected array"),
+        }
+    }
+
+    #[test]
+    fn scalar_timestamp_fields_respect_timezone_and_preserve_nulls() {
+        for (session_timezone, input_timezone, micros, expected) in [
+            ("UTC", Some("UTC"), Some(MICROS), [18, 30, 45]),
+            (
+                "America/Los_Angeles",
+                Some("UTC"),
+                Some(MICROS),
+                [10, 30, 45],
+            ),
+            ("+05:30", Some("UTC"), Some(MICROS), [0, 0, 45]),
+            ("UTC", None, Some(MICROS), [18, 30, 45]),
+            ("America/Los_Angeles", None, Some(MICROS), [18, 30, 45]),
+            ("UTC", Some("UTC"), Some(-1), [23, 59, 59]),
+            ("America/Los_Angeles", Some("UTC"), Some(-1), [15, 59, 59]),
+            ("America/Los_Angeles", None, Some(-1), [23, 59, 59]),
+            ("UTC", Some("UTC"), None, [0, 0, 0]),
+            ("America/Los_Angeles", Some("UTC"), None, [0, 0, 0]),
+            ("America/Los_Angeles", None, None, [0, 0, 0]),
+        ] {
+            let input = ScalarValue::TimestampMicrosecond(micros, input_timezone.map(Into::into));
+            let udfs: [Box<dyn ScalarUDFImpl>; 3] = [
+                Box::new(SparkHour::new(session_timezone.to_string())),
+                Box::new(SparkMinute::new(session_timezone.to_string())),
+                Box::new(SparkSecond::new(session_timezone.to_string())),
+            ];
+            for (udf, expected) in udfs.into_iter().zip(expected) {
+                let result = udf
+                    .invoke_with_args(ScalarFunctionArgs {
+                        args: vec![ColumnarValue::Scalar(input.clone())],
+                        // Preserve the scalar result so the caller can broadcast it over a batch.
+                        number_rows: 3,
+                        return_field: Arc::new(Field::new("v", DataType::Int32, true)),
+                        config_options: Arc::new(ConfigOptions::default()),
+                        arg_fields: vec![],
+                    })
+                    .unwrap();
+                let ColumnarValue::Scalar(result) = result else {
+                    panic!("{} must return a scalar for scalar input", udf.name());
+                };
+                assert_eq!(
+                    result,
+                    ScalarValue::Int32(micros.map(|_| expected)),
+                    "{}({input:?}) in {session_timezone}",
+                    udf.name()
+                );
+            }
         }
     }
 

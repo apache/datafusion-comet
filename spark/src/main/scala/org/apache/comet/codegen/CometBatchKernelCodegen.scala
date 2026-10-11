@@ -145,8 +145,8 @@ object CometBatchKernelCodegen extends Logging with CometExprTraitShim with Come
    * back cleanly rather than crashing the Janino compile at execute time.
    *
    * Checks every `BoundReference`'s data type and the root `expr.dataType` against
-   * [[isSupportedDataType]], rejects aggregates / generators / `Unevaluable`, and gates total
-   * nested-field count on `spark.sql.codegen.maxFields`.
+   * [[isSupportedDataType]], rejects aggregates / generators / subqueries / `Unevaluable`, and
+   * gates total nested-field count on `spark.sql.codegen.maxFields`.
    */
   def canHandle(boundExpr: Expression): Option[String] = {
     if (!isSupportedDataType(boundExpr.dataType)) {
