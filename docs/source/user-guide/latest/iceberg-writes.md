@@ -118,6 +118,8 @@ For an unpartitioned copy-on-write `MERGE`, the native Iceberg writer is reachab
 `MergeRowsExec` breaks the fully-native child chain required by `CometIcebergWriteExec`.
 On Spark 4.1+, the native MergeRows path also preserves the semantic counters required by the
 summary-aware writer commit contract.
+Spark 4.2's insert-only MERGE can run its `MergeRowsExec` query child natively, but the outer
+`InsertOnlyMergeExec` write remains on Spark, so it does not change this native-writer limitation.
 
 For copy-on-write row-level DML, the mechanism differs by Spark version: on Spark 4.0+ the
 analyzer emits operation-coded rows that Comet's writer dispatches through `ReplaceData`'s
