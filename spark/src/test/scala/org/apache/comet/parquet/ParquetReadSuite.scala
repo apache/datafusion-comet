@@ -42,8 +42,10 @@ import org.apache.spark.sql.{CometTestBase, DataFrame, Row}
 import org.apache.spark.sql.catalyst.optimizer.{ConvertToLocalRelation, OptimizeIn}
 import org.apache.spark.sql.catalyst.util.DateTimeUtils
 import org.apache.spark.sql.comet.{CometNativeScanExec, CometScanExec}
+import org.apache.spark.sql.comet.util.Utils
 import org.apache.spark.sql.execution.adaptive.AdaptiveSparkPlanHelper
 import org.apache.spark.sql.execution.datasources.parquet.ParquetUtils
+import org.apache.spark.sql.functions.col
 import org.apache.spark.sql.internal.SQLConf
 import org.apache.spark.sql.types._
 
@@ -2594,6 +2596,114 @@ abstract class ParquetReadSuite extends CometTestBase {
           .parquet(dir.getCanonicalPath)
 
         checkSparkAnswerAndOperator(spark.read.schema(schema).parquet(dir.getCanonicalPath))
+      }
+    }
+  }
+
+  // Spark writes timestamps as INT96 by default, and the native scan's INT96 coercion rebuilds
+  // struct, list and map fields, which must keep their metadata or an id on the container is
+  // lost and the column reads as nulls. The read renames the column so only its id matches it.
+  private val int96Ts = Timestamp.valueOf("2020-01-01 00:00:00")
+  private val int96Inner = new StructType().add("a", IntegerType).add("ts", TimestampType)
+
+  Seq[(String, DataType, Any)](
+    ("struct", int96Inner, Row(1, int96Ts)),
+    ("list", ArrayType(int96Inner), Seq(Row(1, int96Ts), Row(2, int96Ts))),
+    ("map", MapType(StringType, int96Inner), Map("k" -> Row(1, int96Ts)))).foreach {
+    case (label, dataType, value) =>
+      test(s"an id on a $label column holding an INT96 timestamp matches it natively") {
+        withSQLConf(SQLConf.PARQUET_FIELD_ID_READ_ENABLED.key -> "true") {
+          withTempPath { dir =>
+            val rows = Seq(Row(value), Row(null))
+            withSQLConf(
+              CometConf.COMET_ENABLED.key -> "false",
+              SQLConf.PARQUET_OUTPUT_TIMESTAMP_TYPE.key -> "INT96") {
+              spark
+                .createDataFrame(
+                  spark.sparkContext.parallelize(rows),
+                  new StructType().add("c", dataType, true, withId(1)))
+                .write
+                .parquet(dir.getCanonicalPath)
+            }
+            val readSchema = new StructType().add("renamed", dataType, true, withId(1))
+            val df = spark.read.schema(readSchema).parquet(dir.getCanonicalPath)
+            checkSparkAnswerAndOperator(df)
+            checkAnswer(df, rows)
+          }
+        }
+      }
+  }
+
+  // Ids on a struct below a struct or a list, and on its INT96 leaf, match renamed fields.
+  // Spark's vectorized reader before 4.0 rejects the renamed struct below the list, so the
+  // comparison with Spark runs from 4.0 on and the pinned rows hold everywhere.
+  test("an id on a struct nested in a struct or list with an INT96 leaf matches it natively") {
+    def schema(innerName: String, tsName: String): StructType = {
+      def inner(innerId: Int, tsId: Int): StructType = new StructType().add(
+        innerName,
+        new StructType().add("a", IntegerType).add(tsName, TimestampType, true, withId(tsId)),
+        true,
+        withId(innerId))
+      new StructType().add("s", inner(2, 3)).add("l", ArrayType(inner(4, 5)))
+    }
+    val rows = Seq(
+      Row(Row(Row(1, int96Ts)), Seq(Row(Row(2, int96Ts)), Row(Row(3, int96Ts)))),
+      Row(Row(null), Seq(Row(Row(4, null)), null)))
+
+    withSQLConf(SQLConf.PARQUET_FIELD_ID_READ_ENABLED.key -> "true") {
+      withTempPath { dir =>
+        withSQLConf(
+          CometConf.COMET_ENABLED.key -> "false",
+          SQLConf.PARQUET_OUTPUT_TIMESTAMP_TYPE.key -> "INT96") {
+          spark
+            .createDataFrame(spark.sparkContext.parallelize(rows), schema("inner", "ts"))
+            .write
+            .parquet(dir.getCanonicalPath)
+        }
+        val df = spark.read
+          .schema(schema("renamed_inner", "renamed_ts"))
+          .parquet(dir.getCanonicalPath)
+        if (isSpark40Plus) {
+          checkSparkAnswerAndOperator(df)
+        }
+        val plan = stripAQEPlan(df.queryExecution.executedPlan)
+        assert(
+          collect(plan) { case scan: CometNativeScanExec => scan }.nonEmpty,
+          s"expected CometNativeScanExec in the plan:\n$plan")
+        checkAnswer(df, rows)
+      }
+    }
+  }
+
+  // A Variant column is a struct of value and metadata in the Arrow schema, so the same coercion
+  // rebuilds it when the file holds an INT96 column anywhere, and its id has to survive.
+  test("an id on a Variant column next to an INT96 timestamp matches it natively") {
+    assume(Utils.variantType.isDefined, "VariantType requires Spark 4.0+")
+    withSQLConf(
+      SQLConf.PARQUET_FIELD_ID_READ_ENABLED.key -> "true",
+      "spark.sql.variant.allowReadingShredded" -> "true",
+      "spark.sql.variant.pushVariantIntoScan" -> "false") {
+      withTempPath { dir =>
+        withSQLConf(
+          CometConf.COMET_ENABLED.key -> "false",
+          SQLConf.PARQUET_OUTPUT_TIMESTAMP_TYPE.key -> "INT96") {
+          spark
+            .sql("""SELECT parse_json(j) AS v, t AS ts FROM VALUES
+              |  ('{"a":1}', TIMESTAMP'2020-01-01 00:00:00'), (NULL, NULL) AS input(j, t)
+              |""".stripMargin)
+            .select(col("v").as("v", withId(1)), col("ts"))
+            .coalesce(1)
+            .write
+            .parquet(dir.getCanonicalPath)
+        }
+        val readSchema = new StructType()
+          .add("renamed", Utils.variantType.get, true, withId(1))
+          .add("ts", TimestampType)
+        val df = spark.read.schema(readSchema).parquet(dir.getCanonicalPath)
+        checkSparkAnswerAndOperator(df)
+        checkAnswer(
+          df.selectExpr("to_json(renamed)", "ts"),
+          Row("""{"a":1}""", int96Ts) :: Row(null, null) :: Nil)
       }
     }
   }
