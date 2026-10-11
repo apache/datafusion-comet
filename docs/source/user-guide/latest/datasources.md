@@ -267,8 +267,11 @@ AWS credential providers can be configured using the `fs.s3a.aws.credentials.pro
 | `com.amazonaws.auth.ContainerCredentialsProvider`<br/>`software.amazon.awssdk.auth.credentials.ContainerCredentialsProvider`<br/>`com.amazonaws.auth.EC2ContainerCredentialsProviderWrapper` | Access S3 using ECS task credentials                                                                            | None                                                                                                                            |
 | `com.amazonaws.auth.WebIdentityTokenCredentialsProvider`<br/>`software.amazon.awssdk.auth.credentials.WebIdentityTokenFileCredentialsProvider`                                               | Authenticate using web identity token file                                                                      | None                                                                                                                            |
 | `com.amazonaws.auth.profile.ProfileCredentialsProvider`<br/>`software.amazon.awssdk.auth.credentials.ProfileCredentialsProvider`                                                             | Authenticate using a named profile from the local AWS credentials file                                          | None                                                                                                                            |
+| `org.apache.hadoop.fs.s3a.auth.ProfileAWSCredentialsProvider`                                                                                                                                | Authenticate using a named profile, resolved through Hadoop's own provider (Hadoop 3.4.2 or later)              | `fs.s3a.auth.profile.name`, `fs.s3a.auth.profile.file`                                                                          |
 
 Multiple credential providers can be specified in a comma-separated list using the `fs.s3a.aws.credentials.provider` configuration, just as Hadoop AWS supports. If `fs.s3a.aws.credentials.provider` is not configured, Hadoop S3A's default credential provider chain will be used. All configuration options also support bucket-specific overrides using the pattern `fs.s3a.bucket.{bucket-name}.{option}`.
+
+When a bucket's provider list names `org.apache.hadoop.fs.s3a.auth.ProfileAWSCredentialsProvider` and no `fs.s3a.comet.credential.provider.class` is set for the bucket, Comet reads credentials through the built-in `HadoopS3ACredentialProviderAdapter`, which builds Hadoop's own provider list on the executor from the forwarded `fs.s3a.*` settings and the executor's Hadoop configuration. The profile name, the credentials file and any role profile then resolve through Hadoop's own providers on the executor. The class first shipped in Hadoop 3.4.2 (Spark 4.1), and `hadoop-aws` must be visible from Comet's class loader; see [S3 Credential Providers](s3-credential-providers.md).
 
 ### Additional S3 Configuration Options
 
@@ -282,6 +285,18 @@ Beyond credential providers, Comet's Parquet scan supports additional S3 configu
 | `fs.s3a.requester.pays.enabled` | Whether to enable requester pays for S3 requests (true/false)                                      |
 
 All configuration options support bucket-specific overrides using the pattern `fs.s3a.bucket.{bucket-name}.{option}`.
+
+`fs.s3a.path.style.access` selects how the bucket is placed in the request URL: virtual-hosted
+addressing (the default, `false`) sends requests to `https://<bucket>.<endpoint>`, while path-style
+(`true`) sends them to `https://<endpoint>/<bucket>`, which many S3-compatible services such as MinIO
+require. As the AWS SDK does, Comet addresses a request path-style whatever the flag says when the
+endpoint's host is an IP address, or when the bucket name is not a valid hostname label, such as a
+legacy mixed-case name. A valid label is 3 to 63 lowercase letters, digits and hyphens that start
+and end with a letter or digit. Over plain HTTP a name may also contain dots, but over HTTPS a
+dotted name is addressed path-style, since the dotted host falls outside S3's wildcard certificate.
+Earlier Comet releases addressed every custom `fs.s3a.endpoint` path-style whatever the flag said,
+so a MinIO or Ceph RGW deployment that never set the flag now sends requests to `<bucket>.<host>`
+and fails with a DNS error; set `fs.s3a.path.style.access=true` to keep the previous behavior.
 
 ### S3-Compliant Filesystem Schemes
 

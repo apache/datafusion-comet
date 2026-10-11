@@ -87,6 +87,31 @@ setting when the application:
 
 An application that sets `spark.sql.cache.serializer` itself keeps the serializer it chose.
 
+### S3 Request Addressing
+
+Comet's native Parquet and CSV scans now address S3 requests the way Hadoop S3A does (native
+Iceberg reads go through iceberg-rust's FileIO and are unchanged). With `fs.s3a.path.style.access`
+unset or `false` they use virtual-hosted addressing (`<bucket>.<host>`), and with `true` they use
+path-style addressing (`<host>/<bucket>`). Comet `1.1.0` and earlier addressed every custom
+`fs.s3a.endpoint` path-style whatever the setting said, and applied the setting the wrong way round
+when no endpoint was set.
+
+With a custom endpoint and the setting unset or `false`, a read of `s3a://bucket/key` through
+`fs.s3a.endpoint=http://minio.internal:9000` now goes to `http://bucket.minio.internal:9000/key`
+instead of `http://minio.internal:9000/bucket/key`. A MinIO or Ceph RGW deployment whose DNS does
+not resolve the bucket host fails with a DNS error. Set `fs.s3a.path.style.access=true` to keep the
+old addressing.
+
+Reads with no custom endpoint change too. With only `spark.hadoop.fs.s3a.endpoint.region=us-east-1`
+set, a read of `s3a://my-bucket/key` moves from `https://s3.us-east-1.amazonaws.com/my-bucket/key`
+to `https://my-bucket.s3.us-east-1.amazonaws.com/key`. With `fs.s3a.path.style.access=true` and no
+endpoint it moves the other way, from virtual-hosted to path-style. Both match Hadoop S3A's
+addressing, but a proxy or egress rule that matches on host names will see the new hosts.
+
+Comet still addresses a request path-style on its own when the endpoint's host is an IP address or
+the bucket name cannot be a host name. See
+[Additional S3 Configuration Options](datasources.md#additional-s3-configuration-options).
+
 ### Deprecated and Removed Settings
 
 Using `spark.comet.sparkToColumnar.enabled` and `spark.comet.sparkToColumnar.supportedOperatorList`
