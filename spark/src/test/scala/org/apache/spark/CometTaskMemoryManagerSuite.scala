@@ -20,8 +20,8 @@
 package org.apache.spark
 
 import java.util.Properties
-import java.util.concurrent.TimeUnit
-import java.util.concurrent.atomic.{AtomicInteger, AtomicLong, AtomicReference}
+import java.util.concurrent.{CountDownLatch, TimeUnit}
+import java.util.concurrent.atomic.{AtomicBoolean, AtomicInteger, AtomicLong, AtomicReference}
 
 import org.apache.logging.log4j.{Level, LogManager}
 import org.apache.logging.log4j.core.{LogEvent, LoggerContext}
@@ -74,6 +74,38 @@ class CometTaskMemoryManagerSuite extends SparkFunSuite {
       checkUsage(896L)
       manager.releaseMemory(896L)
       checkUsage(0L)
+    }
+  }
+
+  test("a release that Spark rejects leaves the usage unchanged") {
+    val memoryManager = new TestMemoryManager(new SparkConf())
+    memoryManager.limit(1024)
+    val rejectRelease = new AtomicBoolean(false)
+    val taskMemoryManager = new TaskMemoryManager(memoryManager, 0L) {
+      override def releaseExecutionMemory(size: Long, consumer: MemoryConsumer): Unit = {
+        if (rejectRelease.get) {
+          throw new IllegalStateException("release rejected")
+        }
+        super.releaseExecutionMemory(size, consumer)
+      }
+    }
+
+    withTaskContext(taskMemoryManager) { _ =>
+      val manager = new CometTaskMemoryManager(1L, 0L)
+      val consumer = nativeMemoryConsumer(manager)
+      assert(manager.acquireMemory(128L) == 128L)
+
+      rejectRelease.set(true)
+      intercept[IllegalStateException](manager.releaseMemory(64L))
+      rejectRelease.set(false)
+      // Native code gets the error and still counts every byte as held, and so must the usage.
+      assert(manager.getUsed == 128L)
+      assert(consumer.getUsed == 128L)
+      assert(taskMemoryManager.getMemoryConsumptionForThisTask == 128L)
+
+      manager.releaseMemory(128L)
+      assert(manager.getUsed == 0L)
+      assert(taskMemoryManager.getMemoryConsumptionForThisTask == 0L)
     }
   }
 
@@ -152,6 +184,78 @@ class CometTaskMemoryManagerSuite extends SparkFunSuite {
       context.updateLoggers()
     }
     appender.loggingEvents.toSeq
+  }
+
+  test("a short grant is handed back while another acquire of the task waits in Spark") {
+    // Another task holds 82 bytes and a third holds 1.
+    val memoryManager = offHeapMemoryManager()
+    val otherTask = new OffHeapConsumer(new TaskMemoryManager(memoryManager, 1L))
+    val thirdTask = new OffHeapConsumer(new TaskMemoryManager(memoryManager, 2L))
+    assert(otherTask.acquireMemory(82L) == 82L)
+    assert(thirdTask.acquireMemory(1L) == 1L)
+
+    val shortGrant = new CountDownLatch(1)
+    val secondParked = new CountDownLatch(1)
+    val taskMemoryManager = new TaskMemoryManager(memoryManager, 0L) {
+      override def acquireExecutionMemory(required: Long, consumer: MemoryConsumer): Long = {
+        val got = super.acquireExecutionMemory(required, consumer)
+        // Out of Spark's monitor, the short grant waits until the second acquire has parked.
+        if (got < required && shortGrant.getCount > 0) {
+          shortGrant.countDown()
+          secondParked.await(2 * TimeoutSeconds, TimeUnit.SECONDS)
+        }
+        got
+      }
+    }
+
+    withTaskContext(taskMemoryManager) { _ =>
+      val manager = new CometTaskMemoryManager(1L, 0L)
+      // Hold one byte so that handing back the short grant never empties the task's balance,
+      // which would drop its entry from Spark's pool under the waiting acquire.
+      assert(manager.acquireMemory(1L) == 1L)
+
+      // Three active tasks and 16 bytes free: a 30 byte request is short granted 16 bytes, which
+      // native code then hands back.
+      val first = new NativeThread(
+        "the first acquire",
+        () => {
+          val granted = manager.acquireMemory(30L)
+          manager.releaseMemory(granted)
+          granted
+        })
+      val second = new NativeThread("the second acquire", () => manager.acquireMemory(10L))
+
+      try {
+        // At DEBUG the short grant is logged, which must not wait on the task's monitor that the
+        // parked second acquire holds.
+        val messages = logEvents(Level.DEBUG) {
+          first.start()
+          assert(shortGrant.await(TimeoutSeconds, TimeUnit.SECONDS), s"no short grant: $first")
+          // The third task leaves. With two active tasks this task's minimum share is 25 bytes
+          // and 1 byte is free, so a 10 byte request waits inside Spark holding the task's
+          // monitor.
+          thirdTask.freeMemory(1L)
+          second.start()
+          awaitWaitingInSpark(second)
+          secondParked.countDown()
+
+          // Handing back the short grant is what lets the second acquire through.
+          assert(second.result(first) == 10L)
+          assert(first.result(second) == 16L)
+        }.map(_.getMessage.getFormattedMessage)
+        assert(
+          messages.exists(_.contains("requested 30 bytes but only received 16 bytes")),
+          messages.mkString("\n"))
+      } finally {
+        secondParked.countDown()
+        // Free the other task's memory so that neither thread outlives a failed test.
+        otherTask.freeMemory(otherTask.getUsed)
+        Seq(first, second).foreach(_.join())
+      }
+      manager.releaseMemory(10L)
+      manager.releaseMemory(1L)
+      assert(taskMemoryManager.getMemoryConsumptionForThisTask == 0L)
+    }
   }
 
   test("an acquire waiting in Spark survives a release that empties the task's balance") {
@@ -266,6 +370,40 @@ class CometTaskMemoryManagerSuite extends SparkFunSuite {
       .set("spark.memory.offHeap.size", "100")
       .set("spark.memory.storageFraction", "0")
     new UnifiedMemoryManager(conf, 1000L, 500L, 1)
+  }
+
+  /** Waits for `native` to park inside Spark, and stops early if its thread ends. */
+  private def awaitWaitingInSpark(native: NativeThread): Unit = {
+    val thread = native.thread
+    val deadline = System.nanoTime() + TimeUnit.SECONDS.toNanos(TimeoutSeconds)
+    while (thread.isAlive && !waitingInSpark(thread) && System.nanoTime() < deadline) {
+      Thread.sleep(10)
+    }
+    assert(waitingInSpark(thread), s"$native")
+  }
+
+  /** Runs `body` on a daemon thread, as native code would, keeping its result or failure. */
+  private class NativeThread(name: String, body: () => Long) {
+    private val value = new AtomicLong(-1L)
+    private val failure = new AtomicReference[Throwable]()
+    val thread: Thread = new Thread(() =>
+      try value.set(body())
+      catch { case t: Throwable => failure.set(t) })
+    thread.setDaemon(true)
+
+    def start(): Unit = thread.start()
+
+    def join(): Unit = thread.join(TimeUnit.SECONDS.toMillis(TimeoutSeconds))
+
+    /** Waits for `body` to return and gives its result, adding `clue` to a failure. */
+    def result(clue: => Any = ""): Long = {
+      join()
+      assert(!thread.isAlive && failure.get == null, s"$this. $clue")
+      value.get
+    }
+
+    override def toString: String =
+      Option(failure.get).fold(s"$name is ${thread.getState}")(t => s"$name failed: $t")
   }
 
   /** An off-heap consumer that never spills. */

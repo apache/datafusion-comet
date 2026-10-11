@@ -66,8 +66,9 @@ impl SparkMemoryManager for JniMemoryManager {
 /// Every byte a pool records through this type is backed either by Spark's grant or by
 /// overcommit, so Spark's grant plus `overcommit` equals the bytes recorded and not yet released.
 /// Spark is handed back more than it granted only if a release takes less from `overcommit` than
-/// it could. `CometUnifiedMemoryPool` calls in here from several threads without a lock, and
-/// updates its own `used` separately, so this rests on three things:
+/// it could. `CometUnifiedMemoryPool` and `CometFairMemoryPool` both call in here from several
+/// threads without holding a lock, and each updates its own `used` separately, so this rests on
+/// three things:
 ///
 /// - `overcommit` only grows by bytes that are being recorded in the same call.
 /// - Each repayment takes its share of `overcommit` in a single atomic update, so two concurrent
@@ -85,7 +86,8 @@ pub(super) struct SparkMemory {
 pub(super) struct Refusal {
     /// Outstanding overcommit that was asked for on top of the request.
     pub(super) overcommit: usize,
-    /// What Spark offered before it was handed back.
+    /// What Spark granted toward the request and the overcommit together, which can exceed
+    /// the request.
     pub(super) granted: usize,
 }
 
@@ -106,16 +108,36 @@ impl SparkMemory {
         self.task_attempt_id
     }
 
+    /// The Spark calls themselves, without the overcommit ledger, for a short grant a pool
+    /// hands back itself.
+    pub(super) fn manager(&self) -> &dyn SparkMemoryManager {
+        self.manager.as_ref()
+    }
+
     /// Acquires `size` bytes plus any outstanding overcommit, or nothing. A full grant repays the
     /// overcommit; a partial one is handed back and reported as a [`Refusal`].
     pub(super) fn try_acquire(&self, size: usize) -> CometResult<Result<(), Refusal>> {
+        let refusal = match self.try_acquire_leaving_a_short_grant(size)? {
+            Ok(()) => return Ok(Ok(())),
+            Err(refusal) => refusal,
+        };
+        if refusal.granted > 0 {
+            self.manager.release(refusal.granted)?;
+        }
+        Ok(Err(refusal))
+    }
+
+    /// Like [`Self::try_acquire`], except that a short grant stays with Spark, recorded nowhere,
+    /// so the caller can keep charging those bytes until it hands them back through
+    /// [`Self::manager`].
+    pub(super) fn try_acquire_leaving_a_short_grant(
+        &self,
+        size: usize,
+    ) -> CometResult<Result<(), Refusal>> {
         let debt = self.overcommit.load(Relaxed);
         let request = size.saturating_add(debt);
         let granted = granted(request, self.ask_spark(request)?);
         if granted < request {
-            if granted > 0 {
-                self.manager.release(granted)?;
-            }
             return Ok(Err(Refusal {
                 overcommit: debt,
                 granted,
