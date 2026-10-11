@@ -22,6 +22,7 @@ package org.apache.comet
 import scala.util.Random
 
 import org.apache.hadoop.fs.Path
+import org.apache.spark.SparkException
 import org.apache.spark.sql.CometTestBase
 import org.apache.spark.sql.catalyst.expressions.{ArrayAppend, ArrayDistinct, ArrayExcept, ArrayInsert, ArrayIntersect, ArrayJoin, ArrayMax, ArrayMin, ArrayRepeat, ArrayUnion}
 import org.apache.spark.sql.catalyst.expressions.{ArrayContains, ArrayRemove}
@@ -1378,12 +1379,10 @@ class CometArrayExpressionSuite extends CometTestBase with AdaptiveSparkPlanHelp
     }
   }
 
-  // The tests below deliberately live in this suite, not a `sql-tests` fixture: constant folding is
-  // enabled by default here, so each `map(...)` collapses to a MapType Literal and the outer
-  // `array(...)` reaches `CometCreateArray` with folded-Literal children, which `CometLiteral`
-  // rebuilds as an equivalent `CreateMap` of primitive literals -- the folded-literal expansion path
-  // under review. `CometSqlFileTestSuite` force-disables `ConstantFolding`, so an equivalent SQL
-  // fixture would only exercise the constructor path (which `create_array.sql` already covers).
+  // These tests exercise folded complex literals, including CometLiteral's expansion to native
+  // constructors. SQL fixtures need `-- ConstantFolding: enabled` to reach that same path.
+  // folded_array_map_literals.sql covers the mixed map/NULL array; the remaining conversions are
+  // tracked in #6628.
   test("array of folded map literals with array values (multirow)") {
     withParquetTable((0 until 3).map(i => (i, i.toLong)), "tbl") {
       checkSparkAnswerAndOperator(
@@ -1428,17 +1427,6 @@ class CometArrayExpressionSuite extends CometTestBase with AdaptiveSparkPlanHelp
     withParquetTable((0 until 3).map(i => (i, i.toLong)), "tbl") {
       checkSparkAnswerAndOperator(
         "SELECT array(map(1, CAST(NULL AS INT)), map(2, 3)) AS arr FROM tbl")
-    }
-  }
-
-  // A NULL element sits next to a populated one inside a single folded
-  // `ArrayType(MapType(IntegerType, IntegerType, false), containsNull = true)` literal. The null
-  // slot serializes as a typed null literal carrying the declared map type, so the rebuilt sibling
-  // has to report that same type for `make_array` to accept the pair.
-  test("folded array mixing a map literal and a NULL element (multirow)") {
-    withParquetTable((0 until 3).map(i => (i, i.toLong)), "tbl") {
-      checkSparkAnswerAndOperator("SELECT array(map(1, 2), NULL) AS arr FROM tbl")
-      checkSparkAnswerAndOperator("SELECT array(NULL, map(1, 2)) AS arr FROM tbl")
     }
   }
 
@@ -1707,6 +1695,27 @@ class CometArrayExpressionSuite extends CometTestBase with AdaptiveSparkPlanHelp
         // split(NULL, ...) yields a null array; arr[0] on a null array must return NULL
         // rather than failing the non-nullable schema validation in native execution.
         checkSparkAnswerAndOperator(sql("SELECT split(s, ',')[0] FROM test_split_null"))
+      }
+    }
+  }
+
+  // 8192 rows of sequence(0, 262143) put 8192 * 262144 = 2^31 elements in one batch, one past
+  // the Int.MaxValue limit of Arrow's i32 list offsets. Spark builds one array per row and
+  // completes; Comet fails the batch and points at spark.comet.batchSize. The lower batch size
+  // is kept small because each successful batch materializes its elements in native memory.
+  test("sequence over the per-batch element limit fails until the batch size is lowered") {
+    withTable("t_seq_ceiling") {
+      sql("CREATE TABLE t_seq_ceiling(a INT, b INT) USING parquet")
+      sql("INSERT INTO t_seq_ceiling SELECT 0, 262143 FROM range(0, 8192, 1, 1)")
+      val query = "SELECT sum(CAST(size(sequence(a, b)) AS BIGINT)) FROM t_seq_ceiling"
+      withSQLConf(CometConf.COMET_ENABLED.key -> "false") {
+        assert(sql(query).collect().map(_.getLong(0)).toSeq == Seq(2147483648L))
+      }
+      val e = intercept[SparkException](sql(query).collect())
+      assert(e.getMessage.contains("2147483648"), e.getMessage)
+      assert(e.getMessage.contains("spark.comet.batchSize"), e.getMessage)
+      withSQLConf(CometConf.COMET_BATCH_SIZE.key -> "256") {
+        checkSparkAnswerAndOperator(query)
       }
     }
   }

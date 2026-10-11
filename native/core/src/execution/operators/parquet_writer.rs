@@ -39,7 +39,7 @@ use async_trait::async_trait;
 use datafusion::{
     common::tree_node::TreeNodeRecursion,
     error::{DataFusionError, Result},
-    execution::context::TaskContext,
+    execution::{context::TaskContext, memory_pool::MemoryConsumer},
     physical_expr::{EquivalenceProperties, PhysicalExpr},
     physical_plan::{
         execution_plan::{Boundedness, EmissionType},
@@ -157,6 +157,20 @@ impl ParquetWriter {
         }
     }
 
+    /// Memory the writer holds between batches: parquet-rs's estimate for the in-progress row
+    /// group, which counts encoded pages, encoder buffers, dictionaries and any Bloom filters.
+    /// The remote writer flushes a row group after every batch and stages it in a buffer that is
+    /// cleared after each upload but keeps its capacity, so that buffer counts too.
+    fn memory_size(&self) -> usize {
+        match self {
+            ParquetWriter::LocalFile(writer) => writer.memory_size(),
+            #[cfg(feature = "hdfs-opendal")]
+            ParquetWriter::Remote(writer, ..) => {
+                writer.memory_size() + writer.inner().get_ref().capacity()
+            }
+        }
+    }
+
     /// Close the writer and finalize the file
     async fn close(self) -> std::result::Result<(), parquet::errors::ParquetError> {
         match self {
@@ -220,18 +234,9 @@ impl ParquetWriter {
 pub struct ParquetWriterExec {
     /// Input execution plan
     input: Arc<dyn ExecutionPlan>,
-    /// Where this task writes. When `work_dir` is set (the Spark 3.x `CometNativeWriteExec`
-    /// path) this is the write's output directory and is unused; the file name is derived from
-    /// `work_dir`. Otherwise (Spark 4.0+, `CometWriteFilesExec`) it is the exact path of the file
-    /// to write, chosen by the JVM commit protocol and used verbatim - this operator then never
-    /// derives file names of its own.
+    /// The exact path of the file this task writes, chosen by Spark's commit protocol on the JVM
+    /// side and used verbatim - this operator never derives file names of its own.
     output_path: String,
-    /// Working directory for temporary files (used by FileCommitProtocol). Spark 3.x only.
-    work_dir: Option<String>,
-    /// Job ID for tracking this write operation
-    job_id: Option<String>,
-    /// Task attempt ID for this specific task
-    task_attempt_id: Option<i32>,
     /// Compression codec
     compression: ParquetCompression,
     /// Partition ID (from Spark TaskContext)
@@ -254,9 +259,6 @@ impl ParquetWriterExec {
     pub fn try_new(
         input: Arc<dyn ExecutionPlan>,
         output_path: String,
-        work_dir: Option<String>,
-        job_id: Option<String>,
-        task_attempt_id: Option<i32>,
         compression: ParquetCompression,
         partition_id: i32,
         column_names: Vec<String>,
@@ -276,9 +278,6 @@ impl ParquetWriterExec {
         Ok(ParquetWriterExec {
             input,
             output_path,
-            work_dir,
-            job_id,
-            task_attempt_id,
             compression,
             partition_id,
             column_names,
@@ -464,9 +463,6 @@ impl ExecutionPlan for ParquetWriterExec {
             1 => Ok(Arc::new(ParquetWriterExec::try_new(
                 Arc::clone(&children[0]),
                 self.output_path.clone(),
-                self.work_dir.clone(),
-                self.job_id.clone(),
-                self.task_attempt_id,
                 self.compression.clone(),
                 self.partition_id,
                 self.column_names.clone(),
@@ -492,10 +488,10 @@ impl ExecutionPlan for ParquetWriterExec {
         let rows_written = MetricBuilder::new(&self.metrics).counter("rows_written", partition);
 
         let runtime_env = context.runtime_env();
+        let reservation = MemoryConsumer::new(format!("ParquetWriterExec[{partition}]"))
+            .register(context.memory_pool());
         let input = self.input.execute(partition, context)?;
         let input_schema = self.input.schema();
-        let work_dir = self.work_dir.clone();
-        let task_attempt_id = self.task_attempt_id;
         let compression = self.compression.to_parquet()?;
         let column_names = self.column_names.clone();
 
@@ -514,19 +510,8 @@ impl ExecutionPlan for ParquetWriterExec {
             Arc::new(Schema::new(fields))
         });
 
-        let part_file = match &work_dir {
-            // Spark 4.0+ hands over the exact file to write, chosen by the JVM commit protocol.
-            None => self.output_path.clone(),
-            // Spark 3.x hands over a working directory instead and expects the writer to name the
-            // file; that branch goes away with Spark 3.x support.
-            Some(work_dir) => match task_attempt_id {
-                Some(attempt_id) => format!(
-                    "{}/part-{:05}-{:05}.parquet",
-                    work_dir, self.partition_id, attempt_id
-                ),
-                None => format!("{}/part-{:05}.parquet", work_dir, self.partition_id),
-            },
-        };
+        // The JVM commit protocol has already chosen the exact file to write.
+        let part_file = self.output_path.clone();
 
         // Configure writer properties
         let props = WriterProperties::builder()
@@ -577,6 +562,8 @@ impl ExecutionPlan for ParquetWriterExec {
                 writer.write(&renamed_batch).await.map_err(|e| {
                     DataFusionError::Execution(format!("Failed to write batch: {}", e))
                 })?;
+                // The writer cannot spill, so a row group the pool will not grant fails the task.
+                reservation.try_resize(writer.memory_size())?;
             }
 
             writer.close().await.map_err(|e| {
@@ -619,11 +606,14 @@ impl ExecutionPlan for ParquetWriterExec {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::execution::memory_pools::testing::PeakMemoryPool;
     use arrow::array::{Array, Int32Array, ListArray, StringArray};
     use arrow::datatypes::{DataType, Field, Int32Type, Schema};
     use datafusion::datasource::memory::MemorySourceConfig;
     use datafusion::datasource::source::DataSourceExec;
-    use datafusion::prelude::SessionContext;
+    use datafusion::execution::memory_pool::MemoryPool;
+    use datafusion::execution::runtime_env::RuntimeEnvBuilder;
+    use datafusion::prelude::{SessionConfig, SessionContext};
     use parquet::arrow::PARQUET_FIELD_ID_META_KEY;
     use parquet::basic::Repetition;
     use parquet::file::reader::{FileReader, SerializedFileReader};
@@ -654,11 +644,10 @@ mod tests {
         );
     }
 
-    /// Spark 4.0+ hands over the exact file to write rather than a working directory. The writer
-    /// must use that path verbatim - Spark's commit protocol owns naming and staging, and
+    /// The JVM hands over the exact file to write. The writer must use that path verbatim - Spark's commit protocol owns naming and staging, and
     /// committers that track individual files depend on the name it chose.
     #[tokio::test]
-    async fn test_parquet_writer_uses_output_path_verbatim_without_work_dir() -> Result<()> {
+    async fn test_parquet_writer_uses_output_path_verbatim() -> Result<()> {
         let schema = Arc::new(Schema::new(vec![Field::new("id", DataType::Int32, true)]));
         let batch = RecordBatch::try_new(
             Arc::clone(&schema),
@@ -675,9 +664,6 @@ mod tests {
         let writer = ParquetWriterExec::try_new(
             input,
             output_path,
-            None, // work_dir: Spark 4.0+ path
-            None,
-            None,
             ParquetCompression::None,
             // A non-zero partition id must not leak into the file name.
             3,
@@ -742,13 +728,10 @@ mod tests {
         let memory_source = MemorySourceConfig::try_new(&[vec![batch]], input_schema, None)?;
         let input = Arc::new(DataSourceExec::new(Arc::new(memory_source)));
         let temp_dir = tempfile::tempdir()?;
-        let work_dir = format!("file://{}", temp_dir.path().display());
+        let output_path = format!("file://{}/part-00000.parquet", temp_dir.path().display());
         let writer = ParquetWriterExec::try_new(
             input,
-            work_dir.clone(),
-            Some(work_dir),
-            None,
-            None,
+            output_path,
             ParquetCompression::None,
             0,
             vec!["required_id".to_string(), "values".to_string()],
@@ -811,13 +794,10 @@ mod tests {
         let memory_source = MemorySourceConfig::try_new(&[vec![batch]], input_schema, None)?;
         let input = Arc::new(DataSourceExec::new(Arc::new(memory_source)));
         let temp_dir = tempfile::tempdir()?;
-        let work_dir = format!("file://{}", temp_dir.path().display());
+        let output_path = format!("file://{}/part-00000.parquet", temp_dir.path().display());
         let writer = ParquetWriterExec::try_new(
             input,
-            work_dir.clone(),
-            Some(work_dir),
-            None,
-            None,
+            output_path,
             ParquetCompression::None,
             0,
             vec!["values".to_string()],
@@ -845,7 +825,6 @@ mod tests {
 
     /// Helper function to create a test RecordBatch with 1000 rows of (int, string) data
     /// Example batch_id 1 -> 0..1000, 2 -> 1001..2000
-    #[allow(dead_code)]
     fn create_test_record_batch(batch_id: i32) -> Result<RecordBatch> {
         assert!(batch_id > 0, "batch_id must be greater than 0");
         let num_rows = batch_id * 1000;
@@ -866,6 +845,75 @@ mod tests {
         // Create RecordBatch
         RecordBatch::try_new(schema, vec![Arc::new(int_array), Arc::new(string_array)])
             .map_err(|e| DataFusionError::ArrowError(Box::new(e), None))
+    }
+
+    /// Writes `batches` to a local file, reserving from `pool` as a task reserves from its own,
+    /// and returns the size of the file written.
+    async fn write_reserving_from(
+        pool: &Arc<PeakMemoryPool>,
+        batches: Vec<RecordBatch>,
+    ) -> Result<u64> {
+        let schema = batches[0].schema();
+        let column_names = schema.fields().iter().map(|f| f.name().clone()).collect();
+        let memory_source = MemorySourceConfig::try_new(&[batches], Arc::clone(&schema), None)?;
+        let input = Arc::new(DataSourceExec::new(Arc::new(memory_source)));
+        let temp_dir = tempfile::tempdir()?;
+        let file = temp_dir.path().join("part-00000.parquet");
+        let writer = ParquetWriterExec::try_new(
+            input,
+            format!("file://{}", file.display()),
+            ParquetCompression::None,
+            0,
+            column_names,
+            None,
+            HashMap::new(),
+        )?;
+        let pool: Arc<dyn MemoryPool> = Arc::<PeakMemoryPool>::clone(pool);
+        let runtime = RuntimeEnvBuilder::new()
+            .with_memory_pool(pool)
+            .build_arc()?;
+        let context = SessionContext::new_with_config_rt(SessionConfig::new(), runtime);
+        let mut stream = writer.execute(0, context.task_ctx())?;
+        while stream.try_next().await?.is_some() {}
+        Ok(std::fs::metadata(file)?.len())
+    }
+
+    /// The writer reserves its in-progress row group, here the whole file, until the file is
+    /// closed.
+    #[tokio::test]
+    async fn test_parquet_writer_reserves_its_row_group_until_the_file_closes() -> Result<()> {
+        let pool = Arc::new(PeakMemoryPool::new(usize::MAX));
+        let batches = (1..=5)
+            .map(create_test_record_batch)
+            .collect::<Result<_>>()?;
+        let file_size = write_reserving_from(&pool, batches).await?;
+        assert!(
+            pool.peak() as u64 >= file_size / 2,
+            "reserved {} bytes for a row group written as a {file_size}-byte file",
+            pool.peak()
+        );
+        assert_eq!(pool.reserved(), 0, "the writer kept its reservation");
+        Ok(())
+    }
+
+    /// A row group the pool will not grant fails the write with the pool's error, rather than
+    /// holding memory nothing accounts for.
+    #[tokio::test]
+    async fn test_parquet_writer_fails_when_the_pool_refuses_its_row_group() -> Result<()> {
+        let pool = Arc::new(PeakMemoryPool::new(1024));
+        let error = write_reserving_from(&pool, vec![create_test_record_batch(1)?])
+            .await
+            .expect_err("a row group larger than the pool must fail the write");
+        assert!(
+            matches!(error, DataFusionError::ResourcesExhausted(_)),
+            "{error:?}"
+        );
+        assert!(
+            error.to_string().contains("ParquetWriterExec[0]"),
+            "{error}"
+        );
+        assert_eq!(pool.reserved(), 0, "the failed write kept its reservation");
+        Ok(())
     }
 
     #[tokio::test]
@@ -1068,16 +1116,14 @@ mod tests {
         let memory_exec = Arc::new(DataSourceExec::new(Arc::new(memory_source_config)));
 
         // Create ParquetWriterExec with DataSourceExec as input
-        let output_path = "unused".to_string();
-        let work_dir = "hdfs://namenode:9000/user/test_parquet_writer_exec".to_string();
+        let output_path =
+            "hdfs://namenode:9000/user/test_parquet_writer_exec/part-00000-00123.parquet"
+                .to_string();
         let column_names = vec!["id".to_string(), "name".to_string()];
 
         let parquet_writer = ParquetWriterExec::try_new(
             memory_exec,
             output_path,
-            Some(work_dir),
-            None,      // job_id
-            Some(123), // task_attempt_id
             ParquetCompression::None,
             0, // partition_id
             column_names,
