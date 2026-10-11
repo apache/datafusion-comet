@@ -998,6 +998,7 @@ projected is read natively)</p></li>
 <li><p>Encrypted tables with 192-bit data keys (no AES-192-GCM in the underlying crypto)</p></li>
 <li><p>Delete files in a format other than Parquet or Puffin (Avro or ORC positional/equality deletes)</p></li>
 <li><p>Tables backed by Avro or ORC data files (only Parquet is accelerated)</p></li>
+<li><p>Queries that use <code class="docutils literal notranslate"><span class="pre">input_file_name()</span></code>, <code class="docutils literal notranslate"><span class="pre">input_file_block_start()</span></code> or <code class="docutils literal notranslate"><span class="pre">input_file_block_length()</span></code></p></li>
 <li><p>Scans whose data or delete files span more than one S3 bucket (the native reader uses one
 object-store configuration per scan)</p></li>
 <li><p>Tables partitioned on <code class="docutils literal notranslate"><span class="pre">BINARY</span></code> or <code class="docutils literal notranslate"><span class="pre">DECIMAL</span></code> (with precision &gt;28) columns</p></li>
