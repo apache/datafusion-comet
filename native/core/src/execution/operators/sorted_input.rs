@@ -36,9 +36,12 @@ use datafusion::physical_plan::{
 /// sorted before it was cached for instance, but the `ScanExec` it arrives through declares none,
 /// and DataFusion's hash join keeps the unmatched probe rows of a right outer join in place only
 /// when the probe input declares an order. Otherwise it moves them after the matched rows of each
-/// batch, which loses an order Spark has already dropped a sort for. The planner puts this below
-/// that join's probe side with the order Spark reports for it, and nowhere else: an order that
-/// the whole native plan could see would also change how DataFusion's aggregates group.
+/// batch, which loses an order Spark has already dropped a sort for. The planner puts this only
+/// on that join's probe input, with the order Spark reports for it, but the join keeps the order
+/// in its own output, so the operators above it in the native plan see it too: an aggregate
+/// grouped by the key runs in sorted, streaming mode, and a sort aggregate takes the order as
+/// already satisfied. The order therefore has to be one Spark guarantees, since a wrong one gives
+/// wrong groups rather than only rows out of order.
 #[derive(Debug)]
 pub struct SortedInputExec {
     input: Arc<dyn ExecutionPlan>,

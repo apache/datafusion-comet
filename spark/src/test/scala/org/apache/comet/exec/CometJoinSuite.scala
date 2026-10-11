@@ -26,11 +26,11 @@ import org.apache.hadoop.fs.Path
 import org.apache.parquet.hadoop.ParquetFileReader
 import org.apache.parquet.hadoop.util.HadoopInputFile
 import org.apache.spark.SparkException
-import org.apache.spark.sql.{CometTestBase, DataFrame, Row}
+import org.apache.spark.sql.{CometTestBase, DataFrame, QueryTest, Row}
 import org.apache.spark.sql.catalyst.TableIdentifier
 import org.apache.spark.sql.catalyst.analysis.UnresolvedRelation
 import org.apache.spark.sql.catalyst.expressions.{And, AttributeReference, DynamicPruningExpression, IsNotNull}
-import org.apache.spark.sql.catalyst.optimizer.{BuildLeft, BuildRight}
+import org.apache.spark.sql.catalyst.optimizer.{BuildLeft, BuildRight, BuildSide}
 import org.apache.spark.sql.catalyst.plans.Inner
 import org.apache.spark.sql.catalyst.plans.logical.Join
 import org.apache.spark.sql.comet.{CometBroadcastExchangeExec, CometBroadcastHashJoinExec, CometBroadcastNestedLoopJoinExec, CometFilterExec, CometHashJoinExec, CometNativeScanExec, CometProjectExec, CometSortExec, CometSortMergeJoinExec, CometSparkToColumnarExec, CometUnionExec, CometWindowExec}
@@ -2287,23 +2287,74 @@ class CometJoinSuite extends CometTestBase {
               Row(k, i, if (k % 10 == 0) k / 10 else null)
             }
 
-            Seq(
-              "shuffle_hash" -> classOf[CometHashJoinExec],
-              "broadcast" -> classOf[CometBroadcastHashJoinExec]).foreach {
-              case (hint, joinClass) =>
-                val df = streamed
-                  .join(build.hint(hint), streamed("_1") === build("_1"), "left_outer")
-                  .select(streamed("_1").as("k"), streamed("_2").as("v"), build("_2").as("w"))
-                  .sortWithinPartitions("k")
-                val plan = df.queryExecution.executedPlan
-                assert(collect(plan) { case j if j.getClass == joinClass => j }.size == 1, plan)
-                assert(collect(plan) { case c: CometSparkToColumnarExec => c }.size == 1, plan)
-                assert(
-                  collect(plan) { case s @ (_: CometSortExec | _: SortExec) => s }.isEmpty,
-                  plan)
-                assert(df.collect().toSet == expected.toSet)
-                assert(sortedPartitions(df).forall(identity), plan)
+            // Both shapes run as DataFusion's right join: Comet swaps a join built on the right
+            // and leaves one built on the left as it is.
+            def outerJoin(hint: String, joinType: String): DataFrame = {
+              val joined = if (joinType == "left_outer") {
+                streamed.join(build.hint(hint), streamed("_1") === build("_1"), joinType)
+              } else {
+                build.hint(hint).join(streamed, build("_1") === streamed("_1"), joinType)
+              }
+              joined
+                .select(streamed("_1").as("k"), streamed("_2").as("v"), build("_2").as("w"))
+                .sortWithinPartitions("k")
             }
+
+            for {
+              (hint, joinClass) <- Seq(
+                "shuffle_hash" -> classOf[CometHashJoinExec],
+                "broadcast" -> classOf[CometBroadcastHashJoinExec])
+              (joinType, buildSide) <- Seq("left_outer" -> BuildRight, "right_outer" -> BuildLeft)
+            } {
+              val df = outerJoin(hint, joinType)
+              val plan = df.queryExecution.executedPlan
+              val joins: Seq[(Class[_], BuildSide)] = collect(plan) {
+                case j: CometHashJoinExec => (j.getClass, j.buildSide)
+                case j: CometBroadcastHashJoinExec => (j.getClass, j.buildSide)
+              }
+              assert(joins == Seq((joinClass, buildSide)), plan)
+              assert(collect(plan) { case c: CometSparkToColumnarExec => c }.size == 1, plan)
+              assert(
+                collect(plan) { case s @ (_: CometSortExec | _: SortExec) => s }.isEmpty,
+                plan)
+              QueryTest.sameRows(expected, df.collect().toSeq).foreach(fail(_))
+              assert(sortedPartitions(df).forall(identity), plan)
+            }
+          } finally {
+            spark.catalog.clearCache()
+          }
+        }
+      }
+    }
+  }
+
+  test("an outer hash join stays in Spark when the streamed side's order cannot be expressed") {
+    // The native join keeps the streamed side's order only by declaring it on its probe input, so
+    // a join whose order Comet cannot serialize stays in Spark rather than lose the order. With
+    // Add disabled, Comet cannot serialize the order below.
+    withSQLConf(
+      SQLConf.ADAPTIVE_EXECUTION_ENABLED.key -> "false",
+      SQLConf.AUTO_BROADCASTJOIN_THRESHOLD.key -> "-1",
+      SQLConf.SHUFFLE_PARTITIONS.key -> "2",
+      CometConf.COMET_EXEC_IN_MEMORY_CACHE_ENABLED.key -> "false",
+      CometConf.COMET_CONVERT_FROM_IN_MEMORY_CACHE_ENABLED.key -> "true",
+      CometConf.getExprEnabledConfigKey("Add") -> "false") {
+      withParquetTable((0 until 1000).map(i => (i % 100, i)), "big") {
+        withParquetTable((0 until 10).map(i => (i * 10, i)), "small") {
+          try {
+            val streamed =
+              spark.table("big").repartition(2, $"_1").sortWithinPartitions($"_1" + 1).cache()
+            streamed.count()
+            val build = spark.table("small")
+            val (_, plan) = checkSparkAnswerAndFallbackReason(
+              streamed.join(
+                build.hint("shuffle_hash"),
+                streamed("_1") === build("_1"),
+                "left_outer"),
+              "the streamed side's sort order, which this outer join has to keep, cannot be " +
+                "expressed natively")
+            assert(collect(plan) { case j: ShuffledHashJoinExec => j }.size == 1, plan)
+            assert(collect(plan) { case j: CometHashJoinExec => j }.isEmpty, plan)
           } finally {
             spark.catalog.clearCache()
           }

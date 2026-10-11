@@ -6072,6 +6072,100 @@ mod tests {
         assert_eq!("ScanExec", hash_join_exec.children[1].native_plan.name());
     }
 
+    /// The hash join in `plan`, under the projection that `swap_inputs` adds when Spark builds
+    /// on the right.
+    fn planned_hash_join(
+        plan: &Arc<dyn ExecutionPlan>,
+    ) -> &datafusion::physical_plan::joins::HashJoinExec {
+        let join = if plan.is::<datafusion::physical_plan::projection::ProjectionExec>() {
+            plan.children()[0]
+        } else {
+            plan
+        };
+        join.downcast_ref::<datafusion::physical_plan::joins::HashJoinExec>()
+            .expect("a hash join")
+    }
+
+    fn sorted_outer_hash_join(
+        join_type: spark_operator::JoinType,
+        build_side: spark_operator::BuildSide,
+        children: Vec<Operator>,
+    ) -> Operator {
+        Operator {
+            children,
+            op_struct: Some(OpStruct::HashJoin(spark_operator::HashJoin {
+                left_join_keys: vec![create_bound_reference(0)],
+                right_join_keys: vec![create_bound_reference(0)],
+                join_type: join_type as i32,
+                build_side: build_side as i32,
+                streamed_sort_orders: vec![create_sort_order(0, 3, false, true)],
+                ..Default::default()
+            })),
+            ..Default::default()
+        }
+    }
+
+    #[test]
+    fn hash_join_declares_streamed_order_on_probe_input() {
+        // The two outer joins Comet sends the streamed side's order for both run as DataFusion's
+        // right join, whose probe input is its right one, whichever side Spark builds on.
+        for (join_type, build_side) in [
+            (
+                spark_operator::JoinType::RightOuter,
+                spark_operator::BuildSide::BuildLeft,
+            ),
+            (
+                spark_operator::JoinType::LeftOuter,
+                spark_operator::BuildSide::BuildRight,
+            ),
+        ] {
+            let operator =
+                sorted_outer_hash_join(join_type, build_side, vec![create_scan(), create_scan()]);
+            let (_, _, planned) = PhysicalPlanner::default()
+                .create_plan(&operator, &mut vec![], 1)
+                .unwrap();
+            let join = planned_hash_join(&planned.native_plan);
+            assert_eq!("ScanExec", join.left().name());
+            let probe = join.right();
+            let sorted = probe
+                .downcast_ref::<crate::execution::operators::SortedInputExec>()
+                .expect("the probe input declares the streamed side's order");
+            assert_eq!("ScanExec", sorted.children()[0].name());
+            assert_eq!(
+                "col_0@0 ASC",
+                probe.properties().output_ordering().unwrap().to_string()
+            );
+            // The join keeps the order in its own output, so the operators above it see it too.
+            assert!(planned.native_plan.properties().output_ordering().is_some());
+        }
+    }
+
+    #[test]
+    fn hash_join_keeps_probe_input_that_declares_an_order() {
+        // A probe input that already declares an order, such as a sort in the native plan, is
+        // left as it is.
+        let sort = Operator {
+            children: vec![create_scan()],
+            op_struct: Some(OpStruct::Sort(spark_operator::Sort {
+                sort_orders: vec![create_sort_order(0, 3, false, true)],
+                ..Default::default()
+            })),
+            ..Default::default()
+        };
+        let operator = sorted_outer_hash_join(
+            spark_operator::JoinType::RightOuter,
+            spark_operator::BuildSide::BuildLeft,
+            vec![create_scan(), sort],
+        );
+        let (_, _, planned) = PhysicalPlanner::default()
+            .create_plan(&operator, &mut vec![], 1)
+            .unwrap();
+        assert_eq!(
+            "SortExec",
+            planned_hash_join(&planned.native_plan).right().name()
+        );
+    }
+
     #[tokio::test]
     async fn spark_plan_dynamic_filter_preserves_metrics() {
         use crate::execution::metrics::utils::to_native_metric_node;
