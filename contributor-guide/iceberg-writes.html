@@ -862,9 +862,14 @@ Per-bucket <code class="docutils literal notranslate"><span class="pre">fs.s3a.b
 suffix. <code class="docutils literal notranslate"><span class="pre">fs.s3a.bucket.target.other.endpoint</span></code> belongs to bucket <code class="docutils literal notranslate"><span class="pre">target.other</span></code>, so it does not
 make a write to <code class="docutils literal notranslate"><span class="pre">target</span></code> ineligible.
 The Hadoop check excludes keys whose only source is Hadoop’s built-in <code class="docutils literal notranslate"><span class="pre">core-default.xml</span></code>, while
-retaining programmatic, site-XML, and custom <code class="docutils literal notranslate"><span class="pre">*-default.xml</span></code> settings. It also ignores Spark’s
-session-wide S3A vectored-read and <code class="docutils literal notranslate"><span class="pre">downgrade.syncable.exceptions</span></code> settings, which cannot affect a
-data-file write request. Keep those allowlists aligned when adding storage support. Reaching
+retaining programmatic, site-XML, and custom <code class="docutils literal notranslate"><span class="pre">*-default.xml</span></code> settings. It also ignores the keys in
+<code class="docutils literal notranslate"><span class="pre">IgnoredHadoopS3Keys</span></code>: Spark’s session-wide S3A vectored-read and <code class="docutils literal notranslate"><span class="pre">downgrade.syncable.exceptions</span></code>
+settings, plus the committer, <code class="docutils literal notranslate"><span class="pre">bulk.delete.page.size</span></code> and <code class="docutils literal notranslate"><span class="pre">experimental.input.fadvise</span></code> settings that
+deployments set cluster-wide (Spark 4.1 sets two of the committer keys itself). A key belongs on
+that list only if S3A would not apply it to a data-file write request. Settings that S3A does apply,
+such as encryption, ACLs, storage class, signing and the credentials provider, must keep falling
+back. The list matches the exact key, so a per-bucket spelling is not ignored. Keep those
+allowlists aligned when adding storage support. Reaching
 <code class="docutils literal notranslate"><span class="pre">FileIOBuilder.with_prop</span></code> is not proof of support: the builder accepts unknown properties and the
 backend ignores them. A fallback reason must contain property names only, never values.</p>
 </section>
