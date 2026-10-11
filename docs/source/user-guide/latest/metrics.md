@@ -93,14 +93,21 @@ With `spark.comet.exec.join.dynamicFilter.enabled=true`, native broadcast and sh
 report these additional metric keys. See [Join Runtime Filters](tuning/operators.md#join-runtime-filters) for
 eligibility and reader restrictions.
 
-| Metric                                 | Description                                                       |
-| -------------------------------------- | ----------------------------------------------------------------- |
-| `dynamic_filter_join_rows_evaluated`   | Probe rows evaluated by the runtime filter.                       |
-| `dynamic_filter_join_rows_pruned`      | Probe rows rejected by that filter before the hash probe.         |
-| `dynamic_filter_join_rows_bypassed`    | Probe rows passed through while the runtime filter is inactive.   |
-| `dynamic_filter_join_eval_time`        | Time evaluating the runtime filter.                               |
-| `dynamic_filter_join_filters_attached` | Executions that attach their runtime filter to a native reader.   |
-| `dynamic_filter_join_filters_skipped`  | Executions whose probe input is ineligible for reader attachment. |
+| Metric                                 | Description                                                                                                   |
+| -------------------------------------- | ------------------------------------------------------------------------------------------------------------- |
+| `dynamic_filter_join_rows_evaluated`   | Probe rows evaluated by the runtime filter.                                                                   |
+| `dynamic_filter_join_rows_pruned`      | Probe rows rejected by that filter before the hash probe.                                                     |
+| `dynamic_filter_join_rows_bypassed`    | Probe rows passed through while the runtime filter is inactive.                                               |
+| `dynamic_filter_join_eval_time`        | Time evaluating the runtime filter.                                                                           |
+| `dynamic_filter_join_filters_attached` | Executions that attach their runtime filter to a native reader.                                               |
+| `dynamic_filter_join_filters_skipped`  | Executions whose probe input is ineligible for reader attachment.                                             |
+| `dynamic_filter_early_rows_evaluated`  | Rows evaluated before an intermediate join on this join's probe path.                                         |
+| `dynamic_filter_early_rows_pruned`     | Rows rejected there before the intermediate join does its probe work.                                         |
+| `dynamic_filter_early_rows_bypassed`   | Rows passed through while early filtering is inactive or has stopped after two nonempty all-matching batches. |
+| `dynamic_filter_early_eval_time`       | Time evaluating that early filter.                                                                            |
+
+See [early filtering in join chains](tuning/operators.md#early-filtering-in-join-chains)
+for placement and adaptive bypass behavior.
 
 The row counters measure residual filtering of decoded probe batches. They exclude rows skipped
 by the reader. An attached filter does not guarantee that any row groups are pruned: compare the
