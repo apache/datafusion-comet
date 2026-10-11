@@ -908,11 +908,9 @@ byte ranges belonging to the columns it selected, and only those are decompresse
 column out of six does roughly a sixth of the decompression work, and a <code class="docutils literal notranslate"><span class="pre">SELECT</span> <span class="pre">count(*)</span></code>, which
 selects no columns at all, answers from the row count stored beside the payload without touching
 it.</p>
-<p>Compression defaults to <code class="docutils literal notranslate"><span class="pre">zstd</span></code>, for footprint rather than for speed. Over the same 5M-row,
-six-column relation the tables under <a class="reference internal" href="#performance">Performance</a> use — and measured by the same
-benchmark — it holds the data in a sixth of the memory and pays for that on both sides: about 40%
-longer to materialize, and, on a read wide enough to inflate everything, close to five times
-longer. A narrow projection pays far less, because it only inflates the columns it asked for.</p>
+<p>Three codecs are offered: <code class="docutils literal notranslate"><span class="pre">zstd</span></code>, the default, <code class="docutils literal notranslate"><span class="pre">lz4</span></code> and <code class="docutils literal notranslate"><span class="pre">none</span></code>. Measured by the same benchmark
+over the same 5M-row, six-column relation the tables under <a class="reference internal" href="#performance">Performance</a> use (Apple
+M3 Ultra, JDK 17, Spark 4.1, release build):</p>
 <div class="pst-scrollable-table-container"><table class="table">
 <thead>
 <tr class="row-odd"><th class="head"><p>Codec</p></th>
@@ -924,27 +922,43 @@ longer. A narrow projection pays far less, because it only inflates the columns 
 </thead>
 <tbody>
 <tr class="row-even"><td><p><code class="docutils literal notranslate"><span class="pre">zstd</span></code></p></td>
-<td class="text-right"><p>1507 ms</p></td>
-<td class="text-right"><p>55 MiB</p></td>
-<td class="text-right"><p>45 ms</p></td>
-<td class="text-right"><p>295 ms</p></td>
+<td class="text-right"><p>1232 ms</p></td>
+<td class="text-right"><p>51 MiB</p></td>
+<td class="text-right"><p>36 ms</p></td>
+<td class="text-right"><p>248 ms</p></td>
 </tr>
-<tr class="row-odd"><td><p><code class="docutils literal notranslate"><span class="pre">none</span></code></p></td>
-<td class="text-right"><p>1081 ms</p></td>
+<tr class="row-odd"><td><p><code class="docutils literal notranslate"><span class="pre">lz4</span></code></p></td>
+<td class="text-right"><p>1115 ms</p></td>
+<td class="text-right"><p>145 MiB</p></td>
+<td class="text-right"><p>33 ms</p></td>
+<td class="text-right"><p>110 ms</p></td>
+</tr>
+<tr class="row-even"><td><p><code class="docutils literal notranslate"><span class="pre">none</span></code></p></td>
+<td class="text-right"><p>857 ms</p></td>
 <td class="text-right"><p>315 MiB</p></td>
-<td class="text-right"><p>35 ms</p></td>
-<td class="text-right"><p>64 ms</p></td>
+<td class="text-right"><p>31 ms</p></td>
+<td class="text-right"><p>54 ms</p></td>
 </tr>
 </tbody>
 </table>
 </div>
+<p><code class="docutils literal notranslate"><span class="pre">zstd</span></code> is the default, for footprint rather than for speed. It holds the data in a sixth of the
+memory <code class="docutils literal notranslate"><span class="pre">none</span></code> takes and pays for that on both sides: about 45% longer to materialize, and, on a read
+wide enough to inflate everything, more than four times longer. A narrow projection pays far less,
+because it only inflates the columns it asked for.</p>
+<p><code class="docutils literal notranslate"><span class="pre">lz4</span></code> decompresses several times faster than <code class="docutils literal notranslate"><span class="pre">zstd</span></code>, so a read of every column takes less than half
+as long, at nearly three times the footprint. It is written with lz4-java, the JNI-accelerated
+library behind <code class="docutils literal notranslate"><span class="pre">spark.io.compression.codec</span></code>, in Arrow’s standard <code class="docutils literal notranslate"><span class="pre">LZ4_FRAME</span></code> format. Arrow’s own
+LZ4 codec is not used: it is commons-compress’s pure-Java implementation, and is orders of
+magnitude slower to write than <code class="docutils literal notranslate"><span class="pre">zstd</span></code> while also producing larger output.</p>
+<p>What <code class="docutils literal notranslate"><span class="pre">lz4</span></code> saves depends more on the data than what <code class="docutils literal notranslate"><span class="pre">zstd</span></code> saves does. It holds this relation in
+less memory than Spark’s own cache format does (217 MiB), but not a relation of sequential <code class="docutils literal notranslate"><span class="pre">bigint</span></code>
+columns, which Spark’s format delta-encodes: each of the wide relations under
+<a class="reference internal" href="#limitations">Limitations</a> takes about 74 MiB with <code class="docutils literal notranslate"><span class="pre">lz4</span></code>, against 26 to 27 MiB in Spark’s format
+and with <code class="docutils literal notranslate"><span class="pre">zstd</span></code>.</p>
 <p><code class="docutils literal notranslate"><span class="pre">none</span></code> is the better setting for a relation that fits in memory uncompressed and is read at close
-to full width. The default is the other way round because a cache that does not fit costs more than
-one that is slower to read, and Spark’s own cache format compresses by default too.</p>
-<p>Arrow’s other IPC codec, LZ4, is deliberately not offered and the config rejects it. It is
-commons-compress’s pure-Java implementation, unrelated to the JNI-accelerated lz4-java behind
-<code class="docutils literal notranslate"><span class="pre">spark.io.compression.codec</span></code>, and is orders of magnitude slower to write than <code class="docutils literal notranslate"><span class="pre">zstd</span></code> while also
-producing larger output.</p>
+to full width. The default is <code class="docutils literal notranslate"><span class="pre">zstd</span></code> because a cache that does not fit costs more than one that is
+slower to read, and Spark’s own cache format compresses by default too.</p>
 <p>Dictionary-encoded columns are decoded before they are stored. A payload with no schema message has
 nowhere to record either that a column is dictionary encoded or the dictionary itself.</p>
 </section>
@@ -964,7 +978,7 @@ nowhere to record either that a column is dictionary encoded or the dictionary i
 </tr>
 <tr class="row-odd"><td><p><code class="docutils literal notranslate"><span class="pre">spark.comet.exec.inMemoryCache.compression.codec</span></code></p></td>
 <td><p><code class="docutils literal notranslate"><span class="pre">zstd</span></code></p></td>
-<td><p>Arrow IPC compression codec for cached data: <code class="docutils literal notranslate"><span class="pre">zstd</span></code> or <code class="docutils literal notranslate"><span class="pre">none</span></code>. Affects newly cached data only — a batch records the codec it was written with.</p></td>
+<td><p>Arrow IPC compression codec for cached data: <code class="docutils literal notranslate"><span class="pre">zstd</span></code>, <code class="docutils literal notranslate"><span class="pre">lz4</span></code> or <code class="docutils literal notranslate"><span class="pre">none</span></code>. Affects newly cached data only: a batch records the codec it was written with.</p></td>
 </tr>
 <tr class="row-even"><td><p><code class="docutils literal notranslate"><span class="pre">spark.comet.exec.inMemoryCache.compression.zstd.level</span></code></p></td>
 <td><p><code class="docutils literal notranslate"><span class="pre">1</span></code></p></td>
@@ -1146,6 +1160,11 @@ that operator through a columnar-to-row transition:</p>
 all of them longs, is about 10% slower under either kind of operator. That cost is <code class="docutils literal notranslate"><span class="pre">zstd</span></code>
 decompression. With the <code class="docutils literal notranslate"><span class="pre">none</span></code> codec, the same read is 2.7x faster than Spark’s format with Comet
 operators above the scan, and 1.6x faster with a Spark operator above it.</p>
+<p>Measured on an Apple M3 Ultra, Comet’s format with <code class="docutils literal notranslate"><span class="pre">lz4</span></code> is faster than Spark’s in every shape
+under both kinds of operator. The three-column read is 1.4x faster than Spark’s format with either
+kind of operator above the scan, where <code class="docutils literal notranslate"><span class="pre">zstd</span></code> is about 15% slower on the same machine, and the full
+projection is 2.5x faster with Comet operators above the scan and 1.7x faster with a Spark operator
+above it.</p>
 <p>Building the cache is measured the same way, from the same source, with its rows produced either by
 Comet operators or by Spark operators. Comet’s format is written straight from the Arrow batches of
 Comet operators, while Spark’s is always built from rows, so above Comet operators it first converts
@@ -1268,7 +1287,13 @@ reader (Apple M4, JDK 17, Spark 4.1; the average of two runs):</p>
 the others. The row reader takes up to 1.6 times as long, and it is the only reader for relations
 wider than <code class="docutils literal notranslate"><span class="pre">spark.sql.codegen.maxFields</span></code>: reading every column of relations of 100, 200 and 1500
 nullable <code class="docutils literal notranslate"><span class="pre">bigint</span></code> columns took 2.2 to 2.5 times as long as from Spark’s format. A Spark operator
-above Comet’s native cache scan does not pay this; see <a class="reference internal" href="#performance">Performance</a>.
+above Comet’s native cache scan does not pay this; see <a class="reference internal" href="#performance">Performance</a>.</p>
+<p>Most of what the row reader pays is decompression, so <code class="docutils literal notranslate"><span class="pre">lz4</span></code> narrows these gaps. Measured on an
+Apple M3 Ultra, the row reader takes up to 1.25 times as long as Spark’s format with <code class="docutils literal notranslate"><span class="pre">lz4</span></code>, against
+up to 1.7 times with <code class="docutils literal notranslate"><span class="pre">zstd</span></code>, and the fused reader is faster than Spark’s format for every read.
+Reading every column of the wide relations takes 1.3 to 2.0 times as long as from Spark’s format
+with <code class="docutils literal notranslate"><span class="pre">lz4</span></code>, against 2.1 to 2.6 times with <code class="docutils literal notranslate"><span class="pre">zstd</span></code>. <code class="docutils literal notranslate"><span class="pre">lz4</span></code> takes more memory than Spark’s format for
+those relations, though; see <a class="reference internal" href="#storage-format">Storage format</a>.
 <a class="reference external" href="https://github.com/apache/datafusion-comet/issues/5485">#5485</a> tracks these gaps.</p>
 <p>Comet’s serializer exists because Spark’s own Arrow cache format
 (<a class="reference external" href="https://issues.apache.org/jira/browse/SPARK-57268">SPARK-57268</a>) is only available from Spark
