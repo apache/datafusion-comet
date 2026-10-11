@@ -28,7 +28,7 @@ import org.apache.spark.{CometListenerBusUtils, SparkConf}
 import org.apache.spark.scheduler.{SparkListener, SparkListenerTaskEnd}
 import org.apache.spark.sql.{Column, CometTestBase, DataFrame, QueryTest, Row}
 import org.apache.spark.sql.catalyst.expressions.Cast
-import org.apache.spark.sql.catalyst.expressions.aggregate.{Final, Partial, PartialMerge}
+import org.apache.spark.sql.catalyst.expressions.aggregate.{AggregateMode, Final, Partial, PartialMerge}
 import org.apache.spark.sql.catalyst.optimizer.EliminateSorts
 import org.apache.spark.sql.catalyst.plans.physical.{HashPartitioning, RangePartitioning}
 import org.apache.spark.sql.comet.{CometBaseAggregateExec, CometFilterExec, CometHashAggregateExec, CometNativeExec, CometProjectExec, CometSortAggregateExec, CometSortExec}
@@ -156,19 +156,21 @@ class CometAggregateSuite extends CometTestBase with AdaptiveSparkPlanHelper {
   }
 
   /**
-   * Returns the native final aggregates in the plan that `df` last ran, after checking that there
-   * is one and that each spilled.
+   * Returns the native aggregates in the plan that `df` last ran whose aggregate functions all
+   * run in `mode`, after checking that there is one and that each spilled.
    */
-  private def spilledFinalAggregates(df: DataFrame): Seq[CometHashAggregateExec] = {
+  private def spilledAggregates(
+      df: DataFrame,
+      mode: AggregateMode): Seq[CometHashAggregateExec] = {
     val plan = df.queryExecution.executedPlan
-    val finalAggregates = collect(plan) {
-      case aggregate: CometHashAggregateExec if aggregate.modes.contains(Final) => aggregate
+    val aggregates = collect(plan) {
+      case aggregate: CometHashAggregateExec if aggregate.modes == Seq(mode) => aggregate
     }
-    assert(finalAggregates.nonEmpty, s"Expected a native final aggregate:\n$plan")
+    assert(aggregates.nonEmpty, s"Expected a native $mode aggregate:\n$plan")
     assert(
-      finalAggregates.forall(_.metrics("spill_count").value > 0),
-      "The final aggregate did not spill")
-    finalAggregates
+      aggregates.forall(_.metrics("spill_count").value > 0),
+      s"The $mode aggregate did not spill")
+    aggregates
   }
 
   test("final aggregate that has spilled reads its spill files back (issue #6254)") {
@@ -193,7 +195,7 @@ class CometAggregateSuite extends CometTestBase with AdaptiveSparkPlanHelper {
         }
         // checkCometAnswer runs the query once, so the plan read below is the one that ran.
         checkCometAnswer(df, expected)
-        spilledFinalAggregates(df)
+        spilledAggregates(df, Final)
       }
     }
   }
@@ -233,12 +235,104 @@ class CometAggregateSuite extends CometTestBase with AdaptiveSparkPlanHelper {
 
         // Only a sort in the same native plan keeps the final aggregate's input sorted.
         assert(
-          spilledFinalAggregates(df).exists(_.child match {
+          spilledAggregates(df, Final).exists(_.child match {
             case partial: CometHashAggregateExec => partial.child.isInstanceOf[CometSortExec]
             case _ => false
           }),
           "Expected a native final aggregate over a partial aggregate over a sort:\n" +
             df.queryExecution.executedPlan)
+      }
+    }
+  }
+
+  /**
+   * Runs `f` with a native memory pool small enough to make the PartialMerge stage of a distinct
+   * aggregate run short of memory: about 4 MiB, 0.002 of the suite's 2g off-heap.
+   */
+  private def withDistinctMergeMemoryPressure(f: => Unit): Unit = {
+    withSQLConf(
+      SQLConf.ADAPTIVE_EXECUTION_ENABLED.key -> "false",
+      SQLConf.SHUFFLE_PARTITIONS.key -> "1",
+      CometConf.COMET_BATCH_SIZE.key -> "1024",
+      CometConf.COMET_OFFHEAP_MEMORY_POOL_FRACTION.key -> "0.002",
+      CometConf.COMET_RESPECT_DATAFUSION_CONFIGS.key -> "true",
+      "spark.comet.datafusion.execution.sort_spill_reservation_bytes" -> "65536")(f)
+  }
+
+  test("PartialMerge that runs short of memory keeps one row per key (issue #6857)") {
+    // Spark plans count(DISTINCT d) next to sum(v) with a PartialMerge keyed by (g, d), and the
+    // stage above it counts the PartialMerge's rows, so the PartialMerge has to spill rather than
+    // emit a key twice.
+    withTempPath { dir =>
+      val path = dir.getCanonicalPath
+      spark
+        .range(0, 400000, 1, 1)
+        .selectExpr("id % 100 AS g", "id % 200000 AS d", "id AS v")
+        .write
+        .parquet(path)
+      withDistinctMergeMemoryPressure {
+        val df = spark.read.parquet(path).groupBy("g").agg(sum("v"), count_distinct(col("d")))
+        // Each g holds the 4000 ids g + 100 * i, whose d values pair up into 2000 distinct ones.
+        val expected = (0 until 100).map(g => Row(g.toLong, 4000L * g + 799800000L, 2000L))
+        checkCometAnswer(df, expected)
+        spilledAggregates(df, PartialMerge)
+      }
+    }
+  }
+
+  test("PartialMerge that has spilled reads its spill files back (issue #6857)") {
+    withTempPath { dir =>
+      val path = dir.getCanonicalPath
+      spark
+        .range(0, 125000, 1, 1)
+        .selectExpr("0L AS g", "lpad(cast(id % 62500 AS STRING), 128, 'k') AS k", "id AS v")
+        .write
+        .parquet(path)
+      // A 2 MiB pool, shared with the aggregate above it, makes the PartialMerge keyed by (g, k)
+      // spill several runs of its 62,500 groups. As in the #6254 tests, merging the runs then
+      // takes nearly all of its share, and reading them back must not fail the task.
+      withSQLConf(
+        SQLConf.SHUFFLE_PARTITIONS.key -> "1",
+        CometConf.COMET_BATCH_SIZE.key -> "1024",
+        CometConf.COMET_OFFHEAP_MEMORY_POOL_FRACTION.key -> (2.0 / 2048).toString) {
+        val df =
+          spark.read.parquet(path).groupBy("g").agg(expr("max(v)"), count_distinct(col("k")))
+        checkCometAnswer(df, Seq(Row(0L, 124999L, 62500L)))
+        spilledAggregates(df, PartialMerge)
+      }
+    }
+  }
+
+  test("collect_list PartialMerge short of memory keeps one row per key (issue #6857)") {
+    // The collect_list states fill the PartialMerge's memory too. Over a Spark partial, the
+    // PartialMerge decodes Spark's buffers as it merges them, but reads back the native states
+    // it spilled.
+    def padded(i: Int): String = "x" * (128 - i.toString.length) + i
+    val rows = (0 until 32768).map(i => (i % 4096, i % 8192, padded(i)))
+    // Each k holds the ids k + 4096 * j, whose d values are k and k + 4096.
+    val expected = (0 until 4096).map { k =>
+      Row(k, 2L, (0 until 8).map(j => padded(k + 4096 * j)).sorted)
+    }
+    withTempPath { dir =>
+      val path = dir.getCanonicalPath
+      rows.toDF("k", "d", "s").write.parquet(path)
+      for (sparkPartial <- Seq(false, true)) {
+        withDistinctMergeMemoryPressure {
+          val source = if (sparkPartial) rows.toDF("k", "d", "s") else spark.read.parquet(path)
+          val df =
+            source.groupBy("k").agg(count_distinct(col("d")), sort_array(collect_list("s")))
+          checkCometAnswer(df, expected)
+          spilledAggregates(df, PartialMerge)
+          val sparkPartials = collect(df.queryExecution.executedPlan) {
+            case agg: ObjectHashAggregateExec
+                if agg.aggregateExpressions.forall(_.mode == Partial) =>
+              agg
+          }
+          assert(
+            sparkPartials.nonEmpty == sparkPartial,
+            "Expected a Spark partial aggregate only over the local rows:\n" +
+              df.queryExecution.executedPlan)
+        }
       }
     }
   }

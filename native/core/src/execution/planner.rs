@@ -1575,13 +1575,17 @@ impl PhysicalPlanner {
                 let mode = match proto_mode {
                     ProtoAggregateMode::Partial => DFAggregateMode::Partial,
                     ProtoAggregateMode::Final => DFAggregateMode::Final,
-                    // PartialMerge: Partial + MergeAsPartial
-                    ProtoAggregateMode::PartialMerge => DFAggregateMode::Partial,
+                    // Spark's distinct-aggregate plan counts the rows of a PartialMerge, so it must
+                    // emit each key once. DataFusion's Partial emits what it holds when it runs
+                    // short of memory and starts again, while its Single spills. So run the
+                    // PartialMerge as Single, whose MergeAsPartial aggregates merge their input and
+                    // evaluate to their states, and unpack those states below.
+                    ProtoAggregateMode::PartialMerge => DFAggregateMode::Single,
                 };
 
                 // Check if any expression uses PartialMerge mode. When present,
                 // those expressions are wrapped with MergeAsPartial to get merge
-                // semantics inside a Partial-mode AggregateExec.
+                // semantics with state output.
                 let partial_merge_value = ProtoAggregateMode::PartialMerge as i32;
                 let has_partial_merge = proto_mode == ProtoAggregateMode::PartialMerge
                     || agg.expr_modes.contains(&partial_merge_value);
@@ -1680,6 +1684,18 @@ impl PhysicalPlanner {
                     )?,
                 );
 
+                // A PartialMerge runs as Single, so unpack the states it evaluates to into the
+                // state columns that Spark expects of it.
+                let mut output = Arc::clone(&aggregate);
+                let mut additional_native_plans = vec![];
+                if proto_mode == ProtoAggregateMode::PartialMerge {
+                    output = crate::execution::merge_as_partial::unpack_state_structs(
+                        output,
+                        agg.grouping_exprs.len(),
+                    )?;
+                    additional_native_plans.push(Arc::clone(&aggregate));
+                }
+
                 // Spark's SortAggregateExec reports its output as ordered by the grouping keys,
                 // and Spark may have removed a sort above it on that basis. DataFusion emits
                 // groups in input order only when it sees the input sorted on them. When that
@@ -1687,11 +1703,11 @@ impl PhysicalPlanner {
                 // relation that reaches native code as an unordered ScanExec, the hash table can
                 // emit groups out of order, so sort the aggregate output instead.
                 if agg.ordered_by_grouping_keys && !agg.grouping_exprs.is_empty() {
-                    let aggregate_schema = aggregate.schema();
+                    let output_schema = output.schema();
                     let ordering: Vec<PhysicalSortExpr> = (0..agg.grouping_exprs.len())
                         .map(|idx| {
                             PhysicalSortExpr::new(
-                                Arc::new(Column::new(aggregate_schema.field(idx).name(), idx)),
+                                Arc::new(Column::new(output_schema.field(idx).name(), idx)),
                                 SortOptions {
                                     descending: false,
                                     nulls_first: true,
@@ -1699,31 +1715,25 @@ impl PhysicalPlanner {
                             )
                         })
                         .collect();
-                    if !aggregate
+                    if !output
                         .equivalence_properties()
                         .ordering_satisfy(ordering.clone())?
                     {
-                        let sort: Arc<dyn ExecutionPlan> = Arc::new(SortExec::new(
-                            LexOrdering::new(ordering).unwrap(),
-                            Arc::clone(&aggregate),
-                        ));
-                        return Ok((
-                            scans,
-                            shuffle_scans,
-                            Arc::new(SparkPlan::new_with_additional(
-                                spark_plan.plan_id,
-                                sort,
-                                vec![child],
-                                vec![aggregate],
-                            )),
-                        ));
+                        additional_native_plans.push(Arc::clone(&output));
+                        output =
+                            Arc::new(SortExec::new(LexOrdering::new(ordering).unwrap(), output));
                     }
                 }
 
                 Ok((
                     scans,
                     shuffle_scans,
-                    Arc::new(SparkPlan::new(spark_plan.plan_id, aggregate, vec![child])),
+                    Arc::new(SparkPlan::new_with_additional(
+                        spark_plan.plan_id,
+                        output,
+                        vec![child],
+                        additional_native_plans,
+                    )),
                 ))
             }
 
@@ -6314,6 +6324,137 @@ mod tests {
         let planner = PhysicalPlanner::default();
         let (_, _, planned) = planner.create_plan(&op, &mut vec![], 1).unwrap();
         assert_eq!("AggregateExec", planned.native_plan.name());
+    }
+
+    #[tokio::test]
+    async fn partial_merge_runs_as_single_and_emits_merged_states() {
+        use arrow::array::Int64Array;
+        use datafusion::common::tree_node::{Transformed, TreeNode};
+        use datafusion::physical_plan::aggregates::{AggregateExec, AggregateMode};
+        use spark_expression::agg_expr::ExprStruct as AggExprStruct;
+
+        // A Spark PartialMerge of max(v) and count(v) grouped by k, over [k, max state, count state].
+        let int64 = spark_expression::DataType {
+            type_id: 4,
+            type_info: None,
+        };
+        let v = Expr {
+            expr_struct: Some(Unbound(spark_expression::UnboundReference {
+                name: "v".to_string(),
+                datatype: Some(int64.clone()),
+            })),
+            ..Default::default()
+        };
+        let partial_merge = spark_operator::AggregateMode::PartialMerge as i32;
+        let aggregate = |mode: i32| Operator {
+            plan_id: 1,
+            children: vec![Operator {
+                op_struct: Some(OpStruct::Scan(spark_operator::Scan {
+                    fields: vec![int64.clone(); 3],
+                    source: String::new(),
+                })),
+                ..Default::default()
+            }],
+            op_struct: Some(OpStruct::HashAgg(spark_operator::HashAggregate {
+                grouping_exprs: vec![Expr {
+                    expr_struct: Some(Bound(spark_expression::BoundReference {
+                        index: 0,
+                        datatype: Some(int64.clone()),
+                    })),
+                    ..Default::default()
+                }],
+                agg_exprs: vec![
+                    spark_expression::AggExpr {
+                        expr_struct: Some(AggExprStruct::Max(spark_expression::Max {
+                            child: Some(v.clone()),
+                            datatype: Some(int64.clone()),
+                        })),
+                        ..Default::default()
+                    },
+                    spark_expression::AggExpr {
+                        expr_struct: Some(AggExprStruct::Count(spark_expression::Count {
+                            children: vec![v.clone()],
+                        })),
+                        ..Default::default()
+                    },
+                ],
+                mode,
+                expr_modes: vec![partial_merge; 2],
+                initial_input_buffer_offset: 1,
+                ..Default::default()
+            })),
+            ..Default::default()
+        };
+        let ctx = SessionContext::new();
+        let task_ctx = ctx.task_ctx();
+        let planner = PhysicalPlanner::new(Arc::new(ctx), 0);
+
+        // DataFusion's Single spills rather than emit a key twice, and the projection above it
+        // unpacks the states into the columns that the Partial it replaces emitted.
+        let (_, _, planned) = planner
+            .create_plan(&aggregate(partial_merge), &mut vec![], 1)
+            .unwrap();
+        assert_eq!("ProjectionExec", planned.native_plan.name());
+        assert_eq!(1, planned.additional_native_plans.len());
+        let single = planned.additional_native_plans[0]
+            .downcast_ref::<AggregateExec>()
+            .unwrap();
+        assert_eq!(&AggregateMode::Single, single.mode());
+        let (_, _, partial) = planner
+            .create_plan(
+                &aggregate(spark_operator::AggregateMode::Partial as i32),
+                &mut vec![],
+                1,
+            )
+            .unwrap();
+        assert_eq!("AggregateExec", partial.native_plan.name());
+        assert_eq!(partial.native_plan.schema(), planned.native_plan.schema());
+
+        let batch = RecordBatch::try_new(
+            planned.children[0].schema(),
+            vec![
+                Arc::new(Int64Array::from(vec![1, 2, 1, 2, 3])),
+                Arc::new(Int64Array::from(vec![
+                    Some(10),
+                    Some(5),
+                    Some(7),
+                    None,
+                    Some(1),
+                ])),
+                Arc::new(Int64Array::from(vec![1, 2, 3, 0, 4])),
+            ],
+        )
+        .unwrap();
+        let input: Arc<dyn ExecutionPlan> =
+            MemorySourceConfig::try_new_exec(&[vec![batch.clone()]], batch.schema(), None).unwrap();
+        let native_plan = Arc::clone(&planned.native_plan)
+            .transform_up(|node| {
+                Ok(if node.name() == "ScanExec" {
+                    Transformed::yes(Arc::clone(&input))
+                } else {
+                    Transformed::no(node)
+                })
+            })
+            .unwrap()
+            .data;
+        let results = collect(native_plan.execute(0, task_ctx).unwrap())
+            .await
+            .unwrap();
+        let output = arrow::compute::concat_batches(&results[0].schema(), &results).unwrap();
+        let column = |idx: usize| {
+            output
+                .column(idx)
+                .as_any()
+                .downcast_ref::<Int64Array>()
+                .unwrap()
+                .clone()
+        };
+        let (keys, maxes, counts) = (column(0), column(1), column(2));
+        let mut rows: Vec<_> = (0..output.num_rows())
+            .map(|row| (keys.value(row), maxes.value(row), counts.value(row)))
+            .collect();
+        rows.sort();
+        assert_eq!(vec![(1, 10, 4), (2, 5, 2), (3, 1, 4)], rows);
     }
 
     #[tokio::test]
