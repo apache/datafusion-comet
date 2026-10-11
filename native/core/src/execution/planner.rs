@@ -6650,6 +6650,113 @@ mod tests {
     }
 
     #[test]
+    fn hash_join_keeps_probe_order_through_a_runtime_filter_probe() {
+        // With runtime filters on, a probe-side filter or projection becomes its Comet wrapper.
+        // The wrapper must keep the sort's ordering so the join still needs no sort.
+        use datafusion::physical_plan::joins::HashJoinExec;
+        use datafusion_comet_operators::{CometFilterExec, CometProjectionExec};
+
+        let int_type = create_proto_datatype();
+        let sorted_scan = || Operator {
+            children: vec![two_column_scan(&int_type)],
+            op_struct: Some(OpStruct::Sort(spark_operator::Sort {
+                sort_orders: vec![ascending_nulls_first(typed_bound_reference(0, &int_type))],
+                ..Default::default()
+            })),
+            ..Default::default()
+        };
+        // Filters on the value column, so the key ordering can only come from the sort.
+        let filtered = || Operator {
+            children: vec![sorted_scan()],
+            op_struct: Some(OpStruct::Filter(spark_operator::Filter {
+                predicate: Some(Expr {
+                    expr_struct: Some(Gt(Box::new(spark_expression::BinaryExpr {
+                        left: Some(Box::new(typed_bound_reference(1, &int_type))),
+                        right: Some(Box::new(Expr {
+                            expr_struct: Some(Literal(spark_expression::Literal {
+                                value: Some(literal::Value::IntVal(0)),
+                                datatype: Some(int_type.clone()),
+                                is_null: false,
+                            })),
+                            ..Default::default()
+                        })),
+                    }))),
+                    ..Default::default()
+                }),
+            })),
+            ..Default::default()
+        };
+        let projected = || Operator {
+            children: vec![sorted_scan()],
+            op_struct: Some(OpStruct::Projection(spark_operator::Projection {
+                project_list: vec![
+                    typed_bound_reference(0, &int_type),
+                    typed_bound_reference(1, &int_type),
+                ],
+            })),
+            ..Default::default()
+        };
+        for (join_type, build_side, probe_key_index, root) in [
+            (
+                spark_operator::JoinType::LeftOuter,
+                spark_operator::BuildSide::BuildRight,
+                0,
+                "ProjectionExec",
+            ),
+            (
+                spark_operator::JoinType::RightOuter,
+                spark_operator::BuildSide::BuildLeft,
+                2,
+                "HashJoinExec",
+            ),
+        ] {
+            for (probe, probe_name) in [(filtered(), "FilterExec"), (projected(), "ProjectionExec")]
+            {
+                let children = if build_side == spark_operator::BuildSide::BuildRight {
+                    [probe, two_column_scan(&int_type)]
+                } else {
+                    [two_column_scan(&int_type), probe]
+                };
+                let mut op = hash_join_on_first_columns(
+                    join_type,
+                    build_side,
+                    children,
+                    &int_type,
+                    vec![ascending_nulls_first(typed_bound_reference(
+                        probe_key_index,
+                        &int_type,
+                    ))],
+                );
+                let Some(OpStruct::HashJoin(join)) = op.op_struct.as_mut() else {
+                    unreachable!()
+                };
+                join.dynamic_filter_enabled = true;
+                let (_, _, planned) = PhysicalPlanner::default()
+                    .create_plan(&op, &mut vec![], 1)
+                    .unwrap();
+                let context = format!("{join_type:?} {probe_name}");
+                assert_eq!(root, planned.native_plan.name(), "{context}");
+
+                // The probe is the right input of the native join in both shapes.
+                let join_node = if root == "HashJoinExec" {
+                    &planned.native_plan
+                } else {
+                    planned.native_plan.children()[0]
+                };
+                let probe = join_node
+                    .downcast_ref::<HashJoinExec>()
+                    .unwrap_or_else(|| panic!("{context}: {}", join_node.name()))
+                    .right();
+                assert_eq!(probe_name, probe.name(), "{context}");
+                assert!(
+                    probe.is::<CometFilterExec>() || probe.is::<CometProjectionExec>(),
+                    "{context}: probe was not rewritten for runtime filters"
+                );
+            }
+        }
+    }
+
+    #[test]
     fn hash_join_over_a_native_sort_merge_join_adds_no_sort() {
         // A sort merge join declares its key ordering, so a hash join streaming it keeps that
         // ordering without a sort. Spark reports the merge join's left key as the ordering.
