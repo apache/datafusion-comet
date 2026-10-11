@@ -905,8 +905,11 @@ including:</p>
 <code class="docutils literal notranslate"><span class="pre">java.lang.String.trim</span></code> that Spark applies before handing the value to <code class="docutils literal notranslate"><span class="pre">BigDecimal</span></code>.</p></li>
 <li><p>Null bytes (<code class="docutils literal notranslate"><span class="pre">\u0000</span></code>) at the start or end of a string are therefore trimmed. Null bytes
 embedded in the middle of a string produce <code class="docutils literal notranslate"><span class="pre">NULL</span></code>.</p></li>
-<li><p>Fullwidth Unicode digits (U+FF10–U+FF19, e.g. <code class="docutils literal notranslate"><span class="pre">１２３.４５</span></code>) are treated as their ASCII
-equivalents, so <code class="docutils literal notranslate"><span class="pre">CAST('１２３.４５'</span> <span class="pre">AS</span> <span class="pre">DECIMAL(10,2))</span></code> returns <code class="docutils literal notranslate"><span class="pre">123.45</span></code>.</p></li>
+<li><p>Non-ASCII decimal digits that Java’s <code class="docutils literal notranslate"><span class="pre">BigDecimal</span></code> accepts, i.e. every Unicode <code class="docutils literal notranslate"><span class="pre">Nd</span></code> digit in
+the Basic Multilingual Plane (fullwidth <code class="docutils literal notranslate"><span class="pre">１２３.４５</span></code>, Arabic-Indic <code class="docutils literal notranslate"><span class="pre">١٢٣</span></code>, Devanagari <code class="docutils literal notranslate"><span class="pre">१२३</span></code>,
+…), are treated as their ASCII equivalents in both the mantissa and the exponent, so
+<code class="docutils literal notranslate"><span class="pre">CAST('١٢٣.٤٥'</span> <span class="pre">AS</span> <span class="pre">DECIMAL(10,2))</span></code> returns <code class="docutils literal notranslate"><span class="pre">123.45</span></code>. Digits outside the Basic Multilingual
+Plane, such as U+1D7CE MATHEMATICAL BOLD DIGIT ZERO, are rejected as they are by Spark.</p></li>
 <li><p>Scientific notation (e.g. <code class="docutils literal notranslate"><span class="pre">1.23E+5</span></code>) is supported.</p></li>
 <li><p>Special values (<code class="docutils literal notranslate"><span class="pre">inf</span></code>, <code class="docutils literal notranslate"><span class="pre">infinity</span></code>, <code class="docutils literal notranslate"><span class="pre">nan</span></code>) produce <code class="docutils literal notranslate"><span class="pre">NULL</span></code>.</p></li>
 </ul>
