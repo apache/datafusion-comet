@@ -36,6 +36,15 @@ SELECT
   to_json(CASE WHEN p THEN named_struct('X', i) ELSE named_struct('x', i) END)
 FROM test_case_field_names
 
+-- Preserve the first THEN's names at both levels of a nested struct, in either branch order.
+query expect_native(casewhen)
+SELECT
+  to_json(CASE WHEN p THEN named_struct('a', named_struct('x', i))
+    ELSE named_struct('A', named_struct('X', i)) END),
+  to_json(CASE WHEN p THEN named_struct('A', named_struct('X', i))
+    ELSE named_struct('a', named_struct('x', i)) END)
+FROM test_case_field_names
+
 -- Later THEN branches and an omitted ELSE must also preserve the first THEN's name.
 query expect_native(casewhen)
 SELECT
@@ -43,6 +52,12 @@ SELECT
     WHEN q THEN named_struct('X', i + 10) ELSE named_struct('X', i + 20) END),
   to_json(CASE WHEN p THEN named_struct('x', i)
     WHEN q THEN named_struct('X', i + 10) END)
+FROM test_case_field_names
+
+-- A typed NULL in the first THEN still determines the result's struct field name.
+query expect_native(casewhen)
+SELECT to_json(CASE WHEN p THEN CAST(NULL AS STRUCT<x: INT>)
+  WHEN q THEN named_struct('x', i) ELSE named_struct('X', i) END)
 FROM test_case_field_names
 
 -- Fields align by position. Matching these names would incorrectly combine INT with DOUBLE.
