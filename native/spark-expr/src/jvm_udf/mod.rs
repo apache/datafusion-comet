@@ -26,6 +26,7 @@ use arrow::record_batch::RecordBatch;
 
 use datafusion::common::Result as DFResult;
 use datafusion::logical_expr::ColumnarValue;
+use datafusion::physical_expr::expressions::Literal;
 use datafusion::physical_expr::PhysicalExpr;
 
 use datafusion_comet_common::{decode_string_arrays, zero_offsets};
@@ -39,6 +40,12 @@ use jni::objects::{Global, JObject, JValue};
 pub struct JvmScalarUdfExpr {
     class_name: String,
     args: Vec<Arc<dyn PhysicalExpr>>,
+    /// The length-1 array sent for each argument that is a literal. Built once here, because
+    /// building it for every batch copies the value twice: `Literal::evaluate` clones it and
+    /// `to_array_of_size` copies the clone. The codegen dispatcher's serialized expression is
+    /// such a literal, several KB for a Scala UDF. `None` for any other argument, and for a
+    /// literal whose array cannot be built, which `evaluate` then reports.
+    literal_arrays: Vec<Option<ArrayRef>>,
     return_type: DataType,
     return_nullable: bool,
     /// Captured at `createPlan` time and threaded here by the planner. Passed through the
@@ -76,9 +83,17 @@ impl JvmScalarUdfExpr {
             !class_name.is_empty(),
             "JvmScalarUdfExpr requires a non-empty class name"
         );
+        let literal_arrays = args
+            .iter()
+            .map(|arg| {
+                arg.downcast_ref::<Literal>()
+                    .and_then(|literal| literal.value().to_array_of_size(1).ok())
+            })
+            .collect();
         Self {
             class_name,
             args,
+            literal_arrays,
             return_type,
             return_nullable,
             task_context,
@@ -143,9 +158,13 @@ impl PhysicalExpr for JvmScalarUdfExpr {
         let arrays: Vec<ArrayRef> = self
             .args
             .iter()
-            .map(|e| match e.evaluate(batch)? {
-                ColumnarValue::Array(a) => Ok(a),
-                ColumnarValue::Scalar(s) => s.to_array_of_size(1),
+            .zip(&self.literal_arrays)
+            .map(|(e, literal_array)| match literal_array {
+                Some(a) => Ok(Arc::clone(a)),
+                None => match e.evaluate(batch)? {
+                    ColumnarValue::Array(a) => Ok(a),
+                    ColumnarValue::Scalar(s) => s.to_array_of_size(1),
+                },
             })
             .collect::<DFResult<_>>()?;
 
@@ -290,5 +309,50 @@ impl PhysicalExpr for JvmScalarUdfExpr {
             self.partition,
             self.exec_context_id,
         )))
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use arrow::array::{Array, BinaryArray};
+    use datafusion::common::ScalarValue;
+    use datafusion::physical_expr::expressions::Column;
+
+    #[test]
+    fn builds_literal_arguments_once() {
+        let bytes = vec![7u8; 4096];
+        let udf = JvmScalarUdfExpr::new(
+            "org.example.Udf".to_string(),
+            vec![
+                Arc::new(Literal::new(ScalarValue::Binary(Some(bytes.clone())))),
+                Arc::new(Column::new("a", 0)),
+            ],
+            DataType::Int64,
+            true,
+            None,
+            None,
+            0,
+            0,
+        );
+        let literal = udf.literal_arrays[0]
+            .as_ref()
+            .expect("a literal argument's array is built up front");
+        let literal = literal.as_any().downcast_ref::<BinaryArray>().unwrap();
+        assert_eq!(literal.len(), 1);
+        assert_eq!(literal.value(0), bytes.as_slice());
+        assert!(udf.literal_arrays[1].is_none());
+
+        // New children rebuild the arrays, so a position that no longer holds a literal does not
+        // keep sending the old literal's array.
+        let swapped = Arc::new(udf)
+            .with_new_children(vec![
+                Arc::new(Column::new("a", 0)),
+                Arc::new(Literal::new(ScalarValue::Binary(Some(bytes)))),
+            ])
+            .unwrap();
+        let swapped = swapped.downcast_ref::<JvmScalarUdfExpr>().unwrap();
+        assert!(swapped.literal_arrays[0].is_none());
+        assert!(swapped.literal_arrays[1].is_some());
     }
 }

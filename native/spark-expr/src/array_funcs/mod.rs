@@ -15,6 +15,7 @@
 // specific language governing permissions and limitations
 // under the License.
 
+mod array_contains;
 mod array_extrema;
 mod array_insert;
 mod array_position;
@@ -31,6 +32,7 @@ mod sequence;
 mod size;
 mod sort_array;
 
+pub use array_contains::SparkFloatArrayContains;
 pub use array_extrema::SparkArrayExtrema;
 pub use array_insert::ArrayInsert;
 pub use array_position::SparkArrayPositionFunc;
@@ -42,14 +44,36 @@ pub use flatten::SparkFlatten;
 pub use get_array_struct_fields::GetArrayStructFields;
 pub use list_extract::ListExtract;
 pub use list_positions::ListPositionsExpr;
-pub use nested_comparison::{spark_comparison, spark_in_list};
+pub use nested_comparison::{spark_comparison, spark_in_list, FloatOperands, SparkComparison};
 pub use sequence::spark_sequence;
 pub use size::{spark_size, SparkSizeFunc};
 pub use sort_array::SparkSortArray;
 
 use arrow::array::{ArrayRef, ListArray};
-use arrow::buffer::{NullBuffer, OffsetBuffer};
+use arrow::buffer::{BooleanBuffer, NullBuffer, OffsetBuffer};
 use std::sync::Arc;
+
+/// The number of set bits of `bits` before each offset, for `bits` that starts at `offsets[0]`,
+/// counted a word at a time in one pass. The difference between two consecutive entries is the
+/// count within that row.
+fn set_bits_before(bits: &BooleanBuffer, offsets: &OffsetBuffer<i32>) -> Vec<i32> {
+    let chunks = bits.inner().bit_chunks(bits.offset(), bits.len());
+    let mut words = chunks.iter_padded();
+    let (mut word, mut word_start, mut before_word) = (words.next().unwrap_or(0), 0, 0);
+    offsets
+        .iter()
+        .map(|offset| {
+            let end = (offset - offsets[0]) as usize;
+            while end >= word_start + 64 {
+                before_word += word.count_ones() as usize;
+                word = words.next().unwrap_or(0);
+                word_start += 64;
+            }
+            let below_end = word & ((1u64 << (end - word_start)) - 1);
+            (before_word + below_end.count_ones() as usize) as i32
+        })
+        .collect()
+}
 
 /// A list with the field of `array` and the given row nulls, holding `values` at `offsets`.
 fn with_values(

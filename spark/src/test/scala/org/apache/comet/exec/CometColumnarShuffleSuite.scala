@@ -419,6 +419,25 @@ abstract class CometColumnarShuffleSuite extends CometTestBase with AdaptiveSpar
     }
   }
 
+  test("columnar shuffle on array [timestamp]") {
+    // The native row-to-Arrow conversion appends an array of 64 or more elements that holds a
+    // null in one call, which requires the array to carry the column's timezone.
+    Seq(10, 201).foreach { numPartitions =>
+      withParquetTable(
+        (0 until 50).map { i =>
+          val timestamps: Seq[java.sql.Timestamp] = (0 until 70).map { j =>
+            if (j == i) null else new java.sql.Timestamp(i * 1000000L + j)
+          }
+          (i, timestamps)
+        },
+        "tbl") {
+        val df = sql("SELECT * FROM tbl").repartition(numPartitions, $"_1")
+
+        checkShuffleAnswer(df, 1)
+      }
+    }
+  }
+
   test("columnar shuffle on nested array") {
     Seq("false", "true").foreach { _ =>
       Seq(10, 201).foreach { numPartitions =>

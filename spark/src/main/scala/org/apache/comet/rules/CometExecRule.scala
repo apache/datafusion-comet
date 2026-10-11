@@ -25,7 +25,7 @@ import scala.collection.mutable.ListBuffer
 import scala.jdk.CollectionConverters._
 
 import org.apache.spark.sql.SparkSession
-import org.apache.spark.sql.catalyst.expressions.{Divide, DoubleLiteral, EqualNullSafe, EqualTo, Expression, FloatLiteral, GreaterThan, GreaterThanOrEqual, KnownFloatingPointNormalized, LessThan, LessThanOrEqual, NamedExpression, Remainder, SortOrder}
+import org.apache.spark.sql.catalyst.expressions.{Divide, DoubleLiteral, Expression, FloatLiteral, KnownFloatingPointNormalized, NamedExpression, Remainder, SortOrder}
 import org.apache.spark.sql.catalyst.expressions.aggregate.{AggregateMode, Final, Partial, PartialMerge}
 import org.apache.spark.sql.catalyst.optimizer.NormalizeNaNAndZero
 import org.apache.spark.sql.catalyst.rules.Rule
@@ -186,6 +186,11 @@ object CometExecRule {
    */
   private val TYPED_DATASET_PARTIAL_READER: TreeNodeTag[String] =
     TreeNodeTag[String]("comet.typedDatasetPartialReader")
+
+  /** Why Comet does not convert rows to Arrow in a plan that reads `InputFileBlockHolder`. */
+  private val INPUT_FILE_BLOCK_FALLBACK_REASON: String =
+    "Spark to Arrow conversion is not compatible with input_file_name, " +
+      "input_file_block_start, or input_file_block_length"
 }
 
 /**
@@ -409,6 +414,9 @@ case class CometExecRule(session: SparkSession, queryStagePrep: Boolean = false)
    */
   // spotless:on
   private def transform(plan: SparkPlan): SparkPlan = {
+    // Walks the whole plan, so it is lazy: only consulted once a node could be converted.
+    lazy val readsInputFileBlock = CometScanRule.readsInputFileBlock(plan)
+
     if (CometConf.COMET_CONVERT_FROM_TYPED_DATASET_ENABLED.get(conf)) {
       tagPartiallyReadTypedDatasetOutputs(plan)
     }
@@ -484,7 +492,7 @@ case class CometExecRule(session: SparkSession, queryStagePrep: Boolean = false)
                 s"Set ${CometConf.COMET_EXEC_IN_MEMORY_CACHE_ENABLED.key}=true to enable it.")
           }
 
-          if (shouldApplySparkToColumnar(conf, scan)) {
+          if (shouldApplySparkToColumnar(conf, scan, readsInputFileBlock)) {
             convertToComet(scan, CometSparkToColumnarExec).getOrElse(scan)
           } else {
             scan
@@ -506,7 +514,7 @@ case class CometExecRule(session: SparkSession, queryStagePrep: Boolean = false)
       case op: LeafExecNode if hasEnabledHandler(op) =>
         convertToComet(op, allExecs(op.getClass))
           .orElse {
-            if (shouldApplySparkToColumnar(conf, op)) {
+            if (shouldApplySparkToColumnar(conf, op, readsInputFileBlock)) {
               convertToComet(op, CometSparkToColumnarExec)
             } else {
               None
@@ -514,7 +522,7 @@ case class CometExecRule(session: SparkSession, queryStagePrep: Boolean = false)
           }
           .getOrElse(op)
 
-      case op if shouldApplySparkToColumnar(conf, op) =>
+      case op if shouldApplySparkToColumnar(conf, op, readsInputFileBlock) =>
         convertToComet(op, CometSparkToColumnarExec).getOrElse(op)
 
       // Typed Dataset operations (`map`, `flatMap`, `mapPartitions`, `mapGroups`, ...) pass JVM
@@ -530,6 +538,10 @@ case class CometExecRule(session: SparkSession, queryStagePrep: Boolean = false)
               "Comet does not convert the output of a typed Dataset operation when " +
                 s"$reader can stop reading it early, because filling an Arrow batch would " +
                 "run the user function on rows that Spark never reaches")
+          // The conversion reads ahead of input_file_name and friends, as it does over a leaf.
+          // See shouldApplySparkToColumnar.
+          case None if readsInputFileBlock =>
+            withFallbackReason(op, CometExecRule.INPUT_FILE_BLOCK_FALLBACK_REASON)
           case None =>
             convertTypedDatasetOutput(op)
         }
@@ -895,58 +907,6 @@ case class CometExecRule(session: SparkSession, queryStagePrep: Boolean = false)
     }
   }
 
-  private def normalizePlan(plan: SparkPlan): SparkPlan = {
-    plan.transformUp {
-      case p: ProjectExec =>
-        val newProjectList = p.projectList.map(normalize(_).asInstanceOf[NamedExpression])
-        ProjectExec(newProjectList, p.child)
-      case f: FilterExec =>
-        val newCondition = normalize(f.condition)
-        FilterExec(newCondition, f.child)
-    }
-  }
-
-  // Spark will normalize NaN and zero for floating point numbers for several cases.
-  // See `NormalizeFloatingNumbers` optimization rule in Spark.
-  // However, one exception is for comparison operators. Spark does not normalize NaN and zero
-  // because they are handled well in Spark (e.g., `SQLOrderingUtil.compareFloats`). But the
-  // comparison functions in arrow-rs do not normalize NaN and zero. So we need to normalize NaN
-  // and zero for comparison operators in Comet.
-  private def normalize(expr: Expression): Expression = {
-    expr.transformUp {
-      case EqualTo(left, right) =>
-        EqualTo(normalizeNaNAndZero(left), normalizeNaNAndZero(right))
-      case EqualNullSafe(left, right) =>
-        EqualNullSafe(normalizeNaNAndZero(left), normalizeNaNAndZero(right))
-      case GreaterThan(left, right) =>
-        GreaterThan(normalizeNaNAndZero(left), normalizeNaNAndZero(right))
-      case GreaterThanOrEqual(left, right) =>
-        GreaterThanOrEqual(normalizeNaNAndZero(left), normalizeNaNAndZero(right))
-      case LessThan(left, right) =>
-        LessThan(normalizeNaNAndZero(left), normalizeNaNAndZero(right))
-      case LessThanOrEqual(left, right) =>
-        LessThanOrEqual(normalizeNaNAndZero(left), normalizeNaNAndZero(right))
-      case Divide(left, right, evalMode) =>
-        Divide(left, normalizeNaNAndZero(right), evalMode)
-      case Remainder(left, right, evalMode) =>
-        Remainder(left, normalizeNaNAndZero(right), evalMode)
-    }
-  }
-
-  private def normalizeNaNAndZero(expr: Expression): Expression = {
-    expr match {
-      case _: KnownFloatingPointNormalized => expr
-      case FloatLiteral(f) if !f.isNaN && !f.equals(-0.0f) => expr
-      case DoubleLiteral(d) if !d.isNaN && !d.equals(-0.0d) => expr
-      case _ =>
-        expr.dataType match {
-          case _: FloatType | _: DoubleType =>
-            KnownFloatingPointNormalized(NormalizeNaNAndZero(expr))
-          case _ => expr
-        }
-    }
-  }
-
   /**
    * A relation keeps the cache format it was stored in, since `spark.sql.cache.serializer` is
    * static, so a plan that runs without Comet's native execution still reads relations cached in
@@ -977,6 +937,41 @@ case class CometExecRule(session: SparkSession, queryStagePrep: Boolean = false)
     newPlan
   }
 
+  /**
+   * Wraps the divisor of a floating-point `Divide` or `Remainder` in a Project or Filter in
+   * `NormalizeNaNAndZero`. Native comparisons already follow Spark's ordering, including the
+   * check for a zero divisor, so the quotient does not need this. It also canonicalizes a NaN
+   * divisor, though, and with it the NaN quotient: `1.0D / (-d)` of a NaN `d` is otherwise a NaN
+   * with the sign bit set, which `percentile_approx` still orders below every other value
+   * (https://github.com/apache/datafusion-comet/issues/6519). Remove this once that is fixed.
+   */
+  private def normalizeDivisors(plan: SparkPlan): SparkPlan = {
+    def normalize(expr: Expression): Expression = expr.transformUp {
+      case Divide(left, right, evalMode) => Divide(left, normalizeNaNAndZero(right), evalMode)
+      case Remainder(left, right, evalMode) =>
+        Remainder(left, normalizeNaNAndZero(right), evalMode)
+    }
+    plan.transformUp {
+      case p: ProjectExec =>
+        ProjectExec(p.projectList.map(normalize(_).asInstanceOf[NamedExpression]), p.child)
+      case f: FilterExec => FilterExec(normalize(f.condition), f.child)
+    }
+  }
+
+  private def normalizeNaNAndZero(expr: Expression): Expression = {
+    expr match {
+      case _: KnownFloatingPointNormalized => expr
+      case FloatLiteral(f) if !f.isNaN && !f.equals(-0.0f) => expr
+      case DoubleLiteral(d) if !d.isNaN && !d.equals(-0.0d) => expr
+      case _ =>
+        expr.dataType match {
+          case _: FloatType | _: DoubleType =>
+            KnownFloatingPointNormalized(NormalizeNaNAndZero(expr))
+          case _ => expr
+        }
+    }
+  }
+
   private def _apply(plan: SparkPlan): SparkPlan = {
     // We shouldn't transform Spark query plan if Comet is not loaded.
     if (!isCometLoaded(conf)) {
@@ -997,12 +992,15 @@ case class CometExecRule(session: SparkSession, queryStagePrep: Boolean = false)
         plan
       }
     } else {
-      val normalizedPlan = normalizePlan(plan)
+      val normalizedPlan = normalizeDivisors(plan)
 
+      // The rewrite removes the sorts of each join it converts, so put back any sort a kept
+      // operator above still needs. This runs before transform(), which converts the sorts it
+      // adds like any other SortExec.
       val planWithJoinRewritten = if (CometConf.COMET_FORCE_SHJ.get()) {
-        normalizedPlan.transformUp { case p =>
-          RewriteJoin.rewrite(p)
-        }
+        RewriteJoin.restoreRequiredOrdering(normalizedPlan.transformUp { case p =>
+          RewriteJoin.rewrite(p, conf)
+        })
       } else {
         normalizedPlan
       }
@@ -1437,7 +1435,27 @@ case class CometExecRule(session: SparkSession, queryStagePrep: Boolean = false)
         convertToComet(s, CometShuffleExchangeExec).getOrElse(preserveSparkAggregateBuffers(s)))
   }
 
-  private def shouldApplySparkToColumnar(conf: SQLConf, op: SparkPlan): Boolean = {
+  private def shouldApplySparkToColumnar(
+      conf: SQLConf,
+      op: SparkPlan,
+      readsInputFileBlock: => Boolean): Boolean = {
+    // A converted leaf reads ahead of the Spark operator that evaluates input_file_name and
+    // friends: the conversion fills a whole batch, and Comet operators above it may pull more
+    // before they emit. By the time Spark evaluates them, the leaf's reader may have moved on to
+    // a later file or unset InputFileBlockHolder at the end of its input, so rows would report
+    // another file's values or the unset defaults. Leave the leaf on Spark so that the plan above
+    // it stays on Spark too.
+    if (!canApplySparkToColumnar(conf, op)) {
+      false
+    } else if (readsInputFileBlock) {
+      withFallbackReason(op, CometExecRule.INPUT_FILE_BLOCK_FALLBACK_REASON)
+      false
+    } else {
+      true
+    }
+  }
+
+  private def canApplySparkToColumnar(conf: SQLConf, op: SparkPlan): Boolean = {
     // Only consider converting leaf nodes to columnar currently, so that all the following
     // operators can have a chance to be converted to columnar. Leaf operators that output
     // columnar batches, such as Spark's vectorized readers, will also be converted to native
