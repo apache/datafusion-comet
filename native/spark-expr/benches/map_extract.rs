@@ -21,12 +21,10 @@
 //! `datafusion-functions-nested` `map_extract` it overrides, so the gap that motivated
 //! <https://github.com/apache/datafusion-comet/issues/5795> stays visible.
 //!
-//! Read the ratio as a measurement of the pinned DataFusion 55.1.0, not as a permanent gap.
-//! DataFusion main has since rewritten `general_map_extract_inner` around a single
-//! `make_comparator` over the batch, so the per-comparison `ArrayRef` slicing that dominates the
-//! baseline here is specific to the version Comet ships today, and the baseline arm will get much
-//! faster at the next DataFusion bump. What survives that bump is the rest of the case for this
-//! kernel: one `eq` plus one gather, and the `ListExtract` unwrapping pass this removes.
+//! Historical ratios were measured against DataFusion 55.1.0, whose `map_extract`
+//! implementation is unchanged in 55.2.0. Re-run the comparison after dependency upgrades
+//! rather than assuming a permanent gap. Comet's kernel avoids the `ListExtract`
+//! unwrapping pass required by DataFusion's array-valued result.
 
 use arrow::array::builder::{MapBuilder, StringBuilder};
 use arrow::array::{
