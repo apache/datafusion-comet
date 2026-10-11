@@ -24,7 +24,10 @@
 //!
 //! `createPlan`, `setShufflePartitionPusher`, `executePlan` and `releasePlan` also depend on
 //! upcalls into the JVM (input iterators, the task memory manager, metrics, UDFs and scalar
-//! subqueries), so their core logic keeps holding JNI references.
+//! subqueries). Their core functions (`create_execution_context`,
+//! `register_shuffle_partition_pusher`, `execute_plan` and `release_plan`) take the JVM objects
+//! as JNI global references held by the `ExecutionContext` (`PlanJvmRefs`), and the steps that
+//! need an `Env` as callbacks: the memory pool factory, the pusher factory, and `PublishMetrics`.
 
 use super::{serde, utils::SparkArrowConvert};
 use crate::{
@@ -40,6 +43,7 @@ use std::collections::HashSet;
 use arrow::array::{Array, RecordBatch};
 use arrow::datatypes::DataType as ArrowDataType;
 use datafusion::common::{DataFusionError, Result as DataFusionResult};
+use datafusion::config::SpillCompression;
 use datafusion::execution::disk_manager::DiskManagerMode;
 use datafusion::execution::memory_pool::MemoryPool;
 use datafusion::execution::runtime_env::RuntimeEnvBuilder;
@@ -114,7 +118,7 @@ use tokio::sync::mpsc;
 use tokio::task::JoinHandle;
 
 use crate::execution::memory_pools::{
-    create_memory_pool, overcommit, parse_memory_pool_config, PlanMemoryPool,
+    create_memory_pool, overcommit, parse_memory_pool_config, MemoryPoolConfig, PlanMemoryPool,
 };
 use crate::execution::operators::{ScanExec, ShuffleScanExec};
 use crate::execution::shuffle::{
@@ -129,9 +133,9 @@ use crate::execution::tracing::{
 use crate::execution::memory_pools::logging_pool::LoggingMemoryPool;
 use crate::execution::spark_config::{
     SparkConfig, COMET_DEBUG_ENABLED, COMET_DEBUG_MEMORY,
-    COMET_EXEC_AGGREGATE_SKIP_PARTIAL_ENABLED, COMET_EXPLAIN_NATIVE_ENABLED,
-    COMET_MAX_TEMP_DIRECTORY_SIZE, COMET_PARQUET_ROW_FILTER_PUSHDOWN_ENABLED,
-    COMET_TRACING_ENABLED, SPARK_EXECUTOR_CORES,
+    COMET_EXEC_AGGREGATE_SKIP_PARTIAL_ENABLED, COMET_EXEC_SPILL_COMPRESSION_CODEC,
+    COMET_EXPLAIN_NATIVE_ENABLED, COMET_MAX_TEMP_DIRECTORY_SIZE,
+    COMET_PARQUET_ROW_FILTER_PUSHDOWN_ENABLED, COMET_TRACING_ENABLED, SPARK_EXECUTOR_CORES,
 };
 use crate::parquet::encryption_support::{CometEncryptionFactory, ENCRYPTION_FACTORY_ID};
 use crate::parquet::parquet_support::CometObjectStoreRegistry;
@@ -538,8 +542,9 @@ struct ExecutionContext {
     batch_producer: Option<BatchProducer>,
     /// The pool every reservation the plan makes goes through
     plan_memory: Arc<PlanMemoryPool>,
-    /// Native metrics
-    pub metrics: Arc<Global<JObject<'static>>>,
+    /// The JVM `CometMetricNode` the plan's metrics are published to. `None` only without a
+    /// JVM (unit tests).
+    pub metrics: Option<Arc<Global<JObject<'static>>>>,
     // The interval in milliseconds to update metrics
     pub metrics_update_interval: Option<Duration>,
     // The last update time of metrics
@@ -606,33 +611,16 @@ pub unsafe extern "system" fn Java_org_apache_comet_Native_createPlan(
     class_loader_obj: JObject,
 ) -> jlong {
     try_unwrap_or_throw(&e, |env| {
-        // Deserialize Spark configs
         let bytes = env.convert_byte_array(serialized_spark_configs)?;
-        let spark_configs = serde::deserialize_config(bytes.as_slice())?;
-        let spark_config: HashMap<String, String> = spark_configs.entries.into_iter().collect();
+        let settings = prepare_plan_settings(&bytes)?;
 
-        // Initialize the tokio runtime with spark.executor.cores as the default
-        // worker thread count, falling back to 1 if not set.
-        let executor_cores = spark_config.get_usize(SPARK_EXECUTOR_CORES, 1);
-        init_runtime(executor_cores);
-
-        // Access Comet configs
-        let debug_native = spark_config.get_bool(COMET_DEBUG_ENABLED);
-        let explain_native = spark_config.get_bool(COMET_EXPLAIN_NATIVE_ENABLED);
-        let tracing_enabled = spark_config.get_bool(COMET_TRACING_ENABLED);
-        let max_temp_directory_size =
-            spark_config.get_u64(COMET_MAX_TEMP_DIRECTORY_SIZE, 100 * 1024 * 1024 * 1024);
-        let logging_memory_pool = spark_config.get_bool(COMET_DEBUG_MEMORY);
-
-        with_trace("createPlan", tracing_enabled, || {
+        with_trace("createPlan", settings.tracing_enabled, || {
             // Init JVM classes
             JVMClasses::init(env);
 
             let start = Instant::now();
 
-            // Deserialize query plan
-            let bytes = env.convert_byte_array(serialized_query)?;
-            let spark_plan = serde::deserialize_op(bytes.as_slice())?;
+            let serialized_plan = env.convert_byte_array(serialized_query)?;
 
             let metrics = Arc::new(jni_new_global_ref!(env, metrics_node)?);
 
@@ -645,40 +633,10 @@ pub unsafe extern "system" fn Java_org_apache_comet_Native_createPlan(
                 input_sources.push(input_source);
             }
 
-            // Create DataFusion memory pool
             let task_memory_manager =
                 Arc::new(jni_new_global_ref!(env, comet_task_memory_manager_obj)?);
 
             let memory_pool_type = memory_pool_type.try_to_string(env)?;
-            let memory_pool_config = parse_memory_pool_config(
-                off_heap_mode != JNI_FALSE,
-                memory_pool_type,
-                memory_limit,
-            )?;
-            let memory_pool =
-                create_memory_pool(&memory_pool_config, task_memory_manager, task_attempt_id);
-
-            // Register the shared base pool before wrapping it for per-plan debug logging. The
-            // guard removes the entry if any later plan setup step fails.
-            //
-            // Registration is not conditional on this plan's tracing setting. `tracing.enabled` is
-            // a session config, so an executor can run a traced and an untraced plan at once,
-            // while the allocation counter a trace compares against is process-wide. Registering
-            // only traced plans would leave the untraced plan's reservation out of the total and
-            // report it as allocation held outside any pool.
-            let rust_thread_id = get_thread_id();
-            let memory_pool_registration = Some(ThreadMemoryPoolRegistration::new(
-                rust_thread_id,
-                id,
-                Arc::clone(&memory_pool),
-            ));
-
-            let memory_pool = if logging_memory_pool {
-                Arc::new(LoggingMemoryPool::new(task_attempt_id as u64, memory_pool))
-            } else {
-                memory_pool
-            };
-            let plan_memory = Arc::new(PlanMemoryPool::new(memory_pool));
 
             // Get local directories for storing spill files
             let num_local_dirs = local_dirs.len(env)?;
@@ -690,44 +648,11 @@ pub unsafe extern "system" fn Java_org_apache_comet_Native_createPlan(
                 local_dirs_vec.push(local_dir);
             }
 
-            // We need to keep the session context alive. Some session state like temporary
-            // dictionaries are stored in session context. If it is dropped, the temporary
-            // dictionaries will be dropped as well.
-            let session = prepare_datafusion_session_context(
-                batch_size as usize,
-                Arc::clone(&plan_memory) as Arc<dyn MemoryPool>,
-                local_dirs_vec,
-                max_temp_directory_size,
-                task_cpus as usize,
-                &spark_config,
-                &spark_plan,
-            )?;
-
-            let plan_creation_time = start.elapsed();
-
-            let metrics_update_interval = if metrics_update_interval > 0 {
-                Some(Duration::from_millis(metrics_update_interval as u64))
+            // Key unwrapper for encrypted files
+            let key_unwrapper = if !key_unwrapper_obj.is_null() {
+                Some(Arc::new(jni_new_global_ref!(env, key_unwrapper_obj)?))
             } else {
                 None
-            };
-
-            // Handle key unwrapper for encrypted files
-            if !key_unwrapper_obj.is_null() {
-                let encryption_factory = CometEncryptionFactory {
-                    key_unwrapper: Arc::new(jni_new_global_ref!(env, key_unwrapper_obj)?),
-                };
-                session.runtime_env().register_parquet_encryption_factory(
-                    ENCRYPTION_FACTORY_ID,
-                    Arc::new(encryption_factory),
-                );
-            }
-
-            let session = Arc::new(session);
-
-            let tracing_event_name = if tracing_enabled {
-                build_tracing_event_name(&spark_plan)
-            } else {
-                String::new()
             };
 
             // Capture the driving Spark task's TaskContext and context ClassLoader as JNI global
@@ -745,39 +670,223 @@ pub unsafe extern "system" fn Java_org_apache_comet_Native_createPlan(
                 None
             };
 
-            let exec_context = Box::new(ExecutionContext {
+            let inputs = PlanInputs {
                 id,
-                spark_plan,
+                settings,
+                serialized_plan,
                 partition_count: partition_count as usize,
-                root_op: None,
-                scans: vec![],
-                shuffle_scans: vec![],
-                input_sources,
-                stream: None,
-                batch_producer: None,
-                plan_memory,
-                metrics,
+                batch_size: batch_size as usize,
+                off_heap_mode: off_heap_mode != JNI_FALSE,
+                memory_pool_type,
+                memory_limit,
+                task_attempt_id,
+                task_cpus: task_cpus as usize,
+                local_dirs: local_dirs_vec,
                 metrics_update_interval,
-                metrics_last_update_time: Instant::now(),
-                plan_creation_time,
-                session_ctx: session,
-                debug_native,
-                explain_native,
-                tracing_enabled,
-                rust_thread_id,
-                tracing_memory_metric_name: format!(
-                    "thread_{rust_thread_id}_comet_memory_reserved"
-                ),
-                tracing_event_name,
-                task_context,
-                class_loader,
-                shuffle_partition_pusher: None,
-                memory_pool_registration,
-            });
+                start,
+                jvm: PlanJvmRefs {
+                    metrics: Some(metrics),
+                    input_sources,
+                    key_unwrapper,
+                    task_context,
+                    class_loader,
+                },
+            };
+            // The pool acquires memory from Spark's task memory manager.
+            let exec_context = create_execution_context(inputs, |config| {
+                create_memory_pool(config, task_memory_manager, task_attempt_id)
+            })?;
 
             Ok(Box::into_raw(exec_context) as i64)
         })
     })
+}
+
+/// What `createPlan` takes from the Spark configs.
+struct PlanSettings {
+    spark_config: HashMap<String, String>,
+    debug_native: bool,
+    explain_native: bool,
+    tracing_enabled: bool,
+    max_temp_directory_size: u64,
+    logging_memory_pool: bool,
+}
+
+/// Deserializes the Spark configs of a plan and initializes the Tokio runtime from them. The
+/// first step of `Native.createPlan`, before its trace span opens.
+fn prepare_plan_settings(serialized_spark_configs: &[u8]) -> CometResult<PlanSettings> {
+    let spark_configs = serde::deserialize_config(serialized_spark_configs)?;
+    let spark_config: HashMap<String, String> = spark_configs.entries.into_iter().collect();
+
+    // Initialize the tokio runtime with spark.executor.cores as the default
+    // worker thread count, falling back to 1 if not set.
+    let executor_cores = spark_config.get_usize(SPARK_EXECUTOR_CORES, 1);
+    init_runtime(executor_cores);
+
+    // Access Comet configs
+    Ok(PlanSettings {
+        debug_native: spark_config.get_bool(COMET_DEBUG_ENABLED),
+        explain_native: spark_config.get_bool(COMET_EXPLAIN_NATIVE_ENABLED),
+        tracing_enabled: spark_config.get_bool(COMET_TRACING_ENABLED),
+        max_temp_directory_size: spark_config
+            .get_u64(COMET_MAX_TEMP_DIRECTORY_SIZE, 100 * 1024 * 1024 * 1024),
+        logging_memory_pool: spark_config.get_bool(COMET_DEBUG_MEMORY),
+        spark_config,
+    })
+}
+
+/// The arguments of `Native.createPlan`, converted from JNI.
+struct PlanInputs {
+    id: i64,
+    settings: PlanSettings,
+    serialized_plan: Vec<u8>,
+    partition_count: usize,
+    batch_size: usize,
+    off_heap_mode: bool,
+    memory_pool_type: String,
+    memory_limit: i64,
+    task_attempt_id: i64,
+    task_cpus: usize,
+    local_dirs: Vec<String>,
+    /// In milliseconds; zero or less publishes metrics only when the plan is released.
+    metrics_update_interval: i64,
+    /// When plan creation started, the start of `ExecutionContext::plan_creation_time`.
+    start: Instant,
+    jvm: PlanJvmRefs,
+}
+
+/// The JVM objects a plan calls back into, as JNI global references. Each is `None` or empty
+/// only without a JVM (unit tests) or when Spark passes none.
+struct PlanJvmRefs {
+    metrics: Option<Arc<Global<JObject<'static>>>>,
+    input_sources: Vec<Arc<Global<JObject<'static>>>>,
+    key_unwrapper: Option<Arc<Global<JObject<'static>>>>,
+    task_context: Option<Arc<Global<JObject<'static>>>>,
+    class_loader: Option<Arc<Global<JObject<'static>>>>,
+}
+
+/// Creates the execution context of a native plan: deserializes the plan, sets up its memory
+/// pool and DataFusion session, and registers the pool for tracing. The plan's operators are
+/// created by the first `execute_plan`. Core of `Native.createPlan`.
+///
+/// `memory_pool_for` builds the pool every reservation of the plan goes through from its
+/// config; `Native.createPlan` builds one that acquires memory from Spark.
+fn create_execution_context(
+    inputs: PlanInputs,
+    memory_pool_for: impl FnOnce(&MemoryPoolConfig) -> Arc<dyn MemoryPool>,
+) -> CometResult<Box<ExecutionContext>> {
+    let PlanInputs {
+        id,
+        settings,
+        serialized_plan,
+        partition_count,
+        batch_size,
+        off_heap_mode,
+        memory_pool_type,
+        memory_limit,
+        task_attempt_id,
+        task_cpus,
+        local_dirs,
+        metrics_update_interval,
+        start,
+        jvm,
+    } = inputs;
+
+    // Deserialize query plan
+    let spark_plan = serde::deserialize_op(serialized_plan.as_slice())?;
+
+    // Create DataFusion memory pool
+    let memory_pool_config =
+        parse_memory_pool_config(off_heap_mode, memory_pool_type, memory_limit)?;
+    let memory_pool = memory_pool_for(&memory_pool_config);
+
+    // Register the shared base pool before wrapping it for per-plan debug logging. The
+    // guard removes the entry if any later plan setup step fails.
+    //
+    // Registration is not conditional on this plan's tracing setting. `tracing.enabled` is
+    // a session config, so an executor can run a traced and an untraced plan at once,
+    // while the allocation counter a trace compares against is process-wide. Registering
+    // only traced plans would leave the untraced plan's reservation out of the total and
+    // report it as allocation held outside any pool.
+    let rust_thread_id = get_thread_id();
+    let memory_pool_registration = Some(ThreadMemoryPoolRegistration::new(
+        rust_thread_id,
+        id,
+        Arc::clone(&memory_pool),
+    ));
+
+    let memory_pool = if settings.logging_memory_pool {
+        Arc::new(LoggingMemoryPool::new(task_attempt_id as u64, memory_pool))
+    } else {
+        memory_pool
+    };
+    let plan_memory = Arc::new(PlanMemoryPool::new(memory_pool));
+
+    // We need to keep the session context alive. Some session state like temporary
+    // dictionaries are stored in session context. If it is dropped, the temporary
+    // dictionaries will be dropped as well.
+    let session = prepare_datafusion_session_context(
+        batch_size,
+        Arc::clone(&plan_memory) as Arc<dyn MemoryPool>,
+        local_dirs,
+        settings.max_temp_directory_size,
+        task_cpus,
+        &settings.spark_config,
+        &spark_plan,
+    )?;
+
+    let plan_creation_time = start.elapsed();
+
+    let metrics_update_interval = if metrics_update_interval > 0 {
+        Some(Duration::from_millis(metrics_update_interval as u64))
+    } else {
+        None
+    };
+
+    // Handle key unwrapper for encrypted files
+    if let Some(key_unwrapper) = jvm.key_unwrapper {
+        let encryption_factory = CometEncryptionFactory { key_unwrapper };
+        session.runtime_env().register_parquet_encryption_factory(
+            ENCRYPTION_FACTORY_ID,
+            Arc::new(encryption_factory),
+        );
+    }
+
+    let session = Arc::new(session);
+
+    let tracing_event_name = if settings.tracing_enabled {
+        build_tracing_event_name(&spark_plan)
+    } else {
+        String::new()
+    };
+
+    Ok(Box::new(ExecutionContext {
+        id,
+        spark_plan,
+        partition_count,
+        root_op: None,
+        scans: vec![],
+        shuffle_scans: vec![],
+        input_sources: jvm.input_sources,
+        stream: None,
+        batch_producer: None,
+        plan_memory,
+        metrics: jvm.metrics,
+        metrics_update_interval,
+        metrics_last_update_time: Instant::now(),
+        plan_creation_time,
+        session_ctx: session,
+        debug_native: settings.debug_native,
+        explain_native: settings.explain_native,
+        tracing_enabled: settings.tracing_enabled,
+        rust_thread_id,
+        tracing_memory_metric_name: format!("thread_{rust_thread_id}_comet_memory_reserved"),
+        tracing_event_name,
+        task_context: jvm.task_context,
+        class_loader: jvm.class_loader,
+        shuffle_partition_pusher: None,
+        memory_pool_registration,
+    }))
 }
 
 /// Binds one task-owned shuffle callback before native execution is initialized.
@@ -799,23 +908,36 @@ pub extern "system" fn Java_org_apache_comet_Native_setShufflePartitionPusher(
         }
 
         let exec_context = get_execution_context(exec_context);
-        if exec_context.root_op.is_some() {
-            return Err(CometError::Internal(
-                "Remote shuffle callback cannot be registered after native execution starts"
-                    .to_string(),
-            ));
-        }
-
-        if exec_context.shuffle_partition_pusher.is_some() {
-            return Err(CometError::Internal(
-                "Remote shuffle callback has already been registered for this task".to_string(),
-            ));
-        }
-
-        let pusher = JavaShufflePartitionPusher::try_new(env, &callback)?;
-        exec_context.shuffle_partition_pusher = Some(Arc::new(pusher));
-        Ok(())
+        register_shuffle_partition_pusher(exec_context, || {
+            Ok(Arc::new(JavaShufflePartitionPusher::try_new(
+                env, &callback,
+            )?))
+        })
     })
+}
+
+/// Registers the plan's remote shuffle callback, built by `make_pusher` only once the plan
+/// is known to accept one: before execution starts, and once. Core of
+/// `Native.setShufflePartitionPusher`, whose pusher calls back into the JVM.
+fn register_shuffle_partition_pusher(
+    exec_context: &mut ExecutionContext,
+    make_pusher: impl FnOnce() -> CometResult<Arc<dyn ShufflePartitionPusher>>,
+) -> CometResult<()> {
+    if exec_context.root_op.is_some() {
+        return Err(CometError::Internal(
+            "Remote shuffle callback cannot be registered after native execution starts"
+                .to_string(),
+        ));
+    }
+
+    if exec_context.shuffle_partition_pusher.is_some() {
+        return Err(CometError::Internal(
+            "Remote shuffle callback has already been registered for this task".to_string(),
+        ));
+    }
+
+    exec_context.shuffle_partition_pusher = Some(make_pusher()?);
+    Ok(())
 }
 
 /// Skipping is opt-in (`spark.comet.exec.aggregate.skipPartial.enabled`): once DataFusion's probe
@@ -901,6 +1023,24 @@ fn prepare_datafusion_session_context(
         session_config =
             session_config.set_str("datafusion.execution.parquet.reorder_filters", "true");
     }
+
+    // Translate Comet's spill codec into DataFusion's spill compression, which DataFusion
+    // otherwise leaves uncompressed. Set before the pass-through below for the same reason,
+    // so an explicit `spark.comet.datafusion.execution.spill_compression` still wins.
+    let spill_compression = match spark_config
+        .get(COMET_EXEC_SPILL_COMPRESSION_CODEC)
+        .map(String::as_str)
+    {
+        None | Some("lz4") => SpillCompression::Lz4Frame,
+        Some("zstd") => SpillCompression::Zstd,
+        Some("none") => SpillCompression::Uncompressed,
+        Some(codec) => {
+            return Err(CometError::Config(format!(
+                "Unsupported spill compression codec: {codec}"
+            )))
+        }
+    };
+    session_config = session_config.with_spill_compression(spill_compression);
 
     // Pass through DataFusion configs from Spark.
     // e.g: spark-shell --conf spark.comet.datafusion.sql_parser.parse_float_as_decimal=true
@@ -1259,93 +1399,8 @@ pub unsafe extern "system" fn Java_org_apache_comet_Native_executePlan(
         };
 
         let result = with_trace(tracing_label, tracing_enabled, || {
-            let exec_context_id = exec_context.id;
-
-            // Initialize the execution stream.
-            // Because we don't know if input arrays are dictionary-encoded when we create
-            // query plan, we need to defer stream initialization to first time execution.
-            if exec_context.root_op.is_none() {
-                let start = Instant::now();
-                let planner =
-                    PhysicalPlanner::new(Arc::clone(&exec_context.session_ctx), partition)
-                        .with_exec_id(exec_context_id)
-                        .with_sql_text_pool(&exec_context.spark_plan)
-                        .with_task_context(exec_context.task_context.clone())
-                        .with_class_loader(exec_context.class_loader.clone())
-                        .with_shuffle_partition_pusher(
-                            exec_context.shuffle_partition_pusher.clone(),
-                        );
-                let (scans, shuffle_scans, root_op) = planner.create_plan(
-                    &exec_context.spark_plan,
-                    &mut exec_context.input_sources.clone(),
-                    exec_context.partition_count,
-                )?;
-                let physical_plan_time = start.elapsed();
-
-                exec_context.plan_creation_time += physical_plan_time;
-                exec_context.scans = scans;
-                exec_context.shuffle_scans = shuffle_scans;
-
-                if exec_context.explain_native {
-                    let formatted_plan_str =
-                        DisplayableExecutionPlan::new(root_op.native_plan.as_ref()).indent(true);
-                    info!("Comet native query plan:\n{formatted_plan_str:}");
-                }
-
-                let task_ctx = exec_context.session_ctx.task_ctx();
-                // Each Comet native execution corresponds to a single Spark partition,
-                // so we should always execute partition 0.
-                let stream = root_op.native_plan.execute(0, task_ctx)?;
-
-                if exec_context.scans.is_empty() && exec_context.shuffle_scans.is_empty() {
-                    // No JVM data sources — spawn onto tokio so the executor
-                    // thread parks in blocking_recv instead of busy-polling.
-                    exec_context.batch_producer =
-                        Some(BatchProducer::spawn(&get_runtime(), stream));
-                } else {
-                    exec_context.stream = Some(stream);
-                }
-                exec_context.root_op = Some(root_op);
-            } else {
-                // Pull input batches
-                pull_input_batches(exec_context)?;
-            }
-
-            if let Some(producer) = &mut exec_context.batch_producer {
-                match producer.next_batch()? {
-                    Some(batch) => {
-                        // Publish on the configured interval, as the ScanExec path below does,
-                        // since each publish walks the whole metric tree and calls into the JVM.
-                        // `releasePlan` publishes the final values.
-                        update_metrics_on_interval(env, exec_context)?;
-                        return prepare_output(
-                            env,
-                            array_addrs,
-                            schema_addrs,
-                            batch,
-                            exec_context.debug_native,
-                        );
-                    }
-                    None => {
-                        log_plan_metrics(exec_context, stage_id, partition);
-                        return Ok(-1);
-                    }
-                }
-            }
-
-            // ScanExec path: JVM-fed scans return `Pending` until `pull_input_batches` refills
-            // them and wakes the stream. A poll that is still pending, with nothing having woken
-            // the stream by the end of the pull, waits on native I/O, and `next_batch` parks
-            // until it completes.
-            let mut stream = exec_context.stream.take().unwrap();
-            let next = get_runtime().block_on(next_batch(&mut stream, || {
-                pull_input_batches(exec_context)?;
-                update_metrics_on_interval(env, exec_context)
-            }));
-            exec_context.stream = Some(stream);
-            let next = next?;
-            update_metrics_on_interval(env, exec_context)?;
-            match next {
+            let mut publish_metrics = |ctx: &ExecutionContext| update_metrics(env, ctx);
+            match execute_plan(exec_context, stage_id, partition, &mut publish_metrics)? {
                 Some(batch) => prepare_output(
                     env,
                     array_addrs,
@@ -1353,10 +1408,7 @@ pub unsafe extern "system" fn Java_org_apache_comet_Native_executePlan(
                     batch,
                     exec_context.debug_native,
                 ),
-                None => {
-                    log_plan_metrics(exec_context, stage_id, partition);
-                    Ok(-1)
-                }
+                None => Ok(-1),
             }
         });
 
@@ -1381,6 +1433,103 @@ pub unsafe extern "system" fn Java_org_apache_comet_Native_executePlan(
     })
 }
 
+/// Publishes a plan's metrics to the JVM. The plan entry points pass one that calls into the JVM
+/// through their `Env`, so the core functions that drive a plan take no JNI types.
+type PublishMetrics<'a> = dyn FnMut(&ExecutionContext) -> CometResult<()> + 'a;
+
+/// Returns the plan's next output batch, or `None` once the plan has produced all of its output.
+/// The first call creates the plan's operators and starts its stream; a plan with no JVM input
+/// then runs on a Tokio task. Metrics are published through `publish_metrics` on the configured
+/// interval. Core of `Native.executePlan`; the JVM-fed scans call back into the JVM for their
+/// input.
+fn execute_plan(
+    exec_context: &mut ExecutionContext,
+    stage_id: i32,
+    partition: i32,
+    publish_metrics: &mut PublishMetrics,
+) -> CometResult<Option<RecordBatch>> {
+    let exec_context_id = exec_context.id;
+
+    // Initialize the execution stream.
+    // Because we don't know if input arrays are dictionary-encoded when we create
+    // query plan, we need to defer stream initialization to first time execution.
+    if exec_context.root_op.is_none() {
+        let start = Instant::now();
+        let planner = PhysicalPlanner::new(Arc::clone(&exec_context.session_ctx), partition)
+            .with_exec_id(exec_context_id)
+            .with_sql_text_pool(&exec_context.spark_plan)
+            .with_task_context(exec_context.task_context.clone())
+            .with_class_loader(exec_context.class_loader.clone())
+            .with_shuffle_partition_pusher(exec_context.shuffle_partition_pusher.clone());
+        let (scans, shuffle_scans, root_op) = planner.create_plan(
+            &exec_context.spark_plan,
+            &mut exec_context.input_sources.clone(),
+            exec_context.partition_count,
+        )?;
+        let physical_plan_time = start.elapsed();
+
+        exec_context.plan_creation_time += physical_plan_time;
+        exec_context.scans = scans;
+        exec_context.shuffle_scans = shuffle_scans;
+
+        if exec_context.explain_native {
+            let formatted_plan_str =
+                DisplayableExecutionPlan::new(root_op.native_plan.as_ref()).indent(true);
+            info!("Comet native query plan:\n{formatted_plan_str:}");
+        }
+
+        let task_ctx = exec_context.session_ctx.task_ctx();
+        // Each Comet native execution corresponds to a single Spark partition,
+        // so we should always execute partition 0.
+        let stream = root_op.native_plan.execute(0, task_ctx)?;
+
+        if exec_context.scans.is_empty() && exec_context.shuffle_scans.is_empty() {
+            // No JVM data sources — spawn onto tokio so the executor
+            // thread parks in blocking_recv instead of busy-polling.
+            exec_context.batch_producer = Some(BatchProducer::spawn(&get_runtime(), stream));
+        } else {
+            exec_context.stream = Some(stream);
+        }
+        exec_context.root_op = Some(root_op);
+    } else {
+        // Pull input batches
+        pull_input_batches(exec_context)?;
+    }
+
+    if let Some(producer) = &mut exec_context.batch_producer {
+        return match producer.next_batch()? {
+            Some(batch) => {
+                // Publish on the configured interval, as the ScanExec path below does,
+                // since each publish walks the whole metric tree and calls into the JVM.
+                // `releasePlan` publishes the final values.
+                update_metrics_on_interval(exec_context, publish_metrics)?;
+                Ok(Some(batch))
+            }
+            None => {
+                log_plan_metrics(exec_context, stage_id, partition);
+                Ok(None)
+            }
+        };
+    }
+
+    // ScanExec path: JVM-fed scans return `Pending` until `pull_input_batches` refills
+    // them and wakes the stream. A poll that is still pending, with nothing having woken
+    // the stream by the end of the pull, waits on native I/O, and `next_batch` parks
+    // until it completes.
+    let mut stream = exec_context.stream.take().unwrap();
+    let next = get_runtime().block_on(next_batch(&mut stream, || {
+        pull_input_batches(exec_context)?;
+        update_metrics_on_interval(exec_context, publish_metrics)
+    }));
+    exec_context.stream = Some(stream);
+    let next = next?;
+    update_metrics_on_interval(exec_context, publish_metrics)?;
+    if next.is_none() {
+        log_plan_metrics(exec_context, stage_id, partition);
+    }
+    Ok(next)
+}
+
 #[no_mangle]
 /// Drop the native query plan object and context object.
 pub extern "system" fn Java_org_apache_comet_Native_releasePlan(
@@ -1400,48 +1549,58 @@ pub extern "system" fn Java_org_apache_comet_Native_releasePlan(
         // Reclaim ownership of the context up front so that it is always freed, even if a step
         // below fails. Dropping it releases the memory pool and every JNI global ref the context
         // holds.
-        let mut execution_context: Box<ExecutionContext> =
+        let execution_context: Box<ExecutionContext> =
             Box::from_raw(exec_context as *mut ExecutionContext);
 
-        // A plan with no JVM input runs on a Tokio task. Stop it and drop its stream first, so the
-        // stream's memory is returned before the Spark task can end, and the metrics flushed below
-        // include what the stream records as it is dropped.
-        let producer_stopped = execution_context
-            .batch_producer
-            .take()
-            .map_or(Ok(()), BatchProducer::stop);
-
-        // Unregister this context's pool and, when tracing, emit the remaining total for the
-        // thread. Every context registers, but only a traced one writes counters, so the
-        // reservations are read only then.
-        drop(execution_context.memory_pool_registration.take());
-        if execution_context.tracing_enabled {
-            log_memory_usage(
-                &execution_context.tracing_memory_metric_name,
-                total_reserved_for_thread(execution_context.rust_thread_id) as u64,
-            );
-        }
-
-        let metrics_flushed = update_metrics(env, &mut execution_context);
-
-        // Once this returns the Spark task can end, and Spark hands whatever the task still holds
-        // to other tasks. Dropping the plan aborts the tasks its operators spawned, and they give
-        // back what they hold the next time they yield, so wait for them.
-        let id = execution_context.id;
-        let plan_memory = Arc::clone(&execution_context.plan_memory);
-        drop(execution_context);
-        let held = plan_memory.wait_until_released(Instant::now() + PLAN_MEMORY_RELEASE_TIMEOUT);
-        if held > 0 {
-            warn!(
-                "Native plan {id} still holds {held} bytes {PLAN_MEMORY_RELEASE_TIMEOUT:?} after \
-                 it was released. They go back to Spark only when whatever holds them drops them, \
-                 which can be after the Spark task has ended and its memory has been given to \
-                 another task."
-            );
-        }
-
-        producer_stopped.and(metrics_flushed)
+        release_plan(execution_context, &mut |ctx| update_metrics(env, ctx))
     })
+}
+
+/// Releases a plan: stops it, publishes its final metrics through `publish_metrics`, drops it,
+/// and waits briefly for its memory reservations to be returned. The context is freed even if a
+/// step fails. Core of `Native.releasePlan`.
+fn release_plan(
+    mut execution_context: Box<ExecutionContext>,
+    publish_metrics: &mut PublishMetrics,
+) -> CometResult<()> {
+    // A plan with no JVM input runs on a Tokio task. Stop it and drop its stream first, so the
+    // stream's memory is returned before the Spark task can end, and the metrics flushed below
+    // include what the stream records as it is dropped.
+    let producer_stopped = execution_context
+        .batch_producer
+        .take()
+        .map_or(Ok(()), BatchProducer::stop);
+
+    // Unregister this context's pool and, when tracing, emit the remaining total for the
+    // thread. Every context registers, but only a traced one writes counters, so the
+    // reservations are read only then.
+    drop(execution_context.memory_pool_registration.take());
+    if execution_context.tracing_enabled {
+        log_memory_usage(
+            &execution_context.tracing_memory_metric_name,
+            total_reserved_for_thread(execution_context.rust_thread_id) as u64,
+        );
+    }
+
+    let metrics_flushed = publish_metrics(&execution_context);
+
+    // Once this returns the Spark task can end, and Spark hands whatever the task still holds
+    // to other tasks. Dropping the plan aborts the tasks its operators spawned, and they give
+    // back what they hold the next time they yield, so wait for them.
+    let id = execution_context.id;
+    let plan_memory = Arc::clone(&execution_context.plan_memory);
+    drop(execution_context);
+    let held = plan_memory.wait_until_released(Instant::now() + PLAN_MEMORY_RELEASE_TIMEOUT);
+    if held > 0 {
+        warn!(
+            "Native plan {id} still holds {held} bytes {PLAN_MEMORY_RELEASE_TIMEOUT:?} after \
+             it was released. They go back to Spark only when whatever holds them drops them, \
+             which can be after the Spark task has ended and its memory has been given to \
+             another task."
+        );
+    }
+
+    producer_stopped.and(metrics_flushed)
 }
 
 /// How long `releasePlan` waits for a released plan's reservations to be returned. The tasks
@@ -1450,11 +1609,11 @@ pub extern "system" fn Java_org_apache_comet_Native_releasePlan(
 /// Spark task.
 const PLAN_MEMORY_RELEASE_TIMEOUT: Duration = Duration::from_secs(1);
 
-/// Runs `update_metrics` once the configured interval has passed and, with tracing on, samples
+/// Runs `publish_metrics` once the configured interval has passed and, with tracing on, samples
 /// this thread's pool reservation at the same cadence.
 fn update_metrics_on_interval(
-    env: &mut Env,
     exec_context: &mut ExecutionContext,
+    publish_metrics: &mut PublishMetrics,
 ) -> CometResult<()> {
     let Some(interval) = exec_context.metrics_update_interval else {
         return Ok(());
@@ -1463,7 +1622,7 @@ fn update_metrics_on_interval(
     if now - exec_context.metrics_last_update_time < interval {
         return Ok(());
     }
-    update_metrics(env, exec_context)?;
+    publish_metrics(exec_context)?;
     exec_context.metrics_last_update_time = now;
     if exec_context.tracing_enabled {
         log_memory_usage(
@@ -1474,12 +1633,13 @@ fn update_metrics_on_interval(
     Ok(())
 }
 
-fn update_metrics(env: &mut Env, exec_context: &mut ExecutionContext) -> CometResult<()> {
-    if let Some(native_query) = &exec_context.root_op {
-        let metrics = exec_context.metrics.as_obj();
-        update_comet_metric(env, metrics, native_query)
-    } else {
-        Ok(())
+/// Publishes the plan's metrics to its JVM `CometMetricNode`, once the plan has been created.
+fn update_metrics(env: &mut Env, exec_context: &ExecutionContext) -> CometResult<()> {
+    match (&exec_context.root_op, &exec_context.metrics) {
+        (Some(native_query), Some(metrics)) => {
+            update_comet_metric(env, metrics.as_obj(), native_query)
+        }
+        _ => Ok(()),
     }
 }
 
@@ -3380,5 +3540,245 @@ mod tests {
                 .contains("0 schema addresses for 1 array addresses"),
             "{error}"
         );
+    }
+
+    /// A range of `num_elements` longs from 0, which needs no JVM input and reserves no memory.
+    fn range_operator(num_elements: i64) -> Operator {
+        use datafusion_comet_proto::spark_operator::RangeScan;
+
+        Operator {
+            plan_id: 1,
+            op_struct: Some(OpStruct::RangeScan(RangeScan {
+                start: 0,
+                step: 1,
+                num_elements,
+                num_slices: 1,
+            })),
+            ..Default::default()
+        }
+    }
+
+    fn range_plan(num_elements: i64) -> Vec<u8> {
+        use prost::Message;
+        range_operator(num_elements).encode_to_vec()
+    }
+
+    /// A range of `num_elements` longs sorted in descending order. The sort buffers its whole
+    /// input, so the plan holds a memory reservation while it emits its output.
+    fn sorted_range_plan(num_elements: i64) -> Vec<u8> {
+        use datafusion_comet_proto::spark_expression::{
+            self, expr::ExprStruct, NullOrdering, SortDirection,
+        };
+        use datafusion_comet_proto::spark_operator::Sort;
+        use prost::Message;
+
+        let column = Expr {
+            expr_struct: Some(ExprStruct::Bound(spark_expression::BoundReference {
+                index: 0,
+                // A Spark `long`.
+                datatype: Some(spark_expression::DataType {
+                    type_id: 4,
+                    type_info: None,
+                }),
+            })),
+            ..Default::default()
+        };
+        let descending = Expr {
+            expr_struct: Some(ExprStruct::SortOrder(Box::new(
+                spark_expression::SortOrder {
+                    child: Some(Box::new(column)),
+                    direction: SortDirection::Descending as i32,
+                    null_ordering: NullOrdering::NullsLast as i32,
+                },
+            ))),
+            ..Default::default()
+        };
+        Operator {
+            plan_id: 2,
+            children: vec![range_operator(num_elements)],
+            op_struct: Some(OpStruct::Sort(Sort {
+                sort_orders: vec![descending],
+                ..Default::default()
+            })),
+            ..Default::default()
+        }
+        .encode_to_vec()
+    }
+
+    fn long_values(batch: &RecordBatch) -> Vec<i64> {
+        arrow::array::AsArray::as_primitive::<arrow::datatypes::Int64Type>(batch.column(0))
+            .values()
+            .to_vec()
+    }
+
+    /// Creates a plan without a JVM: no metrics node or JVM input, and a memory pool backed by a
+    /// fake Spark.
+    fn create_test_plan(serialized_plan: Vec<u8>) -> CometResult<Box<ExecutionContext>> {
+        use crate::execution::memory_pools::create_memory_pool_with_fake_spark;
+        use datafusion_comet_proto::spark_config::ConfigMap;
+        use prost::Message;
+
+        let configs = ConfigMap {
+            entries: HashMap::from([(SPARK_EXECUTOR_CORES.to_string(), "2".to_string())]),
+        };
+        let inputs = PlanInputs {
+            id: -6201,
+            settings: prepare_plan_settings(&configs.encode_to_vec())?,
+            serialized_plan,
+            partition_count: 1,
+            batch_size: 4,
+            off_heap_mode: true,
+            memory_pool_type: "greedy_unified".to_string(),
+            memory_limit: 1 << 30,
+            task_attempt_id: -6201,
+            task_cpus: 1,
+            local_dirs: vec![std::env::temp_dir().to_str().unwrap().to_string()],
+            metrics_update_interval: 0,
+            start: Instant::now(),
+            jvm: PlanJvmRefs {
+                metrics: None,
+                input_sources: vec![],
+                key_unwrapper: None,
+                task_context: None,
+                class_loader: None,
+            },
+        };
+        create_execution_context(inputs, |config| {
+            create_memory_pool_with_fake_spark(config, -6201, 1 << 30)
+        })
+    }
+
+    #[test]
+    fn execute_plan_drains_a_plan() {
+        let _guard = serial();
+        let mut exec_context = create_test_plan(range_plan(10)).unwrap();
+        assert!(
+            exec_context.root_op.is_none(),
+            "operators are created on first execution"
+        );
+
+        let mut values = Vec::new();
+        while let Some(batch) = execute_plan(&mut exec_context, 0, 0, &mut |_| Ok(())).unwrap() {
+            assert!(
+                batch.num_rows() <= 4,
+                "batches follow the configured batch size"
+            );
+            values.extend(long_values(&batch));
+        }
+        assert_eq!(values, (0..10).collect::<Vec<i64>>());
+        assert!(
+            exec_context.batch_producer.is_some(),
+            "a plan without JVM input runs on a Tokio task"
+        );
+        release_plan(exec_context, &mut |_| Ok(())).unwrap();
+    }
+
+    /// The sort holds a reservation while it emits its 10,000 sorted rows, 4 at a time.
+    const SORTED_ROWS: i64 = 10_000;
+
+    #[test]
+    fn release_plan_returns_the_plans_memory() {
+        let _guard = serial();
+        let mut exec_context = create_test_plan(sorted_range_plan(SORTED_ROWS)).unwrap();
+
+        // Without an update interval, metrics are published only when the plan is released.
+        let mut publishes = 0;
+        let batch = execute_plan(&mut exec_context, 0, 0, &mut |_| {
+            publishes += 1;
+            Ok(())
+        })
+        .unwrap()
+        .expect("the sort emits a first batch");
+        assert_eq!(long_values(&batch), [9999, 9998, 9997, 9996]);
+        assert_eq!(publishes, 0);
+
+        // Released mid-stream, as when Spark stops reading early, with the sort still holding
+        // its buffered input.
+        let plan_memory = Arc::clone(&exec_context.plan_memory);
+        assert!(plan_memory.reserved() > 0, "the sort holds a reservation");
+        release_plan(exec_context, &mut |ctx| {
+            assert!(
+                ctx.root_op.is_some(),
+                "the final metrics are of the executed plan"
+            );
+            publishes += 1;
+            Ok(())
+        })
+        .unwrap();
+        assert_eq!(publishes, 1);
+        assert_eq!(plan_memory.reserved(), 0);
+    }
+
+    #[test]
+    fn release_plan_reports_a_failed_metrics_publish() {
+        let _guard = serial();
+        let mut exec_context = create_test_plan(sorted_range_plan(SORTED_ROWS)).unwrap();
+        execute_plan(&mut exec_context, 0, 0, &mut |_| Ok(())).unwrap();
+        let plan_memory = Arc::clone(&exec_context.plan_memory);
+        assert!(plan_memory.reserved() > 0, "the sort holds a reservation");
+
+        let error = release_plan(exec_context, &mut |_| {
+            Err(CometError::Internal("metrics node is gone".to_string()))
+        })
+        .unwrap_err();
+        assert!(
+            error.to_string().contains("metrics node is gone"),
+            "{error}"
+        );
+        // The plan is still released.
+        assert_eq!(plan_memory.reserved(), 0);
+    }
+
+    #[test]
+    fn create_execution_context_rejects_bad_input() {
+        let _guard = serial();
+        let error = create_test_plan(vec![0xff, 0xff, 0xff])
+            .err()
+            .expect("a malformed plan is rejected");
+        assert!(error.to_string().contains("deserialize"), "{error}");
+    }
+
+    struct NoopPusher;
+
+    impl ShufflePartitionPusher for NoopPusher {
+        fn push_partition_data(
+            &self,
+            _partition_id: i32,
+            _data: &[u8],
+        ) -> datafusion::common::Result<()> {
+            Ok(())
+        }
+    }
+
+    #[test]
+    fn register_shuffle_partition_pusher_once_before_execution() {
+        let _guard = serial();
+        let mut exec_context = create_test_plan(range_plan(3)).unwrap();
+        register_shuffle_partition_pusher(&mut exec_context, || Ok(Arc::new(NoopPusher))).unwrap();
+        assert!(exec_context.shuffle_partition_pusher.is_some());
+
+        // The pusher is built only once the plan is known to accept it.
+        let error = register_shuffle_partition_pusher(&mut exec_context, || {
+            panic!("a rejected pusher must not be built")
+        })
+        .unwrap_err();
+        assert!(
+            error.to_string().contains("already been registered"),
+            "{error}"
+        );
+
+        let mut exec_context = create_test_plan(range_plan(3)).unwrap();
+        execute_plan(&mut exec_context, 0, 0, &mut |_| Ok(())).unwrap();
+        let error = register_shuffle_partition_pusher(&mut exec_context, || {
+            panic!("a rejected pusher must not be built")
+        })
+        .unwrap_err();
+        assert!(
+            error
+                .to_string()
+                .contains("cannot be registered after native execution starts"),
+            "{error}"
+        );
+        release_plan(exec_context, &mut |_| Ok(())).unwrap();
     }
 }

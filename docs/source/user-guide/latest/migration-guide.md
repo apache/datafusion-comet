@@ -59,12 +59,40 @@ key is removed.
 
 ## Upgrading to Comet 1.2.0
 
+Comet `1.2.0` makes no behavior changes that need a `spark.comet.legacy.*` key. The changes below
+need none either, but check whether any of them applies to your deployment.
+
+### In-Memory Cache Enabled by Default
+
+`spark.comet.exec.inMemoryCache.enabled` now defaults to `true` on Spark 3.5 and later. There, an
+application that loads `CometPlugin` now stores what it caches with `CACHE TABLE`, `df.cache()` or
+`df.persist()` in Comet's Arrow format instead of Spark's, and Comet scans it natively. On Spark 3.4
+the default stays `false`; see [In-Memory Cache](in-memory-cache.md) for why. The format does not
+change query results, but it can change performance. Spark's own cache scan can read Comet's format
+more slowly than Spark's, which matters when a session turns Comet or its native execution off
+after caching, and Comet records a fallback reason on such a scan. See
+[In-Memory Cache](in-memory-cache.md#limitations).
+
+The format is chosen once, when the application starts. To keep Spark's format, set
+`spark.comet.exec.inMemoryCache.enabled=false` then. Comet also keeps Spark's format without that
+setting when the application:
+
+- starts with `spark.comet.enabled` or `spark.comet.exec.enabled` set to `false`.
+- leaves Comet shuffle enabled without one of Comet's shuffle managers, so that Comet disables
+  itself.
+- uses Kryo with `spark.kryo.registrationRequired=true` and has not registered Comet's cached
+  batch, because Kryo would reject it. To use Comet's format, register Comet's classes with
+  `spark.kryo.registrator=org.apache.comet.CometKryoRegistrator`; see
+  [Kryo](in-memory-cache.md#kryo).
+
+An application that sets `spark.sql.cache.serializer` itself keeps the serializer it chose.
+
 ### Deprecated and Removed Settings
 
 Using `spark.comet.sparkToColumnar.enabled` and `spark.comet.sparkToColumnar.supportedOperatorList`
-to convert ranges, in-memory cached tables, RDDs and queries without a `FROM` clause to Arrow is
-deprecated, and will stop working in a future major release. Each of these now has a config of its
-own:
+to convert ranges, in-memory cached tables, RDDs, queries without a `FROM` clause and Data Source V1
+relations that are not file-based to Arrow is deprecated, and will stop working in a future major
+release. Each of these now has a config of its own:
 
 | Operator in the list | Config                                       |
 | -------------------- | -------------------------------------------- |
@@ -72,13 +100,16 @@ own:
 | `InMemoryTableScan`  | `spark.comet.convert.inMemoryCache.enabled`  |
 | `RDDScan`            | `spark.comet.convert.rdd.enabled`            |
 | `OneRowRelation`     | `spark.comet.convert.oneRowRelation.enabled` |
+| `RowDataSourceScan`  | `spark.comet.convert.rowDataSource.enabled`  |
 
 `spark.comet.sparkToColumnar.supportedOperatorList` now defaults to an empty list. When it is not
-set, `spark.comet.sparkToColumnar.enabled=true` still converts these four, and a list that names one
-of them still converts it, as before. In both cases the driver logs a warning that names the config
-to use instead. Before Spark 4.1, Spark plans a query without a `FROM` clause as an `RDDScan`, so on
-those versions `RDDScan` in the list also converted it. The list remains the way to convert other
-leaf operators, such as the scan of a Data Source V2 connector.
+set, `spark.comet.sparkToColumnar.enabled=true` still converts the first four, which the list named
+by default, and a list that names any of the five still converts it, as before. In both cases the
+driver logs a warning that names the config to use instead. Before Spark 4.1, Spark plans a query
+without a `FROM` clause as an `RDDScan`, so on those versions `RDDScan` in the list also converted
+it. `spark.comet.convert.oneRowRelation.enabled` is on by default, so such a query is now converted
+without either setting, and logs no warning. The list remains the way to convert other leaf
+operators, such as the scan of a Data Source V2 connector.
 
 ## Upgrading to Comet 1.1.0
 

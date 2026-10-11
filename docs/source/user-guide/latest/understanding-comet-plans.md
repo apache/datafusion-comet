@@ -298,7 +298,7 @@ by role. Names match what is shown in the plan output.
 | `CometNativeScan`        | Parquet scan that runs entirely in Rust via DataFusion.                                                            |
 | `CometIcebergNativeScan` | Iceberg Parquet scan that runs entirely in Rust via DataFusion.                                                    |
 | `CometCsvNativeScan`     | CSV scan that runs entirely in Rust via DataFusion (experimental).                                                 |
-| `CometInMemoryTableScan` | JVM-side scan of a table cached in Comet's Arrow format (experimental, disabled by default).                       |
+| `CometInMemoryTableScan` | JVM-side scan of a table cached in Comet's Arrow format (enabled by default from Spark 3.5).                       |
 | `CometLocalTableScan`    | JVM-side scan of a `LocalTableScanExec` (disabled by default).                                                     |
 | `CometEmptyRelation`     | Empty native input that replaces `EmptyRelationExec` (Spark 4.0 and later).                                        |
 | `CometRange`             | Generates the rows of `spark.range` and SQL `range()` in native code, replacing `RangeExec` (disabled by default). |
@@ -322,7 +322,7 @@ consecutively in a plan, they execute as a single fused block.
 | `CometBroadcastHashJoin`       | `BroadcastHashJoinExec`                                                           |
 | `CometBroadcastNestedLoopJoin` | `BroadcastNestedLoopJoinExec`                                                     |
 | `CometSortMergeJoin`           | `SortMergeJoinExec`                                                               |
-| `CometMergeRows`               | `MergeRowsExec` (Spark 3.5.x / 4.0.x; opt-in)                                     |
+| `CometMergeRows`               | `MergeRowsExec` (Spark 3.5+; opt-in)                                              |
 | `CometWindowExec`              | `WindowExec`                                                                      |
 | `CometWindowGroupLimitExec`    | `WindowGroupLimitExec` (Spark 3.5 and later)                                      |
 | `CometSample`                  | `SampleExec` (sampling without replacement)                                       |

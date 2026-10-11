@@ -742,6 +742,9 @@ under the License.
                          separately and writes the name twice, failing the build. Excluding the
                          already relocated copy on the way in leaves exactly one. -->
                     <exclude>META-INF/services/${comet.shade.packageName}.arrow.*</exclude>
+                    <!-- The IncludeResourceTransformer below writes this jar's NOTICE, so no input
+                         may supply one: shade would write META-INF/NOTICE twice. -->
+                    <exclude>META-INF/NOTICE</exclude>
                   </excludes>
                 </filter>
                 <filter>
@@ -795,6 +798,15 @@ under the License.
                      and its contents. -->
                 <transformer
                   implementation="org.apache.maven.plugins.shade.resource.ServicesResourceTransformer" />
+                <!-- The ASF parent POM generates a META-INF/NOTICE holding only the ASF boilerplate,
+                     and shade kept that one, so the attributions in NOTICE.txt (Apache Gluten) never
+                     reached the jar or the sources jar. Ship NOTICE.txt itself instead, which keeps
+                     the two in step without a second copy to maintain. -->
+                <transformer
+                  implementation="org.apache.maven.plugins.shade.resource.IncludeResourceTransformer">
+                  <resource>META-INF/NOTICE</resource>
+                  <file>${project.basedir}/../NOTICE.txt</file>
+                </transformer>
               </transformers>
             </configuration>
           </execution>

@@ -15,7 +15,7 @@
 // specific language governing permissions and limitations
 // under the License.
 
-use crate::{Cast, EvalMode, IfExpr, NormalizeNaNAndZero, SparkCastOptions};
+use crate::{Cast, EvalMode, IfExpr, NormalizeNaNAndZero, SparkCastOptions, SparkComparison};
 use arrow::array::{
     downcast_primitive, Array, ArrayRef, AsArray, BooleanArray, GenericByteArray, PrimitiveArray,
 };
@@ -152,7 +152,7 @@ fn coerce_branch(
     if data_type == common_type {
         return expr;
     }
-    let cast_options = SparkCastOptions::new(EvalMode::Legacy, "UTC", false);
+    let cast_options = SparkCastOptions::new(EvalMode::Legacy, "UTC");
     Arc::new(Cast::new(
         expr,
         common_type.clone(),
@@ -396,6 +396,8 @@ fn is_infallible(expr: &Arc<dyn PhysicalExpr>, input_schema: &Schema) -> bool {
     }
     let node_is_infallible = if let Some(binary) = expr.downcast_ref::<BinaryExpr>() {
         binary_is_infallible(binary, input_schema)
+    } else if let Some(comparison) = expr.downcast_ref::<SparkComparison>() {
+        comparison.is_infallible(input_schema)
     } else if let Some(cast) = expr.downcast_ref::<Cast>() {
         cast.is_infallible(input_schema)
     } else if let Some(normalize) = expr.downcast_ref::<NormalizeNaNAndZero>() {
@@ -836,6 +838,7 @@ fn merge_nulls(num_rows: usize, branches: &[Branch]) -> Option<NullBuffer> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::{spark_comparison, FloatOperands};
     use arrow::array::{
         BinaryArray, Int32Array, Int64Array, LargeStringArray, StringArray, StructArray,
         TimestampMicrosecondArray,
@@ -1137,24 +1140,40 @@ mod tests {
 
     #[test]
     fn infallible_expressions() {
+        let list_of = |item: DataType| DataType::List(Arc::new(Field::new("item", item, true)));
         let schema = Schema::new(vec![
             Field::new("i", DataType::Int64, true),
             Field::new("j", DataType::Int32, true),
             Field::new("d", DataType::Float64, true),
+            Field::new("e", DataType::Float64, true),
             Field::new("s", DataType::Utf8, true),
             Field::new("dec", DataType::Decimal128(10, 2), true),
+            Field::new("l", list_of(DataType::Float64), true),
+            Field::new("m", list_of(DataType::Float64), true),
+            Field::new(
+                "dictionary",
+                list_of(DataType::Dictionary(
+                    Box::new(DataType::Int32),
+                    Box::new(DataType::Float64),
+                )),
+                true,
+            ),
         ]);
         let c = |name: &str| col(name, &schema).unwrap();
         let cast = |e: Arc<dyn PhysicalExpr>, to: DataType| -> Arc<dyn PhysicalExpr> {
             Arc::new(Cast::new(
                 e,
                 to,
-                SparkCastOptions::new_without_timezone(EvalMode::Ansi, false),
+                SparkCastOptions::new_without_timezone(EvalMode::Ansi),
                 None,
                 None,
             ))
         };
         let infallible = |e: Arc<dyn PhysicalExpr>| is_infallible(&e, &schema);
+        // A comparison as the planner builds it, which follows Spark's ordering for floats
+        let compare = |left: &str, op: Operator, right: Arc<dyn PhysicalExpr>| {
+            spark_comparison(c(left), op, right, &schema, FloatOperands::Normalize).unwrap()
+        };
 
         assert!(infallible(c("i")));
         assert!(infallible(lit("x")));
@@ -1181,6 +1200,13 @@ mod tests {
             DataType::Float64,
             c("d")
         ))));
+        for op in [Operator::Lt, Operator::Eq, Operator::IsNotDistinctFrom] {
+            assert!(infallible(compare("d", op, lit(1.5))), "d {op} 1.5");
+            assert!(infallible(compare("d", op, c("e"))), "d {op} e");
+        }
+        for op in [Operator::Lt, Operator::IsNotDistinctFrom] {
+            assert!(infallible(compare("l", op, c("m"))), "l {op} m");
+        }
 
         // Only a boolean can be negated, and only a float normalized
         assert!(!infallible(Arc::new(NotExpr::new(c("i")))));
@@ -1188,6 +1214,8 @@ mod tests {
             DataType::Int64,
             c("i")
         ))));
+        // A nested comparison fails on a dictionary-encoded leaf against a plain one
+        assert!(!infallible(compare("l", Operator::Lt, c("dictionary"))));
         // Integer division and remainder fail on a zero divisor
         assert!(!infallible(binary(c("i"), Operator::Divide, c("i"))));
         assert!(!infallible(binary(c("i"), Operator::Modulo, c("i"))));
