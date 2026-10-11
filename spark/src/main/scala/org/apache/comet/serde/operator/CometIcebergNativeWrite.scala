@@ -158,10 +158,19 @@ object CometIcebergNativeWrite extends CometOperatorSerde[IcebergWriteExec] {
   // from spark.hadoop.*. They do not alter an Iceberg data-file write request, so they must not
   // make every otherwise-clean S3 write ineligible. This also permits explicit overrides, which
   // are harmless on the write path for the same reason.
+  //
+  // Some Spark distributions also set S3A delete, read and committer defaults cluster-wide. The
+  // native writer does not go through S3A, `fadvise` is a read hint, and Iceberg commits through
+  // table metadata rather than a Hadoop output committer, so these are harmless here as well.
   private val IgnoredHadoopS3Keys: Set[String] = Set(
     "fs.s3a.downgrade.syncable.exceptions",
     "fs.s3a.vectored.read.max.merged.size",
-    "fs.s3a.vectored.read.min.seek.size")
+    "fs.s3a.vectored.read.min.seek.size",
+    "fs.s3a.bulk.delete.page.size",
+    "fs.s3a.experimental.input.fadvise",
+    "fs.s3a.committer.magic.enabled",
+    "fs.s3a.committer.name",
+    "fs.s3a.committer.threads")
 
   // Audited against the pinned iceberg-rust S3 parser
   // (`iceberg/src/io/storage/config/s3.rs` and `storage/opendal/src/s3.rs`). Do not broaden this
