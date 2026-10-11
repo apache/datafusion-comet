@@ -43,10 +43,15 @@ needs.
 
 Comet's memory pool only tracks memory that an operator explicitly reserves, which in practice means the batches
 an operator deliberately accumulates: the sort buffer, the build side of a hash join, hash aggregation state, and the
-shuffle writer's buffered partitions. Memory that is not reserved is invisible to the pool no matter how much of it
-there is. That includes:
+shuffle writer's buffered partitions, along with the write buffers, encode scratch and zstd context of the native
+shuffle writer when it writes to more than one local partition (the scratch is charged as each write ends, so its
+transient peak within a write, the write buffer size plus one block, is not). Memory that is not reserved is
+invisible to the pool no matter how much of it there is. That includes:
 
 - per-batch working memory in expression kernels and Arrow array builders,
+- the write buffers and encode scratch of the single-partition, empty-schema and remote shuffle writers
+  (`spark.comet.shuffle.native.writeBufferSize` sizes the local ones), and the zstd context they keep while
+  encoding when `spark.comet.shuffle.compression.codec` is `zstd`,
 - decompression buffers and Parquet reader structures,
 - object store request buffers and the async runtime's own machinery,
 - Arrow buffers allocated on the JVM side, which no budget covers at all,
@@ -174,7 +179,12 @@ alongside the JVM's own non-heap memory. To size the overhead from it:
    non-heap memory, and add the most untracked memory seen on any executor.
 3. Add a margin on top. The log can miss the true peak between samples, and none of the figures
    includes the allocator's fragmentation and retained pages, or memory allocated by native C
-   libraries such as zstd.
+   libraries such as zstd. The zstd context of the native shuffle writer is the exception: when
+   `spark.comet.shuffle.compression.codec` is `zstd`, a shuffle task writing to more than one local
+   partition reserves its context while spilling or writing its output, so that memory is in
+   `reserved` but never in `allocated`, and the untracked memory worked out from the log
+   understates what has to fit in the overhead by one context per such task (about 1.3 MiB at the
+   default level, close to 8 MiB at levels 7 and 8).
 
 For example, a 16 GiB executor derives an overhead of 1638 MiB. If the line above has the most
 untracked memory in its log, that is 5412.3 + (310.4 - 96.2) - 3890.0 = 1736.5 MiB. The overhead
