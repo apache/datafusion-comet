@@ -277,11 +277,10 @@ object CometLiteral extends CometExpressionSerde[Literal] with CometTypeShim wit
    *   - Any map key type native map kernels cannot reproduce Spark equality for (floating-point,
    *     collated string, complex), or whose interpreted ordering is undefined
    *     (`CalendarIntervalType`), at any nesting level. See [[mapKeyTypesExpandable]].
-   *   - Arrays whose elements are structs, because [[needsExpansion]] does not walk into a
-   *     `StructType`. Native `CreateNamedStruct` builds a 1-row `StructArray` whenever all of its
-   *     children are scalars (`values_to_arrays`), which collides with the surrounding batch's
-   *     row count, and its proto message carries no type, so Spark's declared field nullability
-   *     cannot survive the wire either way. A struct that is only a map value is safe:
+   *   - Arrays whose elements are structs: `ListLiteral` cannot carry struct values, and
+   *     [[needsExpansion]] stops at `StructType`. Native `CreateNamedStruct` supports scalar
+   *     broadcasting and preserves Catalyst field nullability, but this rewrite does not expand
+   *     folded struct elements into constructors. A struct that is only a map value is safe:
    *     `CometCreateMap` hands the whole rebuilt `CreateMap` to the JVM codegen dispatcher, so
    *     Spark's own code builds the struct.
    *   - Folded maps with duplicate keys, see [[hasDuplicateMapKeys]].

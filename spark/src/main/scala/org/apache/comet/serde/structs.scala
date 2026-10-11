@@ -56,6 +56,8 @@ object CometCreateNamedStruct extends CometExpressionSerde[CreateNamedStruct] {
       val structBuilder = ExprOuterClass.CreateNamedStruct.newBuilder()
       structBuilder.addAllValues(valExprs.map(_.get).asJava)
       structBuilder.addAllNames(expr.names.map(_.toString).asJava)
+      // Native expressions can conservatively report nullable even when Catalyst proves otherwise.
+      structBuilder.addAllFieldNullable(expr.valExprs.map(v => Boolean.box(v.nullable)).asJava)
 
       Some(
         ExprOuterClass.Expr
