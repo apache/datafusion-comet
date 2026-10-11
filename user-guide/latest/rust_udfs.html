@@ -965,7 +965,8 @@ Rust SDK as the way to write a UDF for now.</p>
 </pre></div>
 </div>
 <p>Registration loads the library on the driver and verifies that a function with that name exists, so
-a bad path or a missing function fails immediately with a clear error rather than at execution time.</p>
+a bad path or a missing function fails immediately with a clear error rather than at execution time.
+It also checks that Comet can carry the argument and return types natively.</p>
 <p>The function is then callable from SQL or the DataFrame API like any other:</p>
 <div class="highlight-scala notranslate"><div class="highlight"><pre><span></span><span class="n">spark</span><span class="p">.</span><span class="n">range</span><span class="p">(</span><span class="mi">0</span><span class="p">,</span><span class="w"> </span><span class="mi">5</span><span class="p">).</span><span class="n">selectExpr</span><span class="p">(</span><span class="s">"add_one(id) AS y"</span><span class="p">).</span><span class="n">show</span><span class="p">()</span>
 </pre></div>
@@ -983,6 +984,20 @@ way it would for any other shared object, through <code class="docutils literal 
 <code class="docutils literal notranslate"><span class="pre">DYLD_LIBRARY_PATH</span></code> on macOS. That is a convenience, not a sandbox: Comet does not restrict which
 paths may be loaded, so it makes no difference to the trust decision described under
 <a class="reference internal" href="#limitations">Limitations</a>.</p>
+<section id="when-spark-evaluates-the-call">
+<h3>When Spark evaluates the call<a class="headerlink" href="#when-spark-evaluates-the-call" title="Link to this heading">#</a></h3>
+<p>A call runs only inside Comet’s native execution. Spark cannot run the function, so wherever Spark
+has to evaluate the call itself, the query fails with <code class="docutils literal notranslate"><span class="pre">CometUdfNotEvaluatedException</span></code>. That happens:</p>
+<ul class="simple">
+<li><p>when Comet does not take the operator holding the call, for example because another expression
+in it is not supported, or because the call is an argument of an ordinary Scala or Java UDF. The
+query’s extended explain output gives the reason.</p></li>
+<li><p>while Spark plans the query: over local data such as <code class="docutils literal notranslate"><span class="pre">VALUES</span></code>, which the optimizer evaluates
+eagerly, in a filter on partition columns, which Spark evaluates to prune partitions, and in the
+sort keys of a global sort, which Spark evaluates on a sample of rows to choose range bounds. To
+sort on a UDF’s result, select it as a column and sort on that column instead.</p></li>
+</ul>
+</section>
 </section>
 <section id="return-types">
 <h2>Return types<a class="headerlink" href="#return-types" title="Link to this heading">#</a></h2>
@@ -1114,6 +1129,9 @@ the first panic, and the SDK cannot prevent it.</p>
 <p>This feature is at an early stage. The current limitations are:</p>
 <ul class="simple">
 <li><p><strong>Scalar functions only.</strong> Aggregate, window, and table functions are not supported.</p></li>
+<li><p><strong>Spark cannot evaluate a call.</strong> A query fails wherever Spark would have to run the function
+itself, which includes a few places while it plans the query. See
+<a class="reference internal" href="#when-spark-evaluates-the-call">When Spark evaluates the call</a>.</p></li>
 <li><p><strong>Immutable functions only.</strong> A UDF must return the same output for the same input. Comet plans
 every Rust UDF with DataFusion’s <code class="docutils literal notranslate"><span class="pre">Volatility::Immutable</span></code>, so a function that reads a clock, draws
 from an RNG, or carries state across batches may be folded at plan time, evaluated once and
@@ -1192,7 +1210,10 @@ Rebuild your UDF library when upgrading Comet.</p></li>
   <nav class="bd-toc-nav page-toc" aria-labelledby="pst-page-navigation-heading-2">
     <ul class="visible nav section-nav flex-column">
 <li class="toc-h2 nav-item toc-entry"><a class="reference internal nav-link" href="#writing-a-udf">Writing a UDF</a></li>
-<li class="toc-h2 nav-item toc-entry"><a class="reference internal nav-link" href="#registering-and-calling-a-udf">Registering and calling a UDF</a></li>
+<li class="toc-h2 nav-item toc-entry"><a class="reference internal nav-link" href="#registering-and-calling-a-udf">Registering and calling a UDF</a><ul class="nav section-nav flex-column">
+<li class="toc-h3 nav-item toc-entry"><a class="reference internal nav-link" href="#when-spark-evaluates-the-call">When Spark evaluates the call</a></li>
+</ul>
+</li>
 <li class="toc-h2 nav-item toc-entry"><a class="reference internal nav-link" href="#return-types">Return types</a></li>
 <li class="toc-h2 nav-item toc-entry"><a class="reference internal nav-link" href="#supported-types">Supported types</a></li>
 <li class="toc-h2 nav-item toc-entry"><a class="reference internal nav-link" href="#error-handling">Error handling</a></li>
