@@ -366,26 +366,10 @@ jobs:
         uses: ./.github/actions/setup-builder
         with:
           rust-version: ${{ env.RUST_VERSION }}
-          jdk-version: 17  # JDK only needed for JVM module proto generation
+          jdk-version: 17  # JNI headers and libjvm are native build inputs.
 
-      - name: Restore Cargo cache
-        id: cargo-cache
-        uses: actions/cache/restore@v6
-        with:
-          path: |
-            ~/.cargo/registry
-            ~/.cargo/git
-            native/target
-          key: ${{ runner.os }}-cargo-ci-${{ hashFiles('native/**/Cargo.lock', 'native/**/Cargo.toml') }}
-
-      - name: Build native library (CI profile)
-        run: |
-          cd native
-          # CI profile: same overflow behavior as release, but faster compilation
-          # (no LTO, parallel codegen)
-          cargo build --profile ci
-        env:
-          RUSTFLAGS: "-Ctarget-cpu=x86-64-v3 -Clink-arg=-fuse-ld=bfd"
+      - name: Build or restore native library
+        uses: ./.github/actions/build-native-ci
 
       - name: Upload native library
         uses: ./.github/actions/upload-artifact-retry
@@ -397,19 +381,6 @@ jobs:
             native/target/ci/libcomet.so
             native/target/ci/libcomet_test_udfs.so
           retention-days: 1
-
-      - name: Save Cargo cache
-        uses: actions/cache/save@v6
-        # The push run is the cache warmer (see the header), and it writes only
-        # when this dependency set has no entry yet. A scheduled run at the
-        # same sha would only re-archive an entry that already exists.
-        if: github.event_name == 'push' && github.ref == 'refs/heads/main' && steps.cargo-cache.outputs.cache-hit != 'true'
-        with:
-          path: |
-            ~/.cargo/registry
-            ~/.cargo/git
-            native/target
-          key: ${{ runner.os }}-cargo-ci-${{ hashFiles('native/**/Cargo.lock', 'native/**/Cargo.toml') }}
 
   # Run Rust tests (runs in parallel with build-native, uses debug builds).
   #
@@ -652,17 +623,6 @@ jobs:
           name: native-lib-linux
           # Download to release/ since Maven's -Prelease expects libcomet.so there
           path: native/target/release/
-
-      # Restore cargo registry cache (for any cargo commands that might run)
-      - name: Restore Cargo registry
-        uses: actions/cache/restore@v6
-        with:
-          path: |
-            ~/.cargo/registry
-            ~/.cargo/git
-          key: ${{ runner.os }}-cargo-registry-${{ hashFiles('native/**/Cargo.lock') }}
-          restore-keys: |
-            ${{ runner.os }}-cargo-registry-
 
       - name: Java test steps
         uses: ./.github/actions/java-test

@@ -440,6 +440,67 @@ entry through `restore-keys` and downloads whatever else it needs, which is
 what a cold pull request already did. See the push-tier discussion above for
 which jobs do run on main and therefore do write.
 
+## Reusing Linux native builds
+
+The Linux, Spark SQL, Iceberg and manual writer workflows call
+`.github/actions/build-native-ci` after checkout and `setup-builder`. PR, queue,
+scheduled and manual runs restore `native/target/ci/libcomet.so` and skip Cargo
+on an exact library match. Only pushes to `main` save caches. Main skips Cargo
+when both the library and dependency-scoped incremental cache match, and builds
+when either lacks a match to replenish it. The exact library is downloaded after
+restoring Cargo, since an incremental entry can contain an older library. If the
+library is evicted between lookup and download, the action builds it again.
+An incremental cache hit alone never replaces compilation. Builds use
+`cargo build --locked --profile ci`; manifest changes requiring a lockfile update
+must include that update to `native/Cargo.lock`. Artifact paths remain unchanged.
+After compilation, the action checks Cargo's `libcomet.d` dependency list before
+publishing either cache. Local build inputs must be covered by the tracked-file
+fingerprint, with explicit exceptions for generated protobuf modules and JDK
+files. Adding a new file input requires extending that contract.
+
+`dev/ci/native-cache-key.py` snapshots native sources, protobufs, dependencies,
+Cargo configuration and shared build/setup actions before source generation.
+It uses index modes/object IDs after rejecting modified, missing, unmerged,
+symlinked, skip-worktree or assume-unchanged native inputs. It includes Rust
+versions, architecture, the installed compiler/protobuf toolchain dependency
+closure, JNI header and `libjvm.so` contents, and Cargo/Rust, C/C++ compiler/flag
+and HDFS environment overrides. JDK release labels and the JDK component of PATH
+do not distinguish otherwise identical native inputs.
+Caller workflows are excluded because their selected tools and environment are
+observed directly. Spark edits, documentation, generated files and disabled
+contrib sources preserve the key; contrib manifests remain inputs for `--locked`.
+Benchmarks do not enter the library key. The input lists and glob matcher are shared
+with routing in `compute-changes.py` and fingerprinted independently of its
+unrelated routing policy. Native manifests select validation on pull requests and
+the merge queue as well as main's cache warmer. Code generation uses `x86-64-v3`.
+
+The helper supports the official Rust container and `setup-builder`. Introducing
+external tools or files requires updating that contract: an override's path does
+not identify arbitrary contents stored there. Both binary and incremental keys
+retain compiler/linker package versions and their recursive installed Depends/
+Pre-Depends closure, including providers and indirect libraries such as GCC's
+`libisl`, `libmpfr` and `libgmp`. JNI headers and the actual `libjvm.so` link input
+are hashed instead of a JDK release label. Changes to unrelated applications or
+JDK installation paths preserve reuse; changes to the selected package versions
+or JNI/JVM contents invalidate both caches. Build tools outside the official package/tool contract
+require extending it before reuse.
+
+Every consumer must match main's native producer environment to reuse its library
+or incremental cache. Different toolchain packages or JNI/JVM contents need a
+compatible publisher; otherwise consumers repeatedly build cold. Preflight checks the shared Linux
+runner, Rust container, toolchain/JDK selection and declared producer environment,
+including changes before the native action. New environment overrides must be
+reviewed against the fingerprint before they are admitted by this check.
+
+The CI incremental cache holds only `native/target`, including compiled
+dependencies. Cargo fetches registry and Git dependency sources as needed; those
+downloads are not duplicated in the repository's limited cache storage. Its key
+contains only dependencies and the build environment: source-only main pushes
+reuse the existing entry without uploading another full target. Their source
+fingerprint changes only the compact library key.
+Rust checks and tests remain uncached, preserving main's cache budget. Preflight checks
+fingerprint invalidation, main's routing, and the action's cache-hit/miss behavior.
+
 ## Retrying flaky network operations
 
 **Maven.** `.mvn/maven.config` tunes the Maven Resolver HTTP transport: six

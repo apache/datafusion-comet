@@ -1,0 +1,86 @@
+# Licensed to the Apache Software Foundation (ASF) under one
+# or more contributor license agreements.  See the NOTICE file
+# distributed with this work for additional information
+# regarding copyright ownership.  The ASF licenses this file
+# to you under the Apache License, Version 2.0 (the
+# "License"); you may not use this file except in compliance
+# with the License.  You may obtain a copy of the License at
+#
+#   http://www.apache.org/licenses/LICENSE-2.0
+#
+# Unless required by applicable law or agreed to in writing,
+# software distributed under the License is distributed on an
+# "AS IS" BASIS, WITHOUT WARRANTIES OR CONDITIONS OF ANY
+# KIND, either express or implied.  See the License for the
+# specific language governing permissions and limitations
+# under the License.
+
+name: Build or restore the Linux CI native library
+description: 'Reuse an exact-input native library, otherwise build it with the CI profile'
+runs:
+  using: composite
+  steps:
+    # Call after checkout and setup-builder. Compute once, before Cargo writes
+    # generated Rust files, and use the same keys for both restore and save.
+    - name: Fingerprint native build inputs
+      id: key
+      shell: bash
+      env:
+        RUSTFLAGS: "-Ctarget-cpu=x86-64-v3 -Clink-arg=-fuse-ld=bfd"
+      run: |
+        python3 dev/ci/native-cache-key.py --profile ci --github-output "$GITHUB_OUTPUT"
+        # Keep one flag definition without changing later steps in the caller.
+        echo "rustflags=$RUSTFLAGS" >> "$GITHUB_OUTPUT"
+
+    - name: Look up native library cache
+      id: library-cache
+      uses: actions/cache/restore@v6
+      with:
+        path: native/target/ci/libcomet.so
+        key: ${{ steps.key.outputs.library-key }}
+        lookup-only: true
+
+    - name: Restore incremental Cargo cache
+      id: cargo-cache
+      if: steps.library-cache.outputs.cache-hit != 'true' || (github.event_name == 'push' && github.ref == 'refs/heads/main')
+      uses: actions/cache/restore@v6
+      with:
+        path: native/target
+        key: ${{ steps.key.outputs.cargo-key }}
+
+    # A dependency-scoped target can contain an older libcomet.so. Restore the
+    # exact library after Cargo so the target cannot overwrite it on two hits.
+    - name: Restore exact native library
+      id: library-restore
+      if: steps.library-cache.outputs.cache-hit == 'true'
+      uses: actions/cache/restore@v6
+      with:
+        path: native/target/ci/libcomet.so
+        key: ${{ steps.key.outputs.library-key }}
+
+    - name: Build native library (CI profile)
+      if: steps.library-restore.outputs.cache-hit != 'true' || (github.event_name == 'push' && github.ref == 'refs/heads/main' && steps.cargo-cache.outputs.cache-hit != 'true')
+      shell: bash
+      env:
+        RUSTFLAGS: ${{ steps.key.outputs.rustflags }}
+      run: |
+        # A library miss (including eviction after lookup) always builds. Main
+        # also builds to populate a missing dependency cache, even on a library
+        # hit. Two hits use the separately restored exact library above.
+        (cd native && cargo build --locked --profile ci)
+        # Git trusts the checkout root, not its native/ subdirectory.
+        python3 dev/ci/native-cache-key.py --check-depinfo native/target/ci/libcomet.d
+
+    - name: Save native library cache
+      if: github.event_name == 'push' && github.ref == 'refs/heads/main' && steps.library-restore.outputs.cache-hit != 'true'
+      uses: actions/cache/save@v6
+      with:
+        path: native/target/ci/libcomet.so
+        key: ${{ steps.key.outputs.library-key }}
+
+    - name: Save incremental Cargo cache
+      if: github.event_name == 'push' && github.ref == 'refs/heads/main' && steps.cargo-cache.outputs.cache-hit != 'true'
+      uses: actions/cache/save@v6
+      with:
+        path: native/target
+        key: ${{ steps.key.outputs.cargo-key }}
