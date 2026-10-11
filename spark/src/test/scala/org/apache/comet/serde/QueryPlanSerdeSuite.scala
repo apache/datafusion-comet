@@ -21,12 +21,35 @@ package org.apache.comet.serde
 
 import org.scalatest.funsuite.AnyFunSuite
 
+import org.apache.spark.sql.catalyst.expressions.{AtLeastNNonNulls, Literal}
+import org.apache.spark.sql.internal.SQLConf
 import org.apache.spark.sql.types._
 
+import org.apache.comet.CometConf
 import org.apache.comet.CometSparkSessionExtensions.{isSpark40Plus, isSpark41Plus}
 import org.apache.comet.serde.QueryPlanSerde.supportedDataType
 
 class QueryPlanSerdeSuite extends AnyFunSuite {
+
+  test("AtLeastNNonNulls serializes the current query's small batch threshold") {
+    val conf = new SQLConf
+    val key = CometConf.COMET_AT_LEAST_N_NON_NULLS_SMALL_BATCH_THRESHOLD.key
+    val expr = AtLeastNNonNulls(2, Seq(Literal(1), Literal(2), Literal(3)))
+    SQLConf.withExistingConf(conf) {
+      for (threshold <- Seq(None, Some(128), Some(1), Some(65), None)) {
+        threshold match {
+          case Some(value) => conf.setConfString(key, value.toString)
+          case None => conf.unsetConf(key)
+        }
+        val proto =
+          CometAtLeastNNonNulls.convert(expr, Seq.empty, binding = true).get.getAtLeastNNonNulls
+        assert(proto.hasSmallBatchThreshold)
+        assert(proto.getSmallBatchThreshold == threshold.getOrElse(64))
+        assert(proto.getN == 2)
+        assert(proto.getChildrenCount == 3)
+      }
+    }
+  }
 
   test("supportedDataType matches each caller boundary") {
     val complex = ArrayType(IntegerType)

@@ -849,6 +849,18 @@ object CometConf extends ShimCometConf {
       .intConf
       .createWithDefault(Int.MaxValue)
 
+  val COMET_AT_LEAST_N_NON_NULLS_SMALL_BATCH_THRESHOLD: ConfigEntry[Int] =
+    conf(s"$COMET_EXEC_CONFIG_PREFIX.atLeastNNonNulls.smallBatchThreshold")
+      .category(CATEGORY_EXEC)
+      .doc(
+        "For AtLeastNNonNulls, batches with fewer rows than this threshold use row counters; " +
+          "larger batches use bitmap counters. Only affects general counting, not the " +
+          "any/all-valid fast paths. Must be positive. Does not change the input batch size " +
+          "or the fixed 64-bit bitmap word size. Set before planning the query.")
+      .intConf
+      .checkValue(_ > 0, "AtLeastNNonNulls small batch threshold must be positive")
+      .createWithDefault(64)
+
   val COMET_BATCH_SIZE: ConfigEntry[Int] = conf("spark.comet.batchSize")
     .category(CATEGORY_TUNING)
     .doc("The columnar batch size, i.e., the maximum number of rows that a batch can contain.")

@@ -84,6 +84,17 @@
 - Spark 4.0.1 (audited 2026-05-27): semantics unchanged.
 - Spark 4.1.1 (audited 2026-05-27): identical to 4.0.1.
 
+## AtLeastNNonNulls (DataFrame API)
+
+- Spark 3.4.3 (audited 2026-09-24): non-nullable Boolean predicate used by `DataFrame.na.drop`. Counts non-null, non-NaN children and stops evaluating a row once the threshold is reached. Non-positive thresholds return true without evaluating children.
+- Spark 3.5.9 (audited 2026-09-24): identical to 3.4.3.
+- Spark 4.0.4 (audited 2026-09-24): identical to 3.4.3.
+- Spark 4.1.3 (audited 2026-09-24): identical to 3.4.3.
+
+Comet uses a native physical expression to preserve per-row short-circuit evaluation. Non-floating types use outer logical nullability; nested nulls and empty collections remain non-null values. Rust tests cover thresholds, sliced and empty batches, dictionary values, literals, and required and skipped child errors. DataFrame tests cover native routing, disabled-expression fallback, complex types and ANSI casts. This internal predicate has no SQL function name.
+
+- Historical performance (measured 2026-09-28 before the threshold setting and shared CASE/IF integration, [#6180](https://github.com/apache/datafusion-comet/pull/6180)): general thresholds use 64-bit bitmap counters, retaining row counters below the configurable `spark.comet.exec.atLeastNNonNulls.smallBatchThreshold` (default 64 rows). On M3 Pro in release mode, paired comparisons against the previous row-counter-only implementation measured 4.8–5.0x faster Float64 evaluation (0% NULL, 5% NaN) and 8.4–8.5x faster Utf8 evaluation (50% NULL), with 8192 rows, 32 columns and threshold 16. These historical expression timings do not validate the current integrated tree or establish full-query speedups. The [Criterion benchmark](../../../../native/spark-expr/benches/at_least_n_non_nulls.rs) covers small batches and NULL/NaN densities; two supplementary 1,020-case paired runs covered random/clustered distributions and non-power-of-two thresholds without a reproduced regression over 5%.
+
 ## between
 
 - Spark 3.4.3 (audited 2026-05-27): the SQL form `expr BETWEEN low AND high` is rewritten at the parser level to `expr >= low AND expr <= high`. Comet sees only the resulting `And(GreaterThanOrEqual, LessThanOrEqual)` and routes via `CometAnd` + `CometGreaterThanOrEqual` + `CometLessThanOrEqual`.

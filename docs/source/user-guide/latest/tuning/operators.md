@@ -155,6 +155,25 @@ file, the dynamic counter can stay zero despite substantial TopK pruning. The st
 includes other predicates, so compare with filtering disabled to assess TopK savings.
 See [TopK metrics](../metrics.md#local-topk).
 
+## Filtering Rows with Missing Values
+
+Spark's `DataFrame.na.drop` uses `AtLeastNNonNulls` to retain rows with enough non-NULL,
+non-NaN values. For general counting, Comet uses row counters below
+`spark.comet.exec.atLeastNNonNulls.smallBatchThreshold` and bitmap counters at or above it.
+The default is 64 rows. Any positive integer is accepted, including values that are not
+multiples of 64. The bitmap word size remains 64 bits, and the any/all-valid fast paths
+are unaffected.
+
+Set the threshold before planning a query, for example:
+
+```sql
+SET spark.comet.exec.atLeastNNonNulls.smallBatchThreshold=128;
+```
+
+A higher threshold uses row counters for more batches; a lower threshold uses bitmap
+counters for more batches. This does not change the input batch size or Spark's results
+and error behavior. Compare query timings on your data before changing the default.
+
 ## Optimizing Sorting on Floating-Point Values
 
 Comet normalizes NaN payloads and signed zeros in `FLOAT` and `DOUBLE` ordering keys, including floating-point values

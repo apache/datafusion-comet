@@ -95,6 +95,7 @@ message Expr {
     RandStr rand_str = 73;
     Uuid uuid = 74;
     NativeScalarUdf native_scalar_udf = 75;
+    AtLeastNNonNulls at_least_n_non_nulls = 76;
   }
 
   reserved 20;
@@ -738,4 +739,13 @@ message NativeScalarUdf {
   // to express a volatile one. The field is carried so that honoring it later
   // does not need a wire change.
   bool deterministic = 5;
+}
+
+// Counts non-null and non-NaN children, with per-row short-circuit evaluation.
+message AtLeastNNonNulls {
+  int32 n = 1;
+  repeated Expr children = 2;
+  // Row-count/bitmap-count crossover in rows, always set by the JVM serde.
+  // If absent, use the native default (64).
+  optional uint32 small_batch_threshold = 3;
 }

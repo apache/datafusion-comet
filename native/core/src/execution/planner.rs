@@ -143,11 +143,11 @@ use datafusion_comet_proto::{
 };
 use datafusion_comet_spark_expr::{
     create_case_when, create_if_expr, jvm_udf::JvmScalarUdfExpr, spark_in_list, ApproxPercentile,
-    ArrayInsert, Avg, AvgDecimal, Cast, CheckOverflow, Correlation, Covariance, CreateNamedStruct,
-    DecimalRescaleCheckOverflow, FloatOperands, GetArrayStructFields, GetStructField, HllPlusPlus,
-    HllSketchAgg, HllUnionAgg, IfExpr, ListExtract, MaxMinBy, Mode, NormalizeNaNAndZero,
-    NormalizeNestedFloats, Regr, RegrType, SparkCastOptions, SparkMinMax, Stddev, SumDecimal,
-    ToJson, UnboundColumn, Variance, WideDecimalBinaryExpr, WideDecimalOp,
+    ArrayInsert, AtLeastNNonNulls, Avg, AvgDecimal, Cast, CheckOverflow, Correlation, Covariance,
+    CreateNamedStruct, DecimalRescaleCheckOverflow, FloatOperands, GetArrayStructFields,
+    GetStructField, HllPlusPlus, HllSketchAgg, HllUnionAgg, IfExpr, ListExtract, MaxMinBy, Mode,
+    NormalizeNaNAndZero, NormalizeNestedFloats, Regr, RegrType, SparkCastOptions, SparkMinMax,
+    Stddev, SumDecimal, ToJson, UnboundColumn, Variance, WideDecimalBinaryExpr, WideDecimalOp,
 };
 use itertools::Itertools;
 use jni::objects::{Global, JObject};
@@ -1008,6 +1008,21 @@ impl PhysicalPlanner {
                     &options.timezone,
                     csv_write_options,
                 )))
+            }
+            ExprStruct::AtLeastNNonNulls(expr) => {
+                let children = expr
+                    .children
+                    .iter()
+                    .map(|child| self.create_expr(child, Arc::clone(&input_schema)))
+                    .collect::<Result<Vec<_>, _>>()?;
+                let threshold = expr
+                    .small_batch_threshold
+                    .map(|threshold| threshold as usize)
+                    .unwrap_or(AtLeastNNonNulls::DEFAULT_SMALL_BATCH_THRESHOLD);
+                Ok(Arc::new(
+                    AtLeastNNonNulls::new(expr.n, children)
+                        .with_small_batch_threshold(threshold)?,
+                ))
             }
             ExprStruct::ArraysZip(expr) => {
                 if expr.values.is_empty() {
@@ -5244,6 +5259,40 @@ mod tests {
         },
     };
     use datafusion_comet_spark_expr::EvalMode;
+
+    #[test]
+    fn at_least_n_non_nulls_threshold_round_trip() {
+        use datafusion_comet_spark_expr::AtLeastNNonNulls as NativeAtLeastNNonNulls;
+        use prost::Message;
+
+        let planner = PhysicalPlanner::new(Arc::new(SessionContext::new()), 0);
+        let schema = Arc::new(Schema::empty());
+        for threshold in [None, Some(1), Some(65), Some(128), Some(0)] {
+            let expr = Expr {
+                expr_struct: Some(ExprStruct::AtLeastNNonNulls(
+                    spark_expression::AtLeastNNonNulls {
+                        n: 2,
+                        children: vec![],
+                        small_batch_threshold: threshold,
+                    },
+                )),
+                ..Default::default()
+            };
+            let decoded = Expr::decode(expr.encode_to_vec().as_slice()).unwrap();
+            let result = planner.create_expr(&decoded, Arc::clone(&schema));
+            if threshold == Some(0) {
+                assert!(result.unwrap_err().to_string().contains("must be positive"));
+            } else {
+                let expected = NativeAtLeastNNonNulls::new(2, vec![])
+                    .with_small_batch_threshold(threshold.unwrap_or(64) as usize)
+                    .unwrap();
+                assert_eq!(
+                    result.unwrap().downcast_ref::<NativeAtLeastNNonNulls>(),
+                    Some(&expected)
+                );
+            }
+        }
+    }
 
     #[test]
     fn scan_default_rejects_struct_expressions() {
