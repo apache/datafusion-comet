@@ -364,8 +364,8 @@ class CometScanSchemeFallbackSuite extends CometTestBase with CometIcebergTestBa
 
   test("native scan claims hdfs:// when libhdfs.schemes is unset (native-default lockstep)") {
     // Native `is_hdfs_scheme` treats `hdfs` as readable when `fs.comet.libhdfs.schemes` is unset,
-    // so the JVM gate must agree and CLAIM `hdfs://`. Guards the `case None => Set("hdfs")` default
-    // against the silent-fallback regression from #4525.
+    // so the JVM gate must agree and CLAIM `hdfs://`. Guards the `hdfs` default of
+    // NativeConfig.resolveLibhdfsSchemes against the silent-fallback regression from #4525.
     val path = s"${FakeHdfsSchemeFileSystem.PREFIX}${fakeRootDir.getAbsolutePath}/hdfs-data"
     spark.range(0, 10).toDF("id").write.format("parquet").mode(SaveMode.Overwrite).save(path)
 
@@ -388,5 +388,69 @@ class CometScanSchemeFallbackSuite extends CometTestBase with CometIcebergTestBa
           s"but it fell back to Spark:\n$transformed")
       assert(sparkScans.isEmpty, s"expected no leftover Spark FileSourceScanExec:\n$transformed")
     }
+  }
+
+  test("native scan claims a scheme listed in the Hadoop conf's libhdfs.schemes") {
+    // The bare key set in SQLConf reaches the scan's Hadoop conf, where native reads the list.
+    val transformed = applyScanRuleToFakeScan(
+      "libhdfs-hadoop",
+      Seq(CometConf.COMET_LIBHDFS_SCHEMES_KEY -> "fake,hdfs"))
+    val cometScans = transformed.collect { case s: CometScanExec => s }
+    assert(
+      cometScans.size == 1,
+      s"`fake` is in the Hadoop conf's libhdfs list; Comet must claim the scan:\n$transformed")
+  }
+
+  test("runtime SET of the spark.hadoop. key does not claim a scheme native can't route") {
+    // newHadoopConf copies SQLConf keys with their `spark.hadoop.` prefix, so the list never
+    // reaches the Hadoop conf native reads and `fake` is still not routed through libhdfs.
+    val transformed = applyScanRuleToFakeScan(
+      "libhdfs-sqlconf",
+      Seq(CometConf.COMET_LIBHDFS_SCHEMES.key -> "fake,hdfs"))
+    val cometScans = transformed.collect { case s: CometScanExec => s }
+    assert(
+      cometScans.isEmpty,
+      s"native would not route `fake` through libhdfs; the scan must fall back:\n$transformed")
+    val reasons = new ExtendedExplainInfo().getFallbackReasons(transformed)
+    assert(
+      reasons.exists(_.contains("Unsupported filesystem schemes: fake")),
+      s"the scan must be declined for its scheme, got reasons: $reasons")
+  }
+
+  test("native scan claims a scheme listed only in a reader option's libhdfs.schemes") {
+    // A reader option reaches the scan's Hadoop conf but never SQLConf.
+    val transformed = applyScanRuleToFakeScan(
+      "libhdfs-option",
+      readOptions = Map(CometConf.COMET_LIBHDFS_SCHEMES_KEY -> "fake,hdfs"))
+    val cometScans = transformed.collect { case s: CometScanExec => s }
+    assert(
+      cometScans.size == 1,
+      s"`fake` is in the scan's libhdfs list; Comet must claim the scan:\n$transformed")
+  }
+
+  /**
+   * Writes a Parquet table under `fake://`, plans a read of it with `readOptions` and Comet off,
+   * and applies `CometScanRule` to that plan with the native scan enabled and `libhdfsConf` set.
+   */
+  private def applyScanRuleToFakeScan(
+      dir: String,
+      libhdfsConf: Seq[(String, String)] = Nil,
+      readOptions: Map[String, String] = Map.empty): SparkPlan = {
+    val path = s"${FakeHDFSFileSystem.PREFIX}${fakeRootDir.getAbsolutePath}/$dir"
+    spark.range(0, 10).toDF("id").write.format("parquet").mode(SaveMode.Overwrite).save(path)
+
+    var sparkPlan: SparkPlan = null
+    withSQLConf(CometConf.COMET_ENABLED.key -> "false") {
+      sparkPlan = spark.read.options(readOptions).parquet(path).queryExecution.executedPlan
+    }
+    var transformed: SparkPlan = null
+    val scanConf = Seq(
+      CometConf.COMET_ENABLED.key -> "true",
+      CometConf.COMET_NATIVE_SCAN_ENABLED.key -> "true",
+      CometConf.COMET_EXEC_ENABLED.key -> "true")
+    withSQLConf(scanConf ++ libhdfsConf: _*) {
+      transformed = CometScanRule(spark).apply(stripAQEPlan(sparkPlan))
+    }
+    transformed
   }
 }

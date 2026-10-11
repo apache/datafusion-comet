@@ -125,6 +125,15 @@ object NativeConfig {
     }
   }
 
+  /**
+   * The schemes native reads through libhdfs: the `fs.comet.libhdfs.schemes` list, or only `hdfs`
+   * when it is unset or blank, as native `is_hdfs_scheme` decides.
+   */
+  def resolveLibhdfsSchemes(hadoopConf: Configuration): Set[String] = {
+    val raw = hadoopConf.get(COMET_LIBHDFS_SCHEMES_KEY)
+    if (StringUtils.isBlank(raw)) Set("hdfs") else parseSchemeSet(raw)
+  }
+
   // s3/s3a/s3n and any opted-in alias share the authorityless path-promotion semantics above.
   private def isS3FamilyScheme(scheme: String, s3CompliantSchemes: Set[String]): Boolean =
     scheme == "s3" || scheme == "s3a" || scheme == "s3n" || s3CompliantSchemes.contains(scheme)
