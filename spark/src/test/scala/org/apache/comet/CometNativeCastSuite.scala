@@ -2032,6 +2032,30 @@ class CometNativeCastSuite extends CometTestBase with AdaptiveSparkPlanHelper {
     }
   }
 
+  test("cast to a struct with duplicate field names is unsupported") {
+    val sourceType = StructType(Seq(StructField("p", IntegerType), StructField("q", IntegerType)))
+    val duplicateTarget =
+      StructType(Seq(StructField("x", IntegerType), StructField("x", IntegerType)))
+    val uniqueTarget =
+      StructType(Seq(StructField("x", IntegerType), StructField("y", IntegerType)))
+    val reason = CometCast.duplicateStructFieldNamesReason
+
+    Seq(
+      sourceType -> duplicateTarget,
+      ArrayType(sourceType) -> ArrayType(duplicateTarget),
+      MapType(StringType, sourceType) -> MapType(StringType, duplicateTarget)).foreach {
+      case (fromType, toType) =>
+        assert(
+          CometCast.isSupported(fromType, toType, None, CometEvalMode.LEGACY) ==
+            Unsupported(Some(reason)))
+    }
+    assert(
+      CometCast
+        .isSupported(sourceType, uniqueTarget, None, CometEvalMode.LEGACY)
+        .isInstanceOf[Compatible])
+
+  }
+
   test("cast between decimals with different precision and scale") {
     val rowData = Seq(
       Row(BigDecimal("12345.6789")),
