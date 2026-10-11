@@ -139,7 +139,7 @@ fn array_to_json_string(
         spark_cast(
             ColumnarValue::Array(Arc::clone(arr)),
             &DataType::Utf8,
-            &SparkCastOptions::new(EvalMode::Legacy, timezone, false),
+            &SparkCastOptions::new(EvalMode::Legacy, timezone),
         )?
         .into_array(arr.len())
     }
