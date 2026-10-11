@@ -1141,7 +1141,6 @@ object QueryPlanSerde extends Logging with CometExprShim with CometTypeShim {
    *   Some(Expr) or None if not supported
    */
   def createUnaryExpr(
-      expr: Expression,
       child: Expression,
       inputs: Seq[Attribute],
       binding: Boolean,
@@ -1167,7 +1166,6 @@ object QueryPlanSerde extends Logging with CometExprShim with CometTypeShim {
   }
 
   def createBinaryExpr(
-      expr: Expression,
       left: Expression,
       right: Expression,
       inputs: Seq[Attribute],
@@ -1209,7 +1207,6 @@ object QueryPlanSerde extends Logging with CometExprShim with CometTypeShim {
    * each combined `BinaryExpr` as `And` or `Or`.
    */
   def createBalancedBinaryExpr(
-      expr: Expression,
       operands: Seq[Expression],
       inputs: Seq[Attribute],
       binding: Boolean,

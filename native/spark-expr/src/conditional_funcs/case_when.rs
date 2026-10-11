@@ -152,7 +152,7 @@ fn coerce_branch(
     if data_type == common_type {
         return expr;
     }
-    let cast_options = SparkCastOptions::new(EvalMode::Legacy, "UTC", false);
+    let cast_options = SparkCastOptions::new(EvalMode::Legacy, "UTC");
     Arc::new(Cast::new(
         expr,
         common_type.clone(),
@@ -1184,7 +1184,7 @@ mod tests {
             let cast: Arc<dyn PhysicalExpr> = Arc::new(Cast::new(
                 e,
                 to,
-                SparkCastOptions::new_without_timezone(mode, false),
+                SparkCastOptions::new_without_timezone(mode),
                 None,
                 None,
             ));

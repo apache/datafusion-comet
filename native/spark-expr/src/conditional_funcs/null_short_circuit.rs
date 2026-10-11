@@ -360,7 +360,7 @@ mod tests {
         Arc::new(Cast::new(
             expr,
             to,
-            SparkCastOptions::new_without_timezone(EvalMode::Ansi, false),
+            SparkCastOptions::new_without_timezone(EvalMode::Ansi),
             None,
             None,
         ))
@@ -493,7 +493,7 @@ mod tests {
             Arc::new(Cast::new(
                 col("s", &schema).unwrap(),
                 DataType::Int32,
-                SparkCastOptions::new_without_timezone(EvalMode::Legacy, false),
+                SparkCastOptions::new_without_timezone(EvalMode::Legacy),
                 None,
                 None,
             )),

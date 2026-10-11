@@ -884,18 +884,16 @@ under the License.
       execution's `args` replaces the plugin-level list instead of appending to it, so
       each list below is self-contained.
 
-      Two lints are deliberately absent from both lists:
+      `-Ywarn-unused:params` is enabled for both main and test sources. Unused
+      helper parameters are removed. Category-scoped `-Wconf` filters retain required
+      signatures for JNI declarations, cross-version shims, extension hooks, scan
+      factories and reflective test fixtures.
 
-      `-Ywarn-unused:params` reports parameters that are unused because a signature
-      requires them rather than because they are dead: the `@native` declarations in
-      `Native.scala`, which have no body to use them in; cross-version shims under
-      `src/main/spark-*` that match the signature of the Spark version they shim; and
-      overridable defaults and serde helpers whose parameter is part of their public
-      shape. Suppressing these one by one with `@nowarn` does not work across profiles:
-      some shared sources warn under Scala 2.12 but not 2.13 (`CometScanContrib.scala`,
-      for example), so an annotation that silences one profile is unused on the other,
-      which `-Xlint:_` reports through `-Ywarn-unused:nowarn` and `-Xfatal-warnings`
-      turns into a build failure.
+      These filters avoid adding profile-dependent `@nowarn` annotations: an annotation
+      needed under one Scala version can be unused under another. Existing shuffle
+      annotations for Scala 2.13 private-type warnings have a scoped unused-nowarn
+      exception on Scala 2.12. `-Xlint:unused` enables
+      `-Ywarn-unused:nowarn`, which `-Xfatal-warnings` promotes to an error.
 
       `-Ywarn-value-discard` stays on for main sources, where a discarded result is
       usually a dropped builder or a swallowed return, but is off for test sources,
@@ -922,7 +920,37 @@ under the License.
                     <arg>-Ywarn-dead-code</arg>
                     <arg>-Ywarn-numeric-widen</arg>
                     <arg>-Ywarn-value-discard</arg>
-                    <arg>-Ywarn-unused:imports,patvars,privates,locals,-implicits</arg>
+                    <arg>-Ywarn-unused:imports,patvars,privates,locals,params,-implicits</arg>
+                    <!-- JNI declarations and cross-version shims must retain their signatures. -->
+                    <arg>-Wconf:cat=unused-params&amp;site=org\.apache\.comet\.Native\..*:s</arg>
+                    <arg>-Wconf:cat=unused-params&amp;src=.*/src/[a-z]+/spark-[^/]+/.*:s</arg>
+                    <!-- Default extension hooks intentionally leave parameters for overrides. -->
+                    <arg>-Wconf:cat=unused-params&amp;site=org\.apache\.comet\.rules\.CometScanContrib\.tryTransformV[12]\..*:s</arg>
+                    <arg>-Wconf:cat=unused-params&amp;site=org\.apache\.comet\.serde\.CometExpressionSerde\.getSupportLevel\..*:s</arg>
+                    <arg>-Wconf:cat=unused-params&amp;site=org\.apache\.comet\.serde\.CometAggregateExpressionSerde\.getSupportLevel\..*:s</arg>
+                    <arg>-Wconf:cat=unused-params&amp;site=org\.apache\.comet\.serde\.CometOperatorSerde\.getSupportLevel\..*:s</arg>
+                    <arg>-Wconf:cat=unused-params&amp;site=org\.apache\.comet\.serde\.CometAggregateExpressionSerde\.supportsSparkPartialToNativeFinal\..*:s</arg>
+                    <arg>-Wconf:cat=unused-params&amp;site=org\.apache\.comet\.serde\.CometAggregateExpressionSerde\.supportsNativePartialToSparkFinal\..*:s</arg>
+                    <arg>-Wconf:cat=unused-params&amp;site=org\.apache\.spark\.sql\.comet\.CometScanWithPlanData\.withDynamicPruningFilters\..*:s</arg>
+                    <!-- Extractors and public UDF/aggregate hooks retain caller-required arguments. -->
+                    <arg>-Wconf:cat=unused-params&amp;site=org\.apache\.comet\.CometExecIterator\.InputFailure\.unapply\.nativeFailure:s</arg>
+                    <arg>-Wconf:cat=unused-params&amp;site=org\.apache\.comet\.udf\.CometUDF\.evaluate\.(partitionIndex|planId):s</arg>
+                    <arg>-Wconf:cat=unused-params&amp;site=org\.apache\.comet\.udf\.CometUDF\.releasePlan\.planId:s</arg>
+                    <arg>-Wconf:cat=unused-params&amp;site=org\.apache\.spark\.sql\.comet\.CometBaseAggregate\.operatorSupportLevel\.op:s</arg>
+                    <!-- These annotations suppress Scala 2.13 private-type warnings only. -->
+                    <arg>-Wconf:cat=unused-nowarn&amp;site=org\.apache\.spark\.sql\.comet\.execution\.shuffle\.Comet(Celeborn)?ShuffleManager\.get(Reader|Writer):s</arg>
+                    <!-- Scan factories keep the common session-taking API used across versions. -->
+                    <arg>-Wconf:cat=unused-params&amp;site=org\.apache\.spark\.sql\.comet\.CometIcebergNativeScanExec\.apply\.session:s</arg>
+                    <arg>-Wconf:cat=unused-params&amp;site=org\.apache\.spark\.sql\.comet\.CometNativeScanExec\.apply\.session:s</arg>
+                    <arg>-Wconf:cat=unused-params&amp;site=org\.apache\.spark\.sql\.comet\.CometScanExec\.apply\.session:s</arg>
+                    <!-- Reflectively loaded test fixtures must match the external API or constructor shape. -->
+                    <arg>-Wconf:cat=unused-params&amp;site=org\.apache\.comet\.rules\.NoNoArgCtorScanContrib\..*:s</arg>
+                    <arg>-Wconf:cat=unused-params&amp;site=org\.apache\.comet\.shuffle\.RecordingCryptoAwareCelebornClientFactory\.get\..*:s</arg>
+                    <arg>-Wconf:cat=unused-params&amp;site=org\.apache\.comet\.shuffle\.RecordingLegacyCelebornClientFactory\.get\..*:s</arg>
+                    <arg>-Wconf:cat=unused-params&amp;site=org\.apache\.comet\.shuffle\.LegacyMapperEndCelebornPushClient\.cleanup\..*:s</arg>
+                    <arg>-Wconf:cat=unused-params&amp;site=org\.apache\.comet\.shuffle\.WrongReturnTypeCelebornPushClient\.pushOrMergeData\..*:s</arg>
+                    <arg>-Wconf:cat=unused-params&amp;site=org\.apache\.spark\.sql\.comet\.execution\.shuffle\.CometCelebornFallbackTestClient\.reportShuffleFetchFailure\..*:s</arg>
+                    <arg>-Wconf:cat=unused-params&amp;site=org\.apache\.spark\.sql\.comet\.execution\.shuffle\.CometCelebornFallbackTestClient\.cleanupShuffle\..*:s</arg>
                     <arg>-Xfatal-warnings</arg>
                   </args>
                 </configuration>
@@ -937,7 +965,37 @@ under the License.
                     <arg>-Xlint:_</arg>
                     <arg>-Ywarn-dead-code</arg>
                     <arg>-Ywarn-numeric-widen</arg>
-                    <arg>-Ywarn-unused:imports,patvars,privates,locals,-implicits</arg>
+                    <arg>-Ywarn-unused:imports,patvars,privates,locals,params,-implicits</arg>
+                    <!-- JNI declarations and cross-version shims must retain their signatures. -->
+                    <arg>-Wconf:cat=unused-params&amp;site=org\.apache\.comet\.Native\..*:s</arg>
+                    <arg>-Wconf:cat=unused-params&amp;src=.*/src/[a-z]+/spark-[^/]+/.*:s</arg>
+                    <!-- Default extension hooks intentionally leave parameters for overrides. -->
+                    <arg>-Wconf:cat=unused-params&amp;site=org\.apache\.comet\.rules\.CometScanContrib\.tryTransformV[12]\..*:s</arg>
+                    <arg>-Wconf:cat=unused-params&amp;site=org\.apache\.comet\.serde\.CometExpressionSerde\.getSupportLevel\..*:s</arg>
+                    <arg>-Wconf:cat=unused-params&amp;site=org\.apache\.comet\.serde\.CometAggregateExpressionSerde\.getSupportLevel\..*:s</arg>
+                    <arg>-Wconf:cat=unused-params&amp;site=org\.apache\.comet\.serde\.CometOperatorSerde\.getSupportLevel\..*:s</arg>
+                    <arg>-Wconf:cat=unused-params&amp;site=org\.apache\.comet\.serde\.CometAggregateExpressionSerde\.supportsSparkPartialToNativeFinal\..*:s</arg>
+                    <arg>-Wconf:cat=unused-params&amp;site=org\.apache\.comet\.serde\.CometAggregateExpressionSerde\.supportsNativePartialToSparkFinal\..*:s</arg>
+                    <arg>-Wconf:cat=unused-params&amp;site=org\.apache\.spark\.sql\.comet\.CometScanWithPlanData\.withDynamicPruningFilters\..*:s</arg>
+                    <!-- Extractors and public UDF/aggregate hooks retain caller-required arguments. -->
+                    <arg>-Wconf:cat=unused-params&amp;site=org\.apache\.comet\.CometExecIterator\.InputFailure\.unapply\.nativeFailure:s</arg>
+                    <arg>-Wconf:cat=unused-params&amp;site=org\.apache\.comet\.udf\.CometUDF\.evaluate\.(partitionIndex|planId):s</arg>
+                    <arg>-Wconf:cat=unused-params&amp;site=org\.apache\.comet\.udf\.CometUDF\.releasePlan\.planId:s</arg>
+                    <arg>-Wconf:cat=unused-params&amp;site=org\.apache\.spark\.sql\.comet\.CometBaseAggregate\.operatorSupportLevel\.op:s</arg>
+                    <!-- These annotations suppress Scala 2.13 private-type warnings only. -->
+                    <arg>-Wconf:cat=unused-nowarn&amp;site=org\.apache\.spark\.sql\.comet\.execution\.shuffle\.Comet(Celeborn)?ShuffleManager\.get(Reader|Writer):s</arg>
+                    <!-- Scan factories keep the common session-taking API used across versions. -->
+                    <arg>-Wconf:cat=unused-params&amp;site=org\.apache\.spark\.sql\.comet\.CometIcebergNativeScanExec\.apply\.session:s</arg>
+                    <arg>-Wconf:cat=unused-params&amp;site=org\.apache\.spark\.sql\.comet\.CometNativeScanExec\.apply\.session:s</arg>
+                    <arg>-Wconf:cat=unused-params&amp;site=org\.apache\.spark\.sql\.comet\.CometScanExec\.apply\.session:s</arg>
+                    <!-- Reflectively loaded test fixtures must match the external API or constructor shape. -->
+                    <arg>-Wconf:cat=unused-params&amp;site=org\.apache\.comet\.rules\.NoNoArgCtorScanContrib\..*:s</arg>
+                    <arg>-Wconf:cat=unused-params&amp;site=org\.apache\.comet\.shuffle\.RecordingCryptoAwareCelebornClientFactory\.get\..*:s</arg>
+                    <arg>-Wconf:cat=unused-params&amp;site=org\.apache\.comet\.shuffle\.RecordingLegacyCelebornClientFactory\.get\..*:s</arg>
+                    <arg>-Wconf:cat=unused-params&amp;site=org\.apache\.comet\.shuffle\.LegacyMapperEndCelebornPushClient\.cleanup\..*:s</arg>
+                    <arg>-Wconf:cat=unused-params&amp;site=org\.apache\.comet\.shuffle\.WrongReturnTypeCelebornPushClient\.pushOrMergeData\..*:s</arg>
+                    <arg>-Wconf:cat=unused-params&amp;site=org\.apache\.spark\.sql\.comet\.execution\.shuffle\.CometCelebornFallbackTestClient\.reportShuffleFetchFailure\..*:s</arg>
+                    <arg>-Wconf:cat=unused-params&amp;site=org\.apache\.spark\.sql\.comet\.execution\.shuffle\.CometCelebornFallbackTestClient\.cleanupShuffle\..*:s</arg>
                     <arg>-Xfatal-warnings</arg>
                   </args>
                 </configuration>

@@ -84,8 +84,8 @@ use datafusion::{
     prelude::SessionContext,
 };
 use datafusion_comet_operators::{
-    range_exec, CometFilterExec, ExpandExec, ExplodeExec, PartitionedRankLimitExec, SampleExec,
-    WindowFnKind,
+    range_exec, CometFilterExec, CometProjectionExec, ExpandExec, ExplodeExec,
+    PartitionedRankLimitExec, SampleExec, WindowFnKind,
 };
 use datafusion_comet_spark_expr::{
     create_comet_physical_fun, create_comet_physical_fun_with_eval_mode, BinaryOutputStyle,
@@ -710,7 +710,6 @@ impl PhysicalPlanner {
                     SparkCastOptions::new_with_version(
                         eval_mode,
                         &expr.timezone,
-                        expr.allow_incompat,
                         expr.is_spark4_plus,
                     ),
                     spark_expr.expr_id,
@@ -803,7 +802,7 @@ impl PhysicalPlanner {
                     "md5" => Ok(Arc::new(Cast::new(
                         func?,
                         DataType::Utf8,
-                        SparkCastOptions::new_without_timezone(EvalMode::Try, true),
+                        SparkCastOptions::new_without_timezone(EvalMode::Try),
                         None,
                         None,
                     ))),
@@ -925,8 +924,7 @@ impl PhysicalPlanner {
                 )))
             }
             ExprStruct::ToPrettyString(expr) => {
-                let mut spark_cast_options =
-                    SparkCastOptions::new(EvalMode::Try, &expr.timezone, true);
+                let mut spark_cast_options = SparkCastOptions::new(EvalMode::Try, &expr.timezone);
                 let null_string = "NULL";
                 spark_cast_options.null_string = null_string.to_string();
                 spark_cast_options.binary_output_style =
@@ -2623,15 +2621,15 @@ impl PhysicalPlanner {
                     partition_count,
                 )?;
 
-                // Reader attachment replaces the probe filter's child per execution.
-                // Keep its metrics owned by the same Spark filter node.
+                // Reader attachment and early placement recursively replace probe-side
+                // filters and projections. Keep metrics owned by their Spark nodes.
                 if join.dynamic_filter_enabled && !join.null_aware_anti_join {
                     let probe = if join.build_side == BuildSide::BuildLeft as i32 {
                         &mut join_params.right
                     } else {
                         &mut join_params.left
                     };
-                    *probe = Self::prepare_probe_filter_for_runtime_reader(Arc::clone(probe));
+                    *probe = Self::prepare_probe_for_runtime_filters(Arc::clone(probe))?;
                 }
 
                 let left = Arc::clone(&join_params.left.native_plan);
@@ -2916,14 +2914,32 @@ impl PhysicalPlanner {
         }
     }
 
-    /// Keep the Spark filter's metric identity when its reader is replaced for an execution.
-    fn prepare_probe_filter_for_runtime_reader(plan: Arc<SparkPlan>) -> Arc<SparkPlan> {
-        let Some(filter) = plan.native_plan.downcast_ref::<FilterExec>() else {
-            return plan;
-        };
+    /// Keep Spark metric identities for the small set of nodes whose children
+    /// runtime-filter placement can replace. Stop at native/Spark tree boundaries.
+    fn prepare_probe_for_runtime_filters(
+        plan: Arc<SparkPlan>,
+    ) -> Result<Arc<SparkPlan>, ExecutionError> {
+        let mut native: Arc<dyn ExecutionPlan> =
+            if let Some(filter) = plan.native_plan.downcast_ref::<FilterExec>() {
+                Arc::new(CometFilterExec::from_datafusion(filter.clone()))
+            } else if let Some(projection) = plan.native_plan.downcast_ref::<ProjectionExec>() {
+                Arc::new(CometProjectionExec::from_datafusion(projection.clone()))
+            } else {
+                return Ok(plan);
+            };
         let mut prepared = plan.as_ref().clone();
-        prepared.native_plan = Arc::new(CometFilterExec::from_datafusion(filter.clone()));
-        Arc::new(prepared)
+        if let ([child], [only]) = (plan.children.as_slice(), native.children().as_slice()) {
+            if Arc::ptr_eq(only, &child.native_plan) {
+                let child = Self::prepare_probe_for_runtime_filters(Arc::clone(child))?;
+                native = native.replace_children(
+                    vec![Arc::clone(&child.native_plan)],
+                    ReplaceChildrenOptions::new(ChildrenPropertiesMode::Recompute),
+                )?;
+                prepared.children = vec![child];
+            }
+        }
+        prepared.native_plan = native;
+        Ok(Arc::new(prepared))
     }
 
     /// Attach after choosing the final build side, including the projection emitted
@@ -6919,7 +6935,7 @@ mod tests {
                 .with_table_parquet_options(TableParquetOptions::new()),
         ) as Arc<dyn FileSource>;
 
-        let spark_parquet_options = SparkParquetOptions::new(EvalMode::Legacy, "UTC", false);
+        let spark_parquet_options = SparkParquetOptions::new(EvalMode::Legacy, "UTC");
 
         let expr_adapter_factory: Arc<dyn PhysicalExprAdapterFactory> = Arc::new(
             SparkPhysicalExprAdapterFactory::new(spark_parquet_options, None),
