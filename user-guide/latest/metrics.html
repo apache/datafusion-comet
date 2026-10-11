@@ -1019,9 +1019,23 @@ eligibility and reader restrictions.</p>
 <tr class="row-odd"><td><p><code class="docutils literal notranslate"><span class="pre">dynamic_filter_join_filters_skipped</span></code></p></td>
 <td><p>Executions whose probe input is ineligible for reader attachment.</p></td>
 </tr>
+<tr class="row-even"><td><p><code class="docutils literal notranslate"><span class="pre">dynamic_filter_early_rows_evaluated</span></code></p></td>
+<td><p>Rows evaluated before an intermediate join on this join’s probe path.</p></td>
+</tr>
+<tr class="row-odd"><td><p><code class="docutils literal notranslate"><span class="pre">dynamic_filter_early_rows_pruned</span></code></p></td>
+<td><p>Rows rejected there before the intermediate join does its probe work.</p></td>
+</tr>
+<tr class="row-even"><td><p><code class="docutils literal notranslate"><span class="pre">dynamic_filter_early_rows_bypassed</span></code></p></td>
+<td><p>Rows passed through while early filtering is inactive or has stopped after two nonempty all-matching batches.</p></td>
+</tr>
+<tr class="row-odd"><td><p><code class="docutils literal notranslate"><span class="pre">dynamic_filter_early_eval_time</span></code></p></td>
+<td><p>Time evaluating that early filter.</p></td>
+</tr>
 </tbody>
 </table>
 </div>
+<p>See <a class="reference internal" href="tuning/operators.html#early-filtering-in-join-chains"><span class="std std-ref">early filtering in join chains</span></a>
+for placement and adaptive bypass behavior.</p>
 <p>The row counters measure residual filtering of decoded probe batches. They exclude rows skipped
 by the reader. An attached filter does not guarantee that any row groups are pruned: compare the
 probe scan’s <code class="docutils literal notranslate"><span class="pre">bytes_scanned</span></code> and <code class="docutils literal notranslate"><span class="pre">row_groups_pruned_statistics</span></code> with filtering disabled to assess

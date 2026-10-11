@@ -886,6 +886,29 @@ on decoded batches.</p>
 boundaries. A shuffled hash join can still filter probe batches after shuffle, but it cannot send
 its filter back to an earlier scan stage. Compare the <a class="reference internal" href="../metrics.html#hash-joins"><span class="std std-ref">runtime-filter and scan metrics</span></a>
 with the setting disabled to distinguish reduced hash-probe work from reader I/O savings.</p>
+<section id="early-filtering-in-join-chains">
+<h4>Early filtering in join chains<a class="headerlink" href="#early-filtering-in-join-chains" title="Link to this heading">#</a></h4>
+<p>With <code class="docutils literal notranslate"><span class="pre">spark.comet.exec.join.dynamicFilter.enabled=true</span></code>, an eligible join can also
+use its completed build keys to filter decoded rows before an intermediate inner
+join. For example, when a final join accepts only customer 42, it can remove other
+customers before an earlier join looks up their orders. This reduces intermediate
+join work while the final join still checks every match and preserves duplicates.</p>
+<p>Placement follows direct probe-side columns through ordinary inner joins already
+eligible for runtime filtering (a single signed-integer key),
+column-only projections, and direct column null checks above the first intermediate join.
+After crossing a join, the early consumer stays above inferred null checks so null
+keys do not prevent adaptive bypass. It stops at computed
+expressions, other predicates, limits, unsupported joins, and execution boundaries.
+These early filters operate on decoded batches; they do not introduce additional
+Parquet pruning or skip schema conversions. Each intermediate join retains its
+existing reader-filter checks.</p>
+<p>Early filtering stops evaluating after two consecutive nonempty evaluated batches
+remove no rows, avoiding repeated membership checks on unselective inputs. That
+decision is local to one execution. The final join remains responsible for matching
+rows, including if later batches become more selective. The <code class="docutils literal notranslate"><span class="pre">dynamic_filter_early_*</span></code>
+metrics belong to the join supplying the filter; intermediate joins and projections
+retain their own input/output metrics.</p>
+</section>
 </section>
 </section>
 <section id="adaptive-partial-aggregation">
@@ -1031,7 +1054,10 @@ also stays native with <code class="docutils literal notranslate"><span class="p
   <nav class="bd-toc-nav page-toc" aria-labelledby="pst-page-navigation-heading-2">
     <ul class="visible nav section-nav flex-column">
 <li class="toc-h2 nav-item toc-entry"><a class="reference internal nav-link" href="#optimizing-joins">Optimizing Joins</a><ul class="nav section-nav flex-column">
-<li class="toc-h3 nav-item toc-entry"><a class="reference internal nav-link" href="#join-runtime-filters">Join Runtime Filters</a></li>
+<li class="toc-h3 nav-item toc-entry"><a class="reference internal nav-link" href="#join-runtime-filters">Join Runtime Filters</a><ul class="nav section-nav flex-column">
+<li class="toc-h4 nav-item toc-entry"><a class="reference internal nav-link" href="#early-filtering-in-join-chains">Early filtering in join chains</a></li>
+</ul>
+</li>
 </ul>
 </li>
 <li class="toc-h2 nav-item toc-entry"><a class="reference internal nav-link" href="#adaptive-partial-aggregation">Adaptive Partial Aggregation</a></li>
