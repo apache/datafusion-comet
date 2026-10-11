@@ -122,7 +122,7 @@ fn spark_cast(child: Expr, data_type: DataType) -> Expr {
     Arc::new(Cast::new(
         child,
         data_type,
-        SparkCastOptions::new(EvalMode::Legacy, "America/Los_Angeles", false),
+        SparkCastOptions::new(EvalMode::Legacy, "America/Los_Angeles"),
         None,
         None,
     ))

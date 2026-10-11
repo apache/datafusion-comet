@@ -28,7 +28,7 @@ const NUM_ROWS: usize = 8192;
 fn criterion_benchmark(c: &mut Criterion) {
     let batch = create_int32_batch();
     let expr = Arc::new(Column::new("a", 0));
-    let spark_cast_options = SparkCastOptions::new_without_timezone(EvalMode::Legacy, false);
+    let spark_cast_options = SparkCastOptions::new_without_timezone(EvalMode::Legacy);
     let cast_i32_to_i8 = Cast::new(
         expr.clone(),
         DataType::Int8,
@@ -61,7 +61,7 @@ fn criterion_benchmark(c: &mut Criterion) {
         Cast::new(
             Arc::new(Column::new("a", 0)),
             data_type,
-            SparkCastOptions::new_without_timezone(EvalMode::Legacy, false),
+            SparkCastOptions::new_without_timezone(EvalMode::Legacy),
             None,
             None,
         )
