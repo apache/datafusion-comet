@@ -40,8 +40,8 @@ use crate::execution::operators::IcebergScanExec;
 use crate::execution::operators::TopKReaderFilterExec;
 use crate::execution::{
     operators::{
-        ExecutionError, MergeActionContext, MergeInstructionExec, MergeRowsExec, ScanExec,
-        ShuffleScanExec,
+        BlockScanExec, ExecutionError, MergeActionContext, MergeInstructionExec,
+        MergeRowsExec, ScanExec,
     },
     planner::expression_registry::ExpressionRegistry,
     planner::operator_registry::OperatorRegistry,
@@ -161,7 +161,7 @@ use std::{collections::HashMap, sync::Arc};
 type PhyAggResult = Result<Vec<AggregateFunctionExpr>, ExecutionError>;
 type PhyExprResult = Result<Vec<(Arc<dyn PhysicalExpr>, String)>, ExecutionError>;
 pub type PlanCreationResult =
-    Result<(Vec<ScanExec>, Vec<ShuffleScanExec>, Arc<SparkPlan>), ExecutionError>;
+    Result<(Vec<ScanExec>, Vec<BlockScanExec>, Arc<SparkPlan>), ExecutionError>;
 
 struct JoinParameters {
     pub left: Arc<SparkPlan>,
@@ -2964,7 +2964,7 @@ impl PhysicalPlanner {
         join_type: i32,
         condition: &Option<Expr>,
         partition_count: usize,
-    ) -> Result<(JoinParameters, Vec<ScanExec>, Vec<ShuffleScanExec>), ExecutionError> {
+    ) -> Result<(JoinParameters, Vec<ScanExec>, Vec<BlockScanExec>), ExecutionError> {
         assert_eq!(children.len(), 2);
         let (mut left_scans, mut left_shuffle_scans, left) =
             self.create_plan(&children[0], inputs, partition_count)?;

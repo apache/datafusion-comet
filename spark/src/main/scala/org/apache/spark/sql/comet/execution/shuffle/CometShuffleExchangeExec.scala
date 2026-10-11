@@ -141,7 +141,7 @@ case class CometShuffleExchangeExec(
           sparkContext,
           ctx.inputs,
           ctx.numPartitions,
-          ctx.shuffleScanIndices,
+          ctx.blockScanIndices,
           CometMetricNode(metrics, Seq(nativeChildMetricNode)),
           ctx.perPartitionByKey,
           positionalRoundRobin.isDefined)
@@ -336,7 +336,7 @@ case class CometShuffleExchangeExec(
     Objects.hashCode(outputPartitioning, shuffleOrigin, shuffleType, advisoryPartitionSize, child)
 
   override def stringArgs: Iterator[Any] =
-    Iterator(outputPartitioning, shuffleOrigin, shuffleType, child) ++ Iterator(s"[plan_id=$id]")
+    Iterator[Any](outputPartitioning, shuffleOrigin, shuffleType, child, s"[plan_id=$id]")
 }
 
 object CometShuffleExchangeExec
@@ -983,7 +983,7 @@ object CometShuffleExchangeExec
       streamRDD.sparkContext,
       Seq(streamRDD),
       streamRDD.getNumPartitions,
-      shuffleScanIndices = Set.empty,
+      blockScanIndices = Set.empty,
       spillMetricNode = CometMetricNode(metrics, Seq(childMetricNode)))
 
     val ctx = NativeExecContext(
@@ -994,7 +994,7 @@ object CometShuffleExchangeExec
       encryptedFilePaths = Seq.empty,
       commonByKey = Map.empty,
       perPartitionByKey = Map.empty,
-      shuffleScanIndices = Set.empty,
+      blockScanIndices = Set.empty,
       hasScanInput = false)
 
     // The Scan placeholder has no per-operator metrics, so the metric tree for the unified plan

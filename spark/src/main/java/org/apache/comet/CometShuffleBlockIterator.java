@@ -19,7 +19,6 @@
 
 package org.apache.comet;
 
-import java.io.Closeable;
 import java.io.EOFException;
 import java.io.IOException;
 import java.io.InputStream;
@@ -40,7 +39,7 @@ import java.util.function.LongConsumer;
  * Native code must fully consume it (via read_ipc_compressed which allocates new memory for the
  * decompressed data) before pulling the next block.
  */
-public class CometShuffleBlockIterator implements Closeable {
+public class CometShuffleBlockIterator implements CometBlockIterator {
 
   private static final int INITIAL_BUFFER_SIZE = 128 * 1024;
 
@@ -71,6 +70,7 @@ public class CometShuffleBlockIterator implements Closeable {
    *
    * @return the compressed body length in bytes (codec prefix + compressed IPC), or -1 if EOF
    */
+  @Override
   public int hasNext() throws IOException {
     if (closed) {
       return -1;
@@ -137,6 +137,7 @@ public class CometShuffleBlockIterator implements Closeable {
    * Reports a native IPC/codec failure to the remote stream that supplied the current block. Called
    * by ShuffleScan via JNI; local streams preserve the original native exception.
    */
+  @Override
   public void onDecodeFailure(String message) throws IOException {
     if (inputStream instanceof CometShuffleReadFailureHandler) {
       ((CometShuffleReadFailureHandler) inputStream).onShuffleReadFailure(new IOException(message));
@@ -144,6 +145,7 @@ public class CometShuffleBlockIterator implements Closeable {
   }
 
   /** Whether fetched Arrow arrays require validation before native consumption. */
+  @Override
   public boolean requiresValidation() {
     return inputStream instanceof CometShuffleReadFailureHandler;
   }
@@ -152,16 +154,19 @@ public class CometShuffleBlockIterator implements Closeable {
    * Returns the DirectByteBuffer containing the current block's compressed bytes (4-byte codec
    * prefix + compressed IPC data). Called by native code via JNI.
    */
+  @Override
   public ByteBuffer getBuffer() {
     return dataBuf;
   }
 
   /** Returns the length of the current block in bytes. Called by native code via JNI. */
+  @Override
   public int getCurrentBlockLength() {
     return currentBlockLength;
   }
 
   /** Updates Spark's shuffle records-read metric after native code decodes a batch. */
+  @Override
   public void incRecordsRead(long records) {
     recordsReadUpdater.accept(records);
   }

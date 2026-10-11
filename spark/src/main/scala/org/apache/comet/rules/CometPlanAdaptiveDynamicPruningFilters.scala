@@ -26,10 +26,11 @@ import org.apache.spark.sql.catalyst.plans.logical.{Aggregate, LogicalPlan}
 import org.apache.spark.sql.catalyst.rules.Rule
 import org.apache.spark.sql.comet._
 import org.apache.spark.sql.execution._
-import org.apache.spark.sql.execution.adaptive.{AdaptiveSparkPlanExec, AdaptiveSparkPlanHelper}
-import org.apache.spark.sql.execution.exchange.BroadcastExchangeExec
+import org.apache.spark.sql.execution.adaptive.{AdaptiveSparkPlanExec, AdaptiveSparkPlanHelper, BroadcastQueryStageExec}
+import org.apache.spark.sql.execution.exchange.{BroadcastExchangeExec, ReusedExchangeExec}
 import org.apache.spark.sql.execution.joins.{BroadcastHashJoinExec, HashedRelationBroadcastMode, HashJoin}
 
+import org.apache.comet.CometConf
 import org.apache.comet.shims.{ShimPrepareExecutedPlan, ShimSubqueryBroadcast}
 
 /**
@@ -258,7 +259,8 @@ case object CometPlanAdaptiveDynamicPruningFilters
       // construct a fresh exchange wrapping the build subtree, then wrap in a new ASPE.
       // AQE's stageCache ensures the broadcast runs once via ReusedExchangeExec (same
       // canonical form as the join's exchange).
-      val (broadcastChild, isComet) = matchingJoin.get
+      val (broadcastChild, directRead) = matchingJoin.get
+      val isComet = directRead.isDefined
       val buildSidePlan = adaptivePlan.executedPlan
       logDebug(
         s"Matched DPP subquery '${sab.name}' to " +
@@ -276,7 +278,12 @@ case object CometPlanAdaptiveDynamicPruningFilters
         buildSidePlan.output)
       val mode = HashedRelationBroadcastMode(packedKeys)
       val newExchange = if (isComet) {
-        CometBroadcastExchangeExec(buildSidePlan, buildSidePlan.output, mode, buildSidePlan)
+        CometBroadcastExchangeExec(
+          buildSidePlan,
+          buildSidePlan.output,
+          mode,
+          buildSidePlan,
+          directRead.get)
       } else {
         BroadcastExchangeExec(mode, buildSidePlan)
       }
@@ -364,8 +371,8 @@ case object CometPlanAdaptiveDynamicPruningFilters
    */
   private def findMatchingBroadcastJoin(
       sabKeyIds: Set[Any],
-      plan: SparkPlan): Option[(SparkPlan, Boolean)] = {
-    var result: Option[(SparkPlan, Boolean)] = None
+      plan: SparkPlan): Option[(SparkPlan, Option[Boolean])] = {
+    var result: Option[(SparkPlan, Option[Boolean])] = None
     find(plan) {
       case join: CometBroadcastHashJoinExec =>
         result = extractBroadcastChild(
@@ -374,7 +381,10 @@ case object CometPlanAdaptiveDynamicPruningFilters
           join.right,
           join.leftKeys,
           join.rightKeys,
-          isCometJoin = true,
+          directRead = Some(extractDirectRead(join.buildSide match {
+            case BuildLeft => join.left
+            case BuildRight => join.right
+          }).getOrElse(CometConf.COMET_BROADCAST_DIRECT_READ_ENABLED.get())),
           sabKeyIds)
         result.isDefined
       case join: BroadcastHashJoinExec =>
@@ -384,7 +394,7 @@ case object CometPlanAdaptiveDynamicPruningFilters
           join.right,
           join.leftKeys,
           join.rightKeys,
-          isCometJoin = false,
+          directRead = None,
           sabKeyIds)
         result.isDefined
       case _ => false
@@ -398,8 +408,8 @@ case object CometPlanAdaptiveDynamicPruningFilters
       right: SparkPlan,
       leftKeys: Seq[Expression],
       rightKeys: Seq[Expression],
-      isCometJoin: Boolean,
-      sabKeyIds: Set[Any]): Option[(SparkPlan, Boolean)] = {
+      directRead: Option[Boolean],
+      sabKeyIds: Set[Any]): Option[(SparkPlan, Option[Boolean])] = {
     val joinBuildKeys = buildSide match {
       case BuildLeft => leftKeys
       case BuildRight => rightKeys
@@ -410,7 +420,7 @@ case object CometPlanAdaptiveDynamicPruningFilters
         case BuildLeft => left
         case BuildRight => right
       }
-      Some((bc, isCometJoin))
+      Some((bc, directRead))
     } else {
       // exprId mismatch between SAB and candidate BHJ. This is expected when the plan
       // contains multiple broadcast joins and we're iterating through non-matches.
@@ -419,9 +429,22 @@ case object CometPlanAdaptiveDynamicPruningFilters
       // so it's observable without being noisy.
       logDebug(
         s"BHJ buildKey exprIds do not match SAB: sab=$sabKeyIds join=$joinKeyIds " +
-          s"(isCometJoin=$isCometJoin)")
+          s"(isCometJoin=${directRead.isDefined})")
       None
     }
+  }
+
+  private def extractDirectRead(plan: SparkPlan): Option[Boolean] = plan match {
+    case exchange: CometBroadcastExchangeExec => Some(exchange.directRead)
+    case BroadcastQueryStageExec(_, exchange: CometBroadcastExchangeExec, _) =>
+      Some(exchange.directRead)
+    case ReusedExchangeExec(_, exchange: CometBroadcastExchangeExec) => Some(exchange.directRead)
+    case BroadcastQueryStageExec(
+          _,
+          ReusedExchangeExec(_, exchange: CometBroadcastExchangeExec),
+          _) =>
+      Some(exchange.directRead)
+    case _ => None
   }
 
   private def convertNonCometNodeDPP(node: SparkPlan, stagePlan: SparkPlan): SparkPlan = {
