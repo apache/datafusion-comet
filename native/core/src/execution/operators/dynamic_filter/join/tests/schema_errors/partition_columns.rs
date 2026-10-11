@@ -71,6 +71,7 @@ fn partitioned_scan(
         false,
         false,
         false,
+        128 * 1024 * 1024,
     )
     .unwrap()
 }

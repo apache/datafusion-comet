@@ -508,7 +508,8 @@ to Spark ([#2837](https://github.com/apache/datafusion-comet/issues/2837)). Enab
 | `equal_null` | ✅ | — | Lowers to `<=>` (`EqualNullSafe`) |
 | `hll_sketch_estimate` | ✅ | Native | Spark 4.0+ only; falls back by default, the native path is opt-in via allowIncompatible ([details](compatibility/expressions/misc.md)) |
 | `hll_union` | ✅ | Native | Spark 4.0+ only; falls back by default, the native path is opt-in via allowIncompatible ([details](compatibility/expressions/misc.md)) |
-| `is_variant_null` | 🔜 | — | Requires `VariantType` support |
+| `is_valid_variant` | ✅ | Native | Spark 4.2+. Top-level Variant columns and literals. |
+| `is_variant_null` | ✅ | Native | Spark 4.0+. Top-level Variant columns and literals. |
 | `monotonically_increasing_id` | ✅ | Native |  |
 | `parse_json` | 🔜 | — | Requires `VariantType` support |
 | `raise_error` | 🔜 | — | Raises a runtime error |

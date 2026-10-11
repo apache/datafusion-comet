@@ -116,6 +116,8 @@ pub struct SparkParquetOptions {
     /// (overflow -> NULL), because Spark may discard values through pruning paths that
     /// DataFusion cannot fully mirror before conversion.
     pub checked_timestamp_overflow: bool,
+    /// Spark's Variant constructor limit, supplied by the JVM for native scans.
+    pub variant_size_limit: usize,
 }
 
 impl SparkParquetOptions {
@@ -131,6 +133,7 @@ impl SparkParquetOptions {
             allow_type_promotion: false,
             allow_timestamp_ltz_to_ntz: false,
             checked_timestamp_overflow: true,
+            variant_size_limit: 128 * 1024 * 1024,
         }
     }
 
@@ -146,6 +149,7 @@ impl SparkParquetOptions {
             allow_type_promotion: false,
             allow_timestamp_ltz_to_ntz: false,
             checked_timestamp_overflow: true,
+            variant_size_limit: 128 * 1024 * 1024,
         }
     }
 }

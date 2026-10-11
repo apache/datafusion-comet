@@ -41,6 +41,7 @@ use std::{
 pub(super) fn normalize_variant_array(
     array: &ArrayRef,
     target_field: &FieldRef,
+    size_limit: usize,
 ) -> DataFusionResult<ArrayRef> {
     let DataType::Struct(fields) = target_field.data_type() else {
         return Err(DataFusionError::Execution(
@@ -64,6 +65,41 @@ pub(super) fn normalize_variant_array(
     // shredded output is then rebuilt with Spark's byte encoding.
     let array = normalize_variant_storage(array)?;
     let variant = VariantArray::try_new(array.as_ref())?;
+    if variant.typed_value_column().is_none() {
+        // Spark's ShreddingUtils.rebuild passes unshredded bytes through. Validate the
+        // required children and metadata version, leaving payload validation to consumers
+        // such as is_valid_variant (https://github.com/apache/datafusion-comet/issues/5429).
+        let mut value = cast(variant.value_column().as_ref(), &DataType::Binary)?;
+        let metadata = cast(variant.metadata_column().as_ref(), &DataType::Binary)?;
+        for row in 0..variant.len() {
+            if variant.inner().is_valid(row)
+                && (value.is_null(row)
+                    || metadata.is_null(row)
+                    || metadata
+                        .as_binary::<i32>()
+                        .value(row)
+                        .first()
+                        .is_none_or(|b| b & 15 != 1))
+            {
+                return Err(SparkError::MalformedVariant.into());
+            }
+            if variant.inner().is_valid(row)
+                && (value.as_binary::<i32>().value(row).len() > size_limit
+                    || metadata.as_binary::<i32>().value(row).len() > size_limit)
+            {
+                return Err(SparkError::VariantConstructorSizeLimit.into());
+            }
+        }
+        if variant.inner().null_count() != 0 {
+            value =
+                arrow::compute::nullif(value.as_ref(), &arrow::compute::is_null(variant.inner())?)?;
+        }
+        return Ok(Arc::new(StructArray::try_new(
+            fields.clone(),
+            vec![value, metadata],
+            variant.inner().nulls().cloned(),
+        )?));
+    }
     let normalize = |metadata: Option<&ArrayRef>| -> DataFusionResult<ArrayRef> {
         let extended = extend_shredded_metadata(&variant, metadata)?;
         let prepared = prepare_variant_for_unshredding(&variant, extended.as_ref().or(metadata))?;
@@ -73,25 +109,11 @@ pub(super) fn normalize_variant_array(
             }
             error => error.into(),
         })?;
-        let (value, metadata) = if variant.typed_value_column().is_some() {
-            rebuild_spark_variant(
-                &variant,
-                unshredded.value_column(),
-                unshredded.metadata_column(),
-            )?
-        } else {
-            // Spark passes unshredded bytes through, including dictionary order, unused keys,
-            // and wide scalar encodings. Preparation above still validates legacy input.
-            let mut value = cast(variant.value_column().as_ref(), &DataType::Binary)?;
-            let metadata = cast(variant.metadata_column().as_ref(), &DataType::Binary)?;
-            if variant.inner().null_count() != 0 {
-                value = arrow::compute::nullif(
-                    value.as_ref(),
-                    &arrow::compute::is_null(variant.inner())?,
-                )?;
-            }
-            (value, metadata)
-        };
+        let (value, metadata) = rebuild_spark_variant(
+            &variant,
+            unshredded.value_column(),
+            unshredded.metadata_column(),
+        )?;
         Ok(Arc::new(StructArray::try_new(
             fields.clone(),
             vec![value, metadata],

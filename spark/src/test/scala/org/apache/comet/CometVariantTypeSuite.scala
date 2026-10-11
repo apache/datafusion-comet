@@ -27,10 +27,11 @@ import scala.jdk.CollectionConverters._
 import org.scalatest.funsuite.AnyFunSuite
 
 import org.apache.arrow.vector.types.pojo.{ArrowType, Field, FieldType}
-import org.apache.spark.sql.catalyst.expressions.AttributeReference
+import org.apache.spark.sql.catalyst.expressions.{AttributeReference, GetStructField}
+import org.apache.spark.sql.catalyst.expressions.objects.StaticInvoke
 import org.apache.spark.sql.comet.CometNativeColumnarToRowExec
 import org.apache.spark.sql.comet.util.Utils
-import org.apache.spark.sql.types.{ArrayType, BinaryType, StructField, StructType}
+import org.apache.spark.sql.types.{ArrayType, BinaryType, BooleanType, StructField, StructType}
 
 import org.apache.comet.rules.CometScanTypeChecker
 import org.apache.comet.serde.{CometAttributeReference, QueryPlanSerde, Unsupported}
@@ -92,5 +93,46 @@ class CometVariantTypeSuite extends AnyFunSuite {
       case None =>
         assert(Utils.fromArrowField(marked) == storageType)
     }
+  }
+
+  test("Variant predicate serialization is scoped to supported inputs and Spark versions") {
+    assume(Utils.variantType.isDefined, "VariantType requires Spark 4.0+")
+    val variantType = Utils.variantType.get
+    val evaluator = Class.forName(
+      "org.apache.spark.sql.catalyst.expressions.variant.VariantExpressionEvalUtils$")
+    val input = AttributeReference("v", variantType)()
+    for ((method, supported) <- Seq(
+        "isVariantNull" -> true,
+        "isValidVariant" -> CometSparkSessionExtensions.isSpark42Plus)) {
+      val expression = StaticInvoke(
+        evaluator,
+        BooleanType,
+        method,
+        Seq(input),
+        propagateNull = method == "isValidVariant",
+        returnNullable = false)
+      assert(
+        QueryPlanSerde.exprToProto(expression, Seq(input), binding = true).isDefined == supported)
+      assert(
+        QueryPlanSerde
+          .exprToProto(
+            expression.copy(propagateNull = !expression.propagateNull),
+            Seq(input),
+            binding = true)
+          .isEmpty)
+      val lookalike = AttributeReference("v", storageType)()
+      assert(QueryPlanSerde
+        .exprToProto(expression.copy(arguments = Seq(lookalike)), Seq(lookalike), binding = true)
+        .isEmpty)
+      val parent = AttributeReference("s", StructType(Seq(StructField("v", variantType))))()
+      assert(
+        QueryPlanSerde
+          .exprToProto(
+            expression.copy(arguments = Seq(GetStructField(parent, 0))),
+            Seq(parent),
+            binding = true)
+          .isEmpty)
+    }
+    assert(QueryPlanSerde.exprToProto(input, Seq(input), binding = true).isEmpty)
   }
 }

@@ -37,6 +37,24 @@
 
 - Resolved to a literal by the analyzer; same as `user`.
 
+## is_valid_variant
+
+- Spark 3.4.3 (audited 2026-10-04): unavailable.
+- Spark 3.5.8 (audited 2026-10-04): unavailable.
+- Spark 4.0.1 (audited 2026-10-04): unavailable.
+- Spark 4.1.1 (audited 2026-10-04): unavailable.
+- Spark 4.2.0 (audited 2026-10-04): SQL NULL propagates. Validates the metadata version and every reachable value and object key. It accepts unused malformed metadata, invalid UTF-8, trailing bytes, and unordered object fields. Native validation follows Spark's accessors rather than Arrow's stricter format validation.
+- Comet accepts top-level Variant columns and literals in projections and filters. Unshredded scans preserve raw payloads for predicate validation, matching Spark's constructor checks for missing children, metadata version and size. `CometVariantProjectionSuite` covers malformed scan bytes and constructor errors (verified 2026-10-05).
+
+## is_variant_null
+
+- Spark 3.4.3 (audited 2026-10-04): unavailable.
+- Spark 3.5.8 (audited 2026-10-04): unavailable.
+- Spark 4.0.1 (audited 2026-10-04): returns false for SQL NULL. An empty value raises `MALFORMED_VARIANT`; otherwise only a zero first value byte returns true. The remaining value bytes and metadata are not validated.
+- Spark 4.1.1 (audited 2026-10-04): identical to 4.0.1.
+- Spark 4.2.0 (audited 2026-10-04): identical to 4.0.1.
+- Comet accepts top-level Variant columns and literals in projections and filters and retains generic Variant expression fallback.
+
 ## monotonically_increasing_id
 
 - Spark 3.4.3 (audited 2026-05-27): byte-for-byte identical to 4.1.1. `MonotonicallyIncreasingID() extends LeafExpression with Stateful`; produces a Long that encodes the partition id in the upper 31 bits and a per-partition row counter in the lower 33 bits. Comet emits an empty `MonotonicallyIncreasingId` proto and the native side produces the same encoding.

@@ -24,12 +24,15 @@ import org.apache.spark.sql.catalyst.expressions.aggregate.{HllSketchAgg, HllUni
 import org.apache.spark.sql.catalyst.expressions.json.{JsonExpressionUtils, StructsToJsonEvaluator}
 import org.apache.spark.sql.catalyst.expressions.objects.{Invoke, StaticInvoke}
 import org.apache.spark.sql.catalyst.expressions.url.ParseUrlEvaluator
+import org.apache.spark.sql.catalyst.expressions.variant.VariantExpressionEvalUtils
+import org.apache.spark.sql.types.{BooleanType, VariantType}
 
-import org.apache.comet.CometExplainInfo
+import org.apache.comet.{CometConf, CometExplainInfo}
+import org.apache.comet.CometSparkSessionExtensions.{isSpark42Plus, withFallbackReason}
 import org.apache.comet.expressions.CometEvalMode
-import org.apache.comet.serde.{CometAggregateExpressionSerde, CometExpressionSerde, CometHllSketchAgg, CometHllSketchEstimate, CometHllUnion, CometHllUnionAgg, CometListAgg, CometMapSort, CometRandStr, CometToPrettyString}
-import org.apache.comet.serde.ExprOuterClass.Expr
-import org.apache.comet.serde.QueryPlanSerde.exprToProtoInternal
+import org.apache.comet.serde.{CometAggregateExpressionSerde, CometExpressionSerde, CometHllSketchAgg, CometHllSketchEstimate, CometHllUnion, CometHllUnionAgg, CometListAgg, CometMapSort, CometRandStr, CometToPrettyString, CometVariantInput}
+import org.apache.comet.serde.ExprOuterClass.{Expr, UnaryExpr}
+import org.apache.comet.serde.QueryPlanSerde.{exprToProtoInternal, scalarFunctionExprToProtoWithReturnType}
 
 /**
  * Shared trait body for the Spark 4.x `CometExprShim` traits (4.0/4.1/4.2). Holds the parts that
@@ -76,6 +79,18 @@ trait Spark4xCometExprShim extends CometExprShim4x {
         // `x -> x IS NOT NULL` lambda and dispatches to CometArrayCompact.
         exprToProtoInternal(knc.child, inputs, binding)
 
+      // Spark infers these guards for null-intolerant Variant predicates in filters.
+      // They inspect the parent null bitmap without interpreting Variant bytes.
+      case e: IsNull if e.child.dataType == VariantType && CometConf.isExprEnabled("IsNull") =>
+        CometVariantInput.convert(e.child, inputs, binding).map { child =>
+          Expr.newBuilder().setIsNull(UnaryExpr.newBuilder().setChild(child)).build()
+        }
+      case e: IsNotNull
+          if e.child.dataType == VariantType && CometConf.isExprEnabled("IsNotNull") =>
+        CometVariantInput.convert(e.child, inputs, binding).map { child =>
+          Expr.newBuilder().setIsNotNull(UnaryExpr.newBuilder().setChild(child)).build()
+        }
+
       // On Spark 4.0+, RuntimeReplaceable expressions (StructsToJson, ParseUrl) become
       // Invoke(Literal(Evaluator), "evaluate", ...). Reconstruct the original expression and
       // recurse so support-level checks apply, propagating any explain info back onto the
@@ -105,6 +120,25 @@ trait Spark4xCometExprShim extends CometExprShim4x {
 
       case s: StaticInvoke =>
         (s.staticObject, s.functionName, s.arguments) match {
+          // Both predicates are RuntimeReplaceable: match their exact evaluator call rather
+          // than admitting Variant attributes through the general expression serializer.
+          case (cls, method, Seq(child))
+              if cls == VariantExpressionEvalUtils.getClass &&
+                s.dataType == BooleanType && child.dataType == VariantType &&
+                !s.returnNullable && s.propagateNull == (method == "isValidVariant") &&
+                (method == "isVariantNull" || (isSpark42Plus && method == "isValidVariant")) =>
+            val name = if (method == "isVariantNull") "is_variant_null" else "is_valid_variant"
+            val configName = if (method == "isVariantNull") "IsVariantNull" else "IsValidVariant"
+            if (!CometConf.isExprEnabled(configName)) {
+              withFallbackReason(s, s"Expression support is disabled: $configName")
+              None
+            } else {
+              scalarFunctionExprToProtoWithReturnType(
+                name,
+                BooleanType,
+                false,
+                CometVariantInput.convert(child, inputs, binding))
+            }
           case (cls, "lengthOfJsonArray", Seq(child)) if cls == classOf[JsonExpressionUtils] =>
             val lengthOfJsonArray = LengthOfJsonArray(child)
             val exprProto = exprToProtoInternal(lengthOfJsonArray, inputs, binding)
