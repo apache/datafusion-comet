@@ -26,7 +26,7 @@ import org.scalatest.matchers.should.Matchers
 
 import org.apache.hadoop.conf.Configuration
 
-import org.apache.comet.CometConf.COMET_S3_COMPLIANT_SCHEMES_KEY
+import org.apache.comet.CometConf.{COMET_LIBHDFS_SCHEMES_KEY, COMET_S3_COMPLIANT_SCHEMES_KEY}
 
 class NativeConfigSuite extends AnyFunSuite with Matchers {
 
@@ -321,6 +321,135 @@ class NativeConfigSuite extends AnyFunSuite with Matchers {
     assert(opts("fs.s3a.bucket.mybucket.path.style.access") == "false")
   }
 
+  test("extractObjectStoreOptions over a scan's files forwards every scheme's options") {
+    val hadoopConf = new Configuration()
+    hadoopConf.set(COMET_LIBHDFS_SCHEMES_KEY, "hdfs")
+    hadoopConf.set("fs.s3a.access.key", "s3-access-key")
+    hadoopConf.set("fs.gs.project.id", "gcp-project")
+    hadoopConf.set("fs.azure.account.key.acct.blob.core.windows.net", "azure-key")
+    val uris = Seq(
+      "file:///tmp/t/p=1/a.parquet",
+      "hdfs://nn1/t/p=2/b.parquet",
+      "s3a://bucket-a/t/p=3/c.parquet",
+      "gs://bucket-b/t/p=4/d.parquet",
+      "s3a://bucket-c/t/p=5/e.parquet").map(new URI(_))
+
+    val opts = NativeConfig.extractObjectStoreOptions(hadoopConf, uris)
+    assert(opts("fs.s3a.access.key") == "s3-access-key")
+    assert(opts("fs.gs.project.id") == "gcp-project")
+    assert(opts(COMET_LIBHDFS_SCHEMES_KEY) == "hdfs")
+    // No file of the scan is on Azure.
+    assert(!opts.contains("fs.azure.account.key.acct.blob.core.windows.net"))
+    // The union of the options of each scheme on its own.
+    val perScheme = uris.map(NativeConfig.extractObjectStoreOptions(hadoopConf, _))
+    assert(opts == perScheme.reduce(_ ++ _))
+    assert(NativeConfig.extractObjectStoreOptions(hadoopConf, Nil).isEmpty)
+    // A file on Azure brings the Azure options.
+    val withAzure = NativeConfig.extractObjectStoreOptions(
+      hadoopConf,
+      uris :+ new URI("wasbs://container@acct.blob.core.windows.net/t/f.parquet"))
+    assert(withAzure("fs.azure.account.key.acct.blob.core.windows.net") == "azure-key")
+    assert(withAzure("fs.s3a.access.key") == "s3-access-key")
+  }
+
+  test("extractObjectStoreOptions over a scan's files keeps two aliases' settings apart") {
+    val hadoopConf = new Configuration()
+    hadoopConf.set(COMET_S3_COMPLIANT_SCHEMES_KEY, "blob,wasabi")
+    hadoopConf.set("fs.blob.default.endpoint", "https://blob.example.internal")
+    hadoopConf.set("fs.wasabi.default.endpoint", "https://wasabi.example.internal")
+    val uris = Seq("blob://bucket-a/t/1.parquet", "wasabi://bucket-b/t/2.parquet").map(new URI(_))
+
+    Seq(uris, uris.reverse).foreach { files =>
+      val opts = NativeConfig.extractObjectStoreOptions(hadoopConf, files)
+      assert(opts("fs.s3a.bucket.bucket-a.endpoint") == "https://blob.example.internal")
+      assert(opts("fs.s3a.bucket.bucket-b.endpoint") == "https://wasabi.example.internal")
+      assert(!opts.contains("fs.s3a.endpoint"))
+    }
+  }
+
+  test("extractObjectStoreOptions over a scan's files translates alias settings per bucket") {
+    val hadoopConf = new Configuration()
+    hadoopConf.set(COMET_S3_COMPLIANT_SCHEMES_KEY, "blob")
+    hadoopConf.set("fs.blob.default.endpoint", "https://blob.example.internal")
+    hadoopConf.set("fs.blob.default.awsAccessKeyId", "AKIA-blob")
+    // A raw per-bucket key for an alias bucket: the alias translation must win it, even when
+    // another file's scheme copies the raw key too.
+    hadoopConf.set("fs.s3a.bucket.bucket-a.endpoint", "https://stale.example.internal")
+    hadoopConf.set("fs.s3a.bucket.bucket-s3a.endpoint", "https://s3a.example.internal")
+    val uris = Seq(
+      "blob://bucket-a/t/1.parquet",
+      "s3a://bucket-s3a/t/2.parquet",
+      "blob:///bucket-b/t/3.parquet").map(new URI(_))
+
+    val opts = NativeConfig.extractObjectStoreOptions(hadoopConf, uris)
+    Seq("bucket-a", "bucket-b").foreach { bucket =>
+      assert(opts(s"fs.s3a.bucket.$bucket.endpoint") == "https://blob.example.internal")
+      assert(opts(s"fs.s3a.bucket.$bucket.access.key") == "AKIA-blob")
+      assert(opts(s"fs.s3a.bucket.$bucket.path.style.access") == "true")
+    }
+    // The plain s3a bucket keeps its own settings, without the alias defaults.
+    assert(opts("fs.s3a.bucket.bucket-s3a.endpoint") == "https://s3a.example.internal")
+    assert(!opts.contains("fs.s3a.bucket.bucket-s3a.access.key"))
+    // Whichever order the files come in.
+    assert(NativeConfig.extractObjectStoreOptions(hadoopConf, uris.reverse) == opts)
+  }
+
+  test("extractObjectStoreOptions over a scan's files keeps each alias bucket's translation") {
+    // Bucket b1's own translation keeps the default path style, while bucket b2's translation
+    // derives b1's path style from b1's explicit endpoint. Only b1's own one may apply to b1.
+    val hadoopConf = new Configuration()
+    hadoopConf.set(COMET_S3_COMPLIANT_SCHEMES_KEY, "blob")
+    hadoopConf.set("fs.blob.default.pathStyleAccess", "false")
+    hadoopConf.set("fs.blob.b1.endpoint", "https://b1.example.internal")
+    val b1 = new URI("blob://b1/t/1.parquet")
+    val b2 = new URI("blob://b2/t/2.parquet")
+    val alone = NativeConfig.extractObjectStoreOptions(hadoopConf, b1)
+    assert(alone("fs.s3a.bucket.b1.path.style.access") == "false")
+
+    Seq(Seq(b1, b2), Seq(b2, b1)).foreach { uris =>
+      val opts = NativeConfig.extractObjectStoreOptions(hadoopConf, uris)
+      assert(opts("fs.s3a.bucket.b1.endpoint") == "https://b1.example.internal")
+      assert(opts("fs.s3a.bucket.b1.path.style.access") == "false", s"files $uris")
+      assert(opts("fs.s3a.bucket.b2.path.style.access") == "false", s"files $uris")
+    }
+  }
+
+  test("extractObjectStoreOptions over a scan's files translates no alias read through libhdfs") {
+    val hadoopConf = new Configuration()
+    hadoopConf.set(COMET_S3_COMPLIANT_SCHEMES_KEY, "blob")
+    hadoopConf.set(COMET_LIBHDFS_SCHEMES_KEY, "hdfs,blob")
+    hadoopConf.set("fs.s3a.endpoint", "http://s3.example.internal:19001")
+    hadoopConf.set("fs.blob.default.endpoint", "http://blob.example.internal:19002")
+    val s3a = new URI("s3a://bucket/t/1.parquet")
+    val blob = new URI("blob://bucket/t/2.parquet")
+
+    // The libhdfs store reads no `fs.s3a.*` keys, so the alias settings must not reach the
+    // native S3 store of the same bucket.
+    Seq(Seq(s3a, blob), Seq(blob, s3a)).foreach { uris =>
+      val opts = NativeConfig.extractObjectStoreOptions(hadoopConf, uris)
+      assert(opts("fs.s3a.endpoint") == "http://s3.example.internal:19001", s"files $uris")
+      assert(!opts.contains("fs.s3a.bucket.bucket.endpoint"), s"files $uris")
+      assert(!opts.contains("fs.s3a.bucket.bucket.path.style.access"), s"files $uris")
+      assert(opts == NativeConfig.extractObjectStoreOptions(hadoopConf, Seq(s3a)))
+    }
+
+    // An alias read only through libhdfs gets no translated settings either.
+    val blobOnly = NativeConfig.extractObjectStoreOptions(hadoopConf, Seq(blob))
+    assert(!blobOnly.keys.exists(_.startsWith("fs.s3a.bucket.")))
+    assert(blobOnly(COMET_LIBHDFS_SCHEMES_KEY) == "hdfs,blob")
+
+    // An alias the native S3 store reads keeps its translation next to an s3a file.
+    hadoopConf.set(COMET_LIBHDFS_SCHEMES_KEY, "hdfs")
+    val nativeBlob = new URI("blob://bucket-b/t/3.parquet")
+    Seq(Seq(s3a, nativeBlob), Seq(nativeBlob, s3a)).foreach { uris =>
+      val opts = NativeConfig.extractObjectStoreOptions(hadoopConf, uris)
+      assert(opts("fs.s3a.endpoint") == "http://s3.example.internal:19001", s"files $uris")
+      assert(opts("fs.s3a.bucket.bucket-b.endpoint") == "http://blob.example.internal:19002")
+      assert(opts("fs.s3a.bucket.bucket-b.path.style.access") == "true")
+      assert(!opts.contains("fs.s3a.bucket.bucket.endpoint"), s"files $uris")
+    }
+  }
+
   test("bucketForUri - authority, alias path promotion, and non-S3 schemes") {
     // `blob:///mybucket/...` reports authority "default"; the real bucket is the first path
     // segment (matching the native rewrite), but path promotion applies ONLY to S3-family
@@ -342,6 +471,82 @@ class NativeConfigSuite extends AnyFunSuite with Matchers {
         NativeConfig.bucketForUri(new URI(uri), schemes) shouldBe expected
       }
     }
+  }
+
+  test("objectStoreKey - matches the native object store key for each path form") {
+    // The same table is asserted natively by `object_store_key_matches_jvm_fixture` in
+    // native/core/src/parquet/parquet_support.rs. Native scans group files by this key, and the
+    // native planner rejects a partition whose files resolve to different stores. The scheme
+    // lists are comma-separated; an empty libhdfs list means the `hdfs` default.
+    case class Case(path: String, aliases: String, libhdfs: String, key: String, hdfs: Boolean)
+    val account = "account.dfs.core.windows.net"
+    val cases = Seq(
+      // s3a is read through the s3 store; the bucket keeps its case and port.
+      Case("s3a://Bucket.Upper/k.parquet", "", "", "s3://Bucket.Upper", hdfs = false),
+      Case("s3://bucket:9000/k.parquet", "", "", "s3://bucket:9000", hdfs = false),
+      Case("s3a://user:secret@bucket/k.parquet", "", "", "s3://bucket", hdfs = false),
+      Case("S3A://bucket/k.parquet", "", "", "s3://bucket", hdfs = false),
+      Case("s3a:///bucket/k.parquet", "", "", "s3://bucket", hdfs = false),
+      Case("s3n://bucket/k.parquet", "", "", "s3n://bucket", hdfs = false),
+      // A scheme routed through libhdfs keeps its spelling; the decision uses the scheme as
+      // written, so listing s3 does not capture s3a. The last two share a key but not a store.
+      Case("s3a://bucket/k.parquet", "", "s3a", "s3a://bucket", hdfs = true),
+      Case("s3a://bucket/k.parquet", "", "s3", "s3://bucket", hdfs = false),
+      Case("s3://bucket/k.parquet", "", "s3", "s3://bucket", hdfs = true),
+      // An opted-in alias is read through the s3 store, promoting a hostless bucket, unless
+      // libhdfs also lists it.
+      Case("blob://bucket/k.parquet", "blob", "", "s3://bucket", hdfs = false),
+      Case("blob:///bucket/k.parquet", "blob", "", "s3://bucket", hdfs = false),
+      Case("blob:/bucket/k.parquet", "blob", "", "s3://bucket", hdfs = false),
+      Case("blob://bucket/k.parquet", "", "", "blob://bucket", hdfs = false),
+      Case("blob://bucket/k.parquet", "blob", "blob", "blob://bucket", hdfs = true),
+      // Hostless plain s3 is not promoted.
+      Case("s3:///bucket/k.parquet", "", "", "s3://", hdfs = false),
+      // A listed URL-spec special scheme is never an alias.
+      Case("file:///tmp/t/k.parquet", "file", "", "file://", hdfs = false),
+      Case("file:/tmp/t/k.parquet", "", "", "file://", hdfs = false),
+      Case(
+        "HTTPS://Host.Example.com/k.parquet",
+        "",
+        "",
+        "https://host.example.com",
+        hdfs = false),
+      Case("hdfs://nn:8020/t/k.parquet", "", "", "hdfs://nn:8020", hdfs = true),
+      Case("hdfs:///t/k.parquet", "", "", "hdfs://", hdfs = true),
+      Case("gs://bucket/k.parquet", "", "", "gs://bucket", hdfs = false),
+      // ABFS keeps the container from the user info; WASB does not.
+      Case(s"abfss://container@$account/k.parquet", "", "", s"abfss://container@$account", false),
+      Case(s"abfs://container@$account/k.parquet", "", "", s"abfs://container@$account", false),
+      Case(
+        "wasbs://container@account.blob.core.windows.net/k.parquet",
+        "",
+        "",
+        "wasbs://account.blob.core.windows.net",
+        hdfs = false))
+
+    for (c <- cases) {
+      val libhdfs = if (c.libhdfs.isEmpty) Set("hdfs") else NativeConfig.parseSchemeSet(c.libhdfs)
+      withClue(s"${c.path} with aliases '${c.aliases}' and libhdfs '${c.libhdfs}': ") {
+        val key =
+          NativeConfig.objectStoreKey(
+            new URI(c.path),
+            NativeConfig.parseSchemeSet(c.aliases),
+            libhdfs)
+        (key.key, key.isLibhdfs) shouldBe ((c.key, c.hdfs))
+      }
+    }
+    // A path without a scheme is read from the local file system.
+    NativeConfig.objectStoreKey(new URI("/tmp/t/k.parquet"), Set.empty, Set("hdfs")) shouldBe
+      NativeConfig.ObjectStoreKey("file://", isLibhdfs = false)
+  }
+
+  test("resolveLibhdfsSchemes - hdfs when unset or blank, otherwise the configured list") {
+    val conf = new Configuration(false)
+    NativeConfig.resolveLibhdfsSchemes(conf) shouldBe Set("hdfs")
+    conf.set(COMET_LIBHDFS_SCHEMES_KEY, "  ")
+    NativeConfig.resolveLibhdfsSchemes(conf) shouldBe Set("hdfs")
+    conf.set(COMET_LIBHDFS_SCHEMES_KEY, " S3A , fake ")
+    NativeConfig.resolveLibhdfsSchemes(conf) shouldBe Set("s3a", "fake")
   }
 
   test("resolveS3CompliantSchemes - comma list is trimmed and lowercased, empty means none") {

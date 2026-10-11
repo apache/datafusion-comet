@@ -65,6 +65,7 @@ use datafusion::{
     arrow::{compute::SortOptions, datatypes::SchemaRef},
     common::DataFusionError,
     config::ConfigOptions,
+    datasource::object_store::ObjectStoreUrl,
     execution::FunctionRegistry,
     functions_aggregate::first_last::{FirstValue, LastValue},
     logical_expr::Operator as DataFusionOperator,
@@ -99,7 +100,7 @@ use iceberg::expr::Bind;
 use crate::execution::operators::ExecutionError::GeneralError;
 use crate::execution::spark_plan::SparkPlan;
 use crate::parquet::objectstore::s3_blob_fs_support::normalize_object_store_url;
-use crate::parquet::parquet_support::prepare_object_store_with_configs;
+use crate::parquet::parquet_support::{object_store_url_key, prepare_object_store_with_configs};
 use datafusion::common::scalar::ScalarStructBuilder;
 use datafusion::common::{
     tree_node::{Transformed, TransformedResult, TreeNode, TreeNodeRecursion, TreeNodeRewriter},
@@ -497,13 +498,15 @@ impl PhysicalPlanner {
         self.partition
     }
 
-    /// get DataFusion PartitionedFiles from a Spark FilePartition
+    /// get DataFusion PartitionedFiles from a Spark FilePartition. The scan reads a partition
+    /// through a single object store, so every file must resolve to the same one.
     fn get_partitioned_files(
         &self,
         partition: &SparkFilePartition,
         object_store_options: &HashMap<String, String>,
     ) -> Result<Vec<PartitionedFile>, ExecutionError> {
         let mut files = Vec::with_capacity(partition.partitioned_file.len());
+        let mut partition_store: Option<(String, bool)> = None;
         partition.partitioned_file.iter().try_for_each(|file| {
             assert!(file.start + file.length <= file.file_size);
 
@@ -518,7 +521,28 @@ impl PhysicalPlanner {
             // object-store key we hand DataFusion is stripped of the bucket prefix. Skipping this
             // would leave `bucket/key` as the object key, and path-style S3 GETs would double the
             // bucket (`<endpoint>/bucket/bucket/key`).
-            let url = normalize_object_store_url(&file.file_path, object_store_options)?.url;
+            let normalized = normalize_object_store_url(&file.file_path, object_store_options)?;
+            let store = (object_store_url_key(&normalized.url), normalized.is_hdfs);
+            match &partition_store {
+                None => partition_store = Some(store),
+                Some(first) if *first != store => {
+                    let describe = |(key, is_hdfs): &(String, bool)| {
+                        if *is_hdfs {
+                            format!("{key} (libhdfs)")
+                        } else {
+                            key.clone()
+                        }
+                    };
+                    return Err(GeneralError(format!(
+                        "A native scan partition holds files from two object stores ({} and {}); \
+                         each partition is read through one store",
+                        describe(first),
+                        describe(&store)
+                    )));
+                }
+                Some(_) => {}
+            }
+            let url = normalized.url;
             let path = Path::from_url_path(url.path()).map_err(|e| GeneralError(e.to_string()))?;
             partitioned_file.object_meta.location = path;
 
@@ -2065,21 +2089,30 @@ impl PhysicalPlanner {
                     .iter()
                     .map(|(k, v)| (k.clone(), v.clone()))
                     .collect();
-                let one_file = scan
-                    .file_partitions
-                    .first()
-                    .and_then(|f| f.partitioned_file.first())
-                    .map(|f| f.file_path.clone())
-                    .ok_or(GeneralError("Failed to locate file".to_string()))?;
-                let (object_store_url, _, _) = prepare_object_store_with_configs(
-                    self.session_ctx.runtime_env(),
-                    one_file,
-                    &object_store_options,
-                )?;
-                let files = self.get_partitioned_files(
-                    &scan.file_partitions[self.partition as usize],
-                    &object_store_options,
-                )?;
+                let partition = usize::try_from(self.partition)
+                    .ok()
+                    .and_then(|p| scan.file_partitions.get(p))
+                    .ok_or_else(|| {
+                        GeneralError(format!(
+                            "CsvScan has no file partition {} ({} partitions)",
+                            self.partition,
+                            scan.file_partitions.len()
+                        ))
+                    })?;
+                // Build the store from this partition's files; other partitions may read
+                // from a different one.
+                let object_store_url = match partition.partitioned_file.first() {
+                    Some(file) => {
+                        prepare_object_store_with_configs(
+                            self.session_ctx.runtime_env(),
+                            file.file_path.clone(),
+                            &object_store_options,
+                        )?
+                        .0
+                    }
+                    None => ObjectStoreUrl::local_filesystem(),
+                };
+                let files = self.get_partitioned_files(partition, &object_store_options)?;
                 let file_groups: Vec<Vec<PartitionedFile>> = vec![files];
                 let scan = init_csv_datasource_exec(
                     object_store_url,
@@ -5180,6 +5213,7 @@ fn needs_fields_coercion(sig: &TypeSignature) -> bool {
 #[cfg(test)]
 mod tests {
     mod empty_native_scan;
+    mod multi_store_scan;
 
     use futures::{poll, StreamExt};
     use std::{

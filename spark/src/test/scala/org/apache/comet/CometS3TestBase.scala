@@ -34,8 +34,9 @@ import org.apache.spark.sql.execution.SparkPlan
 import org.apache.comet.CometSparkSessionExtensions.isSpark42Plus
 
 import software.amazon.awssdk.auth.credentials.{AwsBasicCredentials, StaticCredentialsProvider}
+import software.amazon.awssdk.core.sync.RequestBody
 import software.amazon.awssdk.services.s3.S3Client
-import software.amazon.awssdk.services.s3.model.{CreateBucketRequest, HeadBucketRequest}
+import software.amazon.awssdk.services.s3.model.{CreateBucketRequest, HeadBucketRequest, PutObjectRequest}
 
 trait CometS3TestBase extends CometTestBase {
 
@@ -115,7 +116,7 @@ trait CometS3TestBase extends CometTestBase {
     case p: CometNativeScanExec => p
   }
 
-  protected def createBucketIfNotExists(bucketName: String): Unit = {
+  private def withS3Client[T](f: S3Client => T): T = {
     val credentials = AwsBasicCredentials.create(userName, password)
     val s3Client = S3Client
       .builder()
@@ -124,17 +125,29 @@ trait CometS3TestBase extends CometTestBase {
       .forcePathStyle(true)
       .build()
     try {
-      val bucketExists = Try {
-        s3Client.headBucket(HeadBucketRequest.builder().bucket(bucketName).build())
-        true
-      }.getOrElse(false)
-
-      if (!bucketExists) {
-        val request = CreateBucketRequest.builder().bucket(bucketName).build()
-        s3Client.createBucket(request)
-      }
+      f(s3Client)
     } finally {
       s3Client.close()
     }
   }
+
+  protected def createBucketIfNotExists(bucketName: String): Unit = withS3Client { s3Client =>
+    val bucketExists = Try {
+      s3Client.headBucket(HeadBucketRequest.builder().bucket(bucketName).build())
+      true
+    }.getOrElse(false)
+
+    if (!bucketExists) {
+      val request = CreateBucketRequest.builder().bucket(bucketName).build()
+      s3Client.createBucket(request)
+    }
+  }
+
+  /** Writes `bytes` to `bucket` under `key`, so tests can place the same key in two buckets. */
+  protected def putObject(bucket: String, key: String, bytes: Array[Byte]): Unit =
+    withS3Client { s3Client =>
+      s3Client.putObject(
+        PutObjectRequest.builder().bucket(bucket).key(key).build(),
+        RequestBody.fromBytes(bytes))
+    }
 }

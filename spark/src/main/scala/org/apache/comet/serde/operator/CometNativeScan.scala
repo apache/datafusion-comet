@@ -26,7 +26,7 @@ import org.apache.spark.internal.Logging
 import org.apache.spark.sql.catalyst.analysis.Resolver
 import org.apache.spark.sql.catalyst.expressions.{Attribute, AttributeReference, Expression, Literal}
 import org.apache.spark.sql.catalyst.util.ResolveDefaultColumns.getExistenceDefaultValues
-import org.apache.spark.sql.comet.{CometNativeExec, CometNativeScanExec, CometScanExec}
+import org.apache.spark.sql.comet.{CometNativeExec, CometNativeScanExec, CometScanExec, CometScanUtils}
 import org.apache.spark.sql.execution.{FileSourceScanExec, InSubqueryExec, SubqueryAdaptiveBroadcastExec}
 import org.apache.spark.sql.execution.datasources.parquet.ParquetUtils
 import org.apache.spark.sql.internal.SQLConf
@@ -240,6 +240,22 @@ object CometNativeScan extends CometOperatorSerde[CometScanExec] with CometTypeS
       scan: CometScanExec,
       builder: Operator.Builder,
       childOp: OperatorOuterClass.Operator*): Option[OperatorOuterClass.Operator] = {
+    val hadoopConf =
+      scan.relation.sparkSession.sessionState.newHadoopConfWithOptions(scan.relation.options)
+    // The root paths can miss a file, e.g. a catalog partition located outside the table, so
+    // check the listed files. The static partitions are a superset of what DPP keeps.
+    val multiStoreReason = CometScanUtils.multiStoreFallbackReason(
+      "Native Parquet scan",
+      scan.selectedPartitions.view.flatMap(_.files.view.map(_.getPath.toUri)),
+      NativeConfig.resolveS3CompliantSchemes(hadoopConf),
+      NativeConfig.resolveLibhdfsSchemes(hadoopConf),
+      scan.bucketedScan)
+    if (multiStoreReason.nonEmpty) {
+      // CometExecRule falls back to the wrapped scan, so tag it too for the explain output.
+      withFallbackReason(scan, multiStoreReason.get)
+      withFallbackReason(scan.wrapped, multiStoreReason.get)
+      return None
+    }
     val nativeScanBuilder = OperatorOuterClass.NativeScan.newBuilder()
     val commonBuilder = OperatorOuterClass.NativeScanCommon.newBuilder()
 
@@ -278,14 +294,6 @@ object CometNativeScan extends CometOperatorSerde[CometScanExec] with CometTypeS
           withFallbackReason(scan, unsupportedDefaultReason)
           return None
       }
-
-      // Extract object store options from first file (S3 configs apply to all files in scan).
-      // Use selectedPartitions (static) instead of getFilePartitions() because at planning time
-      // DPP subqueries haven't been resolved yet. Object store options don't depend on DPP.
-      val firstFileUri = scan.selectedPartitions
-        .flatMap(_.files.headOption)
-        .headOption
-        .map(_.getPath.toUri)
 
       // Constant metadata columns (file_path, file_name, file_size, file_block_start,
       // file_block_length, file_modification_time) are known before opening the file and
@@ -357,17 +365,16 @@ object CometNativeScan extends CometOperatorSerde[CometScanExec] with CometTypeS
       commonBuilder.setAllowTimestampLtzToNtz(CometConf.COMET_ALLOW_TIMESTAMP_LTZ_AS_NTZ)
 
       // Collect S3/cloud storage configurations
-      val hadoopConf = scan.relation.sparkSession.sessionState
-        .newHadoopConfWithOptions(scan.relation.options)
-
       commonBuilder.setEncryptionEnabled(CometParquetUtils.encryptionEnabled(hadoopConf))
 
-      firstFileUri.foreach { uri =>
-        val objectStoreOptions =
-          NativeConfig.extractObjectStoreOptions(hadoopConf, uri)
-        objectStoreOptions.foreach { case (key, value) =>
-          commonBuilder.putObjectStoreOptions(key, value)
-        }
+      // The options of every scheme the scan reads. Use selectedPartitions (static) instead of
+      // getFilePartitions() because at planning time DPP subqueries haven't been resolved yet.
+      // Object store options don't depend on DPP.
+      val objectStoreOptions = NativeConfig.extractObjectStoreOptions(
+        hadoopConf,
+        scan.selectedPartitions.view.flatMap(_.files.view.map(_.getPath.toUri)))
+      objectStoreOptions.foreach { case (key, value) =>
+        commonBuilder.putObjectStoreOptions(key, value)
       }
 
       // Set common data in NativeScan (file_partition will be populated at execution time)

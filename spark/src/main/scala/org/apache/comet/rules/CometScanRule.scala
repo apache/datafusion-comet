@@ -36,7 +36,7 @@ import org.apache.spark.sql.catalyst.expressions.{Attribute, DynamicPruningExpre
 import org.apache.spark.sql.catalyst.rules.Rule
 import org.apache.spark.sql.catalyst.util.{sideBySide, ArrayBasedMapData, DateTimeUtils, GenericArrayData, MetadataColumnHelper}
 import org.apache.spark.sql.catalyst.util.ResolveDefaultColumns.getExistenceDefaultValues
-import org.apache.spark.sql.comet.{CometBatchScanExec, CometScanExec}
+import org.apache.spark.sql.comet.{CometBatchScanExec, CometScanExec, CometScanUtils}
 import org.apache.spark.sql.execution.{FileSourceScanExec, InSubqueryExec, SparkPlan, SubqueryAdaptiveBroadcastExec}
 import org.apache.spark.sql.execution.datasources.HadoopFsRelation
 import org.apache.spark.sql.execution.datasources.v2.BatchScanExec
@@ -290,18 +290,16 @@ case class CometScanRule(session: SparkSession)
         s"Unsupported filesystem schemes: ${unsupportedFsSchemes.mkString(", ")}")
       return None
     }
-    // More than one bucket cannot be served by the single object store native planning registers
-    // per FilePartition; see aliasScanBuckets. Scoped to alias scans: plain multi-bucket `s3://`
-    // has the same flaw today and silently declining it would newly fall back scans that work by
-    // luck, so that widening is left as a separate decision. Note the sibling Iceberg guard
-    // (dataFileBuckets, below) is NOT so scoped -- it declines multi-bucket `s3a://` too.
-    val scanBuckets = CometScanRule.aliasScanBuckets(roots)
-    if (scanBuckets.size > 1) {
-      withFallbackReason(
-        scanExec,
-        "Native Parquet scan reads S3-compliant alias paths across multiple buckets " +
-          s"(${scanBuckets.toSeq.sorted.mkString(", ")}); Comet registers one object store " +
-          "per file partition and would read every file from the first file's bucket")
+    // An early check on the root paths, with both scheme lists from the Hadoop conf as native
+    // reads them (not libhdfsSchemes above). CometNativeScan.convert checks the listed files.
+    val multiStoreReason = CometScanUtils.multiStoreFallbackReason(
+      "Native Parquet scan",
+      roots.map(_.uri),
+      s3CompliantSchemes,
+      NativeConfig.resolveLibhdfsSchemes(hadoopConf),
+      scanExec.bucketedScan)
+    if (multiStoreReason.nonEmpty) {
+      withFallbackReason(scanExec, multiStoreReason.get)
       return None
     }
     // A scheme object_store recognizes can still carry a path it rejects (e.g. a directory whose
@@ -1231,8 +1229,7 @@ object CometScanRule extends Logging {
       uri: URI,
       scheme: Option[String],
       isLibhdfs: Boolean,
-      isAlias: Boolean,
-      bucket: Option[String])
+      isAlias: Boolean)
 
   private[rules] def classifyRootPaths(
       uris: Seq[URI],
@@ -1244,19 +1241,8 @@ object CometScanRule extends Logging {
         uri,
         scheme,
         isLibhdfs = scheme.exists(libhdfsSchemes.contains),
-        isAlias = scheme.exists(s3CompliantSchemes.contains),
-        bucket = NativeConfig.bucketForUri(uri, s3CompliantSchemes))
+        isAlias = scheme.exists(s3CompliantSchemes.contains))
     }
-
-  /**
-   * The distinct buckets this scan's root paths address, or empty when none of them uses an
-   * opt-in S3-compliant alias. More than one bucket means the Parquet gate must fall back: native
-   * planning registers one object store per FilePartition (keyed on the first file's bucket) and
-   * strips the authority from every file's object key, so files in a second bucket are read from
-   * the first. Spark's FilePartition bin-packing can co-locate files from different root paths.
-   */
-  private[rules] def aliasScanBuckets(roots: Seq[RootPathInfo]): Set[String] =
-    if (!roots.exists(_.isAlias)) Set.empty else roots.flatMap(_.bucket).toSet
 
   /**
    * Ask the native object_store parser whether it can build `url`: both the scheme and, via

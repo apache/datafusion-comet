@@ -23,16 +23,24 @@ import java.io.File
 import java.net.URI
 import java.nio.file.Files
 import java.util.UUID
+import java.util.concurrent.atomic.AtomicLong
+
+import scala.util.Random
 
 import org.apache.commons.io.FileUtils
 import org.apache.spark.SparkConf
+import org.apache.spark.paths.SparkPath
 import org.apache.spark.sql.{CometTestBase, SaveMode}
-import org.apache.spark.sql.comet.{CometIcebergNativeScanExec, CometIcebergWriteExec, CometScanExec}
+import org.apache.spark.sql.catalyst.InternalRow
+import org.apache.spark.sql.comet.{CometIcebergNativeScanExec, CometIcebergWriteExec, CometScanExec, CometScanUtils}
 import org.apache.spark.sql.execution.{FileSourceScanExec, SparkPlan}
+import org.apache.spark.sql.execution.datasources.{FilePartition, PartitionedFile}
+import org.apache.spark.sql.internal.SQLConf
 
 import org.apache.comet.{CometConf, CometIcebergTestBase, ExtendedExplainInfo, NativeBase}
-import org.apache.comet.hadoop.fs.{FakeHDFSFileSystem, FakeHdfsSchemeFileSystem, FakeWasbSchemeFileSystem}
+import org.apache.comet.hadoop.fs.{FakeHdfsAuthorityFileSystem, FakeHDFSFileSystem, FakeHdfsSchemeFileSystem, FakeWasbSchemeFileSystem}
 import org.apache.comet.iceberg.IcebergStorageSchemes
+import org.apache.comet.objectstore.NativeConfig
 
 /**
  * Comet's native readers go through object_store, which understands a fixed set of URL schemes. A
@@ -230,28 +238,24 @@ class CometScanSchemeFallbackSuite extends CometTestBase with CometIcebergTestBa
       "the supported-schemes message must list the opted-in alias in its admitted form")
   }
 
-  test("parquet gate: mixed-bucket alias scan is declined (single object store per partition)") {
-    // Native planning registers one object store per FilePartition and strips the authority from
-    // every file's object key, so files in a second bucket would be read from the first. A scan
-    // whose opt-in alias paths span multiple buckets must fall back.
-    val schemes = Set("blob")
-    def buckets(locations: String*): Set[String] =
-      CometScanRule.aliasScanBuckets(
-        CometScanRule.classifyRootPaths(locations.map(new URI(_)), Set.empty, schemes))
+  test("parquet gate: an alias scan over two buckets is claimed") {
+    // Native translates the alias settings for each bucket, so alias paths may span buckets.
+    // Each bucket is an authority of a local-disk file system registered for `blob`.
+    val aliasFileSystem = Seq(
+      "fs.blob.impl" -> classOf[FakeHdfsAuthorityFileSystem].getName,
+      "fs.blob.impl.disable.cache" -> "true",
+      CometConf.COMET_S3_COMPLIANT_SCHEMES_KEY -> "blob")
+    withSQLConf(aliasFileSystem: _*) {
+      val pathA = s"blob://bucket-a${fakeRootDir.getAbsolutePath}/alias-a"
+      val pathB = s"blob://bucket-b${fakeRootDir.getAbsolutePath}/alias-b"
+      spark.range(0, 5).toDF("id").write.mode(SaveMode.Overwrite).parquet(pathA)
+      spark.range(5, 10).toDF("id").write.mode(SaveMode.Overwrite).parquet(pathB)
 
-    assert(
-      buckets("blob://bucket-a/k.parquet", "blob://bucket-b/k.parquet") ==
-        Set("bucket-a", "bucket-b"),
-      "two alias buckets must be reported so the Parquet gate falls back")
-    // An alias bucket mixed with a plain-s3 bucket is still two object stores -> declined.
-    assert(
-      buckets("blob://bucket-a/k.parquet", "s3://bucket-b/k.parquet") ==
-        Set("bucket-a", "bucket-b"))
-    // Safe scans report at most one bucket: one alias path, or the same bucket via two paths.
-    assert(buckets("blob://bucket-a/x.parquet") == Set("bucket-a"))
-    assert(buckets("blob://bucket-a/x.parquet", "blob://bucket-a/y.parquet") == Set("bucket-a"))
-    // No alias path present: plain multi-bucket s3:// is a pre-existing limitation, out of scope.
-    assert(buckets("s3://bucket-a/k.parquet", "s3://bucket-b/k.parquet").isEmpty)
+      assert(claimedScans(spark.read.parquet(pathA)).size == 1)
+      assert(
+        claimedScans(spark.read.parquet(pathA, pathB)).size == 1,
+        "an alias scan over two buckets must be claimed")
+    }
   }
 
   test("parquet gate: object_store rejects an actual path with an illegal character") {
@@ -387,6 +391,298 @@ class CometScanSchemeFallbackSuite extends CometTestBase with CometIcebergTestBa
         "`hdfs://` is natively readable by default; Comet must claim the scan, " +
           s"but it fell back to Spark:\n$transformed")
       assert(sparkScans.isEmpty, s"expected no leftover Spark FileSourceScanExec:\n$transformed")
+    }
+  }
+
+  /** Applies CometScanRule to the Spark plan of `read` and returns the scans it claimed. */
+  private def claimedScans(read: => org.apache.spark.sql.DataFrame): Seq[CometScanExec] = {
+    var sparkPlan: SparkPlan = null
+    withSQLConf(CometConf.COMET_ENABLED.key -> "false") {
+      sparkPlan = read.queryExecution.executedPlan
+    }
+    var claimed: Seq[CometScanExec] = Nil
+    withSQLConf(
+      CometConf.COMET_ENABLED.key -> "true",
+      CometConf.COMET_NATIVE_SCAN_ENABLED.key -> "true",
+      CometConf.COMET_EXEC_ENABLED.key -> "true") {
+      claimed = CometScanRule(spark)
+        .apply(stripAQEPlan(sparkPlan))
+        .collect { case s: CometScanExec => s }
+    }
+    claimed
+  }
+
+  test("parquet gate: a scan over two object stores of different schemes is claimed") {
+    // The native scan forwards the object store options of every scheme it reads.
+    val localPath = s"file://${fakeRootDir.getAbsolutePath}/mixed-local"
+    val hdfsPath = s"${FakeHdfsSchemeFileSystem.PREFIX}${fakeRootDir.getAbsolutePath}/mixed-hdfs"
+    spark.range(0, 5).toDF("id").write.mode(SaveMode.Overwrite).parquet(localPath)
+    spark.range(5, 10).toDF("id").write.mode(SaveMode.Overwrite).parquet(hdfsPath)
+
+    assert(claimedScans(spark.read.parquet(localPath)).size == 1)
+    assert(claimedScans(spark.read.parquet(hdfsPath)).size == 1)
+    assert(
+      claimedScans(spark.read.parquet(localPath, hdfsPath)).size == 1,
+      "a scan over file:// and hdfs:// stores must be claimed")
+  }
+
+  test("multiStoreFallbackReason: a store read through an alias, and a bucketed scan") {
+    def reason(
+        bucketed: Boolean,
+        locations: Seq[String],
+        aliases: Set[String] = Set.empty,
+        libhdfs: Set[String] = Set("hdfs")): Option[String] =
+      CometScanUtils.multiStoreFallbackReason(
+        "Native Parquet scan",
+        locations.map(new URI(_)),
+        aliases,
+        libhdfs,
+        bucketed)
+
+    assert(reason(bucketed = true, Nil).isEmpty)
+    // One store, however it is spelled, never falls back.
+    assert(reason(bucketed = true, Seq("s3a://bucket-a/t/p=1", "s3://bucket-a/t/p=2")).isEmpty)
+    assert(reason(bucketed = true, Seq("/tmp/t/p=1", "file:///tmp/t/p=2")).isEmpty)
+    // Several stores: packed per store, unless the scan is bucketed.
+    assert(reason(bucketed = false, Seq("s3a://bucket-a/t", "s3a://bucket-b/t")).isEmpty)
+    assert(reason(bucketed = false, Seq("gs://bucket-a/t", "gs://bucket-b/t")).isEmpty)
+    assert(reason(bucketed = false, Seq("hdfs://nn1/t", "hdfs://nn2/t")).isEmpty)
+    val bucketedS3 = reason(bucketed = true, Seq("s3a://bucket-a/t/p=1", "s3a://bucket-b/t/p=2"))
+    assert(
+      bucketedS3.contains(
+        "Native Parquet scan of a bucketed table reads paths in object stores s3://bucket-a, " +
+          "s3://bucket-b, but reads each table bucket through one store"))
+    val bucketedHdfs = reason(bucketed = true, Seq("hdfs://nn1/t/p=1", "hdfs://nn2/t/p=2"))
+    assert(bucketedHdfs.exists(_.contains("hdfs://nn1 (libhdfs), hdfs://nn2 (libhdfs)")))
+    // Stores of different schemes each get their own scheme's settings.
+    assert(reason(bucketed = false, Seq("s3a://bucket-a/t", "gs://bucket-b/t")).isEmpty)
+    assert(reason(bucketed = false, Seq("s3a://bucket-a/t", "hdfs://nn1/t")).isEmpty)
+    assert(reason(bucketed = false, Seq("file:///tmp/t", "hdfs://nn1/t")).isEmpty)
+    // s3 read through libhdfs and s3a read natively are two stores of one bucket.
+    assert(
+      reason(
+        bucketed = false,
+        Seq("s3://bucket-a/t", "s3a://bucket-a/u"),
+        libhdfs = Set("s3")).isEmpty)
+    // Alias paths in different buckets get each bucket's alias settings.
+    val blob = Set("blob")
+    assert(reason(bucketed = false, Seq("blob://bucket-a/t", "s3a://bucket-b/u"), blob).isEmpty)
+    assert(reason(bucketed = false, Seq("blob://bucket-a/t", "blob://bucket-b/u"), blob).isEmpty)
+    // A store read through an alias and another scheme would get the alias settings for both.
+    def sharedStore(schemes: String): String =
+      s"Native Parquet scan reads the object store s3://bucket-a through schemes $schemes, " +
+        "but forwards one set of settings per store"
+    assert(
+      reason(bucketed = false, Seq("blob://bucket-a/t", "s3a://bucket-a/u"), blob)
+        .contains(sharedStore("blob, s3a")))
+    assert(
+      reason(bucketed = false, Seq("s3://bucket-a/t", "blob:///bucket-a/u"), blob)
+        .contains(sharedStore("blob, s3")))
+    assert(
+      reason(
+        bucketed = false,
+        Seq("blob://bucket-a/t", "wasabi://bucket-a/u"),
+        Set("blob", "wasabi")).contains(sharedStore("blob, wasabi")))
+    assert(
+      reason(bucketed = true, Seq("blob://bucket-a/t", "s3a://bucket-a/u"), blob)
+        .contains(sharedStore("blob, s3a")))
+    // An alias path with no bucket gets its alias settings as every bucket's settings.
+    val noBucket =
+      "Native Parquet scan reads an S3-compliant alias path with no bucket next to other S3 " +
+        "paths, but would apply its alias settings to every bucket"
+    assert(reason(bucketed = false, Seq("blob:///"), blob).isEmpty)
+    assert(reason(bucketed = false, Seq("blob:///", "s3a://bucket-b/u"), blob).contains(noBucket))
+    assert(
+      reason(bucketed = false, Seq("blob:///", "blob://bucket-b/u"), blob).contains(noBucket))
+    assert(reason(bucketed = false, Seq("blob:///", "gs://bucket-b/u"), blob).isEmpty)
+    // Two aliases with no bucket share the bucketless store.
+    assert(
+      reason(bucketed = false, Seq("blob:///", "wasabi:///"), Set("blob", "wasabi")).contains(
+        "Native Parquet scan reads the object store s3:// through schemes blob, wasabi, but " +
+          "forwards one set of settings per store"))
+    // s3 read through libhdfs ignores the alias settings of its bucket.
+    assert(
+      reason(
+        bucketed = false,
+        Seq("s3://bucket-a/t", "blob://bucket-a/u"),
+        blob,
+        libhdfs = Set("s3")).isEmpty)
+    // A bucketed scan over stores of different schemes.
+    assert(
+      reason(bucketed = true, Seq("s3a://bucket-a/t", "gs://bucket-b/t")).contains(
+        "Native Parquet scan of a bucketed table reads paths in object stores gs://bucket-b, " +
+          "s3://bucket-a, but reads each table bucket through one store"))
+  }
+
+  test("packFilesPerStore: no partition mixes stores, and one store packs as Spark does") {
+    val maxSplitBytes = 100L
+    val random = new Random(6746)
+    def file(store: String, name: String, length: Long): PartitionedFile =
+      PartitionedFile(
+        InternalRow.empty,
+        SparkPath.fromUrlString(s"s3a://$store/t/$name.parquet"),
+        0,
+        length,
+        Array.empty[String],
+        0,
+        length)
+    def storeOf(file: PartitionedFile): String = file.pathUri.getAuthority
+    def pack(files: Seq[PartitionedFile]): Seq[FilePartition] =
+      FilePartition.getFilePartitions(spark, files, maxSplitBytes)
+    def layout(partitions: Seq[FilePartition]): Seq[(Int, Seq[String])] =
+      partitions.map(p => (p.index, p.files.map(_.filePath.toString).toSeq))
+
+    // A small open cost lets several files share a partition.
+    withSQLConf(SQLConf.FILES_OPEN_COST_IN_BYTES.key -> "1") {
+      var sparkMixedRounds = 0
+      (1 to 200).foreach { round =>
+        val numStores = 1 + random.nextInt(3)
+        def randomFile(i: Int): PartitionedFile =
+          file(s"bucket-${random.nextInt(numStores)}", s"f$i", 1L + random.nextInt(150))
+        val files = (0 until random.nextInt(30)).map(randomFile).sortBy(-_.length)
+        if (pack(files).exists(_.files.map(storeOf).distinct.length > 1)) {
+          sparkMixedRounds += 1
+        }
+        val partitions = CometScanUtils.packFilesPerStore(files, storeOf)(pack)
+
+        withClue(s"round $round, layout ${layout(partitions)}: ") {
+          assert(partitions.map(_.index) == partitions.indices)
+          assert(partitions.forall(_.files.map(storeOf).distinct.length == 1))
+          assert(
+            partitions.flatMap(_.files.map(_.filePath.toString)).sorted ==
+              files.map(_.filePath.toString).sorted)
+          if (files.map(storeOf).distinct.size <= 1) {
+            assert(layout(partitions) == layout(pack(files)))
+          }
+          // Each store's files are packed as Spark packs them on their own.
+          files.map(storeOf).distinct.foreach { store =>
+            assert(layout(partitions.filter(p => storeOf(p.files.head) == store)).map(_._2) ==
+              layout(pack(files.filter(f => storeOf(f) == store))).map(_._2))
+          }
+          // Stores come in the order the files first name them.
+          assert(
+            partitions.map(p => storeOf(p.files.head)).distinct == files.map(storeOf).distinct)
+
+          // Splitting Spark's partitions keeps first-seen store order and file order.
+          val sparkPartitions = pack(files)
+          val split = CometScanUtils.splitPartitionsByStore(sparkPartitions, storeOf)
+          val expectedSplit = sparkPartitions.flatMap { partition =>
+            val inPartition = partition.files.toSeq
+            inPartition.map(storeOf).distinct.map { store =>
+              inPartition.filter(f => storeOf(f) == store).map(_.filePath.toString)
+            }
+          }
+          assert(split.map(_.index) == split.indices)
+          assert(split.map(_.files.map(_.filePath.toString).toSeq) == expectedSplit)
+        }
+      }
+      assert(sparkMixedRounds > 0, "Spark's packing never mixed stores, so nothing was tested")
+    }
+  }
+
+  test("packFilesPerStore and splitPartitionsByStore compare each file's store once") {
+    // Comparing every file with every store is slow for a scan over many stores.
+    val numFiles = 2000
+    val numStores = 200
+    val equalsCalls = new AtomicLong()
+    val files = (0 until numFiles).map { i =>
+      PartitionedFile(
+        InternalRow.empty,
+        SparkPath.fromUrlString(s"s3a://bucket-${i % numStores}/f$i.parquet"),
+        0,
+        1,
+        Array.empty[String],
+        0,
+        1)
+    }
+    def storeOf(file: PartitionedFile): CountingKey =
+      new CountingKey(file.pathUri.getAuthority.stripPrefix("bucket-").toInt, equalsCalls)
+    val maxEqualsCalls = 8L * numFiles
+
+    val packed = CometScanUtils.packFilesPerStore(files, storeOf) { files =>
+      Seq(FilePartition(0, files.toArray))
+    }
+    assert(packed.size == numStores)
+    assert(equalsCalls.get <= maxEqualsCalls, s"packing made ${equalsCalls.get} comparisons")
+
+    equalsCalls.set(0)
+    val split =
+      CometScanUtils.splitPartitionsByStore(Seq(FilePartition(0, files.toArray)), storeOf)
+    assert(split.size == numStores)
+    assert(equalsCalls.get <= maxEqualsCalls, s"splitting made ${equalsCalls.get} comparisons")
+  }
+
+  test("libhdfs s3 and native s3a files of one bucket land in separate partitions") {
+    def file(path: String): PartitionedFile =
+      PartitionedFile(
+        InternalRow.empty,
+        SparkPath.fromUrlString(path),
+        0,
+        1,
+        Array.empty[String],
+        0,
+        1)
+    def storeOf(file: PartitionedFile): NativeConfig.ObjectStoreKey =
+      NativeConfig.objectStoreKey(file.pathUri, Set.empty, Set("s3"))
+    val files = Seq(file("s3://bucket/1.parquet"), file("s3a://bucket/2.parquet"))
+    def paths(partitions: Seq[FilePartition]): Seq[Seq[String]] =
+      partitions.map(_.files.map(_.filePath.toString).toSeq)
+
+    withSQLConf(SQLConf.FILES_OPEN_COST_IN_BYTES.key -> "1") {
+      val packed = CometScanUtils.packFilesPerStore(files, storeOf) { files =>
+        FilePartition.getFilePartitions(spark, files, 100L)
+      }
+      assert(paths(packed) == Seq(Seq("s3://bucket/1.parquet"), Seq("s3a://bucket/2.parquet")))
+    }
+    val split =
+      CometScanUtils.splitPartitionsByStore(Seq(FilePartition(0, files.toArray)), storeOf)
+    assert(paths(split) == Seq(Seq("s3://bucket/1.parquet"), Seq("s3a://bucket/2.parquet")))
+  }
+
+  test("splitPartitionsByStore: each partition is split per store, keeping file order") {
+    // The partition value is the number in the file name.
+    def file(path: String): PartitionedFile =
+      PartitionedFile(
+        InternalRow(path.split('/').last.takeWhile(_.isDigit).toInt),
+        SparkPath.fromUrlString(path),
+        0,
+        1,
+        Array.empty[String],
+        0,
+        1)
+    def storeOf(file: PartitionedFile): String = file.pathUri.getAuthority
+    def layout(partitions: Seq[FilePartition]): Seq[(Int, Seq[String])] =
+      partitions.map(p => (p.index, p.files.map(_.filePath.toString).toSeq))
+
+    val single = Seq(
+      FilePartition(0, Array(file("s3a://a/1.csv"), file("s3a://a/2.csv"))),
+      FilePartition(1, Array(file("s3a://b/3.csv"))))
+    assert(CometScanUtils.splitPartitionsByStore(single, storeOf) == single)
+
+    val mixed = Seq(
+      FilePartition(
+        0,
+        Array(file("s3a://a/1.csv"), file("s3a://b/2.csv"), file("s3a://a/3.csv"))),
+      FilePartition(1, Array(file("s3a://b/4.csv"))))
+    val split = CometScanUtils.splitPartitionsByStore(mixed, storeOf)
+    assert(
+      layout(split) == Seq(
+        0 -> Seq("s3a://a/1.csv", "s3a://a/3.csv"),
+        1 -> Seq("s3a://b/2.csv"),
+        2 -> Seq("s3a://b/4.csv")))
+    assert(split.flatMap(_.files.map(_.partitionValues.getInt(0))) == Seq(1, 3, 2, 4))
+  }
+}
+
+/** A store key that counts the calls to its `equals`. */
+private class CountingKey(val id: Int, equalsCalls: AtomicLong) {
+  override def hashCode(): Int = id
+
+  override def equals(other: Any): Boolean = {
+    equalsCalls.incrementAndGet()
+    other match {
+      case key: CountingKey => key.id == id
+      case _ => false
     }
   }
 }
