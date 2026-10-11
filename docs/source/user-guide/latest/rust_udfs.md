@@ -158,6 +158,7 @@ CometNativeUDF.register(
 
 Registration loads the library on the driver and verifies that a function with that name exists, so
 a bad path or a missing function fails immediately with a clear error rather than at execution time.
+It also checks that Comet can carry the argument and return types natively.
 
 The function is then callable from SQL or the DataFrame API like any other:
 
@@ -180,6 +181,19 @@ way it would for any other shared object, through `LD_LIBRARY_PATH` on Linux and
 `DYLD_LIBRARY_PATH` on macOS. That is a convenience, not a sandbox: Comet does not restrict which
 paths may be loaded, so it makes no difference to the trust decision described under
 [Limitations](#limitations).
+
+### When Spark evaluates the call
+
+A call runs only inside Comet's native execution. Spark cannot run the function, so wherever Spark
+has to evaluate the call itself, the query fails with `CometUdfNotEvaluatedException`. That happens:
+
+- when Comet does not take the operator holding the call, for example because another expression
+  in it is not supported, or because the call is an argument of an ordinary Scala or Java UDF. The
+  query's extended explain output gives the reason.
+- while Spark plans the query: over local data such as `VALUES`, which the optimizer evaluates
+  eagerly, in a filter on partition columns, which Spark evaluates to prune partitions, and in the
+  sort keys of a global sort, which Spark evaluates on a sample of rows to choose range bounds. To
+  sort on a UDF's result, select it as a column and sort on that column instead.
 
 ## Return types
 
@@ -277,6 +291,9 @@ the first panic, and the SDK cannot prevent it.
 This feature is at an early stage. The current limitations are:
 
 - **Scalar functions only.** Aggregate, window, and table functions are not supported.
+- **Spark cannot evaluate a call.** A query fails wherever Spark would have to run the function
+  itself, which includes a few places while it plans the query. See
+  [When Spark evaluates the call](#when-spark-evaluates-the-call).
 - **Immutable functions only.** A UDF must return the same output for the same input. Comet plans
   every Rust UDF with DataFusion's `Volatility::Immutable`, so a function that reads a clock, draws
   from an RNG, or carries state across batches may be folded at plan time, evaluated once and
