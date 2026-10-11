@@ -163,6 +163,26 @@ class CometShuffleInputConversionSuite extends CometTestBase {
       Double.NegativeInfinity),
     DecimalType(18, 2) -> Seq("0.00", "-0.01", "9999999999999999.99", "-9999999999999999.99")
       .map(new java.math.BigDecimal(_)),
+    DecimalType(19, 0) -> Seq(
+      "0",
+      "-1",
+      "9223372036854775806",
+      "9223372036854775807",
+      "9223372036854775808",
+      "9999999999999999999",
+      "-9999999999999999999").map(new java.math.BigDecimal(_)),
+    DecimalType(38, 0) -> Seq(
+      "0",
+      "-1",
+      "9223372036854775808",
+      "-9223372036854775809",
+      "99999999999999999999999999999999999999",
+      "-99999999999999999999999999999999999999").map(new java.math.BigDecimal(_)),
+    DecimalType(38, 18) -> Seq(
+      "0.000000000000000000",
+      "-0.000000000000000001",
+      "99999999999999999999.999999999999999999",
+      "-99999999999999999999.999999999999999999").map(new java.math.BigDecimal(_)),
     DateType -> Seq("1970-01-01", "1969-12-31", "0001-01-01", "9999-12-31").map(Date.valueOf),
     TimestampType -> Seq(
       new Timestamp(0L),
@@ -303,17 +323,23 @@ class CometShuffleInputConversionSuite extends CometTestBase {
     }
   }
 
-  convertTest("a shuffle that hashes a wide decimal stays on the JVM columnar shuffle") {
-    // Native shuffle hashes a decimal wider than 18 digits differently from Spark's partitioner
-    // (#5994). The right input, with its array<int> column, stays on the JVM columnar shuffle,
-    // so the left one has to as well, or matching keys land in different partitions.
+  convertTest("a converted wide-decimal shuffle joins the JVM columnar shuffle") {
     withShuffledJoins {
-      val left = rowsDf(100).select(col("k").cast(DecimalType(38, 0)).as("lk"), col("l"))
-      val right = arraysDf().select(col("k").cast(DecimalType(38, 0)).as("rk"), col("xs"))
-      val df = left.join(right, col("lk") === col("rk"))
-      val (_, plan) = checkSparkAnswer(df)
-      assert(conversions(plan).isEmpty, plan)
-      checkCometExchange(df, 2, native = false)
+      Seq("true", "false").foreach { aqe =>
+        withSQLConf(
+          SQLConf.ADAPTIVE_EXECUTION_ENABLED.key -> aqe,
+          SQLConf.COALESCE_PARTITIONS_ENABLED.key -> "false",
+          SQLConf.SKEW_JOIN_ENABLED.key -> "false") {
+          val left = rowsDf(100).select(col("k").cast(DecimalType(38, 0)).as("lk"), col("l"))
+          // The array column keeps the right input on the JVM columnar shuffle.
+          val right = arraysDf().select(col("k").cast(DecimalType(38, 0)).as("rk"), col("xs"))
+          val (_, plan) = checkSparkAnswer(left.join(right, col("lk") === col("rk")))
+          assert(convertedShuffles(plan).length == 1, s"AQE $aqe:\n$plan")
+          assert(
+            cometShuffles(plan).count(_.shuffleType == CometColumnarShuffle) == 1,
+            s"AQE $aqe:\n$plan")
+        }
+      }
     }
   }
 

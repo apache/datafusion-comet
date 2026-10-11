@@ -41,10 +41,10 @@ import org.apache.spark.sql.catalyst.expressions.AttributeReference
 import org.apache.spark.sql.catalyst.expressions.aggregate.Final
 import org.apache.spark.sql.catalyst.plans.logical.LocalRelation
 import org.apache.spark.sql.catalyst.plans.physical.HashPartitioning
-import org.apache.spark.sql.comet.{CometExec, CometHashAggregateExec, CometLocalTableScanExec, CometMetricNode, CometNativeExec, CometScanWrapper, CometSparkToColumnarExec, CometTakeOrderedAndProjectExec}
+import org.apache.spark.sql.comet.{CometExec, CometHashAggregateExec, CometLocalTableScanExec, CometMetricNode, CometNativeExec, CometNativeScanExec, CometScanWrapper, CometSparkToColumnarExec, CometTakeOrderedAndProjectExec}
 import org.apache.spark.sql.comet.execution.arrow.{CometArrowStream, CometNativeArrowSource}
-import org.apache.spark.sql.comet.execution.shuffle.{CometNativeShuffle, CometShuffleExchangeExec}
-import org.apache.spark.sql.execution.{LocalTableScanExec, SparkPlan}
+import org.apache.spark.sql.comet.execution.shuffle.{CometColumnarShuffle, CometNativeShuffle, CometShuffleExchangeExec}
+import org.apache.spark.sql.execution.{FileSourceScanExec, LocalTableScanExec, SparkPlan}
 import org.apache.spark.sql.execution.adaptive.{AdaptiveSparkPlanExec, AdaptiveSparkPlanHelper, AQEShuffleReadExec, ShuffleQueryStageExec}
 import org.apache.spark.sql.execution.exchange.{ReusedExchangeExec, ShuffleExchangeExec}
 import org.apache.spark.sql.functions.{broadcast, col, count, countDistinct, sum}
@@ -796,6 +796,66 @@ class CometNativeShuffleSuite extends CometTestBase with AdaptiveSparkPlanHelper
       checkSparkAnswer(shuffled)
     } finally {
       base.unpersist()
+    }
+  }
+
+  test("native shuffle on wide decimal hash partitioning keys") {
+    withNestedHashPartitioning {
+      withTable("wide_decimals") {
+        sql("CREATE TABLE wide_decimals(id INT, c DECIMAL(38, 0)) USING parquet")
+        sql("""INSERT INTO wide_decimals VALUES (0, null), (1, 0), (2, 128), (3, -129),
+            (4, 99999999999999999999999999999999999999BD),
+            (5, -99999999999999999999999999999999999999BD), (6, 128)""")
+        Seq(Seq("c"), Seq("a"), Seq("s"), Seq("id", "c")).foreach { keys =>
+          def shuffled = sql("""SELECT id, c, array(c, c) AS a,
+              named_struct('d', c) AS s FROM wide_decimals""")
+            .repartition(10, keys.map(col): _*)
+          checkCometExchange(shuffled, 1, native = true)
+          // This pins the common hash helper's shuffle caller, including chained and nested
+          // inputs. The old fixed-width encoding produced different partition assignments.
+          checkSparkAnswer(shuffled.selectExpr("id", "spark_partition_id()"))
+          checkSparkAnswer(shuffled.groupBy("c").count())
+        }
+      }
+    }
+  }
+
+  test("wide decimal joins keep native and Spark shuffle inputs copartitioned") {
+    withSQLConf(
+      CometConf.COMET_NATIVE_SCAN_ENABLED.key -> "true",
+      CometConf.COMET_CONVERT_FROM_JSON_ENABLED.key -> "false",
+      SQLConf.USE_V1_SOURCE_LIST.key -> "parquet,json",
+      SQLConf.SHUFFLE_PARTITIONS.key -> "7",
+      SQLConf.AUTO_BROADCASTJOIN_THRESHOLD.key -> "-1",
+      SQLConf.ADAPTIVE_AUTO_BROADCASTJOIN_THRESHOLD.key -> "-1",
+      SQLConf.COALESCE_PARTITIONS_ENABLED.key -> "false") {
+      withTable("decimal_native", "decimal_spark") {
+        Seq("decimal_native" -> "parquet", "decimal_spark" -> "json").foreach {
+          case (table, format) =>
+            sql(s"CREATE TABLE $table(id INT, k DECIMAL(38, 0)) USING $format")
+            sql(s"""INSERT INTO $table VALUES (1, 1), (2, -1), (3, 128), (4, -129),
+                (5, 99999999999999999999999999999999999999BD),
+                (6, -99999999999999999999999999999999999999BD)""")
+        }
+        for (mode <- Seq("native", "auto"); adaptive <- Seq(false, true)) {
+          withSQLConf(
+            CometConf.COMET_SHUFFLE_MODE.key -> mode,
+            SQLConf.ADAPTIVE_EXECUTION_ENABLED.key -> adaptive.toString) {
+            val df = sql("""SELECT n.id, s.id FROM decimal_native n
+                JOIN decimal_spark s ON n.k = s.k""")
+            val (_, plan) = checkSparkAnswer(df)
+            val exchanges = collect(plan) { case e: CometShuffleExchangeExec => e }
+            assert(exchanges.count(_.shuffleType == CometNativeShuffle) == 1, plan.treeString)
+            if (mode == "auto") {
+              assert(exchanges.count(_.shuffleType == CometColumnarShuffle) == 1, plan.treeString)
+            } else {
+              assert(collect(plan) { case _: ShuffleExchangeExec => 1 }.sum == 1, plan.treeString)
+            }
+            assert(collect(plan) { case _: CometNativeScanExec => 1 }.sum == 1, plan.treeString)
+            assert(collect(plan) { case _: FileSourceScanExec => 1 }.sum == 1, plan.treeString)
+          }
+        }
+      }
     }
   }
 

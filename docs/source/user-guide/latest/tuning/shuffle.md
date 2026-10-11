@@ -71,9 +71,9 @@ converts the child's rows to Arrow, as the `spark.comet.convert.*` settings do f
 batches natively. With hash partitioning that is usually faster than columnar shuffle, while with range partitioning
 the two come out about even. This applies only where native shuffle supports the partitioning and Comet can convert
 all of the child's columns, which rules out calendar intervals, and arrays and maps other than `array<string>` and
-`map<string,string>`. A shuffle that hashes a decimal wider than 18 digits, or a string or a value computed from a
-string, stays on columnar shuffle, so that it partitions rows as Spark does. The converted batches are allocated on
-the JVM outside Comet's memory pools. The setting is disabled by default.
+`map<string,string>`. A shuffle that hashes a string or a value computed from a string stays on columnar shuffle, so
+that it partitions rows as Spark does. The converted batches are allocated on the JVM outside Comet's memory pools.
+The setting is disabled by default.
 
 ### Automatic Revert to Spark Shuffle
 
