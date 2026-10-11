@@ -25,7 +25,7 @@ INSERT INTO test_element_at_map VALUES
   (NULL, NULL)
 
 -- key found
-query
+query expect_native(element_at)
 SELECT element_at(m, 'a'), element_at(m, 'b') FROM test_element_at_map
 
 -- key not found → NULL
@@ -52,29 +52,29 @@ SELECT element_at(mi, CAST(1 AS BIGINT)), element_at(mi, CAST(2 AS SMALLINT)) FR
 query
 SELECT element_at(map('a', 1, 'b', 2), 'a'), element_at(map('a', 1, 'b', 2), 'missing'), element_at(map('a', 1, 'b', 2), NULL)
 
--- Map key types whose Spark equality Comet's native `map_extract` cannot reproduce fall back to
--- Spark. These stay on the constructor path here because the SQL harness excludes
+-- Map key types whose Spark equality Comet's native `map_extract` cannot reproduce dispatch to
+-- Spark's generated code. These stay on the constructor path here because the SQL harness excludes
 -- `ConstantFolding`; `CometMapExpressionSuite` covers the folded-literal form of each.
 
--- Spark stores `-0.0` map keys as `+0.0` and compares with `nanSafeCompareDoubles`, so a `-0.0`
--- lookup finds the `+0.0` key. Native lookup compares the raw Arrow values.
-query expect_fallback(Spark normalizes floating-point map keys)
-SELECT element_at(map(CAST(0 AS DOUBLE), 7), CAST(-0.0 AS DOUBLE))
+-- Spark's floating-point equality treats both signs of zero as equal, so a `-0.0` lookup finds
+-- the `+0.0` key. Native lookup compares the raw Arrow values.
+query expect_dispatch(element_at)
+SELECT element_at(map(CAST(0 AS DOUBLE), 7), double('-0.0'))
 
-query expect_fallback(Spark normalizes floating-point map keys)
-SELECT element_at(map(CAST(0 AS FLOAT), 7), CAST(-0.0 AS FLOAT))
+query expect_dispatch(element_at)
+SELECT element_at(map(CAST(0 AS FLOAT), 7), float('-0.0'))
 
 -- The floating-point decline walks every nesting level of the key type, so an array-of-double key
--- falls back for the same reason.
-query expect_fallback(Spark normalizes floating-point map keys)
-SELECT element_at(map(array(CAST(0 AS DOUBLE)), 7), array(CAST(-0.0 AS DOUBLE)))
+-- dispatches for the same reason.
+query expect_dispatch(element_at)
+SELECT element_at(map(array(CAST(0 AS DOUBLE)), 7), array(double('-0.0')))
 
 -- A complex key type: `map_extract` casts the lookup key to the map's exact Arrow key type, so a
 -- NULL inside the lookup key would abort the cast instead of missing the lookup.
-query expect_fallback(casts the lookup key to the map's exact Arrow key type)
+query expect_dispatch(element_at)
 SELECT element_at(map(array(1), 7), array(CAST(NULL AS INT)))
 
-query expect_fallback(casts the lookup key to the map's exact Arrow key type)
+query expect_dispatch(element_at)
 SELECT element_at(map(named_struct('a', 1), 7), named_struct('a', 1))
 
 -- `BinaryType` keys need no decline: Arrow compares them by content, as Spark's ordering does.
