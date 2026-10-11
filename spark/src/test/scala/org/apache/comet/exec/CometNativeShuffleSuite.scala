@@ -584,6 +584,48 @@ class CometNativeShuffleSuite extends CometTestBase with AdaptiveSparkPlanHelper
     }
   }
 
+  test("decimal join keeps a Spark-bucketed input copartitioned") {
+    withSQLConf(
+      CometConf.COMET_NATIVE_SCAN_ENABLED.key -> "true",
+      SQLConf.BUCKETING_ENABLED.key -> "true",
+      SQLConf.SHUFFLE_PARTITIONS.key -> "8",
+      SQLConf.AUTO_BROADCASTJOIN_THRESHOLD.key -> "-1",
+      SQLConf.ADAPTIVE_AUTO_BROADCASTJOIN_THRESHOLD.key -> "-1",
+      SQLConf.COALESCE_PARTITIONS_ENABLED.key -> "false") {
+      for (precision <- Seq(18, 38)) {
+        withTable("decimal_bucketed", "decimal_plain") {
+          // Spark writes the buckets with its own hash.
+          withSQLConf(CometConf.COMET_ENABLED.key -> "false") {
+            val input =
+              spark.range(0, 1000).selectExpr(s"CAST(id AS DECIMAL($precision, 0)) AS k", "id")
+            input.write.bucketBy(8, "k").saveAsTable("decimal_bucketed")
+            input.write.saveAsTable("decimal_plain")
+          }
+          for (adaptive <- Seq(false, true); mode <- Seq("auto", "native")) {
+            withSQLConf(
+              SQLConf.ADAPTIVE_EXECUTION_ENABLED.key -> adaptive.toString,
+              CometConf.COMET_SHUFFLE_MODE.key -> mode) {
+              val df = sql("""SELECT b.id, p.id FROM decimal_bucketed b
+                             |JOIN decimal_plain p ON b.k = p.k""".stripMargin)
+              val (_, plan) = checkSparkAnswer(df)
+              assert(collect(plan) { case _: CometNativeScanExec => 1 }.sum == 2, plan.treeString)
+              // Only the plain input is shuffled, so its partitions have to match the buckets.
+              val shuffles = collect(plan) {
+                case e: CometShuffleExchangeExec => Some(e.shuffleType)
+                case _: ShuffleExchangeExec => None
+              }
+              val expected =
+                if (precision <= 18) Some(CometNativeShuffle)
+                else if (mode == "auto") Some(CometColumnarShuffle)
+                else None
+              assert(shuffles == Seq(expected), plan.treeString)
+            }
+          }
+        }
+      }
+    }
+  }
+
   test("decimal hash shuffle checks nested keys recursively") {
     withSQLConf(SQLConf.ADAPTIVE_EXECUTION_ENABLED.key -> "false") {
       withNestedHashPartitioning {
