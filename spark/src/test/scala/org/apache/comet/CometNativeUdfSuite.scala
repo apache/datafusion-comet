@@ -446,6 +446,41 @@ class CometNativeUdfSuite extends CometTestBase {
     }
   }
 
+  test("Spark evaluating a native UDF while planning fails the query") {
+    // Spark's optimizer evaluates a projection over local data itself, so this fails even though
+    // Comet would take every operator.
+    CometNativeUDF.register(spark, "add_one_c", libPath, Seq(LongType), LongType)
+    val e = intercept[Exception] {
+      sql("SELECT add_one_c(x) FROM VALUES (1L), (2L) AS t(x)").collect()
+    }
+    assert(
+      stackTraceContains(e, "Spark evaluated the call itself while planning"),
+      s"unhelpful error: $e")
+  }
+
+  test("a global sort on a native UDF's result runs when the sort is on a column") {
+    // Spark evaluates a global sort's keys on a sample of rows to choose range bounds, so the
+    // sort has to be on a column holding the result rather than on the call itself.
+    CometNativeUDF.register(spark, "add_one_c", libPath, Seq(LongType), LongType)
+    val df = spark.range(0, 20, 1, 4).selectExpr("add_one_c(19 - id) AS y").orderBy("y")
+    assert(df.collect().map(_.getLong(0)).toSeq == (1L to 20L))
+  }
+
+  test("a type Comet cannot carry natively is refused at registration") {
+    // Earlier tests register `echo_c`, so drop it first to see that the refusal installs nothing.
+    sql("DROP TEMPORARY FUNCTION IF EXISTS echo_c")
+    val e = intercept[IllegalArgumentException] {
+      CometNativeUDF.register(
+        spark,
+        "echo_c",
+        libPath,
+        Seq(ObjectType(classOf[String])),
+        LongType)
+    }
+    assert(e.getMessage.contains("Comet has no native representation"), e.getMessage)
+    assert(!spark.catalog.functionExists("echo_c"))
+  }
+
   // A native UDF call has to reach its serde wherever Comet converts expressions, not just in a
   // projection. Filters, join conditions, grouping keys and window partitioning each route
   // through a different Comet operator, and a regression in any one of them would show up only as
