@@ -35,7 +35,8 @@ use datafusion::physical_plan::metrics::{
     BaselineMetrics, Count, ExecutionPlanMetricsSet, MetricBuilder, MetricsSet,
 };
 use datafusion::physical_plan::{
-    DisplayAs, DisplayFormatType, ExecutionPlan, Partitioning, PlanProperties,
+    DisplayAs, DisplayFormatType, EmptyRecordBatchStream, ExecutionPlan, Partitioning,
+    PlanProperties,
 };
 use futures::{Stream, StreamExt, TryStreamExt};
 use iceberg::arrow::ScanMetrics;
@@ -178,6 +179,11 @@ impl IcebergScanExec {
         context: Arc<TaskContext>,
     ) -> DFResult<SendableRecordBatchStream> {
         let output_schema = Arc::clone(&self.output_schema);
+        // DPP can leave an empty execution partition so that global aggregates still run.
+        // No files need reading, so do not initialize storage or request catalog credentials.
+        if tasks.is_empty() {
+            return Ok(Box::pin(EmptyRecordBatchStream::new(output_schema)));
+        }
         let file_io = load_file_io(
             &self.catalog_properties,
             &self.metadata_location,
