@@ -20,6 +20,7 @@
 package org.apache.spark;
 
 import java.io.IOException;
+import java.util.NoSuchElementException;
 import java.util.concurrent.atomic.AtomicLong;
 
 import org.slf4j.Logger;
@@ -37,6 +38,9 @@ import org.apache.spark.memory.TaskMemoryManager;
 public class CometTaskMemoryManager {
 
   private static final Logger logger = LoggerFactory.getLogger(CometTaskMemoryManager.class);
+
+  /** Attempts at an acquire whose task entry Spark keeps losing, see acquireFromSpark. */
+  private static final int MAX_ACQUIRE_ATTEMPTS = 3;
 
   /** The id of the native plan this memory manager was created for, the first in its task. */
   private final long id;
@@ -70,7 +74,7 @@ public class CometTaskMemoryManager {
     if (logger.isTraceEnabled()) {
       logger.trace("Task {} requested {} bytes", taskAttemptId, size);
     }
-    long acquired = internal.acquireExecutionMemory(size, nativeMemoryConsumer);
+    long acquired = acquireFromSpark(size);
     long newUsed = used.addAndGet(acquired);
     // A partial grant is routine, not an error: the native pool either refuses the reservation,
     // which tells the operator to spill, or carries the shortfall as overcommit. A refusal that
@@ -92,6 +96,57 @@ public class CometTaskMemoryManager {
           internal.getMemoryConsumptionForThisTask());
     }
     return acquired;
+  }
+
+  /**
+   * Acquires from Spark, retrying when an acquire waiting in Spark lost the task's entry. Spark
+   * removes a task's entry from its execution pool when the task's balance reaches zero, and an
+   * acquire that was waiting for memory then fails when it wakes up with a NoSuchElementException
+   * ("key not found: " and the task id). Releases take no task monitor, so another native thread or
+   * a JVM consumer of the same task can empty the balance while an acquire waits. The failed call
+   * was granted nothing, because Spark only drops the entry at a zero balance, which cannot hold
+   * while this call has a partial grant. So trying again is safe: it registers the task again and
+   * waits for its share as Spark would have. After a few failed attempts the grant is refused. The
+   * helper holds no lock of its own across attempts, so a retry parks in Spark exactly as the first
+   * attempt did.
+   */
+  private long acquireFromSpark(long size) {
+    for (int attempt = 1; ; attempt++) {
+      try {
+        return internal.acquireExecutionMemory(size, nativeMemoryConsumer);
+      } catch (NoSuchElementException e) {
+        if (!isMissingTaskEntry(e)) {
+          throw e;
+        }
+        if (attempt >= MAX_ACQUIRE_ATTEMPTS) {
+          logger.warn(
+              "Task {} lost its execution memory entry in Spark on {} attempts to acquire {} "
+                  + "bytes, refusing the request",
+              taskAttemptId,
+              attempt,
+              size);
+          return 0;
+        }
+        logger.info(
+            "Task {} lost its execution memory entry in Spark while waiting to acquire {} bytes, "
+                + "trying again",
+            taskAttemptId,
+            size);
+      }
+    }
+  }
+
+  /** Whether {@code e} is Spark's execution pool failing to find this task's entry. */
+  private boolean isMissingTaskEntry(NoSuchElementException e) {
+    if (!("key not found: " + taskAttemptId).equals(e.getMessage())) {
+      return false;
+    }
+    for (StackTraceElement frame : e.getStackTrace()) {
+      if ("org.apache.spark.memory.ExecutionMemoryPool".equals(frame.getClassName())) {
+        return true;
+      }
+    }
+    return false;
   }
 
   // Called by Comet native through JNI
