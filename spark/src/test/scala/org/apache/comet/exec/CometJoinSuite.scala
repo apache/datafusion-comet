@@ -1349,6 +1349,33 @@ class CometJoinSuite extends CometTestBase {
     }
   }
 
+  // Both joins use big._1, so no exchange separates them and the outer join's filter on small's
+  // keys reaches big below the intermediate join. Each build side is the smaller input.
+  test("forceShuffledHashJoin chain keeps early join dynamic filtering") {
+    withForcedShjTables(adaptive = false) {
+      val query = "SELECT big._1, big._2, mid._2, small._2 FROM big " +
+        "JOIN mid ON big._1 = mid._1 JOIN small ON big._1 = small._1"
+      for (enabled <- Seq(false, true)) {
+        withSQLConf(CometConf.COMET_EXEC_JOIN_DYNAMIC_FILTER_ENABLED.key -> enabled.toString) {
+          val (_, plan) = checkSparkAnswerAndOperator(sql(query))
+          val joins = collect(plan) { case join: CometHashJoinExec => join }
+          assert(joins.map(_.buildSide) == Seq(BuildRight, BuildRight), plan)
+          // big has 100 rows for each of its 100 keys, mid 30, and small one for keys 0 to 90
+          // in steps of 10. Each of the two shuffle partitions holds some of small's keys.
+          val outputs = joins.map(_.metrics("output_rows").value).sorted
+          assert(outputs == (if (enabled) Seq(30000L, 30000L) else Seq(30000L, 300000L)))
+          if (enabled) {
+            assert(
+              joins.map(_.metrics("dynamic_filter_early_rows_evaluated").value).sum == 10000L)
+            assert(joins.map(_.metrics("dynamic_filter_early_rows_pruned").value).sum == 9000L)
+          } else {
+            assert(joins.forall(!_.metrics.contains("dynamic_filter_early_rows_pruned")))
+          }
+        }
+      }
+    }
+  }
+
   // Checks that a hash join ran, that the rows match Spark's, and that every partition is sorted
   // on the first column. A local sort leaves rows with equal keys in any order, so the rows are
   // compared without their order.
