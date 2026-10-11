@@ -188,7 +188,7 @@ class CometAggregateSuite extends CometTestBase with AdaptiveSparkPlanHelper {
       classOf[LocalTableScanExec])
   }
 
-  test("collect_list and collect_set over non-nullable nested fields survive spilling") {
+  test("collect_list and collect_set over non-nullable nested fields") {
     withTempPath { path =>
       // Keep every group in one input and final partition so aggregation outgrows its memory pool.
       spark
@@ -199,6 +199,17 @@ class CometAggregateSuite extends CometTestBase with AdaptiveSparkPlanHelper {
         .write
         .parquet(path.getAbsolutePath)
       withParquetTable(path.getAbsolutePath, "tbl") {
+        // The literal and coalesce create required fields after the Parquet scan, which
+        // otherwise widens field nullability. Sorting removes collect order differences.
+        val struct = "named_struct('flag', true, 'id', coalesce(_2, 0), 'value', _3)"
+        // Ungrouped aggregation uses Accumulator rather than GroupsAccumulator and fails
+        // on mismatched nested nullability even without spilling.
+        checkSparkAnswerAndOperator(
+          sql(s"""
+          SELECT sort_array(collect_list(s)), sort_array(collect_set(s))
+          FROM (SELECT $struct AS s FROM tbl WHERE _1 < 8)"""),
+          Seq(classOf[CometHashAggregateExec]))
+
         withSQLConf(
           SQLConf.ADAPTIVE_EXECUTION_ENABLED.key -> "false",
           SQLConf.SHUFFLE_PARTITIONS.key -> "1",
@@ -206,9 +217,6 @@ class CometAggregateSuite extends CometTestBase with AdaptiveSparkPlanHelper {
           CometConf.COMET_OFFHEAP_MEMORY_POOL_FRACTION.key -> "0.002",
           CometConf.COMET_RESPECT_DATAFUSION_CONFIGS.key -> "true",
           "spark.comet.datafusion.execution.sort_spill_reservation_bytes" -> "65536") {
-          // The literal and coalesce create required fields after the Parquet scan, which
-          // otherwise widens field nullability. Sorting removes collect order differences.
-          val struct = "named_struct('flag', true, 'id', coalesce(_2, 0), 'value', _3)"
           Seq(struct, s"array($struct)").foreach { value =>
             val (_, cometPlan) = checkSparkAnswerAndOperator(
               sql(s"""
