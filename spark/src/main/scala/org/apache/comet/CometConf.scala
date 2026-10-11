@@ -388,7 +388,7 @@ object CometConf extends ShimCometConf {
           "without the fused reader. Relations whose schema Comet's Arrow writer does not " +
           "support are always cached in Spark's default " +
           "format. Each cached batch is stored as one Arrow IPC record batch with per-buffer " +
-          "zstd compression, and a scan copies out only the buffers of the columns it " +
+          "compression, and a scan copies out only the buffers of the columns it " +
           "projected, so the unselected ones are never decompressed. Eligible Spark " +
           "whole-stage codegen consumers read cached vectors directly when vectorized cache " +
           "reading is enabled; other Spark row consumers use a reusable row buffer. Decoding " +
@@ -409,20 +409,20 @@ object CometConf extends ShimCometConf {
       .category(CATEGORY_EXEC)
       .doc(
         "The Arrow IPC compression codec used when Comet's cache serializer writes cached " +
-          "data. Unlike spark.io.compression.codec, this compresses each Arrow buffer " +
-          "separately rather than the batch as a whole, which is what lets a projected scan " +
-          "decompress only the columns it selected. zstd is the default for footprint rather " +
-          "than speed: it stores cached data in a fraction of the memory, but makes " +
-          "materializing slower, and a read slower in proportion to how many columns it " +
-          "selects. Set to none when a relation fits in memory uncompressed and is read at " +
-          "close to full width. " +
+          "data: zstd, lz4 or none. Unlike spark.io.compression.codec, this compresses each " +
+          "Arrow buffer separately rather than the batch as a whole, which is what lets a " +
+          "projected scan decompress only the columns it selected. zstd is the default for " +
+          "footprint rather than speed: it stores cached data in a fraction of the memory, but " +
+          "makes materializing slower, and a read slower in proportion to how many columns it " +
+          "selects. lz4 decompresses several times faster than zstd, which makes wide reads " +
+          "much faster, at around three times zstd's footprint. It uses lz4-java, the " +
+          "JNI-accelerated library behind spark.io.compression.codec, rather than Arrow's own " +
+          "pure-Java lz4. Set to none when a relation fits in memory uncompressed and is read " +
+          "at close to full width. " +
           "Only affects newly cached data; the codec a batch was written with is recorded in " +
-          "the batch itself and is what the read path uses. Arrow's lz4 is deliberately not " +
-          "offered: it is a pure-Java implementation, unrelated to the JNI-accelerated lz4 " +
-          "behind spark.io.compression.codec, and is orders of magnitude slower to write than " +
-          "zstd while also producing larger output.")
+          "the batch itself and is what the read path uses.")
       .stringConf
-      .checkValues(Set("none", "zstd"))
+      .checkValues(Set("none", "zstd", "lz4"))
       .createWithDefault("zstd")
 
   val COMET_EXEC_IN_MEMORY_CACHE_COMPRESSION_ZSTD_LEVEL: ConfigEntry[Int] =
