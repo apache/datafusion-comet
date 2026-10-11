@@ -622,7 +622,7 @@ fn append_list_column_batch(
     // Helper macro for primitive element types - gets builder fresh each iteration
     // to avoid borrow conflicts with list_builder.append()
     macro_rules! process_primitive_lists {
-        ($builder_type:ty, $append_fn:ident) => {{
+        ($builder_type:ty, $append_fn:ident $(, $extra:expr)*) => {{
             for i in row_start..row_end {
                 read_row_at!(row, row_addresses_ptr, row_sizes_ptr, i);
 
@@ -636,7 +636,7 @@ fn append_list_column_batch(
                         .as_any_mut()
                         .downcast_mut::<$builder_type>()
                         .expect(stringify!($builder_type));
-                    array.$append_fn::<true>(values_builder);
+                    array.$append_fn::<true>(values_builder $(, $extra)*);
                     list_builder.append(true);
                 }
             }
@@ -668,8 +668,12 @@ fn append_list_column_batch(
         DataType::Date32 => {
             process_primitive_lists!(Date32Builder, append_dates_to_builder);
         }
-        DataType::Timestamp(TimeUnit::Microsecond, _) => {
-            process_primitive_lists!(TimestampMicrosecondBuilder, append_timestamps_to_builder);
+        DataType::Timestamp(TimeUnit::Microsecond, tz) => {
+            process_primitive_lists!(
+                TimestampMicrosecondBuilder,
+                append_timestamps_to_builder,
+                tz
+            );
         }
         DataType::Time64(TimeUnit::Nanosecond) => {
             process_primitive_lists!(Time64NanosecondBuilder, append_time64s_to_builder);
@@ -1504,7 +1508,8 @@ fn make_batch(arrays: Vec<ArrayRef>, row_count: usize) -> Result<RecordBatch, Ar
 
 #[cfg(test)]
 mod test {
-    use arrow::datatypes::Fields;
+    use arrow::array::AsArray;
+    use arrow::datatypes::{Fields, TimestampMicrosecondType};
 
     use super::*;
 
@@ -1573,5 +1578,81 @@ mod test {
         // Strict `from_utf8(..).unwrap()` panics here; lossy decode replaces each invalid byte
         // with U+FFFD. `&*` works whether get_string returns `&str` or `Cow<str>`.
         assert_eq!(&*row.get_string(0), "\u{FFFD}\u{FFFD}A");
+    }
+
+    /// Lays out an 8-byte-aligned `UnsafeRow` with one array field of 8-byte elements: the null
+    /// bitset, the field's offset and size, then the `UnsafeArrayData`. `None` is a null field.
+    fn unsafe_row_with_array(values: Option<&[Option<i64>]>) -> Vec<u64> {
+        let Some(values) = values else {
+            return vec![1, 0];
+        };
+        let mut null_bitset = vec![0u64; values.len().div_ceil(64)];
+        let mut elements = Vec::with_capacity(values.len());
+        for (i, value) in values.iter().enumerate() {
+            if value.is_none() {
+                null_bitset[i / 64] |= 1 << (i % 64);
+            }
+            elements.push(value.unwrap_or(0) as u64);
+        }
+        let array_size = 8 * (1 + null_bitset.len() + elements.len()) as u64;
+        let mut row = vec![0, (16 << 32) | array_size, values.len() as u64];
+        row.extend(null_bitset);
+        row.extend(elements);
+        row
+    }
+
+    #[test]
+    fn timestamp_list_column_keeps_its_timezone() {
+        // An array of at least MIN_BULK_NULLABLE_APPEND_ELEMENTS elements that holds a null is
+        // appended with `append_array`, which panics unless the array has the builder's timezone.
+        let data_type = DataType::List(Arc::new(Field::new(
+            "item",
+            DataType::Timestamp(TimeUnit::Microsecond, Some("UTC".into())),
+            true,
+        )));
+        let with_null: Vec<Option<i64>> = (0..70).map(|v| (v != 3).then_some(v << 20)).collect();
+        let without_null: Vec<Option<i64>> = (0..70).map(|v| Some(-v)).collect();
+        let short = vec![Some(1), None];
+        let lists = [
+            Some(with_null.as_slice()),
+            None,
+            Some(short.as_slice()),
+            Some(without_null.as_slice()),
+        ];
+        let rows: Vec<Vec<u64>> = lists.iter().map(|l| unsafe_row_with_array(*l)).collect();
+        let mut row_addresses: Vec<jlong> = rows.iter().map(|r| r.as_ptr() as jlong).collect();
+        let mut row_sizes: Vec<jint> = rows.iter().map(|r| (r.len() * 8) as jint).collect();
+
+        let schema = [data_type.clone()];
+        let mut builder = make_builders(&data_type, rows.len(), 1.0).unwrap();
+        append_columns(
+            row_addresses.as_mut_ptr(),
+            row_sizes.as_mut_ptr(),
+            0,
+            rows.len(),
+            &schema,
+            0,
+            &mut builder,
+            1.0,
+        )
+        .unwrap();
+        let array = builder.finish();
+
+        assert_eq!(array.data_type(), &data_type);
+        let appended: Vec<Option<Vec<Option<i64>>>> = array
+            .as_list::<i32>()
+            .iter()
+            .map(|values| {
+                values.map(|values| {
+                    values
+                        .as_primitive::<TimestampMicrosecondType>()
+                        .iter()
+                        .collect()
+                })
+            })
+            .collect();
+        let expected: Vec<Option<Vec<Option<i64>>>> =
+            lists.iter().map(|l| l.map(<[_]>::to_vec)).collect();
+        assert_eq!(appended, expected);
     }
 }

@@ -93,7 +93,7 @@ fn list_input() -> ArrayRef {
 }
 
 fn criterion_benchmark(c: &mut Criterion) {
-    let options = SparkCastOptions::new(EvalMode::Legacy, "UTC", false);
+    let options = SparkCastOptions::new(EvalMode::Legacy, "UTC");
     let col: Arc<dyn PhysicalExpr> = Arc::new(Column::new("c", 0));
 
     let mut group = c.benchmark_group("cast_nested");
