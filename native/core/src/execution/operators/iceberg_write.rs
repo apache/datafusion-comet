@@ -620,6 +620,10 @@ impl Drop for AbortOnDrop {
             }
             // Dropped from a plain JVM thread (`releasePlan`): run the delete to completion so the
             // files are gone before the task reports its failure.
+            //
+            // A throwaway runtime is safe for HDFS too: the pinned iceberg-storage-opendal builds
+            // every `hdfs-native` client in a runtime of its own (`HDFS_NATIVE_RUNTIME`), so an
+            // operator first built here is not tied to this runtime's lifetime.
             Err(_) => match tokio::runtime::Builder::new_current_thread()
                 .enable_all()
                 .build()

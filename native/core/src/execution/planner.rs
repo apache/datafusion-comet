@@ -4565,33 +4565,45 @@ fn parse_file_scan_tasks_from_common(
                     ))
                 })?;
 
-            Ok(iceberg::scan::FileScanTaskDeleteFile {
+            // iceberg-rust holds the deletion-vector coordinates unsigned and rejects a negative
+            // one when it reads a manifest entry; reject it here the same way.
+            let non_negative = |value: Option<i64>, what: &str| {
+                value.map(u64::try_from).transpose().map_err(|_| {
+                    GeneralError(format!("Delete file '{}' has a negative {what}", file_path))
+                })
+            };
+            let content_offset = non_negative(del.content_offset, "content offset")?;
+            let content_size_in_bytes = non_negative(del.content_size_in_bytes, "content size")?;
+
+            iceberg::scan::FileScanTaskDeleteFile::builder()
                 // Passed RAW, like `data_file_path` below (same exact-string delete-matching
                 // constraint -- see there).
-                file_path,
-                file_type,
-                file_format,
+                .with_file_path(file_path)
+                .with_file_type(file_type)
+                .with_file_format(file_format)
                 // Not serialized; filled in by IcebergScanExec::fill_delete_file_sizes.
-                file_size_in_bytes: 0,
-                partition_spec_id: del.partition_spec_id,
-                equality_ids: if del.equality_ids.is_empty() {
+                .with_file_size_in_bytes(0)
+                .with_partition_spec_id(del.partition_spec_id)
+                .with_equality_ids(if del.equality_ids.is_empty() {
                     None
                 } else {
                     Some(del.equality_ids.clone())
-                },
+                })
                 // Deletion-vector coordinates, which the serde sets only when file_format is
                 // PUFFIN. referenced_data_file names the data file the vector applies to; the other
                 // two locate the deletion-vector-v1 blob in its Puffin file. file_format above is
                 // the discriminator, since Iceberg also populates referencedDataFile on
                 // file-scoped Parquet position deletes.
-                referenced_data_file: del.referenced_data_file.clone(),
-                content_offset: del.content_offset,
-                content_size_in_bytes: del.content_size_in_bytes,
-                record_count,
+                .with_referenced_data_file(del.referenced_data_file.clone())
+                .with_content_offset(content_offset)
+                .with_content_size_in_bytes(content_size_in_bytes)
+                .with_record_count(record_count)
                 // Plaintext StandardKeyMetadata forwarded verbatim from the JVM; decoded by
                 // iceberg-rust with no KMS unwrap. None for unencrypted delete files.
-                key_metadata: del.key_metadata.clone().map(Vec::into_boxed_slice),
-            })
+                .with_key_metadata(del.key_metadata.clone().map(Vec::into_boxed_slice))
+                // Runs iceberg-rust's validation, which requires a deletion vector's coordinates.
+                .build()
+                .map_err(|e| GeneralError(format!("Invalid Iceberg delete file: {e}")))
         })
         .collect::<Result<Vec<_>, ExecutionError>>()?;
 
