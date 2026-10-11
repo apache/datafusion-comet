@@ -73,12 +73,13 @@ operator in `spark.comet.sparkToColumnar.supportedOperatorList` by its Spark cla
 
 ### Spark-to-Comet conversion types
 
-Spark-to-Comet conversion supports `ARRAY<STRING>` and `MAP<STRING,STRING>` with binary
-string semantics, both as top-level fields and inside supported structs. Arrays and maps may
-be null; array elements and map values may also be null. Map keys must be non-null.
-This applies to Spark row and columnar inputs when conversion is enabled for the source.
-Other array element types, other map key/value types, nested collections, and non-binary
-string collations remain unsupported at this conversion boundary. Source defaults are unchanged.
+Spark-to-Comet conversion supports booleans, integers, floats, decimals, strings, binary, dates,
+timestamps and calendar intervals, and arrays, maps and structs of them, nested to any depth.
+Arrays and maps may be null; array elements and map values may also be null. Map keys must be
+non-null. This applies to Spark row and columnar inputs when conversion is enabled for the source.
+A column with any other type is not converted, and neither is one with a string that has a
+non-binary collation, or a struct that has duplicate field names or no fields, anywhere inside it.
+The operators above such a column stay on Spark. Source defaults are unchanged.
 
 This includes row-backed `ExistingRDD` inputs when `spark.comet.convert.rdd.enabled=true`. Spark
 still produces the RDD rows; conversion lets eligible downstream operators execute in Comet.
