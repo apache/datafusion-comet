@@ -23,8 +23,9 @@ use std::sync::Arc;
 use crate::agg_funcs::covariance::{CovarianceAccumulator, CovarianceGroupsAccumulator};
 use crate::agg_funcs::stddev::StddevAccumulator;
 use crate::agg_funcs::variance::VarianceGroupsAccumulator;
+use crate::{divide_by_zero_error, EvalMode, QueryContextMap, SparkErrorWithContext};
 use arrow::compute::filter;
-use datafusion::common::{not_impl_err, Result, ScalarValue};
+use datafusion::common::{not_impl_err, DataFusionError, Result, ScalarValue};
 use datafusion::logical_expr::function::{AccumulatorArgs, StateFieldsArgs};
 use datafusion::logical_expr::{
     Accumulator, AggregateUDFImpl, EmitTo, GroupsAccumulator, Signature, Volatility,
@@ -36,16 +37,47 @@ use datafusion::physical_expr::expressions::StatsType;
 /// The implementation mostly is the same as the DataFusion's implementation. The reason
 /// we have our own implementation is that DataFusion has UInt64 for state_field `count`,
 /// while Spark has Double for count. Also we have added `null_on_divide_by_zero`
-/// to be consistent with Spark's implementation.
-#[derive(Debug, PartialEq, Eq, Hash)]
+/// and `eval_mode` to be consistent with Spark's implementation.
+#[derive(Debug)]
 pub struct Correlation {
     name: String,
     signature: Signature,
     null_on_divide_by_zero: bool,
+    zero_divisor: ZeroDivisor,
+}
+
+// Manually implement PartialEq, Eq, and Hash excluding the registry field
+impl PartialEq for Correlation {
+    fn eq(&self, other: &Self) -> bool {
+        self.name == other.name
+            && self.signature == other.signature
+            && self.null_on_divide_by_zero == other.null_on_divide_by_zero
+            && self.zero_divisor.eval_mode == other.zero_divisor.eval_mode
+            && self.zero_divisor.expr_id == other.zero_divisor.expr_id
+    }
+}
+
+impl Eq for Correlation {}
+
+impl std::hash::Hash for Correlation {
+    fn hash<H: std::hash::Hasher>(&self, state: &mut H) {
+        self.name.hash(state);
+        self.signature.hash(state);
+        self.null_on_divide_by_zero.hash(state);
+        self.zero_divisor.eval_mode.hash(state);
+        self.zero_divisor.expr_id.hash(state);
+    }
 }
 
 impl Correlation {
-    pub fn new(name: impl Into<String>, data_type: DataType, null_on_divide_by_zero: bool) -> Self {
+    pub fn new(
+        name: impl Into<String>,
+        data_type: DataType,
+        null_on_divide_by_zero: bool,
+        eval_mode: EvalMode,
+        expr_id: Option<u64>,
+        registry: Arc<QueryContextMap>,
+    ) -> Self {
         // the result of correlation just support FLOAT64 data type.
         assert!(matches!(data_type, DataType::Float64));
         Self {
@@ -55,7 +87,38 @@ impl Correlation {
                 Volatility::Immutable,
             ),
             null_on_divide_by_zero,
+            zero_divisor: ZeroDivisor {
+                eval_mode,
+                expr_id,
+                registry,
+            },
         }
+    }
+}
+
+/// How the `Divide` in Spark's `ck / sqrt(xMk * yMk)` treats a zero denominator.
+/// It returns null in LEGACY mode and raises DIVIDE_BY_ZERO, carrying the `corr`
+/// call's query context, in ANSI mode.
+#[derive(Debug, Clone)]
+pub(crate) struct ZeroDivisor {
+    eval_mode: EvalMode,
+    expr_id: Option<u64>,
+    registry: Arc<QueryContextMap>,
+}
+
+impl ZeroDivisor {
+    /// The error to raise for a zero denominator, or `None` to return null.
+    fn error(&self) -> Option<DataFusionError> {
+        if self.eval_mode != EvalMode::Ansi {
+            return None;
+        }
+        let error = divide_by_zero_error();
+        Some(match self.expr_id.and_then(|id| self.registry.get(id)) {
+            Some(ctx) => {
+                DataFusionError::External(Box::new(SparkErrorWithContext::with_context(error, ctx)))
+            }
+            None => error.into(),
+        })
     }
 }
 
@@ -78,6 +141,7 @@ impl AggregateUDFImpl for Correlation {
     fn accumulator(&self, _acc_args: AccumulatorArgs) -> Result<Box<dyn Accumulator>> {
         Ok(Box::new(CorrelationAccumulator::try_new(
             self.null_on_divide_by_zero,
+            self.zero_divisor.clone(),
         )?))
     }
 
@@ -126,6 +190,7 @@ impl AggregateUDFImpl for Correlation {
     ) -> Result<Box<dyn GroupsAccumulator>> {
         Ok(Box::new(CorrelationGroupsAccumulator::new(
             self.null_on_divide_by_zero,
+            self.zero_divisor.clone(),
         )))
     }
 }
@@ -137,16 +202,20 @@ pub struct CorrelationAccumulator {
     stddev1: StddevAccumulator,
     stddev2: StddevAccumulator,
     null_on_divide_by_zero: bool,
+    zero_divisor: ZeroDivisor,
 }
 
 impl CorrelationAccumulator {
     /// Creates a new `CorrelationAccumulator`
-    pub fn try_new(null_on_divide_by_zero: bool) -> Result<Self> {
+    pub(crate) fn try_new(null_on_divide_by_zero: bool, zero_divisor: ZeroDivisor) -> Result<Self> {
         Ok(Self {
             covar: CovarianceAccumulator::try_new(StatsType::Population, null_on_divide_by_zero)?,
-            stddev1: StddevAccumulator::try_new(StatsType::Population, null_on_divide_by_zero)?,
-            stddev2: StddevAccumulator::try_new(StatsType::Population, null_on_divide_by_zero)?,
+            stddev1: StddevAccumulator::try_new(StatsType::Population, null_on_divide_by_zero)?
+                .with_pearson_update(),
+            stddev2: StddevAccumulator::try_new(StatsType::Population, null_on_divide_by_zero)?
+                .with_pearson_update(),
             null_on_divide_by_zero,
+            zero_divisor,
         })
     }
 }
@@ -227,10 +296,6 @@ impl Accumulator for CorrelationAccumulator {
     }
 
     fn evaluate(&mut self) -> Result<ScalarValue> {
-        let covar = self.covar.evaluate()?;
-        let stddev1 = self.stddev1.evaluate()?;
-        let stddev2 = self.stddev2.evaluate()?;
-
         if self.covar.get_count() == 0.0 {
             return Ok(ScalarValue::Float64(None));
         } else if self.covar.get_count() == 1.0 {
@@ -240,14 +305,20 @@ impl Accumulator for CorrelationAccumulator {
                 return Ok(ScalarValue::Float64(Some(f64::NAN)));
             }
         }
-        match (covar, stddev1, stddev2) {
-            (
-                ScalarValue::Float64(Some(c)),
-                ScalarValue::Float64(Some(s1)),
-                ScalarValue::Float64(Some(s2)),
-            ) if s1 != 0.0 && s2 != 0.0 => Ok(ScalarValue::Float64(Some(c / (s1 * s2)))),
-            _ => Ok(ScalarValue::Float64(None)),
+        let m2_product = self.stddev1.get_m2() * self.stddev2.get_m2();
+        // The product can underflow even when both moments are nonzero.
+        // A zero moment paired with infinity produces NaN, not a zero denominator.
+        if m2_product == 0.0 {
+            return match self.zero_divisor.error() {
+                Some(error) => Err(error),
+                None => Ok(ScalarValue::Float64(None)),
+            };
         }
+        // Match Spark and the grouped path's raw-moment evaluation. Normalizing
+        // first changes rounding and can avoid overflow in m2_1 * m2_2.
+        Ok(ScalarValue::Float64(Some(
+            self.covar.get_algo_const() / m2_product.sqrt(),
+        )))
     }
 
     fn size(&self) -> usize {
@@ -269,10 +340,11 @@ struct CorrelationGroupsAccumulator {
     var1: VarianceGroupsAccumulator,
     var2: VarianceGroupsAccumulator,
     null_on_divide_by_zero: bool,
+    zero_divisor: ZeroDivisor,
 }
 
 impl CorrelationGroupsAccumulator {
-    fn new(null_on_divide_by_zero: bool) -> Self {
+    fn new(null_on_divide_by_zero: bool, zero_divisor: ZeroDivisor) -> Self {
         // Children run with StatsType::Population, which never hits the
         // count == 1 sample-divide-by-zero branch, so the children's
         // null_on_divide_by_zero is dead code. The top-level evaluate()
@@ -280,9 +352,12 @@ impl CorrelationGroupsAccumulator {
         // that intent explicit.
         Self {
             covar: CovarianceGroupsAccumulator::new(StatsType::Population, false),
-            var1: VarianceGroupsAccumulator::new(StatsType::Population, false),
-            var2: VarianceGroupsAccumulator::new(StatsType::Population, false),
+            var1: VarianceGroupsAccumulator::new(StatsType::Population, false)
+                .with_pearson_update(),
+            var2: VarianceGroupsAccumulator::new(StatsType::Population, false)
+                .with_pearson_update(),
             null_on_divide_by_zero,
+            zero_divisor,
         }
     }
 }
@@ -403,16 +478,18 @@ impl GroupsAccumulator for CorrelationGroupsAccumulator {
                 }
                 continue;
             }
-            // Population stats: divide m2 / count, c / count. The 1/count
-            // factors cancel in c / (s1 * s2), so we work with raw moments.
-            let s1_sq = m2_1s[i];
-            let s2_sq = m2_2s[i];
-            if s1_sq == 0.0 || s2_sq == 0.0 {
+            // Match Spark's raw-moment product, including overflow, underflow
+            // and NaN from a zero moment paired with infinity.
+            let m2_product = m2_1s[i] * m2_2s[i];
+            if m2_product == 0.0 {
+                if let Some(error) = self.zero_divisor.error() {
+                    return Err(error);
+                }
                 values.push(0.0);
                 validity.push(false);
                 continue;
             }
-            values.push(algo_consts[i] / (s1_sq * s2_sq).sqrt());
+            values.push(algo_consts[i] / m2_product.sqrt());
             validity.push(true);
         }
 
@@ -457,12 +534,22 @@ impl GroupsAccumulator for CorrelationGroupsAccumulator {
 #[cfg(test)]
 mod groups_tests {
     use super::*;
+    use crate::{create_query_context_map, QueryContext};
     use arrow::array::AsArray;
     use arrow::datatypes::Float64Type;
+    use datafusion_comet_common::SparkError;
+
+    fn zero_divisor(eval_mode: EvalMode) -> ZeroDivisor {
+        ZeroDivisor {
+            eval_mode,
+            expr_id: None,
+            registry: create_query_context_map(),
+        }
+    }
 
     fn acc(legacy: bool) -> CorrelationGroupsAccumulator {
         // null_on_divide_by_zero = !legacy
-        CorrelationGroupsAccumulator::new(!legacy)
+        CorrelationGroupsAccumulator::new(!legacy, zero_divisor(EvalMode::Legacy))
     }
 
     fn evaluate(a: &mut CorrelationGroupsAccumulator) -> Vec<Option<f64>> {
@@ -471,6 +558,338 @@ mod groups_tests {
             .as_primitive::<Float64Type>()
             .iter()
             .collect()
+    }
+
+    #[test]
+    fn correlation_evaluates_raw_moments_exactly() {
+        // Spark divides ck by sqrt(m2_1 * m2_2). Normalizing the moments
+        // first changes rounding, and avoids overflow that Spark preserves.
+        for (values, expected) in [
+            ([1e16, 1e16 + 2.0], Some(1.0)),
+            ([1e16 + 2.0, 1e16], None),
+            ([-1e16, -1e16 - 2.0], Some(1.0)),
+            ([1e100, 2e100], Some(0.0)),
+            ([1e-100, 2e-100], None),
+        ] {
+            for sign in [-1.0, 1.0] {
+                for null_on_divide_by_zero in [false, true] {
+                    let input: Vec<ArrayRef> = vec![
+                        Arc::new(Float64Array::from(vec![
+                            Some(values[0]),
+                            None,
+                            Some(values[1]),
+                        ])),
+                        Arc::new(Float64Array::from(vec![
+                            Some(sign * values[0]),
+                            Some(0.0),
+                            Some(sign * values[1]),
+                        ])),
+                    ];
+                    let mut scalar = CorrelationAccumulator::try_new(
+                        null_on_divide_by_zero,
+                        zero_divisor(EvalMode::Legacy),
+                    )
+                    .unwrap();
+                    let mut grouped = CorrelationGroupsAccumulator::new(
+                        null_on_divide_by_zero,
+                        zero_divisor(EvalMode::Legacy),
+                    );
+                    scalar.update_batch(&input).unwrap();
+                    grouped.update_batch(&input, &[0, 0, 0], None, 1).unwrap();
+                    let state = scalar
+                        .state()
+                        .unwrap()
+                        .iter()
+                        .map(|s| s.to_array_of_size(1).unwrap())
+                        .collect::<Vec<_>>();
+                    let mut merged_scalar = CorrelationAccumulator::try_new(
+                        null_on_divide_by_zero,
+                        zero_divisor(EvalMode::Legacy),
+                    )
+                    .unwrap();
+                    let mut merged_grouped = CorrelationGroupsAccumulator::new(
+                        null_on_divide_by_zero,
+                        zero_divisor(EvalMode::Legacy),
+                    );
+                    merged_scalar.merge_batch(&state).unwrap();
+                    merged_grouped.merge_batch(&state, &[0], 1).unwrap();
+                    for result in [
+                        scalar.evaluate().unwrap(),
+                        merged_scalar.evaluate().unwrap(),
+                    ] {
+                        assert_eq!(result, ScalarValue::Float64(expected.map(|v| sign * v)));
+                    }
+                    for result in [evaluate(&mut grouped)[0], evaluate(&mut merged_grouped)[0]] {
+                        assert_eq!(result, expected.map(|v| sign * v));
+                    }
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn correlation_zero_and_infinite_moments_yield_nan() {
+        let input: Vec<ArrayRef> = vec![
+            Arc::new(Float64Array::from(vec![1e200, -1e200])),
+            Arc::new(Float64Array::from(vec![0.1, 0.1])),
+        ];
+        let mut scalar =
+            CorrelationAccumulator::try_new(true, zero_divisor(EvalMode::Legacy)).unwrap();
+        let mut grouped = CorrelationGroupsAccumulator::new(true, zero_divisor(EvalMode::Legacy));
+        scalar.update_batch(&input).unwrap();
+        grouped.update_batch(&input, &[0, 0], None, 1).unwrap();
+        let state = scalar
+            .state()
+            .unwrap()
+            .iter()
+            .map(|s| s.to_array_of_size(1).unwrap())
+            .collect::<Vec<_>>();
+        let mut merged_scalar =
+            CorrelationAccumulator::try_new(true, zero_divisor(EvalMode::Legacy)).unwrap();
+        let mut merged_grouped =
+            CorrelationGroupsAccumulator::new(true, zero_divisor(EvalMode::Legacy));
+        merged_scalar.merge_batch(&state).unwrap();
+        merged_grouped.merge_batch(&state, &[0], 1).unwrap();
+        for result in [
+            scalar.evaluate().unwrap(),
+            merged_scalar.evaluate().unwrap(),
+        ] {
+            assert!(matches!(result, ScalarValue::Float64(Some(v)) if v.is_nan()));
+        }
+        for result in [evaluate(&mut grouped)[0], evaluate(&mut merged_grouped)[0]] {
+            assert!(result.unwrap().is_nan());
+        }
+    }
+
+    #[test]
+    fn correlation_merge_empty_partials() {
+        for empty_first in [false, true] {
+            let mut scalar =
+                CorrelationAccumulator::try_new(true, zero_divisor(EvalMode::Legacy)).unwrap();
+            let mut grouped =
+                CorrelationGroupsAccumulator::new(true, zero_divisor(EvalMode::Legacy));
+            let counts = if empty_first {
+                [0.0, 100.0]
+            } else {
+                [100.0, 0.0]
+            };
+            for count in counts {
+                let mean = if count == 0.0 { 0.0 } else { 1e155 };
+                let state: Vec<ArrayRef> = [count, mean, mean, 0.0, 0.0, 0.0]
+                    .into_iter()
+                    .map(|v| Arc::new(Float64Array::from(vec![v])) as ArrayRef)
+                    .collect();
+                scalar.merge_batch(&state).unwrap();
+                grouped.merge_batch(&state, &[0], 1).unwrap();
+            }
+            let ScalarValue::Float64(scalar) = scalar.evaluate().unwrap() else {
+                panic!("expected a double correlation");
+            };
+            for result in [scalar, evaluate(&mut grouped)[0]] {
+                if empty_first {
+                    assert_eq!(result, None);
+                } else {
+                    assert!(result.unwrap().is_nan());
+                }
+            }
+        }
+    }
+
+    fn assert_divide_by_zero<T: std::fmt::Debug>(result: Result<T>) {
+        let Err(DataFusionError::External(error)) = result else {
+            panic!("expected a structured Spark divide-by-zero error, got {result:?}");
+        };
+        assert!(matches!(
+            error.downcast_ref::<SparkError>(),
+            Some(SparkError::DivideByZero)
+        ));
+    }
+
+    fn partial_state(input: &[ArrayRef]) -> Vec<ArrayRef> {
+        let mut partial =
+            CorrelationAccumulator::try_new(true, zero_divisor(EvalMode::Legacy)).unwrap();
+        partial.update_batch(input).unwrap();
+        partial
+            .state()
+            .unwrap()
+            .iter()
+            .map(|s| s.to_array_of_size(1).unwrap())
+            .collect()
+    }
+
+    #[test]
+    fn correlation_zero_denominator_respects_eval_mode() {
+        // https://github.com/apache/datafusion-comet/issues/6481
+        // x is constant at 0.1, which binary floating point cannot represent
+        // exactly. Spark divides ck by sqrt(xMk * yMk) = 0, so its Divide
+        // returns null in LEGACY mode and raises DIVIDE_BY_ZERO in ANSI mode.
+        let y: Vec<f64> = (0..6).map(f64::from).collect();
+        let x = [0.1; 6];
+        let input = |range: std::ops::Range<usize>| -> Vec<ArrayRef> {
+            vec![
+                Arc::new(Float64Array::from(y[range.clone()].to_vec())),
+                Arc::new(Float64Array::from(x[range].to_vec())),
+            ]
+        };
+        for eval_mode in [EvalMode::Legacy, EvalMode::Ansi] {
+            for null_on_divide_by_zero in [false, true] {
+                let mut scalar = CorrelationAccumulator::try_new(
+                    null_on_divide_by_zero,
+                    zero_divisor(eval_mode),
+                )
+                .unwrap();
+                let mut grouped = CorrelationGroupsAccumulator::new(
+                    null_on_divide_by_zero,
+                    zero_divisor(eval_mode),
+                );
+                scalar.update_batch(&input(0..6)).unwrap();
+                grouped
+                    .update_batch(&input(0..6), &[0; 6], None, 1)
+                    .unwrap();
+                let mut scalars = vec![scalar];
+                let mut groups = vec![grouped];
+                // Merging partials in either order must keep xMk exactly zero.
+                for ranges in [[0..3, 3..6], [3..6, 0..3]] {
+                    let mut scalar = CorrelationAccumulator::try_new(
+                        null_on_divide_by_zero,
+                        zero_divisor(eval_mode),
+                    )
+                    .unwrap();
+                    let mut grouped = CorrelationGroupsAccumulator::new(
+                        null_on_divide_by_zero,
+                        zero_divisor(eval_mode),
+                    );
+                    for range in ranges {
+                        let state = partial_state(&input(range));
+                        scalar.merge_batch(&state).unwrap();
+                        grouped.merge_batch(&state, &[0], 1).unwrap();
+                    }
+                    scalars.push(scalar);
+                    groups.push(grouped);
+                }
+                for mut scalar in scalars {
+                    if eval_mode == EvalMode::Ansi {
+                        assert_divide_by_zero(scalar.evaluate());
+                    } else {
+                        assert_eq!(scalar.evaluate().unwrap(), ScalarValue::Float64(None));
+                    }
+                }
+                for mut grouped in groups {
+                    if eval_mode == EvalMode::Ansi {
+                        assert_divide_by_zero(grouped.evaluate(EmitTo::All));
+                    } else {
+                        assert_eq!(evaluate(&mut grouped), vec![None]);
+                    }
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn correlation_ansi_error_carries_query_context() {
+        let sql = "SELECT corr(y, x) FROM t";
+        let registry = create_query_context_map();
+        registry.register(
+            7,
+            QueryContext::new(sql.to_string(), 7, 16, None, None, 1, 7),
+        );
+        let zero_divisor = ZeroDivisor {
+            eval_mode: EvalMode::Ansi,
+            expr_id: Some(7),
+            registry,
+        };
+        let input: Vec<ArrayRef> = vec![
+            Arc::new(Float64Array::from(vec![0.0, 1.0, 2.0])),
+            Arc::new(Float64Array::from(vec![0.1, 0.1, 0.1])),
+        ];
+        let mut scalar = CorrelationAccumulator::try_new(true, zero_divisor.clone()).unwrap();
+        let mut grouped = CorrelationGroupsAccumulator::new(true, zero_divisor);
+        scalar.update_batch(&input).unwrap();
+        grouped.update_batch(&input, &[0, 0, 0], None, 1).unwrap();
+        for result in [
+            scalar.evaluate().map(|_| ()),
+            grouped.evaluate(EmitTo::All).map(|_| ()),
+        ] {
+            let Err(DataFusionError::External(error)) = result else {
+                panic!("expected a Spark error with query context");
+            };
+            let error = error.downcast_ref::<SparkErrorWithContext>().unwrap();
+            assert!(matches!(error.error, SparkError::DivideByZero));
+            assert_eq!(error.context.as_ref().unwrap().sql_text.as_str(), sql);
+        }
+    }
+
+    #[test]
+    fn correlation_ansi_raises_only_on_zero_denominator() {
+        for null_on_divide_by_zero in [false, true] {
+            let mut scalar = CorrelationAccumulator::try_new(
+                null_on_divide_by_zero,
+                zero_divisor(EvalMode::Ansi),
+            )
+            .unwrap();
+            let mut grouped = CorrelationGroupsAccumulator::new(
+                null_on_divide_by_zero,
+                zero_divisor(EvalMode::Ansi),
+            );
+            // Spark checks n == 0 and n == 1 before dividing, so neither raises.
+            let input: Vec<ArrayRef> = vec![
+                Arc::new(Float64Array::from(vec![Some(1.0), None, Some(42.0)])),
+                Arc::new(Float64Array::from(vec![None, Some(2.0), Some(7.0)])),
+            ];
+            grouped.update_batch(&input, &[0, 0, 1], None, 2).unwrap();
+            let single_row = if null_on_divide_by_zero {
+                None
+            } else {
+                Some(f64::NAN)
+            };
+            let result = evaluate(&mut grouped);
+            assert_eq!(result[0], None);
+            assert_eq!(result[1].map(f64::is_nan), single_row.map(f64::is_nan));
+            assert_eq!(scalar.evaluate().unwrap(), ScalarValue::Float64(None));
+            scalar.update_batch(&input).unwrap();
+            let ScalarValue::Float64(result) = scalar.evaluate().unwrap() else {
+                panic!("expected a double correlation");
+            };
+            assert_eq!(result.map(f64::is_nan), single_row.map(f64::is_nan));
+
+            // A zero moment paired with an infinite one gives a NaN denominator,
+            // not a zero one, so Spark's Divide returns NaN.
+            let input: Vec<ArrayRef> = vec![
+                Arc::new(Float64Array::from(vec![1e200, -1e200])),
+                Arc::new(Float64Array::from(vec![0.1, 0.1])),
+            ];
+            let mut scalar = CorrelationAccumulator::try_new(
+                null_on_divide_by_zero,
+                zero_divisor(EvalMode::Ansi),
+            )
+            .unwrap();
+            let mut grouped = CorrelationGroupsAccumulator::new(
+                null_on_divide_by_zero,
+                zero_divisor(EvalMode::Ansi),
+            );
+            scalar.update_batch(&input).unwrap();
+            grouped.update_batch(&input, &[0, 0], None, 1).unwrap();
+            assert!(matches!(
+                scalar.evaluate().unwrap(),
+                ScalarValue::Float64(Some(v)) if v.is_nan()
+            ));
+            assert!(evaluate(&mut grouped)[0].unwrap().is_nan());
+
+            // One group with a zero denominator fails the whole evaluation,
+            // as Spark's Divide does for that group's row.
+            let input: Vec<ArrayRef> = vec![
+                Arc::new(Float64Array::from(vec![1.0, 2.0, 1.0, 2.0])),
+                Arc::new(Float64Array::from(vec![2.0, 4.0, 3.0, 3.0])),
+            ];
+            let mut grouped = CorrelationGroupsAccumulator::new(
+                null_on_divide_by_zero,
+                zero_divisor(EvalMode::Ansi),
+            );
+            grouped
+                .update_batch(&input, &[0, 0, 1, 1], None, 2)
+                .unwrap();
+            assert_divide_by_zero(grouped.evaluate(EmitTo::All));
+        }
     }
 
     #[test]
