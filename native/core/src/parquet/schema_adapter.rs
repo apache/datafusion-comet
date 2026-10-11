@@ -1546,7 +1546,6 @@ impl SparkPhysicalExprAdapter {
             let mut cast_options = SparkCastOptions::new(
                 self.parquet_options.eval_mode,
                 &self.parquet_options.timezone,
-                self.parquet_options.allow_incompat,
             );
             cast_options.allow_cast_unsigned_ints = self.parquet_options.allow_cast_unsigned_ints;
             cast_options.is_adapting_schema = true;
@@ -2273,7 +2272,7 @@ pub(crate) mod test {
         let required_schema =
             Arc::new(Schema::new(vec![Field::new("col", DataType::Int64, false)]));
 
-        let mut spark_parquet_options = SparkParquetOptions::new(EvalMode::Legacy, "UTC", false);
+        let mut spark_parquet_options = SparkParquetOptions::new(EvalMode::Legacy, "UTC");
         spark_parquet_options.allow_type_promotion = false;
 
         let expr_adapter_factory: Arc<dyn PhysicalExprAdapterFactory> = Arc::new(
@@ -2318,7 +2317,7 @@ pub(crate) mod test {
         let required_schema =
             Arc::new(Schema::new(vec![Field::new("col", DataType::Int64, false)]));
 
-        let mut spark_parquet_options = SparkParquetOptions::new(EvalMode::Legacy, "UTC", false);
+        let mut spark_parquet_options = SparkParquetOptions::new(EvalMode::Legacy, "UTC");
         spark_parquet_options.allow_type_promotion = false;
 
         let expr_adapter_factory: Arc<dyn PhysicalExprAdapterFactory> = Arc::new(
@@ -2446,7 +2445,7 @@ pub(crate) mod test {
         batch: &RecordBatch,
         required_schema: SchemaRef,
     ) -> Result<RecordBatch, DataFusionError> {
-        let mut spark_parquet_options = SparkParquetOptions::new(EvalMode::Legacy, "UTC", false);
+        let mut spark_parquet_options = SparkParquetOptions::new(EvalMode::Legacy, "UTC");
         spark_parquet_options.allow_cast_unsigned_ints = true;
         let mut stream = scan_parquet(batch, required_schema, spark_parquet_options)?;
         stream.next().await.unwrap()
@@ -2961,7 +2960,7 @@ pub(crate) mod test {
 
     #[test]
     fn nested_dictionary_containers_are_checked_by_value_type() -> Result<(), DataFusionError> {
-        let options = SparkParquetOptions::new(EvalMode::Legacy, "UTC", false);
+        let options = SparkParquetOptions::new(EvalMode::Legacy, "UTC");
         let physical_struct = DataType::Struct(Fields::from(vec![
             Field::new("x", DataType::Int64, true),
             Field::new("unused", DataType::Int32, true),
@@ -2996,7 +2995,7 @@ pub(crate) mod test {
 
     #[test]
     fn nested_map_shape_mismatch_is_rejected() -> Result<(), DataFusionError> {
-        let options = SparkParquetOptions::new(EvalMode::Legacy, "UTC", false);
+        let options = SparkParquetOptions::new(EvalMode::Legacy, "UTC");
         let valid = map_type(DataType::Int64);
         let DataType::Map(entries, _) = &valid else {
             unreachable!()
@@ -3119,7 +3118,7 @@ pub(crate) mod test {
         let required_schema = struct_schema(vec![
             Field::new("b", DataType::Int32, true).with_metadata(id_meta("1"))
         ]);
-        let mut options = SparkParquetOptions::new(EvalMode::Legacy, "UTC", false);
+        let mut options = SparkParquetOptions::new(EvalMode::Legacy, "UTC");
         options.use_field_id = true;
         let mut stream = scan_parquet(&batch, required_schema, options)?;
         let err = stream
@@ -3146,7 +3145,7 @@ pub(crate) mod test {
             Arc::new(Int32Array::from(vec![1, 2, 3])),
         )?;
         let required_schema = struct_schema(vec![Field::new("x", DataType::Int64, true)]);
-        let mut options = SparkParquetOptions::new(EvalMode::Legacy, "UTC", false);
+        let mut options = SparkParquetOptions::new(EvalMode::Legacy, "UTC");
         options.allow_type_promotion = false;
         let mut stream = scan_parquet(&batch, required_schema, options)?;
         let err = stream
@@ -3172,7 +3171,7 @@ pub(crate) mod test {
             Arc::new(Int32Array::from(Vec::<i32>::new())),
         )?;
         let required_schema = struct_schema(vec![Field::new("x", DataType::Int64, true)]);
-        let mut options = SparkParquetOptions::new(EvalMode::Legacy, "UTC", false);
+        let mut options = SparkParquetOptions::new(EvalMode::Legacy, "UTC");
         options.allow_type_promotion = false;
         let mut stream = scan_parquet(&batch, required_schema, options)?;
         while let Some(batch) = stream.next().await {
@@ -3557,7 +3556,7 @@ pub(crate) mod test {
             Arc::new(Int32Array::from(vec![1, 2, 3])),
         )?;
         let required_schema = struct_schema(vec![Field::new("x", DataType::Int64, true)]);
-        let mut options = SparkParquetOptions::new(EvalMode::Legacy, "UTC", false);
+        let mut options = SparkParquetOptions::new(EvalMode::Legacy, "UTC");
         options.allow_type_promotion = true;
         let mut stream = scan_parquet(&batch, required_schema, options)?;
         let result = stream.next().await.unwrap()?;
@@ -3650,7 +3649,7 @@ pub(crate) mod test {
                 Field::new("a", DataType::Int64, nullable),
                 Field::new("b", DataType::Int64, false),
             ]));
-            let mut options = SparkParquetOptions::new(EvalMode::Legacy, "UTC", false);
+            let mut options = SparkParquetOptions::new(EvalMode::Legacy, "UTC");
             options.case_sensitive = true;
             let adapter = SparkPhysicalExprAdapterFactory::new(options, None)
                 .create(logical, physical)
@@ -3684,7 +3683,7 @@ pub(crate) mod test {
             Arc::new(Field::new("dup", DataType::Int64, true)),
             Arc::new(Field::new("dup", DataType::Int64, true)),
         ];
-        let mut options = SparkParquetOptions::new(EvalMode::Legacy, "UTC", false);
+        let mut options = SparkParquetOptions::new(EvalMode::Legacy, "UTC");
         options.case_sensitive = true;
         let error = super::match_struct_fields(&fields, &fields[..1], &options)
             .expect_err("selected duplicate child must fail")
@@ -3719,7 +3718,7 @@ pub(crate) mod test {
                 default.rewrite(Arc::clone(&column)).is_err(),
                 "fixture must reach the default-adapter fallback"
             );
-            let mut options = SparkParquetOptions::new(EvalMode::Legacy, "UTC", false);
+            let mut options = SparkParquetOptions::new(EvalMode::Legacy, "UTC");
             options.case_sensitive = true;
             let adapter = SparkPhysicalExprAdapterFactory::new(options, None)
                 .create(Arc::clone(&logical), Arc::clone(&physical))
@@ -3785,7 +3784,7 @@ pub(crate) mod test {
             if mode == "missing" {
                 requested.push(Field::new("missing", DataType::Int64, true));
             }
-            let mut options = SparkParquetOptions::new(EvalMode::Legacy, "UTC", false);
+            let mut options = SparkParquetOptions::new(EvalMode::Legacy, "UTC");
             options.case_sensitive = true;
             let mut stream = scan_parquet(&batch, struct_schema(requested), options).unwrap();
             let error = stream
@@ -3887,7 +3886,7 @@ pub(crate) mod test {
                 reader.schema().field(0).data_type(),
                 required.field(0).data_type()
             );
-            let mut options = SparkParquetOptions::new(EvalMode::Legacy, "UTC", false);
+            let mut options = SparkParquetOptions::new(EvalMode::Legacy, "UTC");
             options.case_sensitive = true;
             let mut stream = scan_parquet(&batch, required, options).unwrap();
             let error = stream
@@ -3930,7 +3929,7 @@ pub(crate) mod test {
         // Read with case-insensitive mode, requesting column "b" which matches both "B" and "b"
         let required_schema = Arc::new(Schema::new(vec![Field::new("b", DataType::Int32, false)]));
 
-        let mut spark_parquet_options = SparkParquetOptions::new(EvalMode::Legacy, "UTC", false);
+        let mut spark_parquet_options = SparkParquetOptions::new(EvalMode::Legacy, "UTC");
         spark_parquet_options.case_sensitive = false;
 
         let expr_adapter_factory: Arc<dyn PhysicalExprAdapterFactory> = Arc::new(
@@ -3990,7 +3989,7 @@ pub(crate) mod test {
             None,
         )?));
         let defaults = HashMap::from([(Column::new("missing", 0), default)]);
-        let mut options = SparkParquetOptions::new(EvalMode::Legacy, "UTC", false);
+        let mut options = SparkParquetOptions::new(EvalMode::Legacy, "UTC");
         options.case_sensitive = false;
         let adapter = SparkPhysicalExprAdapterFactory::new(options, Some(defaults))
             .create(logical, physical)?;
@@ -4085,7 +4084,7 @@ pub(crate) mod test {
             Field::new("ω", DataType::Int32, true).with_metadata(id_meta("2")),
         ]));
 
-        let mut opts = SparkParquetOptions::new(EvalMode::Legacy, "UTC", false);
+        let mut opts = SparkParquetOptions::new(EvalMode::Legacy, "UTC");
         opts.case_sensitive = false;
         opts.use_field_id = true;
         let adapter = SparkPhysicalExprAdapterFactory::new(opts, None)
@@ -4116,7 +4115,7 @@ pub(crate) mod test {
         let physical = Arc::new(Schema::new(vec![
             Field::new("MÜNCHEN", storage, true).with_extension_type(VariantType)
         ]));
-        let mut options = SparkParquetOptions::new(EvalMode::Legacy, "UTC", false);
+        let mut options = SparkParquetOptions::new(EvalMode::Legacy, "UTC");
         options.case_sensitive = false;
         let adapter = SparkPhysicalExprAdapterFactory::new(options, None)
             .create(Arc::clone(&logical), Arc::clone(&physical))
@@ -4175,7 +4174,7 @@ pub(crate) mod test {
                     .is_some());
             }
             let adapter = SparkPhysicalExprAdapterFactory::new(
-                SparkParquetOptions::new(EvalMode::Legacy, "UTC", false),
+                SparkParquetOptions::new(EvalMode::Legacy, "UTC"),
                 None,
             )
             .create(logical, physical)
@@ -4211,7 +4210,7 @@ pub(crate) mod test {
                 Field::new("other", storage.clone(), true).with_metadata(id_meta("1")),
                 Field::new("__comet_unmatched_field_id_1", DataType::Binary, true),
             ]));
-            let mut options = SparkParquetOptions::new(EvalMode::Legacy, "UTC", false);
+            let mut options = SparkParquetOptions::new(EvalMode::Legacy, "UTC");
             options.case_sensitive = case_sensitive;
             options.use_field_id = true;
             let adapter = SparkPhysicalExprAdapterFactory::new(options, None)
@@ -4281,7 +4280,7 @@ pub(crate) mod test {
         ));
         let target_type = DataType::List(Arc::clone(&to_item_field));
 
-        let spark_parquet_options = SparkParquetOptions::new(EvalMode::Legacy, "UTC", false);
+        let spark_parquet_options = SparkParquetOptions::new(EvalMode::Legacy, "UTC");
         let comet_result = spark_parquet_convert(
             ColumnarValue::Array(Arc::clone(&list_array)),
             &target_type,
@@ -4392,7 +4391,7 @@ pub(crate) mod test {
     }
 
     fn default_options() -> SparkParquetOptions {
-        SparkParquetOptions::new(EvalMode::Legacy, "UTC", false)
+        SparkParquetOptions::new(EvalMode::Legacy, "UTC")
     }
 
     /// Dropping a struct field by exact name, including through nested struct-in-struct and
@@ -4754,7 +4753,7 @@ pub(crate) mod test {
         )) as Arc<dyn arrow::array::Array>;
         let batch = RecordBatch::try_new(file_schema, vec![col]).unwrap();
 
-        let mut opts = SparkParquetOptions::new(EvalMode::Legacy, "UTC", false);
+        let mut opts = SparkParquetOptions::new(EvalMode::Legacy, "UTC");
         opts.use_field_id = true;
 
         let err = match scan_parquet(&batch, required_schema, opts) {
