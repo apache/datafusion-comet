@@ -37,9 +37,10 @@ import org.apache.spark.sql.comet.execution.arrow.CometArrowStream
 import org.apache.spark.sql.comet.util.{Utils => CometUtils}
 import org.apache.spark.sql.errors.{QueryCompilationErrors, QueryExecutionErrors}
 import org.apache.spark.sql.execution.{SparkPlan, UnaryExecNode}
-import org.apache.spark.sql.execution.command.DataWritingCommandExec
-import org.apache.spark.sql.execution.datasources.{OutputWriterFactory, WriteFilesExec}
+import org.apache.spark.sql.execution.command.{CommandUtils, DataWritingCommandExec}
+import org.apache.spark.sql.execution.datasources.{InsertIntoHadoopFsRelationCommand, OutputWriterFactory, WriteFilesExec}
 import org.apache.spark.sql.execution.metric.{SQLMetric, SQLMetrics}
+import org.apache.spark.sql.util.SchemaUtils
 import org.apache.spark.sql.vectorized.ColumnarBatch
 import org.apache.spark.util.{SerializableConfiguration, Utils}
 
@@ -106,7 +107,21 @@ case class CometNativeWriteExec(
     sparkContext.emptyRDD[ColumnarBatch]
   }
 
+  /** The command this exec replaces, which holds the table this write updates, if any. */
+  private def command: InsertIntoHadoopFsRelationCommand = originalPlan.cmd match {
+    case cmd: InsertIntoHadoopFsRelationCommand => cmd
+    case other =>
+      throw new IllegalStateException(
+        s"${getClass.getSimpleName} replaced an unexpected write command: ${other.getClass}")
+  }
+
   private def executeWriteAndCommit(): Unit = {
+    val cmd = command
+    // Like InsertIntoHadoopFsRelationCommand.run, reject duplicate columns before anything else.
+    SchemaUtils.checkColumnNameDuplication(
+      cmd.outputColumnNames,
+      session.sessionState.conf.caseSensitiveAnalysis)
+
     if (!prepareOutputPathForMode()) {
       logInfo(s"Skipping insertion into $outputPath - already exists (SaveMode.$mode)")
       return
@@ -124,6 +139,23 @@ case class CometNativeWriteExec(
           s"${metrics("files_written").value} files, " +
           s"${metrics("bytes_written").value} bytes, ${metrics("rows_written").value} rows")
     })(catchBlock = committer.abortJob(job))
+    // Outside the block above: the job has committed, so a failure here must not abort it.
+    refreshAfterWrite(cmd)
+  }
+
+  /**
+   * Repeats what InsertIntoHadoopFsRelationCommand.run does once the write has committed, since
+   * this exec replaces that command. Partition metadata updates are left out because partitioned
+   * writes never reach this exec.
+   */
+  private def refreshAfterWrite(cmd: InsertIntoHadoopFsRelationCommand): Unit = {
+    val fs = cmd.outputPath.getFileSystem(serializableHadoopConf.value)
+    // Refresh the files the table's relation has listed.
+    cmd.fileIndex.foreach(_.refresh())
+    // Recache any cached plan that reads the output path.
+    session.sharedState.cacheManager.recacheByPath(session, cmd.outputPath, fs)
+    // Update or clear the table stats, depending on spark.sql.statistics.size.autoUpdate.
+    cmd.catalogTable.foreach(CommandUtils.updateTableStats(session, _))
   }
 
   private def runNativeWriteJob(

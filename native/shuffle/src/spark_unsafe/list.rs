@@ -27,10 +27,15 @@ use arrow::array::{
         ListBuilder, NullBuilder, StringBuilder, StructBuilder, Time64NanosecondBuilder,
         TimestampMicrosecondBuilder,
     },
-    MapBuilder,
+    MapBuilder, PrimitiveArray,
 };
-use arrow::datatypes::{DataType, TimeUnit};
+use arrow::buffer::{BooleanBuffer, Buffer, NullBuffer, ScalarBuffer};
+use arrow::datatypes::{
+    DataType, Date32Type, Float32Type, Float64Type, Int16Type, Int32Type, Int64Type, Int8Type,
+    Time64NanosecondType, TimeUnit, TimestampMicrosecondType,
+};
 use datafusion_comet_jni_bridge::errors::CometError;
+use std::sync::Arc;
 
 /// Element count from which a nullable array with no null elements is appended with one copy
 /// instead of element by element. Below it the loop is as fast: checking the null bitset and
@@ -39,54 +44,92 @@ use datafusion_comet_jni_bridge::errors::CometError;
 /// time with the copy, and arrays of 50 about a fifth.
 const MIN_BULK_APPEND_ELEMENTS: usize = 8;
 
+/// Element count from which an aligned nullable array that holds a null is appended with one copy
+/// of its values and a validity buffer built from its null bitset, instead of element by element.
+/// Building the two buffers takes four allocations, which cost as much as appending about 50
+/// elements one by one, so shorter arrays stay on the loop. The `list_with_one_null` group of the
+/// `array_element_append` benchmark times lengths on both sides of the cutoff, and its doc comment
+/// shows how to compare the two paths. On an M3 Max with the system allocator, arrays of 32
+/// elements took 1.4 times as long with the copy, and arrays of 64 took 69% of the time for 4-byte
+/// elements and 86% for 8-byte ones.
+const MIN_BULK_NULLABLE_APPEND_ELEMENTS: usize = 64;
+
 /// Generates bulk append methods for primitive types in SparkUnsafeArray.
 ///
 /// # Safety invariants for all generated methods:
 /// - `element_offset` points to contiguous element data of length `num_elements`
 /// - `null_bitset_ptr()` returns a pointer to `ceil(num_elements/64)` i64 words
 /// - These invariants are guaranteed by the SparkUnsafeArray layout from the JVM
+///
+/// A timestamp appender also takes `timezone`, which must be the builder's timezone, because
+/// `append_array` requires the array's data type to match the builder's. A mismatch panics in
+/// `append_array` for an aligned array of `MIN_BULK_NULLABLE_APPEND_ELEMENTS` or more elements that
+/// holds a null, and goes unnoticed for every other array.
 macro_rules! impl_append_to_builder {
-    ($method_name:ident, $builder_type:ty, $element_type:ty) => {
-        pub(crate) fn $method_name<const NULLABLE: bool>(&self, builder: &mut $builder_type) {
+    ($method_name:ident, $builder_type:ty, $element_type:ty, $arrow_type:ty
+        $(, $timezone:ident)?) => {
+        pub(crate) fn $method_name<const NULLABLE: bool>(
+            &self,
+            builder: &mut $builder_type,
+            $($timezone: &Option<Arc<str>>,)?
+        ) {
             let num_elements = self.num_elements;
             if num_elements == 0 {
                 return;
             }
+            debug_assert!(self.element_offset != 0, "element_offset is null");
+            let ptr = self.element_offset as *const $element_type;
+            // An array can start at an address that is not aligned for its elements (see
+            // `SparkUnsafeObject`), and only aligned elements can be read as a slice.
+            let aligned = (ptr as usize).is_multiple_of(std::mem::align_of::<$element_type>());
 
             // A nullable array without nulls takes the copy below too, once it is long enough.
             if NULLABLE && (num_elements < MIN_BULK_APPEND_ELEMENTS || self.has_null()) {
-                let mut ptr = self.element_offset as *const $element_type;
                 let null_words = self.null_bitset_ptr();
-                debug_assert!(!null_words.is_null(), "null_bitset_ptr is null");
-                debug_assert!(!ptr.is_null(), "element_offset pointer is null");
-                for idx in 0..num_elements {
-                    // SAFETY: null_words has ceil(num_elements/64) words, idx < num_elements
-                    let is_null = unsafe { Self::is_null_in_bitset(null_words, idx) };
-
-                    if is_null {
-                        builder.append_null();
-                    } else {
-                        // SAFETY: ptr is within element data bounds
-                        builder.append_value(unsafe { ptr.read_unaligned() });
-                    }
-                    // SAFETY: ptr stays within bounds, iterating num_elements times
-                    ptr = unsafe { ptr.add(1) };
-                }
-            } else {
-                // SAFETY: element_offset points to contiguous data of length num_elements
-                debug_assert!(self.element_offset != 0, "element_offset is null");
-                let ptr = self.element_offset as *const $element_type;
-                // Use bulk copy when data is properly aligned, fall back to
-                // per-element unaligned reads otherwise
-                if (ptr as usize).is_multiple_of(std::mem::align_of::<$element_type>()) {
-                    let slice = unsafe { std::slice::from_raw_parts(ptr, num_elements) };
-                    builder.append_slice(slice);
+                if aligned && num_elements >= MIN_BULK_NULLABLE_APPEND_ELEMENTS {
+                    // SAFETY: element_offset points to num_elements aligned elements.
+                    let values = unsafe { std::slice::from_raw_parts(ptr, num_elements) };
+                    let null_mask_len = num_elements.div_ceil(8);
+                    // SAFETY: the ceil(num_elements/64) words of the null bitset cover these
+                    // bytes. The words are little-endian, so byte i holds the bits of elements
+                    // 8i to 8i+7, least significant first, as in an Arrow bitmap.
+                    let null_mask = unsafe {
+                        std::slice::from_raw_parts(null_words as *const u8, null_mask_len)
+                    };
+                    // Spark sets the bit of a null element and Arrow the bit of a valid one. The
+                    // padding bits past the last element turn to ones, outside the buffer's length.
+                    let flipped: Vec<u8> = null_mask.iter().map(|byte| !byte).collect();
+                    let validity =
+                        NullBuffer::new(BooleanBuffer::new(Buffer::from(flipped), 0, num_elements));
+                    let arr = PrimitiveArray::<$arrow_type>::new(
+                        ScalarBuffer::from(Buffer::from_slice_ref(values)),
+                        Some(validity),
+                    );
+                    $(let arr = arr.with_timezone_opt($timezone.clone());)?
+                    builder.append_array(&arr);
                 } else {
                     let mut ptr = ptr;
-                    for _ in 0..num_elements {
-                        builder.append_value(unsafe { ptr.read_unaligned() });
+                    for idx in 0..num_elements {
+                        // SAFETY: null_words has ceil(num_elements/64) words, idx < num_elements
+                        if unsafe { Self::is_null_in_bitset(null_words, idx) } {
+                            builder.append_null();
+                        } else {
+                            // SAFETY: ptr is within element data bounds
+                            builder.append_value(unsafe { ptr.read_unaligned() });
+                        }
+                        // SAFETY: ptr stays within bounds, iterating num_elements times
                         ptr = unsafe { ptr.add(1) };
                     }
+                }
+            } else if aligned {
+                // SAFETY: element_offset points to num_elements aligned elements.
+                let slice = unsafe { std::slice::from_raw_parts(ptr, num_elements) };
+                builder.append_slice(slice);
+            } else {
+                let mut ptr = ptr;
+                for _ in 0..num_elements {
+                    builder.append_value(unsafe { ptr.read_unaligned() });
+                    ptr = unsafe { ptr.add(1) };
                 }
             }
         }
@@ -180,7 +223,9 @@ impl SparkUnsafeArray {
     fn has_null(&self) -> bool {
         let null_words = self.null_bitset_ptr();
         // SAFETY: the null bitset holds ceil(num_elements/64) words. Spark zeroes the bits past
-        // the last element, and a stray one would only send the array down the per-element path.
+        // the last element. A stray one would send the array to the per-element loop, or to the
+        // validity buffer if it is aligned and long enough, and both ignore the bits past the
+        // last element.
         (0..self.num_elements.div_ceil(64))
             .any(|word| unsafe { null_words.add(word).read_unaligned() } != 0)
     }
@@ -196,19 +241,26 @@ impl SparkUnsafeArray {
         (null_words.add(word_idx).read_unaligned() & (1i64 << bit_idx)) != 0
     }
 
-    impl_append_to_builder!(append_ints_to_builder, Int32Builder, i32);
-    impl_append_to_builder!(append_longs_to_builder, Int64Builder, i64);
-    impl_append_to_builder!(append_time64s_to_builder, Time64NanosecondBuilder, i64);
-    impl_append_to_builder!(append_shorts_to_builder, Int16Builder, i16);
-    impl_append_to_builder!(append_bytes_to_builder, Int8Builder, i8);
-    impl_append_to_builder!(append_floats_to_builder, Float32Builder, f32);
-    impl_append_to_builder!(append_doubles_to_builder, Float64Builder, f64);
+    impl_append_to_builder!(append_ints_to_builder, Int32Builder, i32, Int32Type);
+    impl_append_to_builder!(append_longs_to_builder, Int64Builder, i64, Int64Type);
+    impl_append_to_builder!(
+        append_time64s_to_builder,
+        Time64NanosecondBuilder,
+        i64,
+        Time64NanosecondType
+    );
+    impl_append_to_builder!(append_shorts_to_builder, Int16Builder, i16, Int16Type);
+    impl_append_to_builder!(append_bytes_to_builder, Int8Builder, i8, Int8Type);
+    impl_append_to_builder!(append_floats_to_builder, Float32Builder, f32, Float32Type);
+    impl_append_to_builder!(append_doubles_to_builder, Float64Builder, f64, Float64Type);
     impl_append_to_builder!(
         append_timestamps_to_builder,
         TimestampMicrosecondBuilder,
-        i64
+        i64,
+        TimestampMicrosecondType,
+        timezone
     );
-    impl_append_to_builder!(append_dates_to_builder, Date32Builder, i32);
+    impl_append_to_builder!(append_dates_to_builder, Date32Builder, i32, Date32Type);
 
     /// Bulk append boolean values to builder.
     /// Booleans are stored as 1 byte each in SparkUnsafeArray, requiring special handling.
@@ -220,37 +272,28 @@ impl SparkUnsafeArray {
         if num_elements == 0 {
             return;
         }
-
-        let mut ptr = self.element_offset as *const u8;
         debug_assert!(
-            !ptr.is_null(),
+            self.element_offset != 0,
             "append_booleans: element_offset pointer is null"
         );
+        // SAFETY: element_offset points to num_elements one-byte booleans, which need no
+        // alignment.
+        let values =
+            unsafe { std::slice::from_raw_parts(self.element_offset as *const u8, num_elements) };
 
         if NULLABLE {
             let null_words = self.null_bitset_ptr();
-            debug_assert!(
-                !null_words.is_null(),
-                "append_booleans: null_bitset_ptr is null"
-            );
-            for idx in 0..num_elements {
+            for (idx, &value) in values.iter().enumerate() {
                 // SAFETY: null_words has ceil(num_elements/64) words, idx < num_elements
-                let is_null = unsafe { Self::is_null_in_bitset(null_words, idx) };
-
-                if is_null {
+                if unsafe { Self::is_null_in_bitset(null_words, idx) } {
                     builder.append_null();
                 } else {
-                    // SAFETY: ptr is within element data bounds
-                    builder.append_value(unsafe { *ptr != 0 });
+                    builder.append_value(value != 0);
                 }
-                // SAFETY: ptr stays within bounds, iterating num_elements times
-                ptr = unsafe { ptr.add(1) };
             }
         } else {
-            for _ in 0..num_elements {
-                // SAFETY: ptr is within element data bounds
-                builder.append_value(unsafe { *ptr != 0 });
-                ptr = unsafe { ptr.add(1) };
+            for &value in values {
+                builder.append_value(value != 0);
             }
         }
     }
@@ -307,9 +350,9 @@ pub fn append_to_builder<const NULLABLE: bool>(
             let builder = downcast_builder_ref!(Float64Builder, builder);
             array.append_doubles_to_builder::<NULLABLE>(builder);
         }
-        DataType::Timestamp(TimeUnit::Microsecond, _) => {
+        DataType::Timestamp(TimeUnit::Microsecond, tz) => {
             let builder = downcast_builder_ref!(TimestampMicrosecondBuilder, builder);
-            array.append_timestamps_to_builder::<NULLABLE>(builder);
+            array.append_timestamps_to_builder::<NULLABLE>(builder, tz);
         }
         DataType::Date32 => {
             let builder = downcast_builder_ref!(Date32Builder, builder);
@@ -415,6 +458,7 @@ pub fn append_list_element(
 mod test {
     use super::*;
     use arrow::array::builder::PrimitiveBuilder;
+    use arrow::array::Array;
     use arrow::datatypes::{
         ArrowPrimitiveType, Date32Type, Int16Type, Int32Type, Int64Type, Int8Type,
         TimestampMicrosecondType,
@@ -455,7 +499,7 @@ mod test {
         let base = unsafe { (words.as_mut_ptr() as *mut u8).add(shift) };
         unsafe { std::ptr::copy_nonoverlapping(bytes.as_ptr(), base, bytes.len()) };
         let array = SparkUnsafeArray::new(base as i64);
-        let mut builder = PrimitiveBuilder::<T>::new();
+        let mut builder = PrimitiveBuilder::<T>::new().with_data_type(data_type.clone());
         append_to_builder::<true>(&data_type, &mut builder, &array).unwrap();
         builder.finish().iter().map(|v| v.map(Into::into)).collect()
     }
@@ -465,6 +509,11 @@ mod test {
         let long: Vec<Option<i64>> = (0..70).map(Some).collect();
         let mut null_in_second_bitset_word = long.clone();
         null_in_second_bitset_word[66] = None;
+        let nulls_at_both_ends = |len: i64| -> Vec<Option<i64>> {
+            (0..len)
+                .map(|v| (v != 0 && v != len - 1).then_some(-v))
+                .collect()
+        };
         let cases = [
             vec![],
             // Shorter than MIN_BULK_APPEND_ELEMENTS: element by element.
@@ -472,8 +521,22 @@ mod test {
             // Holds a null: element by element.
             vec![Some(1), None, Some(3), Some(-4), Some(5)],
             // No nulls and long enough: one copy.
-            vec![Some(-1), Some(2), Some(-3), Some(4)],
+            vec![
+                Some(-1),
+                Some(2),
+                Some(-3),
+                Some(4),
+                Some(-5),
+                Some(6),
+                Some(-7),
+                Some(8),
+            ],
             long,
+            // Holds a null, one element short of MIN_BULK_NULLABLE_APPEND_ELEMENTS: element by
+            // element.
+            nulls_at_both_ends(63),
+            // Holds a null and long enough: one copy and a validity buffer.
+            nulls_at_both_ends(64),
             // The null is only in the second bitset word, which the copy check must read.
             null_in_second_bitset_word,
         ];
@@ -508,7 +571,116 @@ mod test {
                     ),
                     *values
                 );
+                // The builder carries the column's timezone, which `append_array` checks.
+                assert_eq!(
+                    round_trip::<TimestampMicrosecondType>(
+                        DataType::Timestamp(TimeUnit::Microsecond, Some("America/Denver".into())),
+                        values,
+                        shift
+                    ),
+                    *values
+                );
             }
         }
+    }
+
+    fn make_i32_array(num_elements: usize, null_indices: &[usize]) -> Vec<u8> {
+        let null_bitset_words = num_elements.div_ceil(64);
+        let header_size = 8 + null_bitset_words * 8;
+        let mut buffer = vec![0u8; header_size + num_elements * 4];
+
+        buffer[0..8].copy_from_slice(&(num_elements as i64).to_le_bytes());
+
+        for &i in null_indices {
+            let word_offset = 8 + (i / 64) * 8;
+            let word = i64::from_le_bytes(buffer[word_offset..word_offset + 8].try_into().unwrap());
+            buffer[word_offset..word_offset + 8]
+                .copy_from_slice(&(word | (1i64 << (i % 64))).to_le_bytes());
+        }
+
+        for i in 0..num_elements {
+            let offset = header_size + i * 4;
+            buffer[offset..offset + 4].copy_from_slice(&(i as i32).to_le_bytes());
+        }
+        buffer
+    }
+
+    /// Copies `bytes` to an 8-byte boundary, as inside an UnsafeRow.
+    fn aligned_copy(bytes: &[u8]) -> Vec<u64> {
+        let mut words = vec![0u64; bytes.len().div_ceil(8)];
+        // SAFETY: `words` covers `bytes.len()` bytes.
+        unsafe {
+            std::ptr::copy_nonoverlapping(
+                bytes.as_ptr(),
+                words.as_mut_ptr() as *mut u8,
+                bytes.len(),
+            )
+        };
+        words
+    }
+
+    fn append_i32(buffer: &[u8]) -> arrow::array::Int32Array {
+        let words = aligned_copy(buffer);
+        let array = SparkUnsafeArray::new(words.as_ptr() as i64);
+        let mut builder = Int32Builder::new();
+        append_to_builder::<true>(&DataType::Int32, &mut builder, &array).unwrap();
+        builder.finish()
+    }
+
+    #[test]
+    fn test_nullable_null_in_last_byte() {
+        // None of the lengths is a multiple of 8, so the null sits in a partial last byte. The
+        // first three take the per-element loop, the rest the validity buffer.
+        for num_elements in [7, 9, 17, 65, 71, 73, 81] {
+            let last = num_elements - 1;
+            let arr = append_i32(&make_i32_array(num_elements, &[last]));
+            assert_eq!(arr.len(), num_elements);
+            assert_eq!(arr.null_count(), 1);
+            assert!(arr.is_null(last));
+            for i in 0..last {
+                assert!(arr.is_valid(i));
+                assert_eq!(arr.value(i), i as i32);
+            }
+        }
+    }
+
+    #[test]
+    fn test_all_null() {
+        for num_elements in [9, 73] {
+            let indices: Vec<usize> = (0..num_elements).collect();
+            let arr = append_i32(&make_i32_array(num_elements, &indices));
+            assert_eq!(arr.len(), num_elements);
+            assert_eq!(arr.null_count(), num_elements);
+        }
+    }
+
+    #[test]
+    fn test_all_valid() {
+        for num_elements in [9, 73] {
+            let arr = append_i32(&make_i32_array(num_elements, &[]));
+            assert_eq!(arr.len(), num_elements);
+            assert_eq!(arr.null_count(), 0);
+        }
+    }
+
+    #[test]
+    fn nullable_arrays_append_into_one_builder() {
+        // The list path appends every row's array to one values builder, so the validity buffer
+        // of a long array is appended at an offset that is not a whole byte.
+        let arrays: [Vec<Option<i64>>; 4] = [
+            vec![Some(1), None, Some(3)],
+            (0..70).map(|v| (v % 9 != 4).then_some(v)).collect(),
+            vec![None; 5],
+            (0..65).map(|v| (v != 64).then_some(-v)).collect(),
+        ];
+        let mut builder = Int32Builder::new();
+        for values in &arrays {
+            let words = aligned_copy(&unsafe_array_bytes(values, 4));
+            let array = SparkUnsafeArray::new(words.as_ptr() as i64);
+            append_to_builder::<true>(&DataType::Int32, &mut builder, &array).unwrap();
+        }
+        let appended: Vec<Option<i64>> =
+            builder.finish().iter().map(|v| v.map(i64::from)).collect();
+        assert_eq!(appended, arrays.concat());
     }
 }
