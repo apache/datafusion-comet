@@ -86,12 +86,6 @@ Native shuffle (`CometExchange`) is selected when all of the following condition
      Decimal leaves with precision greater than 18 also disqualify a hash key when there is more
      than one output partition: native decimal hashing differs from Spark's. A one-partition hash
      exchange stays native because the writer serializes it as `SinglePartition` without hashing.
-   - A hash key that is or contains a decimal wider than 18 digits stays on JVM shuffle when the
-     shuffle's stage starts at a typed `Dataset` conversion
-     (`spark.comet.convert.typedDataset.enabled`) and the shuffle has more than one partition.
-     Native shuffle hashes such decimals differently from Spark
-     ([#5994](https://github.com/apache/datafusion-comet/issues/5994)). Without the conversion
-     this shuffle would have used JVM shuffle, and a join partner may still use it.
 
 ## Architecture
 
