@@ -19,6 +19,7 @@
 
 package org.apache.spark.sql.comet
 
+import scala.collection.mutable.ListBuffer
 import scala.reflect.ClassTag
 
 import org.apache.arrow.memory.BufferAllocator
@@ -32,6 +33,7 @@ import org.apache.spark.sql.comet.execution.arrow.{CometArrowStream, CometNative
 import org.apache.spark.sql.comet.util.Utils
 import org.apache.spark.sql.execution.{RowToColumnarTransition, SparkPlan}
 import org.apache.spark.sql.execution.metric.{SQLMetric, SQLMetrics}
+import org.apache.spark.sql.types.{CalendarIntervalType, DataType}
 import org.apache.spark.sql.vectorized.ColumnarBatch
 
 import org.apache.comet.{CometConf, DataTypeSupport}
@@ -134,5 +136,22 @@ object CometSparkToColumnarExec extends CometSink[SparkPlan] with DataTypeSuppor
       nativeOp: OperatorOuterClass.Operator,
       op: SparkPlan): CometNativeExec = {
     CometScanWrapper(nativeOp, CometSparkToColumnarExec(op))
+  }
+
+  /**
+   * Declines calendar intervals at any depth. Arrow holds the time part of an interval in
+   * nanoseconds, so `IntervalMonthDayNanoWriter` overflows on one of more than about 292 years,
+   * which Spark accepts (#5279).
+   */
+  override def isTypeSupported(
+      dt: DataType,
+      name: String,
+      fallbackReasons: ListBuffer[String]): Boolean = dt match {
+    case CalendarIntervalType =>
+      fallbackReasons += s"Unsupported $name of type $dt: Arrow holds the time part of an " +
+        "interval in nanoseconds, which overflows past about 292 years " +
+        "(https://github.com/apache/datafusion-comet/issues/5279)"
+      false
+    case _ => super.isTypeSupported(dt, name, fallbackReasons)
   }
 }

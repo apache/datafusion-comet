@@ -73,13 +73,17 @@ operator in `spark.comet.sparkToColumnar.supportedOperatorList` by its Spark cla
 
 ### Spark-to-Comet conversion types
 
-Spark-to-Comet conversion supports booleans, integers, floats, decimals, strings, binary, dates,
-timestamps and calendar intervals, and arrays, maps and structs of them, nested to any depth.
-Arrays and maps may be null; array elements and map values may also be null. Map keys must be
-non-null. This applies to Spark row and columnar inputs when conversion is enabled for the source.
-A column with any other type is not converted, and neither is one with a string that has a
-non-binary collation, or a struct that has duplicate field names or no fields, anywhere inside it.
-The operators above such a column stay on Spark. Source defaults are unchanged.
+Spark-to-Comet conversion supports booleans, integers, floats, decimals, strings, binary, dates
+and timestamps, and arrays, maps and structs of them, nested to any depth. Arrays and maps may be
+null; array elements and map values may also be null. Map keys must be non-null. This applies to
+Spark row and columnar inputs when conversion is enabled for the source. A column with any other
+type is not converted, and neither is one with a string that has a non-binary collation, or a
+struct that has duplicate field names or no fields, anywhere inside it. The operators above such a
+column stay on Spark. Source defaults are unchanged.
+
+Calendar intervals are not converted, at the top level or inside an array, map or struct. Arrow
+holds the time part of an interval in nanoseconds, so it cannot hold one of more than about 292
+years, which Spark can ([#5279](https://github.com/apache/datafusion-comet/issues/5279)).
 
 This includes row-backed `ExistingRDD` inputs when `spark.comet.convert.rdd.enabled=true`. Spark
 still produces the RDD rows; conversion lets eligible downstream operators execute in Comet.

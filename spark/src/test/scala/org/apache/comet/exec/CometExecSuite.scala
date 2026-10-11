@@ -50,7 +50,7 @@ import org.apache.spark.sql.functions._
 import org.apache.spark.sql.internal.SQLConf
 import org.apache.spark.sql.internal.SQLConf.SESSION_LOCAL_TIMEZONE
 import org.apache.spark.sql.types._
-import org.apache.spark.unsafe.types.UTF8String
+import org.apache.spark.unsafe.types.{CalendarInterval, UTF8String}
 
 import org.apache.comet.{CometConf, CometExecIterator, CometNativeException, ExtendedExplainInfo}
 import org.apache.comet.CometSparkSessionExtensions.{isSpark35Plus, isSpark40Plus, isSpark41Plus, isSpark42Plus}
@@ -4195,7 +4195,7 @@ class CometExecSuite extends CometTestBase {
     })
   }
 
-  test("SparkToColumnar admits arrays and maps of every type the shared rule supports") {
+  test("SparkToColumnar admits arrays and maps of every type it converts") {
     val struct = StructType(Seq(StructField("i", IntegerType), StructField("s", StringType)))
     val admitted = Seq(
       ArrayType(StringType),
@@ -4228,8 +4228,9 @@ class CometExecSuite extends CometTestBase {
         }
     }
 
-    // The shared rule looks inside a collection and declines these for what it finds there. A
-    // decline of the whole collection would record no reason, which is how the two differ.
+    // The shared rule looks inside a collection and declines these for what it finds there, and
+    // so does the conversion for a calendar interval. A decline of the whole collection would
+    // record no reason, which is how the two differ.
     val duplicate = StructType(Seq(StructField("a", LongType), StructField("a", LongType)))
     val declined = Seq(
       ArrayType(duplicate),
@@ -4238,7 +4239,9 @@ class CometExecSuite extends CometTestBase {
       ArrayType(NullType),
       MapType(IntegerType, ArrayType(NullType)),
       ArrayType(DayTimeIntervalType()),
-      MapType(StringType, YearMonthIntervalType())) ++
+      MapType(StringType, YearMonthIntervalType()),
+      ArrayType(CalendarIntervalType),
+      MapType(StringType, CalendarIntervalType)) ++
       (if (isSpark40Plus) {
          Seq(
            "ARRAY<STRING COLLATE UTF8_LCASE>",
@@ -4256,6 +4259,13 @@ class CometExecSuite extends CometTestBase {
         assert(reasons.nonEmpty, s"$dataType was declined without a reason")
       }
     }
+
+    // The shared rule admits a calendar interval, but Arrow holds the time part of one in
+    // nanoseconds, so the conversion declines it at the top level too (#5279).
+    val reasons = ListBuffer.empty[String]
+    val interval = StructType(Seq(StructField("i", CalendarIntervalType)))
+    assert(!CometSparkToColumnarExec.isSchemaSupported(interval, reasons))
+    assert(reasons.exists(_.contains("issues/5279")), reasons)
   }
 
   // A column of each array and map shape the conversion admits, as its type, an expression over
@@ -4379,6 +4389,69 @@ class CometExecSuite extends CometTestBase {
           }
         }
       }
+    }
+  }
+
+  test("SparkToColumnar converts arrays and maps whose elements and values are not null") {
+    // A typed Seq[Int] or Map[Int, Int] field declares its elements and values not null, and so
+    // does an RDD with that schema. CometLocalTableScanExec widens such children to nullable,
+    // because native kernels failed on them (#4789). This conversion keeps them as they are.
+    val data = (0 until 60).map { i =>
+      val n = i % 4
+      (
+        i.toLong,
+        if (i % 7 == 0) null else Seq.tabulate(n)(j => i * 10 + j),
+        if (i % 7 == 1) null else Seq.tabulate(n)(j => j -> (i + j)).toMap)
+    }
+    val schema = new StructType()
+      .add("id", LongType, nullable = false)
+      .add("xs", ArrayType(IntegerType, containsNull = false))
+      .add("m", MapType(IntegerType, IntegerType, valueContainsNull = false))
+    val rows = data.map(Row.fromTuple)
+    val sources: Seq[(String, () => DataFrame)] = Seq(
+      "typed Dataset" -> (() =>
+        spark.sparkContext.parallelize(data, 2).toDS().toDF(schema.fieldNames.toSeq: _*)),
+      "RDD" -> (() => spark.createDataFrame(spark.sparkContext.parallelize(rows, 2), schema)))
+    val expressions = Seq("id", "size(xs) AS n", "slice(xs, 2, 2) AS s", "map_entries(m) AS e") ++
+      (if (isSpark35Plus) Seq("array_insert(xs, 1, 0) AS i", "array_prepend(xs, -1) AS p")
+       else Seq.empty)
+    withSQLConf(
+      SQLConf.ADAPTIVE_EXECUTION_ENABLED.key -> "false",
+      CometConf.COMET_SHUFFLE_MODE.key -> "native",
+      CometConf.COMET_CONVERT_FROM_RDD_ENABLED.key -> "true",
+      CometConf.COMET_CONVERT_FROM_TYPED_DATASET_ENABLED.key -> "true") {
+      sources.foreach { case (name, source) =>
+        assert(source().schema == schema, name)
+        val query = source().filter("id > 0").selectExpr(expressions: _*)
+        val (_, plan) = checkSparkAnswerAndOperator(
+          query,
+          includeClasses = Seq(classOf[CometSparkToColumnarExec], classOf[CometProjectExec]))
+        assert(collect(plan) { case c: CometSparkToColumnarExec => c }.size == 1, s"$name: $plan")
+        val (_, shuffled) = checkSparkAnswerAndOperator(
+          query.repartition(2, col("id")),
+          includeClasses = Seq(classOf[CometShuffleExchangeExec]))
+        val exchanges = collect(shuffled) { case s: CometShuffleExchangeExec => s }
+        assert(exchanges.nonEmpty && exchanges.forall(_.shuffleType == CometNativeShuffle), name)
+      }
+    }
+  }
+
+  test("SparkToColumnar leaves calendar intervals to Spark") {
+    // Arrow holds the time part of an interval in nanoseconds, so converting this one, of about
+    // 29,000 years, would fail the task where Spark returns it (#5279).
+    val interval = new CalendarInterval(1, 2, Long.MaxValue / 10)
+    Seq(
+      CalendarIntervalType -> interval,
+      ArrayType(CalendarIntervalType) -> Seq(interval, null),
+      MapType(StringType, CalendarIntervalType) -> Map("k" -> interval)).foreach {
+      case (dataType, value) =>
+        val schema = new StructType().add("id", IntegerType).add("c", dataType)
+        val rows = Seq(Row(1, value), Row(2, null))
+        withSQLConf(CometConf.COMET_CONVERT_FROM_RDD_ENABLED.key -> "true") {
+          val df = spark.createDataFrame(spark.sparkContext.parallelize(rows, 1), schema)
+          val (_, plan) = checkSparkAnswer(df.filter("id > 0"))
+          assert(collect(plan) { case c: CometSparkToColumnarExec => c }.isEmpty, plan)
+        }
     }
   }
 
