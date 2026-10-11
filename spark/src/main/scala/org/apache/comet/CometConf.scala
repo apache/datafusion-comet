@@ -325,7 +325,8 @@ object CometConf extends ShimCometConf {
       .doc(
         "Whether to enable native ExistenceJoin, produced when EXISTS / NOT EXISTS / IN is " +
           "combined with another predicate via OR. Sort-merge joins, residual (non-equi) join " +
-          "conditions, computed (non-column) join keys, and NOT IN fall back to Spark.")
+          "conditions, computed (non-column) join keys, and NOT IN combined with OR fall back " +
+          "to Spark.")
       .booleanConf
       .createWithDefault(true)
   val COMET_EXEC_AGGREGATE_ENABLED: ConfigEntry[Boolean] =

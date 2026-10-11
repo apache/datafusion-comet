@@ -92,6 +92,12 @@ rows by the grouping keys only, and Spark and Comet can leave rows with equal ke
 orders, so a group with more than one candidate value can return a different value than Spark.
 Both results are valid under Spark's semantics for these functions.
 
+## Hash Join
+
+When Spark reports a hash join's output as ordered by its streamed side, Comet keeps that order.
+When DataFusion does not keep it, for example when it comes from a cached table or the join is a
+`NOT IN`, Comet sorts the native join output to restore it.
+
 ## Window Functions
 
 Comet runs `WindowExec` natively and it is enabled by default (`spark.comet.exec.window.enabled`). A broad set of

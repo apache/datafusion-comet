@@ -1233,6 +1233,22 @@ impl PhysicalPlanner {
         }
     }
 
+    /// Returns a sort of `plan` by `ordering`, or `None` when `ordering` is empty or the plan's
+    /// equivalence properties already satisfy it. Operators whose Spark counterpart reports an
+    /// output ordering use this to sort their output when the native plan does not keep it.
+    fn sort_unless_ordered(
+        plan: Arc<dyn ExecutionPlan>,
+        ordering: Vec<PhysicalSortExpr>,
+    ) -> Result<Option<Arc<dyn ExecutionPlan>>, ExecutionError> {
+        let Some(lex_ordering) = LexOrdering::new(ordering.clone()) else {
+            return Ok(None);
+        };
+        if plan.equivalence_properties().ordering_satisfy(ordering)? {
+            return Ok(None);
+        }
+        Ok(Some(Arc::new(SortExec::new(lex_ordering, plan))))
+    }
+
     #[allow(clippy::too_many_arguments)]
     pub fn create_binary_expr(
         &self,
@@ -1699,14 +1715,8 @@ impl PhysicalPlanner {
                             )
                         })
                         .collect();
-                    if !aggregate
-                        .equivalence_properties()
-                        .ordering_satisfy(ordering.clone())?
+                    if let Some(sort) = Self::sort_unless_ordered(Arc::clone(&aggregate), ordering)?
                     {
-                        let sort: Arc<dyn ExecutionPlan> = Arc::new(SortExec::new(
-                            LexOrdering::new(ordering).unwrap(),
-                            Arc::clone(&aggregate),
-                        ));
                         return Ok((
                             scans,
                             shuffle_scans,
@@ -2659,21 +2669,16 @@ impl PhysicalPlanner {
                 // Exception: null-aware anti-join requires LeftAnti + build-right semantics
                 // (which matches DataFusion's default), and swap_inputs would turn LeftAnti
                 // into RightAnti, which DataFusion rejects with null_aware=true.
-                if join.build_side == BuildSide::BuildLeft as i32 || join.null_aware_anti_join {
+                let (join_root, mut additional_native_plans) = if join.build_side
+                    == BuildSide::BuildLeft as i32
+                    || join.null_aware_anti_join
+                {
                     let hash_join = Self::apply_join_dynamic_filter(
                         hash_join,
                         join.dynamic_filter_enabled && !join.null_aware_anti_join,
                         self.session_ctx.copied_config().options(),
                     )?;
-                    Ok((
-                        scans,
-                        shuffle_scans,
-                        Arc::new(SparkPlan::new(
-                            spark_plan.plan_id,
-                            hash_join,
-                            vec![join_params.left, join_params.right],
-                        )),
-                    ))
+                    (hash_join, vec![])
                 } else {
                     let swapped_hash_join =
                         hash_join.as_ref().swap_inputs(PartitionMode::Partitioned)?;
@@ -2688,18 +2693,38 @@ impl PhysicalPlanner {
                         // a projection was added to the hash join
                         additional_native_plans.push(Arc::clone(swapped_hash_join.children()[0]));
                     }
+                    (swapped_hash_join, additional_native_plans)
+                };
 
-                    Ok((
-                        scans,
-                        shuffle_scans,
-                        Arc::new(SparkPlan::new_with_additional(
-                            spark_plan.plan_id,
-                            swapped_hash_join,
-                            vec![join_params.left, join_params.right],
-                            additional_native_plans,
-                        )),
-                    ))
-                }
+                // Spark reports the streamed side's ordering and may have removed a sort above
+                // the join on that basis. DataFusion keeps unmatched probe rows in probe order
+                // only when it sees the probe input sorted, and does not keep a null-aware anti
+                // join's build order, so sort the output otherwise.
+                let join_schema = join_root.schema();
+                let output_ordering = join
+                    .output_ordering
+                    .iter()
+                    .map(|expr| self.create_sort_expr(expr, Arc::clone(&join_schema)))
+                    .collect::<Result<Vec<_>, _>>()?;
+                let native_plan =
+                    match Self::sort_unless_ordered(Arc::clone(&join_root), output_ordering)? {
+                        Some(sort) => {
+                            additional_native_plans.push(join_root);
+                            sort
+                        }
+                        None => join_root,
+                    };
+
+                Ok((
+                    scans,
+                    shuffle_scans,
+                    Arc::new(SparkPlan::new_with_additional(
+                        spark_plan.plan_id,
+                        native_plan,
+                        vec![join_params.left, join_params.right],
+                        additional_native_plans,
+                    )),
+                ))
             }
             OpStruct::Window(wnd) => {
                 let (scans, shuffle_scans, child) =
@@ -6004,6 +6029,7 @@ mod tests {
                 build_side: 0,
                 null_aware_anti_join: false,
                 dynamic_filter_enabled: false,
+                output_ordering: vec![],
             })),
         };
 
@@ -6296,6 +6322,392 @@ mod tests {
         let planner = PhysicalPlanner::default();
         let (_, _, planned) = planner.create_plan(&op, &mut vec![], 1).unwrap();
         assert_eq!("AggregateExec", planned.native_plan.name());
+    }
+
+    fn typed_bound_reference(index: i32, datatype: &spark_expression::DataType) -> Expr {
+        Expr {
+            expr_struct: Some(Bound(spark_expression::BoundReference {
+                index,
+                datatype: Some(datatype.clone()),
+            })),
+            ..Default::default()
+        }
+    }
+
+    fn ascending_nulls_first(child: Expr) -> Expr {
+        Expr {
+            expr_struct: Some(SortOrder(Box::new(spark_expression::SortOrder {
+                child: Some(Box::new(child)),
+                direction: spark_expression::SortDirection::Ascending as i32,
+                null_ordering: spark_expression::NullOrdering::NullsFirst as i32,
+            }))),
+            ..Default::default()
+        }
+    }
+
+    fn two_column_scan(datatype: &spark_expression::DataType) -> Operator {
+        Operator {
+            op_struct: Some(OpStruct::Scan(spark_operator::Scan {
+                fields: vec![datatype.clone(); 2],
+                source: String::new(),
+            })),
+            ..Default::default()
+        }
+    }
+
+    /// A hash join on the first column of each side that reports `output_ordering`.
+    fn hash_join_on_first_columns(
+        join_type: spark_operator::JoinType,
+        build_side: spark_operator::BuildSide,
+        children: [Operator; 2],
+        key_type: &spark_expression::DataType,
+        output_ordering: Vec<Expr>,
+    ) -> Operator {
+        Operator {
+            plan_id: 1,
+            children: children.into(),
+            op_struct: Some(OpStruct::HashJoin(spark_operator::HashJoin {
+                left_join_keys: vec![typed_bound_reference(0, key_type)],
+                right_join_keys: vec![typed_bound_reference(0, key_type)],
+                join_type: join_type as i32,
+                build_side: build_side as i32,
+                output_ordering,
+                ..Default::default()
+            })),
+            ..Default::default()
+        }
+    }
+
+    /// Executes a planned join with one Int32 (key, value) batch in place of each child scan.
+    async fn execute_join(
+        planned: &crate::execution::spark_plan::SparkPlan,
+        task_ctx: Arc<datafusion::execution::TaskContext>,
+        sides: [(Vec<i32>, Vec<i32>); 2],
+    ) -> RecordBatch {
+        execute_join_batches(planned, task_ctx, sides.map(|side| vec![side])).await
+    }
+
+    /// Executes a planned join with Int32 (key, value) batches in place of each child scan.
+    async fn execute_join_batches(
+        planned: &crate::execution::spark_plan::SparkPlan,
+        task_ctx: Arc<datafusion::execution::TaskContext>,
+        sides: [Vec<(Vec<i32>, Vec<i32>)>; 2],
+    ) -> RecordBatch {
+        use datafusion::common::tree_node::{Transformed, TreeNode};
+
+        let replacements: Vec<(Arc<dyn ExecutionPlan>, Arc<dyn ExecutionPlan>)> = planned
+            .children
+            .iter()
+            .zip(sides)
+            .map(|(child, batches)| {
+                let batches: Vec<RecordBatch> = batches
+                    .into_iter()
+                    .map(|(keys, values)| {
+                        RecordBatch::try_new(
+                            child.schema(),
+                            vec![
+                                Arc::new(Int32Array::from(keys)),
+                                Arc::new(Int32Array::from(values)),
+                            ],
+                        )
+                        .unwrap()
+                    })
+                    .collect();
+                let input: Arc<dyn ExecutionPlan> =
+                    MemorySourceConfig::try_new_exec(&[batches], child.schema(), None).unwrap();
+                (Arc::clone(&child.native_plan), input)
+            })
+            .collect();
+        let native_plan = Arc::clone(&planned.native_plan)
+            .transform_up(|node| {
+                Ok(
+                    match replacements
+                        .iter()
+                        .find(|(scan, _)| Arc::ptr_eq(scan, &node))
+                    {
+                        Some((_, input)) => Transformed::yes(Arc::clone(input)),
+                        None => Transformed::no(node),
+                    },
+                )
+            })
+            .unwrap()
+            .data;
+        let results = collect(native_plan.execute(0, task_ctx).unwrap())
+            .await
+            .unwrap();
+        arrow::compute::concat_batches(&planned.native_plan.schema(), &results).unwrap()
+    }
+
+    fn additional_plan_names(planned: &crate::execution::spark_plan::SparkPlan) -> Vec<&str> {
+        planned
+            .additional_native_plans
+            .iter()
+            .map(|plan| plan.name())
+            .collect()
+    }
+
+    #[tokio::test]
+    async fn hash_join_sorts_output_when_probe_order_is_unknown() {
+        // Spark LeftOuter + BuildRight runs as a swapped DataFusion Right join. The probe scan
+        // declares no ordering, so DataFusion emits matched rows before unmatched ones.
+        let int_type = create_proto_datatype();
+        let op = hash_join_on_first_columns(
+            spark_operator::JoinType::LeftOuter,
+            spark_operator::BuildSide::BuildRight,
+            [two_column_scan(&int_type), two_column_scan(&int_type)],
+            &int_type,
+            vec![ascending_nulls_first(typed_bound_reference(0, &int_type))],
+        );
+        let ctx = SessionContext::new();
+        let task_ctx = ctx.task_ctx();
+        let planner = PhysicalPlanner::new(Arc::new(ctx), 0);
+        let (_, _, planned) = planner.create_plan(&op, &mut vec![], 1).unwrap();
+
+        let output = execute_join(
+            &planned,
+            task_ctx,
+            [(vec![1, 5, 2], vec![10, 50, 20]), (vec![5], vec![500])],
+        )
+        .await;
+        assert_eq!(
+            &Int32Array::from(vec![1, 2, 5]) as &dyn Array,
+            output.column(0).as_ref()
+        );
+        assert_eq!(
+            &Int32Array::from(vec![None, None, Some(5)]) as &dyn Array,
+            output.column(2).as_ref()
+        );
+        assert_eq!("SortExec", planned.native_plan.name());
+        assert_eq!(
+            vec!["HashJoinExec", "ProjectionExec"],
+            additional_plan_names(&planned)
+        );
+    }
+
+    #[tokio::test]
+    async fn hash_join_sorts_output_on_the_unswapped_build_left_path() {
+        // Spark RightOuter + BuildLeft runs unswapped. The probe key is the first column of the
+        // right side, at index 2 of the join output.
+        let int_type = create_proto_datatype();
+        let op = hash_join_on_first_columns(
+            spark_operator::JoinType::RightOuter,
+            spark_operator::BuildSide::BuildLeft,
+            [two_column_scan(&int_type), two_column_scan(&int_type)],
+            &int_type,
+            vec![ascending_nulls_first(typed_bound_reference(2, &int_type))],
+        );
+        let ctx = SessionContext::new();
+        let task_ctx = ctx.task_ctx();
+        let planner = PhysicalPlanner::new(Arc::new(ctx), 0);
+        let (_, _, planned) = planner.create_plan(&op, &mut vec![], 1).unwrap();
+
+        let output = execute_join(
+            &planned,
+            task_ctx,
+            [(vec![5], vec![500]), (vec![1, 5, 2], vec![10, 50, 20])],
+        )
+        .await;
+        assert_eq!(
+            &Int32Array::from(vec![1, 2, 5]) as &dyn Array,
+            output.column(2).as_ref()
+        );
+        assert_eq!(
+            &Int32Array::from(vec![None, None, Some(5)]) as &dyn Array,
+            output.column(0).as_ref()
+        );
+        assert_eq!("SortExec", planned.native_plan.name());
+        assert_eq!(vec!["HashJoinExec"], additional_plan_names(&planned));
+    }
+
+    #[tokio::test]
+    async fn hash_join_sorts_null_aware_anti_join_output() {
+        // A null-aware anti join runs unswapped in CollectLeft mode, so DataFusion builds on the
+        // streamed left side. Keys spanning 1024 or more values skip its perfect hash path, and
+        // the hash path emits the unmatched rows in reverse batch order.
+        let int_type = create_proto_datatype();
+        let mut op = hash_join_on_first_columns(
+            spark_operator::JoinType::LeftAnti,
+            spark_operator::BuildSide::BuildRight,
+            [two_column_scan(&int_type), two_column_scan(&int_type)],
+            &int_type,
+            vec![ascending_nulls_first(typed_bound_reference(0, &int_type))],
+        );
+        let Some(OpStruct::HashJoin(join)) = op.op_struct.as_mut() else {
+            unreachable!()
+        };
+        join.null_aware_anti_join = true;
+        let ctx = SessionContext::new();
+        let task_ctx = ctx.task_ctx();
+        let planner = PhysicalPlanner::new(Arc::new(ctx), 0);
+        let (_, _, planned) = planner.create_plan(&op, &mut vec![], 1).unwrap();
+
+        assert_eq!("SortExec", planned.native_plan.name());
+        assert_eq!(vec!["HashJoinExec"], additional_plan_names(&planned));
+        let hash_join = planned.native_plan.children()[0]
+            .downcast_ref::<datafusion::physical_plan::joins::HashJoinExec>()
+            .unwrap();
+        assert_eq!(
+            &datafusion::common::JoinType::LeftAnti,
+            hash_join.join_type()
+        );
+        assert!(hash_join.null_aware);
+
+        let output = execute_join_batches(
+            &planned,
+            task_ctx,
+            [
+                vec![(vec![10, 20], vec![1, 2]), (vec![3000, 4000], vec![3, 4])],
+                vec![(vec![5], vec![500])],
+            ],
+        )
+        .await;
+        assert_eq!(
+            &Int32Array::from(vec![10, 20, 3000, 4000]) as &dyn Array,
+            output.column(0).as_ref()
+        );
+        assert_eq!(
+            &Int32Array::from(vec![1, 2, 3, 4]) as &dyn Array,
+            output.column(1).as_ref()
+        );
+    }
+
+    #[test]
+    fn hash_join_keeps_native_probe_order_without_a_sort() {
+        // A native sort below the probe side is visible to DataFusion, which then keeps unmatched
+        // probe rows in order. Float keys check that the ordering is normalized like the sort's.
+        let double_type = spark_expression::DataType {
+            type_id: 6,
+            type_info: None,
+        };
+        for key_type in [create_proto_datatype(), double_type] {
+            for (join_type, build_side, probe_key_index, root) in [
+                (
+                    spark_operator::JoinType::LeftOuter,
+                    spark_operator::BuildSide::BuildRight,
+                    0,
+                    "ProjectionExec",
+                ),
+                (
+                    spark_operator::JoinType::RightOuter,
+                    spark_operator::BuildSide::BuildLeft,
+                    2,
+                    "HashJoinExec",
+                ),
+            ] {
+                let sorted_probe = Operator {
+                    children: vec![two_column_scan(&key_type)],
+                    op_struct: Some(OpStruct::Sort(spark_operator::Sort {
+                        sort_orders: vec![ascending_nulls_first(typed_bound_reference(
+                            0, &key_type,
+                        ))],
+                        ..Default::default()
+                    })),
+                    ..Default::default()
+                };
+                let children = if build_side == spark_operator::BuildSide::BuildRight {
+                    [sorted_probe, two_column_scan(&key_type)]
+                } else {
+                    [two_column_scan(&key_type), sorted_probe]
+                };
+                let op = hash_join_on_first_columns(
+                    join_type,
+                    build_side,
+                    children,
+                    &key_type,
+                    vec![ascending_nulls_first(typed_bound_reference(
+                        probe_key_index,
+                        &key_type,
+                    ))],
+                );
+                let (_, _, planned) = PhysicalPlanner::default()
+                    .create_plan(&op, &mut vec![], 1)
+                    .unwrap();
+                assert_eq!(
+                    root,
+                    planned.native_plan.name(),
+                    "{join_type:?} {key_type:?}"
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn hash_join_over_a_native_sort_merge_join_adds_no_sort() {
+        // A sort merge join declares its key ordering, so a hash join streaming it keeps that
+        // ordering without a sort. Spark reports the merge join's left key as the ordering.
+        let int_type = create_proto_datatype();
+        let key = || ascending_nulls_first(typed_bound_reference(0, &int_type));
+        let sorted_scan = || Operator {
+            children: vec![two_column_scan(&int_type)],
+            op_struct: Some(OpStruct::Sort(spark_operator::Sort {
+                sort_orders: vec![key()],
+                ..Default::default()
+            })),
+            ..Default::default()
+        };
+        for smj_join_type in [
+            spark_operator::JoinType::Inner,
+            spark_operator::JoinType::LeftOuter,
+        ] {
+            let sort_merge_join = Operator {
+                children: vec![sorted_scan(), sorted_scan()],
+                op_struct: Some(OpStruct::SortMergeJoin(spark_operator::SortMergeJoin {
+                    left_join_keys: vec![typed_bound_reference(0, &int_type)],
+                    right_join_keys: vec![typed_bound_reference(0, &int_type)],
+                    join_type: smj_join_type as i32,
+                    sort_options: vec![key()],
+                    condition: None,
+                })),
+                ..Default::default()
+            };
+            // The merge join's left key is column 0 of the hash join output.
+            let op = hash_join_on_first_columns(
+                spark_operator::JoinType::LeftOuter,
+                spark_operator::BuildSide::BuildRight,
+                [sort_merge_join, two_column_scan(&int_type)],
+                &int_type,
+                vec![key()],
+            );
+            let (_, _, planned) = PhysicalPlanner::default()
+                .create_plan(&op, &mut vec![], 1)
+                .unwrap();
+            assert_eq!(
+                "ProjectionExec",
+                planned.native_plan.name(),
+                "{smj_join_type:?}\n{}\n{:?}",
+                datafusion::physical_plan::displayable(planned.native_plan.as_ref()).indent(true),
+                planned.native_plan.properties().eq_properties
+            );
+        }
+    }
+
+    #[test]
+    fn hash_join_without_output_ordering_adds_no_sort() {
+        let int_type = create_proto_datatype();
+        for (join_type, build_side, root) in [
+            (
+                spark_operator::JoinType::LeftOuter,
+                spark_operator::BuildSide::BuildRight,
+                "ProjectionExec",
+            ),
+            (
+                spark_operator::JoinType::RightOuter,
+                spark_operator::BuildSide::BuildLeft,
+                "HashJoinExec",
+            ),
+        ] {
+            let op = hash_join_on_first_columns(
+                join_type,
+                build_side,
+                [two_column_scan(&int_type), two_column_scan(&int_type)],
+                &int_type,
+                vec![],
+            );
+            let (_, _, planned) = PhysicalPlanner::default()
+                .create_plan(&op, &mut vec![], 1)
+                .unwrap();
+            assert_eq!(root, planned.native_plan.name(), "{join_type:?}");
+        }
     }
 
     #[tokio::test]
