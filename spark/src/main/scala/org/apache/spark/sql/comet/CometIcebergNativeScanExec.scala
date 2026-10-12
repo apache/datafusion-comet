@@ -136,11 +136,12 @@ case class CometIcebergNativeScanExec(
   // tasks here would run a placeholder subquery. At execution, CometNativeExec sizes the native
   // RDD from perPartitionData instead.
   //
-  // UnknownPartitioning (rather than re-reporting the vanilla BatchScanExec's KeyGroupedPartitioning)
-  // also keeps storage-partitioned joins correct: Spark's EnsureRequirements runs before Comet
-  // converts this scan and already eliminated any redundant shuffle while the leaf was still a
-  // BatchScanExec, so the whole SPJ negotiation (including commonPartitionValues push-down under
-  // AQE) stays on BatchScanExec, the only node Spark can push into.
+  // UnknownPartitioning (rather than re-reporting the vanilla BatchScanExec's
+  // KeyGroupedPartitioning) also keeps storage-partitioned joins correct: Spark's
+  // EnsureRequirements runs before Comet converts this scan and already eliminated any redundant
+  // shuffle while the leaf was still a BatchScanExec, so the whole SPJ negotiation (including
+  // commonPartitionValues push-down under AQE) stays on BatchScanExec, the only node Spark can
+  // push into.
   override lazy val outputPartitioning: Partitioning = UnknownPartitioning(0)
 
   // Report the Iceberg-reported ordering (gated to what the native per-partition merge honours) so
