@@ -17,7 +17,8 @@
 
 use crate::{Cast, EvalMode, IfExpr, NormalizeNaNAndZero, SparkCastOptions, SparkComparison};
 use arrow::array::{
-    downcast_primitive, Array, ArrayRef, AsArray, BooleanArray, GenericByteArray, PrimitiveArray,
+    downcast_primitive, new_empty_array, Array, ArrayRef, AsArray, BooleanArray, GenericByteArray,
+    PrimitiveArray,
 };
 use arrow::buffer::{BooleanBuffer, NullBuffer, OffsetBuffer, ScalarBuffer};
 use arrow::compute::nullif;
@@ -353,6 +354,13 @@ impl PhysicalExpr for CaseWhenExpr {
     }
 
     fn evaluate(&self, batch: &RecordBatch) -> Result<ColumnarValue> {
+        // No row chooses a branch, which both the eager and the lazy evaluation answer with a
+        // scalar NULL. A scalar from an empty batch is taken to mean the expression is constant,
+        // as IN does to build its list once, so return an empty array instead.
+        if batch.num_rows() == 0 {
+            let data_type = self.data_type(&batch.schema())?;
+            return Ok(ColumnarValue::Array(new_empty_array(&data_type)));
+        }
         match self
             .eager
             .get_or_init(|| self.eager_result_type(&batch.schema()))
@@ -1314,14 +1322,37 @@ mod tests {
         assert_eq!(scalar(expr), ScalarValue::Int64(None));
     }
 
+    /// A scalar from an empty batch is taken to mean the expression is constant, so a CASE that
+    /// depends on a column has to return an empty array, whichever way it is evaluated.
     #[test]
-    fn empty_batch() {
+    fn empty_batch_returns_an_empty_array() {
         let batch = int_batch(vec![], vec![]);
         let schema = batch.schema();
         let a = col("a", &schema).unwrap();
         let b = col("b", &schema).unwrap();
-        let when_then = vec![(binary(Arc::clone(&a), Operator::Lt, lit(0i64)), a)];
-        check_against_case_expr(&batch, when_then, Some(b));
+        let null = || lit(ScalarValue::Int64(None));
+        let a_is_1 = || binary(Arc::clone(&a), Operator::Eq, lit(1i64));
+        let a_div_b = binary(Arc::clone(&a), Operator::Divide, b);
+        let new_case = |when_then, else_expr| CaseWhenExpr::try_new(when_then, else_expr).unwrap();
+        for (expr, eager) in [
+            // IF(a = 1, NULL, a), as nullif(a, 1) is planned
+            (
+                new_case(vec![(a_is_1(), null())], Some(Arc::clone(&a))),
+                true,
+            ),
+            // A branch that can fail is evaluated lazily, by CaseExpr, which also returns the
+            // NULL literal as a scalar for an empty batch
+            (new_case(vec![(a_is_1(), null())], Some(a_div_b)), false),
+        ] {
+            assert_eq!(expr.eager_result_type(&schema).is_some(), eager, "{expr}");
+            match expr.evaluate(&batch).unwrap() {
+                ColumnarValue::Array(array) => {
+                    assert_eq!(array.len(), 0, "{expr}");
+                    assert_eq!(array.data_type(), &DataType::Int64, "{expr}");
+                }
+                other => panic!("{expr} returned {other:?} for an empty batch"),
+            }
+        }
     }
 
     #[test]
