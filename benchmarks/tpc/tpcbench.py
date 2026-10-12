@@ -29,8 +29,47 @@ import hashlib
 import json
 import os
 from pyspark.sql import SparkSession
+from pyspark.sql.types import _parse_datatype_string
+from pyspark.sql.utils import to_str
 import time
 from typing import Dict
+from uuid import uuid4
+
+from tpcds_schema import TABLE_SCHEMAS
+
+
+def register_tables(spark, benchmark, table_names, data_path, catalog, database, format, options):
+    """Register query views, retaining TPC-DS logical types for Parquet files."""
+    namespace = None
+    if catalog is None and benchmark == "tpcds" and format.lower() == "parquet":
+        namespace = f"spark_catalog.tpcbench_{uuid4().hex}"
+        spark.sql(f"CREATE DATABASE {namespace}")
+    try:
+        for table in table_names:
+            if catalog is not None:
+                source = f"{catalog}.{database}.{table}"
+                print(f"Registering table {table} from {source}")
+                df = spark.table(source)
+            else:
+                # Support both "customer/" and "customer.parquet/" layouts.
+                source = f"{data_path}/{table}.{format}"
+                if not os.path.exists(source):
+                    source = f"{data_path}/{table}"
+                print(f"Registering table {table} from {source}")
+                if namespace is not None:
+                    df = spark.catalog.createTable(
+                        f"{namespace}.{table}", path=source, source=format,
+                        schema=_parse_datatype_string(TABLE_SCHEMAS[table]),
+                        **{key: to_str(value) for key, value in options.items()},
+                    )
+                else:
+                    df = spark.read.format(format).options(**options).load(source)
+            df.createOrReplaceTempView(table)
+    finally:
+        if namespace is not None:
+            # Views retain resolved relations and CHAR/VARCHAR metadata. Only external
+            # table metadata is dropped; the source files are never owned by this catalog.
+            spark.sql(f"DROP DATABASE {namespace} CASCADE")
 
 
 def dedup_columns(df):
@@ -117,19 +156,7 @@ def main(
 
     # Register tables from either files or Iceberg catalog
     using_iceberg = catalog is not None
-    for table in table_names:
-        if using_iceberg:
-            source = f"{catalog}.{database}.{table}"
-            print(f"Registering table {table} from {source}")
-            df = spark.table(source)
-        else:
-            # Support both "customer/" and "customer.parquet/" layouts
-            source = f"{data_path}/{table}.{format}"
-            if not os.path.exists(source):
-                source = f"{data_path}/{table}"
-            print(f"Registering table {table} from {source}")
-            df = spark.read.format(format).options(**options).load(source)
-        df.createOrReplaceTempView(table)
+    register_tables(spark, benchmark, table_names, data_path, catalog, database, format, options)
 
     conf_dict = {k: v for k, v in spark.sparkContext.getConf().getAll()}
 

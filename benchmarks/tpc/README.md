@@ -30,6 +30,33 @@ For full instructions on running these benchmarks on an EC2 instance, see the [C
 
 TPC queries are bundled in `benchmarks/tpc/queries/` (derived from TPC-H/DS under the TPC Fair Use Policy).
 
+### TPC-DS Parquet table types
+
+The Python file-backed runner registers TPC-DS Parquet with the logical table types
+from [Spark v4.1.3 TPCDSSchema.scala](https://github.com/apache/spark/blob/v4.1.3/sql/core/src/test/scala/org/apache/spark/sql/TPCDSSchema.scala),
+bundled in `tpcds_schema.py`. Inferred Parquet schemas expose CHAR columns as STRING,
+which changes comparisons such as `i_category = 'Men'` for padded `CHAR(50)` data.
+Typed external tables restore Spark's CHAR/VARCHAR semantics without changing query
+SQL or source files. VARCHAR trailing spaces and null values are preserved.
+
+Registration uses a unique namespace in `spark_catalog`, creates session-local views,
+then drops the external table metadata. Both `table/` and `table.parquet/` layouts
+and reader options are supported. Spark's CHAR/VARCHAR configuration still applies;
+use the defaults (`spark.sql.legacy.charVarcharAsString=false`,
+`spark.sql.charAsVarchar=false`, `spark.sql.readSideCharPadding=true`) for logical
+CHAR behavior. TPC-H, other file formats, and existing catalog tables keep their
+existing registration behavior.
+
+Run the regression against a Spark distribution from this directory:
+
+```shell
+$SPARK_HOME/bin/spark-submit --master 'local[2]' test_tpcbench.py
+```
+
+To check Comet, pass the same JAR and plugin configuration used for the benchmark.
+The test uses disposable Parquet files and exercises the production registration
+and query runner, all 24 declared schemas, comparisons, reader options, and cleanup.
+
 ## Usage
 
 All benchmarks are run via `run.py`:
