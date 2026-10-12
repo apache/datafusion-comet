@@ -37,14 +37,16 @@ import org.apache.parquet.hadoop.example.{ExampleParquetWriter, GroupWriteSuppor
 import org.apache.parquet.schema.{MessageType, MessageTypeParser}
 import org.apache.spark._
 import org.apache.spark.internal.config.{MEMORY_OFFHEAP_ENABLED, MEMORY_OFFHEAP_SIZE, SHUFFLE_MANAGER}
+import org.apache.spark.rdd.RDD
 import org.apache.spark.sql.catalyst.plans.logical
 import org.apache.spark.sql.catalyst.util.sideBySide
 import org.apache.spark.sql.comet.CometPlanChecker
 import org.apache.spark.sql.comet.execution.shuffle.{CometColumnarShuffle, CometNativeShuffle, CometShuffleExchangeExec}
 import org.apache.spark.sql.execution._
-import org.apache.spark.sql.execution.adaptive.AdaptiveSparkPlanHelper
+import org.apache.spark.sql.execution.adaptive.{AdaptiveSparkPlanExec, AdaptiveSparkPlanHelper, AQEShuffleReadExec, QueryStageExec}
 import org.apache.spark.sql.execution.exchange.ReusedExchangeExec
 import org.apache.spark.sql.internal._
+import org.apache.spark.sql.sources.{BaseRelation, TableScan}
 import org.apache.spark.sql.test._
 import org.apache.spark.sql.types.{DecimalType, StructType}
 
@@ -76,6 +78,31 @@ abstract class CometTestBase
     assert(reused.nonEmpty, s"$clue:\n$plan")
   }
 
+  /**
+   * Sets each Spark-to-Arrow conversion that [[sparkConf]] turns on to `enabled`. All but the
+   * `OneRowRelation` conversion are off by default. These are the conversions
+   * `spark.comet.sparkToColumnar.enabled` stood for before each had a config of its own.
+   */
+  protected def sparkToArrowConversionConfs(enabled: Boolean): Seq[(String, String)] =
+    Seq(
+      CometConf.COMET_CONVERT_FROM_RANGE_ENABLED,
+      CometConf.COMET_CONVERT_FROM_IN_MEMORY_CACHE_ENABLED,
+      CometConf.COMET_CONVERT_FROM_RDD_ENABLED,
+      CometConf.COMET_CONVERT_FROM_ONE_ROW_RELATION_ENABLED).map(_.key -> enabled.toString)
+
+  /**
+   * A DataFrame over `rows` that Spark scans with a `RowDataSourceScanExec`, as it does a Data
+   * Source V1 relation that is not file-based, such as a JDBC table.
+   */
+  protected def rowDataSourceDataFrame(rowSchema: StructType, rows: Seq[Row]): DataFrame = {
+    val session = spark
+    session.baseRelationToDataFrame(new BaseRelation with TableScan {
+      override def sqlContext: SQLContext = session.sqlContext
+      override def schema: StructType = rowSchema
+      override def buildScan(): RDD[Row] = session.sparkContext.parallelize(rows, 1)
+    })
+  }
+
   protected def sparkConf: SparkConf = {
     val conf = new SparkConf()
     conf.set("spark.hadoop.fs.file.impl", classOf[DebugFilesystem].getName)
@@ -90,11 +117,10 @@ abstract class CometTestBase
     conf.set(CometConf.COMET_ONHEAP_ENABLED.key, "true")
     conf.set(CometConf.COMET_EXEC_ENABLED.key, "true")
     conf.set(CometConf.COMET_SHUFFLE_ENABLED.key, "true")
-    conf.set(CometConf.COMET_SPARK_TO_ARROW_ENABLED.key, "true")
+    conf.setAll(sparkToArrowConversionConfs(enabled = true))
     conf.set(CometConf.COMET_NATIVE_SCAN_ENABLED.key, "true")
     conf.set(CometConf.COMET_PARQUET_UNSIGNED_SMALL_INT_CHECK.key, "false")
     conf.set(CometConf.COMET_SCAN_ALLOW_DISABLED_PARQUET_VECTORIZED_READER.key, "true")
-    conf.set(CometConf.COMET_ONHEAP_MEMORY_OVERHEAD.key, "2g")
     conf.set(CometConf.COMET_EXEC_SORT_MERGE_JOIN_WITH_JOIN_FILTER_ENABLED.key, "true")
     // Fail loudly if a serde declines an operator without stating why, rather than letting the
     // generic "<operator> is not supported" message mask the missing reason.
@@ -629,6 +655,25 @@ abstract class CometTestBase
     checkPlanNotMissingInput(plan)
   }
 
+  /**
+   * [[checkCometOperators]] for an adaptive query that has run. `checkSparkAnswerAndOperator`
+   * inspects a DataFrame that has not run, which for an adaptive query is its initial plan, and
+   * `checkCometOperators` treats query stages as leaves, so this checks the final plan and the
+   * plan inside each of its stages.
+   */
+  protected def checkCometOperatorsInFinalPlan(
+      plan: SparkPlan,
+      excludedClasses: Class[_]*): Unit = {
+    assert(plan.asInstanceOf[AdaptiveSparkPlanExec].isFinalPlan, s"The query has not run:\n$plan")
+    val stagePlans = collect(plan) { case s: QueryStageExec => s.plan }
+    val excluded = excludedClasses :+ classOf[QueryStageExec] :+ classOf[AQEShuffleReadExec]
+    (stripAQEPlan(plan) +: stagePlans).foreach(checkCometOperators(_, excluded: _*))
+  }
+
+  // Matched by name because Spark 3.4 has no TableCacheQueryStageExec.
+  protected def isTableCacheStage(plan: SparkPlan): Boolean =
+    plan.getClass.getSimpleName == "TableCacheQueryStageExec"
+
   // checks the plan node has no missing inputs
   // such nodes represented in plan with exclamation mark !
   // example: !CometWindowExec
@@ -801,9 +846,7 @@ abstract class CometTestBase
       .builder(path)
       .withDictionaryEncoding(dictionaryEnabled)
       .withType(schema)
-      // TODO we need to shim this and use withRowGroupSize(Long) with later parquet-hadoop versions to remove
-      // the deprecated warning here
-      .withRowGroupSize(rowGroupSize.toInt)
+      .withRowGroupSize(rowGroupSize)
       .withPageSize(pageSize)
       .withDictionaryPageSize(dictionaryPageSize)
       .withPageRowCountLimit(pageRowCountLimit)
@@ -919,15 +962,15 @@ abstract class CometTestBase
       opt match {
         case Some(i) =>
           record.add(0, i % 2 == 0)
-          record.add(1, i.toByte)
-          record.add(2, i.toShort)
+          record.add(1, i.toByte.toInt)
+          record.add(2, i.toShort.toInt)
           record.add(3, i)
           record.add(4, i.toLong)
           record.add(5, i.toFloat)
           record.add(6, i.toDouble)
           record.add(7, i.toString * 48)
-          record.add(8, (-i).toByte)
-          record.add(9, (-i).toShort)
+          record.add(8, (-i).toByte.toInt)
+          record.add(9, (-i).toShort.toInt)
           record.add(10, -i)
           record.add(11, (-i).toLong)
           record.add(12, i.toString)
@@ -948,15 +991,15 @@ abstract class CometTestBase
       val i = rand.nextLong()
       val record = new SimpleGroup(schema)
       record.add(0, i % 2 == 0)
-      record.add(1, i.toByte)
-      record.add(2, i.toShort)
+      record.add(1, i.toByte.toInt)
+      record.add(2, i.toShort.toInt)
       record.add(3, i.toInt)
       record.add(4, i)
       record.add(5, java.lang.Float.intBitsToFloat(i.toInt))
       record.add(6, java.lang.Double.longBitsToDouble(i))
       record.add(7, i.toString * 24)
-      record.add(8, (-i).toByte)
-      record.add(9, (-i).toShort)
+      record.add(8, (-i).toByte.toInt)
+      record.add(9, (-i).toShort.toInt)
       record.add(10, (-i).toInt)
       record.add(11, -i)
       record.add(12, i.toString)
@@ -1005,7 +1048,7 @@ abstract class CometTestBase
       if (rand.nextBoolean()) {
         None
       } else {
-        Some(getValue(i, div))
+        Some(getValue(i.toLong, div.toLong))
       }
     }
     expected.foreach { opt =>
@@ -1059,7 +1102,7 @@ abstract class CometTestBase
       if (rand.nextBoolean()) {
         None
       } else {
-        Some(getValue(i, div))
+        Some(getValue(i.toLong, div.toLong))
       }
     }
     expected.foreach { opt =>
@@ -1237,7 +1280,7 @@ abstract class CometTestBase
     val div = if (dictionaryEnabled) 10 else n // maps value to a small range for dict to kick in
 
     val expected = (0 until n).map { i =>
-      Some(getValue(i, div))
+      Some(getValue(i.toLong, div.toLong))
     }
     expected.foreach { opt =>
       val timestampFormats = List(
@@ -1285,7 +1328,7 @@ abstract class CometTestBase
   def makeDecimalRDD(num: Int, decimal: DecimalType, useDictionary: Boolean): DataFrame = {
     val div = if (useDictionary) 5 else num // narrow the space to make it dictionary encoded
     spark
-      .range(num)
+      .range(num.toLong)
       .map(_ % div)
       // Parquet doesn't allow column names with spaces, have to add an alias here.
       // Minus 500 here so that negative decimals are also tested.
@@ -1465,8 +1508,8 @@ abstract class CometTestBase
       val record = new SimpleGroup(schema)
       opt match {
         case Some(i) =>
-          record.add(0, i.toByte)
-          record.add(1, i.toShort)
+          record.add(0, i.toByte.toInt)
+          record.add(1, i.toShort.toInt)
           record.add(2, i)
           record.add(3, i.toLong)
           record.add(4, rand.nextFloat())

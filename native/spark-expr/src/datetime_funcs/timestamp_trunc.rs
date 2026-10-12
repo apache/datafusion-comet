@@ -16,7 +16,8 @@
 // under the License.
 
 use crate::utils::array_with_timezone;
-use arrow::array::ArrayRef;
+use arrow::array::{new_null_array, ArrayRef};
+use arrow::compute::cast;
 use arrow::datatypes::{DataType, Schema, TimeUnit::Microsecond};
 use arrow::record_batch::RecordBatch;
 use datafusion::common::{DataFusionError, ScalarValue, ScalarValue::Utf8};
@@ -40,6 +41,9 @@ pub struct TimestampTruncExpr {
     /// `Arc<str>` so it can be cheaply cloned onto Arrow `Timestamp` data types without
     /// reallocating, and parsed once into a `chrono::TimeZone` per batch.
     timezone: Arc<str>,
+    /// Whether SECOND and MILLISECOND truncation wraps below the smallest timestamp, as Spark
+    /// did before 4.2.0, instead of raising `long overflow` as 4.2.0 and later do (SPARK-56663).
+    wrap_second_millisecond_overflow: bool,
 }
 
 impl Hash for TimestampTruncExpr {
@@ -47,6 +51,7 @@ impl Hash for TimestampTruncExpr {
         self.child.hash(state);
         self.format.hash(state);
         self.timezone.hash(state);
+        self.wrap_second_millisecond_overflow.hash(state);
     }
 }
 impl PartialEq for TimestampTruncExpr {
@@ -54,6 +59,7 @@ impl PartialEq for TimestampTruncExpr {
         self.child.eq(&other.child)
             && self.format.eq(&other.format)
             && self.timezone.eq(&other.timezone)
+            && self.wrap_second_millisecond_overflow == other.wrap_second_millisecond_overflow
     }
 }
 
@@ -62,11 +68,13 @@ impl TimestampTruncExpr {
         child: Arc<dyn PhysicalExpr>,
         format: Arc<dyn PhysicalExpr>,
         timezone: String,
+        wrap_second_millisecond_overflow: bool,
     ) -> Self {
         TimestampTruncExpr {
             child,
             format,
             timezone: Arc::from(timezone),
+            wrap_second_millisecond_overflow,
         }
     }
 }
@@ -87,21 +95,7 @@ impl PhysicalExpr for TimestampTruncExpr {
     }
 
     fn data_type(&self, input_schema: &Schema) -> datafusion::common::Result<DataType> {
-        // The kernel converts the input to the session timezone and emits an array stamped with
-        // that timezone (NTZ stays NTZ). The declared `data_type` has to match or
-        // shuffle/sort/`RowConverter` will fail with a schema-mismatch error.
-        let session_tz = || DataType::Timestamp(Microsecond, Some(Arc::clone(&self.timezone)));
-        match self.child.data_type(input_schema)? {
-            DataType::Timestamp(_, None) => Ok(DataType::Timestamp(Microsecond, None)),
-            DataType::Dictionary(key_type, inner) => {
-                let inner_out = match inner.as_ref() {
-                    DataType::Timestamp(_, None) => DataType::Timestamp(Microsecond, None),
-                    _ => session_tz(),
-                };
-                Ok(DataType::Dictionary(key_type, Box::new(inner_out)))
-            }
-            _ => Ok(session_tz()),
-        }
+        Ok(output_type(&self.child.data_type(input_schema)?))
     }
 
     fn nullable(&self, _: &Schema) -> datafusion::common::Result<bool> {
@@ -111,7 +105,9 @@ impl PhysicalExpr for TimestampTruncExpr {
     fn evaluate(&self, batch: &RecordBatch) -> datafusion::common::Result<ColumnarValue> {
         let timestamp = self.child.evaluate(batch)?;
         let format = self.format.evaluate(batch)?;
+        let output_type = output_type(&timestamp.data_type());
         let tz = &self.timezone;
+        let wrap = self.wrap_second_millisecond_overflow;
         let resolve_tz = |ts: ArrayRef| -> datafusion::common::Result<ArrayRef> {
             // For TimestampNTZ (Timestamp(Microsecond, None)), skip timezone conversion.
             // NTZ values are timezone-independent and truncation should operate directly on the
@@ -126,19 +122,37 @@ impl PhysicalExpr for TimestampTruncExpr {
                 )?)
             }
         };
+        // The kernels label their output with the session timezone they truncated in. Relabel it
+        // with the input's timezone, which leaves the values unchanged.
+        let relabel = |result: ArrayRef| -> datafusion::common::Result<ArrayRef> {
+            Ok(cast(&result, &output_type)?)
+        };
         match (timestamp, format) {
             (ColumnarValue::Array(ts), ColumnarValue::Scalar(Utf8(Some(format)))) => {
-                let result = timestamp_trunc_dyn(&resolve_tz(ts)?, format)?;
-                Ok(ColumnarValue::Array(result))
+                let result = timestamp_trunc_dyn(&resolve_tz(ts)?, format, wrap)?;
+                Ok(ColumnarValue::Array(relabel(result)?))
             }
             (ColumnarValue::Array(ts), ColumnarValue::Array(formats)) => {
-                let result = timestamp_trunc_array_fmt_dyn(&resolve_tz(ts)?, &formats)?;
-                Ok(ColumnarValue::Array(result))
+                let result = timestamp_trunc_array_fmt_dyn(&resolve_tz(ts)?, &formats, wrap)?;
+                Ok(ColumnarValue::Array(relabel(result)?))
             }
             (ColumnarValue::Scalar(ts_scalar), ColumnarValue::Scalar(Utf8(Some(format)))) => {
-                let result = timestamp_trunc_dyn(&resolve_tz(ts_scalar.to_array()?)?, format)?;
-                let scalar = ScalarValue::try_from_array(&result, 0)?;
+                let result =
+                    timestamp_trunc_dyn(&resolve_tz(ts_scalar.to_array()?)?, format, wrap)?;
+                let scalar = ScalarValue::try_from_array(&relabel(result)?, 0)?;
                 Ok(ColumnarValue::Scalar(scalar))
+            }
+            (ColumnarValue::Scalar(ts_scalar), ColumnarValue::Array(formats)) => {
+                let ts = ts_scalar.to_array_of_size(formats.len())?;
+                let result = timestamp_trunc_array_fmt_dyn(&resolve_tz(ts)?, &formats, wrap)?;
+                Ok(ColumnarValue::Array(relabel(result)?))
+            }
+            // A NULL format gives NULL, as in Spark.
+            (ColumnarValue::Array(ts), ColumnarValue::Scalar(Utf8(None))) => {
+                Ok(ColumnarValue::Array(new_null_array(&output_type, ts.len())))
+            }
+            (ColumnarValue::Scalar(_), ColumnarValue::Scalar(Utf8(None))) => {
+                Ok(ColumnarValue::Scalar(ScalarValue::try_from(&output_type)?))
             }
             _ => Err(DataFusionError::Execution(
                 "Invalid input to function TimestampTrunc. \
@@ -160,6 +174,149 @@ impl PhysicalExpr for TimestampTruncExpr {
             Arc::clone(&children[0]),
             Arc::clone(&self.format),
             self.timezone.to_string(),
+            self.wrap_second_millisecond_overflow,
         )))
+    }
+}
+
+/// The result type for an input of type `input`. The kernels truncate in the session timezone, but
+/// the result keeps the input's timezone label. Every `TimestampType` value in a native plan is
+/// labelled "UTC", and a result labelled with the session timezone could not be compared with
+/// other timestamps or mixed with them in `CASE` and `coalesce`.
+fn output_type(input: &DataType) -> DataType {
+    match input {
+        DataType::Dictionary(key_type, value_type) => {
+            DataType::Dictionary(key_type.clone(), Box::new(output_type(value_type)))
+        }
+        DataType::Timestamp(_, tz) => DataType::Timestamp(Microsecond, tz.clone()),
+        other => other.clone(),
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use arrow::array::{
+        Array, AsArray, DictionaryArray, Int32Array, StringArray, TimestampMicrosecondArray,
+    };
+    use arrow::datatypes::{Field, Int32Type, TimestampMicrosecondType};
+    use datafusion::physical_expr::expressions::{Column, Literal};
+
+    /// 2024-01-15 18:30:45 UTC, which is 2024-01-16 00:00:45 in Asia/Kolkata (+05:30).
+    const MICROS: i64 = 1_705_343_445_000_000;
+    /// `MICROS` truncated to the hour in Asia/Kolkata: 2024-01-15 18:30:00 UTC.
+    const HOUR_IN_KOLKATA: i64 = 1_705_343_400_000_000;
+
+    fn utc_timestamp() -> DataType {
+        DataType::Timestamp(Microsecond, Some("UTC".into()))
+    }
+
+    /// Truncates `input` to the hour in Asia/Kolkata, returning the declared and actual types.
+    fn trunc_to_hour_in_kolkata(input: ArrayRef) -> (DataType, ArrayRef) {
+        let schema = Schema::new(vec![Field::new("ts", input.data_type().clone(), true)]);
+        let batch = RecordBatch::try_new(Arc::new(schema.clone()), vec![input]).unwrap();
+        let expr = TimestampTruncExpr::new(
+            Arc::new(Column::new("ts", 0)),
+            Arc::new(Literal::new(Utf8(Some("HOUR".to_string())))),
+            "Asia/Kolkata".to_string(),
+            false,
+        );
+        let declared = expr.data_type(&schema).unwrap();
+        let ColumnarValue::Array(result) = expr.evaluate(&batch).unwrap() else {
+            panic!("expected an array");
+        };
+        (declared, result)
+    }
+
+    #[test]
+    fn result_keeps_the_input_label() {
+        let input = TimestampMicrosecondArray::from(vec![Some(MICROS), None]).with_timezone("UTC");
+        let (declared, result) = trunc_to_hour_in_kolkata(Arc::new(input));
+        assert_eq!(declared, utc_timestamp());
+        assert_eq!(result.data_type(), &utc_timestamp());
+        let result = result.as_primitive::<TimestampMicrosecondType>();
+        assert_eq!(result.value(0), HOUR_IN_KOLKATA);
+        assert!(result.is_null(1));
+    }
+
+    #[test]
+    fn dictionary_result_keeps_the_input_label() {
+        let values = TimestampMicrosecondArray::from(vec![MICROS]).with_timezone("UTC");
+        let input =
+            DictionaryArray::<Int32Type>::try_new(Int32Array::from(vec![0, 0]), Arc::new(values))
+                .unwrap();
+        let expected = DataType::Dictionary(Box::new(DataType::Int32), Box::new(utc_timestamp()));
+        let (declared, result) = trunc_to_hour_in_kolkata(Arc::new(input));
+        assert_eq!(declared, expected);
+        assert_eq!(result.data_type(), &expected);
+        let values = result.as_any_dictionary().values();
+        assert_eq!(
+            values.as_primitive::<TimestampMicrosecondType>().value(0),
+            HOUR_IN_KOLKATA
+        );
+    }
+
+    /// Evaluates `date_trunc` in America/Los_Angeles with the given timestamp and format inputs.
+    fn trunc_in_los_angeles(
+        timestamp: Arc<dyn PhysicalExpr>,
+        format: Arc<dyn PhysicalExpr>,
+        batch: &RecordBatch,
+    ) -> ColumnarValue {
+        TimestampTruncExpr::new(timestamp, format, "America/Los_Angeles".to_string(), false)
+            .evaluate(batch)
+            .unwrap()
+    }
+
+    #[test]
+    fn literal_timestamp_with_a_format_column() {
+        // 2024-11-03 01:30 PDT, inside the overlap. DAY keeps the input's offset, YEAR does not
+        // depend on it, and a NULL format gives NULL.
+        let micros = 1_730_622_600_000_000;
+        let formats = StringArray::from(vec![Some("DAY"), Some("YEAR"), None]);
+        let schema = Schema::new(vec![Field::new("fmt", DataType::Utf8, true)]);
+        let batch = RecordBatch::try_new(Arc::new(schema), vec![Arc::new(formats)]).unwrap();
+        let timestamp = Literal::new(ScalarValue::TimestampMicrosecond(
+            Some(micros),
+            Some("UTC".into()),
+        ));
+        let ColumnarValue::Array(result) =
+            trunc_in_los_angeles(Arc::new(timestamp), Arc::new(Column::new("fmt", 0)), &batch)
+        else {
+            panic!("expected an array");
+        };
+        assert_eq!(result.data_type(), &utc_timestamp());
+        let result = result.as_primitive::<TimestampMicrosecondType>();
+        // 2024-11-03 00:00 PDT and 2024-01-01 00:00 PST.
+        assert_eq!(result.value(0), 1_730_617_200_000_000);
+        assert_eq!(result.value(1), 1_704_096_000_000_000);
+        assert!(result.is_null(2));
+    }
+
+    #[test]
+    fn null_literal_format_gives_null() {
+        let input = TimestampMicrosecondArray::from(vec![Some(MICROS), None]).with_timezone("UTC");
+        let schema = Schema::new(vec![Field::new("ts", utc_timestamp(), true)]);
+        let batch = RecordBatch::try_new(Arc::new(schema), vec![Arc::new(input)]).unwrap();
+        let null_format = || Arc::new(Literal::new(Utf8(None)));
+        let ColumnarValue::Array(result) =
+            trunc_in_los_angeles(Arc::new(Column::new("ts", 0)), null_format(), &batch)
+        else {
+            panic!("expected an array");
+        };
+        assert_eq!(result.data_type(), &utc_timestamp());
+        assert_eq!(result.null_count(), 2);
+
+        let timestamp = Arc::new(Literal::new(ScalarValue::TimestampMicrosecond(
+            Some(MICROS),
+            Some("UTC".into()),
+        )));
+        let ColumnarValue::Scalar(result) = trunc_in_los_angeles(timestamp, null_format(), &batch)
+        else {
+            panic!("expected a scalar");
+        };
+        assert_eq!(
+            result,
+            ScalarValue::TimestampMicrosecond(None, Some("UTC".into()))
+        );
     }
 }

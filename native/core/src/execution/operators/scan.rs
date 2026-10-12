@@ -15,11 +15,11 @@
 // specific language governing permissions and limitations
 // under the License.
 
-use crate::execution::operators::{copy_or_unpack_array, AlignedArrowStreamReader, CopyMode};
 use crate::{errors::CometError, execution::planner::TEST_EXEC_CONTEXT_ID};
 use arrow::array::{ArrayRef, RecordBatch, RecordBatchOptions};
 use arrow::compute::{cast_with_options, CastOptions};
 use arrow::datatypes::{DataType, Field, Schema, SchemaRef};
+use arrow::ffi_stream::ArrowArrayStreamReader;
 use datafusion::common::tree_node::TreeNodeRecursion;
 use datafusion::common::{arrow_datafusion_err, DataFusionError, Result as DataFusionResult};
 use datafusion::physical_plan::execution_plan::{Boundedness, EmissionType};
@@ -32,7 +32,7 @@ use datafusion::{
     physical_plan::{ExecutionPlan, *},
 };
 use datafusion_comet_common::decode_string_arrays;
-use futures::Stream;
+use futures::{task::AtomicWaker, Stream};
 use itertools::Itertools;
 use std::{
     pin::Pin,
@@ -50,13 +50,15 @@ pub struct ScanExec {
     pub exec_context_id: i64,
     /// The C Stream Interface reader. `None` only in unit tests that seed input via
     /// `set_input_batch`.
-    pub input_source: Option<Arc<Mutex<AlignedArrowStreamReader>>>,
+    pub input_source: Option<Arc<Mutex<ArrowArrayStreamReader>>>,
     pub input_source_description: String,
     pub data_types: Vec<DataType>,
     pub schema: SchemaRef,
     /// Used in unit tests to mock the input batch; otherwise written by `pull_next` on each
     /// poll.
     pub batch: Arc<Mutex<Option<InputBatch>>>,
+    /// Woken when `batch` is refilled, so a poll that found it empty is repeated.
+    waker: Arc<AtomicWaker>,
     cache: Arc<PlanProperties>,
     metrics: ExecutionPlanMetricsSet,
     baseline_metrics: BaselineMetrics,
@@ -65,14 +67,15 @@ pub struct ScanExec {
 impl ScanExec {
     pub fn new(
         exec_context_id: i64,
-        input_source: Option<Arc<Mutex<AlignedArrowStreamReader>>>,
+        input_source: Option<Arc<Mutex<ArrowArrayStreamReader>>>,
         input_source_description: &str,
         data_types: Vec<DataType>,
     ) -> Result<Self, CometError> {
         let metrics_set = ExecutionPlanMetricsSet::default();
         let baseline_metrics = BaselineMetrics::new(&metrics_set, 0);
 
-        // Build schema directly from data types since get_next now always unpacks dictionaries
+        // The schema never carries a dictionary type, so `build_record_batch` unpacks any
+        // dictionary column when it casts the input to this schema.
         let schema = schema_from_data_types(&data_types);
 
         let cache = Arc::new(PlanProperties::new(
@@ -90,6 +93,7 @@ impl ScanExec {
             input_source_description: input_source_description.to_string(),
             data_types,
             batch: Arc::new(Mutex::new(None)),
+            waker: Arc::new(AtomicWaker::new()),
             cache,
             metrics: metrics_set,
             baseline_metrics,
@@ -110,9 +114,11 @@ impl ScanExec {
     /// Feeds input batch into this `Scan`. Only used in unit test.
     pub fn set_input_batch(&mut self, input: InputBatch) {
         *self.batch.try_lock().unwrap() = Some(input);
+        self.waker.wake();
     }
 
-    /// Pull next input batch from the upstream `ArrowArrayStreamReader`.
+    /// Pulls the next input batch from the upstream `ArrowArrayStreamReader` unless one is
+    /// already buffered, then wakes the stream waiting for it.
     pub fn get_next_batch(&mut self) -> Result<(), CometError> {
         if self.input_source.is_none() {
             // This is a unit test. Input batches are seeded via `set_input_batch`.
@@ -120,22 +126,25 @@ impl ScanExec {
         }
 
         let mut current_batch = self.batch.try_lock().unwrap();
-        if current_batch.is_none() {
-            let mut timer = self.baseline_metrics.elapsed_compute().timer();
-            let next_batch =
-                ScanExec::pull_next(self.exec_context_id, self.input_source.as_ref().unwrap())?;
-            *current_batch = Some(next_batch);
-            timer.stop();
+        if current_batch.is_some() {
+            return Ok(());
         }
+
+        let mut timer = self.baseline_metrics.elapsed_compute().timer();
+        let next_batch =
+            ScanExec::pull_next(self.exec_context_id, self.input_source.as_ref().unwrap())?;
+        *current_batch = Some(next_batch);
+        timer.stop();
+        drop(current_batch);
+        self.waker.wake();
 
         Ok(())
     }
 
-    /// Pull the next `RecordBatch` from the stream and convert it to an `InputBatch`. Dictionary
-    /// columns are unpacked because Comet's downstream operators do not handle them.
+    /// Pull the next `RecordBatch` from the stream and convert it to an `InputBatch`.
     fn pull_next(
         exec_context_id: i64,
-        reader: &Arc<Mutex<AlignedArrowStreamReader>>,
+        reader: &Arc<Mutex<ArrowArrayStreamReader>>,
     ) -> Result<InputBatch, CometError> {
         if exec_context_id == TEST_EXEC_CONTEXT_ID {
             // Unit test path; input batches are seeded directly.
@@ -147,7 +156,7 @@ impl ScanExec {
         // `get_next_batch`, so a contended `try_lock` here would signal a caller bug, not races.
         let mut reader = reader
             .try_lock()
-            .map_err(|_| CometError::Internal("AlignedArrowStreamReader contended".to_string()))?;
+            .map_err(|_| CometError::Internal("ArrowArrayStreamReader contended".to_string()))?;
 
         let next = reader.next();
         match next {
@@ -166,13 +175,12 @@ impl ScanExec {
     }
 }
 
-/// Transform one FFI-imported column for native execution: first decode any invalid UTF-8 to the
-/// Spark-rendered form (arrow's `from_ffi` imports string buffers unchecked), then copy/unpack.
-/// Decoding runs before unpacking so a `Dictionary(_, Utf8)` decodes its compact values, not the
-/// expanded ones.
+/// Prepare one FFI-imported column for native execution by decoding any invalid UTF-8 to the
+/// Spark-rendered form, since arrow's `from_ffi` imports string buffers unchecked. Otherwise the
+/// column keeps the imported buffers without a copy: the stream transfers ownership by reference
+/// count, and the JVM decodes dictionaries before export.
 fn import_column(col: &ArrayRef) -> Result<ArrayRef, CometError> {
-    let decoded = decode_string_arrays(col)?;
-    Ok(copy_or_unpack_array(&decoded, &CopyMode::UnpackOrClone)?)
+    Ok(decode_string_arrays(col)?)
 }
 
 fn schema_from_data_types(data_types: &[DataType]) -> SchemaRef {
@@ -323,28 +331,27 @@ impl ScanStream<'_> {
 impl Stream for ScanStream<'_> {
     type Item = DataFusionResult<RecordBatch>;
 
-    fn poll_next(self: Pin<&mut Self>, _: &mut Context<'_>) -> Poll<Option<Self::Item>> {
+    fn poll_next(self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<Option<Self::Item>> {
         let mut timer = self.baseline_metrics.elapsed_compute().timer();
         let mut scan_batch = self.scan.batch.try_lock().unwrap();
 
-        let input_batch = &*scan_batch;
-        let input_batch = if let Some(batch) = input_batch {
-            batch
-        } else {
-            timer.stop();
-            return Poll::Pending;
-        };
-
-        let result = match input_batch {
-            InputBatch::EOF => Poll::Ready(None),
-            InputBatch::Batch(columns, num_rows) => {
+        let result = match &*scan_batch {
+            None => {
+                self.scan.waker.register(cx.waker());
+                Poll::Pending
+            }
+            // EOF stays buffered: a re-poll ends the stream again and `get_next_batch` has
+            // nothing to pull.
+            Some(InputBatch::EOF) => Poll::Ready(None),
+            Some(InputBatch::Batch(columns, num_rows)) => {
                 self.baseline_metrics.record_output(*num_rows);
                 let maybe_batch = self.build_record_batch(columns, *num_rows);
                 Poll::Ready(Some(maybe_batch))
             }
         };
-
-        *scan_batch = None;
+        if matches!(result, Poll::Ready(Some(_))) {
+            *scan_batch = None;
+        }
 
         timer.stop();
 
@@ -394,9 +401,122 @@ impl InputBatch {
 #[cfg(test)]
 mod import_tests {
     use super::*;
-    use arrow::array::{make_array, Array, ArrayData, ArrayRef, StringArray};
+    use arrow::array::{make_array, Array, ArrayData, ArrayRef, Decimal128Array, StringArray};
     use arrow::buffer::Buffer;
     use arrow::datatypes::DataType;
+    use arrow::ffi::{FFI_ArrowArray, FFI_ArrowSchema};
+    use arrow::ffi_stream::FFI_ArrowArrayStream;
+    use std::ffi::{c_int, c_void};
+
+    /// Private data of the stream built by [`one_batch_stream`].
+    struct OneBatch {
+        schema: SchemaRef,
+        batch: Option<ArrayData>,
+    }
+
+    unsafe extern "C" fn one_batch_get_schema(
+        stream: *mut FFI_ArrowArrayStream,
+        out: *mut FFI_ArrowSchema,
+    ) -> c_int {
+        let private = unsafe { &*((*stream).private_data as *const OneBatch) };
+        match FFI_ArrowSchema::try_from(private.schema.as_ref()) {
+            Ok(schema) => {
+                unsafe { std::ptr::write(out, schema) };
+                0
+            }
+            Err(_) => 22, // EINVAL
+        }
+    }
+
+    unsafe extern "C" fn one_batch_get_next(
+        stream: *mut FFI_ArrowArrayStream,
+        out: *mut FFI_ArrowArray,
+    ) -> c_int {
+        let private = unsafe { &mut *((*stream).private_data as *mut OneBatch) };
+        // A released (empty) array marks the end of the stream.
+        let array = match private.batch.take() {
+            Some(batch) => FFI_ArrowArray::new(&batch),
+            None => FFI_ArrowArray::empty(),
+        };
+        unsafe { std::ptr::write(out, array) };
+        0
+    }
+
+    unsafe extern "C" fn one_batch_release(stream: *mut FFI_ArrowArrayStream) {
+        let stream = unsafe { &mut *stream };
+        drop(unsafe { Box::from_raw(stream.private_data as *mut OneBatch) });
+        stream.release = None;
+    }
+
+    /// A C stream that yields `batch` once, with its buffers exactly as given. It stands in for a
+    /// JVM producer: arrow-rs's own `FFI_ArrowArrayStream::new` exports from typed arrays, and a
+    /// typed array cannot hold an under-aligned buffer.
+    fn one_batch_stream(schema: SchemaRef, batch: ArrayData) -> FFI_ArrowArrayStream {
+        let private = Box::new(OneBatch {
+            schema,
+            batch: Some(batch),
+        });
+        FFI_ArrowArrayStream {
+            get_schema: Some(one_batch_get_schema),
+            get_next: Some(one_batch_get_next),
+            get_last_error: None,
+            release: Some(one_batch_release),
+            private_data: Box::into_raw(private) as *mut c_void,
+        }
+    }
+
+    /// Comet counterpart to arrow-rs#10030's `test_decimal128_under_aligned_round_trip`, run
+    /// through the stock `ArrowArrayStreamReader` that `ScanExec` reads from. A JVM producer
+    /// (arrow-java's `NettyAllocationManager`) only guarantees the C Data Interface's recommended
+    /// 8-byte alignment, so it can hand us a `Decimal128` buffer that is not 16-byte aligned.
+    /// Since arrow 59, `from_ffi_and_data_type` realigns such buffers on import. Arrow 58 passed
+    /// them through untouched, so building the typed `Decimal128Array` panicked in
+    /// `ScalarBuffer::<i128>::from` (apache/arrow-rs#10028). This test guards against an arrow
+    /// downgrade bringing that back.
+    #[test]
+    fn realigns_under_aligned_decimal128() {
+        let decimal_type = DataType::Decimal128(10, 2);
+
+        // Slice an aligned [0, 1, 2] i128 buffer 8 bytes in to land on an 8-aligned-not-16-aligned
+        // address. The little-endian byte shift makes the two visible elements `1 << 64`, `2 << 64`.
+        let under_aligned = Buffer::from_vec(vec![0_i128, 1_i128, 2_i128]).slice(8);
+        assert_eq!(under_aligned.as_ptr().align_offset(8), 0);
+        assert_ne!(under_aligned.as_ptr().align_offset(16), 0);
+
+        // SAFETY: buffer holds room for 2 i128 values; under-alignment is the condition under test.
+        // `build_unchecked` avoids the validation read that would itself panic on the misaligned i128s.
+        let decimal = unsafe {
+            ArrayData::builder(decimal_type.clone())
+                .len(2)
+                .add_buffer(under_aligned)
+                .build_unchecked()
+        };
+
+        let schema: SchemaRef = Arc::new(Schema::new(vec![Field::new(
+            "d",
+            decimal_type.clone(),
+            false,
+        )]));
+        let struct_data = unsafe {
+            ArrayData::builder(DataType::Struct(schema.fields().clone()))
+                .len(2)
+                .add_child_data(decimal)
+                .build_unchecked()
+        };
+
+        let stream = one_batch_stream(Arc::clone(&schema), struct_data);
+        let mut reader = ArrowArrayStreamReader::try_new(stream).unwrap();
+        let batch = reader.next().unwrap().unwrap();
+        let col = batch
+            .column(0)
+            .as_any()
+            .downcast_ref::<Decimal128Array>()
+            .unwrap();
+        assert_eq!(col.len(), 2);
+        assert_eq!(col.value(0), 1_i128 << 64);
+        assert_eq!(col.value(1), 2_i128 << 64);
+        assert!(reader.next().is_none());
+    }
 
     #[test]
     fn import_decodes_invalid_utf8_column() {

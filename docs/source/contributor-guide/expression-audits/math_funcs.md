@@ -149,6 +149,7 @@ Internal fused expression that replaces the `CheckOverflow(Cast(expr, Decimal128
 ## greatest
 
 - Spark 3.4.3, 3.5.8, 4.0.1, 4.1.1 (audited 2026-05-27): NULL-skipping variadic. Wired as `CometScalarFunction("greatest")` to DataFusion's `GreatestFunc`. Comet does not gate input types, so interval inputs and other Spark-only orderings rely on the native UDF accepting them; no explicit fallback path.
+- Current status: `FLOAT` and `DOUBLE` arguments, and arrays and structs with a floating-point leaf, use the native `SparkGreatestLeast` UDF in both floating-point modes. It follows `SQLOrderingUtil` at any depth (all NaNs equal and greater than non-NaN values, signed zeros equal) and replaces its result only with a strictly greater argument, so the first of equal arguments is returned. Other types use DataFusion's `GreatestFunc`.
 
 ## hex
 
@@ -157,6 +158,7 @@ Internal fused expression that replaces the `CheckOverflow(Cast(expr, Decimal128
 ## least
 
 - Spark 3.4.3, 3.5.8, 4.0.1, 4.1.1 (audited 2026-05-27): mirror of `greatest`; same caveats. Spark 4.1.1 adds `contextIndependentFoldable` (no Comet impact).
+- Current status: mirror of `greatest`. Floating-point arguments, including nested ones, use `SparkGreatestLeast` and return the first of equal arguments; other types use DataFusion's `LeastFunc`.
 
 ## ln
 
@@ -234,6 +236,7 @@ Internal fused expression that replaces the `CheckOverflow(Cast(expr, Decimal128
 ## signum
 
 - Spark 3.4.3, 3.5.8, 4.0.1, 4.1.1 (audited 2026-05-27): `Signum(child)` over `DoubleType`. Spark also restricts to the two interval types via `inputTypes`; Comet handles only the `Double` case via DataFusion `signum`.
+- Spark 3.4, 3.5, 4.0, 4.1, 4.2 (2026-10-02, [#6522](https://github.com/apache/datafusion-comet/issues/6522)): `Math.signum` returns the zero it is given, so `signum(-0.0)` is `-0.0`, where DataFusion's `signum` returns `0.0`. Comet now uses its own `spark_signum` kernel for the `Double` case. Interval inputs fall back; DataFusion's `signum` failed on them at execution.
 
 ## sin
 

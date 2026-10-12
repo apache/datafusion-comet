@@ -254,7 +254,7 @@ spark_row() {
 }
 
 # Every selected row at once, each in its own copy of the tree. That is exactly
-# what CI does: seven matrix rows, seven runners, seven extracted apache-spark/
+# what CI does: nine matrix rows, nine runners, nine extracted apache-spark/
 # trees. Because each row gets a tree to itself, the per-row settings stay
 # identical to CI's -- no shared sbt server, target/ or metastore tmpdir.
 run_spark_rows() {
@@ -271,7 +271,7 @@ run_spark_rows() {
   running=""
   while IFS=$'\037' read -r name args1 args2 heap metaspace; do
     [ -n "$name" ] || continue
-    # Seven concurrent sbt processes would interleave unreadably, so each row
+    # Nine concurrent sbt processes would interleave unreadably, so each row
     # gets its own log.
     spark_row "$name" "$args1" "$args2" "$heap" "$metaspace" "$dest-$name" \
       > "$logs/$name.log" 2>&1 &
@@ -313,7 +313,7 @@ run_spark() {
     purge_partial_poms
     drop_cached_resolution "$dest"
     # Only what the selected rows need. CI compiles all three because one
-    # artifact feeds seven shards; there is no artifact here.
+    # artifact feeds nine shards; there is no artifact here.
     compile=""
     for p in $PROJECTS; do compile="$compile $p/Test/compile"; done
     say "pre-compiling test classes:$compile"
@@ -389,16 +389,25 @@ run_iceberg() {
         gradlew ":iceberg-spark:iceberg-spark-runtime-${SPARK}_${SCALA}:integrationTest"
         ;;
     esac
+    case "$target" in
+      shard-* | extensions)
+        python3 "$REPO/dev/ci/summarize-iceberg-writes.py" --title "$target" \
+          "$dest/build/comet-iceberg-writes/$target"
+        ;;
+    esac
     ok "$target took $(hms $((SECONDS - started)))"
   done
 }
 
-# Reads $dest, $spark and $SCALA from run_iceberg.
+# Reads $dest, $spark, $SCALA and $target from run_iceberg.
 gradlew() {
   (
     cd "$dest"
     # shellcheck disable=SC2031
     export SPARK_LOCAL_IP=localhost ENABLE_COMET=true ENABLE_COMET_ONHEAP=true
+    # One directory per target, emptied first, so a rerun reports only its own writes.
+    export COMET_ICEBERG_WRITE_REPORT_DIR="$dest/build/comet-iceberg-writes/$target"
+    rm -rf "$COMET_ICEBERG_WRITE_REPORT_DIR"
     ./gradlew "-DsparkVersions=$SPARK" "-DscalaVersion=$SCALA" \
       -DflinkVersions= -DkafkaVersions= "$@" -Pquick=true -x javadoc
   )

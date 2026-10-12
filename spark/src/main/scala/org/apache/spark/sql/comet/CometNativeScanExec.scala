@@ -75,6 +75,15 @@ case class CometNativeScanExec(
     with ShimStreamSourceAwareSparkPlan
     with CometScanWithPlanData {
 
+  override def sparkFallback(newChildren: Seq[SparkPlan]): SparkPlan = {
+    // AQE rewrites DPP placeholders in the live scan before transition reversion.
+    // The frozen originalPlan can still contain unexecutable SubqueryAdaptiveBroadcastExecs.
+    val restoredScan =
+      originalPlan.copy(partitionFilters = partitionFilters, dataFilters = dataFilters)
+    originalPlan.logicalLink.foreach(restoredScan.setLogicalLink)
+    restoredScan
+  }
+
   override lazy val metadata: Map[String, String] =
     if (originalPlan != null) originalPlan.metadata else Map.empty
 
@@ -278,12 +287,10 @@ case class CometNativeScanExec(
       encryptedFilePaths,
       perPartitionFilePaths = perPartitionFilePaths) {
       override def compute(split: Partition, context: TaskContext): Iterator[ColumnarBatch] = {
-        val res = super.compute(split, context)
-
-        // Report scan input metrics after the iterator is fully consumed.
+        // Register before super.compute creates the CometExecIterator, so this listener runs
+        // after the iterator's close has published the final scan metrics.
         Option(context).foreach(nativeMetrics.reportScanInputMetrics)
-
-        res
+        super.compute(split, context)
       }
     }
   }
@@ -366,12 +373,17 @@ object CometNativeScanExec {
       session: SparkSession,
       scan: CometScanExec): CometNativeScanExec = {
     // Generate unique key for this scan so PlanDataInjector can match common+partition data.
-    // Multiple scans of same table with different projections/filters get different keys.
+    // Multiple scans of same table with different projections/filters get different keys, and
+    // the op's plan_id separates scans that match on those but read different files (see
+    // PlanDataInjector.withPlanId). It must be the same key NativeScanPlanDataInjector.getKey
+    // rebuilds from nativeOp.
     // The hash is computed once here and embedded in the NativeScan proto, so executors
     // (including the native shuffle writer) rebuild the key instead of hashing per task.
     val common = nativeOp.getNativeScan.getCommon
     val sourceKeyHash = NativeScanPlanDataInjector.sourceKeyHash(common)
-    val sourceKey = NativeScanPlanDataInjector.sourceKey(common.getSource, sourceKeyHash)
+    val sourceKey = PlanDataInjector.withPlanId(
+      NativeScanPlanDataInjector.sourceKey(common.getSource, sourceKeyHash),
+      nativeOp.getPlanId)
     val opWithKey = nativeOp.toBuilder
       .setNativeScan(nativeOp.getNativeScan.toBuilder.setSourceKeyHash(sourceKeyHash))
       .build()

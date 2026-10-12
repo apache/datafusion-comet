@@ -29,15 +29,19 @@ Arrow format, allowing the Comet pipeline to take over after that, but the proce
 
 ### Apache Iceberg
 
-Comet accelerates Iceberg scans of Parquet files. See the [Iceberg Guide] for more information.
+Comet accelerates Iceberg scans of Parquet files and has an experimental, opt-in native Iceberg writer.
+See the [Iceberg Guide] and [Iceberg Writes](iceberg-writes.md) for more information.
 
-[Iceberg Guide]: iceberg.md
+[iceberg guide]: iceberg.md
 
 ### CSV
 
 Comet provides experimental Rust-based CSV scan support. When `spark.comet.scan.csv.v2.enabled` is enabled, CSV files
 are read in Rust for improved performance. This feature is experimental and performance benefits are
-workload-dependent.
+workload-dependent. Only Spark's DataSource V2 CSV scan is accelerated, and Spark reads CSV through the V1 API by
+default, so also remove `csv` from `spark.sql.sources.useV1SourceList`. Queries that use
+`input_file_name()`, `input_file_block_start()` or `input_file_block_length()` fall back to Spark's CSV
+reader, which sets the values these functions read.
 
 Alternatively, when `spark.comet.convert.csv.enabled` is enabled, data from Spark's CSV reader is immediately
 converted into Arrow format, allowing the Comet pipeline to take over after that.
@@ -47,13 +51,48 @@ converted into Arrow format, allowing the Comet pipeline to take over after that
 Comet does not provide a Rust-based JSON scan, but when `spark.comet.convert.json.enabled` is enabled, data is immediately
 converted into Arrow format, allowing the Comet pipeline to take over after that.
 
+### Other Spark inputs
+
+Comet can also convert the output of these Spark inputs to Arrow format, so that the operators
+above them can run in Comet. Only `spark.comet.convert.oneRowRelation.enabled` is on by default,
+because the row it converts has no columns.
+
+- `spark.comet.convert.range.enabled`: `spark.range` and SQL `range()`, for ranges that Comet does
+  not generate natively with `spark.comet.exec.range.enabled`.
+- `spark.comet.convert.inMemoryCache.enabled`: in-memory cached tables that Comet's native cache
+  scan does not read, such as tables cached in Spark's default format.
+- `spark.comet.convert.rdd.enabled`: a DataFrame created from an RDD of rows, for example with
+  `spark.createDataFrame(rdd, schema)`.
+- `spark.comet.convert.oneRowRelation.enabled`: the single row that a query without a `FROM`
+  clause, such as `SELECT 1`, reads.
+- `spark.comet.convert.rowDataSource.enabled`: Data Source V1 relations that are not file-based,
+  such as JDBC tables, which Spark scans with `RowDataSourceScanExec`.
+
+To convert any other leaf operator, such as the scan of a Data Source V2 connector or of a file
+format other than Parquet, JSON and CSV, set `spark.comet.sparkToColumnar.enabled=true` and name the
+operator in `spark.comet.sparkToColumnar.supportedOperatorList` by its Spark class name without the
+`Exec` suffix, such as `BatchScan` or `FileSourceScan`.
+
 ### Spark-to-Comet conversion types
 
-Spark-to-Comet conversion supports `ARRAY<STRING>` with binary string semantics, including
-nullable arrays and nullable elements, both as top-level fields and inside supported structs.
+Spark-to-Comet conversion supports `ARRAY<STRING>` and `MAP<STRING,STRING>` with binary
+string semantics, both as top-level fields and inside supported structs. Arrays and maps may
+be null; array elements and map values may also be null. Map keys must be non-null.
 This applies to Spark row and columnar inputs when conversion is enabled for the source.
-Other array element types, nested arrays, arrays of structs, maps, and non-binary string
-collations remain unsupported at this conversion boundary. Source defaults are unchanged.
+Other array element types, other map key/value types, nested collections, and non-binary
+string collations remain unsupported at this conversion boundary. Source defaults are unchanged.
+
+This includes row-backed `ExistingRDD` inputs when `spark.comet.convert.rdd.enabled=true`. Spark
+still produces the RDD rows; conversion lets eligible downstream operators execute in Comet.
+
+The same types apply to the output of typed `Dataset` operations, such as `map`, which Comet
+converts when `spark.comet.convert.typedDataset.enabled=true`. A column of any other type keeps
+the operators above the typed operation on Spark.
+
+Comet does not convert a source, or the output of a typed `Dataset` operation, when the query uses
+`input_file_name()`, `input_file_block_start()` or `input_file_block_length()`, so the operators
+above it run in Spark. These functions report the file that Spark's reader is on when Spark evaluates
+them, and the conversion and the Comet operators above it would read ahead of that.
 
 ## Data Catalogs
 
@@ -257,7 +296,10 @@ URLs.
 This is opt-in and disabled by default. Enable it by listing the schemes to treat as S3-compliant
 aliases in `spark.hadoop.fs.comet.s3Compliant.schemes` (Hadoop key
 `fs.comet.s3Compliant.schemes`), a comma-separated, case-insensitive list. This mirrors the
-existing `fs.comet.libhdfs.schemes` config.
+existing `fs.comet.libhdfs.schemes` config. The list entries are case-insensitive, but an Iceberg
+table location must write the alias in lowercase (`blob://`, not `BLOB://`): the native Iceberg
+reader opens each recorded location as written, and its S3 backend accepts only a lowercase
+scheme prefix, so Comet declines such a location up front and leaves that scan to Spark.
 
 ```shell
 --conf spark.hadoop.fs.comet.s3Compliant.schemes=blob
@@ -308,6 +350,10 @@ credential providers and options documented above also apply to alias-scheme URL
 translation feeds the native Iceberg scan; see
 [Object store configuration (S3)](iceberg.md#object-store-configuration-s3) in the Iceberg guide.
 
+A native Parquet scan whose alias-scheme paths span more than one bucket falls back to Spark. Alias
+schemes apply to native scans only: a native Iceberg write to an alias-scheme location falls back to
+iceberg-java.
+
 ### Examples
 
 The following examples demonstrate how to configure S3 access using different authentication methods.
@@ -344,71 +390,56 @@ Comet's S3 support has the following limitations:
 
 1. **Partial Hadoop S3A configuration support**: Not all Hadoop S3A configurations are currently supported. Only the configurations listed in the tables above are translated and applied to the underlying `object_store` crate.
 
-2. **Custom credential providers**: Custom implementations of AWS credential providers are not supported. The implementation only supports the standard credential providers listed in the table above. We are planning to add support for custom credential providers through a JNI-based adapter that will allow calling Java credential providers from Rust code. See [#1829](https://github.com/apache/datafusion-comet/issues/1829) for more details.
+2. **Custom credential providers**: Custom credential provider classes named in `fs.s3a.aws.credentials.provider` are not supported; only the standard providers listed in the table above are. To route credential requests through your own Java code, implement Comet's `CometS3CredentialProvider` SPI; see [S3 Credential Providers](s3-credential-providers.md). Broader Hadoop S3A integration is tracked in [#1829](https://github.com/apache/datafusion-comet/issues/1829).
 
 ## Azure
 
 Comet's Parquet scan reads Azure Data Lake Storage Gen2 (ADLS Gen2) through the
 [`object_store` crate](https://crates.io/crates/object_store), using the `abfs` and `abfss` URL schemes.
-As with S3, standard Hadoop ABFS configurations (the `fs.azure.*` keys you already set in `core-site.xml` or via `spark.hadoop.*`) are translated into the `object_store` crate's format, so existing configurations continue to work.
+The Hadoop ABFS configuration you already have (the `fs.azure.*` keys in `core-site.xml` or under `spark.hadoop.*`) authenticates the native scan as well, so an existing setup keeps working.
 
-URLs use the same shape Spark and Hadoop emit: `abfss://<container>@<account>.dfs.core.windows.net/<path>`. The account is taken from the host and the container from the URL user-info. The `wasb`, `wasbs`, `az`, `azure`, and `adl` schemes are not supported by the native scan.
+URLs use the shape Spark and Hadoop emit: `abfss://<container>@<account>.dfs.core.windows.net/<path>`. The `wasb`, `wasbs`, `az`, `azure`, and `adl` schemes are not supported by the native scan.
 
 ### Root CA Certificates
 
 Azure scans discover Root CA Certificates the same way S3 scans do. See [Root CA Certificates](#root-ca-certificates) above. The Rust-based scan uses system Root CA Certificates rather than the Java Trust Store.
 
-### Supported Authentication
+### Authentication is resolved by Hadoop
 
-Comet first calls `MicrosoftAzureBuilder::from_env()`, so any `AZURE_*` environment variables (`AZURE_CLIENT_ID`, `AZURE_TENANT_ID`, `AZURE_FEDERATED_TOKEN_FILE`, `AZURE_AUTHORITY_HOST`, `AZURE_STORAGE_*`) are honored out of the box. This is what makes AKS Workload Identity work in a stock pod with no extra configuration. Any Hadoop `fs.azure.*` keys below are then applied on top, overriding the environment.
+For each `abfs` or `abfss` path, the Spark driver asks the hadoop-azure library on its classpath which authentication mechanism applies to that container and account, and which values it needs. The question goes to the same `AbfsConfiguration` the ABFS `FileSystem` uses, so every Hadoop rule holds: account-scoped keys (`<key>.<account host>`), container-scoped keys (`<key>.<container>.<account host>`, hadoop-azure 3.4.2 and later), credential providers behind `hadoop.security.credential.provider.path` (a JCEKS keystore, for example) and `${...}` substitution behave exactly as they do for Spark's own reads. This holds for the hadoop-azure matching each Spark line's Hadoop: 3.3.4 with Spark 3.4 and 3.5, 3.4.1 with 4.0, 3.4.2 with 4.1, 3.5.0 with 4.2.
 
-| Authentication method     | Hadoop keys                                                                                                                                                            |
-| ------------------------- | ---------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| Shared account key        | `fs.azure.account.key`                                                                                                                                                 |
-| OAuth2 client credentials | `fs.azure.account.oauth2.client.id`, `fs.azure.account.oauth2.client.secret`, `fs.azure.account.oauth2.client.endpoint` (tenant id is extracted from the endpoint URL) |
-| Managed identity (MSI)    | `fs.azure.account.oauth2.msi.tenant`, `fs.azure.account.oauth2.msi.endpoint`, `fs.azure.account.oauth2.msi.authority`                                                  |
-| Workload Identity         | `fs.azure.account.oauth2.client.id`, `fs.azure.account.oauth2.msi.tenant`, `fs.azure.account.oauth2.token.file`                                                        |
-| SAS token                 | `fs.azure.sas.<container>.<account>`                                                                                                                                   |
+The native scan receives the resolved values and builds the `object_store` client from them. It reads no `fs.azure.*` key of its own. A scan whose files span more than one ABFS container or account, or that mixes `abfs`/`abfss` paths with other schemes, falls back to Spark's own scan.
 
-### Hadoop-to-object_store key mapping
+hadoop-azure must be on the driver classpath. It already is whenever Spark can list the path. When it is missing, the scan fails with an error that says so.
 
-Internally, each Hadoop key is translated into a specific `AzureConfigKey` on the underlying `object_store` `MicrosoftAzureBuilder`:
+#### Mechanisms
 
-| Hadoop key (account-scoped suffix omitted) | `AzureConfigKey`         |
-| ------------------------------------------ | ------------------------ |
-| `fs.azure.account.key`                     | `AccessKey`              |
-| `fs.azure.account.oauth2.client.id`        | `ClientId`               |
-| `fs.azure.account.oauth2.client.secret`    | `ClientSecret`           |
-| `fs.azure.account.oauth2.client.endpoint`  | `AuthorityId` (from URL) |
-| `fs.azure.account.oauth2.msi.tenant`       | `AuthorityId`            |
-| `fs.azure.account.oauth2.msi.endpoint`     | `MsiEndpoint`            |
-| `fs.azure.account.oauth2.msi.authority`    | `AuthorityHost`          |
-| `fs.azure.account.oauth2.token.file`       | `FederatedTokenFile`     |
-| `fs.azure.sas.<container>.<account>`       | `SasKey`                 |
+| Hadoop mechanism                                                                                                               | Native scan   | Keys the native scan receives                                                                                                                                                                                                                                                |
+| ------------------------------------------------------------------------------------------------------------------------------ | ------------- | ---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `SharedKey` (Hadoop's default when `fs.azure.account.auth.type` is unset), with any configured `fs.azure.account.keyprovider`  | Supported     | `fs.azure.account.key`. Hadoop's key provider runs on the driver and the key it returns is forwarded                                                                                                                                                                         |
+| `OAuth` with `ClientCredsTokenProvider`                                                                                        | Supported     | `fs.azure.account.oauth2.client.id`, `fs.azure.account.oauth2.client.secret`, `fs.azure.account.oauth2.client.endpoint` (the tenant and authority host come from the endpoint URL)                                                                                           |
+| `OAuth` with `MsiTokenProvider`                                                                                                | Supported     | `fs.azure.account.oauth2.msi.endpoint`, plus `fs.azure.account.oauth2.client.id` when set. `fs.azure.account.oauth2.msi.tenant` and `fs.azure.account.oauth2.msi.authority` are accepted but unused: `object_store`'s IMDS provider sends only the client id to the endpoint |
+| `OAuth` with `WorkloadIdentityTokenProvider` (hadoop-azure 3.4.1 and later)                                                    | Supported     | `fs.azure.account.oauth2.client.id`, `fs.azure.account.oauth2.msi.tenant`, `fs.azure.account.oauth2.token.file`, `fs.azure.account.oauth2.msi.authority` (the last two take Hadoop's defaults when unset)                                                                    |
+| `SAS` with the fixed token (hadoop-azure 3.4.1 and later)                                                                      | Supported     | `fs.azure.sas.fixed.token`                                                                                                                                                                                                                                                   |
+| `OAuth` with `RefreshTokenBasedTokenProvider` or `UserPasswordTokenProvider`                                                   | Not supported |                                                                                                                                                                                                                                                                              |
+| `SAS` with a `fs.azure.sas.token.provider.type` class                                                                          | Not supported |                                                                                                                                                                                                                                                                              |
+| `fs.azure.account.auth.type=Custom`                                                                                            | Not supported |                                                                                                                                                                                                                                                                              |
+| `WorkloadIdentityTokenProvider` with a `fs.azure.account.oauth2.client.assertion.provider.type` (hadoop-azure 3.5.0 and later) | Not supported |                                                                                                                                                                                                                                                                              |
+| `UserboundSASWithOAuth` (hadoop-azure 3.5.0 and later)                                                                         | Not supported |                                                                                                                                                                                                                                                                              |
 
-Anything beyond these keys is not translated and falls through to whatever `from_env()` or the URL itself provided.
+Custom provider classes hand each token request to Java code the native scan cannot call, and the refresh token and user password flows have no `object_store` counterpart. When Hadoop selects one of these, the scan fails with an error naming the auth type and, where one is configured, the class. Configure a supported mechanism for that account, or keep the path on Spark's own scan. Values arrive as Hadoop resolved them, trimmed and defaulted where the ABFS driver trims and defaults them, so the store sees what the driver would have used.
 
-### Tenant id resolution
+Client credentials and Workload Identity token requests go over HTTPS only. The managed identity request goes to the IMDS endpoint over HTTP, as Hadoop's does. For client credentials, Hadoop posts to `fs.azure.account.oauth2.client.endpoint` as given, while `object_store` posts to `<authority host>/<tenant>/oauth2/v2.0/token`. Comet takes the tenant from the path segment before the last `oauth2` and everything before that segment as the authority host, so a v1 `/oauth2/token` endpoint and a proxy with a path prefix both resolve. The token request path is always the v2.0 one. An `http://` endpoint fails.
 
-`AuthorityId` (the AAD tenant id) can be supplied in two ways:
+### Environment variables
 
-- **Directly**, via `fs.azure.account.oauth2.msi.tenant`.
-- **Indirectly**, via `fs.azure.account.oauth2.client.endpoint`, which is a full token URL such as `https://login.microsoftonline.com/<tenant>/oauth2/token`. Comet extracts the tenant id from the first path segment of that URL.
+The `AZURE_*` variables (`AZURE_CLIENT_ID`, `AZURE_TENANT_ID`, `AZURE_FEDERATED_TOKEN_FILE`, `AZURE_STORAGE_ACCOUNT_KEY`, `AZURE_USE_AZURE_CLI`, and the others `object_store` reads) and `IDENTITY_ENDPOINT` are read only when Hadoop configures no authentication for the account at all: none of `fs.azure.account.auth.type`, `fs.azure.account.key`, `fs.azure.account.keyprovider`, `fs.azure.shellkeyprovider.script`, `fs.azure.account.oauth.provider.type`, `fs.azure.sas.token.provider.type`, `fs.azure.sas.fixed.token` or any `fs.azure.account.oauth2.*` key resolves for it. That case is what lets AKS Workload Identity work with no Hadoop configuration for tables whose files Spark does not list through Hadoop, such as Iceberg tables. A plain Parquet path still needs Hadoop configured for Spark's own listing.
 
-If both are set, the value from `msi.tenant` wins.
+Once Hadoop names anything, only the resolved values reach the store. A resolution error (a missing mandatory key, an invalid account key, an unknown provider class) fails the scan with Hadoop's exception. Messages that could quote a credential, such as the key provider's, are kept in the Spark driver log and the scan error names the exception class. The environment is never a fallback. One read happens inside `object_store` rather than Comet: under a resolved managed identity, its IMDS provider picks up `IDENTITY_HEADER` when it fetches a token.
 
-### Account-scoped key lookup order
+### Credentials in transit
 
-Account-scoped keys take precedence over global ones, mirroring Hadoop ABFS's own precedence. For each Hadoop key above, Comet probes the following names in order and uses the first match:
-
-1. `<key>.<account>.dfs.core.windows.net`
-2. `<key>.<account>.blob.core.windows.net`
-3. `<key>.<account>`
-4. `<key>` (unscoped / global)
-
-The SAS namespace follows the same shape with the container inlined into the key name: `fs.azure.sas.<container>.<account>.dfs.core.windows.net`, then `fs.azure.sas.<container>.<account>.blob.core.windows.net`, then `fs.azure.sas.<container>.<account>`.
-
-The Hadoop values, when present, override anything already picked up from the `AZURE_*` environment.
+The resolved values travel in the native plan from the driver to the executors, as the static `fs.s3a.access.key` and `fs.s3a.secret.key` values of an S3 configuration do. Spark's RPC channel is plaintext by default. `spark.network.crypto.enabled` or `spark.ssl.rpc.enabled` protects it. See [Wire encryption](s3-credential-providers.md#wire-encryption).
 
 ### Examples
 
@@ -423,45 +454,65 @@ $SPARK_HOME/bin/spark-shell \
 
 **Example 2: Workload Identity (AKS)**
 
-In an AKS pod with Workload Identity enabled, the `AZURE_*` environment variables injected by the webhook are picked up automatically, so no Comet-specific configuration is required. To set the values explicitly instead:
+In an AKS pod with Workload Identity enabled and no `fs.azure.*` authentication configured, the `AZURE_*` variables the webhook injects are picked up, so nothing Comet-specific is needed. To configure it through Hadoop instead (hadoop-azure 3.4.1 and later):
 
 ```shell
 $SPARK_HOME/bin/spark-shell \
 ...
+--conf spark.hadoop.fs.azure.account.auth.type.myaccount.dfs.core.windows.net=OAuth \
+--conf spark.hadoop.fs.azure.account.oauth.provider.type.myaccount.dfs.core.windows.net=org.apache.hadoop.fs.azurebfs.oauth2.WorkloadIdentityTokenProvider \
 --conf spark.hadoop.fs.azure.account.oauth2.client.id.myaccount.dfs.core.windows.net=<client-id> \
---conf spark.hadoop.fs.azure.account.oauth2.msi.tenant.myaccount.dfs.core.windows.net=<tenant-id> \
---conf spark.hadoop.fs.azure.account.oauth2.token.file.myaccount.dfs.core.windows.net=/var/run/secrets/azure/tokens/azure-identity-token
+--conf spark.hadoop.fs.azure.account.oauth2.msi.tenant.myaccount.dfs.core.windows.net=<tenant-id>
 ...
 ```
 
-**Example 3: OAuth2 client credentials with tenant embedded in the endpoint URL**
+The token file defaults to `/var/run/secrets/azure/tokens/azure-identity-token`, the path AKS mounts. Set `fs.azure.account.oauth2.token.file` for another location.
 
-If only `fs.azure.account.oauth2.client.endpoint` is set, the tenant id is parsed from the endpoint path automatically — there is no need to set `msi.tenant` separately.
+**Example 3: OAuth2 client credentials**
+
+The tenant comes from the endpoint URL, so `fs.azure.account.oauth2.msi.tenant` is not needed:
 
 ```shell
 $SPARK_HOME/bin/spark-shell \
 ...
+--conf spark.hadoop.fs.azure.account.auth.type.myaccount.dfs.core.windows.net=OAuth \
+--conf spark.hadoop.fs.azure.account.oauth.provider.type.myaccount.dfs.core.windows.net=org.apache.hadoop.fs.azurebfs.oauth2.ClientCredsTokenProvider \
 --conf spark.hadoop.fs.azure.account.oauth2.client.id.myaccount.dfs.core.windows.net=<client-id> \
 --conf spark.hadoop.fs.azure.account.oauth2.client.secret.myaccount.dfs.core.windows.net=<client-secret> \
 --conf spark.hadoop.fs.azure.account.oauth2.client.endpoint.myaccount.dfs.core.windows.net=https://login.microsoftonline.com/<tenant-id>/oauth2/token
 ...
 ```
 
-**Example 4: SAS token scoped to a container**
+**Example 4: SAS token**
+
+Hadoop's ABFS driver (3.4.1 and later) reads the fixed token under `fs.azure.account.auth.type=SAS`, and the native scan receives the same value, so one configuration serves the driver and the executors:
 
 ```shell
 $SPARK_HOME/bin/spark-shell \
 ...
---conf spark.hadoop.fs.azure.sas.mycontainer.myaccount.dfs.core.windows.net='sv=2020-08-04&sig=...'
+--conf spark.hadoop.fs.azure.account.auth.type.myaccount.dfs.core.windows.net=SAS \
+--conf spark.hadoop.fs.azure.sas.fixed.token.myaccount.dfs.core.windows.net='sv=2020-08-04&sig=...'
 ...
 ```
 
+To give one container its own token on hadoop-azure 3.4.2 and later, set `fs.azure.sas.fixed.token.mycontainer.myaccount.dfs.core.windows.net`. Hadoop reads it before the account-level key, and the native scan receives whichever one Hadoop picked. The OAuth keys take the same container-scoped form on those versions.
+
+### Changes from Comet 1.1
+
+Comet 1.1 started from the environment and overlaid the Hadoop keys it found by probing the account name under two endpoint suffixes and bare. Now Hadoop decides. What this changes:
+
+- Container-scoped keys work on hadoop-azure 3.4.2 and later, as they do for Spark.
+- Transport variables such as `AZURE_STORAGE_ENDPOINT` and `AZURE_ALLOW_HTTP` no longer apply beside a Hadoop mechanism. They are read only when Hadoop configures none.
+- The WASB key `fs.azure.sas.<container>.<account>`, which the ABFS driver never read, is no longer read by the native scan either. Use `fs.azure.sas.fixed.token`, which the native scan now reads.
+- A lower-case `oauth` auth type, or OAuth keys without `fs.azure.account.auth.type`, fail the way they fail for Spark. In the second case Hadoop defaults to `SharedKey` and the key provider fails. On hadoop-azure 3.4.1 and later the driver log names the missing key. 3.3.4 reports only `Failure to initialize configuration`.
+- A configured mechanism the native scan cannot build fails with an error instead of silently reading the environment.
+
 ### Limitations
 
-1. **Partial Hadoop ABFS configuration support**: Only the `fs.azure.*` keys listed above are translated and applied to the underlying `object_store` crate.
+1. **Authentication keys only**: Only the keys in the table above reach the native store. Other `fs.azure.*` settings (read-ahead, retries, HTTP tuning) do not apply to the native scan.
 
 2. **Supported schemes**: Only `abfs` and `abfss` are routed to the native Azure store. `wasb[s]`, `az`, `azure`, and `adl` are not supported. `wasb[s]` is not recognised by `object_store` at all; `az`, `azure`, and `adl` are recognised by `object_store` but treat the URL host as the _container_ rather than the _account_, which is incompatible with Hadoop's account-scoped configuration keys.
 
 3. **URL shape**: URLs must include the account in the host, i.e. `abfss://<container>@<account>.dfs.core.windows.net/<path>`. Bare `abfs://<container>/<path>` (fsspec-style, no account in the URL) is not supported because Comet cannot resolve the storage account name.
 
-4. **Endpoint suffixes for account-scoped lookup**: Comet probes for account-scoped keys under `dfs.core.windows.net` and `blob.core.windows.net`. Custom or sovereign-cloud endpoint suffixes (e.g. `dfs.core.chinacloudapi.cn`, Fabric endpoints) are not probed; use the unscoped `<key>.<account>` form for those.
+4. **Endpoint hosts**: `object_store` builds an Azure store only for hosts under `dfs.core.windows.net`, `blob.core.windows.net`, `dfs.fabric.microsoft.com` and `blob.fabric.microsoft.com`. Sovereign-cloud endpoints such as `dfs.core.chinacloudapi.cn` are not supported, whatever keys are configured for them.

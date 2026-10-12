@@ -138,6 +138,27 @@ class IcebergReflectionSuite extends AnyFunSuite {
     assert(ex.getCause.getMessage == "boom")
   }
 
+  test("taskCommitFileLocations reads plain SparkWrite task commits") {
+    val commit = new PlainTaskCommit(
+      Array(
+        new LocationFile("s3://bucket/data/a.parquet"),
+        new LocationFile("s3://bucket/data/b.parquet")))
+    assert(
+      IcebergReflection.taskCommitFileLocations(commit) ==
+        Seq("s3://bucket/data/a.parquet", "s3://bucket/data/b.parquet"))
+  }
+
+  test("taskCommitFileLocations reads new files from position-delta task commits") {
+    val commit = new DeltaTaskCommit(
+      Array(new LocationFile("s3://bucket/data/a.parquet")),
+      Array(new LocationFile("s3://bucket/delete/d.parquet")),
+      Array(new LocationFile("s3://bucket/delete/old.parquet")))
+
+    assert(
+      IcebergReflection.taskCommitFileLocations(commit) ==
+        Seq("s3://bucket/data/a.parquet", "s3://bucket/delete/d.parquet"))
+  }
+
   test("getFileFormat reads format() when declared") {
     val file = new FormatFile("PARQUET")
     assert(IcebergReflection.getFileFormat(classOf[FormatFile], file) == Some("PARQUET"))
@@ -230,6 +251,24 @@ class IcebergReflectionSuite extends AnyFunSuite {
     assert(IcebergReflection.getEncryptionManager(new NoEncryptionMethodTable).isEmpty)
   }
 
+  class CustomLocationProviderTable {
+    def locationProvider(): AnyRef = new Object
+  }
+
+  class NoLocationProviderTable
+
+  test("getLocationProvider resolves the provider the table actually installed") {
+    val custom = IcebergReflection.getLocationProvider(new CustomLocationProviderTable)
+    assert(custom.isDefined)
+    assert(custom.get.getClass.getName != IcebergReflection.ClassNames.DEFAULT_LOCATION_PROVIDER)
+  }
+
+  test("getLocationProvider returns None when locationProvider() cannot be resolved") {
+    // The write gate treats None as fail-closed, so a table type without the accessor (or a
+    // future rename) declines the native write rather than assuming DefaultLocationProvider.
+    assert(IcebergReflection.getLocationProvider(new NoLocationProviderTable).isEmpty)
+  }
+
   test("executor-side reflection surface resolves against the linked Iceberg") {
     // The eligibility gate declines a native write when any class, method, or constructor used
     // by the executor-side commit-message assembly fails to resolve (it would otherwise be a
@@ -289,6 +328,19 @@ class IcebergReflectionSuite extends AnyFunSuite {
     // The partition type Comet serializes alongside the rewritten spec has to agree with what
     // iceberg-rust derives for Transform::Unknown, which is string.
     assert(spec.partitionType().fields().get(0).`type`().toString == "string")
+  }
+
+  class PlainTaskCommit(taskFiles: Array[LocationFile]) {
+    def files(): Array[LocationFile] = taskFiles
+  }
+
+  class DeltaTaskCommit(
+      data: Array[LocationFile],
+      deletes: Array[LocationFile],
+      rewrittenDeletes: Array[LocationFile]) {
+    def dataFiles(): Array[LocationFile] = data
+    def deleteFiles(): Array[LocationFile] = deletes
+    def rewrittenDeleteFiles(): Array[LocationFile] = rewrittenDeletes
   }
 
   /** Mimics a newer Iceberg ContentFile, which exposes location(). */

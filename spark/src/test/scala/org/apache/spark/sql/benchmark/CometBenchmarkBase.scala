@@ -62,6 +62,9 @@ trait CometBenchmarkBase
       .set(
         "spark.shuffle.manager",
         "org.apache.spark.sql.comet.execution.shuffle.CometShuffleManager")
+      // Off-heap memory is disabled, so Comet runs in on-heap mode, which must be enabled
+      // explicitly or Comet stays disabled.
+      .set("spark.comet.exec.onHeap.enabled", "true")
 
     val sparkSession = SparkSession
       .builder()
@@ -76,6 +79,11 @@ trait CometBenchmarkBase
     sparkSession.conf.set(CometConf.COMET_EXEC_ENABLED.key, "false")
     // Benchmarks use invalid input values that should produce NULL, not exceptions
     sparkSession.conf.set(SQLConf.ANSI_ENABLED.key, "false")
+    // Comet falls back to Spark for any Parquet scan of a ShortType column unless this check is
+    // disabled, because the column may hold an unsigned UINT_8. Benchmark tables are written by
+    // Spark, where ShortType is always a signed INT16, so the check only turns Comet cases that
+    // read a ShortType column into Spark measurements.
+    sparkSession.conf.set(CometConf.COMET_PARQUET_UNSIGNED_SMALL_INT_CHECK.key, "false")
 
     sparkSession
   }
@@ -103,7 +111,7 @@ trait CometBenchmarkBase
       // generator, so that results are comparable across runs. Seeding a driver-side `Random`
       // would not work here: the closure runs per row on the executor.
       spark
-        .range(values)
+        .range(values.toLong)
         .map(i =>
           if (useDictionary) CometBenchmarkBase.mix64(i) % 5 else CometBenchmarkBase.mix64(i))
         .createOrReplaceTempView(tbl)
@@ -252,7 +260,7 @@ trait CometBenchmarkBase
    * the two, and writing through it keeps the warning ordered against the results table that
    * `Benchmark.run` writes to the same stream.
    */
-  private def warn(benchmark: Benchmark, message: String): Unit = {
+  protected def warn(benchmark: Benchmark, message: String): Unit = {
     val border = "=" * 80
     benchmark.out.println(s"\n$border\n$message\n$border")
   }
@@ -308,19 +316,36 @@ trait CometBenchmarkBase
     saveAsEncryptedParquetV1Table(testDf, dir.getCanonicalPath + "/parquetV1")
   }
 
+  /**
+   * The catalog name the Iceberg benchmarks register, unless one of them asks for another.
+   * `final` so that it is a compile-time constant and a subclass field can initialise from it.
+   */
+  protected final val defaultIcebergCatalog = "benchmark_cat"
+
+  /**
+   * Registers `catalog` as a Hadoop catalog rooted at `warehouseDir`.
+   *
+   * Every Iceberg benchmark needs these three settings and the same three lines were being
+   * repeated in each of them, which is how one of them came to register `bench_cat` while the
+   * rest register `benchmark_cat`.
+   */
+  protected def configureIcebergHadoopCatalog(
+      warehouseDir: File,
+      catalog: String = defaultIcebergCatalog): Unit = {
+    spark.conf.set(s"spark.sql.catalog.$catalog", "org.apache.iceberg.spark.SparkCatalog")
+    spark.conf.set(s"spark.sql.catalog.$catalog.type", "hadoop")
+    spark.conf.set(s"spark.sql.catalog.$catalog.warehouse", warehouseDir.getAbsolutePath)
+  }
+
   protected def prepareIcebergTable(
       dir: File,
       df: DataFrame,
       tableName: String = "icebergTable",
       partition: Option[String] = None): Unit = {
     val warehouseDir = new File(dir, "iceberg-warehouse")
+    configureIcebergHadoopCatalog(warehouseDir)
 
-    // Configure Hadoop catalog (same pattern as CometIcebergNativeSuite)
-    spark.conf.set("spark.sql.catalog.benchmark_cat", "org.apache.iceberg.spark.SparkCatalog")
-    spark.conf.set("spark.sql.catalog.benchmark_cat.type", "hadoop")
-    spark.conf.set("spark.sql.catalog.benchmark_cat.warehouse", warehouseDir.getAbsolutePath)
-
-    val fullTableName = s"benchmark_cat.db.$tableName"
+    val fullTableName = s"$defaultIcebergCatalog.db.$tableName"
 
     // Drop table if exists
     spark.sql(s"DROP TABLE IF EXISTS $fullTableName")
@@ -374,7 +399,7 @@ trait CometBenchmarkBase
 
     val div = if (useDictionary) 5 else values
     spark
-      .range(values)
+      .range(values.toLong)
       .map(_ % div)
       .select((($"value" - 500) / 100.0) cast decimal as Symbol("dec"))
   }

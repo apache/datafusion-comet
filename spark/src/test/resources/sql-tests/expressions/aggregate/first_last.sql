@@ -70,11 +70,16 @@ CREATE TABLE test_types(
   grp string
 ) USING parquet
 
+-- first/last IGNORE NULLS are non-deterministic when a group has more than one non-null value,
+-- because the result depends on intra-group row order, which is not defined and can differ
+-- between Spark and Comet. To keep the multi-type queries below comparable across engines, each
+-- group has at most one non-null value per column (surrounded by nulls so null-skipping is still
+-- exercised); group 'b' is entirely null.
 statement
 INSERT INTO test_types VALUES
   (NULL, NULL,  NULL,  NULL,  NULL,  'a'),
   (1,    100,   1.5,   'foo', true,  'a'),
-  (2,    200,   2.5,   'bar', false, 'a'),
+  (NULL, NULL,  NULL,  NULL,  NULL,  'a'),
   (NULL, NULL,  NULL,  NULL,  NULL,  'b'),
   (NULL, NULL,  NULL,  NULL,  NULL,  'b')
 
@@ -183,7 +188,9 @@ SELECT first(val) IGNORE NULLS FROM test_single_null
 -- first IGNORE NULLS: multiple data types
 -- ============================================================
 
-query expect_fallback(SortAggregate is not supported)
+-- Spark plans this as SortAggregateExec (the string buffer is not hash-friendly), which Comet
+-- now runs natively.
+query
 SELECT grp,
   first(i_val) IGNORE NULLS,
   first(l_val) IGNORE NULLS,
@@ -327,7 +334,9 @@ SELECT last(val) IGNORE NULLS FROM test_single_null
 -- last IGNORE NULLS: multiple data types
 -- ============================================================
 
-query expect_fallback(SortAggregate is not supported)
+-- Spark plans this as SortAggregateExec (the string buffer is not hash-friendly), which Comet
+-- now runs natively.
+query
 SELECT grp,
   last(i_val) IGNORE NULLS,
   last(l_val) IGNORE NULLS,

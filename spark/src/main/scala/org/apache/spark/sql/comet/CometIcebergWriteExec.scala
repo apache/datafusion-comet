@@ -19,17 +19,18 @@
 
 package org.apache.spark.sql.comet
 
+import java.util.concurrent.atomic.AtomicReference
+
 import org.apache.spark.TaskContext
 import org.apache.spark.rdd.RDD
 import org.apache.spark.sql.catalyst.InternalRow
-import org.apache.spark.sql.catalyst.expressions.{Attribute, AttributeReference}
+import org.apache.spark.sql.catalyst.expressions.Attribute
 import org.apache.spark.sql.catalyst.expressions.UnsafeProjection
 import org.apache.spark.sql.comet.execution.arrow.CometArrowStream
 import org.apache.spark.sql.comet.util.{Utils => CometUtils}
 import org.apache.spark.sql.connector.write.{BatchWrite, WriterCommitMessage}
 import org.apache.spark.sql.execution.{SparkPlan, UnaryExecNode}
 import org.apache.spark.sql.execution.metric.{SQLMetric, SQLMetrics}
-import org.apache.spark.sql.types.BinaryType
 import org.apache.spark.sql.vectorized.ColumnarBatch
 import org.apache.spark.util.TaskFailureListener
 
@@ -52,8 +53,12 @@ import org.apache.comet.serde.OperatorOuterClass.Operator
  * @param nativeOp
  *   Template operator carrying the `IcebergWrite` proto. Per-task `partition_id` /
  *   `task_attempt_id` get stamped on a copy at execution time.
+ * @param originalPlan
+ *   The JVM Iceberg write operator restored when Comet reverts a transition-heavy stage.
  * @param child
  *   Comet native child (must be a [[CometNativeExec]] so columnar batches flow through FFI).
+ * @param output
+ *   Commit-message output attributes copied from the JVM Iceberg write plan.
  * @param batchWrite
  *   Shared with the outer [[IcebergCommitExec]] -- the same instance the strategy materialised
  *   via `write.toBatch`. Used here only to provide the `dataLocation` / partition spec needed by
@@ -64,19 +69,14 @@ import org.apache.comet.serde.OperatorOuterClass.Operator
  */
 case class CometIcebergWriteExec(
     nativeOp: Operator,
+    @transient override val originalPlan: IcebergWriteExec,
     child: SparkPlan,
+    override val output: Seq[Attribute],
     @transient batchWrite: BatchWrite,
     @transient table: AnyRef,
     partitionSpecId: Int)
     extends CometNativeExec
     with UnaryExecNode {
-
-  override def originalPlan: SparkPlan = child
-
-  // Same output schema as IcebergWriteExec so the outer IcebergCommitExec consumes the
-  // commit messages identically regardless of which inner exec emitted them.
-  override def output: Seq[Attribute] = Seq(
-    AttributeReference(IcebergWriteExec.CommitMessageColumn, BinaryType, nullable = false)())
 
   // Native exec emits a single Binary column; the surrounding command framework expects rows, so
   // the outer commit exec calls executeCollect on us. supportsColumnar = false keeps Spark from
@@ -305,7 +305,10 @@ case class CometIcebergWriteExec(
         require(
           batch.numCols() == 2,
           s"iceberg_write expected 2 output columns per task, got ${batch.numCols()}")
-        cleanup.own(CometIcebergWriteExec.decodeLocations(batch.column(1).getBinary(0)))
+        CometIcebergWriteExec.beforeNativeHandoff()
+        val locations = CometIcebergWriteExec.decodeLocations(batch.column(1).getBinary(0))
+        cleanup.own(locations)
+        CometIcebergWriteExec.afterNativeHandoff(locations)
         batch.column(0).getBinary(0)
       } finally {
         batch.close()
@@ -316,6 +319,37 @@ case class CometIcebergWriteExec(
 }
 
 object CometIcebergWriteExec {
+
+  // Local-executor test hook after the native output batch arrives but before the JVM decodes and
+  // takes cleanup ownership of its locations. The callback is absent outside a scoped test.
+  private val preHandoffFailpoint = new AtomicReference[() => Unit]()
+
+  private[apache] def withPreNativeHandoffFailpoint[T](callback: () => Unit)(body: => T): T = {
+    val previous = preHandoffFailpoint.getAndSet(callback)
+    try body
+    finally preHandoffFailpoint.set(previous)
+  }
+
+  private[comet] def beforeNativeHandoff(): Unit = {
+    val callback = preHandoffFailpoint.get()
+    if (callback != null) callback()
+  }
+
+  // Local-executor test hook for the boundary between owning the native payload's paths and
+  // decoding its manifest. The callback is absent outside a scoped test invocation.
+  private val handoffFailpoint = new AtomicReference[Seq[String] => Unit]()
+
+  private[apache] def withPostNativeHandoffFailpoint[T](callback: Seq[String] => Unit)(
+      body: => T): T = {
+    val previous = handoffFailpoint.getAndSet(callback)
+    try body
+    finally handoffFailpoint.set(previous)
+  }
+
+  private[comet] def afterNativeHandoff(locations: Seq[String]): Unit = {
+    val callback = handoffFailpoint.get()
+    if (callback != null) callback(locations)
+  }
 
   /**
    * Decode the `written_file_locations` column written by `encode_locations` in
@@ -373,7 +407,8 @@ object CometIcebergWriteExec {
     /** Take ownership of the locations the native writer reported. */
     def own(written: Seq[String]): Unit = locations = written
 
-    override def onTaskFailure(context: TaskContext, error: Throwable): Unit =
-      IcebergReflection.deleteFilesQuietly(io, locations, describeTask)
+    override def onTaskFailure(context: TaskContext, error: Throwable): Unit = {
+      val _ = IcebergReflection.deleteFilesQuietly(io, locations, describeTask)
+    }
   }
 }

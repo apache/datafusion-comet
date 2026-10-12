@@ -15,7 +15,8 @@
 -- specific language governing permissions and limitations
 -- under the License.
 
--- Test RLIKE via JVM regex engine
+-- Test RLIKE dispatcher patterns and the native empty-pattern case
+-- Raw literals keep Spark from dropping regex backslashes such as '\d'.
 
 statement
 CREATE TABLE test_rlike_java(s string) USING parquet
@@ -23,27 +24,27 @@ CREATE TABLE test_rlike_java(s string) USING parquet
 statement
 INSERT INTO test_rlike_java VALUES ('hello'), ('12345'), (''), (NULL), ('Hello World'), ('abc123'), ('aa'), ('ab')
 
-query
-SELECT s RLIKE '^\d+$' FROM test_rlike_java
+query expect_dispatch(rlike)
+SELECT s RLIKE r'^\d+$' FROM test_rlike_java
 
-query
+query expect_dispatch(rlike)
 SELECT s RLIKE '^[a-z]+$' FROM test_rlike_java
 
-query
+query expect_native(rlike)
 SELECT s RLIKE '' FROM test_rlike_java
 
 -- backreference (Java-only)
-query
-SELECT s RLIKE '^(\w)\1$' FROM test_rlike_java
+query expect_dispatch(rlike)
+SELECT s RLIKE r'^(\w)\1$' FROM test_rlike_java
 
 -- lookahead (Java-only)
-query
-SELECT s RLIKE 'abc(?=\d)' FROM test_rlike_java
+query expect_dispatch(rlike)
+SELECT s RLIKE r'abc(?=\d)' FROM test_rlike_java
 
 -- embedded flags (Java-only)
-query
+query expect_dispatch(rlike)
 SELECT s RLIKE '(?i)hello' FROM test_rlike_java
 
--- literal arguments
+-- Literal arguments mix native (empty pattern) and dispatched RLIKE, so only check parity.
 query
-SELECT 'hello' RLIKE '^[a-z]+$', '12345' RLIKE '^\d+$', '' RLIKE '', NULL RLIKE 'a'
+SELECT 'hello' RLIKE '^[a-z]+$', '12345' RLIKE r'^\d+$', '' RLIKE '', NULL RLIKE 'a'

@@ -33,15 +33,16 @@ import org.apache.spark.sql._
 import org.apache.spark.sql.catalyst.{FunctionIdentifier, TableIdentifier}
 import org.apache.spark.sql.catalyst.catalog.{BucketSpec, CatalogStatistics, CatalogTable}
 import org.apache.spark.sql.catalyst.expressions.{DynamicPruningExpression, Expression, ExpressionInfo, Hex, Literal}
-import org.apache.spark.sql.catalyst.expressions.aggregate.{AggregateMode, BloomFilterAggregate}
+import org.apache.spark.sql.catalyst.expressions.aggregate.{AggregateMode, BloomFilterAggregate, Final}
+import org.apache.spark.sql.catalyst.plans.logical.Expand
 import org.apache.spark.sql.comet._
 import org.apache.spark.sql.comet.execution.shuffle.{CometColumnarShuffle, CometNativeShuffle, CometShuffleExchangeExec}
 import org.apache.spark.sql.connector.catalog.InMemoryTableCatalog
 import org.apache.spark.sql.execution._
-import org.apache.spark.sql.execution.adaptive.{AdaptiveSparkPlanExec, BroadcastQueryStageExec}
-import org.apache.spark.sql.execution.columnar.CometInMemoryRelationHelper
+import org.apache.spark.sql.execution.adaptive.{AdaptiveSparkPlanExec, AQEShuffleReadExec, BroadcastQueryStageExec, LogicalQueryStage}
+import org.apache.spark.sql.execution.columnar.{CometInMemoryRelationHelper, InMemoryTableScanExec}
 import org.apache.spark.sql.execution.datasources.parquet.ParquetFileFormat
-import org.apache.spark.sql.execution.exchange.{BroadcastExchangeExec, BroadcastExchangeLike, ReusedExchangeExec, ShuffleExchangeExec}
+import org.apache.spark.sql.execution.exchange.{BroadcastExchangeExec, BroadcastExchangeLike, ReusedExchangeExec, ShuffleExchangeExec, ShuffleExchangeLike}
 import org.apache.spark.sql.execution.joins.{BroadcastHashJoinExec, BroadcastNestedLoopJoinExec, CartesianProductExec, SortMergeJoinExec}
 import org.apache.spark.sql.execution.reuse.ReuseExchangeAndSubquery
 import org.apache.spark.sql.execution.window.WindowExec
@@ -51,8 +52,9 @@ import org.apache.spark.sql.internal.SQLConf.SESSION_LOCAL_TIMEZONE
 import org.apache.spark.sql.types._
 import org.apache.spark.unsafe.types.UTF8String
 
-import org.apache.comet.{CometConf, CometExecIterator, ExtendedExplainInfo}
+import org.apache.comet.{CometConf, CometExecIterator, CometNativeException, ExtendedExplainInfo}
 import org.apache.comet.CometSparkSessionExtensions.{isSpark35Plus, isSpark40Plus, isSpark41Plus, isSpark42Plus}
+import org.apache.comet.rules.CometCoalesceShufflePartitions
 import org.apache.comet.serde.Config.ConfigMap
 import org.apache.comet.testing.{DataGenOptions, ParquetGenerator, SchemaGenOptions}
 
@@ -76,16 +78,81 @@ class CometExecSuite extends CometTestBase {
       ConfigMap.parseFrom(protobuf)
     }
 
-    // test not setting the config
-    val deserialized: ConfigMap = roundtrip
-    assert(null == deserialized.getEntriesMap.get(CometConf.COMET_EXPLAIN_NATIVE_ENABLED.key))
-
     // test explicitly setting the config
     for (value <- Seq("true", "false")) {
       withSQLConf(CometConf.COMET_EXPLAIN_NATIVE_ENABLED.key -> value) {
         val deserialized: ConfigMap = roundtrip
         assert(
           value == deserialized.getEntriesMap.get(CometConf.COMET_EXPLAIN_NATIVE_ENABLED.key))
+      }
+    }
+  }
+
+  test("SQLConf serde resolves the configs that native code parses") {
+    def entries = ConfigMap.parseFrom(CometExecIterator.serializeCometSQLConfs()).getEntriesMap
+    val flags = Seq(
+      CometConf.COMET_DEBUG_ENABLED,
+      CometConf.COMET_DEBUG_MEMORY_ENABLED,
+      CometConf.COMET_EXEC_AGGREGATE_SKIP_PARTIAL_ENABLED,
+      CometConf.COMET_EXPLAIN_NATIVE_ENABLED,
+      CometConf.COMET_PARQUET_ROW_FILTER_PUSHDOWN_ENABLED,
+      CometConf.COMET_TRACING_ENABLED)
+
+    // Native code parses only a bare byte count or a lowercase boolean and silently falls back
+    // to its own default otherwise, so these cross JNI resolved, defaults included.
+    val defaults = entries
+    assert(defaults.get(CometConf.COMET_MAX_TEMP_DIRECTORY_SIZE.key) == "107374182400")
+    flags.foreach(flag => assert(defaults.get(flag.key) == "false", flag.key))
+
+    withSQLConf(
+      (CometConf.COMET_MAX_TEMP_DIRECTORY_SIZE.key -> "10g") +: flags.map(_.key -> "TRUE"): _*) {
+      val resolved = entries
+      assert(resolved.get(CometConf.COMET_MAX_TEMP_DIRECTORY_SIZE.key) == "10737418240")
+      flags.foreach(flag => assert(resolved.get(flag.key) == "true", flag.key))
+    }
+  }
+
+  test("native sort spill files are compressed with the default spill codec") {
+    val numRows = 20000
+    val compressibleValue = "native-sort-spill-compression-" * 8
+    withTempPath { path =>
+      // A single input file keeps all rows in one task so its sort outgrows the tiny memory
+      // pool below and must spill.
+      spark
+        .createDataFrame((0 until numRows).map(i => (i, compressibleValue)))
+        .coalesce(1)
+        .write
+        .parquet(path.getAbsolutePath)
+
+      withParquetTable(path.getAbsolutePath, "tbl") {
+        def sortSpilledBytes(codecConf: (String, String)*): Long = {
+          var spilledBytes = 0L
+          withSQLConf(
+            Seq(
+              CometConf.COMET_BATCH_SIZE.key -> "1024",
+              CometConf.COMET_OFFHEAP_MEMORY_POOL_FRACTION.key -> "0.002",
+              CometConf.COMET_RESPECT_DATAFUSION_CONFIGS.key -> "true",
+              "spark.comet.datafusion.execution.sort_spill_reservation_bytes" -> "65536") ++
+              codecConf: _*) {
+            val sorted = sql("SELECT * FROM tbl").sortWithinPartitions($"_1".desc)
+            assert(sorted.collect().length == numRows)
+            val plan = sorted.queryExecution.executedPlan
+            val sorts = collect(plan) { case sort: CometSortExec => sort }
+            assert(sorts.nonEmpty, s"Expected a native sort:\n$plan")
+            spilledBytes = sorts.map(_.metrics("spilled_bytes").value).sum
+            assert(spilledBytes > 0L, "Native sort did not spill")
+          }
+          spilledBytes
+        }
+
+        // `spilled_bytes` counts what DataFusion wrote to disk, so this shows the default codec
+        // reaching DataFusion's spill writer, not just crossing JNI.
+        val uncompressed =
+          sortSpilledBytes(CometConf.COMET_EXEC_SPILL_COMPRESSION_CODEC.key -> "none")
+        val compressed = sortSpilledBytes()
+        assert(
+          compressed < uncompressed,
+          s"Spilled $compressed bytes with the default codec and $uncompressed with none")
       }
     }
   }
@@ -2113,6 +2180,54 @@ class CometExecSuite extends CometTestBase {
     }
   }
 
+  test("AQE broadcasts native aggregates after replanning") {
+    withSQLConf(
+      SQLConf.ADAPTIVE_EXECUTION_ENABLED.key -> "true",
+      SQLConf.AUTO_BROADCASTJOIN_THRESHOLD.key -> "-1",
+      SQLConf.ADAPTIVE_AUTO_BROADCASTJOIN_THRESHOLD.key -> "10485760",
+      SQLConf.SHUFFLE_PARTITIONS.key -> "4",
+      CometConf.COMET_SHUFFLE_MODE.key -> "native",
+      CometConf.COMET_CONVERT_FROM_RANGE_ENABLED.key -> "true") {
+      val df = sql("""
+          |WITH s AS (
+          |  SELECT id % 64 AS k, SUM(id) AS v FROM range(0, 4096, 1, 4) GROUP BY id % 64
+          |), r1 AS (
+          |  SELECT id % 64 AS k, SUM(id + 1) AS v FROM range(0, 3072, 1, 4) GROUP BY id % 64
+          |), r2 AS (
+          |  SELECT id % 64 AS k, SUM(id + 7) AS v FROM range(0, 2048, 1, 4) GROUP BY id % 64
+          |), g AS (
+          |  SELECT SUM(id) AS v FROM range(0, 1024, 1, 4)
+          |)
+          |SELECT SUM(s.v + COALESCE(r1.v, 0) + COALESCE(r2.v, 0) + g.v)
+          |FROM s LEFT JOIN r1 ON s.k = r1.k LEFT JOIN r2 ON s.k = r2.k CROSS JOIN g
+          |""".stripMargin)
+      val adaptive = df.queryExecution.executedPlan.asInstanceOf[AdaptiveSparkPlanExec]
+      assert(collect(adaptive.executedPlan) { case b: CometBroadcastHashJoinExec => b }.isEmpty)
+
+      checkAnswer(df, Seq(Row(48738816L)))
+
+      val finalPlan = adaptive.executedPlan
+      assert(collect(finalPlan) { case b: CometBroadcastHashJoinExec => b }.size == 2)
+      val broadcasts = collect(finalPlan) { case b: CometBroadcastExchangeExec => b }
+      val aggregates = broadcasts.flatMap { broadcast =>
+        collect(broadcast.child) {
+          case a: CometHashAggregateExec
+              if a.modes.contains(Final) && a.groupingExpressions.nonEmpty =>
+            a
+        }
+      }
+      assert(aggregates.size == 2)
+      aggregates.foreach { aggregate =>
+        assert(aggregate.longMetric("output_rows").value == 64)
+        assert(aggregate.longMetric("elapsed_compute").value > 0)
+        assert(
+          aggregate
+            .getTagValue(SparkPlan.LOGICAL_PLAN_TAG)
+            .exists(_.isInstanceOf[LogicalQueryStage]))
+      }
+    }
+  }
+
   test("CometShuffleExchangeExec logical link should be correct") {
     withTempView("v") {
       spark.sparkContext
@@ -2316,7 +2431,6 @@ class CometExecSuite extends CometTestBase {
     withSQLConf(
       CometConf.COMET_NATIVE_SCAN_ENABLED.key -> "false",
       CometConf.COMET_CONVERT_FROM_PARQUET_ENABLED.key -> "true",
-      CometConf.COMET_SPARK_TO_ARROW_ENABLED.key -> "true",
       CometConf.COMET_SHUFFLE_ENABLED.key -> "true",
       CometConf.COMET_SHUFFLE_MODE.key -> "native") {
       withParquetTable((0 until 10).map(i => (i, i)), "t") {
@@ -2478,6 +2592,27 @@ class CometExecSuite extends CometTestBase {
 
         assert(metrics.contains("output_rows"))
         assert(metrics("output_rows").value == 1L)
+      }
+    }
+  }
+
+  test("filter output projection preserves native metrics") {
+    withSQLConf(
+      SQLConf.ADAPTIVE_EXECUTION_ENABLED.key -> "false",
+      SQLConf.ANSI_ENABLED.key -> "true",
+      CometConf.COMET_BATCH_SIZE.key -> "2") {
+      withParquetTable(Seq((1, "7", 1, 3), (2, "bad", 0, 0), (3, "9", 3, 3)), "tbl") {
+        for (projection <- Seq("count(*)", "_3 AS x")) {
+          val df = sql(s"SELECT $projection FROM tbl WHERE _1 + _3 + _4 > 4")
+          val operators = Seq(classOf[CometFilterExec], classOf[CometProjectExec])
+          val (_, plan) = checkSparkAnswerAndOperator(df, operators)
+          for (node <- plan.collect {
+              case p: CometProjectExec => p
+              case f: CometFilterExec => f
+            }) {
+            assert(node.metrics("output_rows").value == 2L, s"$projection: $node")
+          }
+        }
       }
     }
   }
@@ -2765,6 +2900,14 @@ class CometExecSuite extends CometTestBase {
     }
   }
 
+  test("expand operator with no output columns falls back to Spark") {
+    // Column pruning leaves this shape when nothing above the Expand reads its output.
+    val child = spark.range(3).queryExecution.analyzed
+    val expand = Expand(Seq(Seq.empty[Expression], Seq.empty[Expression]), Seq.empty, child)
+    val df = datasetOfRows(spark, expand).groupBy().count()
+    checkSparkAnswerAndFallbackReason(df, "Expand without output columns is not supported")
+  }
+
   test("multiple distinct multiple columns sets") {
     withTable("agg2") {
       val data2 = Seq[(Integer, Integer, Integer)](
@@ -2970,7 +3113,7 @@ class CometExecSuite extends CometTestBase {
   }
 
   test("bloom_filter_agg") {
-    assume(!isSpark42Plus, "https://github.com/apache/datafusion-comet/issues/4142")
+    assume(!isSpark42Plus, "https://github.com/apache/datafusion-comet/issues/4968")
     val funcId_bloom_filter_agg = new FunctionIdentifier("bloom_filter_agg")
     spark.sessionState.functionRegistry.registerFunction(
       funcId_bloom_filter_agg,
@@ -3017,39 +3160,35 @@ class CometExecSuite extends CometTestBase {
   }
 
   test("spill sort with (multiple) dictionaries") {
-    withSQLConf(CometConf.COMET_ONHEAP_MEMORY_OVERHEAD.key -> "15MB") {
-      withTempDir { dir =>
-        val path = new Path(dir.toURI.toString, "part-r-0.parquet")
-        makeRawTimeParquetFileColumns(path, dictionaryEnabled = true, n = 1000, rowGroupSize = 10)
-        readParquetFile(path.toString) { df =>
-          Seq(
-            $"_0".desc_nulls_first,
-            $"_0".desc_nulls_last,
-            $"_0".asc_nulls_first,
-            $"_0".asc_nulls_last).foreach { colOrder =>
-            val query = df.sortWithinPartitions(colOrder)
-            checkSparkAnswerAndOperator(query)
-          }
+    withTempDir { dir =>
+      val path = new Path(dir.toURI.toString, "part-r-0.parquet")
+      makeRawTimeParquetFileColumns(path, dictionaryEnabled = true, n = 1000, rowGroupSize = 10)
+      readParquetFile(path.toString) { df =>
+        Seq(
+          $"_0".desc_nulls_first,
+          $"_0".desc_nulls_last,
+          $"_0".asc_nulls_first,
+          $"_0".asc_nulls_last).foreach { colOrder =>
+          val query = df.sortWithinPartitions(colOrder)
+          checkSparkAnswerAndOperator(query)
         }
       }
     }
   }
 
   test("spill sort with (multiple) dictionaries on mixed columns") {
-    withSQLConf(CometConf.COMET_ONHEAP_MEMORY_OVERHEAD.key -> "15MB") {
-      withTempDir { dir =>
-        val path = new Path(dir.toURI.toString, "part-r-0.parquet")
-        makeRawTimeParquetFile(path, dictionaryEnabled = true, n = 1000, rowGroupSize = 10)
-        readParquetFile(path.toString) { df =>
-          Seq(
-            $"_6".desc_nulls_first,
-            $"_6".desc_nulls_last,
-            $"_6".asc_nulls_first,
-            $"_6".asc_nulls_last).foreach { colOrder =>
-            // TODO: We should be able to sort on dictionary timestamp column
-            val query = df.sortWithinPartitions(colOrder)
-            checkSparkAnswerAndOperator(query)
-          }
+    withTempDir { dir =>
+      val path = new Path(dir.toURI.toString, "part-r-0.parquet")
+      makeRawTimeParquetFile(path, dictionaryEnabled = true, n = 1000, rowGroupSize = 10)
+      readParquetFile(path.toString) { df =>
+        Seq(
+          $"_6".desc_nulls_first,
+          $"_6".desc_nulls_last,
+          $"_6".asc_nulls_first,
+          $"_6".asc_nulls_last).foreach { colOrder =>
+          // TODO: We should be able to sort on dictionary timestamp column
+          val query = df.sortWithinPartitions(colOrder)
+          checkSparkAnswerAndOperator(query)
         }
       }
     }
@@ -3387,19 +3526,11 @@ class CometExecSuite extends CometTestBase {
     val df2 =
       (0 until 50).map(i => (i % 7, i % 11, i.toString)).toDF("i", "j", "k").as("df2")
 
-    val BucketedTableTestSpec(
-      bucketSpecLeft,
-      numPartitionsLeft,
-      shuffleLeft,
-      sortLeft,
-      numOutputPartitionsLeft) = bucketedTableTestSpecLeft
+    val BucketedTableTestSpec(bucketSpecLeft, numPartitionsLeft, _, _, _) =
+      bucketedTableTestSpecLeft
 
-    val BucketedTableTestSpec(
-      bucketSpecRight,
-      numPartitionsRight,
-      shuffleRight,
-      sortRight,
-      numOutputPartitionsRight) = bucketedTableTestSpecRight
+    val BucketedTableTestSpec(bucketSpecRight, numPartitionsRight, _, _, _) =
+      bucketedTableTestSpecRight
 
     withTable("bucketed_table1", "bucketed_table2") {
       withBucket(df1.repartition(numPartitionsLeft).write.format("parquet"), bucketSpecLeft)
@@ -3518,6 +3649,233 @@ class CometExecSuite extends CometTestBase {
     }
   }
 
+  // https://github.com/apache/datafusion-comet/issues/6454
+  test("AQE coalesces the shuffle partitions of a union whose other branch is a scan") {
+    // Spark coalesces each child of a union as its own group, but its rule did not recognize
+    // Comet's union, so the shuffled branch of a union with a scan kept every shuffle partition.
+    // Comet's rule defers to Spark's, so the query should come out partitioned as it is on Spark.
+    assume(isSpark35Plus, "Comet's query-stage optimizer rules need Spark 3.5+")
+    withTempPath { dir =>
+      spark.range(0, 100, 1, 1).toDF("c").write.parquet(dir.getCanonicalPath)
+      withSQLConf(
+        SQLConf.ADAPTIVE_EXECUTION_ENABLED.key -> "true",
+        SQLConf.COALESCE_PARTITIONS_MIN_PARTITION_NUM.key -> "1",
+        SQLConf.SHUFFLE_PARTITIONS.key -> "200") {
+        def query() = spark
+          .range(0, 10, 1, 2)
+          .toDF("c")
+          .repartition($"c")
+          .union(spark.read.parquet(dir.getCanonicalPath))
+        var sparkPartitions = 0
+        withSQLConf(CometConf.COMET_ENABLED.key -> "false") {
+          val df = query()
+          df.collect()
+          sparkPartitions = df.rdd.getNumPartitions
+        }
+        assert(sparkPartitions < 200, "Spark should have coalesced the shuffled branch")
+
+        val df = query()
+        checkSparkAnswer(df)
+        // checkSparkAnswer runs copies of the query, so run this one to finalize its own plan.
+        df.collect()
+        val plan = df.queryExecution.executedPlan
+        assert(plan.asInstanceOf[AdaptiveSparkPlanExec].isFinalPlan)
+        assert(collect(plan) { case u: CometUnionExec => u }.size == 1)
+        assert(collect(plan) { case r: AQEShuffleReadExec if r.isCoalescedRead => r }.size == 1)
+        assert(df.rdd.getNumPartitions == sparkPartitions)
+      }
+    }
+  }
+
+  // https://github.com/apache/spark/blob/v4.1.3/sql/core/src/test/scala/org/apache/spark/sql/execution/CoalesceShufflePartitionsSuite.scala#L466-L484
+  test("AQE coalesces each branch of a union whose shuffles have different partition counts") {
+    // Every leaf below the union is a shuffle stage, so Spark's rule coalesces its shuffles
+    // together, and gives up because the aggregate's single-partition shuffle cannot be
+    // coalesced. Below a Spark union it coalesces the join's shuffles as a group of their own.
+    assume(isSpark35Plus, "Comet's query-stage optimizer rules need Spark 3.5+")
+    withSQLConf(
+      SQLConf.ADAPTIVE_EXECUTION_ENABLED.key -> "true",
+      SQLConf.AUTO_BROADCASTJOIN_THRESHOLD.key -> "-1",
+      SQLConf.ADAPTIVE_AUTO_BROADCASTJOIN_THRESHOLD.key -> "-1",
+      SQLConf.COALESCE_PARTITIONS_MIN_PARTITION_NUM.key -> "1",
+      SQLConf.SHUFFLE_PARTITIONS.key -> "5") {
+      val df = spark.range(3).join(spark.range(3), "id").union(spark.range(3).groupBy().sum())
+      checkAnswer(df, (0 to 3).map(i => Row(i.toLong)))
+      val plan = df.queryExecution.executedPlan
+      assert(plan.asInstanceOf[AdaptiveSparkPlanExec].isFinalPlan)
+      assert(collect(plan) { case u: CometUnionExec => u }.size == 1)
+      assert(
+        collect(plan) { case r: AQEShuffleReadExec if r.isCoalescedRead => r }.size == 2,
+        plan)
+    }
+  }
+
+  test("AQE leaves the shuffles of a union alone when an aggregate relies on its partitioning") {
+    // From Spark 4.1 a union whose children share a hash partitioning reports it, and the
+    // aggregate above reads the union without a shuffle. Coalescing the branch that can be
+    // coalesced, and not the other, would split each key between the branches' partitions, and
+    // Comet's aggregate, which requires no distribution, would return each key twice.
+    assume(isSpark35Plus, "Comet's query-stage optimizer rules need Spark 3.5+")
+    withSQLConf(
+      SQLConf.ADAPTIVE_EXECUTION_ENABLED.key -> "true",
+      SQLConf.COALESCE_PARTITIONS_MIN_PARTITION_NUM.key -> "1",
+      SQLConf.SHUFFLE_PARTITIONS.key -> "20") {
+      val keys = spark.range(0, 100, 1, 2).selectExpr("id % 10 AS k")
+      // repartition($"k") can be coalesced, and repartition(20, $"k") cannot.
+      val df = keys.repartition($"k").union(keys.repartition(20, $"k")).groupBy("k").count()
+      checkAnswer(df, (0 until 10).map(k => Row(k.toLong, 20L)))
+      val plan = df.queryExecution.executedPlan
+      assert(plan.asInstanceOf[AdaptiveSparkPlanExec].isFinalPlan)
+      assert(collect(plan) { case u: CometUnionExec => u }.size == 1)
+      if (isSpark41Plus) {
+        assert(collect(plan) { case e: ShuffleExchangeLike => e }.size == 2, plan)
+        assert(collect(plan) { case r: AQEShuffleReadExec => r }.isEmpty, plan)
+      }
+    }
+  }
+
+  test("AQE coalesces the shuffle partitions of a union planned again over its stages") {
+    // When AQE plans a query again after its stages materialize, a union directly over those
+    // stages has the same children as the Spark union that Comet replaced.
+    assume(isSpark35Plus, "Comet's query-stage optimizer rules need Spark 3.5+")
+    withTempPath { dir =>
+      spark.range(0, 100, 1, 1).toDF("c").write.parquet(dir.getCanonicalPath)
+      withSQLConf(
+        SQLConf.ADAPTIVE_EXECUTION_ENABLED.key -> "true",
+        SQLConf.COALESCE_PARTITIONS_MIN_PARTITION_NUM.key -> "1",
+        SQLConf.SHUFFLE_PARTITIONS.key -> "200") {
+        val df = spark
+          .range(0, 10, 1, 2)
+          .toDF("c")
+          .repartition($"c")
+          .union(spark.read.parquet(dir.getCanonicalPath))
+        df.collect()
+        val union = collect(df.queryExecution.executedPlan) { case u: CometUnionExec => u }.head
+        val children = union.children.map(_.transformUp { case r: AQEShuffleReadExec => r.child })
+        val replanned = CometUnionExec(UnionExec(children), union.output, children)
+        val coalesced = CometCoalesceShufflePartitions(replanned)
+        assert(collect(coalesced) {
+          case r: AQEShuffleReadExec if r.isCoalescedRead => r
+        }.size == 1)
+        assert(coalesced.isInstanceOf[CometUnionExec])
+      }
+    }
+  }
+
+  test("AQE coalesces the shuffle partitions of a union below a join as Spark does") {
+    // Spark coalesces each child of a broadcast join, nested loop join or Cartesian product as a
+    // group of its own, and from Spark 4.0 it targets the minimum partition size rather than the
+    // advisory size below the latter two, which join every row with every row of the other side.
+    // The shuffled branch of the union should keep as many partitions as it does on Spark.
+    assume(isSpark35Plus, "Comet's query-stage optimizer rules need Spark 3.5+")
+    withTempPath { dir =>
+      spark.range(0, 10, 1, 1).toDF("c").write.parquet(dir.getCanonicalPath)
+      withSQLConf(
+        SQLConf.ADAPTIVE_EXECUTION_ENABLED.key -> "true",
+        SQLConf.AUTO_BROADCASTJOIN_THRESHOLD.key -> "-1",
+        SQLConf.COALESCE_PARTITIONS_MIN_PARTITION_NUM.key -> "1",
+        SQLConf.COALESCE_PARTITIONS_MIN_PARTITION_SIZE.key -> "1",
+        SQLConf.SHUFFLE_PARTITIONS.key -> "10") {
+        def union() = spark
+          .range(0, 1000, 1, 2)
+          .toDF("c")
+          .repartition($"c")
+          .union(spark.read.parquet(dir.getCanonicalPath))
+        def other() = spark.range(0, 3).toDF("d")
+        // The number of partitions the union reads from its shuffled branch.
+        def shuffledBranchPartitions(df: DataFrame): Int = {
+          df.collect()
+          val unions = collect(df.queryExecution.executedPlan) {
+            case u: UnionExec => u
+            case u: CometUnionExec => u
+          }
+          assert(unions.size == 1, df.queryExecution.executedPlan)
+          unions.head.children.head.outputPartitioning.numPartitions
+        }
+        // Each join, the operator Comet plans for it, and whether it joins every row with every
+        // row of the other side.
+        val joins = Seq(
+          (
+            "Cartesian product",
+            () => union().crossJoin(other()),
+            classOf[CartesianProductExec],
+            true),
+          (
+            "broadcast nested loop join",
+            () => union().join(broadcast(other()), $"c" < $"d"),
+            classOf[CometBroadcastNestedLoopJoinExec],
+            true),
+          (
+            "broadcast hash join",
+            () => union().join(broadcast(other()), $"c" === $"d"),
+            classOf[CometBroadcastHashJoinExec],
+            false))
+        joins.foreach { case (join, query, joinClass, explodingJoin) =>
+          var sparkPartitions = 0
+          withSQLConf(CometConf.COMET_ENABLED.key -> "false") {
+            sparkPartitions = shuffledBranchPartitions(query())
+          }
+          if (isSpark40Plus && explodingJoin) {
+            assert(sparkPartitions == 10, s"Spark should not coalesce below a $join")
+          } else {
+            assert(sparkPartitions == 1, s"Spark should coalesce below a $join")
+          }
+
+          val df = query()
+          checkSparkAnswer(df)
+          assert(shuffledBranchPartitions(df) == sparkPartitions, join)
+          val plan = df.queryExecution.executedPlan
+          assert(collect(plan) { case u: CometUnionExec => u }.size == 1, plan)
+          assert(collect(plan) { case j if joinClass.isInstance(j) => j }.size == 1, plan)
+        }
+      }
+    }
+  }
+
+  test("AQE coalesces the shuffle partitions of a union in a stage Spark coalesced in part") {
+    // Spark's rule coalesces the shuffle on the other side of a Cartesian product as a group of
+    // its own before Comet's rule runs. The read it leaves there should not keep the union's
+    // shuffled branch from being coalesced as it is on Spark.
+    assume(isSpark35Plus, "Comet's query-stage optimizer rules need Spark 3.5+")
+    withTempPath { dir =>
+      spark.range(0, 10, 1, 1).toDF("c").write.parquet(dir.getCanonicalPath)
+      withSQLConf(
+        SQLConf.ADAPTIVE_EXECUTION_ENABLED.key -> "true",
+        // Keeps AQE from broadcasting the small side, which would move its shuffle and read into
+        // a stage of their own.
+        SQLConf.AUTO_BROADCASTJOIN_THRESHOLD.key -> "-1",
+        SQLConf.ADAPTIVE_AUTO_BROADCASTJOIN_THRESHOLD.key -> "-1",
+        SQLConf.COALESCE_PARTITIONS_MIN_PARTITION_NUM.key -> "1",
+        SQLConf.SHUFFLE_PARTITIONS.key -> "10") {
+        def query() = spark
+          .range(0, 1000, 1, 2)
+          .toDF("c")
+          .repartition($"c")
+          .union(spark.read.parquet(dir.getCanonicalPath))
+          .crossJoin(spark.range(0, 3).toDF("d").repartition($"d"))
+        // The number of partitions that each coalesced read of the final plan reads.
+        def coalescedReads(df: DataFrame): Seq[Int] = {
+          df.collect()
+          collect(df.queryExecution.executedPlan) {
+            case r: AQEShuffleReadExec if r.isCoalescedRead => r.partitionSpecs.length
+          }
+        }
+        var sparkReads = Seq.empty[Int]
+        withSQLConf(CometConf.COMET_ENABLED.key -> "false") {
+          sparkReads = coalescedReads(query())
+        }
+        assert(sparkReads == Seq(1, 1), "Spark should coalesce both sides of the product")
+
+        val df = query()
+        checkSparkAnswer(df)
+        assert(coalescedReads(df) == sparkReads, df.queryExecution.executedPlan)
+        val plan = df.queryExecution.executedPlan
+        assert(collect(plan) { case u: CometUnionExec => u }.size == 1, plan)
+        assert(collect(plan) { case j: CartesianProductExec => j }.size == 1, plan)
+      }
+    }
+  }
+
   test("native execution after coalesce") {
     withTable("t1") {
       (0 until 5)
@@ -3587,7 +3945,7 @@ class CometExecSuite extends CometTestBase {
         withTable("t1") {
           val numRows = 10
           spark
-            .range(numRows)
+            .range(numRows.toLong)
             .selectExpr("if (id % 2 = 0, null, id) AS a", s"$numRows - id AS b")
             .repartition(3) // Move data across multiple partitions
             .write
@@ -3624,7 +3982,7 @@ class CometExecSuite extends CometTestBase {
         withTable("t1") {
           val numRows = 10
           spark
-            .range(numRows)
+            .range(numRows.toLong)
             .selectExpr("if (id % 2 = 0, null, id) AS a", s"$numRows - id AS b")
             .repartition(3) // Force repartition to test data will come to single partition
             .write
@@ -3655,7 +4013,7 @@ class CometExecSuite extends CometTestBase {
         withTable("t1") {
           val numRows = 10
           spark
-            .range(numRows)
+            .range(numRows.toLong)
             .selectExpr("if (id % 2 = 0, null, id) AS a", s"$numRows - id AS b")
             .repartition(3) // Force repartition to test data will come to single partition
             .write
@@ -3664,6 +4022,114 @@ class CometExecSuite extends CometTestBase {
           checkSparkAnswerAndOperator(df)
         }
       })
+  }
+
+  // https://github.com/apache/datafusion-comet/issues/6234. The final TopK reads its child's
+  // batches through an Arrow C stream, and Arrow Java hands native only the text of an exception
+  // thrown while producing one. The first batch is read on the JVM to derive the stream's schema,
+  // so the overflow has to land past it: row 90000 of a single file, read by one task.
+  test("TakeOrderedAndProjectExec: an input error past the first batch keeps Spark's exception") {
+    withSQLConf(SQLConf.ANSI_ENABLED.key -> "true") {
+      withTempPath { dir =>
+        spark
+          .range(0, 100000, 1, 1)
+          .selectExpr("CAST(id AS INT) AS id")
+          .write
+          .parquet(dir.getCanonicalPath)
+        spark.read.parquet(dir.getCanonicalPath).createOrReplaceTempView("overflow_src")
+        val df =
+          sql(s"SELECT id + ${Int.MaxValue - 90000} AS v FROM overflow_src ORDER BY v LIMIT 5")
+        checkSparkError(df, "ARITHMETIC_OVERFLOW")
+      }
+    }
+  }
+
+  // https://github.com/apache/datafusion-comet/issues/6234. CometSparkToColumnarExec exports its
+  // rows to native without reading a batch on the JVM first, so even an exception thrown for the
+  // first batch reached the user only as the text inside a CometNativeException.
+  test("SparkToColumnar keeps the exception its row input throws") {
+    val rows = spark.sparkContext.parallelize(1 to 10, 1).map { i =>
+      if (i == 5) throw new IllegalStateException("injected row input failure")
+      Row(i)
+    }
+    val df = spark
+      .createDataFrame(rows, StructType(Seq(StructField("a", IntegerType))))
+      .groupBy()
+      .sum("a")
+    assert(
+      collect(df.queryExecution.executedPlan) { case c: CometSparkToColumnarExec => c }.nonEmpty,
+      "expected the rows to reach native through CometSparkToColumnarExec:\n" +
+        df.queryExecution.executedPlan)
+
+    val (sparkError, cometError) = checkSparkAnswerMaybeThrows(df)
+    def injected(error: Option[Throwable], engine: String): (Class[_], Int) = {
+      val chain = causeChain(error.getOrElse(fail(s"$engine did not fail")))
+      assert(!chain.exists(_.isInstanceOf[CometNativeException]), s"$engine: ${chain.head}")
+      val depth = chain.indexWhere(t =>
+        t.isInstanceOf[IllegalStateException] && t.getMessage == "injected row input failure")
+      assert(depth >= 0, s"$engine did not surface the injected failure: ${chain.head}")
+      (chain.head.getClass, depth)
+    }
+    assert(injected(cometError, "Comet") == injected(sparkError, "Spark"))
+  }
+
+  // Arrow Java ignores ArrowArray.offset on import, and a sliced boolean is the one array arrow-rs
+  // exports with a non-zero offset, so native has to zero it at every level, not only the top.
+  // https://github.com/apache/datafusion-comet/issues/6288
+  test("boolean struct children sliced by an OFFSET keep their values") {
+    withTempPath { dir =>
+      spark
+        .range(0, 1000)
+        .selectExpr(
+          "id AS v",
+          "named_struct('x', id % 7 = 0, 'y', id) AS st",
+          "named_struct('x', IF(id % 3 = 0, NULL, id % 7 = 0)) AS stn")
+        .write
+        .parquet(dir.getCanonicalPath)
+      withParquetTable(dir.getCanonicalPath, "t") {
+        // The OFFSET slices the sorted batch 17 rows in, which is not a whole byte of bits.
+        checkSparkAnswerAndOperator("SELECT st FROM t ORDER BY v LIMIT 40 OFFSET 17")
+        checkSparkAnswerAndOperator("SELECT stn FROM t ORDER BY v LIMIT 40 OFFSET 17")
+      }
+    }
+  }
+
+  test("boolean struct children built over sliced aggregate output keep their values") {
+    withTempPath { dir =>
+      spark
+        .range(0, 4000)
+        .selectExpr("id % 2000 AS k", "IF(id % 5 = 0, NULL, id % 2000 % 3 = 0) AS b")
+        .write
+        .parquet(dir.getCanonicalPath)
+      // The hash aggregate slices its emitted groups into batch-size chunks, so with one
+      // partition every output batch after the first is a slice, at offsets both on and off a
+      // byte boundary.
+      withSQLConf(
+        SQLConf.SHUFFLE_PARTITIONS.key -> "1",
+        CometConf.COMET_BATCH_SIZE.key -> "100") {
+        withParquetTable(dir.getCanonicalPath, "g") {
+          checkSparkAnswerAndOperator(
+            "SELECT named_struct('b', b, 'k', k) FROM (SELECT k, b, count(*) FROM g GROUP BY k, b)")
+        }
+      }
+    }
+  }
+
+  test("collect_list of structs with sliced boolean children keeps their values") {
+    withTempPath { dir =>
+      // One file, so the partial and final aggregates share a native plan and see one batch.
+      spark
+        .range(0, 100, 1, 1)
+        .selectExpr("0 AS k", "IF(id < 5, NULL, named_struct('b', id % 3 = 0)) AS st")
+        .write
+        .parquet(dir.getCanonicalPath)
+      withParquetTable(dir.getCanonicalPath, "t") {
+        // Dropping the leading null structs starts the group's only run past row 0, and
+        // collect_list returns a single run as a slice rather than a copy.
+        checkSparkAnswerAndOperator(
+          spark.table("t").coalesce(1).groupBy("k").agg(collect_list("st")))
+      }
+    }
   }
 
   test("collect limit") {
@@ -3729,21 +4195,34 @@ class CometExecSuite extends CometTestBase {
     })
   }
 
-  test("SparkToColumnar admits only binary string arrays through the array gate") {
+  test("SparkToColumnar admits only binary string arrays and maps through the collection gate") {
     for (nullable <- Seq(false, true); containsNull <- Seq(false, true)) {
-      val field = StructField("tags", ArrayType(StringType, containsNull), nullable)
-      Seq(StructType(Seq(field)), StructType(Seq(StructField("nested", StructType(Seq(field))))))
-        .foreach { schema =>
-          assert(CometSparkToColumnarExec.isSchemaSupported(schema, ListBuffer.empty))
-        }
+      for (dataType <- Seq(
+          ArrayType(StringType, containsNull),
+          MapType(StringType, StringType, containsNull))) {
+        val field = StructField("tags", dataType, nullable)
+        Seq(
+          StructType(Seq(field)),
+          StructType(Seq(StructField("nested", StructType(Seq(field))))))
+          .foreach { schema =>
+            assert(CometSparkToColumnarExec.isSchemaSupported(schema, ListBuffer.empty))
+          }
+      }
     }
     val unsupported = Seq(
       ArrayType(IntegerType),
       ArrayType(BinaryType),
       ArrayType(ArrayType(StringType)),
       ArrayType(StructType(Seq(StructField("s", StringType)))),
-      MapType(StringType, StringType)) ++
-      (if (isSpark40Plus) Seq(DataType.fromDDL("ARRAY<STRING COLLATE UTF8_LCASE>"))
+      MapType(StringType, IntegerType),
+      MapType(IntegerType, StringType),
+      MapType(StringType, ArrayType(StringType)),
+      MapType(StringType, StructType(Seq(StructField("s", StringType))))) ++
+      (if (isSpark40Plus)
+         Seq(
+           DataType.fromDDL("ARRAY<STRING COLLATE UTF8_LCASE>"),
+           DataType.fromDDL("MAP<STRING COLLATE UTF8_LCASE,STRING>"),
+           DataType.fromDDL("MAP<STRING,STRING COLLATE UTF8_LCASE>"))
        else Seq.empty)
     unsupported.foreach { dataType =>
       val schema = StructType(Seq(StructField("value", dataType)))
@@ -3821,6 +4300,109 @@ class CometExecSuite extends CometTestBase {
     }
   }
 
+  test("SparkToColumnar string maps cross RDD and Parquet native boundaries") {
+    val schema = new StructType()
+      .add("id", IntegerType)
+      .add("partitionValues", MapType(StringType, StringType))
+      .add("nested", new StructType().add("tags", MapType(StringType, StringType)))
+    val rows = Seq(
+      Row(1, null, null),
+      Row(2, Map.empty[String, String], Row(null)),
+      Row(3, Map("hour" -> null), Row(Map.empty[String, String])),
+      Row(
+        4,
+        Map("hour" -> "2026-09-02T22", "" -> "é", "東京" -> "a\u0000b"),
+        Row(Map("nullable" -> null, "x" -> "value"))),
+      Row(5, Map("hour" -> "2026-09-03T00", "long" -> ("東京" * 32768)), null),
+      Row(6, Map("hour" -> "2026-09-03T01"), Row(Map("x" -> "value"))))
+    for (sourceType <- Seq("rdd", "parquet-row", "parquet-columnar")) {
+      val vectorized = sourceType == "parquet-columnar"
+      withSQLConf(
+        SQLConf.ADAPTIVE_EXECUTION_ENABLED.key -> "false",
+        SQLConf.PARQUET_VECTORIZED_READER_ENABLED.key -> vectorized.toString,
+        "spark.sql.parquet.enableNestedColumnVectorizedReader" -> "true",
+        CometConf.COMET_NATIVE_SCAN_ENABLED.key -> "false",
+        CometConf.COMET_BATCH_SIZE.key -> "2",
+        CometConf.COMET_SHUFFLE_MODE.key -> "native",
+        CometConf.COMET_CONVERT_FROM_PARQUET_ENABLED.key -> "true",
+        CometConf.COMET_CONVERT_FROM_RDD_ENABLED.key -> "true") {
+        withTempPath { dir =>
+          def rdd = spark.createDataFrame(spark.sparkContext.parallelize(rows, 1), schema)
+          if (sourceType != "rdd") {
+            withSQLConf(CometConf.COMET_ENABLED.key -> "false") {
+              rdd.write.parquet(dir.toString)
+            }
+          }
+          def source =
+            if (sourceType == "rdd") rdd else spark.read.schema(schema).parquet(dir.toString)
+          def query = source
+            .filter("id > 0")
+            .selectExpr("id", "partitionValues", "nested", "partitionValues['hour'] AS hour")
+          val (_, plan) = checkSparkAnswerAndOperator(
+            query,
+            includeClasses = Seq(
+              classOf[CometSparkToColumnarExec],
+              classOf[CometProjectExec],
+              classOf[CometFilterExec]))
+          val conversions = collect(plan) { case c: CometSparkToColumnarExec => c }
+          assert(conversions.size == 1)
+          assert(conversions.head.child.supportsColumnar == vectorized)
+          if (sourceType == "rdd") {
+            assert(conversions.head.child.collect { case scan: RDDScanExec => scan }.nonEmpty)
+          }
+          checkSparkSchema(query)
+          checkSparkAnswerAndOperator(
+            source.filter("partitionValues['hour'] BETWEEN '2026-09-02T22' AND '2026-09-03T00'"),
+            includeClasses = Seq(classOf[CometSparkToColumnarExec], classOf[CometFilterExec]))
+          val (_, shuffled) = checkSparkAnswerAndOperator(
+            query.repartition(2, col("id")),
+            includeClasses = Seq(classOf[CometShuffleExchangeExec]))
+          val exchanges = collect(shuffled) { case s: CometShuffleExchangeExec => s }
+          assert(exchanges.nonEmpty && exchanges.forall(_.shuffleType == CometNativeShuffle))
+          checkSparkAnswer(query.limit(1))
+          withSQLConf(
+            CometConf.COMET_CONVERT_FROM_RDD_ENABLED.key -> "false",
+            CometConf.COMET_CONVERT_FROM_PARQUET_ENABLED.key -> "false") {
+            val (_, disabled) = checkSparkAnswer(query)
+            assert(collect(disabled) { case c: CometSparkToColumnarExec => c }.isEmpty)
+          }
+        }
+      }
+    }
+  }
+
+  test("SparkToColumnar over RowDataSourceScanExec") {
+    val schema = new StructType()
+      .add("id", IntegerType)
+      .add("name", StringType)
+      .add("score", DoubleType)
+    val rows = (0 until 1000).map { i =>
+      Row(i, if (i % 7 == 0) null else s"name_${i % 10}", if (i % 5 == 0) null else i * 0.5)
+    }
+    def source = rowDataSourceDataFrame(schema, rows)
+    def conversions(plan: SparkPlan) = collect(plan) { case c: CometSparkToColumnarExec => c }
+    Seq("true", "false").foreach { aqe =>
+      withSQLConf(
+        SQLConf.ADAPTIVE_EXECUTION_ENABLED.key -> aqe,
+        CometConf.COMET_CONVERT_FROM_ROW_DATA_SOURCE_ENABLED.key -> "true") {
+        val (_, filtered) = checkSparkAnswerAndOperator(
+          source.filter("id > 10").selectExpr("id", "name", "score * 2"),
+          includeClasses = Seq(classOf[CometSparkToColumnarExec], classOf[CometFilterExec]))
+        assert(conversions(filtered).size == 1, filtered)
+        val scan = conversions(filtered).head.child.find(_.isInstanceOf[RowDataSourceScanExec])
+        assert(scan.isDefined, filtered)
+        // With AQE on, this is the final plan of an adaptive query.
+        val (_, aggregated) =
+          checkSparkAnswerAndOperator(source.groupBy("name").agg(count("score"), sum("id")))
+        assert(conversions(aggregated).size == 1, aggregated)
+        withSQLConf(CometConf.COMET_CONVERT_FROM_ROW_DATA_SOURCE_ENABLED.key -> "false") {
+          val (_, disabled) = checkSparkAnswer(source.filter("id > 10"))
+          assert(conversions(disabled).isEmpty)
+        }
+      }
+    }
+  }
+
   test("SparkToColumnar over BatchScan (Spark Parquet reader)") {
     Seq("", "parquet").foreach { v1List =>
       Seq(true, false).foreach { parquetVectorized =>
@@ -3868,6 +4450,91 @@ class CometExecSuite extends CometTestBase {
               }
             }
           }
+        }
+      }
+    }
+  }
+
+  test("SparkToColumnar converts Spark's Parquet vectors across row groups") {
+    withTempPath { dir =>
+      withSQLConf(CometConf.COMET_ENABLED.key -> "false") {
+        spark
+          .range(6000)
+          .selectExpr(
+            "id",
+            "if(id % 11 = 0, null, cast(id * 7 as decimal(9,2))) as d9",
+            "if(id % 13 = 0, null, cast((id - 3000) * 9007199254 as decimal(18,2))) as d18",
+            // Both values that fit in a long and values that need all 16 bytes.
+            "if(id % 7 = 0, null, cast(concat(if(id % 2 = 0, '-', ''), cast(id as string), " +
+              "if(id % 3 = 0, '', '123456789012345678'), '.0123456789') as decimal(38,10))) " +
+              "as d38",
+            "if(id % 9 = 0, null, id % 3 = 0) as flag",
+            // Each row group draws from different values, so its dictionary differs.
+            "if(id % 5 = 0, null, concat('group', cast(id div 1000 as string), '-', " +
+              "cast(id % 17 as string))) as dict_string",
+            "if(id % 8 = 0, null, if(id % 4 = 1, array(), transform(sequence(0, " +
+              "cast(id % 4 as int)), x -> concat('e', cast(x + id % 50 as string))))) " +
+              "as strings",
+            "if(id % 6 = 0, null, if(id % 5 = 1, map(), map('k', cast(id % 30 as string), " +
+              "'j', concat('v', cast(id as string))))) as m",
+            "if(id % 10 = 0, null, named_struct('i', cast(id as int), 's', concat('s', " +
+              "cast(id % 40 as string)), 'd', cast(id as decimal(20,4)))) as st")
+          .repartition(1)
+          .write
+          // Several row groups in the one file, each with its own dictionaries.
+          .option("parquet.block.size", 16 * 1024)
+          .parquet(dir.toString)
+      }
+      withSQLConf(
+        CometConf.COMET_NATIVE_SCAN_ENABLED.key -> "false",
+        CometConf.COMET_CONVERT_FROM_PARQUET_ENABLED.key -> "true",
+        SQLConf.PARQUET_VECTORIZED_READER_NESTED_COLUMN_ENABLED.key -> "true",
+        // Spark batches smaller than Comet's, so each Arrow batch spans several of them and, with
+        // them, several row groups.
+        SQLConf.PARQUET_VECTORIZED_READER_BATCH_SIZE.key -> "700",
+        CometConf.COMET_BATCH_SIZE.key -> "4096") {
+        // The filter keeps the conversion, which would otherwise feed a row consumer directly.
+        val df = spark.read.parquet(dir.toString).where("id >= 0")
+        checkSparkAnswer(df)
+        val conversions = collect(df.queryExecution.executedPlan) {
+          case c: CometSparkToColumnarExec => c
+        }
+        assert(
+          conversions.map(_.nodeName) == Seq("CometSparkColumnarToColumnar"),
+          df.queryExecution.executedPlan)
+        checkSparkAnswer(
+          df.groupBy("dict_string")
+            .agg(sum("d9"), sum("d18"), count("d38"), count("strings"), count("m"), count("st")))
+      }
+    }
+  }
+
+  test("SparkToColumnar reads structs the Parquet file does not have as null") {
+    withTempPath { dir =>
+      withSQLConf(CometConf.COMET_ENABLED.key -> "false") {
+        spark
+          .range(5000)
+          .selectExpr("id", "if(id % 7 = 0, null, named_struct('a', cast(id as int))) as st")
+          .repartition(1)
+          .write
+          .parquet(dir.toString)
+      }
+      // Spark's reader marks a missing struct all null and never writes its fields, whether the
+      // struct is a column of its own or a field of one the file has.
+      val fields = "s: string, d: decimal(38,10)"
+      val schema = s"id long, st struct<a: int, inner: struct<$fields>>, missing struct<$fields>"
+      Seq("false", "true").foreach { offHeap =>
+        withSQLConf(
+          CometConf.COMET_NATIVE_SCAN_ENABLED.key -> "false",
+          CometConf.COMET_CONVERT_FROM_PARQUET_ENABLED.key -> "true",
+          SQLConf.PARQUET_VECTORIZED_READER_NESTED_COLUMN_ENABLED.key -> "true",
+          SQLConf.COLUMN_VECTOR_OFFHEAP_ENABLED.key -> offHeap) {
+          val df = spark.read.schema(schema).parquet(dir.toString).where("id >= 0")
+          checkSparkAnswer(df)
+          val conversions = collect(df.queryExecution.executedPlan) {
+            case c: CometSparkToColumnarExec => c
+          }
+          assert(conversions.nonEmpty, df.queryExecution.executedPlan)
         }
       }
     }
@@ -3930,6 +4597,32 @@ class CometExecSuite extends CometTestBase {
     }
   }
 
+  // https://github.com/apache/datafusion-comet/issues/6202
+  test("SparkToColumnar over InMemoryTableScanExec survives the AQE re-plan") {
+    assume(isSpark35Plus, "Table-cache query stages require Spark 3.5+")
+    // CometInMemoryCacheSuite covers this too, but registers Comet's rules twice, through its
+    // plugin and CometTestBase. This suite registers them once, as production does. Reset the
+    // serializer so the relation is cached in Spark's format, as in the test above.
+    CometInMemoryRelationHelper.clearSerializer()
+    withSQLConf(SQLConf.ADAPTIVE_EXECUTION_ENABLED.key -> "true") {
+      withTempView("table_cache_stage") {
+        spark
+          .range(0, 10000, 1, 4)
+          .selectExpr("id", "id % 10 AS k")
+          .createOrReplaceTempView("table_cache_stage")
+        spark.catalog.cacheTable("table_cache_stage")
+        val df = spark.sql("SELECT k, count(*) FROM table_cache_stage GROUP BY k")
+        checkAnswer(df, (0L until 10L).map(k => Row(k, 1000L)))
+        val plan = df.queryExecution.executedPlan
+        checkCometOperatorsInFinalPlan(plan, classOf[InMemoryTableScanExec])
+        val conversions = collect(plan) {
+          case c: CometSparkToColumnarExec if isTableCacheStage(c.child) => c
+        }
+        assert(conversions.size == 1, plan)
+      }
+    }
+  }
+
   test("SparkToColumnar eliminate redundant in AQE") {
     withSQLConf(
       SQLConf.ADAPTIVE_EXECUTION_ENABLED.key -> "true",
@@ -3974,7 +4667,6 @@ class CometExecSuite extends CometTestBase {
       }
       withSQLConf(
         CometConf.COMET_NATIVE_SCAN_ENABLED.key -> "false",
-        CometConf.COMET_SPARK_TO_ARROW_ENABLED.key -> "true",
         CometConf.COMET_CONVERT_FROM_PARQUET_ENABLED.key -> "true") {
         val table = spark.read.parquet(filename)
         table.createOrReplaceTempView("t1")
@@ -3992,7 +4684,6 @@ class CometExecSuite extends CometTestBase {
     withSQLConf(
       SQLConf.USE_V1_SOURCE_LIST.key -> "parquet",
       CometConf.COMET_NATIVE_SCAN_ENABLED.key -> "false",
-      CometConf.COMET_SPARK_TO_ARROW_ENABLED.key -> "true",
       CometConf.COMET_CONVERT_FROM_PARQUET_ENABLED.key -> "true") {
       withTempPath { dir =>
         val expected = 10000L
@@ -4018,6 +4709,52 @@ class CometExecSuite extends CometTestBase {
           case s: CometSparkToColumnarExec => s
         }
         assert(sparkToColumnar.nonEmpty, "Expected CometSparkToColumnarExec in the executed plan")
+      }
+    }
+  }
+
+  // https://github.com/apache/datafusion-comet/issues/6573
+  private val inputFileColumns =
+    Seq("input_file_name()", "input_file_block_start()", "input_file_block_length()", "id")
+  private val inputFileFallbackReason =
+    "Spark to Arrow conversion is not compatible with input_file_name"
+
+  test("input_file_name above a converted Spark file scan keeps the scan on Spark") {
+    for (format <- Seq("parquet", "csv", "json"); v1List <- Seq("", format)) {
+      withTempPath { dir =>
+        spark.range(9000).repartition(3).write.format(format).save(dir.toString)
+        withSQLConf(
+          SQLConf.USE_V1_SOURCE_LIST.key -> v1List,
+          CometConf.COMET_CONVERT_FROM_PARQUET_ENABLED.key -> "true",
+          CometConf.COMET_CONVERT_FROM_CSV_ENABLED.key -> "true",
+          CometConf.COMET_CONVERT_FROM_JSON_ENABLED.key -> "true") {
+          // The filter would run in Comet above the conversion. Without a Comet operator there,
+          // Comet drops the conversion and Spark's project reads the scan directly.
+          val df = spark.read
+            .schema("id LONG")
+            .format(format)
+            .load(dir.toString)
+            .where("id >= 0")
+            .selectExpr(inputFileColumns: _*)
+          val (_, cometPlan) = checkSparkAnswerAndFallbackReason(df, inputFileFallbackReason)
+          assert(collect(cometPlan) { case c: CometSparkToColumnarExec => c }.isEmpty)
+        }
+      }
+    }
+  }
+
+  test("input_file_name above a converted RDD scan keeps the scan on Spark") {
+    withTempPath { dir =>
+      spark.range(9000).repartition(3).selectExpr("CAST(id AS STRING)").write.text(dir.toString)
+      withSQLConf(CometConf.COMET_CONVERT_FROM_RDD_ENABLED.key -> "true") {
+        // HadoopRDD sets the file Spark evaluates input_file_name against, as FileScanRDD does.
+        val rows = spark.sparkContext.textFile(dir.toString).map(line => Row(line.toLong))
+        val df = spark
+          .createDataFrame(rows, new StructType().add("id", LongType))
+          .where("id >= 0")
+          .selectExpr(inputFileColumns: _*)
+        val (_, cometPlan) = checkSparkAnswerAndFallbackReason(df, inputFileFallbackReason)
+        assert(collect(cometPlan) { case c: CometSparkToColumnarExec => c }.isEmpty)
       }
     }
   }
@@ -4205,7 +4942,6 @@ class CometExecSuite extends CometTestBase {
         .parquet(path)
       withSQLConf(
         CometConf.COMET_NATIVE_SCAN_ENABLED.key -> "false",
-        CometConf.COMET_SPARK_TO_ARROW_ENABLED.key -> "true",
         CometConf.COMET_CONVERT_FROM_PARQUET_ENABLED.key -> "true",
         SESSION_LOCAL_TIMEZONE.key -> "America/Los_Angeles") {
         val df = spark.read.parquet(path).orderBy("ts")
@@ -4251,7 +4987,7 @@ class CometExecSuite extends CometTestBase {
     }
   }
 
-  test("CometLocalTableScanExec falls back when schema contains TimeType") {
+  test("CometLocalTableScanExec handles TimeType column") {
     assume(
       org.apache.comet.CometSparkSessionExtensions.isSpark41Plus,
       "TimeType requires Spark 4.1+")
@@ -4259,11 +4995,22 @@ class CometExecSuite extends CometTestBase {
     // row encoder accepts TIME (matches Spark's own TimeFunctionsSuiteBase setup).
     withSQLConf(
       "spark.sql.timeType.enabled" -> "true",
-      CometConf.COMET_EXEC_LOCAL_TABLE_SCAN_ENABLED.key -> "true") {
-      // VALUES folds to a LocalRelation, exercising the CometLocalTableScanExec convert
-      // path; the TimeType column should drive the schema-level fallback.
-      val df = spark.sql("SELECT * FROM VALUES (TIME '12:34:56'), (TIME '01:02:03') AS t(c)")
-      checkSparkAnswer(df)
+      CometConf.COMET_EXEC_LOCAL_TABLE_SCAN_ENABLED.key -> "true",
+      // Two rows to a batch, so each scan below writes more than one batch.
+      CometConf.COMET_BATCH_SIZE.key -> "2") {
+      // VALUES folds to a LocalRelation, exercising the CometLocalTableScanExec convert path.
+      // TimeType routes through TimeNanoWriter, so the native scan handles it end-to-end.
+      Seq(
+        "SELECT * FROM VALUES (TIME '12:34:56'), (TIME '01:02:03'), (NULL) AS t(c)",
+        // a precision below the default
+        "SELECT * FROM VALUES (CAST(TIME '12:34:56.789' AS TIME(3))), (NULL), " +
+          "(CAST(TIME '00:00:00' AS TIME(3))) AS t(c)",
+        // TIME inside an array and a struct, written by the nested writers
+        "SELECT * FROM VALUES (array(TIME '01:02:03', CAST(NULL AS TIME))), " +
+          "(CAST(NULL AS ARRAY<TIME>)), (array(TIME '23:59:59.999999')) AS t(a)",
+        "SELECT * FROM VALUES (named_struct('x', TIME '01:02:03')), " +
+          "(CAST(NULL AS STRUCT<x: TIME>)), (named_struct('x', CAST(NULL AS TIME))) AS t(s)")
+        .foreach(query => checkSparkAnswerAndOperator(spark.sql(query)))
     }
   }
 

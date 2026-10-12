@@ -30,9 +30,18 @@ Relevant entry points:
 - [Adding a New Expression](docs/source/contributor-guide/adding_a_new_expression.md) /
   [Adding a New Operator](docs/source/contributor-guide/adding_a_new_operator.md).
 - [Debugging Guide](docs/source/contributor-guide/debugging.md).
+- [Backporting to Release Branches](docs/source/contributor-guide/backporting.md): a fix that
+  goes to one release branch also goes to every newer one. Cherry-pick with `-x`, and never add
+  an unrelated change to a backport pull request.
 
 When opening a pull request, use the [PR template](.github/pull_request_template.md) and fill
 in every section.
+
+Use `git push` for normal updates to a PR branch. If a rebase or amend requires a force push,
+use `git push --force-with-lease`, never `--force` or `-f`, to reduce the risk of overwriting
+another maintainer's commits. If the lease check rejects the push, inspect and integrate the
+remote changes before retrying; do not bypass it with `--force`. See
+[Submitting a Pull Request](docs/source/contributor-guide/development.md#submitting-a-pull-request).
 
 ## Checking a change against CI
 

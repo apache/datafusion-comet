@@ -19,6 +19,16 @@
 -- regr_avgy, regr_sxx, regr_syy, regr_sxy, regr_slope, regr_intercept, regr_r2.
 -- All functions take (y, x) and operate only on rows where BOTH y and x are non-null.
 
+-- regr_slope, regr_intercept, regr_r2, regr_sxx, regr_syy and regr_sxy fall back to Spark by
+-- default because their native merge of partial aggregates differs from Spark's
+-- (https://github.com/apache/datafusion-comet/issues/6423). Opt in so the queries below cover
+-- the native path. Spark plans regr_sxx and regr_syy as RegrReplacement.
+-- Config: spark.comet.expression.RegrSlope.allowIncompatible=true
+-- Config: spark.comet.expression.RegrIntercept.allowIncompatible=true
+-- Config: spark.comet.expression.RegrR2.allowIncompatible=true
+-- Config: spark.comet.expression.RegrSXY.allowIncompatible=true
+-- Config: spark.comet.expression.RegrReplacement.allowIncompatible=true
+
 statement
 CREATE TABLE test_regr(y double, x double, grp string) USING parquet
 

@@ -110,6 +110,12 @@ github:
     branch-0.17:
       required_pull_request_reviews:
         required_approving_review_count: 1
+    branch-1.0:
+      required_pull_request_reviews:
+        required_approving_review_count: 1
+    branch-1.1:
+      required_pull_request_reviews:
+        required_approving_review_count: 1
   # GitHub's merge queue. Classic `protected_branches` above has no way to
   # express this, but .asf.yaml rulesets accept a raw Rulesets API payload, so
   # no INFRA ticket is needed. Same approach as apache/iceberg-python and
@@ -142,16 +148,22 @@ github:
             # ALLGREEN: every entry's own build has to be green, not just the
             # last one's. HEADGREEN would let an entry whose build failed ride
             # in on a green head, which papers over a flake but equally papers
-            # over a real failure that a later entry happens to mask.
+            # over a real failure that a later entry happens to mask. It would
+            # also let untested code in: `merge_group.base_sha` is the queue
+            # commit of the entry ahead, so each entry's build runs only the
+            # suites its own changed files select, and a green head says
+            # nothing about the suites an earlier entry needed.
             grouping_strategy: ALLGREEN
             # Speculation depth: how many merge_group builds run at once. Each
             # queue entry gets its own build of itself plus everything ahead of
             # it, and merge limits do not combine those builds, so this is the
-            # throughput dial. At 1 every merge serializes behind a ~2.5h
-            # pipeline; 2 sustains roughly 19 merges a day, against a median of
-            # 6 and a busiest-day 22 over the last month. Raise it if the queue
-            # backs up, at the price of that many concurrent pipelines.
-            max_entries_to_build: 2
+            # throughput dial. In September 2026 a full pipeline took a median
+            # of 92 minutes, so 2 capped a queue that never ran dry at roughly
+            # 30 merges a day while approvals arrived at about 20 a day, and
+            # the backlog grew. 4 roughly doubles the cap. The price is that
+            # many concurrent pipelines, and more rebuilds when an entry fails,
+            # since every entry behind it that was already building restarts.
+            max_entries_to_build: 4
             # These only cap how many already-green entries land in one merge;
             # they do not batch the builds. No minimum and no wait, so a lone
             # PR merges the moment its build is green.
