@@ -34,7 +34,7 @@ import org.apache.spark.sql.vectorized.ColumnarBatch
 import org.apache.comet.{CometConf, ConfigEntry}
 import org.apache.comet.CometSparkSessionExtensions.isCometShuffleEnabled
 import org.apache.comet.serde.{Compatible, OperatorOuterClass, SupportLevel, Unsupported}
-import org.apache.comet.serde.QueryPlanSerde.{exprToProto, supportedSortType}
+import org.apache.comet.serde.QueryPlanSerde.{exprToProto, supportedSortType, withSharedSubexpressions}
 import org.apache.comet.serde.operator.CometSink
 
 object CometTakeOrderedAndProjectExec extends CometSink[TakeOrderedAndProjectExec] {
@@ -135,10 +135,20 @@ case class CometTakeOrderedAndProjectExec(
       // physical limit includes the offset; the native limit applies that offset once.
       CometExecUtils.getLimitNativePlan(child.output, limit, offset)
     } else {
+      topKNativePlan(offset)
+    }
+    // Spark's projection runs on its own over the rows the sort keeps, so only its list can share
+    // a subexpression (see QueryPlanSerde.canShortCircuitNulls)
+    withSharedSubexpressions(projectList) {
+      selection.flatMap(CometExecUtils.getProjectionNativePlan(projectList, child.output, _))
+    }
+  }
+
+  // Spark's ordering evaluates each sort key on its own, without subexpression elimination
+  private def topKNativePlan(offset: Int): Option[OperatorOuterClass.Operator] =
+    withSharedSubexpressions(Seq.empty) {
       CometExecUtils.getTopKNativePlan(child.output, sortOrder, child, limit, offset)
     }
-    selection.flatMap(CometExecUtils.getProjectionNativePlan(projectList, child.output, _))
-  }
 
   protected override def doExecuteColumnar(): RDD[ColumnarBatch] = {
     val childRDD = child.executeColumnar()
@@ -157,10 +167,7 @@ case class CometTakeOrderedAndProjectExec(
         } else {
           val numParts = childRDD.getNumPartitions
           // Serialize the plan once before mapping to avoid repeated serialization per partition
-          val topK =
-            CometExecUtils
-              .getTopKNativePlan(child.output, sortOrder, child, limit)
-              .get
+          val topK = topKNativePlan(offset = 0).get
           val serializedTopK = CometExec.serializeNativePlan(topK)
           val numOutputCols = child.output.length
           val inputSchema = CometUtils.fromAttributes(child.output)
