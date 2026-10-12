@@ -1067,8 +1067,20 @@ Spark.</p>
 <p>If the expression you’re adding has different behavior across different Spark versions, you’ll need to account for that in your implementation. There are two tools at your disposal to help with this:</p>
 <ol class="arabic simple">
 <li><p>Shims that exist in <code class="docutils literal notranslate"><span class="pre">spark/src/main/spark-$SPARK_VERSION/org/apache/comet/shims/CometExprShim.scala</span></code> for each Spark version. These shims are used to provide compatibility between different Spark versions.</p></li>
-<li><p>Variables that correspond to the Spark version, such as <code class="docutils literal notranslate"><span class="pre">isSpark33Plus</span></code>, which can be used to conditionally execute code based on the Spark version.</p></li>
+<li><p>Variables that correspond to the Spark version, such as <code class="docutils literal notranslate"><span class="pre">isSpark42Plus</span></code>, which can be used to conditionally execute code based on the Spark version.</p></li>
 </ol>
+<section id="name-the-behavior-not-the-spark-version">
+<h4>Name the behavior, not the Spark version<a class="headerlink" href="#name-the-behavior-not-the-spark-version" title="Link to this heading">#</a></h4>
+<p>When native code has to match a behavior that differs between Spark versions, decide which behavior applies in Scala and pass the result to native code under a name that describes the behavior, not the Spark version that introduced it. This covers protobuf fields, native function arguments, and native function names. For example, <code class="docutils literal notranslate"><span class="pre">TruncTimestamp</span></code> carries a <code class="docutils literal notranslate"><span class="pre">wrap_second_millisecond_overflow</span></code> flag, which the serde sets from <code class="docutils literal notranslate"><span class="pre">!isSpark42Plus</span></code>. It is not called <code class="docutils literal notranslate"><span class="pre">spark_420_plus</span></code>. The <code class="docutils literal notranslate"><span class="pre">filter_var_by_pair_nulls</span></code> field of <code class="docutils literal notranslate"><span class="pre">Regr</span></code> is another example.</p>
+<p>Set the flag in one place on the Scala side, in a shim or in the serde, so that a fork overrides only that. A helper such as <code class="docutils literal notranslate"><span class="pre">isSpark42Plus</span></code> is enough when the behavior changed in a minor release. When Spark changed it in patch releases, compare the full version in a named predicate, because a check on the minor version is wrong for every earlier patch. <code class="docutils literal notranslate"><span class="pre">RegrSparkVersions.r2DegenerateCasesSwapped</span></code> in <code class="docutils literal notranslate"><span class="pre">serde/aggregates.scala</span></code> is the model. It resolves SPARK-55969, which shipped in 3.5.9, 4.0.3, 4.1.2, and 4.2.0.</p>
+<p>Reasons to prefer behavior names:</p>
+<ul class="simple">
+<li><p>Some deployments run a Spark fork that backports fixes from newer open-source releases. Such a fork changes the one Scala check that sets the flag and leaves the protobuf and native code alone. A <code class="docutils literal notranslate"><span class="pre">spark_420_plus</span></code> flag cannot describe a fork that has one 4.2 fix but not the others.</p></li>
+<li><p>Spark occasionally changes behavior in a patch release or between minor releases, so a version number is a poor proxy for the behavior.</p></li>
+<li><p>The native code stays free of Spark version logic, and a reader of the Rust or proto definition can tell what the flag does without looking up a release.</p></li>
+</ul>
+<p>Write comments the same way. Cite the Spark JIRA that changed the behavior, as the <code class="docutils literal notranslate"><span class="pre">TruncTimestamp</span></code> serde does with SPARK-56663, because forks track backports by JIRA rather than by release. Say “Spark 4.2 and later” for a behavior that future releases inherit, rather than “Spark 4.2”. If a later release changes the behavior again, add a new parameter or shim for that change.</p>
+</section>
 </section>
 </section>
 <section id="shimming-to-support-different-spark-versions">
@@ -1199,7 +1211,10 @@ Spark.</p>
 <li class="toc-h4 nav-item toc-entry"><a class="reference internal nav-link" href="#producing-strings-from-arbitrary-bytes">Producing strings from arbitrary bytes</a></li>
 </ul>
 </li>
-<li class="toc-h3 nav-item toc-entry"><a class="reference internal nav-link" href="#api-differences-between-spark-versions">API Differences Between Spark Versions</a></li>
+<li class="toc-h3 nav-item toc-entry"><a class="reference internal nav-link" href="#api-differences-between-spark-versions">API Differences Between Spark Versions</a><ul class="nav section-nav flex-column">
+<li class="toc-h4 nav-item toc-entry"><a class="reference internal nav-link" href="#name-the-behavior-not-the-spark-version">Name the behavior, not the Spark version</a></li>
+</ul>
+</li>
 </ul>
 </li>
 <li class="toc-h2 nav-item toc-entry"><a class="reference internal nav-link" href="#shimming-to-support-different-spark-versions">Shimming to Support Different Spark Versions</a></li>
