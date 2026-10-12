@@ -801,7 +801,8 @@ object CometExec {
       numOutputCols: Int,
       serializedPlan: Array[Byte],
       numParts: Int,
-      partitionIdx: Int): CometExecIterator = {
+      partitionIdx: Int,
+      outputTypes: Seq[DataType] = Seq.empty): CometExecIterator = {
     new CometExecIterator(
       newIterId,
       inputObjects,
@@ -811,7 +812,8 @@ object CometExec {
       numParts,
       partitionIdx,
       broadcastedHadoopConfForEncryption = None,
-      encryptedFilePaths = Seq.empty)
+      encryptedFilePaths = Seq.empty,
+      outputTypes = outputTypes)
   }
 
   def getCometIterator(
@@ -950,7 +952,8 @@ abstract class CometNativeExec extends CometExec {
       ctx.broadcastedHadoopConfForEncryption,
       ctx.encryptedFilePaths,
       ctx.shuffleScanIndices,
-      perPartitionFilePaths = ctx.perPartitionFilePaths) {
+      perPartitionFilePaths = ctx.perPartitionFilePaths,
+      outputTypes = output.map(_.dataType)) {
       override def compute(split: Partition, context: TaskContext): Iterator[ColumnarBatch] = {
         // Register before super.compute creates the CometExecIterator, so this listener runs
         // after the iterator's close has published the final scan metrics.

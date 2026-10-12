@@ -126,6 +126,10 @@ abstract class CometTestBase
     // generic "<operator> is not supported" message mask the missing reason.
     // See https://github.com/apache/datafusion-comet/issues/5230.
     conf.set(CometConf.COMET_STRICT_FALLBACK_REASONS.key, "true")
+    // Fail a native plan that labels a timestamp with another timezone than Comet's convention.
+    // The label never changes the values, so result comparisons cannot catch it, and the casts
+    // at scans and shuffle writes would otherwise repair it without a trace.
+    conf.set(CometConf.COMET_STRICT_TIMESTAMP_LABELS.key, "true")
     // SortOrder is incompatible for mixed zero and negative zero floating point values, but
     // this is an edge case, and we expect most users to allow sorts on floating point, so we
     // enable this for the tests

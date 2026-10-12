@@ -170,7 +170,8 @@ case class CometTakeOrderedAndProjectExec(
               numOutputCols,
               serializedTopK,
               numParts,
-              idx)
+              idx,
+              child.output.map(_.dataType))
           }
         }
 
@@ -189,16 +190,17 @@ case class CometTakeOrderedAndProjectExec(
       // Serialize the plan once before mapping to avoid repeated serialization per partition
       val serializedFinalPlan =
         CometExec.serializeNativePlan(finalNativePlan(childRDD.getNumPartitions).get)
-      val finalOutputLength = output.length
+      val finalOutputTypes = output.map(_.dataType)
       val finalInputSchema = CometUtils.fromAttributes(child.output)
       singlePartitionRDD.mapPartitionsInternal { iter =>
         val it = CometExec.getCometIterator(
           CometArrowStream
             .inputObjects(iter, finalInputSchema, "CometTakeOrderedAndProject-final"),
-          finalOutputLength,
+          finalOutputTypes.length,
           serializedFinalPlan,
           1,
-          0)
+          0,
+          finalOutputTypes)
         setSubqueries(it.id, this)
 
         Option(TaskContext.get()).foreach { context =>
