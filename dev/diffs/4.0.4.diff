@@ -1388,7 +1388,7 @@ index ad424b3a7cc..4ece0117a34 100644
    protected val baseResourcePath = {
      // use the same way as `SQLQueryTestSuite` to get the resource path
 diff --git a/sql/core/src/test/scala/org/apache/spark/sql/SQLQuerySuite.scala b/sql/core/src/test/scala/org/apache/spark/sql/SQLQuerySuite.scala
-index f294ff81021..f019c6de8e9 100644
+index f294ff81021..3a019cb3b99 100644
 --- a/sql/core/src/test/scala/org/apache/spark/sql/SQLQuerySuite.scala
 +++ b/sql/core/src/test/scala/org/apache/spark/sql/SQLQuerySuite.scala
 @@ -38,6 +38,7 @@ import org.apache.spark.sql.catalyst.optimizer.{ConvertToLocalRelation, NestedCo
@@ -1434,7 +1434,17 @@ index f294ff81021..f019c6de8e9 100644
            }
            assert(inMemoryTableScan.size == 2)
            checkAnswer(queryDf, Row(0, 1) :: Row(1, 2) :: Row(2, 3) :: Row(3, 4) :: Row(4, 5) :: Nil)
-@@ -4744,7 +4754,8 @@ class SQLQuerySuite extends QueryTest with SharedSparkSession with AdaptiveSpark
+@@ -4009,7 +4019,8 @@ class SQLQuerySuite extends QueryTest with SharedSparkSession with AdaptiveSpark
+     }
+   }
+ 
+-  test("SPARK-26138 Pushdown limit through InnerLike when condition is empty") {
++  test("SPARK-26138 Pushdown limit through InnerLike when condition is empty",
++    IgnoreComet("Comet's nested loop join emits rows in a different order than Spark")) {
+     withTable("t1", "t2") {
+       spark.range(5).repartition(1).write.saveAsTable("t1")
+       spark.range(5).repartition(1).write.saveAsTable("t2")
+@@ -4744,7 +4755,8 @@ class SQLQuerySuite extends QueryTest with SharedSparkSession with AdaptiveSpark
      )
    }
  

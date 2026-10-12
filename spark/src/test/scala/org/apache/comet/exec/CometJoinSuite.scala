@@ -31,7 +31,7 @@ import org.apache.spark.sql.catalyst.TableIdentifier
 import org.apache.spark.sql.catalyst.analysis.UnresolvedRelation
 import org.apache.spark.sql.catalyst.expressions.{And, AttributeReference, DynamicPruningExpression, IsNotNull}
 import org.apache.spark.sql.catalyst.optimizer.{BuildLeft, BuildRight}
-import org.apache.spark.sql.catalyst.plans.Inner
+import org.apache.spark.sql.catalyst.plans.{Cross, Inner}
 import org.apache.spark.sql.catalyst.plans.logical.Join
 import org.apache.spark.sql.comet.{CometBroadcastExchangeExec, CometBroadcastHashJoinExec, CometBroadcastNestedLoopJoinExec, CometFilterExec, CometHashJoinExec, CometNativeScanExec, CometProjectExec, CometSortExec, CometSortMergeJoinExec, CometUnionExec, CometWindowExec}
 import org.apache.spark.sql.execution.{ColumnarToRowTransition, InputAdapter, LocalTableScanExec, SortExec, SparkPlan, WholeStageCodegenExec}
@@ -1541,6 +1541,37 @@ class CometJoinSuite extends CometTestBase {
     }
   }
 
+  // An explicit cross join has the join type Cross, which Spark's join operators run as Inner.
+  // The optimizer moves an equi-key filter into the join condition and keeps Cross, so each hint
+  // plans an equi-join of type Cross.
+  for ((hint, joinClass) <- Seq(
+      "SHUFFLE_HASH" -> classOf[CometHashJoinExec],
+      "MERGE" -> classOf[CometSortMergeJoinExec],
+      "BROADCAST" -> classOf[CometBroadcastHashJoinExec])) {
+    test(s"CROSS JOIN with an equi-key filter runs natively: $hint") {
+      withSQLConf(
+        SQLConf.ADAPTIVE_AUTO_BROADCASTJOIN_THRESHOLD.key -> "-1",
+        SQLConf.AUTO_BROADCASTJOIN_THRESHOLD.key -> "-1") {
+        withParquetTable((0 until 100).map(i => (i, i % 5)), "tbl_a") {
+          withParquetTable((0 until 50).map(i => (i % 10, i + 2)), "tbl_b") {
+            for (residual <- Seq("", " AND tbl_a._1 > tbl_b._2")) {
+              val df = sql(
+                s"SELECT /*+ $hint(tbl_b) */ * FROM tbl_a CROSS JOIN tbl_b " +
+                  s"WHERE tbl_a._2 = tbl_b._1$residual")
+              val (_, cometPlan) = checkSparkAnswerAndOperator(df, Seq(joinClass))
+              val joinTypes = collect(cometPlan) {
+                case j: CometHashJoinExec => j.joinType
+                case j: CometSortMergeJoinExec => j.joinType
+                case j: CometBroadcastHashJoinExec => j.joinType
+              }
+              assert(joinTypes == Seq(Cross), cometPlan)
+            }
+          }
+        }
+      }
+    }
+  }
+
   test("full outer join") {
     withTempView("`left`", "`right`", "allNulls") {
       allNulls.createOrReplaceTempView("allNulls")
@@ -1925,6 +1956,31 @@ class CometJoinSuite extends CometTestBase {
           checkSparkAnswerAndOperator(
             df,
             Seq(classOf[CometBroadcastExchangeExec], classOf[CometBroadcastNestedLoopJoinExec]))
+        }
+      }
+    }
+  }
+
+  test("BroadcastNestedLoopJoin of join type Cross runs natively") {
+    withSQLConf(SQLConf.AUTO_BROADCASTJOIN_THRESHOLD.key -> "-1") {
+      val left: Seq[(Integer, Int)] =
+        (0 until 5).map(i => ((i: Integer), i * 10)) ++ Seq[(Integer, Int)]((null, 99))
+      val right: Seq[(Integer, String)] =
+        (0 until 4).map(i => ((i: Integer), s"v_$i")) ++ Seq[(Integer, String)]((null, "v_null"))
+      withParquetTable(left, "tbl_a") {
+        withParquetTable(right, "tbl_b") {
+          // The tests above join with FROM tbl_a, tbl_b, which gives an Inner join. CROSS JOIN
+          // gives Cross, which can broadcast either side, as Inner can.
+          for (build <- Seq("tbl_a", "tbl_b"); filter <- Seq("", " WHERE tbl_a._1 > tbl_b._1")) {
+            val df = sql(
+              s"SELECT /*+ BROADCAST($build) */ tbl_a._1, tbl_b._2 " +
+                s"FROM tbl_a CROSS JOIN tbl_b$filter")
+            val (_, cometPlan) = checkSparkAnswerAndOperator(
+              df,
+              Seq(classOf[CometBroadcastExchangeExec], classOf[CometBroadcastNestedLoopJoinExec]))
+            val joins = collect(cometPlan) { case j: CometBroadcastNestedLoopJoinExec => j }
+            assert(joins.map(_.joinType) == Seq(Cross), cometPlan)
+          }
         }
       }
     }

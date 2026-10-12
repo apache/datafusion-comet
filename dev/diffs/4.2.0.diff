@@ -1595,7 +1595,7 @@ index 291aa7cab72..7783c37683e 100644
        super.test(testName, testTags: _*) {
          withSQLConf(SQLConf.ADAPTIVE_EXECUTION_ENABLED.key -> "false") {
 diff --git a/sql/core/src/test/scala/org/apache/spark/sql/SQLQuerySuite.scala b/sql/core/src/test/scala/org/apache/spark/sql/SQLQuerySuite.scala
-index da6f6aca2ad..64c981ad3d7 100644
+index da6f6aca2ad..d178253dc98 100644
 --- a/sql/core/src/test/scala/org/apache/spark/sql/SQLQuerySuite.scala
 +++ b/sql/core/src/test/scala/org/apache/spark/sql/SQLQuerySuite.scala
 @@ -40,6 +40,7 @@ import org.apache.spark.sql.catalyst.parser.ParseException
@@ -1641,7 +1641,17 @@ index da6f6aca2ad..64c981ad3d7 100644
            }
            assert(inMemoryTableScan.size == 2)
            checkAnswer(queryDf, Row(0, 1) :: Row(1, 2) :: Row(2, 3) :: Row(3, 4) :: Row(4, 5) :: Nil)
-@@ -4755,7 +4765,8 @@ class SQLQuerySuite extends SharedSparkSession with AdaptiveSparkPlanHelper
+@@ -4020,7 +4030,8 @@ class SQLQuerySuite extends SharedSparkSession with AdaptiveSparkPlanHelper
+     }
+   }
+ 
+-  test("SPARK-26138 Pushdown limit through InnerLike when condition is empty") {
++  test("SPARK-26138 Pushdown limit through InnerLike when condition is empty",
++    IgnoreComet("Comet's nested loop join emits rows in a different order than Spark")) {
+     withTable("t1", "t2") {
+       spark.range(5).repartition(1).write.saveAsTable("t1")
+       spark.range(5).repartition(1).write.saveAsTable("t2")
+@@ -4755,7 +4766,8 @@ class SQLQuerySuite extends SharedSparkSession with AdaptiveSparkPlanHelper
      )
    }
  
