@@ -38,17 +38,19 @@ Run a single test file by adding the file name (without `.sql` extension) after 
 ```
 
 This uses ScalaTest's substring matching, so the argument must match part of the test name.
-Test names follow the pattern `sql-file: expressions/<category>/<file>.sql [<config>]`.
+Test names use paths relative to `sql-tests/`, for example
+`sql-file: expressions/<category>/<file>.sql [<config>]` or
+`sql-file: framework/<file>.sql [<config>]`.
 
 ## Test file location
 
 SQL test files live under:
 
 ```
-spark/src/test/resources/sql-tests/expressions/
+spark/src/test/resources/sql-tests/
 ```
 
-Files are organized into category subdirectories:
+Expression fixtures are organized into category subdirectories:
 
 ```
 expressions/
@@ -67,8 +69,11 @@ expressions/
   struct/        -- create_named_struct, get_struct_field, ...
 ```
 
-The test suite recursively discovers all `.sql` files in these directories. Each file becomes
-one or more ScalaTest test cases.
+SQL test framework regression fixtures live in `framework/`, such as
+`framework/expect_error_class.sql`.
+
+The test suite recursively discovers all `.sql` files under `sql-tests/`. Each file becomes one
+or more ScalaTest test cases.
 
 ## File format
 
@@ -213,9 +218,10 @@ between matrix combinations. Keys changed by `SET` need not also appear in `Conf
 `SET spark.sql.optimizer.excludedRules=...` replaces the whole exclusion list, including
 the default ConstantFolding exclusion.
 
-Enabling the codegen dispatcher through `SET` still requires a non-error sentinel when
-the file contains `expect_error`, just as enabling it through `Config` does. Run that
-sentinel under the same settings as the error query.
+Enabling the codegen dispatcher through `SET` still requires an operator-checking sentinel
+when the file contains `expect_error`, just as enabling it through `Config` does. A plain
+`query`, `expect_native`, `expect_dispatch` or `expect_error_class` can serve as the sentinel.
+Run it under the same settings as the error query.
 
 This isolation covers SQL configs, not `USE`, temporary views or functions, or SQL
 session variables. Manage those separately.
@@ -316,8 +322,12 @@ SELECT space(n) FROM test_space WHERE n < 0
 
 #### `query expect_error(<pattern>)`
 
-Asserts that both Spark and Comet throw an exception containing the given pattern. Use this
-for ANSI mode tests where invalid operations should throw errors.
+Asserts that both Spark and Comet throw an exception containing the given pattern. This mode
+permits fallback to Spark and does not compare structured error classes or SQLSTATE. Use it
+for unstructured exceptions or errors on an intentional fallback path. For structured errors
+from Comet execution, prefer `expect_error_class` below.
+
+The literal-only examples below check error messages; they do not establish Comet coverage.
 
 ```sql
 -- Config: spark.sql.ansi.enabled=true
@@ -335,11 +345,46 @@ query expect_error(INVALID_ARRAY_INDEX)
 SELECT array(1, 2, 3)[10]
 ```
 
+#### `query expect_error_class(<error_class>)`
+
+Checks the planned Comet operators and requires Spark and Comet to throw the same exception
+class, exact error class and SQLSTATE. Neither exception's cause chain may contain a
+`CometNativeException`. Spark 4 also calls the error class a "condition".
+
+The argument is a single uppercase error class, including an optional subclass separated by
+a dot. It is compared exactly, so `ARITHMETIC_OVERFLOW` does not match
+`BINARY_ARITHMETIC_OVERFLOW`.
+
+```sql
+-- Config: spark.sql.ansi.enabled=true
+
+statement
+CREATE TABLE division_input(n int, d int) USING parquet
+
+statement
+INSERT INTO division_input SELECT 1, 0
+
+query expect_error_class(DIVIDE_BY_ZERO)
+SELECT n / d FROM division_input
+```
+
+Read the expression inputs from Parquet columns so the error occurs during execution.
+Errors raised while analyzing or planning the query fail the test. The operator check runs
+before execution, using the initial plan when AQE is enabled, like the other coverage modes.
+Query-context assertions remain in Scala; this mode uses `checkSparkError`'s exception-class,
+error-class and SQLSTATE checks.
+
+Fixtures that enable the codegen dispatcher and use legacy `expect_error` need a sentinel
+query that checks Comet operators. A plain `query`, `expect_native`, `expect_dispatch` or
+`expect_error_class` satisfies that requirement. The strict error-class mode checks its own
+operators and needs no additional successful query.
+
 ## Adding a new test
 
-1. Create a `.sql` file under the appropriate subdirectory in
+1. Create an expression fixture under the appropriate subdirectory in
    `spark/src/test/resources/sql-tests/expressions/`. Create a new subdirectory if no
-   existing category fits.
+   existing category fits. Put SQL test framework regression fixtures in
+   `spark/src/test/resources/sql-tests/framework/`.
 
 2. Add the Apache license header as a SQL comment.
 
