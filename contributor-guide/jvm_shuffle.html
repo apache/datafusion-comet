@@ -582,7 +582,9 @@ shuffle instead. See <a class="reference internal" href="native_shuffle.html#whe
 range key always falls back here. <code class="docutils literal notranslate"><span class="pre">HashPartitioning</span></code> keys must be primitive only by default:
 setting <code class="docutils literal notranslate"><span class="pre">spark.comet.shuffle.native.partitioning.hash.nested.enabled</span></code> to <code class="docutils literal notranslate"><span class="pre">true</span></code> keeps struct and
 array keys, and map keys on Spark 4.0 and later, on the native path. The config defaults to
-<code class="docutils literal notranslate"><span class="pre">false</span></code>, so a complex hash key falls back to JVM columnar shuffle unless it is enabled. See
+<code class="docutils literal notranslate"><span class="pre">false</span></code>, so a complex hash key falls back to JVM columnar shuffle unless it is enabled.
+Decimal hash keys with precision greater than 18, including nested decimal leaves, also use
+JVM shuffle when there is more than one partition and the shuffle mode allows it. See
 <a class="reference internal" href="native_shuffle.html#when-native-shuffle-is-used"><span class="std std-ref">Supported partition key types</span></a> for the exact
 rules. Complex types are fully supported as data columns in both implementations.</p></li>
 </ol>
