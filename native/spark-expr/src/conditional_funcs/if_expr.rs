@@ -17,6 +17,7 @@
 
 use crate::{Cast, EvalMode, SparkCastOptions};
 use arrow::{
+    array::new_empty_array,
     datatypes::{DataType, Schema},
     record_batch::RecordBatch,
 };
@@ -192,6 +193,13 @@ impl PhysicalExpr for IfExpr {
     }
 
     fn evaluate(&self, batch: &RecordBatch) -> Result<ColumnarValue> {
+        // CaseExpr returns a scalar for an empty batch when the branch it takes is a literal,
+        // and a scalar from an empty batch is taken to mean the expression is constant, as IN
+        // does to build its list once, so return an empty array instead.
+        if batch.num_rows() == 0 {
+            let data_type = self.data_type(&batch.schema())?;
+            return Ok(ColumnarValue::Array(new_empty_array(&data_type)));
+        }
         self.case_expr.evaluate(batch)
     }
 

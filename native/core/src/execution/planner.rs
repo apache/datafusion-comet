@@ -151,8 +151,9 @@ use datafusion_comet_spark_expr::{
     jvm_udf::JvmScalarUdfExpr, spark_in_list, ApproxPercentile, ArrayInsert, Avg, AvgDecimal, Cast,
     CheckOverflow, Correlation, Covariance, CreateNamedStruct, DecimalRescaleCheckOverflow,
     FloatOperands, GetArrayStructFields, GetStructField, HllPlusPlus, IfExpr, ListExtract,
-    MaxMinBy, Mode, NormalizeNaNAndZero, NormalizeNestedFloats, Regr, RegrType, SparkCastOptions,
-    Stddev, SumDecimal, ToJson, UnboundColumn, Variance, WideDecimalBinaryExpr, WideDecimalOp,
+    MaxMinBy, Mode, NormalizeNaNAndZero, NormalizeNestedFloats, Regr, RegrType, SparkCaseExpr,
+    SparkCastOptions, Stddev, SumDecimal, ToJson, UnboundColumn, Variance, WideDecimalBinaryExpr,
+    WideDecimalOp,
 };
 use itertools::Itertools;
 use jni::objects::{Global, JObject};
@@ -4827,17 +4828,17 @@ fn create_case_expr(
                 None,
             )) as Arc<dyn PhysicalExpr>
         });
-        Ok(Arc::new(CaseExpr::try_new(
+        Ok(Arc::new(SparkCaseExpr::new(CaseExpr::try_new(
             None,
             when_then_pairs,
             else_phy_expr,
-        )?))
+        )?)))
     } else {
-        Ok(Arc::new(CaseExpr::try_new(
+        Ok(Arc::new(SparkCaseExpr::new(CaseExpr::try_new(
             None,
             when_then_pairs,
             else_expr.clone(),
-        )?))
+        )?)))
     }
 }
 
