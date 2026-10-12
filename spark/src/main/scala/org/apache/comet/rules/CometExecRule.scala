@@ -443,7 +443,7 @@ case class CometExecRule(session: SparkSession, queryStagePrep: Boolean = false)
         convertToComet(scan, CometIcebergNativeScan).getOrElse(scan)
 
       case scan: CometBatchScanExec if scan.wrapped.scan.isInstanceOf[CSVScan] =>
-        convertToComet(scan, CometCsvNativeScanExec).getOrElse(scan)
+        convertToComet(scan, CometCsvNativeScanExec).getOrElse(scan.wrapped)
 
       // Comet JVM + native scan for V1 and V2
       case op if isCometScan(op) =>
@@ -994,10 +994,13 @@ case class CometExecRule(session: SparkSession, queryStagePrep: Boolean = false)
     } else {
       val normalizedPlan = normalizeDivisors(plan)
 
+      // The rewrite removes the sorts of each join it converts, so put back any sort a kept
+      // operator above still needs. This runs before transform(), which converts the sorts it
+      // adds like any other SortExec.
       val planWithJoinRewritten = if (CometConf.COMET_FORCE_SHJ.get()) {
-        normalizedPlan.transformUp { case p =>
-          RewriteJoin.rewrite(p)
-        }
+        RewriteJoin.restoreRequiredOrdering(normalizedPlan.transformUp { case p =>
+          RewriteJoin.rewrite(p, conf)
+        })
       } else {
         normalizedPlan
       }

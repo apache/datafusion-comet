@@ -224,6 +224,39 @@ under the License.
         </exclusion>
       </exclusions>
     </dependency>
+    <!--
+      hadoop-azure (test) backs the ABFS authentication tests. Main code never links against it:
+      AbfsReflection reaches the classpath's hadoop-azure by reflection, so the version only has
+      to match the Hadoop line Spark provides (${hadoop-azure.version}, pinned per profile in the
+      parent pom). spark-hadoop-cloud:tests already pulls the same artifact in transitively; the
+      explicit declaration pins the version and makes -Dhadoop-azure.version an override. The
+      exclusions mirror the parent pom's spark-hadoop-cloud block: Hadoop's shaded guava and
+      annotations come with hadoop-client, and Spark supplies jetty-util-ajax.
+    -->
+    <dependency>
+      <groupId>org.apache.hadoop</groupId>
+      <artifactId>hadoop-azure</artifactId>
+      <version>${hadoop-azure.version}</version>
+      <scope>test</scope>
+      <exclusions>
+        <exclusion>
+          <groupId>org.apache.hadoop.thirdparty</groupId>
+          <artifactId>hadoop-shaded-guava</artifactId>
+        </exclusion>
+        <exclusion>
+          <groupId>org.apache.hadoop</groupId>
+          <artifactId>hadoop-annotations</artifactId>
+        </exclusion>
+        <exclusion>
+          <groupId>org.eclipse.jetty</groupId>
+          <artifactId>jetty-util-ajax</artifactId>
+        </exclusion>
+        <exclusion>
+          <groupId>commons-logging</groupId>
+          <artifactId>commons-logging</artifactId>
+        </exclusion>
+      </exclusions>
+    </dependency>
     <!-- AWS SDK modules required by Iceberg's S3FileIO (see parent pom for details) -->
     <dependency>
       <groupId>software.amazon.awssdk</groupId>
