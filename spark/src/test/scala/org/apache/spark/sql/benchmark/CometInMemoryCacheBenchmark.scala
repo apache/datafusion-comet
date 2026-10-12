@@ -19,7 +19,10 @@
 
 package org.apache.spark.sql.benchmark
 
+import java.io.PrintStream
 import java.nio.charset.StandardCharsets
+
+import scala.collection.mutable
 
 import org.apache.spark.SparkConf
 import org.apache.spark.benchmark.Benchmark
@@ -73,11 +76,8 @@ object CometInMemoryCacheBenchmark extends CometBenchmarkBase {
     Seq("id", "sc", "deep", "wide", "tail", "d"),
     nestedNumRows)
 
-  // Every value spark.comet.exec.inMemoryCache.compression.codec accepts, default first. Arrow's
-  // other IPC codec, LZ4_FRAME, is not one of them: it is commons-compress's pure-Java LZ4 rather
-  // than the JNI-accelerated lz4-java behind spark.io.compression.codec, and the write path
-  // rejects it.
-  private val codecs = Seq("zstd", "none")
+  // Every value spark.comet.exec.inMemoryCache.compression.codec accepts, default first.
+  private val codecs = Seq("zstd", "lz4", "none")
 
   // A sink for the benchmarked call's result: written but never read, so that neither the
   // compiler nor the JIT can treat `gatherColumnStats` as dead code. Not `private`, because
@@ -444,19 +444,29 @@ object CometInMemoryCacheBenchmark extends CometBenchmarkBase {
    * CometInMemoryTableScan's batches through CometColumnarToRow instead, which
    * runAdaptiveBenchmark measures.
    *
+   * Comet's format is cached under zstd, the default, and under lz4, since most of what a Spark
+   * operator pays to read it is decompression.
+   *
    * Both formats are cached from the same relation, one copy at a time as in runCodecBenchmark,
    * and each case checks which serializer cached the relation it reads and which reader it uses.
    */
   private def runSparkOperatorBenchmark(relation: CachedRelation): Unit = {
     val view = s"${relation.table}_spark_operators"
-    val reads = Seq(
-      SparkOperatorRead("Spark's cache format", sparkSerializer, sparkOperatorConf),
-      SparkOperatorRead("Comet's cache format, row reader", cometSerializer, sparkOperatorConf),
-      SparkOperatorRead(
-        "Comet's cache format, fused reader",
-        cometSerializer,
-        fusedReaderConf,
-        fused = true))
+    val reads = SparkOperatorRead("Spark's cache format", sparkSerializer, sparkOperatorConf) +:
+      Seq("zstd", "lz4").flatMap { codec =>
+        Seq(
+          SparkOperatorRead(
+            s"Comet's cache format, $codec, row reader",
+            cometSerializer,
+            sparkOperatorConf,
+            codec = codec),
+          SparkOperatorRead(
+            s"Comet's cache format, $codec, fused reader",
+            cometSerializer,
+            fusedReaderConf,
+            fused = true,
+            codec = codec))
+      }
 
     spark.catalog.clearCache()
     withTempTable(view) {
@@ -465,14 +475,16 @@ object CometInMemoryCacheBenchmark extends CometBenchmarkBase {
         .createOrReplaceTempView(view)
 
       val cache = new OneCachedCopy(view)
-      readShapes(view).foreach { case (label, query, scanned) =>
+      val benchmarks = readShapes(view).map { case (label, query, scanned) =>
         val benchmark = new Benchmark(
           s"in-memory cache read by Spark operators, $label",
           relation.rows.toLong,
           output = output)
         reads.foreach(addSparkOperatorCase(benchmark, cache, query, scanned, _))
         benchmark.run()
+        benchmark
       }
+      cache.printFootprints(benchmarks.last.out)
 
       spark.catalog.uncacheTable(view)
     }
@@ -488,12 +500,18 @@ object CometInMemoryCacheBenchmark extends CometBenchmarkBase {
    * spark.sql.codegen.maxFields (100 by default) that is how any Spark operator reads a cached
    * relation, because the scan stops offering columnar output and nothing can fuse with it. Every
    * width holds about the same number of values, so the cases differ in width rather than in data
-   * volume.
+   * volume. The columns are sequential longs, which Spark's format delta-encodes, so the
+   * footprint of each format is printed too.
    */
   private def runWideSparkOperatorBenchmark(): Unit = {
-    val reads = Seq(
-      SparkOperatorRead("Spark's cache format", sparkSerializer, sparkOperatorConf),
-      SparkOperatorRead("Comet's cache format, row reader", cometSerializer, sparkOperatorConf))
+    val reads = SparkOperatorRead("Spark's cache format", sparkSerializer, sparkOperatorConf) +:
+      Seq("zstd", "lz4").map { codec =>
+        SparkOperatorRead(
+          s"Comet's cache format, $codec, row reader",
+          cometSerializer,
+          sparkOperatorConf,
+          codec = codec)
+      }
 
     Seq(100, 200, 1500).foreach { width =>
       val rows = 20L * 1000 * 1000 / width
@@ -513,37 +531,57 @@ object CometInMemoryCacheBenchmark extends CometBenchmarkBase {
           output = output)
         reads.foreach(addSparkOperatorCase(benchmark, cache, s"SELECT * FROM $view", width, _))
         benchmark.run()
+        cache.printFootprints(benchmark.out)
 
         spark.catalog.uncacheTable(view)
       }
     }
   }
 
-  /** How Spark operators read a cached relation: its format and the settings of the read. */
+  /**
+   * How Spark operators read a cached relation: its format, the codec Comet's format is written
+   * with, and the settings of the read.
+   */
   private case class SparkOperatorRead(
       name: String,
       serializer: String,
       conf: Seq[(String, String)],
-      fused: Boolean = false)
+      fused: Boolean = false,
+      codec: String = "zstd")
 
   /**
    * Holds one cached copy of `view` at a time, cached under `conf`. Two copies could not coexist
    * anyway: the cache manager keys on the plan rather than the name, so a second one would find
    * the first.
+   *
+   * Records what each format occupies as it is cached, since a format that reads faster is only
+   * worth having at a footprint the application can afford.
    */
   private class OneCachedCopy(view: String, conf: Seq[(String, String)] = sparkOperatorConf) {
-    private var cachedBy: String = _
+    private var cachedBy: (String, String) = _
+    private val footprints = mutable.LinkedHashMap.empty[String, Long]
 
-    def cacheBy(serializer: String): Unit = if (cachedBy != serializer) {
-      spark.catalog.uncacheTable(view)
-      cachedBy = null
-      withCacheSerializer(serializer) {
-        withSQLConf(conf: _*) {
-          spark.catalog.cacheTable(view)
-          spark.table(view).count()
+    // The codec only matters to Comet's serializer, and Spark's ignores its config.
+    def cacheBy(serializer: String, codec: String = "zstd"): Unit =
+      if (cachedBy != ((serializer, codec))) {
+        spark.catalog.uncacheTable(view)
+        cachedBy = null
+        withCacheSerializer(serializer) {
+          withSQLConf(conf ++ codecConf(codec): _*) {
+            spark.catalog.cacheTable(view)
+            spark.table(view).count()
+          }
         }
+        cachedBy = (serializer, codec)
+        val format =
+          if (serializer == sparkSerializer) "Spark's cache format"
+          else s"Comet's cache format, $codec"
+        footprints(format) = cachedBytes(view)
       }
-      cachedBy = serializer
+
+    // As in runCodecBenchmark, footprint has no column in a Benchmark table.
+    def printFootprints(out: PrintStream): Unit = footprints.foreach { case (format, bytes) =>
+      out.println(f"Cached footprint ($format): ${bytes / (1024.0 * 1024.0)}%.1f MiB")
     }
   }
 
@@ -557,7 +595,7 @@ object CometInMemoryCacheBenchmark extends CometBenchmarkBase {
     // Re-caching in this case's format is setup, so it is outside the timer, and it only happens
     // on the case's first call, which is a warmup iteration.
     benchmark.addTimerCase(read.name) { timer =>
-      cache.cacheBy(read.serializer)
+      cache.cacheBy(read.serializer, read.codec)
       withSQLConf(read.conf: _*) {
         if (!verified) {
           verifySparkOperatorRead(query, scanned, read)
@@ -573,8 +611,9 @@ object CometInMemoryCacheBenchmark extends CometBenchmarkBase {
   /**
    * What the feature changes for a query that runs with Comet, against Spark's own cache format,
    * with AQE on and Comet's other settings at their defaults. This is the comparison an
-   * application gets from turning the feature on or off. Both formats are cached from the same
-   * relation, one copy at a time as in runSparkOperatorBenchmark.
+   * application gets from turning the feature on or off, and, through lz4, from changing the
+   * codec. Both formats are cached from the same relation, one copy at a time as in
+   * runSparkOperatorBenchmark.
    *
    * Two shapes of plan read the cache. With Comet operators above the cache scan, Comet's format
    * runs the whole query natively, while Spark's leaves the operators directly above its scan on
@@ -586,8 +625,8 @@ object CometInMemoryCacheBenchmark extends CometBenchmarkBase {
    */
   private def runAdaptiveBenchmark(relation: CachedRelation): Unit = {
     val view = s"${relation.table}_adaptive"
-    val formats =
-      Seq("Spark's cache format" -> sparkSerializer, "Comet's cache format" -> cometSerializer)
+    val formats = ("Spark's cache format", sparkSerializer, "zstd") +:
+      Seq("zstd", "lz4").map(codec => (s"Comet's cache format, $codec", cometSerializer, codec))
     val operatorsAbove = Seq(
       "Comet operators" -> Seq.empty[(String, String)],
       "a Spark operator" -> Seq(CometConf.COMET_EXEC_AGGREGATE_ENABLED.key -> "false"))
@@ -607,12 +646,12 @@ object CometInMemoryCacheBenchmark extends CometBenchmarkBase {
           s"in-memory cache with AQE, $operators above the scan, $label",
           relation.rows.toLong,
           output = output)
-        formats.foreach { case (name, serializer) =>
+        formats.foreach { case (name, serializer, codec) =>
           var verified = false
           // Re-caching in this case's format is setup, so it is outside the timer, and it only
           // happens on the case's first call, which is a warmup iteration.
           benchmark.addTimerCase(name) { timer =>
-            cache.cacheBy(serializer)
+            cache.cacheBy(serializer, codec)
             withSQLConf(adaptiveConf ++ operatorConf: _*) {
               if (!verified) {
                 verifyAdaptiveRead(query, scanned, serializer, operatorConf.nonEmpty)
