@@ -245,6 +245,11 @@ of a two-phase aggregate, comes back from re-planning as the node already planne
 serialized as a `Scan` before the stage existed. `CometExecRule` refreshes such a node: once its input
 is a sink that emits a `ShuffleScan`, that `ShuffleScan` replaces the stale `Scan` leaf.
 
+The native Iceberg writer builds its own native plan rather than joining its child's block, and it
+follows the same decision: when its child is a sink that emits a `ShuffleScan`,
+`CometIcebergNativeWrite` takes that `ShuffleScan` as the leaf of the write's plan. See
+[Iceberg Writes](iceberg-writes.md).
+
 The two are not alternatives on failure. If any output type fails `supportedSinkDataType`,
 `convertToShuffleScan` records the fallback reason `Unsupported data type for shuffle direct read`
 and returns `None`. It does not retry as a regular `Scan`, and retrying would not help, because

@@ -119,6 +119,14 @@ batches from its child over FFI, so the conversion is declined unless the child 
 native operator. This is why a write fed by a `LocalTableScanExec` (`INSERT ... VALUES`, a local
 DataFrame) stays on the JVM writer unless `spark.comet.exec.localTableScan.enabled` is also set.
 
+A Comet shuffle directly under the write is the exception to the FFI path. When the child is a
+sink that reads the shuffle directly (see
+[Direct Read](native_shuffle.md#direct-read-shufflescan)), `buildInputScan` takes the sink's
+`ShuffleScan` as the leaf of the write's native plan, so the shuffle blocks are decoded inside that
+plan instead of in the JVM. Under AQE this covers a write over a shuffle stage or a coalesced read
+of one. That is the plan for a repartitioned insert, and for a hash-distributed write that needs no
+sort, such as one to a partitioned table without a sort order.
+
 `CometIcebergWriteExec` is row-based (it emits the commit message row) over a columnar child, so
 Spark inserts a columnar-to-row transition beneath it. `EliminateRedundantTransitions` removes that
 transition in a dedicated pass that runs before its main `transformUp`, and the scaladoc on
@@ -197,9 +205,10 @@ on the driver. Almost all of it is the per-write `IcebergWriteCommon`:
   including its `HadoopFileIO` fallback, rather than the wrapper's Hadoop configuration.
   Failure to resolve that delegate causes a plan-time fallback.
 
-The per-task `partition_id` and `task_attempt_id` are stamped onto a copy of the proto inside the
-task closure in `CometIcebergWriteExec.doExecuteColumnar`. The native side refuses to run without
-them, since defaulting them would make every task write the same file names.
+The per-task `partition_id` and `task_attempt_id` are stamped onto a copy of the proto in
+`CometIcebergWriteRDD.compute`, the RDD that `CometIcebergWriteExec.doExecuteColumnar` returns. The
+native side refuses to run without them, since defaulting them would make every task write the same
+file names.
 
 `catalog_properties` can carry credentials. `CometIcebergWriteExec.stringArgs` deliberately prints
 only the data location and writer mode, because the default `argString` would put the protobuf's
@@ -218,9 +227,10 @@ reserves for metadata columns, so those writes stay on iceberg-java.
 ### Native execution
 
 The planner builds `IcebergWriteExec` (`native/core/src/execution/operators/iceberg_write.rs`) over
-the FFI scan of the child's batches. `run_write_task` builds iceberg-rust's partitioning writer once
-per task, and `PartitionWriterBuilder` builds the rest of the stack once per partition, with that
-partition's Parquet writer properties:
+the scan of the child: the FFI scan of its batches, or the `ShuffleScan` of a shuffle it reads
+directly. `run_write_task` builds iceberg-rust's partitioning writer once per task, and
+`PartitionWriterBuilder` builds the rest of the stack once per partition, with that partition's
+Parquet writer properties:
 
 ```text
 UnpartitionedWriter | FanoutWriter | ClusteredWriter
