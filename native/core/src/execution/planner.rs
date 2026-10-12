@@ -972,6 +972,8 @@ impl PhysicalPlanner {
                     udf.return_nullable,
                     self.task_context.clone(),
                     self.class_loader.clone(),
+                    self.partition,
+                    self.exec_context_id,
                 )))
             }
             expr => Err(GeneralError(format!("Not implemented: {expr:?}"))),

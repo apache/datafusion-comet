@@ -1535,8 +1535,8 @@ class CometCodegenSourceSuite extends AnyFunSuite {
       IndexedSeq[ArrowColumnSpec](ArrowColumnSpec(varCharVectorClass, nullable = true))
     val nonNullable =
       IndexedSeq[ArrowColumnSpec](ArrowColumnSpec(varCharVectorClass, nullable = false))
-    val k1 = CometScalaUDFCodegen.CacheKey(bytes, nullable)
-    val k2 = CometScalaUDFCodegen.CacheKey(bytes, nonNullable)
+    val k1 = CometScalaUDFCodegen.CacheKey(0L, bytes, nullable)
+    val k2 = CometScalaUDFCodegen.CacheKey(0L, bytes, nonNullable)
     assert(
       k1 != k2,
       "expected nullable=true and nullable=false specs to produce distinct cache keys")
