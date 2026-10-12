@@ -2291,9 +2291,9 @@ trait CometBaseAggregate[T <: BaseAggregateExec] extends CometOperatorSerde[T] {
     // If the aggregateExpressions is empty, we only want to build groupingExpressions,
     // and skip processing of aggregateExpressions.
     //
-    // The groupingExpressions can be empty too. ColumnPruning leaves `Aggregate(Nil, Nil, child)`
-    // when nothing reads a global aggregate's output, as in `df.agg(sum($"a")).count()`. It
-    // emits one row with no columns for any input, and the native planner handles that shape.
+    // The groupingExpressions can be empty too, for the `Aggregate(Nil, Nil, child)` that
+    // ColumnPruning leaves when nothing reads a global aggregate's output. The native planner
+    // handles that shape.
     if (aggregateExpressions.isEmpty) {
       val hashAggBuilder = OperatorOuterClass.HashAggregate.newBuilder()
       hashAggBuilder.addAllGroupingExprs(groupingExprs.map(_.get).asJava)

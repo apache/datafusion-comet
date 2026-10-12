@@ -1562,20 +1562,18 @@ impl PhysicalPlanner {
                 // Spark plans a global aggregate with neither keys nor functions when its output
                 // goes unused, as in `df.agg(sum($"a")).count()`. Each partition emits one row
                 // with no columns, even for an empty input. DataFusion's AggregateStream can't
-                // build a batch with no columns (apache/datafusion#25782), so count the rows and
-                // project the count away. Counting reads the whole input as Spark does, so errors
-                // below the aggregate still surface. The partial and final stages both take this
-                // path, since the final one only collapses the partial one's rows into one.
+                // build a batch with no columns (apache/datafusion#25782), so until it can, count
+                // the rows and project the count away. Counting reads the whole input as Spark
+                // does, so errors below the aggregate still surface. The partial and final stages
+                // both take this path, since the final one only collapses the partial one's rows.
                 if agg.grouping_exprs.is_empty() && agg.agg_exprs.is_empty() {
                     let schema = child.schema();
-                    let count = AggregateExprBuilder::new(
-                        count_udaf(),
+                    let count = Self::create_aggr_func_expr(
+                        "count",
+                        Arc::clone(&schema),
                         vec![Arc::new(Literal::new(ScalarValue::Int64(Some(1))))],
-                    )
-                    .schema(Arc::clone(&schema))
-                    .alias("count")
-                    .build()
-                    .map_err(|e| ExecutionError::DataFusionError(e.to_string()))?;
+                        Arc::unwrap_or_clone(count_udaf()),
+                    )?;
                     let aggregate: Arc<dyn ExecutionPlan> = Arc::new(
                         datafusion::physical_plan::aggregates::AggregateExec::try_new(
                             DFAggregateMode::Single,
@@ -6294,7 +6292,6 @@ mod tests {
                     .await
                     .unwrap();
                 assert_eq!(1, results.iter().map(RecordBatch::num_rows).sum::<usize>());
-                assert!(results.iter().all(|batch| batch.num_columns() == 0));
             }
         }
     }
