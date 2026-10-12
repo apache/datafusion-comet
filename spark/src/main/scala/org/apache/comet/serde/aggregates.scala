@@ -31,7 +31,7 @@ import org.apache.spark.sql.types.{ArrayType, BinaryType, BooleanType, ByteType,
 import org.apache.comet.CometConf.COMET_EXEC_STRICT_FLOATING_POINT
 import org.apache.comet.CometSparkSessionExtensions.{isSpark41Plus, isSpark42Plus, withFallbackReason}
 import org.apache.comet.expressions.CometEvalMode
-import org.apache.comet.serde.QueryPlanSerde.{evalModeToProto, exprToProto, serializeDataType}
+import org.apache.comet.serde.QueryPlanSerde.{evalModeToProto, exprToProto, isStringCollationType, serializeDataType}
 import org.apache.comet.shims.{CometCollectShim, CometEvalModeUtil, CometTypeShim}
 
 object CometMin extends CometAggregateExpressionSerde[Min] {
@@ -40,6 +40,8 @@ object CometMin extends CometAggregateExpressionSerde[Min] {
 
   // Native MIN emits one typed null for empty/all-null input; Spark's least merge ignores it.
   override def supportsNativePartialToSparkFinal(fn: Min): Boolean = true
+
+  override def getUnsupportedReasons(): Seq[String] = AggSerde.minMaxUnsupportedReasons
 
   override def getSupportLevel(expr: Min): SupportLevel =
     AggSerde.minMaxSupportLevel(expr.dataType)
@@ -79,6 +81,8 @@ object CometMax extends CometAggregateExpressionSerde[Max] {
 
   // Native MAX emits one typed null for empty/all-null input; Spark's greatest merge ignores it.
   override def supportsNativePartialToSparkFinal(fn: Max): Boolean = true
+
+  override def getUnsupportedReasons(): Seq[String] = AggSerde.minMaxUnsupportedReasons
 
   override def getSupportLevel(expr: Max): SupportLevel =
     AggSerde.minMaxSupportLevel(expr.dataType)
@@ -1475,14 +1479,24 @@ object AggSerde {
 
   /**
    * Shared support level for `Min` / `Max` based on the result data type. Floats follow Spark's
-   * ordering natively, so strict floating-point mode does not apply to them.
+   * ordering natively, so strict floating-point mode does not apply to them. Spark and the native
+   * accumulators both compare strings and binary as unsigned bytes, except that Spark orders a
+   * string with a non-default collation by that collation.
    */
-  def minMaxSupportLevel(dt: DataType): SupportLevel = {
-    if (!minMaxDataTypeSupported(dt)) {
-      Unsupported(Some(s"Unsupported data type: $dt"))
-    } else {
-      Compatible()
-    }
+  def minMaxSupportLevel(dt: DataType): SupportLevel = dt match {
+    case _: StringType if isStringCollationType(dt) =>
+      Unsupported(Some(ComparisonUtils.nonDefaultCollationReason("min/max")))
+    // DataFusion's grouped hash aggregate under-reports the memory these values hold (#6936).
+    case _: StringType | BinaryType => Compatible()
+    case _ if minMaxDataTypeSupported(dt) => Compatible()
+    case _ => Unsupported(Some(s"Unsupported data type: $dt"))
   }
+
+  /** The inputs that `minMaxSupportLevel` rejects, for the generated compatibility guide. */
+  val minMaxUnsupportedReasons: Seq[String] = Seq(
+    "Input of a type other than boolean, integral, floating-point, decimal, date, timestamp," +
+      " string or binary, such as timestamp without time zone, intervals, arrays and structs.",
+    "A string with a non-default collation (Spark 4.0+), which Spark orders by its collation" +
+      " while Comet compares raw bytes.")
 
 }
