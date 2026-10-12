@@ -1359,8 +1359,9 @@ impl InnerWriter {
     /// shares (`open_files`, see [`MeteredParquetWriter`]) and the rows waiting in their
     /// [`PartitionFeed`]s. When the pool refuses, a fanout write writes out and closes its
     /// partitions, the one holding the most first, until what is left fits, and this returns how
-    /// many it closed. The unpartitioned and clustered writers hold one file open, at most a row
-    /// group, and cannot close it early, so the pool's refusal stands.
+    /// many it closed. The unpartitioned and clustered writers hold one file open and cannot close
+    /// it early, so the pool's refusal stands. Any other error from a resize fails the task (see
+    /// [`is_refusal`]).
     async fn reserve(
         &mut self,
         reservation: &MemoryReservation,
@@ -1370,7 +1371,8 @@ impl InnerWriter {
         let mut pending = self.pending_bytes();
         let mut refused = match reservation.try_resize(open_files.bytes() + pending) {
             Ok(()) => return Ok(0),
-            Err(refused) => refused,
+            Err(e) if is_refusal(&e) => e,
+            Err(e) => return Err(e),
         };
         let InnerWriter::Fanout(fanout, _) = self else {
             return Err(refused);
@@ -1380,7 +1382,8 @@ impl InnerWriter {
             fanout.close_early(i, properties).await?;
             match reservation.try_resize(open_files.bytes() + pending) {
                 Ok(()) => return Ok(closed + 1),
-                Err(e) => refused = e,
+                Err(e) if is_refusal(&e) => refused = e,
+                Err(e) => return Err(e),
             }
         }
         // Not reached: everything a fanout write reserves belongs to one of its partitions, so
@@ -1470,6 +1473,16 @@ impl InnerWriter {
 }
 
 // --- helpers -------------------------------------------------------------
+
+/// Whether `e`, from resizing a reservation, is the pool refusing the memory, which every pool
+/// reports as `ResourcesExhausted` and a fanout write answers by closing partitions early. A pool
+/// backed by Spark can also fail a resize with an exception Spark threw: a spill of another
+/// consumer that failed, or the `InterruptedException` of a task killed while it waited for
+/// memory. That comes back as another kind of error and has to fail the task. Closing partitions
+/// would swallow it, because once the resize is down to a shrink it no longer calls Spark.
+fn is_refusal(e: &DataFusionError) -> bool {
+    matches!(e.find_root(), DataFusionError::ResourcesExhausted(_))
+}
 
 fn parse_iceberg_schema(json: &str) -> DFResult<IcebergSchemaRef> {
     let schema: IcebergSchema = serde_json::from_str(json).map_err(|e| {
@@ -4899,8 +4912,8 @@ mod tests {
         /// mode is unpartitioned, reserving from `pool` the way `IcebergWriteExec::execute`
         /// reserves from the task's pool, and counting into `metrics`. A successful write's files
         /// are left for the caller to inspect.
-        async fn write_reserving_from(
-            pool: &Arc<PeakMemoryPool>,
+        async fn write_reserving_from<P: MemoryPool>(
+            pool: &Arc<P>,
             metrics: WriteMetrics,
             schema: Schema,
             writer_mode: ProtoIcebergWriterMode,
@@ -4926,7 +4939,7 @@ mod tests {
                 ),
                 target_file_size_bytes,
             );
-            let pool: Arc<dyn MemoryPool> = Arc::<PeakMemoryPool>::clone(pool);
+            let pool: Arc<dyn MemoryPool> = Arc::<P>::clone(pool);
             let reservation = MemoryConsumer::new("IcebergWriteExec[0]").register(&pool);
             let written = run_write_task(
                 input_stream(batches),
@@ -5347,6 +5360,111 @@ mod tests {
                 "the failed write left files behind"
             );
             assert_eq!(tight.reserved(), 0, "the failed write kept a reservation");
+        }
+
+        /// A pool with room to spare that refuses the first `refusals` grows it is asked for, then
+        /// fails the next with `error`, the way a pool backed by Spark passes on an exception
+        /// Spark threw, and grants every grow after that.
+        #[derive(Debug)]
+        struct FailingPool {
+            inner: UnboundedMemoryPool,
+            refusals: AtomicUsize,
+            error: Mutex<Option<DataFusionError>>,
+        }
+
+        impl FailingPool {
+            fn new(refusals: usize, error: DataFusionError) -> Self {
+                Self {
+                    inner: UnboundedMemoryPool::default(),
+                    refusals: AtomicUsize::new(refusals),
+                    error: Mutex::new(Some(error)),
+                }
+            }
+        }
+
+        impl fmt::Display for FailingPool {
+            fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+                write!(f, "FailingPool({})", self.inner)
+            }
+        }
+
+        impl MemoryPool for FailingPool {
+            fn name(&self) -> &str {
+                "FailingPool"
+            }
+
+            fn grow(&self, reservation: &MemoryReservation, additional: usize) {
+                self.inner.grow(reservation, additional);
+            }
+
+            fn shrink(&self, reservation: &MemoryReservation, shrink: usize) {
+                self.inner.shrink(reservation, shrink);
+            }
+
+            fn try_grow(&self, reservation: &MemoryReservation, additional: usize) -> DFResult<()> {
+                if self
+                    .refusals
+                    .try_update(Ordering::Relaxed, Ordering::Relaxed, |left| {
+                        left.checked_sub(1)
+                    })
+                    .is_ok()
+                {
+                    return Err(DataFusionError::ResourcesExhausted(format!(
+                        "refused {additional} bytes"
+                    )));
+                }
+                if let Some(error) = self.error.lock().unwrap().take() {
+                    return Err(error);
+                }
+                self.inner.try_grow(reservation, additional)
+            }
+
+            fn reserved(&self) -> usize {
+                self.inner.reserved()
+            }
+        }
+
+        /// Only the pool's refusal makes a fanout write close partitions early. Any other error
+        /// from a resize, such as an exception Spark threw because a spill failed or the task was
+        /// killed, fails the write, which deletes every file it created, the ones it closed early
+        /// included.
+        #[tokio::test]
+        async fn a_fanout_write_fails_on_a_resize_error_that_is_not_a_refusal() {
+            for error in [
+                DataFusionError::External("an exception Spark threw".into()),
+                DataFusionError::Execution("a JNI call that failed".into()),
+            ] {
+                let message = error.to_string();
+                // Two refusals close two partitions early, then the third resize fails.
+                let pool = Arc::new(FailingPool::new(2, error));
+                let (dir, written) = write_reserving_from(
+                    &pool,
+                    WriteMetrics::default(),
+                    iceberg_user_schema(),
+                    ProtoIcebergWriterMode::IcebergWriterFanout,
+                    // A unit for each of 16 partitions, and one unit is one page, so every
+                    // partition has a file open when the pool refuses.
+                    vec![round_robin_batch(16 * ROWS_DIVISOR, 16)],
+                    WriterProperties::builder()
+                        .set_data_page_row_count_limit(ROWS_DIVISOR)
+                        .build(),
+                    TARGET_FILE_SIZE,
+                )
+                .await;
+                let error =
+                    written.expect_err("an error that is not a refusal must fail the write");
+                assert_eq!(error.to_string(), message);
+                assert_eq!(
+                    pool.refusals.load(Ordering::Relaxed),
+                    0,
+                    "the write did not close partitions early before the error"
+                );
+                assert_eq!(
+                    parquet_files_under(dir.path()),
+                    Vec::<PathBuf>::new(),
+                    "the failed write left files behind"
+                );
+            }
         }
 
         /// A task that fails mid-write drops its open files without closing them, so a file's

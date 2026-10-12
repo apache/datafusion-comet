@@ -290,11 +290,14 @@ each refusal closes as few files as it can. Each partition's files report to a c
 `OpenFileMemory`, which is how `reserve` finds them. That is why the fanout path uses
 `FanoutPartitions` rather than iceberg-rust's `FanoutWriter`, which cannot close one partition's
 writer. A closed partition's next rows open a new file with the properties its first file used,
-which the partition keeps. The pool cannot fail a fanout write: everything the write reserves
-belongs to one of its partitions, so once all of them are closed it reserves nothing, and a resize
-down always succeeds. An unpartitioned or clustered write has no file it can close early, so a
-resize the pool refuses fails its task. What the reserved figure covers, and what it misses, is
-described under [Native writers](memory_management.md#native-writers).
+which the partition keeps. A refusal from the pool cannot fail a fanout write: everything the write
+reserves belongs to one of its partitions, so once all of them are closed it reserves nothing, and a
+resize down always succeeds. Only a refusal (`ResourcesExhausted`) makes `reserve` close
+partitions. Any other error from a resize fails the task, such as an exception Spark threw because
+a spill failed or because the task was killed while it waited for memory. An unpartitioned or
+clustered write has no file it can close early, so a resize the pool refuses fails its task. What
+the reserved figure covers, and what it misses, is described under
+[Native writers](memory_management.md#native-writers).
 
 `FileIO` comes from `load_file_io` in `iceberg_common.rs`, shared with the native scan. It picks
 the storage backend from the data location's scheme and wires in Comet's S3 credential bridge when
