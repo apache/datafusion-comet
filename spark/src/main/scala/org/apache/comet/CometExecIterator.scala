@@ -36,6 +36,7 @@ import org.apache.spark.network.util.ByteUnit
 import org.apache.spark.sql.comet.CometMetricNode
 import org.apache.spark.sql.comet.execution.arrow.CometArrowStream
 import org.apache.spark.sql.internal.SQLConf
+import org.apache.spark.sql.types.DataType
 import org.apache.spark.sql.vectorized._
 import org.apache.spark.util.SerializableConfiguration
 
@@ -76,6 +77,9 @@ import org.apache.comet.vector.NativeUtil
  *   Whether to read the shuffle writer's partition offsets when the plan reaches the end of its
  *   output, for a plan rooted at a native shuffle writer with a local destination. Remote shuffle
  *   reports its partition lengths through its pusher instead, so it leaves this false.
+ * @param outputTypes
+ *   The Spark types of the plan's output columns, if the caller knows them. Used only to check
+ *   timestamp labels under `spark.comet.testing.strictTimestampLabels.enabled`.
  */
 class CometExecIterator(
     val id: Long,
@@ -90,11 +94,14 @@ class CometExecIterator(
     shuffleBlockIterators: Map[Int, CometShuffleBlockIterator] = Map.empty,
     taskFilePaths: Seq[String] = Seq.empty,
     shufflePartitionPusher: Option[ShufflePartitionPusher] = None,
-    capturePartitionOffsets: Boolean = false)
+    capturePartitionOffsets: Boolean = false,
+    outputTypes: Seq[DataType] = Seq.empty)
     extends Iterator[ColumnarBatch]
     with Logging {
 
   private val tracingEnabled = CometConf.COMET_TRACING_ENABLED.get()
+  private val checkTimestampLabels =
+    outputTypes.nonEmpty && CometConf.COMET_STRICT_TIMESTAMP_LABELS.get()
   private val memoryMXBean = ManagementFactory.getMemoryMXBean
   private val nativeLib = new Native()
   private val nativeUtil = new NativeUtil()
@@ -256,6 +263,10 @@ class CometExecIterator(
 
       if (tracingEnabled) {
         traceMemoryUsage()
+      }
+
+      if (checkTimestampLabels) {
+        result.foreach(nativeUtil.checkTimestampLabels(_, outputTypes))
       }
 
       result
@@ -879,6 +890,7 @@ object CometExecIterator extends Logging {
       CometConf.COMET_EXPLAIN_NATIVE_ENABLED,
       CometConf.COMET_MAX_TEMP_DIRECTORY_SIZE,
       CometConf.COMET_PARQUET_ROW_FILTER_PUSHDOWN_ENABLED,
+      CometConf.COMET_STRICT_TIMESTAMP_LABELS,
       CometConf.COMET_TRACING_ENABLED).foreach { entry =>
       builder.putEntries(entry.key, entry.get(SQLConf.get).toString)
     }
