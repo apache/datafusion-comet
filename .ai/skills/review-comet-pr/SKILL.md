@@ -171,16 +171,19 @@ Report the comparison in the review even when nothing changed, so the reviewer k
 
 ### Spark version coverage
 
-Comet supports several Spark versions. Version-specific behavior belongs in the shims under
-`spark/src/main/spark-{3.4,3.5,3.x,4.0,4.1,4.2}/org/apache/comet/shims/`, not in branches on a
-version string in shared code, and not in native Rust. If the PR adds a shim for one 4.x version,
-check that the sibling 4.x source sets got it too.
+Comet supports several Spark versions. The check on the Spark version belongs in Scala, either in a
+shim under `spark/src/main/spark-*/` or in one named predicate such as `isSpark42Plus` or
+`RegrSparkVersions.slopeFiltersVarByPairNulls`. It does not belong in an ad hoc comparison on the
+version string in shared code, or in native Rust. If the PR adds a shim for one 4.x version, check
+that the sibling 4.x source sets got it too.
 
-Parameters, protobuf fields, and native function arguments that vary with the Spark version should
-describe the behavior, such as `wrap_second_millisecond_overflow`, not the version, such as
-`spark_420_plus`. Forks that backport fixes can then set the flag from their own shim, and the
-native code carries no version logic (#6740). Flag a version-named parameter, and comments that say
-"Spark 4.2" for behavior later releases inherit.
+Protobuf fields, native function arguments, and native function names only ever see the behavior,
+such as `wrap_second_millisecond_overflow`, never the version, such as `spark_420_plus` (#6740). A
+fork that backports a Spark fix then changes the one Scala check that sets the flag and leaves the
+protobuf and Rust alone. Flag a version-named field, argument, or function, and comments that say
+"Spark 4.2" for behavior later releases inherit or that leave out the Spark JIRA.
+`Cast.is_spark4_plus` and `get_json_object_spark34` predate the rule and #6891 tracks renaming them,
+so flag them only when a PR adds behavior behind them.
 
 When Spark changed the behavior in a patch release, such as SPARK-55969 or SPARK-54918, a check on
 the minor version is wrong for every earlier patch. CI builds only the newest patch of each line, so
