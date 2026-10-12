@@ -1561,11 +1561,13 @@ impl PhysicalPlanner {
 
                 // Spark plans a global aggregate with neither keys nor functions when its output
                 // goes unused, as in `df.agg(sum($"a")).count()`. Each partition emits one row
-                // with no columns, even for an empty input. DataFusion's AggregateStream can't
-                // build a batch with no columns (apache/datafusion#25782), so until it can, count
-                // the rows and project the count away. Counting reads the whole input as Spark
-                // does, so errors below the aggregate still surface. The partial and final stages
-                // both take this path, since the final one only collapses the partial one's rows.
+                // with no columns, even for an empty input. DataFusion can't run that aggregate:
+                // 55.2's AggregateStream can't build a batch with no columns, and newer versions
+                // reject an aggregate with neither keys nor functions (apache/datafusion#25786).
+                // So count the rows and project the count away. Counting reads the whole input as
+                // Spark does, so errors below the aggregate still surface. The partial and final
+                // stages both take this path, since the final one only collapses the partial
+                // one's rows.
                 if agg.grouping_exprs.is_empty() && agg.agg_exprs.is_empty() {
                     let schema = child.schema();
                     let count = Self::create_aggr_func_expr(
