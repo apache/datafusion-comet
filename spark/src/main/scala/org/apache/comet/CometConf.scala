@@ -894,6 +894,18 @@ object CometConf extends ShimCometConf {
         s"Write buffer size must be between 1 and ${Int.MaxValue} bytes")
       .createWithDefault(1024 * 1024)
 
+  val COMET_SHUFFLE_READ_BUFFER_SIZE: ConfigEntry[Long] =
+    conf("spark.comet.shuffle.readBufferSize")
+      .category(CATEGORY_SHUFFLE)
+      .doc(
+        "Size in bytes of each read from a shuffle block stream. Comet reads a shuffle block " +
+          "through a reusable buffer of this size per task thread before decoding it.")
+      .bytesConf(ByteUnit.BYTE)
+      .checkValue(
+        v => v > 0 && v <= Int.MaxValue,
+        s"Read buffer size must be between 1 and ${Int.MaxValue} bytes")
+      .createWithDefault(CometShuffleBlockIterator.DEFAULT_READ_BUFFER_SIZE.toLong)
+
   val COMET_SHUFFLE_JVM_PREFER_DICTIONARY_RATIO: ConfigEntry[Double] = conf(
     "spark.comet.shuffle.jvm.preferDictionary.ratio")
     .withAlternative("spark.comet.shuffle.preferDictionary.ratio")

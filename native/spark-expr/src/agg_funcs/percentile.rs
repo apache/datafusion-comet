@@ -247,7 +247,11 @@ impl GroupsAccumulator for SparkPercentileGroupsAccumulator {
             offsets.push(len);
         }
 
-        let values = emit_group_values.into_iter().flatten().collect::<Vec<_>>();
+        // `len` is the total number of values, which `flatten().collect()` has no size hint for.
+        let mut values = Vec::with_capacity(len as usize);
+        for group in emit_group_values {
+            values.extend_from_slice(&group);
+        }
         let values = Float64Array::new(ScalarBuffer::from(values), None);
         let list = ListArray::new(
             Arc::new(Field::new_list_field(DataType::Float64, true)),

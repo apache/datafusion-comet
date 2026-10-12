@@ -504,6 +504,8 @@ impl PhysicalPlanner {
         object_store_options: &HashMap<String, String>,
     ) -> Result<Vec<PartitionedFile>, ExecutionError> {
         let mut files = Vec::with_capacity(partition.partitioned_file.len());
+        // Create an empty input schema for partition values because they are all literals.
+        let empty_schema = Arc::new(Schema::empty());
         partition.partitioned_file.iter().try_for_each(|file| {
             assert!(file.start + file.length <= file.file_size);
 
@@ -523,8 +525,6 @@ impl PhysicalPlanner {
             partitioned_file.object_meta.location = path;
 
             // Process partition values
-            // Create an empty input schema for partition values because they are all literals.
-            let empty_schema = Arc::new(Schema::empty());
             let partition_values: Result<Vec<_>, _> = file
                 .partition_values
                 .iter()
