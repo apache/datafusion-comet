@@ -1082,6 +1082,23 @@ object CometConf extends ShimCometConf {
       .booleanConf
       .createWithDefault(false)
 
+  val COMET_STRICT_TIMESTAMP_LABELS: ConfigEntry[Boolean] =
+    conf("spark.comet.testing.strictTimestampLabels.enabled")
+      .category(CATEGORY_TESTING)
+      .doc(
+        "Test-only. When enabled, Comet fails a query whose native plan labels a timestamp " +
+          "with a different timezone than Comet's convention, which is `UTC` for " +
+          "`TimestampType` and no timezone for `TimestampNTZType`. Every native output batch " +
+          "is checked against the Spark output types, and the casts that scans and the native " +
+          "shuffle writer would otherwise apply to repair a label fail instead. A label never " +
+          "changes the values, so comparing results cannot detect it, but inside a native plan " +
+          "a wrong label breaks comparisons and type coercion, and a missing one makes kernels " +
+          "read the values as wall-clock time. Enabled for all Comet test suites via " +
+          "`CometTestBase`.")
+      .internal()
+      .booleanConf
+      .createWithDefault(false)
+
   val COMET_SCAN_CONTRIB_DETECT_CONFLICTS: ConfigEntry[Boolean] =
     conf("spark.comet.scan.contrib.detectConflicts.enabled")
       .category(CATEGORY_TESTING)

@@ -34,7 +34,7 @@ under the License.
   <name>comet-spark</name>
 
   <properties>
-    <!-- Reverse default (skip installation), and then enable only for child modules -->
+    <!-- The only published module: the parent pom skips deploying every module -->
     <maven.deploy.skip>false</maven.deploy.skip>
   </properties>
 
