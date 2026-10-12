@@ -186,6 +186,7 @@ The following scenarios will fall back to the JVM Iceberg reader:
 - Encrypted tables with 192-bit data keys (no AES-192-GCM in the underlying crypto)
 - Delete files in a format other than Parquet or Puffin (Avro or ORC positional/equality deletes)
 - Tables backed by Avro or ORC data files (only Parquet is accelerated)
+- Queries that use `input_file_name()`, `input_file_block_start()` or `input_file_block_length()`
 - Scans whose data or delete files span more than one S3 bucket (the native reader uses one
   object-store configuration per scan)
 - Tables partitioned on `BINARY` or `DECIMAL` (with precision >28) columns

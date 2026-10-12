@@ -111,7 +111,7 @@ case class CometScanRule(session: SparkSession)
       // is ever offered it. `transformV2Scan` applies the guard right after its contrib hook
       // declines.
       case scanExec: BatchScanExec =>
-        transformV2Scan(scanExec)
+        transformV2Scan(fullPlan, scanExec)
     }
 
     plan.transform {
@@ -362,7 +362,7 @@ case class CometScanRule(session: SparkSession)
     Some(CometScanExec(scanExec, session))
   }
 
-  private def transformV2Scan(scanExec: BatchScanExec): SparkPlan = {
+  private def transformV2Scan(plan: SparkPlan, scanExec: BatchScanExec): SparkPlan = {
 
     // Give any optional, out-of-tree scan contrib (e.g. Lance) first crack at this V2 scan. On a
     // default build no contrib is registered, so this returns None and we proceed with Comet's
@@ -379,6 +379,16 @@ case class CometScanRule(session: SparkSession)
     // while the fallback for a genuine Iceberg metadata table is unchanged.
     if (isIcebergMetadataTable(scanExec)) {
       return withFallbackReason(scanExec, "Iceberg Metadata tables are not supported")
+    }
+
+    // As in transformV1Scan: these expressions read InputFileBlockHolder, which the source's own
+    // reader sets per file. Comet's native V2 scans (Iceberg, CSV) do not, so they would return
+    // empty/default values (https://github.com/apache/datafusion-comet/issues/6707).
+    if (CometScanRule.readsInputFileBlock(plan)) {
+      return withFallbackReason(
+        scanExec,
+        "Native V2 scan is not compatible with input_file_name, " +
+          "input_file_block_start, or input_file_block_length")
     }
 
     // NOTE: there is no blanket metadata-column guard here. Comet's built-in V2 paths handle
@@ -572,7 +582,14 @@ case class CometScanRule(session: SparkSession)
 
             val effectiveUri = new java.net.URI(effectiveLocation)
 
-            val hadoopS3Options = NativeConfig.extractObjectStoreOptions(hadoopConf, effectiveUri)
+            // Only a scheme the native Iceberg reader can open is worth resolving credentials
+            // for: the ABFS resolver may run a KeyProvider, and the scan is rejected below anyway.
+            val hadoopS3Options =
+              if (CometScanRule.isIcebergReadableScheme(effectiveUri, s3CompliantSchemes)) {
+                NativeConfig.extractObjectStoreOptions(hadoopConf, effectiveUri)
+              } else {
+                Map.empty[String, String]
+              }
 
             // Promote the DATA bucket's per-bucket `fs.s3a.bucket.<b>.*` settings to global (what
             // the native FileIO reads), NOT the metadata bucket's: the FileIO opens data/delete
