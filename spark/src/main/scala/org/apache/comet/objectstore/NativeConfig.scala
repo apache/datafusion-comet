@@ -21,6 +21,7 @@ package org.apache.comet.objectstore
 
 import java.net.URI
 import java.util.Locale
+import java.util.regex.Pattern
 
 import org.apache.commons.lang3.StringUtils
 import org.apache.hadoop.conf.Configuration
@@ -101,19 +102,19 @@ object NativeConfig {
   }
 
   /**
-   * The S3 bucket a URI addresses: its authority, or the first path segment for the authorityless
-   * `blob:///bucket/key` form (matching the native rewrite that promotes it into the host).
-   * Returns None for a non-S3-family scheme, so a local Hadoop-catalog
-   * `file:///tmp/warehouse/...` or a `gs://` location yields no bucket rather than a surprising
-   * `tmp`: only `s3`/`s3a`/`s3n` and the opted-in `s3CompliantSchemes` share the `fs.s3a.*`
-   * per-bucket surface. Callers therefore need no scheme check of their own.
+   * The S3 bucket a URI addresses: its host, as native reads it (the raw authority without user
+   * info or port), or the first path segment for the authorityless `blob:///bucket/key` form
+   * (matching the native rewrite that promotes it into the host). Returns None for a
+   * non-S3-family scheme, so a local Hadoop-catalog `file:///tmp/warehouse/...` or a `gs://`
+   * location yields no bucket rather than a surprising `tmp`: only `s3`/`s3a`/`s3n` and the
+   * opted-in `s3CompliantSchemes` share the `fs.s3a.*` per-bucket surface. Callers therefore need
+   * no scheme check of their own.
    */
-  private[comet] def bucketForUri(uri: URI, s3CompliantSchemes: Set[String]): Option[String] = {
+  private[apache] def bucketForUri(uri: URI, s3CompliantSchemes: Set[String]): Option[String] = {
     if (!lowerScheme(uri).exists(isS3FamilyScheme(_, s3CompliantSchemes))) {
       None
     } else {
-      Option(uri.getAuthority)
-        .map(_.trim)
+      Some(trailingPort.matcher(hostAndPort(uri)).replaceFirst(""))
         .filter(_.nonEmpty)
         .orElse(
           Option(uri.getPath)
@@ -121,6 +122,14 @@ object NativeConfig {
             .map(_.takeWhile(_ != '/'))
             .filter(_.nonEmpty))
     }
+  }
+
+  private val trailingPort = Pattern.compile(":[0-9]*$")
+
+  /** The raw authority without user info, which native drops from every non-ABFS URI. */
+  private def hostAndPort(uri: URI): String = {
+    val rawAuthority = Option(uri.getRawAuthority).getOrElse("")
+    rawAuthority.substring(rawAuthority.lastIndexOf('@') + 1)
   }
 
   /**
@@ -159,10 +168,9 @@ object NativeConfig {
       libhdfsSchemes: Set[String]): ObjectStoreKey = {
     val scheme = lowerScheme(uri).getOrElse("file")
     val isLibhdfs = libhdfsSchemes.contains(scheme)
-    val rawAuthority = Option(uri.getRawAuthority).getOrElse("")
     val authority =
-      if (scheme == "abfs" || scheme == "abfss") rawAuthority
-      else rawAuthority.substring(rawAuthority.lastIndexOf('@') + 1)
+      if (scheme == "abfs" || scheme == "abfss") Option(uri.getRawAuthority).getOrElse("")
+      else hostAndPort(uri)
     val isS3Alias = !isLibhdfs &&
       (scheme == "s3a" ||
         (s3CompliantSchemes.contains(scheme) && !urlSpecialSchemes.contains(scheme)))
@@ -180,7 +188,7 @@ object NativeConfig {
   }
 
   // s3/s3a/s3n and any opted-in alias share the authorityless path-promotion semantics above.
-  private def isS3FamilyScheme(scheme: String, s3CompliantSchemes: Set[String]): Boolean =
+  private[apache] def isS3FamilyScheme(scheme: String, s3CompliantSchemes: Set[String]): Boolean =
     scheme == "s3" || scheme == "s3a" || scheme == "s3n" || s3CompliantSchemes.contains(scheme)
 
   /**
@@ -268,7 +276,7 @@ object NativeConfig {
    * forwards one account's resolution under global keys, so scans go through
    * `extractScanObjectStoreOptions`, which never unions ABFS files.
    */
-  def extractObjectStoreOptions(
+  private[objectstore] def extractObjectStoreOptions(
       hadoopConf: Configuration,
       uris: Iterable[URI]): Map[String, String] = {
     val s3CompliantSchemes = resolveS3CompliantSchemes(hadoopConf)

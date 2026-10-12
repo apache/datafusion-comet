@@ -21,7 +21,7 @@ package org.apache.comet.rules
 
 import java.io.File
 import java.net.URI
-import java.nio.file.Files
+import java.nio.file.{Files, Paths}
 import java.util.UUID
 
 import scala.jdk.CollectionConverters._
@@ -42,7 +42,7 @@ import org.apache.spark.sql.types.{IntegerType, StructType}
 
 import org.apache.comet.{CometConf, ExtendedExplainInfo}
 import org.apache.comet.CometConf.{COMET_LIBHDFS_SCHEMES_KEY, COMET_S3_COMPLIANT_SCHEMES_KEY}
-import org.apache.comet.hadoop.fs.FakeHdfsAuthorityFileSystem
+import org.apache.comet.hadoop.fs.{FakeAbfsFileSystem, FakeHdfsAuthorityFileSystem}
 import org.apache.comet.objectstore.NativeConfig
 
 /**
@@ -62,11 +62,15 @@ class CometMultiStoreScanSuite extends CometTestBase with AdaptiveSparkPlanHelpe
       conf.set(s"spark.hadoop.fs.$scheme.impl", classOf[FakeHdfsAuthorityFileSystem].getName)
       conf.set(s"spark.hadoop.fs.$scheme.impl.disable.cache", "true")
     }
+    conf.set("spark.hadoop.fs.abfss.impl", classOf[FakeAbfsFileSystem].getName)
+    conf.set("spark.hadoop.fs.abfss.impl.disable.cache", "true")
     conf
   }
 
   override def beforeAll(): Unit = {
-    rootDir = Files.createTempDirectory(s"comet_multi_store_${UUID.randomUUID()}").toFile
+    // java.io.tmpdir is under target/, which a fresh checkout may not have yet.
+    val tmp = Files.createDirectories(Paths.get(System.getProperty("java.io.tmpdir")))
+    rootDir = Files.createTempDirectory(tmp, s"comet_multi_store_${UUID.randomUUID()}").toFile
     super.beforeAll()
   }
 
@@ -104,6 +108,12 @@ class CometMultiStoreScanSuite extends CometTestBase with AdaptiveSparkPlanHelpe
     s"$scheme://bucket${rootDir.getAbsolutePath}/$name"
 
   private def local(name: String): String = s"file://${rootDir.getAbsolutePath}/$name"
+
+  private def abfss(container: String, account: String, name: String): String =
+    s"abfss://$container@$account.dfs.core.windows.net${rootDir.getAbsolutePath}/$name"
+
+  private def accountKey(account: String, key: String): (String, String) =
+    s"fs.azure.account.key.$account.dfs.core.windows.net" -> key
 
   private def storeOf(path: String): String = new URI(path).getAuthority
 
@@ -409,6 +419,66 @@ class CometMultiStoreScanSuite extends CometTestBase with AdaptiveSparkPlanHelpe
         assert(allFiles.map(storeOf).distinct.sorted == Seq("nn1", "nn2"), s"files: $files")
         assert(files.forall(_.map(storeOf).distinct.size == 1), s"Comet's layout: $files")
       }
+    }
+  }
+
+  test("abfs layouts one resolution cannot serve still fall back, while name nodes stay native") {
+    // Packing per store would keep two ABFS containers apart, but ABFS forwards one container's
+    // resolution under global keys, so the scan must still decline.
+    writeIds(local("abfs-a"), 0)
+    writeIds(local("abfs-b"), 10)
+    writeIds(local("abfs-csv-a"), 0, "csv")
+    writeIds(local("abfs-csv-b"), 10, "csv")
+    val twoContainers = "Native scan does not support ABFS files from more than one container " +
+      "or account"
+    val keys = Seq(accountKey("accta", "a2V5LWE="), accountKey("acctb", "a2V5LWI="))
+    withSQLConf(nativeScan ++ onePartition ++ keys: _*) {
+      checkSparkAnswerAndFallbackReason(
+        spark.read.parquet(abfss("data", "accta", "abfs-a"), abfss("logs", "accta", "abfs-b")),
+        twoContainers)
+      checkSparkAnswerAndFallbackReason(
+        spark.read.parquet(abfss("data", "accta", "abfs-a"), abfss("data", "acctb", "abfs-b")),
+        twoContainers)
+      writeIds(hdfs("nn1", "abfs-nn"), 0)
+      checkSparkAnswerAndFallbackReason(
+        spark.read.parquet(abfss("data", "accta", "abfs-a"), hdfs("nn1", "abfs-nn")),
+        "Native scan does not support a scan that mixes ABFS and other file systems")
+      // Two name nodes in the same session are still packed per store and read natively.
+      writeIds(hdfs("nn2", "abfs-nn-b"), 10)
+      val files =
+        nativeParquetScan(
+          spark.read.parquet(
+            hdfs("nn1", "abfs-nn"),
+            hdfs("nn2", "abfs-nn-b"))).perPartitionFilePaths.toSeq
+      assert(files.forall(_.map(storeOf).distinct.size == 1), s"Comet's: $files")
+      assert(files.flatten.map(storeOf).distinct.sorted == Seq("nn1", "nn2"), s"files: $files")
+    }
+    withSQLConf(nativeCsv ++ onePartition ++ keys: _*) {
+      checkSparkAnswerAndFallbackReason(
+        spark.read
+          .schema(idSchema)
+          .csv(abfss("data", "accta", "abfs-csv-a"), abfss("logs", "accta", "abfs-csv-b")),
+        twoContainers)
+    }
+  }
+
+  test("abfs scan in one container forwards only that account's resolution") {
+    writeIds(local("abfs-one-a"), 0)
+    writeIds(local("abfs-one-b"), 10)
+    // The other account's key must stay on the driver.
+    val keys = Seq(accountKey("accta", "a2V5LWE="), accountKey("acctb", "a2V5LWI="))
+    val confs = nativeScan ++ onePartition ++ keys :+
+      (SQLConf.ADAPTIVE_EXECUTION_ENABLED.key -> "false")
+    withSQLConf(confs: _*) {
+      // Plan only: running the native scan would send its requests to Azure.
+      val scan = nativeParquetScan(
+        spark.read
+          .parquet(abfss("data", "accta", "abfs-one-a"), abfss("data", "accta", "abfs-one-b")))
+      val options = scan.nativeOp.getNativeScan.getCommon.getObjectStoreOptionsMap.asScala
+      assert(options.get("comet.azure.resolution").contains("resolved"), options)
+      assert(options.get("fs.azure.account.key").contains("a2V5LWE="), options)
+      assert(!options.values.exists(_ == "a2V5LWI="), options)
+      assert(!options.keys.exists(_.startsWith("fs.azure.account.key.")), options)
     }
   }
 }

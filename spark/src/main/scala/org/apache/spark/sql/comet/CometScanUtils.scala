@@ -108,7 +108,7 @@ object CometScanUtils {
   /**
    * Why a native scan of `uris` must fall back because of where they live, or None. The scan
    * forwards the settings of every scheme it reads, and translates alias settings to the
-   * `fs.s3a.*` keys of the alias bucket. So it falls back when one store is read through an
+   * `fs.s3a.*` keys of the alias bucket. So it falls back when one bucket is read through an
    * S3-compliant alias and another scheme, or when an alias path has no bucket and other S3 paths
    * would get its settings. A bucketed scan reads each table bucket as one partition, so its
    * paths must share one store. `scanName` starts the reason. `uris` is walked once, so a lazy
@@ -120,25 +120,38 @@ object CometScanUtils {
       s3CompliantSchemes: Set[String],
       libhdfsSchemes: Set[String],
       isBucketedScan: Boolean): Option[String] = {
-    val schemesByStore =
-      uris.foldLeft(Map.empty[NativeConfig.ObjectStoreKey, Set[String]]) { (seen, uri) =>
-        val store = NativeConfig.objectStoreKey(uri, s3CompliantSchemes, libhdfsSchemes)
-        val scheme = Option(uri.getScheme).map(_.toLowerCase(Locale.ROOT)).getOrElse("file")
-        seen.updated(store, seen.getOrElse(store, Set.empty[String]) + scheme)
+    // Schemes per native store, and per settings scope of the stores native reads itself. An
+    // S3-family path is scoped by its bucket, which drops the port the store key keeps.
+    val (schemesByStore, schemesByScope) =
+      uris.foldLeft(
+        (Map.empty[NativeConfig.ObjectStoreKey, Set[String]], Map.empty[String, Set[String]])) {
+        case ((byStore, byScope), uri) =>
+          val store = NativeConfig.objectStoreKey(uri, s3CompliantSchemes, libhdfsSchemes)
+          val scheme = Option(uri.getScheme).map(_.toLowerCase(Locale.ROOT)).getOrElse("file")
+          val scope =
+            if (NativeConfig.isS3FamilyScheme(scheme, s3CompliantSchemes)) {
+              "s3://" + NativeConfig.bucketForUri(uri, s3CompliantSchemes).getOrElse("")
+            } else {
+              store.key
+            }
+          (
+            byStore.updated(store, byStore.getOrElse(store, Set.empty[String]) + scheme),
+            if (store.isLibhdfs) byScope
+            else byScope.updated(scope, byScope.getOrElse(scope, Set.empty[String]) + scheme))
       }
-    val nativeStores = schemesByStore.toSeq.filterNot(_._1.isLibhdfs).sortBy(_._1.key)
-    val sharedAliasStore = nativeStores.find { case (_, schemes) =>
+    val nativeScopes = schemesByScope.toSeq.sortBy(_._1)
+    val sharedAliasScope = nativeScopes.find { case (_, schemes) =>
       schemes.size > 1 && schemes.exists(s3CompliantSchemes.contains)
     }
     // An alias path with no bucket translates its settings to the global `fs.s3a.*` keys.
-    val s3Paths = nativeStores.flatMap { case (store, schemes) =>
-      schemes.toSeq.filter(isS3FamilyScheme(_, s3CompliantSchemes)).map(store -> _)
+    val s3Paths = nativeScopes.flatMap { case (scope, schemes) =>
+      schemes.toSeq.filter(NativeConfig.isS3FamilyScheme(_, s3CompliantSchemes)).map(scope -> _)
     }
-    val hasBucketlessAlias = s3Paths.exists { case (store, scheme) =>
-      store.key == "s3://" && s3CompliantSchemes.contains(scheme)
+    val hasBucketlessAlias = s3Paths.exists { case (scope, scheme) =>
+      scope == "s3://" && s3CompliantSchemes.contains(scheme)
     }
-    if (sharedAliasStore.nonEmpty) {
-      val (store, schemes) = sharedAliasStore.get
+    if (sharedAliasScope.nonEmpty) {
+      val (store, schemes) = sharedAliasScope.get
       Some(
         s"$scanName reads the object store $store through schemes " +
           s"${schemes.toSeq.sorted.mkString(", ")}, but forwards one set of settings per store")
@@ -155,7 +168,4 @@ object CometScanUtils {
       None
     }
   }
-
-  private def isS3FamilyScheme(scheme: String, s3CompliantSchemes: Set[String]): Boolean =
-    scheme == "s3" || scheme == "s3a" || scheme == "s3n" || s3CompliantSchemes.contains(scheme)
 }

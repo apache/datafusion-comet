@@ -153,6 +153,29 @@ class NativeConfigSuite extends AnyFunSuite with Matchers {
     assert(options("fs.s3a.secret.key") == varRef("fs.s3a.access.key"))
   }
 
+  test("extractScanObjectStoreOptions - alias bucket settings survive a port or user info") {
+    val hadoopConf = new Configuration()
+    hadoopConf.set(COMET_S3_COMPLIANT_SCHEMES_KEY, "blob")
+    val endpoint = "https://vendor.example.internal"
+    hadoopConf.set("fs.blob.bucket-a.endpoint", endpoint)
+    hadoopConf.set("fs.blob.bucket-a.awsAccessKeyId", "AKIA-a")
+    hadoopConf.set("fs.blob.bucket-a.awsSecretAccessKey", "secret-a")
+
+    Seq(
+      "blob://bucket-a:9000/t/x.parquet",
+      "blob://user@bucket-a/t/x.parquet",
+      "blob://user:pw@bucket-a:9000/t/x.parquet").foreach { path =>
+      val opts =
+        NativeConfig.extractScanObjectStoreOptions(hadoopConf, Seq(new URI(path))).toOption.get
+      withClue(s"$path: $opts") {
+        assert(opts.get("fs.s3a.bucket.bucket-a.endpoint").contains(endpoint))
+        assert(opts.get("fs.s3a.bucket.bucket-a.access.key").contains("AKIA-a"))
+        assert(opts.get("fs.s3a.bucket.bucket-a.secret.key").contains("secret-a"))
+        assert(!opts.keys.exists(key => key.contains(":9000") || key.contains("@")))
+      }
+    }
+  }
+
   test(
     "extractObjectStoreOptions - alias forwards vendor fs.<scheme>.<authority>.* keys as s3a") {
     // Alias connectors use per-authority keys (just an endpoint, no region). object_store's
@@ -467,6 +490,13 @@ class NativeConfigSuite extends AnyFunSuite with Matchers {
       // blob is only S3-family when opted in; its authority is still the bucket.
       ("blob://mybucket/key", Set("blob"), Some("mybucket")),
       ("blob:///mybucket/key", Set("blob"), Some("mybucket")),
+      // The bucket is the host native looks up: no port, no user info.
+      ("blob://mybucket:9000/key", Set("blob"), Some("mybucket")),
+      ("s3a://user:secret@mybucket/key", Set.empty[String], Some("mybucket")),
+      ("blob://user@mybucket:9000/key", Set("blob"), Some("mybucket")),
+      ("s3a://mybucket:9000/key", Set.empty[String], Some("mybucket")),
+      ("s3a://[::1]:9000/key", Set.empty[String], Some("[::1]")),
+      ("s3a://user@[::1]/key", Set.empty[String], Some("[::1]")),
       // Not opted in -> not S3-family -> no path promotion.
       ("blob:///mybucket/key", Set.empty[String], None),
       ("file:///tmp/warehouse/db/t/metadata/v1.metadata.json", Set("blob"), None),
@@ -643,7 +673,8 @@ class NativeConfigSuite extends AnyFunSuite with Matchers {
   }
 
   test("extractScanObjectStoreOptions - containers of one account decline the scan") {
-    // Native reads a whole partition through the store of its first file's container.
+    // ABFS forwards one container and account's resolution under global keys, so two
+    // containers cannot share a scan.
     val hadoopConf = new Configuration()
     hadoopConf.set("fs.azure.account.key.accta.dfs.core.windows.net", "a2V5LWE=")
     assertDeclined(
@@ -678,6 +709,24 @@ class NativeConfigSuite extends AnyFunSuite with Matchers {
     Seq(Seq(abfs, s3), Seq(s3, abfs)).foreach { uris =>
       val result = NativeConfig.extractScanObjectStoreOptions(hadoopConf, uris)
       assert(result.isLeft, s"$uris: $result")
+    }
+  }
+
+  test("extractScanObjectStoreOptions - abfs and wasb files in one scan decline it") {
+    // wasb forwards fs.azure.* by prefix, which would hand raw account keys to the ABFS store.
+    val hadoopConf = new Configuration()
+    hadoopConf.set("fs.azure.account.key.accta.dfs.core.windows.net", "a2V5LWE=")
+    hadoopConf.set("fs.azure.account.key.accta.blob.core.windows.net", "a2V5LWI=")
+    val abfs = abfsFile("data", "accta", "a.parquet")
+
+    Seq("wasb", "wasbs").foreach { scheme =>
+      val wasb = new URI(s"$scheme://data@accta.blob.core.windows.net/path/b.parquet")
+      Seq(Seq(abfs, wasb), Seq(wasb, abfs)).foreach { uris =>
+        NativeConfig.extractScanObjectStoreOptions(hadoopConf, uris) match {
+          case Left(reason) => reason should include("mixes ABFS and other file systems")
+          case Right(options) => fail(s"$uris: expected a decline, got $options")
+        }
+      }
     }
   }
 

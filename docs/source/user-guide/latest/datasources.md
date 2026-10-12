@@ -121,9 +121,11 @@ through an S3-compliant alias and through another scheme (for example `blob://bu
 alias path names no bucket (`blob:///`) next to other S3 paths, because that path's alias settings
 would apply to every bucket. An alias scheme that is also listed in `fs.comet.libhdfs.schemes` is
 read through libhdfs, so Comet translates none of its settings and such a path does not cause
-either fallback. A native Parquet scan of a
-bucketed table also falls back when its files span more than one store, because each table bucket
-is read as one partition.
+either fallback. ABFS is the exception to mixing stores: Comet resolves the credentials of one
+container and account per scan, so a scan whose files span more than one ABFS container or account,
+or that mixes `abfs`/`abfss` paths with other schemes, falls back to Spark (see [Azure](#azure)). A
+native Parquet scan of a bucketed table also falls back when its files span more than one store,
+because each table bucket is read as one partition.
 
 ### HDFS
 

@@ -475,6 +475,16 @@ class CometScanSchemeFallbackSuite extends CometTestBase with CometIcebergTestBa
     assert(
       reason(bucketed = false, Seq("blob://bucket-a/t", "s3a://bucket-a/u"), blob)
         .contains(sharedStore("blob, s3a")))
+    // Alias settings are scoped by bucket, so a port does not separate the stores.
+    assert(
+      reason(bucketed = false, Seq("blob://bucket-a:9000/t", "s3a://bucket-a/u"), blob)
+        .contains(sharedStore("blob, s3a")))
+    assert(
+      reason(bucketed = false, Seq("s3a://bucket-a:9000/u", "blob://bucket-a/t"), blob)
+        .contains(sharedStore("blob, s3a")))
+    assert(
+      reason(bucketed = false, Seq("blob://user@bucket-a/t", "s3a://bucket-a/u"), blob)
+        .contains(sharedStore("blob, s3a")))
     assert(
       reason(bucketed = false, Seq("s3://bucket-a/t", "blob:///bucket-a/u"), blob)
         .contains(sharedStore("blob, s3")))
