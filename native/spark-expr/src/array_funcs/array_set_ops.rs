@@ -195,6 +195,35 @@ mod tests {
         Ok(())
     }
 
+    /// A sliced argument keeps its whole child array, which the normalization trims, so the
+    /// rows outside the slice must not leak into the result.
+    #[test]
+    fn sliced_input() -> Result<()> {
+        let left = list(&[
+            Some(vec![Some(NEGATIVE_NAN), Some(3.0)]),
+            Some(vec![Some(-0.0), Some(f64::NAN), Some(0.0)]),
+            None,
+            Some(vec![Some(PAYLOAD_NAN)]),
+        ])
+        .slice(1, 2);
+        let result = invoke_arrays(SparkArraySetOp::distinct(), vec![Arc::clone(&left)])?;
+        assert_eq!(bits(&result), vec![Some(vec![Some(ZERO), Some(NAN)]), None]);
+
+        let right = list(&[
+            Some(vec![Some(-0.0)]),
+            Some(vec![Some(NEGATIVE_NAN), Some(1.0)]),
+            Some(vec![Some(2.0)]),
+        ])
+        .slice(1, 2);
+        let result = invoke_arrays(SparkArraySetOp::union(), vec![left, right])?;
+        let expected = vec![
+            Some(vec![Some(ZERO), Some(NAN), Some(1.0f64.to_bits())]),
+            None,
+        ];
+        assert_eq!(bits(&result), expected);
+        Ok(())
+    }
+
     #[test]
     fn nested_floats_are_normalized() -> Result<()> {
         let input = structs(&[-0.0, 0.0, NEGATIVE_NAN, f64::NAN]);
