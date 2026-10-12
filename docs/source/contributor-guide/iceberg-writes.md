@@ -233,7 +233,7 @@ directly. `run_write_task` builds iceberg-rust's partitioning writer once per ta
 Parquet writer properties:
 
 ```text
-UnpartitionedWriter | FanoutWriter | ClusteredWriter
+UnpartitionedWriter | FanoutPartitions | ClusteredWriter
   -> PartitionWriterBuilder, per partition:
        ParquetWriterBuilder -> RollingFileWriterBuilder -> DataFileWriterBuilder
 ```
@@ -280,8 +280,9 @@ Points where Comet adapts iceberg-rust to match iceberg-java:
 - **Field ids and casting.** `decorate_batch_with_field_ids` casts each batch to the
   field-id-annotated Arrow schema derived from the Iceberg schema, with `safe: false`, so a type
   mismatch fails the task instead of writing NULLs.
-- **Deterministic output order.** iceberg-rust's `FanoutWriter` closes its writers out of a
-  `HashMap`, so the fanout path sorts its `DataFile`s by path before returning them
+- **Deterministic output order.** `FanoutPartitions`, Comet's version of iceberg-rust's
+  `FanoutWriter`, closes its files in an order that depends on how the rows arrived and on which
+  partitions it closed early, so the fanout path sorts its `DataFile`s by path before returning them
   ([#5776](https://github.com/apache/datafusion-comet/issues/5776)). Manifest order becomes the row
   order of an unordered read, so any map iteration that reaches the output needs the same care.
 
@@ -291,8 +292,21 @@ hold in memory. It hands `ParquetWriter` each file's `OutputFile` behind a `Coun
 writer counts the bytes that leave memory on their way to storage, and a file reports what it has
 written less those. When they leave depends on the storage (`StorageWrites`). After every batch
 `run_write_task` resizes the task's reservation to what the open files report plus the rows each
-`PartitionFeed` holds, for the dictionary choice or for pacing, and a resize the pool refuses fails
-the task. What that figure covers, and what it misses, is described under
+`PartitionFeed` holds, for the dictionary choice or for pacing (`InnerWriter::reserve`). When the
+pool refuses a fanout write, `reserve` writes out and closes the partitions holding the most, in
+their open file and their feed, until the resize succeeds, and `run_write_task` counts them in the
+`files_closed_early` metric. Taking the largest first frees the most memory per file closed, so
+each refusal closes as few files as it can. Each partition's files report to a child of the task's
+`OpenFileMemory`, which is how `reserve` finds them. That is why the fanout path uses
+`FanoutPartitions` rather than iceberg-rust's `FanoutWriter`, which cannot close one partition's
+writer. A closed partition's next rows open a new file with the properties its first file used,
+which the partition keeps. A refusal from the pool cannot fail a fanout write: everything the write
+reserves belongs to one of its partitions, so once all of them are closed it reserves nothing, and a
+resize down always succeeds. Only a refusal (`ResourcesExhausted`) makes `reserve` close
+partitions. Any other error from a resize fails the task, such as an exception Spark threw because
+a spill failed or because the task was killed while it waited for memory. An unpartitioned or
+clustered write has no file it can close early, so a resize the pool refuses fails its task. What
+the reserved figure covers, and what it misses, is described under
 [Native writers](memory_management.md#native-writers).
 
 `FileIO` comes from `load_file_io` in `iceberg_common.rs`, shared with the native scan. It picks
@@ -426,16 +440,16 @@ the writer: run the write suites and the Iceberg Spark tests. The pin policy is 
 
 ## Testing
 
-| Suite                                                            | What it covers                                                                                                                                                                                                                         |
-| ---------------------------------------------------------------- | -------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| `CometIcebergWriteActionSuite`                                   | End-to-end writes through the split plan and the native writer: parity with iceberg-java, row-level DML, partition evolution, file order, cleanup on task and job failure, a fanout write outgrowing the memory pool, AQE re-planning. |
-| `CometIcebergWriteDetectionSuite`                                | One case per eligibility rule, accepted and declined.                                                                                                                                                                                  |
-| `CometIcebergSystemFunctionSuite`                                | Native `bucket`, `truncate`, `years`/`months`/`days`/`hours`, which keep a partitioned write's hash distribution and sort native end to end.                                                                                           |
-| `CometIcebergRewriteActionSuite`                                 | Iceberg's `rewrite_data_files` with the split plan and the native writer.                                                                                                                                                              |
-| `IcebergWriteProtoTranslationSuite`                              | Translation of properties into `IcebergParquetWriteSettings` and the writer mode.                                                                                                                                                      |
-| Rust tests in `iceberg_write.rs` and in `iceberg_partition_*.rs` | File rolling on the 1000-row grid, fanout order, clustered input checks, cleanup guard, manifest round trip, memory reservation, partition path rendering, partition values past `chrono`'s calendar.                                  |
-| Rust tests in `iceberg_dictionary.rs`                            | The per-column dictionary choice against answers recorded from parquet-mr, including columns either side of its cut-off.                                                                                                               |
-| `CometIcebergWriteBenchmark`                                     | Native versus iceberg-java for unpartitioned, clustered, fanout and copy-on-write delete writes. It checks each arm's plan before timing it.                                                                                           |
+| Suite                                                            | What it covers                                                                                                                                                                                                                 |
+| ---------------------------------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------ |
+| `CometIcebergWriteActionSuite`                                   | End-to-end writes through the split plan and the native writer: parity with iceberg-java, row-level DML, partition evolution, file order, cleanup on task and job failure, writes outgrowing the memory pool, AQE re-planning. |
+| `CometIcebergWriteDetectionSuite`                                | One case per eligibility rule, accepted and declined.                                                                                                                                                                          |
+| `CometIcebergSystemFunctionSuite`                                | Native `bucket`, `truncate`, `years`/`months`/`days`/`hours`, which keep a partitioned write's hash distribution and sort native end to end.                                                                                   |
+| `CometIcebergRewriteActionSuite`                                 | Iceberg's `rewrite_data_files` with the split plan and the native writer.                                                                                                                                                      |
+| `IcebergWriteProtoTranslationSuite`                              | Translation of properties into `IcebergParquetWriteSettings` and the writer mode.                                                                                                                                              |
+| Rust tests in `iceberg_write.rs` and in `iceberg_partition_*.rs` | File rolling on the 1000-row grid, fanout order, clustered input checks, cleanup guard, manifest round trip, memory reservation, partition path rendering, partition values past `chrono`'s calendar.                          |
+| Rust tests in `iceberg_dictionary.rs`                            | The per-column dictionary choice against answers recorded from parquet-mr, including columns either side of its cut-off.                                                                                                       |
+| `CometIcebergWriteBenchmark`                                     | Native versus iceberg-java for unpartitioned, clustered, fanout and copy-on-write delete writes. It checks each arm's plan before timing it.                                                                                   |
 
 The Comet suites run against the Iceberg version each Spark profile pins in `spark/pom.xml`: 1.5.2
 for Spark 3.4, 1.8.1 for 3.5, 1.10.0 for 4.0 and 4.2, and 1.11.0 for 4.1. Only the default profile
