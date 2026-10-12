@@ -251,6 +251,23 @@ object CometNativeScan extends CometOperatorSerde[CometScanExec] with CometTypeS
     }
 
     if (scanTypes.length == scan.output.length) {
+      // Collect S3/cloud storage configurations
+      val hadoopConf = scan.relation.sparkSession.sessionState
+        .newHadoopConfWithOptions(scan.relation.options)
+
+      // Use selectedPartitions (static) instead of getFilePartitions() because at planning time
+      // DPP subqueries haven't been resolved yet. Object store options don't depend on DPP.
+      val fileUris = scan.selectedPartitions.view.flatMap(_.files).map(_.getPath.toUri)
+      val objectStoreOptions =
+        NativeConfig.extractScanObjectStoreOptions(hadoopConf, fileUris) match {
+          case Right(options) => options
+          case Left(reason) =>
+            // CometExecRule falls back to the wrapped Spark scan, so it carries the reason too.
+            withFallbackReason(scan, reason)
+            withFallbackReason(scan.wrapped, reason)
+            return None
+        }
+
       commonBuilder.addAllFields(scanTypes.asJava)
 
       // Sink operators don't have children
@@ -278,14 +295,6 @@ object CometNativeScan extends CometOperatorSerde[CometScanExec] with CometTypeS
           withFallbackReason(scan, unsupportedDefaultReason)
           return None
       }
-
-      // Extract object store options from first file (S3 configs apply to all files in scan).
-      // Use selectedPartitions (static) instead of getFilePartitions() because at planning time
-      // DPP subqueries haven't been resolved yet. Object store options don't depend on DPP.
-      val firstFileUri = scan.selectedPartitions
-        .flatMap(_.files.headOption)
-        .headOption
-        .map(_.getPath.toUri)
 
       // Constant metadata columns (file_path, file_name, file_size, file_block_start,
       // file_block_length, file_modification_time) are known before opening the file and
@@ -356,18 +365,10 @@ object CometNativeScan extends CometOperatorSerde[CometScanExec] with CometTypeS
       commonBuilder.setAllowTypePromotion(CometConf.COMET_SCHEMA_EVOLUTION_ENABLED)
       commonBuilder.setAllowTimestampLtzToNtz(CometConf.COMET_ALLOW_TIMESTAMP_LTZ_AS_NTZ)
 
-      // Collect S3/cloud storage configurations
-      val hadoopConf = scan.relation.sparkSession.sessionState
-        .newHadoopConfWithOptions(scan.relation.options)
-
       commonBuilder.setEncryptionEnabled(CometParquetUtils.encryptionEnabled(hadoopConf))
 
-      firstFileUri.foreach { uri =>
-        val objectStoreOptions =
-          NativeConfig.extractObjectStoreOptions(hadoopConf, uri)
-        objectStoreOptions.foreach { case (key, value) =>
-          commonBuilder.putObjectStoreOptions(key, value)
-        }
+      objectStoreOptions.foreach { case (key, value) =>
+        commonBuilder.putObjectStoreOptions(key, value)
       }
 
       // Set common data in NativeScan (file_partition will be populated at execution time)

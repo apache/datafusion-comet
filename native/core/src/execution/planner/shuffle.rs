@@ -27,8 +27,9 @@ use arrow::{
 use datafusion::{
     common::ScalarValue,
     physical_expr::{expressions::Literal, LexOrdering, PhysicalExpr, PhysicalSortExpr},
-    physical_plan::ExecutionPlan,
+    physical_plan::{display::DisplayableExecutionPlan, ExecutionPlan},
 };
+use datafusion_comet_common::describe_timestamp_label_mismatch;
 use datafusion_comet_proto::spark_operator::{
     self, CompressionCodec as SparkCompressionCodec, Operator,
 };
@@ -79,6 +80,7 @@ impl OperatorBuilder for ShuffleWriterBuilder {
         let writer_input = align_shuffle_writer_input(
             Arc::clone(&child.native_plan),
             &writer.expected_output_schema,
+            planner.strict_timestamp_labels(),
         )?;
 
         let partitioning = planner
@@ -284,14 +286,37 @@ impl OperatorBuilder for ShuffleScanBuilder {
 
 /// Wrap `child` in a `SchemaAlignExec` when its output drifts from what Spark catalyst
 /// declared. See <https://github.com/apache/datafusion-comet/issues/4515>.
+///
+/// With `strict_timestamp_labels`, a timestamp labelled with another timezone than declared fails
+/// planning instead of being cast. The child is native, so the label is wrong inside its plan too.
 fn align_shuffle_writer_input(
     child: Arc<dyn ExecutionPlan>,
     expected_proto: &[spark_operator::SparkStructField],
+    strict_timestamp_labels: bool,
 ) -> Result<Arc<dyn ExecutionPlan>, ExecutionError> {
     if expected_proto.is_empty() {
         return Ok(child);
     }
     let expected = convert_spark_types_to_arrow_schema(expected_proto);
+    if strict_timestamp_labels {
+        let actual = child.schema();
+        let mismatch = expected
+            .fields()
+            .iter()
+            .zip(actual.fields())
+            .enumerate()
+            .find_map(|(idx, (e, a))| {
+                describe_timestamp_label_mismatch(e.name(), e.data_type(), a.data_type())
+                    .map(|detail| (idx, detail))
+            });
+        if let Some((idx, detail)) = mismatch {
+            return Err(GeneralError(format!(
+                "Shuffle writer input col[{idx}] labels a timestamp differently from the type \
+                 Spark declared, at {detail}. Native plan:\n{}",
+                DisplayableExecutionPlan::new(child.as_ref()).indent(true)
+            )));
+        }
+    }
     SchemaAlignExec::try_new_or_passthrough(child, &expected)
         .map_err(|e| ExecutionError::DataFusionError(e.to_string()))
 }
@@ -789,5 +814,41 @@ mod tests {
             .unwrap_err();
 
         assert!(error.to_string().contains("No input for shuffle scan"));
+    }
+
+    /// The writer's alignment casts a timestamp its child labelled with another zone; a strict
+    /// test run fails planning instead, naming the column.
+    #[test]
+    fn strict_shuffle_writer_rejects_relabelled_timestamps() {
+        use arrow::datatypes::{DataType, Field, Schema, TimeUnit};
+        use datafusion::physical_plan::empty::EmptyExec;
+
+        let child: Arc<dyn ExecutionPlan> =
+            Arc::new(EmptyExec::new(Arc::new(Schema::new(vec![Field::new(
+                "ts",
+                DataType::Timestamp(TimeUnit::Microsecond, Some("Etc/UTC".into())),
+                true,
+            )]))));
+        let expected = [spark_operator::SparkStructField {
+            name: "ts".to_string(),
+            data_type: Some(spark_expression::DataType {
+                type_id: spark_expression::data_type::DataTypeId::Timestamp as i32,
+                type_info: None,
+            }),
+            nullable: true,
+            ..Default::default()
+        }];
+
+        let aligned = align_shuffle_writer_input(Arc::clone(&child), &expected, false).unwrap();
+        assert!(aligned.is::<SchemaAlignExec>());
+
+        let error = align_shuffle_writer_input(child, &expected, true)
+            .unwrap_err()
+            .to_string();
+        assert!(error.contains("Shuffle writer input col[0]"), "{error}");
+        assert!(
+            error.contains(r#"found Timestamp(µs, "Etc/UTC")"#),
+            "{error}"
+        );
     }
 }
