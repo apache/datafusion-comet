@@ -15,12 +15,16 @@
 -- specific language governing permissions and limitations
 -- under the License.
 
--- Checks Variant pruning and fallback with Spark's strict unshredded reader.
+-- Variant results, pruning and fallback. Scala suites cover scan plans and
+-- custom Parquet layouts that cannot be created through SQL.
 
 -- MinSparkVersion: 4.0
+-- Config: spark.sql.sources.useV1SourceList=parquet
+-- Config: spark.sql.adaptive.enabled=false
 -- Config: spark.sql.variant.allowReadingShredded=false
 -- Config: spark.sql.variant.pushVariantIntoScan=false
 -- Config: spark.sql.variant.writeShredding.enabled=false
+-- Config: spark.sql.variant.forceShreddingSchemaForTest=a INT
 
 statement
 CREATE TABLE test_variant(id INT, v VARIANT, tail STRING) USING parquet
@@ -30,7 +34,15 @@ INSERT INTO test_variant VALUES
   (1, parse_json('{"a": 1, "b": "hello"}'), 'first'),
   (2, parse_json('{"a": 2, "b": "world"}'), NULL),
   (3, parse_json('null'), 'variant-null'),
-  (4, NULL, 'sql-null')
+  (4, NULL, 'sql-null'),
+  (5, parse_json('{"a":1,"":2,"nested":{"b":[true,null,2.5]}}'), 'empty-key'),
+  (6, parse_json('[1,"text",false,{"x":2}]'), 'array'),
+  (7, parse_json('42'), 'scalar'),
+  (8, parse_json('"text"'), 'string'),
+  (9, parse_json('{}'), 'empty-object'),
+  (10, parse_json('[]'), 'empty-array'),
+  (11, parse_json('{"z":1,"":2,"child":{"":3},"extra":"中文"}'), 'nested-empty-key'),
+  (12, parse_json('[{"z":4,"":5},{"":6}]'), 'empty-key-array')
 
 -- A plain Parquet scan can remain native when its required schema prunes the
 -- Variant column completely, including both SQL NULL and Variant null values.
@@ -143,3 +155,93 @@ INSERT INTO test_plain_variant_shape VALUES
 -- An ordinary binary struct with Variant-like field names is not a logical Variant.
 query
 SELECT payload FROM test_plain_variant_shape ORDER BY id
+
+-- Canonical values can be read natively when the permissive reader is enabled.
+statement
+SET spark.sql.variant.allowReadingShredded=true
+
+query
+SELECT v FROM test_variant
+
+query
+SELECT id, v, tail FROM test_variant
+
+statement
+CREATE TABLE test_variant_null(v VARIANT) USING parquet
+
+statement
+INSERT INTO test_variant_null VALUES (NULL)
+
+query
+SELECT v FROM test_variant_null
+
+-- Spark unwraps whole-value requests in a Project above the native scan.
+-- CometVariantProjectionSuite asserts that this scan stays native.
+statement
+SET spark.sql.variant.pushVariantIntoScan=true
+
+query spark_answer_only
+SELECT v FROM test_variant
+
+query spark_answer_only
+SELECT id, v, tail FROM test_variant
+
+query spark_answer_only
+SELECT v AS renamed, tail FROM test_variant WHERE id >= 2
+
+query spark_answer_only
+SELECT v FROM test_variant_null
+
+-- Typed, path, multiple-field and placeholder requests require Spark scans.
+query expect_fallback(type VariantType)
+SELECT variant_get(v, '$.a', 'int') FROM test_variant
+
+query expect_fallback(type VariantType)
+SELECT variant_get(v, '$.a', 'variant') FROM test_variant
+
+query expect_fallback(type VariantType)
+SELECT v, variant_get(v, '$.a', 'int') FROM test_variant
+
+query expect_fallback(type VariantType)
+SELECT v IS NULL FROM test_variant
+
+statement
+SET spark.sql.variant.allowReadingShredded=false
+
+query expect_fallback(Native Variant scans require allowReadingShredded=true)
+SELECT v FROM test_variant
+
+-- Force a physical typed_value field; mixed root types can otherwise prevent
+-- Spark's schema inference from shredding the file at all.
+statement
+SET spark.sql.variant.allowReadingShredded=true
+
+statement
+SET spark.sql.variant.writeShredding.enabled=true
+
+statement
+CREATE TABLE test_variant_shredded(id INT, v VARIANT, tail STRING) USING parquet
+
+statement
+INSERT INTO test_variant_shredded SELECT * FROM test_variant
+
+query spark_answer_only
+SELECT v FROM test_variant_shredded
+
+query spark_answer_only
+SELECT id, v, tail FROM test_variant_shredded
+
+query spark_answer_only
+SELECT v AS renamed, tail FROM test_variant_shredded WHERE id >= 2
+
+query
+SELECT id, tail FROM test_variant_shredded ORDER BY id
+
+statement
+SET spark.sql.variant.pushVariantIntoScan=false
+
+query
+SELECT v FROM test_variant_shredded
+
+query
+SELECT id, v, tail FROM test_variant_shredded

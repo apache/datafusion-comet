@@ -180,7 +180,8 @@ object CometNativeScan extends CometOperatorSerde[CometScanExec] with CometTypeS
           s"case-insensitively when ${SQLConf.CASE_SENSITIVE.key}=false")
     }
 
-    if (scanExec.requiredSchema.exists(field => isVariantType(field.dataType))) {
+    if (scanExec.requiredSchema.exists(field =>
+        isVariantType(field.dataType) || isWholeVariantStruct(field.dataType))) {
       // Spark's strict legacy reader owns malformed-layout errors (SPARK-47546).
       // TODO: Remove this guard once the native reader implements Spark's strict Variant layout
       // validation and malformed-input errors when allowReadingShredded=false.
