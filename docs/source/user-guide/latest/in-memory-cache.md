@@ -21,17 +21,23 @@
 
 Comet can store Spark's in-memory cache (`CACHE TABLE`, `df.cache()`, `df.persist()`) in an Arrow
 format that Comet operators read directly. Without it, a cached table is stored in Spark's own
-format and every scan of it has to convert each batch before Comet can continue, which shows up in
-the plan as a `CometSparkColumnarToColumnar` above the cache scan.
+format, which Comet operators cannot read. Under Comet's default settings the operators above the
+cache scan then run on Spark. With `spark.comet.convert.inMemoryCache.enabled`, a
+`CometSparkColumnarToColumnar` above the scan converts each batch for Comet operators instead.
 
-This feature is **experimental and disabled by default**. Turn it on at startup, alongside the rest
-of Comet's configuration:
+This feature is **enabled by default** from Spark 3.5. To turn it off, set the config at startup,
+alongside the rest of Comet's configuration:
 
 ```shell
 $SPARK_HOME/bin/spark-shell \
     ... \
-    --conf spark.comet.exec.inMemoryCache.enabled=true
+    --conf spark.comet.exec.inMemoryCache.enabled=false
 ```
+
+On Spark 3.4 it is disabled by default, and setting the config to `true` turns it on. Spark 3.4 has
+no hook for the rule through which Comet lets AQE coalesce the shuffle partitions of a union that
+Comet runs, so a union of a shuffle and a relation cached in Comet's format keeps every shuffle
+partition there.
 
 It has to be set before the `SparkContext` starts. Comet's driver plugin chooses
 `spark.sql.cache.serializer` once, while the context is initializing, so an application keeps the
@@ -85,36 +91,47 @@ column out of six does roughly a sixth of the decompression work, and a `SELECT 
 selects no columns at all, answers from the row count stored beside the payload without touching
 it.
 
-Compression defaults to `zstd`, for footprint rather than for speed. Over the same 5M-row,
-six-column relation the tables under [Performance](#performance) use — and measured by the same
-benchmark — it holds the data in a sixth of the memory and pays for that on both sides: about 40%
-longer to materialize, and, on a read wide enough to inflate everything, close to five times
-longer. A narrow projection pays far less, because it only inflates the columns it asked for.
+Three codecs are offered: `zstd`, the default, `lz4` and `none`. Measured by the same benchmark
+over the same 5M-row, six-column relation the tables under [Performance](#performance) use (Apple
+M3 Ultra, JDK 17, Spark 4.1, release build):
 
 | Codec  | Materialize | Footprint | Read 1 of 6 | Read 6 of 6 |
 | ------ | ----------: | --------: | ----------: | ----------: |
-| `zstd` |     1507 ms |    55 MiB |       45 ms |      295 ms |
-| `none` |     1081 ms |   315 MiB |       35 ms |       64 ms |
+| `zstd` |     1232 ms |    51 MiB |       36 ms |      248 ms |
+| `lz4`  |     1115 ms |   145 MiB |       33 ms |      110 ms |
+| `none` |      857 ms |   315 MiB |       31 ms |       54 ms |
+
+`zstd` is the default, for footprint rather than for speed. It holds the data in a sixth of the
+memory `none` takes and pays for that on both sides: about 45% longer to materialize, and, on a read
+wide enough to inflate everything, more than four times longer. A narrow projection pays far less,
+because it only inflates the columns it asked for.
+
+`lz4` decompresses several times faster than `zstd`, so a read of every column takes less than half
+as long, at nearly three times the footprint. It is written with lz4-java, the JNI-accelerated
+library behind `spark.io.compression.codec`, in Arrow's standard `LZ4_FRAME` format. Arrow's own
+LZ4 codec is not used: it is commons-compress's pure-Java implementation, and is orders of
+magnitude slower to write than `zstd` while also producing larger output.
+
+What `lz4` saves depends more on the data than what `zstd` saves does. It holds this relation in
+less memory than Spark's own cache format does (217 MiB), but not a relation of sequential `bigint`
+columns, which Spark's format delta-encodes: each of the wide relations under
+[Limitations](#limitations) takes about 74 MiB with `lz4`, against 26 to 27 MiB in Spark's format
+and with `zstd`.
 
 `none` is the better setting for a relation that fits in memory uncompressed and is read at close
-to full width. The default is the other way round because a cache that does not fit costs more than
-one that is slower to read, and Spark's own cache format compresses by default too.
-
-Arrow's other IPC codec, LZ4, is deliberately not offered and the config rejects it. It is
-commons-compress's pure-Java implementation, unrelated to the JNI-accelerated lz4-java behind
-`spark.io.compression.codec`, and is orders of magnitude slower to write than `zstd` while also
-producing larger output.
+to full width. The default is `zstd` because a cache that does not fit costs more than one that is
+slower to read, and Spark's own cache format compresses by default too.
 
 Dictionary-encoded columns are decoded before they are stored. A payload with no schema message has
 nowhere to record either that a column is dictionary encoded or the dictionary itself.
 
 ## Configuration
 
-| Config                                                  | Default | Description                                                                                                                                    |
-| ------------------------------------------------------- | ------- | ---------------------------------------------------------------------------------------------------------------------------------------------- |
-| `spark.comet.exec.inMemoryCache.enabled`                | `false` | Whether to store and scan Spark's in-memory cache in Comet's format. Read at startup.                                                          |
-| `spark.comet.exec.inMemoryCache.compression.codec`      | `zstd`  | Arrow IPC compression codec for cached data: `zstd` or `none`. Affects newly cached data only — a batch records the codec it was written with. |
-| `spark.comet.exec.inMemoryCache.compression.zstd.level` | `1`     | Compression level when the codec is `zstd`. Ignored otherwise.                                                                                 |
+| Config                                                  | Default | Description                                                                                                                                          |
+| ------------------------------------------------------- | ------- | ---------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `spark.comet.exec.inMemoryCache.enabled`                | `true`  | Whether to store and scan Spark's in-memory cache in Comet's format. Read at startup. Defaults to `false` on Spark 3.4.                              |
+| `spark.comet.exec.inMemoryCache.compression.codec`      | `zstd`  | Arrow IPC compression codec for cached data: `zstd`, `lz4` or `none`. Affects newly cached data only: a batch records the codec it was written with. |
+| `spark.comet.exec.inMemoryCache.compression.zstd.level` | `1`     | Compression level when the codec is `zstd`. Ignored otherwise.                                                                                       |
 
 ## Performance
 
@@ -161,10 +178,63 @@ back to Spark row execution above the scan and the two columns stop measuring th
 Read what this compares carefully. Comet execution is on in both columns, so the aggregation runs
 on Comet either way and only the cache-scan boundary moves: on the left, Spark's
 `InMemoryTableScanExec` feeds those same Comet operators through a `CometSparkColumnarToColumnar`
-bridge; on the right, `CometInMemoryTableScan` feeds them directly. Both columns read the same
+bridge, which the benchmark turns on with `spark.comet.convert.inMemoryCache.enabled`; on the
+right, `CometInMemoryTableScan` feeds them directly. Both columns read the same
 Comet-written `CometCachedBatch`. These numbers are therefore "keep the cached scan native" against
 "fall back to a Spark cache scan and convert", not Comet against Spark execution, and not a
-comparison with Spark's own cache format. That comparison is under [Limitations](#limitations).
+comparison with Spark's own cache format, which follows.
+
+### Against Spark's cache format
+
+What turning the feature on changes for a query that Comet runs is measured against Spark's own
+cache format by the benchmark's adaptive cases. Comet and AQE are on, Comet's other settings are at
+their defaults, and the same 5M-row relation is cached in each format. The defaults leave
+`spark.comet.convert.inMemoryCache.enabled` off, so Comet operators cannot read Spark's cache scan,
+and with Spark's format the operators directly above the scan run on Spark. Measured on an AMD
+Ryzen 9 7950X3D (JDK 17, Spark 4.1, release build):
+
+| Query shape                | Spark's cache format | Comet's cache format | Relative |
+| -------------------------- | -------------------: | -------------------: | -------: |
+| Row count only (0 of 6)    |                29 ms |                24 ms |     1.2x |
+| Narrow projection (1 of 6) |                52 ms |                34 ms |     1.5x |
+| 3 of 6 columns             |               102 ms |               112 ms |     0.9x |
+| Full projection (6 of 6)   |               299 ms |               224 ms |     1.3x |
+
+A Spark operator above the cache scan, standing in for any operator Comet does not support, is
+measured the same way, with Comet's aggregate turned off. With Comet's format, the native scan feeds
+that operator through a columnar-to-row transition:
+
+| Query shape                | Spark's cache format | Comet's cache format | Relative |
+| -------------------------- | -------------------: | -------------------: | -------: |
+| Row count only (0 of 6)    |                39 ms |                16 ms |     2.4x |
+| Narrow projection (1 of 6) |                50 ms |                27 ms |     1.8x |
+| 3 of 6 columns             |                97 ms |               112 ms |     0.9x |
+| Full projection (6 of 6)   |               303 ms |               299 ms |     1.0x |
+
+Comet's format is as fast or faster in every shape but one: the read of three of the six columns,
+all of them longs, is about 10% slower under either kind of operator. That cost is `zstd`
+decompression. With the `none` codec, the same read is 2.7x faster than Spark's format with Comet
+operators above the scan, and 1.6x faster with a Spark operator above it.
+
+Measured on an Apple M3 Ultra, Comet's format with `lz4` is faster than Spark's in every shape
+under both kinds of operator. The three-column read is 1.4x faster than Spark's format with either
+kind of operator above the scan, where `zstd` is about 15% slower on the same machine, and the full
+projection is 2.5x faster with Comet operators above the scan and 1.7x faster with a Spark operator
+above it.
+
+Building the cache is measured the same way, from the same source, with its rows produced either by
+Comet operators or by Spark operators. Comet's format is written straight from the Arrow batches of
+Comet operators, while Spark's is always built from rows, so above Comet operators it first converts
+their batches. Measured on an Apple M3 Max (JDK 17, Spark 4.1, release build):
+
+| Rows produced by | Spark's cache format | Comet's cache format, `zstd` | Comet's cache format, `none` |
+| ---------------- | -------------------: | ---------------------------: | ---------------------------: |
+| Comet operators  |              3285 ms |                       944 ms |                       601 ms |
+| Spark operators  |              3680 ms |                      2079 ms |                      1710 ms |
+
+Spark's format holds the relation in 217 MiB, and Comet's in 51 to 55 MiB with `zstd` and 315 MiB
+with `none`. So with the default codec, Comet's format builds 1.8x to 3.5x faster than Spark's and
+takes about a quarter of the memory.
 
 ## Kryo
 
@@ -220,6 +290,9 @@ operator reads a relation cached in Comet's format depends on the scan below it:
   and operators that do not take part in code generation, such as exchanges and limits, or a query
   that returns the cached rows as they are.
 
+Whenever Spark's scan reads Comet's format, which also happens for a relation whose cached plan
+records `Dataset.observe` metrics, Comet records a fallback reason on the scan.
+
 Measured by the same benchmark over the same 5M-row relation, with native execution off so that
 Spark operators consume the cached data, Comet disabled for the row reader and enabled for the fused
 reader (Apple M4, JDK 17, Spark 4.1; the average of two runs):
@@ -234,9 +307,16 @@ reader (Apple M4, JDK 17, Spark 4.1; the average of two runs):
 The fused reader is faster than Spark's own format for the narrowest reads and within 20% of it for
 the others. The row reader takes up to 1.6 times as long, and it is the only reader for relations
 wider than `spark.sql.codegen.maxFields`: reading every column of relations of 100, 200 and 1500
-nullable `bigint` columns took 2.2 to 2.5 times as long as from Spark's format. These gaps are why
-the feature is still off by default;
-[#5485](https://github.com/apache/datafusion-comet/issues/5485) tracks them.
+nullable `bigint` columns took 2.2 to 2.5 times as long as from Spark's format. A Spark operator
+above Comet's native cache scan does not pay this; see [Performance](#performance).
+
+Most of what the row reader pays is decompression, so `lz4` narrows these gaps. Measured on an
+Apple M3 Ultra, the row reader takes up to 1.25 times as long as Spark's format with `lz4`, against
+up to 1.7 times with `zstd`, and the fused reader is faster than Spark's format for every read.
+Reading every column of the wide relations takes 1.3 to 2.0 times as long as from Spark's format
+with `lz4`, against 2.1 to 2.6 times with `zstd`. `lz4` takes more memory than Spark's format for
+those relations, though; see [Storage format](#storage-format).
+[#5485](https://github.com/apache/datafusion-comet/issues/5485) tracks these gaps.
 
 Comet's serializer exists because Spark's own Arrow cache format
 ([SPARK-57268](https://issues.apache.org/jira/browse/SPARK-57268)) is only available from Spark

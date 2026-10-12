@@ -661,6 +661,30 @@ abstract class CometExec extends CometPlan {
   /** The original Spark operator from which this Comet operator is converted from */
   def originalPlan: SparkPlan
 
+  /**
+   * Rebuilds the Spark operator represented by this Comet operator with reverted children.
+   *
+   * Operators whose Comet representation changes the Spark plan shape or whose live state differs
+   * from the original Spark plan must override this method.
+   */
+  def sparkFallback(newChildren: Seq[SparkPlan]): SparkPlan = {
+    val sparkPlan = originalPlan
+    if (sparkPlan == null) {
+      throw new CometExec.InvalidSparkFallbackException(
+        s"${getClass.getSimpleName} has no original Spark plan")
+    }
+    if (newChildren.exists(_ eq sparkPlan)) {
+      throw new CometExec.InvalidSparkFallbackException(
+        s"${getClass.getSimpleName} aliases its original Spark plan with a child")
+    }
+    if (sparkPlan.children.size != newChildren.size) {
+      throw new CometExec.InvalidSparkFallbackException(
+        s"${getClass.getSimpleName} cannot restore ${sparkPlan.getClass.getSimpleName}: " +
+          s"expected ${sparkPlan.children.size} children but received ${newChildren.size}")
+    }
+    sparkPlan.withNewChildren(newChildren)
+  }
+
   /** Comet always support columnar execution */
   override def supportsColumnar: Boolean = true
 
@@ -711,6 +735,9 @@ abstract class CometExec extends CometPlan {
 }
 
 object CometExec {
+  final class InvalidSparkFallbackException(message: String)
+      extends IllegalArgumentException(message)
+
   // An unique id for each CometExecIterator, used to identify the native query execution.
   private val curId = new java.util.concurrent.atomic.AtomicLong()
 
@@ -774,7 +801,8 @@ object CometExec {
       numOutputCols: Int,
       serializedPlan: Array[Byte],
       numParts: Int,
-      partitionIdx: Int): CometExecIterator = {
+      partitionIdx: Int,
+      outputTypes: Seq[DataType] = Seq.empty): CometExecIterator = {
     new CometExecIterator(
       newIterId,
       inputObjects,
@@ -784,7 +812,8 @@ object CometExec {
       numParts,
       partitionIdx,
       broadcastedHadoopConfForEncryption = None,
-      encryptedFilePaths = Seq.empty)
+      encryptedFilePaths = Seq.empty,
+      outputTypes = outputTypes)
   }
 
   def getCometIterator(
@@ -923,7 +952,8 @@ abstract class CometNativeExec extends CometExec {
       ctx.broadcastedHadoopConfForEncryption,
       ctx.encryptedFilePaths,
       ctx.shuffleScanIndices,
-      perPartitionFilePaths = ctx.perPartitionFilePaths) {
+      perPartitionFilePaths = ctx.perPartitionFilePaths,
+      outputTypes = output.map(_.dataType)) {
       override def compute(split: Partition, context: TaskContext): Iterator[ColumnarBatch] = {
         // Register before super.compute creates the CometExecIterator, so this listener runs
         // after the iterator's close has published the final scan metrics.
@@ -1080,6 +1110,13 @@ abstract class CometNativeExec extends CometExec {
     // broadcast plan.
     val (firstNonBroadcastPlanRDD, firstNonBroadcastPlanNumPartitions) =
       firstNonBroadcastPlan.get._1 match {
+        // Plan-data scans, Iceberg included, are sized from perPartitionData, which
+        // findAllPlanData above has resolved. A bucketed scan has one entry per bucket, after any
+        // bucket coalescing, so the count still matches its HashPartitioning.
+        case scan: CometScanWithPlanData =>
+          (null.asInstanceOf[RDD[Any]], scan.perPartitionData.length)
+        case scan: CometIcebergNativeScanExec =>
+          (null.asInstanceOf[RDD[Any]], scan.numPartitions)
         case plan: CometNativeExec =>
           (null.asInstanceOf[RDD[Any]], plan.outputPartitioning.numPartitions)
         case plan =>
@@ -1318,6 +1355,17 @@ abstract class CometLeafExec extends CometNativeExec with LeafExecNode {
  * it, [[PlanDataInjector.findAllPlanData]] cannot collect the per-partition tasks and the
  * parent's native execution receives an empty input. (`CometIcebergNativeScanExec` does NOT use
  * this trait; it has a dedicated `findAllPlanData` case.)
+ *
+ * `perPartitionData.length` is the partition count the native block runs with:
+ * `CometNativeExec.buildNativeContext` sizes the native RDD from it at execution, and the count
+ * in `outputPartitioning` is not used for that.
+ *
+ * `outputPartitioning` must not read `perPartitionData`, or anything else that evaluates the
+ * scan's DPP subqueries. AQE calls it while optimizing a stage, before
+ * `CometPlanAdaptiveDynamicPruningFilters` has converted the adaptive DPP placeholders, so
+ * computing it from those runs a placeholder subquery. A scan that cannot report a real
+ * partitioning without them should report `UnknownPartitioning(0)`, as `CometNativeScanExec` does
+ * for a non-bucketed scan.
  *
  * Each implementation also resolves its own DPP subqueries via `ensureSubqueriesResolved` before
  * `commonData`/`perPartitionData` are read. That method lives on [[CometLeafExec]], so the `self:
@@ -1714,6 +1762,13 @@ object CometExpandExec extends CometOperatorSerde[ExpandExec] {
       op: ExpandExec,
       builder: Operator.Builder,
       childOp: OperatorOuterClass.Operator*): Option[OperatorOuterClass.Operator] = {
+    // The native Expand regroups the flattened expressions by their count per projection, so a
+    // projection with no columns, which column pruning leaves when nothing above the Expand reads
+    // its output, would reach it as no projections at all.
+    if (op.projections.isEmpty || op.projections.head.isEmpty) {
+      withFallbackReason(op, "Expand without output columns is not supported")
+      return None
+    }
     val projExprs = op.projections.flatMap(_.map(e => exprToProto(e, op.child.output)))
 
     if (projExprs.forall(_.isDefined) && childOp.nonEmpty) {

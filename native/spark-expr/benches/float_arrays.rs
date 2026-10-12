@@ -28,7 +28,8 @@ use datafusion::common::ScalarValue;
 use datafusion::functions_nested::remove::array_remove_all_udf;
 use datafusion::functions_nested::sort::array_sort_udf;
 use datafusion::logical_expr::{ColumnarValue, ScalarFunctionArgs, ScalarUDF};
-use datafusion_comet_spark_expr::{SparkArrayRemove, SparkSortArray};
+use datafusion_comet_spark_expr::{SparkArrayRemove, SparkFloatArrayContains, SparkSortArray};
+use datafusion_spark::function::array::array_contains::SparkArrayContains;
 use std::hint::black_box;
 use std::sync::Arc;
 use std::time::Duration;
@@ -76,6 +77,9 @@ fn criterion_benchmark(c: &mut Criterion) {
     group.measurement_time(Duration::from_secs(1));
     let comet_sort = ScalarUDF::new_from_impl(SparkSortArray::default());
     let comet_remove = ScalarUDF::new_from_impl(SparkArrayRemove::default());
+    let comet_contains = ScalarUDF::new_from_impl(SparkFloatArrayContains::default());
+    // The native path other element types take: array_has plus Spark's null semantics.
+    let datafusion_contains = Arc::new(ScalarUDF::new_from_impl(SparkArrayContains::default()));
     let (datafusion_sort, datafusion_remove) = (array_sort_udf(), array_remove_all_udf());
     for len in [8, 50] {
         for nulls in [false, true] {
@@ -107,6 +111,16 @@ fn criterion_benchmark(c: &mut Criterion) {
             let row_values =
                 Float64Array::from_iter_values((0..ROWS).map(|row| value(row * len + 1)));
             let remove_column_args = args(
+                vec![column.clone(), ColumnarValue::Array(Arc::new(row_values))],
+                &list,
+            );
+            let contains_args = args(
+                vec![column.clone(), scalar(ScalarValue::Float64(Some(26.0)))],
+                &list,
+            );
+            let row_values =
+                Float64Array::from_iter_values((0..ROWS).map(|row| value(row * len + 1)));
+            let contains_column_args = args(
                 vec![column, ColumnarValue::Array(Arc::new(row_values))],
                 &list,
             );
@@ -131,6 +145,20 @@ fn criterion_benchmark(c: &mut Criterion) {
                     &datafusion_remove,
                     &remove_column_args,
                     &remove_column_args,
+                ),
+                (
+                    "array_contains",
+                    &comet_contains,
+                    &datafusion_contains,
+                    &contains_args,
+                    &contains_args,
+                ),
+                (
+                    "array_contains_column",
+                    &comet_contains,
+                    &datafusion_contains,
+                    &contains_column_args,
+                    &contains_column_args,
                 ),
             ];
             for (op, comet, datafusion, comet_args, datafusion_args) in cases {

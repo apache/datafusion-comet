@@ -29,17 +29,20 @@ executed.
 Supported parent joins and aggregates remain eligible for native execution. Global aggregates
 still return one row (`COUNT = 0`, `SUM = NULL`), and grouped aggregates return no rows. Independent
 operator restrictions and aggregate buffer compatibility checks still apply.
-Parquet writes whose input plans contain an empty relation use Spark's writer to preserve
-readable empty output files and their schema metadata.
+
+A native Parquet write over a native empty relation stays native. Like Spark's writer, it runs one
+task for the empty input, so the output still gets a schema-only Parquet file that readers can
+infer the schema from.
 
 ## In-Memory Cache
 
 Comet can store cached relations (`df.cache()`, `CACHE TABLE`) in Arrow format and scan them
-natively. This is experimental and disabled by default; see [In-Memory Cache](../in-memory-cache.md)
-for how to enable it. Comet does not replace a `spark.sql.cache.serializer` that the application
-has already set. Relations whose schema Comet's Arrow writer does not support are cached in
-Spark's default format, and their scans fall back to Spark. Reads that feed Spark operators rather
-than Comet operators can be slower than Spark's cache.
+natively. This is enabled by default from Spark 3.5 but not on Spark 3.4; see
+[In-Memory Cache](../in-memory-cache.md) for how to turn it off or on. Comet does not replace a
+`spark.sql.cache.serializer` that the application has already set. Relations whose schema Comet's
+Arrow writer does not support are cached in Spark's default format, and their scans fall back to
+Spark. Reads that feed Spark operators rather than Comet operators can be slower than Spark's
+cache.
 
 With Kryo and `spark.kryo.registrationRequired=true`, Comet needs its Kryo registrator whether or
 not the cache is enabled; see [Kryo serialization](../installation.md#kryo-serialization).
@@ -59,6 +62,18 @@ expected size, but not necessarily the same rows.
 Sampling with replacement (`df.sample(withReplacement = true, ...)`) falls back to Spark, because
 it draws from a Poisson distribution that Comet does not implement natively
 ([#5109](https://github.com/apache/datafusion-comet/issues/5109)).
+
+## Sort
+
+Spark orders a null element of an array sort key, or a null field of a struct sort key, below
+every other value, whatever the key's `NULLS FIRST` or `NULLS LAST`. Comet's native sort places it
+by the key's null order instead. So a sort, TopK, or window order key whose type can hold a null
+element or field falls back to Spark under `ASC NULLS LAST` or `DESC NULLS FIRST`
+([#6476](https://github.com/apache/datafusion-comet/issues/6476)). The default null orders,
+`ASC NULLS FIRST` and `DESC NULLS LAST`, place it where Spark does and run natively, and so does a
+key whose type cannot hold a null element or field, such as `array(coalesce(x, 0))`. Set
+`spark.comet.expression.SortOrder.allowIncompatible=true` to run the other null orders natively
+anyway.
 
 ## Sort Aggregation
 

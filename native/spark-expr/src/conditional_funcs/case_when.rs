@@ -15,7 +15,7 @@
 // specific language governing permissions and limitations
 // under the License.
 
-use crate::{Cast, EvalMode, IfExpr, NormalizeNaNAndZero, SparkCastOptions};
+use crate::{Cast, EvalMode, IfExpr, NormalizeNaNAndZero, SparkCastOptions, SparkComparison};
 use arrow::array::{
     downcast_primitive, Array, ArrayRef, AsArray, BooleanArray, GenericByteArray, PrimitiveArray,
 };
@@ -31,7 +31,6 @@ use datafusion::common::{
     exec_err, internal_datafusion_err, internal_err, DataFusionError, Result, ScalarValue,
 };
 use datafusion::logical_expr::type_coercion::binary::type_union_coercion;
-use datafusion::logical_expr::type_coercion::other::get_coerce_type_for_case_expression;
 use datafusion::logical_expr::{ColumnarValue, Operator};
 use datafusion::physical_expr::expressions::{
     BinaryExpr, CaseExpr, Column, IsNotNullExpr, IsNullExpr, Literal, NotExpr,
@@ -60,8 +59,17 @@ pub fn create_case_when(
         .transpose()?
         .unwrap_or(DataType::Null);
 
-    let Some(coerce_type) = get_coerce_type_for_case_expression(&then_types, Some(&else_type))
-    else {
+    // Spark merges THEN types from left to right, with ELSE last, retaining the first THEN's
+    // struct field names. DataFusion's CASE coercion starts with ELSE and can match fields by name.
+    let coerce_type = then_types.split_first().and_then(|(first, remaining)| {
+        remaining
+            .iter()
+            .chain([&else_type])
+            .try_fold(first.clone(), |common, next| {
+                merge_branch_types(&common, next)
+            })
+    });
+    let Some(coerce_type) = coerce_type else {
         return Ok(Arc::new(CaseWhenExpr::try_new(when_then, else_expr)?));
     };
     let when_then = when_then
@@ -86,7 +94,7 @@ pub fn create_if_expr(
 ) -> Result<Arc<dyn PhysicalExpr>> {
     let true_type = true_expr.data_type(input_schema)?;
     let false_type = false_expr.data_type(input_schema)?;
-    let Some(common_type) = if_common_type(&true_type, &false_type) else {
+    let Some(common_type) = merge_branch_types(&true_type, &false_type) else {
         return Ok(Arc::new(IfExpr::new(if_expr, true_expr, false_expr)));
     };
     Ok(Arc::new(IfExpr::new(
@@ -96,34 +104,30 @@ pub fn create_if_expr(
     )))
 }
 
-/// Reconciles Spark IF branches positionally, retaining THEN names and merging nullability.
+/// Merges conditional branch types positionally, retaining left names and merging nullability.
 /// Spark has already coerced the branches to the same SQL type. DataFusion's struct union may
 /// instead match by name, pairing different positions when names differ only in case.
-fn if_common_type(then_type: &DataType, else_type: &DataType) -> Option<DataType> {
+fn merge_branch_types(left_type: &DataType, right_type: &DataType) -> Option<DataType> {
     use arrow::datatypes::FieldRef;
 
-    fn field(then_field: &FieldRef, else_field: &FieldRef) -> Option<FieldRef> {
+    fn field(left: &FieldRef, right: &FieldRef) -> Option<FieldRef> {
         Some(Arc::new(
-            then_field
-                .as_ref()
+            left.as_ref()
                 .clone()
-                .with_data_type(if_common_type(
-                    then_field.data_type(),
-                    else_field.data_type(),
-                )?)
-                .with_nullable(then_field.is_nullable() || else_field.is_nullable()),
+                .with_data_type(merge_branch_types(left.data_type(), right.data_type())?)
+                .with_nullable(left.is_nullable() || right.is_nullable()),
         ))
     }
 
-    match (then_type, else_type) {
-        (DataType::Struct(then_fields), DataType::Struct(else_fields)) => {
-            if then_fields.len() != else_fields.len() {
+    match (left_type, right_type) {
+        (DataType::Struct(left_fields), DataType::Struct(right_fields)) => {
+            if left_fields.len() != right_fields.len() {
                 return None;
             }
             Some(DataType::Struct(
-                then_fields
+                left_fields
                     .iter()
-                    .zip(else_fields)
+                    .zip(right_fields)
                     .map(|(t, e)| field(t, e))
                     .collect::<Option<Vec<_>>>()?
                     .into(),
@@ -133,7 +137,7 @@ fn if_common_type(then_type: &DataType, else_type: &DataType) -> Option<DataType
         (DataType::Map(t, t_sorted), DataType::Map(e, e_sorted)) => {
             Some(DataType::Map(field(t, e)?, *t_sorted && *e_sorted))
         }
-        _ => type_union_coercion(then_type, else_type),
+        _ => type_union_coercion(left_type, right_type),
     }
 }
 
@@ -152,7 +156,7 @@ fn coerce_branch(
     if data_type == common_type {
         return expr;
     }
-    let cast_options = SparkCastOptions::new(EvalMode::Legacy, "UTC", false);
+    let cast_options = SparkCastOptions::new(EvalMode::Legacy, "UTC");
     Arc::new(Cast::new(
         expr,
         common_type.clone(),
@@ -385,19 +389,40 @@ impl PhysicalExpr for CaseWhenExpr {
     }
 }
 
-/// Whether `expr` can be evaluated for rows that Spark would not evaluate it for.
+/// Whether `expr` can be evaluated for rows that Spark would not evaluate it for, at little cost.
 ///
-/// That holds when it can neither fail nor return something different for seeing more rows: a
-/// column, a literal, and comparisons, boolean logic, null checks, widening casts and wrapping
-/// arithmetic over them. Anything else, including every function, is assumed to be able to fail.
-fn is_infallible(expr: &Arc<dyn PhysicalExpr>, input_schema: &Schema) -> bool {
+/// That holds when it can neither fail nor return something different for seeing more rows, and is
+/// cheap: a column, a literal, and comparisons, boolean logic, null checks, widening casts and
+/// wrapping arithmetic over them. Anything else, including every function and a cast that parses a
+/// string, is treated as able to fail. `CASE` uses this to decide whether to evaluate every branch
+/// over the whole batch, which pays off only when that costs little more than selecting rows.
+pub(super) fn is_infallible(expr: &Arc<dyn PhysicalExpr>, input_schema: &Schema) -> bool {
+    infallible(expr, input_schema, false)
+}
+
+/// Whether `expr` can be evaluated for rows that Spark would not evaluate it for, at any cost: what
+/// [`is_infallible`] accepts, and casts that [`Cast::cannot_fail`] accepts beyond it, such as a
+/// LEGACY or TRY cast from a string to an integer, which returns NULL for a string it cannot parse.
+/// `NullShortCircuit` uses this, since it masks an argument only to keep it from failing on rows
+/// that Spark skips.
+pub(super) fn cannot_fail(expr: &Arc<dyn PhysicalExpr>, input_schema: &Schema) -> bool {
+    infallible(expr, input_schema, true)
+}
+
+fn infallible(expr: &Arc<dyn PhysicalExpr>, input_schema: &Schema, parsing: bool) -> bool {
     if expr.is::<Column>() || expr.is::<Literal>() {
         return true;
     }
     let node_is_infallible = if let Some(binary) = expr.downcast_ref::<BinaryExpr>() {
         binary_is_infallible(binary, input_schema)
+    } else if let Some(comparison) = expr.downcast_ref::<SparkComparison>() {
+        comparison.is_infallible(input_schema)
     } else if let Some(cast) = expr.downcast_ref::<Cast>() {
-        cast.is_infallible(input_schema)
+        if parsing {
+            cast.cannot_fail(input_schema)
+        } else {
+            cast.is_infallible(input_schema)
+        }
     } else if let Some(normalize) = expr.downcast_ref::<NormalizeNaNAndZero>() {
         normalize.is_infallible()
     } else if let Some(not) = expr.downcast_ref::<NotExpr>() {
@@ -415,7 +440,7 @@ fn is_infallible(expr: &Arc<dyn PhysicalExpr>, input_schema: &Schema) -> bool {
         && expr
             .children()
             .into_iter()
-            .all(|child| is_infallible(child, input_schema))
+            .all(|child| infallible(child, input_schema, parsing))
 }
 
 fn binary_is_infallible(binary: &BinaryExpr, input_schema: &Schema) -> bool {
@@ -836,6 +861,7 @@ fn merge_nulls(num_rows: usize, branches: &[Branch]) -> Option<NullBuffer> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::{spark_comparison, FloatOperands};
     use arrow::array::{
         BinaryArray, Int32Array, Int64Array, LargeStringArray, StringArray, StructArray,
         TimestampMicrosecondArray,
@@ -1137,24 +1163,43 @@ mod tests {
 
     #[test]
     fn infallible_expressions() {
+        let list_of = |item: DataType| DataType::List(Arc::new(Field::new("item", item, true)));
         let schema = Schema::new(vec![
             Field::new("i", DataType::Int64, true),
             Field::new("j", DataType::Int32, true),
             Field::new("d", DataType::Float64, true),
+            Field::new("e", DataType::Float64, true),
             Field::new("s", DataType::Utf8, true),
+            Field::new("ls", DataType::LargeUtf8, true),
             Field::new("dec", DataType::Decimal128(10, 2), true),
+            Field::new("l", list_of(DataType::Float64), true),
+            Field::new("m", list_of(DataType::Float64), true),
+            Field::new(
+                "dictionary",
+                list_of(DataType::Dictionary(
+                    Box::new(DataType::Int32),
+                    Box::new(DataType::Float64),
+                )),
+                true,
+            ),
         ]);
         let c = |name: &str| col(name, &schema).unwrap();
-        let cast = |e: Arc<dyn PhysicalExpr>, to: DataType| -> Arc<dyn PhysicalExpr> {
-            Arc::new(Cast::new(
+        let cast_in = |mode: EvalMode, e: Arc<dyn PhysicalExpr>, to: DataType| {
+            let cast: Arc<dyn PhysicalExpr> = Arc::new(Cast::new(
                 e,
                 to,
-                SparkCastOptions::new_without_timezone(EvalMode::Ansi, false),
+                SparkCastOptions::new_without_timezone(mode),
                 None,
                 None,
-            ))
+            ));
+            cast
         };
+        let cast = |e: Arc<dyn PhysicalExpr>, to: DataType| cast_in(EvalMode::Ansi, e, to);
         let infallible = |e: Arc<dyn PhysicalExpr>| is_infallible(&e, &schema);
+        // A comparison as the planner builds it, which follows Spark's ordering for floats
+        let compare = |left: &str, op: Operator, right: Arc<dyn PhysicalExpr>| {
+            spark_comparison(c(left), op, right, &schema, FloatOperands::Normalize).unwrap()
+        };
 
         assert!(infallible(c("i")));
         assert!(infallible(lit("x")));
@@ -1181,6 +1226,13 @@ mod tests {
             DataType::Float64,
             c("d")
         ))));
+        for op in [Operator::Lt, Operator::Eq, Operator::IsNotDistinctFrom] {
+            assert!(infallible(compare("d", op, lit(1.5))), "d {op} 1.5");
+            assert!(infallible(compare("d", op, c("e"))), "d {op} e");
+        }
+        for op in [Operator::Lt, Operator::IsNotDistinctFrom] {
+            assert!(infallible(compare("l", op, c("m"))), "l {op} m");
+        }
 
         // Only a boolean can be negated, and only a float normalized
         assert!(!infallible(Arc::new(NotExpr::new(c("i")))));
@@ -1188,6 +1240,8 @@ mod tests {
             DataType::Int64,
             c("i")
         ))));
+        // A nested comparison fails on a dictionary-encoded leaf against a plain one
+        assert!(!infallible(compare("l", Operator::Lt, c("dictionary"))));
         // Integer division and remainder fail on a zero divisor
         assert!(!infallible(binary(c("i"), Operator::Divide, c("i"))));
         assert!(!infallible(binary(c("i"), Operator::Modulo, c("i"))));
@@ -1197,9 +1251,31 @@ mod tests {
         assert!(!infallible(checked));
         // Decimal arithmetic can overflow
         assert!(!infallible(binary(c("dec"), Operator::Plus, c("dec"))));
-        // Narrowing and parsing casts can fail
+        // Narrowing and parsing casts can fail under ANSI
         assert!(!infallible(cast(c("i"), DataType::Int32)));
         assert!(!infallible(cast(c("s"), DataType::Int32)));
+        // A string that LEGACY or TRY mode cannot parse as an integer becomes NULL, so the cast
+        // cannot fail. Parsing costs too much for CASE to do it for rows it would skip, though.
+        for mode in [EvalMode::Legacy, EvalMode::Try] {
+            for to in [
+                DataType::Int8,
+                DataType::Int16,
+                DataType::Int32,
+                DataType::Int64,
+            ] {
+                for column in ["s", "ls"] {
+                    let parse = cast_in(mode, c(column), to.clone());
+                    assert!(!infallible(Arc::clone(&parse)), "{mode:?} {column} {to}");
+                    assert!(cannot_fail(&parse, &schema), "{mode:?} {column} {to}");
+                }
+            }
+            // Other string casts are not claimed
+            assert!(
+                !cannot_fail(&cast_in(mode, c("s"), DataType::Float64), &schema),
+                "{mode:?}"
+            );
+        }
+        assert!(!cannot_fail(&cast(c("s"), DataType::Int32), &schema));
         // So can anything built from a part that can fail
         assert!(!infallible(binary(
             binary(c("i"), Operator::Divide, c("i")),
@@ -1310,11 +1386,17 @@ mod tests {
 
     /// CASE branches that share a Spark timestamp type but carry different Arrow timezone labels
     /// are reconciled by relabelling them, which used to panic because the cast had no timezone.
+    /// Like IF, CASE retains the first THEN's label when present.
     #[test]
     fn case_reconciles_timestamp_timezone_labels() {
         let utc = DataType::Timestamp(TimeUnit::Microsecond, Some("UTC".into()));
         for then_label in [Some("Etc/UTC"), None] {
             let then_type = DataType::Timestamp(TimeUnit::Microsecond, then_label.map(Into::into));
+            let expected_type = if then_label.is_some() {
+                then_type.clone()
+            } else {
+                utc.clone()
+            };
             let schema = Schema::new(vec![
                 Field::new("b", DataType::Boolean, true),
                 Field::new("t", then_type, true),
@@ -1334,16 +1416,17 @@ mod tests {
             let c = |name: &str| col(name, &schema).unwrap();
             let case = create_case_when(vec![(c("b"), c("t"))], Some(c("e")), &schema).unwrap();
             let result = case.evaluate(&batch).unwrap().into_array(2).unwrap();
-            assert_eq!(result.data_type(), &utc, "{then_label:?}");
+            assert_eq!(case.data_type(&schema).unwrap(), expected_type);
+            assert_eq!(result.data_type(), &expected_type, "{then_label:?}");
             let values = result.as_primitive::<TimestampMicrosecondType>();
             assert_eq!(values.values().to_vec(), vec![1, 20], "{then_label:?}");
         }
     }
 
-    /// Evaluates an IF over `batch`, whose first row takes the THEN branch and second row the ELSE
-    /// branch, and over each row alone, and checks that every result has the type the IF reports.
+    /// Evaluates a conditional over `batch`, whose first row takes THEN and second row ELSE,
+    /// and over each row alone, checking that every result has the type the expression reports.
     /// Returns the result for the whole batch.
-    fn evaluate_if(expr: &Arc<dyn PhysicalExpr>, batch: &RecordBatch) -> ArrayRef {
+    fn evaluate_conditional(expr: &Arc<dyn PhysicalExpr>, batch: &RecordBatch) -> ArrayRef {
         let data_type = expr.data_type(&batch.schema()).unwrap();
         // Both branches, only THEN, and only ELSE, whose array `IfExpr` returns unchanged
         for (offset, len) in [(0, 2), (0, 1), (1, 1)] {
@@ -1361,7 +1444,7 @@ mod tests {
     /// Spark matches struct fields by position even when their case-distinct names are reordered.
     /// Name-based union pairs the first INT with the second DOUBLE and silently widens it.
     #[test]
-    fn if_reconciles_case_variant_fields_positionally() {
+    fn conditional_branches_reconcile_case_variant_fields_positionally() {
         use arrow::array::Float64Array;
 
         let then_fields: arrow::datatypes::Fields = vec![
@@ -1408,12 +1491,6 @@ mod tests {
         )
         .unwrap();
         let c = |name: &str| col(name, &schema).unwrap();
-        let expr = create_if_expr(c("b"), c("t"), c("e"), &schema).unwrap();
-        assert_eq!(
-            expr.data_type(&schema).unwrap(),
-            DataType::Struct(expected_fields.clone())
-        );
-        let result = evaluate_if(&expr, &batch);
         let expected = StructArray::new(
             expected_fields,
             vec![
@@ -1422,7 +1499,14 @@ mod tests {
             ],
             None,
         );
-        assert_eq!(result.as_ref(), &expected);
+        for expr in [
+            create_if_expr(c("b"), c("t"), c("e"), &schema).unwrap(),
+            create_case_when(vec![(c("b"), c("t"))], Some(c("e")), &schema).unwrap(),
+        ] {
+            assert_eq!(expr.data_type(&schema).unwrap(), *expected.data_type());
+            let result = evaluate_conditional(&expr, &batch);
+            assert_eq!(result.as_ref(), &expected, "{expr}");
+        }
     }
 
     /// IF branches that share a Spark timestamp type but carry different Arrow timezone labels are
@@ -1465,17 +1549,17 @@ mod tests {
                 timestamp(label),
                 "{labels}"
             );
-            let result = evaluate_if(&expr, &batch);
+            let result = evaluate_conditional(&expr, &batch);
             let values = result.as_primitive::<TimestampMicrosecondType>();
             assert_eq!(values.values().to_vec(), vec![1, 20], "{labels}");
         }
     }
 
-    /// IF branches whose struct field differs only in whether it can be NULL, or in the case of its
+    /// Conditional branches whose struct field differs only in nullability or in the case of its
     /// name, which Spark adds no cast for. The result's field can be NULL if either branch's can,
-    /// and has the THEN branch's name, as in Spark's `If.dataType`.
+    /// and has the THEN branch's name, as in Spark's `If.dataType` and `CaseWhen.dataType`.
     #[test]
-    fn if_reconciles_struct_field_nullability_and_names() {
+    fn conditional_branches_reconcile_struct_field_nullability_and_names() {
         let field =
             |name: &str, nullable: bool| Arc::new(Field::new(name, DataType::Int32, nullable));
         let struct_type = |field: &FieldRef| DataType::Struct(vec![Arc::clone(field)].into());
@@ -1514,16 +1598,20 @@ mod tests {
             )
             .unwrap();
             let c = |name: &str| col(name, &schema).unwrap();
-            let expr = create_if_expr(c("b"), c("t"), c("e"), &schema).unwrap();
             let fields = format!("{then_field:?} {else_field:?}");
-            assert_eq!(
-                expr.data_type(&schema).unwrap(),
-                struct_type(&result_field),
-                "{fields}"
-            );
-            let result = evaluate_if(&expr, &batch);
             let expected = column(&result_field, vec![Some(1), else_values[1]]);
-            assert_eq!(result.as_ref(), expected.as_ref(), "{fields}");
+            for expr in [
+                create_if_expr(c("b"), c("t"), c("e"), &schema).unwrap(),
+                create_case_when(vec![(c("b"), c("t"))], Some(c("e")), &schema).unwrap(),
+            ] {
+                assert_eq!(
+                    expr.data_type(&schema).unwrap(),
+                    struct_type(&result_field),
+                    "{fields} {expr}"
+                );
+                let result = evaluate_conditional(&expr, &batch);
+                assert_eq!(result.as_ref(), expected.as_ref(), "{fields} {expr}");
+            }
         }
     }
 

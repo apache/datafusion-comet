@@ -38,7 +38,7 @@ import org.json4s.jackson.JsonMethods.parse
 import org.apache.hadoop.fs.{Path => HadoopPath}
 import org.apache.parquet.hadoop.ParquetFileReader
 import org.apache.parquet.hadoop.util.HadoopInputFile
-import org.apache.spark.{CometListenerBusUtils, SparkConf, SparkException, Success, TaskContext}
+import org.apache.spark.{CometListenerBusUtils, SparkConf, SparkException, SparkThrowable, Success, TaskContext}
 import org.apache.spark.rdd.RDD
 import org.apache.spark.scheduler.{SparkListener, SparkListenerTaskEnd}
 import org.apache.spark.sql.CometTestBase
@@ -51,12 +51,15 @@ import org.apache.spark.sql.connector.catalog.InMemoryTableCatalog
 import org.apache.spark.sql.connector.write.{BatchWrite, DataWriterFactory, PhysicalWriteInfo, Write, WriterCommitMessage}
 import org.apache.spark.sql.execution.{ColumnarToRowTransition, LeafExecNode, SparkPlan}
 import org.apache.spark.sql.execution.adaptive.AdaptiveSparkPlanHelper
+import org.apache.spark.sql.execution.exchange.ShuffleExchangeLike
 import org.apache.spark.sql.internal.SQLConf
 import org.apache.spark.sql.streaming.Trigger
 import org.apache.spark.sql.types.{DoubleType, IntegerType, StringType, StructField, StructType}
 
-import org.apache.comet.CometSparkSessionExtensions.{isSpark35Plus, isSpark41Plus}
-import org.apache.comet.iceberg.{IcebergReflection, IcebergWriteReportListener}
+import org.apache.comet.CometSparkSessionExtensions.{isSpark35Plus, isSpark41Plus, isSpark42Plus}
+import org.apache.comet.iceberg.{IcebergReflection, IcebergWriteReportListener, PositionDeltaWrite}
+import org.apache.comet.serde.Unsupported
+import org.apache.comet.serde.operator.CometIcebergNativeWrite
 
 private case class WriteSnapshot(snapshotDelta: Long, plans: Seq[SparkPlan])
 
@@ -102,8 +105,8 @@ class CometIcebergWriteActionSuite
 
   test("AppendData unpartitioned INSERT INTO routes through two-op") {
     assume(icebergAvailable, "Iceberg not available in classpath")
-    withIcebergCatalog { warehouseDir =>
-      createTable(warehouseDir, "append_unpart", partitionSpec = "")
+    withIcebergCatalog { _ =>
+      createTable("append_unpart", partitionSpec = "")
       val snapshot = captureWrite("append_unpart") {
         spark.sql(
           "INSERT INTO cat.db.append_unpart VALUES " +
@@ -116,8 +119,8 @@ class CometIcebergWriteActionSuite
 
   test("spark.comet.enabled=false keeps Spark's own write plan with the split flag on") {
     assume(icebergAvailable, "Iceberg not available in classpath")
-    withIcebergCatalog { warehouseDir =>
-      createTable(warehouseDir, "comet_disabled", partitionSpec = "")
+    withIcebergCatalog { _ =>
+      createTable("comet_disabled", partitionSpec = "")
       // withSQLConf returns Unit before Spark 4.0, so the assertions run inside it.
       withSQLConf(CometConf.COMET_ENABLED.key -> "false") {
         val snapshot = captureWrite("comet_disabled") {
@@ -138,8 +141,8 @@ class CometIcebergWriteActionSuite
 
   test("AppendData partitioned INSERT INTO routes through two-op") {
     assume(icebergAvailable, "Iceberg not available in classpath")
-    withIcebergCatalog { warehouseDir =>
-      createTable(warehouseDir, "append_part", partitionSpec = "PARTITIONED BY (region)")
+    withIcebergCatalog { _ =>
+      createTable("append_part", partitionSpec = "PARTITIONED BY (region)")
       val snapshot = captureWrite("append_part") {
         spark.sql(
           "INSERT INTO cat.db.append_part VALUES " +
@@ -152,9 +155,9 @@ class CometIcebergWriteActionSuite
 
   test("AppendData INSERT FROM SELECT survives the intervening exchange/sort") {
     assume(icebergAvailable, "Iceberg not available in classpath")
-    withIcebergCatalog { warehouseDir =>
-      createTable(warehouseDir, "src", partitionSpec = "")
-      createTable(warehouseDir, "append_from_select", partitionSpec = "PARTITIONED BY (region)")
+    withIcebergCatalog { _ =>
+      createTable("src", partitionSpec = "")
+      createTable("append_from_select", partitionSpec = "PARTITIONED BY (region)")
       spark.sql(
         "INSERT INTO cat.db.src VALUES " +
           "(1, 'us-east', 10.5), (2, 'us-west', 20.3), (3, 'eu', 30.7)")
@@ -171,8 +174,8 @@ class CometIcebergWriteActionSuite
 
   test("AppendData on an empty source still emits a single commit") {
     assume(icebergAvailable, "Iceberg not available in classpath")
-    withIcebergCatalog { warehouseDir =>
-      createTable(warehouseDir, "empty_target", partitionSpec = "")
+    withIcebergCatalog { _ =>
+      createTable("empty_target", partitionSpec = "")
       val snapshot = captureWrite("empty_target") {
         spark.sql(
           "INSERT INTO cat.db.empty_target SELECT id, region, amount " +
@@ -185,8 +188,8 @@ class CometIcebergWriteActionSuite
 
   test("AppendData from a zero-partition RDD still runs one write task and commits") {
     assume(icebergAvailable, "Iceberg not available in classpath")
-    withIcebergCatalog { warehouseDir =>
-      createTable(warehouseDir, "zero_part", partitionSpec = "")
+    withIcebergCatalog { _ =>
+      createTable("zero_part", partitionSpec = "")
       val schema = StructType(
         Seq(
           StructField("id", IntegerType),
@@ -211,8 +214,8 @@ class CometIcebergWriteActionSuite
 
   test("AQE re-plan of the writer subtree writes and commits exactly once") {
     assume(icebergAvailable, "Iceberg not available in classpath")
-    withIcebergCatalog { warehouseDir =>
-      createTable(warehouseDir, "aqe_replan", partitionSpec = "")
+    withIcebergCatalog { _ =>
+      createTable("aqe_replan", partitionSpec = "")
       val session = spark
       import session.implicits._
       (1 to 100)
@@ -254,8 +257,8 @@ class CometIcebergWriteActionSuite
 
   test("partitioned write under AQE keeps the clustered writer working across the shuffle") {
     assume(icebergAvailable, "Iceberg not available in classpath")
-    withIcebergCatalog { warehouseDir =>
-      createTable(warehouseDir, "aqe_part", partitionSpec = "PARTITIONED BY (region)")
+    withIcebergCatalog { _ =>
+      createTable("aqe_part", partitionSpec = "PARTITIONED BY (region)")
       val session = spark
       import session.implicits._
       (1 to 500)
@@ -284,8 +287,8 @@ class CometIcebergWriteActionSuite
 
   test("multi-partition partitioned write collects one commit message per task") {
     assume(icebergAvailable, "Iceberg not available in classpath")
-    withIcebergCatalog { warehouseDir =>
-      createTable(warehouseDir, "multi_task", partitionSpec = "PARTITIONED BY (region)")
+    withIcebergCatalog { _ =>
+      createTable("multi_task", partitionSpec = "PARTITIONED BY (region)")
       val session = spark
       import session.implicits._
       (1 to 100)
@@ -318,8 +321,8 @@ class CometIcebergWriteActionSuite
   test("cached table reflects an append that follows a schema change on Spark 4.1+") {
     assume(icebergAvailable, "Iceberg not available in classpath")
     assume(isSpark41Plus, "name-based cache refresh needs Spark 4.1+")
-    withIcebergCatalog { warehouseDir =>
-      createTable(warehouseDir, "cache_refresh", partitionSpec = "")
+    withIcebergCatalog { _ =>
+      createTable("cache_refresh", partitionSpec = "")
       spark.sql(s"INSERT INTO $catalog.$ns.cache_refresh VALUES (1, 'us-east', 10.0)")
       spark.sql(s"CACHE TABLE $catalog.$ns.cache_refresh")
       assert(spark.sql(s"SELECT * FROM $catalog.$ns.cache_refresh").count() == 1)
@@ -344,8 +347,8 @@ class CometIcebergWriteActionSuite
 
   test("OverwriteByExpression replaces existing rows via two-op") {
     assume(icebergAvailable, "Iceberg not available in classpath")
-    withIcebergCatalog { warehouseDir =>
-      createTable(warehouseDir, "overwrite_static", partitionSpec = "")
+    withIcebergCatalog { _ =>
+      createTable("overwrite_static", partitionSpec = "")
       spark.sql(
         "INSERT INTO cat.db.overwrite_static VALUES " +
           "(1, 'old', 1.0), (2, 'old', 2.0), (3, 'old', 3.0)")
@@ -364,8 +367,8 @@ class CometIcebergWriteActionSuite
 
   test("OverwritePartitionsDynamic replaces only touched partitions") {
     assume(icebergAvailable, "Iceberg not available in classpath")
-    withIcebergCatalog { warehouseDir =>
-      createTable(warehouseDir, "overwrite_dynamic", partitionSpec = "PARTITIONED BY (region)")
+    withIcebergCatalog { _ =>
+      createTable("overwrite_dynamic", partitionSpec = "PARTITIONED BY (region)")
       spark.sql(
         "INSERT INTO cat.db.overwrite_dynamic VALUES " +
           "(1, 'us-east', 1.0), (2, 'us-west', 2.0), (3, 'eu', 3.0)")
@@ -387,9 +390,8 @@ class CometIcebergWriteActionSuite
 
   test("ReplaceData (CoW DELETE) on a row predicate goes through two-op") {
     assume(icebergAvailable, "Iceberg not available in classpath")
-    withIcebergCatalog { warehouseDir =>
+    withIcebergCatalog { _ =>
       createTable(
-        warehouseDir,
         "cow_delete",
         partitionSpec = "",
         properties = Some("'write.delete.mode'='copy-on-write'"))
@@ -409,9 +411,8 @@ class CometIcebergWriteActionSuite
 
   test("ReplaceData (CoW UPDATE) routes through two-op") {
     assume(icebergAvailable, "Iceberg not available in classpath")
-    withIcebergCatalog { warehouseDir =>
+    withIcebergCatalog { _ =>
       createTable(
-        warehouseDir,
         "cow_update",
         partitionSpec = "",
         properties = Some("'write.update.mode'='copy-on-write'"))
@@ -432,9 +433,8 @@ class CometIcebergWriteActionSuite
 
   test("ReplaceData (CoW MERGE) with matched and unmatched legs routes through two-op") {
     assume(icebergAvailable, "Iceberg not available in classpath")
-    withIcebergCatalog { warehouseDir =>
+    withIcebergCatalog { _ =>
       createTable(
-        warehouseDir,
         "cow_merge",
         partitionSpec = "",
         properties = Some("'write.merge.mode'='copy-on-write'"))
@@ -459,7 +459,7 @@ class CometIcebergWriteActionSuite
     assumeNativeAcceleration()
     assume(isSpark41Plus, "MERGE write summaries need Spark 4.1+")
     assume(icebergVersionAtLeast(1, 11), "Iceberg snapshot MERGE summaries need Iceberg 1.11+")
-    withIcebergCatalog { warehouseDir =>
+    withIcebergCatalog { _ =>
       def merge(table: String): Unit = {
         spark.sql(s"""
           |MERGE INTO $catalog.$ns.$table t
@@ -500,7 +500,6 @@ class CometIcebergWriteActionSuite
         val sparkTable = s"merge_summary_spark_$adaptiveEnabled"
         Seq(nativeTable, sparkTable).foreach { table =>
           createTable(
-            warehouseDir,
             table,
             partitionSpec = "",
             properties = Some("'write.merge.mode'='copy-on-write'"))
@@ -545,8 +544,8 @@ class CometIcebergWriteActionSuite
 
   test("failed write job aborts and leaves the table unchanged") {
     assume(icebergAvailable, "Iceberg not available in classpath")
-    withIcebergCatalog { warehouseDir =>
-      createTable(warehouseDir, "task_fail", partitionSpec = "")
+    withIcebergCatalog { _ =>
+      createTable("task_fail", partitionSpec = "")
       coalesceInsert("task_fail", Seq((1, "us-east", 10.0)))
       val session = spark
       import session.implicits._
@@ -578,9 +577,8 @@ class CometIcebergWriteActionSuite
 
   test("commit-time validation still sees a conflicting concurrent append") {
     assume(icebergAvailable, "Iceberg not available in classpath")
-    withIcebergCatalog { warehouseDir =>
+    withIcebergCatalog { _ =>
       createTable(
-        warehouseDir,
         "conflict",
         partitionSpec = "",
         properties = Some(
@@ -632,11 +630,11 @@ class CometIcebergWriteActionSuite
 
   test("a commit-time failure surfaces as the same exception as Spark's own write") {
     assume(icebergAvailable, "Iceberg not available in classpath")
-    withIcebergCatalog { warehouseDir =>
+    withIcebergCatalog { _ =>
       // A serializable overwrite validated from a snapshot older than a matching append fails
       // Iceberg's commit-time validation deterministically, without any concurrency.
       def failCommit(table: String): Throwable = {
-        createTable(warehouseDir, table, partitionSpec = "")
+        createTable(table, partitionSpec = "")
         coalesceInsert(table, Seq((1, "us-east", 10.0)))
         val validateFrom = spark
           .sql(s"SELECT snapshot_id FROM $catalog.$ns.$table.snapshots")
@@ -686,7 +684,7 @@ class CometIcebergWriteActionSuite
       spark.read.parquet(srcDir.getAbsolutePath).createOrReplaceTempView("job_fail_src")
 
       def failJob(table: String): Throwable = {
-        createTable(warehouseDir, table, partitionSpec = "")
+        createTable(table, partitionSpec = "")
         coalesceInsert(table, Seq((1, "us-east", 10.0)))
         val e = intercept[Exception] {
           spark
@@ -741,12 +739,138 @@ class CometIcebergWriteActionSuite
     }
   }
 
+  Seq("DELETE", "UPDATE", "MERGE").foreach { command =>
+    test(s"WriteDelta $command is recognized and stays on Iceberg JVM DeltaWriter") {
+      assume(icebergAvailable, "Iceberg not available in classpath")
+      assume(isSpark35Plus, "WriteDelta interception starts with Spark 3.5")
+      withIcebergCatalog { _ =>
+        val suffix = command.toLowerCase(java.util.Locale.ROOT)
+        val cometTable = s"write_delta_${suffix}_comet"
+        val jvmTable = s"write_delta_${suffix}_jvm"
+        val properties =
+          "'format-version'='2', 'write.delete.mode'='merge-on-read', " +
+            "'write.update.mode'='merge-on-read', 'write.merge.mode'='merge-on-read'"
+
+        Seq(cometTable, jvmTable).foreach { table =>
+          createTable(
+            table,
+            partitionSpec = "PARTITIONED BY (region)",
+            properties = Some(properties))
+          withSQLConf(CometConf.COMET_ICEBERG_WRITE_SPLIT_OPERATOR_ENABLED.key -> "false") {
+            // Keep ids 1 and 2 in the same Iceberg data file so DELETE id = 1 cannot be
+            // satisfied as a metadata/file delete and must exercise the WriteDelta path.
+            coalesceInsert(table, Seq((1, "a", 10.0), (2, "a", 20.0), (3, "c", 30.0)))
+          }
+        }
+
+        def run(table: String): Unit = command match {
+          case "DELETE" =>
+            spark.sql(s"DELETE FROM $catalog.$ns.$table WHERE id = 1")
+          case "UPDATE" =>
+            spark.sql(
+              s"UPDATE $catalog.$ns.$table SET region = 'updated', amount = amount + 5 " +
+                "WHERE id = 2")
+          case "MERGE" =>
+            spark.sql(s"""
+              |MERGE INTO $catalog.$ns.$table t
+              |USING (
+              |  SELECT 2 AS id, 'updated' AS region, 200.0 AS amount
+              |  UNION ALL
+              |  SELECT 4 AS id, 'new' AS region, 40.0 AS amount
+              |) s
+              |ON t.id = s.id
+              |WHEN MATCHED THEN UPDATE SET t.region = s.region, t.amount = s.amount
+              |WHEN NOT MATCHED THEN
+              |  INSERT (id, region, amount) VALUES (s.id, s.region, s.amount)
+              |""".stripMargin)
+        }
+
+        val jvmBefore = countSnapshots(jvmTable)
+        withSQLConf(CometConf.COMET_ENABLED.key -> "false") {
+          run(jvmTable)
+        }
+        assert(countSnapshots(jvmTable) - jvmBefore == 1L)
+
+        val snapshot = withNativeEnabled {
+          captureWrite(cometTable) {
+            run(cometTable)
+          }
+        }
+        assert(snapshot.snapshotDelta == 1L, s"unexpected snapshot count: $snapshot")
+
+        val deltaWrites = snapshot.plans.flatMap { plan =>
+          collectWithSubqueries(plan) {
+            case writer: IcebergWriteExec if writer.dispatch.isInstanceOf[PositionDeltaWrite] =>
+              writer
+          }
+        }
+        assert(
+          deltaWrites.nonEmpty,
+          s"expected PositionDeltaWrite dispatch. Plans:\n${snapshot.plans.mkString("\n--\n")}")
+        assert(
+          deltaWrites.forall { writer =>
+            IcebergReflection
+              .getOuterSparkWrite(writer.batchWrite)
+              .flatMap(IcebergReflection.getTableFromIcebergWrite)
+              .isDefined
+          },
+          "expected PositionDelta batch writes to expose their Iceberg table")
+
+        val nativeWrites = snapshot.plans.flatMap { plan =>
+          collectWithSubqueries(plan) { case writer: CometIcebergWriteExec => writer }
+        }
+        assert(
+          nativeWrites.isEmpty,
+          "WriteDelta must stay on Iceberg's JVM DeltaWriter. Plans:\n" +
+            snapshot.plans.mkString("\n--\n"))
+
+        def rows(table: String): Seq[Row] =
+          spark
+            .sql(s"SELECT id, region, amount FROM $catalog.$ns.$table ORDER BY id")
+            .collect()
+            .toSeq
+
+        assert(
+          rows(cometTable) == rows(jvmTable),
+          s"$command result differs from the stock Iceberg JVM path")
+
+        val summaryPrefix = command match {
+          case "DELETE" => "spark.delete."
+          case "UPDATE" => "spark.update."
+          case "MERGE" => "spark.merge-into."
+        }
+        def rowLevelSummary(table: String): Map[String, String] =
+          spark
+            .sql(s"SELECT summary FROM $catalog.$ns.$table.snapshots " +
+              "ORDER BY committed_at DESC LIMIT 1")
+            .collect()(0)
+            .getMap[String, String](0)
+            .filter { case (key, _) => key.startsWith(summaryPrefix) }
+            .toMap
+
+        val cometSummary = rowLevelSummary(cometTable)
+        val jvmSummary = rowLevelSummary(jvmTable)
+        assert(
+          cometSummary == jvmSummary,
+          s"$command snapshot summary differs from the stock Iceberg JVM path: " +
+            s"Comet=$cometSummary JVM=$jvmSummary")
+        val summaryExpected =
+          (command == "MERGE" && isSpark41Plus) ||
+            ((command == "DELETE" || command == "UPDATE") && isSpark42Plus)
+        if (summaryExpected) {
+          assert(
+            cometSummary.nonEmpty,
+            s"expected Spark row-level summary metrics for $command, got $cometSummary")
+        }
+      }
+    }
+  }
+
   test("sanity check: Spark's default DELETE path works against a Hadoop catalog") {
     assume(icebergAvailable, "Iceberg not available in classpath")
-    withIcebergCatalog { warehouseDir =>
+    withIcebergCatalog { _ =>
       withSQLConf(CometConf.COMET_ICEBERG_WRITE_SPLIT_OPERATOR_ENABLED.key -> "false") {
         createTable(
-          warehouseDir,
           "spark_cow_delete",
           partitionSpec = "",
           properties = Some("'write.delete.mode'='copy-on-write'"))
@@ -761,8 +885,8 @@ class CometIcebergWriteActionSuite
 
   test("disabled config falls through to Spark's V2ExistingTableWriteExec") {
     assume(icebergAvailable, "Iceberg not available in classpath")
-    withIcebergCatalog { warehouseDir =>
-      createTable(warehouseDir, "disabled_conf", partitionSpec = "")
+    withIcebergCatalog { _ =>
+      createTable("disabled_conf", partitionSpec = "")
 
       val snapshot = captureWrite("disabled_conf") {
         withSQLConf(CometConf.COMET_ICEBERG_WRITE_SPLIT_OPERATOR_ENABLED.key -> "false") {
@@ -782,9 +906,9 @@ class CometIcebergWriteActionSuite
 
   test("native acceleration: AppendData INSERT FROM SELECT") {
     assumeNativeAcceleration()
-    withIcebergCatalog { warehouseDir =>
-      createTable(warehouseDir, "native_source", partitionSpec = "")
-      createTable(warehouseDir, "native_target", partitionSpec = "")
+    withIcebergCatalog { _ =>
+      createTable("native_source", partitionSpec = "")
+      createTable("native_target", partitionSpec = "")
       spark.sql(
         "INSERT INTO cat.db.native_source VALUES " +
           "(1, 'us-east', 10.5), (2, 'us-west', 20.3), (3, 'eu', 30.7)")
@@ -797,12 +921,120 @@ class CometIcebergWriteActionSuite
 
   test("native acceleration: AppendData unpartitioned VALUES") {
     assumeNativeAcceleration()
-    withIcebergCatalog { warehouseDir =>
-      createTable(warehouseDir, "native_append_values", partitionSpec = "")
+    withIcebergCatalog { _ =>
+      createTable("native_append_values", partitionSpec = "")
       assertNativeWriteEngages("native_append_values", Seq(1, 2, 3)) {
         spark.sql(
           "INSERT INTO cat.db.native_append_values VALUES " +
             "(1, 'us-east', 10.5), (2, 'us-west', 20.3), (3, 'eu', 30.7)")
+      }
+    }
+  }
+
+  for (adaptive <- Seq(false, true)) {
+    test(s"transition-heavy fallback preserves Iceberg writes with AQE=$adaptive") {
+      assumeNativeAcceleration()
+      withIcebergCatalog { _ =>
+        val suffix = if (adaptive) "aqe" else "no_aqe"
+        val nativeTable = s"transition_native_$suffix"
+        val fallbackTable = s"transition_fallback_$suffix"
+        createTable(nativeTable, partitionSpec = "")
+        createTable(fallbackTable, partitionSpec = "")
+        val values = "(1, 'us-east', 10.5), (2, 'us-west', 20.3), (3, 'eu', 30.7)"
+
+        withSQLConf(
+          SQLConf.ADAPTIVE_EXECUTION_ENABLED.key -> adaptive.toString,
+          CometConf.COMET_EXEC_TRANSITION_REVERT_ENABLED.key -> "false") {
+          assertNativeWriteEngages(nativeTable, Seq(1, 2, 3)) {
+            spark.sql(s"INSERT INTO $catalog.$ns.$nativeTable VALUES $values")
+          }
+        }
+
+        withSQLConf(
+          SQLConf.ADAPTIVE_EXECUTION_ENABLED.key -> adaptive.toString,
+          CometConf.COMET_EXEC_TRANSITION_REVERT_ENABLED.key -> "true",
+          CometConf.COMET_EXEC_TRANSITION_REVERT_MAX_TRANSITIONS.key -> "0") {
+          assertNativeWriteDoesNotEngage(fallbackTable, Seq(1, 2, 3)) {
+            spark.sql(s"INSERT INTO $catalog.$ns.$fallbackTable VALUES $values")
+          }
+        }
+      }
+    }
+  }
+
+  // An unpartitioned INSERT never puts an exchange under the write, so it misses #6152: with AQE
+  // off, unwrapping a transition that sits on a shuffle used to keep walking into the map stage.
+  // The IN-subquery on a partitioned copy-on-write DELETE is the plan that does, and the AQE-off
+  // case is the one that fails with `ColumnarBatch cannot be cast to InternalRow`.
+  // `us-west` keeps a row after deleting id 2. An emptied partition makes the rewrite emit
+  // nothing, and AQE then replaces the write input with an empty LocalTableScan, so the executed
+  // plan no longer contains the shuffle this test is checking for.
+  for (adaptive <- Seq(false, true)) {
+    test(s"transition-heavy fallback preserves partitioned CoW deletes with AQE=$adaptive") {
+      assumeNativeAcceleration()
+      withIcebergCatalog { warehouseDir =>
+        val suffix = if (adaptive) "aqe" else "no_aqe"
+        val nativeTable = s"transition_cow_native_$suffix"
+        val fallbackTable = s"transition_cow_fallback_$suffix"
+        val props = Some("'write.delete.mode'='copy-on-write'")
+        val spec = "PARTITIONED BY (region)"
+        createTable(nativeTable, spec, props)
+        createTable(fallbackTable, spec, props)
+        val seed =
+          Seq(
+            (1, "us-east", 10.0),
+            (2, "us-west", 20.0),
+            (3, "eu", 30.0),
+            (4, "us-east", 40.0),
+            (5, "us-west", 50.0))
+        withSQLConf(CometConf.COMET_ICEBERG_WRITE_SPLIT_OPERATOR_ENABLED.key -> "false") {
+          coalesceInsert(nativeTable, seed)
+          coalesceInsert(fallbackTable, seed)
+        }
+        def delete(table: String): Unit =
+          spark.sql(
+            s"DELETE FROM $catalog.$ns.$table WHERE id IN " +
+              "(SELECT col1 FROM VALUES (2) AS t(col1))")
+
+        withSQLConf(
+          SQLConf.ADAPTIVE_EXECUTION_ENABLED.key -> adaptive.toString,
+          CometConf.COMET_EXEC_TRANSITION_REVERT_ENABLED.key -> "false") {
+          assertNativeWriteEngages(nativeTable, Seq(1, 3, 4, 5)) {
+            delete(nativeTable)
+          }
+        }
+
+        withSQLConf(
+          SQLConf.ADAPTIVE_EXECUTION_ENABLED.key -> adaptive.toString,
+          CometConf.COMET_EXEC_TRANSITION_REVERT_ENABLED.key -> "true",
+          CometConf.COMET_EXEC_TRANSITION_REVERT_MAX_TRANSITIONS.key -> "0") {
+          val snapshot = withNativeEnabled {
+            captureWrite(fallbackTable)(delete(fallbackTable))
+          }
+          assertExactlyOneCommit(snapshot)
+          val nativeExecs = snapshot.plans.flatMap { plan =>
+            collectWithSubqueries(plan) { case e: CometIcebergWriteExec => e }
+          }
+          assert(
+            nativeExecs.isEmpty,
+            "transition reversion should restore IcebergWriteExec. Plans:\n" +
+              snapshot.plans.mkString("\n--\n"))
+          // AdaptiveSparkPlanExec is a leaf, so only the AQE-aware collect reaches the exchange.
+          val hasExchange = snapshot.plans.exists { plan =>
+            collect(plan) { case _: ShuffleExchangeLike => true }.nonEmpty
+          }
+          assert(
+            hasExchange,
+            "the delete must keep a shuffle under the write. Plans:\n" +
+              snapshot.plans.mkString("\n--\n"))
+          assertRows(fallbackTable, Seq(1, 3, 4, 5))
+        }
+
+        val nativeDirs = partitionDirs(warehouseDir, nativeTable)
+        val fallbackDirs = partitionDirs(warehouseDir, fallbackTable)
+        assert(
+          fallbackDirs == nativeDirs,
+          s"partition layout fallback=$fallbackDirs native=$nativeDirs")
       }
     }
   }
@@ -814,11 +1046,11 @@ class CometIcebergWriteActionSuite
   // otherwise, so pin parity against the JVM writer on the same runtime instead of a literal.
   test("native acceleration: appended files carry the same sort_order_id as the JVM writer") {
     assumeNativeAcceleration()
-    withIcebergCatalog { warehouseDir =>
+    withIcebergCatalog { _ =>
       // WRITE ORDERED BY (provided by IcebergSparkSessionExtensions, enabled in this suite)
       // bumps the table's sort order id to a non-default value (1).
       Seq("sorted_native", "sorted_jvm").foreach { t =>
-        createTable(warehouseDir, t, partitionSpec = "")
+        createTable(t, partitionSpec = "")
         spark.sql(s"ALTER TABLE cat.db.$t WRITE ORDERED BY id")
       }
       val insert = (t: String) =>
@@ -842,8 +1074,8 @@ class CometIcebergWriteActionSuite
 
   test("native acceleration: AppendData partitioned by identity") {
     assumeNativeAcceleration()
-    withIcebergCatalog { warehouseDir =>
-      createTable(warehouseDir, "native_append_part", partitionSpec = "PARTITIONED BY (region)")
+    withIcebergCatalog { _ =>
+      createTable("native_append_part", partitionSpec = "PARTITIONED BY (region)")
       assertNativeWriteEngages("native_append_part", Seq(1, 2, 3)) {
         spark.sql(
           "INSERT INTO cat.db.native_append_part VALUES " +
@@ -854,8 +1086,8 @@ class CometIcebergWriteActionSuite
 
   test("native acceleration: OverwriteByExpression (INSERT OVERWRITE STATIC)") {
     assumeNativeAcceleration()
-    withIcebergCatalog { warehouseDir =>
-      createTable(warehouseDir, "native_overwrite_static", partitionSpec = "")
+    withIcebergCatalog { _ =>
+      createTable("native_overwrite_static", partitionSpec = "")
       spark.sql(
         "INSERT INTO cat.db.native_overwrite_static VALUES " +
           "(1, 'old', 1.0), (2, 'old', 2.0), (3, 'old', 3.0)")
@@ -871,8 +1103,8 @@ class CometIcebergWriteActionSuite
 
   test("native acceleration: OverwritePartitionsDynamic") {
     assumeNativeAcceleration()
-    withIcebergCatalog { warehouseDir =>
-      createTable(warehouseDir, "native_overwrite_dyn", partitionSpec = "PARTITIONED BY (region)")
+    withIcebergCatalog { _ =>
+      createTable("native_overwrite_dyn", partitionSpec = "PARTITIONED BY (region)")
       spark.sql(
         "INSERT INTO cat.db.native_overwrite_dyn VALUES " +
           "(1, 'us-east', 1.0), (2, 'us-west', 2.0), (3, 'eu', 3.0)")
@@ -886,9 +1118,8 @@ class CometIcebergWriteActionSuite
 
   test("native acceleration: ReplaceData (CoW DELETE)") {
     assumeNativeAcceleration()
-    withIcebergCatalog { warehouseDir =>
+    withIcebergCatalog { _ =>
       createTable(
-        warehouseDir,
         "native_cow_delete",
         partitionSpec = "",
         properties = Some("'write.delete.mode'='copy-on-write'"))
@@ -904,11 +1135,180 @@ class CometIcebergWriteActionSuite
     }
   }
 
+  // Format version 3 makes row lineage mandatory, but iceberg-java writes lineage columns into
+  // data files only when it rewrites existing rows: copy-on-write DML and rewrite_data_files, on
+  // Iceberg 1.10+. An append or an overwrite writes the data columns alone, and the driver gives
+  // the new rows their ids at commit time, so those writes stay native on a v3 table.
+  test("native acceleration: format-version=3 appends and overwrites match iceberg-java") {
+    assumeNativeAcceleration()
+    assume(isSpark35Plus, "V3 tables require Iceberg 1.8.1+ (Spark 3.5 profile)")
+    withIcebergCatalog { warehouseDir =>
+      Seq("v3_native", "v3_jvm").foreach { t =>
+        createTable(
+          t,
+          partitionSpec = "PARTITIONED BY (region)",
+          properties = Some("'format-version'='3'"))
+      }
+      // Eight partitions, so a writer that orders them differently cannot match by luck.
+      val values = (1 to 32).map(i => s"($i, 'r${i % 8}', ${i * 1.5})").mkString(", ")
+      def append(t: String): Unit = spark.sql(s"INSERT INTO $catalog.$ns.$t VALUES $values")
+      def overwrite(t: String): Unit =
+        withSQLConf("spark.sql.sources.partitionOverwriteMode" -> "DYNAMIC") {
+          spark.sql(s"INSERT OVERWRITE $catalog.$ns.$t VALUES (100, 'r0', 1.0), (101, 'r1', 2.0)")
+        }
+      // The overwrite replaces partitions r0 and r1.
+      val survivors = (1 to 32).filter(_ % 8 > 1)
+      assertNativeWriteEngages("v3_native", 1 to 32)(append("v3_native"))
+      assertNativeWriteEngages("v3_native", survivors ++ Seq(100, 101))(overwrite("v3_native"))
+      append("v3_jvm")
+      overwrite("v3_jvm")
+
+      def rows(table: String)(query: String => String): Seq[Row] =
+        spark.sql(query(s"$catalog.$ns.$table")).collect().toSeq
+      def assertSameAsJvm(query: String => String): Seq[Row] = {
+        val native = rows("v3_native")(query)
+        val jvm = rows("v3_jvm")(query)
+        assert(native == jvm, s"native ${native.mkString} != JVM ${jvm.mkString}")
+        native
+      }
+      assertSameAsJvm(t => s"SELECT * FROM $t ORDER BY id")
+      val nativeDirs = partitionDirs(warehouseDir, "v3_native")
+      assert(nativeDirs == partitionDirs(warehouseDir, "v3_jvm"), s"native: $nativeDirs")
+      // Aggregated per partition, so the comparison does not depend on how a write splits into
+      // tasks.
+      assertSameAsJvm(t => s"""
+        SELECT
+          partition.region,
+          sum(record_count),
+          min(readable_metrics.id.lower_bound),
+          max(readable_metrics.id.upper_bound),
+          sum(readable_metrics.amount.value_count),
+          min(readable_metrics.amount.lower_bound),
+          max(readable_metrics.amount.upper_bound)
+        FROM $t.data_files
+        GROUP BY partition.region
+        ORDER BY partition.region
+      """)
+
+      // Spark exposes the lineage columns from Iceberg 1.10 on. The id a row gets follows the
+      // order of the files in its commit, which follows task completion order for either writer,
+      // so compare the commit each row came from rather than the id itself: the append hands out
+      // ids below 32 and the overwrite ids from 32 on.
+      if (icebergVersionAtLeast(1, 10)) {
+        val lineage = assertSameAsJvm(t => s"""
+          SELECT id, _last_updated_sequence_number, _row_id < 32 FROM $t ORDER BY id
+        """)
+        val expected = survivors.map(id => Row(id, 1L, true)) ++
+          Seq(Row(100, 2L, false), Row(101, 2L, false))
+        assert(lineage == expected, s"lineage: ${lineage.mkString}")
+        val distinct = rows("v3_native")(t => s"SELECT count(DISTINCT _row_id) FROM $t")
+        assert(distinct == Seq(Row(expected.length.toLong)), s"duplicate row ids: $distinct")
+      }
+    }
+  }
+
+  // With one file per commit the row ids are deterministic: a v3 commit gives its new rows the
+  // next unused ids in file order, and each row inherits the sequence number of the commit that
+  // wrote it. Copy-on-write DML on Iceberg 1.10+ writes those values into the rewritten files,
+  // which the native writer does not do, so the UPDATE stays on iceberg-java and has to read the
+  // ids of the natively written rows back unchanged.
+  test("native acceleration: format-version=3 row lineage matches iceberg-java") {
+    assumeNativeAcceleration()
+    assume(icebergVersionAtLeast(1, 10), "Spark reads Iceberg row lineage from Iceberg 1.10 on")
+    withIcebergCatalog { _ =>
+      Seq("lineage_native", "lineage_jvm").foreach { t =>
+        createTable(
+          t,
+          partitionSpec = "",
+          properties = Some("'format-version'='3', 'write.update.mode'='copy-on-write'"))
+      }
+      Seq(
+        Seq((1, "us-east", 10.0), (2, "us-west", 20.0), (3, "eu", 30.0)),
+        Seq((4, "us-east", 40.0), (5, "eu", 50.0))).foreach { batch =>
+        val snapshot = withNativeEnabled {
+          captureWrite("lineage_native")(coalesceInsert("lineage_native", batch))
+        }
+        assert(snapshot.snapshotDelta == 1L)
+        val engaged = snapshot.plans.exists { p =>
+          collectWithSubqueries(p) { case e: CometIcebergWriteExec => e }.nonEmpty
+        }
+        assert(engaged, s"expected a native append:\n${snapshot.plans.mkString("\n--\n")}")
+        coalesceInsert("lineage_jvm", batch)
+      }
+
+      def lineage(table: String): Seq[(Int, Long, Long)] =
+        spark
+          .sql("SELECT id, _row_id, _last_updated_sequence_number " +
+            s"FROM $catalog.$ns.$table ORDER BY id")
+          .collect()
+          .map(r => (r.getInt(0), r.getLong(1), r.getLong(2)))
+          .toSeq
+      val appended = Seq((1, 0L, 1L), (2, 1L, 1L), (3, 2L, 1L), (4, 3L, 2L), (5, 4L, 2L))
+      assert(lineage("lineage_native") == appended)
+      assert(lineage("lineage_jvm") == appended)
+
+      def update(table: String): Unit =
+        spark.sql(s"UPDATE $catalog.$ns.$table SET amount = amount * 2 WHERE id = 2")
+      val snapshot = withNativeEnabled {
+        captureWrite("lineage_native")(update("lineage_native"))
+      }
+      assert(snapshot.snapshotDelta == 1L)
+      val (_, writes) = collectIcebergWriteOps(snapshot.plans)
+      assert(
+        writes.nonEmpty,
+        s"expected the UPDATE to keep IcebergWrite:\n${snapshot.plans.mkString("\n--\n")}")
+      writes.foreach { write =>
+        CometIcebergNativeWrite.getSupportLevel(write) match {
+          case Unsupported(Some(reason)) => assert(reason.contains("_row_id"), reason)
+          case other => fail(s"expected the lineage write to fall back, got $other")
+        }
+      }
+      update("lineage_jvm")
+      // The updated row keeps its id and takes the UPDATE's sequence number. The other rows of
+      // the rewritten file keep both.
+      val updated = Seq((1, 0L, 1L), (2, 1L, 3L), (3, 2L, 1L), (4, 3L, 2L), (5, 4L, 2L))
+      assert(lineage("lineage_native") == updated)
+      assert(lineage("lineage_jvm") == updated)
+    }
+  }
+
+  // A v3 column can carry initial and write defaults. From Iceberg 1.11 Spark fills a write
+  // default in at analysis, so both writers receive the same rows; Iceberg 1.10 does not expose
+  // defaults to Spark, which then rejects an INSERT that omits the column. Iceberg rebuilds the
+  // write schema from Spark's, which drops the defaults today; if it ever keeps them, they reach
+  // iceberg-rust in the schema JSON and this covers parsing them.
+  test("native acceleration: a format-version=3 column with a default matches iceberg-java") {
+    assumeNativeAcceleration()
+    assume(icebergVersionAtLeast(1, 10), "Column defaults require Iceberg 1.10+")
+    withIcebergCatalog { _ =>
+      Seq("default_native", "default_jvm").foreach { t =>
+        createTable(t, partitionSpec = "", properties = Some("'format-version'='3'"))
+        addIcebergIntColumnWithDefault(loadIcebergTable(spark, catalog, ns, t), "c", 7)
+        spark.sql(s"REFRESH TABLE $catalog.$ns.$t")
+      }
+      def insertAll(t: String): Unit =
+        spark.sql(s"INSERT INTO $catalog.$ns.$t VALUES (1, 'us', 1.0, 5), (2, 'eu', 2.0, NULL)")
+      def insertOmitting(t: String): Unit =
+        spark.sql(s"INSERT INTO $catalog.$ns.$t (id, region, amount) VALUES (3, 'ap', 3.0)")
+      val fillsWriteDefault = icebergVersionAtLeast(1, 11)
+      assertNativeWriteEngages("default_native", Seq(1, 2))(insertAll("default_native"))
+      if (fillsWriteDefault) {
+        assertNativeWriteEngages("default_native", Seq(1, 2, 3))(insertOmitting("default_native"))
+      }
+      insertAll("default_jvm")
+      if (fillsWriteDefault) insertOmitting("default_jvm")
+      def rows(t: String): Seq[Row] =
+        spark.sql(s"SELECT * FROM $catalog.$ns.$t ORDER BY id").collect().toSeq
+      val native = rows("default_native")
+      assert(native == rows("default_jvm"), s"native: ${native.mkString}")
+    }
+  }
+
   test("native acceleration: a driver commit failure aborts all completed task files") {
     assumeNativeAcceleration()
-    withIcebergCatalog { warehouseDir =>
+    withIcebergCatalog { _ =>
       val table = "native_commit_failure"
-      createTable(warehouseDir, table, partitionSpec = "")
+      createTable(table, partitionSpec = "")
       // Native writes stay off for the seed. The second append is a committed change after
       // `validateFrom`, so the overwrite below asks Iceberg for serializable validation from
       // that older snapshot. The check runs inside BatchWrite.commit, after the native tasks
@@ -989,9 +1389,8 @@ class CometIcebergWriteActionSuite
   // `ColumnarBatch cannot be cast to InternalRow`.
   test("native acceleration: ReplaceData (CoW DELETE) with AQE disabled") {
     assumeNativeAcceleration()
-    withIcebergCatalog { warehouseDir =>
+    withIcebergCatalog { _ =>
       createTable(
-        warehouseDir,
         "native_cow_delete_no_aqe",
         partitionSpec = "PARTITIONED BY (region)",
         properties = Some("'write.delete.mode'='copy-on-write'"))
@@ -1033,9 +1432,8 @@ class CometIcebergWriteActionSuite
 
   test("native acceleration: ReplaceData (CoW UPDATE)") {
     assumeNativeAcceleration()
-    withIcebergCatalog { warehouseDir =>
+    withIcebergCatalog { _ =>
       createTable(
-        warehouseDir,
         "native_cow_update",
         partitionSpec = "",
         properties = Some("'write.update.mode'='copy-on-write'"))
@@ -1058,9 +1456,8 @@ class CometIcebergWriteActionSuite
   test("native acceleration: ReplaceData (CoW MERGE) honors the versioned native contract") {
     assumeNativeAcceleration()
 
-    withIcebergCatalog { warehouseDir =>
+    withIcebergCatalog { _ =>
       createTable(
-        warehouseDir,
         "native_cow_merge",
         partitionSpec = "",
         properties = Some("'write.merge.mode'='copy-on-write'"))
@@ -1117,7 +1514,7 @@ class CometIcebergWriteActionSuite
   test("MERGE matches Spark on partitioned Iceberg copy-on-write and merge-on-read") {
     assumeNativeAcceleration()
     assume(isSpark35Plus, "native MergeRows requires Spark 3.5+")
-    withIcebergCatalog { warehouseDir =>
+    withIcebergCatalog { _ =>
       spark
         .range(0, 20000, 1, 8)
         .selectExpr(
@@ -1161,7 +1558,6 @@ class CometIcebergWriteActionSuite
           val sparkTable = s"merge_parity_${suffix}_aqe_${adaptiveEnabled}_spark"
           Seq(nativeTable, sparkTable).foreach { table =>
             createTable(
-              warehouseDir,
               table,
               partitionSpec = "PARTITIONED BY (region)",
               properties = Some(s"'format-version'='2', 'write.merge.mode'='$mode'"))
@@ -1204,39 +1600,30 @@ class CometIcebergWriteActionSuite
           val commits = writeSnapshot.plans.flatMap { plan =>
             collectWithSubqueries(plan) { case c: IcebergCommitExec => c }
           }
-          if (mode == "copy-on-write") {
+          assert(
+            commits.nonEmpty,
+            s"expected >= 1 IcebergCommitExec for $mode, got 0. Plans:\n" +
+              writeSnapshot.plans.mkString("\n--\n"))
+          if (mode == "merge-on-read") {
+            val deltaWrites = writeSnapshot.plans.flatMap { plan =>
+              collectWithSubqueries(plan) {
+                case writer: IcebergWriteExec
+                    if writer.dispatch.isInstanceOf[PositionDeltaWrite] =>
+                  writer
+              }
+            }
             assert(
-              commits.nonEmpty,
-              s"expected >= 1 IcebergCommitExec for $mode, got 0. Plans:\n" +
-                writeSnapshot.plans.mkString("\n--\n"))
-          } else {
-            assert(
-              commits.isEmpty,
-              s"merge-on-read should stay on Iceberg WriteDelta, got ${commits.size} IcebergCommitExec. Plans:\n" +
+              deltaWrites.nonEmpty,
+              s"expected PositionDeltaWrite dispatch for $mode. Plans:\n" +
                 writeSnapshot.plans.mkString("\n--\n"))
           }
           val mergeExecs = writeSnapshot.plans.flatMap { plan =>
             collectWithSubqueries(plan) { case e: CometMergeRowsExec => e }
           }
-          if (mode == "merge-on-read" && isSpark41Plus) {
-            val sparkMergeRows = writeSnapshot.plans.flatMap { plan =>
-              collectWithSubqueries(plan) {
-                case e if e.getClass.getSimpleName == "MergeRowsExec" => e
-              }
-            }
-            assert(
-              mergeExecs.isEmpty,
-              "Spark 4.1+ merge-on-read uses the stock V2 writer and must retain MergeRowsExec")
-            assert(
-              sparkMergeRows.nonEmpty,
-              s"expected Spark MergeRowsExec for Spark 4.1+ $mode. Plans:\n" +
-                writeSnapshot.plans.mkString("\n--\n"))
-          } else {
-            assert(
-              mergeExecs.nonEmpty,
-              s"expected CometMergeRowsExec for $mode. Plans:\n" +
-                writeSnapshot.plans.mkString("\n--\n"))
-          }
+          assert(
+            mergeExecs.nonEmpty,
+            s"expected CometMergeRowsExec for $mode. Plans:\n" +
+              writeSnapshot.plans.mkString("\n--\n"))
 
           val nativeWrites = writeSnapshot.plans.flatMap { plan =>
             collectWithSubqueries(plan) { case e: CometIcebergWriteExec => e }
@@ -1284,12 +1671,11 @@ class CometIcebergWriteActionSuite
   test("native MergeRows Iceberg cardinality violation matches Spark") {
     assumeNativeAcceleration()
     assume(isSpark35Plus, "native MergeRows requires Spark 3.5+")
-    withIcebergCatalog { warehouseDir =>
+    withIcebergCatalog { _ =>
       val nativeTable = "merge_cardinality_native"
       val sparkTable = "merge_cardinality_spark"
       Seq(nativeTable, sparkTable).foreach { table =>
         createTable(
-          warehouseDir,
           table,
           partitionSpec = "PARTITIONED BY (region)",
           properties = Some("'format-version'='2', 'write.merge.mode'='copy-on-write'"))
@@ -1357,9 +1743,8 @@ class CometIcebergWriteActionSuite
   // shapes, which put different operators between the columnar CoW scan and the write.
   test("native acceleration: ReplaceData (CoW UPDATE) with AQE disabled") {
     assumeNativeAcceleration()
-    withIcebergCatalog { warehouseDir =>
+    withIcebergCatalog { _ =>
       createTable(
-        warehouseDir,
         "native_cow_update_no_aqe",
         partitionSpec = "PARTITIONED BY (region)",
         properties = Some("'write.update.mode'='copy-on-write'"))
@@ -1393,9 +1778,8 @@ class CometIcebergWriteActionSuite
     // The subtree below the write mixes a Spark-columnar `BatchScan`, a row-based MergeRows
     // path, and Comet operators, so it needs transitions inserted in three different places.
     assumeNativeAcceleration()
-    withIcebergCatalog { warehouseDir =>
+    withIcebergCatalog { _ =>
       createTable(
-        warehouseDir,
         "native_cow_merge_no_aqe",
         partitionSpec = "PARTITIONED BY (region)",
         properties = Some("'write.merge.mode'='copy-on-write'"))
@@ -1576,23 +1960,75 @@ class CometIcebergWriteActionSuite
         assertNativeWriteEngages("nan_offset_native", 40 until 65)(insert("nan_offset_native"))
         insert("nan_offset_jvm")
 
-        // Keyed by field id, and both tables get the same ids from the same DDL.
-        def nanCounts(t: String): Map[Int, Long] =
-          spark
-            .sql(s"SELECT nan_value_counts FROM $catalog.$ns.$t.data_files")
-            .collect()
-            .toSeq
-            .flatMap(_.getMap[Int, Long](0).toSeq)
-            .groupBy(_._1)
-            .map { case (id, counts) => id -> counts.map(_._2).sum }
-
-        val native = nanCounts("nan_offset_native")
-        val jvm = nanCounts("nan_offset_jvm")
+        val native = nanValueCounts("nan_offset_native")
+        val jvm = nanValueCounts("nan_offset_jvm")
         assert(native == jvm, s"native NaN counts $native != JVM NaN counts $jvm")
-        // Iceberg 1.10's `ParquetMetrics` keeps no metrics for a field under a list or map, so
+        // Iceberg 1.9's `ParquetMetrics` keeps no metrics for a field under a list or map, so
         // from then on both maps are empty. Before that, the written ids 40 to 64 hold eight
         // multiples of 3, NaN in the list element and the map value alike.
-        val expected = if (icebergVersionAtLeast(1, 10)) Seq.empty else Seq(8L, 8L)
+        val expected = if (icebergVersionAtLeast(1, 9)) Seq.empty else Seq(8L, 8L)
+        assert(jvm.values.toSeq == expected, s"JVM NaN counts $jvm")
+      }
+    }
+  }
+
+  // `IF(cond, col, NULL)` over a nested column runs natively through `nullif`, which NULLs the
+  // struct, list or map but leaves what is under it in place: a NULL struct keeps its fields'
+  // values and a NULL list or map entry still points at its elements. Parquet writes nothing
+  // under a NULL parent, so iceberg-java counts no NaN there, while iceberg-rust's counter used to
+  // count every one of them.
+  // https://github.com/apache/datafusion-comet/issues/6562
+  test("native acceleration: NaN counts skip values under NULL structs, lists and maps") {
+    assumeNativeAcceleration()
+    withIcebergCatalog { _ =>
+      withTempPath { dir =>
+        spark
+          .range(100)
+          .selectExpr(
+            "CAST(id AS INT) AS id",
+            "IF(id % 3 = 0, CAST('NaN' AS DOUBLE), CAST(id AS DOUBLE)) AS v")
+          .selectExpr(
+            "id",
+            "v",
+            "named_struct('x', v) AS s",
+            "array(v) AS xs",
+            "map('k', v) AS m")
+          .write
+          .parquet(dir.getCanonicalPath)
+        Seq("nan_null_parent_native", "nan_null_parent_jvm").foreach { t =>
+          spark.sql(s"""
+            CREATE TABLE $catalog.$ns.$t (
+              id INT,
+              v DOUBLE,
+              s STRUCT<x: DOUBLE>,
+              xs ARRAY<DOUBLE>,
+              m MAP<STRING, DOUBLE>
+            ) USING iceberg
+          """)
+        }
+        def insert(t: String): Unit =
+          spark.read
+            .parquet(dir.getCanonicalPath)
+            .selectExpr(
+              "id",
+              "IF(id % 2 = 0, v, NULL) AS v",
+              "IF(id % 2 = 0, s, NULL) AS s",
+              "IF(id % 2 = 0, xs, NULL) AS xs",
+              "IF(id % 2 = 0, m, NULL) AS m")
+            .writeTo(s"$catalog.$ns.$t")
+            .append()
+
+        assertNativeWriteEngages("nan_null_parent_native", 0 until 100)(
+          insert("nan_null_parent_native"))
+        insert("nan_null_parent_jvm")
+
+        val native = nanValueCounts("nan_null_parent_native")
+        val jvm = nanValueCounts("nan_null_parent_jvm")
+        assert(native == jvm, s"native NaN counts $native != JVM NaN counts $jvm")
+        // The kept rows are the even ids, so the NaNs written are the multiples of 6 up to 96:
+        // 17 each in `v` and `s.x`, and in the list element and the map value as well before
+        // Iceberg 1.9's `ParquetMetrics` stopped keeping metrics under a list or map.
+        val expected = Seq.fill(if (icebergVersionAtLeast(1, 9)) 2 else 4)(17L)
         assert(jvm.values.toSeq == expected, s"JVM NaN counts $jvm")
       }
     }
@@ -1624,8 +2060,8 @@ class CometIcebergWriteActionSuite
   test("native acceleration: RTAS replaces table contents through the native writer") {
     assumeNativeAcceleration()
     assume(isSpark35Plus, "RTAS re-plans its inner append only on Spark 3.5+")
-    withIcebergCatalog { warehouseDir =>
-      createTable(warehouseDir, "rtas_native", partitionSpec = "")
+    withIcebergCatalog { _ =>
+      createTable("rtas_native", partitionSpec = "")
       coalesceInsert("rtas_native", Seq((1, "old", 1.0)))
       val snapshot = withNativeEnabled {
         captureWrite("rtas_native") {
@@ -1958,9 +2394,8 @@ class CometIcebergWriteActionSuite
 
   test("native acceleration: fanout writer handles unsorted partitioned input") {
     assumeNativeAcceleration()
-    withIcebergCatalog { warehouseDir =>
+    withIcebergCatalog { _ =>
       createTable(
-        warehouseDir,
         "native_fanout",
         partitionSpec = "PARTITIONED BY (region)",
         properties = Some("'write.spark.fanout.enabled'='true'"))
@@ -1993,10 +2428,10 @@ class CometIcebergWriteActionSuite
   // literal, so an iceberg-java wording change surfaces here as a parity failure.
   test("native acceleration: clustered writer rejects unclustered input like the JVM writer") {
     assumeNativeAcceleration()
-    withIcebergCatalog { warehouseDir =>
+    withIcebergCatalog { _ =>
       val (nativeTable, jvmTable) = ("unclustered_native", "unclustered_jvm")
       val tables = Seq(nativeTable, jvmTable)
-      tables.foreach(createTable(warehouseDir, _, partitionSpec = "PARTITIONED BY (region)"))
+      tables.foreach(createTable(_, partitionSpec = "PARTITIONED BY (region)"))
       val session = spark
       import session.implicits._
       // "us-east" is revisited after the writer has moved on to "eu" and closed it.
@@ -2006,18 +2441,8 @@ class CometIcebergWriteActionSuite
           "region",
           "amount")
 
-      var nativeFailure: Throwable = null
-      val nativePlans = withNativeEnabled {
-        capturePlans(spark, includeFailures = true) {
-          nativeFailure = intercept[Exception](appendUnclustered(nativeTable, rows))
-        }
-      }
-      val jvmFailure = intercept[Exception](appendUnclustered(jvmTable, rows))
-      assert(
-        nativePlans.exists(p =>
-          collectWithSubqueries(p) { case e: CometIcebergWriteExec => e }.nonEmpty),
-        "expected the aborted write to have gone through CometIcebergWriteExec. Plans:\n" +
-          nativePlans.mkString("\n--\n"))
+      val (nativeFailure, jvmFailure) =
+        failedWrites(nativeTable, jvmTable)(appendUnclustered(_, rows))
 
       val nativeError = clusteredWriterError(nativeFailure)
       val jvmError = clusteredWriterError(jvmFailure)
@@ -2064,18 +2489,8 @@ class CometIcebergWriteActionSuite
           (2, new Timestamp(0L), Array[Byte](0)),
           (3, new Timestamp(-1500L), Array[Byte](0, 1, -1))).toDF("id", "ts", "bin")
 
-        var nativeFailure: Throwable = null
-        val nativePlans = withNativeEnabled {
-          capturePlans(spark, includeFailures = true) {
-            nativeFailure = intercept[Exception](appendUnclustered(nativeTable, rows))
-          }
-        }
-        val jvmFailure = intercept[Exception](appendUnclustered(jvmTable, rows))
-        assert(
-          nativePlans.exists(p =>
-            collectWithSubqueries(p) { case e: CometIcebergWriteExec => e }.nonEmpty),
-          "expected the aborted write to have gone through CometIcebergWriteExec. Plans:\n" +
-            nativePlans.mkString("\n--\n"))
+        val (nativeFailure, jvmFailure) =
+          failedWrites(nativeTable, jvmTable)(appendUnclustered(_, rows))
 
         val (_, nativeMessage) = clusteredWriterError(nativeFailure)
         assert(
@@ -2090,11 +2505,55 @@ class CometIcebergWriteActionSuite
     }
   }
 
+  // https://github.com/apache/datafusion-comet/issues/6234. The native writer pulls its input
+  // through an Arrow C stream, and Arrow Java hands native only the text of an exception thrown
+  // while producing a batch, so the user got a CometNativeException instead of Spark's exception.
+  // The first batch is read on the JVM to derive the stream's schema, which is why the overflow
+  // has to land past it: row 90000 of a single 100000-row data file, so one task reads it all.
+  test("native acceleration: an input error past the first batch fails like the JVM writer") {
+    assumeNativeAcceleration()
+    withIcebergCatalog { _ =>
+      withSQLConf(SQLConf.ANSI_ENABLED.key -> "true") {
+        val (nativeTable, jvmTable) = ("overflow_native", "overflow_jvm")
+        Seq("overflow_src", nativeTable, jvmTable).foreach { table =>
+          spark.sql(s"CREATE TABLE $catalog.$ns.$table (v INT) USING iceberg")
+        }
+        withSQLConf(CometConf.COMET_ENABLED.key -> "false") {
+          spark
+            .range(0, 100000, 1, 1)
+            .selectExpr("CAST(id AS INT) AS v")
+            .writeTo(s"$catalog.$ns.overflow_src")
+            .append()
+        }
+        def insert(table: String): Unit =
+          spark.sql(
+            s"INSERT INTO $catalog.$ns.$table " +
+              s"SELECT v + ${Int.MaxValue - 90000} FROM $catalog.$ns.overflow_src")
+
+        val (nativeFailure, jvmFailure) = failedWrites(nativeTable, jvmTable)(insert)
+
+        def overflow(failure: Throwable): (Int, Class[_], String, String) = {
+          val chain = causeChain(failure)
+          val depth = chain.indexWhere(_.isInstanceOf[ArithmeticException])
+          assert(depth >= 0, s"no ArithmeticException in the cause chain of $failure")
+          val error = chain(depth).asInstanceOf[Throwable with SparkThrowable]
+          (depth, error.getClass, error.getErrorClass, error.getSqlState)
+        }
+        assert(overflow(jvmFailure)._3 == "ARITHMETIC_OVERFLOW", s"JVM writer: $jvmFailure")
+        assert(
+          overflow(nativeFailure) == overflow(jvmFailure),
+          s"native writer: $nativeFailure\nJVM writer: $jvmFailure")
+        Seq(nativeTable, jvmTable).foreach { table =>
+          assert(spark.table(s"$catalog.$ns.$table").count() == 0, s"$table committed rows")
+        }
+      }
+    }
+  }
+
   test("native acceleration: target-file-size rolls on iceberg-java's 1000-row cadence") {
     assumeNativeAcceleration()
-    withIcebergCatalog { warehouseDir =>
+    withIcebergCatalog { _ =>
       createTable(
-        warehouseDir,
         "native_roll",
         partitionSpec = "",
         properties = Some("'write.target-file-size-bytes'='1'"))
@@ -2283,8 +2742,8 @@ class CometIcebergWriteActionSuite
 
   test("native acceleration: empty append commits exactly once with zero data files") {
     assumeNativeAcceleration()
-    withIcebergCatalog { warehouseDir =>
-      createTable(warehouseDir, "native_empty", partitionSpec = "")
+    withIcebergCatalog { _ =>
+      createTable("native_empty", partitionSpec = "")
       val snapshot = withNativeEnabled {
         captureWrite("native_empty") {
           spark.sql(
@@ -2311,7 +2770,7 @@ class CometIcebergWriteActionSuite
 
   test("native acceleration: empty append to a partitioned table commits with zero data files") {
     assumeNativeAcceleration()
-    withIcebergCatalog { warehouseDir =>
+    withIcebergCatalog { _ =>
       // The unpartitioned test above ends in UnpartitionedWriter::close() with nothing written;
       // these end in ClusteredWriter::close() (the partitioned default) and FanoutWriter::close()
       // respectively, with the partition splitter never invoked at all.
@@ -2319,7 +2778,7 @@ class CometIcebergWriteActionSuite
         ("native_empty_clustered", None),
         ("native_empty_fanout", Some("'write.spark.fanout.enabled'='true'"))).foreach {
         case (table, props) =>
-          createTable(warehouseDir, table, partitionSpec = "PARTITIONED BY (region)", props)
+          createTable(table, partitionSpec = "PARTITIONED BY (region)", props)
           val snapshot = withNativeEnabled {
             captureWrite(table) {
               spark.sql(s"INSERT INTO $catalog.$ns.$table SELECT id, region, amount " +
@@ -2489,8 +2948,8 @@ class CometIcebergWriteActionSuite
   test("native acceleration: partition paths are URL-escaped like iceberg-java") {
     assumeNativeAcceleration()
     withIcebergCatalog { warehouseDir =>
-      createTable(warehouseDir, "escaped_native", partitionSpec = "PARTITIONED BY (region)")
-      createTable(warehouseDir, "escaped_jvm", partitionSpec = "PARTITIONED BY (region)")
+      createTable("escaped_native", partitionSpec = "PARTITIONED BY (region)")
+      createTable("escaped_jvm", partitionSpec = "PARTITIONED BY (region)")
       val regions = Seq("a/b", "c#d", "e?f", "g h", "i=j", "k%l", "m+n", "*-._", "日本", "")
       val values = regions.zipWithIndex
         .map { case (region, i) => s"($i, '$region', $i.5)" }
@@ -2532,7 +2991,7 @@ class CometIcebergWriteActionSuite
   // native path must too.
   test("native acceleration: a failed task deletes the data files it already finalized") {
     assumeNativeAcceleration()
-    withIcebergCatalog { warehouseDir =>
+    withIcebergCatalog { _ =>
       val session = spark
       import session.implicits._
       (1 to 10000)
@@ -2551,11 +3010,7 @@ class CometIcebergWriteActionSuite
       withNativeEnabled(withSQLConf(CometConf.COMET_BATCH_SIZE.key -> "1000") {
         // Control: the same source and settings without the failure roll into several files, so
         // the failing run below really does have finalized files to clean up.
-        createTable(
-          warehouseDir,
-          "cleanup_control",
-          partitionSpec = "",
-          properties = rollingProps)
+        createTable("cleanup_control", partitionSpec = "", properties = rollingProps)
         val controlPlans = capturePlans(spark) {
           spark.sql(
             s"INSERT INTO $catalog.$ns.cleanup_control SELECT id, region, amount FROM cleanup_src")
@@ -2567,7 +3022,7 @@ class CometIcebergWriteActionSuite
         val controlFiles = parquetFiles(dataDir("cleanup_control"))
         assert(controlFiles.size >= 3, s"expected the writer to roll files, got $controlFiles")
 
-        createTable(warehouseDir, "cleanup_target", partitionSpec = "", properties = rollingProps)
+        createTable("cleanup_target", partitionSpec = "", properties = rollingProps)
         coalesceInsert("cleanup_target", Seq((0, "seed", 0.0)))
         val committed = parquetFiles(dataDir("cleanup_target"))
         assert(committed.size == 1)
@@ -2596,10 +3051,136 @@ class CometIcebergWriteActionSuite
     }
   }
 
+  // The native writer reserves what its partitions hold from the task's memory pool. A fanout
+  // write keeps every partition it has seen open, so over enough partitions it outgrows the pool.
+  // It then writes out and closes the partitions holding the most, whose next rows open new
+  // files, and finishes with more, smaller files where it would otherwise fail its task.
+  test("native acceleration: a fanout write that outgrows the memory pool closes partitions") {
+    assumeNativeAcceleration()
+    withIcebergCatalog { _ =>
+      val session = spark
+      import session.implicits._
+      // One task writes 64 partitions of 1000 random 500-byte strings, the partitions taking
+      // turns, so every partition keeps getting rows. That is about 32 MB, and the pool of about
+      // 4 MiB (0.002 of the suite's 2 GiB off-heap size) holds an eighth of it.
+      val rows = 64000
+      (0 until rows)
+        .map(i => (i, s"r${i % 64}", new scala.util.Random(i).alphanumeric.take(500).mkString))
+        .toDF("id", "region", "payload")
+        .coalesce(1)
+        .createOrReplaceTempView("fanout_oom_src")
+      Seq("fanout_oom", "fanout_oom_control").foreach { table =>
+        // No distribution, so one task writes every partition.
+        spark.sql(s"""
+          CREATE TABLE $catalog.$ns.$table (id INT, region STRING, payload STRING)
+          USING iceberg
+          PARTITIONED BY (region)
+          TBLPROPERTIES (
+            'write.spark.fanout.enabled'='true',
+            'write.distribution-mode'='none')
+        """)
+      }
+
+      withNativeEnabled {
+        // withSQLConf returns Unit before Spark 4.0, so the assertions run inside it.
+        withSQLConf(CometConf.COMET_OFFHEAP_MEMORY_POOL_FRACTION.key -> "0.002") {
+          val snapshot = captureWrite("fanout_oom") {
+            spark.sql(s"INSERT INTO $catalog.$ns.fanout_oom SELECT * FROM fanout_oom_src")
+          }
+          assert(
+            snapshot.snapshotDelta == 1L,
+            s"expected 1 commit, got ${snapshot.snapshotDelta}")
+          val writers = snapshot.plans.flatMap { plan =>
+            collectWithSubqueries(plan) { case w: CometIcebergWriteExec => w }
+          }
+          assert(
+            writers.nonEmpty,
+            s"the write did not run natively:\n${snapshot.plans.mkString("\n--\n")}")
+          assert(
+            writers.map(_.metrics("files_closed_early").value).sum > 0,
+            "the write closed no partition early")
+        }
+
+        // With the whole pool, every partition keeps its one file open.
+        spark.sql(s"INSERT INTO $catalog.$ns.fanout_oom_control SELECT * FROM fanout_oom_src")
+        assert(parquetFiles(dataDir("fanout_oom_control")).size == 64)
+        assert(
+          parquetFiles(dataDir("fanout_oom")).size > 64,
+          s"${parquetFiles(dataDir("fanout_oom")).size} files for 64 partitions")
+        // Compared with the source rather than the control, which is native too and could lose
+        // the same rows.
+        val written = spark.sql(s"SELECT id, region, payload FROM $catalog.$ns.fanout_oom")
+        val source = spark.table("fanout_oom_src")
+        assert(written.count() == rows)
+        assert(written.exceptAll(source).isEmpty && source.exceptAll(written).isEmpty)
+      }
+    }
+  }
+
+  // A write that keeps one file open has no partition to close early, so when the file outgrows
+  // the pool the task fails, which Spark can retry, instead of growing in memory that no budget
+  // accounts for until the executor is killed.
+  test("native acceleration: a write whose open file outgrows the memory pool fails its task") {
+    assumeNativeAcceleration()
+    withIcebergCatalog { _ =>
+      val session = spark
+      import session.implicits._
+      // One task writes about 32 MB of random 500-byte strings into one file, whose row group
+      // outgrows the pool of about 4 MiB (0.002 of the suite's 2 GiB off-heap size).
+      val rows = 64000
+      (0 until rows)
+        .map(i => (i, "r", new scala.util.Random(i).alphanumeric.take(500).mkString))
+        .toDF("id", "region", "payload")
+        .coalesce(1)
+        .createOrReplaceTempView("file_oom_src")
+      Seq("file_oom", "file_oom_control").foreach { table =>
+        spark.sql(s"""
+          CREATE TABLE $catalog.$ns.$table (id INT, region STRING, payload STRING)
+          USING iceberg
+        """)
+      }
+
+      withNativeEnabled {
+        withSQLConf(CometConf.COMET_OFFHEAP_MEMORY_POOL_FRACTION.key -> "0.002") {
+          val (failedPlans, error) = captureFailedPlans(spark) {
+            spark.sql(s"INSERT INTO $catalog.$ns.file_oom SELECT * FROM file_oom_src")
+          }
+          assert(
+            error.toSeq
+              .flatMap(exceptionChain)
+              .exists(t =>
+                Option(t.getMessage)
+                  .exists(_.contains("Additional allocation failed for IcebergWriteExec"))),
+            s"expected the native writer's out-of-memory error, got $error")
+          assert(
+            failedPlans.exists(p =>
+              collectWithSubqueries(p) { case w: CometIcebergWriteExec => w }.nonEmpty),
+            s"the failed write did not run natively:\n${failedPlans.mkString("\n--\n")}")
+        }
+        assert(countSnapshots("file_oom") == 0L, "the failed write must not commit")
+        assert(
+          parquetFiles(dataDir("file_oom")).isEmpty,
+          s"the failed task left data files behind: ${parquetFiles(dataDir("file_oom"))}")
+
+        // The executor outlived the failure, and with the whole pool the same write succeeds.
+        val controlPlans = capturePlans(spark) {
+          spark.sql(s"INSERT INTO $catalog.$ns.file_oom_control SELECT * FROM file_oom_src")
+        }
+        assert(
+          controlPlans.exists(p =>
+            collectWithSubqueries(p) { case w: CometIcebergWriteExec => w }.nonEmpty),
+          "the control write did not run natively")
+        assert(
+          spark.sql(s"SELECT count(*) FROM $catalog.$ns.file_oom_control").head().getLong(0)
+            == rows)
+      }
+    }
+  }
+
   test("native acceleration: a pre-native handoff failure cleans up task files") {
     assumeNativeAcceleration()
-    withIcebergCatalog { warehouseDir =>
-      createTable(warehouseDir, "pre_handoff_target", partitionSpec = "")
+    withIcebergCatalog { _ =>
+      createTable("pre_handoff_target", partitionSpec = "")
       coalesceInsert("pre_handoff_target", Seq((0, "seed", 0.0)))
       val before = countSnapshots("pre_handoff_target")
       val root = dataDir("pre_handoff_target").toPath.toAbsolutePath
@@ -2671,8 +3252,8 @@ class CometIcebergWriteActionSuite
 
   test("native acceleration: a post-native handoff failure cleans up task files") {
     assumeNativeAcceleration()
-    withIcebergCatalog { warehouseDir =>
-      createTable(warehouseDir, "handoff_target", partitionSpec = "")
+    withIcebergCatalog { _ =>
+      createTable("handoff_target", partitionSpec = "")
       coalesceInsert("handoff_target", Seq((0, "seed", 0.0)))
       val before = countSnapshots("handoff_target")
       val root = dataDir("handoff_target").toPath.toAbsolutePath
@@ -2751,7 +3332,7 @@ class CometIcebergWriteActionSuite
 
   test("native acceleration: a mid-write failure retries without orphan files") {
     assumeNativeAcceleration()
-    withIcebergCatalog { warehouseDir =>
+    withIcebergCatalog { _ =>
       val session = spark
       import session.implicits._
       (1 to 10000)
@@ -2763,7 +3344,6 @@ class CometIcebergWriteActionSuite
       // choice and writes nothing before then. A 1000-row page lets it finalize files well before
       // the failure at row 7000, which the default 20000-row page would not.
       createTable(
-        warehouseDir,
         "retry_target",
         partitionSpec = "",
         properties =
@@ -2829,9 +3409,9 @@ class CometIcebergWriteActionSuite
   Seq(true, false).foreach { native =>
     test(s"a failed write job deletes the data files of tasks that completed (native=$native)") {
       assume(icebergAvailable, "Iceberg not available in classpath")
-      withIcebergCatalog { warehouseDir =>
+      withIcebergCatalog { _ =>
         val table = s"job_abort_$native"
-        createTable(warehouseDir, table, partitionSpec = "")
+        createTable(table, partitionSpec = "")
         coalesceInsert(table, Seq((0, "seed", 0.0)))
         val committed = parquetFiles(dataDir(table))
         val before = countSnapshots(table)
@@ -2861,6 +3441,8 @@ class CometIcebergWriteActionSuite
           override def onTaskEnd(taskEnd: SparkListenerTaskEnd): Unit =
             if (taskEnd.reason == Success) JobAbortGate.taskFinished()
         }
+        // Drain the setup writes' task-end events first, or they can count toward the gate.
+        CometListenerBusUtils.waitUntilEmpty(spark.sparkContext)
         spark.sparkContext.addSparkListener(listener)
         try {
           val run = () =>
@@ -2896,8 +3478,8 @@ class CometIcebergWriteActionSuite
 
   test("deleteFilesQuietly removes data files through the table FileIO and never throws") {
     assumeNativeAcceleration()
-    withIcebergCatalog { warehouseDir =>
-      createTable(warehouseDir, "delete_quietly", partitionSpec = "PARTITIONED BY (region)")
+    withIcebergCatalog { _ =>
+      createTable("delete_quietly", partitionSpec = "PARTITIONED BY (region)")
       spark.sql(s"INSERT INTO $catalog.$ns.delete_quietly VALUES (1, 'us', 1.0), (2, 'eu', 2.0)")
       val locations = spark
         .sql(s"SELECT file_path FROM $catalog.$ns.delete_quietly.files")
@@ -2925,8 +3507,8 @@ class CometIcebergWriteActionSuite
   // -- the step the locations would otherwise have to be recovered from -- is still covered.
   test("the write cleanup listener deletes the locations the native writer reported") {
     assumeNativeAcceleration()
-    withIcebergCatalog { warehouseDir =>
-      createTable(warehouseDir, "listener_cleanup", partitionSpec = "PARTITIONED BY (region)")
+    withIcebergCatalog { _ =>
+      createTable("listener_cleanup", partitionSpec = "PARTITIONED BY (region)")
       spark.sql(
         s"INSERT INTO $catalog.$ns.listener_cleanup VALUES (1, 'us', 1.0), (2, 'eu', 2.0)")
       val locations = spark
@@ -3092,9 +3674,9 @@ class CometIcebergWriteActionSuite
 
   test("Comet-written rows round-trip through Spark's reader unchanged") {
     assume(icebergAvailable, "Iceberg not available in classpath")
-    withIcebergCatalog { warehouseDir =>
-      createTable(warehouseDir, "parity_comet", partitionSpec = "PARTITIONED BY (region)")
-      createTable(warehouseDir, "parity_spark", partitionSpec = "PARTITIONED BY (region)")
+    withIcebergCatalog { _ =>
+      createTable("parity_comet", partitionSpec = "PARTITIONED BY (region)")
+      createTable("parity_spark", partitionSpec = "PARTITIONED BY (region)")
 
       spark.sql(
         "INSERT INTO cat.db.parity_comet VALUES " +
@@ -3118,8 +3700,8 @@ class CometIcebergWriteActionSuite
 
   test("write custom metrics are registered on the committer only") {
     assume(icebergAvailable, "Iceberg not available in classpath")
-    withIcebergCatalog { warehouseDir =>
-      createTable(warehouseDir, "metrics_once", partitionSpec = "")
+    withIcebergCatalog { _ =>
+      createTable("metrics_once", partitionSpec = "")
       val snapshot = captureWrite("metrics_once") {
         spark.sql(s"INSERT INTO $catalog.$ns.metrics_once VALUES (1, 'us-east', 10.5)")
       }
@@ -3166,8 +3748,8 @@ class CometIcebergWriteActionSuite
 
   test("AppendData writes NULLs in every column") {
     assume(icebergAvailable, "Iceberg not available in classpath")
-    withIcebergCatalog { warehouseDir =>
-      createTable(warehouseDir, "nulls_all", partitionSpec = "")
+    withIcebergCatalog { _ =>
+      createTable("nulls_all", partitionSpec = "")
       val snapshot = captureWrite("nulls_all") {
         spark.sql(s"""INSERT INTO $catalog.$ns.nulls_all VALUES
           (CAST(NULL AS INT), CAST(NULL AS STRING), CAST(NULL AS DOUBLE)),
@@ -3208,9 +3790,8 @@ class CometIcebergWriteActionSuite
 
   test("CoW MERGE with only a matched DELETE leg routes through two-op") {
     assume(icebergAvailable, "Iceberg not available in classpath")
-    withIcebergCatalog { warehouseDir =>
+    withIcebergCatalog { _ =>
       createTable(
-        warehouseDir,
         "merge_del",
         partitionSpec = "",
         properties = Some("'write.merge.mode'='copy-on-write'"))
@@ -3233,9 +3814,8 @@ class CometIcebergWriteActionSuite
     assume(icebergAvailable, "Iceberg not available in classpath")
     // Iceberg 1.5.x (the Spark 3.4 pairing) rejects the clause in its extensions parser.
     assume(isSpark35Plus, "NOT MATCHED BY SOURCE needs Iceberg 1.8+")
-    withIcebergCatalog { warehouseDir =>
+    withIcebergCatalog { _ =>
       createTable(
-        warehouseDir,
         "merge_nmbs",
         partitionSpec = "",
         properties = Some("'write.merge.mode'='copy-on-write'"))
@@ -3364,7 +3944,6 @@ class CometIcebergWriteActionSuite
   }
 
   private def createTable(
-      warehouseDir: File,
       tableName: String,
       partitionSpec: String,
       properties: Option[String] = None): Unit = {
@@ -3415,6 +3994,28 @@ class CometIcebergWriteActionSuite
     val depth = chain.indexWhere(_.isInstanceOf[IllegalStateException])
     assert(depth >= 0, s"no IllegalStateException in the cause chain of $t")
     (depth, chain(depth).getMessage)
+  }
+
+  /**
+   * Runs `write` against `nativeTable` with the native writer and against `jvmTable` with the JVM
+   * writer, expects both to fail, and returns the two failures. The native write has to go
+   * through [[CometIcebergWriteExec]], so a fallback to the JVM writer cannot pass as parity.
+   */
+  private def failedWrites(nativeTable: String, jvmTable: String)(
+      write: String => Unit): (Throwable, Throwable) = {
+    var nativeFailure: Throwable = null
+    val nativePlans = withNativeEnabled {
+      capturePlans(spark, includeFailures = true) {
+        nativeFailure = intercept[Exception](write(nativeTable))
+      }
+    }
+    val jvmFailure = intercept[Exception](write(jvmTable))
+    assert(
+      nativePlans.exists(p =>
+        collectWithSubqueries(p) { case e: CometIcebergWriteExec => e }.nonEmpty),
+      "expected the failed write to have gone through CometIcebergWriteExec. Plans:\n" +
+        nativePlans.mkString("\n--\n"))
+    (nativeFailure, jvmFailure)
   }
 
   private def captureWrite(tableName: String)(action: => Unit): WriteSnapshot = {
@@ -3499,6 +4100,19 @@ class CometIcebergWriteActionSuite
       }
       .toSet
   }
+
+  /**
+   * The table's NaN counts summed over its data files, keyed by field id. Two tables created from
+   * the same DDL get the same ids, so their maps compare directly.
+   */
+  private def nanValueCounts(tableName: String): Map[Int, Long] =
+    spark
+      .sql(s"SELECT nan_value_counts FROM $catalog.$ns.$tableName.data_files")
+      .collect()
+      .toSeq
+      .flatMap(_.getMap[Int, Long](0).toSeq)
+      .groupBy(_._1)
+      .map { case (id, counts) => id -> counts.map(_._2).sum }
 
   private def assertRows(tableName: String, expectedIds: Seq[Int]): Unit = {
     val ids = spark
@@ -3585,13 +4199,9 @@ class CometIcebergWriteActionSuite
   // luck 1 time in 8!, where with two it would pass half the time.
   test("native acceleration: a fanout write lists its data files in a stable order") {
     assumeNativeAcceleration()
-    withIcebergCatalog { warehouseDir =>
+    withIcebergCatalog { _ =>
       val fanout = Some("'write.spark.fanout.enabled'='true'")
-      createTable(
-        warehouseDir,
-        "fanout_order",
-        partitionSpec = "PARTITIONED BY (region)",
-        properties = fanout)
+      createTable("fanout_order", partitionSpec = "PARTITIONED BY (region)", properties = fanout)
       val values = (0 until 8).map(i => s"($i, 'r$i', $i.5)").mkString(", ")
 
       assertNativeWriteEngages("fanout_order", 0 until 8) {
@@ -3614,13 +4224,21 @@ class CometIcebergWriteActionSuite
 
   test("write report records which writer ran each Iceberg write") {
     assumeNativeAcceleration()
-    withIcebergCatalog { warehouseDir =>
-      createTable(warehouseDir, "report_parquet", partitionSpec = "PARTITIONED BY (region)")
+    withIcebergCatalog { _ =>
+      createTable("report_parquet", partitionSpec = "PARTITIONED BY (region)")
       createTable(
-        warehouseDir,
         "report_orc",
         partitionSpec = "",
         properties = Some("'write.format.default'='orc'"))
+      if (isSpark35Plus) {
+        createTable(
+          "report_delta",
+          partitionSpec = "PARTITIONED BY (region)",
+          properties = Some("'format-version'='2', 'write.delete.mode'='merge-on-read'"))
+        withSQLConf(CometConf.COMET_ICEBERG_WRITE_SPLIT_OPERATOR_ENABLED.key -> "false") {
+          coalesceInsert("report_delta", Seq((1, "us-east", 1.5), (2, "us-east", 2.5)))
+        }
+      }
 
       val writes = reportedWrites {
         withNativeEnabled {
@@ -3630,14 +4248,19 @@ class CometIcebergWriteActionSuite
             .sql(s"INSERT INTO $catalog.$ns.report_parquet VALUES (1, 'us-east', 1.5)")
             .collect()
           spark.sql(s"INSERT INTO $catalog.$ns.report_orc VALUES (2, 'eu', 2.5)")
+          if (isSpark35Plus) {
+            spark.sql(s"DELETE FROM $catalog.$ns.report_delta WHERE id = 1")
+          }
         }
         withSQLConf(CometConf.COMET_ICEBERG_WRITE_SPLIT_OPERATOR_ENABLED.key -> "false") {
           spark.sql(s"INSERT INTO $catalog.$ns.report_parquet VALUES (3, 'eu', 3.5)")
         }
       }
-      assert(writes.map(_.writer) == Seq("native", "jvm", "spark"), writes.mkString("\n"))
+      val expectedWriters =
+        Seq("native", "jvm") ++ (if (isSpark35Plus) Seq("jvm") else Nil) ++ Seq("spark")
+      assert(writes.map(_.writer) == expectedWriters, writes.mkString("\n"))
       assert(writes(1).reasons.exists(_.contains("only parquet")))
-      assert(writes(2).node == "AppendData")
+      assert(writes.last.node == "AppendData")
       assert(writes.forall(!_.failed))
     }
   }
@@ -3670,8 +4293,8 @@ class CometIcebergWriteActionSuite
 
   test("write report records a streaming micro-batch write") {
     assumeNativeAcceleration()
-    withIcebergCatalog { warehouseDir =>
-      createTable(warehouseDir, "report_stream", partitionSpec = "")
+    withIcebergCatalog { _ =>
+      createTable("report_stream", partitionSpec = "")
       withTempIcebergDir { dir =>
         val source = new File(dir, "source").getAbsolutePath
         val session = spark
@@ -3709,6 +4332,8 @@ class CometIcebergWriteActionSuite
       val listener = new IcebergWriteReportListener(
         new SparkConf()
           .set(CometConf.COMET_ICEBERG_WRITE_REPORT_DIR.key, reportDir.getAbsolutePath))
+      // Drain the setup writes' events first, or they can reach the listener and be reported.
+      CometListenerBusUtils.waitUntilEmpty(spark.sparkContext)
       spark.listenerManager.register(listener)
       try {
         action
