@@ -566,15 +566,17 @@ way to add expression and operator test coverage without writing Comet Scala Tes
 </pre></div>
 </div>
 <p>This uses ScalaTest’s substring matching, so the argument must match part of the test name.
-Test names follow the pattern <code class="docutils literal notranslate"><span class="pre">sql-file:</span> <span class="pre">expressions/&lt;category&gt;/&lt;file&gt;.sql</span> <span class="pre">[&lt;config&gt;]</span></code>.</p>
+Test names use paths relative to <code class="docutils literal notranslate"><span class="pre">sql-tests/</span></code>, for example
+<code class="docutils literal notranslate"><span class="pre">sql-file:</span> <span class="pre">expressions/&lt;category&gt;/&lt;file&gt;.sql</span> <span class="pre">[&lt;config&gt;]</span></code> or
+<code class="docutils literal notranslate"><span class="pre">sql-file:</span> <span class="pre">framework/&lt;file&gt;.sql</span> <span class="pre">[&lt;config&gt;]</span></code>.</p>
 </section>
 <section id="test-file-location">
 <h2>Test file location<a class="headerlink" href="#test-file-location" title="Link to this heading">#</a></h2>
 <p>SQL test files live under:</p>
-<div class="highlight-default notranslate"><div class="highlight"><pre><span></span><span class="n">spark</span><span class="o">/</span><span class="n">src</span><span class="o">/</span><span class="n">test</span><span class="o">/</span><span class="n">resources</span><span class="o">/</span><span class="n">sql</span><span class="o">-</span><span class="n">tests</span><span class="o">/</span><span class="n">expressions</span><span class="o">/</span>
+<div class="highlight-default notranslate"><div class="highlight"><pre><span></span><span class="n">spark</span><span class="o">/</span><span class="n">src</span><span class="o">/</span><span class="n">test</span><span class="o">/</span><span class="n">resources</span><span class="o">/</span><span class="n">sql</span><span class="o">-</span><span class="n">tests</span><span class="o">/</span>
 </pre></div>
 </div>
-<p>Files are organized into category subdirectories:</p>
+<p>Expression fixtures are organized into category subdirectories:</p>
 <div class="highlight-default notranslate"><div class="highlight"><pre><span></span><span class="n">expressions</span><span class="o">/</span>
   <span class="n">aggregate</span><span class="o">/</span>     <span class="o">--</span> <span class="n">avg</span><span class="p">,</span> <span class="nb">sum</span><span class="p">,</span> <span class="n">count</span><span class="p">,</span> <span class="n">min_max</span><span class="p">,</span> <span class="o">...</span>
   <span class="n">array</span><span class="o">/</span>         <span class="o">--</span> <span class="n">array_contains</span><span class="p">,</span> <span class="n">array_append</span><span class="p">,</span> <span class="n">get_array_item</span><span class="p">,</span> <span class="o">...</span>
@@ -591,8 +593,10 @@ Test names follow the pattern <code class="docutils literal notranslate"><span c
   <span class="n">struct</span><span class="o">/</span>        <span class="o">--</span> <span class="n">create_named_struct</span><span class="p">,</span> <span class="n">get_struct_field</span><span class="p">,</span> <span class="o">...</span>
 </pre></div>
 </div>
-<p>The test suite recursively discovers all <code class="docutils literal notranslate"><span class="pre">.sql</span></code> files in these directories. Each file becomes
-one or more ScalaTest test cases.</p>
+<p>SQL test framework regression fixtures live in <code class="docutils literal notranslate"><span class="pre">framework/</span></code>, such as
+<code class="docutils literal notranslate"><span class="pre">framework/expect_error_class.sql</span></code>.</p>
+<p>The test suite recursively discovers all <code class="docutils literal notranslate"><span class="pre">.sql</span></code> files under <code class="docutils literal notranslate"><span class="pre">sql-tests/</span></code>. Each file becomes one
+or more ScalaTest test cases.</p>
 </section>
 <section id="file-format">
 <h2>File format<a class="headerlink" href="#file-format" title="Link to this heading">#</a></h2>
@@ -715,9 +719,10 @@ between matrix combinations. Keys changed by <code class="docutils literal notra
 <code class="docutils literal notranslate"><span class="pre">RESET</span></code> without a key also resets the harness’s ANSI and optimizer settings. A mid-file
 <code class="docutils literal notranslate"><span class="pre">SET</span> <span class="pre">spark.sql.optimizer.excludedRules=...</span></code> replaces the whole exclusion list, including
 the default ConstantFolding exclusion.</p>
-<p>Enabling the codegen dispatcher through <code class="docutils literal notranslate"><span class="pre">SET</span></code> still requires a non-error sentinel when
-the file contains <code class="docutils literal notranslate"><span class="pre">expect_error</span></code>, just as enabling it through <code class="docutils literal notranslate"><span class="pre">Config</span></code> does. Run that
-sentinel under the same settings as the error query.</p>
+<p>Enabling the codegen dispatcher through <code class="docutils literal notranslate"><span class="pre">SET</span></code> still requires an operator-checking sentinel
+when the file contains <code class="docutils literal notranslate"><span class="pre">expect_error</span></code>, just as enabling it through <code class="docutils literal notranslate"><span class="pre">Config</span></code> does. A plain
+<code class="docutils literal notranslate"><span class="pre">query</span></code>, <code class="docutils literal notranslate"><span class="pre">expect_native</span></code>, <code class="docutils literal notranslate"><span class="pre">expect_dispatch</span></code> or <code class="docutils literal notranslate"><span class="pre">expect_error_class</span></code> can serve as the sentinel.
+Run it under the same settings as the error query.</p>
 <p>This isolation covers SQL configs, not <code class="docutils literal notranslate"><span class="pre">USE</span></code>, temporary views or functions, or SQL
 session variables. Manage those separately.</p>
 </section>
@@ -806,8 +811,11 @@ link to the tracking GitHub issue.</p>
 </section>
 <section id="query-expect-error-pattern">
 <h4><code class="docutils literal notranslate"><span class="pre">query</span> <span class="pre">expect_error(&lt;pattern&gt;)</span></code><a class="headerlink" href="#query-expect-error-pattern" title="Link to this heading">#</a></h4>
-<p>Asserts that both Spark and Comet throw an exception containing the given pattern. Use this
-for ANSI mode tests where invalid operations should throw errors.</p>
+<p>Asserts that both Spark and Comet throw an exception containing the given pattern. This mode
+permits fallback to Spark and does not compare structured error classes or SQLSTATE. Use it
+for unstructured exceptions or errors on an intentional fallback path. For structured errors
+from Comet execution, prefer <code class="docutils literal notranslate"><span class="pre">expect_error_class</span></code> below.</p>
+<p>The literal-only examples below check error messages; they do not establish Comet coverage.</p>
 <div class="highlight-sql notranslate"><div class="highlight"><pre><span></span><span class="c1">-- Config: spark.sql.ansi.enabled=true</span>
 
 <span class="c1">-- integer overflow should throw in ANSI mode</span>
@@ -824,14 +832,45 @@ for ANSI mode tests where invalid operations should throw errors.</p>
 </pre></div>
 </div>
 </section>
+<section id="query-expect-error-class-error-class">
+<h4><code class="docutils literal notranslate"><span class="pre">query</span> <span class="pre">expect_error_class(&lt;error_class&gt;)</span></code><a class="headerlink" href="#query-expect-error-class-error-class" title="Link to this heading">#</a></h4>
+<p>Checks the planned Comet operators and requires Spark and Comet to throw the same exception
+class, exact error class and SQLSTATE. Neither exception’s cause chain may contain a
+<code class="docutils literal notranslate"><span class="pre">CometNativeException</span></code>. Spark 4 also calls the error class a “condition”.</p>
+<p>The argument is a single uppercase error class, including an optional subclass separated by
+a dot. It is compared exactly, so <code class="docutils literal notranslate"><span class="pre">ARITHMETIC_OVERFLOW</span></code> does not match
+<code class="docutils literal notranslate"><span class="pre">BINARY_ARITHMETIC_OVERFLOW</span></code>.</p>
+<div class="highlight-sql notranslate"><div class="highlight"><pre><span></span><span class="c1">-- Config: spark.sql.ansi.enabled=true</span>
+
+<span class="k">statement</span>
+<span class="k">CREATE</span><span class="w"> </span><span class="k">TABLE</span><span class="w"> </span><span class="n">division_input</span><span class="p">(</span><span class="n">n</span><span class="w"> </span><span class="nb">int</span><span class="p">,</span><span class="w"> </span><span class="n">d</span><span class="w"> </span><span class="nb">int</span><span class="p">)</span><span class="w"> </span><span class="k">USING</span><span class="w"> </span><span class="n">parquet</span>
+
+<span class="k">statement</span>
+<span class="k">INSERT</span><span class="w"> </span><span class="k">INTO</span><span class="w"> </span><span class="n">division_input</span><span class="w"> </span><span class="k">SELECT</span><span class="w"> </span><span class="mi">1</span><span class="p">,</span><span class="w"> </span><span class="mi">0</span>
+
+<span class="n">query</span><span class="w"> </span><span class="n">expect_error_class</span><span class="p">(</span><span class="n">DIVIDE_BY_ZERO</span><span class="p">)</span>
+<span class="k">SELECT</span><span class="w"> </span><span class="n">n</span><span class="w"> </span><span class="o">/</span><span class="w"> </span><span class="n">d</span><span class="w"> </span><span class="k">FROM</span><span class="w"> </span><span class="n">division_input</span>
+</pre></div>
+</div>
+<p>Read the expression inputs from Parquet columns so the error occurs during execution.
+Errors raised while analyzing or planning the query fail the test. The operator check runs
+before execution, using the initial plan when AQE is enabled, like the other coverage modes.
+Query-context assertions remain in Scala; this mode uses <code class="docutils literal notranslate"><span class="pre">checkSparkError</span></code>’s exception-class,
+error-class and SQLSTATE checks.</p>
+<p>Fixtures that enable the codegen dispatcher and use legacy <code class="docutils literal notranslate"><span class="pre">expect_error</span></code> need a sentinel
+query that checks Comet operators. A plain <code class="docutils literal notranslate"><span class="pre">query</span></code>, <code class="docutils literal notranslate"><span class="pre">expect_native</span></code>, <code class="docutils literal notranslate"><span class="pre">expect_dispatch</span></code> or
+<code class="docutils literal notranslate"><span class="pre">expect_error_class</span></code> satisfies that requirement. The strict error-class mode checks its own
+operators and needs no additional successful query.</p>
+</section>
 </section>
 </section>
 <section id="adding-a-new-test">
 <h2>Adding a new test<a class="headerlink" href="#adding-a-new-test" title="Link to this heading">#</a></h2>
 <ol class="arabic">
-<li><p>Create a <code class="docutils literal notranslate"><span class="pre">.sql</span></code> file under the appropriate subdirectory in
+<li><p>Create an expression fixture under the appropriate subdirectory in
 <code class="docutils literal notranslate"><span class="pre">spark/src/test/resources/sql-tests/expressions/</span></code>. Create a new subdirectory if no
-existing category fits.</p></li>
+existing category fits. Put SQL test framework regression fixtures in
+<code class="docutils literal notranslate"><span class="pre">spark/src/test/resources/sql-tests/framework/</span></code>.</p></li>
 <li><p>Add the Apache license header as a SQL comment.</p></li>
 <li><p>Add a <code class="docutils literal notranslate"><span class="pre">ConfigMatrix</span></code> directive only if the test needs to run under multiple configurations
 (e.g., testing behavior that varies with a specific Spark config). Do not add <code class="docutils literal notranslate"><span class="pre">ConfigMatrix</span></code>
@@ -1062,6 +1101,7 @@ file and config combination, and executes them using <code class="docutils liter
 <li class="toc-h4 nav-item toc-entry"><a class="reference internal nav-link" href="#query-expect-dispatch-names-query-expect-native-names"><code class="docutils literal notranslate"><span class="pre">query</span> <span class="pre">expect_dispatch(&lt;names&gt;)</span></code> / <code class="docutils literal notranslate"><span class="pre">query</span> <span class="pre">expect_native(&lt;names&gt;)</span></code></a></li>
 <li class="toc-h4 nav-item toc-entry"><a class="reference internal nav-link" href="#query-ignore-reason"><code class="docutils literal notranslate"><span class="pre">query</span> <span class="pre">ignore(&lt;reason&gt;)</span></code></a></li>
 <li class="toc-h4 nav-item toc-entry"><a class="reference internal nav-link" href="#query-expect-error-pattern"><code class="docutils literal notranslate"><span class="pre">query</span> <span class="pre">expect_error(&lt;pattern&gt;)</span></code></a></li>
+<li class="toc-h4 nav-item toc-entry"><a class="reference internal nav-link" href="#query-expect-error-class-error-class"><code class="docutils literal notranslate"><span class="pre">query</span> <span class="pre">expect_error_class(&lt;error_class&gt;)</span></code></a></li>
 </ul>
 </li>
 </ul>
