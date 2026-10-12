@@ -117,7 +117,10 @@ class RevertNativeForTransitionHeavyStagesSuite extends CometTestBase {
       command,
       child,
       outputPath = "/tmp/unused-native-write",
-      mode = SaveMode.Overwrite)
+      mode = SaveMode.Overwrite,
+      committer = null,
+      serializableHadoopConf = null,
+      outputWriterFactory = null)
   }
 
   private def assertRestoredParquetWrite(reverted: SparkPlan): WriteFilesExec = {

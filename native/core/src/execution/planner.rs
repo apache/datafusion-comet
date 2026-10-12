@@ -84,8 +84,8 @@ use datafusion::{
     prelude::SessionContext,
 };
 use datafusion_comet_operators::{
-    range_exec, CometFilterExec, ExpandExec, ExplodeExec, PartitionedRankLimitExec, SampleExec,
-    WindowFnKind,
+    range_exec, CometFilterExec, CometProjectionExec, ExpandExec, ExplodeExec,
+    PartitionedRankLimitExec, SampleExec, WindowFnKind,
 };
 use datafusion_comet_spark_expr::{
     create_comet_physical_fun, create_comet_physical_fun_with_eval_mode, BinaryOutputStyle,
@@ -350,6 +350,9 @@ pub struct PhysicalPlanner {
     /// How comparisons treat floating-point operands. `Raw` only while planning a scan's data
     /// filters; see [`Self::create_data_filter`].
     float_operands: FloatOperands,
+    /// Whether a boundary that would cast a timestamp's timezone label to the declared one fails
+    /// instead. Test-only; see `spark.comet.testing.strictTimestampLabels.enabled`.
+    strict_timestamp_labels: bool,
 }
 
 impl Default for PhysicalPlanner {
@@ -370,6 +373,7 @@ impl PhysicalPlanner {
             class_loader: None,
             shuffle_partition_pusher: None,
             float_operands: FloatOperands::Normalize,
+            strict_timestamp_labels: false,
         }
     }
 
@@ -448,6 +452,15 @@ impl PhysicalPlanner {
         self
     }
 
+    pub fn with_strict_timestamp_labels(mut self, strict: bool) -> Self {
+        self.strict_timestamp_labels = strict;
+        self
+    }
+
+    pub(crate) fn strict_timestamp_labels(&self) -> bool {
+        self.strict_timestamp_labels
+    }
+
     /// Attach a propagated Spark `TaskContext` global reference. Called by the JNI `executePlan`
     /// entry with whatever was captured at `createPlan` time. The planner clones this `Option`
     /// into every `JvmScalarUdfExpr` it builds.
@@ -504,6 +517,8 @@ impl PhysicalPlanner {
         object_store_options: &HashMap<String, String>,
     ) -> Result<Vec<PartitionedFile>, ExecutionError> {
         let mut files = Vec::with_capacity(partition.partitioned_file.len());
+        // Create an empty input schema for partition values because they are all literals.
+        let empty_schema = Arc::new(Schema::empty());
         partition.partitioned_file.iter().try_for_each(|file| {
             assert!(file.start + file.length <= file.file_size);
 
@@ -523,8 +538,6 @@ impl PhysicalPlanner {
             partitioned_file.object_meta.location = path;
 
             // Process partition values
-            // Create an empty input schema for partition values because they are all literals.
-            let empty_schema = Arc::new(Schema::empty());
             let partition_values: Result<Vec<_>, _> = file
                 .partition_values
                 .iter()
@@ -710,7 +723,6 @@ impl PhysicalPlanner {
                     SparkCastOptions::new_with_version(
                         eval_mode,
                         &expr.timezone,
-                        expr.allow_incompat,
                         expr.is_spark4_plus,
                     ),
                     spark_expr.expr_id,
@@ -803,7 +815,7 @@ impl PhysicalPlanner {
                     "md5" => Ok(Arc::new(Cast::new(
                         func?,
                         DataType::Utf8,
-                        SparkCastOptions::new_without_timezone(EvalMode::Try, true),
+                        SparkCastOptions::new_without_timezone(EvalMode::Try),
                         None,
                         None,
                     ))),
@@ -925,8 +937,7 @@ impl PhysicalPlanner {
                 )))
             }
             ExprStruct::ToPrettyString(expr) => {
-                let mut spark_cast_options =
-                    SparkCastOptions::new(EvalMode::Try, &expr.timezone, true);
+                let mut spark_cast_options = SparkCastOptions::new(EvalMode::Try, &expr.timezone);
                 let null_string = "NULL";
                 spark_cast_options.null_string = null_string.to_string();
                 spark_cast_options.binary_output_style =
@@ -1159,10 +1170,10 @@ impl PhysicalPlanner {
     /// they reject, which Spark's Filter above the scan then never sees.
     ///
     /// Without row-level pushdown the filters only prune, and pruning only recognizes a column
-    /// compared with a literal, so that shape keeps the raw column ([`FloatOperands::Raw`]). With
-    /// it, every operand is normalized and float comparisons give up pruning: a raw column would
-    /// drop a stored NaN that Spark matches, such as one with the sign bit set, which Arrow orders
-    /// below every other value.
+    /// compared with a literal, so that shape stays a plain comparison of the raw column
+    /// ([`FloatOperands::Raw`]). With it, every float comparison follows Spark's ordering and
+    /// gives up pruning: a raw column would drop a stored NaN that Spark matches, such as one with
+    /// the sign bit set, which Arrow orders below every other value.
     fn data_filter_float_operands(&self) -> FloatOperands {
         if self
             .session_ctx
@@ -1577,13 +1588,17 @@ impl PhysicalPlanner {
                 let mode = match proto_mode {
                     ProtoAggregateMode::Partial => DFAggregateMode::Partial,
                     ProtoAggregateMode::Final => DFAggregateMode::Final,
-                    // PartialMerge: Partial + MergeAsPartial
-                    ProtoAggregateMode::PartialMerge => DFAggregateMode::Partial,
+                    // Spark's distinct-aggregate plan counts the rows of a PartialMerge, so it must
+                    // emit each key once. DataFusion's Partial emits what it holds when it runs
+                    // short of memory and starts again, while its Single spills. So run the
+                    // PartialMerge as Single, whose MergeAsPartial aggregates merge their input and
+                    // evaluate to their states, and unpack those states below.
+                    ProtoAggregateMode::PartialMerge => DFAggregateMode::Single,
                 };
 
                 // Check if any expression uses PartialMerge mode. When present,
                 // those expressions are wrapped with MergeAsPartial to get merge
-                // semantics inside a Partial-mode AggregateExec.
+                // semantics with state output.
                 let partial_merge_value = ProtoAggregateMode::PartialMerge as i32;
                 let has_partial_merge = proto_mode == ProtoAggregateMode::PartialMerge
                     || agg.expr_modes.contains(&partial_merge_value);
@@ -1682,6 +1697,16 @@ impl PhysicalPlanner {
                     )?,
                 );
 
+                let mut output = aggregate;
+                let mut additional_native_plans = vec![];
+                if proto_mode == ProtoAggregateMode::PartialMerge {
+                    additional_native_plans.push(Arc::clone(&output));
+                    output = crate::execution::merge_as_partial::unpack_state_structs(
+                        output,
+                        agg.grouping_exprs.len(),
+                    )?;
+                }
+
                 // Spark's SortAggregateExec reports its output as ordered by the grouping keys,
                 // and Spark may have removed a sort above it on that basis. DataFusion emits
                 // groups in input order only when it sees the input sorted on them. When that
@@ -1689,11 +1714,11 @@ impl PhysicalPlanner {
                 // relation that reaches native code as an unordered ScanExec, the hash table can
                 // emit groups out of order, so sort the aggregate output instead.
                 if agg.ordered_by_grouping_keys && !agg.grouping_exprs.is_empty() {
-                    let aggregate_schema = aggregate.schema();
+                    let output_schema = output.schema();
                     let ordering: Vec<PhysicalSortExpr> = (0..agg.grouping_exprs.len())
                         .map(|idx| {
                             PhysicalSortExpr::new(
-                                Arc::new(Column::new(aggregate_schema.field(idx).name(), idx)),
+                                Arc::new(Column::new(output_schema.field(idx).name(), idx)),
                                 SortOptions {
                                     descending: false,
                                     nulls_first: true,
@@ -1701,31 +1726,25 @@ impl PhysicalPlanner {
                             )
                         })
                         .collect();
-                    if !aggregate
+                    if !output
                         .equivalence_properties()
                         .ordering_satisfy(ordering.clone())?
                     {
-                        let sort: Arc<dyn ExecutionPlan> = Arc::new(SortExec::new(
-                            LexOrdering::new(ordering).unwrap(),
-                            Arc::clone(&aggregate),
-                        ));
-                        return Ok((
-                            scans,
-                            shuffle_scans,
-                            Arc::new(SparkPlan::new_with_additional(
-                                spark_plan.plan_id,
-                                sort,
-                                vec![child],
-                                vec![aggregate],
-                            )),
-                        ));
+                        additional_native_plans.push(Arc::clone(&output));
+                        output =
+                            Arc::new(SortExec::new(LexOrdering::new(ordering).unwrap(), output));
                     }
                 }
 
                 Ok((
                     scans,
                     shuffle_scans,
-                    Arc::new(SparkPlan::new(spark_plan.plan_id, aggregate, vec![child])),
+                    Arc::new(SparkPlan::new_with_additional(
+                        spark_plan.plan_id,
+                        output,
+                        vec![child],
+                        additional_native_plans,
+                    )),
                 ))
             }
 
@@ -2130,7 +2149,8 @@ impl PhysicalPlanner {
 
                 // The `ScanExec` operator will take actual arrays from Spark during execution
                 let scan =
-                    ScanExec::new(self.exec_context_id, input_source, &scan.source, data_types)?;
+                    ScanExec::new(self.exec_context_id, input_source, &scan.source, data_types)?
+                        .with_strict_timestamp_labels(self.strict_timestamp_labels);
 
                 Ok((
                     vec![scan.clone()],
@@ -2618,15 +2638,15 @@ impl PhysicalPlanner {
                     partition_count,
                 )?;
 
-                // Reader attachment replaces the probe filter's child per execution.
-                // Keep its metrics owned by the same Spark filter node.
+                // Reader attachment and early placement recursively replace probe-side
+                // filters and projections. Keep metrics owned by their Spark nodes.
                 if join.dynamic_filter_enabled && !join.null_aware_anti_join {
                     let probe = if join.build_side == BuildSide::BuildLeft as i32 {
                         &mut join_params.right
                     } else {
                         &mut join_params.left
                     };
-                    *probe = Self::prepare_probe_filter_for_runtime_reader(Arc::clone(probe));
+                    *probe = Self::prepare_probe_for_runtime_filters(Arc::clone(probe))?;
                 }
 
                 let left = Arc::clone(&join_params.left.native_plan);
@@ -2911,14 +2931,32 @@ impl PhysicalPlanner {
         }
     }
 
-    /// Keep the Spark filter's metric identity when its reader is replaced for an execution.
-    fn prepare_probe_filter_for_runtime_reader(plan: Arc<SparkPlan>) -> Arc<SparkPlan> {
-        let Some(filter) = plan.native_plan.downcast_ref::<FilterExec>() else {
-            return plan;
-        };
+    /// Keep Spark metric identities for the small set of nodes whose children
+    /// runtime-filter placement can replace. Stop at native/Spark tree boundaries.
+    fn prepare_probe_for_runtime_filters(
+        plan: Arc<SparkPlan>,
+    ) -> Result<Arc<SparkPlan>, ExecutionError> {
+        let mut native: Arc<dyn ExecutionPlan> =
+            if let Some(filter) = plan.native_plan.downcast_ref::<FilterExec>() {
+                Arc::new(CometFilterExec::from_datafusion(filter.clone()))
+            } else if let Some(projection) = plan.native_plan.downcast_ref::<ProjectionExec>() {
+                Arc::new(CometProjectionExec::from_datafusion(projection.clone()))
+            } else {
+                return Ok(plan);
+            };
         let mut prepared = plan.as_ref().clone();
-        prepared.native_plan = Arc::new(CometFilterExec::from_datafusion(filter.clone()));
-        Arc::new(prepared)
+        if let ([child], [only]) = (plan.children.as_slice(), native.children().as_slice()) {
+            if Arc::ptr_eq(only, &child.native_plan) {
+                let child = Self::prepare_probe_for_runtime_filters(Arc::clone(child))?;
+                native = native.replace_children(
+                    vec![Arc::clone(&child.native_plan)],
+                    ReplaceChildrenOptions::new(ChildrenPropertiesMode::Recompute),
+                )?;
+                prepared.children = vec![child];
+            }
+        }
+        prepared.native_plan = native;
+        Ok(Arc::new(prepared))
     }
 
     /// Attach after choosing the final build side, including the projection emitted
@@ -5882,12 +5920,13 @@ mod tests {
         assert_eq!(0, filter_exec.additional_native_plans.len());
     }
 
-    /// Comparisons normalize float operands, except in the data filters that a scan pushes into
-    /// the Parquet reader, where pruning has to see the column itself.
+    /// Comparisons follow Spark's float ordering without normalizing their operands, except in the
+    /// data filters that a scan pushes into the Parquet reader, where pruning has to see a plain
+    /// comparison of the column.
     #[test]
     fn scan_data_filters_compare_float_columns_directly() {
         use datafusion::physical_expr::expressions::BinaryExpr;
-        use datafusion_comet_spark_expr::NormalizeNaNAndZero;
+        use datafusion_comet_spark_expr::SparkComparison;
         let double = spark_expression::DataType {
             type_id: 6,
             type_info: None,
@@ -5909,30 +5948,29 @@ mod tests {
             })))),
         })));
         let schema = Arc::new(Schema::new(vec![Field::new("d", DataType::Float64, true)]));
-        let left_operand = |expr: Arc<dyn PhysicalExpr>| {
-            let comparison = expr.downcast_ref::<BinaryExpr>().expect("a comparison");
-            Arc::clone(comparison.left())
-        };
         let planner = PhysicalPlanner::default();
         let comparison = planner.create_expr(&expr, Arc::clone(&schema)).unwrap();
-        assert!(left_operand(comparison)
-            .downcast_ref::<NormalizeNaNAndZero>()
-            .is_some());
+        let comparison = comparison
+            .downcast_ref::<SparkComparison>()
+            .expect("a Spark comparison");
+        assert!(comparison.left().downcast_ref::<Column>().is_some());
         let data_filter = planner
             .create_data_filter(&expr, schema, planner.data_filter_float_operands())
             .unwrap();
-        assert!(left_operand(data_filter).downcast_ref::<Column>().is_some());
+        let data_filter = data_filter
+            .downcast_ref::<BinaryExpr>()
+            .expect("a plain comparison");
+        assert!(data_filter.left().downcast_ref::<Column>().is_some());
     }
 
     /// With row-level pushdown the Parquet reader drops the rows a data filter rejects, so the
-    /// filter normalizes the column as well as the literal. A raw column would drop a stored NaN
-    /// whose bits differ from the normalized literal, and a stored NaN with the sign bit set
-    /// under any ordering comparison, both of which Spark matches.
+    /// filter compares the column in Spark's ordering rather than as it is. A raw column would drop
+    /// a stored NaN whose bits differ from the normalized literal, and a stored NaN with the sign
+    /// bit set under any ordering comparison, both of which Spark matches.
     #[test]
-    fn scan_data_filters_normalize_float_columns_with_row_level_pushdown() {
+    fn scan_data_filters_follow_spark_ordering_with_row_level_pushdown() {
         use arrow::array::{AsArray, BooleanArray};
-        use datafusion::physical_expr::expressions::BinaryExpr;
-        use datafusion_comet_spark_expr::{FloatOperands, NormalizeNaNAndZero};
+        use datafusion_comet_spark_expr::{FloatOperands, SparkComparison};
         let double = spark_expression::DataType {
             type_id: 6,
             type_info: None,
@@ -5985,13 +6023,7 @@ mod tests {
                     planner.data_filter_float_operands(),
                 )
                 .unwrap();
-            let comparison = data_filter
-                .downcast_ref::<BinaryExpr>()
-                .expect("a comparison");
-            assert!(comparison
-                .left()
-                .downcast_ref::<NormalizeNaNAndZero>()
-                .is_some());
+            assert!(data_filter.downcast_ref::<SparkComparison>().is_some());
             let matched = data_filter.evaluate(&batch).unwrap().into_array(3).unwrap();
             assert_eq!(matched.as_boolean(), &BooleanArray::from(expected.to_vec()));
         }
@@ -6304,6 +6336,162 @@ mod tests {
         let planner = PhysicalPlanner::default();
         let (_, _, planned) = planner.create_plan(&op, &mut vec![], 1).unwrap();
         assert_eq!("AggregateExec", planned.native_plan.name());
+    }
+
+    #[tokio::test]
+    async fn partial_merge_runs_as_single_and_emits_merged_states() {
+        use arrow::array::{BooleanArray, Int64Array};
+        use datafusion::assert_batches_sorted_eq;
+        use datafusion::common::tree_node::{Transformed, TreeNode};
+        use datafusion::physical_plan::aggregates::{AggregateExec, AggregateMode};
+        use spark_expression::agg_expr::ExprStruct as AggExprStruct;
+
+        // A Spark PartialMerge of max(v), count(v) and first(v) grouped by k, over k and their
+        // states. DataFusion's first has no GroupsAccumulator without an ordering.
+        let int64 = spark_expression::DataType {
+            type_id: 4,
+            type_info: None,
+        };
+        let boolean = spark_expression::DataType {
+            type_id: 0,
+            type_info: None,
+        };
+        let v = Expr {
+            expr_struct: Some(Unbound(spark_expression::UnboundReference {
+                name: "v".to_string(),
+                datatype: Some(int64.clone()),
+            })),
+            ..Default::default()
+        };
+        let partial_merge = spark_operator::AggregateMode::PartialMerge as i32;
+        let aggregate = |mode: i32| Operator {
+            plan_id: 1,
+            children: vec![Operator {
+                op_struct: Some(OpStruct::Scan(spark_operator::Scan {
+                    fields: vec![
+                        int64.clone(),
+                        int64.clone(),
+                        int64.clone(),
+                        int64.clone(),
+                        boolean.clone(),
+                    ],
+                    source: String::new(),
+                })),
+                ..Default::default()
+            }],
+            op_struct: Some(OpStruct::HashAgg(spark_operator::HashAggregate {
+                grouping_exprs: vec![Expr {
+                    expr_struct: Some(Bound(spark_expression::BoundReference {
+                        index: 0,
+                        datatype: Some(int64.clone()),
+                    })),
+                    ..Default::default()
+                }],
+                agg_exprs: vec![
+                    spark_expression::AggExpr {
+                        expr_struct: Some(AggExprStruct::Max(spark_expression::Max {
+                            child: Some(v.clone()),
+                            datatype: Some(int64.clone()),
+                        })),
+                        ..Default::default()
+                    },
+                    spark_expression::AggExpr {
+                        expr_struct: Some(AggExprStruct::Count(spark_expression::Count {
+                            children: vec![v.clone()],
+                        })),
+                        ..Default::default()
+                    },
+                    spark_expression::AggExpr {
+                        expr_struct: Some(AggExprStruct::First(spark_expression::First {
+                            child: Some(v.clone()),
+                            datatype: Some(int64.clone()),
+                            ignore_nulls: false,
+                        })),
+                        ..Default::default()
+                    },
+                ],
+                mode,
+                expr_modes: vec![partial_merge; 3],
+                initial_input_buffer_offset: 1,
+                ..Default::default()
+            })),
+            ..Default::default()
+        };
+        let ctx = SessionContext::new();
+        let task_ctx = ctx.task_ctx();
+        let planner = PhysicalPlanner::new(Arc::new(ctx), 0);
+
+        // DataFusion's Single spills rather than emit a key twice, and the projection above it
+        // unpacks the states into the columns that the Partial it replaces emitted.
+        let (_, _, planned) = planner
+            .create_plan(&aggregate(partial_merge), &mut vec![], 1)
+            .unwrap();
+        assert_eq!("ProjectionExec", planned.native_plan.name());
+        assert_eq!(1, planned.additional_native_plans.len());
+        let single = planned.additional_native_plans[0]
+            .downcast_ref::<AggregateExec>()
+            .unwrap();
+        assert_eq!(&AggregateMode::Single, single.mode());
+        let (_, _, partial) = planner
+            .create_plan(
+                &aggregate(spark_operator::AggregateMode::Partial as i32),
+                &mut vec![],
+                1,
+            )
+            .unwrap();
+        assert_eq!("AggregateExec", partial.native_plan.name());
+        assert_eq!(partial.native_plan.schema(), planned.native_plan.schema());
+
+        let batch = RecordBatch::try_new(
+            planned.children[0].schema(),
+            vec![
+                Arc::new(Int64Array::from(vec![1, 2, 1, 2, 3])),
+                Arc::new(Int64Array::from(vec![
+                    Some(10),
+                    Some(5),
+                    Some(7),
+                    None,
+                    Some(1),
+                ])),
+                Arc::new(Int64Array::from(vec![1, 2, 3, 0, 4])),
+                Arc::new(Int64Array::from(vec![
+                    Some(100),
+                    None,
+                    Some(101),
+                    Some(200),
+                    None,
+                ])),
+                Arc::new(BooleanArray::from(vec![true, false, true, true, false])),
+            ],
+        )
+        .unwrap();
+        let input: Arc<dyn ExecutionPlan> =
+            MemorySourceConfig::try_new_exec(&[vec![batch.clone()]], batch.schema(), None).unwrap();
+        let native_plan = Arc::clone(&planned.native_plan)
+            .transform_up(|node| {
+                Ok(if node.name() == "ScanExec" {
+                    Transformed::yes(Arc::clone(&input))
+                } else {
+                    Transformed::no(node)
+                })
+            })
+            .unwrap()
+            .data;
+        let results = collect(native_plan.execute(0, task_ctx).unwrap())
+            .await
+            .unwrap();
+        assert_batches_sorted_eq!(
+            [
+                "+-------+------------+--------------+--------------------+---------------------------+",
+                "| col_0 | max[value] | count[count] | first[first_value] | first[first_value_is_set] |",
+                "+-------+------------+--------------+--------------------+---------------------------+",
+                "| 1     | 10         | 4            | 100                | true                      |",
+                "| 2     | 5          | 2            | 200                | true                      |",
+                "| 3     | 1          | 4            |                    | false                     |",
+                "+-------+------------+--------------+--------------------+---------------------------+",
+            ],
+            &results
+        );
     }
 
     #[tokio::test]
@@ -6913,7 +7101,7 @@ mod tests {
                 .with_table_parquet_options(TableParquetOptions::new()),
         ) as Arc<dyn FileSource>;
 
-        let spark_parquet_options = SparkParquetOptions::new(EvalMode::Legacy, "UTC", false);
+        let spark_parquet_options = SparkParquetOptions::new(EvalMode::Legacy, "UTC");
 
         let expr_adapter_factory: Arc<dyn PhysicalExprAdapterFactory> = Arc::new(
             SparkPhysicalExprAdapterFactory::new(spark_parquet_options, None),

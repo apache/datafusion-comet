@@ -1379,12 +1379,10 @@ class CometArrayExpressionSuite extends CometTestBase with AdaptiveSparkPlanHelp
     }
   }
 
-  // The tests below deliberately live in this suite, not a `sql-tests` fixture: constant folding is
-  // enabled by default here, so each `map(...)` collapses to a MapType Literal and the outer
-  // `array(...)` reaches `CometCreateArray` with folded-Literal children, which `CometLiteral`
-  // rebuilds as an equivalent `CreateMap` of primitive literals -- the folded-literal expansion path
-  // under review. `CometSqlFileTestSuite` force-disables `ConstantFolding`, so an equivalent SQL
-  // fixture would only exercise the constructor path (which `create_array.sql` already covers).
+  // These tests exercise folded complex literals, including CometLiteral's expansion to native
+  // constructors. SQL fixtures need `-- ConstantFolding: enabled` to reach that same path.
+  // folded_array_map_literals.sql covers the mixed map/NULL array; the remaining conversions are
+  // tracked in #6628.
   test("array of folded map literals with array values (multirow)") {
     withParquetTable((0 until 3).map(i => (i, i.toLong)), "tbl") {
       checkSparkAnswerAndOperator(
@@ -1429,17 +1427,6 @@ class CometArrayExpressionSuite extends CometTestBase with AdaptiveSparkPlanHelp
     withParquetTable((0 until 3).map(i => (i, i.toLong)), "tbl") {
       checkSparkAnswerAndOperator(
         "SELECT array(map(1, CAST(NULL AS INT)), map(2, 3)) AS arr FROM tbl")
-    }
-  }
-
-  // A NULL element sits next to a populated one inside a single folded
-  // `ArrayType(MapType(IntegerType, IntegerType, false), containsNull = true)` literal. The null
-  // slot serializes as a typed null literal carrying the declared map type, so the rebuilt sibling
-  // has to report that same type for `make_array` to accept the pair.
-  test("folded array mixing a map literal and a NULL element (multirow)") {
-    withParquetTable((0 until 3).map(i => (i, i.toLong)), "tbl") {
-      checkSparkAnswerAndOperator("SELECT array(map(1, 2), NULL) AS arr FROM tbl")
-      checkSparkAnswerAndOperator("SELECT array(NULL, map(1, 2)) AS arr FROM tbl")
     }
   }
 

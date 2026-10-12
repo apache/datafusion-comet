@@ -30,7 +30,7 @@ import org.apache.spark.sql.comet.{CometIcebergWriteExec, CometNativeExec, Icebe
 
 import org.apache.comet.{CometConf, ConfigEntry}
 import org.apache.comet.CometSparkSessionExtensions.withFallbackReason
-import org.apache.comet.iceberg.{IcebergReflection, PositionDeltaWrite, ReplaceDataWrite}
+import org.apache.comet.iceberg.{IcebergReflection, IcebergStorageSchemes, PositionDeltaWrite, ReplaceDataWrite}
 import org.apache.comet.objectstore.NativeConfig
 import org.apache.comet.serde.{CometOperatorSerde, Compatible, OperatorOuterClass, SupportLevel, Unsupported}
 import org.apache.comet.serde.OperatorOuterClass.Operator
@@ -86,12 +86,11 @@ object CometIcebergNativeWrite extends CometOperatorSerde[IcebergWriteExec] {
   // `timestamp_ns`, `geometry` or `geography` today, so those are declined in case it learns to.
   private val UnsupportedWriteTypeIds: Set[String] =
     Set("UUID", "VARIANT", "UNKNOWN", "TIMESTAMP_NANO", "GEOMETRY", "GEOGRAPHY")
-  // `oss` is deliberately absent: iceberg-rust has an OSS backend, but Comet does not forward
-  // `oss.*` catalog properties to it and no functional test covers the path, so an OSS write
-  // could silently drop endpoint/credential configuration. Fail closed until it is covered.
-  // `gs` is additionally gated on the resolved FileIO (`requireGcsFileIOForGcsDataLocation`).
-  private val SupportedStorageSchemes: Set[String] =
-    Set("file", "memory", "s3", "s3a", "gs")
+  // Loaded from the native storage factory: `builtin_storage_schemes` in
+  // `native/core/src/execution/operators/iceberg_common.rs` is the single point of change and
+  // explains why `oss` is read-only and `memory` write-only. Lazy so constructing the serde does
+  // not touch the native library. `gs` is additionally gated on the resolved FileIO below.
+  private lazy val SupportedStorageSchemes: Set[String] = IcebergStorageSchemes.write
   // Supported schemes whose native backend is local and needs no host. Every other supported
   // scheme reads its bucket from the URL host (`requireSupportedStorageScheme`).
   private val LocalStorageSchemes: Set[String] = Set("file", "memory")
@@ -159,10 +158,19 @@ object CometIcebergNativeWrite extends CometOperatorSerde[IcebergWriteExec] {
   // from spark.hadoop.*. They do not alter an Iceberg data-file write request, so they must not
   // make every otherwise-clean S3 write ineligible. This also permits explicit overrides, which
   // are harmless on the write path for the same reason.
+  //
+  // Some Spark distributions also set S3A delete, read and committer defaults cluster-wide. The
+  // native writer does not go through S3A, `fadvise` is a read hint, and Iceberg commits through
+  // table metadata rather than a Hadoop output committer, so these are harmless here as well.
   private val IgnoredHadoopS3Keys: Set[String] = Set(
     "fs.s3a.downgrade.syncable.exceptions",
     "fs.s3a.vectored.read.max.merged.size",
-    "fs.s3a.vectored.read.min.seek.size")
+    "fs.s3a.vectored.read.min.seek.size",
+    "fs.s3a.bulk.delete.page.size",
+    "fs.s3a.experimental.input.fadvise",
+    "fs.s3a.committer.magic.enabled",
+    "fs.s3a.committer.name",
+    "fs.s3a.committer.threads")
 
   // Audited against the pinned iceberg-rust S3 parser
   // (`iceberg/src/io/storage/config/s3.rs` and `storage/opendal/src/s3.rs`). Do not broaden this
