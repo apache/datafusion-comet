@@ -1043,6 +1043,305 @@ mod tests {
         );
     }
 
+    // ---------------------------------------------------------------------------------------
+    // Ordered-path coverage: drive the merge end-to-end through IcebergScanExec itself -- real
+    // Parquet files, real per-partition task selection, real SortPreservingMergeExec on top --
+    // rather than merging a MemorySourceConfig, which exercises only DataFusion. These do not
+    // need an ordering-reporting Iceberg build.
+    // ---------------------------------------------------------------------------------------
+
+    fn write_sorted_parquet(dir: &std::path::Path, name: &str, vals: Vec<i32>) -> (String, u64) {
+        use arrow::array::{Int32Array, RecordBatch};
+        use arrow::datatypes::{DataType, Field, Schema as ArrowSchema};
+        use parquet::arrow::ArrowWriter;
+
+        let mut md = std::collections::HashMap::new();
+        md.insert("PARQUET:field_id".to_string(), "1".to_string());
+        let field = Field::new("id", DataType::Int32, false).with_metadata(md);
+        let schema = Arc::new(ArrowSchema::new(vec![field]));
+        let batch =
+            RecordBatch::try_new(Arc::clone(&schema), vec![Arc::new(Int32Array::from(vals))])
+                .unwrap();
+
+        let path = dir.join(name);
+        let file = std::fs::File::create(&path).unwrap();
+        let mut writer = ArrowWriter::try_new(file, schema, None).unwrap();
+        writer.write(&batch).unwrap();
+        writer.close().unwrap();
+        let size = std::fs::metadata(&path).unwrap().len();
+        (path.to_str().unwrap().to_string(), size)
+    }
+
+    fn iceberg_int_schema() -> Arc<iceberg::spec::Schema> {
+        Arc::new(
+            iceberg::spec::Schema::builder()
+                .with_schema_id(0)
+                .with_fields(vec![iceberg::spec::NestedField::required(
+                    1,
+                    "id",
+                    iceberg::spec::Type::Primitive(iceberg::spec::PrimitiveType::Int),
+                )
+                .into()])
+                .build()
+                .unwrap(),
+        )
+    }
+
+    fn data_task(path: String, size: u64) -> FileScanTask {
+        data_task_with_deletes(path, size, vec![])
+    }
+
+    fn data_task_with_deletes(
+        path: String,
+        size: u64,
+        deletes: Vec<iceberg::scan::FileScanTaskDeleteFile>,
+    ) -> FileScanTask {
+        FileScanTask::builder()
+            .with_file_size_in_bytes(size)
+            .with_start(0)
+            .with_length(size)
+            .with_data_file_path(path)
+            .with_data_file_format(DataFileFormat::Parquet)
+            .with_schema(iceberg_int_schema())
+            .with_project_field_ids(vec![1])
+            .with_case_sensitive(false)
+            .with_deletes(deletes)
+            .build()
+            .unwrap()
+    }
+
+    async fn run_ordered_scan(files: Vec<Vec<i32>>, descending: bool) -> Vec<i32> {
+        use arrow::array::Int32Array;
+        use arrow::compute::SortOptions;
+        use arrow::datatypes::{DataType, Field, Schema as ArrowSchema};
+        use datafusion::physical_expr::expressions::Column;
+        use datafusion::physical_expr::{LexOrdering, PhysicalSortExpr};
+        use datafusion::physical_plan::sorts::sort_preserving_merge::SortPreservingMergeExec;
+        use datafusion::prelude::SessionContext;
+        use futures::StreamExt;
+
+        let dir = tempfile::tempdir().unwrap();
+        let tasks: Vec<FileScanTask> = files
+            .into_iter()
+            .enumerate()
+            .map(|(i, vals)| {
+                let (path, size) = write_sorted_parquet(dir.path(), &format!("f{i}.parquet"), vals);
+                data_task(path, size)
+            })
+            .collect();
+        let num_files = tasks.len();
+
+        let out_schema = Arc::new(ArrowSchema::new(vec![Field::new(
+            "id",
+            DataType::Int32,
+            false,
+        )]));
+        let ordering = LexOrdering::new(vec![PhysicalSortExpr {
+            expr: Arc::new(Column::new("id", 0)),
+            options: SortOptions {
+                descending,
+                nulls_first: false,
+            },
+        }])
+        .unwrap();
+
+        let scan = Arc::new(
+            IcebergScanExec::new(
+                dir.path()
+                    .join("metadata.json")
+                    .to_str()
+                    .unwrap()
+                    .to_string(),
+                out_schema,
+                std::collections::HashMap::new(),
+                "cat".to_string(),
+                tasks,
+                1,
+                Some(ordering.clone()),
+            )
+            .unwrap(),
+        );
+        assert_eq!(
+            scan.properties().partitioning.partition_count(),
+            num_files,
+            "ordered scan must expose one partition per file"
+        );
+
+        let spm = SortPreservingMergeExec::new(ordering, scan).with_round_robin_repartition(false);
+        let ctx = SessionContext::new();
+        let mut stream = spm.execute(0, ctx.task_ctx()).unwrap();
+        let mut got = Vec::new();
+        while let Some(batch) = stream.next().await {
+            let batch = batch.unwrap();
+            let col = batch
+                .column(0)
+                .as_any()
+                .downcast_ref::<Int32Array>()
+                .unwrap();
+            (0..col.len()).for_each(|i| got.push(col.value(i)));
+        }
+        got
+    }
+
+    #[tokio::test]
+    async fn probe_ordered_scan_merges_real_parquet_files() {
+        let got = run_ordered_scan(vec![vec![1, 4, 7], vec![2, 5, 8], vec![3, 6, 9]], false).await;
+        assert_eq!(got, (1..=9).collect::<Vec<i32>>());
+    }
+
+    #[tokio::test]
+    async fn probe_ordered_scan_merges_descending_real_parquet_files() {
+        let got = run_ordered_scan(vec![vec![9, 6, 3], vec![8, 5, 2], vec![7, 4, 1]], true).await;
+        assert_eq!(got, (1..=9).rev().collect::<Vec<i32>>());
+    }
+
+    #[tokio::test]
+    async fn probe_ordered_scan_keeps_duplicates_across_files() {
+        let got = run_ordered_scan(vec![vec![1, 2, 2], vec![2, 2, 3], vec![1, 3, 3]], false).await;
+        assert_eq!(got, vec![1, 1, 2, 2, 2, 2, 3, 3, 3]);
+    }
+
+    // Quantifies the delete-file cache loss in the ordered path. Two data files that
+    // share one positional delete file. Unordered = one ArrowReader for both tasks, so the shared
+    // delete file is loaded once. Ordered = one ArrowReader per partition, so the same delete file
+    // is loaded once per data file.
+    fn write_pos_delete(dir: &std::path::Path, name: &str, entries: Vec<(&str, i64)>) -> String {
+        use arrow::array::{Int64Array, RecordBatch, StringArray};
+        use arrow::datatypes::{DataType, Field, Schema as ArrowSchema};
+        use parquet::arrow::ArrowWriter;
+
+        let fid = |id: &str| {
+            let mut m = std::collections::HashMap::new();
+            m.insert("PARQUET:field_id".to_string(), id.to_string());
+            m
+        };
+        let schema = Arc::new(ArrowSchema::new(vec![
+            Field::new("file_path", DataType::Utf8, false).with_metadata(fid("2147483546")),
+            Field::new("pos", DataType::Int64, false).with_metadata(fid("2147483545")),
+        ]));
+        let paths: Vec<&str> = entries.iter().map(|(p, _)| *p).collect();
+        let poss: Vec<i64> = entries.iter().map(|(_, p)| *p).collect();
+        let batch = RecordBatch::try_new(
+            Arc::clone(&schema),
+            vec![
+                Arc::new(StringArray::from(paths)),
+                Arc::new(Int64Array::from(poss)),
+            ],
+        )
+        .unwrap();
+        let path = dir.join(name);
+        let file = std::fs::File::create(&path).unwrap();
+        let mut w = ArrowWriter::try_new(file, schema, None).unwrap();
+        w.write(&batch).unwrap();
+        w.close().unwrap();
+        path.to_str().unwrap().to_string()
+    }
+
+    async fn scan_bytes_with_shared_delete(ordered: bool) -> (Vec<i32>, u64) {
+        use arrow::array::Int32Array;
+        use arrow::compute::SortOptions;
+        use arrow::datatypes::{DataType, Field, Schema as ArrowSchema};
+        use datafusion::physical_expr::expressions::Column;
+        use datafusion::physical_expr::{LexOrdering, PhysicalSortExpr};
+        use datafusion::physical_plan::sorts::sort_preserving_merge::SortPreservingMergeExec;
+        use datafusion::prelude::SessionContext;
+        use futures::StreamExt;
+
+        let dir = tempfile::tempdir().unwrap();
+        let (p0, s0) = write_sorted_parquet(dir.path(), "f0.parquet", vec![1, 3, 5]);
+        let (p1, s1) = write_sorted_parquet(dir.path(), "f1.parquet", vec![2, 4, 6]);
+        // One delete file covering a row in each data file (Iceberg partition-granularity deletes).
+        let del = write_pos_delete(dir.path(), "del.parquet", vec![(&p0, 1), (&p1, 1)]);
+
+        let t0 = data_task_with_deletes(p0, s0, vec![delete_file(&del)]);
+        let t1 = data_task_with_deletes(p1, s1, vec![delete_file(&del)]);
+
+        let out_schema = Arc::new(ArrowSchema::new(vec![Field::new(
+            "id",
+            DataType::Int32,
+            false,
+        )]));
+        let ordering = LexOrdering::new(vec![PhysicalSortExpr {
+            expr: Arc::new(Column::new("id", 0)),
+            options: SortOptions {
+                descending: false,
+                nulls_first: false,
+            },
+        }])
+        .unwrap();
+
+        let scan = Arc::new(
+            IcebergScanExec::new(
+                dir.path()
+                    .join("metadata.json")
+                    .to_str()
+                    .unwrap()
+                    .to_string(),
+                out_schema,
+                std::collections::HashMap::new(),
+                "cat".to_string(),
+                vec![t0, t1],
+                1,
+                if ordered {
+                    Some(ordering.clone())
+                } else {
+                    None
+                },
+            )
+            .unwrap(),
+        );
+
+        let plan: Arc<dyn datafusion::physical_plan::ExecutionPlan> = if ordered {
+            Arc::new(
+                SortPreservingMergeExec::new(ordering, Arc::clone(&scan) as _)
+                    .with_round_robin_repartition(false),
+            )
+        } else {
+            Arc::clone(&scan) as _
+        };
+
+        let ctx = SessionContext::new();
+        let mut stream = plan.execute(0, ctx.task_ctx()).unwrap();
+        let mut got = Vec::new();
+        while let Some(b) = stream.next().await {
+            let b = b.unwrap();
+            let col = b.column(0).as_any().downcast_ref::<Int32Array>().unwrap();
+            (0..col.len()).for_each(|i| got.push(col.value(i)));
+        }
+        got.sort_unstable();
+
+        let bytes = scan
+            .metrics()
+            .unwrap()
+            .sum_by_name("bytes_scanned")
+            .map(|m| m.as_usize() as u64)
+            .unwrap_or(0);
+        (got, bytes)
+    }
+
+    // Regression guard for #6524: the ordered path shares one ArrowReader (and its
+    // CachingDeleteFileLoader) across the partition's file streams, so a delete file shared by the
+    // partition is read once, not once per data file. Asserts the ordered path scans the same bytes
+    // as the unordered path; before the fix the ordered path read the shared delete file's content
+    // an extra time per data file (the issue's 2717 vs 4256 bytes).
+    #[tokio::test]
+    async fn shared_delete_file_read_once_in_ordered_path() {
+        let (unordered_rows, unordered_bytes) = scan_bytes_with_shared_delete(false).await;
+        let (ordered_rows, ordered_bytes) = scan_bytes_with_shared_delete(true).await;
+
+        assert_eq!(unordered_rows, vec![1, 2, 5, 6]);
+        assert_eq!(ordered_rows, vec![1, 2, 5, 6]);
+        println!(
+            "bytes_scanned unordered={unordered_bytes} ordered={ordered_bytes} \
+             delta={}",
+            ordered_bytes as i64 - unordered_bytes as i64
+        );
+        assert_eq!(
+            unordered_bytes, ordered_bytes,
+            "ordered path re-reads the shared delete file once per data file"
+        );
+    }
+
     fn from_hex(s: &str) -> Vec<u8> {
         assert!(s.len().is_multiple_of(2), "odd-length hex string");
         (0..s.len())

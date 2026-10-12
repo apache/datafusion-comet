@@ -8104,6 +8104,392 @@ mod tests {
         );
     }
 
+    // ---------------------------------------------------------------------------------------
+    // Execute the planned Iceberg scan over real Parquet files, so the proto -> LexOrdering
+    // translation (create_sort_expr against required_schema, direction, null ordering) and the
+    // per-partition merge are both exercised, not just the node name. Runs both the merge path
+    // and the maxFilesPerPartition sort-fallback path and requires them to agree.
+    // ---------------------------------------------------------------------------------------
+    fn write_probe_parquet(dir: &std::path::Path, name: &str, vals: Vec<i32>) -> (String, u64) {
+        use arrow::array::{Int32Array, RecordBatch};
+        use arrow::datatypes::{DataType, Field, Schema as ArrowSchema};
+        use parquet::arrow::ArrowWriter;
+        let mut md = std::collections::HashMap::new();
+        md.insert("PARQUET:field_id".to_string(), "1".to_string());
+        let schema = Arc::new(ArrowSchema::new(vec![Field::new(
+            "id",
+            DataType::Int32,
+            false,
+        )
+        .with_metadata(md)]));
+        let batch =
+            RecordBatch::try_new(Arc::clone(&schema), vec![Arc::new(Int32Array::from(vals))])
+                .unwrap();
+        let path = dir.join(name);
+        let f = std::fs::File::create(&path).unwrap();
+        let mut w = ArrowWriter::try_new(f, schema, None).unwrap();
+        w.write(&batch).unwrap();
+        w.close().unwrap();
+        let size = std::fs::metadata(&path).unwrap().len();
+        (path.to_str().unwrap().to_string(), size)
+    }
+
+    fn iceberg_scan_op_over_files(
+        files: &[(String, u64)],
+        max_files_per_partition: u32,
+        descending: bool,
+    ) -> Operator {
+        let schema_json = serde_json::to_string(
+            &iceberg::spec::Schema::builder()
+                .with_schema_id(0)
+                .with_fields(vec![iceberg::spec::NestedField::required(
+                    1,
+                    "id",
+                    iceberg::spec::Type::Primitive(iceberg::spec::PrimitiveType::Int),
+                )
+                .into()])
+                .build()
+                .expect("schema"),
+        )
+        .expect("serialize schema");
+
+        let int_type = spark_expression::DataType {
+            type_id: 3,
+            type_info: None,
+        };
+        let required_schema = vec![spark_operator::SparkStructField {
+            name: "id".to_string(),
+            data_type: Some(int_type.clone()),
+            nullable: false,
+            metadata: Default::default(),
+        }];
+        let sort_child = Expr {
+            expr_struct: Some(Bound(spark_expression::BoundReference {
+                index: 0,
+                datatype: Some(int_type),
+            })),
+            query_context: None,
+            expr_id: None,
+        };
+        let sort_order = Expr {
+            expr_struct: Some(ExprStruct::SortOrder(Box::new(
+                spark_expression::SortOrder {
+                    child: Some(Box::new(sort_child)),
+                    direction: if descending { 1 } else { 0 },
+                    null_ordering: if descending { 1 } else { 0 },
+                },
+            ))),
+            query_context: None,
+            expr_id: None,
+        };
+        let common = spark_operator::IcebergScanCommon {
+            schema_pool: vec![schema_json],
+            project_field_ids_pool: vec![spark_operator::ProjectFieldIdList { field_ids: vec![1] }],
+            required_schema,
+            table_sort_orders: vec![sort_order],
+            max_files_per_partition,
+            data_file_concurrency_limit: 1,
+            ..Default::default()
+        };
+        let tasks = files
+            .iter()
+            .map(|(path, size)| spark_operator::IcebergFileScanTask {
+                data_file_path: path.clone(),
+                file_size_in_bytes: *size,
+                length: *size,
+                schema_idx: 0,
+                project_field_ids_idx: 0,
+                ..Default::default()
+            })
+            .collect();
+        Operator {
+            plan_id: 1,
+            sql_text_pool: vec![],
+            children: vec![],
+            op_struct: Some(OpStruct::IcebergScan(spark_operator::IcebergScan {
+                common: Some(common),
+                file_scan_tasks: tasks,
+            })),
+        }
+    }
+
+    async fn run_planned_iceberg_scan(
+        files: Vec<Vec<i32>>,
+        max_files_per_partition: u32,
+        descending: bool,
+    ) -> (String, Vec<i32>) {
+        use arrow::array::Int32Array;
+        use datafusion::prelude::SessionContext;
+        use futures::StreamExt;
+
+        let dir = tempfile::tempdir().unwrap();
+        let written: Vec<(String, u64)> = files
+            .into_iter()
+            .enumerate()
+            .map(|(i, vals)| write_probe_parquet(dir.path(), &format!("f{i}.parquet"), vals))
+            .collect();
+        let op = iceberg_scan_op_over_files(&written, max_files_per_partition, descending);
+        let planner = PhysicalPlanner::default();
+        let (_, _, plan) = planner.create_plan(&op, &mut vec![], 1).unwrap();
+        let name = plan.native_plan.name().to_string();
+
+        let ctx = SessionContext::new();
+        let mut stream = plan.native_plan.execute(0, ctx.task_ctx()).unwrap();
+        let mut got = Vec::new();
+        while let Some(b) = stream.next().await {
+            let b = b.unwrap();
+            let col = b.column(0).as_any().downcast_ref::<Int32Array>().unwrap();
+            (0..col.len()).for_each(|i| got.push(col.value(i)));
+        }
+        (name, got)
+    }
+
+    #[tokio::test]
+    async fn probe_planned_merge_and_sort_paths_agree_and_are_sorted() {
+        let files = vec![vec![1, 4, 7], vec![2, 5, 8], vec![3, 6, 9]];
+        let expected: Vec<i32> = (1..=9).collect();
+
+        let (merge_name, merge_rows) = run_planned_iceberg_scan(files.clone(), 64, false).await;
+        assert_eq!(merge_name, "SortPreservingMergeExec");
+        assert_eq!(merge_rows, expected, "k-way merge path");
+
+        // Same data, cap forces the spillable-sort fallback: must produce identical output.
+        let (sort_name, sort_rows) = run_planned_iceberg_scan(files, 1, false).await;
+        assert_eq!(sort_name, "SortExec");
+        assert_eq!(sort_rows, expected, "sort-fallback path");
+    }
+
+    #[tokio::test]
+    async fn probe_planned_scan_honors_descending_from_proto() {
+        let files = vec![vec![9, 6, 3], vec![8, 5, 2], vec![7, 4, 1]];
+        let expected: Vec<i32> = (1..=9).rev().collect();
+
+        let (merge_name, merge_rows) = run_planned_iceberg_scan(files.clone(), 64, true).await;
+        assert_eq!(merge_name, "SortPreservingMergeExec");
+        assert_eq!(merge_rows, expected, "descending k-way merge path");
+
+        let (sort_name, sort_rows) = run_planned_iceberg_scan(files, 1, true).await;
+        assert_eq!(sort_name, "SortExec");
+        assert_eq!(sort_rows, expected, "descending sort-fallback path");
+    }
+
+    fn write_probe_parquet_nullable(
+        dir: &std::path::Path,
+        name: &str,
+        vals: Vec<Option<i32>>,
+    ) -> (String, u64) {
+        use arrow::array::{Int32Array, RecordBatch};
+        use arrow::datatypes::{DataType, Field, Schema as ArrowSchema};
+        use parquet::arrow::ArrowWriter;
+        let mut md = std::collections::HashMap::new();
+        md.insert("PARQUET:field_id".to_string(), "1".to_string());
+        let schema = Arc::new(ArrowSchema::new(vec![Field::new(
+            "id",
+            DataType::Int32,
+            true,
+        )
+        .with_metadata(md)]));
+        let batch =
+            RecordBatch::try_new(Arc::clone(&schema), vec![Arc::new(Int32Array::from(vals))])
+                .unwrap();
+        let path = dir.join(name);
+        let f = std::fs::File::create(&path).unwrap();
+        let mut w = ArrowWriter::try_new(f, schema, None).unwrap();
+        w.write(&batch).unwrap();
+        w.close().unwrap();
+        let size = std::fs::metadata(&path).unwrap().len();
+        (path.to_str().unwrap().to_string(), size)
+    }
+
+    fn iceberg_scan_op_nullable(
+        files: &[(String, u64)],
+        max_files_per_partition: u32,
+        descending: bool,
+        nulls_first: bool,
+    ) -> Operator {
+        let schema_json = serde_json::to_string(
+            &iceberg::spec::Schema::builder()
+                .with_schema_id(0)
+                .with_fields(vec![iceberg::spec::NestedField::optional(
+                    1,
+                    "id",
+                    iceberg::spec::Type::Primitive(iceberg::spec::PrimitiveType::Int),
+                )
+                .into()])
+                .build()
+                .expect("schema"),
+        )
+        .expect("serialize schema");
+        let int_type = spark_expression::DataType {
+            type_id: 3,
+            type_info: None,
+        };
+        let required_schema = vec![spark_operator::SparkStructField {
+            name: "id".to_string(),
+            data_type: Some(int_type.clone()),
+            nullable: true,
+            metadata: Default::default(),
+        }];
+        let sort_child = Expr {
+            expr_struct: Some(Bound(spark_expression::BoundReference {
+                index: 0,
+                datatype: Some(int_type),
+            })),
+            query_context: None,
+            expr_id: None,
+        };
+        let sort_order = Expr {
+            expr_struct: Some(ExprStruct::SortOrder(Box::new(
+                spark_expression::SortOrder {
+                    child: Some(Box::new(sort_child)),
+                    direction: if descending { 1 } else { 0 },
+                    null_ordering: if nulls_first { 0 } else { 1 },
+                },
+            ))),
+            query_context: None,
+            expr_id: None,
+        };
+        let common = spark_operator::IcebergScanCommon {
+            schema_pool: vec![schema_json],
+            project_field_ids_pool: vec![spark_operator::ProjectFieldIdList { field_ids: vec![1] }],
+            required_schema,
+            table_sort_orders: vec![sort_order],
+            max_files_per_partition,
+            data_file_concurrency_limit: 1,
+            ..Default::default()
+        };
+        let tasks = files
+            .iter()
+            .map(|(path, size)| spark_operator::IcebergFileScanTask {
+                data_file_path: path.clone(),
+                file_size_in_bytes: *size,
+                length: *size,
+                schema_idx: 0,
+                project_field_ids_idx: 0,
+                ..Default::default()
+            })
+            .collect();
+        Operator {
+            plan_id: 1,
+            sql_text_pool: vec![],
+            children: vec![],
+            op_struct: Some(OpStruct::IcebergScan(spark_operator::IcebergScan {
+                common: Some(common),
+                file_scan_tasks: tasks,
+            })),
+        }
+    }
+
+    async fn run_nullable(
+        files: Vec<Vec<Option<i32>>>,
+        cap: u32,
+        descending: bool,
+        nulls_first: bool,
+    ) -> (String, Vec<Option<i32>>) {
+        use arrow::array::Int32Array;
+        use datafusion::prelude::SessionContext;
+        use futures::StreamExt;
+        let dir = tempfile::tempdir().unwrap();
+        let written: Vec<(String, u64)> = files
+            .into_iter()
+            .enumerate()
+            .map(|(i, v)| write_probe_parquet_nullable(dir.path(), &format!("n{i}.parquet"), v))
+            .collect();
+        let op = iceberg_scan_op_nullable(&written, cap, descending, nulls_first);
+        let planner = PhysicalPlanner::default();
+        let (_, _, plan) = planner.create_plan(&op, &mut vec![], 1).unwrap();
+        let name = plan.native_plan.name().to_string();
+        let ctx = SessionContext::new();
+        let mut stream = plan.native_plan.execute(0, ctx.task_ctx()).unwrap();
+        let mut got = Vec::new();
+        while let Some(b) = stream.next().await {
+            let b = b.unwrap();
+            let col = b.column(0).as_any().downcast_ref::<Int32Array>().unwrap();
+            for i in 0..col.len() {
+                got.push(if col.is_null(i) {
+                    None
+                } else {
+                    Some(col.value(i))
+                });
+            }
+        }
+        (name, got)
+    }
+
+    #[tokio::test]
+    async fn probe_null_ordering_round_trips_through_proto() {
+        // ASC NULLS FIRST (Iceberg's default for asc): each file is sorted that way.
+        let asc_nf = vec![
+            vec![None, Some(1), Some(4)],
+            vec![None, Some(2), Some(5)],
+            vec![Some(3), Some(6)],
+        ];
+        for cap in [64u32, 1u32] {
+            let (name, rows) = run_nullable(asc_nf.clone(), cap, false, true).await;
+            assert_eq!(
+                rows,
+                vec![
+                    None,
+                    None,
+                    Some(1),
+                    Some(2),
+                    Some(3),
+                    Some(4),
+                    Some(5),
+                    Some(6)
+                ],
+                "asc nulls first via {name}"
+            );
+        }
+
+        // DESC NULLS LAST (Iceberg's default for desc).
+        let desc_nl = vec![
+            vec![Some(6), Some(3), None],
+            vec![Some(5), Some(2), None],
+            vec![Some(4), Some(1)],
+        ];
+        for cap in [64u32, 1u32] {
+            let (name, rows) = run_nullable(desc_nl.clone(), cap, true, false).await;
+            assert_eq!(
+                rows,
+                vec![
+                    Some(6),
+                    Some(5),
+                    Some(4),
+                    Some(3),
+                    Some(2),
+                    Some(1),
+                    None,
+                    None
+                ],
+                "desc nulls last via {name}"
+            );
+        }
+
+        // Non-default combination: ASC NULLS LAST. Iceberg's SortField allows it, so the proto
+        // must round-trip it rather than assuming the direction's default.
+        let asc_nl = vec![vec![Some(1), Some(4), None], vec![Some(2), Some(5), None]];
+        for cap in [64u32, 1u32] {
+            let (name, rows) = run_nullable(asc_nl.clone(), cap, false, false).await;
+            assert_eq!(
+                rows,
+                vec![Some(1), Some(2), Some(4), Some(5), None, None],
+                "asc nulls last via {name}"
+            );
+        }
+
+        // Non-default combination: DESC NULLS FIRST.
+        let desc_nf = vec![vec![None, Some(5), Some(1)], vec![None, Some(4), Some(2)]];
+        for cap in [64u32, 1u32] {
+            let (name, rows) = run_nullable(desc_nf.clone(), cap, true, true).await;
+            assert_eq!(
+                rows,
+                vec![None, None, Some(5), Some(4), Some(2), Some(1)],
+                "desc nulls first via {name}"
+            );
+        }
+    }
+
     /// Builds an IcebergScan Operator with `num_files` file-scan tasks and a reported identity
     /// ordering on a single Int column, so create_plan takes the sort-merge path.
     fn iceberg_scan_op_with_ordering(num_files: usize, max_files_per_partition: u32) -> Operator {
