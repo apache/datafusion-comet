@@ -128,13 +128,20 @@ case class CometIcebergNativeScanExec(
   // Only accessed during execution, not planning
   def numPartitions: Int = perPartitionData.length
 
-  // Spark's EnsureRequirements runs before Comet converts this scan, so it already eliminates a
-  // redundant shuffle based on the vanilla BatchScanExec's KeyGroupedPartitioning (storage-
-  // partitioned join) while the leaf is still a BatchScanExec. This node therefore does not need
-  // to re-report partitioning: UnknownPartitioning is enough, and it keeps the whole SPJ
-  // negotiation (including commonPartitionValues push-down under AQE) on BatchScanExec, which is
-  // the only node Spark can push into.
-  override lazy val outputPartitioning: Partitioning = UnknownPartitioning(numPartitions)
+  // Like BatchScanExec on Spark 3.5 and later without a key-grouped partitioning, the scan does
+  // not know its partition count while planning, because dynamic partition pruning decides which
+  // tasks survive and its subqueries resolve at execution. AQE reads outputPartitioning while it
+  // optimizes a stage (ValidateRequirements after CoalesceShufflePartitions), which is before
+  // CometPlanAdaptiveDynamicPruningFilters converts the DPP placeholders, so serializing the
+  // tasks here would run a placeholder subquery. At execution, CometNativeExec sizes the native
+  // RDD from perPartitionData instead.
+  //
+  // UnknownPartitioning (rather than re-reporting the vanilla BatchScanExec's KeyGroupedPartitioning)
+  // also keeps storage-partitioned joins correct: Spark's EnsureRequirements runs before Comet
+  // converts this scan and already eliminated any redundant shuffle while the leaf was still a
+  // BatchScanExec, so the whole SPJ negotiation (including commonPartitionValues push-down under
+  // AQE) stays on BatchScanExec, the only node Spark can push into.
+  override lazy val outputPartitioning: Partitioning = UnknownPartitioning(0)
 
   // Report the Iceberg-reported ordering (gated to what the native per-partition merge honours) so
   // Spark elides redundant sorts above the scan. The gate ran once in CometScanRule and stashed the
@@ -309,7 +316,8 @@ case class CometIcebergNativeScanExec(
       defaultNumPartitions = perPartitionData.length,
       numOutputCols = output.length,
       nativeMetrics = nativeMetrics,
-      subqueries = Seq.empty) {
+      subqueries = Seq.empty,
+      outputTypes = output.map(_.dataType)) {
       override def compute(split: Partition, context: TaskContext): Iterator[ColumnarBatch] = {
         // Register before super.compute creates the CometExecIterator, so this listener runs
         // after the iterator's close has published the final scan metrics.

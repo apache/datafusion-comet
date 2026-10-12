@@ -35,7 +35,8 @@ use datafusion::physical_plan::metrics::{
     BaselineMetrics, Count, ExecutionPlanMetricsSet, MetricBuilder, MetricsSet,
 };
 use datafusion::physical_plan::{
-    DisplayAs, DisplayFormatType, ExecutionPlan, Partitioning, PlanProperties,
+    DisplayAs, DisplayFormatType, EmptyRecordBatchStream, ExecutionPlan, Partitioning,
+    PlanProperties,
 };
 use futures::{Stream, StreamExt, TryStreamExt};
 use iceberg::arrow::{ArrowReader, ScanMetrics};
@@ -83,11 +84,6 @@ pub struct IcebergScanExec {
     tasks: Vec<FileScanTask>,
     /// Number of data files to read concurrently
     data_file_concurrency_limit: usize,
-    /// FileIO (and, for S3, the JVM credential bridge behind it) built once at plan time and shared
-    /// across partitions. FileIO is cheap to clone (Arc-backed), so each `execute` clones this
-    /// rather than rebuilding the storage factory + credential bridge. This matters in the ordered
-    /// path, where the scan is one partition per file and `execute` is called once per file.
-    file_io: FileIO,
     /// Table sort order Iceberg reported, translated against `output_schema`. `Some` makes this a
     /// multi-partition scan: one sorted stream per task, which a SortPreservingMergeExec above
     /// merges back into one sorted partition. It is also advertised in `plan_properties`. `None`
@@ -146,16 +142,6 @@ impl IcebergScanExec {
 
         let metrics = ExecutionPlanMetricsSet::new();
 
-        // Build FileIO (and the S3 credential bridge) once here rather than per `execute`. In the
-        // ordered path `execute` is called once per file, so rebuilding it there would repeat the
-        // JNI/reflection credential-bridge construction for every file in the partition.
-        let file_io = load_file_io(
-            &catalog_properties,
-            &metadata_location,
-            &catalog_name,
-            AccessMode::Read,
-        )?;
-
         Ok(Self {
             metadata_location,
             output_schema,
@@ -164,7 +150,6 @@ impl IcebergScanExec {
             catalog_name,
             tasks,
             data_file_concurrency_limit,
-            file_io,
             ordering,
             reader: OnceLock::new(),
             delete_file_sizes: Arc::new(Mutex::new(HashMap::new())),
@@ -257,7 +242,17 @@ impl IcebergScanExec {
         context: Arc<TaskContext>,
     ) -> DFResult<SendableRecordBatchStream> {
         let output_schema = Arc::clone(&self.output_schema);
-        let file_io = self.file_io.clone();
+        // DPP can leave an empty execution partition so that global aggregates still run.
+        // No files need reading, so do not initialize storage or request catalog credentials.
+        if tasks.is_empty() {
+            return Ok(Box::pin(EmptyRecordBatchStream::new(output_schema)));
+        }
+        let file_io = load_file_io(
+            &self.catalog_properties,
+            &self.metadata_location,
+            &self.catalog_name,
+            AccessMode::Read,
+        )?;
         let batch_size = context.session_config().batch_size();
 
         let metrics = IcebergScanMetrics::new(&self.metrics, partition);
@@ -320,7 +315,7 @@ impl IcebergScanExec {
         let scan_metrics = scan_result.metrics().clone();
         let stream = scan_result.stream();
 
-        let spark_options = SparkParquetOptions::new(EvalMode::Legacy, "UTC", false);
+        let spark_options = SparkParquetOptions::new(EvalMode::Legacy, "UTC");
         let adapter_factory = SparkPhysicalExprAdapterFactory::new(spark_options, None);
 
         let adapted_stream =
@@ -748,7 +743,7 @@ mod tests {
             Field::new("a", DataType::Int64, false),
             Field::new("b", DataType::Int64, false),
         ]));
-        let mut options = super::SparkParquetOptions::new(super::EvalMode::Legacy, "UTC", false);
+        let mut options = super::SparkParquetOptions::new(super::EvalMode::Legacy, "UTC");
         options.case_sensitive = true;
         let factory = super::SparkPhysicalExprAdapterFactory::new(options, None);
         for name in ["a", "b"] {
