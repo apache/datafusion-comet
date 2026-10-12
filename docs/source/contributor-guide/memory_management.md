@@ -214,6 +214,15 @@ the call never returns. Nothing releases them until Spark's final task cleanup, 
 nobody can use for the rest of the task. Any caller that swallows the exception has to reconcile
 that grant, and the only figure available for doing so is the task-wide one above.
 
+**A parked acquire can wake up to a missing task entry.** Spark removes the task's `memoryForTask`
+entry when its balance reaches zero, and an acquire that was waiting in `lock.wait()` and wakes
+afterwards throws a `NoSuchElementException` ("key not found" and the task id) instead of a grant.
+`CometTaskMemoryManager` retries that one case. A missing entry means the task held nothing from
+Spark at that moment, so the failed call has no partial grant to reconcile, and the retry registers
+the task again and waits for its share as the first call would have. After a few attempts it returns
+a zero grant, which the native side treats as a refusal and spills. JVM consumers that call
+`allocatePage` directly are not covered; that gap is tracked in #6304.
+
 **A consumer whose `spill` returns zero takes budget it can never give back.**
 `NativeMemoryConsumer.spill` returns `0`, so Spark can select it as a spill victim and reclaim
 nothing from it; it is only ever a spill trigger. The bytes it holds are real, so other consumers in
@@ -387,8 +396,11 @@ An operator that never calls `try_grow` is invisible to the pool no matter how m
 ### Native writers
 
 Both native writers reserve what they hold between batches through a single consumer per task,
-`ParquetWriterExec[N]` or `IcebergWriteExec[N]`, resized after every batch. Neither can spill, so
-when the pool refuses a resize the task fails with a `CometNativeException` whose message starts
+`ParquetWriterExec[N]` or `IcebergWriteExec[N]`, resized after every batch. Neither can spill. A
+fanout Iceberg write gives memory back instead, by closing partitions early when the pool refuses a
+resize, as described below, so a refusal never fails it. An exception Spark throws during a resize,
+such as a failed spill or a killed task, still fails the task. When the pool refuses any other
+write's resize, the task fails with a `CometNativeException` whose message starts
 `Additional allocation failed for` and names the consumer. That is a task failure Spark can retry.
 Unreserved, the same memory would count only toward the container limit, where exceeding it kills
 the executor.
@@ -409,10 +421,13 @@ the executor.
   it has flushed since its last part was uploaded. At the default row-group size
   (`write.parquet.row-group-size-bytes`, 128 MiB) that is the last row group it flushed. The
   reservation also covers the rows each partition holds back, first for its dictionary choice and
-  then until they fill the 1000-row unit the rolling writer is fed in. It does not cover what
-  parquet-rs holds beyond the encoded size: dictionary hash tables, unencoded dictionary indices
-  and buffer capacity. Native writes decline Bloom filters today, and neither figure would include
-  them.
+  then until they fill the 1000-row unit the rolling writer is fed in. When the pool refuses a
+  fanout write's resize, the writer writes out and closes the partitions holding the most, file
+  and held rows together, until the resize succeeds, so the write ends with more files rather than
+  failing. Each file also reports to its partition's total, which is how the writer finds them.
+  The reservation does not cover what parquet-rs holds beyond the encoded size: dictionary hash
+  tables, unencoded dictionary indices and buffer capacity. Native writes decline Bloom filters
+  today, and neither figure would include them.
 
 The writers register one consumer per task rather than one per open file because every consumer
 registered with `fair_unified` lowers the share of every other consumer in the task. A consumer per

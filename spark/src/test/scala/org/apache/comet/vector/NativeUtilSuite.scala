@@ -27,19 +27,20 @@ import scala.util.Using
 
 import org.apache.arrow.c.{ArrowArray, ArrowSchema, Data}
 import org.apache.arrow.memory.RootAllocator
-import org.apache.arrow.vector.{IntVector, UInt4Vector, VarCharVector}
+import org.apache.arrow.vector.{IntVector, TimeStampMicroTZVector, UInt4Vector, VarCharVector}
 import org.apache.arrow.vector.complex.StructVector
 import org.apache.arrow.vector.dictionary.Dictionary
 import org.apache.arrow.vector.dictionary.DictionaryProvider.MapDictionaryProvider
+import org.apache.arrow.vector.types.TimeUnit
 import org.apache.arrow.vector.types.pojo.{ArrowType, DictionaryEncoding, Field, FieldType}
 import org.apache.spark.sql.CometTestBase
 import org.apache.spark.sql.comet.CometExec
 import org.apache.spark.sql.comet.util.Utils
 import org.apache.spark.sql.execution.vectorized.ConstantColumnVector
-import org.apache.spark.sql.types.{BinaryType, IntegerType, StringType, StructField, StructType}
+import org.apache.spark.sql.types.{ArrayType, BinaryType, DataType, IntegerType, MapType, StringType, StructField, StructType, TimestampNTZType, TimestampType}
 import org.apache.spark.sql.vectorized.{ColumnarBatch, ColumnVector}
 
-import org.apache.comet.{CometArrowAllocator, CometArrowImportAllocator, CometConf}
+import org.apache.comet.{CometArrowAllocator, CometArrowImportAllocator, CometConf, CometRuntimeException}
 import org.apache.comet.serde.{OperatorOuterClass, QueryPlanSerde}
 
 class NativeUtilSuite extends CometTestBase {
@@ -533,6 +534,103 @@ class NativeUtilSuite extends CometTestBase {
         .collect()
 
       assert(actual.sameElements(Array(variantType)))
+    }
+  }
+
+  private def timestampField(name: String, timeZone: String): Field =
+    new Field(
+      name,
+      FieldType.nullable(new ArrowType.Timestamp(TimeUnit.MICROSECOND, timeZone)),
+      null)
+
+  test("timestampLabelMismatch finds a wrong timezone label at any depth") {
+    def mismatch(field: Field, dataType: DataType): Option[String] =
+      NativeUtil.timestampLabelMismatch(field, dataType, null, "col[0]")
+
+    assert(mismatch(timestampField("ts", "UTC"), TimestampType).isEmpty)
+    assert(mismatch(timestampField("ts", null), TimestampNTZType).isEmpty)
+    assert(
+      mismatch(timestampField("ts", "Etc/UTC"), TimestampType).contains(
+        "col[0]: expected TimestampType labelled UTC, found Timestamp(MICROSECOND, Etc/UTC)"))
+    // An LTZ value labelled as NTZ, which kernels would read as wall-clock time.
+    assert(mismatch(timestampField("ts", null), TimestampType).isDefined)
+    assert(mismatch(timestampField("ts", "UTC"), TimestampNTZType).isDefined)
+
+    val struct = new Field(
+      "s",
+      FieldType.nullable(ArrowType.Struct.INSTANCE),
+      Seq(
+        new Field("id", FieldType.nullable(new ArrowType.Int(32, true)), null),
+        new Field(
+          "events",
+          FieldType.nullable(ArrowType.List.INSTANCE),
+          Seq(timestampField("element", null)).asJava)).asJava)
+    val structType =
+      StructType(
+        Seq(StructField("id", IntegerType), StructField("events", ArrayType(TimestampType))))
+    assert(mismatch(struct, structType).exists(_.startsWith("col[0].events.element: ")))
+
+    val entries = new Field(
+      "entries",
+      FieldType.notNullable(ArrowType.Struct.INSTANCE),
+      Seq(
+        new Field("key", FieldType.notNullable(ArrowType.Utf8.INSTANCE), null),
+        timestampField("value", "+00:00")).asJava)
+    val map = new Field("m", FieldType.nullable(new ArrowType.Map(false)), Seq(entries).asJava)
+    assert(
+      mismatch(map, MapType(StringType, TimestampType)).exists(_.startsWith("col[0].value: ")))
+  }
+
+  test("checkTimestampLabels closes a batch it rejects and keeps one it accepts") {
+    Using.resource(new RootAllocator(Long.MaxValue)) { allocator =>
+      def labelled(timeZone: String): ColumnarBatch = {
+        val vector = new TimeStampMicroTZVector("ts", allocator, timeZone)
+        vector.allocateNew(1)
+        vector.setSafe(0, 1L)
+        vector.setValueCount(1)
+        new ColumnarBatch(Array[ColumnVector](new CometPlainVector(vector)), 1)
+      }
+      Using.resource(new NativeUtil) { nativeUtil =>
+        val accepted = labelled("UTC")
+        nativeUtil.checkTimestampLabels(accepted, Seq(TimestampType))
+        assert(allocator.getAllocatedMemory > 0)
+        accepted.close()
+
+        val error = intercept[CometRuntimeException] {
+          nativeUtil.checkTimestampLabels(labelled("Etc/UTC"), Seq(TimestampType))
+        }
+        assert(error.getMessage.contains("at col[0]: expected TimestampType labelled UTC"))
+        assert(allocator.getAllocatedMemory == 0)
+      }
+    }
+  }
+
+  test("checkTimestampLabels reads a dictionary column's label from its imported values") {
+    withIsolatedStructAllocator { (nativeUtil, allocator, _) =>
+      val indexType = new ArrowType.Int(32, true)
+      val encoding = new DictionaryEncoding(0L, false, indexType)
+      val indexField = new Field("ts", new FieldType(true, indexType, encoding), null)
+      val (arrays, schemas) = nativeUtil.allocateArrowStructs(1)
+
+      Using.resources(
+        new TimeStampMicroTZVector("dictionary", allocator, "Etc/UTC"),
+        new IntVector(indexField, allocator)) { (values, indices) =>
+        values.allocateNew(1)
+        values.setSafe(0, 1L)
+        values.setValueCount(1)
+        indices.allocateNew(1)
+        indices.setSafe(0, 0)
+        indices.setValueCount(1)
+        val provider = new MapDictionaryProvider(new Dictionary(values, encoding))
+        Data.exportVector(allocator, indices, provider, arrays(0), schemas(0))
+      }
+
+      val batch = new ColumnarBatch(nativeUtil.importVector(arrays, schemas).toArray, 1)
+      assert(batch.column(0).isInstanceOf[CometDictionaryVector])
+      val error = intercept[CometRuntimeException] {
+        nativeUtil.checkTimestampLabels(batch, Seq(TimestampType))
+      }
+      assert(error.getMessage.contains("found Timestamp(MICROSECOND, Etc/UTC)"), error.getMessage)
     }
   }
 }

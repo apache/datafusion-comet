@@ -134,6 +134,7 @@ private object HashUtils {
   }
 
   private def unsupportedReasonFor(dt: DataType): Option[String] = dt match {
+    // Keep in sync with CometShuffleExchangeExec's hash-key restriction until #5994 is fixed.
     case d: DecimalType if d.precision > 18 => Some(unsupportedDecimalReason)
     case s: StructType =>
       s.fields.iterator.flatMap(f => unsupportedReasonFor(f.dataType).iterator).toSeq.headOption
