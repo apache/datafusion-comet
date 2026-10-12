@@ -579,9 +579,10 @@ object CometShuffleExchangeExec
    * Whether the shuffle hashes into more than one partition a key that native shuffle, reading
    * converted rows, may put in a different partition from Spark's partitioner. Native shuffle
    * must not take over such a shuffle from the JVM columnar shuffle: a join with an input that is
-   * still partitioned by Spark would put matching keys in different partitions. Spark reads a
-   * string's bytes as they are, but importing the converted batch into native replaces invalid
-   * UTF-8 before evaluating the key, including values computed from strings such as `hash(s)`.
+   * still partitioned by Spark would put matching keys in different partitions. Such a key is a
+   * string, or any value computed from one, such as `hash(s)`. Spark reads the string's bytes as
+   * they are, but the import of the converted batch into native replaces invalid UTF-8 before
+   * native shuffle evaluates the key.
    */
   private def hashesDifferentlyFromSpark(s: ShuffleExchangeExec): Boolean =
     s.outputPartitioning match {

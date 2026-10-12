@@ -180,15 +180,15 @@ class CometFuzzTestSuite extends CometFuzzTestBase {
       }
       assert(cometShuffleExchanges.length == expectedNumCometShuffles)
 
-      // With the config enabled these keys do run through native shuffle. This is the widest
-      // nested-type coverage in the repo, so it is worth asserting that they are admitted rather
-      // than only that they fall back.
+      // Enabling nested keys admits native shuffle, including wide decimal leaves.
       withSQLConf(CometConf.COMET_SHUFFLE_NATIVE_HASH_PARTITIONING_NESTED_ENABLED.key -> "true") {
         val enabledDf = spark.sql(sql)
         enabledDf.collect()
         val enabledPlan =
           enabledDf.queryExecution.executedPlan.asInstanceOf[AdaptiveSparkPlanExec].executedPlan
-        assert(collectCometShuffleExchanges(enabledPlan).length == 1)
+        assert(
+          collectCometShuffleExchanges(enabledPlan).length == 1,
+          s"Unexpected shuffle for ${df.schema(col)}")
       }
     }
   }

@@ -443,7 +443,7 @@ pub(crate) fn match_struct_fields(
 
     // `None` marks an id that more than one file field carries.
     let from_id_to_index: HashMap<i32, Option<usize>> = if should_match_by_id {
-        let mut map = HashMap::new();
+        let mut map = HashMap::with_capacity(from_fields.len());
         for (i, field) in from_fields.iter().enumerate() {
             if let Some(id) = field_id(field) {
                 map.entry(id).and_modify(|m| *m = None).or_insert(Some(i));
@@ -465,7 +465,8 @@ pub(crate) fn match_struct_fields(
 
     // Group file field indices by folded name so a case-insensitive collision is detected
     // (Spark's `caseInsensitiveParquetFieldMap`) rather than silently overwritten.
-    let mut folded_to_indices: HashMap<&str, Vec<usize>> = HashMap::new();
+    let mut folded_to_indices: HashMap<&str, Vec<usize>> =
+        HashMap::with_capacity(from_folded.len());
     for (i, folded) in from_folded.iter().enumerate() {
         folded_to_indices
             .entry(folded.as_str())
@@ -1339,7 +1340,11 @@ mod tests {
     fn isolates_azure_containers_in_cache_and_shared_runtime() {
         use datafusion::execution::runtime_env::RuntimeEnvBuilder;
 
-        let options = HashMap::from([("fs.azure.account.key".into(), "c2VjcmV0".into())]);
+        let options = HashMap::from([
+            ("comet.azure.resolution".into(), "resolved".into()),
+            ("comet.azure.auth.type".into(), "SharedKey".into()),
+            ("fs.azure.account.key".into(), "c2VjcmV0".into()),
+        ]);
         let runtime = RuntimeEnvBuilder::new()
             .with_object_store_registry(Arc::new(super::CometObjectStoreRegistry::default()))
             .build_arc()

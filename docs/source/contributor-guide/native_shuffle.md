@@ -57,7 +57,8 @@ Native shuffle (`CometExchange`) is selected when all of the following condition
    uses native shuffle instead, provided native shuffle supports the partitioning and the
    columns, and a `CometSparkToColumnarExec` converts the child's rows to Arrow for it. A shuffle
    that hashes a string or a value computed from a string stays on JVM shuffle, because native
-   shuffle would not put every row in the partition Spark's partitioner does (`CometShuffleExchangeExec.convertsInputForNativeShuffle`).
+   shuffle would not put every row in the partition Spark's partitioner does
+   (`CometShuffleExchangeExec.convertsInputForNativeShuffle`).
 
 3. **Supported partitioning type**: Native shuffle supports:
    - `HashPartitioning`
@@ -524,7 +525,7 @@ independently compressed, allowing parallel decompression during reads.
 | Input format        | Columnar (direct from Comet operators) | Row-based (via ColumnarToRowExec) |
 | Partitioning logic  | Rust implementation                    | Spark's partitioner               |
 | Supported schemes   | Hash, Range, Single, RoundRobin        | Hash, Range, Single, RoundRobin   |
-| Partition key types | Primitives only (Hash, Range)          | Any type                          |
+| Partition key types | See the hash and range rules above     | Any type                          |
 | Performance         | Higher (no format conversion)          | Lower (columnar→row→columnar)     |
 | Writer variants     | Single path                            | Bypass (hash) and sort-based      |
 
