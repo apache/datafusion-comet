@@ -45,7 +45,7 @@ flowchart LR
 
   PRTIER["PR tier<br>Linux build, lint, Rust tests<br>TPC-H / TPC-DS<br>Comet suites, Spark 4.1"]
   QUEUE["Queue tier, on top of the PR tier<br>Spark SQL, Spark 4.1<br>Iceberg 1.11<br>macOS build and Comet suites<br>Benchmark check, Delta gate<br>PyArrow UDF, Spark 4.0 / 4.1 / 4.2"]
-  NIGHTLY["Nightly tier<br>Comet suites, Spark 3.4 / 3.5 / 4.0 / 4.2<br>Spark SQL, Spark 3.5 / 4.0 / 4.2<br>Iceberg 1.8 / 1.9 / 1.10"]
+  NIGHTLY["Nightly tier<br>Comet suites, Spark 3.4 / 3.5 / 4.0 / 4.2<br>Spark SQL, Spark 3.5 / 4.0 / 4.2<br>Iceberg 1.8 / 1.9 / 1.10<br>Delta contrib, Spark 3.5 / 4.0 / 4.1"]
   S34["Neither tier<br>Spark SQL, Spark 3.4"]
   CACHE["Cache-refresh-only mode<br>the three cache-writing jobs, plus Lint"]
 ```
@@ -62,20 +62,19 @@ Suite by suite:
 | macOS build and Comet test suites                 | with label   | yes         | no      |
 | Benchmark compile and lint check                  | with label   | yes         | no      |
 | Delta contrib build gate                          | with label   | yes         | no      |
-| Delta contrib tests, Spark 3.5                    | with label   | yes         | no      |
 | PyArrow UDF tests, Spark 4.0 / 4.1 / 4.2          | with label   | yes         | no      |
 | Comet test suites, Spark 3.4 / 3.5 / 4.0 / 4.2    | with label   | no          | yes     |
 | Spark SQL tests, Spark 3.5 / 4.0 / 4.2            | with label   | no          | yes     |
 | Iceberg Spark SQL tests, Iceberg 1.8 / 1.9 / 1.10 | with label   | no          | yes     |
-| Delta contrib tests, Spark 4.0 / 4.1              | with label   | no          | yes     |
+| Delta contrib tests, Spark 3.5 / 4.0 / 4.1        | with label   | no          | yes     |
 | Spark SQL tests, Spark 3.4                        | with label   | no          | no      |
 
 The **PR tier** is the fast feedback loop while a change is being iterated on. The **queue
 tier** is the authoritative gate: everything the PR tier runs plus the suites that must pass before
 a change lands, evaluated against the merge result rather than the pull request head. The queue
-runs one Spark version and one Iceberg version, the ones the default build profile targets, and the
-Delta contrib suites against Spark 3.5 alone. The **nightly tier** runs the other Spark, Iceberg and
-Delta versions once a day against `main` as it stands;
+runs one Spark version and one Iceberg version, the ones the default build profile targets. The
+**nightly tier** runs the other Spark and Iceberg versions and every Delta contrib suite once a day
+against `main` as it stands;
 see [Nightly runs](#nightly-runs) below. Nothing in the queue tier runs again
 on push to `main`, because the queue already tested the exact tree that landed. The exceptions are
 the Linux and macOS builds, which also run on push so that the dependency caches on `main` stay
@@ -176,6 +175,8 @@ does not cover. Some examples:
 - anything that touches Hive table support, `InsertIntoHiveTable`, or the `sql/hive` parts of
   the 4.1 diff
 - anything touching Iceberg reflection, the Iceberg scan or write path, or the Iceberg diffs
+- a change to `contrib/delta-spark/` or to the scan and native code it builds on;
+  `run-delta-tests` runs the Delta contrib suites against Spark 3.5, 4.0 and 4.1
 - native code with platform-specific behavior, or a dependency bump that changes what is
   compiled on macOS
 - a change to the benchmark sources under `spark/src/test/scala/org/apache/spark/sql/benchmark`
@@ -251,7 +252,7 @@ re-armed automatically.
 `ci.yml` also runs on a schedule, at 06:00 UTC every day, against what landed on `main` since the
 last successful scheduled run. That run executes only the nightly tier: the Comet test suites against the Spark
 profiles other than 4.1, the Spark SQL suites for Spark 3.5, 4.0 and 4.2, the Iceberg suites for
-1.8, 1.9 and 1.10, and the Delta contrib suites for Spark 4.0 and 4.1, each only when the day's
+1.8, 1.9 and 1.10, and the Delta contrib suites for Spark 3.5, 4.0 and 4.1, each only when the day's
 changes touched files it covers. The queue already ran
 everything else against the same tree, so nothing in the queue tier is repeated. A day with no
 merges, or with only documentation changes, runs nothing.

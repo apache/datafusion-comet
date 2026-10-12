@@ -19,14 +19,13 @@ ruleset in `.asf.yaml`. That splits CI into three tiers:
   profile (4.1) only, and nothing else.
 - **Queue tier** (`queue`): the authoritative gate. The PR tier plus the
   macOS build, the benchmark compile check, the Delta contrib build gate, the
-  PyArrow UDF suite, Spark SQL on Spark 4.1, Iceberg 1.11 and the Delta
-  contrib suites on Spark 3.5, evaluated against the merge result rather than
-  against the PR head. One Spark version and one Iceberg version, both the
-  default profile's, and one Delta profile.
+  PyArrow UDF suite, Spark SQL on Spark 4.1 and Iceberg 1.11, evaluated
+  against the merge result rather than against the PR head. One Spark version
+  and one Iceberg version, both the default profile's.
 - **Nightly tier** (`nightly`): the regression sweep of everything else, once
   a day against `main` as it stands. The Comet test suites against the other
   four Spark profiles, Spark SQL on Spark 3.5, 4.0 and 4.2, Iceberg
-  1.8/1.9/1.10, and the Delta contrib suites on Spark 4.0 and 4.1. See
+  1.8/1.9/1.10, and the Delta contrib suites on Spark 3.5, 4.0 and 4.1. See
   [Nightly tier](#nightly-tier) below for how a failure surfaces.
 
 Every queue-only and nightly job has a `run-*` label that opts a pull request
@@ -116,7 +115,6 @@ tiers partition the list and that the `pr` tier is exactly the default profile.
                                                                 pr_benchmark_check  run-benchmark-check
                                                                 delta_build_gate    run-delta-build-gate
                                                                 pyarrow_udf_test    run-pyarrow-udf-tests
-                                                                delta_3_5           run-delta-tests
                                                                 spark_4_1           run-spark-4.1-tests
   label or dispatch only                                        spark_4_1 sql_hive  run-spark-4.1-hive-tests
   ----------------------                                        iceberg_1_11        run-iceberg-tests
@@ -131,6 +129,7 @@ tiers partition the list and that the `pr` tier is exactly the default profile.
                                       iceberg_1_8         run-iceberg-tests
                                       iceberg_1_9         run-iceberg-tests
                                       iceberg_1_10        run-iceberg-tests
+                                      delta_3_5           run-delta-tests
                                       delta_4_0           run-delta-tests
                                       delta_4_1           run-delta-tests
 
@@ -169,7 +168,7 @@ tiers partition the list and that the `pr` tier is exactly the default profile.
 | `pr_benchmark_check` | merge group, **or** PR with `run-benchmark-check`                                                                                                                                                                                                      | benchmark sources only              |
 | `delta_build_gate`   | merge group, **or** PR with `run-delta-build-gate`                                                                                                                                                                                                     | main sources, poms, `contrib/delta` |
 | `pyarrow_udf_test`   | merge group, **or** PR with `run-pyarrow-udf-tests`                                                                                                                                                                                                    | map-in-batch and Python runner code |
-| `delta_3_5`          | merge group, **or** PR with `run-delta-tests`                                                                                                                                                                                                          | Delta contrib and native sources    |
+| `delta_3_5`          | nightly, **or** PR with `run-delta-tests`                                                                                                                                                                                                              | Delta contrib and native sources    |
 | `delta_4_0`          | nightly, **or** PR with `run-delta-tests`                                                                                                                                                                                                              | Delta contrib and native sources    |
 | `delta_4_1`          | nightly, **or** PR with `run-delta-tests`                                                                                                                                                                                                              | Delta contrib and native sources    |
 | `docs`               | push to main, paths matched, **or** dispatch on `main`                                                                                                                                                                                                 | `.asf.yaml`, `docs/**`, `docs.yaml` |

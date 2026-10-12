@@ -44,6 +44,8 @@ FILTERS = {
         "common/**",
         "spark/**",
         "spark-integration/**",
+        # The strict warnings job compiles the Delta contrib against Spark 3.5.
+        "contrib/delta-spark/**",
         "pom.xml",
         "**/pom.xml",
         ".mvn/**",
@@ -604,10 +606,11 @@ POLICY = {
     "iceberg_1_9": ["nightly", "label:run-iceberg-tests"],
     "iceberg_1_10": ["nightly", "label:run-iceberg-tests"],
     "iceberg_1_11": ["queue", "label:run-iceberg-tests"],
-    # Same shape for the Delta contrib suites: Spark 3.5 is the profile the
-    # MinIO and feature-off jobs already pin, so it is the one the queue runs;
-    # 4.0 and 4.1 run nightly. One label opts a pull request into all three.
-    "delta_3_5": ["queue", "label:run-delta-tests"],
+    # The Delta contrib suites all run nightly. The PR tier's strict warnings
+    # job compiles the contrib against Spark 3.5, so a change that breaks its
+    # build on Spark 3.5 fails on its own pull request. One label opts a pull
+    # request into all three.
+    "delta_3_5": ["nightly", "label:run-delta-tests"],
     "delta_4_0": ["nightly", "label:run-delta-tests"],
     "delta_4_1": ["nightly", "label:run-delta-tests"],
 }

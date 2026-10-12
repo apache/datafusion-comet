@@ -477,10 +477,7 @@ jobs:
     needs: changes
     permissions:
       contents: read
-    # Queue-only by default; PRs need the `run-delta-tests` label. Spark 3.5
-    # is the profile the contrib's MinIO and feature-off jobs already pin,
-    # which is why it is the one Delta profile the queue runs while 4.0 and
-    # 4.1 run nightly.
+    # Nightly by default; PRs need the `run-delta-tests` label.
     if: needs.changes.outputs.delta_3_5 == 'true'
     uses: ./.github/workflows/delta_contrib_test.yml
     with:
