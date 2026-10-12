@@ -95,6 +95,7 @@ message Expr {
     RandStr rand_str = 73;
     Uuid uuid = 74;
     NativeScalarUdf native_scalar_udf = 75;
+    ArrayExtrema array_extrema = 76;
   }
 
   reserved 20;
@@ -649,6 +650,15 @@ enum NullOrdering {
 }
 
 // Array functions
+message ArrayExtrema {
+  Expr child = 1;
+  bool is_min = 2;
+  // Collations of every string leaf in the element type, visiting array elements
+  // and struct fields depth-first. Empty means binary ordering.
+  repeated string string_collations = 3;
+  uint32 collation_unicode_version = 4;
+}
+
 message ArrayInsert {
   Expr src_array_expr = 1;
   Expr pos_expr = 2;

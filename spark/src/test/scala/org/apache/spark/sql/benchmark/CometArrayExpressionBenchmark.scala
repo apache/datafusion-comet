@@ -19,6 +19,9 @@
 
 package org.apache.spark.sql.benchmark
 
+import org.apache.comet.{CometConf, ExtendedExplainInfo}
+import org.apache.comet.CometSparkSessionExtensions.isSpark40Plus
+
 // spotless:off
 /**
  * Benchmark to measure performance of Comet array expressions. To run this benchmark:
@@ -146,7 +149,67 @@ object CometArrayExpressionBenchmark extends CometBenchmarkBase {
     }
   }
 
+  def arrayExtremaCollationBenchmark(values: Int, expectNative: Boolean = true): Unit = {
+    // Repeated values exercise dictionaries; long prefixes and Unicode exercise comparison work.
+    val shapes = Seq(
+      ("short ASCII, no nulls", "AbC", 1, 0),
+      ("long ASCII, sparse nulls", "AbC", 32, 8),
+      ("Unicode, dense nulls", "ΣİÄ", 4, 50))
+    for ((shape, prefix, repeats, nullPercent) <- shapes) {
+      withTempPath { dir =>
+        withTempTable("parquetV1Table") {
+          val columns = (0 until 8).map { i =>
+            val text = if (i % 2 == 0) prefix else prefix.toLowerCase(java.util.Locale.ROOT)
+            s"""CASE WHEN PMOD(value + ${i * 13}, 100) < $nullPercent THEN NULL
+               |ELSE CONCAT(REPEAT('$text', $repeats),
+               |  CAST(PMOD(value + ${i / 2}, 64) AS STRING), '${" " * (i % 3)}')
+               |END AS c$i""".stripMargin
+          }
+          prepareTable(dir, spark.sql(s"SELECT ${columns.mkString(", ")} FROM $tbl"))
+          for (collation <- Seq(
+              "UTF8_BINARY",
+              "UTF8_BINARY_RTRIM",
+              "UTF8_LCASE",
+              "UTF8_LCASE_RTRIM");
+            function <- Seq("array_min", "array_max")) {
+            val input = (0 until 8)
+              .map(i => s"CAST(c$i AS STRING COLLATE $collation)")
+              .mkString("array(", ", ", ")")
+            val query = s"SELECT $function($input) FROM parquetV1Table"
+            // The dispatcher baseline uses the same inputs and verifies its execution path too.
+            withSQLConf(
+              CometConf.COMET_ENABLED.key -> "true",
+              CometConf.COMET_EXEC_ENABLED.key -> "true") {
+              val plan = stripAQEPlan(spark.sql(query).queryExecution.executedPlan)
+              val explain = new ExtendedExplainInfo()
+              if ((expectNative && collation != "UTF8_BINARY_RTRIM") ||
+                collation == "UTF8_BINARY") {
+                require(
+                  explain.getNativeExpressions(plan).contains(function) &&
+                    !explain.getCodegenDispatchExpressions(plan).contains(function),
+                  s"$function did not run natively: $plan")
+              } else {
+                require(
+                  explain.getCodegenDispatchExpressions(plan).contains(function),
+                  s"$function did not use the dispatcher: $plan")
+              }
+            }
+            runExpressionBenchmark(s"$function $collation - $shape", values.toLong, query)
+          }
+        }
+      }
+    }
+  }
+
   override def runCometBenchmark(mainArgs: Array[String]): Unit = {
+    if (mainArgs.contains("--array-extrema-collation-only")) {
+      require(isSpark40Plus, "Collation benchmarks require Spark 4.0 or later")
+      runBenchmarkWithTable("ArrayExtremaCollation", 256 * 1024) { v =>
+        arrayExtremaCollationBenchmark(v, expectNative = !mainArgs.contains("--expect-dispatch"))
+      }
+      return
+    }
+
     val values = 4 * 1024 * 1024
 
     runBenchmarkWithTable("sortArrayIntAsc", values) { v =>
@@ -167,6 +230,12 @@ object CometArrayExpressionBenchmark extends CometBenchmarkBase {
 
     runBenchmarkWithTable("ArrayPosition", values) { v =>
       arrayPositionBenchmark(v)
+    }
+
+    if (isSpark40Plus) {
+      runBenchmarkWithTable("ArrayExtremaCollation", 256 * 1024) { v =>
+        arrayExtremaCollationBenchmark(v)
+      }
     }
   }
 }

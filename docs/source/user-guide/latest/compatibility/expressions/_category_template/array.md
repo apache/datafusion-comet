@@ -19,5 +19,13 @@ under the License.
 
 # Array Expressions
 
+`array_min` and `array_max` execute `UTF8_BINARY`, `UTF8_LCASE`, and `UTF8_LCASE_RTRIM`
+comparisons natively, including strings nested in arrays and structs.
+They return the original winning value and retain the first value when comparisons are equal.
+`UTF8_LCASE` uses the Unicode 16 or 17 rules from Spark's ICU runtime; other Unicode versions
+and ICU locale-sensitive collations use the JVM codegen dispatcher. `UTF8_BINARY_RTRIM`
+also retains Spark comparison through the dispatcher until its native performance regression
+is resolved, or falls back to Spark when dispatch is disabled.
+
 <!--BEGIN:EXPR_COMPAT[array]-->
 <!--END:EXPR_COMPAT-->
