@@ -135,11 +135,15 @@ requests per file, which adds up for a write that produces many small files. See
 The native writer's buffers count against Comet's off-heap memory pool, where iceberg-java's buffers
 sit on the JVM heap. A fanout write keeps a data file open for every partition a task writes to, and
 each open file holds the row group it is writing, so a task that writes to many partitions can need
-more memory than the pool grants it. The task then fails with
-`Additional allocation failed for IcebergWriteExec`. Disabling the fanout writer
-(`write.spark.fanout.enabled=false`), a smaller `write.parquet.row-group-size-bytes` or a larger
-`spark.memory.offHeap.size` lets such a write fit, and `spark.comet.write.iceberg.enabled=false`
-writes it with iceberg-java as before. See [Failure handling](iceberg-writes.md#failure-handling).
+more memory than the pool grants it. The task then writes out and closes the partitions holding the
+most memory, whose next rows open new files, so the write finishes with more, smaller files than
+iceberg-java's would. Disabling the fanout writer (`write.spark.fanout.enabled=false`) or a larger
+`spark.memory.offHeap.size` avoids the extra files. A write that keeps one file open, unpartitioned
+or clustered, has no partition to close, so when that file outgrows the pool the task fails with
+`Additional allocation failed for IcebergWriteExec`. A smaller `write.parquet.row-group-size-bytes`
+or a larger `spark.memory.offHeap.size` lets such a write fit. With
+`spark.comet.write.iceberg.enabled=false`, iceberg-java writes both, as before. See
+[Failure handling](iceberg-writes.md#failure-handling).
 
 ## Upgrading to Comet 1.1.0
 
