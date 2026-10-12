@@ -1049,6 +1049,14 @@ create a native expression</p></li>
 </pre></div>
 </div>
 </section>
+<section id="returning-a-scalar-or-an-array">
+<h4>Returning a scalar or an array<a class="headerlink" href="#returning-a-scalar-or-an-array" title="Link to this heading">#</a></h4>
+<p>Return <code class="docutils literal notranslate"><span class="pre">ColumnarValue::Scalar</span></code> only when the result is the same for every row, for example when all
+the inputs are scalars. That includes an empty batch: an expression whose result depends on a column
+must return an empty array there, not a scalar. <code class="docutils literal notranslate"><span class="pre">IN</span></code> evaluates its candidates on an empty batch to
+decide whether they are constants, and uses the value of a candidate that returns a scalar there for
+every row.</p>
+</section>
 <section id="producing-strings-from-arbitrary-bytes">
 <h4>Producing strings from arbitrary bytes<a class="headerlink" href="#producing-strings-from-arbitrary-bytes" title="Link to this heading">#</a></h4>
 <p>Spark’s <code class="docutils literal notranslate"><span class="pre">StringType</span></code> may contain bytes that are not valid UTF-8 (Spark stores them verbatim), but
@@ -1213,6 +1221,7 @@ Spark.</p>
 <li class="toc-h4 nav-item toc-entry"><a class="reference internal nav-link" href="#generally-adding-a-new-expression">Generally Adding a New Expression</a></li>
 <li class="toc-h4 nav-item toc-entry"><a class="reference internal nav-link" href="#adding-a-new-scalar-function-expression">Adding a New Scalar Function Expression</a></li>
 <li class="toc-h4 nav-item toc-entry"><a class="reference internal nav-link" href="#implementing-the-function">Implementing the Function</a></li>
+<li class="toc-h4 nav-item toc-entry"><a class="reference internal nav-link" href="#returning-a-scalar-or-an-array">Returning a scalar or an array</a></li>
 <li class="toc-h4 nav-item toc-entry"><a class="reference internal nav-link" href="#producing-strings-from-arbitrary-bytes">Producing strings from arbitrary bytes</a></li>
 </ul>
 </li>
