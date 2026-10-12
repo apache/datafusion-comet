@@ -27,7 +27,7 @@ fn spark_factory(
     use_field_id: bool,
     defaults: Option<HashMap<Column, ScalarValue>>,
 ) -> Arc<dyn PhysicalExprAdapterFactory> {
-    let mut options = SparkParquetOptions::new(EvalMode::Legacy, "UTC", false);
+    let mut options = SparkParquetOptions::new(EvalMode::Legacy, "UTC");
     options.use_field_id = use_field_id;
     Arc::new(SparkPhysicalExprAdapterFactory::new(options, defaults))
 }

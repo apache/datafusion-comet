@@ -21,13 +21,13 @@ package org.apache.comet.serde
 
 import org.scalatest.funsuite.AnyFunSuite
 
-import org.apache.spark.sql.catalyst.expressions.{AtLeastNNonNulls, Literal}
+import org.apache.spark.sql.catalyst.expressions.{ArrayContains, ArrayPosition, AtLeastNNonNulls, AttributeReference, Cast, Literal}
 import org.apache.spark.sql.internal.SQLConf
 import org.apache.spark.sql.types._
 
 import org.apache.comet.CometConf
 import org.apache.comet.CometSparkSessionExtensions.{isSpark40Plus, isSpark41Plus}
-import org.apache.comet.serde.QueryPlanSerde.supportedDataType
+import org.apache.comet.serde.QueryPlanSerde.{canShortCircuitNulls, supportedDataType, withSharedSubexpressions}
 
 class QueryPlanSerdeSuite extends AnyFunSuite {
 
@@ -121,6 +121,26 @@ class QueryPlanSerdeSuite extends AnyFunSuite {
     boundaries.foreach { case (name, supports, accepted, rejected) =>
       accepted.foreach(dt => assert(supports(dt), s"$name should accept $dt"))
       rejected.foreach(dt => assert(!supports(dt), s"$name should reject $dt"))
+    }
+  }
+
+  test("canShortCircuitNulls skips an argument only where the shared subexpressions are known") {
+    val array = AttributeReference("ai", ArrayType(IntegerType))()
+    val value = AttributeReference("i", IntegerType)()
+    val cast = Cast(AttributeReference("s", StringType)(), IntegerType)
+    val contains = ArrayContains(array, cast)
+    val position = ArrayPosition(array, cast)
+
+    // A column is never shared, so it can be skipped anywhere
+    assert(canShortCircuitNulls(ArrayContains(array, value)))
+    // Something serialized outside an operator's conversion might share the cast
+    assert(!canShortCircuitNulls(contains))
+    withSharedSubexpressions(Seq(contains)) {
+      assert(canShortCircuitNulls(contains))
+    }
+    withSharedSubexpressions(Seq(contains, position)) {
+      assert(!canShortCircuitNulls(contains))
+      assert(!canShortCircuitNulls(position))
     }
   }
 }
