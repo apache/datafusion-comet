@@ -34,6 +34,7 @@ import org.apache.spark.sql.execution.SparkPlan
 import org.apache.comet.CometSparkSessionExtensions.isSpark42Plus
 
 import software.amazon.awssdk.auth.credentials.{AwsBasicCredentials, StaticCredentialsProvider}
+import software.amazon.awssdk.regions.Region
 import software.amazon.awssdk.services.s3.S3Client
 import software.amazon.awssdk.services.s3.model.{CreateBucketRequest, HeadBucketRequest}
 
@@ -46,7 +47,11 @@ trait CometS3TestBase extends CometTestBase {
   protected def testBucketName: String
 
   override def beforeAll(): Unit = {
-    minioContainer = new MinIOContainer(DockerImageName.parse("minio/minio:latest"))
+    // Docker Hub no longer serves minio/minio, so use Chainguard's build of the same server.
+    minioContainer = new MinIOContainer(
+      DockerImageName
+        .parse("cgr.dev/chainguard/minio:latest")
+        .asCompatibleSubstituteFor("minio/minio"))
       .withUserName(userName)
       .withPassword(password)
     minioContainer.start()
@@ -120,6 +125,7 @@ trait CometS3TestBase extends CometTestBase {
     val s3Client = S3Client
       .builder()
       .endpointOverride(URI.create(minioContainer.getS3URL))
+      .region(Region.US_EAST_1)
       .credentialsProvider(StaticCredentialsProvider.create(credentials))
       .forcePathStyle(true)
       .build()
