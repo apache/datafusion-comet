@@ -48,7 +48,7 @@
 - Spark 3.5.8 (audited 2026-05-27): baseline. `ArrayContains(left, right) extends BinaryExpression with NullIntolerant with Predicate`; `inputTypes` uses `findWiderTypeWithoutStringPromotionForTwo`. Wired as `CometScalarFunction("array_contains")`.
 - Spark 4.0.1 (audited 2026-05-27): `NullIntolerant` trait replaced by `nullIntolerant: Boolean`; `checkInputDataTypes` adopts `DataTypeUtils.sameType` (collation-aware in 4.x).
 - Spark 4.1.1 (audited 2026-05-27): identical to 4.0.1.
-- Float/double arrays containing NaN and signed zero match Spark; DataFusion canonicalizes them the same way as Spark's `SQLOrderingUtil`.
+- Spark 3.4, 3.5, 4.0, 4.1, 4.2 (2026-10-02, [#6520](https://github.com/apache/datafusion-comet/issues/6520)): datafusion-spark's `array_contains` compares floats by their bits, where Spark's `genEqual` treats `-0.0` as `0.0` and all NaNs as equal. Flat `FLOAT` and `DOUBLE` arrays now run through Comet's `spark_array_contains`, which applies Spark's equality, instead of the codegen dispatcher. Nested float elements stay on the dispatcher, where Spark's generated code is faster and keeps string collations, as does a value other than a literal or column read over a nullable array, which Spark skips for a null array. Tracked upstream as [apache/datafusion#25981](https://github.com/apache/datafusion/issues/25981).
 
 ## array_distinct
 
@@ -180,6 +180,7 @@
 
 ## sequence
 
+- Performance (tuned 2026-10-09): checked i64 length arithmetic, borrowed scalar inputs, bulk validity union, and vectorisable child-buffer stores; approximately 5× faster than the previous native kernel for column-valued inputs producing 365-element and 10,000-element sequences on arm64, with short/null-heavy shapes also improved. Benchmark: `benches/sequence.rs`.
 - Spark 3.4.3 (audited 2026-08-29): `Sequence(start, stop, stepOpt, timeZoneId)`; `Sequence.impl` selects the implementation from `dataType.elementType`, so the integral/temporal split is knowable at plan time. Codegen for the integral path checks boundaries with a plain `IllegalArgumentException("Illegal sequence boundaries: ...")`, then calls the static `Sequence.sequenceLength`, which raises `SparkRuntimeException(_LEGACY_ERROR_TEMP_2161)` past `MAX_ROUNDED_ARRAY_LENGTH` and `internalError("Unreachable code reached.")` when `stop - start` overflows Long but the exact length is within the limit. Default step is per-row `start <= stop ? 1 : -1`.
 - Spark 3.5.8 (audited 2026-08-29): internal refactors only (`DataTypeUtils.sameType`, `PhysicalIntegralType.integral`); runtime semantics identical to 3.4.3.
 - Spark 4.0.1 (audited 2026-08-29): boundary error becomes `SparkIllegalArgumentException(_LEGACY_ERROR_TEMP_3243)` and the length error becomes `COLLECTION_SIZE_LIMIT_EXCEEDED.PARAMETER` (now carrying the function name); adds `throwable` optimizer hint. `sequenceLength` itself is unchanged.
