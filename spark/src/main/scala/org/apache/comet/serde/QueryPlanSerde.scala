@@ -1306,6 +1306,7 @@ object QueryPlanSerde extends Logging with CometExprShim with CometTypeShim {
    * `spark.sql.subexpressionElimination.enabled` says, which only keeps them evaluated for every
    * row where Spark might not. They are found on the first `canShortCircuitNulls` call for the
    * operator, so an operator without an argument to skip never runs `EquivalentExpressions`.
+   * `None` outside `withSharedSubexpressions`, where they are unknown.
    */
   private val sharedSubexpressions = new DynamicVariable[Option[SharedSubexpressions]](None)
 
@@ -1317,7 +1318,11 @@ object QueryPlanSerde extends Logging with CometExprShim with CometTypeShim {
     }
   }
 
-  /** Runs `f`, which serializes an operator whose expressions are `expressions`. */
+  /**
+   * Runs `f`, which serializes an operator whose expressions are `expressions`. Code that
+   * serializes expressions outside an operator's conversion, such as when the plan runs, calls it
+   * with the expressions Spark evaluates together, or no argument is skipped.
+   */
   def withSharedSubexpressions[T](expressions: Seq[Expression])(f: => T): T =
     sharedSubexpressions.withValue(Some(new SharedSubexpressions(expressions)))(f)
 
@@ -1326,14 +1331,13 @@ object QueryPlanSerde extends Logging with CometExprShim with CometTypeShim {
    * an earlier argument is NULL, as Spark's evaluation of a null-intolerant `BinaryExpression` or
    * `TernaryExpression` does. Not if one of them holds a subexpression that the operator's
    * expressions share: Spark evaluates that for every row, and raises if it fails on a row whose
-   * array is NULL.
+   * array is NULL. Nor outside `withSharedSubexpressions`, where what they share is unknown.
    */
   def canShortCircuitNulls(expr: Expression): Boolean = {
     val later = expr.children.tail
     // Subexpression elimination never shares a leaf, such as a column or a literal
-    later.forall(_.isInstanceOf[LeafExpression]) || {
-      val shared = sharedSubexpressions.value.map(_.common).getOrElse(Nil)
-      !later.exists(_.exists(e => shared.exists(_.semanticEquals(e))))
+    later.forall(_.isInstanceOf[LeafExpression]) || sharedSubexpressions.value.exists { s =>
+      !later.exists(_.exists(e => s.common.exists(_.semanticEquals(e))))
     }
   }
 

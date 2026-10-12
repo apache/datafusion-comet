@@ -34,7 +34,7 @@ import org.apache.spark.sql.vectorized.ColumnarBatch
 import org.apache.comet.{CometConf, ConfigEntry}
 import org.apache.comet.CometSparkSessionExtensions.isCometShuffleEnabled
 import org.apache.comet.serde.{Compatible, OperatorOuterClass, SupportLevel, Unsupported}
-import org.apache.comet.serde.QueryPlanSerde.{exprToProto, supportedSortType}
+import org.apache.comet.serde.QueryPlanSerde.{exprToProto, supportedSortType, withSharedSubexpressions}
 import org.apache.comet.serde.operator.CometSink
 
 object CometTakeOrderedAndProjectExec extends CometSink[TakeOrderedAndProjectExec] {
@@ -124,21 +124,22 @@ case class CometTakeOrderedAndProjectExec(
     SortOrder.orderingSatisfies(child.outputOrdering, sortOrder)
 
   // Also exposed to tests so they can inspect the plan actually used for final execution.
-  def finalNativePlan(inputPartitions: Int): Option[OperatorOuterClass.Operator] = {
-    val selectedLocally = child match {
-      case local: CometLocalTopKExec =>
-        inputPartitions == 1 && local.limit == limit && local.sortOrder == sortOrder
-      case _ => false
+  def finalNativePlan(inputPartitions: Int): Option[OperatorOuterClass.Operator] =
+    withSharedSubexpressions(expressions) {
+      val selectedLocally = child match {
+        case local: CometLocalTopKExec =>
+          inputPartitions == 1 && local.limit == limit && local.sortOrder == sortOrder
+        case _ => false
+      }
+      val selection = if (selectedLocally) {
+        // The local TopK has already ordered and bounded the only input partition. Spark's
+        // physical limit includes the offset; the native limit applies that offset once.
+        CometExecUtils.getLimitNativePlan(child.output, limit, offset)
+      } else {
+        CometExecUtils.getTopKNativePlan(child.output, sortOrder, child, limit, offset)
+      }
+      selection.flatMap(CometExecUtils.getProjectionNativePlan(projectList, child.output, _))
     }
-    val selection = if (selectedLocally) {
-      // The local TopK has already ordered and bounded the only input partition. Spark's
-      // physical limit includes the offset; the native limit applies that offset once.
-      CometExecUtils.getLimitNativePlan(child.output, limit, offset)
-    } else {
-      CometExecUtils.getTopKNativePlan(child.output, sortOrder, child, limit, offset)
-    }
-    selection.flatMap(CometExecUtils.getProjectionNativePlan(projectList, child.output, _))
-  }
 
   protected override def doExecuteColumnar(): RDD[ColumnarBatch] = {
     val childRDD = child.executeColumnar()
@@ -157,10 +158,9 @@ case class CometTakeOrderedAndProjectExec(
         } else {
           val numParts = childRDD.getNumPartitions
           // Serialize the plan once before mapping to avoid repeated serialization per partition
-          val topK =
-            CometExecUtils
-              .getTopKNativePlan(child.output, sortOrder, child, limit)
-              .get
+          val topK = withSharedSubexpressions(expressions) {
+            CometExecUtils.getTopKNativePlan(child.output, sortOrder, child, limit).get
+          }
           val serializedTopK = CometExec.serializeNativePlan(topK)
           val numOutputCols = child.output.length
           val inputSchema = CometUtils.fromAttributes(child.output)

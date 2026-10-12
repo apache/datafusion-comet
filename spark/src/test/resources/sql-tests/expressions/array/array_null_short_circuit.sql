@@ -84,6 +84,29 @@ query expect_native(array_contains)
 SELECT array_contains(ai, CAST(s AS INT)), NOT array_contains(ai, CAST(s AS INT))
 FROM array_null_short_circuit
 
+-- A shuffle evaluates its partitioning keys together in one projection, and a TakeOrderedAndProject
+-- its projection list, so a cast that two of them share raises on the rows whose array is NULL too.
+-- Both are serialized when the plan runs, after the operator's conversion.
+query expect_error(CAST_INVALID_INPUT)
+SELECT ai, s FROM array_null_short_circuit
+DISTRIBUTE BY array_contains(ai, CAST(s AS INT)), array_position(ai, CAST(s AS INT))
+
+query expect_error(CAST_INVALID_INPUT)
+SELECT array_contains(ai, CAST(s AS INT)), array_position(ai, CAST(s AS INT))
+FROM (SELECT * FROM array_null_short_circuit ORDER BY i LIMIT 10)
+
+-- A cast that only one of them holds is skipped, for hash and range partitioning keys and for a
+-- TakeOrderedAndProject
+query
+SELECT ai, s FROM array_null_short_circuit DISTRIBUTE BY array_contains(ai, CAST(s AS INT))
+
+query
+SELECT ai, s FROM array_null_short_circuit ORDER BY array_contains(ai, CAST(s AS INT)), s
+
+query expect_native(array_contains)
+SELECT array_contains(ai, CAST(s AS INT))
+FROM (SELECT * FROM array_null_short_circuit ORDER BY i LIMIT 10)
+
 -- Where the array is not NULL, the argument is evaluated and raises as in Spark
 query expect_error(CAST_INVALID_INPUT)
 SELECT array_contains(ai, CAST(s || 'x' AS INT)) FROM array_null_short_circuit
