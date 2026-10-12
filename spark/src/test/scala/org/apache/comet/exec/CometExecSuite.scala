@@ -110,6 +110,12 @@ class CometExecSuite extends CometTestBase {
       assert(resolved.get(CometConf.COMET_MAX_TEMP_DIRECTORY_SIZE.key) == "10737418240")
       flags.foreach(flag => assert(resolved.get(flag.key) == "true", flag.key))
     }
+
+    // CometTestBase turns this one on, so it has no default to check here. An explicitly set
+    // value crosses verbatim, so only the resolved list turns `TRUE` into `true`.
+    withSQLConf(CometConf.COMET_STRICT_TIMESTAMP_LABELS.key -> "TRUE") {
+      assert(entries.get(CometConf.COMET_STRICT_TIMESTAMP_LABELS.key) == "true")
+    }
   }
 
   test("native sort spill files are compressed with the default spill codec") {
