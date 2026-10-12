@@ -202,35 +202,44 @@ jobs:
           restore-keys: |
             ${{ runner.os }}-java-maven-
 
-      # Split a Maven Central hiccup from a real lint violation. Resolving the
-      # scalafix plugin descriptor has failed mid-job before, leaving
-      # "No plugin found for prefix 'scalafix'" and a red lint that looks
-      # exactly like a violation (pull request #6035). The scalafix-syntactic
-      # job above solves the same problem by retrying the download and then
-      # linting offline; Maven has no equally safe offline mode here, because
-      # the goal resolves rule artifacts as it runs, so retry instead. Stop the
-      # moment scalafix reports actual errors, so a genuinely broken pull
-      # request is not rebuilt four times. Backoff matches
+      # Split a Maven Central hiccup from a real lint violation. When the
+      # scalafix plugin fails to download (Central has answered 403, 429 and
+      # 404), Maven stops with "No plugin found for prefix 'scalafix'" and the
+      # red lint looks exactly like a violation. A scala-compiler jar that did
+      # not download shows up as "ClassNotFoundException: scala.tools.nsc.Main".
+      # The scalafix-syntactic job above lints offline after a retried
+      # download. Maven has no equally safe offline mode here, because the
+      # build resolves plugin and compiler artifacts as it goes, so this step
+      # retries the whole build instead, and only when Maven's error names a
+      # download. A lint violation or a compile error still fails on the first
+      # attempt. Maven caches a 404 in the local repository and will not ask
+      # again on its own, so the retries pass -U. Backoff matches
       # .github/actions/maven-bootstrap: 10s, 20s, 40s plus 0-4s of jitter.
       - name: Run scalafix check
+        # Bash rather than the container default `sh`: the retry below needs
+        # pipefail, $RANDOM, and shell arithmetic.
+        shell: bash
         run: |
           set -o pipefail
+          log=$(mktemp)
+          update=
           for attempt in 1 2 3 4; do
-            if ./mvnw -B package -DskipTests scalafix:scalafix -Dscalafix.mode=CHECK \
-                 -Psemanticdb ${{ matrix.profile.maven_opts }} 2>&1 | tee scalafix-check.log; then
+            if ./mvnw -B $update package -DskipTests scalafix:scalafix -Dscalafix.mode=CHECK \
+                 -Psemanticdb ${{ matrix.profile.maven_opts }} 2>&1 | tee "$log"; then
               exit 0
             fi
-            if grep -q 'Scalafix invoked with errors' scalafix-check.log; then
-              echo "::error::scalafix reported lint violations; see the log above."
+            if ! grep -qE '^\[ERROR\] .*(No plugin found for prefix|could not be resolved|Could not transfer|ClassNotFoundException: scala\.tools\.nsc\.Main)' "$log"; then
+              echo "::error::Maven failed for a reason other than a download, such as a lint violation or a compile error; not retrying."
               exit 1
             fi
             if [ "$attempt" -eq 4 ]; then
-              echo "::error::scalafix could not run after $attempt attempts; no violation was reported."
+              echo "::error::Maven could not download a plugin or dependency after $attempt attempts; this is not a lint violation."
               exit 1
             fi
             delay=$((10 * (1 << (attempt - 1)) + RANDOM % 5))
-            echo "::warning::scalafix attempt $attempt failed without reporting a violation; retrying in ${delay}s."
+            echo "::warning::Maven failed to download a plugin or dependency (attempt $attempt of 4); retrying in ${delay}s with -U."
             sleep "$delay"
+            update=-U
           done
 
       - name: Setup Node.js
