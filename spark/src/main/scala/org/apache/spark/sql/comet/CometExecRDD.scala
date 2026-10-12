@@ -25,6 +25,7 @@ import org.apache.spark.broadcast.Broadcast
 import org.apache.spark.rdd.RDD
 import org.apache.spark.sql.comet.execution.shuffle.CometShuffledBatchRDD
 import org.apache.spark.sql.execution.ScalarSubquery
+import org.apache.spark.sql.types.DataType
 import org.apache.spark.sql.vectorized.ColumnarBatch
 import org.apache.spark.util.SerializableConfiguration
 
@@ -67,7 +68,8 @@ private[spark] class CometExecRDD(
     broadcastedHadoopConfForEncryption: Option[Broadcast[SerializableConfiguration]] = None,
     encryptedFilePaths: Seq[String] = Seq.empty,
     shuffleScanIndices: Set[Int] = Set.empty,
-    @transient perPartitionFilePaths: Array[Seq[String]] = Array.empty)
+    @transient perPartitionFilePaths: Array[Seq[String]] = Array.empty,
+    outputTypes: Seq[DataType] = Seq.empty)
     extends RDD[ColumnarBatch](sc, inputRDDs.map(rdd => new OneToOneDependency(rdd))) {
 
   // Determine partition count: from inputs if available, otherwise from parameter
@@ -136,7 +138,8 @@ private[spark] class CometExecRDD(
       broadcastedHadoopConfForEncryption,
       encryptedFilePaths,
       shuffleBlockIters,
-      taskFilePaths = partition.filePaths)
+      taskFilePaths = partition.filePaths,
+      outputTypes = outputTypes)
 
     // Register ScalarSubqueries so native code can look them up
     subqueries.foreach(sub => CometScalarSubquery.setSubquery(it.id, sub))
@@ -229,7 +232,8 @@ object CometExecRDD {
       broadcastedHadoopConfForEncryption: Option[Broadcast[SerializableConfiguration]] = None,
       encryptedFilePaths: Seq[String] = Seq.empty,
       shuffleScanIndices: Set[Int] = Set.empty,
-      perPartitionFilePaths: Array[Seq[String]] = Array.empty): CometExecRDD = {
+      perPartitionFilePaths: Array[Seq[String]] = Array.empty,
+      outputTypes: Seq[DataType] = Seq.empty): CometExecRDD = {
     // scalastyle:on
 
     new CometExecRDD(
@@ -246,6 +250,7 @@ object CometExecRDD {
       broadcastedHadoopConfForEncryption,
       encryptedFilePaths,
       shuffleScanIndices,
-      perPartitionFilePaths)
+      perPartitionFilePaths,
+      outputTypes)
   }
 }
