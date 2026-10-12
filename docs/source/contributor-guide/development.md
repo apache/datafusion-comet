@@ -574,6 +574,38 @@ SPARK_GENERATE_GOLDEN_FILES=1 ./mvnw -Dsuites="org.apache.spark.sql.comet.CometT
 SPARK_GENERATE_GOLDEN_FILES=1 ./mvnw -Dsuites="org.apache.spark.sql.comet.CometTPCDSV2_7_PlanStabilitySuite" -Pspark-4.0 -nsu test
 ```
 
+### ABFS Authentication Parity Files
+
+`AbfsAuthParitySuite` pins how `AbfsAuthResolver` resolves Azure ABFS authentication on each
+hadoop-azure release. `spark/src/test/resources/abfs-auth-parity/expected-<version>.json` holds,
+for every case in `AbfsAuthParityCases`, the outcome kind (`resolved`, `unconfigured`, `declined`,
+`failed`), the auth type, the provider class, the error class and the forwarded values, with
+secrets stored as SHA-256 digests. The suite picks the file from the hadoop-azure on the test
+classpath, so each Spark profile checks one version:
+
+| Profile       | hadoop-azure |
+| ------------- | ------------ |
+| `-Pspark-3.5` | 3.3.4        |
+| `-Pspark-4.0` | 3.4.1        |
+| `-Pspark-4.1` | 3.4.2        |
+| `-Pspark-4.2` | 3.5.0        |
+
+A new case or a hadoop-azure bump requires re-recording all four files. Run the suite once per
+profile with `-Dcomet.abfs.parity.record=<dir>` and copy the written files into the resources
+directory:
+
+```sh
+./mvnw -Pspark-3.5 test -Dtest=none -Dsuites=org.apache.comet.objectstore.AbfsAuthParitySuite -Dsurefire.failIfNoSpecifiedTests=false -Dcomet.abfs.parity.record=<dir>
+./mvnw -Pspark-4.0 test -Dtest=none -Dsuites=org.apache.comet.objectstore.AbfsAuthParitySuite -Dsurefire.failIfNoSpecifiedTests=false -Dcomet.abfs.parity.record=<dir>
+./mvnw -Pspark-4.1 test -Dtest=none -Dsuites=org.apache.comet.objectstore.AbfsAuthParitySuite -Dsurefire.failIfNoSpecifiedTests=false -Dcomet.abfs.parity.record=<dir>
+./mvnw -Pspark-4.2 test -Dtest=none -Dsuites=org.apache.comet.objectstore.AbfsAuthParitySuite -Dsurefire.failIfNoSpecifiedTests=false -Dcomet.abfs.parity.record=<dir>
+```
+
+The per-version pins in the cases and the cross-check against a real `AzureBlobFileSystem`
+still assert while recording, so a recorded file cannot contradict what hadoop-azure does. The
+file is written only when every case ran. Review the diff of the regenerated files before
+committing them: each line that changes is a behaviour change on that hadoop-azure release.
+
 ## Benchmark
 
 There's a `make` command to run micro benchmarks in the repo. For

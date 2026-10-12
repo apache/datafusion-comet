@@ -16,6 +16,7 @@
 -- under the License.
 
 -- Test regexp_extract_all via JVM regex engine
+-- Raw literals keep Spark from dropping regex backslashes such as '\d'.
 
 statement
 CREATE TABLE test_regexp_extract_all(s string) USING parquet
@@ -24,29 +25,29 @@ statement
 INSERT INTO test_regexp_extract_all VALUES ('abc123def456'), ('no match'), (NULL), ('100-200-300'), ('hello world')
 
 -- group 0: all entire matches
-query
-SELECT regexp_extract_all(s, '\d+', 0) FROM test_regexp_extract_all
+query expect_dispatch(regexp_extract_all)
+SELECT regexp_extract_all(s, r'\d+', 0) FROM test_regexp_extract_all
 
 -- group 1: first capturing group from each match
-query
-SELECT regexp_extract_all(s, '([a-z]+)(\d+)', 1) FROM test_regexp_extract_all
+query expect_dispatch(regexp_extract_all)
+SELECT regexp_extract_all(s, r'([a-z]+)(\d+)', 1) FROM test_regexp_extract_all
 
 -- group 2: second capturing group from each match
-query
-SELECT regexp_extract_all(s, '([a-z]+)(\d+)', 2) FROM test_regexp_extract_all
+query expect_dispatch(regexp_extract_all)
+SELECT regexp_extract_all(s, r'([a-z]+)(\d+)', 2) FROM test_regexp_extract_all
 
 -- no match returns empty array
-query
+query expect_dispatch(regexp_extract_all)
 SELECT regexp_extract_all(s, 'NOMATCH', 0) FROM test_regexp_extract_all
 
 -- backreference pattern (Java-only)
-query
-SELECT regexp_extract_all(s, '(\d)\1', 0) FROM test_regexp_extract_all
+query expect_dispatch(regexp_extract_all)
+SELECT regexp_extract_all(s, r'(\d)\1', 0) FROM test_regexp_extract_all
 
 -- embedded flags (Java-only)
-query
+query expect_dispatch(regexp_extract_all)
 SELECT regexp_extract_all(s, '(?i)[A-Z]+', 0) FROM test_regexp_extract_all
 
 -- literal arguments
-query
-SELECT regexp_extract_all('abc123def456', '(\d+)', 1), regexp_extract_all('no digits', '(\d+)', 1), regexp_extract_all(NULL, '(\d+)', 1)
+query expect_dispatch(regexp_extract_all)
+SELECT regexp_extract_all('abc123def456', r'(\d+)', 1), regexp_extract_all('no digits', r'(\d+)', 1), regexp_extract_all(NULL, r'(\d+)', 1)

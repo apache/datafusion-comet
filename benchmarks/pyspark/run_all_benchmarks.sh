@@ -67,6 +67,7 @@ $SPARK_HOME/bin/spark-submit \
 # Run Comet JVM shuffle
 echo ""
 echo ">>> Running COMET JVM shuffle benchmark..."
+# maxBuildSize=-1 measures the hash join alone: no build-side size limit on the rewrite.
 $SPARK_HOME/bin/spark-submit \
   --master "$SPARK_MASTER" \
   --executor-memory "$EXECUTOR_MEMORY" \
@@ -86,6 +87,7 @@ $SPARK_HOME/bin/spark-submit \
   --conf spark.comet.shuffle.mode=jvm \
   --conf spark.comet.shuffle.mode=jvm \
   --conf spark.comet.exec.replaceSortMergeJoin=true \
+  --conf spark.comet.exec.forceShuffledHashJoin.maxBuildSize=-1 \
   --conf spark.shuffle.manager=org.apache.spark.sql.comet.execution.shuffle.CometShuffleManager \
   --conf spark.sql.extensions=org.apache.comet.CometSparkSessionExtensions \
   --conf spark.comet.cast.allowIncompatible=true \
@@ -96,6 +98,7 @@ $SPARK_HOME/bin/spark-submit \
 # Run Comet Native shuffle
 echo ""
 echo ">>> Running COMET NATIVE shuffle benchmark..."
+# maxBuildSize=-1 measures the hash join alone: no build-side size limit on the rewrite.
 $SPARK_HOME/bin/spark-submit \
   --master "$SPARK_MASTER" \
   --executor-memory "$EXECUTOR_MEMORY" \
@@ -114,6 +117,7 @@ $SPARK_HOME/bin/spark-submit \
   --conf spark.comet.explain.fallback.enabled=true \
   --conf spark.comet.shuffle.mode=native \
   --conf spark.comet.exec.replaceSortMergeJoin=true \
+  --conf spark.comet.exec.forceShuffledHashJoin.maxBuildSize=-1 \
   --conf spark.shuffle.manager=org.apache.spark.sql.comet.execution.shuffle.CometShuffleManager \
   --conf spark.sql.extensions=org.apache.comet.CometSparkSessionExtensions \
   --conf spark.comet.cast.allowIncompatible=true \
