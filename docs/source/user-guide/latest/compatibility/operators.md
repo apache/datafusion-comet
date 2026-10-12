@@ -92,6 +92,26 @@ rows by the grouping keys only, and Spark and Comet can leave rows with equal ke
 orders, so a group with more than one candidate value can return a different value than Spark.
 Both results are valid under Spark's semantics for these functions.
 
+## Hash Join Output Order
+
+Spark reports the sort order of a hash join's streamed side as the join's own, and drops a sort
+above the join that this order satisfies. Comet's native hash joins keep that order, including a
+left or right outer join over a streamed side that was sorted outside the native plan, such as a
+sorted relation read from the [in-memory cache](#in-memory-cache).
+
+Comet passes the order to the native join as sort keys, and an outer join needs at least the first
+key to be one that Comet can express natively. Declaring any leading part of the order keeps the
+rows in place, so the join does not need the rest. An outer join whose first sort key Comet cannot
+express falls back to Spark and records a fallback reason (see
+[Understanding Comet Plans](../understanding-comet-plans.md)), because Comet cannot tell whether
+an operator above the join relies on the order.
+
+Where the order Spark reports might not hold, Comet declares nothing and an outer join can return
+its unmatched rows out of order. The output of a `NOT IN` subquery or of a nested loop join
+([#6898](https://github.com/apache/datafusion-comet/issues/6898)) is one such case, and so is a
+cache or checkpoint that one of them wrote. Comet also declares nothing when it cannot follow the
+order back to its source, as with an RDD checkpoint.
+
 ## Window Functions
 
 Comet runs `WindowExec` natively and it is enabled by default (`spark.comet.exec.window.enabled`). A broad set of
