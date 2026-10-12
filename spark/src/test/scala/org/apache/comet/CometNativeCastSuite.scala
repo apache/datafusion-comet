@@ -1455,6 +1455,23 @@ class CometNativeCastSuite extends CometTestBase with AdaptiveSparkPlanHelper {
     }
   }
 
+  test("(ansi) cast string to negative-scale decimal fails when rescaling overflows an int") {
+    withSQLConf(
+      SQLConf.ANSI_ENABLED.key -> "true",
+      "spark.sql.legacy.allowNegativeScaleOfDecimal" -> "true") {
+      withTable("cast_decimal_rescale") {
+        Seq("1e-2147483647").toDF("s").write.format("parquet").saveAsTable("cast_decimal_rescale")
+        // The parsed scale fits in an int, but the difference to the target scale does not, so
+        // Spark's `BigDecimal.setScale` fails. The native cast must not round it to zero.
+        val df = spark.table("cast_decimal_rescale").select(col("s").cast(DecimalType(10, -2)))
+        checkCometOperators(stripAQEPlan(df.queryExecution.executedPlan))
+        val (sparkError, cometError) = checkSparkAnswerMaybeThrows(df)
+        assert(sparkError.isDefined, "Spark did not fail")
+        assert(cometError.isDefined, "Comet did not fail")
+      }
+    }
+  }
+
   test("cast StringType to TimestampType - UTC") {
     withSQLConf(SQLConf.SESSION_LOCAL_TIMEZONE.key -> "UTC") {
       val values = Seq(

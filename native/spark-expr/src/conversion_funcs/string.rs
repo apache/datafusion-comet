@@ -257,10 +257,16 @@ where
         };
     // Every special value Spark accepts is handled above. Java only allows the suffix after a
     // decimal number, so reject anything else before Rust's parser, which also accepts
-    // `nan`, `inf` and `infinity` in any case (e.g. `NaNF` or `-nan`).
-    if !pruned_float_str
-        .bytes()
-        .all(|b| b.is_ascii_digit() || matches!(b, b'.' | b'e' | b'E' | b'+' | b'-'))
+    // `nan`, `inf` and `infinity` in any case (e.g. `NaNF` or `-nan`). Those are the only
+    // non-numeric forms Rust accepts, and they start with a letter after the optional sign, so
+    // checking that one byte is enough; Rust's parser validates the rest.
+    let unsigned = pruned_float_str
+        .strip_prefix(['+', '-'])
+        .unwrap_or(pruned_float_str);
+    if unsigned
+        .as_bytes()
+        .first()
+        .is_some_and(|b| b.is_ascii_alphabetic())
     {
         return None;
     }
@@ -629,6 +635,11 @@ fn parse_string_to_decimal(input_str: &str, precision: u8, scale: i8) -> SparkRe
     // scale adjustment, in i64 so that an exponent near the i32 bounds cannot wrap
     let target_scale = scale as i64;
     let scale_adjustment = target_scale - exponent as i64;
+    // `BigDecimal.setScale`, which Spark rescales with, fails when the scale difference does not
+    // fit in an int (e.g. "1e-2147483647" to a negative target scale), so do not round to zero.
+    if i32::try_from(scale_adjustment).is_err() {
+        return Err(invalid_decimal_cast(input_str, precision, scale));
+    }
 
     let scaled_value = if scale_adjustment >= 0 {
         // Need to multiply (increase scale) but return None if scale is too high to fit i128
@@ -2569,6 +2580,9 @@ mod tests {
             let err = parse_string_to_decimal(s, 10, 2).unwrap_err();
             assert!(err.to_string().contains("CAST_INVALID_INPUT"), "{s}: {err}");
         }
+        // The parsed scale fits in an int, but rescaling it to a negative target scale does not.
+        let err = parse_string_to_decimal("1e-2147483647", 10, -2).unwrap_err();
+        assert!(err.to_string().contains("CAST_INVALID_INPUT"), "{err}");
         assert_eq!(parse_string_to_decimal("1.5e-3", 10, 2).unwrap(), Some(0));
         assert_eq!(
             parse_string_to_decimal("12.345e1", 10, 2).unwrap(),
