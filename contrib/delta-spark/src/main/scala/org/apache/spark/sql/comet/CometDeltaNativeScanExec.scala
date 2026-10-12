@@ -220,6 +220,7 @@ case class CometDeltaNativeScanExec(
       None,
       Seq.empty,
       perPartitionFilePaths = perPartitionFilePaths,
+      outputTypes = output.map(_.dataType),
       reportScanInputMetrics = true)
   }
 
