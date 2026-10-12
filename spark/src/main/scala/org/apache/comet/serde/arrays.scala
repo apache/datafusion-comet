@@ -163,7 +163,6 @@ object CometArrayAppend
     // IS NOT NULL does not care about element nullability, so use the un-widened source and skip
     // serializing a redundant cast.
     val isNotNullExpr = createUnaryExpr(
-      expr,
       expr.children.head,
       inputs,
       binding,
@@ -944,7 +943,6 @@ object CometElementAt extends CometExpressionSerde[ElementAt] with CodegenDispat
     // CometArraysZip.
     if (needsNullGuard(expr)) {
       val isNotNullExpr = createUnaryExpr(
-        expr,
         expr.left,
         inputs,
         binding,
@@ -1062,7 +1060,6 @@ object CometSize extends CometExpressionSerde[Size] with CodegenDispatchFallback
       inputs: Seq[Attribute],
       binding: Boolean): Option[ExprOuterClass.Expr] = {
     createUnaryExpr(
-      expr,
       expr.child,
       inputs,
       binding,
