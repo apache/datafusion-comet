@@ -299,6 +299,16 @@ object CometConf extends ShimCometConf {
     .booleanConf
     .createWithDefault(true)
 
+  val COMET_EXEC_LOCAL_ENABLED: ConfigEntry[Boolean] = conf("spark.comet.exec.local.enabled")
+    .category(CATEGORY_EXEC)
+    .internal()
+    .doc(
+      "Experimental. When the Spark application runs with a local master, run a whole query " +
+        "that Comet executes natively without JVM input as one native graph in a single " +
+        "Spark task. Other queries use ordinary Comet execution.")
+    .booleanConf
+    .createWithDefault(false)
+
   val COMET_EXEC_PROJECT_ENABLED: ConfigEntry[Boolean] =
     createExecEnabledConfig("project", defaultValue = true)
   val COMET_EXEC_FILTER_ENABLED: ConfigEntry[Boolean] =
