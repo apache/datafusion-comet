@@ -748,6 +748,7 @@ object CometPercentile extends CometAggregateExpressionSerde[Percentile] {
       val builder = ExprOuterClass.Percentile.newBuilder()
       builder.setChild(childExpr.get)
       builder.setPercentage(percentageExpr.get)
+      builder.setFloatInput(percentile.child.dataType == FloatType)
       // DoubleType always serializes successfully.
       builder.setDatatype(serializeDataType(DoubleType).get)
       Some(

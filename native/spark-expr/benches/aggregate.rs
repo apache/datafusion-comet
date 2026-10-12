@@ -400,7 +400,7 @@ fn bench_statistical_aggregates(c: &mut Criterion) {
     });
 
     bench_f64_one_arg(c, "percentile", DataType::Float64, || {
-        Box::new(SparkPercentile::try_new(0.5).unwrap())
+        Box::new(SparkPercentile::try_new(0.5, false).unwrap())
     });
     bench_f64_one_arg(c, "approx_percentile", DataType::Float64, || {
         Box::new(ApproxPercentile::new(

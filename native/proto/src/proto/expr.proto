@@ -306,6 +306,8 @@ message Percentile {
   // Single percentile in [0.0, 1.0] as a literal double expression.
   Expr percentage = 2;
   DataType datatype = 3;
+  // Whether the child was FLOAT before the serde cast it to DOUBLE.
+  bool float_input = 4;
 }
 
 message ApproxPercentile {

@@ -3468,7 +3468,10 @@ impl PhysicalPlanner {
                 // its own UDAF rather than DataFusion's percentile_cont because DataFusion
                 // quantizes the interpolation weight.
                 let percentile_value = percentile_value(expr.percentage.as_ref().unwrap())?;
-                let func = AggregateUDF::new_from_impl(SparkPercentile::try_new(percentile_value)?);
+                let func = AggregateUDF::new_from_impl(SparkPercentile::try_new(
+                    percentile_value,
+                    expr.float_input,
+                )?);
                 AggregateExprBuilder::new(func.into(), vec![child, percentile])
                     .schema(schema)
                     .alias("percentile")
