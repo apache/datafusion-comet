@@ -552,10 +552,14 @@ case class CometScanRule(session: SparkSession)
           fallbackReasons +=
             s"Unsupported filesystem schemes: ${rootIssues.unsupportedSchemes.mkString(", ")}"
         }
-        if (rootIssues.multiBucket.nonEmpty) {
-          fallbackReasons += "Native Text scan reads S3-compliant alias paths across multiple " +
-            s"buckets (${rootIssues.multiBucket.toSeq.sorted.mkString(", ")}); Comet registers " +
-            "one object store per file partition and would read every file from the first bucket"
+        // Unlike the Parquet gate (which scopes this to alias scans to avoid regressing scans that
+        // work by luck), the Text scan is new, so decline any scan whose roots span more than one
+        // scheme/bucket -- a plain `s3a://a` + `s3a://b` read would otherwise read every file from
+        // the first bucket.
+        if (rootIssues.crossLocations.size > 1) {
+          fallbackReasons += "Native Text scan reads paths across multiple schemes/buckets " +
+            s"(${rootIssues.crossLocations.toSeq.sorted.mkString(", ")}); Comet registers one " +
+            "object store per file partition and would read every file from the first location"
         }
         rootIssues.rejectedPath.foreach { uri =>
           fallbackReasons += s"Native Text scan cannot open path '$uri': " +
@@ -1376,12 +1380,16 @@ object CometScanRule extends Logging {
    *   - `multiBucket`: the S3-compliant alias buckets when a scan spans more than one; native
    *     planning registers one object store per FilePartition and would read every file from the
    *     first file's bucket. Empty when a single bucket (or no alias) is used.
+   *   - `crossLocations`: the distinct `scheme://bucket` (or `scheme://authority`) across all
+   *     roots that have one. Size > 1 means the scan spans multiple schemes/buckets; the Text
+   *     gate declines these (the Parquet gate uses the narrower `multiBucket` instead).
    *   - `rejectedPath`: a root whose recognized scheme carries a path object_store rejects (e.g.
    *     a newline -> `%0A`), which native execution cannot open.
    */
   private[rules] case class RootPathIssues(
       unsupportedSchemes: Set[String],
       multiBucket: Set[String],
+      crossLocations: Set[String],
       rejectedPath: Option[URI])
 
   private[rules] def checkObjectStoreRootPaths(
@@ -1401,12 +1409,27 @@ object CometScanRule extends Logging {
         !root.isLibhdfs && !isNativelyReadableScheme(root.uri, s3CompliantSchemes))
     }.toSet
     val buckets = aliasScanBuckets(roots)
+    // Distinct scheme://bucket (or scheme://authority) across roots that have a scheme and a
+    // location. Native planning registers one object store per partition keyed on the first file's
+    // location, so a scan spanning more than one of these reads later files from the first. Covers
+    // plain s3a://a + s3a://b and gs://, abfs://, ... (schemeless/local paths contribute nothing).
+    val crossLocations = roots.flatMap { root =>
+      root.scheme.flatMap { scheme =>
+        root.bucket
+          .orElse(Option(root.uri.getAuthority).filter(_.nonEmpty))
+          .map(loc => s"$scheme://$loc")
+      }
+    }.toSet
     val rejectedPath = roots
       .find(root =>
         root.scheme.isDefined && !root.isLibhdfs && !root.isAlias &&
           !objectStoreAcceptsPath(root.uri))
       .map(_.uri)
-    RootPathIssues(unsupportedSchemes, if (buckets.size > 1) buckets else Set.empty, rejectedPath)
+    RootPathIssues(
+      unsupportedSchemes,
+      if (buckets.size > 1) buckets else Set.empty,
+      crossLocations,
+      rejectedPath)
   }
 
   /**

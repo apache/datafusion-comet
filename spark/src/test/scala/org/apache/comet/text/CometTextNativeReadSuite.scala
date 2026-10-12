@@ -290,13 +290,46 @@ class CometTextNativeReadSuite extends CometTestBase {
     assume(isSpark41Plus, "Spark 4.1+ treats .gzip/.zstd as compressed")
     withTempDir { dir =>
       val gzip = new File(dir, "data.txt.gzip")
-      val out = new java.util.zip.GZIPOutputStream(new java.io.FileOutputStream(gzip))
-      out.write("a\nb\nc".getBytes(StandardCharsets.UTF_8))
-      out.close()
+      val gzipOut = new java.util.zip.GZIPOutputStream(new java.io.FileOutputStream(gzip))
+      gzipOut.write("a\nb\nc".getBytes(StandardCharsets.UTF_8))
+      gzipOut.close()
+      val zstd = new File(dir, "data.txt.zstd")
+      val zstdOut = new com.github.luben.zstd.ZstdOutputStream(new java.io.FileOutputStream(zstd))
+      zstdOut.write("a\nb\nc".getBytes(StandardCharsets.UTF_8))
+      zstdOut.close()
       withTextConf {
         checkSparkAnswerAndFallbackReason(
           spark.read.text(gzip.getAbsolutePath),
           "Comet does not support compressed text files")
+        checkSparkAnswerAndFallbackReason(
+          spark.read.text(zstd.getAbsolutePath),
+          "Comet does not support compressed text files")
+      }
+    }
+  }
+
+  test("native text read - custom lineSep equal to a BOM is not stripped") {
+    withTempDir { dir =>
+      val file = new File(dir, "bom-linesep.txt")
+      val bom = "\uFEFF"
+      // With lineSep=BOM, Spark leaves the BOM as the separator: `BOM a BOM b` -> ["", "a", "b"].
+      Files.write(file.toPath, s"${bom}a${bom}b".getBytes(StandardCharsets.UTF_8))
+      withTextConf {
+        checkSparkAnswerAndOperator(spark.read.option("lineSep", bom).text(file.getAbsolutePath))
+      }
+    }
+  }
+
+  test("native text read - BOM-only file matches Spark for default and BOM separators") {
+    withTempDir { dir =>
+      val f = new File(dir, "bom-only.txt")
+      Files.write(f.toPath, "\uFEFF".getBytes(StandardCharsets.UTF_8))
+      withTextConf {
+        // Default separator: the BOM is stripped, leaving no rows.
+        checkSparkAnswerAndOperator(spark.read.text(f.getAbsolutePath))
+        // lineSep=BOM: the BOM is the (trailing) separator, leaving one empty row.
+        checkSparkAnswerAndOperator(
+          spark.read.option("lineSep", "\uFEFF").text(f.getAbsolutePath))
       }
     }
   }

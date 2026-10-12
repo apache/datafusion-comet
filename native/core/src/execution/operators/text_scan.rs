@@ -250,13 +250,13 @@ impl FileOpener for TextOpener {
             };
 
             let mut timer = baseline_metrics.elapsed_compute().timer();
-            // Spark's line reader (Hadoop LineRecordReader.skipUtfByteOrderMark) strips a leading
-            // UTF-8 BOM at the start of the file. Mirror that in line mode for the split that starts
-            // at file offset 0 (native only reads unsplit files, so start is always 0; a custom
-            // lineSep still strips, matching Hadoop). wholetext keeps the BOM, as Spark's
-            // WholeTextFileRecordReader does.
+            // Spark's line reader strips a leading UTF-8 BOM at the start of the file, but only with
+            // the default separator. With a custom lineSep the BOM is ordinary data (Spark leaves it
+            // for the splitter, so e.g. a file `BOM a BOM b` read with lineSep=BOM yields
+            // ["", "a", "b"]). Only strip in line mode, at file offset 0 (native reads unsplit files
+            // only), and when no custom lineSep is set. wholetext keeps the BOM.
             let at_file_start = range.as_ref().map(|r| r.start == 0).unwrap_or(true);
-            let content = strip_leading_bom(&buf, whole_text, at_file_start);
+            let content = strip_leading_bom(&buf, whole_text, at_file_start, line_sep.is_some());
             let mut lines = split_lines(content, whole_text, line_sep.as_deref());
             // Spark may split an uncompressed file into byte ranges (TextScan.isSplitable). A line
             // belongs to the split whose [start, end) contains the line's start offset -- so each
@@ -275,10 +275,16 @@ impl FileOpener for TextOpener {
     }
 }
 
-/// Strip a single leading UTF-8 BOM, matching Hadoop LineRecordReader.skipUtfByteOrderMark: only in
-/// line mode (not wholetext) and only for the split that starts at file offset 0.
-fn strip_leading_bom(buf: &[u8], whole_text: bool, at_file_start: bool) -> &[u8] {
-    if !whole_text && at_file_start && buf.starts_with(UTF8_BOM) {
+/// Strip a single leading UTF-8 BOM the way Spark's default line reader does: only in line mode
+/// (not wholetext), only for the split that starts at file offset 0, and only with the default
+/// separator. With a custom lineSep the BOM is left in place as ordinary data.
+fn strip_leading_bom(
+    buf: &[u8],
+    whole_text: bool,
+    at_file_start: bool,
+    custom_line_sep: bool,
+) -> &[u8] {
+    if !whole_text && at_file_start && !custom_line_sep && buf.starts_with(UTF8_BOM) {
         &buf[UTF8_BOM.len()..]
     } else {
         buf
@@ -544,23 +550,38 @@ mod tests {
     fn strips_leading_utf8_bom_in_line_mode() {
         let bom = [0xEFu8, 0xBB, 0xBF];
         let with_hello = [&bom[..], b"hello"].concat();
-        // Line mode at file start: the BOM is stripped.
-        assert_eq!(strip_leading_bom(&with_hello, false, true), b"hello");
+        // Default separator at file start: the BOM is stripped.
+        assert_eq!(strip_leading_bom(&with_hello, false, true, false), b"hello");
         // BOM then newline -> ["", "hello"] after split.
         let bom_nl = [&bom[..], b"\nhello"].concat();
         assert_eq!(
-            lines_as_str(strip_leading_bom(&bom_nl, false, true), false, None),
+            lines_as_str(strip_leading_bom(&bom_nl, false, true, false), false, None),
             vec!["", "hello"]
         );
-        // BOM-only file -> empty after strip -> zero lines.
-        assert!(split_lines(strip_leading_bom(&bom, false, true), false, None).is_empty());
-        // Not stripped: wholetext mode, a non-start split, or no BOM present.
-        assert_eq!(strip_leading_bom(&with_hello, true, true), &with_hello[..]);
+        // BOM-only file, default separator -> empty after strip -> zero lines.
+        assert!(split_lines(strip_leading_bom(&bom, false, true, false), false, None).is_empty());
+        // NOT stripped: a custom lineSep (BOM is data), so `BOM a BOM b` split on BOM is
+        // ["", "a", "b"]; wholetext; a non-start split; or no BOM present.
+        let bom_a_bom_b = [&bom[..], b"a", &bom[..], b"b"].concat();
         assert_eq!(
-            strip_leading_bom(&with_hello, false, false),
+            lines_as_str(
+                strip_leading_bom(&bom_a_bom_b, false, true, true),
+                false,
+                Some(&bom)
+            ),
+            vec!["", "a", "b"]
+        );
+        // BOM-only file with lineSep=BOM -> one empty record (trailing separator dropped).
+        assert_eq!(
+            lines_as_str(strip_leading_bom(&bom, false, true, true), false, Some(&bom)),
+            vec![""]
+        );
+        assert_eq!(strip_leading_bom(&with_hello, true, true, false), &with_hello[..]);
+        assert_eq!(
+            strip_leading_bom(&with_hello, false, false, false),
             &with_hello[..]
         );
-        assert_eq!(strip_leading_bom(b"hello", false, true), b"hello");
+        assert_eq!(strip_leading_bom(b"hello", false, true, false), b"hello");
     }
 
     #[test]

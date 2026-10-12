@@ -99,8 +99,10 @@ object CometCsvNativeScanExec extends CometOperatorSerde[CometBatchScanExec] {
       new CSVOptions(csvScan.options.asScala.toMap, columnPruning, timeZone)
     }
     val filePartitions = op.inputPartitions.map(_.asInstanceOf[FilePartition])
+    // Build the Hadoop conf from the scan's read options (case preserved), matching Spark's
+    // CSVScan.createReaderFactory, so per-read settings like fs.s3a.endpoint reach native.
     val hadoopConf =
-      sessionState.newHadoopConfWithOptions(op.session.sparkContext.conf.getAll.toMap)
+      sessionState.newHadoopConfWithOptions(csvScan.options.asCaseSensitiveMap.asScala.toMap)
     val fileUris = filePartitions.view.flatMap(_.files).map(_.pathUri)
     val objectStoreOptions =
       NativeConfig.extractScanObjectStoreOptions(hadoopConf, fileUris) match {

@@ -65,7 +65,7 @@ Reading a partition column from a partitioned directory falls back to Spark, but
 
 Text files are a common source of ill-formed UTF-8. The native reader replaces invalid byte sequences with the
 Unicode replacement character (U+FFFD), so byte-level comparisons and functions can differ from Spark on those rows;
-see [Strings with non-UTF-8 bytes](compatibility/scans.md) in the compatibility guide.
+see [Strings with non-UTF-8 bytes](compatibility/index.md#strings-with-non-utf-8-bytes) in the compatibility guide.
 
 ### Other Spark inputs
 

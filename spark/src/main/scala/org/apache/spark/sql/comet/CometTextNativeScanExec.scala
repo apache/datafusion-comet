@@ -108,8 +108,11 @@ object CometTextNativeScanExec extends CometOperatorSerde[CometBatchScanExec] {
 
     val objectStoreOptions = filePartitions.headOption
       .flatMap { partitionFile =>
+        // Build the Hadoop conf from the scan's read options (case preserved), matching Spark's
+        // TextScan.createReaderFactory. Using SparkConf alone would drop per-read settings like
+        // fs.s3a.endpoint and send the wrong endpoint to native execution.
         val hadoopConf = sessionState
-          .newHadoopConfWithOptions(op.session.sparkContext.conf.getAll.toMap)
+          .newHadoopConfWithOptions(textScan.options.asCaseSensitiveMap.asScala.toMap)
         partitionFile.files.headOption
           .map(file => NativeConfig.extractObjectStoreOptions(hadoopConf, file.pathUri))
       }
