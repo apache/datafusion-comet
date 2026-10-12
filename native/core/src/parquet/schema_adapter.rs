@@ -229,7 +229,7 @@ fn remap_physical_schema(
 
     // Pre-build id -> first matching logical field for the per-physical rename pass below.
     let id_to_logical: HashMap<i32, &FieldRef> = if should_match_by_id {
-        let mut map = HashMap::new();
+        let mut map = HashMap::with_capacity(logical_schema.fields().len());
         for lf in logical_schema.fields() {
             if let Some(id) = field_id(lf) {
                 map.entry(id).or_insert(lf);
@@ -944,7 +944,7 @@ impl PhysicalExprAdapterFactory for SparkPhysicalExprAdapterFactory {
         let original_folded = original_folded.as_ref().unwrap_or(&physical_folded);
 
         // Only allocate per-column index vectors when a folded name actually collides.
-        let mut seen = HashSet::new();
+        let mut seen = HashSet::with_capacity(original_folded.len());
         let mut collisions = HashSet::new();
         for name in original_folded {
             if !seen.insert(name.as_str()) {
@@ -982,7 +982,7 @@ impl PhysicalExprAdapterFactory for SparkPhysicalExprAdapterFactory {
         };
 
         let id_duplicate_roots = if should_match_by_id {
-            let mut exact_names = HashSet::new();
+            let mut exact_names = HashSet::with_capacity(physical_file_schema.fields().len());
             let mut duplicate_names = HashSet::new();
             for field in physical_file_schema.fields() {
                 if !exact_names.insert(field.name()) {

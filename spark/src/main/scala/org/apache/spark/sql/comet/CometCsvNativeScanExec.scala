@@ -114,6 +114,18 @@ object CometCsvNativeScanExec extends CometOperatorSerde[CometBatchScanExec] {
       withFallbackReason(op.wrapped, multiStoreReason.get)
       return None
     }
+    // The options of every scheme the scan reads, or a decline for the ABFS layouts one
+    // resolution cannot serve. Checked before the split below so that its reason is reported.
+    val fileUris = inputPartitions.view.flatMap(_.files).map(_.pathUri)
+    val objectStoreOptions =
+      NativeConfig.extractScanObjectStoreOptions(hadoopConf, fileUris) match {
+        case Right(options) => options
+        case Left(reason) =>
+          // CometExecRule falls back to the wrapped Spark scan, so it carries the reason too.
+          withFallbackReason(op, reason)
+          withFallbackReason(op.wrapped, reason)
+          return None
+      }
     // Native planning reads each partition through one object store.
     val filePartitions = CometScanUtils.splitPartitionsByStore(
       inputPartitions,
@@ -138,10 +150,6 @@ object CometCsvNativeScanExec extends CometOperatorSerde[CometBatchScanExec] {
       .map(_._2.asInstanceOf[Integer])
     val partitionSchemaProto = schema2Proto(csvScan.readPartitionSchema)
     val partitionsProto = filePartitions.map(partition2Proto(_, csvScan.readPartitionSchema))
-
-    val objectStoreOptions = NativeConfig.extractObjectStoreOptions(
-      hadoopConf,
-      filePartitions.view.flatMap(_.files.view.map(_.pathUri)))
 
     csvScanBuilder.putAllObjectStoreOptions(objectStoreOptions.asJava)
     csvScanBuilder.setCsvOptions(csvOptionsProto)

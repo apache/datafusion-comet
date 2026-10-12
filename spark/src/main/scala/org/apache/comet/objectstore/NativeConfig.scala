@@ -37,12 +37,10 @@ object NativeConfig {
     "s3a" -> Seq("fs.s3a."),
     // Google Cloud Storage configurations
     "gs" -> Seq("fs.gs."),
-    // Azure Blob Storage configurations (can use both prefixes)
+    // Azure Blob Storage configurations (can use both prefixes). ABFS (abfs, abfss) is not
+    // forwarded by prefix: `AbfsAuthResolver` resolves its authentication for the one account.
     "wasb" -> Seq("fs.azure.", "fs.wasb."),
-    "wasbs" -> Seq("fs.azure.", "fs.wasb."),
-    // Azure Data Lake Storage Gen2 (ABFS) configurations. Hadoop ABFS authentication keys
-    "abfs" -> Seq("fs.azure.", "fs.abfs."),
-    "abfss" -> Seq("fs.azure.", "fs.abfss.", "fs.abfs."))
+    "wasbs" -> Seq("fs.azure.", "fs.wasb."))
 
   // Some alias filesystems report the literal authority "default" when the URI has none (e.g.
   // `scheme:///bucket/key`); the real bucket is then promoted from the URL path. Keys under this
@@ -244,6 +242,10 @@ object NativeConfig {
    * Extract object store configs (S3, GCS, Azure, ...) from the Hadoop configuration for native
    * DataFusion. Captures global and per-bucket keys; native code prefers per-bucket.
    *
+   * For `abfs`/`abfss` the `fs.azure.*` namespace is not copied. [[AbfsAuthResolver]] asks the
+   * classpath's hadoop-azure which mechanism and values apply to the URI's account and forwards
+   * them as `comet.azure.*` markers plus global-named keys.
+   *
    * A scheme listed in `COMET_S3_COMPLIANT_SCHEMES_KEY` reuses the `fs.s3a.*` surface, and its
    * vendor `fs.<scheme>.<authority>.*` keys are translated to `fs.s3a.*` (see
    * `translateVendorKeys`) AFTER the `fs.s3a.*` pass, so real vendor values override conflicting
@@ -262,7 +264,9 @@ object NativeConfig {
    * scheme, and of one per bucket for an opted-in alias. Each scheme forwards keys under its own
    * prefixes. An alias bucket keeps only the settings translated for that bucket, applied after
    * every scheme's own keys so that they win over a raw `fs.s3a.bucket.<bucket>.*` key. An alias
-   * read through libhdfs translates nothing, since only a native S3 store reads those keys.
+   * read through libhdfs translates nothing, since only a native S3 store reads those keys. ABFS
+   * forwards one account's resolution under global keys, so scans go through
+   * `extractScanObjectStoreOptions`, which never unions ABFS files.
    */
   def extractObjectStoreOptions(
       hadoopConf: Configuration,
@@ -314,6 +318,14 @@ object NativeConfig {
     }
     val s3CompliantSchemes = parseSchemeSet(s3CompliantRaw)
 
+    // ABFS: Hadoop resolves the mechanism and values for this URI's account on the driver, and
+    // only those travel to native (never another account's keys, never the whole namespace).
+    if (scheme == "abfs" || scheme == "abfss") {
+      return (
+        options.toMap ++ AbfsAuthResolver.toOptions(AbfsAuthResolver.resolve(hadoopConf, uri)),
+        Map.empty)
+    }
+
     // Prefixes for this scheme; a configured S3-compliant alias reuses the fs.s3a.* surface.
     val prefixes = objectStoreConfigPrefixes.get(scheme).orElse {
       if (s3CompliantSchemes.contains(scheme)) objectStoreConfigPrefixes.get("s3a") else None
@@ -349,6 +361,46 @@ object NativeConfig {
 
     (options.toMap, aliasOptions)
   }
+
+  /**
+   * The object store options for a scan over `uris`, or the reason the native scan cannot read
+   * them. A scan without ABFS files forwards the options of every scheme it reads (see
+   * `extractObjectStoreOptions` over a scan's files). ABFS authentication is resolved for the
+   * container and account of one URI and forwarded under global key names, so a scan whose ABFS
+   * files span more than one container or account, or that mixes ABFS and other schemes, is
+   * declined, and one that stays in a single container forwards the resolution of its first file.
+   */
+  def extractScanObjectStoreOptions(
+      hadoopConf: Configuration,
+      uris: Iterable[URI]): Either[String, Map[String, String]] = {
+    val iter = uris.iterator
+    if (!iter.hasNext) {
+      return Right(Map.empty)
+    }
+    val first = iter.next()
+    val firstIsAbfs = isAbfs(first)
+    while (iter.hasNext) {
+      val uri = iter.next()
+      if (isAbfs(uri) != firstIsAbfs) {
+        return Left(
+          "Native scan does not support a scan that mixes ABFS and other file systems " +
+            s"(${first.getScheme} and ${uri.getScheme})")
+      }
+      if (firstIsAbfs && uri.getRawAuthority != first.getRawAuthority) {
+        return Left(
+          "Native scan does not support ABFS files from more than one container or account " +
+            s"(${first.getRawAuthority} and ${uri.getRawAuthority})")
+      }
+    }
+    if (firstIsAbfs) {
+      Right(extractObjectStoreOptions(hadoopConf, first))
+    } else {
+      Right(extractObjectStoreOptions(hadoopConf, uris))
+    }
+  }
+
+  private def isAbfs(uri: URI): Boolean =
+    lowerScheme(uri).exists(scheme => scheme == "abfs" || scheme == "abfss")
 
   /**
    * The value Hadoop's own consumers observe for `key`. `Configuration#get` expands any `${...}`

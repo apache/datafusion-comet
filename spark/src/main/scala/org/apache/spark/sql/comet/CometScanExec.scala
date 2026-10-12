@@ -255,10 +255,7 @@ case class CometScanExec(
    */
   def getFilePartitions(): Seq[FilePartition] = {
     val filePartitions = if (bucketedScan) {
-      createFilePartitionsForBucketedScan(
-        relation.bucketSpec.get,
-        dynamicallySelectedPartitions,
-        relation)
+      createFilePartitionsForBucketedScan(relation.bucketSpec.get, dynamicallySelectedPartitions)
     } else {
       createFilePartitionsForNonBucketedScan(dynamicallySelectedPartitions, relation)
     }
@@ -273,13 +270,10 @@ case class CometScanExec(
    *   the bucketing spec.
    * @param selectedPartitions
    *   Hive-style partition that are part of the read.
-   * @param fsRelation
-   *   [[HadoopFsRelation]] associated with the read.
    */
   private def createFilePartitionsForBucketedScan(
       bucketSpec: BucketSpec,
-      selectedPartitions: Array[PartitionDirectory],
-      fsRelation: HadoopFsRelation): Seq[FilePartition] = {
+      selectedPartitions: Array[PartitionDirectory]): Seq[FilePartition] = {
     logInfo(s"Planning with ${bucketSpec.numBuckets} buckets")
     val filesGroupedToBuckets =
       selectedPartitions
