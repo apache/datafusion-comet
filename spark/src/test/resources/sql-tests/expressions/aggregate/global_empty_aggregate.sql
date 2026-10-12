@@ -25,7 +25,7 @@ statement
 CREATE TABLE empty_agg_multi(a int) USING parquet
 
 statement
-INSERT INTO empty_agg_multi SELECT CAST(id AS INT) FROM range(0, 10)
+INSERT INTO empty_agg_multi SELECT CAST(id AS INT) FROM range(0, 10, 1, 5)
 
 -- No files at all.
 statement
