@@ -1434,25 +1434,55 @@ object CometMode extends CometAggregateExpressionSerde[Mode] with CometTypeShim 
   }
 }
 
-object CometPivotFirst extends CometAggregateExpressionSerde[PivotFirst] {
+object CometPivotFirst extends CometAggregateExpressionSerde[PivotFirst] with CometTypeShim {
 
   // Delegate to Spark's own PivotFirst.supportsDataType so the two lists cannot drift if a
   // future Spark version adds a value type to the fast-path gate.
   private def unsupportedValueTypeReason(dt: DataType): String =
     s"Unsupported value data type: $dt"
 
+  private def unsupportedPivotTypeReason(dt: DataType): String =
+    s"Unsupported pivot column data type: $dt"
+
   private val emptyPivotValuesReason = "Pivot values list is empty"
+
+  private val duplicatePivotValuesReason = "Pivot values list contains duplicates"
 
   override def getUnsupportedReasons(): Seq[String] = Seq(
     "Value data type outside PivotFirst.supportsDataType " +
       "(Boolean, Byte, Short, Int, Long, Float, Double, Decimal)",
-    emptyPivotValuesReason)
+    "Pivot column of a type other than Boolean, Byte, Short, Int, Long, Float, Double, " +
+      "Decimal, String (UTF8_BINARY collation), Date, Timestamp or TimestampNTZ, which " +
+      "includes the struct that a pivot on more than one column builds",
+    emptyPivotValuesReason,
+    s"$duplicatePivotValuesReason, including `0.0` next to `-0.0`")
+
+  // The pivot column types for which Spark finds a value's slot in a `HashMap` keyed by plain
+  // value equality, which the native lookup reproduces. Spark keys arrays and structs in a
+  // `TreeMap` by their interpreted ordering. It keys binary values by reference identity before
+  // 4.2 and by ordering from 4.2, which orders strings with a non-UTF8_BINARY collation too.
+  private def isSupportedPivotType(dt: DataType): Boolean = dt match {
+    case BooleanType | ByteType | ShortType | IntegerType | LongType => true
+    case FloatType | DoubleType => true
+    case _: DecimalType => true
+    case DateType | TimestampType | TimestampNTZType => true
+    case st: StringType => !isStringCollationType(st)
+    case _ => false
+  }
 
   override def getSupportLevel(expr: PivotFirst): SupportLevel = {
+    val pivotType = expr.pivotColumn.dataType
     if (!PivotFirst.supportsDataType(expr.valueDataType)) {
       Unsupported(Some(unsupportedValueTypeReason(expr.valueDataType)))
+    } else if (!isSupportedPivotType(pivotType)) {
+      Unsupported(Some(unsupportedPivotTypeReason(pivotType)))
     } else if (expr.pivotColumnValues.isEmpty) {
       Unsupported(Some(emptyPivotValuesReason))
+    } else if (expr.indexSize != expr.pivotColumnValues.length) {
+      // Spark sizes the aggregate buffer from its index of the pivot values, which holds a
+      // repeated value once, while the native aggregate keeps one slot per list entry. The
+      // native partial aggregate would emit more columns than the shuffle schema declares.
+      Unsupported(Some(duplicatePivotValuesReason))
     } else {
       Compatible()
     }

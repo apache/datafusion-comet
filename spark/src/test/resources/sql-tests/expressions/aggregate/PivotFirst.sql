@@ -18,11 +18,10 @@
 -- PivotFirst is Spark's internal aggregate emitted by the two-phase optimized pivot plan
 -- (PivotTransformer). It runs whenever every aggregate output type is in
 -- PivotFirst.supportsDataType (Boolean, Byte, Short, Int, Long, Float, Double, Decimal).
--- These SQL tests exercise that path via SQL PIVOT clauses, one per supported value type
--- plus a handful of edge cases (unmatched pivot values, all-null groups, null pivot column).
--- They intentionally use `spark_answer_only` because the pivot plan's final projection is a
--- Spark expression (ExtractValue on the aggregate output) so the whole query does not always
--- run natively even when PivotFirst itself does.
+-- These SQL tests exercise that path via SQL PIVOT clauses, one per supported value type and
+-- per supported pivot column type, plus a handful of edge cases (unmatched pivot values,
+-- all-null groups, null pivot column). The pivot column types and pivot lists whose matching
+-- Comet does not reproduce come last and must fall back.
 
 -- ============================================================
 -- Setup: sales-like table used for most cases
@@ -44,7 +43,7 @@ INSERT INTO pf_sales VALUES
 -- PivotFirst plan.
 -- ============================================================
 
-query spark_answer_only
+query
 SELECT * FROM pf_sales
   PIVOT (sum(earnings)
     FOR course IN ('dotNET', 'Java'))
@@ -64,7 +63,7 @@ INSERT INTO pf_sales_bi VALUES
   (2013, 'dotNET', 48000000000),
   (2013, 'Java',   30000000000)
 
-query spark_answer_only
+query
 SELECT * FROM pf_sales_bi
   PIVOT (sum(earnings)
     FOR course IN ('dotNET', 'Java'))
@@ -74,7 +73,7 @@ SELECT * FROM pf_sales_bi
 -- Double values: avg(earnings) is double.
 -- ============================================================
 
-query spark_answer_only
+query
 SELECT * FROM pf_sales
   PIVOT (avg(earnings)
     FOR course IN ('dotNET', 'Java'))
@@ -94,7 +93,7 @@ INSERT INTO pf_sales_f VALUES
   (2013, 'dotNET', CAST(48000 AS FLOAT)),
   (2013, 'Java',   CAST(30000 AS FLOAT))
 
-query spark_answer_only
+query
 SELECT * FROM pf_sales_f
   PIVOT (min(earnings)
     FOR course IN ('dotNET', 'Java'))
@@ -116,13 +115,13 @@ INSERT INTO pf_sales_small VALUES
   (2013, 'dotNET', 480, 30),
   (2013, 'Java',   300, 40)
 
-query spark_answer_only
+query
 SELECT * FROM pf_sales_small
   PIVOT (min(s)
     FOR course IN ('dotNET', 'Java'))
   ORDER BY year
 
-query spark_answer_only
+query
 SELECT * FROM pf_sales_small
   PIVOT (min(b)
     FOR course IN ('dotNET', 'Java'))
@@ -142,7 +141,7 @@ INSERT INTO pf_flags VALUES
   (2013, 'dotNET', false),
   (2013, 'Java',   true)
 
-query spark_answer_only
+query
 SELECT * FROM pf_flags
   PIVOT (bool_or(flag)
     FOR course IN ('dotNET', 'Java'))
@@ -162,7 +161,7 @@ INSERT INTO pf_sales_dec VALUES
   (2013, 'dotNET', 48000.00),
   (2013, 'Java',   30000.00)
 
-query spark_answer_only
+query
 SELECT * FROM pf_sales_dec
   PIVOT (sum(earnings)
     FOR course IN ('dotNET', 'Java'))
@@ -172,7 +171,7 @@ SELECT * FROM pf_sales_dec
 -- Multiple aggregates in a single pivot.
 -- ============================================================
 
-query spark_answer_only
+query
 SELECT * FROM pf_sales
   PIVOT (sum(earnings) AS s, avg(earnings) AS a
     FOR course IN ('dotNET', 'Java'))
@@ -183,7 +182,7 @@ SELECT * FROM pf_sales
 -- output slots must be NULL.
 -- ============================================================
 
-query spark_answer_only
+query
 SELECT * FROM pf_sales
   PIVOT (sum(earnings)
     FOR course IN ('dotNET', 'Java', 'MissingA', 'MissingB'))
@@ -206,7 +205,7 @@ INSERT INTO pf_sales_extra VALUES
   (2013, 'Java',   30000),
   (2013, 'Python', 67890)
 
-query spark_answer_only
+query
 SELECT * FROM pf_sales_extra
   PIVOT (sum(earnings)
     FOR course IN ('dotNET', 'Java'))
@@ -226,7 +225,7 @@ INSERT INTO pf_sales_partial VALUES
   (2012, 'Java',   20000),
   (2013, 'Python', 42000)
 
-query spark_answer_only
+query
 SELECT * FROM pf_sales_partial
   PIVOT (sum(earnings)
     FOR course IN ('dotNET', 'Java'))
@@ -248,7 +247,7 @@ INSERT INTO pf_sales_nullable VALUES
   (2013, 'dotNET', 48000),
   (2013, 'Java',   30000)
 
-query spark_answer_only
+query
 SELECT * FROM pf_sales_nullable
   PIVOT (sum(earnings)
     FOR course IN ('dotNET', 'Java'))
@@ -257,9 +256,8 @@ SELECT * FROM pf_sales_nullable
 -- ============================================================
 -- NULL in the pivot COLUMN. Spark tracks this with a dedicated
 -- test ("pivot with null should not throw NPE") because early
--- versions of PivotFirst NPE'd on null keys with a TreeMap.
--- Comet uses a HashMap<ScalarValue, usize> where ScalarValue::Null
--- hashes safely, so this must produce the same rows as Spark.
+-- versions of PivotFirst NPE'd on null keys with a TreeMap. A null
+-- row matches no slot unless the pivot list holds NULL too.
 -- ============================================================
 
 statement
@@ -272,7 +270,7 @@ INSERT INTO pf_sales_nullpivot VALUES
   (2013, 'Java',   30000),
   (2013, NULL,     42)
 
-query spark_answer_only
+query
 SELECT * FROM pf_sales_nullpivot
   PIVOT (sum(earnings)
     FOR course IN ('dotNET', 'Java'))
@@ -293,7 +291,7 @@ INSERT INTO pf_sales_intpivot VALUES
   ('EU', 2012, 20000),
   ('EU', 2013, 30000)
 
-query spark_answer_only
+query
 SELECT * FROM pf_sales_intpivot
   PIVOT (sum(earnings)
     FOR year IN (2012, 2013))
@@ -314,7 +312,7 @@ INSERT INTO pf_sales_datepivot VALUES
   ('EU', DATE '2024-01-01', 20000),
   ('EU', DATE '2024-06-15', 30000)
 
-query spark_answer_only
+query
 SELECT * FROM pf_sales_datepivot
   PIVOT (sum(earnings)
     FOR d IN (DATE '2024-01-01', DATE '2024-06-15'))
@@ -346,14 +344,14 @@ INSERT INTO pf_sales_dblpivot VALUES
 
 -- -0.0 in the pivot list has to collect both signs of zero (63000 / 30000),
 -- and the NaN column has to stay NULL for every group.
-query spark_answer_only
+query
 SELECT * FROM pf_sales_dblpivot
   PIVOT (sum(earnings)
     FOR k IN (-0.0D, double('NaN'), 1.5D))
   ORDER BY region
 
 -- The mirror: a 0.0 entry in the pivot list must also catch the -0.0 rows.
-query spark_answer_only
+query
 SELECT * FROM pf_sales_dblpivot
   PIVOT (sum(earnings)
     FOR k IN (0.0D, 1.5D))
@@ -373,8 +371,155 @@ INSERT INTO pf_sales_fltpivot VALUES
   ('NA', float('NaN'),  11000),
   ('EU', -0.0F,         30000)
 
-query spark_answer_only
+query
 SELECT * FROM pf_sales_fltpivot
   PIVOT (sum(earnings)
     FOR k IN (-0.0F, float('NaN')))
+  ORDER BY region
+
+-- ============================================================
+-- NULL in the pivot LIST collects the rows whose pivot column is
+-- NULL, as Spark's HashMap lookup of a null key does.
+-- ============================================================
+
+query
+SELECT * FROM pf_sales_nullpivot
+  PIVOT (sum(earnings)
+    FOR course IN ('dotNET', NULL))
+  ORDER BY year
+
+-- ============================================================
+-- Two NaN entries are two distinct keys for Spark (NaN equals
+-- nothing), so the list has no duplicates and stays native, and
+-- both columns stay NULL.
+-- ============================================================
+
+query
+SELECT * FROM pf_sales_dblpivot
+  PIVOT (sum(earnings)
+    FOR k IN (double('NaN'), 1.5D, double('NaN')))
+  ORDER BY region
+
+-- ============================================================
+-- The other pivot column types that run natively: boolean,
+-- tinyint, smallint, bigint, decimal, timestamp and timestamp_ntz.
+-- ============================================================
+
+statement
+CREATE TABLE pf_sales_types (
+  region string, flag boolean, b tinyint, s smallint, l bigint, d decimal(10,2),
+  ts timestamp, ntz timestamp_ntz, earnings int) USING parquet
+
+statement
+INSERT INTO pf_sales_types VALUES
+  ('NA', true,  1, 100, 10000000000, 1.50,
+   TIMESTAMP '2024-01-01 00:00:00', TIMESTAMP_NTZ '2024-01-01 00:00:00', 15000),
+  ('NA', false, 2, 200, 20000000000, 2.25,
+   TIMESTAMP '2024-06-15 12:30:00', TIMESTAMP_NTZ '2024-06-15 12:30:00', 48000),
+  ('EU', true,  2, 200, 20000000000, 2.25,
+   TIMESTAMP '2024-06-15 12:30:00', TIMESTAMP_NTZ '2024-06-15 12:30:00', 20000),
+  ('EU', NULL,  3, 300, 30000000000, 3.00,
+   TIMESTAMP '2025-01-01 00:00:00', TIMESTAMP_NTZ '2025-01-01 00:00:00', 30000)
+
+query
+SELECT region, `true`, `false` FROM (
+  SELECT region, flag, earnings FROM pf_sales_types)
+  PIVOT (sum(earnings) FOR flag IN (true, false))
+  ORDER BY region
+
+query
+SELECT * FROM (SELECT region, b, earnings FROM pf_sales_types)
+  PIVOT (sum(earnings) FOR b IN (CAST(1 AS TINYINT), CAST(2 AS TINYINT)))
+  ORDER BY region
+
+query
+SELECT * FROM (SELECT region, s, earnings FROM pf_sales_types)
+  PIVOT (sum(earnings) FOR s IN (CAST(100 AS SMALLINT), CAST(300 AS SMALLINT)))
+  ORDER BY region
+
+query
+SELECT * FROM (SELECT region, l, earnings FROM pf_sales_types)
+  PIVOT (sum(earnings) FOR l IN (10000000000, 20000000000))
+  ORDER BY region
+
+query
+SELECT * FROM (SELECT region, d, earnings FROM pf_sales_types)
+  PIVOT (sum(earnings) FOR d IN (2.25, 3.00))
+  ORDER BY region
+
+query
+SELECT * FROM (SELECT region, ts, earnings FROM pf_sales_types)
+  PIVOT (sum(earnings)
+    FOR ts IN (TIMESTAMP '2024-01-01 00:00:00', TIMESTAMP '2024-06-15 12:30:00'))
+  ORDER BY region
+
+query
+SELECT * FROM (SELECT region, ntz, earnings FROM pf_sales_types)
+  PIVOT (sum(earnings)
+    FOR ntz IN (TIMESTAMP_NTZ '2024-06-15 12:30:00', TIMESTAMP_NTZ '2025-01-01 00:00:00'))
+  ORDER BY region
+
+-- ============================================================
+-- Pivot column types that fall back. Spark compares binary pivot
+-- values by reference before 4.2, so no row matches there, and by
+-- content from 4.2. It matches arrays and structs through their
+-- interpreted ordering. A pivot on two columns pivots on a struct.
+-- ============================================================
+
+statement
+CREATE TABLE pf_sales_complex (
+  region string, k binary, a array<int>, course string, year int, earnings int)
+  USING parquet
+
+statement
+INSERT INTO pf_sales_complex VALUES
+  ('NA', X'61', array(1, 1), 'dotNET', 2012, 15000),
+  ('NA', X'62', array(2, 2), 'Java',   2013, 48000),
+  ('EU', X'61', array(1, 1), 'dotNET', 2013, 20000)
+
+query expect_fallback(Unsupported pivot column data type: BinaryType)
+SELECT * FROM (SELECT region, k, earnings FROM pf_sales_complex)
+  PIVOT (sum(earnings) FOR k IN (X'61', X'62'))
+  ORDER BY region
+
+query expect_fallback(Unsupported pivot column data type: ArrayType)
+SELECT * FROM (SELECT region, a, earnings FROM pf_sales_complex)
+  PIVOT (sum(earnings) FOR a IN (array(1, 1), array(2, 2)))
+  ORDER BY region
+
+query expect_fallback(Unsupported pivot column data type: StructType)
+SELECT * FROM (SELECT region, course, year, earnings FROM pf_sales_complex)
+  PIVOT (sum(earnings) FOR (course, year) IN (('dotNET', 2012), ('Java', 2013)))
+  ORDER BY region
+
+-- ============================================================
+-- Duplicate pivot values fall back. Spark keeps one buffer slot per
+-- distinct value, so its partial aggregate emits fewer columns than
+-- the list has entries, and the projection reads the missing ones
+-- past the end of the array: NULL with ANSI off, an error with it
+-- on. 0.0 and -0.0 are duplicates under Spark's key equality. Only
+-- rows matching the first entry are used, because Spark writes a
+-- repeated value's row past the end of its buffer.
+-- ============================================================
+
+statement
+SET spark.sql.ansi.enabled=false
+
+query expect_fallback(Pivot values list contains duplicates)
+SELECT * FROM pf_sales_intpivot
+  PIVOT (sum(earnings) FOR year IN (2012, 2014, 2014))
+  ORDER BY region
+
+statement
+CREATE TABLE pf_sales_dblnozero (region string, k double, earnings int) USING parquet
+
+statement
+INSERT INTO pf_sales_dblnozero VALUES
+  ('NA', 1.5D, 15000),
+  ('NA', 2.5D, 48000),
+  ('EU', 1.5D, 20000)
+
+query expect_fallback(Pivot values list contains duplicates)
+SELECT * FROM pf_sales_dblnozero
+  PIVOT (sum(earnings) FOR k IN (1.5D, 0.0D, -0.0D))
   ORDER BY region
