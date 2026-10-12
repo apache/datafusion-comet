@@ -24,7 +24,7 @@ use jni::{
     Env,
 };
 
-/// A struct that holds all the JNI methods and fields for JVM `CometShuffleBlockIterator` class.
+/// A struct that holds the JNI methods for the JVM `CometBlockIterator` interface.
 #[allow(dead_code)] // we need to keep references to Java items to prevent GC
 pub struct CometShuffleBlockIterator<'a> {
     pub class: JClass<'a>,
@@ -43,7 +43,7 @@ pub struct CometShuffleBlockIterator<'a> {
 }
 
 impl<'a> CometShuffleBlockIterator<'a> {
-    pub const JVM_CLASS: &'static str = "org/apache/comet/CometShuffleBlockIterator";
+    pub const JVM_CLASS: &'static str = "org/apache/comet/CometBlockIterator";
 
     pub fn new(env: &mut Env<'a>) -> JniResult<CometShuffleBlockIterator<'a>> {
         let class = env.find_class(JNIString::new(Self::JVM_CLASS))?;

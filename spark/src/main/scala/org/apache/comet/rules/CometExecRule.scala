@@ -592,8 +592,8 @@ case class CometExecRule(session: SparkSession, queryStagePrep: Boolean = false)
       // exchange. It is only used for Comet native execution. We only transform Spark broadcast
       // exchange to Comet broadcast exchange if its downstream is a Comet native plan or if the
       // broadcast exchange is forced to be enabled by Comet config.
-      case plan if plan.children.exists(_.isInstanceOf[BroadcastExchangeExec]) =>
-        val newChildren = plan.children.map {
+      case candidate if candidate.children.exists(_.isInstanceOf[BroadcastExchangeExec]) =>
+        val newChildren = candidate.children.map {
           // Tagged by CometSpark34AqeDppFallbackRule on Spark < 3.5 to keep the build-side
           // broadcast Spark-native so Spark's PlanAdaptiveDynamicPruningFilters can match it.
           case b: BroadcastExchangeExec
@@ -604,19 +604,19 @@ case class CometExecRule(session: SparkSession, queryStagePrep: Boolean = false)
           case other => other
         }
         if (!newChildren.exists(_.isInstanceOf[BroadcastExchangeExec])) {
-          val newPlan = convertNode(plan.withNewChildren(newChildren))
+          val newPlan = convertNode(candidate.withNewChildren(newChildren))
           if (isCometNative(newPlan) || CometConf.COMET_EXEC_BROADCAST_FORCE_ENABLED.get(conf)) {
             newPlan
           } else {
             // copy fallback reasons to the original plan
             newPlan
               .getTagValue(CometExplainInfo.FALLBACK_REASONS)
-              .foreach(reasons => withFallbackReasons(plan, reasons))
+              .foreach(reasons => withFallbackReasons(candidate, reasons))
             // return the original plan
-            plan
+            candidate
           }
         } else {
-          plan
+          candidate
         }
 
       // For AQE shuffle stage on a Comet shuffle exchange
@@ -865,7 +865,12 @@ case class CometExecRule(session: SparkSession, queryStagePrep: Boolean = false)
               logInfo(
                 "Converting SubqueryBroadcastExec to " +
                   "CometSubqueryBroadcastExec for DPP exchange reuse")
-              val cometBroadcast = CometBroadcastExchangeExec(b, b.output, b.mode, cometChild)
+              val cometBroadcast = CometBroadcastExchangeExec(
+                b,
+                b.output,
+                b.mode,
+                cometChild,
+                CometConf.COMET_BROADCAST_DIRECT_READ_ENABLED.get())
               val cometSub = CometSubqueryBroadcastExec(
                 sub.name,
                 getSubqueryBroadcastExecIndices(sub),

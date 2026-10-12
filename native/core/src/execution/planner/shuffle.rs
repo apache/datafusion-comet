@@ -44,7 +44,7 @@ use super::{
 };
 use crate::{
     execution::{
-        operators::{ExecutionError, ShuffleScanExec},
+        operators::{BlockScanExec, ExecutionError},
         serde::to_arrow_datatype,
         shuffle::{
             CometPartitioning, CompressionCodec, PartitionOffsets, RoundRobinStrategy,
@@ -268,7 +268,7 @@ impl OperatorBuilder for ShuffleScanBuilder {
             Some(inputs.remove(0))
         };
 
-        let shuffle_scan = ShuffleScanExec::new(exec_context_id, input_source, data_types)?;
+        let shuffle_scan = BlockScanExec::new(exec_context_id, input_source, data_types)?;
 
         Ok((
             vec![],
@@ -276,6 +276,46 @@ impl OperatorBuilder for ShuffleScanBuilder {
             Arc::new(SparkPlan::new(
                 spark_plan.plan_id,
                 Arc::new(shuffle_scan),
+                vec![],
+            )),
+        ))
+    }
+}
+
+/// Builder for direct native broadcast scans.
+pub struct BroadcastScanBuilder;
+
+impl OperatorBuilder for BroadcastScanBuilder {
+    fn build(
+        &self,
+        spark_plan: &Operator,
+        inputs: &mut Vec<Arc<Global<JObject<'static>>>>,
+        _partition_count: usize,
+        planner: &PhysicalPlanner,
+    ) -> PlanCreationResult {
+        let scan = extract_op!(spark_plan, BroadcastScan);
+        let data_types = scan.fields.iter().map(to_arrow_datatype).collect();
+
+        let exec_context_id = planner.exec_context_id;
+        if exec_context_id != TEST_EXEC_CONTEXT_ID && inputs.is_empty() {
+            return Err(GeneralError("No input for broadcast scan".to_string()));
+        }
+
+        let input_source = if exec_context_id == TEST_EXEC_CONTEXT_ID && inputs.is_empty() {
+            None
+        } else {
+            Some(inputs.remove(0))
+        };
+
+        let broadcast_scan =
+            BlockScanExec::new_broadcast(exec_context_id, input_source, data_types)?;
+
+        Ok((
+            vec![],
+            vec![broadcast_scan.clone()],
+            Arc::new(SparkPlan::new(
+                spark_plan.plan_id,
+                Arc::new(broadcast_scan),
                 vec![],
             )),
         ))
@@ -778,7 +818,7 @@ mod tests {
 
         assert!(scans.is_empty());
         assert_eq!(shuffle_scans.len(), 1);
-        assert!(plan.native_plan.is::<ShuffleScanExec>());
+        assert!(plan.native_plan.is::<BlockScanExec>());
     }
 
     #[test]

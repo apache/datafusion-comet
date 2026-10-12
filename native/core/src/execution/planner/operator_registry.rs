@@ -54,6 +54,7 @@ pub enum OperatorType {
     Sort,
     ShuffleWriter,
     ShuffleScan,
+    BroadcastScan,
     ParquetWriter,
     Expand,
     SortMergeJoin,
@@ -134,12 +135,14 @@ impl OperatorRegistry {
 
     /// Register shuffle operators
     fn register_shuffle_operators(&mut self) {
-        use super::shuffle::{ShuffleScanBuilder, ShuffleWriterBuilder};
+        use super::shuffle::{BroadcastScanBuilder, ShuffleScanBuilder, ShuffleWriterBuilder};
 
         self.builders
             .insert(OperatorType::ShuffleWriter, Box::new(ShuffleWriterBuilder));
         self.builders
             .insert(OperatorType::ShuffleScan, Box::new(ShuffleScanBuilder));
+        self.builders
+            .insert(OperatorType::BroadcastScan, Box::new(BroadcastScanBuilder));
     }
 
     /// Register write operators
@@ -176,6 +179,7 @@ fn get_operator_type(spark_operator: &Operator) -> Option<OperatorType> {
         OpStruct::Explode(_) => None, // Not yet in OperatorType enum
         OpStruct::CsvScan(_) => Some(OperatorType::CsvScan),
         OpStruct::ShuffleScan(_) => Some(OperatorType::ShuffleScan),
+        OpStruct::BroadcastScan(_) => Some(OperatorType::BroadcastScan),
         OpStruct::BroadcastNestedLoopJoin(_) => None,
         OpStruct::RangeScan(_) => None,
         OpStruct::Sample(_) => None,    // Not yet in OperatorType enum

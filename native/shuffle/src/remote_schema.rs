@@ -51,7 +51,7 @@ pub fn decode_remote_shuffle_batch(
         .zip(expected_types)
         .map(|(field, expected)| {
             // Non-null dictionary keys can reference null values. The declared types do not
-            // constrain top-level nullability; match ShuffleScanExec's nullable output fields.
+            // constrain top-level nullability; match BlockScanExec's nullable output fields.
             field
                 .as_ref()
                 .clone()
