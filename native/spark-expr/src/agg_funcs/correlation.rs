@@ -23,9 +23,10 @@ use std::sync::Arc;
 use crate::agg_funcs::covariance::{CovarianceAccumulator, CovarianceGroupsAccumulator};
 use crate::agg_funcs::stddev::StddevAccumulator;
 use crate::agg_funcs::variance::VarianceGroupsAccumulator;
-use crate::{divide_by_zero_error, EvalMode, QueryContextMap, SparkErrorWithContext};
+use crate::agg_funcs::welford::ZeroDivisor;
+use crate::{EvalMode, QueryContextMap};
 use arrow::compute::filter;
-use datafusion::common::{not_impl_err, DataFusionError, Result, ScalarValue};
+use datafusion::common::{not_impl_err, Result, ScalarValue};
 use datafusion::logical_expr::function::{AccumulatorArgs, StateFieldsArgs};
 use datafusion::logical_expr::{
     Accumulator, AggregateUDFImpl, EmitTo, GroupsAccumulator, Signature, Volatility,
@@ -38,35 +39,12 @@ use datafusion::physical_expr::expressions::StatsType;
 /// we have our own implementation is that DataFusion has UInt64 for state_field `count`,
 /// while Spark has Double for count. Also we have added `null_on_divide_by_zero`
 /// and `eval_mode` to be consistent with Spark's implementation.
-#[derive(Debug)]
+#[derive(Debug, PartialEq, Eq, Hash)]
 pub struct Correlation {
     name: String,
     signature: Signature,
     null_on_divide_by_zero: bool,
     zero_divisor: ZeroDivisor,
-}
-
-// Manually implement PartialEq, Eq, and Hash excluding the registry field
-impl PartialEq for Correlation {
-    fn eq(&self, other: &Self) -> bool {
-        self.name == other.name
-            && self.signature == other.signature
-            && self.null_on_divide_by_zero == other.null_on_divide_by_zero
-            && self.zero_divisor.eval_mode == other.zero_divisor.eval_mode
-            && self.zero_divisor.expr_id == other.zero_divisor.expr_id
-    }
-}
-
-impl Eq for Correlation {}
-
-impl std::hash::Hash for Correlation {
-    fn hash<H: std::hash::Hasher>(&self, state: &mut H) {
-        self.name.hash(state);
-        self.signature.hash(state);
-        self.null_on_divide_by_zero.hash(state);
-        self.zero_divisor.eval_mode.hash(state);
-        self.zero_divisor.expr_id.hash(state);
-    }
 }
 
 impl Correlation {
@@ -87,38 +65,8 @@ impl Correlation {
                 Volatility::Immutable,
             ),
             null_on_divide_by_zero,
-            zero_divisor: ZeroDivisor {
-                eval_mode,
-                expr_id,
-                registry,
-            },
+            zero_divisor: ZeroDivisor::new(eval_mode, expr_id, registry),
         }
-    }
-}
-
-/// How the `Divide` in Spark's `ck / sqrt(xMk * yMk)` treats a zero denominator.
-/// It returns null in LEGACY mode and raises DIVIDE_BY_ZERO, carrying the `corr`
-/// call's query context, in ANSI mode.
-#[derive(Debug, Clone)]
-pub(crate) struct ZeroDivisor {
-    eval_mode: EvalMode,
-    expr_id: Option<u64>,
-    registry: Arc<QueryContextMap>,
-}
-
-impl ZeroDivisor {
-    /// The error to raise for a zero denominator, or `None` to return null.
-    fn error(&self) -> Option<DataFusionError> {
-        if self.eval_mode != EvalMode::Ansi {
-            return None;
-        }
-        let error = divide_by_zero_error();
-        Some(match self.expr_id.and_then(|id| self.registry.get(id)) {
-            Some(ctx) => {
-                DataFusionError::External(Box::new(SparkErrorWithContext::with_context(error, ctx)))
-            }
-            None => error.into(),
-        })
     }
 }
 
@@ -534,17 +482,14 @@ impl GroupsAccumulator for CorrelationGroupsAccumulator {
 #[cfg(test)]
 mod groups_tests {
     use super::*;
-    use crate::{create_query_context_map, QueryContext};
+    use crate::{create_query_context_map, QueryContext, SparkErrorWithContext};
     use arrow::array::AsArray;
     use arrow::datatypes::Float64Type;
+    use datafusion::common::DataFusionError;
     use datafusion_comet_common::SparkError;
 
     fn zero_divisor(eval_mode: EvalMode) -> ZeroDivisor {
-        ZeroDivisor {
-            eval_mode,
-            expr_id: None,
-            registry: create_query_context_map(),
-        }
+        ZeroDivisor::new(eval_mode, None, create_query_context_map())
     }
 
     fn acc(legacy: bool) -> CorrelationGroupsAccumulator {
@@ -793,11 +738,7 @@ mod groups_tests {
             7,
             QueryContext::new(sql.to_string(), 7, 16, None, None, 1, 7),
         );
-        let zero_divisor = ZeroDivisor {
-            eval_mode: EvalMode::Ansi,
-            expr_id: Some(7),
-            registry,
-        };
+        let zero_divisor = ZeroDivisor::new(EvalMode::Ansi, Some(7), registry);
         let input: Vec<ArrayRef> = vec![
             Arc::new(Float64Array::from(vec![0.0, 1.0, 2.0])),
             Arc::new(Float64Array::from(vec![0.1, 0.1, 0.1])),

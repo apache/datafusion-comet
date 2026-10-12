@@ -3418,6 +3418,8 @@ impl PhysicalPlanner {
                     expr.filter_var_by_pair_nulls,
                     expr.r2_constant_dependent_is_perfect_fit,
                     from_protobuf_eval_mode(expr.eval_mode)?,
+                    spark_expr.expr_id,
+                    Arc::clone(&self.query_context_registry),
                 ));
                 Self::create_aggr_func_expr(name, schema, vec![child1, child2], func)
             }

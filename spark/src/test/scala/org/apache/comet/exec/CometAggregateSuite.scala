@@ -3156,6 +3156,7 @@ class CometAggregateSuite extends CometTestBase with AdaptiveSparkPlanHelper {
                 if (ansi) {
                   val error = checkSparkError(df, "DIVIDE_BY_ZERO")
                   assert(error.getSqlState == "22012")
+                  checkQueryContextMatchesSpark(error, query)
                 } else {
                   checkSparkAnswer(df)
                   checkCometAnswer(df, Seq(Row(null)))
@@ -3165,6 +3166,18 @@ class CometAggregateSuite extends CometTestBase with AdaptiveSparkPlanHelper {
           }
         }
       }
+    }
+  }
+
+  /** Checks that Comet's error points at the same fragment of `query` as Spark's. */
+  private def checkQueryContextMatchesSpark(error: SparkThrowable, query: String): Unit = {
+    // withSQLConf returns Unit on Spark 3.x, so compare inside the block.
+    withSQLConf(CometConf.COMET_ENABLED.key -> "false") {
+      val failure = intercept[Throwable](sql(query).collect())
+      val expected = causeChain(failure).collect { case e: SparkThrowable => e }.last
+      assert(
+        error.getQueryContext.map(_.fragment()).toSeq ==
+          expected.getQueryContext.map(_.fragment()).toSeq)
     }
   }
 
@@ -3327,15 +3340,7 @@ class CometAggregateSuite extends CometTestBase with AdaptiveSparkPlanHelper {
                   if (ansi) {
                     val error = checkSparkError(df, "DIVIDE_BY_ZERO")
                     assert(error.getSqlState == "22012")
-                    // withSQLConf returns Unit on Spark 3.x, so compare inside the block.
-                    withSQLConf(CometConf.COMET_ENABLED.key -> "false") {
-                      val failure = intercept[Throwable](sql(query).collect())
-                      val expected = causeChain(failure).collect { case e: SparkThrowable =>
-                        e
-                      }.last
-                      assert(error.getQueryContext.map(_.fragment()).toSeq ==
-                        expected.getQueryContext.map(_.fragment()).toSeq)
-                    }
+                    checkQueryContextMatchesSpark(error, query)
                   } else {
                     checkSparkAnswerAndOperator(df)
                     checkCometAnswer(df, Seq(Row(null)))
