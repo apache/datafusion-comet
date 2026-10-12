@@ -21,6 +21,7 @@
 -- that could hide a wrong label. NTZ must remain unlabelled in every session timezone.
 -- ConfigMatrix: spark.sql.session.timeZone=UTC,Etc/UTC,America/Los_Angeles
 -- Config: spark.comet.exec.scalaUDF.codegen.enabled=true
+-- Config: spark.sql.ansi.enabled=false
 
 statement
 CREATE TABLE cast_timestamp_labels(s STRING, dt DATE, ts TIMESTAMP, ntz TIMESTAMP_NTZ, n BIGINT, f DOUBLE, dec DECIMAL(20,6)) USING parquet
@@ -116,3 +117,22 @@ SELECT
   hour(CAST(ts AS TIMESTAMP_NTZ)),
   CAST(CAST(ts AS TIMESTAMP_NTZ) AS STRING)
 FROM cast_timestamp_labels
+
+-- BOOLEAN has a separate native timestamp builder and is supported only in legacy mode.
+statement
+CREATE TABLE boolean_timestamp_labels(b BOOLEAN, ts TIMESTAMP) USING parquet
+
+statement
+INSERT INTO boolean_timestamp_labels VALUES
+  (true, TIMESTAMP '1970-01-01 00:00:00.000001Z'),
+  (false, TIMESTAMP '1970-01-01 00:00:00Z'),
+  (true, TIMESTAMP '1970-01-01 00:00:00.000002Z'),
+  (NULL, NULL)
+
+query expect_native(cast, equalto, lessthan, hour)
+SELECT
+  CAST(b AS TIMESTAMP) = ts,
+  CAST(b AS TIMESTAMP) < ts,
+  hour(CAST(b AS TIMESTAMP)),
+  CAST(CAST(b AS TIMESTAMP) AS STRING)
+FROM boolean_timestamp_labels
