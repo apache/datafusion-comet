@@ -573,10 +573,17 @@ mod tests {
         );
         // BOM-only file with lineSep=BOM -> one empty record (trailing separator dropped).
         assert_eq!(
-            lines_as_str(strip_leading_bom(&bom, false, true, true), false, Some(&bom)),
+            lines_as_str(
+                strip_leading_bom(&bom, false, true, true),
+                false,
+                Some(&bom)
+            ),
             vec![""]
         );
-        assert_eq!(strip_leading_bom(&with_hello, true, true, false), &with_hello[..]);
+        assert_eq!(
+            strip_leading_bom(&with_hello, true, true, false),
+            &with_hello[..]
+        );
         assert_eq!(
             strip_leading_bom(&with_hello, false, false, false),
             &with_hello[..]
