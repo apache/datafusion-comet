@@ -1128,10 +1128,10 @@ struct FanoutPartitions {
     /// Where each partition value sits in `partitions`.
     index: HashMap<IcebergStruct, usize>,
     /// Bytes the feeds hold back for their dictionary choice, across all partitions. Every
-    /// partition stays open, so the rows they hold back share one limit: once they reach it, every
-    /// partition still holding makes its choice from the rows it has. A task fanning out to many
-    /// partitions that each get less than a page would otherwise hold all of its rows back,
-    /// uncompressed, until it closed.
+    /// partition stays in `partitions` until the task ends, so the rows they hold back share one
+    /// limit: once they reach it, every partition still holding makes its choice from the rows it
+    /// has. A task fanning out to many partitions that each get less than a page would otherwise
+    /// hold all of its rows back, uncompressed, until it closed.
     ///
     /// Always the sum of the feeds' [`PartitionFeed::held_bytes`], kept in step wherever a feed
     /// changes what it holds back: a push, the release once the limit is reached, and an early
