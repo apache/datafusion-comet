@@ -107,6 +107,16 @@ query expect_native(array_contains)
 SELECT array_contains(ai, CAST(s AS INT))
 FROM (SELECT * FROM array_null_short_circuit ORDER BY i LIMIT 10)
 
+-- A TakeOrderedAndProject compares rows one sort key at a time and evaluates its projection apart
+-- from the keys, so a cast in two sort keys, or in a sort key and the projection, is skipped too
+query expect_native(array_contains, array_position)
+SELECT i FROM (SELECT * FROM array_null_short_circuit
+  ORDER BY array_contains(ai, CAST(s AS INT)), array_position(ai, CAST(s AS INT)), i LIMIT 10)
+
+query expect_native(array_contains, array_position)
+SELECT array_contains(ai, CAST(s AS INT))
+FROM (SELECT * FROM array_null_short_circuit ORDER BY array_position(ai, CAST(s AS INT)), i LIMIT 10)
+
 -- Where the array is not NULL, the argument is evaluated and raises as in Spark
 query expect_error(CAST_INVALID_INPUT)
 SELECT array_contains(ai, CAST(s || 'x' AS INT)) FROM array_null_short_circuit
