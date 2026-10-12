@@ -27,7 +27,9 @@ applied inside the scan.
 Support is experimental and explicitly opt-in. Two things are required:
 
 1. The `comet-contrib-delta-spark` contrib jar on the classpath, alongside
-   `delta-spark`. It is never bundled into `comet-spark`.
+   `delta-spark`. It is never bundled into `comet-spark`, and no release
+   publishes it yet, so build it from source with the steps in the
+   [contrib module README](https://github.com/apache/datafusion-comet/blob/main/contrib/delta-spark/README.md#building-and-testing).
 2. `spark.comet.scan.delta.enabled=true`. The default is `false`, so
    the jar alone does nothing.
 
