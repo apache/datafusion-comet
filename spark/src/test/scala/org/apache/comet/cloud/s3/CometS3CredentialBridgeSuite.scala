@@ -41,17 +41,36 @@ class CometS3CredentialBridgeSuite
 
   override protected val testBucketName = "bridge-test-bucket"
 
+  /**
+   * Read through [[MinioLocationScopedCredentialProvider]] by a per-bucket override, so the rest
+   * of the suite keeps exercising the base provider and this bucket's cache entry is its own.
+   */
+  private val scopedBucket = "bridge-scoped-bucket"
+  private val scopedLocations =
+    java.util.List.of("warehouse/sales", "warehouse/sales/eu/", "/warehouse/finance")
+
   override protected def sparkConf: SparkConf = {
     val conf = super.sparkConf
     val providerClassName = classOf[MinioCometS3CredentialProvider].getName
     // Activate the bridge for the Parquet (object_store) path via the Hadoop S3A namespace.
     conf.set("spark.hadoop.fs.s3a.comet.credential.provider.class", providerClassName)
+    conf.set(
+      s"spark.hadoop.fs.s3a.bucket.$scopedBucket.comet.credential.provider.class",
+      classOf[MinioLocationScopedCredentialProvider].getName)
     // Activate the bridge for the Iceberg (opendal) path via the per-catalog s3 namespace.
     conf.set("spark.sql.catalog.s3_catalog", "org.apache.iceberg.spark.SparkCatalog")
     conf.set("spark.sql.catalog.s3_catalog.type", "hadoop")
     conf.set("spark.sql.catalog.s3_catalog.warehouse", s"s3a://$testBucketName/warehouse")
     conf.set("spark.sql.catalog.s3_catalog.s3.comet.credential.provider.class", providerClassName)
     applyS3CatalogProps(conf, "s3_catalog")
+    // An Iceberg catalog over the scoped bucket whose provider is location-scoped.
+    conf.set("spark.sql.catalog.scoped_catalog", "org.apache.iceberg.spark.SparkCatalog")
+    conf.set("spark.sql.catalog.scoped_catalog.type", "hadoop")
+    conf.set("spark.sql.catalog.scoped_catalog.warehouse", s"s3a://$scopedBucket/warehouse")
+    conf.set(
+      "spark.sql.catalog.scoped_catalog.s3.comet.credential.provider.class",
+      classOf[MinioLocationScopedCredentialProvider].getName)
+    applyS3CatalogProps(conf, "scoped_catalog")
     conf.set(CometConf.COMET_ICEBERG_NATIVE_ENABLED.key, "true")
     conf
   }
@@ -59,6 +78,8 @@ class CometS3CredentialBridgeSuite
   override def beforeAll(): Unit = {
     super.beforeAll()
     MinioCometS3CredentialProvider.installCredentials(userName, password)
+    MinioLocationScopedCredentialProvider.installCredentials(userName, password)
+    createBucketIfNotExists(scopedBucket)
   }
 
   private def assertHasCometParquetScan(plan: SparkPlan): Unit =
@@ -86,6 +107,10 @@ class CometS3CredentialBridgeSuite
     assert(
       MinioCometS3CredentialProvider.lastBucket() == testBucketName,
       s"Bridge received unexpected bucket: ${MinioCometS3CredentialProvider.lastBucket()}")
+    // A base provider keeps one credential per bucket, requested with the path of a file it reads.
+    assert(
+      MinioCometS3CredentialProvider.lastPath().startsWith("/data/bridge-parquet.parquet/"),
+      s"Bridge received unexpected path: ${MinioCometS3CredentialProvider.lastPath()}")
   }
 
   test("Iceberg read on S3 routes credentials through CometS3CredentialProvider") {
@@ -227,6 +252,173 @@ class CometS3CredentialBridgeSuite
 
       spark.sql("DROP TABLE iso_a.db.t")
       spark.sql("DROP TABLE iso_b.db.t")
+    }
+  }
+
+  // Minio does not enforce per-prefix policies here, so these tests check the path of each
+  // credential request: a read must request the credential of its longest covering location.
+
+  test("location-scoped provider: one scan requests each file's longest covering location") {
+    MinioLocationScopedCredentialProvider.installLocations(scopedLocations)
+    val files = Seq(
+      "warehouse/sales/a.parquet" -> 10L,
+      "warehouse/sales/eu/b.parquet" -> 20L,
+      // Shares a name prefix with warehouse/sales but not a segment, so the bucket root covers it.
+      // It is the only file under the root, so "/" below shows it was not routed by name prefix.
+      "warehouse/sales_eu/c.parquet" -> 30L,
+      "warehouse/finance/d.parquet" -> 40L)
+    val paths = files.map { case (key, _) => s"s3a://$scopedBucket/$key" }
+    files.zip(paths).foreach { case ((_, rows), path) =>
+      spark.range(0, rows).write.format("parquet").mode(SaveMode.Overwrite).save(path)
+    }
+
+    MinioLocationScopedCredentialProvider.resetCounters()
+    // Pack every file into one partition, so one store serves every location in a single task.
+    withSQLConf(
+      "spark.sql.files.openCostInBytes" -> "1",
+      "spark.sql.files.minPartitionNum" -> "1") {
+      val df = spark.read.format("parquet").load(paths: _*)
+      assert(df.rdd.getNumPartitions == 1)
+      val total = df.agg(sum(col("id")))
+      assertHasCometParquetScan(total.queryExecution.executedPlan)
+      assert(total.first().getLong(0) == files.map { case (_, rows) => (0L until rows).sum }.sum)
+    }
+
+    assert(
+      MinioLocationScopedCredentialProvider.credentialPaths() ==
+        java.util.Set.of("/warehouse/sales", "/warehouse/sales/eu/", "/warehouse/finance", "/"),
+      s"Unexpected credential paths: ${MinioLocationScopedCredentialProvider.credentialPaths()}")
+    // Every location's bridge shares the bucket's provider registration, whatever properties the
+    // bucket's store was created with, so one provider instance serves all four locations.
+    assert(
+      MinioLocationScopedCredentialProvider.initCount() == 1,
+      s"Provider initialized ${MinioLocationScopedCredentialProvider.initCount()} times")
+  }
+
+  test("location-scoped provider: later scans reuse the bucket's locations") {
+    MinioLocationScopedCredentialProvider.installLocations(scopedLocations)
+    val path = s"s3a://$scopedBucket/warehouse/finance/reuse.parquet"
+    spark.range(0, 100).write.format("parquet").mode(SaveMode.Overwrite).save(path)
+    val expectedSum = (0L until 100L).sum
+    // Creates the bucket's store unless an earlier test did. Its tasks can each miss the store
+    // cache at once and fetch the locations, so the count is only checked after this scan.
+    assert(
+      spark.read.format("parquet").load(path).agg(sum(col("id"))).first().getLong(0) ==
+        expectedSum)
+
+    MinioLocationScopedCredentialProvider.resetCounters()
+    for (_ <- 1 to 3) {
+      val df = spark.read.format("parquet").load(path).agg(sum(col("id")))
+      assertHasCometParquetScan(df.queryExecution.executedPlan)
+      assert(df.first().getLong(0) == expectedSum)
+    }
+
+    assert(
+      MinioLocationScopedCredentialProvider.locationCallCount() == 0,
+      s"Locations fetched ${MinioLocationScopedCredentialProvider.locationCallCount()} times")
+    // Collections.singleton, not Set.of: Scala 2.12 cannot choose between Set.of(E) and
+    // Set.of(E...) for a single argument.
+    assert(
+      MinioLocationScopedCredentialProvider.credentialPaths() == java.util.Collections.singleton(
+        "/warehouse/finance"),
+      s"Unexpected credential paths: ${MinioLocationScopedCredentialProvider.credentialPaths()}")
+  }
+
+  // Declared after the Parquet tests above: the Iceberg catalog registers its own provider
+  // instance, which would break their instance count.
+  test(
+    "location-scoped provider: an Iceberg scan requests each file's longest covering location") {
+    assume(icebergAvailable, "Iceberg not available in classpath")
+
+    spark.sql("""
+      CREATE TABLE scoped_catalog.db.routed (
+        id INT,
+        region STRING
+      ) USING iceberg
+      PARTITIONED BY (region)
+    """)
+    spark.sql("INSERT INTO scoped_catalog.db.routed VALUES (1, 'eu'), (2, 'us'), (3, 'eu')")
+    // The table's location, and a narrower one for its eu partition.
+    MinioLocationScopedCredentialProvider.installLocations(
+      java.util.List.of("warehouse/db/routed", "warehouse/db/routed/data/region=eu"))
+
+    MinioLocationScopedCredentialProvider.resetCounters()
+    val df = spark.sql("SELECT id, region FROM scoped_catalog.db.routed ORDER BY id")
+    assertHasCometIcebergScan(df.queryExecution.executedPlan)
+    assert(
+      df.collect().map(r => (r.getInt(0), r.getString(1))).toSeq ==
+        Seq((1, "eu"), (2, "us"), (3, "eu")))
+
+    // Each data file was read with the credential of its own location. A provider that is not
+    // location-scoped is asked once, with the path of the table's metadata file.
+    assert(
+      MinioLocationScopedCredentialProvider.credentialPaths() ==
+        java.util.Set.of("/warehouse/db/routed", "/warehouse/db/routed/data/region=eu"),
+      s"Unexpected credential paths: ${MinioLocationScopedCredentialProvider.credentialPaths()}")
+
+    spark.sql("DROP TABLE scoped_catalog.db.routed")
+  }
+
+  // The expiry tests are declared last: a bridge keeps the credential they report an expiry for, so
+  // a later test reading the same data through the same bridge would not see the provider asked.
+  test("Parquet reads reuse a credential until shortly before its expiry") {
+    val path = s"s3a://$testBucketName/data/bridge-expiry.parquet"
+    spark.range(0, 1000).write.format("parquet").mode(SaveMode.Overwrite).save(path)
+    val expectedSum = (0L until 1000L).sum
+    MinioCometS3CredentialProvider.installExpiration(System.currentTimeMillis() + 60 * 60 * 1000L)
+    try {
+      // Fetches the credential with its expiry, which the bridge then keeps.
+      assert(
+        spark.read.format("parquet").load(path).agg(sum(col("id"))).first().getLong(0) ==
+          expectedSum)
+
+      MinioCometS3CredentialProvider.resetCounters()
+      for (_ <- 1 to 2) {
+        val df = spark.read.format("parquet").load(path).agg(sum(col("id")))
+        assertHasCometParquetScan(df.queryExecution.executedPlan)
+        assert(df.first().getLong(0) == expectedSum)
+      }
+      assert(
+        MinioCometS3CredentialProvider.callCount() == 0,
+        s"Provider asked ${MinioCometS3CredentialProvider.callCount()} times for a fresh credential")
+    } finally {
+      MinioCometS3CredentialProvider.installExpiration(0L)
+    }
+  }
+
+  test("Iceberg reads reuse a credential until shortly before its expiry") {
+    assume(icebergAvailable, "Iceberg not available in classpath")
+
+    spark.sql("""
+      CREATE TABLE s3_catalog.db.bridge_iceberg_expiry (
+        id INT,
+        name STRING
+      ) USING iceberg
+    """)
+    spark.sql("""
+      INSERT INTO s3_catalog.db.bridge_iceberg_expiry
+      VALUES (1, 'a'), (2, 'b'), (3, 'c')
+    """)
+    val query = "SELECT * FROM s3_catalog.db.bridge_iceberg_expiry ORDER BY id"
+    MinioCometS3CredentialProvider.installExpiration(System.currentTimeMillis() + 60 * 60 * 1000L)
+    try {
+      // Builds the table's FileIO, whose bridge fetches the credential with its expiry and keeps
+      // it.
+      assert(spark.sql(query).collect().length == 3)
+
+      MinioCometS3CredentialProvider.resetCounters()
+      for (_ <- 1 to 2) {
+        val df = spark.sql(query)
+        assertHasCometIcebergScan(df.queryExecution.executedPlan)
+        assert(df.collect().length == 3)
+      }
+      // A FileIO cache change that rebuilt the bridge would ask the provider again here.
+      assert(
+        MinioCometS3CredentialProvider.callCount() == 0,
+        s"Provider asked ${MinioCometS3CredentialProvider.callCount()} times for a fresh credential")
+    } finally {
+      MinioCometS3CredentialProvider.installExpiration(0L)
+      spark.sql("DROP TABLE s3_catalog.db.bridge_iceberg_expiry")
     }
   }
 }

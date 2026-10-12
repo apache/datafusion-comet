@@ -117,6 +117,12 @@ pub(crate) fn acquire_task_shared_pool(
     memory_pool
 }
 
+/// The pool that `pool` wraps, if it is one that [`acquire_task_shared_pool`] returned.
+pub(super) fn unwrap_task_shared(pool: &Arc<dyn MemoryPool>) -> Option<&Arc<dyn MemoryPool>> {
+    pool.downcast_ref::<TaskSharedMemoryPool>()
+        .map(|shared| &shared.inner)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

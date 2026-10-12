@@ -21,14 +21,13 @@ package org.apache.spark.sql.comet.execution.shuffle
 
 import java.io.{EOFException, InputStream}
 import java.nio.{ByteBuffer, ByteOrder}
-import java.nio.channels.{Channels, ReadableByteChannel}
 
 import scala.util.control.NonFatal
 
 import org.apache.spark.sql.execution.metric.SQLMetric
 import org.apache.spark.sql.vectorized.ColumnarBatch
 
-import org.apache.comet.{CometShuffleReadFailureHandler, Native}
+import org.apache.comet.{CometShuffleBlockIterator, CometShuffleReadFailureHandler, Native}
 import org.apache.comet.vector.NativeUtil
 
 /**
@@ -42,14 +41,18 @@ case class NativeBatchDecoderIterator(
     nativeLib: Native,
     nativeUtil: NativeUtil,
     tracingEnabled: Boolean,
-    expectedSchema: Option[Array[Byte]] = None)
+    expectedSchema: Option[Array[Byte]] = None,
+    readBufferSize: Int = CometShuffleBlockIterator.DEFAULT_READ_BUFFER_SIZE)
     extends Iterator[ColumnarBatch] {
 
+  // One consumer reads this iterator, while task completion may close it from another thread.
+  // The monitor protects decoder and batch ownership; transport reads stay outside it.
   private var isClosed = false
   private val longBuf = ByteBuffer.allocate(8).order(ByteOrder.LITTLE_ENDIAN)
   private var currentBatch: ColumnarBatch = null
   private var batch: Option[ColumnarBatch] = None
   private val validateRemoteFrames = in.isInstanceOf[CometShuffleReadFailureHandler]
+  private var remoteDecoderHandle = 0L
 
   require(
     !validateRemoteFrames || expectedSchema.exists(_ != null),
@@ -57,32 +60,24 @@ case class NativeBatchDecoderIterator(
 
   import NativeBatchDecoderIterator._
 
-  private val channel: ReadableByteChannel = if (in != null) {
-    Channels.newChannel(in)
-  } else {
-    null
-  }
-
   override def hasNext: Boolean = {
-    if (channel == null || isClosed) {
-      return false
-    }
-    if (batch.isDefined) {
-      return true
+    synchronized {
+      if (in == null || isClosed) {
+        return false
+      }
+      if (batch.isDefined) {
+        return true
+      }
+
+      // Clear ownership before cleanup so a failed close cannot release this batch twice.
+      if (currentBatch != null) {
+        val previous = currentBatch
+        currentBatch = null
+        previous.close()
+      }
     }
 
-    // Release the previous batch.
-    if (currentBatch != null) {
-      currentBatch.close()
-      currentBatch = null
-    }
-
-    batch = fetchNext()
-    if (batch.isEmpty) {
-      close()
-      return false
-    }
-    true
+    fetchNext()
   }
 
   def next(): ColumnarBatch = {
@@ -90,52 +85,76 @@ case class NativeBatchDecoderIterator(
       throw new NoSuchElementException
     }
 
-    val nextBatch = batch.get
-
-    currentBatch = nextBatch
-    batch = None
-    currentBatch
-  }
-
-  private def fetchNext(): Option[ColumnarBatch] = {
-    // The remote input owns metadata, transport, and frame-boundary failure classification. Do
-    // not turn deliberately unreported metadata timeouts or stream-close failures into corruption.
-    val block = readNextBlock()
-    block.flatMap { case (fieldCount, dataBuf, bytesToRead) =>
-      // Allocation and Arrow import failures are not evidence of a corrupt remote shuffle. Only
-      // forward failures from native codec/IPC decoding and logical type validation.
-      val startTime = System.nanoTime()
-      val decoded = nativeUtil.getNextBatch(
-        fieldCount,
-        (arrayAddrs, schemaAddrs) => {
-          handleReadFailure {
-            if (validateRemoteFrames) {
-              nativeLib.decodeShuffleBlockWithValidation(
-                dataBuf,
-                bytesToRead,
-                arrayAddrs,
-                schemaAddrs,
-                tracingEnabled,
-                expectedSchema.get)
-            } else {
-              nativeLib.decodeShuffleBlock(
-                dataBuf,
-                bytesToRead,
-                arrayAddrs,
-                schemaAddrs,
-                tracingEnabled)
-            }
-          }
-        })
-      decodeTime.add(System.nanoTime() - startTime)
-      decoded
+    synchronized {
+      // Completion may have closed the iterator after hasNext() returned.
+      if (isClosed) {
+        throw new NoSuchElementException
+      }
+      currentBatch = batch.get
+      batch = None
+      currentBatch
     }
   }
 
-  private def handleReadFailure[T](read: => T): T = {
-    try read
-    catch {
-      case NonFatal(failure) =>
+  private def fetchNext(): Boolean = {
+    // The remote input owns metadata, transport, and frame-boundary failure classification. Do
+    // not turn deliberately unreported metadata timeouts or stream-close failures into corruption.
+    // Read outside the monitor so close() can unblock the underlying stream.
+    val block = readNextBlock()
+    var nativeFailure: Throwable = null
+    try {
+      synchronized {
+        // Cleanup may have finished during the read. Do not create a decoder or import a batch
+        // after close(), and publish each decoded batch before cleanup can inspect ownership.
+        if (isClosed) {
+          return false
+        }
+        batch = block.flatMap { case (fieldCount, dataBuf, bytesToRead) =>
+          val startTime = System.nanoTime()
+          // Invalid expected schemas are setup failures, not evidence of corrupt persisted data.
+          if (validateRemoteFrames && remoteDecoderHandle == 0L) {
+            remoteDecoderHandle = nativeLib.createRemoteShuffleDecoder(expectedSchema.get)
+          }
+          val decoded = nativeUtil.getNextBatch(
+            fieldCount,
+            (arrayAddrs, schemaAddrs) => {
+              try {
+                if (validateRemoteFrames) {
+                  nativeLib.decodeShuffleBlockWithValidation(
+                    dataBuf,
+                    bytesToRead,
+                    arrayAddrs,
+                    schemaAddrs,
+                    tracingEnabled,
+                    remoteDecoderHandle)
+                } else {
+                  nativeLib.decodeShuffleBlock(
+                    dataBuf,
+                    bytesToRead,
+                    arrayAddrs,
+                    schemaAddrs,
+                    tracingEnabled)
+                }
+              } catch {
+                case NonFatal(failure) =>
+                  // Record only native decode failures; creation, allocation and import failures
+                  // must not be reported as corrupt remote data. Let NativeUtil clean up first.
+                  nativeFailure = failure
+                  throw failure
+              }
+            })
+          decodeTime.add(System.nanoTime() - startTime)
+          decoded
+        }
+        if (batch.isEmpty) {
+          close()
+        }
+        batch.isDefined
+      }
+    } catch {
+      case NonFatal(failure) if failure eq nativeFailure =>
+        // Reporting can make an RPC. It must run after Arrow cleanup and outside the monitor so
+        // task completion can release the decoder while that reporting is in progress.
         in match {
           case handler: CometShuffleReadFailureHandler => handler.onShuffleReadFailure(failure)
           case _ =>
@@ -145,13 +164,9 @@ case class NativeBatchDecoderIterator(
   }
 
   private def readNextBlock(): Option[(Int, ByteBuffer, Int)] = {
-    if (channel == null || isClosed) {
-      return None
-    }
-
     // read compressed batch size from header
     longBuf.clear()
-    while (longBuf.hasRemaining && channel.read(longBuf) >= 0) {}
+    CometShuffleBlockIterator.readFully(in, longBuf, readBufferSize)
 
     // If we reach the end of the stream, we are done, or if we read partial length
     // then the stream is corrupted.
@@ -168,7 +183,7 @@ case class NativeBatchDecoderIterator(
 
     // read field count from header
     longBuf.clear()
-    while (longBuf.hasRemaining && channel.read(longBuf) >= 0) {}
+    CometShuffleBlockIterator.readFully(in, longBuf, readBufferSize)
     if (longBuf.hasRemaining) {
       throw new EOFException("Data corrupt: unexpected EOF while reading field count")
     }
@@ -193,7 +208,7 @@ case class NativeBatchDecoderIterator(
     }
     dataBuf.clear()
     dataBuf.limit(bytesToRead.toInt)
-    while (dataBuf.hasRemaining && channel.read(dataBuf) >= 0) {}
+    CometShuffleBlockIterator.readFully(in, dataBuf, readBufferSize)
     if (dataBuf.hasRemaining) {
       throw new EOFException("Data corrupt: unexpected EOF while reading compressed batch")
     }
@@ -212,6 +227,8 @@ case class NativeBatchDecoderIterator(
         currentBatch = null
         val prefetched = batch
         batch = None
+        val decoderHandle = remoteDecoderHandle
+        remoteDecoderHandle = 0L
 
         var failure: Throwable = null
         def release(resource: => Unit): Unit = {
@@ -225,6 +242,7 @@ case class NativeBatchDecoderIterator(
 
         if (previous != null) release(previous.close())
         prefetched.filterNot(_ eq previous).foreach(pending => release(pending.close()))
+        if (decoderHandle != 0L) release(nativeLib.releaseRemoteShuffleDecoder(decoderHandle))
         if (in != null) release(in.close())
         release(resetDataBuf())
         if (failure != null) throw failure

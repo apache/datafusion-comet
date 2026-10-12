@@ -27,7 +27,7 @@ import org.scalatest.funsuite.AnyFunSuite
 import org.apache.spark.{SparkConf, TaskContext}
 import org.apache.spark.executor.ShuffleWriteMetrics
 import org.apache.spark.memory.{TaskMemoryManager, TestMemoryManager}
-import org.apache.spark.shuffle.comet.CometShuffleMemoryAllocator
+import org.apache.spark.shuffle.comet.{CometShuffleMemoryAllocator, CometShuffleMemoryAllocatorTrait}
 import org.apache.spark.sql.types._
 import org.apache.spark.unsafe.Platform
 import org.apache.spark.unsafe.UnsafeAlignedOffset
@@ -47,6 +47,7 @@ class SpillSorterSuite extends AnyFunSuite with BeforeAndAfterEach {
   private var conf: SparkConf = _
   private var memoryManager: TestMemoryManager = _
   private var taskMemoryManager: TaskMemoryManager = _
+  private var allocator: CometShuffleMemoryAllocatorTrait = _
 
   override def beforeEach(): Unit = {
     super.beforeEach()
@@ -55,9 +56,13 @@ class SpillSorterSuite extends AnyFunSuite with BeforeAndAfterEach {
     memoryManager = new TestMemoryManager(conf)
     memoryManager.limit(100 * 1024 * 1024) // 100MB
     taskMemoryManager = new TaskMemoryManager(memoryManager, 0)
+    // One allocator per test: pages are addressed by a page number in the allocator's own table,
+    // so everything a sorter touches has to come from the same instance.
+    allocator = CometShuffleMemoryAllocator.getInstance(taskMemoryManager, PAGE_SIZE.toLong)
   }
 
   override def afterEach(): Unit = {
+    allocator = null
     if (taskMemoryManager != null) {
       taskMemoryManager.cleanUpAllAllocatedMemory()
       taskMemoryManager = null
@@ -75,7 +80,6 @@ class SpillSorterSuite extends AnyFunSuite with BeforeAndAfterEach {
       spills: java.util.LinkedList[org.apache.spark.sql.comet.execution.shuffle.SpillInfo] =
         new java.util.LinkedList[org.apache.spark.sql.comet.execution.shuffle.SpillInfo](),
       partitionChecksums: Array[Long] = new Array[Long](10)): SpillSorter = {
-    val allocator = CometShuffleMemoryAllocator.getInstance(conf, taskMemoryManager, PAGE_SIZE)
     val schema = createTestSchema()
     val writeMetrics = new ShuffleWriteMetrics()
     val taskContext = TaskContext.empty()
@@ -115,7 +119,11 @@ class SpillSorterSuite extends AnyFunSuite with BeforeAndAfterEach {
       val partitionId = 0
 
       sorter.initialCurrentPage(recordData.length + UAO_SIZE)
-      sorter.insertRecord(recordData, Platform.BYTE_ARRAY_OFFSET, recordData.length, partitionId)
+      sorter.insertRecord(
+        recordData,
+        Platform.BYTE_ARRAY_OFFSET.toLong,
+        recordData.length,
+        partitionId)
 
       assert(sorter.numRecords() === 1)
     } finally {
@@ -136,7 +144,7 @@ class SpillSorterSuite extends AnyFunSuite with BeforeAndAfterEach {
         val partitionId = i % 10
         sorter.insertRecord(
           recordData,
-          Platform.BYTE_ARRAY_OFFSET,
+          Platform.BYTE_ARRAY_OFFSET.toLong,
           recordData.length,
           partitionId)
       }
@@ -153,7 +161,7 @@ class SpillSorterSuite extends AnyFunSuite with BeforeAndAfterEach {
     try {
       val recordData = Array[Byte](1, 2, 3, 4)
       sorter.initialCurrentPage(recordData.length + UAO_SIZE)
-      sorter.insertRecord(recordData, Platform.BYTE_ARRAY_OFFSET, recordData.length, 0)
+      sorter.insertRecord(recordData, Platform.BYTE_ARRAY_OFFSET.toLong, recordData.length, 0)
 
       assert(sorter.numRecords() === 1)
 
@@ -190,7 +198,7 @@ class SpillSorterSuite extends AnyFunSuite with BeforeAndAfterEach {
     try {
       sorter.initialCurrentPage(1024)
       val recordData = Array[Byte](1, 2, 3, 4)
-      sorter.insertRecord(recordData, Platform.BYTE_ARRAY_OFFSET, recordData.length, 0)
+      sorter.insertRecord(recordData, Platform.BYTE_ARRAY_OFFSET.toLong, recordData.length, 0)
 
       assert(spillCount.get() === 0, "Spill callback should not be triggered during normal ops")
     } finally {
@@ -225,8 +233,7 @@ class SpillSorterSuite extends AnyFunSuite with BeforeAndAfterEach {
     val sorter = createSpillSorter()
     try {
       val initialMemory = sorter.getMemoryUsage()
-      val allocator = CometShuffleMemoryAllocator.getInstance(conf, taskMemoryManager, PAGE_SIZE)
-      val newArray = allocator.allocateArray(INITIAL_SIZE * 2)
+      val newArray = allocator.allocateArray((INITIAL_SIZE * 2).toLong)
       sorter.expandPointerArray(newArray)
 
       assert(sorter.getMemoryUsage() >= initialMemory)
@@ -248,7 +255,7 @@ class SpillSorterSuite extends AnyFunSuite with BeforeAndAfterEach {
 
       for (p <- 0 until numPartitions) {
         for (_ <- 0 until recordsPerPartition) {
-          sorter.insertRecord(recordData, Platform.BYTE_ARRAY_OFFSET, recordData.length, p)
+          sorter.insertRecord(recordData, Platform.BYTE_ARRAY_OFFSET.toLong, recordData.length, p)
         }
       }
 
@@ -256,6 +263,57 @@ class SpillSorterSuite extends AnyFunSuite with BeforeAndAfterEach {
     } finally {
       sorter.freeMemory()
       sorter.freeArray()
+    }
+  }
+
+  test("pointer array growth is sized from the array, not from the data pages") {
+    // Use the unified (off-heap) allocator so that every allocation made by this sorter is
+    // visible through `getUsed` on an allocator that is private to this test.
+    val offHeapConf = new SparkConf(false)
+      .set("spark.memory.offHeap.enabled", "true")
+      .set("spark.memory.offHeap.size", "64m")
+    val offHeapMemoryManager = new TestMemoryManager(offHeapConf)
+    offHeapMemoryManager.limit(64L * 1024 * 1024)
+    val offHeapTaskMemoryManager = new TaskMemoryManager(offHeapMemoryManager, 0)
+    val allocator =
+      CometShuffleMemoryAllocator.getInstance(offHeapTaskMemoryManager, PAGE_SIZE.toLong)
+    // The block manager is only touched when spilling, which this test never does.
+    val sorter = new CometShuffleExternalSorter(
+      allocator,
+      null,
+      TaskContext.empty(),
+      INITIAL_SIZE,
+      2,
+      offHeapConf,
+      new ShuffleWriteMetrics(),
+      createTestSchema())
+
+    try {
+      val recordData = new Array[Byte](16)
+      def insert(i: Int): Unit =
+        sorter.insertRecord(
+          recordData,
+          Platform.BYTE_ARRAY_OFFSET.toLong,
+          recordData.length,
+          i % 2)
+
+      val initialArrayBytes = INITIAL_SIZE * 8L
+      assert(allocator.getUsed === initialArrayBytes)
+
+      insert(0)
+      val pageBytes = allocator.getUsed - initialArrayBytes
+      assert(pageBytes >= PAGE_SIZE)
+
+      // With radix sort enabled the in-memory sorter uses half the array for records, so the
+      // pointer array is grown when the (INITIAL_SIZE / 2 + 1)th record arrives. Growth must
+      // double the pointer array, not request an array sized from the data pages as well.
+      val recordsToTriggerGrowth = INITIAL_SIZE / 2 + 1
+      (1 until recordsToTriggerGrowth).foreach(insert)
+      assert(sorter.getPeakMemoryUsedBytes === pageBytes + 2 * initialArrayBytes)
+      assert(allocator.getUsed === pageBytes + 2 * initialArrayBytes)
+    } finally {
+      sorter.cleanupResources()
+      assert(offHeapTaskMemoryManager.cleanUpAllAllocatedMemory() === 0L)
     }
   }
 

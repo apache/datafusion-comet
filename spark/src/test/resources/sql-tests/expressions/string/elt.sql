@@ -21,7 +21,7 @@ statement
 CREATE TABLE test_elt(n int) USING parquet
 
 statement
-INSERT INTO test_elt VALUES (1), (2), (3), (NULL)
+INSERT INTO test_elt VALUES (1), (2), (0), (-1), (3), (NULL)
 
 query
 SELECT n, elt(n, 'a', 'b') FROM test_elt

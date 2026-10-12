@@ -16,9 +16,9 @@
 // under the License.
 
 use super::ShuffleBlockWriter;
+use crate::codec_context::ShuffleCodecContext;
 use arrow::array::RecordBatch;
 use arrow::compute::kernels::coalesce::BatchCoalescer;
-use arrow::ipc::writer::IpcWriteContext;
 use datafusion::physical_plan::metrics::Time;
 use std::borrow::Borrow;
 use std::io::{Cursor, Seek, SeekFrom, Write};
@@ -38,11 +38,13 @@ use std::io::{Cursor, Seek, SeekFrom, Write};
 /// configured (via `biggest_coalesce_batch_size`) to pass batches that are already at least
 /// `batch_size` rows straight through, verbatim and without copying them, so an oversized input
 /// batch is written as a single oversized block.
+///
+/// Encoding methods borrow a [`ShuffleCodecContext`] rather than owning one: these writers
+/// are created per output partition, and codec contexts must stay task-scoped.
 pub(crate) struct BufBatchWriter<S: Borrow<ShuffleBlockWriter>, W: Write> {
     shuffle_block_writer: S,
     writer: W,
     buffer_max_size: usize,
-    compression_context: IpcWriteContext,
     /// Coalesces small batches into target_batch_size before serialization.
     /// Lazily initialized on first write to capture the schema.
     coalescer: Option<BatchCoalescer>,
@@ -68,7 +70,6 @@ impl<S: Borrow<ShuffleBlockWriter>, W: Write> BufBatchWriter<S, W> {
             shuffle_block_writer,
             writer,
             buffer_max_size,
-            compression_context: IpcWriteContext::default(),
             coalescer: None,
             batch_size,
             #[cfg(debug_assertions)]
@@ -112,6 +113,7 @@ impl<S: Borrow<ShuffleBlockWriter>, W: Write> BufBatchWriter<S, W> {
         &mut self,
         batch: &RecordBatch,
         scratch: &mut Vec<u8>,
+        codec_context: &mut ShuffleCodecContext,
         encode_time: &Time,
         write_time: &Time,
     ) -> datafusion::common::Result<usize> {
@@ -142,7 +144,8 @@ impl<S: Borrow<ShuffleBlockWriter>, W: Write> BufBatchWriter<S, W> {
 
         let mut bytes_written = 0;
         for batch in &completed {
-            bytes_written += self.write_batch_to_buffer(batch, scratch, encode_time, write_time)?;
+            bytes_written +=
+                self.write_batch_to_buffer(batch, scratch, codec_context, encode_time, write_time)?;
         }
         Ok(bytes_written)
     }
@@ -152,6 +155,7 @@ impl<S: Borrow<ShuffleBlockWriter>, W: Write> BufBatchWriter<S, W> {
         &mut self,
         batch: &RecordBatch,
         scratch: &mut Vec<u8>,
+        codec_context: &mut ShuffleCodecContext,
         encode_time: &Time,
         write_time: &Time,
     ) -> datafusion::common::Result<usize> {
@@ -160,7 +164,7 @@ impl<S: Borrow<ShuffleBlockWriter>, W: Write> BufBatchWriter<S, W> {
         let bytes_written = self.shuffle_block_writer.borrow().write_batch(
             batch,
             &mut cursor,
-            &mut self.compression_context,
+            codec_context,
             encode_time,
         )?;
         let pos = cursor.position();
@@ -178,6 +182,7 @@ impl<S: Borrow<ShuffleBlockWriter>, W: Write> BufBatchWriter<S, W> {
     pub(crate) fn flush(
         &mut self,
         scratch: &mut Vec<u8>,
+        codec_context: &mut ShuffleCodecContext,
         encode_time: &Time,
         write_time: &Time,
     ) -> datafusion::common::Result<()> {
@@ -191,7 +196,7 @@ impl<S: Borrow<ShuffleBlockWriter>, W: Write> BufBatchWriter<S, W> {
             }
         }
         for batch in &remaining {
-            self.write_batch_to_buffer(batch, scratch, encode_time, write_time)?;
+            self.write_batch_to_buffer(batch, scratch, codec_context, encode_time, write_time)?;
         }
 
         // Flush the scratch buffer to the underlying writer
@@ -243,9 +248,14 @@ mod tests {
                 .unwrap();
         let mut output = Vec::new();
         let time = Time::default();
+        let mut codec_context = ShuffleCodecContext::default();
         let mut writer = BufBatchWriter::new(block_writer, &mut output, 1 << 20, 8192);
-        writer.write(&batch, scratch, &time, &time).unwrap();
-        writer.flush(scratch, &time, &time).unwrap();
+        writer
+            .write(&batch, scratch, &mut codec_context, &time, &time)
+            .unwrap();
+        writer
+            .flush(scratch, &mut codec_context, &time, &time)
+            .unwrap();
         output
     }
 
@@ -293,7 +303,8 @@ mod tests {
         let time = Time::default();
         let mut writer = BufBatchWriter::new(block_writer, &mut output, 1 << 20, 8192);
         let mut dirty = vec![0xAB, 0xCD];
-        let _ = writer.write(&batch, &mut dirty, &time, &time);
+        let mut codec_context = ShuffleCodecContext::default();
+        let _ = writer.write(&batch, &mut dirty, &mut codec_context, &time, &time);
     }
 
     /// Swapping in a different scratch mid-writer would silently abandon any bytes still
@@ -308,10 +319,13 @@ mod tests {
         let mut output = Vec::new();
         let time = Time::default();
         let mut writer = BufBatchWriter::new(block_writer, &mut output, 1 << 20, 8192);
+        let mut codec_context = ShuffleCodecContext::default();
         let mut first = Vec::new();
-        writer.write(&batch, &mut first, &time, &time).unwrap();
+        writer
+            .write(&batch, &mut first, &mut codec_context, &time, &time)
+            .unwrap();
         let mut second = Vec::new();
-        let _ = writer.write(&batch, &mut second, &time, &time);
+        let _ = writer.write(&batch, &mut second, &mut codec_context, &time, &time);
     }
 
     /// A block that crosses `buffer_max_size` grows the scratch past the cap; `flush`
@@ -328,15 +342,20 @@ mod tests {
             ShuffleBlockWriter::try_new(batch.schema().as_ref(), CompressionCodec::None).unwrap();
         let mut output = Vec::new();
         let time = Time::default();
+        let mut codec_context = ShuffleCodecContext::default();
         let mut scratch = Vec::new();
         let mut writer =
             BufBatchWriter::new(block_writer, &mut output, buffer_max_size, batch_size);
-        writer.write(&batch, &mut scratch, &time, &time).unwrap();
+        writer
+            .write(&batch, &mut scratch, &mut codec_context, &time, &time)
+            .unwrap();
         assert!(
             scratch.capacity() > buffer_max_size,
             "oversized block must have grown the scratch past the cap"
         );
-        writer.flush(&mut scratch, &time, &time).unwrap();
+        writer
+            .flush(&mut scratch, &mut codec_context, &time, &time)
+            .unwrap();
         assert!(scratch.is_empty());
         assert!(
             scratch.capacity() <= buffer_max_size,
@@ -354,13 +373,17 @@ mod tests {
         let mut output = Vec::new();
         let mut scratch = Vec::new();
         let mut writer = BufBatchWriter::new(block_writer, &mut output, large_cap, batch_size);
-        writer.write(&batch, &mut scratch, &time, &time).unwrap();
+        writer
+            .write(&batch, &mut scratch, &mut codec_context, &time, &time)
+            .unwrap();
         let cap_after_write = scratch.capacity();
         assert!(
             cap_after_write > 0 && cap_after_write <= large_cap,
             "write must have serialized the batch into the scratch"
         );
-        writer.flush(&mut scratch, &time, &time).unwrap();
+        writer
+            .flush(&mut scratch, &mut codec_context, &time, &time)
+            .unwrap();
         assert!(scratch.is_empty());
         assert_eq!(
             scratch.capacity(),

@@ -19,6 +19,16 @@
 -- regr_avgy, regr_sxx, regr_syy, regr_sxy, regr_slope, regr_intercept, regr_r2.
 -- All functions take (y, x) and operate only on rows where BOTH y and x are non-null.
 
+-- regr_slope, regr_intercept, regr_r2, regr_sxx, regr_syy and regr_sxy fall back to Spark by
+-- default because their native merge of partial aggregates differs from Spark's
+-- (https://github.com/apache/datafusion-comet/issues/6423). Opt in so the queries below cover
+-- the native path. Spark plans regr_sxx and regr_syy as RegrReplacement.
+-- Config: spark.comet.expression.RegrSlope.allowIncompatible=true
+-- Config: spark.comet.expression.RegrIntercept.allowIncompatible=true
+-- Config: spark.comet.expression.RegrR2.allowIncompatible=true
+-- Config: spark.comet.expression.RegrSXY.allowIncompatible=true
+-- Config: spark.comet.expression.RegrReplacement.allowIncompatible=true
+
 statement
 CREATE TABLE test_regr(y double, x double, grp string) USING parquet
 
@@ -144,8 +154,8 @@ SELECT regr_slope(y, x), regr_intercept(y, x), regr_r2(y, x) FROM test_regr_sing
 
 -- edge case: independent variable (x) is constant but y varies.
 -- var_pop(x) = 0, so slope/intercept are NULL and regr_sxx = 0. regr_r2 is a
--- degenerate case whose value depends on the Spark version (1.0 on 3.4, NULL on
--- 3.5+ after SPARK-55969), which Comet matches per version.
+-- degenerate case whose value depends on the Spark patch release (1.0 before
+-- SPARK-55969, NULL from 3.5.9, 4.0.3, 4.1.2 and 4.2.0), which Comet matches.
 statement
 CREATE TABLE test_regr_const_x(y double, x double) USING parquet
 
@@ -160,8 +170,8 @@ SELECT regr_sxx(y, x), regr_syy(y, x), regr_sxy(y, x) FROM test_regr_const_x
 
 -- edge case: dependent variable (y) is constant but x varies.
 -- The slope is 0 and the intercept equals the constant y. regr_r2 is a degenerate
--- case whose value depends on the Spark version (NULL on 3.4, 1.0 on 3.5+ after
--- SPARK-55969), which Comet matches per version.
+-- case whose value depends on the Spark patch release (NULL before SPARK-55969,
+-- 1.0 from 3.5.9, 4.0.3, 4.1.2 and 4.2.0), which Comet matches.
 statement
 CREATE TABLE test_regr_const_y(y double, x double) USING parquet
 

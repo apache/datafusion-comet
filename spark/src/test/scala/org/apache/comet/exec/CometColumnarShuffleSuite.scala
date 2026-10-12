@@ -30,8 +30,9 @@ import org.apache.hadoop.fs.Path
 import org.apache.spark.{Partitioner, SparkConf}
 import org.apache.spark.sql.{CometTestBase, DataFrame, Row}
 import org.apache.spark.sql.comet.execution.shuffle.{CometShuffleDependency, CometShuffleExchangeExec, CometShuffleManager}
+import org.apache.spark.sql.execution.SQLExecution
 import org.apache.spark.sql.execution.adaptive.{AdaptiveSparkPlanHelper, AQEShuffleReadExec, ShuffleQueryStageExec}
-import org.apache.spark.sql.execution.exchange.ReusedExchangeExec
+import org.apache.spark.sql.execution.exchange.{ReusedExchangeExec, ShuffleExchangeExec}
 import org.apache.spark.sql.execution.joins.SortMergeJoinExec
 import org.apache.spark.sql.functions.col
 import org.apache.spark.sql.internal.SQLConf
@@ -75,6 +76,29 @@ abstract class CometColumnarShuffleSuite extends CometTestBase with AdaptiveSpar
       """.stripMargin).select($"r.*")
 
     checkSparkAnswer(df)
+    checkCometExchange(df, 0, false)
+  }
+
+  test("Fallback to Spark when shuffling CalendarIntervalType data") {
+    val df = spark
+      .sql("select id, make_interval(1,2,3,4,5,6,7) as i from range(100)")
+      .repartition(4)
+
+    assert(df.collect().length == 100)
+
+    val plan = df.queryExecution.executedPlan
+    assert(
+      find(plan) {
+        case _: ShuffleExchangeExec => true
+        case _ => false
+      }.nonEmpty,
+      plan)
+    assert(
+      find(plan) {
+        case _: CometShuffleExchangeExec => true
+        case _ => false
+      }.isEmpty,
+      plan)
   }
 
   test("Unsupported types for SinglePartition should fallback to Spark") {
@@ -391,6 +415,25 @@ abstract class CometColumnarShuffleSuite extends CometTestBase with AdaptiveSpar
             checkShuffleAnswer(df, 1)
           }
         }
+      }
+    }
+  }
+
+  test("columnar shuffle on array [timestamp]") {
+    // The native row-to-Arrow conversion appends an array of 64 or more elements that holds a
+    // null in one call, which requires the array to carry the column's timezone.
+    Seq(10, 201).foreach { numPartitions =>
+      withParquetTable(
+        (0 until 50).map { i =>
+          val timestamps: Seq[java.sql.Timestamp] = (0 until 70).map { j =>
+            if (j == i) null else new java.sql.Timestamp(i * 1000000L + j)
+          }
+          (i, timestamps)
+        },
+        "tbl") {
+        val df = sql("SELECT * FROM tbl").repartition(numPartitions, $"_1")
+
+        checkShuffleAnswer(df, 1)
       }
     }
   }
@@ -792,6 +835,28 @@ abstract class CometColumnarShuffleSuite extends CometTestBase with AdaptiveSpar
    * Checks that `df` produces the same answer as Spark does, and has the `expectedNum` Comet
    * exchange operators.
    */
+  test("range partitioning on floating-point uses columnar shuffle under strictFloatingPoint") {
+    // The columnar path partitions on the JVM with Spark's own RangePartitioner, but it still
+    // probes whether Comet can serialize the sort order. Before #5506 that probe reported
+    // Incompatible for scalar float and double under strict mode, so this exchange fell back to
+    // Spark's shuffle for no compatibility reason. Consulting a native-serde gate on a path that
+    // never goes native is tracked separately in #5971; this test pins the floating-point half of
+    // it, which #5506 fixed.
+    withSQLConf(
+      CometConf.COMET_EXEC_STRICT_FLOATING_POINT.key -> "true",
+      CometConf.getExprAllowIncompatConfigKey("SortOrder") -> "false") {
+      withParquetTable(
+        (0 until 20).map(i => (if (i % 3 == 0) -0.0d else i.toDouble, i)),
+        "range_fp_tbl") {
+        Seq("FLOAT", "DOUBLE").foreach { sqlType =>
+          val df = sql(s"SELECT CAST(_1 AS $sqlType) AS c, _2 FROM range_fp_tbl")
+            .repartitionByRange(4, col("c"))
+          checkShuffleAnswer(df, 1)
+        }
+      }
+    }
+  }
+
   private def checkShuffleAnswer(df: DataFrame, expectedNum: Int): Unit = {
     checkCometExchange(df, expectedNum, false)
     checkSparkAnswer(df)
@@ -875,6 +940,22 @@ class DisableAQECometShuffleSuite extends CometColumnarShuffleSuite {
             classOf[SortMergeJoinExec])
         }
       }
+    }
+  }
+
+  test("JVM shuffle writes batches no larger than spark.comet.batchSize") {
+    // spark.comet.shuffle.jvm.batchSize keeps its default of 8192, which is capped at 4096.
+    withSQLConf(
+      CometConf.COMET_SHUFFLE_JVM_SPILL_THRESHOLD.key -> Int.MaxValue.toString,
+      CometConf.COMET_BATCH_SIZE.key -> "4096") {
+      val df = spark.range(0, 20000, 1, 1).toDF().repartition(2, $"id")
+      val shuffle = checkCometExchange(df, 1, native = false).head
+      // Propagating the SQL conf lets the tasks see the batch size, as they would under an action.
+      val batchRows = SQLExecution.withSQLConfPropagated(spark) {
+        shuffle.executeColumnar().map(_.numRows()).collect()
+      }
+      assert(batchRows.sum == 20000)
+      assert(batchRows.max <= 4096)
     }
   }
 }
