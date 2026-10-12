@@ -4897,10 +4897,11 @@ mod tests {
 
         /// Writes `batches` into a fresh table of `schema`, partitioned by `region` unless the
         /// mode is unpartitioned, reserving from `pool` the way `IcebergWriteExec::execute`
-        /// reserves from the task's pool. A successful write's files are left for the caller to
-        /// inspect.
+        /// reserves from the task's pool, and counting into `metrics`. A successful write's files
+        /// are left for the caller to inspect.
         async fn write_reserving_from(
             pool: &Arc<PeakMemoryPool>,
+            metrics: WriteMetrics,
             schema: Schema,
             writer_mode: ProtoIcebergWriterMode,
             batches: Vec<RecordBatch>,
@@ -4936,7 +4937,7 @@ mod tests {
                 writer_properties,
                 Some(0),
                 Some(0),
-                WriteMetrics::default(),
+                metrics,
                 reservation,
             )
             .await
@@ -4962,6 +4963,7 @@ mod tests {
                 .build();
             let (_dir, written) = write_reserving_from(
                 &pool,
+                WriteMetrics::default(),
                 iceberg_user_schema(),
                 writer_mode,
                 vec![batch],
@@ -5002,6 +5004,7 @@ mod tests {
                 let pool = Arc::new(PeakMemoryPool::new(usize::MAX));
                 let (_dir, written) = write_reserving_from(
                     &pool,
+                    WriteMetrics::default(),
                     iceberg_user_schema(),
                     ProtoIcebergWriterMode::IcebergWriterFanout,
                     vec![round_robin_batch(
@@ -5084,6 +5087,7 @@ mod tests {
             let pool = Arc::new(PeakMemoryPool::new(usize::MAX));
             let (_dir, written) = write_reserving_from(
                 &pool,
+                WriteMetrics::default(),
                 iceberg_user_schema(),
                 ProtoIcebergWriterMode::IcebergWriterUnpartitioned,
                 batches,
@@ -5126,6 +5130,7 @@ mod tests {
             let pool = Arc::new(PeakMemoryPool::new(8 * row_group_bytes));
             let (_dir, written) = write_reserving_from(
                 &pool,
+                WriteMetrics::default(),
                 iceberg_payload_schema(),
                 ProtoIcebergWriterMode::IcebergWriterFanout,
                 batches,
@@ -5161,7 +5166,8 @@ mod tests {
         /// Writes `batches` into a fanout table of `schema` twice: with a pool to spare, then with
         /// a pool of the most that first write reserved divided by `divisor`, which it can only
         /// fit by closing partitions early. Returns both writes' data files and the second write's
-        /// directory, after checking that the second fit and gave its reservation back.
+        /// directory, after checking that the second fit, gave its reservation back and counted
+        /// the files it closed early.
         async fn fanout_write_in_part_of_the_pool(
             divisor: usize,
             schema: Schema,
@@ -5171,6 +5177,7 @@ mod tests {
             let roomy = Arc::new(PeakMemoryPool::new(usize::MAX));
             let (_dir, written) = write_reserving_from(
                 &roomy,
+                WriteMetrics::default(),
                 schema.clone(),
                 ProtoIcebergWriterMode::IcebergWriterFanout,
                 batches(),
@@ -5180,8 +5187,10 @@ mod tests {
             .await;
             let roomy_files = written.unwrap();
             let tight = Arc::new(PeakMemoryPool::new(roomy.peak() / divisor));
+            let metrics = WriteMetrics::default();
             let (dir, written) = write_reserving_from(
                 &tight,
+                metrics.clone(),
                 schema,
                 ProtoIcebergWriterMode::IcebergWriterFanout,
                 batches(),
@@ -5191,6 +5200,17 @@ mod tests {
             .await;
             let tight_files = written.expect("closing partitions early lets the write fit");
             assert_eq!(tight.reserved(), 0, "the write kept a reservation");
+            // No file rolls at `TARGET_FILE_SIZE`, so each file was closed either early, and
+            // counted, or when the task ended, which closes at most one file per partition.
+            let closed_early = metrics.files_closed_early.value();
+            let partitions = rows_per_partition(&roomy_files).len();
+            assert!(
+                closed_early > 0
+                    && closed_early <= tight_files.len()
+                    && tight_files.len() <= closed_early + partitions,
+                "{closed_early} files counted as closed early, of {} for {partitions} partitions",
+                tight_files.len()
+            );
             (roomy_files, tight_files, dir)
         }
 
@@ -5293,6 +5313,7 @@ mod tests {
             let roomy = Arc::new(PeakMemoryPool::new(usize::MAX));
             let (dir, written) = write_reserving_from(
                 &roomy,
+                WriteMetrics::default(),
                 iceberg_user_schema(),
                 ProtoIcebergWriterMode::IcebergWriterUnpartitioned,
                 batches(),
@@ -5306,6 +5327,7 @@ mod tests {
             let tight = Arc::new(PeakMemoryPool::new(roomy.peak() / 2));
             let (dir, written) = write_reserving_from(
                 &tight,
+                WriteMetrics::default(),
                 iceberg_user_schema(),
                 ProtoIcebergWriterMode::IcebergWriterUnpartitioned,
                 batches(),
