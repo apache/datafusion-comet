@@ -26,7 +26,7 @@ import org.apache.spark.sql.execution.{FileSourceScanExec, SparkPlan}
 import org.apache.spark.sql.execution.datasources.HadoopFsRelation
 
 import org.apache.comet.CometConf.COMET_EXEC_ENABLED
-import org.apache.comet.CometSparkSessionExtensions.withFallbackReason
+import org.apache.comet.CometSparkSessionExtensions.{hasFallbackReason, withFallbackReason}
 import org.apache.comet.rules.CometScanContrib
 
 /**
@@ -93,6 +93,9 @@ class DeltaScanContrib extends CometScanContrib with Logging {
             val subqueryDataFilters =
               CometDeltaNativeScan.subqueryFiltersFromParent(plan, scanExec)
             Some(CometDeltaNativeScanExec(nativeOp, scanExec, subqueryDataFilters))
+          // convert tags its own reason when it declines the scan's object stores.
+          case None if hasFallbackReason(scanExec) =>
+            Some(scanExec)
           case None =>
             Some(
               withFallbackReason(

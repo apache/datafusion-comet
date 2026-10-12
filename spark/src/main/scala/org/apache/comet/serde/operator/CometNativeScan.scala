@@ -19,8 +19,6 @@
 
 package org.apache.comet.serde.operator
 
-import java.net.URI
-
 import scala.collection.mutable.ListBuffer
 import scala.jdk.CollectionConverters._
 
@@ -243,17 +241,22 @@ object CometNativeScan extends CometOperatorSerde[CometScanExec] with CometTypeS
       scan: CometScanExec,
       builder: Operator.Builder,
       childOp: OperatorOuterClass.Operator*): Option[OperatorOuterClass.Operator] = {
-    // Extract object store options from first file (S3 configs apply to all files in scan).
-    // Use selectedPartitions (static) instead of getFilePartitions() because at planning time
-    // DPP subqueries haven't been resolved yet. Object store options don't depend on DPP.
-    val firstFileUri = scan.selectedPartitions
-      .flatMap(_.files.headOption)
-      .headOption
-      .map(_.getPath.toUri)
-
     // Collect S3/cloud storage configurations
     val hadoopConf = scan.relation.sparkSession.sessionState
       .newHadoopConfWithOptions(scan.relation.options)
+
+    // Use selectedPartitions (static) instead of getFilePartitions() because at planning time
+    // DPP subqueries haven't been resolved yet. Object store options don't depend on DPP.
+    val fileUris = scan.selectedPartitions.view.flatMap(_.files).map(_.getPath.toUri)
+    val objectStoreOptions =
+      NativeConfig.extractScanObjectStoreOptions(hadoopConf, fileUris) match {
+        case Right(options) => options
+        case Left(reason) =>
+          // CometExecRule falls back to the wrapped Spark scan, so it carries the reason too.
+          withFallbackReason(scan, reason)
+          withFallbackReason(scan.wrapped, reason)
+          return None
+      }
 
     buildNativeScanCommon(
       source = scan.simpleStringWithNodeId(),
@@ -263,7 +266,7 @@ object CometNativeScan extends CometOperatorSerde[CometScanExec] with CometTypeS
       partitionSchema = scan.relation.partitionSchema,
       fileConstantMetadataColumns = scan.wrapped.fileConstantMetadataColumns,
       dataFilters = scan.supportedDataFilters,
-      firstFileUri = firstFileUri,
+      objectStoreOptions = objectStoreOptions,
       hadoopConf = hadoopConf,
       conf = scan.conf) match {
       case Some(commonBuilder) =>
@@ -304,7 +307,7 @@ object CometNativeScan extends CometOperatorSerde[CometScanExec] with CometTypeS
       partitionSchema: StructType,
       fileConstantMetadataColumns: Seq[AttributeReference],
       dataFilters: Seq[Expression],
-      firstFileUri: Option[URI],
+      objectStoreOptions: Map[String, String],
       hadoopConf: Configuration,
       conf: SQLConf): Option[OperatorOuterClass.NativeScanCommon.Builder] = {
     val commonBuilder = OperatorOuterClass.NativeScanCommon.newBuilder()
@@ -381,7 +384,7 @@ object CometNativeScan extends CometOperatorSerde[CometScanExec] with CometTypeS
     commonBuilder.addAllRequiredSchema(requiredSchemaProto.asJava)
     commonBuilder.addAllPartitionSchema(partitionSchemaProto.asJava)
 
-    populateScanConfFlags(commonBuilder, requiredSchema, firstFileUri, hadoopConf, conf)
+    populateScanConfFlags(commonBuilder, requiredSchema, objectStoreOptions, hadoopConf, conf)
 
     Some(commonBuilder)
   }
@@ -396,7 +399,7 @@ object CometNativeScan extends CometOperatorSerde[CometScanExec] with CometTypeS
   private[comet] def populateScanConfFlags(
       commonBuilder: OperatorOuterClass.NativeScanCommon.Builder,
       requiredSchema: StructType,
-      firstFileUri: Option[URI],
+      objectStoreOptions: Map[String, String],
       hadoopConf: Configuration,
       conf: SQLConf): Unit = {
     val sessionTimeZone = conf.getConfString("spark.sql.session.timeZone")
@@ -431,12 +434,8 @@ object CometNativeScan extends CometOperatorSerde[CometScanExec] with CometTypeS
 
     commonBuilder.setEncryptionEnabled(CometParquetUtils.encryptionEnabled(hadoopConf))
 
-    firstFileUri.foreach { uri =>
-      val objectStoreOptions =
-        NativeConfig.extractObjectStoreOptions(hadoopConf, uri)
-      objectStoreOptions.foreach { case (key, value) =>
-        commonBuilder.putObjectStoreOptions(key, value)
-      }
+    objectStoreOptions.foreach { case (key, value) =>
+      commonBuilder.putObjectStoreOptions(key, value)
     }
   }
 

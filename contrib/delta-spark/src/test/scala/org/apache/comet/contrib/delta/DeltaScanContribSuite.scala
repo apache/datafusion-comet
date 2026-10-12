@@ -25,13 +25,17 @@ import java.nio.file.Files
 import java.util.{Locale, UUID}
 import java.util.concurrent.atomic.AtomicBoolean
 
+import scala.jdk.CollectionConverters._
+
 import org.apache.hadoop.conf.Configuration
 import org.apache.hadoop.fs.{Path, RawLocalFileSystem}
 import org.apache.hadoop.fs.s3a.{S3AFileSystem, S3AUtils}
 import org.apache.hadoop.security.alias.CredentialProviderFactory
+import org.apache.spark.sql.comet.CometDeltaNativeScanExec
 import org.apache.spark.sql.delta.actions.DeletionVectorDescriptor
 
 import org.apache.comet.{CometConf, ExtendedExplainInfo}
+import org.apache.comet.objectstore.NativeConfig
 import org.apache.comet.rules.CometScanRule
 
 /**
@@ -376,6 +380,25 @@ class DeltaScanContribSuite extends CometDeltaTestBase {
     assert(DeltaScanSupport.userInfoBearingAuthorityReason(sameContainer).isDefined)
   }
 
+  test("multiStoreReason declines data files on more than one ABFS store or beside s3a") {
+    // Core's extractScanObjectStoreOptions needs one ABFS container and account per scan and no
+    // other scheme beside ABFS. This gate declines all three shapes before convert reaches it.
+    val shapes = Seq(
+      "two accounts" -> Seq(
+        new URI("abfss://data@accountA.dfs.core.windows.net/t/part-0.parquet"),
+        new URI("abfss://data@accountB.dfs.core.windows.net/t/part-1.parquet")),
+      "two containers" -> Seq(
+        new URI("abfss://dataA@account.dfs.core.windows.net/t/part-0.parquet"),
+        new URI("abfss://dataB@account.dfs.core.windows.net/t/part-1.parquet")),
+      "abfss and s3a" -> Seq(
+        new URI("abfss://data@account.dfs.core.windows.net/t/part-0.parquet"),
+        new URI("s3a://bucket/t/part-1.parquet")))
+    shapes.foreach { case (shape, uris) =>
+      val reason = DeltaScanSupport.multiStoreReason(uris)
+      assert(reason.exists(_.contains("multiple object stores")), s"$shape: $reason")
+    }
+  }
+
   test(
     "multiStoreReason declines distinct underscore-bearing GCS buckets " +
       "(URI#getHost null-collapse)") {
@@ -591,15 +614,16 @@ class DeltaScanContribSuite extends CometDeltaTestBase {
       CometDeltaNativeScan.mergedObjectStoreOptions(hadoopConf, Seq(s3Uri, abfssUri))
     assert(merged.get("fs.s3a.access.key").contains("s3-access-key"))
     assert(merged.get("fs.s3a.secret.key").contains("s3-secret-key"))
-    assert(
-      merged
-        .get("fs.azure.account.key.acct.dfs.core.windows.net")
-        .contains("azure-account-key"))
+    // ABFS options are what Hadoop resolves for the account, not the fs.azure.* namespace.
+    val abfsOptions = NativeConfig.extractObjectStoreOptions(hadoopConf, abfssUri)
+    assert(abfsOptions.nonEmpty)
+    abfsOptions.foreach { case (key, value) => assert(merged.get(key).contains(value), key) }
 
-    // s3-only input must not leak the azure credentials into the merged map.
+    // s3-only input must not leak the azure options into the merged map.
     val s3Only = CometDeltaNativeScan.mergedObjectStoreOptions(hadoopConf, Seq(s3Uri))
     assert(s3Only.get("fs.s3a.access.key").contains("s3-access-key"))
-    assert(!s3Only.keys.exists(_.startsWith("fs.azure.")))
+    assert(
+      !s3Only.keys.exists(key => key.startsWith("fs.azure.") || key.startsWith("comet.azure.")))
   }
 
   test(
@@ -657,6 +681,30 @@ class DeltaScanContribSuite extends CometDeltaTestBase {
     assert(
       CometDeltaNativeScan.storeUris(Seq.empty, tableRootPath, None) ==
         Seq(tableRootPath.toUri))
+  }
+
+  test("a scan that selects no files keeps the table root's object-store options") {
+    withTempPath { dir =>
+      val path = dir.getAbsolutePath
+      spark
+        .range(0, 10)
+        .selectExpr("id", "id % 2 AS p")
+        .write
+        .format("delta")
+        .partitionBy("p")
+        .save(path)
+      // The scheme list rides along in every extracted map, so a local root's options are not
+      // empty.
+      withSQLConf(CometConf.COMET_S3_COMPLIANT_SCHEMES_KEY -> "minio") {
+        val df = spark.read.format("delta").load(path).where("p = 5")
+        assert(df.collect().isEmpty)
+        val scans = deltaNativeScans(df).collect { case s: CometDeltaNativeScanExec => s }
+        assert(scans.size == 1, s"expected one native Delta scan:\n${df.queryExecution}")
+        val options =
+          DeltaSparkScanEnvelope.unpack(scans.head.nativeOp).getCommon.getObjectStoreOptionsMap
+        assert(options.asScala.toMap == Map(CometConf.COMET_S3_COMPLIANT_SCHEMES_KEY -> "minio"))
+      }
+    }
   }
 
   test("user guide documents every native Delta scan config verbatim, with its default") {

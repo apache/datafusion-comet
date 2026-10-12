@@ -32,6 +32,7 @@ import org.apache.spark.sql.execution.{FileSourceScanExec, ScalarSubquery => Exe
 import org.apache.spark.sql.execution.datasources.{FilePartition, PartitionedFile}
 import org.apache.spark.sql.types.{ByteType, LongType, MetadataBuilder, StructField, StructType}
 
+import org.apache.comet.CometSparkSessionExtensions.withFallbackReason
 import org.apache.comet.objectstore.NativeConfig
 import org.apache.comet.serde.OperatorOuterClass
 import org.apache.comet.serde.OperatorOuterClass.Operator
@@ -117,7 +118,8 @@ object CometDeltaNativeScan
   /**
    * Build the planning-time `DeltaScan` operator (common data only; file partitions are injected
    * lazily at execution). Returns None when an output data type cannot be serialized or the plan
-   * shape is not one we can translate faithfully. `memo` is the same claim-memo instance
+   * shape is not one we can translate faithfully, and tags `scanExec` with the reason when the
+   * data files need more than one ABFS store. `memo` is the same claim-memo instance
    * [[DeltaScanSupport.declineReason]] populated on this claim; its `hadoopConf` and
    * `dvDescriptors` are reused here rather than recomputed.
    */
@@ -127,12 +129,20 @@ object CometDeltaNativeScan
       memo: DeltaScanSupport.DeltaClaimMemo): Option[Operator] = {
     val relation = scanExec.relation
 
-    val firstFileUri = scanHelper.selectedPartitions
-      .flatMap(_.files.headOption)
-      .headOption
-      .map(_.getPath.toUri)
+    val dataFileUris = scanHelper.selectedPartitions.view.flatMap(_.files).map(_.getPath.toUri)
+    val firstFileUri = dataFileUris.headOption
 
     val hadoopConf = memo.hadoopConf
+
+    val objectStoreOptions =
+      NativeConfig.extractScanObjectStoreOptions(hadoopConf, dataFileUris) match {
+        case Right(options) => options
+        case Left(reason) =>
+          // declineReason already declines data files on more than one store; this only
+          // catches ABFS authorities that differ in case or percent-encoding alone.
+          withFallbackReason(scanExec, reason)
+          return None
+      }
 
     val tableRootPath = relation.location.rootPaths.head
     val tableRoot = tableRootPath.toString
@@ -148,11 +158,11 @@ object CometDeltaNativeScan
         partitionSchema = toPhysical(scanExec, relation.partitionSchema),
         fileConstantMetadataColumns = scanExec.fileConstantMetadataColumns,
         dataFilters = scanHelper.supportedDataFilters,
-        firstFileUri = firstFileUri,
+        objectStoreOptions = objectStoreOptions,
         hadoopConf = hadoopConf,
         conf = scanExec.conf)
     } else {
-      buildDvScanCommon(scanExec, scanHelper, firstFileUri, hadoopConf)
+      buildDvScanCommon(scanExec, scanHelper, objectStoreOptions, hadoopConf)
     }
 
     commonOpt.map { commonBuilder =>
@@ -221,9 +231,12 @@ object CometDeltaNativeScan
 
   /**
    * Unions `NativeConfig.extractObjectStoreOptions` over every `uris` authority. Safe to union
-   * rather than pick one: extracted keys are scheme-disjoint prefixes (`fs.s3a.*` vs
-   * `fs.azure.*`, ...), so options for different schemes never collide, and re-extracting the
-   * same scheme from two URIs is idempotent.
+   * rather than pick one: S3 and GCS options sit under their own scheme's prefix, and
+   * re-extracting the same scheme from two URIs is idempotent. Azure options are not scoped to an
+   * account and overlap (WASB copies `fs.azure.*`; ABFS forwards `comet.azure.*` markers plus
+   * global `fs.azure.*` keys), but only the table root can bring an Azure authority here:
+   * `DeltaScanSupport.declineReason` declines Azure data files and deletion vectors, whose
+   * container is userinfo.
    */
   private[delta] def mergedObjectStoreOptions(
       hadoopConf: org.apache.hadoop.conf.Configuration,
@@ -388,7 +401,7 @@ object CometDeltaNativeScan
   private def buildDvScanCommon(
       scanExec: FileSourceScanExec,
       scanHelper: CometScanExec,
-      firstFileUri: Option[java.net.URI],
+      objectStoreOptions: Map[String, String],
       hadoopConf: org.apache.hadoop.conf.Configuration)
       : Option[OperatorOuterClass.NativeScanCommon.Builder] = {
     val relation = scanExec.relation
@@ -482,7 +495,7 @@ object CometDeltaNativeScan
     CometNativeScan.populateScanConfFlags(
       commonBuilder,
       physicalRequired,
-      firstFileUri,
+      objectStoreOptions,
       hadoopConf,
       scanExec.conf)
 
