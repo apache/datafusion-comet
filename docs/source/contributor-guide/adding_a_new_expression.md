@@ -582,7 +582,21 @@ Spark.
 If the expression you're adding has different behavior across different Spark versions, you'll need to account for that in your implementation. There are two tools at your disposal to help with this:
 
 1. Shims that exist in `spark/src/main/spark-$SPARK_VERSION/org/apache/comet/shims/CometExprShim.scala` for each Spark version. These shims are used to provide compatibility between different Spark versions.
-2. Variables that correspond to the Spark version, such as `isSpark33Plus`, which can be used to conditionally execute code based on the Spark version.
+2. Variables that correspond to the Spark version, such as `isSpark42Plus`, which can be used to conditionally execute code based on the Spark version.
+
+#### Name the behavior, not the Spark version
+
+When native code has to match a behavior that differs between Spark versions, decide which behavior applies in Scala and pass the result to native code under a name that describes the behavior, not the Spark version that introduced it. This covers protobuf fields, native function arguments, and native function names. For example, `TruncTimestamp` carries a `wrap_second_millisecond_overflow` flag, which the serde sets from `!isSpark42Plus`. It is not called `spark_420_plus`. The `filter_var_by_pair_nulls` field of `Regr` is another example.
+
+Set the flag in one place on the Scala side, in a shim or in the serde, so that a fork overrides only that. A helper such as `isSpark42Plus` is enough when the behavior changed in a minor release. When Spark changed it in patch releases, compare the full version in a named predicate, because a check on the minor version is wrong for every earlier patch. `RegrSparkVersions.r2DegenerateCasesSwapped` in `serde/aggregates.scala` is the model. It resolves SPARK-55969, which shipped in 3.5.9, 4.0.3, 4.1.2, and 4.2.0.
+
+Reasons to prefer behavior names:
+
+- Some deployments run a Spark fork that backports fixes from newer open-source releases. Such a fork changes the one Scala check that sets the flag and leaves the protobuf and native code alone. A `spark_420_plus` flag cannot describe a fork that has one 4.2 fix but not the others.
+- Spark occasionally changes behavior in a patch release or between minor releases, so a version number is a poor proxy for the behavior.
+- The native code stays free of Spark version logic, and a reader of the Rust or proto definition can tell what the flag does without looking up a release.
+
+Write comments the same way. Cite the Spark JIRA that changed the behavior, as the `TruncTimestamp` serde does with SPARK-56663, because forks track backports by JIRA rather than by release. Say "Spark 4.2 and later" for a behavior that future releases inherit, rather than "Spark 4.2". If a later release changes the behavior again, add a new parameter or shim for that change.
 
 ## Shimming to Support Different Spark Versions
 
