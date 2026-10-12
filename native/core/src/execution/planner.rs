@@ -2981,10 +2981,19 @@ impl PhysicalPlanner {
         if plan.is::<ScanExec>() || plan.is::<ShuffleScanExec>() {
             return true;
         }
-        // DataFusion reports every right hash join as keeping its probe order, but keeps it only
-        // when the probe declares one, and no input on this path declares an order.
+        // DataFusion reports every right hash join as keeping its probe order, but a right outer
+        // join keeps it only when the probe declares one, and no input on this path declares an
+        // order. An inner join emits its matches probe row by probe row, and a right semi, anti or
+        // mark join builds its probe indices in ascending order, so none of them depends on a
+        // declaration. Any other join type keeps no probe order at all.
         if let Some(join) = plan.downcast_ref::<HashJoinExec>() {
-            if join.join_type() != &DFJoinType::Inner {
+            if !matches!(
+                join.join_type(),
+                DFJoinType::Inner
+                    | DFJoinType::RightSemi
+                    | DFJoinType::RightAnti
+                    | DFJoinType::RightMark
+            ) {
                 return false;
             }
         }
@@ -6190,11 +6199,13 @@ mod tests {
         assert_eq!("ProjectionExec", probe.children()[0].name());
     }
 
-    #[test]
-    fn hash_join_declares_no_order_over_an_operator_that_may_move_rows() {
-        let hash_join = |join_type: spark_operator::JoinType,
-                         build_side: spark_operator::BuildSide,
-                         null_aware_anti_join: bool| Operator {
+    /// A hash join over two scans, for use as the probe input of the join under test.
+    fn hash_join_over_scans(
+        join_type: spark_operator::JoinType,
+        build_side: spark_operator::BuildSide,
+        null_aware_anti_join: bool,
+    ) -> Operator {
+        Operator {
             children: vec![create_scan(), create_scan()],
             op_struct: Some(OpStruct::HashJoin(spark_operator::HashJoin {
                 left_join_keys: vec![create_bound_reference(0)],
@@ -6205,33 +6216,82 @@ mod tests {
                 ..Default::default()
             })),
             ..Default::default()
-        };
-        for probe_input in [
-            // Comet builds a null-aware anti join on Spark's streamed side, so its output is not
-            // in the order Spark reports for it.
-            hash_join(
-                spark_operator::JoinType::LeftAnti,
-                spark_operator::BuildSide::BuildRight,
-                true,
-            ),
-            // A right join whose probe declares no order moves its unmatched rows, although
-            // DataFusion reports it as keeping its probe order.
-            hash_join(
-                spark_operator::JoinType::RightOuter,
-                spark_operator::BuildSide::BuildLeft,
-                false,
-            ),
+        }
+    }
+
+    #[test]
+    fn hash_join_declares_order_through_joins_that_keep_probe_order() {
+        // An inner join emits its matches probe row by probe row, and a right semi, anti or mark
+        // join emits its probe indices in ascending order. None of them depends on the probe
+        // declaring an order, so the order Spark reports for the outer join's streamed side
+        // still holds above them.
+        use datafusion::common::JoinType as DF;
+        use spark_operator::BuildSide::{BuildLeft, BuildRight};
+        use spark_operator::JoinType::{Existence, Inner, LeftAnti, LeftSemi};
+        for (join_type, build_side, planned_type) in [
+            (Inner, BuildLeft, DF::Inner),
+            (Inner, BuildRight, DF::Inner),
+            (LeftSemi, BuildRight, DF::RightSemi),
+            (LeftAnti, BuildRight, DF::RightAnti),
+            (Existence, BuildRight, DF::RightMark),
         ] {
             let operator = sorted_outer_hash_join(
                 spark_operator::JoinType::RightOuter,
-                spark_operator::BuildSide::BuildLeft,
-                vec![create_scan(), probe_input],
+                BuildLeft,
+                vec![
+                    create_scan(),
+                    hash_join_over_scans(join_type, build_side, false),
+                ],
             );
             let (_, _, planned) = PhysicalPlanner::default()
                 .create_plan(&operator, &mut vec![], 1)
                 .unwrap();
             let probe = planned_hash_join(&planned.native_plan).right();
-            assert_eq!("HashJoinExec", probe.name());
+            assert_eq!(
+                "SortedInputExec",
+                probe.name(),
+                "{join_type:?} {build_side:?}"
+            );
+            let declared = planned_hash_join(probe.children()[0]);
+            assert_eq!(&planned_type, declared.join_type());
+        }
+    }
+
+    #[test]
+    fn hash_join_declares_no_order_over_an_operator_that_may_move_rows() {
+        use spark_operator::BuildSide::{BuildLeft, BuildRight};
+        use spark_operator::JoinType::{FullOuter, LeftAnti, LeftSemi, RightOuter};
+        for (probe_input, reason) in [
+            // Comet builds a null-aware anti join on Spark's streamed side, so its output is not
+            // in the order Spark reports for it.
+            (
+                hash_join_over_scans(LeftAnti, BuildRight, true),
+                "a null-aware anti join",
+            ),
+            // A right join whose probe declares no order moves its unmatched rows, although
+            // DataFusion reports it as keeping its probe order.
+            (
+                hash_join_over_scans(RightOuter, BuildLeft, false),
+                "a right outer join",
+            ),
+            // The remaining types keep no probe order at all: a left semi join built on the left
+            // emits build rows, and a full outer join emits its unmatched build rows last.
+            (
+                hash_join_over_scans(LeftSemi, BuildLeft, false),
+                "a left semi join",
+            ),
+            (
+                hash_join_over_scans(FullOuter, BuildLeft, false),
+                "a full outer join",
+            ),
+        ] {
+            let operator =
+                sorted_outer_hash_join(RightOuter, BuildLeft, vec![create_scan(), probe_input]);
+            let (_, _, planned) = PhysicalPlanner::default()
+                .create_plan(&operator, &mut vec![], 1)
+                .unwrap();
+            let probe = planned_hash_join(&planned.native_plan).right();
+            assert_eq!("HashJoinExec", probe.name(), "{reason}");
         }
     }
 

@@ -31,10 +31,10 @@ import org.apache.spark.sql.catalyst.TableIdentifier
 import org.apache.spark.sql.catalyst.analysis.UnresolvedRelation
 import org.apache.spark.sql.catalyst.expressions.{And, Ascending, AttributeReference, BoundReference, Descending, DynamicPruningExpression, InterpretedOrdering, IsNotNull, SortDirection, SortOrder}
 import org.apache.spark.sql.catalyst.optimizer.{BuildLeft, BuildRight, BuildSide}
-import org.apache.spark.sql.catalyst.plans.{Inner, LeftOuter}
+import org.apache.spark.sql.catalyst.plans.{Inner, LeftOuter, LeftSemi}
 import org.apache.spark.sql.catalyst.plans.logical.Join
-import org.apache.spark.sql.comet.{CometBroadcastExchangeExec, CometBroadcastHashJoinExec, CometBroadcastNestedLoopJoinExec, CometFilterExec, CometHashJoinExec, CometInMemoryTableScanExec, CometNativeScanExec, CometProjectExec, CometSortExec, CometSortMergeJoinExec, CometSparkToColumnarExec, CometUnionExec, CometWindowExec}
-import org.apache.spark.sql.execution.{ColumnarToRowTransition, InputAdapter, LocalTableScanExec, SortExec, SparkPlan, WholeStageCodegenExec}
+import org.apache.spark.sql.comet.{CometBroadcastExchangeExec, CometBroadcastHashJoinExec, CometBroadcastNestedLoopJoinExec, CometFilterExec, CometHashJoinExec, CometInMemoryTableScanExec, CometNativeScanExec, CometProjectExec, CometSampleExec, CometSortExec, CometSortMergeJoinExec, CometSparkToColumnarExec, CometUnionExec, CometWindowExec}
+import org.apache.spark.sql.execution.{ColumnarToRowTransition, InputAdapter, LocalTableScanExec, RDDScanExec, SortExec, SparkPlan, WholeStageCodegenExec}
 import org.apache.spark.sql.execution.adaptive.{AdaptiveSparkPlanExec, AQEShuffleReadExec, QueryStageExec}
 import org.apache.spark.sql.execution.columnar.InMemoryTableScanExec
 import org.apache.spark.sql.execution.datasources.SchemaColumnConvertNotSupportedException
@@ -2488,14 +2488,71 @@ class CometJoinSuite extends CometTestBase {
     // The same NOT IN as the test above, but cached, so its rows reach the outer join from the
     // JVM. The cache reports the order Spark reports for the null-aware anti join, which its rows
     // are not in, and the outer join's probe input is then a plain JVM input as far as the native
-    // plan can see. The order must not be declared there either. A cached plan that AQE runs
-    // reports no order, so AQE is off here, as Spark 3.4 has it for every cached plan by default.
+    // plan can see. The order must not be declared there either. A cache with an exchange in its
+    // plan is written under AQE from Spark 3.5, and Spark's scan then reports the order of the
+    // final plan behind the adaptive one, which reports none itself, so this runs with AQE off
+    // and on.
+    Seq(false, true).foreach { adaptive =>
+      withSQLConf(
+        SQLConf.ADAPTIVE_EXECUTION_ENABLED.key -> adaptive.toString,
+        SQLConf.SHUFFLE_PARTITIONS.key -> "2",
+        SQLConf.COLUMN_BATCH_SIZE.key -> "8",
+        CometConf.COMET_BATCH_SIZE.key -> "8",
+        CometConf.COMET_EXEC_IN_MEMORY_CACHE_ENABLED.key -> "true") {
+        withParquetTable((0 until 2000).map(i => ((i % 40) * 1000, i)), "big") {
+          withParquetTable(Seq(1000, 10000, 20000, 100000).map(x => Tuple1(Option(x))), "excl") {
+            withParquetTable((0 until 40 by 2).map(k => (k * 1000, k)), "small") {
+              try {
+                spark
+                  .table("big")
+                  .toDF("k", "v")
+                  .repartition(2, $"k")
+                  .sortWithinPartitions("k")
+                  .cache()
+                  .createOrReplaceTempView("cached")
+                spark.table("cached").count()
+                sql("SELECT * FROM cached WHERE k NOT IN (SELECT _1 FROM excl)")
+                  .cache()
+                  .createOrReplaceTempView("anti")
+                spark.table("anti").count()
+                val cachedPlan = cachedPlanOf(spark.table("anti"))
+                assert(
+                  find(cachedPlan) {
+                    case join: CometBroadcastHashJoinExec => join.isNullAwareAntiJoin
+                    case _ => false
+                  }.isDefined,
+                  s"the cache was not written by a native NOT IN (AQE $adaptive):\n$cachedPlan")
+                assert(
+                  !partitionsInOrder(spark.table("anti"), keyOrder(Ascending)),
+                  "the cached NOT IN rows are in order, so nothing here can split a group")
+                val query =
+                  """SELECT /*+ BROADCAST(b) */ a.k, count(*), sum(a.v), count(b._2)
+                    |FROM anti a LEFT JOIN small b ON a.k = b._1
+                    |GROUP BY a.k""".stripMargin
+                checkEachKeyGroupedOnce(query)
+              } finally {
+                spark.catalog.clearCache()
+                spark.catalog.dropTempView("anti")
+                spark.catalog.dropTempView("cached")
+              }
+            }
+          }
+        }
+      }
+    }
+  }
+
+  test("an outer hash join over a checkpoint of a NOT IN keeps each group once") {
+    // A checkpoint is read by an RDD scan that reports the order of the plan it was taken from,
+    // as a cache does, but that plan is gone, so nothing can say whether the order holds. Here it
+    // is the order Spark reports for the null-aware anti join, which the rows are not in.
     withSQLConf(
       SQLConf.ADAPTIVE_EXECUTION_ENABLED.key -> "false",
       SQLConf.SHUFFLE_PARTITIONS.key -> "2",
       SQLConf.COLUMN_BATCH_SIZE.key -> "8",
       CometConf.COMET_BATCH_SIZE.key -> "8",
-      CometConf.COMET_EXEC_IN_MEMORY_CACHE_ENABLED.key -> "true") {
+      CometConf.COMET_EXEC_IN_MEMORY_CACHE_ENABLED.key -> "true",
+      CometConf.COMET_CONVERT_FROM_RDD_ENABLED.key -> "true") {
       withParquetTable((0 until 2000).map(i => ((i % 40) * 1000, i)), "big") {
         withParquetTable(Seq(1000, 10000, 20000, 100000).map(x => Tuple1(Option(x))), "excl") {
           withParquetTable((0 until 40 by 2).map(k => (k * 1000, k)), "small") {
@@ -2509,19 +2566,16 @@ class CometJoinSuite extends CometTestBase {
                 .createOrReplaceTempView("cached")
               spark.table("cached").count()
               sql("SELECT * FROM cached WHERE k NOT IN (SELECT _1 FROM excl)")
-                .cache()
+                .localCheckpoint()
                 .createOrReplaceTempView("anti")
-              spark.table("anti").count()
-              val cachedPlan = cachedPlanOf(spark.table("anti"))
+              val plan = spark.table("anti").queryExecution.executedPlan
+              val scans = collect(plan) { case scan: RDDScanExec => scan }
               assert(
-                cachedPlan.exists {
-                  case join: CometBroadcastHashJoinExec => join.isNullAwareAntiJoin
-                  case _ => false
-                },
-                s"the cache was not written by a native NOT IN:\n$cachedPlan")
+                scans.size == 1 && scans.head.outputOrdering.nonEmpty,
+                s"the checkpoint does not report the NOT IN's order:\n$plan")
               assert(
                 !partitionsInOrder(spark.table("anti"), keyOrder(Ascending)),
-                "the cached NOT IN rows are in order, so nothing here can split a group")
+                "the checkpointed NOT IN rows are in order, so nothing here can split a group")
               val query =
                 """SELECT /*+ BROADCAST(b) */ a.k, count(*), sum(a.v), count(b._2)
                   |FROM anti a LEFT JOIN small b ON a.k = b._1
@@ -2538,11 +2592,12 @@ class CometJoinSuite extends CometTestBase {
     }
   }
 
-  test("an outer hash join over a cache of an undeclared outer join keeps each group once") {
-    // The IN subquery's semi join sits between the sorted cache and the first outer join, and the
-    // native planner declares no order over a semi join, so that outer join moves its unmatched
-    // rows, and the cache it writes is out of the order it reports. The second outer join reads
-    // that cache as a JVM input and must not declare the order either.
+  test("an outer hash join over a cache of an outer hash join with no declared order") {
+    // The planner declares the order on an outer join's probe input only through operators that
+    // keep their input's order, and the native sample does not report that it does. An outer
+    // join over a sample therefore moves its unmatched rows, although the serde sent its order,
+    // and the cache it writes is out of the order it reports. The second outer join reads that
+    // cache as a JVM input and must not declare the order either.
     withSQLConf(
       SQLConf.ADAPTIVE_EXECUTION_ENABLED.key -> "false",
       SQLConf.SHUFFLE_PARTITIONS.key -> "2",
@@ -2550,53 +2605,56 @@ class CometJoinSuite extends CometTestBase {
       CometConf.COMET_BATCH_SIZE.key -> "8",
       CometConf.COMET_EXEC_IN_MEMORY_CACHE_ENABLED.key -> "true") {
       withParquetTable((0 until 2000).map(i => ((i % 40) * 1000, i)), "big") {
-        withParquetTable((0 until 40).filter(_ % 7 != 3).map(k => Tuple1(k * 1000)), "incl") {
-          withParquetTable((0 until 40 by 2).map(k => (k * 1000, k)), "small") {
-            try {
-              spark
-                .table("big")
-                .toDF("k", "v")
-                .repartition(2, $"k")
-                .sortWithinPartitions("k")
-                .cache()
-                .createOrReplaceTempView("cached")
-              spark.table("cached").count()
-              sql("""SELECT /*+ BROADCAST(b) */ a.k, a.v, b._2 AS w
-                    |FROM (SELECT * FROM cached WHERE k IN (SELECT _1 FROM incl)) a
-                    |LEFT JOIN small b ON a.k = b._1""".stripMargin)
-                .cache()
-                .createOrReplaceTempView("joined")
-              spark.table("joined").count()
-              val cachedPlan = cachedPlanOf(spark.table("joined"))
-              assert(
-                cachedPlan.exists {
-                  case join: CometBroadcastHashJoinExec => join.joinType == LeftOuter
-                  case _ => false
-                },
-                s"the cache was not written by a native outer join:\n$cachedPlan")
-              assert(
-                !partitionsInOrder(spark.table("joined"), keyOrder(Ascending)),
-                "the cached outer join rows are in order, so nothing here can split a group")
-              val query =
-                """SELECT /*+ BROADCAST(c) */ j.k, count(*), sum(j.v), count(c._2)
-                  |FROM joined j LEFT JOIN small c ON j.k = c._1
-                  |GROUP BY j.k""".stripMargin
-              checkEachKeyGroupedOnce(query)
-            } finally {
-              spark.catalog.clearCache()
-              spark.catalog.dropTempView("joined")
-              spark.catalog.dropTempView("cached")
-            }
+        withParquetTable((0 until 40 by 2).map(k => (k * 1000, k)), "small") {
+          try {
+            spark
+              .table("big")
+              .toDF("k", "v")
+              .repartition(2, $"k")
+              .sortWithinPartitions("k")
+              .cache()
+              .createOrReplaceTempView("cached")
+            spark.table("cached").count()
+            sql("""SELECT /*+ BROADCAST(b) */ a.k, a.v, b._2 AS w
+                  |FROM (SELECT * FROM cached TABLESAMPLE (90 PERCENT) REPEATABLE (7)) a
+                  |LEFT JOIN small b ON a.k = b._1""".stripMargin)
+              .cache()
+              .createOrReplaceTempView("joined")
+            spark.table("joined").count()
+            val cachedPlan = cachedPlanOf(spark.table("joined"))
+            assert(
+              find(cachedPlan) {
+                case join: CometBroadcastHashJoinExec =>
+                  join.joinType == LeftOuter &&
+                  join.nativeOp.getHashJoin.getStreamedSortOrdersCount > 0
+                case _ => false
+              }.isDefined,
+              s"the cache was not written by a native outer join that sent the order:\n$cachedPlan")
+            assert(
+              find(cachedPlan)(_.isInstanceOf[CometSampleExec]).isDefined,
+              s"the outer join does not read a native sample:\n$cachedPlan")
+            assert(
+              !partitionsInOrder(spark.table("joined"), keyOrder(Ascending)),
+              "the cached outer join rows are in order, so nothing here can split a group")
+            val query =
+              """SELECT /*+ BROADCAST(c) */ j.k, count(*), sum(j.v), count(c._2)
+                |FROM joined j LEFT JOIN small c ON j.k = c._1
+                |GROUP BY j.k""".stripMargin
+            checkEachKeyGroupedOnce(query)
+          } finally {
+            spark.catalog.clearCache()
+            spark.catalog.dropTempView("joined")
+            spark.catalog.dropTempView("cached")
           }
         }
       }
     }
   }
 
-  test("an outer hash join over a cache sorted above an outer hash join declares the order") {
-    // The sort in the plan that wrote the cache puts its rows in the order the cache reports,
-    // whatever the outer join below the sort did, so the second outer join declares that order.
-    // The sort is on (k, v), so Spark does not drop it as one the first join already satisfies.
+  test("an outer hash join over a cache of a declared outer hash join declares the order too") {
+    // The first outer join's probe input is the sorted cache, a JVM input that the planner
+    // declares the order on, so the join keeps its unmatched rows in place and the cache it
+    // writes is in the order it reports. The second outer join can rely on that.
     withSQLConf(
       SQLConf.ADAPTIVE_EXECUTION_ENABLED.key -> "false",
       SQLConf.SHUFFLE_PARTITIONS.key -> "2",
@@ -2616,34 +2674,38 @@ class CometJoinSuite extends CometTestBase {
             spark.table("cached").count()
             sql("""SELECT /*+ BROADCAST(b) */ a.k, a.v, b._2 AS w
                   |FROM cached a LEFT JOIN small b ON a.k = b._1""".stripMargin)
-              .sortWithinPartitions("k", "v")
               .cache()
-              .createOrReplaceTempView("sorted_joined")
-            spark.table("sorted_joined").count()
-            val cachedPlan = cachedPlanOf(spark.table("sorted_joined"))
+              .createOrReplaceTempView("joined")
+            spark.table("joined").count()
+            val cachedPlan = cachedPlanOf(spark.table("joined"))
             assert(
-              cachedPlan.exists {
-                case join: CometBroadcastHashJoinExec => join.joinType == LeftOuter
+              find(cachedPlan) {
+                case join: CometBroadcastHashJoinExec =>
+                  join.joinType == LeftOuter &&
+                  join.nativeOp.getHashJoin.getStreamedSortOrdersCount > 0
                 case _ => false
-              },
-              s"the cache was not written by a native outer join:\n$cachedPlan")
+              }.isDefined,
+              s"the cache was not written by a native outer join that sent the order:\n$cachedPlan")
+            assert(
+              partitionsInOrder(spark.table("joined"), keyOrder(Ascending)),
+              "the cached outer join rows are out of order, so the first join did not keep them")
             val df = sql("""SELECT /*+ BROADCAST(c) */ j.k, j.v, c._2
-                           |FROM sorted_joined j LEFT JOIN small c ON j.k = c._1""".stripMargin)
+                           |FROM joined j LEFT JOIN small c ON j.k = c._1""".stripMargin)
               .sortWithinPartitions("k")
-            val joins = df.queryExecution.executedPlan.collect {
-              case join: CometBroadcastHashJoinExec => join
+            val plan = df.queryExecution.executedPlan
+            val joins = collect(plan) { case join: CometBroadcastHashJoinExec => join }
+            assert(joins.size == 1, plan)
+            assert(joins.head.nativeOp.getHashJoin.getStreamedSortOrdersCount > 0, plan)
+            assert(collect(plan) { case s @ (_: CometSortExec | _: SortExec) => s }.isEmpty, plan)
+            val expected = (0 until 2000).map { i =>
+              val m = i % 40
+              Row(m * 1000, i, if (m % 2 == 0) m else null)
             }
-            assert(joins.size == 1, df.queryExecution.executedPlan)
-            assert(joins.head.nativeOp.getHashJoin.getStreamedSortOrdersCount > 0)
-            assert(partitionsInOrder(df, keyOrder(Ascending)))
-            var sparkRows = Seq.empty[Row]
-            withSQLConf(CometConf.COMET_ENABLED.key -> "false") {
-              sparkRows = df.collect().toSeq
-            }
-            QueryTest.sameRows(sparkRows, df.collect().toSeq).foreach(fail(_))
+            QueryTest.sameRows(expected, df.collect().toSeq).foreach(fail(_))
+            assert(partitionsInOrder(df, keyOrder(Ascending)), plan)
           } finally {
             spark.catalog.clearCache()
-            spark.catalog.dropTempView("sorted_joined")
+            spark.catalog.dropTempView("joined")
             spark.catalog.dropTempView("cached")
           }
         }
@@ -2651,11 +2713,10 @@ class CometJoinSuite extends CometTestBase {
     }
   }
 
-  test("an outer hash join over a cache of a nested loop join keeps each group once") {
-    // DataFusion's nested loop join emits each probe batch's matches build row by build row, so
-    // it keeps the order of neither input, while Spark reports the streamed side's order for an
-    // inner one. The cache it writes reports that order, and the outer join reading the cache
-    // must not declare it.
+  test("an outer hash join declares the streamed order over a semi join") {
+    // `k IN (SELECT ...)` runs as a left semi join, which emits its probe rows in ascending
+    // order whether or not the probe input declares an order. The outer join above it therefore
+    // declares the cache's order on the semi join's output, and keeps it.
     withSQLConf(
       SQLConf.ADAPTIVE_EXECUTION_ENABLED.key -> "false",
       SQLConf.SHUFFLE_PARTITIONS.key -> "2",
@@ -2663,7 +2724,7 @@ class CometJoinSuite extends CometTestBase {
       CometConf.COMET_BATCH_SIZE.key -> "8",
       CometConf.COMET_EXEC_IN_MEMORY_CACHE_ENABLED.key -> "true") {
       withParquetTable((0 until 2000).map(i => ((i % 40) * 1000, i)), "big") {
-        withParquetTable(Seq(0, 1).map(Tuple1(_)), "two") {
+        withParquetTable((0 until 40).filter(_ % 7 != 3).map(k => Tuple1(k * 1000)), "incl") {
           withParquetTable((0 until 40 by 2).map(k => (k * 1000, k)), "small") {
             try {
               spark
@@ -2674,26 +2735,120 @@ class CometJoinSuite extends CometTestBase {
                 .cache()
                 .createOrReplaceTempView("cached")
               spark.table("cached").count()
-              sql("""SELECT /*+ BROADCAST(t) */ a.k, a.v, t._1 AS x
-                    |FROM cached a JOIN two t ON a.v % 2 <= t._1""".stripMargin)
-                .cache()
-                .createOrReplaceTempView("nlj")
-              spark.table("nlj").count()
-              val cachedPlan = cachedPlanOf(spark.table("nlj"))
+              val df = sql("""SELECT /*+ BROADCAST(b) */ a.k, a.v, b._2 AS w
+                             |FROM (SELECT * FROM cached WHERE k IN (SELECT _1 FROM incl)) a
+                             |LEFT JOIN small b ON a.k = b._1""".stripMargin)
+                .sortWithinPartitions("k")
+              val plan = df.queryExecution.executedPlan
+              // Spark also pushes the IN to the other input of the outer join, so the outer join
+              // is found by its type and has to read the semi join over the cache.
+              val outer = collect(plan) {
+                case join: CometBroadcastHashJoinExec if join.joinType == LeftOuter => join
+              }
+              assert(outer.size == 1, plan)
               assert(
-                cachedPlan.exists(_.isInstanceOf[CometBroadcastNestedLoopJoinExec]),
-                s"the cache was not written by a native nested loop join:\n$cachedPlan")
+                outer.head.left match {
+                  case semi: CometBroadcastHashJoinExec => semi.joinType == LeftSemi
+                  case _ => false
+                },
+                plan)
+              assert(outer.head.nativeOp.getHashJoin.getStreamedSortOrdersCount > 0, plan)
               assert(
-                !partitionsInOrder(spark.table("nlj"), keyOrder(Ascending)),
-                "the cached nested loop join rows are in order, so nothing here can split a group")
-              checkEachKeyGroupedOnce(
-                """SELECT /*+ BROADCAST(c) */ n.k, count(*), sum(n.v), count(c._2)
-                  |FROM nlj n LEFT JOIN small c ON n.k = c._1
-                  |GROUP BY n.k""".stripMargin)
+                collect(plan) { case s @ (_: CometSortExec | _: SortExec) => s }.isEmpty,
+                plan)
+              val expected = (0 until 2000).filter(i => (i % 40) % 7 != 3).map { i =>
+                val m = i % 40
+                Row(m * 1000, i, if (m % 2 == 0) m else null)
+              }
+              QueryTest.sameRows(expected, df.collect().toSeq).foreach(fail(_))
+              assert(partitionsInOrder(df, keyOrder(Ascending)), plan)
             } finally {
               spark.catalog.clearCache()
-              spark.catalog.dropTempView("nlj")
               spark.catalog.dropTempView("cached")
+            }
+          }
+        }
+      }
+    }
+  }
+
+  test("a NOT IN below the build side of an inner hash join leaves the streamed order declared") {
+    // An inner join passes on only its streamed side's order, so a NOT IN below its build side
+    // cannot affect it, and the outer join above the inner join still declares it. A build side
+    // behind an exchange reports no order, so it needs a build side that is a cache already
+    // partitioned on the key, where the shuffled hash join gets no exchange, and that reports the
+    // order of the NOT IN that wrote it.
+    withSQLConf(
+      SQLConf.ADAPTIVE_EXECUTION_ENABLED.key -> "false",
+      SQLConf.SHUFFLE_PARTITIONS.key -> "2",
+      SQLConf.COLUMN_BATCH_SIZE.key -> "8",
+      CometConf.COMET_BATCH_SIZE.key -> "8",
+      CometConf.COMET_EXEC_IN_MEMORY_CACHE_ENABLED.key -> "true") {
+      withParquetTable((0 until 2000).map(i => ((i % 40) * 1000, i)), "big") {
+        withParquetTable((0 until 40).map(k => (k * 1000, k)), "dim") {
+          withParquetTable(Seq(1000, 10000, 20000, 100000).map(x => Tuple1(Option(x))), "excl") {
+            withParquetTable((0 until 40 by 2).map(k => (k * 1000, k)), "small") {
+              try {
+                Seq("big" -> "cached", "dim" -> "dim_cached").foreach { case (table, view) =>
+                  spark
+                    .table(table)
+                    .toDF("k", "v")
+                    .repartition(2, $"k")
+                    .sortWithinPartitions("k")
+                    .cache()
+                    .createOrReplaceTempView(view)
+                  spark.table(view).count()
+                }
+                sql("SELECT * FROM dim_cached WHERE k NOT IN (SELECT _1 FROM excl)")
+                  .cache()
+                  .createOrReplaceTempView("anti")
+                spark.table("anti").count()
+                val cachedPlan = cachedPlanOf(spark.table("anti"))
+                assert(
+                  find(cachedPlan) {
+                    case join: CometBroadcastHashJoinExec => join.isNullAwareAntiJoin
+                    case _ => false
+                  }.isDefined,
+                  s"the cache was not written by a native NOT IN:\n$cachedPlan")
+                val query =
+                  """SELECT /*+ SHUFFLE_HASH(b), BROADCAST(c) */ a.k, a.v, b.v AS x, c._2 AS w
+                    |FROM cached a
+                    |JOIN anti b ON a.k = b.k
+                    |LEFT JOIN small c ON a.k = c._1""".stripMargin
+                val df = sql(query).sortWithinPartitions("k")
+                val plan = df.queryExecution.executedPlan
+                val inner = collect(plan) { case join: CometHashJoinExec => join }
+                assert(inner.size == 1 && inner.head.joinType == Inner, plan)
+                assert(inner.head.buildSide == BuildRight, plan)
+                assert(
+                  find(inner.head.right) {
+                    case _: CometInMemoryTableScanExec | _: InMemoryTableScanExec => true
+                    case _ => false
+                  }.isDefined,
+                  plan)
+                assert(collect(plan) { case e: ShuffleExchangeLike => e }.isEmpty, plan)
+                val outer = collect(plan) {
+                  case join: CometBroadcastHashJoinExec if join.joinType == LeftOuter => join
+                }
+                assert(outer.size == 1, plan)
+                assert(outer.head.nativeOp.getHashJoin.getStreamedSortOrdersCount > 0, plan)
+                assert(
+                  collect(plan) { case s @ (_: CometSortExec | _: SortExec) => s }.isEmpty,
+                  plan)
+                val expected = (0 until 2000)
+                  .filter(i => !Set(1, 10, 20).contains(i % 40))
+                  .map { i =>
+                    val m = i % 40
+                    Row(m * 1000, i, m, if (m % 2 == 0) m else null)
+                  }
+                QueryTest.sameRows(expected, df.collect().toSeq).foreach(fail(_))
+                assert(partitionsInOrder(df, keyOrder(Ascending)), plan)
+              } finally {
+                spark.catalog.clearCache()
+                spark.catalog.dropTempView("anti")
+                spark.catalog.dropTempView("dim_cached")
+                spark.catalog.dropTempView("cached")
+              }
             }
           }
         }
@@ -2720,12 +2875,16 @@ class CometJoinSuite extends CometTestBase {
     assert(cometRows == sparkRows)
   }
 
-  // The physical plan that wrote the cache `df` reads.
-  private def cachedPlanOf(df: DataFrame): SparkPlan =
-    df.queryExecution.executedPlan
-      .collectFirst {
-        case scan: CometInMemoryTableScanExec => scan.originalPlan.relation.cachedPlan
-        case scan: InMemoryTableScanExec => scan.relation.cachedPlan
-      }
-      .getOrElse(fail(s"no cache scan in\n${df.queryExecution.executedPlan}"))
+  // The physical plan that wrote the cache `df` reads, as Spark's scan reports its order: for an
+  // adaptive cached plan that is the final plan behind it.
+  private def cachedPlanOf(df: DataFrame): SparkPlan = {
+    val cachedPlan = collectFirst(df.queryExecution.executedPlan) {
+      case scan: CometInMemoryTableScanExec => scan.originalPlan.relation.cachedPlan
+      case scan: InMemoryTableScanExec => scan.relation.cachedPlan
+    }.getOrElse(fail(s"no cache scan in\n${df.queryExecution.executedPlan}"))
+    cachedPlan match {
+      case adaptive: AdaptiveSparkPlanExec if adaptive.isFinalPlan => adaptive.executedPlan
+      case other => other
+    }
+  }
 }
