@@ -443,7 +443,7 @@ case class CometExecRule(session: SparkSession, queryStagePrep: Boolean = false)
         convertToComet(scan, CometIcebergNativeScan).getOrElse(scan)
 
       case scan: CometBatchScanExec if scan.wrapped.scan.isInstanceOf[CSVScan] =>
-        convertToComet(scan, CometCsvNativeScanExec).getOrElse(scan)
+        convertToComet(scan, CometCsvNativeScanExec).getOrElse(scan.wrapped)
 
       // Comet JVM + native scan for V1 and V2
       case op if isCometScan(op) =>
