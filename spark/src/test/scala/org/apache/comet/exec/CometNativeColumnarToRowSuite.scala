@@ -451,7 +451,7 @@ class CometNativeColumnarToRowSuite extends CometTestBase with AdaptiveSparkPlan
       DataGenOptions(generateNegativeZero = false, generateNaN = false, generateInfinity = false)
 
     // Test with multiple random deeply nested schemas
-    for (iteration <- 1 to 3) {
+    for (_ <- 1 to 3) {
       val schema = FuzzDataGenerator.generateNestedSchema(
         random,
         numCols = 5,
