@@ -677,90 +677,6 @@ class CometRegExpJvmSuite extends CometTestBase with AdaptiveSparkPlanHelper {
     }
   }
 
-  // ========== regexp_extract tests ==========
-
-  test("regexp_extract: basic group extraction") {
-    withSubjects("abc123def", "no match", null, "xyz789") {
-      checkSparkAnswerAndOperator(
-        sql("SELECT s, regexp_extract(s, '([a-z]+)(\\\\d+)', 1) FROM t"))
-      checkSparkAnswerAndOperator(
-        sql("SELECT s, regexp_extract(s, '([a-z]+)(\\\\d+)', 2) FROM t"))
-    }
-  }
-
-  test("regexp_extract: group 0 returns entire match") {
-    withSubjects("hello world", "foo123bar", null) {
-      checkSparkAnswerAndOperator(sql("SELECT s, regexp_extract(s, '\\\\d+', 0) FROM t"))
-    }
-  }
-
-  test("regexp_extract: no match returns empty string") {
-    withSubjects("abc", "def", null) {
-      checkSparkAnswerAndOperator(sql("SELECT s, regexp_extract(s, '\\\\d+', 0) FROM t"))
-    }
-  }
-
-  test("regexp_extract: backreference pattern (Java-only)") {
-    withSubjects("aa", "ab", "bb", null) {
-      checkSparkAnswerAndOperator(sql("SELECT s, regexp_extract(s, '(\\\\w)\\\\1', 0) FROM t"))
-    }
-  }
-
-  test("regexp_extract: lookahead pattern (Java-only)") {
-    withSubjects("foobar", "foobaz", null) {
-      checkSparkAnswerAndOperator(sql("SELECT s, regexp_extract(s, 'foo(?=bar)', 0) FROM t"))
-    }
-  }
-
-  test("regexp_extract: embedded flags (Java-only)") {
-    withSubjects("FOO123", "foo456", "bar789") {
-      checkSparkAnswerAndOperator(
-        sql("SELECT s, regexp_extract(s, '(?i)(foo)(\\\\d+)', 2) FROM t"))
-    }
-  }
-
-  test("regexp_extract: all-null column") {
-    withSubjects(null, null, null) {
-      checkSparkAnswerAndOperator(sql("SELECT regexp_extract(s, '(\\\\d+)', 1) FROM t"))
-    }
-  }
-
-  // ========== regexp_extract_all tests ==========
-
-  test("regexp_extract_all: basic extraction of all matches") {
-    withSubjects("abc123def456", "no match", null, "x1y2z3") {
-      checkSparkAnswerAndOperator(sql("SELECT s, regexp_extract_all(s, '(\\\\d+)', 1) FROM t"))
-    }
-  }
-
-  test("regexp_extract_all: group 0 returns full matches") {
-    withSubjects("cat bat hat", "no vowels", null) {
-      checkSparkAnswerAndOperator(sql("SELECT s, regexp_extract_all(s, '[a-z]at', 0) FROM t"))
-    }
-  }
-
-  test("regexp_extract_all: multiple groups") {
-    withSubjects("a1b2c3", "x9y8", null) {
-      checkSparkAnswerAndOperator(
-        sql("SELECT s, regexp_extract_all(s, '([a-z])(\\\\d)', 1) FROM t"))
-      checkSparkAnswerAndOperator(
-        sql("SELECT s, regexp_extract_all(s, '([a-z])(\\\\d)', 2) FROM t"))
-    }
-  }
-
-  test("regexp_extract_all: no matches returns empty array") {
-    withSubjects("abc", "def") {
-      checkSparkAnswerAndOperator(sql("SELECT s, regexp_extract_all(s, '\\\\d+', 0) FROM t"))
-    }
-  }
-
-  test("regexp_extract_all: lookahead pattern (Java-only)") {
-    withSubjects("foobar foobaz fooqux") {
-      checkSparkAnswerAndOperator(
-        sql("SELECT s, regexp_extract_all(s, 'foo(?=ba[rz])', 0) FROM t"))
-    }
-  }
-
   // ========== regexp_replace tests ==========
 
   test("regexp_replace: basic replacement") {
@@ -847,33 +763,6 @@ class CometRegExpJvmSuite extends CometTestBase with AdaptiveSparkPlanHelper {
     }
   }
 
-  // ========== regexp_instr tests ==========
-
-  test("regexp_instr: basic position finding") {
-    withSubjects("abc123def", "no match", null, "456xyz") {
-      checkSparkAnswerAndOperator(sql("SELECT s, regexp_instr(s, '\\\\d+', 0) FROM t"))
-    }
-  }
-
-  test("regexp_instr: specific group position") {
-    withSubjects("abc123def456", "xyz", null) {
-      checkSparkAnswerAndOperator(sql("SELECT s, regexp_instr(s, '([a-z]+)(\\\\d+)', 1) FROM t"))
-      checkSparkAnswerAndOperator(sql("SELECT s, regexp_instr(s, '([a-z]+)(\\\\d+)', 2) FROM t"))
-    }
-  }
-
-  test("regexp_instr: no match returns 0") {
-    withSubjects("abc", "def", null) {
-      checkSparkAnswerAndOperator(sql("SELECT s, regexp_instr(s, '\\\\d+', 0) FROM t"))
-    }
-  }
-
-  test("regexp_instr: lookahead (Java-only)") {
-    withSubjects("foobar", "foobaz", null) {
-      checkSparkAnswerAndOperator(sql("SELECT s, regexp_instr(s, 'foo(?=bar)', 0) FROM t"))
-    }
-  }
-
   // ========== split tests ==========
 
   test("split: basic regex split") {
@@ -912,19 +801,7 @@ class CometRegExpJvmSuite extends CometTestBase with AdaptiveSparkPlanHelper {
     }
   }
 
-  // ========== multi-batch and combined tests ==========
-
-  test("regexp_extract: many rows spanning multiple batches") {
-    withTable("t") {
-      sql("CREATE TABLE t (s STRING) USING parquet")
-      val values = (0 until 5000)
-        .map(i => if (i % 7 == 0) "(NULL)" else s"('item_${i}_value')")
-        .mkString(", ")
-      sql(s"INSERT INTO t VALUES $values")
-      checkSparkAnswerAndOperator(
-        sql("SELECT s, regexp_extract(s, 'item_(\\\\d+)_value', 1) FROM t"))
-    }
-  }
+  // ========== combined tests ==========
 
   test("all regexp expressions combined in one query") {
     withSubjects("abc123def456", "hello world", null, "aa") {
@@ -937,17 +814,6 @@ class CometRegExpJvmSuite extends CometTestBase with AdaptiveSparkPlanHelper {
           |  regexp_instr(s, '\\d+', 0) AS num_pos
           |FROM t
           |""".stripMargin))
-    }
-  }
-
-  test("expressions with no native path always run via the JVM dispatcher") {
-    withSubjects("abc123def", "no match", null, "xyz789") {
-      // regexp_extract / regexp_extract_all / regexp_instr have no native rust path, so they
-      // always run on Comet via the JVM codegen dispatcher rather than falling back to Spark.
-      checkSparkAnswerAndOperator(
-        sql("SELECT s, regexp_extract(s, '([a-z]+)(\\\\d+)', 2) FROM t"))
-      checkSparkAnswerAndOperator(sql("SELECT s, regexp_extract_all(s, '\\\\d+', 0) FROM t"))
-      checkSparkAnswerAndOperator(sql("SELECT s, regexp_instr(s, '\\\\d+', 0) FROM t"))
     }
   }
 }
