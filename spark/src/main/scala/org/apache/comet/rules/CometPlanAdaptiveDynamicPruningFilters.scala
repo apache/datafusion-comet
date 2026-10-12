@@ -364,7 +364,8 @@ case object CometPlanAdaptiveDynamicPruningFilters
    * True when `plan` (a DPP subquery's build, taken from an AdaptiveSparkPlanExec.executedPlan)
    * produces native Comet columnar output, so it is safe as a CometBroadcastExchangeExec child.
    * Unwraps AQE stage wrappers and any columnar->row transition (mirrors the stripping in
-   * CometExecRule.rewriteInSubqueryPlan), then checks for a CometNativeExec. See issue #6008.
+   * CometExecRule.rewriteInSubqueryPlan), then checks for a columnar CometPlan (not only a
+   * CometNativeExec - see the comment on the final check). See issue #6008.
    */
   private def isNativeBuildSide(plan: SparkPlan): Boolean = {
     val stripped = stripAQEPlan(plan) match {

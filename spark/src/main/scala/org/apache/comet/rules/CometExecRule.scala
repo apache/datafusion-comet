@@ -623,13 +623,13 @@ case class CometExecRule(session: SparkSession, queryStagePrep: Boolean = false)
             newPlan
               .getTagValue(CometExplainInfo.FALLBACK_REASONS)
               .foreach(reasons => withFallbackReasons(plan, reasons))
-            // The join stays on Spark, so undo any #6008 build-side bridge we inserted - otherwise
-            // a Spark broadcast is left wrapping Comet nodes, which wastes a row<->Arrow round trip
-            // and breaks DPP broadcast reuse against the subquery's unbridged copy.
-            revertBridgedBroadcasts(plan)
+            // The join stays on Spark. Any #6008 build-side bridge we inserted is left under a
+            // plain Spark BroadcastExchangeExec here; clearWastedBuildSideBridges undoes it after
+            // the transform. See issue #6008.
+            plan
           }
         } else {
-          revertBridgedBroadcasts(plan)
+          plan
         }
 
       // For AQE shuffle stage on a Comet shuffle exchange
@@ -991,7 +991,15 @@ case class CometExecRule(session: SparkSession, queryStagePrep: Boolean = false)
       // unsupported build-side scan (e.g. Text) to Arrow and let the join run natively (#6008).
       tagBroadcastBuildSideLeaves(planWithJoinRewritten)
 
-      var newPlan = revertUnsafePartialAggregates(transform(planWithJoinRewritten))
+      var transformed = transform(planWithJoinRewritten)
+      // A build-side bridge is only worth keeping when its broadcast join went native. Where the
+      // join stayed on Spark, clearWastedBuildSideBridges clears the tag from those scans and we
+      // transform once more so the build side rebuilds exactly as it would without the feature.
+      // See issue #6008.
+      if (clearWastedBuildSideBridges(transformed)) {
+        transformed = transform(planWithJoinRewritten)
+      }
+      var newPlan = revertUnsafePartialAggregates(transformed)
 
       // if the plan cannot be run fully natively then explain why (when appropriate
       // config is enabled)
@@ -1515,9 +1523,9 @@ case class CometExecRule(session: SparkSession, queryStagePrep: Boolean = false)
    * a `CometBroadcastExchangeExec`, so bridging the build side would only add a row to Arrow copy
    * for no native join. This does not also check the join serdes
    * (COMET_EXEC_BROADCAST_HASH_JOIN_ENABLED / COMET_EXEC_BROADCAST_NESTED_LOOP_JOIN_ENABLED): if
-   * the exchange converts but the join does not, the broadcast arm returns the original plan and
-   * EliminateRedundantTransitions removes the now-unused bridge, so a leftover copy never reaches
-   * runtime. See issue #6008.
+   * the exchange converts but the join does not, `clearWastedBuildSideBridges` clears the tag
+   * after the transform and a second transform rebuilds the Spark build side, so a leftover copy
+   * never reaches runtime. See issue #6008.
    */
   private def broadcastBuildSideBridgeEnabled: Boolean =
     CometConf.COMET_CONVERT_BROADCAST_BUILD_SIDE_ENABLED.get(conf) &&
@@ -1582,11 +1590,15 @@ case class CometExecRule(session: SparkSession, queryStagePrep: Boolean = false)
   }
 
   /**
-   * Tag the build side's file-source scans, but only if the join can actually become a native
-   * Comet broadcast join and the probe side is natively scannable. If the join cannot convert,
-   * the bridged (Comet) build subtree would be left under a Spark `BroadcastExchangeExec`, which
-   * both wastes a row to Arrow copy and breaks Spark's DPP broadcast reuse (the DPP subquery
-   * keeps an unbridged copy). We skip when:
+   * Tag the build side's file-source scans, but only when the join looks like it can become a
+   * native Comet broadcast join: the probe side is natively scannable and the join's own serde is
+   * enabled. This is a best-effort gate that avoids inserting a bridge we would only tear down
+   * again - it cannot see every reason a join stays on Spark (an unsupported operator above a
+   * native probe scan, or a join type the serde declines), so `clearWastedBuildSideBridges` is
+   * the backstop that undoes any bridge left under a Spark `BroadcastExchangeExec` after the
+   * transform. Skipping here still matters because a bridge under a Spark broadcast breaks
+   * Spark's DPP broadcast reuse until it is torn down (the DPP subquery keeps an unbridged copy).
+   * We skip when:
    *   - the join's own serde is disabled (`joinEnabled`), so it will stay on Spark; or
    *   - the build-side `BroadcastExchangeExec` carries `SKIP_COMET_BROADCAST_TAG`, which
    *     `CometSpark34AqeDppFallbackRule` sets on Spark 3.4 to keep the broadcast Spark-native so
@@ -1651,29 +1663,37 @@ case class CometExecRule(session: SparkSession, queryStagePrep: Boolean = false)
   }
 
   /**
-   * Undo a #6008 build-side bridge in `plan`'s broadcast children when the broadcast join is left
-   * on Spark. Only a `BroadcastExchangeExec` whose subtree actually contains a
-   * `CometSparkToColumnarExec` is reverted; a legitimately native build (e.g. a Parquet
-   * `CometScanExec`) has no bridge and is left untouched, so this never disturbs a broadcast that
-   * is not part of this feature. See issue #6008.
+   * After the main transform, a #6008 build-side bridge is left under a plain Spark
+   * `BroadcastExchangeExec` only when its broadcast join did not go native - an unsupported join
+   * type (e.g. a full outer `BroadcastNestedLoopJoinExec`), a build side the serde declined, or a
+   * probe that is not fully native (e.g. an unsupported operator above a native scan). Clear
+   * `BROADCAST_BUILD_SIDE_TAG` from every scan under such a broadcast so a second transform
+   * rebuilds that build side exactly as it would without the feature, and so a later AQE stage
+   * pass - which prepares the build stage on its own, without the join above it - does not bridge
+   * the scan again. Returns true if any tag was cleared.
+   *
+   * Scans under a `CometBroadcastExchangeExec` keep their tag: that join went native and wants
+   * the bridged build. The descent enters `CometScanWrapper`'s wrapped `originalPlan` by hand
+   * because it is a leaf, so a plain `foreach` would never reach the bridged scan inside it. See
+   * issue #6008.
    */
-  private def revertBridgedBroadcasts(plan: SparkPlan): SparkPlan =
-    plan.withNewChildren(plan.children.map {
-      case b: BroadcastExchangeExec if b.exists(_.isInstanceOf[CometSparkToColumnarExec]) =>
-        b.withNewChildren(Seq(revertCometToSpark(b.child)))
-      case other => other
-    })
-
-  /**
-   * Rebuild a converted build-side subtree as its original Spark plan. The bridge
-   * (`CometScanWrapper(CometSparkToColumnarExec(sparkScan))`) collapses back to the Spark scan,
-   * and each Comet operator above it is replaced by its `originalPlan` with reverted children.
-   */
-  private def revertCometToSpark(plan: SparkPlan): SparkPlan = plan match {
-    case w: CometScanWrapper => revertCometToSpark(w.originalPlan)
-    case bridge: CometSparkToColumnarExec => revertCometToSpark(bridge.child)
-    case c: CometExec => c.originalPlan.withNewChildren(c.children.map(revertCometToSpark))
-    case other => other.withNewChildren(other.children.map(revertCometToSpark))
+  private def clearWastedBuildSideBridges(plan: SparkPlan): Boolean = {
+    var cleared = false
+    def clearScanTags(node: SparkPlan): Unit = {
+      if (node.getTagValue(CometExecRule.BROADCAST_BUILD_SIDE_TAG).isDefined) {
+        node.unsetTagValue(CometExecRule.BROADCAST_BUILD_SIDE_TAG)
+        cleared = true
+      }
+      node match {
+        case w: CometScanWrapper => clearScanTags(w.originalPlan)
+        case other => other.children.foreach(clearScanTags)
+      }
+    }
+    plan.foreach {
+      case b: BroadcastExchangeExec => clearScanTags(b)
+      case _ =>
+    }
+    cleared
   }
 
   private def isSparkToArrowEnabled(conf: SQLConf, op: SparkPlan) = {

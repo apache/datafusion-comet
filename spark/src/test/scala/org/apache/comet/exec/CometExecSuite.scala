@@ -676,6 +676,223 @@ class CometExecSuite extends CometTestBase {
     }
   }
 
+  test("broadcast join that stays on Spark leaves no build-side bridge (#6008)") {
+    // A non-equi FULL OUTER broadcast join is a BroadcastNestedLoopJoinExec whose join type Comet
+    // declines (getSupportLevel is Unsupported for FullOuter). The probe is native Parquet, so the
+    // build-side gate still tags and bridges the text build - but because the join cannot go
+    // native, clearWastedBuildSideBridges must undo that bridge after the transform, leaving the
+    // plan exactly as it would be without the feature: a Spark BNLJ over a Spark broadcast with no
+    // CometSparkToColumnarExec. Regression test for the first-round revert that never fired. #6008.
+    withTempDir { dir =>
+      val probePath = s"${dir.getAbsolutePath}/probe.parquet"
+      val buildPath = s"${dir.getAbsolutePath}/build.txt"
+      withSQLConf(CometConf.COMET_ENABLED.key -> "false") {
+        spark.range(0, 100).selectExpr("CAST(id AS INT) AS k", "id AS v").write.parquet(probePath)
+        spark.range(0, 5).selectExpr("CAST(id AS STRING) AS value").write.text(buildPath)
+      }
+      for (aqe <- Seq(false, true)) {
+        withSQLConf(SQLConf.ADAPTIVE_EXECUTION_ENABLED.key -> aqe.toString) {
+          spark.read.parquet(probePath).createOrReplaceTempView("probe_fo_6008")
+          spark.read.text(buildPath).createOrReplaceTempView("build_fo_6008")
+          val (_, cometPlan) = checkSparkAnswer(sql("""
+              |SELECT /*+ BROADCAST(a) */ p.v, a.value
+              |FROM probe_fo_6008 p
+              |FULL OUTER JOIN (SELECT value FROM build_fo_6008 WHERE LENGTH(value) > 0) a
+              |ON p.k > CAST(a.value AS INT)
+              |""".stripMargin))
+          assert(
+            collect(cometPlan) { case s: CometSparkToColumnarExec => s }.isEmpty,
+            s"aqe=$aqe: a Spark-staying join must leave no build-side bridge:\n" +
+              cometPlan.treeString)
+          assert(
+            collect(cometPlan) { case b: CometBroadcastExchangeExec => b }.isEmpty,
+            s"aqe=$aqe: the broadcast must stay on Spark:\n${cometPlan.treeString}")
+          assert(
+            collect(cometPlan) { case j: BroadcastNestedLoopJoinExec => j }.nonEmpty,
+            s"aqe=$aqe: full outer join must stay a Spark BNLJ:\n${cometPlan.treeString}")
+        }
+      }
+    }
+  }
+
+  test("Spark-staying broadcast join with an aggregate build side leaves no bridge (#6008)") {
+    // Same declined FULL OUTER BNLJ, but the text build side is aggregated. The bridge is inserted
+    // under the aggregate (and its CometSinkPlaceHolder) and then cleared. The first-round revert
+    // rebuilt the Spark nodes from originalPlan and crashed here with a ClassCastException; the
+    // tag-clear-and-retransform approach must give a clean Spark plan and the right answer. #6008.
+    withTempDir { dir =>
+      val probePath = s"${dir.getAbsolutePath}/probe.parquet"
+      val buildPath = s"${dir.getAbsolutePath}/build.txt"
+      withSQLConf(CometConf.COMET_ENABLED.key -> "false") {
+        spark.range(0, 100).selectExpr("CAST(id AS INT) AS k", "id AS v").write.parquet(probePath)
+        spark.range(0, 20).selectExpr("CAST(id % 5 AS STRING) AS value").write.text(buildPath)
+      }
+      for (aqe <- Seq(false, true)) {
+        withSQLConf(SQLConf.ADAPTIVE_EXECUTION_ENABLED.key -> aqe.toString) {
+          spark.read.parquet(probePath).createOrReplaceTempView("probe_foa_6008")
+          spark.read.text(buildPath).createOrReplaceTempView("build_foa_6008")
+          val (_, cometPlan) = checkSparkAnswer(sql("""
+              |SELECT /*+ BROADCAST(a) */ p.v, a.n
+              |FROM probe_foa_6008 p
+              |FULL OUTER JOIN
+              |  (SELECT CAST(value AS INT) AS gk, COUNT(*) AS n
+              |   FROM build_foa_6008 GROUP BY value) a
+              |ON p.k > a.gk
+              |""".stripMargin))
+          assert(
+            collect(cometPlan) { case s: CometSparkToColumnarExec => s }.isEmpty,
+            s"aqe=$aqe: aggregate build side must leave no bridge:\n${cometPlan.treeString}")
+          assert(
+            collect(cometPlan) { case b: CometBroadcastExchangeExec => b }.isEmpty,
+            s"aqe=$aqe: the broadcast must stay on Spark:\n${cometPlan.treeString}")
+        }
+      }
+    }
+  }
+
+  test("Spark-staying broadcast join with a union build side leaves no bridge (#6008)") {
+    // Same declined FULL OUTER BNLJ, but the build side is a UNION ALL of two text scans. The
+    // first-round revert rebuilt each Comet node from originalPlan and failed here with "Incorrect
+    // number of children"; tag-clear-and-retransform must produce a clean Spark plan. See #6008.
+    withTempDir { dir =>
+      val probePath = s"${dir.getAbsolutePath}/probe.parquet"
+      val buildPath1 = s"${dir.getAbsolutePath}/build1.txt"
+      val buildPath2 = s"${dir.getAbsolutePath}/build2.txt"
+      withSQLConf(CometConf.COMET_ENABLED.key -> "false") {
+        spark.range(0, 100).selectExpr("CAST(id AS INT) AS k", "id AS v").write.parquet(probePath)
+        spark.range(0, 5).selectExpr("CAST(id AS STRING) AS value").write.text(buildPath1)
+        spark.range(5, 10).selectExpr("CAST(id AS STRING) AS value").write.text(buildPath2)
+      }
+      for (aqe <- Seq(false, true)) {
+        withSQLConf(SQLConf.ADAPTIVE_EXECUTION_ENABLED.key -> aqe.toString) {
+          spark.read.parquet(probePath).createOrReplaceTempView("probe_fou_6008")
+          spark.read.text(buildPath1).createOrReplaceTempView("build_fou1_6008")
+          spark.read.text(buildPath2).createOrReplaceTempView("build_fou2_6008")
+          val (_, cometPlan) = checkSparkAnswer(sql("""
+              |SELECT /*+ BROADCAST(a) */ p.v, a.value
+              |FROM probe_fou_6008 p
+              |FULL OUTER JOIN
+              |  (SELECT value FROM build_fou1_6008 UNION ALL SELECT value FROM build_fou2_6008) a
+              |ON p.k > CAST(a.value AS INT)
+              |""".stripMargin))
+          assert(
+            collect(cometPlan) { case s: CometSparkToColumnarExec => s }.isEmpty,
+            s"aqe=$aqe: union build side must leave no bridge:\n${cometPlan.treeString}")
+          assert(
+            collect(cometPlan) { case b: CometBroadcastExchangeExec => b }.isEmpty,
+            s"aqe=$aqe: the broadcast must stay on Spark:\n${cometPlan.treeString}")
+        }
+      }
+    }
+  }
+
+  test("Spark 3.4 AQE DPP with a text dimension on the broadcast build side (#6008)") {
+    // The 3.5+ version of this is tested above. On Spark 3.4, CometSpark34AqeDppFallbackRule tags
+    // the DPP build broadcast with SKIP_COMET_BROADCAST_TAG so Spark's PlanAdaptiveDynamicPruning
+    // Filters can match it; the build-side gate must honor that tag and NOT bridge the text
+    // dimension, so DPP stays live and the fact is pruned by a real subquery rather than a static
+    // true. Covers the 3.4-only path that the isSpark35Plus test cannot reach. See issue #6008.
+    assume(!isSpark35Plus, "This test covers the Spark 3.4 DPP fallback path")
+    withSQLConf(
+      SQLConf.USE_V1_SOURCE_LIST.key -> "parquet",
+      SQLConf.ADAPTIVE_EXECUTION_ENABLED.key -> "true",
+      SQLConf.DYNAMIC_PARTITION_PRUNING_ENABLED.key -> "true",
+      SQLConf.DYNAMIC_PARTITION_PRUNING_REUSE_BROADCAST_ONLY.key -> "true") {
+      withTempDir { dir =>
+        val factPath = s"${dir.getAbsolutePath}/fact.parquet"
+        val dimPath = s"${dir.getAbsolutePath}/dim.txt"
+        withSQLConf(CometConf.COMET_ENABLED.key -> "false") {
+          spark
+            .range(0, 100)
+            .selectExpr("CAST(id % 10 AS STRING) AS fk", "id AS v")
+            .write
+            .partitionBy("fk")
+            .parquet(factPath)
+          spark.range(0, 10).selectExpr("CAST(id AS STRING) AS value").write.text(dimPath)
+        }
+        spark.read.parquet(factPath).createOrReplaceTempView("dpp34_fact_txt")
+        spark.read.text(dimPath).createOrReplaceTempView("dpp34_dim_txt")
+        // CAST(d.value AS INT) % 2 = 0 is a filter Spark cannot infer onto f.fk, so the fact is
+        // pruned only via a live DPP subquery.
+        val df = sql("""
+            |SELECT /*+ BROADCAST(d) */ f.v
+            |FROM dpp34_fact_txt f JOIN dpp34_dim_txt d ON f.fk = d.value
+            |WHERE CAST(d.value AS INT) % 2 = 0
+            |""".stripMargin)
+        val (_, cometPlan) = checkSparkAnswer(df)
+        // The SKIP tag keeps the text dimension un-bridged on 3.4.
+        assert(
+          collect(cometPlan) { case s: CometSparkToColumnarExec => s }.isEmpty,
+          s"3.4: the SKIP-tagged DPP build must not be bridged:\n${cometPlan.treeString}")
+        // DPP is still live - the fact scan keeps a broadcast pruning subquery.
+        val dppSubqueries = collectWithSubqueries(cometPlan) {
+          case s: SubqueryBroadcastExec => s
+          case s: CometSubqueryBroadcastExec => s
+        }
+        assert(
+          dppSubqueries.nonEmpty,
+          s"3.4: expected a live DPP broadcast subquery on the fact scan:\n${cometPlan.treeString}")
+      }
+    }
+  }
+
+  test("AQE DPP reuses the broadcast for a UNION ALL dimension (#6008)") {
+    // The DPP subquery's build is a CometUnionExec - a columnar CometPlan, not a CometNativeExec.
+    // isNativeBuildSide must accept it so CometPlanAdaptiveDynamicPruningFilters converts the
+    // subquery's SubqueryBroadcastExec and Spark reuses the join's CometBroadcastExchangeExec as a
+    // ReusedExchangeExec. The earlier CometNativeExec-only check dropped the reuse. See #6008.
+    assume(isSpark35Plus, "Native AQE DPP requires Spark 3.5+")
+    withSQLConf(
+      SQLConf.USE_V1_SOURCE_LIST.key -> "parquet",
+      SQLConf.ADAPTIVE_EXECUTION_ENABLED.key -> "true",
+      SQLConf.DYNAMIC_PARTITION_PRUNING_ENABLED.key -> "true",
+      SQLConf.DYNAMIC_PARTITION_PRUNING_REUSE_BROADCAST_ONLY.key -> "true") {
+      withTempDir { dir =>
+        val factPath = s"${dir.getAbsolutePath}/fact.parquet"
+        val dim1Path = s"${dir.getAbsolutePath}/dim1.parquet"
+        val dim2Path = s"${dir.getAbsolutePath}/dim2.parquet"
+        withSQLConf(CometConf.COMET_ENABLED.key -> "false") {
+          spark
+            .range(0, 100)
+            .selectExpr("CAST(id % 10 AS STRING) AS fk", "id AS v")
+            .write
+            .partitionBy("fk")
+            .parquet(factPath)
+          spark
+            .range(0, 10)
+            .selectExpr("CAST(id AS STRING) AS value", "id AS n")
+            .write
+            .parquet(dim1Path)
+          spark
+            .range(10, 20)
+            .selectExpr("CAST(id AS STRING) AS value", "id AS n")
+            .write
+            .parquet(dim2Path)
+        }
+        spark.read.parquet(factPath).createOrReplaceTempView("dpp_fact_u")
+        spark.read.parquet(dim1Path).createOrReplaceTempView("dpp_dim1_u")
+        spark.read.parquet(dim2Path).createOrReplaceTempView("dpp_dim2_u")
+        val df = sql("""
+            |SELECT /*+ BROADCAST(d) */ f.v
+            |FROM dpp_fact_u f JOIN
+            |  (SELECT value FROM dpp_dim1_u WHERE n % 2 = 0
+            |   UNION ALL SELECT value FROM dpp_dim2_u WHERE n % 2 = 0) d
+            |ON f.fk = d.value
+            |""".stripMargin)
+        val (_, cometPlan) = checkSparkAnswer(df)
+        // The union dimension broadcast goes native.
+        assert(
+          collectWithSubqueries(cometPlan) { case b: CometBroadcastExchangeExec => b }.nonEmpty,
+          "expected a native CometBroadcastExchangeExec for the union dimension:\n" +
+            cometPlan.treeString)
+        // DPP reuses that broadcast rather than building a second one.
+        assert(
+          collectWithSubqueries(cometPlan) { case r: ReusedExchangeExec => r }.nonEmpty,
+          s"expected a ReusedExchangeExec under the DPP subquery:\n${cometPlan.treeString}")
+      }
+    }
+  }
+
   test("non-AQE DPP: BHJ works with CometNativeScanExec") {
     withTempDir { path =>
       val factPath = s"${path.getAbsolutePath}/fact.parquet"
