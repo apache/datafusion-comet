@@ -386,10 +386,11 @@ impl IcebergScanExec {
             needed
                 .iter()
                 .map(|path| {
-                    let cell = cache
-                        .entry(path.clone())
-                        .or_insert_with(|| Arc::new(tokio::sync::OnceCell::new()))
-                        .clone();
+                    let cell = Arc::clone(
+                        cache
+                            .entry(path.clone())
+                            .or_insert_with(|| Arc::new(tokio::sync::OnceCell::new())),
+                    );
                     (path.clone(), cell)
                 })
                 .collect()
