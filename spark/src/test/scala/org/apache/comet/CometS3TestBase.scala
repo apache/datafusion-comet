@@ -46,8 +46,14 @@ trait CometS3TestBase extends CometTestBase {
 
   protected def testBucketName: String
 
+  // Docker Hub no longer serves minio/minio. This is Chainguard's build of MinIO
+  // RELEASE.2026-09-22T19-25-18Z, pinned by its multi-arch index digest.
+  private val minioImage = "cgr.dev/chainguard/minio@sha256:" +
+    "dc455cdd4db6e390b1b26514f15ff37681a777bf8dab41aac445a0259f751e56"
+
   override def beforeAll(): Unit = {
-    minioContainer = new MinIOContainer(DockerImageName.parse("minio/minio:latest"))
+    minioContainer = new MinIOContainer(
+      DockerImageName.parse(minioImage).asCompatibleSubstituteFor("minio/minio"))
       .withUserName(userName)
       .withPassword(password)
     minioContainer.start()
@@ -124,8 +130,8 @@ trait CometS3TestBase extends CometTestBase {
     val s3Client = S3Client
       .builder()
       .endpointOverride(URI.create(minioContainer.getS3URL))
-      .credentialsProvider(StaticCredentialsProvider.create(credentials))
       .region(Region.US_EAST_1)
+      .credentialsProvider(StaticCredentialsProvider.create(credentials))
       .forcePathStyle(true)
       .build()
     try {

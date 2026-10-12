@@ -17,7 +17,8 @@
 
 use crate::{Cast, EvalMode, IfExpr, NormalizeNaNAndZero, SparkCastOptions, SparkComparison};
 use arrow::array::{
-    downcast_primitive, Array, ArrayRef, AsArray, BooleanArray, GenericByteArray, PrimitiveArray,
+    downcast_primitive, new_empty_array, Array, ArrayRef, AsArray, BooleanArray, GenericByteArray,
+    PrimitiveArray,
 };
 use arrow::buffer::{BooleanBuffer, NullBuffer, OffsetBuffer, ScalarBuffer};
 use arrow::compute::nullif;
@@ -353,6 +354,13 @@ impl PhysicalExpr for CaseWhenExpr {
     }
 
     fn evaluate(&self, batch: &RecordBatch) -> Result<ColumnarValue> {
+        // No row chooses a branch, which both the eager and the lazy evaluation answer with a
+        // scalar NULL. A scalar from an empty batch is taken to mean the expression is constant,
+        // as IN does to build its list once, so return an empty array instead.
+        if batch.num_rows() == 0 {
+            let data_type = self.data_type(&batch.schema())?;
+            return Ok(ColumnarValue::Array(new_empty_array(&data_type)));
+        }
         match self
             .eager
             .get_or_init(|| self.eager_result_type(&batch.schema()))
@@ -389,12 +397,27 @@ impl PhysicalExpr for CaseWhenExpr {
     }
 }
 
-/// Whether `expr` can be evaluated for rows that Spark would not evaluate it for.
+/// Whether `expr` can be evaluated for rows that Spark would not evaluate it for, at little cost.
 ///
-/// That holds when it can neither fail nor return something different for seeing more rows: a
-/// column, a literal, and comparisons, boolean logic, null checks, widening casts and wrapping
-/// arithmetic over them. Anything else, including every function, is assumed to be able to fail.
-fn is_infallible(expr: &Arc<dyn PhysicalExpr>, input_schema: &Schema) -> bool {
+/// That holds when it can neither fail nor return something different for seeing more rows, and is
+/// cheap: a column, a literal, and comparisons, boolean logic, null checks, widening casts and
+/// wrapping arithmetic over them. Anything else, including every function and a cast that parses a
+/// string, is treated as able to fail. `CASE` uses this to decide whether to evaluate every branch
+/// over the whole batch, which pays off only when that costs little more than selecting rows.
+pub(super) fn is_infallible(expr: &Arc<dyn PhysicalExpr>, input_schema: &Schema) -> bool {
+    infallible(expr, input_schema, false)
+}
+
+/// Whether `expr` can be evaluated for rows that Spark would not evaluate it for, at any cost: what
+/// [`is_infallible`] accepts, and casts that [`Cast::cannot_fail`] accepts beyond it, such as a
+/// LEGACY or TRY cast from a string to an integer, which returns NULL for a string it cannot parse.
+/// `NullShortCircuit` uses this, since it masks an argument only to keep it from failing on rows
+/// that Spark skips.
+pub(super) fn cannot_fail(expr: &Arc<dyn PhysicalExpr>, input_schema: &Schema) -> bool {
+    infallible(expr, input_schema, true)
+}
+
+fn infallible(expr: &Arc<dyn PhysicalExpr>, input_schema: &Schema, parsing: bool) -> bool {
     if expr.is::<Column>() || expr.is::<Literal>() {
         return true;
     }
@@ -403,7 +426,11 @@ fn is_infallible(expr: &Arc<dyn PhysicalExpr>, input_schema: &Schema) -> bool {
     } else if let Some(comparison) = expr.downcast_ref::<SparkComparison>() {
         comparison.is_infallible(input_schema)
     } else if let Some(cast) = expr.downcast_ref::<Cast>() {
-        cast.is_infallible(input_schema)
+        if parsing {
+            cast.cannot_fail(input_schema)
+        } else {
+            cast.is_infallible(input_schema)
+        }
     } else if let Some(normalize) = expr.downcast_ref::<NormalizeNaNAndZero>() {
         normalize.is_infallible()
     } else if let Some(not) = expr.downcast_ref::<NotExpr>() {
@@ -421,7 +448,7 @@ fn is_infallible(expr: &Arc<dyn PhysicalExpr>, input_schema: &Schema) -> bool {
         && expr
             .children()
             .into_iter()
-            .all(|child| is_infallible(child, input_schema))
+            .all(|child| infallible(child, input_schema, parsing))
 }
 
 fn binary_is_infallible(binary: &BinaryExpr, input_schema: &Schema) -> bool {
@@ -1151,6 +1178,7 @@ mod tests {
             Field::new("d", DataType::Float64, true),
             Field::new("e", DataType::Float64, true),
             Field::new("s", DataType::Utf8, true),
+            Field::new("ls", DataType::LargeUtf8, true),
             Field::new("dec", DataType::Decimal128(10, 2), true),
             Field::new("l", list_of(DataType::Float64), true),
             Field::new("m", list_of(DataType::Float64), true),
@@ -1164,15 +1192,17 @@ mod tests {
             ),
         ]);
         let c = |name: &str| col(name, &schema).unwrap();
-        let cast = |e: Arc<dyn PhysicalExpr>, to: DataType| -> Arc<dyn PhysicalExpr> {
-            Arc::new(Cast::new(
+        let cast_in = |mode: EvalMode, e: Arc<dyn PhysicalExpr>, to: DataType| {
+            let cast: Arc<dyn PhysicalExpr> = Arc::new(Cast::new(
                 e,
                 to,
-                SparkCastOptions::new_without_timezone(EvalMode::Ansi),
+                SparkCastOptions::new_without_timezone(mode),
                 None,
                 None,
-            ))
+            ));
+            cast
         };
+        let cast = |e: Arc<dyn PhysicalExpr>, to: DataType| cast_in(EvalMode::Ansi, e, to);
         let infallible = |e: Arc<dyn PhysicalExpr>| is_infallible(&e, &schema);
         // A comparison as the planner builds it, which follows Spark's ordering for floats
         let compare = |left: &str, op: Operator, right: Arc<dyn PhysicalExpr>| {
@@ -1229,9 +1259,31 @@ mod tests {
         assert!(!infallible(checked));
         // Decimal arithmetic can overflow
         assert!(!infallible(binary(c("dec"), Operator::Plus, c("dec"))));
-        // Narrowing and parsing casts can fail
+        // Narrowing and parsing casts can fail under ANSI
         assert!(!infallible(cast(c("i"), DataType::Int32)));
         assert!(!infallible(cast(c("s"), DataType::Int32)));
+        // A string that LEGACY or TRY mode cannot parse as an integer becomes NULL, so the cast
+        // cannot fail. Parsing costs too much for CASE to do it for rows it would skip, though.
+        for mode in [EvalMode::Legacy, EvalMode::Try] {
+            for to in [
+                DataType::Int8,
+                DataType::Int16,
+                DataType::Int32,
+                DataType::Int64,
+            ] {
+                for column in ["s", "ls"] {
+                    let parse = cast_in(mode, c(column), to.clone());
+                    assert!(!infallible(Arc::clone(&parse)), "{mode:?} {column} {to}");
+                    assert!(cannot_fail(&parse, &schema), "{mode:?} {column} {to}");
+                }
+            }
+            // Other string casts are not claimed
+            assert!(
+                !cannot_fail(&cast_in(mode, c("s"), DataType::Float64), &schema),
+                "{mode:?}"
+            );
+        }
+        assert!(!cannot_fail(&cast(c("s"), DataType::Int32), &schema));
         // So can anything built from a part that can fail
         assert!(!infallible(binary(
             binary(c("i"), Operator::Divide, c("i")),
@@ -1270,14 +1322,37 @@ mod tests {
         assert_eq!(scalar(expr), ScalarValue::Int64(None));
     }
 
+    /// A scalar from an empty batch is taken to mean the expression is constant, so a CASE that
+    /// depends on a column has to return an empty array, whichever way it is evaluated.
     #[test]
-    fn empty_batch() {
+    fn empty_batch_returns_an_empty_array() {
         let batch = int_batch(vec![], vec![]);
         let schema = batch.schema();
         let a = col("a", &schema).unwrap();
         let b = col("b", &schema).unwrap();
-        let when_then = vec![(binary(Arc::clone(&a), Operator::Lt, lit(0i64)), a)];
-        check_against_case_expr(&batch, when_then, Some(b));
+        let null = || lit(ScalarValue::Int64(None));
+        let a_is_1 = || binary(Arc::clone(&a), Operator::Eq, lit(1i64));
+        let a_div_b = binary(Arc::clone(&a), Operator::Divide, b);
+        let new_case = |when_then, else_expr| CaseWhenExpr::try_new(when_then, else_expr).unwrap();
+        for (expr, eager) in [
+            // IF(a = 1, NULL, a), as nullif(a, 1) is planned
+            (
+                new_case(vec![(a_is_1(), null())], Some(Arc::clone(&a))),
+                true,
+            ),
+            // A branch that can fail is evaluated lazily, by CaseExpr, which also returns the
+            // NULL literal as a scalar for an empty batch
+            (new_case(vec![(a_is_1(), null())], Some(a_div_b)), false),
+        ] {
+            assert_eq!(expr.eager_result_type(&schema).is_some(), eager, "{expr}");
+            match expr.evaluate(&batch).unwrap() {
+                ColumnarValue::Array(array) => {
+                    assert_eq!(array.len(), 0, "{expr}");
+                    assert_eq!(array.data_type(), &DataType::Int64, "{expr}");
+                }
+                other => panic!("{expr} returned {other:?} for an empty batch"),
+            }
+        }
     }
 
     #[test]

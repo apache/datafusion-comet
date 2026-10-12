@@ -25,6 +25,7 @@ import org.apache.spark.broadcast.Broadcast
 import org.apache.spark.rdd.RDD
 import org.apache.spark.sql.comet.execution.shuffle.CometShuffledBatchRDD
 import org.apache.spark.sql.execution.ScalarSubquery
+import org.apache.spark.sql.types.DataType
 import org.apache.spark.sql.vectorized.ColumnarBatch
 import org.apache.spark.util.SerializableConfiguration
 
@@ -68,6 +69,7 @@ private[spark] class CometExecRDD(
     encryptedFilePaths: Seq[String] = Seq.empty,
     shuffleScanIndices: Set[Int] = Set.empty,
     @transient perPartitionFilePaths: Array[Seq[String]] = Array.empty,
+    outputTypes: Seq[DataType] = Seq.empty,
     // Set by a contrib leaf scan (e.g. the Delta contrib's `CometDeltaNativeScanExec`) that
     // builds this RDD directly, bypassing `CometNativeExec.executeColumnarWithContext`'s own
     // `ctx.hasScanInput` check, so it reports task input metrics without subclassing this RDD.
@@ -145,7 +147,8 @@ private[spark] class CometExecRDD(
       broadcastedHadoopConfForEncryption,
       encryptedFilePaths,
       shuffleBlockIters,
-      taskFilePaths = partition.filePaths)
+      taskFilePaths = partition.filePaths,
+      outputTypes = outputTypes)
 
     // Register ScalarSubqueries so native code can look them up
     subqueries.foreach(sub => CometScalarSubquery.setSubquery(it.id, sub))
@@ -239,6 +242,7 @@ object CometExecRDD {
       encryptedFilePaths: Seq[String] = Seq.empty,
       shuffleScanIndices: Set[Int] = Set.empty,
       perPartitionFilePaths: Array[Seq[String]] = Array.empty,
+      outputTypes: Seq[DataType] = Seq.empty,
       reportScanInputMetrics: Boolean = false): CometExecRDD = {
     // scalastyle:on
 
@@ -257,6 +261,7 @@ object CometExecRDD {
       encryptedFilePaths,
       shuffleScanIndices,
       perPartitionFilePaths,
+      outputTypes,
       reportScanInputMetrics)
   }
 }

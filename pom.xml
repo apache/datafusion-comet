@@ -130,7 +130,12 @@ under the License.
     <!-- Used by some tests inherited from Spark to get project root directory -->
     <spark.test.home>${session.executionRootDirectory}</spark.test.home>
 
-    <!-- Reverse default (skip installation), and then enable only for child modules -->
+    <!-- Deploy nothing by default and have comet-spark opt back in, so the snapshot repository gets
+         only the shaded comet-spark jar. comet-common is bundled into that jar, its published pom is
+         flattened and names neither a parent nor comet-common, and comet-spark-integration only
+         checks the jar's contents, so a consumer needs none of the others. Installing is left alone:
+         builds run from inside spark/ resolve comet-common from the local repository.
+         dev/release/publish-to-maven.sh applies the same rule to the release. -->
     <maven.deploy.skip>true</maven.deploy.skip>
 
     <!-- For testing with JDK 17 -->
