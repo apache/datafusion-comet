@@ -35,7 +35,9 @@ Here is an overview of the changes that the diffs make to Iceberg:
   (iceberg-rust) Parquet writer, alongside the native scan in every Comet-configured session, so that Iceberg's
   write, commit, and row-level-operation tests run through it. `spark.comet.write.iceberg.enabled` switches both
   and is on by default; the diffs set it explicitly, together with the testing-only
-  `spark.comet.write.iceberg.splitOperator.enabled`, which it makes redundant. See [#5259]
+  `spark.comet.write.iceberg.splitOperator.enabled`. That flag is redundant for the normal write path, but
+  it is still what plans merge-on-read (`WriteDelta`) writes as the split plan on Spark 3.5+, so Iceberg's
+  row-level-operation tests exercise that path. See [#5259]
 - Enable `spark.comet.exec.localTableScan.enabled` in the same sessions. `CometIcebergNativeWrite` sets
   `requiresNativeChildren`, so without this flag a write fed by an inline `VALUES` list keeps Spark's row-based
   `LocalTableScanExec`, the conversion is declined, and the write silently runs on the JVM writer. Many Iceberg

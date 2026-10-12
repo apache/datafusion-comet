@@ -139,7 +139,9 @@ changes.
 
 The rewrite is skipped — and the write runs through Spark's stock combined operator — when:
 
-- `spark.comet.write.iceberg.enabled` is set to `false`;
+- `spark.comet.write.iceberg.enabled` is set to `false` and the testing setting
+  `spark.comet.write.iceberg.splitOperator.enabled`, which Comet 1.1.0 documented as a user setting,
+  is not on;
 - Comet is disabled (`spark.comet.enabled=false`), or its native execution is
   (`spark.comet.exec.enabled=false`);
 - Comet is in plan-only mode (`spark.comet.explain.planOnly.enabled=true`);

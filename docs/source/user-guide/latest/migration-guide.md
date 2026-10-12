@@ -125,7 +125,12 @@ as in Comet 1.1.0. Comet 1.1.0 named this setting `spark.comet.iceberg.write.ena
 testing category, and Comet now ignores that name, so a deployment that set it to `false` gets the
 new default unless it sets `spark.comet.write.iceberg.enabled=false`.
 `spark.comet.write.iceberg.splitOperator.enabled` is now a testing setting, and setting it to
-`false` does not turn the split operator off. See [Iceberg Writes](iceberg-writes.md).
+`false` does not turn the split operator off. Comet 1.1.0 documented it as the switch for the split
+plan, so a deployment that still sets it to `true` keeps the split plan when
+`spark.comet.write.iceberg.enabled=false`, with iceberg-java writing the data files, and on Spark
+3.5+ it also plans merge-on-read writes as the split plan. Unset that setting as well as setting
+`spark.comet.write.iceberg.enabled=false` to plan Spark's own operator. See
+[Iceberg Writes](iceberg-writes.md).
 
 To compute the Iceberg metrics of a natively written file, Comet reads the file's Parquet footer
 back from storage, where iceberg-java's writer takes them from memory. On S3 or GCS that is two GET
