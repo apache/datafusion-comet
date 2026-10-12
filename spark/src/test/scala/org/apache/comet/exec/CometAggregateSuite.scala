@@ -3861,4 +3861,17 @@ class CometAggregateSuite extends CometTestBase with AdaptiveSparkPlanHelper {
     }
   }
 
+  // global_empty_aggregate.sql covers the SQL shapes. A SQL query always projects a column, so
+  // only a DataFrame hands the zero-column row of `Aggregate(Nil, Nil, child)` to the JVM, where
+  // losing its row count would return no rows.
+  test("global aggregate with no keys and no functions returns one empty row") {
+    withParquetTable((0 until 10).map(Tuple1(_)), "tbl") {
+      Seq(spark.table("tbl"), spark.table("tbl").where($"_1" > 100)).foreach { input =>
+        val df = input.agg(sum($"_1"))
+        checkSparkAnswerAndOperator(df.select())
+        assert(!df.isEmpty)
+      }
+    }
+  }
+
 }

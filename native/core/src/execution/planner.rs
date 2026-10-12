@@ -1559,6 +1559,49 @@ impl PhysicalPlanner {
                 let (scans, shuffle_scans, child) =
                     self.create_plan(&children[0], inputs, partition_count)?;
 
+                // Spark plans a global aggregate with neither keys nor functions when its output
+                // goes unused, as in `df.agg(sum($"a")).count()`. Each partition emits one row
+                // with no columns, even for an empty input. DataFusion's AggregateStream can't
+                // build a batch with no columns (apache/datafusion#25782), so count the rows and
+                // project the count away. Counting reads the whole input as Spark does, so errors
+                // below the aggregate still surface. The partial and final stages both take this
+                // path, since the final one only collapses the partial one's rows into one.
+                if agg.grouping_exprs.is_empty() && agg.agg_exprs.is_empty() {
+                    let schema = child.schema();
+                    let count = AggregateExprBuilder::new(
+                        count_udaf(),
+                        vec![Arc::new(Literal::new(ScalarValue::Int64(Some(1))))],
+                    )
+                    .schema(Arc::clone(&schema))
+                    .alias("count")
+                    .build()
+                    .map_err(|e| ExecutionError::DataFusionError(e.to_string()))?;
+                    let aggregate: Arc<dyn ExecutionPlan> = Arc::new(
+                        datafusion::physical_plan::aggregates::AggregateExec::try_new(
+                            DFAggregateMode::Single,
+                            PhysicalGroupBy::default(),
+                            vec![Arc::new(count)],
+                            vec![None],
+                            Arc::clone(&child.native_plan),
+                            schema,
+                        )?,
+                    );
+                    let projection: Arc<dyn ExecutionPlan> = Arc::new(ProjectionExec::try_new(
+                        Vec::<(Arc<dyn PhysicalExpr>, String)>::new(),
+                        Arc::clone(&aggregate),
+                    )?);
+                    return Ok((
+                        scans,
+                        shuffle_scans,
+                        Arc::new(SparkPlan::new_with_additional(
+                            spark_plan.plan_id,
+                            projection,
+                            vec![child],
+                            vec![aggregate],
+                        )),
+                    ));
+                }
+
                 let group_exprs: PhyExprResult = agg
                     .grouping_exprs
                     .iter()
@@ -6183,6 +6226,77 @@ mod tests {
         );
         assert_eq!(1, projection_exec.children.len());
         assert_eq!("ScanExec", projection_exec.children[0].native_plan.name());
+    }
+
+    #[tokio::test]
+    async fn keyless_aggregate_without_functions_emits_one_empty_row() {
+        use arrow::array::RecordBatchOptions;
+        use datafusion::common::tree_node::{Transformed, TreeNode};
+
+        let scan = Operator {
+            op_struct: Some(OpStruct::Scan(spark_operator::Scan {
+                fields: vec![],
+                source: String::new(),
+            })),
+            ..Default::default()
+        };
+        let schema = Arc::new(Schema::empty());
+        let rows = |num_rows| {
+            RecordBatch::try_new_with_options(
+                Arc::clone(&schema),
+                vec![],
+                &RecordBatchOptions::new().with_row_count(Some(num_rows)),
+            )
+            .unwrap()
+        };
+        let ctx = SessionContext::new();
+        let task_ctx = ctx.task_ctx();
+        let planner = PhysicalPlanner::new(Arc::new(ctx), 0);
+
+        // Spark serializes the stage below its exchange as Partial and the one above as Final.
+        // Both emit one row with no columns per partition, even for an empty input.
+        for mode in [
+            spark_operator::AggregateMode::Partial,
+            spark_operator::AggregateMode::Final,
+        ] {
+            let aggregate = Operator {
+                plan_id: 1,
+                children: vec![scan.clone()],
+                op_struct: Some(OpStruct::HashAgg(spark_operator::HashAggregate {
+                    mode: mode as i32,
+                    ..Default::default()
+                })),
+                ..Default::default()
+            };
+            let (_, _, planned) = planner.create_plan(&aggregate, &mut vec![], 1).unwrap();
+            assert_eq!("ProjectionExec", planned.native_plan.name());
+            assert_eq!(0, planned.schema().fields().len());
+            assert_eq!(1, planned.additional_native_plans.len());
+            assert_eq!("AggregateExec", planned.additional_native_plans[0].name());
+            assert_eq!(1, planned.children.len());
+            assert_eq!("ScanExec", planned.children[0].native_plan.name());
+
+            for batches in [vec![rows(3), rows(2)], vec![]] {
+                let input: Arc<dyn ExecutionPlan> =
+                    MemorySourceConfig::try_new_exec(&[batches], Arc::clone(&schema), None)
+                        .unwrap();
+                let native_plan = Arc::clone(&planned.native_plan)
+                    .transform_up(|node| {
+                        Ok(if node.name() == "ScanExec" {
+                            Transformed::yes(Arc::clone(&input))
+                        } else {
+                            Transformed::no(node)
+                        })
+                    })
+                    .unwrap()
+                    .data;
+                let results = collect(native_plan.execute(0, Arc::clone(&task_ctx)).unwrap())
+                    .await
+                    .unwrap();
+                assert_eq!(1, results.iter().map(RecordBatch::num_rows).sum::<usize>());
+                assert!(results.iter().all(|batch| batch.num_columns() == 0));
+            }
+        }
     }
 
     #[tokio::test]
