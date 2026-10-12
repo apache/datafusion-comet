@@ -3567,9 +3567,8 @@ impl PhysicalPlanner {
                     self.create_expr(expr.value_column.as_ref().unwrap(), Arc::clone(&schema))?;
                 let value_type = to_arrow_datatype(expr.value_datatype.as_ref().unwrap());
                 // Reconstruct pivot values as ScalarValues from the serialized Literal exprs.
-                // The Scala serde builds them as Literal(v, pivot_column.dataType), so extracting
-                // via Literal downcast gives us the exact ScalarValue the update path compares
-                // against per input row.
+                // The Scala serde builds them as Literal(v, pivot_column.dataType), so they carry
+                // the pivot column's type, which `SparkPivotFirst` builds its lookup index from.
                 let mut pivot_values = Vec::with_capacity(expr.pivot_values.len());
                 for lit_expr in &expr.pivot_values {
                     let physical = self.create_expr(lit_expr, Arc::clone(&schema))?;
@@ -3580,8 +3579,10 @@ impl PhysicalPlanner {
                     })?;
                     pivot_values.push(literal.value().clone());
                 }
-                let func =
-                    AggregateUDF::new_from_impl(SparkPivotFirst::new(value_type, pivot_values));
+                let func = AggregateUDF::new_from_impl(SparkPivotFirst::try_new(
+                    value_type,
+                    pivot_values,
+                )?);
                 Self::create_aggr_func_expr("pivot_first", schema, vec![pivot_col, value_col], func)
             }
         }
