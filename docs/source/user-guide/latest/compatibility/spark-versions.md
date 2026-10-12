@@ -80,13 +80,23 @@ Spark 4.1.3 is supported with Java 17/21 and Scala 2.13.
   Comet's scan runs. Workaround: project the column away, cast it to a concrete type before
   persisting, or read the file with Comet disabled for that query.
 
-## Spark 4.2 (Experimental)
+## Spark 4.2
 
-Spark 4.2.0 is provided as experimental support with Java 17 and Scala 2.13.
+Spark 4.2.0 is supported with Java 17 and Scala 2.13.
 
-```{warning}
-Spark 4.2 support is experimental. Comet's own test suites and Apache Spark's SQL test suite both
-run nightly for this version rather than on every pull request, so a regression is caught within a
-day but does not block a merge. It is intended for early evaluation only and should not be used in
-production.
-```
+### Known Limitations
+
+- **`FILTER` on window aggregates**: Spark 4.2 accepts a `FILTER (WHERE ...)` clause on an
+  aggregate function used as a window function. Comet does not support the clause there, so the
+  window operator falls back to Spark.
+- **Merged subqueries in `UNION` branches**
+  ([#4949](https://github.com/apache/datafusion-comet/issues/4949)): Spark 4.2 turns a single-row
+  aggregate in some queries, for example TPC-DS q77a, into a scalar subquery that returns a struct,
+  and reads its fields in a projection over a `OneRowRelation`. Comet does not support a
+  struct-typed scalar subquery result yet
+  ([#5834](https://github.com/apache/datafusion-comet/issues/5834)), so that projection, and the
+  union and the aggregates above it, fall back to Spark.
+- **ANSI arithmetic overflow**
+  ([#4967](https://github.com/apache/datafusion-comet/issues/4967)): Spark 4.2 changed some
+  ANSI-mode arithmetic overflow behavior, and Comet does not match these changes yet. See
+  [ANSI-mode error classes and messages](index.md#ansi-mode-error-classes-and-messages).

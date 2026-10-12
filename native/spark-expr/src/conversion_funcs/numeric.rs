@@ -1432,7 +1432,6 @@ mod tests {
     use super::*;
     use arrow::array::AsArray;
     use arrow::datatypes::TimestampMicrosecondType;
-    use core::f64;
 
     #[test]
     fn test_spark_cast_int_to_int_overflow() {
@@ -2292,7 +2291,7 @@ mod tests {
         );
 
         for eval_mode in [EvalMode::Legacy, EvalMode::Ansi, EvalMode::Try] {
-            let options = SparkCastOptions::new(eval_mode, "UTC", false);
+            let options = SparkCastOptions::new(eval_mode, "UTC");
 
             let doubles =
                 cast_array(Arc::clone(&decimals_38_18), &DataType::Float64, &options).unwrap();

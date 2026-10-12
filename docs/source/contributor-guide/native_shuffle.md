@@ -39,6 +39,12 @@ Compare this to JVM shuffle's data path:
 Comet Native (columnar) → ColumnarToRowExec → rows → JVM Shuffle → Arrow IPC → columnar
 ```
 
+When `RevertNativeForTransitionHeavyStages` restores the map stage to Spark execution, the
+native exchange stays in place. Its input still needs Arrow-backed Comet vectors, even if the
+restored Spark operator supports columnar output. The rule adds `CometSparkToColumnarExec` to
+convert either Spark rows or Spark columnar batches to Arrow before the native shuffle consumes
+them. Spark's `RowToColumnarExec` alone does not satisfy this input contract.
+
 ## When Native Shuffle is Used
 
 Native shuffle (`CometExchange`) is selected when all of the following conditions are met:
@@ -46,7 +52,13 @@ Native shuffle (`CometExchange`) is selected when all of the following condition
 1. **Shuffle mode allows native**: `spark.comet.shuffle.mode` is `native` or `auto`.
 
 2. **Child plan is a Comet native operator**: The child must be a `CometPlan` that produces
-   columnar output. Row-based Spark operators require JVM shuffle.
+   columnar output. Row-based Spark operators require JVM shuffle, unless
+   `spark.comet.convert.shuffleInput.enabled` is set. Then a shuffle that JVM shuffle would take
+   uses native shuffle instead, provided native shuffle supports the partitioning and the
+   columns, and a `CometSparkToColumnarExec` converts the child's rows to Arrow for it. A shuffle
+   that hashes a string, a value computed from a string, or a decimal wider than 18 digits stays
+   on JVM shuffle, because native shuffle would not put every row in the partition Spark's
+   partitioner does (`CometShuffleExchangeExec.convertsInputForNativeShuffle`).
 
 3. **Supported partitioning type**: Native shuffle supports:
    - `HashPartitioning`
@@ -63,14 +75,20 @@ Native shuffle (`CometExchange`) is selected when all of the following condition
      compares raw bytes. Scalar float and double are supported, including when
      `spark.comet.exec.strictFloatingPoint` is enabled, because the native range partitioner
      normalizes its comparison keys and its sampled boundary rows the same way the native sort
-     does. Strict floating point only affects floating-point values nested in arrays, structs, or
-     maps, which are rejected as range keys for being nested anyway.
+     does. The native sort normalizes floating-point values nested in arrays and structs as well,
+     but those keys are rejected as range keys for being nested.
    - `HashPartitioning` keys must be primitive **by default**. Setting
      `spark.comet.shuffle.native.partitioning.hash.nested.enabled` to `true` admits structs and
      arrays as keys, checked recursively to their leaves, and maps on Spark 4.0 and later, where
      Spark's `mapsort` normalization makes physical entry order irrelevant. A collated string at any
      depth still disqualifies the key. The config defaults to `false` pending measurement of the
      nested hashing paths, so by default a complex hash key falls back to JVM shuffle.
+   - A hash key that is or contains a decimal wider than 18 digits stays on JVM shuffle when the
+     shuffle's stage starts at a typed `Dataset` conversion
+     (`spark.comet.convert.typedDataset.enabled`) and the shuffle has more than one partition.
+     Native shuffle hashes such decimals differently from Spark
+     ([#5994](https://github.com/apache/datafusion-comet/issues/5994)). Without the conversion
+     this shuffle would have used JVM shuffle, and a join partner may still use it.
 
 ## Architecture
 
@@ -154,11 +172,14 @@ The native shuffle implementation is its own workspace crate, `datafusion-comet-
    - The child plan's `nativeOp` directly, when `CometShuffleExchangeExec`'s child is a
      `CometNativeExec` subtree. The upstream operators run inside the same `CometExecIterator`
      as the writer, with no JVM-to-native batch boundary between them.
-   - A synthetic `Scan("ShuffleWriterInput")` placeholder, when the dep was built via the
-     convenience `prepareShuffleDependency(rdd, ...)` overload (used by
-     `CometCollectLimitExec` and `CometTakeOrderedAndProjectExec`, or when the
-     exchange's child is a non-native `CometPlan` such as `CometSparkToColumnarExec`). Native
-     code reads `ColumnarBatch`es from the JVM input iterator via Arrow C Stream Interface.
+   - A synthetic `Scan("ShuffleWriterInput")` placeholder, when the exchange's child is a
+     non-native `CometPlan`, and for the dependencies that `CometCollectLimitExec` and
+     `CometTakeOrderedAndProjectExec` build. Native code reads the input through the Arrow C
+     Stream Interface. A `CometNativeArrowSource` child, such as `CometSparkToColumnarExec`,
+     exports its own Arrow stream from `doExecuteAsArrowStream()`, which
+     `prepareArrowStreamShuffleDependency` hands to native. Any other input is an
+     `RDD[ColumnarBatch]`, which the convenience `prepareShuffleDependency(rdd, ...)` overload
+     wraps in a stream.
 
 2. **Native execution**: A single `CometExecIterator` per partition runs the unified plan.
 
@@ -221,6 +242,11 @@ JVM columnar shuffle, because both write the same Arrow IPC block format.
 decides during plan serialization. When direct read is enabled and the sink's input is a Comet shuffle
 exchange, `convertToShuffleScan` emits a `ShuffleScan` operator. When either is false the sink falls
 through to the base `CometSink.convert`, which emits the usual `Scan`.
+
+Under AQE, an operator that shares its logical node with a shuffle stage, such as the final aggregate
+of a two-phase aggregate, comes back from re-planning as the node already planned, whose input was
+serialized as a `Scan` before the stage existed. `CometExecRule` refreshes such a node: once its input
+is a sink that emits a `ShuffleScan`, that `ShuffleScan` replaces the stale `Scan` leaf.
 
 The two are not alternatives on failure. If any output type fails `supportedSinkDataType`,
 `convertToShuffleScan` records the fallback reason `Unsupported data type for shuffle direct read`

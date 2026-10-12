@@ -20,14 +20,20 @@
 package org.apache.spark
 
 import java.io.File
+import java.nio.charset.StandardCharsets
+import java.nio.file.Files
+import java.util.concurrent.TimeUnit
 
 import org.apache.logging.log4j.Level
+import org.apache.spark.api.plugin.{DriverPlugin, ExecutorPlugin, PluginContext, SparkPlugin}
+import org.apache.spark.scheduler.{SparkListenerApplicationEnd, SparkListenerEvent, SparkListenerExecutorMetricsUpdate, SparkListenerExecutorRemoved}
 import org.apache.spark.sql.{CometTestBase, SaveMode, SparkSession}
 import org.apache.spark.sql.comet.CometPlan
 import org.apache.spark.sql.comet.execution.shuffle.{CometShuffleExchangeExec, CometShuffleManager}
 import org.apache.spark.sql.internal.StaticSQLConf
+import org.apache.spark.util.{JsonProtocol, ManualClock, Utils}
 
-import org.apache.comet.{COMET_VERSION, CometConf}
+import org.apache.comet.{COMET_VERSION, CometConf, CometExecIterator, CometExecutorMemoryUsage}
 
 class CometPluginsSuite extends CometTestBase {
   override protected def sparkConf: SparkConf = {
@@ -162,6 +168,11 @@ class CometPluginsSuite extends CometTestBase {
     assert(execMemOverhead3 == "2G")
     assert(execMemOverhead4 == "2G")
   }
+
+  test("the memory usage log sends the driver nothing without an event log") {
+    // The suite runs the Comet plugin but writes no event log.
+    assert(CometExecutorPlugin.eventLogContext.isEmpty)
+  }
 }
 
 class CometPluginsDefaultSuite extends CometTestBase {
@@ -251,8 +262,8 @@ class CometPluginsMemoryOverheadWarningSuite extends CometTestBase {
     assert(!warningsFor(conf).exists(_.contains(warning)))
   }
 
-  test("does not warn in local mode") {
-    Seq("local", "local[4]", "local-cluster[2,1,1024]").foreach { master =>
+  test("does not warn in local mode or on a standalone cluster") {
+    Seq("local", "local[4]", "local-cluster[2,1,1024]", "spark://host:7077").foreach { master =>
       assert(!warningsFor(cometConf(master)).exists(_.contains(warning)), master)
     }
   }
@@ -417,4 +428,136 @@ class CometPluginsSparkShuffleManagerSuite extends CometTestBase {
       }
     }
   }
+}
+
+class CometPluginsEventLogSuite extends SparkFunSuite {
+
+  import CometExecIterator.{memoryUsageEvent, JvmArrowMemory}
+
+  /**
+   * Runs `f` in an application that runs `plugin` and writes an event log, passing it the context
+   * through which the executor sends memory usage samples, and returns the event log's events
+   * once the application has stopped.
+   */
+  private def eventLog(plugin: Class[_ <: SparkPlugin] = classOf[CometPlugin])(
+      f: (SparkContext, PluginContext) => Unit): Seq[SparkListenerEvent] = {
+    val eventLogDir = Utils.createTempDir()
+    try {
+      val sc = new SparkContext(
+        new SparkConf()
+          .setMaster("local[1]")
+          .setAppName(getClass.getSimpleName)
+          .set("spark.plugins", plugin.getName)
+          .set("spark.eventLog.enabled", "true")
+          .set("spark.eventLog.dir", eventLogDir.toURI.toString)
+          // One plain file, which the test reads directly. Spark 4 compresses and rolls it by
+          // default.
+          .set("spark.eventLog.compress", "false")
+          .set("spark.eventLog.rolling.enabled", "false"))
+      try {
+        val pluginContext = CometExecutorPlugin.eventLogContext
+        assert(pluginContext.isDefined, "The executor should send samples to the event log")
+        f(sc, pluginContext.get)
+      } finally {
+        sc.stop()
+      }
+      eventLogDir
+        .listFiles()
+        .toSeq
+        .filter(file => file.isFile && !file.getName.startsWith("."))
+        .flatMap(file =>
+          new String(Files.readAllBytes(file.toPath), StandardCharsets.UTF_8)
+            .split("\n")
+            .map(JsonProtocol.sparkEventFromJson))
+    } finally {
+      Utils.deleteRecursively(eventLogDir)
+    }
+  }
+
+  private val marker =
+    memoryUsageEvent("marker", 0L, Array(0L, 0L, 0L, 0L), JvmArrowMemory(0L, 0L))
+
+  /**
+   * Posts `event`, and a marker once every listener has handled it. The bus hands an event to one
+   * queue at a time, so what the driver plugin's listener records on `event` can reach the event
+   * log ahead of `event` itself. It always reaches it ahead of the marker.
+   */
+  private def postAndMark(sc: SparkContext, event: SparkListenerEvent): Unit = {
+    sc.listenerBus.post(event)
+    sc.listenerBus.waitUntilEmpty()
+    sc.listenerBus.post(marker)
+  }
+
+  /**
+   * Asserts that the event log records exactly one sample `isSample` accepts, ahead of the marker
+   * and so not at the application's end.
+   */
+  private def assertRecordedOnceBeforeMarker(events: Seq[SparkListenerEvent])(
+      isSample: SparkListenerEvent => Boolean): Unit = {
+    val recorded = events.indices.filter(i => isSample(events(i)))
+    assert(recorded.size == 1 && recorded(0) < events.indexOf(marker), events)
+  }
+
+  test("the driver records what the memory usage log sent it when the application ends") {
+    // An allocation no real sample has, to tell this sample apart from any that the memory usage
+    // log running in this JVM sends, and large enough to be the most untracked memory of its
+    // summary.
+    val usage = Array(123456789L * 1024, 0L, 1L, 1L)
+    val jvmArrow = JvmArrowMemory(allocated = 3456789L, imported = 456789L)
+    val events = eventLog() { (sc, pluginContext) =>
+      CometExecIterator.sendToEventLog(usage, jvmArrow)
+      // The driver plugin receives its messages in order, and `ask`, unlike the log's one-way
+      // `send`, returns once it has received this one, so it has the sample above by then. It
+      // replies to none of them.
+      assert(
+        pluginContext.ask(
+          memoryUsageEvent("barrier", 0L, Array(0L, 0L, 0L, 0L), jvmArrow)) == null)
+      // The end as the listener sees it, which alone records what the driver holds on Spark 3.4
+      // and 3.5. From Spark 4.0 the plugin's shutdown would record it too, when the context stops.
+      postAndMark(sc, SparkListenerApplicationEnd(System.currentTimeMillis()))
+    }
+    assertRecordedOnceBeforeMarker(events) {
+      // Local mode runs the executor inside the driver.
+      case sample: CometExecutorMemoryUsage =>
+        sample == memoryUsageEvent(SparkContext.DRIVER_IDENTIFIER, sample.time, usage, jvmArrow)
+      case _ => false
+    }
+  }
+
+  test("the driver records what an executor sent since its last summary when it goes away") {
+    val sample = memoryUsageEvent(
+      "lost",
+      System.currentTimeMillis(),
+      Array(300L * 1024 * 1024, 100L * 1024 * 1024, 2L, 3L),
+      JvmArrowMemory(0L, 0L))
+    val events = eventLog() { (sc, pluginContext) =>
+      pluginContext.ask(sample)
+      postAndMark(sc, SparkListenerExecutorRemoved(sample.time, sample.executorId, "test"))
+    }
+    assertRecordedOnceBeforeMarker(events)(_ == sample)
+  }
+
+  test("the driver records an idle executor's samples at its first heartbeat a minute later") {
+    val sample = memoryUsageEvent(
+      "idle",
+      System.currentTimeMillis(),
+      Array(300L * 1024 * 1024, 100L * 1024 * 1024, 2L, 0L),
+      JvmArrowMemory(0L, 0L))
+    val events = eventLog(classOf[ManualClockCometPlugin]) { (sc, pluginContext) =>
+      pluginContext.ask(sample)
+      ManualClockCometPlugin.clock.advance(TimeUnit.MINUTES.toMillis(1))
+      postAndMark(sc, SparkListenerExecutorMetricsUpdate(sample.executorId, Seq.empty))
+    }
+    assertRecordedOnceBeforeMarker(events)(_ == sample)
+  }
+}
+
+/** The Comet plugin with a driver clock that `CometPluginsEventLogSuite` moves by hand. */
+class ManualClockCometPlugin extends SparkPlugin {
+  override def driverPlugin(): DriverPlugin = new CometDriverPlugin(ManualClockCometPlugin.clock)
+  override def executorPlugin(): ExecutorPlugin = new CometExecutorPlugin
+}
+
+object ManualClockCometPlugin {
+  val clock = new ManualClock()
 }

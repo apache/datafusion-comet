@@ -104,10 +104,10 @@ Runs your existing Spark queries on the Apache DataFusion native engine, no code
 <p class="comet-feature__body">Comet tightly integrates with the core Apache DataFusion project, leveraging its powerful execution engine. The diagram below shows how the Comet plugin intercepts Spark physical plans, translates supported operators into a protocol-buffer representation, and hands them to the Apache DataFusion native engine for execution.</p>
 </div>
 <figure class="comet-feature__figure">
-<img src="_static/images/comet-overview.png"
-     width="2569" height="2006"
+<img src="_static/images/comet-overview.svg"
+     width="880" height="640"
      loading="lazy" decoding="async"
-     alt="Comet architecture overview diagram showing the bridge between Apache Spark and Apache DataFusion" />
+     alt="Spark hands its physical plan to the Comet plugin, which sends the operators it supports to the Apache DataFusion native engine as a protobuf plan. DataFusion reads Parquet and Iceberg data directly and returns the results to Spark as Arrow columnar batches." />
 <figcaption>Comet Overview</figcaption>
 </figure>
 <p class="comet-feature__links">

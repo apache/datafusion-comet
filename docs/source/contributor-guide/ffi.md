@@ -28,7 +28,7 @@ Comet transfers Arrow data across the JVM/native boundary in two directions:
    per-partition iterator once as an `ArrowArrayStream`, and native pulls every batch through a single C callback.
 2. **Native → JVM**: JVM pulls batches from native code using `CometExecIterator`, via the
    [Arrow C Data Interface](https://arrow.apache.org/docs/format/CDataInterface.html) (one `ArrowArray`/`ArrowSchema`
-   pair per batch).
+   pair per column of each batch).
 
 The following diagram shows an example of the end-to-end flow for a query stage.
 
@@ -78,7 +78,7 @@ exports once per partition:
          │ (native pulls each batch via the get_next callback)
          ▼
 ┌─────────────────┐
-│    ScanExec     │ ── owns an AlignedArrowStreamReader
+│    ScanExec     │ ── owns an ArrowArrayStreamReader
 │  (Rust/native)  │
 └────────┬────────┘
          │
@@ -108,18 +108,26 @@ compressed shuffle blocks are decoded inside the native plan by `ShuffleScanExec
 boundary at all. `CometExecRDD.resolveInputObjects` classifies the slots, driven by which scan slots the serialized
 plan marked as `ShuffleScan`. See [Direct Read](native_shuffle.md#direct-read-shufflescan) for that path.
 
-On the native side, `planner.rs` reads each stream's `memoryAddress` and takes ownership through
-`AlignedArrowStreamReader::from_raw`, importing the schema once. `ScanExec::get_next_batch` then pulls each batch
+On the native side, `planner.rs` reads each stream's `memoryAddress` and takes ownership through arrow-rs's
+`ArrowArrayStreamReader::from_raw`, importing the schema once. `ScanExec::get_next_batch` then pulls each batch
 through the stream's `get_next` callback. There is no per-batch JNI call and no per-column FFI export.
+`ScanExec::pull_next` passes every imported column through `import_column`, which decodes invalid UTF-8 to Spark's
+rendering and otherwise uses the column as imported, without a copy.
 
-### Buffer Alignment (AlignedArrowStreamReader)
+Java's allocator only guarantees 8-byte alignment, while arrow-rs needs `Decimal128` buffers 16-byte aligned. arrow-rs
+realigns under-aligned buffers on import ([apache/arrow-rs#10030](https://github.com/apache/arrow-rs/pull/10030)), and
+the `realigns_under_aligned_decimal128` test in `scan.rs` guards against an arrow downgrade that would bring back the
+panic ([apache/arrow-rs#10028](https://github.com/apache/arrow-rs/issues/10028)).
 
-`AlignedArrowStreamReader` (in `execution/operators/aligned_stream_reader.rs`) wraps the imported stream and calls
-`align_buffers` on every batch before constructing typed arrays. This works around the fact that Java's allocator
-hands back `Decimal128` buffers at 8-byte (not 16-byte) alignment, which the stock `ArrowArrayStreamReader` rejects
-([apache/arrow-rs#10028](https://github.com/apache/arrow-rs/issues/10028)). The fix
-([apache/arrow-rs#10030](https://github.com/apache/arrow-rs/pull/10030)) makes import align internally and ships in
-arrow 59.0.0; once Comet is on arrow >= 59 this reader can be dropped for the stock `ArrowArrayStreamReader`.
+### Errors from the JVM Producer
+
+Arrow Java's exported stream catches whatever the reader throws in `get_next` and hands native only its text, so
+native fails the plan with a `CometNativeException` built from that text. `CometArrowStream.stream` wraps every
+reader to keep the throwable itself until the task completes, and `CometExecIterator` rethrows it in place of the
+native error. The task then fails with the exception Spark would have thrown, such as a `SparkArithmeticException`
+from an upstream plan. For an input of Arrow-backed `ColumnarBatch`es, the first batch never takes this path: schema
+reconciliation reads it on the JVM before the stream is exported, so what it throws propagates directly. A test of
+this path therefore has to fail a later batch.
 
 ### Schema Reconciliation
 
@@ -127,6 +135,10 @@ arrow 59.0.0; once Comet is on arrow >= 59 this reader can be dropped for the st
 first batch rather than the consumer's Spark-declared types. Native `ScanExec` already casts its input to the
 declared scan-input schema in `build_record_batch`, so the truthful first-batch schema lets that cast fire; if the
 two differ, it logs one deduplicated warning naming the operator, column, and type drift.
+
+No input stream carries a dictionary. `RowArrowReader` and `SparkColumnarArrowReader` write plain vectors, and
+`ColumnarBatchArrowReader` decodes a dictionary-encoded column on the JVM before export, which is why
+`reconcileStreamSchema` advertises the dictionary's value type for it.
 
 ### Memory Layout
 
@@ -159,7 +171,7 @@ so it is safe to buffer batches in operators such as `SortExec` or `ShuffleWrite
 
 The whole per-partition stream is exported once, so the JVM allocates one `ArrowArrayStream` per partition rather
 than a per-batch, per-column `ArrowArray`/`ArrowSchema` wrapper object pair. Lifecycle is anchored at the stream: when
-`ScanExec` drops its `AlignedArrowStreamReader`, the stream's release callback fires synchronously back into the JVM
+`ScanExec` drops its `ArrowArrayStreamReader`, the stream's release callback fires synchronously back into the JVM
 and closes the `ArrowReader` and its `VectorSchemaRoot`, releasing the off-heap buffers. Because native holds those
 buffers until the reader drops, an operator that buffers many batches keeps the corresponding JVM-side data alive
 until then.
@@ -168,7 +180,7 @@ until then.
 
 ### Architecture
 
-When JVM needs results from native execution:
+When the JVM needs results from native execution:
 
 ```
 ┌─────────────────┐
@@ -178,148 +190,79 @@ When JVM needs results from native execution:
          │ produces RecordBatch
          ▼
 ┌─────────────────┐
-│ CometExecIter   │
+│ prepare_output  │ ── fills one ArrowArray/ArrowSchema pair per column
 │  (Rust/native)  │
 └────────┬────────┘
-         │ Arrow FFI
-         │ (transfers ArrowArray/ArrowSchema pointers)
+         │ Arrow C Data Interface
+         │ (structs allocated by the JVM, filled by native)
          ▼
 ┌─────────────────┐
-│ CometExecIter   │ ◄─── JNI call from Spark
-│  (Scala side)   │
+│   NativeUtil    │ ◄─── CometExecIterator calls Native.executePlan
+│  (Scala side)   │      once per batch
 └────────┬────────┘
-         │
+         │ ColumnarBatch of CometVectors
          ▼
 ┌─────────────────┐
-│  Spark Actions  │
-│  (collect, etc) │
+│ Spark and Comet │
+│  JVM operators  │
 └─────────────────┘
 ```
 
-### FFI Transfer Process
+### Transfer Process
 
-The transfer happens in `CometExecIterator::getNextBatch()`:
+`CometExecIterator.hasNext` fetches each batch through `NativeUtil.getNextBatch`, with one JNI call per batch:
 
-```scala
-// Scala side
-def getNextBatch(): ColumnarBatch = {
-  val batchHandle = Native.getNextBatch(nativeHandle)
+1. `NativeUtil.getNextBatch` allocates one empty `ArrowArray`/`ArrowSchema` pair per output column from
+   `CometArrowAllocator` and passes their memory addresses to
+   `Native.executePlan(stage, partition, plan, arrayAddrs, schemaAddrs)`.
+2. `executePlan` (in `jni_api.rs`) polls the native plan for its next `RecordBatch`, and `prepare_output` exports
+   each column into its pair with `move_to_spark` (in `execution/utils.rs`). `move_to_spark` zeroes the column's
+   offsets (see [Array Offsets](#array-offsets)), then writes an `FFI_ArrowArray` over the result, and an
+   `FFI_ArrowSchema` built from its data type and field metadata, into the JVM-allocated structs. `executePlan`
+   returns the batch's row count, or `-1` at the end of the output. With `spark.comet.debug.enabled` set,
+   `prepare_output` first runs `validate_full` on every column.
+3. At the end of the output, `NativeUtil` releases the unused structs. Otherwise `NativeUtil.importVector` imports
+   each column with `ArrowImporter.importVector`, wraps it with `CometVector.getVector`, and returns the vectors as
+   a `ColumnarBatch`.
 
-  // Import from FFI structures
-  val vectors = (0 until schema.length).map { i =>
-    val array = Array.empty[Long](1)
-    val schemaPtr = Array.empty[Long](1)
+`ArrowImporter` (in `spark/src/main/java/org/apache/arrow/c/`) imports every column through one shared
+`SchemaImporter`. Arrow Java's own `Data.importField` creates a new `SchemaImporter` for each field, and each one
+numbers dictionaries from 0, so two dictionary-encoded columns would collide in the shared `CDataDictionaryProvider`.
 
-    // Get FFI pointers from native
-    Native.exportVector(batchHandle, i, array, schemaPtr)
+### Array Offsets
 
-    // Import into Arrow Java
-    Data.importVector(allocator, array(0), schemaPtr(0))
-  }
+Arrow Java's C Data import ignores `ArrowArray.offset` at every level
+([apache/arrow-java#88](https://github.com/apache/arrow-java/issues/88)) and reads each buffer from its start. arrow-rs
+folds a slice into the buffers for almost every type, but a sliced `BooleanArray` keeps its bit offset, and a struct
+exports offset 0 even when its children are sliced. So every array native exports to the JVM first goes through
+`zero_offsets` (in `native/common/src/ffi_offsets.rs`), which re-slices boolean bitmaps to start at bit 0 at every
+level and shares every other buffer. `move_to_spark` applies it to executed batches and decoded shuffle blocks, and
+`JvmScalarUdfExpr` applies it to the inputs of the JVM UDF bridge. A new native to JVM export path has to call it too,
+or sliced booleans reach the JVM misaligned
+([#6288](https://github.com/apache/datafusion-comet/issues/6288)).
 
-  new ColumnarBatch(vectors.toArray, numRows)
-}
-```
+### Ownership and Lifecycle
 
-```rust
-// Native side (simplified)
-#[no_mangle]
-pub extern "system" fn Java_..._getNextBatch(
-    env: JNIEnv,
-    handle: jlong,
-) -> jlong {
-    let context = get_exec_context(handle)?;
-    let batch = context.stream.next().await?;
+Native allocates the data, and the JVM references it without copying:
 
-    // Store batch and return handle
-    let batch_handle = Box::into_raw(Box::new(batch)) as i64;
-    batch_handle
-}
+- The `FFI_ArrowArray` that `move_to_spark` writes holds a reference to the column's native buffers, and its release
+  callback drops that reference.
+- On import, Arrow Java wraps each native buffer in an `ArrowBuf`. Closing the last `ArrowBuf` over an imported
+  column runs its release callback, and native frees the buffers once no Rust reference to them remains.
+- `CometExecIterator` closes the batch it returned when the consumer next calls `hasNext` or `next`, and on
+  `close()`. A batch is therefore valid only until the consumer asks for the next one, and a consumer that keeps the
+  data longer has to copy it.
 
-#[no_mangle]
-pub extern "system" fn Java_..._exportVector(
-    env: JNIEnv,
-    batch_handle: jlong,
-    col_idx: jint,
-    array_ptr: jlongArray,
-    schema_ptr: jlongArray,
-) {
-    let batch = get_batch(batch_handle)?;
-    let array = batch.column(col_idx);
-
-    // Export to FFI structures
-    let (array_ffi, schema_ffi) = to_ffi(array.to_data())?;
-
-    // Write pointers back to JVM
-    env.set_long_array_region(array_ptr, 0, &[array_ffi as i64])?;
-    env.set_long_array_region(schema_ptr, 0, &[schema_ffi as i64])?;
-}
-```
-
-### Wrapper Object Lifecycle (Native → JVM)
-
-```
-Time    Native Memory              JVM Heap              Data location
-────────────────────────────────────────────────────────────────────────
-t0      RecordBatch produced       -                     Data in native
-        in DataFusion
-
-t1      FFI_ArrowArray created     -                     Data in native
-        FFI_ArrowSchema created
-        (native heap)
-
-t2      Pointers exported to JVM   ArrowBuf created      Data in native
-                                   (wraps native ptr)
-
-t3      FFI structures kept alive  Spark processes       Data in native
-        via batch handle           ColumnarBatch         ✓ Valid
-
-t4      Batch handle released      ArrowBuf freed        Data freed
-        Release callback runs      (triggers native      (via release
-                                   release callback)     callback)
-```
-
-**Key Difference from JVM → Native**:
-
-- Native code controls lifecycle through batch handle
-- JVM creates `ArrowBuf` wrappers that point to native memory
-- Release callback ensures proper cleanup when JVM is done
-- No GC pressure issue because native allocator manages the data
-
-### Release Callbacks
-
-Critical for proper cleanup:
-
-```rust
-// Native release callback (simplified)
-extern "C" fn release_batch(array: *mut FFI_ArrowArray) {
-    if !array.is_null() {
-        unsafe {
-            // Free the data buffers
-            for buffer in (*array).buffers {
-                drop(Box::from_raw(buffer));
-            }
-            // Free the array structure itself
-            drop(Box::from_raw(array));
-        }
-    }
-}
-```
-
-When JVM is done with the data:
-
-```java
-// ArrowBuf.close() triggers the release callback
-arrowBuf.close();  // → calls native release_batch()
-```
+By the time the JVM receives a batch, native has usually stopped reserving it in the memory pool, but it stays
+resident until the JVM closes it. See [Crossing the FFI boundary](memory_management.md#crossing-the-ffi-boundary).
 
 ## Memory Ownership Rules
 
 ### JVM → Native
 
-| Scenario  | Ownership   | Action Required                                                                                                                              |
-| --------- | ----------- | -------------------------------------------------------------------------------------------------------------------------------------------- |
-| All cases | Native owns | None; the C Stream transfers ownership by reference count (copy only to unpack dictionaries). Dropping the reader releases the JVM-side data |
+| Scenario  | Ownership   | Action Required                                                                                           |
+| --------- | ----------- | --------------------------------------------------------------------------------------------------------- |
+| All cases | Native owns | None; the C Stream transfers ownership by reference count. Dropping the reader releases the JVM-side data |
 
 ### Native → JVM
 

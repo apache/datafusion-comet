@@ -18,13 +18,13 @@
 use std::cmp::Ordering;
 use std::sync::Arc;
 
+use crate::float_semantics::{float_gt, float_lt, spark_comparator};
 use arrow::array::{
-    make_array, make_comparator, new_empty_array, Array, ArrayRef, AsArray, BooleanArray,
-    DynComparator, ListArray, MutableArrayData, PrimitiveArray, PrimitiveBuilder, StructArray,
-    UInt32Array,
+    make_array, new_empty_array, Array, ArrayRef, AsArray, BooleanArray, ListArray,
+    MutableArrayData, PrimitiveArray, PrimitiveBuilder, StructArray, UInt32Array,
 };
 use arrow::buffer::{NullBuffer, OffsetBuffer};
-use arrow::compute::{take, SortOptions};
+use arrow::compute::take;
 use arrow::datatypes::{ArrowPrimitiveType, DataType, Float32Type, Float64Type};
 use datafusion::common::{exec_err, Result, ScalarValue};
 use datafusion::functions_nested::min_max::{array_max_udf, array_min_udf};
@@ -142,12 +142,8 @@ where
                 }
                 let replace = match best {
                     None => true,
-                    Some(current) if is_min => {
-                        candidate < current || (!candidate.is_nan() && current.is_nan())
-                    }
-                    Some(current) => {
-                        candidate > current || (candidate.is_nan() && !current.is_nan())
-                    }
+                    Some(current) if is_min => float_lt(candidate, current),
+                    Some(current) => float_gt(candidate, current),
                 };
                 if replace {
                     // Copy the winning value, never normalize its zero sign or NaN bits.
@@ -162,7 +158,7 @@ where
 
 fn nested_extrema(array: &ListArray, is_min: bool) -> Result<ArrayRef> {
     let values = array.values();
-    let compare = spark_comparator(values)?;
+    let compare = spark_comparator(values.as_ref(), values.as_ref())?;
     let nulls = values.nulls();
     let ordering = if is_min {
         Ordering::Less
@@ -294,93 +290,6 @@ fn take_extrema_values(values: &ArrayRef, indices: &UInt32Array) -> Result<Array
             )?))
         }
         _ => Ok(take(values.as_ref(), indices, None)?),
-    }
-}
-
-/// Build one comparator per child array, not per row. This is local to extrema:
-/// DataFusion's ScalarValue nested comparisons put inner nulls last, unlike Spark.
-fn spark_comparator(array: &ArrayRef) -> Result<DynComparator> {
-    match array.data_type() {
-        DataType::Float32 => Ok(float_comparator::<Float32Type>(array)),
-        DataType::Float64 => Ok(float_comparator::<Float64Type>(array)),
-        DataType::List(_) => {
-            let array = array.as_list::<i32>();
-            let compare = spark_comparator(array.values())?;
-            let offsets = array.offsets().clone();
-            Ok(nulls_first(array.nulls().cloned(), move |left, right| {
-                let left_start = offsets[left] as usize;
-                let right_start = offsets[right] as usize;
-                let left_len = offsets[left + 1] as usize - left_start;
-                let right_len = offsets[right + 1] as usize - right_start;
-                for offset in 0..left_len.min(right_len) {
-                    let ordering = compare(left_start + offset, right_start + offset);
-                    if ordering != Ordering::Equal {
-                        return ordering;
-                    }
-                }
-                left_len.cmp(&right_len)
-            }))
-        }
-        DataType::Struct(_) => {
-            let array = array.as_struct();
-            let fields = array
-                .columns()
-                .iter()
-                .map(spark_comparator)
-                .collect::<Result<Vec<_>>>()?;
-            Ok(nulls_first(array.nulls().cloned(), move |left, right| {
-                fields
-                    .iter()
-                    .map(|compare| compare(left, right))
-                    .find(|&ordering| ordering != Ordering::Equal)
-                    .unwrap_or(Ordering::Equal)
-            }))
-        }
-        _ => Ok(make_comparator(
-            array.as_ref(),
-            array.as_ref(),
-            SortOptions {
-                descending: false,
-                nulls_first: true,
-            },
-        )?),
-    }
-}
-
-fn float_comparator<T: ArrowPrimitiveType>(array: &ArrayRef) -> DynComparator
-where
-    T::Native: Float,
-{
-    let values = array.as_primitive::<T>().values().clone();
-    nulls_first(array.nulls().cloned(), move |left, right| {
-        let left = values[left];
-        let right = values[right];
-        if left == right || (left.is_nan() && right.is_nan()) {
-            Ordering::Equal
-        } else if left > right || left.is_nan() {
-            Ordering::Greater
-        } else {
-            Ordering::Less
-        }
-    })
-}
-
-fn nulls_first(
-    nulls: Option<NullBuffer>,
-    compare: impl Fn(usize, usize) -> Ordering + Send + Sync + 'static,
-) -> DynComparator {
-    match nulls {
-        None => Box::new(compare),
-        Some(nulls) => {
-            Box::new(
-                move |left, right| match (nulls.is_null(left), nulls.is_null(right)) {
-                    (true, true) => Ordering::Equal,
-                    (true, false) => Ordering::Less,
-                    (false, true) => Ordering::Greater,
-                    (false, false) => compare(left, right),
-                },
-            )
-        }
     }
 }
 

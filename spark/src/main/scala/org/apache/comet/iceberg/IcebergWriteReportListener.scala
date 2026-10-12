@@ -75,7 +75,7 @@ class IcebergWriteReportListener(conf: SparkConf) extends QueryExecutionListener
       }
       if (lines.nonEmpty) {
         synchronized {
-          Files.write(
+          val _ = Files.write(
             reportFile.toPath,
             lines.mkString.getBytes(UTF_8),
             StandardOpenOption.CREATE,

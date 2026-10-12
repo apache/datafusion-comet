@@ -871,7 +871,6 @@ class CometCelebornShuffleManagerSuite extends AnyFunSuite {
   /** Caches one prepared scan under `shuffleId` as a native map task would. */
   private def prepareShuffleScan(shuffleId: Int, source: String): String = {
     val common = OperatorOuterClass.NativeScanCommon.newBuilder().setSource(source).build()
-    val key = NativeScanPlanDataInjector.sourceKey(common)
     val scanOp = OperatorOuterClass.Operator
       .newBuilder()
       .setNativeScan(
@@ -880,6 +879,7 @@ class CometCelebornShuffleManagerSuite extends AnyFunSuite {
           .setCommon(common)
           .setSourceKeyHash(NativeScanPlanDataInjector.sourceKeyHash(common)))
       .build()
+    val key = NativeScanPlanDataInjector.getKey(scanOp).get
     val partition = OperatorOuterClass.NativeScan
       .newBuilder()
       .setFilePartition(OperatorOuterClass.SparkFilePartition.newBuilder())

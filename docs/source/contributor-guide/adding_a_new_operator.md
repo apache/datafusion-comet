@@ -85,6 +85,14 @@ remove the inserted local node when restoring Spark execution. Restoring its `or
 apply the global TopK twice. A single input partition uses a final native limit and projection;
 multiple input partitions still require a final TopK after the shuffle.
 
+With `spark.comet.exec.topK.dynamicFilter.enabled`, only the local sort sets the protobuf
+`Sort.dynamic_filter_enabled` flag. The native planner wraps an eligible sort in
+`TopKReaderFilterExec`. Its permanent plan contains an unexecuted sort template; each execution
+creates a fresh sort and live predicate, then attaches that predicate to the Parquet reader when
+eligible. The stream owns the heap and predicate until completion, error, or cancellation. The
+final TopK after an exchange does not share this state. Reader work stays on scan metrics while
+attachment counters belong to the local TopK.
+
 ### Choosing the Right Operator Type
 
 When adding a new operator, choose based on these criteria:
@@ -109,6 +117,56 @@ Sink operators are handled specially in `CometExecRule.operator2Proto`. Instead 
 type, they are converted to `ScanExec` in the native plan. This allows them to serve as entry points for native
 execution blocks. The original Spark operator is wrapped with `CometScanWrapper` or `CometSinkPlaceHolder` which
 manages the boundary between JVM and native execution.
+
+### Operators That Should Not Be Converted
+
+Before adding an operator, check that converting it would speed anything up. Comet deliberately
+leaves three kinds of Spark plan nodes in place.
+
+**Wrappers and scheduling nodes.** `AdaptiveSparkPlanExec`, the AQE query stages
+(`ShuffleQueryStageExec`, `BroadcastQueryStageExec`, `TableCacheQueryStageExec`, and, on Spark 4.0
+and later, `ResultQueryStageExec`), `AQEShuffleReadExec`, `InputAdapter`, `WholeStageCodegenExec`,
+`ReusedExchangeExec`, and `ReusedSubqueryExec` do no data processing of their own. They schedule
+stages, mark whole-stage code generation boundaries, choose which shuffle blocks each task reads,
+or point at a plan that runs elsewhere. AQE creates the query stages itself, after Comet's rules
+have run on the plan inside them, and depends on their exact class. For example, it casts the root
+of the final plan to `ResultQueryStageExec`. When a query stage wraps a Comet shuffle, broadcast,
+or cached relation, `CometExecRule` reads from it as a native input through `CometExchangeSink`
+and leaves the stage itself in place.
+
+**Operators that run user JVM code on JVM objects.** The typed `Dataset` API plans
+`DeserializeToObjectExec`, `SerializeFromObjectExec`, `MapElementsExec`, `MapPartitionsExec`,
+`AppendColumnsExec`, `AppendColumnsWithObjectExec`, `MapGroupsExec`, and `CoGroupExec`. They
+convert rows to JVM objects, run an arbitrary user function on those objects, or convert them back,
+and most of them pass the objects to the next operator as an `ObjectType` column, which has no
+Arrow representation. None of this can run natively, so these operators stay on Spark. Every typed
+operation ends in `SerializeFromObjectExec`, though, whose output is ordinary rows. With
+`spark.comet.convert.typedDataset.enabled`, `CometExecRule` puts a `CometSparkToColumnarExec` above
+it, so the operators above the typed operation can run natively. Spark inserts no columnar
+transitions below a `RowToColumnarTransition`, so the rule inserts them for the typed operation's
+own operators itself. Spark computes a typed operation's rows one at a time, as they are read, while
+the conversion fills a whole Arrow batch first. So the rule leaves the output unconverted where a
+limit, a `mapPartitions` function, or code reading `Dataset.rdd` could stop reading it early, unless
+an operator that reads all of its input first, such as an exchange, a sort, or a hash aggregate,
+sits in between. For the same reason, it leaves the output unconverted when the plan uses
+`input_file_name()`, `input_file_block_start()` or `input_file_block_length()`: filling the batch
+moves the scan's reader past the file that these report when Spark evaluates them above the
+conversion. Fusing the deserializer, the `Invoke` that calls the user function, and the
+serializer of `Dataset.map` into one projection in the JVM codegen dispatcher was tried in
+[#5714](https://github.com/apache/datafusion-comet/pull/5714) and dropped. The dispatcher only calls
+into Spark's own classes, and the conversion gets nearly the same speedup for `map` while also
+covering the operations that pass the user function an iterator or a whole group. A typed `filter`
+is planned as an ordinary `FilterExec`, not as one of these operators.
+
+**Driver-side commands.** `ExecutedCommandExec` runs a `RunnableCommand`, such as DDL or `SET`, on
+the driver, so there is no data path for Comet to accelerate.
+
+If a new Spark version adds a wrapper node, do not write a serde for it. Add it to the nodes that
+`ExtendedExplainInfo.generateTreeString` skips when counting operators, and to the wrapper list in
+[Understanding Comet Plans](../user-guide/latest/understanding-comet-plans.md), so the coverage
+summary does not count it as a Spark operator. If `CometExecRule` visits the node, also add it to
+the operators it leaves in place without recording a fallback reason. `ExtendedExplainInfo`
+already skips every `QueryStageExec`, so a new query stage type needs no change there.
 
 ## Implementing a Native Operator
 
@@ -427,6 +485,12 @@ match op.op_struct.as_ref() {
 }
 ```
 
+`ProjectionBuilder` prunes a DataFusion filter's output for column-only projections, including
+empty projections such as the input to `count(*)`. Each required output column is filtered once,
+then the projection restores its order, duplicates and aliases. The predicate still sees its
+original input schema. Both native plans remain for metrics, including when they share a Spark
+plan ID. Computed projections and projections that use every input column are unchanged.
+
 #### Implement the Operator
 
 Create the operator implementation, either in an existing file or a new file in `native/core/src/execution/operators/`:
@@ -451,7 +515,7 @@ pub fn create_your_operator_exec(
 }
 ```
 
-For custom operators, you'll need to implement the `ExecutionPlan` trait. See `native/core/src/execution/operators/expand.rs` or `scan.rs` for examples.
+For custom operators, you'll need to implement the `ExecutionPlan` trait. Operators that need nothing else from `core` live in the `datafusion-comet-operators` crate under `native/operators/src/`. See `native/operators/src/expand.rs` or `native/core/src/execution/operators/scan.rs` for examples.
 
 ### Step 6: Add Tests
 
@@ -669,6 +733,34 @@ Use `QueryPlanSerde.exprToProto` to convert Spark expressions to protobuf:
 ```scala
 val protoExpr = exprToProto(sparkExpr, inputSchema)
 ```
+
+### Restoring the Spark operator (`sparkFallback`)
+
+`CometExec.originalPlan` is the Spark operator this node replaced. `CometExecRule` copies
+`originalPlan.logicalLink` onto the Comet node, which is how AQE finds the node again when it
+re-plans a stage. `RevertNativeForTransitionHeavyStages` calls `sparkFallback(newChildren)` to
+rebuild that Spark operator with the children of the reverted stage.
+
+The default implementation is `originalPlan.withNewChildren(newChildren)`. It refuses a null
+`originalPlan`, an `originalPlan` that is one of the node's own children, or a different number of
+children than the Spark operator has.
+
+Override `sparkFallback` when conversion changes the plan shape, so the restored node is not that
+Spark operator with the same children. `CometNativeWriteExec` replaces a `DataWritingCommandExec`
+and drops the `WriteFilesExec` under it; its override puts that wrapper back around the restored
+input. `CometIcebergWriteExec` keeps the same shape as `IcebergWriteExec`, so the default is
+enough.
+
+Also override `sparkFallback` when the operator's live state differs from `originalPlan`.
+`CometNativeScanExec` restores its current partition and data filters, and
+`CometIcebergNativeScanExec` restores its current runtime filters, so AQE's executable DPP
+subqueries survive reversion. `CometLocalTopKExec` returns the restored child directly: Comet
+inserted that local candidate selection, and only the outer TopK restores Spark's offset and
+projection. Rebuilding the original TopK at both nodes would apply it twice.
+
+Do not point `originalPlan` at a child. If that child is a shuffle or query stage, the copied
+logical link puts this node inside the stage's `LogicalQueryStage`. AQE then re-plans a second
+copy of the operator around the one that is already there.
 
 ### Handling Fallback
 

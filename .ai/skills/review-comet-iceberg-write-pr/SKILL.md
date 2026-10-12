@@ -46,7 +46,7 @@ not, inherits it. There is no query that fails to tell you.
 | Layer                | Flag                                              | Code                                                                                                                         |
 | -------------------- | ------------------------------------------------- | ---------------------------------------------------------------------------------------------------------------------------- |
 | Split-operator plan  | `spark.comet.write.iceberg.splitOperator.enabled` | `IcebergWriteStrategy`, `IcebergWriteLogical`, `IcebergWriteExec`, `IcebergCommitExec`, the `spark-*/.../iceberg/` shims     |
-| Native writer        | `spark.comet.iceberg.write.enabled`               | `CometIcebergNativeWrite` (gate and serde), `IcebergWriteProtoTranslation`, `CometIcebergWriteExec`, `iceberg_write.rs`      |
+| Native writer        | `spark.comet.write.iceberg.enabled`               | `CometIcebergNativeWrite` (gate and serde), `IcebergWriteProtoTranslation`, `CometIcebergWriteExec`, `iceberg_write.rs`      |
 | Shared with the scan | both                                              | `iceberg_common.rs` (`load_file_io`, `storage_factory_for`, `scheme_of`), `IcebergReflection`, `NativeConfig` S3 translation |
 
 A change to the split plan affects every Iceberg write once that flag is on, including writes that
@@ -111,6 +111,16 @@ only the latest.
       `Float.compare` does not
       ([#6138](https://github.com/apache/datafusion-comet/issues/6138)). Check equality, hashing,
       ordering and rendering for float, double, timestamp, timestamptz, binary and decimal.
+- [ ] **Timestamp partition values are UTC.** Iceberg's `years`, `months`, `days` and `hours`
+      ignore the session timezone. For date and timestamp sources, `PartitionValueCalculator`
+      (`iceberg_partition_value.rs`) computes them with the same kernels in
+      `iceberg_funcs/temporal.rs` that key the sort in front of a clustered write, and those follow
+      iceberg-java's `DateTimeUtil`, including its pre-1970 rounding. A change that moves one of
+      these transforms back to iceberg-rust, or that makes the kernels read the column's timezone
+      label, breaks that agreement. iceberg-rust's `years` and `months` follow the label
+      ([apache/iceberg-rust#3142](https://github.com/apache/iceberg-rust/issues/3142)). Ask for a
+      test in a non-UTC session for a change here. "Partition values" in `iceberg-writes.md` lists
+      where iceberg-rust differs, and `timezones.md` covers how Comet labels timestamps.
 - [ ] **Partition paths use the Java renderers.** Directory names come from
       `CometLocationGenerator` / `partition_to_path` in `iceberg_partition_path.rs`, which follow
       iceberg-java's `partitionToPath`, with `java_float_string` for floats. A PR that calls
@@ -123,9 +133,11 @@ only the latest.
 
 ## 4. Failure Handling and Cleanup
 
-Files must have exactly one owner at every moment. Read the ownership table in the contributor
-guide before reviewing any change near `AbortOnDrop`, `TrackingLocationGenerator`,
-`WrittenFileCleanup`, `drainNativePayload` or `IcebergCommitExec.collectAndCommit`.
+Cleanup must never have an ownership gap. During the handoff, native remains armed until the JVM
+has taken the locations and acknowledged that by polling EOF, so a brief overlap is intentional.
+Read the ownership table in the contributor guide before reviewing any change near `AbortOnDrop`,
+`TrackingLocationGenerator`, `WrittenFileCleanup`, `drainNativePayload` or
+`IcebergCommitExec.collectAndCommit`.
 
 - [ ] A new failure point between writing a file and the JVM taking the locations is covered by the
       native guard, including the path where the plan is dropped mid-write rather than returning an
@@ -140,6 +152,14 @@ guide before reviewing any change near `AbortOnDrop`, `TrackingLocationGenerator
       `SparkWrite.abort` keeps working.
 - [ ] The user-visible exception type is still what Spark's own write path throws on each Spark
       version ([#6143](https://github.com/apache/datafusion-comet/issues/6143)).
+- [ ] **Every open file and every held-back row is reserved.** Files must be opened through
+      `MeteredParquetWriterBuilder`, and rows the writer holds outside iceberg-rust (the
+      `PartitionFeed`s, or anything a new feed holds back) must be added to what `run_write_task` reserves. A
+      builder that constructs `ParquetWriterBuilder` directly leaves its files out of the task's
+      memory reservation, so a wide fanout write grows past the pool instead of failing its task.
+      A storage scheme newly supported for writes needs its entry in
+      `StorageWrites::for_location`: a file reports its flushed row groups until its storage has
+      written them out, which a local file does at once and an object store only part by part.
 
 ## 5. Plan Shape
 
@@ -177,16 +197,16 @@ guide before reviewing any change near `AbortOnDrop`, `TrackingLocationGenerator
 
 ## 7. Tests
 
-| Suite                               | Covers                                                                               |
-| ----------------------------------- | ------------------------------------------------------------------------------------ |
-| `CometIcebergWriteActionSuite`      | Both layers end to end, parity with iceberg-java, DML, failure cleanup, AQE re-plans |
-| `CometIcebergWriteDetectionSuite`   | One case per eligibility rule                                                        |
-| `CometIcebergSystemFunctionSuite`   | Native partition transforms keeping partitioned writes native                        |
-| `CometIcebergRewriteActionSuite`    | `rewrite_data_files` through the split plan and the native writer                    |
-| `IcebergWriteProtoTranslationSuite` | Property to `IcebergParquetWriteSettings` translation                                |
-| Rust tests in `iceberg_write.rs`    | Rolling, fanout order, clustered checks, cleanup guard, manifest round trip          |
-| `iceberg_partition_path.rs` tests   | Partition path rendering against iceberg-java                                        |
-| `CometIcebergWriteBenchmark`        | Native versus iceberg-java throughput                                                |
+| Suite                               | Covers                                                                                          |
+| ----------------------------------- | ----------------------------------------------------------------------------------------------- |
+| `CometIcebergWriteActionSuite`      | Both layers end to end, parity with iceberg-java, DML, failure cleanup, AQE re-plans            |
+| `CometIcebergWriteDetectionSuite`   | One case per eligibility rule                                                                   |
+| `CometIcebergSystemFunctionSuite`   | Native partition transforms keeping partitioned writes native                                   |
+| `CometIcebergRewriteActionSuite`    | `rewrite_data_files` through the split plan and the native writer                               |
+| `IcebergWriteProtoTranslationSuite` | Property to `IcebergParquetWriteSettings` translation                                           |
+| Rust tests in `iceberg_write.rs`    | Rolling, fanout order, clustered checks, cleanup guard, manifest round trip, memory reservation |
+| `iceberg_partition_path.rs` tests   | Partition path rendering against iceberg-java                                                   |
+| `CometIcebergWriteBenchmark`        | Native versus iceberg-java throughput                                                           |
 
 Ask specifically:
 
@@ -194,7 +214,7 @@ Ask specifically:
       that only compares results passes when both sides used iceberg-java. Look for
       `assertNativeWriteEngages` or a collected `CometIcebergWriteExec`.
 - [ ] **Is the input native?** `withNativeEnabled` also sets `localTableScan`; a test that sets
-      `spark.comet.iceberg.write.enabled` by hand and inserts `VALUES` usually tests the JVM writer.
+      `spark.comet.write.iceberg.enabled` by hand and inserts `VALUES` usually tests the JVM writer.
 - [ ] **Is the comparison against iceberg-java** (a sibling table written by the JVM writer) rather
       than hand-written expected values?
 - [ ] **Enough partitions for an ordering bug?** Two partitions pass half the time; use eight or

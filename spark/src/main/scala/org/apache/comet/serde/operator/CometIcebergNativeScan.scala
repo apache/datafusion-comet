@@ -283,6 +283,19 @@ object CometIcebergNativeScan extends CometOperatorSerde[CometBatchScanExec] wit
     IcebergReflection.findMethod(clazz, methodName).flatMap(m => Option(m.invoke(deleteFile)))
 
   /**
+   * Reads equality-delete field IDs for the native serde path. The accessor is required on every
+   * supported Iceberg DeleteFile API, so a missing method or invocation failure must propagate. A
+   * null return is distinct: Iceberg uses it for files without equality keys.
+   */
+  private def requiredEqualityFieldIds(
+      deleteFileClass: Class[_],
+      deleteFile: Any): java.util.List[Integer] = {
+    val method = IcebergReflection.getMethod(deleteFileClass, "equalityFieldIds")
+    val ids = method.invoke(deleteFile).asInstanceOf[java.util.List[Integer]]
+    if (ids == null) new java.util.ArrayList[Integer]() else ids
+  }
+
+  /**
    * Extracts delete files from an Iceberg FileScanTask as a list (for deduplication).
    *
    * Delete-file size is not serialized; the native scan stats each file for it (see
@@ -301,97 +314,15 @@ object CometIcebergNativeScan extends CometOperatorSerde[CometBatchScanExec] wit
 
       val deletes = IcebergReflection.getDeleteFilesFromTask(task, fileScanTaskClass)
 
-      deletes.asScala.map { deleteFile =>
-        // The path is the one essential field. A delete file we cannot locate cannot be applied,
-        // and silently skipping it would leak deleted rows, so treat a missing path as fatal.
-        val deletePath = IcebergReflection
-          .extractFileLocation(contentFileClass, deleteFile)
-          .getOrElse(
-            throw new RuntimeException(
-              "Neither location() nor path() is declared on this Iceberg version's " +
-                "ContentFile -- cannot extract delete file path from FileScanTask"))
-
-        val deleteBuilder = OperatorOuterClass.IcebergDeleteFile.newBuilder()
-        deleteBuilder.setFilePathIdx(internPath(deletePath))
-
-        val contentType =
-          try {
-            val contentMethod = IcebergReflection.getMethod(deleteFileClass, "content")
-            val content = contentMethod.invoke(deleteFile)
-            content.toString match {
-              case IcebergReflection.ContentTypes.POSITION_DELETES =>
-                IcebergReflection.ContentTypes.POSITION_DELETES
-              case IcebergReflection.ContentTypes.EQUALITY_DELETES =>
-                IcebergReflection.ContentTypes.EQUALITY_DELETES
-              case other => other
-            }
-          } catch {
-            case _: Exception =>
-              IcebergReflection.ContentTypes.POSITION_DELETES
-          }
-        deleteBuilder.setContentType(contentType)
-
-        // "PARQUET", or "PUFFIN" for a V3 deletion vector. iceberg-rust selects its
-        // deletion-vector reader on this, and a wrong value reads a Puffin blob as Parquet, so an
-        // undeterminable format is fatal: by serde time there is no fallback left.
-        val fileFormat = IcebergReflection
-          .getFileFormat(contentFileClass, deleteFile)
-          .getOrElse(
-            throw new RuntimeException(
-              "ContentFile.format() is not declared on this Iceberg version -- cannot tell a " +
-                "deletion vector from a Parquet delete file"))
-        deleteBuilder.setFileFormat(fileFormat)
-
-        val specId =
-          try {
-            val specIdMethod = IcebergReflection.getMethod(deleteFileClass, "specId")
-            specIdMethod.invoke(deleteFile).asInstanceOf[Int]
-          } catch {
-            case _: Exception => 0
-          }
-        deleteBuilder.setPartitionSpecId(specId)
-
-        try {
-          val equalityIdsMethod =
-            IcebergReflection.getMethod(deleteFileClass, "equalityFieldIds")
-          val equalityIds = equalityIdsMethod
-            .invoke(deleteFile)
-            .asInstanceOf[java.util.List[Integer]]
-          equalityIds.forEach(id => deleteBuilder.addEqualityIds(id))
-        } catch {
-          case _: Exception =>
-        }
-
-        // Gated on the format, not on the accessors returning a value: Iceberg also sets
-        // referencedDataFile on file-scoped Parquet position deletes, where iceberg-rust ignores
-        // it. Forwarding it there would serialize a data-file path per delete file that nothing
-        // reads, and would invite keying deletion-vector detection on the field instead of on
-        // fileFormat, which is the only discriminator.
-        if (fileFormat.equalsIgnoreCase(IcebergReflection.FileFormats.PUFFIN)) {
-          deletionVectorField(deleteFileClass, "referencedDataFile", deleteFile)
-            .foreach(p => deleteBuilder.setReferencedDataFile(p.asInstanceOf[String]))
-          deletionVectorField(deleteFileClass, "contentOffset", deleteFile)
-            .foreach(o => deleteBuilder.setContentOffset(o.asInstanceOf[java.lang.Long]))
-          deletionVectorField(deleteFileClass, "contentSizeInBytes", deleteFile)
-            .foreach(s => deleteBuilder.setContentSizeInBytes(s.asInstanceOf[java.lang.Long]))
-        }
-
-        // recordCount is declared on ContentFile, so it is present on every supported Iceberg
-        // version and a lookup failure is a real defect rather than an old-version absence.
-        // iceberg-rust rejects a deletion vector without it, since it checks the count against
-        // the cardinality it decodes from the blob.
-        deleteBuilder.setRecordCount(
-          IcebergReflection
-            .getMethod(contentFileClass, "recordCount")
-            .invoke(deleteFile)
-            .asInstanceOf[java.lang.Long])
-
-        // Encrypted delete files carry a plaintext StandardKeyMetadata blob; forward it verbatim.
-        // Unencrypted delete files leave the field unset.
-        keyMetadataBytes(keyMetadataMethod, deleteFile).foreach(deleteBuilder.setKeyMetadata)
-
-        deleteBuilder.build()
-      }.toSeq
+      deletes.asScala
+        .map(
+          serializeDeleteFile(
+            _,
+            contentFileClass,
+            deleteFileClass,
+            keyMetadataMethod,
+            internPath))
+        .toSeq
     } catch {
       case e: Exception =>
         val msg =
@@ -400,6 +331,85 @@ object CometIcebergNativeScan extends CometOperatorSerde[CometBatchScanExec] wit
         logError(msg)
         throw new RuntimeException(msg, e)
     }
+  }
+
+  /**
+   * Serializes a single Iceberg DeleteFile to protobuf.
+   *
+   * Required delete metadata must never fall back to guessed values after native execution has
+   * been selected. Missing accessors and invocation failures therefore propagate.
+   */
+  private[operator] def serializeDeleteFile(
+      deleteFile: Any,
+      contentFileClass: Class[_],
+      deleteFileClass: Class[_],
+      keyMetadataMethod: java.lang.reflect.Method,
+      internPath: String => Int): OperatorOuterClass.IcebergDeleteFile = {
+    val deletePath = IcebergReflection
+      .extractFileLocation(contentFileClass, deleteFile)
+      .getOrElse(
+        throw new RuntimeException(
+          "Neither location() nor path() is declared on this Iceberg version's " +
+            "ContentFile -- cannot extract delete file path from FileScanTask"))
+
+    val deleteBuilder = OperatorOuterClass.IcebergDeleteFile.newBuilder()
+    deleteBuilder.setFilePathIdx(internPath(deletePath))
+
+    val contentMethod = IcebergReflection.getMethod(deleteFileClass, "content")
+    val contentType = contentMethod.invoke(deleteFile).toString
+    deleteBuilder.setContentType(contentType)
+
+    // "PARQUET", or "PUFFIN" for a V3 deletion vector. iceberg-rust selects its
+    // deletion-vector reader on this, and a wrong value reads a Puffin blob as Parquet, so an
+    // undeterminable format is fatal: by serde time there is no fallback left.
+    val fileFormat = IcebergReflection
+      .getFileFormat(contentFileClass, deleteFile)
+      .getOrElse(
+        throw new RuntimeException(
+          "ContentFile.format() is not declared on this Iceberg version -- cannot tell a " +
+            "deletion vector from a Parquet delete file"))
+    deleteBuilder.setFileFormat(fileFormat)
+
+    val specIdMethod = IcebergReflection.getMethod(deleteFileClass, "specId")
+    deleteBuilder.setPartitionSpecId(specIdMethod.invoke(deleteFile).asInstanceOf[Int])
+
+    val equalityFieldIds = requiredEqualityFieldIds(deleteFileClass, deleteFile)
+    val isEqualityDelete = contentType == IcebergReflection.ContentTypes.EQUALITY_DELETES
+    if (isEqualityDelete && equalityFieldIds.isEmpty) {
+      throw new IllegalStateException(
+        s"Iceberg equality delete file '$deletePath' has no equality field IDs")
+    }
+    deleteBuilder.addAllEqualityIds(equalityFieldIds)
+
+    // Gated on the format, not on the accessors returning a value: Iceberg also sets
+    // referencedDataFile on file-scoped Parquet position deletes, where iceberg-rust ignores
+    // it. Forwarding it there would serialize a data-file path per delete file that nothing
+    // reads, and would invite keying deletion-vector detection on the field instead of on
+    // fileFormat, which is the only discriminator.
+    if (fileFormat.equalsIgnoreCase(IcebergReflection.FileFormats.PUFFIN)) {
+      deletionVectorField(deleteFileClass, "referencedDataFile", deleteFile)
+        .foreach(p => deleteBuilder.setReferencedDataFile(p.asInstanceOf[String]))
+      deletionVectorField(deleteFileClass, "contentOffset", deleteFile)
+        .foreach(o => deleteBuilder.setContentOffset(o.asInstanceOf[java.lang.Long]))
+      deletionVectorField(deleteFileClass, "contentSizeInBytes", deleteFile)
+        .foreach(s => deleteBuilder.setContentSizeInBytes(s.asInstanceOf[java.lang.Long]))
+    }
+
+    // recordCount is declared on ContentFile, so it is present on every supported Iceberg
+    // version and a lookup failure is a real defect rather than an old-version absence.
+    // iceberg-rust rejects a deletion vector without it, since it checks the count against
+    // the cardinality it decodes from the blob.
+    deleteBuilder.setRecordCount(
+      IcebergReflection
+        .getMethod(contentFileClass, "recordCount")
+        .invoke(deleteFile)
+        .asInstanceOf[java.lang.Long])
+
+    // Encrypted delete files carry a plaintext StandardKeyMetadata blob; forward it verbatim.
+    // Unencrypted delete files leave the field unset.
+    keyMetadataBytes(keyMetadataMethod, deleteFile).foreach(deleteBuilder.setKeyMetadata)
+
+    deleteBuilder.build()
   }
 
   /**
@@ -519,7 +529,7 @@ object CometIcebergNativeScan extends CometOperatorSerde[CometBatchScanExec] wit
                 commonBuilder.addPartitionTypePool(partitionTypeJson)
                 idx
               })
-            taskBuilder.setPartitionSpecIdx(specIdx)
+            val _ = taskBuilder.setPartitionSpecIdx(specIdx)
           } catch {
             case e: Exception =>
               logWarning(s"Failed to serialize partition spec to JSON: ${e.getMessage}")
@@ -579,7 +589,7 @@ object CometIcebergNativeScan extends CometOperatorSerde[CometBatchScanExec] wit
               commonBuilder.addPartitionDataPool(partitionDataProto)
               idx
             })
-          taskBuilder.setPartitionDataIdx(partitionDataIdx)
+          val _ = taskBuilder.setPartitionDataIdx(partitionDataIdx)
         } else {
           // Defensive: ContentScanTask.partition() returns an empty struct (never null) for
           // unpartitioned tables in practice. If it is ever null we cannot compute values, so
@@ -644,6 +654,10 @@ object CometIcebergNativeScan extends CometOperatorSerde[CometBatchScanExec] wit
 
     global.result() ++ promoted.result()
   }
+
+  /** iceberg-rust's per-I/O-call timeout, set from `spark.comet.iceberg.ioTimeout`. */
+  def ioTimeoutProperty(): (String, String) =
+    "opendal.io-timeout-ms" -> CometConf.COMET_ICEBERG_IO_TIMEOUT.get().toString
 
   /**
    * Converts an Iceberg residual Expression into an IcebergPredicate for the native scan.
@@ -1020,7 +1034,7 @@ object CometIcebergNativeScan extends CometOperatorSerde[CometBatchScanExec] wit
     commonBuilder.setDataFileConcurrencyLimit(
       CometConf.COMET_ICEBERG_DATA_FILE_CONCURRENCY_LIMIT.get())
     metadata.catalogName.foreach(commonBuilder.setCatalogName)
-    metadata.catalogProperties.foreach { case (key, value) =>
+    (metadata.catalogProperties + ioTimeoutProperty()).foreach { case (key, value) =>
       commonBuilder.putCatalogProperties(key, value)
     }
 
@@ -1130,10 +1144,7 @@ object CometIcebergNativeScan extends CometOperatorSerde[CometBatchScanExec] wit
                     // dropped ones from the table's schema history (mirrors Iceberg-Java's
                     // DeleteFilter.fileProjection).
                     val equalityFieldIds = deletes.asScala.flatMap { df =>
-                      IcebergReflection
-                        .getEqualityFieldIds(deleteFileClass, df)
-                        .asScala
-                        .map(_.asInstanceOf[java.lang.Integer].intValue())
+                      requiredEqualityFieldIds(deleteFileClass, df).asScala.map(_.intValue())
                     }.toSeq
                     if (equalityFieldIds.nonEmpty) {
                       IcebergReflection

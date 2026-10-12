@@ -32,12 +32,12 @@ import org.apache.spark.sql.execution.datasources.parquet.ParquetUtils
 import org.apache.spark.sql.internal.SQLConf
 import org.apache.spark.sql.types.{StructField, StructType}
 
-import org.apache.comet.{CometConf, ConfigEntry}
+import org.apache.comet.{CometConf, ConfigEntry, DataTypeSupport}
 import org.apache.comet.CometConf.COMET_EXEC_ENABLED
 import org.apache.comet.CometSparkSessionExtensions.{hasFallbackReason, isSpark35Plus, isSpark41Plus, withFallbackReason}
 import org.apache.comet.objectstore.NativeConfig
 import org.apache.comet.parquet.CometParquetUtils
-import org.apache.comet.serde.{CometOperatorSerde, Compatible, OperatorOuterClass, SupportLevel}
+import org.apache.comet.serde.{CometOperatorSerde, CometTimeZone, Compatible, OperatorOuterClass, SupportLevel}
 import org.apache.comet.serde.ExprOuterClass.Expr
 import org.apache.comet.serde.OperatorOuterClass.Operator
 import org.apache.comet.serde.QueryPlanSerde.{exprToProto, serializeDataType}
@@ -69,7 +69,9 @@ object CometNativeScan extends CometOperatorSerde[CometScanExec] with CometTypeS
           } else {
             Some(Literal.create(value, field.dataType))
           }
-          expression.flatMap(exprToProto(_, output)).map(_ -> java.lang.Long.valueOf(index))
+          expression
+            .flatMap(exprToProto(_, output))
+            .map(_ -> java.lang.Long.valueOf(index.toLong))
       }
       .toSeq
     // Never drop a value independently of its index: that would shift every later default.
@@ -165,6 +167,19 @@ object CometNativeScan extends CometOperatorSerde[CometScanExec] with CometTypeS
       withFallbackReason(scanExec, unsupportedDefaultReason)
     }
 
+    // Spark's reader raises when a requested field folds to more than one file field. The native
+    // scan resolves nested names only while casting, so a column whose file type equals the
+    // requested one, and whose siblings are therefore the requested ones, is read positionally.
+    // A DataFrame analyzed case-sensitively gets such a schema past the analyzer (#6136). Not in
+    // CometScanTypeChecker, which also gates Iceberg scans that resolve fields by id.
+    if (!SQLConf.get.caseSensitiveAnalysis &&
+      DataTypeSupport.hasCaseInsensitiveDuplicateFieldNames(scanExec.requiredSchema)) {
+      withFallbackReason(
+        scanExec,
+        "Native Parquet scan does not support a read schema whose field names collide " +
+          s"case-insensitively when ${SQLConf.CASE_SENSITIVE.key}=false")
+    }
+
     if (scanExec.requiredSchema.exists(field => isVariantType(field.dataType))) {
       // Spark's strict legacy reader owns malformed-layout errors (SPARK-47546).
       // TODO: Remove this guard once the native reader implements Spark's strict Variant layout
@@ -236,6 +251,23 @@ object CometNativeScan extends CometOperatorSerde[CometScanExec] with CometTypeS
     }
 
     if (scanTypes.length == scan.output.length) {
+      // Collect S3/cloud storage configurations
+      val hadoopConf = scan.relation.sparkSession.sessionState
+        .newHadoopConfWithOptions(scan.relation.options)
+
+      // Use selectedPartitions (static) instead of getFilePartitions() because at planning time
+      // DPP subqueries haven't been resolved yet. Object store options don't depend on DPP.
+      val fileUris = scan.selectedPartitions.view.flatMap(_.files).map(_.getPath.toUri)
+      val objectStoreOptions =
+        NativeConfig.extractScanObjectStoreOptions(hadoopConf, fileUris) match {
+          case Right(options) => options
+          case Left(reason) =>
+            // CometExecRule falls back to the wrapped Spark scan, so it carries the reason too.
+            withFallbackReason(scan, reason)
+            withFallbackReason(scan.wrapped, reason)
+            return None
+        }
+
       commonBuilder.addAllFields(scanTypes.asJava)
 
       // Sink operators don't have children
@@ -263,14 +295,6 @@ object CometNativeScan extends CometOperatorSerde[CometScanExec] with CometTypeS
           withFallbackReason(scan, unsupportedDefaultReason)
           return None
       }
-
-      // Extract object store options from first file (S3 configs apply to all files in scan).
-      // Use selectedPartitions (static) instead of getFilePartitions() because at planning time
-      // DPP subqueries haven't been resolved yet. Object store options don't depend on DPP.
-      val firstFileUri = scan.selectedPartitions
-        .flatMap(_.files.headOption)
-        .headOption
-        .map(_.getPath.toUri)
 
       // Constant metadata columns (file_path, file_name, file_size, file_block_start,
       // file_block_length, file_modification_time) are known before opening the file and
@@ -311,7 +335,9 @@ object CometNativeScan extends CometOperatorSerde[CometScanExec] with CometTypeS
       commonBuilder.addAllDataSchema(dataSchema.asJava)
       commonBuilder.addAllRequiredSchema(requiredSchema.asJava)
       commonBuilder.addAllPartitionSchema(partitionSchema.asJava)
-      commonBuilder.setSessionTimezone(scan.conf.getConfString("spark.sql.session.timeZone"))
+      val sessionTimeZone = scan.conf.getConfString("spark.sql.session.timeZone")
+      commonBuilder.setSessionTimezone(
+        CometTimeZone.nativeId(Some(sessionTimeZone)).getOrElse(sessionTimeZone))
       commonBuilder.setCaseSensitive(scan.conf.getConf[Boolean](SQLConf.CASE_SENSITIVE))
 
       // SPARK-53535 (Spark 4.1+): when reading a struct whose requested fields are all
@@ -339,18 +365,10 @@ object CometNativeScan extends CometOperatorSerde[CometScanExec] with CometTypeS
       commonBuilder.setAllowTypePromotion(CometConf.COMET_SCHEMA_EVOLUTION_ENABLED)
       commonBuilder.setAllowTimestampLtzToNtz(CometConf.COMET_ALLOW_TIMESTAMP_LTZ_AS_NTZ)
 
-      // Collect S3/cloud storage configurations
-      val hadoopConf = scan.relation.sparkSession.sessionState
-        .newHadoopConfWithOptions(scan.relation.options)
-
       commonBuilder.setEncryptionEnabled(CometParquetUtils.encryptionEnabled(hadoopConf))
 
-      firstFileUri.foreach { uri =>
-        val objectStoreOptions =
-          NativeConfig.extractObjectStoreOptions(hadoopConf, uri)
-        objectStoreOptions.foreach { case (key, value) =>
-          commonBuilder.putObjectStoreOptions(key, value)
-        }
+      objectStoreOptions.foreach { case (key, value) =>
+        commonBuilder.putObjectStoreOptions(key, value)
       }
 
       // Set common data in NativeScan (file_partition will be populated at execution time)
