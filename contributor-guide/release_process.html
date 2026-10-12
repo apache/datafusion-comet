@@ -994,6 +994,10 @@ Creating<span class="w"> </span>Nexus<span class="w"> </span>staging<span class=
 </div>
 <p>In the Nexus repository UI (https://repository.apache.org/) locate and verify the artifacts in
 staging (https://central.sonatype.org/publish/release/#locate-and-examine-your-staging-repository).</p>
+<p>The staging repository should hold only the <code class="docutils literal notranslate"><span class="pre">comet-spark-spark&lt;spark</span> <span class="pre">version&gt;_&lt;scala</span> <span class="pre">version&gt;</span></code> artifacts, one for
+each Spark and Scala combination that <code class="docutils literal notranslate"><span class="pre">build-release-comet.sh</span></code> builds. The build installs <code class="docutils literal notranslate"><span class="pre">comet-common</span></code> and the
+parent pom too, but <code class="docutils literal notranslate"><span class="pre">publish-to-maven.sh</span></code> leaves them out of the upload: <code class="docutils literal notranslate"><span class="pre">comet-common</span></code> is shaded into the
+<code class="docutils literal notranslate"><span class="pre">comet-spark</span></code> jar and the published <code class="docutils literal notranslate"><span class="pre">comet-spark</span></code> pom has no parent, so nothing refers to either of them.</p>
 <p>The script closes the staging repository but does not release it. Releasing to Maven Central is a manual step
 performed only after the vote passes (see <a class="reference internal" href="#publishing-maven-artifacts">Publishing Maven Artifacts</a> below).</p>
 <p>Note that the Maven artifacts are always published under the final release version (e.g. <code class="docutils literal notranslate"><span class="pre">0.13.0</span></code>), not the RC
