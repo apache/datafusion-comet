@@ -350,6 +350,9 @@ pub struct PhysicalPlanner {
     /// How comparisons treat floating-point operands. `Raw` only while planning a scan's data
     /// filters; see [`Self::create_data_filter`].
     float_operands: FloatOperands,
+    /// Whether a boundary that would cast a timestamp's timezone label to the declared one fails
+    /// instead. Test-only; see `spark.comet.testing.strictTimestampLabels.enabled`.
+    strict_timestamp_labels: bool,
 }
 
 impl Default for PhysicalPlanner {
@@ -370,6 +373,7 @@ impl PhysicalPlanner {
             class_loader: None,
             shuffle_partition_pusher: None,
             float_operands: FloatOperands::Normalize,
+            strict_timestamp_labels: false,
         }
     }
 
@@ -446,6 +450,15 @@ impl PhysicalPlanner {
     pub fn with_exec_id(mut self, exec_context_id: i64) -> Self {
         self.exec_context_id = exec_context_id;
         self
+    }
+
+    pub fn with_strict_timestamp_labels(mut self, strict: bool) -> Self {
+        self.strict_timestamp_labels = strict;
+        self
+    }
+
+    pub(crate) fn strict_timestamp_labels(&self) -> bool {
+        self.strict_timestamp_labels
     }
 
     /// Attach a propagated Spark `TaskContext` global reference. Called by the JNI `executePlan`
@@ -2136,7 +2149,8 @@ impl PhysicalPlanner {
 
                 // The `ScanExec` operator will take actual arrays from Spark during execution
                 let scan =
-                    ScanExec::new(self.exec_context_id, input_source, &scan.source, data_types)?;
+                    ScanExec::new(self.exec_context_id, input_source, &scan.source, data_types)?
+                        .with_strict_timestamp_labels(self.strict_timestamp_labels);
 
                 Ok((
                     vec![scan.clone()],
