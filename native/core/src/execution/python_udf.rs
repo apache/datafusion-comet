@@ -57,6 +57,11 @@ fn initialize_python() -> Result<()> {
                 pyo3::ffi::PyConfig_InitPythonConfig(config.as_mut_ptr());
                 let mut config = config.assume_init();
                 config.install_signal_handlers = 0;
+                // Spark starts its Python workers with PYTHONUNBUFFERED. The embedded
+                // interpreter is never finalized, so buffered print() output would be
+                // lost when the executor exits. Leave the JVM's C streams unchanged.
+                config.buffered_stdio = 0;
+                config.configure_c_stdio = 0;
                 config.use_hash_seed = 1;
                 config.hash_seed = 0;
                 let status = pyo3::ffi::Py_InitializeFromConfig(&config);
@@ -581,6 +586,52 @@ mod tests {
             assert!(error.contains("line 1"), "{error}");
             assert!(error.contains("ZeroDivisionError"), "{error}");
         });
+    }
+
+    const UNBUFFERED_CHILD: &str = "COMET_ARROW_UDF_UNBUFFERED_CHILD";
+    const UNBUFFERED_MARKER: &str = "comet-arrow-udf-unbuffered-marker";
+
+    /// Runs in a child process: prints from a UDF, then exits without finalizing
+    /// Python, as an executor JVM does.
+    #[test]
+    fn print_from_udf_then_exit() {
+        if std::env::var_os(UNBUFFERED_CHILD).is_none() {
+            return;
+        }
+        initialize_python().unwrap();
+        Python::attach(|py| {
+            let command = cloudpickled_lambda(
+                py,
+                c"lambda a: (print('comet-arrow-udf-unbuffered-marker'), a)[1]",
+            );
+            let udf =
+                ArrowPythonUdf::from_command(&command, DataType::Int64, true, true, false, "")
+                    .unwrap();
+            let input: ArrayRef = Arc::new(Int64Array::from(vec![1]));
+            udf.evaluate(&[input], 1).unwrap();
+        });
+        std::process::exit(0);
+    }
+
+    #[test]
+    fn udf_stdout_survives_exit_without_flush() {
+        let output = std::process::Command::new(std::env::current_exe().unwrap())
+            .args([
+                "--exact",
+                "execution::python_udf::tests::print_from_udf_then_exit",
+                "--nocapture",
+                "--test-threads=1",
+            ])
+            .env(UNBUFFERED_CHILD, "1")
+            .output()
+            .unwrap();
+        let stdout = String::from_utf8_lossy(&output.stdout);
+        assert!(
+            stdout.contains(UNBUFFERED_MARKER),
+            "status: {}, stdout: {stdout}, stderr: {}",
+            output.status,
+            String::from_utf8_lossy(&output.stderr)
+        );
     }
 
     #[test]
