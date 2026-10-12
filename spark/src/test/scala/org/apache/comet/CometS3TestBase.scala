@@ -46,12 +46,14 @@ trait CometS3TestBase extends CometTestBase {
 
   protected def testBucketName: String
 
+  // Docker Hub no longer serves minio/minio. This is Chainguard's build of MinIO
+  // RELEASE.2026-09-22T19-25-18Z, pinned by its multi-arch index digest.
+  private val minioImage = "cgr.dev/chainguard/minio@sha256:" +
+    "dc455cdd4db6e390b1b26514f15ff37681a777bf8dab41aac445a0259f751e56"
+
   override def beforeAll(): Unit = {
-    // Docker Hub no longer serves minio/minio, so use Chainguard's build of the same server.
     minioContainer = new MinIOContainer(
-      DockerImageName
-        .parse("cgr.dev/chainguard/minio:latest")
-        .asCompatibleSubstituteFor("minio/minio"))
+      DockerImageName.parse(minioImage).asCompatibleSubstituteFor("minio/minio"))
       .withUserName(userName)
       .withPassword(password)
     minioContainer.start()
