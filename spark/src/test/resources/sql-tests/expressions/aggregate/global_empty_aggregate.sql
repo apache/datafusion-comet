@@ -20,7 +20,8 @@
 -- for an empty input.
 -- Config: spark.comet.exec.localTableScan.enabled=true
 
--- Five partitions, so the final stage collapses five rows into one.
+-- Five files. With the test session's parallelism of 5, the scan reads them as five partitions, so
+-- the final stage collapses five rows into one.
 statement
 CREATE TABLE empty_agg_multi(a int) USING parquet
 
