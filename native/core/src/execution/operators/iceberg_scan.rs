@@ -109,10 +109,11 @@ pub struct IcebergScanExec {
     /// creates fresh `ScanMetrics` per call, so per-partition metrics stay separate, and the reader
     /// is Arc-backed and cheap to clone.
     reader: OnceLock<ArrowReader>,
-    /// Delete-file sizes (path -> bytes) stat'd once and shared across partitions, so the HEAD
-    /// request for a delete file shared by the partition is issued once rather than once per data
-    /// file (#6524). Guarded by a std Mutex; the lock is never held across an `.await`.
-    delete_file_sizes: Arc<Mutex<HashMap<String, u64>>>,
+    /// Per-delete-file size cells shared across this scan's partitions. Each path maps to a shared
+    /// cell that runs its HEAD stat at most once: concurrent partitions needing the same delete
+    /// file await the one in-flight request instead of each issuing its own (#6524). The std Mutex
+    /// only guards get/insert of the cells and is never held across an `.await`.
+    delete_file_sizes: Arc<Mutex<HashMap<String, Arc<tokio::sync::OnceCell<u64>>>>>,
     /// Metrics
     metrics: ExecutionPlanMetricsSet,
 }
@@ -348,7 +349,7 @@ impl IcebergScanExec {
         tasks: &mut [FileScanTask],
         file_io: &FileIO,
         concurrency_limit: usize,
-        size_cache: &Mutex<HashMap<String, u64>>,
+        size_cache: &Mutex<HashMap<String, Arc<tokio::sync::OnceCell<u64>>>>,
     ) -> Result<(), Error> {
         use datafusion::common::HashSet;
         use futures::TryStreamExt;
@@ -376,16 +377,21 @@ impl IcebergScanExec {
             return Ok(());
         }
 
-        // Only stat delete files not already sized on an earlier partition of this scan. The size
-        // cache is shared across partitions (#6524), so a delete file the whole partition shares is
-        // stat'd once, not once per data file. Snapshot the missing paths under the lock, then
-        // release it before the async stats below.
-        let to_stat: Vec<String> = {
-            let cache = size_cache.lock().unwrap();
+        // Coalesce stats across partitions: each delete file gets one shared cell, and concurrent
+        // partitions that need the same file await its single in-flight stat instead of each issuing
+        // a HEAD (#6524). Create/fetch the per-path cells under a brief lock (no await held), then
+        // drive the stats through the cells.
+        let cells: Vec<(String, Arc<tokio::sync::OnceCell<u64>>)> = {
+            let mut cache = size_cache.lock().unwrap();
             needed
                 .iter()
-                .filter(|path| !cache.contains_key(path.as_str()))
-                .cloned()
+                .map(|path| {
+                    let cell = cache
+                        .entry(path.clone())
+                        .or_insert_with(|| Arc::new(tokio::sync::OnceCell::new()))
+                        .clone();
+                    (path.clone(), cell)
+                })
                 .collect()
         };
 
@@ -395,51 +401,47 @@ impl IcebergScanExec {
         // Guaranteed > 0 by COMET_ICEBERG_DATA_FILE_CONCURRENCY_LIMIT; buffer_unordered(0) would
         // never poll.
         debug_assert!(concurrency_limit > 0);
-        let sizes: Vec<(String, u64)> = futures::stream::iter(to_stat.into_iter().map(|path| {
-            let file_io = file_io.clone();
-            async move {
-                let size = file_io
-                    .new_input(&path)?
-                    .metadata()
-                    .await
-                    .map_err(|e| {
-                        Error::new(
-                            ErrorKind::Unexpected,
-                            format!("Failed to stat delete file '{path}'"),
-                        )
-                        .with_source(e)
-                    })?
-                    .size;
-                if size < MIN_PARQUET_FILE_SIZE {
-                    return Err(Error::new(
-                        ErrorKind::Unexpected,
-                        format!(
-                            "Delete file '{path}' statted to {size} bytes, below the \
-                             {MIN_PARQUET_FILE_SIZE}-byte Parquet minimum. The object is empty or \
-                             truncated, or the stat returned no Content-Length (check the object \
-                             store endpoint, TLS, and path-style config)."
-                        ),
-                    ));
+        let size_map: std::collections::HashMap<String, u64> =
+            futures::stream::iter(cells.into_iter().map(|(path, cell)| {
+                let file_io = file_io.clone();
+                async move {
+                    // get_or_try_init runs the stat once per cell; partitions awaiting the same cell
+                    // share the result rather than each issuing their own HEAD.
+                    let size = *cell
+                        .get_or_try_init(|| async {
+                            let size = file_io
+                                .new_input(&path)?
+                                .metadata()
+                                .await
+                                .map_err(|e| {
+                                    Error::new(
+                                        ErrorKind::Unexpected,
+                                        format!("Failed to stat delete file '{path}'"),
+                                    )
+                                    .with_source(e)
+                                })?
+                                .size;
+                            if size < MIN_PARQUET_FILE_SIZE {
+                                return Err(Error::new(
+                                    ErrorKind::Unexpected,
+                                    format!(
+                                        "Delete file '{path}' statted to {size} bytes, below the \
+                                         {MIN_PARQUET_FILE_SIZE}-byte Parquet minimum. The object is \
+                                         empty or truncated, or the stat returned no Content-Length \
+                                         (check the object store endpoint, TLS, and path-style \
+                                         config)."
+                                    ),
+                                ));
+                            }
+                            Ok::<u64, Error>(size)
+                        })
+                        .await?;
+                    Ok::<(String, u64), Error>((path, size))
                 }
-                Ok::<(String, u64), Error>((path, size))
-            }
-        }))
-        .buffer_unordered(concurrency_limit)
-        .try_collect()
-        .await?;
-
-        // Record newly-stat'd sizes in the shared cache, then build the size map for every delete
-        // file this partition needs (cached + just stat'd). The lock is not held across any await.
-        let size_map: std::collections::HashMap<String, u64> = {
-            let mut cache = size_cache.lock().unwrap();
-            for (path, size) in sizes {
-                cache.insert(path, size);
-            }
-            needed
-                .iter()
-                .filter_map(|path| cache.get(path.as_str()).map(|&size| (path.clone(), size)))
-                .collect()
-        };
+            }))
+            .buffer_unordered(concurrency_limit)
+            .try_collect()
+            .await?;
         // iceberg-rust 665c64e made `FileScanTask::deletes` a private field exposed only through
         // a read-only accessor, so a task's delete files can no longer be sized in place. Rebuild
         // each task that carries deletes with sized copies; tasks without deletes are untouched.
