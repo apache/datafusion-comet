@@ -152,6 +152,10 @@ object CometLevenshtein extends CometExpressionSerde[Levenshtein] {
 
 When the return type is set on the proto, the native planner skips the registry lookup entirely and routes straight to the Comet UDF registered in `create_comet_physical_fun_with_eval_mode`.
 
+#### Arguments that Spark skips after a NULL
+
+A null-intolerant `BinaryExpression` or `TernaryExpression` returns NULL as soon as one of its arguments is NULL, without evaluating the arguments after it. Native execution evaluates every argument of a `ScalarFunc` over the whole batch, so an argument that can fail, such as an ANSI cast of a malformed string, would fail on rows that Spark skips. Wrap the serialized call of such an expression in `withNullShortCircuit`, as `CometArrayContains` and `CometSlice` do, after checking the conditions in its Scaladoc.
+
 #### Registering the Expression Handler
 
 Once you've created your `CometExpressionSerde` implementation, register it in `QueryPlanSerde.scala` by adding it to the appropriate expression map (e.g., `mathExpressions`, `stringExpressions`, `predicateExpressions`, etc.):

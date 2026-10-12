@@ -957,8 +957,11 @@ less, as overcommit (see <a class="reference internal" href="#the-unified-pools"
 <section id="native-writers">
 <h3>Native writers<a class="headerlink" href="#native-writers" title="Link to this heading">#</a></h3>
 <p>Both native writers reserve what they hold between batches through a single consumer per task,
-<code class="docutils literal notranslate"><span class="pre">ParquetWriterExec[N]</span></code> or <code class="docutils literal notranslate"><span class="pre">IcebergWriteExec[N]</span></code>, resized after every batch. Neither can spill, so
-when the pool refuses a resize the task fails with a <code class="docutils literal notranslate"><span class="pre">CometNativeException</span></code> whose message starts
+<code class="docutils literal notranslate"><span class="pre">ParquetWriterExec[N]</span></code> or <code class="docutils literal notranslate"><span class="pre">IcebergWriteExec[N]</span></code>, resized after every batch. Neither can spill. A
+fanout Iceberg write gives memory back instead, by closing partitions early when the pool refuses a
+resize, as described below, so a refusal never fails it. An exception Spark throws during a resize,
+such as a failed spill or a killed task, still fails the task. When the pool refuses any other
+write’s resize, the task fails with a <code class="docutils literal notranslate"><span class="pre">CometNativeException</span></code> whose message starts
 <code class="docutils literal notranslate"><span class="pre">Additional</span> <span class="pre">allocation</span> <span class="pre">failed</span> <span class="pre">for</span></code> and names the consumer. That is a task failure Spark can retry.
 Unreserved, the same memory would count only toward the container limit, where exceeding it kills
 the executor.</p>
@@ -979,10 +982,13 @@ in memory until the next one is complete or the file closes, so there a file als
 it has flushed since its last part was uploaded. At the default row-group size
 (<code class="docutils literal notranslate"><span class="pre">write.parquet.row-group-size-bytes</span></code>, 128 MiB) that is the last row group it flushed. The
 reservation also covers the rows each partition holds back, first for its dictionary choice and
-then until they fill the 1000-row unit the rolling writer is fed in. It does not cover what
-parquet-rs holds beyond the encoded size: dictionary hash tables, unencoded dictionary indices
-and buffer capacity. Native writes decline Bloom filters today, and neither figure would include
-them.</p></li>
+then until they fill the 1000-row unit the rolling writer is fed in. When the pool refuses a
+fanout write’s resize, the writer writes out and closes the partitions holding the most, file
+and held rows together, until the resize succeeds, so the write ends with more files rather than
+failing. Each file also reports to its partition’s total, which is how the writer finds them.
+The reservation does not cover what parquet-rs holds beyond the encoded size: dictionary hash
+tables, unencoded dictionary indices and buffer capacity. Native writes decline Bloom filters
+today, and neither figure would include them.</p></li>
 </ul>
 <p>The writers register one consumer per task rather than one per open file because every consumer
 registered with <code class="docutils literal notranslate"><span class="pre">fair_unified</span></code> lowers the share of every other consumer in the task. A consumer per

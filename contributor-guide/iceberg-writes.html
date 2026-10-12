@@ -775,7 +775,7 @@ reserves for metadata columns, so those writes stay on iceberg-java.</p>
 the FFI scan of the child’s batches. <code class="docutils literal notranslate"><span class="pre">run_write_task</span></code> builds iceberg-rust’s partitioning writer once
 per task, and <code class="docutils literal notranslate"><span class="pre">PartitionWriterBuilder</span></code> builds the rest of the stack once per partition, with that
 partition’s Parquet writer properties:</p>
-<div class="highlight-text notranslate"><div class="highlight"><pre><span></span>UnpartitionedWriter | FanoutWriter | ClusteredWriter
+<div class="highlight-text notranslate"><div class="highlight"><pre><span></span>UnpartitionedWriter | FanoutPartitions | ClusteredWriter
   -&gt; PartitionWriterBuilder, per partition:
        ParquetWriterBuilder -&gt; RollingFileWriterBuilder -&gt; DataFileWriterBuilder
 </pre></div>
@@ -822,8 +822,9 @@ held rows then go through <code class="docutils literal notranslate"><span class
 <li><p><strong>Field ids and casting.</strong> <code class="docutils literal notranslate"><span class="pre">decorate_batch_with_field_ids</span></code> casts each batch to the
 field-id-annotated Arrow schema derived from the Iceberg schema, with <code class="docutils literal notranslate"><span class="pre">safe:</span> <span class="pre">false</span></code>, so a type
 mismatch fails the task instead of writing NULLs.</p></li>
-<li><p><strong>Deterministic output order.</strong> iceberg-rust’s <code class="docutils literal notranslate"><span class="pre">FanoutWriter</span></code> closes its writers out of a
-<code class="docutils literal notranslate"><span class="pre">HashMap</span></code>, so the fanout path sorts its <code class="docutils literal notranslate"><span class="pre">DataFile</span></code>s by path before returning them
+<li><p><strong>Deterministic output order.</strong> <code class="docutils literal notranslate"><span class="pre">FanoutPartitions</span></code>, Comet’s version of iceberg-rust’s
+<code class="docutils literal notranslate"><span class="pre">FanoutWriter</span></code>, closes its files in an order that depends on how the rows arrived and on which
+partitions it closed early, so the fanout path sorts its <code class="docutils literal notranslate"><span class="pre">DataFile</span></code>s by path before returning them
 (<a class="reference external" href="https://github.com/apache/datafusion-comet/issues/5776">#5776</a>). Manifest order becomes the row
 order of an unordered read, so any map iteration that reaches the output needs the same care.</p></li>
 </ul>
@@ -833,8 +834,21 @@ hold in memory. It hands <code class="docutils literal notranslate"><span class=
 writer counts the bytes that leave memory on their way to storage, and a file reports what it has
 written less those. When they leave depends on the storage (<code class="docutils literal notranslate"><span class="pre">StorageWrites</span></code>). After every batch
 <code class="docutils literal notranslate"><span class="pre">run_write_task</span></code> resizes the task’s reservation to what the open files report plus the rows each
-<code class="docutils literal notranslate"><span class="pre">PartitionFeed</span></code> holds, for the dictionary choice or for pacing, and a resize the pool refuses fails
-the task. What that figure covers, and what it misses, is described under
+<code class="docutils literal notranslate"><span class="pre">PartitionFeed</span></code> holds, for the dictionary choice or for pacing (<code class="docutils literal notranslate"><span class="pre">InnerWriter::reserve</span></code>). When the
+pool refuses a fanout write, <code class="docutils literal notranslate"><span class="pre">reserve</span></code> writes out and closes the partitions holding the most, in
+their open file and their feed, until the resize succeeds, and <code class="docutils literal notranslate"><span class="pre">run_write_task</span></code> counts them in the
+<code class="docutils literal notranslate"><span class="pre">files_closed_early</span></code> metric. Taking the largest first frees the most memory per file closed, so
+each refusal closes as few files as it can. Each partition’s files report to a child of the task’s
+<code class="docutils literal notranslate"><span class="pre">OpenFileMemory</span></code>, which is how <code class="docutils literal notranslate"><span class="pre">reserve</span></code> finds them. That is why the fanout path uses
+<code class="docutils literal notranslate"><span class="pre">FanoutPartitions</span></code> rather than iceberg-rust’s <code class="docutils literal notranslate"><span class="pre">FanoutWriter</span></code>, which cannot close one partition’s
+writer. A closed partition’s next rows open a new file with the properties its first file used,
+which the partition keeps. A refusal from the pool cannot fail a fanout write: everything the write
+reserves belongs to one of its partitions, so once all of them are closed it reserves nothing, and a
+resize down always succeeds. Only a refusal (<code class="docutils literal notranslate"><span class="pre">ResourcesExhausted</span></code>) makes <code class="docutils literal notranslate"><span class="pre">reserve</span></code> close
+partitions. Any other error from a resize fails the task, such as an exception Spark threw because
+a spill failed or because the task was killed while it waited for memory. An unpartitioned or
+clustered write has no file it can close early, so a resize the pool refuses fails its task. What
+the reserved figure covers, and what it misses, is described under
 <a class="reference internal" href="memory_management.html#native-writers"><span class="std std-ref">Native writers</span></a>.</p>
 <p><code class="docutils literal notranslate"><span class="pre">FileIO</span></code> comes from <code class="docutils literal notranslate"><span class="pre">load_file_io</span></code> in <code class="docutils literal notranslate"><span class="pre">iceberg_common.rs</span></code>, shared with the native scan. It picks
 the storage backend from the data location’s scheme and wires in Comet’s S3 credential bridge when
@@ -996,7 +1010,7 @@ the writer: run the write suites and the Iceberg Spark tests. The pin policy is 
 </thead>
 <tbody>
 <tr class="row-even"><td><p><code class="docutils literal notranslate"><span class="pre">CometIcebergWriteActionSuite</span></code></p></td>
-<td><p>End-to-end writes through the split plan and the native writer: parity with iceberg-java, row-level DML, partition evolution, file order, cleanup on task and job failure, a fanout write outgrowing the memory pool, AQE re-planning.</p></td>
+<td><p>End-to-end writes through the split plan and the native writer: parity with iceberg-java, row-level DML, partition evolution, file order, cleanup on task and job failure, writes outgrowing the memory pool, AQE re-planning.</p></td>
 </tr>
 <tr class="row-odd"><td><p><code class="docutils literal notranslate"><span class="pre">CometIcebergWriteDetectionSuite</span></code></p></td>
 <td><p>One case per eligibility rule, accepted and declined.</p></td>
