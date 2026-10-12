@@ -133,6 +133,8 @@ fn validate_percentile(percentile: f64) -> Result<()> {
 #[derive(Debug)]
 struct SparkPercentileAccumulator {
     values: Vec<f64>,
+    /// Where each merged partial state ends in `values`. See `spark_percentile`.
+    partial_ends: Vec<usize>,
     percentile: f64,
     float_input: bool,
 }
@@ -141,6 +143,7 @@ impl SparkPercentileAccumulator {
     fn new(percentile: f64, float_input: bool) -> Self {
         Self {
             values: vec![],
+            partial_ends: vec![],
             percentile,
             float_input,
         }
@@ -171,6 +174,7 @@ impl Accumulator for SparkPercentileAccumulator {
         let states = states[0].as_list::<i32>();
         for state in states.iter().flatten() {
             self.update_batch(&[state])?;
+            self.partial_ends.push(self.values.len());
         }
         Ok(())
     }
@@ -178,19 +182,24 @@ impl Accumulator for SparkPercentileAccumulator {
     fn evaluate(&mut self) -> Result<ScalarValue> {
         Ok(ScalarValue::Float64(spark_percentile(
             self.values.as_mut_slice(),
+            &self.partial_ends,
             self.percentile,
             self.float_input,
         )))
     }
 
     fn size(&self) -> usize {
-        size_of_val(self) + self.values.capacity() * size_of::<f64>()
+        size_of_val(self)
+            + self.values.capacity() * size_of::<f64>()
+            + self.partial_ends.capacity() * size_of::<usize>()
     }
 }
 
 #[derive(Debug)]
 struct SparkPercentileGroupsAccumulator {
     group_values: Vec<Vec<f64>>,
+    /// Where each merged partial state ends in the group's values. See `spark_percentile`.
+    group_partial_ends: Vec<Vec<usize>>,
     percentile: f64,
     float_input: bool,
 }
@@ -199,6 +208,7 @@ impl SparkPercentileGroupsAccumulator {
     fn new(percentile: f64, float_input: bool) -> Self {
         Self {
             group_values: vec![],
+            group_partial_ends: vec![],
             percentile,
             float_input,
         }
@@ -215,6 +225,7 @@ impl GroupsAccumulator for SparkPercentileGroupsAccumulator {
     ) -> Result<()> {
         let values = values[0].as_primitive::<Float64Type>();
         self.group_values.resize(total_num_groups, Vec::new());
+        self.group_partial_ends.resize(total_num_groups, Vec::new());
 
         for (row, &group_index) in group_indices.iter().enumerate() {
             if let Some(filter) = opt_filter {
@@ -239,11 +250,14 @@ impl GroupsAccumulator for SparkPercentileGroupsAccumulator {
     ) -> Result<()> {
         let input_group_values = values[0].as_list::<i32>();
         self.group_values.resize(total_num_groups, Vec::new());
+        self.group_partial_ends.resize(total_num_groups, Vec::new());
 
         for (&group_index, values) in group_indices.iter().zip(input_group_values.iter()) {
             if let Some(values) = values {
                 let values = values.as_primitive::<Float64Type>();
-                self.group_values[group_index].extend(values.iter().flatten());
+                let group_values = &mut self.group_values[group_index];
+                group_values.extend(values.iter().flatten());
+                self.group_partial_ends[group_index].push(group_values.len());
             }
         }
 
@@ -252,6 +266,8 @@ impl GroupsAccumulator for SparkPercentileGroupsAccumulator {
 
     fn state(&mut self, emit_to: EmitTo) -> Result<Vec<ArrayRef>> {
         let emit_group_values = emit_to.take_needed(&mut self.group_values);
+        // A state holds no boundaries, so a later merge sees these values as one partial.
+        emit_to.take_needed(&mut self.group_partial_ends);
 
         let mut offsets = Vec::with_capacity(emit_group_values.len() + 1);
         offsets.push(0);
@@ -278,10 +294,12 @@ impl GroupsAccumulator for SparkPercentileGroupsAccumulator {
 
     fn evaluate(&mut self, emit_to: EmitTo) -> Result<ArrayRef> {
         let mut emit_group_values = emit_to.take_needed(&mut self.group_values);
+        let emit_partial_ends = emit_to.take_needed(&mut self.group_partial_ends);
         let mut builder = Float64Builder::with_capacity(emit_group_values.len());
-        for values in &mut emit_group_values {
+        for (values, partial_ends) in emit_group_values.iter_mut().zip(&emit_partial_ends) {
             builder.append_option(spark_percentile(
                 values.as_mut_slice(),
+                partial_ends,
                 self.percentile,
                 self.float_input,
             ));
@@ -303,10 +321,23 @@ impl GroupsAccumulator for SparkPercentileGroupsAccumulator {
             .map(|values| values.capacity() * size_of::<f64>())
             .sum::<usize>()
             + self.group_values.capacity() * size_of::<Vec<f64>>()
+            + self
+                .group_partial_ends
+                .iter()
+                .map(|ends| ends.capacity() * size_of::<usize>())
+                .sum::<usize>()
+            + self.group_partial_ends.capacity() * size_of::<Vec<usize>>()
     }
 }
 
-fn spark_percentile(values: &mut [f64], percentile: f64, float_input: bool) -> Option<f64> {
+/// `partial_ends` marks where each partial state merged into `values` ends. Values past the last
+/// one came straight from input rows, as in Spark's `Complete` mode.
+fn spark_percentile(
+    values: &mut [f64],
+    partial_ends: &[usize],
+    percentile: f64,
+    float_input: bool,
+) -> Option<f64> {
     let len = values.len();
     if len == 0 {
         return None;
@@ -315,7 +346,7 @@ fn spark_percentile(values: &mut [f64], percentile: f64, float_input: bool) -> O
         return Some(values[0]);
     }
     // Read before the selection below reorders the values.
-    let zeros = SignedZeros::find(values, float_input);
+    let zeros = SignedZeros::find(values, partial_ends, float_input);
 
     let position = (len - 1) as f64 * percentile;
     let lower = position.floor() as usize;
@@ -352,7 +383,7 @@ struct SignedZeros {
 }
 
 impl SignedZeros {
-    fn find(values: &[f64], float_input: bool) -> Self {
+    fn find(values: &[f64], partial_ends: &[usize], float_input: bool) -> Self {
         if !values.iter().any(|v| v.to_bits() == NEGATIVE_ZERO_BITS) {
             return Self::default();
         }
@@ -371,7 +402,7 @@ impl SignedZeros {
         if positive == 0 {
             return Self::default();
         }
-        let first_negative = spark_iterates_negative_zero_first(values, float_input);
+        let first_negative = spark_iterates_negative_zero_first(values, partial_ends, float_input);
         Self {
             start: Some(below),
             first_count: if first_negative { negative } else { positive },
@@ -398,18 +429,30 @@ const NEGATIVE_ZERO_BITS: u64 = 0x8000_0000_0000_0000;
 
 /// Whether `-0.0` comes before `0.0` in Spark's final percentile buffer.
 ///
-/// Spark inserts the rows into the partial buffer, serializes it in iteration order,
-/// deserializes it into a new map, and merges that into the final buffer, again in iteration
-/// order. This replays those three tables. Values merged from several partial buffers are
-/// treated as one, since even Spark's answer then depends on the order they arrive in.
-fn spark_iterates_negative_zero_first(values: &[f64], float_input: bool) -> bool {
+/// Each partition inserts its rows into a partial buffer and serializes it in iteration order.
+/// The final aggregation deserializes each one into a new map and merges that into its buffer,
+/// again in iteration order, one partial after another. This replays those tables, taking the
+/// partials in the order Comet merged them. Spark merges them in the order its shuffle delivers
+/// them, so when that changes the zero Spark reaches first, Spark's own answer varies too.
+fn spark_iterates_negative_zero_first(
+    values: &[f64],
+    partial_ends: &[usize],
+    float_input: bool,
+) -> bool {
+    let build = |values: &mut dyn Iterator<Item = f64>| {
+        let mut table = SparkKeySet::new(float_input);
+        values.for_each(|v| table.add(v));
+        table
+    };
     let mut table = SparkKeySet::new(float_input);
-    values.iter().for_each(|&v| table.add(v));
-    for _ in 0..2 {
-        let mut next = SparkKeySet::new(float_input);
-        table.keys().for_each(|v| next.add(v));
-        table = next;
+    let mut start = 0;
+    for &end in partial_ends {
+        let partial = build(&mut values[start..end].iter().copied());
+        let deserialized = build(&mut partial.keys());
+        deserialized.keys().for_each(|v| table.add(v));
+        start = end;
     }
+    values[start..].iter().for_each(|&v| table.add(v));
     let first_zero = table.keys().find(|&v| v == 0.0);
     first_zero.is_some_and(f64::is_sign_negative)
 }
@@ -493,13 +536,13 @@ impl SparkKeySet {
 
 #[cfg(test)]
 mod tests {
-    use super::spark_percentile;
+    use super::*;
 
     #[test]
     fn interpolates_with_full_spark_precision() {
         let mut values = vec![0.0, 10_000_000.0];
         assert_eq!(
-            spark_percentile(&mut values, 0.123456789, false),
+            spark_percentile(&mut values, &[], 0.123456789, false),
             Some(1_234_567.89)
         );
     }
@@ -508,8 +551,10 @@ mod tests {
     fn orders_nan_above_every_other_value() {
         // A NaN with the sign bit set, which IEEE 754 total order would put first.
         let mut values = vec![f64::from_bits(0xfff8_0000_0000_0000), 2.0, 1.0];
-        assert_eq!(spark_percentile(&mut values, 0.0, false), Some(1.0));
-        assert!(spark_percentile(&mut values, 1.0, false).unwrap().is_nan());
+        assert_eq!(spark_percentile(&mut values, &[], 0.0, false), Some(1.0));
+        assert!(spark_percentile(&mut values, &[], 1.0, false)
+            .unwrap()
+            .is_nan());
     }
 
     // The rows of Spark's SPARK-45599 test, for which Spark returns -0.0.
@@ -536,7 +581,8 @@ mod tests {
     fn picks_the_zero_spark_iterates_first() {
         for float_input in [false, true] {
             let mut values = spark_45599_rows();
-            let result = spark_percentile(&mut values, 0.1, float_input).unwrap();
+            let ends = [values.len()];
+            let result = spark_percentile(&mut values, &ends, 0.1, float_input).unwrap();
             assert_eq!(result.to_bits(), (-0.0_f64).to_bits());
         }
     }
@@ -548,7 +594,8 @@ mod tests {
         for (keys, first) in [(10, -0.0_f64), (500, 0.0_f64)] {
             let mut values: Vec<f64> = (1..=keys).map(f64::from).collect();
             values.extend([-0.0, 0.0]);
-            let result = spark_percentile(&mut values, 0.0, false).unwrap();
+            let ends = [values.len()];
+            let result = spark_percentile(&mut values, &ends, 0.0, false).unwrap();
             assert_eq!(result.to_bits(), first.to_bits());
         }
     }
@@ -556,7 +603,51 @@ mod tests {
     #[test]
     fn keeps_the_sign_of_a_lone_zero() {
         let mut values = vec![-1.0, -0.0, 1.0];
-        let result = spark_percentile(&mut values, 0.5, false).unwrap();
+        let result = spark_percentile(&mut values, &[], 0.5, false).unwrap();
         assert_eq!(result.to_bits(), (-0.0_f64).to_bits());
+    }
+
+    // Two partitions for which Spark ranks -0.0 first whichever arrives first, but which rank
+    // 0.0 first when the second is merged first and the two are replayed as one partial.
+    fn two_partials() -> [Vec<f64>; 2] {
+        [
+            vec![
+                369513.0, 998311.0, 8278.0, 156933.0, 286454.0, 349279.0, 125841.0, 796806.0,
+                556996.0, 0.0, 667190.0, 624668.0, 335166.0, 220654.0, 315604.0,
+            ],
+            vec![223815.0, 201661.0, 68860.0, 928422.0, -0.0],
+        ]
+    }
+
+    fn states(partials: &[Vec<f64>]) -> ArrayRef {
+        let lists = partials.iter().map(|p| Some(p.iter().copied().map(Some)));
+        Arc::new(ListArray::from_iter_primitive::<Float64Type, _, _>(lists))
+    }
+
+    #[test]
+    fn replays_each_partial_separately() {
+        let partials = two_partials();
+
+        let mut flattened = partials.concat();
+        let ends = [flattened.len()];
+        let result = spark_percentile(&mut flattened, &ends, 0.0, false).unwrap();
+        assert_eq!(result.to_bits(), 0.0_f64.to_bits());
+
+        let mut accumulator = SparkPercentileAccumulator::new(0.0, false);
+        accumulator.merge_batch(&[states(&partials)]).unwrap();
+        let ScalarValue::Float64(Some(result)) = accumulator.evaluate().unwrap() else {
+            panic!("expected a non-null Float64")
+        };
+        assert!(result.is_sign_negative());
+
+        let mut accumulator = SparkPercentileGroupsAccumulator::new(0.0, false);
+        accumulator
+            .merge_batch(&[states(&partials)], &[0, 0], 1)
+            .unwrap();
+        let result = accumulator.evaluate(EmitTo::All).unwrap();
+        assert!(result
+            .as_primitive::<Float64Type>()
+            .value(0)
+            .is_sign_negative());
     }
 }

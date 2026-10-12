@@ -119,16 +119,16 @@ query
 SELECT g, percentile(f, 0.5), percentile(d, 0.5) FROM test_percentile_signed_zero GROUP BY g ORDER BY g
 
 -- When both zeros are present Spark keeps them as separate keys and ranks first the one its
--- hash table reaches first (SPARK-45599), which changes as the table grows. Each table is one
--- file, so there is a single partial buffer and the answer does not depend on partition order.
+-- hash table reaches first (SPARK-45599), which changes as the table grows. Each INSERT
+-- coalesces to one task, so each table is one file in row order with a single partial buffer.
 statement
 CREATE TABLE test_percentile_zero_tie(d double) USING parquet
 
 statement
-INSERT INTO test_percentile_zero_tie VALUES
+INSERT INTO test_percentile_zero_tie SELECT /*+ COALESCE(1) */ * FROM VALUES
   (0.0), (2.0), (153.0), (168.0), (3252411229536261.0), (7.205759403792794e+16),
   (1.7976931348623157e+308), (0.25), (double('NaN')), (double('NaN')), (double('-0.0')),
-  (-128.0), (double('NaN')), (double('NaN'))
+  (-128.0), (double('NaN')), (double('NaN')) AS t(d)
 
 query
 SELECT percentile(d, 0.1), percentile(d, 0.15), percentile(d, 0.5) FROM test_percentile_zero_tie
@@ -138,9 +138,9 @@ statement
 CREATE TABLE test_percentile_zero_tie_grouped(g int, f float, d double) USING parquet
 
 statement
-INSERT INTO test_percentile_zero_tie_grouped VALUES
+INSERT INTO test_percentile_zero_tie_grouped SELECT /*+ COALESCE(1) */ * FROM VALUES
   (1, float('-0.0'), double('-0.0')), (1, float('0.0'), double('0.0')), (1, 1.0, 1.0),
-  (2, float('0.0'), double('0.0')), (2, float('-0.0'), double('-0.0')), (2, 1.0, 1.0)
+  (2, float('0.0'), double('0.0')), (2, float('-0.0'), double('-0.0')), (2, 1.0, 1.0) AS t(g, f, d)
 
 query
 SELECT g, percentile(f, 0.0), percentile(d, 0.0), percentile(d, 0.25) FROM test_percentile_zero_tie_grouped GROUP BY g ORDER BY g
@@ -150,7 +150,7 @@ CREATE TABLE test_percentile_zero_tie_large(f float, d double) USING parquet
 
 statement
 INSERT INTO test_percentile_zero_tie_large
-SELECT /*+ REPARTITION(1) */ * FROM (
+SELECT /*+ COALESCE(1) */ * FROM (
   SELECT cast(id AS float), cast(id AS double) FROM range(1, 501)
   UNION ALL SELECT float('-0.0'), double('-0.0')
   UNION ALL SELECT float('0.0'), double('0.0'))
