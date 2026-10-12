@@ -94,9 +94,11 @@ Both results are valid under Spark's semantics for these functions.
 
 ## Hash Join
 
-When Spark reports a hash join's output as ordered by its streamed side, Comet keeps that order.
-When DataFusion does not keep it, for example when it comes from a cached table or the join is a
-`NOT IN`, Comet sorts the native join output to restore it.
+Spark plans `NOT IN` as a null-aware anti join, and the native hash join builds it on Spark's
+streamed side without keeping that side's order. When Spark reports the streamed side as ordered,
+for example the output of a window, a sort-merge join, or a cached table sorted within its
+partitions, Comet falls back to Spark for the join, so that a sort Spark removed above it on the
+strength of that order is not lost.
 
 ## Window Functions
 

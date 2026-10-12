@@ -2811,6 +2811,18 @@ trait CometHashJoin {
       return None
     }
 
+    // DataFusion builds a null-aware anti join on Spark's streamed side, and on its hash map path
+    // it emits the build batches last to first, so the output loses the ordering Spark reports
+    // for the join. Remove this fallback once Comet uses a DataFusion release that fixes
+    // https://github.com/apache/datafusion/issues/26226.
+    if (isNullAwareAntiJoin && join.outputOrdering.nonEmpty) {
+      withFallbackReason(
+        join,
+        "null-aware anti-join over an ordered streamed side is not supported natively, " +
+          "because the native join does not keep that order")
+      return None
+    }
+
     val condition = join.condition.map { cond =>
       val condProto = exprToProto(cond, join.left.output ++ join.right.output)
       if (condProto.isEmpty) {
@@ -2861,29 +2873,6 @@ trait CometHashJoin {
       }
     }
 
-    // DataFusion may move unmatched probe rows for the outer shapes, and runs a null-aware anti
-    // join with Spark's streamed side as its build side, so the native planner needs the ordering
-    // Spark reports for the join to restore it.
-    val mayReorderStreamed = (join.joinType, join.buildSide) match {
-      case (LeftOuter, BuildRight) | (RightOuter, BuildLeft) => true
-      case (LeftAnti, BuildRight) => isNullAwareAntiJoin
-      case _ => false
-    }
-    val outputOrdering = if (mayReorderStreamed && join.outputOrdering.nonEmpty) {
-      if (!supportedSortType(join, join.outputOrdering)) {
-        withFallbackReason(join, "Unsupported data type in hash join output ordering")
-        return None
-      }
-      val orders = join.outputOrdering.map(exprToProto(_, join.output))
-      if (orders.exists(_.isEmpty)) {
-        withFallbackReason(join, "Unsupported expression in hash join output ordering")
-        return None
-      }
-      orders.flatten
-    } else {
-      Nil
-    }
-
     val leftKeys = join.leftKeys.map(exprToProto(_, join.left.output))
     val rightKeys = join.rightKeys.map(exprToProto(_, join.right.output))
 
@@ -2899,7 +2888,6 @@ trait CometHashJoin {
         else OperatorOuterClass.BuildSide.BuildRight)
         .setNullAwareAntiJoin(isNullAwareAntiJoin)
         .setDynamicFilterEnabled(CometConf.COMET_EXEC_JOIN_DYNAMIC_FILTER_ENABLED.get(join.conf))
-        .addAllOutputOrdering(outputOrdering.asJava)
       condition.foreach(joinBuilder.setCondition)
       Some(builder.setHashJoin(joinBuilder).build())
     } else {
