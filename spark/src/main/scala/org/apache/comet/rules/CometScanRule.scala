@@ -618,8 +618,12 @@ case class CometScanRule(session: SparkSession)
                 .get(COMET_S3_COMPLIANT_SCHEMES_KEY)
                 .map(COMET_S3_COMPLIANT_SCHEMES_KEY -> _)
 
-            val result = CometIcebergNativeScanMetadata
-              .extract(scanExec.scan, effectiveLocation, catalogProperties, icebergTasks)
+            val result = CometIcebergNativeScanMetadata.extract(
+              scanExec.scan,
+              effectiveLocation,
+              catalogProperties,
+              icebergTasks,
+              taskValidation.requiredFieldIds)
 
             result
           } catch {
@@ -735,15 +739,16 @@ case class CometScanRule(session: SparkSession)
         val resolvedProjectedFieldIds = projectedFieldIds.flatten.toSet
         val hasUnresolvedProjectedFieldIds = projectedFieldIds.exists(_.isEmpty)
 
-        // The whole Iceberg table schema is serialized to native, but iceberg-rust can represent
+        // The full task schema can be serialized to native, but iceberg-rust can represent
         // Variant in that schema as long as no projected field contains one. Check projected
         // roots strictly, and allow Variant only under entirely unprojected roots. Other
         // unsupported types still fail closed everywhere. An empty data projection is also strict
         // because iceberg-rust currently interprets an empty field-id list as a request for every
         // column.
+        val taskSchema = metadata.fullTaskSchema.getOrElse(metadata.tableSchema)
         val schemaTypesSupported =
           try {
-            val fullSchema = IcebergReflection.toSparkSchema(metadata.tableSchema)
+            val fullSchema = IcebergReflection.toSparkSchema(taskSchema)
             // DataTypeSupport recursively dispatches back to this override for struct fields,
             // array elements, and map entries, so Variant is allowed at any nesting depth only
             // when its entire top-level Iceberg field is unprojected.
@@ -754,7 +759,7 @@ case class CometScanRule(session: SparkSession)
                   reasons: ListBuffer[String]): Boolean =
                 isVariantType(dt) || super.isTypeSupported(dt, name, reasons)
             }
-            val tableFieldIds = IcebergReflection.buildFieldIdMapping(metadata.tableSchema)
+            val tableFieldIds = IcebergReflection.buildFieldIdMapping(taskSchema)
 
             fullSchema.fields.forall { field =>
               val isProjected = projectedDataColumns.isEmpty ||
@@ -775,11 +780,11 @@ case class CometScanRule(session: SparkSession)
         // nested field was added (to a struct, or to a struct inside a list or map) fails the
         // native scan with "Incorrect number of arrays for StructArray fields", and a nested field
         // renamed since the file was written can read back as NULL. The native read usually asks
-        // only for the nested fields Spark's schema pruning keeps, but some tasks still read with
-        // the full table schema (see CometIcebergNativeScan), so this check walks both schemas and
-        // falls back even when the changed field is pruned away. A FileScanTask does not record
-        // which schema wrote its file, so fall back when any schema in the table's history lacks
-        // a nested field of a projected column or names it differently.
+        // only for the nested fields Spark's schema pruning keeps, but a scan can still read with
+        // the full schema (see IcebergReflection.nativeTaskSchemas), so this check walks both
+        // schemas and falls back even when the changed field is pruned away. A FileScanTask does
+        // not record which schema wrote its file, so fall back when any schema in the table's
+        // history lacks a nested field of a projected column or names it differently.
         val nestedFieldsSupported =
           try {
             val schemas = Seq(metadata.tableSchema, metadata.scanSchema)
@@ -1039,12 +1044,21 @@ case class CometScanRule(session: SparkSession)
           }
         }
 
+        // Every task needs each partition source and equality-delete key under one name (see
+        // IcebergReflection.nativeTaskSchemas).
+        val taskSchemaNamesSupported = metadata.fullTaskSchema.isDefined
+        if (!taskSchemaNamesSupported) {
+          fallbackReasons += "Comet's native Iceberg reader cannot name a partition source or " +
+            "equality-delete key the same way in every task: no schema in the table's history " +
+            "names it apart from the columns the scan reads"
+        }
+
         if (schemaSupported && fileIOCompatible && formatVersionSupported &&
           defaultValuesSupported && schemaTypesSupported && encryptionKeyLengthSupported &&
           taskValidation.allParquet && allSupportedFilesystems && allLocationsOpenable &&
           metadataSchemeSupported && partitionTypesSupported && unifiedPartitionTypeSupported &&
           transformFunctionsSupported && deleteFileTypesSupported && dppSubqueriesSupported &&
-          nestedFieldsSupported) {
+          nestedFieldsSupported && taskSchemaNamesSupported) {
           CometBatchScanExec(
             scanExec.clone().asInstanceOf[BatchScanExec],
             runtimeFilters = scanExec.runtimeFilters,
@@ -1367,6 +1381,8 @@ object CometScanRule extends Logging {
       IcebergReflection.loadClass(IcebergReflection.ClassNames.FILE_SCAN_TASK)
     val unboundPredicateClass =
       IcebergReflection.loadClass(IcebergReflection.ClassNames.UNBOUND_PREDICATE)
+    val deleteFileClass =
+      IcebergReflection.loadClass(IcebergReflection.ClassNames.DELETE_FILE)
 
     // Resolve all method lookups outside the loop
     val fileMethod = IcebergReflection.getMethod(contentScanTaskClass, "file")
@@ -1374,11 +1390,18 @@ object CometScanRule extends Logging {
     val pathMethod = IcebergReflection.getMethod(contentFileClass, "path")
     val residualMethod = IcebergReflection.getMethod(contentScanTaskClass, "residual")
     val deletesMethod = IcebergReflection.getMethod(fileScanTaskClass, "deletes")
+    val specMethod = IcebergReflection.getMethod(fileScanTaskClass, "spec")
     val termMethod = IcebergReflection.getMethod(unboundPredicateClass, "term")
 
     var allParquet = true
     val unsupportedSchemes = mutable.Set[String]()
     var nonIdentityTransform: Option[String] = None
+    // Many tasks share a partition spec, and a delete file can apply to many data files, so each
+    // distinct instance is inspected once.
+    def identitySet(): java.util.Set[Any] =
+      java.util.Collections.newSetFromMap(new java.util.IdentityHashMap[Any, java.lang.Boolean]())
+    val specs = identitySet()
+    val seenDeleteFiles = identitySet()
     val deleteFiles = new java.util.ArrayList[Any]()
     // Buckets the native FileIO must read (data + delete files), for the single-config check in
     // CometScanRule; only S3-family locations contribute (see NativeConfig.bucketForUri).
@@ -1439,13 +1462,17 @@ object CometScanRule extends Logging {
 
       // Collect delete files and check their schemes
       if (fileScanTaskClass.isInstance(task)) {
+        // Unlike the checks around it, a failure here propagates: the spec decides which columns
+        // every task schema needs, and a schema that misses one fails the native scan.
+        Option(specMethod.invoke(task)).foreach(specs.add)
         try {
           val deletes = deletesMethod.invoke(task).asInstanceOf[java.util.List[_]]
-          deleteFiles.addAll(deletes)
-
           deletes.asScala.foreach { deleteFile =>
-            IcebergReflection.extractFileLocation(contentFileClass, deleteFile).foreach {
-              deletePath => inspectLocation(deletePath)
+            if (seenDeleteFiles.add(deleteFile)) {
+              deleteFiles.add(deleteFile)
+              IcebergReflection.extractFileLocation(contentFileClass, deleteFile).foreach {
+                deletePath => inspectLocation(deletePath)
+              }
             }
           }
         } catch {
@@ -1454,13 +1481,25 @@ object CometScanRule extends Logging {
       }
     }
 
+    // The columns every native task schema holds beyond the projection: partition sources and
+    // equality-delete keys (see IcebergReflection.nativeTaskSchemas).
+    val requiredFieldIds =
+      specs.asScala.flatMap(IcebergReflection.partitionFieldSourceIds).toSet ++
+        deleteFiles.asScala.flatMap { deleteFile =>
+          IcebergReflection
+            .getEqualityFieldIds(deleteFileClass, deleteFile)
+            .asScala
+            .map(_.asInstanceOf[java.lang.Integer].intValue())
+        }
+
     IcebergTaskValidationResult(
       allParquet,
       unsupportedSchemes.toSet,
       nonIdentityTransform,
       deleteFiles,
       dataFileBuckets.toSet,
-      hostlessLocation)
+      hostlessLocation,
+      requiredFieldIds)
   }
 }
 
@@ -1473,4 +1512,5 @@ case class IcebergTaskValidationResult(
     nonIdentityTransform: Option[String],
     deleteFiles: java.util.List[_],
     dataFileBuckets: Set[String],
-    hostlessLocation: Option[String])
+    hostlessLocation: Option[String],
+    requiredFieldIds: Set[Int])

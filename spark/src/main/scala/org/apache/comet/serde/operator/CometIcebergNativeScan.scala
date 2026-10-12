@@ -980,10 +980,8 @@ object CometIcebergNativeScan extends CometOperatorSerde[CometBatchScanExec] wit
     val commonBuilder = OperatorOuterClass.IcebergScanCommon.newBuilder()
 
     // Deduplication structures - map unique values to pool indices
-    val schemaToPoolIndex = mutable.HashMap[AnyRef, Int]()
     val partitionSpecToPoolIndex = mutable.HashMap[String, Int]()
     val nameMappingToPoolIndex = mutable.HashMap[String, Int]()
-    val projectFieldIdsToPoolIndex = mutable.HashMap[Seq[Int], Int]()
     val partitionDataToPoolIndex = mutable.HashMap[String, Int]()
     // Individual delete files are interned into a flat pool; deleteFilesToPoolIndex then dedups
     // the per-task sets as lists of indices into it, so a delete file that applies to many data
@@ -1006,20 +1004,6 @@ object CometIcebergNativeScan extends CometOperatorSerde[CometBatchScanExec] wit
           idx
         })
     val residualToPoolIndex = mutable.HashMap[OperatorOuterClass.IcebergPredicate, Int]()
-    // Field-id mappings are read out of an Iceberg schema by reflection, one lookup per column, so
-    // memoize them. Keyed like schemaToPoolIndex above: a task schema that Iceberg materializes
-    // fresh per task misses, but the table/scan schema shared by every task hits.
-    val fieldIdMappingCache = mutable.HashMap[AnyRef, Map[String, Int]]()
-    def fieldIdMapping(schema: AnyRef): Map[String, Int] =
-      fieldIdMappingCache.getOrElseUpdate(schema, IcebergReflection.buildFieldIdMapping(schema))
-    // Whether the scan schema references field ids the current table schema no longer has (a
-    // dropped column read through VERSION AS OF). Loop-invariant, and lazy so a scan whose tasks
-    // all carry deletes never walks the table schema at all.
-    lazy val hasHistoricalColumns = {
-      val tableSchemaFieldIds =
-        fieldIdMapping(metadata.tableSchema.asInstanceOf[AnyRef]).values.toSet
-      metadata.globalFieldIdMapping.values.exists(id => !tableSchemaFieldIds.contains(id))
-    }
     // Columns whose Iceberg type iceberg-rust cannot use for page-index pruning; residual
     // predicates over them are dropped (see icebergExprToProto). Computed once from the full table
     // schema so a filter column projected out of the scan output is still recognized.
@@ -1027,36 +1011,33 @@ object CometIcebergNativeScan extends CometOperatorSerde[CometBatchScanExec] wit
       IcebergReflection.pageIndexUnsupportedColumns(metadata.tableSchema)
 
     // iceberg-rust reads every leaf of a projected column that the task schema holds. Reading with
-    // the pruned scan schema skips the nested fields Spark's schema pruning removed, which the
-    // table schema would read and decode only to drop later.
-    val nestedSchemaPruningEnabled = CometConf.COMET_ICEBERG_NESTED_SCHEMA_PRUNING_ENABLED.get()
-    // Partition sources and equality-delete keys that the task schema lacks are appended at its
-    // top level. A nested one that the query pruned away would land outside its struct, so a task
-    // that needs one reads with the full schema instead.
-    val canUsePrunedSchemaCache = mutable.HashMap[Seq[Int], Boolean]()
-    def canUsePrunedSchema(requiredFieldIds: Seq[Int]): Boolean =
-      nestedSchemaPruningEnabled && (requiredFieldIds.isEmpty ||
-        canUsePrunedSchemaCache.getOrElseUpdate(
-          requiredFieldIds,
-          requiredFieldIds.forall { id =>
-            IcebergReflection.findFieldObject(metadata.prunedScanSchema, id).isDefined ||
-            !IcebergReflection.isNestedField(metadata.tableSchema, id)
-          }))
-    // schemaWithRequiredFields builds a new Schema whenever it appends a column. Memoize it by
-    // base schema (Iceberg's Schema compares by identity) and ids, so tasks that need the same
-    // columns share one schema object, and with it one schema pool entry. Most tasks need no extra
-    // columns, so they skip both lookups.
-    val requiredFieldsCache = mutable.HashMap[(AnyRef, Seq[Int]), AnyRef]()
-    def withRequiredFields(baseSchema: AnyRef, requiredFieldIds: Seq[Int]): AnyRef =
-      if (requiredFieldIds.isEmpty) {
-        baseSchema
-      } else {
-        requiredFieldsCache.getOrElseUpdate(
-          (baseSchema, requiredFieldIds),
-          IcebergReflection
-            .schemaWithRequiredFields(baseSchema, metadata.table, requiredFieldIds)
-            .asInstanceOf[AnyRef])
-      }
+    // the pruned task schema skips the nested fields Spark's schema pruning removed, which the
+    // full schema would read and decode only to drop later. Every task reads with the same schema
+    // (see IcebergReflection.nativeTaskSchemas), so its pool entry and the projected field ids are
+    // the same for every task too.
+    val pruningEnabled = CometConf.COMET_ICEBERG_NESTED_SCHEMA_PRUNING_ENABLED.get()
+    val taskSchema: AnyRef = metadata.prunedTaskSchema
+      .filter(_ => pruningEnabled)
+      .orElse(metadata.fullTaskSchema)
+      .getOrElse(throw new IllegalStateException(
+        "No native Iceberg task schema. CometScanRule should have fallen back to Spark."))
+      .asInstanceOf[AnyRef]
+    val nameToFieldId = IcebergReflection.buildFieldIdMapping(taskSchema)
+    val projectFieldIds = output.map { attr =>
+      nameToFieldId
+        .get(attr.name)
+        .orElse(metadata.globalFieldIdMapping.get(attr.name))
+        .orElse(CometIcebergNativeScan.MetadataFieldIds.get(attr.name))
+        .getOrElse {
+          throw new IllegalStateException(
+            s"Column '${attr.name}' not found in task schema, global schema, " +
+              "or metadata field IDs. This indicates a bug in CometScanRule " +
+              "validation -- all output columns should be resolvable.")
+        }
+    }
+    val projectFieldIdsList = OperatorOuterClass.ProjectFieldIdList.newBuilder()
+    projectFieldIds.foreach(id => projectFieldIdsList.addFieldIds(id))
+    commonBuilder.addProjectFieldIdsPool(projectFieldIdsList.build())
 
     val perPartitionBuilders = mutable.ArrayBuffer[OperatorOuterClass.IcebergScan]()
 
@@ -1101,9 +1082,9 @@ object CometIcebergNativeScan extends CometOperatorSerde[CometBatchScanExec] wit
     // keyMetadata() is declared on ContentFile (present across all supported Iceberg versions).
     // For encrypted tables it returns the plaintext StandardKeyMetadata blob; null otherwise.
     val keyMetadataMethod = IcebergReflection.getMethod(contentFileClass, "keyMetadata")
-    val taskSchemaMethod = IcebergReflection.getMethod(fileScanTaskClass, "schema")
     val toJsonMethod =
       IcebergReflection.getMethod(schemaParserClass, "toJson", schemaClass)
+    commonBuilder.addSchemaPool(toJsonMethod.invoke(null, taskSchema).asInstanceOf[String])
 
     // Access inputRDD - safe now, DPP is resolved
     scanExec.inputRDD match {
@@ -1162,77 +1143,9 @@ object CometIcebergNativeScan extends CometOperatorSerde[CometBatchScanExec] wit
                 // verbatim for iceberg-rust to decode. Unencrypted files leave the field unset.
                 keyMetadataBytes(keyMetadataMethod, dataFile).foreach(taskBuilder.setKeyMetadata)
 
-                val deletes =
-                  IcebergReflection.getDeleteFilesFromTask(task, fileScanTaskClass)
-                val hasDeletes = !deletes.isEmpty
-
-                // An equality delete may be keyed on a column dropped from the current schema
-                // (schema evolution). iceberg-rust must read that column to apply the delete,
-                // so union the equality-delete field ids into the task schema, resolving any
-                // dropped ones from the table's schema history (mirrors Iceberg-Java's
-                // DeleteFilter.fileProjection).
-                val equalityFieldIds =
-                  if (hasDeletes) {
-                    deletes.asScala.flatMap { df =>
-                      requiredEqualityFieldIds(deleteFileClass, df).asScala.map(_.intValue())
-                    }.toSeq
-                  } else {
-                    Nil
-                  }
-
-                // iceberg-rust validates a FileScanTask by resolving its partition spec against
-                // the task schema, so a task carrying a partition spec needs that spec's source
-                // columns present even when the query projects them out (e.g. selecting only
-                // _spec_id / _partition). Union them in. project_field_ids still drives the read,
-                // so these columns are not materialized into the output.
-                val requiredFieldIds = equalityFieldIds ++
-                  IcebergReflection.partitionSourceFieldIds(task, fileScanTaskClass)
-
-                val baseSchema: AnyRef =
-                  if (canUsePrunedSchema(requiredFieldIds)) {
-                    metadata.prunedScanSchema.asInstanceOf[AnyRef]
-                  } else if (hasDeletes) {
-                    taskSchemaMethod.invoke(task)
-                  } else if (hasHistoricalColumns) {
-                    metadata.scanSchema.asInstanceOf[AnyRef]
-                  } else {
-                    metadata.tableSchema.asInstanceOf[AnyRef]
-                  }
-                val schema: AnyRef = withRequiredFields(baseSchema, requiredFieldIds)
-
-                val schemaIdx = schemaToPoolIndex.getOrElseUpdate(
-                  schema, {
-                    val idx = schemaToPoolIndex.size
-                    val schemaJson = toJsonMethod.invoke(null, schema).asInstanceOf[String]
-                    commonBuilder.addSchemaPool(schemaJson)
-                    idx
-                  })
-                taskBuilder.setSchemaIdx(schemaIdx)
-
-                val nameToFieldId = fieldIdMapping(schema)
-
-                val projectFieldIds = output.map { attr =>
-                  nameToFieldId
-                    .get(attr.name)
-                    .orElse(metadata.globalFieldIdMapping.get(attr.name))
-                    .orElse(CometIcebergNativeScan.MetadataFieldIds.get(attr.name))
-                    .getOrElse {
-                      throw new IllegalStateException(
-                        s"Column '${attr.name}' not found in task schema, global schema, " +
-                          "or metadata field IDs. This indicates a bug in CometScanRule " +
-                          "validation -- all output columns should be resolvable.")
-                    }
-                }
-
-                val projectFieldIdsIdx = projectFieldIdsToPoolIndex.getOrElseUpdate(
-                  projectFieldIds, {
-                    val idx = projectFieldIdsToPoolIndex.size
-                    val listBuilder = OperatorOuterClass.ProjectFieldIdList.newBuilder()
-                    projectFieldIds.foreach(id => listBuilder.addFieldIds(id))
-                    commonBuilder.addProjectFieldIdsPool(listBuilder.build())
-                    idx
-                  })
-                taskBuilder.setProjectFieldIdsIdx(projectFieldIdsIdx)
+                // One task schema and one projection for the whole scan, both at pool index 0.
+                taskBuilder.setSchemaIdx(0)
+                taskBuilder.setProjectFieldIdsIdx(0)
 
                 val deleteFilesList =
                   extractDeleteFilesList(
@@ -1325,10 +1238,10 @@ object CometIcebergNativeScan extends CometOperatorSerde[CometBatchScanExec] wit
 
     // Log deduplication summary
     val allPoolSizes = Seq(
-      schemaToPoolIndex.size,
+      commonBuilder.getSchemaPoolCount,
       partitionSpecToPoolIndex.size,
       nameMappingToPoolIndex.size,
-      projectFieldIdsToPoolIndex.size,
+      commonBuilder.getProjectFieldIdsPoolCount,
       partitionDataToPoolIndex.size,
       deleteFileToPoolIndex.size,
       deleteFilesToPoolIndex.size,

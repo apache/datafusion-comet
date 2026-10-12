@@ -1099,6 +1099,16 @@ class CometIcebergNativeSuite
       tableName: String,
       column: String,
       value: Any,
+      warehouseDir: File): Unit =
+    commitEqualityDeletes(catalogName, namespace, tableName, column, Seq(value), warehouseDir)
+
+  /** Like [[commitEqualityDelete]], with one delete file holding every value in `values`. */
+  private def commitEqualityDeletes(
+      catalogName: String,
+      namespace: String,
+      tableName: String,
+      column: String,
+      values: Seq[Any],
       warehouseDir: File): Unit = {
     val catalog = spark.sessionState.catalogManager
       .catalog(catalogName)
@@ -1110,9 +1120,12 @@ class CometIcebergNativeSuite
       .table()
 
     val deleteRowSchema = table.schema().select(column)
-    val record: org.apache.iceberg.data.Record =
-      org.apache.iceberg.data.GenericRecord.create(deleteRowSchema)
-    record.setField(column, value)
+    val records = values.map { value =>
+      val record: org.apache.iceberg.data.Record =
+        org.apache.iceberg.data.GenericRecord.create(deleteRowSchema)
+      record.setField(column, value)
+      record
+    }
     val out = table
       .io()
       .newOutputFile(new File(warehouseDir, s"eq-delete-${System.nanoTime()}.parquet").toString)
@@ -1120,10 +1133,15 @@ class CometIcebergNativeSuite
       table,
       out,
       null,
-      java.util.Collections.singletonList(record),
+      records.asJava,
       deleteRowSchema)
     table.newRowDelta().addDeletes(deleteFile).commit()
   }
+
+  private def latestSnapshotId(table: String): Long = spark
+    .sql(s"SELECT snapshot_id FROM $table.snapshots ORDER BY committed_at DESC LIMIT 1")
+    .collect()(0)
+    .getLong(0)
 
   // Regression for the native scan applying an equality delete keyed on a column that has since
   // been dropped (schema evolution). The delete's field id is absent from the current schema, so
@@ -2350,9 +2368,9 @@ class CometIcebergNativeSuite
 
   // A pruned task schema still needs the columns iceberg-rust uses beyond the projection: the
   // partition source and the equality-delete key when the query projects neither. Tasks with
-  // deletes read with the pruned schema too, and the tasks of every partition share the one schema
-  // that appending the partition source builds. VERSION AS OF reads of columns dropped, renamed,
-  // or swapped after the snapshot use the snapshot's names.
+  // deletes read with the pruned schema too, and every task of a scan reads with the same one.
+  // VERSION AS OF reads of columns dropped, renamed, or swapped after the snapshot use the
+  // snapshot's names.
   test("nested schema pruning with deletes, partitions, and time travel") {
     assume(icebergAvailable, "Iceberg not available in classpath")
 
@@ -2365,9 +2383,9 @@ class CometIcebergNativeSuite
         CometConf.COMET_EXEC_ENABLED.key -> "true",
         CometConf.COMET_ICEBERG_NATIVE_ENABLED.key -> "true") {
 
-        // Also checks that no task, tasks with deletes included, reads the pruned `pad` fields.
-        // With `oneSchema`, every task needs the same columns, so they share one task schema.
-        def checkPrunedNativeScan(query: String, oneSchema: Boolean = false): Unit = {
+        // Also checks that every task, tasks with deletes included, reads with one schema that
+        // leaves out the pruned `pad` fields.
+        def checkPrunedNativeScan(query: String): Unit = {
           val (_, cometPlan) = checkSparkAnswer(query)
           val scans = collectIcebergNativeScans(cometPlan)
           assert(scans.length == 1, s"expected one native scan, got ${scans.length}\n$cometPlan")
@@ -2378,17 +2396,10 @@ class CometIcebergNativeSuite
               .getSchemaPoolList
               .asScala
             assert(
-              schemas.forall(!_.contains("\"pad\"")),
-              s"$query: pruned field in a task schema:\n${schemas.mkString("\n")}")
-            assert(
-              !oneSchema || schemas.length == 1,
-              s"$query: expected one task schema, got:\n${schemas.mkString("\n")}")
+              schemas.length == 1 && !schemas.head.contains("\"pad\""),
+              s"$query: expected one task schema without pad, got:\n${schemas.mkString("\n")}")
           }
         }
-        def latestSnapshotId(table: String): Long = spark
-          .sql(s"SELECT snapshot_id FROM $table.snapshots ORDER BY committed_at DESC LIMIT 1")
-          .collect()(0)
-          .getLong(0)
 
         val morProperties = """
           TBLPROPERTIES (
@@ -2425,8 +2436,7 @@ class CometIcebergNativeSuite
           "RENAME COLUMN y TO x",
           "RENAME COLUMN tmp TO y").foreach(change => spark.sql(s"ALTER TABLE $mor $change"))
         checkPrunedNativeScan(s"SELECT id, s.a FROM $mor ORDER BY id")
-        // The equality-delete key `id` is not projected. Iceberg gives the delete only to the data
-        // file whose `id` range holds 7, so only that file's task appends `id`.
+        // The equality-delete key `id` is not projected, so the task schema appends it.
         checkPrunedNativeScan(s"SELECT s.a FROM $mor ORDER BY s.a")
         checkPrunedNativeScan(
           s"SELECT id, s.a FROM $mor VERSION AS OF $snapshotBeforeDeletes ORDER BY id")
@@ -2446,21 +2456,18 @@ class CometIcebergNativeSuite
         """)
         spark.sql(s"DELETE FROM $partitioned WHERE id % 10 = 0")
         val partitionedSnapshot = latestSnapshotId(partitioned)
-        // The partition source `p` is not projected. Every task appends it, and they share the
-        // memoized result.
-        checkPrunedNativeScan(s"SELECT id, s.a FROM $partitioned ORDER BY id", oneSchema = true)
+        // The partition source `p` is not projected, so the task schema appends it.
+        checkPrunedNativeScan(s"SELECT id, s.a FROM $partitioned ORDER BY id")
         checkPrunedNativeScan(s"SELECT p, count(s.a) FROM $partitioned GROUP BY p ORDER BY p")
-        // Once `p` takes the dropped `c`'s name, the partition source's current name clashes with
-        // the snapshot's `c`, so it is appended under its older name.
+        // Once `p` takes the dropped `c`'s name, the task schema keeps the snapshot's names: `c`
+        // for the dropped column, and `p` for the partition source.
         spark.sql(s"ALTER TABLE $partitioned DROP COLUMN c")
         spark.sql(s"ALTER TABLE $partitioned RENAME COLUMN p TO c")
         checkPrunedNativeScan(
-          s"SELECT id, c, s.a FROM $partitioned VERSION AS OF $partitionedSnapshot ORDER BY id",
-          oneSchema = true)
+          s"SELECT id, c, s.a FROM $partitioned VERSION AS OF $partitionedSnapshot ORDER BY id")
 
         // Two partition sources renamed into each other's names: `q` takes the dropped `c`'s name
-        // and `p` takes `q`'s. Names picked one field at a time clash here, so both are appended
-        // as one older schema names them.
+        // and `p` takes `q`'s. The task schema names both as the snapshot does, `p` and `q`.
         val twoSources = "test_cat.db.nested_pruning_two_sources"
         spark.sql(s"""
           CREATE TABLE $twoSources (id INT, p INT, q INT, c INT, s STRUCT<a: INT, pad: STRING>)
@@ -2472,10 +2479,99 @@ class CometIcebergNativeSuite
           spark.sql(s"ALTER TABLE $twoSources $change")
         }
         checkPrunedNativeScan(
-          s"SELECT id, c, s.a FROM $twoSources VERSION AS OF $twoSourcesSnapshot ORDER BY id",
-          oneSchema = true)
+          s"SELECT id, c, s.a FROM $twoSources VERSION AS OF $twoSourcesSnapshot ORDER BY id")
 
         Seq(mor, partitioned, twoSources).foreach(t => spark.sql(s"DROP TABLE $t"))
+      }
+    }
+  }
+
+  // iceberg-rust builds an equality-delete predicate once per delete file, with the names of the
+  // task that loads it first, and binds it by name in every task that shares the reader, so every
+  // task must give a key the same name. Adaptive split sizing is off, so the files of each table
+  // land in one task group and share a reader.
+  test("nested schema pruning gives each equality-delete key one name in every task") {
+    assume(icebergAvailable, "Iceberg not available in classpath")
+    // Equality deletes keyed on a since-dropped column need Iceberg 1.11's schema-history lookup.
+    assume(
+      icebergVersionAtLeast(1, 11),
+      "Equality delete on a dropped column requires Iceberg 1.11+ schema-history resolution")
+
+    withTempIcebergDir { warehouseDir =>
+      withSQLConf(
+        "spark.sql.catalog.test_cat" -> "org.apache.iceberg.spark.SparkCatalog",
+        "spark.sql.catalog.test_cat.type" -> "hadoop",
+        "spark.sql.catalog.test_cat.warehouse" -> warehouseDir.getAbsolutePath,
+        CometConf.COMET_ENABLED.key -> "true",
+        CometConf.COMET_EXEC_ENABLED.key -> "true",
+        CometConf.COMET_ICEBERG_NATIVE_ENABLED.key -> "true") {
+
+        val properties = """
+          TBLPROPERTIES ('format-version' = '2', 'read.split.adaptive-size.enabled' = 'false')
+        """
+
+        // A delete keyed on `y` covers only the second file. After `y` is dropped and `x0` is
+        // renamed to `x`, a delete keyed on `x` covers both, so one task needs `x` and the other
+        // needs `x` and `y`.
+        val renamed = "test_cat.db.key_names_renamed"
+        spark.sql(s"CREATE TABLE $renamed (id INT, x0 INT, y INT) USING iceberg $properties")
+        spark.sql(s"INSERT INTO $renamed VALUES (1, 10, 100), (2, 20, 100)")
+        spark.sql(s"INSERT INTO $renamed VALUES (3, 25, 200), (4, 30, 300)")
+        commitEqualityDelete("test_cat", "db", "key_names_renamed", "y", 200, warehouseDir)
+        spark.sql(s"ALTER TABLE $renamed DROP COLUMN y")
+        spark.sql(s"ALTER TABLE $renamed RENAME COLUMN x0 TO x")
+        commitEqualityDeletes(
+          "test_cat",
+          "db",
+          "key_names_renamed",
+          "x",
+          Seq(10, 25),
+          warehouseDir)
+        checkIcebergNativeScan(s"SELECT id FROM $renamed ORDER BY id")
+
+        // Keys from schemas that never held both: `p` is dropped before `q` is added, and a delete
+        // keyed on each applies to the one data file.
+        val generations = "test_cat.db.key_names_generations"
+        spark.sql(s"CREATE TABLE $generations (id INT, p INT) USING iceberg $properties")
+        spark.sql(s"INSERT INTO $generations VALUES (1, 10), (2, 20), (3, 30)")
+        commitEqualityDelete("test_cat", "db", "key_names_generations", "p", 10, warehouseDir)
+        spark.sql(s"ALTER TABLE $generations DROP COLUMN p")
+        spark.sql(s"ALTER TABLE $generations ADD COLUMN q INT")
+        commitEqualityDelete("test_cat", "db", "key_names_generations", "q", 99, warehouseDir)
+        checkIcebergNativeScan(s"SELECT id FROM $generations ORDER BY id")
+
+        // The first spec's files need the nested partition source `s.region`, which the query
+        // prunes away, so this VERSION AS OF read uses the full schema. A global delete keyed on
+        // `k` covers files of both specs, and `k` and `j` swap names after the snapshot, so the
+        // full schema must carry the snapshot's names, as the pruned one does.
+        val swapped = "test_cat.db.key_names_swapped"
+        spark.sql(s"""
+          CREATE TABLE $swapped (id INT, k INT, j INT, s STRUCT<region: STRING, a: INT>)
+          USING iceberg PARTITIONED BY (s.region) $properties
+        """)
+        spark.sql(s"""
+          INSERT INTO $swapped VALUES
+            (1, 10, 100, named_struct('region', 'east', 'a', 1)),
+            (2, 20, 200, named_struct('region', 'west', 'a', 2))
+        """)
+        loadIcebergTable(spark, "test_cat", "db", "key_names_swapped")
+          .asInstanceOf[org.apache.iceberg.Table]
+          .updateSpec()
+          .removeField("s.region")
+          .commit()
+        spark.sql(s"""
+          INSERT INTO $swapped VALUES
+            (3, 10, 300, named_struct('region', 'east', 'a', 3)),
+            (4, 30, 400, named_struct('region', 'west', 'a', 4))
+        """)
+        commitEqualityDelete("test_cat", "db", "key_names_swapped", "k", 10, warehouseDir)
+        val snapshot = latestSnapshotId(swapped)
+        Seq("RENAME COLUMN k TO tmp", "RENAME COLUMN j TO k", "RENAME COLUMN tmp TO j").foreach {
+          change => spark.sql(s"ALTER TABLE $swapped $change")
+        }
+        checkIcebergNativeScan(s"SELECT id, k FROM $swapped VERSION AS OF $snapshot ORDER BY id")
+
+        Seq(renamed, generations, swapped).foreach(t => spark.sql(s"DROP TABLE $t"))
       }
     }
   }
