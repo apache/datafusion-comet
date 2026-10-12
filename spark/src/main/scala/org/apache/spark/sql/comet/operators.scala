@@ -2872,19 +2872,29 @@ trait CometHashJoin {
     // and an input sorted outside the native plan, a relation sorted before it was cached for
     // instance, declares no order to DataFusion. Send the order so the native join declares it
     // on the probe input; see SortedInputExec. Every other join type keeps the probe order as
-    // it is.
+    // it is, except the null-aware anti join: Comet builds that one on its streamed side, so its
+    // output is not in the order Spark reports for it, and the planner declares no order above
+    // it.
+    //
+    // Declaring any order makes DataFusion keep the probe rows in place, so the longest prefix
+    // of the order that Comet can express is enough. Nothing here can tell whether an operator
+    // above relies on the order, so a join whose first key Comet cannot express stays in Spark.
     val streamedSortOrders = (join.joinType, join.buildSide) match {
       case (LeftOuter, BuildRight) | (RightOuter, BuildLeft) if join.outputOrdering.nonEmpty =>
         val streamed = if (join.buildSide == BuildRight) join.left else join.right
-        val orders = join.outputOrdering.map(exprToProto(_, streamed.output))
-        if (orders.exists(_.isEmpty)) {
+        val orders = join.outputOrdering.iterator
+          .map(exprToProto(_, streamed.output))
+          .takeWhile(_.isDefined)
+          .flatten
+          .toSeq
+        if (orders.isEmpty) {
           withFallbackReason(
             join,
             "the streamed side's sort order, which this outer join has to keep, cannot be " +
               "expressed natively")
           return None
         }
-        orders.flatten
+        orders
       case _ => Nil
     }
 

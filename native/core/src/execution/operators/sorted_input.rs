@@ -37,11 +37,12 @@ use datafusion::physical_plan::{
 /// and DataFusion's hash join keeps the unmatched probe rows of a right outer join in place only
 /// when the probe input declares an order. Otherwise it moves them after the matched rows of each
 /// batch, which loses an order Spark has already dropped a sort for. The planner puts this only
-/// on that join's probe input, with the order Spark reports for it, but the join keeps the order
-/// in its own output, so the operators above it in the native plan see it too: an aggregate
-/// grouped by the key runs in sorted, streaming mode, and a sort aggregate takes the order as
-/// already satisfied. The order therefore has to be one Spark guarantees, since a wrong one gives
-/// wrong groups rather than only rows out of order.
+/// on that join's probe input, with the order Spark reports for it, and only when the rows reach
+/// that input from the JVM through operators that keep their order. The join keeps the order in
+/// its own output, so the operators above it in the native plan see it too: an aggregate grouped
+/// by the key runs in sorted, streaming mode, a sort aggregate takes the order as already
+/// satisfied, and a top-k sort whose keys start with it stops reading early. A wrong order would
+/// therefore give wrong groups or wrong rows, not only rows out of order.
 #[derive(Debug)]
 pub struct SortedInputExec {
     input: Arc<dyn ExecutionPlan>,

@@ -3401,8 +3401,10 @@ class CometInMemoryCacheSuite extends CometTestBase {
             }
 
             for {
-              hint <- Seq("shuffle_hash", "broadcast")
-              joinType <- Seq("left_outer", "right_outer")
+              (hint, joinClass) <- Seq(
+                "shuffle_hash" -> classOf[CometHashJoinExec],
+                "broadcast" -> classOf[CometBroadcastHashJoinExec])
+              (joinType, buildSide) <- Seq("left_outer" -> BuildRight, "right_outer" -> BuildLeft)
             } {
               val joined = if (joinType == "right_outer") {
                 build.hint(hint).join(streamed, build("_1") === streamed("_1"), joinType)
@@ -3413,12 +3415,20 @@ class CometInMemoryCacheSuite extends CometTestBase {
                 .groupBy(streamed("_1"))
                 .agg(count(lit(1)), sum(streamed("_2")), count(build("_2")))
               val plan = df.queryExecution.executedPlan
+              val joins: Seq[(SparkPlan, BuildSide)] = collect(plan) {
+                case j: CometHashJoinExec => (j, j.buildSide)
+                case j: CometBroadcastHashJoinExec => (j, j.buildSide)
+              }
               assert(
-                collect(plan) { case j @ (_: CometHashJoinExec | _: CometBroadcastHashJoinExec) =>
-                  j
-                }.size == 1,
+                joins.map { case (j, side) => (j.getClass, side) } == Seq((joinClass, buildSide)),
                 plan)
-              assert(collect(plan) { case a: CometHashAggregateExec => a }.size == 2, plan)
+              // A final aggregate after a shuffle would merge a key a partial aggregate split, so
+              // both aggregates have to sit above the join with no exchange in between.
+              def aboveJoin(p: SparkPlan): Boolean = p.find(_ eq joins.head._1).isDefined
+              assert(
+                collect(plan) { case a: CometHashAggregateExec => a }.count(aboveJoin) == 2,
+                plan)
+              assert(!collect(plan) { case e: ShuffleExchangeLike => e }.exists(aboveJoin), plan)
               assert(collect(plan) { case s: CometInMemoryTableScanExec => s }.size == 1, plan)
               QueryTest.sameRows(expected, df.collect().toSeq).foreach(fail(_))
             }
