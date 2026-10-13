@@ -34,16 +34,12 @@
 //! `DictionaryValuesWriter` and `RunLengthBitPackingHybridEncoder` in parquet-column, and the page
 //! boundary follows `ColumnWriteStoreBase.sizeCheck`.
 
-use std::hash::{BuildHasher, Hash, Hasher};
-use std::marker::PhantomData;
+use std::hash::{Hash, Hasher};
 
-use arrow::array::{
-    downcast_primitive, Array, AsArray, GenericByteArray, GenericByteViewArray, RecordBatch,
-};
+use arrow::array::{downcast_primitive, Array, ArrayAccessor, AsArray, RecordBatch};
 use arrow::buffer::NullBuffer;
 use arrow::datatypes::{
-    ArrowNativeType, ArrowPrimitiveType, ByteArrayType, ByteViewType, DataType, Fields,
-    Schema as ArrowSchema, ToByteSlice,
+    ArrowNativeType, ArrowPrimitiveType, DataType, Fields, Schema as ArrowSchema, ToByteSlice,
 };
 use datafusion::common::HashSet;
 use datafusion::error::{DataFusionError, Result as DFResult};
@@ -62,9 +58,9 @@ const FIRST_PAGE_SIZE_CHECK_ROWS: usize = 100;
 /// (`ColumnWriteStoreBase.THRESHOLD_TOLERANCE_RATIO`).
 const PAGE_SIZE_TOLERANCE_RATIO: f32 = 0.1;
 
-/// The most values a column's dictionary makes room for before it starts. A first page of a
-/// nested column can hold many more values than it has distinct ones, so past this the set grows
-/// only as distinct values arrive.
+/// The most values a column's dictionary makes room for up front. A first page of a nested column
+/// can hold many more values than it has distinct ones, so past this the set grows only as
+/// distinct values arrive.
 const MAX_RESERVED_VALUES: usize = 1 << 16;
 
 /// Decides, from the rows a partition's data starts with, which of its columns keep dictionary
@@ -108,14 +104,6 @@ struct Candidate {
     /// `write.parquet.dict-size-bytes`. parquet-mr abandons a dictionary as soon as it grows past
     /// this, which on a first page leaves no dictionary page at all.
     dictionary_limit: u64,
-}
-
-impl Candidate {
-    /// The most values the column's dictionary can hold: one past the most that fit within
-    /// `dictionary_limit`, since a value takes at least its width, or a 4-byte length.
-    fn max_dictionary_len(&self) -> usize {
-        (self.dictionary_limit / self.width.unwrap_or(4) + 1) as usize
-    }
 }
 
 /// The way from a batch down to one leaf column: a top-level column, then a step into each nested
@@ -218,9 +206,8 @@ impl DictionaryChooser {
     /// The writer properties for a partition whose rows start with `sample`: the table's, with
     /// dictionary encoding turned off for every column parquet-mr would write plain.
     ///
-    /// Columns are judged one at a time, and each is read only as far as its first page reaches.
-    /// Their dictionaries are collected in one set for each kind of value, emptied for each column,
-    /// so what this keeps is at most the largest dictionary of each kind, none of which can outgrow
+    /// Columns are judged one at a time, and each is read only as far as its first page reaches,
+    /// so what this keeps at any moment is one column's dictionary, which cannot outgrow
     /// `write.parquet.dict-size-bytes` by more than a value.
     pub fn choose(&self, sample: &[RecordBatch]) -> WriterProperties {
         if sample
@@ -230,10 +217,9 @@ impl DictionaryChooser {
             // There is no telling which values belong to which column.
             return self.base.clone();
         }
-        let mut dictionaries = Dictionaries::default();
         let mut plain = Vec::new();
         for candidate in &self.candidates {
-            let Some(keeps) = self.judge(candidate, sample, &mut dictionaries) else {
+            let Some(keeps) = self.judge(candidate, sample) else {
                 // Cannot happen once the fields match, but a guess is worse than no choice.
                 return self.base.clone();
             };
@@ -255,82 +241,62 @@ impl DictionaryChooser {
     /// Whether `candidate` keeps its dictionary on the first page `sample` gives it, or `None`
     /// when a batch does not have the shape the schema promised. A column of a type there is no
     /// reading is left as configured.
-    fn judge<'a>(
-        &self,
-        candidate: &Candidate,
-        sample: &'a [RecordBatch],
-        dictionaries: &mut Dictionaries<'a>,
-    ) -> Option<bool> {
+    fn judge(&self, candidate: &Candidate, sample: &[RecordBatch]) -> Option<bool> {
         macro_rules! primitive {
-            ($t:ty, $chooser:ident, $candidate:ident, $sample:ident, $dictionaries:ident) => {
-                $chooser.judge_primitive::<$t>($candidate, $sample, $dictionaries)
-            };
-        }
-        let chooser = self;
-        macro_rules! bytes {
-            ($array:ident => $read:expr) => {
-                chooser.judge_bytes(candidate, sample, &mut dictionaries.bytes, |$array| $read)
+            ($t:ty) => {
+                self.judge_primitive::<$t>(candidate, sample)
             };
         }
         downcast_primitive! {
-            &candidate.data_type => (primitive, chooser, candidate, sample, dictionaries),
-            DataType::Utf8 => bytes!(array => array.as_string_opt::<i32>()),
-            DataType::LargeUtf8 => bytes!(array => array.as_string_opt::<i64>()),
-            DataType::Utf8View => bytes!(array => array.as_string_view_opt()),
-            DataType::Binary => bytes!(array => array.as_binary_opt::<i32>()),
-            DataType::LargeBinary => bytes!(array => array.as_binary_opt::<i64>()),
-            DataType::BinaryView => bytes!(array => array.as_binary_view_opt()),
+            &candidate.data_type => (primitive),
+            DataType::Utf8 => {
+                self.judge_values(candidate, sample, |a| a.as_string_opt::<i32>().map(bytes))
+            }
+            DataType::LargeUtf8 => {
+                self.judge_values(candidate, sample, |a| a.as_string_opt::<i64>().map(bytes))
+            }
+            DataType::Utf8View => {
+                self.judge_values(candidate, sample, |a| a.as_string_view_opt().map(bytes))
+            }
+            DataType::Binary => {
+                self.judge_values(candidate, sample, |a| a.as_binary_opt::<i32>().map(bytes))
+            }
+            DataType::LargeBinary => {
+                self.judge_values(candidate, sample, |a| a.as_binary_opt::<i64>().map(bytes))
+            }
+            DataType::BinaryView => {
+                self.judge_values(candidate, sample, |a| a.as_binary_view_opt().map(bytes))
+            }
             _ => Some(true),
         }
     }
 
-    /// [`Self::judge`] for a column of `T` values, which are told apart by their bits.
+    /// [`Self::judge`] for a column of `T` values, told apart by their bits where those fit in a
+    /// `u128` and by their bytes where not.
     fn judge_primitive<'a, T: ArrowPrimitiveType>(
         &self,
         candidate: &Candidate,
         sample: &'a [RecordBatch],
-        dictionaries: &mut Dictionaries<'a>,
     ) -> Option<bool> {
         let values = |array: &'a dyn Array| Some(array.as_primitive_opt::<T>()?.values().as_ref());
         if size_of::<T::Native>() <= size_of::<u64>() {
-            self.judge_values(candidate, sample, &mut dictionaries.narrow, |array| {
-                values(array).map(Fixed::new)
-            })
+            self.judge_values(candidate, sample, |array| values(array).map(bits::<_, u64>))
         } else if size_of::<T::Native>() <= size_of::<u128>() {
-            self.judge_values(candidate, sample, &mut dictionaries.wide, |array| {
-                values(array).map(Fixed::new)
+            self.judge_values(candidate, sample, |array| {
+                values(array).map(bits::<_, u128>)
             })
         } else {
-            self.judge_bytes(candidate, sample, &mut dictionaries.bytes, values)
+            self.judge_values(candidate, sample, |array| values(array).map(native_bytes))
         }
     }
 
-    /// [`Self::judge`] for a column whose values `values` reads as bytes. Each value is hashed
-    /// once, as it is read, with the dictionary's own hasher.
-    fn judge_bytes<'a, B: AsBytes<'a>>(
+    /// [`Self::judge`] for a column whose values `read` reads from each batch's leaf array: what
+    /// tells each value apart, and how many bytes it has.
+    fn judge_values<'a, K: Copy + Eq + Hash, R: Fn(usize) -> (K, usize)>(
         &self,
         candidate: &Candidate,
         sample: &'a [RecordBatch],
-        dictionary: &mut HashSet<HashedBytes<'a>>,
-        values: impl Fn(&'a dyn Array) -> Option<B>,
-    ) -> Option<bool> {
-        let hasher = dictionary.hasher().clone();
-        self.judge_values(candidate, sample, dictionary, |array| {
-            Some(Hashed {
-                values: values(array)?,
-                hasher: &hasher,
-            })
-        })
-    }
-
-    /// [`Self::judge`] for a column whose values `values` reads from each batch's leaf array,
-    /// collecting its dictionary in `dictionary`.
-    fn judge_values<'a, V: Values<'a>>(
-        &self,
-        candidate: &Candidate,
-        sample: &'a [RecordBatch],
-        dictionary: &mut HashSet<V::Key>,
-        values: impl Fn(&'a dyn Array) -> Option<V>,
+        read: impl Fn(&'a dyn Array) -> Option<R>,
     ) -> Option<bool> {
         // The way to the leaf in each batch the page reaches, with the rows of it the page can
         // take, and how many leaf entries lie under those rows.
@@ -347,20 +313,12 @@ impl DictionaryChooser {
             rows_left -= rows;
             batches.push((path, rows));
         }
-        // The dictionary never holds more values than the page takes, nor more than its limit
-        // lets it.
-        dictionary.clear();
-        dictionary.reserve(
-            entries
-                .min(candidate.max_dictionary_len())
-                .min(MAX_RESERVED_VALUES),
-        );
-        let mut page = FirstPage::new(candidate, self.page_bytes, dictionary);
+        let mut page = FirstPage::<K>::new(candidate, self.page_bytes, entries);
         for (path, rows) in &batches {
             if page.is_closed() {
                 break;
             }
-            page.extend(path, &values(path.leaf)?, *rows);
+            page.extend(path, &read(path.leaf)?, *rows);
         }
         Some(page.rows == 0 || page.keeps_dictionary())
     }
@@ -430,10 +388,12 @@ impl Leaf {
                 }
                 _ => return None,
             };
-            levels.push(Level {
-                nulls: array.nulls(),
-                children,
-            });
+            // A null buffer with no nulls in it is as good as none, and a struct without nulls
+            // leads every entry straight to its field's, so neither needs a level.
+            let nulls = present_nulls(array);
+            if nulls.is_some() || !matches!(children, Children::Same) {
+                levels.push(Level { nulls, children });
+            }
             array = next.as_ref();
         }
         Some(Path {
@@ -500,8 +460,17 @@ impl Path<'_> {
     /// Returns whether every entry was visited. Nothing is expanded ahead, so a page that ends
     /// partway through a batch reads no further.
     fn visit(&self, row: usize, f: &mut impl FnMut(usize) -> bool) -> bool {
+        // A leaf with no levels above it has one entry per row: the row itself.
+        if self.levels.is_empty() {
+            return f(row);
+        }
         visit(&self.levels, row, f)
     }
+}
+
+/// `array`'s nulls, or `None` when it has none.
+fn present_nulls(array: &dyn Array) -> Option<&NullBuffer> {
+    array.nulls().filter(|nulls| nulls.null_count() > 0)
 }
 
 fn visit(levels: &[Level], index: usize, f: &mut impl FnMut(usize) -> bool) -> bool {
@@ -520,15 +489,23 @@ fn visit(levels: &[Level], index: usize, f: &mut impl FnMut(usize) -> bool) -> b
     }
 }
 
-/// A leaf array's values, told apart by their bytes: a fixed-width value's native bytes, or a
-/// string's or binary's content.
-trait Values<'a> {
-    /// Equal exactly when two values' bytes are.
-    type Key: Copy + Eq + Hash;
+/// Reads fixed-width values by their bits, zero-extended to `K`, which is at least as wide.
+fn bits<T: ArrowNativeType, K: Bits>(values: &[T]) -> impl Fn(usize) -> (K, usize) + '_ {
+    move |index| (K::of(values[index]), size_of::<T>())
+}
 
-    /// The value at `index`, and the plain-encoded size it has where the physical type sets no
-    /// width: a 4-byte length plus its bytes.
-    fn get(&self, index: usize) -> (Self::Key, u64);
+/// Reads fixed-width values too wide for [`bits`] by their native bytes.
+fn native_bytes<'a, T: ArrowNativeType>(values: &'a [T]) -> impl Fn(usize) -> (Bytes<'a>, usize) {
+    move |index| Bytes::of(values[index].to_byte_slice())
+}
+
+/// Reads a string or binary array's values by their content.
+fn bytes<'a, A, V>(array: A) -> impl Fn(usize) -> (Bytes<'a>, usize)
+where
+    A: ArrayAccessor<Item = &'a V>,
+    V: AsRef<[u8]> + ?Sized + 'a,
+{
+    move |index| Bytes::of(array.value(index).as_ref())
 }
 
 /// The bits of a fixed-width value, zero-extended to fill this type.
@@ -554,114 +531,40 @@ impl Bits for u128 {
     }
 }
 
-/// Fixed-width values no wider than `K`, told apart by their bits.
-struct Fixed<'a, T, K> {
-    values: &'a [T],
-    key: PhantomData<K>,
-}
-
-impl<'a, T, K> Fixed<'a, T, K> {
-    fn new(values: &'a [T]) -> Self {
-        Self {
-            values,
-            key: PhantomData,
-        }
-    }
-}
-
-impl<'a, T: ArrowNativeType, K: Bits> Values<'a> for Fixed<'a, T, K> {
-    type Key = K;
-
-    fn get(&self, index: usize) -> (K, u64) {
-        (K::of(self.values[index]), 4 + size_of::<T>() as u64)
-    }
-}
-
-/// Values that are read as bytes: a string's or binary's content, or the native bytes of a
-/// fixed-width value too wide for [`Fixed`].
-trait AsBytes<'a> {
-    fn bytes(&self, index: usize) -> &'a [u8];
-}
-
-impl<'a, T: ByteArrayType> AsBytes<'a> for &'a GenericByteArray<T> {
-    fn bytes(&self, index: usize) -> &'a [u8] {
-        let array: &'a GenericByteArray<T> = self;
-        array.value(index).as_ref()
-    }
-}
-
-impl<'a, T: ByteViewType + ?Sized> AsBytes<'a> for &'a GenericByteViewArray<T> {
-    fn bytes(&self, index: usize) -> &'a [u8] {
-        let array: &'a GenericByteViewArray<T> = self;
-        array.value(index).as_ref()
-    }
-}
-
-impl<'a, T: ArrowNativeType> AsBytes<'a> for &'a [T] {
-    fn bytes(&self, index: usize) -> &'a [u8] {
-        let values: &'a [T] = self;
-        values[index].to_byte_slice()
-    }
-}
-
-/// Values told apart by their bytes, each hashed with `hasher` as it is read.
-struct Hashed<'h, B, S> {
-    values: B,
-    hasher: &'h S,
-}
-
-impl<'a, B: AsBytes<'a>, S: BuildHasher> Values<'a> for Hashed<'_, B, S> {
-    type Key = HashedBytes<'a>;
-
-    fn get(&self, index: usize) -> (HashedBytes<'a>, u64) {
-        let bytes = self.values.bytes(index);
-        let hash = self.hasher.hash_one(bytes);
-        (HashedBytes { hash, bytes }, 4 + bytes.len() as u64)
-    }
-}
-
-/// A value's bytes, with their hash. A dictionary hashes it by that number instead of the bytes
-/// again, and two values whose hashes differ are told apart without comparing their bytes.
+/// A value's bytes. Two of the same length whose last bytes differ are told apart without
+/// comparing the rest, which spares comparing most distinct values with the one before them.
 #[derive(Clone, Copy)]
-struct HashedBytes<'a> {
-    hash: u64,
-    bytes: &'a [u8],
+struct Bytes<'a>(&'a [u8]);
+
+impl<'a> Bytes<'a> {
+    /// `bytes` as a value, and how many there are.
+    fn of(bytes: &'a [u8]) -> (Self, usize) {
+        (Self(bytes), bytes.len())
+    }
 }
 
-impl PartialEq for HashedBytes<'_> {
+impl PartialEq for Bytes<'_> {
     fn eq(&self, other: &Self) -> bool {
-        self.hash == other.hash && self.bytes == other.bytes
+        self.0.len() == other.0.len() && self.0.last() == other.0.last() && self.0 == other.0
     }
 }
 
-impl Eq for HashedBytes<'_> {}
+impl Eq for Bytes<'_> {}
 
-impl Hash for HashedBytes<'_> {
+impl Hash for Bytes<'_> {
     fn hash<H: Hasher>(&self, state: &mut H) {
-        state.write_u64(self.hash);
+        // A value is always hashed alone, so its bytes need no length in front of them.
+        state.write(self.0);
     }
-}
-
-/// The sets a choice collects its columns' dictionaries in, one for each kind of key. Each is
-/// emptied for the next column rather than dropped, so it grows once per choice and not once per
-/// column.
-#[derive(Default)]
-struct Dictionaries<'a> {
-    /// Fixed-width values of up to 8 bytes.
-    narrow: HashSet<u64>,
-    /// Fixed-width values of up to 16 bytes, such as decimals.
-    wide: HashSet<u128>,
-    /// Strings, binaries, and wider fixed-width values.
-    bytes: HashSet<HashedBytes<'a>>,
 }
 
 /// What parquet-mr's dictionary writer has seen of one column chunk's first data page.
-struct FirstPage<'d, K> {
+struct FirstPage<K> {
     width: Option<u64>,
     dictionary_limit: u64,
     page_bytes: u64,
     /// Every value seen so far, once each: the dictionary.
-    dictionary: &'d mut HashSet<K>,
+    dictionary: HashSet<K>,
     /// The value before the one being added.
     previous: Option<K>,
     /// The runs the page's dictionary ids would be encoded in.
@@ -676,15 +579,19 @@ struct FirstPage<'d, K> {
     overflowed: bool,
 }
 
-impl<'d, K: Copy + Eq + Hash> FirstPage<'d, K> {
-    /// A page that collects its dictionary in `dictionary`, which starts out empty.
-    fn new(candidate: &Candidate, page_bytes: u64, dictionary: &'d mut HashSet<K>) -> Self {
-        debug_assert!(dictionary.is_empty());
+impl<K: Copy + Eq + Hash> FirstPage<K> {
+    /// A page that can see at most `entries` values, whose dictionary starts with room for as
+    /// many of them as it can hold.
+    fn new(candidate: &Candidate, page_bytes: u64, entries: usize) -> Self {
+        // A dictionary never holds more values than the page takes, nor more than one past the
+        // most that fit within its limit, since a value takes at least its width, or a 4-byte
+        // length.
+        let most = (candidate.dictionary_limit / candidate.width.unwrap_or(4) + 1) as usize;
         Self {
             width: candidate.width,
             dictionary_limit: candidate.dictionary_limit,
             page_bytes,
-            dictionary,
+            dictionary: HashSet::with_capacity(entries.min(most).min(MAX_RESERVED_VALUES)),
             previous: None,
             ids: HybridRuns::default(),
             plain_bytes: 0,
@@ -700,19 +607,19 @@ impl<'d, K: Copy + Eq + Hash> FirstPage<'d, K> {
     }
 
     /// Adds `rows` rows of one batch, whose way down to the leaf is `path` and whose leaf values
-    /// `values` reads. Stops reading as soon as the page ends.
-    fn extend<'a, V: Values<'a, Key = K>>(&mut self, path: &Path<'_>, values: &V, rows: usize) {
+    /// `read` reads. Stops reading as soon as the page ends.
+    fn extend(&mut self, path: &Path<'_>, read: &impl Fn(usize) -> (K, usize), rows: usize) {
         if self.is_closed() {
             return;
         }
-        let nulls = path.leaf.nulls();
+        let nulls = present_nulls(path.leaf);
         for row in 0..rows {
             let whole_row = path.visit(row, &mut |index| {
                 if nulls.is_some_and(|nulls| nulls.is_null(index)) {
                     return true;
                 }
-                let (value, unsized_bytes) = values.get(index);
-                self.add(value, self.width.unwrap_or(unsized_bytes));
+                let (value, len) = read(index);
+                self.add(value, len);
                 !self.overflowed
             });
             if !whole_row {
@@ -727,8 +634,9 @@ impl<'d, K: Copy + Eq + Hash> FirstPage<'d, K> {
     }
 
     /// `DictionaryValuesWriter.write*` and `FallbackValuesWriter`'s raw size, for one value of
-    /// `size` plain-encoded bytes.
-    fn add(&mut self, value: K, size: u64) {
+    /// `len` bytes.
+    fn add(&mut self, value: K, len: usize) {
+        let size = self.width.unwrap_or(4 + len as u64);
         self.plain_bytes += size;
         // Ids are handed out in order of first appearance, so an id repeats the one before it
         // exactly when its value does, and a repeated value is in the dictionary already.
@@ -1349,7 +1257,7 @@ mod tests {
                 format!("{name}_large_list"),
                 Arc::new(LargeListArray::new(
                     Arc::clone(&element),
-                    OffsetBuffer::from_lengths(std::iter::repeat_n(2, rows)),
+                    OffsetBuffer::from_repeated_length(2, rows),
                     Arc::clone(&pairs),
                     None,
                 )),
@@ -1551,21 +1459,6 @@ mod tests {
     /// rows are never read.
     #[test]
     fn a_column_is_read_only_as_far_as_its_first_page() {
-        /// Values that count how many of them are read.
-        struct Counted<'c, V> {
-            values: V,
-            reads: &'c Cell<usize>,
-        }
-
-        impl<'a, V: Values<'a>> Values<'a> for Counted<'_, V> {
-            type Key = V::Key;
-
-            fn get(&self, index: usize) -> (V::Key, u64) {
-                self.reads.set(self.reads.get() + 1);
-                self.values.get(index)
-            }
-        }
-
         let rows = 400;
         let list = ListArray::new(
             Arc::new(Field::new("element", DataType::Int32, true)),
@@ -1581,14 +1474,14 @@ mod tests {
         .unwrap();
         let candidate = &chooser.candidates[0];
         let path = candidate.leaf.path(&batch).unwrap();
+        let read = bits::<_, u64>(path.leaf.as_primitive::<Int32Type>().values());
         let reads = Cell::new(0);
-        let values = Counted {
-            values: Fixed::<_, u64>::new(path.leaf.as_primitive::<Int32Type>().values()),
-            reads: &reads,
+        let counted = |index| {
+            reads.set(reads.get() + 1);
+            read(index)
         };
-        let mut dictionary = HashSet::default();
-        let mut page = FirstPage::new(candidate, chooser.page_bytes, &mut dictionary);
-        page.extend(&path, &values, rows);
+        let mut page = FirstPage::new(candidate, chooser.page_bytes, 0);
+        page.extend(&path, &counted, rows);
         assert!(page.full);
         assert_eq!(page.rows, 100);
         assert_eq!(reads.get(), 100 * 8192);
@@ -1620,6 +1513,26 @@ mod tests {
         assert_eq!(
             dictionary_columns(properties(20_000, 1024 * 1024, 1024), &[batch]),
             ["l.list.element"]
+        );
+    }
+
+    /// The fields of a null struct are not part of the column chunk either.
+    #[test]
+    fn values_under_a_null_struct_are_not_counted() {
+        // Every odd row's struct is null over a value no other row has, which would overflow the
+        // 1 KiB dictionary if they were counted. Every even row holds 7, so the page the column
+        // chunk actually has is 1000 repeats of one value.
+        let values =
+            Int64Array::from_iter_values((0..2000).map(|i| if i % 2 == 1 { i } else { 7 }));
+        let st = StructArray::new(
+            Fields::from(vec![Field::new("n", DataType::Int64, true)]),
+            vec![Arc::new(values) as ArrayRef],
+            Some(NullBuffer::from_iter((0..2000).map(|i| i % 2 == 0))),
+        );
+        let batch = RecordBatch::try_from_iter([("s", Arc::new(st) as ArrayRef)]).unwrap();
+        assert_eq!(
+            dictionary_columns(properties(20_000, 1024 * 1024, 1024), &[batch]),
+            ["s.n"]
         );
     }
 

@@ -263,11 +263,10 @@ Points where Comet adapts iceberg-rust to match iceberg-java:
   reaches the writer. `DictionaryChooser` (`iceberg_dictionary.rs`) replays parquet-mr's accounting
   over those rows and turns dictionary encoding off for the columns parquet-mr would write plain.
   It reads only the columns there is a choice for, one at a time, and walks each lazily only as far
-  as its first page. It collects the dictionaries in one set for each kind of value, emptied and
-  reused from one column to the next, so beyond the held rows it keeps no more than the largest
-  dictionary of each kind. The accounting follows `FallbackValuesWriter`, `DictionaryValuesWriter`
-  and `RunLengthBitPackingHybridEncoder`, and its tests pin answers recorded from parquet-mr itself.
-  The held rows then go through `RowPacer`, so the roll grid does not move.
+  as its first page, so beyond the held rows it keeps no more than one column's dictionary. The
+  accounting follows `FallbackValuesWriter`, `DictionaryValuesWriter` and
+  `RunLengthBitPackingHybridEncoder`, and its tests pin answers recorded from parquet-mr itself. The
+  held rows then go through `RowPacer`, so the roll grid does not move.
 - **Field ids and casting.** `decorate_batch_with_field_ids` casts each batch to the
   field-id-annotated Arrow schema derived from the Iceberg schema, with `safe: false`, so a type
   mismatch fails the task instead of writing NULLs.

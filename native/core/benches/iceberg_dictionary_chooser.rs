@@ -21,7 +21,9 @@
 //! Each sample is what a partition holds back before choosing: the first data page of every
 //! column, which at Iceberg's default `write.parquet.page-row-limit` is 20,000 rows, in the
 //! 8192-row batches a shuffle read produces. The `primitives_1k` shape is a partition that ends
-//! within its first page, as the many small partitions of a fanout write do.
+//! within its first page, as the many small partitions of a fanout write do, and the `sorted`
+//! shape is a partition of a table written sorted, whose columns repeat each value for a run of
+//! rows.
 
 use std::hint::black_box;
 use std::ops::Range;
@@ -45,8 +47,8 @@ const NULL_STRIDE: i64 = 8;
 
 type Columns = Vec<(&'static str, ArrayRef)>;
 
-/// Builds a group's columns from the source table's `value` for each row.
-type Group = fn(&[i64]) -> Columns;
+/// Builds a group's columns for a range of the sample's rows.
+type Group = fn(Range<usize>) -> Columns;
 
 /// splitmix64.
 fn mix(x: u64) -> u64 {
@@ -72,15 +74,24 @@ fn entry_is_valid(value: i64, entry: i64) -> bool {
     (value + entry * 3).rem_euclid(NULL_STRIDE) != 0
 }
 
-/// The offsets of every row's entries, and the `(value, entry)` each entry is built from.
-fn entries(values: &[i64], count: impl Fn(i64) -> usize) -> (OffsetBuffer<i32>, Vec<(i64, i64)>) {
+/// The offsets of every row's entries, and the row and entry index each entry is built from.
+fn entries<R: Copy>(rows: &[R], count: impl Fn(R) -> usize) -> (OffsetBuffer<i32>, Vec<(R, i64)>) {
     let mut flat = Vec::new();
-    let offsets = OffsetBuffer::from_lengths(values.iter().map(|&value| {
-        let n = count(value);
-        flat.extend((0..n as i64).map(|entry| (value, entry)));
+    let offsets = OffsetBuffer::from_lengths(rows.iter().map(|&row| {
+        let n = count(row);
+        flat.extend((0..n as i64).map(|entry| (row, entry)));
         n
     }));
     (offsets, flat)
+}
+
+/// `value` of every entry, or null for the entries `entry_is_valid` makes null.
+fn valid<'a, T>(
+    flat: &'a [(i64, i64)],
+    value: impl Fn(i64, i64) -> T + 'a,
+) -> impl Iterator<Item = Option<T>> + 'a {
+    flat.iter()
+        .map(move |&(v, i)| entry_is_valid(v, i).then(|| value(v, i)))
 }
 
 fn list(offsets: OffsetBuffer<i32>, elements: ArrayRef) -> ArrayRef {
@@ -114,7 +125,8 @@ fn strings(values: impl Iterator<Item = Option<String>>) -> ArrayRef {
     Arc::new(StringArray::from_iter(values))
 }
 
-fn primitives(values: &[i64]) -> Columns {
+fn primitives(rows: Range<usize>) -> Columns {
+    let values = &values(rows);
     vec![
         (
             "c_bool",
@@ -175,7 +187,8 @@ fn primitives(values: &[i64]) -> Columns {
     ]
 }
 
-fn structs(values: &[i64]) -> Columns {
+fn structs(rows: Range<usize>) -> Columns {
+    let values = &values(rows);
     let s_flat = struct_of(
         vec![
             (
@@ -234,55 +247,46 @@ fn structs(values: &[i64]) -> Columns {
     vec![("s_flat", s_flat), ("s_nested", s_nested)]
 }
 
-fn arrays(values: &[i64]) -> Columns {
+fn arrays(rows: Range<usize>) -> Columns {
+    let values = &values(rows);
     let (offsets, flat) = entries(values, |v| entry_count(v, 0));
     let a_int = list(
         offsets,
-        ints(
-            flat.iter()
-                .map(|&(v, i)| entry_is_valid(v, i).then_some((v % 1_000_000 + i) as i32)),
-        ),
+        ints(valid(&flat, |v, i| (v % 1_000_000 + i) as i32)),
     );
     let (offsets, flat) = entries(values, |v| entry_count(v, 1));
     let a_double = list(
         offsets,
-        Arc::new(Float64Array::from_iter(flat.iter().map(|&(v, i)| {
-            entry_is_valid(v, i).then_some((v % 1_000_000 + i) as f64 / 7.0)
+        Arc::new(Float64Array::from_iter(valid(&flat, |v, i| {
+            (v % 1_000_000 + i) as f64 / 7.0
         }))),
     );
     let (offsets, flat) = entries(values, |v| entry_count(v, 2));
     let a_str = list(
         offsets,
-        strings(
-            flat.iter()
-                .map(|&(v, i)| entry_is_valid(v, i).then(|| format!("e{}", v % 100_000 + i))),
-        ),
+        strings(valid(&flat, |v, i| format!("e{}", v % 100_000 + i))),
     );
     vec![("a_int", a_int), ("a_double", a_double), ("a_str", a_str)]
 }
 
-fn maps(values: &[i64]) -> Columns {
+fn maps(rows: Range<usize>) -> Columns {
+    let values = &values(rows);
     let (offsets, flat) = entries(values, |v| entry_count(v, 1));
     let m_str_int = map(
         offsets.clone(),
         strings(flat.iter().map(|&(_, i)| Some(format!("k{i}")))),
-        ints(
-            flat.iter()
-                .map(|&(v, i)| entry_is_valid(v, i).then_some((v % 1000 + i) as i32)),
-        ),
+        ints(valid(&flat, |v, i| (v % 1000 + i) as i32)),
     );
     let m_int_str = map(
         offsets,
         ints(flat.iter().map(|&(_, i)| Some(i as i32))),
-        strings(
-            flat.iter()
-                .map(|&(v, i)| entry_is_valid(v, i).then(|| format!("v{}", v % 100_000 + i))),
-        ),
+        strings(valid(&flat, |v, i| format!("v{}", v % 100_000 + i))),
     );
     vec![("m_str_int", m_str_int), ("m_int_str", m_int_str)]
 }
 
-fn nested(values: &[i64]) -> Columns {
+fn nested(rows: Range<usize>) -> Columns {
+    let values = &values(rows);
     let (offsets, flat) = entries(values, |v| entry_count(v, 0));
     let n_array_struct = list(
         offsets,
@@ -306,29 +310,26 @@ fn nested(values: &[i64]) -> Columns {
         ),
     );
 
-    // A map from "k{i}" to an array of `entry_count(value, i)` ints.
+    // A map from "k{i}" to an array of `entry_count(value, i)` ints, or null.
     let (offsets, flat) = entries(values, |v| entry_count(v, 1));
-    let mut inner_offsets = vec![0i32];
-    let mut inner_values = Vec::new();
-    for &(v, i) in &flat {
-        let n = if entry_is_valid(v, i) {
+    let (inner_offsets, elements) = entries(&flat, |(v, i)| {
+        if entry_is_valid(v, i) {
             entry_count(v, i)
         } else {
             0
-        };
-        inner_values.extend(
-            (0..n as i64).map(|j| entry_is_valid(v, j).then_some((v % 1000 + i * 10 + j) as i32)),
-        );
-        inner_offsets.push(inner_values.len() as i32);
-    }
-    let inner = Arc::new(ListArray::new(
-        Arc::new(Field::new("element", DataType::Int32, true)),
-        OffsetBuffer::new(inner_offsets.into()),
-        ints(inner_values.into_iter()),
-        Some(NullBuffer::from_iter(
-            flat.iter().map(|&(v, i)| entry_is_valid(v, i)),
-        )),
-    ));
+        }
+    });
+    let inner =
+        Arc::new(ListArray::new(
+            Arc::new(Field::new("element", DataType::Int32, true)),
+            inner_offsets,
+            ints(elements.iter().map(|&((v, i), j)| {
+                entry_is_valid(v, j).then_some((v % 1000 + i * 10 + j) as i32)
+            })),
+            Some(NullBuffer::from_iter(
+                flat.iter().map(|&(v, i)| entry_is_valid(v, i)),
+            )),
+        ));
     let n_map_array = map(
         offsets,
         strings(flat.iter().map(|&(_, i)| Some(format!("k{i}")))),
@@ -337,37 +338,62 @@ fn nested(values: &[i64]) -> Columns {
 
     let (tag_offsets, tags) = entries(values, |v| entry_count(v, 3));
     let (attr_offsets, attrs) = entries(values, |v| entry_count(v, 1));
-    let n_struct_mix =
-        struct_of(
-            vec![
-                (
-                    "tags",
-                    list(
-                        tag_offsets,
-                        strings(tags.iter().map(|&(v, i)| {
-                            entry_is_valid(v, i).then(|| format!("t{}", (v + i) % 50))
-                        })),
-                    ),
+    let n_struct_mix = struct_of(
+        vec![
+            (
+                "tags",
+                list(
+                    tag_offsets,
+                    strings(valid(&tags, |v, i| format!("t{}", (v + i) % 50))),
                 ),
-                (
-                    "attrs",
-                    map(
-                        attr_offsets,
-                        strings(attrs.iter().map(|&(_, i)| Some(format!("a{i}")))),
-                        ints(
-                            attrs.iter().map(|&(v, i)| {
-                                entry_is_valid(v, i).then_some((v % 1000 + i) as i32)
-                            }),
-                        ),
-                    ),
+            ),
+            (
+                "attrs",
+                map(
+                    attr_offsets,
+                    strings(attrs.iter().map(|&(_, i)| Some(format!("a{i}")))),
+                    ints(valid(&attrs, |v, i| (v % 1000 + i) as i32)),
                 ),
-            ],
-            None,
-        );
+            ),
+        ],
+        None,
+    );
     vec![
         ("n_array_struct", n_array_struct),
         ("n_map_array", n_map_array),
         ("n_struct_mix", n_struct_mix),
+    ]
+}
+
+/// A table clustered by its columns, as a sorted write leaves it: `day`, `country` and `url`
+/// repeat each value for runs of 500, 100 and 10 rows, `url`'s values are long, and `id` is
+/// unique and ascending.
+fn sorted(rows: Range<usize>) -> Columns {
+    vec![
+        (
+            "country",
+            strings(
+                rows.clone()
+                    .map(|row| Some(format!("country-{:03}", row / 100))),
+            ),
+        ),
+        (
+            "url",
+            strings(
+                rows.clone()
+                    .map(|row| Some(format!("https://example.com/{:0>80}", row / 10))),
+            ),
+        ),
+        (
+            "day",
+            Arc::new(Date32Array::from_iter_values(
+                rows.clone().map(|row| (row / 500) as i32),
+            )),
+        ),
+        (
+            "id",
+            Arc::new(Int64Array::from_iter_values(rows.map(|row| row as i64))),
+        ),
     ]
 }
 
@@ -376,8 +402,7 @@ fn sample(rows: usize, group: Group) -> Vec<RecordBatch> {
     (0..rows)
         .step_by(BATCH_ROWS)
         .map(|start| {
-            let values = values(start..(start + BATCH_ROWS).min(rows));
-            RecordBatch::try_from_iter(group(&values)).unwrap()
+            RecordBatch::try_from_iter(group(start..(start + BATCH_ROWS).min(rows))).unwrap()
         })
         .collect()
 }
@@ -395,13 +420,14 @@ fn properties() -> WriterProperties {
 }
 
 fn criterion_benchmark(c: &mut Criterion) {
-    let shapes: [(&str, usize, Group); 6] = [
+    let shapes: [(&str, usize, Group); 7] = [
         ("primitives", 20_000, primitives),
         ("primitives_1k", 1000, primitives),
         ("structs", 20_000, structs),
         ("arrays", 20_000, arrays),
         ("maps", 20_000, maps),
         ("nested", 20_000, nested),
+        ("sorted", 20_000, sorted),
     ];
     let mut group = c.benchmark_group("dictionary_chooser");
     for (name, rows, columns) in shapes {
