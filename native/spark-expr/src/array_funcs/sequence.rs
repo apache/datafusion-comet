@@ -215,6 +215,13 @@ where
             Self::Array(array) => array.is_null(row),
         }
     }
+    fn null_count(&self, rows: usize) -> usize {
+        match self {
+            Self::Scalar(None) => rows,
+            Self::Scalar(Some(_)) => 0,
+            Self::Array(array) => array.null_count(),
+        }
+    }
     fn nulls(&self, len: usize) -> Option<NullBuffer> {
         match self {
             Self::Scalar(None) => Some(NullBuffer::new_null(len)),
@@ -277,18 +284,32 @@ where
     // Validate every row before checking the batch total, preserving the first Spark error.
     // Retain lengths so short sequences do not repeat per-row arithmetic during generation.
     let mut lengths = sequence_vec::<usize>(num_rows)?;
-    let mut total = 0usize;
-    for row in 0..num_rows {
-        if nulls.as_ref().is_some_and(|nulls| nulls.is_null(row)) {
-            lengths.push(0);
-            continue;
+    let scalar_size = size.filter(|_| {
+        num_rows != 0
+            && args
+                .iter()
+                .all(|arg| matches!(arg, ColumnarValue::Scalar(_)))
+    });
+    let total = if let Some((_, total)) = scalar_size {
+        // Preflight already checked the one scalar length. Fill the existing cache without
+        // revalidating it for every row; its full capacity was reserved above.
+        lengths.resize(num_rows, total / num_rows);
+        total
+    } else {
+        let mut total = 0usize;
+        for row in 0..num_rows {
+            if nulls.as_ref().is_some_and(|nulls| nulls.is_null(row)) {
+                lengths.push(0);
+                continue;
+            }
+            let s = start.value(row);
+            let e = stop.value(row);
+            let len = sequence_length(s, e, row_step(row, s, e))?;
+            total += len;
+            lengths.push(len);
         }
-        let s = start.value(row);
-        let e = stop.value(row);
-        let len = sequence_length(s, e, row_step(row, s, e))?;
-        total += len;
-        lengths.push(len);
-    }
+        total
+    };
     // Arrow's List offsets must fit i32; Spark's per-row array limit is checked above.
     if total > i32::MAX as usize {
         return Err(DataFusionError::External(Box::new(
@@ -354,8 +375,19 @@ fn construction_size<T: Integral>(
 where
     T::Native: Into<i64>,
 {
+    let null_counts = [
+        start.null_count(rows),
+        stop.null_count(rows),
+        step.map_or(0, |step| step.null_count(rows)),
+    ];
+    let nullable = null_counts.iter().any(|count| *count != 0);
+    let all_null = rows != 0 && null_counts.contains(&rows);
     let row_length = |row| -> Result<usize> {
-        if start.is_null(row) || stop.is_null(row) || step.is_some_and(|step| step.is_null(row)) {
+        if nullable
+            && (start.is_null(row)
+                || stop.is_null(row)
+                || step.is_some_and(|step| step.is_null(row)))
+        {
             return Ok(0);
         }
         let s = start.value(row);
@@ -366,7 +398,11 @@ where
     let scalars = matches!(start, Input::Scalar(_))
         && matches!(stop, Input::Scalar(_))
         && step.is_none_or(|step| matches!(step, Input::Scalar(_)));
-    let (total, has_nulls) = if scalars && rows != 0 {
+    let (total, has_nulls) = if all_null {
+        // Any wholly-null input proves every output row is null. Do not inspect the other
+        // inputs' values or scan rows; checked offset/bitmap sizing still follows below.
+        (0, true)
+    } else if scalars && rows != 0 {
         let len = row_length(0)?;
         (len as u128 * rows as u128, len == 0)
     } else {
@@ -1017,6 +1053,29 @@ mod memory_tests {
                 Err(DataFusionError::ResourcesExhausted(_))
             ));
             assert_released(&small);
+        }
+    }
+
+    #[test]
+    fn all_null_input_metadata_suppresses_invalid_underlying_values() {
+        for null_input in 0..3 {
+            let args = [10, 0, 1]
+                .into_iter()
+                .enumerate()
+                .map(|(index, value)| {
+                    // Non-null values would have illegal ascending boundaries. Slice the wholly
+                    // null input too, so the shortcut relies on the logical array's metadata.
+                    let validity = (index == null_input).then(|| NullBuffer::new_null(5));
+                    let array = Int64Array::new(vec![value; 5].into(), validity).slice(1, 3);
+                    ColumnarValue::Array(Arc::new(array))
+                })
+                .collect::<Vec<_>>();
+            let pool = ObservedPool::new(4 * 4 + 64, None);
+            let udf = SparkSequence::new(list_type(), Arc::clone(&pool) as _);
+            let result = invoke(&udf, args, 3).unwrap();
+            assert_eq!(result.null_count(), 3);
+            assert_eq!(pool.peak.load(Ordering::Relaxed), 4 * 4 + 64);
+            assert_released(&pool);
         }
     }
 
