@@ -75,6 +75,8 @@ class CometAnswerToleranceSuite extends CometTestBase {
     assertMismatch(Seq(("a", 1.0)).toDF("s", "d"), Row("b", 1.0))
     // Only top-level floating-point values get the tolerance.
     assertMismatch(Seq(Seq(1.0 + 1e-7)).toDF("a"), Row(Seq(1.0)))
+    assertMismatch(Seq(Seq(-0.0)).toDF("a"), Row(Seq(0.0)))
+    assertMatch(Seq(Seq(Double.NaN)).toDF("a"), Row(Seq(Double.NaN)))
   }
 
   test("rows are sorted before they are paired") {
@@ -89,6 +91,33 @@ class CometAnswerToleranceSuite extends CometTestBase {
     assertMatch(Seq(0.5, 1.2246467991473532e-16).toDF("d"), Row(0.0), Row(0.5))
     assertMismatch(Seq(1.0, 2.0).toDF("d"), Row(1.0), Row(Double.NaN))
     assertMismatch(Seq(1.0, 2.0).toDF("d"), Row(1.0))
+  }
+
+  test("rows of an unordered query pair one-to-one") {
+    // A leading value within tolerance must not pair rows whose other fields differ.
+    assertMatch(Seq((1e-7, "a"), (0.0, "b")).toDF("d", "s"), Row(0.0, "a"), Row(0.0, "b"))
+    assertMismatch(Seq((1e-7, "b"), (0.0, "b")).toDF("d", "s"), Row(0.0, "a"), Row(0.0, "b"))
+    // The same with a second floating-point field, which sorting alone cannot pair.
+    assertMatch(Seq((1e-7, 1.0), (0.0, 2.0)).toDF("x", "y"), Row(0.0, 1.0), Row(0.0, 2.0))
+    // The first Spark row matches both Comet rows, the second only the first Comet row. Pairing
+    // in order, or giving each Spark row the first free Comet row it matches, pairs the first
+    // rows and leaves the second Spark row without a partner.
+    assertMatch(Seq((2e-7, 5e-7), (3e-7, -8e-7)).toDF("x", "y"), Row(0.0, 0.0), Row(1e-7, 9e-7))
+    // Every row matches a row on the other side, but not one of its own.
+    assertMismatch(
+      Seq((0.0, 0.0), (1.0, 1.0), (1.0, 1.0)).toDF("x", "y"),
+      Row(0.0, 0.0),
+      Row(0.0, 0.0),
+      Row(1.0, 1.0))
+    // Maps match whatever the order of their entries, which their string form does not ignore.
+    assertMatch(
+      Seq(Map("b" -> 2, "a" -> 1), Map("a" -> 2, "b" -> 1)).toDF("m"),
+      Row(Map("a" -> 1, "b" -> 2)),
+      Row(Map("b" -> 1, "a" -> 2)))
+    assertMismatch(
+      Seq(Map("b" -> 2, "a" -> 1), Map("a" -> 1, "b" -> 2)).toDF("m"),
+      Row(Map("a" -> 1, "b" -> 2)),
+      Row(Map("b" -> 1, "a" -> 2)))
   }
 
   test("rows of a sorted query are paired in order") {

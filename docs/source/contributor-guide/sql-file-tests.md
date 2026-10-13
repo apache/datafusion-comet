@@ -263,9 +263,8 @@ ignores the sign of zero (`+0.0` matches `-0.0`), so keep tolerance for ordinary
 plain `query` for cases whose expected result is signed zero. Values nested inside arrays, structs
 and maps are compared exactly.
 
-As in the default mode, both results are sorted before they are compared unless the query has an
-`ORDER BY`. Floating-point values sort by value, so two results that match within the tolerance
-end up in the same position.
+As in the default mode, the order of the rows only matters when the query has an `ORDER BY`.
+Otherwise each row of the Spark result must match a different row of the Comet result.
 
 ```sql
 query tolerance=1e-6

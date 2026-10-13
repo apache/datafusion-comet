@@ -21,6 +21,7 @@ package org.apache.spark.sql
 
 import java.util.concurrent.atomic.AtomicInteger
 
+import scala.collection.mutable
 import scala.concurrent.duration._
 import scala.reflect.ClassTag
 import scala.reflect.runtime.universe.TypeTag
@@ -522,7 +523,8 @@ abstract class CometTestBase
    * [[checkCometAnswer]], but top-level `float` and `double` values match when they are within
    * `absTol` of each other. NaN matches only NaN, and an infinity matches only the infinity of
    * the same sign. `+0.0` matches `-0.0`. Values nested in arrays, structs and maps are compared
-   * exactly.
+   * exactly. Unless the query is sorted, each Spark row must match a Comet row of its own, in any
+   * order.
    */
   protected def checkCometAnswerWithTolerance(
       cometDf: DataFrame,
@@ -553,9 +555,7 @@ abstract class CometTestBase
     val preparedSpark = prepareCometAnswer(sparkAnswer, isSorted, ordering)
     val preparedComet = prepareCometAnswer(cometAnswer, isSorted, ordering)
     val matches = absTol match {
-      case Some(tol) =>
-        preparedSpark.length == preparedComet.length &&
-        preparedSpark.zip(preparedComet).forall { case (s, c) => rowsMatch(s, c, tol) }
+      case Some(tol) => answersMatchWithinTolerance(preparedSpark, preparedComet, isSorted, tol)
       case None => QueryTest.compare(preparedSpark, preparedComet)
     }
     if (!matches) {
@@ -627,33 +627,144 @@ abstract class CometTestBase
   }
 
   /**
-   * Orders rows for a tolerance comparison: field by field, with `float` and `double` fields
-   * compared by value and everything else by its string form. Sorting whole rows by `toString`,
-   * as the exact comparison does, can put two values that match within tolerance at different
-   * positions: `1.2246467991473532E-16` sorts after `0.5`, but `0.0` sorts before it. The two
-   * zeros are equal here because the comparison matches them, and NaN sorts last.
+   * Orders rows for a tolerance comparison: by their top-level `float` and `double` fields,
+   * compared by value, and then by their string form. Sorting by the string form alone, as the
+   * exact comparison does, can put two values that match within tolerance far apart:
+   * `1.2246467991473532E-16` sorts after `0.5`, but `0.0` sorts before it. The two zeros are
+   * equal here because the comparison matches them. Null sorts first and NaN last.
    */
   private val toleranceOrdering: Ordering[Row] = new Ordering[Row] {
     override def compare(x: Row, y: Row): Int =
       x.toSeq.iterator
         .zip(y.toSeq.iterator)
-        .map { case (l, r) => compareField(l, r) }
+        .map { case (l, r) => compareFloats(l, r) }
         .find(_ != 0)
-        .getOrElse(0)
+        .getOrElse(x.toString.compareTo(y.toString))
 
-    private def compareField(left: Any, right: Any): Int = (left, right) match {
-      case (null, null) => 0
-      case (null, _) => -1
-      case (_, null) => 1
+    private def compareFloats(left: Any, right: Any): Int = (left, right) match {
       case (l: Float, r: Float) => if (l == r) 0 else java.lang.Float.compare(l, r)
       case (l: Double, r: Double) => if (l == r) 0 else java.lang.Double.compare(l, r)
-      case _ => left.toString.compareTo(right.toString)
+      case (null, _: Float | _: Double) => -1
+      case (_: Float | _: Double, null) => 1
+      case _ => 0
     }
+  }
+
+  /**
+   * Whether two answers, sorted by [[toleranceOrdering]], match within `absTol`: each Spark row
+   * must match a Comet row of its own. A sorted query pairs the rows in order. Otherwise two rows
+   * can only pair when their fields other than the top-level `float` and `double` ones compare
+   * equal, so the rows are grouped by those fields and each group must pair up on its own, which
+   * also makes duplicates count. Within a group, the rows are in order of their floating-point
+   * values. With at most one such field, pairing the rows in that order works whenever any
+   * pairing does. With more, rows that match can sort differently on each side, so a group that
+   * does not pair in order falls back to [[pairsOneToOne]].
+   */
+  private def answersMatchWithinTolerance(
+      spark: Seq[Row],
+      comet: Seq[Row],
+      isSorted: Boolean,
+      absTol: Double): Boolean = {
+    def pairInOrder(sparkRows: Seq[Row], cometRows: Seq[Row]): Boolean =
+      sparkRows.length == cometRows.length &&
+        sparkRows.zip(cometRows).forall { case (s, c) => rowsMatch(s, c, absTol) }
+    if (isSorted) {
+      pairInOrder(spark, comet)
+    } else {
+      val sparkGroups = spark.groupBy(toleranceGroupKey)
+      val cometGroups = comet.groupBy(toleranceGroupKey)
+      sparkGroups.keySet == cometGroups.keySet && sparkGroups.forall { case (key, sparkRows) =>
+        val cometRows = cometGroups(key)
+        val floatFields = key.count(_.isEmpty)
+        pairInOrder(sparkRows, cometRows) ||
+        (floatFields > 1 && sparkRows.length == cometRows.length &&
+          pairsOneToOne(sparkRows.toIndexedSeq, cometRows.toIndexedSeq, absTol))
+      }
+    }
+  }
+
+  /**
+   * Keys a row by its fields other than the top-level `float` and `double` ones, which become
+   * `None`. Two rows get the same key when `QueryTest.compare` matches those other fields.
+   */
+  private def toleranceGroupKey(row: Row): Seq[Option[Any]] = row.toSeq.map {
+    case _: Float | _: Double => None
+    case value => Some(comparisonKey(value))
+  }
+
+  /**
+   * A normalized value in a form that is equal for two values when `QueryTest.compare` matches
+   * them, so that it can key a hash map: a map becomes the set of its entries, and a `float` or
+   * `double` its bits.
+   */
+  private def comparisonKey(value: Any): Any = value match {
+    case row: Row => row.toSeq.map(comparisonKey)
+    case map: scala.collection.Map[_, _] =>
+      map.iterator.map { case (k, v) => (comparisonKey(k), comparisonKey(v)) }.toSet
+    case seq: scala.collection.Iterable[_] => seq.map(comparisonKey).toSeq
+    case d: Double => java.lang.Double.doubleToRawLongBits(d)
+    case f: Float => java.lang.Float.floatToRawIntBits(f)
+    case other => other
+  }
+
+  /**
+   * Whether each Spark row can pair with a Comet row of its own that it matches within `absTol`,
+   * found with Kuhn's algorithm. The rows at the same position start out paired when they match.
+   * Each Spark row left without a partner then searches breadth-first for a path that ends at a
+   * Comet row without one: a Comet row that it matches, whose partner moves on to another Comet
+   * row that it matches, and so on. Shifting the pairs along that path pairs one more row. When a
+   * Spark row finds no such path, no pairing of all the rows exists.
+   */
+  private def pairsOneToOne(
+      spark: IndexedSeq[Row],
+      comet: IndexedSeq[Row],
+      absTol: Double): Boolean = {
+    val sparkPartner = Array.fill(spark.length)(-1)
+    val cometPartner = Array.fill(comet.length)(-1)
+    spark.indices.filter(i => rowsMatch(spark(i), comet(i), absTol)).foreach { i =>
+      sparkPartner(i) = i
+      cometPartner(i) = i
+    }
+    // The Comet rows that each Spark row matches, found when the search first needs them.
+    val candidates = mutable.Map.empty[Int, Seq[Int]]
+    def candidatesOf(s: Int): Seq[Int] =
+      candidates.getOrElseUpdate(
+        s,
+        comet.indices.filter(c => rowsMatch(spark(s), comet(c), absTol)))
+
+    def pairUp(start: Int): Boolean = {
+      // The Spark row from which the search first reached each Comet row.
+      val reachedFrom = Array.fill(comet.length)(-1)
+      val queue = mutable.Queue(start)
+      var unpaired = -1
+      while (unpaired < 0 && queue.nonEmpty) {
+        val s = queue.dequeue()
+        for (c <- candidatesOf(s) if unpaired < 0 && reachedFrom(c) < 0) {
+          reachedFrom(c) = s
+          if (cometPartner(c) < 0) {
+            unpaired = c
+          } else {
+            queue.enqueue(cometPartner(c))
+          }
+        }
+      }
+      var c = unpaired
+      while (c >= 0) {
+        val s = reachedFrom(c)
+        val previous = sparkPartner(s)
+        sparkPartner(s) = c
+        cometPartner(c) = s
+        c = previous
+      }
+      unpaired >= 0
+    }
+
+    spark.indices.forall(s => sparkPartner(s) >= 0 || pairUp(s))
   }
 
   private def rowsMatch(spark: Row, comet: Row, absTol: Double): Boolean =
     spark.length == comet.length && spark.toSeq.zip(comet.toSeq).forall {
-      case (s: Float, c: Float) => valuesMatch(s, c, absTol)
+      case (s: Float, c: Float) => valuesMatch(s.toDouble, c.toDouble, absTol)
       case (s: Double, c: Double) => valuesMatch(s, c, absTol)
       case (s, c) => QueryTest.compare(s, c)
     }
