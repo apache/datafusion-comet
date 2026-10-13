@@ -489,6 +489,7 @@ fn op_name(op: &OpStruct) -> &'static str {
         OpStruct::CsvScan(_) => "CsvScan",
         OpStruct::ShuffleScan(_) => "ShuffleScan",
         OpStruct::BroadcastNestedLoopJoin(_) => "BroadcastNestedLoopJoin",
+        OpStruct::CrossJoin(_) => "CrossJoin",
         OpStruct::Sample(_) => "Sample",
         OpStruct::MergeRows(_) => "MergeRows",
         OpStruct::RangeScan(_) => "RangeScan",
