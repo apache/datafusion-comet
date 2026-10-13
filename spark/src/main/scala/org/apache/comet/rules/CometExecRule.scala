@@ -1672,25 +1672,30 @@ case class CometExecRule(session: SparkSession, queryStagePrep: Boolean = false)
    * pass - which prepares the build stage on its own, without the join above it - does not bridge
    * the scan again. Returns true if any tag was cleared.
    *
-   * Scans under a `CometBroadcastExchangeExec` keep their tag: that join went native and wants
-   * the bridged build. The descent enters `CometScanWrapper`'s wrapped `originalPlan` by hand
-   * because it is a leaf, so a plain `foreach` would never reach the bridged scan inside it. See
-   * issue #6008.
+   * Two guards keep the walk honest. It stops at a `CometBroadcastExchangeExec` - a nested
+   * broadcast join that went native keeps its bridge. And it only clears a tag (and so asks for a
+   * second transform) when the tagged scan sits under a `CometSparkToColumnarExec`, i.e. it was
+   * actually bridged. A CSV/JSON/Parquet scan whose per-format arm left it on Spark still carries
+   * the tag but was never bridged, so touching it would force a pointless second transform. The
+   * descent enters `CometScanWrapper`'s wrapped `originalPlan` by hand because it is a leaf, so a
+   * plain `foreach` would never reach the bridged scan inside it. See issue #6008.
    */
   private def clearWastedBuildSideBridges(plan: SparkPlan): Boolean = {
     var cleared = false
-    def clearScanTags(node: SparkPlan): Unit = {
-      if (node.getTagValue(CometExecRule.BROADCAST_BUILD_SIDE_TAG).isDefined) {
-        node.unsetTagValue(CometExecRule.BROADCAST_BUILD_SIDE_TAG)
-        cleared = true
-      }
-      node match {
-        case w: CometScanWrapper => clearScanTags(w.originalPlan)
-        case other => other.children.foreach(clearScanTags)
-      }
+    def clearScanTags(node: SparkPlan, underBridge: Boolean): Unit = node match {
+      // A nested broadcast join that went native keeps its bridge.
+      case _: CometBroadcastExchangeExec =>
+      case w: CometScanWrapper => clearScanTags(w.originalPlan, underBridge)
+      case bridge: CometSparkToColumnarExec => clearScanTags(bridge.child, underBridge = true)
+      case other =>
+        if (underBridge && other.getTagValue(CometExecRule.BROADCAST_BUILD_SIDE_TAG).isDefined) {
+          other.unsetTagValue(CometExecRule.BROADCAST_BUILD_SIDE_TAG)
+          cleared = true
+        }
+        other.children.foreach(clearScanTags(_, underBridge))
     }
     plan.foreach {
-      case b: BroadcastExchangeExec => clearScanTags(b)
+      case b: BroadcastExchangeExec => clearScanTags(b, underBridge = false)
       case _ =>
     }
     cleared

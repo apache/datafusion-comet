@@ -786,13 +786,13 @@ class CometExecSuite extends CometTestBase {
     }
   }
 
-  test("Spark 3.4 AQE DPP with a text dimension on the broadcast build side (#6008)") {
-    // The 3.5+ version of this is tested above. On Spark 3.4, CometSpark34AqeDppFallbackRule tags
-    // the DPP build broadcast with SKIP_COMET_BROADCAST_TAG so Spark's PlanAdaptiveDynamicPruning
-    // Filters can match it; the build-side gate must honor that tag and NOT bridge the text
-    // dimension, so DPP stays live and the fact is pruned by a real subquery rather than a static
-    // true. Covers the 3.4-only path that the isSpark35Plus test cannot reach. See issue #6008.
-    assume(!isSpark35Plus, "This test covers the Spark 3.4 DPP fallback path")
+  test("Spark 3.4 AQE DPP with a V1 Parquet fact and a text dimension (#6008)") {
+    // On Spark 3.4, CometScanRule keeps a V1 scan that carries an AQE DPP filter on Spark
+    // (CometScanRule.scala:199), so this Parquet fact is not native, hasOnlyNativeScans is false,
+    // and the build side is never tagged or bridged. This pins that the feature stays out of the
+    // way on 3.4: DPP remains live and the answer matches Spark. The SKIP_COMET_BROADCAST_TAG path
+    // needs a native fact; the Iceberg test in CometBroadcastBuildSideSuite covers it. See #6008.
+    assume(!isSpark35Plus, "This test covers the Spark 3.4 V1-fact DPP fallback")
     withSQLConf(
       SQLConf.USE_V1_SOURCE_LIST.key -> "parquet",
       SQLConf.ADAPTIVE_EXECUTION_ENABLED.key -> "true",
@@ -820,10 +820,10 @@ class CometExecSuite extends CometTestBase {
             |WHERE CAST(d.value AS INT) % 2 = 0
             |""".stripMargin)
         val (_, cometPlan) = checkSparkAnswer(df)
-        // The SKIP tag keeps the text dimension un-bridged on 3.4.
+        // The non-native V1 fact means the build side is never tagged, so nothing is bridged.
         assert(
           collect(cometPlan) { case s: CometSparkToColumnarExec => s }.isEmpty,
-          s"3.4: the SKIP-tagged DPP build must not be bridged:\n${cometPlan.treeString}")
+          s"3.4: the text dimension must not be bridged:\n${cometPlan.treeString}")
         // DPP is still live - the fact scan keeps a broadcast pruning subquery.
         val dppSubqueries = collectWithSubqueries(cometPlan) {
           case s: SubqueryBroadcastExec => s
