@@ -58,14 +58,6 @@ interact, including encoding workspace and local fallback for oversized rows.
 <!--BEGIN:CONFIG_TABLE[tuning]-->
 <!--END:CONFIG_TABLE-->
 
-## Legacy Configuration Settings
-
-These deprecated settings temporarily restore behaviour from earlier releases. They default to
-`false` and may be removed in a future major release. See the [Upgrade Guide](migration-guide.md).
-
-<!--BEGIN:CONFIG_TABLE[legacy]-->
-<!--END:CONFIG_TABLE-->
-
 ## Development & Testing Settings
 
 These settings exist for Comet's own test suites and for debugging. They are **not covered by the

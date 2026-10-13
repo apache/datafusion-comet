@@ -274,10 +274,6 @@ depend on live tasks, registered consumers or pool usage. On-heap mode has no de
 `-1` explicitly disables it and `0` is a real zero-byte ceiling. The resolved value crosses JNI in the existing
 config map, without changing the memory pool or reserving anything from it.
 
-The deprecated `spark.comet.legacy.allowUnboundedSequence` boolean defaults to `false`. Setting it
-to `true` resolves the byte ceiling to unbounded, taking precedence over any explicit numeric limit
-and restoring the pre-1.2.0 behaviour. Existing per-row and batch element limits still apply.
-
 The kernel checks logical output values, list offsets and validity bytes after validating all
 rows, before allocating its values and offsets. Row-length scratch storage and validity preparation
 can precede that check. Allocator padding and shared input backing outside a validity slice do not

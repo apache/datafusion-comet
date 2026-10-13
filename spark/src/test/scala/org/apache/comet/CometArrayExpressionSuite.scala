@@ -1718,10 +1718,6 @@ class CometArrayExpressionSuite extends CometTestBase with AdaptiveSparkPlanHelp
         assert(error.getMessage.contains("requires 100 output bytes"), error.getMessage)
         assert(error.getMessage.contains("52-byte limit"), error.getMessage)
         assert(error.getMessage.contains(key), error.getMessage)
-        // The legacy switch restores execution of the same query, even with an explicit cap.
-        withSQLConf(CometConf.COMET_LEGACY_ALLOW_UNBOUNDED_SEQUENCE.key -> "true") {
-          checkSparkAnswerAndOperator(sql(query), Seq(classOf[CometProjectExec]))
-        }
       }
       // Two five-element integer lists need 40 value bytes and 12 offset bytes. Retaining all
       // 16 batches downstream must not reduce any later invocation's 52-byte ceiling.

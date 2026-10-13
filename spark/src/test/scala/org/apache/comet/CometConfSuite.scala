@@ -138,27 +138,6 @@ class CometConfSuite extends AnyFunSuite {
     }
   }
 
-  test("legacy sequence behaviour disables the default and explicit byte ceilings") {
-    import CometExecIterator.getMemoryConfig
-    val legacy = CometConf.COMET_LEGACY_ALLOW_UNBOUNDED_SEQUENCE
-    val ceiling = CometConf.COMET_EXEC_SEQUENCE_MAX_BYTES_PER_INVOCATION
-    val conf = new SparkConf(false)
-      .set("spark.master", "local[8]")
-      .set("spark.memory.offHeap.enabled", "true")
-      .set("spark.memory.offHeap.size", "1g")
-    val sqlConf = new SQLConf
-    SQLConf.withExistingConf(sqlConf) {
-      assert(!legacy.get())
-      assert(getMemoryConfig(conf).sequenceMaxBytes.contains(128L * 1024 * 1024))
-      sqlConf.setConfString(legacy.key, "true")
-      assert(getMemoryConfig(conf).sequenceMaxBytes.isEmpty)
-      sqlConf.setConfString(ceiling.key, "52")
-      assert(getMemoryConfig(conf).sequenceMaxBytes.isEmpty)
-      sqlConf.setConfString(legacy.key, "false")
-      assert(getMemoryConfig(conf).sequenceMaxBytes.contains(52L))
-    }
-  }
-
   test("primary key wins over alternative when both are set") {
     val entry = CometConf
       .conf("spark.comet.testing.alias.primaryWins")

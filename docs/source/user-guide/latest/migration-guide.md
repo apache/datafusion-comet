@@ -23,11 +23,11 @@ This guide lists the behavior changes in each Comet release and the configuratio
 restores the previous behavior for each one. Read the section for every version between the release
 you are upgrading from and the release you are upgrading to.
 
-A **behavior change** is one where the same query, run over the same data, with the same explicitly
+A **behaviour change** is one where the same query, run over the same data, with the same explicitly
 set configuration, produces a different result or a different error than it did in the previous
-release. Comet's [versioning policy](../../about/versioning_policy.md) permits these in a minor
-release only when a `spark.comet.legacy.*` configuration key restores the previous behavior, so
-every behavior change below names such a key.
+release. Each entry for a behaviour change below names the setting that restores the previous
+behaviour. See Comet's [versioning policy](../../about/versioning_policy.md) for the requirements
+on shipping these changes in a minor release.
 
 A release's section can also list changes that need no legacy key but can still change what an
 existing deployment does, such as a fix that makes Comet apply a setting as documented, or a setting
@@ -68,15 +68,12 @@ its values and offsets. In off-heap mode the default ceiling comes from the conf
 limit and task slots, so a valid query that previously completed can now fail when one invocation
 exceeds that ceiling. On-heap test mode has no default ceiling.
 
-Set `spark.comet.legacy.allowUnboundedSequence=true` to restore the pre-1.2.0 absence of this byte
-ceiling. This deprecated boolean defaults to `false`, takes precedence over an explicitly set
-`spark.comet.exec.sequence.maxBytesPerInvocation`, and may be removed in a future major release.
-Existing Spark per-row and Arrow batch element limits still apply.
+Set `spark.comet.exec.sequence.maxBytesPerInvocation=-1` to restore the pre-1.2.0 absence of this
+byte ceiling. Existing Spark per-row and Arrow batch element limits still apply.
 
 To retain the new check, reduce `spark.comet.batchSize`, shorten the sequences or choose a larger
-`spark.comet.exec.sequence.maxBytesPerInvocation`. Setting that numeric option to `-1` also disables
-the byte ceiling. Retained results, concurrent calls and later scalar or folded-literal expansion
-do not consume an invocation's ceiling. See
+`spark.comet.exec.sequence.maxBytesPerInvocation`. Retained results, concurrent calls and later
+scalar or folded-literal expansion do not consume an invocation's ceiling. See
 [Limiting Integral Sequence Output](tuning/memory.md#limiting-integral-sequence-output).
 
 ### In-Memory Cache Enabled by Default

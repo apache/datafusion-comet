@@ -134,9 +134,6 @@ class CometExecSuite extends CometTestBase {
         assert(resolved == expected)
       }
     }
-    withSQLConf(key -> "2k", CometConf.COMET_LEGACY_ALLOW_UNBOUNDED_SEQUENCE.key -> "true") {
-      assert(resolved == "-1")
-    }
   }
 
   test("native sort spill files are compressed with the default spill codec") {

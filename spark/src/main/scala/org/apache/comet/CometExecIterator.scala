@@ -927,23 +927,19 @@ object CometExecIterator extends Logging {
       logDebug("on-heap mode: native memory is unbounded and unaccounted")
       MemoryConfig(offHeapMode, memoryPoolType = "unbounded", memoryLimit = 0)
     }
-    val sequenceMaxBytes = if (CometConf.COMET_LEGACY_ALLOW_UNBOUNDED_SEQUENCE.get()) {
-      None
-    } else {
-      CometConf.COMET_EXEC_SEQUENCE_MAX_BYTES_PER_INVOCATION.get() match {
-        case Some(-1L) => None
-        case Some(bytes) => Some(bytes)
-        case None if offHeapMode =>
-          // This share is stable for the task: live task counts and pool usage do not affect it.
-          require(
-            memoryConfig.memoryLimit >= 0,
-            "The derived sequence memory limit must be non-negative")
-          Some(sequenceExecutorCores(conf).fold(memoryConfig.memoryLimit) { cores =>
-            val taskSlots = math.max(1L, cores.toLong / taskCPUs)
-            memoryConfig.memoryLimit / taskSlots
-          })
-        case None => None
-      }
+    val sequenceMaxBytes = CometConf.COMET_EXEC_SEQUENCE_MAX_BYTES_PER_INVOCATION.get() match {
+      case Some(-1L) => None
+      case Some(bytes) => Some(bytes)
+      case None if offHeapMode =>
+        // This share is stable for the task: live task counts and pool usage do not affect it.
+        require(
+          memoryConfig.memoryLimit >= 0,
+          "The derived sequence memory limit must be non-negative")
+        Some(sequenceExecutorCores(conf).fold(memoryConfig.memoryLimit) { cores =>
+          val taskSlots = math.max(1L, cores.toLong / taskCPUs)
+          memoryConfig.memoryLimit / taskSlots
+        })
+      case None => None
     }
     memoryConfig.copy(sequenceMaxBytes = sequenceMaxBytes)
   }
