@@ -36,7 +36,7 @@ import org.apache.spark.sql.{CometTestBase, DataFrame, Row}
 import org.apache.spark.sql.catalyst.expressions.DynamicPruningExpression
 import org.apache.spark.sql.comet._
 import org.apache.spark.sql.comet.execution.shuffle.{CometNativeShuffle, CometShuffleExchangeExec}
-import org.apache.spark.sql.execution.{InSubqueryExec, ReusedSubqueryExec, SparkPlan, SubqueryAdaptiveBroadcastExec, SubqueryBroadcastExec, SubqueryExec}
+import org.apache.spark.sql.execution.{InSubqueryExec, LocalTableScanExec, ReusedSubqueryExec, SparkPlan, SubqueryAdaptiveBroadcastExec, SubqueryBroadcastExec, SubqueryExec}
 import org.apache.spark.sql.execution.adaptive.{AdaptiveSparkPlanExec, AdaptiveSparkPlanHelper, AQEShuffleReadExec, BroadcastQueryStageExec}
 import org.apache.spark.sql.execution.datasources.v2.BatchScanExec
 import org.apache.spark.sql.execution.exchange.{ReusedExchangeExec, ShuffleExchangeExec, ShuffleExchangeLike}
@@ -5322,10 +5322,21 @@ class CometIcebergNativeSuite
               if (isSpark35Plus && aqeEnabled && scans.isEmpty) {
                 // Newer Spark versions shuffle the join inputs, allowing AQE to replace
                 // the join and its scans with an empty relation after DPP prunes one input.
+                // Spark 4.0+ (SPARK-48466) plans it as EmptyRelationExec, which Comet
+                // converts to CometEmptyRelationExec. Spark 3.5 has no EmptyRelation node
+                // and plans an empty LocalTableScanExec instead.
                 // This checks result compatibility; the SinglePartition regression assertions
                 // below target Spark 3.4, where both scans must remain in one native block.
+                val emptyRelations = if (isSpark40Plus) {
+                  collect(plan) { case empty: CometEmptyRelationExec => empty }
+                } else {
+                  collect(plan) {
+                    case empty: LocalTableScanExec if empty.rows.isEmpty => empty
+                    case empty: CometLocalTableScanExec if empty.rows.isEmpty => empty
+                  }
+                }
                 assert(
-                  collect(plan) { case empty: CometEmptyRelationExec => empty }.nonEmpty,
+                  emptyRelations.nonEmpty,
                   s"Expected AQE to replace the pruned join with an empty relation:\n$plan")
               } else {
                 assert(scans.size == 2, s"Expected two native Iceberg scans:\n$plan")
