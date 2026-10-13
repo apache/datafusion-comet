@@ -69,7 +69,11 @@ private[spark] class CometExecRDD(
     encryptedFilePaths: Seq[String] = Seq.empty,
     shuffleScanIndices: Set[Int] = Set.empty,
     @transient perPartitionFilePaths: Array[Seq[String]] = Array.empty,
-    outputTypes: Seq[DataType] = Seq.empty)
+    outputTypes: Seq[DataType] = Seq.empty,
+    // Set by a contrib leaf scan (e.g. the Delta contrib's `CometDeltaNativeScanExec`) that
+    // builds this RDD directly, bypassing `CometNativeExec.executeColumnarWithContext`'s own
+    // `ctx.hasScanInput` check, so it reports task input metrics without subclassing this RDD.
+    reportScanInputMetrics: Boolean = false)
     extends RDD[ColumnarBatch](sc, inputRDDs.map(rdd => new OneToOneDependency(rdd))) {
 
   // Determine partition count: from inputs if available, otherwise from parameter
@@ -104,6 +108,11 @@ private[spark] class CometExecRDD(
     // reverse registration order, so registering first means this listener runs last, after
     // nested native blocks and the iterator have published their final metric values.
     Option(context).foreach(nativeMetrics.reportSpillMetrics)
+    // Registered here for the same reason: it has to run after the iterator's close has
+    // published the final scan metrics.
+    if (reportScanInputMetrics) {
+      Option(context).foreach(nativeMetrics.reportScanInputMetrics)
+    }
 
     val partition = split.asInstanceOf[CometExecPartition]
 
@@ -233,7 +242,8 @@ object CometExecRDD {
       encryptedFilePaths: Seq[String] = Seq.empty,
       shuffleScanIndices: Set[Int] = Set.empty,
       perPartitionFilePaths: Array[Seq[String]] = Array.empty,
-      outputTypes: Seq[DataType] = Seq.empty): CometExecRDD = {
+      outputTypes: Seq[DataType] = Seq.empty,
+      reportScanInputMetrics: Boolean = false): CometExecRDD = {
     // scalastyle:on
 
     new CometExecRDD(
@@ -251,6 +261,7 @@ object CometExecRDD {
       encryptedFilePaths,
       shuffleScanIndices,
       perPartitionFilePaths,
-      outputTypes)
+      outputTypes,
+      reportScanInputMetrics)
   }
 }

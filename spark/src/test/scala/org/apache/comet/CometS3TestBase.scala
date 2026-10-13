@@ -75,6 +75,9 @@ trait CometS3TestBase extends CometTestBase {
     conf.set("spark.hadoop.fs.s3a.secret.key", password)
     conf.set("spark.hadoop.fs.s3a.endpoint", minioContainer.getS3URL)
     conf.set("spark.hadoop.fs.s3a.path.style.access", "true")
+    // Pin the region explicitly rather than relying on Hadoop-version-dependent region
+    // resolution; MinIO ignores the value. Native maps this the same way (see s3.rs).
+    conf.set("spark.hadoop.fs.s3a.endpoint.region", "us-east-1")
   }
 
   // Spark 4.2 has no published Iceberg spark-runtime yet; the build reuses the 4.0 runtime, whose
