@@ -37,7 +37,7 @@ use arrow::array::{
     Array, ArrayRef, RecordBatch, RecordBatchOptions,
 };
 use arrow::compute::cast;
-use arrow::datatypes::{DataType, Field, Schema, TimeUnit};
+use arrow::datatypes::{DataType, Field, Schema, SchemaRef, TimeUnit};
 use arrow::error::ArrowError;
 use datafusion::physical_plan::metrics::Time;
 use datafusion_comet_jni_bridge::errors::CometError;
@@ -380,6 +380,10 @@ fn append_nested_struct_fields_field_major(
 ) -> Result<(), CometError> {
     let num_rows = row_addresses.len();
     let mut row = SparkUnsafeRow::new_with_num_fields(fields.len());
+    // Reused by every nested struct field. The recursive call only borrows them.
+    let mut nested_addresses: Vec<jlong> = Vec::new();
+    let mut nested_sizes: Vec<jint> = Vec::new();
+    let mut nested_is_null: Vec<bool> = Vec::new();
 
     // Helper macro for processing primitive fields
     macro_rules! process_field {
@@ -517,9 +521,12 @@ fn append_nested_struct_fields_field_major(
                 let nested_builder = get_field_builder!(struct_builder, StructBuilder, field_idx);
 
                 // Collect nested struct addresses and sizes in one pass, building validity
-                let mut nested_addresses: Vec<jlong> = Vec::with_capacity(num_rows);
-                let mut nested_sizes: Vec<jint> = Vec::with_capacity(num_rows);
-                let mut nested_is_null: Vec<bool> = Vec::with_capacity(num_rows);
+                nested_addresses.clear();
+                nested_sizes.clear();
+                nested_is_null.clear();
+                nested_addresses.reserve(num_rows);
+                nested_sizes.reserve(num_rows);
+                nested_is_null.reserve(num_rows);
 
                 for row_idx in 0..num_rows {
                     if struct_is_null[row_idx] {
@@ -622,7 +629,7 @@ fn append_list_column_batch(
     // Helper macro for primitive element types - gets builder fresh each iteration
     // to avoid borrow conflicts with list_builder.append()
     macro_rules! process_primitive_lists {
-        ($builder_type:ty, $append_fn:ident) => {{
+        ($builder_type:ty, $append_fn:ident $(, $extra:expr)*) => {{
             for i in row_start..row_end {
                 read_row_at!(row, row_addresses_ptr, row_sizes_ptr, i);
 
@@ -636,7 +643,7 @@ fn append_list_column_batch(
                         .as_any_mut()
                         .downcast_mut::<$builder_type>()
                         .expect(stringify!($builder_type));
-                    array.$append_fn::<true>(values_builder);
+                    array.$append_fn::<true>(values_builder $(, $extra)*);
                     list_builder.append(true);
                 }
             }
@@ -668,8 +675,12 @@ fn append_list_column_batch(
         DataType::Date32 => {
             process_primitive_lists!(Date32Builder, append_dates_to_builder);
         }
-        DataType::Timestamp(TimeUnit::Microsecond, _) => {
-            process_primitive_lists!(TimestampMicrosecondBuilder, append_timestamps_to_builder);
+        DataType::Timestamp(TimeUnit::Microsecond, tz) => {
+            process_primitive_lists!(
+                TimestampMicrosecondBuilder,
+                append_timestamps_to_builder,
+                tz
+            );
         }
         DataType::Time64(TimeUnit::Nanosecond) => {
             process_primitive_lists!(Time64NanosecondBuilder, append_time64s_to_builder);
@@ -833,6 +844,11 @@ fn append_struct_fields_field_major(
         }
     }
 
+    // Reused by every nested struct field. The recursive call only borrows them.
+    let mut nested_addresses: Vec<jlong> = Vec::new();
+    let mut nested_sizes: Vec<jint> = Vec::new();
+    let mut nested_is_null: Vec<bool> = Vec::new();
+
     // Helper macro for processing primitive fields
     macro_rules! process_field {
         ($builder_type:ty, $field_idx:expr, $get_value:expr) => {{
@@ -966,9 +982,12 @@ fn append_struct_fields_field_major(
                 let nested_builder = get_field_builder!(struct_builder, StructBuilder, field_idx);
 
                 // Collect nested struct addresses and sizes in one pass, building validity
-                let mut nested_addresses: Vec<jlong> = Vec::with_capacity(num_rows);
-                let mut nested_sizes: Vec<jint> = Vec::with_capacity(num_rows);
-                let mut nested_is_null: Vec<bool> = Vec::with_capacity(num_rows);
+                nested_addresses.clear();
+                nested_sizes.clear();
+                nested_is_null.clear();
+                nested_addresses.reserve(num_rows);
+                nested_sizes.reserve(num_rows);
+                nested_is_null.reserve(num_rows);
 
                 for (row_idx, i) in (row_start..row_end).enumerate() {
                     if struct_is_null[row_idx] {
@@ -1370,7 +1389,7 @@ pub fn process_sorted_row_partition(
 
     // Create builders once and reuse them across batches.
     // After finish() is called, builders are reset and can be reused.
-    let mut data_builders: Vec<Box<dyn ArrayBuilder>> = vec![];
+    let mut data_builders: Vec<Box<dyn ArrayBuilder>> = Vec::with_capacity(schema.len());
     schema.iter().try_for_each(|dt| {
         make_builders(dt, batch_size, prefer_dictionary_ratio)
             .map(|builder| data_builders.push(builder))?;
@@ -1391,6 +1410,8 @@ pub fn process_sorted_row_partition(
     // One context for every batch this call encodes; the JVM calls in once per sorted
     // partition, so there is no wider native scope to hoist it to.
     let mut codec_context = ShuffleCodecContext::default();
+    // The block writer pre-encodes the batch schema, so it is kept until the schema changes.
+    let mut block_writer: Option<(SchemaRef, ShuffleBlockWriter)> = None;
 
     while current_row < row_num {
         let n = std::cmp::min(batch_size, row_num - current_row);
@@ -1423,8 +1444,17 @@ pub fn process_sorted_row_partition(
         frozen.clear();
         let mut cursor = Cursor::new(&mut frozen);
 
-        let block_writer = ShuffleBlockWriter::try_new(batch.schema().as_ref(), codec.clone())?;
-        written += block_writer.write_batch(&batch, &mut cursor, &mut codec_context, &ipc_time)?;
+        // The schema changes between batches when a dictionary-encoded column falls back to a
+        // plain array (see `builder_to_array`).
+        if block_writer
+            .as_ref()
+            .is_none_or(|(cached, _)| cached != batch.schema_ref())
+        {
+            let writer = ShuffleBlockWriter::try_new(batch.schema_ref(), codec.clone())?;
+            block_writer = Some((batch.schema(), writer));
+        }
+        let (_, writer) = block_writer.as_ref().expect("block writer is set above");
+        written += writer.write_batch(&batch, &mut cursor, &mut codec_context, &ipc_time)?;
 
         if let Some(checksum) = &mut current_checksum {
             checksum.update(&mut cursor)?;
@@ -1504,7 +1534,8 @@ fn make_batch(arrays: Vec<ArrayRef>, row_count: usize) -> Result<RecordBatch, Ar
 
 #[cfg(test)]
 mod test {
-    use arrow::datatypes::Fields;
+    use arrow::array::AsArray;
+    use arrow::datatypes::{Fields, TimestampMicrosecondType};
 
     use super::*;
 
@@ -1573,5 +1604,81 @@ mod test {
         // Strict `from_utf8(..).unwrap()` panics here; lossy decode replaces each invalid byte
         // with U+FFFD. `&*` works whether get_string returns `&str` or `Cow<str>`.
         assert_eq!(&*row.get_string(0), "\u{FFFD}\u{FFFD}A");
+    }
+
+    /// Lays out an 8-byte-aligned `UnsafeRow` with one array field of 8-byte elements: the null
+    /// bitset, the field's offset and size, then the `UnsafeArrayData`. `None` is a null field.
+    fn unsafe_row_with_array(values: Option<&[Option<i64>]>) -> Vec<u64> {
+        let Some(values) = values else {
+            return vec![1, 0];
+        };
+        let mut null_bitset = vec![0u64; values.len().div_ceil(64)];
+        let mut elements = Vec::with_capacity(values.len());
+        for (i, value) in values.iter().enumerate() {
+            if value.is_none() {
+                null_bitset[i / 64] |= 1 << (i % 64);
+            }
+            elements.push(value.unwrap_or(0) as u64);
+        }
+        let array_size = 8 * (1 + null_bitset.len() + elements.len()) as u64;
+        let mut row = vec![0, (16 << 32) | array_size, values.len() as u64];
+        row.extend(null_bitset);
+        row.extend(elements);
+        row
+    }
+
+    #[test]
+    fn timestamp_list_column_keeps_its_timezone() {
+        // An array of at least MIN_BULK_NULLABLE_APPEND_ELEMENTS elements that holds a null is
+        // appended with `append_array`, which panics unless the array has the builder's timezone.
+        let data_type = DataType::List(Arc::new(Field::new(
+            "item",
+            DataType::Timestamp(TimeUnit::Microsecond, Some("UTC".into())),
+            true,
+        )));
+        let with_null: Vec<Option<i64>> = (0..70).map(|v| (v != 3).then_some(v << 20)).collect();
+        let without_null: Vec<Option<i64>> = (0..70).map(|v| Some(-v)).collect();
+        let short = vec![Some(1), None];
+        let lists = [
+            Some(with_null.as_slice()),
+            None,
+            Some(short.as_slice()),
+            Some(without_null.as_slice()),
+        ];
+        let rows: Vec<Vec<u64>> = lists.iter().map(|l| unsafe_row_with_array(*l)).collect();
+        let mut row_addresses: Vec<jlong> = rows.iter().map(|r| r.as_ptr() as jlong).collect();
+        let mut row_sizes: Vec<jint> = rows.iter().map(|r| (r.len() * 8) as jint).collect();
+
+        let schema = [data_type.clone()];
+        let mut builder = make_builders(&data_type, rows.len(), 1.0).unwrap();
+        append_columns(
+            row_addresses.as_mut_ptr(),
+            row_sizes.as_mut_ptr(),
+            0,
+            rows.len(),
+            &schema,
+            0,
+            &mut builder,
+            1.0,
+        )
+        .unwrap();
+        let array = builder.finish();
+
+        assert_eq!(array.data_type(), &data_type);
+        let appended: Vec<Option<Vec<Option<i64>>>> = array
+            .as_list::<i32>()
+            .iter()
+            .map(|values| {
+                values.map(|values| {
+                    values
+                        .as_primitive::<TimestampMicrosecondType>()
+                        .iter()
+                        .collect()
+                })
+            })
+            .collect();
+        let expected: Vec<Option<Vec<Option<i64>>>> =
+            lists.iter().map(|l| l.map(<[_]>::to_vec)).collect();
+        assert_eq!(appended, expected);
     }
 }
