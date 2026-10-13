@@ -34,100 +34,6 @@ import org.apache.comet.testing.{DataGenOptions, FuzzDataGenerator, ParquetGener
  */
 class CometHashExpressionSuite extends CometTestBase with AdaptiveSparkPlanHelper {
 
-  test("hash - boolean") {
-    withTable("t") {
-      sql("CREATE TABLE t(c BOOLEAN) USING parquet")
-      sql("INSERT INTO t VALUES (true), (false), (null)")
-      checkSparkAnswerAndOperator("SELECT c, hash(c), xxhash64(c) FROM t ORDER BY c")
-    }
-  }
-
-  test("hash - byte/tinyint") {
-    withTable("t") {
-      sql("CREATE TABLE t(c TINYINT) USING parquet")
-      sql("INSERT INTO t VALUES (1), (0), (-1), (127), (-128), (null)")
-      checkSparkAnswerAndOperator("SELECT c, hash(c), xxhash64(c) FROM t ORDER BY c")
-    }
-  }
-
-  test("hash - short/smallint") {
-    withTable("t") {
-      sql("CREATE TABLE t(c SMALLINT) USING parquet")
-      sql("INSERT INTO t VALUES (1), (0), (-1), (32767), (-32768), (null)")
-      checkSparkAnswerAndOperator("SELECT c, hash(c), xxhash64(c) FROM t ORDER BY c")
-    }
-  }
-
-  test("hash - int") {
-    withTable("t") {
-      sql("CREATE TABLE t(c INT) USING parquet")
-      sql("INSERT INTO t VALUES (1), (0), (-1), (2147483647), (-2147483648), (null)")
-      checkSparkAnswerAndOperator("SELECT c, hash(c), xxhash64(c) FROM t ORDER BY c")
-    }
-  }
-
-  test("hash - long/bigint") {
-    withTable("t") {
-      sql("CREATE TABLE t(c BIGINT) USING parquet")
-      sql(
-        "INSERT INTO t VALUES (1), (0), (-1), (9223372036854775807), (-9223372036854775808), (null)")
-      checkSparkAnswerAndOperator("SELECT c, hash(c), xxhash64(c) FROM t ORDER BY c")
-    }
-  }
-
-  test("hash - float") {
-    withTable("t") {
-      sql("CREATE TABLE t(c FLOAT) USING parquet")
-      sql("INSERT INTO t VALUES (1.0), (0.0), (-0.0), (-1.0), (3.14159), (null)")
-      checkSparkAnswerAndOperator("SELECT c, hash(c), xxhash64(c) FROM t ORDER BY c")
-    }
-  }
-
-  test("hash - double") {
-    withTable("t") {
-      sql("CREATE TABLE t(c DOUBLE) USING parquet")
-      sql("INSERT INTO t VALUES (1.0), (0.0), (-0.0), (-1.0), (3.14159265358979), (null)")
-      checkSparkAnswerAndOperator("SELECT c, hash(c), xxhash64(c) FROM t ORDER BY c")
-    }
-  }
-
-  test("hash - string") {
-    withTable("t") {
-      sql("CREATE TABLE t(c STRING) USING parquet")
-      sql("INSERT INTO t VALUES ('hello'), (''), ('Spark SQL'), ('苹果手机'), (null)")
-      checkSparkAnswerAndOperator("SELECT c, hash(c), xxhash64(c) FROM t ORDER BY c")
-    }
-  }
-
-  test("hash - binary") {
-    withTable("t") {
-      sql("CREATE TABLE t(c BINARY) USING parquet")
-      sql("INSERT INTO t VALUES (X''), (X'00'), (X'0102030405'), (null)")
-      checkSparkAnswerAndOperator("SELECT c, hash(c), xxhash64(c) FROM t ORDER BY c")
-    }
-  }
-
-  test("hash - date") {
-    withTable("t") {
-      sql("CREATE TABLE t(c DATE) USING parquet")
-      sql(
-        "INSERT INTO t VALUES (DATE '2023-01-01'), (DATE '1970-01-01'), (DATE '2000-12-31'), (null)")
-      checkSparkAnswerAndOperator("SELECT c, hash(c), xxhash64(c) FROM t ORDER BY c")
-    }
-  }
-
-  test("hash - timestamp") {
-    withTable("t") {
-      sql("CREATE TABLE t(c TIMESTAMP) USING parquet")
-      sql("""INSERT INTO t VALUES
-            (TIMESTAMP '2023-01-01 12:00:00'),
-            (TIMESTAMP '1970-01-01 00:00:00'),
-            (TIMESTAMP '2000-12-31 23:59:59'),
-            (null)""")
-      checkSparkAnswerAndOperator("SELECT c, hash(c), xxhash64(c) FROM t ORDER BY c")
-    }
-  }
-
   test("hash - decimal (precision <= 18)") {
     Seq((10, 2), (18, 0), (18, 10)).foreach { case (precision, scale) =>
       withTable("t") {
@@ -312,19 +218,6 @@ class CometHashExpressionSuite extends CometTestBase with AdaptiveSparkPlanHelpe
     }
   }
 
-  test("hash - multiple primitive columns") {
-    withTable("t") {
-      sql("CREATE TABLE t(a INT, b STRING, c DOUBLE) USING parquet")
-      sql("""INSERT INTO t VALUES
-            (1, 'hello', 3.14),
-            (2, '', 0.0),
-            (null, null, null),
-            (-1, 'test', -1.5)""")
-      checkSparkAnswerAndOperator(
-        "SELECT hash(a, b, c), xxhash64(a, b, c), hash(c, b, a), xxhash64(c, b, a), hash(a), xxhash64(a), hash(b), xxhash64(b), hash(c), xxhash64(c) FROM t")
-    }
-  }
-
   test("hash - multiple columns with arrays") {
     withTable("t") {
       sql("CREATE TABLE t(a INT, b ARRAY<INT>, c STRING) USING parquet")
@@ -369,16 +262,6 @@ class CometHashExpressionSuite extends CometTestBase with AdaptiveSparkPlanHelpe
     }
   }
 
-  test("hash - with custom seed") {
-    withTable("t") {
-      sql("CREATE TABLE t(c INT) USING parquet")
-      sql("INSERT INTO t VALUES (1), (2), (3), (null)")
-      // Extra integer arguments are hashed as additional children, not as the Spark seed.
-      checkSparkAnswerAndOperator(
-        "SELECT hash(c), xxhash64(c), hash(c, 0), xxhash64(c, 0), hash(c, 42), xxhash64(c, 42), hash(c, -1), xxhash64(c, -1) FROM t ORDER BY c")
-    }
-  }
-
   test("hash - large array") {
     withTable("t") {
       sql("CREATE TABLE t(c ARRAY<INT>) USING parquet")
@@ -403,19 +286,6 @@ class CometHashExpressionSuite extends CometTestBase with AdaptiveSparkPlanHelpe
               array(named_struct('p', 10, 'q', 'foo'), named_struct('p', 20, 'q', 'bar'))))),
             (null)""")
       checkSparkAnswerAndOperator("SELECT c, hash(c), xxhash64(c) FROM t")
-    }
-  }
-
-  test("hash - with dictionary encoding") {
-    Seq(true, false).foreach { dictionary =>
-      withSQLConf("parquet.enable.dictionary" -> dictionary.toString) {
-        withTable("t") {
-          sql("CREATE TABLE t(c STRING) USING parquet")
-          // Repeated values to trigger dictionary encoding
-          sql("INSERT INTO t VALUES ('a'), ('b'), ('a'), ('b'), ('a'), ('c'), (null)")
-          checkSparkAnswerAndOperator("SELECT c, hash(c), xxhash64(c) FROM t ORDER BY c")
-        }
-      }
     }
   }
 

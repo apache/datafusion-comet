@@ -120,6 +120,11 @@ echo "Deploying artifacts from $LOCAL_REPO"
 
 pushd $LOCAL_REPO/org/apache/datafusion
 
+# Only comet-spark is published. comet-common is shaded into the comet-spark jar and the comet-spark
+# pom is flattened, so nothing published refers to comet-common or the parent pom. The build installs
+# both locally, and comet-spark-integration only checks the jar.
+find . -mindepth 1 -maxdepth 1 ! -name 'comet-spark-spark*' -exec rm -rf {} +
+
 # Remove any extra files generated during install
 find . -type f |grep -v \.jar |grep -v \.pom | xargs rm
 

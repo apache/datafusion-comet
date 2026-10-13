@@ -1110,6 +1110,13 @@ abstract class CometNativeExec extends CometExec {
     // broadcast plan.
     val (firstNonBroadcastPlanRDD, firstNonBroadcastPlanNumPartitions) =
       firstNonBroadcastPlan.get._1 match {
+        // Plan-data scans, Iceberg included, are sized from perPartitionData, which
+        // findAllPlanData above has resolved. A bucketed scan has one entry per bucket, after any
+        // bucket coalescing, so the count still matches its HashPartitioning.
+        case scan: CometScanWithPlanData =>
+          (null.asInstanceOf[RDD[Any]], scan.perPartitionData.length)
+        case scan: CometIcebergNativeScanExec =>
+          (null.asInstanceOf[RDD[Any]], scan.numPartitions)
         case plan: CometNativeExec =>
           (null.asInstanceOf[RDD[Any]], plan.outputPartitioning.numPartitions)
         case plan =>
@@ -1172,9 +1179,10 @@ abstract class CometNativeExec extends CometExec {
       commonByKey = commonByKey,
       perPartitionByKey = perPartitionByKey,
       shuffleScanIndices = shuffleScanIndices,
-      // A leaf Comet scan (`CometNativeScanExec`, `CometIcebergNativeScanExec`) can
-      // contribute `bytes_scanned` / `output_rows` to Spark's task-level input metrics,
-      // which drive the Input column on the UI's Stages and Executors tabs.
+      // A leaf Comet scan (`CometNativeScanExec`, `CometIcebergNativeScanExec`, or a contrib
+      // leaf such as `CometDeltaNativeScanExec`) can contribute `bytes_scanned` /
+      // `output_rows` to Spark's task-level input metrics, which drive the Input column on
+      // the UI's Stages and Executors tabs.
       // Matching on `CometLeafExec` rather than `CometNativeScanExec` keeps every scan
       // reported once the scan is fused into a larger native block, where only the block
       // root's `compute` runs. `reportScanInputMetrics` self-filters on the `bytes_scanned`
@@ -1348,6 +1356,17 @@ abstract class CometLeafExec extends CometNativeExec with LeafExecNode {
  * it, [[PlanDataInjector.findAllPlanData]] cannot collect the per-partition tasks and the
  * parent's native execution receives an empty input. (`CometIcebergNativeScanExec` does NOT use
  * this trait; it has a dedicated `findAllPlanData` case.)
+ *
+ * `perPartitionData.length` is the partition count the native block runs with:
+ * `CometNativeExec.buildNativeContext` sizes the native RDD from it at execution, and the count
+ * in `outputPartitioning` is not used for that.
+ *
+ * `outputPartitioning` must not read `perPartitionData`, or anything else that evaluates the
+ * scan's DPP subqueries. AQE calls it while optimizing a stage, before
+ * `CometPlanAdaptiveDynamicPruningFilters` has converted the adaptive DPP placeholders, so
+ * computing it from those runs a placeholder subquery. A scan that cannot report a real
+ * partitioning without them should report `UnknownPartitioning(0)`, as `CometNativeScanExec` does
+ * for a non-bucketed scan.
  *
  * Each implementation also resolves its own DPP subqueries via `ensureSubqueriesResolved` before
  * `commonData`/`perPartitionData` are read. That method lives on [[CometLeafExec]], so the `self:
