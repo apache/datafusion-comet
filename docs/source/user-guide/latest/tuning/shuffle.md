@@ -117,7 +117,10 @@ controlled by `spark.comet.shuffle.compression.zstd.level` (default `1`).
 
 With zstd, Comet also stores the offsets of string, binary, array and map columns as lengths before
 compressing each shuffle block. Lengths compress much better than offsets: in our measurements, shuffle
-files with such columns were 10% to 40% smaller, and zstd was no slower.
+files with such columns were 10% to 40% smaller, and zstd was no slower. This applies to native shuffle
+and to JVM shuffle blocks without dictionary-encoded columns. A JVM shuffle block in which
+`spark.comet.shuffle.jvm.preferDictionary.ratio` dictionary-encodes a column keeps the offsets of all
+its columns, and Celeborn shuffle blocks keep theirs too.
 `spark.comet.shuffle.compression.offsetsAsLengths.enabled` turns this off. LZ4 and snappy shuffle blocks
 are written as before.
 

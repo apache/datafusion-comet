@@ -830,7 +830,8 @@ object CometConf extends ShimCometConf {
         "Whether Comet shuffle stores the offsets of string, binary, array and map columns as " +
           "lengths before compressing each block. Lengths compress much better than offsets, " +
           "which makes shuffle files with such columns smaller. Only takes effect when " +
-          s"${COMET_SHUFFLE_COMPRESSION_CODEC.key} is zstd.")
+          s"${COMET_SHUFFLE_COMPRESSION_CODEC.key} is zstd, and not for Celeborn shuffle or " +
+          "for JVM shuffle blocks with dictionary-encoded columns, which keep their offsets.")
       .booleanConf
       .createWithDefault(true)
 
