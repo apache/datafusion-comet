@@ -1536,6 +1536,60 @@ mod tests {
         }
     }
 
+    /// The store comes from the backend's options, while the registration URL keeps the hash of
+    /// the full map, which the Delta scan's per-partition memo keys by. Two maps that differ only
+    /// in another backend's key register under different URLs holding the same store. Seeds and
+    /// removes one in-memory cache entry; no remote requests are performed.
+    #[test]
+    fn registration_url_hashes_full_options_while_store_uses_backend_options() {
+        let bucket = "comet-isolation-registration-hash";
+        let s3_options = HashMap::from([
+            (
+                "fs.s3a.aws.credentials.provider".to_string(),
+                "org.apache.hadoop.fs.s3a.AnonymousAWSCredentialsProvider".to_string(),
+            ),
+            (
+                "fs.s3a.endpoint.region".to_string(),
+                "us-east-1".to_string(),
+            ),
+        ]);
+        let mut scan_options = s3_options.clone();
+        scan_options.insert(
+            "fs.azure.account.key.acct.blob.core.windows.net".into(),
+            "azure-key".into(),
+        );
+        let key = (
+            format!("s3://{bucket}"),
+            hash_object_store_configs(&s3_options),
+            false,
+        );
+        let store: Arc<dyn ObjectStore> = Arc::new(InMemory::new());
+        object_store_cache()
+            .write()
+            .unwrap()
+            .insert(key.clone(), Arc::clone(&store));
+
+        let runtime = Arc::new(RuntimeEnv::default());
+        let [s3_url, scan_url] = [&s3_options, &scan_options].map(|options| {
+            prepare_object_store_with_configs(
+                Arc::clone(&runtime),
+                format!("s3://{bucket}/file.parquet"),
+                options,
+            )
+            .unwrap()
+            .0
+        });
+        object_store_cache().write().unwrap().remove(&key);
+
+        assert_ne!(s3_url, scan_url);
+        let s3_store = runtime.object_store(&s3_url).unwrap();
+        assert!(Arc::ptr_eq(
+            &s3_store,
+            &runtime.object_store(&scan_url).unwrap()
+        ));
+        assert!(Arc::ptr_eq(&s3_store, &store));
+    }
+
     /// The Azure store of a container depends on the `fs.azure.*` and `comet.azure.*` options only.
     /// Seeds and removes three in-memory cache entries; no remote requests are performed.
     #[test]
