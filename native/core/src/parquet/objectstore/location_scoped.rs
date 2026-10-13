@@ -48,14 +48,11 @@ use object_store::{
     ObjectStore, ObjectStoreExt, PutMultipartOptions, PutOptions, PutPayload, PutResult,
     RenameOptions, Result,
 };
-use tokio::sync::Mutex;
 
 use crate::cloud::s3::credential_bridge::CredentialProviderError;
+use crate::cloud::s3::policy_locations::{LocationIndex, PolicyLocations, RefreshError};
 
 const STORE: &str = "LocationScopedS3";
-
-/// The credential path used for paths that no returned location covers.
-const ROOT_CREDENTIAL_PATH: &str = "/";
 
 /// Fetches the provider's current policy locations for the bucket.
 pub(crate) type LocationSource = Arc<dyn Fn() -> Result<Vec<String>> + Send + Sync>;
@@ -63,73 +60,6 @@ pub(crate) type LocationSource = Arc<dyn Fn() -> Result<Vec<String>> + Send + Sy
 /// Builds the store for one location from the path passed to `getCredentialsForPath`.
 pub(crate) type LocationStoreFactory =
     Arc<dyn Fn(&str) -> Result<Arc<dyn ObjectStore>> + Send + Sync>;
-
-/// One snapshot of the provider's locations.
-struct LocationIndex {
-    /// Counts refresh attempts, including failed ones.
-    generation: u64,
-    /// Canonical location to credential path: the location as the provider returned it, with a
-    /// leading slash.
-    locations: Arc<HashMap<Path, String>>,
-    /// Why the attempt that produced this snapshot failed, when it kept the previous locations.
-    failure: Option<Arc<str>>,
-}
-
-impl LocationIndex {
-    fn new(generation: u64, locations: Vec<String>) -> Result<Self> {
-        let mut index = HashMap::with_capacity(locations.len());
-        for location in locations {
-            // Request paths are percent-decoded the same way, so both sides compare as raw keys.
-            let canonical = Path::from_url_path(&location).map_err(|e| Error::Generic {
-                store: STORE,
-                source: format!("Invalid policy location {location:?}: {e}").into(),
-            })?;
-            // A duplicate keeps the first spelling, which is the path the provider is given.
-            index
-                .entry(canonical)
-                .or_insert_with(|| credential_path(&location));
-        }
-        Ok(Self {
-            generation,
-            locations: Arc::new(index),
-            failure: None,
-        })
-    }
-
-    /// The snapshot after a failed refresh: the same locations under the next generation, with the
-    /// failure recorded for the requests routed before it.
-    fn after_failure(&self, failure: &Error) -> Self {
-        Self {
-            generation: self.generation + 1,
-            locations: Arc::clone(&self.locations),
-            failure: Some(failure.to_string().into()),
-        }
-    }
-
-    /// Returns the credential path of the longest location that covers `path`.
-    fn route(&self, path: &Path) -> &str {
-        let mut longest = self
-            .locations
-            .get(&Path::default())
-            .map_or(ROOT_CREDENTIAL_PATH, String::as_str);
-        let mut prefix = Path::default();
-        for part in path.parts() {
-            prefix = prefix.join(part);
-            if let Some(credential_path) = self.locations.get(&prefix) {
-                longest = credential_path;
-            }
-        }
-        longest
-    }
-}
-
-fn credential_path(location: &str) -> String {
-    if location.starts_with('/') {
-        location.to_string()
-    } else {
-        format!("/{location}")
-    }
-}
 
 /// Whether `err` can mean the locations changed since the snapshot: S3 denied the request, or the
 /// provider could not produce the credential of the location the request was routed to.
@@ -159,16 +89,14 @@ struct Inner {
     bucket: String,
     source: LocationSource,
     factory: LocationStoreFactory,
-    index: RwLock<Arc<LocationIndex>>,
-    /// Serializes refreshes, so the failed reads from one snapshot share one attempt.
-    refresh_lock: Mutex<()>,
+    locations: PolicyLocations,
     /// Location stores by credential path.
     stores: RwLock<HashMap<String, Arc<dyn ObjectStore>>>,
 }
 
 impl Inner {
     fn index(&self) -> Arc<LocationIndex> {
-        Arc::clone(&self.index.read().unwrap_or_else(PoisonError::into_inner))
+        self.locations.current()
     }
 
     fn route(&self, path: &Path) -> Result<Route> {
@@ -176,7 +104,7 @@ impl Inner {
         let credential_path = index.route(path).to_string();
         let store = self.store(&credential_path)?;
         Ok(Route {
-            generation: index.generation,
+            generation: index.generation(),
             credential_path,
             store,
         })
@@ -223,25 +151,18 @@ impl Inner {
     /// Fetches the locations again, unless a refresh was attempted after `failed` was routed, in
     /// which case this request shares that attempt's outcome.
     async fn refresh(&self, failed: &Route) -> Result<()> {
-        let _refresh = self.refresh_lock.lock().await;
-        let current = self.index();
-        if current.generation != failed.generation {
-            return match &current.failure {
-                Some(failure) => Err(Error::Generic {
+        self.locations
+            .refresh(failed.generation, |generation| {
+                (self.source)().and_then(|locations| LocationIndex::new(generation, locations))
+            })
+            .await
+            .map_err(|e| match e {
+                RefreshError::Fetch(e) => e,
+                RefreshError::Earlier(failure) => Error::Generic {
                     store: STORE,
                     source: failure.to_string().into(),
-                }),
-                None => Ok(()),
-            };
-        }
-        let next = (self.source)()
-            .and_then(|locations| LocationIndex::new(current.generation + 1, locations));
-        let (index, result) = match next {
-            Ok(index) => (index, Ok(())),
-            Err(e) => (current.after_failure(&e), Err(e)),
-        };
-        *self.index.write().unwrap_or_else(PoisonError::into_inner) = Arc::new(index);
-        result
+                },
+            })
     }
 }
 
@@ -267,8 +188,7 @@ impl LocationScopedObjectStore {
                 bucket,
                 source,
                 factory,
-                index: RwLock::new(Arc::new(index)),
-                refresh_lock: Mutex::new(()),
+                locations: PolicyLocations::new(index),
                 stores: RwLock::new(HashMap::new()),
             }),
         })
@@ -279,7 +199,7 @@ impl fmt::Debug for LocationScopedObjectStore {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         f.debug_struct("LocationScopedObjectStore")
             .field("bucket", &self.inner.bucket)
-            .field("locations", &self.inner.index().locations.len())
+            .field("locations", &self.inner.index().len())
             .finish()
     }
 }
@@ -649,73 +569,6 @@ mod tests {
     /// The two ranges are close enough to be coalesced into one request.
     async fn get_ranges(store: &LocationScopedObjectStore, path: &str) -> Result<Vec<Bytes>> {
         store.get_ranges(&Path::from(path), &[0..4, 8..12]).await
-    }
-
-    #[test]
-    fn routes_to_the_longest_covering_location() {
-        let index = LocationIndex::new(
-            0,
-            vec![
-                "warehouse/sales".into(),
-                "warehouse/sales/eu/".into(),
-                "/warehouse/finance".into(),
-            ],
-        )
-        .unwrap();
-        let route = |path: &str| index.route(&Path::from(path)).to_string();
-        assert_eq!(route("warehouse/sales/a.parquet"), "/warehouse/sales");
-        assert_eq!(
-            route("warehouse/sales/eu/b.parquet"),
-            "/warehouse/sales/eu/"
-        );
-        assert_eq!(route("warehouse/sales"), "/warehouse/sales");
-        assert_eq!(route("warehouse/finance/c.parquet"), "/warehouse/finance");
-        // Locations match whole segments, so a sibling that shares a name prefix is not covered.
-        assert_eq!(route("warehouse/sales_eu/d.parquet"), "/");
-        assert_eq!(route("warehouse/e.parquet"), "/");
-        assert_eq!(route("other/f.parquet"), "/");
-    }
-
-    #[test]
-    fn compares_locations_and_paths_percent_decoded() {
-        // A URI path escapes '%' as %25, so Spark's %3A partition escape arrives as %253A.
-        let index = LocationIndex::new(0, vec!["tbl/ts=2024-01-01%2000%253A00".into()]).unwrap();
-        let spark_path = Path::from_url_path("/tbl/ts=2024-01-01%2000%253A00/part-0.parquet");
-        assert_eq!(
-            index.route(&spark_path.unwrap()),
-            "/tbl/ts=2024-01-01%2000%253A00",
-            "the provider is given the location as it was returned"
-        );
-        // Decoded once, %3A is ':', which names a different key.
-        let other_key = Path::from_url_path("/tbl/ts=2024-01-01%2000%3A00/part-0.parquet");
-        assert_eq!(index.route(&other_key.unwrap()), "/");
-    }
-
-    #[test]
-    fn keeps_the_first_spelling_of_a_duplicate_location() {
-        let index = LocationIndex::new(0, vec!["a/b".into(), "/a/b/".into()]).unwrap();
-        assert_eq!(index.locations.len(), 1);
-        assert_eq!(index.route(&Path::from("a/b/c")), "/a/b");
-    }
-
-    #[test]
-    fn accepts_the_bucket_root_as_a_location() {
-        let index = LocationIndex::new(0, vec!["".into(), "a".into()]).unwrap();
-        assert!(index.locations.contains_key(&Path::default()));
-        assert_eq!(index.route(&Path::from("x/y")), "/");
-        assert_eq!(index.route(&Path::from("a/y")), "/a");
-    }
-
-    #[test]
-    fn rejects_locations_that_are_not_bucket_paths() {
-        // Empty and relative segments, a URI (its "//" is an empty segment), a control character
-        // once decoded, and bytes that do not decode to UTF-8.
-        for location in ["a//b", "a/../b", "s3://bucket/a", "a/%0Ab", "a/%FF"] {
-            assert!(
-                LocationIndex::new(0, vec![location.into()]).is_err(),
-                "{location:?} should be rejected"
-            );
-        }
     }
 
     /// Several locations can be read through one store, in any order, which is what a scan does

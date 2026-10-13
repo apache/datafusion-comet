@@ -93,8 +93,9 @@ case class CometLocalTableScanExec(
         new RowArrowReader(
           _,
           arrowSchema,
-          CometArrowStream.countingIterator(rowIter, (_: InternalRow) => numOutputRows.add(1)),
-          maxRecordsPerBatch))
+          rowIter,
+          maxRecordsPerBatch,
+          onRows = rows => numOutputRows.add(rows.toLong)))
     }
   }
 
@@ -132,8 +133,9 @@ object CometLocalTableScanExec extends CometSink[LocalTableScanExec] with DataTy
   // downstream expression serdes (issue #4789).
   override protected def scanFieldType(dt: DataType): DataType = dt.asNullable
 
-  // RowArrowReader handles NullType and intervals, but not TimeType. Non-default string collations
-  // remain unsupported here, matching DataTypeSupport's existing local-scan boundary.
+  // RowArrowReader handles NullType, intervals, and TimeType (through TimeNanoWriter).
+  // Non-default string collations remain unsupported here, matching DataTypeSupport's
+  // existing local-scan boundary.
   override def isTypeSupported(
       dt: DataType,
       name: String,
@@ -142,7 +144,6 @@ object CometLocalTableScanExec extends CometSink[LocalTableScanExec] with DataTy
       dt,
       allowComplex = true,
       allowIntervals = true,
-      allowTimeType = false,
       allowAnyStringType = false,
       // Java Arrow keys struct children by name; declining here hands the struct to
       // DataTypeSupport, which records the duplicate-field-name fallback reason.

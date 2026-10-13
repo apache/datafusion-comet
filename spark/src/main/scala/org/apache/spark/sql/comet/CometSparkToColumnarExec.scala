@@ -117,9 +117,10 @@ case class CometSparkToColumnarExec(child: SparkPlan)
           new RowArrowReader(
             _,
             arrowSchema,
-            CometArrowStream.countingIterator(rowIter, (_: InternalRow) => numInputRows.add(1)),
+            rowIter,
             maxRecordsPerBatch,
-            onConversionNs))
+            onConversionNs,
+            rows => numInputRows.add(rows.toLong)))
       }
     }
   }

@@ -103,6 +103,8 @@ jobs:
             spark/src/test/resources/pyspark/test_pyarrow_udf.py
           /tmp/venv/bin/python -m pytest -v \
             spark/src/test/resources/pyspark/test_pyarrow_udf_dictionary_shuffle.py
+          /tmp/venv/bin/python -m pytest -v \
+            spark/src/test/resources/pyspark/test_pyarrow_udf_fuzz.py
 
       # Saved only on main: an entry written from a pull request or a
       # `gh-readonly-queue/*` branch cannot be restored by any later run, and
