@@ -38,6 +38,8 @@ CREATE TABLE empty_agg_division(n int, d int) USING parquet
 statement
 INSERT INTO empty_agg_division SELECT 1, 0
 
+-- CollapseProject folds the outer SELECT into the aggregate, so the final stage projects the
+-- literal over the row with no columns.
 query
 SELECT 1 FROM (SELECT count(*) FROM empty_agg_multi)
 
@@ -59,6 +61,13 @@ SELECT 1 FROM (SELECT count(*) FROM VALUES (1) AS v(a))
 
 query
 SELECT 1 FROM (SELECT count(*) FROM VALUES (1) AS v(a) WHERE a > 5)
+
+-- The parser plans HAVING without GROUP BY as a global aggregate, here one that outputs a literal.
+query
+SELECT 1 AS x FROM empty_agg_multi HAVING true
+
+query
+SELECT 1 AS x FROM empty_agg_none HAVING true
 
 -- The aggregate still reads its whole input, so an error below it surfaces as it does in Spark.
 statement
