@@ -361,6 +361,8 @@ object CometConf extends ShimCometConf {
     createExecEnabledConfig("broadcastNestedLoopJoin", defaultValue = true)
   val COMET_EXEC_SORT_MERGE_JOIN_ENABLED: ConfigEntry[Boolean] =
     createExecEnabledConfig("sortMergeJoin", defaultValue = true)
+  val COMET_EXEC_CARTESIAN_PRODUCT_ENABLED: ConfigEntry[Boolean] =
+    createExecEnabledConfig("cartesianProduct", defaultValue = true)
   val COMET_EXEC_EXISTENCE_JOIN_ENABLED: ConfigEntry[Boolean] =
     conf("spark.comet.exec.existenceJoin.enabled")
       .category(CATEGORY_ENABLE_EXEC)

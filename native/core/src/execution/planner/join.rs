@@ -15,8 +15,8 @@
 // specific language governing permissions and limitations
 // under the License.
 
-//! Builders for the native join operators (hash join, sort-merge join, and broadcast nested loop
-//! join), and the join-key and join-filter planning they share.
+//! Builders for the native join operators (hash join, sort-merge join, broadcast nested loop
+//! join, and cross join), and the join-key and join-filter planning they share.
 
 use std::{collections::HashMap, sync::Arc};
 
@@ -37,7 +37,8 @@ use datafusion::{
     physical_plan::{
         filter::FilterExec,
         joins::{
-            utils::JoinFilter, HashJoinExec, NestedLoopJoinExec, PartitionMode, SortMergeJoinExec,
+            utils::JoinFilter, CrossJoinExec, HashJoinExec, NestedLoopJoinExec, PartitionMode,
+            SortMergeJoinExec,
         },
         projection::ProjectionExec,
         ChildrenPropertiesMode, ExecutionPlan, ExecutionPlanProperties, ReplaceChildrenOptions,
@@ -341,6 +342,49 @@ impl OperatorBuilder for BroadcastNestedLoopJoinBuilder {
                 )),
             ))
         }
+    }
+}
+
+/// Builder for `CrossJoin`: Spark's CartesianProductExec, delegated to DataFusion's CrossJoinExec.
+pub struct CrossJoinBuilder;
+
+impl OperatorBuilder for CrossJoinBuilder {
+    fn build(
+        &self,
+        spark_plan: &Operator,
+        inputs: &mut Vec<Arc<Global<JObject<'static>>>>,
+        partition_count: usize,
+        planner: &PhysicalPlanner,
+    ) -> PlanCreationResult {
+        let children = &spark_plan.children;
+
+        // A pure cross product has no join keys and no condition; the Inner join type here only
+        // satisfies the shared helper and is unused by CrossJoinExec. CrossJoinExec emits left
+        // columns followed by right columns, matching Spark's output order.
+        let (join_params, scans, shuffle_scans) = planner.parse_join_parameters(
+            inputs,
+            children,
+            &[],
+            &[],
+            JoinType::Inner as i32,
+            &None,
+            partition_count,
+        )?;
+
+        let left = Arc::clone(&join_params.left.native_plan);
+        let right = Arc::clone(&join_params.right.native_plan);
+
+        let cross_join = Arc::new(CrossJoinExec::new(left, right));
+
+        Ok((
+            scans,
+            shuffle_scans,
+            Arc::new(SparkPlan::new(
+                spark_plan.plan_id,
+                cross_join,
+                vec![join_params.left, join_params.right],
+            )),
+        ))
     }
 }
 
