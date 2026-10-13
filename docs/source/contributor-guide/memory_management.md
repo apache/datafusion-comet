@@ -257,6 +257,25 @@ back a slice of the off-heap pool for the memory Comet does not reserve, but it 
 
 The only room Spark leaves for memory outside the pool is `spark.executor.memoryOverhead`.
 
+### Integral sequence invocation ceiling
+
+`getMemoryConfig` also resolves `spark.comet.exec.sequence.maxBytesPerInvocation`. Unless explicitly
+overridden, each native integral `sequence` invocation is limited to `memory_limit` divided by the
+configured task slots: `max(1, floor(local or executor cores / CPUs allocated to the task))`. The
+actual task CPU allocation respects resource profiles. This fixed share does not depend on live
+tasks, registered consumers or pool usage. On-heap mode has no default ceiling; `-1` explicitly
+disables it and `0` is a real zero-byte ceiling. The resolved value crosses JNI in the existing
+config map, without changing the memory pool or reserving anything from it.
+
+The kernel checks logical output values, list offsets and validity bytes after validating all
+rows, before allocating its values and offsets. Row-length scratch storage and validity preparation
+can precede that check. Allocator padding and shared input backing outside a validity slice do not
+count. Earlier outputs, concurrent invocations and downstream sort, shuffle or explode do not
+consume the ceiling. A scalar invocation still produces one list; generic scalar broadcasts and
+copies of folded literals happen outside it. This bounds one expansion, and does not close the
+accounting or lifetime gaps described below. See
+[Limiting Integral Sequence Output](../user-guide/latest/tuning/memory.md#limiting-integral-sequence-output).
+
 ### Resolving the pool type
 
 `parse_memory_pool_config` (`native/core/src/execution/memory_pools/config.rs`) turns the pool-type

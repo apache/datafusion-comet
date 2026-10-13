@@ -94,7 +94,7 @@ use datafusion_comet_spark_expr::{
     create_comet_physical_fun, create_comet_physical_fun_with_eval_mode, BinaryOutputStyle,
     BloomFilterAgg, BloomFilterMightContain, CheckedBinaryExpr, CometCollectList, CometCollectSet,
     CsvWriteOptions, EvalMode, ListPositionsExpr, SparkArraysZipFunc, SparkBloomFilterVersion,
-    SparkListAgg, SparkPercentile, Subquery, SumInteger, ToCsv,
+    SparkListAgg, SparkPercentile, SparkSequence, Subquery, SumInteger, ToCsv,
 };
 use datafusion_datasource::TableSchema;
 use iceberg::expr::Bind;
@@ -358,6 +358,7 @@ pub struct PhysicalPlanner {
     /// Whether a boundary that would cast a timestamp's timezone label to the declared one fails
     /// instead. Test-only; see `spark.comet.testing.strictTimestampLabels.enabled`.
     strict_timestamp_labels: bool,
+    sequence_max_bytes: Option<usize>,
 }
 
 impl Default for PhysicalPlanner {
@@ -379,6 +380,7 @@ impl PhysicalPlanner {
             shuffle_partition_pusher: None,
             float_operands: FloatOperands::Normalize,
             strict_timestamp_labels: false,
+            sequence_max_bytes: None,
         }
     }
 
@@ -459,6 +461,11 @@ impl PhysicalPlanner {
 
     pub fn with_strict_timestamp_labels(mut self, strict: bool) -> Self {
         self.strict_timestamp_labels = strict;
+        self
+    }
+
+    pub fn with_sequence_max_bytes(mut self, max_bytes: Option<usize>) -> Self {
+        self.sequence_max_bytes = max_bytes;
         self
     }
 
@@ -4085,12 +4092,19 @@ impl PhysicalPlanner {
                 }
             };
 
-        let fun_expr = create_comet_physical_fun(
-            fun_name,
-            data_type.clone(),
-            &self.session_ctx.state(),
-            Some(expr.fail_on_error),
-        )?;
+        let fun_expr = if fun_name == "spark_sequence" {
+            Arc::new(ScalarUDF::new_from_impl(SparkSequence::new(
+                data_type.clone(),
+                self.sequence_max_bytes,
+            )))
+        } else {
+            create_comet_physical_fun(
+                fun_name,
+                data_type.clone(),
+                &self.session_ctx.state(),
+                Some(expr.fail_on_error),
+            )?
+        };
 
         let args = args
             .into_iter()
@@ -5352,6 +5366,66 @@ mod tests {
         },
     };
     use datafusion_comet_spark_expr::EvalMode;
+
+    #[test]
+    fn sequence_planner_applies_the_invocation_ceiling() {
+        use spark_expression::data_type::{data_type_info::DatatypeStruct, DataTypeInfo, ListInfo};
+
+        let args = (0..2)
+            .map(|index| Expr {
+                expr_struct: Some(Bound(spark_expression::BoundReference {
+                    index,
+                    datatype: Some(create_proto_datatype()),
+                })),
+                ..Default::default()
+            })
+            .collect();
+        let call = spark_expression::ScalarFunc {
+            func: "spark_sequence".to_string(),
+            args,
+            return_type: Some(spark_expression::DataType {
+                type_id: 14,
+                type_info: Some(Box::new(DataTypeInfo {
+                    datatype_struct: Some(DatatypeStruct::List(Box::new(ListInfo {
+                        element_type: Some(Box::new(create_proto_datatype())),
+                        contains_null: false,
+                        element_field_id: None,
+                    }))),
+                })),
+            }),
+            fail_on_error: false,
+            null_short_circuit: false,
+        };
+        let schema = Arc::new(Schema::new(vec![
+            Field::new("start", DataType::Int32, false),
+            Field::new("stop", DataType::Int32, false),
+        ]));
+        let batch = RecordBatch::try_new(
+            Arc::clone(&schema),
+            vec![
+                Arc::new(Int32Array::from(vec![0, 10])),
+                Arc::new(Int32Array::from(vec![2, 12])),
+            ],
+        )
+        .unwrap();
+        for limit in [None, Some(36), Some(35)] {
+            let planner = PhysicalPlanner::default().with_sequence_max_bytes(limit);
+            let expr = planner
+                .create_scalar_function_expr(&call, Arc::clone(&schema))
+                .unwrap();
+            let output = expr.evaluate(&batch);
+            if limit == Some(35) {
+                let error = output.unwrap_err().to_string();
+                assert!(error.contains("requires 36 output bytes"), "{error}");
+            } else {
+                let output = output.unwrap().into_array(2).unwrap();
+                let list = output.as_any().downcast_ref::<ListArray>().unwrap();
+                assert_eq!(list.value_offsets(), &[0, 3, 6]);
+                let values = list.values().as_any().downcast_ref::<Int32Array>().unwrap();
+                assert_eq!(values.values().as_ref(), &[0, 1, 2, 10, 11, 12]);
+            }
+        }
+    }
 
     #[test]
     fn scan_default_rejects_struct_expressions() {

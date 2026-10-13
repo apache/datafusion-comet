@@ -36,14 +36,64 @@ use arrow::datatypes::{
 };
 use datafusion::common::cast::as_primitive_array;
 use datafusion::common::{exec_err, internal_err, DataFusionError, Result, ScalarValue};
-use datafusion::logical_expr::ColumnarValue;
+use datafusion::logical_expr::{
+    ColumnarValue, ScalarFunctionArgs, ScalarUDFImpl, Signature, Volatility,
+};
 
 use crate::SparkError;
 
 /// Spark's ByteArrayMethods.MAX_ROUNDED_ARRAY_LENGTH (Integer.MAX_VALUE - 15).
 const MAX_ROUNDED_ARRAY_LENGTH: i64 = (i32::MAX - 15) as i64;
 
+/// A limit on one invocation's logical output, independent of other calls and their results.
+#[derive(Debug, Hash, Eq, PartialEq)]
+pub struct SparkSequence {
+    signature: Signature,
+    data_type: DataType,
+    max_bytes: Option<usize>,
+}
+
+impl SparkSequence {
+    pub fn new(data_type: DataType, max_bytes: Option<usize>) -> Self {
+        Self {
+            signature: Signature::variadic_any(Volatility::Immutable),
+            data_type,
+            max_bytes,
+        }
+    }
+}
+
+impl ScalarUDFImpl for SparkSequence {
+    fn name(&self) -> &str {
+        "spark_sequence"
+    }
+
+    fn signature(&self) -> &Signature {
+        &self.signature
+    }
+
+    fn return_type(&self, _: &[DataType]) -> Result<DataType> {
+        Ok(self.data_type.clone())
+    }
+
+    fn invoke_with_args(&self, args: ScalarFunctionArgs) -> Result<ColumnarValue> {
+        // All-scalar arguments materialise one list. Generic scalar broadcasting and copies of
+        // folded literals happen outside this invocation and are not charged to its ceiling.
+        spark_sequence_with_limit(&args.args, &self.data_type, self.max_bytes)
+    }
+}
+
 pub fn spark_sequence(args: &[ColumnarValue], data_type: &DataType) -> Result<ColumnarValue> {
+    spark_sequence_with_limit(args, data_type, None)
+}
+
+/// Check logical Arrow output bytes before allocating values and offsets. This is not a pool
+/// reservation: earlier results, concurrent invocations and downstream consumers share no tally.
+pub fn spark_sequence_with_limit(
+    args: &[ColumnarValue],
+    data_type: &DataType,
+    max_bytes: Option<usize>,
+) -> Result<ColumnarValue> {
     let child_field = match data_type {
         DataType::List(field) => Arc::clone(field),
         other => return exec_err!("spark_sequence expects a List return type, got {other:?}"),
@@ -77,10 +127,10 @@ pub fn spark_sequence(args: &[ColumnarValue], data_type: &DataType) -> Result<Co
     }
 
     let result = match child_field.data_type() {
-        DataType::Int8 => sequence_integral::<Int8Type>(args, num_rows, child_field),
-        DataType::Int16 => sequence_integral::<Int16Type>(args, num_rows, child_field),
-        DataType::Int32 => sequence_integral::<Int32Type>(args, num_rows, child_field),
-        DataType::Int64 => sequence_integral::<Int64Type>(args, num_rows, child_field),
+        DataType::Int8 => sequence_integral::<Int8Type>(args, num_rows, child_field, max_bytes),
+        DataType::Int16 => sequence_integral::<Int16Type>(args, num_rows, child_field, max_bytes),
+        DataType::Int32 => sequence_integral::<Int32Type>(args, num_rows, child_field, max_bytes),
+        DataType::Int64 => sequence_integral::<Int64Type>(args, num_rows, child_field, max_bytes),
         other => exec_err!("spark_sequence does not support element type {other:?}"),
     }?;
 
@@ -155,6 +205,7 @@ fn sequence_integral<T: Integral>(
     args: &[ColumnarValue],
     num_rows: usize,
     child_field: FieldRef,
+    max_bytes: Option<usize>,
 ) -> Result<ArrayRef>
 where
     T::Native: Into<i64>,
@@ -175,6 +226,7 @@ where
         .as_ref()
         .is_some_and(|nulls| nulls.null_count() == num_rows)
     {
+        check_output_size(num_rows, 0, size_of::<T::Native>(), true, max_bytes)?;
         return Ok(Arc::new(ListArray::new_null(child_field, num_rows)));
     }
     let row_step = |row: usize, start: i64, stop: i64| -> i64 {
@@ -197,7 +249,8 @@ where
         let s = start.value(row);
         let e = stop.value(row);
         let len = sequence_length(s, e, row_step(row, s, e))?;
-        total += len;
+        // Keep validating after an unrepresentable total so a later Spark row error still wins.
+        total = total.saturating_add(len);
         lengths.push(len);
     }
     // Arrow's List offsets must fit i32; Spark's per-row array limit is checked above.
@@ -209,6 +262,13 @@ where
         )));
     }
 
+    check_output_size(
+        num_rows,
+        total,
+        size_of::<T::Native>(),
+        nulls.is_some(),
+        max_bytes,
+    )?;
     let mut values: Vec<T::Native> = Vec::new();
     values.try_reserve_exact(total).map_err(|_| {
         DataFusionError::External(Box::new(SparkError::SequenceBatchTooLarge {
@@ -243,6 +303,45 @@ where
         Arc::new(values),
         nulls,
     )?))
+}
+
+fn check_output_size(
+    num_rows: usize,
+    total_elements: usize,
+    element_width: usize,
+    has_nulls: bool,
+    max_bytes: Option<usize>,
+) -> Result<()> {
+    // Count the logical buffers, including the terminal offset. Reused sliced validity may
+    // reference a larger allocation; bytes outside the slice and allocator padding are excluded.
+    let validity_bytes = if has_nulls { num_rows.div_ceil(8) } else { 0 };
+    let output_bytes = total_elements
+        .checked_mul(element_width)
+        .and_then(|values| {
+            num_rows
+                .checked_add(1)?
+                .checked_mul(size_of::<i32>())?
+                .checked_add(values)
+        })
+        .and_then(|bytes| bytes.checked_add(validity_bytes))
+        .ok_or_else(|| {
+            DataFusionError::ResourcesExhausted(
+                "Comet's native `sequence` output byte count exceeds the addressable size. \
+                 Lower `spark.comet.batchSize` or shorten the sequences."
+                    .to_string(),
+            )
+        })?;
+    if let Some(limit) = max_bytes {
+        if output_bytes > limit {
+            return Err(DataFusionError::ResourcesExhausted(format!(
+                "Comet's native `sequence` invocation requires {output_bytes} output bytes, \
+                 exceeding its {limit}-byte limit. Lower `spark.comet.batchSize`, shorten the \
+                 sequences, or configure `spark.comet.exec.sequence.maxBytesPerInvocation` \
+                 (-1 disables the limit)."
+            )));
+        }
+    }
+    Ok(())
 }
 
 /// Match released Spark 3.4--4.1 Sequence.sequenceLength, including its wide-arithmetic
@@ -309,6 +408,7 @@ mod tests {
     use super::*;
     use arrow::array::{Int64Array, Int8Array};
     use arrow::datatypes::Field;
+    use datafusion::config::ConfigOptions;
 
     fn list_of(elem: DataType) -> DataType {
         DataType::List(Arc::new(Field::new_list_field(elem, false)))
@@ -334,6 +434,225 @@ mod tests {
 
     fn as_primitive_list(arr: &ArrayRef) -> ListArray {
         arr.as_any().downcast_ref::<ListArray>().unwrap().clone()
+    }
+
+    fn invoke(udf: &SparkSequence, args: Vec<ColumnarValue>, rows: usize) -> Result<ColumnarValue> {
+        udf.invoke_with_args(ScalarFunctionArgs {
+            args,
+            arg_fields: vec![],
+            number_rows: rows,
+            return_field: Arc::new(Field::new("result", udf.data_type.clone(), true)),
+            config_options: Arc::new(ConfigOptions::default()),
+        })
+    }
+
+    #[test]
+    fn byte_ceiling_counts_each_integral_width_and_terminal_offset() {
+        macro_rules! check_width {
+            ($ty:ty) => {{
+                let args = vec![
+                    ColumnarValue::Array(Arc::new(PrimitiveArray::<$ty>::from_iter_values([
+                        0, 10,
+                    ]))),
+                    ColumnarValue::Array(Arc::new(PrimitiveArray::<$ty>::from_iter_values([
+                        2, 11,
+                    ]))),
+                ];
+                let data_type = list_of(<$ty>::DATA_TYPE);
+                let bytes = 5 * size_of::<<$ty as ArrowPrimitiveType>::Native>() + 3 * 4;
+                let output = spark_sequence_with_limit(&args, &data_type, Some(bytes))
+                    .unwrap()
+                    .into_array(2)
+                    .unwrap();
+                let expected = spark_sequence(&args, &data_type)
+                    .unwrap()
+                    .into_array(2)
+                    .unwrap();
+                assert_eq!(output.to_data(), expected.to_data());
+                let error =
+                    spark_sequence_with_limit(&args, &data_type, Some(bytes - 1)).unwrap_err();
+                assert!(matches!(error, DataFusionError::ResourcesExhausted(_)));
+                assert!(error
+                    .to_string()
+                    .contains(&format!("requires {bytes} output bytes")));
+            }};
+        }
+        check_width!(Int8Type);
+        check_width!(Int16Type);
+        check_width!(Int32Type);
+        check_width!(Int64Type);
+    }
+
+    #[test]
+    fn byte_ceiling_counts_logical_sliced_validity_and_all_null_outputs() {
+        let mut values = vec![Some(1i64); 32];
+        values[8] = None;
+        values[15] = None;
+        let args = vec![
+            ColumnarValue::Array(Arc::new(Int64Array::from(values).slice(7, 9))),
+            ColumnarValue::Scalar(ScalarValue::Int64(Some(1))),
+        ];
+        // Seven values, ten offsets and nine validity bits. The slice starts within a byte
+        // and shares a larger input allocation; neither changes its logical output size.
+        let bytes = 7 * 8 + 10 * 4 + 2;
+        let output = spark_sequence_with_limit(&args, &list_of(DataType::Int64), Some(bytes))
+            .unwrap()
+            .into_array(9)
+            .unwrap();
+        assert_eq!(output.null_count(), 2);
+        assert!(
+            spark_sequence_with_limit(&args, &list_of(DataType::Int64), Some(bytes - 1)).is_err()
+        );
+
+        let args = vec![
+            ColumnarValue::Array(Arc::new(Int64Array::from(vec![None; 9]))),
+            ColumnarValue::Scalar(ScalarValue::Int64(Some(i64::MAX))),
+            ColumnarValue::Scalar(ScalarValue::Int64(Some(-1))),
+        ];
+        let output = spark_sequence_with_limit(&args, &list_of(DataType::Int64), Some(42))
+            .unwrap()
+            .into_array(9)
+            .unwrap();
+        assert_eq!(output.null_count(), 9);
+        assert!(spark_sequence_with_limit(&args, &list_of(DataType::Int64), Some(41)).is_err());
+
+        let args = vec![
+            ColumnarValue::Scalar(ScalarValue::Int64(None)),
+            ColumnarValue::Scalar(ScalarValue::Int64(Some(1))),
+        ];
+        assert!(matches!(
+            spark_sequence_with_limit(&args, &list_of(DataType::Int64), Some(9)).unwrap(),
+            ColumnarValue::Scalar(ScalarValue::List(list)) if list.is_null(0)
+        ));
+        assert!(spark_sequence_with_limit(&args, &list_of(DataType::Int64), Some(8)).is_err());
+    }
+
+    #[test]
+    fn empty_output_still_has_an_offset_and_zero_is_a_real_ceiling() {
+        let args = vec![
+            ColumnarValue::Array(Arc::new(Int64Array::from(Vec::<i64>::new()))),
+            ColumnarValue::Scalar(ScalarValue::Int64(Some(1))),
+        ];
+        let output = spark_sequence_with_limit(&args, &list_of(DataType::Int64), Some(4))
+            .unwrap()
+            .into_array(0)
+            .unwrap();
+        assert_eq!(as_primitive_list(&output).value_offsets(), &[0]);
+        for limit in [0, 3] {
+            assert!(
+                spark_sequence_with_limit(&args, &list_of(DataType::Int64), Some(limit)).is_err()
+            );
+        }
+    }
+
+    #[test]
+    fn ceiling_refuses_large_outputs_before_allocating_values_and_preserves_errors() {
+        let scalar = |value| ColumnarValue::Scalar(ScalarValue::Int64(Some(value)));
+        // This valid single sequence would allocate nearly 16 GiB without the ceiling.
+        let error = spark_sequence_with_limit(
+            &[scalar(0), scalar(MAX_ROUNDED_ARRAY_LENGTH - 1)],
+            &list_of(DataType::Int64),
+            Some(1024),
+        )
+        .unwrap_err();
+        assert!(matches!(error, DataFusionError::ResourcesExhausted(_)));
+        assert!(error.to_string().contains("1024-byte limit"));
+
+        let starts = ColumnarValue::Array(Arc::new(Int64Array::from(vec![0, 5])));
+        let stops = ColumnarValue::Array(Arc::new(Int64Array::from(vec![500, 1])));
+        let error = spark_sequence_with_limit(
+            &[starts, stops, scalar(1)],
+            &list_of(DataType::Int64),
+            Some(0),
+        )
+        .unwrap_err()
+        .to_string();
+        assert!(
+            error.contains("Illegal sequence boundaries: 5 to 1 by 1"),
+            "{error}"
+        );
+
+        let starts = ColumnarValue::Array(Arc::new(Int64Array::from(vec![0, 0])));
+        let error = spark_sequence_with_limit(
+            &[starts, scalar(1_073_741_823)],
+            &list_of(DataType::Int64),
+            Some(0),
+        )
+        .unwrap_err()
+        .to_string();
+        assert!(error.contains("2147483648 total elements"), "{error}");
+    }
+
+    #[test]
+    fn output_byte_arithmetic_is_checked_without_allocations() {
+        for (rows, elements, width, nulls) in [
+            (usize::MAX, 0, 1, false),
+            (usize::MAX / 4, 0, 1, false),
+            (1, usize::MAX, 8, false),
+            (1, usize::MAX - 8, 1, true),
+        ] {
+            assert!(matches!(
+                check_output_size(rows, elements, width, nulls, None),
+                Err(DataFusionError::ResourcesExhausted(_))
+            ));
+        }
+    }
+
+    #[test]
+    fn retained_and_concurrent_results_do_not_consume_another_invocations_ceiling() {
+        let udf = Arc::new(SparkSequence::new(list_of(DataType::Int64), Some(32)));
+        let args = vec![
+            ColumnarValue::Array(Arc::new(Int64Array::from(vec![0]))),
+            ColumnarValue::Scalar(ScalarValue::Int64(Some(2))),
+        ];
+        let mut retained = (0..8)
+            .map(|_| invoke(&udf, args.clone(), 1).unwrap())
+            .collect::<Vec<_>>();
+        let barrier = Arc::new(std::sync::Barrier::new(5));
+        let handles = (0..5)
+            .map(|_| {
+                let udf = Arc::clone(&udf);
+                let args = args.clone();
+                let barrier = Arc::clone(&barrier);
+                std::thread::spawn(move || {
+                    barrier.wait();
+                    invoke(&udf, args, 1).unwrap()
+                })
+            })
+            .collect::<Vec<_>>();
+        retained.extend(handles.into_iter().map(|handle| handle.join().unwrap()));
+        retained.push(invoke(&udf, args, 1).unwrap());
+        for output in retained {
+            let output = output.into_array(1).unwrap();
+            assert_eq!(row_values(&as_primitive_list(&output), 0), vec![0, 1, 2]);
+        }
+    }
+
+    #[test]
+    fn scalar_invocations_remain_immutable_and_generic_broadcast_is_outside_the_ceiling() {
+        let data_type = list_of(DataType::Int64);
+        let udf = SparkSequence::new(data_type.clone(), Some(24));
+        assert_eq!(udf.signature().volatility, Volatility::Immutable);
+        assert_ne!(udf, SparkSequence::new(data_type.clone(), Some(23)));
+        let distinct = std::collections::HashSet::from([
+            SparkSequence::new(data_type.clone(), Some(24)),
+            SparkSequence::new(data_type.clone(), Some(23)),
+            SparkSequence::new(data_type.clone(), None),
+        ]);
+        assert_eq!(distinct.len(), 3);
+        let args = vec![
+            ColumnarValue::Scalar(ScalarValue::Int64(Some(1))),
+            ColumnarValue::Scalar(ScalarValue::Int64(Some(2))),
+        ];
+        for rows in [0, 1, 8192] {
+            let output = invoke(&udf, args.clone(), rows).unwrap();
+            assert!(matches!(output, ColumnarValue::Scalar(_)));
+            // Materialising the scalar for many rows is a separate generic operation.
+            let broadcast = output.into_array(32).unwrap();
+            assert_eq!(broadcast.len(), 32);
+            assert_eq!(as_primitive_list(&broadcast).values().len(), 64);
+        }
+        assert!(invoke(&SparkSequence::new(data_type, Some(23)), args, 1).is_err());
     }
 
     fn row_values(list: &ListArray, row: usize) -> Vec<i64> {

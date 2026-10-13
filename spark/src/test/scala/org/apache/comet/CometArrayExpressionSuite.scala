@@ -27,6 +27,8 @@ import org.apache.spark.sql.CometTestBase
 import org.apache.spark.sql.catalyst.expressions.{ArrayAppend, ArrayDistinct, ArrayExcept, ArrayInsert, ArrayIntersect, ArrayJoin, ArrayMax, ArrayMin, ArrayRepeat, ArrayUnion}
 import org.apache.spark.sql.catalyst.expressions.{ArrayContains, ArrayRemove}
 import org.apache.spark.sql.catalyst.expressions.{AttributeReference, Cast, CreateArray, ElementAt, Literal, MonotonicallyIncreasingID}
+import org.apache.spark.sql.comet.{CometExplodeExec, CometProjectExec, CometSortExec}
+import org.apache.spark.sql.comet.execution.shuffle.CometShuffleExchangeExec
 import org.apache.spark.sql.execution.adaptive.AdaptiveSparkPlanHelper
 import org.apache.spark.sql.functions._
 import org.apache.spark.sql.internal.SQLConf
@@ -1695,6 +1697,60 @@ class CometArrayExpressionSuite extends CometTestBase with AdaptiveSparkPlanHelp
         // split(NULL, ...) yields a null array; arr[0] on a null array must return NULL
         // rather than failing the non-nullable schema validation in native execution.
         checkSparkAnswerAndOperator(sql("SELECT split(s, ',')[0] FROM test_split_null"))
+      }
+    }
+  }
+
+  test("sequence invocation byte ceiling rejects a batch before materialising its output") {
+    val key = CometConf.COMET_EXEC_SEQUENCE_MAX_BYTES_PER_INVOCATION.key
+    withTable("t_seq_bytes") {
+      sql("CREATE TABLE t_seq_bytes(id BIGINT, a INT, b INT) USING parquet")
+      sql(
+        "INSERT INTO t_seq_bytes SELECT id, CAST(id AS INT), CAST(id + 4 AS INT) " +
+          "FROM range(0, 32, 1, 1)")
+      val query = "SELECT id, sequence(a, b) AS s FROM t_seq_bytes"
+      withSQLConf(
+        key -> "52",
+        CometConf.COMET_BATCH_SIZE.key -> "4",
+        SQLConf.ADAPTIVE_EXECUTION_ENABLED.key -> "false") {
+        val df = sql(query)
+        assert(df.queryExecution.executedPlan.collect { case p: CometProjectExec => p }.nonEmpty)
+        val error = intercept[SparkException](df.collect())
+        assert(error.getMessage.contains("requires 100 output bytes"), error.getMessage)
+        assert(error.getMessage.contains("52-byte limit"), error.getMessage)
+        assert(error.getMessage.contains(key), error.getMessage)
+      }
+      // Two five-element integer lists need 40 value bytes and 12 offset bytes. Retaining all
+      // 16 batches downstream must not reduce any later invocation's 52-byte ceiling.
+      withSQLConf(
+        key -> "52",
+        CometConf.COMET_BATCH_SIZE.key -> "2",
+        CometConf.COMET_SHUFFLE_ENABLED.key -> "true",
+        CometConf.COMET_SHUFFLE_MODE.key -> "native",
+        SQLConf.ADAPTIVE_EXECUTION_ENABLED.key -> "false") {
+        checkSparkAnswerAndOperator(sql(query), Seq(classOf[CometProjectExec]))
+        checkSparkAnswerAndOperator(sql(s"$query ORDER BY id DESC"), Seq(classOf[CometSortExec]))
+        checkSparkAnswerAndOperator(
+          sql(s"SELECT /*+ REPARTITION(2, id) */ * FROM ($query)"),
+          Seq(classOf[CometShuffleExchangeExec]))
+        checkSparkAnswerAndOperator(
+          sql("SELECT id, explode(sequence(a, b)) FROM t_seq_bytes"),
+          Seq(classOf[CometExplodeExec]))
+      }
+      withSQLConf(key -> "-1", CometConf.COMET_BATCH_SIZE.key -> "4") {
+        checkSparkAnswerAndOperator(sql(query), Seq(classOf[CometProjectExec]))
+      }
+    }
+  }
+
+  test("folded sequence literals are outside the native invocation ceiling") {
+    withSQLConf(CometConf.COMET_EXEC_SEQUENCE_MAX_BYTES_PER_INVOCATION.key -> "0") {
+      withParquetDataFrame(Seq(1, 2, 3)) { frame =>
+        // Spark folds this sequence to a literal before Comet sees it. The native projection
+        // broadcasts that literal; it never invokes the native sequence kernel.
+        val df = frame.selectExpr("sequence(1, 3) AS s")
+        assert(!df.queryExecution.optimizedPlan.toString.contains("sequence("))
+        checkSparkAnswerAndOperator(df, Seq(classOf[CometProjectExec]))
       }
     }
   }

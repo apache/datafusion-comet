@@ -45,7 +45,7 @@ pub use get_array_struct_fields::GetArrayStructFields;
 pub use list_extract::ListExtract;
 pub use list_positions::ListPositionsExpr;
 pub use nested_comparison::{spark_comparison, spark_in_list, FloatOperands, SparkComparison};
-pub use sequence::spark_sequence;
+pub use sequence::{spark_sequence, spark_sequence_with_limit, SparkSequence};
 pub use size::{spark_size, SparkSizeFunc};
 pub use sort_array::SparkSortArray;
 

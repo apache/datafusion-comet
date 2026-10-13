@@ -272,6 +272,42 @@ narrow tables when memory is plentiful.
 `spark.comet.shuffle.jvm.batchSize` controls the batch size used when the JVM columnar shuffle writer
 flushes sorted spill files. A value larger than `spark.comet.batchSize` is capped at `spark.comet.batchSize`.
 
+## Limiting Integral Sequence Output
+
+`spark.comet.exec.sequence.maxBytesPerInvocation` limits the logical Arrow output of each native
+integral `sequence` invocation. The kernel validates all rows and checks this ceiling before
+allocating the output values and offsets. A refusal fails the task with the required byte count and
+the limit. Lower `spark.comet.batchSize` to fit fewer sequences in an invocation, shorten a sequence
+that is too large on its own, or explicitly raise this setting. Byte units such as `64m` are accepted;
+`-1` disables the ceiling and `0` allows no output bytes.
+
+When the setting is absent in off-heap mode, the default is:
+
+```text
+task slots = max(1, floor(local or executor cores / CPUs allocated to the task))
+sequence ceiling = Comet's configured memory pool limit / task slots
+```
+
+The pool limit is resolved by `CometExecIterator.getMemoryConfig` from
+`spark.memory.offHeap.size * spark.comet.exec.memoryPool.fraction`. Local mode uses the thread count
+in `spark.master`; executors use `spark.executor.cores`. The task's CPU allocation normally comes
+from `spark.task.cpus`, and may be overridden by a resource profile. The ceiling does not change
+with live task counts or pool usage. On-heap test mode has no default ceiling; an explicit setting
+still applies there.
+
+Logical bytes include the child values at their integral width, four bytes per list offset
+(including the terminal offset), and one validity bit per row when null lists are present, rounded
+up to whole bytes. Even an empty output has a four-byte terminal offset. Allocator padding, scratch
+space and shared input backing outside a validity slice are excluded. Validity preparation and the
+row-length scratch buffer may be allocated before the final check.
+
+This is a ceiling for one invocation, not a memory reservation or an executor memory limit.
+Retaining earlier results, running concurrent calls, and passing results to sort, shuffle or explode
+do not consume another invocation's ceiling. All-scalar arguments materialise one list and retain
+constant-folding behaviour. Later generic scalar broadcasts and copies of folded literals are
+outside this ceiling, as are sequences evaluated by Spark. Continue to size the executor's memory
+overhead for allocations outside its memory pool.
+
 ## Limiting Spill Disk Usage
 
 Native operators that spill to disk (aggregate, sort, shuffle) are bounded by

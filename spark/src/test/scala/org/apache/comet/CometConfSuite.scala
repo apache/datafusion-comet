@@ -25,6 +25,20 @@ import org.apache.spark.sql.internal.SQLConf
 
 class CometConfSuite extends AnyFunSuite {
 
+  test("sequence invocation ceiling accepts byte units, zero and the explicit opt-out") {
+    val entry = CometConf.COMET_EXEC_SEQUENCE_MAX_BYTES_PER_INVOCATION
+    val conf = new SQLConf
+    assert(entry.get(conf).isEmpty)
+    Seq("-1" -> -1L, "0" -> 0L, "123" -> 123L, "2k" -> 2048L).foreach { case (input, expected) =>
+      conf.setConfString(entry.key, input)
+      assert(entry.get(conf).contains(expected))
+    }
+    Seq("-2", "invalid").foreach { input =>
+      conf.setConfString(entry.key, input)
+      intercept[IllegalArgumentException](entry.get(conf))
+    }
+  }
+
   test("primary key wins over alternative when both are set") {
     val entry = CometConf
       .conf("spark.comet.testing.alias.primaryWins")

@@ -20,7 +20,7 @@ use arrow::datatypes::{DataType, Field};
 use criterion::{criterion_group, criterion_main, Criterion};
 use datafusion::common::ScalarValue;
 use datafusion::physical_plan::ColumnarValue;
-use datafusion_comet_spark_expr::spark_sequence;
+use datafusion_comet_spark_expr::{spark_sequence, spark_sequence_with_limit};
 use std::hint::black_box;
 use std::sync::Arc;
 
@@ -56,6 +56,25 @@ fn criterion_benchmark(c: &mut Criterion) {
     let return_type = list_of_i64();
 
     let mut group = c.benchmark_group("sequence");
+
+    // Keep a configured path beside the existing baseline shapes. The limit fits every output
+    // here, so this measures the successful guard without timing error formatting.
+    for (label, elems, null_every) in [
+        ("short", 1, None),
+        ("long", 365, None),
+        ("sparse_nulls", 365, Some(10)),
+        ("dense_nulls", 365, Some(2)),
+        ("all_nulls", 365, Some(1)),
+    ] {
+        let args = args_with_len(elems, null_every);
+        group.bench_function(format!("limited_{label}"), |b| {
+            b.iter(|| {
+                black_box(
+                    spark_sequence_with_limit(&args, &return_type, Some(32 * 1024 * 1024)).unwrap(),
+                )
+            })
+        });
+    }
 
     // Short sequences: per-row overhead dominates.
     for elems in [1i64, 2, 5] {
