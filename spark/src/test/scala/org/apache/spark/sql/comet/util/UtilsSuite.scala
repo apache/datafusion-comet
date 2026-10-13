@@ -21,12 +21,15 @@ package org.apache.spark.sql.comet.util
 
 import java.nio.charset.StandardCharsets
 
+import scala.jdk.CollectionConverters._
+
 import org.apache.arrow.c.CDataDictionaryProvider
-import org.apache.arrow.vector.{BaseLargeVariableWidthVector, LargeVarBinaryVector, LargeVarCharVector, ValueVector, VarBinaryVector, VarCharVector, VariableWidthFieldVector}
+import org.apache.arrow.vector.{BaseLargeVariableWidthVector, BitVectorHelper, LargeVarBinaryVector, LargeVarCharVector, ValueVector, VarBinaryVector, VarCharVector, VariableWidthFieldVector}
+import org.apache.arrow.vector.ipc.message.ArrowFieldNode
 import org.apache.spark.SparkException
 import org.apache.spark.sql.CometTestBase
 import org.apache.spark.sql.execution.vectorized.ConstantColumnVector
-import org.apache.spark.sql.types.{IntegerType, StringType, StructField, StructType, TimestampType}
+import org.apache.spark.sql.types.{BinaryType, IntegerType, StringType, StructField, StructType, TimestampType}
 import org.apache.spark.sql.vectorized.{ColumnarBatch, ColumnVector}
 
 import org.apache.comet.CometArrowAllocator
@@ -174,26 +177,12 @@ class UtilsSuite extends CometTestBase {
     // getBatchFieldVectors writes a 32-bit copy of them rather than the vector itself. A caller
     // taking the direct write path expects the batch's own vectors, so isArrowBacked must report
     // false and let the caller convert the batch instead.
-    val numRows = 2
-    Seq[org.apache.arrow.vector.FieldVector](
-      {
-        val v = new org.apache.arrow.vector.LargeVarCharVector("s", CometArrowAllocator)
-        v.allocateNew(numRows)
-        v.setSafe(0, "hello".getBytes("UTF-8"))
-        v.setSafe(1, "world".getBytes("UTF-8"))
-        v.setValueCount(numRows)
-        v
-      }, {
-        val v = new org.apache.arrow.vector.LargeVarBinaryVector("b", CometArrowAllocator)
-        v.allocateNew(numRows)
-        v.setSafe(0, "hello".getBytes("UTF-8"))
-        v.setSafe(1, "world".getBytes("UTF-8"))
-        v.setValueCount(numRows)
-        v
-      }).foreach { vector =>
+    val values = Seq("hello", "world")
+    Seq[ValueVector](
+      fill(new LargeVarCharVector("s", CometArrowAllocator), values),
+      fill(new LargeVarBinaryVector("b", CometArrowAllocator), values)).foreach { vector =>
       try {
-        val col = CometVector.getVector(vector, new CDataDictionaryProvider)
-        val batch = new ColumnarBatch(Array[ColumnVector](col), numRows)
+        val batch = new ColumnarBatch(Array(cometVector(vector)), values.length)
         assert(
           !Utils.isArrowBacked(batch),
           s"${vector.getClass.getSimpleName} must not be reported as directly writable")
@@ -208,30 +197,56 @@ class UtilsSuite extends CometTestBase {
     // LargeVarCharVector or LargeVarBinaryVector. The column is still StringType or BinaryType,
     // so it is written as the Utf8 or Binary vector every reader of the bytes expects for those.
     val values = Seq("hello", null, "", "wörld")
-    val numRows = values.length
     val strings = fill(new LargeVarCharVector("s", CometArrowAllocator), values)
     val binaries = fill(new LargeVarBinaryVector("b", CometArrowAllocator), values)
     try {
       val batch =
-        new ColumnarBatch(Array(cometVector(strings), cometVector(binaries)), numRows)
+        new ColumnarBatch(Array(cometVector(strings), cometVector(binaries)), values.length)
+      assert(
+        roundTrip(batch) == Seq(
+          classOf[VarCharVector] -> values,
+          classOf[VarBinaryVector] -> values))
+    } finally {
+      strings.close()
+      binaries.close()
+    }
+  }
 
-      val (rowCount, buf) = Utils.serializeBatches(Iterator(batch)).next()
-      assert(rowCount == numRows)
+  test("serializeBatches rebases large-offset vectors whose offsets start past zero") {
+    // Offsets need not start at zero. A slice imported over the C Data interface keeps its
+    // parent's offsets and data buffer, so they start past bytes that no value covers. The copy
+    // holds only the bytes the values cover, with offsets counted from the first of them.
+    val values = Seq("hello", null, "wörld")
+    val strings = startingPast("xx", new LargeVarCharVector("s", CometArrowAllocator), values)
+    val binaries = startingPast("xx", new LargeVarBinaryVector("b", CometArrowAllocator), values)
+    try {
+      assert(strings.getOffsetBuffer.getLong(0) == 2)
+      assert(binaries.getOffsetBuffer.getLong(0) == 2)
+      val batch =
+        new ColumnarBatch(Array(cometVector(strings), cometVector(binaries)), values.length)
+      assert(
+        roundTrip(batch) == Seq(
+          classOf[VarCharVector] -> values,
+          classOf[VarBinaryVector] -> values))
+    } finally {
+      strings.close()
+      binaries.close()
+    }
+  }
 
-      val it = Utils.decodeBatches(buf, "test")
-      assert(it.hasNext)
-      val out = it.next()
-      val vectorClasses = (0 until out.numCols()).map(i =>
-        out.column(i).asInstanceOf[CometVector].getValueVector.getClass)
-      val gotStrings =
-        (0 until numRows).map(i => Option(out.column(0).getUTF8String(i)).map(_.toString).orNull)
-      val gotBinaries = (0 until numRows).map(i =>
-        Option(out.column(1).getBinary(i)).map(new String(_, StandardCharsets.UTF_8)).orNull)
-      assert(!it.hasNext)
-
-      assert(vectorClasses == Seq(classOf[VarCharVector], classOf[VarBinaryVector]))
-      assert(gotStrings == values)
-      assert(gotBinaries == values)
+  test("serializeBatches writes empty large-offset vectors with 32-bit offsets") {
+    // A vector that holds no values need not have an offset buffer, so none is read.
+    val strings = new LargeVarCharVector("s", CometArrowAllocator)
+    val binaries = new LargeVarBinaryVector("b", CometArrowAllocator)
+    try {
+      strings.setValueCount(0)
+      binaries.setValueCount(0)
+      assert(strings.getOffsetBuffer.capacity == 0)
+      val batch = new ColumnarBatch(Array(cometVector(strings), cometVector(binaries)), 0)
+      assert(
+        roundTrip(batch) == Seq(
+          classOf[VarCharVector] -> Seq.empty,
+          classOf[VarBinaryVector] -> Seq.empty))
     } finally {
       strings.close()
       binaries.close()
@@ -254,8 +269,7 @@ class UtilsSuite extends CometTestBase {
 
       val it = coalesced.iterator.flatMap(Utils.decodeBatches(_, "test"))
       val out = it.next()
-      val got = (0 until out.numRows()).map(i =>
-        Option(out.column(0).getUTF8String(i)).map(_.toString).orNull)
+      val got = stringValues(out.column(0), out.numRows())
       assert(!it.hasNext)
       assert(got == Seq("a", null, "b", "c"))
     } finally {
@@ -267,17 +281,36 @@ class UtilsSuite extends CometTestBase {
   test("serializeBatches refuses a large-offset column too big for 32-bit offsets") {
     // The offsets alone claim 2 GiB of data. The size is checked before anything is copied, so
     // the data itself never has to exist.
-    val strings = fill(new LargeVarCharVector("s", CometArrowAllocator), Seq("a"))
+    val strings = tooBigForIntOffsets("s")
     try {
-      strings.getOffsetBuffer.setLong(
-        BaseLargeVariableWidthVector.OFFSET_WIDTH,
-        Int.MaxValue + 1L)
       val batch = new ColumnarBatch(Array(cometVector(strings)), 1)
       val e = intercept[SparkException](Utils.serializeBatches(Iterator(batch)).next())
       assert(e.getMessage.contains("more than 32-bit offsets can address"), e.getMessage)
     } finally {
       strings.close()
     }
+  }
+
+  test("serializeBatches releases the vectors it made when a later column fails") {
+    // A materialized constant and a 32-bit copy of a large-offset column are both made before the
+    // last column is refused. Nothing outside serializeBatches ever holds them, so it has to
+    // close them itself, while the batch's own vectors stay with their owner.
+    val before = CometArrowAllocator.getAllocatedMemory
+    val constant = new ConstantColumnVector(1, IntegerType)
+    constant.setInt(42)
+    val small = fill(new LargeVarCharVector("small", CometArrowAllocator), Seq("a"))
+    val tooBig = tooBigForIntOffsets("big")
+    try {
+      val batch = new ColumnarBatch(Array(constant, cometVector(small), cometVector(tooBig)), 1)
+      val e = intercept[SparkException](Utils.serializeBatches(Iterator(batch)).next())
+      assert(e.getMessage.contains("more than 32-bit offsets can address"), e.getMessage)
+      assert(small.getValueCount == 1 && small.getObject(0).toString == "a")
+    } finally {
+      constant.close()
+      small.close()
+      tooBig.close()
+    }
+    assert(CometArrowAllocator.getAllocatedMemory == before)
   }
 
   /** Writes `values` into `vector`, leaving a null entry unset so that it reads back as null. */
@@ -290,6 +323,81 @@ class UtilsSuite extends CometTestBase {
     vector
   }
 
+  /**
+   * Loads `values` into `vector` the way an imported slice holds them: the data buffer starts
+   * with the bytes of `skipped`, which no value covers, so the offsets start past zero.
+   */
+  private def startingPast[V <: BaseLargeVariableWidthVector](
+      skipped: String,
+      vector: V,
+      values: Seq[String]): V = {
+    val skippedBytes = skipped.getBytes(StandardCharsets.UTF_8)
+    val valueBytes =
+      values.map(v => if (v == null) Array.emptyByteArray else v.getBytes(StandardCharsets.UTF_8))
+    val offsets = valueBytes.scanLeft(skippedBytes.length.toLong)(_ + _.length)
+    val width = BaseLargeVariableWidthVector.OFFSET_WIDTH.toLong
+
+    val validity =
+      CometArrowAllocator.buffer(BitVectorHelper.getValidityBufferSize(values.length).toLong)
+    val offsetBuffer = CometArrowAllocator.buffer(offsets.length * width)
+    val data = CometArrowAllocator.buffer(offsets.last)
+    val buffers = Seq(validity, offsetBuffer, data)
+    try {
+      validity.setZero(0, validity.capacity)
+      values.indices.filter(values(_) != null).foreach { i =>
+        BitVectorHelper.setBit(validity, i.toLong)
+      }
+      offsets.zipWithIndex.foreach { case (offset, i) => offsetBuffer.setLong(i * width, offset) }
+      data.setBytes(0, skippedBytes ++ valueBytes.flatten)
+      vector.loadFieldBuffers(
+        new ArrowFieldNode(values.length.toLong, values.count(_ == null).toLong),
+        buffers.asJava)
+      vector
+    } finally {
+      // The vector takes references of its own.
+      buffers.foreach(_.close())
+    }
+  }
+
+  /** A one-value vector whose offsets claim more data than 32-bit offsets can address. */
+  private def tooBigForIntOffsets(name: String): LargeVarCharVector = {
+    val vector = fill(new LargeVarCharVector(name, CometArrowAllocator), Seq("a"))
+    vector.getOffsetBuffer.setLong(BaseLargeVariableWidthVector.OFFSET_WIDTH, Int.MaxValue + 1L)
+    vector
+  }
+
   private def cometVector(vector: ValueVector): ColumnVector =
     CometVector.getVector(vector, new CDataDictionaryProvider)
+
+  /**
+   * Serializes `batch` on its own and decodes it as the broadcast consumers do, returning each
+   * column's vector class and values.
+   */
+  private def roundTrip(batch: ColumnarBatch): Seq[(Class[_], Seq[String])] = {
+    val (rowCount, buf) = Utils.serializeBatches(Iterator(batch)).next()
+    assert(rowCount == batch.numRows())
+
+    // Everything is read before the iterator moves on, which releases the batch it returned.
+    val it = Utils.decodeBatches(buf, "test")
+    val out = it.next()
+    val columns = (0 until out.numCols()).map { i =>
+      val column = out.column(i)
+      val vectorClass = column.asInstanceOf[CometVector].getValueVector.getClass
+      (vectorClass, stringValues(column, out.numRows()))
+    }
+    assert(!it.hasNext)
+    columns
+  }
+
+  /** The values of a string or binary column, with binary values read as UTF-8. */
+  private def stringValues(column: ColumnVector, numRows: Int): Seq[String] =
+    (0 until numRows).map { i =>
+      if (column.isNullAt(i)) {
+        null
+      } else if (column.dataType == BinaryType) {
+        new String(column.getBinary(i), StandardCharsets.UTF_8)
+      } else {
+        column.getUTF8String(i).toString
+      }
+    }
 }

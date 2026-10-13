@@ -533,45 +533,62 @@ object Utils extends CometTypeShim with Logging {
   def getBatchFieldVectorsWithProviders(
       batch: ColumnarBatch): Seq[(FieldVector, Option[DictionaryProvider])] = {
     val rows = batch.numRows()
-    (0 until batch.numCols()).map { index =>
-      batch.column(index) match {
-        case a: CometVector =>
-          val valueVector = a.getValueVector
-          val provider =
-            if (valueVector.getField.getDictionary != null) Some(a.getDictionaryProvider)
-            else None
+    // Vectors made here rather than taken from `batch`. The caller releases them with the rest of
+    // what it writes, but if a later column fails it never gets them, so they are closed here.
+    val made = scala.collection.mutable.ArrayBuffer.empty[FieldVector]
+    def keep(vector: FieldVector): FieldVector = {
+      made += vector
+      vector
+    }
 
-          val fieldVector = valueVector match {
-            case v: LargeVarCharVector => narrowOffsets(v, ArrowType.Utf8.INSTANCE)
-            case v: LargeVarBinaryVector => narrowOffsets(v, ArrowType.Binary.INSTANCE)
-            case v => getFieldVector(v, "serialize")
-          }
-          (fieldVector, provider)
+    try {
+      (0 until batch.numCols()).map { index =>
+        batch.column(index) match {
+          case a: CometVector =>
+            val valueVector = a.getValueVector
+            val provider =
+              if (valueVector.getField.getDictionary != null) Some(a.getDictionaryProvider)
+              else None
 
-        case cv: ConstantColumnVector =>
-          // Spark wraps file-source partition columns and other per-batch constants in
-          // `ConstantColumnVector`. Materialise to an Arrow vector so the serialisation path
-          // doesn't reject the batch. "UTC" is intentional -- see `ConstantColumnVectors`.
-          val materialized = ConstantColumnVectors.materialize(
-            cv,
-            cv.dataType(),
-            rows,
-            s"_const_$index",
-            org.apache.comet.CometArrowAllocator,
-            "UTC")
-          (materialized, None)
+            val fieldVector = valueVector match {
+              case v: LargeVarCharVector => keep(narrowOffsets(v, ArrowType.Utf8.INSTANCE))
+              case v: LargeVarBinaryVector => keep(narrowOffsets(v, ArrowType.Binary.INSTANCE))
+              case v => getFieldVector(v, "serialize")
+            }
+            (fieldVector, provider)
 
-        case c =>
-          throw new SparkException(
-            s"Comet execution only takes Arrow Arrays, but got ${c.getClass}. " +
-              "This typically happens when a Comet scan falls back to Spark due to unsupported " +
-              "data types (e.g., complex types like structs, arrays, or maps). " +
-              "To resolve this, you can: " +
-              "(1) enable spark.comet.scan.allowIncompatible=true to use a compatible native " +
-              "scan variant, or " +
-              "(2) enable spark.comet.convert.parquet.enabled=true to convert Spark Parquet " +
-              "data to Arrow format automatically.")
+          case cv: ConstantColumnVector =>
+            // Spark wraps file-source partition columns and other per-batch constants in
+            // `ConstantColumnVector`. Materialise to an Arrow vector so the serialisation path
+            // doesn't reject the batch. "UTC" is intentional -- see `ConstantColumnVectors`.
+            val materialized = keep(
+              ConstantColumnVectors.materialize(
+                cv,
+                cv.dataType(),
+                rows,
+                s"_const_$index",
+                org.apache.comet.CometArrowAllocator,
+                "UTC"))
+            (materialized, None)
+
+          case c =>
+            throw new SparkException(
+              s"Comet execution only takes Arrow Arrays, but got ${c.getClass}. " +
+                "This typically happens when a Comet scan falls back to Spark due to " +
+                "unsupported data types (e.g., complex types like structs, arrays, or maps). " +
+                "To resolve this, you can: " +
+                "(1) enable spark.comet.scan.allowIncompatible=true to use a compatible native " +
+                "scan variant, or " +
+                "(2) enable spark.comet.convert.parquet.enabled=true to convert Spark Parquet " +
+                "data to Arrow format automatically.")
+        }
       }
+    } catch {
+      case NonFatal(e) =>
+        made.foreach(v =>
+          try v.close()
+          catch { case NonFatal(closeError) => e.addSuppressed(closeError) })
+        throw e
     }
   }
 
@@ -586,6 +603,10 @@ object Utils extends CometTypeShim with Logging {
    * a root built from the first one's schema, and a native plan reading them takes its input
    * stream's schema from the first one too. Only a column holding more data than 32-bit offsets
    * can address is refused.
+   *
+   * Only top-level columns are narrowed. A `large_string` or `large_binary` child of a struct,
+   * list or map column passes [[getFieldVector]] with its parent and keeps its 64-bit offsets
+   * (#6933).
    *
    * Like a materialized `ConstantColumnVector`, the copy is released when the caller clears the
    * vectors it wrote. `large` itself stays with its owner.
@@ -616,7 +637,9 @@ object Utils extends CometTypeShim with Logging {
     try {
       narrow.allocateNew(dataLength, numValues)
       if (numValues > 0) {
-        val validityBytes = BitVectorHelper.getValidityBufferSize(numValues)
+        // An Arrow Java vector has no array offset, so validity bit i belongs to value i even when
+        // the offsets start past zero, and the bitmap is copied from bit 0.
+        val validityBytes = BitVectorHelper.getValidityBufferSize(numValues).toLong
         narrow.getValidityBuffer.setBytes(0, large.getValidityBuffer, 0, validityBytes)
         val offsets = narrow.getOffsetBuffer
         (0 to numValues).foreach { i =>
