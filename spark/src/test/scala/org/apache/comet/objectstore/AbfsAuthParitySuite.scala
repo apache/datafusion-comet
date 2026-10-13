@@ -43,6 +43,7 @@ import com.fasterxml.jackson.databind.{JsonNode, ObjectMapper}
 import org.apache.comet.objectstore.AbfsAuthParityCases._
 import org.apache.comet.objectstore.AbfsAuthResolver._
 import org.apache.comet.objectstore.AbfsReflection.Handles
+import org.apache.comet.tags.AzureTest
 
 /**
  * Pins the resolver's behaviour per hadoop-azure version and cross-checks it against the real
@@ -67,6 +68,7 @@ import org.apache.comet.objectstore.AbfsReflection.Handles
  * assert while recording, so a recorded file never contradicts the hadoop-azure source. The file
  * is written only when every case ran, so a filtered run cannot leave a partial file behind.
  */
+@AzureTest
 class AbfsAuthParitySuite extends AnyFunSuite with Matchers with BeforeAndAfterAll {
   import AbfsAuthParitySuite._
 

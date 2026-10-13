@@ -31,12 +31,14 @@ import org.apache.spark.sql.types.{IntegerType, StructType}
 
 import org.apache.comet.{CometConf, ExtendedExplainInfo}
 import org.apache.comet.hadoop.fs.FakeAbfsFileSystem
+import org.apache.comet.tags.AzureTest
 
 /**
  * Plans scans over `abfss://` paths served by [[FakeAbfsFileSystem]], with authentication
  * resolved offline by the hadoop-azure on the test classpath. A scan Comet declines runs on
  * Spark's own scan against the local files.
  */
+@AzureTest
 class AbfsScanFallbackSuite extends CometTestBase {
 
   private val multipleAuthoritiesReason = "more than one container or account"

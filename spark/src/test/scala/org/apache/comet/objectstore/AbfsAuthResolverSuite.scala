@@ -35,12 +35,14 @@ import org.apache.hadoop.fs.azurebfs.services.KeyProvider
 
 import org.apache.comet.objectstore.AbfsAuthResolver._
 import org.apache.comet.objectstore.AbfsReflection.Handles
+import org.apache.comet.tags.AzureTest
 
 /**
  * Runs the resolver against the hadoop-azure on the test classpath (3.3.4 on the spark-3.x
  * profiles, 3.4.1, 3.4.2 and 3.5.0 on spark-4.0, 4.1 and 4.2). Cases that depend on a feature one
  * line lacks are gated on the capability probes rather than on a version number.
  */
+@AzureTest
 class AbfsAuthResolverSuite extends AnyFunSuite with Matchers {
 
   private val account = "myacct.dfs.core.windows.net"
