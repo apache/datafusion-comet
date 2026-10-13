@@ -22,6 +22,7 @@ use std::{
     fmt,
     fmt::{Debug, Formatter},
     fs::File,
+    io::Write,
     sync::Arc,
 };
 
@@ -30,6 +31,7 @@ use opendal::Operator;
 #[cfg(feature = "hdfs-opendal")]
 use std::io::Cursor;
 
+use crate::jvm_bridge::OutputStreamSink;
 use crate::parquet::parquet_support::is_hdfs_scheme;
 #[cfg(feature = "hdfs-opendal")]
 use crate::parquet::parquet_support::{create_hdfs_operator, prepare_object_store_with_configs};
@@ -99,6 +101,10 @@ enum ParquetWriter {
         Box<Operator>,
         String,
     ),
+    /// Writer for a file the JVM created through Hadoop's FileSystem API, which only supplies the
+    /// file's bytes. Whatever the file system does to create and store the file, S3A's magic
+    /// committer support among it, is the JVM's.
+    OutputStream(ArrowWriter<OutputStreamWriter>),
 }
 
 impl ParquetWriter {
@@ -154,13 +160,15 @@ impl ParquetWriter {
 
                 Ok(())
             }
+            ParquetWriter::OutputStream(writer) => writer.write(batch),
         }
     }
 
     /// Memory the writer holds between batches: parquet-rs's estimate for the in-progress row
     /// group, which counts encoded pages, encoder buffers, dictionaries and any Bloom filters.
     /// The remote writer flushes a row group after every batch and stages it in a buffer that is
-    /// cleared after each upload but keeps its capacity, so that buffer counts too.
+    /// cleared after each upload but keeps its capacity, so that buffer counts too, as does the
+    /// buffer an output stream writer collects its next write in.
     fn memory_size(&self) -> usize {
         match self {
             ParquetWriter::LocalFile(writer) => writer.memory_size(),
@@ -168,15 +176,20 @@ impl ParquetWriter {
             ParquetWriter::Remote(writer, ..) => {
                 writer.memory_size() + writer.inner().get_ref().capacity()
             }
+            ParquetWriter::OutputStream(writer) => {
+                writer.memory_size() + writer.inner().buffer.capacity()
+            }
         }
     }
 
-    /// Close the writer and finalize the file
-    async fn close(self) -> std::result::Result<(), parquet::errors::ParquetError> {
+    /// Close the writer and finalize the file. Returns the file's size in bytes when the writer
+    /// counted it, which only an output stream writer does, since nothing else can tell the size
+    /// of a file the JVM created. Otherwise the caller has to ask the file system.
+    async fn close(self) -> std::result::Result<Option<u64>, parquet::errors::ParquetError> {
         match self {
             ParquetWriter::LocalFile(writer) => {
                 writer.close()?;
-                Ok(())
+                Ok(None)
             }
             #[cfg(feature = "hdfs-opendal")]
             ParquetWriter::Remote(
@@ -223,9 +236,76 @@ impl ParquetWriter {
                     }
                 }
 
-                Ok(())
+                Ok(None)
+            }
+            ParquetWriter::OutputStream(mut writer) => {
+                // `finish` sends the footer and flushes the writer's last write, so the JVM can
+                // close the file once this returns. Unlike `close` it keeps the writer, which has
+                // counted every byte it wrote.
+                writer.finish()?;
+                Ok(Some(writer.bytes_written() as u64))
             }
         }
+    }
+}
+
+/// Writes a Parquet file's bytes to the output stream of the file the JVM created. Bytes are
+/// collected into writes of the stream's `max_write_size`, so a file costs one upcall per write
+/// rather than one per page.
+struct OutputStreamWriter {
+    sink: Arc<dyn OutputStreamSink>,
+    /// Bytes not yet handed to the stream, at most `capacity` of them.
+    buffer: Vec<u8>,
+    capacity: usize,
+    /// Set once a write to the stream has failed. Nothing is sent after that, not even what
+    /// dropping the Parquet writer flushes, since the stream is in an unknown state and the JVM
+    /// aborts the file once the failure reaches it.
+    failed: bool,
+}
+
+impl OutputStreamWriter {
+    fn new(sink: Arc<dyn OutputStreamSink>) -> Self {
+        let capacity = sink.max_write_size().max(1);
+        Self {
+            sink,
+            buffer: Vec::with_capacity(capacity),
+            capacity,
+            failed: false,
+        }
+    }
+
+    /// Hands the buffered bytes to the stream.
+    fn send(&mut self) -> std::io::Result<()> {
+        if self.failed {
+            return Err(std::io::Error::other(
+                "a previous write to the output stream failed",
+            ));
+        }
+        if !self.buffer.is_empty() {
+            if let Err(e) = self.sink.write(&self.buffer) {
+                self.failed = true;
+                return Err(std::io::Error::other(e));
+            }
+            self.buffer.clear();
+        }
+        Ok(())
+    }
+}
+
+impl Write for OutputStreamWriter {
+    fn write(&mut self, data: &[u8]) -> std::io::Result<usize> {
+        // A full buffer is sent before taking more rather than as soon as it fills, so that a
+        // failed send consumes none of `data`, as `Write` requires of an error.
+        if self.buffer.len() == self.capacity || self.failed {
+            self.send()?;
+        }
+        let taken = data.len().min(self.capacity - self.buffer.len());
+        self.buffer.extend_from_slice(&data[..taken]);
+        Ok(taken)
+    }
+
+    fn flush(&mut self) -> std::io::Result<()> {
+        self.send()
     }
 }
 
@@ -247,6 +327,9 @@ pub struct ParquetWriterExec {
     output_schema: Option<SchemaRef>,
     /// Object store configuration options
     object_store_options: HashMap<String, String>,
+    /// The output stream of the file at `output_path`, when the JVM created that file. The writer
+    /// then writes the file's bytes there and never opens `output_path` itself.
+    output_stream: Option<Arc<dyn OutputStreamSink>>,
     /// Metrics
     metrics: ExecutionPlanMetricsSet,
     /// Cache for plan properties
@@ -283,9 +366,17 @@ impl ParquetWriterExec {
             column_names,
             output_schema,
             object_store_options,
+            output_stream: None,
             metrics: ExecutionPlanMetricsSet::new(),
             cache,
         })
+    }
+
+    /// Write the file's bytes to `output_stream`, the output stream of the file the JVM created
+    /// at `output_path`, rather than creating the file natively.
+    pub fn with_output_stream(mut self, output_stream: Arc<dyn OutputStreamSink>) -> Self {
+        self.output_stream = Some(output_stream);
+        self
     }
 
     /// Create an Arrow writer based on the storage scheme
@@ -296,6 +387,7 @@ impl ParquetWriterExec {
     /// * `props` - Writer properties including compression
     /// * `runtime_env` - Runtime environment for object store registration
     /// * `object_store_options` - Configuration options for object store
+    /// * `output_stream` - The output stream of the file, when the JVM created it
     ///
     /// # Returns
     /// * `Ok(ParquetWriter)` - A writer appropriate for the storage scheme
@@ -306,7 +398,22 @@ impl ParquetWriterExec {
         props: WriterProperties,
         _runtime_env: Arc<datafusion::execution::runtime_env::RuntimeEnv>,
         object_store_options: &HashMap<String, String>,
+        output_stream: Option<Arc<dyn OutputStreamSink>>,
     ) -> Result<ParquetWriter> {
+        // The JVM created the file through its own FileSystem, so the path is not this writer's
+        // to interpret, whatever its scheme.
+        if let Some(output_stream) = output_stream {
+            let writer =
+                ArrowWriter::try_new(OutputStreamWriter::new(output_stream), schema, Some(props))
+                    .map_err(|e| {
+                    DataFusionError::Execution(format!(
+                        "Failed to create output stream writer: {}",
+                        e
+                    ))
+                })?;
+            return Ok(ParquetWriter::OutputStream(writer));
+        }
+
         // Parse URL and match on storage scheme directly
         let url = Url::parse(output_file_path).map_err(|e| {
             DataFusionError::Execution(format!("Failed to parse URL '{}': {}", output_file_path, e))
@@ -460,15 +567,21 @@ impl ExecutionPlan for ParquetWriterExec {
         children: Vec<Arc<dyn ExecutionPlan>>,
     ) -> Result<Arc<dyn ExecutionPlan>> {
         match children.len() {
-            1 => Ok(Arc::new(ParquetWriterExec::try_new(
-                Arc::clone(&children[0]),
-                self.output_path.clone(),
-                self.compression.clone(),
-                self.partition_id,
-                self.column_names.clone(),
-                self.output_schema.clone(),
-                self.object_store_options.clone(),
-            )?)),
+            1 => {
+                let writer = ParquetWriterExec::try_new(
+                    Arc::clone(&children[0]),
+                    self.output_path.clone(),
+                    self.compression.clone(),
+                    self.partition_id,
+                    self.column_names.clone(),
+                    self.output_schema.clone(),
+                    self.object_store_options.clone(),
+                )?;
+                Ok(Arc::new(match &self.output_stream {
+                    Some(output_stream) => writer.with_output_stream(Arc::clone(output_stream)),
+                    None => writer,
+                }))
+            }
             _ => Err(DataFusionError::Internal(
                 "ParquetWriterExec requires exactly one child".to_string(),
             )),
@@ -525,6 +638,7 @@ impl ExecutionPlan for ParquetWriterExec {
             props,
             runtime_env,
             &object_store_options,
+            self.output_stream.clone(),
         )?;
 
         // Clone schema for use in async closure
@@ -567,18 +681,23 @@ impl ExecutionPlan for ParquetWriterExec {
                 reservation.try_resize(writer.memory_size())?;
             }
 
-            writer.close().await.map_err(|e| {
+            let written_size = writer.close().await.map_err(|e| {
                 DataFusionError::Execution(format!("Failed to close writer: {}", e))
             })?;
 
-            // Get file size - strip file:// prefix if present for local filesystem access
-            let local_path = part_file
-                .strip_prefix("file://")
-                .or_else(|| part_file.strip_prefix("file:"))
-                .unwrap_or(&part_file);
-            let file_size = std::fs::metadata(local_path)
-                .map(|m| m.len() as i64)
-                .unwrap_or(0);
+            let file_size = match written_size {
+                Some(size) => size as i64,
+                None => {
+                    // Get file size - strip file:// prefix if present for local filesystem access
+                    let local_path = part_file
+                        .strip_prefix("file://")
+                        .or_else(|| part_file.strip_prefix("file:"))
+                        .unwrap_or(&part_file);
+                    std::fs::metadata(local_path)
+                        .map(|m| m.len() as i64)
+                        .unwrap_or(0)
+                }
+            };
 
             // Update metrics with write statistics
             files_written.add(1);
@@ -917,6 +1036,168 @@ mod tests {
         Ok(())
     }
 
+    /// Records what a writer hands the output stream of a file the JVM created, and fails the
+    /// write with index `failing_write` when there is one.
+    #[derive(Default)]
+    struct RecordingSink {
+        max_write_size: usize,
+        failing_write: Option<usize>,
+        writes: std::sync::Mutex<Vec<Vec<u8>>>,
+    }
+
+    impl RecordingSink {
+        fn new(max_write_size: usize) -> Self {
+            Self {
+                max_write_size,
+                ..Default::default()
+            }
+        }
+
+        fn writes(&self) -> Vec<Vec<u8>> {
+            self.writes.lock().unwrap().clone()
+        }
+    }
+
+    impl OutputStreamSink for RecordingSink {
+        fn max_write_size(&self) -> usize {
+            self.max_write_size
+        }
+
+        fn write(&self, data: &[u8]) -> Result<()> {
+            let mut writes = self.writes.lock().unwrap();
+            assert!(
+                data.len() <= self.max_write_size,
+                "a write of {} bytes exceeds the stream's limit of {}",
+                data.len(),
+                self.max_write_size
+            );
+            writes.push(data.to_vec());
+            if self.failing_write == Some(writes.len() - 1) {
+                return Err(DataFusionError::Execution(
+                    "injected output stream failure".to_string(),
+                ));
+            }
+            Ok(())
+        }
+    }
+
+    /// Writes `batches` with a writer for `output_path`, through `output_stream` when there is
+    /// one, and returns the writer for its metrics.
+    async fn write_batches(
+        batches: Vec<RecordBatch>,
+        output_path: String,
+        output_stream: Option<Arc<dyn OutputStreamSink>>,
+    ) -> Result<Arc<ParquetWriterExec>> {
+        let schema = batches[0].schema();
+        let column_names = schema.fields().iter().map(|f| f.name().clone()).collect();
+        let memory_source = MemorySourceConfig::try_new(&[batches], Arc::clone(&schema), None)?;
+        let input = Arc::new(DataSourceExec::new(Arc::new(memory_source)));
+        let writer = ParquetWriterExec::try_new(
+            input,
+            output_path,
+            ParquetCompression::Snappy,
+            0,
+            column_names,
+            None,
+            HashMap::new(),
+        )?;
+        let writer = Arc::new(match output_stream {
+            Some(output_stream) => writer.with_output_stream(output_stream),
+            None => writer,
+        });
+        let mut stream = writer.execute(0, SessionContext::new().task_ctx())?;
+        while stream.try_next().await?.is_some() {}
+        Ok(writer)
+    }
+
+    /// A file the JVM created gets exactly the bytes the writer would have written to a file of
+    /// its own, in writes no larger than the stream accepts, and the writer never opens the path
+    /// itself: here an S3A magic committer path, which only S3A can create correctly.
+    #[tokio::test]
+    async fn test_parquet_writer_writes_a_jvm_created_file_through_its_output_stream() -> Result<()>
+    {
+        let batches: Vec<RecordBatch> = (1..=5)
+            .map(create_test_record_batch)
+            .collect::<Result<_>>()?;
+        let temp_dir = tempfile::tempdir()?;
+        let local_file = temp_dir.path().join("part-00000.parquet");
+        write_batches(
+            batches.clone(),
+            format!("file://{}", local_file.display()),
+            None,
+        )
+        .await?;
+        let expected = std::fs::read(&local_file)?;
+
+        let max_write_size = 4096;
+        let sink = Arc::new(RecordingSink::new(max_write_size));
+        let magic_path = "s3a://bucket/table/__magic_job-0001/job-0001/tasks/\
+                          attempt_0001_m_000000_0/__base/part-00000.parquet";
+        let writer = write_batches(
+            batches,
+            magic_path.to_string(),
+            Some(Arc::clone(&sink) as Arc<dyn OutputStreamSink>),
+        )
+        .await?;
+
+        let writes = sink.writes();
+        assert!(
+            writes.len() > 1,
+            "expected several writes, got {}",
+            writes.len()
+        );
+        let (last, full) = writes.split_last().unwrap();
+        assert!(
+            full.iter().all(|write| write.len() == max_write_size),
+            "every write but the last fills the stream's limit: {:?}",
+            writes.iter().map(Vec::len).collect::<Vec<_>>()
+        );
+        assert!(!last.is_empty() && last.len() <= max_write_size);
+        assert_eq!(writes.concat(), expected);
+
+        let metrics = writer.metrics().unwrap();
+        assert_eq!(
+            metrics.sum_by_name("bytes_written").unwrap().as_usize(),
+            expected.len()
+        );
+        assert_eq!(
+            metrics.sum_by_name("rows_written").unwrap().as_usize(),
+            5000
+        );
+        Ok(())
+    }
+
+    /// A failed write to the output stream fails the task with the stream's error, and nothing is
+    /// sent to the stream after it, not even what dropping the Parquet writer flushes.
+    #[tokio::test]
+    async fn test_parquet_writer_stops_writing_to_a_failed_output_stream() -> Result<()> {
+        let batches: Vec<RecordBatch> = (1..=5)
+            .map(create_test_record_batch)
+            .collect::<Result<_>>()?;
+        let sink = Arc::new(RecordingSink {
+            failing_write: Some(1),
+            ..RecordingSink::new(1024)
+        });
+        let error = write_batches(
+            batches,
+            "s3a://bucket/table/part-00000.parquet".to_string(),
+            Some(Arc::clone(&sink) as Arc<dyn OutputStreamSink>),
+        )
+        .await
+        .expect_err("a failed write to the output stream must fail the task");
+
+        assert!(
+            error.to_string().contains("injected output stream failure"),
+            "{error}"
+        );
+        assert_eq!(
+            sink.writes().len(),
+            2,
+            "the writer kept writing to a stream that had failed"
+        );
+        Ok(())
+    }
+
     #[tokio::test]
     #[cfg(feature = "hdfs-opendal")]
     #[ignore = "This test requires a running HDFS cluster"]
@@ -1068,6 +1349,7 @@ mod tests {
             props,
             runtime_env,
             &HashMap::new(),
+            None,
         )?;
 
         // Write 5 batches in a loop

@@ -43,7 +43,7 @@ import org.apache.spark.util.SerializableConfiguration
 import org.apache.comet.CometConf._
 import org.apache.comet.Tracing.withTrace
 import org.apache.comet.exceptions.CometQueryExecutionException
-import org.apache.comet.parquet.CometFileKeyUnwrapper
+import org.apache.comet.parquet.{CometFileKeyUnwrapper, HadoopFileOutput}
 import org.apache.comet.serde.Config.ConfigMap
 import org.apache.comet.shuffle.ShufflePartitionPusher
 import org.apache.comet.udf.CometUdfBridge
@@ -73,6 +73,9 @@ import org.apache.comet.vector.NativeUtil
  *   Paths to encrypted Parquet files that need key unwrapping.
  * @param shufflePartitionPusher
  *   Optional task-owned callback that receives remote shuffle output.
+ * @param outputStream
+ *   Optional file that the JVM created for the plan's Parquet writer, which writes the file's
+ *   bytes to it rather than creating the file natively.
  * @param capturePartitionOffsets
  *   Whether to read the shuffle writer's partition offsets when the plan reaches the end of its
  *   output, for a plan rooted at a native shuffle writer with a local destination. Remote shuffle
@@ -94,6 +97,7 @@ class CometExecIterator(
     shuffleBlockIterators: Map[Int, CometShuffleBlockIterator] = Map.empty,
     taskFilePaths: Seq[String] = Seq.empty,
     shufflePartitionPusher: Option[ShufflePartitionPusher] = None,
+    outputStream: Option[HadoopFileOutput] = None,
     capturePartitionOffsets: Boolean = false,
     outputTypes: Seq[DataType] = Seq.empty)
     extends Iterator[ColumnarBatch]
@@ -163,6 +167,7 @@ class CometExecIterator(
       shufflePartitionPusher.foreach { pusher =>
         nativeLib.setShufflePartitionPusher(createdPlan, pusher)
       }
+      outputStream.foreach(output => nativeLib.setOutputStream(createdPlan, output))
       createdPlan
     } catch {
       case failure: Throwable =>
