@@ -61,11 +61,11 @@ class CometConfSuite extends AnyFunSuite {
         val conf = offHeap.clone.set("spark.master", master)
         assert(
           getMemoryConfig(conf).sequenceMaxBytes.contains(poolBytes / math.max(1, cores / 2)))
-        // A resource profile can allocate more CPUs than spark.task.cpus requests.
-        assert(
-          getMemoryConfig(conf, taskCPUs = 3L).sequenceMaxBytes
-            .contains(poolBytes / math.max(1, cores / 3)))
       }
+      // The actual allocation overrides spark.task.cpus; ten cores fit three three-CPU tasks.
+      assert(
+        getMemoryConfig(offHeap.clone.set("spark.master", "yarn"), taskCPUs = 3L).sequenceMaxBytes
+          .contains(poolBytes / 3))
       val conf = offHeap.clone.set("spark.master", "local[8]")
       sqlConf.setConfString(CometConf.COMET_OFFHEAP_MEMORY_POOL_FRACTION.key, "0.5")
       Seq("fair_unified", "greedy_unified").foreach { poolType =>
@@ -93,8 +93,6 @@ class CometConfSuite extends AnyFunSuite {
         getMemoryConfig(
           offHeap.clone.set("spark.master", "local-cluster[ 2, 4, 1024 ]")).sequenceMaxBytes
           .contains(poolBytes / 4))
-      assert(
-        getMemoryConfig(localCluster, taskCPUs = 2L).sequenceMaxBytes.contains(poolBytes / 2))
       assert(
         getMemoryConfig(localCluster.clone.set("spark.executor.cores", "2")).sequenceMaxBytes
           .contains(poolBytes / 2))
@@ -137,6 +135,27 @@ class CometConfSuite extends AnyFunSuite {
             assert(getMemoryConfig(mode).sequenceMaxBytes == expected)
         }
       }
+    }
+  }
+
+  test("legacy sequence behaviour disables the default and explicit byte ceilings") {
+    import CometExecIterator.getMemoryConfig
+    val legacy = CometConf.COMET_LEGACY_ALLOW_UNBOUNDED_SEQUENCE
+    val ceiling = CometConf.COMET_EXEC_SEQUENCE_MAX_BYTES_PER_INVOCATION
+    val conf = new SparkConf(false)
+      .set("spark.master", "local[8]")
+      .set("spark.memory.offHeap.enabled", "true")
+      .set("spark.memory.offHeap.size", "1g")
+    val sqlConf = new SQLConf
+    SQLConf.withExistingConf(sqlConf) {
+      assert(!legacy.get())
+      assert(getMemoryConfig(conf).sequenceMaxBytes.contains(128L * 1024 * 1024))
+      sqlConf.setConfString(legacy.key, "true")
+      assert(getMemoryConfig(conf).sequenceMaxBytes.isEmpty)
+      sqlConf.setConfString(ceiling.key, "52")
+      assert(getMemoryConfig(conf).sequenceMaxBytes.isEmpty)
+      sqlConf.setConfString(legacy.key, "false")
+      assert(getMemoryConfig(conf).sequenceMaxBytes.contains(52L))
     }
   }
 

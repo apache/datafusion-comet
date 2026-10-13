@@ -178,9 +178,9 @@ val COMET_LEGACY_FOO_BEHAVIOR: ConfigEntry[Boolean] =
 ```
 
 Naming follows the usual conventions: `spark.comet.legacy.` prefix, `camelCase` final segment, and
-a `COMET_LEGACY_*` Scala symbol. No legacy config exists yet, so the first one to land must also add
-the `CATEGORY_LEGACY` constant to `CometConf.scala` and a corresponding section to `configs.md`. The
-doc string must state which release changed the behavior and what the old behavior was, so that
+a `COMET_LEGACY_*` Scala symbol. Use `CATEGORY_LEGACY`, which routes these keys to the Legacy
+Configuration Settings section of `configs.md`. The doc string must state which release changed
+the behaviour and what the old behaviour was, so that
 `configs.md` is self-explanatory without cross-referencing the upgrade guide.
 
 The checklist for a behavior change:

@@ -67,6 +67,7 @@ object CometConf extends ShimCometConf {
   private val CATEGORY_ENABLE_EXEC = "enable_exec"
   private val CATEGORY_SHUFFLE = "shuffle"
   private val CATEGORY_TUNING = "tuning"
+  private val CATEGORY_LEGACY = "legacy"
   private val CATEGORY_TESTING = "testing"
 
   def register(conf: ConfigEntry[_]): Unit = {
@@ -591,13 +592,25 @@ object CometConf extends ShimCometConf {
           "standalone with unknown executor cores, the fallback is the whole pool limit; " +
           "set spark.executor.cores or this setting to choose a task ceiling. " +
           "On-heap test mode is unbounded unless explicitly configured. Set -1 to disable " +
-          "the ceiling; 0 permits no output bytes. Earlier results and concurrent calls do " +
+          "the ceiling; 0 permits no output bytes. This setting is ignored when " +
+          "spark.comet.legacy.allowUnboundedSequence is true. Earlier results and concurrent calls do " +
           "not consume this limit. Scalar invocations produce one list; subsequent scalar " +
           "broadcasts and copies of folded literals are outside this ceiling. This does not " +
           s"reserve pool memory or bound executor memory usage. $TUNING_GUIDE.")
       .bytesConf(ByteUnit.BYTE)
       .checkValue(v => v >= -1, "Must be -1 (unbounded) or a non-negative byte count")
       .createOptional
+
+  val COMET_LEGACY_ALLOW_UNBOUNDED_SEQUENCE: ConfigEntry[Boolean] =
+    conf("spark.comet.legacy.allowUnboundedSequence")
+      .category(CATEGORY_LEGACY)
+      .doc(
+        "When true, restores the pre-1.2.0 behaviour of native integral sequence by disabling " +
+          "its output byte ceiling, even when spark.comet.exec.sequence.maxBytesPerInvocation " +
+          "is explicitly set. Existing Spark per-row and Arrow batch element limits still " +
+          "apply. This config is deprecated and will be removed in a future major release.")
+      .booleanConf
+      .createWithDefault(false)
 
   val COMET_EXEC_AGGREGATE_SKIP_PARTIAL_ENABLED: ConfigEntry[Boolean] =
     conf(s"$COMET_EXEC_CONFIG_PREFIX.aggregate.skipPartial.enabled")

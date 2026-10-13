@@ -281,6 +281,11 @@ the limit. Lower `spark.comet.batchSize` to fit fewer sequences in an invocation
 that is too large on its own, or explicitly raise this setting. Byte units such as `64m` are accepted;
 `-1` disables the ceiling and `0` allows no output bytes.
 
+For compatibility with releases before 1.2.0, `spark.comet.legacy.allowUnboundedSequence=true`
+disables this byte ceiling even when a numeric limit is explicitly set. This deprecated boolean
+defaults to `false` and may be removed in a future major release. Existing Spark per-row and Arrow
+batch element limits still apply. See the [Upgrade Guide](../migration-guide.md).
+
 When the setting is absent in off-heap mode and the core count is known, the default is:
 
 ```text

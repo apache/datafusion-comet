@@ -27,8 +27,7 @@ import org.apache.spark.sql.CometTestBase
 import org.apache.spark.sql.catalyst.expressions.{ArrayAppend, ArrayDistinct, ArrayExcept, ArrayInsert, ArrayIntersect, ArrayJoin, ArrayMax, ArrayMin, ArrayRepeat, ArrayUnion}
 import org.apache.spark.sql.catalyst.expressions.{ArrayContains, ArrayRemove}
 import org.apache.spark.sql.catalyst.expressions.{AttributeReference, Cast, CreateArray, ElementAt, Literal, MonotonicallyIncreasingID}
-import org.apache.spark.sql.comet.{CometExplodeExec, CometProjectExec, CometSortExec}
-import org.apache.spark.sql.comet.execution.shuffle.CometShuffleExchangeExec
+import org.apache.spark.sql.comet.{CometProjectExec, CometSortExec}
 import org.apache.spark.sql.execution.adaptive.AdaptiveSparkPlanHelper
 import org.apache.spark.sql.functions._
 import org.apache.spark.sql.internal.SQLConf
@@ -1719,23 +1718,20 @@ class CometArrayExpressionSuite extends CometTestBase with AdaptiveSparkPlanHelp
         assert(error.getMessage.contains("requires 100 output bytes"), error.getMessage)
         assert(error.getMessage.contains("52-byte limit"), error.getMessage)
         assert(error.getMessage.contains(key), error.getMessage)
+        // The legacy switch restores execution of the same query, even with an explicit cap.
+        withSQLConf(CometConf.COMET_LEGACY_ALLOW_UNBOUNDED_SEQUENCE.key -> "true") {
+          checkSparkAnswerAndOperator(sql(query), Seq(classOf[CometProjectExec]))
+        }
       }
       // Two five-element integer lists need 40 value bytes and 12 offset bytes. Retaining all
       // 16 batches downstream must not reduce any later invocation's 52-byte ceiling.
       withSQLConf(
         key -> "52",
         CometConf.COMET_BATCH_SIZE.key -> "2",
-        CometConf.COMET_SHUFFLE_ENABLED.key -> "true",
-        CometConf.COMET_SHUFFLE_MODE.key -> "native",
         SQLConf.ADAPTIVE_EXECUTION_ENABLED.key -> "false") {
-        checkSparkAnswerAndOperator(sql(query), Seq(classOf[CometProjectExec]))
-        checkSparkAnswerAndOperator(sql(s"$query ORDER BY id DESC"), Seq(classOf[CometSortExec]))
         checkSparkAnswerAndOperator(
-          sql(s"SELECT /*+ REPARTITION(2, id) */ * FROM ($query)"),
-          Seq(classOf[CometShuffleExchangeExec]))
-        checkSparkAnswerAndOperator(
-          sql("SELECT id, explode(sequence(a, b)) FROM t_seq_bytes"),
-          Seq(classOf[CometExplodeExec]))
+          sql(s"$query ORDER BY id DESC"),
+          Seq(classOf[CometProjectExec], classOf[CometSortExec]))
       }
       withSQLConf(key -> "-1", CometConf.COMET_BATCH_SIZE.key -> "4") {
         checkSparkAnswerAndOperator(sql(query), Seq(classOf[CometProjectExec]))

@@ -61,9 +61,7 @@ fn criterion_benchmark(c: &mut Criterion) {
     // here, so this measures the successful guard without timing error formatting.
     for (label, elems, null_every) in [
         ("short", 1, None),
-        ("long", 365, None),
         ("sparse_nulls", 365, Some(10)),
-        ("dense_nulls", 365, Some(2)),
         ("all_nulls", 365, Some(1)),
     ] {
         let args = args_with_len(elems, null_every);
@@ -76,13 +74,13 @@ fn criterion_benchmark(c: &mut Criterion) {
         });
     }
 
-    // Fixed guard overhead is most visible when scalar inputs produce just one short list.
-    for elems in [1i64, 5] {
+    // Fixed guard overhead is most visible when scalar inputs produce one single-element list.
+    {
         let args = vec![
             ColumnarValue::Scalar(ScalarValue::Int64(Some(0))),
-            ColumnarValue::Scalar(ScalarValue::Int64(Some(elems - 1))),
+            ColumnarValue::Scalar(ScalarValue::Int64(Some(0))),
         ];
-        group.bench_function(format!("limited_all_scalar_one_list_{elems}_elems"), |b| {
+        group.bench_function("limited_all_scalar_one_list_1_elems", |b| {
             b.iter(|| {
                 black_box(
                     spark_sequence_with_limit(&args, &return_type, Some(32 * 1024 * 1024)).unwrap(),
@@ -90,18 +88,6 @@ fn criterion_benchmark(c: &mut Criterion) {
             })
         });
     }
-    {
-        let mut args = args_with_len(1, None);
-        args.push(ColumnarValue::Scalar(ScalarValue::Int64(Some(1))));
-        group.bench_function("limited_scalar_step_1_elems", |b| {
-            b.iter(|| {
-                black_box(
-                    spark_sequence_with_limit(&args, &return_type, Some(32 * 1024 * 1024)).unwrap(),
-                )
-            })
-        });
-    }
-
     // Short sequences: per-row overhead dominates.
     for elems in [1i64, 2, 5] {
         let args = args_with_len(elems, None);

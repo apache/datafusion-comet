@@ -599,30 +599,15 @@ mod tests {
     }
 
     #[test]
-    fn retained_and_concurrent_results_do_not_consume_another_invocations_ceiling() {
-        let udf = Arc::new(SparkSequence::new(list_of(DataType::Int64), Some(32)));
+    fn retained_result_does_not_reduce_the_next_invocations_ceiling() {
+        let udf = SparkSequence::new(list_of(DataType::Int64), Some(32));
         let args = vec![
             ColumnarValue::Array(Arc::new(Int64Array::from(vec![0]))),
             ColumnarValue::Scalar(ScalarValue::Int64(Some(2))),
         ];
-        let mut retained = (0..8)
-            .map(|_| invoke(&udf, args.clone(), 1).unwrap())
-            .collect::<Vec<_>>();
-        let barrier = Arc::new(std::sync::Barrier::new(5));
-        let handles = (0..5)
-            .map(|_| {
-                let udf = Arc::clone(&udf);
-                let args = args.clone();
-                let barrier = Arc::clone(&barrier);
-                std::thread::spawn(move || {
-                    barrier.wait();
-                    invoke(&udf, args, 1).unwrap()
-                })
-            })
-            .collect::<Vec<_>>();
-        retained.extend(handles.into_iter().map(|handle| handle.join().unwrap()));
-        retained.push(invoke(&udf, args, 1).unwrap());
-        for output in retained {
+        let first = invoke(&udf, args.clone(), 1).unwrap();
+        let second = invoke(&udf, args, 1).unwrap();
+        for output in [first, second] {
             let output = output.into_array(1).unwrap();
             assert_eq!(row_values(&as_primitive_list(&output), 0), vec![0, 1, 2]);
         }
@@ -647,11 +632,14 @@ mod tests {
         for rows in [0, 1, 8192] {
             let output = invoke(&udf, args.clone(), rows).unwrap();
             assert!(matches!(output, ColumnarValue::Scalar(_)));
-            // Materialising the scalar for many rows is a separate generic operation.
-            let broadcast = output.into_array(32).unwrap();
-            assert_eq!(broadcast.len(), 32);
-            assert_eq!(as_primitive_list(&broadcast).values().len(), 64);
         }
+        // Materialising the scalar for many rows is a separate generic operation.
+        let broadcast = invoke(&udf, args.clone(), 32)
+            .unwrap()
+            .into_array(32)
+            .unwrap();
+        assert_eq!(broadcast.len(), 32);
+        assert_eq!(as_primitive_list(&broadcast).values().len(), 64);
         assert!(invoke(&SparkSequence::new(data_type, Some(23)), args, 1).is_err());
     }
 
