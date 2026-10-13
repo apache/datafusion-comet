@@ -48,6 +48,8 @@ and skips the remaining steps. Otherwise it:
 - Appends `CometSparkSessionExtensions` to `spark.sql.extensions`, unless it is already listed.
 - Sets `spark.sql.cache.serializer` to Comet's `ArrowCachedBatchSerializer` when
   `spark.comet.exec.inMemoryCache.enabled=true`, unless the application has chosen a different serializer.
+  It leaves Spark's serializer in place where Comet could not scan its format natively or Kryo would
+  reject it; see [In-Memory Cache](../user-guide/latest/in-memory-cache.md).
 - Registers `CometSource` with Spark's metrics system and adds `CometMetricsListener` to
   `spark.sql.queryExecutionListeners` when `spark.comet.metrics.enabled=true`.
 - Logs a warning for settings that are likely to cause problems, such as an unset `spark.executor.memoryOverhead`.

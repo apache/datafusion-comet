@@ -245,7 +245,8 @@ SELECT get_json_object('[[[1,2],[]]]', '$[*][*][*]'), get_json_object('[[[1,2]]]
 
 -- Spark 3.5+ rejects numbers whose digit count exceeds Jackson's default
 -- 1000-digit limit, including values the path never selects. Spark 3.4's
--- Jackson version does not impose this limit.
+-- default Jackson version (2.14) does not impose this limit, but Comet follows
+-- whichever Jackson version is on the classpath.
 query
 SELECT get_json_object(concat('[{"a":1,"b":', repeat('9', 1000), '}]'), '$[*].a'),
        get_json_object(concat('[{"a":1,"b":', repeat('9', 1001), '}]'), '$[*].a'),
