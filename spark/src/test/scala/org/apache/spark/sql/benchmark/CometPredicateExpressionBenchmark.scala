@@ -30,8 +30,8 @@ import org.apache.comet.{CometConf, ExtendedExplainInfo}
  * benchmark-org.apache.spark.sql.benchmark.CometPredicateExpressionBenchmark` Results will be
  * written to "spark/benchmarks/CometPredicateExpressionBenchmark -**results.txt". Pass `--
  * atleastnnonnulls` to benchmark `DataFrame.na.drop`. Add `--focus-double` for the 32-column,
- * half-threshold, full-consumer 0/5% NaN control, and `--reverse-modes` to reverse mode order in
- * an independent run.
+ * half-threshold controls with count-only and full-column consumers, 0/50% NULL and 0/5% NaN. Add
+ * `--reverse-modes` to reverse mode order in an independent run.
  */
 object CometPredicateExpressionBenchmark extends CometBenchmarkBase {
 
@@ -54,7 +54,7 @@ object CometPredicateExpressionBenchmark extends CometBenchmarkBase {
   def atLeastNNonNullsBenchmark(rows: Int, focusDouble: Boolean, reverseModes: Boolean): Unit = {
     for (kind <- (if (focusDouble) Seq("double") else Seq("double", "string"));
       width <- (if (focusDouble) Seq(32) else Seq(4, 32));
-      missing <- (if (focusDouble) Seq(0) else Seq(0, 50));
+      missing <- Seq(0, 50);
       nanPercent <- (if (kind == "double") Seq(0, 5) else Seq(0))) {
       withTempPath { dir =>
         val fields = (0 until width).map { i =>
@@ -74,7 +74,7 @@ object CometPredicateExpressionBenchmark extends CometBenchmarkBase {
         val modes = if (reverseModes) defaultModes.reverse else defaultModes
         for (threshold <- (if (focusDouble) Seq(width / 2) else Seq(1, width / 2, width));
           consumed <-
-            (if (focusDouble) Seq(width)
+            (if (focusDouble) Seq(0, width)
              else Seq(0, 1, math.min(4, width), width).distinct)) {
           val benchmark = new Benchmark(
             s"na.drop: $width $kind columns, $missing% NULL, $nanPercent% NaN, " +
