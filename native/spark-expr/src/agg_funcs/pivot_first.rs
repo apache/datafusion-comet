@@ -449,12 +449,15 @@ impl<T: ArrowPrimitiveType> PivotFirstGroupsAccumulator<T> {
     /// Removes the cells of the groups that `emit_to` covers, returning their values and which of
     /// them are set. The remaining groups move to the front.
     fn take_cells(&mut self, emit_to: EmitTo) -> (Vec<T::Native>, BooleanBuffer) {
-        let num_cells = match emit_to {
-            EmitTo::All => self.values.len(),
-            EmitTo::First(n) => n * self.num_slots,
+        // `take_needed` copies out whichever part is smaller, so emitting a few groups does not
+        // hand the output the buffer that still holds all the others. It counts cells, and each
+        // group has `num_slots` of them.
+        let cells = match emit_to {
+            EmitTo::All => EmitTo::All,
+            EmitTo::First(n) => EmitTo::First(n * self.num_slots),
         };
-        let rest = self.values.split_off(num_cells);
-        let values = std::mem::replace(&mut self.values, rest);
+        let values = cells.take_needed(&mut self.values);
+        let num_cells = values.len();
         let is_set = self.is_set.finish();
         self.is_set
             .append_buffer(&is_set.slice(num_cells, is_set.len() - num_cells));
@@ -1088,6 +1091,34 @@ mod tests {
         assert_eq!(state[0].as_primitive::<Int32Type>().value(0), 3);
         assert_eq!(state[1].as_primitive::<Int32Type>().value(0), 4);
         assert_eq!(acc.evaluate(EmitTo::All).unwrap().len(), 0);
+    }
+
+    #[test]
+    fn grouped_emit_first_copies_out_only_the_emitted_groups() {
+        // The output of a partial emit must not hold the buffer that keeps the other groups.
+        let num_groups = 1000;
+        let mut acc = grouped_acc(DataType::Int32, &[s("a"), s("b")]);
+        acc.update_batch(
+            &[
+                Arc::new(StringArray::from(vec!["b"; num_groups])),
+                Arc::new(Int32Array::from_iter_values(0..num_groups as i32)),
+            ],
+            &(0..num_groups).collect::<Vec<_>>(),
+            None,
+            num_groups,
+        )
+        .unwrap();
+        let lists = acc.evaluate(EmitTo::First(10)).unwrap();
+        let cells = lists.as_list::<i32>().values().as_primitive::<Int32Type>();
+        assert_eq!(cells.len(), 20);
+        assert_eq!(
+            cells.values().inner().capacity(),
+            cells.len() * size_of::<i32>()
+        );
+        assert_eq!(
+            int32_lists(&acc.evaluate(EmitTo::All).unwrap())[0],
+            vec![None, Some(10)]
+        );
     }
 
     #[test]
