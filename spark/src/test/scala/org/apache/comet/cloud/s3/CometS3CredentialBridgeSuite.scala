@@ -151,6 +151,7 @@ class CometS3CredentialBridgeSuite
       "s3.secret-access-key" -> password,
       "s3.endpoint" -> minioContainer.getS3URL,
       "s3.region" -> "us-east-1",
+      "client.region" -> "us-east-1",
       "s3.path-style-access" -> "true",
       "comet.test-tenant-id" -> "tenant-A")
     val warehouse = s"s3a://$testBucketName/warehouse-rest-spi"
