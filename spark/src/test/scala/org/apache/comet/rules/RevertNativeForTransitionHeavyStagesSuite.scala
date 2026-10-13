@@ -23,8 +23,10 @@ import java.util.concurrent.{CountDownLatch, TimeUnit}
 import java.util.concurrent.atomic.AtomicReference
 
 import org.apache.spark.SparkConf
+import org.apache.spark.rdd.RDD
 import org.apache.spark.sql.{CometTestBase, Row, SaveMode}
-import org.apache.spark.sql.catalyst.expressions.{AttributeReference, Literal}
+import org.apache.spark.sql.catalyst.InternalRow
+import org.apache.spark.sql.catalyst.expressions.{Attribute, AttributeReference, Literal}
 import org.apache.spark.sql.catalyst.expressions.aggregate.{Final, Partial}
 import org.apache.spark.sql.comet._
 import org.apache.spark.sql.comet.execution.arrow.ArrowCachedBatchSerializer
@@ -47,6 +49,20 @@ private case class AliasingFallbackCometExec(
     child: SparkPlan)
     extends CometExec
     with UnaryExecNode {
+  override protected def withNewChildInternal(newChild: SparkPlan): SparkPlan =
+    copy(child = newChild)
+}
+
+/**
+ * Supports both output formats over a columnar child, as `ArrowEvalPythonExec` does on Spark 4.2.
+ * Tests only plan it.
+ */
+private case class BothFormatsExec(child: SparkPlan) extends UnaryExecNode {
+  override def output: Seq[Attribute] = child.output
+  override def supportsColumnar: Boolean = child.supportsColumnar
+  override def supportsRowBased: Boolean = true
+  override protected def doExecute(): RDD[InternalRow] =
+    throw new UnsupportedOperationException("BothFormatsExec is only planned")
   override protected def withNewChildInternal(newChild: SparkPlan): SparkPlan =
     copy(child = newChild)
 }
@@ -864,6 +880,43 @@ class RevertNativeForTransitionHeavyStagesSuite extends CometTestBase {
             s"the reverted result stage must stay columnar:\n$resultStage")
         } finally {
           cached.unpersist()
+        }
+      }
+    }
+  }
+
+  for (adaptive <- Seq(false, true)) {
+    test(
+      s"transition-heavy revert keeps a result root that supports both formats: AQE=$adaptive") {
+      withSQLConf(
+        SQLConf.ADAPTIVE_EXECUTION_ENABLED.key -> adaptive.toString,
+        CometConf.COMET_EXEC_TRANSITION_REVERT_ENABLED.key -> "true",
+        CometConf.COMET_EXEC_TRANSITION_REVERT_MAX_TRANSITIONS.key -> "0") {
+        withParquetTable((0 until 10).map(i => (i, i % 10)), "tbl") {
+          val scan = createSparkPlan("SELECT _1, _2 FROM tbl")
+            .collectFirst { case node: FileSourceScanExec => node }
+            .getOrElse(fail("expected a Spark scan"))
+          assert(scan.supportsColumnar, s"test requires a vectorized Spark scan:\n$scan")
+          val rule = RevertNativeForTransitionHeavyStages(spark)
+
+          // Reverting the native filter would leave a root that outputs only rows, while the
+          // consumer may read columnar batches, so the stage must stay as it is.
+          val overFilter = BothFormatsExec(
+            CometSparkToColumnarExec(CometNativeColumnarToRowExec(cometFilter(scan))))
+          assert(overFilter.supportsColumnar && overFilter.supportsRowBased)
+          assert(rule.countTransitions(overFilter) == 1)
+          assert(!rule.revertToSpark(overFilter).supportsColumnar)
+          val kept = rule(overFilter)
+          assert(kept eq overFilter, s"the stage must not be reverted:\n$kept")
+
+          // Over the columnar scan the reverted root still supports both formats, so it needs no
+          // transition on top.
+          val overScan = BothFormatsExec(CometSparkToColumnarExec(ColumnarToRowExec(scan)))
+          assert(rule.countTransitions(overScan) == 1)
+          val reverted = rule(overScan)
+          assert(
+            reverted == BothFormatsExec(scan),
+            s"the reverted root must keep both formats:\n$reverted")
         }
       }
     }

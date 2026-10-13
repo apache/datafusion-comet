@@ -82,9 +82,21 @@ case class RevertNativeForTransitionHeavyStages(session: SparkSession, wholePlan
    * does, Spark marks a cached `AdaptiveSparkPlanExec` columnar and AQE plans its final stage to
    * output columnar batches. Only then does Spark's transition insertion leave a columnar-only
    * root; when rows are wanted it puts a columnar-to-row transition on top.
+   *
+   * Spark leaves a root that supports both formats as it is in either case, so such a root, for
+   * example `ArrowEvalPythonExec` over a columnar child on Spark 4.2, does not say which format
+   * its consumer reads. No transition provides both, so that stage is reverted only if the
+   * reverted root supports both formats too.
    */
   private def revertResultStageIfNeeded(plan: SparkPlan): Option[SparkPlan] =
-    revertStageIfNeeded(plan, outputColumnar = plan.supportsColumnar && !plan.supportsRowBased)
+    if (plan.supportsColumnar && plan.supportsRowBased) {
+      // Unlike row output, columnar output adds no transition over a reverted root that
+      // supports both formats.
+      revertStageIfNeeded(plan, outputColumnar = true)
+        .filter(reverted => reverted.supportsColumnar && reverted.supportsRowBased)
+    } else {
+      revertStageIfNeeded(plan, outputColumnar = plan.supportsColumnar)
+    }
 
   /**
    * Reverts the stage below a shuffle if needed and returns the shuffle over the reverted stage.
