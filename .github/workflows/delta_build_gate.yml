@@ -15,12 +15,15 @@
 # specific language governing permissions and limitations
 # under the License.
 
-# Build-gate verification for the optional contrib/delta integration.
+# Build-gate verification for the Delta split of the native library and the JVM build.
 #
 # A single cheap job that runs dev/verify-contrib-delta-gate.sh, which proves:
-#   - the DEFAULT cargo / mvn / dylib build carries ZERO Delta surface
-#     (no comet-contrib-delta / delta_kernel in the cargo tree, no io.delta in
-#     the effective pom, no Delta symbols in libcomet); and
+#   - the kernel-backed `comet-contrib-delta` crate stays out of every shipped
+#     build (no comet-contrib-delta / delta_kernel in the default or
+#     --no-default-features cargo tree, no io.delta in the effective pom, no
+#     contrib symbols in libcomet), while the small default-on `delta` feature
+#     (deletion-vector decoding) is deliberately in and its symbol footprint is
+#     pinned; and
 #   - the gated build (`--features contrib-delta` / `-Pcontrib-delta`) compiles
 #     and pulls the right delta-spark per Spark profile.
 #
