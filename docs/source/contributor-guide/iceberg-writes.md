@@ -263,10 +263,11 @@ Points where Comet adapts iceberg-rust to match iceberg-java:
   reaches the writer. `DictionaryChooser` (`iceberg_dictionary.rs`) replays parquet-mr's accounting
   over those rows and turns dictionary encoding off for the columns parquet-mr would write plain.
   It reads only the columns there is a choice for, one at a time, and walks each lazily only as far
-  as its first page, so beyond the held rows it keeps no more than one column's dictionary. The
-  accounting follows `FallbackValuesWriter`, `DictionaryValuesWriter` and
-  `RunLengthBitPackingHybridEncoder`, and its tests pin answers recorded from parquet-mr itself. The
-  held rows then go through `RowPacer`, so the roll grid does not move.
+  as its first page. It collects the dictionaries in one set for each kind of value, emptied and
+  reused from one column to the next, so beyond the held rows it keeps no more than the largest
+  dictionary of each kind. The accounting follows `FallbackValuesWriter`, `DictionaryValuesWriter`
+  and `RunLengthBitPackingHybridEncoder`, and its tests pin answers recorded from parquet-mr itself.
+  The held rows then go through `RowPacer`, so the roll grid does not move.
 - **Field ids and casting.** `decorate_batch_with_field_ids` casts each batch to the
   field-id-annotated Arrow schema derived from the Iceberg schema, with `safe: false`, so a type
   mismatch fails the task instead of writing NULLs.
@@ -439,6 +440,7 @@ the writer: run the write suites and the Iceberg Spark tests. The pin policy is 
 | `IcebergWriteProtoTranslationSuite`                              | Translation of properties into `IcebergParquetWriteSettings` and the writer mode.                                                                                                                                              |
 | Rust tests in `iceberg_write.rs` and in `iceberg_partition_*.rs` | File rolling on the 1000-row grid, fanout order, clustered input checks, cleanup guard, manifest round trip, memory reservation, partition path rendering, partition values past `chrono`'s calendar.                          |
 | Rust tests in `iceberg_dictionary.rs`                            | The per-column dictionary choice against answers recorded from parquet-mr, including columns either side of its cut-off.                                                                                                       |
+| `iceberg_dictionary_chooser` benchmark in `native/core/benches`  | The time one partition's dictionary choice takes, over primitive, struct, array, map and nested columns.                                                                                                                       |
 | `CometIcebergWriteBenchmark`                                     | Native versus iceberg-java for unpartitioned, clustered, fanout and copy-on-write delete writes. It checks each arm's plan before timing it.                                                                                   |
 
 The Comet suites run against the Iceberg version each Spark profile pins in `spark/pom.xml`: 1.5.2

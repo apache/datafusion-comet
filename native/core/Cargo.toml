@@ -164,5 +164,9 @@ name = "array_element_append"
 harness = false
 
 [[bench]]
+name = "iceberg_dictionary_chooser"
+harness = false
+
+[[bench]]
 name = "parquet_timestamp_conversion"
 harness = false
