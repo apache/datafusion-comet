@@ -436,15 +436,8 @@ case class CometScanRule(session: SparkSession)
             scanExec,
             s"Native Text scan requires ${COMET_EXEC_ENABLED.key} to be enabled")
         }
-        // input_file_name/_block_start/_block_length read a thread-local that Spark's FileScanRDD
-        // sets; the native DataFusion scan does not, so they would return "" / -1. Reuse the shared
-        // helper the Parquet gate uses so the two cannot drift.
-        if (CometScanRule.readsInputFileBlock(plan)) {
-          return withFallbackReason(
-            scanExec,
-            "Native Text scan is not compatible with input_file_name, " +
-              "input_file_block_start, or input_file_block_length")
-        }
+        // input_file_name/_block_start/_block_length are already handled by the blanket V2 gate
+        // near the top of transformV2Scan, so no Text-specific check is needed here.
         val fallbackReasons = new ListBuffer[String]()
         val schemaSupported =
           CometBatchScanExec.isSchemaSupported(scan.readDataSchema, fallbackReasons)

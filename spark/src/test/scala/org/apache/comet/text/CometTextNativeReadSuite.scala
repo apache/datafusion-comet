@@ -82,9 +82,8 @@ class CometTextNativeReadSuite extends CometTestBase {
   test("native text read - fallback for input_file_name") {
     withTextConf {
       val df = spark.read.text(TEST_TEXT_PATH).withColumn("f", input_file_name())
-      checkSparkAnswerAndFallbackReason(
-        df,
-        "Native Text scan is not compatible with input_file_name")
+      // The blanket V2 input_file_name gate (shared by all native V2 scans) emits this.
+      checkSparkAnswerAndFallbackReason(df, "is not compatible with input_file_name")
     }
   }
 
