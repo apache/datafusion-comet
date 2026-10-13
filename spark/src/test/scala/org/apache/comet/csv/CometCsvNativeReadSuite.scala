@@ -23,10 +23,12 @@ import java.nio.charset.StandardCharsets
 import java.nio.file.Files
 
 import org.apache.spark.sql.CometTestBase
+import org.apache.spark.sql.comet.CometCsvNativeScanExec
 import org.apache.spark.sql.internal.SQLConf
 import org.apache.spark.sql.types.{IntegerType, StringType, StructType, TimestampType}
 
-import org.apache.comet.CometConf
+import org.apache.comet.{CometConf, ExtendedExplainInfo}
+import org.apache.comet.CometSparkSessionExtensions.isSpark41Plus
 
 class CometCsvNativeReadSuite extends CometTestBase {
   private val TEST_CSV_PATH_NO_HEADER = "src/test/resources/test-data/csv-test-1.csv"
@@ -116,6 +118,61 @@ class CometCsvNativeReadSuite extends CometTestBase {
             "Comet's native CSV reader parses timestamps in UTC, but the CSV timezone is " +
               "Asia/Tokyo")
         }
+      }
+    }
+  }
+
+  test("Native csv read - TIME columns fall back") {
+    assume(isSpark41Plus, "TimeType requires Spark 4.1+")
+    withTempDir { dir =>
+      Files.write(
+        dir.toPath.resolve("part-0.csv"),
+        "t\n12:34:56\n".getBytes(StandardCharsets.UTF_8))
+      withSQLConf(
+        "spark.sql.timeType.enabled" -> "true",
+        CometConf.COMET_CSV_V2_NATIVE_ENABLED.key -> "true",
+        SQLConf.USE_V1_SOURCE_LIST.key -> "") {
+        // Spark 4.1's CSV reader rejects TIME when it reads the file, and Spark 4.2 parses it with
+        // the `timeFormat` option, which the native reader does not take. Either way the scan has
+        // to stay in Spark. Checked on the plan because Spark 4.1 has no answer to compare with.
+        val plan = spark.read
+          .option("header", "true")
+          .schema("t TIME")
+          .csv(dir.toString)
+          .queryExecution
+          .executedPlan
+        assert(plan.collectFirst { case s: CometCsvNativeScanExec => s }.isEmpty, plan)
+        val reasons = new ExtendedExplainInfo().getFallbackReasons(plan)
+        assert(reasons.exists(_.contains("Unsupported t of type TimeType(6)")), reasons)
+      }
+    }
+  }
+
+  // https://github.com/apache/datafusion-comet/issues/6707. These functions read
+  // InputFileBlockHolder, which the native CSV scan does not set.
+  test("Native csv read - input_file_name falls back to Spark's reader") {
+    withTempPath { dir =>
+      spark.range(30).repartition(3).write.csv(dir.toString)
+      withSQLConf(
+        CometConf.COMET_CSV_V2_NATIVE_ENABLED.key -> "true",
+        SQLConf.USE_V1_SOURCE_LIST.key -> "") {
+        val read = spark.read.schema("id LONG").csv(dir.toString)
+        val df = read.selectExpr(
+          "input_file_name()",
+          "input_file_block_start()",
+          "input_file_block_length()",
+          "id")
+        val (_, plan) = checkSparkAnswerAndFallbackReason(
+          df,
+          "Native V2 scan is not compatible with input_file_name")
+        assert(
+          collect(plan) { case s: CometCsvNativeScanExec => s }.isEmpty,
+          s"Expected Spark's CSV reader but found CometCsvNativeScanExec. Plan:\n$plan")
+        // Without these functions the scan stays native
+        val (_, nativePlan) = checkSparkAnswer(read.where("id >= 0"))
+        assert(
+          collect(nativePlan) { case s: CometCsvNativeScanExec => s }.nonEmpty,
+          s"Expected CometCsvNativeScanExec. Plan:\n$nativePlan")
       }
     }
   }

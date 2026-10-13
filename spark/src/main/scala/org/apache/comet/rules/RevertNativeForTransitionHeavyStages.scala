@@ -23,7 +23,8 @@ import org.apache.spark.internal.Logging
 import org.apache.spark.sql.SparkSession
 import org.apache.spark.sql.catalyst.expressions.aggregate.{Final, Partial, PartialMerge}
 import org.apache.spark.sql.catalyst.rules.Rule
-import org.apache.spark.sql.comet.{CometColumnarToRowExec, CometExec, CometHashAggregateExec, CometIcebergNativeScanExec, CometLocalTopKExec, CometNativeColumnarToRowExec, CometNativeScanExec, CometSparkToColumnarExec}
+import org.apache.spark.sql.comet.{CometBaseAggregateExec, CometColumnarToRowExec, CometExec, CometNativeColumnarToRowExec, CometSparkToColumnarExec}
+import org.apache.spark.sql.comet.execution.shuffle.{CometColumnarShuffle, CometNativeShuffle, CometShuffleExchangeExec}
 import org.apache.spark.sql.execution.{ColumnarToRowExec, ColumnarToRowTransition, RowToColumnarExec, SparkPlan}
 import org.apache.spark.sql.execution.adaptive.QueryStageExec
 import org.apache.spark.sql.execution.exchange.{BroadcastExchangeLike, ShuffleExchangeLike}
@@ -62,32 +63,66 @@ case class RevertNativeForTransitionHeavyStages(session: SparkSession, wholePlan
     plan match {
       case _: BroadcastExchangeLike => plan
       case exchange: ShuffleExchangeLike =>
-        revertStageIfNeeded(exchange.child, exchange.supportsColumnar)
-          .map(reverted => exchange.withNewChildren(Seq(reverted)))
-          .getOrElse(plan)
+        revertShuffleStageIfNeeded(exchange).getOrElse(plan)
       case _ =>
-        // Result stage: its output is collected as rows, so no consumer requires columnar input
-        // and the reverted stage needs no trailing R2C.
+        // Result stage: its output is collected as rows.
         revertStageIfNeeded(plan, outputColumnar = false).getOrElse(plan)
     }
   }
 
   private def applyForNonAQE(plan: SparkPlan): SparkPlan = {
     val withRevertedStages = plan.transformUp { case exchange: ShuffleExchangeLike =>
-      revertStageIfNeeded(exchange.child, exchange.supportsColumnar)
-        .map(reverted => exchange.withNewChildren(Seq(reverted)))
-        .getOrElse(exchange)
+      revertShuffleStageIfNeeded(exchange).getOrElse(exchange)
     }
     revertStageIfNeeded(withRevertedStages, outputColumnar = false)
       .getOrElse(withRevertedStages)
   }
 
   /**
-   * Reverts the stage if C2R count exceeds threshold. Wraps in R2C if exchange needs columnar.
+   * Reverts the stage below a shuffle if needed and returns the shuffle over the reverted stage.
+   * A native shuffle over rows that `spark.comet.convert.shuffleInput.enabled` converted loses
+   * the conversion with the rest of the stage, so it goes back to the JVM columnar shuffle that
+   * the conversion replaced, which reads the stage's rows. Any other native shuffle consumes
+   * Arrow-backed Comet vectors, so the reverted stage is bridged back to them.
+   */
+  private def revertShuffleStageIfNeeded(exchange: ShuffleExchangeLike): Option[SparkPlan] =
+    exchange match {
+      case s: CometShuffleExchangeExec
+          if s.shuffleType == CometNativeShuffle && convertsSparkRows(s.child) =>
+        revertStageIfNeeded(s.child, s.supportsColumnar).map { reverted =>
+          val columnar = s.copy(child = reverted, shuffleType = CometColumnarShuffle)
+          columnar.copyTagsFrom(s)
+          columnar
+        }
+      case _ =>
+        val outputArrow = exchange match {
+          case comet: CometShuffleExchangeExec => comet.shuffleType == CometNativeShuffle
+          case _ => false
+        }
+        revertStageIfNeeded(exchange.child, exchange.supportsColumnar, outputArrow)
+          .map(reverted => exchange.withNewChildren(Seq(reverted)))
+    }
+
+  /**
+   * Whether `plan` is the conversion that `spark.comet.convert.shuffleInput.enabled` puts over a
+   * Spark operator. A Comet transition directly under a `CometSparkToColumnarExec` is a stacked
+   * bridge that the revert strips and then restores for a native shuffle, not that conversion.
+   */
+  private def convertsSparkRows(plan: SparkPlan): Boolean = plan match {
+    case conversion: CometSparkToColumnarExec =>
+      !conversion.child.isInstanceOf[CometNativeColumnarToRowExec] &&
+      !conversion.child.isInstanceOf[CometColumnarToRowExec]
+    case _ => false
+  }
+
+  /**
+   * Reverts the stage if C2R count exceeds threshold, restoring the stage's output format when
+   * the reverted root does not satisfy it.
    */
   private def revertStageIfNeeded(
       stagePlan: SparkPlan,
-      outputColumnar: Boolean): Option[SparkPlan] = {
+      outputColumnar: Boolean,
+      outputArrow: Boolean = false): Option[SparkPlan] = {
     val transitionCount = countTransitions(stagePlan)
     if (transitionCount <= maxTransitions) return None
 
@@ -101,11 +136,27 @@ case class RevertNativeForTransitionHeavyStages(session: SparkSession, wholePlan
     val reason =
       s"Stage reverted: $transitionCount C2R transitions exceed threshold $maxTransitions"
 
-    val reverted = revertToSpark(stagePlan)
-    val result = if (outputColumnar && !reverted.supportsColumnar) {
-      RowToColumnarExec(withFallbackReason(reverted, reason))
+    val reverted =
+      try {
+        revertToSpark(stagePlan)
+      } catch {
+        case e: CometExec.InvalidSparkFallbackException =>
+          logWarning(
+            "Skipping transition-heavy stage reversion because a Comet operator could not " +
+              s"restore its Spark plan: ${e.getMessage}")
+          return None
+      }
+    val revertedWithReason = withFallbackReason(reverted, reason)
+    val result = if (outputArrow) {
+      // Native shuffle consumes Arrow-backed Comet vectors, not arbitrary Spark columnar
+      // batches. This bridge converts both row-based and vectorized Spark fallback roots.
+      CometSparkToColumnarExec(revertedWithReason)
+    } else if (outputColumnar && !reverted.supportsColumnar) {
+      RowToColumnarExec(revertedWithReason)
+    } else if (!outputColumnar && reverted.supportsColumnar) {
+      ColumnarToRowExec(revertedWithReason)
     } else {
-      withFallbackReason(reverted, reason)
+      revertedWithReason
     }
     Some(result)
   }
@@ -121,13 +172,13 @@ case class RevertNativeForTransitionHeavyStages(session: SparkSession, wholePlan
   private def hasUnsafeMixedAggregateAtStageBoundary(stagePlan: SparkPlan): Boolean = {
     def reachesBoundaryBeforeAggregate(plan: SparkPlan): Boolean = plan match {
       case _ if isStageBoundary(plan) => true
-      case _: CometHashAggregateExec => false
+      case _: CometBaseAggregateExec => false
       case _ => plan.children.exists(reachesBoundaryBeforeAggregate)
     }
 
     def visit(plan: SparkPlan): Boolean = plan match {
       case _ if isStageBoundary(plan) => false
-      case aggregate: CometHashAggregateExec
+      case aggregate: CometBaseAggregateExec
           if !QueryPlanSerde
             .allAggsSupportNativePartialToSparkFinal(aggregate.aggregateExpressions) ||
             QueryPlanSerde
@@ -146,16 +197,31 @@ case class RevertNativeForTransitionHeavyStages(session: SparkSession, wholePlan
   }
 
   /**
-   * Like `transformDown`, never descends stage-boundary children.
+   * Like `transformDown`, never descends stage-boundary children. If the rule rewrites the
+   * current node, re-apply it to the result so stacked transitions such as
+   * `CometSparkToColumnarExec(CometNativeColumnarToRowExec(x))` are fully unwrapped before
+   * children are visited. Spark's `transformDown` does not do this; leaving the inner C2R in
+   * place later calls `CometNativeColumnarToRowExec.withNewChildren` with a reverted row-based
+   * child, which asserts `child.supportsColumnar`.
+   *
+   * A rewrite can itself be the stage boundary. Unwrapping a transition that sits directly on a
+   * shuffle yields that shuffle, and descending into it strips transitions in the next stage.
+   * `transformStageUp` and `insertTransitions` do not cross the exchange, so those transitions
+   * would not be restored (#6152). Return the boundary unchanged.
    */
   private def transformStageDown(plan: SparkPlan)(
       rule: PartialFunction[SparkPlan, SparkPlan]): SparkPlan = {
     val transformed = rule.applyOrElse(plan, identity[SparkPlan])
-    val newChildren = transformed.children.map { child =>
-      if (isStageBoundary(child)) child else transformStageDown(child)(rule)
+    if (transformed ne plan) {
+      if (isStageBoundary(transformed)) transformed
+      else transformStageDown(transformed)(rule)
+    } else {
+      val newChildren = transformed.children.map { child =>
+        if (isStageBoundary(child)) child else transformStageDown(child)(rule)
+      }
+      if (newChildren == transformed.children) transformed
+      else transformed.withNewChildren(newChildren)
     }
-    if (newChildren == transformed.children) transformed
-    else transformed.withNewChildren(newChildren)
   }
 
   /** Like `transformUp`, never descends stage-boundary children. */
@@ -184,7 +250,27 @@ case class RevertNativeForTransitionHeavyStages(session: SparkSession, wholePlan
     count
   }
 
+  /**
+   * Checks for Comet operators whose original Spark plan is also their input. This must run
+   * before any bottom-up rewrite replaces children. Otherwise a stable `originalPlan` reference
+   * can keep pointing at the old Comet child after `withNewChildren`, hiding the alias and
+   * causing fallback to reconstruct that Comet child instead of a Spark operator.
+   */
+  private def validateOriginalPlanAliases(plan: SparkPlan): Unit = plan match {
+    case _ if isStageBoundary(plan) => ()
+    case cometExec: CometExec =>
+      val sparkPlan = cometExec.originalPlan
+      if (sparkPlan != null && cometExec.children.exists(_ eq sparkPlan)) {
+        throw new CometExec.InvalidSparkFallbackException(
+          s"${cometExec.getClass.getSimpleName} aliases its original Spark plan with a child")
+      }
+      cometExec.children.foreach(validateOriginalPlanAliases)
+    case _ =>
+      plan.children.foreach(validateOriginalPlanAliases)
+  }
+
   private[rules] def revertToSpark(plan: SparkPlan): SparkPlan = {
+    validateOriginalPlanAliases(plan)
     val stripped = transformStageDown(plan) {
       case CometNativeColumnarToRowExec(child) => child
       case CometColumnarToRowExec(child) => child
@@ -192,40 +278,12 @@ case class RevertNativeForTransitionHeavyStages(session: SparkSession, wholePlan
       case sparkToColumnar: CometSparkToColumnarExec => sparkToColumnar.child
       case RowToColumnarExec(child) => child
     }
-    val reverted = transformStageUp(stripped) {
-      // Local candidate selection was inserted by Comet. Only the outer TopK owns
-      // the original Spark operator's offset and projection.
-      case local: CometLocalTopKExec => local.child
-      case cometExec: CometExec =>
-        if (cometExec.originalPlan.children.size == cometExec.children.size) {
-          val originalWithCurrentExpressions = cometExec match {
-            case scan: CometNativeScanExec =>
-              // AQE's query-stage optimizer rewrites DPP placeholders in the live Comet scan
-              // before this post-columnar rule runs. The frozen FileSourceScanExec in
-              // originalPlan still contains SubqueryAdaptiveBroadcastExec, which cannot execute.
-              // Preserve the rewritten filters when reverting the scan to Spark.
-              val originalScan = scan.originalPlan.copy(
-                partitionFilters = scan.partitionFilters,
-                dataFilters = scan.dataFilters)
-              scan.originalPlan.logicalLink.foreach(originalScan.setLogicalLink)
-              originalScan
-            case scan: CometIcebergNativeScanExec =>
-              // Iceberg's native scan has the same split between live and frozen filters.
-              // serializedPartitionData rebuilds originalPlan from runtimeFilters before
-              // execution, but transition reversion skips that path and executes the restored
-              // BatchScanExec directly. Carry the executable DPP filters across here as well.
-              val originalScan = scan.originalPlan.copy(runtimeFilters = scan.runtimeFilters)
-              scan.originalPlan.logicalLink.foreach(originalScan.setLogicalLink)
-              originalScan
-            case _ => cometExec.originalPlan
-          }
-          originalWithCurrentExpressions.withNewChildren(cometExec.children)
-        } else {
-          logWarning(
-            "Comet plan and original have different child count for " +
-              s"${cometExec.getClass.getSimpleName}, using originalPlan as-is.")
-          cometExec.originalPlan
-        }
+    if (isStageBoundary(stripped)) {
+      throw new CometExec.InvalidSparkFallbackException(
+        "Cannot revert a stage whose stripped root is a stage boundary")
+    }
+    val reverted = transformStageUp(stripped) { case cometExec: CometExec =>
+      cometExec.sparkFallback(cometExec.children)
     }
     insertTransitions(reverted)
   }

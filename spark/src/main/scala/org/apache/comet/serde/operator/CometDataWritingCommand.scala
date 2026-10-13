@@ -19,17 +19,21 @@
 
 package org.apache.comet.serde.operator
 
+import java.util.UUID
+
 import scala.jdk.CollectionConverters._
 
-import org.apache.spark.SparkException
-import org.apache.spark.sql.comet.{CometEmptyRelationExec, CometNativeExec, CometNativeWriteExec, CometScanWrapper}
-import org.apache.spark.sql.execution.SparkPlan
-import org.apache.spark.sql.execution.adaptive.QueryStageExec
+import org.apache.hadoop.mapreduce.Job
+import org.apache.hadoop.mapreduce.lib.output.FileOutputFormat
+import org.apache.spark.internal.io.FileCommitProtocol
+import org.apache.spark.sql.catalyst.InternalRow
+import org.apache.spark.sql.catalyst.util.CaseInsensitiveMap
+import org.apache.spark.sql.comet.{CometNativeExec, CometNativeWriteExec}
 import org.apache.spark.sql.execution.command.DataWritingCommandExec
 import org.apache.spark.sql.execution.datasources.{InsertIntoHadoopFsRelationCommand, WriteFilesExec}
 import org.apache.spark.sql.execution.datasources.parquet.ParquetFileFormat
-import org.apache.spark.sql.execution.exchange.ReusedExchangeExec
 import org.apache.spark.sql.internal.SQLConf
+import org.apache.spark.util.SerializableConfiguration
 
 import org.apache.comet.{CometConf, ConfigEntry}
 import org.apache.comet.CometSparkSessionExtensions.withFallbackReason
@@ -55,25 +59,18 @@ object CometDataWritingCommand extends CometOperatorSerde[DataWritingCommandExec
       case cmd: InsertIntoHadoopFsRelationCommand =>
         cmd.fileFormat match {
           case _: ParquetFileFormat =>
-            // AQE can replace the write input with a zero-partition empty relation. Keep
-            // Spark's writer, which creates an empty task to preserve the output file schema.
-            // The native writer only maps existing partitions; see #5303. This guard is
-            // conservative: an empty relation below an exchange can have nonzero partitions
-            // at the write input. Revisit the guard when native empty-file handling is fixed.
-            if (hasEmptyRelationInput(op.child)) {
-              return Unsupported(Some(
-                "Parquet writes with empty-relation inputs require Spark's empty-file handling"))
-            }
-
             if (!cmd.outputPath.toString.startsWith("file:") && !cmd.outputPath.toString
                 .startsWith("hdfs:")) {
               return Unsupported(Some("Supported output filesystems: local, HDFS"))
             }
 
+            // Spark 3.x HadoopMapReduceCommitProtocol.getFilename hardcodes "part";
+            // mapreduce.output.basename is only honored on Spark 4.0+. Custom committer paths
+            // are still checked by checkNativeWriteDestination before native execution.
             NativeWriteUtils
-              // This writer names its own files `part-<partition>-<attempt>.parquet`, so the
-              // prefix is fixed rather than read from `mapreduce.output.basename`.
-              .escapedHdfsDestination(cmd.outputPath.toString, "part")
+              .escapedHdfsDestination(
+                cmd.outputPath.toString,
+                NativeWriteUtils.DEFAULT_BASE_OUTPUT_NAME)
               .foreach(reason => return Unsupported(Some(reason)))
 
             if (cmd.bucketSpec.isDefined) {
@@ -98,14 +95,6 @@ object CometDataWritingCommand extends CometOperatorSerde[DataWritingCommandExec
     }
   }
 
-  private def hasEmptyRelationInput(plan: SparkPlan): Boolean = plan match {
-    case _: CometEmptyRelationExec => true
-    case wrapper: CometScanWrapper => hasEmptyRelationInput(wrapper.originalPlan)
-    case stage: QueryStageExec => hasEmptyRelationInput(stage.plan)
-    case reused: ReusedExchangeExec => hasEmptyRelationInput(reused.child)
-    case _ => plan.children.exists(hasEmptyRelationInput)
-  }
-
   override def convert(
       op: DataWritingCommandExec,
       builder: Operator.Builder,
@@ -123,6 +112,8 @@ object CometDataWritingCommand extends CometOperatorSerde[DataWritingCommandExec
 
       val outputPath = cmd.outputPath.toString
 
+      // Planning-time value only. CometNativeWriteExec replaces it per task with the codec that
+      // names the file.
       val plannedCodec = NativeWriteUtils.parseCompressionCodec(cmd.options)
       val codec = NativeWriteUtils.protoCompressionCodec(plannedCodec) match {
         case Some(codec) => codec
@@ -140,8 +131,8 @@ object CometDataWritingCommand extends CometOperatorSerde[DataWritingCommandExec
           cmd.query.schema.fields.toIndexedSeq,
           Some(
             op.session.sessionState.conf.getConf(SQLConf.PARQUET_FIELD_ID_WRITE_ENABLED))).asJava)
-      // Note: work_dir, job_id, and task_attempt_id will be set at execution time
-      // in CometNativeWriteExec, as they depend on the Spark task context
+      // CometNativeWriteExec replaces output_path with the committer's exact task filename
+      // at execution time.
 
       // Collect S3/cloud storage configurations
       val session = op.session
@@ -189,29 +180,30 @@ object CometDataWritingCommand extends CometOperatorSerde[DataWritingCommandExec
         other
     }
 
-    // Create FileCommitProtocol for atomic writes
-    val jobId = java.util.UUID.randomUUID().toString
-    val committer =
-      try {
-        // Use Spark's SQLHadoopMapReduceCommitProtocol
-        val committerClass =
-          classOf[org.apache.spark.sql.execution.datasources.SQLHadoopMapReduceCommitProtocol]
-        val constructor =
-          committerClass.getConstructor(classOf[String], classOf[String], classOf[Boolean])
-        Some(
-          constructor
-            .newInstance(
-              jobId,
-              outputPath,
-              java.lang.Boolean.FALSE // dynamicPartitionOverwrite = false for now
-            )
-            .asInstanceOf[org.apache.spark.internal.io.FileCommitProtocol])
-      } catch {
-        case e: Exception =>
-          throw new SparkException(s"Could not instantiate FileCommitProtocol: ${e.getMessage}")
-      }
+    val session = op.session
+    val job = Job.getInstance(session.sessionState.newHadoopConfWithOptions(cmd.options))
+    job.setOutputKeyClass(classOf[Void])
+    job.setOutputValueClass(classOf[InternalRow])
+    FileOutputFormat.setOutputPath(job, cmd.outputPath)
+    val outputWriterFactory =
+      cmd.fileFormat.prepareWrite(session, job, CaseInsensitiveMap(cmd.options), cmd.query.schema)
 
-    CometNativeWriteExec(nativeOp, childPlan, outputPath, cmd.mode, committer, jobId)
+    val committer = FileCommitProtocol.instantiate(
+      session.sessionState.conf.fileCommitProtocolClass,
+      UUID.randomUUID().toString,
+      outputPath,
+      dynamicPartitionOverwrite = false)
+    job.getConfiguration.set("spark.sql.sources.writeJobUUID", UUID.randomUUID().toString)
+
+    CometNativeWriteExec(
+      nativeOp,
+      op,
+      childPlan,
+      outputPath,
+      cmd.mode,
+      committer,
+      new SerializableConfiguration(job.getConfiguration),
+      outputWriterFactory)
   }
 
 }

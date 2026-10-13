@@ -31,12 +31,4 @@ package org.apache.comet.expressions
  */
 object CometEvalMode extends Enumeration {
   val LEGACY, ANSI, TRY = Value
-
-  def fromBoolean(ansiEnabled: Boolean): Value = if (ansiEnabled) {
-    ANSI
-  } else {
-    LEGACY
-  }
-
-  def fromString(str: String): CometEvalMode.Value = CometEvalMode.withName(str)
 }
