@@ -22,27 +22,36 @@ statement
 CREATE TABLE test_regexp_instr(s string) USING parquet
 
 statement
-INSERT INTO test_regexp_instr VALUES ('abc123def'), ('no match'), (NULL), ('123xyz'), ('hello world'), ('aa')
+INSERT INTO test_regexp_instr VALUES
+  ('abc123def'), ('no match'), (NULL), ('123xyz'), ('hello world'), ('aa'),
+  ('456xyz'), ('abc123def456'), ('xyz'), ('abc'), ('def'), ('foobar'), ('foobaz'), ('xyz789')
 
 -- basic: position of first digit sequence
 query expect_dispatch(regexp_instr)
-SELECT regexp_instr(s, r'\d+', 0) FROM test_regexp_instr
+SELECT s, regexp_instr(s, r'\d+', 0) FROM test_regexp_instr
 
--- group 1 (still returns position of entire match per Spark semantics)
+-- Spark returns the position of the entire match for both third-argument values.
 query expect_dispatch(regexp_instr)
-SELECT regexp_instr(s, r'([a-z]+)(\d+)', 1) FROM test_regexp_instr
+SELECT s, regexp_instr(s, r'([a-z]+)(\d+)', 1) FROM test_regexp_instr
+
+query expect_dispatch(regexp_instr)
+SELECT s, regexp_instr(s, r'([a-z]+)(\d+)', 2) FROM test_regexp_instr
 
 -- no match returns 0
 query expect_dispatch(regexp_instr)
-SELECT regexp_instr(s, 'NOMATCH', 0) FROM test_regexp_instr
+SELECT s, regexp_instr(s, 'NOMATCH', 0) FROM test_regexp_instr
 
 -- backreference pattern (Java-only)
 query expect_dispatch(regexp_instr)
-SELECT regexp_instr(s, r'(\w)\1', 0) FROM test_regexp_instr
+SELECT s, regexp_instr(s, r'(\w)\1', 0) FROM test_regexp_instr
+
+-- lookahead (Java-only)
+query expect_dispatch(regexp_instr)
+SELECT s, regexp_instr(s, 'foo(?=bar)', 0) FROM test_regexp_instr
 
 -- embedded flags (Java-only)
 query expect_dispatch(regexp_instr)
-SELECT regexp_instr(s, '(?i)HELLO', 0) FROM test_regexp_instr
+SELECT s, regexp_instr(s, '(?i)HELLO', 0) FROM test_regexp_instr
 
 -- literal arguments
 query expect_dispatch(regexp_instr)

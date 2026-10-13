@@ -28,15 +28,15 @@ use datafusion::logical_expr::{
 use num::Float;
 use std::sync::Arc;
 
-/// Spark's `greatest` or `least` over Float32 or Float64 values, or over arrays or structs with a
-/// float leaf.
+/// Spark's `greatest` or `least` over Float32 or Float64 values, or over arrays or structs.
 ///
 /// Spark orders floats with `SQLOrderingUtil.compareDoubles`, in which NaN is larger than every
 /// other value and `-0.0` equals `0.0`, at any depth. It walks the arguments in order and replaces
 /// its result only with a strictly greater (or smaller) value, skipping nulls, so of equal
 /// arguments the first one wins: `greatest(-0.0, 0.0)` is `-0.0`. DataFusion's `greatest` and
 /// `least` order floats by IEEE 754 total order, handle constant arguments before the others, and
-/// let a later argument win a tie.
+/// let a later argument win a tie. DataFusion's `least` also orders a null inside an array or
+/// struct after every other value, where Spark orders it first.
 #[derive(Debug, PartialEq, Eq, Hash)]
 pub struct SparkGreatestLeast {
     signature: Signature,
@@ -51,11 +51,11 @@ impl SparkGreatestLeast {
         }
     }
 
-    /// Whether arguments of this type need Spark's float ordering. DataFusion's `greatest` and
-    /// `least` already match Spark for every other type, since equal values are identical there.
+    /// Whether arguments of this type need Spark's ordering, of floats or of nulls inside nested
+    /// values. DataFusion's `greatest` and `least` already match Spark for every other type, since
+    /// equal values are identical there.
     pub fn handles(data_type: &DataType) -> bool {
-        matches!(data_type, DataType::Float32 | DataType::Float64)
-            || (data_type.is_nested() && has_float_leaf(data_type))
+        matches!(data_type, DataType::Float32 | DataType::Float64) || data_type.is_nested()
     }
 
     fn validate_arg_count(&self, count: usize) -> Result<()> {
@@ -91,6 +91,67 @@ impl SparkGreatestLeast {
                 Ok(zip(&BooleanArray::new(take, None), candidate, current)?)
             }
         }
+    }
+
+    /// Reduces the constant arguments, so that each group of them is compared once rather than
+    /// broadcast and compared row by row for each constant. The result is the first argument that
+    /// no later argument ranks strictly before. Equal values of a type without a float leaf are
+    /// identical, so the order of its arguments does not matter: all of its constants reduce to
+    /// one, which goes first, so that the columns are compared against it rather than against an
+    /// intermediate result of earlier columns. With a float leaf, equal values such as `-0.0` and
+    /// `0.0` differ, so only adjacent constants reduce and every argument keeps its place, which
+    /// keeps the earlier of equal arguments. The reduction keeps the selected constant itself
+    /// rather than a copy. `to_array` turns a constant into a one-row array of the result type.
+    fn merge_constants(
+        &self,
+        args: &[ColumnarValue],
+        data_type: &DataType,
+        to_array: impl Fn(&ColumnarValue) -> Result<ArrayRef>,
+    ) -> Result<Vec<ColumnarValue>> {
+        let any_order = !has_float_leaf(data_type);
+        let mut merged: Vec<ColumnarValue> = Vec::with_capacity(args.len());
+        // The position in `merged` of the constant that the next constant reduces into
+        let mut target: Option<usize> = None;
+        for arg in args {
+            match (arg, target) {
+                (ColumnarValue::Scalar(_), Some(i)) => {
+                    if self.replaces(&to_array(&merged[i])?, &to_array(arg)?)? {
+                        merged[i] = arg.clone();
+                    }
+                }
+                (ColumnarValue::Scalar(_), None) => {
+                    target = Some(merged.len());
+                    merged.push(arg.clone());
+                }
+                (ColumnarValue::Array(_), _) => {
+                    if !any_order {
+                        target = None;
+                    }
+                    merged.push(arg.clone());
+                }
+            }
+        }
+        if let (true, Some(i)) = (any_order, target) {
+            let constant = merged.remove(i);
+            merged.insert(0, constant);
+        }
+        Ok(merged)
+    }
+
+    /// Whether the one-row `candidate` replaces the one-row `current`, as in [`Self::pick`].
+    fn replaces(&self, current: &ArrayRef, candidate: &ArrayRef) -> Result<bool> {
+        if candidate.is_null(0) {
+            return Ok(false);
+        }
+        if current.is_null(0) {
+            return Ok(true);
+        }
+        let ordering = spark_comparator(candidate.as_ref(), current.as_ref())?(0, 0);
+        Ok(if self.greatest {
+            ordering.is_gt()
+        } else {
+            ordering.is_lt()
+        })
     }
 
     fn pick_floats<T>(
@@ -185,7 +246,7 @@ impl ScalarUDFImpl for SparkGreatestLeast {
         // Spark gives every argument the same type up to nullability, but Arrow also compares
         // field names and nullability, which the row selection below needs to match.
         let data_type = args.return_field.data_type();
-        let to_array = |arg: &ColumnarValue| -> Result<ArrayRef> {
+        let to_array = |arg: &ColumnarValue, rows: usize| -> Result<ArrayRef> {
             let array = arg.to_array(rows)?;
             Ok(if array.data_type() == data_type {
                 array
@@ -193,9 +254,10 @@ impl ScalarUDFImpl for SparkGreatestLeast {
                 cast(&array, data_type)?
             })
         };
-        let mut result = to_array(&args.args[0])?;
-        for arg in &args.args[1..] {
-            result = self.pick(&result, &to_array(arg)?)?;
+        let args = self.merge_constants(&args.args, data_type, |arg| to_array(arg, 1))?;
+        let mut result = to_array(&args[0], rows)?;
+        for arg in &args[1..] {
+            result = self.pick(&result, &to_array(arg, rows)?)?;
         }
         if all_scalars {
             Ok(ColumnarValue::Scalar(ScalarValue::try_from_array(
@@ -408,8 +470,89 @@ mod tests {
         Ok(())
     }
 
+    /// Float constants merge only when adjacent, in argument order, so the earlier of equal floats
+    /// wins, and every argument keeps its place. Constants of a type without a float leaf merge
+    /// across columns into one that goes first, and a null inside a list ranks first. The merged
+    /// constant is one of the original constants.
     #[test]
-    fn handles_floats_and_nested_floats_only() {
+    fn constants_merge_in_spark_order() -> Result<()> {
+        use arrow::array::Int32Array;
+
+        let float = |v: f64| ColumnarValue::Scalar(ScalarValue::Float64(Some(v)));
+        let column = ColumnarValue::Array(Arc::new(Float64Array::from(vec![0.5, 2.0])));
+        let to_array = |arg: &ColumnarValue| arg.to_array(1);
+        for greatest in [true, false] {
+            let function = SparkGreatestLeast::new(greatest);
+            let args = [
+                column.clone(),
+                float(-0.0),
+                float(0.0),
+                column.clone(),
+                float(1.0),
+            ];
+            let merged = function.merge_constants(&args, &DataType::Float64, to_array)?;
+            assert_eq!(merged.len(), 4, "greatest={greatest}");
+            assert!(
+                matches!(merged[0], ColumnarValue::Array(_)),
+                "greatest={greatest}"
+            );
+            match &merged[1] {
+                ColumnarValue::Scalar(ScalarValue::Float64(Some(v))) => {
+                    assert_eq!(v.to_bits(), (-0.0f64).to_bits(), "greatest={greatest}")
+                }
+                other => panic!("expected a double constant, got {other:?}"),
+            }
+        }
+
+        let item = Arc::new(Field::new("item", DataType::Int32, true));
+        let list_type = DataType::List(Arc::clone(&item));
+        let list = |rows: Vec<Vec<Option<i32>>>| -> ArrayRef {
+            let lengths: Vec<usize> = rows.iter().map(Vec::len).collect();
+            let values: Vec<Option<i32>> = rows.into_iter().flatten().collect();
+            Arc::new(ListArray::new(
+                Arc::clone(&item),
+                OffsetBuffer::from_lengths(lengths),
+                Arc::new(Int32Array::from(values)),
+                None,
+            ))
+        };
+        let constant = |values: Vec<Option<i32>>| {
+            ColumnarValue::Scalar(ScalarValue::try_from_array(&list(vec![values]), 0).unwrap())
+        };
+        let column = ColumnarValue::Array(list(vec![vec![Some(0)], vec![Some(5)]]));
+        let args = vec![
+            column.clone(),
+            constant(vec![Some(1), Some(0)]),
+            column,
+            constant(vec![Some(1), None]),
+            constant(vec![Some(1), Some(0)]),
+        ];
+        // `[1, NULL]` ranks below `[1, 0]`, and both rank between `[0]` and `[5]`.
+        for (greatest, kept, expected) in [
+            (true, 1, vec![vec![Some(1), Some(0)], vec![Some(5)]]),
+            (false, 3, vec![vec![Some(0)], vec![Some(1), None]]),
+        ] {
+            let merged =
+                SparkGreatestLeast::new(greatest).merge_constants(&args, &list_type, to_array)?;
+            assert_eq!(merged.len(), 3, "greatest={greatest}");
+            match (&merged[0], &args[kept]) {
+                (
+                    ColumnarValue::Scalar(ScalarValue::List(m)),
+                    ColumnarValue::Scalar(ScalarValue::List(a)),
+                ) => {
+                    assert!(Arc::ptr_eq(m, a), "greatest={greatest}")
+                }
+                other => panic!("expected list constants, got {other:?}"),
+            }
+            let result = invoke(greatest, args.clone(), 2, list_type.clone())?.into_array(2)?;
+            let expected = list(expected);
+            assert_eq!(result.as_ref(), expected.as_ref(), "greatest={greatest}");
+        }
+        Ok(())
+    }
+
+    #[test]
+    fn handles_floats_and_nested_types_only() {
         let float_list = DataType::List(Arc::new(Field::new("item", DataType::Float32, true)));
         let int_list = DataType::List(Arc::new(Field::new("item", DataType::Int32, true)));
         let float_struct =
@@ -418,8 +561,8 @@ mod tests {
         assert!(SparkGreatestLeast::handles(&DataType::Float64));
         assert!(SparkGreatestLeast::handles(&float_list));
         assert!(SparkGreatestLeast::handles(&float_struct));
+        assert!(SparkGreatestLeast::handles(&int_list));
         assert!(!SparkGreatestLeast::handles(&DataType::Int32));
-        assert!(!SparkGreatestLeast::handles(&int_list));
         assert!(!SparkGreatestLeast::handles(&DataType::Utf8));
     }
 }
