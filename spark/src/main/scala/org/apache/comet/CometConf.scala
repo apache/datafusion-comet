@@ -583,6 +583,26 @@ object CometConf extends ShimCometConf {
       .bytesConf(ByteUnit.BYTE)
       .createOptional
 
+  val COMET_EXEC_SEQUENCE_MAX_BYTES_PER_INVOCATION: OptionalConfigEntry[Long] =
+    conf(s"$COMET_EXEC_CONFIG_PREFIX.sequence.maxBytesPerInvocation")
+      .category(CATEGORY_TUNING)
+      .doc(
+        "Maximum logical Arrow output bytes of one native integral sequence invocation, " +
+          "including values, list offsets and validity. When unset in off-heap mode, uses " +
+          "Comet's configured memory pool limit divided by the configured concurrent task " +
+          "slots (local or executor cores divided by the task's allocated CPUs, at least one). " +
+          "Local-cluster uses configured worker cores when executor cores are unset. For " +
+          "standalone with unknown executor cores, the fallback is the whole pool limit; " +
+          "set spark.executor.cores or this setting to choose a task ceiling. " +
+          "On-heap test mode is unbounded unless explicitly configured. Set -1 to disable " +
+          "the ceiling; 0 permits no output bytes. Earlier results and concurrent calls do " +
+          "not consume this limit. Scalar invocations produce one list; subsequent scalar " +
+          "broadcasts and copies of folded literals are outside this ceiling. This does not " +
+          s"reserve pool memory or bound executor memory usage. $TUNING_GUIDE.")
+      .bytesConf(ByteUnit.BYTE)
+      .checkValue(v => v >= -1, "Must be -1 (unbounded) or a non-negative byte count")
+      .createOptional
+
   val COMET_EXEC_AGGREGATE_SKIP_PARTIAL_ENABLED: ConfigEntry[Boolean] =
     conf(s"$COMET_EXEC_CONFIG_PREFIX.aggregate.skipPartial.enabled")
       .category(CATEGORY_EXEC)

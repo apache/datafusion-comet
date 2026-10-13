@@ -21,9 +21,122 @@ package org.apache.comet
 
 import org.scalatest.funsuite.AnyFunSuite
 
+import org.apache.spark.SparkConf
 import org.apache.spark.sql.internal.SQLConf
 
 class CometConfSuite extends AnyFunSuite {
+
+  test("sequence invocation ceiling accepts byte units, zero and the explicit opt-out") {
+    val entry = CometConf.COMET_EXEC_SEQUENCE_MAX_BYTES_PER_INVOCATION
+    val conf = new SQLConf
+    assert(entry.get(conf).isEmpty)
+    Seq("-1" -> -1L, "0" -> 0L, "123" -> 123L, "2k" -> 2048L).foreach { case (input, expected) =>
+      conf.setConfString(entry.key, input)
+      assert(entry.get(conf).contains(expected))
+    }
+    Seq("-2", "invalid").foreach { input =>
+      conf.setConfString(entry.key, input)
+      intercept[IllegalArgumentException](entry.get(conf))
+    }
+  }
+
+  test("sequence invocation ceiling uses configured task slots and the resolved pool limit") {
+    import CometExecIterator.getMemoryConfig
+    val poolBytes = 2L * 1024 * 1024 * 1024
+    val offHeap = new SparkConf(false)
+      .set("spark.memory.offHeap.enabled", "true")
+      .set("spark.memory.offHeap.size", "2g")
+      .set("spark.executor.cores", "10")
+      .set("spark.task.cpus", "2")
+    val masters = Seq(
+      "local" -> 1,
+      "local[4]" -> 4,
+      "local[7,3]" -> 7,
+      "local[*]" -> Runtime.getRuntime.availableProcessors(),
+      "local[*,3]" -> Runtime.getRuntime.availableProcessors(),
+      "yarn" -> 10)
+    val sqlConf = new SQLConf
+    SQLConf.withExistingConf(sqlConf) {
+      masters.foreach { case (master, cores) =>
+        val conf = offHeap.clone.set("spark.master", master)
+        assert(
+          getMemoryConfig(conf).sequenceMaxBytes.contains(poolBytes / math.max(1, cores / 2)))
+      }
+      // The actual allocation overrides spark.task.cpus; ten cores fit three three-CPU tasks.
+      assert(
+        getMemoryConfig(offHeap.clone.set("spark.master", "yarn"), taskCPUs = 3L).sequenceMaxBytes
+          .contains(poolBytes / 3))
+      val conf = offHeap.clone.set("spark.master", "local[8]")
+      sqlConf.setConfString(CometConf.COMET_OFFHEAP_MEMORY_POOL_FRACTION.key, "0.5")
+      Seq("fair_unified", "greedy_unified").foreach { poolType =>
+        sqlConf.setConfString(CometConf.COMET_OFFHEAP_MEMORY_POOL_TYPE.key, poolType)
+        assert(getMemoryConfig(conf).sequenceMaxBytes.contains(poolBytes / 2 / 4))
+      }
+      sqlConf.setConfString(CometConf.COMET_OFFHEAP_MEMORY_POOL_FRACTION.key, "0")
+      assert(getMemoryConfig(conf).sequenceMaxBytes.contains(0L))
+      sqlConf.setConfString(CometConf.COMET_OFFHEAP_MEMORY_POOL_FRACTION.key, "-1")
+      intercept[IllegalArgumentException](getMemoryConfig(conf))
+    }
+  }
+
+  test(
+    "sequence invocation ceiling distinguishes configured cores from unknown standalone cores") {
+    import CometExecIterator.getMemoryConfig
+    val poolBytes = 2L * 1024 * 1024 * 1024
+    val offHeap = new SparkConf(false)
+      .set("spark.memory.offHeap.enabled", "true")
+      .set("spark.memory.offHeap.size", "2g")
+    SQLConf.withExistingConf(new SQLConf) {
+      val localCluster = offHeap.clone.set("spark.master", "local-cluster[2,4,1024]")
+      assert(getMemoryConfig(localCluster).sequenceMaxBytes.contains(poolBytes / 4))
+      assert(
+        getMemoryConfig(
+          offHeap.clone.set("spark.master", "local-cluster[ 2, 4, 1024 ]")).sequenceMaxBytes
+          .contains(poolBytes / 4))
+      assert(
+        getMemoryConfig(localCluster.clone.set("spark.executor.cores", "2")).sequenceMaxBytes
+          .contains(poolBytes / 2))
+
+      val standalone = offHeap.clone.set("spark.master", "spark://worker:7077")
+      // No supported executor-local API exposes the assigned cores in this case. This is an
+      // explicit whole-pool fallback, independent of host processors or the task's CPU count.
+      assert(getMemoryConfig(standalone).sequenceMaxBytes.contains(poolBytes))
+      assert(getMemoryConfig(standalone, taskCPUs = 3L).sequenceMaxBytes.contains(poolBytes))
+      assert(
+        getMemoryConfig(
+          standalone.clone.set("spark.executor.cores", "8"),
+          taskCPUs = 2L).sequenceMaxBytes.contains(poolBytes / 4))
+
+      // YARN and Kubernetes retain their one-core default when executor cores are unset.
+      Seq("yarn", "k8s://https://kubernetes.default.svc:443").foreach { master =>
+        assert(
+          getMemoryConfig(offHeap.clone.set("spark.master", master)).sequenceMaxBytes
+            .contains(poolBytes))
+      }
+    }
+  }
+
+  test("sequence invocation overrides also apply to otherwise unbounded on-heap test mode") {
+    import CometExecIterator.getMemoryConfig
+    val key = CometConf.COMET_EXEC_SEQUENCE_MAX_BYTES_PER_INVOCATION.key
+    val conf = new SparkConf(false)
+      .set("spark.master", "local[4]")
+      .set("spark.memory.offHeap.enabled", "false")
+    val sqlConf = new SQLConf
+    SQLConf.withExistingConf(sqlConf) {
+      assert(getMemoryConfig(conf).sequenceMaxBytes.isEmpty)
+      Seq("false", "true").foreach { offHeap =>
+        val mode = conf.clone
+          .set("spark.memory.offHeap.enabled", offHeap)
+          .set("spark.memory.offHeap.size", "2g")
+        Seq("-1" -> None, "0" -> Some(0L), "2k" -> Some(2048L)).foreach {
+          case (value, expected) =>
+            sqlConf.setConfString(key, value)
+            assert(getMemoryConfig(mode).sequenceMaxBytes == expected)
+        }
+      }
+    }
+  }
 
   test("primary key wins over alternative when both are set") {
     val entry = CometConf

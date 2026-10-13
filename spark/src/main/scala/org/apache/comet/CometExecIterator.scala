@@ -114,8 +114,9 @@ class CometExecIterator(
     val conf = SparkEnv.get.conf
     val localDiskDirs = SparkEnv.get.blockManager.getLocalDiskDirs
 
-    // serialize Comet related Spark configs in protobuf format
-    val protobufSparkConfigs = CometExecIterator.serializeCometSQLConfs()
+    val memoryConfig = CometExecIterator.getMemoryConfig(conf, taskCPUs)
+    // Serialize Comet configs with the memory settings resolved for this task.
+    val protobufSparkConfigs = CometExecIterator.serializeCometSQLConfs(memoryConfig)
 
     // Create keyUnwrapper if encryption is enabled
     val keyUnwrapper = if (encryptedFilePaths.nonEmpty) {
@@ -129,8 +130,6 @@ class CometExecIterator(
     } else {
       null
     }
-
-    val memoryConfig = CometExecIterator.getMemoryConfig(conf)
 
     val createdPlan = nativeLib.createPlan(
       id,
@@ -861,7 +860,8 @@ object CometExecIterator extends Logging {
   private def cometSqlConfs: Map[String, String] =
     SQLConf.get.getAllConfs.filter(_._1.startsWith(CometConf.COMET_PREFIX))
 
-  def serializeCometSQLConfs(): Array[Byte] = {
+  def serializeCometSQLConfs(
+      memoryConfig: MemoryConfig = getMemoryConfig(SparkEnv.get.conf)): Array[Byte] = {
     val builder = ConfigMap.newBuilder()
     cometSqlConfs.foreach { case (k, v) =>
       if (k.startsWith(s"${CometConf.COMET_PREFIX}.datafusion.")) {
@@ -876,6 +876,9 @@ object CometExecIterator extends Logging {
     // for tokio runtime thread count
     val executorCores = numDriverOrExecutorCores(SparkEnv.get.conf)
     builder.putEntries("spark.executor.cores", executorCores.toString)
+    builder.putEntries(
+      CometConf.COMET_EXEC_SEQUENCE_MAX_BYTES_PER_INVOCATION.key,
+      memoryConfig.sequenceMaxBytes.getOrElse(-1L).toString)
 
     // Any Comet config that the native side reads must be added here manually, resolved.
     // `cometSqlConfs` only carries values that were explicitly set, exactly as they were
@@ -898,10 +901,14 @@ object CometExecIterator extends Logging {
     builder.build().toByteArray
   }
 
-  def getMemoryConfig(conf: SparkConf): MemoryConfig = {
+  def getMemoryConfig(conf: SparkConf): MemoryConfig =
+    getMemoryConfig(conf, conf.getInt("spark.task.cpus", 1).toLong)
+
+  def getMemoryConfig(conf: SparkConf, taskCPUs: Long): MemoryConfig = {
+    require(taskCPUs > 0, "Task CPUs must be positive")
     // there are different paths for on-heap vs off-heap mode
     val offHeapMode = CometSparkSessionExtensions.isOffHeapEnabled(conf)
-    if (offHeapMode) {
+    val memoryConfig = if (offHeapMode) {
       // in off-heap mode, Comet uses unified memory management to share off-heap memory with Spark
       val offHeapSize = conf.getSizeAsBytes("spark.memory.offHeap.size")
       val memoryFraction = CometConf.COMET_OFFHEAP_MEMORY_POOL_FRACTION.get()
@@ -919,6 +926,34 @@ object CometExecIterator extends Logging {
       // on-heap pool, so nothing is accounted. See the memory management contributor guide.
       logDebug("on-heap mode: native memory is unbounded and unaccounted")
       MemoryConfig(offHeapMode, memoryPoolType = "unbounded", memoryLimit = 0)
+    }
+    val sequenceMaxBytes = CometConf.COMET_EXEC_SEQUENCE_MAX_BYTES_PER_INVOCATION.get() match {
+      case Some(-1L) => None
+      case Some(bytes) => Some(bytes)
+      case None if offHeapMode =>
+        // This share is stable for the task: live task counts and pool usage do not affect it.
+        require(
+          memoryConfig.memoryLimit >= 0,
+          "The derived sequence memory limit must be non-negative")
+        Some(sequenceExecutorCores(conf).fold(memoryConfig.memoryLimit) { cores =>
+          val taskSlots = math.max(1L, cores.toLong / taskCPUs)
+          memoryConfig.memoryLimit / taskSlots
+        })
+      case None => None
+    }
+    memoryConfig.copy(sequenceMaxBytes = sequenceMaxBytes)
+  }
+
+  private def sequenceExecutorCores(conf: SparkConf): Option[Int] = {
+    val localCluster = """local-cluster\[\s*[0-9]+\s*,\s*([0-9]+)\s*,\s*[0-9]+\s*]""".r
+    conf.get("spark.master") match {
+      case localCluster(workerCores) =>
+        conf.getOption("spark.executor.cores").map(_.toInt).orElse(Some(workerCores.toInt))
+      case master if master.startsWith("spark://") && !conf.contains("spark.executor.cores") =>
+        // Standalone can assign all available worker cores without exposing that number here.
+        // Use the whole pool as a fallback, rather than claiming to infer a single task slot.
+        None
+      case _ => Some(numDriverOrExecutorCores(conf))
     }
   }
 
@@ -950,4 +985,8 @@ object CometExecIterator extends Logging {
   }
 }
 
-case class MemoryConfig(offHeapMode: Boolean, memoryPoolType: String, memoryLimit: Long)
+case class MemoryConfig(
+    offHeapMode: Boolean,
+    memoryPoolType: String,
+    memoryLimit: Long,
+    sequenceMaxBytes: Option[Long] = None)

@@ -118,6 +118,24 @@ class CometExecSuite extends CometTestBase {
     }
   }
 
+  test("SQLConf serde sends the resolved per-invocation sequence byte ceiling") {
+    val key = CometConf.COMET_EXEC_SEQUENCE_MAX_BYTES_PER_INVOCATION.key
+    val conf = new org.apache.spark.SparkConf(false)
+      .set("spark.master", "local[8]")
+      .set("spark.memory.offHeap.enabled", "true")
+      .set("spark.memory.offHeap.size", "2g")
+    def resolved: String = {
+      val memory = CometExecIterator.getMemoryConfig(conf, taskCPUs = 2L)
+      ConfigMap.parseFrom(CometExecIterator.serializeCometSQLConfs(memory)).getEntriesMap.get(key)
+    }
+    assert(resolved == "536870912")
+    Seq("2k" -> "2048", "0" -> "0", "-1" -> "-1").foreach { case (input, expected) =>
+      withSQLConf(key -> input) {
+        assert(resolved == expected)
+      }
+    }
+  }
+
   test("native sort spill files are compressed with the default spill codec") {
     val numRows = 20000
     val compressibleValue = "native-sort-spill-compression-" * 8

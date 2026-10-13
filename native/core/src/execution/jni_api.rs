@@ -132,7 +132,7 @@ use crate::execution::tracing::{
 
 use crate::execution::memory_pools::logging_pool::LoggingMemoryPool;
 use crate::execution::spark_config::{
-    SparkConfig, COMET_DEBUG_ENABLED, COMET_DEBUG_MEMORY,
+    sequence_max_bytes, SparkConfig, COMET_DEBUG_ENABLED, COMET_DEBUG_MEMORY,
     COMET_EXEC_AGGREGATE_SKIP_PARTIAL_ENABLED, COMET_EXEC_SPILL_COMPRESSION_CODEC,
     COMET_EXPLAIN_NATIVE_ENABLED, COMET_MAX_TEMP_DIRECTORY_SIZE,
     COMET_PARQUET_ROW_FILTER_PUSHDOWN_ENABLED, COMET_STRICT_TIMESTAMP_LABELS,
@@ -558,6 +558,8 @@ struct ExecutionContext {
     pub debug_native: bool,
     /// Whether boundaries fail on a relabelled timestamp instead of casting it (test-only)
     pub strict_timestamp_labels: bool,
+    /// Resolved logical output ceiling for each integral sequence invocation.
+    sequence_max_bytes: Option<usize>,
     /// Whether to write native plans with metrics to stdout
     pub explain_native: bool,
     /// Whether to log memory usage on each call to execute_plan
@@ -710,6 +712,7 @@ struct PlanSettings {
     spark_config: HashMap<String, String>,
     debug_native: bool,
     strict_timestamp_labels: bool,
+    sequence_max_bytes: Option<usize>,
     explain_native: bool,
     tracing_enabled: bool,
     max_temp_directory_size: u64,
@@ -731,6 +734,7 @@ fn prepare_plan_settings(serialized_spark_configs: &[u8]) -> CometResult<PlanSet
     Ok(PlanSettings {
         debug_native: spark_config.get_bool(COMET_DEBUG_ENABLED),
         strict_timestamp_labels: spark_config.get_bool(COMET_STRICT_TIMESTAMP_LABELS),
+        sequence_max_bytes: sequence_max_bytes(&spark_config)?,
         explain_native: spark_config.get_bool(COMET_EXPLAIN_NATIVE_ENABLED),
         tracing_enabled: spark_config.get_bool(COMET_TRACING_ENABLED),
         max_temp_directory_size: spark_config
@@ -883,6 +887,7 @@ fn create_execution_context(
         session_ctx: session,
         debug_native: settings.debug_native,
         strict_timestamp_labels: settings.strict_timestamp_labels,
+        sequence_max_bytes: settings.sequence_max_bytes,
         explain_native: settings.explain_native,
         tracing_enabled: settings.tracing_enabled,
         rust_thread_id,
@@ -1464,6 +1469,7 @@ fn execute_plan(
         let planner = PhysicalPlanner::new(Arc::clone(&exec_context.session_ctx), partition)
             .with_exec_id(exec_context_id)
             .with_strict_timestamp_labels(exec_context.strict_timestamp_labels)
+            .with_sequence_max_bytes(exec_context.sequence_max_bytes)
             .with_sql_text_pool(&exec_context.spark_plan)
             .with_task_context(exec_context.task_context.clone())
             .with_class_loader(exec_context.class_loader.clone())

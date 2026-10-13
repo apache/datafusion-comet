@@ -59,8 +59,22 @@ key is removed.
 
 ## Upgrading to Comet 1.2.0
 
-Comet `1.2.0` makes no behavior changes that need a `spark.comet.legacy.*` key. The changes below
-need none either, but check whether any of them applies to your deployment.
+Review the following changes when upgrading to Comet `1.2.0`.
+
+### Native Integral Sequence Byte Ceiling
+
+Native integral `sequence` now checks each invocation's logical Arrow output size before allocating
+its values and offsets. In off-heap mode the default ceiling comes from the configured memory pool
+limit and task slots, so a valid query that previously completed can now fail when one invocation
+exceeds that ceiling. On-heap test mode has no default ceiling.
+
+Set `spark.comet.exec.sequence.maxBytesPerInvocation=-1` to restore the pre-1.2.0 absence of this
+byte ceiling. Existing Spark per-row and Arrow batch element limits still apply.
+
+To retain the new check, reduce `spark.comet.batchSize`, shorten the sequences or choose a larger
+`spark.comet.exec.sequence.maxBytesPerInvocation`. Retained results, concurrent calls and later
+scalar or folded-literal expansion do not consume an invocation's ceiling. See
+[Limiting Integral Sequence Output](tuning/memory.md#limiting-integral-sequence-output).
 
 ### In-Memory Cache Enabled by Default
 

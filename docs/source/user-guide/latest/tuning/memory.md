@@ -272,6 +272,43 @@ narrow tables when memory is plentiful.
 `spark.comet.shuffle.jvm.batchSize` controls the batch size used when the JVM columnar shuffle writer
 flushes sorted spill files. A value larger than `spark.comet.batchSize` is capped at `spark.comet.batchSize`.
 
+## Limiting Integral Sequence Output
+
+`spark.comet.exec.sequence.maxBytesPerInvocation` limits the logical Arrow output of each native
+integral `sequence` invocation. The kernel validates all rows and checks this ceiling before
+allocating the output values and offsets. A refusal fails the task with the required byte count and
+the limit. Lower `spark.comet.batchSize` to fit fewer sequences in an invocation, shorten a sequence
+that is too large on its own, or explicitly raise this setting. Byte units such as `64m` are accepted;
+`-1` restores the pre-1.2.0 absence of this byte ceiling, and `0` allows no output bytes. Existing
+Spark per-row and Arrow batch element limits still apply. See the
+[Upgrade Guide](../migration-guide.md).
+
+When the setting is absent in off-heap mode and the core count is known, the default is:
+
+```text
+task slots = max(1, floor(local or executor cores / CPUs allocated to the task))
+sequence ceiling = Comet's configured memory pool limit / task slots
+```
+
+The pool limit is resolved by `CometExecIterator.getMemoryConfig` from
+`spark.memory.offHeap.size * spark.comet.exec.memoryPool.fraction`. Local mode uses the thread count
+in `spark.master`; executors use `spark.executor.cores`. For `local-cluster[workers,cores,memory]`,
+the configured worker cores are used when executor cores are unset. Standalone may assign cores
+without exposing their count in the executor configuration. In that case the fallback is the whole
+configured pool limit, not an inferred task share; set `spark.executor.cores` or an explicit
+sequence ceiling to choose a smaller limit.
+
+The task's CPU allocation normally comes from `spark.task.cpus`, and may be overridden by a resource
+profile; the executor configuration also reflects non-default profile allocations. The ceiling
+does not change with live task counts or pool usage. On-heap test mode has no default ceiling; an
+explicit setting still applies there.
+
+Logical bytes include the child values at their integral width, four bytes per list offset
+(including the terminal offset), and one validity bit per row when null lists are present, rounded
+up to whole bytes. Even an empty output has a four-byte terminal offset. Allocator padding, scratch
+space and shared input backing outside a validity slice are excluded. Validity preparation and the
+row-length scratch buffer may be allocated before the final check.
+
 ## Limiting Spill Disk Usage
 
 Native operators that spill to disk (aggregate, sort, shuffle) are bounded by

@@ -17,6 +17,10 @@
 
 use std::collections::HashMap;
 
+use crate::errors::{CometError, CometResult};
+
+pub(crate) const COMET_EXEC_SEQUENCE_MAX_BYTES_PER_INVOCATION: &str =
+    "spark.comet.exec.sequence.maxBytesPerInvocation";
 pub(crate) const COMET_TRACING_ENABLED: &str = "spark.comet.tracing.enabled";
 pub(crate) const COMET_DEBUG_ENABLED: &str = "spark.comet.debug.enabled";
 pub(crate) const COMET_EXPLAIN_NATIVE_ENABLED: &str = "spark.comet.explain.native.enabled";
@@ -31,6 +35,21 @@ pub(crate) const COMET_EXEC_SPILL_COMPRESSION_CODEC: &str =
 pub(crate) const COMET_STRICT_TIMESTAMP_LABELS: &str =
     "spark.comet.testing.strictTimestampLabels.enabled";
 pub(crate) const SPARK_EXECUTOR_CORES: &str = "spark.executor.cores";
+
+/// The JVM resolves the task's default and byte units before sending this value.
+pub(crate) fn sequence_max_bytes(config: &HashMap<String, String>) -> CometResult<Option<usize>> {
+    match config
+        .get(COMET_EXEC_SEQUENCE_MAX_BYTES_PER_INVOCATION)
+        .map(String::as_str)
+    {
+        None | Some("-1") => Ok(None),
+        Some(value) => value.parse::<usize>().map(Some).map_err(|_| {
+            CometError::Config(format!(
+                "Invalid resolved {COMET_EXEC_SEQUENCE_MAX_BYTES_PER_INVOCATION}: {value}"
+            ))
+        }),
+    }
+}
 
 /// Comet configs read through this trait must be resolved by the JVM first:
 /// `CometExecIterator.serializeCometSQLConfs` sends booleans as `true` or `false` and sizes as a
@@ -59,5 +78,30 @@ impl SparkConfig for HashMap<String, String> {
         self.get(name)
             .and_then(|str_val| str_val.parse::<usize>().ok())
             .unwrap_or(default_value)
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn sequence_ceiling_requires_resolved_bytes() {
+        let mut config = HashMap::new();
+        assert_eq!(sequence_max_bytes(&config).unwrap(), None);
+        for (value, expected) in [("-1", None), ("0", Some(0)), ("1024", Some(1024))] {
+            config.insert(
+                COMET_EXEC_SEQUENCE_MAX_BYTES_PER_INVOCATION.into(),
+                value.into(),
+            );
+            assert_eq!(sequence_max_bytes(&config).unwrap(), expected);
+        }
+        for value in ["-2", "1k", "invalid", "18446744073709551616"] {
+            config.insert(
+                COMET_EXEC_SEQUENCE_MAX_BYTES_PER_INVOCATION.into(),
+                value.into(),
+            );
+            assert!(sequence_max_bytes(&config).is_err(), "{value}");
+        }
     }
 }

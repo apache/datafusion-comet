@@ -94,7 +94,7 @@ use datafusion_comet_spark_expr::{
     create_comet_physical_fun, create_comet_physical_fun_with_eval_mode, BinaryOutputStyle,
     BloomFilterAgg, BloomFilterMightContain, CheckedBinaryExpr, CometCollectList, CometCollectSet,
     CsvWriteOptions, EvalMode, ListPositionsExpr, SparkArraysZipFunc, SparkBloomFilterVersion,
-    SparkListAgg, SparkPercentile, Subquery, SumInteger, ToCsv,
+    SparkListAgg, SparkPercentile, SparkSequence, Subquery, SumInteger, ToCsv,
 };
 use datafusion_datasource::TableSchema;
 use iceberg::expr::Bind;
@@ -358,6 +358,7 @@ pub struct PhysicalPlanner {
     /// Whether a boundary that would cast a timestamp's timezone label to the declared one fails
     /// instead. Test-only; see `spark.comet.testing.strictTimestampLabels.enabled`.
     strict_timestamp_labels: bool,
+    sequence_max_bytes: Option<usize>,
 }
 
 impl Default for PhysicalPlanner {
@@ -379,6 +380,7 @@ impl PhysicalPlanner {
             shuffle_partition_pusher: None,
             float_operands: FloatOperands::Normalize,
             strict_timestamp_labels: false,
+            sequence_max_bytes: None,
         }
     }
 
@@ -459,6 +461,11 @@ impl PhysicalPlanner {
 
     pub fn with_strict_timestamp_labels(mut self, strict: bool) -> Self {
         self.strict_timestamp_labels = strict;
+        self
+    }
+
+    pub fn with_sequence_max_bytes(mut self, max_bytes: Option<usize>) -> Self {
+        self.sequence_max_bytes = max_bytes;
         self
     }
 
@@ -4086,12 +4093,19 @@ impl PhysicalPlanner {
                 }
             };
 
-        let fun_expr = create_comet_physical_fun(
-            fun_name,
-            data_type.clone(),
-            &self.session_ctx.state(),
-            Some(expr.fail_on_error),
-        )?;
+        let fun_expr = if fun_name == "spark_sequence" {
+            Arc::new(ScalarUDF::new_from_impl(SparkSequence::new(
+                data_type.clone(),
+                self.sequence_max_bytes,
+            )))
+        } else {
+            create_comet_physical_fun(
+                fun_name,
+                data_type.clone(),
+                &self.session_ctx.state(),
+                Some(expr.fail_on_error),
+            )?
+        };
 
         let args = args
             .into_iter()
