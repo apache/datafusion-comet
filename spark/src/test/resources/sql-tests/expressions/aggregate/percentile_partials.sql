@@ -15,6 +15,8 @@
 -- specific language governing permissions and limitations
 -- under the License.
 
+-- MinSparkVersion: 3.5
+
 -- When a group holds both 0.0 and -0.0, Spark ranks first the zero its final hash table reaches
 -- first, which depends on each partition's partial buffer, not only on the rows. Each INSERT
 -- coalesces to one task, so it writes one file in row order, and an open cost as large as a

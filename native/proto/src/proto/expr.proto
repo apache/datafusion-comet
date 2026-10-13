@@ -308,6 +308,9 @@ message Percentile {
   DataType datatype = 3;
   // Whether the child was FLOAT before the serde cast it to DOUBLE.
   bool float_input = 4;
+  // Whether Spark keeps 0.0 and -0.0 as separate keys in its percentile buffer, which it does
+  // from 3.5.2 (SPARK-45599).
+  bool signed_zero_keys = 5;
 }
 
 message ApproxPercentile {

@@ -138,7 +138,7 @@ fn criterion_benchmark(c: &mut Criterion) {
 
     group.bench_function("percentile", |b| {
         let udf = Arc::new(AggregateUDF::new_from_impl(
-            SparkPercentile::try_new(0.5, false).unwrap(),
+            SparkPercentile::try_new(0.5, false, true).unwrap(),
         ));
         // Mirror the planner: exact percentile takes the value column plus the
         // percentage literal as inputs.

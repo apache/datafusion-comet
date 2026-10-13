@@ -3471,6 +3471,7 @@ impl PhysicalPlanner {
                 let func = AggregateUDF::new_from_impl(SparkPercentile::try_new(
                     percentile_value,
                     expr.float_input,
+                    expr.signed_zero_keys,
                 )?);
                 AggregateExprBuilder::new(func.into(), vec![child, percentile])
                     .schema(schema)
