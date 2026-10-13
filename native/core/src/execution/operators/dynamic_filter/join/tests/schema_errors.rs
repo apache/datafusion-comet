@@ -153,7 +153,10 @@ async fn join_reader_filter_preserves_schema_error_with_file_statistics() {
         config.options_mut().execution.parquet.pushdown_filters = false;
         let session = Arc::new(SessionContext::new_with_config(config));
         let scan = scan(&[&compatible, &incompatible], true, None, false, &session);
-        let (config, _) = scan.downcast_to_file_source::<ParquetSource>().unwrap();
+        // Comet wraps the Parquet source to attach file paths to read errors.
+        let (config, _) =
+            crate::execution::operators::dynamic_filter::parquet_reader::parquet_file_source(&scan)
+                .unwrap();
         let mut config = config.clone();
         config.file_groups = vec![config.file_groups[0]
             .files()

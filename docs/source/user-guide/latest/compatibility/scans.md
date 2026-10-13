@@ -150,3 +150,16 @@ SchemaColumnConvertNotSupportedException`) instead of the one-level chain Spark'
   `SparkException` instead. Walk the cause chain to recover the
   `SchemaColumnConvertNotSupportedException`. Spark 4.0+ produces a single-level chain, matching
   vanilla Spark. See [#4354](https://github.com/apache/datafusion-comet/issues/4354).
+
+### Read Error Wrapping
+
+- **Spark 3.x: `TIMESTAMP_MILLIS` overflow past the first batch is wrapped in a file-read error**.
+  When a Parquet `TIMESTAMP_MILLIS` value overflows on conversion to microseconds, Spark's reader
+  throws `ArithmeticException: long overflow`. Spark 3.4 and 3.5 wrap a reader error in a
+  `SparkException` that names the file only while reading the first batch of each file split. For
+  the vectorized reader, that batch is the first `spark.sql.parquet.columnarReaderBatchSize` rows
+  (4096 by default), or the first row group if that is smaller. An overflow in a later batch fails
+  the task with the bare `ArithmeticException`. Spark 4.0+ wraps errors from every batch, and so does
+  Comet on every Spark version. So on Spark 3.x, an overflow past the first batch produces a Comet
+  error that names the file and has one more `SparkException` above the `ArithmeticException` in
+  its cause chain than Spark's error.
