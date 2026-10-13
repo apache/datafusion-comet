@@ -19,11 +19,12 @@ use arrow::array::Int64Array;
 use arrow::datatypes::{DataType, Field};
 use criterion::{criterion_group, criterion_main, Criterion};
 use datafusion::common::{config::ConfigOptions, Result, ScalarValue};
-use datafusion::execution::memory_pool::{GreedyMemoryPool, MemoryPool};
+use datafusion::execution::memory_pool::{GreedyMemoryPool, MemoryPool, TrackConsumersPool};
 use datafusion::logical_expr::{ScalarFunctionArgs, ScalarUDF};
 use datafusion::physical_plan::ColumnarValue;
 use datafusion_comet_spark_expr::{spark_sequence, SparkSequence};
 use std::hint::black_box;
+use std::num::NonZeroUsize;
 use std::sync::Arc;
 
 const NUM_ROWS: usize = 8192;
@@ -59,9 +60,12 @@ fn criterion_benchmark(c: &mut Criterion) {
 
     benchmark_group(c, "sequence", |args, _| spark_sequence(args, &return_type));
 
-    // Exercise the production UDF, including real pool admission and complete scalar batches.
+    // Exercise the production UDF, including tracked pool admission and complete scalar batches.
     // The benchmark-only 1 GiB budget admits the largest 8192 x 10000 i64 fixture.
-    let pool = Arc::new(GreedyMemoryPool::new(1024 * 1024 * 1024));
+    let pool = Arc::new(TrackConsumersPool::new(
+        GreedyMemoryPool::new(1024 * 1024 * 1024),
+        NonZeroUsize::new(10).unwrap(),
+    ));
     let udf = Arc::new(ScalarUDF::new_from_impl(SparkSequence::new(
         return_type.clone(),
         Arc::clone(&pool) as _,
@@ -69,7 +73,7 @@ fn criterion_benchmark(c: &mut Criterion) {
     let return_field = Arc::new(Field::new("sequence", return_type, true));
     let config_options = Arc::new(ConfigOptions::default());
     benchmark_group(c, "sequence_pooled", |args, rows| {
-        udf.invoke_with_args(ScalarFunctionArgs {
+        black_box(&udf).invoke_with_args(ScalarFunctionArgs {
             args: args.to_vec(),
             arg_fields: vec![],
             number_rows: rows,
