@@ -2158,7 +2158,7 @@ class CometIcebergWriteActionSuite
   // iceberg-java does. One shuffle partition puts every row in one task, so the values meet in one
   // writer. The fanout writer gets them interleaved. The clustered writer gets each partition's
   // rows together: Spark's sort ties -0.0 with 0.0, so a zero that repeats could come back
-  // unclustered, which iceberg-java rejects too.
+  // unclustered, which both writers reject (see the next test).
   test("signed-zero and NaN float and double identity partitions match iceberg-java") {
     assumeNativeAcceleration()
     withIcebergCatalog { warehouseDir =>
@@ -2213,6 +2213,40 @@ class CometIcebergWriteActionSuite
             assert(matching(nativeTable) == matching(jvmTable), s"fanout=$fanout, $predicate")
           }
       }
+    }
+  }
+
+  // https://github.com/apache/datafusion-comet/issues/6138. A clustered writer rejects a row for a
+  // partition it has already closed. While iceberg-rust treated -0.0 and 0.0 as one value, the
+  // native writer accepted these rows as one partition, where iceberg-java rejects them. Spark's
+  // sort ties the two zeros, so `appendUnclustered` skips it to fix the order the writers see.
+  test("clustered writer rejects interleaved signed zeros like the JVM writer") {
+    assumeNativeAcceleration()
+    withIcebergCatalog { _ =>
+      val (nativeTable, jvmTable) = ("zero_unclustered_native", "zero_unclustered_jvm")
+      val tables = Seq(nativeTable, jvmTable)
+      tables.foreach { table =>
+        spark.sql(s"""
+          CREATE TABLE $catalog.$ns.$table (id INT, f FLOAT, d DOUBLE)
+          USING iceberg PARTITIONED BY (f, d)
+        """)
+      }
+      // The -0.0 partition is revisited after the writer has moved on to 0.0 and closed it.
+      val (negF, posF) = ("CAST('-0.0' AS FLOAT)", "CAST(0.0 AS FLOAT)")
+      val rows = spark.sql(
+        s"SELECT * FROM VALUES (1, $negF, 0.0D), (2, $posF, 0.0D), (3, $negF, 0.0D) " +
+          "AS t(id, f, d)")
+
+      val (nativeFailure, jvmFailure) =
+        failedWrites(nativeTable, jvmTable)(appendUnclustered(_, rows))
+
+      val (_, nativeMessage) = clusteredWriterError(nativeFailure)
+      assert(
+        clusteredWriterError(nativeFailure) == clusteredWriterError(jvmFailure),
+        s"native message differs from the JVM writer's:\n$nativeMessage")
+      assert(nativeMessage.contains("partition 'f=-0.0/d=0.0'"), nativeMessage)
+      // Neither write may have committed.
+      tables.foreach(assertRows(_, Seq.empty))
     }
   }
 
