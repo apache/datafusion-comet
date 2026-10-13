@@ -129,10 +129,10 @@ case class CometWriteFilesExec(
 
     // SPARK-23271: a zero-partition input would spawn no task and therefore write no file at all,
     // so the output directory would carry no schema for readers. Spark's own WriteFilesExec swaps
-    // in a dummy single-partition RDD for exactly this case. AQE reaches it by collapsing a
-    // completed empty shuffle into a CometEmptyRelationExec, which is why
-    // CometDataWritingCommand declines empty-relation inputs on the Spark 3.x path (#5303): its
-    // writer has nowhere to put this swap. See CometEmptyRelationParquetWriterSuite.
+    // in a dummy single-partition RDD for exactly this case, and CometNativeWriteExec does the
+    // same on the Spark 3.x path (#5303). AQE reaches it by collapsing a completed empty shuffle
+    // into a CometEmptyRelationExec, so a write over a native empty relation stays native and
+    // still leaves a schema-only file. See CometEmptyRelationParquetWriterSuite.
     val writeRDD = if (childRDD.getNumPartitions == 0) {
       sparkContext.parallelize(Seq.empty[ColumnarBatch], 1)
     } else {

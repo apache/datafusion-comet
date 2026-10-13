@@ -34,6 +34,7 @@ datafusion = { workspace = true }
 datafusion-comet-common = { workspace = true }
 datafusion-comet-spark-expr = { workspace = true }
 futures = { workspace = true }
+parking_lot = "0.12.5"
 
 [dev-dependencies]
 criterion = { version = "0.7", features = ["async", "async_tokio", "async_std"] }

@@ -47,7 +47,6 @@ object CometNot extends CometExpressionSerde[Not] {
     expr.child match {
       case inner: EqualTo if hasNativePath(CometEqualTo, inner) =>
         createBinaryExpr(
-          inner,
           inner.left,
           inner.right,
           inputs,
@@ -55,7 +54,6 @@ object CometNot extends CometExpressionSerde[Not] {
           (builder, binaryExpr) => builder.setNeq(binaryExpr))
       case inner: EqualNullSafe if hasNativePath(CometEqualNullSafe, inner) =>
         createBinaryExpr(
-          inner,
           inner.left,
           inner.right,
           inputs,
@@ -71,7 +69,6 @@ object CometNot extends CometExpressionSerde[Not] {
         // native, or returns None, which cascades this Not to None and falls the enclosing
         // operator back to Spark.
         createUnaryExpr(
-          expr,
           expr.child,
           inputs,
           binding,
@@ -93,7 +90,6 @@ object CometAnd extends CometExpressionSerde[And] {
       { case _: And => true; case _ => false },
       { case a: And => (a.left, a.right) })
     createBalancedBinaryExpr(
-      expr,
       operands,
       inputs,
       binding,
@@ -111,7 +107,6 @@ object CometOr extends CometExpressionSerde[Or] {
       { case _: Or => true; case _ => false },
       { case o: Or => (o.left, o.right) })
     createBalancedBinaryExpr(
-      expr,
       operands,
       inputs,
       binding,
@@ -125,7 +120,6 @@ object CometEqualTo extends CollationAwareBinaryPredicate[EqualTo] {
       inputs: Seq[Attribute],
       binding: Boolean): Option[ExprOuterClass.Expr] = {
     createBinaryExpr(
-      expr,
       expr.left,
       expr.right,
       inputs,
@@ -140,7 +134,6 @@ object CometEqualNullSafe extends CollationAwareBinaryPredicate[EqualNullSafe] {
       inputs: Seq[Attribute],
       binding: Boolean): Option[ExprOuterClass.Expr] = {
     createBinaryExpr(
-      expr,
       expr.left,
       expr.right,
       inputs,
@@ -155,7 +148,6 @@ object CometGreaterThan extends CollationAwareBinaryPredicate[GreaterThan] {
       inputs: Seq[Attribute],
       binding: Boolean): Option[ExprOuterClass.Expr] = {
     createBinaryExpr(
-      expr,
       expr.left,
       expr.right,
       inputs,
@@ -170,7 +162,6 @@ object CometGreaterThanOrEqual extends CollationAwareBinaryPredicate[GreaterThan
       inputs: Seq[Attribute],
       binding: Boolean): Option[ExprOuterClass.Expr] = {
     createBinaryExpr(
-      expr,
       expr.left,
       expr.right,
       inputs,
@@ -185,7 +176,6 @@ object CometLessThan extends CollationAwareBinaryPredicate[LessThan] {
       inputs: Seq[Attribute],
       binding: Boolean): Option[ExprOuterClass.Expr] = {
     createBinaryExpr(
-      expr,
       expr.left,
       expr.right,
       inputs,
@@ -200,7 +190,6 @@ object CometLessThanOrEqual extends CollationAwareBinaryPredicate[LessThanOrEqua
       inputs: Seq[Attribute],
       binding: Boolean): Option[ExprOuterClass.Expr] = {
     createBinaryExpr(
-      expr,
       expr.left,
       expr.right,
       inputs,
@@ -215,7 +204,6 @@ object CometIsNull extends CometExpressionSerde[IsNull] {
       inputs: Seq[Attribute],
       binding: Boolean): Option[ExprOuterClass.Expr] = {
     createUnaryExpr(
-      expr,
       expr.child,
       inputs,
       binding,
@@ -229,7 +217,6 @@ object CometIsNotNull extends CometExpressionSerde[IsNotNull] {
       inputs: Seq[Attribute],
       binding: Boolean): Option[ExprOuterClass.Expr] = {
     createUnaryExpr(
-      expr,
       expr.child,
       inputs,
       binding,

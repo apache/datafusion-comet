@@ -32,6 +32,7 @@ import org.apache.spark.sql.{CometTestBase, SparkSession}
 import org.apache.spark.sql.execution.SparkPlanInfo
 import org.apache.spark.sql.execution.ui.SparkListenerSQLExecutionStart
 
+import org.apache.comet.CometSparkSessionExtensions.isSpark35Plus
 import org.apache.comet.iceberg.IcebergReflection
 
 /**
@@ -237,6 +238,60 @@ class CometIcebergRewriteActionSuite extends CometTestBase with CometIcebergTest
     }
   }
 
+  // On a format-version 3 table, Iceberg 1.10+ compaction writes the row lineage columns so the
+  // rewritten rows keep their ids and sequence numbers. The native writer does not write them, so
+  // there the rewrite falls back to iceberg-java, while the appends that build the table stay
+  // native. Older Iceberg writes no lineage columns, so its rewrite stays native.
+  test("binPack rewrite of a format-version=3 table keeps row lineage") {
+    assume(icebergAvailable, "Iceberg not available in classpath")
+    assume(isSpark35Plus, "V3 tables require Iceberg 1.8.1+ (Spark 3.5 profile)")
+    val writesLineage = icebergVersionAtLeast(1, 10)
+
+    withTempIcebergDir { warehouseDir =>
+      withIcebergComet(warehouseDir) {
+        val table = s"$catalog.db.v3_rewrite_test"
+        try {
+          createMultiFileTable(table, MultiFileTableSize, "TBLPROPERTIES ('format-version'='3')")
+          assertCurrentDataFilesWrittenByCometNative(table)
+          // Each append is one file of 100 rows, so append i hands out ids from i * 100 and
+          // its rows carry sequence number i + 1.
+          val lineageQuery =
+            s"SELECT id, _row_id, _last_updated_sequence_number FROM $table ORDER BY id"
+          if (writesLineage) {
+            val expected = (0 until MultiFileTableSize * 100).map(i =>
+              org.apache.spark.sql.Row(i, i.toLong, (i / 100 + 1).toLong))
+            assert(spark.sql(lineageQuery).collect().toSeq == expected)
+          }
+          val rowsBefore = spark.sql(s"SELECT * FROM $table ORDER BY id").collect().toSeq
+          val lineageBefore =
+            if (writesLineage) spark.sql(lineageQuery).collect().toSeq else Seq.empty
+
+          val plans = captureSqlPlans {
+            val rewrittenCount = runRewriteDataFiles(table, invoke(_, "binPack"))
+            assert(
+              rewrittenCount >= MultiFileTableSize,
+              s"Expected >= $MultiFileTableSize input files rewritten, got $rewrittenCount")
+          }
+
+          val rewritePlans = plans.filter(isRewriteWrite)
+          assert(rewritePlans.nonEmpty, "Expected at least one rewrite plan\n" + dumpPlans(plans))
+          assert(spark.sql(s"SELECT * FROM $table ORDER BY id").collect().toSeq == rowsBefore)
+          if (writesLineage) {
+            assert(
+              !rewritePlans.exists(_.hasNode("CometIcebergWrite")),
+              "Expected the lineage-carrying rewrite to stay on iceberg-java\n" +
+                dumpPlans(rewritePlans))
+            assert(spark.sql(lineageQuery).collect().toSeq == lineageBefore)
+          } else {
+            assertWritesAreComet(rewritePlans)
+          }
+        } finally {
+          spark.sql(s"DROP TABLE IF EXISTS $table")
+        }
+      }
+    }
+  }
+
   // -- Test driver -----------------------------------------------------------
 
   private case class RewriteCase(
@@ -318,6 +373,7 @@ class CometIcebergRewriteActionSuite extends CometTestBase with CometIcebergTest
         case _ =>
       }
     }
+    CometListenerBusUtils.waitUntilEmpty(spark.sparkContext)
     spark.sparkContext.addSparkListener(listener)
     try {
       body
@@ -474,8 +530,11 @@ class CometIcebergRewriteActionSuite extends CometTestBase with CometIcebergTest
       CometConf.COMET_SCALA_UDF_CODEGEN_ENABLED.key -> "true")(body)
 
   /** Creates an Iceberg table with `numFiles` separate appends, each producing one data file. */
-  private def createMultiFileTable(table: String, numFiles: Int): Unit = {
-    spark.sql(s"CREATE TABLE $table (id INT, value DOUBLE) USING iceberg")
+  private def createMultiFileTable(
+      table: String,
+      numFiles: Int,
+      tableProperties: String = ""): Unit = {
+    spark.sql(s"CREATE TABLE $table (id INT, value DOUBLE) USING iceberg $tableProperties")
     (0 until numFiles).foreach { i =>
       spark
         .range(i * 100L, (i + 1) * 100L)

@@ -26,7 +26,7 @@ import org.apache.spark.sql.catalyst.expressions.aggregate.{AggregateExpression,
 import org.apache.spark.sql.catalyst.util.ArrayData
 import org.apache.spark.sql.comet.CometExecUtils
 import org.apache.spark.sql.internal.SQLConf
-import org.apache.spark.sql.types.{BinaryType, BooleanType, ByteType, DataType, DateType, DecimalType, DoubleType, FloatType, IntegerType, LongType, NumericType, ShortType, StringType, TimestampNTZType, TimestampType}
+import org.apache.spark.sql.types.{ArrayType, BinaryType, BooleanType, ByteType, DataType, DateType, DayTimeIntervalType, DecimalType, DoubleType, FloatType, IntegerType, LongType, MapType, NullType, NumericType, ShortType, StringType, StructType, TimestampNTZType, TimestampType, YearMonthIntervalType}
 
 import org.apache.comet.CometConf.COMET_EXEC_STRICT_FLOATING_POINT
 import org.apache.comet.CometSparkSessionExtensions.{isSpark41Plus, isSpark42Plus, withFallbackReason}
@@ -542,8 +542,7 @@ trait CometCovBase {
       nullOnDivideByZero: Boolean,
       statsType: Int,
       inputs: Seq[Attribute],
-      binding: Boolean,
-      conf: SQLConf): Option[ExprOuterClass.AggExpr] = {
+      binding: Boolean): Option[ExprOuterClass.AggExpr] = {
     val child1Expr = exprToProto(cov.left, inputs, binding)
     val child2Expr = exprToProto(cov.right, inputs, binding)
     val dataType = serializeDataType(cov.dataType)
@@ -575,14 +574,7 @@ object CometCovSample extends CometAggregateExpressionSerde[CovSample] with Come
       inputs: Seq[Attribute],
       binding: Boolean,
       conf: SQLConf): Option[ExprOuterClass.AggExpr] = {
-    convertCov(
-      aggExpr,
-      covSample,
-      covSample.nullOnDivideByZero,
-      0,
-      inputs,
-      binding,
-      conf: SQLConf)
+    convertCov(aggExpr, covSample, covSample.nullOnDivideByZero, 0, inputs, binding)
   }
 }
 
@@ -593,20 +585,12 @@ object CometCovPopulation extends CometAggregateExpressionSerde[CovPopulation] w
       inputs: Seq[Attribute],
       binding: Boolean,
       conf: SQLConf): Option[ExprOuterClass.AggExpr] = {
-    convertCov(
-      aggExpr,
-      covPopulation,
-      covPopulation.nullOnDivideByZero,
-      1,
-      inputs,
-      binding,
-      conf: SQLConf)
+    convertCov(aggExpr, covPopulation, covPopulation.nullOnDivideByZero, 1, inputs, binding)
   }
 }
 
 trait CometVariance {
   def convertVariance(
-      aggExpr: AggregateExpression,
       expr: CentralMomentAgg,
       nullOnDivideByZero: Boolean,
       statsType: Int,
@@ -641,7 +625,7 @@ object CometVarianceSamp extends CometAggregateExpressionSerde[VarianceSamp] wit
       inputs: Seq[Attribute],
       binding: Boolean,
       conf: SQLConf): Option[ExprOuterClass.AggExpr] = {
-    convertVariance(aggExpr, variance, variance.nullOnDivideByZero, 0, inputs, binding)
+    convertVariance(variance, variance.nullOnDivideByZero, 0, inputs, binding)
   }
 }
 
@@ -652,19 +636,17 @@ object CometVariancePop extends CometAggregateExpressionSerde[VariancePop] with 
       inputs: Seq[Attribute],
       binding: Boolean,
       conf: SQLConf): Option[ExprOuterClass.AggExpr] = {
-    convertVariance(aggExpr, variance, variance.nullOnDivideByZero, 1, inputs, binding)
+    convertVariance(variance, variance.nullOnDivideByZero, 1, inputs, binding)
   }
 }
 
 trait CometStddev {
   def convertStddev(
-      aggExpr: AggregateExpression,
       stddev: CentralMomentAgg,
       nullOnDivideByZero: Boolean,
       statsType: Int,
       inputs: Seq[Attribute],
-      binding: Boolean,
-      conf: SQLConf): Option[ExprOuterClass.AggExpr] = {
+      binding: Boolean): Option[ExprOuterClass.AggExpr] = {
     val child = stddev.child
     val childExpr = exprToProto(child, inputs, binding)
     val dataType = serializeDataType(stddev.dataType)
@@ -694,7 +676,7 @@ object CometStddevSamp extends CometAggregateExpressionSerde[StddevSamp] with Co
       inputs: Seq[Attribute],
       binding: Boolean,
       conf: SQLConf): Option[ExprOuterClass.AggExpr] = {
-    convertStddev(aggExpr, stddev, stddev.nullOnDivideByZero, 0, inputs, binding, conf: SQLConf)
+    convertStddev(stddev, stddev.nullOnDivideByZero, 0, inputs, binding)
   }
 }
 
@@ -705,7 +687,7 @@ object CometStddevPop extends CometAggregateExpressionSerde[StddevPop] with Come
       inputs: Seq[Attribute],
       binding: Boolean,
       conf: SQLConf): Option[ExprOuterClass.AggExpr] = {
-    convertStddev(aggExpr, stddev, stddev.nullOnDivideByZero, 1, inputs, binding, conf: SQLConf)
+    convertStddev(stddev, stddev.nullOnDivideByZero, 1, inputs, binding)
   }
 }
 
@@ -1284,6 +1266,37 @@ object CometCollectList extends CometAggregateExpressionSerde[CollectList] {
   }
 }
 
+/**
+ * Spark's `CollectList` and `CollectSet` serialize their buffer as an `UnsafeRow` holding one
+ * `UnsafeArrayData`. A native PartialMerge decodes that buffer into the list state the native
+ * accumulators merge (`spark_aggregate_state.rs`), so a Spark Partial can feed it, but only for
+ * the element types the decoder reads. For any other, the PartialMerge must stay in Spark.
+ */
+object CometCollectBuffer extends CometTypeShim {
+
+  def nativePartialMergeCanDecode(fn: AggregateFunction): Boolean = fn match {
+    case collect: CollectList => canDecode(collect.child.dataType, nested = false)
+    case collect: CollectSet => canDecode(collect.child.dataType, nested = false)
+    case _ => false
+  }
+
+  private def canDecode(dataType: DataType, nested: Boolean): Boolean = dataType match {
+    case BooleanType | ByteType | ShortType | IntegerType | LongType | FloatType | DoubleType |
+        BinaryType | DateType | TimestampType | TimestampNTZType | NullType =>
+      true
+    case _: StringType | _: DecimalType => true
+    case dt if isTimeType(dt) => true
+    // The decoder reads nested values with the shuffle's unsafe row readers, which do not
+    // support ANSI intervals, so only top-level ones are decoded.
+    case _: YearMonthIntervalType | _: DayTimeIntervalType => !nested
+    case ArrayType(elementType, _) => canDecode(elementType, nested = true)
+    case StructType(fields) => fields.forall(field => canDecode(field.dataType, nested = true))
+    case MapType(keyType, valueType, _) =>
+      canDecode(keyType, nested = true) && canDecode(valueType, nested = true)
+    case _ => false
+  }
+}
+
 object CometApproxCountDistinct extends CometAggregateExpressionSerde[HyperLogLogPlusPlus] {
 
   // The register buffer uses Spark's identical packed-`Long` layout (`numWords` `Long` columns),
@@ -1460,15 +1473,13 @@ object AggSerde {
     }
   }
 
-  /** Shared support level for `Min` / `Max` based on the result data type. */
+  /**
+   * Shared support level for `Min` / `Max` based on the result data type. Floats follow Spark's
+   * ordering natively, so strict floating-point mode does not apply to them.
+   */
   def minMaxSupportLevel(dt: DataType): SupportLevel = {
     if (!minMaxDataTypeSupported(dt)) {
       Unsupported(Some(s"Unsupported data type: $dt"))
-    } else if ((dt == FloatType || dt == DoubleType) &&
-      COMET_EXEC_STRICT_FLOATING_POINT.get()) {
-      // https://github.com/apache/datafusion-comet/issues/2448
-      Unsupported(
-        Some(s"floating-point not supported when ${COMET_EXEC_STRICT_FLOATING_POINT.key}=true"))
     } else {
       Compatible()
     }
