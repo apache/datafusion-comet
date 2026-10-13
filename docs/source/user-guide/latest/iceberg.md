@@ -224,6 +224,11 @@ The following scenarios will fall back to the JVM Iceberg reader:
   while Spark maps UUID to a string, so the two orders can disagree; Comet declines the ordering
   and falls back to Spark
 
+A sort key the query does not project is intentionally not in this list, because it is not a
+fallback: Comet still reads the table natively and only skips the sort elimination. It reports the
+projected prefix of the sort order (or no order when the leading key is unprojected). This is
+likely the most common case people hit, so it is described under [Tuning](#tuning).
+
 Writes are not covered by this list. By default Iceberg writes use Spark's own writer; see
 [Iceberg Writes](iceberg-writes.md) for the experimental native writer and when it applies.
 
