@@ -1167,10 +1167,9 @@ mod tests {
         Ok(())
     }
 
-    /// A failed write to the output stream fails the task with the stream's error, and nothing is
-    /// sent to the stream after it, not even what dropping the Parquet writer flushes.
+    /// A failed write to the output stream fails the task with the stream's error.
     #[tokio::test]
-    async fn test_parquet_writer_stops_writing_to_a_failed_output_stream() -> Result<()> {
+    async fn test_parquet_writer_fails_when_its_output_stream_fails() -> Result<()> {
         let batches: Vec<RecordBatch> = (1..=5)
             .map(create_test_record_batch)
             .collect::<Result<_>>()?;
@@ -1196,6 +1195,40 @@ mod tests {
             "the writer kept writing to a stream that had failed"
         );
         Ok(())
+    }
+
+    /// Once a write to the stream has failed, the writer sends nothing more: neither what a
+    /// caller writes next, nor what a flush, such as the one dropping the Parquet writer makes,
+    /// would send. A failed send also consumes none of the bytes it was handed, as `Write`
+    /// requires of an error.
+    #[test]
+    fn test_output_stream_writer_sends_nothing_after_a_failed_write() {
+        let sink = Arc::new(RecordingSink {
+            failing_write: Some(0),
+            ..RecordingSink::new(4)
+        });
+        let mut writer = OutputStreamWriter::new(Arc::clone(&sink) as Arc<dyn OutputStreamSink>);
+
+        // A full buffer is only sent when the next bytes arrive.
+        writer.write_all(b"abcd").unwrap();
+        assert!(sink.writes().is_empty());
+        writer
+            .write(b"e")
+            .expect_err("the stream fails its first write");
+        assert_eq!(sink.writes(), vec![b"abcd".to_vec()]);
+        assert_eq!(writer.buffer, b"abcd", "the failed write consumed bytes");
+
+        writer
+            .write(b"e")
+            .expect_err("the writer must not write to a failed stream");
+        writer
+            .flush()
+            .expect_err("the writer must not flush to a failed stream");
+        assert_eq!(
+            sink.writes().len(),
+            1,
+            "the writer wrote to a failed stream"
+        );
     }
 
     #[tokio::test]

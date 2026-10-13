@@ -28,6 +28,7 @@ import scala.util.Using
 
 import org.apache.commons.io.IOUtils
 import org.apache.hadoop.fs.Path
+import org.apache.parquet.hadoop.ParquetOutputCommitter
 import org.apache.spark.SparkConf
 import org.apache.spark.sql.DataFrame
 import org.apache.spark.sql.execution.SparkPlan
@@ -141,6 +142,9 @@ class ParquetWriteWithMagicCommitterSuite
     assert(
       spark.conf.get(SQLConf.FILE_COMMIT_PROTOCOL_CLASS.key) ==
         NativeWriteUtils.PathOutputCommitProtocolClass)
+    assert(
+      spark.conf.get(SQLConf.PARQUET_OUTPUT_COMMITTER_CLASS.key) ==
+        NativeWriteUtils.BindingParquetOutputCommitterClass)
     withTempPath { dir =>
       val df = nativeSource((1 to 10000).map(i => (i, s"str_$i")).toDF("id", "name"), dir)
         .repartition(4)
@@ -177,41 +181,51 @@ class ParquetWriteWithMagicCommitterSuite
     }
   }
 
-  test("a native write is committed by the magic committer through Spark's commit protocol") {
-    assume(isSpark40Plus, "Requires the WriteFilesExec seam")
-    // The other binding: Spark's own protocol instantiates BindingParquetOutputCommitter, which
-    // asks the committer factory for the magic committer and hands out its paths.
-    withTempPath { dir =>
-      val df = nativeSource((1 to 1000).map(i => (i, s"str_$i")).toDF("id", "name"), dir)
-        .repartition(2)
-      val table = s"s3a://$testBucketName/binding"
-      withNativeWriter {
-        withSQLConf(
-          SQLConf.FILE_COMMIT_PROTOCOL_CLASS.key ->
-            SQLConf.FILE_COMMIT_PROTOCOL_CLASS.defaultValueString) {
-          assert(
-            spark.conf.get(SQLConf.PARQUET_OUTPUT_COMMITTER_CLASS.key) ==
-              NativeWriteUtils.BindingParquetOutputCommitterClass)
-          val plan = captureWritePlan(p => df.write.parquet(p), table)
-          assertHasCometNativeWriteExec(plan)
-          assertCommittedByMagic(table, plan, files = 2)
+  // Spark 4.1 configures both bindings at once. Either one alone asks the committer factory for
+  // the magic committer: PathOutputCommitProtocol ignores the Parquet committer class, and Spark's
+  // default protocol instantiates BindingParquetOutputCommitter, which hands out the magic
+  // committer's paths.
+  Seq(
+    "PathOutputCommitProtocol" -> (SQLConf.PARQUET_OUTPUT_COMMITTER_CLASS.key ->
+      classOf[ParquetOutputCommitter].getName),
+    "BindingParquetOutputCommitter" -> (SQLConf.FILE_COMMIT_PROTOCOL_CLASS.key ->
+      SQLConf.FILE_COMMIT_PROTOCOL_CLASS.defaultValueString)).foreach {
+    case (binding, otherBindingUnset) =>
+      test(s"a native write is committed by the magic committer through $binding alone") {
+        assume(isSpark40Plus, "Requires the WriteFilesExec seam")
+        withTempPath { dir =>
+          val df = nativeSource((1 to 1000).map(i => (i, s"str_$i")).toDF("id", "name"), dir)
+            .repartition(2)
+          val table = s"s3a://$testBucketName/$binding"
+          withNativeWriter {
+            withSQLConf(otherBindingUnset) {
+              val plan = captureWritePlan(p => df.write.parquet(p), table)
+              assertHasCometNativeWriteExec(plan)
+              assertCommittedByMagic(table, plan, files = 2)
+            }
+          }
+          checkAnswer(spark.read.parquet(table), df)
         }
       }
-      checkAnswer(spark.read.parquet(table), df)
-    }
   }
 
   test("a failed native write leaves no pending upload behind") {
     assume(isSpark40Plus, "Requires the WriteFilesExec seam")
-    // S3A starts the multipart upload of a magic file when the file is created. A failed write
-    // has to abort it: closing would record it for task commit, and nothing else cleans it up,
-    // since S3A's committers do not abort a destination's pending uploads by default.
+    // S3A starts the multipart upload of a magic file when the file is created, so a failed write
+    // has to abort the file for the upload not to stay pending, and billed. Job abort otherwise
+    // cleans up only with fs.s3a.committer.abort.pending.uploads, which deployments writing one
+    // destination from concurrent jobs turn off, so it is off here: only the writer's own abort
+    // can leave the bucket clean. One task, because job abort does not wait for tasks still
+    // running, so with several what is left would depend on how far the others got.
     withTempPath { dir =>
       val df = nativeSource((1 to 1000).map(i => (i, i - 500)).toDF("id", "divisor"), dir)
         .select((col("id") / col("divisor")).as("quotient"))
+        .coalesce(1)
       val table = s"s3a://$testBucketName/failed"
       withNativeWriter {
-        withSQLConf(SQLConf.ANSI_ENABLED.key -> "true") {
+        withSQLConf(
+          SQLConf.ANSI_ENABLED.key -> "true",
+          "fs.s3a.committer.abort.pending.uploads" -> "false") {
           val (plan, error) = captureFailedWritePlan(df.write.parquet(table))
           assertHasCometNativeWriteExec(plan)
           assert(
@@ -221,9 +235,12 @@ class ParquetWriteWithMagicCommitterSuite
       }
       val tablePath = new Path(table)
       val fs = tablePath.getFileSystem(spark.sessionState.newHadoopConf())
-      assert(
-        !fs.exists(tablePath) || fs.listStatus(tablePath).isEmpty,
-        fs.listStatus(tablePath).map(_.getPath).mkString(", "))
+      if (fs.exists(tablePath)) {
+        val iterator = fs.listFiles(tablePath, true)
+        val files =
+          Iterator.continually(iterator).takeWhile(_.hasNext).map(_.next().getPath).toList
+        assert(files.isEmpty, s"A failed write left ${files.mkString(", ")}")
+      }
       assert(pendingUploads(testBucketName).isEmpty, pendingUploads(testBucketName))
     }
   }
