@@ -30,15 +30,22 @@ edition = { workspace = true }
 arrow = { workspace = true }
 chrono = { workspace = true }
 datafusion = { workspace = true }
+datafusion-functions = { workspace = true }
 datafusion-spark = { workspace = true }
 num = { workspace = true }
 regex = { workspace = true }
 # preserve_order: needed for get_json_object to match Spark's JSON key ordering
 serde_json = { version = "1.0", features = ["preserve_order"] }
 serde = { version = "1.0", features = ["derive"] }
+# get_json_object: pre-parse scan for Jackson's numeric length constraint, using
+# the same memchr2-based string skipping as serde_json's own `ignore_str`
+memchr = "2.8"
+smallvec = "1.16"
 datafusion-comet-common = { workspace = true }
 datafusion-comet-jni-bridge = { workspace = true }
 jni = "0.22.4"
+# jni-bridge's `jni_static_call!` expands to `paste::paste!`, so callers need `paste` directly
+paste = "1.0.14"
 futures = { workspace = true }
 twox-hash = "2.1.2"
 rand = { workspace = true }
@@ -56,6 +63,10 @@ rand = { workspace = true}
 tokio = { version = "1", features = ["rt-multi-thread"] }
 datafusion = { workspace = true, features = ["sql"] }
 
+# `paste` is only used through macro expansion, which cargo machete cannot see
+[package.metadata.cargo-machete]
+ignored = ["paste"]
+
 [lib]
 name = "datafusion_comet_spark_expr"
 path = "src/lib.rs"
@@ -70,6 +81,10 @@ harness = false
 
 [[bench]]
 name = "cast_from_string"
+harness = false
+
+[[bench]]
+name = "cast_nested"
 harness = false
 
 [[bench]]
@@ -173,6 +188,10 @@ name = "bloom_filter_agg"
 harness = false
 
 [[bench]]
+name = "bloom_filter_might_contain"
+harness = false
+
+[[bench]]
 name = "collect"
 harness = false
 
@@ -265,6 +284,10 @@ name = "arrays_overlap"
 harness = false
 
 [[bench]]
+name = "array_extrema"
+harness = false
+
+[[bench]]
 name = "checked_arithmetic"
 harness = false
 
@@ -330,6 +353,22 @@ harness = false
 
 [[bench]]
 name = "abs"
+harness = false
+
+[[bench]]
+name = "sqrt"
+harness = false
+
+[[bench]]
+name = "concat_ws"
+harness = false
+
+[[bench]]
+name = "list_positions"
+harness = false
+
+[[bench]]
+name = "map_from_arrays"
 harness = false
 
 [[bench]]
@@ -425,6 +464,18 @@ name = "aggregate_stats"
 harness = false
 
 [[bench]]
+name = "hll_agg"
+harness = false
+
+[[bench]]
+name = "hll_scalar"
+harness = false
+
+[[bench]]
+name = "aggregate_misc"
+harness = false
+
+[[bench]]
 name = "nondeterministic"
 harness = false
 
@@ -438,4 +489,20 @@ harness = false
 
 [[bench]]
 name = "nested_comparison"
+harness = false
+
+[[bench]]
+name = "float_comparison"
+harness = false
+
+[[bench]]
+name = "float_arrays"
+harness = false
+
+[[bench]]
+name = "min_max"
+harness = false
+
+[[bench]]
+name = "greatest_least"
 harness = false

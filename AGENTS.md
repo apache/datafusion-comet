@@ -30,6 +30,9 @@ Relevant entry points:
 - [Adding a New Expression](docs/source/contributor-guide/adding_a_new_expression.md) /
   [Adding a New Operator](docs/source/contributor-guide/adding_a_new_operator.md).
 - [Debugging Guide](docs/source/contributor-guide/debugging.md).
+- [Backporting to Release Branches](docs/source/contributor-guide/backporting.md): a fix that
+  goes to one release branch also goes to every newer one. Cherry-pick with `-x`, and never add
+  an unrelated change to a backport pull request.
 
 When opening a pull request, use the [PR template](.github/pull_request_template.md) and fill
 in every section.

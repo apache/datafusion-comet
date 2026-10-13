@@ -18,7 +18,7 @@
 [package]
 name = "comet-contrib-lance"
 description = "Native Lance scan integration for Apache DataFusion Comet"
-version = "1.1.0"
+version = "1.2.0"
 edition = "2021"
 rust-version = "1.94"
 publish = false

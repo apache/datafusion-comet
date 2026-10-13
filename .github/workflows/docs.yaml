@@ -42,12 +42,17 @@ jobs:
         with:
           python-version: "3.10"
 
+      # No `cache: 'maven'`: build.sh builds four Spark profiles, so that entry
+      # ran to 2.5 GB, read by this job alone, and it pushed the entries the
+      # merge-queue builds depend on out of the repository's 10 GB budget. The
+      # site deploy runs after the merge and nothing waits on it, so fetching
+      # the Maven dependencies here is the cheaper side of that trade. See
+      # issue #6387.
       - name: Setup Java
         uses: actions/setup-java@v6
         with:
           distribution: 'temurin'
           java-version: '17'
-          cache: 'maven'
 
       - name: Setup Node
         uses: actions/setup-node@v7

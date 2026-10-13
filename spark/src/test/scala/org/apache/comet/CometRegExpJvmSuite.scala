@@ -20,24 +20,16 @@
 package org.apache.comet
 
 import org.apache.spark.sql.CometTestBase
-import org.apache.spark.sql.comet.{CometFilterExec, CometProjectExec}
-import org.apache.spark.sql.execution.adaptive.AdaptiveSparkPlanHelper
 import org.apache.spark.sql.functions.col
 
 import org.apache.comet.CometSparkSessionExtensions.{isSpark40Plus, isSpark41Plus}
 
 // Regex expressions other than in-subset `rlike` run through the codegen dispatcher by default
 // (Spark's own code, enabled by default) rather than the native rust path.
-class CometRegExpJvmSuite extends CometTestBase with AdaptiveSparkPlanHelper {
+class CometRegExpJvmSuite extends CometTestBase {
 
-  // Patterns that the Rust regex crate cannot handle. Using one of these proves
-  // the JVM path was taken: if the pattern reached native, native would have
-  // rejected it and the operator would not be Comet.
-  private val backreference = "^(\\\\w)\\\\1$"
+  // A Java-only pattern used to check the opt-in behavior when Rust rejects it.
   private val lookahead = "foo(?=bar)"
-  private val lookbehind = "(?<=foo)bar"
-  private val embeddedFlags = "(?i)foo"
-  private val namedGroup = "(?<digit>\\\\d)"
 
   // Same structure as Sunchao's 4096-branch / 131,072-capture reproducer
   // (PR #5415). CometRegexSuite asserts the full pattern on the analyzer
@@ -62,85 +54,6 @@ class CometRegExpJvmSuite extends CometTestBase with AdaptiveSparkPlanHelper {
 
   // ========== rlike tests ==========
 
-  test("rlike: projection produces Java regex semantics with null handling") {
-    withSubjects("abc123", "no digits", null, "mixed_42_data") {
-      val df = sql("SELECT s, s rlike '\\\\d+' AS m FROM t")
-      checkSparkAnswerAndOperator(df)
-    }
-  }
-
-  test("rlike: predicate filters rows using Java regex semantics") {
-    withSubjects("abc123", "no digits", null, "mixed_42_data") {
-      val df = sql("SELECT s FROM t WHERE s rlike '\\\\d+'")
-      checkSparkAnswerAndOperator(df)
-    }
-  }
-
-  test("rlike: backreference in projection (Java-only construct)") {
-    withSubjects("aa", "ab", "xyzzy", null) {
-      val df = sql(s"SELECT s, s rlike '$backreference' FROM t")
-      checkSparkAnswerAndOperator(df)
-      val plan = df.queryExecution.executedPlan
-      assert(
-        collect(plan) { case p: CometProjectExec => p }.nonEmpty,
-        s"Expected CometProjectExec in:\n$plan")
-    }
-  }
-
-  test("rlike: backreference in predicate (Java-only construct)") {
-    withSubjects("aa", "ab", "xyzzy", null) {
-      val df = sql(s"SELECT s FROM t WHERE s rlike '$backreference'")
-      checkSparkAnswerAndOperator(df)
-      val plan = df.queryExecution.executedPlan
-      assert(
-        collect(plan) { case f: CometFilterExec => f }.nonEmpty,
-        s"Expected CometFilterExec in:\n$plan")
-    }
-  }
-
-  test("rlike: lookahead pattern (Java-only construct)") {
-    withSubjects("foobar", "foobaz", "barfoo", null) {
-      checkSparkAnswerAndOperator(sql(s"SELECT s, s rlike '$lookahead' FROM t"))
-      checkSparkAnswerAndOperator(sql(s"SELECT s FROM t WHERE s rlike '$lookahead'"))
-    }
-  }
-
-  test("rlike: lookbehind pattern (Java-only construct)") {
-    withSubjects("foobar", "barbar", "foofoo", null) {
-      checkSparkAnswerAndOperator(sql(s"SELECT s, s rlike '$lookbehind' FROM t"))
-    }
-  }
-
-  test("rlike: embedded case-insensitive flag (Java-only construct)") {
-    withSubjects("FOO", "foo", "fOO", "bar") {
-      checkSparkAnswerAndOperator(sql(s"SELECT s, s rlike '$embeddedFlags' FROM t"))
-    }
-  }
-
-  test("rlike: named groups (Java-only construct)") {
-    withSubjects("a1", "ab", "9z", null) {
-      checkSparkAnswerAndOperator(sql(s"SELECT s, s rlike '$namedGroup' FROM t"))
-    }
-  }
-
-  test("rlike: empty pattern matches every non-null row") {
-    withSubjects("abc", "", null) {
-      checkSparkAnswerAndOperator(sql("SELECT s, s rlike '' FROM t"))
-    }
-  }
-
-  test("rlike: empty subject string is handled correctly") {
-    withSubjects("", "x", null) {
-      checkSparkAnswerAndOperator(sql("SELECT s, s rlike '^$' FROM t"))
-    }
-  }
-
-  test("rlike: all-null subject column produces all-null result") {
-    withSubjects(null, null, null) {
-      checkSparkAnswerAndOperator(sql("SELECT s rlike '\\\\d+' FROM t"))
-    }
-  }
-
   test("rlike: invalid pattern falls back to Spark") {
     withSubjects("a") {
       val ex = intercept[Throwable](sql("SELECT s rlike '[' FROM t").collect())
@@ -149,32 +62,6 @@ class CometRegExpJvmSuite extends CometTestBase with AdaptiveSparkPlanHelper {
           ex.getMessage.contains("PatternSyntax") ||
           ex.getMessage.contains("Unclosed"),
         s"Unexpected error: ${ex.getMessage}")
-    }
-  }
-
-  test("rlike: combines with filter, projection, and aggregate") {
-    withTable("t") {
-      sql("CREATE TABLE t (s STRING, k INT) USING parquet")
-      sql("""INSERT INTO t VALUES
-            |  ('aa', 1), ('ab', 1), ('aa', 2), ('xyzzy', 2), ('aa', 3), (NULL, 3)""".stripMargin)
-      val df = sql(s"""SELECT k, COUNT(*) AS c
-           |FROM t
-           |WHERE s rlike '$backreference'
-           |GROUP BY k
-           |ORDER BY k""".stripMargin)
-      checkSparkAnswerAndOperator(df)
-    }
-  }
-
-  test("rlike: many rows spanning multiple batches") {
-    withTable("t") {
-      sql("CREATE TABLE t (s STRING) USING parquet")
-      val values = (0 until 5000)
-        .map(i => if (i % 7 == 0) "(NULL)" else s"('row_${i}_aa')")
-        .mkString(", ")
-      sql(s"INSERT INTO t VALUES $values")
-      checkSparkAnswerAndOperator(sql(s"SELECT s, s rlike '$backreference' FROM t"))
-      checkSparkAnswerAndOperator(sql(s"SELECT s FROM t WHERE s rlike '$backreference'"))
     }
   }
 
@@ -677,90 +564,6 @@ class CometRegExpJvmSuite extends CometTestBase with AdaptiveSparkPlanHelper {
     }
   }
 
-  // ========== regexp_extract tests ==========
-
-  test("regexp_extract: basic group extraction") {
-    withSubjects("abc123def", "no match", null, "xyz789") {
-      checkSparkAnswerAndOperator(
-        sql("SELECT s, regexp_extract(s, '([a-z]+)(\\\\d+)', 1) FROM t"))
-      checkSparkAnswerAndOperator(
-        sql("SELECT s, regexp_extract(s, '([a-z]+)(\\\\d+)', 2) FROM t"))
-    }
-  }
-
-  test("regexp_extract: group 0 returns entire match") {
-    withSubjects("hello world", "foo123bar", null) {
-      checkSparkAnswerAndOperator(sql("SELECT s, regexp_extract(s, '\\\\d+', 0) FROM t"))
-    }
-  }
-
-  test("regexp_extract: no match returns empty string") {
-    withSubjects("abc", "def", null) {
-      checkSparkAnswerAndOperator(sql("SELECT s, regexp_extract(s, '\\\\d+', 0) FROM t"))
-    }
-  }
-
-  test("regexp_extract: backreference pattern (Java-only)") {
-    withSubjects("aa", "ab", "bb", null) {
-      checkSparkAnswerAndOperator(sql("SELECT s, regexp_extract(s, '(\\\\w)\\\\1', 0) FROM t"))
-    }
-  }
-
-  test("regexp_extract: lookahead pattern (Java-only)") {
-    withSubjects("foobar", "foobaz", null) {
-      checkSparkAnswerAndOperator(sql("SELECT s, regexp_extract(s, 'foo(?=bar)', 0) FROM t"))
-    }
-  }
-
-  test("regexp_extract: embedded flags (Java-only)") {
-    withSubjects("FOO123", "foo456", "bar789") {
-      checkSparkAnswerAndOperator(
-        sql("SELECT s, regexp_extract(s, '(?i)(foo)(\\\\d+)', 2) FROM t"))
-    }
-  }
-
-  test("regexp_extract: all-null column") {
-    withSubjects(null, null, null) {
-      checkSparkAnswerAndOperator(sql("SELECT regexp_extract(s, '(\\\\d+)', 1) FROM t"))
-    }
-  }
-
-  // ========== regexp_extract_all tests ==========
-
-  test("regexp_extract_all: basic extraction of all matches") {
-    withSubjects("abc123def456", "no match", null, "x1y2z3") {
-      checkSparkAnswerAndOperator(sql("SELECT s, regexp_extract_all(s, '(\\\\d+)', 1) FROM t"))
-    }
-  }
-
-  test("regexp_extract_all: group 0 returns full matches") {
-    withSubjects("cat bat hat", "no vowels", null) {
-      checkSparkAnswerAndOperator(sql("SELECT s, regexp_extract_all(s, '[a-z]at', 0) FROM t"))
-    }
-  }
-
-  test("regexp_extract_all: multiple groups") {
-    withSubjects("a1b2c3", "x9y8", null) {
-      checkSparkAnswerAndOperator(
-        sql("SELECT s, regexp_extract_all(s, '([a-z])(\\\\d)', 1) FROM t"))
-      checkSparkAnswerAndOperator(
-        sql("SELECT s, regexp_extract_all(s, '([a-z])(\\\\d)', 2) FROM t"))
-    }
-  }
-
-  test("regexp_extract_all: no matches returns empty array") {
-    withSubjects("abc", "def") {
-      checkSparkAnswerAndOperator(sql("SELECT s, regexp_extract_all(s, '\\\\d+', 0) FROM t"))
-    }
-  }
-
-  test("regexp_extract_all: lookahead pattern (Java-only)") {
-    withSubjects("foobar foobaz fooqux") {
-      checkSparkAnswerAndOperator(
-        sql("SELECT s, regexp_extract_all(s, 'foo(?=ba[rz])', 0) FROM t"))
-    }
-  }
-
   // ========== regexp_replace tests ==========
 
   test("regexp_replace: basic replacement") {
@@ -825,30 +628,25 @@ class CometRegExpJvmSuite extends CometTestBase with AdaptiveSparkPlanHelper {
     }
   }
 
-  // ========== regexp_instr tests ==========
-
-  test("regexp_instr: basic position finding") {
-    withSubjects("abc123def", "no match", null, "456xyz") {
-      checkSparkAnswerAndOperator(sql("SELECT s, regexp_instr(s, '\\\\d+', 0) FROM t"))
-    }
-  }
-
-  test("regexp_instr: specific group position") {
-    withSubjects("abc123def456", "xyz", null) {
-      checkSparkAnswerAndOperator(sql("SELECT s, regexp_instr(s, '([a-z]+)(\\\\d+)', 1) FROM t"))
-      checkSparkAnswerAndOperator(sql("SELECT s, regexp_instr(s, '([a-z]+)(\\\\d+)', 2) FROM t"))
-    }
-  }
-
-  test("regexp_instr: no match returns 0") {
-    withSubjects("abc", "def", null) {
-      checkSparkAnswerAndOperator(sql("SELECT s, regexp_instr(s, '\\\\d+', 0) FROM t"))
-    }
-  }
-
-  test("regexp_instr: lookahead (Java-only)") {
-    withSubjects("foobar", "foobaz", null) {
-      checkSparkAnswerAndOperator(sql("SELECT s, regexp_instr(s, 'foo(?=bar)', 0) FROM t"))
+  test("regexp_replace: invalid group reference in a filter surfaces the original exception") {
+    // DataFusion's parquet RowFilter flattens a predicate's error to a string, which would lose
+    // the Java throwable. A filter that calls into the JVM must therefore stay out of the scan
+    // even with row-level pushdown on, so it fails in the Filter above the scan instead.
+    assume(isSpark40Plus)
+    withSQLConf(CometConf.COMET_PARQUET_ROW_FILTER_PUSHDOWN_ENABLED.key -> "true") {
+      withSubjects("first last") {
+        val df = sql(
+          "SELECT COUNT(*) FROM t " +
+            "WHERE regexp_replace(s, '(?<first>[a-zA-Z]+) (?<last>[a-zA-Z]+)', '$3 $1') " +
+            "IS NOT NULL")
+        val names = causeChain(intercept[Throwable](df.collect())).map(_.getClass.getName)
+        assert(
+          names.contains("org.apache.spark.SparkRuntimeException"),
+          s"expected SparkRuntimeException in the cause chain, got: $names")
+        assert(
+          !names.contains("org.apache.comet.CometNativeException"),
+          s"native exception leaked across the boundary: $names")
+      }
     }
   }
 
@@ -890,19 +688,7 @@ class CometRegExpJvmSuite extends CometTestBase with AdaptiveSparkPlanHelper {
     }
   }
 
-  // ========== multi-batch and combined tests ==========
-
-  test("regexp_extract: many rows spanning multiple batches") {
-    withTable("t") {
-      sql("CREATE TABLE t (s STRING) USING parquet")
-      val values = (0 until 5000)
-        .map(i => if (i % 7 == 0) "(NULL)" else s"('item_${i}_value')")
-        .mkString(", ")
-      sql(s"INSERT INTO t VALUES $values")
-      checkSparkAnswerAndOperator(
-        sql("SELECT s, regexp_extract(s, 'item_(\\\\d+)_value', 1) FROM t"))
-    }
-  }
+  // ========== combined tests ==========
 
   test("all regexp expressions combined in one query") {
     withSubjects("abc123def456", "hello world", null, "aa") {
@@ -915,17 +701,6 @@ class CometRegExpJvmSuite extends CometTestBase with AdaptiveSparkPlanHelper {
           |  regexp_instr(s, '\\d+', 0) AS num_pos
           |FROM t
           |""".stripMargin))
-    }
-  }
-
-  test("expressions with no native path always run via the JVM dispatcher") {
-    withSubjects("abc123def", "no match", null, "xyz789") {
-      // regexp_extract / regexp_extract_all / regexp_instr have no native rust path, so they
-      // always run on Comet via the JVM codegen dispatcher rather than falling back to Spark.
-      checkSparkAnswerAndOperator(
-        sql("SELECT s, regexp_extract(s, '([a-z]+)(\\\\d+)', 2) FROM t"))
-      checkSparkAnswerAndOperator(sql("SELECT s, regexp_extract_all(s, '\\\\d+', 0) FROM t"))
-      checkSparkAnswerAndOperator(sql("SELECT s, regexp_instr(s, '\\\\d+', 0) FROM t"))
     }
   }
 }

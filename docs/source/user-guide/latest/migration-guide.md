@@ -57,6 +57,60 @@ Treat setting one of these keys as a temporary measure. If you find you cannot s
 legacy behavior, please open an issue describing your use case so it can be considered before the
 key is removed.
 
+## Upgrading to Comet 1.2.0
+
+Comet `1.2.0` makes no behavior changes that need a `spark.comet.legacy.*` key. The changes below
+need none either, but check whether any of them applies to your deployment.
+
+### In-Memory Cache Enabled by Default
+
+`spark.comet.exec.inMemoryCache.enabled` now defaults to `true` on Spark 3.5 and later. There, an
+application that loads `CometPlugin` now stores what it caches with `CACHE TABLE`, `df.cache()` or
+`df.persist()` in Comet's Arrow format instead of Spark's, and Comet scans it natively. On Spark 3.4
+the default stays `false`; see [In-Memory Cache](in-memory-cache.md) for why. The format does not
+change query results, but it can change performance. Spark's own cache scan can read Comet's format
+more slowly than Spark's, which matters when a session turns Comet or its native execution off
+after caching, and Comet records a fallback reason on such a scan. See
+[In-Memory Cache](in-memory-cache.md#limitations).
+
+The format is chosen once, when the application starts. To keep Spark's format, set
+`spark.comet.exec.inMemoryCache.enabled=false` then. Comet also keeps Spark's format without that
+setting when the application:
+
+- starts with `spark.comet.enabled` or `spark.comet.exec.enabled` set to `false`.
+- leaves Comet shuffle enabled without one of Comet's shuffle managers, so that Comet disables
+  itself.
+- uses Kryo with `spark.kryo.registrationRequired=true` and has not registered Comet's cached
+  batch, because Kryo would reject it. To use Comet's format, register Comet's classes with
+  `spark.kryo.registrator=org.apache.comet.CometKryoRegistrator`; see
+  [Kryo](in-memory-cache.md#kryo).
+
+An application that sets `spark.sql.cache.serializer` itself keeps the serializer it chose.
+
+### Deprecated and Removed Settings
+
+Using `spark.comet.sparkToColumnar.enabled` and `spark.comet.sparkToColumnar.supportedOperatorList`
+to convert ranges, in-memory cached tables, RDDs, queries without a `FROM` clause and Data Source V1
+relations that are not file-based to Arrow is deprecated, and will stop working in a future major
+release. Each of these now has a config of its own:
+
+| Operator in the list | Config                                       |
+| -------------------- | -------------------------------------------- |
+| `Range`              | `spark.comet.convert.range.enabled`          |
+| `InMemoryTableScan`  | `spark.comet.convert.inMemoryCache.enabled`  |
+| `RDDScan`            | `spark.comet.convert.rdd.enabled`            |
+| `OneRowRelation`     | `spark.comet.convert.oneRowRelation.enabled` |
+| `RowDataSourceScan`  | `spark.comet.convert.rowDataSource.enabled`  |
+
+`spark.comet.sparkToColumnar.supportedOperatorList` now defaults to an empty list. When it is not
+set, `spark.comet.sparkToColumnar.enabled=true` still converts the first four, which the list named
+by default, and a list that names any of the five still converts it, as before. In both cases the
+driver logs a warning that names the config to use instead. Before Spark 4.1, Spark plans a query
+without a `FROM` clause as an `RDDScan`, so on those versions `RDDScan` in the list also converted
+it. `spark.comet.convert.oneRowRelation.enabled` is on by default, so such a query is now converted
+without either setting, and logs no warning. The list remains the way to convert other leaf
+operators, such as the scan of a Data Source V2 connector.
+
 ## Upgrading to Comet 1.1.0
 
 Comet `1.1.0` makes no behavior changes that need a `spark.comet.legacy.*` key. The changes below
@@ -123,6 +177,19 @@ Comet also now checks the shuffle manager that the application is running, rathe
 session's `spark.shuffle.manager`. A session that named `CometShuffleManager` after the SparkContext
 had started with a different shuffle manager used to plan Comet shuffles that failed with a
 `ClassCastException`. Such a session now runs without Comet, with a warning.
+
+### Native Iceberg Reads on EKS with IRSA
+
+On EKS with IAM Roles for Service Accounts (IRSA), when `AWS_WEB_IDENTITY_TOKEN_FILE`,
+`AWS_ROLE_ARN` and a region are set and the catalog configures no credentials, Comet `1.1.0`'s
+native Iceberg scan takes its S3 credentials only from the web-identity role. If that fails, it no
+longer falls back to the node role or Pod Identity, as Comet `1.0.0` did. So a cluster whose IRSA
+setup is broken, and that was reading S3 as the node role without anyone noticing, now fails native
+Iceberg reads with `failed to load signing credential`. The "EKS / IRSA" section of
+[S3 Credential Providers](s3-credential-providers.md) explains the change. To go back to the old
+credential chain for a catalog, set
+`spark.sql.catalog.<catalog>.s3.comet.credential.webIdentity.enabled=false`. A table loaded by path
+has no catalog to set that on, so for it set `spark.comet.scan.icebergNative.enabled=false`.
 
 ### Deprecated and Removed Settings
 
