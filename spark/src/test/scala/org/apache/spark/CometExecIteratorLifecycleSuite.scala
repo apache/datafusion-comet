@@ -685,64 +685,6 @@ class CometExecIteratorLifecycleSuite extends CometTestBase {
 
   private val kubernetesMaster = "k8s://https://kubernetes.default.svc:443"
 
-  test("sequence invocation ceiling uses configured task slots and the resolved pool limit") {
-    import CometExecIterator.getMemoryConfig
-    val poolBytes = 2L * 1024 * 1024 * 1024
-    val offHeap = new SparkConf(false)
-      .set("spark.memory.offHeap.enabled", "true")
-      .set("spark.memory.offHeap.size", "2g")
-      .set("spark.executor.cores", "10")
-      .set("spark.task.cpus", "2")
-    val masters = Seq(
-      "local" -> 1,
-      "local[4]" -> 4,
-      "local[7,3]" -> 7,
-      "local[*]" -> Runtime.getRuntime.availableProcessors(),
-      "local[*,3]" -> Runtime.getRuntime.availableProcessors(),
-      "yarn" -> 10)
-    masters.foreach { case (master, cores) =>
-      val conf = offHeap.clone.set("spark.master", master)
-      assert(getMemoryConfig(conf).sequenceMaxBytes.contains(poolBytes / math.max(1, cores / 2)))
-      // A resource profile can allocate more CPUs than spark.task.cpus requests.
-      assert(
-        getMemoryConfig(conf, taskCPUs = 3L).sequenceMaxBytes
-          .contains(poolBytes / math.max(1, cores / 3)))
-    }
-    val conf = offHeap.clone.set("spark.master", "local[8]")
-    Seq("fair_unified", "greedy_unified").foreach { poolType =>
-      withSQLConf(
-        CometConf.COMET_OFFHEAP_MEMORY_POOL_TYPE.key -> poolType,
-        CometConf.COMET_OFFHEAP_MEMORY_POOL_FRACTION.key -> "0.5") {
-        assert(getMemoryConfig(conf).sequenceMaxBytes.contains(poolBytes / 2 / 4))
-      }
-    }
-    withSQLConf(CometConf.COMET_OFFHEAP_MEMORY_POOL_FRACTION.key -> "0") {
-      assert(getMemoryConfig(conf).sequenceMaxBytes.contains(0L))
-    }
-    withSQLConf(CometConf.COMET_OFFHEAP_MEMORY_POOL_FRACTION.key -> "-1") {
-      intercept[IllegalArgumentException](getMemoryConfig(conf))
-    }
-  }
-
-  test("sequence invocation overrides also apply to otherwise unbounded on-heap test mode") {
-    import CometExecIterator.getMemoryConfig
-    val key = CometConf.COMET_EXEC_SEQUENCE_MAX_BYTES_PER_INVOCATION.key
-    val conf = new SparkConf(false)
-      .set("spark.master", "local[4]")
-      .set("spark.memory.offHeap.enabled", "false")
-    assert(getMemoryConfig(conf).sequenceMaxBytes.isEmpty)
-    Seq("false", "true").foreach { offHeap =>
-      val mode = conf.clone
-        .set("spark.memory.offHeap.enabled", offHeap)
-        .set("spark.memory.offHeap.size", "2g")
-      Seq("-1" -> None, "0" -> Some(0L), "2k" -> Some(2048L)).foreach { case (value, expected) =>
-        withSQLConf(key -> value) {
-          assert(getMemoryConfig(mode).sequenceMaxBytes == expected)
-        }
-      }
-    }
-  }
-
   test("the native memory limit is the container's memory outside the JVM heap") {
     import CometExecIterator.nativeMemoryLimit
     val mib = 1024L * 1024

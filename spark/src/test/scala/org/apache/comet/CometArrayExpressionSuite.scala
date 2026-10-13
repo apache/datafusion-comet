@@ -1745,7 +1745,7 @@ class CometArrayExpressionSuite extends CometTestBase with AdaptiveSparkPlanHelp
 
   test("folded sequence literals are outside the native invocation ceiling") {
     withSQLConf(CometConf.COMET_EXEC_SEQUENCE_MAX_BYTES_PER_INVOCATION.key -> "0") {
-      withParquetDataFrame(Seq(1, 2, 3)) { frame =>
+      withParquetDataFrame(Seq(Tuple1(1), Tuple1(2), Tuple1(3))) { frame =>
         // Spark folds this sequence to a literal before Comet sees it. The native projection
         // broadcasts that literal; it never invokes the native sequence kernel.
         val df = frame.selectExpr("sequence(1, 3) AS s")

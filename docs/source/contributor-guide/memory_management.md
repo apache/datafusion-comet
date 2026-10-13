@@ -80,7 +80,8 @@ page:
 | --------------------------------------- | ----------- | ------------------------------------------------------------- | ----------------- |
 | Spark execution + storage (on-heap)     | JVM heap    | `spark.executor.memory` and the unified memory manager        | Yes               |
 | Spark Tungsten (off-heap)               | Off-heap    | `spark.memory.offHeap.size` via `TaskMemoryManager`           | Yes               |
-| Comet native (Rust global allocator)    | Native heap | `memory_limit` (see below), enforced only via the memory pool | Reservations only |
+| Comet native (Rust global allocator)    | Native heap | Memory pools for declared reservations; no allocator-wide limit | Reservations only |
+| Comet integral `sequence` output        | Native heap | Logical per-invocation ceiling, without a pool reservation    | No                |
 | Comet JVM Arrow (`CometArrowAllocator`) | Off-heap    | **Nothing**: a `RootAllocator(Long.MaxValue)`                 | No                |
 | Comet JVM shuffle pages                 | Off-heap    | `spark.memory.offHeap.size` via `TaskMemoryManager`           | Yes               |
 
@@ -97,8 +98,10 @@ allocates the bytes and in who is able to see them.
 - **Native heap** is allocated by Rust through its global allocator, in the same process. No JVM
   code makes the call, so no JVM-side allocator or metric ever measures these bytes. The only layer
   that sees any of them is Comet's own memory pool, and then only the portion that operators
-  explicitly reserve. That portion is still charged to Spark, as the next paragraph describes; what
-  is never reserved is measured by nothing and budgeted by nobody.
+  explicitly reserve. That portion is still charged to Spark, as the next paragraph describes.
+  Unreserved allocations have no pool accounting. Individual guards, such as integral `sequence`'s
+  per-invocation ceiling, can refuse a logical output without making a reservation; they do not
+  bound total native usage.
 
 **The budget is shared even though the memory is not.** `memory_limit` is derived from
 `spark.memory.offHeap.size` (see [Where Comet's budget comes from](#where-comets-budget-comes-from)),
@@ -261,10 +264,14 @@ The only room Spark leaves for memory outside the pool is `spark.executor.memory
 
 `getMemoryConfig` also resolves `spark.comet.exec.sequence.maxBytesPerInvocation`. Unless explicitly
 overridden, each native integral `sequence` invocation is limited to `memory_limit` divided by the
-configured task slots: `max(1, floor(local or executor cores / CPUs allocated to the task))`. The
-actual task CPU allocation respects resource profiles. This fixed share does not depend on live
-tasks, registered consumers or pool usage. On-heap mode has no default ceiling; `-1` explicitly
-disables it and `0` is a real zero-byte ceiling. The resolved value crosses JNI in the existing
+configured task slots: `max(1, floor(local or executor cores / CPUs allocated to the task))` when
+the core count is known. Local-cluster uses its configured worker cores if `spark.executor.cores`
+is unset. Standalone can assign cores without exposing their count in the executor configuration;
+in that case the fallback is the whole `memory_limit`, not an inferred task share. Set
+`spark.executor.cores` or an explicit sequence ceiling to choose a smaller limit. The actual task
+CPU allocation and executor configuration respect resource profiles. This fixed ceiling does not
+depend on live tasks, registered consumers or pool usage. On-heap mode has no default ceiling;
+`-1` explicitly disables it and `0` is a real zero-byte ceiling. The resolved value crosses JNI in the existing
 config map, without changing the memory pool or reserving anything from it.
 
 The kernel checks logical output values, list offsets and validity bytes after validating all
@@ -629,10 +636,11 @@ somewhat less abrupt.
 
 ## Open problems
 
-Nothing described above prevents an executor from being OOM-killed. Every enforcement point Comet
-has bounds _declared reservations_, and the sections above describe several structural reasons why
-declared reservations are a lower bound on physical usage. The known gaps, roughly in order of how
-much they matter:
+Nothing described above guarantees that an executor avoids being OOM-killed. Memory pools bound
+_declared reservations_, while the integral `sequence` ceiling bounds one logical output without
+reserving it. Neither bounds total resident memory, and the sections above describe several reasons
+why declared reservations are a lower bound on physical usage. The known gaps, roughly in order of
+how much they matter:
 
 - **Real native usage is observed but not acted on.** Comet counts the bytes Rust's allocator has
   handed out, and each executor logs that count next to the pools' reservations. Nothing reads it

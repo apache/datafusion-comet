@@ -935,11 +935,26 @@ object CometExecIterator extends Logging {
         require(
           memoryConfig.memoryLimit >= 0,
           "The derived sequence memory limit must be non-negative")
-        val taskSlots = math.max(1L, numDriverOrExecutorCores(conf).toLong / taskCPUs)
-        Some(memoryConfig.memoryLimit / taskSlots)
+        Some(sequenceExecutorCores(conf).fold(memoryConfig.memoryLimit) { cores =>
+          val taskSlots = math.max(1L, cores.toLong / taskCPUs)
+          memoryConfig.memoryLimit / taskSlots
+        })
       case None => None
     }
     memoryConfig.copy(sequenceMaxBytes = sequenceMaxBytes)
+  }
+
+  private def sequenceExecutorCores(conf: SparkConf): Option[Int] = {
+    val localCluster = """local-cluster\[\d+\s*,\s*(\d+)\s*,\s*\d+\]""".r
+    conf.get("spark.master") match {
+      case localCluster(workerCores) =>
+        conf.getOption("spark.executor.cores").map(_.toInt).orElse(Some(workerCores.toInt))
+      case master if master.startsWith("spark://") && !conf.contains("spark.executor.cores") =>
+        // Standalone can assign all available worker cores without exposing that number here.
+        // Use the whole pool as a fallback, rather than claiming to infer a single task slot.
+        None
+      case _ => Some(numDriverOrExecutorCores(conf))
+    }
   }
 
   private def numDriverOrExecutorCores(conf: SparkConf): Int = {

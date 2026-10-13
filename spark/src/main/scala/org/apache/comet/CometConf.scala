@@ -587,6 +587,9 @@ object CometConf extends ShimCometConf {
           "including values, list offsets and validity. When unset in off-heap mode, uses " +
           "Comet's configured memory pool limit divided by the configured concurrent task " +
           "slots (local or executor cores divided by the task's allocated CPUs, at least one). " +
+          "Local-cluster uses configured worker cores when executor cores are unset. For " +
+          "standalone with unknown executor cores, the fallback is the whole pool limit; " +
+          "set spark.executor.cores or this setting to choose a task ceiling. " +
           "On-heap test mode is unbounded unless explicitly configured. Set -1 to disable " +
           "the ceiling; 0 permits no output bytes. Earlier results and concurrent calls do " +
           "not consume this limit. Scalar invocations produce one list; subsequent scalar " +

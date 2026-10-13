@@ -76,6 +76,32 @@ fn criterion_benchmark(c: &mut Criterion) {
         });
     }
 
+    // Fixed guard overhead is most visible when scalar inputs produce just one short list.
+    for elems in [1i64, 5] {
+        let args = vec![
+            ColumnarValue::Scalar(ScalarValue::Int64(Some(0))),
+            ColumnarValue::Scalar(ScalarValue::Int64(Some(elems - 1))),
+        ];
+        group.bench_function(format!("limited_all_scalar_one_list_{elems}_elems"), |b| {
+            b.iter(|| {
+                black_box(
+                    spark_sequence_with_limit(&args, &return_type, Some(32 * 1024 * 1024)).unwrap(),
+                )
+            })
+        });
+    }
+    {
+        let mut args = args_with_len(1, None);
+        args.push(ColumnarValue::Scalar(ScalarValue::Int64(Some(1))));
+        group.bench_function("limited_scalar_step_1_elems", |b| {
+            b.iter(|| {
+                black_box(
+                    spark_sequence_with_limit(&args, &return_type, Some(32 * 1024 * 1024)).unwrap(),
+                )
+            })
+        });
+    }
+
     // Short sequences: per-row overhead dominates.
     for elems in [1i64, 2, 5] {
         let args = args_with_len(elems, None);

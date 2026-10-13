@@ -249,8 +249,7 @@ where
         let s = start.value(row);
         let e = stop.value(row);
         let len = sequence_length(s, e, row_step(row, s, e))?;
-        // Keep validating after an unrepresentable total so a later Spark row error still wins.
-        total = total.saturating_add(len);
+        total += len;
         lengths.push(len);
     }
     // Arrow's List offsets must fit i32; Spark's per-row array limit is checked above.
@@ -312,6 +311,9 @@ fn check_output_size(
     has_nulls: bool,
     max_bytes: Option<usize>,
 ) -> Result<()> {
+    let Some(limit) = max_bytes else {
+        return Ok(());
+    };
     // Count the logical buffers, including the terminal offset. Reused sliced validity may
     // reference a larger allocation; bytes outside the slice and allocator padding are excluded.
     let validity_bytes = if has_nulls { num_rows.div_ceil(8) } else { 0 };
@@ -331,15 +333,13 @@ fn check_output_size(
                     .to_string(),
             )
         })?;
-    if let Some(limit) = max_bytes {
-        if output_bytes > limit {
-            return Err(DataFusionError::ResourcesExhausted(format!(
-                "Comet's native `sequence` invocation requires {output_bytes} output bytes, \
-                 exceeding its {limit}-byte limit. Lower `spark.comet.batchSize`, shorten the \
-                 sequences, or configure `spark.comet.exec.sequence.maxBytesPerInvocation` \
-                 (-1 disables the limit)."
-            )));
-        }
+    if output_bytes > limit {
+        return Err(DataFusionError::ResourcesExhausted(format!(
+            "Comet's native `sequence` invocation requires {output_bytes} output bytes, \
+             exceeding its {limit}-byte limit. Lower `spark.comet.batchSize`, shorten the \
+             sequences, or configure `spark.comet.exec.sequence.maxBytesPerInvocation` \
+             (-1 disables the limit)."
+        )));
     }
     Ok(())
 }
@@ -592,7 +592,7 @@ mod tests {
             (1, usize::MAX - 8, 1, true),
         ] {
             assert!(matches!(
-                check_output_size(rows, elements, width, nulls, None),
+                check_output_size(rows, elements, width, nulls, Some(usize::MAX)),
                 Err(DataFusionError::ResourcesExhausted(_))
             ));
         }

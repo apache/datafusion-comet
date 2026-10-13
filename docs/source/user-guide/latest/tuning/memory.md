@@ -281,7 +281,7 @@ the limit. Lower `spark.comet.batchSize` to fit fewer sequences in an invocation
 that is too large on its own, or explicitly raise this setting. Byte units such as `64m` are accepted;
 `-1` disables the ceiling and `0` allows no output bytes.
 
-When the setting is absent in off-heap mode, the default is:
+When the setting is absent in off-heap mode and the core count is known, the default is:
 
 ```text
 task slots = max(1, floor(local or executor cores / CPUs allocated to the task))
@@ -290,10 +290,16 @@ sequence ceiling = Comet's configured memory pool limit / task slots
 
 The pool limit is resolved by `CometExecIterator.getMemoryConfig` from
 `spark.memory.offHeap.size * spark.comet.exec.memoryPool.fraction`. Local mode uses the thread count
-in `spark.master`; executors use `spark.executor.cores`. The task's CPU allocation normally comes
-from `spark.task.cpus`, and may be overridden by a resource profile. The ceiling does not change
-with live task counts or pool usage. On-heap test mode has no default ceiling; an explicit setting
-still applies there.
+in `spark.master`; executors use `spark.executor.cores`. For `local-cluster[workers,cores,memory]`,
+the configured worker cores are used when executor cores are unset. Standalone may assign cores
+without exposing their count in the executor configuration. In that case the fallback is the whole
+configured pool limit, not an inferred task share; set `spark.executor.cores` or an explicit
+sequence ceiling to choose a smaller limit.
+
+The task's CPU allocation normally comes from `spark.task.cpus`, and may be overridden by a resource
+profile; the executor configuration also reflects non-default profile allocations. The ceiling
+does not change with live task counts or pool usage. On-heap test mode has no default ceiling; an
+explicit setting still applies there.
 
 Logical bytes include the child values at their integral width, four bytes per list offset
 (including the terminal offset), and one validity bit per row when null lists are present, rounded
