@@ -295,12 +295,13 @@ where
         pool.map(|pool| reserve_construction(pool, bytes))
             .transpose()
     })();
-    let scratch_error = |error| {
+    // Keep error-only typed parsing in the cold helper so it need not borrow hot input locals.
+    let scratch_error = move |error| {
         // Only resource exhaustion needs an allocation-free validation pass to keep Spark
         // row errors and the batch element ceiling ahead of it. Propagate other pool errors,
         // such as an interrupted Spark task, immediately without inspecting more input rows.
         if scalar_length.is_none() && matches!(&error, DataFusionError::ResourcesExhausted(_)) {
-            validate_before_resource_error(&start, &stop, step.as_ref(), num_rows, error)
+            validate_before_resource_error::<T>(args, num_rows, error)
         } else {
             error
         }
@@ -439,29 +440,35 @@ fn construction_scratch(rows: usize, cache_lengths: bool, bitmap_count: usize) -
 
 #[cold]
 fn validate_before_resource_error<T: Integral>(
-    start: &Input<'_, T>,
-    stop: &Input<'_, T>,
-    step: Option<&Input<'_, T>>,
+    args: &[ColumnarValue],
     rows: usize,
     resource_error: DataFusionError,
 ) -> DataFusionError
 where
     T::Native: Into<i64>,
 {
-    let mut total = 0u128;
-    for row in 0..rows {
-        if start.is_null(row) || stop.is_null(row) || step.is_some_and(|step| step.is_null(row)) {
-            continue;
+    let validation = (|| -> Result<usize> {
+        let start = Input::<T>::new(&args[0])?;
+        let stop = Input::<T>::new(&args[1])?;
+        let step = args.get(2).map(Input::<T>::new).transpose()?;
+        let mut total = 0u128;
+        for row in 0..rows {
+            if start.is_null(row)
+                || stop.is_null(row)
+                || step.as_ref().is_some_and(|step| step.is_null(row))
+            {
+                continue;
+            }
+            let s = start.value(row);
+            let e = stop.value(row);
+            let step = step
+                .as_ref()
+                .map_or_else(|| if s <= e { 1 } else { -1 }, |step| step.value(row));
+            total += sequence_length(s, e, step)? as u128;
         }
-        let s = start.value(row);
-        let e = stop.value(row);
-        let step = step.map_or_else(|| if s <= e { 1 } else { -1 }, |step| step.value(row));
-        match sequence_length(s, e, step) {
-            Ok(len) => total += len as u128,
-            Err(error) => return error,
-        }
-    }
-    batch_length(total).err().unwrap_or(resource_error)
+        batch_length(total)
+    })();
+    validation.err().unwrap_or(resource_error)
 }
 
 fn sequence_vec<T>(capacity: usize) -> Result<Vec<T>> {
