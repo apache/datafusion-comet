@@ -26,7 +26,7 @@ anyone debugging an out-of-memory report. For user-facing tuning advice, see the
 
 This page covers off-heap mode (`spark.memory.offHeap.enabled=true`) only. Comet also has an
 on-heap mode, but it exists so that the Spark SQL test suite can run against Comet without changing
-Spark's memory configuration. Comet performs no memory accounting in it: the native side gets
+Spark's memory configuration. Comet enforces no native pool limit in it: the native side gets
 DataFusion's `UnboundedMemoryPool` and the JVM shuffle allocator
 (`CometUnboundedShuffleMemoryAllocator`) hands out `Unsafe` pages against no budget. Native memory
 is not on the JVM heap, so there is no Spark pool it could honestly be charged to, and the
@@ -397,6 +397,29 @@ Native operators reserve through DataFusion's `MemoryConsumer` / `MemoryReservat
 - `shrink(n)` returns bytes to the pool.
 
 An operator that never calls `try_grow` is invisible to the pool no matter how much memory it uses.
+
+### Integral sequence construction
+
+Native integral `sequence` registers a temporary non-spillable consumer with the executing
+session's memory pool, including its per-plan tracking and task-shared policy wrappers. Before
+allocating output buffers it validates the full invocation, preserves Spark's first row error and
+the Arrow batch-offset ceiling, then calls `try_grow` for values, offsets, validity capacity and
+construction scratch. Bitmap capacity is a conservative allowance for new output/union buffers,
+not a charge for the full backing allocation of a borrowed sliced input bitmap. The preflight adds
+a row pass; the existing length cache and bulk validity operations remain in the generation
+kernel. No additional memory setting is introduced.
+
+The reservation and consumer registration end when construction returns, including allocation
+errors and unwinding. The returned array, its clones, and FFI exports do not keep this reservation.
+A downstream buffering operator is responsible for its own reservation. Creating an expression
+without evaluating it registers no consumer, so idle expressions do not reduce fair-pool shares.
+
+A refusal fails the expression. It does not trigger native reclamation: a sort or aggregate that
+already holds memory may not receive this next batch, and therefore may fail before reaching its
+own reservation/spill step. The Spark bridge may itself wait or spill Spark consumers according to
+its existing policy. This construction check does not guarantee a container RSS ceiling or bound
+all retained outputs, and it does not fix the FFI lifetime accounting gap below. In on-heap mode
+the existing `UnboundedMemoryPool` supplies no enforced limit.
 
 ### Native writers
 

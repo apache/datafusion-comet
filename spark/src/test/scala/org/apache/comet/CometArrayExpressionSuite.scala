@@ -1760,4 +1760,35 @@ class CometArrayExpressionSuite extends CometTestBase with AdaptiveSparkPlanHelp
       }
     }
   }
+
+  test("sequence uses the task pool and a smaller batch recovers") {
+    withTable("t_sequence_pool") {
+      sql("CREATE TABLE t_sequence_pool(a INT, b INT) USING parquet")
+      sql("INSERT INTO t_sequence_pool SELECT 0, 31 FROM range(0, 512, 1, 1)")
+      val query = "SELECT sum(CAST(size(sequence(a, b)) AS BIGINT)) FROM t_sequence_pool"
+      withSQLConf(
+        CometConf.COMET_OFFHEAP_MEMORY_POOL_TYPE.key -> "fair_unified",
+        CometConf.COMET_OFFHEAP_MEMORY_POOL_FRACTION.key -> "0.00001",
+        CometConf.COMET_BATCH_SIZE.key -> "8192") {
+        val error = intercept[SparkException](sql(query).collect())
+        assert(error.getMessage.contains("Sequence"), error.getMessage)
+        withSQLConf(CometConf.COMET_BATCH_SIZE.key -> "16") {
+          checkSparkAnswerAndImpl(sql(query), native = Seq("sequence"))
+        }
+      }
+    }
+  }
+
+  test("sequence output remains usable through sorting and collection") {
+    withTable("t_sequence_retained") {
+      sql("CREATE TABLE t_sequence_retained(id INT, a INT, b INT) USING parquet")
+      sql("INSERT INTO t_sequence_retained SELECT CAST(id AS INT), 1, 16 FROM range(0, 256, 1, 4)")
+      withSQLConf(CometConf.COMET_BATCH_SIZE.key -> "16") {
+        checkSparkAnswerAndImpl(
+          sql("SELECT id, sequence(a, b) AS values FROM t_sequence_retained ORDER BY id DESC"),
+          native = Seq("sequence"))
+      }
+    }
+  }
+
 }

@@ -25,6 +25,49 @@ mod tests {
     use datafusion_comet_spark_expr::create_comet_physical_fun;
     use datafusion_comet_spark_expr::register_all_comet_functions;
 
+    #[tokio::test]
+    async fn sequence_reserves_the_complete_scalar_batch_without_folding() -> Result<()> {
+        use arrow::datatypes::Field;
+        use datafusion::execution::memory_pool::{GreedyMemoryPool, MemoryPool};
+        use datafusion::logical_expr::ScalarUDF;
+        use datafusion_comet_spark_expr::SparkSequence;
+        use std::sync::Arc;
+        let ctx = SessionContext::new();
+        let data_type = DataType::List(Arc::new(Field::new_list_field(DataType::Int64, false)));
+        // One row fits, while eight rows plus offsets and construction scratch do not.
+        let pool = Arc::new(GreedyMemoryPool::new(128));
+        ctx.register_udf(ScalarUDF::new_from_impl(SparkSequence::new(
+            data_type.clone(),
+            Arc::clone(&pool) as _,
+        )));
+        let frame = ctx.sql("SELECT spark_sequence(1::BIGINT, 4::BIGINT) FROM (VALUES (1), (2), (3), (4), (5), (6), (7), (8)) t(x)").await?;
+        assert!(frame
+            .clone()
+            .into_optimized_plan()?
+            .to_string()
+            .contains("spark_sequence"));
+        assert_eq!(pool.reserved(), 0);
+        assert!(frame
+            .collect()
+            .await
+            .unwrap_err()
+            .to_string()
+            .contains("Sequence"));
+        assert_eq!(pool.reserved(), 0);
+        let output = ctx
+            .sql("SELECT spark_sequence(1::BIGINT, 4::BIGINT)")
+            .await?
+            .collect()
+            .await?;
+        assert_eq!(output[0].num_rows(), 1);
+        assert_eq!(pool.reserved(), 0);
+        // The registry-only factory must not silently construct an unpooled production UDF.
+        assert!(
+            create_comet_physical_fun("spark_sequence", data_type, &ctx.state(), None).is_err()
+        );
+        Ok(())
+    }
+
     #[test]
     fn test_concat_ws_runtime_scalars() -> Result<()> {
         use arrow::datatypes::Field;

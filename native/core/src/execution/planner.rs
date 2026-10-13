@@ -4125,12 +4125,22 @@ impl PhysicalPlanner {
                 }
             };
 
-        let fun_expr = create_comet_physical_fun(
-            fun_name,
-            data_type.clone(),
-            &self.session_ctx.state(),
-            Some(expr.fail_on_error),
-        )?;
+        let fun_expr = if fun_name == "spark_sequence" {
+            // Keep the exact outer pool, including per-plan tracking and task-shared policy.
+            Arc::new(datafusion::logical_expr::ScalarUDF::new_from_impl(
+                datafusion_comet_spark_expr::SparkSequence::new(
+                    data_type.clone(),
+                    Arc::clone(&self.session_ctx.runtime_env().memory_pool),
+                ),
+            ))
+        } else {
+            create_comet_physical_fun(
+                fun_name,
+                data_type.clone(),
+                &self.session_ctx.state(),
+                Some(expr.fail_on_error),
+            )?
+        };
 
         let args = args
             .into_iter()
@@ -6908,6 +6918,73 @@ mod tests {
         spark_expression::DataType {
             type_id: 3,
             type_info: None,
+        }
+    }
+
+    #[test]
+    fn sequence_uses_the_session_pool_and_returns_its_reservation() {
+        use crate::execution::memory_pools::{testing::PeakMemoryPool, PlanMemoryPool};
+        use datafusion::execution::memory_pool::MemoryPool;
+        use datafusion::execution::runtime_env::RuntimeEnvBuilder;
+        use spark_expression::data_type::{data_type_info::DatatypeStruct, DataTypeInfo, ListInfo};
+        let array_type = spark_expression::DataType {
+            type_id: 14,
+            type_info: Some(Box::new(DataTypeInfo {
+                datatype_struct: Some(DatatypeStruct::List(Box::new(ListInfo {
+                    element_type: Some(Box::new(create_proto_datatype())),
+                    contains_null: false,
+                    element_field_id: None,
+                }))),
+            })),
+        };
+        let expression = spark_expression::ScalarFunc {
+            func: "spark_sequence".to_string(),
+            args: vec![create_bound_reference(0), create_bound_reference(1)],
+            return_type: Some(array_type),
+            fail_on_error: false,
+        };
+        let schema = Arc::new(Schema::new(vec![
+            Field::new("start", DataType::Int32, false),
+            Field::new("stop", DataType::Int32, false),
+        ]));
+        let batch = RecordBatch::try_new(
+            Arc::clone(&schema),
+            vec![
+                Arc::new(Int32Array::from(vec![1, 2])),
+                Arc::new(Int32Array::from(vec![3, 4])),
+            ],
+        )
+        .unwrap();
+        for limit in [0, 1024] {
+            let inner = Arc::new(PeakMemoryPool::new(limit));
+            let plan_pool = Arc::new(PlanMemoryPool::new(Arc::clone(&inner) as _));
+            let runtime = RuntimeEnvBuilder::new()
+                .with_memory_pool(Arc::clone(&plan_pool) as _)
+                .build_arc()
+                .unwrap();
+            let context = Arc::new(SessionContext::new_with_config_rt(
+                SessionConfig::new(),
+                runtime,
+            ));
+            let planner = PhysicalPlanner::new(context, 0);
+            let physical = planner
+                .create_scalar_function_expr(&expression, Arc::clone(&schema))
+                .unwrap();
+            assert_eq!(inner.reserved(), 0);
+            let result = physical.evaluate(&batch);
+            if limit == 0 {
+                assert!(matches!(
+                    result,
+                    Err(DataFusionError::ResourcesExhausted(_))
+                ));
+            } else {
+                let result = result.unwrap().into_array(2).unwrap();
+                assert_eq!(result.len(), 2);
+                assert!(inner.peak() > 0);
+                // The output is still alive, but construction and releasePlan tracking are done.
+                assert_eq!(plan_pool.wait_until_released(std::time::Instant::now()), 0);
+            }
+            assert_eq!(inner.reserved(), 0);
         }
     }
 
