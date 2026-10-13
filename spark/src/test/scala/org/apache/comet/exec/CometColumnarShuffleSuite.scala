@@ -754,6 +754,40 @@ abstract class CometColumnarShuffleSuite extends CometTestBase with AdaptiveSpar
     }
   }
 
+  test("columnar shuffle stores offsets as lengths only with zstd") {
+    withParquetTable((0 until 40000).map(i => (i, s"str$i", Seq(s"a$i", s"bb$i"))), "tbl") {
+      // 10 partitions take the bypass-merge writer, 201 the sort-based one
+      Seq(10, 201).foreach { numPartitions =>
+        def bytesWritten(codec: String, offsetsAsLengths: Boolean): Long = {
+          var bytes = 0L
+          withSQLConf(
+            // this suite spills every few rows; keep blocks big enough for compression to matter
+            CometConf.COMET_SHUFFLE_JVM_SPILL_THRESHOLD.key -> "100000",
+            CometConf.COMET_SHUFFLE_COMPRESSION_CODEC.key -> codec,
+            CometConf.COMET_SHUFFLE_COMPRESSION_OFFSETS_AS_LENGTHS.key ->
+              offsetsAsLengths.toString) {
+            val shuffled = sql("SELECT * FROM tbl").repartition(numPartitions, $"_1")
+            checkShuffleAnswer(shuffled, 1)
+            shuffled.collect()
+            bytes = collectFirst(shuffled.queryExecution.executedPlan) {
+              case e: CometShuffleExchangeExec => e.metrics("shuffleBytesWritten").value
+            }.get
+          }
+          bytes
+        }
+
+        val lengths = bytesWritten("zstd", offsetsAsLengths = true)
+        val offsets = bytesWritten("zstd", offsetsAsLengths = false)
+        assert(
+          lengths < offsets,
+          s"$numPartitions partitions: zstd wrote $lengths bytes with lengths, $offsets with " +
+            "offsets")
+        // LZ4 does not take lengths yet, so the setting must not change what it writes
+        assert(bytesWritten("lz4", offsetsAsLengths = true) == bytesWritten("lz4", false))
+      }
+    }
+  }
+
   test("columnar shuffle encode_time metric should be tracked (issue-1212)") {
     // Use enough rows so encode time is measurably > 0
     withParquetTable((0 until 1000).map(i => (i, (i + 1).toLong)), "tbl") {

@@ -115,6 +115,12 @@ both Comet's native shuffle and the JVM columnar shuffle writer. Supported value
 useful when shuffle I/O or network bandwidth is the bottleneck. When ZSTD is selected, the level is
 controlled by `spark.comet.shuffle.compression.zstd.level` (default `1`).
 
+With zstd, Comet also stores the offsets of string, binary, array and map columns as lengths before
+compressing each shuffle block. Lengths compress much better than offsets: in our measurements, shuffle
+files with such columns were 10% to 40% smaller, and zstd was no slower.
+`spark.comet.shuffle.compression.offsetsAsLengths.enabled` turns this off. LZ4 and snappy shuffle blocks
+are written as before.
+
 `spark.shuffle.compress=false` disables compression for Comet's native shuffle only. It has no effect on
 the JVM columnar shuffle writer, which always compresses spill files with the codec above. Disabling
 compression on the native path may result in faster shuffle times in certain environments, such as

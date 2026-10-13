@@ -823,6 +823,17 @@ object CometConf extends ShimCometConf {
       .intConf
       .createWithDefault(1)
 
+  val COMET_SHUFFLE_COMPRESSION_OFFSETS_AS_LENGTHS: ConfigEntry[Boolean] =
+    conf("spark.comet.shuffle.compression.offsetsAsLengths.enabled")
+      .category(CATEGORY_SHUFFLE)
+      .doc(
+        "Whether Comet shuffle stores the offsets of string, binary, array and map columns as " +
+          "lengths before compressing each block. Lengths compress much better than offsets, " +
+          "which makes shuffle files with such columns smaller. Only takes effect when " +
+          s"${COMET_SHUFFLE_COMPRESSION_CODEC.key} is zstd.")
+      .booleanConf
+      .createWithDefault(true)
+
   val COMET_SHUFFLE_JVM_MAX_WRITERS_PER_EXECUTOR: ConfigEntry[Int] = {
     conf("spark.comet.shuffle.jvm.maxWritersPerExecutor")
       .withAlternative(

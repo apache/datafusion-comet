@@ -16,13 +16,16 @@
 // under the License.
 
 use crate::codec_context::ShuffleCodecContext;
+use crate::offsets_as_lengths::{
+    buffer_roles, has_offsets, offsets_to_lengths, BufferRole, LENGTHS_TAG_FLAG,
+};
 use arrow::array::RecordBatch;
 use arrow::datatypes::{DataType, Schema, SchemaRef};
 use arrow::ipc::writer::{
     write_message, DictionaryTracker, IpcDataGenerator, IpcWriteContext, IpcWriteOptions,
     StreamWriter,
 };
-use arrow::ipc::MetadataVersion;
+use arrow::ipc::{root_as_message, MetadataVersion};
 use datafusion::common::DataFusionError;
 use datafusion::error::Result;
 use datafusion::physical_plan::metrics::Time;
@@ -71,6 +74,10 @@ enum SchemaEncoding {
 /// at the start of every block, rather than re-serialized per block by `StreamWriter::try_new`.
 /// Schemas that contain dictionary types fall back to `StreamWriter`, whose dictionary-id
 /// bookkeeping ties schema and batch encoding together.
+///
+/// On that same pre-encoded path, a writer can store every offsets buffer of the record-batch body
+/// as lengths, which compress where running offsets do not (see the `offsets_as_lengths` module
+/// and [`Self::with_offsets_as_lengths`]), and flag such blocks in their codec tag.
 #[derive(Clone)]
 pub struct ShuffleBlockWriter {
     codec: CompressionCodec,
@@ -81,6 +88,11 @@ pub struct ShuffleBlockWriter {
     /// pinned to metadata version V5, which [`IPC_EOS`] depends on.
     write_options: IpcWriteOptions,
     schema_encoding: SchemaEncoding,
+    /// Body buffer roles of the record batches this writer encodes, when they have offsets that
+    /// could be stored as lengths. Only set on the pre-encoded path; shared like `header_bytes`.
+    offset_roles: Option<Arc<[BufferRole]>>,
+    /// Whether to store those offsets as lengths; see [`Self::with_offsets_as_lengths`].
+    offsets_as_lengths: bool,
 }
 
 impl ShuffleBlockWriter {
@@ -165,6 +177,7 @@ impl ShuffleBlockWriter {
         // For dictionary-free schemas, pre-encode the IPC schema message once so it does not have
         // to be re-serialized per local block. RSS always delays serialization until admission.
         // `flattened_fields` walks the full nested field tree for the local dictionary fallback.
+        let mut offset_roles = None;
         let schema_encoding = if let Some(schema) = rss_schema {
             SchemaEncoding::Fallback(schema)
         } else if schema
@@ -183,6 +196,9 @@ impl ShuffleBlockWriter {
             );
             let mut buf = Vec::new();
             write_message(&mut buf, encoded_schema, &write_options)?;
+            offset_roles = buffer_roles(schema)
+                .filter(|roles| has_offsets(roles))
+                .map(Arc::from);
             SchemaEncoding::Precoded(Arc::from(buf))
         };
 
@@ -191,16 +207,38 @@ impl ShuffleBlockWriter {
             header_bytes: Arc::from(header_bytes),
             write_options,
             schema_encoding,
+            offset_roles,
+            offsets_as_lengths: false,
         })
     }
 
-    /// Serialize `batch` as a standalone Arrow IPC stream into `out`.
+    /// Store offsets buffers as lengths where this writer can: dictionary-free local blocks with
+    /// at least one offsets buffer. Off by default.
+    ///
+    /// Only zstd takes it for now. Lengths compress into long runs, which lz4_flex decodes two bytes
+    /// at a time (PSeitz/lz4_flex#227), so LZ4 would spend more time decoding than the smaller
+    /// blocks save; snappy also spends more time than it saves.
+    pub fn with_offsets_as_lengths(mut self, enabled: bool) -> Self {
+        self.offsets_as_lengths = enabled && matches!(self.codec, CompressionCodec::Zstd(_));
+        self
+    }
+
+    /// [`Self::with_offsets_as_lengths`] without the codec restriction, so tests can show that the
+    /// reader rebuilds offsets under every codec.
+    #[cfg(test)]
+    fn with_offsets_as_lengths_for_any_codec(mut self) -> Self {
+        self.offsets_as_lengths = true;
+        self
+    }
+
+    /// Serialize `batch` as a standalone Arrow IPC stream into `out`. Returns whether the
+    /// record-batch body stores its offsets as lengths.
     fn encode_ipc_stream<W: Write>(
         &self,
         batch: &RecordBatch,
         out: &mut W,
         compression_context: &mut IpcWriteContext,
-    ) -> Result<()> {
+    ) -> Result<bool> {
         let schema_message = match &self.schema_encoding {
             SchemaEncoding::Fallback(schema) => {
                 // Dictionary encoding requires the schema and record batch to share a dictionary
@@ -209,7 +247,7 @@ impl ShuffleBlockWriter {
                     StreamWriter::try_new_with_options(out, schema, self.write_options.clone())?;
                 stream_writer.write(batch)?;
                 stream_writer.finish()?;
-                return Ok(());
+                return Ok(false);
             }
             SchemaEncoding::Precoded(schema_message) => schema_message,
         };
@@ -217,7 +255,7 @@ impl ShuffleBlockWriter {
         // Fast path: reuse the pre-encoded schema message and write the record batch manually.
         let data_gen = IpcDataGenerator::default();
         let mut dictionary_tracker = DictionaryTracker::new(true);
-        let (encoded_dictionaries, encoded_batch) = data_gen.encode(
+        let (encoded_dictionaries, mut encoded_batch) = data_gen.encode(
             batch,
             &mut dictionary_tracker,
             &self.write_options,
@@ -225,10 +263,42 @@ impl ShuffleBlockWriter {
         )?;
         debug_assert!(encoded_dictionaries.is_empty());
 
+        let lengths = match self
+            .offset_roles
+            .as_ref()
+            .filter(|_| self.offsets_as_lengths)
+        {
+            Some(roles) => {
+                let message = root_as_message(&encoded_batch.ipc_message).map_err(|e| {
+                    DataFusionError::Internal(format!("re-reading an encoded batch: {e:?}"))
+                })?;
+                let buffers = message
+                    .header_as_record_batch()
+                    .and_then(|batch| batch.buffers())
+                    .ok_or_else(|| {
+                        DataFusionError::Internal("encoded batch has no buffers".to_string())
+                    })?;
+                // A layout out of step with arrow-ipc's writer leaves the block in the plain
+                // format rather than failing the task.
+                debug_assert_eq!(buffers.len(), roles.len(), "buffer roles out of step");
+                buffers.len() == roles.len() && {
+                    offsets_to_lengths(
+                        &mut encoded_batch.arrow_data,
+                        buffers
+                            .iter()
+                            .map(|b| (b.offset() as usize, b.length() as usize)),
+                        roles,
+                    )?;
+                    true
+                }
+            }
+            None => false,
+        };
+
         out.write_all(schema_message)?;
         write_message(&mut *out, encoded_batch, &self.write_options)?;
         out.write_all(&IPC_EOS)?;
-        Ok(())
+        Ok(lengths)
     }
 
     /// Writes given record batch as Arrow IPC bytes into given writer.
@@ -286,7 +356,7 @@ impl ShuffleBlockWriter {
             // memory: a high-level workspace (hundreds of MiB) must not outlive the block.
             codec_context.release_zstd_if_oversized();
         }
-        encode_result?;
+        let lengths = encode_result?;
 
         // fill ipc length
         let end_pos = output.stream_position()?;
@@ -299,8 +369,14 @@ impl ShuffleBlockWriter {
             )));
         }
 
+        let mut header = [0u8; 20];
+        header.copy_from_slice(&self.header_bytes);
+        header[..8].copy_from_slice(&ipc_length.to_le_bytes());
+        if lengths {
+            header[16] |= LENGTHS_TAG_FLAG;
+        }
         output.seek(SeekFrom::Start(start_pos))?;
-        output.write_all(&ipc_length.to_le_bytes())?;
+        output.write_all(&header)?;
         output.seek(SeekFrom::Start(end_pos))?;
 
         timer.stop();
@@ -308,17 +384,19 @@ impl ShuffleBlockWriter {
         Ok((end_pos - start_pos) as usize)
     }
 
-    /// Encode `batch` through the configured outer compression codec into `output`.
+    /// Encode `batch` through the configured outer compression codec into `output`. Returns
+    /// whether the body stores its offsets as lengths.
     fn compress_ipc_stream<W: Write>(
         &self,
         batch: &RecordBatch,
         output: &mut W,
         codec_context: &mut ShuffleCodecContext,
         bounded_rss_codec: bool,
-    ) -> Result<()> {
+    ) -> Result<bool> {
+        let lengths;
         match &self.codec {
             CompressionCodec::None => {
-                self.encode_ipc_stream(batch, output, &mut codec_context.arrow_ipc)?;
+                lengths = self.encode_ipc_stream(batch, output, &mut codec_context.arrow_ipc)?;
             }
             CompressionCodec::Lz4Frame => {
                 let frame_info = if bounded_rss_codec {
@@ -329,14 +407,14 @@ impl ShuffleBlockWriter {
                 };
                 let mut wtr =
                     lz4_flex::frame::FrameEncoder::with_frame_info(frame_info, &mut *output);
-                self.encode_ipc_stream(batch, &mut wtr, &mut codec_context.arrow_ipc)?;
+                lengths = self.encode_ipc_stream(batch, &mut wtr, &mut codec_context.arrow_ipc)?;
                 wtr.finish().map_err(|e| {
                     DataFusionError::Execution(format!("lz4 compression error: {e}"))
                 })?;
             }
             CompressionCodec::Snappy => {
                 let mut wtr = snap::write::FrameEncoder::new(&mut *output);
-                self.encode_ipc_stream(batch, &mut wtr, &mut codec_context.arrow_ipc)?;
+                lengths = self.encode_ipc_stream(batch, &mut wtr, &mut codec_context.arrow_ipc)?;
                 wtr.into_inner().map_err(|e| {
                     DataFusionError::Execution(format!("snappy compression error: {e}"))
                 })?;
@@ -344,11 +422,11 @@ impl ShuffleBlockWriter {
             CompressionCodec::Zstd(level) => {
                 let (cctx, arrow_ipc) = codec_context.zstd_cctx(*level)?;
                 let mut encoder = zstd::Encoder::with_context(&mut *output, cctx);
-                self.encode_ipc_stream(batch, &mut encoder, arrow_ipc)?;
+                lengths = self.encode_ipc_stream(batch, &mut encoder, arrow_ipc)?;
                 encoder.finish()?;
             }
         }
-        Ok(())
+        Ok(lengths)
     }
 }
 
@@ -356,9 +434,15 @@ impl ShuffleBlockWriter {
 mod tests {
     use super::*;
     use crate::codec_context::ShuffleCodecContext;
-    use crate::read_ipc_compressed;
-    use arrow::array::{Int64Array, StringArray};
-    use arrow::datatypes::{DataType, Field};
+    use crate::{read_ipc_compressed, read_ipc_compressed_validated};
+    use arrow::array::{
+        ArrayRef, BinaryArray, BooleanArray, Date32Array, Decimal128Array, DictionaryArray,
+        FixedSizeBinaryArray, FixedSizeListBuilder, Int32Array, Int32Builder, Int64Array,
+        Int64Builder, LargeBinaryArray, LargeListArray, LargeStringArray, ListBuilder, MapBuilder,
+        NullArray, StringArray, StringBuilder, StringViewArray, StructArray,
+        TimestampMicrosecondArray,
+    };
+    use arrow::datatypes::{DataType, Field, Int32Type};
     use std::io::Cursor;
 
     fn test_schema() -> Schema {
@@ -683,6 +767,291 @@ mod tests {
         assert!(estimate(*levels.end()) > estimate(1));
         assert_eq!(estimate(i32::MAX), estimate(*levels.end()));
         assert_eq!(estimate(i32::MIN), estimate(*levels.start()));
+    }
+
+    /// Writes one block through a fresh codec context and returns all of it, header included.
+    fn write_block(writer: &ShuffleBlockWriter, batch: &RecordBatch) -> Vec<u8> {
+        let mut out = vec![];
+        writer
+            .write_batch(
+                batch,
+                &mut Cursor::new(&mut out),
+                &mut ShuffleCodecContext::default(),
+                &Time::default(),
+            )
+            .unwrap();
+        out
+    }
+
+    fn lengths_flagged(block: &[u8]) -> bool {
+        block[16] & LENGTHS_TAG_FLAG != 0
+    }
+
+    const CODECS: [CompressionCodec; 4] = [
+        CompressionCodec::None,
+        CompressionCodec::Lz4Frame,
+        CompressionCodec::Zstd(1),
+        CompressionCodec::Snappy,
+    ];
+
+    /// One column of every type with an offsets buffer, and the fixed-width and nested types
+    /// around them, with nulls, empty values and sliced inputs whose offsets do not start at 0.
+    fn offsets_batch() -> RecordBatch {
+        let rows = 64;
+        let strings: StringArray = (0..rows + 7)
+            .map(|i| match i % 5 {
+                0 => None,
+                1 => Some(String::new()),
+                _ => Some(format!("s{}", i * 37)),
+            })
+            .collect();
+        let strings = strings.slice(7, rows);
+        let binary: BinaryArray = (0..rows)
+            .map(|i| (i % 3 != 0).then(|| vec![i as u8; i % 4]))
+            .collect();
+        let large_strings: LargeStringArray = (0..rows)
+            .map(|i| (i % 4 != 0).then(|| "x".repeat(i % 6)))
+            .collect();
+        let large_binary: LargeBinaryArray = (0..rows).map(|i| Some(vec![7u8; i % 3])).collect();
+
+        let mut list = ListBuilder::new(StringBuilder::new());
+        for i in 0..rows + 3 {
+            if i % 7 == 0 {
+                list.append_null();
+                continue;
+            }
+            for j in 0..i % 4 {
+                list.values().append_value(format!("{i}-{j}"));
+            }
+            list.append(true);
+        }
+        let list = list.finish().slice(3, rows);
+
+        let large_list = LargeListArray::from_iter_primitive::<Int32Type, _, _>(
+            (0..rows).map(|i| (i % 5 != 0).then(|| (0..i % 3).map(|j| Some(j as i32)))),
+        );
+
+        let mut map = MapBuilder::new(None, StringBuilder::new(), Int64Builder::new());
+        for i in 0..rows {
+            for j in 0..i % 3 {
+                map.keys().append_value(format!("k{j}"));
+                map.values().append_value((i * j) as i64);
+            }
+            map.append(i % 6 != 0).unwrap();
+        }
+        let map = map.finish();
+
+        let mut fixed_list = FixedSizeListBuilder::new(StringBuilder::new(), 2);
+        for i in 0..rows {
+            fixed_list.values().append_value(format!("a{i}"));
+            fixed_list.values().append_null();
+            fixed_list.append(i % 9 != 0);
+        }
+        let fixed_list = fixed_list.finish();
+
+        let mut inner_list = ListBuilder::new(Int32Builder::new());
+        for i in 0..rows {
+            inner_list.values().append_slice(&vec![i as i32; i % 3]);
+            inner_list.append(true);
+        }
+        let structs = StructArray::from(vec![
+            (
+                Arc::new(Field::new("name", DataType::Utf8, true)),
+                Arc::new(
+                    (0..rows)
+                        .map(|i| (i % 2 == 0).then(|| format!("n{i}")))
+                        .collect::<StringArray>(),
+                ) as ArrayRef,
+            ),
+            (
+                Arc::new(Field::new(
+                    "items",
+                    DataType::List(Arc::new(Field::new_list_field(DataType::Int32, true))),
+                    true,
+                )),
+                Arc::new(inner_list.finish()) as ArrayRef,
+            ),
+        ]);
+
+        let fixed_binary =
+            FixedSizeBinaryArray::try_from_iter((0..rows).map(|i| [i as u8, 1, 2])).unwrap();
+        let columns: Vec<(&str, ArrayRef)> = vec![
+            ("null", Arc::new(NullArray::new(rows))),
+            (
+                "bool",
+                Arc::new(
+                    (0..rows)
+                        .map(|i| Some(i % 3 == 0))
+                        .collect::<BooleanArray>(),
+                ),
+            ),
+            (
+                "decimal",
+                Arc::new(
+                    (0..rows)
+                        .map(|i| Some(i as i128 * 101))
+                        .collect::<Decimal128Array>()
+                        .with_precision_and_scale(12, 2)
+                        .unwrap(),
+                ),
+            ),
+            (
+                "date",
+                Arc::new(Date32Array::from_iter_values(0..rows as i32)),
+            ),
+            (
+                "ts",
+                Arc::new(
+                    TimestampMicrosecondArray::from_iter_values(0..rows as i64)
+                        .with_timezone("UTC"),
+                ),
+            ),
+            ("fixed_binary", Arc::new(fixed_binary)),
+            ("strings", Arc::new(strings)),
+            ("binary", Arc::new(binary)),
+            ("large_strings", Arc::new(large_strings)),
+            ("large_binary", Arc::new(large_binary)),
+            ("list", Arc::new(list)),
+            ("large_list", Arc::new(large_list)),
+            ("map", Arc::new(map)),
+            ("fixed_list", Arc::new(fixed_list)),
+            ("struct", Arc::new(structs)),
+        ];
+        RecordBatch::try_from_iter(columns).unwrap()
+    }
+
+    /// The reader rebuilds offsets under every codec, so turning lengths on for another codec
+    /// later is a writer-only change.
+    #[test]
+    #[cfg_attr(miri, ignore)] // miri can't call foreign function `ZSTD_createCCtx`
+    fn offsets_as_lengths_round_trip_every_mapped_type() {
+        let batch = offsets_batch();
+        for codec in CODECS {
+            let plain = ShuffleBlockWriter::try_new(&batch.schema(), codec.clone()).unwrap();
+            let writer = plain.clone().with_offsets_as_lengths_for_any_codec();
+            let block = write_block(&writer, &batch);
+            assert!(lengths_flagged(&block), "{codec:?}");
+            assert_eq!(
+                read_ipc_compressed(&block[16..]).unwrap(),
+                batch,
+                "{codec:?}"
+            );
+            assert_eq!(
+                read_ipc_compressed_validated(&block[16..]).unwrap(),
+                batch,
+                "{codec:?} validated"
+            );
+
+            let plain = write_block(&plain, &batch);
+            assert!(!lengths_flagged(&plain), "{codec:?}");
+            assert_eq!(block[16] & !LENGTHS_TAG_FLAG, plain[16], "{codec:?}");
+            assert_eq!(
+                read_ipc_compressed(&plain[16..]).unwrap(),
+                batch,
+                "{codec:?}"
+            );
+        }
+    }
+
+    /// Off unless asked for, and then only with zstd.
+    #[test]
+    #[cfg_attr(miri, ignore)] // miri can't call foreign function `ZSTD_createCCtx`
+    fn offsets_as_lengths_only_with_zstd() {
+        let batch = offsets_batch();
+        for codec in CODECS {
+            let writer = ShuffleBlockWriter::try_new(&batch.schema(), codec.clone()).unwrap();
+            assert!(!lengths_flagged(&write_block(&writer, &batch)), "{codec:?}");
+            let block = write_block(&writer.with_offsets_as_lengths(true), &batch);
+            assert_eq!(
+                lengths_flagged(&block),
+                matches!(codec, CompressionCodec::Zstd(_)),
+                "{codec:?}"
+            );
+            assert_eq!(
+                read_ipc_compressed(&block[16..]).unwrap(),
+                batch,
+                "{codec:?}"
+            );
+        }
+    }
+
+    /// Blocks with nothing to rewrite keep the plain tag, so their bytes are what they were
+    /// before lengths existed: no offsets, dictionaries (the `StreamWriter` path) and remote
+    /// writers, which always take that path.
+    #[test]
+    #[cfg_attr(miri, ignore)] // miri can't call foreign function `ZSTD_createCCtx`
+    fn offsets_as_lengths_only_where_there_are_offsets() {
+        let numbers = RecordBatch::try_from_iter(vec![(
+            "n",
+            Arc::new(Int32Array::from(vec![1, 2, 3])) as ArrayRef,
+        )])
+        .unwrap();
+        let dictionary: DictionaryArray<Int32Type> = vec!["a", "b", "a"].into_iter().collect();
+        let dictionary =
+            RecordBatch::try_from_iter(vec![("d", Arc::new(dictionary) as ArrayRef)]).unwrap();
+        for batch in [&numbers, &dictionary] {
+            let writer = ShuffleBlockWriter::try_new(&batch.schema(), CompressionCodec::Zstd(1))
+                .unwrap()
+                .with_offsets_as_lengths(true);
+            let block = write_block(&writer, batch);
+            assert!(!lengths_flagged(&block));
+            assert_eq!(&block[16..20], b"ZSTD");
+            assert_eq!(&read_ipc_compressed(&block[16..]).unwrap(), batch);
+        }
+
+        let strings = test_batch(1, 10);
+        let writer = ShuffleBlockWriter::try_new_rss(strings.schema(), CompressionCodec::Zstd(1))
+            .unwrap()
+            .with_offsets_as_lengths(true);
+        let mut remote = vec![];
+        writer
+            .write_rss_batch(
+                &strings,
+                &mut Cursor::new(&mut remote),
+                &mut ShuffleCodecContext::default(),
+                &Time::default(),
+            )
+            .unwrap();
+        assert!(!lengths_flagged(&remote));
+        assert_eq!(read_ipc_compressed(&remote[16..]).unwrap(), strings);
+    }
+
+    /// The reason for the rewrite: running offsets compress poorly, lengths compress well. Short
+    /// fixed-length strings are the extreme case.
+    #[test]
+    #[cfg_attr(miri, ignore)] // miri can't call foreign function `ZSTD_createCCtx`
+    fn offsets_as_lengths_shrink_short_strings() {
+        let strings: StringArray = (0..8192).map(|i| Some(format!("{:08}", i * 7))).collect();
+        let batch = RecordBatch::try_from_iter(vec![("s", Arc::new(strings) as ArrayRef)]).unwrap();
+        let writer =
+            ShuffleBlockWriter::try_new(&batch.schema(), CompressionCodec::Zstd(1)).unwrap();
+        let offsets = write_block(&writer, &batch).len();
+        let lengths = write_block(&writer.with_offsets_as_lengths(true), &batch).len();
+        assert!(
+            lengths * 10 < offsets * 8,
+            "lengths block {lengths} bytes, offsets block {offsets} bytes"
+        );
+    }
+
+    /// A flagged block whose schema has no mapped buffer layout cannot have come from this
+    /// writer; decoding it must fail rather than guess at which buffers to rebuild.
+    #[test]
+    fn lengths_flag_on_an_unmapped_layout_is_an_error() {
+        let views = StringViewArray::from(vec!["a", "bb", "ccc"]);
+        let batch = RecordBatch::try_from_iter(vec![("v", Arc::new(views) as ArrayRef)]).unwrap();
+        let mut block = b"NONE".to_vec();
+        let mut writer = StreamWriter::try_new(&mut block, &batch.schema()).unwrap();
+        writer.write(&batch).unwrap();
+        writer.finish().unwrap();
+        drop(writer);
+        assert_eq!(read_ipc_compressed(&block).unwrap(), batch);
+
+        block[0] |= LENGTHS_TAG_FLAG;
+        let error = read_ipc_compressed_validated(&block).unwrap_err();
+        assert!(
+            error.to_string().contains("unmapped buffer layout"),
+            "{error}"
+        );
     }
 
     /// A `ShuffleBlockWriter` is cloned once per output partition (see `LocalPartitionWriter`), and

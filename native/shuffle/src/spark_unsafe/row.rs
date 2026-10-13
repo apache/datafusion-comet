@@ -1375,6 +1375,8 @@ pub fn process_sorted_row_partition(
     // inside the loop within the method across batches.
     initial_checksum: Option<u32>,
     codec: &CompressionCodec,
+    // see `ShuffleBlockWriter::with_offsets_as_lengths`
+    offsets_as_lengths: bool,
 ) -> Result<(i64, Option<u32>, i64), CometError> {
     // The current row number we are reading
     let mut current_row = 0;
@@ -1450,7 +1452,8 @@ pub fn process_sorted_row_partition(
             .as_ref()
             .is_none_or(|(cached, _)| cached != batch.schema_ref())
         {
-            let writer = ShuffleBlockWriter::try_new(batch.schema_ref(), codec.clone())?;
+            let writer = ShuffleBlockWriter::try_new(batch.schema_ref(), codec.clone())?
+                .with_offsets_as_lengths(offsets_as_lengths);
             block_writer = Some((batch.schema(), writer));
         }
         let (_, writer) = block_writer.as_ref().expect("block writer is set above");

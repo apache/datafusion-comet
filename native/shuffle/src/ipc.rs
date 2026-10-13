@@ -15,6 +15,7 @@
 // specific language governing permissions and limitations
 // under the License.
 
+use crate::offsets_as_lengths::{buffer_roles, lengths_to_offsets, LENGTHS_TAG_FLAG};
 use arrow::array::{ArrayRef, RecordBatch};
 use arrow::buffer::{Buffer, MutableBuffer};
 use arrow::datatypes::{Schema, SchemaRef};
@@ -194,38 +195,40 @@ fn body_length(message: &Message<'_>) -> Result<usize> {
 }
 
 fn read_ipc_compressed_impl(bytes: &[u8], validate: bool) -> Result<RecordBatch> {
-    let codec = bytes
+    let tag = bytes
         .get(..4)
         .ok_or_else(|| decode_error("truncated compression codec"))?;
+    // the flag rides on the first tag byte; the rest of the tag names the codec as before
+    let lengths = tag[0] & LENGTHS_TAG_FLAG != 0;
+    let codec = [tag[0] & !LENGTHS_TAG_FLAG, tag[1], tag[2], tag[3]];
     let mut encoded = &bytes[4..];
-    let batch = match codec {
+    let batch = match &codec {
         b"SNAP" => decode(
             Streamed(snap::read::FrameDecoder::new(&mut encoded)),
             validate,
+            lengths,
         )?,
         b"LZ4_" => decode(
             Streamed(lz4_flex::frame::FrameDecoder::new(RequireLz4EndMark(
                 &mut encoded,
             ))),
             validate,
+            lengths,
         )?,
         // The slice already implements BufRead. Adding another BufReader would let read-ahead
         // conceal compressed bytes left over after the decoder reaches its end marker.
         b"ZSTD" => decode(
             Streamed(zstd::Decoder::with_buffer(&mut encoded)?),
             validate,
+            lengths,
         )?,
         // Uncompressed messages are located in place, so only bodies are copied.
         b"NONE" => {
-            let batch = decode(Sliced::new(encoded), validate)?;
+            let batch = decode(Sliced::new(encoded), validate, lengths)?;
             encoded = &[];
             batch
         }
-        other => {
-            return Err(decode_error(&format!(
-                "invalid compression codec: {other:?}"
-            )))
-        }
+        _ => return Err(decode_error(&format!("invalid compression codec: {tag:?}"))),
     };
     // LZ4 returns EOF at the end of one compressed frame without consuming the next one. Check
     // the encoded source as well as the decoded IPC tail so an oversized outer frame cannot
@@ -236,9 +239,9 @@ fn read_ipc_compressed_impl(bytes: &[u8], validate: bool) -> Result<RecordBatch>
     Ok(batch)
 }
 
-fn decode<'b, S: BlockSource<'b>>(source: S, validate: bool) -> Result<RecordBatch> {
+fn decode<'b, S: BlockSource<'b>>(source: S, validate: bool, lengths: bool) -> Result<RecordBatch> {
     STATE.with_borrow_mut(|state| {
-        let batch = read_single_batch(state, source, validate);
+        let batch = read_single_batch(state, source, validate, lengths);
         // a corrupt length can grow the scratch arbitrarily; do not pin that for the thread's life
         if state.scratch.capacity() > SCRATCH_RETAIN_LIMIT {
             state.scratch = Vec::new();
@@ -249,11 +252,13 @@ fn decode<'b, S: BlockSource<'b>>(source: S, validate: bool) -> Result<RecordBat
 
 /// Reads one complete IPC stream holding exactly one record batch. Mirrors what
 /// `arrow::ipc::reader::StreamReader` does message by message, except that the schema message is
-/// served from the cache when its bytes match one already parsed.
+/// served from the cache when its bytes match one already parsed, and that with `lengths` the
+/// record batch's offsets buffers are rebuilt from the lengths the writer stored.
 fn read_single_batch<'b, S: BlockSource<'b>>(
     state: &mut DecoderState,
     mut source: S,
     validate: bool,
+    lengths: bool,
 ) -> Result<RecordBatch> {
     let DecoderState {
         schemas, scratch, ..
@@ -340,7 +345,10 @@ fn read_single_batch<'b, S: BlockSource<'b>>(
                 let record_batch = message
                     .header_as_record_batch()
                     .ok_or_else(|| decode_error("unable to read record batch"))?;
-                let body = source.body(body_len)?;
+                let mut body = source.body(body_len)?;
+                if lengths {
+                    body = restore_offsets(body, &record_batch, &schema)?;
+                }
                 batch = Some(
                     RecordBatchDecoder::try_new(
                         &body,
@@ -368,6 +376,36 @@ fn read_single_batch<'b, S: BlockSource<'b>>(
     let batch = batch.ok_or_else(|| decode_error("empty IPC stream"))?;
     source.expect_exhausted()?;
     Ok(batch)
+}
+
+/// Turns the lengths a writer stored back into offsets, in the body buffer itself: both sources
+/// hand out a freshly allocated body, so this does not copy it again.
+fn restore_offsets(
+    body: Buffer,
+    record_batch: &arrow::ipc::RecordBatch<'_>,
+    schema: &Schema,
+) -> Result<Buffer> {
+    let roles = buffer_roles(schema).ok_or_else(|| {
+        decode_error("offsets stored as lengths for a schema with an unmapped buffer layout")
+    })?;
+    let buffers = record_batch
+        .buffers()
+        .ok_or_else(|| decode_error("record batch has no buffers"))?;
+    let mut body = body.into_mutable().unwrap_or_else(|shared| {
+        let mut copy = MutableBuffer::with_capacity(shared.len());
+        copy.extend_from_slice(shared.as_slice());
+        copy
+    });
+    // an offset or length that does not fit lands outside the body and is rejected there
+    let range = |value: i64| usize::try_from(value).unwrap_or(usize::MAX);
+    lengths_to_offsets(
+        body.as_slice_mut(),
+        buffers
+            .iter()
+            .map(|b| (range(b.offset()), range(b.length()))),
+        &roles,
+    )?;
+    Ok(body.into())
 }
 
 /// Where a block's IPC messages come from. Metadata is borrowed one message at a time; bodies
