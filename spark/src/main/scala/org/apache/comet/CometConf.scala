@@ -1286,9 +1286,10 @@ object CometConf extends ShimCometConf {
 
   val COMET_LIBHDFS_SCHEMES_KEY = "fs.comet.libhdfs.schemes"
 
-  // Declared so the value appears in the generated config reference and can be set via
-  // `spark.hadoop.*`, but never read through this entry: `NativeConfig.resolveLibhdfsSchemes`
-  // reads the Hadoop key above instead, so `core-site.xml` is honored too.
+  // Declared so the value appears in the generated config reference and can be set at startup
+  // via `spark.hadoop.*`, but never read through this entry: the scan gates read the Hadoop key
+  // above through `NativeConfig.resolveLibhdfsSchemes`, as native does, so `core-site.xml` is
+  // honored too.
   val COMET_LIBHDFS_SCHEMES: OptionalConfigEntry[String] =
     conf(s"spark.hadoop.$COMET_LIBHDFS_SCHEMES_KEY")
       .category(CATEGORY_SCAN)

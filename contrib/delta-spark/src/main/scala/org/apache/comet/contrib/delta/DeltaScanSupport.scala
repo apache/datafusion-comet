@@ -39,7 +39,6 @@ import org.apache.spark.sql.internal.SQLConf
 import org.apache.spark.sql.types.{ArrayType, DataType, MapType, StructType}
 
 import org.apache.comet.CometConf
-import org.apache.comet.CometConf.COMET_LIBHDFS_SCHEMES
 import org.apache.comet.objectstore.NativeConfig
 import org.apache.comet.parquet.CometParquetUtils
 import org.apache.comet.rules.{CometScanRule, CometScanTypeChecker}
@@ -293,8 +292,9 @@ object DeltaScanSupport {
     }
 
     // Only claim scans whose root paths object_store (or the configured libhdfs schemes) can
-    // actually read (mirrors core's unsupportedFsSchemes gate).
-    val libhdfs = libhdfsSchemes
+    // actually read (mirrors core's unsupportedFsSchemes gate). The libhdfs list comes from the
+    // scan's Hadoop conf, as native reads it.
+    val libhdfs = NativeConfig.resolveLibhdfsSchemes(hadoopConf)
     val unsupportedRootSchemes = unsupportedSchemes(rootUris, libhdfs)
     if (unsupportedRootSchemes.nonEmpty) {
       return Some(
@@ -458,16 +458,6 @@ object DeltaScanSupport {
       }
       .map(_.copyWithAbsolutePath(tableRootPath))
       .toSeq
-  }
-
-  /**
-   * The libhdfs scheme exemption set from [[org.apache.comet.CometConf.COMET_LIBHDFS_SCHEMES]],
-   * parsed exactly like core's scan gate (`NativeConfig.parseSchemeSet`: split on commas,
-   * trimmed, lowercased) and defaulting to `Set("hdfs")` when unset.
-   */
-  private[delta] def libhdfsSchemes: Set[String] = COMET_LIBHDFS_SCHEMES.get() match {
-    case Some(s) => NativeConfig.parseSchemeSet(s)
-    case None => Set("hdfs")
   }
 
   /**
