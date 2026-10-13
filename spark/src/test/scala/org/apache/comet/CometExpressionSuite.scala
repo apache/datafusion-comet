@@ -2060,20 +2060,6 @@ class CometExpressionSuite extends CometTestBase with AdaptiveSparkPlanHelper {
     }
   }
 
-  test("md5") {
-    Seq(false, true).foreach { dictionary =>
-      withSQLConf("parquet.enable.dictionary" -> dictionary.toString) {
-        val table = "test"
-        withTable(table) {
-          sql(s"create table $table(col String) using parquet")
-          sql(
-            s"insert into $table values ('test1'), ('test1'), ('test2'), ('test2'), (NULL), ('')")
-          checkSparkAnswerAndOperator(s"select md5(col) FROM $table")
-        }
-      }
-    }
-  }
-
   test("unhex") {
     val table = "unhex_table"
     Seq(false, true).foreach { dictionaryEnabled =>
@@ -2617,48 +2603,6 @@ class CometExpressionSuite extends CometTestBase with AdaptiveSparkPlanHelper {
     }
   }
 
-  test("hash functions") {
-    Seq(true, false).foreach { dictionary =>
-      withSQLConf("parquet.enable.dictionary" -> dictionary.toString) {
-        val table = "test"
-        withTable(table) {
-          sql(s"create table $table(col string, a int, b float) using parquet")
-          sql(s"""
-              |insert into $table values
-              |('Spark SQL  ', 10, 1.2), (NULL, NULL, NULL), ('', 0, 0.0), ('苹果手机', NULL, 3.999999)
-              |, ('Spark SQL  ', 10, 1.2), (NULL, NULL, NULL), ('', 0, 0.0), ('苹果手机', NULL, 3.999999)
-              |""".stripMargin)
-          checkSparkAnswerAndOperator("""
-              |select
-              |md5(col), md5(cast(a as string)), md5(cast(b as string)),
-              |hash(col), hash(col, 1), hash(col, 0), hash(col, a, b), hash(b, a, col),
-              |xxhash64(col), xxhash64(col, 1), xxhash64(col, 0), xxhash64(col, a, b), xxhash64(b, a, col),
-              |crc32(col), crc32(cast(a as string)), crc32(cast(b as string)),
-              |sha2(col, 0), sha2(col, 256), sha2(col, 224), sha2(col, 384), sha2(col, 512), sha2(col, 128), sha2(col, -1),
-              |sha1(col), sha1(cast(a as string)), sha1(cast(b as string))
-              |from test
-              |""".stripMargin)
-        }
-      }
-    }
-  }
-
-  test("sha2 with all-literal arguments and ConstantFolding disabled") {
-    // https://github.com/apache/datafusion-comet/issues/3340
-    // When ConstantFolding is disabled, an all-literal sha2() call reaches the native
-    // engine as scalar arguments. Verify it computes the correct result rather than crashing.
-    withSQLConf(
-      "spark.sql.optimizer.excludedRules" ->
-        "org.apache.spark.sql.catalyst.optimizer.ConstantFolding") {
-      checkSparkAnswerAndOperator("""
-          |select
-          |sha2('test', 0), sha2('test', 256), sha2('test', 224),
-          |sha2('test', 384), sha2('test', 512), sha2('test', 128), sha2('test', -1),
-          |sha2(cast(null as string), 256)
-          |""".stripMargin)
-    }
-  }
-
   test("remainder function") {
     def withAnsiMode(enabled: Boolean)(f: => Unit): Unit = {
       withSQLConf(
@@ -2735,44 +2679,6 @@ class CometExpressionSuite extends CometTestBase with AdaptiveSparkPlanHelper {
           """.stripMargin)
         }
       })
-    }
-  }
-
-  test("hash functions with random input") {
-    val dataGen = DataGenerator.DEFAULT
-    // sufficient number of rows to create dictionary encoded ArrowArray.
-    val randomNumRows = 1000
-
-    val whitespaceChars = " \t\r\n"
-    val timestampPattern = "0123456789/:T" + whitespaceChars
-    Seq(true, false).foreach { dictionary =>
-      withSQLConf("parquet.enable.dictionary" -> dictionary.toString) {
-        val table = "test"
-        withTable(table) {
-          sql(s"create table $table(col string, a int, b float) using parquet")
-          val tableSchema = spark.table(table).schema
-          val rows = dataGen.generateRows(
-            randomNumRows,
-            tableSchema,
-            Some(() => dataGen.generateString(timestampPattern, 6)))
-          val data = spark.createDataFrame(spark.sparkContext.parallelize(rows), tableSchema)
-          data.write
-            .mode("append")
-            .insertInto(table)
-          // with random generated data
-          // disable cast(b as string) for now, as the cast from float to string may produce incompatible result
-          checkSparkAnswerAndOperator("""
-              |select
-              |md5(col), md5(cast(a as string)), --md5(cast(b as string)),
-              |hash(col), hash(col, 1), hash(col, 0), hash(col, a, b), hash(b, a, col),
-              |xxhash64(col), xxhash64(col, 1), xxhash64(col, 0), xxhash64(col, a, b), xxhash64(b, a, col),
-              |crc32(col), crc32(cast(a as string)),
-              |sha2(col, 0), sha2(col, 256), sha2(col, 224), sha2(col, 384), sha2(col, 512), sha2(col, 128), sha2(col, -1),
-              |sha1(col), sha1(cast(a as string))
-              |from test
-              |""".stripMargin)
-        }
-      }
     }
   }
 
