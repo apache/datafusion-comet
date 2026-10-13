@@ -44,6 +44,7 @@ import org.apache.spark.sql.util.SchemaUtils
 import org.apache.spark.sql.vectorized.ColumnarBatch
 import org.apache.spark.util.{SerializableConfiguration, Utils}
 
+import org.apache.comet.CometExecIterator
 import org.apache.comet.serde.OperatorOuterClass.Operator
 import org.apache.comet.serde.operator.NativeWriteUtils
 
@@ -51,8 +52,11 @@ import org.apache.comet.serde.operator.NativeWriteUtils
  * Native Parquet writes on Spark 3.x, where Comet replaces the entire write command.
  *
  * Both execution entry points run Spark's job and task commit lifecycle. Native code writes the
- * exact filename supplied by the configured commit protocol, using the prepared Hadoop job. Spark
- * 4.0+ uses CometWriteFilesExec and leaves the surrounding command with Spark instead.
+ * exact filename supplied by the configured commit protocol, using the prepared Hadoop job. A
+ * file that is neither local nor on HDFS is created through Hadoop's FileSystem API, as Spark's
+ * writer creates it, and the native writer only supplies its bytes, which is what S3A's magic
+ * committer needs. Spark 4.0+ uses CometWriteFilesExec and leaves the surrounding command with
+ * Spark instead.
  *
  * @param originalPlan
  *   The JVM data-writing command restored when Comet reverts a transition-heavy stage
@@ -216,32 +220,38 @@ case class CometNativeWriteExec(
               .protoCompressionCodec(codec.name())
               .getOrElse(throw new UnsupportedOperationException(
                 s"Comet's native Parquet writer cannot write $codec"))
-            val writer = capturedNativeOp.getParquetWriter.toBuilder
-              .setOutputPath(filePath)
-              .setCompression(protoCodec)
-              .build()
-            val taskOp = capturedNativeOp.toBuilder.setParquetWriter(writer).build()
 
-            // Register before the iterator so this listener runs after its cleanup.
-            nativeMetrics.reportNativeWriteOutputMetrics(context)
-            val execIterator = CometExec.getCometIterator(
-              CometArrowStream.inputObjects(batches, childSchema, "CometNativeWriteExec"),
-              childSchema.length,
-              taskOp,
-              nativeMetrics,
-              numPartitions,
-              context.partitionId(),
-              None,
-              Seq.empty)
+            // A file the native writer cannot create itself, such as one S3A's magic committer
+            // hands out, is created through Hadoop with the task's configuration.
+            NativeWriteUtils.writeFile(filePath, taskContext.getConfiguration) { output =>
+              val writer = capturedNativeOp.getParquetWriter.toBuilder
+                .setOutputPath(filePath)
+                .setJvmOutputStream(output.isDefined)
+                .setCompression(protoCodec)
+                .build()
+              val taskOp = capturedNativeOp.toBuilder.setParquetWriter(writer).build()
 
-            // Close before committing. A failed write must remain the primary error even if
-            // native teardown (including the final metrics update) also throws.
-            Utils.tryWithSafeFinally {
-              while (execIterator.hasNext) {
-                execIterator.next().close()
+              // Register before the iterator so this listener runs after its cleanup.
+              nativeMetrics.reportNativeWriteOutputMetrics(context)
+              val execIterator = new CometExecIterator(
+                CometExec.newIterId,
+                CometArrowStream.inputObjects(batches, childSchema, "CometNativeWriteExec"),
+                childSchema.length,
+                CometExec.serializeNativePlan(taskOp),
+                nativeMetrics,
+                numPartitions,
+                context.partitionId(),
+                outputStream = output)
+
+              // Close before committing. A failed write must remain the primary error even if
+              // native teardown (including the final metrics update) also throws.
+              Utils.tryWithSafeFinally {
+                while (execIterator.hasNext) {
+                  execIterator.next().close()
+                }
+              } {
+                execIterator.close()
               }
-            } {
-              execIterator.close()
             }
           }
           // `hasNext` already ran an empty partition's child to completion, so there is nothing

@@ -24,13 +24,14 @@ import java.net.URI
 import java.nio.charset.StandardCharsets
 
 import scala.jdk.CollectionConverters._
-import scala.util.Using
+import scala.util.{Try, Using}
 
 import org.apache.commons.io.IOUtils
 import org.apache.hadoop.fs.Path
 import org.apache.parquet.hadoop.ParquetOutputCommitter
 import org.apache.spark.SparkConf
 import org.apache.spark.sql.DataFrame
+import org.apache.spark.sql.comet.CometNativeWriteExec
 import org.apache.spark.sql.execution.SparkPlan
 import org.apache.spark.sql.execution.command.DataWritingCommandExec
 import org.apache.spark.sql.functions.col
@@ -40,7 +41,6 @@ import com.fasterxml.jackson.databind.ObjectMapper
 
 import org.apache.comet.CometConf
 import org.apache.comet.CometS3TestBase
-import org.apache.comet.CometSparkSessionExtensions.isSpark40Plus
 import org.apache.comet.serde.operator.NativeWriteUtils
 
 import software.amazon.awssdk.auth.credentials.{AwsBasicCredentials, StaticCredentialsProvider}
@@ -53,8 +53,8 @@ import software.amazon.awssdk.services.s3.model.ListMultipartUploadsRequest
  *
  * A manual suite like the other MinIO suites, since it needs Docker. Every session here gets the
  * magic committer the way Spark configures it when spark-hadoop-cloud is on the classpath: by
- * default on Spark 4.1+ (SPARK-47618), and for a bucket that asks for it on Spark 4.0. The shared
- * test configuration turns that off for every other suite.
+ * default on Spark 4.1+ (SPARK-47618), and for a bucket that asks for it on earlier versions. The
+ * shared test configuration turns that off for every other suite.
  */
 class ParquetWriteWithMagicCommitterSuite
     extends CometParquetWriterTestBase
@@ -105,16 +105,25 @@ class ParquetWriteWithMagicCommitterSuite
     spark.read.parquet(sourcePath)
   }
 
-  private def writeStat(plan: SparkPlan, name: String): Long =
+  /**
+   * The files and bytes the write reports: from Spark's stats tracker on Spark 4.0+, which leaves
+   * the write command in the plan, and from the native writer on 3.x, which replaces it.
+   */
+  private def writtenFilesAndBytes(plan: SparkPlan): (Long, Long) =
     plan
-      .collectFirst { case write: DataWritingCommandExec => write.cmd.metrics(name).value }
-      .getOrElse(fail(s"No write command in the plan:\n${plan.treeString}"))
+      .collectFirst {
+        case write: DataWritingCommandExec =>
+          (write.cmd.metrics("numFiles").value, write.cmd.metrics("numOutputBytes").value)
+        case write: CometNativeWriteExec =>
+          (write.metrics("files_written").value, write.metrics("bytes_written").value)
+      }
+      .getOrElse(fail(s"No write in the plan:\n${plan.treeString}"))
 
   /**
    * Checks that the magic committer committed `files` part files to `table`: its `_SUCCESS`
    * manifest names it and them, no `__magic` directory or pending upload is left behind, and the
-   * write's statistics saw each file's real size, which S3A reports for a magic file only through
-   * the marker it writes when the file is closed.
+   * write reports each file's real size. On Spark 4.0+ that size comes from the marker S3A writes
+   * when it closes a magic file, and on 3.x from what the native writer counted.
    */
   private def assertCommittedByMagic(table: String, plan: SparkPlan, files: Int): Unit = {
     val tablePath = new Path(table)
@@ -132,12 +141,10 @@ class ParquetWriteWithMagicCommitterSuite
       fs.listStatus(tablePath).map(_.getPath).mkString(", "))
     assert(pendingUploads(tablePath.toUri.getHost).isEmpty)
 
-    assert(writeStat(plan, "numFiles") == files)
-    assert(writeStat(plan, "numOutputBytes") == parts.map(_.getLen).sum)
+    assert(writtenFilesAndBytes(plan) == ((files.toLong, parts.map(_.getLen).sum)))
   }
 
   test("a native write is committed by S3A's magic committer") {
-    assume(isSpark40Plus, "Requires the WriteFilesExec seam")
     // Spark's own magic committer configuration, rather than one this suite spells out.
     assert(
       spark.conf.get(SQLConf.FILE_COMMIT_PROTOCOL_CLASS.key) ==
@@ -159,7 +166,11 @@ class ParquetWriteWithMagicCommitterSuite
   }
 
   test("a native write is committed with the magic committer tracking commits in memory") {
-    assume(isSpark40Plus, "Requires the WriteFilesExec seam")
+    assume(
+      Try(
+        Class.forName(
+          "org.apache.hadoop.fs.s3a.commit.magic.InMemoryMagicCommitTracker")).isSuccess,
+      "Requires S3A's in-memory commit tracking, which Hadoop 3.3.4 does not have")
     // Task commit then reads the pending uploads from S3A's in-process tracker, not from the
     // `.pending` files: a native writer that only reproduced those files would lose its data
     // here. Its own bucket, since S3A reads the setting from the file system instance it caches
@@ -192,7 +203,6 @@ class ParquetWriteWithMagicCommitterSuite
       SQLConf.FILE_COMMIT_PROTOCOL_CLASS.defaultValueString)).foreach {
     case (binding, otherBindingUnset) =>
       test(s"a native write is committed by the magic committer through $binding alone") {
-        assume(isSpark40Plus, "Requires the WriteFilesExec seam")
         withTempPath { dir =>
           val df = nativeSource((1 to 1000).map(i => (i, s"str_$i")).toDF("id", "name"), dir)
             .repartition(2)
@@ -210,7 +220,6 @@ class ParquetWriteWithMagicCommitterSuite
   }
 
   test("a failed native write leaves no pending upload behind") {
-    assume(isSpark40Plus, "Requires the WriteFilesExec seam")
     // S3A starts the multipart upload of a magic file when the file is created, so a failed write
     // has to abort the file for the upload not to stay pending, and billed. Job abort otherwise
     // cleans up only with fs.s3a.committer.abort.pending.uploads, which deployments writing one
@@ -218,14 +227,14 @@ class ParquetWriteWithMagicCommitterSuite
     // can leave the bucket clean. One task, because job abort does not wait for tasks still
     // running, so with several what is left would depend on how far the others got.
     withTempPath { dir =>
-      val df = nativeSource((1 to 1000).map(i => (i, i - 500)).toDF("id", "divisor"), dir)
-        .select((col("id") / col("divisor")).as("quotient"))
-        .coalesce(1)
+      val source = nativeSource((1 to 1000).map(i => (i, i - 500)).toDF("id", "divisor"), dir)
       val table = s"s3a://$testBucketName/failed"
       withNativeWriter {
         withSQLConf(
           SQLConf.ANSI_ENABLED.key -> "true",
           "fs.s3a.committer.abort.pending.uploads" -> "false") {
+          // Built under ANSI mode, which Spark 3.x division captures when it is created.
+          val df = source.select((col("id") / col("divisor")).as("quotient")).coalesce(1)
           val (plan, error) = captureFailedWritePlan(df.write.parquet(table))
           assertHasCometNativeWriteExec(plan)
           assert(
@@ -246,7 +255,6 @@ class ParquetWriteWithMagicCommitterSuite
   }
 
   test("an S3 write that S3A's magic committer does not commit stays on Spark") {
-    assume(isSpark40Plus, "Requires the WriteFilesExec seam")
     // Only the magic committer's writes have S3A create each file. The others need the native
     // writer to do what S3A does at create time, which it does not yet.
     Seq("file", "directory").foreach { committer =>

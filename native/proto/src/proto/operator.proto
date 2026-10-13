@@ -1016,8 +1016,9 @@ message ParquetWriter {
   // Whether the JVM has already created `output_path` through Hadoop's FileSystem API and
   // registered its output stream with the plan (Native.setOutputStream). The native writer then
   // writes the file's bytes to that stream instead of opening the path itself, and the JVM closes
-  // the file afterwards. Set per task by CometWriteFilesExec for every file that is neither local
-  // nor on HDFS, such as the files S3A's magic committer needs S3A itself to create.
+  // the file afterwards. Set per task by CometWriteFilesExec and CometNativeWriteExec for every
+  // file that is neither local nor on HDFS, such as the files S3A's magic committer needs S3A
+  // itself to create.
   bool jvm_output_stream = 10;
 }
 

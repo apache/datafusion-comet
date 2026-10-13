@@ -59,18 +59,19 @@ object CometDataWritingCommand extends CometOperatorSerde[DataWritingCommandExec
       case cmd: InsertIntoHadoopFsRelationCommand =>
         cmd.fileFormat match {
           case _: ParquetFileFormat =>
-            if (!cmd.outputPath.toString.startsWith("file:") && !cmd.outputPath.toString
-                .startsWith("hdfs:")) {
-              return Unsupported(Some("Supported output filesystems: local, HDFS"))
-            }
-
+            val session = op.session
             // Spark 3.x HadoopMapReduceCommitProtocol.getFilename hardcodes "part";
             // mapreduce.output.basename is only honored on Spark 4.0+. Custom committer paths
             // are still checked by checkNativeWriteDestination before native execution.
             NativeWriteUtils
-              .escapedHdfsDestination(
+              .unsupportedFileSystem(
                 cmd.outputPath.toString,
-                NativeWriteUtils.DEFAULT_BASE_OUTPUT_NAME)
+                session.sessionState.conf.fileCommitProtocolClass,
+                session.sessionState.newHadoopConfWithOptions(cmd.options))
+              .orElse(
+                NativeWriteUtils.escapedHdfsDestination(
+                  cmd.outputPath.toString,
+                  NativeWriteUtils.DEFAULT_BASE_OUTPUT_NAME))
               .foreach(reason => return Unsupported(Some(reason)))
 
             if (cmd.bucketSpec.isDefined) {

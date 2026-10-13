@@ -73,22 +73,13 @@ object CometWriteFiles extends CometOperatorSerde[WriteFilesExec] {
         return Unsupported(Some("Only InsertIntoHadoopFsRelationCommand writes are supported"))
     }
 
-    // Local and HDFS files are created natively. A write S3A's magic committer commits is planned
-    // natively too, since each of its files is created through S3A (see CometWriteFilesExec),
-    // which is the only way to give the committer the pending upload it completes. Other S3
-    // writes stay on Spark until the native writer reproduces what S3A does at create time.
     val conf = hadoopConf(op)
-    if (!outputPath.startsWith("file:") && !outputPath.startsWith("hdfs:") &&
-      !NativeWriteUtils.usesS3AMagicCommitter(
-        outputPath,
-        SQLConf.get.fileCommitProtocolClass,
-        conf)) {
-      return Unsupported(
-        Some("Supported output filesystems: local, HDFS, and S3 with the S3A magic committer"))
-    }
-
     NativeWriteUtils
-      .escapedHdfsDestination(outputPath, fileNamePrefix(conf))
+      .unsupportedFileSystem(
+        outputPath,
+        op.session.sessionState.conf.fileCommitProtocolClass,
+        conf)
+      .orElse(NativeWriteUtils.escapedHdfsDestination(outputPath, fileNamePrefix(conf)))
       .foreach(reason => return Unsupported(Some(reason)))
 
     if (op.bucketSpec.isDefined) {

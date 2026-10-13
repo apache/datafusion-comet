@@ -1734,7 +1734,6 @@ class CometParquetWriterSuite extends CometParquetWriterTestBase {
   }
 
   test("a task file the native writer cannot create is created through Hadoop") {
-    assume(isSpark40Plus, "Requires the WriteFilesExec seam")
     // The native writer creates only local and HDFS files. Every other file, such as the one
     // S3A's magic committer hands out under its `__magic` directory, has to be created through
     // Hadoop's FileSystem API so the FileSystem can do whatever it does at create time, and the
@@ -1777,7 +1776,6 @@ class CometParquetWriterSuite extends CometParquetWriterTestBase {
   }
 
   test("a failed write through Hadoop aborts the file and fails with what its stream threw") {
-    assume(isSpark40Plus, "Requires the WriteFilesExec seam")
     // A file the JVM created is discarded when the native write fails: aborted, so that S3A
     // abandons the upload rather than completing a truncated file. The native writer only passes
     // on the text of what the stream threw, so the task rethrows the exception itself, as a
