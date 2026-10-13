@@ -27,7 +27,9 @@ use datafusion::common::ScalarValue;
 use datafusion::logical_expr::Operator;
 use datafusion::physical_expr::expressions::{in_list, BinaryExpr, Column, Literal};
 use datafusion::physical_expr::PhysicalExpr;
-use datafusion_comet_spark_expr::{spark_comparison, spark_in_list, NormalizeNestedFloats};
+use datafusion_comet_spark_expr::{
+    spark_comparison, spark_in_list, FloatOperands, NormalizeNestedFloats,
+};
 use std::hint::black_box;
 use std::sync::Arc;
 use std::time::Duration;
@@ -65,7 +67,7 @@ fn expression(version: &str, mode: &str, batch: &RecordBatch) -> Arc<dyn Physica
     let b: Arc<dyn PhysicalExpr> = Arc::new(Column::new("b", 1));
     if mode == "eq" {
         return if version == "new" {
-            spark_comparison(a, Operator::Eq, b, &schema).unwrap()
+            spark_comparison(a, Operator::Eq, b, &schema, FloatOperands::Normalize).unwrap()
         } else {
             Arc::new(BinaryExpr::new(a, Operator::Eq, b))
         };
