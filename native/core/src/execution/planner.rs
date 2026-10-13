@@ -4125,22 +4125,12 @@ impl PhysicalPlanner {
                 }
             };
 
-        let fun_expr = if fun_name == "spark_sequence" {
-            // Keep the exact outer pool, including per-plan tracking and task-shared policy.
-            Arc::new(datafusion::logical_expr::ScalarUDF::new_from_impl(
-                datafusion_comet_spark_expr::SparkSequence::new(
-                    data_type.clone(),
-                    Arc::clone(&self.session_ctx.runtime_env().memory_pool),
-                ),
-            ))
-        } else {
-            create_comet_physical_fun(
-                fun_name,
-                data_type.clone(),
-                &self.session_ctx.state(),
-                Some(expr.fail_on_error),
-            )?
-        };
+        let fun_expr = create_comet_physical_fun(
+            fun_name,
+            data_type.clone(),
+            &self.session_ctx.state(),
+            Some(expr.fail_on_error),
+        )?;
 
         let args = args
             .into_iter()

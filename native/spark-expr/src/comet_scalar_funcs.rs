@@ -36,12 +36,12 @@ use crate::{
     SparkArraysOverlap, SparkContains, SparkDateDiff, SparkDateFromUnixDate, SparkDateTrunc,
     SparkDayOfWeek, SparkFlatten, SparkFloatArrayContains, SparkIcebergBucket,
     SparkIcebergTemporalTransform, SparkIcebergTruncate, SparkMakeDate, SparkMakeInterval,
-    SparkMakeTime, SparkMapExtract, SparkNextDay, SparkSecondsToTimestamp, SparkSizeFunc,
-    SparkSortArray, SparkWeekDay,
+    SparkMakeTime, SparkMapExtract, SparkNextDay, SparkSecondsToTimestamp, SparkSequence,
+    SparkSizeFunc, SparkSortArray, SparkWeekDay,
 };
 use arrow::datatypes::DataType;
 use datafusion::common::{DataFusionError, Result as DataFusionResult};
-use datafusion::execution::FunctionRegistry;
+use datafusion::execution::{session_state::SessionState, FunctionRegistry};
 use datafusion::logical_expr::{
     ScalarFunctionArgs, ScalarFunctionImplementation, ScalarUDF, ScalarUDFImpl, Signature,
     Volatility,
@@ -98,17 +98,17 @@ macro_rules! make_comet_scalar_udf {
     }};
 }
 
-/// Create a physical scalar function.
+/// Create a physical scalar function using the session registry and runtime resources.
 pub fn create_comet_physical_fun(
     fun_name: &str,
     data_type: DataType,
-    registry: &dyn FunctionRegistry,
+    session_state: &SessionState,
     fail_on_error: Option<bool>,
 ) -> Result<Arc<ScalarUDF>, DataFusionError> {
     create_comet_physical_fun_with_eval_mode(
         fun_name,
         data_type,
-        registry,
+        session_state,
         fail_on_error,
         EvalMode::Legacy,
     )
@@ -118,7 +118,7 @@ pub fn create_comet_physical_fun(
 pub fn create_comet_physical_fun_with_eval_mode(
     fun_name: &str,
     data_type: DataType,
-    registry: &dyn FunctionRegistry,
+    session_state: &SessionState,
     fail_on_error: Option<bool>,
     eval_mode: EvalMode,
 ) -> Result<Arc<ScalarUDF>, DataFusionError> {
@@ -130,9 +130,13 @@ pub fn create_comet_physical_fun_with_eval_mode(
         "ceil" => {
             make_comet_scalar_udf!("ceil", spark_ceil, data_type)
         }
-        "spark_sequence" => datafusion::common::internal_err!(
-            "spark_sequence requires the task memory pool; construct SparkSequence in the planner"
-        ),
+        "spark_sequence" => {
+            // Preserve the exact outer pool, including per-plan tracking and task-shared policy.
+            Ok(Arc::new(ScalarUDF::new_from_impl(SparkSequence::new(
+                data_type,
+                Arc::clone(&session_state.runtime_env().memory_pool),
+            ))))
+        }
         "floor" => {
             make_comet_scalar_udf!("floor", spark_floor, data_type)
         }
@@ -330,7 +334,7 @@ pub fn create_comet_physical_fun_with_eval_mode(
              (e.g. parse_url / try_parse_url) or a dedicated match arm that \
              consumes the flag."
         ))),
-        _ => registry.udf(fun_name).map_err(|e| {
+        _ => session_state.udf(fun_name).map_err(|e| {
             DataFusionError::Execution(format!(
                 "Function {fun_name} not found in the registry: {e}",
             ))

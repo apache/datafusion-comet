@@ -26,7 +26,7 @@ use datafusion::common::{
     exec_err, internal_err, not_impl_err, DataFusionError, Result, ScalarValue,
 };
 use datafusion::config::ConfigOptions;
-use datafusion::execution::FunctionRegistry;
+use datafusion::execution::session_state::SessionState;
 use datafusion::physical_expr::expressions::{lit, BinaryExpr};
 use datafusion::physical_expr::ScalarFunctionExpr;
 use datafusion::physical_expr_common::datum::{apply, apply_cmp_for_nested};
@@ -140,7 +140,7 @@ pub fn create_modulo_expr(
     data_type: DataType,
     input_schema: SchemaRef,
     fail_on_error: bool,
-    registry: &dyn FunctionRegistry,
+    session_state: &SessionState,
 ) -> Result<Arc<dyn PhysicalExpr>, DataFusionError> {
     // For non-ANSI mode, wrap the right expression such that any zero value is replaced with `NULL`
     // to prevent divide by zero error.
@@ -185,7 +185,7 @@ pub fn create_modulo_expr(
                 left_256,
                 right_256,
                 &decimal256_return_type,
-                registry,
+                session_state,
                 fail_on_error,
             )?;
 
@@ -201,7 +201,7 @@ pub fn create_modulo_expr(
             left,
             right_non_ansi_safe,
             &data_type,
-            registry,
+            session_state,
             fail_on_error,
         ),
     }
@@ -268,12 +268,16 @@ fn create_modulo_scalar_function(
     left: Arc<dyn PhysicalExpr>,
     right: Arc<dyn PhysicalExpr>,
     data_type: &DataType,
-    registry: &dyn FunctionRegistry,
+    session_state: &SessionState,
     fail_on_error: bool,
 ) -> Result<Arc<dyn PhysicalExpr>, DataFusionError> {
     let func_name = "spark_modulo";
-    let modulo_expr =
-        create_comet_physical_fun(func_name, data_type.clone(), registry, Some(fail_on_error))?;
+    let modulo_expr = create_comet_physical_fun(
+        func_name,
+        data_type.clone(),
+        session_state,
+        Some(fail_on_error),
+    )?;
     Ok(Arc::new(ScalarFunctionExpr::new(
         func_name,
         modulo_expr,
