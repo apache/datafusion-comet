@@ -33,9 +33,9 @@ use crate::kernels::temporal::{timestamp_trunc_array_fmt_dyn, timestamp_trunc_dy
 
 #[derive(Debug, Eq)]
 pub struct TimestampTruncExpr {
-    /// An array with DataType::Timestamp(TimeUnit::Microsecond, None)
+    /// Timestamp expression to truncate.
     child: Arc<dyn PhysicalExpr>,
-    /// Scalar UTF8 string matching the valid values in Spark SQL: https://spark.apache.org/docs/latest/api/sql/index.html#date_trunc
+    /// UTF8 format expression matching the valid values in Spark SQL: https://spark.apache.org/docs/latest/api/sql/index.html#date_trunc
     format: Arc<dyn PhysicalExpr>,
     /// IANA timezone name (e.g. `America/Los_Angeles`) or fixed offset (`+HH:MM`). Stored as
     /// `Arc<str>` so it can be cheaply cloned onto Arrow `Timestamp` data types without
@@ -163,7 +163,7 @@ impl PhysicalExpr for TimestampTruncExpr {
     }
 
     fn children(&self) -> Vec<&Arc<dyn PhysicalExpr>> {
-        vec![&self.child]
+        vec![&self.child, &self.format]
     }
 
     fn with_new_children(
@@ -172,7 +172,7 @@ impl PhysicalExpr for TimestampTruncExpr {
     ) -> Result<Arc<dyn PhysicalExpr>, DataFusionError> {
         Ok(Arc::new(TimestampTruncExpr::new(
             Arc::clone(&children[0]),
-            Arc::clone(&self.format),
+            Arc::clone(&children[1]),
             self.timezone.to_string(),
             self.wrap_second_millisecond_overflow,
         )))
@@ -200,6 +200,7 @@ mod tests {
         Array, AsArray, DictionaryArray, Int32Array, StringArray, TimestampMicrosecondArray,
     };
     use arrow::datatypes::{Field, Int32Type, TimestampMicrosecondType};
+    use datafusion::common::tree_node::{Transformed, TreeNode};
     use datafusion::physical_expr::expressions::{Column, Literal};
 
     /// 2024-01-15 18:30:45 UTC, which is 2024-01-16 00:00:45 in Asia/Kolkata (+05:30).
@@ -253,6 +254,53 @@ mod tests {
         assert_eq!(
             values.as_primitive::<TimestampMicrosecondType>().value(0),
             HOUR_IN_KOLKATA
+        );
+    }
+
+    #[test]
+    fn rewrites_timestamp_and_format_columns() {
+        let expr: Arc<dyn PhysicalExpr> = Arc::new(TimestampTruncExpr::new(
+            Arc::new(Column::new("ts", 0)),
+            Arc::new(Column::new("fmt", 1)),
+            "Asia/Kolkata".to_string(),
+            false,
+        ));
+        // A projection swaps the two input columns. Both references must follow the new schema.
+        let rewritten = expr
+            .transform_up(|expr| {
+                if let Some(column) = expr.downcast_ref::<Column>() {
+                    Ok(Transformed::yes(
+                        Arc::new(Column::new(column.name(), 1 - column.index()))
+                            as Arc<dyn PhysicalExpr>,
+                    ))
+                } else {
+                    Ok(Transformed::no(expr))
+                }
+            })
+            .unwrap()
+            .data;
+        let batch = RecordBatch::try_new(
+            Arc::new(Schema::new(vec![
+                Field::new("fmt", DataType::Utf8, true),
+                Field::new("ts", utc_timestamp(), true),
+            ])),
+            vec![
+                Arc::new(StringArray::from(vec![Some("HOUR"), Some("SECOND"), None])),
+                Arc::new(TimestampMicrosecondArray::from(vec![MICROS; 3]).with_timezone("UTC")),
+            ],
+        )
+        .unwrap();
+        let ColumnarValue::Array(result) = rewritten.evaluate(&batch).unwrap() else {
+            panic!("expected an array");
+        };
+        assert_eq!(
+            rewritten.data_type(batch.schema().as_ref()).unwrap(),
+            utc_timestamp()
+        );
+        assert_eq!(
+            result.as_ref(),
+            &TimestampMicrosecondArray::from(vec![Some(HOUR_IN_KOLKATA), Some(MICROS), None])
+                .with_timezone("UTC")
         );
     }
 

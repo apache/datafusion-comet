@@ -135,7 +135,8 @@ use crate::execution::spark_config::{
     SparkConfig, COMET_DEBUG_ENABLED, COMET_DEBUG_MEMORY,
     COMET_EXEC_AGGREGATE_SKIP_PARTIAL_ENABLED, COMET_EXEC_SPILL_COMPRESSION_CODEC,
     COMET_EXPLAIN_NATIVE_ENABLED, COMET_MAX_TEMP_DIRECTORY_SIZE,
-    COMET_PARQUET_ROW_FILTER_PUSHDOWN_ENABLED, COMET_TRACING_ENABLED, SPARK_EXECUTOR_CORES,
+    COMET_PARQUET_ROW_FILTER_PUSHDOWN_ENABLED, COMET_STRICT_TIMESTAMP_LABELS,
+    COMET_TRACING_ENABLED, SPARK_EXECUTOR_CORES,
 };
 use crate::parquet::encryption_support::{CometEncryptionFactory, ENCRYPTION_FACTORY_ID};
 use crate::parquet::parquet_support::CometObjectStoreRegistry;
@@ -556,6 +557,8 @@ struct ExecutionContext {
     pub session_ctx: Arc<SessionContext>,
     /// Whether to enable additional debugging checks & messages
     pub debug_native: bool,
+    /// Whether boundaries fail on a relabelled timestamp instead of casting it (test-only)
+    pub strict_timestamp_labels: bool,
     /// Whether to write native plans with metrics to stdout
     pub explain_native: bool,
     /// Whether to log memory usage on each call to execute_plan
@@ -707,6 +710,7 @@ pub unsafe extern "system" fn Java_org_apache_comet_Native_createPlan(
 struct PlanSettings {
     spark_config: HashMap<String, String>,
     debug_native: bool,
+    strict_timestamp_labels: bool,
     explain_native: bool,
     tracing_enabled: bool,
     max_temp_directory_size: u64,
@@ -727,6 +731,7 @@ fn prepare_plan_settings(serialized_spark_configs: &[u8]) -> CometResult<PlanSet
     // Access Comet configs
     Ok(PlanSettings {
         debug_native: spark_config.get_bool(COMET_DEBUG_ENABLED),
+        strict_timestamp_labels: spark_config.get_bool(COMET_STRICT_TIMESTAMP_LABELS),
         explain_native: spark_config.get_bool(COMET_EXPLAIN_NATIVE_ENABLED),
         tracing_enabled: spark_config.get_bool(COMET_TRACING_ENABLED),
         max_temp_directory_size: spark_config
@@ -878,6 +883,7 @@ fn create_execution_context(
         plan_creation_time,
         session_ctx: session,
         debug_native: settings.debug_native,
+        strict_timestamp_labels: settings.strict_timestamp_labels,
         explain_native: settings.explain_native,
         tracing_enabled: settings.tracing_enabled,
         rust_thread_id,
@@ -964,7 +970,7 @@ fn configure_skip_partial_aggregation(config: &mut SessionConfig, plan: &Operato
                                 if count.children.len() == 1)
                         })
                 }
-                // PartialMerge is represented as native Partial, but consumes states, not rows.
+                // PartialMerge consumes states, not rows.
                 _ => false,
             },
             _ => true,
@@ -1458,6 +1464,7 @@ fn execute_plan(
         let start = Instant::now();
         let planner = PhysicalPlanner::new(Arc::clone(&exec_context.session_ctx), partition)
             .with_exec_id(exec_context_id)
+            .with_strict_timestamp_labels(exec_context.strict_timestamp_labels)
             .with_sql_text_pool(&exec_context.spark_plan)
             .with_task_context(exec_context.task_context.clone())
             .with_class_loader(exec_context.class_loader.clone())
@@ -2778,6 +2785,7 @@ mod tests {
                         }],
                         return_type: None,
                         fail_on_error: false,
+                        null_short_circuit: false,
                     })),
                     query_context: None,
                     expr_id: None,

@@ -242,8 +242,10 @@ jobs:
 
   # Compiles main and test sources with -Pstrict-warnings, which promotes scalac warnings to
   # errors, so a change that reintroduces a cleared warning (an Int widened into a Long metric,
-  # a discarded builder result) fails here rather than accumulating. Spark 3.5 only: the profile
-  # passes on the Scala 2.12 profiles, and the Scala 2.13 remainder is tracked in
+  # a discarded builder result) fails here rather than accumulating. It also compiles the Delta
+  # contrib (-Pdelta) against Spark 3.5, so a change that breaks the contrib build on Spark 3.5
+  # fails on its own pull request rather than in the nightly Delta suites. Spark 3.5 only: the
+  # profile passes on the Scala 2.12 profiles, and the Scala 2.13 remainder is tracked in
   # https://github.com/apache/datafusion-comet/issues/5893.
   strict-scala-warnings:
     needs: lint
@@ -273,7 +275,7 @@ jobs:
             ${{ runner.os }}-java-maven-
 
       - name: Compile with strict warnings
-        run: ./mvnw -B test-compile -Pspark-3.5 -Pstrict-warnings -DskipTests
+        run: ./mvnw -B test-compile -Pspark-3.5,delta -Pstrict-warnings -DskipTests
 
       # Saved only on main: an entry written from a pull request or a
       # `gh-readonly-queue/*` branch cannot be restored by any later run, and
@@ -560,18 +562,23 @@ jobs:
               org.apache.spark.sql.comet.CometTPCDSV1_4_PlanStabilitySuite
               org.apache.spark.sql.comet.CometTPCDSV2_7_PlanStabilitySuite
               org.apache.spark.sql.comet.CometTaskMetricsSuite
+              org.apache.spark.sql.comet.CometUnsafeProjectionSuite
               org.apache.spark.sql.comet.CometDppFallbackRepro3949Suite
               org.apache.spark.sql.comet.CometShuffleFallbackStickinessSuite
               org.apache.spark.sql.comet.PlanDataInjectorSuite
               org.apache.spark.sql.comet.PlanDataInjectorShuffleLifecycleSuite
               org.apache.spark.sql.comet.CometDecimalArithmeticViewSuite
               org.apache.spark.sql.comet.CometDecimalPromotionSuite
+              org.apache.spark.sql.comet.DecimalPrecisionSuite
               org.apache.spark.sql.comet.CometScanWithPlanDataSuite
               org.apache.spark.sql.comet.util.UtilsSuite
               org.apache.comet.vector.NativeUtilSuite
               org.apache.comet.vector.CometVectorUtilsSuite
               org.apache.comet.udf.CometUdfBridgeSuite
               org.apache.comet.objectstore.NativeConfigSuite
+              org.apache.comet.objectstore.AbfsAuthResolverSuite
+              org.apache.comet.objectstore.AbfsAuthParitySuite
+              org.apache.comet.objectstore.AbfsScanFallbackSuite
               org.apache.comet.serde.operator.CometIcebergNativeScanSuite
               org.apache.comet.serde.operator.CometNativeScanSuite
               org.apache.spark.sql.CometToPrettyStringSuite
