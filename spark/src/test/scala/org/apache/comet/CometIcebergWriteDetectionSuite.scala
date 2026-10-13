@@ -53,7 +53,6 @@ class CometIcebergWriteDetectionSuite extends CometTestBase with CometIcebergTes
 
   override protected def sparkConf: SparkConf = {
     super.sparkConf
-      .set(CometConf.COMET_ICEBERG_WRITE_SPLIT_OPERATOR_ENABLED.key, "true")
       .set(CometConf.COMET_ICEBERG_NATIVE_WRITE_ENABLED.key, "true")
   }
 
@@ -1458,10 +1457,13 @@ class CometIcebergWriteDetectionSuite extends CometTestBase with CometIcebergTes
     }
   }
 
+  // With the native writer off, only the testing split flag still plans an `IcebergWriteExec`.
   test("no fall-back reason is recorded when the iceberg write feature is disabled") {
     withDetectionCatalog { _ =>
       createTable("flag_off", partitionSpec = "")
-      withSQLConf(CometConf.COMET_ICEBERG_NATIVE_WRITE_ENABLED.key -> "false") {
+      withSQLConf(
+        CometConf.COMET_ICEBERG_WRITE_SPLIT_OPERATOR_ENABLED.key -> "true",
+        CometConf.COMET_ICEBERG_NATIVE_WRITE_ENABLED.key -> "false") {
         val writeExec = insertWriteExec("flag_off")
         assert(
           writeExec.getTagValue(CometExplainInfo.FALLBACK_REASONS).isEmpty,

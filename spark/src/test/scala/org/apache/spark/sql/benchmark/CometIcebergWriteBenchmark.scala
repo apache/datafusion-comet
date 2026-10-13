@@ -147,8 +147,6 @@ object CometIcebergWriteBenchmark extends CometBenchmarkBase {
       Seq(
         CometConf.COMET_ENABLED.key -> "true",
         CometConf.COMET_EXEC_ENABLED.key -> "true",
-        // The native writer requires the split-operator plan; enabling it alone is a no-op.
-        CometConf.COMET_ICEBERG_WRITE_SPLIT_OPERATOR_ENABLED.key -> "true",
         CometConf.COMET_ICEBERG_NATIVE_WRITE_ENABLED.key -> "true"),
       expectComet = true,
       expectNativeWrite = true))
