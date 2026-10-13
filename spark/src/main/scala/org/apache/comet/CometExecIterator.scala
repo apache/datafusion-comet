@@ -929,7 +929,7 @@ object CometExecIterator extends Logging {
     }
     val sequenceMaxBytes = if (CometConf.COMET_LEGACY_ALLOW_UNBOUNDED_SEQUENCE.get()) {
       None
-    } else
+    } else {
       CometConf.COMET_EXEC_SEQUENCE_MAX_BYTES_PER_INVOCATION.get() match {
         case Some(-1L) => None
         case Some(bytes) => Some(bytes)
@@ -944,6 +944,7 @@ object CometExecIterator extends Logging {
           })
         case None => None
       }
+    }
     memoryConfig.copy(sequenceMaxBytes = sequenceMaxBytes)
   }
 
