@@ -1015,12 +1015,10 @@ object CometIcebergNativeScan extends CometOperatorSerde[CometBatchScanExec] wit
     // full schema would read and decode only to drop later. Every task reads with the same schema
     // (see IcebergReflection.nativeTaskSchemas), so its pool entry and the projected field ids are
     // the same for every task too.
-    val pruningEnabled = CometConf.COMET_ICEBERG_NESTED_SCHEMA_PRUNING_ENABLED.get()
-    val taskSchema: AnyRef = metadata.prunedTaskSchema
-      .filter(_ => pruningEnabled)
-      .orElse(metadata.fullTaskSchema)
-      .getOrElse(throw new IllegalStateException(
-        "No native Iceberg task schema. CometScanRule should have fallen back to Spark."))
+    val taskSchema: AnyRef = metadata.taskSchema
+      .getOrElse(
+        throw new IllegalStateException(
+          "No native Iceberg task schema. CometScanRule should have fallen back to Spark."))
       .asInstanceOf[AnyRef]
     val nameToFieldId = IcebergReflection.buildFieldIdMapping(taskSchema)
     val projectFieldIds = output.map { attr =>

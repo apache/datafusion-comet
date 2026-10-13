@@ -40,7 +40,8 @@ CREATE TABLE test_cat.db.nested_pruning (
 ) USING iceberg
 
 -- NULL structs, lists, maps, list elements, map values, and fields, so that the pruned read has
--- to rebuild the validity of every level from the leaves it keeps.
+-- to rebuild the validity of every level from the leaves it keeps. Empty lists and maps are valid
+-- with no child rows, which is another case.
 statement
 INSERT INTO test_cat.db.nested_pruning
 SELECT
@@ -49,11 +50,11 @@ SELECT
     'a', IF(id % 5 = 0, NULL, CAST(id AS INT)),
     'pad', repeat('p', 20),
     'inner', IF(id % 3 = 0, NULL, named_struct('b', CAST(id * 2 AS INT), 'pad', repeat('q', 20))))),
-  IF(id % 7 = 0, NULL, array(
+  CASE WHEN id % 7 = 0 THEN NULL WHEN id % 11 = 0 THEN array() ELSE array(
     named_struct('x', CAST(id AS INT), 'pad', repeat('r', 20)),
-    IF(id % 5 = 0, NULL, named_struct('x', CAST(-id AS INT), 'pad', repeat('s', 20))))),
-  IF(id % 7 = 0, NULL, map('k', IF(id % 3 = 0, NULL,
-    named_struct('v', CAST(id AS INT), 'pad', repeat('t', 20)))))
+    IF(id % 5 = 0, NULL, named_struct('x', CAST(-id AS INT), 'pad', repeat('s', 20)))) END,
+  CASE WHEN id % 7 = 0 THEN NULL WHEN id % 11 = 0 THEN map() ELSE map('k', IF(id % 3 = 0, NULL,
+    named_struct('v', CAST(id AS INT), 'pad', repeat('t', 20)))) END
 FROM range(100)
 
 query

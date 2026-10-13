@@ -86,6 +86,14 @@ class CometIcebergNativeSuite
   }
 
   /**
+   * [[checkIcebergNativeScan]] with nested schema pruning off, so the scan reads its full schema.
+   */
+  private def checkFullSchemaNativeScan(query: String): Unit =
+    withSQLConf(CometConf.COMET_ICEBERG_NESTED_SCHEMA_PRUNING_ENABLED.key -> "false") {
+      checkIcebergNativeScan(query)
+    }
+
+  /**
    * Asserts a query stays native even when its DPP filter falls back (SMJ / non-Comet BHJ / reuse
    * disabled), where only the runtime filter, not the scan, reverts to Spark.
    */
@@ -1856,7 +1864,24 @@ class CometIcebergNativeSuite
           s"SELECT id, c, s.a FROM $historical VERSION AS OF $snapshotWithB ORDER BY id",
           "s.b (added)")
 
-        Seq(table, historical).foreach(t => spark.sql(s"DROP TABLE $t"))
+        // Unpartitioned, the same read takes the pruned schema, which leaves s.b out, so it stays
+        // native. With pruning off it reads the full schema and falls back.
+        val unpartitioned = "test_cat.db.evo_struct_historical_unpartitioned"
+        spark.sql(s"CREATE TABLE $unpartitioned (id INT, c INT, s STRUCT<a: INT>) USING iceberg")
+        spark.sql(s"INSERT INTO $unpartitioned VALUES (1, 100, named_struct('a', 10))")
+        spark.sql(s"ALTER TABLE $unpartitioned ADD COLUMN s.b INT")
+        spark.sql(s"INSERT INTO $unpartitioned VALUES (2, 200, named_struct('a', 20, 'b', 99))")
+        val unpartitionedSnapshot = latestSnapshotId(unpartitioned)
+        spark.sql(s"ALTER TABLE $unpartitioned DROP COLUMN c")
+        spark.sql(s"ALTER TABLE $unpartitioned DROP COLUMN s.b")
+        val unpartitionedQuery =
+          s"SELECT id, c, s.a FROM $unpartitioned VERSION AS OF $unpartitionedSnapshot ORDER BY id"
+        checkIcebergNativeScan(unpartitionedQuery)
+        withSQLConf(CometConf.COMET_ICEBERG_NESTED_SCHEMA_PRUNING_ENABLED.key -> "false") {
+          checkNestedFieldEvolutionFallback(unpartitionedQuery, "s.b (added)")
+        }
+
+        Seq(table, historical, unpartitioned).foreach(t => spark.sql(s"DROP TABLE $t"))
       }
     }
   }
@@ -2405,7 +2430,8 @@ class CometIcebergNativeSuite
         CometConf.COMET_ICEBERG_NATIVE_ENABLED.key -> "true") {
 
         // Also checks that every task, tasks with deletes included, reads with one schema that
-        // leaves out the pruned `pad` fields.
+        // leaves out the pruned `pad` fields, and that the full schema read with pruning off gives
+        // the same answer.
         def checkPrunedNativeScan(query: String): Unit = {
           val (_, cometPlan) = checkSparkAnswer(query)
           val scans = collectIcebergNativeScans(cometPlan)
@@ -2420,6 +2446,7 @@ class CometIcebergNativeSuite
               schemas.length == 1 && !schemas.head.contains("\"pad\""),
               s"$query: expected one task schema without pad, got:\n${schemas.mkString("\n")}")
           }
+          checkFullSchemaNativeScan(query)
         }
 
         val morProperties = """
@@ -2530,6 +2557,10 @@ class CometIcebergNativeSuite
         val properties = """
           TBLPROPERTIES ('format-version' = '2', 'read.split.adaptive-size.enabled' = 'false')
         """
+        def checkPrunedAndFullReads(query: String): Unit = {
+          checkIcebergNativeScan(query)
+          checkFullSchemaNativeScan(query)
+        }
 
         // A delete keyed on `y` covers only the second file. After `y` is dropped and `x0` is
         // renamed to `x`, a delete keyed on `x` covers both, so one task needs `x` and the other
@@ -2548,7 +2579,7 @@ class CometIcebergNativeSuite
           "x",
           Seq(10, 25),
           warehouseDir)
-        checkIcebergNativeScan(s"SELECT id FROM $renamed ORDER BY id")
+        checkPrunedAndFullReads(s"SELECT id FROM $renamed ORDER BY id")
 
         // Keys from schemas that never held both: `p` is dropped before `q` is added, and a delete
         // keyed on each applies to the one data file.
@@ -2559,7 +2590,7 @@ class CometIcebergNativeSuite
         spark.sql(s"ALTER TABLE $generations DROP COLUMN p")
         spark.sql(s"ALTER TABLE $generations ADD COLUMN q INT")
         commitEqualityDelete("test_cat", "db", "key_names_generations", "q", 99, warehouseDir)
-        checkIcebergNativeScan(s"SELECT id FROM $generations ORDER BY id")
+        checkPrunedAndFullReads(s"SELECT id FROM $generations ORDER BY id")
 
         // The first spec's files need the nested partition source `s.region`, which the query
         // prunes away, so this VERSION AS OF read uses the full schema. A global delete keyed on
@@ -2590,7 +2621,7 @@ class CometIcebergNativeSuite
         Seq("RENAME COLUMN k TO tmp", "RENAME COLUMN j TO k", "RENAME COLUMN tmp TO j").foreach {
           change => spark.sql(s"ALTER TABLE $swapped $change")
         }
-        checkIcebergNativeScan(s"SELECT id, k FROM $swapped VERSION AS OF $snapshot ORDER BY id")
+        checkPrunedAndFullReads(s"SELECT id, k FROM $swapped VERSION AS OF $snapshot ORDER BY id")
 
         Seq(renamed, generations, swapped).foreach(t => spark.sql(s"DROP TABLE $t"))
       }

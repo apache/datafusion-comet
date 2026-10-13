@@ -28,6 +28,7 @@ import org.apache.hadoop.conf.Configuration
 import org.apache.spark.internal.Logging
 import org.apache.spark.sql.SparkSession
 
+import org.apache.comet.CometConf
 import org.apache.comet.util.ClassLoaders
 
 /**
@@ -2419,7 +2420,18 @@ case class CometIcebergNativeScanMetadata(
     globalFieldIdMapping: Map[String, Int],
     catalogProperties: Map[String, String],
     catalogName: Option[String],
-    fileFormat: String)
+    fileFormat: String) {
+
+  /**
+   * The schema every task of the scan reads with: the pruned task schema while nested schema
+   * pruning is on and can apply, the full one otherwise. CometScanRule checks this schema and
+   * CometIcebergNativeScan serializes it, so the two cannot disagree. None falls back to Spark.
+   */
+  def taskSchema: Option[Any] =
+    prunedTaskSchema
+      .filter(_ => CometConf.COMET_ICEBERG_NESTED_SCHEMA_PRUNING_ENABLED.get())
+      .orElse(fullTaskSchema)
+}
 
 object CometIcebergNativeScanMetadata extends Logging {
 
