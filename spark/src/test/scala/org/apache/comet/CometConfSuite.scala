@@ -90,6 +90,10 @@ class CometConfSuite extends AnyFunSuite {
       val localCluster = offHeap.clone.set("spark.master", "local-cluster[2,4,1024]")
       assert(getMemoryConfig(localCluster).sequenceMaxBytes.contains(poolBytes / 4))
       assert(
+        getMemoryConfig(
+          offHeap.clone.set("spark.master", "local-cluster[ 2, 4, 1024 ]")).sequenceMaxBytes
+          .contains(poolBytes / 4))
+      assert(
         getMemoryConfig(localCluster, taskCPUs = 2L).sequenceMaxBytes.contains(poolBytes / 2))
       assert(
         getMemoryConfig(localCluster.clone.set("spark.executor.cores", "2")).sequenceMaxBytes

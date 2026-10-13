@@ -945,7 +945,7 @@ object CometExecIterator extends Logging {
   }
 
   private def sequenceExecutorCores(conf: SparkConf): Option[Int] = {
-    val localCluster = """local-cluster\[\d+\s*,\s*(\d+)\s*,\s*\d+\]""".r
+    val localCluster = """local-cluster\[\s*[0-9]+\s*,\s*([0-9]+)\s*,\s*[0-9]+\s*]""".r
     conf.get("spark.master") match {
       case localCluster(workerCores) =>
         conf.getOption("spark.executor.cores").map(_.toInt).orElse(Some(workerCores.toInt))
