@@ -242,8 +242,10 @@ jobs:
 
   # Compiles main and test sources with -Pstrict-warnings, which promotes scalac warnings to
   # errors, so a change that reintroduces a cleared warning (an Int widened into a Long metric,
-  # a discarded builder result) fails here rather than accumulating. Spark 3.5 only: the profile
-  # passes on the Scala 2.12 profiles, and the Scala 2.13 remainder is tracked in
+  # a discarded builder result) fails here rather than accumulating. It also compiles the Delta
+  # contrib (-Pdelta) against Spark 3.5, so a change that breaks the contrib build on Spark 3.5
+  # fails on its own pull request rather than in the nightly Delta suites. Spark 3.5 only: the
+  # profile passes on the Scala 2.12 profiles, and the Scala 2.13 remainder is tracked in
   # https://github.com/apache/datafusion-comet/issues/5893.
   strict-scala-warnings:
     needs: lint
@@ -273,7 +275,7 @@ jobs:
             ${{ runner.os }}-java-maven-
 
       - name: Compile with strict warnings
-        run: ./mvnw -B test-compile -Pspark-3.5 -Pstrict-warnings -DskipTests
+        run: ./mvnw -B test-compile -Pspark-3.5,delta -Pstrict-warnings -DskipTests
 
       # Saved only on main: an entry written from a pull request or a
       # `gh-readonly-queue/*` branch cannot be restored by any later run, and
