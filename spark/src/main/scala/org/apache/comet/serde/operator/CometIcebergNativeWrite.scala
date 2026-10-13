@@ -326,12 +326,11 @@ object CometIcebergNativeWrite extends CometOperatorSerde[IcebergWriteExec] {
       .getWritePropertiesFromSparkWrite(sparkWrite)
       .getOrElse(return Some("could not read SparkWrite.writeProperties"))
 
-    val context = TriggerContext(
-      table,
-      tableProperties ++ writeProperties,
-      sparkWrite,
-      op.session.sessionState.newHadoopConf(),
-      effectiveHadoopConf(op, table))
+    val hadoopConfs = new LazyHadoopConfs(
+      () => op.session.sessionState.newHadoopConf(),
+      sessionConf => effectiveHadoopConf(op, table, sessionConf))
+    val context =
+      TriggerContext(table, tableProperties ++ writeProperties, sparkWrite, hadoopConfs)
     triggers.iterator.map(rule => rule(context)).collectFirst { case Some(reason) => reason }
   }
 
@@ -339,13 +338,24 @@ object CometIcebergNativeWrite extends CometOperatorSerde[IcebergWriteExec] {
       table: Any,
       properties: Map[String, String],
       sparkWrite: Any,
-      hadoopConf: Configuration,
-      s3HadoopConf: Configuration)
+      hadoopConfs: LazyHadoopConfs) {
+    def hadoopConf: Configuration = hadoopConfs.session
+    def s3HadoopConf: Configuration = hadoopConfs.effective
+  }
+
+  private[comet] final class LazyHadoopConfs(
+      sessionConfBuilder: () => Configuration,
+      effectiveConfBuilder: Configuration => Configuration) {
+    lazy val session: Configuration = sessionConfBuilder()
+    lazy val effective: Configuration = effectiveConfBuilder(session)
+  }
 
   private type TriggerRule = TriggerContext => Option[String]
 
-  private def effectiveHadoopConf(op: IcebergWriteExec, table: Any): Configuration = {
-    val sessionConf = op.session.sessionState.newHadoopConf()
+  private def effectiveHadoopConf(
+      op: IcebergWriteExec,
+      table: Any,
+      sessionConf: Configuration): Configuration = {
     val catalogOverrides = IcebergReflection
       .deriveCatalogName(table)
       .map { catalogName =>
@@ -1147,7 +1157,8 @@ object CometIcebergNativeWrite extends CometOperatorSerde[IcebergWriteExec] {
     // effective FileIO Hadoop configuration, translate them to the s3.* keys iceberg-rust
     // consumes, and let FileIO/vended properties win on conflict. The FileIO configuration
     // includes SparkCatalog's catalog-specific `hadoop.*` overrides.
-    val writeHadoopConf = effectiveHadoopConf(op, table)
+    val writeHadoopConf =
+      effectiveHadoopConf(op, table, op.session.sessionState.newHadoopConf())
     val dataUri = new java.net.URI(dataLocation)
     // Promote the data bucket's per-bucket `fs.s3a.bucket.<b>.*` settings to global, mirroring the
     // scan path: iceberg-rust's pinned S3 parser reads only global `s3.*`. Only an S3-family data

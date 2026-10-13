@@ -499,6 +499,11 @@ Creating Nexus staging repository
 In the Nexus repository UI (https://repository.apache.org/) locate and verify the artifacts in
 staging (https://central.sonatype.org/publish/release/#locate-and-examine-your-staging-repository).
 
+The staging repository should hold only the `comet-spark-spark<spark version>_<scala version>` artifacts, one for
+each Spark and Scala combination that `build-release-comet.sh` builds. The build installs `comet-common` and the
+parent pom too, but `publish-to-maven.sh` leaves them out of the upload: `comet-common` is shaded into the
+`comet-spark` jar and the published `comet-spark` pom has no parent, so nothing refers to either of them.
+
 The script closes the staging repository but does not release it. Releasing to Maven Central is a manual step
 performed only after the vote passes (see [Publishing Maven Artifacts](#publishing-maven-artifacts) below).
 
