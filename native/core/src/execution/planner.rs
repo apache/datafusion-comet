@@ -1750,21 +1750,17 @@ impl PhysicalPlanner {
                 let (scans, shuffle_scans, child) =
                     self.create_plan(&children[0], inputs, partition_count)?;
 
-                // Spark plans a global aggregate with neither keys nor functions when its output
-                // goes unused, as in `df.agg(sum($"a")).count()`. Each partition emits one row
-                // with no columns, even for an empty input. DataFusion can't run that aggregate:
-                // 55.2's AggregateStream can't build a batch with no columns, and newer versions
-                // reject an aggregate with neither keys nor functions (apache/datafusion#25786).
-                // So count the rows and project the count away. Counting reads the whole input as
-                // Spark does, so errors below the aggregate still surface. The partial and final
-                // stages both take this path, since the final one only collapses the partial
-                // one's rows.
+                // For `df.agg(sum($"a")).count()`, Spark plans a global aggregate with neither
+                // keys nor functions that emits one row with no columns per partition. DataFusion
+                // can't run that (apache/datafusion#25786), so plan a throwaway `count(NULL)` and
+                // project it away. The count still drains the input, so errors below it surface.
+                // Both Spark stages take this path, since no count passes between them.
                 if agg.grouping_exprs.is_empty() && agg.agg_exprs.is_empty() {
                     let schema = child.schema();
                     let count = Self::create_aggr_func_expr(
                         "count",
                         Arc::clone(&schema),
-                        vec![Arc::new(Literal::new(ScalarValue::Int64(Some(1))))],
+                        vec![Arc::new(Literal::new(ScalarValue::Null))],
                         Arc::unwrap_or_clone(count_udaf()),
                     )?;
                     let aggregate: Arc<dyn ExecutionPlan> = Arc::new(
