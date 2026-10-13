@@ -1982,6 +1982,70 @@ class CometDeltaNativeScanSuite extends CometDeltaTestBase {
     }
   }
 
+  // Each UNION ALL branch joins the same aggregate over the Delta fact table to a different
+  // dimension group, so the two DPP scans prune to 1 and 3 store partitions. The shuffles above
+  // them differ only in their DPP filter and must not share a query stage. Coalescing is off: a
+  // coalesced read carries per-partition sizes that would keep the parent exchanges apart anyway.
+  test("shuffle over a DPP scan stage is not reused across UNION ALL branches (#6264)") {
+    withTempPath { dir =>
+      val path = dir.getAbsolutePath
+      spark
+        .range(1000)
+        .selectExpr(
+          "cast(id % 10 as int) as store_id",
+          "cast(id % 13 as int) as item",
+          "cast(id as int) as amount")
+        .write
+        .format("delta")
+        .partitionBy("store_id")
+        .save(s"$path/fact")
+      spark
+        .range(10)
+        .selectExpr(
+          "cast(id as int) as store_id",
+          "case when id = 1 then 'a' when id in (2, 3, 4) then 'b' else 'c' end as grp")
+        .write
+        .parquet(s"$path/dim")
+
+      withTempView("dpp_branch_fact", "dpp_branch_dim") {
+        spark.read.format("delta").load(s"$path/fact").createOrReplaceTempView("dpp_branch_fact")
+        spark.read.parquet(s"$path/dim").createOrReplaceTempView("dpp_branch_dim")
+        withSQLConf(
+          SQLConf.ADAPTIVE_EXECUTION_ENABLED.key -> "true",
+          SQLConf.DYNAMIC_PARTITION_PRUNING_REUSE_BROADCAST_ONLY.key -> "true",
+          SQLConf.COALESCE_PARTITIONS_ENABLED.key -> "false") {
+          val query = """WITH x AS (
+              |  SELECT store_id, item, sum(amount) AS s FROM dpp_branch_fact
+              |  GROUP BY store_id, item),
+              |y AS (SELECT store_id, s % 7 AS b, count(*) AS c FROM x GROUP BY store_id, s % 7)
+              |SELECT y.store_id, y.b, y.c FROM y
+              |JOIN dpp_branch_dim d ON y.store_id = d.store_id WHERE d.grp = 'a'
+              |UNION ALL
+              |SELECT y.store_id, y.b, y.c FROM y
+              |JOIN dpp_branch_dim d ON y.store_id = d.store_id WHERE d.grp = 'b'""".stripMargin
+          val (_, cometPlan) = checkSparkAnswer(query)
+
+          def dppScans(plan: SparkPlan): Seq[CometDeltaNativeScanExec] = collect(plan) {
+            case s: CometDeltaNativeScanExec
+                if s.runtimeFilters.exists(_.isInstanceOf[DynamicPruningExpression]) =>
+              s
+          }
+          assert(
+            dppScans(cometPlan).map(_.metrics("numPartitions").value).sorted == Seq(1L, 3L),
+            "Expected one native Delta DPP scan per branch, pruned to 1 and 3 partitions:\n" +
+              cometPlan.treeString)
+          val reusedDpp = collect(cometPlan) {
+            case r: ReusedExchangeExec if dppScans(r.child).nonEmpty => r
+          }
+          assert(
+            reusedDpp.isEmpty,
+            "An exchange over a DPP scan was reused by the other branch:\n" +
+              cometPlan.treeString)
+        }
+      }
+    }
+  }
+
   test("scalar subquery in a partition filter does not force partitioning during AQE checks") {
     // Crash shape: a scalar subquery used directly as
     // a partition filter, e.g. `p = (SELECT max(p) FROM dim ...)`, references only the
