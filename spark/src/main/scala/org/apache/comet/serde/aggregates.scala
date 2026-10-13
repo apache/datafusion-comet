@@ -1436,8 +1436,6 @@ object CometMode extends CometAggregateExpressionSerde[Mode] with CometTypeShim 
 
 object CometPivotFirst extends CometAggregateExpressionSerde[PivotFirst] with CometTypeShim {
 
-  // Delegate to Spark's own PivotFirst.supportsDataType so the two lists cannot drift if a
-  // future Spark version adds a value type to the fast-path gate.
   private def unsupportedValueTypeReason(dt: DataType): String =
     s"Unsupported value data type: $dt"
 
@@ -1449,13 +1447,24 @@ object CometPivotFirst extends CometAggregateExpressionSerde[PivotFirst] with Co
   private val duplicatePivotValuesReason = "Pivot values list contains duplicates"
 
   override def getUnsupportedReasons(): Seq[String] = Seq(
-    "Value data type outside PivotFirst.supportsDataType " +
-      "(Boolean, Byte, Short, Int, Long, Float, Double, Decimal)",
+    "Value data type other than Boolean, Byte, Short, Int, Long, Float, Double or Decimal",
     "Pivot column of a type other than Boolean, Byte, Short, Int, Long, Float, Double, " +
       "Decimal, String (UTF8_BINARY collation), Date, Timestamp or TimestampNTZ, which " +
       "includes the struct that a pivot on more than one column builds",
     emptyPivotValuesReason,
     s"$duplicatePivotValuesReason, including `0.0` next to `-0.0`")
+
+  // The value types the native aggregate stores. They are the types of Spark's
+  // `PivotFirst.supportsDataType` on every version through 4.2. The check does not call that
+  // method, because a type a later version adds would then reach native code that has no storage
+  // for it, and the query would fail rather than fall back. Running a new type natively means
+  // adding it here, to `getUnsupportedReasons`, and to `SparkPivotFirst::groups_accumulator`.
+  private def isSupportedValueType(dt: DataType): Boolean = dt match {
+    case BooleanType | ByteType | ShortType | IntegerType | LongType => true
+    case FloatType | DoubleType => true
+    case _: DecimalType => true
+    case _ => false
+  }
 
   // The pivot column types for which Spark finds a value's slot in a `HashMap` keyed by plain
   // value equality, which the native lookup reproduces. Spark keys arrays and structs in a
@@ -1472,7 +1481,7 @@ object CometPivotFirst extends CometAggregateExpressionSerde[PivotFirst] with Co
 
   override def getSupportLevel(expr: PivotFirst): SupportLevel = {
     val pivotType = expr.pivotColumn.dataType
-    if (!PivotFirst.supportsDataType(expr.valueDataType)) {
+    if (!isSupportedValueType(expr.valueDataType)) {
       Unsupported(Some(unsupportedValueTypeReason(expr.valueDataType)))
     } else if (!isSupportedPivotType(pivotType)) {
       Unsupported(Some(unsupportedPivotTypeReason(pivotType)))
