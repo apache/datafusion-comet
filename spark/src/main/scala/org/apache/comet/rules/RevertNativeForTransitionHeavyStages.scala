@@ -83,20 +83,26 @@ case class RevertNativeForTransitionHeavyStages(session: SparkSession, wholePlan
    * output columnar batches. Only then does Spark's transition insertion leave a columnar-only
    * root; when rows are wanted it puts a columnar-to-row transition on top.
    *
-   * Spark leaves a root that supports both formats as it is in either case, so such a root, for
-   * example `ArrowEvalPythonExec` over a columnar child on Spark 4.2, does not say which format
-   * its consumer reads. No transition provides both, so that stage is reverted only if the
-   * reverted root supports both formats too.
+   * Spark leaves a root that supports both formats as it is in either case, so under AQE such a
+   * root, for example `ArrowEvalPythonExec` over a columnar child on Spark 4.2, does not say
+   * which format its consumer reads. No transition provides both, so that stage is reverted only
+   * if the reverted root supports both formats too. Without AQE the consumer reads rows, or, for
+   * a cache, picks the format from the root this rule leaves, so such a root is reverted to row
+   * output like any other. The check reads the AQE conf rather than `wholePlan`, so that the
+   * plan-only preview under AQE shows what AQE executes.
    */
-  private def revertResultStageIfNeeded(plan: SparkPlan): Option[SparkPlan] =
-    if (plan.supportsColumnar && plan.supportsRowBased) {
+  private def revertResultStageIfNeeded(plan: SparkPlan): Option[SparkPlan] = {
+    val bothFormats = plan.supportsColumnar && plan.supportsRowBased
+    if (bothFormats && session.sessionState.conf.adaptiveExecutionEnabled) {
       // Unlike row output, columnar output adds no transition over a reverted root that
       // supports both formats.
       revertStageIfNeeded(plan, outputColumnar = true)
         .filter(reverted => reverted.supportsColumnar && reverted.supportsRowBased)
     } else {
-      revertStageIfNeeded(plan, outputColumnar = plan.supportsColumnar)
+      // Only a root that cannot output rows was planned for columnar output.
+      revertStageIfNeeded(plan, outputColumnar = !plan.supportsRowBased)
     }
+  }
 
   /**
    * Reverts the stage below a shuffle if needed and returns the shuffle over the reverted stage.

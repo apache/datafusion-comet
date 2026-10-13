@@ -885,9 +885,12 @@ class RevertNativeForTransitionHeavyStagesSuite extends CometTestBase {
     }
   }
 
-  for (adaptive <- Seq(false, true)) {
+  // The plan-only preview holds the whole plan, so under AQE it must keep the stages that AQE
+  // keeps.
+  for ((adaptive, wholePlan) <- Seq((true, false), (true, true), (false, false))) {
     test(
-      s"transition-heavy revert keeps a result root that supports both formats: AQE=$adaptive") {
+      "transition-heavy revert of a result root that supports both formats: " +
+        s"AQE=$adaptive, wholePlan=$wholePlan") {
       withSQLConf(
         SQLConf.ADAPTIVE_EXECUTION_ENABLED.key -> adaptive.toString,
         CometConf.COMET_EXEC_TRANSITION_REVERT_ENABLED.key -> "true",
@@ -897,26 +900,41 @@ class RevertNativeForTransitionHeavyStagesSuite extends CometTestBase {
             .collectFirst { case node: FileSourceScanExec => node }
             .getOrElse(fail("expected a Spark scan"))
           assert(scan.supportsColumnar, s"test requires a vectorized Spark scan:\n$scan")
-          val rule = RevertNativeForTransitionHeavyStages(spark)
+          val rule = RevertNativeForTransitionHeavyStages(spark, wholePlan)
 
-          // Reverting the native filter would leave a root that outputs only rows, while the
-          // consumer may read columnar batches, so the stage must stay as it is.
           val overFilter = BothFormatsExec(
             CometSparkToColumnarExec(CometNativeColumnarToRowExec(cometFilter(scan))))
           assert(overFilter.supportsColumnar && overFilter.supportsRowBased)
           assert(rule.countTransitions(overFilter) == 1)
-          assert(!rule.revertToSpark(overFilter).supportsColumnar)
-          val kept = rule(overFilter)
-          assert(kept eq overFilter, s"the stage must not be reverted:\n$kept")
-
-          // Over the columnar scan the reverted root still supports both formats, so it needs no
-          // transition on top.
+          val filterSparkPlan = rule.revertToSpark(overFilter)
+          assert(!filterSparkPlan.supportsColumnar)
           val overScan = BothFormatsExec(CometSparkToColumnarExec(ColumnarToRowExec(scan)))
           assert(rule.countTransitions(overScan) == 1)
-          val reverted = rule(overScan)
-          assert(
-            reverted == BothFormatsExec(scan),
-            s"the reverted root must keep both formats:\n$reverted")
+
+          if (adaptive) {
+            // Reverting the native filter would leave a root that outputs only rows, while the
+            // consumer may read columnar batches, so the stage must stay as it is.
+            val kept = rule(overFilter)
+            assert(kept eq overFilter, s"the stage must not be reverted:\n$kept")
+
+            // Over the columnar scan the reverted root still supports both formats, so it needs
+            // no transition on top.
+            val reverted = rule(overScan)
+            assert(
+              reverted == BothFormatsExec(scan),
+              s"the reverted root must keep both formats:\n$reverted")
+          } else {
+            // Without AQE the consumer reads rows, or, for a cache, picks the format from the
+            // root the rule leaves, so both stages are reverted to row output.
+            val revertedFilter = rule(overFilter)
+            assert(
+              revertedFilter == filterSparkPlan,
+              s"the stage must be reverted:\n$revertedFilter")
+            val revertedScan = rule(overScan)
+            assert(
+              revertedScan == ColumnarToRowExec(BothFormatsExec(scan)),
+              s"the reverted stage must output rows:\n$revertedScan")
+          }
         }
       }
     }
