@@ -29,7 +29,7 @@ under the License.
     <meta charset="utf-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1.0" /><meta name="viewport" content="width=device-width, initial-scale=1" />
 
-    <title>Iceberg Writes: Comet’s Split-Operator Plan (Experimental) &#8212; Apache DataFusion Comet  documentation</title>
+    <title>Iceberg Writes: Comet’s Split-Operator Plan and Native Writer &#8212; Apache DataFusion Comet  documentation</title>
   
   
   
@@ -809,7 +809,7 @@ under the License.
     
     <li class="breadcrumb-item"><a href="index.html" class="nav-link">Comet 1.2.0-SNAPSHOT User Guide</a></li>
     
-    <li class="breadcrumb-item active" aria-current="page"><span class="ellipsis">Iceberg Writes: Comet’s Split-Operator Plan (Experimental)</span></li>
+    <li class="breadcrumb-item active" aria-current="page"><span class="ellipsis">Iceberg Writes: Comet’s Split-Operator Plan and Native Writer</span></li>
   </ul>
 </nav>
 </div>
@@ -844,10 +844,14 @@ under the License.
   specific language governing permissions and limitations
   under the License.
 -->
-<section id="iceberg-writes-comet-s-split-operator-plan-experimental">
-<h1>Iceberg Writes: Comet’s Split-Operator Plan (Experimental)<a class="headerlink" href="#iceberg-writes-comet-s-split-operator-plan-experimental" title="Link to this heading">#</a></h1>
-<p><strong>This feature is experimental and disabled by default.</strong> Enable it only after validating it
-against your own workloads.</p>
+<section id="iceberg-writes-comet-s-split-operator-plan-and-native-writer">
+<h1>Iceberg Writes: Comet’s Split-Operator Plan and Native Writer<a class="headerlink" href="#iceberg-writes-comet-s-split-operator-plan-and-native-writer" title="Link to this heading">#</a></h1>
+<p>Since Comet 1.2.0, Comet plans Iceberg writes with the split-operator plan described below, and
+writes the data files of each eligible write natively with iceberg-rust. A write that is not
+eligible falls back to iceberg-java’s writer. Natively written files differ from iceberg-java’s in
+the ways listed under <a class="reference internal" href="#accepted-divergences">Accepted divergences</a>.</p>
+<p><code class="docutils literal notranslate"><span class="pre">spark.comet.write.iceberg.enabled</span></code> switches both. Set it to <code class="docutils literal notranslate"><span class="pre">false</span></code> to plan Spark’s own write
+operator instead, as Comet 1.1.0 did, so that iceberg-java writes every data file.</p>
 <section id="overview">
 <h2>Overview<a class="headerlink" href="#overview" title="Link to this heading">#</a></h2>
 <p>Spark writes an Iceberg table through a single physical operator that combines data-file
@@ -857,8 +861,8 @@ sorts, and exchanges producing the rows — but the operator itself sits outside
 data-file writing cannot be re-planned in response to how its input ran. And because data-file
 writing is bundled with the metadata and commit steps, there is no separate step for Comet to
 replace.</p>
-<p>When <code class="docutils literal notranslate"><span class="pre">spark.comet.write.iceberg.splitOperator.enabled=true</span></code>, Comet rewrites eligible Iceberg
-writes into two operators:</p>
+<p>When <code class="docutils literal notranslate"><span class="pre">spark.comet.write.iceberg.enabled=true</span></code>, the default, Comet rewrites eligible Iceberg writes
+into two operators:</p>
 <ol class="arabic simple">
 <li><p><strong><code class="docutils literal notranslate"><span class="pre">IcebergWrite</span></code></strong> — writes the data files on the executors, exactly as iceberg-java does
 today, and returns each task’s serialized commit message. This operator and the sub-query
@@ -866,13 +870,12 @@ feeding it run inside AQE.</p></li>
 <li><p><strong><code class="docutils literal notranslate"><span class="pre">IcebergCommit</span></code></strong> — collects the commit messages on the driver and performs the normal
 Iceberg commit (including commit-time validation), outside AQE, exactly once.</p></li>
 </ol>
-<p>With only the split plan enabled, data files are still written by iceberg-java; only the plan
-shape changes. The split moves data-file writing inside AQE and separates it from the commit,
-and it is the foundation for the second toggle: when
-<code class="docutils literal notranslate"><span class="pre">spark.comet.write.iceberg.enabled=true</span></code> and the write passes the eligibility check below, the
-<code class="docutils literal notranslate"><span class="pre">IcebergWrite</span></code> operator’s per-task Parquet write is delegated to
+<p>The split moves data-file writing inside AQE and separates it from the commit, which gives Comet
+a step to replace: when the write passes the eligibility check below, the <code class="docutils literal notranslate"><span class="pre">IcebergWrite</span></code>
+operator’s per-task Parquet write is delegated to
 <a class="reference external" href="https://github.com/apache/iceberg-rust">iceberg-rust</a> via Comet’s native execution pipeline
-(<a class="reference external" href="https://github.com/apache/datafusion-comet/pull/5361">#5361</a>).</p>
+(<a class="reference external" href="https://github.com/apache/datafusion-comet/pull/5361">#5361</a>). A write that does not pass keeps
+<code class="docutils literal notranslate"><span class="pre">IcebergWrite</span></code>, and iceberg-java writes its data files; only the plan shape changes.</p>
 </section>
 <section id="how-the-native-write-works">
 <h2>How the native write works<a class="headerlink" href="#how-the-native-write-works" title="Link to this heading">#</a></h2>
@@ -905,19 +908,15 @@ already has, even if they do not fill its first page.</p>
 </section>
 <section id="configuration">
 <h2>Configuration<a class="headerlink" href="#configuration" title="Link to this heading">#</a></h2>
-<p>Standard Comet + Iceberg setup (see <a class="reference internal" href="iceberg.html"><span class="std std-doc"><code class="docutils literal notranslate"><span class="pre">iceberg.md</span></code></span></a>) plus the write-side toggle:</p>
+<p>Iceberg writes need only the standard Comet and Iceberg setup (see <a class="reference internal" href="iceberg.html"><span class="std std-doc"><code class="docutils literal notranslate"><span class="pre">iceberg.md</span></code></span></a>).
+<code class="docutils literal notranslate"><span class="pre">spark.comet.write.iceberg.enabled</span></code> is on by default; set it to <code class="docutils literal notranslate"><span class="pre">false</span></code> to plan Spark’s own write
+operator instead.</p>
 <div class="highlight-default notranslate"><div class="highlight"><pre><span></span><span class="c1"># Standard Comet / Iceberg wiring</span>
 <span class="n">spark</span><span class="o">.</span><span class="n">plugins</span><span class="o">=</span><span class="n">org</span><span class="o">.</span><span class="n">apache</span><span class="o">.</span><span class="n">spark</span><span class="o">.</span><span class="n">CometPlugin</span>
 <span class="n">spark</span><span class="o">.</span><span class="n">sql</span><span class="o">.</span><span class="n">extensions</span><span class="o">=</span><span class="n">org</span><span class="o">.</span><span class="n">apache</span><span class="o">.</span><span class="n">iceberg</span><span class="o">.</span><span class="n">spark</span><span class="o">.</span><span class="n">extensions</span><span class="o">.</span><span class="n">IcebergSparkSessionExtensions</span>
 <span class="n">spark</span><span class="o">.</span><span class="n">sql</span><span class="o">.</span><span class="n">catalog</span><span class="o">.&lt;</span><span class="n">name</span><span class="o">&gt;=</span><span class="n">org</span><span class="o">.</span><span class="n">apache</span><span class="o">.</span><span class="n">iceberg</span><span class="o">.</span><span class="n">spark</span><span class="o">.</span><span class="n">SparkCatalog</span>
 <span class="n">spark</span><span class="o">.</span><span class="n">sql</span><span class="o">.</span><span class="n">catalog</span><span class="o">.&lt;</span><span class="n">name</span><span class="o">&gt;.</span><span class="n">type</span><span class="o">=</span><span class="n">hadoop</span>                          <span class="c1"># or hive / glue / rest / ...</span>
 <span class="n">spark</span><span class="o">.</span><span class="n">sql</span><span class="o">.</span><span class="n">catalog</span><span class="o">.&lt;</span><span class="n">name</span><span class="o">&gt;.</span><span class="n">warehouse</span><span class="o">=...</span>
-
-<span class="c1"># Split-operator plan (experimental, off by default)</span>
-<span class="n">spark</span><span class="o">.</span><span class="n">comet</span><span class="o">.</span><span class="n">write</span><span class="o">.</span><span class="n">iceberg</span><span class="o">.</span><span class="n">splitOperator</span><span class="o">.</span><span class="n">enabled</span><span class="o">=</span><span class="n">true</span>
-
-<span class="c1"># Native Parquet writer (experimental, off by default; requires the split plan)</span>
-<span class="n">spark</span><span class="o">.</span><span class="n">comet</span><span class="o">.</span><span class="n">write</span><span class="o">.</span><span class="n">iceberg</span><span class="o">.</span><span class="n">enabled</span><span class="o">=</span><span class="n">true</span>
 
 <span class="c1"># Lets writes whose input is a local relation (INSERT ... VALUES, a local DataFrame) use the</span>
 <span class="c1"># native writer; see "Native Parquet write eligibility" below</span>
@@ -944,10 +943,11 @@ summary-aware writer commit contract.</p>
 analyzer emits operation-coded rows that Comet’s writer dispatches through <code class="docutils literal notranslate"><span class="pre">ReplaceData</span></code>’s
 projections, while on Spark 3.4/3.5 the rewritten rows are written as a plain row stream. The
 supported set of operations is the same either way.</p>
-<p>On Spark 3.5+, merge-on-read uses Spark’s <code class="docutils literal notranslate"><span class="pre">WriteDelta</span></code>. The split plan intercepts that command so
-Comet can keep the same driver commit and reporting path, but task-side row-level writes stay on
-Iceberg’s JVM <code class="docutils literal notranslate"><span class="pre">DeltaWriter</span></code>; <code class="docutils literal notranslate"><span class="pre">CometIcebergWriteExec</span></code> is never used for position-delta rows.
-Spark 3.4 leaves <code class="docutils literal notranslate"><span class="pre">WriteDelta</span></code> on Spark’s stock write plan.</p>
+<p>Merge-on-read uses Spark’s <code class="docutils literal notranslate"><span class="pre">WriteDelta</span></code>, and Iceberg’s JVM <code class="docutils literal notranslate"><span class="pre">DeltaWriter</span></code> writes its rows under
+either plan, so it keeps Spark’s stock write plan. On Spark 3.5+ the testing setting
+<code class="docutils literal notranslate"><span class="pre">spark.comet.write.iceberg.splitOperator.enabled</span></code> plans it as the split plan, with the same driver
+commit and reporting path, but <code class="docutils literal notranslate"><span class="pre">CometIcebergWriteExec</span></code> is never used for position-delta rows.
+Spark 3.4 always leaves <code class="docutils literal notranslate"><span class="pre">WriteDelta</span></code> on Spark’s stock write plan.</p>
 <p>On Spark 4.1+ the split plan matches two further stock-Spark behaviours: MERGE metrics are
 forwarded to the writer’s commit (Iceberg 1.11+ records them in the snapshot summary), and
 cached catalog tables are recached by name after a write so cache entries survive schema
@@ -957,10 +957,15 @@ changes.</p>
 <h2>When Comet falls back to Spark’s write operator<a class="headerlink" href="#when-comet-falls-back-to-spark-s-write-operator" title="Link to this heading">#</a></h2>
 <p>The rewrite is skipped — and the write runs through Spark’s stock combined operator — when:</p>
 <ul class="simple">
-<li><p><code class="docutils literal notranslate"><span class="pre">spark.comet.write.iceberg.splitOperator.enabled</span></code> is <code class="docutils literal notranslate"><span class="pre">false</span></code> (the default);</p></li>
+<li><p><code class="docutils literal notranslate"><span class="pre">spark.comet.write.iceberg.enabled</span></code> is set to <code class="docutils literal notranslate"><span class="pre">false</span></code> and the testing setting
+<code class="docutils literal notranslate"><span class="pre">spark.comet.write.iceberg.splitOperator.enabled</span></code>, which Comet 1.1.0 documented as a user setting,
+is not on;</p></li>
+<li><p>Comet is disabled (<code class="docutils literal notranslate"><span class="pre">spark.comet.enabled=false</span></code>), or its native execution is
+(<code class="docutils literal notranslate"><span class="pre">spark.comet.exec.enabled=false</span></code>);</p></li>
+<li><p>Comet is in plan-only mode (<code class="docutils literal notranslate"><span class="pre">spark.comet.explain.planOnly.enabled=true</span></code>);</p></li>
 <li><p>the write is neither an Iceberg <code class="docutils literal notranslate"><span class="pre">SparkWrite</span></code> nor a supported Iceberg position-delta write;</p></li>
-<li><p>the table uses merge-on-read on Spark 3.4; Spark 3.5+ <code class="docutils literal notranslate"><span class="pre">WriteDelta</span></code> is intercepted but remains
-on Iceberg’s JVM <code class="docutils literal notranslate"><span class="pre">DeltaWriter</span></code>;</p></li>
+<li><p>the table uses merge-on-read (<code class="docutils literal notranslate"><span class="pre">WriteDelta</span></code>), unless the testing setting
+<code class="docutils literal notranslate"><span class="pre">spark.comet.write.iceberg.splitOperator.enabled</span></code> is on with Spark 3.5+;</p></li>
 <li><p>the statement is CTAS / RTAS on Spark 3.4, where the staged exec writes inline; on Spark
 3.5+ those statements re-plan their inner append, which is intercepted normally;</p></li>
 <li><p>the write requires Spark’s commit coordinator, which Comet’s per-task commit protocol does
@@ -973,7 +978,7 @@ trade-off, only no plan change.</p>
 </section>
 <section id="native-parquet-write-eligibility">
 <h2>Native Parquet write eligibility<a class="headerlink" href="#native-parquet-write-eligibility" title="Link to this heading">#</a></h2>
-<p>When <code class="docutils literal notranslate"><span class="pre">spark.comet.write.iceberg.enabled=true</span></code>
+<p>When <code class="docutils literal notranslate"><span class="pre">spark.comet.write.iceberg.enabled=true</span></code>, the default
 (<a class="reference external" href="https://github.com/apache/datafusion-comet/pull/5361">#5361</a>), the <code class="docutils literal notranslate"><span class="pre">IcebergWrite</span></code> operator’s
 per-task Parquet write is delegated to <a class="reference external" href="https://github.com/apache/iceberg-rust">iceberg-rust</a>.
 The native writer must produce the same outcome as iceberg-java — the same Parquet features,
@@ -990,8 +995,8 @@ write keeps <code class="docutils literal notranslate"><span class="pre">Iceberg
 must itself run in Comet. A write whose input is a local relation, such as <code class="docutils literal notranslate"><span class="pre">INSERT</span> <span class="pre">...</span> <span class="pre">VALUES</span></code> or
 <code class="docutils literal notranslate"><span class="pre">df.writeTo(...).append()</span></code> on a DataFrame built from local data, is fed by Spark’s
 <code class="docutils literal notranslate"><span class="pre">LocalTableScanExec</span></code>, which Comet only converts when <code class="docutils literal notranslate"><span class="pre">spark.comet.exec.localTableScan.enabled=true</span></code>
-(off by default). Without that setting such writes run through iceberg-java even when both write
-flags are on.</p>
+(off by default). Without that setting such writes keep <code class="docutils literal notranslate"><span class="pre">IcebergWrite</span></code> and run through
+iceberg-java.</p>
 <p><strong>Most Iceberg write settings are not supported.</strong> Detection is an allowlist: a write is
 eligible only when its entire effective configuration matches the table below, and anything
 else — any other write-affecting property, any key added by a future Iceberg version, any
@@ -1145,7 +1150,13 @@ bounds carried over from the native writer’s tracked state. iceberg-java’s m
 — metrics modes, the inferred-column cap
 (<code class="docutils literal notranslate"><span class="pre">write.metadata.metrics.max-inferred-column-defaults</span></code>), bound truncation, and list/map bounds
 suppression — are therefore applied by iceberg-java’s own code regardless of what the native
-writer reports. This costs one footer-sized ranged read per written file at write time.</p>
+writer reports.</p>
+<p>iceberg-java’s writer takes these metrics from the footer it still holds in memory, but the native
+path reads each footer back from storage: two small reads per written file, one for the footer’s
+length and one for the footer itself, made one file after another before the task finishes. On S3
+or GCS each read is a GET request, so the task waits two request round trips per file. That is
+small next to uploading a large file, but a write that produces many small files, such as a fanout
+write over many partitions, pays it for every one of them.</p>
 </section>
 <section id="failure-handling">
 <h2>Failure handling<a class="headerlink" href="#failure-handling" title="Link to this heading">#</a></h2>
@@ -1205,11 +1216,12 @@ messages carry genuine <code class="docutils literal notranslate"><span class="p
 cleanup (which deletes the files listed in the commit messages for cleanable failures) applies
 unchanged.</p>
 </section>
-<section id="accepted-divergences-behind-the-toggle">
-<h2>Accepted divergences behind the toggle<a class="headerlink" href="#accepted-divergences-behind-the-toggle" title="Link to this heading">#</a></h2>
+<section id="accepted-divergences">
+<h2>Accepted divergences<a class="headerlink" href="#accepted-divergences" title="Link to this heading">#</a></h2>
 <p>Some differences between parquet-mr and the pinned parquet-rs / iceberg-rust are unconditional —
-they apply to every native write and cannot be configured away. Enabling
-<code class="docutils literal notranslate"><span class="pre">spark.comet.write.iceberg.enabled</span></code> accepts them. They fall into three classes with very
+they apply to every native write and cannot be configured away. Leaving
+<code class="docutils literal notranslate"><span class="pre">spark.comet.write.iceberg.enabled</span></code> at its default of <code class="docutils literal notranslate"><span class="pre">true</span></code> accepts them, and setting it to
+<code class="docutils literal notranslate"><span class="pre">false</span></code> avoids them. They fall into three classes with very
 different blast radius: differences confined to the physical bytes of a data file (cosmetic —
 no reader decision is based on them), differences visible in manifest metadata (these outlive
 the write and feed later readers’ pruning decisions, so each one is analyzed individually
@@ -1380,7 +1392,7 @@ values, and manifest metadata — must match iceberg-java exactly, or the write 
 <li class="toc-h2 nav-item toc-entry"><a class="reference internal nav-link" href="#when-comet-falls-back-to-spark-s-write-operator">When Comet falls back to Spark’s write operator</a></li>
 <li class="toc-h2 nav-item toc-entry"><a class="reference internal nav-link" href="#native-parquet-write-eligibility">Native Parquet write eligibility</a></li>
 <li class="toc-h2 nav-item toc-entry"><a class="reference internal nav-link" href="#failure-handling">Failure handling</a></li>
-<li class="toc-h2 nav-item toc-entry"><a class="reference internal nav-link" href="#accepted-divergences-behind-the-toggle">Accepted divergences behind the toggle</a><ul class="nav section-nav flex-column">
+<li class="toc-h2 nav-item toc-entry"><a class="reference internal nav-link" href="#accepted-divergences">Accepted divergences</a><ul class="nav section-nav flex-column">
 <li class="toc-h3 nav-item toc-entry"><a class="reference internal nav-link" href="#physical-file-layout-only-cosmetic">Physical file layout only (cosmetic)</a></li>
 <li class="toc-h3 nav-item toc-entry"><a class="reference internal nav-link" href="#manifest-metadata-visible-to-later-readers">Manifest metadata visible to later readers</a></li>
 </ul>

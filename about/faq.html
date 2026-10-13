@@ -597,10 +597,10 @@ listing files, or planning, or that process little data, have less to gain.</p><
 <section id="does-comet-support-delta-lake-apache-hudi-or-apache-paimon-tables">
 <h3>Does Comet support Delta Lake, Apache Hudi, or Apache Paimon tables?<a class="headerlink" href="#does-comet-support-delta-lake-apache-hudi-or-apache-paimon-tables" title="Link to this heading">#</a></h3>
 <p>Not yet. Comet accelerates <a class="reference internal" href="../user-guide/latest/iceberg.html"><span class="std std-doc">Apache Iceberg</span></a> tables, with a native
-reader that is enabled by default and
-<a class="reference internal" href="../user-guide/latest/iceberg-writes.html"><span class="std std-doc">experimental native writes</span></a>. It does not accelerate scans of
-Delta Lake, Hudi, or Paimon tables, so Spark reads those. Native Delta Lake reads are in development;
-see the <a class="reference internal" href="../contributor-guide/roadmap.html#delta-lake-support"><span class="std std-ref">roadmap</span></a>. Hudi and Paimon are not on the
+reader and <a class="reference internal" href="../user-guide/latest/iceberg-writes.html"><span class="std std-doc">native writes</span></a> that are both enabled by default.
+It does not accelerate scans of Delta Lake, Hudi, or Paimon tables, so Spark reads those. Native
+Delta Lake reads are in development; see the
+<a class="reference internal" href="../contributor-guide/roadmap.html#delta-lake-support"><span class="std std-ref">roadmap</span></a>. Hudi and Paimon are not on the
 roadmap.</p>
 </section>
 <section id="does-comet-accelerate-pyspark-jobs-and-python-udfs">

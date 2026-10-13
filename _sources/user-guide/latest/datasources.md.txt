@@ -29,8 +29,9 @@ Arrow format, allowing the Comet pipeline to take over after that, but the proce
 
 ### Apache Iceberg
 
-Comet accelerates Iceberg scans of Parquet files and has an experimental, opt-in native Iceberg writer.
-See the [Iceberg Guide] and [Iceberg Writes](iceberg-writes.md) for more information.
+Comet accelerates Iceberg scans of Parquet files and, since Comet 1.2.0, writes the data files of
+eligible Iceberg writes natively. See the [Iceberg Guide] and [Iceberg Writes](iceberg-writes.md)
+for more information.
 
 [iceberg guide]: iceberg.md
 

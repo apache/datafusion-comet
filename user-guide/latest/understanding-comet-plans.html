@@ -1061,8 +1061,8 @@ contains them, so each gets its own report alongside the outer query’s. The ou
 also counts its subqueries, so do not add the reports together.</p></li>
 <li><p>Only the JVM side of planning runs. Anything that would fail when DataFusion builds the
 native plan still counts as accelerated, so treat the percentage as an upper bound.</p></li>
-<li><p>Comet’s split Iceberg V2 write (<code class="docutils literal notranslate"><span class="pre">spark.comet.write.iceberg.splitOperator.enabled</span></code>) is
-declined in plan-only mode, so such writes run on, and are reported as, Spark.</p></li>
+<li><p>Comet’s split Iceberg V2 write (<code class="docutils literal notranslate"><span class="pre">spark.comet.write.iceberg.enabled</span></code>) is declined in
+plan-only mode, so such writes run on, and are reported as, Spark.</p></li>
 <li><p>Under AQE the report describes the plan before any adaptive re-planning, so coverage of the
 plan that finally executes can differ. In particular, AQE plans subqueries into the outer
 query only after the report is produced, so the outer report counts their operators as
@@ -1230,7 +1230,7 @@ consecutively in a plan, they execute as a single fused block.</p>
 <td><p><code class="docutils literal notranslate"><span class="pre">DataWritingCommandExec</span></code> (Spark 3.x, experimental native Parquet writes)</p></td>
 </tr>
 <tr class="row-odd"><td><p><code class="docutils literal notranslate"><span class="pre">CometIcebergWrite</span></code></p></td>
-<td><p><code class="docutils literal notranslate"><span class="pre">IcebergWrite</span></code> (experimental native Iceberg data-file writes)</p></td>
+<td><p><code class="docutils literal notranslate"><span class="pre">IcebergWrite</span></code> (native Iceberg data-file writes)</p></td>
 </tr>
 </tbody>
 </table>
@@ -1265,10 +1265,10 @@ consecutively in a plan, they execute as a single fused block.</p>
 <td><p>Runs <code class="docutils literal notranslate"><span class="pre">mapInArrow</span></code> / <code class="docutils literal notranslate"><span class="pre">mapInPandas</span></code> Python UDFs on Comet’s Arrow batches (experimental). See <a class="reference internal" href="pyarrow-udfs.html"><span class="std std-doc">PyArrow UDF Acceleration</span></a>.</p></td>
 </tr>
 <tr class="row-even"><td><p><code class="docutils literal notranslate"><span class="pre">IcebergWrite</span></code></p></td>
-<td><p>Executor-side Iceberg data-file write in Comet’s split-operator Iceberg write plan (experimental). See <a class="reference internal" href="iceberg-writes.html"><span class="std std-doc">Iceberg Writes</span></a>.</p></td>
+<td><p>Executor-side Iceberg data-file write in Comet’s split-operator Iceberg write plan. See <a class="reference internal" href="iceberg-writes.html"><span class="std std-doc">Iceberg Writes</span></a>.</p></td>
 </tr>
 <tr class="row-odd"><td><p><code class="docutils literal notranslate"><span class="pre">IcebergCommit</span></code></p></td>
-<td><p>Driver-side commit for Comet’s split-operator Iceberg write plan (experimental).</p></td>
+<td><p>Driver-side commit for Comet’s split-operator Iceberg write plan.</p></td>
 </tr>
 </tbody>
 </table>

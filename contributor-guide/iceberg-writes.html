@@ -561,26 +561,29 @@ iceberg-java’s output), see <a class="reference internal" href="../user-guide/
 does not repeat those lists; it explains the code that implements them.</p>
 <section id="overview">
 <h2>Overview<a class="headerlink" href="#overview" title="Link to this heading">#</a></h2>
-<p>Two flags, each of which builds on the one before it:</p>
+<p>Two layers, the second built on the first, both switched by <code class="docutils literal notranslate"><span class="pre">spark.comet.write.iceberg.enabled</span></code>:</p>
 <div class="pst-scrollable-table-container"><table class="table">
 <thead>
-<tr class="row-odd"><th class="head"><p>Flag</p></th>
+<tr class="row-odd"><th class="head"><p>Layer</p></th>
 <th class="head"><p>What it changes</p></th>
 </tr>
 </thead>
 <tbody>
-<tr class="row-even"><td><p><code class="docutils literal notranslate"><span class="pre">spark.comet.write.iceberg.splitOperator.enabled</span></code></p></td>
-<td><p>The plan shape. Spark’s single V2 write operator becomes <code class="docutils literal notranslate"><span class="pre">IcebergCommit</span></code> over <code class="docutils literal notranslate"><span class="pre">IcebergWrite</span></code>. iceberg-java still writes the data files.</p></td>
+<tr class="row-even"><td><p>The split-operator plan</p></td>
+<td><p>The plan shape. Spark’s single V2 write operator becomes <code class="docutils literal notranslate"><span class="pre">IcebergCommit</span></code> over <code class="docutils literal notranslate"><span class="pre">IcebergWrite</span></code>, and iceberg-java writes the data files inside it.</p></td>
 </tr>
-<tr class="row-odd"><td><p><code class="docutils literal notranslate"><span class="pre">spark.comet.write.iceberg.enabled</span></code></p></td>
+<tr class="row-odd"><td><p>The native writer</p></td>
 <td><p>Who writes the data files. An eligible <code class="docutils literal notranslate"><span class="pre">IcebergWrite</span></code> becomes <code class="docutils literal notranslate"><span class="pre">CometIcebergWrite</span></code>, which writes Parquet with iceberg-rust.</p></td>
 </tr>
 </tbody>
 </table>
 </div>
-<p>The native flag does nothing without the split flag, because it converts a node only the split plan
-creates. Both default to <code class="docutils literal notranslate"><span class="pre">false</span></code>. The roadmap for making them the default, and the criteria for it,
-are tracked in <a class="reference external" href="https://github.com/apache/datafusion-comet/issues/5644">#5644</a> under the epic
+<p>The flag defaults to <code class="docutils literal notranslate"><span class="pre">true</span></code> since Comet 1.2.0, so a change to the split plan reaches every Iceberg
+write and a change to the native writer reaches every eligible one. Set to <code class="docutils literal notranslate"><span class="pre">false</span></code>, it plans Spark’s
+own write operator. The testing-only <code class="docutils literal notranslate"><span class="pre">spark.comet.write.iceberg.splitOperator.enabled</span></code> plans the
+split operator with the native writer off, which the suites use to compare the two writers under
+the same plan. The rollout and its criteria are tracked in
+<a class="reference external" href="https://github.com/apache/datafusion-comet/issues/5644">#5644</a> under the epic
 <a class="reference external" href="https://github.com/apache/datafusion-comet/issues/5649">#5649</a>.</p>
 <p>One rule runs through the whole native path: <strong>the native writer must produce the outcome
 iceberg-java would have produced, or decline.</strong> iceberg-java is the reference for every data file,
@@ -617,7 +620,7 @@ the commit.</p>
 <tbody>
 <tr class="row-even"><td><p><code class="docutils literal notranslate"><span class="pre">IcebergWriteStrategy</span></code></p></td>
 <td><p><code class="docutils literal notranslate"><span class="pre">spark/src/main/scala/org/apache/comet/iceberg/</span></code></p></td>
-<td><p>Planner strategy. Matches <code class="docutils literal notranslate"><span class="pre">AppendData</span></code>, <code class="docutils literal notranslate"><span class="pre">OverwriteByExpression</span></code>, <code class="docutils literal notranslate"><span class="pre">OverwritePartitionsDynamic</span></code>, <code class="docutils literal notranslate"><span class="pre">ReplaceData</span></code> (and Iceberg’s own <code class="docutils literal notranslate"><span class="pre">ReplaceIcebergData</span></code>, which Iceberg 1.5.2 plans on Spark 3.4), plus Spark 3.5+ Iceberg <code class="docutils literal notranslate"><span class="pre">WriteDelta</span></code>.</p></td>
+<td><p>Planner strategy. Matches <code class="docutils literal notranslate"><span class="pre">AppendData</span></code>, <code class="docutils literal notranslate"><span class="pre">OverwriteByExpression</span></code>, <code class="docutils literal notranslate"><span class="pre">OverwritePartitionsDynamic</span></code>, <code class="docutils literal notranslate"><span class="pre">ReplaceData</span></code> (and Iceberg’s own <code class="docutils literal notranslate"><span class="pre">ReplaceIcebergData</span></code>, which Iceberg 1.5.2 plans on Spark 3.4), plus Spark 3.5+ Iceberg <code class="docutils literal notranslate"><span class="pre">WriteDelta</span></code> under the testing split flag.</p></td>
 </tr>
 <tr class="row-odd"><td><p><code class="docutils literal notranslate"><span class="pre">IcebergWriteLogical</span></code></p></td>
 <td><p>same</p></td>
@@ -654,8 +657,10 @@ so it can delete their files.</p></li>
 position-delta write do not ask for one; the checks in <code class="docutils literal notranslate"><span class="pre">buildTwoOp</span></code> and <code class="docutils literal notranslate"><span class="pre">buildDeltaTwoOp</span></code>
 are defensive.</p></li>
 <li><p><strong>WriteDelta stays JVM-backed.</strong> Spark 3.5+ merge-on-read commands are intercepted by the split
-plan, but <code class="docutils literal notranslate"><span class="pre">IcebergWriteExec</span></code> delegates their rows to Iceberg’s JVM <code class="docutils literal notranslate"><span class="pre">DeltaWriter</span></code>; the native
-Iceberg writer is explicitly declined. Spark 3.4 <code class="docutils literal notranslate"><span class="pre">WriteDelta</span></code> keeps Spark’s plan.</p></li>
+plan only when the testing flag <code class="docutils literal notranslate"><span class="pre">spark.comet.write.iceberg.splitOperator.enabled</span></code> is on, and then
+<code class="docutils literal notranslate"><span class="pre">IcebergWriteExec</span></code> delegates their rows to Iceberg’s JVM <code class="docutils literal notranslate"><span class="pre">DeltaWriter</span></code>; the native Iceberg writer
+is explicitly declined. Since the split plan gives such a write nothing over Spark’s operator,
+<code class="docutils literal notranslate"><span class="pre">spark.comet.write.iceberg.enabled</span></code> alone leaves it on Spark’s plan, as does Spark 3.4.</p></li>
 <li><p><strong>What is not intercepted:</strong> streaming writes and CTAS/RTAS on Spark 3.4. Those keep Spark’s plan.</p></li>
 </ul>
 <p>On Spark 4.1+, <code class="docutils literal notranslate"><span class="pre">IcebergWriteSummaryShim</span></code> finds either Spark’s <code class="docutils literal notranslate"><span class="pre">MergeRowsExec</span></code> or
@@ -1033,6 +1038,9 @@ the writer: run the write suites and the Iceberg Spark tests. The pin policy is 
 <tr class="row-odd"><td><p><code class="docutils literal notranslate"><span class="pre">CometIcebergWriteBenchmark</span></code></p></td>
 <td><p>Native versus iceberg-java for unpartitioned, clustered, fanout and copy-on-write delete writes. It checks each arm’s plan before timing it.</p></td>
 </tr>
+<tr class="row-even"><td><p><code class="docutils literal notranslate"><span class="pre">CometIcebergEndToEndBenchmark</span></code></p></td>
+<td><p>An Iceberg read, hash repartition and Iceberg write against stock Spark, over primitive, struct, array, map and nested columns. It checks each arm’s plan and the rows it wrote before timing it.</p></td>
+</tr>
 </tbody>
 </table>
 </div>
@@ -1057,7 +1065,7 @@ half the time. The fanout order test uses eight.</p></li>
 <li><p><strong>Check storage state for failure tests</strong>, not only the table: list the files under the data
 location and compare them with what the manifests reference.</p></li>
 </ul>
-<p>The upstream Iceberg Spark tests also run with both flags and <code class="docutils literal notranslate"><span class="pre">localTableScan</span></code> enabled (see
+<p>The upstream Iceberg Spark tests also run with the native writer and <code class="docutils literal notranslate"><span class="pre">localTableScan</span></code> enabled (see
 <a class="reference internal" href="iceberg-spark-tests.html"><span class="std std-doc">Running Iceberg Spark Tests</span></a>). They are a broad regression net, but they do
 not assert which writer ran, and Comet’s fallback reasons do not appear in their CI logs, so a green
 run is not evidence that the native writer handled a given test
