@@ -781,13 +781,15 @@ case class CometScanRule(session: SparkSession)
         // native scan with "Incorrect number of arrays for StructArray fields", and a nested field
         // renamed since the file was written can read back as NULL. The native read usually asks
         // only for the nested fields Spark's schema pruning keeps, but a scan can still read with
-        // the full schema (see IcebergReflection.nativeTaskSchemas), so this check walks both
-        // schemas and falls back even when the changed field is pruned away. A FileScanTask does
-        // not record which schema wrote its file, so fall back when any schema in the table's
+        // its full task schema (see IcebergReflection.nativeTaskSchemas), which for VERSION AS OF
+        // can be an older schema than the table's. So this check walks the table, scan, and full
+        // task schemas, and falls back even when the changed field is pruned away. A FileScanTask
+        // does not record which schema wrote its file, so fall back when any schema in the table's
         // history lacks a nested field of a projected column or names it differently.
         val nestedFieldsSupported =
           try {
-            val schemas = Seq(metadata.tableSchema, metadata.scanSchema)
+            val schemas =
+              Seq(metadata.tableSchema, metadata.scanSchema) ++ metadata.fullTaskSchema
             val fieldIds =
               if (hasUnresolvedProjectedFieldIds) {
                 schemas.flatMap(IcebergReflection.buildFieldIdMapping(_).values).toSet

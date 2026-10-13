@@ -1827,7 +1827,8 @@ class CometIcebergNativeSuite
         checkNestedFieldEvolutionFallback(
           s"SELECT l.id, r.id FROM $table l JOIN $table r ON l.s = r.s ORDER BY l.id",
           "s.b (added)")
-        // The old snapshot's files lack s.b too, and the native read uses the current schema.
+        // The old snapshot's files lack s.b too, and the scan's full schema is the current one,
+        // which has it.
         checkNestedFieldEvolutionFallback(
           s"SELECT id, s FROM $table VERSION AS OF $snapshotBeforeAdd ORDER BY id",
           "s.b (added)")
@@ -1835,7 +1836,27 @@ class CometIcebergNativeSuite
         // A read that does not project the evolved column stays native.
         checkIcebergNativeScan(s"SELECT id FROM $table ORDER BY id")
 
-        spark.sql(s"DROP TABLE $table")
+        // A VERSION AS OF read whose full schema is older than the table's: the pruned-away
+        // nested partition source `s.k` makes the scan read its full schema, and the dropped `c`
+        // makes that the snapshot's, which still has the s.b that the first file predates.
+        val historical = "test_cat.db.evo_struct_historical"
+        spark.sql(s"""
+          CREATE TABLE $historical (id INT, c INT, s STRUCT<k: STRING, a: INT>)
+          USING iceberg PARTITIONED BY (s.k)
+        """)
+        spark.sql(s"INSERT INTO $historical VALUES (1, 100, named_struct('k', 'east', 'a', 10))")
+        spark.sql(s"ALTER TABLE $historical ADD COLUMN s.b INT")
+        spark.sql(s"""
+          INSERT INTO $historical VALUES (2, 200, named_struct('k', 'east', 'a', 20, 'b', 99))
+        """)
+        val snapshotWithB = latestSnapshotId(historical)
+        spark.sql(s"ALTER TABLE $historical DROP COLUMN c")
+        spark.sql(s"ALTER TABLE $historical DROP COLUMN s.b")
+        checkNestedFieldEvolutionFallback(
+          s"SELECT id, c, s.a FROM $historical VERSION AS OF $snapshotWithB ORDER BY id",
+          "s.b (added)")
+
+        Seq(table, historical).foreach(t => spark.sql(s"DROP TABLE $t"))
       }
     }
   }
