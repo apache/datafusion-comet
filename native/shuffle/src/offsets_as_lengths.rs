@@ -106,6 +106,21 @@ pub(crate) fn has_offsets(roles: &[BufferRole]) -> bool {
     roles.iter().any(|role| *role != BufferRole::Other)
 }
 
+/// The (offset, length) of every body buffer of a record-batch message, in body order. A value
+/// that does not fit a `usize` becomes one that lies outside any body, so the range check that
+/// follows rejects it.
+pub(crate) fn buffer_ranges<'a>(
+    batch: &arrow::ipc::RecordBatch<'a>,
+) -> Result<impl ExactSizeIterator<Item = (usize, usize)> + 'a> {
+    let buffers = batch.buffers().ok_or_else(|| {
+        DataFusionError::Execution("Shuffle block record batch has no buffers".to_string())
+    })?;
+    let range = |value: i64| usize::try_from(value).unwrap_or(usize::MAX);
+    Ok(buffers
+        .iter()
+        .map(move |buffer| (range(buffer.offset()), range(buffer.length()))))
+}
+
 /// Rewrites every offsets buffer of `body` as byte planes of lengths, in place. `buffers` are the
 /// record-batch message's (offset, length) pairs in body order, one per entry of `roles`.
 pub(crate) fn offsets_to_lengths(
@@ -113,12 +128,13 @@ pub(crate) fn offsets_to_lengths(
     buffers: impl ExactSizeIterator<Item = (usize, usize)>,
     roles: &[BufferRole],
 ) -> Result<()> {
-    let (mut scratch32, mut scratch64) = (Vec::new(), Vec::new());
-    for_each_offsets_buffer(body, buffers, roles, |bytes, role| match role {
-        BufferRole::Offsets32 => to_length_planes_32(bytes, &mut scratch32),
-        BufferRole::Offsets64 => to_length_planes_64(bytes, &mut scratch64),
-        BufferRole::Other => {}
-    })
+    rewrite(
+        body,
+        buffers,
+        roles,
+        to_length_planes_32,
+        to_length_planes_64,
+    )
 }
 
 /// Undoes [`offsets_to_lengths`], in place.
@@ -127,19 +143,21 @@ pub(crate) fn lengths_to_offsets(
     buffers: impl ExactSizeIterator<Item = (usize, usize)>,
     roles: &[BufferRole],
 ) -> Result<()> {
-    let (mut scratch32, mut scratch64) = (Vec::new(), Vec::new());
-    for_each_offsets_buffer(body, buffers, roles, |bytes, role| match role {
-        BufferRole::Offsets32 => from_length_planes_32(bytes, &mut scratch32),
-        BufferRole::Offsets64 => from_length_planes_64(bytes, &mut scratch64),
-        BufferRole::Other => {}
-    })
+    rewrite(
+        body,
+        buffers,
+        roles,
+        from_length_planes_32,
+        from_length_planes_64,
+    )
 }
 
-fn for_each_offsets_buffer(
+fn rewrite(
     body: &mut [u8],
     buffers: impl ExactSizeIterator<Item = (usize, usize)>,
     roles: &[BufferRole],
-    mut rewrite: impl FnMut(&mut [u8], BufferRole),
+    rewrite32: fn(&mut [u8], &mut Vec<u32>),
+    rewrite64: fn(&mut [u8], &mut Vec<u64>),
 ) -> Result<()> {
     if buffers.len() != roles.len() {
         return Err(DataFusionError::Execution(format!(
@@ -148,23 +166,29 @@ fn for_each_offsets_buffer(
             roles.len()
         )));
     }
-    let body_len = body.len();
+    let (mut scratch32, mut scratch64) = (Vec::new(), Vec::new());
     for ((offset, len), role) in buffers.zip(roles) {
-        if *role == BufferRole::Other {
-            continue;
+        match role {
+            BufferRole::Other => {}
+            BufferRole::Offsets32 => rewrite32(buffer_mut(body, offset, len)?, &mut scratch32),
+            BufferRole::Offsets64 => rewrite64(buffer_mut(body, offset, len)?, &mut scratch64),
         }
-        let bytes = offset
-            .checked_add(len)
-            .and_then(|end| body.get_mut(offset..end))
-            .ok_or_else(|| {
-                DataFusionError::Execution(format!(
-                    "Shuffle block offsets buffer at {offset} with length {len} is outside \
-                     its {body_len}-byte body"
-                ))
-            })?;
-        rewrite(bytes, *role);
     }
     Ok(())
+}
+
+/// `body[offset..offset + len]`, or an error when that range is not inside `body`.
+fn buffer_mut(body: &mut [u8], offset: usize, len: usize) -> Result<&mut [u8]> {
+    let body_len = body.len();
+    offset
+        .checked_add(len)
+        .and_then(|end| body.get_mut(offset..end))
+        .ok_or_else(|| {
+            DataFusionError::Execution(format!(
+                "Shuffle block offsets buffer at {offset} with length {len} is outside its \
+                 {body_len}-byte body"
+            ))
+        })
 }
 
 /// Lengths in byte planes for one offset width. The first entry is a length from zero. One pass
@@ -173,15 +197,17 @@ fn for_each_offsets_buffer(
 /// arithmetic makes every bit pattern round-trip. Only whole entries move: the trailing bytes of a
 /// buffer that is not a whole number of entries stay where they are.
 macro_rules! length_planes {
-    ($to_planes:ident, $from_planes:ident, $word:ty, $width:literal) => {
+    ($to_planes:ident, $from_planes:ident, $word:ty) => {
         fn $to_planes(bytes: &mut [u8], scratch: &mut Vec<$word>) {
-            let count = bytes.len() / $width;
+            const WIDTH: usize = size_of::<$word>();
+            let count = bytes.len() / WIDTH;
             if count == 0 {
                 return;
             }
-            let entries = &mut bytes[..count * $width];
-            let words = entries.as_chunks::<$width>().0;
+            let entries = &mut bytes[..count * WIDTH];
+            let words = entries.as_chunks::<WIDTH>().0;
             scratch.clear();
+            scratch.reserve(count);
             scratch.push(<$word>::from_le_bytes(words[0]));
             scratch.extend(words.windows(2).map(|pair| {
                 <$word>::from_le_bytes(pair[1]).wrapping_sub(<$word>::from_le_bytes(pair[0]))
@@ -195,11 +221,12 @@ macro_rules! length_planes {
         }
 
         fn $from_planes(bytes: &mut [u8], scratch: &mut Vec<$word>) {
-            let count = bytes.len() / $width;
+            const WIDTH: usize = size_of::<$word>();
+            let count = bytes.len() / WIDTH;
             if count == 0 {
                 return;
             }
-            let entries = &mut bytes[..count * $width];
+            let entries = &mut bytes[..count * WIDTH];
             scratch.clear();
             scratch.resize(count, 0);
             for (plane, input) in entries.chunks_exact(count).enumerate() {
@@ -209,7 +236,7 @@ macro_rules! length_planes {
                 }
             }
             let mut running: $word = 0;
-            let words = entries.as_chunks_mut::<$width>().0;
+            let words = entries.as_chunks_mut::<WIDTH>().0;
             for (entry, length) in words.iter_mut().zip(scratch.iter()) {
                 running = running.wrapping_add(*length);
                 *entry = running.to_le_bytes();
@@ -218,8 +245,8 @@ macro_rules! length_planes {
     };
 }
 
-length_planes!(to_length_planes_32, from_length_planes_32, u32, 4);
-length_planes!(to_length_planes_64, from_length_planes_64, u64, 8);
+length_planes!(to_length_planes_32, from_length_planes_32, u32);
+length_planes!(to_length_planes_64, from_length_planes_64, u64);
 
 #[cfg(test)]
 mod tests {

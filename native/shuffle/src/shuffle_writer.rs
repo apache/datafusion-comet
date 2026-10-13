@@ -128,8 +128,7 @@ pub struct ShuffleWriterExec {
     write_buffer_size: usize,
     /// Maximum bytes buffered in memory before spilling; `None` disables the limit
     max_buffer_bytes: Option<usize>,
-    /// Whether local blocks store offsets as lengths; see
-    /// [`ShuffleBlockWriter::with_offsets_as_lengths`].
+    /// Whether local blocks store offsets as lengths
     offsets_as_lengths: bool,
 }
 
@@ -202,8 +201,8 @@ impl ShuffleWriterExec {
         })
     }
 
-    /// Store offsets as lengths in local shuffle blocks, where the codec takes it; see
-    /// [`ShuffleBlockWriter::with_offsets_as_lengths`]. Remote (RSS) blocks are unaffected.
+    /// Store offsets as lengths in local shuffle blocks where the writer can; see
+    /// [`ShuffleBlockWriter::try_new_with_offsets_as_lengths`]. Remote (RSS) blocks keep offsets.
     pub fn with_offsets_as_lengths(mut self, enabled: bool) -> Self {
         self.offsets_as_lengths = enabled;
         self
@@ -336,8 +335,11 @@ async fn external_shuffle(
             output_data_file,
             partition_offsets,
         } => {
-            let shuffle_block_writer = ShuffleBlockWriter::try_new(schema.as_ref(), codec.clone())?
-                .with_offsets_as_lengths(offsets_as_lengths);
+            let shuffle_block_writer = ShuffleBlockWriter::try_new_with_offsets_as_lengths(
+                schema.as_ref(),
+                codec.clone(),
+                offsets_as_lengths,
+            )?;
             let writer = LocalPartitionWriter::try_new(
                 output_data_file,
                 partition_offsets,

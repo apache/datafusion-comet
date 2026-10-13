@@ -768,10 +768,7 @@ abstract class CometColumnarShuffleSuite extends CometTestBase with AdaptiveSpar
               offsetsAsLengths.toString) {
             val shuffled = sql("SELECT * FROM tbl").repartition(numPartitions, $"_1")
             checkShuffleAnswer(shuffled, 1)
-            shuffled.collect()
-            bytes = collectFirst(shuffled.queryExecution.executedPlan) {
-              case e: CometShuffleExchangeExec => e.metrics("shuffleBytesWritten").value
-            }.get
+            bytes = cometShuffleMetric(shuffled, "shuffleBytesWritten")
           }
           bytes
         }

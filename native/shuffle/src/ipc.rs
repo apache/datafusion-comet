@@ -15,7 +15,9 @@
 // specific language governing permissions and limitations
 // under the License.
 
-use crate::offsets_as_lengths::{buffer_roles, lengths_to_offsets, LENGTHS_TAG_FLAG};
+use crate::offsets_as_lengths::{
+    buffer_ranges, buffer_roles, lengths_to_offsets, LENGTHS_TAG_FLAG,
+};
 use arrow::array::{ArrayRef, RecordBatch};
 use arrow::buffer::{Buffer, MutableBuffer};
 use arrow::datatypes::{Schema, SchemaRef};
@@ -323,7 +325,7 @@ fn read_single_batch<'b, S: BlockSource<'b>>(
                 let dictionary = message
                     .header_as_dictionary_batch()
                     .ok_or_else(|| decode_error("unable to read dictionary batch"))?;
-                let body = source.body(body_len)?;
+                let body = Buffer::from(source.body(body_len)?);
                 read_dictionary_impl(
                     &body,
                     dictionary,
@@ -347,8 +349,9 @@ fn read_single_batch<'b, S: BlockSource<'b>>(
                     .ok_or_else(|| decode_error("unable to read record batch"))?;
                 let mut body = source.body(body_len)?;
                 if lengths {
-                    body = restore_offsets(body, &record_batch, &schema)?;
+                    restore_offsets(body.as_slice_mut(), &record_batch, &schema)?;
                 }
+                let body = Buffer::from(body);
                 batch = Some(
                     RecordBatchDecoder::try_new(
                         &body,
@@ -378,38 +381,21 @@ fn read_single_batch<'b, S: BlockSource<'b>>(
     Ok(batch)
 }
 
-/// Turns the lengths a writer stored back into offsets, in the body buffer itself: both sources
-/// hand out a freshly allocated body, so this does not copy it again.
+/// Turns the lengths a writer stored back into offsets, in the body itself.
 fn restore_offsets(
-    body: Buffer,
+    body: &mut [u8],
     record_batch: &arrow::ipc::RecordBatch<'_>,
     schema: &Schema,
-) -> Result<Buffer> {
+) -> Result<()> {
     let roles = buffer_roles(schema).ok_or_else(|| {
         decode_error("offsets stored as lengths for a schema with an unmapped buffer layout")
     })?;
-    let buffers = record_batch
-        .buffers()
-        .ok_or_else(|| decode_error("record batch has no buffers"))?;
-    let mut body = body.into_mutable().unwrap_or_else(|shared| {
-        let mut copy = MutableBuffer::with_capacity(shared.len());
-        copy.extend_from_slice(shared.as_slice());
-        copy
-    });
-    // an offset or length that does not fit lands outside the body and is rejected there
-    let range = |value: i64| usize::try_from(value).unwrap_or(usize::MAX);
-    lengths_to_offsets(
-        body.as_slice_mut(),
-        buffers
-            .iter()
-            .map(|b| (range(b.offset()), range(b.length()))),
-        &roles,
-    )?;
-    Ok(body.into())
+    lengths_to_offsets(body, buffer_ranges(record_batch)?, &roles)
 }
 
 /// Where a block's IPC messages come from. Metadata is borrowed one message at a time; bodies
-/// become exactly sized buffers that the decoded arrays keep.
+/// become exactly sized buffers that the decoded arrays keep, still mutable so offsets stored as
+/// lengths can be rebuilt in place first.
 ///
 /// `'b` is the lifetime of an in-memory block, so [`Sliced`] can hand out metadata without
 /// copying it; a streamed source uses `'static` and copies metadata into the caller's scratch.
@@ -421,7 +407,7 @@ trait BlockSource<'b> {
         'b: 'a;
 
     /// The next message's body, `len` bytes long.
-    fn body(&mut self, len: usize) -> Result<Buffer>;
+    fn body(&mut self, len: usize) -> Result<MutableBuffer>;
 
     /// Errors unless every byte of the block has been consumed.
     fn expect_exhausted(&mut self) -> Result<()>;
@@ -485,10 +471,10 @@ impl<R: Read> BlockSource<'static> for Streamed<R> {
         Ok(Some(scratch.as_slice()))
     }
 
-    fn body(&mut self, len: usize) -> Result<Buffer> {
+    fn body(&mut self, len: usize) -> Result<MutableBuffer> {
         let mut body = MutableBuffer::from_len_zeroed(len);
         self.read_exact(&mut body, "truncated IPC body")?;
-        Ok(body.into())
+        Ok(body)
     }
 
     fn expect_exhausted(&mut self) -> Result<()> {
@@ -541,9 +527,12 @@ impl<'b> BlockSource<'b> for Sliced<'b> {
         Ok(Some(self.take(len, "truncated IPC metadata")?))
     }
 
-    fn body(&mut self, len: usize) -> Result<Buffer> {
+    fn body(&mut self, len: usize) -> Result<MutableBuffer> {
         // an exactly sized copy, with no zero fill before it
-        Ok(Buffer::from(self.take(len, "truncated IPC body")?))
+        let bytes = self.take(len, "truncated IPC body")?;
+        let mut body = MutableBuffer::with_capacity(bytes.len());
+        body.extend_from_slice(bytes);
+        Ok(body)
     }
 
     fn expect_exhausted(&mut self) -> Result<()> {
@@ -578,11 +567,13 @@ impl<R: Read> Read for RequireLz4EndMark<R> {
 mod tests {
     use super::{
         read_ipc_compressed, read_ipc_compressed_validated, reset_schema_cache, schema_cache_stats,
-        scratch_capacity, RequireLz4EndMark, SchemaCacheStats, SCHEMA_CACHE_CAPACITY,
-        SCHEMA_CACHE_RETAIN_LIMIT, SCRATCH_RETAIN_LIMIT,
+        scratch_capacity, RequireLz4EndMark, SchemaCacheStats, LENGTHS_TAG_FLAG,
+        SCHEMA_CACHE_CAPACITY, SCHEMA_CACHE_RETAIN_LIMIT, SCRATCH_RETAIN_LIMIT,
     };
     use crate::writers::rss::tests::allocations;
-    use arrow::array::{Array, DictionaryArray, Int32Array, RecordBatch, StringArray};
+    use arrow::array::{
+        Array, ArrayRef, DictionaryArray, Int32Array, RecordBatch, StringArray, StringViewArray,
+    };
     use arrow::datatypes::{DataType, Field, Int32Type, Schema};
     use arrow::ipc::reader::StreamReader;
     use arrow::ipc::writer::StreamWriter;
@@ -648,6 +639,23 @@ mod tests {
     /// One encoded block, without the 16-byte Comet header.
     fn block_for(batch: &RecordBatch, codec: &[u8; 4]) -> Vec<u8> {
         encode(codec, &ipc_bytes(batch))
+    }
+
+    /// A flagged block whose schema has no mapped buffer layout cannot have come from Comet's
+    /// writer; decoding it must fail rather than guess at which buffers to rebuild.
+    #[test]
+    fn lengths_flag_on_an_unmapped_layout_is_an_error() {
+        let views = StringViewArray::from(vec!["a", "bb", "ccc"]);
+        let batch = RecordBatch::try_from_iter(vec![("v", Arc::new(views) as ArrayRef)]).unwrap();
+        let mut block = block_for(&batch, b"NONE");
+        assert_eq!(read_ipc_compressed(&block).unwrap(), batch);
+
+        block[0] |= LENGTHS_TAG_FLAG;
+        let error = read_ipc_compressed_validated(&block).unwrap_err();
+        assert!(
+            error.to_string().contains("unmapped buffer layout"),
+            "{error}"
+        );
     }
 
     fn mixed_batch() -> RecordBatch {

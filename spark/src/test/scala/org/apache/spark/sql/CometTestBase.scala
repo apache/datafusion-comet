@@ -1344,6 +1344,19 @@ abstract class CometTestBase
     plan.replaceFirst("file:.*,", "").replaceAll(raw"#\d+", "")
   }
 
+  /**
+   * Runs `df` and returns the metric `name` of its first Comet shuffle exchange. Answer checks
+   * such as `checkSparkAnswer` execute copies built from the logical plan, so this plan's
+   * exchange has no metrics until `df` itself has run. AdaptiveSparkPlanHelper's `collectFirst`
+   * also looks inside AQE query stages, which a plain tree walk stops above.
+   */
+  protected def cometShuffleMetric(df: DataFrame, name: String): Long = {
+    df.collect()
+    collectFirst(df.queryExecution.executedPlan) { case e: CometShuffleExchangeExec =>
+      e.metrics(name).value
+    }.get
+  }
+
   protected def checkCometExchange(
       df: DataFrame,
       cometExchangeNum: Int,
