@@ -57,9 +57,7 @@ fn args_with_len(elems_per_row: i64, null_every: Option<usize>) -> Vec<ColumnarV
 fn criterion_benchmark(c: &mut Criterion) {
     let return_type = list_of_i64();
 
-    benchmark_group(c, "sequence_kernel", |args, _| {
-        spark_sequence(args, &return_type)
-    });
+    benchmark_group(c, "sequence", |args, _| spark_sequence(args, &return_type));
 
     // Exercise the production UDF, including real pool admission and complete scalar batches.
     // The benchmark-only 1 GiB budget admits the largest 8192 x 10000 i64 fixture.

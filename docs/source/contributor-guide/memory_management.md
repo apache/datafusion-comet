@@ -404,8 +404,9 @@ Native integral `sequence` registers a temporary non-spillable consumer with the
 session's memory pool, including its per-plan tracking and task-shared policy wrappers. Column
 inputs use staged `try_grow` admission: first offsets, the length cache and validity-union capacity;
 then values after one pass validates and caches every row length. This retains Spark's first row
-error and the Arrow batch-offset ceiling. If the initial admission or fallible scratch allocation
-fails, an allocation-free validation pass preserves those errors ahead of the resource error.
+error and the Arrow batch-offset ceiling. If initial admission or fallible scratch allocation
+reports resource exhaustion, an allocation-free validation pass preserves those errors ahead of
+the resource error. Other pool errors propagate immediately without further row validation.
 Scalar and metadata-all-null or empty inputs have cheaply known sizes and use one admission.
 Bitmap capacity is a conservative allowance for new output/union buffers, not a charge for the
 full backing allocation of a borrowed sliced input bitmap. No additional memory setting is

@@ -296,9 +296,10 @@ where
             .transpose()
     })();
     let scratch_error = |error| {
-        // Only refusal/allocation failures need an allocation-free validation pass to keep
-        // Spark row errors and the batch element ceiling ahead of a resource error.
-        if scalar_length.is_none() {
+        // Only resource exhaustion needs an allocation-free validation pass to keep Spark
+        // row errors and the batch element ceiling ahead of it. Propagate other pool errors,
+        // such as an interrupted Spark task, immediately without inspecting more input rows.
+        if scalar_length.is_none() && matches!(&error, DataFusionError::ResourcesExhausted(_)) {
             validate_before_resource_error(&start, &stop, step.as_ref(), num_rows, error)
         } else {
             error
@@ -925,7 +926,7 @@ mod memory_tests {
     use arrow::ffi::FFI_ArrowArray;
     use datafusion::common::config::ConfigOptions;
     use datafusion::execution::memory_pool::{GreedyMemoryPool, MemoryLimit, UnboundedMemoryPool};
-    use std::sync::atomic::{AtomicUsize, Ordering};
+    use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
     use std::sync::Barrier;
 
     /// A real bounded pool with observations and an optional rendezvous after admission. The
@@ -938,6 +939,7 @@ mod memory_tests {
         growths: AtomicUsize,
         peak: AtomicUsize,
         rendezvous: Option<Barrier>,
+        external_failure: AtomicBool,
     }
     impl ObservedPool {
         fn new(limit: usize, concurrent: Option<usize>) -> Arc<Self> {
@@ -948,6 +950,7 @@ mod memory_tests {
                 growths: AtomicUsize::new(0),
                 peak: AtomicUsize::new(0),
                 rendezvous: concurrent.map(Barrier::new),
+                external_failure: AtomicBool::new(false),
             })
         }
     }
@@ -977,6 +980,12 @@ mod memory_tests {
         }
         fn try_grow(&self, reservation: &MemoryReservation, bytes: usize) -> Result<()> {
             self.growths.fetch_add(1, Ordering::Relaxed);
+            if self.external_failure.swap(false, Ordering::Relaxed) {
+                return Err(DataFusionError::External(Box::new(std::io::Error::new(
+                    std::io::ErrorKind::Interrupted,
+                    "pool interrupted",
+                ))));
+            }
             let result = self.inner.try_grow(reservation, bytes);
             self.peak
                 .fetch_max(self.inner.reserved(), Ordering::Relaxed);
@@ -1258,6 +1267,33 @@ mod memory_tests {
             Err(DataFusionError::ResourcesExhausted(_))
         ));
         assert_released(&refused);
+    }
+
+    #[test]
+    fn non_resource_pool_error_is_not_replaced_by_a_row_error() {
+        let pool = ObservedPool::new(128, None);
+        pool.external_failure.store(true, Ordering::Relaxed);
+        let udf = SparkSequence::new(list_type(), Arc::clone(&pool) as _);
+        let args = vec![
+            ColumnarValue::Array(Arc::new(Int64Array::from(vec![2]))),
+            ColumnarValue::Array(Arc::new(Int64Array::from(vec![1]))),
+            ColumnarValue::Scalar(ScalarValue::Int64(Some(1))),
+        ];
+        // An exception from the pool must survive even when reading these bounds would
+        // produce a Spark sequence error. Resource refusal has different precedence below.
+        let error = invoke(&udf, args, 1).unwrap_err();
+        let DataFusionError::External(error) = error else {
+            panic!("expected the original external pool error");
+        };
+        let error = error.downcast_ref::<std::io::Error>().unwrap();
+        assert_eq!(error.kind(), std::io::ErrorKind::Interrupted);
+        assert_eq!(error.to_string(), "pool interrupted");
+        assert_eq!(pool.growths.load(Ordering::Relaxed), 1);
+        assert_eq!(pool.registrations.load(Ordering::Relaxed), 1);
+        assert_released(&pool);
+        let output = invoke(&udf, scalars(Some(1), Some(2), Some(1)), 1).unwrap();
+        assert_eq!(output.len(), 1);
+        assert_released(&pool);
     }
 
     #[test]
