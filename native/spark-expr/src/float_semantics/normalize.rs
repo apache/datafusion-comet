@@ -24,6 +24,7 @@ use arrow::datatypes::{DataType, Float32Type, Float64Type, Schema};
 use arrow::record_batch::RecordBatch;
 use datafusion::common::{Result, ScalarValue};
 use datafusion::logical_expr::ColumnarValue;
+use datafusion::physical_expr::expressions::Literal;
 use datafusion::physical_expr::PhysicalExpr;
 use std::fmt::{Display, Formatter};
 use std::hash::{Hash, Hasher};
@@ -92,14 +93,16 @@ impl PhysicalExpr for NormalizeNaNAndZero {
     }
 
     fn evaluate(&self, batch: &RecordBatch) -> Result<ColumnarValue> {
-        let cv = self.child.evaluate(batch)?;
-        let array = cv.into_array(batch.num_rows())?;
-
         match &self.data_type {
-            DataType::Float32 | DataType::Float64 => {
-                Ok(ColumnarValue::Array(normalize_floats(&array)))
-            }
+            DataType::Float32 | DataType::Float64 => {}
             dt => panic!("Unexpected data type {dt:?}"),
+        }
+        // A scalar stays a scalar, so a constant operand is not expanded into a column.
+        match self.child.evaluate(batch)? {
+            ColumnarValue::Array(array) => Ok(ColumnarValue::Array(normalize_floats(&array))),
+            ColumnarValue::Scalar(value) => {
+                Ok(ColumnarValue::Scalar(normalize_float_scalar(value)))
+            }
         }
     }
 
@@ -124,7 +127,8 @@ impl Display for NormalizeNaNAndZero {
     }
 }
 
-/// Normalizes nested IN operands, preserving constants for static membership lookup.
+/// Applies [`normalize_nested_floats`] to a list or struct operand of `IN` or a comparison. A
+/// constant operand stays a scalar, which keeps static membership lookup available.
 #[derive(Debug, Eq)]
 pub struct NormalizeNestedFloats {
     child: Arc<dyn PhysicalExpr>,
@@ -132,19 +136,13 @@ pub struct NormalizeNestedFloats {
 
 impl NormalizeNestedFloats {
     /// Wrap nested floating-point operands only; scalar floats keep their existing semantics.
+    /// An operand that is already wrapped is returned as is.
     pub fn wrap_if_needed(
         child: Arc<dyn PhysicalExpr>,
         schema: &Schema,
     ) -> Result<Arc<dyn PhysicalExpr>> {
         let dt = child.data_type(schema)?;
-        if matches!(
-            dt,
-            DataType::List(_)
-                | DataType::LargeList(_)
-                | DataType::FixedSizeList(_, _)
-                | DataType::Struct(_)
-        ) && has_float_leaf(&dt)
-        {
+        if is_nested_with_float_leaf(&dt) && child.downcast_ref::<Self>().is_none() {
             Ok(Arc::new(Self { child }))
         } else {
             Ok(child)
@@ -214,6 +212,32 @@ impl PhysicalExpr for NormalizeNestedFloats {
     }
 }
 
+/// Normalizes an operand of a comparison, so that Arrow's comparison kernels order it the way
+/// Spark's SQL ordering does. Arrow orders floats by IEEE 754 total order, which agrees with
+/// Spark's once `-0.0` is folded and every NaN canonicalized.
+///
+/// A Float32 or Float64 operand is wrapped in [`NormalizeNaNAndZero`], and a list or struct with
+/// a float leaf in [`NormalizeNestedFloats`]. A literal is normalized now instead, so that it stays
+/// a literal. Other operands, and operands that are already wrapped, are returned as is.
+pub fn normalize_comparison_operand(
+    operand: Arc<dyn PhysicalExpr>,
+    schema: &Schema,
+) -> Result<Arc<dyn PhysicalExpr>> {
+    if let Some(literal) = operand.downcast_ref::<Literal>() {
+        let value = literal.value();
+        let normalized = match value.data_type() {
+            DataType::Float32 | DataType::Float64 => normalize_float_scalar(value.clone()),
+            dt if is_nested_with_float_leaf(&dt) => {
+                ScalarValue::try_from_array(&normalize_nested_floats(&value.to_array()?), 0)?
+            }
+            _ => return Ok(operand),
+        };
+        return Ok(Arc::new(Literal::new(normalized)));
+    }
+    let operand = NormalizeNaNAndZero::wrap_if_needed(operand, schema)?;
+    NormalizeNestedFloats::wrap_if_needed(operand, schema)
+}
+
 /// Applies [`normalize_float`] to a Float32 or Float64 array. Any other array is returned as is,
 /// including a nested one: [`normalize_nested_floats`] reaches floats inside lists and structs.
 pub fn normalize_floats(array: &ArrayRef) -> ArrayRef {
@@ -232,6 +256,15 @@ pub fn normalize_floats(array: &ArrayRef) -> ArrayRef {
     }
 }
 
+/// Applies [`normalize_float`] to a Float32 or Float64 scalar. Other scalars are returned as is.
+pub(crate) fn normalize_float_scalar(value: ScalarValue) -> ScalarValue {
+    match value {
+        ScalarValue::Float32(v) => ScalarValue::Float32(v.map(normalize_float)),
+        ScalarValue::Float64(v) => ScalarValue::Float64(v.map(normalize_float)),
+        other => other,
+    }
+}
+
 /// Whether a Float32 or Float64 field occurs at any depth of a list or struct type. The keys and
 /// values of a map are not searched.
 pub fn has_float_leaf(dt: &DataType) -> bool {
@@ -243,6 +276,11 @@ pub fn has_float_leaf(dt: &DataType) -> bool {
         DataType::Struct(fields) => fields.iter().any(|f| has_float_leaf(f.data_type())),
         _ => false,
     }
+}
+
+/// Whether `dt` is a list or struct with a Float32 or Float64 field at any depth.
+pub(crate) fn is_nested_with_float_leaf(dt: &DataType) -> bool {
+    dt.is_nested() && has_float_leaf(dt)
 }
 
 /// Recursively rebuilds nested arrays with `-0.0` normalized to `0.0` and NaN canonicalized
@@ -524,6 +562,120 @@ mod tests {
         builder.append(true);
         let nested: ArrayRef = Arc::new(builder.finish());
         assert!(Arc::ptr_eq(&normalize_floats(&nested), &nested));
+    }
+
+    #[test]
+    fn test_normalize_nan_and_zero_keeps_scalars() -> Result<()> {
+        use datafusion::physical_expr::expressions::Literal;
+        let schema = Arc::new(Schema::new(vec![Field::new("a", DataType::Int32, true)]));
+        let batch = RecordBatch::try_new(
+            Arc::clone(&schema),
+            vec![Arc::new(Int32Array::from(vec![1, 2, 3]))],
+        )?;
+        for (value, expected) in [
+            (
+                ScalarValue::Float64(Some(-0.0)),
+                ScalarValue::Float64(Some(0.0)),
+            ),
+            (
+                ScalarValue::Float64(Some(f64::from_bits(0xfff8_0000_0000_0000))),
+                ScalarValue::Float64(Some(f64::NAN)),
+            ),
+            (
+                ScalarValue::Float32(Some(-0.0)),
+                ScalarValue::Float32(Some(0.0)),
+            ),
+            (ScalarValue::Float64(None), ScalarValue::Float64(None)),
+        ] {
+            let expr =
+                NormalizeNaNAndZero::new(value.data_type(), Arc::new(Literal::new(value.clone())));
+            // Compare the bits, since every NaN prints the same.
+            let bits = |v: &ScalarValue| match v {
+                ScalarValue::Float64(v) => v.map(f64::to_bits),
+                ScalarValue::Float32(v) => v.map(|v| u64::from(v.to_bits())),
+                other => panic!("unexpected {other:?}"),
+            };
+            match expr.evaluate(&batch)? {
+                ColumnarValue::Scalar(actual) => {
+                    assert_eq!(actual.data_type(), expected.data_type());
+                    assert_eq!(bits(&actual), bits(&expected), "{value:?}");
+                }
+                ColumnarValue::Array(_) => panic!("{value:?} was expanded into an array"),
+            }
+        }
+        Ok(())
+    }
+
+    #[test]
+    fn test_normalize_comparison_operand() -> Result<()> {
+        use datafusion::physical_expr::expressions::{Column, Literal};
+        let list = DataType::List(Arc::new(Field::new("item", DataType::Float64, true)));
+        let schema = Schema::new(vec![
+            Field::new("f64", DataType::Float64, true),
+            Field::new("list", list, true),
+            Field::new("i32", DataType::Int32, true),
+        ]);
+        let column = |i: usize| -> Arc<dyn PhysicalExpr> {
+            Arc::new(Column::new(schema.field(i).name(), i))
+        };
+
+        // Columns are wrapped once, and only when they hold floats.
+        let wrapped = normalize_comparison_operand(column(0), &schema)?;
+        assert!(wrapped.downcast_ref::<NormalizeNaNAndZero>().is_some());
+        let again = normalize_comparison_operand(Arc::clone(&wrapped), &schema)?;
+        assert!(Arc::ptr_eq(&again, &wrapped));
+        let wrapped = normalize_comparison_operand(column(1), &schema)?;
+        assert!(wrapped.downcast_ref::<NormalizeNestedFloats>().is_some());
+        let again = normalize_comparison_operand(Arc::clone(&wrapped), &schema)?;
+        assert!(Arc::ptr_eq(&again, &wrapped));
+        let int = column(2);
+        assert!(Arc::ptr_eq(
+            &normalize_comparison_operand(Arc::clone(&int), &schema)?,
+            &int
+        ));
+
+        // Literals are normalized now and stay literals.
+        let literal =
+            |value: ScalarValue| -> Arc<dyn PhysicalExpr> { Arc::new(Literal::new(value)) };
+        let value = |expr: Arc<dyn PhysicalExpr>| -> ScalarValue {
+            expr.downcast_ref::<Literal>()
+                .expect("a literal operand stays a literal")
+                .value()
+                .clone()
+        };
+        let bits = |expr: Arc<dyn PhysicalExpr>| match value(expr) {
+            ScalarValue::Float64(Some(v)) => v.to_bits(),
+            ScalarValue::Float32(Some(v)) => u64::from(v.to_bits()),
+            other => panic!("unexpected {other:?}"),
+        };
+        let folded =
+            normalize_comparison_operand(literal(ScalarValue::Float64(Some(-0.0))), &schema)?;
+        assert_eq!(bits(folded), 0.0f64.to_bits());
+        let folded = normalize_comparison_operand(
+            literal(ScalarValue::Float32(Some(f32::from_bits(0xffc0_0000)))),
+            &schema,
+        )?;
+        assert_eq!(bits(folded), u64::from(f32::NAN.to_bits()));
+        let nested = ScalarValue::List(Arc::new(
+            ListArray::from_iter_primitive::<Float64Type, _, _>([Some(vec![
+                Some(-0.0),
+                Some(f64::from_bits(0xfff8_0000_0000_0000)),
+            ])]),
+        ));
+        let folded = value(normalize_comparison_operand(literal(nested), &schema)?);
+        let ScalarValue::List(folded) = folded else {
+            panic!("expected a list literal, got {folded:?}");
+        };
+        let folded = folded.value(0);
+        let folded = folded.as_primitive::<Float64Type>();
+        assert_eq!(folded.value(0).to_bits(), 0.0f64.to_bits());
+        assert_eq!(folded.value(1).to_bits(), f64::NAN.to_bits());
+        let int = literal(ScalarValue::Int32(Some(1)));
+        assert!(Arc::ptr_eq(
+            &normalize_comparison_operand(Arc::clone(&int), &schema)?,
+            &int
+        ));
+        Ok(())
     }
 
     #[test]

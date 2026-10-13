@@ -282,3 +282,13 @@ use more than `N` times this value on shared local disks. If the limit is reache
 fail and the query errors out. Raise this on workloads with large sort/aggregate/shuffle spills, or
 lower it to protect executors on shared disks, remembering that the total across an executor is a
 multiple of this value.
+
+## Compressing Spill Files
+
+`spark.comet.exec.spill.compression.codec` sets the codec for the files that native sorts,
+aggregations, sort-merge joins, and nested loop joins spill to disk. The default is `lz4`, which
+Spark also uses for its own spill files by default. `zstd` writes smaller files, which reduces
+spill I/O and how much of `spark.comet.maxTempDirectorySize` they use, but takes more CPU to
+compress and decompress them. `none` writes them uncompressed. Comet's shuffle writers use
+`spark.comet.shuffle.compression.codec` instead. See
+[Shuffle Compression](shuffle.md#shuffle-compression).
