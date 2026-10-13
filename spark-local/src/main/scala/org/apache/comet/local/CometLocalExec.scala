@@ -48,7 +48,7 @@ case class CometLocalExec private[local] (
   // cached local result must still exchange to get its required distribution.
   override def outputPartitioning: Partitioning = UnknownPartitioning(1)
 
-  // Partitions are delivered in order, so the block's ordering holds across the result.
+  // The ordering of the whole result, which admission derives from the block's partitions.
   override def outputOrdering: Seq[SortOrder] = ordering
 
   override def innerChildren: Seq[QueryPlan[_]] = Seq(block)

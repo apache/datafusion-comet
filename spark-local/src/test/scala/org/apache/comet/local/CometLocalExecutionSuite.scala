@@ -31,6 +31,8 @@ import org.apache.spark.{SparkEnv, SparkException, TaskContext}
 import org.apache.spark.sql.{DataFrame, Row, SparkSession}
 import org.apache.spark.sql.execution.columnar.InMemoryRelation
 import org.apache.spark.sql.execution.exchange.ShuffleExchangeLike
+import org.apache.spark.sql.expressions.Window
+import org.apache.spark.sql.functions.{col, desc, row_number}
 
 import org.apache.comet.{CometArrowImportAllocator, CometConf, CometExecIterator, CometSparkSessionExtensions, NativeBase}
 import org.apache.comet.vector.NativeUtil
@@ -210,6 +212,63 @@ class CometLocalExecutionSuite
           counts.collect().map(r => r.getLong(0) -> r.getLong(1)).toMap ==
             (0L until 5L).map(_ -> 200L).toMap)
       } finally cached.unpersist(blocking = true)
+    }
+  }
+
+  test("only an ordering that holds across concatenated partitions is reported") {
+    // A range's slices are ranges of its ordering, so the result keeps it.
+    assert(localNodes(spark.range(0, 100, 1, 7).toDF()).head.outputOrdering.nonEmpty)
+    // Sorting within partitions orders each slice, not their concatenation.
+    val sorted = spark.range(0, 20, 1, 2).toDF().sortWithinPartitions(desc("id"))
+    assert(localNodes(sorted).size == 1)
+    assert(localNodes(sorted).head.outputOrdering.isEmpty)
+    assert(
+      localNodes(
+        spark
+          .range(0, 20, 1, 1)
+          .toDF()
+          .sortWithinPartitions(desc("id"))).head.outputOrdering.nonEmpty)
+  }
+
+  test("a window over a cached partition-sorted result still sorts") {
+    withConf("spark.sql.adaptive.enabled", "false") {
+      val cached = spark.range(0, 20, 1, 2).toDF().sortWithinPartitions(desc("id"))
+      assert(localNodes(cached).size == 1)
+      cached.cache()
+      try {
+        cached.count()
+        val ranks = withConf("spark.comet.enabled", "false") {
+          cached
+            .select(col("id"), row_number().over(Window.orderBy(desc("id"))))
+            .collect()
+            .map(r => r.getLong(0) -> r.getInt(1))
+            .toMap
+        }
+        assert(ranks == (0L until 20L).map(id => id -> (20 - id.toInt)).toMap)
+      } finally cached.unpersist(blocking = true)
+    }
+  }
+
+  test("a limit does not fail on an error in a partition it does not reach") {
+    withConf("spark.sql.ansi.enabled", "true") {
+      def query(): DataFrame =
+        spark
+          .range(0, 200000, 1, 2)
+          .filter("id >= 99999")
+          .selectExpr("100L DIV (100000L - id) AS v")
+          .limit(1)
+      assert(localNodes(query()).size == 1, query().queryExecution.executedPlan.toString)
+      // Spark reads only the first partition; the second divides by zero at id 100000.
+      assert(query().collect().toSeq == Seq(Row(100L)))
+      assert(query().collect().toSeq == expected(query()))
+      // A full collect reaches the failing partition and fails as Spark does.
+      def all(): DataFrame =
+        spark
+          .range(0, 200000, 1, 2)
+          .filter("id >= 99999")
+          .selectExpr("100L DIV (100000L - id) AS v")
+      val failure = intercept[Exception](all().collect())
+      assert(failure.getMessage.contains("DIVIDE_BY_ZERO"), failure.getMessage)
     }
   }
 

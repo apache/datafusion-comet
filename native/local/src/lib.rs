@@ -40,7 +40,6 @@ use datafusion::physical_plan::{
     SendableRecordBatchStream,
 };
 use futures::future::poll_fn;
-use futures::task::AtomicWaker;
 use futures::{FutureExt, Stream, StreamExt};
 use tokio::task::JoinHandle;
 
@@ -104,26 +103,22 @@ fn in_partition_order(
     plan: &Arc<dyn ExecutionPlan>,
     context: &Arc<TaskContext>,
 ) -> Result<SendableRecordBatchStream> {
-    let failure = Arc::new(Failure::default());
     let runtime = tokio::runtime::Handle::current();
     let partitions = (0..plan.output_partitioning().partition_count())
         .map(|partition| {
             let stream = plan.execute(partition, Arc::clone(context))?;
-            Ok(Partition::spawn(&runtime, stream, Arc::clone(&failure)))
+            Ok(Partition::spawn(&runtime, stream))
         })
         .collect::<Result<VecDeque<_>>>()?;
     Ok(Box::pin(RecordBatchStreamAdapter::new(
         plan.schema(),
-        PartitionOrder {
-            partitions,
-            failure,
-        },
+        PartitionOrder { partitions },
     )))
 }
 
 /// One root partition running on its own Tokio task, a few batches ahead of delivery.
 struct Partition {
-    batches: tokio::sync::mpsc::Receiver<RecordBatch>,
+    batches: tokio::sync::mpsc::Receiver<Result<RecordBatch>>,
     /// Set once the task has sent the stream's last batch. The channel closes whenever the
     /// task ends, and a runtime that shuts down cancels its tasks, so only this tells that
     /// every batch arrived.
@@ -135,11 +130,7 @@ struct Partition {
 }
 
 impl Partition {
-    fn spawn(
-        runtime: &tokio::runtime::Handle,
-        stream: SendableRecordBatchStream,
-        failure: Arc<Failure>,
-    ) -> Self {
+    fn spawn(runtime: &tokio::runtime::Handle, stream: SendableRecordBatchStream) -> Self {
         let (sender, batches) = tokio::sync::mpsc::channel(PARTITION_BUFFER);
         let ended = Arc::new(AtomicBool::new(false));
         let stream = Arc::new(Mutex::new(Some(stream)));
@@ -154,8 +145,8 @@ impl Partition {
                     })
                     .await;
                     match next {
-                        Some(Ok(batch)) => permit.send(batch),
-                        Some(Err(error)) => return failure.record(error),
+                        Some(Ok(batch)) => permit.send(Ok(batch)),
+                        Some(Err(error)) => return permit.send(Err(error)),
                         None => {
                             // A taken stream also ends here, but then nobody reads the flag.
                             task_ended.store(true, Ordering::Release);
@@ -167,9 +158,11 @@ impl Partition {
             .catch_unwind()
             .await;
             if result.is_err() {
-                failure.record(DataFusionError::Execution(
-                    "Local query partition panicked".into(),
-                ));
+                let _ = sender
+                    .send(Err(DataFusionError::Execution(
+                        "Local query partition panicked".into(),
+                    )))
+                    .await;
             }
         });
         Self {
@@ -191,58 +184,35 @@ impl Drop for Partition {
     }
 }
 
-/// The first error of any partition, reported as soon as it happens rather than when the
-/// failed partition's turn comes.
-#[derive(Default)]
-struct Failure {
-    error: Mutex<Option<DataFusionError>>,
-    waker: AtomicWaker,
-}
-
-impl Failure {
-    /// Keeps the first error and wakes the consumer.
-    fn record(&self, error: DataFusionError) {
-        lock(&self.error).get_or_insert(error);
-        self.waker.wake();
-    }
-
-    fn take(&self) -> Option<DataFusionError> {
-        lock(&self.error).take()
-    }
-}
-
+/// Delivers the partitions in turn. A partition's error is reported when its turn comes, as
+/// Spark's `executeTake` evaluates a later partition only when it needs that partition's rows:
+/// a consumer that stops early never sees the failure of a partition it did not reach.
 struct PartitionOrder {
     partitions: VecDeque<Partition>,
-    failure: Arc<Failure>,
 }
 
 impl Stream for PartitionOrder {
     type Item = Result<RecordBatch>;
 
     fn poll_next(mut self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<Option<Self::Item>> {
-        self.failure.waker.register(cx.waker());
         loop {
-            if let Some(error) = self.failure.take() {
-                self.partitions.clear();
-                return Poll::Ready(Some(Err(error)));
-            }
             let Some(partition) = self.partitions.front_mut() else {
                 return Poll::Ready(None);
             };
             match partition.batches.poll_recv(cx) {
-                Poll::Ready(Some(batch)) => return Poll::Ready(Some(Ok(batch))),
+                Poll::Ready(Some(Ok(batch))) => return Poll::Ready(Some(Ok(batch))),
+                Poll::Ready(Some(Err(error))) => {
+                    self.partitions.clear();
+                    return Poll::Ready(Some(Err(error)));
+                }
                 Poll::Ready(None) if partition.ended.load(Ordering::Acquire) => {
                     self.partitions.pop_front();
                 }
                 Poll::Ready(None) => {
-                    // A failed partition records its error before its channel closes.
-                    let error = self.failure.take().unwrap_or_else(|| {
-                        DataFusionError::Execution(
-                            "Local query partition stopped without completing".into(),
-                        )
-                    });
                     self.partitions.clear();
-                    return Poll::Ready(Some(Err(error)));
+                    return Poll::Ready(Some(Err(DataFusionError::Execution(
+                        "Local query partition stopped without completing".into(),
+                    ))));
                 }
                 Poll::Pending => return Poll::Pending,
             }

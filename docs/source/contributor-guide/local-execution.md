@@ -60,13 +60,16 @@ single partition. That partition's task creates the native graph:
   Comet execution.
 - `native/local` runs all partitions concurrently on Comet's Tokio runtime and delivers them in
   partition order, each up to two batches ahead. The result therefore has Spark's row order, and
-  a limit returns the same rows as Spark's `executeTake`. The first error of any partition ends
-  the query at once.
+  a limit returns the same rows as Spark's `executeTake`. A partition's error is reported when its
+  turn comes, so a limit satisfied by earlier partitions does not fail on a later one, as with
+  `executeTake`, which never evaluates the partitions it does not need.
 
 `CometLocalExec` reports `UnknownPartitioning(1)`: the result is one partition, but its rows
 are not clustered by anything, so a query over a cached local result still gets the exchange
-its distribution requires. It reports the block's ordering, which delivery in partition order
-preserves.
+its distribution requires. Spark's ordering of the block holds within each partition, so the
+result reports it only when it holds across the concatenated partitions: with one partition, or
+when the partitions are ranges of a prefix of that ordering, as a range's slices are. Sorting
+within partitions, for example, reports no ordering.
 
 Explain shows the native block under `CometLocalExec`. Its native operators do not report SQL
 metrics; `CometLocalExec` counts the rows and batches it delivers.
@@ -112,8 +115,8 @@ cd ..
 ./mvnw test -Dsuites=org.apache.comet.local.CometLocalExecutionSuite
 ```
 
-The native tests cover partition-order delivery, early failure, cancellation with busy workers,
+The native tests cover partition-order delivery, errors reported in a partition's turn, cancellation with busy workers,
 the one-batch handoff and runtime shutdown. `CometLocalExecutionSuite` compares admitted queries
 with Spark's results and order, and covers ranges Spark would overflow, declined expressions,
-AQE, limits, caching, the result size limit, job and task cancellation, and native errors. After
+AQE, reported orderings, limits that stop before a failing partition, caching, the result size limit, job and task cancellation, and native errors. After
 each test it checks that no native query, imported Arrow memory or result slot is left.

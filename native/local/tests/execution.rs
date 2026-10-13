@@ -483,27 +483,53 @@ async fn partition_order_delivers_partitions_in_turn() {
     assert_eq!(values, (0..7 * 9 * 4).collect::<Vec<_>>());
 }
 
-#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
-async fn partition_order_reports_a_later_failure_without_waiting_for_earlier_partitions() {
-    let blocking = BlockingExec::new(schema(), 1);
-    let refs = blocking.refs();
-    let failing = MockExec::new(
+fn failing() -> Arc<dyn ExecutionPlan> {
+    Arc::new(MockExec::new(
         vec![Err(DataFusionError::Execution(
             "injected late failure".into(),
         ))],
         schema(),
-    );
-    let plan = UnionExec::try_new(vec![Arc::new(blocking), Arc::new(failing)]).unwrap();
+    ))
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn partition_order_reports_a_later_failure_in_its_turn() {
+    let plan = UnionExec::try_new(vec![ordered_input(1, 3), failing()]).unwrap();
     let mut stream = LocalQuery::new(plan, context())
         .in_partition_order()
         .execute()
         .unwrap();
+    // The earlier partition's batches come first, even though the later one failed at once.
+    for _ in 0..3 {
+        timeout(DEADLINE, stream.next())
+            .await
+            .unwrap()
+            .unwrap()
+            .unwrap();
+    }
     let error = timeout(DEADLINE, stream.next())
         .await
         .unwrap()
         .unwrap()
         .unwrap_err();
     assert!(error.to_string().contains("injected late failure"));
+    assert!(stream.next().await.is_none());
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn partition_order_never_reports_the_failure_of_a_partition_not_reached() {
+    let blocking = BlockingExec::new(schema(), 1);
+    let refs = blocking.refs();
+    let plan = UnionExec::try_new(vec![Arc::new(blocking), failing()]).unwrap();
+    let mut stream = LocalQuery::new(plan, context())
+        .in_partition_order()
+        .execute()
+        .unwrap();
+    // A consumer that stops in the first partition, as a limit does, sees no error.
+    assert!(timeout(Duration::from_millis(200), stream.next())
+        .await
+        .is_err());
+    stream.cancel();
     assert!(stream.next().await.is_none());
     wait_released(&refs).await;
 }

@@ -22,7 +22,8 @@ package org.apache.comet.local
 import scala.jdk.CollectionConverters._
 
 import org.apache.spark.sql.SparkSession
-import org.apache.spark.sql.catalyst.expressions.SubqueryExpression
+import org.apache.spark.sql.catalyst.expressions.{SortOrder, SubqueryExpression}
+import org.apache.spark.sql.catalyst.plans.physical.RangePartitioning
 import org.apache.spark.sql.comet.{CometNativeExec, CometRangeExec}
 import org.apache.spark.sql.execution.{CollectLimitExec, QueryExecution, SparkPlan}
 import org.apache.spark.sql.internal.SQLConf
@@ -76,10 +77,26 @@ private[comet] object CometLocalRule {
         val partitions = block.collectLeaves().head.outputPartitioning.numPartitions
         val spec = LocalQuerySpec(block.serializedPlanOpt.plan.get, partitions, block.output.size)
         val local = CometLocalResultExec(
-          CometLocalExec(block.output, spec, block.outputOrdering, block))
+          CometLocalExec(block.output, spec, resultOrdering(block, partitions), block))
         limit.map(_.copy(child = local)).getOrElse(local)
       case converted if limit.isEmpty => converted
       case _ => convert(plan)
+    }
+  }
+
+  /**
+   * The ordering of the whole result. Spark's `outputOrdering` holds within each partition, and
+   * the result concatenates the partitions in order, so it holds for the whole result only with
+   * one partition, or when the partitions are ranges of a prefix of that ordering, as a range's
+   * slices are.
+   */
+  private def resultOrdering(block: CometNativeExec, partitions: Int): Seq[SortOrder] = {
+    val ordering = block.outputOrdering
+    block.outputPartitioning match {
+      case _ if partitions == 1 => ordering
+      case RangePartitioning(ranges, _) if SortOrder.orderingSatisfies(ordering, ranges) =>
+        ordering
+      case _ => Nil
     }
   }
 

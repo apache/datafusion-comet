@@ -171,9 +171,12 @@ fn local_plan(context: &ExecutionContext, partitions: jint) -> CometResult<Arc<d
 }
 
 fn next_id() -> CometResult<i64> {
-    NEXT_ID
-        .fetch_update(Ordering::Relaxed, Ordering::Relaxed, |id| id.checked_add(1))
-        .map_err(|_| CometError::Internal("Local query IDs exhausted".into()))
+    // IDs are never reused. A counter that wrapped would reuse them, so fail instead.
+    let id = NEXT_ID.fetch_add(1, Ordering::Relaxed);
+    if id < 1 {
+        return Err(CometError::Internal("Local query IDs exhausted".into()));
+    }
+    Ok(id)
 }
 
 fn register(id: i64, entry: Entry) -> CometResult<()> {
