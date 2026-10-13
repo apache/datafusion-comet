@@ -1141,9 +1141,16 @@ class CometInMemoryCacheSuite extends CometTestBase {
     }
   }
 
-  // Each column's null count summed over the cached batches, asserting along the way that no
-  // batch records bounds for the column.
+  // Each column's null count summed over the cached batches. Asserts first that the relation is
+  // stored in Comet's format, because Spark's DefaultCachedBatch records the same null counts and
+  // no bounds for binary, nested and void columns, and then that no batch records bounds for a
+  // column.
   private def nullCountsWithoutBounds(view: String): Seq[Long] = {
+    val batchTypes = cachedBatchTypes(view)
+    assert(
+      batchTypes.sameElements(
+        Array("org.apache.spark.sql.comet.execution.arrow.CometCachedBatch")),
+      s"$view was cached as ${batchTypes.mkString(", ")}")
     val relation = spark.sharedState.cacheManager.lookupCachedData(spark.table(view)).get
     val stats = relation.cachedRepresentation.cacheBuilder.cachedColumnBuffers
       .collect()
