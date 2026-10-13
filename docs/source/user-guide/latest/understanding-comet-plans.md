@@ -322,7 +322,7 @@ consecutively in a plan, they execute as a single fused block.
 | `CometBroadcastHashJoin`       | `BroadcastHashJoinExec`                                                           |
 | `CometBroadcastNestedLoopJoin` | `BroadcastNestedLoopJoinExec`                                                     |
 | `CometSortMergeJoin`           | `SortMergeJoinExec`                                                               |
-| `CometMergeRows`               | `MergeRowsExec` (Spark 3.5+; opt-in)                                              |
+| `CometMergeRows`               | `MergeRowsExec` (Spark 3.5+; opt-in; Spark 4.2 insert-only child)                 |
 | `CometWindowExec`              | `WindowExec`                                                                      |
 | `CometWindowGroupLimitExec`    | `WindowGroupLimitExec` (Spark 3.5 and later)                                      |
 | `CometSample`                  | `SampleExec` (sampling without replacement)                                       |

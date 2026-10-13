@@ -34,6 +34,9 @@ import org.apache.spark.sql.util.QueryExecutionListener
 
 import org.apache.comet.CometConf
 import org.apache.comet.CometSparkSessionExtensions.isSpark42Plus
+import org.apache.comet.serde.{Compatible, Unsupported}
+import org.apache.comet.serde.OperatorOuterClass.{MergeActionContext, Operator}
+import org.apache.comet.serde.operator.CometMergeRows
 import org.apache.comet.shims.{MergeRowsMetricsShim, ShimCometMergeRows}
 
 /**
@@ -51,6 +54,62 @@ class CometMergeRowsSuite extends CometTestBase with AdaptiveSparkPlanHelper {
       .set("spark.sql.adaptive.autoBroadcastJoinThreshold", "-1")
       .set("spark.sql.shuffle.partitions", "4")
       .setMaster("local[5,2]")
+  }
+
+  test("summary-free insert-only MergeRows requires Spark 4.2") {
+    val input = spark.range(3)
+    val child = input.queryExecution.sparkPlan
+    val id = child.output.head
+    val instructions = Seq(
+      MergeRows.Keep(MergeRows.Insert, EqualTo(id, Literal(1L)), Seq(id)),
+      MergeRows.Keep(MergeRows.Insert, Literal(true), Seq(id)))
+    val op = MergeRowsExec(
+      Literal(true),
+      Literal(false),
+      Seq.empty,
+      instructions,
+      Seq.empty,
+      checkCardinality = false,
+      output = Seq(id),
+      child = child)
+
+    assert(ShimCometMergeRows.canRunWithoutMergeSummary(op) == isSpark42Plus)
+    val builder = Operator.newBuilder()
+    val childOp = Operator.newBuilder().build()
+    if (isSpark42Plus) {
+      assert(CometMergeRows.getSupportLevel(op).isInstanceOf[Compatible])
+      val native = CometMergeRows.convert(op, builder, childOp).get.getMergeRows
+      assert(!native.getSemanticMetricsRequired)
+      assert(!native.hasRowIdOrdinal)
+      assert(native.getNotMatchedInstructionsCount == 2)
+      assert(
+        native.getNotMatchedInstructions(0).getContext == MergeActionContext.MERGE_ACTION_INSERT)
+      val exec = CometMergeRows.createExec(builder.build(), op)
+      assert(!exec.checkCardinality && exec.rowIdOrdinal.isEmpty)
+      assert(exec.notMatchedInstructions == instructions)
+    } else {
+      assert(CometMergeRows.getSupportLevel(op).isInstanceOf[Unsupported])
+      assert(CometMergeRows.convert(op, builder, childOp).isEmpty)
+    }
+
+    val summaryAware = op.copy()
+    val logical = MergeRows(
+      op.isSourceRowPresent,
+      op.isTargetRowPresent,
+      op.matchedInstructions,
+      op.notMatchedInstructions,
+      op.notMatchedBySourceInstructions,
+      op.checkCardinality,
+      op.output,
+      input.queryExecution.analyzed)
+    summaryAware.setLogicalLink(ShimCometMergeRows.withNativeMergeSummary(logical))
+    assert(ShimCometMergeRows.hasNativeMergeSummary(summaryAware))
+    assert(
+      CometMergeRows
+        .convert(summaryAware, Operator.newBuilder(), childOp)
+        .get
+        .getMergeRows
+        .getSemanticMetricsRequired)
   }
 
   test("native MergeRows semantic counters match Spark for Keep, Discard and Split") {
