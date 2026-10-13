@@ -48,10 +48,13 @@ private[comet] object ColumnLayout {
  * Spark caches a compiled class under its source, so an operator that generates code in every
  * partition still generates the source every time, which for a wide or deeply nested schema can
  * take longer than the partition's rows. Keeping the class under a cheaper key generates it once.
- * The cache holds the `maxEntries` most recently used values.
+ * Like Spark's cache, it holds the `spark.sql.codegen.cache.maxEntries` most recently used
+ * values.
  */
-private[comet] class GeneratedClassCache[K, V <: AnyRef](
-    maxEntries: Int = GeneratedClassCache.MaxEntries) {
+private[comet] class GeneratedClassCache[K, V <: AnyRef] {
+
+  /** A static conf, so read once, as Spark reads it for its own cache. Zero keeps nothing. */
+  private val maxEntries = SQLConf.get.codegenCacheMaxEntries
 
   /** Least recently used first. Guarded by `entries.synchronized`. */
   private val entries = new JLinkedHashMap[K, V](16, 0.75f, true) {
@@ -81,10 +84,4 @@ private[comet] class GeneratedClassCache[K, V <: AnyRef](
       value
     }
   }
-}
-
-private[comet] object GeneratedClassCache {
-
-  /** The default bound of Spark's compiled class cache, `spark.sql.codegen.cache.maxEntries`. */
-  val MaxEntries = 100
 }
