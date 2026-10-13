@@ -44,7 +44,6 @@ import org.apache.spark.sql.util.SchemaUtils
 import org.apache.spark.sql.vectorized.ColumnarBatch
 import org.apache.spark.util.{SerializableConfiguration, Utils}
 
-import org.apache.comet.CometExecIterator
 import org.apache.comet.serde.OperatorOuterClass.Operator
 import org.apache.comet.serde.operator.NativeWriteUtils
 
@@ -221,38 +220,24 @@ case class CometNativeWriteExec(
               .getOrElse(throw new UnsupportedOperationException(
                 s"Comet's native Parquet writer cannot write $codec"))
 
-            // A file the native writer cannot create itself, such as one S3A's magic committer
-            // hands out, is created through Hadoop with the task's configuration.
-            NativeWriteUtils.writeFile(filePath, taskContext.getConfiguration) { output =>
-              val writer = capturedNativeOp.getParquetWriter.toBuilder
-                .setOutputPath(filePath)
-                .setJvmOutputStream(output.isDefined)
-                .setCompression(protoCodec)
-                .build()
-              val taskOp = capturedNativeOp.toBuilder.setParquetWriter(writer).build()
+            val writer = capturedNativeOp.getParquetWriter.toBuilder
+              .setCompression(protoCodec)
+              .build()
 
-              // Register before the iterator so this listener runs after its cleanup.
-              nativeMetrics.reportNativeWriteOutputMetrics(context)
-              val execIterator = new CometExecIterator(
-                CometExec.newIterId,
-                CometArrowStream.inputObjects(batches, childSchema, "CometNativeWriteExec"),
-                childSchema.length,
-                CometExec.serializeNativePlan(taskOp),
-                nativeMetrics,
-                numPartitions,
-                context.partitionId(),
-                outputStream = output)
-
-              // Close before committing. A failed write must remain the primary error even if
-              // native teardown (including the final metrics update) also throws.
-              Utils.tryWithSafeFinally {
-                while (execIterator.hasNext) {
-                  execIterator.next().close()
-                }
-              } {
-                execIterator.close()
-              }
-            }
+            // Register before the iterator so this listener runs after its cleanup.
+            nativeMetrics.reportNativeWriteOutputMetrics(context)
+            // Runs and closes the native plan before the task commits, creating through Hadoop
+            // any file the native writer cannot create itself, such as one S3A's magic committer
+            // hands out.
+            CometWriteFilesExec.writeFile(
+              filePath,
+              taskContext.getConfiguration,
+              capturedNativeOp.toBuilder.setParquetWriter(writer).build(),
+              CometArrowStream.inputObjects(batches, childSchema, "CometNativeWriteExec"),
+              childSchema.length,
+              nativeMetrics,
+              numPartitions,
+              context.partitionId())
           }
           // `hasNext` already ran an empty partition's child to completion, so there is nothing
           // to drain or release when no file was written.

@@ -30,7 +30,6 @@ import org.apache.hadoop.fs.FSDataOutputStream;
 import org.apache.hadoop.fs.Path;
 import org.apache.hadoop.fs.RawLocalFileSystem;
 import org.apache.hadoop.fs.StreamCapabilities;
-import org.apache.hadoop.fs.permission.FsPermission;
 import org.apache.hadoop.util.Progressable;
 
 /**
@@ -95,20 +94,6 @@ public class RecordingFileSystem extends RawLocalFileSystem {
       Progressable progress)
       throws IOException {
     return record(f, super.create(f, overwrite, bufferSize, replication, blockSize, progress));
-  }
-
-  @Override
-  public FSDataOutputStream create(
-      Path f,
-      FsPermission permission,
-      boolean overwrite,
-      int bufferSize,
-      short replication,
-      long blockSize,
-      Progressable progress)
-      throws IOException {
-    return record(
-        f, super.create(f, permission, overwrite, bufferSize, replication, blockSize, progress));
   }
 
   private FSDataOutputStream record(Path path, FSDataOutputStream out) {

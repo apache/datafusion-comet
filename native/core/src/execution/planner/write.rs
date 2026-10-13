@@ -105,21 +105,21 @@ impl OperatorBuilder for ParquetWriterBuilder {
             .map(|(k, v)| (k.clone(), v.clone()))
             .collect();
 
-        let parquet_writer = ParquetWriterExec::try_new(
-            Arc::clone(&child.native_plan),
-            writer.output_path.clone(),
-            codec,
-            planner.partition(),
-            writer.column_names.clone(),
-            (!writer.output_schema.is_empty())
-                .then(|| convert_spark_types_to_arrow_schema(&writer.output_schema)),
-            object_store_options,
-        )?;
         let parquet_writer = Arc::new(
-            match jvm_output_stream(writer.jvm_output_stream, planner.output_stream())? {
-                Some(output_stream) => parquet_writer.with_output_stream(output_stream),
-                None => parquet_writer,
-            },
+            ParquetWriterExec::try_new(
+                Arc::clone(&child.native_plan),
+                writer.output_path.clone(),
+                codec,
+                planner.partition(),
+                writer.column_names.clone(),
+                (!writer.output_schema.is_empty())
+                    .then(|| convert_spark_types_to_arrow_schema(&writer.output_schema)),
+                object_store_options,
+            )?
+            .with_output_stream(jvm_output_stream(
+                writer.jvm_output_stream,
+                planner.output_stream.as_ref(),
+            )?),
         );
 
         Ok((

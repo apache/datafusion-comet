@@ -27,6 +27,8 @@ import scala.util.{Random, Using}
 
 import org.apache.hadoop.conf.Configuration
 import org.apache.hadoop.fs.{FileSystem, Path}
+import org.apache.hadoop.fs.s3a.commit.S3ACommitterFactory
+import org.apache.hadoop.fs.s3a.commit.magic.MagicS3GuardCommitterFactory
 import org.apache.hadoop.mapreduce.TaskAttemptContext
 import org.apache.logging.log4j.Level
 import org.apache.parquet.hadoop.ParquetFileReader
@@ -34,6 +36,7 @@ import org.apache.parquet.hadoop.metadata.CompressionCodecName
 import org.apache.parquet.hadoop.util.HadoopInputFile
 import org.apache.parquet.schema.{MessageType, Type}
 import org.apache.spark.internal.io.{FileCommitProtocol, FileNameSpec}
+import org.apache.spark.internal.io.cloud.{BindingParquetOutputCommitter, PathOutputCommitProtocol}
 import org.apache.spark.sql.{AnalysisException, DataFrame, Row, SaveMode}
 import org.apache.spark.sql.catalyst.{InternalRow, TableIdentifier}
 import org.apache.spark.sql.comet.{CometBatchScanExec, CometNativeColumnarToRowExec, CometNativeScanExec, CometNativeWriteExec, CometScanExec, CometSparkToColumnarExec, CometWriteFilesExec}
@@ -1733,90 +1736,81 @@ class CometParquetWriterSuite extends CometParquetWriterTestBase {
     }
   }
 
+  /**
+   * Runs `write` with a source of `rows` rows in `partitions` partitions, read natively, and the
+   * path to write it to, while RecordingFileSystemCommitProtocol puts the write's task files on
+   * [[RecordingFileSystem]], whose recordings start empty and are cleared afterwards.
+   */
+  private def withRecordingFileSystem(rows: Int, partitions: Int)(
+      write: (DataFrame, String) => Unit): Unit =
+    withTempPath { dir =>
+      val outputPath = new File(dir, "output.parquet").getAbsolutePath
+      val sourcePath = new File(dir, "source.parquet").getAbsolutePath
+      withNativeWriter {
+        val df = materializeAsCometSource(
+          (1 to rows).map(i => (i, s"str_$i")).toDF("id", "name").repartition(partitions),
+          sourcePath)
+        RecordingFileSystem.reset()
+        try {
+          withSQLConf(
+            SQLConf.FILE_COMMIT_PROTOCOL_CLASS.key ->
+              classOf[RecordingFileSystemCommitProtocol].getName,
+            s"fs.${RecordingFileSystem.SCHEME}.impl" -> classOf[RecordingFileSystem].getName) {
+            write(df, outputPath)
+          }
+        } finally {
+          RecordingFileSystem.reset()
+        }
+      }
+    }
+
   test("a task file the native writer cannot create is created through Hadoop") {
     // The native writer creates only local and HDFS files. Every other file, such as the one
     // S3A's magic committer hands out under its `__magic` directory, has to be created through
     // Hadoop's FileSystem API so the FileSystem can do whatever it does at create time, and the
     // native writer only supplies the bytes. RecordingFileSystemCommitProtocol puts task files on
     // a scheme the native writer cannot open at all, so the write can only succeed that way.
-    withTempPath { dir =>
-      val outputPath = new File(dir, "output.parquet").getAbsolutePath
-      val sourcePath = new File(dir, "source.parquet").getAbsolutePath
-      withNativeWriter {
-        val df = materializeAsCometSource(
-          (1 to 1000).map(i => (i, s"str_$i")).toDF("id", "name").repartition(3),
-          sourcePath)
+    withRecordingFileSystem(rows = 1000, partitions = 3) { (df, outputPath) =>
+      val plan = captureWritePlan(p => df.write.parquet(p), outputPath)
+      assertHasCometNativeWriteExec(plan)
 
-        RecordingFileSystem.reset()
-        try {
-          withSQLConf(
-            SQLConf.FILE_COMMIT_PROTOCOL_CLASS.key ->
-              classOf[RecordingFileSystemCommitProtocol].getName,
-            s"fs.${RecordingFileSystem.SCHEME}.impl" -> classOf[RecordingFileSystem].getName) {
-            val plan = captureWritePlan(p => df.write.parquet(p), outputPath)
-            assertHasCometNativeWriteExec(plan)
-          }
+      val created = RecordingFileSystem.created.asScala.toSeq
+      assert(created.size == 3, s"Expected one file per task, got $created")
+      assert(created.forall(_.startsWith(RecordingFileSystem.PREFIX)), created)
+      // Closed, which is where a FileSystem such as S3A completes or records the upload, and
+      // only once the native writer had written all of it.
+      assert(RecordingFileSystem.closed.asScala.toSet == created.toSet)
+      assert(RecordingFileSystem.aborted.isEmpty)
 
-          val created = RecordingFileSystem.created.asScala.toSeq
-          assert(created.size == 3, s"Expected one file per task, got $created")
-          assert(created.forall(_.startsWith(RecordingFileSystem.PREFIX)), created)
-          // Closed, which is where a FileSystem such as S3A completes or records the upload, and
-          // only once the native writer had written all of it.
-          assert(RecordingFileSystem.closed.asScala.toSet == created.toSet)
-          assert(RecordingFileSystem.aborted.isEmpty)
-        } finally {
-          RecordingFileSystem.reset()
-        }
-
-        checkAnswer(spark.read.parquet(outputPath), df)
-        assert(listPartFileNames(outputPath).size == 3)
-        assert(new File(outputPath, "_SUCCESS").exists())
-      }
+      checkAnswer(spark.read.parquet(outputPath), df)
+      assert(listPartFileNames(outputPath).size == 3)
+      assert(new File(outputPath, "_SUCCESS").exists())
     }
   }
 
   test("a failed write through Hadoop aborts the file and fails with what its stream threw") {
     // A file the JVM created is discarded when the native write fails: aborted, so that S3A
-    // abandons the upload rather than completing a truncated file. The native writer only passes
-    // on the text of what the stream threw, so the task rethrows the exception itself, as a
-    // failure in Spark's own writer would surface.
-    withTempPath { dir =>
-      val outputPath = new File(dir, "output.parquet").getAbsolutePath
-      val sourcePath = new File(dir, "source.parquet").getAbsolutePath
-      withNativeWriter {
-        val df = materializeAsCometSource(
-          (1 to 100).map(i => (i, s"str_$i")).toDF("id", "name").repartition(1),
-          sourcePath)
+    // abandons the upload rather than completing a truncated file. The native writer fails the
+    // task with the exception the stream threw, which the JVM rethrows as it was, as a failure in
+    // Spark's own writer would surface.
+    withRecordingFileSystem(rows = 100, partitions = 1) { (df, outputPath) =>
+      RecordingFileSystem.failWrites = true
+      val (plan, error) = captureFailedWritePlan(df.write.parquet(outputPath))
+      assertHasCometNativeWriteExec(plan)
+      assert(
+        causeChain(error).exists {
+          case e: IOException => e.getMessage == RecordingFileSystem.WRITE_FAILURE
+          case _ => false
+        },
+        s"Expected the stream's own IOException, got: $error")
 
-        RecordingFileSystem.reset()
-        try {
-          withSQLConf(
-            SQLConf.FILE_COMMIT_PROTOCOL_CLASS.key ->
-              classOf[RecordingFileSystemCommitProtocol].getName,
-            s"fs.${RecordingFileSystem.SCHEME}.impl" -> classOf[RecordingFileSystem].getName) {
-            RecordingFileSystem.failWrites = true
-            val (plan, error) = captureFailedWritePlan(df.write.parquet(outputPath))
-            assertHasCometNativeWriteExec(plan)
-            assert(
-              causeChain(error).exists {
-                case e: IOException => e.getMessage == RecordingFileSystem.WRITE_FAILURE
-                case _ => false
-              },
-              s"Expected the stream's own IOException, got: $error")
-          }
-
-          assert(RecordingFileSystem.created.size == 1)
-          assert(RecordingFileSystem.aborted.asScala == RecordingFileSystem.created.asScala)
-          assert(RecordingFileSystem.closed.isEmpty)
-        } finally {
-          RecordingFileSystem.reset()
-        }
-
-        assert(
-          listPartFileNames(outputPath).isEmpty,
-          s"A failed write must not leave part files: ${listPartFileNames(outputPath)}")
-        assert(!new File(outputPath, "_temporary").exists())
-      }
+      assert(RecordingFileSystem.created.size == 1)
+      assert(RecordingFileSystem.aborted.asScala == RecordingFileSystem.created.asScala)
+      assert(RecordingFileSystem.closed.isEmpty)
+      assert(
+        listPartFileNames(outputPath).isEmpty,
+        s"A failed write must not leave part files: ${listPartFileNames(outputPath)}")
+      assert(!new File(outputPath, "_temporary").exists())
     }
   }
 
@@ -1828,8 +1822,13 @@ class CometParquetWriterSuite extends CometParquetWriterTestBase {
     val defaultProtocol = SQLConf.FILE_COMMIT_PROTOCOL_CLASS.defaultValueString
     val bindingCommitter =
       SQLConf.PARQUET_OUTPUT_COMMITTER_CLASS.key -> NativeWriteUtils.BindingParquetOutputCommitterClass
-    val s3aFactory = "org.apache.hadoop.fs.s3a.commit.S3ACommitterFactory"
-    val magicFactory = "org.apache.hadoop.fs.s3a.commit.magic.MagicS3GuardCommitterFactory"
+    val s3aFactory = S3ACommitterFactory.CLASSNAME
+    val magicFactory = MagicS3GuardCommitterFactory.CLASSNAME
+    // Main code names spark-hadoop-cloud's classes rather than linking them.
+    assert(pathOutput == classOf[PathOutputCommitProtocol].getName)
+    assert(
+      NativeWriteUtils.BindingParquetOutputCommitterClass ==
+        classOf[BindingParquetOutputCommitter].getName)
     val s3aSchemeFactory = "mapreduce.outputcommitter.factory.scheme.s3a" -> s3aFactory
     val magicName = "fs.s3a.committer.name" -> "magic"
 
@@ -1991,15 +1990,6 @@ class CometParquetWriterSuite extends CometParquetWriterTestBase {
       df.write.parquet(inputPath)
     }
     inputPath
-  }
-
-  // Persist `df` to `sourcePath` with Comet disabled and return a DataFrame that reads it back,
-  // so the source plan is a Comet scan (satisfying CometExecRule.requiresNativeChildren).
-  private def materializeAsCometSource(df: DataFrame, sourcePath: String): DataFrame = {
-    withSQLConf(CometConf.COMET_ENABLED.key -> "false") {
-      df.write.parquet(sourcePath)
-    }
-    spark.read.parquet(sourcePath)
   }
 
   private def listPartFileNames(dir: String): Set[String] = {

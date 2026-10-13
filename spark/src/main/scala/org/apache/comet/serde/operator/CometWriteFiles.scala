@@ -138,7 +138,9 @@ object CometWriteFiles extends CometOperatorSerde[WriteFilesExec] {
       .setCompression(codec)
 
     // getSupportLevel already declined the write if the tag is absent, so this cannot be empty.
-    outputPathOf(op).foreach { outputPath =>
+    // Only a native writer creating its own files reads the options: the files of any other
+    // destination are created and uploaded through Hadoop, see CometWriteFilesExec.writeFile.
+    outputPathOf(op).filter(NativeWriteUtils.nativeWriterCreatesFile).foreach { outputPath =>
       // The tag holds `Path.toString`, which is not a valid URI string: it leaves spaces and
       // literal `%` unescaped, so `URI.create` would throw. Round-tripping through `Path` escapes
       // them again. Only the scheme and authority matter to `extractObjectStoreOptions`, but

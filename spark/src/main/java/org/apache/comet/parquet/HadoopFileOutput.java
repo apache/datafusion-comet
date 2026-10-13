@@ -48,9 +48,6 @@ public final class HadoopFileOutput {
   private final Path path;
   private final FSDataOutputStream out;
 
-  /** What {@link #write} threw. The native writer only passes on its text. */
-  private volatile Throwable failure;
-
   private HadoopFileOutput(Path path, FSDataOutputStream out) {
     this.path = path;
     this.out = out;
@@ -71,21 +68,12 @@ public final class HadoopFileOutput {
     return new HadoopFileOutput(path, out);
   }
 
-  /** Appends the first {@code length} bytes of {@code data} to the file. Called natively. */
+  /**
+   * Appends the first {@code length} bytes of {@code data} to the file. Called natively, which
+   * fails the write with whatever this throws, rethrown to the JVM as it was.
+   */
   public void write(byte[] data, int length) throws IOException {
-    try {
-      out.write(data, 0, length);
-    } catch (IOException | RuntimeException | Error e) {
-      if (failure == null) {
-        failure = e;
-      }
-      throw e;
-    }
-  }
-
-  /** What the file's stream threw when the native writer wrote to it, or {@code null}. */
-  public Throwable failure() {
-    return failure;
+    out.write(data, 0, length);
   }
 
   /**

@@ -23,12 +23,12 @@ import java.util.Locale
 
 import org.apache.hadoop.conf.Configuration
 import org.apache.hadoop.fs.Path
+import org.apache.hadoop.mapreduce.lib.output.PathOutputCommitterFactory
 import org.apache.parquet.hadoop.ParquetOutputFormat
 import org.apache.spark.sql.catalyst.plans.QueryPlan
 import org.apache.spark.sql.catalyst.util.CaseInsensitiveMap
 import org.apache.spark.sql.internal.SQLConf
 
-import org.apache.comet.parquet.HadoopFileOutput
 import org.apache.comet.serde.OperatorOuterClass
 import org.apache.comet.serde.QueryPlanSerde.serializeDataType
 
@@ -200,53 +200,22 @@ object NativeWriteUtils {
     filePath.startsWith("file:") || filePath.startsWith("hdfs:")
 
   /**
-   * Writes the task file at `filePath` with `write`, which runs the task's native write plan.
-   *
-   * When the native writer cannot create the file itself (see [[nativeWriterCreatesFile]]), it is
-   * created here first, with the task's configuration, and `write` gets its [[HadoopFileOutput]]
-   * for the plan's writer to write the file's bytes to. That is what S3A's magic committer needs:
-   * S3A turns a file created under the committer's `__magic` directory into a pending upload to
-   * the file's final destination, which it records when the file is closed, and only S3A can do
-   * that. The file is closed once `write` returns. If `write` throws, the file is aborted
-   * instead, and what the file's stream threw is rethrown, since the native writer passes on only
-   * its text, as Spark's own writer would surface it.
-   */
-  def writeFile(filePath: String, hadoopConf: Configuration)(
-      write: Option[HadoopFileOutput] => Unit): Unit = {
-    val output =
-      if (nativeWriterCreatesFile(filePath)) None
-      else Some(HadoopFileOutput.create(filePath, hadoopConf))
-    try {
-      write(output)
-    } catch {
-      case failure: Throwable =>
-        output match {
-          case Some(file) =>
-            file.abort(failure)
-            throw Option(file.failure()).filter(_ ne failure).fold(failure) { streamFailure =>
-              streamFailure.addSuppressed(failure)
-              streamFailure
-            }
-          case None => throw failure
-        }
-    }
-    // Only once the native writer has written every byte of the file and released it.
-    output.foreach(_.close())
-  }
-
-  /**
    * A fallback reason when the native writer cannot write to `outputPath`'s file system, or
    * `None` when it can. Local and HDFS files are created natively. A write that S3A's magic
    * committer commits is supported too, since each of its files is created through S3A (see
-   * [[writeFile]]), which is the only way to give the committer the pending upload it completes.
-   * Other S3 writes stay on Spark until the native writer reproduces what S3A does at create
-   * time.
+   * `CometWriteFilesExec.writeFile`), which is the only way to give the committer the pending
+   * upload it completes. Other S3 writes stay on Spark until the native writer reproduces what
+   * S3A does at create time.
+   *
+   * @param hadoopConf
+   *   the write's Hadoop configuration, only built for a destination the native writer does not
+   *   create files in
    */
   def unsupportedFileSystem(
       outputPath: String,
       commitProtocolClass: String,
-      hadoopConf: Configuration): Option[String] =
-    if (outputPath.startsWith("file:") || outputPath.startsWith("hdfs:") ||
+      hadoopConf: => Configuration): Option[String] =
+    if (nativeWriterCreatesFile(outputPath) ||
       usesS3AMagicCommitter(outputPath, commitProtocolClass, hadoopConf)) {
       None
     } else {
@@ -292,7 +261,7 @@ object NativeWriteUtils {
    *
    * Only planning asks, to decide whether a write is worth running natively. A wrong answer
    * cannot misplace data: each task writes the path the committer actually returns, and creates
-   * any file that is not local or on HDFS through Hadoop, see [[writeFile]].
+   * any file that is not local or on HDFS through Hadoop, see `CometWriteFilesExec.writeFile`.
    *
    * @param commitProtocolClass
    *   the write's `spark.sql.sources.commitProtocolClass`
@@ -315,8 +284,8 @@ object NativeWriteUtils {
     }
 
     val factory = Seq(
-      "mapreduce.outputcommitter.factory.class",
-      s"mapreduce.outputcommitter.factory.scheme.${uri.getScheme}")
+      PathOutputCommitterFactory.COMMITTER_FACTORY_CLASS,
+      PathOutputCommitterFactory.COMMITTER_FACTORY_SCHEME_PATTERN.format(uri.getScheme))
       .map(key => hadoopConf.getTrimmed(key, ""))
       .find(_.nonEmpty)
     factory match {

@@ -44,6 +44,7 @@ import org.apache.spark.sql.vectorized.ColumnarBatch
 import org.apache.spark.util.Utils
 
 import org.apache.comet.CometExecIterator
+import org.apache.comet.parquet.HadoopFileOutput
 import org.apache.comet.serde.OperatorOuterClass
 import org.apache.comet.serde.OperatorOuterClass.Operator
 import org.apache.comet.serde.operator.{schema2Proto, NativeWriteUtils}
@@ -295,9 +296,6 @@ object CometWriteFilesExec extends Logging {
    *
    * The row count is taken on the JVM side as batches are pulled into native code. That is exact
    * because the native writer consumes its whole input before completing.
-   *
-   * A file the native writer cannot create itself is created through Hadoop's FileSystem API with
-   * the task's configuration, see [[NativeWriteUtils.writeFile]].
    */
   private def writeNatively(
       taskWrite: NativeWriteTask,
@@ -306,29 +304,64 @@ object CometWriteFilesExec extends Logging {
       batches: Iterator[ColumnarBatch],
       partitionId: Int,
       hadoopConf: Configuration): Long = {
+    val parquetWriter = taskWrite.nativeOp.getParquetWriter.toBuilder
+      .setCompression(codec)
+      .clearColumnNames()
+      .addAllColumnNames(taskWrite.dataColumnNames.asJava)
+      .clearOutputSchema()
+      .addAllOutputSchema(taskWrite.outputSchema.asJava)
+      .build()
+
     var rowsWritten = 0L
     val countingBatches =
       CometArrowStream.countingIterator[ColumnarBatch](batches, b => rowsWritten += b.numRows())
 
-    NativeWriteUtils.writeFile(filePath, hadoopConf) { output =>
-      val parquetWriter = taskWrite.nativeOp.getParquetWriter.toBuilder
+    writeFile(
+      filePath,
+      hadoopConf,
+      taskWrite.nativeOp.toBuilder.setParquetWriter(parquetWriter).build(),
+      CometArrowStream.inputObjects(countingBatches, taskWrite.childSchema, taskWrite.nodeName),
+      taskWrite.dataColumnNames.length,
+      taskWrite.nativeMetrics,
+      taskWrite.numPartitions,
+      partitionId)
+    rowsWritten
+  }
+
+  /**
+   * Writes the task file at `filePath` by running `nativeOp`, a native write plan whose Parquet
+   * writer is set up for the task except for the file, over `inputs`. Both native writers write
+   * their files with this: CometWriteFilesExec on Spark 4.0+ and CometNativeWriteExec on 3.x.
+   *
+   * When the native writer cannot create the file itself (see
+   * [[NativeWriteUtils.nativeWriterCreatesFile]]), it is created here first, through Hadoop's
+   * FileSystem API with the task's configuration, and the plan's writer writes the file's bytes
+   * to its [[HadoopFileOutput]]. That is what S3A's magic committer needs: S3A turns a file
+   * created under the committer's `__magic` directory into a pending upload to the file's final
+   * destination, which it records when the file is closed, and only S3A can do that. The file is
+   * closed once the plan has written all of it, and aborted if the plan fails.
+   */
+  private[comet] def writeFile(
+      filePath: String,
+      hadoopConf: Configuration,
+      nativeOp: Operator,
+      inputs: Array[Object],
+      numOutputCols: Int,
+      nativeMetrics: CometMetricNode,
+      numPartitions: Int,
+      partitionId: Int): Unit = {
+    def run(output: Option[HadoopFileOutput]): Unit = {
+      val writer = nativeOp.getParquetWriter.toBuilder
         .setOutputPath(filePath)
         .setJvmOutputStream(output.isDefined)
-        .setCompression(codec)
-        .clearColumnNames()
-        .addAllColumnNames(taskWrite.dataColumnNames.asJava)
-        .clearOutputSchema()
-        .addAllOutputSchema(taskWrite.outputSchema.asJava)
         .build()
-      val taskOp = taskWrite.nativeOp.toBuilder.setParquetWriter(parquetWriter).build()
-
       val execIterator = new CometExecIterator(
         CometExec.newIterId,
-        CometArrowStream.inputObjects(countingBatches, taskWrite.childSchema, taskWrite.nodeName),
-        taskWrite.dataColumnNames.length,
-        CometExec.serializeNativePlan(taskOp),
-        taskWrite.nativeMetrics,
-        taskWrite.numPartitions,
+        inputs,
+        numOutputCols,
+        CometExec.serializeNativePlan(nativeOp.toBuilder.setParquetWriter(writer).build()),
+        nativeMetrics,
+        numPartitions,
         partitionId,
         outputStream = output)
 
@@ -344,7 +377,20 @@ object CometWriteFilesExec extends Logging {
       }
     }
 
-    rowsWritten
+    if (NativeWriteUtils.nativeWriterCreatesFile(filePath)) {
+      run(None)
+    } else {
+      val file = HadoopFileOutput.create(filePath, hadoopConf)
+      try {
+        run(Some(file))
+      } catch {
+        case failure: Throwable =>
+          file.abort(failure)
+          throw failure
+      }
+      // Only once the native writer has written every byte of the file and released it.
+      file.close()
+    }
   }
 
   /**

@@ -20,14 +20,12 @@
 package org.apache.comet.parquet
 
 import java.io.File
-import java.net.URI
-import java.nio.charset.StandardCharsets
 
 import scala.jdk.CollectionConverters._
-import scala.util.{Try, Using}
+import scala.util.Try
 
-import org.apache.commons.io.IOUtils
 import org.apache.hadoop.fs.Path
+import org.apache.hadoop.fs.s3a.commit.files.SuccessData
 import org.apache.parquet.hadoop.ParquetOutputCommitter
 import org.apache.spark.SparkConf
 import org.apache.spark.sql.DataFrame
@@ -37,15 +35,9 @@ import org.apache.spark.sql.execution.command.DataWritingCommandExec
 import org.apache.spark.sql.functions.col
 import org.apache.spark.sql.internal.SQLConf
 
-import com.fasterxml.jackson.databind.ObjectMapper
-
-import org.apache.comet.CometConf
 import org.apache.comet.CometS3TestBase
 import org.apache.comet.serde.operator.NativeWriteUtils
 
-import software.amazon.awssdk.auth.credentials.{AwsBasicCredentials, StaticCredentialsProvider}
-import software.amazon.awssdk.regions.Region
-import software.amazon.awssdk.services.s3.S3Client
 import software.amazon.awssdk.services.s3.model.ListMultipartUploadsRequest
 
 /**
@@ -71,16 +63,6 @@ class ParquetWriteWithMagicCommitterSuite
     conf
   }
 
-  private def s3Client(): S3Client =
-    S3Client
-      .builder()
-      .endpointOverride(URI.create(minioContainer.getS3URL))
-      .region(Region.US_EAST_1)
-      .credentialsProvider(
-        StaticCredentialsProvider.create(AwsBasicCredentials.create(userName, password)))
-      .forcePathStyle(true)
-      .build()
-
   /** The multipart uploads still pending in `bucket`, as their object keys. */
   private def pendingUploads(bucket: String): Seq[String] = {
     val client = s3Client()
@@ -96,14 +78,11 @@ class ParquetWriteWithMagicCommitterSuite
     }
   }
 
-  /** `df` persisted locally with Comet off and read back, so its plan is a native scan. */
-  private def nativeSource(df: DataFrame, dir: File): DataFrame = {
-    val sourcePath = new File(dir, "source.parquet").getAbsolutePath
-    withSQLConf(CometConf.COMET_ENABLED.key -> "false") {
-      df.write.parquet(sourcePath)
-    }
-    spark.read.parquet(sourcePath)
-  }
+  /** `rows` rows read natively from a local copy, so the write's input is a Comet scan. */
+  private def source(rows: Int, dir: File): DataFrame =
+    materializeAsCometSource(
+      (1 to rows).map(i => (i, s"str_$i")).toDF("id", "name"),
+      new File(dir, "source.parquet").getAbsolutePath)
 
   /**
    * The files and bytes the write reports: from Spark's stats tracker on Spark 4.0+, which leaves
@@ -120,29 +99,39 @@ class ParquetWriteWithMagicCommitterSuite
       .getOrElse(fail(s"No write in the plan:\n${plan.treeString}"))
 
   /**
-   * Checks that the magic committer committed `files` part files to `table`: its `_SUCCESS`
-   * manifest names it and them, no `__magic` directory or pending upload is left behind, and the
-   * write reports each file's real size. On Spark 4.0+ that size comes from the marker S3A writes
-   * when it closes a magic file, and on 3.x from what the native writer counted.
+   * Writes `rows` rows in `files` tasks natively to `table` under `confs`, and checks that the
+   * magic committer committed them: its `_SUCCESS` manifest names it and the files, no `__magic`
+   * directory or pending upload is left behind, the write reports each file's real size, and the
+   * data reads back. On Spark 4.0+ that size comes from the marker S3A writes when it closes a
+   * magic file, and on 3.x from what the native writer counted.
    */
-  private def assertCommittedByMagic(table: String, plan: SparkPlan, files: Int): Unit = {
-    val tablePath = new Path(table)
-    val fs = tablePath.getFileSystem(spark.sessionState.newHadoopConf())
-    val manifest = Using.resource(fs.open(new Path(tablePath, "_SUCCESS"))) { in =>
-      new ObjectMapper().readTree(IOUtils.toString(in, StandardCharsets.UTF_8))
+  private def checkMagicCommittedWrite(table: String, rows: Int, files: Int)(
+      confs: (String, String)*): Unit =
+    withTempPath { dir =>
+      val df = source(rows, dir).repartition(files)
+      withNativeWriter {
+        withSQLConf(confs: _*) {
+          val plan = captureWritePlan(p => df.write.parquet(p), table)
+          assertHasCometNativeWriteExec(plan)
+
+          val tablePath = new Path(table)
+          val fs = tablePath.getFileSystem(spark.sessionState.newHadoopConf())
+          val manifest = SuccessData.load(fs, new Path(tablePath, "_SUCCESS"))
+          assert(manifest.getCommitter == "magic", manifest)
+          assert(manifest.getFilenames.size == files, manifest)
+
+          val entries = fs.listStatus(tablePath)
+          assert(
+            entries.forall(!_.getPath.getName.startsWith("__magic")),
+            entries.map(_.getPath).mkString(", "))
+          val parts = entries.filter(_.getPath.getName.startsWith("part-"))
+          assert(parts.length == files, parts.map(_.getPath).mkString(", "))
+          assert(pendingUploads(tablePath.toUri.getHost).isEmpty)
+          assert(writtenFilesAndBytes(plan) == ((files.toLong, parts.map(_.getLen).sum)))
+        }
+      }
+      checkAnswer(spark.read.parquet(table), df)
     }
-    assert(manifest.get("committer").asText() == "magic", manifest.toPrettyString)
-
-    val parts = fs.listStatus(tablePath).filter(_.getPath.getName.startsWith("part-"))
-    assert(parts.length == files, parts.map(_.getPath).mkString(", "))
-    assert(manifest.get("filenames").size() == files, manifest.toPrettyString)
-    assert(
-      fs.listStatus(tablePath).forall(!_.getPath.getName.startsWith("__magic")),
-      fs.listStatus(tablePath).map(_.getPath).mkString(", "))
-    assert(pendingUploads(tablePath.toUri.getHost).isEmpty)
-
-    assert(writtenFilesAndBytes(plan) == ((files.toLong, parts.map(_.getLen).sum)))
-  }
 
   test("a native write is committed by S3A's magic committer") {
     // Spark's own magic committer configuration, rather than one this suite spells out.
@@ -152,17 +141,7 @@ class ParquetWriteWithMagicCommitterSuite
     assert(
       spark.conf.get(SQLConf.PARQUET_OUTPUT_COMMITTER_CLASS.key) ==
         NativeWriteUtils.BindingParquetOutputCommitterClass)
-    withTempPath { dir =>
-      val df = nativeSource((1 to 10000).map(i => (i, s"str_$i")).toDF("id", "name"), dir)
-        .repartition(4)
-      val table = s"s3a://$testBucketName/committed"
-      withNativeWriter {
-        val plan = captureWritePlan(p => df.write.parquet(p), table)
-        assertHasCometNativeWriteExec(plan)
-        assertCommittedByMagic(table, plan, files = 4)
-      }
-      checkAnswer(spark.read.parquet(table), df)
-    }
+    checkMagicCommittedWrite(s"s3a://$testBucketName/committed", rows = 10000, files = 4)()
   }
 
   test("a native write is committed with the magic committer tracking commits in memory") {
@@ -177,19 +156,8 @@ class ParquetWriteWithMagicCommitterSuite
     // per bucket.
     val bucket = "magic-in-memory"
     createBucketIfNotExists(bucket)
-    withTempPath { dir =>
-      val df = nativeSource((1 to 1000).map(i => (i, s"str_$i")).toDF("id", "name"), dir)
-        .repartition(2)
-      val table = s"s3a://$bucket/committed"
-      withNativeWriter {
-        withSQLConf("fs.s3a.committer.magic.track.commits.in.memory.enabled" -> "true") {
-          val plan = captureWritePlan(p => df.write.parquet(p), table)
-          assertHasCometNativeWriteExec(plan)
-          assertCommittedByMagic(table, plan, files = 2)
-        }
-      }
-      checkAnswer(spark.read.parquet(table), df)
-    }
+    checkMagicCommittedWrite(s"s3a://$bucket/committed", rows = 1000, files = 2)(
+      "fs.s3a.committer.magic.track.commits.in.memory.enabled" -> "true")
   }
 
   // Spark 4.1 configures both bindings at once. Either one alone asks the committer factory for
@@ -203,19 +171,8 @@ class ParquetWriteWithMagicCommitterSuite
       SQLConf.FILE_COMMIT_PROTOCOL_CLASS.defaultValueString)).foreach {
     case (binding, otherBindingUnset) =>
       test(s"a native write is committed by the magic committer through $binding alone") {
-        withTempPath { dir =>
-          val df = nativeSource((1 to 1000).map(i => (i, s"str_$i")).toDF("id", "name"), dir)
-            .repartition(2)
-          val table = s"s3a://$testBucketName/$binding"
-          withNativeWriter {
-            withSQLConf(otherBindingUnset) {
-              val plan = captureWritePlan(p => df.write.parquet(p), table)
-              assertHasCometNativeWriteExec(plan)
-              assertCommittedByMagic(table, plan, files = 2)
-            }
-          }
-          checkAnswer(spark.read.parquet(table), df)
-        }
+        checkMagicCommittedWrite(s"s3a://$testBucketName/$binding", rows = 1000, files = 2)(
+          otherBindingUnset)
       }
   }
 
@@ -227,14 +184,16 @@ class ParquetWriteWithMagicCommitterSuite
     // can leave the bucket clean. One task, because job abort does not wait for tasks still
     // running, so with several what is left would depend on how far the others got.
     withTempPath { dir =>
-      val source = nativeSource((1 to 1000).map(i => (i, i - 500)).toDF("id", "divisor"), dir)
+      val divisors = materializeAsCometSource(
+        (1 to 1000).map(i => (i, i - 500)).toDF("id", "divisor"),
+        new File(dir, "source.parquet").getAbsolutePath)
       val table = s"s3a://$testBucketName/failed"
       withNativeWriter {
         withSQLConf(
           SQLConf.ANSI_ENABLED.key -> "true",
           "fs.s3a.committer.abort.pending.uploads" -> "false") {
           // Built under ANSI mode, which Spark 3.x division captures when it is created.
-          val df = source.select((col("id") / col("divisor")).as("quotient")).coalesce(1)
+          val df = divisors.select((col("id") / col("divisor")).as("quotient")).coalesce(1)
           val (plan, error) = captureFailedWritePlan(df.write.parquet(table))
           assertHasCometNativeWriteExec(plan)
           assert(
@@ -259,7 +218,7 @@ class ParquetWriteWithMagicCommitterSuite
     // writer to do what S3A does at create time, which it does not yet.
     Seq("file", "directory").foreach { committer =>
       withTempPath { dir =>
-        val df = nativeSource((1 to 100).map(i => (i, s"str_$i")).toDF("id", "name"), dir)
+        val df = source(100, dir)
         val table = s"s3a://$testBucketName/committer-$committer"
         withNativeWriter {
           withSQLConf("fs.s3a.committer.name" -> committer) {

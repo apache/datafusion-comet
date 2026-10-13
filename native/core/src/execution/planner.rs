@@ -514,11 +514,6 @@ impl PhysicalPlanner {
         self
     }
 
-    /// The output stream attached with [`Self::with_output_stream`], if any.
-    pub(crate) fn output_stream(&self) -> Option<&Arc<dyn OutputStreamSink>> {
-        self.output_stream.as_ref()
-    }
-
     /// How comparisons treat floating-point operands.
     pub fn float_operands(&self) -> FloatOperands {
         self.float_operands

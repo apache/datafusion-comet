@@ -125,27 +125,31 @@ trait CometS3TestBase extends CometTestBase {
     case p: CometNativeScanExec => p
   }
 
-  protected def createBucketIfNotExists(bucketName: String): Unit = {
-    val credentials = AwsBasicCredentials.create(userName, password)
-    val s3Client = S3Client
+  /** An S3 client for the test's MinIO, which the caller closes. */
+  protected def s3Client(): S3Client =
+    S3Client
       .builder()
       .endpointOverride(URI.create(minioContainer.getS3URL))
       .region(Region.US_EAST_1)
-      .credentialsProvider(StaticCredentialsProvider.create(credentials))
+      .credentialsProvider(
+        StaticCredentialsProvider.create(AwsBasicCredentials.create(userName, password)))
       .forcePathStyle(true)
       .build()
+
+  protected def createBucketIfNotExists(bucketName: String): Unit = {
+    val client = s3Client()
     try {
       val bucketExists = Try {
-        s3Client.headBucket(HeadBucketRequest.builder().bucket(bucketName).build())
+        client.headBucket(HeadBucketRequest.builder().bucket(bucketName).build())
         true
       }.getOrElse(false)
 
       if (!bucketExists) {
         val request = CreateBucketRequest.builder().bucket(bucketName).build()
-        s3Client.createBucket(request)
+        client.createBucket(request)
       }
     } finally {
-      s3Client.close()
+      client.close()
     }
   }
 }

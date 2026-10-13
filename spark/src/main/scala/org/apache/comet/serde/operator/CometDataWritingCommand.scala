@@ -135,16 +135,17 @@ object CometDataWritingCommand extends CometOperatorSerde[DataWritingCommandExec
       // CometNativeWriteExec replaces output_path with the committer's exact task filename
       // at execution time.
 
-      // Collect S3/cloud storage configurations
-      val session = op.session
-      val hadoopConf = session.sessionState.newHadoopConfWithOptions(cmd.options)
-      // `outputPath` is `Path.toString`, which is not a valid URI string: it leaves spaces and
-      // literal `%` unescaped, so `URI.create` would throw (and the catch below would silently
-      // give the write back to Spark). Going through `Path` escapes them again.
-      val objectStoreOptions =
-        NativeConfig.extractObjectStoreOptions(hadoopConf, cmd.outputPath.toUri)
-      objectStoreOptions.foreach { case (key, value) =>
-        writerOpBuilder.putObjectStoreOptions(key, value)
+      // Collect S3/cloud storage configurations. Only a native writer creating its own files
+      // reads them: the files of any other destination are created and uploaded through Hadoop,
+      // see CometWriteFilesExec.writeFile.
+      if (NativeWriteUtils.nativeWriterCreatesFile(outputPath)) {
+        val hadoopConf = op.session.sessionState.newHadoopConfWithOptions(cmd.options)
+        // `outputPath` is `Path.toString`, which is not a valid URI string: it leaves spaces and
+        // literal `%` unescaped, so `URI.create` would throw (and the catch below would silently
+        // give the write back to Spark). Going through `Path` escapes them again.
+        NativeConfig.extractObjectStoreOptions(hadoopConf, cmd.outputPath.toUri).foreach {
+          case (key, value) => writerOpBuilder.putObjectStoreOptions(key, value)
+        }
       }
 
       val writerOp = writerOpBuilder.build()

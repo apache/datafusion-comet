@@ -938,20 +938,36 @@ fn register_shuffle_partition_pusher(
     exec_context: &mut ExecutionContext,
     make_pusher: impl FnOnce() -> CometResult<Arc<dyn ShufflePartitionPusher>>,
 ) -> CometResult<()> {
-    if exec_context.root_op.is_some() {
-        return Err(CometError::Internal(
-            "Remote shuffle callback cannot be registered after native execution starts"
-                .to_string(),
-        ));
+    register_before_execution(
+        exec_context.root_op.is_some(),
+        &mut exec_context.shuffle_partition_pusher,
+        "Remote shuffle callback",
+        make_pusher,
+    )
+}
+
+/// Registers one of a plan's task-owned JVM callbacks in `slot`, built by `make` only once the
+/// plan is known to accept it: before execution has `started`, and once. `what` names the callback
+/// in the errors.
+fn register_before_execution<T: ?Sized>(
+    started: bool,
+    slot: &mut Option<Arc<T>>,
+    what: &str,
+    make: impl FnOnce() -> CometResult<Arc<T>>,
+) -> CometResult<()> {
+    if started {
+        return Err(CometError::Internal(format!(
+            "{what} cannot be registered after native execution starts"
+        )));
     }
 
-    if exec_context.shuffle_partition_pusher.is_some() {
-        return Err(CometError::Internal(
-            "Remote shuffle callback has already been registered for this task".to_string(),
-        ));
+    if slot.is_some() {
+        return Err(CometError::Internal(format!(
+            "{what} has already been registered for this task"
+        )));
     }
 
-    exec_context.shuffle_partition_pusher = Some(make_pusher()?);
+    *slot = Some(make()?);
     Ok(())
 }
 
@@ -988,21 +1004,12 @@ fn register_output_stream(
     exec_context: &mut ExecutionContext,
     make_sink: impl FnOnce() -> CometResult<Arc<dyn OutputStreamSink>>,
 ) -> CometResult<()> {
-    if exec_context.root_op.is_some() {
-        return Err(CometError::Internal(
-            "A native write's output stream cannot be registered after native execution starts"
-                .to_string(),
-        ));
-    }
-
-    if exec_context.output_stream.is_some() {
-        return Err(CometError::Internal(
-            "A native write's output stream has already been registered for this plan".to_string(),
-        ));
-    }
-
-    exec_context.output_stream = Some(make_sink()?);
-    Ok(())
+    register_before_execution(
+        exec_context.root_op.is_some(),
+        &mut exec_context.output_stream,
+        "A native write's output stream",
+        make_sink,
+    )
 }
 
 /// Skipping is opt-in (`spark.comet.exec.aggregate.skipPartial.enabled`): once DataFusion's probe
@@ -3839,50 +3846,6 @@ mod tests {
         execute_plan(&mut exec_context, 0, 0, &mut |_| Ok(())).unwrap();
         let error = register_shuffle_partition_pusher(&mut exec_context, || {
             panic!("a rejected pusher must not be built")
-        })
-        .unwrap_err();
-        assert!(
-            error
-                .to_string()
-                .contains("cannot be registered after native execution starts"),
-            "{error}"
-        );
-        release_plan(exec_context, &mut |_| Ok(())).unwrap();
-    }
-
-    struct DiscardingSink;
-
-    impl OutputStreamSink for DiscardingSink {
-        fn max_write_size(&self) -> usize {
-            1
-        }
-
-        fn write(&self, _data: &[u8]) -> datafusion::common::Result<()> {
-            Ok(())
-        }
-    }
-
-    #[test]
-    fn register_output_stream_once_before_execution() {
-        let _guard = serial();
-        let mut exec_context = create_test_plan(range_plan(3)).unwrap();
-        register_output_stream(&mut exec_context, || Ok(Arc::new(DiscardingSink))).unwrap();
-        assert!(exec_context.output_stream.is_some());
-
-        // The sink is built only once the plan is known to accept it.
-        let error = register_output_stream(&mut exec_context, || {
-            panic!("a rejected output stream must not be built")
-        })
-        .unwrap_err();
-        assert!(
-            error.to_string().contains("already been registered"),
-            "{error}"
-        );
-
-        let mut exec_context = create_test_plan(range_plan(3)).unwrap();
-        execute_plan(&mut exec_context, 0, 0, &mut |_| Ok(())).unwrap();
-        let error = register_output_stream(&mut exec_context, || {
-            panic!("a rejected output stream must not be built")
         })
         .unwrap_err();
         assert!(
