@@ -156,7 +156,9 @@ Read the ownership table in the contributor guide before reviewing any change ne
       `MeteredParquetWriterBuilder`, and rows the writer holds outside iceberg-rust (the
       `PartitionFeed`s, or anything a new feed holds back) must be added to what `run_write_task` reserves. A
       builder that constructs `ParquetWriterBuilder` directly leaves its files out of the task's
-      memory reservation, so a wide fanout write grows past the pool instead of failing its task.
+      memory reservation, so a wide fanout write grows past the pool instead of closing
+      partitions early or failing its task. A fanout file must also report to its partition's
+      `OpenFileMemory`, or the partitions holding the most are not the ones closed.
       A storage scheme newly supported for writes needs its entry in
       `StorageWrites::for_location`: a file reports its flushed row groups until its storage has
       written them out, which a local file does at once and an object store only part by part.
