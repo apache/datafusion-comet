@@ -212,6 +212,7 @@ Read the ownership table in the contributor guide before reviewing any change ne
 | Rust tests in `iceberg_write.rs`    | Rolling, fanout order, clustered checks, cleanup guard, manifest round trip, memory reservation |
 | `iceberg_partition_path.rs` tests   | Partition path rendering against iceberg-java                                                   |
 | `CometIcebergWriteBenchmark`        | Native versus iceberg-java throughput                                                           |
+| `CometIcebergEndToEndBenchmark`     | Native read, shuffle and write against stock Spark, primitive and nested columns                |
 
 Ask specifically:
 
