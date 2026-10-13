@@ -401,13 +401,16 @@ An operator that never calls `try_grow` is invisible to the pool no matter how m
 ### Integral sequence construction
 
 Native integral `sequence` registers a temporary non-spillable consumer with the executing
-session's memory pool, including its per-plan tracking and task-shared policy wrappers. Before
-allocating output buffers it validates the full invocation, preserves Spark's first row error and
-the Arrow batch-offset ceiling, then calls `try_grow` for values, offsets, validity capacity and
-construction scratch. Bitmap capacity is a conservative allowance for new output/union buffers,
-not a charge for the full backing allocation of a borrowed sliced input bitmap. The preflight adds
-a row pass; the existing length cache and bulk validity operations remain in the generation
-kernel. No additional memory setting is introduced.
+session's memory pool, including its per-plan tracking and task-shared policy wrappers. Column
+inputs use staged `try_grow` admission: first offsets, the length cache and validity-union capacity;
+then values after one pass validates and caches every row length. This retains Spark's first row
+error and the Arrow batch-offset ceiling. If the initial admission or fallible scratch allocation
+fails, an allocation-free validation pass preserves those errors ahead of the resource error.
+Scalar and metadata-all-null or empty inputs have cheaply known sizes and use one admission.
+Bitmap capacity is a conservative allowance for new output/union buffers, not a charge for the
+full backing allocation of a borrowed sliced input bitmap. No additional memory setting is
+introduced. The `sequence_pooled` group in `native/spark-expr/benches/sequence.rs` measures the
+complete UDF invocation against a real bounded pool, including scalar batch expansion.
 
 The reservation and consumer registration end when construction returns, including allocation
 errors and unwinding. The returned array, its clones, and FFI exports do not keep this reservation.

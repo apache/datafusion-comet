@@ -6942,6 +6942,7 @@ mod tests {
             args: vec![create_bound_reference(0), create_bound_reference(1)],
             return_type: Some(array_type),
             fail_on_error: false,
+            null_short_circuit: false,
         };
         let schema = Arc::new(Schema::new(vec![
             Field::new("start", DataType::Int32, false),

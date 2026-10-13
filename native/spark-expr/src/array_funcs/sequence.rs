@@ -103,7 +103,7 @@ impl ScalarUDFImpl for SparkSequence {
 }
 
 /// Unpooled standalone kernel entry point, retained for kernel tests and benchmarks. Native
-/// query plans must use SparkSequence so the complete requested batch is reserved before work.
+/// query plans must use SparkSequence so staged admission covers the complete requested batch.
 pub fn spark_sequence(args: &[ColumnarValue], data_type: &DataType) -> Result<ColumnarValue> {
     let all_scalar = args
         .iter()
@@ -246,18 +246,65 @@ where
     let start = Input::<T>::new(&args[0])?;
     let stop = Input::<T>::new(&args[1])?;
     let step = args.get(2).map(Input::<T>::new).transpose()?;
-    // The preflight reads borrowed inputs without allocating validity or length scratch. It
-    // preserves Spark's first row error and Arrow's element ceiling ahead of a pool refusal.
-    let size = pool
-        .map(|_| construction_size::<T>(&start, &stop, step.as_ref(), num_rows))
-        .transpose()?;
-    let _reservation = match (pool, size) {
-        (Some(pool), Some((bytes, _))) => Some(reserve_construction(pool, bytes)?),
-        _ => None,
-    };
-    if size.is_some_and(|(_, total)| total == 0) {
-        return null_sequence::<T>(child_field, num_rows);
+    let null_counts = [
+        start.null_count(num_rows),
+        stop.null_count(num_rows),
+        step.as_ref().map_or(0, |step| step.null_count(num_rows)),
+    ];
+    if num_rows == 0 || null_counts.contains(&num_rows) {
+        // Metadata proves there are no values. Admit only offsets and one new null bitmap,
+        // without inspecting values hidden by a null input.
+        let bytes = construction_scratch(num_rows, false, usize::from(num_rows != 0))?;
+        let _reservation = pool
+            .map(|pool| reserve_construction(pool, bytes))
+            .transpose()?;
+        return null_sequence::<T>(child_field, num_rows, None);
     }
+    let row_step = |row: usize, start: i64, stop: i64| -> i64 {
+        match &step {
+            Some(step) => step.value(row),
+            None if start <= stop => 1,
+            None => -1,
+        }
+    };
+    let scalar_length = if args
+        .iter()
+        .all(|arg| matches!(arg, ColumnarValue::Scalar(_)))
+    {
+        let s = start.value(0);
+        let e = stop.value(0);
+        Some(sequence_length(s, e, row_step(0, s, e))?)
+    } else {
+        None
+    };
+    let scalar_total = scalar_length
+        .map(|len| batch_length(len as u128 * num_rows as u128))
+        .transpose()?;
+    // Columns admit scratch first, then validate and cache each row length once before
+    // growing this same reservation for values. Scalars know their complete size already.
+    let initial = (|| {
+        let bitmap_count = if null_counts.iter().any(|count| *count != 0) {
+            2
+        } else {
+            0
+        };
+        let bytes = construction_scratch(num_rows, true, bitmap_count)?;
+        let bytes = bytes
+            .checked_add(value_bytes::<T>(scalar_total.unwrap_or(0))?)
+            .ok_or_else(size_error)?;
+        pool.map(|pool| reserve_construction(pool, bytes))
+            .transpose()
+    })();
+    let scratch_error = |error| {
+        // Only refusal/allocation failures need an allocation-free validation pass to keep
+        // Spark row errors and the batch element ceiling ahead of a resource error.
+        if scalar_length.is_none() {
+            validate_before_resource_error(&start, &stop, step.as_ref(), num_rows, error)
+        } else {
+            error
+        }
+    };
+    let reservation = initial.map_err(scratch_error)?;
     // Reuse validity once per batch instead of checking three inputs and rebuilding a
     // bitmap row by row. Arrow unions sliced bitmaps with bulk word operations.
     let nulls = NullBuffer::union(
@@ -271,32 +318,19 @@ where
         .as_ref()
         .is_some_and(|nulls| nulls.null_count() == num_rows)
     {
-        return null_sequence::<T>(child_field, num_rows);
+        // Reuse the union result: allocating another all-null bitmap here could exceed the
+        // two-bitmap allowance while the union's intermediate buffer is still live.
+        return null_sequence::<T>(child_field, num_rows, nulls);
     }
-    let row_step = |row: usize, start: i64, stop: i64| -> i64 {
-        match &step {
-            Some(step) => step.value(row),
-            None if start <= stop => 1,
-            None => -1,
-        }
-    };
 
     // Validate every row before checking the batch total, preserving the first Spark error.
     // Retain lengths so short sequences do not repeat per-row arithmetic during generation.
-    let mut lengths = sequence_vec::<usize>(num_rows)?;
-    let scalar_size = size.filter(|_| {
-        num_rows != 0
-            && args
-                .iter()
-                .all(|arg| matches!(arg, ColumnarValue::Scalar(_)))
-    });
-    let total = if let Some((_, total)) = scalar_size {
-        // Preflight already checked the one scalar length. Fill the existing cache without
-        // revalidating it for every row; its full capacity was reserved above.
-        lengths.resize(num_rows, total / num_rows);
-        total
+    let mut lengths = sequence_vec::<usize>(num_rows).map_err(scratch_error)?;
+    let total = if let Some(len) = scalar_length {
+        lengths.resize(num_rows, len);
+        scalar_total.unwrap()
     } else {
-        let mut total = 0usize;
+        let mut total = 0u128;
         for row in 0..num_rows {
             if nulls.as_ref().is_some_and(|nulls| nulls.is_null(row)) {
                 lengths.push(0);
@@ -305,18 +339,15 @@ where
             let s = start.value(row);
             let e = stop.value(row);
             let len = sequence_length(s, e, row_step(row, s, e))?;
-            total += len;
+            total += len as u128;
             lengths.push(len);
         }
-        total
+        batch_length(total)?
     };
-    // Arrow's List offsets must fit i32; Spark's per-row array limit is checked above.
-    if total > i32::MAX as usize {
-        return Err(DataFusionError::External(Box::new(
-            SparkError::SequenceBatchTooLarge {
-                total_elements: total.to_string(),
-            },
-        )));
+    if scalar_length.is_none() {
+        if let Some(reservation) = &reservation {
+            reservation.try_grow(value_bytes::<T>(total)?)?;
+        }
     }
 
     let mut values = sequence_vec::<T::Native>(total)?;
@@ -366,55 +397,7 @@ fn bitmap_capacity(rows: usize) -> Result<usize> {
     Ok(rows.div_ceil(8).checked_add(63).ok_or_else(size_error)? & !63)
 }
 
-fn construction_size<T: Integral>(
-    start: &Input<'_, T>,
-    stop: &Input<'_, T>,
-    step: Option<&Input<'_, T>>,
-    rows: usize,
-) -> Result<(usize, usize)>
-where
-    T::Native: Into<i64>,
-{
-    let null_counts = [
-        start.null_count(rows),
-        stop.null_count(rows),
-        step.map_or(0, |step| step.null_count(rows)),
-    ];
-    let nullable = null_counts.iter().any(|count| *count != 0);
-    let all_null = rows != 0 && null_counts.contains(&rows);
-    let row_length = |row| -> Result<usize> {
-        if nullable
-            && (start.is_null(row)
-                || stop.is_null(row)
-                || step.is_some_and(|step| step.is_null(row)))
-        {
-            return Ok(0);
-        }
-        let s = start.value(row);
-        let e = stop.value(row);
-        let step = step.map_or_else(|| if s <= e { 1 } else { -1 }, |step| step.value(row));
-        sequence_length(s, e, step)
-    };
-    let scalars = matches!(start, Input::Scalar(_))
-        && matches!(stop, Input::Scalar(_))
-        && step.is_none_or(|step| matches!(step, Input::Scalar(_)));
-    let (total, has_nulls) = if all_null {
-        // Any wholly-null input proves every output row is null. Do not inspect the other
-        // inputs' values or scan rows; checked offset/bitmap sizing still follows below.
-        (0, true)
-    } else if scalars && rows != 0 {
-        let len = row_length(0)?;
-        (len as u128 * rows as u128, len == 0)
-    } else {
-        let mut total = 0u128;
-        let mut has_nulls = false;
-        for row in 0..rows {
-            let len = row_length(row)?;
-            total += len as u128;
-            has_nulls |= len == 0;
-        }
-        (total, has_nulls)
-    };
+fn batch_length(total: u128) -> Result<usize> {
     if total > i32::MAX as u128 {
         return Err(DataFusionError::External(Box::new(
             SparkError::SequenceBatchTooLarge {
@@ -422,40 +405,62 @@ where
             },
         )));
     }
-    let total = total as usize;
-    let values = total
+    Ok(total as usize)
+}
+
+fn value_bytes<T: Integral>(total: usize) -> Result<usize> {
+    total
         .checked_mul(std::mem::size_of::<T::Native>())
-        .ok_or_else(size_error)?;
+        .ok_or_else(size_error)
+}
+
+fn construction_scratch(rows: usize, cache_lengths: bool, bitmap_count: usize) -> Result<usize> {
     let offsets = rows
         .checked_add(1)
         .and_then(|n| n.checked_mul(std::mem::size_of::<i32>()))
         .ok_or_else(size_error)?;
-    // The all-null/empty path needs no length scratch. Otherwise retain the merged kernel's
-    // length cache. Up to two bulk validity unions can coexist, so reserve their rounded
-    // construction capacity conservatively. This does not charge the full backing capacity
-    // of a borrowed input bitmap, which can be much larger than this batch after slicing.
-    let lengths = if total == 0 {
-        0
-    } else {
+    let lengths = if cache_lengths {
         rows.checked_mul(std::mem::size_of::<usize>())
             .ok_or_else(size_error)?
-    };
-    let bitmap_count = if !has_nulls {
-        0
-    } else if total == 0 {
-        1
     } else {
-        2
+        0
     };
+    // Up to two new bulk validity unions can coexist. This conservatively reserves their
+    // capacity, not the full backing allocation of a borrowed, possibly sliced input bitmap.
     let validity = bitmap_capacity(rows)?
         .checked_mul(bitmap_count)
         .ok_or_else(size_error)?;
-    let bytes = values
-        .checked_add(offsets)
-        .and_then(|n| n.checked_add(lengths))
+    offsets
+        .checked_add(lengths)
         .and_then(|n| n.checked_add(validity))
-        .ok_or_else(size_error)?;
-    Ok((bytes, total))
+        .ok_or_else(size_error)
+}
+
+#[cold]
+fn validate_before_resource_error<T: Integral>(
+    start: &Input<'_, T>,
+    stop: &Input<'_, T>,
+    step: Option<&Input<'_, T>>,
+    rows: usize,
+    resource_error: DataFusionError,
+) -> DataFusionError
+where
+    T::Native: Into<i64>,
+{
+    let mut total = 0u128;
+    for row in 0..rows {
+        if start.is_null(row) || stop.is_null(row) || step.is_some_and(|step| step.is_null(row)) {
+            continue;
+        }
+        let s = start.value(row);
+        let e = stop.value(row);
+        let step = step.map_or_else(|| if s <= e { 1 } else { -1 }, |step| step.value(row));
+        match sequence_length(s, e, step) {
+            Ok(len) => total += len as u128,
+            Err(error) => return error,
+        }
+    }
+    batch_length(total).err().unwrap_or(resource_error)
 }
 
 fn sequence_vec<T>(capacity: usize) -> Result<Vec<T>> {
@@ -466,12 +471,16 @@ fn sequence_vec<T>(capacity: usize) -> Result<Vec<T>> {
     Ok(values)
 }
 
-fn null_sequence<T: Integral>(field: FieldRef, rows: usize) -> Result<ArrayRef> {
+fn null_sequence<T: Integral>(
+    field: FieldRef,
+    rows: usize,
+    existing_nulls: Option<NullBuffer>,
+) -> Result<ArrayRef> {
     let count = rows.checked_add(1).ok_or_else(size_error)?;
     let mut offsets = sequence_vec::<i32>(count)?;
     offsets.resize(count, 0);
-    let nulls = if rows == 0 {
-        None
+    let nulls = if existing_nulls.is_some() || rows == 0 {
+        existing_nulls
     } else {
         let bytes = bitmap_capacity(rows)?;
         let mut validity = sequence_vec::<u8>(bytes)?;
@@ -926,6 +935,7 @@ mod memory_tests {
         inner: GreedyMemoryPool,
         active: AtomicUsize,
         registrations: AtomicUsize,
+        growths: AtomicUsize,
         peak: AtomicUsize,
         rendezvous: Option<Barrier>,
     }
@@ -935,6 +945,7 @@ mod memory_tests {
                 inner: GreedyMemoryPool::new(limit),
                 active: AtomicUsize::new(0),
                 registrations: AtomicUsize::new(0),
+                growths: AtomicUsize::new(0),
                 peak: AtomicUsize::new(0),
                 rendezvous: concurrent.map(Barrier::new),
             })
@@ -965,11 +976,15 @@ mod memory_tests {
             self.inner.shrink(reservation, bytes);
         }
         fn try_grow(&self, reservation: &MemoryReservation, bytes: usize) -> Result<()> {
+            self.growths.fetch_add(1, Ordering::Relaxed);
             let result = self.inner.try_grow(reservation, bytes);
             self.peak
                 .fetch_max(self.inner.reserved(), Ordering::Relaxed);
-            if let Some(rendezvous) = &self.rendezvous {
-                rendezvous.wait();
+            // Rendezvous only on initial admission, never on a later staged growth.
+            if reservation.size() == 0 {
+                if let Some(rendezvous) = &self.rendezvous {
+                    rendezvous.wait();
+                }
             }
             result
         }
@@ -1130,13 +1145,23 @@ mod memory_tests {
             .register(&dyn_pool);
         buffer.try_grow(128).unwrap();
         let udf = SparkSequence::new(list_type(), dyn_pool);
-        let args = scalars(Some(1), Some(4), Some(1));
+        let args = vec![
+            ColumnarValue::Array(Arc::new(Int64Array::from(vec![1; 4]))),
+            ColumnarValue::Array(Arc::new(Int64Array::from(vec![4; 4]))),
+        ];
+        // Scratch fits alongside the existing reservation; the later value growth does not.
         // The caller has not received this output yet, so its own try_grow/spill opportunity
         // cannot rescue a refusal in the upstream expression. No reclaim callback is implied.
         assert!(matches!(
             invoke(&udf, args.clone(), 4),
             Err(DataFusionError::ResourcesExhausted(_))
         ));
+        assert_eq!(pool.growths.load(Ordering::Relaxed), 3); // buffer, scratch, values
+        assert_eq!(pool.registrations.load(Ordering::Relaxed), 2);
+        assert_eq!(
+            pool.peak.load(Ordering::Relaxed),
+            128 + 5 * 4 + 4 * std::mem::size_of::<usize>()
+        );
         assert_eq!(buffer.size(), 128);
         assert_eq!(pool.reserved(), 128);
         assert_eq!(pool.active.load(Ordering::Relaxed), 1);
@@ -1146,36 +1171,137 @@ mod memory_tests {
     }
 
     #[test]
-    fn row_errors_and_element_ceiling_precede_pool_refusal() {
-        let pool = ObservedPool::new(0, None);
+    fn staged_column_refusal_releases_scratch_and_recovers() {
+        let rows = 4;
+        let scratch = (rows + 1) * 4 + rows * std::mem::size_of::<usize>();
+        let args = vec![
+            ColumnarValue::Array(Arc::new(Int64Array::from(vec![1; rows]))),
+            ColumnarValue::Array(Arc::new(Int64Array::from(vec![4; rows]))),
+        ];
+        // Distinguish a first-stage refusal from a second-stage refusal after scratch was
+        // granted. Neither leaves an idle registration or bytes behind.
+        for (limit, growths, peak) in [(scratch - 1, 1, 0), (scratch + 32, 2, scratch)] {
+            let pool = ObservedPool::new(limit, None);
+            let udf = SparkSequence::new(list_type(), Arc::clone(&pool) as _);
+            assert!(matches!(
+                invoke(&udf, args.clone(), rows),
+                Err(DataFusionError::ResourcesExhausted(_))
+            ));
+            assert_eq!(pool.growths.load(Ordering::Relaxed), growths);
+            assert_eq!(pool.peak.load(Ordering::Relaxed), peak);
+            assert_eq!(pool.registrations.load(Ordering::Relaxed), 1);
+            assert_released(&pool);
+            // Recovery uses the same UDF/pool and retains the successful output.
+            let output = invoke(&udf, scalars(Some(1), Some(2), Some(1)), 1).unwrap();
+            assert_eq!(output.len(), 1);
+            assert_released(&pool);
+        }
+    }
+
+    #[test]
+    fn row_error_after_scratch_admission_releases_the_reservation() {
+        let pool = ObservedPool::new(128, None);
         let udf = SparkSequence::new(list_type(), Arc::clone(&pool) as _);
         let args = vec![
-            ColumnarValue::Array(Arc::new(Int64Array::from(vec![0, 0, 2]))),
-            ColumnarValue::Array(Arc::new(Int64Array::from(vec![
-                MAX_ROUNDED_ARRAY_LENGTH - 1,
-                MAX_ROUNDED_ARRAY_LENGTH - 1,
-                1,
-            ]))),
+            ColumnarValue::Array(Arc::new(Int64Array::from(vec![1, 2, 3]))),
+            ColumnarValue::Array(Arc::new(Int64Array::from(vec![2, 3, 1]))),
             ColumnarValue::Scalar(ScalarValue::Int64(Some(1))),
         ];
         assert!(invoke(&udf, args, 3)
             .unwrap_err()
             .to_string()
             .contains("Illegal sequence boundaries"));
-        let error = invoke(&udf, scalars(Some(0), Some(262143), Some(1)), 8192)
-            .unwrap_err()
-            .to_string();
-        assert!(
-            error.contains("2147483648") && error.contains("spark.comet.batchSize"),
-            "{error}"
-        );
-        assert_eq!(pool.registrations.load(Ordering::Relaxed), 0);
+        assert_eq!(pool.growths.load(Ordering::Relaxed), 1);
+        assert!(pool.peak.load(Ordering::Relaxed) > 0);
+        assert_released(&pool);
+        assert!(invoke(&udf, scalars(Some(1), Some(2), Some(1)), 1).is_ok());
         assert_released(&pool);
     }
 
     #[test]
+    fn disjoint_null_masks_reuse_combined_validity_and_suppress_errors() {
+        let args = [10, 0, 1]
+            .into_iter()
+            .enumerate()
+            .map(|(input, value)| {
+                // Every input is partially valid, but their sliced masks have no common valid
+                // row. The underlying ascending bounds would be illegal without null suppression.
+                let validity =
+                    NullBuffer::from((0..5).map(|row| row != input + 1).collect::<Vec<_>>());
+                let array = Int64Array::new(vec![value; 5].into(), Some(validity)).slice(1, 3);
+                assert_eq!(array.null_count(), 1);
+                ColumnarValue::Array(Arc::new(array))
+            })
+            .collect::<Vec<_>>();
+        let bytes = 4 * 4 + 3 * std::mem::size_of::<usize>() + 2 * 64;
+        let pool = ObservedPool::new(bytes, None);
+        let udf = SparkSequence::new(list_type(), Arc::clone(&pool) as _);
+        let result = invoke(&udf, args.clone(), 3).unwrap();
+        assert_eq!(result.null_count(), 3);
+        assert_eq!(
+            result
+                .as_any()
+                .downcast_ref::<ListArray>()
+                .unwrap()
+                .values()
+                .len(),
+            0
+        );
+        assert_eq!(pool.growths.load(Ordering::Relaxed), 1);
+        assert_eq!(pool.peak.load(Ordering::Relaxed), bytes);
+        assert_released(&pool);
+        // Initial refusal validates without allocating the union, respecting the same masks.
+        let refused = ObservedPool::new(bytes - 1, None);
+        let udf = SparkSequence::new(list_type(), Arc::clone(&refused) as _);
+        assert!(matches!(
+            invoke(&udf, args, 3),
+            Err(DataFusionError::ResourcesExhausted(_))
+        ));
+        assert_released(&refused);
+    }
+
+    #[test]
+    fn row_errors_and_element_ceiling_precede_pool_refusal() {
+        // Exercise both the cold validation after scratch refusal and the normal cached pass.
+        for limit in [0, 128] {
+            let pool = ObservedPool::new(limit, None);
+            let udf = SparkSequence::new(list_type(), Arc::clone(&pool) as _);
+            let args = vec![
+                ColumnarValue::Array(Arc::new(Int64Array::from(vec![0, 0, 2]))),
+                ColumnarValue::Array(Arc::new(Int64Array::from(vec![
+                    MAX_ROUNDED_ARRAY_LENGTH - 1,
+                    MAX_ROUNDED_ARRAY_LENGTH - 1,
+                    1,
+                ]))),
+                ColumnarValue::Scalar(ScalarValue::Int64(Some(1))),
+            ];
+            assert!(invoke(&udf, args, 3)
+                .unwrap_err()
+                .to_string()
+                .contains("Illegal sequence boundaries"));
+            let columns = vec![
+                ColumnarValue::Array(Arc::new(Int64Array::from(vec![0, 0]))),
+                ColumnarValue::Array(Arc::new(Int64Array::from(vec![1073741823, 1073741823]))),
+            ];
+            for (args, rows) in [
+                (columns, 2),
+                (scalars(Some(0), Some(262143), Some(1)), 8192),
+            ] {
+                let error = invoke(&udf, args, rows).unwrap_err().to_string();
+                assert!(
+                    error.contains("2147483648") && error.contains("spark.comet.batchSize"),
+                    "{error}"
+                );
+                assert_released(&pool);
+            }
+            // Each column invocation registers once; the scalar ceiling is known beforehand.
+            assert_eq!(pool.registrations.load(Ordering::Relaxed), 2);
+        }
+    }
+
+    #[test]
     fn allocation_failure_and_unwind_release_registration_and_bytes() {
-        let pool = ObservedPool::new(64, None);
+        let pool = ObservedPool::new(128, None);
         let dyn_pool = Arc::clone(&pool) as Arc<dyn MemoryPool>;
         let failure = (|| -> Result<()> {
             let _reservation = reserve_construction(&dyn_pool, 64)?;
@@ -1188,7 +1314,8 @@ mod memory_tests {
         ));
         assert_released(&pool);
         let unwind = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
-            let _reservation = reserve_construction(&dyn_pool, 64).unwrap();
+            let reservation = reserve_construction(&dyn_pool, 64).unwrap();
+            reservation.try_grow(64).unwrap();
             let mut partial = sequence_vec::<u64>(8).unwrap();
             partial.push(1);
             panic!("construction interrupted");
