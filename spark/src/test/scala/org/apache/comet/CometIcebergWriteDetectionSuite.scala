@@ -65,6 +65,35 @@ class CometIcebergWriteDetectionSuite extends CometTestBase with CometIcebergTes
     }
   }
 
+  test("Hadoop configurations are built lazily and share the session configuration") {
+    var sessionBuilds = 0
+    var effectiveBuilds = 0
+    val sessionConf = new Configuration(false)
+    val hadoopConfs = new CometIcebergNativeWrite.LazyHadoopConfs(
+      () => {
+        sessionBuilds += 1
+        sessionConf
+      },
+      conf => {
+        effectiveBuilds += 1
+        assert(conf eq sessionConf)
+        new Configuration(conf)
+      })
+
+    assert(sessionBuilds == 0)
+    assert(effectiveBuilds == 0)
+    assert(hadoopConfs.session eq sessionConf)
+    assert(sessionBuilds == 1)
+    assert(effectiveBuilds == 0)
+    assert(hadoopConfs.effective ne sessionConf)
+    assert(sessionBuilds == 1)
+    assert(effectiveBuilds == 1)
+    assert(hadoopConfs.session eq sessionConf)
+    assert(hadoopConfs.effective ne sessionConf)
+    assert(sessionBuilds == 1)
+    assert(effectiveBuilds == 1)
+  }
+
   test("clean parquet V2 table planned as AppendData yields Compatible") {
     withDetectionCatalog { _ =>
       createTable("ok", partitionSpec = "")
