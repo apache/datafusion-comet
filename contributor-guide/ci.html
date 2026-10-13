@@ -563,7 +563,7 @@ mechanics behind the configuration are documented in
 preflight checks first (license headers, Markdown formatting, workflow linting, the CI config
 checks), computes which heavy jobs the changed files are relevant to, and fans out to those jobs.
 Which jobs run also depends on the event:</p>
-<object data="../_images/mermaid-f5b40459e5fe9b892b845c9198fe1c9420e05d14.svg" type="image/svg+xml">
+<object data="../_images/mermaid-09341aca03757d9d3637a2eaff73472d472d0673.svg" type="image/svg+xml">
             <p class="warning">flowchart LR
   PR([pull request]) --&gt; PRTIER
   PR -. with label .-&gt; QUEUE
@@ -576,7 +576,7 @@ Which jobs run also depends on the event:</p>
 
   PRTIER[&quot;PR tier&lt;br&gt;Linux build, lint, Rust tests&lt;br&gt;TPC-H / TPC-DS&lt;br&gt;Comet suites, Spark 4.1&quot;]
   QUEUE[&quot;Queue tier, on top of the PR tier&lt;br&gt;Spark SQL, Spark 4.1&lt;br&gt;Iceberg 1.11&lt;br&gt;macOS build and Comet suites&lt;br&gt;Benchmark check, Delta gate&lt;br&gt;PyArrow UDF, Spark 4.0 / 4.1 / 4.2&quot;]
-  NIGHTLY[&quot;Nightly tier&lt;br&gt;Comet suites, Spark 3.4 / 3.5 / 4.0 / 4.2&lt;br&gt;Spark SQL, Spark 3.5 / 4.0 / 4.2&lt;br&gt;Iceberg 1.8 / 1.9 / 1.10&quot;]
+  NIGHTLY[&quot;Nightly tier&lt;br&gt;Comet suites, Spark 3.4 / 3.5 / 4.0 / 4.2&lt;br&gt;Spark SQL, Spark 3.5 / 4.0 / 4.2&lt;br&gt;Iceberg 1.8 / 1.9 / 1.10&lt;br&gt;Delta contrib, Spark 3.5 / 4.0 / 4.1&quot;]
   S34[&quot;Neither tier&lt;br&gt;Spark SQL, Spark 3.4&quot;]
   CACHE[&quot;Cache-refresh-only mode&lt;br&gt;the three cache-writing jobs, plus Lint&quot;]</p></object>
 <p>Suite by suite:</p>
@@ -649,7 +649,12 @@ Which jobs run also depends on the event:</p>
 <td><p>no</p></td>
 <td><p>yes</p></td>
 </tr>
-<tr class="row-even"><td><p>Spark SQL tests, Spark 3.4</p></td>
+<tr class="row-even"><td><p>Delta contrib tests, Spark 3.5 / 4.0 / 4.1</p></td>
+<td><p>with label</p></td>
+<td><p>no</p></td>
+<td><p>yes</p></td>
+</tr>
+<tr class="row-odd"><td><p>Spark SQL tests, Spark 3.4</p></td>
 <td><p>with label</p></td>
 <td><p>no</p></td>
 <td><p>no</p></td>
@@ -661,7 +666,8 @@ Which jobs run also depends on the event:</p>
 tier</strong> is the authoritative gate: everything the PR tier runs plus the suites that must pass before
 a change lands, evaluated against the merge result rather than the pull request head. The queue
 runs one Spark version and one Iceberg version, the ones the default build profile targets. The
-<strong>nightly tier</strong> runs the other Spark and Iceberg versions once a day against <code class="docutils literal notranslate"><span class="pre">main</span></code> as it stands;
+<strong>nightly tier</strong> runs the other Spark and Iceberg versions and every Delta contrib suite once a day
+against <code class="docutils literal notranslate"><span class="pre">main</span></code> as it stands;
 see <a class="reference internal" href="#nightly-runs">Nightly runs</a> below. Nothing in the queue tier runs again
 on push to <code class="docutils literal notranslate"><span class="pre">main</span></code>, because the queue already tested the exact tree that landed. The exceptions are
 the Linux and macOS builds, which also run on push so that the dependency caches on <code class="docutils literal notranslate"><span class="pre">main</span></code> stay
@@ -718,25 +724,28 @@ cases that pin both down.</p>
 <tr class="row-even"><td><p><code class="docutils literal notranslate"><span class="pre">run-pyarrow-udf-tests</span></code></p></td>
 <td><p>PyArrow UDF tests against Spark 4.0/4.1/4.2</p></td>
 </tr>
-<tr class="row-odd"><td><p><code class="docutils literal notranslate"><span class="pre">run-spark-4.1-tests</span></code></p></td>
+<tr class="row-odd"><td><p><code class="docutils literal notranslate"><span class="pre">run-delta-tests</span></code></p></td>
+<td><p>Delta contrib tests against Spark 3.5, 4.0 and 4.1</p></td>
+</tr>
+<tr class="row-even"><td><p><code class="docutils literal notranslate"><span class="pre">run-spark-4.1-tests</span></code></p></td>
 <td><p>Spark SQL tests against Spark 4.1, every module</p></td>
 </tr>
-<tr class="row-even"><td><p><code class="docutils literal notranslate"><span class="pre">run-spark-4.1-hive-tests</span></code></p></td>
+<tr class="row-odd"><td><p><code class="docutils literal notranslate"><span class="pre">run-spark-4.1-hive-tests</span></code></p></td>
 <td><p>Spark SQL tests against Spark 4.1, sql_hive only</p></td>
 </tr>
-<tr class="row-odd"><td><p><code class="docutils literal notranslate"><span class="pre">run-spark-3.4-tests</span></code></p></td>
+<tr class="row-even"><td><p><code class="docutils literal notranslate"><span class="pre">run-spark-3.4-tests</span></code></p></td>
 <td><p>Spark SQL tests against Spark 3.4</p></td>
 </tr>
-<tr class="row-even"><td><p><code class="docutils literal notranslate"><span class="pre">run-spark-3.5-tests</span></code></p></td>
+<tr class="row-odd"><td><p><code class="docutils literal notranslate"><span class="pre">run-spark-3.5-tests</span></code></p></td>
 <td><p>Spark SQL tests against Spark 3.5</p></td>
 </tr>
-<tr class="row-odd"><td><p><code class="docutils literal notranslate"><span class="pre">run-spark-4.0-tests</span></code></p></td>
+<tr class="row-even"><td><p><code class="docutils literal notranslate"><span class="pre">run-spark-4.0-tests</span></code></p></td>
 <td><p>Spark SQL tests against Spark 4.0</p></td>
 </tr>
-<tr class="row-even"><td><p><code class="docutils literal notranslate"><span class="pre">run-spark-4.2-tests</span></code></p></td>
+<tr class="row-odd"><td><p><code class="docutils literal notranslate"><span class="pre">run-spark-4.2-tests</span></code></p></td>
 <td><p>Spark SQL tests against Spark 4.2</p></td>
 </tr>
-<tr class="row-odd"><td><p><code class="docutils literal notranslate"><span class="pre">run-iceberg-tests</span></code></p></td>
+<tr class="row-even"><td><p><code class="docutils literal notranslate"><span class="pre">run-iceberg-tests</span></code></p></td>
 <td><p>Iceberg Spark SQL tests against every Iceberg version</p></td>
 </tr>
 </tbody>
@@ -780,6 +789,8 @@ compiles every Spark profile on every pull request, so this is for runtime diffe
 <li><p>anything that touches Hive table support, <code class="docutils literal notranslate"><span class="pre">InsertIntoHiveTable</span></code>, or the <code class="docutils literal notranslate"><span class="pre">sql/hive</span></code> parts of
 the 4.1 diff</p></li>
 <li><p>anything touching Iceberg reflection, the Iceberg scan or write path, or the Iceberg diffs</p></li>
+<li><p>a change to <code class="docutils literal notranslate"><span class="pre">contrib/delta-spark/</span></code> or to the scan and native code it builds on;
+<code class="docutils literal notranslate"><span class="pre">run-delta-tests</span></code> runs the Delta contrib suites against Spark 3.5, 4.0 and 4.1</p></li>
 <li><p>native code with platform-specific behavior, or a dependency bump that changes what is
 compiled on macOS</p></li>
 <li><p>a change to the benchmark sources under <code class="docutils literal notranslate"><span class="pre">spark/src/test/scala/org/apache/spark/sql/benchmark</span></code>
@@ -845,8 +856,9 @@ re-armed automatically.</p>
 <h2>Nightly runs<a class="headerlink" href="#nightly-runs" title="Link to this heading">#</a></h2>
 <p><code class="docutils literal notranslate"><span class="pre">ci.yml</span></code> also runs on a schedule, at 06:00 UTC every day, against what landed on <code class="docutils literal notranslate"><span class="pre">main</span></code> since the
 last successful scheduled run. That run executes only the nightly tier: the Comet test suites against the Spark
-profiles other than 4.1, the Spark SQL suites for Spark 3.5, 4.0 and 4.2, and the Iceberg suites for
-1.8, 1.9 and 1.10, each only when the day’s changes touched files it covers. The queue already ran
+profiles other than 4.1, the Spark SQL suites for Spark 3.5, 4.0 and 4.2, the Iceberg suites for
+1.8, 1.9 and 1.10, and the Delta contrib suites for Spark 3.5, 4.0 and 4.1, each only when the day’s
+changes touched files it covers. The queue already ran
 everything else against the same tree, so nothing in the queue tier is repeated. A day with no
 merges, or with only documentation changes, runs nothing.</p>
 <p>If the previous run cannot be found — the first nightly, an unreachable Actions API, or a base that
