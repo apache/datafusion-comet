@@ -319,6 +319,21 @@ class CometTextNativeReadSuite extends CometTestBase {
     }
   }
 
+  test("native text read - fallback for a self-overlapping custom lineSep") {
+    withTempDir { dir =>
+      val file = new File(dir, "overlap.txt")
+      // "aab" overlaps itself (its "aa" prefix can restart a match). Hadoop's readCustomLine, which
+      // Spark uses, can split such input differently from the native reader's exact substring scan,
+      // so Comet must fall back. Spark's own result is the reference.
+      Files.write(file.toPath, "aaabz".getBytes(StandardCharsets.UTF_8))
+      withTextConf {
+        checkSparkAnswerAndFallbackReason(
+          spark.read.option("lineSep", "aab").text(file.getAbsolutePath),
+          "self-overlapping line separator")
+      }
+    }
+  }
+
   test("native text read - BOM-only file matches Spark for default and BOM separators") {
     withTempDir { dir =>
       val f = new File(dir, "bom-only.txt")

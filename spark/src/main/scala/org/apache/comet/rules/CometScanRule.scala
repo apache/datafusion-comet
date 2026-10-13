@@ -521,6 +521,21 @@ case class CometScanRule(session: SparkSession)
         val textOptions =
           new org.apache.spark.sql.execution.datasources.text.TextOptions(
             scan.options.asScala.toMap)
+        // Spark reads a custom line separator with Hadoop's LineReader.readCustomLine, which on a
+        // mismatch backtracks only one byte instead of following the separator's own prefix
+        // overlap. For a separator that overlaps itself (e.g. "aab", whose "aa" prefix can restart
+        // a match) that reader can split differently from the native reader's exact substring
+        // scan, and the difference depends on where the separator falls across Hadoop's input
+        // buffer boundaries. wholetext ignores the separator, so only guard line mode. Fall back
+        // so the two always agree.
+        if (!textOptions.wholeText) {
+          textOptions.lineSeparatorInRead.foreach { sep =>
+            if (CometScanRule.separatorSelfOverlaps(sep)) {
+              fallbackReasons += "Comet native Text scan does not support a self-overlapping " +
+                "line separator (Spark's line reader can split it differently)"
+            }
+          }
+        }
         if (textOptions.wholeText) {
           val maxWholeTextBytes =
             math.min(session.sessionState.conf.filesMaxPartitionBytes, Int.MaxValue.toLong / 3)
@@ -1309,6 +1324,35 @@ object CometScanRule extends Logging {
         case _: InputFileName | _: InputFileBlockStart | _: InputFileBlockLength => true
         case _ => false
       }))
+
+  /**
+   * True when a custom line separator overlaps itself -- some proper prefix of the separator is
+   * also a suffix of one of its prefixes, so a partial match can restart (e.g. "aab", or "aba").
+   * Spark splits custom separators with Hadoop's LineReader.readCustomLine, which backtracks only
+   * one byte on a mismatch instead of following that overlap, so for such a separator it can
+   * split differently from the native reader's exact substring scan. Uses the KMP prefix
+   * function: any nonzero entry means the separator overlaps itself.
+   */
+  private[rules] def separatorSelfOverlaps(sep: Array[Byte]): Boolean = {
+    val f = new Array[Int](sep.length)
+    var k = 0
+    var overlaps = false
+    var i = 1
+    while (i < sep.length) {
+      while (k > 0 && sep(i) != sep(k)) {
+        k = f(k - 1)
+      }
+      if (sep(i) == sep(k)) {
+        k += 1
+      }
+      f(i) = k
+      if (k > 0) {
+        overlaps = true
+      }
+      i += 1
+    }
+    overlaps
+  }
 
   // Memo of `NativeBase.isObjectStoreSchemeSupported`, keyed by the probe URL rather than the
   // scheme: object_store's parser keys on (scheme, host-presence), so an authorityless URL would
