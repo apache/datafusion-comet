@@ -122,7 +122,7 @@ impl DictionaryChooser {
             .with_coerce_types(base.coerce_types())
             .convert(schema)
             .map_err(DataFusionError::from)?;
-        let mut leaves = Vec::new();
+        let mut leaves = Vec::with_capacity(parquet_schema.num_columns());
         for (column, field) in schema.fields().iter().enumerate() {
             let mut leaf = Leaf {
                 column,

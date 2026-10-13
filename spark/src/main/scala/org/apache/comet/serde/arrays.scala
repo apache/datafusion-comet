@@ -56,7 +56,7 @@ object CometArrayRemove
       } else {
         "array_remove_all"
       }
-    scalarFunctionExprToProto(function, arrayExprProto, keyExprProto)
+    withNullShortCircuit(expr, scalarFunctionExprToProto(function, arrayExprProto, keyExprProto))
   }
 }
 
@@ -86,7 +86,6 @@ object CometArrayAppend extends CometExpressionSerde[ArrayAppend] with ArraysBas
     // IS NOT NULL does not care about element nullability, so use the un-widened source and skip
     // serializing a redundant cast.
     val isNotNullExpr = createUnaryExpr(
-      expr,
       expr.children.head,
       inputs,
       binding,
@@ -185,7 +184,7 @@ object CometArrayContains
       } else {
         "array_contains"
       }
-    scalarFunctionExprToProto(function, arrayExprProto, keyExprProto)
+    withNullShortCircuit(expr, scalarFunctionExprToProto(function, arrayExprProto, keyExprProto))
   }
 }
 
@@ -377,7 +376,7 @@ object CometArraysOverlap
       false,
       leftArrayExprProto,
       rightArrayExprProto)
-    arraysOverlapScalarExpr
+    withNullShortCircuit(expr, arraysOverlapScalarExpr)
   }
 }
 
@@ -584,11 +583,13 @@ object CometSlice extends CometExpressionSerde[Slice] {
     // output, so only `return_field_from_args` is guaranteed to match. Spark's `expr.dataType` is
     // not: `CometCreateArray` may have widened the input to a deeply-nullable element type, and
     // DataFusion list elements are nullable where Spark's `containsNull` says otherwise.
-    scalarFunctionExprToProto(
-      "spark_array_slice",
-      arrayExprProto,
-      startExprProto,
-      lengthExprProto)
+    withNullShortCircuit(
+      expr,
+      scalarFunctionExprToProto(
+        "spark_array_slice",
+        arrayExprProto,
+        startExprProto,
+        lengthExprProto))
   }
 }
 
@@ -675,7 +676,7 @@ object CometArrayUnion extends CometExpressionSerde[ArrayUnion] {
 
     val arraysUnionScalarExpr =
       scalarFunctionExprToProto("array_union", leftArrayExprProto, rightArrayExprProto)
-    arraysUnionScalarExpr
+    withNullShortCircuit(expr, arraysUnionScalarExpr)
   }
 }
 
@@ -735,6 +736,8 @@ object CometGetArrayItem extends CometExpressionSerde[GetArrayItem] {
         .setOrdinal(ordinalExpr.get)
         .setOneBased(false)
         .setFailOnError(expr.failOnError)
+        // Spark evaluates the ordinal only where the array is not NULL, see withNullShortCircuit
+        .setNullShortCircuit(canShortCircuitNulls(expr))
 
       Some(
         ExprOuterClass.Expr
@@ -861,7 +864,6 @@ object CometElementAt extends CometExpressionSerde[ElementAt] {
     // CometArraysZip.
     if (needsNullGuard(expr)) {
       val isNotNullExpr = createUnaryExpr(
-        expr,
         expr.left,
         inputs,
         binding,
@@ -974,7 +976,6 @@ object CometSize extends CometExpressionSerde[Size] {
       inputs: Seq[Attribute],
       binding: Boolean): Option[ExprOuterClass.Expr] = {
     createUnaryExpr(
-      expr,
       expr.child,
       inputs,
       binding,
@@ -1010,7 +1011,7 @@ object CometArrayPosition extends CometExpressionSerde[ArrayPosition] with Array
     // (matching Spark's behavior)
     val optExpr =
       scalarFunctionExprToProto("spark_array_position", arrayExprProto, elementExprProto)
-    optExpr
+    withNullShortCircuit(expr, optExpr)
   }
 }
 

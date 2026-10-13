@@ -137,13 +137,19 @@ class CometTopKSuite extends CometTestBase {
       withSQLConf(
         CometConf.COMET_EXEC_TOPK_FUSION_ENABLED.key -> "false",
         SQLConf.ADAPTIVE_EXECUTION_ENABLED.key -> adaptive.toString,
+        SQLConf.SESSION_LOCAL_TIMEZONE.key -> "America/Los_Angeles",
+        SQLConf.DATETIME_JAVA8API_ENABLED.key -> "true",
         SQLConf.SUBQUERY_REUSE_ENABLED.key -> "true",
         SQLConf.LEAF_NODE_DEFAULT_PARALLELISM.key -> "3",
         SQLConf.FILES_MAX_PARTITION_BYTES.key -> "4194304") {
         withTempPath { path =>
           spark
             .range(0, 120, 1, 3)
-            .selectExpr("CAST(id % 10 AS INT) AS a", "CAST(119 - id AS INT) AS b")
+            .selectExpr(
+              "CAST(id % 10 AS INT) AS a",
+              "CAST(119 - id AS INT) AS b",
+              "timestamp_micros(id * 1000000 - 100000000) AS ts",
+              "CAST(timestamp_micros(id * 1000000 - 100000000) AS TIMESTAMP_NTZ) AS local_ts")
             .write
             .parquet(path.getCanonicalPath)
           withParquetTable(path.getCanonicalPath, "topk_input") {
@@ -156,7 +162,9 @@ class CometTopKSuite extends CometTestBase {
                   "(SELECT named_struct('max_a', max(a), 'min_b', min(b)) FROM topk_input)"
                 s"a + $subquery.max_a, b + $subquery.min_b"
             }
-            val queryText = s"SELECT a, b FROM topk_input ORDER BY $orderBy LIMIT 7"
+            // The local iterator returns all sort inputs, while the final projection reorders
+            // and drops columns. Both must check timestamp labels against their own schema.
+            val queryText = s"SELECT ts, local_ts, a FROM topk_input ORDER BY $orderBy LIMIT 7"
             val query = sql(queryText)
             if (subqueryType == "merged struct") {
               val mergedFields = query.queryExecution.optimizedPlan.collect { case node =>
@@ -194,6 +202,8 @@ class CometTopKSuite extends CometTestBase {
             assert(!topK.child.isInstanceOf[CometLocalTopKExec])
             assert(!topK.orderingSatisfies)
             assert(topK.child.executeColumnar().getNumPartitions == 3)
+            assert(topK.child.output.length == 4)
+            assert(topK.output.length == 3)
             val sortSubqueries = topK.sortOrder.flatMap(_.collect { case s: ScalarSubquery => s })
             assert(sortSubqueries.nonEmpty, s"Expected scalar subqueries in native TopK:\n$plan")
             assert(
