@@ -23,11 +23,11 @@ This guide lists the behavior changes in each Comet release and the configuratio
 restores the previous behavior for each one. Read the section for every version between the release
 you are upgrading from and the release you are upgrading to.
 
-A **behaviour change** is one where the same query, run over the same data, with the same explicitly
+A **behavior change** is one where the same query, run over the same data, with the same explicitly
 set configuration, produces a different result or a different error than it did in the previous
-release. Each entry for a behaviour change below names the setting that restores the previous
-behaviour. See Comet's [versioning policy](../../about/versioning_policy.md) for the requirements
-on shipping these changes in a minor release.
+release. Comet's [versioning policy](../../about/versioning_policy.md) permits these in a minor
+release only when a `spark.comet.legacy.*` configuration key restores the previous behavior, so
+every behavior change below names such a key.
 
 A release's section can also list changes that need no legacy key but can still change what an
 existing deployment does, such as a fix that makes Comet apply a setting as documented, or a setting

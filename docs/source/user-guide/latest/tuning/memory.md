@@ -309,13 +309,6 @@ up to whole bytes. Even an empty output has a four-byte terminal offset. Allocat
 space and shared input backing outside a validity slice are excluded. Validity preparation and the
 row-length scratch buffer may be allocated before the final check.
 
-This is a ceiling for one invocation, not a memory reservation or an executor memory limit.
-Retaining earlier results, running concurrent calls, and passing results to sort, shuffle or explode
-do not consume another invocation's ceiling. All-scalar arguments materialise one list and retain
-constant-folding behaviour. Later generic scalar broadcasts and copies of folded literals are
-outside this ceiling, as are sequences evaluated by Spark. Continue to size the executor's memory
-overhead for allocations outside its memory pool.
-
 ## Limiting Spill Disk Usage
 
 Native operators that spill to disk (aggregate, sort, shuffle) are bounded by
