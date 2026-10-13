@@ -24,7 +24,7 @@ import java.nio.charset.StandardCharsets
 import scala.jdk.CollectionConverters._
 
 import org.apache.arrow.c.CDataDictionaryProvider
-import org.apache.arrow.vector.{BitVectorHelper, VarCharVector}
+import org.apache.arrow.vector.VarCharVector
 import org.apache.arrow.vector.ipc.message.ArrowFieldNode
 import org.apache.spark.sql.CometTestBase
 import org.apache.spark.sql.execution.vectorized.ConstantColumnVector
@@ -262,9 +262,9 @@ class UtilsSuite extends CometTestBase {
       val length = values.length - skip
       val sliced = new VarCharVector("s", CometArrowAllocator)
       sliced.loadFieldBuffers(
-        new ArrowFieldNode(length, values.drop(skip).count(_ == null)),
+        new ArrowFieldNode(length.toLong, values.drop(skip).count(_ == null).toLong),
         Seq(
-          full.getValidityBuffer.slice(skip / 8, BitVectorHelper.getValidityBufferSize(length)),
+          full.getValidityBuffer.slice(skip / 8L, (length + 7) / 8L),
           full.getOffsetBuffer.slice(skip * 4L, (length + 1) * 4L),
           full.getDataBuffer).asJava)
       sliced
