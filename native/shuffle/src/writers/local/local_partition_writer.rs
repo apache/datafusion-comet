@@ -23,6 +23,7 @@ use crate::writers::BufBatchWriter;
 use crate::{PartitionOffsets, ShuffleBlockWriter};
 use arrow::array::RecordBatch;
 use datafusion::common::DataFusionError;
+use datafusion::execution::memory_pool::MemoryReservation;
 use datafusion::execution::runtime_env::RuntimeEnv;
 use std::fs::{File, OpenOptions};
 use std::io::{BufWriter, ErrorKind, Read, Seek, SeekFrom, Write};
@@ -130,6 +131,7 @@ impl LocalPartitionWriter {
                 write_buffer_size,
                 batch_size,
                 num_output_partitions,
+                &runtime,
             );
             DataOutput::Multi {
                 output_writer,
@@ -172,6 +174,13 @@ impl LocalPartitionWriter {
 }
 
 impl PartitionWriter for LocalPartitionWriter {
+    fn memory_reservation(&self) -> Option<Arc<MemoryReservation>> {
+        match &self.data_output {
+            DataOutput::Multi { spill, .. } => Some(spill.memory_reservation()),
+            DataOutput::Single { .. } => None,
+        }
+    }
+
     fn write<I>(
         &mut self,
         pid: usize,
@@ -292,6 +301,7 @@ impl PartitionWriter for LocalPartitionWriter {
                     }
                     write_timer.stop();
                 }
+                spill.release_ranges(pid);
 
                 // Write in memory batches to output data file. Each partition uses its
                 // own writer so coalescing does not cross partition boundaries, but the
@@ -595,6 +605,7 @@ mod tests {
                 writer
                     .finish_partition(pid, &mut vec![Ok(b)].into_iter(), &metrics)
                     .unwrap();
+                assert!(writer.get_spill().ranges(pid).unwrap().is_empty());
             }
             writer.finish_all(&metrics).unwrap();
 
@@ -646,13 +657,15 @@ mod tests {
     fn finish_partition_fails_when_spill_file_is_truncated() {
         for write_buffer_size in [1 << 20, 64] {
             let dir = tempfile::tempdir().unwrap();
+            let runtime = Arc::new(RuntimeEnv::default());
             let mut writer = partition_writer_with(
                 &test_batch(),
                 2,
                 write_buffer_size,
                 &dir,
-                Arc::new(RuntimeEnv::default()),
+                Arc::clone(&runtime),
             );
+            let base_metadata_bytes = runtime.memory_pool.reserved();
             let metrics = ShufflePartitionerMetrics::new(&ExecutionPlanMetricsSet::new(), 0);
             for pid in 0..2 {
                 writer
@@ -679,6 +692,9 @@ mod tests {
                 err.to_string().contains("truncated"),
                 "write buffer {write_buffer_size}: unexpected error: {err}"
             );
+            assert!(runtime.memory_pool.reserved() > base_metadata_bytes);
+            drop(writer);
+            assert_eq!(runtime.memory_pool.reserved(), 0);
         }
     }
 }

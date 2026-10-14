@@ -21,6 +21,7 @@ use crate::writers::BufBatchWriter;
 use crate::ShuffleBlockWriter;
 use arrow::record_batch::RecordBatch;
 use datafusion::common::DataFusionError;
+use datafusion::execution::memory_pool::{MemoryConsumer, MemoryReservation};
 use datafusion::execution::runtime_env::RuntimeEnv;
 use datafusion::execution::SpillFile as DfSpillFile;
 use datafusion::execution::SpillWriter as DfSpillWriter;
@@ -64,6 +65,8 @@ pub(crate) struct PartitionedSpill {
     len: u64,
     /// Per partition, the spill file ranges holding its blocks, in write order.
     ranges: Vec<Vec<Range<u64>>>,
+    /// Shared with the repartitioner's input buffers; range charges survive each spill.
+    reservation: Arc<MemoryReservation>,
     /// Set when a write fails partway, after which `len` may not match the file.
     failed: bool,
 }
@@ -74,14 +77,21 @@ impl PartitionedSpill {
         write_buffer_size: usize,
         batch_size: usize,
         num_partitions: usize,
+        runtime: &RuntimeEnv,
     ) -> Self {
+        let ranges = vec![Vec::new(); num_partitions];
+        let reservation = MemoryConsumer::new("ShuffleSpill")
+            .with_can_spill(true)
+            .register(&runtime.memory_pool);
+        reservation.grow(ranges.capacity() * size_of::<Vec<Range<u64>>>());
         Self {
             shuffle_block_writer,
             write_buffer_size,
             batch_size,
             spill_file: None,
             len: 0,
-            ranges: vec![Vec::new(); num_partitions],
+            ranges,
+            reservation: Arc::new(reservation),
             failed: false,
         }
     }
@@ -149,7 +159,7 @@ impl PartitionedSpill {
         if bytes_written > 0 {
             let start = self.len;
             self.len += bytes_written;
-            self.ranges[pid].push(start..self.len);
+            self.push_range(pid, start..self.len);
         }
         metrics
             .spilled_bytes
@@ -165,6 +175,28 @@ impl PartitionedSpill {
     pub(crate) fn ranges(&self, pid: usize) -> datafusion::common::Result<&[Range<u64>]> {
         self.check_usable()?;
         Ok(&self.ranges[pid])
+    }
+
+    pub(crate) fn memory_reservation(&self) -> Arc<MemoryReservation> {
+        Arc::clone(&self.reservation)
+    }
+
+    fn push_range(&mut self, pid: usize, range: Range<u64>) {
+        let ranges = &mut self.ranges[pid];
+        let capacity = ranges.capacity();
+        ranges.push(range);
+        let growth = (ranges.capacity() - capacity) * size_of::<Range<u64>>();
+        if growth != 0 {
+            // A spill must be able to record its own bookkeeping under memory pressure.
+            self.reservation.grow(growth);
+        }
+    }
+
+    /// Releases the range allocation after a partition's spilled blocks have been copied.
+    pub(crate) fn release_ranges(&mut self, pid: usize) {
+        let bytes = self.ranges[pid].capacity() * size_of::<Range<u64>>();
+        self.ranges[pid] = Vec::new();
+        self.reservation.shrink(bytes);
     }
 
     /// Writes buffered spill bytes to the spill file.
@@ -335,11 +367,52 @@ mod tests {
             ShuffleBlockWriter::try_new(batch.schema_ref().as_ref(), CompressionCodec::None)
                 .unwrap();
         // batch_size below the row count so a write serializes into the scratch
-        PartitionedSpill::new(block_writer, 1 << 20, 10, num_partitions)
+        PartitionedSpill::new(
+            block_writer,
+            1 << 20,
+            10,
+            num_partitions,
+            &RuntimeEnv::default(),
+        )
     }
 
     fn metrics() -> ShufflePartitionerMetrics {
         ShufflePartitionerMetrics::new(&ExecutionPlanMetricsSet::new(), 0)
+    }
+
+    #[test]
+    fn merging_releases_range_capacity() {
+        let num_partitions = 16_000;
+        let rounds = 88;
+        let mut spill = partitioned_spill(&test_batch(), num_partitions);
+        // Model the metadata from many spill rounds without writing the payload to disk.
+        let base_bytes = spill.reservation.size();
+        for pid in 0..num_partitions {
+            for round in 0..rounds {
+                spill.push_range(pid, round..round + 1);
+            }
+        }
+        let capacity = spill.ranges[0].capacity();
+        let initial_bytes = num_partitions * capacity * size_of::<Range<u64>>();
+        assert_eq!(spill.reservation.size(), base_bytes + initial_bytes);
+        for pid in 0..num_partitions {
+            spill.release_ranges(pid);
+            assert_eq!(spill.ranges[pid].capacity(), 0);
+            assert_eq!(
+                spill.reservation.size(),
+                base_bytes + (num_partitions - pid - 1) * capacity * size_of::<Range<u64>>()
+            );
+            if pid + 1 < num_partitions {
+                assert_eq!(spill.ranges[pid + 1].len(), rounds as usize);
+            }
+        }
+        let retained_bytes: usize = spill
+            .ranges
+            .iter()
+            .map(|ranges| ranges.capacity() * size_of::<Range<u64>>())
+            .sum();
+        assert_eq!(retained_bytes, 0);
+        println!("range capacity: {initial_bytes} bytes before merge, {retained_bytes} after");
     }
 
     fn failing_write(spill: &mut PartitionedSpill, recycled: &mut Vec<u8>) {

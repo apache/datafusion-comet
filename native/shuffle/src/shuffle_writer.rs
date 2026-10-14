@@ -624,6 +624,8 @@ mod test {
         let num_partitions = 2;
         let runtime_env = create_runtime(memory_limit);
         let metrics_set = ExecutionPlanMetricsSet::new();
+        let metrics = ShufflePartitionerMetrics::new(&metrics_set, 0);
+        let memory_spilled_bytes = metrics.memory_spilled_bytes.clone();
         let shuffle_block_writer =
             ShuffleBlockWriter::try_new(batch.schema().as_ref(), CompressionCodec::Lz4Frame)
                 .unwrap();
@@ -641,14 +643,15 @@ mod test {
             0,
             local_partition_writer,
             CometPartitioning::Hash(vec![Arc::new(Column::new("a", 0))], num_partitions),
-            ShufflePartitionerMetrics::new(&metrics_set, 0),
-            runtime_env,
+            metrics,
+            Arc::clone(&runtime_env),
             1024,
             false,
             None,
         )
         .unwrap();
 
+        let base_metadata_bytes = runtime_env.memory_pool.reserved();
         repartitioner.insert_batch(batch.clone()).await.unwrap();
 
         assert!(!repartitioner
@@ -656,7 +659,14 @@ mod test {
             .get_spill()
             .has_spill_file());
 
+        let before_spill = runtime_env.memory_pool.reserved();
         repartitioner.spill(0).unwrap();
+        let retained_bytes = runtime_env.memory_pool.reserved();
+        assert!(retained_bytes > base_metadata_bytes);
+        assert_eq!(
+            memory_spilled_bytes.value(),
+            before_spill - base_metadata_bytes
+        );
 
         // after spill, both partitions' blocks are in the one spill file
         {
@@ -668,6 +678,13 @@ mod test {
 
         // insert another batch after spilling
         repartitioner.insert_batch(batch.clone()).await.unwrap();
+        repartitioner.spill(0).unwrap();
+        // The second range fits the existing allocation, which stays charged across spills.
+        assert_eq!(runtime_env.memory_pool.reserved(), retained_bytes);
+        repartitioner.shuffle_write().unwrap();
+        assert_eq!(runtime_env.memory_pool.reserved(), base_metadata_bytes);
+        drop(repartitioner);
+        assert_eq!(runtime_env.memory_pool.reserved(), 0);
     }
 
     /// The zstd context is reused within one encode burst but must not survive past it: a
