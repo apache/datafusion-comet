@@ -33,7 +33,7 @@ For applicable cases that are not selected for native execution automatically, `
 
 The following incompatibilities cause `ArrayDistinct` to fall back to Spark by default. Set `spark.comet.expression.ArrayDistinct.allowIncompatible=true` to enable Comet acceleration despite these differences.
 
-- Floating-point elements match Spark's signed-zero and NaN semantics natively only on Spark 4.2.0, whose optimizer normalizes the arguments (SPARK-54918)
+- Floating-point elements match Spark's signed-zero semantics natively only on Spark 4.0.5+, 4.1.4+ and 4.2+, which treat -0.0 and 0.0 as one value in these functions (SPARK-54918, SPARK-59602)
 - Spark compares non-UTF8_BINARY collated string elements under their collation, while Comet's native array_distinct compares raw bytes
 
 ## ArrayExcept
@@ -72,7 +72,7 @@ For applicable cases that are not selected for native execution automatically, `
 
 The following incompatibilities cause `ArrayUnion` to fall back to Spark by default. Set `spark.comet.expression.ArrayUnion.allowIncompatible=true` to enable Comet acceleration despite these differences.
 
-- Floating-point elements match Spark's signed-zero and NaN semantics natively only on Spark 4.2.0, whose optimizer normalizes the arguments (SPARK-54918)
+- Floating-point elements match Spark's signed-zero semantics natively only on Spark 4.0.5+, 4.1.4+ and 4.2+, which treat -0.0 and 0.0 as one value in these functions (SPARK-54918, SPARK-59602)
 - Spark compares non-UTF8_BINARY collated string elements under their collation, while Comet's native array_union compares raw bytes
 
 ## ArraysOverlap

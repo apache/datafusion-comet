@@ -866,7 +866,7 @@ under the License.
 <h2>ArrayDistinct<a class="headerlink" href="#arraydistinct" title="Link to this heading">#</a></h2>
 <p>The following incompatibilities cause <code class="docutils literal notranslate"><span class="pre">ArrayDistinct</span></code> to fall back to Spark by default. Set <code class="docutils literal notranslate"><span class="pre">spark.comet.expression.ArrayDistinct.allowIncompatible=true</span></code> to enable Comet acceleration despite these differences.</p>
 <ul class="simple">
-<li><p>Floating-point elements match Spark’s signed-zero and NaN semantics natively only on Spark 4.2.0, whose optimizer normalizes the arguments (SPARK-54918)</p></li>
+<li><p>Floating-point elements match Spark’s signed-zero semantics natively only on Spark 4.0.5+, 4.1.4+ and 4.2+, which treat -0.0 and 0.0 as one value in these functions (SPARK-54918, SPARK-59602)</p></li>
 <li><p>Spark compares non-UTF8_BINARY collated string elements under their collation, while Comet’s native array_distinct compares raw bytes</p></li>
 </ul>
 </section>
@@ -911,7 +911,7 @@ under the License.
 <h2>ArrayUnion<a class="headerlink" href="#arrayunion" title="Link to this heading">#</a></h2>
 <p>The following incompatibilities cause <code class="docutils literal notranslate"><span class="pre">ArrayUnion</span></code> to fall back to Spark by default. Set <code class="docutils literal notranslate"><span class="pre">spark.comet.expression.ArrayUnion.allowIncompatible=true</span></code> to enable Comet acceleration despite these differences.</p>
 <ul class="simple">
-<li><p>Floating-point elements match Spark’s signed-zero and NaN semantics natively only on Spark 4.2.0, whose optimizer normalizes the arguments (SPARK-54918)</p></li>
+<li><p>Floating-point elements match Spark’s signed-zero semantics natively only on Spark 4.0.5+, 4.1.4+ and 4.2+, which treat -0.0 and 0.0 as one value in these functions (SPARK-54918, SPARK-59602)</p></li>
 <li><p>Spark compares non-UTF8_BINARY collated string elements under their collation, while Comet’s native array_union compares raw bytes</p></li>
 </ul>
 </section>
