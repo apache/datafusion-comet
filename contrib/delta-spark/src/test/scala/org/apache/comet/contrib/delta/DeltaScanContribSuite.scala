@@ -254,71 +254,50 @@ class DeltaScanContribSuite extends CometDeltaTestBase {
     assert(DeltaScanSupport.s3CompliantAliasSchemeReason(notOptedIn, Seq(blobUri)).isEmpty)
   }
 
-  test("scheme gate claims a scheme listed in the Hadoop conf's libhdfs.schemes") {
-    assert(!CometScanRule.isNativelyReadableScheme(new URI(FakeHDFSFileSystem.PREFIX), Set.empty))
-    // The bare key reaches the scan's Hadoop conf, where native reads the list. The padding,
-    // case and empty entries check it is parsed the way native and core's gate parse it.
-    val plan = planDeltaReadOnFakeScheme(libhdfsConf =
-      Seq(CometConf.COMET_LIBHDFS_SCHEMES_KEY -> " FAKE , hdfs ,, "))
-    assertClaimedOnFakeScheme(plan)
-  }
-
-  test("scheme gate claims a scheme listed only in a reader option's libhdfs.schemes") {
-    assert(!CometScanRule.isNativelyReadableScheme(new URI(FakeHDFSFileSystem.PREFIX), Set.empty))
-    // Delta keeps `fs.` read options in the relation options, which reach the scan's Hadoop conf
-    // but never SQLConf or the session's Hadoop conf.
-    val plan = planDeltaReadOnFakeScheme(readOptions =
-      Map(CometConf.COMET_LIBHDFS_SCHEMES_KEY -> "fake,hdfs"))
-    assertClaimedOnFakeScheme(plan)
-  }
-
-  test("scheme gate ignores a runtime SET of the spark.hadoop. libhdfs key") {
-    // newHadoopConf copies SQLConf keys with their `spark.hadoop.` prefix, so the list never
-    // reaches the Hadoop conf native reads and `fake` is still not routed through libhdfs.
-    val plan = planDeltaReadOnFakeScheme(libhdfsConf =
-      Seq(CometConf.COMET_LIBHDFS_SCHEMES.key -> "fake,hdfs"))
-    assert(
-      collectByName(plan, "CometDeltaNativeScanExec").isEmpty,
-      s"native would not route `fake` through libhdfs; the scan must fall back:\n$plan")
-    val reasons = new ExtendedExplainInfo().getFallbackReasons(plan)
-    assert(
-      reasons.exists(_.contains("Native Delta scan does not support filesystem scheme(s) fake")),
-      s"the scan must be declined for its scheme, got reasons: $reasons")
-  }
-
-  private def assertClaimedOnFakeScheme(plan: SparkPlan): Unit = {
-    val reasons = new ExtendedExplainInfo().getFallbackReasons(plan)
-    assert(
-      !reasons.exists(_.contains("filesystem scheme")),
-      s"`fake` is in the scan's libhdfs list; it must not be declined, got reasons: $reasons")
-    assert(
-      collectByName(plan, "CometDeltaNativeScanExec").nonEmpty,
-      s"expected the native Delta scan to claim the read:\n$plan")
-  }
-
-  /**
-   * Writes a Delta table locally and returns the executed plan of a read of it through `fake://`
-   * (backed by the local filesystem), planned with `libhdfsConf` set and `readOptions` on the
-   * reader. The plan is not run.
-   */
-  private def planDeltaReadOnFakeScheme(
-      libhdfsConf: Seq[(String, String)] = Nil,
-      readOptions: Map[String, String] = Map.empty): SparkPlan = {
-    var plan: SparkPlan = null
+  test("scheme gate reads libhdfs.schemes from the scan's Hadoop conf") {
     withTempPath { dir =>
       spark.range(0, 10).write.format("delta").save(dir.getAbsolutePath)
       val fakePath = s"${FakeHDFSFileSystem.PREFIX}${dir.getAbsolutePath}"
-      val sqlConf = ("fs.fake.impl" -> classOf[FakeHDFSFileSystem].getName) +: libhdfsConf
-      withSQLConf(sqlConf: _*) {
-        plan = spark.read
-          .format("delta")
-          .options(readOptions)
-          .load(fakePath)
-          .queryExecution
-          .executedPlan
+      val bareKey = CometConf.COMET_LIBHDFS_SCHEMES_KEY
+      // (case, SQLConf, reader options, claimed). The bare key and a reader option reach the
+      // scan's Hadoop conf, where native reads the list. Delta keeps `fs.` read options in the
+      // relation options, which never reach SQLConf or the session's Hadoop conf. newHadoopConf
+      // copies a runtime SET of the `spark.hadoop.` key with its prefix, so native never routes
+      // `fake` through libhdfs.
+      val cases = Seq(
+        ("bare key in SQLConf", Seq(bareKey -> "fake,hdfs"), Map.empty[String, String], true),
+        ("reader option", Nil, Map(bareKey -> "fake,hdfs"), true),
+        (
+          "runtime SET of the spark.hadoop. key",
+          Seq(CometConf.COMET_LIBHDFS_SCHEMES.key -> "fake,hdfs"),
+          Map.empty[String, String],
+          false))
+      cases.foreach { case (name, conf, readOptions, claimed) =>
+        var plan: SparkPlan = null
+        withSQLConf(("fs.fake.impl" -> classOf[FakeHDFSFileSystem].getName) +: conf: _*) {
+          plan = spark.read
+            .format("delta")
+            .options(readOptions)
+            .load(fakePath)
+            .queryExecution
+            .executedPlan
+        }
+        val nativeScans = collectByName(plan, "CometDeltaNativeScanExec")
+        val reasons = new ExtendedExplainInfo().getFallbackReasons(plan)
+        if (claimed) {
+          assert(
+            !reasons.exists(_.contains("filesystem scheme")),
+            s"$name: `fake` must not be declined, got reasons: $reasons")
+          assert(nativeScans.nonEmpty, s"$name: expected the native Delta scan:\n$plan")
+        } else {
+          assert(nativeScans.isEmpty, s"$name: the scan must fall back:\n$plan")
+          assert(
+            reasons.exists(
+              _.contains("Native Delta scan does not support filesystem scheme(s) fake")),
+            s"$name: the scan must be declined for its scheme, got reasons: $reasons")
+        }
       }
     }
-    plan
   }
 
   test("unsupportedSchemes passes an all-file: root-path selection (no regression)") {

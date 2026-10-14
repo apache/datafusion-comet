@@ -127,7 +127,7 @@ object NativeConfig {
    * The schemes native reads through libhdfs: the `fs.comet.libhdfs.schemes` list, or only `hdfs`
    * when it is unset or blank, as native `is_hdfs_scheme` decides.
    */
-  def resolveLibhdfsSchemes(hadoopConf: Configuration): Set[String] = {
+  private[comet] def resolveLibhdfsSchemes(hadoopConf: Configuration): Set[String] = {
     val raw = hadoopConf.get(COMET_LIBHDFS_SCHEMES_KEY)
     if (StringUtils.isBlank(raw)) Set("hdfs") else parseSchemeSet(raw)
   }
