@@ -36,8 +36,7 @@ pub(crate) fn cast_boolean_to_timestamp(
     target_tz: &Option<Arc<str>>,
 ) -> SparkResult<ArrayRef> {
     let bool_array = array_ref.as_boolean();
-    // true is 1 microsecond and false is 0. `from_unary` runs on null slots too
-    // and copies the null buffer; `i64::from` on a bool is infallible for any bit pattern.
+    // true is 1 microsecond and false is 0.
     let micros = PrimitiveArray::<TimestampMicrosecondType>::from_unary(bool_array, |value| {
         i64::from(value)
     });
@@ -51,11 +50,11 @@ mod tests {
     use crate::{EvalMode, SparkCastOptions};
     use arrow::array::{
         Array, ArrayRef, BooleanArray, Float32Array, Float64Array, Int16Array, Int32Array,
-        Int64Array, Int8Array, StringArray,
+        Int64Array, Int8Array, StringArray, TimestampMicrosecondBuilder,
     };
     use arrow::buffer::NullBuffer;
-    use arrow::datatypes::DataType::Decimal128;
-    use arrow::datatypes::TimestampMicrosecondType;
+    use arrow::datatypes::DataType::{Decimal128, Timestamp};
+    use arrow::datatypes::{TimeUnit, TimestampMicrosecondType};
     use std::sync::Arc;
 
     fn test_input_bool_array() -> ArrayRef {
@@ -226,23 +225,43 @@ mod tests {
         let ts = out.as_primitive::<TimestampMicrosecondType>();
         assert_eq!(ts.values().as_ref(), &[1, 1]);
         assert!(ts.nulls().is_none());
+    }
 
-        let full = BooleanArray::from(vec![Some(true), None, Some(false)]);
-        let out =
-            cast_boolean_to_timestamp(&Array::slice(&full, 1, 2), &Some(Arc::from("UTC"))).unwrap();
-        let ts = out.as_primitive::<TimestampMicrosecondType>();
-        assert!(ts.is_null(0));
-        assert_eq!(ts.value(1), 0);
-
-        // A true bit under a null stays null. `from_unary` still reads that slot.
-        let bits = BooleanArray::from(vec![true, false]);
+    #[test]
+    fn test_cast_boolean_to_timestamp_null_slot_matches_builder() {
+        let tz = Some(Arc::from("UTC"));
+        // The slice starts on a null whose bit is set.
+        let bits = BooleanArray::from(vec![false, true, false, true]);
         let masked = BooleanArray::new(
             bits.values().clone(),
-            Some(NullBuffer::from(vec![false, true])),
+            Some(NullBuffer::from(vec![true, false, true, false])),
         );
-        let out = cast_boolean_to_timestamp(&(Arc::new(masked) as ArrayRef), &None).unwrap();
-        let ts = out.as_primitive::<TimestampMicrosecondType>();
-        assert!(ts.is_null(0));
-        assert_eq!(ts.value(1), 0);
+        let input = Array::slice(&masked, 1, 3);
+        let bools = input.as_boolean();
+        let mut builder = TimestampMicrosecondBuilder::with_capacity(bools.len());
+        for i in 0..bools.len() {
+            if bools.is_null(i) {
+                builder.append_null();
+            } else {
+                builder.append_value(i64::from(bools.value(i)));
+            }
+        }
+        let expected = builder.finish().with_timezone_opt(tz.clone());
+
+        let out = cast_array(
+            Arc::clone(&input),
+            &Timestamp(TimeUnit::Microsecond, tz),
+            &SparkCastOptions::new(EvalMode::Ansi, "UTC"),
+        )
+        .unwrap();
+        let actual = out.as_primitive::<TimestampMicrosecondType>();
+        assert_eq!(actual.len(), expected.len());
+        assert_eq!(actual.timezone(), expected.timezone());
+        for i in 0..actual.len() {
+            assert_eq!(actual.is_null(i), expected.is_null(i), "index {i}");
+            if actual.is_valid(i) {
+                assert_eq!(actual.value(i), expected.value(i), "index {i}");
+            }
+        }
     }
 }

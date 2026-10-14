@@ -366,8 +366,9 @@ where
     T: ArrowPrimitiveType,
     T::Native: Into<i64>,
 {
-    // saturating_mul limits to i64::MIN/MAX. Spark does this in every eval mode.
-    // `unary` runs on null slots too; saturating_mul is infallible for any bit pattern.
+    // saturating_mul limits to i64::MIN/MAX on overflow instead of panicking,
+    // which could occur when converting extreme values (e.g., Long.MIN_VALUE)
+    // matching spark behavior (irrespective of EvalMode)
     array.unary(|value| {
         let seconds: i64 = value.into();
         seconds.saturating_mul(MICROS_PER_SECOND)
@@ -1450,9 +1451,11 @@ pub(crate) fn cast_float_to_timestamp(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use arrow::array::{Array, AsArray};
+    use crate::cast::cast_array;
+    use crate::SparkCastOptions;
+    use arrow::array::{Array, AsArray, TimestampMicrosecondBuilder};
     use arrow::buffer::NullBuffer;
-    use arrow::datatypes::TimestampMicrosecondType;
+    use arrow::datatypes::{TimeUnit, TimestampMicrosecondType};
 
     #[test]
     fn test_spark_cast_int_to_int_overflow() {
@@ -2799,30 +2802,57 @@ mod tests {
         }
     }
 
-    #[test]
-    fn test_cast_int_to_timestamp_edges() {
-        let tz = Some(Arc::from("UTC"));
+    /// Logical nulls and valid values. Values stored under nulls are not compared:
+    /// the builder writes 0 there, and `unary` writes the converted payload.
+    fn assert_logical_timestamps(actual: &ArrayRef, expected: &ArrayRef) {
+        let actual = actual.as_primitive::<TimestampMicrosecondType>();
+        let expected = expected.as_primitive::<TimestampMicrosecondType>();
+        assert_eq!(actual.len(), expected.len());
+        assert_eq!(actual.timezone(), expected.timezone());
+        for i in 0..actual.len() {
+            assert_eq!(actual.is_null(i), expected.is_null(i), "index {i}");
+            if actual.is_valid(i) {
+                assert_eq!(actual.value(i), expected.value(i), "index {i}");
+            }
+        }
+    }
 
-        // i64::MIN/MAX saturate. A non-zero value under a null must not panic.
-        let raw = Int64Array::from(vec![i64::MIN, 5, i64::MAX]);
+    #[test]
+    fn test_cast_int_to_timestamp_null_slot_matches_builder() {
+        let tz = Some(Arc::from("UTC"));
+        // The slice starts on a null whose payload is i64::MIN. Multiplying that
+        // payload by MICROS_PER_SECOND overflows i64.
+        let raw = Int64Array::from(vec![7_i64, i64::MIN, 5, i64::MAX]);
         let masked = Int64Array::new(
             raw.values().clone(),
-            Some(NullBuffer::from(vec![false, true, false])),
+            Some(NullBuffer::from(vec![true, false, true, false])),
         );
-        let out = cast_int_to_timestamp(&(Arc::new(masked) as ArrayRef), &tz).unwrap();
-        assert_ts(
-            &out,
-            &[None, Some(5 * MICROS_PER_SECOND), None],
-            Some("UTC"),
-        );
+        let input = Array::slice(&masked, 1, 3);
+        let ints = input.as_primitive::<Int64Type>();
+        let mut builder = TimestampMicrosecondBuilder::with_capacity(ints.len());
+        for i in 0..ints.len() {
+            if ints.is_null(i) {
+                builder.append_null();
+            } else {
+                builder.append_value(ints.value(i).saturating_mul(MICROS_PER_SECOND));
+            }
+        }
+        let expected: ArrayRef = Arc::new(builder.finish().with_timezone_opt(tz.clone()));
 
+        let out = cast_array(
+            Arc::clone(&input),
+            &DataType::Timestamp(TimeUnit::Microsecond, tz),
+            &SparkCastOptions::new(EvalMode::Ansi, "UTC"),
+        )
+        .unwrap();
+        assert_logical_timestamps(&out, &expected);
+    }
+
+    #[test]
+    fn test_cast_int_to_timestamp_edges() {
         let extremes: ArrayRef = Arc::new(Int64Array::from(vec![Some(i64::MIN), Some(i64::MAX)]));
         let out = cast_int_to_timestamp(&extremes, &None).unwrap();
         assert_ts(&out, &[Some(i64::MIN), Some(i64::MAX)], None);
-
-        let full = Int32Array::from(vec![Some(10), None, Some(30)]);
-        let out = cast_int_to_timestamp(&Array::slice(&full, 1, 2), &tz).unwrap();
-        assert_ts(&out, &[None, Some(30 * MICROS_PER_SECOND)], Some("UTC"));
     }
 
     #[test]
