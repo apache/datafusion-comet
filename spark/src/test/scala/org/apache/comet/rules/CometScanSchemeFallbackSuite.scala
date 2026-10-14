@@ -362,33 +362,59 @@ class CometScanSchemeFallbackSuite extends CometTestBase with CometIcebergTestBa
     assert(sparkScans.isEmpty, s"expected no leftover Spark FileSourceScanExec:\n$transformed")
   }
 
-  test("scheme gate reads libhdfs.schemes from the scan's Hadoop conf") {
-    val path = writeParquet(FakeHDFSFileSystem.PREFIX)
+  test("scheme gate claims a libhdfs scheme only when the session lists it") {
+    val fakePath = writeParquet(FakeHDFSFileSystem.PREFIX)
+    // The same files through the local filesystem.
+    val localPath = s"file:${fakePath.stripPrefix(FakeHDFSFileSystem.PREFIX)}"
     val bareKey = CometConf.COMET_LIBHDFS_SCHEMES_KEY
-    // (case, SQLConf, reader options, claimed). The bare key and a reader option reach the scan's
-    // Hadoop conf, where native reads the list. newHadoopConf copies a runtime SET of the
-    // `spark.hadoop.` key with its prefix, so native never routes `fake` through libhdfs.
+    val unsupported = "Unsupported filesystem schemes: fake"
+    def readerOnly(scheme: String): String =
+      s"does not support filesystem scheme(s) $scheme listed in $bareKey only through reader " +
+        "options"
+    // (case, path, SQLConf, reader options, expected fallback reason or None when claimed).
+    // newHadoopConf copies the bare key from SQLConf, and a runtime SET of the `spark.hadoop.`
+    // key with its prefix, so native never routes `fake` through libhdfs for the latter. libhdfs
+    // never sees reader options, so a scheme only they list is declined, even a local one.
     val cases = Seq(
-      ("bare key in SQLConf", Seq(bareKey -> "fake,hdfs"), Map.empty[String, String], true),
-      ("reader option", Nil, Map(bareKey -> "fake,hdfs"), true),
+      (
+        "bare key in SQLConf",
+        fakePath,
+        Seq(bareKey -> "fake,hdfs"),
+        Map.empty[String, String],
+        None),
+      ("reader option", fakePath, Nil, Map(bareKey -> "fake,hdfs"), Some(readerOnly("fake"))),
       (
         "runtime SET of the spark.hadoop. key",
+        fakePath,
         Seq(CometConf.COMET_LIBHDFS_SCHEMES.key -> "fake,hdfs"),
         Map.empty[String, String],
-        false))
-    cases.foreach { case (name, conf, readOptions, claimed) =>
+        Some(unsupported)),
+      (
+        "reader option removes a session-listed scheme",
+        fakePath,
+        Seq(bareKey -> "fake,hdfs"),
+        Map(bareKey -> "hdfs"),
+        Some(unsupported)),
+      (
+        "reader-only natively readable scheme",
+        localPath,
+        Nil,
+        Map(bareKey -> "file"),
+        Some(readerOnly("file"))))
+    // Every case runs, and the failure lists each one that broke.
+    val errors = cases.flatMap { case (name, path, conf, readOptions, expectedReason) =>
       val transformed = applyScanRule(path, conf, readOptions)
-      val cometScans = transformed.collect { case s: CometScanExec => s }
-      if (claimed) {
-        assert(cometScans.size == 1, s"$name: Comet must claim the scan:\n$transformed")
-      } else {
-        assert(cometScans.isEmpty, s"$name: the scan must fall back:\n$transformed")
-        val reasons = new ExtendedExplainInfo().getFallbackReasons(transformed)
-        assert(
-          reasons.exists(_.contains("Unsupported filesystem schemes: fake")),
-          s"$name: the scan must be declined for its scheme, got reasons: $reasons")
+      val claimed = transformed.collect { case s: CometScanExec => s }.nonEmpty
+      lazy val reasons = new ExtendedExplainInfo().getFallbackReasons(transformed)
+      expectedReason match {
+        case None if !claimed => Some(s"$name: Comet must claim the scan:\n$transformed")
+        case Some(_) if claimed => Some(s"$name: the scan must fall back:\n$transformed")
+        case Some(reason) if !reasons.exists(_.contains(reason)) =>
+          Some(s"$name: expected a reason containing '$reason', got reasons: $reasons")
+        case _ => None
       }
     }
+    assert(errors.isEmpty, errors.mkString("\n"))
   }
 
   /** Writes a 10-row Parquet table at `prefix` plus the suite's temp dir and returns its path. */

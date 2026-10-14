@@ -1292,8 +1292,7 @@ object CometConf extends ShimCometConf {
 
   // Declared so the value appears in the generated config reference and can be set at startup
   // via `spark.hadoop.*`, but never read through this entry: the scan gates read the Hadoop key
-  // above through `NativeConfig.resolveLibhdfsSchemes`, as native does, so `core-site.xml` is
-  // honored too.
+  // above through `NativeConfig.resolveScanLibhdfsSchemes`, so `core-site.xml` is honored too.
   val COMET_LIBHDFS_SCHEMES: OptionalConfigEntry[String] =
     conf(s"spark.hadoop.$COMET_LIBHDFS_SCHEMES_KEY")
       .category(CATEGORY_SCAN)
@@ -1301,7 +1300,9 @@ object CometConf extends ShimCometConf {
         "Defines filesystem schemes (e.g., hdfs, webhdfs) that the native side accesses " +
           "via libhdfs, separated by commas. Valid only when built with hdfs-opendal feature " +
           "enabled. Read from the Hadoop configuration, so it must be set before the " +
-          "SparkSession is created.")
+          "SparkSession is created. A scheme listed only through a reader option is not read " +
+          "natively. libhdfs reads the settings of a listed scheme, such as " +
+          "`fs.<scheme>.impl`, from the executor's `core-site.xml`.")
       .stringConf
       .createOptional
 

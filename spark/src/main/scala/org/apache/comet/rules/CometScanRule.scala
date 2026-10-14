@@ -252,9 +252,12 @@ case class CometScanRule(session: SparkSession)
     // itself (`NativeBase.isObjectStoreSchemeSupported`) rather than a hardcoded list, so the
     // planner can't drift from object_store's actual support.
     //
-    // EXCEPT schemes native routes through libhdfs. The list comes from the scan's Hadoop conf, as
-    // native reads it, and defaults to `hdfs`.
-    val libhdfsSchemes = NativeConfig.resolveLibhdfsSchemes(hadoopConf)
+    // EXCEPT schemes native routes through libhdfs (`hdfs` by default). A scheme the reader
+    // options add to that list is declined; see NativeConfig.resolveScanLibhdfsSchemes.
+    val libhdfs = NativeConfig.resolveScanLibhdfsSchemes(
+      r.sparkSession.sessionState.newHadoopConf(),
+      hadoopConf)
+    val libhdfsSchemes = libhdfs.libhdfs
     // Opt-in S3-compliant alias schemes (e.g. `blob`) from `fs.comet.s3Compliant.schemes`. Read
     // from the Hadoop config, like the libhdfs list above, so `core-site.xml` is honored. The
     // native object_store gate no longer claims aliases, so admit them here where the Hadoop
@@ -267,6 +270,15 @@ case class CometScanRule(session: SparkSession)
       libhdfsSchemes,
       s3CompliantSchemes)
 
+    val scanOnlyLibhdfsSchemes = roots.flatMap(_.scheme).filter(libhdfs.scanOnly.contains).toSet
+    if (scanOnlyLibhdfsSchemes.nonEmpty) {
+      withFallbackReason(
+        scanExec,
+        "Native Parquet scan does not support filesystem scheme(s) " +
+          s"${scanOnlyLibhdfsSchemes.toSeq.sorted.mkString(", ")} listed in " +
+          s"$COMET_LIBHDFS_SCHEMES_KEY only through reader options")
+      return None
+    }
     val unsupportedFsSchemes = roots.iterator.flatMap { root =>
       root.scheme.filter(_ =>
         !root.isLibhdfs && !CometScanRule.isNativelyReadableScheme(root.uri, s3CompliantSchemes))
