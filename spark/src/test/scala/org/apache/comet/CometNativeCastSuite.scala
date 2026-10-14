@@ -1416,30 +1416,13 @@ class CometNativeCastSuite extends CometTestBase with AdaptiveSparkPlanHelper {
     }
   }
 
-  test("(ansi) failing cast of a literal in an unreached branch does not fail planning") {
+  test("(ansi) failing cast of a literal raises Spark's own exception when reached") {
     withSQLConf(SQLConf.ANSI_ENABLED.key -> "true") {
       withTable("cast_literal_branch") {
         Seq(0L, 1L, 2L).toDF("id").write.format("parquet").saveAsTable("cast_literal_branch")
-        // ConstantFolding leaves a failing cast unfolded inside a conditional branch, so it
-        // reaches Comet as a cast of a literal. No row chooses the branch, so Spark returns rows.
-        // Comet runs Spark's own Cast through the codegen dispatcher, not a native cast.
-        checkSparkAnswerAndImpl(
-          sql("""SELECT id,
-            |  CASE WHEN id = 5 THEN CAST('bad' AS BIGINT) ELSE id END,
-            |  IF(id > 5, CAST(2147483648L AS INT), 0)
-            |FROM cast_literal_branch""".stripMargin),
-          dispatched = Seq("cast"))
-        // A row that chooses the branch raises Spark's error.
-        checkSparkError(
-          sql(
-            "SELECT CASE WHEN id = 1 THEN CAST('bad' AS BIGINT) ELSE id END " +
-              "FROM cast_literal_branch"),
-          "CAST_INVALID_INPUT")
-        checkSparkError(
-          sql("SELECT IF(id > 1, CAST(2147483648L AS INT), 0) FROM cast_literal_branch"),
-          "CAST_OVERFLOW")
-        // Spark's own evaluation decides the failure, whatever it is. This string's scale fits
-        // in an int, so it parses, but rounding it to the target scale fails in Spark.
+        // cast_literal_ansi.sql covers failing casts that raise an error class. This string's
+        // scale fits in an int, so it parses, but rounding it to the target scale fails in Spark
+        // with a raw `ArithmeticException`, which has no error class to compare.
         val df = sql(
           "SELECT CASE WHEN id = 1 THEN CAST('1e-2147483647' AS DECIMAL(10,2)) " +
             "ELSE CAST(0 AS DECIMAL(10,2)) END FROM cast_literal_branch")
