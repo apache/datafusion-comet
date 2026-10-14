@@ -19,7 +19,7 @@
 //! `unary` kernel. Shapes: no nulls, sparse nulls (1 in 10), dense nulls
 //! (7 in 8), and an all-null batch.
 
-use arrow::array::{Int64Array, RecordBatch};
+use arrow::array::{Int32Array, Int64Array, RecordBatch};
 use arrow::datatypes::{DataType, Field, Schema, TimeUnit};
 use criterion::{criterion_group, criterion_main, Criterion};
 use datafusion::physical_expr::expressions::Column;
@@ -60,6 +60,13 @@ fn timestamp_cast() -> Cast {
     )
 }
 
+fn batch_i32() -> RecordBatch {
+    let values: Int32Array = (0..BATCH_SIZE)
+        .map(|i| Some(1_600_000_000 + i as i32))
+        .collect();
+    record_batch(DataType::Int32, Arc::new(values))
+}
+
 fn batch_i64(nulls: Nulls) -> RecordBatch {
     let values: Int64Array = (0..BATCH_SIZE)
         .map(|i| {
@@ -86,6 +93,7 @@ fn criterion_benchmark(c: &mut Criterion) {
         });
     };
 
+    bench("cast_i32_to_timestamp: no nulls", batch_i32());
     bench("cast_i64_to_timestamp: no nulls", batch_i64(Nulls::None));
     bench(
         "cast_i64_to_timestamp: sparse nulls",

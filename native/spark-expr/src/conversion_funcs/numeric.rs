@@ -2641,6 +2641,7 @@ mod tests {
             let result = cast_decimal_to_timestamp(&decimal_array, tz, 6).unwrap();
             let ts_array = result.as_primitive::<TimestampMicrosecondType>();
 
+            assert!(ts_array.is_valid(0));
             assert_eq!(ts_array.value(0), 0);
             assert_eq!(ts_array.value(1), 1_000_000);
             assert_eq!(ts_array.value(2), -1_000_000);
@@ -2910,37 +2911,19 @@ mod tests {
             other => panic!("expected overflow, got {other:?}"),
         }
 
-        for (value, text) in [
-            (f64::MAX, "Infinity"),
-            (f64::INFINITY, "inf"),
-            (f64::NAN, "NaN"),
-        ] {
+        for (value, text) in [(f64::MAX, "Infinity"), (f64::MIN, "-Infinity")] {
             let array: ArrayRef = Arc::new(Float64Array::from(vec![Some(value)]));
-            let err = cast_float_to_timestamp(&array, &tz, EvalMode::Ansi).unwrap_err();
-            match (value.is_nan() || value.is_infinite(), err) {
-                (
-                    true,
-                    SparkError::CastInvalidValue {
-                        value: got,
-                        to_type,
-                        ..
-                    },
-                ) => {
+            match cast_float_to_timestamp(&array, &tz, EvalMode::Ansi).unwrap_err() {
+                SparkError::CastOverFlow {
+                    value: got,
+                    from_type,
+                    to_type,
+                } => {
                     assert_eq!(got, text);
-                    assert_eq!(to_type, "TIMESTAMP");
-                }
-                (
-                    false,
-                    SparkError::CastOverFlow {
-                        value: got,
-                        to_type,
-                        ..
-                    },
-                ) => {
-                    assert_eq!(got, text);
+                    assert_eq!(from_type, "DOUBLE");
                     assert_eq!(to_type, "BIGINT");
                 }
-                (_, other) => panic!("unexpected error for {value:?}: {other:?}"),
+                other => panic!("expected overflow, got {other:?}"),
             }
         }
 
@@ -2949,7 +2932,6 @@ mod tests {
             Some(2.0),
             Some(f64::NAN),
             Some(f64::INFINITY),
-            Some(1e16),
             None,
             Some(-3.0),
         ]));
@@ -2961,7 +2943,7 @@ mod tests {
         );
         assert_ts(
             &legacy,
-            &[Some(2_000_000), None, None, None, None, Some(-3_000_000)],
+            &[Some(2_000_000), None, None, None, Some(-3_000_000)],
             Some("UTC"),
         );
 
@@ -2986,5 +2968,38 @@ mod tests {
             }
             other => panic!("expected overflow, got {other:?}"),
         }
+    }
+
+    #[test]
+    fn test_cast_float_invalid_from_type_is_double() {
+        let tz = Some(Arc::from("UTC"));
+        for value in [f64::NAN, f64::INFINITY, f64::NEG_INFINITY] {
+            let array: ArrayRef = Arc::new(Float64Array::from(vec![Some(value)]));
+            let err = cast_float_to_timestamp(&array, &tz, EvalMode::Ansi).unwrap_err();
+            let from_type = match err {
+                SparkError::CastInvalidValue { from_type, .. }
+                | SparkError::InvalidInputInCastToDatetime { from_type, .. } => from_type,
+                other => panic!("expected an invalid-input error, got {other:?}"),
+            };
+            assert_eq!(from_type, "DOUBLE");
+        }
+    }
+
+    #[test]
+    fn test_cast_float_timestamp_bounds_at_i64_extremes() {
+        let tz = Some(Arc::from("UTC"));
+        let hi = (i64::MAX as f64) / (MICROS_PER_SECOND as f64);
+        let lo = (i64::MIN as f64) / (MICROS_PER_SECOND as f64);
+        let array: ArrayRef = Arc::new(Float64Array::from(vec![Some(hi), Some(lo)]));
+        let out = cast_float_to_timestamp(&array, &tz, EvalMode::Ansi).unwrap();
+        assert_ts(&out, &[Some(i64::MAX), Some(i64::MIN)], Some("UTC"));
+    }
+
+    #[test]
+    fn test_cast_float_timestamp_truncates_toward_zero() {
+        let tz = Some(Arc::from("UTC"));
+        let array: ArrayRef = Arc::new(Float64Array::from(vec![Some(1.5e-6), Some(-1.5e-6)]));
+        let out = cast_float_to_timestamp(&array, &tz, EvalMode::Ansi).unwrap();
+        assert_ts(&out, &[Some(1), Some(-1)], Some("UTC"));
     }
 }

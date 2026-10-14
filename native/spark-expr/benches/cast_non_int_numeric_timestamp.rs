@@ -19,7 +19,9 @@
 //! kernel as f64. Shapes: no nulls, sparse nulls (1 in 10), dense nulls (7 in 8).
 //! Float covers legacy and ANSI, plus a legacy batch of NaN and infinities.
 
-use arrow::array::{ArrayRef, BooleanArray, Decimal128Array, Float64Array, RecordBatch};
+use arrow::array::{
+    ArrayRef, BooleanArray, Decimal128Array, Float32Array, Float64Array, RecordBatch,
+};
 use arrow::datatypes::{DataType, Field, Schema, TimeUnit};
 use criterion::{criterion_group, criterion_main, Criterion};
 use datafusion::physical_expr::expressions::Column;
@@ -83,6 +85,13 @@ fn batch_f64(nulls: Nulls, non_finite: bool) -> RecordBatch {
     record_batch(DataType::Float64, Arc::new(values))
 }
 
+fn batch_f32() -> RecordBatch {
+    let values: Float32Array = (0..BATCH_SIZE)
+        .map(|i| Some((i as f32) * 0.5 - 100.0))
+        .collect();
+    record_batch(DataType::Float32, Arc::new(values))
+}
+
 fn batch_bool(nulls: Nulls) -> RecordBatch {
     let values: BooleanArray = (0..BATCH_SIZE)
         .map(|i| {
@@ -123,6 +132,11 @@ fn criterion_benchmark(c: &mut Criterion) {
         });
     };
 
+    bench(
+        "cast_f32_to_timestamp: legacy, no nulls",
+        &legacy,
+        batch_f32(),
+    );
     bench(
         "cast_f64_to_timestamp: legacy, no nulls",
         &legacy,
