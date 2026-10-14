@@ -36,7 +36,7 @@ import org.apache.spark.sql.comet.execution.shuffle.CometShuffleExchangeExec
 import org.apache.spark.sql.execution.LocalTableScanExec
 import org.apache.spark.sql.execution.SQLExecution
 import org.apache.spark.sql.execution.adaptive.{AdaptiveSparkPlanExec, AdaptiveSparkPlanHelper, ShuffleQueryStageExec}
-import org.apache.spark.sql.execution.aggregate.{BaseAggregateExec, ObjectHashAggregateExec, SortAggregateExec}
+import org.apache.spark.sql.execution.aggregate.{BaseAggregateExec, HashAggregateExec, ObjectHashAggregateExec, SortAggregateExec}
 import org.apache.spark.sql.execution.exchange.{ReusedExchangeExec, ShuffleExchangeExec}
 import org.apache.spark.sql.functions.{avg, col, collect_list, collect_set, count_distinct, expr, sort_array, sum}
 import org.apache.spark.sql.internal.SQLConf
@@ -4126,6 +4126,32 @@ class CometAggregateSuite extends CometTestBase with AdaptiveSparkPlanHelper {
           s"Expected a HashAggregateExec with empty resultExpressions in:\n$plan")
         checkSparkAnswerAndOperator(sql)
       }
+    }
+  }
+
+  // global_empty_aggregate.sql covers the SQL shapes. A SQL query always projects a column, so
+  // only a DataFrame hands the zero-column row of `Aggregate(Nil, Nil, child)` to the JVM, where
+  // losing its row count would return no rows.
+  test("global aggregate with no keys and no functions returns one empty row") {
+    withParquetTable((0 until 10).map(Tuple1(_)), "tbl") {
+      Seq(spark.table("tbl"), spark.table("tbl").where($"_1" > 100)).foreach { input =>
+        checkSparkAnswerAndOperator(input.agg(sum($"_1")).select())
+      }
+    }
+  }
+
+  // Local table scans run in Spark by default, so the partial aggregate stays in Spark and the
+  // native final aggregate reads its rows through a JVM columnar shuffle.
+  test("global aggregate with no keys and no functions over a Spark partial aggregate") {
+    withSQLConf(CometConf.COMET_EXEC_LOCAL_TABLE_SCAN_ENABLED.key -> "false") {
+      val (_, cometPlan) = checkSparkAnswerAndOperator(
+        sql("SELECT * FROM VALUES (1), (2) AS v(a)").agg(sum($"a")).select(),
+        Seq(classOf[CometHashAggregateExec]),
+        classOf[HashAggregateExec],
+        classOf[LocalTableScanExec])
+      assert(
+        collect(cometPlan) { case agg: HashAggregateExec => agg }.nonEmpty,
+        s"Expected a Spark partial aggregate; plan:\n$cometPlan")
     }
   }
 
