@@ -461,7 +461,7 @@ pub(crate) fn match_struct_fields(
         parquet_options.case_sensitive,
         parquet_options.use_field_id,
     );
-    (0..resolver.requested_len())
+    (0..to_fields.len())
         .map(|to_pos| resolver.resolve(to_pos))
         .collect()
 }
