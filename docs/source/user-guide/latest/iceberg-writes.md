@@ -195,7 +195,7 @@ A write is eligible only when ALL of the following hold:
 | ------------------------------------------------------------------------------------------------------------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
 | resolved write format (`write-format` option overlaid on `write.format.default`)                                                            | `parquet`                                                                                                                                                                                                                                                                                                                                                                                                                                                                       |
 | `format-version`                                                                                                                            | `1`, `2` or `3` (on `3`, writes that carry row lineage fall back; see below)                                                                                                                                                                                                                                                                                                                                                                                                    |
-| `write.parquet.compression-codec` / `compression-level` / `row-group-size-bytes` / `page-size-bytes` / `page-row-limit` / `dict-size-bytes` | the sizes/limit must be positive Java ints (`Integer.parseInt` semantics — no trimming, no values past `Int.MaxValue` — matching iceberg-java, whose writer fails on anything else); `compression-level` must be a Java int within the native writer's per-codec range (zstd 1–22, gzip 0–9, brotli 0–11; ignored by both writers for snappy/lz4/none) — iceberg-java never validates the level, so an out-of-range value falls back rather than becoming a native task failure |
+| `write.parquet.compression-codec` / `compression-level` / `row-group-size-bytes` / `page-size-bytes` / `page-row-limit` / `dict-size-bytes` | the sizes/limit must be positive Java ints (`Integer.parseInt` semantics — no trimming, no values past `Int.MaxValue` — matching iceberg-java, whose writer fails on anything else); `compression-level` must be a Java int within the native writer's per-codec range (zstd 1–22, gzip 0–9, brotli 0–11; ignored for snappy/lz4/none), which iceberg-java never validates, so other levels fall back; `brotli` needs Hadoop's `BrotliCodec` class on the classpath (see below) |
 | `write.parquet.row-group-check-min-record-count`                                                                                            | unset or `100` (the default)                                                                                                                                                                                                                                                                                                                                                                                                                                                    |
 | `write.parquet.row-group-check-max-record-count`                                                                                            | unset or `10000` (the default)                                                                                                                                                                                                                                                                                                                                                                                                                                                  |
 | `write.parquet.page-version`                                                                                                                | unset or `v1`                                                                                                                                                                                                                                                                                                                                                                                                                                                                   |
@@ -285,6 +285,15 @@ can be dropped afterwards. A spec that mixes such a field with a live one falls 
 cannot write through it either, so the write fails with iceberg-java's own error rather than in
 the native writer ([#6141](https://github.com/apache/datafusion-comet/issues/6141)). A spec whose
 fields are all `void` writes unpartitioned and stays eligible.
+
+A write that compresses with `brotli` falls back unless Hadoop's
+`org.apache.hadoop.io.compress.BrotliCodec` class can be loaded. parquet-mr compresses and
+decompresses brotli pages with that class, and neither Spark nor Iceberg ships it. Without a brotli
+codec jar on the classpath, iceberg-java fails the write, and no JVM Parquet reader, Spark's or
+Iceberg's, can read a brotli file. parquet-rs compresses brotli without the class, so a native write
+would commit files that only a native reader could read. The gate looks the class up on the
+driver, through the class loader that Spark adds application jars to
+([#6960](https://github.com/apache/datafusion-comet/issues/6960)).
 
 Other `write.*` properties are intentionally not gated because they cannot make the native
 writer produce different data files: distribution and ordering settings shape the Spark plan
@@ -462,8 +471,16 @@ a data file but not what any reader computes from it:
   for a default `zstd` table. The decompressed data is identical. For the same reason,
   codec-level side channels (`zlib.compress.level`, `compression.brotli.quality`,
   `io.compression.codec.zstd.level` — the last is present in every Hadoop configuration by
-  default) are not gated: they can only shift compressed bytes, which are already accepted as
-  divergent.
+  default) are not gated: the native writer does not read them, and they can only shift
+  compressed bytes, which are already accepted as divergent. A numeric gzip level is the one
+  exception, because it changes whether iceberg-java can write at all. Hadoop reads
+  `zlib.compress.level` as the name of a `ZlibCompressor.CompressionLevel` constant, such as
+  `BEST_SPEED`, so iceberg-java fails a gzip write whose level is a number, set either as
+  `write.parquet.compression-level` or as `zlib.compress.level` in the Hadoop configuration. It
+  fails on Hadoop 3.4, and on Hadoop 3.3 when Hadoop's native zlib library is loaded. The native
+  writer writes such a table at its `write.parquet.compression-level`, or at gzip's default level,
+  and any reader can decompress the pages, whatever the level
+  ([#6960](https://github.com/apache/datafusion-comet/issues/6960)).
 
 ### Manifest metadata visible to later readers
 
