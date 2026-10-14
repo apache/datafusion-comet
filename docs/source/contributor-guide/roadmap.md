@@ -137,14 +137,14 @@ enabled by default ([#1625]).
 
 ## Iceberg Table Writes
 
-Comet can now write Iceberg tables natively. The feature is experimental, disabled by default, and controlled by two
-settings, the second of which requires the first. The first splits Spark's Iceberg V2 write operator into separate
-writer and committer operators, so the query feeding the write becomes visible to AQE and to Comet's columnar rules
-([#4658]). The second delegates each task's Parquet write to `iceberg-rust` when the write passes an eligibility
-check ([#5361]); writes that don't pass keep Iceberg Java's writer. Merge-on-read writes are not intercepted yet
-([#6240]). The remaining work toward the original goal of [#4322], an ETL job that runs end to end in native code, is
-tracked in [#5649]: correctness fixes, failure handling that matches Iceberg Java, broader coverage, and enabling
-both settings by default ([#5644]). See [Iceberg Writes](iceberg-writes.md) for how the write path works.
+Since Comet 1.2.0, Comet writes Iceberg tables natively by default, controlled by one setting,
+`spark.comet.write.iceberg.enabled` ([#5644]). Comet splits Spark's Iceberg V2 write operator into separate writer
+and committer operators, so the query feeding the write becomes visible to AQE and to Comet's columnar rules
+([#4658]), and delegates each task's Parquet write to `iceberg-rust` when the write passes an eligibility check
+([#5361]); writes that don't pass keep Iceberg Java's writer. Merge-on-read writes keep Spark's write operator
+until the native writer can write them ([#6240]). The remaining work toward the original goal of [#4322], an ETL job that runs end to end in native code, is
+tracked in [#5649]: correctness fixes, failure handling that matches Iceberg Java, and broader coverage. See
+[Iceberg Writes](iceberg-writes.md) for how the write path works.
 
 [#4322]: https://github.com/apache/datafusion-comet/issues/4322
 [#4658]: https://github.com/apache/datafusion-comet/pull/4658
