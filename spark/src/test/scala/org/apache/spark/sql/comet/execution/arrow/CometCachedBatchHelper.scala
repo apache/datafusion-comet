@@ -126,6 +126,24 @@ object CometCachedBatchHelper {
     CachedBatchIpc.serialize(batch, codec, allocator, chunkSize)._1
 
   /**
+   * The size the cache writer computes for the record batch `root` unloads to under `codec`,
+   * which is what it sizes a payload's chunk from, and the bytes `MessageSerializer.serialize`
+   * actually writes for that batch.
+   */
+  def computedAndWrittenMessageSize(
+      root: VectorSchemaRoot,
+      codec: CompressionCodec): (Long, Long) = {
+    val batch = new VectorUnloader(root, true, codec, true).getRecordBatch
+    try {
+      val out = new java.io.ByteArrayOutputStream()
+      MessageSerializer.serialize(new WriteChannel(Channels.newChannel(out)), batch)
+      (CachedBatchIpc.messageSize(batch), out.size().toLong)
+    } finally {
+      batch.close()
+    }
+  }
+
+  /**
    * The codec the cache writer uses for a `spark.comet.exec.inMemoryCache.compression.codec`
    * value. A thin shim, for tests about a codec's own encoding rather than about a cached
    * relation.
