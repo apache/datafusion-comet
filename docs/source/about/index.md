@@ -29,8 +29,8 @@ behind it.
 - [Frequently Asked Questions](faq.md): answers to common questions about choosing, installing, and
   running Comet
 - [Blog Posts and Talks](blogs-and-talks.md): external writing and conference talks about Comet
-- [Top-Level Project Proposal](top_level_project_proposal.md): the draft proposal to promote
-  Comet to a top-level Apache project
+- [Top-Level Project Proposal](top_level_project_proposal.md): the proposal to promote Comet to a
+  top-level Apache project
 - [ASF Links](../asf/index.md): licensing, donations, security reporting, and the code of conduct
 
 ```{toctree}

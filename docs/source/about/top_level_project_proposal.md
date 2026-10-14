@@ -19,12 +19,10 @@ under the License.
 
 # Proposal to Establish Apache Comet as a Top-Level Project
 
-This page is a draft of the proposal and board resolution to promote Comet from a sub-project of
-Apache DataFusion to a top-level Apache project, Apache Comet. It is adapted from the
+This page contains the proposal and board resolution to promote Comet from a sub-project of Apache
+DataFusion to a top-level Apache project, Apache Comet. It is adapted from the
 [proposal][datafusion-proposal] that established Apache DataFusion as a top-level project in 2024,
 when DataFusion graduated from Apache Arrow. Progress is tracked in [#6793][epic].
-
-The DataFusion PMC has not voted on this proposal yet.
 
 ## Board Resolution
 
@@ -74,8 +72,6 @@ RESOLVED, that all responsibilities pertaining to the Apache DataFusion Comet
 sub-project encumbered upon the Apache DataFusion Project are hereafter
 discharged.
 ```
-
-The scope statement is under discussion in [#6789][scope-issue].
 
 ## Summary
 
@@ -316,4 +312,3 @@ several Hadoop sub-projects became top-level projects, including Mahout, Avro, a
 [ip-clearance]: https://incubator.apache.org/ip-clearance/arrow-datafusion-comet.html
 [name-issue]: https://github.com/apache/datafusion-comet/issues/5291
 [name-search]: https://issues.apache.org/jira/browse/PODLINGNAMESEARCH-255
-[scope-issue]: https://github.com/apache/datafusion-comet/issues/6789
