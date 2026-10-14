@@ -21,7 +21,7 @@ package org.apache.comet.serde
 
 import scala.jdk.CollectionConverters._
 
-import org.apache.spark.sql.catalyst.expressions.{Attribute, Cast, Expression, Literal}
+import org.apache.spark.sql.catalyst.expressions.{Attribute, Cast, Divide, Expression, Literal}
 import org.apache.spark.sql.catalyst.expressions.aggregate.{AggregateExpression, AggregateFunction, ApproximatePercentile, Average, BitAndAgg, BitOrAgg, BitXorAgg, BloomFilterAggregate, CentralMomentAgg, CollectList, CollectSet, Complete, Corr, Count, Covariance, CovPopulation, CovSample, First, HyperLogLogPlusPlus, Last, Max, MaxBy, MaxMinBy, Min, MinBy, Mode, Partial, Percentile, RegrIntercept, RegrR2, RegrReplacement, RegrSlope, RegrSXY, StddevPop, StddevSamp, Sum, VariancePop, VarianceSamp}
 import org.apache.spark.sql.catalyst.util.ArrayData
 import org.apache.spark.sql.comet.CometExecUtils
@@ -31,7 +31,7 @@ import org.apache.spark.sql.types.{ArrayType, BinaryType, BooleanType, ByteType,
 import org.apache.comet.CometConf.COMET_EXEC_STRICT_FLOATING_POINT
 import org.apache.comet.CometSparkSessionExtensions.{isSpark41Plus, isSpark42Plus, withFallbackReason}
 import org.apache.comet.expressions.CometEvalMode
-import org.apache.comet.serde.QueryPlanSerde.{evalModeToProto, exprToProto, serializeDataType}
+import org.apache.comet.serde.QueryPlanSerde.{evalModeToProto, exprToProto, isStringCollationType, serializeDataType}
 import org.apache.comet.shims.{CometCollectShim, CometEvalModeUtil, CometTypeShim}
 
 object CometMin extends CometAggregateExpressionSerde[Min] {
@@ -40,6 +40,8 @@ object CometMin extends CometAggregateExpressionSerde[Min] {
 
   // Native MIN emits one typed null for empty/all-null input; Spark's least merge ignores it.
   override def supportsNativePartialToSparkFinal(fn: Min): Boolean = true
+
+  override def getUnsupportedReasons(): Seq[String] = AggSerde.minMaxUnsupportedReasons
 
   override def getSupportLevel(expr: Min): SupportLevel =
     AggSerde.minMaxSupportLevel(expr.dataType)
@@ -79,6 +81,8 @@ object CometMax extends CometAggregateExpressionSerde[Max] {
 
   // Native MAX emits one typed null for empty/all-null input; Spark's greatest merge ignores it.
   override def supportsNativePartialToSparkFinal(fn: Max): Boolean = true
+
+  override def getUnsupportedReasons(): Seq[String] = AggSerde.minMaxUnsupportedReasons
 
   override def getSupportLevel(expr: Max): SupportLevel =
     AggSerde.minMaxSupportLevel(expr.dataType)
@@ -911,34 +915,15 @@ private[comet] object RegrSparkVersions {
  * variable (y) and `child2` is the independent variable (x), matching the native accumulator's
  * `regr_*(y, x)` convention.
  */
-trait CometRegrBase[T <: AggregateFunction] extends CometAggregateExpressionSerde[T] {
-
-  /** The SQL function or functions this serde implements, named in the incompatibility note. */
-  protected def sqlFunctions: String
-
-  // The native merge (`variance_merge` and `covariance_merge` in welford.rs) orders its
-  // floating-point operations differently from Spark's CentralMomentAgg and Covariance. Merging
-  // the first partial buffer into the zero-initialized final buffer can leave a one-ULP error on
-  // the mean, so a constant variable ends up with a tiny non-zero m2 and Spark's exact `m2 == 0`
-  // degenerate-case checks never fire. Porting Spark's merge order would make these Compatible.
-  private def mergeOrderReason: String =
-    s"Comet merges the partial aggregates of $sqlFunctions in a different floating-point " +
-      "operation order from Spark. When a group's rows come from more than one partial " +
-      "aggregate and a variable is constant at a value that binary floating point cannot " +
-      "represent exactly, such as 0.1, Comet returns a wrong value where Spark returns NULL, " +
-      "0.0 or 1.0 (https://github.com/apache/datafusion-comet/issues/6423)"
-
-  override def getIncompatibleReasons(): Seq[String] = Seq(mergeOrderReason)
-
-  override def getSupportLevel(expr: T): SupportLevel = Incompatible(Some(mergeOrderReason))
-
+trait CometRegrBase {
   def convertRegr(
       aggExpr: AggregateExpression,
       regrType: ExprOuterClass.Regr.RegrType,
       y: Expression,
       x: Expression,
       inputs: Seq[Attribute],
-      binding: Boolean): Option[ExprOuterClass.AggExpr] = {
+      binding: Boolean,
+      evalMode: CometEvalMode.Value = CometEvalMode.LEGACY): Option[ExprOuterClass.AggExpr] = {
     val child1Expr = exprToProto(y, inputs, binding)
     val child2Expr = exprToProto(x, inputs, binding)
     val dataType = serializeDataType(DoubleType)
@@ -949,6 +934,7 @@ trait CometRegrBase[T <: AggregateFunction] extends CometAggregateExpressionSerd
       builder.setChild2(child2Expr.get)
       builder.setRegrType(regrType)
       builder.setDatatype(dataType.get)
+      builder.setEvalMode(evalModeToProto(evalMode))
       // Both regression fixes shipped in patch releases, so the running Spark's exact version
       // decides which behaviour the native accumulator mirrors.
       val sparkVersion = org.apache.spark.SPARK_VERSION
@@ -968,9 +954,7 @@ trait CometRegrBase[T <: AggregateFunction] extends CometAggregateExpressionSerd
   }
 }
 
-object CometRegrSlope extends CometRegrBase[RegrSlope] {
-  override protected def sqlFunctions: String = "`regr_slope`"
-
+object CometRegrSlope extends CometAggregateExpressionSerde[RegrSlope] with CometRegrBase {
   override def convert(
       aggExpr: AggregateExpression,
       expr: RegrSlope,
@@ -986,9 +970,9 @@ object CometRegrSlope extends CometRegrBase[RegrSlope] {
       binding)
 }
 
-object CometRegrIntercept extends CometRegrBase[RegrIntercept] {
-  override protected def sqlFunctions: String = "`regr_intercept`"
-
+object CometRegrIntercept
+    extends CometAggregateExpressionSerde[RegrIntercept]
+    with CometRegrBase {
   override def convert(
       aggExpr: AggregateExpression,
       expr: RegrIntercept,
@@ -1004,21 +988,36 @@ object CometRegrIntercept extends CometRegrBase[RegrIntercept] {
       binding)
 }
 
-object CometRegrR2 extends CometRegrBase[RegrR2] {
-  override protected def sqlFunctions: String = "`regr_r2`"
-
+object CometRegrR2 extends CometAggregateExpressionSerde[RegrR2] with CometRegrBase {
   override def convert(
       aggExpr: AggregateExpression,
       expr: RegrR2,
       inputs: Seq[Attribute],
       binding: Boolean,
-      conf: SQLConf): Option[ExprOuterClass.AggExpr] =
-    convertRegr(aggExpr, ExprOuterClass.Regr.RegrType.R2, expr.y, expr.x, inputs, binding)
+      conf: SQLConf): Option[ExprOuterClass.AggExpr] = {
+    // Divide captures its mode when Spark constructs the expression. Reading the
+    // current SQLConf could change semantics if ANSI mode has changed since then.
+    val evalMode = expr.evaluateExpression.collectFirst { case divide: Divide =>
+      CometEvalModeUtil.fromSparkEvalMode(divide.evalMode)
+    }
+    evalMode match {
+      case Some(mode) =>
+        convertRegr(
+          aggExpr,
+          ExprOuterClass.Regr.RegrType.R2,
+          expr.y,
+          expr.x,
+          inputs,
+          binding,
+          mode)
+      case None =>
+        withFallbackReason(aggExpr, "REGR_R2 division evaluation mode not supported")
+        None
+    }
+  }
 }
 
-object CometRegrSXY extends CometRegrBase[RegrSXY] {
-  override protected def sqlFunctions: String = "`regr_sxy`"
-
+object CometRegrSXY extends CometAggregateExpressionSerde[RegrSXY] with CometRegrBase {
   override def convert(
       aggExpr: AggregateExpression,
       expr: RegrSXY,
@@ -1035,9 +1034,9 @@ object CometRegrSXY extends CometRegrBase[RegrSXY] {
  * deviations) of its single child. We serialize it as the `SXX` regression statistic with the
  * child duplicated, since `regr_sxx(c, c) = m2(c)`.
  */
-object CometRegrReplacement extends CometRegrBase[RegrReplacement] {
-  override protected def sqlFunctions: String = "`regr_sxx` and `regr_syy`"
-
+object CometRegrReplacement
+    extends CometAggregateExpressionSerde[RegrReplacement]
+    with CometRegrBase {
   override def convert(
       aggExpr: AggregateExpression,
       expr: RegrReplacement,
@@ -1475,14 +1474,24 @@ object AggSerde {
 
   /**
    * Shared support level for `Min` / `Max` based on the result data type. Floats follow Spark's
-   * ordering natively, so strict floating-point mode does not apply to them.
+   * ordering natively, so strict floating-point mode does not apply to them. Spark and the native
+   * accumulators both compare strings and binary as unsigned bytes, except that Spark orders a
+   * string with a non-default collation by that collation.
    */
-  def minMaxSupportLevel(dt: DataType): SupportLevel = {
-    if (!minMaxDataTypeSupported(dt)) {
-      Unsupported(Some(s"Unsupported data type: $dt"))
-    } else {
-      Compatible()
-    }
+  def minMaxSupportLevel(dt: DataType): SupportLevel = dt match {
+    case _: StringType if isStringCollationType(dt) =>
+      Unsupported(Some(ComparisonUtils.nonDefaultCollationReason("min/max")))
+    // DataFusion's grouped hash aggregate under-reports the memory these values hold (#6936).
+    case _: StringType | BinaryType => Compatible()
+    case _ if minMaxDataTypeSupported(dt) => Compatible()
+    case _ => Unsupported(Some(s"Unsupported data type: $dt"))
   }
+
+  /** The inputs that `minMaxSupportLevel` rejects, for the generated compatibility guide. */
+  val minMaxUnsupportedReasons: Seq[String] = Seq(
+    "Input of a type other than boolean, integral, floating-point, decimal, date, timestamp," +
+      " string or binary, such as timestamp without time zone, intervals, arrays and structs.",
+    "A string with a non-default collation (Spark 4.0+), which Spark orders by its collation" +
+      " while Comet compares raw bytes.")
 
 }
