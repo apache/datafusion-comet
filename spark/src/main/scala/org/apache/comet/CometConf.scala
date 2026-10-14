@@ -125,21 +125,25 @@ object CometConf extends ShimCometConf {
     conf("spark.comet.write.iceberg.splitOperator.enabled")
       .category(CATEGORY_TESTING)
       .doc(
-        "Whether to rewrite Iceberg V2 writes from Spark's combined V2 write/commit operator " +
-          "into Comet's two-operator shape: a file writer exec (inside AQE) and a committer " +
-          "(outside AQE).")
+        "Whether to plan Iceberg writes as Comet's file writer and committer even when " +
+          "`spark.comet.write.iceberg.enabled` is false, so that Iceberg's own writer writes " +
+          "every data file inside Comet's plan. It is also what plans merge-on-read writes on " +
+          "Spark 3.5+ that way. Used by tests to compare the two writers under the same plan.")
       .booleanConf
       .createWithDefault(false)
 
   val COMET_ICEBERG_NATIVE_WRITE_ENABLED: ConfigEntry[Boolean] =
     conf("spark.comet.write.iceberg.enabled")
-      .category(CATEGORY_TESTING)
+      .category(CATEGORY_EXEC)
       .doc(
-        "Whether to delegate the executor-side Parquet write to Comet's native (iceberg-rust) " +
-          "writer when the table's properties allow it. Requires " +
-          "`spark.comet.write.iceberg.splitOperator.enabled = true`. Off by default.")
+        "Whether Comet plans Iceberg writes and writes their data files natively. Comet " +
+          "replaces Spark's combined V2 write operator with a file writer (inside AQE) under a " +
+          "committer (outside AQE), and writes the data files of each eligible write with its " +
+          "native (iceberg-rust) writer. Other writes use Iceberg's own writer, and Iceberg " +
+          "commits every write. Merge-on-read writes keep Spark's operator. Set this to false " +
+          "to plan Spark's own V2 write operator.")
       .booleanConf
-      .createWithDefault(false)
+      .createWithDefault(true)
 
   val COMET_ICEBERG_DATA_FILE_CONCURRENCY_LIMIT: ConfigEntry[Int] =
     conf("spark.comet.scan.icebergNative.dataFileConcurrencyLimit")
