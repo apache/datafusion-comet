@@ -925,40 +925,22 @@ operators, such as the scan of a Data Source V2 connector.</p>
 </section>
 <section id="iceberg-writes">
 <h3>Iceberg Writes<a class="headerlink" href="#iceberg-writes" title="Link to this heading">#</a></h3>
-<p><code class="docutils literal notranslate"><span class="pre">spark.comet.write.iceberg.enabled</span></code> now defaults to <code class="docutils literal notranslate"><span class="pre">true</span></code>. Comet plans an Iceberg <code class="docutils literal notranslate"><span class="pre">INSERT</span> <span class="pre">INTO</span></code>,
-<code class="docutils literal notranslate"><span class="pre">INSERT</span> <span class="pre">OVERWRITE</span></code>, and copy-on-write <code class="docutils literal notranslate"><span class="pre">DELETE</span></code>, <code class="docutils literal notranslate"><span class="pre">UPDATE</span></code> or <code class="docutils literal notranslate"><span class="pre">MERGE</span></code> as two operators, <code class="docutils literal notranslate"><span class="pre">IcebergWrite</span></code>
-under <code class="docutils literal notranslate"><span class="pre">IcebergCommit</span></code>, in place of Spark’s single V2 write operator, and writes the data files of
-each eligible write natively with iceberg-rust. A write that is not eligible still uses
-iceberg-java’s writer, and iceberg-java still commits every write. The table holds the same rows,
-but natively written files differ from iceberg-java’s in the ways listed under
-<a class="reference internal" href="iceberg-writes.html#accepted-divergences"><span class="std std-ref">Accepted divergences</span></a>, and explain output and the Spark UI
-show the new operators. Set <code class="docutils literal notranslate"><span class="pre">spark.comet.write.iceberg.enabled=false</span></code> to plan Spark’s own operator,
-as in Comet 1.1.0. Comet 1.1.0 named this setting <code class="docutils literal notranslate"><span class="pre">spark.comet.iceberg.write.enabled</span></code>, in the
-testing category, and Comet now ignores that name, so a deployment that set it to <code class="docutils literal notranslate"><span class="pre">false</span></code> gets the
-new default unless it sets <code class="docutils literal notranslate"><span class="pre">spark.comet.write.iceberg.enabled=false</span></code>.
-<code class="docutils literal notranslate"><span class="pre">spark.comet.write.iceberg.splitOperator.enabled</span></code> is now a testing setting, and setting it to
-<code class="docutils literal notranslate"><span class="pre">false</span></code> does not turn the split operator off. Comet 1.1.0 documented it as the switch for the split
-plan, so a deployment that still sets it to <code class="docutils literal notranslate"><span class="pre">true</span></code> keeps the split plan when
-<code class="docutils literal notranslate"><span class="pre">spark.comet.write.iceberg.enabled=false</span></code>, with iceberg-java writing the data files, and on Spark
-3.5+ it also plans merge-on-read writes as the split plan. Unset that setting as well as setting
-<code class="docutils literal notranslate"><span class="pre">spark.comet.write.iceberg.enabled=false</span></code> to plan Spark’s own operator. See
-<a class="reference internal" href="iceberg-writes.html"><span class="std std-doc">Iceberg Writes</span></a>.</p>
-<p>To compute the Iceberg metrics of a natively written file, Comet reads the file’s Parquet footer
-back from storage, where iceberg-java’s writer takes them from memory. On S3 or GCS that is two GET
-requests per file, which adds up for a write that produces many small files. See
-<a class="reference internal" href="iceberg-writes.html#native-parquet-write-eligibility"><span class="std std-ref">Native Parquet write eligibility</span></a>.</p>
-<p>The native writer’s buffers count against Comet’s off-heap memory pool, where iceberg-java’s buffers
-sit on the JVM heap. A fanout write keeps a data file open for every partition a task writes to, and
-each open file holds the row group it is writing, so a task that writes to many partitions can need
-more memory than the pool grants it. The task then writes out and closes the partitions holding the
-most memory, whose next rows open new files, so the write finishes with more, smaller files than
-iceberg-java’s would. Disabling the fanout writer (<code class="docutils literal notranslate"><span class="pre">write.spark.fanout.enabled=false</span></code>) or a larger
-<code class="docutils literal notranslate"><span class="pre">spark.memory.offHeap.size</span></code> avoids the extra files. A write that keeps one file open, unpartitioned
-or clustered, has no partition to close, so when that file outgrows the pool the task fails with
-<code class="docutils literal notranslate"><span class="pre">Additional</span> <span class="pre">allocation</span> <span class="pre">failed</span> <span class="pre">for</span> <span class="pre">IcebergWriteExec</span></code>. A smaller <code class="docutils literal notranslate"><span class="pre">write.parquet.row-group-size-bytes</span></code>
-or a larger <code class="docutils literal notranslate"><span class="pre">spark.memory.offHeap.size</span></code> lets such a write fit. With
-<code class="docutils literal notranslate"><span class="pre">spark.comet.write.iceberg.enabled=false</span></code>, iceberg-java writes both, as before. See
-<a class="reference internal" href="iceberg-writes.html#failure-handling"><span class="std std-ref">Failure handling</span></a>.</p>
+<p>Comet’s Iceberg write path is now switched by one setting, <code class="docutils literal notranslate"><span class="pre">spark.comet.write.iceberg.enabled</span></code>,
+which stays off by default. With it on, Comet plans an Iceberg <code class="docutils literal notranslate"><span class="pre">INSERT</span> <span class="pre">INTO</span></code>, <code class="docutils literal notranslate"><span class="pre">INSERT</span> <span class="pre">OVERWRITE</span></code>,
+and copy-on-write <code class="docutils literal notranslate"><span class="pre">DELETE</span></code>, <code class="docutils literal notranslate"><span class="pre">UPDATE</span></code> or <code class="docutils literal notranslate"><span class="pre">MERGE</span></code> as two operators, <code class="docutils literal notranslate"><span class="pre">IcebergWrite</span></code> under
+<code class="docutils literal notranslate"><span class="pre">IcebergCommit</span></code>, in place of Spark’s single V2 write operator, and writes the data files of each
+eligible write natively with iceberg-rust. A write that is not eligible uses iceberg-java’s writer,
+and iceberg-java commits every write. Before turning it on, see <a class="reference internal" href="iceberg-writes.html"><span class="std std-doc">Iceberg Writes</span></a>
+for how natively written files differ from iceberg-java’s, the footer reads the native path makes on
+S3 or GCS, and how the native writer draws on Comet’s off-heap memory pool.</p>
+<p>Comet 1.1.0 named this setting <code class="docutils literal notranslate"><span class="pre">spark.comet.iceberg.write.enabled</span></code>, in the testing category, and it
+took effect only together with <code class="docutils literal notranslate"><span class="pre">spark.comet.write.iceberg.splitOperator.enabled</span></code>. Comet now ignores
+the old name, so a deployment that turned native writes on that way must set
+<code class="docutils literal notranslate"><span class="pre">spark.comet.write.iceberg.enabled=true</span></code> to keep them.
+<code class="docutils literal notranslate"><span class="pre">spark.comet.write.iceberg.splitOperator.enabled</span></code> is now a testing setting. Comet 1.1.0 documented
+it as the switch for the split plan, and a deployment that still sets it to <code class="docutils literal notranslate"><span class="pre">true</span></code> keeps the split
+plan, with iceberg-java writing the data files, and on Spark 3.5+ it now also plans merge-on-read
+writes as the split plan. Unset it to plan Spark’s own operator.</p>
 </section>
 </section>
 <section id="upgrading-to-comet-1-1-0">

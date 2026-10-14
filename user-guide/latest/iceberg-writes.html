@@ -846,12 +846,14 @@ under the License.
 -->
 <section id="iceberg-writes-comet-s-split-operator-plan-and-native-writer">
 <h1>Iceberg Writes: Comet’s Split-Operator Plan and Native Writer<a class="headerlink" href="#iceberg-writes-comet-s-split-operator-plan-and-native-writer" title="Link to this heading">#</a></h1>
-<p>Since Comet 1.2.0, Comet plans Iceberg writes with the split-operator plan described below, and
-writes the data files of each eligible write natively with iceberg-rust. A write that is not
-eligible falls back to iceberg-java’s writer. Natively written files differ from iceberg-java’s in
-the ways listed under <a class="reference internal" href="#accepted-divergences">Accepted divergences</a>.</p>
-<p><code class="docutils literal notranslate"><span class="pre">spark.comet.write.iceberg.enabled</span></code> switches both. Set it to <code class="docutils literal notranslate"><span class="pre">false</span></code> to plan Spark’s own write
-operator instead, as Comet 1.1.0 did, so that iceberg-java writes every data file.</p>
+<p>With <code class="docutils literal notranslate"><span class="pre">spark.comet.write.iceberg.enabled=true</span></code>, Comet plans Iceberg writes with the split-operator
+plan described below, and writes the data files of each eligible write natively with iceberg-rust.
+A write that is not eligible falls back to iceberg-java’s writer. Natively written files differ
+from iceberg-java’s in the ways listed under <a class="reference internal" href="#accepted-divergences">Accepted divergences</a>.</p>
+<p>The setting is off by default, so Spark plans its own write operator and iceberg-java writes every
+data file. Validate the native writer against your own workloads before enabling it, including
+the costs described under <a class="reference internal" href="#native-parquet-write-eligibility">Native Parquet write eligibility</a>
+and <a class="reference internal" href="#failure-handling">Failure handling</a>.</p>
 <section id="overview">
 <h2>Overview<a class="headerlink" href="#overview" title="Link to this heading">#</a></h2>
 <p>Spark writes an Iceberg table through a single physical operator that combines data-file
@@ -861,8 +863,8 @@ sorts, and exchanges producing the rows — but the operator itself sits outside
 data-file writing cannot be re-planned in response to how its input ran. And because data-file
 writing is bundled with the metadata and commit steps, there is no separate step for Comet to
 replace.</p>
-<p>When <code class="docutils literal notranslate"><span class="pre">spark.comet.write.iceberg.enabled=true</span></code>, the default, Comet rewrites eligible Iceberg writes
-into two operators:</p>
+<p>When <code class="docutils literal notranslate"><span class="pre">spark.comet.write.iceberg.enabled=true</span></code>, Comet rewrites eligible Iceberg writes into two
+operators:</p>
 <ol class="arabic simple">
 <li><p><strong><code class="docutils literal notranslate"><span class="pre">IcebergWrite</span></code></strong> — writes the data files on the executors, exactly as iceberg-java does
 today, and returns each task’s serialized commit message. This operator and the sub-query
@@ -908,15 +910,17 @@ already has, even if they do not fill its first page.</p>
 </section>
 <section id="configuration">
 <h2>Configuration<a class="headerlink" href="#configuration" title="Link to this heading">#</a></h2>
-<p>Iceberg writes need only the standard Comet and Iceberg setup (see <a class="reference internal" href="iceberg.html"><span class="std std-doc"><code class="docutils literal notranslate"><span class="pre">iceberg.md</span></code></span></a>).
-<code class="docutils literal notranslate"><span class="pre">spark.comet.write.iceberg.enabled</span></code> is on by default; set it to <code class="docutils literal notranslate"><span class="pre">false</span></code> to plan Spark’s own write
-operator instead.</p>
+<p>Standard Comet + Iceberg setup (see <a class="reference internal" href="iceberg.html"><span class="std std-doc"><code class="docutils literal notranslate"><span class="pre">iceberg.md</span></code></span></a>) plus the write setting, which is
+off by default:</p>
 <div class="highlight-default notranslate"><div class="highlight"><pre><span></span><span class="c1"># Standard Comet / Iceberg wiring</span>
 <span class="n">spark</span><span class="o">.</span><span class="n">plugins</span><span class="o">=</span><span class="n">org</span><span class="o">.</span><span class="n">apache</span><span class="o">.</span><span class="n">spark</span><span class="o">.</span><span class="n">CometPlugin</span>
 <span class="n">spark</span><span class="o">.</span><span class="n">sql</span><span class="o">.</span><span class="n">extensions</span><span class="o">=</span><span class="n">org</span><span class="o">.</span><span class="n">apache</span><span class="o">.</span><span class="n">iceberg</span><span class="o">.</span><span class="n">spark</span><span class="o">.</span><span class="n">extensions</span><span class="o">.</span><span class="n">IcebergSparkSessionExtensions</span>
 <span class="n">spark</span><span class="o">.</span><span class="n">sql</span><span class="o">.</span><span class="n">catalog</span><span class="o">.&lt;</span><span class="n">name</span><span class="o">&gt;=</span><span class="n">org</span><span class="o">.</span><span class="n">apache</span><span class="o">.</span><span class="n">iceberg</span><span class="o">.</span><span class="n">spark</span><span class="o">.</span><span class="n">SparkCatalog</span>
 <span class="n">spark</span><span class="o">.</span><span class="n">sql</span><span class="o">.</span><span class="n">catalog</span><span class="o">.&lt;</span><span class="n">name</span><span class="o">&gt;.</span><span class="n">type</span><span class="o">=</span><span class="n">hadoop</span>                          <span class="c1"># or hive / glue / rest / ...</span>
 <span class="n">spark</span><span class="o">.</span><span class="n">sql</span><span class="o">.</span><span class="n">catalog</span><span class="o">.&lt;</span><span class="n">name</span><span class="o">&gt;.</span><span class="n">warehouse</span><span class="o">=...</span>
+
+<span class="c1"># Split-operator plan and native Parquet writer</span>
+<span class="n">spark</span><span class="o">.</span><span class="n">comet</span><span class="o">.</span><span class="n">write</span><span class="o">.</span><span class="n">iceberg</span><span class="o">.</span><span class="n">enabled</span><span class="o">=</span><span class="n">true</span>
 
 <span class="c1"># Lets writes whose input is a local relation (INSERT ... VALUES, a local DataFrame) use the</span>
 <span class="c1"># native writer; see "Native Parquet write eligibility" below</span>
@@ -957,7 +961,7 @@ changes.</p>
 <h2>When Comet falls back to Spark’s write operator<a class="headerlink" href="#when-comet-falls-back-to-spark-s-write-operator" title="Link to this heading">#</a></h2>
 <p>The rewrite is skipped — and the write runs through Spark’s stock combined operator — when:</p>
 <ul class="simple">
-<li><p><code class="docutils literal notranslate"><span class="pre">spark.comet.write.iceberg.enabled</span></code> is set to <code class="docutils literal notranslate"><span class="pre">false</span></code> and the testing setting
+<li><p><code class="docutils literal notranslate"><span class="pre">spark.comet.write.iceberg.enabled</span></code> is <code class="docutils literal notranslate"><span class="pre">false</span></code> (the default) and the testing setting
 <code class="docutils literal notranslate"><span class="pre">spark.comet.write.iceberg.splitOperator.enabled</span></code>, which Comet 1.1.0 documented as a user setting,
 is not on;</p></li>
 <li><p>Comet is disabled (<code class="docutils literal notranslate"><span class="pre">spark.comet.enabled=false</span></code>), or its native execution is
@@ -978,7 +982,7 @@ trade-off, only no plan change.</p>
 </section>
 <section id="native-parquet-write-eligibility">
 <h2>Native Parquet write eligibility<a class="headerlink" href="#native-parquet-write-eligibility" title="Link to this heading">#</a></h2>
-<p>When <code class="docutils literal notranslate"><span class="pre">spark.comet.write.iceberg.enabled=true</span></code>, the default
+<p>When <code class="docutils literal notranslate"><span class="pre">spark.comet.write.iceberg.enabled=true</span></code>
 (<a class="reference external" href="https://github.com/apache/datafusion-comet/pull/5361">#5361</a>), the <code class="docutils literal notranslate"><span class="pre">IcebergWrite</span></code> operator’s
 per-task Parquet write is delegated to <a class="reference external" href="https://github.com/apache/iceberg-rust">iceberg-rust</a>.
 The native writer must produce the same outcome as iceberg-java — the same Parquet features,
@@ -1219,9 +1223,8 @@ unchanged.</p>
 <section id="accepted-divergences">
 <h2>Accepted divergences<a class="headerlink" href="#accepted-divergences" title="Link to this heading">#</a></h2>
 <p>Some differences between parquet-mr and the pinned parquet-rs / iceberg-rust are unconditional —
-they apply to every native write and cannot be configured away. Leaving
-<code class="docutils literal notranslate"><span class="pre">spark.comet.write.iceberg.enabled</span></code> at its default of <code class="docutils literal notranslate"><span class="pre">true</span></code> accepts them, and setting it to
-<code class="docutils literal notranslate"><span class="pre">false</span></code> avoids them. They fall into three classes with very
+they apply to every native write and cannot be configured away. Enabling
+<code class="docutils literal notranslate"><span class="pre">spark.comet.write.iceberg.enabled</span></code> accepts them. They fall into three classes with very
 different blast radius: differences confined to the physical bytes of a data file (cosmetic —
 no reader decision is based on them), differences visible in manifest metadata (these outlive
 the write and feed later readers’ pruning decisions, so each one is analyzed individually

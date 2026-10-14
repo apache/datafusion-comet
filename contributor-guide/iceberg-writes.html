@@ -578,11 +578,11 @@ does not repeat those lists; it explains the code that implements them.</p>
 </tbody>
 </table>
 </div>
-<p>The flag defaults to <code class="docutils literal notranslate"><span class="pre">true</span></code> since Comet 1.2.0, so a change to the split plan reaches every Iceberg
-write and a change to the native writer reaches every eligible one. Set to <code class="docutils literal notranslate"><span class="pre">false</span></code>, it plans Spark’s
-own write operator. The testing-only <code class="docutils literal notranslate"><span class="pre">spark.comet.write.iceberg.splitOperator.enabled</span></code> plans the
-split operator with the native writer off, which the suites use to compare the two writers under
-the same plan. The rollout and its criteria are tracked in
+<p>The flag defaults to <code class="docutils literal notranslate"><span class="pre">false</span></code>, which plans Spark’s own write operator. With it on, a change to the
+split plan reaches every Iceberg write and a change to the native writer reaches every eligible one.
+The testing-only <code class="docutils literal notranslate"><span class="pre">spark.comet.write.iceberg.splitOperator.enabled</span></code> plans the split operator with the
+native writer off, which the suites use to compare the two writers under the same plan. The
+criteria for turning the flag on by default are tracked in
 <a class="reference external" href="https://github.com/apache/datafusion-comet/issues/5644">#5644</a> under the epic
 <a class="reference external" href="https://github.com/apache/datafusion-comet/issues/5649">#5649</a>.</p>
 <p>One rule runs through the whole native path: <strong>the native writer must produce the outcome

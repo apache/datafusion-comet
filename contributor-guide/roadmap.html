@@ -643,14 +643,14 @@ enabled by default (<a class="reference external" href="https://github.com/apach
 </section>
 <section id="iceberg-table-writes">
 <h2>Iceberg Table Writes<a class="headerlink" href="#iceberg-table-writes" title="Link to this heading">#</a></h2>
-<p>Since Comet 1.2.0, Comet writes Iceberg tables natively by default, controlled by one setting,
-<code class="docutils literal notranslate"><span class="pre">spark.comet.write.iceberg.enabled</span></code> (<a class="reference external" href="https://github.com/apache/datafusion-comet/issues/5644">#5644</a>). Comet splits Spark’s Iceberg V2 write operator into separate writer
-and committer operators, so the query feeding the write becomes visible to AQE and to Comet’s columnar rules
-(<a class="reference external" href="https://github.com/apache/datafusion-comet/pull/4658">#4658</a>), and delegates each task’s Parquet write to <code class="docutils literal notranslate"><span class="pre">iceberg-rust</span></code> when the write passes an eligibility check
-(<a class="reference external" href="https://github.com/apache/datafusion-comet/pull/5361">#5361</a>); writes that don’t pass keep Iceberg Java’s writer. Merge-on-read writes keep Spark’s write operator
-until the native writer can write them (<a class="reference external" href="https://github.com/apache/datafusion-comet/issues/6240">#6240</a>). The remaining work toward the original goal of <a class="reference external" href="https://github.com/apache/datafusion-comet/issues/4322">#4322</a>, an ETL job that runs end to end in native code, is
-tracked in <a class="reference external" href="https://github.com/apache/datafusion-comet/issues/5649">#5649</a>: correctness fixes, failure handling that matches Iceberg Java, and broader coverage. See
-<a class="reference internal" href="iceberg-writes.html"><span class="std std-doc">Iceberg Writes</span></a> for how the write path works.</p>
+<p>Comet can write Iceberg tables natively, controlled by one setting, <code class="docutils literal notranslate"><span class="pre">spark.comet.write.iceberg.enabled</span></code>, which is
+off by default. Comet splits Spark’s Iceberg V2 write operator into separate writer and committer operators, so the
+query feeding the write becomes visible to AQE and to Comet’s columnar rules (<a class="reference external" href="https://github.com/apache/datafusion-comet/pull/4658">#4658</a>), and delegates each task’s
+Parquet write to <code class="docutils literal notranslate"><span class="pre">iceberg-rust</span></code> when the write passes an eligibility check (<a class="reference external" href="https://github.com/apache/datafusion-comet/pull/5361">#5361</a>); writes that don’t pass keep
+Iceberg Java’s writer. Merge-on-read writes keep Spark’s write operator until the native writer can write them
+(<a class="reference external" href="https://github.com/apache/datafusion-comet/issues/6240">#6240</a>). The remaining work toward the original goal of <a class="reference external" href="https://github.com/apache/datafusion-comet/issues/4322">#4322</a>, an ETL job that runs end to end in native code,
+is tracked in <a class="reference external" href="https://github.com/apache/datafusion-comet/issues/5649">#5649</a>: correctness fixes, failure handling that matches Iceberg Java, broader coverage, and enabling
+the setting by default (<a class="reference external" href="https://github.com/apache/datafusion-comet/issues/5644">#5644</a>). See <a class="reference internal" href="iceberg-writes.html"><span class="std std-doc">Iceberg Writes</span></a> for how the write path works.</p>
 </section>
 <section id="delta-lake-support">
 <h2>Delta Lake Support<a class="headerlink" href="#delta-lake-support" title="Link to this heading">#</a></h2>

@@ -554,10 +554,10 @@ covers a broader set of table formats overall.</p>
 <p>Comet provides a native Iceberg scan built on iceberg-rust. It has been tested with Iceberg 1.5 and 1.8 through 1.11
 and supports Iceberg spec v1, v2, and v3, schema evolution, time travel and branch reads, positional and equality
 deletes and deletion vectors, encrypted v3 tables, REST catalogs, and S3-compatible object storage. For Iceberg
-writes, Comet writes the data files of eligible writes natively through iceberg-rust by default, and iceberg-java
-writes the rest and commits every write (see <a class="reference internal" href="../user-guide/latest/iceberg-writes.html"><span class="std std-doc">Comet Iceberg writes</span></a>). Comet does not currently provide native
-integrations for Delta Lake, Hudi, or Paimon. See the <a class="reference internal" href="../user-guide/latest/iceberg.html"><span class="std std-doc">Comet Iceberg guide</span></a> for the full list of supported features
-and known limitations.</p>
+writes, Comet can write the data files of eligible writes natively through iceberg-rust, an opt-in feature, and
+iceberg-java writes the rest and commits every write (see <a class="reference internal" href="../user-guide/latest/iceberg-writes.html"><span class="std std-doc">Comet Iceberg writes</span></a>). Comet does not currently provide
+native integrations for Delta Lake, Hudi, or Paimon. See the <a class="reference internal" href="../user-guide/latest/iceberg.html"><span class="std std-doc">Comet Iceberg guide</span></a> for the full list of supported
+features and known limitations.</p>
 <p>Gluten ships dedicated modules for Iceberg, Delta Lake (2.3 through 4.1, depending on the Spark version), Hudi, and
 Paimon. Its <a class="reference external" href="https://github.com/apache/gluten/blob/v1.7.0/docs/get-started/VeloxIceberg.md">Iceberg documentation</a> says that reads of unpartitioned tables are offloaded, including tables with
 position deletes, while reads of partitioned tables mostly fall back to Spark, as do equality deletes and all writes.

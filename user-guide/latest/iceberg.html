@@ -1011,9 +1011,10 @@ or renamed. The native reader cannot yet match such a field to data files writte
 change. The check uses the table’s schema history, so the fallback stays after those files are
 rewritten</p></li>
 </ul>
-<p>Writes are not covered by this list. By default Comet plans an Iceberg write with its split-operator
-plan and writes eligible data files natively; see <a class="reference internal" href="iceberg-writes.html"><span class="std std-doc">Iceberg Writes</span></a> for the plan,
-the native writer, and when each applies.</p>
+<p>Writes are not covered by this list. By default Iceberg writes use Spark’s own writer. With
+<code class="docutils literal notranslate"><span class="pre">spark.comet.write.iceberg.enabled=true</span></code>, Comet plans an Iceberg write with its split-operator plan
+and writes eligible data files natively; see <a class="reference internal" href="iceberg-writes.html"><span class="std std-doc">Iceberg Writes</span></a> for the plan, the
+native writer, and when each applies.</p>
 </section>
 <section id="iceberg-udfs">
 <h3>Iceberg UDFs<a class="headerlink" href="#iceberg-udfs" title="Link to this heading">#</a></h3>
