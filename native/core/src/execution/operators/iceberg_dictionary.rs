@@ -533,6 +533,10 @@ impl Bits for u128 {
 
 /// A value's bytes. Two of the same length whose last bytes differ are told apart without
 /// comparing the rest, which spares comparing most distinct values with the one before them.
+/// Keyed by plain `&[u8]` instead, the `maps` and `nested` shapes of the
+/// `iceberg_dictionary_chooser` benchmark take about 25% longer and `primitives` and `arrays`
+/// about 12% longer, mostly for the comparison. Only `sorted`, whose values mostly repeat the one
+/// before them, is faster that way, by 2%.
 #[derive(Clone, Copy)]
 struct Bytes<'a>(&'a [u8]);
 
@@ -772,10 +776,10 @@ mod tests {
     use arrow::array::{
         ArrayRef, BooleanArray, Date32Array, Decimal128Array, FixedSizeBinaryArray,
         FixedSizeListArray, Float32Array, Float64Array, Int32Array, Int64Array, LargeListArray,
-        ListArray, StringArray, StructArray,
+        ListArray, MapArray, StringArray, StructArray, UInt32Array,
     };
     use arrow::buffer::{NullBuffer, OffsetBuffer};
-    use arrow::compute::cast;
+    use arrow::compute::{cast, take_record_batch};
     use arrow::datatypes::{Field, Fields, Int32Type, TimeUnit};
 
     /// splitmix64, the generator the parquet-mr ground truth below was recorded with.
@@ -1182,18 +1186,175 @@ mod tests {
         );
     }
 
-    /// Where a partition's rows were cut into batches does not change its choice.
+    /// Where a partition's rows were cut into batches does not change its choice, whether each
+    /// batch was built on its own or sliced from a larger one, as the clustered writer slices a
+    /// batch that spans partitions.
     #[test]
     fn batch_boundaries_do_not_change_the_choice() {
         let properties = || properties(20_000, 1024 * 1024, 2 * 1024 * 1024);
-        let whole = dictionary_columns(properties(), &corpus_batches(20_000, 20_000));
+        let batch = corpus(0..20_000);
+        let whole = dictionary_columns(properties(), std::slice::from_ref(&batch));
         for batch_rows in [777, 1000, 8192] {
             assert_eq!(
-                dictionary_columns(properties(), &corpus_batches(20_000, batch_rows)),
+                dictionary_columns(properties(), &corpus_batches(20_000, batch_rows as u64)),
                 whole,
                 "batches of {batch_rows} rows"
             );
+            let slices: Vec<RecordBatch> = (0..batch.num_rows())
+                .step_by(batch_rows)
+                .map(|start| batch.slice(start, batch_rows.min(batch.num_rows() - start)))
+                .collect();
+            assert_eq!(
+                dictionary_columns(properties(), &slices),
+                whole,
+                "slices of {batch_rows} rows"
+            );
         }
+    }
+
+    /// A batch sliced at an odd offset, as the clustered writer slices one that spans
+    /// partitions, makes the same choice as the same rows gathered into arrays of their own, as
+    /// the fanout writer gathers them.
+    #[test]
+    fn a_sliced_batch_is_read_only_within_its_slice() {
+        let rows = 3000;
+        let (offset, len) = (1001, 999);
+        // Every list, map and struct here is null on odd rows. Only the entries within the slice
+        // that are present and have nothing null above them hold one of four values. Every other
+        // entry holds a value of its own, so reading one past the slice, or a null or anything
+        // under one, overflows the 1 KiB dictionary.
+        let value = |row: usize, entry: usize, counted: bool| -> i64 {
+            if counted && (offset..offset + len).contains(&row) {
+                (entry % 4) as i64
+            } else {
+                (1_000_000 + 4 * row + entry) as i64
+            }
+        };
+        let even = |row: usize| row.is_multiple_of(2);
+        let row_nulls = || Some(NullBuffer::from_iter((0..rows).map(even)));
+        // Two entries per row, as the children of a list or a map.
+        let pairs = |first_entry: usize| -> ArrayRef {
+            Arc::new(Int64Array::from_iter_values(
+                (0..2 * rows).map(|i| value(i / 2, first_entry + i % 2, even(i / 2))),
+            ))
+        };
+        let element = || Arc::new(Field::new("element", DataType::Int64, true));
+        let map_entries = StructArray::new(
+            Fields::from(vec![
+                Field::new("key", DataType::Int64, false),
+                Field::new("value", DataType::Int64, true),
+            ]),
+            vec![pairs(0), pairs(2)],
+            None,
+        );
+        // `s.n` and `s.inner` are also null on every other even row.
+        let quarter = |row: usize| row.is_multiple_of(4);
+        let quarter_nulls = || Some(NullBuffer::from_iter((0..rows).map(|row| row % 4 != 2)));
+        let x = Fields::from(vec![Field::new("x", DataType::Int64, true)]);
+        let s = StructArray::new(
+            Fields::from(vec![
+                Field::new("n", DataType::Int64, true),
+                Field::new("inner", DataType::Struct(x.clone()), true),
+            ]),
+            vec![
+                Arc::new(Int64Array::new(
+                    (0..rows).map(|row| value(row, 0, quarter(row))).collect(),
+                    quarter_nulls(),
+                )),
+                Arc::new(StructArray::new(
+                    x,
+                    vec![Arc::new(Int64Array::from_iter_values(
+                        (0..rows).map(|row| value(row, 1, quarter(row))),
+                    ))],
+                    quarter_nulls(),
+                )),
+            ],
+            row_nulls(),
+        );
+        // A list of two structs per row, the second of them null.
+        let k = Fields::from(vec![Field::new("k", DataType::Int64, true)]);
+        let ls = ListArray::new(
+            Arc::new(Field::new("element", DataType::Struct(k.clone()), true)),
+            OffsetBuffer::from_repeated_length(2, rows),
+            Arc::new(StructArray::new(
+                k,
+                vec![Arc::new(Int64Array::from_iter_values(
+                    (0..2 * rows).map(|i| value(i / 2, i % 2, even(i / 2) && even(i))),
+                ))],
+                Some(NullBuffer::from_iter((0..2 * rows).map(even))),
+            )),
+            row_nulls(),
+        );
+        let columns: Vec<(&str, ArrayRef)> = vec![
+            // Distinct within the slice too, so plain either way.
+            ("id", Arc::new(Int64Array::from_iter_values(0..rows as i64))),
+            (
+                "flat",
+                Arc::new(Int64Array::new(
+                    (0..rows).map(|row| value(row, 0, even(row))).collect(),
+                    row_nulls(),
+                )),
+            ),
+            (
+                "l",
+                Arc::new(ListArray::new(
+                    element(),
+                    OffsetBuffer::from_repeated_length(2, rows),
+                    pairs(0),
+                    row_nulls(),
+                )),
+            ),
+            (
+                "ll",
+                Arc::new(LargeListArray::new(
+                    element(),
+                    OffsetBuffer::from_repeated_length(2, rows),
+                    pairs(0),
+                    row_nulls(),
+                )),
+            ),
+            (
+                "fl",
+                Arc::new(FixedSizeListArray::new(element(), 2, pairs(0), row_nulls())),
+            ),
+            (
+                "m",
+                Arc::new(MapArray::new(
+                    Arc::new(Field::new(
+                        "key_value",
+                        map_entries.data_type().clone(),
+                        false,
+                    )),
+                    OffsetBuffer::from_repeated_length(2, rows),
+                    map_entries,
+                    row_nulls(),
+                    false,
+                )),
+            ),
+            ("s", Arc::new(s)),
+            ("ls", Arc::new(ls)),
+        ];
+        let batch = RecordBatch::try_from_iter(columns).unwrap();
+        let properties = || properties(20_000, 1024 * 1024, 1024);
+        // Read whole, the batch overflows every dictionary.
+        assert!(dictionary_columns(properties(), std::slice::from_ref(&batch)).is_empty());
+
+        let slice = batch.slice(offset, len);
+        let gathered =
+            take_record_batch(&slice, &UInt32Array::from_iter_values(0..len as u32)).unwrap();
+        let expected = [
+            "flat",
+            "l.list.element",
+            "ll.list.element",
+            "fl.list.element",
+            "m.key_value.key",
+            "m.key_value.value",
+            "s.n",
+            "s.inner.x",
+            "ls.list.element.k",
+        ];
+        assert_eq!(dictionary_columns(properties(), &[slice]), expected);
+        assert_eq!(dictionary_columns(properties(), &[gathered]), expected);
     }
 
     /// A leaf column of any type is read. In each, a column of ten values keeps its dictionary and
