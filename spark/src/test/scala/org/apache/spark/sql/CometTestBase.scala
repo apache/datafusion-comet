@@ -78,6 +78,15 @@ abstract class CometTestBase
     assert(reused.nonEmpty, s"$clue:\n$plan")
   }
 
+  /** Asserts that no reused exchange in `plan` sits over a scan that `dppScan` matches. */
+  protected def assertNoReusedExchangeOverDppScan[T](plan: SparkPlan)(
+      dppScan: PartialFunction[SparkPlan, T]): Unit = {
+    val reused = collect(plan) {
+      case exchange: ReusedExchangeExec if collect(exchange.child)(dppScan).nonEmpty => exchange
+    }
+    assert(reused.isEmpty, s"An exchange over a DPP scan was reused by another branch:\n$plan")
+  }
+
   /**
    * Sets each Spark-to-Arrow conversion that [[sparkConf]] turns on to `enabled`. All but the
    * `OneRowRelation` conversion are off by default. These are the conversions

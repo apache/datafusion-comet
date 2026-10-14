@@ -1804,32 +1804,45 @@ class CometExecSuite extends CometTestBase {
     }
   }
 
-  // Runs a UNION ALL of one CTE joined to dimension group 'a' and to group 'b'. Coalescing is off:
-  // a coalesced shuffle read carries per-partition sizes that would keep the two branches' parent
-  // exchanges apart and hide a wrong reuse.
-  private def checkDppBranchesKeepTheirRows(query: String): Unit = {
+  // Coalescing is off: a coalesced shuffle read carries per-partition sizes that would keep the two
+  // branches' parent exchanges apart and hide a wrong reuse.
+  private def withDppBranchConf(f: => Unit): Unit = {
     withSQLConf(
       SQLConf.USE_V1_SOURCE_LIST.key -> "parquet",
       SQLConf.ADAPTIVE_EXECUTION_ENABLED.key -> "true",
       SQLConf.DYNAMIC_PARTITION_PRUNING_REUSE_BROADCAST_ONLY.key -> "true",
-      SQLConf.COALESCE_PARTITIONS_ENABLED.key -> "false") {
+      SQLConf.COALESCE_PARTITIONS_ENABLED.key -> "false")(f)
+  }
+
+  private val dppScan: PartialFunction[SparkPlan, CometNativeScanExec] = {
+    case s: CometNativeScanExec
+        if s.partitionFilters.exists(_.isInstanceOf[DynamicPruningExpression]) =>
+      s
+  }
+
+  // A UNION ALL of one CTE joined to dimension groups grp1 and grp2, with a shuffle stage over each
+  // DPP scan.
+  private def dppShuffleQuery(grp1: String, grp2: String): String =
+    s"""WITH x AS (
+       |  SELECT store_id, item, sum(amount) AS s FROM dpp_branch_fact GROUP BY store_id, item),
+       |y AS (SELECT store_id, s % 7 AS b, count(*) AS c FROM x GROUP BY store_id, s % 7)
+       |SELECT y.store_id, y.b, y.c FROM y JOIN dpp_branch_dim d ON y.store_id = d.store_id
+       |WHERE d.grp = '$grp1'
+       |UNION ALL
+       |SELECT y.store_id, y.b, y.c FROM y JOIN dpp_branch_dim d ON y.store_id = d.store_id
+       |WHERE d.grp = '$grp2'""".stripMargin
+
+  // Runs a UNION ALL of one CTE joined to dimension group 'a' and to group 'b'.
+  private def checkDppBranchesKeepTheirRows(query: String): Unit = {
+    withDppBranchConf {
       if (isSpark35Plus) {
         val (_, cometPlan) = checkSparkAnswerAndOperator(sql(query))
-        def dppScans(plan: SparkPlan): Seq[CometNativeScanExec] = collect(plan) {
-          case s: CometNativeScanExec
-              if s.partitionFilters.exists(_.isInstanceOf[DynamicPruningExpression]) =>
-            s
-        }
         assert(
-          dppScans(cometPlan).map(_.metrics("numPartitions").value).sorted == Seq(1L, 3L),
+          collect(cometPlan)(dppScan).map(_.metrics("numPartitions").value).sorted ==
+            Seq(1L, 3L),
           "Expected one DPP scan per branch, pruned to 1 and 3 partitions:\n" +
             cometPlan.treeString)
-        val reusedDpp = collect(cometPlan) {
-          case r: ReusedExchangeExec if dppScans(r.child).nonEmpty => r
-        }
-        assert(
-          reusedDpp.isEmpty,
-          s"An exchange over a DPP scan was reused by the other branch:\n${cometPlan.treeString}")
+        assertNoReusedExchangeOverDppScan(cometPlan)(dppScan)
       } else {
         // On 3.4, AQE DPP falls back to Spark.
         checkSparkAnswer(sql(query))
@@ -1856,27 +1869,32 @@ class CometExecSuite extends CometTestBase {
 
   test("AQE DPP: shuffle over a DPP scan stage is not reused across branches (#6264)") {
     withDppBranchTables {
-      checkDppBranchesKeepTheirRows("""WITH x AS (
-          |  SELECT store_id, item, sum(amount) AS s FROM dpp_branch_fact GROUP BY store_id, item),
-          |y AS (SELECT store_id, s % 7 AS b, count(*) AS c FROM x GROUP BY store_id, s % 7)
-          |SELECT y.store_id, y.b, y.c FROM y JOIN dpp_branch_dim d ON y.store_id = d.store_id
-          |WHERE d.grp = 'a'
-          |UNION ALL
-          |SELECT y.store_id, y.b, y.c FROM y JOIN dpp_branch_dim d ON y.store_id = d.store_id
-          |WHERE d.grp = 'b'""".stripMargin)
+      checkDppBranchesKeepTheirRows(dppShuffleQuery("a", "b"))
     }
   }
 
-  // Guards the scan-stage path, which passes without keeping the DPP placeholder in the canonical
-  // form: the dimension join sits in the scan's own stage, and AQE keys each scan stage after its
-  // DPP filter is converted.
-  test("AQE DPP: DPP join in the scan's own stage keeps both branches (#6264)") {
+  // With the same dimension filter in both branches, AQE's stage cache lookup after the DPP
+  // placeholder is converted finds the first branch's stage, so the shuffles are reused as in
+  // Spark. This fails if the scan's canonical form keeps too much, such as originalPlan's DPP
+  // filters or unnormalized partition filters.
+  test("AQE DPP: shuffle over scans with the same DPP filter is reused across branches (#6264)") {
     withDppBranchTables {
-      checkDppBranchesKeepTheirRows("""SELECT f.store_id, f.item, f.amount FROM dpp_branch_fact f
-          |JOIN dpp_branch_dim d ON f.store_id = d.store_id WHERE d.grp = 'a'
-          |UNION ALL
-          |SELECT f.store_id, f.item, f.amount FROM dpp_branch_fact f
-          |JOIN dpp_branch_dim d ON f.store_id = d.store_id WHERE d.grp = 'b'""".stripMargin)
+      withDppBranchConf {
+        val df = sql(dppShuffleQuery("a", "a"))
+        val (sparkPlan, cometPlan) =
+          if (isSpark35Plus) checkSparkAnswerAndOperator(df) else checkSparkAnswer(df)
+        def reused(plan: SparkPlan): Int =
+          collect(plan) { case r: ReusedExchangeExec => r }.size
+        assert(reused(sparkPlan) > 0, s"Spark should reuse the shuffle:\n$sparkPlan")
+        assert(
+          reused(cometPlan) == reused(sparkPlan),
+          s"expected ${reused(sparkPlan)} reused exchanges, got ${reused(cometPlan)}:\n" +
+            cometPlan.treeString)
+        if (isSpark35Plus) {
+          assertExchangeReuseOver(cometPlan, "Expected the shuffle over a DPP scan to be reused")(
+            dppScan)
+        }
+      }
     }
   }
 

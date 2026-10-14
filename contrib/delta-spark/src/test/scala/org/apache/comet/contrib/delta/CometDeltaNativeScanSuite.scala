@@ -2025,22 +2025,17 @@ class CometDeltaNativeScanSuite extends CometDeltaTestBase {
               |JOIN dpp_branch_dim d ON y.store_id = d.store_id WHERE d.grp = 'b'""".stripMargin
           val (_, cometPlan) = checkSparkAnswer(query)
 
-          def dppScans(plan: SparkPlan): Seq[CometDeltaNativeScanExec] = collect(plan) {
+          val dppScan: PartialFunction[SparkPlan, CometDeltaNativeScanExec] = {
             case s: CometDeltaNativeScanExec
                 if s.runtimeFilters.exists(_.isInstanceOf[DynamicPruningExpression]) =>
               s
           }
           assert(
-            dppScans(cometPlan).map(_.metrics("numPartitions").value).sorted == Seq(1L, 3L),
+            collect(cometPlan)(dppScan).map(_.metrics("numPartitions").value).sorted ==
+              Seq(1L, 3L),
             "Expected one native Delta DPP scan per branch, pruned to 1 and 3 partitions:\n" +
               cometPlan.treeString)
-          val reusedDpp = collect(cometPlan) {
-            case r: ReusedExchangeExec if dppScans(r.child).nonEmpty => r
-          }
-          assert(
-            reusedDpp.isEmpty,
-            "An exchange over a DPP scan was reused by the other branch:\n" +
-              cometPlan.treeString)
+          assertNoReusedExchangeOverDppScan(cometPlan)(dppScan)
         }
       }
     }

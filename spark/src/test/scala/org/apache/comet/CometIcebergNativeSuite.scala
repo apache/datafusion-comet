@@ -6170,17 +6170,13 @@ class CometIcebergNativeSuite
 
         // Also checked on 3.4: the Iceberg scan stays in Comet there and Spark's own DPP rule
         // plans its filter.
-        def dppScans(plan: SparkPlan): Seq[CometIcebergNativeScanExec] =
-          collectIcebergNativeScans(plan).filter(_.runtimeFilters.nonEmpty)
-        assert(
-          dppScans(cometPlan).size == 2,
-          s"Expected one DPP scan per branch:\n${cometPlan.treeString}")
-        val reusedDpp = collect(cometPlan) {
-          case r: ReusedExchangeExec if dppScans(r.child).nonEmpty => r
+        val dppScan: PartialFunction[SparkPlan, CometIcebergNativeScanExec] = {
+          case s: CometIcebergNativeScanExec if s.runtimeFilters.nonEmpty => s
         }
         assert(
-          reusedDpp.isEmpty,
-          s"An exchange over a DPP scan was reused by the other branch:\n${cometPlan.treeString}")
+          collect(cometPlan)(dppScan).size == 2,
+          s"Expected one DPP scan per branch:\n${cometPlan.treeString}")
+        assertNoReusedExchangeOverDppScan(cometPlan)(dppScan)
 
         spark.sql("DROP TABLE aqe_cat.db.branch_fact")
       }

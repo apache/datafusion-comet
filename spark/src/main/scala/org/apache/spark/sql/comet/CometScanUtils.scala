@@ -20,6 +20,7 @@
 package org.apache.spark.sql.comet
 
 import org.apache.spark.sql.catalyst.expressions.{DynamicPruningExpression, Expression, Literal}
+import org.apache.spark.sql.execution.FileSourceScanExec
 
 object CometScanUtils {
 
@@ -33,5 +34,22 @@ object CometScanUtils {
     // exchange as it was before the stage optimizer rules converted that placeholder, so dropping
     // it makes scans with different DPP filters equal and lets AQE reuse one stage for both.
     predicates.filterNot(_ == DynamicPruningExpression(Literal.TrueLiteral))
+  }
+
+  /**
+   * Canonicalizes a Comet scan's `originalPlan` (which may be null) without any of its DPP
+   * partition filters. That copy carries the column selection and schema needed for equals and
+   * hashCode, but its DPP filters are stale because no DPP rule rewrites them. The scan's own DPP
+   * filters, passed through [[filterUnusedDynamicPruningExpressions]], carry its DPP identity.
+   */
+  def canonicalizeOriginalPlan(originalPlan: FileSourceScanExec): FileSourceScanExec = {
+    if (originalPlan == null) {
+      null
+    } else {
+      originalPlan
+        .copy(partitionFilters =
+          originalPlan.partitionFilters.filterNot(_.isInstanceOf[DynamicPruningExpression]))
+        .doCanonicalize()
+    }
   }
 }

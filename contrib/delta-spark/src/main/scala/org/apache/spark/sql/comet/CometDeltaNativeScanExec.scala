@@ -225,15 +225,6 @@ case class CometDeltaNativeScanExec(
   }
 
   override def doCanonicalize(): CometDeltaNativeScanExec = {
-    // originalPlan's DPP filters are a stale copy that no DPP rule rewrites, so drop them all.
-    // runtimeFilters below carry the scan's DPP identity.
-    val canonOriginal = if (originalPlan != null) {
-      val stripped = originalPlan.copy(partitionFilters =
-        originalPlan.partitionFilters.filterNot(_.isInstanceOf[DynamicPruningExpression]))
-      stripped.doCanonicalize()
-    } else {
-      null
-    }
     CometDeltaNativeScanExec(
       nativeOp,
       output.map(QueryPlan.normalizeExpressions(_, output)),
@@ -243,7 +234,7 @@ case class CometDeltaNativeScanExec(
         output),
       QueryPlan.normalizePredicates(dataFilters, output),
       relation,
-      canonOriginal,
+      CometScanUtils.canonicalizeOriginalPlan(originalPlan),
       SerializedPlan(None),
       "")
   }
