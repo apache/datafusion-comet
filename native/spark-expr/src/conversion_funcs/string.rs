@@ -710,6 +710,8 @@ fn parse_string_to_decimal(input_str: &str, precision: u8, scale: i8) -> SparkRe
     let scale_adjustment = target_scale - exponent as i64;
     // `BigDecimal.setScale`, which Spark rescales with, fails when the scale difference does not
     // fit in an int (e.g. "1e-2147483647" to a negative target scale), so do not round to zero.
+    // Spark raises a raw `ArithmeticException` there in every eval mode; see
+    // https://github.com/apache/datafusion-comet/issues/6966.
     if i32::try_from(scale_adjustment).is_err() {
         return Err(invalid_decimal_cast(input_str, precision, scale));
     }
@@ -723,6 +725,8 @@ fn parse_string_to_decimal(input_str: &str, precision: u8, scale: i8) -> SparkRe
         mantissa.checked_mul(pow10_i128(scale_adjustment as u32).unwrap())
     } else {
         // Need to divide (decrease scale)
+        // Spark's `BigDecimal.setScale` also fails for a very large difference that still fits in
+        // an int, while this rounds to zero: https://github.com/apache/datafusion-comet/issues/6966
         if -scale_adjustment > 38 {
             return Ok(Some(0));
         }

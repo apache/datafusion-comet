@@ -1445,7 +1445,9 @@ class CometNativeCastSuite extends CometTestBase with AdaptiveSparkPlanHelper {
       withTable("cast_decimal_rescale") {
         Seq("1e-2147483647").toDF("s").write.format("parquet").saveAsTable("cast_decimal_rescale")
         // The parsed scale fits in an int, but the difference to the target scale does not, so
-        // Spark's `BigDecimal.setScale` fails. The native cast must not round it to zero.
+        // Spark's `BigDecimal.setScale` fails. The native cast must not round it to zero. Spark
+        // raises a raw `ArithmeticException`, so only failure is compared here; see
+        // https://github.com/apache/datafusion-comet/issues/6966.
         val df = spark.table("cast_decimal_rescale").select(col("s").cast(DecimalType(10, -2)))
         checkCometOperators(stripAQEPlan(df.queryExecution.executedPlan))
         val (sparkError, cometError) = checkSparkAnswerMaybeThrows(df)
