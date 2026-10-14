@@ -104,11 +104,9 @@ Apple donated Comet to the Apache Arrow project in early 2024 ([IP clearance][ip
 it became a sub-project of Apache DataFusion when DataFusion became a top-level project in
 April 2024. Starting as a DataFusion sub-project made sense because of the overlap in contributors.
 
-Comet is different from the other DataFusion sub-projects, which extend DataFusion: Python and Java
-bindings, and distributed execution with Ballista. Comet is an accelerator for Apache Spark that
-uses DataFusion as its execution engine. DataFusion and Comet now have largely distinct and strong
-communities, though there is overlap, and the Comet community is large and active enough to stand
-on its own. Focused governance will make it easier to grow that community and to recognize
+The main reason for this proposal is that DataFusion and Comet now have largely distinct and strong
+communities, though there is overlap. The Comet community is large and active enough to stand on
+its own, and focused governance will make it easier to grow that community and to recognize
 contributors whose work is mainly on Comet.
 
 The community has discussed this idea publicly since July 2026 ([#5184][discussion]). As of the
@@ -117,8 +115,9 @@ DataFusion PMC.
 
 Several current members of the DataFusion PMC are active in Comet and understand and believe deeply
 in the Apache Way. They have served as PMC chairs, managed and voted on every Comet release, and
-guided new contributors. With this existing governance experience, the new top-level project will
-be able to function well immediately and independently.
+guided new contributors. Three of the five proposed initial PMC members are ASF Members. With this
+existing governance experience, the new top-level project will be able to function well immediately
+and independently.
 
 ## Current Status
 
