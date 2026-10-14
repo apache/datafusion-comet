@@ -38,7 +38,7 @@ import org.apache.spark.CometDriverPlugin
 import org.apache.spark.sql.{CometTestBase, DataFrame, Observation, QueryTest, Row}
 import org.apache.spark.sql.catalyst.expressions.{And, Attribute, AttributeReference, EqualTo, Expression, GreaterThan, GreaterThanOrEqual, LessThan, Literal}
 import org.apache.spark.sql.columnar.{CachedBatch, SimpleMetricsCachedBatch}
-import org.apache.spark.sql.comet.{CometBroadcastHashJoinExec, CometInMemoryTableScanExec, CometSortAggregateExec, CometSortExec, CometSortMergeJoinExec}
+import org.apache.spark.sql.comet.{CometBroadcastHashJoinExec, CometInMemoryTableScanExec, CometSortAggregateExec, CometSortExec, CometSortMergeJoinExec, CometSparkToColumnarExec}
 import org.apache.spark.sql.comet.execution.arrow.{ArrowCachedBatchSerializer, CometCachedBatchHelper}
 import org.apache.spark.sql.comet.execution.shuffle.CometCelebornShuffleManager
 import org.apache.spark.sql.comet.util.Utils
@@ -55,7 +55,7 @@ import org.apache.spark.storage.StorageLevel
 
 import org.apache.comet.{CometArrowAllocator, CometConf, CometKryoRegistrator, ExtendedExplainInfo}
 import org.apache.comet.CometSparkSessionExtensions.{isSpark35Plus, isSpark40Plus}
-import org.apache.comet.rules.CometCacheColumnarRule
+import org.apache.comet.rules.{CometCacheBuildRule, CometCacheColumnarRule}
 import org.apache.comet.vector.{CometPlainVector, CometVector}
 
 import net.jpountz.lz4.LZ4FrameInputStream
@@ -322,6 +322,96 @@ class CometInMemoryCacheSuite extends CometTestBase {
             }
           }
         }
+      }
+    }
+  }
+
+  test("AQE builds a cache whose final stage ends in a Spark operator straight into Arrow") {
+    assume(isSpark40Plus, "Spark builds a cache from AQE's columnar output only from 4.0")
+    // AQE plans a cached query's final stage for columnar output, and a stage that ends in a row
+    // operator, a Spark Project here, gets a transition on top. Spark's RowToColumnarExec would fill
+    // its own column vectors for the serializer to copy into Arrow, so Comet writes Arrow straight
+    // from the rows instead (#6952). It leaves Spark's transition when Comet's cache is off, in
+    // plan-only mode, and for a schema CometSparkToColumnarExec cannot convert.
+    withTempPath { path =>
+      withSQLConf(CometConf.COMET_ENABLED.key -> "false") {
+        spark
+          .range(0, 1000, 1, 2)
+          .selectExpr("id", "cast(id % 10 AS int) AS a", "concat('s', id) AS s")
+          .write
+          .parquet(path.toString)
+      }
+      val source = s"(SELECT /*+ REPARTITION(4, a) */ * FROM parquet.`${path.toString}`)"
+      val cases = Seq(
+        ("converted", "id + 1 AS id1, a, s", Nil, true),
+        (
+          "Comet's cache off",
+          "id + 1 AS id1, a, s",
+          Seq(CometConf.COMET_EXEC_IN_MEMORY_CACHE_ENABLED.key -> "false"),
+          false),
+        (
+          "plan-only mode",
+          "id + 1 AS id1, a, s",
+          Seq(CometConf.COMET_EXPLAIN_PLAN_ONLY_ENABLED.key -> "true"),
+          false),
+        ("array of int", "id + 1 AS id1, array(a) AS arr, s", Nil, false))
+      for ((name, projection, confs, converted) <- cases) {
+        withSQLConf(
+          Seq(
+            SQLConf.ADAPTIVE_EXECUTION_ENABLED.key -> "true",
+            SQLConf.CAN_CHANGE_CACHED_PLAN_OUTPUT_PARTITIONING.key -> "true",
+            CometConf.COMET_EXEC_PROJECT_ENABLED.key -> "false") ++ confs: _*) {
+          val query = s"SELECT $projection FROM $source"
+          val expected = uncachedSparkAnswer(query)
+          val df = spark.sql(query)
+          df.cache()
+          try {
+            assert(df.count() == 1000)
+            val cached = spark.sharedState.cacheManager.lookupCachedData(df).get
+            val finalPlan = stripAQEPlan(cached.cachedRepresentation.cacheBuilder.cachedPlan)
+            withClue(s"$name:\n$finalPlan\n") {
+              val conversions = collect(finalPlan) { case c: CometSparkToColumnarExec => c }
+              val transitions = collect(finalPlan) { case r: RowToColumnarExec => r }
+              if (converted) {
+                assert(transitions.isEmpty)
+                assert(conversions.length == 1)
+                assert(conversions.head.metrics("numOutputBatches").value > 0)
+              } else {
+                assert(conversions.isEmpty)
+                assert(transitions.length == 1)
+              }
+              assert(
+                cached.cachedRepresentation.cacheBuilder.cachedColumnBuffers
+                  .map(_.getClass.getName)
+                  .distinct()
+                  .collect()
+                  .toSeq == Seq("org.apache.spark.sql.comet.execution.arrow.CometCachedBatch"))
+              assert(QueryTest.sameRows(expected.toSeq, df.collect().toSeq).isEmpty)
+            }
+          } finally {
+            df.unpersist(blocking = true)
+          }
+        }
+      }
+    }
+  }
+
+  test("CometCacheBuildRule converts a root transition only for Comet's cache serializer") {
+    // Another serializer gets the batches Spark planned for it. The serializer is a static conf
+    // that this suite pins to Comet's, so the rule is applied directly under a cloned conf.
+    withSQLConf(CometConf.COMET_EXEC_IN_MEMORY_CACHE_ENABLED.key -> "true") {
+      val transition = RowToColumnarExec(spark.range(10).queryExecution.sparkPlan)
+      val rule = CometCacheBuildRule()
+      assert(rule(transition).isInstanceOf[CometSparkToColumnarExec])
+      // Only the root, which is where Spark puts the transition for a stage's columnar output.
+      val filtered = FilterExec(Literal.TrueLiteral, transition)
+      assert(rule(filtered) eq filtered)
+      val otherSerializer = spark.sessionState.conf.clone()
+      otherSerializer.setConf(
+        StaticSQLConf.SPARK_CACHE_SERIALIZER,
+        "org.apache.spark.sql.execution.columnar.DefaultCachedBatchSerializer")
+      SQLConf.withExistingConf(otherSerializer) {
+        assert(rule(transition) eq transition)
       }
     }
   }
