@@ -46,8 +46,8 @@ enum Nulls {
 fn is_null(i: usize, nulls: Nulls) -> bool {
     match nulls {
         Nulls::None => false,
-        Nulls::Sparse => i % 10 == 0,
-        Nulls::Dense => i % 8 != 0,
+        Nulls::Sparse => i.is_multiple_of(10),
+        Nulls::Dense => !i.is_multiple_of(8),
         Nulls::All => true,
     }
 }
@@ -72,7 +72,7 @@ fn batch_f64(nulls: Nulls, non_finite: bool) -> RecordBatch {
         .map(|i| {
             if is_null(i, nulls) {
                 None
-            } else if non_finite && i % 16 == 0 {
+            } else if non_finite && i.is_multiple_of(16) {
                 Some(f64::NAN)
             } else if non_finite && i % 16 == 1 {
                 Some(f64::INFINITY)
@@ -106,7 +106,7 @@ fn batch_bool(nulls: Nulls) -> RecordBatch {
             if is_null(i, nulls) {
                 None
             } else {
-                Some(i % 2 == 0)
+                Some(i.is_multiple_of(2))
             }
         })
         .collect();

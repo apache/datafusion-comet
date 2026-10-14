@@ -44,8 +44,8 @@ enum Nulls {
 fn is_null(i: usize, nulls: Nulls) -> bool {
     match nulls {
         Nulls::None => false,
-        Nulls::Sparse => i % 10 == 0,
-        Nulls::Dense => i % 8 != 0,
+        Nulls::Sparse => i.is_multiple_of(10),
+        Nulls::Dense => !i.is_multiple_of(8),
         Nulls::All => true,
     }
 }
