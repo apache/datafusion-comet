@@ -37,11 +37,11 @@ Two layers, the second built on the first, both switched by `spark.comet.write.i
 | The split-operator plan | The plan shape. Spark's single V2 write operator becomes `IcebergCommit` over `IcebergWrite`, and iceberg-java writes the data files inside it. |
 | The native writer       | Who writes the data files. An eligible `IcebergWrite` becomes `CometIcebergWrite`, which writes Parquet with iceberg-rust.                      |
 
-The flag defaults to `true` since Comet 1.2.0, so a change to the split plan reaches every Iceberg
-write and a change to the native writer reaches every eligible one. Set to `false`, it plans Spark's
-own write operator. The testing-only `spark.comet.write.iceberg.splitOperator.enabled` plans the
-split operator with the native writer off, which the suites use to compare the two writers under
-the same plan. The rollout and its criteria are tracked in
+The flag defaults to `false`, which plans Spark's own write operator. With it on, a change to the
+split plan reaches every Iceberg write and a change to the native writer reaches every eligible one.
+The testing-only `spark.comet.write.iceberg.splitOperator.enabled` plans the split operator with the
+native writer off, which the suites use to compare the two writers under the same plan. The
+criteria for turning the flag on by default are tracked in
 [#5644](https://github.com/apache/datafusion-comet/issues/5644) under the epic
 [#5649](https://github.com/apache/datafusion-comet/issues/5649).
 
