@@ -680,9 +680,13 @@ object CometShuffleExchangeExec
           reasons +=
             s"${CometConf.COMET_SHUFFLE_NATIVE_HASH_PARTITIONING_ENABLED.key} is disabled"
         }
-        for (expr <- expressions) {
-          if (QueryPlanSerde.exprToProto(expr, inputs).isEmpty) {
-            reasons += s"unsupported hash partitioning expression: $expr"
+        // Spark evaluates the keys in one projection, so check them in the scope that
+        // CometNativeShuffleWriter serializes them in
+        QueryPlanSerde.withSharedSubexpressions(expressions) {
+          for (expr <- expressions) {
+            if (QueryPlanSerde.exprToProto(expr, inputs).isEmpty) {
+              reasons += s"unsupported hash partitioning expression: $expr"
+            }
           }
         }
         for (dt <- expressions.map(_.dataType).distinct) {
@@ -720,12 +724,15 @@ object CometShuffleExchangeExec
             s"${CometConf.COMET_SHUFFLE_NATIVE_RANGE_PARTITIONING_ENABLED.key} is disabled"
           return reasons.toSeq
         }
-        for (o <- orderings) {
-          if (QueryPlanSerde.exprToProto(o, inputs).isEmpty) {
-            reasons += s"unsupported range partitioning sort order: $o"
-            // Roll up fallback reasons recorded on the sort-order expression (e.g. strict
-            // floating-point sort) so they surface in the shuffle's explain output.
-            o.getTagValue(CometExplainInfo.FALLBACK_REASONS).foreach(reasons ++= _)
+        // As for hash partitioning, the same scope as CometNativeShuffleWriter
+        QueryPlanSerde.withSharedSubexpressions(orderings.map(_.child)) {
+          for (o <- orderings) {
+            if (QueryPlanSerde.exprToProto(o, inputs).isEmpty) {
+              reasons += s"unsupported range partitioning sort order: $o"
+              // Roll up fallback reasons recorded on the sort-order expression (e.g. strict
+              // floating-point sort) so they surface in the shuffle's explain output.
+              o.getTagValue(CometExplainInfo.FALLBACK_REASONS).foreach(reasons ++= _)
+            }
           }
         }
         for (dt <- orderings.map(_.dataType).distinct) {

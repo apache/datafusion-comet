@@ -1302,20 +1302,23 @@ object QueryPlanSerde extends Logging with CometExprShim with CometTypeShim {
    * The subexpressions that occur more than once in the expressions of the operator being
    * serialized, as Spark's subexpression elimination finds them. Spark's generated code for a
    * projection or an aggregation evaluates each of them for every row, before the expressions
-   * that use them. They are treated that way for every operator, and whatever
+   * that use them. `canShortCircuitNulls` treats them that way whatever
    * `spark.sql.subexpressionElimination.enabled` says, which only keeps them evaluated for every
-   * row where Spark might not. They are found on the first `canShortCircuitNulls` call for the
-   * operator, so an operator without an argument to skip never runs `EquivalentExpressions`.
-   * `None` outside `withSharedSubexpressions`, where they are unknown.
+   * row where Spark might not, while `skipsSharedSubexpression` honors the setting. They are
+   * found on the first call to either for the operator, so an operator without an argument to
+   * skip never runs `EquivalentExpressions`. `None` outside `withSharedSubexpressions`, where
+   * they are unknown.
    */
   private val sharedSubexpressions = new DynamicVariable[Option[SharedSubexpressions]](None)
 
   private final class SharedSubexpressions(expressions: Seq[Expression]) {
-    lazy val common: Seq[Expression] = {
-      val equivalence = new EquivalentExpressions
-      expressions.foreach(equivalence.addExprTree(_))
-      equivalence.getCommonSubexpressions
-    }
+    lazy val common: Seq[Expression] = commonSubexpressions(expressions)
+  }
+
+  private def commonSubexpressions(expressions: Seq[Expression]): Seq[Expression] = {
+    val equivalence = new EquivalentExpressions
+    expressions.foreach(equivalence.addExprTree(_))
+    equivalence.getCommonSubexpressions
   }
 
   /**
@@ -1337,9 +1340,45 @@ object QueryPlanSerde extends Logging with CometExprShim with CometTypeShim {
     val later = expr.children.tail
     // Subexpression elimination never shares a leaf, such as a column or a literal
     later.forall(_.isInstanceOf[LeafExpression]) || sharedSubexpressions.value.exists { s =>
-      !later.exists(_.exists(e => s.common.exists(_.semanticEquals(e))))
+      !holdsSharedSubexpression(later, s)
     }
   }
+
+  /**
+   * Whether some node of `expr` with more than one child holds, in a child it can skip, a
+   * subexpression that the operator's expressions share. A node can skip any child after its
+   * first, a `DivModLike` or `Pmod` its dividend too, and a `StringLocate`, which evaluates its
+   * start first, its other two children, while an `ArrayAppend` skips none. Spark evaluates that
+   * subexpression for every row, while `expr` evaluated alone, as the JVM codegen dispatcher
+   * does, can skip it on the rows where a child evaluated before it is NULL, so an ANSI error
+   * Spark raises goes unraised. A subexpression that `expr` itself repeats does not count: the
+   * dispatcher eliminates it too, and evaluates it for every row. False when
+   * `spark.sql.subexpressionElimination.enabled` is off, since Spark then shares nothing, and
+   * outside `withSharedSubexpressions`, where what the operator shares is unknown.
+   */
+  def skipsSharedSubexpression(expr: Expression): Boolean =
+    SQLConf.get.subexpressionEliminationEnabled && sharedSubexpressions.value.exists { s =>
+      lazy val repeated = commonSubexpressions(Seq(expr))
+      expr.exists { node =>
+        val skippable = node match {
+          // `DivModLike` and `Pmod` skip the dividend when the divisor, evaluated first, is NULL
+          case _: DivModLike | _: Pmod => node.children
+          // `StringLocate` evaluates `start`, its last child, first and skips the others on NULL
+          case _: StringLocate => node.children.init
+          // Spark 3.x's `ArrayAppend` evaluates both children before its NULL check
+          case _: ArrayAppend => Nil
+          case _ => node.children.drop(1)
+        }
+        !skippable.forall(_.isInstanceOf[LeafExpression]) &&
+        holdsSharedSubexpression(skippable, s, e => !repeated.exists(_.semanticEquals(e)))
+      }
+    }
+
+  private def holdsSharedSubexpression(
+      exprs: Seq[Expression],
+      shared: SharedSubexpressions,
+      counts: Expression => Boolean = _ => true): Boolean =
+    exprs.exists(_.exists(e => shared.common.exists(_.semanticEquals(e)) && counts(e)))
 
   /**
    * Has native execution evaluate the arguments of `scalarFunc`, the serialized `expr`, the way

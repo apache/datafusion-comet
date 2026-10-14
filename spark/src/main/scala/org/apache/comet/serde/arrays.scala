@@ -98,13 +98,31 @@ private[serde] object CalendarIntervalOutput {
     else None
 }
 
+/**
+ * Keeps an expression off the JVM codegen dispatcher when one of its nodes could skip an argument
+ * holding a subexpression that the operator's other expressions share (see
+ * `QueryPlanSerde.skipsSharedSubexpression`). Spark evaluates such a subexpression for every row,
+ * so the expression falls back to Spark instead.
+ */
+private[serde] object SharedSubexpressionArgument {
+
+  private val reason: String =
+    "an argument this expression can skip holds a subexpression that the operator's other " +
+      "expressions share, which Spark evaluates for every row before this expression's NULL check"
+
+  def declineReason(expr: Expression): Option[String] =
+    if (skipsSharedSubexpression(expr)) Some(reason) else None
+}
+
 object CometArrayAppend
     extends CometExpressionSerde[ArrayAppend]
     with ArraysBase
     with CodegenDispatchFallback {
 
   override def dispatchDeclineReason(expr: Expression): Option[String] =
-    CalendarIntervalOutput.declineReason(expr)
+    CalendarIntervalOutput
+      .declineReason(expr)
+      .orElse(SharedSubexpressionArgument.declineReason(expr))
 
   override def getUnsupportedReasons(): Seq[String] =
     Seq(NullGuardSupport.nondeterministicReason)
@@ -919,7 +937,9 @@ object CometElementAt extends CometExpressionSerde[ElementAt] with CodegenDispat
   override def getUnsupportedReasons(): Seq[String] = eagerIndexReason +: MapKeySupport.reasons
 
   override def dispatchDeclineReason(expr: Expression): Option[String] =
-    CalendarIntervalOutput.declineReason(expr)
+    CalendarIntervalOutput
+      .declineReason(expr)
+      .orElse(SharedSubexpressionArgument.declineReason(expr))
 
   override def getSupportLevel(expr: ElementAt): SupportLevel = {
     if (needsNullGuard(expr) && !expr.left.deterministic) {
@@ -1054,6 +1074,9 @@ object CometSize extends CometExpressionSerde[Size] with CodegenDispatchFallback
   override def getUnsupportedReasons(): Seq[String] =
     Seq(NullGuardSupport.nondeterministicReason)
 
+  override def dispatchDeclineReason(expr: Expression): Option[String] =
+    SharedSubexpressionArgument.declineReason(expr)
+
   override def getSupportLevel(expr: Size): SupportLevel = {
     NullGuardSupport.nondeterministicChild(Seq(expr.child)).getOrElse {
       expr.child.dataType match {
@@ -1140,8 +1163,12 @@ object CometArraysZip extends CometExpressionSerde[ArraysZip] with CodegenDispat
       "a struct or inner array that holds one of those.",
     NullGuardSupport.nondeterministicReason)
 
+  // `arrays_zip` skips the arguments after a NULL one, as can a node nested in an argument, and
+  // the dispatcher compiles the whole tree, so either can skip a shared subexpression.
   override def dispatchDeclineReason(expr: Expression): Option[String] =
-    CalendarIntervalOutput.declineReason(expr)
+    CalendarIntervalOutput
+      .declineReason(expr)
+      .orElse(SharedSubexpressionArgument.declineReason(expr))
 
   private def isTypeSupported(dt: DataType): Boolean = {
     import DataTypes._
