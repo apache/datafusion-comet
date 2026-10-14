@@ -1163,9 +1163,9 @@ class CometInMemoryCacheSuite extends CometTestBase {
 
   test("Comet in-memory cache statistics count nulls in columns that record no bounds") {
     // These columns record a null count and no bounds: binary and nested types, and a bigint
-    // column with no values. Comet's Arrow vectors give the count without a pass over the rows,
-    // while Spark's vectors are counted row by row, so it is checked from the row write path,
-    // Comet's native scan and Spark's vectorized reader.
+    // column with no values. The count is the one the written Arrow vectors hold, so it is checked
+    // from the row write path and Comet's native scan, which produce those vectors, and from
+    // Spark's vectorized reader, whose batches are converted to them first.
     val df = spark
       .range(1000)
       .selectExpr("if(id % 7 = 0, NULL, id) AS v")
@@ -1223,8 +1223,8 @@ class CometInMemoryCacheSuite extends CometTestBase {
   test("Comet in-memory cache statistics count the nulls of a column missing from a file") {
     // Spark's vectorized Parquet reader marks a column that a file lacks all-null without counting
     // any nulls, so that vector's numNulls is 0 while every row isNullAt. A binary column records
-    // that count and no bounds, so taking it from numNulls would record no nulls, and the IsNull
-    // filter below would prune every batch read from the file that lacks the column.
+    // that count and no bounds, so taking it from that vector would record no nulls, and the
+    // IsNull filter below would prune every batch read from the file that lacks the column.
     withSparkColumnarCache(
       "missing_column_columnar",
       SQLConf.PARQUET_SCHEMA_MERGING_ENABLED.key -> "true") { path =>
@@ -1249,39 +1249,6 @@ class CometInMemoryCacheSuite extends CometTestBase {
         .collect()
         .map(_.asInstanceOf[SimpleMetricsCachedBatch].stats)
       assert(stats.map(_.getInt(b * 5 + 2)).sum == 400)
-    }
-  }
-
-  test("Comet in-memory cache statistics count nulls only within a batch's rows") {
-    // A batch can report fewer rows than its vectors hold, and the nulls here are all past the
-    // batch's rows. A count taken from the whole vector would say every row of this batch is null,
-    // and Spark would then prune the batch for IsNotNull.
-    val ints = new IntVector("i", CometArrowAllocator)
-    val binaries = new VarBinaryVector("b", CometArrowAllocator)
-    try {
-      ints.allocateNew(4)
-      binaries.allocateNew(4)
-      Seq(0, 1).foreach { r =>
-        ints.set(r, r + 1)
-        binaries.set(r, Array[Byte](r.toByte))
-      }
-      Seq(2, 3).foreach { r =>
-        ints.setNull(r)
-        binaries.setNull(r)
-      }
-      ints.setValueCount(4)
-      binaries.setValueCount(4)
-      val batch = new ColumnarBatch(
-        Array[ColumnVector](new CometPlainVector(ints), new CometPlainVector(binaries)),
-        2)
-      val attrs =
-        Seq(AttributeReference("i", IntegerType)(), AttributeReference("b", BinaryType)())
-      val (lower, upper, nulls) = CometCachedBatchHelper.columnStats(batch, attrs)
-      assert(nulls.toSeq == Seq(0, 0))
-      assert(lower(0) == 1 && upper(0) == 2)
-    } finally {
-      ints.close()
-      binaries.close()
     }
   }
 

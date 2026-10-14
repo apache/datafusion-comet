@@ -788,9 +788,9 @@ object CometInMemoryCacheBenchmark extends CometBenchmarkBase {
         columns(5).putByteArray(r, s"str_c_$r".getBytes(StandardCharsets.UTF_8))
         r += 1
       }
-      // The same values in Comet's Arrow vectors. Spark's vectors are what the collector reads
-      // from Spark's vectorized readers, and Arrow vectors are what it reads from Comet operators
-      // and from the row write path.
+      // The same values in Comet's Arrow vectors, which are what the collector reads: the cache
+      // writes the batches of Comet operators and of the row write path as they are, and those
+      // of Spark's vectorized readers after converting them to Arrow.
       val arrowBatch = CometArrowConverters.columnarBatchToArrowBatch(
         batch,
         Utils.toArrowSchema(Utils.fromAttributes(attrs), CometArrowStream.NATIVE_TIMEZONE),
@@ -798,7 +798,6 @@ object CometInMemoryCacheBenchmark extends CometBenchmarkBase {
       try {
         val benchmark =
           new Benchmark("in-memory cache statistics", numRows.toLong, output = output)
-        addStatsCase(benchmark, "Spark vectors", batch, attrs)
         addStatsCase(benchmark, "Arrow vectors", arrowBatch, attrs)
         benchmark.run()
       } finally arrowBatch.close()
