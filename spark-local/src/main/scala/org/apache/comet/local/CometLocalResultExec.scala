@@ -29,7 +29,7 @@ import org.apache.spark.rdd.RDD
 import org.apache.spark.sql.catalyst.InternalRow
 import org.apache.spark.sql.catalyst.expressions.{Attribute, SortOrder, UnsafeRow}
 import org.apache.spark.sql.catalyst.plans.physical.Partitioning
-import org.apache.spark.sql.execution.{SparkPlan, UnaryExecNode}
+import org.apache.spark.sql.execution.{ColumnarToRowExec, SparkPlan, UnaryExecNode}
 
 /**
  * Row result boundary of a local query. Spark's collect encodes and compresses every row of a
@@ -53,6 +53,18 @@ case class CometLocalResultExec(child: SparkPlan) extends UnaryExecNode {
     if (n <= 0) Array.empty
     else if (sparkContext.isLocal) LocalResultHandoff.collect(execute(), n, maxResultSize)
     else super.executeTake(n)
+
+  /**
+   * Runs the query as ordinary Comet execution instead. An iterator fetches one result partition
+   * at a time to bound what it holds, and a local query has a single partition holding the whole
+   * result, so the native block runs as Spark tasks, one per partition, as without local
+   * execution.
+   */
+  override def executeToIterator(): Iterator[InternalRow] =
+    child
+      .collectFirst { case local: CometLocalExec => ColumnarToRowExec(local.block) }
+      .getOrElse(child)
+      .executeToIterator()
 
   // Spark enforces this on serialized task results; this boundary enforces it while copying.
   private def maxResultSize: Long =

@@ -282,6 +282,24 @@ class CometLocalExecutionSuite
     assert(query.toLocalIterator().asScala.toSeq == rows)
   }
 
+  test("an iterator fetches one partition at a time through ordinary execution") {
+    val query = spark.range(0, 400, 1, 8).selectExpr("id", "id * 2 AS v")
+    assert(query.queryExecution.executedPlan.isInstanceOf[CometLocalResultExec])
+    val group = "comet-local-iterator"
+    spark.sparkContext.setJobGroup(group, "local iterator")
+    val rows =
+      try query.toLocalIterator().asScala.toList
+      finally spark.sparkContext.clearJobGroup()
+    assert(rows == expected(spark.range(0, 400, 1, 8).selectExpr("id", "id * 2 AS v")))
+    // One job per partition, as Spark's executeToIterator runs, rather than one for the query.
+    val tracker = spark.sparkContext.statusTracker
+    val deadline = System.nanoTime() + TimeUnit.SECONDS.toNanos(20)
+    while (tracker.getJobIdsForGroup(group).length < 8 && System.nanoTime() < deadline) {
+      Thread.sleep(10)
+    }
+    assert(tracker.getJobIdsForGroup(group).length == 8)
+  }
+
   test("collect and take hand local results to the driver within a Spark job") {
     val query = spark.range(0, 200, 1, 5).selectExpr("id", "id % 3 AS k")
     assert(query.queryExecution.executedPlan.isInstanceOf[CometLocalResultExec])

@@ -89,7 +89,13 @@ them on the driver, all on one thread. While copying, the task counts uncompress
 bytes and stops reading, which closes the native query, once they exceed
 `spark.driver.maxResultSize`; the driver then fails the action. Spark counts compressed bytes,
 so this check is the stricter one. On a non-local master the node uses Spark's ordinary
-collect. Other actions, such as `toLocalIterator`, keep Spark's behavior.
+collect.
+
+An iterator fetches one result partition at a time so that it holds at most one, but a local
+query has a single partition holding the whole result. `toLocalIterator`, which also serves the
+Thrift server's incremental collect, therefore runs the native block as ordinary Comet execution,
+one Spark task per partition. Consumers that read the result RDD partition by partition, such as
+PySpark's `toLocalIterator`, still receive the whole result as one partition.
 
 ## Lifecycle and cancellation
 
@@ -118,5 +124,5 @@ cd ..
 The native tests cover partition-order delivery, errors reported in a partition's turn, cancellation with busy workers,
 the one-batch handoff and runtime shutdown. `CometLocalExecutionSuite` compares admitted queries
 with Spark's results and order, and covers ranges Spark would overflow, declined expressions,
-AQE, reported orderings, limits that stop before a failing partition, caching, the result size limit, job and task cancellation, and native errors. After
+AQE, reported orderings, limits that stop before a failing partition, iterators, caching, the result size limit, job and task cancellation, and native errors. After
 each test it checks that no native query, imported Arrow memory or result slot is left.
