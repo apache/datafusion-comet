@@ -728,10 +728,11 @@ object IcebergReflection extends Logging {
    *
    * Every task reads with the same schema because iceberg-rust builds an equality-delete
    * predicate once per delete file, with the column names of the task that loads it first, and
-   * binds it by name in every other task of the reader. The names come from the full schema, the
-   * newest schema, current first, that names every column of the scan schema the same way. That
-   * is the current schema unless a VERSION AS OF snapshot named a column differently. A key that
-   * schema lacks, dropped before it, takes the newest name that no other column has.
+   * binds it by name in every other task of the reader. The full schema is the newest schema,
+   * current first, that has every field the scan reads, at any depth, with the same name and
+   * type, as the batch adaptation after iceberg-rust cannot narrow a promoted type back. That is
+   * the current schema unless a VERSION AS OF snapshot named or typed a field differently. A key
+   * that schema lacks, dropped before it, takes the newest name that no other column has.
    */
   def nativeTaskSchemas(
       table: Any,
@@ -739,14 +740,19 @@ object IcebergReflection extends Logging {
       scanSchema: Any,
       requiredFieldIds: Set[Int]): (Option[Any], Option[Any]) = {
     val prunedScanSchema = withoutMetadataColumns(scanSchema)
-    val scanColumns = columnNamesById(prunedScanSchema).toSet
+    val scanFields = fieldsAtAnyDepth(prunedScanSchema)
     val schemas = tableSchema +: getAllSchemas(table).reverse
-    val full = schemas.iterator
-      .map(schema => schema -> columnNamesById(schema))
-      .find { case (_, columns) => scanColumns.subsetOf(columns.toSet) }
+    val full = schemas.find { schema =>
+      scanFields.forall { case (id, name, leafType) =>
+        findFieldObject(schema, id).exists { field =>
+          fieldName(field) == name && leafType.forall(_ == fieldTypeOf(field))
+        }
+      }
+    }
     full match {
       case None => (None, None)
-      case Some((fullSchema, fullColumns)) =>
+      case Some(fullSchema) =>
+        val fullColumns = columnNamesById(fullSchema)
         val fullNames = fullColumns.values.toSet
         val ids = requiredFieldIds.toSeq.sorted
         val inFull = ids.flatMap(id => findFieldObject(fullSchema, id).map(id -> _)).toMap
@@ -787,6 +793,24 @@ object IcebergReflection extends Logging {
       .asScala
       .map(column => fieldIdOf(column) -> fieldName(column))
       .toMap
+  }
+
+  /**
+   * The fields of `schema` at any depth, as id, name, and the type of a field with no children.
+   */
+  private def fieldsAtAnyDepth(schema: Any): Seq[(Int, String, Option[Any])] = {
+    import scala.jdk.CollectionConverters._
+    def walk(field: Any): Seq[(Int, String, Option[Any])] = {
+      val children = childFields(field)
+      val leafType = if (children.isEmpty) Some(fieldTypeOf(field)) else None
+      (fieldIdOf(field), fieldName(field), leafType) +: children.flatMap(walk)
+    }
+    getMethod(schema.getClass, "columns")
+      .invoke(schema)
+      .asInstanceOf[java.util.List[_]]
+      .asScala
+      .toSeq
+      .flatMap(walk)
   }
 
   /** `schema` with `fields` appended at its top level, or `schema` itself when there are none. */
@@ -1383,6 +1407,8 @@ object IcebergReflection extends Logging {
 
   private def fieldIdOf(field: Any): Int =
     getMethod(field.getClass, "fieldId").invoke(field).asInstanceOf[Int]
+
+  private def fieldTypeOf(field: Any): Any = getMethod(field.getClass, "type").invoke(field)
 
   /**
    * Converts an Iceberg `Schema` to the Spark `StructType` it reads as, via

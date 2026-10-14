@@ -2529,6 +2529,40 @@ class CometIcebergNativeSuite
         checkPrunedNativeScan(
           s"SELECT id, c, s.a FROM $twoSources VERSION AS OF $twoSourcesSnapshot ORDER BY id")
 
+        // VERSION AS OF reads across type promotions. The batch adaptation after iceberg-rust
+        // cannot narrow a promoted type back, so the full schema must have the snapshot's types,
+        // not just be the newest schema that still has the dropped `c`. Each query reads one
+        // promoted column, so another promotion cannot steer the choice. The pruned schema cannot
+        // hold the nested partition source `s.k`, so the partitioned table reads the full schema
+        // with pruning on too.
+        Seq("promoted" -> "", "promoted_partitioned" -> "PARTITIONED BY (s.k)").foreach {
+          case (name, partitioning) =>
+            val promoted = s"test_cat.db.nested_pruning_$name"
+            spark.sql(s"""
+              CREATE TABLE $promoted (
+                id INT, x INT, d DECIMAL(9, 2), c INT, s STRUCT<k: STRING, a: INT>)
+              USING iceberg $partitioning
+            """)
+            spark.sql(s"""
+              INSERT INTO $promoted VALUES
+                (1, 10, 1.25, 100, named_struct('k', 'east', 'a', 1)),
+                (2, NULL, NULL, NULL, named_struct('k', 'west', 'a', CAST(NULL AS INT)))
+            """)
+            val snapshot = latestSnapshotId(promoted)
+            Seq(
+              "ALTER COLUMN x TYPE BIGINT",
+              "ALTER COLUMN d TYPE DECIMAL(18, 2)",
+              "ALTER COLUMN s.a TYPE BIGINT",
+              "DROP COLUMN c").foreach(change => spark.sql(s"ALTER TABLE $promoted $change"))
+            Seq("x", "d", "s.a").foreach { column =>
+              val query =
+                s"SELECT id, $column, c FROM $promoted VERSION AS OF $snapshot ORDER BY id"
+              checkIcebergNativeScan(query)
+              checkFullSchemaNativeScan(query)
+            }
+            spark.sql(s"DROP TABLE $promoted")
+        }
+
         Seq(mor, partitioned, twoSources).foreach(t => spark.sql(s"DROP TABLE $t"))
       }
     }
