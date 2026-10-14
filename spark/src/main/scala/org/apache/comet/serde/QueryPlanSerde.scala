@@ -1302,12 +1302,12 @@ object QueryPlanSerde extends Logging with CometExprShim with CometTypeShim {
    * The subexpressions that occur more than once in the expressions of the operator being
    * serialized, as Spark's subexpression elimination finds them. Spark's generated code for a
    * projection or an aggregation evaluates each of them for every row, before the expressions
-   * that use them. `canShortCircuitNulls` treats them that way whatever
-   * `spark.sql.subexpressionElimination.enabled` says, which only keeps them evaluated for every
-   * row where Spark might not, while `skipsSharedSubexpression` honors the setting. They are
-   * found on the first call to either for the operator, so an operator without an argument to
-   * skip never runs `EquivalentExpressions`. `None` outside `withSharedSubexpressions`, where
-   * they are unknown.
+   * that use them. `canShortCircuitNulls` and `skipsSharedSubexpression` treat them that way
+   * whatever `spark.sql.subexpressionElimination.enabled` says: a whole-stage codegen aggregate
+   * shares them even when it is off, and treating them as shared where Spark does not only keeps
+   * them evaluated for every row, or falls back to Spark. They are found on the first call to
+   * either for the operator, so an operator without an argument to skip never runs
+   * `EquivalentExpressions`. `None` outside `withSharedSubexpressions`, where they are unknown.
    */
   private val sharedSubexpressions = new DynamicVariable[Option[SharedSubexpressions]](None)
 
@@ -1351,14 +1351,19 @@ object QueryPlanSerde extends Logging with CometExprShim with CometTypeShim {
    * start first, its other two children, while an `ArrayAppend` skips none. Spark evaluates that
    * subexpression for every row, while `expr` evaluated alone, as the JVM codegen dispatcher
    * does, can skip it on the rows where a child evaluated before it is NULL, so an ANSI error
-   * Spark raises goes unraised. A subexpression that `expr` itself repeats does not count: the
-   * dispatcher eliminates it too, and evaluates it for every row. False when
-   * `spark.sql.subexpressionElimination.enabled` is off, since Spark then shares nothing, and
-   * outside `withSharedSubexpressions`, where what the operator shares is unknown.
+   * Spark raises goes unraised. This holds whatever `spark.sql.subexpressionElimination.enabled`
+   * says, since a whole-stage codegen aggregate shares subexpressions even when it is off, and
+   * declining only costs a fallback to Spark. A subexpression that `expr` itself repeats does not
+   * count while the setting is on: the dispatcher then eliminates it too, and evaluates it for
+   * every row. False outside `withSharedSubexpressions`, where what the operator shares is
+   * unknown.
    */
   def skipsSharedSubexpression(expr: Expression): Boolean =
-    SQLConf.get.subexpressionEliminationEnabled && sharedSubexpressions.value.exists { s =>
-      lazy val repeated = commonSubexpressions(Seq(expr))
+    sharedSubexpressions.value.exists { s =>
+      // The dispatcher eliminates subexpressions only while the setting is on
+      lazy val repeated =
+        if (SQLConf.get.subexpressionEliminationEnabled) commonSubexpressions(Seq(expr))
+        else Nil
       expr.exists { node =>
         val skippable = node match {
           // `DivModLike` and `Pmod` skip the dividend when the divisor, evaluated first, is NULL

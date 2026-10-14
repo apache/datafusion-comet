@@ -75,10 +75,11 @@ query expect_fallback(holds a subexpression that the operator's other expression
 SELECT array_append(a1, element_at(m1, 1.0D / x)), array_append(a2, element_at(m2, 1.0D / x))
 FROM test_array_append_shared_nonzero
 
--- With subexpression elimination off Spark shares nothing, so the calls stay dispatched.
+-- With subexpression elimination off a projection shares nothing, but a whole-stage codegen
+-- aggregate still does, so the map lookup in the item still declines the dispatcher.
 statement
 SET spark.sql.subexpressionElimination.enabled=false
 
-query expect_dispatch(array_append)
+query expect_fallback(holds a subexpression that the operator's other expressions share)
 SELECT array_append(a1, element_at(m1, 1.0D / x)), array_append(a2, element_at(m2, 1.0D / x))
 FROM test_array_append_shared
