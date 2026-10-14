@@ -94,6 +94,13 @@ The following cases are not supported by Comet and always fall back to Spark, re
 - Non-literal delimiters are not supported.
 - Non-default string collations are not supported.
 
+## Max
+
+The following cases are not supported by Comet and always fall back to Spark, regardless of any `allowIncompatible` setting:
+
+- Input of a type other than boolean, integral, floating-point, decimal, date, timestamp, string or binary, such as timestamp without time zone, intervals, arrays and structs.
+- A string with a non-default collation (Spark 4.0+), which Spark orders by its collation while Comet compares raw bytes.
+
 ## MaxBy
 
 The following differences from Spark are always present and do not require any additional configuration:
@@ -103,6 +110,13 @@ The following differences from Spark are always present and do not require any a
 The following cases are not supported by Comet and always fall back to Spark, regardless of any `allowIncompatible` setting:
 
 - The value and ordering must both be fixed-length types (boolean, integral, floating-point, decimal, date, or timestamp). A variable-length or nested type such as string, binary, or struct falls back to Spark.
+
+## Min
+
+The following cases are not supported by Comet and always fall back to Spark, regardless of any `allowIncompatible` setting:
+
+- Input of a type other than boolean, integral, floating-point, decimal, date, timestamp, string or binary, such as timestamp without time zone, intervals, arrays and structs.
+- A string with a non-default collation (Spark 4.0+), which Spark orders by its collation while Comet compares raw bytes.
 
 ## MinBy
 

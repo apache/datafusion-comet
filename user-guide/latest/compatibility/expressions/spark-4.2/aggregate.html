@@ -939,6 +939,14 @@ under the License.
 <li><p>Non-default string collations are not supported.</p></li>
 </ul>
 </section>
+<section id="max">
+<h2>Max<a class="headerlink" href="#max" title="Link to this heading">#</a></h2>
+<p>The following cases are not supported by Comet and always fall back to Spark, regardless of any <code class="docutils literal notranslate"><span class="pre">allowIncompatible</span></code> setting:</p>
+<ul class="simple">
+<li><p>Input of a type other than boolean, integral, floating-point, decimal, date, timestamp, string or binary, such as timestamp without time zone, intervals, arrays and structs.</p></li>
+<li><p>A string with a non-default collation (Spark 4.0+), which Spark orders by its collation while Comet compares raw bytes.</p></li>
+</ul>
+</section>
 <section id="maxby">
 <h2>MaxBy<a class="headerlink" href="#maxby" title="Link to this heading">#</a></h2>
 <p>The following differences from Spark are always present and do not require any additional configuration:</p>
@@ -948,6 +956,14 @@ under the License.
 <p>The following cases are not supported by Comet and always fall back to Spark, regardless of any <code class="docutils literal notranslate"><span class="pre">allowIncompatible</span></code> setting:</p>
 <ul class="simple">
 <li><p>The value and ordering must both be fixed-length types (boolean, integral, floating-point, decimal, date, or timestamp). A variable-length or nested type such as string, binary, or struct falls back to Spark.</p></li>
+</ul>
+</section>
+<section id="min">
+<h2>Min<a class="headerlink" href="#min" title="Link to this heading">#</a></h2>
+<p>The following cases are not supported by Comet and always fall back to Spark, regardless of any <code class="docutils literal notranslate"><span class="pre">allowIncompatible</span></code> setting:</p>
+<ul class="simple">
+<li><p>Input of a type other than boolean, integral, floating-point, decimal, date, timestamp, string or binary, such as timestamp without time zone, intervals, arrays and structs.</p></li>
+<li><p>A string with a non-default collation (Spark 4.0+), which Spark orders by its collation while Comet compares raw bytes.</p></li>
 </ul>
 </section>
 <section id="minby">
@@ -1038,7 +1054,9 @@ under the License.
 <li class="toc-h2 nav-item toc-entry"><a class="reference internal nav-link" href="#hyperloglogplusplus">HyperLogLogPlusPlus</a></li>
 <li class="toc-h2 nav-item toc-entry"><a class="reference internal nav-link" href="#last">Last</a></li>
 <li class="toc-h2 nav-item toc-entry"><a class="reference internal nav-link" href="#listagg">ListAgg</a></li>
+<li class="toc-h2 nav-item toc-entry"><a class="reference internal nav-link" href="#max">Max</a></li>
 <li class="toc-h2 nav-item toc-entry"><a class="reference internal nav-link" href="#maxby">MaxBy</a></li>
+<li class="toc-h2 nav-item toc-entry"><a class="reference internal nav-link" href="#min">Min</a></li>
 <li class="toc-h2 nav-item toc-entry"><a class="reference internal nav-link" href="#minby">MinBy</a></li>
 <li class="toc-h2 nav-item toc-entry"><a class="reference internal nav-link" href="#mode">Mode</a></li>
 <li class="toc-h2 nav-item toc-entry"><a class="reference internal nav-link" href="#percentile">Percentile</a></li>
