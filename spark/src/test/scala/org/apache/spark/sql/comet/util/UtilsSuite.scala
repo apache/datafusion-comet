@@ -19,11 +19,13 @@
 
 package org.apache.spark.sql.comet.util
 
+import java.nio.channels.ClosedByInterruptException
 import java.nio.charset.StandardCharsets
 
 import scala.jdk.CollectionConverters._
 
 import org.apache.arrow.c.CDataDictionaryProvider
+import org.apache.arrow.memory.BufferAllocator
 import org.apache.arrow.vector.VarCharVector
 import org.apache.arrow.vector.ipc.message.ArrowFieldNode
 import org.apache.spark.sql.CometTestBase
@@ -97,6 +99,30 @@ class UtilsSuite extends CometTestBase {
     // in a vector of their own.
     val fresh = serialize(skips.map(skip => strings(values.drop(skip))))
     assert(sliced.map(_.size) == fresh.map(_.size))
+  }
+
+  test("serializeBatches closes the slice it writes when the write fails") {
+    // A cancelled broadcast interrupts its task, so the next write to the interruptible channel
+    // serializeBatches writes through fails. The slice holds its own references on the batch's
+    // buffers, and they would outlive the batch unless the slice is closed on that path too.
+    val allocator = CometArrowAllocator.newChildAllocator("sliced-batch", 0, Long.MaxValue)
+    try {
+      val vector = slicedStrings((0 until 24).map(i => s"value-$i"), 8, allocator)
+      val column = CometVector.getVector(vector, new CDataDictionaryProvider)
+      val batch = new ColumnarBatch(Array[ColumnVector](column), vector.getValueCount)
+      Thread.currentThread().interrupt()
+      try {
+        intercept[ClosedByInterruptException] {
+          Utils.serializeBatches(Iterator(batch)).next()
+        }
+      } finally {
+        Thread.interrupted()
+        batch.close()
+      }
+      assert(allocator.getAllocatedMemory == 0)
+    } finally {
+      allocator.close()
+    }
   }
 
   test("serializeBatches materializes ConstantColumnVector columns") {
@@ -239,8 +265,10 @@ class UtilsSuite extends CometTestBase {
     }
   }
 
-  private def strings(values: Seq[String]): VarCharVector = {
-    val vector = new VarCharVector("s", CometArrowAllocator)
+  private def strings(
+      values: Seq[String],
+      allocator: BufferAllocator = CometArrowAllocator): VarCharVector = {
+    val vector = new VarCharVector("s", allocator)
     vector.allocateNew()
     values.zipWithIndex.foreach {
       case (null, i) => vector.setNull(i)
@@ -256,11 +284,14 @@ class UtilsSuite extends CometTestBase {
    * bytes of the first `skip` values. `skip` is a multiple of 8, so the validity bitmap slices on
    * a byte boundary.
    */
-  private def slicedStrings(values: Seq[String], skip: Int): VarCharVector = {
-    val full = strings(values)
+  private def slicedStrings(
+      values: Seq[String],
+      skip: Int,
+      allocator: BufferAllocator = CometArrowAllocator): VarCharVector = {
+    val full = strings(values, allocator)
     try {
       val length = values.length - skip
-      val sliced = new VarCharVector("s", CometArrowAllocator)
+      val sliced = new VarCharVector("s", allocator)
       sliced.loadFieldBuffers(
         new ArrowFieldNode(length.toLong, values.drop(skip).count(_ == null).toLong),
         Seq(

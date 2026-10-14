@@ -272,12 +272,17 @@ object Utils extends CometTypeShim with Logging {
       // rebases the offsets to zero and leaves those bytes out.
       val written =
         if (fieldVectors.forall(offsetsStartAtZero)) root else root.slice(0, root.getRowCount)
-      val writer = new ArrowStreamWriter(written, provider, Channels.newChannel(out))
-      writer.start()
-      writer.writeBatch()
-      if (written ne root) written.close()
-      root.clear()
-      writer.close()
+      try {
+        val writer = new ArrowStreamWriter(written, provider, Channels.newChannel(out))
+        writer.start()
+        writer.writeBatch()
+        root.clear()
+        writer.close()
+      } finally {
+        // The slice holds its own references on the batch's buffers, so it is closed even when the
+        // write fails, as it does when a cancelled broadcast interrupts the task.
+        if (written ne root) written.close()
+      }
 
       if (out.size() > 0) {
         (batch.numRows().toLong, cbbos.toChunkedByteBuffer)
