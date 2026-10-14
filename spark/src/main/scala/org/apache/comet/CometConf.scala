@@ -135,15 +135,14 @@ object CometConf extends ShimCometConf {
   val COMET_ICEBERG_NATIVE_WRITE_ENABLED: ConfigEntry[Boolean] =
     conf("spark.comet.write.iceberg.enabled")
       .category(CATEGORY_EXEC)
-      .doc(
-        "Whether Comet plans Iceberg writes and writes their data files natively. Comet " +
-          "replaces Spark's combined V2 write operator with a file writer (inside AQE) under a " +
-          "committer (outside AQE), and writes the data files of each eligible write with its " +
-          "native (iceberg-rust) writer. Other writes use Iceberg's own writer, and Iceberg " +
-          "commits every write. Merge-on-read writes keep Spark's operator. Set this to false " +
-          "to plan Spark's own V2 write operator.")
+      .doc("Whether Comet plans Iceberg writes and writes their data files natively. When " +
+        "enabled, Comet replaces Spark's combined V2 write operator with a file writer " +
+        "(inside AQE) under a committer (outside AQE), and writes the data files of each " +
+        "eligible write with its native (iceberg-rust) writer. Other writes use Iceberg's own " +
+        "writer, and Iceberg commits every write. Merge-on-read writes keep Spark's operator. " +
+        "When disabled, Spark plans its own V2 write operator.")
       .booleanConf
-      .createWithDefault(true)
+      .createWithDefault(false)
 
   val COMET_ICEBERG_DATA_FILE_CONCURRENCY_LIMIT: ConfigEntry[Int] =
     conf("spark.comet.scan.icebergNative.dataFileConcurrencyLimit")
