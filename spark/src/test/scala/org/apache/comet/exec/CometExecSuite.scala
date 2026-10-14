@@ -786,12 +786,58 @@ class CometExecSuite extends CometTestBase {
     }
   }
 
+  test("a native broadcast join nested in a Spark-staying join keeps its bridge (#6008)") {
+    // The outer FULL OUTER BNLJ stays on Spark, but its build side is itself a broadcast hash join
+    // of a native Parquet table with a bridged text table. clearWastedBuildSideBridges must stop at
+    // the inner CometBroadcastExchangeExec so that native join keeps its bridge, rather than walk
+    // through it and revert the inner scan. Pins the stop-at-CometBroadcastExchangeExec case.
+    withTempDir { dir =>
+      val probePath = s"${dir.getAbsolutePath}/probe.parquet"
+      val factPath = s"${dir.getAbsolutePath}/fact.parquet"
+      val dimPath = s"${dir.getAbsolutePath}/dim.txt"
+      withSQLConf(CometConf.COMET_ENABLED.key -> "false") {
+        spark.range(0, 20).selectExpr("CAST(id AS INT) AS ok", "id AS x").write.parquet(probePath)
+        spark.range(0, 100).selectExpr("CAST(id AS INT) AS k", "id AS v").write.parquet(factPath)
+        spark.range(0, 5).selectExpr("CAST(id AS STRING) AS value").write.text(dimPath)
+      }
+      for (aqe <- Seq(false, true)) {
+        withSQLConf(SQLConf.ADAPTIVE_EXECUTION_ENABLED.key -> aqe.toString) {
+          spark.read.parquet(probePath).createOrReplaceTempView("nest_outer")
+          spark.read.parquet(factPath).createOrReplaceTempView("nest_fact")
+          spark.read.text(dimPath).createOrReplaceTempView("nest_dim")
+          val (_, cometPlan) = checkSparkAnswer(sql("""
+              |SELECT /*+ BROADCAST(ib) */ o.x, ib.v
+              |FROM nest_outer o
+              |FULL OUTER JOIN (
+              |  SELECT /*+ BROADCAST(t) */ p.k AS k, p.v AS v
+              |  FROM nest_fact p JOIN nest_dim t ON p.k = CAST(t.value AS INT)
+              |) ib
+              |ON o.ok > ib.k
+              |""".stripMargin))
+          // Inner join runs natively and keeps its text bridge.
+          assert(
+            collect(cometPlan) { case j: CometBroadcastHashJoinExec => j }.nonEmpty,
+            s"aqe=$aqe: the inner join should be a CometBroadcastHashJoinExec:\n" +
+              cometPlan.treeString)
+          assert(
+            collect(cometPlan) { case s: CometSparkToColumnarExec => s }.nonEmpty,
+            s"aqe=$aqe: the inner join must keep its text bridge:\n${cometPlan.treeString}")
+          // Outer full outer join stays on Spark.
+          assert(
+            collect(cometPlan) { case j: BroadcastNestedLoopJoinExec => j }.nonEmpty,
+            s"aqe=$aqe: the outer full outer join must stay a Spark BNLJ:\n${cometPlan.treeString}")
+        }
+      }
+    }
+  }
+
   test("Spark 3.4 AQE DPP with a V1 Parquet fact and a text dimension (#6008)") {
-    // On Spark 3.4, CometScanRule keeps a V1 scan that carries an AQE DPP filter on Spark
-    // (CometScanRule.scala:199), so this Parquet fact is not native, hasOnlyNativeScans is false,
-    // and the build side is never tagged or bridged. This pins that the feature stays out of the
-    // way on 3.4: DPP remains live and the answer matches Spark. The SKIP_COMET_BROADCAST_TAG path
-    // needs a native fact; the Iceberg test in CometBroadcastBuildSideSuite covers it. See #6008.
+    // On Spark 3.4, CometScanRule.transformV1Scan has an "AQE Dynamic Partition Pruning requires
+    // Spark 3.5+" fallback that keeps a V1 scan with an AQE DPP filter on Spark. So this Parquet
+    // fact is not native, hasOnlyNativeScans is false, and the build side is never tagged or
+    // bridged. The feature stays out of the way on 3.4: DPP stays live and the answer matches
+    // Spark. The SKIP_COMET_BROADCAST_TAG path needs a native fact; the Iceberg test in
+    // CometBroadcastBuildSideSuite covers it. See #6008.
     assume(!isSpark35Plus, "This test covers the Spark 3.4 V1-fact DPP fallback")
     withSQLConf(
       SQLConf.USE_V1_SOURCE_LIST.key -> "parquet",
