@@ -1124,6 +1124,10 @@ mod tests {
         let decoded = deserialize_dv_bitmap(&native_bytes(&values)).unwrap();
         let expected: RoaringTreemap = values.into_iter().collect();
         assert_eq!(decoded, expected);
+        // `native_bytes` emits an entry for every key up to the maximum, so key 1 is an empty
+        // partition. The decoder must omit it without shifting key 2's partition index.
+        let keys: Vec<u32> = decoded.bitmaps().map(|(key, _)| key).collect();
+        assert_eq!(keys, vec![0, 2]);
     }
 
     #[test]
@@ -1142,6 +1146,24 @@ mod tests {
         let decoded = deserialize_dv_bitmap(&data).unwrap();
         let (_, decoded_bitmap) = decoded.bitmaps().next().unwrap();
         assert_eq!(decoded_bitmap.serialized_size(), compressed_size);
+
+        // Dense native DVs now reach `build_access_plan`, so the same container must survive
+        // plan construction. Group 0 (rows 0..600_000) is fully deleted and must be skipped;
+        // group 1 (rows 600_000..1_200_000) has its first 400_000 rows deleted, leaving a
+        // trailing run of 200_000 live rows to select.
+        assert_eq!(decoded.len(), 1_000_000);
+        let plan = full_file_access_plan(&[600_000, 600_000], &decoded).unwrap();
+        assert_eq!(&plan.inner()[0], &RowGroupAccess::Skip);
+        match &plan.inner()[1] {
+            RowGroupAccess::Selection(sel) => {
+                let selectors: Vec<RowSelector> = sel.clone().into();
+                assert_eq!(
+                    selectors,
+                    vec![RowSelector::skip(400_000), RowSelector::select(200_000)]
+                );
+            }
+            other => panic!("expected selection, got {other:?}"),
+        }
     }
 
     #[test]
