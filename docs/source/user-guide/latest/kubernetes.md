@@ -61,26 +61,24 @@ REVISION: 1
 TEST SUITE: None
 ```
 
-Create an example Spark SQL application file named `comet-sql.yaml`. The query uses a generated
-range, so it does not require an external data source. Its `EXPLAIN` output also makes it possible
-to verify that Comet is executing the query.
+Create an example Spark SQL application file named `comet-dataframe-pi.yaml`. This application uses
+Spark's DataFrame API, so it exercises Comet without requiring an external data source.
 
 ```bash
 apiVersion: sparkoperator.k8s.io/v1beta2
 kind: SparkApplication
 metadata:
-  name: comet-sql
+  name: comet-dataframe-pi
   namespace: default
 spec:
   type: Scala
   mode: cluster
   image: apache/datafusion-comet
   imagePullPolicy: IfNotPresent
-  mainClass: org.apache.spark.sql.hive.thriftserver.SparkSQLCLIDriver
-  mainApplicationFile: local:///opt/spark/jars/spark-hive-thriftserver_2.13-4.1.3.jar
+  mainClass: org.apache.spark.examples.sql.SparkDataFramePi
+  mainApplicationFile: local:///opt/spark/examples/jars/spark-examples_2.13-4.1.3.jar
   arguments:
-    - "-e"
-    - "EXPLAIN SELECT sum(id * id) FROM range(1000000); SELECT sum(id * id) FROM range(1000000);"
+    - "10"
   sparkConf:
     "spark.executor.extraClassPath": "/opt/spark/jars/comet-spark-spark4.1_2.13-$COMET_VERSION.jar"
     "spark.driver.extraClassPath": "/opt/spark/jars/comet-spark-spark4.1_2.13-$COMET_VERSION.jar"
@@ -90,6 +88,7 @@ spec:
     "spark.executor.memoryOverhead": "1g"
     "spark.comet.enabled": "true"
     "spark.comet.exec.enabled": "true"
+    "spark.comet.explain.native.enabled": "true"
     "spark.comet.shuffle.enabled": "true"
     "spark.comet.shuffle.mode": "auto"
     "spark.shuffle.manager": "org.apache.spark.sql.comet.execution.shuffle.CometShuffleManager"
@@ -115,44 +114,45 @@ Refer to [Comet builds](#comet-docker-images)
 Run Apache Spark application with Comet enabled
 
 ```bash
-kubectl apply -f comet-sql.yaml
-sparkapplication.sparkoperator.k8s.io/comet-sql created
+kubectl apply -f comet-dataframe-pi.yaml
+sparkapplication.sparkoperator.k8s.io/comet-dataframe-pi created
 ```
 
 Check application status
 
 ```bash
-kubectl get sparkapp comet-sql
+kubectl get sparkapp comet-dataframe-pi
 
-NAME        STATUS      ATTEMPTS   START   FINISH   AGE
-comet-sql   COMPLETED   1          ...     ...      ...
+NAME                 STATUS      ATTEMPTS   START   FINISH   AGE
+comet-dataframe-pi   COMPLETED   1          ...     ...      ...
 ```
 
 To check more runtime details
 
 ```bash
-kubectl describe sparkapplication comet-sql
+kubectl describe sparkapplication comet-dataframe-pi
 
 ....
 Events:
   Type    Reason                     Age    From                          Message
   ----    ------                     ----   ----                          -------
-  Normal  SparkApplicationSubmitted  8m15s  spark-application-controller  SparkApplication comet-sql was submitted successfully
-  Normal  SparkDriverRunning         7m18s  spark-application-controller  Driver comet-sql-driver is running
-  Normal  SparkExecutorPending       7m11s  spark-application-controller  Executor [comet-sql-68732195ab217303-exec-1] is pending
-  Normal  SparkExecutorRunning       7m10s  spark-application-controller  Executor [comet-sql-68732195ab217303-exec-1] is running
-  Normal  SparkExecutorCompleted     7m5s   spark-application-controller  Executor [comet-sql-68732195ab217303-exec-1] completed
-  Normal  SparkDriverCompleted       7m4s   spark-application-controller  Driver comet-sql-driver completed
+  Normal  SparkApplicationSubmitted  8m15s  spark-application-controller  SparkApplication comet-dataframe-pi was submitted successfully
+  Normal  SparkDriverRunning         7m18s  spark-application-controller  Driver comet-dataframe-pi-driver is running
+  Normal  SparkExecutorPending       7m11s  spark-application-controller  Executor [comet-dataframe-pi-68732195ab217303-exec-1] is pending
+  Normal  SparkExecutorRunning       7m10s  spark-application-controller  Executor [comet-dataframe-pi-68732195ab217303-exec-1] is running
+  Normal  SparkExecutorCompleted     7m5s   spark-application-controller  Executor [comet-dataframe-pi-68732195ab217303-exec-1] completed
+  Normal  SparkDriverCompleted       7m4s   spark-application-controller  Driver comet-dataframe-pi-driver completed
 
 ```
 
 Get Driver Logs
 
 ```bash
-kubectl logs comet-sql-driver
+kubectl logs comet-dataframe-pi-driver
 ```
 
-The `EXPLAIN` output in the driver log includes Comet operators such as `CometRange` and
-`CometHashAggregate`. The query output contains the computed sum `333332833333500000`.
+The driver log contains the computed approximation (`Pi is roughly ...`). To confirm that Comet
+executed the DataFrame query, inspect the executor log for the native plan emitted by
+`spark.comet.explain.native.enabled`.
 
 More info on [Kube Spark operator](https://www.kubeflow.org/docs/components/spark-operator/getting-started/)
