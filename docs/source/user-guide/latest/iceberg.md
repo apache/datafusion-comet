@@ -574,6 +574,82 @@ or GCS each read is a GET request, so the task waits two request round trips per
 small next to uploading a large file, but a write that produces many small files, such as a fanout
 write over many partitions, pays it for every one of them.
 
+#### Plans for each fallback
+
+Each eligibility rule above is planned to be lifted, waiting on work in another project, or not
+planned. A rule is lifted only once the native writer matches iceberg-java's output for the
+setting it guards.
+
+Planned to be lifted:
+
+- `write.object-storage.enabled=true`
+  ([#6956](https://github.com/apache/datafusion-comet/issues/6956))
+- S3 settings that cannot change the written object or where it is written, such as `fs.s3a.impl`,
+  connection pool sizes, timeouts, retries and multipart sizes; S3A and `FileIO` credential
+  providers and S3A server-side encryption settings that have a native equivalent; and ACL,
+  storage class, requester-pays and `dsse-kms` settings
+  ([#6957](https://github.com/apache/datafusion-comet/issues/6957))
+- Merge-on-read `DELETE`, `UPDATE` and `MERGE` on a format version 2 table
+  ([#6240](https://github.com/apache/datafusion-comet/issues/6240))
+- Bloom filters (`write.parquet.bloom-filter-*`)
+  ([PR #5724](https://github.com/apache/datafusion-comet/pull/5724))
+- Copy-on-write `DELETE`, `UPDATE` and `MERGE`, and `rewrite_data_files`, on a format version 3
+  table with Iceberg 1.10 or newer
+  ([#6669](https://github.com/apache/datafusion-comet/issues/6669))
+- Azure (`abfs`, `abfss`, `wasb`, `wasbs`) and `oss` data locations, S3-compatible scheme
+  aliases, and a `gs` data location opened through `HadoopFileIO`
+  ([#6958](https://github.com/apache/datafusion-comet/issues/6958))
+- `parquet.*` table properties and session Hadoop settings that iceberg-java's writer never reads,
+  `write.parquet.shred-variants=true`, and an `io-impl` table property
+  ([#6955](https://github.com/apache/datafusion-comet/issues/6955))
+- `parquet.enable.dictionary`, `parquet.columnindex.truncate.length`,
+  `write.parquet.page-version=v2`, `write.parquet.stats-enabled.column.*`, non-default
+  `row-group-check-*` counts, and a zstd level of `0`
+  ([#6954](https://github.com/apache/datafusion-comet/issues/6954))
+- `uuid` and `unknown` columns
+  ([#6959](https://github.com/apache/datafusion-comet/issues/6959))
+- An identity partition on a `float` or `double` column
+  ([PR #6851](https://github.com/apache/datafusion-comet/pull/6851))
+
+Waiting on work in another project:
+
+- `hdfs` data locations wait on an HDFS backend in iceberg-rust
+  ([apache/iceberg-rust#3111](https://github.com/apache/iceberg-rust/pull/3111)).
+  [#5894](https://github.com/apache/datafusion-comet/issues/5894) tracks Comet's side.
+- Merge-on-read on a format version 3 table, which writes deletion vectors, waits on a deletion
+  vector writer in iceberg-rust
+  ([apache/iceberg-rust#2580](https://github.com/apache/iceberg-rust/issues/2580)).
+- Table encryption (`encryption.*` properties, an `EncryptingFileIO`, or Iceberg's standard
+  encryption manager) waits on iceberg-rust's table encryption support
+  ([apache/iceberg-rust#2034](https://github.com/apache/iceberg-rust/issues/2034)).
+- `variant` columns wait on native `VariantType` support in Comet
+  ([#5433](https://github.com/apache/datafusion-comet/issues/5433), part of [#5438](https://github.com/apache/datafusion-comet/issues/5438)).
+- A negative zstd compression level waits on parquet-rs, which accepts zstd levels 1 to 22
+  ([apache/arrow-rs#11545](https://github.com/apache/arrow-rs/issues/11545)).
+- Format version 4 waits on a final version 4 table specification.
+- `timestamp_ns`, `geometry` and `geography` columns wait on Iceberg's Spark integration, which has
+  no Spark type for them, so Spark cannot write such a table today.
+
+Not planned:
+
+- Avro and ORC data files. The native writer writes Parquet only, and iceberg-rust has no Avro or
+  ORC data file writer.
+- Any other data location scheme, which no iceberg-rust storage backend serves.
+- A custom location provider (`write.location-provider.impl`, or one a custom `TableOperations`
+  supplies), a `FileIO` outside the recognized classes, or a custom encryption manager. Each is
+  user code that runs in the JVM, which the native writer cannot call.
+- S3 object tags, access points, transfer acceleration, dual-stack and cross-region endpoints,
+  remote signing, and custom S3A signers. Comet's native S3 client has no equivalent for them.
+- Any other `write.parquet.*` key, such as one a newer Iceberg version adds. The allowlist fails
+  closed so that no key is silently ignored, and Comet vets each new key when it adds support for
+  that Iceberg version.
+- A size or limit that is not a positive Java int, a format version 1 spec that mixes a live field
+  with a `void` field whose source column was dropped, and an `s3`, `s3a` or `gs` location with no
+  bucket in its authority. iceberg-java rejects these writes, or resolves the location through
+  Hadoop, so falling back keeps its behavior and its error.
+- A gzip level outside 0 to 9 or a brotli level outside 0 to 11. parquet-rs rejects them, and
+  translating each one is not planned.
+
 ### Failure handling
 
 Eligibility is decided entirely at plan time. That includes the reflection surface: every

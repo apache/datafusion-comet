@@ -174,8 +174,8 @@ The gate has these properties, and a new rule has to keep them:
 Most rules are pinned by `CometIcebergWriteDetectionSuite`, and the row lineage rule by
 `CometIcebergWriteActionSuite`. Add a case to the detection suite for any new rule, for
 both the accepted and the declined side. Update the eligibility table in the user guide in the same
-change. Whether each existing restriction is permanent is tracked in
-[#5643](https://github.com/apache/datafusion-comet/issues/5643).
+change, and the user guide's "Plans for each fallback" lists, which record whether each rule is
+planned to be lifted, waiting on another project, or not planned.
 
 ## What Crosses the Boundary
 
