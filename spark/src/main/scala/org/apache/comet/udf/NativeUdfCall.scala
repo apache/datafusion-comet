@@ -29,9 +29,10 @@ import org.apache.spark.sql.types.DataType
  * in the session builds one for each call it resolves.
  *
  * Comet replaces it with a `NativeScalarUdf` that runs the function named `name` in the library
- * at `libraryPath`. Spark has no way to evaluate it, so `eval` throws. That happens only when
- * Comet does not take the operator holding the call, and failing there makes the fallback visible
- * rather than silent.
+ * at `libraryPath`. Spark has no way to evaluate it, so `eval` throws, which makes a fallback
+ * visible rather than silent. Spark evaluates a call where Comet does not take the operator
+ * holding it, and while planning in a few places: over local data, in a filter on partition
+ * columns, and to sample the keys of a global sort.
  *
  * `argumentTypes` is the registered signature, one type per child. Spark's analyzer checks each
  * call against it, disregarding nullability, and inserts no casts.
