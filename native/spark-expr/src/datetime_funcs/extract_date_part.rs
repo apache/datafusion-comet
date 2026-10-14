@@ -16,9 +16,11 @@
 // under the License.
 
 use crate::utils::array_with_timezone;
+use arrow::array::timezone::Tz;
 use arrow::array::{Array, ArrayRef, Decimal128Array, Int32Array, TimestampMicrosecondArray};
 use arrow::compute::{date_part, DatePart};
 use arrow::datatypes::{DataType, Int32Type, TimeUnit::Microsecond};
+use chrono::{DateTime, NaiveDateTime, Offset, TimeZone};
 use datafusion::common::cast::as_time64_nanosecond_array;
 use datafusion::common::{internal_datafusion_err, utils::take_function_args, Result, ScalarValue};
 use datafusion::logical_expr::{
@@ -132,6 +134,36 @@ macro_rules! extract_date_part {
                 let [arg]: [ColumnarValue; 1] = args.args.try_into().map_err(|_| {
                     internal_datafusion_err!(concat!($fn_name, " expects exactly one argument"))
                 })?;
+                if let ColumnarValue::Scalar(ScalarValue::TimestampMicrosecond(
+                    Some(micros),
+                    Some(_),
+                )) = &arg
+                {
+                    if !is_utc_timezone(&self.timezone)
+                        && DateTime::from_timestamp_micros(*micros).is_none()
+                    {
+                        // Spark's microsecond timestamps extend beyond chrono's calendar range.
+                        // The first/last timezone offset spans extend indefinitely, so obtain the
+                        // offset at the nearest endpoint without clamping the clock value. This
+                        // retains chrono-tz's documented far-future DST limitation.
+                        let timezone: Tz = self.timezone.parse()?;
+                        let endpoint = if *micros < 0 {
+                            NaiveDateTime::MIN
+                        } else {
+                            NaiveDateTime::MAX
+                        };
+                        let offset = timezone
+                            .offset_from_utc_datetime(&endpoint)
+                            .fix()
+                            .local_minus_utc();
+                        // Reduce before adding the offset to avoid overflowing at i64 endpoints.
+                        let local_micros = micros.rem_euclid(MICROS_PER_DAY)
+                            + i64::from(offset) * MICROS_PER_SECOND;
+                        return Ok(ColumnarValue::Scalar(ScalarValue::Int32(Some($kernel(
+                            local_micros,
+                        )))));
+                    }
+                }
                 let is_scalar = matches!(arg, ColumnarValue::Scalar(_));
                 let array = arg.into_array(1)?;
                 let result: ArrayRef =
@@ -353,6 +385,28 @@ mod tests {
             ("UTC", Some("UTC"), None, [0, 0, 0]),
             ("America/Los_Angeles", Some("UTC"), None, [0, 0, 0]),
             ("America/Los_Angeles", None, None, [0, 0, 0]),
+            ("UTC", Some("UTC"), Some(i64::MAX), [4, 0, 54]),
+            ("UTC", Some("UTC"), Some(i64::MIN), [19, 59, 5]),
+            ("+01:00", Some("UTC"), Some(i64::MAX), [5, 0, 54]),
+            ("+01:00", Some("UTC"), Some(i64::MIN), [20, 59, 5]),
+            ("-03:30", Some("UTC"), Some(i64::MAX), [0, 30, 54]),
+            ("-03:30", Some("UTC"), Some(i64::MIN), [16, 29, 5]),
+            ("Asia/Kathmandu", Some("UTC"), Some(i64::MAX), [9, 45, 54]),
+            ("Asia/Kathmandu", Some("UTC"), Some(i64::MIN), [1, 40, 21]),
+            (
+                "America/Los_Angeles",
+                Some("UTC"),
+                Some(i64::MAX),
+                [20, 0, 54],
+            ),
+            (
+                "America/Los_Angeles",
+                Some("UTC"),
+                Some(i64::MIN),
+                [12, 6, 7],
+            ),
+            ("America/Los_Angeles", None, Some(i64::MAX), [4, 0, 54]),
+            ("America/Los_Angeles", None, Some(i64::MIN), [19, 59, 5]),
         ] {
             let input = ScalarValue::TimestampMicrosecond(micros, input_timezone.map(Into::into));
             let udfs: [Box<dyn ScalarUDFImpl>; 3] = [
