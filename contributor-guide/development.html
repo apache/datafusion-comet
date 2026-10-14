@@ -1139,6 +1139,11 @@ directory:</p>
 still assert while recording, so a recorded file cannot contradict what hadoop-azure does. The
 file is written only when every case ran. Review the diff of the regenerated files before
 committing them: each line that changes is a behaviour change on that hadoop-azure release.</p>
+<p>The FileSystem cross-check in <code class="docutils literal notranslate"><span class="pre">AbfsAuthParitySuite</span></code> is tagged <code class="docutils literal notranslate"><span class="pre">org.apache.comet.tags.AzureTest</span></code>.
+It initializes a real <code class="docutils literal notranslate"><span class="pre">AzureBlobFileSystem</span></code>, so it passes only when the test-scoped hadoop-azure
+matches the Hadoop the build runs on. A build against another Hadoop, where no matching
+hadoop-azure is pinned, can skip it with <code class="docutils literal notranslate"><span class="pre">-DtagsToExclude=org.apache.comet.tags.AzureTest</span></code> and
+still run the resolver cases.</p>
 </section>
 </section>
 <section id="benchmark">
