@@ -26,7 +26,7 @@ import org.apache.spark.SparkThrowable
 import org.apache.spark.sql.{Column, CometTestBase, DataFrame, Row}
 import org.apache.spark.sql.catalyst.expressions.{Alias, Cast, FromUnixTime, In, InSet, Literal, StructsToJson, TruncDate, TruncTimestamp}
 import org.apache.spark.sql.catalyst.optimizer.{ConvertToLocalRelation, OptimizeIn, SimplifyExtractValueOps}
-import org.apache.spark.sql.comet.{CometFilterExec, CometProjectExec, CometSortExec, CometTakeOrderedAndProjectExec}
+import org.apache.spark.sql.comet.{CometFilterExec, CometProjectExec, CometSortExec, CometTakeOrderedAndProjectExec, CometWindowExec}
 import org.apache.spark.sql.execution.{LocalTableScanExec, ProjectExec, SparkPlan}
 import org.apache.spark.sql.execution.adaptive.AdaptiveSparkPlanHelper
 import org.apache.spark.sql.functions._
@@ -191,6 +191,44 @@ class CometExpressionSuite extends CometTestBase with AdaptiveSparkPlanHelper {
             sql(s"SELECT id, f, d FROM strict_fp_topk ORDER BY $col ASC NULLS LAST, id LIMIT 4"),
             Seq(classOf[CometTakeOrderedAndProjectExec]))
         }
+      }
+    }
+  }
+
+  test("nested sort keys keep root and interior null ordering separate in native") {
+    withTable("nested_null_sort_native") {
+      sql("CREATE TABLE nested_null_sort_native (id INT, a ARRAY<INT>) USING parquet")
+      sql("""INSERT INTO nested_null_sort_native VALUES
+        |(1, array(1, 2)), (2, array(CAST(NULL AS INT), 1)),
+        |(3, NULL), (4, array(0, 1)), (5, array(CAST(NULL AS INT), 1))""".stripMargin)
+
+      withSQLConf(CometConf.getExprAllowIncompatConfigKey("SortOrder") -> "false") {
+        checkSparkAnswerAndOperator(
+          sql("SELECT id FROM nested_null_sort_native ORDER BY a ASC NULLS LAST, id"),
+          Seq(classOf[CometSortExec]))
+        checkSparkAnswerAndOperator(
+          sql("SELECT id FROM nested_null_sort_native ORDER BY a DESC NULLS FIRST, id LIMIT 3"),
+          Seq(classOf[CometTakeOrderedAndProjectExec]))
+        checkSparkAnswerAndOperator(
+          sql(
+            "SELECT id, DENSE_RANK() OVER (ORDER BY a ASC NULLS LAST) AS r " +
+              "FROM nested_null_sort_native"),
+          Seq(classOf[CometWindowExec]))
+      }
+    }
+  }
+
+  test("default array_sort orders null elements last and nested nulls first in native") {
+    withTable("nested_null_array_sort_native") {
+      sql("CREATE TABLE nested_null_array_sort_native (a ARRAY<ARRAY<INT>>) USING parquet")
+      sql("""INSERT INTO nested_null_array_sort_native VALUES
+        |(array(array(1), array(CAST(NULL AS INT)), CAST(NULL AS ARRAY<INT>), array(0))),
+        |(CAST(NULL AS ARRAY<ARRAY<INT>>))""".stripMargin)
+
+      withSQLConf(CometConf.COMET_SCALA_UDF_CODEGEN_ENABLED.key -> "false") {
+        checkSparkAnswerAndOperator(
+          sql("SELECT array_sort(a) FROM nested_null_array_sort_native"),
+          Seq(classOf[CometProjectExec]))
       }
     }
   }

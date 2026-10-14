@@ -812,6 +812,22 @@ class CometArrayExpressionSuite extends CometTestBase with AdaptiveSparkPlanHelp
     }
   }
 
+  test("default array_sort with collated strings keeps Spark comparison") {
+    assume(isSpark40Plus)
+    withParquetTable(Seq(("a", "B"), ("B", "a")), "collated_array_sort") {
+      val a = "CAST(_1 AS STRING COLLATE UTF8_LCASE)"
+      val b = "CAST(_2 AS STRING COLLATE UTF8_LCASE)"
+      val inputs = Seq(s"array($a, $b)", s"array(named_struct('s', $a), named_struct('s', $b))")
+      withSQLConf(CometConf.COMET_SCALA_UDF_CODEGEN_ENABLED.key -> "false") {
+        inputs.foreach { input =>
+          checkSparkAnswerAndFallbackReason(
+            s"SELECT array_sort($input) FROM collated_array_sort",
+            "expression has no native path")
+        }
+      }
+    }
+  }
+
   test("array extrema - runtime NaN representations") {
     withParquetTable(Seq((Float.NaN, Double.NaN)), "floating_point_extrema") {
       for (strict <- Seq(false, true)) {
