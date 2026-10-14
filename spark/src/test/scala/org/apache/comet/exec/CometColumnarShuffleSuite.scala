@@ -755,9 +755,11 @@ abstract class CometColumnarShuffleSuite extends CometTestBase with AdaptiveSpar
   }
 
   test("columnar shuffle stores offsets as lengths only with zstd") {
-    withParquetTable((0 until 40000).map(i => (i, s"str$i", Seq(s"a$i", s"bb$i"))), "tbl") {
+    withParquetTable(rowsWithOffsets(40000), "tbl") {
       // 10 partitions take the bypass-merge writer, 201 the sort-based one
       Seq(10, 201).foreach { numPartitions =>
+        def shuffled: DataFrame = sql("SELECT * FROM tbl").repartition(numPartitions, $"_1")
+
         def bytesWritten(codec: String, offsetsAsLengths: Boolean): Long = {
           var bytes = 0L
           withSQLConf(
@@ -766,9 +768,9 @@ abstract class CometColumnarShuffleSuite extends CometTestBase with AdaptiveSpar
             CometConf.COMET_SHUFFLE_COMPRESSION_CODEC.key -> codec,
             CometConf.COMET_SHUFFLE_COMPRESSION_OFFSETS_AS_LENGTHS.key ->
               offsetsAsLengths.toString) {
-            val shuffled = sql("SELECT * FROM tbl").repartition(numPartitions, $"_1")
-            checkShuffleAnswer(shuffled, 1)
-            bytes = cometShuffleMetric(shuffled, "shuffleBytesWritten")
+            val df = shuffled
+            checkShuffleAnswer(df, 1)
+            bytes = cometShuffleMetric(df, "shuffleBytesWritten")
           }
           bytes
         }
@@ -781,6 +783,14 @@ abstract class CometColumnarShuffleSuite extends CometTestBase with AdaptiveSpar
             "offsets")
         // LZ4 does not take lengths yet, so the setting must not change what it writes
         assert(bytesWritten("lz4", offsetsAsLengths = true) == bytesWritten("lz4", false))
+
+        // At the suite's own threshold, every partition gets many blocks of a few rows, which
+        // the sort-based writer spills to files and merges
+        withSQLConf(
+          CometConf.COMET_SHUFFLE_COMPRESSION_CODEC.key -> "zstd",
+          CometConf.COMET_SHUFFLE_COMPRESSION_OFFSETS_AS_LENGTHS.key -> "true") {
+          checkShuffleAnswer(shuffled, 1)
+        }
       }
     }
   }

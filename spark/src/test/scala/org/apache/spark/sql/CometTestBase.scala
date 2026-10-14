@@ -1357,6 +1357,29 @@ abstract class CometTestBase
     }.get
   }
 
+  /**
+   * Rows for shuffle tests of offsets stored as lengths, with offsets in a string, a binary, an
+   * array, a map and a struct column. Every tenth string is null, and so are the binary, array
+   * and map values next to it. The string after it is empty, and every array holds a null.
+   */
+  protected def rowsWithOffsets(
+      n: Int): Seq[(Int, String, Array[Byte], Seq[String], Map[String, String], (String, Int))] =
+    (0 until n).map { i =>
+      val s = i % 10 match {
+        case 0 => null
+        case 1 => ""
+        case _ => s"str$i"
+      }
+      val value = Option(s)
+      (
+        i,
+        s,
+        value.map(_.getBytes("UTF-8")).orNull,
+        value.map(v => Seq(v, null, s"a$i")).orNull,
+        value.map(v => Map(s"k$i" -> v)).orNull,
+        (s, i))
+    }
+
   protected def checkCometExchange(
       df: DataFrame,
       cometExchangeNum: Int,
