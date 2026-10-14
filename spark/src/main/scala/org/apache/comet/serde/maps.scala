@@ -132,6 +132,28 @@ object CometMapExtract extends CometExpressionSerde[GetMapValue] {
   }
 }
 
+/**
+ * Shared gate for the native map builders, `map_from_arrays` and `map_from_entries`, which tell
+ * keys apart by their bits. Spark's `ArrayBasedMapBuilder` finds a duplicate `FLOAT` or `DOUBLE`
+ * key in a `HashMap` of boxed values, where every NaN is one key, and a duplicate struct or array
+ * key in a `TreeMap` in Spark's SQL ordering, where `-0.0` equals `0.0` too. From Spark 4.0 it
+ * also normalizes a `FLOAT` or `DOUBLE` key before the lookup, unless
+ * `spark.sql.legacy.disableMapKeyNormalization` is set, so the two zeros are one key and
+ * `map_from_entries` stores `0.0`. A key type that holds a float at any depth is therefore
+ * `Incompatible` on every version.
+ */
+private object MapBuilderKeySupport {
+  val floatingPointReason: String =
+    "Spark finds duplicate map keys that hold a `FLOAT` or `DOUBLE` by value, so NaNs with " +
+      "different bits are one key, and so are `-0.0` and `0.0` inside a struct or array key. " +
+      "From Spark 4.0, a `-0.0` key is also normalized to `0.0`, unless " +
+      "`spark.sql.legacy.disableMapKeyNormalization` is set. Comet's native map construction " +
+      "compares the keys' bits ([#6549](https://github.com/apache/datafusion-comet/issues/6549))."
+
+  def hasFloatingPointKey(dataType: MapType): Boolean =
+    SupportLevel.containsType(dataType.keyType, classOf[FloatType], classOf[DoubleType])
+}
+
 private object MapKeyDedupPolicySupport {
   val incompatibleReason: String =
     s"`${SQLConf.MAP_KEY_DEDUP_POLICY.key}` is set to " +
@@ -154,13 +176,15 @@ private object MapKeyDedupPolicySupport {
 object CometMapFromArrays extends CometExpressionSerde[MapFromArrays] {
 
   override def getIncompatibleReasons(): Seq[String] =
-    Seq(MapKeyDedupPolicySupport.incompatibleReason)
+    Seq(MapBuilderKeySupport.floatingPointReason, MapKeyDedupPolicySupport.incompatibleReason)
 
   override def getCompatibleNotes(): Seq[String] =
     Seq(MapKeyDedupPolicySupport.nullKeyReason)
 
   override def getSupportLevel(expr: MapFromArrays): SupportLevel = {
-    if (MapKeyDedupPolicySupport.isLastWin) {
+    if (MapBuilderKeySupport.hasFloatingPointKey(expr.dataType)) {
+      Incompatible(Some(MapBuilderKeySupport.floatingPointReason))
+    } else if (MapKeyDedupPolicySupport.isLastWin) {
       Incompatible(Some(MapKeyDedupPolicySupport.incompatibleReason))
     } else {
       Compatible(None)
@@ -214,7 +238,11 @@ object CometMapFromEntries
     "`BinaryType` is not supported as a map value in `map_from_entries`"
 
   override def getIncompatibleReasons(): Seq[String] =
-    Seq(keyUnsupportedReason, valueUnsupportedReason, MapKeyDedupPolicySupport.incompatibleReason)
+    Seq(
+      keyUnsupportedReason,
+      valueUnsupportedReason,
+      MapBuilderKeySupport.floatingPointReason,
+      MapKeyDedupPolicySupport.incompatibleReason)
 
   override def getCompatibleNotes(): Seq[String] =
     Seq(MapKeyDedupPolicySupport.nullKeyReason)
@@ -224,6 +252,8 @@ object CometMapFromEntries
       Incompatible(Some(keyUnsupportedReason))
     } else if (SupportLevel.containsType(expr.dataType.valueType, classOf[BinaryType])) {
       Incompatible(Some(valueUnsupportedReason))
+    } else if (MapBuilderKeySupport.hasFloatingPointKey(expr.dataType)) {
+      Incompatible(Some(MapBuilderKeySupport.floatingPointReason))
     } else if (MapKeyDedupPolicySupport.isLastWin) {
       Incompatible(Some(MapKeyDedupPolicySupport.incompatibleReason))
     } else {
