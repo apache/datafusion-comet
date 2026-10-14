@@ -36,8 +36,8 @@ pub(crate) fn cast_boolean_to_timestamp(
     target_tz: &Option<Arc<str>>,
 ) -> SparkResult<ArrayRef> {
     let bool_array = array_ref.as_boolean();
-    // true is 1 microsecond and false is 0. `from_unary` maps every slot in one
-    // pass and copies the null buffer. The conversion cannot fail.
+    // true is 1 microsecond and false is 0. `from_unary` runs on null slots too
+    // and copies the null buffer; `i64::from` on a bool is infallible for any bit pattern.
     let micros = PrimitiveArray::<TimestampMicrosecondType>::from_unary(bool_array, |value| {
         i64::from(value)
     });

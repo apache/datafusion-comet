@@ -159,8 +159,8 @@ where
             float_timestamp_micros(val).ok_or_else(|| float_timestamp_error(val))
         })?)
     } else {
-        // Legacy and Try null the same values ANSI rejects, and they do not allocate
-        // an error string to do it.
+        // Legacy and Try null the same values ANSI rejects, without allocating an
+        // error string. `unary_opt` skips null slots, so this closure does not see them.
         Ok(array.unary_opt(|value| float_timestamp_micros(value.into())))
     }
 }
@@ -366,10 +366,8 @@ where
     T: ArrowPrimitiveType,
     T::Native: Into<i64>,
 {
-    // saturating_mul limits to i64::MIN/MAX on overflow instead of panicking,
-    // which could occur when converting extreme values (e.g., Long.MIN_VALUE).
-    // Spark does this in every eval mode. `unary` is infallible, so it also runs
-    // on null slots; saturating_mul cannot panic on those.
+    // saturating_mul limits to i64::MIN/MAX. Spark does this in every eval mode.
+    // `unary` runs on null slots too; saturating_mul is infallible for any bit pattern.
     array.unary(|value| {
         let seconds: i64 = value.into();
         seconds.saturating_mul(MICROS_PER_SECOND)
