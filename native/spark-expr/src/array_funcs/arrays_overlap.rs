@@ -28,6 +28,13 @@
 //!   - true  if any non-null element appears in both arrays
 //!   - null  if no definite overlap but either array contains null elements
 //!   - false if no overlap and neither array contains null elements
+//!
+//! Spark looks up flat elements in a hash set of boxed values, so every NaN is one value, while
+//! `-0.0` and `0.0` are two. Spark 4.2.0 normalizes the arguments in the plan (SPARK-54918), and
+//! 4.0.5, 4.1.4 and 4.2.1 normalize flat `FLOAT` and `DOUBLE` elements before the lookup
+//! (SPARK-59602), which makes the zeros one value too. `spark_arrays_overlap_normalized` matches
+//! them that way, and the serde picks it on those versions. Nested elements compare in Spark's SQL
+//! ordering on every version, where the zeros are equal.
 
 use arrow::array::{
     make_comparator, Array, ArrayRef, AsArray, BooleanArray, GenericListArray, GenericStringArray,
@@ -46,16 +53,21 @@ use datafusion::common::{exec_err, utils::take_function_args, HashSet, Result, S
 use datafusion::logical_expr::{
     ColumnarValue, ScalarFunctionArgs, ScalarUDFImpl, Signature, TypeSignature, Volatility,
 };
+use num::Float;
 use std::cmp::Ordering;
 use std::hash::Hash;
 use std::ops::Range;
 use std::sync::Arc;
 
-use crate::float_semantics::{canonicalize_nan, has_float_leaf, normalize_nested_floats};
+use crate::float_semantics::{
+    canonicalize_nan, has_float_leaf, normalize_float, normalize_nested_floats,
+};
 
 #[derive(Debug, PartialEq, Eq, Hash)]
 pub struct SparkArraysOverlap {
     signature: Signature,
+    /// Whether `-0.0` and `0.0` are one value in a flat `FLOAT` or `DOUBLE` array.
+    normalize_floats: bool,
 }
 
 impl Default for SparkArraysOverlap {
@@ -68,13 +80,27 @@ impl SparkArraysOverlap {
     pub fn new() -> Self {
         Self {
             signature: Signature::new(TypeSignature::Any(2), Volatility::Immutable),
+            normalize_floats: false,
+        }
+    }
+
+    /// Normalizes flat `FLOAT` and `DOUBLE` elements before matching them, so `-0.0` and `0.0` are
+    /// one value as well as every NaN.
+    pub fn normalized() -> Self {
+        Self {
+            normalize_floats: true,
+            ..Self::new()
         }
     }
 }
 
 impl ScalarUDFImpl for SparkArraysOverlap {
     fn name(&self) -> &str {
-        "spark_arrays_overlap"
+        if self.normalize_floats {
+            "spark_arrays_overlap_normalized"
+        } else {
+            "spark_arrays_overlap"
+        }
     }
 
     fn signature(&self) -> &Signature {
@@ -117,10 +143,12 @@ impl ScalarUDFImpl for SparkArraysOverlap {
                     (DataType::List(_), DataType::List(_)) => arrays_overlap_list::<i32>(
                         left_arr.as_any().downcast_ref().unwrap(),
                         right_arr.as_any().downcast_ref().unwrap(),
+                        self.normalize_floats,
                     )?,
                     (DataType::LargeList(_), DataType::LargeList(_)) => arrays_overlap_list::<i64>(
                         left_arr.as_any().downcast_ref().unwrap(),
                         right_arr.as_any().downcast_ref().unwrap(),
+                        self.normalize_floats,
                     )?,
                     (l, r) => {
                         return exec_err!(
@@ -138,10 +166,12 @@ impl ScalarUDFImpl for SparkArraysOverlap {
                     (DataType::List(_), DataType::List(_)) => arrays_overlap_list::<i32>(
                         left_arr.as_any().downcast_ref().unwrap(),
                         right_arr.as_any().downcast_ref().unwrap(),
+                        self.normalize_floats,
                     )?,
                     (DataType::LargeList(_), DataType::LargeList(_)) => arrays_overlap_list::<i64>(
                         left_arr.as_any().downcast_ref().unwrap(),
                         right_arr.as_any().downcast_ref().unwrap(),
+                        self.normalize_floats,
                     )?,
                     (l, r) => {
                         return exec_err!(
@@ -163,9 +193,12 @@ impl ScalarUDFImpl for SparkArraysOverlap {
 /// - true if any non-null element appears in both arrays
 /// - null if no definite overlap but either array contains null elements
 /// - false otherwise
+///
+/// With `normalize_floats`, `-0.0` and `0.0` are one value in a flat `FLOAT` or `DOUBLE` array.
 fn arrays_overlap_list<OffsetSize: OffsetSizeTrait>(
     left: &GenericListArray<OffsetSize>,
     right: &GenericListArray<OffsetSize>,
+    normalize_floats: bool,
 ) -> Result<ArrayRef> {
     let left_values = left.values();
     let right_values = right.values();
@@ -189,6 +222,18 @@ fn arrays_overlap_list<OffsetSize: OffsetSizeTrait>(
             )
         };
     }
+    macro_rules! float_fast_path {
+        ($t:ty) => {
+            if normalize_floats {
+                flat_fast_path!(
+                    NormalizedFloats(left_values.as_primitive::<$t>()),
+                    NormalizedFloats(right_values.as_primitive::<$t>())
+                )
+            } else {
+                primitive_fast_path!($t)
+            }
+        };
+    }
 
     match left_values.data_type() {
         DataType::Boolean => flat_fast_path!(left_values.as_boolean(), right_values.as_boolean()),
@@ -200,8 +245,8 @@ fn arrays_overlap_list<OffsetSize: OffsetSizeTrait>(
         DataType::UInt16 => primitive_fast_path!(UInt16Type),
         DataType::UInt32 => primitive_fast_path!(UInt32Type),
         DataType::UInt64 => primitive_fast_path!(UInt64Type),
-        DataType::Float32 => primitive_fast_path!(Float32Type),
-        DataType::Float64 => primitive_fast_path!(Float64Type),
+        DataType::Float32 => float_fast_path!(Float32Type),
+        DataType::Float64 => float_fast_path!(Float64Type),
         DataType::Date32 => primitive_fast_path!(Date32Type),
         DataType::Date64 => primitive_fast_path!(Date64Type),
         DataType::Decimal128(_, _) => primitive_fast_path!(Decimal128Type),
@@ -348,6 +393,30 @@ impl<'a, S: OffsetSizeTrait> KeyedValues<'a> for &'a GenericStringArray<S> {
     }
 }
 
+/// Flat `FLOAT` or `DOUBLE` elements keyed after [`normalize_float`], so `-0.0` and `0.0` share a
+/// key as well as every NaN.
+struct NormalizedFloats<'a, T: ArrowPrimitiveType>(&'a PrimitiveArray<T>);
+
+// Derived impls would require `T: Copy`, which Arrow's type markers don't implement.
+impl<T: ArrowPrimitiveType> Clone for NormalizedFloats<'_, T> {
+    fn clone(&self) -> Self {
+        *self
+    }
+}
+
+impl<T: ArrowPrimitiveType> Copy for NormalizedFloats<'_, T> {}
+
+impl<'a, T: ArrowPrimitiveType> KeyedValues<'a> for NormalizedFloats<'a, T>
+where
+    T::Native: OverlapKey + Float,
+{
+    type Key = <T::Native as OverlapKey>::Key;
+
+    fn key_at(&self, i: usize) -> Option<Self::Key> {
+        (!self.0.is_null(i)).then(|| normalize_float(self.0.value(i)).overlap_key())
+    }
+}
+
 /// Above this many pairwise comparisons a hash probe beats the nested scan.
 const NESTED_SCAN_BUDGET: usize = 256;
 
@@ -407,9 +476,8 @@ fn normalize_list_element_floats<OffsetSize: OffsetSizeTrait>(
 
 /// Fallback for nested and otherwise unhandled element types.
 ///
-/// note: Spark's flat arrays_overlap (HashSet<Double>) treats -0.0 and 0.0 as different,
-/// only the nested path here treats them as equal. this normalization can't move into the
-/// flat fast path in arrays_overlap_list without breaking that difference.
+/// Spark compares nested elements in its SQL ordering on every version, so this path normalizes
+/// their floats whether or not the flat fast path in arrays_overlap_list does.
 fn arrays_overlap_list_generic<OffsetSize: OffsetSizeTrait>(
     left: &GenericListArray<OffsetSize>,
     right: &GenericListArray<OffsetSize>,
@@ -538,11 +606,12 @@ fn needs_comparator(dt: &DataType) -> bool {
 mod tests {
     use super::*;
     use arrow::array::{
-        Float64Array, Float64Builder, Int32Array, Int32Builder, ListArray, ListBuilder,
-        StructArray, StructBuilder,
+        Float64Array, Float64Builder, Int32Array, Int32Builder, LargeListArray, ListArray,
+        ListBuilder, StructArray, StructBuilder,
     };
     use arrow::buffer::{NullBuffer, OffsetBuffer};
     use arrow::datatypes::{Field, Fields};
+    use datafusion::config::ConfigOptions;
 
     fn make_list_array(
         values: &Int32Array,
@@ -563,7 +632,7 @@ mod tests {
         let left = make_list_array(&Int32Array::from(vec![1, 2, 3]), &[0, 3], None);
         let right = make_list_array(&Int32Array::from(vec![3, 4, 5]), &[0, 3], None);
 
-        let result = arrays_overlap_list::<i32>(&left, &right)?;
+        let result = arrays_overlap_list::<i32>(&left, &right, false)?;
         let result = result.as_any().downcast_ref::<BooleanArray>().unwrap();
         assert!(result.value(0));
         assert!(result.is_valid(0));
@@ -576,7 +645,7 @@ mod tests {
         let left = make_list_array(&Int32Array::from(vec![1, 2]), &[0, 2], None);
         let right = make_list_array(&Int32Array::from(vec![3, 4]), &[0, 2], None);
 
-        let result = arrays_overlap_list::<i32>(&left, &right)?;
+        let result = arrays_overlap_list::<i32>(&left, &right, false)?;
         let result = result.as_any().downcast_ref::<BooleanArray>().unwrap();
         assert!(!result.value(0));
         assert!(result.is_valid(0));
@@ -605,6 +674,10 @@ mod tests {
             .map(|value| Some(value as f32))
             .chain([Some(-0.0)])
             .collect::<Vec<_>>();
+        let hash_sign_right = (17..=32)
+            .map(|value| Some(value as f32))
+            .chain([Some(-1.0)])
+            .collect::<Vec<_>>();
 
         let left = ListArray::from_iter_primitive::<Float32Type, _, _>([
             Some(vec![Some(positive_nan)]),
@@ -615,6 +688,8 @@ mod tests {
             Some(vec![Some(positive_nan), None]),
             Some(vec![Some(0.0), None]),
             Some(hash_nan_left),
+            Some(hash_zero_left.clone()),
+            Some(vec![Some(-1.0)]),
             Some(hash_zero_left),
         ]);
         let right = ListArray::from_iter_primitive::<Float32Type, _, _>([
@@ -627,11 +702,13 @@ mod tests {
             Some(vec![Some(-0.0)]),
             Some(hash_nan_right),
             Some(hash_zero_right),
+            Some(vec![Some(1.0)]),
+            Some(hash_sign_right),
         ]);
 
-        let result = arrays_overlap_list::<i32>(&left, &right)?;
-        let result = result.as_any().downcast_ref::<BooleanArray>().unwrap();
-        let expected = BooleanArray::from(vec![
+        // Every NaN is one value in both variants, and only the normalized one also makes the
+        // zeros one value. The last two rows check that other values keep their sign.
+        let boxed = BooleanArray::from(vec![
             Some(true),
             Some(true),
             Some(true),
@@ -641,8 +718,30 @@ mod tests {
             None,
             Some(true),
             Some(false),
+            Some(false),
+            Some(false),
         ]);
-        assert_eq!(result, &expected);
+        let normalized = BooleanArray::from(vec![
+            Some(true),
+            Some(true),
+            Some(true),
+            Some(true),
+            Some(true),
+            Some(true),
+            Some(true),
+            Some(true),
+            Some(true),
+            Some(false),
+            Some(false),
+        ]);
+        for (normalize_floats, expected) in [(false, boxed), (true, normalized)] {
+            let result = arrays_overlap_list::<i32>(&left, &right, normalize_floats)?;
+            assert_eq!(
+                result.as_boolean(),
+                &expected,
+                "normalize_floats: {normalize_floats}"
+            );
+        }
         Ok(())
     }
 
@@ -668,6 +767,10 @@ mod tests {
             .map(|value| Some(value as f64))
             .chain([Some(-0.0)])
             .collect::<Vec<_>>();
+        let hash_sign_right = (17..=32)
+            .map(|value| Some(value as f64))
+            .chain([Some(-1.0)])
+            .collect::<Vec<_>>();
 
         let left = ListArray::from_iter_primitive::<Float64Type, _, _>([
             Some(vec![Some(positive_nan)]),
@@ -678,6 +781,8 @@ mod tests {
             Some(vec![Some(positive_nan), None]),
             Some(vec![Some(0.0), None]),
             Some(hash_nan_left),
+            Some(hash_zero_left.clone()),
+            Some(vec![Some(-1.0)]),
             Some(hash_zero_left),
         ]);
         let right = ListArray::from_iter_primitive::<Float64Type, _, _>([
@@ -690,11 +795,13 @@ mod tests {
             Some(vec![Some(-0.0)]),
             Some(hash_nan_right),
             Some(hash_zero_right),
+            Some(vec![Some(1.0)]),
+            Some(hash_sign_right),
         ]);
 
-        let result = arrays_overlap_list::<i32>(&left, &right)?;
-        let result = result.as_any().downcast_ref::<BooleanArray>().unwrap();
-        let expected = BooleanArray::from(vec![
+        // Every NaN is one value in both variants, and only the normalized one also makes the
+        // zeros one value. The last two rows check that other values keep their sign.
+        let boxed = BooleanArray::from(vec![
             Some(true),
             Some(true),
             Some(true),
@@ -704,8 +811,108 @@ mod tests {
             None,
             Some(true),
             Some(false),
+            Some(false),
+            Some(false),
         ]);
-        assert_eq!(result, &expected);
+        let normalized = BooleanArray::from(vec![
+            Some(true),
+            Some(true),
+            Some(true),
+            Some(true),
+            Some(true),
+            Some(true),
+            Some(true),
+            Some(true),
+            Some(true),
+            Some(false),
+            Some(false),
+        ]);
+        for (normalize_floats, expected) in [(false, boxed), (true, normalized)] {
+            let result = arrays_overlap_list::<i32>(&left, &right, normalize_floats)?;
+            assert_eq!(
+                result.as_boolean(),
+                &expected,
+                "normalize_floats: {normalize_floats}"
+            );
+        }
+        Ok(())
+    }
+
+    /// Runs `udf` over two arguments, giving one value per row.
+    fn invoke(udf: &SparkArraysOverlap, args: [ColumnarValue; 2], rows: usize) -> Result<ArrayRef> {
+        let arg_fields = args
+            .iter()
+            .map(|arg| Arc::new(Field::new("arg", arg.data_type(), true)))
+            .collect();
+        udf.invoke_with_args(ScalarFunctionArgs {
+            args: args.into(),
+            arg_fields,
+            number_rows: rows,
+            return_field: Arc::new(Field::new("result", DataType::Boolean, true)),
+            config_options: Arc::new(ConfigOptions::default()),
+        })?
+        .into_array(rows)
+    }
+
+    #[test]
+    fn test_normalized_variant_makes_flat_signed_zeros_one_value() -> Result<()> {
+        // Row 0 holds the two zeros, and row 1 two values that differ only in sign.
+        let left = [Some(vec![Some(0.0)]), Some(vec![Some(1.0)])];
+        let right = [Some(vec![Some(-0.0)]), Some(vec![Some(-1.0)])];
+        let lists: [(ArrayRef, ArrayRef); 2] = [
+            (
+                Arc::new(ListArray::from_iter_primitive::<Float64Type, _, _>(
+                    left.clone(),
+                )),
+                Arc::new(ListArray::from_iter_primitive::<Float64Type, _, _>(
+                    right.clone(),
+                )),
+            ),
+            (
+                Arc::new(LargeListArray::from_iter_primitive::<Float64Type, _, _>(
+                    left,
+                )),
+                Arc::new(LargeListArray::from_iter_primitive::<Float64Type, _, _>(
+                    right,
+                )),
+            ),
+        ];
+
+        for (udf, name, zeros_match) in [
+            (SparkArraysOverlap::new(), "spark_arrays_overlap", false),
+            (
+                SparkArraysOverlap::normalized(),
+                "spark_arrays_overlap_normalized",
+                true,
+            ),
+        ] {
+            assert_eq!(udf.name(), name);
+            for (left, right) in &lists {
+                let columns = [
+                    ColumnarValue::Array(Arc::clone(left)),
+                    ColumnarValue::Array(Arc::clone(right)),
+                ];
+                let result = invoke(&udf, columns, 2)?;
+                assert_eq!(
+                    result.as_boolean(),
+                    &BooleanArray::from(vec![zeros_match, false]),
+                    "{name} over {} columns",
+                    left.data_type()
+                );
+
+                let scalars = [
+                    ColumnarValue::Scalar(ScalarValue::try_from_array(left, 0)?),
+                    ColumnarValue::Scalar(ScalarValue::try_from_array(right, 0)?),
+                ];
+                let result = invoke(&udf, scalars, 1)?;
+                assert_eq!(
+                    result.as_boolean(),
+                    &BooleanArray::from(vec![zeros_match]),
+                    "{name} over {} scalars",
+                    left.data_type()
+                );
+            }
+        }
         Ok(())
     }
 
@@ -715,7 +922,7 @@ mod tests {
         let left = make_list_array(&Int32Array::from(vec![Some(1), None]), &[0, 2], None);
         let right = make_list_array(&Int32Array::from(vec![None, Some(2)]), &[0, 2], None);
 
-        let result = arrays_overlap_list::<i32>(&left, &right)?;
+        let result = arrays_overlap_list::<i32>(&left, &right, false)?;
         let result = result.as_any().downcast_ref::<BooleanArray>().unwrap();
         assert!(result.is_null(0));
         Ok(())
@@ -727,7 +934,7 @@ mod tests {
         let left = make_list_array(&Int32Array::from(vec![Some(1), None]), &[0, 2], None);
         let right = make_list_array(&Int32Array::from(vec![1, 2]), &[0, 2], None);
 
-        let result = arrays_overlap_list::<i32>(&left, &right)?;
+        let result = arrays_overlap_list::<i32>(&left, &right, false)?;
         let result = result.as_any().downcast_ref::<BooleanArray>().unwrap();
         assert!(result.value(0));
         assert!(result.is_valid(0));
@@ -744,7 +951,7 @@ mod tests {
         );
         let right = make_list_array(&Int32Array::from(Vec::<i32>::new()), &[0, 0], None);
 
-        let result = arrays_overlap_list::<i32>(&left, &right)?;
+        let result = arrays_overlap_list::<i32>(&left, &right, false)?;
         let result = result.as_any().downcast_ref::<BooleanArray>().unwrap();
         assert!(!result.value(0));
         assert!(result.is_valid(0));
@@ -761,7 +968,7 @@ mod tests {
         );
         let right = make_list_array(&Int32Array::from(vec![1, 2]), &[0, 2], None);
 
-        let result = arrays_overlap_list::<i32>(&left, &right)?;
+        let result = arrays_overlap_list::<i32>(&left, &right, false)?;
         let result = result.as_any().downcast_ref::<BooleanArray>().unwrap();
         assert!(result.is_null(0));
         Ok(())
@@ -773,7 +980,7 @@ mod tests {
         let left = make_list_array(&Int32Array::from(vec![None::<i32>]), &[0, 1], None);
         let right = make_list_array(&Int32Array::from(vec![None::<i32>]), &[0, 1], None);
 
-        let result = arrays_overlap_list::<i32>(&left, &right)?;
+        let result = arrays_overlap_list::<i32>(&left, &right, false)?;
         let result = result.as_any().downcast_ref::<BooleanArray>().unwrap();
         assert!(result.is_null(0));
         Ok(())
@@ -799,7 +1006,7 @@ mod tests {
             None,
         );
 
-        let result = arrays_overlap_list::<i32>(&left, &right)?;
+        let result = arrays_overlap_list::<i32>(&left, &right, false)?;
         let result = result.as_any().downcast_ref::<BooleanArray>().unwrap();
         assert!(
             result.is_null(0),
@@ -815,7 +1022,7 @@ mod tests {
         let left = make_list_array(&Int32Array::from(vec![Some(3), None]), &[0, 2], None);
         let right = make_list_array(&Int32Array::from(vec![1, 2]), &[0, 2], None);
 
-        let result = arrays_overlap_list::<i32>(&left, &right)?;
+        let result = arrays_overlap_list::<i32>(&left, &right, false)?;
         let result = result.as_any().downcast_ref::<BooleanArray>().unwrap();
         assert!(result.is_null(0));
         Ok(())
@@ -864,13 +1071,13 @@ mod tests {
         // NaN matches itself, and signed zeros are equal, matching Spark.
         let left = make_nested_float_list(&[&[f64::NAN]]);
         let right = make_nested_float_list(&[&[f64::NAN]]);
-        let result = arrays_overlap_list::<i32>(&left, &right)?;
+        let result = arrays_overlap_list::<i32>(&left, &right, false)?;
         let result = result.as_any().downcast_ref::<BooleanArray>().unwrap();
         assert!(result.value(0));
 
         let left = make_nested_float_list(&[&[0.0]]);
         let right = make_nested_float_list(&[&[-0.0]]);
-        let result = arrays_overlap_list::<i32>(&left, &right)?;
+        let result = arrays_overlap_list::<i32>(&left, &right, false)?;
         let result = result.as_any().downcast_ref::<BooleanArray>().unwrap();
         assert!(result.value(0));
         Ok(())
@@ -881,7 +1088,7 @@ mod tests {
         // [[-NaN]] vs [[NaN]] => true
         let left = make_nested_float_list(&[&[-f64::NAN]]);
         let right = make_nested_float_list(&[&[f64::NAN]]);
-        let result = arrays_overlap_list::<i32>(&left, &right)?;
+        let result = arrays_overlap_list::<i32>(&left, &right, false)?;
         let result = result.as_any().downcast_ref::<BooleanArray>().unwrap();
         assert!(result.value(0));
         Ok(())
@@ -899,7 +1106,7 @@ mod tests {
             Some(vec![Some(5), Some(6)]),
         ]);
 
-        let result = arrays_overlap_list::<i32>(&left, &right)?;
+        let result = arrays_overlap_list::<i32>(&left, &right, false)?;
         let result = result.as_any().downcast_ref::<BooleanArray>().unwrap();
         assert!(result.is_valid(0));
         assert!(result.value(0));
@@ -912,7 +1119,7 @@ mod tests {
         let left = make_nested_list(vec![Some(vec![Some(1), Some(2)])]);
         let right = make_nested_list(vec![Some(vec![Some(3), Some(4)])]);
 
-        let result = arrays_overlap_list::<i32>(&left, &right)?;
+        let result = arrays_overlap_list::<i32>(&left, &right, false)?;
         let result = result.as_any().downcast_ref::<BooleanArray>().unwrap();
         assert!(result.is_valid(0));
         assert!(!result.value(0));
@@ -925,7 +1132,7 @@ mod tests {
         let left = make_nested_list(vec![Some(vec![Some(1), None])]);
         let right = make_nested_list(vec![Some(vec![Some(1), None])]);
 
-        let result = arrays_overlap_list::<i32>(&left, &right)?;
+        let result = arrays_overlap_list::<i32>(&left, &right, false)?;
         let result = result.as_any().downcast_ref::<BooleanArray>().unwrap();
         assert!(result.is_valid(0));
         assert!(result.value(0));
@@ -941,7 +1148,7 @@ mod tests {
             Some(vec![Some(3), Some(4)]),
         ]);
 
-        let result = arrays_overlap_list::<i32>(&left, &right)?;
+        let result = arrays_overlap_list::<i32>(&left, &right, false)?;
         let result = result.as_any().downcast_ref::<BooleanArray>().unwrap();
         assert!(result.is_valid(0));
         assert!(!result.value(0));
@@ -954,7 +1161,7 @@ mod tests {
         let left = make_nested_list(vec![Some(vec![None])]);
         let right = make_nested_list(vec![Some(vec![None])]);
 
-        let result = arrays_overlap_list::<i32>(&left, &right)?;
+        let result = arrays_overlap_list::<i32>(&left, &right, false)?;
         let result = result.as_any().downcast_ref::<BooleanArray>().unwrap();
         assert!(
             result.is_valid(0),
@@ -976,7 +1183,7 @@ mod tests {
         ]);
         let right = make_nested_list(vec![Some(vec![Some(1), Some(2)])]);
 
-        let result = arrays_overlap_list::<i32>(&left, &right)?;
+        let result = arrays_overlap_list::<i32>(&left, &right, false)?;
         let result = result.as_any().downcast_ref::<BooleanArray>().unwrap();
         assert!(result.is_valid(0));
         assert!(result.value(0));
@@ -1024,7 +1231,7 @@ mod tests {
         let left = make_struct_list(vec![Some((Some(1), Some(2))), Some((Some(3), Some(4)))]);
         let right = make_struct_list(vec![Some((Some(3), Some(4))), Some((Some(5), Some(6)))]);
 
-        let result = arrays_overlap_list::<i32>(&left, &right)?;
+        let result = arrays_overlap_list::<i32>(&left, &right, false)?;
         let result = result.as_any().downcast_ref::<BooleanArray>().unwrap();
         assert!(result.is_valid(0));
         assert!(result.value(0));
@@ -1037,7 +1244,7 @@ mod tests {
         let left = make_struct_list(vec![Some((Some(1), Some(2)))]);
         let right = make_struct_list(vec![Some((Some(3), Some(4)))]);
 
-        let result = arrays_overlap_list::<i32>(&left, &right)?;
+        let result = arrays_overlap_list::<i32>(&left, &right, false)?;
         let result = result.as_any().downcast_ref::<BooleanArray>().unwrap();
         assert!(result.is_valid(0));
         assert!(!result.value(0));
@@ -1050,7 +1257,7 @@ mod tests {
         let left = make_struct_list(vec![Some((Some(1), None))]);
         let right = make_struct_list(vec![Some((Some(1), None))]);
 
-        let result = arrays_overlap_list::<i32>(&left, &right)?;
+        let result = arrays_overlap_list::<i32>(&left, &right, false)?;
         let result = result.as_any().downcast_ref::<BooleanArray>().unwrap();
         assert!(result.is_valid(0));
         assert!(result.value(0));
@@ -1063,7 +1270,7 @@ mod tests {
         let left = make_struct_list(vec![Some((Some(1), Some(2))), Some((Some(1), None))]);
         let right = make_struct_list(vec![Some((Some(1), Some(2)))]);
 
-        let result = arrays_overlap_list::<i32>(&left, &right)?;
+        let result = arrays_overlap_list::<i32>(&left, &right, false)?;
         let result = result.as_any().downcast_ref::<BooleanArray>().unwrap();
         assert!(result.is_valid(0));
         assert!(result.value(0));
@@ -1117,7 +1324,7 @@ mod tests {
         let left = make_list(vec![1.0, 2.0]);
         let right = make_list(vec![1.0, 2.0]);
 
-        let result = arrays_overlap_list::<i32>(&left, &right)?;
+        let result = arrays_overlap_list::<i32>(&left, &right, false)?;
         let result = result.as_any().downcast_ref::<BooleanArray>().unwrap();
         assert!(result.value(0));
         assert!(result.value(1));
@@ -1130,7 +1337,7 @@ mod tests {
         let left = make_struct_float_list(vec![Some(-0.0)]);
         let right = make_struct_float_list(vec![Some(0.0)]);
 
-        let result = arrays_overlap_list::<i32>(&left, &right)?;
+        let result = arrays_overlap_list::<i32>(&left, &right, false)?;
         let result = result.as_any().downcast_ref::<BooleanArray>().unwrap();
         assert!(result.is_valid(0));
         assert!(result.value(0));
@@ -1143,7 +1350,7 @@ mod tests {
         let left = make_struct_list(vec![None]);
         let right = make_struct_list(vec![Some((Some(1), Some(2)))]);
 
-        let result = arrays_overlap_list::<i32>(&left, &right)?;
+        let result = arrays_overlap_list::<i32>(&left, &right, false)?;
         let result = result.as_any().downcast_ref::<BooleanArray>().unwrap();
         assert!(result.is_null(0));
         Ok(())

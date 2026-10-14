@@ -363,6 +363,16 @@ object CometArraysOverlap
   override def getSupportLevel(expr: ArraysOverlap): SupportLevel =
     ArrayElementEqualitySupport.getSupportLevel("arrays_overlap", expr.left.dataType)
 
+  /**
+   * The native variant for a Spark version. Where ArraySetSupport.normalizesFloats holds, Spark
+   * normalizes flat FLOAT and DOUBLE elements, so -0.0 and 0.0 are one value, and the
+   * `_normalized` variant matches them that way. Earlier releases keep the zeros apart. Both
+   * variants treat every NaN as one value and compare nested elements in Spark's SQL ordering.
+   */
+  def nativeFunction(version: String): String =
+    if (ArraySetSupport.normalizesFloats(version)) "spark_arrays_overlap_normalized"
+    else "spark_arrays_overlap"
+
   override def convert(
       expr: ArraysOverlap,
       inputs: Seq[Attribute],
@@ -371,7 +381,7 @@ object CometArraysOverlap
     val rightArrayExprProto = exprToProtoInternal(expr.right, inputs, binding)
 
     val arraysOverlapScalarExpr = scalarFunctionExprToProtoWithReturnType(
-      "spark_arrays_overlap",
+      nativeFunction(SPARK_VERSION),
       BooleanType,
       false,
       leftArrayExprProto,
@@ -626,7 +636,8 @@ private[comet] object ArraySetSupport {
   // Spark 4.2.0 normalizes the arguments of these functions in the plan (SPARK-54918), and 4.0.5,
   // 4.1.4 and 4.2.1 normalize while evaluating them (SPARK-59602). Either way, Spark treats -0.0
   // and 0.0, and every NaN, as one value at any depth, which the spark_ variants match. Earlier
-  // releases keep -0.0 and 0.0 apart in a flat array. The check reads the version rather than a
+  // releases keep -0.0 and 0.0 apart in a flat array. Both changes cover arrays_overlap too (see
+  // CometArraysOverlap.nativeFunction). The check reads the version rather than a
   // KnownFloatingPointNormalized marker, because SPARK-59602 adds no marker, and SPARK-54918
   // normalizes CreateArray, If, CaseWhen and Coalesce without wrapping the resulting array.
   def normalizesFloats(version: String): Boolean =
