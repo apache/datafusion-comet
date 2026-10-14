@@ -15,11 +15,11 @@
 // specific language governing permissions and limitations
 // under the License.
 
-//! Integer to timestamp casts. 8192 rows, the default batch size.
-//! Shapes: no nulls, sparse nulls (1 in 10), dense nulls (7 in 8), and an
-//! all-null i64 batch. Values are deterministic.
+//! i64 to timestamp. 8192 rows. The narrower integer widths use the same
+//! `unary` kernel. Shapes: no nulls, sparse nulls (1 in 10), dense nulls
+//! (7 in 8), and an all-null batch.
 
-use arrow::array::{Int16Array, Int32Array, Int64Array, Int8Array, RecordBatch};
+use arrow::array::{Int64Array, RecordBatch};
 use arrow::datatypes::{DataType, Field, Schema, TimeUnit};
 use criterion::{criterion_group, criterion_main, Criterion};
 use datafusion::physical_expr::expressions::Column;
@@ -60,46 +60,6 @@ fn timestamp_cast() -> Cast {
     )
 }
 
-fn batch_i8(nulls: Nulls) -> RecordBatch {
-    let values: Int8Array = (0..BATCH_SIZE)
-        .map(|i| {
-            if is_null(i, nulls) {
-                None
-            } else {
-                Some(i as i8)
-            }
-        })
-        .collect();
-    record_batch(DataType::Int8, Arc::new(values))
-}
-
-fn batch_i16(nulls: Nulls) -> RecordBatch {
-    let values: Int16Array = (0..BATCH_SIZE)
-        .map(|i| {
-            if is_null(i, nulls) {
-                None
-            } else {
-                Some(i as i16)
-            }
-        })
-        .collect();
-    record_batch(DataType::Int16, Arc::new(values))
-}
-
-fn batch_i32(nulls: Nulls) -> RecordBatch {
-    // Seconds around 2020-09-13, a realistic cast(int as timestamp) input.
-    let values: Int32Array = (0..BATCH_SIZE)
-        .map(|i| {
-            if is_null(i, nulls) {
-                None
-            } else {
-                Some(1_600_000_000 + i as i32)
-            }
-        })
-        .collect();
-    record_batch(DataType::Int32, Arc::new(values))
-}
-
 fn batch_i64(nulls: Nulls) -> RecordBatch {
     let values: Int64Array = (0..BATCH_SIZE)
         .map(|i| {
@@ -125,33 +85,6 @@ fn criterion_benchmark(c: &mut Criterion) {
             b.iter(|| black_box(cast.evaluate(black_box(&batch)).unwrap()))
         });
     };
-
-    bench("cast_i8_to_timestamp: no nulls", batch_i8(Nulls::None));
-    bench(
-        "cast_i8_to_timestamp: sparse nulls",
-        batch_i8(Nulls::Sparse),
-    );
-    bench("cast_i8_to_timestamp: dense nulls", batch_i8(Nulls::Dense));
-
-    bench("cast_i16_to_timestamp: no nulls", batch_i16(Nulls::None));
-    bench(
-        "cast_i16_to_timestamp: sparse nulls",
-        batch_i16(Nulls::Sparse),
-    );
-    bench(
-        "cast_i16_to_timestamp: dense nulls",
-        batch_i16(Nulls::Dense),
-    );
-
-    bench("cast_i32_to_timestamp: no nulls", batch_i32(Nulls::None));
-    bench(
-        "cast_i32_to_timestamp: sparse nulls",
-        batch_i32(Nulls::Sparse),
-    );
-    bench(
-        "cast_i32_to_timestamp: dense nulls",
-        batch_i32(Nulls::Dense),
-    );
 
     bench("cast_i64_to_timestamp: no nulls", batch_i64(Nulls::None));
     bench(

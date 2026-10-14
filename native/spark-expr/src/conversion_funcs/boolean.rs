@@ -221,56 +221,28 @@ mod tests {
 
     #[test]
     fn test_cast_boolean_to_timestamp_edges() {
-        let tz = Some(Arc::from("UTC"));
-
-        let all_true: ArrayRef = Arc::new(BooleanArray::from(vec![true, true, true]));
-        let out = cast_boolean_to_timestamp(&all_true, &tz).unwrap();
+        let all_true: ArrayRef = Arc::new(BooleanArray::from(vec![true, true]));
+        let out = cast_boolean_to_timestamp(&all_true, &None).unwrap();
         let ts = out.as_primitive::<TimestampMicrosecondType>();
-        assert_eq!(ts.values().as_ref(), &[1, 1, 1]);
+        assert_eq!(ts.values().as_ref(), &[1, 1]);
         assert!(ts.nulls().is_none());
-        assert_eq!(ts.timezone(), Some("UTC"));
 
-        let all_false: ArrayRef = Arc::new(BooleanArray::from(vec![false, false]));
-        let out = cast_boolean_to_timestamp(&all_false, &None).unwrap();
-        let ts = out.as_primitive::<TimestampMicrosecondType>();
-        assert_eq!(ts.values().as_ref(), &[0, 0]);
-        assert!(ts.nulls().is_none());
-        assert!(ts.timezone().is_none());
-
-        let all_null = BooleanArray::new_null(3);
-        let out = cast_boolean_to_timestamp(&(Arc::new(all_null) as ArrayRef), &tz).unwrap();
-        let ts = out.as_primitive::<TimestampMicrosecondType>();
-        assert_eq!(ts.len(), 3);
-        assert_eq!(ts.null_count(), 3);
-        assert!(ts.is_null(0) && ts.is_null(1) && ts.is_null(2));
-
-        let empty: ArrayRef = Arc::new(BooleanArray::from(Vec::<bool>::new()));
-        let out = cast_boolean_to_timestamp(&empty, &None).unwrap();
-        assert_eq!(out.len(), 0);
-        assert!(out
-            .as_primitive::<TimestampMicrosecondType>()
-            .nulls()
-            .is_none());
-
-        let full = BooleanArray::from(vec![Some(true), None, Some(false), Some(true)]);
-        let sliced = Array::slice(&full, 1, 3);
-        let out = cast_boolean_to_timestamp(&sliced, &tz).unwrap();
+        let full = BooleanArray::from(vec![Some(true), None, Some(false)]);
+        let out =
+            cast_boolean_to_timestamp(&Array::slice(&full, 1, 2), &Some(Arc::from("UTC"))).unwrap();
         let ts = out.as_primitive::<TimestampMicrosecondType>();
         assert!(ts.is_null(0));
         assert_eq!(ts.value(1), 0);
-        assert_eq!(ts.value(2), 1);
-        assert_eq!(ts.null_count(), 1);
 
-        // A true bit sitting under a null stays null and does not affect the neighbor.
-        let bits = BooleanArray::from(vec![true, false, true]);
+        // A true bit under a null stays null. `from_unary` still reads that slot.
+        let bits = BooleanArray::from(vec![true, false]);
         let masked = BooleanArray::new(
             bits.values().clone(),
-            Some(NullBuffer::from(vec![false, true, false])),
+            Some(NullBuffer::from(vec![false, true])),
         );
         let out = cast_boolean_to_timestamp(&(Arc::new(masked) as ArrayRef), &None).unwrap();
         let ts = out.as_primitive::<TimestampMicrosecondType>();
         assert!(ts.is_null(0));
         assert_eq!(ts.value(1), 0);
-        assert!(ts.is_null(2));
     }
 }

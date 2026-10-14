@@ -15,15 +15,11 @@
 // specific language governing permissions and limitations
 // under the License.
 
-//! Float, decimal, and boolean casts to timestamp. 8192 rows.
-//! Shapes: no nulls, sparse nulls (1 in 10), dense nulls (7 in 8).
-//! Float benches cover legacy and ANSI on finite values, plus a legacy
-//! batch that mixes NaN and infinities (those become nulls). Decimal benches
-//! cover scale 6 at each null density, and scales 0 and 18 with no nulls.
+//! f64, decimal, and boolean casts to timestamp. 8192 rows. f32 uses the same
+//! kernel as f64. Shapes: no nulls, sparse nulls (1 in 10), dense nulls (7 in 8).
+//! Float covers legacy and ANSI, plus a legacy batch of NaN and infinities.
 
-use arrow::array::{
-    ArrayRef, BooleanArray, Decimal128Array, Float32Array, Float64Array, RecordBatch,
-};
+use arrow::array::{ArrayRef, BooleanArray, Decimal128Array, Float64Array, RecordBatch};
 use arrow::datatypes::{DataType, Field, Schema, TimeUnit};
 use criterion::{criterion_group, criterion_main, Criterion};
 use datafusion::physical_expr::expressions::Column;
@@ -87,19 +83,6 @@ fn batch_f64(nulls: Nulls, non_finite: bool) -> RecordBatch {
     record_batch(DataType::Float64, Arc::new(values))
 }
 
-fn batch_f32(nulls: Nulls) -> RecordBatch {
-    let values: Float32Array = (0..BATCH_SIZE)
-        .map(|i| {
-            if is_null(i, nulls) {
-                None
-            } else {
-                Some((i as f32) * 0.5 - 100.0)
-            }
-        })
-        .collect();
-    record_batch(DataType::Float32, Arc::new(values))
-}
-
 fn batch_bool(nulls: Nulls) -> RecordBatch {
     let values: BooleanArray = (0..BATCH_SIZE)
         .map(|i| {
@@ -141,21 +124,6 @@ fn criterion_benchmark(c: &mut Criterion) {
     };
 
     bench(
-        "cast_f32_to_timestamp: legacy, no nulls",
-        &legacy,
-        batch_f32(Nulls::None),
-    );
-    bench(
-        "cast_f32_to_timestamp: legacy, sparse nulls",
-        &legacy,
-        batch_f32(Nulls::Sparse),
-    );
-    bench(
-        "cast_f32_to_timestamp: legacy, dense nulls",
-        &legacy,
-        batch_f32(Nulls::Dense),
-    );
-    bench(
         "cast_f64_to_timestamp: legacy, no nulls",
         &legacy,
         batch_f64(Nulls::None, false),
@@ -181,21 +149,6 @@ fn criterion_benchmark(c: &mut Criterion) {
         batch_f64(Nulls::None, true),
     );
 
-    bench(
-        "cast_f32_to_timestamp: ansi, no nulls",
-        &ansi,
-        batch_f32(Nulls::None),
-    );
-    bench(
-        "cast_f32_to_timestamp: ansi, sparse nulls",
-        &ansi,
-        batch_f32(Nulls::Sparse),
-    );
-    bench(
-        "cast_f32_to_timestamp: ansi, dense nulls",
-        &ansi,
-        batch_f32(Nulls::Dense),
-    );
     bench(
         "cast_f64_to_timestamp: ansi, no nulls",
         &ansi,
@@ -237,17 +190,6 @@ fn criterion_benchmark(c: &mut Criterion) {
         &legacy,
         batch_decimal(6, Nulls::All),
     );
-    bench(
-        "cast_decimal_to_timestamp: scale 0, no nulls",
-        &legacy,
-        batch_decimal(0, Nulls::None),
-    );
-    bench(
-        "cast_decimal_to_timestamp: scale 18, no nulls",
-        &legacy,
-        batch_decimal(18, Nulls::None),
-    );
-
     bench(
         "cast_bool_to_timestamp: no nulls",
         &legacy,
