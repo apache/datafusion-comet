@@ -55,10 +55,10 @@ SELECT grp, corr(y, x), corr(x, y) FROM test_corr_const GROUP BY grp ORDER BY gr
 statement
 SET spark.sql.ansi.enabled=true
 
-query expect_error(DIVIDE_BY_ZERO)
+query expect_error_class(DIVIDE_BY_ZERO)
 SELECT corr(y, x) FROM test_corr_const WHERE grp = 'a'
 
-query expect_error(DIVIDE_BY_ZERO)
+query expect_error_class(DIVIDE_BY_ZERO)
 SELECT grp, corr(x, y) FROM test_corr_const GROUP BY grp
 
 -- Spark checks for zero and one rows before dividing, even in ANSI mode

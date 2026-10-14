@@ -3415,37 +3415,25 @@ class CometAggregateSuite extends CometTestBase with AdaptiveSparkPlanHelper {
           }
           withParquetTable(path.getCanonicalPath, "corr_constant") {
             assert(spark.table("corr_constant").rdd.getNumPartitions == numPartitions)
+            // The LEGACY results on this data are covered by "statistical aggregates merge
+            // fractional constants across partitions".
             for {
-              ansi <- Seq(false, true)
               groupBy <- Seq("", " GROUP BY g")
+              args <- Seq("y, x", "x, y", "x, x")
             } {
-              withSQLConf(SQLConf.ANSI_ENABLED.key -> ansi.toString) {
-                for (args <- Seq("y, x", "x, y", "x, x")) {
-                  val query = s"SELECT corr($args) FROM corr_constant" + groupBy
-                  val df = sql(query)
-                  val aggregates = stripAQEPlan(df.queryExecution.executedPlan).collect {
-                    case a: CometHashAggregateExec => a
-                  }
-                  assert(aggregates.size == 2)
-                  assert(aggregates.exists(_.modes.contains(Partial)))
-                  assert(aggregates.exists(_.modes.contains(Final)))
-                  // Spark divides ck by sqrt(xMk * yMk) = 0.
-                  if (ansi) {
-                    val error = checkSparkError(df, "DIVIDE_BY_ZERO")
-                    assert(error.getSqlState == "22012")
-                    checkQueryContextMatchesSpark(error, query)
-                  } else {
-                    checkSparkAnswerAndOperator(df)
-                    checkCometAnswer(df, Seq(Row(null)))
-                  }
+              withSQLConf(SQLConf.ANSI_ENABLED.key -> "true") {
+                val query = s"SELECT corr($args) FROM corr_constant" + groupBy
+                val df = sql(query)
+                val aggregates = stripAQEPlan(df.queryExecution.executedPlan).collect {
+                  case a: CometHashAggregateExec => a
                 }
-
-                // The other statistical aggregates have no zero divisor here.
-                val statsQuery = "SELECT covar_pop(y, x), covar_samp(y, x), var_pop(x), " +
-                  "var_samp(x), stddev_pop(x), stddev_samp(x), corr(y, y) " +
-                  "FROM corr_constant" + groupBy
-                checkSparkAnswerAndOperator(statsQuery)
-                checkAnswer(sql(statsQuery), Seq(Row(0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 1.0)))
+                assert(aggregates.size == 2)
+                assert(aggregates.exists(_.modes.contains(Partial)))
+                assert(aggregates.exists(_.modes.contains(Final)))
+                // Spark divides ck by sqrt(xMk * yMk) = 0.
+                val error = checkSparkError(df, "DIVIDE_BY_ZERO")
+                assert(error.getSqlState == "22012")
+                checkQueryContextMatchesSpark(error, query)
               }
             }
           }

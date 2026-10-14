@@ -677,54 +677,42 @@ mod groups_tests {
             ]
         };
         for eval_mode in [EvalMode::Legacy, EvalMode::Ansi] {
-            for null_on_divide_by_zero in [false, true] {
-                let mut scalar = CorrelationAccumulator::try_new(
-                    null_on_divide_by_zero,
-                    zero_divisor(eval_mode),
-                )
+            // n is 6 everywhere here, so null_on_divide_by_zero, which only the
+            // count == 1 branch reads, does not matter.
+            let mut scalar =
+                CorrelationAccumulator::try_new(true, zero_divisor(eval_mode)).unwrap();
+            let mut grouped = CorrelationGroupsAccumulator::new(true, zero_divisor(eval_mode));
+            scalar.update_batch(&input(0..6)).unwrap();
+            grouped
+                .update_batch(&input(0..6), &[0; 6], None, 1)
                 .unwrap();
-                let mut grouped = CorrelationGroupsAccumulator::new(
-                    null_on_divide_by_zero,
-                    zero_divisor(eval_mode),
-                );
-                scalar.update_batch(&input(0..6)).unwrap();
-                grouped
-                    .update_batch(&input(0..6), &[0; 6], None, 1)
-                    .unwrap();
-                let mut scalars = vec![scalar];
-                let mut groups = vec![grouped];
-                // Merging partials in either order must keep xMk exactly zero.
-                for ranges in [[0..3, 3..6], [3..6, 0..3]] {
-                    let mut scalar = CorrelationAccumulator::try_new(
-                        null_on_divide_by_zero,
-                        zero_divisor(eval_mode),
-                    )
-                    .unwrap();
-                    let mut grouped = CorrelationGroupsAccumulator::new(
-                        null_on_divide_by_zero,
-                        zero_divisor(eval_mode),
-                    );
-                    for range in ranges {
-                        let state = partial_state(&input(range));
-                        scalar.merge_batch(&state).unwrap();
-                        grouped.merge_batch(&state, &[0], 1).unwrap();
-                    }
-                    scalars.push(scalar);
-                    groups.push(grouped);
+            let mut scalars = vec![scalar];
+            let mut groups = vec![grouped];
+            // Merging partials in either order must keep xMk exactly zero.
+            for ranges in [[0..3, 3..6], [3..6, 0..3]] {
+                let mut scalar =
+                    CorrelationAccumulator::try_new(true, zero_divisor(eval_mode)).unwrap();
+                let mut grouped = CorrelationGroupsAccumulator::new(true, zero_divisor(eval_mode));
+                for range in ranges {
+                    let state = partial_state(&input(range));
+                    scalar.merge_batch(&state).unwrap();
+                    grouped.merge_batch(&state, &[0], 1).unwrap();
                 }
-                for mut scalar in scalars {
-                    if eval_mode == EvalMode::Ansi {
-                        assert_divide_by_zero(scalar.evaluate());
-                    } else {
-                        assert_eq!(scalar.evaluate().unwrap(), ScalarValue::Float64(None));
-                    }
+                scalars.push(scalar);
+                groups.push(grouped);
+            }
+            for mut scalar in scalars {
+                if eval_mode == EvalMode::Ansi {
+                    assert_divide_by_zero(scalar.evaluate());
+                } else {
+                    assert_eq!(scalar.evaluate().unwrap(), ScalarValue::Float64(None));
                 }
-                for mut grouped in groups {
-                    if eval_mode == EvalMode::Ansi {
-                        assert_divide_by_zero(grouped.evaluate(EmitTo::All));
-                    } else {
-                        assert_eq!(evaluate(&mut grouped), vec![None]);
-                    }
+            }
+            for mut grouped in groups {
+                if eval_mode == EvalMode::Ansi {
+                    assert_divide_by_zero(grouped.evaluate(EmitTo::All));
+                } else {
+                    assert_eq!(evaluate(&mut grouped), vec![None]);
                 }
             }
         }
