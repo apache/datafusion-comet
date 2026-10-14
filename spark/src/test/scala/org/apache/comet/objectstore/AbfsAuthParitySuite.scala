@@ -68,7 +68,6 @@ import org.apache.comet.tags.AzureTest
  * assert while recording, so a recorded file never contradicts the hadoop-azure source. The file
  * is written only when every case ran, so a filtered run cannot leave a partial file behind.
  */
-@AzureTest
 class AbfsAuthParitySuite extends AnyFunSuite with Matchers with BeforeAndAfterAll {
   import AbfsAuthParitySuite._
 
@@ -186,7 +185,9 @@ class AbfsAuthParitySuite extends AnyFunSuite with Matchers with BeforeAndAfterA
     }
   }
 
-  test("FileSystem.newInstance agrees with the resolver on every case") {
+  // Tagged AzureTest: AzureBlobFileSystem links against Hadoop classes that only a matching
+  // Hadoop has, while the resolver cases above need nothing newer than AbfsConfiguration.
+  test("FileSystem.newInstance agrees with the resolver on every case", AzureTest) {
     val timings = mutable.ArrayBuffer[(String, Long)]()
     val disagreements = cases.flatMap { c =>
       val outcome = resolve(hadoopConf(c), c.uri)

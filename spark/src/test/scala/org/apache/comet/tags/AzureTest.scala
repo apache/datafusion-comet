@@ -17,21 +17,14 @@
  * under the License.
  */
 
-package org.apache.comet.tags;
+package org.apache.comet.tags
 
-import java.lang.annotation.ElementType;
-import java.lang.annotation.Retention;
-import java.lang.annotation.RetentionPolicy;
-import java.lang.annotation.Target;
-
-import org.scalatest.TagAnnotation;
+import org.scalatest.Tag
 
 /**
- * Marks suites that resolve Azure ABFS authentication through the hadoop-azure on the test
- * classpath. They pass only when that hadoop-azure matches the Hadoop the build runs on, so a build
- * against another Hadoop can skip them with -DtagsToExclude=org.apache.comet.tags.AzureTest.
+ * Marks tests that initialize a real `AzureBlobFileSystem` from the hadoop-azure on the test
+ * classpath. They pass only when that hadoop-azure matches the Hadoop the build runs on, so a
+ * build against another Hadoop can skip them with
+ * `-DtagsToExclude=org.apache.comet.tags.AzureTest`.
  */
-@TagAnnotation
-@Retention(RetentionPolicy.RUNTIME)
-@Target({ElementType.METHOD, ElementType.TYPE})
-public @interface AzureTest {}
+object AzureTest extends Tag("org.apache.comet.tags.AzureTest")
