@@ -27,8 +27,8 @@ import org.apache.hadoop.fs.Path
 import org.apache.spark.{CometListenerBusUtils, SparkConf}
 import org.apache.spark.scheduler.{SparkListener, SparkListenerTaskEnd}
 import org.apache.spark.sql.{Column, CometTestBase, DataFrame, QueryTest, Row}
-import org.apache.spark.sql.catalyst.expressions.Cast
-import org.apache.spark.sql.catalyst.expressions.aggregate.{Final, Partial, PartialMerge}
+import org.apache.spark.sql.catalyst.expressions.{Cast, Literal}
+import org.apache.spark.sql.catalyst.expressions.aggregate.{AggregateMode, Final, Partial, PartialMerge, RegrR2}
 import org.apache.spark.sql.catalyst.optimizer.EliminateSorts
 import org.apache.spark.sql.catalyst.plans.physical.{HashPartitioning, RangePartitioning}
 import org.apache.spark.sql.comet.{CometBaseAggregateExec, CometFilterExec, CometHashAggregateExec, CometNativeExec, CometProjectExec, CometSortAggregateExec, CometSortExec}
@@ -46,7 +46,7 @@ import org.apache.comet.CometConf
 import org.apache.comet.CometConf.COMET_EXEC_STRICT_FLOATING_POINT
 import org.apache.comet.CometSparkSessionExtensions.{isSpark35Plus, isSpark40Plus, isSpark41Plus}
 import org.apache.comet.rules.CometExecRule
-import org.apache.comet.serde.RegrSparkVersions
+import org.apache.comet.serde.{CometRegrR2, ExprOuterClass, RegrSparkVersions}
 import org.apache.comet.testing.{DataGenOptions, FuzzDataGenerator, ParquetGenerator, SchemaGenOptions}
 
 /**
@@ -156,19 +156,21 @@ class CometAggregateSuite extends CometTestBase with AdaptiveSparkPlanHelper {
   }
 
   /**
-   * Returns the native final aggregates in the plan that `df` last ran, after checking that there
-   * is one and that each spilled.
+   * Returns the native aggregates in the plan that `df` last ran whose aggregate functions all
+   * run in `mode`, after checking that there is one and that each spilled.
    */
-  private def spilledFinalAggregates(df: DataFrame): Seq[CometHashAggregateExec] = {
+  private def spilledAggregates(
+      df: DataFrame,
+      mode: AggregateMode): Seq[CometHashAggregateExec] = {
     val plan = df.queryExecution.executedPlan
-    val finalAggregates = collect(plan) {
-      case aggregate: CometHashAggregateExec if aggregate.modes.contains(Final) => aggregate
+    val aggregates = collect(plan) {
+      case aggregate: CometHashAggregateExec if aggregate.modes == Seq(mode) => aggregate
     }
-    assert(finalAggregates.nonEmpty, s"Expected a native final aggregate:\n$plan")
+    assert(aggregates.nonEmpty, s"Expected a native $mode aggregate:\n$plan")
     assert(
-      finalAggregates.forall(_.metrics("spill_count").value > 0),
-      "The final aggregate did not spill")
-    finalAggregates
+      aggregates.forall(_.metrics("spill_count").value > 0),
+      s"The $mode aggregate did not spill")
+    aggregates
   }
 
   test("final aggregate that has spilled reads its spill files back (issue #6254)") {
@@ -193,7 +195,7 @@ class CometAggregateSuite extends CometTestBase with AdaptiveSparkPlanHelper {
         }
         // checkCometAnswer runs the query once, so the plan read below is the one that ran.
         checkCometAnswer(df, expected)
-        spilledFinalAggregates(df)
+        spilledAggregates(df, Final)
       }
     }
   }
@@ -233,12 +235,103 @@ class CometAggregateSuite extends CometTestBase with AdaptiveSparkPlanHelper {
 
         // Only a sort in the same native plan keeps the final aggregate's input sorted.
         assert(
-          spilledFinalAggregates(df).exists(_.child match {
+          spilledAggregates(df, Final).exists(_.child match {
             case partial: CometHashAggregateExec => partial.child.isInstanceOf[CometSortExec]
             case _ => false
           }),
           "Expected a native final aggregate over a partial aggregate over a sort:\n" +
             df.queryExecution.executedPlan)
+      }
+    }
+  }
+
+  /**
+   * Runs `f` with a native memory pool small enough to make the PartialMerge stage of a distinct
+   * aggregate run short of memory: about 4 MiB, 0.002 of the suite's 2g off-heap.
+   */
+  private def withDistinctMergeMemoryPressure(f: => Unit): Unit = {
+    withSQLConf(
+      SQLConf.ADAPTIVE_EXECUTION_ENABLED.key -> "false",
+      SQLConf.SHUFFLE_PARTITIONS.key -> "1",
+      CometConf.COMET_BATCH_SIZE.key -> "1024",
+      CometConf.COMET_OFFHEAP_MEMORY_POOL_FRACTION.key -> "0.002")(f)
+  }
+
+  test("PartialMerge that runs short of memory keeps one row per key (issue #6857)") {
+    // Spark plans count(DISTINCT d) next to sum(v) with a PartialMerge keyed by (g, d), and the
+    // stage above it counts the PartialMerge's rows, so the PartialMerge has to spill rather than
+    // emit a key twice.
+    withTempPath { dir =>
+      val path = dir.getCanonicalPath
+      spark
+        .range(0, 400000, 1, 1)
+        .selectExpr("id % 100 AS g", "id % 200000 AS d", "id AS v")
+        .write
+        .parquet(path)
+      withDistinctMergeMemoryPressure {
+        val df = spark.read.parquet(path).groupBy("g").agg(sum("v"), count_distinct(col("d")))
+        // Each g holds the 4000 ids g + 100 * i, whose d values pair up into 2000 distinct ones.
+        val expected = (0 until 100).map(g => Row(g.toLong, 4000L * g + 799800000L, 2000L))
+        checkCometAnswer(df, expected)
+        spilledAggregates(df, PartialMerge)
+      }
+    }
+  }
+
+  test("PartialMerge that has spilled reads its spill files back (issue #6857)") {
+    withTempPath { dir =>
+      val path = dir.getCanonicalPath
+      spark
+        .range(0, 125000, 1, 1)
+        .selectExpr("0L AS g", "lpad(cast(id % 62500 AS STRING), 128, 'k') AS k", "id AS v")
+        .write
+        .parquet(path)
+      // A 2 MiB pool, shared with the aggregate above it, makes the PartialMerge keyed by (g, k)
+      // spill several runs of its 62,500 groups. As in the #6254 tests, merging the runs then
+      // takes nearly all of its share, and reading them back must not fail the task.
+      withSQLConf(
+        SQLConf.SHUFFLE_PARTITIONS.key -> "1",
+        CometConf.COMET_BATCH_SIZE.key -> "1024",
+        CometConf.COMET_OFFHEAP_MEMORY_POOL_FRACTION.key -> (2.0 / 2048).toString) {
+        val df =
+          spark.read.parquet(path).groupBy("g").agg(expr("max(v)"), count_distinct(col("k")))
+        checkCometAnswer(df, Seq(Row(0L, 124999L, 62500L)))
+        spilledAggregates(df, PartialMerge)
+      }
+    }
+  }
+
+  test("collect_list PartialMerge short of memory keeps one row per key (issue #6857)") {
+    // The collect_list states fill the PartialMerge's memory too. Over a Spark partial, the
+    // PartialMerge decodes Spark's buffers as it merges them, but reads back the native states
+    // it spilled.
+    def padded(i: Int): String = "x" * (128 - i.toString.length) + i
+    val rows = (0 until 32768).map(i => (i % 4096, i % 8192, padded(i)))
+    // Each k holds the ids k + 4096 * j, whose d values are k and k + 4096.
+    val expected = (0 until 4096).map { k =>
+      Row(k, 2L, (0 until 8).map(j => padded(k + 4096 * j)).sorted)
+    }
+    val localRows = rows.toDF("k", "d", "s")
+    withTempPath { dir =>
+      val path = dir.getCanonicalPath
+      localRows.write.parquet(path)
+      for (sparkPartial <- Seq(false, true)) {
+        withDistinctMergeMemoryPressure {
+          val source = if (sparkPartial) localRows else spark.read.parquet(path)
+          val df =
+            source.groupBy("k").agg(count_distinct(col("d")), sort_array(collect_list("s")))
+          checkCometAnswer(df, expected)
+          spilledAggregates(df, PartialMerge)
+          val sparkPartials = collect(df.queryExecution.executedPlan) {
+            case agg: ObjectHashAggregateExec
+                if agg.aggregateExpressions.forall(_.mode == Partial) =>
+              agg
+          }
+          assert(
+            sparkPartials.nonEmpty == sparkPartial,
+            "Expected a Spark partial aggregate only over the local rows:\n" +
+              df.queryExecution.executedPlan)
+        }
       }
     }
   }
@@ -2991,6 +3084,274 @@ class CometAggregateSuite extends CometTestBase with AdaptiveSparkPlanHelper {
               | corr(d2, d1) c7,
               | corr(d2, d2) c8
               | FROM t""".stripMargin)
+        }
+      }
+    }
+  }
+
+  test("statistical aggregates with large nearby values") {
+    withSQLConf(
+      SQLConf.ADAPTIVE_EXECUTION_ENABLED.key -> "false",
+      SQLConf.SHUFFLE_PARTITIONS.key -> "1",
+      "spark.sql.files.minPartitionNum" -> "1",
+      CometConf.COMET_SHUFFLE_ENABLED.key -> "true",
+      CometConf.COMET_SHUFFLE_MODE.key -> "native") {
+      val cases = Seq(
+        (Seq(1e16, 1e16 + 2), Some(1.0)),
+        (Seq(1e16 + 2, 1e16), None),
+        (Seq(-1e16, -1e16 - 2), Some(1.0)))
+      for ((values, expectedCorr) <- cases) {
+        // One ordered file keeps both values in the same partial accumulator. Splitting
+        // them across files would only exercise merging two single-row states.
+        withTempPath { path =>
+          (Seq(Some(values.head), None, Some(values.last)))
+            .map(v => (0, v))
+            .toDF("g", "v")
+            .coalesce(1)
+            .write
+            .parquet(path.getCanonicalPath)
+          withParquetTable(path.getCanonicalPath, "large_moments") {
+            for (groupBy <- Seq("", " GROUP BY g")) {
+              val query = "SELECT var_pop(v), var_samp(v), stddev_pop(v), stddev_samp(v) " +
+                "FROM large_moments" + groupBy
+              val (_, cometPlan) = checkSparkAnswerAndOperator(query)
+              val aggregates = cometPlan.collect { case a: CometHashAggregateExec => a }
+              assert(aggregates.exists(_.modes.contains(Partial)))
+              assert(aggregates.exists(_.modes.contains(Final)))
+              checkAnswer(sql(query), Seq(Row(1.0, 2.0, 1.0, math.sqrt(2.0))))
+
+              // CORR and REGR_R2 use PearsonCorrelation's update, while REGR_SXX/SYY
+              // and the variance used by slope/intercept follow CentralMomentAgg.
+              val corrQuery = "SELECT corr(v, v) FROM large_moments" + groupBy
+              checkSparkAnswerAndNumOfAggregates(corrQuery, 2)
+              // Reversing the positive pair rounds the Pearson mean to the second
+              // value, leaving zero M2 and a NULL correlation.
+              checkAnswer(sql(corrQuery), Seq(Row(expectedCorr.map(Double.box).orNull)))
+              checkSparkAnswerAndNumOfAggregates(
+                "SELECT regr_r2(v, v), regr_sxx(v, v), regr_syy(v, v), " +
+                  "regr_slope(v, v), regr_intercept(v, v) FROM large_moments" + groupBy,
+                2)
+            }
+          }
+        }
+      }
+    }
+  }
+
+  test("statistical aggregates use raw moments at extreme magnitudes") {
+    withSQLConf(
+      SQLConf.ANSI_ENABLED.key -> "false",
+      SQLConf.ADAPTIVE_EXECUTION_ENABLED.key -> "false",
+      SQLConf.SHUFFLE_PARTITIONS.key -> "1",
+      "spark.sql.files.minPartitionNum" -> "1",
+      CometConf.COMET_SHUFFLE_ENABLED.key -> "true",
+      CometConf.COMET_SHUFFLE_MODE.key -> "native") {
+      val cases = Seq(
+        (Seq(1e100, 2e100), Some(0.0), None),
+        (Seq(1e-100, 2e-100), None, None),
+        (Seq(1e200, -1e200), Some(Double.NaN), Some(Double.NaN)))
+      for ((values, expectedCorr, expectedConstantCorr) <- cases) {
+        withTempPath { path =>
+          Seq(Some(values.head), None, Some(values.last))
+            .map(v => (0, v, 0.1))
+            .toDF("g", "v", "x")
+            .coalesce(1)
+            .write
+            .parquet(path.getCanonicalPath)
+          withParquetTable(path.getCanonicalPath, "correlation_extremes") {
+            assert(spark.table("correlation_extremes").rdd.getNumPartitions == 1)
+            for (groupBy <- Seq("", " GROUP BY g")) {
+              val query = "SELECT corr(v, v), corr(v, -v), corr(v, x), " +
+                "regr_r2(v, v), regr_r2(v, -v) " +
+                "FROM correlation_extremes" + groupBy
+              checkSparkAnswerAndNumOfAggregates(query, 2)
+              // The raw-moment product can overflow, underflow, or become NaN (0 * Inf).
+              // ANSI-off division by a zero denominator returns NULL.
+              checkCometAnswer(
+                sql(query),
+                Seq(
+                  Row(
+                    expectedCorr.map(Double.box).orNull,
+                    expectedCorr.map(v => Double.box(-v)).orNull,
+                    expectedConstantCorr.map(Double.box).orNull,
+                    expectedCorr.map(v => Double.box(v * v)).orNull,
+                    expectedCorr.map(v => Double.box(v * v)).orNull)))
+            }
+          }
+        }
+      }
+    }
+  }
+
+  test("statistical aggregates regr_r2 preserves its captured evaluation mode") {
+    for (ansi <- Seq(false, true)) {
+      withSQLConf(SQLConf.ANSI_ENABLED.key -> ansi.toString) {
+        val expr = RegrR2(Literal(1.0), Literal(2.0))
+        withSQLConf(SQLConf.ANSI_ENABLED.key -> (!ansi).toString) {
+          val serialized = CometRegrR2.convert(
+            expr.toAggregateExpression(),
+            expr,
+            Seq.empty,
+            binding = false,
+            conf = SQLConf.get)
+          assert(serialized.isDefined)
+          val expected =
+            if (ansi) ExprOuterClass.EvalMode.ANSI else ExprOuterClass.EvalMode.LEGACY
+          assert(serialized.get.getRegr.getEvalMode == expected)
+        }
+      }
+    }
+  }
+
+  test("statistical aggregates regr_r2 underflow respects ANSI mode") {
+    withSQLConf(
+      SQLConf.ADAPTIVE_EXECUTION_ENABLED.key -> "false",
+      SQLConf.SHUFFLE_PARTITIONS.key -> "1",
+      SQLConf.FILES_MAX_PARTITION_BYTES.key -> "1048576",
+      SQLConf.FILES_OPEN_COST_IN_BYTES.key -> "1048576",
+      "spark.sql.files.minPartitionNum" -> "1",
+      CometConf.COMET_SHUFFLE_ENABLED.key -> "true",
+      CometConf.COMET_SHUFFLE_MODE.key -> "native") {
+      for (numPartitions <- Seq(1, 2)) {
+        withTempPath { path =>
+          // One file exercises updating a partial with both values. Two files also
+          // exercise merging independent single-row partials in the final aggregate.
+          val files = if (numPartitions == 1) {
+            Seq(Seq(Some(1e-100), None, Some(2e-100)))
+          } else {
+            Seq(Seq(Some(1e-100), None), Seq(Some(2e-100)))
+          }
+          files.foreach { values =>
+            values
+              .map(v => (0, v))
+              .toDF("g", "v")
+              .coalesce(1)
+              .write
+              .mode("append")
+              .parquet(path.getCanonicalPath)
+          }
+          withParquetTable(path.getCanonicalPath, "r2_underflow") {
+            assert(spark.table("r2_underflow").rdd.getNumPartitions == numPartitions)
+            for {
+              ansi <- Seq(false, true)
+              groupBy <- Seq("", " GROUP BY g")
+              x <- Seq("v", "-v")
+            } {
+              withSQLConf(SQLConf.ANSI_ENABLED.key -> ansi.toString) {
+                val query = s"SELECT regr_r2(v, $x) FROM r2_underflow" + groupBy
+                val df = sql(query)
+                val aggregates = stripAQEPlan(df.queryExecution.executedPlan).collect {
+                  case a: CometHashAggregateExec => a
+                }
+                assert(aggregates.size == 2)
+                assert(aggregates.exists(_.modes.contains(Partial)))
+                assert(aggregates.exists(_.modes.contains(Final)))
+                if (ansi) {
+                  val error = checkSparkError(df, "DIVIDE_BY_ZERO")
+                  assert(error.getSqlState == "22012")
+                } else {
+                  checkSparkAnswer(df)
+                  checkCometAnswer(df, Seq(Row(null)))
+                }
+              }
+            }
+          }
+        }
+      }
+    }
+  }
+
+  test("statistical aggregates merge large nearby values across partitions") {
+    withSQLConf(
+      SQLConf.ADAPTIVE_EXECUTION_ENABLED.key -> "false",
+      SQLConf.SHUFFLE_PARTITIONS.key -> "1",
+      SQLConf.FILES_MAX_PARTITION_BYTES.key -> "1048576",
+      SQLConf.FILES_OPEN_COST_IN_BYTES.key -> "1048576",
+      CometConf.COMET_SHUFFLE_ENABLED.key -> "true",
+      CometConf.COMET_SHUFFLE_MODE.key -> "native") {
+      withTempPath { path =>
+        // Two constant-valued files produce separate partials with zero M2. The
+        // old merge returns 576 instead of 1024, regardless of which partial arrives first.
+        for (value <- Seq(1e17 - 96, 1e17 - 32)) {
+          (Seq.fill(3)((0, Option(value))) ++ Seq((0, None), (1, None)))
+            .toDF("g", "v")
+            .coalesce(1)
+            .write
+            .mode("append")
+            .parquet(path.getCanonicalPath)
+        }
+        withParquetTable(path.getCanonicalPath, "merged_moments") {
+          assert(spark.table("merged_moments").rdd.getNumPartitions == 2)
+          for (groupBy <- Seq("", " GROUP BY g")) {
+            val query = "SELECT var_pop(v), var_samp(v), stddev_pop(v), stddev_samp(v) " +
+              "FROM merged_moments" + groupBy
+            val (_, cometPlan) = checkSparkAnswerAndOperator(query)
+            val aggregates = cometPlan.collect { case a: CometHashAggregateExec => a }
+            assert(aggregates.exists(_.modes.contains(Partial)))
+            assert(aggregates.exists(_.modes.contains(Final)))
+            val expected = Seq(Row(1024.0, 1228.8, 32.0, math.sqrt(1228.8))) ++
+              (if (groupBy.isEmpty) Seq.empty else Seq(Row(null, null, null, null)))
+            checkAnswer(sql(query), expected)
+            checkSparkAnswerWithTolAndNumOfAggregates(
+              "SELECT covar_pop(v, -v), covar_samp(v, -v), corr(v, -v), regr_r2(v, -v), " +
+                "regr_sxx(v, -v), regr_syy(v, -v), regr_sxy(v, -v), " +
+                "regr_slope(v, -v), regr_intercept(v, -v) FROM merged_moments" + groupBy,
+              2)
+          }
+        }
+      }
+    }
+  }
+
+  test("statistical aggregates merge fractional constants across partitions") {
+    // https://github.com/apache/datafusion-comet/issues/6423
+    // https://github.com/apache/datafusion-comet/issues/6481
+    withSQLConf(
+      SQLConf.ANSI_ENABLED.key -> "false",
+      SQLConf.ADAPTIVE_EXECUTION_ENABLED.key -> "false",
+      SQLConf.SHUFFLE_PARTITIONS.key -> "1",
+      SQLConf.FILES_MAX_PARTITION_BYTES.key -> "1048576",
+      SQLConf.FILES_OPEN_COST_IN_BYTES.key -> "1048576",
+      CometConf.COMET_SHUFFLE_ENABLED.key -> "true",
+      CometConf.COMET_SHUFFLE_MODE.key -> "native") {
+      val swapped = RegrSparkVersions.r2DegenerateCasesSwapped(spark.version)
+      val constantX: java.lang.Double = if (swapped) null else 1.0
+      val constantY: java.lang.Double = if (swapped) 1.0 else null
+      for (reverse <- Seq(false, true)) {
+        withTempPath { path =>
+          val starts = if (reverse) Seq(3, 0) else Seq(0, 3)
+          for (start <- starts) {
+            (start until start + 3)
+              .map(y => (0, y.toDouble, 0.1))
+              .toDF("g", "y", "x")
+              .coalesce(1)
+              .write
+              .mode("append")
+              .parquet(path.getCanonicalPath)
+          }
+          withParquetTable(path.getCanonicalPath, "fractional_constants") {
+            assert(spark.table("fractional_constants").rdd.getNumPartitions == 2)
+            for (groupBy <- Seq("", " GROUP BY g")) {
+              val query = "SELECT regr_slope(y, x), regr_intercept(y, x), regr_r2(y, x), " +
+                "regr_sxx(y, x), regr_sxy(y, x), regr_r2(x, y), regr_syy(x, y) " +
+                "FROM fractional_constants" + groupBy
+              val (_, cometPlan) = checkSparkAnswerAndOperator(query)
+              val aggregates = cometPlan.collect { case a: CometHashAggregateExec => a }
+              assert(aggregates.exists(_.modes.contains(Partial)))
+              assert(aggregates.exists(_.modes.contains(Final)))
+              // Keep the degenerate-case results exact. A tolerance can hide nonzero M2.
+              checkAnswer(sql(query), Seq(Row(null, null, constantX, 0.0, 0.0, constantY, 0.0)))
+
+              val statsQuery = "SELECT corr(y, x), covar_pop(y, x), covar_samp(y, x), " +
+                "var_pop(x), var_samp(x), stddev_pop(x), stddev_samp(x) " +
+                "FROM fractional_constants" + groupBy
+              val (_, statsPlan) = checkSparkAnswerAndOperator(statsQuery)
+              val statsAggregates = statsPlan.collect { case a: CometHashAggregateExec => a }
+              assert(statsAggregates.exists(_.modes.contains(Partial)))
+              assert(statsAggregates.exists(_.modes.contains(Final)))
+              checkAnswer(sql(statsQuery), Seq(Row(null, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0)))
+            }
+          }
         }
       }
     }

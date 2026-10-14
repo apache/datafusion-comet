@@ -163,6 +163,11 @@ impl StddevAccumulator {
     pub fn get_m2(&self) -> f64 {
         self.variance.get_m2()
     }
+
+    pub(super) fn with_pearson_update(mut self) -> Self {
+        self.variance = self.variance.with_pearson_update();
+        self
+    }
 }
 
 impl Accumulator for StddevAccumulator {
@@ -267,6 +272,40 @@ mod groups_tests {
     use super::*;
     use arrow::array::AsArray;
     use arrow::datatypes::Float64Type;
+
+    #[test]
+    fn stddev_merge_empty_partials() {
+        for empty_first in [false, true] {
+            for stats in [StatsType::Population, StatsType::Sample] {
+                let mut scalar = StddevAccumulator::try_new(stats, true).unwrap();
+                let mut grouped = StddevGroupsAccumulator::new(stats, true);
+                let counts = if empty_first {
+                    [0.0, 100.0]
+                } else {
+                    [100.0, 0.0]
+                };
+                for count in counts {
+                    let state: Vec<ArrayRef> = [count, if count == 0.0 { 0.0 } else { 1e155 }, 0.0]
+                        .into_iter()
+                        .map(|v| Arc::new(Float64Array::from(vec![v])) as ArrayRef)
+                        .collect();
+                    scalar.merge_batch(&state).unwrap();
+                    grouped.merge_batch(&state, &[0], 1).unwrap();
+                }
+                let ScalarValue::Float64(Some(scalar)) = scalar.evaluate().unwrap() else {
+                    panic!("expected a non-null standard deviation");
+                };
+                let grouped = grouped.evaluate(EmitTo::All).unwrap();
+                for result in [scalar, grouped.as_primitive::<Float64Type>().value(0)] {
+                    if empty_first {
+                        assert_eq!(result, 0.0);
+                    } else {
+                        assert!(result.is_nan());
+                    }
+                }
+            }
+        }
+    }
 
     #[test]
     fn pop_stddev_single_group() {

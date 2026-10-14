@@ -25,7 +25,6 @@ import org.apache.spark.sql.catalyst.expressions.{Attribute, Cast, Expression, L
 import org.apache.spark.sql.internal.SQLConf
 import org.apache.spark.sql.types.{ArrayType, DataType, DataTypes, DecimalType, MapType, NullType, StructType, TimestampNTZType, TimestampType}
 
-import org.apache.comet.CometConf
 import org.apache.comet.CometSparkSessionExtensions.{isSpark40Plus, withFallbackReason}
 import org.apache.comet.DataTypeSupport.isComplexType
 import org.apache.comet.serde.{CodegenDispatchFallback, CometExpressionSerde, CometTimeZone, Compatible, ExprOuterClass, Incompatible, SupportLevel, Unsupported}
@@ -204,10 +203,6 @@ object CometCast
         castBuilder.setChild(childExpr)
         castBuilder.setDatatype(dataType)
         castBuilder.setEvalMode(evalModeToProto(evalMode))
-        castBuilder.setAllowIncompat(
-          SQLConf.get
-            .getConfString(CometConf.getExprAllowIncompatConfigKey(classOf[Cast]), "false")
-            .toBoolean)
         castBuilder.setTimezone(timeZone)
         castBuilder.setIsSpark4Plus(isSpark40Plus)
         Some(
@@ -285,7 +280,7 @@ object CometCast
       case (_: DecimalType, _: DecimalType) =>
         Compatible()
       case (DataTypes.StringType, _) =>
-        canCastFromString(toType, timeZoneId, evalMode)
+        canCastFromString(toType)
       case (_, DataTypes.StringType) =>
         canCastToString(fromType, timeZoneId, evalMode)
       case (DataTypes.TimestampType, _) =>
@@ -343,10 +338,7 @@ object CometCast
     }
   }
 
-  private def canCastFromString(
-      toType: DataType,
-      timeZoneId: Option[String],
-      evalMode: CometEvalMode.Value): SupportLevel = {
+  private def canCastFromString(toType: DataType): SupportLevel = {
     toType match {
       case DataTypes.BooleanType =>
         Compatible()

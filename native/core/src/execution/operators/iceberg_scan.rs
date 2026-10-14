@@ -35,7 +35,8 @@ use datafusion::physical_plan::metrics::{
     BaselineMetrics, Count, ExecutionPlanMetricsSet, MetricBuilder, MetricsSet,
 };
 use datafusion::physical_plan::{
-    DisplayAs, DisplayFormatType, ExecutionPlan, Partitioning, PlanProperties,
+    DisplayAs, DisplayFormatType, EmptyRecordBatchStream, ExecutionPlan, Partitioning,
+    PlanProperties,
 };
 use futures::{Stream, StreamExt, TryStreamExt};
 use iceberg::arrow::ScanMetrics;
@@ -178,6 +179,11 @@ impl IcebergScanExec {
         context: Arc<TaskContext>,
     ) -> DFResult<SendableRecordBatchStream> {
         let output_schema = Arc::clone(&self.output_schema);
+        // DPP can leave an empty execution partition so that global aggregates still run.
+        // No files need reading, so do not initialize storage or request catalog credentials.
+        if tasks.is_empty() {
+            return Ok(Box::pin(EmptyRecordBatchStream::new(output_schema)));
+        }
         let file_io = load_file_io(
             &self.catalog_properties,
             &self.metadata_location,
@@ -230,7 +236,7 @@ impl IcebergScanExec {
         let scan_metrics = scan_result.metrics().clone();
         let stream = scan_result.stream();
 
-        let spark_options = SparkParquetOptions::new(EvalMode::Legacy, "UTC", false);
+        let spark_options = SparkParquetOptions::new(EvalMode::Legacy, "UTC");
         let adapter_factory = SparkPhysicalExprAdapterFactory::new(spark_options, None);
 
         let adapted_stream =
@@ -630,7 +636,7 @@ mod tests {
             Field::new("a", DataType::Int64, false),
             Field::new("b", DataType::Int64, false),
         ]));
-        let mut options = super::SparkParquetOptions::new(super::EvalMode::Legacy, "UTC", false);
+        let mut options = super::SparkParquetOptions::new(super::EvalMode::Legacy, "UTC");
         options.case_sensitive = true;
         let factory = super::SparkPhysicalExprAdapterFactory::new(options, None);
         for name in ["a", "b"] {

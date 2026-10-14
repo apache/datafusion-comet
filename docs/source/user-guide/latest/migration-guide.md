@@ -59,6 +59,34 @@ key is removed.
 
 ## Upgrading to Comet 1.2.0
 
+Comet `1.2.0` makes no behavior changes that need a `spark.comet.legacy.*` key. The changes below
+need none either, but check whether any of them applies to your deployment.
+
+### In-Memory Cache Enabled by Default
+
+`spark.comet.exec.inMemoryCache.enabled` now defaults to `true` on Spark 3.5 and later. There, an
+application that loads `CometPlugin` now stores what it caches with `CACHE TABLE`, `df.cache()` or
+`df.persist()` in Comet's Arrow format instead of Spark's, and Comet scans it natively. On Spark 3.4
+the default stays `false`; see [In-Memory Cache](in-memory-cache.md) for why. The format does not
+change query results, but it can change performance. Spark's own cache scan can read Comet's format
+more slowly than Spark's, which matters when a session turns Comet or its native execution off
+after caching, and Comet records a fallback reason on such a scan. See
+[In-Memory Cache](in-memory-cache.md#limitations).
+
+The format is chosen once, when the application starts. To keep Spark's format, set
+`spark.comet.exec.inMemoryCache.enabled=false` then. Comet also keeps Spark's format without that
+setting when the application:
+
+- starts with `spark.comet.enabled` or `spark.comet.exec.enabled` set to `false`.
+- leaves Comet shuffle enabled without one of Comet's shuffle managers, so that Comet disables
+  itself.
+- uses Kryo with `spark.kryo.registrationRequired=true` and has not registered Comet's cached
+  batch, because Kryo would reject it. To use Comet's format, register Comet's classes with
+  `spark.kryo.registrator=org.apache.comet.CometKryoRegistrator`; see
+  [Kryo](in-memory-cache.md#kryo).
+
+An application that sets `spark.sql.cache.serializer` itself keeps the serializer it chose.
+
 ### Deprecated and Removed Settings
 
 Using `spark.comet.sparkToColumnar.enabled` and `spark.comet.sparkToColumnar.supportedOperatorList`
@@ -82,6 +110,45 @@ without a `FROM` clause as an `RDDScan`, so on those versions `RDDScan` in the l
 it. `spark.comet.convert.oneRowRelation.enabled` is on by default, so such a query is now converted
 without either setting, and logs no warning. The list remains the way to convert other leaf
 operators, such as the scan of a Data Source V2 connector.
+
+### Iceberg Writes
+
+`spark.comet.write.iceberg.enabled` now defaults to `true`. Comet plans an Iceberg `INSERT INTO`,
+`INSERT OVERWRITE`, and copy-on-write `DELETE`, `UPDATE` or `MERGE` as two operators, `IcebergWrite`
+under `IcebergCommit`, in place of Spark's single V2 write operator, and writes the data files of
+each eligible write natively with iceberg-rust. A write that is not eligible still uses
+iceberg-java's writer, and iceberg-java still commits every write. The table holds the same rows,
+but natively written files differ from iceberg-java's in the ways listed under
+[Accepted divergences](iceberg-writes.md#accepted-divergences), and explain output and the Spark UI
+show the new operators. Set `spark.comet.write.iceberg.enabled=false` to plan Spark's own operator,
+as in Comet 1.1.0. Comet 1.1.0 named this setting `spark.comet.iceberg.write.enabled`, in the
+testing category, and Comet now ignores that name, so a deployment that set it to `false` gets the
+new default unless it sets `spark.comet.write.iceberg.enabled=false`.
+`spark.comet.write.iceberg.splitOperator.enabled` is now a testing setting, and setting it to
+`false` does not turn the split operator off. Comet 1.1.0 documented it as the switch for the split
+plan, so a deployment that still sets it to `true` keeps the split plan when
+`spark.comet.write.iceberg.enabled=false`, with iceberg-java writing the data files, and on Spark
+3.5+ it also plans merge-on-read writes as the split plan. Unset that setting as well as setting
+`spark.comet.write.iceberg.enabled=false` to plan Spark's own operator. See
+[Iceberg Writes](iceberg-writes.md).
+
+To compute the Iceberg metrics of a natively written file, Comet reads the file's Parquet footer
+back from storage, where iceberg-java's writer takes them from memory. On S3 or GCS that is two GET
+requests per file, which adds up for a write that produces many small files. See
+[Native Parquet write eligibility](iceberg-writes.md#native-parquet-write-eligibility).
+
+The native writer's buffers count against Comet's off-heap memory pool, where iceberg-java's buffers
+sit on the JVM heap. A fanout write keeps a data file open for every partition a task writes to, and
+each open file holds the row group it is writing, so a task that writes to many partitions can need
+more memory than the pool grants it. The task then writes out and closes the partitions holding the
+most memory, whose next rows open new files, so the write finishes with more, smaller files than
+iceberg-java's would. Disabling the fanout writer (`write.spark.fanout.enabled=false`) or a larger
+`spark.memory.offHeap.size` avoids the extra files. A write that keeps one file open, unpartitioned
+or clustered, has no partition to close, so when that file outgrows the pool the task fails with
+`Additional allocation failed for IcebergWriteExec`. A smaller `write.parquet.row-group-size-bytes`
+or a larger `spark.memory.offHeap.size` lets such a write fit. With
+`spark.comet.write.iceberg.enabled=false`, iceberg-java writes both, as before. See
+[Failure handling](iceberg-writes.md#failure-handling).
 
 ## Upgrading to Comet 1.1.0
 
