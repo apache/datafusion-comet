@@ -88,10 +88,12 @@ spec:
     "spark.executor.memoryOverhead": "1g"
     "spark.comet.enabled": "true"
     "spark.comet.exec.enabled": "true"
+    "spark.comet.exec.range.enabled": "true"
     "spark.comet.explain.native.enabled": "true"
     "spark.comet.shuffle.enabled": "true"
     "spark.comet.shuffle.mode": "auto"
     "spark.shuffle.manager": "org.apache.spark.sql.comet.execution.shuffle.CometShuffleManager"
+    "spark.kubernetes.executor.deleteOnTermination": "false"
   sparkVersion: 4.1.3
   driver:
     labels:
@@ -151,8 +153,9 @@ Get Driver Logs
 kubectl logs comet-dataframe-pi-driver
 ```
 
-The driver log contains the computed approximation (`Pi is roughly ...`). To confirm that Comet
-executed the DataFrame query, inspect the executor log for the native plan emitted by
-`spark.comet.explain.native.enabled`.
+The driver log contains the computed approximation (`Pi is roughly ...`). The example retains the
+completed executor pod so that you can inspect its log for the native plan emitted by
+`spark.comet.explain.native.enabled` and confirm that Comet executed the DataFrame query. Delete the
+application with `kubectl delete sparkapplication comet-dataframe-pi` when you finish.
 
 More info on [Kube Spark operator](https://www.kubeflow.org/docs/components/spark-operator/getting-started/)
