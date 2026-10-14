@@ -152,6 +152,88 @@ public class NativeLibraryTest {
   }
 
   @Test
+  public void selectsSafeAlternativeToUnsuitableRoot() throws Exception {
+    Path unsafe = temp.newFolder("unsafe-preferred").toPath();
+    Path safe = temp.newFolder("safe-alternative").toPath();
+    Files.setPosixFilePermissions(unsafe, PosixFilePermissions.fromString("rwxrwxrwx"));
+    try (NativeLibrary extracted = NativeLibrary.extract(resource(), NAME, unsafe, safe)) {
+      assertEquals(safe.toRealPath(), extracted.path().getParent().getParent());
+      assertArrayEquals(CONTENT, Files.readAllBytes(extracted.path()));
+      assertDirectoryEmpty(unsafe);
+    }
+    assertDirectoryEmpty(safe);
+  }
+
+  @Test
+  public void defaultExtractionFallsBackFromUnsuitableSparkTempRoot() throws Exception {
+    Path unsafe = temp.newFolder("spark-temp").toPath();
+    Files.setPosixFilePermissions(unsafe, PosixFilePermissions.fromString("rwxrwxrwx"));
+    String previous = System.getProperty("java.io.tmpdir");
+    try {
+      System.setProperty("java.io.tmpdir", unsafe.toString());
+      try (NativeLibrary extracted = NativeLibrary.extract(resource(), NAME)) {
+        assertNotEquals(unsafe.toRealPath(), extracted.path().getParent().getParent());
+        assertArrayEquals(CONTENT, Files.readAllBytes(extracted.path()));
+        assertDirectoryEmpty(unsafe);
+      }
+    } finally {
+      System.setProperty("java.io.tmpdir", previous);
+    }
+  }
+
+  @Test
+  public void skipsMissingRootWithoutConsumingResource() throws Exception {
+    Path missing = temp.getRoot().toPath().resolve("missing");
+    Path safe = temp.newFolder("existing").toPath();
+    try (NativeLibrary extracted = NativeLibrary.extract(resource(), NAME, missing, safe)) {
+      assertEquals(safe.toRealPath(), extracted.path().getParent().getParent());
+      assertArrayEquals(CONTENT, Files.readAllBytes(extracted.path()));
+      assertFalse(Files.exists(missing));
+    }
+  }
+
+  @Test
+  public void allUnsafeCandidatesFailBeforeReadingResource() throws Exception {
+    Path first = temp.newFolder("first-unsafe").toPath();
+    Path second = temp.newFolder("second-unsafe").toPath();
+    Files.setPosixFilePermissions(first, PosixFilePermissions.fromString("rwxrwxrwx"));
+    Files.setPosixFilePermissions(second, PosixFilePermissions.fromString("rwxrwxrwx"));
+    InputStream unread =
+        new InputStream() {
+          @Override
+          public int read() {
+            throw new AssertionError("Resource read before selecting a safe root");
+          }
+        };
+    IOException failure =
+        assertThrows(IOException.class, () -> NativeLibrary.extract(unread, NAME, first, second));
+    assertEquals(2, failure.getSuppressed().length);
+    assertDirectoryEmpty(first);
+    assertDirectoryEmpty(second);
+  }
+
+  @Test
+  public void copyFailureDoesNotRetryAnotherRoot() throws Exception {
+    Path first = temp.newFolder("first-safe").toPath();
+    Path second = temp.newFolder("second-safe").toPath();
+    int[] reads = {0};
+    InputStream broken =
+        new InputStream() {
+          @Override
+          public int read() throws IOException {
+            reads[0]++;
+            throw new IOException("broken resource");
+          }
+        };
+    IOException failure =
+        assertThrows(IOException.class, () -> NativeLibrary.extract(broken, NAME, first, second));
+    assertEquals("broken resource", failure.getMessage());
+    assertEquals(1, reads[0]);
+    assertDirectoryEmpty(first);
+    assertDirectoryEmpty(second);
+  }
+
+  @Test
   public void permitsStickySharedTempRoot() throws Exception {
     Path root = temp.newFolder("sticky").toPath();
     Files.setAttribute(root, "unix:mode", 01777);

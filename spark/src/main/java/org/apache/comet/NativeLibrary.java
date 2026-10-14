@@ -48,18 +48,20 @@ final class NativeLibrary implements AutoCloseable {
   }
 
   static NativeLibrary extract(InputStream resource, String libraryName) throws IOException {
-    return extract(resource, libraryName, Paths.get(System.getProperty("java.io.tmpdir")));
+    // Spark on YARN puts java.io.tmpdir below a NodeManager-owned directory. That account can
+    // replace descendants, so use a separately validated system root if the preferred root is
+    // unsafe.
+    return extract(
+        resource,
+        libraryName,
+        Paths.get(System.getProperty("java.io.tmpdir")),
+        Paths.get("/tmp"),
+        Paths.get("/var/tmp"));
   }
 
-  static NativeLibrary extract(InputStream resource, String libraryName, Path tempRoot)
+  static NativeLibrary extract(InputStream resource, String libraryName, Path... tempRoots)
       throws IOException {
-    Path root = tempRoot.toRealPath();
-    checkTempRoot(root);
-    Path directory =
-        Files.createTempDirectory(
-            root,
-            DIRECTORY_PREFIX,
-            PosixFilePermissions.asFileAttribute(PosixFilePermissions.fromString("rwx------")));
+    Path directory = createExtractionDirectory(tempRoots);
     NativeLibrary result = new NativeLibrary(directory, libraryName);
     try {
       copy(resource, result.library);
@@ -72,6 +74,23 @@ final class NativeLibrary implements AutoCloseable {
       }
       throw e;
     }
+  }
+
+  private static Path createExtractionDirectory(Path[] tempRoots) throws IOException {
+    IOException failure = new IOException("No safe temporary directory for libcomet");
+    for (Path tempRoot : tempRoots) {
+      try {
+        Path root = tempRoot.toRealPath();
+        checkTempRoot(root);
+        return Files.createTempDirectory(
+            root,
+            DIRECTORY_PREFIX,
+            PosixFilePermissions.asFileAttribute(PosixFilePermissions.fromString("rwx------")));
+      } catch (IOException e) {
+        failure.addSuppressed(e);
+      }
+    }
+    throw failure;
   }
 
   private static void checkTempRoot(Path root) throws IOException {
