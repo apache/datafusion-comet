@@ -53,7 +53,6 @@ class CometIcebergWriteDetectionSuite extends CometTestBase with CometIcebergTes
 
   override protected def sparkConf: SparkConf = {
     super.sparkConf
-      .set(CometConf.COMET_ICEBERG_WRITE_SPLIT_OPERATOR_ENABLED.key, "true")
       .set(CometConf.COMET_ICEBERG_NATIVE_WRITE_ENABLED.key, "true")
   }
 
@@ -63,6 +62,35 @@ class CometIcebergWriteDetectionSuite extends CometTestBase with CometIcebergTes
       assume(icebergAvailable, "Iceberg not available in classpath")
       testFun
     }
+  }
+
+  test("Hadoop configurations are built lazily and share the session configuration") {
+    var sessionBuilds = 0
+    var effectiveBuilds = 0
+    val sessionConf = new Configuration(false)
+    val hadoopConfs = new CometIcebergNativeWrite.LazyHadoopConfs(
+      () => {
+        sessionBuilds += 1
+        sessionConf
+      },
+      conf => {
+        effectiveBuilds += 1
+        assert(conf eq sessionConf)
+        new Configuration(conf)
+      })
+
+    assert(sessionBuilds == 0)
+    assert(effectiveBuilds == 0)
+    assert(hadoopConfs.session eq sessionConf)
+    assert(sessionBuilds == 1)
+    assert(effectiveBuilds == 0)
+    assert(hadoopConfs.effective ne sessionConf)
+    assert(sessionBuilds == 1)
+    assert(effectiveBuilds == 1)
+    assert(hadoopConfs.session eq sessionConf)
+    assert(hadoopConfs.effective ne sessionConf)
+    assert(sessionBuilds == 1)
+    assert(effectiveBuilds == 1)
   }
 
   test("clean parquet V2 table planned as AppendData yields Compatible") {
@@ -1429,10 +1457,13 @@ class CometIcebergWriteDetectionSuite extends CometTestBase with CometIcebergTes
     }
   }
 
+  // With the native writer off, only the testing split flag still plans an `IcebergWriteExec`.
   test("no fall-back reason is recorded when the iceberg write feature is disabled") {
     withDetectionCatalog { _ =>
       createTable("flag_off", partitionSpec = "")
-      withSQLConf(CometConf.COMET_ICEBERG_NATIVE_WRITE_ENABLED.key -> "false") {
+      withSQLConf(
+        CometConf.COMET_ICEBERG_WRITE_SPLIT_OPERATOR_ENABLED.key -> "true",
+        CometConf.COMET_ICEBERG_NATIVE_WRITE_ENABLED.key -> "false") {
         val writeExec = insertWriteExec("flag_off")
         assert(
           writeExec.getTagValue(CometExplainInfo.FALLBACK_REASONS).isEmpty,
