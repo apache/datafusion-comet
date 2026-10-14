@@ -739,6 +739,9 @@ exchange stays native because the writer serializes it as <code class="docutils 
 <tr class="row-even"><td><p><code class="docutils literal notranslate"><span class="pre">ipc.rs</span></code></p></td>
 <td><p><code class="docutils literal notranslate"><span class="pre">read_ipc_compressed</span></code> and <code class="docutils literal notranslate"><span class="pre">read_ipc_compressed_validated</span></code>, the decode side used by the shuffle reader.</p></td>
 </tr>
+<tr class="row-odd"><td><p><code class="docutils literal notranslate"><span class="pre">offsets_as_lengths.rs</span></code></p></td>
+<td><p>Which IPC body buffers hold offsets, the rewrite of offsets as lengths in byte planes, and the <code class="docutils literal notranslate"><span class="pre">LENGTHS_TAG_FLAG</span></code> codec-tag bit.</p></td>
+</tr>
 </tbody>
 </table>
 </div>
@@ -780,6 +783,10 @@ exceeds the threshold, partitions spill to temporary files.</p></li>
 <li><p>Writes compression type header</p></li>
 <li><p>Writes field count header</p></li>
 <li><p>Writes compressed IPC stream</p></li>
+<li><p>With zstd and <code class="docutils literal notranslate"><span class="pre">spark.comet.shuffle.compression.offsetsAsLengths.enabled</span></code>, first rewrites
+the IPC body’s offsets buffers as lengths in byte planes, and marks the block by setting the
+high bit of the codec tag’s first byte (<code class="docutils literal notranslate"><span class="pre">native/shuffle/src/offsets_as_lengths.rs</span></code>). The
+reader rebuilds the offsets before decoding.</p></li>
 </ul>
 </li>
 <li><p><strong>Output</strong>: One data file holds the concatenated partition data. The writer records the byte
@@ -857,8 +864,10 @@ not a <code class="docutils literal notranslate"><span class="pre">CometShuffled
 </ul>
 <p><code class="docutils literal notranslate"><span class="pre">CometShuffleBlockIterator</span></code> reads a 16-byte header per block: an 8-byte compressed length, which
 includes the field count but not itself, followed by an 8-byte field count that is discarded because
-the schema comes from the <code class="docutils literal notranslate"><span class="pre">ShuffleScan</span></code> protobuf fields. The compressed body is read into a reused
-<code class="docutils literal notranslate"><span class="pre">DirectByteBuffer</span></code>, <strong>valid only until the next <code class="docutils literal notranslate"><span class="pre">hasNext()</span></code> call</strong>. Native must fully consume it
+the schema comes from the <code class="docutils literal notranslate"><span class="pre">ShuffleScan</span></code> protobuf fields. The 4-byte codec tag after it is read only by
+native code; the high bit of its first byte marks a block whose offsets buffers hold lengths. The
+compressed body is read into a reused <code class="docutils literal notranslate"><span class="pre">DirectByteBuffer</span></code>, <strong>valid only until the next <code class="docutils literal notranslate"><span class="pre">hasNext()</span></code>
+call</strong>. Native must fully consume it
 before pulling the next block, which <code class="docutils literal notranslate"><span class="pre">read_ipc_compressed</span></code> satisfies because it allocates fresh
 native memory for the decoded data.</p>
 </section>
@@ -1126,43 +1135,47 @@ independently compressed, allowing parallel decompression during reads.</p>
 <td><p><code class="docutils literal notranslate"><span class="pre">1</span></code></p></td>
 <td><p>Zstd compression level</p></td>
 </tr>
-<tr class="row-odd"><td><p><code class="docutils literal notranslate"><span class="pre">spark.comet.shuffle.native.writeBufferSize</span></code></p></td>
+<tr class="row-odd"><td><p><code class="docutils literal notranslate"><span class="pre">spark.comet.shuffle.compression.offsetsAsLengths.enabled</span></code></p></td>
+<td><p><code class="docutils literal notranslate"><span class="pre">true</span></code></p></td>
+<td><p>Store offsets as lengths in zstd blocks</p></td>
+</tr>
+<tr class="row-even"><td><p><code class="docutils literal notranslate"><span class="pre">spark.comet.shuffle.native.writeBufferSize</span></code></p></td>
 <td><p><code class="docutils literal notranslate"><span class="pre">1MB</span></code></p></td>
 <td><p>Write buffer size</p></td>
 </tr>
-<tr class="row-even"><td><p><code class="docutils literal notranslate"><span class="pre">spark.comet.shuffle.native.maxBufferBytes</span></code></p></td>
+<tr class="row-odd"><td><p><code class="docutils literal notranslate"><span class="pre">spark.comet.shuffle.native.maxBufferBytes</span></code></p></td>
 <td><p><code class="docutils literal notranslate"><span class="pre">0</span></code></p></td>
 <td><p>Fixed spill threshold. <code class="docutils literal notranslate"><span class="pre">0</span></code> disables it, leaving pool pressure</p></td>
 </tr>
-<tr class="row-odd"><td><p><code class="docutils literal notranslate"><span class="pre">spark.comet.shuffle.native.partitioning.hash.enabled</span></code></p></td>
+<tr class="row-even"><td><p><code class="docutils literal notranslate"><span class="pre">spark.comet.shuffle.native.partitioning.hash.enabled</span></code></p></td>
 <td><p><code class="docutils literal notranslate"><span class="pre">true</span></code></p></td>
 <td><p>Allow <code class="docutils literal notranslate"><span class="pre">HashPartitioning</span></code> on the native path</p></td>
 </tr>
-<tr class="row-even"><td><p><code class="docutils literal notranslate"><span class="pre">spark.comet.shuffle.native.partitioning.hash.nested.enabled</span></code></p></td>
+<tr class="row-odd"><td><p><code class="docutils literal notranslate"><span class="pre">spark.comet.shuffle.native.partitioning.hash.nested.enabled</span></code></p></td>
 <td><p><code class="docutils literal notranslate"><span class="pre">false</span></code></p></td>
 <td><p>Allow struct and array hash keys, and map keys on Spark 4.0+</p></td>
 </tr>
-<tr class="row-odd"><td><p><code class="docutils literal notranslate"><span class="pre">spark.comet.shuffle.native.partitioning.range.enabled</span></code></p></td>
+<tr class="row-even"><td><p><code class="docutils literal notranslate"><span class="pre">spark.comet.shuffle.native.partitioning.range.enabled</span></code></p></td>
 <td><p><code class="docutils literal notranslate"><span class="pre">true</span></code></p></td>
 <td><p>Allow <code class="docutils literal notranslate"><span class="pre">RangePartitioning</span></code> on the native path</p></td>
 </tr>
-<tr class="row-even"><td><p><code class="docutils literal notranslate"><span class="pre">spark.comet.shuffle.native.partitioning.roundrobin.enabled</span></code></p></td>
+<tr class="row-odd"><td><p><code class="docutils literal notranslate"><span class="pre">spark.comet.shuffle.native.partitioning.roundrobin.enabled</span></code></p></td>
 <td><p><code class="docutils literal notranslate"><span class="pre">false</span></code></p></td>
 <td><p>Allow <code class="docutils literal notranslate"><span class="pre">RoundRobinPartitioning</span></code> on the native path</p></td>
 </tr>
-<tr class="row-odd"><td><p><code class="docutils literal notranslate"><span class="pre">spark.comet.shuffle.native.partitioning.roundrobin.maxHashColumns</span></code></p></td>
+<tr class="row-even"><td><p><code class="docutils literal notranslate"><span class="pre">spark.comet.shuffle.native.partitioning.roundrobin.maxHashColumns</span></code></p></td>
 <td><p><code class="docutils literal notranslate"><span class="pre">0</span></code></p></td>
 <td><p>Columns to hash for round robin. <code class="docutils literal notranslate"><span class="pre">0</span></code> hashes all of them</p></td>
 </tr>
-<tr class="row-even"><td><p><code class="docutils literal notranslate"><span class="pre">spark.comet.shuffle.native.partitioning.roundrobin.positional.enabled</span></code></p></td>
+<tr class="row-odd"><td><p><code class="docutils literal notranslate"><span class="pre">spark.comet.shuffle.native.partitioning.roundrobin.positional.enabled</span></code></p></td>
 <td><p><code class="docutils literal notranslate"><span class="pre">false</span></code></p></td>
 <td><p>Place round-robin rows by position where the plan allows it</p></td>
 </tr>
-<tr class="row-odd"><td><p><code class="docutils literal notranslate"><span class="pre">spark.comet.shuffle.native.partitioning.roundrobin.positional.groupRows</span></code></p></td>
+<tr class="row-even"><td><p><code class="docutils literal notranslate"><span class="pre">spark.comet.shuffle.native.partitioning.roundrobin.positional.groupRows</span></code></p></td>
 <td><p><code class="docutils literal notranslate"><span class="pre">0</span></code></p></td>
 <td><p>Rows per positional group. <code class="docutils literal notranslate"><span class="pre">0</span></code> derives it from batch size and partition count</p></td>
 </tr>
-<tr class="row-even"><td><p><code class="docutils literal notranslate"><span class="pre">spark.comet.shuffle.jvm.batchSize</span></code></p></td>
+<tr class="row-odd"><td><p><code class="docutils literal notranslate"><span class="pre">spark.comet.shuffle.jvm.batchSize</span></code></p></td>
 <td><p><code class="docutils literal notranslate"><span class="pre">8192</span></code></p></td>
 <td><p>Target rows per batch</p></td>
 </tr>
