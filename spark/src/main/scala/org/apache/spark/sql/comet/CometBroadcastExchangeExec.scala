@@ -19,6 +19,7 @@
 
 package org.apache.spark.sql.comet
 
+import java.util.Objects
 import java.util.UUID
 import java.util.concurrent.{Future, TimeoutException, TimeUnit}
 
@@ -41,8 +42,6 @@ import org.apache.spark.sql.internal.{SQLConf, StaticSQLConf}
 import org.apache.spark.sql.vectorized.ColumnarBatch
 import org.apache.spark.util.{SparkFatalException, ThreadUtils}
 import org.apache.spark.util.io.ChunkedByteBuffer
-
-import com.google.common.base.Objects
 
 import org.apache.comet.{CometConf, ConfigEntry}
 import org.apache.comet.serde.OperatorOuterClass
@@ -251,7 +250,7 @@ case class CometBroadcastExchangeExec(
     }
   }
 
-  override def hashCode(): Int = Objects.hashCode(child)
+  override def hashCode(): Int = Objects.hash(child)
 
   override def stringArgs: Iterator[Any] = Iterator(output, child)
 

@@ -19,13 +19,13 @@
 
 package org.apache.spark.sql.comet
 
+import java.util.Objects
+
 import scala.jdk.CollectionConverters._
 
 import org.apache.spark.sql.catalyst.expressions.{Attribute, Expression, SortOrder}
 import org.apache.spark.sql.catalyst.plans.physical.Partitioning
 import org.apache.spark.sql.execution.SparkPlan
-
-import com.google.common.base.Objects
 
 import org.apache.comet.{CometConf, ConfigEntry}
 import org.apache.comet.CometSparkSessionExtensions.withFallbackReason
@@ -190,7 +190,7 @@ case class CometWindowGroupLimitExec(
   }
 
   override def hashCode(): Int =
-    Objects.hashCode(
+    Objects.hash(
       output,
       partitionSpec,
       orderSpec,

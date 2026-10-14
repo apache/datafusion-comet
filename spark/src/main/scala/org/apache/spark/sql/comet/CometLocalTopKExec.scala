@@ -19,13 +19,13 @@
 
 package org.apache.spark.sql.comet
 
+import java.util.Objects
+
 import org.apache.spark.sql.catalyst.expressions.{Attribute, SortOrder}
 import org.apache.spark.sql.catalyst.plans.physical.Partitioning
 import org.apache.spark.sql.execution.{SparkPlan, TakeOrderedAndProjectExec}
 import org.apache.spark.sql.execution.metric.{SQLMetric, SQLMetrics}
 import org.apache.spark.sql.types.{ByteType, IntegerType, LongType, ShortType}
-
-import com.google.common.base.Objects
 
 import org.apache.comet.CometConf
 import org.apache.comet.serde.OperatorOuterClass.{Operator, Sort}
@@ -110,7 +110,7 @@ case class CometLocalTopKExec(
   }
 
   override def hashCode(): Int =
-    Objects.hashCode(output, Int.box(limit), sortOrder, Boolean.box(dynamicFilterEnabled), child)
+    Objects.hash(output, Int.box(limit), sortOrder, Boolean.box(dynamicFilterEnabled), child)
 
   override lazy val metrics: Map[String, SQLMetric] =
     CometMetricNode.baselineMetrics(sparkContext) ++ Map(

@@ -92,7 +92,6 @@ under the License.
          release that exists for each of their Scala versions (2.13.16, 2.13.17 and 2.13.18). -->
     <semanticdb.version>4.13.10</semanticdb.version>
     <slf4j.version>2.0.17</slf4j.version>
-    <guava.version>33.2.1-jre</guava.version>
     <testcontainers.version>1.21.4</testcontainers.version>
     <amazon-awssdk-v2.version>2.31.51</amazon-awssdk-v2.version>
     <!-- AWS SDK v1, present at runtime on Hadoop 3.3.x (spark-3.x profiles). Used at provided
@@ -333,16 +332,6 @@ under the License.
         <version>${slf4j.version}</version>
         <scope>${spark.maven.scope}</scope>
       </dependency>
-
-      <!-- Shaded deps marked as provided. These are promoted to compile scope
-           in the modules where we want the shaded classes to appear in the
-           associated jar. -->
-      <dependency>
-        <groupId>com.google.guava</groupId>
-        <artifactId>guava</artifactId>
-        <version>${guava.version}</version>
-      </dependency>
-      <!-- End of shaded deps -->
 
       <!-- Test dependencies -->
       <dependency>
@@ -1274,15 +1263,6 @@ under the License.
                         <ignoreClass>javax.annotation.meta.TypeQualifierValidator</ignoreClass>
                         <ignoreClass>javax.annotation.Nullable</ignoreClass>
                         <ignoreClass>javax.annotation.meta.TypeQualifierNickname</ignoreClass>
-                      </ignoreClasses>
-                    </dependency>
-                    <dependency>
-                      <groupId>com.google.guava</groupId>
-                      <artifactId>guava</artifactId>
-                      <ignoreClasses>
-                        <ignoreClass>com.google.thirdparty.publicsuffix.TrieParser</ignoreClass>
-                        <ignoreClass>com.google.thirdparty.publicsuffix.PublicSuffixPatterns</ignoreClass>
-                        <ignoreClass>com.google.thirdparty.publicsuffix.PublicSuffixType</ignoreClass>
                       </ignoreClasses>
                     </dependency>
                     <dependency>

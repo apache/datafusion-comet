@@ -19,10 +19,10 @@
 
 package org.apache.spark.sql.comet
 
+import java.util.Objects
+
 import org.apache.spark.sql.catalyst.expressions.Attribute
 import org.apache.spark.sql.execution.{RangeExec, SparkPlan}
-
-import com.google.common.base.Objects
 
 import org.apache.comet.{CometConf, ConfigEntry}
 import org.apache.comet.serde.{CometOperatorSerde, Compatible, OperatorOuterClass, SupportLevel, Unsupported}
@@ -66,7 +66,7 @@ case class CometRangeExec(
     }
   }
 
-  override def hashCode(): Int = Objects.hashCode(originalPlan, output)
+  override def hashCode(): Int = Objects.hash(originalPlan, output)
 }
 
 object CometRangeExec extends CometOperatorSerde[RangeExec] {
