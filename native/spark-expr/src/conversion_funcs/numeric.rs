@@ -514,9 +514,10 @@ macro_rules! cast_decimal_to_int16_down {
             .expect("Expected a Decimal128ArrayType");
 
         let divisor = 10_i128.pow($scale as u32);
-        // The legacy conversion cannot fail, so `unary` maps the values buffer in one pass and
-        // keeps the null buffer. `try_unary` only visits valid slots, so an out-of-range value
-        // under a null cannot raise a spurious overflow error.
+        // `try_unary` only visits valid slots, so a value under a null is neither divided nor,
+        // in ANSI mode, checked for overflow. The legacy conversion cannot fail, but the division
+        // is most of the cost for decimals, so it uses `try_unary` too, with a closure that
+        // always returns `Ok`, instead of `unary`, which would divide the slots under nulls.
         let output_array: $dest_array_type = match $eval_mode {
             EvalMode::Ansi => cast_array.try_unary(|value| {
                 let truncated = value / divisor;
@@ -543,7 +544,9 @@ macro_rules! cast_decimal_to_int16_down {
                     )
                 })
             })?,
-            _ => cast_array.unary(|value| (value / divisor) as i32 as $rust_dest_type),
+            _ => cast_array.try_unary(|value| {
+                Ok::<_, SparkError>((value / divisor) as i32 as $rust_dest_type)
+            })?,
         };
         Ok(Arc::new(output_array) as ArrayRef)
     }};
@@ -566,9 +569,10 @@ macro_rules! cast_decimal_to_int32_up {
             .expect("Expected a Decimal128ArrayType");
 
         let divisor = 10_i128.pow($scale as u32);
-        // The legacy conversion cannot fail, so `unary` maps the values buffer in one pass and
-        // keeps the null buffer. `try_unary` only visits valid slots, so an out-of-range value
-        // under a null cannot raise a spurious overflow error.
+        // `try_unary` only visits valid slots, so a value under a null is neither divided nor,
+        // in ANSI mode, checked for overflow. The legacy conversion cannot fail, but the division
+        // is most of the cost for decimals, so it uses `try_unary` too, with a closure that
+        // always returns `Ok`, instead of `unary`, which would divide the slots under nulls.
         let output_array: $dest_array_type = match $eval_mode {
             EvalMode::Ansi => cast_array.try_unary(|value| {
                 let truncated = value / divisor;
@@ -585,7 +589,8 @@ macro_rules! cast_decimal_to_int32_up {
                 }
                 Ok(truncated as $rust_dest_type)
             })?,
-            _ => cast_array.unary(|value| (value / divisor) as $rust_dest_type),
+            _ => cast_array
+                .try_unary(|value| Ok::<_, SparkError>((value / divisor) as $rust_dest_type))?,
         };
         Ok(Arc::new(output_array) as ArrayRef)
     }};
