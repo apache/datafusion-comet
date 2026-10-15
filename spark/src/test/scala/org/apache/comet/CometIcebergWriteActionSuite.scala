@@ -149,9 +149,9 @@ class CometIcebergWriteActionSuite
   }
 
   // Comet 1.1.0 documented the split flag as a user setting, so a deployment can carry it into 1.2.0.
-  // With it on, `spark.comet.write.iceberg.enabled=false` only turns the native writer off: the split
-  // plan stays, with iceberg-java writing the files. The upgrade guide tells such deployments to
-  // unset the split flag to get Spark's own operator back.
+  // With it on and `spark.comet.write.iceberg.enabled` off, the split plan stays, with iceberg-java
+  // writing the files. The upgrade guide tells such deployments to unset the split flag to get
+  // Spark's own operator back.
   test(
     "the split flag keeps the split plan with iceberg-java's writer when the write flag is off") {
     assume(icebergAvailable, "Iceberg not available in classpath")
@@ -178,9 +178,10 @@ class CometIcebergWriteActionSuite
   }
 
   // The suite pins both write flags, so this test unsets them to see what an application that
-  // sets neither gets. A Parquet scan is a native input, so the write is eligible.
+  // sets neither gets: Spark's own write operator, even for a write the native writer could take.
+  // A Parquet scan is a native input, so the write is eligible.
   // https://github.com/apache/datafusion-comet/issues/5644
-  test("an eligible Iceberg write runs natively under the split plan when no flag is set") {
+  test("an eligible Iceberg write keeps Spark's own write plan when no flag is set") {
     assume(icebergAvailable, "Iceberg not available in classpath")
     withIcebergCatalog { _ =>
       withTempPath { dir =>
@@ -201,6 +202,40 @@ class CometIcebergWriteActionSuite
           }
         }
         assert(snapshot.snapshotDelta == 1L, s"expected 1 commit, got ${snapshot.snapshotDelta}")
+        val (commits, writes) = collectIcebergWriteOps(snapshot.plans)
+        assert(
+          commits.isEmpty && writes.isEmpty,
+          "expected Spark's own write plan with no flag set. Plans:\n" +
+            snapshot.plans.mkString("\n--\n"))
+        assertRows("write_defaults", expectedIds = 0 until 10)
+      }
+    }
+  }
+
+  // An application turns Comet's Iceberg writes on with spark.comet.write.iceberg.enabled alone,
+  // so this test leaves the testing split flag unset. A Parquet scan is a native input, so the
+  // write is eligible.
+  test("an eligible Iceberg write runs natively when only the write flag is set") {
+    assume(icebergAvailable, "Iceberg not available in classpath")
+    withIcebergCatalog { _ =>
+      withTempPath { dir =>
+        spark
+          .range(10)
+          .selectExpr("CAST(id AS INT) AS id", "'eu' AS region", "CAST(id AS DOUBLE) AS amount")
+          .write
+          .parquet(dir.getCanonicalPath)
+        createTable("write_flag_only", partitionSpec = "")
+        val snapshot = captureWrite("write_flag_only") {
+          withSessionConf(
+            CometConf.COMET_ICEBERG_WRITE_SPLIT_OPERATOR_ENABLED.key -> None,
+            CometConf.COMET_ICEBERG_NATIVE_WRITE_ENABLED.key -> Some("true")) {
+            spark.read
+              .parquet(dir.getCanonicalPath)
+              .writeTo(s"$catalog.$ns.write_flag_only")
+              .append()
+          }
+        }
+        assert(snapshot.snapshotDelta == 1L, s"expected 1 commit, got ${snapshot.snapshotDelta}")
         val (commits, _) = collectIcebergWriteOps(snapshot.plans)
         val nativeWrites = snapshot.plans.flatMap { plan =>
           collectWithSubqueries(plan) { case e: CometIcebergWriteExec => e }
@@ -209,15 +244,16 @@ class CometIcebergWriteActionSuite
           commits.nonEmpty && nativeWrites.nonEmpty,
           "expected an IcebergCommitExec over a CometIcebergWriteExec. Plans:\n" +
             snapshot.plans.mkString("\n--\n"))
-        assertRows("write_defaults", expectedIds = 0 until 10)
+        assertRows("write_flag_only", expectedIds = 0 until 10)
       }
     }
   }
 
-  // Iceberg's DeltaWriter writes a merge-on-read write's rows under either plan, so with no flag
-  // set the write keeps Spark's own operator. Only the testing split flag plans it as Comet's.
+  // Iceberg's DeltaWriter writes a merge-on-read write's rows under either plan, so with only the
+  // write flag set the write keeps Spark's own operator. Only the testing split flag plans it as
+  // Comet's.
   // https://github.com/apache/datafusion-comet/issues/6240
-  test("a merge-on-read write keeps Spark's own write plan when no flag is set") {
+  test("a merge-on-read write keeps Spark's own write plan when only the write flag is set") {
     assume(icebergAvailable, "Iceberg not available in classpath")
     assume(isSpark35Plus, "WriteDelta interception starts with Spark 3.5")
     withIcebergCatalog { _ =>
@@ -231,7 +267,7 @@ class CometIcebergWriteActionSuite
       val snapshot = captureWrite("mor_defaults") {
         withSessionConf(
           CometConf.COMET_ICEBERG_WRITE_SPLIT_OPERATOR_ENABLED.key -> None,
-          CometConf.COMET_ICEBERG_NATIVE_WRITE_ENABLED.key -> None) {
+          CometConf.COMET_ICEBERG_NATIVE_WRITE_ENABLED.key -> Some("true")) {
           spark.sql(s"DELETE FROM $catalog.$ns.mor_defaults WHERE id = 1")
         }
       }
@@ -250,13 +286,13 @@ class CometIcebergWriteActionSuite
     }
   }
 
-  // With no flag set, an eligible write becomes a CometIcebergWriteExec, so reverting a
+  // With only the write flag set, an eligible write becomes a CometIcebergWriteExec, so reverting a
   // transition-heavy stage has to put a JVM writer back rather than drop the write. The same write
   // runs first under the default threshold, which leaves its stage alone, so that the reverted run
   // is known to start from a native write rather than from one that was never eligible.
   // https://github.com/apache/datafusion-comet/issues/5719
   for (adaptive <- Seq(false, true)) {
-    test(s"transition-heavy fallback keeps the write when no flag is set with AQE=$adaptive") {
+    test(s"transition-heavy fallback keeps the write under the write flag alone, AQE=$adaptive") {
       assume(icebergAvailable, "Iceberg not available in classpath")
       withIcebergCatalog { _ =>
         withTempPath { dir =>
@@ -270,8 +306,8 @@ class CometIcebergWriteActionSuite
             .parquet(dir.getCanonicalPath)
           val table = s"transition_defaults_${if (adaptive) "aqe" else "no_aqe"}"
           createTable(table, partitionSpec = "")
-          // Appends the source with no write flag set, checks that it committed once, and returns
-          // the plans it ran.
+          // Appends the source with only the write flag set, checks that it committed once, and
+          // returns the plans it ran.
           def append(maxTransitions: Int): Seq[SparkPlan] = {
             var plans = Seq.empty[SparkPlan]
             // withSQLConf returns Unit before Spark 4.0, so the plans are kept from inside it.
@@ -282,7 +318,7 @@ class CometIcebergWriteActionSuite
               val snapshot = captureWrite(table) {
                 withSessionConf(
                   CometConf.COMET_ICEBERG_WRITE_SPLIT_OPERATOR_ENABLED.key -> None,
-                  CometConf.COMET_ICEBERG_NATIVE_WRITE_ENABLED.key -> None) {
+                  CometConf.COMET_ICEBERG_NATIVE_WRITE_ENABLED.key -> Some("true")) {
                   spark.read
                     .parquet(dir.getCanonicalPath)
                     .writeTo(s"$catalog.$ns.$table")
@@ -4356,8 +4392,8 @@ class CometIcebergWriteActionSuite
   /**
    * Sets each key to its value, or unsets it for `None`, for the duration of `action`, then puts
    * back the value each key had before. It writes the session conf directly; see
-   * [[withNativeEnabled]] for why. A key is restored rather than unset because unsetting the
-   * native write flag would turn it on: it defaults to true while this suite pins it off.
+   * [[withNativeEnabled]] for why. A key is restored rather than unset because this suite pins
+   * both write flags, and unsetting one would leave its default in place of the suite's value.
    */
   private def withSessionConf[T](settings: (String, Option[String])*)(action: => T): T = {
     val conf = spark.sessionState.conf
