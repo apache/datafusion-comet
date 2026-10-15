@@ -62,6 +62,7 @@ pub enum OperatorType {
     CsvScan,
     MergeRows,
     Explode,
+    BroadcastNestedLoopJoin,
 }
 
 /// Global registry of operator builders
@@ -123,6 +124,7 @@ impl OperatorRegistry {
     fn register_all_operators(&mut self) {
         self.register_projection_operators();
         self.register_aggregate_operators();
+        self.register_join_operators();
         self.register_shuffle_operators();
         self.register_write_operators();
         self.register_merge_rows_operators();
@@ -143,6 +145,20 @@ impl OperatorRegistry {
 
         self.builders
             .insert(OperatorType::HashAgg, Box::new(HashAggBuilder));
+    }
+
+    /// Register join operators
+    fn register_join_operators(&mut self) {
+        use super::join::{BroadcastNestedLoopJoinBuilder, HashJoinBuilder, SortMergeJoinBuilder};
+
+        self.builders
+            .insert(OperatorType::HashJoin, Box::new(HashJoinBuilder));
+        self.builders
+            .insert(OperatorType::SortMergeJoin, Box::new(SortMergeJoinBuilder));
+        self.builders.insert(
+            OperatorType::BroadcastNestedLoopJoin,
+            Box::new(BroadcastNestedLoopJoinBuilder),
+        );
     }
 
     /// Register shuffle operators
@@ -205,7 +221,7 @@ fn get_operator_type(spark_operator: &Operator) -> Option<OperatorType> {
         OpStruct::Explode(_) => Some(OperatorType::Explode),
         OpStruct::CsvScan(_) => Some(OperatorType::CsvScan),
         OpStruct::ShuffleScan(_) => Some(OperatorType::ShuffleScan),
-        OpStruct::BroadcastNestedLoopJoin(_) => None,
+        OpStruct::BroadcastNestedLoopJoin(_) => Some(OperatorType::BroadcastNestedLoopJoin),
         OpStruct::RangeScan(_) => None,
         OpStruct::Sample(_) => None, // Not yet in OperatorType enum
         OpStruct::MergeRows(_) => Some(OperatorType::MergeRows),
