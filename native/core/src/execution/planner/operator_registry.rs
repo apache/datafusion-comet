@@ -60,6 +60,7 @@ pub enum OperatorType {
     HashJoin,
     Window,
     CsvScan,
+    MergeRows,
 }
 
 /// Global registry of operator builders
@@ -122,6 +123,7 @@ impl OperatorRegistry {
         self.register_projection_operators();
         self.register_shuffle_operators();
         self.register_write_operators();
+        self.register_merge_rows_operators();
     }
 
     /// Register projection operators
@@ -151,6 +153,14 @@ impl OperatorRegistry {
         self.builders
             .insert(OperatorType::ParquetWriter, Box::new(ParquetWriterBuilder));
     }
+
+    /// Register row-level MERGE operators
+    fn register_merge_rows_operators(&mut self) {
+        use super::merge_rows::MergeRowsBuilder;
+
+        self.builders
+            .insert(OperatorType::MergeRows, Box::new(MergeRowsBuilder));
+    }
 }
 
 /// Extract the operator type from a Spark operator
@@ -178,8 +188,8 @@ fn get_operator_type(spark_operator: &Operator) -> Option<OperatorType> {
         OpStruct::ShuffleScan(_) => Some(OperatorType::ShuffleScan),
         OpStruct::BroadcastNestedLoopJoin(_) => None,
         OpStruct::RangeScan(_) => None,
-        OpStruct::Sample(_) => None,    // Not yet in OperatorType enum
-        OpStruct::MergeRows(_) => None, // Not yet in OperatorType enum
+        OpStruct::Sample(_) => None, // Not yet in OperatorType enum
+        OpStruct::MergeRows(_) => Some(OperatorType::MergeRows),
         // Generic extension point for out-of-tree contrib scans (Delta, Lance, ...); not in
         // OperatorType enum. The arm stays unconditional even in non-contrib builds because the
         // proto enum is generated regardless of cargo features and Rust requires an exhaustive
