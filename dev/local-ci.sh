@@ -107,8 +107,8 @@ setup_jdk() {
 
 # The ci profile is release without LTO. Stage it where -Prelease looks.
 build_native() {
-  say "cargo build --profile ci"
-  (cd "$REPO/native" && cargo build --profile ci)
+  say "cargo build --locked --profile ci"
+  (cd "$REPO/native" && cargo build --locked --profile ci)
   mkdir -p "$REPO/native/target/release"
   cp "$REPO/native/target/ci/$LIB" "$REPO/native/target/release/$LIB"
 }
