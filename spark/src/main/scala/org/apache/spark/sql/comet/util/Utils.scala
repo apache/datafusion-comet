@@ -356,11 +356,11 @@ object Utils extends CometTypeShim with Logging {
   private val MaxReadPiece = 64 * 1024
 
   /**
-   * Reads `in` straight into each buffer it is asked to fill, in pieces of up to 64 KiB.
-   * `Channels.newChannel` reads 8 KiB at a time, and enters and leaves the JDK's interruptible
-   * I/O machinery for each piece. Like that channel, this one closes and throws
-   * `ClosedByInterruptException` when a read starts on an interrupted thread, so a cancelled
-   * decode still stops at its next read.
+   * Reads `in` into each buffer it is asked to fill until the buffer is full or `in` ends, up to
+   * 64 KiB at a time through one reused array. `Channels.newChannel` reads 8 KiB at a time, and
+   * enters and leaves the JDK's interruptible I/O machinery for each piece. Like that channel,
+   * this one closes and throws `ClosedByInterruptException` when a read starts on an interrupted
+   * thread, so a cancelled decode still stops at its next read.
    */
   private final class InputStreamChannel(in: InputStream) extends ReadableByteChannel {
     private var piece = Array.emptyByteArray

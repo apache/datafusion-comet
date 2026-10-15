@@ -52,9 +52,10 @@ import org.apache.comet.vector.NativeUtil
  * [[org.apache.spark.sql.comet.execution.arrow.ColumnarBatchArrowReader]] does, without affecting
  * another task.
  *
- * An entry is freed when the last task holding it completes. So the cache holds no memory that
- * the tasks would not hold anyway, since without it each of them holds a decoded copy of its own
- * for as long as it runs. A task that reads the broadcast after that decodes it again.
+ * An entry is freed when the last task holding it completes, and a task that reads the broadcast
+ * after that decodes it again. A native join keeps a build side of one batch, which is what
+ * coalescing makes of a broadcast, for as long as its task runs, so for such a broadcast the
+ * cache holds no memory that the tasks would not hold anyway.
  *
  * @param decode
  *   decodes a broadcast's value; `None` makes each task decode the value for itself
@@ -80,7 +81,7 @@ private[comet] class DecodedBroadcastCache(
   /** The number of broadcast values that running tasks hold. */
   def size: Int = entries.synchronized(entries.size)
 
-  /** The number of tasks that hold the entry for `chunks`. */
+  /** The number of holds on the entry for `chunks`, one for each read by a running task. */
   def holders(chunks: Array[ChunkedByteBuffer]): Int =
     entries.synchronized(Option(entries.get(chunks)).map(_.holders).getOrElse(0))
 
@@ -122,7 +123,7 @@ private[comet] class DecodedBroadcastCache(
   }
 
   private final class Entry(val chunks: Array[ChunkedByteBuffer]) {
-    // The tasks that hold this entry. Guarded by `entries`.
+    // One hold for each read of the broadcast by a running task. Guarded by `entries`.
     var holders = 0
     private val done = new CountDownLatch(1)
     // Written by the task that loads the entry before `done` opens, and read by others after.
@@ -294,9 +295,6 @@ private[comet] object DecodedBroadcastCache {
       batches: Array[(Schema, ArrowRecordBatch)]) {
 
     def numBatches: Int = batches.length
-
-    /** The memory that the batches hold. */
-    def allocatedBytes: Long = allocator.getAllocatedMemory
 
     /**
      * A root of the caller's own over the buffers of batch `i`. Its vectors take references of

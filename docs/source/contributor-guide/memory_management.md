@@ -110,12 +110,14 @@ for both at once, and raises the pod's memory request by the same amount.
 **Comet's JVM-side Arrow allocator is unbounded and accounted by nobody.** `CometArrowAllocator`
 (`spark/src/main/scala/org/apache/comet/package.scala`) is a single process-wide
 `new RootAllocator(Long.MaxValue)`. Child allocators are cut from it for FFI stream export
-(`CometNativeArrowSource`), broadcast coalescing, and `CometSparkToColumnarExec`. These are real
-off-heap bytes in container RSS that neither Spark's `TaskMemoryManager` nor Comet's native memory
-pool sees. In practice the volume is modest, a batch at a time per stream, but there is no
-ceiling and no backpressure. The executor's memory usage log reports the allocator's total, and
-the part of it charged to the import allocator described below, so that the overhead can be sized
-for it.
+(`CometNativeArrowSource`), broadcast coalescing, the decoded broadcasts that an executor's tasks
+share (`DecodedBroadcastCache`), and `CometSparkToColumnarExec`. These are real off-heap bytes in
+container RSS that neither Spark's `TaskMemoryManager` nor Comet's native memory pool sees. In
+practice the volume is modest, a batch at a time per stream, but there is no ceiling and no
+backpressure. A broadcast is the largest case: a task that reads one holds all of it decoded, and
+the tasks of an executor that read it at the same time share one such copy. The executor's memory
+usage log reports the allocator's total, and the part of it charged to the import allocator
+described below, so that the overhead can be sized for it.
 
 Charging these buffers to Spark's off-heap pool instead was tried in
 [#5998](https://github.com/apache/datafusion-comet/pull/5998) and dropped. Spark cannot make
@@ -155,6 +157,7 @@ flowchart LR
     CACHE["ArrowCachedBatchSerializer"]
     PY["CometArrowPythonRunnerBase"]
     BC["Utils broadcast-coalesce"]
+    DBC["DecodedBroadcastCache<br>broadcasts shared by tasks"]
   end
 
   ROOT["CometArrowAllocator<br>RootAllocator, no limit<br>no allocation listener"]
@@ -171,6 +174,7 @@ flowchart LR
   CACHE --> ROOT
   PY --> ROOT
   BC --> ROOT
+  DBC --> ROOT
   ROOT --> NOBODY
   SHUF --> TMM
   NPOOL -->|"CometTaskMemoryManager over JNI"| TMM
