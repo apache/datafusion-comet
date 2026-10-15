@@ -2450,10 +2450,12 @@ case class CometIcebergNativeScanMetadata(
 
   /**
    * The schema every task of the scan reads with: the pruned task schema while nested schema
-   * pruning is on and can apply, the full one otherwise. CometScanRule checks this schema and
-   * CometIcebergNativeScan serializes it, so the two cannot disagree. None falls back to Spark.
+   * pruning is on and can apply, the full one otherwise. It is fixed when `extract` builds the
+   * metadata during planning, so the schema CometScanRule checks is the one
+   * CometIcebergNativeScan serializes at execution, even if the config changes in between. None
+   * falls back to Spark.
    */
-  def taskSchema: Option[Any] =
+  val taskSchema: Option[Any] =
     prunedTaskSchema
       .filter(_ => CometConf.COMET_ICEBERG_NESTED_SCHEMA_PRUNING_ENABLED.get())
       .orElse(fullTaskSchema)

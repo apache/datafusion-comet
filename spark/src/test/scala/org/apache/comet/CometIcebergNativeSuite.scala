@@ -1880,6 +1880,13 @@ class CometIcebergNativeSuite
         withSQLConf(CometConf.COMET_ICEBERG_NESTED_SCHEMA_PRUNING_ENABLED.key -> "false") {
           checkNestedFieldEvolutionFallback(unpartitionedQuery, "s.b (added)")
         }
+        // The task schema is chosen during planning, so a query planned with pruning on still
+        // reads the pruned schema when it runs with pruning off.
+        val planned = spark.sql(unpartitionedQuery)
+        assertSingleNativeScan(planned.queryExecution.executedPlan)
+        withSQLConf(CometConf.COMET_ICEBERG_NESTED_SCHEMA_PRUNING_ENABLED.key -> "false") {
+          checkAnswer(planned, Seq(Row(1, 100, 10), Row(2, 200, 20)))
+        }
 
         Seq(table, historical, unpartitioned).foreach(t => spark.sql(s"DROP TABLE $t"))
       }
