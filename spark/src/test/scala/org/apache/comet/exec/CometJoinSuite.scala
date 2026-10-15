@@ -31,7 +31,7 @@ import org.apache.spark.SparkException
 import org.apache.spark.sql.{Column, CometTestBase, DataFrame, QueryTest, Row}
 import org.apache.spark.sql.catalyst.TableIdentifier
 import org.apache.spark.sql.catalyst.analysis.UnresolvedRelation
-import org.apache.spark.sql.catalyst.expressions.{And, Ascending, AttributeReference, BoundReference, Descending, DynamicPruningExpression, InterpretedOrdering, IsNotNull, SortDirection, SortOrder}
+import org.apache.spark.sql.catalyst.expressions.{And, Ascending, AttributeReference, BoundReference, Descending, DynamicPruningExpression, IsNotNull, SortOrder}
 import org.apache.spark.sql.catalyst.optimizer.{BuildLeft, BuildRight, BuildSide}
 import org.apache.spark.sql.catalyst.plans.{Inner, LeftOuter, LeftSemi}
 import org.apache.spark.sql.catalyst.plans.logical.Join
