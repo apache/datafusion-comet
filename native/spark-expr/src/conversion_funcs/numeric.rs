@@ -389,7 +389,7 @@ macro_rules! cast_int_to_int_macro {
     }};
 }
 
-/// Spark's ANSI range check for casting a floating point value to a 32-bit or 64-bit integer,
+/// Spark's ANSI/TRY range check for casting a floating point value to a 32-bit or 64-bit integer,
 /// from `FloatExactNumeric`/`DoubleExactNumeric.toInt`/`toLong` in Spark's `numerics.scala`:
 /// `Math.floor(x) <= MaxValue && Math.ceil(x) >= MinValue`. The JVM widens a float source to
 /// double for `Math.floor`/`Math.ceil` and converts the integer bounds to double for the
@@ -424,7 +424,7 @@ macro_rules! cast_float_to_int16_down {
             .expect(concat!("Expected a ", stringify!($src_array_type)));
 
         let output_array = match $eval_mode {
-            EvalMode::Ansi => cast_array
+            EvalMode::Ansi | EvalMode::Try => cast_array
                 .iter()
                 .map(|value| match value {
                     Some(value) => {
@@ -432,6 +432,9 @@ macro_rules! cast_float_to_int16_down {
                         // first and then requires the truncated Int to round-trip through the
                         // narrower type.
                         if !spark_float_fits_integral(value, i32::MIN as f64, i32::MAX as f64) {
+                            if $eval_mode == EvalMode::Try {
+                                return Ok(None);
+                            }
                             return Err(cast_overflow(
                                 &format!($format_str, value).replace("e", "E"),
                                 $src_type_str,
@@ -439,6 +442,9 @@ macro_rules! cast_float_to_int16_down {
                             ));
                         }
                         let i32_value = value as i32;
+                        if $eval_mode == EvalMode::Try {
+                            return Ok(<$rust_dest_type>::try_from(i32_value).ok());
+                        }
                         <$rust_dest_type>::try_from(i32_value)
                             .map_err(|_| {
                                 cast_overflow(
@@ -487,7 +493,7 @@ macro_rules! cast_float_to_int32_up {
             .expect(concat!("Expected a ", stringify!($src_array_type)));
 
         let output_array = match $eval_mode {
-            EvalMode::Ansi => cast_array
+            EvalMode::Ansi | EvalMode::Try => cast_array
                 .iter()
                 .map(|value| match value {
                     Some(value) => {
@@ -496,6 +502,9 @@ macro_rules! cast_float_to_int32_up {
                             <$rust_dest_type>::MIN as f64,
                             <$rust_dest_type>::MAX as f64,
                         ) {
+                            if $eval_mode == EvalMode::Try {
+                                return Ok(None);
+                            }
                             return Err(cast_overflow(
                                 &format!($format_str, value).replace("e", "E"),
                                 $src_type_str,

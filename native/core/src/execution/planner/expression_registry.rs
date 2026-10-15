@@ -87,6 +87,7 @@ pub enum ExpressionType {
     Rlike,
     CheckOverflow,
     ScalarFunc,
+    VariantGet,
     NormalizeNanAndZero,
     Subquery,
     BloomFilterMightContain,
@@ -362,6 +363,7 @@ impl ExpressionRegistry {
             Some(ExprStruct::Rlike(_)) => Ok(ExpressionType::Rlike),
             Some(ExprStruct::CheckOverflow(_)) => Ok(ExpressionType::CheckOverflow),
             Some(ExprStruct::ScalarFunc(_)) => Ok(ExpressionType::ScalarFunc),
+            Some(ExprStruct::VariantGet(_)) => Ok(ExpressionType::VariantGet),
             Some(ExprStruct::NormalizeNanAndZero(_)) => Ok(ExpressionType::NormalizeNanAndZero),
             Some(ExprStruct::Subquery(_)) => Ok(ExpressionType::Subquery),
             Some(ExprStruct::BloomFilterMightContain(_)) => {

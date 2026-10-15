@@ -521,11 +521,11 @@ to Spark ([#2837](https://github.com/apache/datafusion-comet/issues/2837)). Enab
 | `to_variant_object` | 🔜 | — | Requires `VariantType` support |
 | `try_aes_decrypt` | ✅ | — | Routed through the JVM codegen dispatcher |
 | `try_parse_json` | 🔜 | — | Requires `VariantType` support |
-| `try_variant_get` | 🔜 | — | Requires `VariantType` support |
+| `try_variant_get` | ✅ | Native | Spark 4.0+; foldable paths over top-level Variant columns or literals; Boolean, numeric and binary targets. Decimal, DATE and TIMESTAMP targets require `spark.comet.expression.VariantGet.allowIncompatible=true` because of JDK rounding and date range differences. STRING, TIME, nested and Variant targets fall back. |
 | `typeof` | ✅ | — | Foldable; resolved to a literal before Comet sees the plan |
 | `user` | ✅ | — | Resolved to a literal by the Spark analyzer before reaching Comet |
 | `uuid` | ✅ | Native |  |
-| `variant_get` | 🔜 | — | Requires `VariantType` support |
+| `variant_get` | ✅ | Native | Same supported inputs and targets as `try_variant_get`; failed conversions preserve Spark's `INVALID_VARIANT_CAST` error. This extracts from the decoded value and does not prune Parquet fields. |
 
 ---
 
