@@ -29,8 +29,10 @@ executed.
 Supported parent joins and aggregates remain eligible for native execution. Global aggregates
 still return one row (`COUNT = 0`, `SUM = NULL`), and grouped aggregates return no rows. Independent
 operator restrictions and aggregate buffer compatibility checks still apply.
-Parquet writes whose input plans contain an empty relation use Spark's writer to preserve
-readable empty output files and their schema metadata.
+
+A native Parquet write over a native empty relation stays native. Like Spark's writer, it runs one
+task for the empty input, so the output still gets a schema-only Parquet file that readers can
+infer the schema from.
 
 ## In-Memory Cache
 
@@ -110,9 +112,11 @@ incorrect result. When any single window expression in a `WindowExec` falls back
   (`stddev`, `stddev_pop`, `stddev_samp`, `var_pop`, `var_samp`, `corr`, `covar_pop`, `covar_samp`). These run
   natively as plain aggregations but not as window functions
   ([#4766](https://github.com/apache/datafusion-comet/issues/4766)).
-- `min` / `max` on string, binary, timestamp-without-time-zone, interval, or nested (array / struct) input types,
-  and `sum` / `avg` on year-month or day-time interval input types. Windowed aggregates inherit the same input-type
-  support as the batch aggregates, so these fall back in both contexts.
+- `min` / `max` on timestamp-without-time-zone, interval, or nested (array / struct) input types, and `sum` /
+  `avg` on year-month or day-time interval input types. Windowed aggregates inherit the same input-type support as
+  the batch aggregates, so these fall back in both contexts.
+- `min` / `max` on string or binary input types. These run natively as plain aggregations but not as window
+  functions.
 - `sum` or `avg` on `DECIMAL` with a sliding (non ever-expanding) frame, because the sliding path would wrap on
   overflow instead of returning Spark's `NULL`.
 - `RANGE` frame with an explicit offset when the `ORDER BY` column is `DATE` or `DECIMAL`

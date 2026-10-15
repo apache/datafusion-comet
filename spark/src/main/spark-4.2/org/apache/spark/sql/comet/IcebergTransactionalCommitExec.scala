@@ -33,7 +33,8 @@ private[org] final class IcebergTransactionalCommitExec private (
       delegate.batchWrite,
       delegate.write,
       delegate.refreshCache,
-      delegate.child)
+      delegate.child,
+      delegate.command)
     with TransactionalExec {
 
   override def withTransaction(txn: Option[Transaction]): SparkPlan = copyWith(transaction = txn)
@@ -62,13 +63,14 @@ private[org] final class IcebergTransactionalCommitExec private (
   }
 
   override def makeCopy(newArgs: Array[AnyRef]): IcebergTransactionalCommitExec = {
-    require(newArgs.length == 4, s"expected 4 IcebergCommitExec arguments, got ${newArgs.length}")
+    require(newArgs.length == 5, s"expected 5 IcebergCommitExec arguments, got ${newArgs.length}")
     val copied = new IcebergTransactionalCommitExec(
       IcebergCommitExec(
         newArgs(0).asInstanceOf[org.apache.spark.sql.connector.write.BatchWrite],
         newArgs(1).asInstanceOf[org.apache.spark.sql.connector.write.Write],
         newArgs(2).asInstanceOf[IcebergCommitExec.RefreshCache],
-        newArgs(3).asInstanceOf[SparkPlan]),
+        newArgs(3).asInstanceOf[SparkPlan],
+        newArgs(4).asInstanceOf[Option[org.apache.comet.iceberg.DeltaCommand]]),
       transaction)
     copied.copyTagsFrom(this)
     copied
@@ -85,7 +87,7 @@ private[org] final class IcebergTransactionalCommitExec private (
       child: SparkPlan = this.child,
       transaction: Option[Transaction] = this.transaction): IcebergTransactionalCommitExec =
     new IcebergTransactionalCommitExec(
-      IcebergCommitExec(batchWrite, write, refreshCache, child),
+      IcebergCommitExec(batchWrite, write, refreshCache, child, command),
       transaction)
 }
 

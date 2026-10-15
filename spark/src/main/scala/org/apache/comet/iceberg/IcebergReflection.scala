@@ -19,7 +19,7 @@
 
 package org.apache.comet.iceberg
 
-import java.lang.reflect.Method
+import java.lang.reflect.{Constructor, Method}
 import java.util.concurrent.ConcurrentHashMap
 
 import scala.util.control.NonFatal
@@ -204,6 +204,20 @@ object IcebergReflection extends Logging {
     if (batchWrite == null) return false
     batchWrite.getClass.getName.startsWith(ClassNames.SPARK_WRITE + "$")
   }
+
+  private val positionDeltaWriteClassName =
+    "org.apache.iceberg.spark.source.SparkPositionDeltaWrite"
+  private val positionDeltaBatchWriteClassPrefix =
+    "org.apache.iceberg.spark.source.SparkPositionDeltaWrite$PositionDeltaBatchWrite"
+
+  /** True only for Iceberg's JVM DeltaWrite implementation. */
+  def isIcebergPositionDeltaWrite(write: Any): Boolean =
+    write != null && tryLoadClass(positionDeltaWriteClassName).exists(_.isInstance(write))
+
+  /** True only for the BatchWrite enclosed by Iceberg's SparkPositionDeltaWrite. */
+  def isIcebergPositionDeltaBatchWrite(batchWrite: Any): Boolean =
+    batchWrite != null && batchWrite.getClass.getName.startsWith(
+      positionDeltaBatchWriteClassPrefix)
 
   def getOuterSparkWrite(batchWrite: Any): Option[Any] = {
     if (batchWrite == null) None
@@ -1423,6 +1437,14 @@ object IcebergReflection extends Logging {
   def getTableFromSparkWrite(sparkWrite: Any): Option[Any] =
     getSparkWriteField(sparkWrite, "table")
 
+  /** Table owned by either Iceberg's regular SparkWrite or its position-delta write. */
+  def getTableFromIcebergWrite(write: Any): Option[Any] =
+    if (isIcebergPositionDeltaWrite(write)) {
+      reflectField(write, "table")
+    } else {
+      getTableFromSparkWrite(write)
+    }
+
   def getWritePropertiesFromSparkWrite(sparkWrite: Any): Option[Map[String, String]] = {
     import scala.jdk.CollectionConverters._
     getSparkWriteField(sparkWrite, "writeProperties")
@@ -2010,19 +2032,36 @@ object IcebergReflection extends Logging {
   }
 
   /**
-   * The locations of the data files carried by a `SparkWrite$TaskCommit` message (its
-   * package-private `files()`), or empty when `message` is not one. Used to clean up after a
-   * write job that failed before any commit was attempted.
+   * The newly written file locations carried by an Iceberg task commit message. Plain
+   * `SparkWrite$TaskCommit` exposes `files()`; position-delta commits expose separate
+   * `dataFiles()` and `deleteFiles()` arrays. Do not include `rewrittenDeleteFiles()`: those
+   * files pre-date this job and are only candidates for removal after a successful delta commit.
+   *
+   * Used to clean completed tasks after a write job fails before any commit is attempted. Both
+   * Iceberg write implementations keep their own cleanup disabled in that failure mode.
    */
-  def taskCommitFileLocations(message: AnyRef): Seq[String] =
+  def taskCommitFileLocations(message: AnyRef): Seq[String] = {
+    def locations(methodName: String): Seq[String] =
+      findMethodInHierarchy(message.getClass, methodName).toSeq
+        .flatMap { method =>
+          method.invoke(message) match {
+            case array: Array[_] =>
+              array.toSeq.flatMap(file => extractFileLocation(file.getClass, file))
+            case _ => Seq.empty
+          }
+        }
+
     findMethodInHierarchy(message.getClass, "files") match {
       case Some(files) =>
         files.invoke(message) match {
-          case array: Array[_] => array.toSeq.flatMap(f => extractFileLocation(f))
+          case array: Array[_] =>
+            array.toSeq.flatMap(file => extractFileLocation(file.getClass, file))
           case _ => Seq.empty
         }
-      case None => Seq.empty
+      case None =>
+        locations("dataFiles") ++ locations("deleteFiles")
     }
+  }
 
   /** The table's `FileIO` (`table.io()`). Iceberg requires `FileIO` to be `Serializable`. */
   def getTableIO(table: Any): Option[AnyRef] =
@@ -2113,18 +2152,41 @@ object IcebergReflection extends Logging {
   }
 
   /**
-   * The three parquet-mr-bridging members the footer re-read depends on. Resolved together, per
-   * call, rather than memoized in JVM-lifetime lazy vals: `executorReflectionUnresolved` keys its
+   * The parquet-mr-bridging members the footer re-read depends on. Resolved together, per call,
+   * rather than memoized in JVM-lifetime lazy vals: `executorReflectionUnresolved` keys its
    * verdict on the current Iceberg class loader, and a probe re-run after a classpath change must
    * not be satisfied by `Method`s resolved against a previous Iceberg. Resolution is a per-task
    * cost (once per `rebuildDataFilesWithJavaMetrics` call), not per-file.
    */
-  private case class ParquetFooterReflection(
+  private[iceberg] case class ParquetFooterReflection(
       footerMetrics: Method,
       parquetIOFile: Method,
-      parquetFileReaderOpen: Method)
+      parquetFileReaderOpen: Method,
+      readOptions: Option[FooterReadOptions])
 
-  private def resolveParquetFooterReflection(): ParquetFooterReflection = {
+  /**
+   * Opens a file with parquet-mr's default read options, built from a `PlainParquetConfiguration`
+   * rather than from a Hadoop `Configuration`.
+   *
+   * On parquet-mr that has `ParquetConfiguration` (1.14 and later),
+   * `ParquetFileReader.open(InputFile)` builds its options from a new Hadoop `Configuration` and
+   * reads them back, which parses Hadoop's default XML resources on every call, so once for every
+   * data file a task writes. The options govern filtering, decryption, allocation, and how string
+   * statistics from old parquet-mr writers are read, none of which applies to a footer the native
+   * writer has just written. Earlier parquet-mr builds its defaults without Hadoop, so there the
+   * footer is still read through `open(InputFile)`.
+   */
+  private[iceberg] case class FooterReadOptions(
+      open: Method,
+      builder: Method,
+      build: Method,
+      plainConfiguration: Constructor[_]) {
+
+    def newOptions(): AnyRef =
+      build.invoke(builder.invoke(null, plainConfiguration.newInstance().asInstanceOf[AnyRef]))
+  }
+
+  private[iceberg] def resolveParquetFooterReflection(): ParquetFooterReflection = {
     // `ParquetUtil.footerMetrics(ParquetMetadata, Stream[FieldMetrics], MetricsConfig,
     // NameMapping)`. In `iceberg-spark-runtime` jars parquet-mr is shaded, so the
     // `ParquetMetadata` parameter type is the relocated class -- resolved from the method itself
@@ -2144,12 +2206,38 @@ object IcebergReflection extends Logging {
       parquetMetadataClass.getName
         .replace("hadoop.metadata.ParquetMetadata", "hadoop.ParquetFileReader"))
     val parquetFileReaderOpen = readerClass.getMethod("open", parquetIOFile.getReturnType)
-    ParquetFooterReflection(footerMetrics, parquetIOFile, parquetFileReaderOpen)
+    ParquetFooterReflection(
+      footerMetrics,
+      parquetIOFile,
+      parquetFileReaderOpen,
+      resolveFooterReadOptions(readerClass, parquetIOFile.getReturnType))
+  }
+
+  /**
+   * The members [[FooterReadOptions]] needs, or `None` on parquet-mr without
+   * `ParquetConfiguration`. They are looked up next to `ParquetFileReader`, which lives in the
+   * `hadoop` package of a possibly relocated parquet-mr.
+   */
+  private def resolveFooterReadOptions(
+      readerClass: Class[_],
+      inputFileClass: Class[_]): Option[FooterReadOptions] = {
+    val parquetPackage = readerClass.getName.stripSuffix("hadoop.ParquetFileReader")
+    for {
+      configurationClass <- tryLoadClass(s"${parquetPackage}conf.ParquetConfiguration")
+      plainConfigurationClass <- tryLoadClass(s"${parquetPackage}conf.PlainParquetConfiguration")
+      optionsClass <- tryLoadClass(s"${parquetPackage}ParquetReadOptions")
+      open <- findMethod(readerClass, "open", inputFileClass, optionsClass)
+      builder <- findMethod(optionsClass, "builder", configurationClass)
+      build <- findMethod(builder.getReturnType, "build")
+    } yield FooterReadOptions(open, builder, build, plainConfigurationClass.getConstructor())
   }
 
   private def readParquetFooter(parquet: ParquetFooterReflection, inputFile: AnyRef): AnyRef = {
     val parquetInputFile = parquet.parquetIOFile.invoke(null, inputFile)
-    val reader = parquet.parquetFileReaderOpen.invoke(null, parquetInputFile)
+    val reader = parquet.readOptions match {
+      case Some(options) => options.open.invoke(null, parquetInputFile, options.newOptions())
+      case None => parquet.parquetFileReaderOpen.invoke(null, parquetInputFile)
+    }
     try {
       getMethod(reader.getClass, "getFooter").invoke(reader)
     } finally {

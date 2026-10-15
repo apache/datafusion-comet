@@ -419,6 +419,25 @@ abstract class CometColumnarShuffleSuite extends CometTestBase with AdaptiveSpar
     }
   }
 
+  test("columnar shuffle on array [timestamp]") {
+    // The native row-to-Arrow conversion appends an array of 64 or more elements that holds a
+    // null in one call, which requires the array to carry the column's timezone.
+    Seq(10, 201).foreach { numPartitions =>
+      withParquetTable(
+        (0 until 50).map { i =>
+          val timestamps: Seq[java.sql.Timestamp] = (0 until 70).map { j =>
+            if (j == i) null else new java.sql.Timestamp(i * 1000000L + j)
+          }
+          (i, timestamps)
+        },
+        "tbl") {
+        val df = sql("SELECT * FROM tbl").repartition(numPartitions, $"_1")
+
+        checkShuffleAnswer(df, 1)
+      }
+    }
+  }
+
   test("columnar shuffle on nested array") {
     Seq("false", "true").foreach { _ =>
       Seq(10, 201).foreach { numPartitions =>
@@ -732,6 +751,47 @@ abstract class CometColumnarShuffleSuite extends CometTestBase with AdaptiveSpar
 
       assert(metrics.contains("shuffleWriteTime"))
       assert(metrics("shuffleWriteTime").value > 0)
+    }
+  }
+
+  test("columnar shuffle stores offsets as lengths only with zstd") {
+    withParquetTable(rowsWithOffsets(40000), "tbl") {
+      // 10 partitions take the bypass-merge writer, 201 the sort-based one
+      Seq(10, 201).foreach { numPartitions =>
+        def shuffled: DataFrame = sql("SELECT * FROM tbl").repartition(numPartitions, $"_1")
+
+        def bytesWritten(codec: String, offsetsAsLengths: Boolean): Long = {
+          var bytes = 0L
+          withSQLConf(
+            // this suite spills every few rows; keep blocks big enough for compression to matter
+            CometConf.COMET_SHUFFLE_JVM_SPILL_THRESHOLD.key -> "100000",
+            CometConf.COMET_SHUFFLE_COMPRESSION_CODEC.key -> codec,
+            CometConf.COMET_SHUFFLE_COMPRESSION_OFFSETS_AS_LENGTHS.key ->
+              offsetsAsLengths.toString) {
+            val df = shuffled
+            checkShuffleAnswer(df, 1)
+            bytes = cometShuffleMetric(df, "shuffleBytesWritten")
+          }
+          bytes
+        }
+
+        val lengths = bytesWritten("zstd", offsetsAsLengths = true)
+        val offsets = bytesWritten("zstd", offsetsAsLengths = false)
+        assert(
+          lengths < offsets,
+          s"$numPartitions partitions: zstd wrote $lengths bytes with lengths, $offsets with " +
+            "offsets")
+        // LZ4 does not take lengths yet, so the setting must not change what it writes
+        assert(bytesWritten("lz4", offsetsAsLengths = true) == bytesWritten("lz4", false))
+
+        // At the suite's own threshold, every partition gets many blocks of a few rows, which
+        // the sort-based writer spills to files and merges
+        withSQLConf(
+          CometConf.COMET_SHUFFLE_COMPRESSION_CODEC.key -> "zstd",
+          CometConf.COMET_SHUFFLE_COMPRESSION_OFFSETS_AS_LENGTHS.key -> "true") {
+          checkShuffleAnswer(shuffled, 1)
+        }
+      }
     }
   }
 
