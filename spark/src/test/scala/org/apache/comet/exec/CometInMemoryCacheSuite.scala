@@ -3531,6 +3531,15 @@ class CometInMemoryCacheSuite extends CometTestBase {
               assert(
                 joins.map { case (j, side) => (j.getClass, side) } == Seq((joinClass, buildSide)),
                 plan)
+              // The serde sent the order, which is what lets the aggregates above run in sorted
+              // mode, and a sorted aggregate emits its groups in key order.
+              assert(
+                collect(plan) {
+                  case j: CometHashJoinExec => j.nativeOp
+                  case j: CometBroadcastHashJoinExec => j.nativeOp
+                }.forall(_.getHashJoin.getStreamedSortOrdersCount > 0),
+                plan)
+              assert(sortedPartitions(df).forall(identity), plan)
               // A final aggregate after a shuffle would merge a key a partial aggregate split, so
               // both aggregates have to sit above the join with no exchange in between.
               def aboveJoin(p: SparkPlan): Boolean = p.find(_ eq joins.head._1).isDefined
