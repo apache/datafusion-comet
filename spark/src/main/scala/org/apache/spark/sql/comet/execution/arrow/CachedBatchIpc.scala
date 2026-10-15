@@ -33,7 +33,7 @@ import org.apache.arrow.vector.{FieldVector, TypeLayout, ValueVector, VectorLoad
 import org.apache.arrow.vector.compression.{CompressionCodec, CompressionUtil, NoCompressionCodec}
 import org.apache.arrow.vector.dictionary.DictionaryEncoder
 import org.apache.arrow.vector.ipc.{ReadChannel, WriteChannel}
-import org.apache.arrow.vector.ipc.message.{ArrowBodyCompression, ArrowFieldNode, ArrowRecordBatch, MessageSerializer}
+import org.apache.arrow.vector.ipc.message.{ArrowBodyCompression, ArrowFieldNode, ArrowRecordBatch, IpcOption, MessageSerializer}
 import org.apache.arrow.vector.types.pojo.{ArrowType, Field, Schema}
 import org.apache.arrow.vector.util.DataSizeRoundingUtil
 import org.apache.spark.SparkException
@@ -184,11 +184,15 @@ private[comet] object CachedBatchIpc {
   /**
    * Serialize `batch` into one encapsulated IPC RecordBatch message.
    *
-   * The message is written into heap chunks of `chunkSize` bytes rather than one array, so a
-   * batch is not bounded by the 2 GiB a single JVM array can hold. Nothing bounds a cached
+   * The message is written into heap chunks of at most `chunkSize` bytes rather than one array,
+   * so a batch is not bounded by the 2 GiB a single JVM array can hold. Nothing bounds a cached
    * batch's bytes upstream: the row path cuts batches by row count alone, and a columnar input
    * batch arrives at whatever size the plan above produced. Chunks are appended rather than grown
-   * and recopied, so the write also never holds the payload twice.
+   * and recopied, so the write also never holds the payload twice. A message smaller than
+   * `chunkSize` gets one chunk of exactly its size. `ChunkedByteBufferOutputStream` allocates a
+   * whole chunk on its first write and copies a part-filled last chunk into an exactly sized
+   * buffer, so a fixed chunk size would cost every small batch a zeroed array of `chunkSize`
+   * bytes and a copy of its payload.
    *
    * Returns the message and the decoded size of each top-level column. Each size is measured on
    * the batch before compression, from the plain lengths of the column's own buffers, which is
@@ -234,7 +238,9 @@ private[comet] object CachedBatchIpc {
         // own buffers by now, so this does not touch it.
         root.clear()
 
-        val out = new ChunkedByteBufferOutputStream(chunkSize, ByteBuffer.allocate)
+        val out = new ChunkedByteBufferOutputStream(
+          math.min(chunkSize.toLong, messageSize(recordBatch)).toInt,
+          ByteBuffer.allocate)
         try {
           val channel = new WriteChannel(Channels.newChannel(out))
           MessageSerializer.serialize(channel, recordBatch)
@@ -251,6 +257,18 @@ private[comet] object CachedBatchIpc {
         try v.close()
         catch { case NonFatal(_) => () })
     }
+  }
+
+  /**
+   * The number of bytes `MessageSerializer.serialize` writes for `batch` at the start of a
+   * stream: the continuation token and length that prefix the metadata, the metadata padded so
+   * that the body starts at a multiple of 8 bytes, and the body, whose buffers are already
+   * aligned to 8 bytes.
+   */
+  private[arrow] def messageSize(batch: ArrowRecordBatch): Long = {
+    val metadata = MessageSerializer.serializeMetadata(batch, IpcOption.DEFAULT)
+    val prefixedMetadata = DataSizeRoundingUtil.roundUpTo8Multiple(8L + metadata.remaining())
+    prefixedMetadata + batch.computeBodyLength()
   }
 
   /**
