@@ -442,10 +442,10 @@ pub(super) fn get_config_trimmed<'a>(
 ///
 /// SYNC NOTE: a new call site means adding its property here and `fs.s3a.<property>` to
 /// `S3ConfigKeyConsumers` in
-/// `contrib/delta-spark/src/main/scala/org/apache/comet/contrib/delta/DeltaScanSupport.scala`.
+/// `spark/src/main/scala/org/apache/comet/objectstore/S3ConfigGate.scala`.
 /// `native_s3a_config_properties_matches_call_sites` keeps this list equal to the call sites,
-/// `delta_contrib_compares_every_native_s3a_property` checks the Scala block covers it, and
-/// `DeltaScanContribSuite` checks it against the compiled `AllS3ConfigKeys`.
+/// `gate_compares_every_native_s3a_property` checks the Scala block covers it, and
+/// `S3ConfigGateSuite` checks it against the compiled `AllS3ConfigKeys`.
 #[cfg(test)]
 pub(super) const NATIVE_S3A_CONFIG_PROPERTIES: &[&str] = &[
     "endpoint.region",
@@ -1113,21 +1113,21 @@ mod tests {
             found, expected,
             "NATIVE_S3A_CONFIG_PROPERTIES must exactly match every property name passed to \
              get_config/get_config_trimmed in this file -- update the constant (and keep \
-             DeltaScanSupport.scala's AllS3ConfigKeys in sync, see that constant's SYNC NOTE) \
+             S3ConfigGate.scala's AllS3ConfigKeys in sync, see that constant's SYNC NOTE) \
              when a call site changes"
         );
     }
 
-    /// Checks that the Delta contrib's `S3ConfigKeyConsumers` (`DeltaScanSupport.scala`) compares
-    /// every property in `NATIVE_S3A_CONFIG_PROPERTIES`, on every PR that touches native code
-    /// (the contrib suites do not). Parses the Scala block as text: each `"fs.s3a.<key>"`
-    /// literal followed by `->` up to the first `)`. `DeltaScanContribSuite` checks the same
-    /// parse against the compiled `AllS3ConfigKeys`.
+    /// Checks that the JVM S3 gate's `S3ConfigKeyConsumers` (`S3ConfigGate.scala`) compares every
+    /// property in `NATIVE_S3A_CONFIG_PROPERTIES`, on every PR that touches native code (the JVM
+    /// suites do not run there). Parses the Scala block as text: each `"fs.s3a.<key>"` literal
+    /// followed by `->` up to the first `)`. `S3ConfigGateSuite` checks the same parse against the
+    /// compiled `AllS3ConfigKeys`.
     #[test]
-    fn delta_contrib_compares_every_native_s3a_property() {
+    fn gate_compares_every_native_s3a_property() {
         let path = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join(
-            "../../contrib/delta-spark/src/main/scala/org/apache/comet/contrib/delta/\
-             DeltaScanSupport.scala",
+            "../../spark/src/main/scala/org/apache/comet/objectstore/\
+             S3ConfigGate.scala",
         );
         let scala = std::fs::read_to_string(&path)
             .unwrap_or_else(|e| panic!("cannot read {}: {e}", path.display()));
@@ -1136,7 +1136,7 @@ mod tests {
         let start = scala.find(marker).unwrap_or_else(|| {
             panic!(
                 "{} no longer declares `{marker}`: the block was renamed or reformatted, \
-                 update this parser and the matching one in DeltaScanContribSuite",
+                 update this parser and the matching one in S3ConfigGateSuite",
                 path.display()
             )
         }) + marker.len();

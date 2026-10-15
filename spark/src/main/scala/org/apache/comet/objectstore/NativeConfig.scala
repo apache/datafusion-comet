@@ -265,16 +265,32 @@ object NativeConfig {
    * the store built for the partition's first file, and an ABFS store is bound to one container
    * of one account, so a scan whose ABFS files span more than one container or account, or that
    * mixes ABFS and other schemes, is declined.
+   *
+   * An S3 scan is also declined when the native S3 client would resolve a different configuration
+   * than Hadoop's `S3AFileSystem` for any of its buckets (see [[S3ConfigGate]]), since the
+   * forwarded options would then make native read under a different effective identity or
+   * endpoint than Spark would, silently. A caller whose own claim gate already ran
+   * [[S3ConfigGate.declineReason]] over a superset of `uris` passes `verifyS3Config = false`
+   * rather than pay for the check twice.
    */
   def extractScanObjectStoreOptions(
       hadoopConf: Configuration,
-      uris: Iterable[URI]): Either[String, Map[String, String]] = {
+      uris: Iterable[URI],
+      verifyS3Config: Boolean = true): Either[String, Map[String, String]] = {
     val iter = uris.iterator
     if (!iter.hasNext) {
       return Right(Map.empty)
     }
     val first = iter.next()
     val firstIsAbfs = isAbfs(first)
+    // One representative URI per S3 bucket: the gate decides per bucket, so the files of a large
+    // scan need not each be re-examined by every gate.
+    val s3Uris = scala.collection.mutable.LinkedHashMap.empty[String, URI]
+    def collectS3(uri: URI): Unit =
+      if (verifyS3Config) {
+        S3ConfigGate.s3Bucket(uri).foreach(bucket => s3Uris.getOrElseUpdate(bucket, uri))
+      }
+    collectS3(first)
     while (iter.hasNext) {
       val uri = iter.next()
       if (isAbfs(uri) != firstIsAbfs) {
@@ -287,6 +303,12 @@ object NativeConfig {
           "Native scan does not support ABFS files from more than one container or account " +
             s"(${first.getRawAuthority} and ${uri.getRawAuthority})")
       }
+      collectS3(uri)
+    }
+    val s3Reason =
+      if (s3Uris.isEmpty) None else S3ConfigGate.declineReason(hadoopConf, s3Uris.values.toSeq)
+    if (s3Reason.isDefined) {
+      return Left(s3Reason.get)
     }
     Right(extractObjectStoreOptions(hadoopConf, first))
   }
