@@ -525,6 +525,21 @@ mod test {
     use datafusion::physical_expr::expressions::Column;
     use datafusion::physical_plan::ColumnarValue;
 
+    fn reference_gather(
+        values: &dyn Array,
+        source_rows: &[Option<usize>],
+    ) -> Result<arrow::array::ArrayRef> {
+        let data = values.to_data();
+        let mut result = MutableArrayData::new(vec![&data], true, source_rows.len());
+        for &row in source_rows {
+            match row {
+                Some(index) => result.try_extend(0, index, index + 1)?,
+                None => result.try_extend_nulls(1)?,
+            }
+        }
+        Ok(arrow::array::make_array(result.freeze()))
+    }
+
     fn skewed_nested_values(selected_len: usize) -> Vec<arrow::array::ArrayRef> {
         use arrow::array::{LargeListArray, MapArray, StructArray};
         use arrow::buffer::{NullBuffer, OffsetBuffer};
@@ -597,16 +612,10 @@ mod test {
                         Arc::clone(&values),
                         nullable.then(|| (0..ROWS).map(|row| row % 4 != 0).collect::<NullBuffer>()),
                     );
-                    let data = values.to_data();
-                    let mut expected = MutableArrayData::new(vec![&data], true, ROWS);
-                    for row in 0..ROWS {
-                        if outer.is_null(row) {
-                            expected.try_extend_nulls(1)?;
-                        } else {
-                            expected.try_extend(0, 2 * row, 2 * row + 1)?;
-                        }
-                    }
-                    let expected = arrow::array::make_array(expected.freeze());
+                    let source_rows = (0..ROWS)
+                        .map(|row| outer.is_valid(row).then_some(2 * row))
+                        .collect::<Vec<_>>();
+                    let expected = reference_gather(values.as_ref(), &source_rows)?;
                     let null_default = ScalarValue::try_from(values.data_type())?;
                     for default in [None, Some(&null_default)] {
                         let ColumnarValue::Array(result) = list_extract(
@@ -670,16 +679,10 @@ mod test {
                             .collect::<NullBuffer>()
                     }),
                 );
-                let data = values.to_data();
-                let mut expected = MutableArrayData::new(vec![&data], true, ROWS);
-                for row in 0..ROWS {
-                    if outer.is_null(row) {
-                        expected.try_extend_nulls(1)?;
-                    } else {
-                        expected.try_extend(0, 2 * row, 2 * row + 1)?;
-                    }
-                }
-                let expected = arrow::array::make_array(expected.freeze());
+                let source_rows = (0..ROWS)
+                    .map(|row| outer.is_valid(row).then_some(2 * row))
+                    .collect::<Vec<_>>();
+                let expected = reference_gather(values.as_ref(), &source_rows)?;
                 let ColumnarValue::Array(result) = list_extract(
                     &outer,
                     &Int32Array::from(vec![0; ROWS]),
@@ -731,17 +734,12 @@ mod test {
                 Some((0..8192).map(|row| row % 4 != 0).collect::<NullBuffer>()),
             )
             .slice(1, 8);
-            let data = values.to_data();
             // The sliced rows are: first child, last child, null index, null list,
             // out-of-bounds, first child, last child, null list.
-            let mut expected = MutableArrayData::new(vec![&data], true, 8);
-            for index in [Some(2), Some(5), None, None, None, Some(12), Some(15), None] {
-                match index {
-                    Some(i) => expected.try_extend(0, i, i + 1)?,
-                    None => expected.try_extend_nulls(1)?,
-                }
-            }
-            let expected = arrow::array::make_array(expected.freeze());
+            let expected = reference_gather(
+                values.as_ref(),
+                &[Some(2), Some(5), None, None, None, Some(12), Some(15), None],
+            )?;
             for (one_based, indices) in [
                 (
                     false,
