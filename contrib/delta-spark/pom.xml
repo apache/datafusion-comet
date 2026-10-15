@@ -36,6 +36,9 @@
          jni.dir (basedir/../native) would point at contrib/native. -->
     <jni.dir>${project.basedir}/../../native/target/debug</jni.dir>
     <maven.deploy.skip>false</maven.deploy.skip>
+    <!-- Delta 4.x still requires Guava at test runtime. Keep the version local so the core Comet
+         modules do not expose or package Guava. -->
+    <guava.version>33.2.1-jre</guava.version>
   </properties>
 
   <dependencies>

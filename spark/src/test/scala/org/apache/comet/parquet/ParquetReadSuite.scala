@@ -1407,7 +1407,8 @@ abstract class ParquetReadSuite extends CometTestBase {
           checkAnswer(
             df,
             (0 until 10).map(n =>
-              Row(new BigDecimal(BigInteger.valueOf(n).add(BigInteger.valueOf(Long.MaxValue))))))
+              Row(new BigDecimal(
+                BigInteger.valueOf(n.toLong).add(BigInteger.valueOf(Long.MaxValue))))))
         }
       }
     }
