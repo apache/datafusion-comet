@@ -31,7 +31,6 @@ import org.apache.spark.sql.catalyst.expressions.{AttributeReference, DynamicPru
 import org.apache.spark.sql.comet.{CometDeltaNativeScanExec, CometSubqueryBroadcastExec}
 import org.apache.spark.sql.execution.{FileSourceScanExec, InSubqueryExec, QueryExecution, ReusedSubqueryExec, ScalarSubquery, SparkPlan, SubqueryBroadcastExec, SubqueryExec}
 import org.apache.spark.sql.execution.datasources.v2.V2TableWriteExec
-import org.apache.spark.sql.execution.exchange.ReusedExchangeExec
 import org.apache.spark.sql.functions.{col, lit, to_json}
 import org.apache.spark.sql.internal.SQLConf
 import org.apache.spark.sql.types.{ByteType, LongType, StringType, StructField, StructType}
@@ -1970,13 +1969,10 @@ class CometDeltaNativeScanSuite extends CometDeltaTestBase {
             collect(cometPlan) { case s: CometDeltaNativeScanExec => s }.nonEmpty,
             s"expected a native Delta scan:\n${cometPlan.treeString}")
 
-          def reused(plan: SparkPlan): Int =
-            collect(plan) { case r: ReusedExchangeExec => r }.size
-          assert(reused(sparkPlan) == 1, s"Spark should reuse the shuffle:\n$sparkPlan")
           assert(
-            reused(cometPlan) == reused(sparkPlan),
-            s"expected ${reused(sparkPlan)} reused exchange, got ${reused(cometPlan)}:\n" +
-              cometPlan.treeString)
+            reusedExchanges(sparkPlan).size == 1,
+            s"Spark should reuse the shuffle once:\n$sparkPlan")
+          assertSameExchangeReuseAsSpark(sparkPlan, cometPlan)
         }
       }
     }

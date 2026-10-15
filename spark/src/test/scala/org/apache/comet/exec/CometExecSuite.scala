@@ -1883,13 +1883,7 @@ class CometExecSuite extends CometTestBase {
         val df = sql(dppShuffleQuery("a", "a"))
         val (sparkPlan, cometPlan) =
           if (isSpark35Plus) checkSparkAnswerAndOperator(df) else checkSparkAnswer(df)
-        def reused(plan: SparkPlan): Int =
-          collect(plan) { case r: ReusedExchangeExec => r }.size
-        assert(reused(sparkPlan) > 0, s"Spark should reuse the shuffle:\n$sparkPlan")
-        assert(
-          reused(cometPlan) == reused(sparkPlan),
-          s"expected ${reused(sparkPlan)} reused exchanges, got ${reused(cometPlan)}:\n" +
-            cometPlan.treeString)
+        assertSameExchangeReuseAsSpark(sparkPlan, cometPlan)
         if (isSpark35Plus) {
           assertExchangeReuseOver(cometPlan, "Expected the shuffle over a DPP scan to be reused")(
             dppScan)
