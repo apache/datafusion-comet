@@ -64,7 +64,7 @@ import org.apache.comet.rules.CometExecRule
 import org.apache.comet.serde.{CometCollectBuffer, CometOperatorSerde, Compatible, OperatorOuterClass, QueryContextInterner, SupportLevel, Unsupported}
 import org.apache.comet.serde.OperatorOuterClass.{AggregateMode => CometAggregateMode, Operator}
 import org.apache.comet.serde.QueryPlanSerde
-import org.apache.comet.serde.QueryPlanSerde.{aggExprToProto, exprToProto, isStringCollationType, supportedSortType}
+import org.apache.comet.serde.QueryPlanSerde.{aggExprToProto, exprToProto, isStringCollationType, supportedScalarSortElementType, supportedSortType}
 import org.apache.comet.serde.operator.CometSink
 import org.apache.comet.shims.MergeRowsMetricsShim
 
@@ -2889,13 +2889,17 @@ trait CometHashJoin {
     // an order that cannot be checked; see mayReportFalseOrder.
     //
     // Declaring any order makes DataFusion keep the probe rows in place, so the longest prefix
-    // of the order that Comet can express is enough. Nothing here can tell whether an operator
-    // above relies on the order, so a join whose first key Comet cannot express stays in Spark.
+    // of the order that Comet can express is enough. A key counts as expressible when the native
+    // sort accepts its type, as `supportedSortType` decides for a sort: a collated string is
+    // ordered by its collation in Spark but would be declared in raw byte order. Nothing here can
+    // tell whether an operator above relies on the order, so a join whose first key Comet cannot
+    // express stays in Spark.
     val streamed = if (join.buildSide == BuildRight) join.left else join.right
     val streamedSortOrders = (join.joinType, join.buildSide) match {
       case (LeftOuter, BuildRight) | (RightOuter, BuildLeft)
           if join.outputOrdering.nonEmpty && !mayReportFalseOrder(streamed) =>
         val orders = join.outputOrdering.iterator
+          .takeWhile(order => supportedScalarSortElementType(order.dataType))
           .map(exprToProto(_, streamed.output))
           .takeWhile(_.isDefined)
           .flatten

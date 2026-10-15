@@ -23,11 +23,11 @@ use std::sync::Arc;
 use datafusion::common::tree_node::TreeNodeRecursion;
 use datafusion::common::{internal_err, Result};
 use datafusion::execution::TaskContext;
-use datafusion::physical_expr::{EquivalenceProperties, LexOrdering, PhysicalExpr};
+use datafusion::physical_expr::{LexOrdering, PhysicalExpr};
 use datafusion::physical_plan::execution_plan::CardinalityEffect;
 use datafusion::physical_plan::{
-    apply_expression_roots, DisplayAs, DisplayFormatType, ExecutionPlan, PlanProperties,
-    SendableRecordBatchStream,
+    apply_expression_roots, DisplayAs, DisplayFormatType, ExecutionPlan, ExecutionPlanProperties,
+    PlanProperties, SendableRecordBatchStream,
 };
 
 /// Passes `input` through unchanged and declares to DataFusion the order its rows arrive in.
@@ -53,8 +53,12 @@ pub struct SortedInputExec {
 impl SortedInputExec {
     pub fn new(input: Arc<dyn ExecutionPlan>, ordering: LexOrdering) -> Self {
         let input_properties = input.properties();
+        // Start from the input's own properties, so the constants and equivalence classes it
+        // knows of stay visible to the operators above.
+        let mut equivalence_properties = input.equivalence_properties().clone();
+        equivalence_properties.add_ordering(ordering.iter().cloned());
         let cache = Arc::new(PlanProperties::new(
-            EquivalenceProperties::new_with_orderings(input.schema(), [ordering.clone()]),
+            equivalence_properties,
             input_properties.output_partitioning().clone(),
             input_properties.emission_type,
             input_properties.boundedness,

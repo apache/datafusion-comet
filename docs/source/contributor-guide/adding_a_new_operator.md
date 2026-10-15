@@ -357,6 +357,23 @@ case class CometProjectExec(
 }
 ```
 
+#### Reporting an Output Ordering
+
+An operator that overrides `outputOrdering`, as `CometFilterExec` does above with
+`child.outputOrdering`, makes a claim that Spark acts on: it drops a sort above the operator that
+the order satisfies. Report what the Spark operator reports and nothing more. `SampleExec`, for
+example, reports no order, so `CometSampleExec` must not report its child's.
+
+The claim has to hold at run time as well. A native hash join declares the order Spark reports for
+its streamed side to DataFusion, and an aggregate above the join may then run in sorted mode, or a
+top-k sort may stop reading early, on the strength of that order. If the order is false, the
+result is wrong groups or wrong rows, not only rows out of order. So an operator that reports an
+ordering must keep it natively, and the native operator must say so by returning `true` from
+`maintains_input_order` for that child, as DataFusion's filter and projection do. The planner
+declares the order through an operator only when the operator says it keeps it. An operator that
+cannot keep the order natively must not report it, or has to be added to `mayReportFalseOrder` in
+`operators.scala`, which makes the hash join serde send no order over it.
+
 #### Plan Identity and Exchange Reuse
 
 Spark's `ReuseExchangeAndSubquery` identifies equivalent plans through canonicalization and may

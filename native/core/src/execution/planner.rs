@@ -2955,6 +2955,15 @@ impl PhysicalPlanner {
     /// declares one. Spark's plan knows the order of an input that enters the native plan from
     /// the JVM, but the `ScanExec` it arrives through declares none. Only that order is declared:
     /// when an operator in between may have moved rows, `plan` is left as it is.
+    ///
+    /// The serde sends an order only when the streamed side's Comet operators report it, and it
+    /// checks that nothing under them moves rows (`mayReportFalseOrder`), while this walk asks
+    /// the native operators the same thing through `maintains_input_order`. The two agree as
+    /// long as a Comet operator that reports an order keeps it natively and says so. One that
+    /// does not lands here with `plan` unchanged, and the join then moves its unmatched rows
+    /// after Spark has dropped the sort above it. Nothing here can fall back at that point, so
+    /// the invariant is kept at the operator: see "Adding a New Operator" in the contributor
+    /// guide.
     fn with_declared_order(
         &self,
         plan: Arc<dyn ExecutionPlan>,
