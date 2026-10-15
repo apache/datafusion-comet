@@ -123,6 +123,9 @@ under the License.
          reflection only). Each Spark profile pins it to its Hadoop line; override with
          -Dhadoop-azure.version to test another release. -->
     <hadoop-azure.version>3.4.2</hadoop-azure.version>
+    <!-- Extra scalatest tags to exclude, comma separated, for example
+         -DtagsToExclude=org.apache.comet.tags.AzureTest. -->
+    <tagsToExclude></tagsToExclude>
     <jni.dir>${project.basedir}/../native/target/debug</jni.dir>
     <platform>darwin</platform>
     <arch>x86_64</arch>
@@ -1126,7 +1129,7 @@ under the License.
             <filereports>SparkTestSuite.txt</filereports>
             <stdout>D</stdout>
             <stderr/>
-            <tagsToExclude>org.apache.comet.IntegrationTestSuite</tagsToExclude>
+            <tagsToExclude>org.apache.comet.IntegrationTestSuite,${tagsToExclude}</tagsToExclude>
             <systemProperties>
               <!-- emit test logs to target/unit-tests.log -->
               <log4j.configurationFile>file:src/test/resources/log4j2.properties</log4j.configurationFile>
