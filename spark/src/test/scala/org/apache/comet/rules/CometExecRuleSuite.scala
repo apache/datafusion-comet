@@ -40,7 +40,7 @@ import org.apache.spark.sql.comet.CometExec.nativeLeaves
 import org.apache.spark.sql.comet.execution.shuffle.{CometNativeShuffle, CometShuffleExchangeExec}
 import org.apache.spark.sql.execution._
 import org.apache.spark.sql.execution.adaptive.{AdaptiveSparkPlanExec, AQEShuffleReadExec, BroadcastQueryStageExec, LogicalQueryStage, QueryStageExec, ShuffleQueryStageExec, SimpleCost, SimpleCostEvaluator}
-import org.apache.spark.sql.execution.aggregate.{HashAggregateExec, ObjectHashAggregateExec}
+import org.apache.spark.sql.execution.aggregate.{HashAggregateExec, ObjectHashAggregateExec, SortAggregateExec}
 import org.apache.spark.sql.execution.datasources.v2.BatchScanExec
 import org.apache.spark.sql.execution.exchange.{BroadcastExchangeExec, ShuffleExchangeExec}
 import org.apache.spark.sql.internal.SQLConf
@@ -1442,6 +1442,61 @@ class CometExecRuleSuite extends CometTestBase {
     }
   }
 
+  test("buffer repair walks through the sort below a sort aggregate") {
+    // Spark puts a SortExec between a sort aggregate and its exchange, converted or not. Repair
+    // must rebuild through it to restore the native Partial, and when repair stops at a stage it
+    // must still find the native Partial below the sort and warn.
+    withSQLConf(
+      SQLConf.ADAPTIVE_EXECUTION_ENABLED.key -> "false",
+      SQLConf.WHOLESTAGE_CODEGEN_ENABLED.key -> "false",
+      SQLConf.USE_OBJECT_HASH_AGG.key -> "false",
+      CometConf.COMET_EXEC_LOCAL_TABLE_SCAN_ENABLED.key -> "true",
+      CometConf.COMET_SHUFFLE_ENABLED.key -> "true",
+      CometConf.COMET_SHUFFLE_MODE.key -> "native") {
+      withTempView("test_data") {
+        createTestDataFrame.createOrReplaceTempView("test_data")
+        val plan = applyCometExecRule(
+          createSparkPlan(spark, "SELECT collect_list(id) FROM test_data GROUP BY (id % 3)"))
+        val nativeFinal = plan
+          .collectFirst { case agg: CometSortAggregateExec if agg.modes == Seq(Final) => agg }
+          .getOrElse(fail(s"Expected a native final sort aggregate in:\n$plan"))
+        val partial = plan
+          .collectFirst { case agg: CometSortAggregateExec if agg.modes == Seq(Partial) => agg }
+          .getOrElse(fail(s"Expected a native partial sort aggregate in:\n$plan"))
+        val sparkFinal = nativeFinal.originalPlan.asInstanceOf[SortAggregateExec]
+        val cometSort = nativeFinal.child.asInstanceOf[CometSortExec]
+        val sorts: Seq[SparkPlan => SparkPlan] = Seq(
+          child => cometSort.copy(child = child),
+          child => cometSort.originalPlan.withNewChildren(Seq(child)))
+        val rule = CometExecRule(spark)
+
+        sorts.foreach { sortOver =>
+          val repaired =
+            rule.revertUnsafePartialAggregates(sparkFinal.copy(child = sortOver(cometSort.child)))
+          assert(repaired.collect { case agg: CometSortAggregateExec => agg }.isEmpty, repaired)
+          val sparkPartial = repaired.collectFirst {
+            case agg: SortAggregateExec if agg.aggregateExpressions.forall(_.mode == Partial) =>
+              agg
+          }.get
+          assert(sparkPartial.getTagValue(CometExecRule.COMET_UNSAFE_PARTIAL).isDefined)
+
+          val exchange = ShuffleExchangeExec(
+            org.apache.spark.sql.catalyst.plans.physical.SinglePartition,
+            partial)
+          val stage = ShuffleQueryStageExec(0, exchange, exchange.canonicalized)
+          val placeholder = CometSinkPlaceHolder(
+            org.apache.comet.serde.OperatorOuterClass.Operator.getDefaultInstance,
+            stage,
+            stage)
+          val consumer = sparkFinal.copy(child = sortOver(placeholder))
+          assert(rule.revertUnsafePartialAggregates(consumer) eq consumer)
+          val reasons = new ExtendedExplainInfo().getFallbackReasons(consumer)
+          assert(reasons.exists(_.contains("could not restore a native intermediate buffer")))
+        }
+      }
+    }
+  }
+
   test("CometExecRule should not allow decimal SUM mixed execution") {
     withTempView("test_data") {
       createTestDataFrame.createOrReplaceTempView("test_data")
@@ -2264,13 +2319,15 @@ class CometExecRuleSuite extends CometTestBase {
 
   /** Runs `f` with a query over each leaf operator that has a `spark.comet.convert` config. */
   private def withConversionQueries(f: Seq[(ConfigEntry[Boolean], String)] => Unit): Unit = {
-    withTempView("rdd_input", "cached_input") {
+    withTempView("rdd_input", "cached_input", "row_data_source_input") {
       val schema = StructType(Seq(StructField("a", DataTypes.IntegerType)))
       spark
         .createDataFrame(spark.sparkContext.parallelize(Seq(Row(1), Row(2)), 1), schema)
         .createOrReplaceTempView("rdd_input")
       spark.range(10).selectExpr("CAST(id AS INT) AS a").createOrReplaceTempView("cached_input")
       spark.catalog.cacheTable("cached_input")
+      rowDataSourceDataFrame(schema, Seq(Row(1), Row(2)))
+        .createOrReplaceTempView("row_data_source_input")
       try {
         f(
           Seq(
@@ -2280,7 +2337,9 @@ class CometExecRuleSuite extends CometTestBase {
             CometConf.COMET_CONVERT_FROM_RDD_ENABLED -> "SELECT a + 1 FROM rdd_input",
             // Spark plans this as an RDDScanExec before 4.1, so it also checks that the RDD
             // config leaves it alone there.
-            CometConf.COMET_CONVERT_FROM_ONE_ROW_RELATION_ENABLED -> "SELECT 1 AS a"))
+            CometConf.COMET_CONVERT_FROM_ONE_ROW_RELATION_ENABLED -> "SELECT 1 AS a",
+            CometConf.COMET_CONVERT_FROM_ROW_DATA_SOURCE_ENABLED ->
+              "SELECT a + 1 FROM row_data_source_input"))
       } finally {
         spark.catalog.uncacheTable("cached_input")
       }
@@ -2297,18 +2356,37 @@ class CometExecRuleSuite extends CometTestBase {
     }
   }
 
+  test("only the OneRowRelation conversion is on by default") {
+    withConversionQueries { queries =>
+      // CometTestBase turns every conversion on, so set each back to its default.
+      val defaults = queries.map { case (entry, _) => entry.key -> entry.defaultValueString }
+      for ((entry, query) <- queries) {
+        withClue(s"$query: ") {
+          assert(
+            convertedLeaves(query, defaults: _*).nonEmpty ==
+              (entry eq CometConf.COMET_CONVERT_FROM_ONE_ROW_RELATION_ENABLED))
+        }
+      }
+    }
+  }
+
   test("the deprecated sparkToColumnar settings still convert what they converted before") {
     val switch = CometConf.COMET_SPARK_TO_ARROW_ENABLED.key -> "true"
     val list = CometConf.COMET_SPARK_TO_ARROW_SUPPORTED_OPERATOR_LIST.key
+    val rowDataSource = CometConf.COMET_CONVERT_FROM_ROW_DATA_SOURCE_ENABLED
     withConversionQueries { queries =>
-      // Without a list, the switch converts the operators the list used to name by default.
-      queries.foreach { case (_, query) =>
-        assert(convertedLeaves(query, switch).nonEmpty, query)
+      // Without a list, the switch converts the operators the list used to name by default,
+      // which did not include RowDataSourceScan.
+      queries.foreach { case (entry, query) =>
+        assert(convertedLeaves(query, switch).nonEmpty == (entry ne rowDataSource), query)
       }
       // A list replaces them.
       val range = queries.head._2
       assert(convertedLeaves(range, switch, list -> "RDDScan").isEmpty)
       assert(convertedLeaves(range, switch, list -> "Range").nonEmpty)
+      // A list that names RowDataSourceScan still converts it.
+      val rowDataSourceQuery = queries.find(_._1 eq rowDataSource).get._2
+      assert(convertedLeaves(rowDataSourceQuery, switch, list -> "RowDataSourceScan").nonEmpty)
     }
     // An operator without a config of its own is converted only when the list names it.
     val values = "SELECT a FROM VALUES (1), (2) AS t(a)"
@@ -2319,29 +2397,38 @@ class CometExecRuleSuite extends CometTestBase {
 
   test("the deprecated sparkToColumnar settings warn once for each config they stand in for") {
     val switch = CometConf.COMET_SPARK_TO_ARROW_ENABLED.key -> "true"
+    val list = CometConf.COMET_SPARK_TO_ARROW_SUPPORTED_OPERATOR_LIST.key
     val range = "SELECT id + 1 FROM range(10)"
     CometExecRule.warnedDeprecatedConversions.clear()
     val appender = new LogAppender("deprecated Spark-to-Arrow settings")
-    withLogAppender(appender, Seq(classOf[CometExecRule].getName), Some(Level.WARN)) {
-      assert(convertedLeaves(range, switch).nonEmpty)
-      assert(convertedLeaves(range, switch).nonEmpty)
-      // With its own config on, the range does not need the deprecated settings.
-      assert(
-        convertedLeaves(
-          range,
-          switch,
-          CometConf.COMET_CONVERT_FROM_RANGE_ENABLED.key -> "true").nonEmpty)
-      // Converting an operator without a config of its own is not deprecated.
-      assert(convertedLeaves(
-        "SELECT a FROM VALUES (1), (2) AS t(a)",
-        switch,
-        CometConf.COMET_SPARK_TO_ARROW_SUPPORTED_OPERATOR_LIST.key -> "LocalTableScan").nonEmpty)
+    withConversionQueries { queries =>
+      val rowDataSource =
+        queries.find(_._1 eq CometConf.COMET_CONVERT_FROM_ROW_DATA_SOURCE_ENABLED).get._2
+      withLogAppender(appender, Seq(classOf[CometExecRule].getName), Some(Level.WARN)) {
+        assert(convertedLeaves(range, switch).nonEmpty)
+        assert(convertedLeaves(range, switch).nonEmpty)
+        // With its own config on, the range does not need the deprecated settings.
+        assert(
+          convertedLeaves(
+            range,
+            switch,
+            CometConf.COMET_CONVERT_FROM_RANGE_ENABLED.key -> "true").nonEmpty)
+        // Converting an operator without a config of its own is not deprecated.
+        assert(
+          convertedLeaves(
+            "SELECT a FROM VALUES (1), (2) AS t(a)",
+            switch,
+            list -> "LocalTableScan").nonEmpty)
+        assert(convertedLeaves(rowDataSource, switch, list -> "RowDataSourceScan").nonEmpty)
+      }
     }
     val warnings = appender.loggingEvents
       .map(_.getMessage.getFormattedMessage)
       .filter(_.contains(CometConf.COMET_SPARK_TO_ARROW_ENABLED.key))
-    assert(warnings.size == 1, warnings)
+    assert(warnings.size == 2, warnings)
     assert(warnings.head.contains(s"${CometConf.COMET_CONVERT_FROM_RANGE_ENABLED.key}=true"))
+    assert(
+      warnings(1).contains(s"${CometConf.COMET_CONVERT_FROM_ROW_DATA_SOURCE_ENABLED.key}=true"))
   }
 
 }

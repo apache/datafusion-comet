@@ -154,6 +154,55 @@ fn nullability(field: &FieldRef) -> String {
     format!("{qualifier} {}", field.data_type())
 }
 
+/// Describes the first timestamp whose timezone label differs between `expected` and `actual`, as
+/// a dotted path rooted at `path`. Returns `None` when every timestamp in `actual` carries the
+/// label `expected` declares, whatever else differs. A dictionary on either side is looked through,
+/// since boundaries unpack dictionaries anyway.
+///
+/// A label never changes the values, which are UTC microseconds whatever it says, so the cast at a
+/// boundary repairs it and nothing past the boundary can tell. Inside a native plan the label does
+/// matter: any other zone breaks comparisons and type coercion against Comet's `"UTC"`, and a
+/// missing one makes kernels read the values as wall-clock time. Strict test runs
+/// (`spark.comet.testing.strictTimestampLabels.enabled`) fail at the boundary instead of casting,
+/// so the test that produced the drift reports it.
+pub fn describe_timestamp_label_mismatch(
+    path: &str,
+    expected: &DataType,
+    actual: &DataType,
+) -> Option<String> {
+    match (expected, actual) {
+        (DataType::Timestamp(_, e), DataType::Timestamp(_, a)) if e != a => {
+            Some(format!("{path}: expected {expected}, found {actual}"))
+        }
+        (_, DataType::Dictionary(_, a)) => describe_timestamp_label_mismatch(path, expected, a),
+        (DataType::Dictionary(_, e), _) => describe_timestamp_label_mismatch(path, e, actual),
+        (DataType::List(e), DataType::List(a))
+        | (DataType::LargeList(e), DataType::LargeList(a))
+        | (DataType::FixedSizeList(e, _), DataType::FixedSizeList(a, _)) => {
+            describe_timestamp_label_mismatch(
+                &format!("{path}.element"),
+                e.data_type(),
+                a.data_type(),
+            )
+        }
+        (DataType::Map(e, _), DataType::Map(a, _)) => describe_timestamp_label_mismatch(
+            &format!("{path}.entries"),
+            e.data_type(),
+            a.data_type(),
+        ),
+        (DataType::Struct(e), DataType::Struct(a)) if e.len() == a.len() => {
+            e.iter().zip(a.iter()).find_map(|(e, a)| {
+                describe_timestamp_label_mismatch(
+                    &format!("{path}.{}", e.name()),
+                    e.data_type(),
+                    a.data_type(),
+                )
+            })
+        }
+        _ => None,
+    }
+}
+
 /// Returns `base` with nested field nullability widened to also cover `other`, so that arrays of
 /// either type can be stamped with the result. Shapes that do not line up (different struct field
 /// counts, different list flavours, ...) are left as `base`; those are real type differences and
@@ -414,6 +463,91 @@ mod tests {
         assert!(msg.contains("TestExec"), "{msg}");
         assert!(msg.contains("col[0]"), "{msg}");
         assert!(msg.contains("payload: expected Struct"), "{msg}");
+    }
+
+    fn timestamp(tz: Option<&str>) -> DataType {
+        DataType::Timestamp(arrow::datatypes::TimeUnit::Microsecond, tz.map(Into::into))
+    }
+
+    #[test]
+    fn describes_timestamp_label_mismatches() {
+        let utc = timestamp(Some("UTC"));
+        assert_eq!(
+            describe_timestamp_label_mismatch("ts", &utc, &timestamp(Some("Etc/UTC"))).unwrap(),
+            r#"ts: expected Timestamp(µs, "UTC"), found Timestamp(µs, "Etc/UTC")"#
+        );
+        // The worst case: an LTZ value labelled as NTZ is read as wall-clock time downstream.
+        assert!(describe_timestamp_label_mismatch("ts", &utc, &timestamp(None)).is_some());
+        assert!(describe_timestamp_label_mismatch("ts", &timestamp(None), &utc).is_some());
+        assert_eq!(describe_timestamp_label_mismatch("ts", &utc, &utc), None);
+        assert_eq!(
+            describe_timestamp_label_mismatch("ts", &timestamp(None), &timestamp(None)),
+            None
+        );
+    }
+
+    #[test]
+    fn describes_nested_timestamp_label_paths() {
+        let wrap = |tz: Option<&str>| {
+            DataType::Struct(Fields::from(vec![
+                Field::new("id", DataType::Int64, true),
+                Field::new(
+                    "events",
+                    DataType::List(Arc::new(Field::new_list_field(timestamp(tz), true))),
+                    true,
+                ),
+            ]))
+        };
+        assert_eq!(
+            describe_timestamp_label_mismatch("c0", &wrap(Some("UTC")), &wrap(None)).unwrap(),
+            r#"c0.events.element: expected Timestamp(µs, "UTC"), found Timestamp(µs)"#
+        );
+
+        let map = |tz: Option<&str>| {
+            DataType::Map(
+                Arc::new(Field::new(
+                    "entries",
+                    DataType::Struct(Fields::from(vec![
+                        Field::new("key", DataType::Utf8, false),
+                        Field::new("value", timestamp(tz), true),
+                    ])),
+                    false,
+                )),
+                false,
+            )
+        };
+        assert_eq!(
+            describe_timestamp_label_mismatch("m", &map(Some("UTC")), &map(Some("+00:00")))
+                .unwrap(),
+            r#"m.entries.value: expected Timestamp(µs, "UTC"), found Timestamp(µs, "+00:00")"#
+        );
+    }
+
+    /// Only the label is checked. A dictionary, a nullability flag or a different leaf type is
+    /// left for the boundary cast, and a dictionary is looked through to the timestamp inside.
+    #[test]
+    fn timestamp_label_check_ignores_other_differences() {
+        let utc = timestamp(Some("UTC"));
+        let dict =
+            |value: DataType| DataType::Dictionary(Box::new(DataType::Int32), Box::new(value));
+        assert_eq!(
+            describe_timestamp_label_mismatch("ts", &utc, &dict(utc.clone())),
+            None
+        );
+        assert!(
+            describe_timestamp_label_mismatch("ts", &utc, &dict(timestamp(Some("Etc/UTC"))))
+                .is_some()
+        );
+        assert_eq!(
+            describe_timestamp_label_mismatch("c0", &DataType::Int64, &DataType::Int32),
+            None
+        );
+        let list =
+            |nullable: bool| DataType::List(Arc::new(Field::new_list_field(utc.clone(), nullable)));
+        assert_eq!(
+            describe_timestamp_label_mismatch("c0", &list(true), &list(false)),
+            None
+        );
     }
 
     #[test]

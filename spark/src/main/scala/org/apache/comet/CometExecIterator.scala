@@ -26,6 +26,7 @@ import java.util.concurrent.atomic.AtomicBoolean
 
 import scala.util.control.NonFatal
 
+import org.apache.arrow.c.ArrowArrayStream
 import org.apache.arrow.memory.BufferAllocator
 import org.apache.hadoop.conf.Configuration
 import org.apache.spark._
@@ -33,7 +34,9 @@ import org.apache.spark.broadcast.Broadcast
 import org.apache.spark.internal.Logging
 import org.apache.spark.network.util.ByteUnit
 import org.apache.spark.sql.comet.CometMetricNode
+import org.apache.spark.sql.comet.execution.arrow.CometArrowStream
 import org.apache.spark.sql.internal.SQLConf
+import org.apache.spark.sql.types.DataType
 import org.apache.spark.sql.vectorized._
 import org.apache.spark.util.SerializableConfiguration
 
@@ -43,6 +46,7 @@ import org.apache.comet.exceptions.CometQueryExecutionException
 import org.apache.comet.parquet.CometFileKeyUnwrapper
 import org.apache.comet.serde.Config.ConfigMap
 import org.apache.comet.shuffle.ShufflePartitionPusher
+import org.apache.comet.udf.CometUdfBridge
 import org.apache.comet.vector.NativeUtil
 
 /**
@@ -73,6 +77,9 @@ import org.apache.comet.vector.NativeUtil
  *   Whether to read the shuffle writer's partition offsets when the plan reaches the end of its
  *   output, for a plan rooted at a native shuffle writer with a local destination. Remote shuffle
  *   reports its partition lengths through its pusher instead, so it leaves this false.
+ * @param outputTypes
+ *   The Spark types of the plan's output columns, if the caller knows them. Used only to check
+ *   timestamp labels under `spark.comet.testing.strictTimestampLabels.enabled`.
  */
 class CometExecIterator(
     val id: Long,
@@ -87,11 +94,14 @@ class CometExecIterator(
     shuffleBlockIterators: Map[Int, CometShuffleBlockIterator] = Map.empty,
     taskFilePaths: Seq[String] = Seq.empty,
     shufflePartitionPusher: Option[ShufflePartitionPusher] = None,
-    capturePartitionOffsets: Boolean = false)
+    capturePartitionOffsets: Boolean = false,
+    outputTypes: Seq[DataType] = Seq.empty)
     extends Iterator[ColumnarBatch]
     with Logging {
 
   private val tracingEnabled = CometConf.COMET_TRACING_ENABLED.get()
+  private val checkTimestampLabels =
+    outputTypes.nonEmpty && CometConf.COMET_STRICT_TIMESTAMP_LABELS.get()
   private val memoryMXBean = ManagementFactory.getMemoryMXBean
   private val nativeLib = new Native()
   private val nativeUtil = new NativeUtil()
@@ -224,6 +234,17 @@ class CometExecIterator(
 
   CometExecIterator.startMemoryUsageLog()
 
+  /**
+   * Matches any throwable once a JVM input of this plan has failed, and extracts what that input
+   * threw. Native saw only its text. See `CometArrowStream.inputFailure`.
+   */
+  private object InputFailure {
+    def unapply(nativeFailure: Throwable): Option[Throwable] =
+      inputObjects.iterator
+        .collect { case stream: ArrowArrayStream => CometArrowStream.inputFailure(stream) }
+        .collectFirst { case Some(failure) => failure }
+  }
+
   private def getNextBatch: Option[ColumnarBatch] = {
     assert(partitionIndex >= 0 && partitionIndex < numParts)
 
@@ -244,8 +265,16 @@ class CometExecIterator(
         traceMemoryUsage()
       }
 
+      if (checkTimestampLabels) {
+        result.foreach(nativeUtil.checkTimestampLabels(_, outputTypes))
+      }
+
       result
     } catch {
+      // Native saw only the text of what a JVM input threw, so rethrow the exception itself.
+      case InputFailure(failure) =>
+        throw failure
+
       // Handle CometQueryExecutionException with JSON payload first
       case e: CometQueryExecutionException =>
         logError(s"Native execution for task $taskAttemptId failed", e)
@@ -338,6 +367,10 @@ class CometExecIterator(
       // execution context frees this plan's task-shared memory pool reference and several JNI
       // global refs.
       attempt(nativeLib.releasePlan(plan))
+
+      // Drops what the task's JVM UDFs keep for this plan, such as its dispatched kernels. `id` is
+      // the plan id the native plan passed them.
+      attempt(CometUdfBridge.releasePlan(taskAttemptId, id))
 
       // Run the diagnostics even when teardown failed: a failed teardown is exactly when the
       // non-zero memory usage warning below is most informative.
@@ -853,9 +886,11 @@ object CometExecIterator extends Logging {
       CometConf.COMET_DEBUG_ENABLED,
       CometConf.COMET_DEBUG_MEMORY_ENABLED,
       CometConf.COMET_EXEC_AGGREGATE_SKIP_PARTIAL_ENABLED,
+      CometConf.COMET_EXEC_SPILL_COMPRESSION_CODEC,
       CometConf.COMET_EXPLAIN_NATIVE_ENABLED,
       CometConf.COMET_MAX_TEMP_DIRECTORY_SIZE,
       CometConf.COMET_PARQUET_ROW_FILTER_PUSHDOWN_ENABLED,
+      CometConf.COMET_STRICT_TIMESTAMP_LABELS,
       CometConf.COMET_TRACING_ENABLED).foreach { entry =>
       builder.putEntries(entry.key, entry.get(SQLConf.get).toString)
     }
