@@ -16,7 +16,10 @@
 -- under the License.
 
 -- to_binary with 'hex' format lowers to Unhex, which Comet accelerates.
--- to_binary with 'utf-8' and 'base64' formats fall back to Spark.
+-- to_binary with 'utf-8' falls back to Spark.
+-- to_binary with 'base64' lowers to UnBase64(failOnError = true), which CometUnBase64 marks
+-- Unsupported (strict RFC 4648 validation is not yet ported) and routes through the JVM codegen
+-- dispatcher via CodegenDispatchFallback, so results are byte-exact to Spark.
 
 statement
 CREATE TABLE test_to_binary(s string) USING parquet
@@ -36,6 +39,6 @@ SELECT to_binary('41', 'hex'), to_binary('0A1B', 'hex'), to_binary('', 'hex'), t
 query spark_answer_only
 SELECT to_binary(s, 'utf-8') FROM test_to_binary
 
--- base64 format falls back to Spark
-query spark_answer_only
+-- base64 format runs in-pipeline via CodegenDispatchFallback and matches Spark
+query
 SELECT to_binary(s, 'base64') FROM test_to_binary

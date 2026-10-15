@@ -254,6 +254,23 @@ INSERT INTO test_ap_nested_str VALUES
 query
 SELECT array_position(arr, val) FROM test_ap_nested_str
 
+-- nested double array column: -0.0 and 0.0 are equal under Spark's nested ordering
+statement
+CREATE TABLE test_ap_nested_dbl(arr array<array<double>>, val array<double>) USING parquet
+
+statement
+INSERT INTO test_ap_nested_dbl VALUES
+  (array(array(1.0), array(double('-0.0'))), array(double('0.0'))),
+  (array(array(double('-0.0')), array(1.0)), array(double('0.0'))),
+  (array(array(double('0.0')), array(1.0)), array(double('-0.0'))),
+  (array(array(double('NaN'))), array(double('NaN'))),
+  (array(array(1.0)), array(2.0)),
+  (NULL, array(double('0.0'))),
+  (array(array(double('0.0'))), NULL)
+
+query
+SELECT array_position(arr, val) FROM test_ap_nested_dbl
+
 -- timestamp arrays
 statement
 CREATE TABLE test_ap_ts(arr array<timestamp>, val timestamp) USING parquet

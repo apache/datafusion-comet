@@ -24,22 +24,20 @@ import scala.math.min
 import org.apache.spark.sql.catalyst.expressions.{Add, Attribute, Cast, Divide, EmptyRow, EqualTo, EvalMode, Expression, If, IntegralDivide, Literal, Multiply, Remainder, Round, Subtract, UnaryMinus}
 import org.apache.spark.sql.types.{ByteType, DataType, DecimalType, DoubleType, FloatType, IntegerType, LongType, ShortType}
 
-import org.apache.comet.CometSparkSessionExtensions.withFallbackReason
 import org.apache.comet.expressions.{CometCast, CometEvalMode}
-import org.apache.comet.serde.QueryPlanSerde.{evalModeToProto, exprToProtoInternal, flattenAssociative, optExprWithFallbackReason, scalarFunctionExprToProtoWithReturnType, serializeDataType}
+import org.apache.comet.serde.QueryPlanSerde.{evalModeToProto, exprToProtoInternal, flattenAssociative, scalarFunctionExprToProtoWithReturnType, serializeDataType}
 import org.apache.comet.shims.CometEvalModeUtil
 
 trait MathBase {
   def createMathExpression(
-      expr: Expression,
       left: Expression,
       right: Expression,
       inputs: Seq[Attribute],
       binding: Boolean,
       dataType: DataType,
       evalMode: EvalMode.Value,
-      f: (ExprOuterClass.Expr.Builder, ExprOuterClass.MathExpr) => ExprOuterClass.Expr.Builder)
-      : Option[ExprOuterClass.Expr] = {
+      f: (ExprOuterClass.Expr.Builder, ExprOuterClass.MathExpr) => ExprOuterClass.Expr.Builder,
+      checkDivideOverflow: Boolean = false): Option[ExprOuterClass.Expr] = {
     val leftExpr = exprToProtoInternal(left, inputs, binding)
     val rightExpr = exprToProtoInternal(right, inputs, binding)
 
@@ -49,6 +47,7 @@ trait MathBase {
       builder.setLeft(leftExpr.get)
       builder.setRight(rightExpr.get)
       builder.setEvalMode(evalModeToProto(CometEvalModeUtil.fromSparkEvalMode(evalMode)))
+      builder.setCheckDivideOverflow(checkDivideOverflow)
       serializeDataType(dataType).foreach { t =>
         builder.setReturnType(t)
       }
@@ -61,7 +60,6 @@ trait MathBase {
             .newBuilder(),
           inner).build())
     } else {
-      withFallbackReason(expr, left, right)
       None
     }
   }
@@ -116,7 +114,6 @@ trait MathBase {
    * single `returnType` / `evalMode` is correct for every inner node.
    */
   def createBalancedMathExpr(
-      expr: Expression,
       operands: Seq[Expression],
       inputs: Seq[Attribute],
       binding: Boolean,
@@ -126,7 +123,6 @@ trait MathBase {
       : Option[ExprOuterClass.Expr] = {
     val protos = operands.map(exprToProtoInternal(_, inputs, binding))
     if (protos.exists(_.isEmpty)) {
-      withFallbackReason(expr, operands: _*)
       None
     } else {
       val returnType = serializeDataType(dataType)
@@ -168,7 +164,6 @@ object CometAdd extends CometExpressionSerde[Add] with MathBase {
         { case _: Add => true; case _ => false },
         { case a: Add => (a.left, a.right) })
       createBalancedMathExpr(
-        expr,
         operands,
         inputs,
         binding,
@@ -177,7 +172,6 @@ object CometAdd extends CometExpressionSerde[Add] with MathBase {
         (builder, mathExpr) => builder.setAdd(mathExpr))
     } else {
       createMathExpression(
-        expr,
         expr.left,
         expr.right,
         inputs,
@@ -199,7 +193,6 @@ object CometSubtract extends CometExpressionSerde[Subtract] with MathBase {
       inputs: Seq[Attribute],
       binding: Boolean): Option[ExprOuterClass.Expr] = {
     createMathExpression(
-      expr,
       expr.left,
       expr.right,
       inputs,
@@ -227,7 +220,6 @@ object CometMultiply extends CometExpressionSerde[Multiply] with MathBase {
         { case _: Multiply => true; case _ => false },
         { case m: Multiply => (m.left, m.right) })
       createBalancedMathExpr(
-        expr,
         operands,
         inputs,
         binding,
@@ -236,7 +228,6 @@ object CometMultiply extends CometExpressionSerde[Multiply] with MathBase {
         (builder, mathExpr) => builder.setMultiply(mathExpr))
     } else {
       createMathExpression(
-        expr,
         expr.left,
         expr.right,
         inputs,
@@ -250,8 +241,16 @@ object CometMultiply extends CometExpressionSerde[Multiply] with MathBase {
 
 object CometDivide extends CometExpressionSerde[Divide] with MathBase {
 
-  override def getSupportLevel(expr: Divide): SupportLevel =
-    mathDataTypeSupportLevel(expr.left.dataType)
+  override def getSupportLevel(expr: Divide): SupportLevel = {
+    if (expr.dataType.isInstanceOf[DecimalType] &&
+      (!expr.left.dataType.isInstanceOf[DecimalType] ||
+        !expr.right.dataType.isInstanceOf[DecimalType])) {
+      // This is only a sanity check; Spark's type coercion should prevent this case.
+      Unsupported(Some("Decimal division with a decimal result requires decimal operands"))
+    } else {
+      mathDataTypeSupportLevel(expr.left.dataType)
+    }
+  }
 
   override def convert(
       expr: Divide,
@@ -262,8 +261,7 @@ object CometDivide extends CometExpressionSerde[Divide] with MathBase {
     // For now, use NullIf to swap zeros with nulls.
     val rightExpr =
       if (expr.evalMode != EvalMode.ANSI) nullIfWhenPrimitive(expr.right) else expr.right
-    val divideExpr = createMathExpression(
-      expr,
+    createMathExpression(
       expr.left,
       rightExpr,
       inputs,
@@ -271,21 +269,6 @@ object CometDivide extends CometExpressionSerde[Divide] with MathBase {
       expr.dataType,
       expr.evalMode,
       (builder, mathExpr) => builder.setDivide(mathExpr))
-
-    // For decimal division Spark applies CheckOverflow after dividing: in ANSI mode overflow
-    // throws NUMERIC_VALUE_OUT_OF_RANGE; in legacy/try mode it returns null.  The Rust
-    // spark_decimal_div_internal uses i128::MAX as a sentinel for overflow, so without this
-    // wrapper an ANSI overflow would silently return a garbage value instead of throwing.
-    if (divideExpr.isDefined && expr.dataType.isInstanceOf[DecimalType] &&
-      serializeDataType(expr.dataType).isDefined) {
-      val builder = ExprOuterClass.CheckOverflow.newBuilder()
-      builder.setChild(divideExpr.get)
-      builder.setFailOnError(expr.evalMode == EvalMode.ANSI)
-      builder.setDatatype(serializeDataType(expr.dataType).get)
-      Some(ExprOuterClass.Expr.newBuilder().setCheckOverflow(builder).build())
-    } else {
-      divideExpr
-    }
   }
 }
 
@@ -319,14 +302,16 @@ object CometIntegralDivide extends CometExpressionSerde[IntegralDivide] with Mat
     }
 
     val divideExpr = createMathExpression(
-      expr,
       left,
       rightExpr,
       inputs,
       binding,
       dataType,
       expr.evalMode,
-      (builder, mathExpr) => builder.setIntegralDivide(mathExpr))
+      (builder, mathExpr) => builder.setIntegralDivide(mathExpr),
+      // Spark only checks integral divide overflow (Long.MinValue div -1) for LONG
+      // operands; DECIMAL operands wrap around on the cast to LONG even in ANSI mode
+      checkDivideOverflow = expr.checkDivideOverflow)
 
     if (divideExpr.isDefined) {
       val childExpr = if (dataType.isInstanceOf[DecimalType]) {
@@ -362,7 +347,6 @@ object CometRemainder extends CometExpressionSerde[Remainder] with MathBase {
       inputs: Seq[Attribute],
       binding: Boolean): Option[ExprOuterClass.Expr] = {
     createMathExpression(
-      expr,
       expr.left,
       expr.right,
       inputs,
@@ -373,11 +357,29 @@ object CometRemainder extends CometExpressionSerde[Remainder] with MathBase {
   }
 }
 
-object CometRound extends CometExpressionSerde[Round] {
+/**
+ * `round` lowers to the native `round` kernel for integral and non-negative-scale decimal inputs.
+ * The cases below have no native implementation; `CodegenDispatchFallback` keeps them in the
+ * Comet pipeline by running Spark's own `RoundBase.doGenCode` in the JVM codegen dispatcher,
+ * which matches Spark exactly.
+ */
+object CometRound extends CometExpressionSerde[Round] with CodegenDispatchFallback {
+
+  private val negativeScaleReason =
+    "Negative-scale decimal inputs, which are only creatable with " +
+      "spark.sql.legacy.allowNegativeScaleOfDecimal=true"
+
+  private val floatingPointReason =
+    "Float and double inputs. Spark rounds them through a BigDecimal built from " +
+      "`java.lang.Double.toString()` rather than from the exact binary value, and that " +
+      "shortened decimal string can round differently than the value it came from"
+
+  override def getUnsupportedReasons(): Seq[String] =
+    Seq(floatingPointReason, negativeScaleReason)
 
   override def getSupportLevel(expr: Round): SupportLevel = expr.child.dataType match {
     case t: DecimalType if t.scale < 0 => // Spark disallows negative scale SPARK-30252
-      Unsupported(Some("Decimal type has negative scale"))
+      Unsupported(Some(negativeScaleReason))
     case _: FloatType | DoubleType =>
       // We cannot properly match with the Spark behavior for floating-point numbers.
       // Spark uses BigDecimal for rounding float/double, and BigDecimal fist converts a
@@ -393,7 +395,7 @@ object CometRound extends CometExpressionSerde[Round] {
       // I.e. 6.13171162472835E18 == 6.1317116247283497E18. However, toString() does not.
       // That results in round(6.1317116247283497E18, -5) == 6.1317116247282995E18 instead
       // of 6.1317116247283999E18.
-      Unsupported(Some("Comet does not support Spark's BigDecimal rounding"))
+      Unsupported(Some(floatingPointReason))
     case _ =>
       Compatible()
   }
@@ -422,7 +424,7 @@ object CometRound extends CometExpressionSerde[Round] {
             r.ansiEnabled,
             childExpr,
             scaleExpr)
-        optExprWithFallbackReason(optExpr, r, r.child)
+        optExpr
     }
 
   }
@@ -447,7 +449,6 @@ object CometUnaryMinus extends CometExpressionSerde[UnaryMinus] with MathBase {
           .setUnaryMinus(builder)
           .build())
     } else {
-      withFallbackReason(expr, expr.child)
       None
     }
   }

@@ -29,7 +29,7 @@ INSERT INTO test_bin VALUES
 (-100, -100, -99.99, -99.99),
 (-255, -255, -255.255, -255.255),
 (0, 0, 0.0, 0.0),
-(0, 0, -0.0, -0.0),
+(0, 0, float('-0.0'), double('-0.0')),
 (NULL, NULL, NULL, NULL),
 (2147483647, 9223372036854775807, cast('Infinity' as float), cast('Infinity' as double)),
 (-2147483648, -9223372036854775808, cast('-Infinity' as float), cast('-Infinity' as double)),

@@ -71,7 +71,9 @@ $SPARK_HOME/bin/spark-submit \
     --driver-memory 8G \
     --conf spark.driver.memory=8G \
     --conf spark.executor.instances=1 \
-    --conf spark.executor.memory=32G \
+    --conf spark.executor.memory=16G \
+    --conf spark.memory.offHeap.enabled=true \
+    --conf spark.memory.offHeap.size=16G \
     --conf spark.executor.cores=8 \
     --conf spark.cores.max=8 \
     --conf spark.task.cpus=1 \
@@ -83,10 +85,9 @@ $SPARK_HOME/bin/spark-submit \
     --conf spark.sql.extensions=org.apache.comet.CometSparkSessionExtensions \
     --conf spark.comet.enabled=true \
     --conf spark.comet.exec.enabled=true \
-    --conf spark.comet.exec.all.enabled=true \
-    --conf spark.comet.cast.allowIncompatible=true \
-    --conf spark.comet.exec.shuffle.enabled=true \
-    --conf spark.comet.exec.shuffle.mode=auto \
+    --conf spark.comet.expression.Cast.allowIncompatible=true \
+    --conf spark.comet.shuffle.enabled=true \
+    --conf spark.comet.shuffle.mode=auto \
     --conf spark.shuffle.manager=org.apache.spark.sql.comet.execution.shuffle.CometShuffleManager \
     --conf spark.kubernetes.namespace=default \
     --conf spark.kubernetes.driver.pod.name=tpcbench  \

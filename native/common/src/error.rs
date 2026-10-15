@@ -21,6 +21,11 @@ use std::sync::Arc;
 
 #[derive(thiserror::Error, Debug, Clone)]
 pub enum SparkError {
+    #[error(
+        "[MALFORMED_VARIANT] Variant binary is malformed. Please check the data source is valid."
+    )]
+    MalformedVariant,
+
     // This list was generated from the Spark code. Many of the exceptions are not yet used by Comet
     #[error("[CAST_INVALID_INPUT] The value '{value}' of the type \"{from_type}\" cannot be cast to \"{to_type}\" \
         because it is malformed. Correct the value as per the syntax, or change its target type. \
@@ -66,10 +71,16 @@ pub enum SparkError {
     #[error("[CANNOT_PARSE_DECIMAL] Cannot parse decimal.")]
     CannotParseDecimal,
 
-    #[error("[ARITHMETIC_OVERFLOW] {from_type} overflow. If necessary set \"spark.sql.ansi.enabled\" to \"false\" to bypass this error.")]
-    ArithmeticOverflow { from_type: String },
+    #[error("[ARITHMETIC_OVERFLOW] {from_type} overflow.{suggestion} If necessary set \"spark.sql.ansi.enabled\" to \"false\" to bypass this error.",
+        suggestion = if function_name.is_empty() { String::new() } else {
+            format!(" Use '{function_name}' to tolerate overflow and return NULL instead.")
+        })]
+    ArithmeticOverflow {
+        from_type: String,
+        function_name: String,
+    },
 
-    #[error("[ARITHMETIC_OVERFLOW] Overflow in integral divide. Use `try_divide` to tolerate overflow and return NULL instead. If necessary set \"spark.sql.ansi.enabled\" to \"false\" to bypass this error.")]
+    #[error("[ARITHMETIC_OVERFLOW] Overflow in integral divide. Use 'try_divide' to tolerate overflow and return NULL instead. If necessary set \"spark.sql.ansi.enabled\" to \"false\" to bypass this error.")]
     IntegralDivideOverflow,
 
     #[error("[ARITHMETIC_OVERFLOW] Overflow in sum of decimals. Use `try_{function_name}` to tolerate overflow and return NULL instead. If necessary set \"spark.sql.ansi.enabled\" to \"false\" to bypass this error.")]
@@ -101,6 +112,12 @@ pub enum SparkError {
     #[error("[DATETIME_OVERFLOW] Datetime arithmetic overflow.")]
     DatetimeOverflow,
 
+    #[error("[ILLEGAL_DAY_OF_WEEK] Illegal input for day of week: {input}.")]
+    IllegalDayOfWeek { input: String },
+
+    #[error("[DATETIME_FIELD_OUT_OF_BOUNDS] {range_message}. If necessary set \"spark.sql.ansi.enabled\" to \"false\" to bypass this error.")]
+    DatetimeFieldOutOfBounds { range_message: String },
+
     #[error("[INVALID_ARRAY_INDEX] The index {index_value} is out of bounds. The array has {array_size} elements. Use the SQL function get() to tolerate accessing element at invalid index and return NULL instead. If necessary set \"spark.sql.ansi.enabled\" to \"false\" to bypass this error.")]
     InvalidArrayIndex { index_value: i32, array_size: i32 },
 
@@ -129,11 +146,37 @@ pub enum SparkError {
     #[error("[EXCEED_LIMIT_LENGTH] Cannot create a map with {size} elements which exceeds the limit {max_size}.")]
     ExceedMapSizeLimit { size: i32, max_size: i32 },
 
-    #[error("[COLLECTION_SIZE_LIMIT_EXCEEDED] Cannot create array with {num_elements} elements which exceeds the limit {max_elements}.")]
+    /// `num_elements` is a decimal string because Spark reports the unclamped length, which can
+    /// exceed i64 (e.g. sequence(Long.MinValue, Long.MaxValue, 1)). The JVM shim maps this to the
+    /// version-appropriate `createArrayWithElementsExceedLimitError`, passing `function_name`
+    /// through on Spark 4.x (which includes it in the message) and ignoring it on 3.x.
+    #[error("[COLLECTION_SIZE_LIMIT_EXCEEDED] Can't create array with {num_elements} elements which exceeding the array size limit {max_elements}.")]
     CollectionSizeLimitExceeded {
-        num_elements: i64,
+        num_elements: String,
         max_elements: i64,
+        function_name: String,
     },
+
+    /// Step direction does not match the start/stop bounds in `sequence`. The JVM shim maps this
+    /// to a plain IllegalArgumentException on Spark 3.x and SparkIllegalArgumentException
+    /// (_LEGACY_ERROR_TEMP_3243) on 4.x, matching what Spark's codegen throws.
+    #[error("[_LEGACY_ERROR_TEMP_3243] Illegal sequence boundaries: {start} to {stop} by {step}")]
+    SequenceIllegalBoundaries {
+        start: String,
+        stop: String,
+        step: String,
+    },
+
+    /// Sum of every row's sequence length in one Arrow batch exceeds Comet's per-batch offset
+    /// ceiling (i32::MAX) or the allocator could not satisfy the reservation. Spark itself has
+    /// no equivalent limit because it stores each row as its own `long[]`. Reported with a
+    /// message that names `spark.comet.batchSize` as the actionable knob.
+    #[error(
+        "Comet's native `sequence` kernel cannot materialize a batch with {total_elements} \
+        total elements: it exceeds the per-batch limit or the allocator refused the reservation. \
+        Lower `spark.comet.batchSize` so fewer rows are grouped per batch."
+    )]
+    SequenceBatchTooLarge { total_elements: String },
 
     #[error("[NOT_NULL_ASSERT_VIOLATION] The field `{field_name}` cannot be null.")]
     NotNullAssertViolation { field_name: String },
@@ -172,11 +215,20 @@ pub enum SparkError {
         group_index: i32,
     },
 
+    #[error("[INVALID_URL] The url is invalid: {url}. If necessary set \"spark.sql.ansi.enabled\" to \"false\" to bypass this error.")]
+    InvalidUrl { url: String },
+
     #[error("[DATATYPE_CANNOT_ORDER] Cannot order by type: {data_type}.")]
     DatatypeCannotOrder { data_type: String },
 
     #[error("[SCALAR_SUBQUERY_TOO_MANY_ROWS] Scalar subquery returned more than one row.")]
     ScalarSubqueryTooManyRows,
+
+    /// Mirrors Spark's `QueryExecutionErrors.mergeCardinalityViolationError()`, raised by
+    /// `MergeRowsExec.BitmapCardinalityValidator` when a MERGE's ON condition matches a single
+    /// target row against more than one source row.
+    #[error("[MERGE_CARDINALITY_VIOLATION] The ON search condition of the MERGE statement matched a single row from the target table with multiple rows of the source table. This could result in the target row being operated on more than once with an update or delete operation and is not allowed.")]
+    MergeCardinalityViolation,
 
     #[error("{message}")]
     FileNotFound { message: String },
@@ -190,17 +242,18 @@ pub enum SparkError {
     /// Multiple Parquet fields share the same field id when the read schema requested an
     /// id-based lookup. Mirrors Spark's `_LEGACY_ERROR_TEMP_2094`
     /// (`foundDuplicateFieldInFieldIdLookupModeError`).
-    #[error("[_LEGACY_ERROR_TEMP_2094] Found duplicate field(s) by id: id={required_id} matches [{matched_fields}] in id-lookup mode")]
+    #[error("[_LEGACY_ERROR_TEMP_2094] Found duplicate field(s) by id: id={required_id} matches {matched_fields} in id-lookup mode")]
     DuplicateFieldByFieldId {
         required_id: i32,
         matched_fields: String,
     },
 
-    /// The read schema requests Parquet field-id matching but the file carries no field ids.
-    /// Mirrors the runtime error raised in Spark's `ParquetReadSupport` when
-    /// `spark.sql.parquet.fieldId.read.ignoreMissing` is false.
+    /// The read schema carries Parquet field ids but the file carries none. Mirrors the runtime
+    /// error raised in Spark's `ParquetReadSupport` when
+    /// `spark.sql.parquet.fieldId.read.ignoreMissing` is false. Spark's message names no file,
+    /// so `file_path` travels as a parameter for the 4.x shim's `FAILED_READ_FILE` wrapper.
     #[error("Spark read schema expects field Ids, but Parquet file schema doesn't contain any field Ids. Please remove the field ids from Spark schema or ignore missing ids by setting `spark.sql.parquet.fieldId.read.ignoreMissing = true`")]
-    ParquetMissingFieldIds,
+    ParquetMissingFieldIds { file_path: String },
 
     /// Schema mismatch when reading a Parquet column under a requested schema
     /// that's incompatible with the physical column type. Translated by the JVM
@@ -223,6 +276,14 @@ pub enum SparkError {
     /// it from the per-task file list.
     #[error("Encountered error while reading file {file_path}: {message}")]
     CannotReadFile { file_path: String, message: String },
+
+    /// A native scan refused to rebase an ancient date or timestamp under the EXCEPTION rebase
+    /// mode. Converted by the JVM shim with `DataSourceUtils.newRebaseExceptionInRead(format)`,
+    /// which throws on a format it does not know. `format` must be "Parquet" or "Parquet INT96",
+    /// so build it with [`SparkError::read_ancient_datetime`]. `column` only feeds the native
+    /// message: Spark's exception has no column parameter, so the JVM drops it.
+    #[error("[INCONSISTENT_BEHAVIOR_CROSS_VERSION.READ_ANCIENT_DATETIME] Reading dates before 1582-10-15 or timestamps before 1900-01-01T00:00:00Z from {format} files can be ambiguous (column {column})")]
+    ReadAncientDatetime { format: String, column: String },
 
     #[error("ArrowError: {0}.")]
     Arrow(Arc<ArrowError>),
@@ -253,9 +314,33 @@ impl SparkError {
         }
     }
 
+    /// Construct a [`SparkError::DuplicateFieldCaseInsensitive`], formatting `matched` as the
+    /// bracketed, comma-joined list the JVM `ShimSparkErrorConverter` consumes (fed verbatim into
+    /// the `matchedOrcFields` param). Centralizes that format so every producer stays consistent.
+    pub fn duplicate_field_case_insensitive(
+        required_field_name: &str,
+        matched: &[&str],
+    ) -> SparkError {
+        SparkError::DuplicateFieldCaseInsensitive {
+            required_field_name: required_field_name.to_string(),
+            matched_fields: format!("[{}]", matched.join(", ")),
+        }
+    }
+
+    /// Construct a [`SparkError::ReadAncientDatetime`] for `column`, with Spark's "Parquet INT96"
+    /// format when the column is an INT96 timestamp and "Parquet" otherwise.
+    pub fn read_ancient_datetime(column: &str, is_int96: bool) -> SparkError {
+        let format = if is_int96 { "Parquet INT96" } else { "Parquet" };
+        SparkError::ReadAncientDatetime {
+            format: format.to_string(),
+            column: column.to_string(),
+        }
+    }
+
     /// Get the error type name for JSON serialization
     pub(crate) fn error_type_name(&self) -> &'static str {
         match self {
+            SparkError::MalformedVariant => "MalformedVariant",
             SparkError::CastInvalidValue { .. } => "CastInvalidValue",
             SparkError::InvalidInputInCastToDatetime { .. } => "InvalidInputInCastToDatetime",
             SparkError::NumericValueOutOfRange { .. } => "NumericValueOutOfRange",
@@ -276,6 +361,8 @@ impl SparkError {
                 "IntervalArithmeticOverflowWithoutSuggestion"
             }
             SparkError::DatetimeOverflow => "DatetimeOverflow",
+            SparkError::IllegalDayOfWeek { .. } => "IllegalDayOfWeek",
+            SparkError::DatetimeFieldOutOfBounds { .. } => "DatetimeFieldOutOfBounds",
             SparkError::InvalidArrayIndex { .. } => "InvalidArrayIndex",
             SparkError::InvalidElementAtIndex { .. } => "InvalidElementAtIndex",
             SparkError::InvalidBitmapPosition { .. } => "InvalidBitmapPosition",
@@ -285,6 +372,8 @@ impl SparkError {
             SparkError::MapKeyValueDiffSizes => "MapKeyValueDiffSizes",
             SparkError::ExceedMapSizeLimit { .. } => "ExceedMapSizeLimit",
             SparkError::CollectionSizeLimitExceeded { .. } => "CollectionSizeLimitExceeded",
+            SparkError::SequenceIllegalBoundaries { .. } => "SequenceIllegalBoundaries",
+            SparkError::SequenceBatchTooLarge { .. } => "SequenceBatchTooLarge",
             SparkError::NotNullAssertViolation { .. } => "NotNullAssertViolation",
             SparkError::ValueIsNull { .. } => "ValueIsNull",
             SparkError::CannotParseTimestamp { .. } => "CannotParseTimestamp",
@@ -293,14 +382,17 @@ impl SparkError {
             SparkError::UnexpectedPositiveValue { .. } => "UnexpectedPositiveValue",
             SparkError::UnexpectedNegativeValue { .. } => "UnexpectedNegativeValue",
             SparkError::InvalidRegexGroupIndex { .. } => "InvalidRegexGroupIndex",
+            SparkError::InvalidUrl { .. } => "InvalidUrl",
             SparkError::DatatypeCannotOrder { .. } => "DatatypeCannotOrder",
             SparkError::ScalarSubqueryTooManyRows => "ScalarSubqueryTooManyRows",
+            SparkError::MergeCardinalityViolation => "MergeCardinalityViolation",
             SparkError::FileNotFound { .. } => "FileNotFound",
             SparkError::DuplicateFieldCaseInsensitive { .. } => "DuplicateFieldCaseInsensitive",
             SparkError::DuplicateFieldByFieldId { .. } => "DuplicateFieldByFieldId",
-            SparkError::ParquetMissingFieldIds => "ParquetMissingFieldIds",
+            SparkError::ParquetMissingFieldIds { .. } => "ParquetMissingFieldIds",
             SparkError::ParquetSchemaConvert { .. } => "ParquetSchemaConvert",
             SparkError::CannotReadFile { .. } => "CannotReadFile",
+            SparkError::ReadAncientDatetime { .. } => "ReadAncientDatetime",
             SparkError::Arrow(_) => "Arrow",
             SparkError::Internal(_) => "Internal",
         }
@@ -358,9 +450,13 @@ impl SparkError {
                     "toType": to_type,
                 })
             }
-            SparkError::ArithmeticOverflow { from_type } => {
+            SparkError::ArithmeticOverflow {
+                from_type,
+                function_name,
+            } => {
                 serde_json::json!({
                     "fromType": from_type,
+                    "functionName": function_name,
                 })
             }
             SparkError::DecimalSumOverflow { function_name } => {
@@ -429,10 +525,24 @@ impl SparkError {
             SparkError::CollectionSizeLimitExceeded {
                 num_elements,
                 max_elements,
+                function_name,
             } => {
                 serde_json::json!({
                     "numElements": num_elements,
                     "maxElements": max_elements,
+                    "functionName": function_name,
+                })
+            }
+            SparkError::SequenceIllegalBoundaries { start, stop, step } => {
+                serde_json::json!({
+                    "start": start,
+                    "stop": stop,
+                    "step": step,
+                })
+            }
+            SparkError::SequenceBatchTooLarge { total_elements } => {
+                serde_json::json!({
+                    "totalElements": total_elements,
                 })
             }
             SparkError::NotNullAssertViolation { field_name } => {
@@ -456,6 +566,16 @@ impl SparkError {
                 serde_json::json!({
                     "message": message,
                     "suggestedFunc": suggested_func,
+                })
+            }
+            SparkError::IllegalDayOfWeek { input } => {
+                serde_json::json!({
+                    "string": input,
+                })
+            }
+            SparkError::DatetimeFieldOutOfBounds { range_message } => {
+                serde_json::json!({
+                    "rangeMessage": range_message,
                 })
             }
             SparkError::InvalidFractionOfSecond { value } => {
@@ -497,6 +617,11 @@ impl SparkError {
                     "groupIndex": group_index,
                 })
             }
+            SparkError::InvalidUrl { url } => {
+                serde_json::json!({
+                    "url": url,
+                })
+            }
             SparkError::DatatypeCannotOrder { data_type } => {
                 serde_json::json!({
                     "dataType": data_type,
@@ -525,6 +650,11 @@ impl SparkError {
                     "matchedFields": matched_fields,
                 })
             }
+            SparkError::ParquetMissingFieldIds { file_path } => {
+                serde_json::json!({
+                    "filePath": file_path,
+                })
+            }
             SparkError::ParquetSchemaConvert {
                 file_path,
                 column,
@@ -542,6 +672,12 @@ impl SparkError {
                 serde_json::json!({
                     "filePath": file_path,
                     "message": message,
+                })
+            }
+            SparkError::ReadAncientDatetime { format, column } => {
+                serde_json::json!({
+                    "format": format,
+                    "column": column,
                 })
             }
             SparkError::Arrow(e) => {
@@ -589,27 +725,38 @@ impl SparkError {
             | SparkError::InvalidIndexOfZero => "org/apache/spark/SparkArrayIndexOutOfBoundsException",
 
             // RuntimeException
-            SparkError::CannotParseDecimal
+            SparkError::MalformedVariant
+            | SparkError::CannotParseDecimal
             | SparkError::DuplicatedMapKey { .. }
             | SparkError::NullMapKey
             | SparkError::MapKeyValueDiffSizes
             | SparkError::ExceedMapSizeLimit { .. }
             | SparkError::CollectionSizeLimitExceeded { .. }
+            | SparkError::SequenceBatchTooLarge { .. } // Comet-specific extension
             | SparkError::NotNullAssertViolation { .. }
             | SparkError::ValueIsNull { .. } // Comet-specific extension
             | SparkError::UnexpectedPositiveValue { .. }
             | SparkError::UnexpectedNegativeValue { .. }
             | SparkError::InvalidRegexGroupIndex { .. }
-            | SparkError::ScalarSubqueryTooManyRows => "org/apache/spark/SparkRuntimeException",
+            | SparkError::ScalarSubqueryTooManyRows
+            | SparkError::MergeCardinalityViolation => "org/apache/spark/SparkRuntimeException",
 
             // DateTimeException
             SparkError::InvalidInputInCastToDatetime { .. }
             | SparkError::CannotParseTimestamp { .. }
-            | SparkError::InvalidFractionOfSecond { .. } => "org/apache/spark/SparkDateTimeException",
+            | SparkError::InvalidFractionOfSecond { .. }
+            | SparkError::DatetimeFieldOutOfBounds { .. } => {
+                "org/apache/spark/SparkDateTimeException"
+            }
 
             // IllegalArgumentException
             SparkError::DatatypeCannotOrder { .. }
-            | SparkError::InvalidUtf8String { .. } => "org/apache/spark/SparkIllegalArgumentException",
+            | SparkError::InvalidUrl { .. }
+            | SparkError::InvalidUtf8String { .. }
+            | SparkError::IllegalDayOfWeek { .. }
+            | SparkError::SequenceIllegalBoundaries { .. } => {
+                "org/apache/spark/SparkIllegalArgumentException"
+            }
 
             // FileNotFound - will be converted to SparkFileNotFoundException by the shim
             SparkError::FileNotFound { .. } => "org/apache/spark/SparkException",
@@ -623,10 +770,11 @@ impl SparkError {
             // (Spark's `foundDuplicateFieldInFieldIdLookupModeError` returns SparkRuntimeException)
             SparkError::DuplicateFieldByFieldId { .. } => "org/apache/spark/SparkRuntimeException",
 
-            // ParquetMissingFieldIds - converted to a plain RuntimeException by the shim,
-            // matching the `RuntimeException` Spark's ParquetReadSupport throws when the
-            // file lacks field ids and `spark.sql.parquet.fieldId.read.ignoreMissing=false`.
-            SparkError::ParquetMissingFieldIds => "java/lang/RuntimeException",
+            // ParquetMissingFieldIds - converted to the plain RuntimeException Spark's
+            // ParquetReadSupport throws when the file lacks field ids and
+            // `spark.sql.parquet.fieldId.read.ignoreMissing=false`. The 4.x shim wraps it in
+            // the FAILED_READ_FILE SparkException Spark 4 raises at the task boundary.
+            SparkError::ParquetMissingFieldIds { .. } => "java/lang/RuntimeException",
 
             // ParquetSchemaConvert - converted to SchemaColumnConvertNotSupportedException by the shim
             SparkError::ParquetSchemaConvert { .. } => {
@@ -637,6 +785,10 @@ impl SparkError {
             // (QueryExecutionErrors.cannotReadFilesError).
             SparkError::CannotReadFile { .. } => "org/apache/spark/SparkException",
 
+            // ReadAncientDatetime - converted to SparkUpgradeException by the shim
+            // (DataSourceUtils.newRebaseExceptionInRead).
+            SparkError::ReadAncientDatetime { .. } => "org/apache/spark/SparkUpgradeException",
+
             // Generic errors
             SparkError::Arrow(_) | SparkError::Internal(_) => "org/apache/spark/SparkException",
         }
@@ -645,6 +797,7 @@ impl SparkError {
     /// Returns the Spark error class code for this error
     pub(crate) fn error_class(&self) -> Option<&'static str> {
         match self {
+            SparkError::MalformedVariant => Some("MALFORMED_VARIANT"),
             // Cast errors
             SparkError::CastInvalidValue { .. } => Some("CAST_INVALID_INPUT"),
             SparkError::InvalidInputInCastToDatetime { .. } => Some("CAST_INVALID_INPUT"),
@@ -685,6 +838,10 @@ impl SparkError {
             SparkError::CollectionSizeLimitExceeded { .. } => {
                 Some("COLLECTION_SIZE_LIMIT_EXCEEDED")
             }
+            SparkError::SequenceIllegalBoundaries { .. } => Some("_LEGACY_ERROR_TEMP_3243"),
+
+            // Comet-specific: no Spark error class, the shim builds the message itself.
+            SparkError::SequenceBatchTooLarge { .. } => None,
 
             // Null validation errors
             SparkError::NotNullAssertViolation { .. } => Some("NOT_NULL_ASSERT_VIOLATION"),
@@ -693,6 +850,8 @@ impl SparkError {
             // DateTime errors
             SparkError::CannotParseTimestamp { .. } => Some("CANNOT_PARSE_TIMESTAMP"),
             SparkError::InvalidFractionOfSecond { .. } => Some("INVALID_FRACTION_OF_SECOND"),
+            SparkError::IllegalDayOfWeek { .. } => Some("ILLEGAL_DAY_OF_WEEK"),
+            SparkError::DatetimeFieldOutOfBounds { .. } => Some("DATETIME_FIELD_OUT_OF_BOUNDS"),
 
             // String/UTF8 errors
             SparkError::InvalidUtf8String { .. } => Some("INVALID_UTF8_STRING"),
@@ -704,11 +863,17 @@ impl SparkError {
             // Regex errors
             SparkError::InvalidRegexGroupIndex { .. } => Some("INVALID_PARAMETER_VALUE"),
 
+            // URL errors
+            SparkError::InvalidUrl { .. } => Some("INVALID_URL"),
+
             // Unsupported operation errors
             SparkError::DatatypeCannotOrder { .. } => Some("DATATYPE_CANNOT_ORDER"),
 
             // Subquery errors
             SparkError::ScalarSubqueryTooManyRows => Some("SCALAR_SUBQUERY_TOO_MANY_ROWS"),
+
+            // MERGE INTO errors
+            SparkError::MergeCardinalityViolation => Some("MERGE_CARDINALITY_VIOLATION"),
 
             // File not found
             SparkError::FileNotFound { .. } => Some("_LEGACY_ERROR_TEMP_2055"),
@@ -719,8 +884,9 @@ impl SparkError {
             // Duplicate field id in id-lookup mode
             SparkError::DuplicateFieldByFieldId { .. } => Some("_LEGACY_ERROR_TEMP_2094"),
 
-            // ParquetMissingFieldIds is a plain RuntimeException with no error class.
-            SparkError::ParquetMissingFieldIds => None,
+            // ParquetMissingFieldIds is a plain RuntimeException with no error class. The 4.x
+            // shim supplies FAILED_READ_FILE itself, so none is exposed here.
+            SparkError::ParquetMissingFieldIds { .. } => None,
 
             // Parquet schema mismatch — translated to SchemaColumnConvertNotSupportedException
             // by the JVM shim. The shim wraps it in the version-appropriate
@@ -730,6 +896,11 @@ impl SparkError {
             // CannotReadFile — the JVM shim wraps it via cannotReadFilesError, which supplies the
             // FAILED_READ_FILE error class, so none is exposed here.
             SparkError::CannotReadFile { .. } => None,
+
+            // ReadAncientDatetime - set by DataSourceUtils.newRebaseExceptionInRead in the shim.
+            SparkError::ReadAncientDatetime { .. } => {
+                Some("INCONSISTENT_BEHAVIOR_CROSS_VERSION.READ_ANCIENT_DATETIME")
+            }
 
             // Generic errors (no error class)
             SparkError::Arrow(_) | SparkError::Internal(_) => None,
@@ -873,6 +1044,28 @@ mod tests {
     }
 
     #[test]
+    fn test_arithmetic_overflow_suggestion_json_and_display() {
+        for function in ["", "try_add", "try_subtract", "try_multiply"] {
+            let error = SparkError::ArithmeticOverflow {
+                from_type: "long".to_string(),
+                function_name: function.to_string(),
+            };
+            let parsed: serde_json::Value = serde_json::from_str(&error.to_json()).unwrap();
+            assert_eq!(parsed["errorClass"], "ARITHMETIC_OVERFLOW");
+            assert_eq!(parsed["params"]["fromType"], "long");
+            assert_eq!(parsed["params"]["functionName"], function);
+            let hint = if function.is_empty() {
+                String::new()
+            } else {
+                format!(" Use '{function}' to tolerate overflow and return NULL instead.")
+            };
+            assert_eq!(error.to_string(), format!(
+                "[ARITHMETIC_OVERFLOW] long overflow.{hint} If necessary set \"spark.sql.ansi.enabled\" to \"false\" to bypass this error."
+            ));
+        }
+    }
+
+    #[test]
     fn test_binary_overflow_json() {
         let error = SparkError::BinaryArithmeticOverflow {
             value1: "32767".to_string(),
@@ -989,6 +1182,10 @@ mod tests {
             Some("INVALID_ARRAY_INDEX")
         );
         assert_eq!(SparkError::NullMapKey.error_class(), Some("NULL_MAP_KEY"));
+        assert_eq!(
+            SparkError::read_ancient_datetime("d", false).error_class(),
+            Some("INCONSISTENT_BEHAVIOR_CROSS_VERSION.READ_ANCIENT_DATETIME")
+        );
     }
 
     #[test]
@@ -1010,5 +1207,28 @@ mod tests {
             SparkError::NullMapKey.exception_class(),
             "org/apache/spark/SparkRuntimeException"
         );
+        assert_eq!(
+            SparkError::read_ancient_datetime("d", false).exception_class(),
+            "org/apache/spark/SparkUpgradeException"
+        );
+    }
+
+    #[test]
+    fn test_read_ancient_datetime_json() {
+        for (is_int96, format) in [(false, "Parquet"), (true, "Parquet INT96")] {
+            let error = SparkError::read_ancient_datetime("ts", is_int96);
+            assert_eq!(error.error_type_name(), "ReadAncientDatetime");
+
+            let parsed: serde_json::Value = serde_json::from_str(&error.to_json()).unwrap();
+            assert_eq!(parsed["errorType"], "ReadAncientDatetime");
+            assert_eq!(
+                parsed["errorClass"],
+                "INCONSISTENT_BEHAVIOR_CROSS_VERSION.READ_ANCIENT_DATETIME"
+            );
+            assert_eq!(
+                parsed["params"],
+                serde_json::json!({"format": format, "column": "ts"})
+            );
+        }
     }
 }

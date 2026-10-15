@@ -74,7 +74,7 @@ object CometRegExpExtractBenchmark extends CometBenchmarkBase {
         "spark.shuffle.manager",
         "org.apache.spark.sql.comet.execution.shuffle.CometShuffleManager")
 
-    val sparkSession = SparkSession.builder.config(conf).getOrCreate()
+    val sparkSession = SparkSession.builder().config(conf).getOrCreate()
     sparkSession.conf.set(SQLConf.PARQUET_VECTORIZED_READER_ENABLED.key, "true")
     sparkSession.conf.set(SQLConf.WHOLESTAGE_CODEGEN_ENABLED.key, "true")
     sparkSession.conf.set(CometConf.COMET_ENABLED.key, "false")
@@ -112,14 +112,14 @@ object CometRegExpExtractBenchmark extends CometBenchmarkBase {
             val extractQuery =
               s"select regexp_extract(c1, '${p.pattern}', ${p.idx}) from parquetV1Table"
             runBenchmark(extractName) {
-              runModes("RegExpExtract", extractName, v, extractQuery)
+              runModes("RegExpExtract", extractName, v.toLong, extractQuery)
             }
 
             val extractAllName = s"regexp_extract_all / ${p.name}"
             val extractAllQuery =
               s"select regexp_extract_all(c1, '${p.pattern}', ${p.idx}) from parquetV1Table"
             runBenchmark(extractAllName) {
-              runModes("RegExpExtractAll", extractAllName, v, extractAllQuery)
+              runModes("RegExpExtractAll", extractAllName, v.toLong, extractAllQuery)
             }
           }
         }

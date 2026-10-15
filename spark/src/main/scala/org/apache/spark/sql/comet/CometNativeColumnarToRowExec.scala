@@ -45,13 +45,10 @@ import org.apache.comet.{CometConf, NativeColumnarToRowConverter}
  * Native implementation of ColumnarToRowExec that converts Arrow columnar data to Spark UnsafeRow
  * format using Rust.
  *
- * This feature is enabled by default and can be disabled by setting
- * `spark.comet.exec.columnarToRow.native.enabled=false`.
- *
- * Benefits over the JVM implementation:
- *   - Zero-copy for variable-length types (strings, binary)
- *   - Better CPU cache utilization through vectorized processing
- *   - Reduced GC pressure
+ * This feature is disabled by default and can be enabled by setting
+ * `spark.comet.exec.columnarToRow.native.enabled=true`. The native conversion carries a fixed JNI
+ * cost per batch and is slower than the JVM implementation for small batches (see issue #5112 for
+ * measurements).
  *
  * @param child
  *   The child plan that produces columnar batches
@@ -100,7 +97,7 @@ case class CometNativeColumnarToRowExec(child: SparkPlan)
         val numInputBatches = longMetric("numInputBatches")
         val localSchema = this.schema
         val batchSize = CometConf.COMET_BATCH_SIZE.get()
-        val broadcastColumnar = child.executeBroadcast()
+        val broadcastColumnar = child.executeBroadcast[Any]()
         val serializedBatches =
           broadcastColumnar.value.asInstanceOf[Array[org.apache.spark.util.io.ChunkedByteBuffer]]
 
@@ -111,7 +108,7 @@ case class CometNativeColumnarToRowExec(child: SparkPlan)
             .flatMap(CometUtils.decodeBatches(_, this.getClass.getSimpleName))
             .flatMap { batch =>
               numInputBatches += 1
-              numOutputRows += batch.numRows()
+              numOutputRows += batch.numRows().toLong
               val result = converter.convert(batch)
               // Wrap iterator to close batch after consumption
               new Iterator[InternalRow] {
@@ -205,7 +202,7 @@ case class CometNativeColumnarToRowExec(child: SparkPlan)
       batches.flatMap { batch =>
         numInputBatches += 1
         val numRows = batch.numRows()
-        numOutputRows += numRows
+        numOutputRows += numRows.toLong
 
         val startTime = System.nanoTime()
         val result = converter.convert(batch)

@@ -23,7 +23,7 @@
 
 ## parse_url
 
-- Performance (tuned 2026-07-11, PR #4893): cache the compiled query regex in a thread-local single-slot cache keyed by the query key, eliminating per-row `Regex::new()` recompilation in the QUERY-with-key path (the key is constant across a batch in practice). Up to 50x faster. Benchmark: `benches/parse_url.rs`.
+- Performance (tuned 2026-07-11, PR [#4893](https://github.com/apache/datafusion-comet/pull/4893)): cache the compiled query regex in a thread-local single-slot cache keyed by the query key, eliminating per-row `Regex::new()` recompilation in the QUERY-with-key path (the key is constant across a batch in practice). Up to 50x faster. Benchmark: `benches/parse_url.rs`.
 
 ## try_url_decode
 

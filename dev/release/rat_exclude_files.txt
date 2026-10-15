@@ -3,6 +3,8 @@
 .github/pull_request_template.md
 .github/workflows/README.md
 .gitmodules
+.claude/skills
+CLAUDE.md
 native/Cargo.lock
 native/jni-bridge/testdata/backtrace.txt
 native/jni-bridge/testdata/stacktrace.txt
@@ -28,5 +30,6 @@ spark/src/test/resources/tpch-query-results/*.out
 spark/src/test/resources/tpch-extended/q*.sql
 spark/src/test/resources/test-data/*.csv
 spark/src/test/resources/test-data/*.ndjson
+spark/src/test/resources/abfs-auth-parity/*.json
 spark/inspections/CometTPC*results.txt
 benchmarks/tpc/queries/**/*.sql

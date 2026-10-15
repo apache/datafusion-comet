@@ -21,7 +21,7 @@ package org.apache.comet.serde
 
 import org.apache.spark.sql.catalyst.expressions.{Attribute, ParseUrl}
 
-import org.apache.comet.serde.QueryPlanSerde.{exprToProtoInternal, optExprWithFallbackReason, scalarFunctionExprToProto}
+import org.apache.comet.serde.QueryPlanSerde.{exprToProtoInternal, scalarFunctionExprToProto}
 
 object CometParseUrl extends CometExpressionSerde[ParseUrl] {
 
@@ -32,6 +32,6 @@ object CometParseUrl extends CometExpressionSerde[ParseUrl] {
     val funcName = if (expr.failOnError) "parse_url" else "try_parse_url"
     val childExprs = expr.children.map(exprToProtoInternal(_, inputs, binding))
     val optExpr = scalarFunctionExprToProto(funcName, childExprs: _*)
-    optExprWithFallbackReason(optExpr, expr, expr.children: _*)
+    optExpr
   }
 }

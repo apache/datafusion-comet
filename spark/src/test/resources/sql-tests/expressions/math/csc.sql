@@ -19,7 +19,15 @@ statement
 CREATE TABLE test_csc(d double) USING parquet
 
 statement
-INSERT INTO test_csc VALUES (0.0), (-0.0), (1.5707963267948966), (-1.5707963267948966), (3.141592653589793), (NULL), (cast('NaN' as double)), (cast('Infinity' as double)), (cast('-Infinity' as double))
+INSERT INTO test_csc VALUES (0.0), (double('-0.0')), (1.5707963267948966), (-1.5707963267948966), (3.141592653589793), (NULL), (cast('NaN' as double)), (cast('Infinity' as double)), (cast('-Infinity' as double))
 
 query tolerance=1e-6
 SELECT csc(d) FROM test_csc
+
+-- signed-zero: exact comparison so csc(-0.0) == -Infinity is distinguished
+-- from +Infinity (tolerance only checks isInfinity).
+query
+SELECT csc(d) FROM test_csc WHERE d = 0.0
+
+query
+SELECT csc(0.0), csc(double('-0.0'))

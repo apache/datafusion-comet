@@ -31,13 +31,14 @@ import org.apache.spark.sql.comet.execution.arrow.{CometArrowStream, CometNative
 import org.apache.spark.sql.comet.util.Utils
 import org.apache.spark.sql.execution.{LeafExecNode, LocalTableScanExec}
 import org.apache.spark.sql.execution.metric.{SQLMetric, SQLMetrics}
-import org.apache.spark.sql.types.{DataType, NullType, StructType}
+import org.apache.spark.sql.types.{DataType, StructType}
 
 import com.google.common.base.Objects
 
 import org.apache.comet.{CometConf, ConfigEntry, DataTypeSupport}
 import org.apache.comet.CometSparkSessionExtensions.withFallbackReason
 import org.apache.comet.serde.OperatorOuterClass.Operator
+import org.apache.comet.serde.QueryPlanSerde.supportedDataType
 import org.apache.comet.serde.operator.CometSink
 
 case class CometLocalTableScanExec(
@@ -51,12 +52,12 @@ case class CometLocalTableScanExec(
   override lazy val metrics: Map[String, SQLMetric] = Map(
     "numOutputRows" -> SQLMetrics.createMetric(sparkContext, "number of output rows"))
 
-  @transient private lazy val unsafeRows: Array[InternalRow] = {
+  @transient private lazy val unsafeRows: IndexedSeq[InternalRow] = {
     if (rows.isEmpty) {
-      Array.empty
+      IndexedSeq.empty
     } else {
       val proj = UnsafeProjection.create(output, output)
-      rows.map(r => proj(r).copy()).toArray
+      rows.iterator.map(r => proj(r).copy()).toIndexedSeq
     }
   }
 
@@ -92,8 +93,9 @@ case class CometLocalTableScanExec(
         new RowArrowReader(
           _,
           arrowSchema,
-          CometArrowStream.countingIterator(rowIter, (_: InternalRow) => numOutputRows.add(1)),
-          maxRecordsPerBatch))
+          rowIter,
+          maxRecordsPerBatch,
+          onRows = rows => numOutputRows.add(rows.toLong)))
     }
   }
 
@@ -131,15 +133,24 @@ object CometLocalTableScanExec extends CometSink[LocalTableScanExec] with DataTy
   // downstream expression serdes (issue #4789).
   override protected def scanFieldType(dt: DataType): DataType = dt.asNullable
 
-  // ArrowWriter (used by RowArrowReader) handles NullType via Utils.toArrowType + NullWriter;
-  // other types off DataTypeSupport's allow list (TimeType, intervals, ...) have no ArrowWriter
-  // coverage and must fall back to Spark.
+  // RowArrowReader handles NullType, intervals, and TimeType (through TimeNanoWriter).
+  // Non-default string collations remain unsupported here, matching DataTypeSupport's
+  // existing local-scan boundary.
   override def isTypeSupported(
       dt: DataType,
       name: String,
-      fallbackReasons: ListBuffer[String]): Boolean = dt match {
-    case _: NullType => true
-    case _ => super.isTypeSupported(dt, name, fallbackReasons)
+      fallbackReasons: ListBuffer[String]): Boolean = {
+    val supported = supportedDataType(
+      dt,
+      allowComplex = true,
+      allowIntervals = true,
+      allowAnyStringType = false,
+      // Java Arrow keys struct children by name; declining here hands the struct to
+      // DataTypeSupport, which records the duplicate-field-name fallback reason.
+      allowDuplicateStructFieldNames = false)
+    // DataTypeSupport accepts no type that supportedDataType rejects here, so the super call
+    // cannot widen the accepted set; it only records the fallback reason for rejected types.
+    if (supported) true else super.isTypeSupported(dt, name, fallbackReasons)
   }
 
   override def convert(

@@ -67,7 +67,6 @@ INSERT INTO test_sort_array_double VALUES
     3.0,
     1.0,
     NULL,
-    -0.0,
     0.0)),
   (array(
     CAST('NaN' AS DOUBLE),
@@ -88,6 +87,32 @@ SELECT sort_array(arr, true) FROM test_sort_array_double
 query
 SELECT sort_array(arr, false) FROM test_sort_array_double
 
+-- Spark descending sort keeps +0.0 after -0.0; Comet reverses them.
+-- Surfaced by https://github.com/apache/datafusion-comet/issues/5271
+statement
+CREATE TABLE test_sort_array_dbl_negzero(arr array<double>) USING parquet
+
+statement
+INSERT INTO test_sort_array_dbl_negzero VALUES
+  (array(
+    CAST('Infinity' AS DOUBLE),
+    CAST('-Infinity' AS DOUBLE),
+    CAST('NaN' AS DOUBLE),
+    3.0,
+    1.0,
+    NULL,
+    double('-0.0'),
+    0.0))
+
+query
+SELECT sort_array(arr) FROM test_sort_array_dbl_negzero
+
+query
+SELECT sort_array(arr, true) FROM test_sort_array_dbl_negzero
+
+query ignore(sort_array descending signed-zero: Spark [-0.0, 0.0], Comet [0.0, -0.0])
+SELECT sort_array(arr, false) FROM test_sort_array_dbl_negzero
+
 statement
 CREATE TABLE test_sort_array_float(arr array<float>) USING parquet
 
@@ -100,7 +125,6 @@ INSERT INTO test_sort_array_float VALUES
     CAST(3.0 AS FLOAT),
     CAST(1.0 AS FLOAT),
     CAST(NULL AS FLOAT),
-    CAST(-0.0 AS FLOAT),
     CAST(0.0 AS FLOAT))),
   (array(
     CAST('NaN' AS FLOAT),
@@ -119,6 +143,32 @@ SELECT sort_array(arr, true) FROM test_sort_array_float
 
 query
 SELECT sort_array(arr, false) FROM test_sort_array_float
+
+-- Spark descending sort keeps +0.0 after -0.0; Comet reverses them.
+-- Surfaced by https://github.com/apache/datafusion-comet/issues/5271
+statement
+CREATE TABLE test_sort_array_flt_negzero(arr array<float>) USING parquet
+
+statement
+INSERT INTO test_sort_array_flt_negzero VALUES
+  (array(
+    CAST('Infinity' AS FLOAT),
+    CAST('-Infinity' AS FLOAT),
+    CAST('NaN' AS FLOAT),
+    CAST(3.0 AS FLOAT),
+    CAST(1.0 AS FLOAT),
+    CAST(NULL AS FLOAT),
+    float('-0.0'),
+    CAST(0.0 AS FLOAT)))
+
+query
+SELECT sort_array(arr) FROM test_sort_array_flt_negzero
+
+query
+SELECT sort_array(arr, true) FROM test_sort_array_flt_negzero
+
+query ignore(sort_array descending signed-zero: Spark [-0.0, 0.0], Comet [0.0, -0.0])
+SELECT sort_array(arr, false) FROM test_sort_array_flt_negzero
 
 statement
 CREATE TABLE test_sort_array_decimal(arr array<decimal(12, 3)>) USING parquet
@@ -318,37 +368,17 @@ SELECT
       CAST('NaN' AS DOUBLE),
       1.0,
       NULL,
-      -0.0,
+      double('-0.0'),
       0.0)),
   sort_array(
     array(
-      CAST('Infinity' AS DOUBLE),
-      CAST('-Infinity' AS DOUBLE),
-      CAST('NaN' AS DOUBLE),
-      1.0,
-      NULL,
-      -0.0,
-      0.0),
-    false),
-  sort_array(
-    array(
       CAST('Infinity' AS FLOAT),
       CAST('-Infinity' AS FLOAT),
       CAST('NaN' AS FLOAT),
       CAST(1.0 AS FLOAT),
       CAST(NULL AS FLOAT),
-      CAST(-0.0 AS FLOAT),
+      float('-0.0'),
       CAST(0.0 AS FLOAT))),
-  sort_array(
-    array(
-      CAST('Infinity' AS FLOAT),
-      CAST('-Infinity' AS FLOAT),
-      CAST('NaN' AS FLOAT),
-      CAST(1.0 AS FLOAT),
-      CAST(NULL AS FLOAT),
-      CAST(-0.0 AS FLOAT),
-      CAST(0.0 AS FLOAT)),
-    false),
   sort_array(
     CAST(array(
       CAST(100 AS DECIMAL(10, 0)),
@@ -393,6 +423,31 @@ SELECT
   sort_array(array(array(1, NULL), array(1), NULL)),
   sort_array(array(NULL, NULL)),
   sort_array(cast(NULL as array<int>))
+
+-- Spark descending sort keeps +0.0 after -0.0; Comet reverses them.
+-- Surfaced by https://github.com/apache/datafusion-comet/issues/5271
+query ignore(sort_array descending signed-zero: Spark [-0.0, 0.0], Comet [0.0, -0.0])
+SELECT
+  sort_array(
+    array(
+      CAST('Infinity' AS DOUBLE),
+      CAST('-Infinity' AS DOUBLE),
+      CAST('NaN' AS DOUBLE),
+      1.0,
+      NULL,
+      double('-0.0'),
+      0.0),
+    false),
+  sort_array(
+    array(
+      CAST('Infinity' AS FLOAT),
+      CAST('-Infinity' AS FLOAT),
+      CAST('NaN' AS FLOAT),
+      CAST(1.0 AS FLOAT),
+      CAST(NULL AS FLOAT),
+      float('-0.0'),
+      CAST(0.0 AS FLOAT)),
+    false)
 
 query
 SELECT sort_array(

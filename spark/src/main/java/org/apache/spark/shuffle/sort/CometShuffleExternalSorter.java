@@ -101,6 +101,7 @@ public final class CometShuffleExternalSorter implements CometShuffleChecksumSup
   private final String checksumAlgorithm;
   private final String compressionCodec;
   private final int compressionLevel;
+  private final boolean offsetsAsLengths;
 
   // The memory allocator for this sorter. It is used to allocate/free memory pages for this sorter.
   // Because we need to allocate off-heap memory regardless of configured Spark memory mode
@@ -128,21 +129,22 @@ public final class CometShuffleExternalSorter implements CometShuffleChecksumSup
     this.numPartitions = numPartitions;
     this.schema = schema;
     this.numElementsForSpillThreshold =
-        (int) CometConf$.MODULE$.COMET_COLUMNAR_SHUFFLE_SPILL_THRESHOLD().get();
+        (int) CometConf$.MODULE$.COMET_SHUFFLE_JVM_SPILL_THRESHOLD().get();
     this.writeMetrics = writeMetrics;
 
     this.peakMemoryUsedBytes = getMemoryUsage();
     this.partitionChecksums = createPartitionChecksums(numPartitions, conf);
     this.checksumAlgorithm = getChecksumAlgorithm(conf);
-    this.compressionCodec = CometConf$.MODULE$.COMET_EXEC_SHUFFLE_COMPRESSION_CODEC().get();
-    this.compressionLevel =
-        (int) CometConf$.MODULE$.COMET_EXEC_SHUFFLE_COMPRESSION_ZSTD_LEVEL().get();
+    this.compressionCodec = CometConf$.MODULE$.COMET_SHUFFLE_COMPRESSION_CODEC().get();
+    this.compressionLevel = (int) CometConf$.MODULE$.COMET_SHUFFLE_COMPRESSION_ZSTD_LEVEL().get();
+    this.offsetsAsLengths =
+        (boolean) CometConf$.MODULE$.COMET_SHUFFLE_COMPRESSION_OFFSETS_AS_LENGTHS().get();
 
     this.initialSize = initialSize;
     this.tracingEnabled = (boolean) CometConf$.MODULE$.COMET_TRACING_ENABLED().get();
 
     this.preferDictionaryRatio =
-        (double) CometConf$.MODULE$.COMET_SHUFFLE_PREFER_DICTIONARY_RATIO().get();
+        (double) CometConf$.MODULE$.COMET_SHUFFLE_JVM_PREFER_DICTIONARY_RATIO().get();
 
     this.activeSpillSorter = createSpillSorter();
   }
@@ -158,6 +160,7 @@ public final class CometShuffleExternalSorter implements CometShuffleChecksumSup
             preferDictionaryRatio,
             compressionCodec,
             compressionLevel,
+            offsetsAsLengths,
             checksumAlgorithm,
             partitionChecksums,
             writeMetrics,
@@ -197,6 +200,7 @@ public final class CometShuffleExternalSorter implements CometShuffleChecksumSup
     activeSpillSorter.setSpillInfo(spillInfo);
 
     activeSpillSorter.writeSortedFileNative(false, tracingEnabled);
+    updatePeakMemoryUsed();
     final long spillSize = activeSpillSorter.freeMemory();
     activeSpillSorter.reset();
 
@@ -254,7 +258,10 @@ public final class CometShuffleExternalSorter implements CometShuffleChecksumSup
   private void growPointerArrayIfNecessary() throws IOException {
     assert (activeSpillSorter != null);
     if (!activeSpillSorter.hasSpaceForAnotherRecord()) {
-      long used = activeSpillSorter.getMemoryUsage();
+      // Size the new array from the pointer array alone, as Spark's ShuffleExternalSorter does.
+      // SpillSorter.getMemoryUsage() also counts the data pages, which would make the array grow
+      // in proportion to the pages instead of doubling.
+      long used = activeSpillSorter.getPointerArrayMemoryUsage();
       LongArray array;
       try {
         // could trigger spilling

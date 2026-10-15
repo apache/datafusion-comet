@@ -74,13 +74,13 @@ class CometFuzzTestSuite extends CometFuzzTestBase {
           case "TINYINT" | "SMALLINT" =>
             s"$defaultValueType(${defaultValueRow.get(0)})"
           case "FLOAT" =>
-            if (Float.NaN.equals(defaultValueRow.get(0))) {
+            if (defaultValueRow.getFloat(0).isNaN) {
               floatNaNLiteral
             } else {
               s"$defaultValueType(${defaultValueRow.get(0)})"
             }
           case "DOUBLE" =>
-            if (Double.NaN.equals(defaultValueRow.get(0))) {
+            if (defaultValueRow.getDouble(0).isNaN) {
               doubleNaNLiteral
             } else {
               s"$defaultValueType(${defaultValueRow.get(0)})"
@@ -109,7 +109,12 @@ class CometFuzzTestSuite extends CometFuzzTestBase {
                 .asInstanceOf[Array[Byte]]
                 .sameElements(spark.sql(sql).collect()(0).get(0).asInstanceOf[Array[Byte]]))
           } else {
-            assert(defaultValueRow.get(0).equals(spark.sql(sql).collect()(0).get(0)))
+            // Compare as boxed values with `equals` rather than `==`: for a NaN default
+            // value, boxed Float/Double equality treats NaN as equal to itself, whereas
+            // primitive `==` would not.
+            val expectedValue = defaultValueRow.get(0).asInstanceOf[AnyRef]
+            val actualValue = spark.sql(sql).collect()(0).get(0).asInstanceOf[AnyRef]
+            assert(expectedValue.equals(actualValue))
           }
         }
       }
@@ -155,6 +160,17 @@ class CometFuzzTestSuite extends CometFuzzTestBase {
   }
 
   test("distribute by single column (complex types)") {
+    // Inspect only the key schema: any wide decimal leaf requires Spark's hash partition
+    // assignments, even when native hashing of nested keys is enabled.
+    def hasWideDecimal(dataType: DataType): Boolean = dataType match {
+      case decimal: DecimalType => decimal.precision > 18
+      case StructType(fields) => fields.exists(field => hasWideDecimal(field.dataType))
+      case ArrayType(elementType, _) => hasWideDecimal(elementType)
+      case MapType(keyType, valueType, _) =>
+        hasWideDecimal(keyType) || hasWideDecimal(valueType)
+      case _ => false
+    }
+
     val df = spark.read.parquet(filename)
     df.createOrReplaceTempView("t1")
     val columns = df.schema.fields.filter(f => isComplexType(f.dataType)).map(_.name)
@@ -170,10 +186,26 @@ class CometFuzzTestSuite extends CometFuzzTestBase {
         case "jvm" =>
           1
         case "native" =>
-          // native shuffle does not support complex types as partitioning keys
+          // Nested hash partitioning keys are off by default, so native shuffle falls back here.
           0
       }
       assert(cometShuffleExchanges.length == expectedNumCometShuffles)
+
+      // Enabling nested keys admits supported types, but wide decimal leaves still require
+      // Spark's hash partition assignments. JVM shuffle supports both kinds of key.
+      withSQLConf(CometConf.COMET_SHUFFLE_NATIVE_HASH_PARTITIONING_NESTED_ENABLED.key -> "true") {
+        val enabledDf = spark.sql(sql)
+        enabledDf.collect()
+        val enabledPlan =
+          enabledDf.queryExecution.executedPlan.asInstanceOf[AdaptiveSparkPlanExec].executedPlan
+        val expectedEnabledShuffles =
+          if (CometConf.COMET_SHUFFLE_MODE.get() == "native" &&
+            hasWideDecimal(df.schema(col).dataType)) 0
+          else 1
+        assert(
+          collectCometShuffleExchanges(enabledPlan).length == expectedEnabledShuffles,
+          s"Unexpected shuffle for ${df.schema(col)}")
+      }
     }
   }
 
@@ -258,15 +290,14 @@ class CometFuzzTestSuite extends CometFuzzTestBase {
         SQLConf.PARQUET_OUTPUT_TIMESTAMP_TYPE.key -> outputTimestampType.toString,
         SQLConf.SESSION_LOCAL_TIMEZONE.key -> defaultTimezone) {
 
-        // TODO test with MapType
-        // https://github.com/apache/datafusion-comet/issues/2945
         val schema = StructType(
           Seq(
             StructField("c0", DataTypes.DateType),
             StructField("c1", DataTypes.createArrayType(DataTypes.DateType)),
             StructField(
               "c2",
-              DataTypes.createStructType(Array(StructField("c3", DataTypes.DateType))))))
+              DataTypes.createStructType(Array(StructField("c3", DataTypes.DateType)))),
+            StructField("c4", MapType(DateType, DateType))))
 
         ParquetGenerator.makeParquetFile(
           random,
@@ -293,10 +324,26 @@ class CometFuzzTestSuite extends CometFuzzTestBase {
                 val columns =
                   df.schema.fields
                     .filter(f => DataTypeSupport.hasTemporalType(f.dataType))
-                    .map(_.name)
 
                 for (col <- columns) {
-                  checkSparkAnswer(s"SELECT $col FROM t1 ORDER BY $col")
+                  // Maps are not orderable; the answer helper compares unordered results too.
+                  val (_, cometPlan) = col.dataType match {
+                    case _: MapType =>
+                      val query = s"SELECT ${col.name} FROM t1"
+                      if (int96TimestampConversion) {
+                        checkSparkAnswer(query)
+                      } else {
+                        checkSparkAnswerAndOperator(query)
+                      }
+                    case _ =>
+                      checkSparkAnswer(s"SELECT ${col.name} FROM t1 ORDER BY ${col.name}")
+                  }
+                  // INT96 timestamp conversion intentionally disables the Comet extension.
+                  if (!int96TimestampConversion) {
+                    assert(
+                      collectNativeScans(cometPlan).size == 1,
+                      s"Expected a Comet scan for ${col.name} in $tz:\n$cometPlan")
+                  }
                 }
               }
             }

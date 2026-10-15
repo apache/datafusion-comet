@@ -221,6 +221,17 @@ Example log output:
 
 When backtraces are enabled (see earlier section) then backtraces will be included for failed allocations.
 
+Under memory pressure, Spark often grants a native memory pool less than it asked for, so Comet
+logs this only at `DEBUG`. The operator that needed the memory usually spills and carries on. If it
+cannot, the task fails with an error that says how much Spark granted and lists the largest memory
+consumers. To log every partial grant, set this logger to `DEBUG`, for example in
+`log4j2.properties`:
+
+```properties
+logger.cometTaskMemoryManager.name = org.apache.spark.CometTaskMemoryManager
+logger.cometTaskMemoryManager.level = debug
+```
+
 ### Dumping native stream output with the `debug` module
 
 The `native/core/src/debug/` module ships small wrappers that print every

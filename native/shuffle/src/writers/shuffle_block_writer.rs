@@ -15,13 +15,29 @@
 // specific language governing permissions and limitations
 // under the License.
 
+use crate::codec_context::ShuffleCodecContext;
+use crate::offsets_as_lengths::{
+    buffer_ranges, buffer_roles, has_offsets, offsets_to_lengths, BufferRole, LENGTHS_TAG_FLAG,
+};
 use arrow::array::RecordBatch;
-use arrow::datatypes::Schema;
-use arrow::ipc::writer::StreamWriter;
+use arrow::datatypes::{DataType, Schema, SchemaRef};
+use arrow::ipc::writer::{
+    write_message, DictionaryTracker, IpcDataGenerator, IpcWriteContext, IpcWriteOptions,
+    StreamWriter,
+};
+use arrow::ipc::{root_as_message, MetadataVersion};
 use datafusion::common::DataFusionError;
 use datafusion::error::Result;
 use datafusion::physical_plan::metrics::Time;
-use std::io::{Cursor, Seek, SeekFrom, Write};
+use std::io::{Seek, SeekFrom, Write};
+use std::sync::Arc;
+
+/// Arrow IPC stream end-of-stream marker: the continuation marker (`0xFFFFFFFF`) followed by a
+/// zero message length. This is what `StreamWriter::finish` emits for metadata version V5 with
+/// non-legacy framing; a V4-legacy stream would instead emit four zero bytes with no continuation
+/// marker. The fast path pins its `IpcWriteOptions` to V5 (see [`ShuffleBlockWriter::try_new`]), so
+/// this constant is valid; if that assumption ever changes, this must be revisited.
+const IPC_EOS: [u8; 8] = [0xff, 0xff, 0xff, 0xff, 0x00, 0x00, 0x00, 0x00];
 
 /// Compression algorithm applied to shuffle IPC blocks.
 #[derive(Debug, Clone)]
@@ -32,40 +48,266 @@ pub enum CompressionCodec {
     Snappy,
 }
 
+/// How a writer encodes the Arrow IPC schema at the start of each block. Local writers cache
+/// dictionary-free schemas; RSS serializes under admission. The retained state never carries
+/// both a pre-encoded message and a schema at the same time.
+///
+/// Both arms hold their payload behind an `Arc` because a `ShuffleBlockWriter` is cloned once per
+/// output partition (see `LocalPartitionWriter`), and a shuffle can request millions of partitions.
+/// Deep-copying the pre-encoded schema per clone would allocate gigabytes for a large partition
+/// count; sharing it makes cloning O(1).
+#[derive(Clone)]
+enum SchemaEncoding {
+    /// Dictionary-free schema: the IPC schema message, pre-encoded once, is written verbatim at the
+    /// start of every block instead of being re-serialized per block. `offset_roles` is set when
+    /// the record batches' offsets are stored as lengths.
+    Precoded {
+        message: Arc<[u8]>,
+        offset_roles: Option<Arc<[BufferRole]>>,
+    },
+    /// Dictionary schemas and all RSS schemas: each block is encoded with `StreamWriter`, which
+    /// re-serializes the schema while sharing its dictionary tracker with the record batch.
+    Fallback(SchemaRef),
+}
+
+/// Whether arrow-ipc encodes a record batch of `schema` into exactly the body buffers `roles`
+/// describes. A type's buffer count does not depend on its data, so one empty batch settles it
+/// for the writer's lifetime; a writer whose schema does not match keeps its offsets as they are.
+fn matches_ipc_layout(
+    schema: &Schema,
+    roles: &[BufferRole],
+    write_options: &IpcWriteOptions,
+) -> bool {
+    let batch = RecordBatch::new_empty(Arc::new(schema.clone()));
+    let Ok((_, encoded)) = IpcDataGenerator::default().encode(
+        &batch,
+        &mut DictionaryTracker::new(true),
+        write_options,
+        &mut IpcWriteContext::default(),
+    ) else {
+        return false;
+    };
+    root_as_message(&encoded.ipc_message)
+        .ok()
+        .and_then(|message| message.header_as_record_batch())
+        .and_then(|batch| batch.buffers())
+        .is_some_and(|buffers| buffers.len() == roles.len())
+}
+
 /// Writes a record batch as a length-prefixed, compressed Arrow IPC block.
+///
+/// Each block is a self-contained Arrow IPC stream (schema message, dictionary messages, record
+/// batch message, end-of-stream marker). For the common case of a schema with no dictionary types,
+/// the schema flatbuffer for local writers is encoded once in [`Self::try_new`] and written verbatim
+/// at the start of every block, rather than re-serialized per block by `StreamWriter::try_new`.
+/// Schemas that contain dictionary types fall back to `StreamWriter`, whose dictionary-id
+/// bookkeeping ties schema and batch encoding together. A pre-encoded writer can also store
+/// offsets as lengths ([`Self::try_new_with_offsets_as_lengths`]).
 #[derive(Clone)]
 pub struct ShuffleBlockWriter {
     codec: CompressionCodec,
-    header_bytes: Vec<u8>,
+    /// Shared behind an `Arc` so cloning the writer per output partition stays O(1); see the note
+    /// on [`SchemaEncoding`].
+    header_bytes: Arc<[u8]>,
+    /// IPC options shared by the schema and record-batch encoders so the two can never diverge;
+    /// pinned to metadata version V5, which [`IPC_EOS`] depends on.
+    write_options: IpcWriteOptions,
+    schema_encoding: SchemaEncoding,
 }
 
 impl ShuffleBlockWriter {
-    pub fn try_new(schema: &Schema, codec: CompressionCodec) -> Result<Self> {
-        let header_bytes = Vec::with_capacity(20);
-        let mut cursor = Cursor::new(header_bytes);
+    /// Working memory for the RSS-only codec settings, excluding IPC and destination buffers.
+    ///
+    /// LZ4 uses a fixed 64 KiB input block, its compression-bound output, and a 16 KiB hash table.
+    /// Snappy uses a 64 KiB input block, a 76,490-byte output block, and its hash table. 256 KiB
+    /// conservatively covers either encoder. Zstd's streaming estimate includes the C-allocated
+    /// context, window, and input/output buffers; its Rust writer adds a fixed 32 KiB output Vec.
+    ///
+    /// Charged and released per admitted invocation, so the zstd context must live and die
+    /// within that window (see `write_batch_with_codec_limits`).
+    pub(crate) fn rss_codec_workspace(&self) -> Result<usize> {
+        match self.codec {
+            CompressionCodec::None => Ok(0),
+            CompressionCodec::Lz4Frame | CompressionCodec::Snappy => Ok(256 * 1024),
+            CompressionCodec::Zstd(level) => {
+                // The C estimator loops through the requested levels. Bound arbitrary user
+                // configuration before calling it (the encoder itself clamps to this range).
+                let levels = zstd::compression_level_range();
+                let level = level.clamp(*levels.start(), *levels.end());
+                // SAFETY: this pure estimator accepts an integer compression level and does not
+                // retain pointers. Our streaming encoder uses no dictionary or worker threads.
+                let estimate =
+                    unsafe { zstd::zstd_safe::zstd_sys::ZSTD_estimateCStreamSize(level) };
+                // SAFETY: ZSTD_isError accepts every size_t returned by the estimator.
+                if unsafe { zstd::zstd_safe::zstd_sys::ZSTD_isError(estimate) } != 0 {
+                    return Err(DataFusionError::Execution(
+                        "Cannot estimate remote shuffle Zstd workspace".to_string(),
+                    ));
+                }
+                estimate.checked_add(64 * 1024).ok_or_else(|| {
+                    DataFusionError::Execution(
+                        "Remote shuffle Zstd workspace exceeds the native integer limit"
+                            .to_string(),
+                    )
+                })
+            }
+        }
+    }
 
-        // leave space for compressed message length
-        cursor.seek_relative(8)?;
+    pub fn try_new(schema: &Schema, codec: CompressionCodec) -> Result<Self> {
+        Self::try_new_inner(schema, codec, None, false)
+    }
+
+    /// Like [`Self::try_new`], but when `enabled`, stores every offsets buffer as lengths (see the
+    /// `offsets_as_lengths` module) where this writer can: dictionary-free local blocks with at
+    /// least one offsets buffer, compressed with zstd.
+    ///
+    /// Other codecs keep offsets for now. Lengths compress into long runs, which lz4_flex decodes
+    /// two bytes at a time (PSeitz/lz4_flex#227), so LZ4 would spend more time decoding than the
+    /// smaller blocks save; snappy also spends more time than it saves.
+    pub fn try_new_with_offsets_as_lengths(
+        schema: &Schema,
+        codec: CompressionCodec,
+        enabled: bool,
+    ) -> Result<Self> {
+        let enabled = enabled && matches!(codec, CompressionCodec::Zstd(_));
+        Self::try_new_inner(schema, codec, None, enabled)
+    }
+
+    /// RSS cannot pre-encode a potentially large schema before its per-frame admission. Retain
+    /// the input's shared schema and serialize it inside the admitted encoding invocation instead.
+    pub(crate) fn try_new_rss(schema: SchemaRef, codec: CompressionCodec) -> Result<Self> {
+        Self::try_new_inner(schema.as_ref(), codec, Some(Arc::clone(&schema)), false)
+    }
+
+    fn try_new_inner(
+        schema: &Schema,
+        codec: CompressionCodec,
+        rss_schema: Option<SchemaRef>,
+        offsets_as_lengths: bool,
+    ) -> Result<Self> {
+        // Header layout: 8-byte block length placeholder + 8-byte field count (usize) + 4-byte
+        // codec tag = 20 bytes.
+        let mut header_bytes = Vec::with_capacity(20);
+
+        // leave space for compressed message length (filled in per block by write_batch)
+        header_bytes.extend_from_slice(&[0u8; 8]);
 
         // write number of columns because JVM side needs to know how many addresses to allocate
         let field_count = schema.fields().len();
-        cursor.write_all(&field_count.to_le_bytes())?;
+        header_bytes.extend_from_slice(&field_count.to_le_bytes());
 
-        // write compression codec to header
-        let codec_header = match &codec {
+        // the compression codec follows, once the schema encoding below has decided its flag
+        let mut codec_header = *match &codec {
             CompressionCodec::Snappy => b"SNAP",
             CompressionCodec::Lz4Frame => b"LZ4_",
             CompressionCodec::Zstd(_) => b"ZSTD",
             CompressionCodec::None => b"NONE",
         };
-        cursor.write_all(codec_header)?;
 
-        let header_bytes = cursor.into_inner();
+        // Shuffle blocks are always written with metadata version V5. Pin it explicitly rather than
+        // relying on `IpcWriteOptions::default`, because IPC_EOS is only the correct end-of-stream
+        // marker for V5. Alignment 64 and non-legacy framing match the arrow defaults.
+        let write_options = IpcWriteOptions::try_new(64, false, MetadataVersion::V5)?;
+
+        // For dictionary-free schemas, pre-encode the IPC schema message once so it does not have
+        // to be re-serialized per local block. RSS always delays serialization until admission.
+        // `flattened_fields` walks the full nested field tree for the local dictionary fallback.
+        let schema_encoding = if let Some(schema) = rss_schema {
+            SchemaEncoding::Fallback(schema)
+        } else if schema
+            .flattened_fields()
+            .iter()
+            .any(|f| matches!(f.data_type(), DataType::Dictionary(_, _)))
+        {
+            SchemaEncoding::Fallback(Arc::new(schema.clone()))
+        } else {
+            let data_gen = IpcDataGenerator::default();
+            let mut dictionary_tracker = DictionaryTracker::new(true);
+            let encoded_schema = data_gen.schema_to_bytes_with_dictionary_tracker(
+                schema,
+                &mut dictionary_tracker,
+                &write_options,
+            );
+            let mut buf = Vec::new();
+            write_message(&mut buf, encoded_schema, &write_options)?;
+            let offset_roles = offsets_as_lengths
+                .then(|| buffer_roles(schema))
+                .flatten()
+                .filter(|roles| {
+                    has_offsets(roles) && matches_ipc_layout(schema, roles, &write_options)
+                })
+                .map(Arc::from);
+            if offset_roles.is_some() {
+                codec_header[0] |= LENGTHS_TAG_FLAG;
+            }
+            SchemaEncoding::Precoded {
+                message: Arc::from(buf),
+                offset_roles,
+            }
+        };
+        header_bytes.extend_from_slice(&codec_header);
 
         Ok(Self {
             codec,
-            header_bytes,
+            header_bytes: Arc::from(header_bytes),
+            write_options,
+            schema_encoding,
         })
+    }
+
+    /// Serialize `batch` as a standalone Arrow IPC stream into `out`.
+    fn encode_ipc_stream<W: Write>(
+        &self,
+        batch: &RecordBatch,
+        out: &mut W,
+        compression_context: &mut IpcWriteContext,
+    ) -> Result<()> {
+        let (schema_message, offset_roles) = match &self.schema_encoding {
+            SchemaEncoding::Fallback(schema) => {
+                // Dictionary encoding requires the schema and record batch to share a dictionary
+                // tracker, so `StreamWriter` (which re-encodes the schema per block) is used here.
+                let mut stream_writer =
+                    StreamWriter::try_new_with_options(out, schema, self.write_options.clone())?;
+                stream_writer.write(batch)?;
+                stream_writer.finish()?;
+                return Ok(());
+            }
+            SchemaEncoding::Precoded {
+                message,
+                offset_roles,
+            } => (message, offset_roles),
+        };
+
+        // Fast path: reuse the pre-encoded schema message and write the record batch manually.
+        let data_gen = IpcDataGenerator::default();
+        let mut dictionary_tracker = DictionaryTracker::new(true);
+        let (encoded_dictionaries, mut encoded_batch) = data_gen.encode(
+            batch,
+            &mut dictionary_tracker,
+            &self.write_options,
+            compression_context,
+        )?;
+        debug_assert!(encoded_dictionaries.is_empty());
+
+        if let Some(roles) = offset_roles {
+            let message = root_as_message(&encoded_batch.ipc_message).map_err(|e| {
+                DataFusionError::Internal(format!("re-reading an encoded batch: {e:?}"))
+            })?;
+            let record_batch = message.header_as_record_batch().ok_or_else(|| {
+                DataFusionError::Internal("encoded message is not a record batch".to_string())
+            })?;
+            offsets_to_lengths(
+                &mut encoded_batch.arrow_data,
+                buffer_ranges(&record_batch)?,
+                roles,
+            )?;
+        }
+
+        out.write_all(schema_message)?;
+        write_message(&mut *out, encoded_batch, &self.write_options)?;
+        out.write_all(&IPC_EOS)?;
+        Ok(())
     }
 
     /// Writes given record batch as Arrow IPC bytes into given writer.
@@ -74,7 +316,31 @@ impl ShuffleBlockWriter {
         &self,
         batch: &RecordBatch,
         output: &mut W,
+        codec_context: &mut ShuffleCodecContext,
         ipc_time: &Time,
+    ) -> Result<usize> {
+        self.write_batch_with_codec_limits(batch, output, codec_context, ipc_time, false)
+    }
+
+    /// Encode with the codec settings covered by [`Self::rss_codec_workspace`]. Local shuffle
+    /// retains its existing adaptive LZ4 block sizing through [`Self::write_batch`].
+    pub(crate) fn write_rss_batch<W: Write + Seek>(
+        &self,
+        batch: &RecordBatch,
+        output: &mut W,
+        codec_context: &mut ShuffleCodecContext,
+        ipc_time: &Time,
+    ) -> Result<usize> {
+        self.write_batch_with_codec_limits(batch, output, codec_context, ipc_time, true)
+    }
+
+    fn write_batch_with_codec_limits<W: Write + Seek>(
+        &self,
+        batch: &RecordBatch,
+        output: &mut W,
+        codec_context: &mut ShuffleCodecContext,
+        ipc_time: &Time,
+        bounded_rss_codec: bool,
     ) -> Result<usize> {
         if batch.num_rows() == 0 {
             return Ok(0);
@@ -86,42 +352,20 @@ impl ShuffleBlockWriter {
         // write header
         output.write_all(&self.header_bytes)?;
 
-        let output = match &self.codec {
-            CompressionCodec::None => {
-                let mut arrow_writer = StreamWriter::try_new(output, &batch.schema())?;
-                arrow_writer.write(batch)?;
-                arrow_writer.finish()?;
-                arrow_writer.into_inner()?
-            }
-            CompressionCodec::Lz4Frame => {
-                let mut wtr = lz4_flex::frame::FrameEncoder::new(output);
-                let mut arrow_writer = StreamWriter::try_new(&mut wtr, &batch.schema())?;
-                arrow_writer.write(batch)?;
-                arrow_writer.finish()?;
-                wtr.finish().map_err(|e| {
-                    DataFusionError::Execution(format!("lz4 compression error: {e}"))
-                })?
-            }
-
-            CompressionCodec::Zstd(level) => {
-                let encoder = zstd::Encoder::new(output, *level)?;
-                let mut arrow_writer = StreamWriter::try_new(encoder, &batch.schema())?;
-                arrow_writer.write(batch)?;
-                arrow_writer.finish()?;
-                let zstd_encoder = arrow_writer.into_inner()?;
-                zstd_encoder.finish()?
-            }
-
-            CompressionCodec::Snappy => {
-                let mut wtr = snap::write::FrameEncoder::new(output);
-                let mut arrow_writer = StreamWriter::try_new(&mut wtr, &batch.schema())?;
-                arrow_writer.write(batch)?;
-                arrow_writer.finish()?;
-                wtr.into_inner().map_err(|e| {
-                    DataFusionError::Execution(format!("snappy compression error: {e}"))
-                })?
-            }
-        };
+        let encode_result =
+            self.compress_ipc_stream(batch, output, codec_context, bounded_rss_codec);
+        if bounded_rss_codec {
+            // RSS charges the zstd workspace (rss_codec_workspace) to each admitted encode
+            // and releases the charge when it ends, success or not. Free the workspace inside
+            // that window -- kept alive it would be native memory the reservation system no
+            // longer tracks.
+            codec_context.release_zstd();
+        } else {
+            // Local shuffle reuses the context across blocks, but nothing reserves its
+            // memory: a high-level workspace (hundreds of MiB) must not outlive the block.
+            codec_context.release_zstd_if_oversized();
+        }
+        encode_result?;
 
         // fill ipc length
         let end_pos = output.stream_position()?;
@@ -134,7 +378,6 @@ impl ShuffleBlockWriter {
             )));
         }
 
-        // fill ipc length
         output.seek(SeekFrom::Start(start_pos))?;
         output.write_all(&ipc_length.to_le_bytes())?;
         output.seek(SeekFrom::Start(end_pos))?;
@@ -142,5 +385,683 @@ impl ShuffleBlockWriter {
         timer.stop();
 
         Ok((end_pos - start_pos) as usize)
+    }
+
+    /// Encode `batch` through the configured outer compression codec into `output`.
+    fn compress_ipc_stream<W: Write>(
+        &self,
+        batch: &RecordBatch,
+        output: &mut W,
+        codec_context: &mut ShuffleCodecContext,
+        bounded_rss_codec: bool,
+    ) -> Result<()> {
+        match &self.codec {
+            CompressionCodec::None => {
+                self.encode_ipc_stream(batch, output, &mut codec_context.arrow_ipc)?;
+            }
+            CompressionCodec::Lz4Frame => {
+                let frame_info = if bounded_rss_codec {
+                    lz4_flex::frame::FrameInfo::new()
+                        .block_size(lz4_flex::frame::BlockSize::Max64KB)
+                } else {
+                    lz4_flex::frame::FrameInfo::default()
+                };
+                let mut wtr =
+                    lz4_flex::frame::FrameEncoder::with_frame_info(frame_info, &mut *output);
+                self.encode_ipc_stream(batch, &mut wtr, &mut codec_context.arrow_ipc)?;
+                wtr.finish().map_err(|e| {
+                    DataFusionError::Execution(format!("lz4 compression error: {e}"))
+                })?;
+            }
+            CompressionCodec::Snappy => {
+                let mut wtr = snap::write::FrameEncoder::new(&mut *output);
+                self.encode_ipc_stream(batch, &mut wtr, &mut codec_context.arrow_ipc)?;
+                wtr.into_inner().map_err(|e| {
+                    DataFusionError::Execution(format!("snappy compression error: {e}"))
+                })?;
+            }
+            CompressionCodec::Zstd(level) => {
+                let (cctx, arrow_ipc) = codec_context.zstd_cctx(*level)?;
+                let mut encoder = zstd::Encoder::with_context(&mut *output, cctx);
+                self.encode_ipc_stream(batch, &mut encoder, arrow_ipc)?;
+                encoder.finish()?;
+            }
+        }
+        Ok(())
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::codec_context::ShuffleCodecContext;
+    use crate::{read_ipc_compressed, read_ipc_compressed_validated};
+    use arrow::array::{
+        ArrayRef, BinaryArray, BooleanArray, Date32Array, Decimal128Array, DictionaryArray,
+        FixedSizeBinaryArray, FixedSizeListBuilder, Int32Array, Int32Builder, Int64Array,
+        Int64Builder, LargeBinaryArray, LargeListArray, LargeStringArray, ListBuilder, MapBuilder,
+        NullArray, StringArray, StringBuilder, StructArray, TimestampMicrosecondArray,
+    };
+    use arrow::datatypes::{DataType, Field, Int32Type};
+    use std::io::Cursor;
+
+    fn test_schema() -> Schema {
+        Schema::new(vec![
+            Field::new("a", DataType::Int64, false),
+            Field::new("b", DataType::Utf8, false),
+        ])
+    }
+
+    fn test_batch(seed: i64, rows: usize) -> RecordBatch {
+        let ints: Vec<i64> = (0..rows as i64).map(|i| seed * 1_000_000 + i).collect();
+        let strings: Vec<String> = (0..rows).map(|i| format!("row-{seed}-{i}")).collect();
+        RecordBatch::try_new(
+            Arc::new(test_schema()),
+            vec![
+                Arc::new(Int64Array::from(ints)),
+                Arc::new(StringArray::from(strings)),
+            ],
+        )
+        .unwrap()
+    }
+
+    /// One long-lived context, a new writer per partition, several blocks per writer -- the
+    /// same shape as the local finish/spill loops. Every block must decode on its own.
+    #[test]
+    #[cfg_attr(miri, ignore)] // miri can't call foreign function `ZSTD_createCCtx`
+    fn codec_context_reused_across_blocks_and_writers_roundtrips() {
+        for codec in &CODECS {
+            let mut ctx = ShuffleCodecContext::default();
+            let mut blocks: Vec<(RecordBatch, Vec<u8>)> = vec![];
+            for partition in 0..3i64 {
+                let writer = ShuffleBlockWriter::try_new(&test_schema(), codec.clone()).unwrap();
+                for block in 0..4i64 {
+                    let batch = test_batch(partition * 10 + block, 100);
+                    let mut out = vec![];
+                    let mut cursor = Cursor::new(&mut out);
+                    writer
+                        .write_batch(&batch, &mut cursor, &mut ctx, &Time::default())
+                        .unwrap();
+                    blocks.push((batch, out));
+                }
+            }
+            for (expected, bytes) in &blocks {
+                let decoded = read_ipc_compressed(&bytes[16..]).unwrap();
+                assert_eq!(&decoded, expected);
+            }
+        }
+    }
+
+    /// Writers with different zstd levels share one context; neither level may stick to the
+    /// other's blocks. On repetitive data level 19 must compress smaller than level 1 even
+    /// through the shared context.
+    #[test]
+    #[cfg_attr(miri, ignore)] // miri can't call foreign function `ZSTD_createCCtx`
+    fn codec_context_serves_alternating_zstd_levels() {
+        let batch = {
+            let ints: Vec<i64> = (0..4096).map(|i| i % 4).collect();
+            let strings: Vec<String> = (0..4096).map(|i| format!("padding-{}", i % 8)).collect();
+            RecordBatch::try_new(
+                Arc::new(test_schema()),
+                vec![
+                    Arc::new(Int64Array::from(ints)),
+                    Arc::new(StringArray::from(strings)),
+                ],
+            )
+            .unwrap()
+        };
+        let fast = ShuffleBlockWriter::try_new(&test_schema(), CompressionCodec::Zstd(1)).unwrap();
+        let slow = ShuffleBlockWriter::try_new(&test_schema(), CompressionCodec::Zstd(19)).unwrap();
+        let mut ctx = ShuffleCodecContext::default();
+        let mut sizes = vec![];
+        // Interleave so each block re-encounters the other writer's level on the shared context.
+        for _ in 0..2 {
+            for writer in [&fast, &slow] {
+                let mut out = vec![];
+                let mut cursor = Cursor::new(&mut out);
+                writer
+                    .write_batch(&batch, &mut cursor, &mut ctx, &Time::default())
+                    .unwrap();
+                assert_eq!(read_ipc_compressed(&out[16..]).unwrap(), batch);
+                sizes.push(out.len());
+            }
+        }
+        // sizes = [fast, slow, fast, slow]; each writer's level must hold on every block.
+        assert!(
+            sizes[1] < sizes[0] && sizes[3] < sizes[2],
+            "level 19 must compress smaller than level 1 through the same reused context: {sizes:?}"
+        );
+        assert_eq!(sizes[0], sizes[2], "same writer, same input, same level");
+        assert_eq!(sizes[1], sizes[3], "same writer, same input, same level");
+    }
+
+    /// Common zstd levels stay cached between local blocks; a high level allocates a
+    /// workspace of hundreds of MiB that must be dropped as soon as its block is done.
+    #[test]
+    #[cfg_attr(miri, ignore)] // miri can't call foreign function `ZSTD_createCCtx`
+    fn local_write_drops_oversized_zstd_context() {
+        let batch = test_batch(3, 100);
+        let mut ctx = ShuffleCodecContext::default();
+
+        let fast = ShuffleBlockWriter::try_new(&test_schema(), CompressionCodec::Zstd(1)).unwrap();
+        let mut fast_out = vec![];
+        fast.write_batch(
+            &batch,
+            &mut Cursor::new(&mut fast_out),
+            &mut ctx,
+            &Time::default(),
+        )
+        .unwrap();
+        assert!(
+            ctx.holds_zstd_cctx(),
+            "a common-level workspace must stay cached for reuse"
+        );
+
+        let slow = ShuffleBlockWriter::try_new(&test_schema(), CompressionCodec::Zstd(22)).unwrap();
+        let mut slow_out = vec![];
+        slow.write_batch(
+            &batch,
+            &mut Cursor::new(&mut slow_out),
+            &mut ctx,
+            &Time::default(),
+        )
+        .unwrap();
+        assert!(
+            !ctx.holds_zstd_cctx(),
+            "a level-22 workspace must not stay cached past its block"
+        );
+
+        assert_eq!(read_ipc_compressed(&fast_out[16..]).unwrap(), batch);
+        assert_eq!(read_ipc_compressed(&slow_out[16..]).unwrap(), batch);
+    }
+
+    /// Retention is only worth its complexity if consecutive blocks actually share one
+    /// context: two level-6 blocks must cost a single context creation.
+    #[test]
+    #[cfg_attr(miri, ignore)] // miri can't call foreign function `ZSTD_createCCtx`
+    fn zstd_context_created_once_for_retained_level() {
+        let batch = test_batch(4, 100);
+        let writer =
+            ShuffleBlockWriter::try_new(&test_schema(), CompressionCodec::Zstd(6)).unwrap();
+        let mut ctx = ShuffleCodecContext::default();
+        for _ in 0..2 {
+            let mut out = vec![];
+            writer
+                .write_batch(
+                    &batch,
+                    &mut Cursor::new(&mut out),
+                    &mut ctx,
+                    &Time::default(),
+                )
+                .unwrap();
+            assert_eq!(read_ipc_compressed(&out[16..]).unwrap(), batch);
+        }
+        assert_eq!(
+            ctx.creation_count(),
+            1,
+            "the second block must reuse the first block's context"
+        );
+        assert!(ctx.holds_zstd_cctx());
+    }
+
+    /// Level 9's workspace measures 15,459,857 bytes (zstd-sys 2.1.0+zstd.1.5.7), past the
+    /// 8 MiB retention cap, so each block pays its own context creation and release.
+    #[test]
+    #[cfg_attr(miri, ignore)] // miri can't call foreign function `ZSTD_createCCtx`
+    fn zstd_context_recreated_per_block_past_retention_cap() {
+        let batch = test_batch(5, 100);
+        let writer =
+            ShuffleBlockWriter::try_new(&test_schema(), CompressionCodec::Zstd(9)).unwrap();
+        let mut ctx = ShuffleCodecContext::default();
+        for _ in 0..2 {
+            let mut out = vec![];
+            writer
+                .write_batch(
+                    &batch,
+                    &mut Cursor::new(&mut out),
+                    &mut ctx,
+                    &Time::default(),
+                )
+                .unwrap();
+            assert_eq!(read_ipc_compressed(&out[16..]).unwrap(), batch);
+            assert!(
+                !ctx.holds_zstd_cctx(),
+                "a level-9 workspace must be released after every block"
+            );
+        }
+        assert_eq!(ctx.creation_count(), 2);
+    }
+
+    /// Level 8's workspace measures 8,119,825 bytes (zstd-sys 2.1.0+zstd.1.5.7) -- about 3%
+    /// under the retention cap. A zstd bump that grows it past the cap would turn off reuse
+    /// at the highest still-retained level with no other symptom; fail loudly here instead.
+    #[test]
+    #[cfg_attr(miri, ignore)] // miri can't call foreign function `ZSTD_createCCtx`
+    fn zstd_context_retained_at_level_eight_near_cap() {
+        let batch = test_batch(6, 100);
+        let writer =
+            ShuffleBlockWriter::try_new(&test_schema(), CompressionCodec::Zstd(8)).unwrap();
+        let mut ctx = ShuffleCodecContext::default();
+        for _ in 0..2 {
+            let mut out = vec![];
+            writer
+                .write_batch(
+                    &batch,
+                    &mut Cursor::new(&mut out),
+                    &mut ctx,
+                    &Time::default(),
+                )
+                .unwrap();
+            assert_eq!(read_ipc_compressed(&out[16..]).unwrap(), batch);
+        }
+        assert_eq!(
+            ctx.creation_count(),
+            1,
+            "level 8 must stay under the retention cap and keep reusing one context"
+        );
+        assert!(ctx.holds_zstd_cctx());
+    }
+
+    /// Accepts a fixed number of bytes, then fails every write.
+    struct FailingSink {
+        inner: Cursor<Vec<u8>>,
+        remaining: usize,
+    }
+
+    impl Write for FailingSink {
+        fn write(&mut self, buf: &[u8]) -> std::io::Result<usize> {
+            if buf.len() > self.remaining {
+                return Err(std::io::Error::other("sink full"));
+            }
+            self.remaining -= buf.len();
+            self.inner.write(buf)
+        }
+
+        fn flush(&mut self) -> std::io::Result<()> {
+            self.inner.flush()
+        }
+    }
+
+    impl Seek for FailingSink {
+        fn seek(&mut self, pos: SeekFrom) -> std::io::Result<u64> {
+            self.inner.seek(pos)
+        }
+    }
+
+    /// A failed write must not poison the context: the next block through the same context
+    /// has to come out clean.
+    #[test]
+    #[cfg_attr(miri, ignore)] // miri can't call foreign function `ZSTD_createCCtx`
+    fn codec_context_usable_after_write_error() {
+        let batch = test_batch(1, 100);
+        let writer =
+            ShuffleBlockWriter::try_new(&test_schema(), CompressionCodec::Zstd(1)).unwrap();
+        let mut ctx = ShuffleCodecContext::default();
+
+        // Fits the 20-byte header but not the body: the encoder dies mid-frame.
+        let mut failing = FailingSink {
+            inner: Cursor::new(vec![]),
+            remaining: 64,
+        };
+        assert!(writer
+            .write_batch(&batch, &mut failing, &mut ctx, &Time::default())
+            .is_err());
+
+        let mut out = vec![];
+        let mut cursor = Cursor::new(&mut out);
+        writer
+            .write_batch(&batch, &mut cursor, &mut ctx, &Time::default())
+            .unwrap();
+        assert_eq!(read_ipc_compressed(&out[16..]).unwrap(), batch);
+    }
+
+    /// RSS encodes free the zstd context each time (its memory is only reserved per
+    /// invocation); local encodes keep it.
+    #[test]
+    #[cfg_attr(miri, ignore)] // miri can't call foreign function `ZSTD_createCCtx`
+    fn rss_write_releases_zstd_context_local_write_retains_it() {
+        let batch = test_batch(2, 100);
+        let writer =
+            ShuffleBlockWriter::try_new(&test_schema(), CompressionCodec::Zstd(1)).unwrap();
+        let mut ctx = ShuffleCodecContext::default();
+
+        let mut rss_out = vec![];
+        let mut cursor = Cursor::new(&mut rss_out);
+        writer
+            .write_rss_batch(&batch, &mut cursor, &mut ctx, &Time::default())
+            .unwrap();
+        assert!(
+            !ctx.holds_zstd_cctx(),
+            "remote write must not retain the zstd context past its admitted invocation"
+        );
+        assert_eq!(read_ipc_compressed(&rss_out[16..]).unwrap(), batch);
+
+        let mut local_out = vec![];
+        let mut cursor = Cursor::new(&mut local_out);
+        writer
+            .write_batch(&batch, &mut cursor, &mut ctx, &Time::default())
+            .unwrap();
+        assert!(
+            ctx.holds_zstd_cctx(),
+            "local write must keep the zstd context for reuse"
+        );
+        assert_eq!(read_ipc_compressed(&local_out[16..]).unwrap(), batch);
+    }
+
+    #[test]
+    fn rss_zstd_workspace_accounts_for_compression_level_without_unbounded_estimator_loops() {
+        let schema = Arc::new(Schema::empty());
+        let estimate = |level| {
+            ShuffleBlockWriter::try_new_rss(Arc::clone(&schema), CompressionCodec::Zstd(level))
+                .unwrap()
+                .rss_codec_workspace()
+                .unwrap()
+        };
+        let levels = zstd::compression_level_range();
+        assert!(estimate(1) > 64 * 1024);
+        assert!(estimate(*levels.end()) > estimate(1));
+        assert_eq!(estimate(i32::MAX), estimate(*levels.end()));
+        assert_eq!(estimate(i32::MIN), estimate(*levels.start()));
+    }
+
+    /// Writes one block through a fresh codec context and returns all of it, header included.
+    fn write_block(writer: &ShuffleBlockWriter, batch: &RecordBatch) -> Vec<u8> {
+        let mut out = vec![];
+        writer
+            .write_batch(
+                batch,
+                &mut Cursor::new(&mut out),
+                &mut ShuffleCodecContext::default(),
+                &Time::default(),
+            )
+            .unwrap();
+        out
+    }
+
+    fn lengths_flagged(block: &[u8]) -> bool {
+        block[16] & LENGTHS_TAG_FLAG != 0
+    }
+
+    const CODECS: [CompressionCodec; 4] = [
+        CompressionCodec::None,
+        CompressionCodec::Lz4Frame,
+        CompressionCodec::Zstd(1),
+        CompressionCodec::Snappy,
+    ];
+
+    /// One column of every type with an offsets buffer, and the fixed-width and nested types
+    /// around them, with nulls, empty values and sliced inputs whose offsets do not start at 0.
+    fn offsets_batch() -> RecordBatch {
+        let rows = 64;
+        let strings: StringArray = (0..rows + 7)
+            .map(|i| match i % 5 {
+                0 => None,
+                1 => Some(String::new()),
+                _ => Some(format!("s{}", i * 37)),
+            })
+            .collect();
+        let strings = strings.slice(7, rows);
+        let binary: BinaryArray = (0..rows)
+            .map(|i| (i % 3 != 0).then(|| vec![i as u8; i % 4]))
+            .collect();
+        let large_strings: LargeStringArray = (0..rows)
+            .map(|i| (i % 4 != 0).then(|| "x".repeat(i % 6)))
+            .collect();
+        let large_binary: LargeBinaryArray = (0..rows).map(|i| Some(vec![7u8; i % 3])).collect();
+
+        let mut list = ListBuilder::new(StringBuilder::new());
+        for i in 0..rows + 3 {
+            if i % 7 == 0 {
+                list.append_null();
+                continue;
+            }
+            for j in 0..i % 4 {
+                list.values().append_value(format!("{i}-{j}"));
+            }
+            list.append(true);
+        }
+        let list = list.finish().slice(3, rows);
+
+        let large_list = LargeListArray::from_iter_primitive::<Int32Type, _, _>(
+            (0..rows).map(|i| (i % 5 != 0).then(|| (0..i % 3).map(|j| Some(j as i32)))),
+        );
+
+        let mut map = MapBuilder::new(None, StringBuilder::new(), Int64Builder::new());
+        for i in 0..rows {
+            for j in 0..i % 3 {
+                map.keys().append_value(format!("k{j}"));
+                map.values().append_value((i * j) as i64);
+            }
+            map.append(i % 6 != 0).unwrap();
+        }
+        let map = map.finish();
+
+        let mut fixed_list = FixedSizeListBuilder::new(StringBuilder::new(), 2);
+        for i in 0..rows {
+            fixed_list.values().append_value(format!("a{i}"));
+            fixed_list.values().append_null();
+            fixed_list.append(i % 9 != 0);
+        }
+        let fixed_list = fixed_list.finish();
+
+        let mut inner_list = ListBuilder::new(Int32Builder::new());
+        for i in 0..rows {
+            inner_list.values().append_slice(&vec![i as i32; i % 3]);
+            inner_list.append(true);
+        }
+        let structs = StructArray::from(vec![
+            (
+                Arc::new(Field::new("name", DataType::Utf8, true)),
+                Arc::new(
+                    (0..rows)
+                        .map(|i| (i % 2 == 0).then(|| format!("n{i}")))
+                        .collect::<StringArray>(),
+                ) as ArrayRef,
+            ),
+            (
+                Arc::new(Field::new(
+                    "items",
+                    DataType::List(Arc::new(Field::new_list_field(DataType::Int32, true))),
+                    true,
+                )),
+                Arc::new(inner_list.finish()) as ArrayRef,
+            ),
+        ]);
+
+        let fixed_binary =
+            FixedSizeBinaryArray::try_from_iter((0..rows).map(|i| [i as u8, 1, 2])).unwrap();
+        let columns: Vec<(&str, ArrayRef)> = vec![
+            ("null", Arc::new(NullArray::new(rows))),
+            (
+                "bool",
+                Arc::new(
+                    (0..rows)
+                        .map(|i| Some(i % 3 == 0))
+                        .collect::<BooleanArray>(),
+                ),
+            ),
+            (
+                "decimal",
+                Arc::new(
+                    (0..rows)
+                        .map(|i| Some(i as i128 * 101))
+                        .collect::<Decimal128Array>()
+                        .with_precision_and_scale(12, 2)
+                        .unwrap(),
+                ),
+            ),
+            (
+                "date",
+                Arc::new(Date32Array::from_iter_values(0..rows as i32)),
+            ),
+            (
+                "ts",
+                Arc::new(
+                    TimestampMicrosecondArray::from_iter_values(0..rows as i64)
+                        .with_timezone("UTC"),
+                ),
+            ),
+            ("fixed_binary", Arc::new(fixed_binary)),
+            ("strings", Arc::new(strings)),
+            ("binary", Arc::new(binary)),
+            ("large_strings", Arc::new(large_strings)),
+            ("large_binary", Arc::new(large_binary)),
+            ("list", Arc::new(list)),
+            ("large_list", Arc::new(large_list)),
+            ("map", Arc::new(map)),
+            ("fixed_list", Arc::new(fixed_list)),
+            ("struct", Arc::new(structs)),
+        ];
+        RecordBatch::try_from_iter(columns).unwrap()
+    }
+
+    /// Every mapped type round-trips under every codec: without lengths, with lengths as the
+    /// public constructor allows them (zstd only), and with lengths forced on. The forced case
+    /// shows the reader rebuilds offsets whatever the codec, so allowing another codec later is a
+    /// writer-only change.
+    #[test]
+    #[cfg_attr(miri, ignore)] // miri can't call foreign function `ZSTD_createCCtx`
+    fn offsets_as_lengths_round_trip_every_mapped_type() {
+        let batch = offsets_batch();
+        let schema = batch.schema();
+        for codec in CODECS {
+            let zstd = matches!(codec, CompressionCodec::Zstd(_));
+            for (writer, flagged) in [
+                (ShuffleBlockWriter::try_new(&schema, codec.clone()), false),
+                (
+                    ShuffleBlockWriter::try_new_with_offsets_as_lengths(
+                        &schema,
+                        codec.clone(),
+                        true,
+                    ),
+                    zstd,
+                ),
+                (
+                    ShuffleBlockWriter::try_new_inner(&schema, codec.clone(), None, true),
+                    true,
+                ),
+            ] {
+                let block = write_block(&writer.unwrap(), &batch);
+                assert_eq!(lengths_flagged(&block), flagged, "{codec:?}");
+                assert_eq!(
+                    read_ipc_compressed(&block[16..]).unwrap(),
+                    batch,
+                    "{codec:?}"
+                );
+                assert_eq!(
+                    read_ipc_compressed_validated(&block[16..]).unwrap(),
+                    batch,
+                    "{codec:?} validated"
+                );
+            }
+        }
+    }
+
+    /// The once-per-writer layout check: the mapped roles of every type match what arrow-ipc
+    /// writes, and a mismatch would be caught before any block is written.
+    #[test]
+    fn layout_check_matches_arrow_ipc_buffers() {
+        let schema = offsets_batch().schema();
+        let options = IpcWriteOptions::try_new(64, false, MetadataVersion::V5).unwrap();
+        let roles = buffer_roles(&schema).unwrap();
+        assert!(matches_ipc_layout(&schema, &roles, &options));
+        assert!(!matches_ipc_layout(&schema, &roles[1..], &options));
+    }
+
+    /// Blocks with nothing to rewrite keep the plain tag, so their bytes are what they were
+    /// before lengths existed: no offsets, dictionaries (the `StreamWriter` path) and remote
+    /// writers, which always take that path.
+    #[test]
+    #[cfg_attr(miri, ignore)] // miri can't call foreign function `ZSTD_createCCtx`
+    fn offsets_as_lengths_only_where_there_are_offsets() {
+        let numbers = RecordBatch::try_from_iter(vec![(
+            "n",
+            Arc::new(Int32Array::from(vec![1, 2, 3])) as ArrayRef,
+        )])
+        .unwrap();
+        let dictionary: DictionaryArray<Int32Type> = vec!["a", "b", "a"].into_iter().collect();
+        let dictionary =
+            RecordBatch::try_from_iter(vec![("d", Arc::new(dictionary) as ArrayRef)]).unwrap();
+        for batch in [&numbers, &dictionary] {
+            let writer = ShuffleBlockWriter::try_new_with_offsets_as_lengths(
+                &batch.schema(),
+                CompressionCodec::Zstd(1),
+                true,
+            )
+            .unwrap();
+            let block = write_block(&writer, batch);
+            assert!(!lengths_flagged(&block));
+            assert_eq!(&block[16..20], b"ZSTD");
+            assert_eq!(&read_ipc_compressed(&block[16..]).unwrap(), batch);
+        }
+
+        let strings = test_batch(1, 10);
+        let writer =
+            ShuffleBlockWriter::try_new_rss(strings.schema(), CompressionCodec::Zstd(1)).unwrap();
+        let mut remote = vec![];
+        writer
+            .write_rss_batch(
+                &strings,
+                &mut Cursor::new(&mut remote),
+                &mut ShuffleCodecContext::default(),
+                &Time::default(),
+            )
+            .unwrap();
+        assert!(!lengths_flagged(&remote));
+        assert_eq!(read_ipc_compressed(&remote[16..]).unwrap(), strings);
+    }
+
+    /// The reason for the rewrite: running offsets compress poorly, lengths compress well. Short
+    /// fixed-length strings are the extreme case.
+    #[test]
+    #[cfg_attr(miri, ignore)] // miri can't call foreign function `ZSTD_createCCtx`
+    fn offsets_as_lengths_shrink_short_strings() {
+        let strings: StringArray = (0..8192).map(|i| Some(format!("{:08}", i * 7))).collect();
+        let batch = RecordBatch::try_from_iter(vec![("s", Arc::new(strings) as ArrayRef)]).unwrap();
+        let schema = batch.schema();
+        let offsets = ShuffleBlockWriter::try_new(&schema, CompressionCodec::Zstd(1)).unwrap();
+        let lengths = ShuffleBlockWriter::try_new_with_offsets_as_lengths(
+            &schema,
+            CompressionCodec::Zstd(1),
+            true,
+        )
+        .unwrap();
+        let offsets = write_block(&offsets, &batch).len();
+        let lengths = write_block(&lengths, &batch).len();
+        assert!(
+            lengths * 10 < offsets * 8,
+            "lengths block {lengths} bytes, offsets block {offsets} bytes"
+        );
+    }
+
+    /// A `ShuffleBlockWriter` is cloned once per output partition (see `LocalPartitionWriter`), and
+    /// a shuffle can request millions of partitions (e.g. the SPARK-48037 test uses more than 16
+    /// million). Cloning must share the immutable header and pre-encoded schema buffers rather than
+    /// deep-copying them; otherwise a large partition count allocates gigabytes and stalls the
+    /// executor.
+    #[test]
+    fn clone_shares_buffers() {
+        let schema = Schema::new(vec![
+            Field::new("a", DataType::Int64, false),
+            Field::new("b", DataType::Int64, false),
+        ]);
+        let writer = ShuffleBlockWriter::try_new(&schema, CompressionCodec::None).unwrap();
+        let cloned = writer.clone();
+
+        assert!(
+            Arc::ptr_eq(&writer.header_bytes, &cloned.header_bytes),
+            "header bytes should be shared across clones, not deep-copied"
+        );
+
+        match (&writer.schema_encoding, &cloned.schema_encoding) {
+            (
+                SchemaEncoding::Precoded { message: a, .. },
+                SchemaEncoding::Precoded { message: b, .. },
+            ) => assert!(
+                Arc::ptr_eq(a, b),
+                "pre-encoded schema should be shared across clones, not deep-copied"
+            ),
+            _ => panic!("dictionary-free schema should use the pre-encoded fast path"),
+        }
     }
 }

@@ -22,17 +22,23 @@ package org.apache.comet.codegen
 import org.apache.spark.sql.catalyst.expressions.SpecializedGetters
 import org.apache.spark.sql.types._
 
+import org.apache.comet.shims.CometTypeShim
+
 /**
  * Shared `SpecializedGetters.get(ordinal, dataType)` dispatch used by [[CometInternalRow]] and
  * [[CometArrayData]]. Spark codegen paths (notably `SafeProjection` for ScalaUDF struct args) and
  * interpreted-eval fallbacks (`ArrayDistinct.nullSafeEval` etc.) call the generic `get` instead
  * of the typed getter, so both kernel-side bases need a non-throwing implementation.
  *
+ * The type surface here must stay in step with `CometBatchKernelCodegen.isSupportedDataType`,
+ * which is what gates the expression at plan time. A type accepted there but missing here throws
+ * at execute time, after the plan has already committed to the kernel.
+ *
  * For complex types, the typed getter allocates a fresh `InputStruct_*` / `InputArray_*` /
  * `InputMap_*` per call (`ColumnarRow`-style), so retain-by-reference consumers like
  * `OpenHashSet` get distinct identities.
  */
-private[codegen] object CometSpecializedGettersDispatch {
+private[codegen] object CometSpecializedGettersDispatch extends CometTypeShim {
 
   def get(g: SpecializedGetters, ordinal: Int, dataType: DataType): AnyRef = {
     if (g.isNullAt(ordinal)) return null
@@ -40,9 +46,15 @@ private[codegen] object CometSpecializedGettersDispatch {
       case BooleanType => java.lang.Boolean.valueOf(g.getBoolean(ordinal))
       case ByteType => java.lang.Byte.valueOf(g.getByte(ordinal))
       case ShortType => java.lang.Short.valueOf(g.getShort(ordinal))
-      case IntegerType | DateType => java.lang.Integer.valueOf(g.getInt(ordinal))
-      case LongType | TimestampType | TimestampNTZType =>
+      case IntegerType | DateType | _: YearMonthIntervalType =>
+        java.lang.Integer.valueOf(g.getInt(ordinal))
+      case LongType | TimestampType | TimestampNTZType | _: DayTimeIntervalType =>
         java.lang.Long.valueOf(g.getLong(ordinal))
+      case CalendarIntervalType => g.getInterval(ordinal)
+      // Spark 4.1's `TimeType` is nanos-since-midnight in a long, read through `getLong` just
+      // like the other long-backed temporal types. Matches `elementGetterCall` and
+      // `emitSpecializedGetterExpr`, which both route time types to `getLong`.
+      case dt if isTimeType(dt) => java.lang.Long.valueOf(g.getLong(ordinal))
       case FloatType => java.lang.Float.valueOf(g.getFloat(ordinal))
       case DoubleType => java.lang.Double.valueOf(g.getDouble(ordinal))
       case _: StringType => g.getUTF8String(ordinal)

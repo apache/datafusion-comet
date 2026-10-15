@@ -120,7 +120,8 @@ INSERT INTO test_intersect_long VALUES (array(9223372036854775807, 1, -922337203
 query
 SELECT a, b, array_intersect(a, b) FROM test_intersect_long
 
--- float arrays with NaN, Infinity, -Infinity
+-- Float arrays with NaN, Infinity, and -Infinity. Signed-zero membership cases are
+-- covered in array_set_signed_zero*.sql.
 statement
 CREATE TABLE test_intersect_float(a array<float>, b array<float>) USING parquet
 
@@ -132,13 +133,12 @@ INSERT INTO test_intersect_float VALUES
   (array(float('NaN'), 1.0), array(2.0, 3.0)),
   (array(1.0, 2.0), array(float('NaN'))),
   (array(float('NaN'), NULL), array(float('NaN'), NULL)),
-  (array(float('Infinity'), 1.0, float('-Infinity')), array(float('Infinity'), float('-Infinity'))),
-  (array(cast(0.0 as float), cast(-0.0 as float)), array(cast(0.0 as float)))
+  (array(float('Infinity'), 1.0, float('-Infinity')), array(float('Infinity'), float('-Infinity')))
 
 query
 SELECT a, b, array_intersect(a, b) FROM test_intersect_float
 
--- double arrays with NaN, Infinity, -Infinity
+-- Double arrays with NaN, Infinity, and -Infinity. Signed-zero cases are in array_set_signed_zero*.sql.
 statement
 CREATE TABLE test_intersect_dbl(a array<double>, b array<double>) USING parquet
 
@@ -151,7 +151,6 @@ INSERT INTO test_intersect_dbl VALUES
   (array(1.0, 2.0), array(double('NaN'))),
   (array(double('NaN'), NULL), array(double('NaN'), NULL)),
   (array(double('Infinity'), 1.0, double('-Infinity')), array(double('Infinity'), double('-Infinity'))),
-  (array(0.0, -0.0), array(0.0)),
   (array(1.0, 2.0, NULL), array(1.0, NULL))
 
 query

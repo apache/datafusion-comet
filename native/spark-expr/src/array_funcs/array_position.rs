@@ -16,9 +16,11 @@
 // under the License.
 
 use arrow::array::{
-    Array, ArrayRef, AsArray, BooleanArray, GenericListArray, Int64Array, OffsetSizeTrait,
+    make_comparator, Array, ArrayRef, AsArray, BooleanArray, GenericListArray, Int64Array,
+    OffsetSizeTrait,
 };
 use arrow::buffer::{NullBuffer, ScalarBuffer};
+use arrow::compute::SortOptions;
 use arrow::datatypes::{
     ArrowPrimitiveType, DataType, Date32Type, Decimal128Type, Float32Type, Float64Type, Int16Type,
     Int32Type, Int64Type, Int8Type, TimestampMicrosecondType,
@@ -27,8 +29,10 @@ use datafusion::common::{exec_err, DataFusionError, Result as DataFusionResult, 
 use datafusion::logical_expr::{
     ColumnarValue, ScalarFunctionArgs, ScalarUDFImpl, Signature, TypeSignature, Volatility,
 };
-use num::Float;
+use std::cmp::Ordering;
 use std::sync::Arc;
+
+use crate::float_semantics::{compare_floats, has_float_leaf, normalize_nested_floats};
 
 /// Spark array_position() function that returns the 1-based position of an element in an array.
 /// Returns 0 if the element is not found (Spark behavior differs from DataFusion which returns null).
@@ -102,7 +106,7 @@ fn generic_array_position<O: OffsetSizeTrait>(
         }
         DataType::Utf8 => position_string::<O, i32>(list_array, offsets, values, element),
         DataType::LargeUtf8 => position_string::<O, i64>(list_array, offsets, values, element),
-        // Fallback to ScalarValue for complex types (nested arrays, etc.)
+        // Fallback to Arrow's comparator for complex types (nested arrays, etc.)
         _ => position_fallback::<O>(list_array, offsets, values, element),
     }
 }
@@ -177,11 +181,10 @@ where
         let start = w[0].as_usize();
         let end = w[1].as_usize();
         let search_val = element_typed.value(row_index);
-        let search_is_nan = search_val.is_nan();
         for i in start..end {
             if !values_typed.is_null(i) {
                 let v = values_typed.value(i);
-                if (search_is_nan && v.is_nan()) || v == search_val {
+                if compare_floats(v, search_val).is_eq() {
                     result[row_index] = (i - start + 1) as i64;
                     break;
                 }
@@ -260,7 +263,7 @@ fn position_string<O: OffsetSizeTrait, S: OffsetSizeTrait>(
     Ok(Arc::new(Int64Array::new(ScalarBuffer::from(result), nulls)))
 }
 
-/// Fallback for complex types (nested arrays, structs, etc.) using ScalarValue comparison.
+/// Fallback for complex types (nested arrays, structs, etc.) using Arrow's comparator.
 fn position_fallback<O: OffsetSizeTrait>(
     list_array: &GenericListArray<O>,
     offsets: &arrow::buffer::OffsetBuffer<O>,
@@ -270,6 +273,15 @@ fn position_fallback<O: OffsetSizeTrait>(
     let num_rows = list_array.len();
     let nulls = combined_nulls(list_array.nulls(), element.nulls());
     let mut result = vec![0i64; num_rows];
+    let values_normalized =
+        has_float_leaf(values.data_type()).then(|| normalize_nested_floats(values));
+    let element_normalized =
+        has_float_leaf(element.data_type()).then(|| normalize_nested_floats(element));
+    let comparator = make_comparator(
+        values_normalized.as_ref().unwrap_or(values).as_ref(),
+        element_normalized.as_ref().unwrap_or(element).as_ref(),
+        SortOptions::default(),
+    )?;
 
     for (row_index, w) in offsets.windows(2).enumerate() {
         if nulls.as_ref().is_some_and(|n| n.is_null(row_index)) {
@@ -277,19 +289,90 @@ fn position_fallback<O: OffsetSizeTrait>(
         }
         let start = w[0].as_usize();
         let end = w[1].as_usize();
-        let search_scalar = ScalarValue::try_from_array(element, row_index)?;
         for i in start..end {
-            if !values.is_null(i) {
-                let item_scalar = ScalarValue::try_from_array(values, i)?;
-                if search_scalar == item_scalar {
-                    result[row_index] = (i - start + 1) as i64;
-                    break;
-                }
+            if !values.is_null(i) && comparator(i, row_index) == Ordering::Equal {
+                result[row_index] = (i - start + 1) as i64;
+                break;
             }
         }
     }
 
     Ok(Arc::new(Int64Array::new(ScalarBuffer::from(result), nulls)))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use arrow::array::ListArray;
+    use arrow::buffer::OffsetBuffer;
+    use arrow::datatypes::{Field, Float64Type};
+
+    #[test]
+    fn test_nested_float_and_null_position() -> DataFusionResult<()> {
+        let values = ListArray::from_iter_primitive::<Float64Type, _, _>([
+            Some(vec![Some(1.0)]),
+            Some(vec![Some(f64::NAN)]),
+            Some(vec![Some(-0.0)]),
+            Some(vec![Some(0.0)]),
+            Some(vec![Some(1.0), None]),
+        ]);
+        let array = ListArray::new(
+            Arc::new(Field::new("item", values.data_type().clone(), true)),
+            OffsetBuffer::new(vec![0, 2, 4, 5].into()),
+            Arc::new(values),
+            None,
+        );
+        let element = ListArray::from_iter_primitive::<Float64Type, _, _>([
+            Some(vec![Some(f64::NAN)]),
+            Some(vec![Some(0.0)]),
+            Some(vec![Some(1.0), None]),
+        ]);
+
+        let result = array_position_inner(&[Arc::new(array), Arc::new(element)])?;
+        let result = result.as_any().downcast_ref::<Int64Array>().unwrap();
+        assert_eq!(result, &Int64Array::from(vec![2, 1, 1]));
+        Ok(())
+    }
+
+    // array_position over array<struct<...>> currently falls back to Spark
+    // (ArraysBase.isTypeSupported rejects StructType, see #1307), so this only
+    // exercises position_fallback directly and isn't reachable from a SQL query.
+    #[test]
+    fn test_struct_float_field_signed_zero_position() -> DataFusionResult<()> {
+        use arrow::array::{Float64Builder, StructBuilder};
+
+        let fields = vec![Arc::new(Field::new("a", DataType::Float64, true))];
+        let mut values_builder =
+            StructBuilder::new(fields.clone(), vec![Box::new(Float64Builder::new())]);
+        for v in [-0.0, 1.0] {
+            values_builder
+                .field_builder::<Float64Builder>(0)
+                .unwrap()
+                .append_value(v);
+            values_builder.append(true);
+        }
+        let values = Arc::new(values_builder.finish());
+        let array = ListArray::new(
+            Arc::new(Field::new("item", values.data_type().clone(), true)),
+            OffsetBuffer::new(vec![0, 2].into()),
+            values,
+            None,
+        );
+
+        let mut element_builder = StructBuilder::new(fields, vec![Box::new(Float64Builder::new())]);
+        element_builder
+            .field_builder::<Float64Builder>(0)
+            .unwrap()
+            .append_value(0.0);
+        element_builder.append(true);
+        let element = element_builder.finish();
+
+        let result = array_position_inner(&[Arc::new(array), Arc::new(element)])?;
+        let result = result.as_any().downcast_ref::<Int64Array>().unwrap();
+        // {-0.0} is the first element and now matches {0.0}, matching Spark.
+        assert_eq!(result, &Int64Array::from(vec![1]));
+        Ok(())
+    }
 }
 
 #[derive(Debug, Hash, Eq, PartialEq)]

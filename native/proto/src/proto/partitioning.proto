@@ -57,4 +57,16 @@ message RoundRobinPartition {
   int32 num_partitions = 1;
   // Maximum number of columns to hash. 0 means no limit (hash all columns).
   int32 max_hash_columns = 2;
+  // When true, place rows by position rather than by hashing their contents: the row at
+  // task-global ordinal i goes to
+  // (positional_start_partition + i / positional_group_rows) % num_partitions.
+  // Only set where the driver has established that the map task replays its rows in the same
+  // order; see "Round Robin Partitioning" in the contributor guide's native_shuffle.md.
+  bool positional = 3;
+  // Rows per contiguous group under positional placement. Always positive: the driver resolves
+  // the default once, so that a retried task cannot derive a different one.
+  int32 positional_group_rows = 4;
+  // Output partition this map task's first group goes to, set per task from
+  // `CometShuffleExchangeExec.positionalStartPartition`.
+  int32 positional_start_partition = 5;
 }

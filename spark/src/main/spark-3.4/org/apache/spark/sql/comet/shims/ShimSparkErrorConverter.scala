@@ -26,7 +26,7 @@ import scala.util.matching.Regex
 import org.apache.spark.{QueryContext, SparkDateTimeException, SparkException}
 import org.apache.spark.sql.catalyst.trees.SQLQueryContext
 import org.apache.spark.sql.errors.QueryExecutionErrors
-import org.apache.spark.sql.execution.datasources.SchemaColumnConvertNotSupportedException
+import org.apache.spark.sql.execution.datasources.{DataSourceUtils, SchemaColumnConvertNotSupportedException}
 import org.apache.spark.sql.types._
 import org.apache.spark.unsafe.types.UTF8String
 
@@ -93,9 +93,10 @@ trait ShimSparkErrorConverter {
 
       case "ArithmeticOverflow" =>
         val fromType = params("fromType").toString
+        val functionName = params.get("functionName").map(_.toString).getOrElse("")
         Some(
           QueryExecutionErrors
-            .arithmeticOverflowError(fromType + " overflow", "", sqlCtx(context)))
+            .arithmeticOverflowError(fromType + " overflow", functionName, sqlCtx(context)))
 
       case "IntegralDivideOverflow" =>
         Some(QueryExecutionErrors.overflowInIntegralDivideError(sqlCtx(context)))
@@ -105,7 +106,8 @@ trait ShimSparkErrorConverter {
         Some(QueryExecutionErrors.overflowInSumOfDecimalError(sqlCtx(context)))
 
       case "NumericValueOutOfRange" =>
-        val decimal = Decimal(params("value").toString)
+        // Use Java BigDecimal to avoid Scala BigDecimal's DECIMAL128 MathContext rewriting.
+        val decimal = Decimal(new java.math.BigDecimal(params("value").toString))
         Some(
           QueryExecutionErrors.cannotChangeDecimalPrecisionError(
             decimal,
@@ -158,10 +160,32 @@ trait ShimSparkErrorConverter {
         Some(QueryExecutionErrors.exceedMapSizeLimitError(params("size").toString.toInt))
 
       case "CollectionSizeLimitExceeded" =>
-        // createArrayWithElementsExceedLimitError takes (count: Any) in Spark 3.4
+        // createArrayWithElementsExceedLimitError takes (count: Any) in Spark 3.4; pass the
+        // decimal string through since the reported length can exceed Long range.
         Some(
           QueryExecutionErrors.createArrayWithElementsExceedLimitError(
-            params("numElements").toString.toLong))
+            params("numElements").toString))
+
+      case "SequenceIllegalBoundaries" =>
+        // Spark 3.x codegen throws a plain IllegalArgumentException for sequence boundaries.
+        Some(
+          new IllegalArgumentException(
+            s"Illegal sequence boundaries: ${params("start")} to ${params("stop")} " +
+              s"by ${params("step")}"))
+
+      case "SequenceBatchTooLarge" =>
+        // Comet-specific per-batch limit for native `sequence`. Point the user at
+        // spark.comet.batchSize since Spark itself has no equivalent guard.
+        Some(
+          new SparkException(
+            "Comet's native `sequence` kernel cannot materialize a batch with " +
+              s"${params("totalElements")} total elements: it exceeds the per-batch " +
+              "limit or the allocator refused the reservation. Lower " +
+              "`spark.comet.batchSize` so fewer rows are grouped per batch.",
+            null))
+
+      case "Internal" =>
+        Some(SparkException.internalError(params("message").toString))
 
       case "NotNullAssertViolation" =>
         Some(
@@ -177,6 +201,16 @@ trait ShimSparkErrorConverter {
       case "CannotParseTimestamp" =>
         Some(
           QueryExecutionErrors.ansiDateTimeParseError(new Exception(params("message").toString)))
+
+      case "IllegalDayOfWeek" =>
+        Some(
+          QueryExecutionErrors
+            .ansiIllegalArgumentError(s"Illegal input for day of week: ${params("string")}"))
+
+      case "DatetimeFieldOutOfBounds" =>
+        Some(
+          QueryExecutionErrors.ansiDateTimeError(
+            new java.time.DateTimeException(params("rangeMessage").toString)))
 
       case "InvalidFractionOfSecond" =>
         Some(QueryExecutionErrors.invalidFractionOfSecondError())
@@ -260,6 +294,12 @@ trait ShimSparkErrorConverter {
             messageParameters = params.map { case (k, v) => (k, v.toString) },
             cause = null))
 
+      case "InvalidUrl" =>
+        Some(
+          QueryExecutionErrors.invalidUrlError(
+            UTF8String.fromString(params("url").toString),
+            new java.net.URISyntaxException(params("url").toString, "Invalid URL")))
+
       case "DatatypeCannotOrder" =>
         // orderedOperationUnsupportedByDataTypeError takes DataType in Spark 3.4, not String
         Some(
@@ -340,6 +380,11 @@ trait ShimSparkErrorConverter {
         Some(
           QueryExecutionErrors.readCurrentFileNotFoundError(
             new FileNotFoundException(s"File $path does not exist")))
+
+      case "ReadAncientDatetime" =>
+        // Spark raises this unwrapped, not as FAILED_READ_FILE. The helper picks the rebase
+        // config for the format and throws on a format it does not know.
+        Some(DataSourceUtils.newRebaseExceptionInRead(params("format").toString))
 
       case "CannotReadFile" =>
         // A per-file read failure of a readable-but-broken file (corrupt/truncated parquet,

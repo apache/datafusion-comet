@@ -28,10 +28,13 @@ import org.testcontainers.utility.DockerImageName
 
 import org.apache.spark.SparkConf
 import org.apache.spark.sql.CometTestBase
+import org.apache.spark.sql.comet.{CometNativeScanExec, CometScanExec}
+import org.apache.spark.sql.execution.SparkPlan
 
 import org.apache.comet.CometSparkSessionExtensions.isSpark42Plus
 
 import software.amazon.awssdk.auth.credentials.{AwsBasicCredentials, StaticCredentialsProvider}
+import software.amazon.awssdk.regions.Region
 import software.amazon.awssdk.services.s3.S3Client
 import software.amazon.awssdk.services.s3.model.{CreateBucketRequest, HeadBucketRequest}
 
@@ -43,8 +46,14 @@ trait CometS3TestBase extends CometTestBase {
 
   protected def testBucketName: String
 
+  // Docker Hub no longer serves minio/minio. This is Chainguard's build of MinIO
+  // RELEASE.2026-09-22T19-25-18Z, pinned by its multi-arch index digest.
+  private val minioImage = "cgr.dev/chainguard/minio@sha256:" +
+    "dc455cdd4db6e390b1b26514f15ff37681a777bf8dab41aac445a0259f751e56"
+
   override def beforeAll(): Unit = {
-    minioContainer = new MinIOContainer(DockerImageName.parse("minio/minio:latest"))
+    minioContainer = new MinIOContainer(
+      DockerImageName.parse(minioImage).asCompatibleSubstituteFor("minio/minio"))
       .withUserName(userName)
       .withPassword(password)
     minioContainer.start()
@@ -66,6 +75,9 @@ trait CometS3TestBase extends CometTestBase {
     conf.set("spark.hadoop.fs.s3a.secret.key", password)
     conf.set("spark.hadoop.fs.s3a.endpoint", minioContainer.getS3URL)
     conf.set("spark.hadoop.fs.s3a.path.style.access", "true")
+    // Pin the region explicitly rather than relying on Hadoop-version-dependent region
+    // resolution; MinIO ignores the value. Native maps this the same way (see s3.rs).
+    conf.set("spark.hadoop.fs.s3a.endpoint.region", "us-east-1")
   }
 
   // Spark 4.2 has no published Iceberg spark-runtime yet; the build reuses the 4.0 runtime, whose
@@ -93,11 +105,32 @@ trait CometS3TestBase extends CometTestBase {
     conf.set(s"spark.sql.catalog.$catalogName.s3.path-style-access", "true")
   }
 
+  /**
+   * Wire the `blob://` opt-in S3-compliant alias for `bucket`: register the alias scheme and bind
+   * it to an S3A-derived FileSystem so Spark reads/writes blob://<bucket>/... against the same
+   * MinIO. The vendor-style per-authority keys are translated to fs.s3a.bucket.<bucket>.* for the
+   * native read by NativeConfig.translateVendorKeys, and an endpoint also defaults path-style on.
+   */
+  protected def applyBlobSchemeProps(conf: SparkConf, bucket: String): Unit = {
+    conf.set(CometConf.COMET_S3_COMPLIANT_SCHEMES.key, "blob")
+    conf.set("spark.hadoop.fs.blob.impl", "org.apache.comet.hadoop.fs.BlobSchemeFileSystem")
+    conf.set(s"spark.hadoop.fs.blob.$bucket.endpoint", minioContainer.getS3URL)
+    conf.set(s"spark.hadoop.fs.blob.$bucket.awsAccessKeyId", userName)
+    conf.set(s"spark.hadoop.fs.blob.$bucket.awsSecretAccessKey", password)
+  }
+
+  /** The Comet Parquet scans in `plan`, native or JVM-side. */
+  protected def cometScans(plan: SparkPlan): Seq[SparkPlan] = collect(plan) {
+    case p: CometScanExec => p
+    case p: CometNativeScanExec => p
+  }
+
   protected def createBucketIfNotExists(bucketName: String): Unit = {
     val credentials = AwsBasicCredentials.create(userName, password)
     val s3Client = S3Client
       .builder()
       .endpointOverride(URI.create(minioContainer.getS3URL))
+      .region(Region.US_EAST_1)
       .credentialsProvider(StaticCredentialsProvider.create(credentials))
       .forcePathStyle(true)
       .build()

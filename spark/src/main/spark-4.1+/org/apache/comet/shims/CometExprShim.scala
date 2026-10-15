@@ -24,16 +24,18 @@ import org.apache.spark.sql.catalyst.expressions.aggregate.Sum
 import org.apache.spark.sql.catalyst.expressions.objects.{Invoke, StaticInvoke}
 import org.apache.spark.sql.catalyst.util.DateTimeUtils
 import org.apache.spark.sql.internal.SQLConf
-import org.apache.spark.sql.types.TimeType
+import org.apache.spark.sql.types.{DecimalType, IntegerType, TimeType}
 
 import org.apache.comet.expressions.CometEvalMode
 import org.apache.comet.serde.ExprOuterClass.{BinaryOutputStyle, Expr}
-import org.apache.comet.serde.QueryPlanSerde.{exprToProtoInternal, optExprWithFallbackReason, scalarFunctionExprToProtoWithReturnType}
+import org.apache.comet.serde.QueryPlanSerde.{exprToProtoInternal, scalarFunctionExprToProtoWithReturnType}
 
 /**
  * `CometExprShim` acts as a shim for parsing expressions from different Spark versions.
  */
 trait CometExprShim extends Spark4xCometExprShim {
+
+  def getJsonObjectNativeFunctionName: String = "get_json_object"
 
   def binaryOutputStyle: BinaryOutputStyle = {
     // Since Spark 4.1, BINARY_OUTPUT_STYLE is an enumConf so getConf already returns the enum value.
@@ -64,7 +66,24 @@ trait CometExprShim extends Spark4xCometExprShim {
         val childExprs = s.arguments.map(exprToProtoInternal(_, inputs, binding))
         val optExpr =
           scalarFunctionExprToProtoWithReturnType("make_time", s.dataType, true, childExprs: _*)
-        optExprWithFallbackReason(optExpr, expr, s.arguments: _*)
+        optExpr
+
+      // Spark 4.1 and 4.2 EXTRACT(SECOND FROM TIME) return Decimal(8,6), even for TIME(p < 6).
+      case s: StaticInvoke
+          if s.staticObject == classOf[DateTimeUtils.type] &&
+            s.functionName == "getSecondsOfTimeWithFraction" &&
+            s.dataType == DecimalType(8, 6) && s.arguments.size == 2 &&
+            s.arguments.head.dataType.isInstanceOf[TimeType] &&
+            (s.arguments(1) match {
+              case Literal(p: Int, IntegerType) => p >= 0 && p <= 6
+              case _ => false
+            }) =>
+        val childExprs = s.arguments.map(exprToProtoInternal(_, inputs, binding))
+        scalarFunctionExprToProtoWithReturnType(
+          "seconds_of_time",
+          s.dataType,
+          false,
+          childExprs: _*)
 
       case i: Invoke =>
         (i.targetObject, i.functionName, i.arguments) match {
@@ -73,7 +92,7 @@ trait CometExprShim extends Spark4xCometExprShim {
             val childExprs = args.map(exprToProtoInternal(_, inputs, binding))
             val optExpr =
               scalarFunctionExprToProtoWithReturnType("to_time", i.dataType, true, childExprs: _*)
-            optExprWithFallbackReason(optExpr, i, args: _*)
+            optExpr
           case _ =>
             super.sparkVersionSpecificExprToProtoInternal(expr, inputs, binding)
         }
@@ -89,7 +108,7 @@ trait CometExprShim extends Spark4xCometExprShim {
               i.dataType,
               false,
               childExprs: _*)
-            optExprWithFallbackReason(optExpr, expr, args: _*)
+            optExpr
           case _ =>
             super.sparkVersionSpecificExprToProtoInternal(expr, inputs, binding)
         }
