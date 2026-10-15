@@ -2190,7 +2190,9 @@ mod tests {
     }
 
     /// Companion to `requested_duplicate_field_id_errors`: a duplicated file id that no
-    /// requested field looks up stays harmless, as Spark only raises inside `matchIdField`.
+    /// requested field looks up stays harmless, as Spark only raises inside `matchIdField`. So
+    /// does a name that two file fields share once folded, here `f` and `F`, when the requested
+    /// field of that name resolves by id, since `matchIdField` never compares names.
     #[test]
     fn unrequested_duplicate_field_id_reads_fine() {
         use crate::parquet::parquet_support::{parquet_convert_array, SparkParquetOptions};
@@ -2204,6 +2206,8 @@ mod tests {
             ("x", DataType::Int32, 1),
             ("y", DataType::Int32, 1),
             ("z", DataType::Int32, 2),
+            ("f", DataType::Int32, 3),
+            ("F", DataType::Int32, 4),
         ]) else {
             unreachable!()
         };
@@ -2213,6 +2217,8 @@ mod tests {
                 Arc::new(Int32Array::from(vec![42])),
                 Arc::new(Int32Array::from(vec![43])),
                 Arc::new(Int32Array::from(vec![44])),
+                Arc::new(Int32Array::from(vec![45])),
+                Arc::new(Int32Array::from(vec![46])),
             ],
             None,
         ));

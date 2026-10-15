@@ -3644,6 +3644,7 @@ pub(crate) mod test {
         let fields = vec![
             Arc::new(Field::new("dup", DataType::Int64, true)),
             Arc::new(Field::new("dup", DataType::Int64, true)),
+            Arc::new(Field::new("Dup", DataType::Int64, true)),
         ];
         let mut options = SparkParquetOptions::new(EvalMode::Legacy, "UTC");
         options.case_sensitive = true;
@@ -3652,6 +3653,11 @@ pub(crate) mod test {
             .to_string();
         assert!(error.contains("duplicate"), "{error}");
         assert!(!error.contains("case-insensitive"), "{error}");
+        // A case-sensitive read compares exact names, so `Dup` resolves to itself alone.
+        assert_eq!(
+            super::match_struct_fields(&fields, &fields[2..], &options).unwrap(),
+            vec![Some(2)]
+        );
     }
 
     #[test]
