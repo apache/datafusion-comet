@@ -72,6 +72,9 @@ fn partitioned_scan(
         false,
         false,
         false,
+        "CORRECTED",
+        "CORRECTED",
+        false,
     )
     .unwrap()
 }

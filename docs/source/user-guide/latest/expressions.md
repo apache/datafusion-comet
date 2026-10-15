@@ -126,12 +126,12 @@ The tables below list every Spark built-in expression with its current status.
 | `regr_avgx` | ✅ | — | Native: Spark rewrites to `Average` (tests in [#4551](https://github.com/apache/datafusion-comet/pull/4551)) |
 | `regr_avgy` | ✅ | — | Native: Spark rewrites to `Average` (tests in [#4551](https://github.com/apache/datafusion-comet/pull/4551)) |
 | `regr_count` | ✅ | — | Native: Spark rewrites to `Count` (tests in [#4551](https://github.com/apache/datafusion-comet/pull/4551)) |
-| `regr_intercept` | ✅ | Native | Falls back by default because the native merge of partial aggregates differs from Spark ([#6423](https://github.com/apache/datafusion-comet/issues/6423)); the native path is opt-in via `spark.comet.expression.RegrIntercept.allowIncompatible=true` |
-| `regr_r2` | ✅ | Native | Falls back by default because the native merge of partial aggregates differs from Spark ([#6423](https://github.com/apache/datafusion-comet/issues/6423)); the native path is opt-in via `spark.comet.expression.RegrR2.allowIncompatible=true` |
-| `regr_slope` | ✅ | Native | Falls back by default because the native merge of partial aggregates differs from Spark ([#6423](https://github.com/apache/datafusion-comet/issues/6423)); the native path is opt-in via `spark.comet.expression.RegrSlope.allowIncompatible=true` |
-| `regr_sxx` | ✅ | Native | Falls back by default because the native merge of partial aggregates differs from Spark ([#6423](https://github.com/apache/datafusion-comet/issues/6423)); the native path is opt-in via `spark.comet.expression.RegrReplacement.allowIncompatible=true` (Spark plans `regr_sxx` as `RegrReplacement`) |
-| `regr_sxy` | ✅ | Native | Falls back by default because the native merge of partial aggregates differs from Spark ([#6423](https://github.com/apache/datafusion-comet/issues/6423)); the native path is opt-in via `spark.comet.expression.RegrSXY.allowIncompatible=true` |
-| `regr_syy` | ✅ | Native | Falls back by default because the native merge of partial aggregates differs from Spark ([#6423](https://github.com/apache/datafusion-comet/issues/6423)); the native path is opt-in via `spark.comet.expression.RegrReplacement.allowIncompatible=true` (Spark plans `regr_syy` as `RegrReplacement`) |
+| `regr_intercept` | ✅ | Native |  |
+| `regr_r2` | ✅ | Native |  |
+| `regr_slope` | ✅ | Native |  |
+| `regr_sxx` | ✅ | Native |  |
+| `regr_sxy` | ✅ | Native |  |
+| `regr_syy` | ✅ | Native |  |
 | `skewness` | 🔜 | — | Not yet implemented natively |
 | `some` | ✅ | — |  |
 | `std` | ✅ | Native |  |
@@ -155,8 +155,8 @@ The tables below list every Spark built-in expression with its current status.
 | `array` | ✅ | Native |  |
 | `array_append` | ✅ | Native |  |
 | `array_compact` | ✅ | — |  |
-| `array_contains` | ✅ | Native | Float/double element arrays route through the JVM codegen dispatcher by default; the native path is opt-in via allowIncompatible |
-| `array_distinct` | ✅ | Native | NaN/signed-zero handling may differ ([details](compatibility/floating-point.md)) |
+| `array_contains` | ✅ | Hybrid | Flat float/double element arrays use a native kernel with Spark's equality; nested float elements, non-default string collations, and a value that is not a literal or column over a nullable array, route through the JVM codegen dispatcher |
+| `array_distinct` | ✅ | Native | Floating-point elements fall back on Spark versions before 4.0.5, 4.1.4, and 4.2; signed-zero results may differ with native opt-in ([details](compatibility/floating-point.md)). Non-default string collations fall back |
 | `array_except` | ✅ | Hybrid | Routes through the JVM codegen dispatcher by default; the incompatible native path is opt-in via allowIncompatible ([details](compatibility/expressions/array.md)) |
 | `array_insert` | ✅ | Native |  |
 | `array_intersect` | ✅ | Hybrid | Routes through the JVM codegen dispatcher by default; the incompatible native path is opt-in via allowIncompatible ([details](compatibility/expressions/array.md)) |
@@ -167,8 +167,8 @@ The tables below list every Spark built-in expression with its current status.
 | `array_prepend` | ✅ | — |  |
 | `array_remove` | ✅ | Native |  |
 | `array_repeat` | ✅ | Native |  |
-| `array_union` | ✅ | Native | NaN/signed-zero handling may differ ([details](compatibility/floating-point.md)) |
-| `arrays_overlap` | ✅ | Native |  |
+| `array_union` | ✅ | Native | Floating-point elements fall back on Spark versions before 4.0.5, 4.1.4, and 4.2; signed-zero results may differ with native opt-in ([details](compatibility/floating-point.md)). Non-default string collations fall back |
+| `arrays_overlap` | ✅ | Hybrid | Non-default string collations use the JVM codegen dispatcher |
 | `arrays_zip` | ✅ | Native |  |
 | `element_at` | ✅ | Native |  |
 | `flatten` | ✅ | Native | Binary/struct/map elements fall back |
@@ -256,7 +256,7 @@ The type-name conversion functions (`bigint`, `binary`, `boolean`, `date`, `deci
 | `convert_timezone` | ✅ | Hybrid | Routes through the JVM codegen dispatcher by default (handles all timezone forms); the native path is opt-in via allowIncompatible ([details](compatibility/expressions/datetime.md)) |
 | `curdate` | ✅ | — | Constant-folded to a literal (alias of `current_date`) |
 | `current_date` | ✅ | — | Constant-folded to a literal before Comet sees the plan |
-| `current_time` | 🔜 | — | Blocked on Spark 4.1 TIME type support ([#4288](https://github.com/apache/datafusion-comet/issues/4288)) |
+| `current_time` | ✅ | — | Spark 4.1+; requires `spark.sql.timeType.enabled=true`, which Spark leaves off by default. Constant-folded to a literal before Comet sees the plan |
 | `current_timestamp` | ✅ | — | Constant-folded to a literal before Comet sees the plan |
 | `current_timezone` | ✅ | — |  |
 | `date_add` | ✅ | Native | The 2-argument form is native; the `date_add(UNIT, n, ts)` form (Spark 3.5+) parses to `timestampadd` and runs through codegen dispatch |
@@ -285,8 +285,8 @@ The type-name conversion functions (`bigint`, `binary`, `boolean`, `date`, `deci
 | `make_interval` | ✅ | Hybrid | Routes through the JVM codegen dispatcher by default; intervals outside Arrow's nanosecond range are tracked by [#5279](https://github.com/apache/datafusion-comet/issues/5279); the native path is opt-in via allowIncompatible ([details](compatibility/expressions/datetime.md)) |
 | `make_time` | ✅ | — | Spark 4.1+; requires `spark.sql.timeType.enabled=true`, which Spark leaves off by default. Runs natively; remaining TIME type work is tracked by [#4288](https://github.com/apache/datafusion-comet/issues/4288) |
 | `make_timestamp` | ✅ | Hybrid |  |
-| `make_timestamp_ltz` | ✅ | — | 2-arg TIME form falls back |
-| `make_timestamp_ntz` | ✅ | — | 2-arg TIME form falls back |
+| `make_timestamp_ltz` | ✅ | — | The 2-argument `(date, time)` form (Spark 4.1+) runs through codegen dispatch |
+| `make_timestamp_ntz` | ✅ | — | The 2-argument `(date, time)` form (Spark 4.1+) runs through codegen dispatch |
 | `make_ym_interval` | ✅ | Codegen dispatch |  |
 | `minute` | ✅ | Native |  |
 | `month` | ✅ | Native |  |
@@ -297,8 +297,8 @@ The type-name conversion functions (`bigint`, `binary`, `boolean`, `date`, `deci
 | `quarter` | ✅ | Native |  |
 | `second` | ✅ | Native |  |
 | `session_window` | 🔜 | — | Batch session-window grouping falls back (`UpdatingSessionsExec` is not yet native); tracked by [#4785](https://github.com/apache/datafusion-comet/issues/4785) |
-| `time_diff` | 🔜 | — | Spark 4.1 TIME type; tracked by [#4288](https://github.com/apache/datafusion-comet/issues/4288) |
-| `time_trunc` | 🔜 | — | Spark 4.1 TIME type; tracked by [#4288](https://github.com/apache/datafusion-comet/issues/4288) |
+| `time_diff` | ✅ | Codegen dispatch | Spark 4.1+; requires `spark.sql.timeType.enabled=true`, which Spark leaves off by default |
+| `time_trunc` | ✅ | Codegen dispatch | Spark 4.1+; requires `spark.sql.timeType.enabled=true`, which Spark leaves off by default |
 | `timediff` | ✅ | — | Spark 4.0+ grammar alias that parses to `timestampdiff`; runs through codegen dispatch |
 | `timestamp_micros` | ✅ | Codegen dispatch |  |
 | `timestamp_millis` | ✅ | Codegen dispatch |  |
@@ -306,7 +306,7 @@ The type-name conversion functions (`bigint`, `binary`, `boolean`, `date`, `deci
 | `timestampadd` | ✅ | — | Reached through the grammar rather than the function registry; runs through codegen dispatch |
 | `timestampdiff` | ✅ | — | Reached through the grammar rather than the function registry; runs through codegen dispatch |
 | `to_date` | ✅ | — | Rewrites to `Cast` (or `Cast(GetTimestamp)` with a format) before Comet sees the plan |
-| `to_time` | ✅ | — | Spark 4.1+; requires `spark.sql.timeType.enabled=true`, which Spark leaves off by default. The one-argument form runs natively |
+| `to_time` | ✅ | — | Spark 4.1+; requires `spark.sql.timeType.enabled=true`, which Spark leaves off by default. The one-argument form runs natively, and the form with a format argument runs through codegen dispatch |
 | `to_timestamp` | ✅ | — | Rewrites to `Cast` (or `GetTimestamp` with a format) before Comet sees the plan |
 | `to_timestamp_ltz` | ✅ | — | Rewrites to `to_timestamp` (`TimestampType`) |
 | `to_timestamp_ntz` | ✅ | — | Rewrites to `to_timestamp` (`TimestampNTZType`) |
@@ -422,7 +422,7 @@ to Spark ([#2837](https://github.com/apache/datafusion-comet/issues/2837)). Enab
 | Function | Status | Implementation | Notes |
 | --- | --- | --- | --- |
 | `%` | ✅ | Native |  |
-| `*` | ✅ | Native | DayTime interval multiplication routes through the JVM codegen dispatcher; YearMonth and Calendar interval multiplication fall back |
+| `*` | ✅ | Native | YearMonth and DayTime interval multiplication routes through the JVM codegen dispatcher; Calendar interval multiplication falls back |
 | `+` | ✅ | Native |  |
 | `-` | ✅ | Native |  |
 | `/` | ✅ | Native | DayTime interval division routes through the JVM codegen dispatcher; YearMonth and Calendar interval division fall back |

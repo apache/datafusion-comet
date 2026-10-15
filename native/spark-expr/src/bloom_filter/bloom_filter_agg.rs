@@ -24,6 +24,7 @@ use crate::bloom_filter::spark_bloom_filter::{SparkBloomFilter, SparkBloomFilter
 
 use arrow::array::ArrayRef;
 use arrow::array::BinaryArray;
+use arrow::array::StringArray;
 use datafusion::common::{downcast_value, ScalarValue};
 use datafusion::error::{DataFusionError, Result};
 use datafusion::logical_expr::function::{AccumulatorArgs, StateFieldsArgs};
@@ -118,6 +119,13 @@ impl Accumulator for SparkBloomFilter {
             return Ok(());
         }
         let arr = &values[0];
+        // Hash strings in place rather than materializing a `ScalarValue::Utf8` per row.
+        if let Some(strings) = arr.as_any().downcast_ref::<StringArray>() {
+            for value in strings.iter().flatten() {
+                self.put_binary(value.as_bytes());
+            }
+            return Ok(());
+        }
         (0..arr.len()).try_for_each(|index| {
             let v = ScalarValue::try_from_array(arr, index)?;
 

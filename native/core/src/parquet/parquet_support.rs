@@ -87,8 +87,6 @@ pub struct SparkParquetOptions {
     /// session local timezone by an analyzer in Spark.
     // TODO we should change timezone to Tz to avoid repeated parsing
     pub timezone: String,
-    /// Allow casts that are supported but not guaranteed to be 100% compatible
-    pub allow_incompat: bool,
     /// Support casting unsigned ints to signed ints (used by Parquet SchemaAdapter)
     pub allow_cast_unsigned_ints: bool,
     /// Whether to read dates/timestamps that were written in the legacy hybrid Julian + Gregorian calendar as it is. If false, throw exceptions instead. If the spark type is TimestampNTZ, this should be true.
@@ -123,14 +121,29 @@ pub struct SparkParquetOptions {
     /// When false (Spark's default), requesting anything but Spark's VariantType for such a
     /// field is rejected, mirroring `ParquetToSparkSchemaConverter.convertGroupField`.
     pub ignore_variant_annotation: bool,
+    /// When true, resolve each file's datetime calendar-rebase policy from its parquet footer
+    /// metadata (`org.apache.spark.legacyDateTime` and friends) and rebase -- or refuse --
+    /// affected values, mirroring Spark's per-file `DataSourceUtils.datetimeRebaseSpec`
+    /// resolution. Enabled by the Delta scan arm; the plain NativeScan keeps its documented
+    /// no-rebase behavior (#5010). See `datetime_rebase.rs`.
+    pub rebase_from_file_metadata: bool,
+    /// Effective `spark.sql.parquet.datetimeRebaseModeInRead` (a `LegacyBehaviorPolicy` value),
+    /// forwarded from the JVM at planning time. Consulted -- exactly like Spark's
+    /// `DataSourceUtils.getRebaseSpec` `modeByConfig` fallback -- only for files whose footer
+    /// metadata does not decide the rebase policy on its own, and only when
+    /// `rebase_from_file_metadata` is set. Empty (a producer that predates the field) is
+    /// treated as `EXCEPTION`, the conservative refuse-ancient posture.
+    pub datetime_rebase_mode_in_read: String,
+    /// Effective `spark.sql.parquet.int96RebaseModeInRead`; same semantics as
+    /// `datetime_rebase_mode_in_read` for the INT96 timestamp spec.
+    pub int96_rebase_mode_in_read: String,
 }
 
 impl SparkParquetOptions {
-    pub fn new(eval_mode: EvalMode, timezone: &str, allow_incompat: bool) -> Self {
+    pub fn new(eval_mode: EvalMode, timezone: &str) -> Self {
         Self {
             eval_mode,
             timezone: timezone.to_string(),
-            allow_incompat,
             allow_cast_unsigned_ints: false,
             use_legacy_date_timestamp_or_ntz: false,
             case_sensitive: false,
@@ -140,14 +153,16 @@ impl SparkParquetOptions {
             allow_timestamp_ltz_to_ntz: false,
             checked_timestamp_overflow: true,
             ignore_variant_annotation: false,
+            rebase_from_file_metadata: false,
+            datetime_rebase_mode_in_read: String::new(),
+            int96_rebase_mode_in_read: String::new(),
         }
     }
 
-    pub fn new_without_timezone(eval_mode: EvalMode, allow_incompat: bool) -> Self {
+    pub fn new_without_timezone(eval_mode: EvalMode) -> Self {
         Self {
             eval_mode,
             timezone: "".to_string(),
-            allow_incompat,
             allow_cast_unsigned_ints: false,
             use_legacy_date_timestamp_or_ntz: false,
             case_sensitive: false,
@@ -157,6 +172,9 @@ impl SparkParquetOptions {
             allow_timestamp_ltz_to_ntz: false,
             checked_timestamp_overflow: true,
             ignore_variant_annotation: false,
+            rebase_from_file_metadata: false,
+            datetime_rebase_mode_in_read: String::new(),
+            int96_rebase_mode_in_read: String::new(),
         }
     }
 }
@@ -454,7 +472,7 @@ pub(crate) fn match_struct_fields(
 
     // `None` marks an id that more than one file field carries.
     let from_id_to_index: HashMap<i32, Option<usize>> = if should_match_by_id {
-        let mut map = HashMap::new();
+        let mut map = HashMap::with_capacity(from_fields.len());
         for (i, field) in from_fields.iter().enumerate() {
             if let Some(id) = field_id(field) {
                 map.entry(id).and_modify(|m| *m = None).or_insert(Some(i));
@@ -476,7 +494,8 @@ pub(crate) fn match_struct_fields(
 
     // Group file field indices by folded name so a case-insensitive collision is detected
     // (Spark's `caseInsensitiveParquetFieldMap`) rather than silently overwritten.
-    let mut folded_to_indices: HashMap<&str, Vec<usize>> = HashMap::new();
+    let mut folded_to_indices: HashMap<&str, Vec<usize>> =
+        HashMap::with_capacity(from_folded.len());
     for (i, folded) in from_folded.iter().enumerate() {
         folded_to_indices
             .entry(folded.as_str())
@@ -685,7 +704,7 @@ pub(crate) fn object_store_authority(url: &Url) -> &str {
     &url[start..url::Position::AfterPort]
 }
 
-fn object_store_url_key(url: &Url) -> String {
+fn registry_url_key(url: &Url) -> String {
     format!("{}://{}", url.scheme(), object_store_authority(url))
 }
 
@@ -708,7 +727,7 @@ impl ObjectStoreRegistry for CometObjectStoreRegistry {
             self.azure_stores
                 .write()
                 .unwrap_or_else(PoisonError::into_inner)
-                .insert(object_store_url_key(url), store)
+                .insert(registry_url_key(url), store)
         } else {
             self.default.register_store(url, store)
         }
@@ -719,7 +738,7 @@ impl ObjectStoreRegistry for CometObjectStoreRegistry {
             self.azure_stores
                 .write()
                 .unwrap_or_else(PoisonError::into_inner)
-                .remove(&object_store_url_key(url))
+                .remove(&registry_url_key(url))
                 .ok_or_else(|| {
                     DataFusionError::Internal(format!("No suitable object store found for {url}"))
                 })
@@ -734,7 +753,7 @@ impl ObjectStoreRegistry for CometObjectStoreRegistry {
                 .azure_stores
                 .read()
                 .unwrap_or_else(PoisonError::into_inner)
-                .get(&object_store_url_key(url))
+                .get(&registry_url_key(url))
             {
                 return Ok(Arc::clone(store));
             }
@@ -847,13 +866,13 @@ type ObjectStoreCache = RwLock<HashMap<ObjectStoreCacheKey, Arc<dyn ObjectStore>
 /// (e.g. `fs.s3a.access.key` / `fs.s3a.secret.key`) produce a different `config_hash` when
 /// those values change, which causes a new store to be created and inserted under the new
 /// key; the old entry is harmlessly superseded.
-fn object_store_cache() -> &'static ObjectStoreCache {
+pub(crate) fn object_store_cache() -> &'static ObjectStoreCache {
     static CACHE: OnceLock<ObjectStoreCache> = OnceLock::new();
     CACHE.get_or_init(|| RwLock::new(HashMap::new()))
 }
 
 /// Compute a hash of the object store configuration for cache keying.
-fn hash_object_store_configs(configs: &HashMap<String, String>) -> u64 {
+pub(crate) fn hash_object_store_configs(configs: &HashMap<String, String>) -> u64 {
     let mut hasher = DefaultHasher::new();
     let mut keys: Vec<&String> = configs.keys().collect();
     keys.sort();
@@ -899,25 +918,52 @@ fn object_store_backend(url: &Url, is_hdfs: bool) -> Result<ObjectStoreBackend, 
 /// selected backend match. URL, configuration, and store-construction failures propagate to the
 /// caller. Callers must use the returned backend classification rather than infer it from an
 /// original alias or the synthetic registration scheme.
+///
+/// Delegates to [`prepare_object_store_with_config_hash`] after hashing `object_store_configs`.
 pub(crate) fn prepare_object_store_with_configs(
     runtime_env: Arc<RuntimeEnv>,
     url: String,
     object_store_configs: &HashMap<String, String>,
 ) -> Result<(ObjectStoreUrl, Path, ObjectStoreBackend), ExecutionError> {
+    let config_hash = hash_object_store_configs(object_store_configs);
+    prepare_object_store_with_config_hash(runtime_env, url, object_store_configs, config_hash)
+}
+
+/// The `scheme://host:port` cache-key string [`prepare_object_store_with_configs`] resolves and
+/// registers object stores under, plus the "is this an HDFS-scheme URL" classification. `url`
+/// must already be the [`normalize_object_store_url`] result (s3a and the opted-in aliases
+/// rewritten to `s3://`, a hostless alias bucket promoted into the host), so the key here is
+/// exactly the one the resolution path registers under. Pure and I/O-free (no config hashing,
+/// no cache lock, no store creation/registration): a caller that keeps its OWN local
+/// `ObjectStoreUrl`-keyed cache (e.g. `delta_spark_scan.rs`'s `resolve_store`, which resolves a
+/// store per FILE but only needs one per distinct authority) can compute this cheap key first
+/// and consult its local cache before ever calling into the expensive resolution path below.
+pub(crate) fn object_store_url_key(normalized: &NormalizedObjectStoreUrl) -> (String, bool) {
+    let url = &normalized.url;
+    let url_key = format!("{}://{}", url.scheme(), object_store_authority(url));
+    (url_key, normalized.is_hdfs)
+}
+
+/// Same as [`prepare_object_store_with_configs`], but takes an already-computed
+/// [`hash_object_store_configs`] result instead of hashing `object_store_configs` again. `configs`
+/// is loop-invariant across every file resolved for one scan/writer, so a caller that already
+/// hashed it once (e.g. once per partition, rather than once per file) should call this directly.
+pub(crate) fn prepare_object_store_with_config_hash(
+    runtime_env: Arc<RuntimeEnv>,
+    url: String,
+    object_store_configs: &HashMap<String, String>,
+    config_hash: u64,
+) -> Result<(ObjectStoreUrl, Path, ObjectStoreBackend), ExecutionError> {
     // `is_hdfs` comes back from normalization because it must be decided on the URL as written.
     // Re-deriving it from the normalized URL would let an `s3a`/alias rewrite land on an `s3`
     // entry in `fs.comet.libhdfs.schemes` and route an S3 read through libhdfs.
-    let NormalizedObjectStoreUrl {
-        url,
-        is_hdfs: is_hdfs_scheme,
-    } = normalize_object_store_url(url.as_str(), object_store_configs)?;
+    let normalized = normalize_object_store_url(url.as_str(), object_store_configs)?;
+    let (url_key, is_hdfs_scheme) = object_store_url_key(&normalized);
     // Configured S3 aliases must be normalized before the object-store parser classifies them.
     // HDFS routing still wins, including when its configured schemes resemble remote stores.
-    let backend = object_store_backend(&url, is_hdfs_scheme)?;
-    let scheme = url.scheme();
-    let url_key = object_store_url_key(&url);
+    let backend = object_store_backend(&normalized.url, is_hdfs_scheme)?;
+    let url = &normalized.url;
 
-    let config_hash = hash_object_store_configs(object_store_configs);
     let cache_key = (url_key.clone(), config_hash, is_hdfs_scheme);
 
     // Check the cache first to reuse existing object store instances.
@@ -938,13 +984,13 @@ pub(crate) fn prepare_object_store_with_configs(
         } else {
             debug!("Creating new object store for {url_key}");
             let (store, path): (Box<dyn ObjectStore>, Path) = if is_hdfs_scheme {
-                create_hdfs_object_store(&url)
-            } else if scheme == "s3" {
-                objectstore::s3::create_store(&url, object_store_configs, Duration::from_secs(300))
-            } else if is_azure_scheme(scheme) {
-                objectstore::azure::create_store(&url, object_store_configs)
+                create_hdfs_object_store(url)
+            } else if url.scheme() == "s3" {
+                objectstore::s3::create_store(url, object_store_configs, Duration::from_secs(300))
+            } else if is_azure_scheme(url.scheme()) {
+                objectstore::azure::create_store(url, object_store_configs)
             } else {
-                parse_url(&url)
+                parse_url(url)
             }
             .map_err(|e| ExecutionError::GeneralError(e.to_string()))?;
 
@@ -956,29 +1002,38 @@ pub(crate) fn prepare_object_store_with_configs(
             (store, path)
         };
 
-    // A RuntimeEnv can plan multiple scans with different backends or credentials
-    // for the same bucket. Use the same identity as the cache, even for the first
-    // registration, so neither later registration nor planning order changes the
-    // store used by an existing scan. Native s3/s3a share the normalized s3 scheme;
-    // a Hadoop-selected scheme retains its physical spelling.
-    //
-    // Native LocalFileSystem ignores these Hadoop options and keeps file:// for
-    // compatibility. An explicitly Hadoop-routed file scheme is still isolated.
-    let object_store_url = if scheme == "file" && !is_hdfs_scheme {
-        ObjectStoreUrl::parse(url_key)?
-    } else {
-        let backend = if is_hdfs_scheme { "hdfs" } else { "native" };
-        // DataFusion keys stores only by scheme and authority, so put configuration
-        // and backend identity in the scheme while preserving the physical authority.
-        // `+comet-` marks our internal registration suffix; encryption lookup strips
-        // the complete suffix to recover the physical URI.
-        ObjectStoreUrl::parse(format!(
-            "{scheme}+comet-{config_hash:016x}-{backend}://{}",
-            object_store_authority(&url),
-        ))?
-    };
+    // A RuntimeEnv can plan multiple scans with different backends or credentials for the
+    // same bucket. Register under the same identity as the cache, even the first time, so
+    // neither later registration nor planning order changes the store an existing scan uses.
+    let object_store_url = object_store_registration_url(&normalized, &url_key, config_hash)?;
     runtime_env.register_object_store(object_store_url.as_ref(), object_store);
     Ok((object_store_url, object_store_path, backend))
+}
+
+/// The URL [`prepare_object_store_with_config_hash`] registers `normalized` under in a
+/// `RuntimeEnv`, given its [`object_store_url_key`] and [`hash_object_store_configs`] result.
+/// Native `file` keeps the physical key (LocalFileSystem ignores the Hadoop options); every
+/// other store, including a Hadoop-routed `file`, folds the configuration hash and backend into
+/// the scheme because DataFusion keys stores only by scheme and authority. `+comet-` marks the
+/// suffix encryption lookup strips to recover the physical URI. Pure and I/O-free, so a caller
+/// memoizing stores per registration URL can compute the key without resolving anything.
+pub(crate) fn object_store_registration_url(
+    normalized: &NormalizedObjectStoreUrl,
+    url_key: &str,
+    config_hash: u64,
+) -> Result<ObjectStoreUrl, ExecutionError> {
+    let url = &normalized.url;
+    if url.scheme() == "file" && !normalized.is_hdfs {
+        return Ok(ObjectStoreUrl::parse(url_key)?);
+    }
+    let backend = if normalized.is_hdfs { "hdfs" } else { "native" };
+    // DataFusion keys stores only by scheme and authority, so put configuration and backend
+    // identity in the scheme while preserving the physical authority, container included.
+    Ok(ObjectStoreUrl::parse(format!(
+        "{}+comet-{config_hash:016x}-{backend}://{}",
+        url.scheme(),
+        object_store_authority(url),
+    ))?)
 }
 
 #[cfg(test)]
@@ -1303,6 +1358,67 @@ mod tests {
         object_store_cache().write().unwrap().remove(&key);
     }
 
+    /// Guards `object_store_registration_url` against drifting from the URL the resolution path
+    /// actually registers: the Delta scan memoizes stores under the former and reads them back
+    /// under the latter. Seeds one in-memory hdfs cache entry so no libhdfs backend is built.
+    #[test]
+    #[cfg_attr(miri, ignore)] // AWS credential providers and object_store call foreign functions
+    fn registration_url_matches_prepare_for_every_backend() {
+        use super::{
+            object_store_registration_url, object_store_url_key,
+            prepare_object_store_with_config_hash,
+        };
+        use crate::parquet::objectstore::s3_blob_fs_support::normalize_object_store_url;
+        let s3_options = HashMap::from([
+            (
+                "fs.s3a.aws.credentials.provider".to_string(),
+                "org.apache.hadoop.fs.s3a.AnonymousAWSCredentialsProvider".to_string(),
+            ),
+            (
+                "fs.s3a.endpoint.region".to_string(),
+                "us-east-1".to_string(),
+            ),
+        ]);
+        let hdfs_options =
+            HashMap::from([("fs.comet.libhdfs.schemes".to_string(), "hdfs".to_string())]);
+        let hdfs_key = (
+            "hdfs://comet-registration-url:8020".to_string(),
+            hash_object_store_configs(&hdfs_options),
+            true,
+        );
+        let hdfs_store: Arc<dyn ObjectStore> = Arc::new(InMemory::new());
+        object_store_cache()
+            .write()
+            .unwrap()
+            .insert(hdfs_key.clone(), hdfs_store);
+        for (input, options) in [
+            ("s3a://comet-registration-url/a.parquet", &s3_options),
+            (
+                "file:///tmp/comet-registration-url/a.parquet",
+                &HashMap::new(),
+            ),
+            (
+                "hdfs://comet-registration-url:8020/a.parquet",
+                &hdfs_options,
+            ),
+        ] {
+            let config_hash = hash_object_store_configs(options);
+            let normalized = normalize_object_store_url(input, options).unwrap();
+            let (url_key, _) = object_store_url_key(&normalized);
+            let expected = object_store_registration_url(&normalized, &url_key, config_hash)
+                .unwrap_or_else(|e| panic!("{input}: {e}"));
+            let (registered, _, _) = prepare_object_store_with_config_hash(
+                Arc::new(RuntimeEnv::default()),
+                input.to_string(),
+                options,
+                config_hash,
+            )
+            .unwrap_or_else(|e| panic!("{input}: {e}"));
+            assert_eq!(registered, expected, "{input}");
+        }
+        object_store_cache().write().unwrap().remove(&hdfs_key);
+    }
+
     /// Checks that native file construction returns Local and cached Hadoop file routing returns
     /// Other, with distinct registered stores. Removes its synthetic Hadoop cache entry on success.
     #[test]
@@ -1350,7 +1466,11 @@ mod tests {
     fn isolates_azure_containers_in_cache_and_shared_runtime() {
         use datafusion::execution::runtime_env::RuntimeEnvBuilder;
 
-        let options = HashMap::from([("fs.azure.account.key".into(), "c2VjcmV0".into())]);
+        let options = HashMap::from([
+            ("comet.azure.resolution".into(), "resolved".into()),
+            ("comet.azure.auth.type".into(), "SharedKey".into()),
+            ("fs.azure.account.key".into(), "c2VjcmV0".into()),
+        ]);
         let runtime = RuntimeEnvBuilder::new()
             .with_object_store_registry(Arc::new(super::CometObjectStoreRegistry::default()))
             .build_arc()
@@ -1412,7 +1532,7 @@ mod tests {
         let err = spark_parquet_convert(
             ColumnarValue::Array(Arc::new(array)),
             &to_type,
-            &SparkParquetOptions::new(EvalMode::Legacy, "UTC", false),
+            &SparkParquetOptions::new(EvalMode::Legacy, "UTC"),
         )
         .expect_err("array<int> -> int must be an error");
         assert!(
@@ -1520,7 +1640,7 @@ mod tests {
         use datafusion_comet_spark_expr::EvalMode;
         use std::sync::Arc;
 
-        let options = SparkParquetOptions::new(EvalMode::Legacy, "UTC", false);
+        let options = SparkParquetOptions::new(EvalMode::Legacy, "UTC");
         let overflow_millis = 9_223_372_036_854_776_i64;
         let millis: ArrayRef = Arc::new(TimestampMillisecondArray::from(vec![
             Some(overflow_millis),
@@ -1640,7 +1760,7 @@ mod tests {
         ));
         let target = DataType::Struct(target_fields.into());
         let input: ArrayRef = Arc::new(input);
-        let options = SparkParquetOptions::new(EvalMode::Legacy, "UTC", false);
+        let options = SparkParquetOptions::new(EvalMode::Legacy, "UTC");
         let output = parquet_convert_array(Arc::clone(&input), &target, &options).unwrap();
         assert_eq!(output.data_type(), &target);
         assert!(output.is_null(0));
@@ -1689,7 +1809,7 @@ mod tests {
 
         for timezone in [None::<Arc<str>>, Some(Arc::from("UTC"))] {
             for overflow in [i64::MAX, i64::MIN] {
-                let options = SparkParquetOptions::new(EvalMode::Legacy, "UTC", false);
+                let options = SparkParquetOptions::new(EvalMode::Legacy, "UTC");
                 let millis: ArrayRef = Arc::new(
                     TimestampMillisecondArray::from(vec![overflow, 7, overflow])
                         .with_timezone_opt(timezone.clone()),
@@ -1829,7 +1949,7 @@ mod tests {
         use datafusion_comet_spark_expr::EvalMode;
         use std::sync::Arc;
 
-        let options = SparkParquetOptions::new(EvalMode::Legacy, "UTC", false);
+        let options = SparkParquetOptions::new(EvalMode::Legacy, "UTC");
         for timezone in [None::<Arc<str>>, Some(Arc::from("UTC"))] {
             for overflow in [i64::MIN, i64::MAX] {
                 let values: ArrayRef = Arc::new(
@@ -1925,7 +2045,7 @@ mod tests {
         use datafusion_comet_spark_expr::EvalMode;
         use std::sync::Arc;
 
-        let options = SparkParquetOptions::new(EvalMode::Legacy, "UTC", false);
+        let options = SparkParquetOptions::new(EvalMode::Legacy, "UTC");
         let values: ArrayRef = Arc::new(TimestampMillisecondArray::from(vec![
             i64::MAX,
             7,
@@ -2132,7 +2252,7 @@ mod tests {
         ));
         let to_type = struct_type_with_field_id(vec![("f", DataType::Int32, 1)]);
 
-        let mut opts = SparkParquetOptions::new(EvalMode::Legacy, "UTC", false);
+        let mut opts = SparkParquetOptions::new(EvalMode::Legacy, "UTC");
         opts.use_field_id = true;
 
         let err = parquet_convert_array(from, &to_type, &opts).unwrap_err();
@@ -2172,7 +2292,7 @@ mod tests {
         ));
         let to_type = struct_type_with_field_id(vec![("f", DataType::Int32, 2)]);
 
-        let mut opts = SparkParquetOptions::new(EvalMode::Legacy, "UTC", false);
+        let mut opts = SparkParquetOptions::new(EvalMode::Legacy, "UTC");
         opts.use_field_id = true;
 
         let result = parquet_convert_array(from, &to_type, &opts).unwrap();

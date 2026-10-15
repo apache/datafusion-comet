@@ -197,6 +197,9 @@ fn parquet_scan(
         false,
         false,
         false,
+        "CORRECTED",
+        "CORRECTED",
+        false,
     )
     .unwrap()
 }

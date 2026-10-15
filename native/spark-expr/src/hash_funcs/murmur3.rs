@@ -784,9 +784,14 @@ mod tests {
                 Some(-1.0),
                 Some(99999999999.99999999999),
                 Some(-99999999999.99999999999),
+                // Every NaN hashes as the canonical NaN, whatever its sign or payload.
+                Some(f32::NAN),
+                Some(f32::from_bits(0xffc0_0000)),
+                Some(f32::from_bits(0x7f80_0001)),
             ],
             vec![
-                0xe434cc39, 0x379fae8f, 0x379fae8f, 0xdc0da8eb, 0xcbdc340f, 0xc0361c86,
+                0xe434cc39, 0x379fae8f, 0x379fae8f, 0xdc0da8eb, 0xcbdc340f, 0xc0361c86, 0xeb2eb18a,
+                0xeb2eb18a, 0xeb2eb18a,
             ],
         );
     }
@@ -801,11 +806,105 @@ mod tests {
                 Some(-1.0),
                 Some(99999999999.99999999999),
                 Some(-99999999999.99999999999),
+                // Every NaN hashes as the canonical NaN, whatever its sign or payload.
+                Some(f64::NAN),
+                Some(f64::from_bits(0xfff8_0000_0000_0000)),
+                Some(f64::from_bits(0x7ff0_0000_0000_0001)),
             ],
             vec![
-                0xe4876492, 0x9c67b85d, 0x9c67b85d, 0x13d81357, 0xb87e1595, 0xa0eef9f9,
+                0xe4876492, 0x9c67b85d, 0x9c67b85d, 0x13d81357, 0xb87e1595, 0xa0eef9f9, 0xb3a005cf,
+                0xb3a005cf, 0xb3a005cf,
             ],
         );
+    }
+
+    /// Spark hashes a float through `doubleToLongBits` or `floatToIntBits`, which canonicalize
+    /// NaN, so a NaN with the sign bit set or with a payload hashes like the canonical NaN inside
+    /// lists, structs, maps and dictionaries too. Checks both hashes, which expand the same macros.
+    #[test]
+    fn test_non_canonical_nan_hashes_like_canonical_nan() {
+        use crate::hash_funcs::create_xxhash64_hashes;
+        use arrow::array::{
+            DictionaryArray, FixedSizeListArray, Int32Array, LargeListArray, ListArray, MapArray,
+            StructArray,
+        };
+        use arrow::buffer::OffsetBuffer;
+        use arrow::datatypes::{DataType, Field, Fields};
+
+        let shapes = |values: ArrayRef| -> Vec<ArrayRef> {
+            let field = Arc::new(Field::new("item", values.data_type().clone(), true));
+            // One entry per row, with the float as both the key and the value.
+            let entry_fields = Fields::from(vec![
+                Field::new("key", values.data_type().clone(), false),
+                Field::new("value", values.data_type().clone(), true),
+            ]);
+            let entries = StructArray::new(
+                entry_fields.clone(),
+                vec![Arc::clone(&values), Arc::clone(&values)],
+                None,
+            );
+            vec![
+                Arc::clone(&values),
+                Arc::new(ListArray::new(
+                    Arc::clone(&field),
+                    OffsetBuffer::from_lengths([1; 3]),
+                    Arc::clone(&values),
+                    None,
+                )),
+                Arc::new(LargeListArray::new(
+                    Arc::clone(&field),
+                    OffsetBuffer::from_lengths([1; 3]),
+                    Arc::clone(&values),
+                    None,
+                )),
+                Arc::new(FixedSizeListArray::new(
+                    Arc::clone(&field),
+                    1,
+                    Arc::clone(&values),
+                    None,
+                )),
+                Arc::new(StructArray::new(
+                    vec![field].into(),
+                    vec![Arc::clone(&values)],
+                    None,
+                )),
+                Arc::new(DictionaryArray::new(
+                    Int32Array::from(vec![0, 1, 2]),
+                    values,
+                )),
+                Arc::new(MapArray::new(
+                    Arc::new(Field::new("entries", DataType::Struct(entry_fields), false)),
+                    OffsetBuffer::from_lengths([1; 3]),
+                    entries,
+                    None,
+                    false,
+                )),
+            ]
+        };
+        let canonical64: ArrayRef = Arc::new(Float64Array::from(vec![f64::NAN; 3]));
+        let other64: ArrayRef = Arc::new(Float64Array::from(vec![
+            f64::from_bits(0xfff8_0000_0000_0000),
+            f64::from_bits(0x7ff0_0000_0000_0001),
+            f64::from_bits(0xfff0_0000_0000_0001),
+        ]));
+        let canonical32: ArrayRef = Arc::new(Float32Array::from(vec![f32::NAN; 3]));
+        let other32: ArrayRef = Arc::new(Float32Array::from(vec![
+            f32::from_bits(0xffc0_0000),
+            f32::from_bits(0x7f80_0001),
+            f32::from_bits(0xff80_0001),
+        ]));
+        for (canonical, other) in [(canonical64, other64), (canonical32, other32)] {
+            for (canonical, other) in shapes(canonical).into_iter().zip(shapes(other)) {
+                let (mut expected, mut actual) = (vec![42u32; 3], vec![42u32; 3]);
+                create_murmur3_hashes(&[Arc::clone(&canonical)], &mut expected).unwrap();
+                create_murmur3_hashes(&[Arc::clone(&other)], &mut actual).unwrap();
+                assert_eq!(actual, expected, "murmur3 of {}", other.data_type());
+                let (mut expected, mut actual) = (vec![42u64; 3], vec![42u64; 3]);
+                create_xxhash64_hashes(&[canonical], &mut expected).unwrap();
+                create_xxhash64_hashes(&[Arc::clone(&other)], &mut actual).unwrap();
+                assert_eq!(actual, expected, "xxhash64 of {}", other.data_type());
+            }
+        }
     }
 
     #[test]
