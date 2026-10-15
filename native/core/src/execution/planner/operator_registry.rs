@@ -122,6 +122,7 @@ impl OperatorRegistry {
     /// Register all operator builders
     fn register_all_operators(&mut self) {
         self.register_projection_operators();
+        self.register_aggregate_operators();
         self.register_shuffle_operators();
         self.register_write_operators();
         self.register_merge_rows_operators();
@@ -134,6 +135,14 @@ impl OperatorRegistry {
 
         self.builders
             .insert(OperatorType::Projection, Box::new(ProjectionBuilder));
+    }
+
+    /// Register aggregate operators
+    fn register_aggregate_operators(&mut self) {
+        use super::aggregate::HashAggBuilder;
+
+        self.builders
+            .insert(OperatorType::HashAgg, Box::new(HashAggBuilder));
     }
 
     /// Register shuffle operators
