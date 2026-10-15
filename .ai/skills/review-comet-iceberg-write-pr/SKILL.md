@@ -49,11 +49,11 @@ not, inherits it. There is no query that fails to tell you.
 | Native writer        | `CometIcebergNativeWrite` (gate and serde), `IcebergWriteProtoTranslation`, `CometIcebergWriteExec`, `iceberg_write.rs`      |
 | Shared with the scan | `iceberg_common.rs` (`load_file_io`, `storage_factory_for`, `scheme_of`), `IcebergReflection`, `NativeConfig` S3 translation |
 
-`spark.comet.write.iceberg.enabled` switches both write layers and is on by default, so a change to
-the split plan affects every Iceberg write, including writes that never reach the native writer, and
-a change to the native writer affects every eligible one. The testing-only
-`spark.comet.write.iceberg.splitOperator.enabled` plans the split operator with the native writer
-off. A change to a shared file affects the native Iceberg scan too.
+`spark.comet.write.iceberg.enabled` switches both write layers. It is off by default, but once a
+user turns it on, a change to the split plan affects every Iceberg write, including writes that
+never reach the native writer, and a change to the native writer affects every eligible one. The
+testing-only `spark.comet.write.iceberg.splitOperator.enabled` plans the split operator with the
+native writer off. A change to a shared file affects the native Iceberg scan too.
 
 ## 2. Direction of the Gate Change
 
