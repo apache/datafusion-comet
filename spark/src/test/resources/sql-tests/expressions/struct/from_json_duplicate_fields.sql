@@ -35,6 +35,10 @@ SELECT from_json(j, 'outer STRUCT<a: INT, a: INT>')
 FROM test_from_json_duplicate_fields ORDER BY id
 
 -- Distinct field names remain on the native path.
-query
+query expect_native(from_json)
 SELECT from_json(j, 'a INT, outer STRUCT<a: INT>')
 FROM test_from_json_duplicate_fields ORDER BY id
+
+-- Duplicate detection is case-sensitive, matching Spark's field-name semantics here.
+query expect_native(from_json)
+SELECT from_json(j, 'a INT, A INT') FROM test_from_json_duplicate_fields ORDER BY id
