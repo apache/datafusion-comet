@@ -185,9 +185,8 @@ private[comet] class DecodedBroadcastCache(
     // broadcast without the cache starts to decode it.
     private var started = false
     private var failure: Throwable = _
-    private var shared: Decoded = _
-    private var own: Iterator[ColumnarBatch] = _
-    private var index = 0
+    private var batches: Iterator[ColumnarBatch] = _
+    // The root of the view that `next` returned last, closed by the next call to `hasNext`.
     private var current: VectorSchemaRoot = _
 
     override def hasNext: Boolean = {
@@ -197,25 +196,15 @@ private[comet] class DecodedBroadcastCache(
       if (!started) {
         start()
       }
-      if (own != null) {
-        own.hasNext
-      } else {
-        closeCurrent()
-        index < shared.numBatches
-      }
+      closeCurrent()
+      batches.hasNext
     }
 
     override def next(): ColumnarBatch = {
       if (!hasNext) {
         throw new NoSuchElementException
       }
-      if (own != null) {
-        own.next()
-      } else {
-        current = shared.view(index)
-        index += 1
-        NativeUtil.rootAsBatch(current)
-      }
+      batches.next()
     }
 
     private def start(): Unit = {
@@ -226,9 +215,13 @@ private[comet] class DecodedBroadcastCache(
         release(entry)
       }
       try {
-        (if (loading) entry.load(source) else entry.await(context)) match {
-          case Some(decoded) => shared = decoded
-          case None => own = chunks.iterator.flatMap(Utils.decodeBatches(_, source))
+        batches = (if (loading) entry.load(source) else entry.await(context)) match {
+          case Some(decoded) =>
+            Iterator.tabulate(decoded.numBatches) { i =>
+              current = decoded.view(i)
+              NativeUtil.rootAsBatch(current)
+            }
+          case None => chunks.iterator.flatMap(Utils.decodeBatches(_, source))
         }
       } catch {
         case t: Throwable =>
@@ -294,8 +287,7 @@ private[comet] object DecodedBroadcastCache {
       result
     } finally {
       if (result.isEmpty) {
-        batches.foreach(_._2.close())
-        allocator.close()
+        new Decoded(allocator, batches.toArray).close()
       }
     }
   }

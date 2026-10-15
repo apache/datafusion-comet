@@ -112,124 +112,90 @@ class DecodedBroadcastCacheSuite extends CometTestBase {
 
   test("a task that comes while another task decodes the broadcast waits for that decode") {
     val value = broadcastValue(rows(1000))
-    val decoding = new CountDownLatch(1)
-    val finish = new CountDownLatch(1)
-    val decodes = new AtomicInteger
-    val cache = new DecodedBroadcastCache((chunks, source) => {
-      decodes.incrementAndGet()
-      decoding.countDown()
-      finish.await()
-      DecodedBroadcastCache.decode(chunks, source)
-    })
+    val gated = new GatedCache
     val before = CometArrowAllocator.getAllocatedMemory
     val loader = newTask(1)
     val waiter = newTask(2)
 
-    val loaded = inThread(readAll(cache.batches(value, loader, "test")))
-    assert(decoding.await(Timeout.toSeconds, TimeUnit.SECONDS))
-    val waited = inThread(readAll(cache.batches(value, waiter, "test")))
-    waitUntil(cache.holders(value) == 2)
+    val loaded = gated.startLoad(value, loader)
+    val waited = inThread(readAll(gated.cache.batches(value, waiter, "test")))
+    gated.awaitHolders(value, 2)
     Thread.sleep(200)
     assert(!waited.isCompleted)
 
-    finish.countDown()
+    gated.finish.countDown()
     assert(Await.result(loaded, Timeout) == rows(1000))
     assert(Await.result(waited, Timeout) == rows(1000))
-    assert(decodes.get == 1)
+    assert(gated.decodes.get == 1)
 
     loader.markTaskCompleted(None)
     waiter.markTaskCompleted(None)
-    assert(cache.size == 0)
+    assert(gated.cache.size == 0)
     assert(CometArrowAllocator.getAllocatedMemory == before)
   }
 
   test("a task killed while it waits for another task's decode stops waiting") {
     val value = broadcastValue(rows(100))
-    val decoding = new CountDownLatch(1)
-    val finish = new CountDownLatch(1)
-    val cache = new DecodedBroadcastCache((chunks, source) => {
-      decoding.countDown()
-      finish.await()
-      DecodedBroadcastCache.decode(chunks, source)
-    })
+    val gated = new GatedCache
     val before = CometArrowAllocator.getAllocatedMemory
     val loader = newTask(1)
     val waiter = newTask(2)
 
-    val loaded = inThread(readAll(cache.batches(value, loader, "test")))
-    assert(decoding.await(Timeout.toSeconds, TimeUnit.SECONDS))
-    val waited = inThread(cache.batches(value, waiter, "test").hasNext)
-    waitUntil(cache.holders(value) == 2)
+    val loaded = gated.startLoad(value, loader)
+    val waited = inThread(gated.cache.batches(value, waiter, "test").hasNext)
+    gated.awaitHolders(value, 2)
     waiter.markInterrupted("killed by the test")
     val killed = intercept[TaskKilledException](Await.result(waited, Timeout))
     assert(killed.reason == "killed by the test")
     waiter.markTaskCompleted(Some(killed))
 
-    finish.countDown()
+    gated.finish.countDown()
     assert(Await.result(loaded, Timeout) == rows(100))
     loader.markTaskCompleted(None)
-    assert(cache.size == 0)
+    assert(gated.cache.size == 0)
     assert(CometArrowAllocator.getAllocatedMemory == before)
   }
 
   test("tasks waiting for a decode that fails decode the broadcast for themselves") {
     val value = broadcastValue(rows(1000))
-    val decoding = new CountDownLatch(1)
-    val fail = new CountDownLatch(1)
-    val decodes = new AtomicInteger
-    val cache = new DecodedBroadcastCache((chunks, source) => {
-      if (decodes.incrementAndGet() == 1) {
-        decoding.countDown()
-        fail.await()
-        throw new IllegalStateException("decode failed")
-      }
-      DecodedBroadcastCache.decode(chunks, source)
-    })
+    val gated = new GatedCache(failFirst = true)
     val before = CometArrowAllocator.getAllocatedMemory
     val loader = newTask(1)
     val waiter = newTask(2)
 
-    val loaded = inThread(readAll(cache.batches(value, loader, "test")))
-    assert(decoding.await(Timeout.toSeconds, TimeUnit.SECONDS))
-    val waited = inThread(readAll(cache.batches(value, waiter, "test")))
-    waitUntil(cache.holders(value) == 2)
-    fail.countDown()
+    val loaded = gated.startLoad(value, loader)
+    val waited = inThread(readAll(gated.cache.batches(value, waiter, "test")))
+    gated.awaitHolders(value, 2)
+    gated.finish.countDown()
     val failure = intercept[IllegalStateException](Await.result(loaded, Timeout))
     assert(failure.getMessage == "decode failed")
     assert(Await.result(waited, Timeout) == rows(1000))
-    assert(decodes.get == 1, "the waiting task decoded the broadcast through the cache")
+    assert(gated.decodes.get == 1, "the waiting task decoded the broadcast through the cache")
 
     // The failed entry is no longer handed out, so the next task decodes the broadcast again.
     val later = newTask(3)
-    assert(readAll(cache.batches(value, later, "test")) == rows(1000))
-    assert(decodes.get == 2)
+    assert(readAll(gated.cache.batches(value, later, "test")) == rows(1000))
+    assert(gated.decodes.get == 2)
 
     loader.markTaskCompleted(Some(failure))
     waiter.markTaskCompleted(None)
     later.markTaskCompleted(None)
-    assert(cache.size == 0)
+    assert(gated.cache.size == 0)
     assert(CometArrowAllocator.getAllocatedMemory == before)
   }
 
   test("a decode that outlives its task frees what it decoded") {
     val value = broadcastValue(rows(100))
-    val decoding = new CountDownLatch(1)
-    val finish = new CountDownLatch(1)
-    val cache = new DecodedBroadcastCache((chunks, source) => {
-      decoding.countDown()
-      finish.await()
-      DecodedBroadcastCache.decode(chunks, source)
-    })
+    val gated = new GatedCache
     val before = CometArrowAllocator.getAllocatedMemory
     val task = newTask(1)
 
-    val read = inThread(readAll(cache.batches(value, task, "test")))
-    assert(decoding.await(Timeout.toSeconds, TimeUnit.SECONDS))
+    val read = gated.startLoad(value, task)
     // The task completes on another thread while its read decodes the broadcast, which gives
     // back the task's hold and frees the entry before the decode keeps anything in it.
     task.markTaskCompleted(None)
-    assert(cache.size == 0)
-    finish.countDown()
+    assert(gated.cache.size == 0)
+    gated.finish.countDown()
     assert(Await.result(read, Timeout) == rows(100))
     assert(CometArrowAllocator.getAllocatedMemory == before)
   }
@@ -469,11 +435,37 @@ class DecodedBroadcastCacheSuite extends CometTestBase {
     result.future
   }
 
-  private def waitUntil(condition: => Boolean): Unit = {
-    val deadline = System.nanoTime() + Timeout.toNanos
-    while (!condition) {
-      assert(System.nanoTime() < deadline, "timed out")
-      Thread.sleep(10)
+  /**
+   * A cache whose first decode signals `decoding` and waits for `finish`, then fails if
+   * `failFirst`. Later decodes go straight through, and `decodes` counts all of them.
+   */
+  private class GatedCache(failFirst: Boolean = false) {
+    private val decoding = new CountDownLatch(1)
+    val finish = new CountDownLatch(1)
+    val decodes = new AtomicInteger
+    val cache = new DecodedBroadcastCache((chunks, source) => {
+      if (decodes.incrementAndGet() == 1) {
+        decoding.countDown()
+        finish.await()
+        if (failFirst) {
+          throw new IllegalStateException("decode failed")
+        }
+      }
+      DecodedBroadcastCache.decode(chunks, source)
+    })
+
+    /** Starts `task`'s read of `value` on a thread of its own and waits until it decodes. */
+    def startLoad(
+        value: Array[ChunkedByteBuffer],
+        task: TaskContextImpl): Future[Seq[(Any, Any)]] = {
+      val loaded = inThread(readAll(cache.batches(value, task, "test")))
+      assert(decoding.await(Timeout.toSeconds, TimeUnit.SECONDS))
+      loaded
     }
+
+    def awaitHolders(value: Array[ChunkedByteBuffer], holders: Int): Unit =
+      eventually(timeout(Timeout), interval(10.millis)) {
+        assert(cache.holders(value) == holders)
+      }
   }
 }

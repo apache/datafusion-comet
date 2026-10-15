@@ -78,25 +78,12 @@ class UtilsSuite extends CometTestBase {
     val values = (0 until 24).map(i => if (i % 5 == 0) null else s"value-$i")
     val skips = Seq(8, 16)
 
-    def serialize(vectors: Seq[VarCharVector]): Seq[ChunkedByteBuffer] = {
-      val batches = vectors.map { v =>
-        val column = CometVector.getVector(v, new CDataDictionaryProvider)
-        new ColumnarBatch(Array[ColumnVector](column), v.getValueCount)
-      }
-      try Utils.serializeBatches(batches.iterator).map(_._2).toList
-      finally batches.foreach(_.close())
-    }
-
     val sliced = serialize(skips.map(slicedStrings(values, _)))
     val (coalesced, batchCount, _) = Utils.coalesceBroadcastBatches(sliced.iterator)
     assert(batchCount == skips.length)
     val it = Utils.decodeBatches(coalesced.head, "test")
-    val out = it.next()
-    val got = (0 until out.numRows()).map { i =>
-      if (out.column(0).isNullAt(i)) null else out.column(0).getUTF8String(i).toString
-    }
+    assert(readStrings(it.next()) == skips.flatMap(values.drop))
     assert(!it.hasNext)
-    assert(got == skips.flatMap(values.drop))
 
     // The bytes before a slice are not written either: it takes as many bytes as the same values
     // in a vector of their own.
@@ -105,34 +92,18 @@ class UtilsSuite extends CometTestBase {
   }
 
   test("decodeBatches reads a stream larger than one read piece") {
-    // The decoder reads its stream in pieces of up to 64 KiB, so this stream takes many reads.
+    // The decoder reads its stream in pieces of up to MaxReadPiece bytes, so this one takes many.
     val values = (0 until 20000).map(i => if (i % 11 == 0) null else s"value-$i")
-    val vector = strings(values)
-    val batch = new ColumnarBatch(
-      Array[ColumnVector](CometVector.getVector(vector, new CDataDictionaryProvider)),
-      values.length)
-    val (_, buf) =
-      try Utils.serializeBatches(Iterator(batch)).next()
-      finally batch.close()
-    assert(buf.size > 64 * 1024)
+    val buf = serialize(Seq(strings(values))).head
+    assert(buf.size > Utils.MaxReadPiece)
 
     val it = Utils.decodeBatches(buf, "test")
-    val out = it.next()
-    val got = (0 until out.numRows()).map { i =>
-      if (out.column(0).isNullAt(i)) null else out.column(0).getUTF8String(i).toString
-    }
+    assert(readStrings(it.next()) == values)
     assert(!it.hasNext)
-    assert(got == values)
   }
 
   test("decodeBatches stops on an interrupted thread") {
-    val vector = strings(Seq("a", "b"))
-    val batch = new ColumnarBatch(
-      Array[ColumnVector](CometVector.getVector(vector, new CDataDictionaryProvider)),
-      2)
-    val (_, buf) =
-      try Utils.serializeBatches(Iterator(batch)).next()
-      finally batch.close()
+    val buf = serialize(Seq(strings(Seq("a", "b")))).head
     val before = CometArrowAllocator.getAllocatedMemory
     Thread.currentThread().interrupt()
     try {
@@ -334,6 +305,22 @@ class UtilsSuite extends CometTestBase {
       }
     }
   }
+
+  /** Serializes each vector as a batch of its own, closing the batches. */
+  private def serialize(vectors: Seq[VarCharVector]): Seq[ChunkedByteBuffer] = {
+    val batches = vectors.map { v =>
+      val column = CometVector.getVector(v, new CDataDictionaryProvider)
+      new ColumnarBatch(Array[ColumnVector](column), v.getValueCount)
+    }
+    try Utils.serializeBatches(batches.iterator).map(_._2).toList
+    finally batches.foreach(_.close())
+  }
+
+  /** The strings of the first column of `batch`. */
+  private def readStrings(batch: ColumnarBatch): Seq[String] =
+    (0 until batch.numRows()).map { i =>
+      if (batch.column(0).isNullAt(i)) null else batch.column(0).getUTF8String(i).toString
+    }
 
   private def strings(
       values: Seq[String],
