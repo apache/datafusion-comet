@@ -128,6 +128,8 @@ pub struct ShuffleWriterExec {
     write_buffer_size: usize,
     /// Maximum bytes buffered in memory before spilling; `None` disables the limit
     max_buffer_bytes: Option<usize>,
+    /// Whether local blocks store offsets as lengths
+    offsets_as_lengths: bool,
 }
 
 impl ShuffleWriterExec {
@@ -195,7 +197,15 @@ impl ShuffleWriterExec {
             tracing_enabled,
             write_buffer_size,
             max_buffer_bytes,
+            offsets_as_lengths: false,
         })
+    }
+
+    /// Store offsets as lengths in local shuffle blocks where the writer can; see
+    /// [`ShuffleBlockWriter::try_new_with_offsets_as_lengths`]. Remote (RSS) blocks keep offsets.
+    pub fn with_offsets_as_lengths(mut self, enabled: bool) -> Self {
+        self.offsets_as_lengths = enabled;
+        self
     }
 }
 
@@ -257,15 +267,18 @@ impl ExecutionPlan for ShuffleWriterExec {
         children: Vec<Arc<dyn ExecutionPlan>>,
     ) -> Result<Arc<dyn ExecutionPlan>> {
         match children.len() {
-            1 => Ok(Arc::new(ShuffleWriterExec::try_new_with_destination(
-                Arc::clone(&children[0]),
-                self.partitioning.clone(),
-                self.codec.clone(),
-                self.destination.clone(),
-                self.tracing_enabled,
-                self.write_buffer_size,
-                self.max_buffer_bytes,
-            )?)),
+            1 => Ok(Arc::new(
+                ShuffleWriterExec::try_new_with_destination(
+                    Arc::clone(&children[0]),
+                    self.partitioning.clone(),
+                    self.codec.clone(),
+                    self.destination.clone(),
+                    self.tracing_enabled,
+                    self.write_buffer_size,
+                    self.max_buffer_bytes,
+                )?
+                .with_offsets_as_lengths(self.offsets_as_lengths),
+            )),
             _ => panic!("ShuffleWriterExec wrong number of children"),
         }
     }
@@ -294,6 +307,7 @@ impl ExecutionPlan for ShuffleWriterExec {
                 self.tracing_enabled,
                 self.write_buffer_size,
                 self.max_buffer_bytes,
+                self.offsets_as_lengths,
             ))
             .try_flatten(),
         )))
@@ -312,6 +326,7 @@ async fn external_shuffle(
     tracing_enabled: bool,
     write_buffer_size: usize,
     max_buffer_bytes: Option<usize>,
+    offsets_as_lengths: bool,
 ) -> Result<SendableRecordBatchStream> {
     let schema = input.schema();
 
@@ -320,7 +335,11 @@ async fn external_shuffle(
             output_data_file,
             partition_offsets,
         } => {
-            let shuffle_block_writer = ShuffleBlockWriter::try_new(schema.as_ref(), codec.clone())?;
+            let shuffle_block_writer = ShuffleBlockWriter::try_new_with_offsets_as_lengths(
+                schema.as_ref(),
+                codec.clone(),
+                offsets_as_lengths,
+            )?;
             let writer = LocalPartitionWriter::try_new(
                 output_data_file,
                 partition_offsets,

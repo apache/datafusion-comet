@@ -19,13 +19,15 @@
 
 # Iceberg Writes: Comet's Split-Operator Plan and Native Writer
 
-Since Comet 1.2.0, Comet plans Iceberg writes with the split-operator plan described below, and
-writes the data files of each eligible write natively with iceberg-rust. A write that is not
-eligible falls back to iceberg-java's writer. Natively written files differ from iceberg-java's in
-the ways listed under [Accepted divergences](#accepted-divergences).
+With `spark.comet.write.iceberg.enabled=true`, Comet plans Iceberg writes with the split-operator
+plan described below, and writes the data files of each eligible write natively with iceberg-rust.
+A write that is not eligible falls back to iceberg-java's writer. Natively written files differ
+from iceberg-java's in the ways listed under [Accepted divergences](#accepted-divergences).
 
-`spark.comet.write.iceberg.enabled` switches both. Set it to `false` to plan Spark's own write
-operator instead, as Comet 1.1.0 did, so that iceberg-java writes every data file.
+The setting is off by default, so Spark plans its own write operator and iceberg-java writes every
+data file. Validate the native writer against your own workloads before enabling it, including
+the costs described under [Native Parquet write eligibility](#native-parquet-write-eligibility)
+and [Failure handling](#failure-handling).
 
 ## Overview
 
@@ -37,8 +39,8 @@ data-file writing cannot be re-planned in response to how its input ran. And bec
 writing is bundled with the metadata and commit steps, there is no separate step for Comet to
 replace.
 
-When `spark.comet.write.iceberg.enabled=true`, the default, Comet rewrites eligible Iceberg writes
-into two operators:
+When `spark.comet.write.iceberg.enabled=true`, Comet rewrites eligible Iceberg writes into two
+operators:
 
 1. **`IcebergWrite`** — writes the data files on the executors, exactly as iceberg-java does
    today, and returns each task's serialized commit message. This operator and the sub-query
@@ -86,9 +88,8 @@ already has, even if they do not fill its first page.
 
 ## Configuration
 
-Iceberg writes need only the standard Comet and Iceberg setup (see [`iceberg.md`](iceberg.md)).
-`spark.comet.write.iceberg.enabled` is on by default; set it to `false` to plan Spark's own write
-operator instead.
+Standard Comet + Iceberg setup (see [`iceberg.md`](iceberg.md)) plus the write setting, which is
+off by default:
 
 ```
 # Standard Comet / Iceberg wiring
@@ -97,6 +98,9 @@ spark.sql.extensions=org.apache.iceberg.spark.extensions.IcebergSparkSessionExte
 spark.sql.catalog.<name>=org.apache.iceberg.spark.SparkCatalog
 spark.sql.catalog.<name>.type=hadoop                          # or hive / glue / rest / ...
 spark.sql.catalog.<name>.warehouse=...
+
+# Split-operator plan and native Parquet writer
+spark.comet.write.iceberg.enabled=true
 
 # Lets writes whose input is a local relation (INSERT ... VALUES, a local DataFrame) use the
 # native writer; see "Native Parquet write eligibility" below
@@ -139,7 +143,7 @@ changes.
 
 The rewrite is skipped — and the write runs through Spark's stock combined operator — when:
 
-- `spark.comet.write.iceberg.enabled` is set to `false` and the testing setting
+- `spark.comet.write.iceberg.enabled` is `false` (the default) and the testing setting
   `spark.comet.write.iceberg.splitOperator.enabled`, which Comet 1.1.0 documented as a user setting,
   is not on;
 - Comet is disabled (`spark.comet.enabled=false`), or its native execution is
@@ -160,7 +164,7 @@ trade-off, only no plan change.
 
 ## Native Parquet write eligibility
 
-When `spark.comet.write.iceberg.enabled=true`, the default
+When `spark.comet.write.iceberg.enabled=true`
 ([#5361](https://github.com/apache/datafusion-comet/pull/5361)), the `IcebergWrite` operator's
 per-task Parquet write is delegated to [iceberg-rust](https://github.com/apache/iceberg-rust).
 The native writer must produce the same outcome as iceberg-java — the same Parquet features,
@@ -376,9 +380,8 @@ unchanged.
 ## Accepted divergences
 
 Some differences between parquet-mr and the pinned parquet-rs / iceberg-rust are unconditional —
-they apply to every native write and cannot be configured away. Leaving
-`spark.comet.write.iceberg.enabled` at its default of `true` accepts them, and setting it to
-`false` avoids them. They fall into three classes with very
+they apply to every native write and cannot be configured away. Enabling
+`spark.comet.write.iceberg.enabled` accepts them. They fall into three classes with very
 different blast radius: differences confined to the physical bytes of a data file (cosmetic —
 no reader decision is based on them), differences visible in manifest metadata (these outlive
 the write and feed later readers' pruning decisions, so each one is analyzed individually
