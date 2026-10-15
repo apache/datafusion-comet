@@ -88,7 +88,7 @@ use datafusion::{
     prelude::SessionContext,
 };
 use datafusion_comet_operators::{
-    range_exec, CometFilterExec, CometProjectionExec, ExpandExec, ExplodeExec,
+    range_exec, range_sort_expr, CometFilterExec, CometProjectionExec, ExpandExec, ExplodeExec,
     PartitionedRankLimitExec, SampleExec, WindowFnKind,
 };
 use datafusion_comet_spark_expr::{
@@ -2065,7 +2065,7 @@ impl PhysicalPlanner {
             }
             OpStruct::RangeScan(range) => {
                 // A leaf with no JVM input: each task produces its own partition of the range.
-                let range: Arc<dyn ExecutionPlan> = Arc::new(range_exec(
+                let source: Arc<dyn ExecutionPlan> = Arc::new(range_exec(
                     range.start,
                     range.step,
                     range.num_elements,
@@ -2073,10 +2073,17 @@ impl PhysicalPlanner {
                     self.partition,
                     self.session_ctx.copied_config().batch_size(),
                 )?);
+                // The range's order is real, and Spark's `RangeExec` reports it, so declare it
+                // for the operators above, a hash join in particular: see `SortedInputExec`.
+                let ordering = LexOrdering::new([range_sort_expr(range.step)]);
+                let source: Arc<dyn ExecutionPlan> = match ordering {
+                    Some(ordering) => Arc::new(SortedInputExec::new(source, ordering)),
+                    None => source,
+                };
                 Ok((
                     vec![],
                     vec![],
-                    Arc::new(SparkPlan::new(spark_plan.plan_id, range, vec![])),
+                    Arc::new(SparkPlan::new(spark_plan.plan_id, source, vec![])),
                 ))
             }
             OpStruct::Sample(sample) => {

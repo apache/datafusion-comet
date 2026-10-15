@@ -25,6 +25,7 @@ use datafusion::common::{internal_err, Result};
 use datafusion::execution::TaskContext;
 use datafusion::physical_expr::{LexOrdering, PhysicalExpr};
 use datafusion::physical_plan::execution_plan::CardinalityEffect;
+use datafusion::physical_plan::metrics::MetricsSet;
 use datafusion::physical_plan::{
     apply_expression_roots, DisplayAs, DisplayFormatType, ExecutionPlan, ExecutionPlanProperties,
     PlanProperties, SendableRecordBatchStream,
@@ -99,6 +100,12 @@ impl ExecutionPlan for SortedInputExec {
 
     fn maintains_input_order(&self) -> Vec<bool> {
         vec![true]
+    }
+
+    /// The rows pass through, so the input's metrics are this operator's, and a range whose root
+    /// this wraps still reports its output rows.
+    fn metrics(&self) -> Option<MetricsSet> {
+        self.input.metrics()
     }
 
     fn cardinality_effect(&self) -> CardinalityEffect {
