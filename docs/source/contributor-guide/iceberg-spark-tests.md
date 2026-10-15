@@ -34,7 +34,8 @@ Here is an overview of the changes that the diffs make to Iceberg:
 - Enable Comet's Iceberg write path, the split-operator plan (`IcebergCommit -> IcebergWrite`) and the native
   (iceberg-rust) Parquet writer, alongside the native scan in every Comet-configured session, so that Iceberg's
   write, commit, and row-level-operation tests run through it. `spark.comet.write.iceberg.enabled` switches both
-  and is on by default; the diffs set it explicitly, together with the testing-only
+  and is off by default for users, so these suites are where it runs against Iceberg's own tests. The diffs set
+  it explicitly, together with the testing-only
   `spark.comet.write.iceberg.splitOperator.enabled`. That flag is redundant for the normal write path, but
   it is still what plans merge-on-read (`WriteDelta`) writes as the split plan on Spark 3.5+, so Iceberg's
   row-level-operation tests exercise that path. See [#5259]
