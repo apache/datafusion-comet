@@ -131,9 +131,9 @@ pub type PlanCreationResult =
 /// the key field non-nullable and every nested key/value type byte-for-byte unchanged. Any non-`Map`
 /// type is returned unchanged.
 ///
-/// This is the shallow counterpart of `make_all_fields_nullable`, used for `map_entries`.
-/// `map_entries` reuses the input map's entries array as its output list values but declares that
-/// element's `value` field nullable (`Struct(key non-null, value nullable)`), deriving both nested
+/// This is the shallow counterpart of `make_all_fields_nullable` (in `planner/aggregate.rs`), used
+/// for `map_entries`. `map_entries` reuses the input map's entries array as its output list values
+/// but declares that element's `value` field nullable (`Struct(key non-null, value nullable)`), deriving both nested
 /// types verbatim from the input. Arrow's `GenericListArray::try_new` compares the declared element
 /// field's type against the reused values array's type in full, so the ONLY field that can mismatch
 /// is the entries `value` field's own `nullable` flag; widening just that field is sufficient.
