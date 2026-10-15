@@ -55,7 +55,9 @@ import org.apache.comet.vector.NativeUtil
  * An entry is freed when the last task holding it completes, and a task that reads the broadcast
  * after that decodes it again. A native join keeps a build side of one batch, which is what
  * coalescing makes of a broadcast, for as long as its task runs, so for such a broadcast the
- * cache holds no memory that the tasks would not hold anyway.
+ * cache holds no memory that the tasks would not hold anyway. A native join copies a build side
+ * of several batches, so the cache keeps one copy of such a broadcast that the tasks would have
+ * freed once they built their tables.
  *
  * @param decode
  *   decodes a broadcast's value; `None` makes each task decode the value for itself
@@ -132,7 +134,19 @@ private[comet] class DecodedBroadcastCache(
     /** Decodes the broadcast for every task that holds the entry. Runs in the first of them. */
     def load(source: String): Option[Decoded] = {
       try {
-        decoded = decode(chunks, source)
+        val result = decode(chunks, source)
+        // A task whose completion listener runs on another thread can give the entry back
+        // during the decode. If it was the last holder the entry has been freed already, and
+        // nothing would free what it kept now.
+        val kept = entries.synchronized {
+          if (holders > 0) {
+            decoded = result
+          }
+          holders > 0
+        }
+        if (!kept) {
+          result.foreach(_.close())
+        }
         decoded
       } catch {
         case t: Throwable =>

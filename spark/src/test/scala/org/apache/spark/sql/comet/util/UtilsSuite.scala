@@ -19,6 +19,8 @@
 
 package org.apache.spark.sql.comet.util
 
+import java.io.{FilterInputStream, InputStream, OutputStream}
+import java.nio.ByteBuffer
 import java.nio.channels.ClosedByInterruptException
 import java.nio.charset.StandardCharsets
 
@@ -28,6 +30,7 @@ import org.apache.arrow.c.CDataDictionaryProvider
 import org.apache.arrow.memory.BufferAllocator
 import org.apache.arrow.vector.VarCharVector
 import org.apache.arrow.vector.ipc.message.ArrowFieldNode
+import org.apache.spark.io.CompressionCodec
 import org.apache.spark.sql.CometTestBase
 import org.apache.spark.sql.execution.vectorized.ConstantColumnVector
 import org.apache.spark.sql.types.{IntegerType, StringType, StructField, StructType, TimestampType}
@@ -140,6 +143,32 @@ class UtilsSuite extends CometTestBase {
       Thread.interrupted()
     }
     assert(CometArrowAllocator.getAllocatedMemory == before)
+  }
+
+  test("a read of a broadcast stream stops at the next piece once its thread is interrupted") {
+    // Arrow reads a message body with one call, which for a coalesced broadcast is all of it.
+    var pieces = 0
+    val codec = new CompressionCodec {
+      override def compressedOutputStream(s: OutputStream): OutputStream = s
+      // Interrupts the reading thread during the first piece, as killing its task does.
+      override def compressedInputStream(s: InputStream): InputStream =
+        new FilterInputStream(s) {
+          override def read(b: Array[Byte], off: Int, len: Int): Int = {
+            pieces += 1
+            Thread.currentThread().interrupt()
+            super.read(b, off, len)
+          }
+        }
+    }
+    val channel =
+      Utils.ipcChannel(new ChunkedByteBuffer(ByteBuffer.wrap(new Array[Byte](1 << 20))), codec)
+    try {
+      intercept[ClosedByInterruptException](channel.read(ByteBuffer.allocate(1 << 20)))
+    } finally {
+      Thread.interrupted()
+    }
+    assert(pieces == 1)
+    assert(!channel.isOpen)
   }
 
   test("serializeBatches closes the slice it writes when the write fails") {

@@ -211,6 +211,29 @@ class DecodedBroadcastCacheSuite extends CometTestBase {
     assert(CometArrowAllocator.getAllocatedMemory == before)
   }
 
+  test("a decode that outlives its task frees what it decoded") {
+    val value = broadcastValue(rows(100))
+    val decoding = new CountDownLatch(1)
+    val finish = new CountDownLatch(1)
+    val cache = new DecodedBroadcastCache((chunks, source) => {
+      decoding.countDown()
+      finish.await()
+      DecodedBroadcastCache.decode(chunks, source)
+    })
+    val before = CometArrowAllocator.getAllocatedMemory
+    val task = newTask(1)
+
+    val read = inThread(readAll(cache.batches(value, task, "test")))
+    assert(decoding.await(Timeout.toSeconds, TimeUnit.SECONDS))
+    // The task completes on another thread while its read decodes the broadcast, which gives
+    // back the task's hold and frees the entry before the decode keeps anything in it.
+    task.markTaskCompleted(None)
+    assert(cache.size == 0)
+    finish.countDown()
+    assert(Await.result(read, Timeout) == rows(100))
+    assert(CometArrowAllocator.getAllocatedMemory == before)
+  }
+
   test("each task decodes a broadcast with dictionaries for itself") {
     val values = Seq("a", "b", null, "a", "c", "b")
     val value = dictionaryBroadcastValue(values)
