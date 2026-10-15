@@ -34,7 +34,7 @@ import com.google.common.base.Objects
 
 import org.apache.comet.{CometConf, ConfigEntry}
 import org.apache.comet.CometSparkSessionExtensions.withFallbackReason
-import org.apache.comet.serde.{AggSerde, CometOperatorSerde, LiteralOuterClass, OperatorOuterClass}
+import org.apache.comet.serde.{AggSerde, CometOperatorSerde, CometSortOrder, LiteralOuterClass, OperatorOuterClass}
 import org.apache.comet.serde.OperatorOuterClass.Operator
 import org.apache.comet.serde.QueryPlanSerde.{aggExprToProto, exprToProto, liftFallbackReasons, scalarFunctionExprToProto, serializeDataType}
 
@@ -439,15 +439,31 @@ object CometWindowExec extends CometOperatorSerde[WindowExec] {
     // never compare values that way and stay native over the same keys. That includes CUME_DIST,
     // whose RANGE frame DataFusion never reads.
     // https://github.com/apache/datafusion/issues/24937
+    //
+    // The same comparison orders a null element or field above every other value, while the sort
+    // placed it below, as Spark does. Once the bound search passes a row whose key holds one, the
+    // frame of every later row runs to the end of the partition. So an ORDER BY key whose type
+    // can hold a null element or field falls back for these frames too, with the same exemptions.
+    // https://github.com/apache/datafusion-comet/issues/6477
     f match {
       case SpecifiedWindowFrame(RangeFrame, lb, ub)
           if (lb != UnboundedPreceding || ub != UnboundedFollowing) &&
             !windowExpr.windowFunction.isInstanceOf[CumeDist] =>
-        windowExpr.windowSpec.orderSpec.map(_.dataType).find(!isRangeComparable(_)) match {
+        val orderTypes = windowExpr.windowSpec.orderSpec.map(_.dataType)
+        orderTypes.find(!isRangeComparable(_)) match {
           case Some(dt) =>
             withFallbackReason(
               windowExpr,
               s"RANGE frame on ${dt.catalogString} ORDER BY is not supported")
+            return None
+          case None =>
+        }
+        orderTypes.find(CometSortOrder.canHoldNestedNull) match {
+          case Some(dt) =>
+            withFallbackReason(
+              windowExpr,
+              s"RANGE frame on ${dt.catalogString} ORDER BY is not supported when the key " +
+                "can hold a null element or field")
             return None
           case None =>
         }

@@ -29,11 +29,13 @@ use arrow::array::{
 };
 use arrow::datatypes::DataType;
 use datafusion::common::cast::{as_large_string_array, as_string_array, as_string_view_array};
-use datafusion::common::{exec_datafusion_err, exec_err, Result, ScalarValue};
+use datafusion::common::{exec_err, Result, ScalarValue};
 use datafusion::logical_expr::{
     ColumnarValue, ScalarFunctionArgs, ScalarUDFImpl, Signature, TypeSignature, Volatility,
 };
 use regex::Regex;
+
+use crate::SparkError;
 
 // RFC 3986 Appendix B decomposition regex.
 // Groups: 2=scheme, 4=authority, 5=path, 7=query, 9=fragment
@@ -109,11 +111,10 @@ fn has_invalid_uri_chars(s: &str) -> bool {
 }
 
 fn invalid_url_err(value: &str) -> datafusion::common::DataFusionError {
-    exec_datafusion_err!(
-        "[INVALID_URL] The provided URL '{}' is not valid. Use `try_parse_url` to tolerate \
-         malformed URLs and return NULL instead. SQLSTATE: 22P02",
-        value
-    )
+    SparkError::InvalidUrl {
+        url: value.to_string(),
+    }
+    .into()
 }
 
 fn parse_url_component(value: &str, part: &str, key: Option<&str>) -> Result<Option<String>> {

@@ -34,6 +34,14 @@ PARITY_GROUPS = [
         ],
         "Spark 3.5 and 4.0 intentionally register MergeRows through identical shims.",
     ),
+    (
+        "MergeRows metrics shim without semantic counters",
+        [
+            Path("spark/src/main/spark-3.x/org/apache/comet/shims/MergeRowsMetricsShim.scala"),
+            Path("spark/src/main/spark-4.0/org/apache/comet/shims/MergeRowsMetricsShim.scala"),
+        ],
+        "Spark 3.x and 4.0 do not publish semantic MergeRows counters.",
+    ),
 ]
 
 

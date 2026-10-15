@@ -19,7 +19,7 @@
 
 package org.apache.spark.sql.comet.execution.shuffle
 
-import java.io.InputStream
+import java.io.{FilterInputStream, InputStream}
 
 import org.apache.spark.{InterruptibleIterator, MapOutputTracker, SparkEnv, TaskContext}
 import org.apache.spark.internal.{config, Logging}
@@ -91,6 +91,7 @@ class CometBlockStoreShuffleReader[K, C](
     val nativeLib = new Native()
     val nativeUtil = new NativeUtil()
     val tracingEnabled = CometConf.COMET_TRACING_ENABLED.get()
+    val readBufferSize = CometConf.COMET_SHUFFLE_READ_BUFFER_SIZE.get().toInt
 
     // Closes last read iterator and shared resources after the task is finished.
     // We need to close read iterator during iterating input streams,
@@ -113,7 +114,8 @@ class CometBlockStoreShuffleReader[K, C](
           dep.decodeTime,
           nativeLib,
           nativeUtil,
-          tracingEnabled)
+          tracingEnabled,
+          readBufferSize = readBufferSize)
         currentReadIterator
       })
       .map(b => (0, b))
@@ -158,10 +160,23 @@ class CometBlockStoreShuffleReader[K, C](
    */
   override def readAsRawStream(): InputStream = {
     val streams = fetchIterator.map(_._2)
-    new java.io.SequenceInputStream(new java.util.Enumeration[InputStream] {
+    val blocks = new java.io.SequenceInputStream(new java.util.Enumeration[InputStream] {
       override def hasMoreElements: Boolean = streams.hasNext
       override def nextElement(): InputStream = streams.next()
     })
+    // Native code reads this stream on the task thread, outside any InterruptibleIterator, so
+    // every read checks whether the task was killed.
+    new FilterInputStream(blocks) {
+      override def read(): Int = {
+        context.killTaskIfInterrupted()
+        in.read()
+      }
+
+      override def read(buffer: Array[Byte], offset: Int, length: Int): Int = {
+        context.killTaskIfInterrupted()
+        in.read(buffer, offset, length)
+      }
+    }
   }
 
   private def fetchContinuousBlocksInBatch: Boolean = {

@@ -16,6 +16,9 @@
 -- under the License.
 
 -- ConfigMatrix: parquet.enable.dictionary=false,true
+-- Disabling ObjectHashAggregate makes Spark plan SortAggregateExec for collect_set instead, so the
+-- matrix runs the whole fixture through both aggregate operators.
+-- ConfigMatrix: spark.sql.execution.useObjectHashAggregateExec=true,false
 
 -- ============================================================
 -- Setup: tables

@@ -51,6 +51,7 @@ the navigation menu to read more.
    Supported Operators <operators>
    Supported Expressions <expressions>
    ScalaUDF and Java UDF Support <scala_java_udfs>
+   Custom Rust UDFs <rust_udfs>
 
 .. toctree::
    :maxdepth: 1
@@ -94,6 +95,7 @@ the navigation menu to read more.
    :caption: Integrations
    :hidden:
 
+   Delta Lake (experimental) <delta>
    Iceberg Guide <iceberg>
    Iceberg Writes <iceberg-writes>
    Celeborn Guide <celeborn>
