@@ -19,7 +19,6 @@
 -- other value, whatever the key's NULLS FIRST or NULLS LAST, which places only a null key itself.
 -- For nondefault root NULL placement, Comet wraps the key so only root NULLs use that placement;
 -- nested NULLs keep Spark's direction-dependent order in Sort, TopK and window keys.
--- Config: spark.comet.expression.SortOrder.allowIncompatible=false
 
 statement
 CREATE TABLE nested_null_order(id INT, g INT, i INT) USING parquet

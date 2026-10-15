@@ -1172,7 +1172,7 @@ object CometArrayForAll extends CometCodegenDispatch[ArrayForAll]
 
 object CometArrayAggregate extends CometCodegenDispatch[ArrayAggregate]
 
-object CometArraySort extends CometCodegenDispatch[ArraySort] with CometTypeShim {
+object CometArraySort extends CometExpressionSerde[ArraySort] with CometTypeShim {
   private def usesDefaultComparator(expr: ArraySort): Boolean = expr.function match {
     case lambda: LambdaFunction if lambda.arguments.length == 2 =>
       val left = lambda.arguments.head
@@ -1201,7 +1201,7 @@ object CometArraySort extends CometCodegenDispatch[ArraySort] with CometTypeShim
         "spark_array_sort",
         exprToProtoInternal(expr.argument, inputs, binding))
     } else {
-      super.convert(expr, inputs, binding)
+      CometScalaUDF.emitJvmCodegenDispatch(expr, inputs, binding)
     }
   }
 }

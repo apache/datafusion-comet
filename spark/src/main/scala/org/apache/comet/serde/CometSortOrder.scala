@@ -47,7 +47,9 @@ import org.apache.comet.serde.QueryPlanSerde.exprToProtoInternal
 object CometSortOrder extends CometExpressionSerde[SortOrder] {
 
   private val nondeterministicNestedKeyReason =
-    "A nested sort key with nondefault root null placement must be deterministic"
+    "A nested sort key with nondefault root null placement must be deterministic: " +
+      "the wrapper can evaluate the key twice, for isnull(key) and its value, " +
+      "which could disagree"
 
   override def getUnsupportedReasons(): Seq[String] = Seq(nondeterministicNestedKeyReason)
 

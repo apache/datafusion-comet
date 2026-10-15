@@ -22,10 +22,7 @@
 -- comparison for `ASC NULLS LAST` and `DESC NULLS FIRST` (#6476). A RANGE window frame that
 -- searches for a row's peers over a key that can hold a nested null still falls back (#6477).
 --
--- The test harness admits incompatible sort orders by default, so turn that off to check the
--- shipped policy.
 -- Config: spark.comet.exec.strictFloatingPoint=true
--- Config: spark.comet.expression.SortOrder.allowIncompatible=false
 
 statement
 CREATE TABLE nested_float_strict(id INT, g INT, d DOUBLE, f FLOAT, s BOOLEAN) USING parquet

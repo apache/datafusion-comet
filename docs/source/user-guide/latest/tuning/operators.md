@@ -197,5 +197,5 @@ peers over such a key still falls back to Spark
 also stays native with `spark.comet.exec.strictFloatingPoint=true`.
 
 The default `array_sort` comparator also runs natively. It puts null array elements last while comparing nulls
-inside nested arrays and structs below non-null values. A custom `array_sort` comparator continues through the JVM
-codegen dispatcher.
+inside nested arrays and structs below non-null values. A custom `array_sort` comparator or an
+array with a non-default string collation continues through the JVM codegen dispatcher.

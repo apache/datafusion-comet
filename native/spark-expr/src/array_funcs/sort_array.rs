@@ -21,6 +21,7 @@ use std::sync::Arc;
 use super::with_values;
 use crate::float_semantics::{
     compare_floats, compare_floats_java, float_gt, float_lt, spark_comparator,
+    spark_comparator_ignoring_nulls,
 };
 use arrow::array::{
     Array, ArrayRef, AsArray, BooleanBufferBuilder, ListArray, PrimitiveArray, UInt32Array,
@@ -146,15 +147,19 @@ impl ScalarUDFImpl for SparkArraySort {
             return exec_err!("spark_array_sort takes a list, got {}", array.data_type());
         };
         let values = list.values();
-        let compare = spark_comparator(values.as_ref(), values.as_ref())?;
-        let result = sort_by(list, true, |a, b| {
-            match (values.is_null(a), values.is_null(b)) {
-                (true, true) => Ordering::Equal,
-                (true, false) => Ordering::Greater,
-                (false, true) => Ordering::Less,
-                (false, false) => compare(a, b),
-            }
-        })?;
+        let compare = spark_comparator_ignoring_nulls(values.as_ref(), values.as_ref())?;
+        let result = if let Some(nulls) = values.nulls().filter(|nulls| nulls.null_count() > 0) {
+            sort_by(list, true, |a, b| {
+                match (nulls.is_null(a), nulls.is_null(b)) {
+                    (true, true) => Ordering::Equal,
+                    (true, false) => Ordering::Greater,
+                    (false, true) => Ordering::Less,
+                    (false, false) => compare(a, b),
+                }
+            })?
+        } else {
+            sort_by(list, true, compare)?
+        };
         if is_scalar {
             Ok(ColumnarValue::Scalar(ScalarValue::try_from_array(
                 &result, 0,

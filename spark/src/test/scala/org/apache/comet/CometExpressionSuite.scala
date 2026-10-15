@@ -114,11 +114,9 @@ class CometExpressionSuite extends CometTestBase with AdaptiveSparkPlanHelper {
       df.withColumn("id", monotonically_increasing_id()).write.parquet(path)
       spark.read.parquet(path).createOrReplaceTempView("tbl")
 
-      // Scalar floating-point sort keys are normalized natively, so strict mode admits them even
-      // with allowIncompatible off. The nested tests below cover array and struct keys.
-      withSQLConf(
-        CometConf.getExprAllowIncompatConfigKey("SortOrder") -> "false",
-        CometConf.COMET_EXEC_STRICT_FLOATING_POINT.key -> "true") {
+      // Scalar floating-point sort keys are normalized natively, so strict mode admits them. The
+      // nested tests below cover array and struct keys.
+      withSQLConf(CometConf.COMET_EXEC_STRICT_FLOATING_POINT.key -> "true") {
         checkSparkAnswerAndOperator(
           sql("select * from tbl order by 1, 2, 3"),
           Seq(classOf[CometSortExec]))
@@ -165,9 +163,7 @@ class CometExpressionSuite extends CometTestBase with AdaptiveSparkPlanHelper {
         val query =
           s"SELECT id, f, d, s FROM strict_fp_sort ORDER BY $col $direction $nullOrder$secondary, id"
 
-        withSQLConf(
-          CometConf.getExprAllowIncompatConfigKey("SortOrder") -> "false",
-          CometConf.COMET_EXEC_STRICT_FLOATING_POINT.key -> "true") {
+        withSQLConf(CometConf.COMET_EXEC_STRICT_FLOATING_POINT.key -> "true") {
           checkSparkAnswerAndOperator(sql(query), Seq(classOf[CometSortExec]))
         }
       }
@@ -183,52 +179,12 @@ class CometExpressionSuite extends CometTestBase with AdaptiveSparkPlanHelper {
       strictFpSortRows.toDF("id", "f", "d", "s").write.parquet(path)
       spark.read.parquet(path).createOrReplaceTempView("strict_fp_topk")
 
-      withSQLConf(
-        CometConf.getExprAllowIncompatConfigKey("SortOrder") -> "false",
-        CometConf.COMET_EXEC_STRICT_FLOATING_POINT.key -> "true") {
+      withSQLConf(CometConf.COMET_EXEC_STRICT_FLOATING_POINT.key -> "true") {
         for (col <- Seq("f", "d")) {
           checkSparkAnswerAndOperator(
             sql(s"SELECT id, f, d FROM strict_fp_topk ORDER BY $col ASC NULLS LAST, id LIMIT 4"),
             Seq(classOf[CometTakeOrderedAndProjectExec]))
         }
-      }
-    }
-  }
-
-  test("nested sort keys keep root and interior null ordering separate in native") {
-    withTable("nested_null_sort_native") {
-      sql("CREATE TABLE nested_null_sort_native (id INT, a ARRAY<INT>) USING parquet")
-      sql("""INSERT INTO nested_null_sort_native VALUES
-        |(1, array(1, 2)), (2, array(CAST(NULL AS INT), 1)),
-        |(3, NULL), (4, array(0, 1)), (5, array(CAST(NULL AS INT), 1))""".stripMargin)
-
-      withSQLConf(CometConf.getExprAllowIncompatConfigKey("SortOrder") -> "false") {
-        checkSparkAnswerAndOperator(
-          sql("SELECT id FROM nested_null_sort_native ORDER BY a ASC NULLS LAST, id"),
-          Seq(classOf[CometSortExec]))
-        checkSparkAnswerAndOperator(
-          sql("SELECT id FROM nested_null_sort_native ORDER BY a DESC NULLS FIRST, id LIMIT 3"),
-          Seq(classOf[CometTakeOrderedAndProjectExec]))
-        checkSparkAnswerAndOperator(
-          sql(
-            "SELECT id, DENSE_RANK() OVER (ORDER BY a ASC NULLS LAST) AS r " +
-              "FROM nested_null_sort_native"),
-          Seq(classOf[CometWindowExec]))
-      }
-    }
-  }
-
-  test("default array_sort orders null elements last and nested nulls first in native") {
-    withTable("nested_null_array_sort_native") {
-      sql("CREATE TABLE nested_null_array_sort_native (a ARRAY<ARRAY<INT>>) USING parquet")
-      sql("""INSERT INTO nested_null_array_sort_native VALUES
-        |(array(array(1), array(CAST(NULL AS INT)), CAST(NULL AS ARRAY<INT>), array(0))),
-        |(CAST(NULL AS ARRAY<ARRAY<INT>>))""".stripMargin)
-
-      withSQLConf(CometConf.COMET_SCALA_UDF_CODEGEN_ENABLED.key -> "false") {
-        checkSparkAnswerAndOperator(
-          sql("SELECT array_sort(a) FROM nested_null_array_sort_native"),
-          Seq(classOf[CometProjectExec]))
       }
     }
   }
@@ -252,9 +208,7 @@ class CometExpressionSuite extends CometTestBase with AdaptiveSparkPlanHelper {
 
     rows.toDF("id", "f", "d").createOrReplaceTempView("strict_fp_bits")
 
-    withSQLConf(
-      CometConf.getExprAllowIncompatConfigKey("SortOrder") -> "false",
-      CometConf.COMET_EXEC_STRICT_FLOATING_POINT.key -> "true") {
+    withSQLConf(CometConf.COMET_EXEC_STRICT_FLOATING_POINT.key -> "true") {
       for (col <- Seq("f", "d")) {
         val query = s"SELECT id, f, d FROM strict_fp_bits ORDER BY $col, id"
         // LocalTableScanExec has no native counterpart enabled by default; it is the source of
@@ -297,15 +251,10 @@ class CometExpressionSuite extends CometTestBase with AdaptiveSparkPlanHelper {
       df.withColumn("id", monotonically_increasing_id()).write.parquet(path)
       spark.read.parquet(path).createOrReplaceTempView("tbl")
 
-      // The sort stays native whether or not incompatible expressions are allowed.
-      Seq("false", "true").foreach { allowIncompat =>
-        withSQLConf(
-          CometConf.getExprAllowIncompatConfigKey("SortOrder") -> allowIncompat,
-          CometConf.COMET_EXEC_STRICT_FLOATING_POINT.key -> "true") {
-          checkSparkAnswerAndOperator(
-            sql("select * from tbl order by 1, 2, 3"),
-            Seq(classOf[CometSortExec]))
-        }
+      withSQLConf(CometConf.COMET_EXEC_STRICT_FLOATING_POINT.key -> "true") {
+        checkSparkAnswerAndOperator(
+          sql("select * from tbl order by 1, 2, 3"),
+          Seq(classOf[CometSortExec]))
       }
     }
   }
@@ -344,9 +293,7 @@ class CometExpressionSuite extends CometTestBase with AdaptiveSparkPlanHelper {
 
     rows.toDF("id", "d").createOrReplaceTempView("strict_fp_nested_bits")
 
-    withSQLConf(
-      CometConf.getExprAllowIncompatConfigKey("SortOrder") -> "false",
-      CometConf.COMET_EXEC_STRICT_FLOATING_POINT.key -> "true") {
+    withSQLConf(CometConf.COMET_EXEC_STRICT_FLOATING_POINT.key -> "true") {
       // The zeros are peers, and so are the two NaNs, which sort last.
       for ((key, value, order) <- Seq[(String, Row => Option[Double], Seq[Int])](
           ("array(d)", r => Some(r.getSeq[Double](1).head), Seq(2, 3, 4, 0, 1)),

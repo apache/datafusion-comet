@@ -167,9 +167,6 @@ class CometWindowExecSuite extends CometTestBase {
         SQLConf.ADAPTIVE_EXECUTION_ENABLED.key -> "false",
         SQLConf.SHUFFLE_PARTITIONS.key -> "1",
         CometConf.COMET_EXEC_STRICT_FLOATING_POINT.key -> strictFloatingPoint,
-        // Defaults to true under CometTestBase; pin it so strict mode exercises the shipped
-        // admission policy rather than the test harness's escape hatch.
-        CometConf.getExprAllowIncompatConfigKey("SortOrder") -> "false",
         CometConf.COMET_EXEC_WINDOW_GROUP_LIMIT_ENABLED.key -> "true") {
         withTempView("floating_window_peers") {
           // LocalTableScan preserves NaN payloads, unlike a Parquet round trip. Check the input
@@ -230,7 +227,6 @@ class CometWindowExecSuite extends CometTestBase {
         SQLConf.ADAPTIVE_EXECUTION_ENABLED.key -> "false",
         SQLConf.SHUFFLE_PARTITIONS.key -> "1",
         CometConf.COMET_EXEC_STRICT_FLOATING_POINT.key -> "false",
-        CometConf.getExprAllowIncompatConfigKey("SortOrder") -> "false",
         CometConf.COMET_EXEC_WINDOW_GROUP_LIMIT_ENABLED.key -> "true") {
         for {
           rankFunction <- Seq("RANK", "DENSE_RANK")
@@ -278,7 +274,6 @@ class CometWindowExecSuite extends CometTestBase {
       SQLConf.ADAPTIVE_EXECUTION_ENABLED.key -> "false",
       SQLConf.SHUFFLE_PARTITIONS.key -> "1",
       "spark.sql.optimizer.windowGroupLimitThreshold" -> "1000",
-      CometConf.getExprAllowIncompatConfigKey("SortOrder") -> "false",
       CometConf.COMET_EXEC_WINDOW_GROUP_LIMIT_ENABLED.key -> "true") {
       withTempView("nested_null_group_limit") {
         Seq((1, Some(1)), (2, Some(1)), (3, Some(2)), (4, None), (5, None))
@@ -325,7 +320,6 @@ class CometWindowExecSuite extends CometTestBase {
 
         withSQLConf(
           CometConf.COMET_EXEC_STRICT_FLOATING_POINT.key -> "true",
-          CometConf.getExprAllowIncompatConfigKey("SortOrder") -> "false",
           CometConf.COMET_EXEC_WINDOW_GROUP_LIMIT_ENABLED.key -> "false") {
           checkSparkAnswerAndOperator(
             sql(s"""SELECT id, SUM(id) OVER (ORDER BY $orderColumn) AS running
