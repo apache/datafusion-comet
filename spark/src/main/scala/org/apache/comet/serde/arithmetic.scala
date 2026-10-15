@@ -30,7 +30,6 @@ import org.apache.comet.shims.CometEvalModeUtil
 
 trait MathBase {
   def createMathExpression(
-      expr: Expression,
       left: Expression,
       right: Expression,
       inputs: Seq[Attribute],
@@ -144,7 +143,6 @@ trait MathBase {
    * single `returnType` / `evalMode` is correct for every inner node.
    */
   def createBalancedMathExpr(
-      expr: Expression,
       operands: Seq[Expression],
       inputs: Seq[Attribute],
       binding: Boolean,
@@ -195,7 +193,6 @@ object CometAdd extends CometExpressionSerde[Add] with MathBase {
         { case _: Add => true; case _ => false },
         { case a: Add => (a.left, a.right) })
       createBalancedMathExpr(
-        expr,
         operands,
         inputs,
         binding,
@@ -204,7 +201,6 @@ object CometAdd extends CometExpressionSerde[Add] with MathBase {
         (builder, mathExpr) => builder.setAdd(mathExpr))
     } else {
       createMathExpression(
-        expr,
         expr.left,
         expr.right,
         inputs,
@@ -226,7 +222,6 @@ object CometSubtract extends CometExpressionSerde[Subtract] with MathBase {
       inputs: Seq[Attribute],
       binding: Boolean): Option[ExprOuterClass.Expr] = {
     createMathExpression(
-      expr,
       expr.left,
       expr.right,
       inputs,
@@ -254,7 +249,6 @@ object CometMultiply extends CometExpressionSerde[Multiply] with MathBase {
         { case _: Multiply => true; case _ => false },
         { case m: Multiply => (m.left, m.right) })
       createBalancedMathExpr(
-        expr,
         operands,
         inputs,
         binding,
@@ -263,7 +257,6 @@ object CometMultiply extends CometExpressionSerde[Multiply] with MathBase {
         (builder, mathExpr) => builder.setMultiply(mathExpr))
     } else {
       createMathExpression(
-        expr,
         expr.left,
         expr.right,
         inputs,
@@ -302,7 +295,6 @@ object CometDivide extends CometExpressionSerde[Divide] with MathBase {
     val rightExpr =
       if (expr.evalMode != EvalMode.ANSI) nullIfWhenPrimitive(expr.right) else expr.right
     createMathExpression(
-      expr,
       expr.left,
       rightExpr,
       inputs,
@@ -346,7 +338,6 @@ object CometIntegralDivide extends CometExpressionSerde[IntegralDivide] with Mat
     }
 
     val divideExpr = createMathExpression(
-      expr,
       left,
       rightExpr,
       inputs,
@@ -392,7 +383,6 @@ object CometRemainder extends CometExpressionSerde[Remainder] with MathBase {
       inputs: Seq[Attribute],
       binding: Boolean): Option[ExprOuterClass.Expr] = {
     createMathExpression(
-      expr,
       expr.left,
       expr.right,
       inputs,

@@ -48,16 +48,12 @@ const ICEBERG_PROVIDER_CLASS_PROPERTY: &str = "s3.comet.credential.provider.clas
 /// iceberg-storage-opendal's own settings, such as `opendal.io-timeout-ms`.
 const STORAGE_PROPERTY_PREFIXES: &[&str] = &["s3.", "gcs.", "adls.", "client.", "opendal."];
 
-/// Pick an OpenDAL storage backend from a URI's scheme. `file` (or no scheme) falls through to
-/// the local file system. `memory` is used by the write path to assemble manifest bytes that
-/// stay entirely in-process. For S3, the Comet credential bridge is wired in when a provider
-/// class is configured; `access_mode` is forwarded to the JVM SPI so the read and write paths can
-/// be granted different (e.g. read-only vs read-write) credentials.
+/// Pick an OpenDAL storage backend for a URI whose scheme `builtin_storage_schemes` lists for
+/// `access_mode`, or that is an opted-in S3-compliant alias written in lowercase; anything else is
+/// rejected before the match, so the list alone decides what each mode admits. For S3, the Comet
+/// credential bridge is wired in when a provider class is configured and `access_mode` is
+/// forwarded to the JVM SPI.
 ///
-/// The JVM planner mirrors the schemes admitted here by hand, so that it can decline a scan
-/// cleanly instead of failing at execution. Changing the arms below means updating
-/// `CometScanRule.icebergReadableSchemes` (reads) and
-/// `CometIcebergNativeWrite.SupportedStorageSchemes` (writes).
 /// The bool is false when a read fell back to opendal's default chain because the configured S3
 /// access provider failed to initialise; such a `FileIO` must not be cached, so the next task
 /// retries.
@@ -67,24 +63,22 @@ pub(crate) fn storage_factory_for(
     catalog_name: &str,
     access_mode: AccessMode,
 ) -> Result<(Arc<dyn StorageFactory>, bool), DataFusionError> {
+    // Verbatim match: OpenDAL strips the scheme prefix from every path case-sensitively at open
+    // time, so admitting `S3://` here would only defer the failure. Aliases are held to the same
+    // rule (`is_iceberg_alias_scheme`). The JVM gates match verbatim.
     let scheme = scheme_of(path);
+    if !builtin_storage_schemes(access_mode).contains(&scheme)
+        && !is_s3_family_scheme(scheme, catalog_properties)
+    {
+        return Err(DataFusionError::Execution(format!(
+            "Unsupported storage scheme: {scheme}"
+        )));
+    }
     match scheme {
         "file" => Ok((Arc::new(OpenDalStorageFactory::Fs), true)),
         "memory" => Ok((Arc::new(OpenDalStorageFactory::Memory), true)),
         "gs" => Ok((Arc::new(OpenDalStorageFactory::Gcs), true)),
-        // Reads keep the OSS backend they have always had (CometScanRule admits `oss` scan
-        // locations through HadoopFileIO). Writes fail closed: Comet does not forward `oss.*`
-        // properties into the FileIO and no test covers the write path, so OSS-specific
-        // endpoint/credential configuration could silently be dropped. The JVM write gate
-        // already declines `oss` locations; this is the native-side backstop.
-        "oss" => match access_mode {
-            AccessMode::Read => Ok((Arc::new(OpenDalStorageFactory::Oss), true)),
-            AccessMode::Write => Err(DataFusionError::Execution(
-                "OSS is not supported for native Iceberg writes (oss.* properties are not \
-                 forwarded to the native FileIO)"
-                    .to_string(),
-            )),
-        },
+        "oss" => Ok((Arc::new(OpenDalStorageFactory::Oss), true)),
         // s3, s3a, and any opted-in s3-compliant alias (e.g. blob) route to the S3 backend. Listed
         // last so the built-in backends above stay authoritative even if one of their schemes is
         // also named in `fs.comet.s3Compliant.schemes`. An alias additionally gets a wrapper that
@@ -93,7 +87,7 @@ pub(crate) fn storage_factory_for(
         // location-scoped provider gets a storage that serves each file with the credential of
         // its policy location -- see iceberg_location_scoped.
         s if is_s3_family_scheme(s, catalog_properties) => {
-            let alias = is_s3_compliant_alias_scheme(s, catalog_properties);
+            let alias = is_iceberg_alias_scheme(s, catalog_properties);
             let (access, cacheable) =
                 build_s3_access(path, catalog_properties, catalog_name, access_mode)?;
             let factory: Arc<dyn StorageFactory> = match access {
@@ -111,6 +105,7 @@ pub(crate) fn storage_factory_for(
             };
             Ok((factory, cacheable))
         }
+        // Only a listed scheme without an arm reaches here; the tests below fail on that.
         _ => Err(DataFusionError::Execution(format!(
             "Unsupported storage scheme: {scheme}"
         ))),
@@ -301,6 +296,17 @@ fn cached_file_io(
         drop(evicted);
     }
     Ok(file_io)
+}
+
+/// The single point of change for the built-in schemes `storage_factory_for` admits per access
+/// mode; the JVM read and write gates load these lists over JNI. `memory` is write-only: an OpenDAL
+/// memory backend is a fresh empty in-process store the write path assembles manifests in, so a
+/// read finds nothing. `oss` is read-only: no `oss.*` property is forwarded and no test covers it.
+pub(crate) fn builtin_storage_schemes(access_mode: AccessMode) -> &'static [&'static str] {
+    match access_mode {
+        AccessMode::Read => &["file", "gs", "oss", "s3", "s3a"],
+        AccessMode::Write => &["file", "memory", "gs", "s3", "s3a"],
+    }
 }
 
 pub(crate) fn load_file_io(
@@ -574,7 +580,7 @@ fn env_region_present() -> bool {
 /// The JVM write gate (`CometIcebergNativeWrite.storageScheme`) mirrors this rule exactly, case
 /// included. Change both together, and keep the cases in
 /// `scheme_of_extracts_scheme_from_all_uri_forms` in step with its `storageScheme` test.
-fn scheme_of(path: &str) -> &str {
+pub(crate) fn scheme_of(path: &str) -> &str {
     match path.split_once(':') {
         Some((scheme, _)) if !scheme.is_empty() && !scheme.contains('/') => scheme,
         _ => "file",
@@ -587,7 +593,19 @@ fn scheme_of(path: &str) -> &str {
 /// iceberg-rust's storage factory has no `s3n` backend and the Scala Iceberg scheme gate
 /// (`isIcebergReadableScheme`) rejects `s3n` before a path ever reaches this operator.
 fn is_s3_family_scheme(scheme: &str, catalog_properties: &HashMap<String, String>) -> bool {
-    matches!(scheme, "s3" | "s3a") || is_s3_compliant_alias_scheme(scheme, catalog_properties)
+    matches!(scheme, "s3" | "s3a") || is_iceberg_alias_scheme(scheme, catalog_properties)
+}
+
+/// True if `scheme` is an opted-in S3-compliant alias written exactly as the lowercase form of its
+/// list entry. The shared `is_s3_compliant_alias_scheme` is case-insensitive, which is safe for
+/// the Parquet path because it rewrites an alias URL to `s3://` before anything opens it. The
+/// Iceberg path opens the recorded location as written, and OpenDAL's S3 backend checks it against
+/// a `scheme://bucket/` prefix whose scheme comes from `Url::parse` and so is lowercase, so
+/// `BLOB://bucket/key` would pass a case-insensitive gate here and fail at open time. The JVM
+/// Iceberg gate matches the same way.
+fn is_iceberg_alias_scheme(scheme: &str, catalog_properties: &HashMap<String, String>) -> bool {
+    !scheme.bytes().any(|b| b.is_ascii_uppercase())
+        && is_s3_compliant_alias_scheme(scheme, catalog_properties)
 }
 
 #[cfg(test)]
@@ -823,7 +841,25 @@ mod tests {
         // oss.* property forwarding exists and is tested.
         assert!(factory_result("oss://bucket/db/table", AccessMode::Read).is_ok());
         let err = factory_result("oss://bucket/db/table", AccessMode::Write).unwrap_err();
-        assert!(err.contains("OSS"), "unexpected error: {err}");
+        assert!(
+            err.contains("Unsupported storage scheme: oss"),
+            "unexpected error: {err}"
+        );
+    }
+
+    #[test]
+    fn memory_scheme_is_writable_but_not_readable() {
+        // The write path assembles manifests in a fresh in-process memory store. A read against
+        // a new memory store can never find data, so the factory must decline it up front.
+        assert!(factory_result("memory:manifest.avro", AccessMode::Write).is_ok());
+        assert!(factory_result("memory:///manifest.avro", AccessMode::Write).is_ok());
+        for path in ["memory:manifest.avro", "memory:///key.parquet"] {
+            let err = factory_result(path, AccessMode::Read).unwrap_err();
+            assert!(
+                err.contains("Unsupported storage scheme: memory"),
+                "unexpected error for {path}: {err}"
+            );
+        }
     }
 
     #[test]
@@ -831,10 +867,82 @@ mod tests {
         for mode in [AccessMode::Read, AccessMode::Write] {
             assert!(factory_result("file:///tmp/x", mode).is_ok());
             assert!(factory_result("/tmp/no-scheme", mode).is_ok());
-            assert!(factory_result("memory:manifest.avro", mode).is_ok());
             // No credential provider configured: the default chain applies in both modes.
             assert!(factory_result("s3://bucket/db/table", mode).is_ok());
             assert!(factory_result("gs://bucket/db/table", mode).is_ok());
+        }
+    }
+
+    #[test]
+    fn scheme_list_pre_check_is_load_bearing() {
+        // The oss and memory arms build a backend for either mode; only their absence from the
+        // list for the other mode rejects them. Both facts are asserted so that adding an
+        // access-mode branch back into an arm, or listing the scheme, breaks this test.
+        assert!(factory_result("oss://bucket/path", AccessMode::Read).is_ok());
+        assert!(!builtin_storage_schemes(AccessMode::Write).contains(&"oss"));
+        let err = factory_result("oss://bucket/path", AccessMode::Write).unwrap_err();
+        assert!(
+            err.contains("Unsupported storage scheme: oss"),
+            "unexpected error: {err}"
+        );
+        assert!(factory_result("memory:///path", AccessMode::Write).is_ok());
+        assert!(!builtin_storage_schemes(AccessMode::Read).contains(&"memory"));
+        let err = factory_result("memory:///path", AccessMode::Read).unwrap_err();
+        assert!(
+            err.contains("Unsupported storage scheme: memory"),
+            "unexpected error: {err}"
+        );
+    }
+
+    #[test]
+    fn mixed_case_scheme_is_rejected_for_both_modes() {
+        // OpenDAL strips the scheme prefix from every path case-sensitively at open time
+        // (`S3://bucket/key` fails its `s3://bucket/` prefix check), so the factory must not
+        // admit what the open cannot serve. The JVM gates match the built-in set verbatim too.
+        for mode in [AccessMode::Read, AccessMode::Write] {
+            for path in ["S3://bucket/key", "File:///tmp/x", "GS://bucket/key"] {
+                let err = factory_result(path, mode).unwrap_err();
+                assert!(
+                    err.contains("Unsupported storage scheme"),
+                    "unexpected error for {path} in {mode:?}: {err}"
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn alias_scheme_is_matched_verbatim() {
+        // An alias location is opened as written, and OpenDAL's S3 backend checks it against a
+        // lowercase `scheme://bucket/` prefix, so a mixed-case alias that passed a
+        // case-insensitive gate here would only fail at open time. The list entry may be written
+        // in any case; the location's scheme must match its lowercase form exactly.
+        for listed in ["blob", " BLOB ", "minio,Blob"] {
+            let props = HashMap::from([(
+                "fs.comet.s3Compliant.schemes".to_string(),
+                listed.to_string(),
+            )]);
+            for mode in [AccessMode::Read, AccessMode::Write] {
+                assert!(
+                    storage_factory_for("blob://bucket/key", &props, "test_cat", mode).is_ok(),
+                    "blob://bucket/key must be admitted for {mode:?} with list {listed:?}"
+                );
+                for path in [
+                    "BLOB://bucket/key",
+                    "Blob://bucket/key",
+                    "BLOB:///bucket/key",
+                ] {
+                    let err = storage_factory_for(path, &props, "test_cat", mode)
+                        .map(|_| ())
+                        .expect_err(&format!(
+                            "{path} must be rejected for {mode:?} with list {listed:?}"
+                        ))
+                        .to_string();
+                    assert!(
+                        err.contains("Unsupported storage scheme"),
+                        "unexpected error for {path} in {mode:?}: {err}"
+                    );
+                }
+            }
         }
     }
 
@@ -867,6 +975,43 @@ mod tests {
             "arn:aws:iam::1:role/r".to_string(),
         );
         assert!(has_explicit_s3_credentials(&blank));
+    }
+
+    #[test]
+    fn listed_schemes_are_accepted_by_storage_factory() {
+        for mode in [AccessMode::Read, AccessMode::Write] {
+            for scheme in builtin_storage_schemes(mode) {
+                let url = format!("{scheme}://bucket/path");
+                assert!(
+                    factory_result(&url, mode).is_ok(),
+                    "{scheme} is listed for {mode:?} but the factory rejects it"
+                );
+            }
+        }
+        assert!(builtin_storage_schemes(AccessMode::Read).contains(&"oss"));
+        assert!(!builtin_storage_schemes(AccessMode::Write).contains(&"oss"));
+        assert!(!builtin_storage_schemes(AccessMode::Read).contains(&"memory"));
+        assert!(builtin_storage_schemes(AccessMode::Write).contains(&"memory"));
+    }
+
+    #[test]
+    fn unlisted_schemes_are_rejected_for_both_modes() {
+        let unlisted = [
+            "hdfs", "abfs", "abfss", "wasb", "wasbs", "gcs", "http", "https", "azure",
+        ];
+        for mode in [AccessMode::Read, AccessMode::Write] {
+            for scheme in unlisted {
+                let err = factory_result(&format!("{scheme}://bucket/path"), mode).unwrap_err();
+                assert!(
+                    err.contains("Unsupported storage scheme"),
+                    "unexpected error for {scheme} in {mode:?}: {err}"
+                );
+                assert!(
+                    !builtin_storage_schemes(mode).contains(&scheme),
+                    "{scheme} must not be listed for {mode:?}"
+                );
+            }
+        }
     }
 
     #[test]

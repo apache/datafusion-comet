@@ -28,7 +28,7 @@ import org.apache.spark.sql.execution.{SparkPlan, SQLExecution, UnaryExecNode}
 import org.apache.spark.sql.execution.datasources.v2.V2CommandExec
 import org.apache.spark.sql.execution.metric.{SQLMetric, SQLMetrics}
 
-import org.apache.comet.iceberg.{IcebergDriverMetricsShim, IcebergReflection}
+import org.apache.comet.iceberg.{DeltaCommand, IcebergDriverMetricsShim, IcebergReflection}
 
 /**
  * Driver-side committer for Comet's split-operator Iceberg V2 write.
@@ -38,7 +38,8 @@ case class IcebergCommitExec(
     @transient batchWrite: BatchWrite,
     @transient write: Write,
     @transient refreshCache: IcebergCommitExec.RefreshCache,
-    child: SparkPlan)
+    child: SparkPlan,
+    command: Option[DeltaCommand] = None)
     extends V2CommandExec
     with UnaryExecNode
     with Logging {
@@ -95,9 +96,9 @@ case class IcebergCommitExec(
           cause)
         // The BatchWrite contract expects a job-level abort. Iceberg's own `SparkWrite.abort`
         // only deletes files after a cleanable *commit* failure and skips cleanup otherwise, so
-        // the data files of tasks that completed before the job failed would stay behind even
-        // though nothing can reference them (no commit was attempted). Delete them here; the
-        // failed task's own files are cleaned up by the task itself.
+        // the files of tasks that completed before the job failed would stay behind even though
+        // nothing can reference them (no commit was attempted). Delete newly written data/delete
+        // files here; the failed task's own files are cleaned up by the task itself.
         val failure = abortAfter(completed, cause)
         try deleteCompletedTaskFiles(completed)
         catch {
@@ -110,7 +111,7 @@ case class IcebergCommitExec(
 
     try {
       messages.foreach(batchWrite.onDataWriterCommit)
-      IcebergWriteSummaryShim.commit(batchWrite, messages, child)
+      IcebergWriteSummaryShim.commit(batchWrite, messages, child, command)
       logInfo(s"Iceberg commit succeeded with ${messages.length} task message(s)")
     } catch {
       case cause: Throwable =>
@@ -143,7 +144,7 @@ case class IcebergCommitExec(
     if (locations.nonEmpty) {
       val io = IcebergReflection
         .getOuterSparkWrite(batchWrite)
-        .flatMap(IcebergReflection.getTableFromSparkWrite)
+        .flatMap(IcebergReflection.getTableFromIcebergWrite)
         .flatMap(IcebergReflection.getTableIO)
       io match {
         case Some(fileIO) =>
@@ -153,7 +154,7 @@ case class IcebergCommitExec(
             s"job abort, ${completed.length} completed task(s)")
         case None =>
           logWarning(
-            s"Could not resolve the table FileIO; leaving ${locations.size} data file(s) from " +
+            s"Could not resolve the table FileIO; leaving ${locations.size} written file(s) from " +
               "completed tasks of a failed write job for remove_orphan_files")
       }
     }

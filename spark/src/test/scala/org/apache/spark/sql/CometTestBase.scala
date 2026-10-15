@@ -79,9 +79,9 @@ abstract class CometTestBase
   }
 
   /**
-   * Sets each Spark-to-Arrow conversion that [[sparkConf]] turns on, which are off by default, to
-   * `enabled`. These are the conversions `spark.comet.sparkToColumnar.enabled` stood for before
-   * each had a config of its own.
+   * Sets each Spark-to-Arrow conversion that [[sparkConf]] turns on to `enabled`. All but the
+   * `OneRowRelation` conversion are off by default. These are the conversions
+   * `spark.comet.sparkToColumnar.enabled` stood for before each had a config of its own.
    */
   protected def sparkToArrowConversionConfs(enabled: Boolean): Seq[(String, String)] =
     Seq(
@@ -126,6 +126,10 @@ abstract class CometTestBase
     // generic "<operator> is not supported" message mask the missing reason.
     // See https://github.com/apache/datafusion-comet/issues/5230.
     conf.set(CometConf.COMET_STRICT_FALLBACK_REASONS.key, "true")
+    // Fail a native plan that labels a timestamp with another timezone than Comet's convention.
+    // The label never changes the values, so result comparisons cannot catch it, and the casts
+    // at scans and shuffle writes would otherwise repair it without a trace.
+    conf.set(CometConf.COMET_STRICT_TIMESTAMP_LABELS.key, "true")
     // SortOrder is incompatible for mixed zero and negative zero floating point values, but
     // this is an edge case, and we expect most users to allow sorts on floating point, so we
     // enable this for the tests
@@ -1339,6 +1343,42 @@ abstract class CometTestBase
   def stripRandomPlanParts(plan: String): String = {
     plan.replaceFirst("file:.*,", "").replaceAll(raw"#\d+", "")
   }
+
+  /**
+   * Runs `df` and returns the metric `name` of its first Comet shuffle exchange. Answer checks
+   * such as `checkSparkAnswer` execute copies built from the logical plan, so this plan's
+   * exchange has no metrics until `df` itself has run. AdaptiveSparkPlanHelper's `collectFirst`
+   * also looks inside AQE query stages, which a plain tree walk stops above.
+   */
+  protected def cometShuffleMetric(df: DataFrame, name: String): Long = {
+    df.collect()
+    collectFirst(df.queryExecution.executedPlan) { case e: CometShuffleExchangeExec =>
+      e.metrics(name).value
+    }.get
+  }
+
+  /**
+   * Rows for shuffle tests of offsets stored as lengths, with offsets in a string, a binary, an
+   * array, a map and a struct column. Every tenth string is null, and so are the binary, array
+   * and map values next to it. The string after it is empty, and every array holds a null.
+   */
+  protected def rowsWithOffsets(
+      n: Int): Seq[(Int, String, Array[Byte], Seq[String], Map[String, String], (String, Int))] =
+    (0 until n).map { i =>
+      val s = i % 10 match {
+        case 0 => null
+        case 1 => ""
+        case _ => s"str$i"
+      }
+      val value = Option(s)
+      (
+        i,
+        s,
+        value.map(_.getBytes("UTF-8")).orNull,
+        value.map(v => Seq(v, null, s"a$i")).orNull,
+        value.map(v => Map(s"k$i" -> v)).orNull,
+        (s, i))
+    }
 
   protected def checkCometExchange(
       df: DataFrame,

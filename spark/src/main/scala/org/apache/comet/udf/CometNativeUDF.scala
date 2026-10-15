@@ -23,6 +23,7 @@ import org.apache.spark.sql.SparkSession
 import org.apache.spark.sql.comet.CometUdfErrors
 import org.apache.spark.sql.types.DataType
 
+import org.apache.comet.serde.QueryPlanSerde
 import org.apache.comet.shims.ShimSessionFunctionRegistry
 
 /**
@@ -46,9 +47,10 @@ object CometNativeUDF {
   /**
    * Register a single native UDF with an explicit signature.
    *
-   * Validates the library on the driver (loads it, confirms a UDF named `name` exists), then
-   * installs `name` as a temporary function of the session, as `spark.udf.register` would: other
-   * sessions do not see it, and registering another function under the same name replaces it.
+   * Checks that Comet can carry the argument and return types natively and validates the library
+   * on the driver (loads it, confirms a UDF named `name` exists), then installs `name` as a
+   * temporary function of the session, as `spark.udf.register` would: other sessions do not see
+   * it, and registering another function under the same name replaces it.
    *
    * Executors need no registration: the library path travels with the plan in the
    * `NativeScalarUdf` proto, and each executor loads the library itself on first use. The path
@@ -58,8 +60,9 @@ object CometNativeUDF {
    * argument types differ, other than in nullability, and inserts no casts, so cast the arguments
    * in the query instead.
    *
-   * Spark cannot evaluate the call itself: if Comet does not take the operator holding it, the
-   * query fails.
+   * Spark cannot evaluate the call itself, so a query fails where Spark would have to: in an
+   * operator Comet does not take, and while planning over local data, in a filter on partition
+   * columns, or to sample the keys of a global sort.
    *
    * `deterministic` must be `true`. Comet plans every imported kernel as immutable, so a
    * nondeterministic UDF cannot yet be expressed; passing `false` fails here rather than silently
@@ -83,6 +86,13 @@ object CometNativeUDF {
           "UDFs as immutable, so a nondeterministic function may be constant-folded or " +
           "eliminated as a common subexpression. " +
           "See https://github.com/apache/datafusion-comet/issues/5249")
+    }
+    // With a type Comet cannot represent natively, every call would fall back to Spark, which
+    // cannot evaluate it.
+    (inputTypes :+ returnType).find(QueryPlanSerde.serializeDataType(_).isEmpty).foreach { t =>
+      throw new IllegalArgumentException(
+        s"native UDF '$name': Comet has no native representation for type " +
+          s"${t.catalogString}, so no call to it could run.")
     }
     validateLibrary(libraryPath, name)
     ShimSessionFunctionRegistry

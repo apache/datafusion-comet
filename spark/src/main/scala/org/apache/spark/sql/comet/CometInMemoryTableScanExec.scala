@@ -32,6 +32,7 @@ import org.apache.spark.sql.execution.adaptive.AdaptiveSparkPlanHelper
 import org.apache.spark.sql.execution.columnar.{CachedRDDBuilder, InMemoryRelation, InMemoryTableScanExec}
 import org.apache.spark.sql.execution.metric.{SQLMetric, SQLMetrics}
 import org.apache.spark.sql.vectorized.ColumnarBatch
+import org.apache.spark.util.LongAccumulator
 
 import org.apache.comet.CometConf
 import org.apache.comet.serde.CometOperatorSerde
@@ -67,6 +68,16 @@ case class CometInMemoryTableScanExec(
 
   override lazy val metrics: Map[String, SQLMetric] = Map(
     "numOutputRows" -> SQLMetrics.createMetric(sparkContext, "number of output rows"))
+
+  // The partitions and batches a scan read after pruning, as Spark's InMemoryTableScanExec counts
+  // them under spark.sql.inMemoryTableScanStatistics.enable. Spark's PartitionBatchPruningSuite
+  // reads these to check that pruning skipped what it should have, and only they can show that:
+  // the answer is the same whether a batch was pruned or decoded and filtered.
+  lazy val enableAccumulatorsForTest: Boolean = conf.inMemoryTableScanStatisticsEnabled
+
+  lazy val readPartitions: LongAccumulator = sparkContext.longAccumulator
+
+  lazy val readBatches: LongAccumulator = sparkContext.longAccumulator
 
   // `scanOutput` always equals this, including when it is empty. An empty-output scan
   // (`SELECT count(*)`) emits genuinely zero-column batches carrying only a row count: widening it
@@ -125,6 +136,11 @@ case class CometInMemoryTableScanExec(
   // stats bug, for instance -- and silently ignoring it would make Comet diverge from Spark on a
   // knob a user reaching for it is specifically trying to control.
   override def doExecuteColumnar(): RDD[ColumnarBatch] = {
+    if (enableAccumulatorsForTest) {
+      readPartitions.setValue(0)
+      readBatches.setValue(0)
+    }
+
     val numOutputRows = longMetric("numOutputRows")
 
     // Resolved here rather than at planning time. CachedRDDBuilder.cachedColumnBuffers is not a
@@ -142,8 +158,23 @@ case class CometInMemoryTableScanExec(
         cachedBuffers
       }
 
+    // Counted after pruning, as Spark counts them, so a pruned batch is not a read one.
+    val countedBuffers = if (enableAccumulatorsForTest) {
+      filteredBuffers.mapPartitionsInternal { iter =>
+        if (iter.hasNext) {
+          readPartitions.add(1)
+        }
+        iter.map { batch =>
+          readBatches.add(1)
+          batch
+        }
+      }
+    } else {
+      filteredBuffers
+    }
+
     serializer
-      .convertCachedBatchToColumnarBatch(filteredBuffers, relationOutput, scanOutput, conf)
+      .convertCachedBatchToColumnarBatch(countedBuffers, relationOutput, scanOutput, conf)
       .map { cb =>
         numOutputRows += cb.numRows().toLong
         cb
