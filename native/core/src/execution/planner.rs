@@ -8216,10 +8216,12 @@ mod tests {
         assert_eq!(fields[1].name, "category");
     }
 
-    /// iceberg-rust holds a deletion vector's blob coordinates as `u64`, so the planner rejects a
-    /// negative one from the proto rather than build the delete file with it.
+    /// iceberg-rust holds a deletion vector's record count and blob coordinates as `u64`, so the
+    /// planner rejects a negative one from the proto rather than build the delete file with it. A
+    /// deletion vector without a record count reaches iceberg-rust's builder, whose error must
+    /// come back through the `Invalid Iceberg delete file` mapping.
     #[test]
-    fn test_delete_file_pool_rejects_negative_coordinates() {
+    fn test_delete_file_pool_rejects_invalid_deletion_vectors() {
         let deletion_vector = spark_operator::IcebergDeleteFile {
             file_path_idx: 0,
             content_type: "POSITION_DELETES".to_string(),
@@ -8254,6 +8256,20 @@ mod tests {
                     ..deletion_vector.clone()
                 },
                 "negative content size",
+            ),
+            (
+                spark_operator::IcebergDeleteFile {
+                    record_count: Some(-1),
+                    ..deletion_vector.clone()
+                },
+                "negative record count",
+            ),
+            (
+                spark_operator::IcebergDeleteFile {
+                    record_count: None,
+                    ..deletion_vector.clone()
+                },
+                "is missing record_count",
             ),
         ] {
             let error = parse(delete).expect_err(expected).to_string();

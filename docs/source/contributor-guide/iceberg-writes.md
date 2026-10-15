@@ -246,9 +246,8 @@ Points where Comet adapts iceberg-rust to match iceberg-java:
   NULL past `chrono`'s calendar ([#6145](https://github.com/apache/datafusion-comet/issues/6145)).
   All four of its transforms floor a pre-1970 timestamp that lies exactly 999999 microseconds into a
   unit, which iceberg-java puts in the unit before
-  ([#6426](https://github.com/apache/datafusion-comet/issues/6426)), and its `day` puts some
-  timestamps from the last second before a pre-1970 midnight in the next day. Every other transform
-  stays on iceberg-rust.
+  ([#6426](https://github.com/apache/datafusion-comet/issues/6426)). Every other transform stays on
+  iceberg-rust.
 - **File names.** `file_name_prefix` embeds the partition id, the task attempt id and the operation
   id, so a retried or speculative attempt never reuses another attempt's file names.
 - **Row pacing.** iceberg-java's rolling writer checks the target file size every 1000 rows of the
