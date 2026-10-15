@@ -119,6 +119,10 @@ conversion of the native scan output and strict reads with `allowReadingShredded
 support is tracked by [#4295](https://github.com/apache/datafusion-comet/issues/4295) and
 [#3983](https://github.com/apache/datafusion-comet/issues/3983).
 
+Native scans support at most 64 nested object or array containers along a Variant value path.
+Typed containers and residual values share this limit. Deeper values fail with
+`MALFORMED_VARIANT` rather than exhausting the native thread stack.
+
 Shredded reconstruction can be slower than Spark's reader; see the
 [focused scan and allocation measurements in PR #5868](https://github.com/apache/datafusion-comet/pull/5868).
 

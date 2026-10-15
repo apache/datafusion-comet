@@ -642,9 +642,14 @@ fn unchanged_values_reuse_buffers_and_still_validate() {
             output.as_binary::<i32>().values().as_ptr()
         );
     }
-    let (output, changed) =
-        rewrite_residual_values(&values, metadata.as_binary::<i32>(), None, &[Some(0), None])
-            .unwrap();
+    let (output, changed) = rewrite_residual_values(
+        &values,
+        metadata.as_binary::<i32>(),
+        None,
+        &[Some(0), None],
+        0,
+    )
+    .unwrap();
     assert!(!changed);
     assert!(Arc::ptr_eq(&values, &output));
 
@@ -665,6 +670,7 @@ fn unchanged_values_reuse_buffers_and_still_validate() {
         missing_metadata.as_binary::<i32>(),
         None,
         &[Some(0), Some(1)],
+        0,
     )
     .is_err());
 }
@@ -699,6 +705,7 @@ fn lazy_rewrites_preserve_prefix_nulls_and_suffix() {
         metadata.as_binary::<i32>(),
         None,
         &[Some(0), None, Some(2), None],
+        0,
     )
     .unwrap();
     assert!(changed);
@@ -1031,4 +1038,126 @@ fn typed_scalar_canonicalizes_nan_and_keeps_negative_zero() {
         panic!("expected a float");
     };
     assert_eq!(v.to_bits(), (-0.0f32).to_bits());
+}
+
+// Construct fixed wire bytes bottom-up, without recursive Variant builders/validation.
+// One key "a", one-byte field ids/counts and four-byte offsets in every container.
+fn nested_variant_bytes(depth: usize, objects: bool) -> Vec<u8> {
+    let mut value = vec![0]; // Variant null
+    for _ in 0..depth {
+        let mut parent = if objects {
+            vec![0x0e, 1, 0]
+        } else {
+            vec![0x0f, 1]
+        };
+        parent.extend_from_slice(&0_u32.to_le_bytes());
+        parent.extend_from_slice(&(value.len() as u32).to_le_bytes());
+        parent.extend_from_slice(&value);
+        value = parent;
+    }
+    value
+}
+
+fn nested_variant_storage(residual_depth: usize, typed_depth: usize, objects: bool) -> ArrayRef {
+    let value = nested_variant_bytes(residual_depth, objects);
+    let mut state: ArrayRef = Arc::new(StructArray::from(vec![(
+        Arc::new(Field::new("value", DataType::Binary, true)),
+        Arc::new(BinaryArray::from(vec![value.as_slice()])) as ArrayRef,
+    )]));
+    for _ in 0..typed_depth {
+        let typed: ArrayRef = if objects {
+            Arc::new(StructArray::from(vec![(
+                Arc::new(Field::new("a", state.data_type().clone(), true)),
+                state,
+            )]))
+        } else {
+            Arc::new(ListArray::new(
+                Arc::new(Field::new("element", state.data_type().clone(), true)),
+                OffsetBuffer::new(vec![0, 1].into()),
+                state,
+                None,
+            ))
+        };
+        state = Arc::new(StructArray::from(vec![(
+            Arc::new(Field::new("typed_value", typed.data_type().clone(), true)),
+            typed,
+        )]));
+    }
+    // Metadata version 1, dictionary ["a"]. Independent of Comet's encoding routines.
+    let metadata: ArrayRef = Arc::new(BinaryArray::from(vec![&[1, 1, 0, 1, b'a'][..]]));
+    let state = state.as_struct();
+    let mut fields = state.fields().to_vec();
+    let mut columns = state.columns().to_vec();
+    fields.push(Arc::new(Field::new("metadata", DataType::Binary, false)));
+    columns.push(metadata);
+    Arc::new(StructArray::new(fields.into(), columns, None))
+}
+
+#[test]
+fn normalize_variant_nesting_boundary() {
+    for objects in [false, true] {
+        for typed_depth in [0, MAX_VARIANT_NESTING_DEPTH / 2, MAX_VARIANT_NESTING_DEPTH] {
+            let residual_depth = MAX_VARIANT_NESTING_DEPTH - typed_depth;
+            let input = nested_variant_storage(residual_depth, typed_depth, objects);
+            let output = normalize_variant_array(&input, &target_field(false)).unwrap();
+            assert_eq!(output.len(), 1);
+            // Full validation of supported output must also succeed.
+            Variant::try_new(
+                output.as_struct().column(1).as_binary::<i32>().value(0),
+                output.as_struct().column(0).as_binary::<i32>().value(0),
+            )
+            .unwrap();
+
+            let input = nested_variant_storage(residual_depth + 1, typed_depth, objects);
+            let error = normalize_variant_array(&input, &target_field(false)).unwrap_err();
+            assert!(error.to_string().contains("MALFORMED_VARIANT"), "{error}");
+        }
+    }
+}
+
+#[test]
+fn normalize_rejects_very_deep_residual_without_recursive_validation() {
+    // Run on a normal worker-sized stack. The input is encoded iteratively, so rejection
+    // cannot accidentally depend on the test builder's own recursion limit.
+    std::thread::Builder::new()
+        .stack_size(2 * 1024 * 1024)
+        .spawn(|| {
+            for objects in [false, true] {
+                let input = nested_variant_storage(4096, 0, objects);
+                let error = normalize_variant_array(&input, &target_field(false)).unwrap_err();
+                assert!(error.to_string().contains("MALFORMED_VARIANT"), "{error}");
+            }
+        })
+        .unwrap()
+        .join()
+        .unwrap();
+}
+
+#[test]
+fn variant_reencoding_rejects_excessive_depth() {
+    let metadata = VariantMetadata::new(&[1, 1, 0, 1, b'a']);
+    for objects in [false, true] {
+        let value = nested_variant_bytes(MAX_VARIANT_NESTING_DEPTH + 1, objects);
+        for order in [
+            VariantObjectKeyOrder::ArrowUtf8,
+            VariantObjectKeyOrder::SparkUtf16,
+        ] {
+            let error = variant_bytes(
+                &metadata,
+                Variant::new_with_metadata(metadata.clone(), &value),
+                order,
+            )
+            .unwrap_err();
+            assert!(error.to_string().contains("MALFORMED_VARIANT"), "{error}");
+        }
+    }
+}
+
+#[test]
+fn normalize_rejects_excessive_typed_storage_depth() {
+    for objects in [false, true] {
+        let input = nested_variant_storage(0, MAX_VARIANT_NESTING_DEPTH + 1, objects);
+        let error = normalize_variant_array(&input, &target_field(false)).unwrap_err();
+        assert!(error.to_string().contains("MALFORMED_VARIANT"), "{error}");
+    }
 }

@@ -38,6 +38,59 @@ use std::{
     sync::Arc,
 };
 
+/// Maximum number of object/list containers on a Variant path. Scalars have depth zero.
+/// Apply the same budget to typed containers and their residuals before Arrow's recursive
+/// validation/unshredding or Comet's recursive re-encoding can consume them.
+const MAX_VARIANT_NESTING_DEPTH: usize = 64;
+
+fn check_variant_depth(variant: Variant<'_, '_>, depth: usize) -> DataFusionResult<()> {
+    let mut pending = vec![(variant, depth)];
+    while let Some((value, depth)) = pending.pop() {
+        if matches!(value, Variant::Object(_) | Variant::List(_))
+            && depth >= MAX_VARIANT_NESTING_DEPTH
+        {
+            return Err(SparkError::MalformedVariant.into());
+        }
+        // iter_try performs recursive full validation. Use shallow iterators here; callers
+        // catch malformed-byte panics, then validate fully only after bounding the depth.
+        match value {
+            Variant::Object(object) => {
+                pending.extend(object.iter().map(|(_, value)| (value, depth + 1)));
+            }
+            Variant::List(list) => {
+                pending.extend(list.iter().map(|value| (value, depth + 1)));
+            }
+            _ => {}
+        }
+    }
+    Ok(())
+}
+
+/// Bound storage traversal before casts and VariantArray construction recurse into the schema.
+/// Each logical container adds a typed container and a shredding-state Struct, plus the root.
+fn check_variant_storage_depth(data_type: &DataType) -> DataFusionResult<()> {
+    let mut pending = vec![(data_type, 0)];
+    while let Some((data_type, depth)) = pending.pop() {
+        if depth > 2 * MAX_VARIANT_NESTING_DEPTH + 1 {
+            return Err(SparkError::MalformedVariant.into());
+        }
+        match data_type {
+            DataType::Struct(fields) => {
+                pending.extend(fields.iter().map(|field| (field.data_type(), depth + 1)));
+            }
+            DataType::List(field)
+            | DataType::LargeList(field)
+            | DataType::ListView(field)
+            | DataType::LargeListView(field)
+            | DataType::FixedSizeList(field, _)
+            | DataType::Map(field, _) => pending.push((field.data_type(), depth + 1)),
+            DataType::Dictionary(_, value) => pending.push((value.as_ref(), depth + 1)),
+            _ => {}
+        }
+    }
+    Ok(())
+}
+
 pub(super) fn normalize_variant_array(
     array: &ArrayRef,
     target_field: &FieldRef,
@@ -62,6 +115,7 @@ pub(super) fn normalize_variant_array(
     // VariantArray resolves metadata/value/typed_value by name, so the reader's child order is
     // irrelevant. Legacy Spark residuals must be put in Arrow order before unshredding;
     // shredded output is then rebuilt with Spark's byte encoding.
+    check_variant_storage_depth(array.data_type())?;
     let array = normalize_variant_storage(array)?;
     let variant = VariantArray::try_new(array.as_ref())?;
     let normalize = |metadata: Option<&ArrayRef>| -> DataFusionResult<ArrayRef> {
@@ -213,6 +267,7 @@ fn rewrite_shredding_state(
     target_metadata: Option<&BinaryArray>,
     metadata_rows: &[Option<usize>],
     allow_missing: bool,
+    depth: usize,
 ) -> DataFusionResult<(ArrayRef, bool)> {
     if state.len() != metadata_rows.len() {
         return Err(DataFusionError::Execution(
@@ -261,8 +316,13 @@ fn rewrite_shredding_state(
     }
 
     if let Some(index) = fields.iter().position(|field| field.name() == "value") {
-        let (value, value_changed) =
-            rewrite_residual_values(&columns[index], metadata, target_metadata, &active_rows)?;
+        let (value, value_changed) = rewrite_residual_values(
+            &columns[index],
+            metadata,
+            target_metadata,
+            &active_rows,
+            depth,
+        )?;
         if value_changed {
             fields[index] = Arc::new(
                 fields[index]
@@ -284,8 +344,13 @@ fn rewrite_shredding_state(
             .enumerate()
             .map(|(row, metadata)| columns[index].is_valid(row).then_some(*metadata).flatten())
             .collect::<Vec<_>>();
-        let (typed_value, typed_changed) =
-            rewrite_typed_value(&columns[index], metadata, target_metadata, &typed_rows)?;
+        let (typed_value, typed_changed) = rewrite_typed_value(
+            &columns[index],
+            metadata,
+            target_metadata,
+            &typed_rows,
+            depth,
+        )?;
         if typed_changed {
             fields[index] = Arc::new(
                 fields[index]
@@ -316,6 +381,7 @@ fn rewrite_residual_values(
     metadata: &BinaryArray,
     target_metadata: Option<&BinaryArray>,
     metadata_rows: &[Option<usize>],
+    depth: usize,
 ) -> DataFusionResult<(ArrayRef, bool)> {
     let binary = cast(value.as_ref(), &DataType::Binary)?;
     let binary = binary.as_binary::<i32>();
@@ -339,6 +405,14 @@ fn rewrite_residual_values(
                 "Variant metadata is null at row {metadata_row}"
             )));
         }
+
+        catch_unwind(AssertUnwindSafe(|| {
+            check_variant_depth(
+                Variant::new(metadata.value(*metadata_row), binary.value(index)),
+                depth,
+            )
+        }))
+        .map_err(|_| SparkError::MalformedVariant)??;
 
         let rebuilt = catch_unwind(AssertUnwindSafe(
             || -> Result<Option<Vec<u8>>, ArrowError> {
@@ -421,6 +495,7 @@ fn rewrite_list_typed_value<L: ListLikeArray>(
     metadata: &BinaryArray,
     target_metadata: Option<&BinaryArray>,
     metadata_rows: &[Option<usize>],
+    depth: usize,
 ) -> DataFusionResult<(ArrayRef, bool)> {
     let child_rows = list_metadata_rows(list, metadata_rows)?;
     let values = list.values().as_struct_opt().ok_or_else(|| {
@@ -429,8 +504,14 @@ fn rewrite_list_typed_value<L: ListLikeArray>(
             list.values().data_type()
         ))
     })?;
-    let (values, changed) =
-        rewrite_shredding_state(values, metadata, target_metadata, &child_rows, false)?;
+    let (values, changed) = rewrite_shredding_state(
+        values,
+        metadata,
+        target_metadata,
+        &child_rows,
+        false,
+        depth + 1,
+    )?;
     if !changed {
         return Ok((Arc::clone(array), false));
     }
@@ -480,7 +561,19 @@ fn rewrite_typed_value(
     metadata: &BinaryArray,
     target_metadata: Option<&BinaryArray>,
     metadata_rows: &[Option<usize>],
+    depth: usize,
 ) -> DataFusionResult<(ArrayRef, bool)> {
+    if matches!(
+        typed_value.data_type(),
+        DataType::Struct(_)
+            | DataType::List(_)
+            | DataType::LargeList(_)
+            | DataType::ListView(_)
+            | DataType::LargeListView(_)
+    ) && depth >= MAX_VARIANT_NESTING_DEPTH
+    {
+        return Err(SparkError::MalformedVariant.into());
+    }
     match typed_value.data_type() {
         DataType::Struct(_) => {
             let object = typed_value.as_struct();
@@ -495,8 +588,14 @@ fn rewrite_typed_value(
                         column.data_type()
                     ))
                 })?;
-                let (child, child_changed) =
-                    rewrite_shredding_state(child, metadata, target_metadata, metadata_rows, true)?;
+                let (child, child_changed) = rewrite_shredding_state(
+                    child,
+                    metadata,
+                    target_metadata,
+                    metadata_rows,
+                    true,
+                    depth + 1,
+                )?;
                 if child_changed {
                     fields[index] = Arc::new(
                         fields[index]
@@ -526,6 +625,7 @@ fn rewrite_typed_value(
             metadata,
             target_metadata,
             metadata_rows,
+            depth,
         ),
         DataType::LargeList(_) => rewrite_list_typed_value(
             typed_value,
@@ -533,6 +633,7 @@ fn rewrite_typed_value(
             metadata,
             target_metadata,
             metadata_rows,
+            depth,
         ),
         DataType::ListView(_) => rewrite_list_typed_value(
             typed_value,
@@ -540,6 +641,7 @@ fn rewrite_typed_value(
             metadata,
             target_metadata,
             metadata_rows,
+            depth,
         ),
         DataType::LargeListView(_) => rewrite_list_typed_value(
             typed_value,
@@ -547,6 +649,7 @@ fn rewrite_typed_value(
             metadata,
             target_metadata,
             metadata_rows,
+            depth,
         ),
         _ => Ok((Arc::clone(typed_value), false)),
     }
@@ -567,6 +670,7 @@ fn prepare_variant_for_unshredding(
         target_metadata.map(|metadata| metadata.as_binary::<i32>()),
         &metadata_rows,
         false,
+        0,
     )?;
     if let Some(metadata) = target_metadata {
         let array = array.as_struct();
@@ -1099,31 +1203,46 @@ enum VariantObjectKeyOrder {
 }
 
 fn is_compatible_variant(variant: &Variant<'_, '_>, order: VariantObjectKeyOrder) -> bool {
-    match variant {
-        Variant::Object(object) => {
-            let mut previous = None;
-            object.iter().all(|(name, value)| {
-                let ordered = previous
-                    .map(|previous: &str| match order {
-                        VariantObjectKeyOrder::ArrowUtf8 => previous <= name,
-                        VariantObjectKeyOrder::SparkUtf16 => {
-                            previous.encode_utf16().cmp(name.encode_utf16())
-                                != std::cmp::Ordering::Greater
-                        }
-                    })
-                    .unwrap_or(true);
-                previous = Some(name);
-                ordered && is_compatible_variant(&value, order)
-            })
+    let mut pending = vec![variant.clone()];
+    while let Some(value) = pending.pop() {
+        match value {
+            Variant::Object(object) => {
+                let mut previous = None;
+                for (name, value) in object.iter() {
+                    let ordered = previous
+                        .map(|previous: &str| match order {
+                            VariantObjectKeyOrder::ArrowUtf8 => previous <= name,
+                            VariantObjectKeyOrder::SparkUtf16 => {
+                                previous.encode_utf16().cmp(name.encode_utf16())
+                                    != std::cmp::Ordering::Greater
+                            }
+                        })
+                        .unwrap_or(true);
+                    if !ordered {
+                        return false;
+                    }
+                    previous = Some(name);
+                    pending.push(value);
+                }
+            }
+            Variant::List(list) => pending.extend(list.iter()),
+            _ => {}
         }
-        Variant::List(list) => list
-            .iter()
-            .all(|value| is_compatible_variant(&value, order)),
-        _ => true,
     }
+    true
 }
 
 fn variant_bytes(
+    metadata: &VariantMetadata<'_>,
+    variant: Variant<'_, '_>,
+    order: VariantObjectKeyOrder,
+) -> Result<Vec<u8>, ArrowError> {
+    check_variant_depth(variant.clone(), 0)
+        .map_err(|error| ArrowError::InvalidArgumentError(error.to_string()))?;
+    variant_bytes_bounded(metadata, variant, order)
+}
+
+fn variant_bytes_bounded(
     metadata: &VariantMetadata<'_>,
     variant: Variant<'_, '_>,
     order: VariantObjectKeyOrder,
@@ -1142,7 +1261,7 @@ fn variant_bytes(
                 matches!(order, VariantObjectKeyOrder::ArrowUtf8),
             );
             for (name, value) in object.iter() {
-                let value = variant_bytes(metadata, value, order)?;
+                let value = variant_bytes_bounded(metadata, value, order)?;
                 builder
                     .try_insert_bytes(name, Variant::new_with_metadata(metadata.clone(), &value))?;
             }
@@ -1155,7 +1274,7 @@ fn variant_bytes(
                 matches!(order, VariantObjectKeyOrder::ArrowUtf8),
             );
             for value in list.iter() {
-                let value = variant_bytes(metadata, value, order)?;
+                let value = variant_bytes_bounded(metadata, value, order)?;
                 builder.append_value_bytes(Variant::new_with_metadata(metadata.clone(), &value));
             }
             builder.finish();
@@ -1210,6 +1329,8 @@ fn reorder_variant_values(
             || -> Result<Option<Vec<u8>>, ArrowError> {
                 let metadata = VariantMetadata::try_new(metadata.value(index))?;
                 let variant = Variant::new_with_metadata(metadata.clone(), value.value(index));
+                check_variant_depth(variant.clone(), 0)
+                    .map_err(|error| ArrowError::InvalidArgumentError(error.to_string()))?;
                 if is_compatible_variant(&variant, VariantObjectKeyOrder::SparkUtf16) {
                     return Ok(None);
                 }
