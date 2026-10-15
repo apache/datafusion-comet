@@ -15,7 +15,7 @@
 -- specific language governing permissions and limitations
 -- under the License.
 
--- ConfigMatrix: spark.sql.session.timeZone=UTC,+01:00,-03:30,America/Los_Angeles,Asia/Kathmandu
+-- ConfigMatrix: spark.sql.session.timeZone=UTC,+01:00,-03:30
 -- Config: spark.sql.adaptive.enabled=false
 -- Config: spark.sql.execution.reuseSubquery=true
 -- Config: spark.sql.parquet.outputTimestampType=TIMESTAMP_MICROS
@@ -46,40 +46,40 @@ SET spark.comet.enabled=true
 
 -- The full i64 microsecond endpoints.
 query expect_native(hour,minute,second)
-SELECT hour((SELECT max(ts) FROM timestamp_boundary WHERE id < 2)),
-       hour((SELECT min(ts) FROM timestamp_boundary WHERE id < 2)),
-       minute((SELECT max(ts) FROM timestamp_boundary WHERE id < 2)),
-       minute((SELECT min(ts) FROM timestamp_boundary WHERE id < 2)),
-       second((SELECT max(ts) FROM timestamp_boundary WHERE id < 2)),
-       second((SELECT min(ts) FROM timestamp_boundary WHERE id < 2))
+SELECT hour((SELECT max(ts) AS maximum FROM timestamp_boundary WHERE id < 2)),
+       hour((SELECT min(ts) AS minimum FROM timestamp_boundary WHERE id < 2)),
+       minute((SELECT max(ts) AS maximum FROM timestamp_boundary WHERE id < 2)),
+       minute((SELECT min(ts) AS minimum FROM timestamp_boundary WHERE id < 2)),
+       second((SELECT max(ts) AS maximum FROM timestamp_boundary WHERE id < 2)),
+       second((SELECT min(ts) AS minimum FROM timestamp_boundary WHERE id < 2))
 FROM timestamp_boundary
 
 -- Immediately before and at chrono's minimum.
 query expect_native(hour,minute,second)
-SELECT hour((SELECT max(ts) FROM timestamp_boundary WHERE id IN (2, 3))),
-       hour((SELECT min(ts) FROM timestamp_boundary WHERE id IN (2, 3))),
-       minute((SELECT max(ts) FROM timestamp_boundary WHERE id IN (2, 3))),
-       minute((SELECT min(ts) FROM timestamp_boundary WHERE id IN (2, 3))),
-       second((SELECT max(ts) FROM timestamp_boundary WHERE id IN (2, 3))),
-       second((SELECT min(ts) FROM timestamp_boundary WHERE id IN (2, 3)))
+SELECT hour((SELECT max(ts) AS maximum FROM timestamp_boundary WHERE id IN (2, 3))),
+       hour((SELECT min(ts) AS minimum FROM timestamp_boundary WHERE id IN (2, 3))),
+       minute((SELECT max(ts) AS maximum FROM timestamp_boundary WHERE id IN (2, 3))),
+       minute((SELECT min(ts) AS minimum FROM timestamp_boundary WHERE id IN (2, 3))),
+       second((SELECT max(ts) AS maximum FROM timestamp_boundary WHERE id IN (2, 3))),
+       second((SELECT min(ts) AS minimum FROM timestamp_boundary WHERE id IN (2, 3)))
 FROM timestamp_boundary
 
 -- At and immediately after chrono's maximum.
 query expect_native(hour,minute,second)
-SELECT hour((SELECT max(ts) FROM timestamp_boundary WHERE id IN (4, 5))),
-       hour((SELECT min(ts) FROM timestamp_boundary WHERE id IN (4, 5))),
-       minute((SELECT max(ts) FROM timestamp_boundary WHERE id IN (4, 5))),
-       minute((SELECT min(ts) FROM timestamp_boundary WHERE id IN (4, 5))),
-       second((SELECT max(ts) FROM timestamp_boundary WHERE id IN (4, 5))),
-       second((SELECT min(ts) FROM timestamp_boundary WHERE id IN (4, 5)))
+SELECT hour((SELECT max(ts) AS maximum FROM timestamp_boundary WHERE id IN (4, 5))),
+       hour((SELECT min(ts) AS minimum FROM timestamp_boundary WHERE id IN (4, 5))),
+       minute((SELECT max(ts) AS maximum FROM timestamp_boundary WHERE id IN (4, 5))),
+       minute((SELECT min(ts) AS minimum FROM timestamp_boundary WHERE id IN (4, 5))),
+       second((SELECT max(ts) AS maximum FROM timestamp_boundary WHERE id IN (4, 5))),
+       second((SELECT min(ts) AS minimum FROM timestamp_boundary WHERE id IN (4, 5)))
 FROM timestamp_boundary
 
 -- An empty source still produces NULL scalar fields.
 query expect_native(hour,minute,second)
-SELECT hour((SELECT max(ts) FROM timestamp_boundary WHERE id < 0)),
-       hour((SELECT min(ts) FROM timestamp_boundary WHERE id < 0)),
-       minute((SELECT max(ts) FROM timestamp_boundary WHERE id < 0)),
-       minute((SELECT min(ts) FROM timestamp_boundary WHERE id < 0)),
-       second((SELECT max(ts) FROM timestamp_boundary WHERE id < 0)),
-       second((SELECT min(ts) FROM timestamp_boundary WHERE id < 0))
+SELECT hour((SELECT max(ts) AS maximum FROM timestamp_boundary WHERE id < 0)),
+       hour((SELECT min(ts) AS minimum FROM timestamp_boundary WHERE id < 0)),
+       minute((SELECT max(ts) AS maximum FROM timestamp_boundary WHERE id < 0)),
+       minute((SELECT min(ts) AS minimum FROM timestamp_boundary WHERE id < 0)),
+       second((SELECT max(ts) AS maximum FROM timestamp_boundary WHERE id < 0)),
+       second((SELECT min(ts) AS minimum FROM timestamp_boundary WHERE id < 0))
 FROM timestamp_boundary

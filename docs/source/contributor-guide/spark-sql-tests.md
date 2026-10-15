@@ -208,6 +208,13 @@ its own. The label stays applied, so the next push you make runs Spark 3.4 as pa
 verdict. Read the label run's result before merging — with Spark 3.4 out of the merge queue,
 nothing else will.
 
+The Spark 3.4 `sql_core-3` job uploads a `spark-test-diagnostics-*` artifact containing its sbt
+output, Spark logs, and XML test reports. After five minutes without console output, a watchdog
+also captures two sets of JVM thread dumps and process/memory snapshots. It does not stop or retry
+the tests. The test step has a 90-minute timeout so a stalled runner can fail and still upload
+these diagnostics before the job's six-hour limit. Individual passing test events are not a
+completed shard verdict: check the final test summary and successful process exit as well.
+
 See [Continuous Integration](ci.md) for how the tiers and labels work. When bringing up a new Spark
 version, the version needs its own job in `.github/workflows/ci.yml` plus entries in `FILTERS` and
 `POLICY` in `dev/ci/compute-changes.py`.

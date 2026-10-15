@@ -1008,6 +1008,13 @@ object QueryPlanSerde extends Logging with CometExprShim with CometTypeShim {
       inputs: Seq[Attribute],
       binding: Boolean): Option[Expr] = {
 
+    CometScalarSubquery.consumerFallbackReason(expr) match {
+      case Some(reason) =>
+        withFallbackReason(expr, reason)
+        return None
+      case None =>
+    }
+
     def convert[T <: Expression](expr: T, handler: CometExpressionSerde[T]): Option[Expr] = {
       val exprConfName = handler.getExprConfigName(expr)
       if (!CometConf.isExprEnabled(exprConfName)) {

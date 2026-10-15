@@ -719,6 +719,16 @@ maps, intervals, and other unsupported field types cause fallback to Spark. Stri
 subject to the compatibility differences described in
 [Strings with non-UTF-8 bytes](compatibility/index.md#strings-with-non-utf-8-bytes).
 
+Native value transfer does not imply that every consumer of a struct scalar result runs natively.
+Calendar conversions and fields such as `year` and `month` over struct scalar subqueries fall back
+to Spark, including when an intermediate projection names the scalar result, because their runtime
+values can exceed the native calendar range. This also avoids
+differences in far-future daylight saving time. Scalar-subquery `hour`, `minute`, and `second`
+remain native for UTC, fixed offsets, and timezone-independent `timestamp_ntz` inputs; regional
+`timestamp` inputs fall back. Similarly, `unix_timestamp` stays native for timestamp inputs, but
+scalar date inputs fall back. Raw timestamp transport, comparisons, and supported epoch arithmetic
+remain native.
+
 ## See also
 
 - [Comet Compatibility Guide](compatibility/index.md) - known incompatibilities and edge cases for supported expressions.

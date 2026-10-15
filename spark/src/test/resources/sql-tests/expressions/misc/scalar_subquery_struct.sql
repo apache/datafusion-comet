@@ -101,10 +101,16 @@ SELECT id, s.flag, s.tiny, s.small, s.number, s.large, s.single, s.dbl,
 FROM (SELECT id, (SELECT payload FROM test_struct_subq WHERE id = 1) AS s
       FROM test_struct_subq)
 
--- Consume the timestamp under each session zone, rather than only displaying it.
-query
+-- Calendar formatting of runtime struct fields must use Spark.
+query expect_fallback(Calendar operations on struct scalar subqueries require Spark because their runtime values may exceed the native calendar range)
 SELECT id, CAST(s.instant AS STRING),
        s.instant = TIMESTAMP '1969-12-31 23:59:59.123456'
+FROM (SELECT id, (SELECT payload FROM test_struct_subq WHERE id = 1) AS s
+      FROM test_struct_subq)
+
+-- Comparing the raw timestamp field still uses native scalar transport.
+query
+SELECT id, s.instant = TIMESTAMP '1969-12-31 23:59:59.123456'
 FROM (SELECT id, (SELECT payload FROM test_struct_subq WHERE id = 1) AS s
       FROM test_struct_subq)
 
@@ -148,178 +154,121 @@ SELECT id, (SELECT named_struct('untyped', NULL, 'value', max(id),
             FROM test_struct_subq) AS s
 FROM test_struct_subq
 
--- hour: plain scalar and paired aggregate subqueries, including runtime NULL results.
-query expect_native(hour)
-SELECT id, hour((SELECT max(payload.instant) FROM test_struct_subq))
-FROM test_struct_subq
-
-query expect_native(hour)
-SELECT id, hour((SELECT max(payload.instant) FROM test_struct_subq)),
-       hour((SELECT min(payload.instant) FROM test_struct_subq))
-FROM test_struct_subq
-
-query expect_native(hour)
-SELECT id, hour((SELECT max(payload.instant) FROM test_struct_subq WHERE id < 0))
-FROM test_struct_subq
-
-query expect_native(hour)
-SELECT id, hour((SELECT max(payload.instant) FROM test_struct_subq WHERE id < 0)),
-       hour((SELECT min(payload.instant) FROM test_struct_subq WHERE id < 0))
-FROM test_struct_subq
-
--- minute: plain scalar and paired aggregate subqueries, including runtime NULL results.
-query expect_native(minute)
-SELECT id, minute((SELECT max(payload.instant) FROM test_struct_subq))
-FROM test_struct_subq
-
-query expect_native(minute)
-SELECT id, minute((SELECT max(payload.instant) FROM test_struct_subq)),
-       minute((SELECT min(payload.instant) FROM test_struct_subq))
-FROM test_struct_subq
-
-query expect_native(minute)
-SELECT id, minute((SELECT max(payload.instant) FROM test_struct_subq WHERE id < 0))
-FROM test_struct_subq
-
-query expect_native(minute)
-SELECT id, minute((SELECT max(payload.instant) FROM test_struct_subq WHERE id < 0)),
-       minute((SELECT min(payload.instant) FROM test_struct_subq WHERE id < 0))
-FROM test_struct_subq
-
--- second: plain scalar and paired aggregate subqueries, including runtime NULL results.
-query expect_native(second)
-SELECT id, second((SELECT max(payload.instant) FROM test_struct_subq))
-FROM test_struct_subq
-
-query expect_native(second)
-SELECT id, second((SELECT max(payload.instant) FROM test_struct_subq)),
-       second((SELECT min(payload.instant) FROM test_struct_subq))
-FROM test_struct_subq
-
-query expect_native(second)
-SELECT id, second((SELECT max(payload.instant) FROM test_struct_subq WHERE id < 0))
-FROM test_struct_subq
-
-query expect_native(second)
-SELECT id, second((SELECT max(payload.instant) FROM test_struct_subq WHERE id < 0)),
-       second((SELECT min(payload.instant) FROM test_struct_subq WHERE id < 0))
-FROM test_struct_subq
-
 -- unix_timestamp: plain scalar and paired aggregate subqueries, including runtime NULL results.
 query expect_native(unix_timestamp)
-SELECT id, unix_timestamp((SELECT max(payload.instant) FROM test_struct_subq))
+SELECT id, unix_timestamp((SELECT max(payload.instant) AS maximum FROM test_struct_subq))
 FROM test_struct_subq
 
 query expect_native(unix_timestamp)
-SELECT id, unix_timestamp((SELECT max(payload.instant) FROM test_struct_subq)),
-       unix_timestamp((SELECT min(payload.instant) FROM test_struct_subq))
+SELECT id, unix_timestamp((SELECT max(payload.instant) AS maximum FROM test_struct_subq)),
+       unix_timestamp((SELECT min(payload.instant) AS minimum FROM test_struct_subq))
 FROM test_struct_subq
 
 query expect_native(unix_timestamp)
-SELECT id, unix_timestamp((SELECT max(payload.instant) FROM test_struct_subq WHERE id < 0))
+SELECT id, unix_timestamp((SELECT max(payload.instant) AS maximum FROM test_struct_subq WHERE id < 0))
 FROM test_struct_subq
 
 query expect_native(unix_timestamp)
-SELECT id, unix_timestamp((SELECT max(payload.instant) FROM test_struct_subq WHERE id < 0)),
-       unix_timestamp((SELECT min(payload.instant) FROM test_struct_subq WHERE id < 0))
+SELECT id, unix_timestamp((SELECT max(payload.instant) AS maximum FROM test_struct_subq WHERE id < 0)),
+       unix_timestamp((SELECT min(payload.instant) AS minimum FROM test_struct_subq WHERE id < 0))
 FROM test_struct_subq
 
 -- lpad: scalar strings fall back for both plain and paired aggregate subqueries.
 query expect_fallback(Scalar values are not supported for the `str` argument)
-SELECT id, lpad((SELECT max(payload.text) FROM test_struct_subq), 8, '0')
+SELECT id, lpad((SELECT max(payload.text) AS maximum FROM test_struct_subq), 8, '0')
 FROM test_struct_subq
 
 query expect_fallback(Scalar values are not supported for the `str` argument)
-SELECT id, lpad((SELECT max(payload.text) FROM test_struct_subq), 8, '0'),
-       lpad((SELECT min(payload.text) FROM test_struct_subq), 8, '0')
+SELECT id, lpad((SELECT max(payload.text) AS maximum FROM test_struct_subq), 8, '0'),
+       lpad((SELECT min(payload.text) AS minimum FROM test_struct_subq), 8, '0')
 FROM test_struct_subq
 
 query expect_fallback(Scalar values are not supported for the `str` argument)
-SELECT id, lpad((SELECT max(payload.text) FROM test_struct_subq WHERE id < 0), 1000000, '0')
+SELECT id, lpad((SELECT max(payload.text) AS maximum FROM test_struct_subq WHERE id < 0), 1000000, '0')
 FROM test_struct_subq
 
 query expect_fallback(Scalar values are not supported for the `str` argument)
-SELECT id, lpad((SELECT max(payload.text) FROM test_struct_subq WHERE id < 0), 1000000, '0'),
-       lpad((SELECT min(payload.text) FROM test_struct_subq WHERE id < 0), 1000000, '0')
+SELECT id, lpad((SELECT max(payload.text) AS maximum FROM test_struct_subq WHERE id < 0), 1000000, '0'),
+       lpad((SELECT min(payload.text) AS minimum FROM test_struct_subq WHERE id < 0), 1000000, '0')
 FROM test_struct_subq
 
 -- A scalar string with per-row lengths also stays on Spark's fallback path.
 query expect_fallback(Scalar values are not supported for the `str` argument)
-SELECT id, lpad((SELECT max(payload.text) FROM test_struct_subq), id, '0')
+SELECT id, lpad((SELECT max(payload.text) AS maximum FROM test_struct_subq), id, '0')
 FROM test_struct_subq
 
 -- Wrapping the scalar string must not bypass the fallback guard.
 query expect_fallback(Scalar values are not supported for the `str` argument)
-SELECT id, lpad(concat((SELECT max(payload.text) FROM test_struct_subq), ''), 8, '0')
+SELECT id, lpad(concat((SELECT max(payload.text) AS maximum FROM test_struct_subq), ''), 8, '0')
 FROM test_struct_subq
 
 -- Column strings still run natively with plain or paired scalar subquery lengths.
 query expect_native(lpad)
-SELECT id, lpad(payload.text, (SELECT max(id) FROM test_struct_subq), '0')
+SELECT id, lpad(payload.text, (SELECT max(id) AS maximum FROM test_struct_subq), '0')
 FROM test_struct_subq
 
 query expect_native(lpad)
-SELECT id, lpad(payload.text, (SELECT max(id) FROM test_struct_subq), '0'),
-       lpad(payload.text, (SELECT min(id) FROM test_struct_subq), '0')
+SELECT id, lpad(payload.text, (SELECT max(id) AS maximum FROM test_struct_subq), '0'),
+       lpad(payload.text, (SELECT min(id) AS minimum FROM test_struct_subq), '0')
 FROM test_struct_subq
 
 -- Runtime NULL lengths must reach the column kernel without becoming literal NULLs.
 query expect_native(lpad)
-SELECT id, lpad(payload.text, (SELECT max(id) FROM test_struct_subq WHERE id < 0), '0')
+SELECT id, lpad(payload.text, (SELECT max(id) AS maximum FROM test_struct_subq WHERE id < 0), '0')
 FROM test_struct_subq
 
 query expect_native(lpad)
-SELECT id, lpad(payload.text, (SELECT max(id) FROM test_struct_subq WHERE id < 0), '0'),
-       lpad(payload.text, (SELECT min(id) FROM test_struct_subq WHERE id < 0), '0')
+SELECT id, lpad(payload.text, (SELECT max(id) AS maximum FROM test_struct_subq WHERE id < 0), '0'),
+       lpad(payload.text, (SELECT min(id) AS minimum FROM test_struct_subq WHERE id < 0), '0')
 FROM test_struct_subq
 
 -- rpad: scalar strings fall back for both plain and paired aggregate subqueries.
 query expect_fallback(Scalar values are not supported for the `str` argument)
-SELECT id, rpad((SELECT max(payload.text) FROM test_struct_subq), 8, '0')
+SELECT id, rpad((SELECT max(payload.text) AS maximum FROM test_struct_subq), 8, '0')
 FROM test_struct_subq
 
 query expect_fallback(Scalar values are not supported for the `str` argument)
-SELECT id, rpad((SELECT max(payload.text) FROM test_struct_subq), 8, '0'),
-       rpad((SELECT min(payload.text) FROM test_struct_subq), 8, '0')
+SELECT id, rpad((SELECT max(payload.text) AS maximum FROM test_struct_subq), 8, '0'),
+       rpad((SELECT min(payload.text) AS minimum FROM test_struct_subq), 8, '0')
 FROM test_struct_subq
 
 query expect_fallback(Scalar values are not supported for the `str` argument)
-SELECT id, rpad((SELECT max(payload.text) FROM test_struct_subq WHERE id < 0), 1000000, '0')
+SELECT id, rpad((SELECT max(payload.text) AS maximum FROM test_struct_subq WHERE id < 0), 1000000, '0')
 FROM test_struct_subq
 
 query expect_fallback(Scalar values are not supported for the `str` argument)
-SELECT id, rpad((SELECT max(payload.text) FROM test_struct_subq WHERE id < 0), 1000000, '0'),
-       rpad((SELECT min(payload.text) FROM test_struct_subq WHERE id < 0), 1000000, '0')
+SELECT id, rpad((SELECT max(payload.text) AS maximum FROM test_struct_subq WHERE id < 0), 1000000, '0'),
+       rpad((SELECT min(payload.text) AS minimum FROM test_struct_subq WHERE id < 0), 1000000, '0')
 FROM test_struct_subq
 
 -- A scalar string with per-row lengths also stays on Spark's fallback path.
 query expect_fallback(Scalar values are not supported for the `str` argument)
-SELECT id, rpad((SELECT max(payload.text) FROM test_struct_subq), id, '0')
+SELECT id, rpad((SELECT max(payload.text) AS maximum FROM test_struct_subq), id, '0')
 FROM test_struct_subq
 
 -- Wrapping the scalar string must not bypass the fallback guard.
 query expect_fallback(Scalar values are not supported for the `str` argument)
-SELECT id, rpad(concat((SELECT max(payload.text) FROM test_struct_subq), ''), 8, '0')
+SELECT id, rpad(concat((SELECT max(payload.text) AS maximum FROM test_struct_subq), ''), 8, '0')
 FROM test_struct_subq
 
 -- Column strings still run natively with plain or paired scalar subquery lengths.
 query expect_native(rpad)
-SELECT id, rpad(payload.text, (SELECT max(id) FROM test_struct_subq), '0')
+SELECT id, rpad(payload.text, (SELECT max(id) AS maximum FROM test_struct_subq), '0')
 FROM test_struct_subq
 
 query expect_native(rpad)
-SELECT id, rpad(payload.text, (SELECT max(id) FROM test_struct_subq), '0'),
-       rpad(payload.text, (SELECT min(id) FROM test_struct_subq), '0')
+SELECT id, rpad(payload.text, (SELECT max(id) AS maximum FROM test_struct_subq), '0'),
+       rpad(payload.text, (SELECT min(id) AS minimum FROM test_struct_subq), '0')
 FROM test_struct_subq
 
 -- Runtime NULL lengths must reach the column kernel without becoming literal NULLs.
 query expect_native(rpad)
-SELECT id, rpad(payload.text, (SELECT max(id) FROM test_struct_subq WHERE id < 0), '0')
+SELECT id, rpad(payload.text, (SELECT max(id) AS maximum FROM test_struct_subq WHERE id < 0), '0')
 FROM test_struct_subq
 
 query expect_native(rpad)
-SELECT id, rpad(payload.text, (SELECT max(id) FROM test_struct_subq WHERE id < 0), '0'),
-       rpad(payload.text, (SELECT min(id) FROM test_struct_subq WHERE id < 0), '0')
+SELECT id, rpad(payload.text, (SELECT max(id) AS maximum FROM test_struct_subq WHERE id < 0), '0'),
+       rpad(payload.text, (SELECT min(id) AS minimum FROM test_struct_subq WHERE id < 0), '0')
 FROM test_struct_subq
 
 statement

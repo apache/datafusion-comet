@@ -258,11 +258,15 @@ jobs:
       - name: Run Spark tests
         # Bash rather than the container default `sh`, for the retry below.
         shell: bash
+        # Leave time to upload diagnostics if the Spark 3.4 slow shard stalls
+        # during runner shutdown. Its normal runtime is under 30 minutes.
+        timeout-minutes: ${{ inputs.spark-short == '3.4' && matrix.module.name == 'sql_core-3' && 90 || 360 }}
         run: |
           cd apache-spark
           rm -rf /root/.m2/repository/org/apache/parquet # somehow parquet cache requires cleanups
-          # set SBTOPTS
-          printf -- '-J-Xms1g\n-J-Xmx4g\n-J-XX:MaxMetaspaceSize=1g\n' > .sbtopts
+          # The launcher appends .sbtopts after -mem and SBT_OPTS. Keep it empty
+          # so it cannot override the orchestrator's heap/metaspace limits below.
+          : > .sbtopts
           export SERIAL_SBT_TESTS=1
 
           # Per-row forked-test-JVM caps (read by Spark's SparkBuild.scala). 
@@ -278,7 +282,26 @@ jobs:
           # build job's pre-compile step retries those failures; this is the same
           # retry for this job's own sbt. Once a test result has been printed, a
           # failure belongs to the tests and is never retried.
-          log=$(mktemp)
+          diagnostics="$GITHUB_WORKSPACE/spark-test-diagnostics"
+          mkdir -p "$diagnostics"
+          log="$diagnostics/sbt.log"
+          : > "$log"
+          if [ "${{ inputs.spark-short }}" = '3.4' ] && [ "${{ matrix.module.name }}" = 'sql_core-3' ]; then
+            python3 "$GITHUB_WORKSPACE/dev/ci/spark-test-watchdog.py" \
+              --log "$log" --root-pid "$$" --output-dir "$diagnostics" \
+              > "$diagnostics/watchdog-console.log" 2>&1 &
+            watchdog_pid=$!
+            stop_watchdog() {
+              sbt_status=$?
+              trap - EXIT
+              if jobs -pr | grep -qx "$watchdog_pid"; then
+                kill "$watchdog_pid" 2>/dev/null || true
+              fi
+              wait "$watchdog_pid" || true
+              exit "$sbt_status"
+            }
+            trap stop_watchdog EXIT
+          fi
           for attempt in 1 2 3; do
             # Cap parallel forked test JVMs at 1 so that even when
             # SparkParallelTestGrouping is enabled we don't blow the
@@ -337,6 +360,16 @@ jobs:
           # reads DEDICATED_JVM_SBT_TESTS and forks a separate JVM per
           # listed suite. Empty value is a safe no-op.
           DEDICATED_JVM_SBT_TESTS: ${{ inputs.spark-short == '4.0' && 'org.apache.spark.sql.execution.datasources.parquet.ParquetFileFormatV1Suite,org.apache.spark.sql.execution.datasources.parquet.ParquetFileFormatV2Suite,org.apache.spark.sql.execution.datasources.orc.OrcSourceV1Suite,org.apache.spark.sql.execution.datasources.orc.OrcSourceV2Suite' || '' }}
+      - name: Upload Spark 3.4 slow-shard diagnostics
+        if: ${{ always() && inputs.spark-short == '3.4' && matrix.module.name == 'sql_core-3' }}
+        uses: ./.github/actions/upload-artifact-retry
+        with:
+          name: spark-test-diagnostics-${{ inputs.spark-full }}-${{ matrix.module.name }}-jdk${{ inputs.java }}
+          path: |
+            spark-test-diagnostics/
+            apache-spark/**/unit-tests.log
+            apache-spark/**/test-reports/*.xml
+          retention-days: 7
       - name: Upload fallback log
         if: ${{ inputs.collect-fallback-logs }}
         uses: ./.github/actions/upload-artifact-retry

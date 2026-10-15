@@ -203,6 +203,9 @@ jobs:
       - name: Check CI config invariants
         run: python3 dev/ci/check-ci-config.py
 
+      - name: Check Spark test diagnostics
+        run: python3 dev/ci/test_spark_test_watchdog.py
+
       - name: Install actionlint
         # Pure network, and preflight gates every other job, so a single reset
         # connection here would fail the whole run. Download to a file rather

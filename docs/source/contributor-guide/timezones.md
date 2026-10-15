@@ -173,6 +173,19 @@ with the JVM's and logs a warning if they differ. The user guide describes the e
 "Timezone Database Versions" on the datetime
 [expression compatibility](../user-guide/latest/compatibility/expressions/index.md) page.
 
+Struct scalar subqueries can expose these differences on paths that previously ran in Spark.
+Their calendar conversions and calendar-field extraction therefore fall back, since the value is
+not available when the plan is serialized and can also exceed chrono's calendar range. Regional
+timezone consumers of these results fall back as well. Scalar clock-field extraction retains its
+native path for fixed-offset zones and `TimestampNTZType`, and epoch extraction from timestamps
+remains timezone-independent. The consumer guard checks the timezone stamped on each expression
+and recursively checks wrapped subqueries before serialization, including casts of whole structs.
+Plan-local provenance follows derived columns through projections, exchanges and AQE stages so
+an intermediate alias cannot hide a scalar consumer from the guard. Ordinary columns do not acquire
+this provenance merely because they contain dates or timestamps.
+Tests must cover future summer dates and midnight boundaries: the microsecond endpoints alone can
+all fall in winter and miss a recurring-DST discrepancy.
+
 ## Scans
 
 Parquet stores timestamps either as `INT64` annotated `TIMESTAMP(MICROS or MILLIS, isAdjustedToUTC)`,

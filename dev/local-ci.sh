@@ -235,7 +235,9 @@ row_label() { printf 'spark-sql-%s / spark-%s-jdk%s\n' "$1" "$FULL" "$JAVA"; }
 spark_row() {
   (
     cd "$6"
-    printf -- '-J-Xms1g\n-J-Xmx4g\n-J-XX:MaxMetaspaceSize=1g\n' > .sbtopts
+    # .sbtopts takes precedence over -mem and SBT_OPTS in Spark's launcher.
+    # Keep the orchestrator limits below effective, as in the CI workflow.
+    : > .sbtopts
     export LC_ALL=C.UTF-8 NOLINT_ON_COMPILE=true
     # shellcheck disable=SC2030
     export ENABLE_COMET=true ENABLE_COMET_ONHEAP=true
