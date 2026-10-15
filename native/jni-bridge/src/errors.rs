@@ -24,13 +24,7 @@ use jni::errors::{Exception, ToException};
 use regex::Regex;
 
 use std::{
-    any::Any,
-    convert,
-    fmt::Write,
-    panic::UnwindSafe,
-    result, str,
-    str::Utf8Error,
-    sync::{Arc, Mutex},
+    any::Any, cell::Cell, convert, fmt::Write, panic::UnwindSafe, result, str, str::Utf8Error,
 };
 
 // This is just a pointer. We'll be returning it from our function. We
@@ -44,8 +38,11 @@ use lazy_static::lazy_static;
 use parquet::errors::ParquetError;
 use thiserror::Error;
 
-lazy_static! {
-    static ref PANIC_BACKTRACE: Arc<Mutex<Option<String>>> = Arc::new(Mutex::new(None));
+thread_local! {
+    /// The backtrace of the last panic on this thread, captured by the panic hook and taken where
+    /// the panic is caught. Kept per thread because Spark runs many tasks at once, and the hook
+    /// and the `catch_unwind` that catches a panic both run on the panicking thread.
+    static PANIC_BACKTRACE: Cell<Option<String>> = const { Cell::new(None) };
 }
 
 /// Error returned during executing operators.
@@ -187,9 +184,10 @@ pub fn init() {
         // Log the panic message and location to stderr so it is visible in CI logs
         // even if the exception message is lost crossing the FFI boundary
         eprintln!("Comet native panic: {panic_info}");
-        // Capture the backtrace for a panic
-        *PANIC_BACKTRACE.lock().unwrap() =
-            Some(std::backtrace::Backtrace::force_capture().to_string());
+        // Capture the backtrace for a panic. `try_with` because a panic in the hook aborts the
+        // process, and the thread-local is gone while the thread is being torn down.
+        let backtrace = std::backtrace::Backtrace::force_capture().to_string();
+        let _ = PANIC_BACKTRACE.try_with(|slot| slot.set(Some(backtrace)));
     }));
 }
 
@@ -644,7 +642,7 @@ pub struct NativeFailure {
 impl From<CometError> for NativeFailure {
     fn from(error: CometError) -> Self {
         let backtrace = match error {
-            CometError::Panic { .. } => PANIC_BACKTRACE.lock().unwrap().take(),
+            CometError::Panic { .. } => PANIC_BACKTRACE.try_with(Cell::take).ok().flatten(),
             _ => None,
         };
         NativeFailure { error, backtrace }
@@ -1613,6 +1611,58 @@ mod tests {
 
     fn error_source_string(error: &CometError) -> String {
         std::error::Error::source(error).unwrap().to_string()
+    }
+
+    /// Waits twice on a barrier when dropped. Dropped while its thread unwinds, it runs after that
+    /// thread's panic hook and before `catch_native` takes the backtrace.
+    struct WaitOnDrop(Arc<std::sync::Barrier>);
+
+    impl Drop for WaitOnDrop {
+        fn drop(&mut self) {
+            // Both panic hooks have run once both threads pass the first wait.
+            self.0.wait();
+            self.0.wait();
+        }
+    }
+
+    #[inline(never)]
+    fn panic_in_first_thread(barrier: Arc<std::sync::Barrier>) -> CometResult<()> {
+        let _wait = WaitOnDrop(barrier);
+        panic!("first thread")
+    }
+
+    #[inline(never)]
+    fn panic_in_second_thread(barrier: Arc<std::sync::Barrier>) -> CometResult<()> {
+        let _wait = WaitOnDrop(barrier);
+        panic!("second thread")
+    }
+
+    /// Two threads panic at once, and each takes its backtrace only after both panic hooks have
+    /// run. Each must still get the backtrace of its own panic.
+    #[test]
+    fn panic_backtrace_stays_with_its_thread() {
+        init();
+        let barrier = Arc::new(std::sync::Barrier::new(2));
+        let first = {
+            let barrier = Arc::clone(&barrier);
+            std::thread::spawn(move || catch_native(move || panic_in_first_thread(barrier)))
+        };
+        let second = {
+            let barrier = Arc::clone(&barrier);
+            std::thread::spawn(move || catch_native(move || panic_in_second_thread(barrier)))
+        };
+
+        for (handle, own, other) in [
+            (first, "panic_in_first_thread", "panic_in_second_thread"),
+            (second, "panic_in_second_thread", "panic_in_first_thread"),
+        ] {
+            let failure = handle.join().unwrap().unwrap_err();
+            let backtrace = failure
+                .backtrace
+                .unwrap_or_else(|| panic!("no backtrace for {own}"));
+            assert!(backtrace.contains(own), "{own} got another backtrace");
+            assert!(!backtrace.contains(other), "{own} got {other}'s backtrace");
+        }
     }
 
     #[test]
