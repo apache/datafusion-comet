@@ -54,8 +54,64 @@ SELECT _1, array_append(IF(_1 % 2 = 0, array(1), CAST(NULL AS ARRAY<INT>)), _1) 
        array_append(IF(_1 % 2 = 0, array(1), CAST(NULL AS ARRAY<INT>)), 5) AS b
 FROM array_append_eager
 
--- A nondeterministic item is declined when the array can be NULL: the native guard would
--- serialize it twice, and each copy would see only a subset of the rows.
-query expect_fallback(nondeterministic item)
+-- A nondeterministic operand is declined when the array can be NULL: the native guard would
+-- serialize it more than once, and each copy would see only a subset of the rows. This covers the
+-- item and the array alike.
+query expect_fallback(nondeterministic operand)
 SELECT _1, array_append(IF(_1 % 2 = 0, array(1), CAST(NULL AS ARRAY<INT>)), CAST(rand(7L) * 3 AS INT)) AS a
+FROM array_append_eager
+
+query expect_fallback(nondeterministic operand)
+SELECT _1, array_append(IF(rand(7L) < 2, CAST(NULL AS ARRAY<INT>), array(1)), _1) AS a
+FROM array_append_eager
+
+-- A non-nullable array needs no guard, so `convert` emits none and the item is evaluated once over
+-- the whole batch. A nondeterministic item therefore stays native and in step with Spark.
+query expect_native(array_append)
+SELECT _1, array_append(array(1, 2), CAST(rand(7L) * 3 AS INT)) AS a
+FROM array_append_eager
+
+-- A non-nullable array still raises for a throwing item
+query expect_error(DIVIDE_BY_ZERO)
+SELECT _1, array_append(array(1, 2), 1 / (_1 - 1)) AS a
+FROM array_append_eager
+
+-- Every array NULL: the batch only ever takes the ELSE branch, which must still evaluate the item
+statement
+CREATE TABLE array_append_all_null(_1 INT, arr ARRAY<INT>) USING parquet
+
+statement
+INSERT INTO array_append_all_null VALUES (0, NULL), (1, NULL), (2, NULL), (3, NULL)
+
+query expect_error(DIVIDE_BY_ZERO)
+SELECT _1, array_append(arr, 1 / (_1 - 1)) AS a FROM array_append_all_null
+
+query expect_native(array_append)
+SELECT _1, array_append(arr, 1 / (_1 + 1)) AS a FROM array_append_all_null
+
+-- No array NULL: the batch only ever takes the THEN branch
+statement
+CREATE TABLE array_append_no_null(_1 INT, arr ARRAY<INT>) USING parquet
+
+statement
+INSERT INTO array_append_no_null VALUES (0, array(1)), (1, array(2)), (2, array()), (3, array(4, 5))
+
+query expect_error(DIVIDE_BY_ZERO)
+SELECT _1, array_append(arr, 1 / (_1 - 1)) AS a FROM array_append_no_null
+
+query expect_native(array_append)
+SELECT _1, array_append(arr, 1 / (_1 + 1)) AS a FROM array_append_no_null
+
+-- Complex element types: the item is widened in lockstep with the array, and the widened item is
+-- what the ELSE branch evaluates. The array item divides by zero only where the array is NULL.
+query expect_error(DIVIDE_BY_ZERO)
+SELECT _1, array_append(IF(_1 % 2 = 0, array(array(1)), CAST(NULL AS ARRAY<ARRAY<INT>>)), array(1 / (_1 - 1))) AS a
+FROM array_append_eager
+
+query expect_error(DIVIDE_BY_ZERO)
+SELECT _1, array_append(IF(_1 % 2 = 0, array(map(1, 2)), CAST(NULL AS ARRAY<MAP<INT, INT>>)), map(1, 1 / (_1 - 1))) AS a
+FROM array_append_eager
+
+query expect_native(array_append)
+SELECT _1, array_append(IF(_1 % 2 = 0, array(array(1)), CAST(NULL AS ARRAY<ARRAY<INT>>)), array(1 / (_1 + 1))) AS a
 FROM array_append_eager

@@ -65,14 +65,19 @@ object CometArrayAppend extends CometExpressionSerde[ArrayAppend] with ArraysBas
   /**
    * Spark's generated code for `ArrayAppend` evaluates the item for every row and guards only the
    * assignment of the result, so an item that raises under ANSI raises on a row whose array is
-   * NULL too (#6086). `convert` reproduces that by also evaluating the item in the `ELSE` branch
-   * of its `CASE WHEN <array> IS NOT NULL` guard, which means it serializes the item twice. A
-   * nondeterministic item cannot survive that: each copy sees only a subset of the rows, so they
-   * advance its state independently and silently move values and NULLs.
+   * NULL too (#6086). With a nullable array, `convert` reproduces that by also evaluating the
+   * item in the `ELSE` branch of its `CASE WHEN <array> IS NOT NULL` guard. The guard serializes
+   * the array twice and the `ELSE` serializes the item a second time, and a stateful operand
+   * cannot survive that: each copy sees only a subset of the rows, so the copies advance its
+   * state independently and silently move values and NULLs. Either operand is declined when it is
+   * nondeterministic. A non-nullable array needs no guard, so `convert` emits no `CASE` for it
+   * and evaluates each operand once over the whole batch, in order, whatever the operands are.
    */
-  private val nondeterministicItemReason: String =
-    "array_append with a nullable array and a nondeterministic item: the native guard on the " +
-      "array evaluates the item on a subset of the rows, where Spark evaluates it on every row"
+  private val nondeterministicReason: String =
+    "array_append with a nullable array and a nondeterministic operand such as `rand()`: the " +
+      "native NULL guard evaluates the operands more than once, on subsets of the rows"
+
+  override def getUnsupportedReasons(): Seq[String] = Seq(nondeterministicReason)
 
   /**
    * Whether evaluating `expr` for a row Spark would not guard it on is unobservable: a literal or
@@ -84,8 +89,8 @@ object CometArrayAppend extends CometExpressionSerde[ArrayAppend] with ArraysBas
   }
 
   override def getSupportLevel(expr: ArrayAppend): SupportLevel = {
-    if (expr.left.nullable && !expr.right.deterministic) {
-      Unsupported(Some(nondeterministicItemReason))
+    if (expr.left.nullable && expr.children.exists(!_.deterministic)) {
+      Unsupported(Some(nondeterministicReason))
     } else {
       Compatible()
     }
@@ -112,6 +117,13 @@ object CometArrayAppend extends CometExpressionSerde[ArrayAppend] with ArraysBas
         arrayExprProto,
         keyExprProto)
 
+    // A non-nullable array never takes the NULL branch, so the guard is dead weight. Without it
+    // each operand is evaluated once over the whole batch, which also keeps a nondeterministic
+    // operand in step.
+    if (!expr.children.head.nullable) {
+      return arrayAppendScalarExpr
+    }
+
     // IS NOT NULL does not care about element nullability, so use the un-widened source and skip
     // serializing a redundant cast.
     val isNotNullExpr = createUnaryExpr(
@@ -126,9 +138,9 @@ object CometArrayAppend extends CometExpressionSerde[ArrayAppend] with ArraysBas
     // DataFusion's CaseExpr evaluates the THEN branch only on the rows the guard selects, but
     // Spark evaluates the item on every row. Evaluate it on the remaining rows in the ELSE
     // branch, so that it raises there as well, and still once per row. See
-    // `nondeterministicItemReason` for why this is restricted to deterministic items.
+    // `nondeterministicReason` for why this is restricted to deterministic operands.
     val elseExprProto =
-      if (cannotThrow(expr.children(1)) || !expr.children.head.nullable) {
+      if (cannotThrow(expr.children(1))) {
         nullLiteralProto
       } else {
         for {
