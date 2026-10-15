@@ -158,6 +158,7 @@ The native shuffle implementation is its own workspace crate, `datafusion-comet-
 | `writers/buf_batch_writer.rs`      | `BufBatchWriter`, which coalesces sub-`batch_size` batches through Arrow's `BatchCoalescer` before serializing.                  |
 | `writers/local/spill.rs`           | `PartitionedSpill`, the one spill file shared by every output partition, and its per-partition byte ranges.                      |
 | `ipc.rs`                           | `read_ipc_compressed` and `read_ipc_compressed_validated`, the decode side used by the shuffle reader.                           |
+| `offsets_as_lengths.rs`            | Which IPC body buffers hold offsets, the rewrite of offsets as lengths in byte planes, and the `LENGTHS_TAG_FLAG` codec-tag bit. |
 
 ## Data Flow
 
@@ -191,6 +192,10 @@ The native shuffle implementation is its own workspace crate, `datafusion-comet-
    - Writes compression type header
    - Writes field count header
    - Writes compressed IPC stream
+   - With zstd and `spark.comet.shuffle.compression.offsetsAsLengths.enabled`, first rewrites
+     the IPC body's offsets buffers as lengths in byte planes, and marks the block by setting the
+     high bit of the codec tag's first byte (`native/shuffle/src/offsets_as_lengths.rs`). The
+     reader rebuilds the offsets before decoding.
 
 6. **Output**: One data file holds the concatenated partition data. The writer records the byte
    offset where each partition begins, plus the total length, and keeps them in memory.
@@ -270,8 +275,10 @@ leave that walk consistent with it.
 
 `CometShuffleBlockIterator` reads a 16-byte header per block: an 8-byte compressed length, which
 includes the field count but not itself, followed by an 8-byte field count that is discarded because
-the schema comes from the `ShuffleScan` protobuf fields. The compressed body is read into a reused
-`DirectByteBuffer`, **valid only until the next `hasNext()` call**. Native must fully consume it
+the schema comes from the `ShuffleScan` protobuf fields. The 4-byte codec tag after it is read only by
+native code; the high bit of its first byte marks a block whose offsets buffers hold lengths. The
+compressed body is read into a reused `DirectByteBuffer`, **valid only until the next `hasNext()`
+call**. Native must fully consume it
 before pulling the next block, which `read_ipc_compressed` satisfies because it allocates fresh
 native memory for the decoded data.
 
@@ -524,6 +531,7 @@ independently compressed, allowing parallel decompression during reads.
 | `spark.comet.shuffle.directRead.enabled`                                  | `true`  | Decode shuffle blocks in native code, bypassing Arrow FFI                     |
 | `spark.comet.shuffle.compression.codec`                                   | `lz4`   | Compression codec                                                             |
 | `spark.comet.shuffle.compression.zstd.level`                              | `1`     | Zstd compression level                                                        |
+| `spark.comet.shuffle.compression.offsetsAsLengths.enabled`                | `true`  | Store offsets as lengths in zstd blocks                                       |
 | `spark.comet.shuffle.native.writeBufferSize`                              | `1MB`   | Write buffer size                                                             |
 | `spark.comet.shuffle.native.maxBufferBytes`                               | `0`     | Fixed spill threshold. `0` disables it, leaving pool pressure                 |
 | `spark.comet.shuffle.native.partitioning.hash.enabled`                    | `true`  | Allow `HashPartitioning` on the native path                                   |
