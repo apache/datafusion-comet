@@ -1076,10 +1076,10 @@ index 3cf2bfd17ab..5bcf9478e9b 100644
      val hiveVersion = "2.3.9"
      // transitive=false, only download specified jar
 diff --git a/sql/core/src/test/scala/org/apache/spark/sql/SQLQueryTestSuite.scala b/sql/core/src/test/scala/org/apache/spark/sql/SQLQueryTestSuite.scala
-index 71af1fd69c3..46340ba5740 100644
+index 71af1fd69c3..8a8b49f007c 100644
 --- a/sql/core/src/test/scala/org/apache/spark/sql/SQLQueryTestSuite.scala
 +++ b/sql/core/src/test/scala/org/apache/spark/sql/SQLQueryTestSuite.scala
-@@ -872,9 +872,25 @@ class SQLQueryTestSuite extends QueryTest with SharedSparkSession with SQLHelper
+@@ -872,9 +872,26 @@ class SQLQueryTestSuite extends QueryTest with SharedSparkSession with SQLHelper
          s"Schema did not match for query #$i\n${expected.sql}: $output") {
          output.schema
        }
@@ -1090,6 +1090,7 @@ index 71af1fd69c3..46340ba5740 100644
 +      // instead of `SparkArithmeticException`. Collapse both sides to a placeholder in that
 +      // case only. Remove once Comet uses a DataFusion release that includes
 +      // https://github.com/apache/datafusion/pull/24638.
++      // Tracking issue: https://github.com/apache/datafusion-comet/issues/4517
 +      val (expectedOut, actualOut) = if (isCometEnabled &&
 +          expected.output.startsWith("org.apache.spark.SparkArithmeticException") &&
 +          expected.output.contains("\"DIVIDE_BY_ZERO\"") &&

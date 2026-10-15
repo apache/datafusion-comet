@@ -1805,7 +1805,7 @@ mod tests {
     /// wrapper and through `Context` and `Shared` wrappers, while an ordinary reader error does
     /// not match.
     #[test]
-    fn parquet_external_spark_error_keeps_its_type() {
+    fn extract_spark_payload_through_parquet_external() {
         let raised = DataFusionError::ParquetError(Box::new(ParquetError::External(Box::new(
             SparkError::ParquetMissingFieldIds {
                 file_path: "a.parquet".to_string(),
@@ -2037,16 +2037,6 @@ mod tests {
     }
 
     #[test]
-    fn extract_spark_payload_through_shared() {
-        // Join futures hand every consumer a `Shared` clone of the build-side error.
-        let e = DataFusionError::Shared(Arc::new(DataFusionError::from(SparkError::DivideByZero)));
-        assert!(matches!(
-            extract_spark_payload(&e),
-            Some(SparkPayload::Bare(SparkError::DivideByZero))
-        ));
-    }
-
-    #[test]
     fn extract_spark_payload_through_parquet_row_filter() {
         // Shape produced by a pushed-down parquet row filter once DataFusion keeps the typed
         // error (apache/datafusion#24638): the parquet reader wraps the ArrowError it gets
@@ -2066,8 +2056,8 @@ mod tests {
     }
 
     #[test]
-    fn extract_spark_payload_prefers_outermost_payload() {
-        // A `SparkErrorWithContext` found before a bare `SparkError` keeps its SQL context.
+    fn extract_spark_payload_keeps_context_through_wrappers() {
+        // A `SparkErrorWithContext` under a wrapper is returned as is, so its SQL context is kept.
         let e = DataFusionError::from(SparkErrorWithContext::new(SparkError::DivideByZero))
             .context("outer");
         assert!(matches!(
