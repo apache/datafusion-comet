@@ -63,6 +63,7 @@ pub enum OperatorType {
     MergeRows,
     Explode,
     BroadcastNestedLoopJoin,
+    WindowGroupLimit,
 }
 
 /// Global registry of operator builders
@@ -125,6 +126,7 @@ impl OperatorRegistry {
         self.register_projection_operators();
         self.register_aggregate_operators();
         self.register_join_operators();
+        self.register_window_operators();
         self.register_shuffle_operators();
         self.register_write_operators();
         self.register_merge_rows_operators();
@@ -158,6 +160,18 @@ impl OperatorRegistry {
         self.builders.insert(
             OperatorType::BroadcastNestedLoopJoin,
             Box::new(BroadcastNestedLoopJoinBuilder),
+        );
+    }
+
+    /// Register window operators
+    fn register_window_operators(&mut self) {
+        use super::window::{WindowBuilder, WindowGroupLimitBuilder};
+
+        self.builders
+            .insert(OperatorType::Window, Box::new(WindowBuilder));
+        self.builders.insert(
+            OperatorType::WindowGroupLimit,
+            Box::new(WindowGroupLimitBuilder),
         );
     }
 
@@ -231,6 +245,6 @@ fn get_operator_type(spark_operator: &Operator) -> Option<OperatorType> {
         // match. No contrib-specific logic lives here -- we just signal "no OperatorType mapping"
         // so the supports-mixed-codegen check skips it.
         OpStruct::ContribScan(_) => None,
-        OpStruct::WindowGroupLimit(_) => None, // Not yet in OperatorType enum
+        OpStruct::WindowGroupLimit(_) => Some(OperatorType::WindowGroupLimit),
     }
 }

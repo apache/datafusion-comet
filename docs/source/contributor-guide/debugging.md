@@ -254,8 +254,8 @@ so `spark.comet.debug.enabled` and `COMET_LOG_LEVEL` do not affect it.
 
 #### Example: dumping window operator output
 
-In `PhysicalPlanner::create_plan` in `native/core/src/execution/planner.rs`,
-the `OpStruct::Window` arm builds a `BoundedWindowAggExec` and hands it to
+In `WindowBuilder::build` in `native/core/src/execution/planner/window.rs`,
+the window operator builds a `BoundedWindowAggExec` and hands it to
 `SparkPlan::new`. Wrap the node between those two steps:
 
 ```rust
