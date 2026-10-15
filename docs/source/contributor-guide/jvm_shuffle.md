@@ -215,9 +215,10 @@ writes the same Arrow IPC block format as native shuffle, so direct read applies
 
 ## Configuration
 
-| Config                                   | Description                                       |
-| ---------------------------------------- | ------------------------------------------------- |
-| `spark.comet.shuffle.jvm.batchSize`      | Rows per Arrow batch                              |
-| `spark.comet.shuffle.jvm.spillThreshold` | Row count threshold for spill                     |
-| `spark.comet.shuffle.compression.codec`  | Compression codec, `lz4` by default               |
-| `spark.comet.shuffle.directRead.enabled` | Decode blocks natively on read, `true` by default |
+| Config                                                     | Description                                                                                   |
+| ---------------------------------------------------------- | --------------------------------------------------------------------------------------------- |
+| `spark.comet.shuffle.jvm.batchSize`                        | Rows per Arrow batch                                                                          |
+| `spark.comet.shuffle.jvm.spillThreshold`                   | Row count threshold for spill                                                                 |
+| `spark.comet.shuffle.compression.codec`                    | Compression codec, `lz4` by default                                                           |
+| `spark.comet.shuffle.compression.offsetsAsLengths.enabled` | Store offsets as lengths in zstd blocks without dictionary-encoded columns, `true` by default |
+| `spark.comet.shuffle.directRead.enabled`                   | Decode blocks natively on read, `true` by default                                             |

@@ -260,6 +260,7 @@ fn run_benchmark(
                 0,
                 None,
                 &CompressionCodec::Zstd(1),
+                false,
             )
             .unwrap();
         });
