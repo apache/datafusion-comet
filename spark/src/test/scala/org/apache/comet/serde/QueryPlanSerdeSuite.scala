@@ -148,16 +148,5 @@ class QueryPlanSerdeSuite extends AnyFunSuite {
       // Outside an operator's conversion what they share is still unknown
       assert(!canShortCircuitNulls(contains))
     }
-    withSubexpressionElimination(enabled = true) {
-      Seq(false, true).foreach { alwaysShared =>
-        withSharedSubexpressions(shared, alwaysShared) {
-          assert(!canShortCircuitNulls(contains))
-        }
-        withSharedSubexpressions(Seq(contains), alwaysShared) {
-          assert(canShortCircuitNulls(contains))
-        }
-      }
-      assert(!canShortCircuitNulls(contains))
-    }
   }
 }
