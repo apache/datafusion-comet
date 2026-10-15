@@ -32,7 +32,7 @@ use datafusion::physical_expr::expressions::{lit, Column};
 use datafusion::physical_expr::PhysicalExpr;
 use datafusion::physical_plan::aggregates::{AggregateExec, AggregateMode, PhysicalGroupBy};
 use datafusion::physical_plan::ExecutionPlan;
-use datafusion_comet_spark_expr::{MaxMinBy, Mode, Regr, RegrType, SparkListAgg};
+use datafusion_comet_spark_expr::{EvalMode, MaxMinBy, Mode, Regr, RegrType, SparkListAgg};
 use futures::StreamExt;
 use std::hint::black_box;
 use std::sync::Arc;
@@ -178,6 +178,7 @@ fn criterion_benchmark(c: &mut Criterion) {
                 "regr_slope",
                 true,
                 false,
+                EvalMode::Legacy,
             ))),
         ),
     ];

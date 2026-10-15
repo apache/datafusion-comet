@@ -43,14 +43,17 @@ not, inherits it. There is no query that fails to tell you.
 
 ## 1. Which Layer
 
-| Layer                | Flag                                              | Code                                                                                                                         |
-| -------------------- | ------------------------------------------------- | ---------------------------------------------------------------------------------------------------------------------------- |
-| Split-operator plan  | `spark.comet.write.iceberg.splitOperator.enabled` | `IcebergWriteStrategy`, `IcebergWriteLogical`, `IcebergWriteExec`, `IcebergCommitExec`, the `spark-*/.../iceberg/` shims     |
-| Native writer        | `spark.comet.write.iceberg.enabled`               | `CometIcebergNativeWrite` (gate and serde), `IcebergWriteProtoTranslation`, `CometIcebergWriteExec`, `iceberg_write.rs`      |
-| Shared with the scan | both                                              | `iceberg_common.rs` (`load_file_io`, `storage_factory_for`, `scheme_of`), `IcebergReflection`, `NativeConfig` S3 translation |
+| Layer                | Code                                                                                                                         |
+| -------------------- | ---------------------------------------------------------------------------------------------------------------------------- |
+| Split-operator plan  | `IcebergWriteStrategy`, `IcebergWriteLogical`, `IcebergWriteExec`, `IcebergCommitExec`, the `spark-*/.../iceberg/` shims     |
+| Native writer        | `CometIcebergNativeWrite` (gate and serde), `IcebergWriteProtoTranslation`, `CometIcebergWriteExec`, `iceberg_write.rs`      |
+| Shared with the scan | `iceberg_common.rs` (`load_file_io`, `storage_factory_for`, `scheme_of`), `IcebergReflection`, `NativeConfig` S3 translation |
 
-A change to the split plan affects every Iceberg write once that flag is on, including writes that
-never reach the native writer. A change to a shared file affects the native Iceberg scan too.
+`spark.comet.write.iceberg.enabled` switches both write layers. It is off by default, but once a
+user turns it on, a change to the split plan affects every Iceberg write, including writes that
+never reach the native writer, and a change to the native writer affects every eligible one. The
+testing-only `spark.comet.write.iceberg.splitOperator.enabled` plans the split operator with the
+native writer off. A change to a shared file affects the native Iceberg scan too.
 
 ## 2. Direction of the Gate Change
 
@@ -156,7 +159,9 @@ Read the ownership table in the contributor guide before reviewing any change ne
       `MeteredParquetWriterBuilder`, and rows the writer holds outside iceberg-rust (the
       `PartitionFeed`s, or anything a new feed holds back) must be added to what `run_write_task` reserves. A
       builder that constructs `ParquetWriterBuilder` directly leaves its files out of the task's
-      memory reservation, so a wide fanout write grows past the pool instead of failing its task.
+      memory reservation, so a wide fanout write grows past the pool instead of closing
+      partitions early or failing its task. A fanout file must also report to its partition's
+      `OpenFileMemory`, or the partitions holding the most are not the ones closed.
       A storage scheme newly supported for writes needs its entry in
       `StorageWrites::for_location`: a file reports its flushed row groups until its storage has
       written them out, which a local file does at once and an object store only part by part.
@@ -207,6 +212,7 @@ Read the ownership table in the contributor guide before reviewing any change ne
 | Rust tests in `iceberg_write.rs`    | Rolling, fanout order, clustered checks, cleanup guard, manifest round trip, memory reservation |
 | `iceberg_partition_path.rs` tests   | Partition path rendering against iceberg-java                                                   |
 | `CometIcebergWriteBenchmark`        | Native versus iceberg-java throughput                                                           |
+| `CometIcebergEndToEndBenchmark`     | Native read, shuffle and write against stock Spark, primitive and nested columns                |
 
 Ask specifically:
 
