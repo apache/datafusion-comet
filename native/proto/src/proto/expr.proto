@@ -300,6 +300,9 @@ message Regr {
   // Comet builds against for 3.5 and later (3.5.9, 4.0.3+, 4.1, 4.2) but not
   // in 3.4.
   bool r2_constant_dependent_is_perfect_fit = 6;
+  // Only consulted for R2. Division by an underflowed moment product returns
+  // null in LEGACY mode and raises DIVIDE_BY_ZERO in ANSI mode.
+  EvalMode eval_mode = 7;
 }
 
 message Percentile {
@@ -574,6 +577,10 @@ message ScalarFunc {
   repeated Expr args = 2;
   DataType return_type = 3;
   bool fail_on_error = 4;
+  // Evaluate each argument after the first only for the rows where no earlier argument is NULL,
+  // as Spark does for a null-intolerant BinaryExpression or TernaryExpression. See
+  // QueryPlanSerde.withNullShortCircuit.
+  bool null_short_circuit = 5;
 }
 
 message CaseWhen {
@@ -647,6 +654,8 @@ message ListExtract {
   Expr default_value = 3;
   bool one_based = 4;
   bool fail_on_error = 5;
+  // Evaluate the ordinal only for the rows where the child is not NULL, as in ScalarFunc
+  bool null_short_circuit = 6;
 }
 
 message GetArrayStructFields {

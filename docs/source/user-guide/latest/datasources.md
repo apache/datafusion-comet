@@ -29,8 +29,9 @@ Arrow format, allowing the Comet pipeline to take over after that, but the proce
 
 ### Apache Iceberg
 
-Comet accelerates Iceberg scans of Parquet files and has an experimental, opt-in native Iceberg writer.
-See the [Iceberg Guide] and [Iceberg Writes](iceberg-writes.md) for more information.
+Comet accelerates Iceberg scans of Parquet files and can write the data files of eligible Iceberg
+writes natively, an opt-in feature. See the [Iceberg Guide] and [Iceberg Writes](iceberg-writes.md)
+for more information.
 
 [iceberg guide]: iceberg.md
 
@@ -72,6 +73,16 @@ To convert any other leaf operator, such as the scan of a Data Source V2 connect
 format other than Parquet, JSON and CSV, set `spark.comet.sparkToColumnar.enabled=true` and name the
 operator in `spark.comet.sparkToColumnar.supportedOperatorList` by its Spark class name without the
 `Exec` suffix, such as `BatchScan` or `FileSourceScan`.
+
+One case is converted automatically: when the build (broadcast) side of a broadcast join is a file
+or V2 scan Comet cannot read natively - for example a small Text lookup table - and every scan on
+the probe side is already native, Comet converts that build-side scan to Arrow so the whole join
+runs natively over the large probe. This is controlled by
+`spark.comet.convert.broadcastBuildSide.enabled`, which is **on by default**, unlike the switches
+above. The build side is usually small, but an explicit `BROADCAST` hint or a selective filter above
+the scan can make the copied volume larger, and with dynamic partition pruning the dimension is read
+a second time for the pruning subquery. Set `spark.comet.convert.broadcastBuildSide.enabled=false` to
+keep such build sides on Spark.
 
 ### Spark-to-Comet conversion types
 
