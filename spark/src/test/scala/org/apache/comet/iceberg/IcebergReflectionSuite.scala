@@ -280,6 +280,25 @@ class IcebergReflectionSuite extends AnyFunSuite {
       IcebergReflection.executorReflectionUnresolved)
   }
 
+  test("footer re-reads build parquet-mr's read options without a Hadoop Configuration") {
+    // `ParquetFileReader.open(InputFile)` builds its read options from a new Hadoop
+    // `Configuration` on parquet-mr 1.14 and later, and parsing that configuration's XML
+    // resources was most of the cost of rebuilding a native-written file's metrics.
+    IcebergReflection.resolveParquetFooterReflection().readOptions match {
+      case Some(readOptions) =>
+        val options = readOptions.newOptions()
+        val configuration = options.getClass.getMethod("getConfiguration").invoke(options)
+        assert(configuration.getClass.getSimpleName == "PlainParquetConfiguration")
+      case None =>
+        // Only parquet-mr without `ParquetConfiguration` keeps `open(InputFile)`, whose
+        // defaults are built without Hadoop.
+        intercept[ClassNotFoundException] {
+          IcebergReflection.loadClass(
+            "org.apache.iceberg.shaded.org.apache.parquet.conf.ParquetConfiguration")
+        }
+    }
+  }
+
   /** Schema the transform tests below partition on, one column per transform source type. */
   private val transformSchema = new Schema(
     Types.NestedField.optional(1, "id", Types.LongType.get()),

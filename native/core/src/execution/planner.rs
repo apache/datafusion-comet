@@ -31,6 +31,9 @@ mod write;
 // and calls into that crate.
 #[cfg(feature = "contrib-delta")]
 mod delta_scan;
+// JVM-planned Delta sibling of the kernel handler above; see delta_spark_scan.rs.
+#[cfg(feature = "delta")]
+mod delta_spark_scan;
 #[cfg(feature = "contrib-lance")]
 mod lance_scan;
 
@@ -100,13 +103,14 @@ use iceberg::expr::Bind;
 use crate::execution::operators::ExecutionError::GeneralError;
 use crate::execution::spark_plan::SparkPlan;
 use crate::parquet::objectstore::s3_blob_fs_support::normalize_object_store_url;
-use crate::parquet::parquet_support::prepare_object_store_with_configs;
+use crate::parquet::parquet_support::{prepare_object_store_with_configs, ObjectStoreBackend};
 use datafusion::common::scalar::ScalarStructBuilder;
 use datafusion::common::{
     tree_node::{Transformed, TransformedResult, TreeNode, TreeNodeRecursion, TreeNodeRewriter},
     JoinType as DFJoinType, NullEquality, ScalarValue,
 };
 use datafusion::datasource::listing::PartitionedFile;
+use datafusion::datasource::object_store::ObjectStoreUrl;
 use datafusion::logical_expr::type_coercion::functions::fields_with_udf;
 use datafusion::logical_expr::{
     AggregateUDF, ReturnFieldArgs, ScalarUDF, TypeSignature, WindowFrame, WindowFrameBound,
@@ -143,12 +147,13 @@ use datafusion_comet_proto::{
     },
 };
 use datafusion_comet_spark_expr::{
-    create_case_when, create_if_expr, jvm_udf::JvmScalarUdfExpr, spark_in_list, ApproxPercentile,
-    ArrayInsert, Avg, AvgDecimal, Cast, CheckOverflow, Correlation, Covariance, CreateNamedStruct,
-    DecimalRescaleCheckOverflow, FloatOperands, GetArrayStructFields, GetStructField, HllPlusPlus,
-    HllSketchAgg, HllUnionAgg, IfExpr, ListExtract, MaxMinBy, Mode, NormalizeNaNAndZero,
-    NormalizeNestedFloats, Regr, RegrType, SparkCastOptions, SparkMinMax, Stddev, SumDecimal,
-    ToJson, UnboundColumn, Variance, WideDecimalBinaryExpr, WideDecimalOp,
+    coerce_to_common_type, create_case_when, create_if_expr, jvm_udf::JvmScalarUdfExpr,
+    spark_in_list, ApproxPercentile, ArrayInsert, Avg, AvgDecimal, Cast, CheckOverflow,
+    Correlation, Covariance, CreateNamedStruct, DecimalRescaleCheckOverflow, FloatOperands,
+    GetArrayStructFields, GetStructField, HllPlusPlus, HllSketchAgg, HllUnionAgg, IfExpr,
+    ListExtract, MaxMinBy, Mode, NormalizeNaNAndZero, NormalizeNestedFloats, NullShortCircuit,
+    Regr, RegrType, SparkCastOptions, SparkMinMax, Stddev, SumDecimal, ToJson, UnboundColumn,
+    Variance, WideDecimalBinaryExpr, WideDecimalOp,
 };
 use itertools::Itertools;
 use jni::objects::{Global, JObject};
@@ -351,6 +356,9 @@ pub struct PhysicalPlanner {
     /// How comparisons treat floating-point operands. `Raw` only while planning a scan's data
     /// filters; see [`Self::create_data_filter`].
     float_operands: FloatOperands,
+    /// Whether a boundary that would cast a timestamp's timezone label to the declared one fails
+    /// instead. Test-only; see `spark.comet.testing.strictTimestampLabels.enabled`.
+    strict_timestamp_labels: bool,
 }
 
 impl Default for PhysicalPlanner {
@@ -371,6 +379,7 @@ impl PhysicalPlanner {
             class_loader: None,
             shuffle_partition_pusher: None,
             float_operands: FloatOperands::Normalize,
+            strict_timestamp_labels: false,
         }
     }
 
@@ -449,6 +458,15 @@ impl PhysicalPlanner {
         self
     }
 
+    pub fn with_strict_timestamp_labels(mut self, strict: bool) -> Self {
+        self.strict_timestamp_labels = strict;
+        self
+    }
+
+    pub(crate) fn strict_timestamp_labels(&self) -> bool {
+        self.strict_timestamp_labels
+    }
+
     /// Attach a propagated Spark `TaskContext` global reference. Called by the JNI `executePlan`
     /// entry with whatever was captured at `createPlan` time. The planner clones this `Option`
     /// into every `JvmScalarUdfExpr` it builds.
@@ -496,6 +514,187 @@ impl PhysicalPlanner {
     /// Return partition id of this planner.
     pub fn partition(&self) -> i32 {
         self.partition
+    }
+
+    /// Build the native parquet `DataSourceExec` shared by the parquet-backed scan arms
+    /// (NativeScan and, behind the `delta` feature, DeltaScan): schema conversion, data-filter
+    /// binding, object-store setup, file-group construction, and `init_datasource_exec`.
+    /// Arm-specific concerns (file-list decoding, deletion-vector handling) stay in the arms.
+    /// `rebase_from_file_metadata` opts the scan into per-file datetime calendar-rebase
+    /// resolution (see `datetime_rebase.rs`): the Delta arm passes true, while NativeScan
+    /// passes false to keep its documented no-rebase behavior (#5010).
+    /// `datetime_rebase_mode_in_read` / `int96_rebase_mode_in_read` carry the session's
+    /// effective read modes for files whose footer metadata does not decide the policy;
+    /// they are only consulted when `rebase_from_file_metadata` is true (empty means
+    /// EXCEPTION, the conservative refuse-ancient posture).
+    #[allow(clippy::too_many_arguments)]
+    fn build_parquet_scan_plan(
+        &self,
+        plan_id: u32,
+        common: &spark_operator::NativeScanCommon,
+        object_store_url: ObjectStoreUrl,
+        object_store_backend: ObjectStoreBackend,
+        files: Vec<PartitionedFile>,
+        rebase_from_file_metadata: bool,
+        datetime_rebase_mode_in_read: &str,
+        int96_rebase_mode_in_read: &str,
+    ) -> Result<Arc<SparkPlan>, ExecutionError> {
+        let data_schema = convert_spark_types_to_arrow_schema(common.data_schema.as_slice());
+        let required_schema: SchemaRef =
+            convert_spark_types_to_arrow_schema(common.required_schema.as_slice());
+        let partition_schema: SchemaRef =
+            convert_spark_types_to_arrow_schema(common.partition_schema.as_slice());
+        let projection_vector: Vec<usize> = common
+            .projection_vector
+            .iter()
+            .map(|offset| *offset as usize)
+            .collect();
+
+        // Check if this partition has any files (bucketed scan with bucket pruning may have
+        // empty partitions; a fully-pruned Delta partition likewise).
+        if files.is_empty() {
+            // Match the nonempty scan's projected table schema, including partition
+            // and constant metadata columns. Fused operators bind against this schema
+            // even when the bucket has no rows.
+            let partition_fields: Vec<FieldRef> = partition_schema
+                .fields()
+                .iter()
+                .map(|f| Arc::new(Field::new(f.name(), f.data_type().clone(), f.is_nullable())))
+                .collect();
+            let table_schema = TableSchema::builder(data_schema)
+                .with_table_partition_cols(partition_fields)
+                .build();
+            let output_schema = Arc::new(table_schema.table_schema().project(&projection_vector)?);
+            let empty_exec = Arc::new(EmptyExec::new(output_schema));
+            return Ok(Arc::new(SparkPlan::new(plan_id, empty_exec, vec![])));
+        }
+
+        // data_filters may reference partition columns and constant metadata columns
+        // (e.g. `_metadata.file_size`), which the Parquet reader appends after
+        // required_schema's columns once partition_values are projected into the
+        // batch. Bind against the combined schema so `Bound` indices resolve
+        // correctly -- Scala's `exprToProto(filter, scan.output)`
+        // (CometNativeScan.scala) numbers columns against that same ordering.
+        let data_filters: Result<Vec<Arc<dyn PhysicalExpr>>, ExecutionError> =
+            if common.data_filters.is_empty() {
+                Ok(vec![])
+            } else {
+                let filter_schema: SchemaRef = Arc::new(Schema::new(
+                    required_schema
+                        .fields()
+                        .iter()
+                        .chain(partition_schema.fields().iter())
+                        .cloned()
+                        .collect::<Vec<FieldRef>>(),
+                ));
+                let float_operands = self.data_filter_float_operands();
+                common
+                    .data_filters
+                    .iter()
+                    .map(|expr| {
+                        self.create_data_filter(expr, Arc::clone(&filter_schema), float_operands)
+                    })
+                    .collect()
+            };
+
+        let default_values = self.parse_default_values(common, &required_schema)?;
+
+        let file_groups: Vec<Vec<PartitionedFile>> = vec![files];
+
+        let scan = init_datasource_exec(
+            required_schema,
+            Some(data_schema),
+            Some(partition_schema),
+            object_store_url,
+            object_store_backend,
+            file_groups,
+            Some(projection_vector),
+            if common.has_data_filters || !common.data_filters.is_empty() {
+                Some(data_filters?)
+            } else {
+                None
+            },
+            default_values,
+            common.session_timezone.as_str(),
+            common.case_sensitive,
+            common.return_null_struct_if_all_fields_missing,
+            common.allow_type_promotion,
+            common.allow_timestamp_ltz_to_ntz,
+            self.session_ctx(),
+            common.encryption_enabled,
+            common.use_field_id,
+            common.require_field_ids,
+            rebase_from_file_metadata,
+            datetime_rebase_mode_in_read,
+            int96_rebase_mode_in_read,
+        )?;
+        Ok(Arc::new(SparkPlan::new(plan_id, scan, vec![])))
+    }
+
+    /// Register the scan's object store and convert its proto file list into DataFusion
+    /// [`PartitionedFile`]. Shared by the NativeScan and DeltaScan arms; empty partitions
+    /// yield an empty file list (handled by `build_parquet_scan_plan`).
+    fn prepare_scan_store_and_files(
+        &self,
+        common: &spark_operator::NativeScanCommon,
+        partition_files: &SparkFilePartition,
+    ) -> Result<(ObjectStoreUrl, ObjectStoreBackend, Vec<PartitionedFile>), ExecutionError> {
+        let one_file = match partition_files.partitioned_file.first() {
+            Some(f) => f.file_path.clone(),
+            None => {
+                // Empty partition: no store to resolve; the URL and backend are unused because
+                // the file group is empty and build_parquet_scan_plan returns EmptyExec.
+                return Ok((
+                    ObjectStoreUrl::local_filesystem(),
+                    ObjectStoreBackend::Local,
+                    vec![],
+                ));
+            }
+        };
+        let object_store_options: HashMap<String, String> = common
+            .object_store_options
+            .iter()
+            .map(|(k, v)| (k.clone(), v.clone()))
+            .collect();
+        let (object_store_url, _, object_store_backend) = prepare_object_store_with_configs(
+            self.session_ctx.runtime_env(),
+            one_file,
+            &object_store_options,
+        )?;
+        let files = self.get_partitioned_files(partition_files, &object_store_options)?;
+        Ok((object_store_url, object_store_backend, files))
+    }
+
+    /// Parse a scan's serialized default values (for columns missing in older files) into the
+    /// map consumed by the SchemaMapper. Shared by the NativeScan and DeltaScan arms.
+    fn parse_default_values(
+        &self,
+        common: &spark_operator::NativeScanCommon,
+        required_schema: &SchemaRef,
+    ) -> Result<Option<HashMap<Column, ScalarValue>>, ExecutionError> {
+        if common.default_values.len() != common.default_values_indexes.len() {
+            return Err(GeneralError(
+                "Scan default values and indexes have different lengths".to_string(),
+            ));
+        }
+        if common.default_values.is_empty() {
+            return Ok(None);
+        }
+        common
+            .default_values
+            .iter()
+            .zip(&common.default_values_indexes)
+            .map(|(expr, offset)| {
+                let idx = usize::try_from(*offset)
+                    .map_err(|_| GeneralError(format!("Invalid scan default index {offset}")))?;
+                let field = required_schema.fields().get(idx).ok_or_else(|| {
+                    GeneralError(format!("Scan default index {idx} is outside schema"))
+                })?;
+                let value = self.create_default_value(expr, Arc::clone(required_schema))?;
+                Ok((Column::new(field.name(), idx), value))
+            })
+            .collect::<Result<HashMap<_, _>, ExecutionError>>()
+            .map(Some)
     }
 
     /// get DataFusion PartitionedFiles from a Spark FilePartition
@@ -956,7 +1155,7 @@ impl PhysicalPlanner {
                     .as_ref()
                     .map(|e| self.create_expr(e, Arc::clone(&input_schema)))
                     .transpose()?;
-                Ok(Arc::new(ListExtract::new(
+                let list_extract: Arc<dyn PhysicalExpr> = Arc::new(ListExtract::new(
                     child,
                     ordinal,
                     default_value,
@@ -964,7 +1163,12 @@ impl PhysicalPlanner {
                     expr.fail_on_error,
                     spark_expr.expr_id,
                     Arc::clone(&self.query_context_registry),
-                )))
+                ));
+                if expr.null_short_circuit {
+                    Ok(NullShortCircuit::wrap(list_extract, &input_schema)?)
+                } else {
+                    Ok(list_extract)
+                }
             }
             ExprStruct::GetArrayStructFields(expr) => {
                 let child =
@@ -1547,6 +1751,45 @@ impl PhysicalPlanner {
                 let (scans, shuffle_scans, child) =
                     self.create_plan(&children[0], inputs, partition_count)?;
 
+                // For `df.agg(sum($"a")).count()`, Spark plans a global aggregate with neither
+                // keys nor functions that emits one row with no columns per partition. DataFusion
+                // can't run that (apache/datafusion#25786), so plan a throwaway `count(NULL)` and
+                // project it away. The count still drains the input, so errors below it surface.
+                // Both Spark stages take this path, since no count passes between them.
+                if agg.grouping_exprs.is_empty() && agg.agg_exprs.is_empty() {
+                    let schema = child.schema();
+                    let count = Self::create_aggr_func_expr(
+                        "count",
+                        Arc::clone(&schema),
+                        vec![Arc::new(Literal::new(ScalarValue::Null))],
+                        Arc::unwrap_or_clone(count_udaf()),
+                    )?;
+                    let aggregate: Arc<dyn ExecutionPlan> = Arc::new(
+                        datafusion::physical_plan::aggregates::AggregateExec::try_new(
+                            DFAggregateMode::Single,
+                            PhysicalGroupBy::default(),
+                            vec![Arc::new(count)],
+                            vec![None],
+                            Arc::clone(&child.native_plan),
+                            schema,
+                        )?,
+                    );
+                    let projection: Arc<dyn ExecutionPlan> = Arc::new(ProjectionExec::try_new(
+                        Vec::<(Arc<dyn PhysicalExpr>, String)>::new(),
+                        Arc::clone(&aggregate),
+                    )?);
+                    return Ok((
+                        scans,
+                        shuffle_scans,
+                        Arc::new(SparkPlan::new_with_additional(
+                            spark_plan.plan_id,
+                            projection,
+                            vec![child],
+                            vec![aggregate],
+                        )),
+                    ));
+                }
+
                 let group_exprs: PhyExprResult = agg
                     .grouping_exprs
                     .iter()
@@ -1576,13 +1819,17 @@ impl PhysicalPlanner {
                 let mode = match proto_mode {
                     ProtoAggregateMode::Partial => DFAggregateMode::Partial,
                     ProtoAggregateMode::Final => DFAggregateMode::Final,
-                    // PartialMerge: Partial + MergeAsPartial
-                    ProtoAggregateMode::PartialMerge => DFAggregateMode::Partial,
+                    // Spark's distinct-aggregate plan counts the rows of a PartialMerge, so it must
+                    // emit each key once. DataFusion's Partial emits what it holds when it runs
+                    // short of memory and starts again, while its Single spills. So run the
+                    // PartialMerge as Single, whose MergeAsPartial aggregates merge their input and
+                    // evaluate to their states, and unpack those states below.
+                    ProtoAggregateMode::PartialMerge => DFAggregateMode::Single,
                 };
 
                 // Check if any expression uses PartialMerge mode. When present,
                 // those expressions are wrapped with MergeAsPartial to get merge
-                // semantics inside a Partial-mode AggregateExec.
+                // semantics with state output.
                 let partial_merge_value = ProtoAggregateMode::PartialMerge as i32;
                 let has_partial_merge = proto_mode == ProtoAggregateMode::PartialMerge
                     || agg.expr_modes.contains(&partial_merge_value);
@@ -1681,6 +1928,16 @@ impl PhysicalPlanner {
                     )?,
                 );
 
+                let mut output = aggregate;
+                let mut additional_native_plans = vec![];
+                if proto_mode == ProtoAggregateMode::PartialMerge {
+                    additional_native_plans.push(Arc::clone(&output));
+                    output = crate::execution::merge_as_partial::unpack_state_structs(
+                        output,
+                        agg.grouping_exprs.len(),
+                    )?;
+                }
+
                 // Spark's SortAggregateExec reports its output as ordered by the grouping keys,
                 // and Spark may have removed a sort above it on that basis. DataFusion emits
                 // groups in input order only when it sees the input sorted on them. When that
@@ -1688,11 +1945,11 @@ impl PhysicalPlanner {
                 // relation that reaches native code as an unordered ScanExec, the hash table can
                 // emit groups out of order, so sort the aggregate output instead.
                 if agg.ordered_by_grouping_keys && !agg.grouping_exprs.is_empty() {
-                    let aggregate_schema = aggregate.schema();
+                    let output_schema = output.schema();
                     let ordering: Vec<PhysicalSortExpr> = (0..agg.grouping_exprs.len())
                         .map(|idx| {
                             PhysicalSortExpr::new(
-                                Arc::new(Column::new(aggregate_schema.field(idx).name(), idx)),
+                                Arc::new(Column::new(output_schema.field(idx).name(), idx)),
                                 SortOptions {
                                     descending: false,
                                     nulls_first: true,
@@ -1700,31 +1957,25 @@ impl PhysicalPlanner {
                             )
                         })
                         .collect();
-                    if !aggregate
+                    if !output
                         .equivalence_properties()
                         .ordering_satisfy(ordering.clone())?
                     {
-                        let sort: Arc<dyn ExecutionPlan> = Arc::new(SortExec::new(
-                            LexOrdering::new(ordering).unwrap(),
-                            Arc::clone(&aggregate),
-                        ));
-                        return Ok((
-                            scans,
-                            shuffle_scans,
-                            Arc::new(SparkPlan::new_with_additional(
-                                spark_plan.plan_id,
-                                sort,
-                                vec![child],
-                                vec![aggregate],
-                            )),
-                        ));
+                        additional_native_plans.push(Arc::clone(&output));
+                        output =
+                            Arc::new(SortExec::new(LexOrdering::new(ordering).unwrap(), output));
                     }
                 }
 
                 Ok((
                     scans,
                     shuffle_scans,
-                    Arc::new(SparkPlan::new(spark_plan.plan_id, aggregate, vec![child])),
+                    Arc::new(SparkPlan::new_with_additional(
+                        spark_plan.plan_id,
+                        output,
+                        vec![child],
+                        additional_native_plans,
+                    )),
                 ))
             }
 
@@ -1898,162 +2149,24 @@ impl PhysicalPlanner {
                     .as_ref()
                     .ok_or_else(|| GeneralError("NativeScan missing common data".into()))?;
 
-                let data_schema =
-                    convert_spark_types_to_arrow_schema(common.data_schema.as_slice());
-                let required_schema: SchemaRef =
-                    convert_spark_types_to_arrow_schema(common.required_schema.as_slice());
-                let partition_schema: SchemaRef =
-                    convert_spark_types_to_arrow_schema(common.partition_schema.as_slice());
-                let projection_vector: Vec<usize> = common
-                    .projection_vector
-                    .iter()
-                    .map(|offset| *offset as usize)
-                    .collect();
-
                 let partition_files = scan
                     .file_partition
                     .as_ref()
                     .ok_or_else(|| GeneralError("NativeScan missing file_partition".into()))?;
 
-                // Check if this partition has any files (bucketed scan with bucket pruning may have empty partitions)
-                if partition_files.partitioned_file.is_empty() {
-                    // Match the nonempty scan's projected table schema, including partition
-                    // and constant metadata columns. Fused operators bind against this schema
-                    // even when the bucket has no rows.
-                    let partition_fields: Vec<FieldRef> = partition_schema
-                        .fields()
-                        .iter()
-                        .map(|f| {
-                            Arc::new(Field::new(f.name(), f.data_type().clone(), f.is_nullable()))
-                        })
-                        .collect();
-                    let table_schema = TableSchema::builder(data_schema)
-                        .with_table_partition_cols(partition_fields)
-                        .build();
-                    let output_schema =
-                        Arc::new(table_schema.table_schema().project(&projection_vector)?);
-                    let empty_exec = Arc::new(EmptyExec::new(output_schema));
-                    return Ok((
-                        vec![],
-                        vec![],
-                        Arc::new(SparkPlan::new(spark_plan.plan_id, empty_exec, vec![])),
-                    ));
-                }
-
-                // data_filters may reference partition columns and constant metadata columns
-                // (e.g. `_metadata.file_size`), which the Parquet reader appends after
-                // required_schema's columns once partition_values are projected into the
-                // batch. Bind against the combined schema so `Bound` indices resolve
-                // correctly -- Scala's `exprToProto(filter, scan.output)`
-                // (CometNativeScan.scala) numbers columns against that same ordering.
-                let data_filters: Result<Vec<Arc<dyn PhysicalExpr>>, ExecutionError> =
-                    if common.data_filters.is_empty() {
-                        Ok(vec![])
-                    } else {
-                        let filter_schema: SchemaRef = Arc::new(Schema::new(
-                            required_schema
-                                .fields()
-                                .iter()
-                                .chain(partition_schema.fields().iter())
-                                .cloned()
-                                .collect::<Vec<FieldRef>>(),
-                        ));
-                        let float_operands = self.data_filter_float_operands();
-                        common
-                            .data_filters
-                            .iter()
-                            .map(|expr| {
-                                self.create_data_filter(
-                                    expr,
-                                    Arc::clone(&filter_schema),
-                                    float_operands,
-                                )
-                            })
-                            .collect()
-                    };
-
-                if common.default_values.len() != common.default_values_indexes.len() {
-                    return Err(GeneralError(
-                        "Scan default values and indexes have different lengths".to_string(),
-                    ));
-                }
-                let default_values = if common.default_values.is_empty() {
-                    None
-                } else {
-                    Some(
-                        common
-                            .default_values
-                            .iter()
-                            .zip(&common.default_values_indexes)
-                            .map(|(expr, offset)| {
-                                let idx = usize::try_from(*offset).map_err(|_| {
-                                    GeneralError(format!("Invalid scan default index {offset}"))
-                                })?;
-                                let field = required_schema.fields().get(idx).ok_or_else(|| {
-                                    GeneralError(format!(
-                                        "Scan default index {idx} is outside schema"
-                                    ))
-                                })?;
-                                let value =
-                                    self.create_default_value(expr, Arc::clone(&required_schema))?;
-                                Ok((Column::new(field.name(), idx), value))
-                            })
-                            .collect::<Result<HashMap<_, _>, ExecutionError>>()?,
-                    )
-                };
-
-                // Get one file from this partition (we know it's not empty due to early return above)
-                let one_file = partition_files
-                    .partitioned_file
-                    .first()
-                    .map(|f| f.file_path.clone())
-                    .expect("partition should have files after empty check");
-
-                let object_store_options: HashMap<String, String> = common
-                    .object_store_options
-                    .iter()
-                    .map(|(k, v)| (k.clone(), v.clone()))
-                    .collect();
-                let (object_store_url, _, object_store_backend) =
-                    prepare_object_store_with_configs(
-                        self.session_ctx.runtime_env(),
-                        one_file,
-                        &object_store_options,
-                    )?;
-
-                // Get files for this partition
-                let files = self.get_partitioned_files(partition_files, &object_store_options)?;
-                let file_groups: Vec<Vec<PartitionedFile>> = vec![files];
-
-                let scan = init_datasource_exec(
-                    required_schema,
-                    Some(data_schema),
-                    Some(partition_schema),
+                let (object_store_url, object_store_backend, files) =
+                    self.prepare_scan_store_and_files(common, partition_files)?;
+                let scan = self.build_parquet_scan_plan(
+                    spark_plan.plan_id,
+                    common,
                     object_store_url,
                     object_store_backend,
-                    file_groups,
-                    Some(projection_vector),
-                    if common.has_data_filters || !common.data_filters.is_empty() {
-                        Some(data_filters?)
-                    } else {
-                        None
-                    },
-                    default_values,
-                    common.session_timezone.as_str(),
-                    common.case_sensitive,
-                    common.return_null_struct_if_all_fields_missing,
-                    common.allow_type_promotion,
-                    common.allow_timestamp_ltz_to_ntz,
-                    self.session_ctx(),
-                    common.encryption_enabled,
-                    common.use_field_id,
-                    common.require_field_ids,
+                    files,
+                    false,
+                    "",
+                    "",
                 )?;
-                Ok((
-                    vec![],
-                    vec![],
-                    Arc::new(SparkPlan::new(spark_plan.plan_id, scan, vec![])),
-                ))
+                Ok((vec![], vec![], scan))
             }
             OpStruct::CsvScan(scan) => {
                 let data_schema = convert_spark_types_to_arrow_schema(scan.data_schema.as_slice());
@@ -2129,7 +2242,8 @@ impl PhysicalPlanner {
 
                 // The `ScanExec` operator will take actual arrays from Spark during execution
                 let scan =
-                    ScanExec::new(self.exec_context_id, input_source, &scan.source, data_types)?;
+                    ScanExec::new(self.exec_context_id, input_source, &scan.source, data_types)?
+                        .with_strict_timestamp_labels(self.strict_timestamp_labels);
 
                 Ok((
                     vec![scan.clone()],
@@ -2190,6 +2304,12 @@ impl PhysicalPlanner {
                 // failure.
                 #[cfg(feature = "contrib-delta")]
                 if let Some(result) = delta_scan::try_plan_contrib_scan(self, spark_plan, contrib) {
+                    return result;
+                }
+                #[cfg(feature = "delta")]
+                if let Some(result) =
+                    delta_spark_scan::try_plan_contrib_scan(self, spark_plan, contrib)
+                {
                     return result;
                 }
                 #[cfg(feature = "contrib-lance")]
@@ -3510,6 +3630,7 @@ impl PhysicalPlanner {
                     name,
                     expr.filter_var_by_pair_nulls,
                     expr.r2_constant_dependent_is_perfect_fit,
+                    from_protobuf_eval_mode(expr.eval_mode)?,
                 ));
                 Self::create_aggr_func_expr(name, schema, vec![child1, child2], func)
             }
@@ -4005,6 +4126,10 @@ impl PhysicalPlanner {
                     Self::coerce_child_to(arg, &input_schema, widen_map_entry_value_nullable)
                 })
                 .collect::<Result<Vec<_>, ExecutionError>>()?
+        } else if fun_name == "greatest" || fun_name == "least" {
+            // Spark compares struct arguments field by field by position, while DataFusion's
+            // coercion below would match fields by name. See `coerce_to_common_type`.
+            coerce_to_common_type(args, &input_schema)?
         } else {
             args
         };
@@ -4113,6 +4238,11 @@ impl PhysicalPlanner {
             Arc::new(Field::new(fun_name, data_type.clone(), true)),
             Arc::new(ConfigOptions::default()),
         ));
+        let scalar_expr = if expr.null_short_circuit {
+            NullShortCircuit::wrap(scalar_expr, &input_schema)?
+        } else {
+            scalar_expr
+        };
 
         // DF53 changed some UDFs (e.g. md5) to return StringViewArray at execution
         // time (apache/datafusion#20045). Comet does not yet support view types, so
@@ -5396,6 +5526,21 @@ mod tests {
         assert_eq!(field.metadata().get("source"), Some(&"spark".to_string()));
     }
 
+    /// Pack a `DeltaSparkScan` into the generic `ContribScan` envelope exactly as the
+    /// contrib jar does on the JVM side.
+    fn delta_spark_envelope(scan: spark_operator::DeltaSparkScan) -> Operator {
+        use prost::Message;
+        Operator {
+            plan_id: 0,
+            sql_text_pool: vec![],
+            children: vec![],
+            op_struct: Some(OpStruct::ContribScan(spark_operator::ContribScan {
+                type_url: "type.googleapis.com/comet.contrib.delta_spark.DeltaSparkScan".into(),
+                value: scan.encode_to_vec(),
+            })),
+        }
+    }
+
     fn create_sort_order(index: i32, type_id: i32, descending: bool, nulls_first: bool) -> Expr {
         Expr {
             expr_struct: Some(SortOrder(Box::new(spark_expression::SortOrder {
@@ -5733,6 +5878,88 @@ mod tests {
                 }
             }
         }
+    }
+
+    #[test]
+    fn delta_scan_errors_without_delta_feature() {
+        let op = delta_spark_envelope(spark_operator::DeltaSparkScan {
+            common: None,
+            delta_common: None,
+            file_partition: None,
+        });
+        let planner = PhysicalPlanner::default();
+        let err = planner.create_plan(&op, &mut vec![], 1).unwrap_err();
+        let msg = format!("{err}");
+        #[cfg(not(feature = "delta"))]
+        assert!(
+            msg.contains("built without a contrib that handles it"),
+            "expected mismatched-build error, got: {msg}"
+        );
+        #[cfg(feature = "delta")]
+        assert!(
+            msg.contains("missing common data"),
+            "expected missing-common-data error for an empty DeltaSparkScan, got: {msg}"
+        );
+    }
+
+    #[cfg(feature = "delta")]
+    fn delta_scan_op(files: Vec<spark_operator::DeltaSparkPartitionedFile>) -> Operator {
+        delta_spark_envelope(spark_operator::DeltaSparkScan {
+            common: Some(Default::default()),
+            delta_common: None,
+            file_partition: Some(spark_operator::DeltaSparkFilePartition {
+                partitioned_file: files,
+            }),
+        })
+    }
+
+    #[cfg(feature = "delta")]
+    #[test]
+    fn delta_scan_rejects_dv_without_source() {
+        let op = delta_scan_op(vec![spark_operator::DeltaSparkPartitionedFile {
+            file: Some(spark_operator::SparkPartitionedFile {
+                file_path: "file:///tmp/f.parquet".into(),
+                start: 0,
+                length: 0,
+                file_size: 0,
+                partition_values: vec![],
+            }),
+            dv: Some(spark_operator::DeltaSparkDvDescriptor {
+                storage_type: "u".into(),
+                absolute_path: None,
+                inline_data: None,
+                offset: Some(1),
+                size_in_bytes: 1,
+                cardinality: 1,
+            }),
+            // (file_path carries a scheme because store resolution now precedes
+            // the DV handling)
+        }]);
+        let err = PhysicalPlanner::default()
+            .create_plan(&op, &mut vec![], 1)
+            .unwrap_err();
+        let msg = format!("{err}");
+        assert!(
+            msg.contains("neither inline data nor a path"),
+            "expected malformed-descriptor error, got: {msg}"
+        );
+    }
+
+    #[cfg(feature = "delta")]
+    #[test]
+    fn delta_scan_rejects_missing_inner_file() {
+        let op = delta_scan_op(vec![spark_operator::DeltaSparkPartitionedFile {
+            file: None,
+            dv: None,
+        }]);
+        let err = PhysicalPlanner::default()
+            .create_plan(&op, &mut vec![], 1)
+            .unwrap_err();
+        let msg = format!("{err}");
+        assert!(
+            msg.contains("missing inner file"),
+            "expected missing-inner-file error, got: {msg}"
+        );
     }
 
     #[test]
@@ -6458,6 +6685,76 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn keyless_aggregate_without_functions_emits_one_empty_row() {
+        use arrow::array::RecordBatchOptions;
+        use datafusion::common::tree_node::{Transformed, TreeNode};
+
+        let scan = Operator {
+            op_struct: Some(OpStruct::Scan(spark_operator::Scan {
+                fields: vec![],
+                source: String::new(),
+            })),
+            ..Default::default()
+        };
+        let schema = Arc::new(Schema::empty());
+        let rows = |num_rows| {
+            RecordBatch::try_new_with_options(
+                Arc::clone(&schema),
+                vec![],
+                &RecordBatchOptions::new().with_row_count(Some(num_rows)),
+            )
+            .unwrap()
+        };
+        let ctx = SessionContext::new();
+        let task_ctx = ctx.task_ctx();
+        let planner = PhysicalPlanner::new(Arc::new(ctx), 0);
+
+        // Spark serializes the stage below its exchange as Partial and the one above as Final.
+        // Both emit one row with no columns per partition, even for an empty input.
+        for mode in [
+            spark_operator::AggregateMode::Partial,
+            spark_operator::AggregateMode::Final,
+        ] {
+            let aggregate = Operator {
+                plan_id: 1,
+                children: vec![scan.clone()],
+                op_struct: Some(OpStruct::HashAgg(spark_operator::HashAggregate {
+                    mode: mode as i32,
+                    ..Default::default()
+                })),
+                ..Default::default()
+            };
+            let (_, _, planned) = planner.create_plan(&aggregate, &mut vec![], 1).unwrap();
+            assert_eq!("ProjectionExec", planned.native_plan.name());
+            assert_eq!(0, planned.schema().fields().len());
+            assert_eq!(1, planned.additional_native_plans.len());
+            assert_eq!("AggregateExec", planned.additional_native_plans[0].name());
+            assert_eq!(1, planned.children.len());
+            assert_eq!("ScanExec", planned.children[0].native_plan.name());
+
+            for batches in [vec![rows(3), rows(2)], vec![]] {
+                let input: Arc<dyn ExecutionPlan> =
+                    MemorySourceConfig::try_new_exec(&[batches], Arc::clone(&schema), None)
+                        .unwrap();
+                let native_plan = Arc::clone(&planned.native_plan)
+                    .transform_up(|node| {
+                        Ok(if node.name() == "ScanExec" {
+                            Transformed::yes(Arc::clone(&input))
+                        } else {
+                            Transformed::no(node)
+                        })
+                    })
+                    .unwrap()
+                    .data;
+                let results = collect(native_plan.execute(0, Arc::clone(&task_ctx)).unwrap())
+                    .await
+                    .unwrap();
+                assert_eq!(1, results.iter().map(RecordBatch::num_rows).sum::<usize>());
+            }
+        }
+    }
+
+    #[tokio::test]
     async fn sort_aggregate_output_is_ordered_by_grouping_keys() {
         use arrow::datatypes::Int32Type;
         use datafusion::common::tree_node::{Transformed, TreeNode};
@@ -6608,6 +6905,162 @@ mod tests {
         let planner = PhysicalPlanner::default();
         let (_, _, planned) = planner.create_plan(&op, &mut vec![], 1).unwrap();
         assert_eq!("AggregateExec", planned.native_plan.name());
+    }
+
+    #[tokio::test]
+    async fn partial_merge_runs_as_single_and_emits_merged_states() {
+        use arrow::array::{BooleanArray, Int64Array};
+        use datafusion::assert_batches_sorted_eq;
+        use datafusion::common::tree_node::{Transformed, TreeNode};
+        use datafusion::physical_plan::aggregates::{AggregateExec, AggregateMode};
+        use spark_expression::agg_expr::ExprStruct as AggExprStruct;
+
+        // A Spark PartialMerge of max(v), count(v) and first(v) grouped by k, over k and their
+        // states. DataFusion's first has no GroupsAccumulator without an ordering.
+        let int64 = spark_expression::DataType {
+            type_id: 4,
+            type_info: None,
+        };
+        let boolean = spark_expression::DataType {
+            type_id: 0,
+            type_info: None,
+        };
+        let v = Expr {
+            expr_struct: Some(Unbound(spark_expression::UnboundReference {
+                name: "v".to_string(),
+                datatype: Some(int64.clone()),
+            })),
+            ..Default::default()
+        };
+        let partial_merge = spark_operator::AggregateMode::PartialMerge as i32;
+        let aggregate = |mode: i32| Operator {
+            plan_id: 1,
+            children: vec![Operator {
+                op_struct: Some(OpStruct::Scan(spark_operator::Scan {
+                    fields: vec![
+                        int64.clone(),
+                        int64.clone(),
+                        int64.clone(),
+                        int64.clone(),
+                        boolean.clone(),
+                    ],
+                    source: String::new(),
+                })),
+                ..Default::default()
+            }],
+            op_struct: Some(OpStruct::HashAgg(spark_operator::HashAggregate {
+                grouping_exprs: vec![Expr {
+                    expr_struct: Some(Bound(spark_expression::BoundReference {
+                        index: 0,
+                        datatype: Some(int64.clone()),
+                    })),
+                    ..Default::default()
+                }],
+                agg_exprs: vec![
+                    spark_expression::AggExpr {
+                        expr_struct: Some(AggExprStruct::Max(spark_expression::Max {
+                            child: Some(v.clone()),
+                            datatype: Some(int64.clone()),
+                        })),
+                        ..Default::default()
+                    },
+                    spark_expression::AggExpr {
+                        expr_struct: Some(AggExprStruct::Count(spark_expression::Count {
+                            children: vec![v.clone()],
+                        })),
+                        ..Default::default()
+                    },
+                    spark_expression::AggExpr {
+                        expr_struct: Some(AggExprStruct::First(spark_expression::First {
+                            child: Some(v.clone()),
+                            datatype: Some(int64.clone()),
+                            ignore_nulls: false,
+                        })),
+                        ..Default::default()
+                    },
+                ],
+                mode,
+                expr_modes: vec![partial_merge; 3],
+                initial_input_buffer_offset: 1,
+                ..Default::default()
+            })),
+            ..Default::default()
+        };
+        let ctx = SessionContext::new();
+        let task_ctx = ctx.task_ctx();
+        let planner = PhysicalPlanner::new(Arc::new(ctx), 0);
+
+        // DataFusion's Single spills rather than emit a key twice, and the projection above it
+        // unpacks the states into the columns that the Partial it replaces emitted.
+        let (_, _, planned) = planner
+            .create_plan(&aggregate(partial_merge), &mut vec![], 1)
+            .unwrap();
+        assert_eq!("ProjectionExec", planned.native_plan.name());
+        assert_eq!(1, planned.additional_native_plans.len());
+        let single = planned.additional_native_plans[0]
+            .downcast_ref::<AggregateExec>()
+            .unwrap();
+        assert_eq!(&AggregateMode::Single, single.mode());
+        let (_, _, partial) = planner
+            .create_plan(
+                &aggregate(spark_operator::AggregateMode::Partial as i32),
+                &mut vec![],
+                1,
+            )
+            .unwrap();
+        assert_eq!("AggregateExec", partial.native_plan.name());
+        assert_eq!(partial.native_plan.schema(), planned.native_plan.schema());
+
+        let batch = RecordBatch::try_new(
+            planned.children[0].schema(),
+            vec![
+                Arc::new(Int64Array::from(vec![1, 2, 1, 2, 3])),
+                Arc::new(Int64Array::from(vec![
+                    Some(10),
+                    Some(5),
+                    Some(7),
+                    None,
+                    Some(1),
+                ])),
+                Arc::new(Int64Array::from(vec![1, 2, 3, 0, 4])),
+                Arc::new(Int64Array::from(vec![
+                    Some(100),
+                    None,
+                    Some(101),
+                    Some(200),
+                    None,
+                ])),
+                Arc::new(BooleanArray::from(vec![true, false, true, true, false])),
+            ],
+        )
+        .unwrap();
+        let input: Arc<dyn ExecutionPlan> =
+            MemorySourceConfig::try_new_exec(&[vec![batch.clone()]], batch.schema(), None).unwrap();
+        let native_plan = Arc::clone(&planned.native_plan)
+            .transform_up(|node| {
+                Ok(if node.name() == "ScanExec" {
+                    Transformed::yes(Arc::clone(&input))
+                } else {
+                    Transformed::no(node)
+                })
+            })
+            .unwrap()
+            .data;
+        let results = collect(native_plan.execute(0, task_ctx).unwrap())
+            .await
+            .unwrap();
+        assert_batches_sorted_eq!(
+            [
+                "+-------+------------+--------------+--------------------+---------------------------+",
+                "| col_0 | max[value] | count[count] | first[first_value] | first[first_value_is_set] |",
+                "+-------+------------+--------------+--------------------+---------------------------+",
+                "| 1     | 10         | 4            | 100                | true                      |",
+                "| 2     | 5          | 2            | 200                | true                      |",
+                "| 3     | 1          | 4            |                    | false                     |",
+                "+-------+------------+--------------+--------------------+---------------------------+",
+            ],
+            &results
+        );
     }
 
     #[tokio::test]
@@ -6982,6 +7435,7 @@ mod tests {
                         args: vec![array_col, array_col_1],
                         return_type: None,
                         fail_on_error: false,
+                        null_short_circuit: false,
                     })),
                     query_context: None,
                     expr_id: None,
@@ -7108,6 +7562,7 @@ mod tests {
                         args: vec![array_col, array_col_1],
                         return_type: None,
                         fail_on_error: false,
+                        null_short_circuit: false,
                     })),
                     query_context: None,
                     expr_id: None,

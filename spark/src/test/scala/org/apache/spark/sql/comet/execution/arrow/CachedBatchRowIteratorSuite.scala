@@ -133,6 +133,42 @@ class CachedBatchRowIteratorSuite extends AnyFunSuite {
       }
     }
 
+    if (mode == "CODEGEN_ONLY") {
+      test(s"$mode: readers of one layout share a class and read their own batches") {
+        withMode() {
+          val (attributes, first) = wideInput(41)
+          val (_, second) = wideInput(41)
+          try {
+            val firstRows = new CachedBatchRowIterator(attributes).createObject(first.iterator)
+            val generated = CachedBatchRowIterator.generatedClassCount
+            val secondRows = new CachedBatchRowIterator(attributes).createObject(second.iterator)
+            assert(CachedBatchRowIterator.generatedClassCount == generated)
+            assert(firstRows.getClass eq secondRows.getClass)
+            // Draining the second reader leaves the first one's batches unread.
+            checkWideRows(attributes, secondRows)
+            checkWideRows(attributes, firstRows)
+          } finally (first ++ second).foreach(_.close())
+        }
+      }
+
+      test(s"$mode: the huge-method limit applies to a reader class generated earlier") {
+        val (attributes, batches) = wideInput(43)
+        try {
+          withMode(SQLConf.WHOLESTAGE_HUGE_METHOD_LIMIT.key -> "1") {
+            val rows = new CachedBatchRowIterator(attributes).createObject(Iterator.empty)
+            assert(rows.isInstanceOf[ProjectedRows])
+          }
+          val generated = CachedBatchRowIterator.generatedClassCount
+          withMode() {
+            val rows = new CachedBatchRowIterator(attributes).createObject(batches.iterator)
+            assert(!rows.isInstanceOf[ProjectedRows])
+            checkWideRows(attributes, rows)
+          }
+          assert(CachedBatchRowIterator.generatedClassCount == generated)
+        } finally batches.foreach(_.close())
+      }
+    }
+
     test(
       s"$mode: a generated method above the huge-method limit falls back to UnsafeProjection") {
       // Below any generated method, as if the reader had grown past HotSpot's limit.
