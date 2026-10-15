@@ -54,6 +54,12 @@ object CometTimeZone {
   /** Whether `timeZoneId` has a zero offset at every instant. */
   def isUtc(timeZoneId: Option[String]): Boolean = nativeId(timeZoneId).contains("UTC")
 
+  /** Whether native code can represent a timezone whose offset never changes. */
+  private[serde] def isFixedOffset(timeZoneId: Option[String]): Boolean =
+    nativeId(timeZoneId).exists { id =>
+      Try(DateTimeUtils.getZoneId(id).getRules.isFixedOffset).getOrElse(false)
+    }
+
   /** `Unsupported` when native code cannot represent `timeZoneId`, `Compatible` otherwise. */
   def supportLevel(timeZoneId: Option[String]): SupportLevel = nativeId(timeZoneId) match {
     case Some(_) => Compatible()

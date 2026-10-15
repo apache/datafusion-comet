@@ -529,7 +529,7 @@ object CometStringRPad extends CometExpressionSerde[StringRPad] with CodegenDisp
     Seq(PadReasons.literalStrReason, PadReasons.nonLiteralPadReason)
 
   override def getSupportLevel(expr: StringRPad): SupportLevel = {
-    if (expr.str.isInstanceOf[Literal]) {
+    if (expr.str.references.isEmpty) {
       return Unsupported(Some(PadReasons.literalStrReason))
     }
     if (!expr.pad.isInstanceOf[Literal]) {
@@ -557,7 +557,7 @@ object CometStringLPad extends CometExpressionSerde[StringLPad] with CodegenDisp
     Seq(PadReasons.literalStrReason, PadReasons.nonLiteralPadReason)
 
   override def getSupportLevel(expr: StringLPad): SupportLevel = {
-    if (expr.str.isInstanceOf[Literal]) {
+    if (expr.str.references.isEmpty) {
       return Unsupported(Some(PadReasons.literalStrReason))
     }
     if (!expr.pad.isInstanceOf[Literal]) {

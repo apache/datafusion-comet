@@ -77,7 +77,8 @@ codegen dispatcher covers only scalar expressions; see the
 Spark's `StringType` can hold arbitrary bytes, including sequences that are not valid UTF-8 (for
 example `CAST(X'FF' AS STRING)`). Arrow's string type requires valid UTF-8, so Comet cannot store
 the raw bytes natively. When Comet produces a string from arbitrary bytes (such as
-`CAST(binary AS string)` or a columnar shuffle), it decodes them the same way the JVM does
+`CAST(binary AS string)`, a columnar shuffle, or scalar-subquery results, including struct fields),
+it decodes them the same way the JVM does
 (`new String(bytes, UTF_8)`), replacing each ill-formed sequence with the Unicode replacement
 character `U+FFFD`. Spark itself applies the identical replacement whenever such a string is
 materialized (collected, printed, or passed to most string functions), so the rendered result
@@ -88,7 +89,8 @@ underlying bytes rather than on the rendered text:
 
 - **Round-trips.** Spark keeps the original bytes, so `CAST(CAST(X'FF' AS STRING) AS BINARY)` returns
   `X'FF'`, whereas Comet returns the UTF-8 encoding of `U+FFFD` (`X'EFBFBD'`). `octet_length` and
-  hashing of such a string differ for the same reason.
+  hashing of such a string differ for the same reason. For example, a string containing `X'C328'`
+  returned by a scalar subquery has hex bytes `C328` in Spark and `EFBFBD28` in Comet.
 - **Value identity.** Decoding maps every ill-formed sequence onto the same `U+FFFD`, so two Spark
   strings that hold different bytes can become equal in Comet. For example, with `b = X'FF'`,
   `CAST(b AS STRING) = CAST(X'EFBFBD' AS STRING)` is `false` in Spark (`UTF8String` compares the raw
