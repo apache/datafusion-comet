@@ -1,0 +1,121 @@
+/*
+ * Licensed to the Apache Software Foundation (ASF) under one
+ * or more contributor license agreements.  See the NOTICE file
+ * distributed with this work for additional information
+ * regarding copyright ownership.  The ASF licenses this file
+ * to you under the Apache License, Version 2.0 (the
+ * "License"); you may not use this file except in compliance
+ * with the License.  You may obtain a copy of the License at
+ *
+ *   http://www.apache.org/licenses/LICENSE-2.0
+ *
+ * Unless required by applicable law or agreed to in writing,
+ * software distributed under the License is distributed on an
+ * "AS IS" BASIS, WITHOUT WARRANTIES OR CONDITIONS OF ANY
+ * KIND, either express or implied.  See the License for the
+ * specific language governing permissions and limitations
+ * under the License.
+ */
+
+package org.apache.spark.sql.comet
+
+import org.apache.spark.sql.catalyst.expressions.{Attribute, BoundReference, CodeGeneratorWithInterpretedFallback, InterpretedUnsafeProjection, UnsafeProjection}
+import org.apache.spark.sql.catalyst.expressions.codegen.{CodeAndComment, CodeFormatter, CodegenContext, CodeGenerator, GeneratedClass, GenerateUnsafeProjection}
+
+/**
+ * Creates the projection that copies each row of a batch into an UnsafeRow, as
+ * `UnsafeProjection.create(output, output)` does, but generates and compiles its class only once
+ * per executor for each column layout.
+ *
+ * `UnsafeProjection.create` generates the projection's Java source on every call, and only the
+ * compiled class is cached. `CometColumnarToRowExec` calls it once per partition whenever it runs
+ * outside whole-stage codegen, which Spark skips for a schema with more fields than
+ * `spark.sql.codegen.maxFields`, nested fields included. Spark's own scans fall back to rows for
+ * such schemas, so its `ColumnarToRowExec` rarely meets one, but Comet's operators always produce
+ * batches. The source grows with the number of nested fields, and each level of nesting repeats
+ * the work of splitting its children into methods: for 100 columns nested three levels deep,
+ * generating it took about 19 ms in every partition.
+ *
+ * Every call returns a new instance of the shared class, so callers own their projection as they
+ * do one from `UnsafeProjection.create`.
+ */
+private[comet] object CometUnsafeProjection
+    extends CodeGeneratorWithInterpretedFallback[Seq[BoundReference], UnsafeProjection] {
+
+  /** A compiled projection class and the objects its instances reference. */
+  private case class Generated(generatedClass: GeneratedClass, references: Array[Any]) {
+    def newProjection(): UnsafeProjection =
+      generatedClass.generate(references).asInstanceOf[UnsafeProjection]
+  }
+
+  private val classes = new GeneratedClassCache[ColumnLayout, Generated]()
+
+  /** How many projection classes this executor has generated, for tests. */
+  private[comet] def generatedClassCount: Long = classes.generatedCount
+
+  /** A projection of rows with the columns of `output` to UnsafeRows. */
+  def create(output: Seq[Attribute]): UnsafeProjection =
+    createObject(output.zipWithIndex.map { case (attr, ordinal) =>
+      BoundReference(ordinal, attr.dataType, attr.nullable)
+    })
+
+  override protected def createCodeGeneratedObject(
+      columns: Seq[BoundReference]): UnsafeProjection =
+    classes
+      .getOrGenerate(ColumnLayout.of(columns)) {
+        val generated = generate(columns)
+        // Instances of a shared class share its references, so share only a class that has
+        // none. GenerateUnsafeProjection references no objects for bound columns.
+        (generated, generated.references.isEmpty)
+      }
+      .newProjection()
+
+  override protected def createInterpretedObject(columns: Seq[BoundReference]): UnsafeProjection =
+    InterpretedUnsafeProjection.createProjection(columns)
+
+  /**
+   * Generates and compiles the class that `GenerateUnsafeProjection.create` does, from the same
+   * template, which is repeated here because that method returns only an instance.
+   */
+  private def generate(columns: Seq[BoundReference]): Generated = {
+    val ctx = new CodegenContext
+    val eval = GenerateUnsafeProjection.createCode(ctx, columns)
+    val body =
+      s"""
+         |public java.lang.Object generate(Object[] references) {
+         |  return new SpecificUnsafeProjection(references);
+         |}
+         |
+         |class SpecificUnsafeProjection extends ${classOf[UnsafeProjection].getName} {
+         |
+         |  private Object[] references;
+         |  ${ctx.declareMutableStates()}
+         |
+         |  public SpecificUnsafeProjection(Object[] references) {
+         |    this.references = references;
+         |    ${ctx.initMutableStates()}
+         |  }
+         |
+         |  public void initialize(int partitionIndex) {
+         |    ${ctx.initPartition()}
+         |  }
+         |
+         |  // Scala.Function1 need this
+         |  public java.lang.Object apply(java.lang.Object row) {
+         |    return apply((InternalRow) row);
+         |  }
+         |
+         |  public UnsafeRow apply(InternalRow ${ctx.INPUT_ROW}) {
+         |    ${eval.code}
+         |    return ${eval.value};
+         |  }
+         |
+         |  ${ctx.declareAddedFunctions()}
+         |}
+       """.stripMargin
+    val code = CodeFormatter.stripOverlappingComments(
+      new CodeAndComment(body, ctx.getPlaceHolderToComments()))
+    val (generatedClass, _) = CodeGenerator.compile(code)
+    Generated(generatedClass, ctx.references.toArray)
+  }
+}

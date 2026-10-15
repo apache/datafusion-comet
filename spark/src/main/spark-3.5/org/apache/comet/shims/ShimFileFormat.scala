@@ -19,9 +19,11 @@
 
 package org.apache.comet.shims
 
+import org.apache.spark.sql.catalyst.expressions.Literal
+import org.apache.spark.sql.execution.datasources.{FileFormat, PartitionedFile}
 import org.apache.spark.sql.execution.datasources.parquet.ParquetFileFormat
 import org.apache.spark.sql.execution.datasources.parquet.ParquetRowIndexUtil
-import org.apache.spark.sql.types.StructType
+import org.apache.spark.sql.types.{DataType, StructType}
 
 object ShimFileFormat {
   // A name for a temporary column that holds row indexes computed by the file format reader
@@ -30,4 +32,18 @@ object ShimFileFormat {
 
   def findRowIndexColumnIndexInSchema(sparkSchema: StructType): Int =
     ParquetRowIndexUtil.findRowIndexColumnIndexInSchema(sparkSchema)
+
+  def fileConstantMetadataExtractors(
+      fileFormat: FileFormat): Map[String, PartitionedFile => Any] =
+    fileFormat.fileConstantMetadataExtractors
+
+  // dataType is unused on this Spark version; getFileConstantMetadataColumnValue only gained
+  // a dataType parameter in Spark 4.2 (SPARK-56931). Accepted here so callers can pass it
+  // uniformly across Spark versions.
+  def getFileConstantMetadataColumnValue(
+      name: String,
+      file: PartitionedFile,
+      extractors: Map[String, PartitionedFile => Any],
+      dataType: DataType): Literal =
+    FileFormat.getFileConstantMetadataColumnValue(name, file, extractors)
 }

@@ -19,5 +19,10 @@
 //!
 //! Today this hosts the JNI bridge to the JVM `CometS3CredentialDispatcher` SPI, which is reused
 //! by the raw Parquet (`object_store`) path and the Iceberg (`opendal` via `iceberg-rust`) path.
+//!
+//! The other cross-path S3 helper, S3-compliant scheme aliasing
+//! (`fs.comet.s3Compliant.schemes`), currently lives in
+//! `crate::parquet::objectstore::s3_blob_fs_support` next to the URL rewrite the Parquet scan
+//! needs; the Iceberg operators import it from there.
 
 pub mod s3;

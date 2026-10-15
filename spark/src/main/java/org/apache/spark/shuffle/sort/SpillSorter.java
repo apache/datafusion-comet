@@ -57,6 +57,7 @@ public class SpillSorter extends SpillWriter {
   private final double preferDictionaryRatio;
   private final String compressionCodec;
   private final int compressionLevel;
+  private final boolean offsetsAsLengths;
   private final String checksumAlgorithm;
 
   // Shared state (mutable, passed by reference from parent)
@@ -82,6 +83,7 @@ public class SpillSorter extends SpillWriter {
    * @param preferDictionaryRatio Dictionary encoding preference ratio
    * @param compressionCodec Compression codec for spill files
    * @param compressionLevel Compression level
+   * @param offsetsAsLengths Whether to store offsets as lengths where the codec takes it
    * @param checksumAlgorithm Checksum algorithm (e.g., "crc32", "adler32")
    * @param partitionChecksums Array to store partition checksums (shared with parent)
    * @param writeMetrics Metrics reporter for shuffle writes
@@ -97,6 +99,7 @@ public class SpillSorter extends SpillWriter {
       double preferDictionaryRatio,
       String compressionCodec,
       int compressionLevel,
+      boolean offsetsAsLengths,
       String checksumAlgorithm,
       long[] partitionChecksums,
       ShuffleWriteMetricsReporter writeMetrics,
@@ -109,6 +112,7 @@ public class SpillSorter extends SpillWriter {
     this.preferDictionaryRatio = preferDictionaryRatio;
     this.compressionCodec = compressionCodec;
     this.compressionLevel = compressionLevel;
+    this.offsetsAsLengths = offsetsAsLengths;
     this.checksumAlgorithm = checksumAlgorithm;
     this.partitionChecksums = partitionChecksums;
     this.writeMetrics = writeMetrics;
@@ -131,13 +135,28 @@ public class SpillSorter extends SpillWriter {
               + "https://github.com/apache/arrow-datafusion-comet?tab=readme-ov-file#enable-comet-shuffle",
           e);
     }
-    sorterArray = allocator.allocateArray(initialSize);
-    this.inMemSorter.expandPointerArray(sorterArray);
+    boolean adopted = false;
+    try {
+      sorterArray = allocator.allocateArray(initialSize);
+      this.inMemSorter.expandPointerArray(sorterArray);
+      adopted = true;
 
-    this.allocatedPages = new LinkedList<>();
+      this.allocatedPages = new LinkedList<>();
 
-    this.nativeLib = new Native();
-    this.dataTypes = serializeSchema(schema);
+      this.nativeLib = new Native();
+      this.dataTypes = serializeSchema(schema);
+    } catch (Throwable t) {
+      // This writer is never handed to Spark when its constructor fails, so nothing else could
+      // reclaim what was allocated so far; free it here to keep the shared pool leak-free.
+      // Before adoption the sorter still owns only its initial one-entry array; after adoption
+      // it owns `sorterArray`, and `free()` releases whichever it holds.
+      if (!adopted && sorterArray != null) {
+        allocator.freeArray(sorterArray);
+        sorterArray = null;
+      }
+      this.inMemSorter.free();
+      throw t;
+    }
   }
 
   /** Frees allocated memory pages of this writer */
@@ -162,6 +181,21 @@ public class SpillSorter extends SpillWriter {
       } else {
         return ((inMemSorter == null) ? 0 : inMemSorter.getMemoryUsage()) + totalPageSize;
       }
+    }
+  }
+
+  /**
+   * Memory held by the in-memory sorter's pointer array alone, excluding the data pages. This is
+   * what the pointer array growth in {@link CometShuffleExternalSorter} must be sized from: sizing
+   * it from {@link #getMemoryUsage()} would grow the array in proportion to the data pages instead
+   * of doubling it.
+   */
+  public long getPointerArrayMemoryUsage() {
+    synchronized (this) {
+      if (freed || inMemSorter == null) {
+        return 0;
+      }
+      return inMemSorter.getMemoryUsage();
     }
   }
 
@@ -253,6 +287,7 @@ public class SpillSorter extends SpillWriter {
                   preferDictionaryRatio,
                   compressionCodec,
                   compressionLevel,
+                  offsetsAsLengths,
                   tracingEnabled);
           spillInfo.partitionLengths[currentPartition] = written;
 
@@ -288,6 +323,7 @@ public class SpillSorter extends SpillWriter {
               preferDictionaryRatio,
               compressionCodec,
               compressionLevel,
+              offsetsAsLengths,
               tracingEnabled);
       spillInfo.partitionLengths[currentPartition] = written;
 

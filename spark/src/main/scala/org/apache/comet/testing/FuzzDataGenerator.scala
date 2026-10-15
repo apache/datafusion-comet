@@ -28,11 +28,12 @@ import java.time.{Instant, LocalDateTime, ZoneId}
 import scala.collection.mutable.ListBuffer
 import scala.util.Random
 
-import org.apache.commons.lang3.RandomStringUtils
 import org.apache.spark.sql.{DataFrame, Row, SparkSession}
 import org.apache.spark.sql.types._
 
 object FuzzDataGenerator {
+
+  private val alphabet = "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz"
 
   /**
    * Date to use as base for generating temporal columns. Random integers will be added to or
@@ -196,19 +197,28 @@ object FuzzDataGenerator {
         val k = generateColumn(r, keyType, numRows, mapOptions)
         val v = generateColumn(r, valueType, numRows, mapOptions)
         k.zip(v).map(x => Map(x._1 -> x._2))
+      // A cast to `Long` here would unbox a null element to 0 instead of throwing, so match on
+      // the element.
       case DataTypes.BooleanType =>
-        generateColumn(r, DataTypes.LongType, numRows, options)
-          .map(_.asInstanceOf[Long].toShort)
-          .map(s => s % 2 == 0)
+        generateColumn(r, DataTypes.LongType, numRows, options).map {
+          case x: Long => x.toShort % 2 == 0
+          case null => null
+        }
       case DataTypes.ByteType =>
-        generateColumn(r, DataTypes.LongType, numRows, options)
-          .map(_.asInstanceOf[Long].toByte)
+        generateColumn(r, DataTypes.LongType, numRows, options).map {
+          case x: Long => x.toByte
+          case null => null
+        }
       case DataTypes.ShortType =>
-        generateColumn(r, DataTypes.LongType, numRows, options)
-          .map(_.asInstanceOf[Long].toShort)
+        generateColumn(r, DataTypes.LongType, numRows, options).map {
+          case x: Long => x.toShort
+          case null => null
+        }
       case DataTypes.IntegerType =>
-        generateColumn(r, DataTypes.LongType, numRows, options)
-          .map(_.asInstanceOf[Long].toInt)
+        generateColumn(r, DataTypes.LongType, numRows, options).map {
+          case x: Long => x.toInt
+          case null => null
+        }
       case DataTypes.LongType =>
         Range(0, numRows).map(_ => {
           r.nextInt(50) match {
@@ -263,7 +273,7 @@ object FuzzDataGenerator {
             case 1 => r.nextInt().toByte.toString
             case 2 => r.nextLong().toString
             case 3 => r.nextDouble().toString
-            case 4 => RandomStringUtils.randomAlphabetic(options.maxStringLength)
+            case 4 => randomAlphabetic(r, options.maxStringLength)
             case 5 =>
               // use a constant value to trigger dictionary encoding
               "dict_encode_me!"
@@ -291,6 +301,18 @@ object FuzzDataGenerator {
             ZoneId.systemDefault()))
       case _ => throw new IllegalStateException(s"Cannot generate data for $dataType yet")
     }
+  }
+
+  /**
+   * Generate a random string of ASCII letters. Unlike `Random.nextString`, which draws from the
+   * whole UTF-16 range, this stays within `[A-Za-z]`.
+   */
+  private def randomAlphabetic(r: Random, length: Int): String = {
+    val sb = new StringBuilder(length)
+    while (sb.length < length) {
+      sb.append(alphabet.charAt(r.nextInt(alphabet.length)))
+    }
+    sb.toString
   }
 
   private def randomChoice[T](list: Seq[T], r: Random): T = {

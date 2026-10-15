@@ -22,7 +22,6 @@ package org.apache.comet.serde
 import org.apache.spark.sql.catalyst.expressions.{Attribute, ToPrettyString}
 import org.apache.spark.sql.types.DataTypes
 
-import org.apache.comet.CometSparkSessionExtensions.withFallbackReason
 import org.apache.comet.expressions.{CometCast, CometEvalMode}
 import org.apache.comet.serde.QueryPlanSerde.{binaryOutputStyle, exprToProtoInternal}
 
@@ -32,6 +31,9 @@ object CometToPrettyString extends CometExpressionSerde[ToPrettyString] {
     Seq("Falls back to Spark when the input type cannot be cast to string.")
 
   override def getSupportLevel(expr: ToPrettyString): SupportLevel = {
+    if (CometTimeZone.nativeId(expr.timeZoneId).isEmpty) {
+      return CometTimeZone.supportLevel(expr.timeZoneId)
+    }
     CometCast.isSupported(
       expr.child.dataType,
       DataTypes.StringType,
@@ -52,12 +54,11 @@ object CometToPrettyString extends CometExpressionSerde[ToPrettyString] {
         val tps = ExprOuterClass.ToPrettyString
           .newBuilder()
           .setChild(p)
-          .setTimezone(expr.timeZoneId.getOrElse("UTC"))
+          .setTimezone(CometTimeZone.nativeId(expr.timeZoneId).get)
           .setBinaryOutputStyle(binaryOutputStyle)
           .build()
         Some(ExprOuterClass.Expr.newBuilder().setToPrettyString(tps).build())
       case _ =>
-        withFallbackReason(expr, expr.child)
         None
     }
   }

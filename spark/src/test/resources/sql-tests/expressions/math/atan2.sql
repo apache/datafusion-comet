@@ -20,14 +20,14 @@ CREATE TABLE test_atan2(y double, x double) USING parquet
 
 statement
 INSERT INTO test_atan2 VALUES
-  (0.0, 0.0), (0.0, -0.0), (0.0, 1.0), (0.0, -1.0), (0.0, NULL), (0.0, cast('NaN' as double)), (0.0, cast('Infinity' as double)), (0.0, cast('-Infinity' as double)),
-  (-0.0, 0.0), (-0.0, -0.0), (-0.0, 1.0), (-0.0, -1.0), (-0.0, NULL), (-0.0, cast('NaN' as double)), (-0.0, cast('Infinity' as double)), (-0.0, cast('-Infinity' as double)),
-  (1.0, 0.0), (1.0, -0.0), (1.0, 1.0), (1.0, -1.0), (1.0, NULL), (1.0, cast('NaN' as double)), (1.0, cast('Infinity' as double)), (1.0, cast('-Infinity' as double)),
-  (-1.0, 0.0), (-1.0, -0.0), (-1.0, 1.0), (-1.0, -1.0), (-1.0, NULL), (-1.0, cast('NaN' as double)), (-1.0, cast('Infinity' as double)), (-1.0, cast('-Infinity' as double)),
-  (NULL, 0.0), (NULL, -0.0), (NULL, 1.0), (NULL, -1.0), (NULL, NULL), (NULL, cast('NaN' as double)), (NULL, cast('Infinity' as double)), (NULL, cast('-Infinity' as double)),
-  (cast('NaN' as double), 0.0), (cast('NaN' as double), -0.0), (cast('NaN' as double), 1.0), (cast('NaN' as double), -1.0), (cast('NaN' as double), NULL), (cast('NaN' as double), cast('NaN' as double)), (cast('NaN' as double), cast('Infinity' as double)), (cast('NaN' as double), cast('-Infinity' as double)),
-  (cast('Infinity' as double), 0.0), (cast('Infinity' as double), -0.0), (cast('Infinity' as double), 1.0), (cast('Infinity' as double), -1.0), (cast('Infinity' as double), NULL), (cast('Infinity' as double), cast('NaN' as double)), (cast('Infinity' as double), cast('Infinity' as double)), (cast('Infinity' as double), cast('-Infinity' as double)),
-  (cast('-Infinity' as double), 0.0), (cast('-Infinity' as double), -0.0), (cast('-Infinity' as double), 1.0), (cast('-Infinity' as double), -1.0), (cast('-Infinity' as double), NULL), (cast('-Infinity' as double), cast('NaN' as double)), (cast('-Infinity' as double), cast('Infinity' as double)), (cast('-Infinity' as double), cast('-Infinity' as double))
+  (0.0, 0.0), (0.0, double('-0.0')), (0.0, 1.0), (0.0, -1.0), (0.0, NULL), (0.0, cast('NaN' as double)), (0.0, cast('Infinity' as double)), (0.0, cast('-Infinity' as double)),
+  (double('-0.0'), 0.0), (double('-0.0'), double('-0.0')), (double('-0.0'), 1.0), (double('-0.0'), -1.0), (double('-0.0'), NULL), (double('-0.0'), cast('NaN' as double)), (double('-0.0'), cast('Infinity' as double)), (double('-0.0'), cast('-Infinity' as double)),
+  (1.0, 0.0), (1.0, double('-0.0')), (1.0, 1.0), (1.0, -1.0), (1.0, NULL), (1.0, cast('NaN' as double)), (1.0, cast('Infinity' as double)), (1.0, cast('-Infinity' as double)),
+  (-1.0, 0.0), (-1.0, double('-0.0')), (-1.0, 1.0), (-1.0, -1.0), (-1.0, NULL), (-1.0, cast('NaN' as double)), (-1.0, cast('Infinity' as double)), (-1.0, cast('-Infinity' as double)),
+  (NULL, 0.0), (NULL, double('-0.0')), (NULL, 1.0), (NULL, -1.0), (NULL, NULL), (NULL, cast('NaN' as double)), (NULL, cast('Infinity' as double)), (NULL, cast('-Infinity' as double)),
+  (cast('NaN' as double), 0.0), (cast('NaN' as double), double('-0.0')), (cast('NaN' as double), 1.0), (cast('NaN' as double), -1.0), (cast('NaN' as double), NULL), (cast('NaN' as double), cast('NaN' as double)), (cast('NaN' as double), cast('Infinity' as double)), (cast('NaN' as double), cast('-Infinity' as double)),
+  (cast('Infinity' as double), 0.0), (cast('Infinity' as double), double('-0.0')), (cast('Infinity' as double), 1.0), (cast('Infinity' as double), -1.0), (cast('Infinity' as double), NULL), (cast('Infinity' as double), cast('NaN' as double)), (cast('Infinity' as double), cast('Infinity' as double)), (cast('Infinity' as double), cast('-Infinity' as double)),
+  (cast('-Infinity' as double), 0.0), (cast('-Infinity' as double), double('-0.0')), (cast('-Infinity' as double), 1.0), (cast('-Infinity' as double), -1.0), (cast('-Infinity' as double), NULL), (cast('-Infinity' as double), cast('NaN' as double)), (cast('-Infinity' as double), cast('Infinity' as double)), (cast('-Infinity' as double), cast('-Infinity' as double))
 
 query tolerance=1e-6
 SELECT atan2(y, x) FROM test_atan2
@@ -42,7 +42,21 @@ SELECT atan2(1.0, x) FROM test_atan2
 
 -- literal permutations
 query tolerance=1e-6
-SELECT atan2(0.0, 0.0), atan2(0.0, -0.0), atan2(0.0, 1.0), atan2(0.0, -1.0),
-  atan2(-0.0, 0.0), atan2(-0.0, -0.0), atan2(-0.0, 1.0), atan2(-0.0, -1.0),
-  atan2(1.0, 0.0), atan2(1.0, -0.0), atan2(1.0, 1.0), atan2(1.0, -1.0),
-  atan2(-1.0, 0.0), atan2(-1.0, -0.0), atan2(-1.0, 1.0), atan2(-1.0, -1.0)
+SELECT atan2(0.0, 0.0), atan2(0.0, double('-0.0')), atan2(0.0, 1.0), atan2(0.0, -1.0),
+  atan2(double('-0.0'), 0.0), atan2(double('-0.0'), double('-0.0')), atan2(double('-0.0'), 1.0), atan2(double('-0.0'), -1.0),
+  atan2(1.0, 0.0), atan2(1.0, double('-0.0')), atan2(1.0, 1.0), atan2(1.0, -1.0),
+  atan2(-1.0, 0.0), atan2(-1.0, double('-0.0')), atan2(-1.0, 1.0), atan2(-1.0, -1.0)
+
+-- signed-zero: Spark adds +0.0 to both args, so these are all +0.0.
+-- Exact comparison so a leftover -0.0 is distinguished (tolerance uses
+-- absolute difference). ±π cases stay on the tolerance queries above.
+query
+SELECT atan2(y, x) FROM test_atan2 WHERE y = 0.0 AND x = 0.0
+
+query
+SELECT atan2(y, 1.0) FROM test_atan2 WHERE y = 0.0
+
+query
+SELECT atan2(0.0, 0.0), atan2(0.0, double('-0.0')),
+  atan2(double('-0.0'), 0.0), atan2(double('-0.0'), double('-0.0')),
+  atan2(0.0, 1.0), atan2(double('-0.0'), 1.0)

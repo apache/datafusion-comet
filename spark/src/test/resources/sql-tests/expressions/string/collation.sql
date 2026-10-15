@@ -52,6 +52,15 @@ SELECT concat('Hello' COLLATE UNICODE_CI, 'World' COLLATE UNICODE_CI)
 query
 SELECT reverse('Hello' COLLATE UNICODE_CI)
 
+-- next_day and levenshtein join the same pattern: their native kernels read the argument as raw
+-- bytes, so a collated argument is dispatched rather than run natively. Full coverage lives in
+-- datetime/next_day_collation.sql and string/levenshtein_collation.sql.
+query
+SELECT next_day(date('2024-01-01'), 'Monday' COLLATE UTF8_LCASE), next_day(date('2024-01-01'), 'mo' COLLATE UNICODE_CI)
+
+query
+SELECT levenshtein('HELLO' COLLATE UTF8_LCASE, 'hello' COLLATE UTF8_LCASE), levenshtein('kitten' COLLATE UNICODE_CI, 'sitting' COLLATE UNICODE_CI)
+
 -- ============================================================================
 -- Collated predicate operands route through the JVM codegen dispatcher.
 -- The predicate serdes mark collated cases `Unsupported`; `CodegenDispatchFallback` runs

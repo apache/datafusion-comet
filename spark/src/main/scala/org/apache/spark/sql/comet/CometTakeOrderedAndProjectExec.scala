@@ -34,7 +34,7 @@ import org.apache.spark.sql.vectorized.ColumnarBatch
 import org.apache.comet.{CometConf, ConfigEntry}
 import org.apache.comet.CometSparkSessionExtensions.isCometShuffleEnabled
 import org.apache.comet.serde.{Compatible, OperatorOuterClass, SupportLevel, Unsupported}
-import org.apache.comet.serde.QueryPlanSerde.{exprToProto, supportedSortType}
+import org.apache.comet.serde.QueryPlanSerde.{exprToProto, supportedSortType, withSharedSubexpressions}
 import org.apache.comet.serde.operator.CometSink
 
 object CometTakeOrderedAndProjectExec extends CometSink[TakeOrderedAndProjectExec] {
@@ -79,7 +79,7 @@ object CometTakeOrderedAndProjectExec extends CometSink[TakeOrderedAndProjectExe
         op.offset,
         op.sortOrder,
         op.projectList,
-        op.child))
+        CometLocalTopKExec.create(op).getOrElse(op.child)))
   }
 }
 
@@ -123,6 +123,33 @@ case class CometTakeOrderedAndProjectExec(
   lazy val orderingSatisfies: Boolean =
     SortOrder.orderingSatisfies(child.outputOrdering, sortOrder)
 
+  // Also exposed to tests so they can inspect the plan actually used for final execution.
+  def finalNativePlan(inputPartitions: Int): Option[OperatorOuterClass.Operator] = {
+    val selectedLocally = child match {
+      case local: CometLocalTopKExec =>
+        inputPartitions == 1 && local.limit == limit && local.sortOrder == sortOrder
+      case _ => false
+    }
+    val selection = if (selectedLocally) {
+      // The local TopK has already ordered and bounded the only input partition. Spark's
+      // physical limit includes the offset; the native limit applies that offset once.
+      CometExecUtils.getLimitNativePlan(child.output, limit, offset)
+    } else {
+      topKNativePlan(offset)
+    }
+    // Spark's projection runs on its own over the rows the sort keeps, so only its list can share
+    // a subexpression (see QueryPlanSerde.canShortCircuitNulls)
+    withSharedSubexpressions(projectList) {
+      selection.flatMap(CometExecUtils.getProjectionNativePlan(projectList, child.output, _))
+    }
+  }
+
+  // Spark's ordering evaluates each sort key on its own, without subexpression elimination
+  private def topKNativePlan(offset: Int): Option[OperatorOuterClass.Operator] =
+    withSharedSubexpressions(Seq.empty) {
+      CometExecUtils.getTopKNativePlan(child.output, sortOrder, child, limit, offset)
+    }
+
   protected override def doExecuteColumnar(): RDD[ColumnarBatch] = {
     val childRDD = child.executeColumnar()
     if (childRDD.getNumPartitions == 0 || limit == 0) {
@@ -131,15 +158,16 @@ case class CometTakeOrderedAndProjectExec(
       val singlePartitionRDD = if (childRDD.getNumPartitions == 1) {
         childRDD
       } else {
-        val localTopK = if (orderingSatisfies) {
+        val localTopK = if (child.isInstanceOf[CometLocalTopKExec]) {
+          // A fused child is already ordered and bounded. Check it before orderingSatisfies,
+          // which is also true for that child, to avoid adding a redundant native limit.
+          childRDD
+        } else if (orderingSatisfies) {
           CometExecUtils.getNativeLimitRDD(childRDD, child.output, limit)
         } else {
           val numParts = childRDD.getNumPartitions
           // Serialize the plan once before mapping to avoid repeated serialization per partition
-          val topK =
-            CometExecUtils
-              .getTopKNativePlan(child.output, sortOrder, child, limit)
-              .get
+          val topK = topKNativePlan(offset = 0).get
           val serializedTopK = CometExec.serializeNativePlan(topK)
           val numOutputCols = child.output.length
           val inputSchema = CometUtils.fromAttributes(child.output)
@@ -149,7 +177,8 @@ case class CometTakeOrderedAndProjectExec(
               numOutputCols,
               serializedTopK,
               numParts,
-              idx)
+              idx,
+              child.output.map(_.dataType))
           }
         }
 
@@ -160,26 +189,25 @@ case class CometTakeOrderedAndProjectExec(
           outputPartitioning,
           serializer,
           metrics)
-        metrics("numPartitions").set(dep.partitioner.numPartitions)
+        metrics("numPartitions").set(dep.partitioner.numPartitions.toLong)
 
         new CometShuffledBatchRDD(dep, readMetrics)
       }
 
       // Serialize the plan once before mapping to avoid repeated serialization per partition
-      val topKAndProjection = CometExecUtils
-        .getProjectionNativePlan(projectList, child.output, sortOrder, child, limit, offset)
-        .get
-      val serializedTopKAndProjection = CometExec.serializeNativePlan(topKAndProjection)
-      val finalOutputLength = output.length
+      val serializedFinalPlan =
+        CometExec.serializeNativePlan(finalNativePlan(childRDD.getNumPartitions).get)
+      val finalOutputTypes = output.map(_.dataType)
       val finalInputSchema = CometUtils.fromAttributes(child.output)
       singlePartitionRDD.mapPartitionsInternal { iter =>
         val it = CometExec.getCometIterator(
           CometArrowStream
             .inputObjects(iter, finalInputSchema, "CometTakeOrderedAndProject-final"),
-          finalOutputLength,
-          serializedTopKAndProjection,
+          finalOutputTypes.length,
+          serializedFinalPlan,
           1,
-          0)
+          0,
+          finalOutputTypes)
         setSubqueries(it.id, this)
 
         Option(TaskContext.get()).foreach { context =>

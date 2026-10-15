@@ -25,9 +25,10 @@ use datafusion::common::{
     cast::as_generic_string_array, exec_err, Result as DataFusionResult, ScalarValue,
 };
 use datafusion::logical_expr::ColumnarValue;
-use regex::Regex;
+use regex::{CaptureLocations, Regex};
 use std::sync::Arc;
 
+use super::pattern_cache::PatternCache;
 use super::regexp_extract_common::{parse_args, ParsedArgs};
 
 /// Spark-compatible `regexp_extract_all(subject, pattern, idx)`.
@@ -40,8 +41,11 @@ use super::regexp_extract_common::{parse_args, ParsedArgs};
 ///
 /// Note: this uses the Rust `regex` crate, whose syntax differs from Java's regex engine in
 /// some ways. The expression is therefore reported as Incompatible.
-pub fn spark_regexp_extract_all(args: &[ColumnarValue]) -> DataFusionResult<ColumnarValue> {
-    let (regex, group_idx, subject) = match parse_args("regexp_extract_all", args)? {
+pub fn spark_regexp_extract_all(
+    args: &[ColumnarValue],
+    regex_cache: &PatternCache,
+) -> DataFusionResult<ColumnarValue> {
+    let (regex, group_idx, subject) = match parse_args("regexp_extract_all", args, regex_cache)? {
         ParsedArgs::Parsed {
             regex,
             group_idx,
@@ -98,15 +102,17 @@ fn extract_all_array<O: OffsetSizeTrait>(
     let mut null_buffer = BooleanBufferBuilder::new(array.len());
     offsets.push(0);
 
+    // One set of capture locations serves the whole batch, so no per-match allocation
+    // touches the compiled regex's shared group-info Arc from several threads at once.
+    let mut locations = regex.capture_locations();
     for i in 0..array.len() {
         if array.is_null(i) {
             offsets.push(values_builder.len() as i32);
             null_buffer.append(false);
         } else {
-            for caps in regex.captures_iter(array.value(i)) {
-                let s = caps.get(group_idx).map(|m| m.as_str()).unwrap_or("");
-                values_builder.append_value(s);
-            }
+            for_each_group_match(regex, &mut locations, array.value(i), group_idx, |s| {
+                values_builder.append_value(s)
+            });
             offsets.push(values_builder.len() as i32);
             null_buffer.append(true);
         }
@@ -124,14 +130,48 @@ fn extract_all_array<O: OffsetSizeTrait>(
 }
 
 fn extract_one(input: &str, regex: &Regex, group_idx: usize) -> Vec<String> {
-    regex
-        .captures_iter(input)
-        .map(|caps| {
-            caps.get(group_idx)
-                .map(|m| m.as_str().to_string())
-                .unwrap_or_default()
-        })
-        .collect()
+    let mut locations = regex.capture_locations();
+    let mut matches = Vec::new();
+    for_each_group_match(regex, &mut locations, input, group_idx, |s| {
+        matches.push(s.to_string())
+    });
+    matches
+}
+
+/// Calls `f` with the text of group `group_idx` for every non-overlapping match of `regex`
+/// in `haystack`, in the order `captures_iter` yields them, or with the empty string when
+/// the group does not participate. Each match costs a single capture search into
+/// `locations` and no allocation.
+fn for_each_group_match(
+    regex: &Regex,
+    locations: &mut CaptureLocations,
+    haystack: &str,
+    group_idx: usize,
+    mut f: impl FnMut(&str),
+) {
+    let mut start = 0;
+    let mut last_end = None;
+    while start <= haystack.len() {
+        let Some(m) = regex.captures_read_at(locations, haystack, start) else {
+            break;
+        };
+        // The regex crate's iterators drop an empty match that sits at the end of the
+        // previous match and search again one byte further on. Such a match can only be
+        // found from that end, so the retry never skips twice in a row.
+        if m.is_empty() && Some(m.end()) == last_end {
+            debug_assert_eq!(Some(start), last_end);
+            start += 1;
+            continue;
+        }
+        start = m.end();
+        last_end = Some(m.end());
+        let group = locations
+            .get(group_idx)
+            .map_or("", |(group_start, group_end)| {
+                &haystack[group_start..group_end]
+            });
+        f(group);
+    }
 }
 
 fn null_result(len: Option<usize>) -> ColumnarValue {
@@ -167,8 +207,12 @@ mod tests {
     use super::*;
     use arrow::array::{LargeStringArray, StringArray};
 
+    fn call_raw(args: &[ColumnarValue]) -> DataFusionResult<ColumnarValue> {
+        spark_regexp_extract_all(args, &PatternCache::new())
+    }
+
     fn run(args: Vec<ColumnarValue>) -> DataFusionResult<Vec<Option<Vec<String>>>> {
-        let result = spark_regexp_extract_all(&args)?;
+        let result = call_raw(&args)?;
         let list = match result {
             ColumnarValue::Array(arr) => arr,
             ColumnarValue::Scalar(ScalarValue::List(arr)) => arr as ArrayRef,
@@ -305,6 +349,41 @@ mod tests {
     }
 
     #[test]
+    fn empty_matches_are_kept_and_iteration_terminates() {
+        // The regex crate yields empty matches but skips one that sits at the end of the
+        // previous match, so `a*` on "ba" is ["", "a"] with no trailing empty.
+        let result = run(vec![array(vec![Some("ba")]), pattern(r"a*"), idx(0)]).unwrap();
+        assert_eq!(result, vec![Some(vec![String::new(), "a".to_string()])]);
+    }
+
+    #[test]
+    fn empty_matches_advance_over_multibyte_chars() {
+        let result = run(vec![array(vec![Some("日x本")]), pattern(r"x*"), idx(0)]).unwrap();
+        assert_eq!(
+            result,
+            vec![Some(vec![String::new(), "x".to_string(), String::new()])]
+        );
+    }
+
+    #[test]
+    fn anchors_and_word_boundaries_see_full_context() {
+        let result = run(vec![
+            array(vec![Some("cat hat bat")]),
+            pattern(r"\b\w+\b"),
+            idx(0),
+        ])
+        .unwrap();
+        assert_eq!(
+            result,
+            vec![Some(vec![
+                "cat".to_string(),
+                "hat".to_string(),
+                "bat".to_string()
+            ])]
+        );
+    }
+
+    #[test]
     fn unmatched_optional_group_returns_empty_string() {
         let result = run(vec![
             array(vec![Some("foo foo")]),
@@ -317,7 +396,7 @@ mod tests {
 
     #[test]
     fn group_index_out_of_range_errors() {
-        let err = spark_regexp_extract_all(&[array(vec![Some("abc")]), pattern(r"(a)(b)"), idx(3)])
+        let err = call_raw(&[array(vec![Some("abc")]), pattern(r"(a)(b)"), idx(3)])
             .err()
             .unwrap();
         let msg = err.to_string();
@@ -327,7 +406,7 @@ mod tests {
 
     #[test]
     fn negative_index_errors() {
-        let err = spark_regexp_extract_all(&[array(vec![Some("abc")]), pattern(r"(a)"), idx(-1)])
+        let err = call_raw(&[array(vec![Some("abc")]), pattern(r"(a)"), idx(-1)])
             .err()
             .unwrap();
         let msg = err.to_string();
@@ -337,11 +416,90 @@ mod tests {
 
     #[test]
     fn invalid_regex_errors() {
-        let err =
-            spark_regexp_extract_all(&[array(vec![Some("abc")]), pattern(r"(unclosed"), idx(0)])
-                .err()
-                .unwrap();
+        let err = call_raw(&[array(vec![Some("abc")]), pattern(r"(unclosed"), idx(0)])
+            .err()
+            .unwrap();
         assert!(err.to_string().contains("`regexp`"));
+    }
+
+    /// One expression evaluates many batches; the pattern must compile once and results
+    /// must stay correct on every batch.
+    #[test]
+    fn compiles_regex_once_across_batches() {
+        let cache = PatternCache::new();
+        for batch in 0..4 {
+            let subject = format!("{batch}1-{batch}2, {batch}3-{batch}4");
+            let result = spark_regexp_extract_all(
+                &[array(vec![Some(&subject)]), pattern(r"(\d+)-(\d+)"), idx(1)],
+                &cache,
+            )
+            .unwrap();
+            match result {
+                ColumnarValue::Array(arr) => {
+                    let list = arr.as_any().downcast_ref::<ListArray>().unwrap();
+                    let inner = list.value(0);
+                    let strs = inner.as_any().downcast_ref::<StringArray>().unwrap();
+                    assert_eq!(strs.value(0), format!("{batch}1"));
+                    assert_eq!(strs.value(1), format!("{batch}3"));
+                }
+                other => panic!("unexpected result: {other:?}"),
+            }
+        }
+        assert_eq!(cache.compile_count(), 1);
+    }
+
+    /// The match walk must visit exactly the matches `captures_iter` yields, including the
+    /// empty-match and multibyte cases where the crate's iterator skips or nudges forward.
+    #[test]
+    fn matches_agree_with_captures_iter() {
+        let patterns = [
+            r"a*",
+            r"(a*)",
+            r"\b",
+            r"(\d*)",
+            r"(?:)",
+            r"(\d+)",
+            r"(a+)",
+            r"zzz",
+            r"(foo)(bar)?",
+            r"x*",
+            r"\b\w+\b",
+            r"(.)(.)?",
+        ];
+        let haystacks = [
+            "",
+            "a",
+            "ba",
+            "aaa",
+            "123-456-789-123",
+            "日x本",
+            "café résumé",
+            "こんにちは世界",
+            "a😀b😀",
+            "foo foo bar",
+            "cat hat bat",
+            "a b\tc",
+        ];
+        for pattern in patterns {
+            let regex = Regex::new(pattern).unwrap();
+            let mut locations = regex.capture_locations();
+            for haystack in haystacks {
+                for group_idx in [0usize, 1, 2, 7] {
+                    let expected: Vec<String> = regex
+                        .captures_iter(haystack)
+                        .map(|caps| caps.get(group_idx).map_or("", |m| m.as_str()).to_string())
+                        .collect();
+                    let mut actual = Vec::new();
+                    for_each_group_match(&regex, &mut locations, haystack, group_idx, |s| {
+                        actual.push(s.to_string())
+                    });
+                    assert_eq!(
+                        actual, expected,
+                        "pattern {pattern:?} on {haystack:?} group {group_idx}"
+                    );
+                }
+            }
+        }
     }
 
     /// Regression: `LargeUtf8` subject must still produce a `ListArray` whose inner values
@@ -354,7 +512,7 @@ mod tests {
             None,
             Some("4 5"),
         ])));
-        let result = spark_regexp_extract_all(&[array, pattern(r"(\d)"), idx(1)]).unwrap();
+        let result = call_raw(&[array, pattern(r"(\d)"), idx(1)]).unwrap();
         let list = match result {
             ColumnarValue::Array(arr) => arr,
             other => panic!("unexpected result: {other:?}"),

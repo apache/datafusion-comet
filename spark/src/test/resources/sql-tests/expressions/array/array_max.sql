@@ -15,13 +15,16 @@
 -- specific language governing permissions and limitations
 -- under the License.
 
+-- Config: spark.comet.exec.scalaUDF.codegen.enabled=false
+-- Config: spark.comet.expression.ArrayMax.allowIncompatible=false
+
 statement
 CREATE TABLE test_array_max(arr array<int>) USING parquet
 
 statement
 INSERT INTO test_array_max VALUES (array(1, 2, 3)), (array(3, 1, 2)), (array()), (NULL), (array(NULL, 1, 2)), (array(-1, -2, -3))
 
-query spark_answer_only
+query
 SELECT array_max(arr) FROM test_array_max
 
 -- literal arguments
@@ -43,7 +46,7 @@ INSERT INTO test_array_max_double VALUES
   (array(CAST('Infinity' AS DOUBLE), 1.0, 2.0)),
   (array(CAST('-Infinity' AS DOUBLE), 1.0, 2.0)),
   (array(CAST('NaN' AS DOUBLE), CAST('Infinity' AS DOUBLE), CAST('-Infinity' AS DOUBLE))),
-  (array(0.0, -0.0, 1.0)),
+  (array(0.0, double('-0.0'), 1.0)),
   (NULL),
   (array())
 
@@ -62,7 +65,7 @@ INSERT INTO test_array_max_float VALUES
   (array(CAST('NaN' AS FLOAT), NULL, CAST(1.0 AS FLOAT))),
   (array(CAST('Infinity' AS FLOAT), CAST(1.0 AS FLOAT))),
   (array(CAST('-Infinity' AS FLOAT), CAST(1.0 AS FLOAT))),
-  (array(CAST(0.0 AS FLOAT), CAST(-0.0 AS FLOAT))),
+  (array(CAST(0.0 AS FLOAT), float('-0.0'))),
   (NULL),
   (array())
 

@@ -59,9 +59,12 @@ pub struct QueryContext {
 }
 
 impl QueryContext {
+    /// `sql_text` accepts either an owned `String` or an already-shared `Arc<String>`. The plan
+    /// deserializer passes an `Arc` cloned from the plan's SQL text pool so that all the contexts
+    /// in one plan share a single allocation instead of each cloning the full query text.
     #[allow(clippy::too_many_arguments)]
     pub fn new(
-        sql_text: String,
+        sql_text: impl Into<Arc<String>>,
         start_index: i32,
         stop_index: i32,
         object_type: Option<String>,
@@ -70,7 +73,7 @@ impl QueryContext {
         start_position: i32,
     ) -> Self {
         Self {
-            sql_text: Arc::new(sql_text),
+            sql_text: sql_text.into(),
             start_index,
             stop_index,
             object_type,

@@ -23,11 +23,19 @@ import scala.jdk.CollectionConverters._
 
 import org.apache.spark.sql.catalyst.expressions.{Attribute, CaseWhen, Coalesce, Expression, If, IsNotNull}
 
-import org.apache.comet.CometSparkSessionExtensions.withFallbackReason
 import org.apache.comet.serde.QueryPlanSerde.exprToProtoInternal
 
 object CometIf extends CometExpressionSerde[If] {
   override def convert(
+      expr: If,
+      inputs: Seq[Attribute],
+      binding: Boolean): Option[ExprOuterClass.Expr] =
+    // Spark's null guard around a Scala UDF goes to the dispatcher with the UDF when it can.
+    CometScalaUDF
+      .emitNullGuardDispatch(expr, inputs, binding)
+      .orElse(convertNative(expr, inputs, binding))
+
+  private def convertNative(
       expr: If,
       inputs: Seq[Attribute],
       binding: Boolean): Option[ExprOuterClass.Expr] = {
@@ -45,7 +53,6 @@ object CometIf extends CometExpressionSerde[If] {
           .setIf(builder)
           .build())
     } else {
-      withFallbackReason(expr, expr.predicate, expr.trueValue, expr.falseValue)
       None
     }
   }
@@ -76,7 +83,6 @@ object CometCaseWhen extends CometExpressionSerde[CaseWhen] {
         if (elseValueExpr.isDefined) {
           builder.setElseExpr(elseValueExpr.get)
         } else {
-          withFallbackReason(expr, expr.elseValue.get)
           return None
         }
       }
@@ -86,7 +92,6 @@ object CometCaseWhen extends CometExpressionSerde[CaseWhen] {
           .setCaseWhen(builder)
           .build())
     } else {
-      withFallbackReason(expr, allBranches: _*)
       None
     }
   }
@@ -116,7 +121,6 @@ object CometCoalesce extends CometExpressionSerde[Coalesce] {
       if (elseValueExpr.isDefined) {
         builder.setElseExpr(elseValueExpr.get)
       } else {
-        withFallbackReason(expr, elseValue)
         return None
       }
       Some(
@@ -125,7 +129,6 @@ object CometCoalesce extends CometExpressionSerde[Coalesce] {
           .setCaseWhen(builder)
           .build())
     } else {
-      withFallbackReason(expr, branches.map(_._2): _*)
       None
     }
   }

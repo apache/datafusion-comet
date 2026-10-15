@@ -15,8 +15,9 @@
 // specific language governing permissions and limitations
 // under the License.
 
+use crate::error::unwrap_arrow_external_error;
 use crate::math_funcs::utils::get_precision_scale;
-use crate::{divide_by_zero_error, EvalMode};
+use crate::{divide_by_zero_error, integral_divide_overflow_error, EvalMode};
 use arrow::array::{Array, Decimal128Array};
 use arrow::datatypes::{DataType, DECIMAL128_MAX_PRECISION};
 use arrow::error::ArrowError;
@@ -34,15 +35,16 @@ pub fn spark_decimal_div(
     data_type: &DataType,
     eval_mode: EvalMode,
 ) -> Result<ColumnarValue, DataFusionError> {
-    spark_decimal_div_internal(args, data_type, false, eval_mode)
+    spark_decimal_div_internal(args, data_type, false, eval_mode, false)
 }
 
 pub fn spark_decimal_integral_div(
     args: &[ColumnarValue],
     data_type: &DataType,
     eval_mode: EvalMode,
+    check_divide_overflow: bool,
 ) -> Result<ColumnarValue, DataFusionError> {
-    spark_decimal_div_internal(args, data_type, true, eval_mode)
+    spark_decimal_div_internal(args, data_type, true, eval_mode, check_divide_overflow)
 }
 
 // Let Decimal(p3, s3) as return type i.e. Decimal(p1, s1) / Decimal(p2, s2) = Decimal(p3, s3).
@@ -50,12 +52,34 @@ pub fn spark_decimal_integral_div(
 // get enough scale that matches with Spark behavior, it requires to widen s1 to s2 + s3 + 1. Since
 // both s2 and s3 are 38 at max., s1 is 77 at max. DataFusion division cannot handle such scale >
 // Decimal256Type::MAX_SCALE. Therefore, we need to implement this decimal division using BigInt.
+/// Convert a computed quotient to the `i128` stored in the result array, throwing
+/// ARITHMETIC_OVERFLOW when the integral divide overflow check applies and the quotient
+/// does not fit in a LONG (see `MathExpr.check_divide_overflow` in expr.proto).
+#[inline]
+fn quotient_to_i128<T: ToPrimitive>(
+    res: &T,
+    check_divide_overflow: bool,
+) -> Result<i128, ArrowError> {
+    let res = res.to_i128().unwrap_or(i128::MAX);
+    if check_divide_overflow && i64::try_from(res).is_err() {
+        return Err(ArrowError::ExternalError(Box::new(
+            integral_divide_overflow_error(),
+        )));
+    }
+    Ok(res)
+}
+
 fn spark_decimal_div_internal(
     args: &[ColumnarValue],
     data_type: &DataType,
     is_integral_div: bool,
     eval_mode: EvalMode,
+    // See `MathExpr.check_divide_overflow` in expr.proto
+    check_divide_overflow: bool,
 ) -> Result<ColumnarValue, DataFusionError> {
+    // Spark captures rather than throws overflow errors in TRY mode, and never checks
+    // in legacy mode, so the overflow check only ever throws under ANSI
+    let check_divide_overflow = check_divide_overflow && eval_mode == EvalMode::Ansi;
     let left = &args[0];
     let right = &args[1];
     let (p3, s3) = get_precision_scale(data_type);
@@ -77,7 +101,7 @@ fn spark_decimal_div_internal(
 
     let l_exp = ((s2 + s3 + 1) as u32).saturating_sub(s1 as u32);
     let r_exp = (s1 as u32).saturating_sub((s2 + s3 + 1) as u32);
-    let result: Decimal128Array = if p1 as u32 + l_exp > DECIMAL128_MAX_PRECISION as u32
+    let result = if p1 as u32 + l_exp > DECIMAL128_MAX_PRECISION as u32
         || p2 as u32 + r_exp > DECIMAL128_MAX_PRECISION as u32
     {
         let ten = BigInt::from(10);
@@ -93,7 +117,7 @@ fn spark_decimal_div_internal(
             // Spark throws DIVIDE_BY_ZERO for both `/` and `div` when ANSI is enabled, so
             // the `is_integral_div` guard was wrong and has been removed.
             if eval_mode == EvalMode::Ansi && r.is_zero() {
-                return Err(ArrowError::ComputeError(divide_by_zero_error().to_string()));
+                return Err(ArrowError::ExternalError(Box::new(divide_by_zero_error())));
             }
             // Non-ANSI: zero divisors have already been replaced with null by the
             // `nullIfWhenPrimitive` wrapper applied in the Scala serde layer, so
@@ -107,8 +131,8 @@ fn spark_decimal_div_internal(
             } else {
                 div + &five
             } / &ten;
-            Ok(res.to_i128().unwrap_or(i128::MAX))
-        })?
+            quotient_to_i128(&res, check_divide_overflow)
+        })
     } else {
         let l_mul = 10_i128.pow(l_exp);
         let r_mul = 10_i128.pow(r_exp);
@@ -120,7 +144,7 @@ fn spark_decimal_div_internal(
             // Spark throws DIVIDE_BY_ZERO for both `/` and `div` when ANSI is enabled, so
             // the `is_integral_div` guard was wrong and has been removed.
             if eval_mode == EvalMode::Ansi && r == 0 {
-                return Err(ArrowError::ComputeError(divide_by_zero_error().to_string()));
+                return Err(ArrowError::ExternalError(Box::new(divide_by_zero_error())));
             }
             // Non-ANSI: zero divisors have already been replaced with null by the
             // `nullIfWhenPrimitive` wrapper applied in the Scala serde layer, so
@@ -134,9 +158,57 @@ fn spark_decimal_div_internal(
             } else {
                 div + 5
             } / 10;
-            Ok(res.to_i128().unwrap_or(i128::MAX))
-        })?
+            quotient_to_i128(&res, check_divide_overflow)
+        })
     };
+    let result: Decimal128Array = result.map_err(unwrap_arrow_external_error)?;
     let result = result.with_data_type(DataType::Decimal128(p3, s3));
     Ok(ColumnarValue::Array(Arc::new(result)))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::SparkError;
+
+    fn decimal(value: i128, precision: u8, scale: i8) -> ColumnarValue {
+        ColumnarValue::Array(Arc::new(
+            Decimal128Array::from(vec![Some(value)])
+                .with_data_type(DataType::Decimal128(precision, scale)),
+        ))
+    }
+
+    fn spark_error(result: Result<ColumnarValue, DataFusionError>) -> SparkError {
+        match result.unwrap_err() {
+            DataFusionError::External(error) => *error
+                .downcast::<SparkError>()
+                .expect("expected external SparkError"),
+            error => panic!("expected external SparkError, got {error:?}"),
+        }
+    }
+
+    #[test]
+    fn test_decimal_divide_by_zero_returns_spark_error() {
+        // Exercise both the i128 and BigInt kernels.
+        for (precision, scale) in [(10, 2), (38, 0)] {
+            let result = spark_decimal_div(
+                &[decimal(100, precision, scale), decimal(0, precision, scale)],
+                &DataType::Decimal128(precision, scale),
+                EvalMode::Ansi,
+            );
+            assert!(matches!(spark_error(result), SparkError::DivideByZero));
+        }
+    }
+
+    #[test]
+    fn test_integral_divide_overflow_returns_spark_error() {
+        let result = quotient_to_i128(&(i64::MAX as i128 + 1), true);
+        match result.unwrap_err() {
+            ArrowError::ExternalError(error) => assert!(matches!(
+                error.downcast_ref::<SparkError>(),
+                Some(SparkError::IntegralDivideOverflow)
+            )),
+            error => panic!("expected external SparkError, got {error:?}"),
+        }
+    }
 }
