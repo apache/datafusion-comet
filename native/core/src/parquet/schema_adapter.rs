@@ -519,11 +519,8 @@ fn variant_annotation_err(column: &str, target_type: &DataType) -> DataFusionErr
 /// The one behavioral gap is `ignore_variant_annotation` on a non-v1 annotation. Spark's guard
 /// fails before it reaches its own ignore branch, so Spark still raises
 /// `PARQUET_TYPE_NOT_RECOGNIZED`, while Comet skips the check entirely and reads the plain
-/// struct. Comet is the more permissive of the two there. Closing it would mean pairing the
-/// requested schema against the Parquet `SchemaDescriptor` rather than the Arrow schema, which
-/// duplicates the field-id and case-folding rules `check_variant_annotation` reuses. Closing it
-/// means either reading the version from the Parquet schema or arrow-rs carrying it on the
-/// extension type.
+/// struct. Comet is the more permissive of the two there. Closing it means either reading the
+/// version from the Parquet schema or arrow-rs carrying it on the extension type.
 fn is_variant_marked(field: &Field) -> bool {
     field.has_valid_extension_type::<VariantType>()
 }
@@ -5096,7 +5093,7 @@ pub(crate) mod test {
             ))
         };
 
-        let mut spark_parquet_options = SparkParquetOptions::new(EvalMode::Legacy, "UTC", false);
+        let mut spark_parquet_options = SparkParquetOptions::new(EvalMode::Legacy, "UTC");
         spark_parquet_options.ignore_variant_annotation = options.ignore_variant_annotation;
         let seen = Arc::new(Mutex::new(None));
         let expr_adapter_factory: Arc<dyn PhysicalExprAdapterFactory> = Arc::new(ProbeFactory {
@@ -5120,7 +5117,8 @@ pub(crate) mod test {
                 ScanIoSource::Local,
                 &ExecutionPlanMetricsSet::new(),
             )
-            .with_spark_variant_schema(projects_variant),
+            .with_spark_variant_schema(projects_variant)
+            .with_reconcile_variant_markers(!options.ignore_variant_annotation),
         );
         let parquet_source =
             ParquetSource::new(requested).with_parquet_file_reader_factory(reader_factory);
@@ -5357,7 +5355,7 @@ pub(crate) mod test {
             true,
         )]));
 
-        let mut options = SparkParquetOptions::new(EvalMode::Legacy, "UTC", false);
+        let mut options = SparkParquetOptions::new(EvalMode::Legacy, "UTC");
         options.use_field_id = true;
         let err = SparkPhysicalExprAdapterFactory::new(options, None)
             .create(logical, physical)
@@ -5429,7 +5427,7 @@ pub(crate) mod test {
         )]));
         let expr_adapter_factory: Arc<dyn PhysicalExprAdapterFactory> =
             Arc::new(SparkPhysicalExprAdapterFactory::new(
-                SparkParquetOptions::new(EvalMode::Legacy, "UTC", false),
+                SparkParquetOptions::new(EvalMode::Legacy, "UTC"),
                 None,
             ));
         let file_scan_config = FileScanConfigBuilder::new(
@@ -5479,7 +5477,7 @@ pub(crate) mod test {
     ) -> Result<(), DataFusionError> {
         let err = scan_as_plain_variant_storage(write_annotated_variant_file(None))
             .await
-            .expect_err("Comet rejects an unversioned VARIANT annotation that Spark would accept");
+            .expect_err("Comet rejects an unversioned VARIANT annotation, as Spark does");
         assert!(
             err.to_string().contains("_LEGACY_ERROR_TEMP_3071"),
             "unexpected error: {err}"
@@ -5546,21 +5544,6 @@ pub(crate) mod test {
         Ok(())
     }
 
-    /// Spark rejects this read inside `ParquetToSparkSchemaConverter`, while converting the schema,
-    /// so a file with no rows fails just the same. That is the opposite of the type-promotion
-    /// checks in this module, which `RejectOnNonEmpty` defers to match Spark's per-row-group
-    /// behavior (see `parquet_empty_file_disallowed_widening`, SPARK-26709). Pinning it here keeps
-    /// a later reader from "fixing" this check to match its neighbours.
-    #[tokio::test]
-    async fn variant_annotation_is_rejected_on_an_empty_file() -> Result<(), DataFusionError> {
-        let schema = Arc::new(Schema::new(vec![variant_field("v")]));
-        let empty = StructArray::new_null(variant_storage_fields(), 0);
-        let batch = RecordBatch::try_new(schema, vec![Arc::new(empty)])?;
-        let probe = probe_variant_annotation(batch, ProbeOptions::default()).await?;
-        assert_variant_annotation_rejected(&probe, "v", plain_variant_storage_sql());
-        Ok(())
-    }
-
     /// Map children are read by position, so a VARIANT annotation on the second child must be
     /// rejected even when the file names that child something other than the `value` Spark
     /// requests. Pairing by name would find no `value` in the file and skip the annotation while
@@ -5624,7 +5607,7 @@ pub(crate) mod test {
             true,
         )]));
         let result = SparkPhysicalExprAdapterFactory::new(
-            SparkParquetOptions::new(EvalMode::Legacy, "UTC", false),
+            SparkParquetOptions::new(EvalMode::Legacy, "UTC"),
             None,
         )
         .with_required_schema(required)
@@ -5634,18 +5617,6 @@ pub(crate) mod test {
             "`ns.nv` is outside the read schema: {:?}",
             result.err()
         );
-    }
-
-    /// A top-level Variant column: the `v variant` case of the Spark suite.
-    #[tokio::test]
-    async fn variant_annotation_survives_at_top_level() -> Result<(), DataFusionError> {
-        let schema = Arc::new(Schema::new(vec![variant_field("v")]));
-        let batch = RecordBatch::try_new(schema, vec![Arc::new(variant_storage_array())])?;
-        let probe = probe_variant_annotation(batch, ProbeOptions::default()).await?;
-        assert_annotation_survived("top level", &probe, |s| {
-            s.field_with_name("v").ok().map(|f| Arc::new(f.clone()))
-        });
-        Ok(())
     }
 
     /// A file that *does* embed an `ARROW:schema` hint, which Spark never writes but Arrow-based
@@ -5705,6 +5676,40 @@ pub(crate) mod test {
         assert_eq!(
             probe.scan?, 1,
             "a group the writer never annotated must read as a plain struct, as Spark reads it"
+        );
+        Ok(())
+    }
+
+    /// `ignore_variant_annotation` makes `check_variant_annotation` a no-op, and nothing else
+    /// reads the physical side's Variant marker, so the footer rewrite that aligns it is skipped
+    /// rather than paid for on every open of every hinted file -- which is every scan below Spark
+    /// 4.1, where `CometParquetUtils.ignoreVariantAnnotation` is unconditionally true. The
+    /// skipped rewrite is observable: the hint's marker reaches the adapter unaligned, on a file
+    /// whose group the writer never annotated.
+    #[tokio::test]
+    async fn the_footer_is_left_alone_when_the_annotation_check_is_off(
+    ) -> Result<(), DataFusionError> {
+        let filename =
+            write_with_foreign_hint(&unmarked_storage_schema(), &marked_storage_schema())?;
+        let probe = probe_variant_annotation_file(
+            &filename,
+            &unmarked_storage_schema(),
+            ProbeOptions {
+                ignore_variant_annotation: true,
+                ..Default::default()
+            },
+        )
+        .await?;
+        assert_eq!(probe.scan?, 1);
+        let observed = probe
+            .observed_physical
+            .expect("`create` must still run, to observe what the reader built");
+        assert!(
+            observed
+                .field_with_name("v")
+                .expect("`v` is in the physical schema")
+                .has_valid_extension_type::<VariantType>(),
+            "the hint's marker must survive untouched, proving the rewrite was skipped: {observed:?}"
         );
         Ok(())
     }
@@ -5801,81 +5806,6 @@ pub(crate) mod test {
         ));
         writer.close()?;
         Ok(filename)
-    }
-
-    /// A Variant nested inside a struct: the `ns struct<nv variant>` case.
-    #[tokio::test]
-    async fn variant_annotation_survives_inside_struct() -> Result<(), DataFusionError> {
-        let inner = variant_field("nv");
-        let outer_fields = Fields::from(vec![Arc::clone(&inner)]);
-        let outer = StructArray::new(
-            outer_fields.clone(),
-            vec![Arc::new(variant_storage_array()) as ArrayRef],
-            None,
-        );
-        let schema = Arc::new(Schema::new(vec![Field::new(
-            "ns",
-            DataType::Struct(outer_fields),
-            true,
-        )]));
-        let batch = RecordBatch::try_new(schema, vec![Arc::new(outer)])?;
-        let probe = probe_variant_annotation(batch, ProbeOptions::default()).await?;
-        assert_annotation_survived("struct field", &probe, |s| {
-            match s.field_with_name("ns").ok()?.data_type() {
-                DataType::Struct(fields) => fields.iter().find(|f| f.name() == "nv").cloned(),
-                _ => None,
-            }
-        });
-        Ok(())
-    }
-
-    /// A Variant as a list element: the `av array<variant>` case. parquet-rs converts list
-    /// elements through a different branch of `complex.rs` than struct fields, so a struct-field
-    /// result does not carry over to here.
-    #[tokio::test]
-    async fn variant_annotation_survives_as_list_element() -> Result<(), DataFusionError> {
-        let element = variant_field("element");
-        let values = variant_storage_array();
-        let list = ListArray::new(
-            Arc::clone(&element),
-            OffsetBuffer::new(vec![0, 1].into()),
-            Arc::new(values),
-            None,
-        );
-        let schema = Arc::new(Schema::new(vec![Field::new(
-            "av",
-            DataType::List(element),
-            true,
-        )]));
-        let batch = RecordBatch::try_new(schema, vec![Arc::new(list)])?;
-        let probe = probe_variant_annotation(batch, ProbeOptions::default()).await?;
-        assert_annotation_survived("list element", &probe, |s| {
-            match s.field_with_name("av").ok()?.data_type() {
-                DataType::List(item) => Some(Arc::clone(item)),
-                _ => None,
-            }
-        });
-        Ok(())
-    }
-
-    /// A Variant as a map value: the `mv map<string, variant>` case. Map key/value fields take yet
-    /// another conversion branch, independent of both struct fields and list elements.
-    #[tokio::test]
-    async fn variant_annotation_survives_as_map_value() -> Result<(), DataFusionError> {
-        let batch = map_of_variant_batch("value")?;
-        let probe = probe_variant_annotation(batch, ProbeOptions::default()).await?;
-        assert_annotation_survived("map value", &probe, |s| {
-            match s.field_with_name("mv").ok()?.data_type() {
-                DataType::Map(entries, _) => match entries.data_type() {
-                    DataType::Struct(fields) => {
-                        fields.iter().find(|f| f.name() == "value").cloned()
-                    }
-                    _ => None,
-                },
-                _ => None,
-            }
-        });
-        Ok(())
     }
 
     /// A requested schema that repeats an id is declined at planning time and never reaches

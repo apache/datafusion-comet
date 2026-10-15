@@ -207,6 +207,10 @@ pub struct EagerPageIndexReaderFactory {
     // Refuse a file whose Parquet schema carries no field id, as Spark's `ParquetReadSupport`
     // does when the requested schema carries one and `ignoreMissing` is not set.
     require_field_ids: bool,
+    // Align a file's Arrow schema hint with its VARIANT annotations before the adapter reads
+    // either. Off when `spark.sql.parquet.ignoreVariantAnnotation` makes the check that consumes
+    // the marker a no-op, which is every scan below Spark 4.1.
+    reconcile_variant_markers: bool,
     stamp_int96_leaves: bool,
     conversion_check: Option<(SchemaRef, SparkParquetOptions, bool)>,
     deferred_rejections: Arc<Mutex<HashMap<Path, (ObjectMeta, RejectOnNonEmpty)>>>,
@@ -239,6 +243,7 @@ impl EagerPageIndexReaderFactory {
             scan_io_metrics,
             spark_variant_schema: false,
             require_field_ids: false,
+            reconcile_variant_markers: false,
             stamp_int96_leaves: false,
             conversion_check: None,
             deferred_rejections: Arc::new(Mutex::new(HashMap::new())),
@@ -259,6 +264,14 @@ impl EagerPageIndexReaderFactory {
 
     pub fn with_spark_variant_schema(mut self, enabled: bool) -> Self {
         self.spark_variant_schema = enabled;
+        self
+    }
+
+    /// Reconcile the `ARROW:schema` hint's Variant markers with the file's annotations. Off by
+    /// default: only `check_variant_annotation` reads those markers, so a scan that does not run
+    /// that check pays nothing for a footer rewrite nobody looks at.
+    pub(crate) fn with_reconcile_variant_markers(mut self, enabled: bool) -> Self {
+        self.reconcile_variant_markers = enabled;
         self
     }
 
@@ -323,6 +336,7 @@ impl ParquetFileReaderFactory for EagerPageIndexReaderFactory {
             metadata_size_hint,
             spark_variant_schema: self.spark_variant_schema,
             require_field_ids: self.require_field_ids,
+            reconcile_variant_markers: self.reconcile_variant_markers,
             stamp_int96_leaves: self.stamp_int96_leaves,
             conversion_check: self.conversion_check.clone(),
             deferred_rejections: Arc::clone(&self.deferred_rejections),
@@ -343,6 +357,7 @@ struct EagerPageIndexReader {
     metadata_size_hint: Option<usize>,
     spark_variant_schema: bool,
     require_field_ids: bool,
+    reconcile_variant_markers: bool,
     stamp_int96_leaves: bool,
     conversion_check: Option<(SchemaRef, SparkParquetOptions, bool)>,
     deferred_rejections: Arc<Mutex<HashMap<Path, (ObjectMeta, RejectOnNonEmpty)>>>,
@@ -755,6 +770,7 @@ impl AsyncFileReader for EagerPageIndexReader {
         let scan_io_metrics = Arc::clone(&self.scan_io_metrics);
         let spark_variant_schema = self.spark_variant_schema;
         let require_field_ids = self.require_field_ids;
+        let reconcile_variant_markers = self.reconcile_variant_markers;
         let stamp_enabled = self.stamp_int96_leaves;
         async move {
             let file_decryption_properties = options
@@ -855,8 +871,10 @@ impl AsyncFileReader for EagerPageIndexReader {
             };
             let metadata = if spark_variant_schema {
                 with_spark_arrow_schema(metadata)?
-            } else {
+            } else if reconcile_variant_markers {
                 with_reconciled_variant_markers(metadata)?
+            } else {
+                metadata
             };
             if let Some((required, conversion_options, row_filters)) =
                 self.conversion_check.as_ref()

@@ -244,6 +244,7 @@ pub(crate) fn init_datasource_exec(
         )
         .with_spark_variant_schema(projects_variant)
         .with_require_field_ids(require_field_ids)
+        .with_reconcile_variant_markers(!ignore_variant_annotation)
         .with_int96_leaf_stamp(rebase_from_file_metadata)
         .with_conversion_check(
             Arc::clone(&required_schema),

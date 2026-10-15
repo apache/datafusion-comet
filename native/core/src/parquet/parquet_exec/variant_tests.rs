@@ -504,6 +504,12 @@ async fn annotated_root_inside_the_read_schema_is_rejected() {
 
 /// Scoping the check to the read schema must not move it to row groups: a requested annotated root
 /// in a file with no row group is still rejected, matching Spark's schema-conversion-time check.
+///
+/// Spark rejects this read inside `ParquetToSparkSchemaConverter`, while converting the schema, so
+/// a file with no rows fails just the same. That is the opposite of the type-promotion checks in
+/// `schema_adapter`, which `RejectOnNonEmpty` defers to match Spark's per-row-group behavior (see
+/// `parquet_empty_file_disallowed_widening`, SPARK-26709). Pinning it here keeps a later reader
+/// from "fixing" this check to match its neighbours.
 #[tokio::test]
 async fn requested_annotated_root_is_rejected_on_an_empty_file() {
     assert_variant_annotation_rejected(
