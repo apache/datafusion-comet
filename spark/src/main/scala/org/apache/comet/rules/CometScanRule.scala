@@ -789,16 +789,17 @@ case class CometScanRule(session: SparkSession)
               false
           }
 
-        // Neither iceberg-rust nor the batch adaptation after it matches a data file's nested
-        // fields to the table's by field id (apache/iceberg-rust#2617). A file written before a
-        // nested field was added (to a struct, or to a struct inside a list or map) fails the
-        // native scan with "Incorrect number of arrays for StructArray fields", and a nested field
-        // renamed since the file was written can read back as NULL. This check walks the schema
-        // the scan reads (see CometIcebergNativeScanMetadata.taskSchema), which for VERSION AS OF
-        // can be older than the table's, and also the table and scan schemas, so it can fall back
-        // when the changed field is pruned away. A FileScanTask does not record which schema wrote
-        // its file, so fall back when any schema in the table's history lacks a nested field of a
-        // projected column or names it differently.
+        // iceberg-rust matches a data file's nested fields to the table's by field id, filling in
+        // a field the file lacks with NULLs and applying renames, so schema evolution that adds,
+        // renames, drops or reorders nested fields reads correctly. One shape still differs from
+        // Spark: a struct (at any depth) whose fields in the schema the scan reads were all added
+        // after a file was written. The native read returns a struct of NULLs or NULL there,
+        // depending on what else the scan reads, where Spark returns NULL for a top-level struct
+        // and a struct of NULLs for a nested one. The schema the scan reads is the task schema (see
+        // CometIcebergNativeScanMetadata.taskSchema), which holds only the nested fields Spark
+        // keeps while nested schema pruning is on, and which for VERSION AS OF can be older than
+        // the table's. A FileScanTask does not record which schema wrote its file, so fall back
+        // when any schema in the table's history has such a struct in a projected column.
         val nestedFieldsSupported =
           try {
             val schemas = Seq(metadata.tableSchema, metadata.scanSchema) ++ metadata.taskSchema
@@ -808,18 +809,17 @@ case class CometScanRule(session: SparkSession)
               } else {
                 resolvedProjectedFieldIds
               }
-            val changed = schemas
-              .flatMap { schema =>
-                IcebergReflection.nestedFieldsAddedOrRenamed(metadata.table, schema, fieldIds)
-              }
+            val disjoint = metadata.taskSchema.toSeq
+              .flatMap(IcebergReflection.structsWithNoFieldsInCommon(metadata.table, _, fieldIds))
               .distinct
               .sorted
-            if (changed.nonEmpty) {
-              fallbackReasons += "Nested fields added or renamed by Iceberg schema evolution are " +
-                "not yet supported by Comet's native reader, which cannot match them to data " +
-                s"files written before the change: ${changed.mkString(", ")}"
+            if (disjoint.nonEmpty) {
+              fallbackReasons += "Structs whose fields were all added by Iceberg schema " +
+                "evolution are not yet supported by Comet's native reader, which reads data " +
+                "files written before the change differently from Spark: " +
+                disjoint.mkString(", ")
             }
-            changed.isEmpty
+            disjoint.isEmpty
           } catch {
             case e: Exception =>
               fallbackReasons += "Iceberg reflection failure: could not compare nested fields " +
