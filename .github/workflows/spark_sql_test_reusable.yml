@@ -245,7 +245,8 @@ jobs:
           name: jvm-compiled-spark-${{ inputs.spark-full }}-jdk${{ inputs.java }}
       - name: Extract apache-spark/ (sources + compiled output)
         run: |
-          # Restore mtimes so Zinc skips compilation on the test JVM.
+          # Preserve mtimes to reuse Zinc output where possible. Setup Spark
+          # below can still invalidate it by reinstalling Comet's SNAPSHOT JAR.
           tar -xzpf apache-spark.tar.gz
           rm -f apache-spark.tar.gz
       - name: Setup Spark
@@ -332,22 +333,23 @@ jobs:
           fi
         env:
           LC_ALL: "C.UTF-8"
-          # The build-jvm job pre-compiled Spark sources and Test classes, so
-          # SBT here only orchestrates `testOnly` — Zinc verifies "no changes"
-          # against the unpacked apache-spark/ tree and skips compilation. We
-          # cap SBT heap so the freed RAM goes
-          # to the forked test JVM and OS/container overhead, fixing the
-          # cgroup-OOM SIGKILLs we saw on sql_core-* under 7 GB runners.
-          SBT_MEM: "1024"
-          # G1GC + tuning for the SBT orchestrator JVM. -Xss4m replaces the
-          # launcher's -Xss64m default (no compile here, deep recursion not
-          # needed). UseStringDeduplication and MaxMetaspaceSize cap real
-          # and ceiling footprint. ExitOnOutOfMemoryError fails fast.
+          # Restored output is a cache, not a guarantee of no compilation.
+          # Zinc can recompile test sources after Setup Spark installs Comet,
+          # and Spark 4.x exceeds a 1 GiB sbt heap in that phase. Restore the
+          # previous effective 4 GiB ceiling explicitly, independently of the
+          # per-row forked-test-JVM caps. -mem also sets Xms and the code cache;
+          # override those below to retain a 1 GiB initial heap and 128 MiB
+          # code cache rather than committing the whole heap at startup.
+          SBT_MEM: "4096"
+          # SBT_OPTS follows the launcher's generated -mem options. Keep the
+          # previous effective 1 GiB metaspace ceiling for compilation too.
           SBT_OPTS: >-
+            -Xms1g
             -Xss4m
             -XX:+UseG1GC
             -XX:+UseStringDeduplication
-            -XX:MaxMetaspaceSize=384m
+            -XX:MaxMetaspaceSize=1g
+            -XX:ReservedCodeCacheSize=128m
             -XX:G1HeapRegionSize=2m
             -XX:InitiatingHeapOccupancyPercent=35
             -XX:+ParallelRefProcEnabled

@@ -208,6 +208,13 @@ its own. The label stays applied, so the next push you make runs Spark 3.4 as pa
 verdict. Read the label run's result before merging — with Spark 3.4 out of the merge queue,
 nothing else will.
 
+The restored Spark compile artifact is a cache: installing the Comet SNAPSHOT JAR in a test job
+can still make Zinc recompile dependent sources. The CI and local runners therefore give sbt a
+4 GiB maximum heap and 1 GiB metaspace ceiling, with a 1 GiB initial heap and 128 MiB code cache.
+They clear `.sbtopts` so the launcher cannot silently override these settings. These are sbt's
+limits; the matrix's separate forked-test-JVM heap and metaspace caps still apply, and only one
+test JVM runs at a time.
+
 The Spark 3.4 `sql_core-3` job uploads a `spark-test-diagnostics-*` artifact containing its sbt
 output, Spark logs, and XML test reports. After five minutes without console output, a watchdog
 also captures two sets of JVM thread dumps and process/memory snapshots. It does not stop or retry
