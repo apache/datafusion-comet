@@ -62,6 +62,35 @@ object CometArrayRemove
 
 object CometArrayAppend extends CometExpressionSerde[ArrayAppend] with ArraysBase {
 
+  /**
+   * Spark's generated code for `ArrayAppend` evaluates the item for every row and guards only the
+   * assignment of the result, so an item that raises under ANSI raises on a row whose array is
+   * NULL too (#6086). `convert` reproduces that by also evaluating the item in the `ELSE` branch
+   * of its `CASE WHEN <array> IS NOT NULL` guard, which means it serializes the item twice. A
+   * nondeterministic item cannot survive that: each copy sees only a subset of the rows, so they
+   * advance its state independently and silently move values and NULLs.
+   */
+  private val nondeterministicItemReason: String =
+    "array_append with a nullable array and a nondeterministic item: the native guard on the " +
+      "array evaluates the item on a subset of the rows, where Spark evaluates it on every row"
+
+  /**
+   * Whether evaluating `expr` for a row Spark would not guard it on is unobservable: a literal or
+   * column read cannot throw. `foldable` is not usable here, see CometArrayJoin.orderInsensitive.
+   */
+  private def cannotThrow(expr: Expression): Boolean = expr match {
+    case _: Literal | _: Attribute | _: BoundReference => true
+    case _ => false
+  }
+
+  override def getSupportLevel(expr: ArrayAppend): SupportLevel = {
+    if (expr.left.nullable && !expr.right.deterministic) {
+      Unsupported(Some(nondeterministicItemReason))
+    } else {
+      Compatible()
+    }
+  }
+
   override def convert(
       expr: ArrayAppend,
       inputs: Seq[Attribute],
@@ -94,12 +123,38 @@ object CometArrayAppend extends CometExpressionSerde[ArrayAppend] with ArraysBas
     val nullLiteralProto =
       exprToProtoInternal(Literal(null, elementType), Seq.empty, binding = true)
 
-    if (arrayAppendScalarExpr.isDefined && isNotNullExpr.isDefined && nullLiteralProto.isDefined) {
+    // DataFusion's CaseExpr evaluates the THEN branch only on the rows the guard selects, but
+    // Spark evaluates the item on every row. Evaluate it on the remaining rows in the ELSE
+    // branch, so that it raises there as well, and still once per row. See
+    // `nondeterministicItemReason` for why this is restricted to deterministic items.
+    val elseExprProto =
+      if (cannotThrow(expr.children(1)) || !expr.children.head.nullable) {
+        nullLiteralProto
+      } else {
+        for {
+          itemProto <- keyExprProto
+          nullLit <- nullLiteralProto
+        } yield {
+          val itemIsNotNull = ExprOuterClass.Expr
+            .newBuilder()
+            .setIsNotNull(ExprOuterClass.UnaryExpr.newBuilder().setChild(itemProto))
+            .build()
+          val evaluateItem = ExprOuterClass.CaseWhen
+            .newBuilder()
+            .addWhen(itemIsNotNull)
+            .addThen(nullLit)
+            .setElseExpr(nullLit)
+            .build()
+          ExprOuterClass.Expr.newBuilder().setCaseWhen(evaluateItem).build()
+        }
+      }
+
+    if (arrayAppendScalarExpr.isDefined && isNotNullExpr.isDefined && elseExprProto.isDefined) {
       val caseWhenExpr = ExprOuterClass.CaseWhen
         .newBuilder()
         .addWhen(isNotNullExpr.get)
         .addThen(arrayAppendScalarExpr.get)
-        .setElseExpr(nullLiteralProto.get)
+        .setElseExpr(elseExprProto.get)
         .build()
       Some(
         ExprOuterClass.Expr
