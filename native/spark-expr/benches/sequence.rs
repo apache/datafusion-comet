@@ -18,10 +18,13 @@
 use arrow::array::Int64Array;
 use arrow::datatypes::{DataType, Field};
 use criterion::{criterion_group, criterion_main, Criterion};
-use datafusion::common::ScalarValue;
+use datafusion::common::{config::ConfigOptions, Result, ScalarValue};
+use datafusion::execution::memory_pool::{GreedyMemoryPool, MemoryPool, TrackConsumersPool};
+use datafusion::logical_expr::{ScalarFunctionArgs, ScalarUDF};
 use datafusion::physical_plan::ColumnarValue;
-use datafusion_comet_spark_expr::spark_sequence;
+use datafusion_comet_spark_expr::{spark_sequence, SparkSequence};
 use std::hint::black_box;
+use std::num::NonZeroUsize;
 use std::sync::Arc;
 
 const NUM_ROWS: usize = 8192;
@@ -55,13 +58,44 @@ fn args_with_len(elems_per_row: i64, null_every: Option<usize>) -> Vec<ColumnarV
 fn criterion_benchmark(c: &mut Criterion) {
     let return_type = list_of_i64();
 
-    let mut group = c.benchmark_group("sequence");
+    benchmark_group(c, "sequence", |args, _| spark_sequence(args, &return_type));
+
+    // Exercise the production UDF, including tracked pool admission and complete scalar batches.
+    // The benchmark-only 1 GiB budget admits the largest 8192 x 10000 i64 fixture.
+    let pool = Arc::new(TrackConsumersPool::new(
+        GreedyMemoryPool::new(1024 * 1024 * 1024),
+        NonZeroUsize::new(10).unwrap(),
+    ));
+    let udf = Arc::new(ScalarUDF::new_from_impl(SparkSequence::new(
+        return_type.clone(),
+        Arc::clone(&pool) as _,
+    )));
+    let return_field = Arc::new(Field::new("sequence", return_type, true));
+    let config_options = Arc::new(ConfigOptions::default());
+    benchmark_group(c, "sequence_pooled", |args, rows| {
+        black_box(&udf).invoke_with_args(ScalarFunctionArgs {
+            args: args.to_vec(),
+            arg_fields: vec![],
+            number_rows: rows,
+            return_field: Arc::clone(&return_field),
+            config_options: Arc::clone(&config_options),
+        })
+    });
+    assert_eq!(pool.reserved(), 0);
+}
+
+fn benchmark_group(
+    c: &mut Criterion,
+    name: &str,
+    evaluate: impl Fn(&[ColumnarValue], usize) -> Result<ColumnarValue>,
+) {
+    let mut group = c.benchmark_group(name);
 
     // Short sequences: per-row overhead dominates.
     for elems in [1i64, 2, 5] {
         let args = args_with_len(elems, None);
         group.bench_function(format!("short_{elems}_elems"), |b| {
-            b.iter(|| black_box(spark_sequence(&args, &return_type).unwrap()))
+            b.iter(|| black_box(evaluate(&args, NUM_ROWS).unwrap()))
         });
     }
 
@@ -70,7 +104,7 @@ fn criterion_benchmark(c: &mut Criterion) {
     for elems in [365i64, 10_000] {
         let args = args_with_len(elems, None);
         group.bench_function(format!("long_{elems}_elems"), |b| {
-            b.iter(|| black_box(spark_sequence(&args, &return_type).unwrap()))
+            b.iter(|| black_box(evaluate(&args, NUM_ROWS).unwrap()))
         });
     }
 
@@ -85,7 +119,7 @@ fn criterion_benchmark(c: &mut Criterion) {
             ColumnarValue::Array(Arc::new(step)),
         ];
         group.bench_function("descending_365_elems", |b| {
-            b.iter(|| black_box(spark_sequence(&args, &return_type).unwrap()))
+            b.iter(|| black_box(evaluate(&args, NUM_ROWS).unwrap()))
         });
     }
 
@@ -100,7 +134,7 @@ fn criterion_benchmark(c: &mut Criterion) {
             ColumnarValue::Array(Arc::new(step)),
         ];
         group.bench_function("zero_step_start_eq_stop", |b| {
-            b.iter(|| black_box(spark_sequence(&args, &return_type).unwrap()))
+            b.iter(|| black_box(evaluate(&args, NUM_ROWS).unwrap()))
         });
     }
 
@@ -108,7 +142,7 @@ fn criterion_benchmark(c: &mut Criterion) {
     for (label, every) in [("sparse_nulls", 10usize), ("dense_nulls", 2)] {
         let args = args_with_len(365, Some(every));
         group.bench_function(format!("{label}_365_elems"), |b| {
-            b.iter(|| black_box(spark_sequence(&args, &return_type).unwrap()))
+            b.iter(|| black_box(evaluate(&args, NUM_ROWS).unwrap()))
         });
     }
 
@@ -135,7 +169,7 @@ fn criterion_benchmark(c: &mut Criterion) {
             ColumnarValue::Array(Arc::new(step)),
         ];
         group.bench_function(label, |b| {
-            b.iter(|| black_box(spark_sequence(&args, &return_type).unwrap()))
+            b.iter(|| black_box(evaluate(&args, NUM_ROWS).unwrap()))
         });
     }
 
@@ -150,7 +184,7 @@ fn criterion_benchmark(c: &mut Criterion) {
             ColumnarValue::Array(Arc::new(step)),
         ];
         group.bench_function("error_illegal_boundaries", |b| {
-            b.iter(|| black_box(spark_sequence(&args, &return_type).unwrap_err()))
+            b.iter(|| black_box(evaluate(&args, NUM_ROWS).unwrap_err()))
         });
     }
 
@@ -159,7 +193,7 @@ fn criterion_benchmark(c: &mut Criterion) {
         let mut args = args_with_len(elems, None);
         args.push(ColumnarValue::Scalar(ScalarValue::Int64(Some(1))));
         group.bench_function(format!("scalar_step_{elems}_elems"), |b| {
-            b.iter(|| black_box(spark_sequence(&args, &return_type).unwrap()))
+            b.iter(|| black_box(evaluate(&args, NUM_ROWS).unwrap()))
         });
     }
 
@@ -171,14 +205,7 @@ fn criterion_benchmark(c: &mut Criterion) {
                 ColumnarValue::Scalar(ScalarValue::Int64(Some(elems - 1))),
             ];
             group.bench_function(format!("all_scalar_{rows}_rows_{elems}_elems"), |b| {
-                b.iter(|| {
-                    black_box(
-                        spark_sequence(&args, &return_type)
-                            .unwrap()
-                            .into_array(rows)
-                            .unwrap(),
-                    )
-                })
+                b.iter(|| black_box(evaluate(&args, rows).unwrap().into_array(rows).unwrap()))
             });
         }
     }
@@ -191,7 +218,7 @@ fn criterion_benchmark(c: &mut Criterion) {
         for elems in [1i64, 2, 5] {
             let args = args_with_len(elems, Some(every));
             group.bench_function(format!("{label}_{elems}_elems"), |b| {
-                b.iter(|| black_box(spark_sequence(&args, &return_type).unwrap()))
+                b.iter(|| black_box(evaluate(&args, NUM_ROWS).unwrap()))
             });
         }
     }
