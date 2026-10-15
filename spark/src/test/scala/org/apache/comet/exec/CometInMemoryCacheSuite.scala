@@ -3488,7 +3488,10 @@ class CometInMemoryCacheSuite extends CometTestBase {
     // The order the join declares on its probe input reaches past the join, so the aggregate
     // above it in the same native plan groups in sorted, streaming mode. That is right while
     // Spark's reported order holds, and a wrong order would split a key across groups, which only
-    // a comparison of the rows as a multiset catches. Small batches make each group span several.
+    // a comparison of the rows as a multiset catches. With 40 keys and 8-row batches each group
+    // spans several batches. With 1000 keys a batch holds four keys, alternately matched and
+    // unmatched, so a join that moved its unmatched rows would also change the order in which the
+    // aggregate first sees the keys, and its output would not come back sorted.
     withSQLConf(
       SQLConf.ADAPTIVE_EXECUTION_ENABLED.key -> "false",
       SQLConf.AUTO_BROADCASTJOIN_THRESHOLD.key -> "-1",
@@ -3496,62 +3499,76 @@ class CometInMemoryCacheSuite extends CometTestBase {
       SQLConf.COLUMN_BATCH_SIZE.key -> "8",
       CometConf.COMET_BATCH_SIZE.key -> "8",
       CometConf.COMET_EXEC_IN_MEMORY_CACHE_ENABLED.key -> "true") {
-      withParquetTable((0 until 2000).map(i => ((i % 40) * 1000, i)), "big") {
-        withParquetTable((0 until 40 by 2).map(m => (m * 1000, m)), "small") {
-          try {
-            val streamed =
-              spark.table("big").repartition(2, $"_1").sortWithinPartitions("_1").cache()
-            streamed.count()
-            val build = spark.table("small")
+      Seq(40, 1000).foreach { keys =>
+        val data = (0 until 2000).map(i => ((i % keys) * 1000, i))
+        withParquetTable(data, "big") {
+          withParquetTable((0 until keys by 2).map(m => (m * 1000, m)), "small") {
+            try {
+              val streamed =
+                spark.table("big").repartition(2, $"_1").sortWithinPartitions("_1").cache()
+              streamed.count()
+              val build = spark.table("small")
 
-            // Fifty rows per key, and a match in the build side for every even key.
-            val expected = (0 until 40).map { m =>
-              Row(m * 1000, 50L, 50L * m + 49000L, if (m % 2 == 0) 50L else 0L)
-            }
+              // A match in the build side for every even key.
+              val expected = data.groupBy(_._1).toSeq.map { case (k, rows) =>
+                Row(
+                  k,
+                  rows.size.toLong,
+                  rows.map(_._2.toLong).sum,
+                  if ((k / 1000) % 2 == 0) {
+                    rows.size.toLong
+                  } else 0L)
+              }
 
-            for {
-              (hint, joinClass) <- Seq(
-                "shuffle_hash" -> classOf[CometHashJoinExec],
-                "broadcast" -> classOf[CometBroadcastHashJoinExec])
-              (joinType, buildSide) <- Seq("left_outer" -> BuildRight, "right_outer" -> BuildLeft)
-            } {
-              val joined = if (joinType == "right_outer") {
-                build.hint(hint).join(streamed, build("_1") === streamed("_1"), joinType)
-              } else {
-                streamed.join(build.hint(hint), streamed("_1") === build("_1"), joinType)
+              for {
+                (hint, joinClass) <- Seq(
+                  "shuffle_hash" -> classOf[CometHashJoinExec],
+                  "broadcast" -> classOf[CometBroadcastHashJoinExec])
+                (joinType, buildSide) <- Seq(
+                  "left_outer" -> BuildRight,
+                  "right_outer" -> BuildLeft)
+              } {
+                val joined = if (joinType == "right_outer") {
+                  build.hint(hint).join(streamed, build("_1") === streamed("_1"), joinType)
+                } else {
+                  streamed.join(build.hint(hint), streamed("_1") === build("_1"), joinType)
+                }
+                val df = joined
+                  .groupBy(streamed("_1"))
+                  .agg(count(lit(1)), sum(streamed("_2")), count(build("_2")))
+                val plan = df.queryExecution.executedPlan
+                val joins: Seq[(SparkPlan, BuildSide)] = collect(plan) {
+                  case j: CometHashJoinExec => (j, j.buildSide)
+                  case j: CometBroadcastHashJoinExec => (j, j.buildSide)
+                }
+                assert(
+                  joins.map { case (j, side) => (j.getClass, side) } == Seq(
+                    (joinClass, buildSide)),
+                  plan)
+                // The serde sent the order, which is what lets the aggregates above run in
+                // sorted mode, and a sorted aggregate emits its groups in key order.
+                assert(
+                  collect(plan) {
+                    case j: CometHashJoinExec => j.nativeOp
+                    case j: CometBroadcastHashJoinExec => j.nativeOp
+                  }.forall(_.getHashJoin.getStreamedSortOrdersCount > 0),
+                  plan)
+                assert(sortedPartitions(df).forall(identity), plan)
+                // A final aggregate after a shuffle would merge a key a partial aggregate split,
+                // so both aggregates have to sit above the join with no exchange in between.
+                def aboveJoin(p: SparkPlan): Boolean = p.find(_ eq joins.head._1).isDefined
+                assert(
+                  collect(plan) { case a: CometHashAggregateExec => a }.count(aboveJoin) == 2,
+                  plan)
+                assert(
+                  !collect(plan) { case e: ShuffleExchangeLike => e }.exists(aboveJoin),
+                  plan)
+                assert(collect(plan) { case s: CometInMemoryTableScanExec => s }.size == 1, plan)
+                QueryTest.sameRows(expected, df.collect().toSeq).foreach(fail(_))
               }
-              val df = joined
-                .groupBy(streamed("_1"))
-                .agg(count(lit(1)), sum(streamed("_2")), count(build("_2")))
-              val plan = df.queryExecution.executedPlan
-              val joins: Seq[(SparkPlan, BuildSide)] = collect(plan) {
-                case j: CometHashJoinExec => (j, j.buildSide)
-                case j: CometBroadcastHashJoinExec => (j, j.buildSide)
-              }
-              assert(
-                joins.map { case (j, side) => (j.getClass, side) } == Seq((joinClass, buildSide)),
-                plan)
-              // The serde sent the order, which is what lets the aggregates above run in sorted
-              // mode, and a sorted aggregate emits its groups in key order.
-              assert(
-                collect(plan) {
-                  case j: CometHashJoinExec => j.nativeOp
-                  case j: CometBroadcastHashJoinExec => j.nativeOp
-                }.forall(_.getHashJoin.getStreamedSortOrdersCount > 0),
-                plan)
-              assert(sortedPartitions(df).forall(identity), plan)
-              // A final aggregate after a shuffle would merge a key a partial aggregate split, so
-              // both aggregates have to sit above the join with no exchange in between.
-              def aboveJoin(p: SparkPlan): Boolean = p.find(_ eq joins.head._1).isDefined
-              assert(
-                collect(plan) { case a: CometHashAggregateExec => a }.count(aboveJoin) == 2,
-                plan)
-              assert(!collect(plan) { case e: ShuffleExchangeLike => e }.exists(aboveJoin), plan)
-              assert(collect(plan) { case s: CometInMemoryTableScanExec => s }.size == 1, plan)
-              QueryTest.sameRows(expected, df.collect().toSeq).foreach(fail(_))
+            } finally {
+              spark.catalog.clearCache()
             }
-          } finally {
-            spark.catalog.clearCache()
           }
         }
       }
