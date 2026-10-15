@@ -61,6 +61,7 @@ pub enum OperatorType {
     Window,
     CsvScan,
     MergeRows,
+    Explode,
 }
 
 /// Global registry of operator builders
@@ -124,6 +125,7 @@ impl OperatorRegistry {
         self.register_shuffle_operators();
         self.register_write_operators();
         self.register_merge_rows_operators();
+        self.register_explode_operators();
     }
 
     /// Register projection operators
@@ -161,6 +163,14 @@ impl OperatorRegistry {
         self.builders
             .insert(OperatorType::MergeRows, Box::new(MergeRowsBuilder));
     }
+
+    /// Register explode operators
+    fn register_explode_operators(&mut self) {
+        use super::explode::ExplodeBuilder;
+
+        self.builders
+            .insert(OperatorType::Explode, Box::new(ExplodeBuilder));
+    }
 }
 
 /// Extract the operator type from a Spark operator
@@ -183,7 +193,7 @@ fn get_operator_type(spark_operator: &Operator) -> Option<OperatorType> {
         OpStruct::SortMergeJoin(_) => Some(OperatorType::SortMergeJoin),
         OpStruct::HashJoin(_) => Some(OperatorType::HashJoin),
         OpStruct::Window(_) => Some(OperatorType::Window),
-        OpStruct::Explode(_) => None, // Not yet in OperatorType enum
+        OpStruct::Explode(_) => Some(OperatorType::Explode),
         OpStruct::CsvScan(_) => Some(OperatorType::CsvScan),
         OpStruct::ShuffleScan(_) => Some(OperatorType::ShuffleScan),
         OpStruct::BroadcastNestedLoopJoin(_) => None,
