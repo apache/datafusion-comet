@@ -807,7 +807,7 @@ fn configure_skip_partial_aggregation(config: &mut SessionConfig, plan: &Operato
                                 if count.children.len() == 1)
                         })
                 }
-                // PartialMerge is represented as native Partial, but consumes states, not rows.
+                // PartialMerge consumes states, not rows.
                 _ => false,
             },
             _ => true,
