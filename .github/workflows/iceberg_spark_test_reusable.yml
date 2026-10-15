@@ -206,8 +206,11 @@ jobs:
 
   iceberg-spark-extensions:
     needs: build-native
-    name: iceberg-spark-extensions/iceberg-${{ inputs.iceberg-full }}/spark-${{ inputs.spark-full }}/scala-${{ inputs.scala }}/java-${{ inputs.java }}
+    name: iceberg-spark-extensions/iceberg-${{ inputs.iceberg-full }}/spark-${{ inputs.spark-full }}/scala-${{ inputs.scala }}/java-${{ inputs.java }}/shard-${{ matrix.shard }}
     runs-on: ubuntu-24.04
+    strategy:
+      fail-fast: false
+      matrix: ${{ fromJSON(needs.build-native.outputs.shard-matrix) }}
     container:
       image: amd64/rust
     env:
@@ -238,20 +241,51 @@ jobs:
           ENABLE_COMET=true ENABLE_COMET_ONHEAP=true COMET_ICEBERG_WRITE_REPORT_DIR="$PWD/build/comet-iceberg-writes" \
             ./gradlew -DsparkVersions=${{ inputs.spark-short }} -DscalaVersion=${{ inputs.scala }} -DflinkVersions= -DkafkaVersions= \
             :iceberg-spark:iceberg-spark-extensions-${{ inputs.spark-short }}_${{ inputs.scala }}:test \
+            --init-script ../dev/ci/iceberg-test-shards.gradle \
+            -PcometShardTask=:iceberg-spark:iceberg-spark-extensions-${{ inputs.spark-short }}_${{ inputs.scala }}:test \
+            -PcometShardIndex=${{ matrix.shard }} -PcometShardCount=${{ needs.build-native.outputs.shard-count }} \
             -Pquick=true -x javadoc
       - name: Summarize Iceberg writes
         if: ${{ !cancelled() }}
         run: |
-          python3 dev/ci/summarize-iceberg-writes.py --title "iceberg-spark-extensions" \
+          python3 dev/ci/summarize-iceberg-writes.py --title "iceberg-spark-extensions shard ${{ matrix.shard }}" \
             apache-iceberg/build/comet-iceberg-writes
-      - name: Upload Iceberg write report
+      - name: Upload Iceberg shard inventory and test reports
         if: ${{ !cancelled() }}
+        # iceberg-spark-extensions-shard-coverage downloads the inventory, so a
+        # flaky upload here fails that job too. Retry rather than fail on 403.
         uses: ./.github/actions/upload-artifact-retry
         with:
-          name: iceberg-spark-extensions-writes-${{ inputs.iceberg-full }}-spark-${{ inputs.spark-full }}-scala-${{ inputs.scala }}-jdk${{ inputs.java }}-attempt-${{ github.run_attempt }}
-          path: apache-iceberg/build/comet-iceberg-writes/*.jsonl
-          if-no-files-found: ignore
+          name: iceberg-spark-extensions-${{ inputs.iceberg-full }}-spark-${{ inputs.spark-full }}-scala-${{ inputs.scala }}-jdk${{ inputs.java }}-shard-${{ matrix.shard }}-attempt-${{ github.run_attempt }}
+          path: |
+            apache-iceberg/**/build/comet-shards/*.json
+            apache-iceberg/**/build/test-results/test/*.xml
+            apache-iceberg/build/comet-iceberg-writes/*.jsonl
           retention-days: 7
+
+  iceberg-spark-extensions-shard-coverage:
+    needs: iceberg-spark-extensions
+    if: ${{ !cancelled() }}
+    name: iceberg-spark-extensions-shard-coverage/iceberg-${{ inputs.iceberg-full }}/spark-${{ inputs.spark-full }}/scala-${{ inputs.scala }}/java-${{ inputs.java }}
+    runs-on: ubuntu-slim
+    steps:
+      - uses: actions/checkout@v7
+      - name: Download Iceberg extensions shard inventories
+        uses: ./.github/actions/download-artifact-retry
+        with:
+          # Download all attempts: a failed-job rerun retains earlier successful
+          # shards. The checker selects the latest inventory for each index.
+          pattern: iceberg-spark-extensions-${{ inputs.iceberg-full }}-spark-${{ inputs.spark-full }}-scala-${{ inputs.scala }}-jdk${{ inputs.java }}-shard-*-attempt-*
+          path: iceberg-shard-reports
+      - name: Verify complete, disjoint Iceberg extensions candidate coverage
+        run: |
+          python3 dev/ci/check-iceberg-shards.py --manifests iceberg-shard-reports \
+            --task :iceberg-spark:iceberg-spark-extensions-${{ inputs.spark-short }}_${{ inputs.scala }}:test
+      - name: Summarize Iceberg writes across shards
+        if: ${{ !cancelled() }}
+        run: |
+          python3 dev/ci/summarize-iceberg-writes.py --title "iceberg-spark-extensions, all shards" \
+            iceberg-shard-reports
 
   iceberg-spark-runtime:
     needs: build-native
