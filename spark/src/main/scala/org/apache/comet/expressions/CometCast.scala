@@ -507,14 +507,18 @@ object CometCast
 
   private def canCastFromDecimal(fromType: DecimalType, toType: DataType): SupportLevel =
     toType match {
-      // Negative-scale source overflows natively; see #5013. Float and double are not listed:
-      // `decimal128_to_f64` / `decimal128_to_f32` handle a negative scale exactly (#5684).
+      // These scale-align by computing 10^|scale|, which overflows for a negative scale, so a
+      // negative-scale source has no native path. See issue #5013.
       case DataTypes.ByteType | DataTypes.ShortType | DataTypes.IntegerType | DataTypes.LongType |
-          DataTypes.TimestampType if fromType.scale < 0 =>
-        Unsupported(Some(negativeScaleDecimalCastReason))
-      case DataTypes.FloatType | DataTypes.DoubleType | DataTypes.ByteType | DataTypes.ShortType |
-          DataTypes.IntegerType | DataTypes.LongType | DataTypes.BooleanType |
           DataTypes.TimestampType =>
+        if (fromType.scale < 0) {
+          Unsupported(Some(negativeScaleDecimalCastReason))
+        } else {
+          Compatible()
+        }
+      // Float and double are not gated on scale: `decimal128_to_f64` / `decimal128_to_f32`
+      // round the exact decimal value once and handle a negative scale deliberately (#5684).
+      case DataTypes.FloatType | DataTypes.DoubleType | DataTypes.BooleanType =>
         Compatible()
       case _ => Unsupported(Some(s"Cast from DecimalType to $toType is not supported"))
     }
