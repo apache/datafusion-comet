@@ -52,6 +52,22 @@ converted into Arrow format, allowing the Comet pipeline to take over after that
 Comet does not provide a Rust-based JSON scan, but when `spark.comet.convert.json.enabled` is enabled, data is immediately
 converted into Arrow format, allowing the Comet pipeline to take over after that.
 
+### Text
+
+Comet provides experimental Rust-based text scan support (a single `value: string` column). When
+`spark.comet.scan.text.v2.enabled` is enabled, text files are read in Rust. This feature is experimental and
+performance benefits are workload-dependent. Only Spark's DataSource V2 text scan is accelerated, and Spark reads
+text through the V1 API by default, so also remove `text` from `spark.sql.sources.useV1SourceList`. The native scan
+falls back to Spark for cases it does not handle -- including compressed files, files larger than
+`spark.comet.scan.text.maxFileSize` (64MB by default, since the reader loads each file whole), files Spark splits
+into byte ranges, unsupported filesystem schemes, and `input_file_name()` or
+`ignoreCorruptFiles`/`ignoreMissingFiles` usage. It targets small lookup tables such as a broadcast join's build side.
+Reading a partition column from a partitioned directory falls back to Spark, but selecting only `value` stays native.
+
+Text files are a common source of ill-formed UTF-8. The native reader replaces invalid byte sequences with the
+Unicode replacement character (U+FFFD), so byte-level comparisons and functions can differ from Spark on those rows;
+see [Strings with non-UTF-8 bytes](compatibility/index.md#strings-with-non-utf-8-bytes) in the compatibility guide.
+
 ### Other Spark inputs
 
 Comet can also convert the output of these Spark inputs to Arrow format, so that the operators

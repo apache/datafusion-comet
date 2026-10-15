@@ -38,9 +38,10 @@ import org.apache.spark.sql.catalyst.util.{sideBySide, ArrayBasedMapData, DateTi
 import org.apache.spark.sql.catalyst.util.ResolveDefaultColumns.getExistenceDefaultValues
 import org.apache.spark.sql.comet.{CometBatchScanExec, CometScanExec}
 import org.apache.spark.sql.execution.{FileSourceScanExec, InSubqueryExec, SparkPlan, SubqueryAdaptiveBroadcastExec}
-import org.apache.spark.sql.execution.datasources.HadoopFsRelation
+import org.apache.spark.sql.execution.datasources.{FilePartition, HadoopFsRelation}
 import org.apache.spark.sql.execution.datasources.v2.BatchScanExec
 import org.apache.spark.sql.execution.datasources.v2.csv.CSVScan
+import org.apache.spark.sql.execution.datasources.v2.text.TextScan
 import org.apache.spark.sql.internal.SQLConf
 import org.apache.spark.sql.types._
 
@@ -245,77 +246,31 @@ case class CometScanRule(session: SparkSession)
       return None
     }
     // Comet's native readers go through object_store, which only understands a fixed set of URL
-    // schemes. A custom Hadoop FileSystem (e.g. registered via spark.hadoop.fs.<scheme>.impl) would
-    // surface at execution time as `Generic URL error: Unable to recognise URL "..."`. Decline here
-    // so Spark's reader -- which goes through the Hadoop FS API and can resolve custom schemes --
-    // handles the scan. Whether object_store recognizes a scheme is answered by the native layer
-    // itself (`NativeBase.isObjectStoreSchemeSupported`) rather than a hardcoded list, so the
-    // planner can't drift from object_store's actual support.
-    //
-    // EXCEPT schemes the user routes through libhdfs via `spark.hadoop.fs.comet.libhdfs.schemes`
-    // (e.g. `hdfs`, or a test `fake`): those ARE natively readable through the libhdfs object_store
-    // bridge, so they must NOT be declined here. The claim decision is guarded in CI by
-    // CometScanSchemeFallbackSuite; end-to-end execution through libhdfs is guarded by
-    // ParquetReadFromFakeHadoopFsSuite, which is a manual suite (see its scaladoc).
-    //
-    // The default mirrors the native side: when the config is unset, `is_hdfs_scheme`
-    // (native/core/src/parquet/parquet_support.rs) treats `hdfs` as natively readable, and
-    // `create_hdfs_object_store` is in the default build (`default = ["hdfs-opendal"]`). If we
-    // defaulted to an empty set here, a plain `hdfs://` V1 scan would be declined and fall back to
-    // Spark even though native can read it -- a silent regression for HDFS users in the default
-    // configuration. So default to `Set("hdfs")` to stay in lockstep with the native default.
-    val libhdfsSchemes: Set[String] = COMET_LIBHDFS_SCHEMES.get() match {
-      case Some(s) => NativeConfig.parseSchemeSet(s)
-      case None => Set("hdfs")
-    }
-    // Opt-in S3-compliant alias schemes (e.g. `blob`) from `fs.comet.s3Compliant.schemes`. Read
-    // from the Hadoop config rather than SQLConf (unlike COMET_LIBHDFS_SCHEMES above) so
-    // `core-site.xml` is honored. The native object_store gate no longer claims aliases, so admit
-    // them here where the Hadoop config is available.
-    val s3CompliantSchemes = NativeConfig.resolveS3CompliantSchemes(hadoopConf)
-
-    // Classify each root path once; see RootPathInfo.
-    val roots = CometScanRule.classifyRootPaths(
-      r.location.rootPaths.map(_.toUri),
-      libhdfsSchemes,
-      s3CompliantSchemes)
-
-    val unsupportedFsSchemes = roots.iterator.flatMap { root =>
-      root.scheme.filter(_ =>
-        !root.isLibhdfs && !CometScanRule.isNativelyReadableScheme(root.uri, s3CompliantSchemes))
-    }.toSet
-    if (unsupportedFsSchemes.nonEmpty) {
+    // schemes; a custom Hadoop FileSystem would hard-fail at execution. The shared helper
+    // classifies the root paths (honoring libhdfs and S3-compliant aliases) and reports
+    // unsupported schemes, multi-bucket alias scans, and object_store-rejected paths. The scheme
+    // claim decision is guarded in CI by CometScanSchemeFallbackSuite; libhdfs end-to-end by
+    // ParquetReadFromFakeHadoopFsSuite.
+    val rootIssues =
+      CometScanRule.checkObjectStoreRootPaths(r.location.rootPaths.map(_.toUri), hadoopConf)
+    if (rootIssues.unsupportedSchemes.nonEmpty) {
       withFallbackReason(
         scanExec,
-        s"Unsupported filesystem schemes: ${unsupportedFsSchemes.mkString(", ")}")
+        s"Unsupported filesystem schemes: ${rootIssues.unsupportedSchemes.mkString(", ")}")
       return None
     }
-    // More than one bucket cannot be served by the single object store native planning registers
-    // per FilePartition; see aliasScanBuckets. Scoped to alias scans: plain multi-bucket `s3://`
-    // has the same flaw today and silently declining it would newly fall back scans that work by
-    // luck, so that widening is left as a separate decision. Note the sibling Iceberg guard
-    // (dataFileBuckets, below) is NOT so scoped -- it declines multi-bucket `s3a://` too.
-    val scanBuckets = CometScanRule.aliasScanBuckets(roots)
-    if (scanBuckets.size > 1) {
+    if (rootIssues.multiBucket.nonEmpty) {
       withFallbackReason(
         scanExec,
         "Native Parquet scan reads S3-compliant alias paths across multiple buckets " +
-          s"(${scanBuckets.toSeq.sorted.mkString(", ")}); Comet registers one object store " +
-          "per file partition and would read every file from the first file's bucket")
+          s"(${rootIssues.multiBucket.toSeq.sorted.mkString(", ")}); Comet registers one object " +
+          "store per file partition and would read every file from the first file's bucket")
       return None
     }
-    // A scheme object_store recognizes can still carry a path it rejects (e.g. a directory whose
-    // name contains a newline -> `%0A` in the URI), which native execution would hard-fail on.
-    // Only object_store-native schemes are probed: aliases (normalized to s3:// natively) and
-    // libhdfs schemes route elsewhere. Root paths only -- a rejected character deeper in the tree
-    // still fails at execution.
-    val rejectedPath = roots.find(root =>
-      root.scheme.isDefined && !root.isLibhdfs && !root.isAlias &&
-        !CometScanRule.objectStoreAcceptsPath(root.uri))
-    if (rejectedPath.nonEmpty) {
+    if (rootIssues.rejectedPath.nonEmpty) {
       withFallbackReason(
         scanExec,
-        s"Native Parquet scan cannot open path '${rejectedPath.get.uri}': object_store " +
+        s"Native Parquet scan cannot open path '${rootIssues.rejectedPath.get}': object_store " +
           "rejects it (e.g. an unsupported character in the path)")
       return None
     }
@@ -461,6 +416,164 @@ case class CometScanRule(session: SparkSession)
         }
         if (schemaSupported && partitionSchemaSupported && containsCorruptedRecordsColumn
           && !isInferSchemaEnabled && isSingleCharacterDelimiter && parsesTimestampsLikeSpark) {
+          CometBatchScanExec(
+            scanExec.clone().asInstanceOf[BatchScanExec],
+            runtimeFilters = scanExec.runtimeFilters)
+        } else {
+          withFallbackReasons(scanExec, fallbackReasons.toSet)
+        }
+
+      case scan: TextScan if COMET_TEXT_V2_NATIVE_ENABLED.get() =>
+        if (scanExec.output.exists(_.isMetadataCol)) {
+          return withFallbackReason(
+            scanExec,
+            "Metadata columns are not supported for Text V2 scans")
+        }
+        // A native scan is useless without native execution: with exec disabled, CometExecRule
+        // leaves this CometBatchScanExec unconverted and it fails at runtime. Require native exec.
+        if (!COMET_EXEC_ENABLED.get()) {
+          return withFallbackReason(
+            scanExec,
+            s"Native Text scan requires ${COMET_EXEC_ENABLED.key} to be enabled")
+        }
+        // input_file_name/_block_start/_block_length are already handled by the blanket V2 gate
+        // near the top of transformV2Scan, so no Text-specific check is needed here.
+        val fallbackReasons = new ListBuffer[String]()
+        val schemaSupported =
+          CometBatchScanExec.isSchemaSupported(scan.readDataSchema, fallbackReasons)
+        if (!schemaSupported) {
+          fallbackReasons += s"Schema ${scan.readDataSchema} is not supported"
+        }
+        // Spark's text source allows only a single data column (TextScan.verifyReadSchema). A
+        // user-forced multi-column read schema is invalid; fall back so Spark raises its structured
+        // AnalysisException rather than letting the native reader fail with an opaque error.
+        if (scan.readDataSchema.size > 1) {
+          fallbackReasons += "Text data source supports only a single column"
+        }
+        // Partition columns are not implemented for native Text scans (unlike the native CSV path,
+        // which forwards them). Fall back to Spark for partitioned reads rather than drop them.
+        if (scan.readPartitionSchema.nonEmpty) {
+          fallbackReasons += "Comet does not support partition columns in native Text scans"
+        }
+        // The native reader loads each file whole. Spark splits a large uncompressed text file
+        // into byte-range partitions (TextScan.isSplitable), and each split would then re-read and
+        // buffer the whole file with no memory-pool reservation. Restrict native execution to
+        // unsplit files (the small build-side lookups this targets); Spark handles large files.
+        val hasSplitFile = scanExec.inputPartitions.exists {
+          case fp: FilePartition => fp.files.exists(_.start != 0)
+          case _ => false
+        }
+        if (hasSplitFile) {
+          fallbackReasons += "Comet native Text scan does not support files split into byte " +
+            "ranges (large files)"
+        }
+        // The native reader loads each file whole and does not reserve the buffer against the
+        // memory pool, so bound the per-file size; larger files fall back to Spark. This keeps the
+        // feature to the small lookup tables it targets regardless of maxPartitionBytes.
+        val maxTextFileSize = COMET_SCAN_TEXT_MAX_FILE_SIZE.get()
+        val hasOversizedFile = scanExec.inputPartitions.exists {
+          case fp: FilePartition => fp.files.exists(_.length > maxTextFileSize)
+          case _ => false
+        }
+        if (hasOversizedFile) {
+          fallbackReasons += "Comet native Text scan does not read files larger than " +
+            s"${COMET_SCAN_TEXT_MAX_FILE_SIZE.key} ($maxTextFileSize bytes)"
+        }
+        // Comet's native plan does not carry a compression codec, so the native reader would feed
+        // raw compressed bytes to the line splitter. Spark auto-detects a codec by file extension.
+        // Use the options-aware Hadoop conf (so a per-read codec option is honored) and the
+        // version-aware ShimFileFormat.isCompressedFile, which on Spark 4.1+ also catches the
+        // non-standard .gzip/.zstd extensions that CompressionCodecFactory alone misses.
+        val hadoopConf = session.sessionState.newHadoopConfWithOptions(scan.options.asScala.toMap)
+        val hasCompressedFile = scan.fileIndex.inputFiles.exists { path =>
+          ShimFileFormat.isCompressedFile(hadoopConf, new org.apache.hadoop.fs.Path(path))
+        }
+        if (hasCompressedFile) {
+          fallbackReasons += "Comet does not support compressed text files"
+        }
+        // Spark skips unreadable/missing files when these are set; the native reader's DataFusion
+        // FileStream fails the whole scan instead (OnError::Fail). Fall back to match Spark.
+        if (SQLConf.get.ignoreCorruptFiles || scan.options.getBoolean(
+            "ignoreCorruptFiles",
+            false)) {
+          fallbackReasons += "Comet native Text scan does not support ignoreCorruptFiles"
+        }
+        if (SQLConf.get.ignoreMissingFiles || scan.options.getBoolean(
+            "ignoreMissingFiles",
+            false)) {
+          fallbackReasons += "Comet native Text scan does not support ignoreMissingFiles"
+        }
+        // Spark's line reader skips any line at or over
+        // mapreduce.input.linerecordreader.line.maxlength (default unlimited); the key can come
+        // from spark.hadoop.*, core-site.xml, or a read option. The native reader does not
+        // truncate, so fall back when a finite limit is set.
+        if (hadoopConf.getInt("mapreduce.input.linerecordreader.line.maxlength", Int.MaxValue)
+            != Int.MaxValue) {
+          fallbackReasons += "Comet native Text scan does not support " +
+            "mapreduce.input.linerecordreader.line.maxlength"
+        }
+        // A wholetext file is never split (TextScan.isSplitable is false for wholeText), so the
+        // split-file guard above does not bound it. Reading a very large file whole is unbounded
+        // memory, and the whole file becomes one Arrow string value. Because a lossy UTF-8 decode
+        // can expand ill-formed bytes up to 3x, cap the raw file size at Int.MaxValue/3 so the
+        // decoded value stays under Arrow's 2GB 32-bit string-offset limit; fall back above that.
+        // (The native reader also fails cleanly rather than panicking if a value still overflows.)
+        val textOptions =
+          new org.apache.spark.sql.execution.datasources.text.TextOptions(
+            scan.options.asScala.toMap)
+        // Spark reads a custom line separator with Hadoop's LineReader.readCustomLine, which on a
+        // mismatch backtracks only one byte instead of following the separator's own prefix
+        // overlap. For a separator that overlaps itself (e.g. "aab", whose "aa" prefix can restart
+        // a match) that reader can split differently from the native reader's exact substring
+        // scan, and the difference depends on where the separator falls across Hadoop's input
+        // buffer boundaries. wholetext ignores the separator, so only guard line mode. Fall back
+        // so the two always agree.
+        if (!textOptions.wholeText) {
+          textOptions.lineSeparatorInRead.foreach { sep =>
+            if (CometScanRule.separatorSelfOverlaps(sep)) {
+              fallbackReasons += "Comet native Text scan does not support a self-overlapping " +
+                "line separator (Spark's line reader can split it differently)"
+            }
+          }
+        }
+        if (textOptions.wholeText) {
+          val maxWholeTextBytes =
+            math.min(session.sessionState.conf.filesMaxPartitionBytes, Int.MaxValue.toLong / 3)
+          val hasLargeWholeTextFile = scanExec.inputPartitions.exists {
+            case fp: FilePartition => fp.files.exists(_.length > maxWholeTextBytes)
+            case _ => false
+          }
+          if (hasLargeWholeTextFile) {
+            fallbackReasons += "Comet native Text scan does not support large wholetext files " +
+              s"(over ${SQLConf.FILES_MAX_PARTITION_BYTES.key}, capped below 2GB)"
+          }
+        }
+        // Comet's native reader opens files through object_store, which only understands a fixed
+        // set of URL schemes. A text file on a custom Hadoop scheme (viewfs://, oss://, ...), a
+        // multi-bucket S3-compliant alias scan, or a path object_store rejects would be claimed
+        // here then hard-fail at execution, whereas Spark reads it via the Hadoop FS API. Use the
+        // same shared gate as the native Parquet path; hdfs:// routes through libhdfs.
+        val rootIssues = CometScanRule.checkObjectStoreRootPaths(
+          scan.fileIndex.rootPaths.map(_.toUri),
+          hadoopConf)
+        if (rootIssues.unsupportedSchemes.nonEmpty) {
+          fallbackReasons +=
+            s"Unsupported filesystem schemes: ${rootIssues.unsupportedSchemes.mkString(", ")}"
+        }
+        // Unlike the Parquet gate (which scopes this to alias scans to avoid regressing scans that
+        // work by luck), the Text scan is new, so decline any scan whose roots span more than one
+        // scheme/bucket -- a plain `s3a://a` + `s3a://b` read would otherwise read every file from
+        // the first bucket.
+        if (rootIssues.crossLocations.size > 1) {
+          fallbackReasons += "Native Text scan reads paths across multiple schemes/buckets " +
+            s"(${rootIssues.crossLocations.toSeq.sorted.mkString(", ")}); Comet registers one " +
+            "object store per file partition and would read every file from the first location"
+        }
+        rootIssues.rejectedPath.foreach { uri =>
+          fallbackReasons += s"Native Text scan cannot open path '$uri': " +
+            "object_store rejects it (e.g. an unsupported character in the path)"
+        }
+        if (fallbackReasons.isEmpty) {
           CometBatchScanExec(
             scanExec.clone().asInstanceOf[BatchScanExec],
             runtimeFilters = scanExec.runtimeFilters)
@@ -1212,6 +1325,35 @@ object CometScanRule extends Logging {
         case _ => false
       }))
 
+  /**
+   * True when a custom line separator overlaps itself -- some proper prefix of the separator is
+   * also a suffix of one of its prefixes, so a partial match can restart (e.g. "aab", or "aba").
+   * Spark splits custom separators with Hadoop's LineReader.readCustomLine, which backtracks only
+   * one byte on a mismatch instead of following that overlap, so for such a separator it can
+   * split differently from the native reader's exact substring scan. Uses the KMP prefix
+   * function: any nonzero entry means the separator overlaps itself.
+   */
+  private[rules] def separatorSelfOverlaps(sep: Array[Byte]): Boolean = {
+    val f = new Array[Int](sep.length)
+    var k = 0
+    var overlaps = false
+    var i = 1
+    while (i < sep.length) {
+      while (k > 0 && sep(i) != sep(k)) {
+        k = f(k - 1)
+      }
+      if (sep(i) == sep(k)) {
+        k += 1
+      }
+      f(i) = k
+      if (k > 0) {
+        overlaps = true
+      }
+      i += 1
+    }
+    overlaps
+  }
+
   // Memo of `NativeBase.isObjectStoreSchemeSupported`, keyed by the probe URL rather than the
   // scheme: object_store's parser keys on (scheme, host-presence), so an authorityless URL would
   // otherwise poison the authority-bearing form of the same scheme.
@@ -1265,6 +1407,68 @@ object CometScanRule extends Logging {
         isAlias = scheme.exists(s3CompliantSchemes.contains),
         bucket = NativeConfig.bucketForUri(uri, s3CompliantSchemes))
     }
+
+  /**
+   * The object_store scheme/bucket/path problems that make a set of root paths unreadable by
+   * Comet's native file scans (shared by the Parquet V1 gate and the Text V2 gate). Each caller
+   * formats its own fallback message from these findings.
+   *
+   *   - `unsupportedSchemes`: schemes object_store does not natively read and that are not routed
+   *     through libhdfs (a custom Hadoop FileSystem would hard-fail at execution).
+   *   - `multiBucket`: the S3-compliant alias buckets when a scan spans more than one; native
+   *     planning registers one object store per FilePartition and would read every file from the
+   *     first file's bucket. Empty when a single bucket (or no alias) is used.
+   *   - `crossLocations`: the distinct `scheme://bucket` (or `scheme://authority`) across all
+   *     roots that have one. Size > 1 means the scan spans multiple schemes/buckets; the Text
+   *     gate declines these (the Parquet gate uses the narrower `multiBucket` instead).
+   *   - `rejectedPath`: a root whose recognized scheme carries a path object_store rejects (e.g.
+   *     a newline -> `%0A`), which native execution cannot open.
+   */
+  private[rules] case class RootPathIssues(
+      unsupportedSchemes: Set[String],
+      multiBucket: Set[String],
+      crossLocations: Set[String],
+      rejectedPath: Option[URI])
+
+  private[rules] def checkObjectStoreRootPaths(
+      rootUris: Seq[URI],
+      hadoopConf: Configuration): RootPathIssues = {
+    // Schemes routed through libhdfs are natively readable; default to Set("hdfs") to match the
+    // native side (see the Parquet gate's comment). S3-compliant aliases come from the Hadoop
+    // config so core-site.xml is honored.
+    val libhdfsSchemes: Set[String] = COMET_LIBHDFS_SCHEMES.get() match {
+      case Some(s) => NativeConfig.parseSchemeSet(s)
+      case None => Set("hdfs")
+    }
+    val s3CompliantSchemes = NativeConfig.resolveS3CompliantSchemes(hadoopConf)
+    val roots = classifyRootPaths(rootUris, libhdfsSchemes, s3CompliantSchemes)
+    val unsupportedSchemes = roots.iterator.flatMap { root =>
+      root.scheme.filter(_ =>
+        !root.isLibhdfs && !isNativelyReadableScheme(root.uri, s3CompliantSchemes))
+    }.toSet
+    val buckets = aliasScanBuckets(roots)
+    // Distinct scheme://bucket (or scheme://authority) across roots that have a scheme and a
+    // location. Native planning registers one object store per partition keyed on the first file's
+    // location, so a scan spanning more than one of these reads later files from the first. Covers
+    // plain s3a://a + s3a://b and gs://, abfs://, ... (schemeless/local paths contribute nothing).
+    val crossLocations = roots.flatMap { root =>
+      root.scheme.flatMap { scheme =>
+        root.bucket
+          .orElse(Option(root.uri.getAuthority).filter(_.nonEmpty))
+          .map(loc => s"$scheme://$loc")
+      }
+    }.toSet
+    val rejectedPath = roots
+      .find(root =>
+        root.scheme.isDefined && !root.isLibhdfs && !root.isAlias &&
+          !objectStoreAcceptsPath(root.uri))
+      .map(_.uri)
+    RootPathIssues(
+      unsupportedSchemes,
+      if (buckets.size > 1) buckets else Set.empty,
+      crossLocations,
+      rejectedPath)
+  }
 
   /**
    * The distinct buckets this scan's root paths address, or empty when none of them uses an

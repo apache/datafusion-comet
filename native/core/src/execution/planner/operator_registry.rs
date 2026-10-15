@@ -60,6 +60,7 @@ pub enum OperatorType {
     HashJoin,
     Window,
     CsvScan,
+    TextScan,
 }
 
 /// Global registry of operator builders
@@ -175,6 +176,7 @@ fn get_operator_type(spark_operator: &Operator) -> Option<OperatorType> {
         OpStruct::Window(_) => Some(OperatorType::Window),
         OpStruct::Explode(_) => None, // Not yet in OperatorType enum
         OpStruct::CsvScan(_) => Some(OperatorType::CsvScan),
+        OpStruct::TextScan(_) => Some(OperatorType::TextScan),
         OpStruct::ShuffleScan(_) => Some(OperatorType::ShuffleScan),
         OpStruct::BroadcastNestedLoopJoin(_) => None,
         OpStruct::RangeScan(_) => None,
