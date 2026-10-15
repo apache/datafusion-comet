@@ -964,7 +964,7 @@ expressions. The following function families are <strong>not currently planned</
 <tr class="row-odd"><td><p><code class="docutils literal notranslate"><span class="pre">avg</span></code></p></td>
 <td><p>✅</p></td>
 <td><p>Native</p></td>
-<td><p>Interval types fall back</p></td>
+<td><p>Interval types fall back. <code class="docutils literal notranslate"><span class="pre">DECIMAL</span></code> input with precision 25 or more falls back in most cases, see <a class="reference internal" href="compatibility/operators.html#hash-aggregation"><span class="std std-ref">Hash Aggregation</span></a></p></td>
 </tr>
 <tr class="row-even"><td><p><code class="docutils literal notranslate"><span class="pre">bit_and</span></code></p></td>
 <td><p>✅</p></td>
@@ -1094,7 +1094,7 @@ expressions. The following function families are <strong>not currently planned</
 <tr class="row-odd"><td><p><code class="docutils literal notranslate"><span class="pre">mean</span></code></p></td>
 <td><p>✅</p></td>
 <td><p>Native</p></td>
-<td><p></p></td>
+<td><p>Interval types fall back. <code class="docutils literal notranslate"><span class="pre">DECIMAL</span></code> input with precision 25 or more falls back in most cases, see <a class="reference internal" href="compatibility/operators.html#hash-aggregation"><span class="std std-ref">Hash Aggregation</span></a></p></td>
 </tr>
 <tr class="row-even"><td><p><code class="docutils literal notranslate"><span class="pre">median</span></code></p></td>
 <td><p>✅</p></td>
@@ -1224,7 +1224,7 @@ expressions. The following function families are <strong>not currently planned</
 <tr class="row-odd"><td><p><code class="docutils literal notranslate"><span class="pre">try_avg</span></code></p></td>
 <td><p>✅</p></td>
 <td><p>—</p></td>
-<td><p>Interval types fall back</p></td>
+<td><p>Interval types fall back. <code class="docutils literal notranslate"><span class="pre">DECIMAL</span></code> input with precision 25 or more falls back in most cases, see <a class="reference internal" href="compatibility/operators.html#hash-aggregation"><span class="std std-ref">Hash Aggregation</span></a></p></td>
 </tr>
 <tr class="row-even"><td><p><code class="docutils literal notranslate"><span class="pre">try_sum</span></code></p></td>
 <td><p>✅</p></td>

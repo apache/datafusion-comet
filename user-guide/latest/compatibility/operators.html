@@ -896,6 +896,23 @@ key whose type cannot hold a null element or field, such as <code class="docutil
 <code class="docutils literal notranslate"><span class="pre">spark.comet.expression.SortOrder.allowIncompatible=true</span></code> to run the other null orders natively
 anyway.</p>
 </section>
+<section id="hash-aggregation">
+<h2>Hash Aggregation<a class="headerlink" href="#hash-aggregation" title="Link to this heading">#</a></h2>
+<p>Decimal <code class="docutils literal notranslate"><span class="pre">avg</span></code> with input precision 25 or more falls back to Spark, except over <code class="docutils literal notranslate"><span class="pre">DECIMAL(38,</span> <span class="pre">38)</span></code>.
+The native average rescales the sum within 38 digits before dividing it by the count, so a large
+sum returns <code class="docutils literal notranslate"><span class="pre">NULL</span></code> where Spark returns the average. Under ANSI, an average that Spark rejects with
+<code class="docutils literal notranslate"><span class="pre">NUMERIC_VALUE_OUT_OF_RANGE</span></code> also returns <code class="docutils literal notranslate"><span class="pre">NULL</span></code>
+(<a class="reference external" href="https://github.com/apache/datafusion-comet/issues/7007">#7007</a>). Set
+<code class="docutils literal notranslate"><span class="pre">spark.comet.expression.Average.allowIncompatible=true</span></code> to run it natively anyway.</p>
+<p>From input precision 28, Spark keeps the running sum of a decimal <code class="docutils literal notranslate"><span class="pre">avg</span></code> at precision 38, which can
+overflow even when the average fits. In an aggregate without grouping keys, and in an
+<code class="docutils literal notranslate"><span class="pre">ObjectHashAggregateExec</span></code>, the native average does not handle that overflow the way Spark does, so
+such an <code class="docutils literal notranslate"><span class="pre">avg</span></code> falls back to Spark whatever <code class="docutils literal notranslate"><span class="pre">allowIncompatible</span></code> is set to
+(<a class="reference external" href="https://github.com/apache/datafusion-comet/issues/5418">#5418</a>,
+<a class="reference external" href="https://github.com/apache/datafusion-comet/issues/5509">#5509</a>). A grouped <code class="docutils literal notranslate"><span class="pre">HashAggregateExec</span></code>
+runs it natively, since both engines return <code class="docutils literal notranslate"><span class="pre">NULL</span></code> for the group, or raise under ANSI, once its
+running sum overflows.</p>
+</section>
 <section id="sort-aggregation">
 <h2>Sort Aggregation<a class="headerlink" href="#sort-aggregation" title="Link to this heading">#</a></h2>
 <p>Comet runs <code class="docutils literal notranslate"><span class="pre">SortAggregateExec</span></code> natively when Comet shuffle is enabled and Comet supports every
@@ -938,6 +955,11 @@ the batch aggregates, so these fall back in both contexts.</p></li>
 functions.</p></li>
 <li><p><code class="docutils literal notranslate"><span class="pre">sum</span></code> or <code class="docutils literal notranslate"><span class="pre">avg</span></code> on <code class="docutils literal notranslate"><span class="pre">DECIMAL</span></code> with a sliding (non ever-expanding) frame, because the sliding path would wrap on
 overflow instead of returning Spark’s <code class="docutils literal notranslate"><span class="pre">NULL</span></code>.</p></li>
+<li><p><code class="docutils literal notranslate"><span class="pre">avg</span></code> on <code class="docutils literal notranslate"><span class="pre">DECIMAL</span></code> with precision 25 or more. Up to precision 27 it runs natively with
+<code class="docutils literal notranslate"><span class="pre">spark.comet.expression.Average.allowIncompatible=true</span></code>, as in an aggregate
+(<a class="reference external" href="https://github.com/apache/datafusion-comet/issues/7007">#7007</a>). From precision 28 the native average also
+differs from Spark once the running sum overflows precision 38
+(<a class="reference external" href="https://github.com/apache/datafusion-comet/issues/5418">#5418</a>).</p></li>
 <li><p><code class="docutils literal notranslate"><span class="pre">RANGE</span></code> frame with an explicit offset when the <code class="docutils literal notranslate"><span class="pre">ORDER</span> <span class="pre">BY</span></code> column is <code class="docutils literal notranslate"><span class="pre">DATE</span></code> or <code class="docutils literal notranslate"><span class="pre">DECIMAL</span></code>
 (<a class="reference external" href="https://github.com/apache/datafusion-comet/issues/4834">#4834</a>).</p></li>
 <li><p><code class="docutils literal notranslate"><span class="pre">RANGE</span></code> frame bounded by <code class="docutils literal notranslate"><span class="pre">CURRENT</span> <span class="pre">ROW</span></code> when an <code class="docutils literal notranslate"><span class="pre">ORDER</span> <span class="pre">BY</span></code> key is an array of arrays or structs, or a struct
@@ -1081,6 +1103,7 @@ they will be identical to Spark. Unsorted results may have different row orderin
 <li class="toc-h2 nav-item toc-entry"><a class="reference internal nav-link" href="#in-memory-cache">In-Memory Cache</a></li>
 <li class="toc-h2 nav-item toc-entry"><a class="reference internal nav-link" href="#sampling">Sampling</a></li>
 <li class="toc-h2 nav-item toc-entry"><a class="reference internal nav-link" href="#sort">Sort</a></li>
+<li class="toc-h2 nav-item toc-entry"><a class="reference internal nav-link" href="#hash-aggregation">Hash Aggregation</a></li>
 <li class="toc-h2 nav-item toc-entry"><a class="reference internal nav-link" href="#sort-aggregation">Sort Aggregation</a></li>
 <li class="toc-h2 nav-item toc-entry"><a class="reference internal nav-link" href="#window-functions">Window Functions</a></li>
 <li class="toc-h2 nav-item toc-entry"><a class="reference internal nav-link" href="#merge-into-mergerowsexec">MERGE INTO (MergeRowsExec)</a></li>
