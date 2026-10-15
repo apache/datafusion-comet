@@ -19,7 +19,7 @@
 
 package org.apache.comet.iceberg
 
-import java.lang.reflect.Method
+import java.lang.reflect.{Constructor, Method}
 import java.util.concurrent.ConcurrentHashMap
 
 import scala.util.control.NonFatal
@@ -2152,18 +2152,41 @@ object IcebergReflection extends Logging {
   }
 
   /**
-   * The three parquet-mr-bridging members the footer re-read depends on. Resolved together, per
-   * call, rather than memoized in JVM-lifetime lazy vals: `executorReflectionUnresolved` keys its
+   * The parquet-mr-bridging members the footer re-read depends on. Resolved together, per call,
+   * rather than memoized in JVM-lifetime lazy vals: `executorReflectionUnresolved` keys its
    * verdict on the current Iceberg class loader, and a probe re-run after a classpath change must
    * not be satisfied by `Method`s resolved against a previous Iceberg. Resolution is a per-task
    * cost (once per `rebuildDataFilesWithJavaMetrics` call), not per-file.
    */
-  private case class ParquetFooterReflection(
+  private[iceberg] case class ParquetFooterReflection(
       footerMetrics: Method,
       parquetIOFile: Method,
-      parquetFileReaderOpen: Method)
+      parquetFileReaderOpen: Method,
+      readOptions: Option[FooterReadOptions])
 
-  private def resolveParquetFooterReflection(): ParquetFooterReflection = {
+  /**
+   * Opens a file with parquet-mr's default read options, built from a `PlainParquetConfiguration`
+   * rather than from a Hadoop `Configuration`.
+   *
+   * On parquet-mr that has `ParquetConfiguration` (1.14 and later),
+   * `ParquetFileReader.open(InputFile)` builds its options from a new Hadoop `Configuration` and
+   * reads them back, which parses Hadoop's default XML resources on every call, so once for every
+   * data file a task writes. The options govern filtering, decryption, allocation, and how string
+   * statistics from old parquet-mr writers are read, none of which applies to a footer the native
+   * writer has just written. Earlier parquet-mr builds its defaults without Hadoop, so there the
+   * footer is still read through `open(InputFile)`.
+   */
+  private[iceberg] case class FooterReadOptions(
+      open: Method,
+      builder: Method,
+      build: Method,
+      plainConfiguration: Constructor[_]) {
+
+    def newOptions(): AnyRef =
+      build.invoke(builder.invoke(null, plainConfiguration.newInstance().asInstanceOf[AnyRef]))
+  }
+
+  private[iceberg] def resolveParquetFooterReflection(): ParquetFooterReflection = {
     // `ParquetUtil.footerMetrics(ParquetMetadata, Stream[FieldMetrics], MetricsConfig,
     // NameMapping)`. In `iceberg-spark-runtime` jars parquet-mr is shaded, so the
     // `ParquetMetadata` parameter type is the relocated class -- resolved from the method itself
@@ -2183,12 +2206,38 @@ object IcebergReflection extends Logging {
       parquetMetadataClass.getName
         .replace("hadoop.metadata.ParquetMetadata", "hadoop.ParquetFileReader"))
     val parquetFileReaderOpen = readerClass.getMethod("open", parquetIOFile.getReturnType)
-    ParquetFooterReflection(footerMetrics, parquetIOFile, parquetFileReaderOpen)
+    ParquetFooterReflection(
+      footerMetrics,
+      parquetIOFile,
+      parquetFileReaderOpen,
+      resolveFooterReadOptions(readerClass, parquetIOFile.getReturnType))
+  }
+
+  /**
+   * The members [[FooterReadOptions]] needs, or `None` on parquet-mr without
+   * `ParquetConfiguration`. They are looked up next to `ParquetFileReader`, which lives in the
+   * `hadoop` package of a possibly relocated parquet-mr.
+   */
+  private def resolveFooterReadOptions(
+      readerClass: Class[_],
+      inputFileClass: Class[_]): Option[FooterReadOptions] = {
+    val parquetPackage = readerClass.getName.stripSuffix("hadoop.ParquetFileReader")
+    for {
+      configurationClass <- tryLoadClass(s"${parquetPackage}conf.ParquetConfiguration")
+      plainConfigurationClass <- tryLoadClass(s"${parquetPackage}conf.PlainParquetConfiguration")
+      optionsClass <- tryLoadClass(s"${parquetPackage}ParquetReadOptions")
+      open <- findMethod(readerClass, "open", inputFileClass, optionsClass)
+      builder <- findMethod(optionsClass, "builder", configurationClass)
+      build <- findMethod(builder.getReturnType, "build")
+    } yield FooterReadOptions(open, builder, build, plainConfigurationClass.getConstructor())
   }
 
   private def readParquetFooter(parquet: ParquetFooterReflection, inputFile: AnyRef): AnyRef = {
     val parquetInputFile = parquet.parquetIOFile.invoke(null, inputFile)
-    val reader = parquet.parquetFileReaderOpen.invoke(null, parquetInputFile)
+    val reader = parquet.readOptions match {
+      case Some(options) => options.open.invoke(null, parquetInputFile, options.newOptions())
+      case None => parquet.parquetFileReaderOpen.invoke(null, parquetInputFile)
+    }
     try {
       getMethod(reader.getClass, "getFooter").invoke(reader)
     } finally {

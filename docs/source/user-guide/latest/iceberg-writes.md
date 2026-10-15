@@ -17,10 +17,17 @@
   under the License.
 -->
 
-# Iceberg Writes: Comet's Split-Operator Plan (Experimental)
+# Iceberg Writes: Comet's Split-Operator Plan and Native Writer
 
-**This feature is experimental and disabled by default.** Enable it only after validating it
-against your own workloads.
+With `spark.comet.write.iceberg.enabled=true`, Comet plans Iceberg writes with the split-operator
+plan described below, and writes the data files of each eligible write natively with iceberg-rust.
+A write that is not eligible falls back to iceberg-java's writer. Natively written files differ
+from iceberg-java's in the ways listed under [Accepted divergences](#accepted-divergences).
+
+The setting is off by default, so Spark plans its own write operator and iceberg-java writes every
+data file. Validate the native writer against your own workloads before enabling it, including
+the costs described under [Native Parquet write eligibility](#native-parquet-write-eligibility)
+and [Failure handling](#failure-handling).
 
 ## Overview
 
@@ -32,8 +39,8 @@ data-file writing cannot be re-planned in response to how its input ran. And bec
 writing is bundled with the metadata and commit steps, there is no separate step for Comet to
 replace.
 
-When `spark.comet.write.iceberg.splitOperator.enabled=true`, Comet rewrites eligible Iceberg
-writes into two operators:
+When `spark.comet.write.iceberg.enabled=true`, Comet rewrites eligible Iceberg writes into two
+operators:
 
 1. **`IcebergWrite`** — writes the data files on the executors, exactly as iceberg-java does
    today, and returns each task's serialized commit message. This operator and the sub-query
@@ -41,13 +48,12 @@ writes into two operators:
 2. **`IcebergCommit`** — collects the commit messages on the driver and performs the normal
    Iceberg commit (including commit-time validation), outside AQE, exactly once.
 
-With only the split plan enabled, data files are still written by iceberg-java; only the plan
-shape changes. The split moves data-file writing inside AQE and separates it from the commit,
-and it is the foundation for the second toggle: when
-`spark.comet.write.iceberg.enabled=true` and the write passes the eligibility check below, the
-`IcebergWrite` operator's per-task Parquet write is delegated to
+The split moves data-file writing inside AQE and separates it from the commit, which gives Comet
+a step to replace: when the write passes the eligibility check below, the `IcebergWrite`
+operator's per-task Parquet write is delegated to
 [iceberg-rust](https://github.com/apache/iceberg-rust) via Comet's native execution pipeline
-([#5361](https://github.com/apache/datafusion-comet/pull/5361)).
+([#5361](https://github.com/apache/datafusion-comet/pull/5361)). A write that does not pass keeps
+`IcebergWrite`, and iceberg-java writes its data files; only the plan shape changes.
 
 ## How the native write works
 
@@ -82,7 +88,8 @@ already has, even if they do not fill its first page.
 
 ## Configuration
 
-Standard Comet + Iceberg setup (see [`iceberg.md`](iceberg.md)) plus the write-side toggle:
+Standard Comet + Iceberg setup (see [`iceberg.md`](iceberg.md)) plus the write setting, which is
+off by default:
 
 ```
 # Standard Comet / Iceberg wiring
@@ -92,10 +99,7 @@ spark.sql.catalog.<name>=org.apache.iceberg.spark.SparkCatalog
 spark.sql.catalog.<name>.type=hadoop                          # or hive / glue / rest / ...
 spark.sql.catalog.<name>.warehouse=...
 
-# Split-operator plan (experimental, off by default)
-spark.comet.write.iceberg.splitOperator.enabled=true
-
-# Native Parquet writer (experimental, off by default; requires the split plan)
+# Split-operator plan and native Parquet writer
 spark.comet.write.iceberg.enabled=true
 
 # Lets writes whose input is a local relation (INSERT ... VALUES, a local DataFrame) use the
@@ -124,10 +128,11 @@ analyzer emits operation-coded rows that Comet's writer dispatches through `Repl
 projections, while on Spark 3.4/3.5 the rewritten rows are written as a plain row stream. The
 supported set of operations is the same either way.
 
-On Spark 3.5+, merge-on-read uses Spark's `WriteDelta`. The split plan intercepts that command so
-Comet can keep the same driver commit and reporting path, but task-side row-level writes stay on
-Iceberg's JVM `DeltaWriter`; `CometIcebergWriteExec` is never used for position-delta rows.
-Spark 3.4 leaves `WriteDelta` on Spark's stock write plan.
+Merge-on-read uses Spark's `WriteDelta`, and Iceberg's JVM `DeltaWriter` writes its rows under
+either plan, so it keeps Spark's stock write plan. On Spark 3.5+ the testing setting
+`spark.comet.write.iceberg.splitOperator.enabled` plans it as the split plan, with the same driver
+commit and reporting path, but `CometIcebergWriteExec` is never used for position-delta rows.
+Spark 3.4 always leaves `WriteDelta` on Spark's stock write plan.
 
 On Spark 4.1+ the split plan matches two further stock-Spark behaviours: MERGE metrics are
 forwarded to the writer's commit (Iceberg 1.11+ records them in the snapshot summary), and
@@ -138,10 +143,15 @@ changes.
 
 The rewrite is skipped — and the write runs through Spark's stock combined operator — when:
 
-- `spark.comet.write.iceberg.splitOperator.enabled` is `false` (the default);
+- `spark.comet.write.iceberg.enabled` is `false` (the default) and the testing setting
+  `spark.comet.write.iceberg.splitOperator.enabled`, which Comet 1.1.0 documented as a user setting,
+  is not on;
+- Comet is disabled (`spark.comet.enabled=false`), or its native execution is
+  (`spark.comet.exec.enabled=false`);
+- Comet is in plan-only mode (`spark.comet.explain.planOnly.enabled=true`);
 - the write is neither an Iceberg `SparkWrite` nor a supported Iceberg position-delta write;
-- the table uses merge-on-read on Spark 3.4; Spark 3.5+ `WriteDelta` is intercepted but remains
-  on Iceberg's JVM `DeltaWriter`;
+- the table uses merge-on-read (`WriteDelta`), unless the testing setting
+  `spark.comet.write.iceberg.splitOperator.enabled` is on with Spark 3.5+;
 - the statement is CTAS / RTAS on Spark 3.4, where the staged exec writes inline; on Spark
   3.5+ those statements re-plan their inner append, which is intercepted normally;
 - the write requires Spark's commit coordinator, which Comet's per-task commit protocol does
@@ -172,8 +182,8 @@ The native writer reads its input as Arrow batches from a Comet operator, so the
 must itself run in Comet. A write whose input is a local relation, such as `INSERT ... VALUES` or
 `df.writeTo(...).append()` on a DataFrame built from local data, is fed by Spark's
 `LocalTableScanExec`, which Comet only converts when `spark.comet.exec.localTableScan.enabled=true`
-(off by default). Without that setting such writes run through iceberg-java even when both write
-flags are on.
+(off by default). Without that setting such writes keep `IcebergWrite` and run through
+iceberg-java.
 
 **Most Iceberg write settings are not supported.** Detection is an allowlist: a write is
 eligible only when its entire effective configuration matches the table below, and anything
@@ -201,7 +211,7 @@ A write is eligible only when ALL of the following hold:
 | `write.target-file-size-bytes`                                                                                                              | any value (the two writers can choose different roll points; see accepted divergences)                                                                                                                                                                                                                                                                                                                                                                                          |
 | data location URI scheme                                                                                                                    | `file`, `memory`, `s3`, `s3a`, `gs`, matched case-sensitively (`S3://` falls back). `s3`, `s3a` and `gs` need a bucket in the authority (`s3://bucket/...`), so a hostless form such as `s3:/bucket/key` falls back. `gs` only when the `FileIO` opening the data location is a `GCSFileIO`; see below                                                                                                                                                                          |
 | resolved `table.locationProvider()`                                                                                                         | Iceberg's built-in `DefaultLocationProvider`                                                                                                                                                                                                                                                                                                                                                                                                                                    |
-| Hadoop S3A settings for an `s3` / `s3a` data location                                                                                       | only `fs.s3a.access.key`, `secret.key`, `session.token`, `endpoint`, `endpoint.region`, and `path.style.access`, including their `fs.s3a.bucket.<data-bucket>.*` forms; any other effective `fs.s3a.*` setting falls back                                                                                                                                                                                                                                                       |
+| Hadoop S3A settings for an `s3` / `s3a` data location                                                                                       | only `fs.s3a.access.key`, `secret.key`, `session.token`, `endpoint`, `endpoint.region`, and `path.style.access`, including their `fs.s3a.bucket.<data-bucket>.*` forms; any other effective `fs.s3a.*` setting falls back, apart from the ignored settings listed below                                                                                                                                                                                                         |
 | Iceberg `FileIO` S3 settings for an `s3` / `s3a` data location                                                                              | the S3 endpoint, region, static/session credentials, path-style, SSE (`none`, `s3`, `kms`, or `custom`; not `dsse-kms`), assume-role, anonymous/config-chain settings parsed by the pinned iceberg-rust version, plus Comet's credential-provider class and built-in web-identity properties. When a custom provider is configured, its vendor-owned `s3.*` / `client.*` properties are also forwarded; unsupported Iceberg-defined S3 settings still fall back                 |
 | partition spec                                                                                                                              | any, except an identity partition on a `float` or `double` column, or a `void` field whose source column was dropped beside a live field (see below)                                                                                                                                                                                                                                                                                                                            |
 | column types                                                                                                                                | any except `uuid` (Spark plans it as a string; no Arrow cast reaches `fixed(16)`) and the v3 types `variant`, `unknown`, `timestamp_ns`, `geometry` and `geography`                                                                                                                                                                                                                                                                                                             |
@@ -242,7 +252,12 @@ properties; session and catalog Hadoop options are neither checked nor forwarded
 `core-default.xml` values are not treated as explicit settings, but
 programmatic settings and values from site or custom `*-default.xml` resources are. Spark's
 session-wide S3A vectored-read and `downgrade.syncable.exceptions` compatibility settings are also
-ignored because they cannot alter an Iceberg data-file write request. Unknown explicit
+ignored, as are the S3A committer (`committer.name`, `committer.magic.enabled`,
+`committer.threads`), `bulk.delete.page.size` and `experimental.input.fadvise` settings, because
+none of them can alter an Iceberg data-file write request. Spark 4.1 sets `committer.name` and
+`committer.magic.enabled` itself when `spark-hadoop-cloud` is on the classpath. Ignored settings are
+matched by their plain `fs.s3a.<name>` keys, so a per-bucket `fs.s3a.bucket.<data-bucket>.<name>`
+form still falls back. Unknown explicit
 `fs.s3a.*`, `s3.*`, or `client.*` settings therefore fall back at planning time instead of being
 silently ignored by the native storage backend. The exception is a vendor-owned `s3.*` /
 `client.*` property when
@@ -290,7 +305,14 @@ bounds carried over from the native writer's tracked state. iceberg-java's metad
 — metrics modes, the inferred-column cap
 (`write.metadata.metrics.max-inferred-column-defaults`), bound truncation, and list/map bounds
 suppression — are therefore applied by iceberg-java's own code regardless of what the native
-writer reports. This costs one footer-sized ranged read per written file at write time.
+writer reports.
+
+iceberg-java's writer takes these metrics from the footer it still holds in memory, but the native
+path reads each footer back from storage: two small reads per written file, one for the footer's
+length and one for the footer itself, made one file after another before the task finishes. On S3
+or GCS each read is a GET request, so the task waits two request round trips per file. That is
+small next to uploading a large file, but a write that produces many small files, such as a fanout
+write over many partitions, pays it for every one of them.
 
 ## Failure handling
 
@@ -310,13 +332,24 @@ The native writer's buffers are charged to Comet's memory pool, the off-heap bud
 native operators draw on, where iceberg-java's buffers sit on the JVM heap. A fanout write keeps a
 data file open for every partition a task writes to. Each open file holds the row group it is
 writing in memory, up to `write.parquet.row-group-size-bytes`, and on S3 or GCS also the last row
-group it flushed, which is uploaded once the next one is complete or the file closes. So a task
-writing to many partitions needs memory in proportion to them. When the pool cannot grant it, the
-task fails with a `CometNativeException` reading `Additional allocation failed for IcebergWriteExec`
-instead of exceeding the executor's memory, and Spark retries it like any other task failure. Such a
-write fits in less memory with the fanout writer disabled (`write.spark.fanout.enabled=false`):
-Spark then sorts each task's rows by partition, and the task keeps one file open at a time. A
-smaller row-group size also helps. Otherwise the write needs a larger `spark.memory.offHeap.size`.
+group it flushed, which is uploaded once the next one is complete or the file closes. Each
+partition also holds the rows that have not reached its file yet. So a task writing to many
+partitions needs memory in proportion to them. When the pool cannot grant it, the task writes out
+and closes the partitions holding the most memory until what is left fits, and a closed
+partition's next rows open a new file. The write then finishes with more, smaller files than
+iceberg-java's would. When every partition keeps getting rows, a task given an eighth of the memory
+its partitions need writes about four files per partition instead of one, however many partitions
+it writes to. The `files closed early to free memory` metric of its `CometIcebergWrite` operator
+counts the files it closed early. Disabling the fanout writer (`write.spark.fanout.enabled=false`)
+avoids the extra files: Spark then sorts each task's rows by partition, and the task keeps one file
+open at a time. A larger `spark.memory.offHeap.size` also helps, and Iceberg's `rewrite_data_files`
+procedure compacts small files once they are written.
+
+A write that keeps one file open, unpartitioned or clustered, has no partition to close. When that
+file outgrows the pool, the task fails with a `CometNativeException` reading
+`Additional allocation failed for IcebergWriteExec` instead of exceeding the executor's memory, and
+Spark retries it like any other task failure. A smaller `write.parquet.row-group-size-bytes` or a
+larger `spark.memory.offHeap.size` lets such a write fit.
 
 Partial results are never committed. The commit set is exactly the commit messages returned by
 successful tasks — a failed task contributes none — and if the job fails, the driver-side
@@ -344,7 +377,7 @@ messages carry genuine `SparkWrite$TaskCommit` objects, so Iceberg's own `SparkW
 cleanup (which deletes the files listed in the commit messages for cleanable failures) applies
 unchanged.
 
-## Accepted divergences behind the toggle
+## Accepted divergences
 
 Some differences between parquet-mr and the pinned parquet-rs / iceberg-rust are unconditional —
 they apply to every native write and cannot be configured away. Enabling
@@ -411,6 +444,11 @@ a data file but not what any reader computes from it:
   they may cross the target several grid steps apart, and the resulting files can differ in row
   count by an arbitrary number of 1000-row blocks. Do not rely on file-layout parity between the
   two writers; rely only on each file rolling on its own 1000-row boundary.
+- A fanout write that the memory pool cannot hold closes partitions before the task ends (see
+  [Failure handling](#failure-handling)), where iceberg-java's fanout writer keeps every file open
+  until then. So a partition can have more, smaller files than iceberg-java writes, and a file
+  closed early ends off the 1000-row grid, as the last file of a task does. A partition closed
+  before its rows filled a first page makes its dictionary choice from the rows it has.
 - A fanout write lists a task's data files in file-path order, where iceberg-java lists them in
   its own `StructLikeMap` iteration order. Both are stable across runs, and neither is a
   documented ordering, but the manifest entry order becomes the scan-task order and so the row
@@ -418,10 +456,9 @@ a data file but not what any reader computes from it:
   commit gives each file's rows, so the same rows can get different `_row_id` values from the two
   writers. The ids are unique either way, and across tasks iceberg-java's own assignment already
   depends on the order in which the tasks finish. Only the sorted order is reproducible on the
-  native path: iceberg-rust's `FanoutWriter` closes its per-partition writers out of a `HashMap`,
-  which under Rust's per-process `RandomState` would otherwise give a different order on every
-  run. Clustered and unpartitioned writes append in creation order on both paths and are
-  unaffected.
+  native path: the order the native writer closes its files in depends on the order rows arrive in
+  and on which partitions it closes early to free memory. Clustered and unpartitioned writes append
+  in creation order on both paths and are unaffected.
 - Compressed page bytes are implementation-defined: the codec and any explicit level are
   translated, but parquet-rs and parquet-mr embed different encoder implementations and
   defaults (zstd default levels, LZ4 framing), so byte-identical output is not achievable even

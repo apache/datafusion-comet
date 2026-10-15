@@ -25,9 +25,8 @@ import scala.collection.mutable.ListBuffer
 import scala.jdk.CollectionConverters._
 
 import org.apache.spark.sql.SparkSession
-import org.apache.spark.sql.catalyst.expressions.{Divide, DoubleLiteral, Expression, FloatLiteral, KnownFloatingPointNormalized, NamedExpression, Remainder, SortOrder}
+import org.apache.spark.sql.catalyst.expressions.{Expression, SortOrder}
 import org.apache.spark.sql.catalyst.expressions.aggregate.{AggregateMode, Final, Partial, PartialMerge}
-import org.apache.spark.sql.catalyst.optimizer.NormalizeNaNAndZero
 import org.apache.spark.sql.catalyst.rules.Rule
 import org.apache.spark.sql.catalyst.trees.TreeNodeTag
 import org.apache.spark.sql.catalyst.util.sideBySide
@@ -443,7 +442,7 @@ case class CometExecRule(session: SparkSession, queryStagePrep: Boolean = false)
         convertToComet(scan, CometIcebergNativeScan).getOrElse(scan)
 
       case scan: CometBatchScanExec if scan.wrapped.scan.isInstanceOf[CSVScan] =>
-        convertToComet(scan, CometCsvNativeScanExec).getOrElse(scan)
+        convertToComet(scan, CometCsvNativeScanExec).getOrElse(scan.wrapped)
 
       // Comet JVM + native scan for V1 and V2
       case op if isCometScan(op) =>
@@ -937,41 +936,6 @@ case class CometExecRule(session: SparkSession, queryStagePrep: Boolean = false)
     newPlan
   }
 
-  /**
-   * Wraps the divisor of a floating-point `Divide` or `Remainder` in a Project or Filter in
-   * `NormalizeNaNAndZero`. Native comparisons already follow Spark's ordering, including the
-   * check for a zero divisor, so the quotient does not need this. It also canonicalizes a NaN
-   * divisor, though, and with it the NaN quotient: `1.0D / (-d)` of a NaN `d` is otherwise a NaN
-   * with the sign bit set, which `percentile_approx` still orders below every other value
-   * (https://github.com/apache/datafusion-comet/issues/6519). Remove this once that is fixed.
-   */
-  private def normalizeDivisors(plan: SparkPlan): SparkPlan = {
-    def normalize(expr: Expression): Expression = expr.transformUp {
-      case Divide(left, right, evalMode) => Divide(left, normalizeNaNAndZero(right), evalMode)
-      case Remainder(left, right, evalMode) =>
-        Remainder(left, normalizeNaNAndZero(right), evalMode)
-    }
-    plan.transformUp {
-      case p: ProjectExec =>
-        ProjectExec(p.projectList.map(normalize(_).asInstanceOf[NamedExpression]), p.child)
-      case f: FilterExec => FilterExec(normalize(f.condition), f.child)
-    }
-  }
-
-  private def normalizeNaNAndZero(expr: Expression): Expression = {
-    expr match {
-      case _: KnownFloatingPointNormalized => expr
-      case FloatLiteral(f) if !f.isNaN && !f.equals(-0.0f) => expr
-      case DoubleLiteral(d) if !d.isNaN && !d.equals(-0.0d) => expr
-      case _ =>
-        expr.dataType match {
-          case _: FloatType | _: DoubleType =>
-            KnownFloatingPointNormalized(NormalizeNaNAndZero(expr))
-          case _ => expr
-        }
-    }
-  }
-
   private def _apply(plan: SparkPlan): SparkPlan = {
     // We shouldn't transform Spark query plan if Comet is not loaded.
     if (!isCometLoaded(conf)) {
@@ -992,17 +956,15 @@ case class CometExecRule(session: SparkSession, queryStagePrep: Boolean = false)
         plan
       }
     } else {
-      val normalizedPlan = normalizeDivisors(plan)
-
       // The rewrite removes the sorts of each join it converts, so put back any sort a kept
       // operator above still needs. This runs before transform(), which converts the sorts it
       // adds like any other SortExec.
       val planWithJoinRewritten = if (CometConf.COMET_FORCE_SHJ.get()) {
-        RewriteJoin.restoreRequiredOrdering(normalizedPlan.transformUp { case p =>
+        RewriteJoin.restoreRequiredOrdering(plan.transformUp { case p =>
           RewriteJoin.rewrite(p, conf)
         })
       } else {
-        normalizedPlan
+        plan
       }
 
       // Tag Partial aggregates that must not be converted to Comet because a
@@ -1172,24 +1134,21 @@ case class CometExecRule(session: SparkSession, queryStagePrep: Boolean = false)
       }
 
       val builder = OperatorOuterClass.Operator.newBuilder().setPlanId(op.id)
-      if (op.children.nonEmpty && op.children.forall(_.isInstanceOf[CometNativeExec])) {
-        val childOp = op.children.map(_.asInstanceOf[CometNativeExec].nativeOp)
-        childOp.foreach(builder.addChildren)
-        return serde
-          .convert(op, builder, childOp: _*)
-          .map { nativeOp =>
-            val exec = serde.createExec(nativeOp, op)
-            rollUpInfoMessages(op, exec)
-            exec
-          }
-      } else {
-        return serde
-          .convert(op, builder)
-          .map { nativeOp =>
-            val exec = serde.createExec(nativeOp, op)
-            rollUpInfoMessages(op, exec)
-            exec
-          }
+      // Which subexpressions Spark evaluates for every row decides where native execution may
+      // skip a function's arguments (see `QueryPlanSerde.canShortCircuitNulls`)
+      val nativeOp = QueryPlanSerde.withSharedSubexpressions(op.expressions) {
+        if (op.children.nonEmpty && op.children.forall(_.isInstanceOf[CometNativeExec])) {
+          val childOp = op.children.map(_.asInstanceOf[CometNativeExec].nativeOp)
+          childOp.foreach(builder.addChildren)
+          serde.convert(op, builder, childOp: _*)
+        } else {
+          serde.convert(op, builder)
+        }
+      }
+      return nativeOp.map { nativeOp =>
+        val exec = serde.createExec(nativeOp, op)
+        rollUpInfoMessages(op, exec)
+        exec
       }
     }
     None
@@ -1765,8 +1724,6 @@ case class CometExecRule(session: SparkSession, queryStagePrep: Boolean = false)
 
     val aggregateExpressions = agg.aggregateExpressions
     val groupingExpressions = agg.groupingExpressions
-
-    if (groupingExpressions.isEmpty && aggregateExpressions.isEmpty) return false
 
     if (groupingExpressions.exists(e =>
         SupportLevel.containsType(e.dataType, classOf[MapType]))) {

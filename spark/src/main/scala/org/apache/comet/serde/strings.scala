@@ -418,7 +418,6 @@ object CometLike extends CometExpressionSerde[Like] with CodegenDispatchFallback
 
   override def convert(expr: Like, inputs: Seq[Attribute], binding: Boolean): Option[Expr] = {
     createBinaryExpr(
-      expr,
       expr.left,
       expr.right,
       inputs,
@@ -507,7 +506,6 @@ object CometRLike
     val allowIncompat = CometConf.isExprAllowIncompat(getExprConfigName(expr))
     if (provablyCompatible(expr) || (allowIncompat && nativeApplicable(expr))) {
       return createBinaryExpr(
-        expr,
         expr.left,
         expr.right,
         inputs,

@@ -20,18 +20,21 @@
 //! Spark's PartialMerge mode merges intermediate state buffers and outputs intermediate
 //! state (not final values). DataFusion has no equivalent mode — `Partial` calls
 //! `update_batch` and outputs state, while `Final` calls `merge_batch` and outputs
-//! evaluated results.
+//! evaluated results. `PartialReduce` merges state and outputs state, but from DataFusion 56
+//! it emits a group more than once when it runs short of memory, as `Partial` does.
 //!
-//! This wrapper bridges the gap: it operates under DataFusion's `Partial` mode (which
-//! outputs state) but redirects `update_batch` calls to `merge_batch`, giving merge
-//! semantics with state output.
+//! This wrapper bridges the gap: it redirects `update_batch` calls to `merge_batch`, and it
+//! evaluates to its state, packed into a struct. Under DataFusion's `Partial` mode, which
+//! outputs state, that gives merge semantics with state output. Under `Single` mode, which
+//! spills rather than emit a group twice, the planner unpacks the struct into the state columns.
 
 use std::fmt::Debug;
 use std::hash::{Hash, Hasher};
+use std::sync::Arc;
 
-use arrow::array::{ArrayRef, BooleanArray};
-use arrow::datatypes::{DataType, Field, FieldRef};
-use datafusion::common::Result;
+use arrow::array::{ArrayRef, BooleanArray, StructArray};
+use arrow::datatypes::{DataType, Field, FieldRef, Fields, Schema};
+use datafusion::common::{internal_err, Result};
 use datafusion::logical_expr::function::AccumulatorArgs;
 use datafusion::logical_expr::function::StateFieldsArgs;
 use datafusion::logical_expr::{
@@ -39,16 +42,23 @@ use datafusion::logical_expr::{
     Signature, Volatility,
 };
 use datafusion::physical_expr::aggregate::AggregateFunctionExpr;
+use datafusion::physical_expr::{
+    expressions::Column, GroupsAccumulatorAdapter, PhysicalExpr, PhysicalSortExpr,
+};
+use datafusion::physical_plan::{projection::ProjectionExec, ExecutionPlan};
 use datafusion::scalar::ScalarValue;
+use datafusion_comet_spark_expr::GetStructField;
 
 use crate::execution::spark_aggregate_state::PartialMergeStateDecoder;
 
-/// An AggregateUDF wrapper that gives merge semantics in Partial mode.
+/// An AggregateUDF wrapper that merges state and outputs state in Partial or Single mode.
 ///
 /// When DataFusion runs an AggregateExec in Partial mode, it calls `update_batch`
 /// on each accumulator and outputs `state()`. This wrapper intercepts `update_batch`
 /// and redirects it to `merge_batch` on the inner accumulator, effectively
-/// implementing PartialMerge: merge inputs, output state.
+/// implementing PartialMerge: merge inputs, output state. In Single mode, DataFusion
+/// outputs `evaluate()` instead, which returns the inner accumulator's state as a struct
+/// of the state fields.
 ///
 /// We store the inner AggregateUDF (not the AggregateFunctionExpr) to avoid keeping
 /// references to UnboundColumn expressions that would panic if evaluated.
@@ -56,10 +66,12 @@ use crate::execution::spark_aggregate_state::PartialMergeStateDecoder;
 pub struct MergeAsPartialUDF {
     /// The inner aggregate UDF, cloned from the original expression.
     inner_udf: AggregateUDF,
-    /// Pre-computed return type from the original expression.
-    return_type: DataType,
-    /// Pre-computed state fields from the original expression.
-    cached_state_fields: Vec<FieldRef>,
+    /// The original expression's return field, which the inner accumulator is built with, since
+    /// the wrapper returns its state instead.
+    inner_return_field: FieldRef,
+    /// Pre-computed state fields from the original expression, which are also the fields of
+    /// the struct the wrapper evaluates to.
+    cached_state_fields: Fields,
     /// Cached signature that accepts state field types.
     signature: Signature,
     /// Override argument fields used only when constructing the inner accumulator.
@@ -87,8 +99,7 @@ impl Hash for MergeAsPartialUDF {
 impl MergeAsPartialUDF {
     pub fn new(inner_expr: &AggregateFunctionExpr) -> Result<Self> {
         let name = format!("merge_as_partial_{}", inner_expr.name());
-        let return_type = inner_expr.field().data_type().clone();
-        let cached_state_fields = inner_expr.state_fields()?;
+        let cached_state_fields = Fields::from(inner_expr.state_fields()?);
         let accumulator_expr_fields =
             Self::accumulator_expr_fields(inner_expr, &cached_state_fields);
         let state_decoder = PartialMergeStateDecoder::try_new(inner_expr, &cached_state_fields)?;
@@ -99,7 +110,7 @@ impl MergeAsPartialUDF {
 
         Ok(Self {
             inner_udf: inner_expr.fun().clone(),
-            return_type,
+            inner_return_field: inner_expr.field(),
             cached_state_fields,
             signature,
             accumulator_expr_fields,
@@ -136,6 +147,7 @@ impl MergeAsPartialUDF {
             .as_deref()
             .unwrap_or(args.expr_fields);
         AccumulatorArgs {
+            return_field: Arc::clone(&self.inner_return_field),
             expr_fields,
             ..args
         }
@@ -153,14 +165,20 @@ impl AggregateUDFImpl for MergeAsPartialUDF {
 
     fn return_type(&self, _arg_types: &[DataType]) -> Result<DataType> {
         // In Partial mode, return_type isn't used for output schema (state_fields is).
-        // Return the inner function's return type for consistency.
-        Ok(self.return_type.clone())
+        // In Single mode, the wrapper evaluates to its state.
+        Ok(DataType::Struct(self.cached_state_fields.clone()))
+    }
+
+    fn is_nullable(&self) -> bool {
+        // The state struct itself is never null, so each state field unpacked from it keeps its
+        // own nullability.
+        false
     }
 
     fn state_fields(&self, _args: StateFieldsArgs) -> Result<Vec<FieldRef>> {
         // Cached at construction: state schema depends on the inner aggregate's
         // return type, not on StateFieldsArgs.
-        Ok(self.cached_state_fields.clone())
+        Ok(self.cached_state_fields.to_vec())
     }
 
     fn accumulator(&self, args: AccumulatorArgs) -> Result<Box<dyn Accumulator>> {
@@ -170,24 +188,34 @@ impl AggregateUDFImpl for MergeAsPartialUDF {
         Ok(Box::new(MergeAsPartialAccumulator {
             inner: inner_acc,
             state_decoder: self.state_decoder.clone(),
+            state_fields: self.cached_state_fields.clone(),
         }))
     }
 
-    fn groups_accumulator_supported(&self, args: AccumulatorArgs) -> bool {
-        self.inner_udf
-            .groups_accumulator_supported(self.inner_accumulator_args(args))
+    fn groups_accumulator_supported(&self, _args: AccumulatorArgs) -> bool {
+        // An inner aggregate without a GroupsAccumulator gets an adapter below, so that Single
+        // mode emits its states a column at a time rather than evaluating each group to a struct.
+        true
     }
 
     fn create_groups_accumulator(
         &self,
         args: AccumulatorArgs,
     ) -> Result<Box<dyn GroupsAccumulator>> {
-        let inner_acc = self
+        let inner_args = self.inner_accumulator_args(args);
+        let inner_acc: Box<dyn GroupsAccumulator> = if self
             .inner_udf
-            .create_groups_accumulator(self.inner_accumulator_args(args))?;
+            .groups_accumulator_supported(inner_args.clone())
+        {
+            self.inner_udf.create_groups_accumulator(inner_args)?
+        } else {
+            let factory = InnerAccumulatorFactory::new(&self.inner_udf, &inner_args);
+            Box::new(GroupsAccumulatorAdapter::new(move || factory.create()))
+        };
         Ok(Box::new(MergeAsPartialGroupsAccumulator {
             inner: inner_acc,
             state_decoder: self.state_decoder.clone(),
+            state_fields: self.cached_state_fields.clone(),
         }))
     }
 
@@ -204,10 +232,88 @@ impl AggregateUDFImpl for MergeAsPartialUDF {
     }
 }
 
-/// Accumulator wrapper that redirects update_batch to merge_batch.
+/// Owned copies of the arguments that build an inner row accumulator, which a
+/// `GroupsAccumulatorAdapter` does for each new group, after `AccumulatorArgs` has gone.
+struct InnerAccumulatorFactory {
+    udf: AggregateUDF,
+    return_field: FieldRef,
+    schema: Schema,
+    ignore_nulls: bool,
+    order_bys: Vec<PhysicalSortExpr>,
+    is_reversed: bool,
+    name: String,
+    is_distinct: bool,
+    exprs: Vec<Arc<dyn PhysicalExpr>>,
+    expr_fields: Vec<FieldRef>,
+}
+
+impl InnerAccumulatorFactory {
+    fn new(udf: &AggregateUDF, args: &AccumulatorArgs) -> Self {
+        Self {
+            udf: udf.clone(),
+            return_field: Arc::clone(&args.return_field),
+            schema: args.schema.clone(),
+            ignore_nulls: args.ignore_nulls,
+            order_bys: args.order_bys.to_vec(),
+            is_reversed: args.is_reversed,
+            name: args.name.to_string(),
+            is_distinct: args.is_distinct,
+            exprs: args.exprs.to_vec(),
+            expr_fields: args.expr_fields.to_vec(),
+        }
+    }
+
+    fn create(&self) -> Result<Box<dyn Accumulator>> {
+        self.udf.accumulator(AccumulatorArgs {
+            return_field: Arc::clone(&self.return_field),
+            schema: &self.schema,
+            ignore_nulls: self.ignore_nulls,
+            order_bys: &self.order_bys,
+            is_reversed: self.is_reversed,
+            name: &self.name,
+            is_distinct: self.is_distinct,
+            exprs: &self.exprs,
+            expr_fields: &self.expr_fields,
+        })
+    }
+}
+
+/// Projects the output of a Single-mode `aggregate` whose aggregates are all [`MergeAsPartialUDF`]s
+/// into the output of a Partial-mode one: its `num_grouping` grouping columns, then one column per
+/// state field, unpacked from the struct each aggregate evaluates to.
+pub(crate) fn unpack_state_structs(
+    aggregate: Arc<dyn ExecutionPlan>,
+    num_grouping: usize,
+) -> Result<Arc<dyn ExecutionPlan>> {
+    let schema = aggregate.schema();
+    let mut exprs: Vec<(Arc<dyn PhysicalExpr>, String)> = Vec::new();
+    for (idx, field) in schema.fields().iter().enumerate() {
+        let column: Arc<dyn PhysicalExpr> = Arc::new(Column::new(field.name(), idx));
+        if idx < num_grouping {
+            exprs.push((column, field.name().clone()));
+            continue;
+        }
+        let DataType::Struct(state_fields) = field.data_type() else {
+            return internal_err!(
+                "Expected a struct of aggregate state in column {idx}, got {}",
+                field.data_type()
+            );
+        };
+        for (ordinal, state_field) in state_fields.iter().enumerate() {
+            exprs.push((
+                Arc::new(GetStructField::new(Arc::clone(&column), ordinal)),
+                state_field.name().clone(),
+            ));
+        }
+    }
+    Ok(Arc::new(ProjectionExec::try_new(exprs, aggregate)?))
+}
+
+/// Accumulator wrapper that redirects update_batch to merge_batch and evaluates to its state.
 struct MergeAsPartialAccumulator {
     inner: Box<dyn Accumulator>,
     state_decoder: PartialMergeStateDecoder,
+    state_fields: Fields,
 }
 
 impl Debug for MergeAsPartialAccumulator {
@@ -229,7 +335,17 @@ impl Accumulator for MergeAsPartialAccumulator {
     }
 
     fn evaluate(&mut self) -> Result<ScalarValue> {
-        self.inner.evaluate()
+        let state = self
+            .inner
+            .state()?
+            .iter()
+            .map(ScalarValue::to_array)
+            .collect::<Result<Vec<_>>>()?;
+        Ok(ScalarValue::Struct(Arc::new(StructArray::try_new(
+            self.state_fields.clone(),
+            state,
+            None,
+        )?)))
     }
 
     fn state(&mut self) -> Result<Vec<ScalarValue>> {
@@ -241,10 +357,12 @@ impl Accumulator for MergeAsPartialAccumulator {
     }
 }
 
-/// GroupsAccumulator wrapper that redirects update_batch to merge_batch.
+/// GroupsAccumulator wrapper that redirects update_batch to merge_batch and evaluates to its
+/// state.
 struct MergeAsPartialGroupsAccumulator {
     inner: Box<dyn GroupsAccumulator>,
     state_decoder: PartialMergeStateDecoder,
+    state_fields: Fields,
 }
 
 impl Debug for MergeAsPartialGroupsAccumulator {
@@ -290,7 +408,12 @@ impl GroupsAccumulator for MergeAsPartialGroupsAccumulator {
     }
 
     fn evaluate(&mut self, emit_to: EmitTo) -> Result<ArrayRef> {
-        self.inner.evaluate(emit_to)
+        let state = self.inner.state(emit_to)?;
+        Ok(Arc::new(StructArray::try_new(
+            self.state_fields.clone(),
+            state,
+            None,
+        )?))
     }
 
     fn state(&mut self, emit_to: EmitTo) -> Result<Vec<ArrayRef>> {
