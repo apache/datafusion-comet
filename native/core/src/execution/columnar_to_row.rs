@@ -43,7 +43,7 @@ use arrow::array::types::{
 use arrow::array::*;
 use arrow::compute::kernels::arity::unary;
 use arrow::compute::{cast_with_options, CastOptions};
-use arrow::datatypes::{ArrowNativeType, DataType, TimeUnit};
+use arrow::datatypes::{ArrowNativeType, DataType, Field, TimeUnit};
 use std::sync::Arc;
 
 /// Maximum digits for decimal that can fit in a long (8 bytes).
@@ -169,6 +169,7 @@ enum TypedArray<'a> {
     Binary(&'a BinaryArray),
     LargeBinary(&'a LargeBinaryArray),
     FixedSizeBinary(&'a FixedSizeBinaryArray),
+    Variant(&'a StructArray, &'a BinaryArray, &'a BinaryArray),
     Struct(
         &'a StructArray,
         arrow::datatypes::Fields,
@@ -182,7 +183,25 @@ enum TypedArray<'a> {
 
 impl<'a> TypedArray<'a> {
     /// Pre-downcast an ArrayRef to a TypedArray.
-    fn from_array(array: &'a ArrayRef) -> CometResult<Self> {
+    fn from_array(array: &'a ArrayRef, field: &Field) -> CometResult<Self> {
+        if field.extension_type_name() == Some("arrow.parquet.variant") {
+            let arr = downcast_array!(array, StructArray)?;
+            let fields = arr.fields();
+            if fields.len() != 2
+                || fields[0].name() != "value"
+                || fields[1].name() != "metadata"
+                || fields.iter().any(|f| f.data_type() != &DataType::Binary)
+            {
+                return Err(CometError::Internal(
+                    "Variant C2R requires Binary children [value, metadata]".to_string(),
+                ));
+            }
+            return Ok(TypedArray::Variant(
+                arr,
+                downcast_array!(arr.column(0), BinaryArray)?,
+                downcast_array!(arr.column(1), BinaryArray)?,
+            ));
+        }
         let actual_type = array.data_type();
         match actual_type {
             DataType::Null => {
@@ -280,6 +299,7 @@ impl<'a> TypedArray<'a> {
                 Binary,
                 LargeBinary,
                 FixedSizeBinary,
+                Variant,
                 Struct,
                 List,
                 LargeList,
@@ -344,6 +364,27 @@ impl<'a> TypedArray<'a> {
             TypedArray::Binary(arr) => Ok(write_bytes_padded(buffer, arr.value(row_idx))),
             TypedArray::LargeBinary(arr) => Ok(write_bytes_padded(buffer, arr.value(row_idx))),
             TypedArray::FixedSizeBinary(arr) => Ok(write_bytes_padded(buffer, arr.value(row_idx))),
+            TypedArray::Variant(_, values, metadata) => {
+                // A null parent is handled by write_row_typed before reaching this writer.
+                if values.is_null(row_idx) || metadata.is_null(row_idx) {
+                    return Err(CometError::Internal(
+                        "Non-null Variant C2R value has a null value or metadata child".to_string(),
+                    ));
+                }
+                let value = values.value(row_idx);
+                let metadata = metadata.value(row_idx);
+                let total_size = 4usize
+                    .checked_add(value.len())
+                    .and_then(|size| size.checked_add(metadata.len()))
+                    .filter(|size| *size <= i32::MAX as usize)
+                    .ok_or_else(|| CometError::Internal("Variant C2R value is too large".into()))?;
+                // Spark UnsafeWriter stores a value length followed by the two byte arrays.
+                buffer.extend_from_slice(&(value.len() as i32).to_le_bytes());
+                buffer.extend_from_slice(value);
+                buffer.extend_from_slice(metadata);
+                buffer.resize(buffer.len() + round_up_to_8(total_size) - total_size, 0);
+                Ok(total_size)
+            }
             TypedArray::Decimal128(arr, precision) if *precision > MAX_LONG_DIGITS => {
                 let bytes = i128_to_spark_decimal_bytes(arr.value(row_idx));
                 Ok(write_bytes_padded(buffer, &bytes))
@@ -857,8 +898,8 @@ fn is_fixed_width(data_type: &DataType) -> bool {
 
 /// Check if all columns in a schema are fixed-width.
 #[inline]
-fn is_all_fixed_width(schema: &[DataType]) -> bool {
-    schema.iter().all(is_fixed_width)
+fn is_all_fixed_width(schema: &[Field]) -> bool {
+    schema.iter().all(|field| is_fixed_width(field.data_type()))
 }
 
 /// Context for columnar to row conversion.
@@ -867,8 +908,8 @@ fn is_all_fixed_width(schema: &[DataType]) -> bool {
 /// converting Arrow columnar data to Spark UnsafeRow format. The buffer is
 /// reused across multiple `convert` calls to minimize allocations.
 pub struct ColumnarToRowContext {
-    /// The Arrow data types for each column.
-    schema: Vec<DataType>,
+    /// Arrow fields retain logical extension identity, including Variant's Struct storage.
+    schema: Vec<Field>,
     /// The output buffer containing converted rows.
     /// Layout: [Row0][Row1]...[RowN] where each row is an UnsafeRow.
     buffer: Vec<u8>,
@@ -891,9 +932,9 @@ impl ColumnarToRowContext {
     ///
     /// # Arguments
     ///
-    /// * `schema` - The Arrow data types for each column.
+    /// * `schema` - The Arrow fields for each column, including extension metadata.
     /// * `batch_size` - Maximum number of rows expected per batch (for pre-allocation).
-    pub fn new(schema: Vec<DataType>, batch_size: usize) -> Self {
+    pub fn new(schema: Vec<Field>, batch_size: usize) -> Self {
         let num_fields = schema.len();
         let null_bitset_width = Self::calculate_bitset_width(num_fields);
         let fixed_width_size = null_bitset_width + num_fields * 8;
@@ -958,6 +999,11 @@ impl ColumnarToRowContext {
                 arrays.len()
             )));
         }
+        if arrays.iter().any(|array| array.len() < num_rows) {
+            return Err(CometError::Internal(
+                "Columnar to row batch has fewer values than its row count".to_string(),
+            ));
+        }
 
         // Unpack any dictionary arrays to their underlying value type
         // This is needed because Parquet may return dictionary-encoded arrays
@@ -965,7 +1011,14 @@ impl ColumnarToRowContext {
         let arrays: Vec<ArrayRef> = arrays
             .iter()
             .zip(self.schema.iter())
-            .map(|(arr, schema_type)| Self::maybe_cast_to_schema_type(arr, schema_type))
+            .map(|(arr, field)| {
+                if field.extension_type_name() == Some("arrow.parquet.variant") {
+                    // Validate Variant storage before writing; a cast could hide malformed children.
+                    Ok(Arc::clone(arr))
+                } else {
+                    Self::maybe_cast_to_schema_type(arr, field.data_type())
+                }
+            })
             .collect::<CometResult<Vec<_>>>()?;
         let arrays = arrays.as_slice();
 
@@ -986,7 +1039,8 @@ impl ColumnarToRowContext {
         // Pre-downcast all arrays to avoid type dispatch in inner loop
         let typed_arrays: Vec<TypedArray> = arrays
             .iter()
-            .map(TypedArray::from_array)
+            .zip(&self.schema)
+            .map(|(array, field)| TypedArray::from_array(array, field))
             .collect::<CometResult<Vec<_>>>()?;
 
         // Pre-compute variable-length column indices (once per batch, not per row)
@@ -1120,7 +1174,7 @@ impl ColumnarToRowContext {
             // Write values for all rows in this column
             self.write_column_fixed_width(
                 array,
-                &self.schema[col_idx].clone(),
+                &self.schema[col_idx].data_type().clone(),
                 col_idx,
                 field_offset_in_row,
                 row_size,
@@ -1346,7 +1400,7 @@ impl ColumnarToRowContext {
     }
 
     /// Returns the schema.
-    pub fn schema(&self) -> &[DataType] {
+    pub fn schema(&self) -> &[Field] {
         &self.schema
     }
 }
@@ -1916,6 +1970,166 @@ mod tests {
     use super::*;
     use std::sync::Arc;
 
+    fn context_from_types(schema: Vec<DataType>, batch_size: usize) -> ColumnarToRowContext {
+        ColumnarToRowContext::new(
+            schema
+                .into_iter()
+                .map(|dt| Field::new("", dt, true))
+                .collect(),
+            batch_size,
+        )
+    }
+
+    fn variant_field() -> Field {
+        Field::new(
+            "v",
+            DataType::Struct(
+                vec![
+                    Field::new("value", DataType::Binary, true),
+                    Field::new("metadata", DataType::Binary, true),
+                ]
+                .into(),
+            ),
+            true,
+        )
+        .with_extension_type(parquet::variant::VariantType)
+    }
+
+    #[test]
+    fn variant_rows_preserve_bytes_nulls_padding_and_siblings() {
+        let field = variant_field();
+        let DataType::Struct(fields) = field.data_type() else {
+            unreachable!()
+        };
+        let value = [12, 42];
+        let metadata = [1, 0, 0];
+        let variant: ArrayRef = Arc::new(StructArray::new(
+            fields.clone(),
+            vec![
+                Arc::new(BinaryArray::from(vec![
+                    Some(value.as_slice()),
+                    Some(&[0]),
+                    None,
+                ])),
+                Arc::new(BinaryArray::from(vec![
+                    Some(metadata.as_slice()),
+                    Some(metadata.as_slice()),
+                    None,
+                ])),
+            ],
+            Some(arrow::buffer::NullBuffer::from(vec![true, true, false])),
+        ));
+        let mut ctx = ColumnarToRowContext::new(
+            vec![
+                Field::new("before", DataType::Int32, false),
+                field.clone(),
+                Field::new("after", DataType::Utf8, false),
+            ],
+            3,
+        );
+        let arrays = vec![
+            Arc::new(Int32Array::from(vec![7, 8, 9])) as ArrayRef,
+            Arc::clone(&variant),
+            Arc::new(StringArray::from(vec!["tail", "next", "last"])),
+        ];
+        for _ in 0..2 {
+            ctx.convert(&arrays, 3).unwrap();
+            for (i, value) in [Some(value.as_slice()), Some(&[0]), None]
+                .iter()
+                .enumerate()
+            {
+                let start = ctx.offsets[i] as usize;
+                let row = &ctx.buffer[start..start + ctx.lengths[i] as usize];
+                assert_eq!(
+                    i64::from_le_bytes(row[8..16].try_into().unwrap()),
+                    7 + i as i64
+                );
+                if let Some(value) = value {
+                    assert_eq!(row[0], 0);
+                    let slot = u64::from_le_bytes(row[16..24].try_into().unwrap());
+                    let offset = (slot >> 32) as usize;
+                    let size = slot as u32 as usize;
+                    assert_eq!(offset, 32);
+                    assert_eq!(size, 4 + value.len() + metadata.len());
+                    assert_eq!(
+                        &row[offset..offset + 4],
+                        &(value.len() as i32).to_le_bytes()
+                    );
+                    assert_eq!(&row[offset + 4..offset + 4 + value.len()], *value);
+                    assert_eq!(&row[offset + 4 + value.len()..offset + size], &metadata);
+                    assert!(row[offset + size..offset + round_up_to_8(size)]
+                        .iter()
+                        .all(|b| *b == 0));
+                } else {
+                    assert_eq!(row[0], 2);
+                }
+                let tail_slot = u64::from_le_bytes(row[24..32].try_into().unwrap());
+                let tail_offset = (tail_slot >> 32) as usize;
+                assert_eq!(
+                    &row[tail_offset..tail_offset + 4],
+                    [b"tail", b"next", b"last"][i]
+                );
+            }
+            ctx.convert(&arrays.iter().map(|a| a.slice(0, 0)).collect::<Vec<_>>(), 0)
+                .unwrap();
+            assert!(ctx.buffer.is_empty());
+            assert!(ctx.offsets.is_empty());
+        }
+
+        // The identical physical Struct without extension metadata keeps Struct row encoding.
+        let mut plain = context_from_types(vec![field.data_type().clone()], 1);
+        plain.convert(&[variant], 1).unwrap();
+        let slot = u64::from_le_bytes(plain.buffer[8..16].try_into().unwrap());
+        assert_eq!(slot as u32, 40);
+        assert_eq!(&plain.buffer[16..24], &[0; 8]);
+    }
+
+    #[test]
+    fn variant_rejects_invalid_children_but_masks_parent_nulls() {
+        let field = variant_field();
+        let DataType::Struct(fields) = field.data_type() else {
+            unreachable!()
+        };
+        for (value, metadata) in [
+            (None, Some(&[1, 0, 0][..])),
+            (Some(&[0][..]), None),
+            (None, None),
+        ] {
+            let children: Vec<ArrayRef> = vec![
+                Arc::new(BinaryArray::from(vec![value])),
+                Arc::new(BinaryArray::from(vec![metadata])),
+            ];
+            let mut ctx = ColumnarToRowContext::new(vec![field.clone()], 1);
+            let non_null =
+                Arc::new(StructArray::new(fields.clone(), children.clone(), None)) as ArrayRef;
+            assert!(ctx
+                .convert(&[non_null], 1)
+                .unwrap_err()
+                .to_string()
+                .contains("null value or metadata child"));
+            let null = Arc::new(StructArray::new(
+                fields.clone(),
+                children,
+                Some(arrow::buffer::NullBuffer::from(vec![false])),
+            )) as ArrayRef;
+            ctx.convert(&[null], 1).unwrap();
+            assert_eq!(ctx.buffer[0], 1);
+        }
+        let mut ctx = ColumnarToRowContext::new(vec![field], 1);
+        let invalid: ArrayRef = Arc::new(StructArray::new_empty_fields(1, None));
+        assert!(ctx
+            .convert(&[invalid], 1)
+            .unwrap_err()
+            .to_string()
+            .contains("requires Binary children"));
+        let too_short: ArrayRef = Arc::new(NullArray::new(0));
+        assert!(ctx
+            .convert(&[too_short], 1)
+            .unwrap_err()
+            .to_string()
+            .contains("fewer values"));
+    }
+
     #[test]
     fn test_bitset_width_calculation() {
         assert_eq!(ColumnarToRowContext::calculate_bitset_width(0), 0);
@@ -1938,7 +2152,7 @@ mod tests {
     #[test]
     fn test_convert_int_array() {
         let schema = vec![DataType::Int32];
-        let mut ctx = ColumnarToRowContext::new(schema, 100);
+        let mut ctx = context_from_types(schema, 100);
 
         let array: ArrayRef = Arc::new(Int32Array::from(vec![Some(1), Some(2), None, Some(4)]));
         let arrays = vec![array];
@@ -1958,7 +2172,7 @@ mod tests {
     #[test]
     fn test_convert_multiple_columns() {
         let schema = vec![DataType::Int32, DataType::Int64, DataType::Float64];
-        let mut ctx = ColumnarToRowContext::new(schema, 100);
+        let mut ctx = context_from_types(schema, 100);
 
         let array1: ArrayRef = Arc::new(Int32Array::from(vec![1, 2, 3]));
         let array2: ArrayRef = Arc::new(Int64Array::from(vec![100i64, 200, 300]));
@@ -1981,7 +2195,7 @@ mod tests {
     fn test_fixed_width_fast_path() {
         // Test that the fixed-width fast path produces correct results
         let schema = vec![DataType::Int32, DataType::Int64, DataType::Float64];
-        let mut ctx = ColumnarToRowContext::new(schema.clone(), 100);
+        let mut ctx = context_from_types(schema.clone(), 100);
 
         // Verify that the context detects this as all fixed-width
         assert!(
@@ -2040,7 +2254,7 @@ mod tests {
     fn test_mixed_schema_uses_general_path() {
         // Test that schemas with variable-length types use the general path
         let schema = vec![DataType::Int32, DataType::Utf8];
-        let ctx = ColumnarToRowContext::new(schema, 100);
+        let ctx = context_from_types(schema, 100);
 
         // Should NOT be detected as all fixed-width
         assert!(
@@ -2052,7 +2266,7 @@ mod tests {
     #[test]
     fn test_convert_string_array() {
         let schema = vec![DataType::Utf8];
-        let mut ctx = ColumnarToRowContext::new(schema, 100);
+        let mut ctx = context_from_types(schema, 100);
 
         let array: ArrayRef = Arc::new(StringArray::from(vec!["hello", "world"]));
         let arrays = vec![array];
@@ -2489,7 +2703,7 @@ mod tests {
     fn test_convert_fixed_size_binary_array() {
         // FixedSizeBinary(3) - each value is exactly 3 bytes
         let schema = vec![DataType::FixedSizeBinary(3)];
-        let mut ctx = ColumnarToRowContext::new(schema, 100);
+        let mut ctx = context_from_types(schema, 100);
 
         let array: ArrayRef = Arc::new(
             FixedSizeBinaryArray::try_from(vec![
@@ -2547,7 +2761,7 @@ mod tests {
 
         // Schema expects Decimal128(5, 2) - not a dictionary type
         let schema = vec![DataType::Decimal128(5, 2)];
-        let mut ctx = ColumnarToRowContext::new(schema, 100);
+        let mut ctx = context_from_types(schema, 100);
 
         let arrays = vec![dict_array];
         let (ptr, offsets, lengths) = ctx.convert(&arrays, 6).unwrap();
@@ -2580,7 +2794,7 @@ mod tests {
         let int_array: ArrayRef = Arc::new(Int32Array::from(vec![Some(-1i32), None, Some(-3)]));
 
         let schema = vec![DataType::Decimal128(5, 2)];
-        let mut ctx = ColumnarToRowContext::new(schema, 100);
+        let mut ctx = context_from_types(schema, 100);
 
         let arrays = vec![int_array];
         let (ptr, offsets, lengths) = ctx.convert(&arrays, 3).unwrap();
@@ -2627,7 +2841,7 @@ mod tests {
         let sliced: ArrayRef = Arc::new(full.slice(2, 3));
 
         let schema = vec![DataType::Decimal128(5, 2)];
-        let mut ctx = ColumnarToRowContext::new(schema, 100);
+        let mut ctx = context_from_types(schema, 100);
         let arrays = vec![sliced];
         let (ptr, offsets, lengths) = ctx.convert(&arrays, 3).unwrap();
 
@@ -2658,7 +2872,7 @@ mod tests {
         let int_array: ArrayRef = Arc::new(Int64Array::from(vec![Some(-100i64), None, Some(-300)]));
 
         let schema = vec![DataType::Decimal128(10, 2)];
-        let mut ctx = ColumnarToRowContext::new(schema, 100);
+        let mut ctx = context_from_types(schema, 100);
 
         let arrays = vec![int_array];
         let (ptr, offsets, lengths) = ctx.convert(&arrays, 3).unwrap();
@@ -2700,7 +2914,7 @@ mod tests {
         let sliced: ArrayRef = Arc::new(full.slice(2, 3));
 
         let schema = vec![DataType::Decimal128(10, 2)];
-        let mut ctx = ColumnarToRowContext::new(schema, 100);
+        let mut ctx = context_from_types(schema, 100);
         let arrays = vec![sliced];
         let (ptr, offsets, lengths) = ctx.convert(&arrays, 3).unwrap();
 

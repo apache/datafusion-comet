@@ -50,7 +50,7 @@ class NativeColumnarToRowConverter(schema: StructType, batchSize: Int) extends A
   private val nativeUtil = new NativeUtil()
 
   // serializeDataType is broader than native C2R support. Production construction is gated by
-  // CometNativeColumnarToRowExec.supportsSchema, which recursively rejects VariantType.
+  // CometNativeColumnarToRowExec.supportsSchema, which rejects nested VariantType.
   private val serializedSchema: Array[Array[Byte]] = schema.fields.map { field =>
     QueryPlanSerde.serializeDataType(field.dataType) match {
       case Some(dataType) => dataType.toByteArray
