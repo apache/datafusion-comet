@@ -101,6 +101,47 @@ class UtilsSuite extends CometTestBase {
     assert(sliced.map(_.size) == fresh.map(_.size))
   }
 
+  test("decodeBatches reads a stream larger than one read piece") {
+    // The decoder reads its stream in pieces of up to 64 KiB, so this stream takes many reads.
+    val values = (0 until 20000).map(i => if (i % 11 == 0) null else s"value-$i")
+    val vector = strings(values)
+    val batch = new ColumnarBatch(
+      Array[ColumnVector](CometVector.getVector(vector, new CDataDictionaryProvider)),
+      values.length)
+    val (_, buf) =
+      try Utils.serializeBatches(Iterator(batch)).next()
+      finally batch.close()
+    assert(buf.size > 64 * 1024)
+
+    val it = Utils.decodeBatches(buf, "test")
+    val out = it.next()
+    val got = (0 until out.numRows()).map { i =>
+      if (out.column(0).isNullAt(i)) null else out.column(0).getUTF8String(i).toString
+    }
+    assert(!it.hasNext)
+    assert(got == values)
+  }
+
+  test("decodeBatches stops on an interrupted thread") {
+    val vector = strings(Seq("a", "b"))
+    val batch = new ColumnarBatch(
+      Array[ColumnVector](CometVector.getVector(vector, new CDataDictionaryProvider)),
+      2)
+    val (_, buf) =
+      try Utils.serializeBatches(Iterator(batch)).next()
+      finally batch.close()
+    val before = CometArrowAllocator.getAllocatedMemory
+    Thread.currentThread().interrupt()
+    try {
+      intercept[ClosedByInterruptException] {
+        Utils.decodeBatches(buf, "test")
+      }
+    } finally {
+      Thread.interrupted()
+    }
+    assert(CometArrowAllocator.getAllocatedMemory == before)
+  }
+
   test("serializeBatches closes the slice it writes when the write fails") {
     // A cancelled broadcast interrupts its task, so the next write to the interruptible channel
     // serializeBatches writes through fails. The slice holds its own references on the batch's

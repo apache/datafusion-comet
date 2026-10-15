@@ -212,7 +212,7 @@ case class CometBroadcastExchangeExec(
   override protected def doExecuteColumnar(): RDD[ColumnarBatch] = {
     val broadcasted = executeBroadcast[Array[ChunkedByteBuffer]]()
 
-    new CometBatchRDD(sparkContext, getNumPartitions(), broadcasted)
+    new CometBatchRDD(sparkContext, getNumPartitions(), broadcasted, shareDecoded)
   }
 
   // After https://issues.apache.org/jira/browse/SPARK-48195, Spark plan will cache created RDD.
@@ -224,8 +224,11 @@ case class CometBroadcastExchangeExec(
     }
 
     val broadcasted = executeBroadcast[Array[ChunkedByteBuffer]]()
-    new CometBatchRDD(sparkContext, numPartitions, broadcasted)
+    new CometBatchRDD(sparkContext, numPartitions, broadcasted, shareDecoded)
   }
+
+  private def shareDecoded: Boolean =
+    CometConf.COMET_EXEC_BROADCAST_SHARE_DECODED_ENABLED.get(conf)
 
   override protected[sql] def doExecuteBroadcast[T](): broadcast.Broadcast[T] = {
     try {
@@ -286,11 +289,15 @@ object CometBroadcastExchangeExec extends CometSink[BroadcastExchangeExec] {
  *   number of partitions
  * @param value
  *   the broadcasted batches which are serialized into an array of [[ChunkedByteBuffer]]s
+ * @param shareDecoded
+ *   whether the tasks of an executor that read the broadcast at the same time share one decoded
+ *   copy of it, through [[DecodedBroadcastCache]]
  */
 class CometBatchRDD(
     sc: SparkContext,
     val numPartitions: Int,
-    value: broadcast.Broadcast[Array[ChunkedByteBuffer]])
+    value: broadcast.Broadcast[Array[ChunkedByteBuffer]],
+    shareDecoded: Boolean)
     extends RDD[ColumnarBatch](sc, Nil) {
 
   override def getPartitions: Array[Partition] = (0 until numPartitions).toArray.map { i =>
@@ -299,8 +306,12 @@ class CometBatchRDD(
 
   override def compute(split: Partition, context: TaskContext): Iterator[ColumnarBatch] = {
     val partition = split.asInstanceOf[CometBatchPartition]
-    partition.value.value.iterator
-      .flatMap(Utils.decodeBatches(_, this.getClass.getSimpleName))
+    val source = this.getClass.getSimpleName
+    if (shareDecoded && context != null) {
+      DecodedBroadcastCache.shared.batches(partition.value.value, context, source)
+    } else {
+      partition.value.value.iterator.flatMap(Utils.decodeBatches(_, source))
+    }
   }
 }
 
