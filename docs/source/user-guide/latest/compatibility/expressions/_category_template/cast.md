@@ -195,7 +195,9 @@ The following casts are exceptions to these rules:
   string format.
 
 In Try mode, a cast between maps fails with an error when a key cannot be cast, where Spark returns
-a result ([#5995](https://github.com/apache/datafusion-comet/issues/5995)).
+a result ([#5995](https://github.com/apache/datafusion-comet/issues/5995)). This only affects key
+casts that Spark accepts under `TRY_CAST`, such as narrowing `BIGINT` to `INT`. Spark rejects a
+`STRING` key cast at analysis.
 
 ## Legacy Mode
 
