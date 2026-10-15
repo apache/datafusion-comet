@@ -225,8 +225,10 @@ impl RootResolution {
 
 /// Resolve every root file column against the requested root fields. Raises Spark's
 /// `_LEGACY_ERROR_TEMP_2094` "Found duplicate field(s)" when an id-bearing logical field would
-/// resolve to more than one physical field. That check covers every logical field, while an
-/// ambiguous name fails only for a referenced column (see `check_duplicate_columns`).
+/// resolve to more than one physical field. That check covers every logical field, which is the
+/// whole data schema rather than the projection, so it also fails a read that never references
+/// the field, where Spark reads the file (#7006). An ambiguous name fails only for a referenced
+/// column (see `check_duplicate_columns`).
 fn resolve_root_fields(resolver: &FieldResolver) -> DataFusionResult<Vec<RootResolution>> {
     let mut resolutions = vec![RootResolution::Unchanged; resolver.file_fields().len()];
     for requested in 0..resolver.requested_fields().len() {
