@@ -590,8 +590,9 @@ dev/local-ci.sh<span class="w"> </span>iceberg<span class="w"> </span><span clas
 are still the reference, and are what you want when updating a diff.</p>
 <section id="install-comet">
 <h2>1. Install Comet<a class="headerlink" href="#install-comet" title="Link to this heading">#</a></h2>
-<p>Run <code class="docutils literal notranslate"><span class="pre">make</span> <span class="pre">release</span></code> in Comet to install the Comet JAR into the local Maven repository, specifying the Spark version.</p>
-<div class="highlight-shell notranslate"><div class="highlight"><pre><span></span><span class="nv">PROFILES</span><span class="o">=</span><span class="s2">"-Pspark-4.1"</span><span class="w"> </span>make<span class="w"> </span>release
+<p>Run <code class="docutils literal notranslate"><span class="pre">make</span> <span class="pre">release</span></code> in Comet to install the Comet JAR into the local Maven repository, specifying the Spark
+and Scala versions the Iceberg tests will run against. The example below matches step 3.</p>
+<div class="highlight-shell notranslate"><div class="highlight"><pre><span></span><span class="nv">PROFILES</span><span class="o">=</span><span class="s2">"-Pspark-3.5 -Pscala-2.13"</span><span class="w"> </span>make<span class="w"> </span>release
 </pre></div>
 </div>
 </section>
@@ -654,12 +655,12 @@ diff must be generated against its own tag.</p>
 </section>
 <section id="running-tests-in-ci">
 <h2>Running Tests in CI<a class="headerlink" href="#running-tests-in-ci" title="Link to this heading">#</a></h2>
-<p>The <code class="docutils literal notranslate"><span class="pre">iceberg_spark_test_&lt;version&gt;.yml</span></code> workflows apply these diffs and run the three Gradle targets above
-against each Iceberg version, all with Java 17. Iceberg 1.8.1 runs against Spark 3.4.3; Iceberg 1.9.1 and 1.10.0
-run against Spark 3.5.9; Iceberg 1.11.0 runs against Spark 4.1.3. Iceberg 1.11.0 runs in the
-merge queue; 1.8.1, 1.9.1 and 1.10.0 run once a night against <code class="docutils literal notranslate"><span class="pre">main</span></code>. All four run earlier on a
-pull request labeled <code class="docutils literal notranslate"><span class="pre">run-iceberg-tests</span></code>; none runs on an unlabeled pull request. All caller
-workflows delegate to <code class="docutils literal notranslate"><span class="pre">iceberg_spark_test_reusable.yml</span></code>, which holds the build and test job logic. See
+<p>The <code class="docutils literal notranslate"><span class="pre">iceberg_1_8</span></code>, <code class="docutils literal notranslate"><span class="pre">iceberg_1_9</span></code>, <code class="docutils literal notranslate"><span class="pre">iceberg_1_10</span></code> and <code class="docutils literal notranslate"><span class="pre">iceberg_1_11</span></code> jobs in <code class="docutils literal notranslate"><span class="pre">ci.yml</span></code> apply these diffs and
+run the three Gradle targets above against each Iceberg version, all with Java 17. Iceberg 1.8.1 runs against
+Spark 3.4.3; Iceberg 1.9.1 and 1.10.0 run against Spark 3.5.9; Iceberg 1.11.0 runs against Spark 4.1.3.
+Iceberg 1.11.0 runs in the merge queue; 1.8.1, 1.9.1 and 1.10.0 run once a night against <code class="docutils literal notranslate"><span class="pre">main</span></code>. All four
+run earlier on a pull request labeled <code class="docutils literal notranslate"><span class="pre">run-iceberg-tests</span></code>; none runs on an unlabeled pull request. Each job
+calls <code class="docutils literal notranslate"><span class="pre">iceberg_spark_test_reusable.yml</span></code>, which holds the build and test job logic. See
 <a class="reference external" href="https://github.com/apache/datafusion-comet/blob/main/.github/workflows/README.md">.github/workflows/README.md</a>
 for how the pull-request, merge-queue and nightly tiers differ.</p>
 <p>The core Spark test target runs in four independent workers. The workflow passes

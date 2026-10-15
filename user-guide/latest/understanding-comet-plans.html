@@ -1164,7 +1164,9 @@ by role. Names match what is shown in the plan output.</p>
 <section id="native-rust-operators">
 <h3>Native Rust Operators<a class="headerlink" href="#native-rust-operators" title="Link to this heading">#</a></h3>
 <p>These are implemented in Rust and run in DataFusion. When several appear
-consecutively in a plan, they execute as a single fused block.</p>
+consecutively in a plan, they execute as a single fused block. The write operators
+(<code class="docutils literal notranslate"><span class="pre">CometWriteFiles</span></code>, <code class="docutils literal notranslate"><span class="pre">CometNativeWrite</span></code> and <code class="docutils literal notranslate"><span class="pre">CometIcebergWrite</span></code>) are the exception: each runs as its
+own native plan over its child’s output.</p>
 <div class="pst-scrollable-table-container"><table class="table">
 <thead>
 <tr class="row-odd"><th class="head"><p>Node</p></th>
@@ -1230,7 +1232,7 @@ consecutively in a plan, they execute as a single fused block.</p>
 <td><p><code class="docutils literal notranslate"><span class="pre">DataWritingCommandExec</span></code> (Spark 3.x, experimental native Parquet writes)</p></td>
 </tr>
 <tr class="row-odd"><td><p><code class="docutils literal notranslate"><span class="pre">CometIcebergWrite</span></code></p></td>
-<td><p><code class="docutils literal notranslate"><span class="pre">IcebergWrite</span></code> (native Iceberg data-file writes)</p></td>
+<td><p><code class="docutils literal notranslate"><span class="pre">IcebergWrite</span></code> (native Iceberg data-file writes, opt-in)</p></td>
 </tr>
 </tbody>
 </table>

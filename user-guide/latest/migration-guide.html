@@ -937,10 +937,11 @@ S3 or GCS, and how the native writer draws on Comet’s off-heap memory pool.</p
 took effect only together with <code class="docutils literal notranslate"><span class="pre">spark.comet.write.iceberg.splitOperator.enabled</span></code>. Comet now ignores
 the old name, so a deployment that turned native writes on that way must set
 <code class="docutils literal notranslate"><span class="pre">spark.comet.write.iceberg.enabled=true</span></code> to keep them.
-<code class="docutils literal notranslate"><span class="pre">spark.comet.write.iceberg.splitOperator.enabled</span></code> is now a testing setting. Comet 1.1.0 documented
-it as the switch for the split plan, and a deployment that still sets it to <code class="docutils literal notranslate"><span class="pre">true</span></code> keeps the split
-plan, with iceberg-java writing the data files, and on Spark 3.5+ it now also plans merge-on-read
-writes as the split plan. Unset it to plan Spark’s own operator.</p>
+<code class="docutils literal notranslate"><span class="pre">spark.comet.write.iceberg.splitOperator.enabled</span></code> is a testing setting, as it was in 1.1.0, but
+Comet 1.1.0’s Iceberg Writes guide documented it as the switch for the split plan. A deployment
+that still sets it to <code class="docutils literal notranslate"><span class="pre">true</span></code> keeps the split plan, with iceberg-java writing the data files, and
+on Spark 3.5+ it now also plans merge-on-read writes as the split plan. Unset it to plan Spark’s
+own operator.</p>
 </section>
 </section>
 <section id="upgrading-to-comet-1-1-0">

@@ -865,6 +865,8 @@ cast inside the Comet pipeline.</p></li>
 </ul>
 <p>Incompatible and unsupported casts fall back to Spark only when Comet’s codegen dispatcher cannot handle them (for
 example, casts involving <code class="docutils literal notranslate"><span class="pre">VariantType</span></code>) or when <code class="docutils literal notranslate"><span class="pre">spark.comet.exec.scalaUDF.codegen.enabled=false</span></code>.</p>
+<p>The tables at the end of this page cover casts between primitive types. See <a class="reference internal" href="#complex-types">Complex Types</a> for
+casts involving arrays, structs, and maps.</p>
 <section id="ansi-mode-support">
 <h2>ANSI Mode Support<a class="headerlink" href="#ansi-mode-support" title="Link to this heading">#</a></h2>
 <p>Enabling ANSI mode does not by itself make a cast fall back to Spark or require
@@ -951,7 +953,8 @@ is the same regardless of the session timezone setting.</p>
 types (Boolean, Byte, Short, Float, Double, Decimal) always return <code class="docutils literal notranslate"><span class="pre">NULL</span></code>. Comet handles
 this by short-circuiting to a null literal during query planning, so no native execution
 is needed. In ANSI and Try modes, Spark rejects these casts at analysis time (before
-execution reaches Comet).</p>
+execution reaches Comet). The short-circuit applies only to a top-level cast. See
+<a class="reference internal" href="#complex-types">Complex Types</a> for <code class="docutils literal notranslate"><span class="pre">DATE</span></code> values inside structs and maps.</p>
 </section>
 <section id="string-to-timestamp">
 <h2>String to Timestamp<a class="headerlink" href="#string-to-timestamp" title="Link to this heading">#</a></h2>
@@ -1027,6 +1030,65 @@ code-generated cast instead of the native one.</p>
 Spark’s behavior of using Java <code class="docutils literal notranslate"><span class="pre">BigDecimal.toString()</span></code> semantics, which produces scientific
 notation (e.g. a value of 12300 stored as <code class="docutils literal notranslate"><span class="pre">Decimal(7,-2)</span></code> with unscaled value 123 is rendered
 as <code class="docutils literal notranslate"><span class="pre">&quot;1.23E+4&quot;</span></code>).</p>
+</section>
+<section id="complex-types">
+<h2>Complex Types<a class="headerlink" href="#complex-types" title="Link to this heading">#</a></h2>
+<p>Comet casts arrays, structs, and maps by casting each element, field, key, and value with the
+rules for primitive types, using the table for the same eval mode. A complex-type cast is
+therefore compatible only when every cast it contains is compatible. For example, casting
+<code class="docutils literal notranslate"><span class="pre">ARRAY&lt;INT&gt;</span></code> to <code class="docutils literal notranslate"><span class="pre">ARRAY&lt;BIGINT&gt;</span></code> has the same support level as casting <code class="docutils literal notranslate"><span class="pre">INT</span></code> to <code class="docutils literal notranslate"><span class="pre">BIGINT</span></code>, and a
+struct cast with one unsupported field cast is unsupported. The rules apply at every level of
+nesting, so casting <code class="docutils literal notranslate"><span class="pre">ARRAY&lt;STRUCT&lt;a:</span> <span class="pre">INT&gt;&gt;</span></code> to <code class="docutils literal notranslate"><span class="pre">ARRAY&lt;STRUCT&lt;a:</span> <span class="pre">BIGINT&gt;&gt;</span></code> also has the same
+support level as casting <code class="docutils literal notranslate"><span class="pre">INT</span></code> to <code class="docutils literal notranslate"><span class="pre">BIGINT</span></code>.</p>
+<div class="pst-scrollable-table-container"><table class="table">
+<thead>
+<tr class="row-odd"><th class="head"><p>From</p></th>
+<th class="head"><p>To</p></th>
+<th class="head"><p>Support level</p></th>
+</tr>
+</thead>
+<tbody>
+<tr class="row-even"><td><p><code class="docutils literal notranslate"><span class="pre">ARRAY&lt;T&gt;</span></code></p></td>
+<td><p><code class="docutils literal notranslate"><span class="pre">ARRAY&lt;U&gt;</span></code></p></td>
+<td><p>Same as <code class="docutils literal notranslate"><span class="pre">T</span></code> to <code class="docutils literal notranslate"><span class="pre">U</span></code></p></td>
+</tr>
+<tr class="row-odd"><td><p><code class="docutils literal notranslate"><span class="pre">ARRAY&lt;T&gt;</span></code></p></td>
+<td><p><code class="docutils literal notranslate"><span class="pre">STRING</span></code></p></td>
+<td><p>Same as <code class="docutils literal notranslate"><span class="pre">T</span></code> to <code class="docutils literal notranslate"><span class="pre">STRING</span></code></p></td>
+</tr>
+<tr class="row-even"><td><p><code class="docutils literal notranslate"><span class="pre">STRUCT</span></code></p></td>
+<td><p><code class="docutils literal notranslate"><span class="pre">STRUCT</span></code></p></td>
+<td><p>Compatible if every field cast is compatible. Fields are matched by position</p></td>
+</tr>
+<tr class="row-odd"><td><p><code class="docutils literal notranslate"><span class="pre">STRUCT</span></code></p></td>
+<td><p><code class="docutils literal notranslate"><span class="pre">STRING</span></code></p></td>
+<td><p>Compatible if the cast from every field to <code class="docutils literal notranslate"><span class="pre">STRING</span></code> is compatible</p></td>
+</tr>
+<tr class="row-even"><td><p><code class="docutils literal notranslate"><span class="pre">MAP&lt;K,</span> <span class="pre">V&gt;</span></code></p></td>
+<td><p><code class="docutils literal notranslate"><span class="pre">MAP&lt;K2,</span> <span class="pre">V2&gt;</span></code></p></td>
+<td><p>Compatible if <code class="docutils literal notranslate"><span class="pre">K</span></code> to <code class="docutils literal notranslate"><span class="pre">K2</span></code> and <code class="docutils literal notranslate"><span class="pre">V</span></code> to <code class="docutils literal notranslate"><span class="pre">V2</span></code> are both compatible</p></td>
+</tr>
+<tr class="row-odd"><td><p><code class="docutils literal notranslate"><span class="pre">MAP&lt;K,</span> <span class="pre">V&gt;</span></code></p></td>
+<td><p><code class="docutils literal notranslate"><span class="pre">STRING</span></code></p></td>
+<td><p>Unsupported</p></td>
+</tr>
+</tbody>
+</table>
+</div>
+<p>The following casts are exceptions to these rules:</p>
+<ul class="simple">
+<li><p><code class="docutils literal notranslate"><span class="pre">ARRAY&lt;DATE&gt;</span></code> can only be cast natively to <code class="docutils literal notranslate"><span class="pre">ARRAY&lt;INT&gt;</span></code> or <code class="docutils literal notranslate"><span class="pre">ARRAY&lt;STRING&gt;</span></code>. Casts to other array
+types are unsupported.</p></li>
+<li><p>A cast from a <code class="docutils literal notranslate"><span class="pre">DATE</span></code> struct field or map value to a numeric or boolean type is unsupported. In
+Legacy mode these casts always return <code class="docutils literal notranslate"><span class="pre">NULL</span></code> (see <a class="reference internal" href="#date-to-numeric-types">Date to Numeric Types</a>).</p></li>
+<li><p>When <code class="docutils literal notranslate"><span class="pre">spark.sql.legacy.castComplexTypesToString.enabled=true</span></code>, casts from arrays, structs, and
+maps to <code class="docutils literal notranslate"><span class="pre">STRING</span></code> are unsupported, because Comet’s native cast only produces Spark’s default
+string format.</p></li>
+</ul>
+<p>In Try mode, a cast between maps fails with an error when a key cannot be cast, where Spark returns
+a result (<a class="reference external" href="https://github.com/apache/datafusion-comet/issues/5995">#5995</a>). This only affects key
+casts that Spark accepts under <code class="docutils literal notranslate"><span class="pre">TRY_CAST</span></code>, such as narrowing <code class="docutils literal notranslate"><span class="pre">BIGINT</span></code> to <code class="docutils literal notranslate"><span class="pre">INT</span></code>. Spark rejects a
+<code class="docutils literal notranslate"><span class="pre">STRING</span></code> key cast at analysis.</p>
 </section>
 <section id="legacy-mode">
 <h2>Legacy Mode<a class="headerlink" href="#legacy-mode" title="Link to this heading">#</a></h2>
@@ -1785,6 +1847,7 @@ as <code class="docutils literal notranslate"><span class="pre">&quot;1.23E+4&qu
 <li class="toc-h2 nav-item toc-entry"><a class="reference internal nav-link" href="#timestampntz-casts">TimestampNTZ Casts</a></li>
 <li class="toc-h2 nav-item toc-entry"><a class="reference internal nav-link" href="#date-to-string">Date to String</a></li>
 <li class="toc-h2 nav-item toc-entry"><a class="reference internal nav-link" href="#decimal-with-negative-scale-to-string">Decimal with Negative Scale to String</a></li>
+<li class="toc-h2 nav-item toc-entry"><a class="reference internal nav-link" href="#complex-types">Complex Types</a></li>
 <li class="toc-h2 nav-item toc-entry"><a class="reference internal nav-link" href="#legacy-mode">Legacy Mode</a></li>
 <li class="toc-h2 nav-item toc-entry"><a class="reference internal nav-link" href="#try-mode">Try Mode</a></li>
 <li class="toc-h2 nav-item toc-entry"><a class="reference internal nav-link" href="#ansi-mode">ANSI Mode</a></li>

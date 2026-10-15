@@ -937,6 +937,7 @@ supports:</p>
 <li><p><code class="docutils literal notranslate"><span class="pre">INSERT</span> <span class="pre">OVERWRITE</span></code>, static and dynamic (<code class="docutils literal notranslate"><span class="pre">OverwriteByExpression</span></code>,
 <code class="docutils literal notranslate"><span class="pre">OverwritePartitionsDynamic</span></code>)</p></li>
 <li><p>Copy-on-write <code class="docutils literal notranslate"><span class="pre">DELETE</span></code> / <code class="docutils literal notranslate"><span class="pre">UPDATE</span></code> / <code class="docutils literal notranslate"><span class="pre">MERGE</span></code> (<code class="docutils literal notranslate"><span class="pre">ReplaceData</span></code>)</p></li>
+<li><p>Iceberg’s <code class="docutils literal notranslate"><span class="pre">rewrite_data_files</span></code> procedure, which writes each rewritten file group as an append</p></li>
 </ul>
 <p>For an unpartitioned copy-on-write <code class="docutils literal notranslate"><span class="pre">MERGE</span></code>, the native Iceberg writer is reachable on Spark
 3.5+ when <code class="docutils literal notranslate"><span class="pre">spark.comet.exec.mergeRows.enabled=true</span></code>. With the flag disabled, the JVM
@@ -972,10 +973,12 @@ is not on;</p></li>
 <code class="docutils literal notranslate"><span class="pre">spark.comet.write.iceberg.splitOperator.enabled</span></code> is on with Spark 3.5+;</p></li>
 <li><p>the statement is CTAS / RTAS on Spark 3.4, where the staged exec writes inline; on Spark
 3.5+ those statements re-plan their inner append, which is intercepted normally;</p></li>
+<li><p>the write is a streaming write (<code class="docutils literal notranslate"><span class="pre">writeStream</span></code> into an Iceberg table);</p></li>
 <li><p>the write requires Spark’s commit coordinator, which Comet’s per-task commit protocol does
 not use;</p></li>
 <li><p>Comet cannot reflect the Iceberg internals needed to build the two-operator plan (for
-example an unrecognised write class or a <code class="docutils literal notranslate"><span class="pre">ReplaceData</span></code> projection it cannot map).</p></li>
+example an unrecognised write class, or an Iceberg 1.5 <code class="docutils literal notranslate"><span class="pre">ReplaceIcebergData</span></code> plan whose fields
+it cannot read).</p></li>
 </ul>
 <p>In every fallback case the write is planned as if Comet were absent; there is no correctness
 trade-off, only no plan change.</p>
@@ -991,10 +994,10 @@ depends on is one the native path reproduces exactly, and additionally only when
 feeding the write is fully Comet-native. For a partitioned table that plan includes the hash
 distribution and local sort Iceberg requests on its partition transforms; those stay native
 because the transforms themselves have native implementations (see
-<a class="reference internal" href="iceberg.html"><span class="std std-doc">Iceberg system functions</span></a>). Ineligible writes run through iceberg-java unchanged,
-with the reason reported as a fall-back reason in Comet’s extended EXPLAIN output. A write that
-runs natively shows <code class="docutils literal notranslate"><span class="pre">CometIcebergWrite</span></code> under <code class="docutils literal notranslate"><span class="pre">IcebergCommit</span></code> in the physical plan; an ineligible
-write keeps <code class="docutils literal notranslate"><span class="pre">IcebergWrite</span></code>.</p>
+<a class="reference internal" href="iceberg.html#iceberg-system-functions"><span class="std std-ref">Iceberg system functions</span></a>). Ineligible writes run through
+iceberg-java unchanged, with the reason reported as a fall-back reason in Comet’s extended EXPLAIN
+output. A write that runs natively shows <code class="docutils literal notranslate"><span class="pre">CometIcebergWrite</span></code> under <code class="docutils literal notranslate"><span class="pre">IcebergCommit</span></code> in the physical
+plan; an ineligible write keeps <code class="docutils literal notranslate"><span class="pre">IcebergWrite</span></code>.</p>
 <p>The native writer reads its input as Arrow batches from a Comet operator, so the write’s input
 must itself run in Comet. A write whose input is a local relation, such as <code class="docutils literal notranslate"><span class="pre">INSERT</span> <span class="pre">...</span> <span class="pre">VALUES</span></code> or
 <code class="docutils literal notranslate"><span class="pre">df.writeTo(...).append()</span></code> on a DataFrame built from local data, is fed by Spark’s
@@ -1145,7 +1148,7 @@ writer produce different data files: distribution and ordering settings shape th
 identically on both paths, WAP / branch / snapshot properties act on the JVM committer,
 <code class="docutils literal notranslate"><span class="pre">write.avro.*</span></code> / <code class="docutils literal notranslate"><span class="pre">write.orc.*</span></code> apply only to formats already excluded, and merge-on-read
 settings route the write through <code class="docutils literal notranslate"><span class="pre">WriteDelta</span></code>, whose task writer remains iceberg-java rather
-than the native writer. Every native eligibility rule is pinned by
+than the native writer. Most native eligibility rules are pinned by
 <code class="docutils literal notranslate"><span class="pre">CometIcebergWriteDetectionSuite</span></code>.</p>
 <p>Manifest <code class="docutils literal notranslate"><span class="pre">DataFile</span></code> metrics are assembled on the JVM before commit: each written file’s
 metrics are re-derived from its parquet footer through the version-matched
@@ -1184,7 +1187,7 @@ partitions needs memory in proportion to them. When the pool cannot grant it, th
 and closes the partitions holding the most memory until what is left fits, and a closed
 partition’s next rows open a new file. The write then finishes with more, smaller files than
 iceberg-java’s would. When every partition keeps getting rows, a task given an eighth of the memory
-its partitions need writes about four files per partition instead of one, however many partitions
+its partitions need writes four to five files per partition instead of one, however many partitions
 it writes to. The <code class="docutils literal notranslate"><span class="pre">files</span> <span class="pre">closed</span> <span class="pre">early</span> <span class="pre">to</span> <span class="pre">free</span> <span class="pre">memory</span></code> metric of its <code class="docutils literal notranslate"><span class="pre">CometIcebergWrite</span></code> operator
 counts the files it closed early. Disabling the fanout writer (<code class="docutils literal notranslate"><span class="pre">write.spark.fanout.enabled=false</span></code>)
 avoids the extra files: Spark then sorts each task’s rows by partition, and the task keeps one file
@@ -1213,8 +1216,9 @@ normal <code class="docutils literal notranslate"><span class="pre">remove_orpha
 <p>When one task fails, the tasks that had already completed leave committed-nothing data files
 too. The committer collects each task’s commit message as that task finishes, so on a job
 failure it aborts with the completed messages and deletes their data files through the table
-<code class="docutils literal notranslate"><span class="pre">FileIO</span></code>. (Iceberg’s own <code class="docutils literal notranslate"><span class="pre">SparkWrite.abort</span></code> skips cleanup unless a commit failed with a
-cleanable error, so on the stock path those files are left for <code class="docutils literal notranslate"><span class="pre">remove_orphan_files</span></code>.) A
+<code class="docutils literal notranslate"><span class="pre">FileIO</span></code>. (From Iceberg 1.6 on, Iceberg’s own <code class="docutils literal notranslate"><span class="pre">SparkWrite.abort</span></code> skips cleanup unless a commit
+failed with a cleanable error, so on the stock path those files are left for
+<code class="docutils literal notranslate"><span class="pre">remove_orphan_files</span></code>. Iceberg 1.5, which the Spark 3.4 profile pins, deletes them.) A
 failure during the driver-side commit itself behaves exactly as on the stock path: the commit
 messages carry genuine <code class="docutils literal notranslate"><span class="pre">SparkWrite$TaskCommit</span></code> objects, so Iceberg’s own <code class="docutils literal notranslate"><span class="pre">SparkWrite.abort</span></code>
 cleanup (which deletes the files listed in the commit messages for cleanable failures) applies
@@ -1224,11 +1228,11 @@ unchanged.</p>
 <h2>Accepted divergences<a class="headerlink" href="#accepted-divergences" title="Link to this heading">#</a></h2>
 <p>Some differences between parquet-mr and the pinned parquet-rs / iceberg-rust are unconditional —
 they apply to every native write and cannot be configured away. Enabling
-<code class="docutils literal notranslate"><span class="pre">spark.comet.write.iceberg.enabled</span></code> accepts them. They fall into three classes with very
+<code class="docutils literal notranslate"><span class="pre">spark.comet.write.iceberg.enabled</span></code> accepts them. They fall into two classes with very
 different blast radius: differences confined to the physical bytes of a data file (cosmetic —
-no reader decision is based on them), differences visible in manifest metadata (these outlive
-the write and feed later readers’ pruning decisions, so each one is analyzed individually
-below), and one operational path-layout caveat.</p>
+no reader decision is based on them), and differences visible in manifest metadata (these
+outlive the write and feed later readers’ pruning decisions, so each one is analyzed
+individually below).</p>
 <section id="physical-file-layout-only-cosmetic">
 <h3>Physical file layout only (cosmetic)<a class="headerlink" href="#physical-file-layout-only-cosmetic" title="Link to this heading">#</a></h3>
 <p>No Iceberg reader bases a planning or correctness decision on these; they change the bytes of
@@ -1237,13 +1241,12 @@ a data file but not what any reader computes from it:</p>
 <li><p>Footer key-value metadata differs: native files carry an <code class="docutils literal notranslate"><span class="pre">ARROW:schema</span></code> entry and no
 <code class="docutils literal notranslate"><span class="pre">iceberg.schema</span></code> entry; iceberg-java files are the opposite.</p></li>
 <li><p>The Parquet root schema element is named <code class="docutils literal notranslate"><span class="pre">arrow_schema</span></code> (iceberg-java: <code class="docutils literal notranslate"><span class="pre">table</span></code>).</p></li>
-<li><p><code class="docutils literal notranslate"><span class="pre">created_by</span></code> identifies parquet-rs, not parquet-mr.</p></li>
-<li><p>No page CRC checksums and no page-header statistics (parquet-mr writes both by default).
-Absent page-header statistics can only make a reader scan more pages, never skip pages it
-should have read; page pruning uses the column index, which the native writer does produce.</p></li>
+<li><p><code class="docutils literal notranslate"><span class="pre">created_by</span></code> reads <code class="docutils literal notranslate"><span class="pre">Apache</span> <span class="pre">Iceberg</span> <span class="pre">&lt;version&gt;</span> <span class="pre">(Comet)</span></code>, where iceberg-java’s files carry
+parquet-mr’s version string.</p></li>
+<li><p>No page CRC checksums: iceberg-java writes one in every page header, and parquet-rs writes none.
+Neither writer puts statistics in page headers; page pruning uses the column index, which both
+writers produce.</p></li>
 <li><p>Dictionary-encoded pages are labeled <code class="docutils literal notranslate"><span class="pre">RLE_DICTIONARY</span></code> (parquet-mr v1 files: <code class="docutils literal notranslate"><span class="pre">PLAIN_DICTIONARY</span></code>).</p></li>
-<li><p>Fixed-length binary columns (<code class="docutils literal notranslate"><span class="pre">uuid</span></code>, <code class="docutils literal notranslate"><span class="pre">fixed</span></code>, decimals with precision &gt; 18) are not
-dictionary-encoded (parquet-mr dictionary-encodes them).</p></li>
 <li><p>The native writer uses parquet-mr’s size accounting to choose dictionary encoding: a column
 whose sampled rows show the dictionary saving no space is written plain, with no dictionary page,
 instead of carrying a dictionary page that every selective read of it would have to fetch
@@ -1261,10 +1264,12 @@ cut-off can be decided the other way. Close to the cut-off both encodings take a
 space. A column that keeps its dictionary and later fills it falls back to plain on both
 writers, but parquet-rs’s dictionary page then holds every entry, where parquet-mr’s holds
 only the entries earlier pages used.</p></li>
-<li><p>Row-group boundaries: parquet-mr flushes by byte size at a record-count check cadence,
-parquet-rs buffers by row count. File naming follows the same cadence-style difference
-(iceberg-java names files <code class="docutils literal notranslate"><span class="pre">&lt;partition&gt;-&lt;task&gt;-&lt;operation&gt;-&lt;count&gt;</span></code>; iceberg-rust uses a
-process-local counter).</p></li>
+<li><p>Row-group boundaries: both writers close a row group by size, but parquet-mr checks its buffered
+size only at record-count checkpoints, while parquet-rs checks its own estimate as it writes each
+batch, so the boundaries land on different rows.</p></li>
+<li><p>File names: both writers name files <code class="docutils literal notranslate"><span class="pre">&lt;partition&gt;-&lt;task</span> <span class="pre">attempt&gt;-&lt;operation&gt;-&lt;count&gt;</span></code>, counting
+per task. The native writer zero-pads the task attempt id and counts from <code class="docutils literal notranslate"><span class="pre">00000</span></code>; iceberg-java
+leaves the id unpadded and counts from <code class="docutils literal notranslate"><span class="pre">00001</span></code>.</p></li>
 <li><p>Partition directory names match iceberg-java 1.8+’s <code class="docutils literal notranslate"><span class="pre">PartitionSpec.partitionToPath</span></code> for every
 partition type the native writer accepts. Identity partitions on <code class="docutils literal notranslate"><span class="pre">float</span></code> and <code class="docutils literal notranslate"><span class="pre">double</span></code> columns
 fall back (see <a class="reference internal" href="#native-parquet-write-eligibility">Native Parquet write eligibility</a>), so
@@ -1302,8 +1307,9 @@ native path: the order the native writer closes its files in depends on the orde
 and on which partitions it closes early to free memory. Clustered and unpartitioned writes append
 in creation order on both paths and are unaffected.</p></li>
 <li><p>Compressed page bytes are implementation-defined: the codec and any explicit level are
-translated, but parquet-rs and parquet-mr embed different encoder implementations and
-defaults (zstd default levels, LZ4 framing), so byte-identical output is not achievable even
+translated, and a <code class="docutils literal notranslate"><span class="pre">zstd</span></code> table with no level is written at parquet-mr’s default level of 3, but
+parquet-rs and parquet-mr embed different encoder implementations (LZ4 framing, for one), and
+their pages and row groups end at different rows, so byte-identical output is not achievable even
 for a default <code class="docutils literal notranslate"><span class="pre">zstd</span></code> table. The decompressed data is identical. For the same reason,
 codec-level side channels (<code class="docutils literal notranslate"><span class="pre">zlib.compress.level</span></code>, <code class="docutils literal notranslate"><span class="pre">compression.brotli.quality</span></code>,
 <code class="docutils literal notranslate"><span class="pre">io.compression.codec.zstd.level</span></code> — the last is present in every Hadoop configuration by
@@ -1335,8 +1341,8 @@ parquet footer), while iceberg-java’s writer-tracked counts do not. Both count
 the same amount, so the derived null ratios and <code class="docutils literal notranslate"><span class="pre">IS</span> <span class="pre">NULL</span></code> / <code class="docutils literal notranslate"><span class="pre">IS</span> <span class="pre">NOT</span> <span class="pre">NULL</span></code> pruning decisions
 are unaffected.</p></li>
 </ul>
-<p>All content not listed above — the logical data, encodings for non-FLBA columns, statistics
-values, and manifest metadata — must match iceberg-java exactly, or the write falls back.</p>
+<p>All content not listed above — the logical data, statistics values, and manifest metadata —
+must match iceberg-java exactly, or the write falls back.</p>
 </section>
 </section>
 </section>

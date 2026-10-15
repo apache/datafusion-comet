@@ -1269,6 +1269,39 @@ metadata and remote totals instead of dividing by zero. Cancellation can leave l
 work outside the final metric snapshot; these counters are not a guarantee of complete network
 traffic accounting after cancellation.</p>
 </section>
+<section id="s3-http-attempts-and-retries">
+<h3>S3 HTTP attempts and retries<a class="headerlink" href="#s3-http-attempts-and-retries" title="Link to this heading">#</a></h3>
+<p>Native Parquet scans of S3 paths also count the GETs observed by the HTTP connector and their
+retries, after range coalescing, without changing the retry policy:</p>
+<div class="pst-scrollable-table-container"><table class="table">
+<thead>
+<tr class="row-odd"><th class="head"><p>Metric suffix</p></th>
+<th class="head"><p>Meaning</p></th>
+</tr>
+</thead>
+<tbody>
+<tr class="row-even"><td><p><code class="docutils literal notranslate"><span class="pre">http_observed_gets</span></code></p></td>
+<td><p>GETs reaching the instrumented HTTP connector.</p></td>
+</tr>
+<tr class="row-odd"><td><p><code class="docutils literal notranslate"><span class="pre">http_retries</span></code></p></td>
+<td><p>Calls after the first attempt for each observed GET.</p></td>
+</tr>
+</tbody>
+</table>
+</div>
+<p>The total number of HTTP attempts is <code class="docutils literal notranslate"><span class="pre">scan_io_http_observed_gets</span></code> plus <code class="docutils literal notranslate"><span class="pre">scan_io_http_retries</span></code>.
+Each scan counts only its own requests, even when scans share an S3 client.
+Retries include HTTP-status retries, interrupted-body resumes, and Comet’s location-scoped
+re-routing after a permission error refreshes the credential locations. A nonzero retry count
+can therefore reflect stale location credentials as well as S3 throttling or network failures.
+HEAD requests, credential requests, bucket-region lookups, and redirects or protocol retries
+handled inside reqwest are not counted.</p>
+<p>Only scans using the native S3 connector fill these counters. GCS, Azure, HTTP(S), local, and
+HDFS scans always report zero, which does not mean their requests were never retried. This also
+applies to S3 paths routed through HDFS by <code class="docutils literal notranslate"><span class="pre">fs.comet.libhdfs.schemes</span></code>. For a native S3 scan,
+<code class="docutils literal notranslate"><span class="pre">scan_io_http_observed_gets</span></code> normally matches <code class="docutils literal notranslate"><span class="pre">scan_io_object_store_get_calls</span></code>, the number of
+GETs after range coalescing.</p>
+</section>
 </section>
 <section id="task-level-input-metrics-on-spark-4-1">
 <h2>Task-Level Input Metrics on Spark 4.1+<a class="headerlink" href="#task-level-input-metrics-on-spark-4-1" title="Link to this heading">#</a></h2>
@@ -1358,6 +1391,7 @@ filesystem or network traffic accounting.</p>
 <li class="toc-h3 nav-item toc-entry"><a class="reference internal nav-link" href="#scanexec">ScanExec</a></li>
 <li class="toc-h3 nav-item toc-entry"><a class="reference internal nav-link" href="#shufflewriterexec">ShuffleWriterExec</a></li>
 <li class="toc-h3 nav-item toc-entry"><a class="reference internal nav-link" href="#native-parquet-scans">Native Parquet scans</a></li>
+<li class="toc-h3 nav-item toc-entry"><a class="reference internal nav-link" href="#s3-http-attempts-and-retries">S3 HTTP attempts and retries</a></li>
 </ul>
 </li>
 <li class="toc-h2 nav-item toc-entry"><a class="reference internal nav-link" href="#task-level-input-metrics-on-spark-4-1">Task-Level Input Metrics on Spark 4.1+</a></li>

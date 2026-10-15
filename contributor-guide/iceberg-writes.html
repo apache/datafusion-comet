@@ -579,7 +579,8 @@ does not repeat those lists; it explains the code that implements them.</p>
 </table>
 </div>
 <p>The flag defaults to <code class="docutils literal notranslate"><span class="pre">false</span></code>, which plans Spark’s own write operator. With it on, a change to the
-split plan reaches every Iceberg write and a change to the native writer reaches every eligible one.
+split plan reaches every append, overwrite and copy-on-write Iceberg write, and a change to the
+native writer reaches every eligible one.
 The testing-only <code class="docutils literal notranslate"><span class="pre">spark.comet.write.iceberg.splitOperator.enabled</span></code> plans the split operator with the
 native writer off, which the suites use to compare the two writers under the same plan. The
 criteria for turning the flag on by default are tracked in
@@ -726,7 +727,8 @@ way. A gate that is more permissive than the native code turns a fallback into a
 <code class="docutils literal notranslate"><span class="pre">scheme_of</span></code> split a location’s scheme differently). Prefer sharing one implementation, or pin the
 pair with a test that feeds both the same inputs.</p></li>
 </ul>
-<p>Every rule is pinned by <code class="docutils literal notranslate"><span class="pre">CometIcebergWriteDetectionSuite</span></code>. Add a case there for any new rule, for
+<p>Most rules are pinned by <code class="docutils literal notranslate"><span class="pre">CometIcebergWriteDetectionSuite</span></code>, and the row lineage rule by
+<code class="docutils literal notranslate"><span class="pre">CometIcebergWriteActionSuite</span></code>. Add a case to the detection suite for any new rule, for
 both the accepted and the declined side. Update the eligibility table in the user guide in the same
 change. Whether each existing restriction is permanent is tracked in
 <a class="reference external" href="https://github.com/apache/datafusion-comet/issues/5643">#5643</a>.</p>
@@ -790,9 +792,9 @@ partition’s Parquet writer properties:</p>
 <li><p><strong>Location generation.</strong> <code class="docutils literal notranslate"><span class="pre">CometLocationGenerator</span></code> (<code class="docutils literal notranslate"><span class="pre">iceberg_partition_path.rs</span></code>) replaces
 iceberg-rust’s <code class="docutils literal notranslate"><span class="pre">DefaultLocationGenerator</span></code> and renders partition directories the way iceberg-java’s
 <code class="docutils literal notranslate"><span class="pre">PartitionSpec.partitionToPath</span></code> does. iceberg-rust’s own rendering differs for several types, and
-panics for pre-1970 <code class="docutils literal notranslate"><span class="pre">timestamptz</span></code> and for dates past <code class="docutils literal notranslate"><span class="pre">chrono</span></code>’s calendar. Float and double values
-use Comet’s Java <code class="docutils literal notranslate"><span class="pre">Double.toString</span></code> renderer (<code class="docutils literal notranslate"><span class="pre">java_float_string</span></code>), shared with
-<code class="docutils literal notranslate"><span class="pre">cast(float</span> <span class="pre">as</span> <span class="pre">string)</span></code>. The partition type is resolved once when the generator is built, because
+panics for dates past <code class="docutils literal notranslate"><span class="pre">chrono</span></code>’s calendar. Float and double values use Comet’s Java
+<code class="docutils literal notranslate"><span class="pre">Double.toString</span></code> renderer (<code class="docutils literal notranslate"><span class="pre">java_float_string</span></code>), shared with <code class="docutils literal notranslate"><span class="pre">cast(float</span> <span class="pre">as</span> <span class="pre">string)</span></code>. The
+partition type is resolved once when the generator is built, because
 <code class="docutils literal notranslate"><span class="pre">LocationGenerator::generate_location</span></code> cannot return an error.</p></li>
 <li><p><strong>Partition values.</strong> <code class="docutils literal notranslate"><span class="pre">PartitionValueCalculator</span></code> (<code class="docutils literal notranslate"><span class="pre">iceberg_partition_value.rs</span></code>) replaces
 iceberg-rust’s calculator of the same name, and <code class="docutils literal notranslate"><span class="pre">PartitionSplitter</span></code> replaces its
@@ -816,9 +818,10 @@ first data page shows the dictionary saving no space. parquet-rs has no such che
 column’s encoding when the file opens
 (<a class="reference external" href="https://github.com/apache/datafusion-comet/issues/6114">#6114</a>). So each partition’s
 <code class="docutils literal notranslate"><span class="pre">PartitionFeed</span></code> holds back the partition’s first page of rows (<code class="docutils literal notranslate"><span class="pre">write.parquet.page-row-limit</span></code>,
-capped by <code class="docutils literal notranslate"><span class="pre">write.parquet.row-group-size-bytes</span></code>, which the fanout feeds share) before any of them
-reaches the writer. <code class="docutils literal notranslate"><span class="pre">DictionaryChooser</span></code> (<code class="docutils literal notranslate"><span class="pre">iceberg_dictionary.rs</span></code>) replays parquet-mr’s accounting
-over those rows and turns dictionary encoding off for the columns parquet-mr would write plain.
+at least 100, capped by <code class="docutils literal notranslate"><span class="pre">write.parquet.row-group-size-bytes</span></code>, which the fanout feeds share) before
+any of them reaches the writer, unless no column has a dictionary choice to make.
+<code class="docutils literal notranslate"><span class="pre">DictionaryChooser</span></code> (<code class="docutils literal notranslate"><span class="pre">iceberg_dictionary.rs</span></code>) replays parquet-mr’s accounting over those rows and
+turns dictionary encoding off for the columns parquet-mr would write plain.
 It reads only the columns there is a choice for, one at a time, and walks each lazily only as far
 as its first page, so beyond the held rows it keeps no more than one column’s dictionary. The
 accounting follows <code class="docutils literal notranslate"><span class="pre">FallbackValuesWriter</span></code>, <code class="docutils literal notranslate"><span class="pre">DictionaryValuesWriter</span></code> and
@@ -897,7 +900,8 @@ backend ignores them. A fallback reason must contain property names only, never 
 <p>Each task emits exactly one batch with one row and two <code class="docutils literal notranslate"><span class="pre">BINARY</span></code> columns (<code class="docutils literal notranslate"><span class="pre">build_output_schema</span></code>):</p>
 <ol class="arabic simple">
 <li><p>The task’s <code class="docutils literal notranslate"><span class="pre">DataFile</span></code>s encoded as an Iceberg v2 data manifest, written by iceberg-rust’s
-<code class="docutils literal notranslate"><span class="pre">ManifestWriter</span></code> into an in-process <code class="docutils literal notranslate"><span class="pre">memory:</span></code> <code class="docutils literal notranslate"><span class="pre">FileIO</span></code>. Empty when the task wrote no files.</p></li>
+<code class="docutils literal notranslate"><span class="pre">ManifestWriter</span></code> into an in-process <code class="docutils literal notranslate"><span class="pre">memory:</span></code> <code class="docutils literal notranslate"><span class="pre">FileIO</span></code>. A task that wrote no files sends a
+manifest with no entries.</p></li>
 <li><p>Every location the task’s writers were handed (<code class="docutils literal notranslate"><span class="pre">encode_locations</span></code>: a big-endian count, then a
 length-prefixed UTF-8 string per location).</p></li>
 </ol>
@@ -918,7 +922,8 @@ iceberg-java’s <code class="docutils literal notranslate"><span class="pre">Ta
 <p>Rebuilding metrics on the JVM is the main reason manifest parity holds: metrics modes, truncation,
 the inferred-column cap and list/map bounds suppression are decided by iceberg-java’s code. When
 touching the native writer, do not try to make iceberg-rust’s own metrics authoritative; the JVM
-discards them. The price is one footer read per written file.</p>
+discards them. The price is reading each written file’s footer back from storage, two small reads
+per file.</p>
 </section>
 </section>
 <section id="failure-handling-and-cleanup-ownership">
@@ -1018,7 +1023,7 @@ the writer: run the write suites and the Iceberg Spark tests. The pin policy is 
 <td><p>End-to-end writes through the split plan and the native writer: parity with iceberg-java, row-level DML, partition evolution, file order, cleanup on task and job failure, writes outgrowing the memory pool, AQE re-planning.</p></td>
 </tr>
 <tr class="row-odd"><td><p><code class="docutils literal notranslate"><span class="pre">CometIcebergWriteDetectionSuite</span></code></p></td>
-<td><p>One case per eligibility rule, accepted and declined.</p></td>
+<td><p>Most eligibility rules, each accepted and declined.</p></td>
 </tr>
 <tr class="row-even"><td><p><code class="docutils literal notranslate"><span class="pre">CometIcebergSystemFunctionSuite</span></code></p></td>
 <td><p>Native <code class="docutils literal notranslate"><span class="pre">bucket</span></code>, <code class="docutils literal notranslate"><span class="pre">truncate</span></code>, <code class="docutils literal notranslate"><span class="pre">years</span></code>/<code class="docutils literal notranslate"><span class="pre">months</span></code>/<code class="docutils literal notranslate"><span class="pre">days</span></code>/<code class="docutils literal notranslate"><span class="pre">hours</span></code>, which keep a partitioned write’s hash distribution and sort native end to end.</p></td>
@@ -1045,9 +1050,11 @@ the writer: run the write suites and the Iceberg Spark tests. The pin policy is 
 </table>
 </div>
 <p>The Comet suites run against the Iceberg version each Spark profile pins in <code class="docutils literal notranslate"><span class="pre">spark/pom.xml</span></code>: 1.5.2
-for Spark 3.4, 1.8.1 for 3.5, 1.10.0 for 4.0 and 4.2, and 1.11.0 for 4.1. Only the default profile
-runs on every pull request. Behaviour that differs between Iceberg versions, such as reflection
-targets, metrics conventions and partition path spelling, needs a test that runs on each.</p>
+for Spark 3.4, 1.8.1 for 3.5, 1.10.0 for 4.0, and 1.11.0 for 4.1. No Iceberg runtime is published
+for Spark 4.2, so the 4.2 profile builds against the 4.0 runtime and the Iceberg suites skip there
+(<code class="docutils literal notranslate"><span class="pre">icebergAvailable</span></code> is false on Spark 4.2). Only the default profile runs on every pull request.
+Behaviour that differs between Iceberg versions, such as reflection targets, metrics conventions
+and partition path spelling, needs a test that runs on each.</p>
 <p>When writing a native-write test:</p>
 <ul class="simple">
 <li><p><strong>Assert that the native writer ran.</strong> Every fallback is silent to the query, so a passing
@@ -1067,9 +1074,10 @@ location and compare them with what the manifests reference.</p></li>
 </ul>
 <p>The upstream Iceberg Spark tests also run with the native writer and <code class="docutils literal notranslate"><span class="pre">localTableScan</span></code> enabled (see
 <a class="reference internal" href="iceberg-spark-tests.html"><span class="std std-doc">Running Iceberg Spark Tests</span></a>). They are a broad regression net, but they do
-not assert which writer ran, and Comet’s fallback reasons do not appear in their CI logs, so a green
-run is not evidence that the native writer handled a given test
-(<a class="reference external" href="https://github.com/apache/datafusion-comet/issues/6148">#6148</a>).</p>
+not assert which writer ran, so a green run is not evidence that the native writer handled a given
+test. Each job’s summary page counts the writes each writer ran and lists the most common reasons
+Comet declined the rest (see
+<a class="reference internal" href="iceberg-spark-tests.html#which-writer-ran-each-iceberg-write"><span class="std std-ref">Which writer ran each Iceberg write</span></a>).</p>
 </section>
 <section id="pitfalls">
 <h2>Pitfalls<a class="headerlink" href="#pitfalls" title="Link to this heading">#</a></h2>

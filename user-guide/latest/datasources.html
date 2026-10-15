@@ -897,6 +897,15 @@ such as JDBC tables, which Spark scans with <code class="docutils literal notran
 format other than Parquet, JSON and CSV, set <code class="docutils literal notranslate"><span class="pre">spark.comet.sparkToColumnar.enabled=true</span></code> and name the
 operator in <code class="docutils literal notranslate"><span class="pre">spark.comet.sparkToColumnar.supportedOperatorList</span></code> by its Spark class name without the
 <code class="docutils literal notranslate"><span class="pre">Exec</span></code> suffix, such as <code class="docutils literal notranslate"><span class="pre">BatchScan</span></code> or <code class="docutils literal notranslate"><span class="pre">FileSourceScan</span></code>.</p>
+<p>One case is converted automatically: when the build (broadcast) side of a broadcast join is a file
+or V2 scan Comet cannot read natively - for example a small Text lookup table - and every scan on
+the probe side is already native, Comet converts that build-side scan to Arrow so the whole join
+runs natively over the large probe. This is controlled by
+<code class="docutils literal notranslate"><span class="pre">spark.comet.convert.broadcastBuildSide.enabled</span></code>, which is <strong>on by default</strong>, unlike the switches
+above. The build side is usually small, but an explicit <code class="docutils literal notranslate"><span class="pre">BROADCAST</span></code> hint or a selective filter above
+the scan can make the copied volume larger, and with dynamic partition pruning the dimension is read
+a second time for the pruning subquery. Set <code class="docutils literal notranslate"><span class="pre">spark.comet.convert.broadcastBuildSide.enabled=false</span></code> to
+keep such build sides on Spark.</p>
 </section>
 <section id="spark-to-comet-conversion-types">
 <h3>Spark-to-Comet conversion types<a class="headerlink" href="#spark-to-comet-conversion-types" title="Link to this heading">#</a></h3>

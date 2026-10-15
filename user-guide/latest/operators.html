@@ -917,7 +917,7 @@ omitted from the tables below and may be reconsidered based on demand:</p>
 </tr>
 <tr class="row-even"><td><p><code class="docutils literal notranslate"><span class="pre">LocalTableScanExec</span></code></p></td>
 <td><p>⚠️</p></td>
-<td><p>Disabled by default; there is no acceleration advantage and this operator is typically only used in test code. Can be opted into via config (<a class="reference external" href="https://github.com/apache/datafusion-comet/pull/4393">#4393</a>).</p></td>
+<td><p>Disabled by default. Converting it rarely speeds up the scan itself, but a native Iceberg write needs it to write the rows of <code class="docutils literal notranslate"><span class="pre">INSERT</span> <span class="pre">...</span> <span class="pre">VALUES</span></code> or a local DataFrame natively; see <a class="reference internal" href="iceberg-writes.html#native-parquet-write-eligibility"><span class="std std-ref">Iceberg Writes</span></a>. Enable it with <code class="docutils literal notranslate"><span class="pre">spark.comet.exec.localTableScan.enabled=true</span></code> (<a class="reference external" href="https://github.com/apache/datafusion-comet/pull/4393">#4393</a>).</p></td>
 </tr>
 <tr class="row-odd"><td><p><code class="docutils literal notranslate"><span class="pre">EmptyRelationExec</span></code></p></td>
 <td><p>✅</p></td>
