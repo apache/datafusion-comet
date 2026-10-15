@@ -34,6 +34,23 @@ query expect_fallback(Cast target contains a struct with duplicate field names)
 SELECT CAST(map('key', s) AS MAP<STRING, STRUCT<x: INT, x: INT>>)
 FROM test_cast_duplicate_struct_fields
 
+-- A null source must not bypass duplicate-name validation in a nested struct cast.
+query expect_fallback(Cast target contains a struct with duplicate field names)
+SELECT CAST(named_struct('a', NULL, 'b', s.p)
+  AS STRUCT<a: STRUCT<x: INT, x: INT>, b: INT>)
+FROM test_cast_duplicate_struct_fields
+
+-- The ARRAY<NULL> shortcut must not bypass validation of the target element type.
+query expect_fallback(Cast target contains a struct with duplicate field names)
+SELECT s.p, CAST(e AS STRUCT<x: INT, x: INT>)
+FROM test_cast_duplicate_struct_fields
+LATERAL VIEW explode(array(NULL, NULL)) v AS e
+
+-- Constant folding produces a typed null literal, whose own serde must reject the target shape.
+query expect_fallback(Unsupported data type)
+SELECT s, CAST(NULL AS STRUCT<x: INT, x: INT>)
+FROM test_cast_duplicate_struct_fields
+
 -- Distinct field names remain on the native path.
 query
 SELECT CAST(s AS STRUCT<x: INT, y: INT>) FROM test_cast_duplicate_struct_fields

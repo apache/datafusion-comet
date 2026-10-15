@@ -25,7 +25,7 @@ import org.apache.spark.sql.types.{ArrayType, DataType, DataTypes, DecimalType, 
 
 import org.apache.comet.CometConf
 import org.apache.comet.CometSparkSessionExtensions.{isSpark40Plus, withFallbackReason}
-import org.apache.comet.DataTypeSupport.{hasDuplicateFieldNames, isComplexType}
+import org.apache.comet.DataTypeSupport.{containsDuplicateFieldNames, isComplexType}
 import org.apache.comet.serde.{CodegenDispatchFallback, CometExpressionSerde, CometTimeZone, Compatible, ExprOuterClass, Incompatible, SupportLevel, Unsupported}
 import org.apache.comet.serde.ExprOuterClass.Expr
 import org.apache.comet.serde.QueryPlanSerde.{evalModeToProto, exprToProtoInternal, serializeDataType}
@@ -204,6 +204,13 @@ object CometCast
       return unsupported(fromType, toType)
     }
 
+    // Check the entire target before the NullType and identity shortcuts below. Arrow Java can
+    // collapse duplicate struct children even when the source reaches the target through a null,
+    // array, map, or nested struct path.
+    if (containsDuplicateFieldNames(toType)) {
+      return Unsupported(Some(duplicateStructFieldNamesReason))
+    }
+
     // Spark 4.0's collation metadata rides on `StringType`, but `serializeDataType` maps every
     // `StringType` to the same proto id, so a non-default collation is dropped on the way into
     // the native plan with no warning. Reject the cast outright rather than relying on the
@@ -273,9 +280,6 @@ object CometCast
       case (DataTypes.DoubleType, _) =>
         canCastFromDouble(toType)
       case (from_struct: StructType, to_struct: StructType) =>
-        if (hasDuplicateFieldNames(to_struct.fields)) {
-          return Unsupported(Some(duplicateStructFieldNamesReason))
-        }
         from_struct.fields.zip(to_struct.fields).foreach { case (a, b) =>
           // `convert` replaces a top-level cast that is always null (DATE to a numeric or boolean
           // type in LEGACY mode) with a null literal, so the native cast never sees one. A struct

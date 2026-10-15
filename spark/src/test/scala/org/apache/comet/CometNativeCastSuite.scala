@@ -2042,6 +2042,8 @@ class CometNativeCastSuite extends CometTestBase with AdaptiveSparkPlanHelper {
 
     Seq(
       sourceType -> duplicateTarget,
+      DataTypes.NullType -> duplicateTarget,
+      ArrayType(DataTypes.NullType) -> ArrayType(duplicateTarget),
       ArrayType(sourceType) -> ArrayType(duplicateTarget),
       MapType(StringType, sourceType) -> MapType(StringType, duplicateTarget)).foreach {
       case (fromType, toType) =>
