@@ -2497,13 +2497,18 @@ trait CometBaseAggregate[T <: BaseAggregateExec] extends CometOperatorSerde[T] {
           output(bufferIdx) = output(bufferIdx).withDataType(nativeStateType)
         case _: Percentile =>
           // Comet's native percentile UDAF keeps all values, cast to double, along with where
-          // each merged partial state ends in them (see SparkPercentile in native/spark-expr).
+          // each merged partial state ends in them and how deeply the merge stages nest it (see
+          // SparkPercentile in native/spark-expr).
           val nativeStateType = StructType(
             Seq(
               StructField("values", ArrayType(DoubleType, containsNull = true), nullable = false),
               StructField(
                 "partial_ends",
                 ArrayType(LongType, containsNull = true),
+                nullable = false),
+              StructField(
+                "partial_depths",
+                ArrayType(IntegerType, containsNull = true),
                 nullable = false)))
           output(bufferIdx) = output(bufferIdx).withDataType(nativeStateType)
         case m: Mode =>

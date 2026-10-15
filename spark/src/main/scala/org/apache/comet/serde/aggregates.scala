@@ -23,7 +23,7 @@ import scala.jdk.CollectionConverters._
 
 import org.apache.spark.SPARK_VERSION
 import org.apache.spark.sql.catalyst.expressions.{Attribute, Cast, Expression, Literal}
-import org.apache.spark.sql.catalyst.expressions.aggregate.{AggregateExpression, AggregateFunction, ApproximatePercentile, Average, BitAndAgg, BitOrAgg, BitXorAgg, BloomFilterAggregate, CentralMomentAgg, CollectList, CollectSet, Complete, Corr, Count, Covariance, CovPopulation, CovSample, First, HyperLogLogPlusPlus, Last, Max, MaxBy, MaxMinBy, Min, MinBy, Mode, Partial, Percentile, RegrIntercept, RegrR2, RegrReplacement, RegrSlope, RegrSXY, StddevPop, StddevSamp, Sum, VariancePop, VarianceSamp}
+import org.apache.spark.sql.catalyst.expressions.aggregate.{AggregateExpression, AggregateFunction, ApproximatePercentile, Average, BitAndAgg, BitOrAgg, BitXorAgg, BloomFilterAggregate, CentralMomentAgg, CollectList, CollectSet, Complete, Corr, Count, Covariance, CovPopulation, CovSample, First, HyperLogLogPlusPlus, Last, Max, MaxBy, MaxMinBy, Min, MinBy, Mode, Partial, PartialMerge, Percentile, RegrIntercept, RegrR2, RegrReplacement, RegrSlope, RegrSXY, StddevPop, StddevSamp, Sum, VariancePop, VarianceSamp}
 import org.apache.spark.sql.catalyst.util.ArrayData
 import org.apache.spark.sql.comet.CometExecUtils
 import org.apache.spark.sql.comet.util.Utils
@@ -708,7 +708,16 @@ object CometPercentile extends CometAggregateExpressionSerde[Percentile] {
     "Before Spark 3.5.2, Spark can merge `0.0` and `-0.0` into one key and drop the count of " +
       "one of them (SPARK-45599). Comet keeps every value, so when `FLOAT` or `DOUBLE` input " +
       "holds both zeros the result can differ from Spark's."
-  override def getCompatibleNotes(): Seq[String] = Seq(signedZeroKeysNote)
+  // The replay models Spark's hash-based aggregation only; see
+  // `spark_iterates_negative_zero_first` in native/spark-expr for what it leaves out.
+  private val zeroOrderNote =
+    "From Spark 3.5.2, when `FLOAT` or `DOUBLE` input holds both `0.0` and `-0.0`, Spark " +
+      "ranks first the one its hash table reaches first. Comet replays those tables for each " +
+      "task's partial buffer and each merge stage, but not Spark's sort-based fallback once a " +
+      "task holds `spark.sql.objectHashAggregate.sortBased.fallbackThreshold` groups, nor its " +
+      "own aggregates emitting or spilling under memory pressure, so there its zero can differ " +
+      "from Spark's."
+  override def getCompatibleNotes(): Seq[String] = Seq(signedZeroKeysNote, zeroOrderNote)
   override def getUnsupportedReasons(): Seq[String] = Seq(
     arrayOfPercentagesReason,
     nonLiteralPercentageReason,
@@ -757,8 +766,15 @@ object CometPercentile extends CometAggregateExpressionSerde[Percentile] {
       val builder = ExprOuterClass.Percentile.newBuilder()
       builder.setChild(childExpr.get)
       builder.setPercentage(percentageExpr.get)
+      val floatingInput = percentile.child.dataType match {
+        case FloatType | DoubleType => true
+        case _ => false
+      }
       builder.setFloatInput(percentile.child.dataType == FloatType)
-      builder.setSignedZeroKeys(keepsSignedZeroKeys(SPARK_VERSION))
+      // Only floating-point input can hold both zeros; the native side tracks Spark's partial
+      // buffers only when this is set.
+      builder.setSignedZeroKeys(floatingInput && keepsSignedZeroKeys(SPARK_VERSION))
+      builder.setMergeStage(aggExpr.mode == PartialMerge)
       // DoubleType always serializes successfully.
       builder.setDatatype(serializeDataType(DoubleType).get)
       Some(

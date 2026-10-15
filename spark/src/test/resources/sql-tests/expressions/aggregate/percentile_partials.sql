@@ -21,8 +21,9 @@
 -- first, which depends on each partition's partial buffer, not only on the rows. Each INSERT
 -- coalesces to one task, so it writes one file in row order, and an open cost as large as a
 -- split keeps every file in its own partition.
--- Spark ranks -0.0 first for these rows in either arrival order, while replaying them as one
--- partial ranks 0.0 first.
+-- Spark ranks -0.0 first for these rows in either arrival order. Replaying them as one partial
+-- ranks 0.0 first when the first file is merged first, so these queries catch a regression to
+-- that for one shuffle order only.
 -- Config: spark.sql.files.openCostInBytes=134217728
 
 statement

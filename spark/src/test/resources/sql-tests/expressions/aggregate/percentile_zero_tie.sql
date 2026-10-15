@@ -57,3 +57,22 @@ SELECT /*+ COALESCE(1) */ * FROM (
 
 query
 SELECT percentile(f, 0.0), percentile(d, 0.0), percentile(f, 0.001), percentile(d, 0.001) FROM test_percentile_zero_tie_large
+
+-- A distinct aggregate beside the percentile adds two merge stages, each of which serializes its
+-- buffer and so reorders the keys the next table receives. Spark ranks 0.0 first for these rows
+-- after the two stages, and -0.0 first without them.
+statement
+CREATE TABLE test_percentile_zero_tie_merge_stages(d double, k int) USING parquet
+
+statement
+INSERT INTO test_percentile_zero_tie_merge_stages SELECT /*+ COALESCE(1) */ * FROM VALUES
+  (572803.0, 1), (866096.0, 1), (866879.0, 1), (433001.0, 1), (33996.0, 1), (75441.0, 1),
+  (418281.0, 1), (919347.0, 1), (710172.0, 1), (746536.0, 1), (68317.0, 1), (830168.0, 1),
+  (127901.0, 1), (662299.0, 1), (132114.0, 1), (986230.0, 1), (624172.0, 1), (784519.0, 1),
+  (199287.0, 1), (200265.0, 1), (0.0, 1), (double('-0.0'), 1) AS t(d, k)
+
+query
+SELECT percentile(d, 0.0), count(DISTINCT k) FROM test_percentile_zero_tie_merge_stages
+
+query
+SELECT percentile(d, 0.0) FROM test_percentile_zero_tie_merge_stages
