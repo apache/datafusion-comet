@@ -745,10 +745,10 @@ case class CometScanRule(session: SparkSession)
         // unsupported types still fail closed everywhere. An empty data projection is also strict
         // because iceberg-rust currently interprets an empty field-id list as a request for every
         // column.
-        val taskSchema = metadata.fullTaskSchema.getOrElse(metadata.tableSchema)
+        val fullTaskSchema = metadata.fullTaskSchema.getOrElse(metadata.tableSchema)
         val schemaTypesSupported =
           try {
-            val fullSchema = IcebergReflection.toSparkSchema(taskSchema)
+            val fullSchema = IcebergReflection.toSparkSchema(fullTaskSchema)
             // DataTypeSupport recursively dispatches back to this override for struct fields,
             // array elements, and map entries, so Variant is allowed at any nesting depth only
             // when its entire top-level Iceberg field is unprojected.
@@ -759,7 +759,7 @@ case class CometScanRule(session: SparkSession)
                   reasons: ListBuffer[String]): Boolean =
                 isVariantType(dt) || super.isTypeSupported(dt, name, reasons)
             }
-            val tableFieldIds = IcebergReflection.buildFieldIdMapping(taskSchema)
+            val tableFieldIds = IcebergReflection.buildFieldIdMapping(fullTaskSchema)
 
             fullSchema.fields.forall { field =>
               val isProjected = projectedDataColumns.isEmpty ||

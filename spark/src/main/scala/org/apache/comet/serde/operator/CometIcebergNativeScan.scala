@@ -1021,21 +1021,21 @@ object CometIcebergNativeScan extends CometOperatorSerde[CometBatchScanExec] wit
           "No native Iceberg task schema. CometScanRule should have fallen back to Spark."))
       .asInstanceOf[AnyRef]
     val nameToFieldId = IcebergReflection.buildFieldIdMapping(taskSchema)
-    val projectFieldIds = output.map { attr =>
-      nameToFieldId
-        .get(attr.name)
-        .orElse(metadata.globalFieldIdMapping.get(attr.name))
-        .orElse(CometIcebergNativeScan.MetadataFieldIds.get(attr.name))
-        .getOrElse {
-          throw new IllegalStateException(
-            s"Column '${attr.name}' not found in task schema, global schema, " +
-              "or metadata field IDs. This indicates a bug in CometScanRule " +
-              "validation -- all output columns should be resolvable.")
-        }
+    val projectFieldIds = OperatorOuterClass.ProjectFieldIdList.newBuilder()
+    output.foreach { attr =>
+      projectFieldIds.addFieldIds(
+        nameToFieldId
+          .get(attr.name)
+          .orElse(metadata.globalFieldIdMapping.get(attr.name))
+          .orElse(CometIcebergNativeScan.MetadataFieldIds.get(attr.name))
+          .getOrElse {
+            throw new IllegalStateException(
+              s"Column '${attr.name}' not found in task schema, global schema, " +
+                "or metadata field IDs. This indicates a bug in CometScanRule " +
+                "validation -- all output columns should be resolvable.")
+          })
     }
-    val projectFieldIdsList = OperatorOuterClass.ProjectFieldIdList.newBuilder()
-    projectFieldIds.foreach(id => projectFieldIdsList.addFieldIds(id))
-    commonBuilder.addProjectFieldIdsPool(projectFieldIdsList.build())
+    commonBuilder.addProjectFieldIdsPool(projectFieldIds.build())
 
     val perPartitionBuilders = mutable.ArrayBuffer[OperatorOuterClass.IcebergScan]()
 

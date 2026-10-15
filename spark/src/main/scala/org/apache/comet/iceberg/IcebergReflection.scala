@@ -841,13 +841,16 @@ object IcebergReflection extends Logging {
     import scala.jdk.CollectionConverters._
     val columns =
       getMethod(schema.getClass, "columns").invoke(schema).asInstanceOf[java.util.List[_]]
-    val dataColumns = columns.asScala.filter(fieldIdOf(_) <= MaxDataFieldId)
+    val dataColumns = new java.util.ArrayList[Any](columns.size)
+    columns.asScala.iterator
+      .filter(fieldIdOf(_) <= MaxDataFieldId)
+      .foreach(column => dataColumns.add(column))
     if (dataColumns.size == columns.size) {
       schema
     } else {
       schema.getClass
         .getConstructor(classOf[java.util.List[_]])
-        .newInstance(new java.util.ArrayList[Any](dataColumns.asJava))
+        .newInstance(dataColumns)
         .asInstanceOf[AnyRef]
     }
   }

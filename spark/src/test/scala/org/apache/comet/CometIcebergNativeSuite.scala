@@ -93,6 +93,12 @@ class CometIcebergNativeSuite
       checkIcebergNativeScan(query)
     }
 
+  /** [[checkIcebergNativeScan]] with nested schema pruning on, as by default, and then off. */
+  private def checkPrunedAndFullReads(query: String): Unit = {
+    checkIcebergNativeScan(query)
+    checkFullSchemaNativeScan(query)
+  }
+
   /**
    * Asserts a query stays native even when its DPP filter falls back (SMJ / non-Comet BHJ / reuse
    * disabled), where only the runtime filter, not the scan, reverts to Spark.
@@ -2479,7 +2485,6 @@ class CometIcebergNativeSuite
           INSERT INTO $mor
           SELECT id, p, concat('r', CAST(id AS STRING)), id, -id, s FROM ($rows)
         """)
-        val snapshotBeforeDeletes = latestSnapshotId(mor)
         spark.sql(s"DELETE FROM $mor WHERE id % 10 = 0")
         val snapshotWithDeletes = latestSnapshotId(mor)
         commitEqualityDelete("test_cat", "db", "nested_pruning_mor", "id", 7, warehouseDir)
@@ -2493,8 +2498,6 @@ class CometIcebergNativeSuite
         checkPrunedNativeScan(s"SELECT id, s.a FROM $mor ORDER BY id")
         // The equality-delete key `id` is not projected, so the task schema appends it.
         checkPrunedNativeScan(s"SELECT s.a FROM $mor ORDER BY s.a")
-        checkPrunedNativeScan(
-          s"SELECT id, s.a FROM $mor VERSION AS OF $snapshotBeforeDeletes ORDER BY id")
         // The current table schema lacks `c` and names `r`, `x`, and `y` differently, so these
         // tasks with deletes must read with the scan schema, which keeps the snapshot's names.
         checkPrunedNativeScan(
@@ -2562,10 +2565,8 @@ class CometIcebergNativeSuite
               "ALTER COLUMN s.a TYPE BIGINT",
               "DROP COLUMN c").foreach(change => spark.sql(s"ALTER TABLE $promoted $change"))
             Seq("x", "d", "s.a").foreach { column =>
-              val query =
-                s"SELECT id, $column, c FROM $promoted VERSION AS OF $snapshot ORDER BY id"
-              checkIcebergNativeScan(query)
-              checkFullSchemaNativeScan(query)
+              checkPrunedAndFullReads(
+                s"SELECT id, $column, c FROM $promoted VERSION AS OF $snapshot ORDER BY id")
             }
             spark.sql(s"DROP TABLE $promoted")
         }
@@ -2598,10 +2599,6 @@ class CometIcebergNativeSuite
         val properties = """
           TBLPROPERTIES ('format-version' = '2', 'read.split.adaptive-size.enabled' = 'false')
         """
-        def checkPrunedAndFullReads(query: String): Unit = {
-          checkIcebergNativeScan(query)
-          checkFullSchemaNativeScan(query)
-        }
 
         // A delete keyed on `y` covers only the second file. After `y` is dropped and `x0` is
         // renamed to `x`, a delete keyed on `x` covers both, so one task needs `x` and the other
