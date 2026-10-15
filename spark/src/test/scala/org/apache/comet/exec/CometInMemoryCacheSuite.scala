@@ -36,7 +36,7 @@ import org.apache.arrow.vector.types.pojo.ArrowType
 import org.apache.spark.{SparkConf, SparkException}
 import org.apache.spark.CometDriverPlugin
 import org.apache.spark.sql.{CometTestBase, DataFrame, Observation, QueryTest, Row}
-import org.apache.spark.sql.catalyst.expressions.{And, Attribute, AttributeReference, EqualTo, Expression, GreaterThan, GreaterThanOrEqual, LessThan, Literal}
+import org.apache.spark.sql.catalyst.expressions.{And, Ascending, Attribute, AttributeReference, EqualTo, Expression, GreaterThan, GreaterThanOrEqual, LessThan, Literal}
 import org.apache.spark.sql.catalyst.optimizer.{BuildLeft, BuildRight, BuildSide}
 import org.apache.spark.sql.catalyst.plans.LeftOuter
 import org.apache.spark.sql.columnar.{CachedBatch, SimpleMetricsCachedBatch}
@@ -3350,7 +3350,7 @@ class CometInMemoryCacheSuite extends CometTestBase {
                     }.size == 1)
                     assert(sorts(outerPlan).isEmpty, outerPlan)
                     QueryTest.sameRows(outerRows, outer.collect().toSeq).foreach(fail(_))
-                    assert(sortedPartitions(outer).forall(identity), outerPlan)
+                    assert(partitionsInOrder(outer, keyOrder(Ascending)), outerPlan)
                 }
 
                 val inner = query(hint, "inner")
@@ -3358,7 +3358,7 @@ class CometInMemoryCacheSuite extends CometTestBase {
                 assert(joins(innerPlan) == Seq((joinClass, BuildRight)), innerPlan)
                 assert(sorts(innerPlan).isEmpty, innerPlan)
                 QueryTest.sameRows(innerRows, inner.collect().toSeq).foreach(fail(_))
-                assert(sortedPartitions(inner).forall(identity), innerPlan)
+                assert(partitionsInOrder(inner, keyOrder(Ascending)), innerPlan)
             }
           } finally {
             spark.catalog.clearCache()
@@ -3367,15 +3367,6 @@ class CometInMemoryCacheSuite extends CometTestBase {
       }
     }
   }
-
-  // Whether each partition of `df` has the integer key in its first column in ascending order.
-  private def sortedPartitions(df: DataFrame): Array[Boolean] =
-    df.queryExecution.toRdd
-      .mapPartitions { it =>
-        val keys = it.map(_.getInt(0)).toArray
-        Iterator(keys.sameElements(keys.sorted))
-      }
-      .collect()
 
   test("a broadcast outer hash join over a sorted cache keeps its order with default settings") {
     // A cache written with no exchange in its plan is not adaptive, so with AQE on, as it is by
@@ -3406,7 +3397,7 @@ class CometInMemoryCacheSuite extends CometTestBase {
             assert(joins.head.nativeOp.getHashJoin.getStreamedSortOrdersCount > 0, plan)
             assert(collect(plan) { case s @ (_: CometSortExec | _: SortExec) => s }.isEmpty, plan)
             assert(collect(plan) { case s: CometInMemoryTableScanExec => s }.size == 1, plan)
-            assert(sortedPartitions(df).forall(identity), plan)
+            assert(partitionsInOrder(df, keyOrder(Ascending)), plan)
           } finally {
             spark.catalog.clearCache()
           }
@@ -3446,32 +3437,18 @@ class CometInMemoryCacheSuite extends CometTestBase {
                   .createOrReplaceTempView("anti")
                 spark.table("anti").count()
                 assert(
-                  !sortedPartitions(spark.table("anti")).forall(identity),
+                  !partitionsInOrder(spark.table("anti"), keyOrder(Ascending)),
                   "the cached NOT IN rows are in order, so nothing here can split a group")
                 val query =
                   """SELECT /*+ BROADCAST(b) */ a.k, count(*), sum(a.v), count(b._2)
                     |FROM anti a LEFT JOIN small b ON a.k = b._1
                     |GROUP BY a.k""".stripMargin
-                def rows(): Seq[(Int, Long, Long, Long)] =
-                  sql(query)
-                    .collect()
-                    .map(r => (r.getInt(0), r.getLong(1), r.getLong(2), r.getLong(3)))
-                    .toSeq
-                    .sorted
-                val cometRows = rows()
-                val plan = sql(query).queryExecution.executedPlan
-                assert(
-                  collect(plan) { case s: CometInMemoryTableScanExec => s }.size == 1,
-                  s"the outer join does not read the native cache scan (AQE $adaptive):\n$plan")
-                // withSQLConf returns Unit on Spark 3.x, so Spark's rows are assigned inside it.
-                var sparkRows = Seq.empty[(Int, Long, Long, Long)]
-                withSQLConf(CometConf.COMET_ENABLED.key -> "false") {
-                  sparkRows = rows()
-                }
-                assert(
-                  cometRows.map(_._1).distinct.size == cometRows.size,
-                  "a key is grouped twice")
-                assert(cometRows == sparkRows)
+                checkEachKeyGroupedOnce(
+                  query,
+                  plan =>
+                    assert(
+                      collect(plan) { case s: CometInMemoryTableScanExec => s }.size == 1,
+                      s"the outer join does not read the native cache scan (AQE $adaptive):\n$plan"))
               } finally {
                 spark.catalog.clearCache()
                 spark.catalog.dropTempView("anti")
@@ -3553,7 +3530,7 @@ class CometInMemoryCacheSuite extends CometTestBase {
                     case j: CometBroadcastHashJoinExec => j.nativeOp
                   }.forall(_.getHashJoin.getStreamedSortOrdersCount > 0),
                   plan)
-                assert(sortedPartitions(df).forall(identity), plan)
+                assert(partitionsInOrder(df, keyOrder(Ascending)), plan)
                 // A final aggregate after a shuffle would merge a key a partial aggregate split,
                 // so both aggregates have to sit above the join with no exchange in between.
                 def aboveJoin(p: SparkPlan): Boolean = p.find(_ eq joins.head._1).isDefined
