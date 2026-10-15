@@ -64,7 +64,7 @@ import org.apache.comet.rules.CometExecRule
 import org.apache.comet.serde.{CometCollectBuffer, CometOperatorSerde, Compatible, OperatorOuterClass, QueryContextInterner, SupportLevel, Unsupported}
 import org.apache.comet.serde.OperatorOuterClass.{AggregateMode => CometAggregateMode, Operator}
 import org.apache.comet.serde.QueryPlanSerde
-import org.apache.comet.serde.QueryPlanSerde.{aggExprToProto, exprToProto, isStringCollationType, supportedScalarSortElementType, supportedSortType}
+import org.apache.comet.serde.QueryPlanSerde.{aggExprToProto, exprToProto, hasNonDefaultStringCollation, isStringCollationType, supportedSortType}
 import org.apache.comet.serde.operator.CometSink
 import org.apache.comet.shims.MergeRowsMetricsShim
 
@@ -2910,17 +2910,17 @@ trait CometHashJoin {
     // an order that cannot be checked; see mayReportFalseOrder.
     //
     // Declaring any order makes DataFusion keep the probe rows in place, so the longest prefix
-    // of the order that Comet can express is enough. A key counts as expressible when the native
-    // sort accepts its type, as `supportedSortType` decides for a sort: a collated string is
-    // ordered by its collation in Spark but would be declared in raw byte order. Nothing here can
-    // tell whether an operator above relies on the order, so a join whose first key Comet cannot
-    // express stays in Spark.
+    // of the order that Comet can express is enough. A key that exprToProto takes counts as
+    // expressible, unless it holds a collated string, at the top level or nested, which Spark
+    // orders by its collation but the native side would declare in raw byte order. That is the
+    // check `supportedSortType` makes for a sort. Nothing here can tell whether an operator above
+    // relies on the order, so a join whose first key Comet cannot express stays in Spark.
     val (streamed, _) = streamedSide(join.buildSide, join.left, join.right)
     val streamedSortOrders =
       if (runsAsRightOuterJoin(join.joinType, join.buildSide) &&
         join.outputOrdering.nonEmpty && !mayReportFalseOrder(streamed)) {
         val orders = join.outputOrdering.iterator
-          .takeWhile(order => supportedScalarSortElementType(order.dataType))
+          .takeWhile(order => !hasNonDefaultStringCollation(order.dataType))
           .map(exprToProto(_, streamed.output))
           .takeWhile(_.isDefined)
           .flatten

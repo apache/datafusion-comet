@@ -42,7 +42,7 @@ import org.apache.spark.sql.execution.columnar.InMemoryTableScanExec
 import org.apache.spark.sql.execution.datasources.SchemaColumnConvertNotSupportedException
 import org.apache.spark.sql.execution.exchange.{ReusedExchangeExec, ShuffleExchangeLike}
 import org.apache.spark.sql.execution.joins.{ShuffledHashJoinExec, SortMergeJoinExec}
-import org.apache.spark.sql.functions.{count, lit, sum}
+import org.apache.spark.sql.functions.{array, count, lit, struct, sum}
 import org.apache.spark.sql.internal.SQLConf
 import org.apache.spark.sql.types.{ArrayType, DoubleType, IntegerType, LongType, MetadataBuilder, StructField, StructType}
 
@@ -2526,8 +2526,8 @@ class CometJoinSuite extends CometTestBase {
     // SortedInputExec passes the rows through, so the order is physically Spark's, but the serde
     // and the native sort expression handle the key, and the sorted aggregate above the join finds
     // its group boundaries by comparing it. The timestamps run in a session time zone that is not
-    // UTC and include values before 1970. Struct, array and map keys are out of scope, since
-    // exprToProto rejects them by default and such a join stays in Spark.
+    // UTC and include values before 1970. Double, array and struct keys have tests of their own,
+    // and Spark cannot sort by a map.
     val keyTypes = Seq(
       "decimal(20,2)" -> Seq(
         "-999999999999999999.99",
@@ -2676,6 +2676,69 @@ class CometJoinSuite extends CometTestBase {
             }
           } finally {
             spark.catalog.clearCache()
+          }
+        }
+      }
+    }
+  }
+
+  test("outer hash joins keep a streamed order that starts with an array or a struct") {
+    // exprToProto takes an array or a struct sort key, so a join whose streamed order starts with
+    // one sends it, stays native, and the planner declares it on the JVM input. Spark drops a sort
+    // right below a join, so the sorted rows come from a cache.
+    withSQLConf(
+      SQLConf.ADAPTIVE_EXECUTION_ENABLED.key -> "false",
+      SQLConf.AUTO_BROADCASTJOIN_THRESHOLD.key -> "-1",
+      CometConf.COMET_EXEC_IN_MEMORY_CACHE_ENABLED.key -> "false",
+      CometConf.COMET_CONVERT_FROM_IN_MEMORY_CACHE_ENABLED.key -> "true") {
+      withParquetTable((0 until 2000).map(i => (i % 40, i)), "big") {
+        withParquetTable((0 until 40 by 2).map(k => (k, k / 2)), "small") {
+          val build = spark.table("small")
+          // An array of strings, the one array type that Comet reads from Spark's cache.
+          Seq(
+            "array" -> array(($"_1" % 7).cast("string"), $"_1".cast("string")),
+            "struct" -> struct($"_1" % 7, $"_1")).foreach { case (keyName, key) =>
+            try {
+              val streamed = spark
+                .table("big")
+                .select(key.as("s"), $"_1", $"_2")
+                .repartition(2, $"_1")
+                .sortWithinPartitions("s")
+                .cache()
+              streamed.count()
+              val order = SortOrder(
+                BoundReference(0, streamed.schema("s").dataType, nullable = true),
+                Ascending)
+              Seq("left_outer", "right_outer").foreach { joinType =>
+                def joined: DataFrame = {
+                  val hinted = build.hint("broadcast")
+                  if (joinType == "left_outer") {
+                    streamed.join(hinted, streamed("_1") === build("_1"), joinType)
+                  } else {
+                    hinted.join(streamed, build("_1") === streamed("_1"), joinType)
+                  }
+                }
+                def df: DataFrame = joined
+                  .select(streamed("s"), streamed("_2").as("v"), build("_2").as("w"))
+                  .sortWithinPartitions("s")
+                val plan = df.queryExecution.executedPlan
+                val context = s"$keyName $joinType\n$plan"
+                val joins = collect(plan) { case j: CometBroadcastHashJoinExec => j.nativeOp }
+                assert(joins.size == 1, context)
+                assert(joins.head.getHashJoin.getStreamedSortOrdersCount > 0, context)
+                assert(
+                  collect(plan) { case s @ (_: CometSortExec | _: SortExec) => s }.isEmpty,
+                  context)
+                sameRowsAsSpark(df)
+                assert(partitionsInOrder(df, order), context)
+                sameRowsAsSpark(
+                  joined
+                    .groupBy(streamed("s"))
+                    .agg(count(lit(1)), sum(streamed("_2")), count(build("_2"))))
+              }
+            } finally {
+              spark.catalog.clearCache()
+            }
           }
         }
       }
