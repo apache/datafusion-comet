@@ -308,20 +308,20 @@ where
     };
     let reservation = initial.map_err(scratch_error)?;
     // Reuse validity once per batch instead of checking three inputs and rebuilding a
-    // bitmap row by row. Arrow unions sliced bitmaps with bulk word operations.
-    let nulls = NullBuffer::union(
-        start.nulls(num_rows).as_ref(),
-        stop.nulls(num_rows).as_ref(),
-    );
-    let step_nulls = step.as_ref().and_then(|step| step.nulls(num_rows));
-    let nulls = NullBuffer::union(nulls.as_ref(), step_nulls.as_ref())
+    // bitmap row by row. Arrow unions sliced bitmaps with bulk word operations, allocating
+    // one accumulator and applying the remaining masks in place.
+    let input_nulls = [
+        start.nulls(num_rows),
+        stop.nulls(num_rows),
+        step.as_ref().and_then(|step| step.nulls(num_rows)),
+    ];
+    let nulls = NullBuffer::union_many(input_nulls.iter().map(Option::as_ref))
         .filter(|nulls| nulls.null_count() != 0);
     if nulls
         .as_ref()
         .is_some_and(|nulls| nulls.null_count() == num_rows)
     {
-        // Reuse the union result: allocating another all-null bitmap here could exceed the
-        // two-bitmap allowance while the union's intermediate buffer is still live.
+        // Reuse the accumulator so another all-null bitmap cannot exceed its capacity allowance.
         return null_sequence::<T>(child_field, num_rows, nulls);
     }
 
@@ -395,7 +395,7 @@ fn size_error() -> DataFusionError {
 }
 
 fn bitmap_capacity(rows: usize) -> Result<usize> {
-    // Arrow's MutableBuffer, used by NullBuffer::union, rounds capacity to 64 bytes.
+    // Round bitmap bytes to Arrow's 64-byte allocation boundary.
     Ok(rows.div_ceil(8).checked_add(63).ok_or_else(size_error)? & !63)
 }
 
@@ -427,8 +427,8 @@ fn construction_scratch(rows: usize, cache_lengths: bool, bitmap_count: usize) -
     } else {
         0
     };
-    // Up to two new bulk validity unions can coexist. This conservatively reserves their
-    // capacity, not the full backing allocation of a borrowed, possibly sliced input bitmap.
+    // Bulk unions use one accumulator; two rounded bitmap sizes allow for capacity doubling.
+    // The full backing allocation of a borrowed, possibly sliced input bitmap is not charged.
     let validity = bitmap_capacity(rows)?
         .checked_mul(bitmap_count)
         .ok_or_else(size_error)?;
@@ -1129,6 +1129,71 @@ mod memory_tests {
         assert_eq!(array.to_data(), expected.to_data());
         assert_eq!(pool.peak.load(Ordering::Relaxed), bytes);
         assert_released(&pool);
+    }
+
+    #[test]
+    fn sliced_validity_accumulator_capacity_and_values() {
+        // Exercise byte and 64-byte bitmap boundaries, including a trailing chunk large
+        // enough to double Arrow's capacity. Matching offsets need only one rounded bitmap.
+        for rows in [7usize, 8, 9, 511, 512, 513, 2049, 8193] {
+            for offsets in [[3usize; 3], [1, 6, 3], [8, 16, 24]] {
+                let args = [1, 5, 2]
+                    .into_iter()
+                    .enumerate()
+                    .map(|(input, value)| {
+                        let offset = offsets[input];
+                        let validity = NullBuffer::from(
+                            (0..rows + offset)
+                                .map(|row| row < offset || (row - offset) % 11 != input)
+                                .collect::<Vec<_>>(),
+                        );
+                        let array =
+                            Int64Array::new(vec![value; rows + offset].into(), Some(validity))
+                                .slice(offset, rows);
+                        ColumnarValue::Array(Arc::new(array))
+                    })
+                    .collect::<Vec<_>>();
+                let valid_rows = (0..rows).filter(|row| row % 11 >= 3).count();
+                let bitmap_bytes = rows.div_ceil(512) * 64;
+                let bytes = (rows + 1) * 4
+                    + rows * std::mem::size_of::<usize>()
+                    + 2 * bitmap_bytes
+                    + valid_rows * 3 * 8;
+                let pool = ObservedPool::new(bytes, None);
+                let udf = SparkSequence::new(list_type(), Arc::clone(&pool) as _);
+                let array = invoke(&udf, args.clone(), rows).unwrap();
+                assert_released(&pool);
+                let lists = array.as_any().downcast_ref::<ListArray>().unwrap();
+                let capacity = lists.nulls().unwrap().buffer().capacity();
+                let capacity_limit = if offsets == [3; 3] {
+                    (rows + 3).div_ceil(512) * 64
+                } else {
+                    2 * bitmap_bytes
+                };
+                assert!(
+                    capacity <= capacity_limit,
+                    "{rows} rows at offsets {offsets:?}: bitmap capacity {capacity} exceeds {capacity_limit}"
+                );
+                assert_eq!(lists.null_count(), rows - valid_rows);
+                assert_eq!(lists.values().len(), valid_rows * 3);
+                for row in 0..rows {
+                    assert_eq!(lists.is_null(row), row % 11 < 3);
+                    if lists.is_valid(row) {
+                        let values = lists.value(row);
+                        let values = values.as_any().downcast_ref::<Int64Array>().unwrap();
+                        assert_eq!(values.values().as_ref(), &[1, 3, 5]);
+                    }
+                }
+                assert_eq!(pool.peak.load(Ordering::Relaxed), bytes);
+                let refused = ObservedPool::new(bytes - 1, None);
+                let udf = SparkSequence::new(list_type(), Arc::clone(&refused) as _);
+                assert!(matches!(
+                    invoke(&udf, args, rows),
+                    Err(DataFusionError::ResourcesExhausted(_))
+                ));
+                assert_released(&refused);
+            }
+        }
     }
 
     #[test]

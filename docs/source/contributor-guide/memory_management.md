@@ -408,8 +408,9 @@ error and the Arrow batch-offset ceiling. If initial admission or fallible scrat
 reports resource exhaustion, an allocation-free validation pass preserves those errors ahead of
 the resource error. Other pool errors propagate immediately without further row validation.
 Scalar and metadata-all-null or empty inputs have cheaply known sizes and use one admission.
-Bitmap capacity is a conservative allowance for new output/union buffers, not a charge for the
-full backing allocation of a borrowed sliced input bitmap. No additional memory setting is
+Validity unions allocate one accumulator and apply the remaining masks in place. Its allowance
+of two 64-byte-rounded bitmap sizes covers capacity doubling for a trailing chunk; borrowed sliced
+input bitmap backing allocations are not charged. No additional memory setting is
 introduced. The `sequence_pooled` group in `native/spark-expr/benches/sequence.rs` measures the
 complete UDF invocation against a real bounded pool, including scalar batch expansion.
 
