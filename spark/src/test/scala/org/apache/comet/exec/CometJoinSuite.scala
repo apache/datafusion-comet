@@ -2522,6 +2522,71 @@ class CometJoinSuite extends CometTestBase {
     }
   }
 
+  test("outer hash joins keep the order of a sorted bucketed table read by the native scan") {
+    // With spark.sql.legacy.bucketedTableScan.outputOrdering on, Spark reports a bucketed table's
+    // sort columns as the scan's order when every bucket has one file, and the sort above the
+    // join is dropped on that basis. The native scan reads each bucket's file in order, but it is
+    // a native leaf, not a JVM input, so the planner has to count it as a source whose order
+    // Spark reports, or the join moves its unmatched rows. A broadcast join, since a shuffled one
+    // would put an exchange between the scan and the join.
+    withTable("sorted_bucketed") {
+      // A single writer task writes one file per bucket.
+      (0 until 2000)
+        .map(i => (i % 40, i))
+        .toDF("k", "v")
+        .coalesce(1)
+        .write
+        .format("parquet")
+        .bucketBy(2, "k")
+        .sortBy("k")
+        .saveAsTable("sorted_bucketed")
+      withSQLConf(
+        SQLConf.ADAPTIVE_EXECUTION_ENABLED.key -> "false",
+        SQLConf.AUTO_BROADCASTJOIN_THRESHOLD.key -> "-1",
+        SQLConf.BUCKETING_ENABLED.key -> "true",
+        SQLConf.AUTO_BUCKETED_SCAN_ENABLED.key -> "false",
+        SQLConf.LEGACY_BUCKETED_TABLE_SCAN_OUTPUT_ORDERING.key -> "true") {
+        withParquetTable((0 until 40 by 2).map(k => (k, k / 2)), "small") {
+          val streamed = spark.table("sorted_bucketed")
+          val build = spark.table("small")
+          val scanOrder = collectFirst(streamed.queryExecution.executedPlan) {
+            case scan: CometNativeScanExec if scan.bucketedScan => scan.outputOrdering
+          }
+          assert(scanOrder.exists(_.nonEmpty), streamed.queryExecution.executedPlan)
+          Seq("left_outer", "right_outer").foreach { joinType =>
+            val joined = if (joinType == "left_outer") {
+              streamed.join(build.hint("broadcast"), streamed("k") === build("_1"), joinType)
+            } else {
+              build.hint("broadcast").join(streamed, streamed("k") === build("_1"), joinType)
+            }
+            val df = joined
+              .select(streamed("k"), streamed("v"), build("_2").as("w"))
+              .sortWithinPartitions("k")
+            val plan = df.queryExecution.executedPlan
+            val context = s"$joinType\n$plan"
+            val joins = collect(plan) { case j: CometBroadcastHashJoinExec => j }
+            assert(joins.size == 1, context)
+            assert(
+              collect(joins.head) {
+                case s: CometNativeScanExec if s.bucketedScan => s
+              }.size == 1,
+              context)
+            assert(joins.head.nativeOp.getHashJoin.getStreamedSortOrdersCount > 0, context)
+            assert(
+              collect(plan) { case s @ (_: CometSortExec | _: SortExec) => s }.isEmpty,
+              context)
+            val expected = (0 until 2000).map { i =>
+              val k = i % 40
+              Row(k, i, if (k % 2 == 0) k / 2 else null)
+            }
+            QueryTest.sameRows(expected, df.collect().toSeq).foreach(fail(_))
+            assert(partitionsInOrder(df, keyOrder(Ascending)), context)
+          }
+        }
+      }
+    }
+  }
+
   test("outer hash joins keep the streamed order for decimal, string and timestamp keys") {
     // SortedInputExec passes the rows through, so the order is physically Spark's, but the serde
     // and the native sort expression handle the key, and the sorted aggregate above the join finds
