@@ -44,7 +44,7 @@ import org.apache.spark.sql.execution.exchange.{ReusedExchangeExec, ShuffleExcha
 import org.apache.spark.sql.execution.joins.{ShuffledHashJoinExec, SortMergeJoinExec}
 import org.apache.spark.sql.functions.{count, lit, sum}
 import org.apache.spark.sql.internal.SQLConf
-import org.apache.spark.sql.types.{ArrayType, IntegerType, LongType, MetadataBuilder, StructField, StructType}
+import org.apache.spark.sql.types.{ArrayType, DoubleType, IntegerType, LongType, MetadataBuilder, StructField, StructType}
 
 import org.apache.comet.{CometConf, CometExplainInfo, ExtendedExplainInfo}
 import org.apache.comet.CometSparkSessionExtensions.{hasFallbackReason, isSpark35Plus}
@@ -2463,15 +2463,16 @@ class CometJoinSuite extends CometTestBase {
     }
   }
 
-  // Compares the rows of a fresh `df` as a multiset with the ones Spark returns for it. The rows
-  // of a key tie under the sort, so their order within it differs between the two.
-  private def sameRowsAsSpark(df: => DataFrame): Unit = {
+  // Compares the rows of a fresh `df` with the ones Spark returns for it, as a multiset unless
+  // `isSorted`. The rows of a key tie under a sort, so their order within it can differ between
+  // the two.
+  private def sameRowsAsSpark(df: => DataFrame, isSorted: Boolean = false): Unit = {
     // withSQLConf returns Unit on Spark 3.x, so Spark's rows are assigned inside it.
     var sparkRows = Seq.empty[Row]
     withSQLConf(CometConf.COMET_ENABLED.key -> "false") {
       sparkRows = df.collect().toSeq
     }
-    QueryTest.sameRows(sparkRows, df.collect().toSeq).foreach(fail(_))
+    QueryTest.sameRows(sparkRows, df.collect().toSeq, isSorted).foreach(fail(_))
   }
 
   test("outer hash joins keep the order of a native range") {
@@ -2602,6 +2603,79 @@ class CometJoinSuite extends CometTestBase {
             } finally {
               spark.catalog.clearCache()
             }
+          }
+        }
+      }
+    }
+  }
+
+  test("outer hash joins keep a streamed double order with signed zeros and NaN") {
+    // Spark sorts -0.0 and 0.0 as equal and NaN above every other value. The planner declares the
+    // order on the key normalized as the native sort normalizes it, so an operator above the join
+    // compares keys as Spark does. A top-k above the join runs in a native plan of its own, over
+    // the join's output, so it cannot stop early on the declared order, and one sorting by the key
+    // alone reads only the first rows of each partition, which holds only if the join keeps them in
+    // order. A broadcast join, since Spark joins on the normalized key and a shuffled join would
+    // shuffle the streamed side again.
+    val keys =
+      Seq(Double.NegativeInfinity, -1.5, -0.0, 0.0, 1.5, Double.PositiveInfinity, Double.NaN)
+    withSQLConf(
+      SQLConf.ADAPTIVE_EXECUTION_ENABLED.key -> "false",
+      SQLConf.AUTO_BROADCASTJOIN_THRESHOLD.key -> "-1",
+      CometConf.COMET_EXEC_IN_MEMORY_CACHE_ENABLED.key -> "false",
+      CometConf.COMET_CONVERT_FROM_IN_MEMORY_CACHE_ENABLED.key -> "true") {
+      // The build side holds -0.0 and not 0.0, so a streamed 0.0 matches only on the normalized
+      // key.
+      val buildData = Seq((Double.NegativeInfinity, 0), (-0.0, 1), (1.5, 2), (Double.NaN, 3))
+      withParquetTable((0 until 2000).map(i => (keys(i % keys.size), i)), "big") {
+        withParquetTable(buildData, "small") {
+          try {
+            val streamed =
+              spark.table("big").repartition(2, $"_2").sortWithinPartitions("_1").cache()
+            streamed.count()
+            val build = spark.table("small")
+            val order = SortOrder(BoundReference(0, DoubleType, nullable = true), Ascending)
+            Seq("left_outer", "right_outer").foreach { joinType =>
+              def joined: DataFrame = {
+                val hinted = build.hint("broadcast")
+                if (joinType == "left_outer") {
+                  streamed.join(hinted, streamed("_1") === build("_1"), joinType)
+                } else {
+                  hinted.join(streamed, build("_1") === streamed("_1"), joinType)
+                }
+              }
+              def rows: DataFrame =
+                joined.select(streamed("_1").as("k"), streamed("_2").as("v"), build("_2").as("w"))
+              val df = rows.sortWithinPartitions("k")
+              val plan = df.queryExecution.executedPlan
+              val context = s"$joinType\n$plan"
+              val joins = collect(plan) { case j: CometBroadcastHashJoinExec => j.nativeOp }
+              assert(joins.size == 1, context)
+              assert(joins.head.getHashJoin.getStreamedSortOrdersCount > 0, context)
+              assert(
+                collect(plan) { case s @ (_: CometSortExec | _: SortExec) => s }.isEmpty,
+                context)
+              sameRowsAsSpark(rows.sortWithinPartitions("k"))
+              assert(partitionsInOrder(df, order), context)
+
+              def agg: DataFrame = joined
+                .groupBy(streamed("_1").as("k"))
+                .agg(count(lit(1)), sum(streamed("_2")), count(build("_2")))
+              sameRowsAsSpark(agg)
+              val groupKeys = agg.collect().map(_.getDouble(0)).toSeq
+              assert(groupKeys.distinct.size == groupKeys.size, s"$joinType groups a key twice")
+
+              // The first 600 rows by the key end among the zeros, which tie, so which of them
+              // are taken depends on v alone. The first 300 descending take every NaN, which tie
+              // too, and the rest from the infinities. A limit on the key alone ends where the
+              // zeros start, since which of them it took would be arbitrary.
+              sameRowsAsSpark(rows.orderBy("k", "v").limit(600), isSorted = true)
+              sameRowsAsSpark(rows.orderBy($"k".desc, $"v").limit(300), isSorted = true)
+              val belowZero = (0 until 2000).count(i => keys(i % keys.size) < -1.0)
+              sameRowsAsSpark(rows.select("k").orderBy("k").limit(belowZero), isSorted = true)
+            }
+          } finally {
+            spark.catalog.clearCache()
           }
         }
       }
