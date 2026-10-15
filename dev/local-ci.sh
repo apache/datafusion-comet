@@ -190,9 +190,9 @@ purge_parquet() {
   rm -rf "$dir"
 }
 
-# setup-spark-builder greps for an explicit <packaging>jar|bundle</packaging> and
-# so misses a POM declaring none, which Maven defaults to jar. org.antlr:antlr4
-# is one of those. A <packaging>pom</packaging> parent has no JAR by design.
+# Mirrors the purge in setup-spark-builder. A POM declaring no <packaging> is
+# purged too, since Maven defaults it to jar. org.antlr:antlr4 and Arrow's are
+# among those. A <packaging>pom</packaging> parent has no JAR by design.
 purge_partial_poms() {
   repo="$(maven_repo)"
   [ -d "$repo" ] || return 0
