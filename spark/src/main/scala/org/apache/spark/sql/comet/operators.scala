@@ -2915,10 +2915,10 @@ trait CometHashJoin {
     // ordered by its collation in Spark but would be declared in raw byte order. Nothing here can
     // tell whether an operator above relies on the order, so a join whose first key Comet cannot
     // express stays in Spark.
-    val streamed = if (join.buildSide == BuildRight) join.left else join.right
-    val streamedSortOrders = (join.joinType, join.buildSide) match {
-      case (LeftOuter, BuildRight) | (RightOuter, BuildLeft)
-          if join.outputOrdering.nonEmpty && !mayReportFalseOrder(streamed) =>
+    val (streamed, _) = streamedSide(join.buildSide, join.left, join.right)
+    val streamedSortOrders =
+      if (runsAsRightOuterJoin(join.joinType, join.buildSide) &&
+        join.outputOrdering.nonEmpty && !mayReportFalseOrder(streamed)) {
         val orders = join.outputOrdering.iterator
           .takeWhile(order => supportedScalarSortElementType(order.dataType))
           .map(exprToProto(_, streamed.output))
@@ -2933,8 +2933,9 @@ trait CometHashJoin {
           return None
         }
         orders
-      case _ => Nil
-    }
+      } else {
+        Nil
+      }
 
     if (leftKeys.forall(_.isDefined) &&
       rightKeys.forall(_.isDefined) &&
@@ -2993,7 +2994,7 @@ trait CometHashJoin {
         join.left,
         join.right)
     case join: HashJoin =>
-      mayReportFalseOrder(if (join.buildSide == BuildRight) join.left else join.right)
+      mayReportFalseOrder(streamedSide(join.buildSide, join.left, join.right)._1)
     case wrapper: CometScanWrapper => mayReportFalseOrder(wrapper.originalPlan)
     case scan: CometInMemoryTableScanExec =>
       mayReportFalseOrder(scan.originalPlan.relation.cachedPlan)
@@ -3015,7 +3016,7 @@ trait CometHashJoin {
       buildSide: BuildSide,
       left: SparkPlan,
       right: SparkPlan): Boolean = {
-    val (streamed, streamedIndex) = if (buildSide == BuildRight) (left, 0) else (right, 1)
+    val (streamed, streamedIndex) = streamedSide(buildSide, left, right)
     mayReportFalseOrder(streamed) ||
     (runsAsRightOuterJoin(joinType, buildSide) && !declaresStreamedOrder(nativeOp, streamedIndex))
   }
@@ -3031,6 +3032,13 @@ trait CometHashJoin {
         val probe = nativeOp.getChildren(streamedIndex)
         probe.hasScan || probe.hasShuffleScan
       }
+
+  // The streamed side of a hash join, which is the side it is not built on, and its child index.
+  private def streamedSide(
+      buildSide: BuildSide,
+      left: SparkPlan,
+      right: SparkPlan): (SparkPlan, Int) =
+    if (buildSide == BuildRight) (left, 0) else (right, 1)
 
   // A left outer join built on the right and a right outer join built on the left both run as
   // DataFusion's right outer join, which keeps its unmatched probe rows in place only when the
