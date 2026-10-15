@@ -36,6 +36,9 @@ under the License.
   <properties>
     <!-- The only published module: the parent pom skips deploying every module -->
     <maven.deploy.skip>false</maven.deploy.skip>
+    <!-- Hive's test-only catalog integration still uses Guava at runtime. Keep the version local
+         so Guava is not exposed by or packaged into the published Comet artifact. -->
+    <guava.version>33.2.1-jre</guava.version>
   </properties>
 
   <dependencies>
@@ -121,6 +124,12 @@ under the License.
     <dependency>
       <groupId>junit</groupId>
       <artifactId>junit</artifactId>
+      <scope>test</scope>
+    </dependency>
+    <dependency>
+      <groupId>com.google.guava</groupId>
+      <artifactId>guava</artifactId>
+      <version>${guava.version}</version>
       <scope>test</scope>
     </dependency>
     <dependency>
