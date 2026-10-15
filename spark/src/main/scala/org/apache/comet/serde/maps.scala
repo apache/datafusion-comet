@@ -34,7 +34,7 @@ import org.apache.comet.shims.CometTypeShim
 private[serde] object MapKeySupport {
 
   private val floatingPointReason: String =
-    "Spark normalizes floating-point map keys, so `-0.0` matches a `+0.0` key and all `NaN`s " +
+    "Spark looks a key up in its SQL ordering, so `-0.0` matches a `+0.0` key and all `NaN`s " +
       "match each other; Comet's native map lookup compares the raw Arrow values."
 
   private val collationReason: String =
@@ -51,9 +51,10 @@ private[serde] object MapKeySupport {
    * finds a key with `TypeUtils.getInterpretedOrdering` over the keys `ArrayBasedMapBuilder`
    * stored, having first normalized them, while native `map_extract` compares the Arrow values as
    * they are, so decline the key types where those disagree:
-   *   - `ArrayBasedMapBuilder` rewrites a `-0.0` key to `+0.0` and canonicalises `NaN`, and
-   *     `nanSafeCompareDoubles` treats `-0.0` and `+0.0` as equal, so Spark answers a `-0.0`
-   *     lookup from a `+0.0` key where native finds nothing.
+   *   - `nanSafeCompareDoubles` treats `-0.0` and `+0.0` as equal and all `NaN`s as equal, so
+   *     Spark answers a `-0.0` lookup from a `+0.0` key where native finds nothing, on every
+   *     version. (How `ArrayBasedMapBuilder` treats float keys when it builds a map differs by
+   *     version; see `MapBuilderKeySupport`.)
    *   - a non-default collation compares under rules native applies as `UTF8_BINARY`.
    *   - for a complex key type, `map_extract`'s `coerce_types` returns the map's exact key field
    *     type, so Comet's planner casts the lookup key to it. That cannot reproduce Spark's
@@ -134,13 +135,8 @@ object CometMapExtract extends CometExpressionSerde[GetMapValue] {
 
 /**
  * Shared gate for the native map builders, `map_from_arrays` and `map_from_entries`, which tell
- * keys apart by their bits. Spark's `ArrayBasedMapBuilder` finds a duplicate `FLOAT` or `DOUBLE`
- * key in a `HashMap` of boxed values, where every NaN is one key, and a duplicate struct or array
- * key in a `TreeMap` in Spark's SQL ordering, where `-0.0` equals `0.0` too. From Spark 4.0 it
- * also normalizes a `FLOAT` or `DOUBLE` key before the lookup, unless
- * `spark.sql.legacy.disableMapKeyNormalization` is set, so the two zeros are one key and
- * `map_from_entries` stores `0.0`. A key type that holds a float at any depth is therefore
- * `Incompatible` on every version.
+ * keys apart by their bits. A key type that holds a float at any depth is `Incompatible` on every
+ * Spark version; `floatingPointReason` explains why.
  */
 private object MapBuilderKeySupport {
   val floatingPointReason: String =
@@ -173,7 +169,9 @@ private object MapKeyDedupPolicySupport {
       .equalsIgnoreCase(SQLConf.MapKeyDedupPolicy.LAST_WIN.toString)
 }
 
-object CometMapFromArrays extends CometExpressionSerde[MapFromArrays] {
+object CometMapFromArrays
+    extends CometExpressionSerde[MapFromArrays]
+    with CodegenDispatchFallback {
 
   override def getIncompatibleReasons(): Seq[String] =
     Seq(MapBuilderKeySupport.floatingPointReason, MapKeyDedupPolicySupport.incompatibleReason)

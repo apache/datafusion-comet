@@ -17,10 +17,14 @@
 
 -- Verifies that `map_from_arrays` falls back to Spark when `spark.sql.mapKeyDedupPolicy` is set
 -- to `LAST_WIN`. Spark's ArrayBasedMapBuilder keeps the last occurrence of each duplicate key;
--- Comet's native `map` scalar has no LAST_WIN path, so it must fall back. The default `EXCEPTION`
--- mode agrees with Comet and is covered by `map_from_arrays.sql`.
+-- Comet's native `map` scalar has no LAST_WIN path. `CometMapFromArrays` mixes in
+-- `CodegenDispatchFallback`, so its native `Incompatible` normally routes through the JVM codegen
+-- dispatcher; we disable the dispatcher here so the incompat branch surfaces as a genuine Spark
+-- fallback rather than in-pipeline codegen. The default `EXCEPTION` mode agrees with Comet and is
+-- covered by `map_from_arrays.sql`.
 
 -- Config: spark.sql.mapKeyDedupPolicy=LAST_WIN
+-- Config: spark.comet.exec.scalaUDF.codegen.enabled=false
 
 statement
 CREATE TABLE test_map_from_arrays_dedup(k array<string>, v array<int>) USING parquet

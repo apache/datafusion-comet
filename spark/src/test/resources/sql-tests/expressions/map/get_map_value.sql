@@ -44,5 +44,5 @@ CREATE TABLE test_map_double(m map<double, int>) USING parquet
 statement
 INSERT INTO test_map_double VALUES (map(CAST(0 AS DOUBLE), 7)), (map(CAST(1 AS DOUBLE), 8)), (NULL)
 
-query expect_fallback(Spark normalizes floating-point map keys)
+query expect_fallback(Spark looks a key up in its SQL ordering)
 SELECT m[CAST(-0.0 AS DOUBLE)] FROM test_map_double

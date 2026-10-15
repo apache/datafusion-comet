@@ -168,11 +168,7 @@ array whose elements cannot be null in ascending order, Spark's generated code p
 ## Map construction
 
 `map_from_arrays` and `map_from_entries` don't build a map natively when its key type holds a
-`FLOAT` or `DOUBLE` at any depth. Spark finds duplicate keys by value, so NaNs with different bits
-are one key, and inside a struct or array key `-0.0` and `0.0` are one key too. From Spark 4.0,
-unless `spark.sql.legacy.disableMapKeyNormalization` is set, Spark also normalizes a top-level key,
-so `-0.0` and `0.0` are one key and `map_from_entries` stores `0.0`. Comet's native map
-construction compares the keys' bits
-([#6549](https://github.com/apache/datafusion-comet/issues/6549)), so `map_from_entries` runs
-through the codegen dispatcher instead, and `map_from_arrays` falls back to Spark. `FLOAT` and
-`DOUBLE` values don't affect either function.
+`FLOAT` or `DOUBLE` at any depth. They run Spark's code through the codegen dispatcher instead, so
+duplicate keys, including NaNs and zeros of either sign, behave as in Spark. `FLOAT` and `DOUBLE`
+values don't affect either function. The expressions' entries in the
+[expression compatibility guide](expressions/map.md) give the reason.

@@ -399,7 +399,7 @@ class CometMapExpressionSuite extends CometTestBase {
       checkSparkAnswerAndFallbackReason(
         "SELECT _1 AS id, element_at(element_at(map(1, map(CAST(0 AS DOUBLE), 7)), _1), " +
           s"$negZero) AS v FROM tbl",
-        "Spark normalizes floating-point map keys")
+        "Spark looks a key up in its SQL ordering")
     }
   }
 
@@ -497,7 +497,7 @@ class CometMapExpressionSuite extends CometTestBase {
       val lookup = "CAST(concat('-', CAST(_1 - 1 AS STRING), '.0') AS DOUBLE)"
       checkSparkAnswerAndFallbackReason(
         s"SELECT _1 AS id, element_at(map(CAST(0 AS DOUBLE), 7), $lookup) AS v FROM tbl",
-        "Spark normalizes floating-point map keys")
+        "Spark looks a key up in its SQL ordering")
     }
   }
 
