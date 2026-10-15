@@ -497,6 +497,22 @@ case class CometScanRule(session: SparkSession)
           return withFallbackReasons(scanExec, fallbackReasons.toSet)
         }
 
+        // This build of Comet has no native k-way merge for sorted Iceberg data. When Iceberg
+        // groups a partition's sorted files and reports an output ordering (e.g. with the
+        // preserve-data-ordering config on), EnsureRequirements may already have dropped the Sort
+        // above this scan because Spark trusts that report. Comet's native reader concatenates a
+        // partition's files in arbitrary order, so taking over the scan would silently return
+        // unsorted rows that Spark believes are sorted -> wrong results. scanExec.ordering is
+        // Spark's own view of the reported ordering and is exactly the condition under which the
+        // Sort gets dropped, so we key off it. Stay on Spark, whose Iceberg reader produces the
+        // sorted output it promised. This only needs scanExec, so we check it before the metadata
+        // reads below, which can go over the network for REST and S3 catalogs.
+        if (scanExec.ordering.exists(_.nonEmpty)) {
+          fallbackReasons += "Iceberg reports an output ordering that this build of Comet cannot " +
+            "preserve in the native scan; staying on Spark to keep the reported ordering"
+          return withFallbackReasons(scanExec, fallbackReasons.toSet)
+        }
+
         val typeChecker = CometScanTypeChecker()
         // Filter out metadata columns from schema check -- their types are handled
         // by iceberg-rust directly (e.g., _partition can be an empty struct for

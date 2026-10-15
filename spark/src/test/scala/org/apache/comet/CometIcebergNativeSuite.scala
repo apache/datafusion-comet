@@ -7370,4 +7370,119 @@ class CometIcebergNativeSuite
       }
     }
   }
+
+  test("fall back to Spark when Iceberg reports an output ordering") {
+    assume(icebergAvailable, "Iceberg not available in classpath")
+
+    withTempIcebergDir { warehouseDir =>
+      withSQLConf(
+        "spark.sql.catalog.sort_cat" -> "org.apache.iceberg.spark.SparkCatalog",
+        "spark.sql.catalog.sort_cat.type" -> "hadoop",
+        "spark.sql.catalog.sort_cat.warehouse" -> warehouseDir.getAbsolutePath,
+        CometConf.COMET_ENABLED.key -> "true",
+        CometConf.COMET_EXEC_ENABLED.key -> "true",
+        CometConf.COMET_ICEBERG_NATIVE_ENABLED.key -> "true") {
+
+        val table = "sort_cat.db.sorted_table"
+        try {
+          // Partition the table and give it a sort order. Iceberg only reports an output ordering
+          // when the grouping key is non-empty (a partitioned table with preserve-data-grouping)
+          // and the table has a sort order, so both are needed to exercise the real fallback path.
+          spark.sql(s"""
+            CREATE TABLE $table (
+              id INT,
+              category STRING
+            ) USING iceberg
+            PARTITIONED BY (category)
+          """)
+          // Set the sort order via the Java API; the SQL form (WRITE ORDERED BY) needs Iceberg's
+          // SQL extensions, which the test session does not register.
+          setIcebergSortOrderAsc(table, "id")
+
+          // Write several files into the same partition so a sorted read needs a k-way merge.
+          spark.sql(s"INSERT INTO $table VALUES (3, 'x'), (1, 'x')")
+          spark.sql(s"INSERT INTO $table VALUES (4, 'x'), (2, 'x')")
+
+          val query = s"SELECT * FROM $table ORDER BY id"
+
+          // Without k-way merge enabled, Iceberg reports no ordering and the native scan takes over.
+          checkIcebergNativeScan(query)
+
+          // The ordering-based fallback can only be exercised on Iceberg runtimes that actually
+          // report an ordering (they ship SortOrderAnalyzer). Other releases do not, so skip
+          // there rather than fail; the assert below still fires loudly on a capable runtime that
+          // stops reporting the ordering.
+          assume(
+            icebergReportsOrdering,
+            "Iceberg runtime does not report output ordering (no SortOrderAnalyzer)")
+
+          // With k-way merge on, Iceberg reports an output ordering that this build cannot
+          // preserve. Comet must stay on Spark, or a reported ordering is silently violated.
+          withSQLConf(
+            "spark.sql.iceberg.planning.preserve-data-grouping" -> "true",
+            "spark.sql.iceberg.planning.preserve-data-ordering" -> "true") {
+
+            // Confirm Iceberg actually reports the ordering first, so the test fails loudly rather
+            // than going silently vacuous if a future Iceberg bump changes when ordering is
+            // reported. (This planning step is Comet-disabled and does not execute the query.)
+            var sparkPlan: SparkPlan = null
+            withSQLConf(CometConf.COMET_ENABLED.key -> "false") {
+              sparkPlan = spark.sql(query).queryExecution.executedPlan
+            }
+            val orderedScans = collect(sparkPlan) {
+              case b: BatchScanExec if b.ordering.exists(_.nonEmpty) => b
+            }
+            assert(
+              orderedScans.nonEmpty,
+              s"Expected Iceberg BatchScanExec to report an ordering. Plan:\n$sparkPlan")
+
+            checkIcebergNativeScanFallback(query, "Iceberg reports an output ordering")
+          }
+        } finally {
+          spark.sql(s"DROP TABLE IF EXISTS $table PURGE")
+        }
+      }
+    }
+  }
+
+  test("stay native when Iceberg cannot report an ordering despite k-way merge configs") {
+    assume(icebergAvailable, "Iceberg not available in classpath")
+
+    withTempIcebergDir { warehouseDir =>
+      withSQLConf(
+        "spark.sql.catalog.sort_cat" -> "org.apache.iceberg.spark.SparkCatalog",
+        "spark.sql.catalog.sort_cat.type" -> "hadoop",
+        "spark.sql.catalog.sort_cat.warehouse" -> warehouseDir.getAbsolutePath,
+        CometConf.COMET_ENABLED.key -> "true",
+        CometConf.COMET_EXEC_ENABLED.key -> "true",
+        CometConf.COMET_ICEBERG_NATIVE_ENABLED.key -> "true") {
+
+        val table = "sort_cat.db.unsorted_table"
+        try {
+          // Unpartitioned and no sort order, so Iceberg cannot report an ordering even with both
+          // k-way merge configs on. This pins the narrowing from dropping the config check: the
+          // fallback keys off a reported ordering, not the config, so turning the config on must
+          // not push a plain read onto Spark. Runs on every profile since it needs no ordering.
+          spark.sql(s"""
+            CREATE TABLE $table (
+              id INT,
+              name STRING
+            ) USING iceberg
+          """)
+          spark.sql(s"INSERT INTO $table VALUES (3, 'c'), (1, 'a')")
+          spark.sql(s"INSERT INTO $table VALUES (4, 'd'), (2, 'b')")
+
+          val query = s"SELECT * FROM $table ORDER BY id"
+
+          withSQLConf(
+            "spark.sql.iceberg.planning.preserve-data-grouping" -> "true",
+            "spark.sql.iceberg.planning.preserve-data-ordering" -> "true") {
+            checkIcebergNativeScan(query)
+          }
+        } finally {
+          spark.sql(s"DROP TABLE IF EXISTS $table PURGE")
+        }
+      }
+    }
+  }
 }
