@@ -2265,11 +2265,6 @@ trait CometBaseAggregate[T <: BaseAggregateExec] extends CometOperatorSerde[T] {
     val resultExpressions = aggregate.resultExpressions
     val child = aggregate.child
 
-    if (groupingExpressions.isEmpty && aggregateExpressions.isEmpty) {
-      withFallbackReason(aggregate, "No group by or aggregation")
-      return None
-    }
-
     if (groupingExpressions.exists(expr =>
         SupportLevel.containsType(expr.dataType, classOf[MapType]))) {
       withFallbackReason(aggregate, "Grouping on map-containing types is not supported")
@@ -2314,6 +2309,10 @@ trait CometBaseAggregate[T <: BaseAggregateExec] extends CometOperatorSerde[T] {
     //              +- FileScan parquet spark_catalog.default.test[col1#6, col2#7] ......
     // If the aggregateExpressions is empty, we only want to build groupingExpressions,
     // and skip processing of aggregateExpressions.
+    //
+    // The groupingExpressions can be empty too, for the `Aggregate(Nil, Nil, child)` that
+    // ColumnPruning leaves when nothing reads a global aggregate's output. The native planner
+    // handles that shape.
     if (aggregateExpressions.isEmpty) {
       val hashAggBuilder = OperatorOuterClass.HashAggregate.newBuilder()
       hashAggBuilder.addAllGroupingExprs(groupingExprs.map(_.get).asJava)

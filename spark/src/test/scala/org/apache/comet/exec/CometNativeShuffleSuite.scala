@@ -1563,6 +1563,40 @@ class CometNativeShuffleSuite extends CometTestBase with AdaptiveSparkPlanHelper
     }
   }
 
+  test("native shuffle stores offsets as lengths only with zstd") {
+    withParquetTable(rowsWithOffsets(20000), "tbl") {
+      def shuffled: DataFrame = sql("SELECT * FROM tbl").repartition(10, $"_1")
+
+      def bytesWritten(codec: String, offsetsAsLengths: Boolean): Long = {
+        var bytes = 0L
+        withSQLConf(
+          CometConf.COMET_SHUFFLE_COMPRESSION_CODEC.key -> codec,
+          CometConf.COMET_SHUFFLE_COMPRESSION_OFFSETS_AS_LENGTHS.key -> offsetsAsLengths.toString) {
+          val df = shuffled
+          checkShuffleAnswer(df, 1)
+          bytes = cometShuffleMetric(df, "shuffleBytesWritten")
+        }
+        bytes
+      }
+
+      val lengths = bytesWritten("zstd", offsetsAsLengths = true)
+      val offsets = bytesWritten("zstd", offsetsAsLengths = false)
+      assert(lengths < offsets, s"zstd wrote $lengths bytes with lengths, $offsets with offsets")
+      // LZ4 does not take lengths yet, so the setting must not change what it writes
+      assert(bytesWritten("lz4", offsetsAsLengths = true) == bytesWritten("lz4", false))
+
+      // A small buffer limit makes the writer spill, so blocks also pass through the spill file
+      withSQLConf(
+        CometConf.COMET_SHUFFLE_COMPRESSION_CODEC.key -> "zstd",
+        CometConf.COMET_SHUFFLE_COMPRESSION_OFFSETS_AS_LENGTHS.key -> "true",
+        CometConf.COMET_SHUFFLE_NATIVE_MAX_BUFFER_BYTES.key -> "64k") {
+        val df = shuffled
+        checkShuffleAnswer(df, 1)
+        assert(cometShuffleMetric(df, "spill_count") > 0)
+      }
+    }
+  }
+
   test("native shuffle: round robin partitioning") {
     withSQLConf(CometConf.COMET_SHUFFLE_NATIVE_ROUND_ROBIN_PARTITIONING_ENABLED.key -> "true") {
       withParquetTable((0 until 100).map(i => (i, (i + 1).toLong, s"str$i")), "tbl") {
