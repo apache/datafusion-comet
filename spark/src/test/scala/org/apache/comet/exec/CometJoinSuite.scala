@@ -2475,6 +2475,17 @@ class CometJoinSuite extends CometTestBase {
     }
   }
 
+  // Compares the rows of a fresh `df` as a multiset with the ones Spark returns for it. The rows
+  // of a key tie under the sort, so their order within it differs between the two.
+  private def sameRowsAsSpark(df: => DataFrame): Unit = {
+    // withSQLConf returns Unit on Spark 3.x, so Spark's rows are assigned inside it.
+    var sparkRows = Seq.empty[Row]
+    withSQLConf(CometConf.COMET_ENABLED.key -> "false") {
+      sparkRows = df.collect().toSeq
+    }
+    QueryTest.sameRows(sparkRows, df.collect().toSeq).foreach(fail(_))
+  }
+
   test("outer hash joins keep the streamed order for decimal, string and timestamp keys") {
     // SortedInputExec passes the rows through, so the order is physically Spark's, but the serde
     // and the native sort expression handle the key, and the sorted aggregate above the join finds
@@ -2494,7 +2505,7 @@ class CometJoinSuite extends CometTestBase {
         "1969-12-31 23:59:59.999999",
         "1970-01-01 00:00:00",
         "2026-11-01 01:30:00",
-        "2200-06-15 12:00:00"))
+        "2030-06-15 12:00:00"))
     withSQLConf(
       SQLConf.ADAPTIVE_EXECUTION_ENABLED.key -> "false",
       SQLConf.AUTO_BROADCASTJOIN_THRESHOLD.key -> "-1",
@@ -2529,9 +2540,10 @@ class CometJoinSuite extends CometTestBase {
                     hinted.join(streamed, build("_1") === streamed("_1"), joinType)
                   }
                 }
-                val df = joined
+                def sorted: DataFrame = joined
                   .select(streamed("_1").as("k"), streamed("_2").as("v"), build("_2").as("w"))
                   .sortWithinPartitions("k")
+                val df = sorted
                 val plan = df.queryExecution.executedPlan
                 val joins = collect(plan) { case j: CometHashJoinExec => j }
                 assert(joins.size == 1, s"$typeName $joinType\n$plan")
@@ -2541,15 +2553,15 @@ class CometJoinSuite extends CometTestBase {
                 assert(
                   collect(plan) { case s @ (_: CometSortExec | _: SortExec) => s }.isEmpty,
                   s"$typeName $joinType\n$plan")
-                checkSparkAnswer(df)
+                sameRowsAsSpark(sorted)
                 assert(partitionsInOrder(df, order), s"$typeName $joinType\n$plan")
 
                 // The aggregate runs in sorted mode over the declared order, and groups a key once
                 // only if the join keeps it.
-                val agg = joined
+                def agg: DataFrame = joined
                   .groupBy(streamed("_1").as("k"))
                   .agg(count(lit(1)), sum(streamed("_2")), count(build("_2")))
-                checkSparkAnswer(agg)
+                sameRowsAsSpark(agg)
                 assert(agg.count() == keys.size, s"$typeName $joinType groups a key twice")
               }
             } finally {
@@ -2752,7 +2764,10 @@ class CometJoinSuite extends CometTestBase {
               cachedPlan.outputOrdering.isEmpty,
               s"the cache reports an order that nothing keeps:\n$cachedPlan")
             // The sort above the cache stays, so the partitions come back sorted.
-            assert(partitionsInOrder(spark.table("joined").sortWithinPartitions("k"), keyOrder(Ascending)))
+            assert(
+              partitionsInOrder(
+                spark.table("joined").sortWithinPartitions("k"),
+                keyOrder(Ascending)))
             val query =
               """SELECT /*+ BROADCAST(c) */ j.k, count(*), sum(j.v), count(c._2)
                 |FROM joined j LEFT JOIN small c ON j.k = c._1
