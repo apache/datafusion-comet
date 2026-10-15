@@ -374,6 +374,12 @@ declares the order through an operator only when the operator says it keeps it. 
 cannot keep the order natively must not report it, or has to be added to `mayReportFalseOrder` in
 `operators.scala`, which makes the hash join serde send no order over it.
 
+A leaf that reports an ordering is where the order starts, so the planner has to know that the
+native operator produces its rows in that order. It knows that of an input from the JVM and of a
+scan of files, which reads the files of each partition one after the other, and the native range
+declares its order itself through `SortedInputExec`. A new leaf that reports an ordering must
+declare it natively the same way.
+
 #### Plan Identity and Exchange Reuse
 
 Spark's `ReuseExchangeAndSubquery` identifies equivalent plans through canonicalization and may
