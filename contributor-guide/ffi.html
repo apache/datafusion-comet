@@ -766,6 +766,15 @@ level and shares every other buffer. <code class="docutils literal notranslate">
 <code class="docutils literal notranslate"><span class="pre">JvmScalarUdfExpr</span></code> applies it to the inputs of the JVM UDF bridge. A new native to JVM export path has to call it too,
 or sliced booleans reach the JVM misaligned
 (<a class="reference external" href="https://github.com/apache/datafusion-comet/issues/6288">#6288</a>).</p>
+<p><code class="docutils literal notranslate"><span class="pre">zero_offsets</span></code> leaves the offsets of a sliced string, binary, list or map array as they are. arrow-rs slices those
+arrays by moving the start of their offsets, so the JVM imports them with offsets that start past zero and with the
+rows before the slice still at the front of the data buffer, or of the child vector for a list or map. Reading values
+through the offsets is correct, but Arrow Java 18.3’s <code class="docutils literal notranslate"><span class="pre">VectorSchemaRootAppender</span></code> assumes offsets that start at zero and
+folds those rows into the first value it appends, and <code class="docutils literal notranslate"><span class="pre">VectorUnloader</span></code> writes them into an IPC stream. So
+<code class="docutils literal notranslate"><span class="pre">Utils.serializeBatches</span></code> rebases a broadcast batch’s offsets with <code class="docutils literal notranslate"><span class="pre">VectorSchemaRoot.slice</span></code> before
+<code class="docutils literal notranslate"><span class="pre">coalesceBroadcastBatches</span></code> appends it (<a class="reference external" href="https://github.com/apache/datafusion-comet/issues/6779">#6779</a>), and code that
+appends imported vectors has to rebase them too. The in-memory cache serializer still writes the earlier rows
+(<a class="reference external" href="https://github.com/apache/datafusion-comet/issues/6995">#6995</a>).</p>
 </section>
 <section id="id2">
 <h3>Ownership and Lifecycle<a class="headerlink" href="#id2" title="Link to this heading">#</a></h3>
