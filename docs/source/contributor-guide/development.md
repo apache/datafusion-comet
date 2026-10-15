@@ -606,6 +606,12 @@ still assert while recording, so a recorded file cannot contradict what hadoop-a
 file is written only when every case ran. Review the diff of the regenerated files before
 committing them: each line that changes is a behaviour change on that hadoop-azure release.
 
+The FileSystem cross-check in `AbfsAuthParitySuite` is tagged `org.apache.comet.tags.AzureTest`.
+It initializes a real `AzureBlobFileSystem`, so it passes only when the test-scoped hadoop-azure
+matches the Hadoop the build runs on. A build against another Hadoop, where no matching
+hadoop-azure is pinned, can skip it with `-DtagsToExclude=org.apache.comet.tags.AzureTest` and
+still run the resolver cases.
+
 ## Benchmark
 
 There's a `make` command to run micro benchmarks in the repo. For
