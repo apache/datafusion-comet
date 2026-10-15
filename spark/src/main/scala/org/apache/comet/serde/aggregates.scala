@@ -749,6 +749,7 @@ object CometPercentile extends CometAggregateExpressionSerde[Percentile] {
     expr.child.dataType match {
       case FloatType | DoubleType if !keepsSignedZeroKeys(SPARK_VERSION) =>
         Compatible(Some(signedZeroKeysNote))
+      case FloatType | DoubleType => Compatible(Some(zeroOrderNote))
       case _: NumericType => Compatible()
       case _ => Unsupported(Some(inputTypeReason))
     }
