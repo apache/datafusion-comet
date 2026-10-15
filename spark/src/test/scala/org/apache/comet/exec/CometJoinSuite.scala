@@ -184,6 +184,26 @@ class CometJoinSuite extends CometTestBase {
     }
   }
 
+  test("cross join stays on Spark by default (native path is opt-in)") {
+    // Native CrossJoinExec can't spill, so it's opt-in; by default the cross join stays on Spark.
+    withSQLConf(
+      SQLConf.AUTO_BROADCASTJOIN_THRESHOLD.key -> "-1",
+      SQLConf.ADAPTIVE_AUTO_BROADCASTJOIN_THRESHOLD.key -> "-1",
+      SQLConf.ADAPTIVE_EXECUTION_ENABLED.key -> "false") {
+      withParquetTable(Seq((0, 10), (1, 11), (2, 12)), "l") {
+        withParquetTable(Seq((0, 100), (1, 101)), "r") {
+          val df = sql(
+            "SELECT * FROM (SELECT /*+ COALESCE(1) */ * FROM l) l " +
+              "CROSS JOIN (SELECT /*+ COALESCE(1) */ * FROM r) r")
+          checkSparkAnswer(df)
+          assert(
+            !df.queryExecution.executedPlan.exists(_.isInstanceOf[CometCartesianProductExec]),
+            "cross join must stay on Spark when cartesianProduct.enabled is false")
+        }
+      }
+    }
+  }
+
   test("join - self join") {
     val df1 = testData.select(testData("key")).as("df1")
     val df2 = testData.select(testData("key")).as("df2")
