@@ -19,6 +19,8 @@
 
 package org.apache.comet.expressions
 
+import scala.util.Try
+
 import org.apache.spark.sql.catalyst.expressions.{Attribute, Cast, Expression, Literal}
 import org.apache.spark.sql.internal.SQLConf
 import org.apache.spark.sql.types.{ArrayType, DataType, DataTypes, DecimalType, MapType, NullType, StructType, TimestampNTZType, TimestampType}
@@ -105,6 +107,13 @@ object CometCast
       if (isVariantType(cast.child.dataType) || isVariantType(cast.dataType)) {
         return unsupported(cast.child.dataType, cast.dataType)
       }
+      if (Try(cast.eval()).isFailure) {
+        // The cast fails for this literal, and Spark's `ConstantFolding` kept it because it sits
+        // in a conditional branch that may never run. Spark's own `Cast` must raise the error
+        // only when a row reaches it, so route it through the JVM codegen dispatcher (or fall
+        // back to Spark) rather than a native cast whose parsing could accept the literal.
+        return Unsupported(Some(failedLiteralCastReason))
+      }
       Compatible()
     } else if (CometTimeZone.nativeId(cast.timeZoneId).isEmpty) {
       CometTimeZone.supportLevel(cast.timeZoneId)
@@ -134,6 +143,9 @@ object CometCast
         }
     }
   }
+
+  private val failedLiteralCastReason: String =
+    "Cast of a literal that fails to evaluate runs Spark's Cast so it fails only if reached"
 
 //  Some casts like date -> int/byte / long are always null. Terminate early in planning
   private def isAlwaysCastToNull(

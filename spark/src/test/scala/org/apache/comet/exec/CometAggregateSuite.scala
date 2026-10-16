@@ -24,11 +24,11 @@ import java.util.concurrent.atomic.AtomicLong
 import scala.util.Random
 
 import org.apache.hadoop.fs.Path
-import org.apache.spark.{CometListenerBusUtils, SparkConf}
+import org.apache.spark.{CometListenerBusUtils, SparkConf, SparkThrowable}
 import org.apache.spark.scheduler.{SparkListener, SparkListenerTaskEnd}
 import org.apache.spark.sql.{Column, CometTestBase, DataFrame, QueryTest, Row}
 import org.apache.spark.sql.catalyst.expressions.{Cast, Literal}
-import org.apache.spark.sql.catalyst.expressions.aggregate.{AggregateMode, Final, Partial, PartialMerge, RegrR2}
+import org.apache.spark.sql.catalyst.expressions.aggregate.{AggregateMode, Corr, Final, Partial, PartialMerge, RegrR2}
 import org.apache.spark.sql.catalyst.optimizer.EliminateSorts
 import org.apache.spark.sql.catalyst.plans.physical.{HashPartitioning, RangePartitioning}
 import org.apache.spark.sql.comet.{CometBaseAggregateExec, CometFilterExec, CometHashAggregateExec, CometNativeExec, CometProjectExec, CometSortAggregateExec, CometSortExec}
@@ -46,7 +46,7 @@ import org.apache.comet.CometConf
 import org.apache.comet.CometConf.COMET_EXEC_STRICT_FLOATING_POINT
 import org.apache.comet.CometSparkSessionExtensions.{isSpark35Plus, isSpark40Plus, isSpark41Plus}
 import org.apache.comet.rules.CometExecRule
-import org.apache.comet.serde.{CometRegrR2, ExprOuterClass, RegrSparkVersions}
+import org.apache.comet.serde.{CometCorr, CometRegrR2, ExprOuterClass, RegrSparkVersions}
 import org.apache.comet.testing.{DataGenOptions, FuzzDataGenerator, ParquetGenerator, SchemaGenOptions}
 
 /**
@@ -1575,15 +1575,19 @@ class CometAggregateSuite extends CometTestBase with AdaptiveSparkPlanHelper {
         val path = new Path(dir.toURI.toString, "test")
         makeParquetFile(path, 1000, 10, dictionaryEnabled)
         withParquetTable(path.toUri.toString, "tbl") {
-          Seq("SUM", "AVG").foreach { FN =>
-            checkSparkAnswerAndOperator(
-              s"SELECT _g1, $FN(_8 + CAST(1 AS DECIMAL(20, 10))) FROM tbl GROUP BY _g1")
-            checkSparkAnswerAndOperator(
-              s"SELECT _g1, $FN(_8 - CAST(-1 AS DECIMAL(10, 3))) FROM tbl GROUP BY _g1")
-            checkSparkAnswerAndOperator(
-              s"SELECT _g1, $FN(_9 * CAST(3.14 AS DECIMAL(4, 3))) FROM tbl GROUP BY _g1")
-            checkSparkAnswerAndOperator(
-              s"SELECT _g1, $FN(_9 / CAST(1.2345 AS DECIMAL(35, 10))) FROM tbl GROUP BY _g1")
+          // AVG over the precision 38 products and quotients of _9 falls back by default
+          // (#7007). Opt in to keep comparing the native AVG with Spark on them.
+          withSQLConf(CometConf.getExprAllowIncompatConfigKey("Average") -> "true") {
+            Seq("SUM", "AVG").foreach { FN =>
+              checkSparkAnswerAndOperator(
+                s"SELECT _g1, $FN(_8 + CAST(1 AS DECIMAL(20, 10))) FROM tbl GROUP BY _g1")
+              checkSparkAnswerAndOperator(
+                s"SELECT _g1, $FN(_8 - CAST(-1 AS DECIMAL(10, 3))) FROM tbl GROUP BY _g1")
+              checkSparkAnswerAndOperator(
+                s"SELECT _g1, $FN(_9 * CAST(3.14 AS DECIMAL(4, 3))) FROM tbl GROUP BY _g1")
+              checkSparkAnswerAndOperator(
+                s"SELECT _g1, $FN(_9 / CAST(1.2345 AS DECIMAL(35, 10))) FROM tbl GROUP BY _g1")
+            }
           }
         }
       }
@@ -2147,35 +2151,47 @@ class CometAggregateSuite extends CometTestBase with AdaptiveSparkPlanHelper {
 
   test("avg/sum overflow on decimal(38, _)") {
     val table = "overflow_decimal_38"
+    // AVG over DECIMAL(38, 2) falls back by default (#7007). Opt in to keep comparing the native
+    // grouped AVG with Spark on sums that leave the precision.
     withTable(table) {
-      sql(s"create table $table(a decimal(38, 2), b INT) using parquet")
-      sql(s"insert into $table values(42.00, 1), (999999999999999999999999999999999999.99, 1)")
-      checkSparkAnswerAndNumOfAggregates(s"select sum(a) from $table", 2)
-      sql(s"insert into $table values(42.00, 2), (99999999999999999999999999999999.99, 2)")
-      sql(s"insert into $table values(999999999999999999999999999999999999.99, 3)")
-      sql(s"insert into $table values(99999999999999999999999999999999.99, 4)")
-      checkSparkAnswerAndNumOfAggregates(
-        s"select avg(a), sum(a) from $table group by b order by b",
-        2)
+      withSQLConf(CometConf.getExprAllowIncompatConfigKey("Average") -> "true") {
+        sql(s"create table $table(a decimal(38, 2), b INT) using parquet")
+        sql(s"insert into $table values(42.00, 1), (999999999999999999999999999999999999.99, 1)")
+        checkSparkAnswerAndNumOfAggregates(s"select sum(a) from $table", 2)
+        sql(s"insert into $table values(42.00, 2), (99999999999999999999999999999999.99, 2)")
+        sql(s"insert into $table values(999999999999999999999999999999999999.99, 3)")
+        sql(s"insert into $table values(99999999999999999999999999999999.99, 4)")
+        checkSparkAnswerAndNumOfAggregates(
+          s"select avg(a), sum(a) from $table group by b order by b",
+          2)
+      }
     }
   }
 
   /**
-   * Writes one DECIMAL(38,38) row per `(k, v)` pair to a single parquet file, keeping the given
-   * order so a test controls which running sums are formed, and exposes it as `tableName`.
+   * Writes one row per `(k, v)` pair, with `v` cast to `decimalType`, to a single parquet file,
+   * keeping the given order so a test controls which running sums are formed, and exposes it as
+   * `tableName`.
    */
-  private def withMaxPrecisionDecimalTable(values: Seq[(Int, String)], tableName: String)(
-      f: => Unit): Unit = {
+  private def withDecimalTable(
+      values: Seq[(Int, String)],
+      decimalType: String,
+      tableName: String)(f: => Unit): Unit = {
     withTempPath { dir =>
       values
         .toDF("k", "raw_v")
-        .selectExpr("k", "CAST(raw_v AS DECIMAL(38,38)) AS v")
+        .selectExpr("k", s"CAST(raw_v AS $decimalType) AS v")
         .coalesce(1)
         .write
         .parquet(dir.toString)
       withParquetTable(dir.toString, tableName)(f)
     }
   }
+
+  /** [[withDecimalTable]] for DECIMAL(38,38), whose sums are at the maximum precision. */
+  private def withMaxPrecisionDecimalTable(values: Seq[(Int, String)], tableName: String)(
+      f: => Unit): Unit =
+    withDecimalTable(values, "DECIMAL(38,38)", tableName)(f)
 
   // Running sums 0.6, 1.2, 0.6: the intermediate leaves DECIMAL(38,38) but the final fits.
   private val intermediateOverflowRows = Seq((1, "0.6"), (1, "0.6"), (1, "-0.6"))
@@ -2515,6 +2531,186 @@ class CometAggregateSuite extends CometTestBase with AdaptiveSparkPlanHelper {
     }
   }
 
+  /**
+   * Asserts that `df` runs its aggregates in Spark with `reason` recorded and gives Spark's
+   * answer, `expected`.
+   */
+  private def assertDecimalAvgFallsBack(df: DataFrame, reason: String, expected: Row): Unit = {
+    checkSparkAnswerAndFallbackReason(df, reason)
+    checkAnswer(df, expected)
+    val nativeAggregates = stripAQEPlan(df.queryExecution.executedPlan).collect {
+      case agg: CometHashAggregateExec => agg
+    }
+    assert(
+      nativeAggregates.isEmpty,
+      s"expected the aggregate to run in Spark, got $nativeAggregates")
+  }
+
+  private val ungroupedMaxPrecisionAvgReason =
+    "Ungrouped decimal AVG with a maximum-precision sum cannot match Spark's aggregation buffer"
+
+  test("decimal AVG whose rescaled sum can overflow falls back") {
+    // The native AVG multiplies the sum by 10^4 in an i128 before it divides by the count. Two
+    // DECIMAL(38,18) rows of 9000000000000000 sum to 1.8e34 unscaled, which the rescale takes
+    // out of the i128, so the native AVG returned NULL where Spark returns the average. Under
+    // ANSI it also returned NULL for an average that Spark rejects as out of range.
+    // https://github.com/apache/datafusion-comet/issues/7007
+    val reason = "a large sum of a DECIMAL with precision 25 or more overflows when the native " +
+      "average rescales it"
+    val average = new java.math.BigDecimal("9000000000000000.0000000000000000000000")
+    Seq(true, false).foreach { ansiEnabled =>
+      withSQLConf(
+        SQLConf.ANSI_ENABLED.key -> ansiEnabled.toString,
+        CometConf.COMET_SHUFFLE_ENABLED.key -> "true",
+        CometConf.COMET_SHUFFLE_MODE.key -> "native") {
+        withDecimalTable(
+          Seq((1, "9000000000000000"), (1, "9000000000000000")),
+          "DECIMAL(38,18)",
+          "dec_avg_rescale") {
+          Seq("AVG", "try_avg").foreach { function =>
+            assertDecimalAvgFallsBack(
+              sql(s"SELECT k, $function(v) FROM dec_avg_rescale GROUP BY k"),
+              reason,
+              Row(1, average))
+          }
+          // Ungrouped, the sum is also at the maximum precision, which declines the operator
+          // before its aggregates are converted.
+          assertDecimalAvgFallsBack(
+            sql("SELECT AVG(v) FROM dec_avg_rescale"),
+            ungroupedMaxPrecisionAvgReason,
+            Row(average))
+        }
+        // A single row of 1e17 averages to a value that DECIMAL(38,22) cannot hold.
+        withDecimalTable(Seq((1, "100000000000000000")), "DECIMAL(38,18)", "dec_avg_range") {
+          val df = sql("SELECT k, AVG(v) FROM dec_avg_range GROUP BY k")
+          if (ansiEnabled) {
+            val (sparkError, cometError) = checkSparkAnswerMaybeThrows(df)
+            Seq("Spark" -> sparkError, "Comet" -> cometError).foreach { case (engine, error) =>
+              assert(
+                error.exists(_.getMessage.contains("NUMERIC_VALUE_OUT_OF_RANGE")),
+                s"expected $engine to raise NUMERIC_VALUE_OUT_OF_RANGE, got $error")
+            }
+          } else {
+            assertDecimalAvgFallsBack(df, reason, Row(1, null))
+          }
+        }
+      }
+    }
+    withSQLConf(
+      CometConf.COMET_SHUFFLE_ENABLED.key -> "true",
+      CometConf.COMET_SHUFFLE_MODE.key -> "native") {
+      // The rescaled sum always fits up to input precision 24.
+      withDecimalTable(Seq((1, "1.5"), (1, "2.5")), "DECIMAL(24,2)", "dec_avg_24") {
+        checkSparkAnswerAndOperator("SELECT k, AVG(v) FROM dec_avg_24 GROUP BY k")
+        checkSparkAnswerAndOperator("SELECT AVG(v) FROM dec_avg_24")
+      }
+      // Precision 25 falls back grouped or not, unless the user accepts the difference.
+      withDecimalTable(Seq((1, "1.5"), (1, "2.5")), "DECIMAL(25,2)", "dec_avg_25") {
+        val two = new java.math.BigDecimal("2.000000")
+        assertDecimalAvgFallsBack(
+          sql("SELECT k, AVG(v) FROM dec_avg_25 GROUP BY k"),
+          reason,
+          Row(1, two))
+        assertDecimalAvgFallsBack(sql("SELECT AVG(v) FROM dec_avg_25"), reason, Row(two))
+        withSQLConf(CometConf.getExprAllowIncompatConfigKey("Average") -> "true") {
+          checkSparkAnswerAndOperator("SELECT k, AVG(v) FROM dec_avg_25 GROUP BY k")
+          checkSparkAnswerAndOperator("SELECT AVG(v) FROM dec_avg_25")
+        }
+      }
+      // DECIMAL(38,38) averages at its own scale, so there is nothing to rescale.
+      withMaxPrecisionDecimalTable(Seq((1, "0.2"), (1, "0.4")), "dec_avg_no_rescale") {
+        checkSparkAnswerAndOperator("SELECT k, AVG(v) FROM dec_avg_no_rescale GROUP BY k")
+      }
+    }
+  }
+
+  test("ungrouped decimal AVG at maximum precision falls back") {
+    // Spark keeps an ungrouped running sum unbounded under codegen, so DECIMAL(38,38) inputs
+    // 0.6, 0.6, -0.6 average to 0.2. The native AVG skipped the row that takes its sum out of the
+    // precision and returned 0. Its merge latched partials of 0.6 and 0.6 to NULL, or raised
+    // under ANSI, where Spark returns 0.6.
+    // https://github.com/apache/datafusion-comet/issues/5418
+    Seq(true, false).foreach { ansiEnabled =>
+      withSQLConf(
+        SQLConf.ANSI_ENABLED.key -> ansiEnabled.toString,
+        CometConf.COMET_SHUFFLE_ENABLED.key -> "true",
+        CometConf.COMET_SHUFFLE_MODE.key -> "native") {
+        Seq(intermediateOverflowRows, intermediateOverflowRowsWithNulls).foreach { rows =>
+          withMaxPrecisionDecimalTable(rows, "dec_avg_ungrouped") {
+            Seq("AVG", "try_avg").foreach { function =>
+              assertDecimalAvgFallsBack(
+                sql(s"SELECT $function(v) FROM dec_avg_ungrouped"),
+                ungroupedMaxPrecisionAvgReason,
+                Row(new java.math.BigDecimal("0.2").setScale(38)))
+            }
+          }
+        }
+        withMaxPrecisionDecimalTable(Seq((1, "0.6")), "dec_avg_merge_a") {
+          withMaxPrecisionDecimalTable(Seq((1, "0.6")), "dec_avg_merge_b") {
+            assertDecimalAvgFallsBack(
+              sql("SELECT AVG(v) FROM " +
+                "(SELECT v FROM dec_avg_merge_a UNION ALL SELECT v FROM dec_avg_merge_b)"),
+              ungroupedMaxPrecisionAvgReason,
+              Row(new java.math.BigDecimal("0.6").setScale(38)))
+          }
+        }
+        // Grouped, both engines latch once the running sum leaves the precision, so the
+        // aggregate stays native.
+        withMaxPrecisionDecimalTable(intermediateOverflowRows, "dec_avg_grouped") {
+          val df = sql("SELECT k, AVG(v) FROM dec_avg_grouped GROUP BY k")
+          if (ansiEnabled) {
+            checkSparkError(df, "ARITHMETIC_OVERFLOW")
+          } else {
+            checkSparkAnswerAndOperator(df)
+            checkAnswer(df, Row(1, null))
+          }
+        }
+      }
+    }
+  }
+
+  test("decimal AVG with object hash aggregate falls back at maximum precision") {
+    // collect_list makes Spark plan ObjectHashAggregateExec, whose buffer keeps the running sum
+    // unbounded, so Spark averages DECIMAL(38,38) inputs 0.6, 0.6, -0.6 to 0.2. The native
+    // grouped AVG latched to NULL, or raised under ANSI, and the ungrouped one returned 0.
+    // https://github.com/apache/datafusion-comet/issues/5509
+    val reason = "Decimal AVG with a maximum-precision sum cannot match Spark's unbounded " +
+      "object aggregation buffer"
+    val average = new java.math.BigDecimal("0.2").setScale(38)
+    Seq(true, false).foreach { ansiEnabled =>
+      withSQLConf(
+        SQLConf.ANSI_ENABLED.key -> ansiEnabled.toString,
+        SQLConf.USE_OBJECT_HASH_AGG.key -> "true",
+        CometConf.COMET_SHUFFLE_ENABLED.key -> "true",
+        CometConf.COMET_SHUFFLE_MODE.key -> "native") {
+        withMaxPrecisionDecimalTable(intermediateOverflowRows, "dec_avg_object") {
+          Seq(
+            "SELECT k, AVG(v), collect_list(k) FROM dec_avg_object GROUP BY k" ->
+              Row(1, average, Seq(1, 1, 1)),
+            "SELECT AVG(v), collect_list(k) FROM dec_avg_object" ->
+              Row(average, Seq(1, 1, 1))).foreach { case (query, expected) =>
+            val df = sql(query)
+            assert(
+              df.queryExecution.sparkPlan.exists(_.isInstanceOf[ObjectHashAggregateExec]),
+              s"expected Spark to plan an object hash aggregate: ${df.queryExecution.sparkPlan}")
+            assertDecimalAvgFallsBack(df, reason, expected)
+          }
+        }
+      }
+    }
+    // With headroom above the input precision the same queries stay native.
+    withSQLConf(
+      SQLConf.USE_OBJECT_HASH_AGG.key -> "true",
+      CometConf.COMET_SHUFFLE_ENABLED.key -> "true",
+      CometConf.COMET_SHUFFLE_MODE.key -> "native") {
+      withDecimalTable(intermediateOverflowRows, "DECIMAL(10,2)", "dec_avg_object_small") {
+        checkSparkAnswerAndOperator(
+          "SELECT k, AVG(v), collect_list(k) FROM dec_avg_object_small GROUP BY k")
+        checkSparkAnswerAndOperator("SELECT AVG(v), collect_list(k) FROM dec_avg_object_small")
+      }
+    }
+  }
+
   test("avg decimal with nothing to average") {
     // There is no sum to overflow when the input is empty or entirely null, so avg must
     // return null rather than raising ARITHMETIC_OVERFLOW in ANSI mode.
@@ -2562,9 +2758,13 @@ class CometAggregateSuite extends CometTestBase with AdaptiveSparkPlanHelper {
   }
 
   test("final decimal avg") {
+    // AVG over DECIMAL(38, 37) falls back by default (#7007). Opt in to keep comparing the
+    // native grouped AVG with Spark. Ungrouped, its sum at the maximum precision stays in Spark
+    // regardless (#5418).
     withSQLConf(
       CometConf.COMET_SHUFFLE_ENABLED.key -> "true",
-      CometConf.COMET_SHUFFLE_MODE.key -> "native") {
+      CometConf.COMET_SHUFFLE_MODE.key -> "native",
+      CometConf.getExprAllowIncompatConfigKey("Average") -> "true") {
       Seq(true, false).foreach { dictionaryEnabled =>
         withSQLConf("parquet.enable.dictionary" -> dictionaryEnabled.toString) {
           val table = s"final_decimal_avg_$dictionaryEnabled"
@@ -2582,13 +2782,13 @@ class CometAggregateSuite extends CometTestBase with AdaptiveSparkPlanHelper {
             sql(s"insert into $table values(0.13344406545919155429936259114971302408, 5)")
 
             checkSparkAnswerAndNumOfAggregates(s"SELECT b , AVG(a) FROM $table GROUP BY b", 2)
-            checkSparkAnswerAndNumOfAggregates(s"SELECT AVG(a) FROM $table", 2)
+            checkSparkAnswerAndNumOfAggregates(s"SELECT AVG(a) FROM $table", 0)
             checkSparkAnswerAndNumOfAggregates(
               s"SELECT b, MIN(a), MAX(a), COUNT(a), SUM(a), AVG(a) FROM $table GROUP BY b",
               2)
             checkSparkAnswerAndNumOfAggregates(
               s"SELECT MIN(a), MAX(a), COUNT(a), SUM(a), AVG(a) FROM $table",
-              2)
+              0)
           }
         }
       }
@@ -2631,10 +2831,13 @@ class CometAggregateSuite extends CometTestBase with AdaptiveSparkPlanHelper {
   test("Decimal Avg with DF") {
     Seq(true, false).foreach { dictionaryEnabled =>
       Seq(true, false).foreach { nativeShuffleEnabled =>
+        // AVG over _9, a DECIMAL(38, 37), falls back by default (#7007). Opt in to keep
+        // comparing the native grouped AVG with Spark.
         withSQLConf(
           CometConf.COMET_SHUFFLE_ENABLED.key -> nativeShuffleEnabled.toString,
           CometConf.COMET_SHUFFLE_MODE.key -> "native",
-          CometConf.getExprAllowIncompatConfigKey(classOf[Cast]) -> "true") {
+          CometConf.getExprAllowIncompatConfigKey(classOf[Cast]) -> "true",
+          CometConf.getExprAllowIncompatConfigKey("Average") -> "true") {
           withTempDir { dir =>
             val path = new Path(dir.toURI.toString, "test")
             makeParquetFile(path, 1000, 20, dictionaryEnabled)
@@ -2663,9 +2866,8 @@ class CometAggregateSuite extends CometTestBase with AdaptiveSparkPlanHelper {
               assert(getNumCometHashAggregate(
                 sql("SELECT AVG(_8) FROM tbl")) == expectedNumOfCometAggregates)
 
-              checkSparkAnswerAndNumOfAggregates(
-                "SELECT AVG(_9) FROM tbl",
-                expectedNumOfCometAggregates)
+              // Ungrouped, the sum of _9 at the maximum precision stays in Spark (#5418).
+              checkSparkAnswerAndNumOfAggregates("SELECT AVG(_9) FROM tbl", 0)
             }
           }
         }
@@ -3249,6 +3451,7 @@ class CometAggregateSuite extends CometTestBase with AdaptiveSparkPlanHelper {
                 if (ansi) {
                   val error = checkSparkError(df, "DIVIDE_BY_ZERO")
                   assert(error.getSqlState == "22012")
+                  checkQueryContextMatchesSpark(error, query)
                 } else {
                   checkSparkAnswer(df)
                   checkCometAnswer(df, Seq(Row(null)))
@@ -3258,6 +3461,18 @@ class CometAggregateSuite extends CometTestBase with AdaptiveSparkPlanHelper {
           }
         }
       }
+    }
+  }
+
+  /** Checks that Comet's error points at the same fragment of `query` as Spark's. */
+  private def checkQueryContextMatchesSpark(error: SparkThrowable, query: String): Unit = {
+    // withSQLConf returns Unit on Spark 3.x, so compare inside the block.
+    withSQLConf(CometConf.COMET_ENABLED.key -> "false") {
+      val failure = intercept[Throwable](sql(query).collect())
+      val expected = causeChain(failure).collect { case e: SparkThrowable => e }.last
+      assert(
+        error.getQueryContext.map(_.fragment()).toSeq ==
+          expected.getQueryContext.map(_.fragment()).toSeq)
     }
   }
 
@@ -3350,6 +3565,78 @@ class CometAggregateSuite extends CometTestBase with AdaptiveSparkPlanHelper {
               assert(statsAggregates.exists(_.modes.contains(Partial)))
               assert(statsAggregates.exists(_.modes.contains(Final)))
               checkAnswer(sql(statsQuery), Seq(Row(null, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0)))
+            }
+          }
+        }
+      }
+    }
+  }
+
+  test("statistical aggregates corr preserves its captured evaluation mode") {
+    for (ansi <- Seq(false, true)) {
+      withSQLConf(SQLConf.ANSI_ENABLED.key -> ansi.toString) {
+        val expr = Corr(Literal(1.0), Literal(2.0))
+        withSQLConf(SQLConf.ANSI_ENABLED.key -> (!ansi).toString) {
+          val serialized = CometCorr.convert(
+            expr.toAggregateExpression(),
+            expr,
+            Seq.empty,
+            binding = false,
+            conf = SQLConf.get)
+          assert(serialized.isDefined)
+          val expected =
+            if (ansi) ExprOuterClass.EvalMode.ANSI else ExprOuterClass.EvalMode.LEGACY
+          assert(serialized.get.getCorrelation.getEvalMode == expected)
+        }
+      }
+    }
+  }
+
+  test("statistical aggregates corr zero denominator respects ANSI mode") {
+    // https://github.com/apache/datafusion-comet/issues/6481
+    withSQLConf(
+      SQLConf.ADAPTIVE_EXECUTION_ENABLED.key -> "false",
+      SQLConf.SHUFFLE_PARTITIONS.key -> "1",
+      SQLConf.FILES_MAX_PARTITION_BYTES.key -> "1048576",
+      SQLConf.FILES_OPEN_COST_IN_BYTES.key -> "1048576",
+      "spark.sql.files.minPartitionNum" -> "1",
+      CometConf.COMET_SHUFFLE_ENABLED.key -> "true",
+      CometConf.COMET_SHUFFLE_MODE.key -> "native") {
+      for (numPartitions <- Seq(1, 2)) {
+        withTempPath { path =>
+          // x is constant at 0.1, which binary floating point cannot represent exactly.
+          // Two files also exercise merging the partials in the final aggregate.
+          val files = if (numPartitions == 1) Seq(0 until 6) else Seq(0 until 3, 3 until 6)
+          files.foreach { ys =>
+            ys.map(y => (0, y.toDouble, 0.1))
+              .toDF("g", "y", "x")
+              .coalesce(1)
+              .write
+              .mode("append")
+              .parquet(path.getCanonicalPath)
+          }
+          withParquetTable(path.getCanonicalPath, "corr_constant") {
+            assert(spark.table("corr_constant").rdd.getNumPartitions == numPartitions)
+            // The LEGACY results on this data are covered by "statistical aggregates merge
+            // fractional constants across partitions".
+            for {
+              groupBy <- Seq("", " GROUP BY g")
+              args <- Seq("y, x", "x, y", "x, x")
+            } {
+              withSQLConf(SQLConf.ANSI_ENABLED.key -> "true") {
+                val query = s"SELECT corr($args) FROM corr_constant" + groupBy
+                val df = sql(query)
+                val aggregates = stripAQEPlan(df.queryExecution.executedPlan).collect {
+                  case a: CometHashAggregateExec => a
+                }
+                assert(aggregates.size == 2)
+                assert(aggregates.exists(_.modes.contains(Partial)))
+                assert(aggregates.exists(_.modes.contains(Final)))
+                // Spark divides ck by sqrt(xMk * yMk) = 0.
+                val error = checkSparkError(df, "DIVIDE_BY_ZERO")
+                assert(error.getSqlState == "22012")
+                checkQueryContextMatchesSpark(error, query)
+              }
             }
           }
         }
@@ -3895,8 +4182,12 @@ class CometAggregateSuite extends CometTestBase with AdaptiveSparkPlanHelper {
       (null.asInstanceOf[java.math.BigDecimal], 1),
       (new java.math.BigDecimal("30.00"), 2))
 
+    // The BigDecimal values are DECIMAL(38, 18), whose AVG falls back by default (#7007). Opt in
+    // to check the native AVG's nullability.
     Seq(true, false).foreach { ansiEnabled =>
-      withSQLConf(SQLConf.ANSI_ENABLED.key -> ansiEnabled.toString) {
+      withSQLConf(
+        SQLConf.ANSI_ENABLED.key -> ansiEnabled.toString,
+        CometConf.getExprAllowIncompatConfigKey("Average") -> "true") {
         withParquetTable(nonNullableData, "tbl") {
           val sumRes = sql("SELECT _2, sum(_1) FROM tbl GROUP BY _2")
           checkSparkAnswerAndOperator(sumRes)

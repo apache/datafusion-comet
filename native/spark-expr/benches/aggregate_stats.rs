@@ -38,7 +38,8 @@ use datafusion::physical_expr::PhysicalExpr;
 use datafusion::physical_plan::aggregates::{AggregateExec, AggregateMode, PhysicalGroupBy};
 use datafusion::physical_plan::ExecutionPlan;
 use datafusion_comet_spark_expr::{
-    ApproxPercentile, Avg, Correlation, Covariance, HllPlusPlus, SparkPercentile, Variance,
+    ApproxPercentile, Avg, Correlation, Covariance, EvalMode, HllPlusPlus, SparkPercentile,
+    Variance,
 };
 use futures::StreamExt;
 use std::hint::black_box;
@@ -194,6 +195,9 @@ fn comet_correlation() -> Arc<AggregateUDF> {
         "correlation",
         DataType::Float64,
         false,
+        EvalMode::Legacy,
+        None,
+        datafusion_comet_spark_expr::create_query_context_map(),
     )))
 }
 
