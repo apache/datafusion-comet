@@ -147,7 +147,7 @@ to protobuf and implements the partitioning logic in native code.
 
 Selection logic in `CometShuffleManager.shouldBypassMergeSort()`:
 
-- Uses bypass if partitions < threshold AND partitions × cores ≤ max threads
+- Uses bypass if partitions ≤ threshold AND partitions × cores ≤ max threads
 - Otherwise uses sort-based to avoid OOM from many concurrent writers
 
 ### Writers
@@ -212,6 +212,12 @@ writes the same Arrow IPC block format as native shuffle, so direct read applies
   `CometShuffleExternalSorter` spills at `spark.comet.shuffle.jvm.spillThreshold` alone, which
   defaults to `Int.MaxValue`, so on the sort path that trigger is effectively off by default.
 - `CometDiskBlockWriter` coordinates spilling across all partition writers (largest first)
+- The bypass writer's partition writers each hold a page as soon as they buffer a row. Each one
+  starts a batch on a 64 KiB page and doubles each further page, up to Spark's page size
+  (`spark.buffer.pageSize`, capped at 128 MB). Spark sizes its page so that a task fits only 16 to
+  32 of them, so pages of that size would make the writers spill each other about one row at a
+  time once a shuffle has more partitions than that. The sort-based writer has a single sorter per
+  task, and uses Spark's page size from the first page.
 
 ## Configuration
 
