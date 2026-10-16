@@ -2305,13 +2305,13 @@ to Spark (<a class="reference external" href="https://github.com/apache/datafusi
 </tr>
 <tr class="row-odd"><td><p><code class="docutils literal notranslate"><span class="pre">map_from_arrays</span></code></p></td>
 <td><p>✅</p></td>
-<td><p>Native</p></td>
-<td><p></p></td>
+<td><p>Hybrid</p></td>
+<td><p><code class="docutils literal notranslate"><span class="pre">FLOAT</span></code> or <code class="docutils literal notranslate"><span class="pre">DOUBLE</span></code> keys and <code class="docutils literal notranslate"><span class="pre">spark.sql.mapKeyDedupPolicy=LAST_WIN</span></code> route through the JVM codegen dispatcher (<a class="reference internal" href="#compatibility/expressions/map.md"><span class="xref myst">details</span></a>)</p></td>
 </tr>
 <tr class="row-even"><td><p><code class="docutils literal notranslate"><span class="pre">map_from_entries</span></code></p></td>
 <td><p>✅</p></td>
 <td><p>Hybrid</p></td>
-<td><p>BinaryType keys/values and <code class="docutils literal notranslate"><span class="pre">spark.sql.mapKeyDedupPolicy=LAST_WIN</span></code> route through the JVM codegen dispatcher (<a class="reference internal" href="#compatibility/expressions/map.md"><span class="xref myst">details</span></a>)</p></td>
+<td><p>BinaryType keys/values, <code class="docutils literal notranslate"><span class="pre">FLOAT</span></code> or <code class="docutils literal notranslate"><span class="pre">DOUBLE</span></code> keys and <code class="docutils literal notranslate"><span class="pre">spark.sql.mapKeyDedupPolicy=LAST_WIN</span></code> route through the JVM codegen dispatcher (<a class="reference internal" href="#compatibility/expressions/map.md"><span class="xref myst">details</span></a>)</p></td>
 </tr>
 <tr class="row-odd"><td><p><code class="docutils literal notranslate"><span class="pre">map_keys</span></code></p></td>
 <td><p>✅</p></td>

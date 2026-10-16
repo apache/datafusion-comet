@@ -897,8 +897,17 @@ plan. The bytes therefore do not distinguish canonicalized plans.</p></li>
 rather than serialization state; this method does not define equality.</p></li>
 </ul>
 <p>Some operators use a different convention. <code class="docutils literal notranslate"><span class="pre">CometNativeScanExec</span></code> compares <code class="docutils literal notranslate"><span class="pre">originalPlan</span></code> to retain
-scan identity, and its <code class="docutils literal notranslate"><span class="pre">doCanonicalize</span></code> canonicalizes that plan while removing unused dynamic
-pruning filters. <code class="docutils literal notranslate"><span class="pre">CometBroadcastExchangeExec</span></code> also compares <code class="docutils literal notranslate"><span class="pre">originalPlan</span></code> before canonicalization,
+scan identity. Its <code class="docutils literal notranslate"><span class="pre">doCanonicalize</span></code> passes <code class="docutils literal notranslate"><span class="pre">originalPlan</span></code> to
+<code class="docutils literal notranslate"><span class="pre">CometScanUtils.canonicalizeOriginalPlan</span></code>, which strips every dynamic pruning filter from that copy
+before canonicalizing it, because the copy is stale and no DPP rule rewrites it. The scan’s DPP
+identity comes from its top-level <code class="docutils literal notranslate"><span class="pre">partitionFilters</span></code> instead, where
+<code class="docutils literal notranslate"><span class="pre">CometScanUtils.filterUnusedDynamicPruningExpressions</span></code> drops only
+<code class="docutils literal notranslate"><span class="pre">DynamicPruningExpression(TrueLiteral)</span></code>, as Spark’s <code class="docutils literal notranslate"><span class="pre">FileSourceScanExec</span></code> does. A new scan with DPP
+support should call both helpers (the second when it keeps a <code class="docutils literal notranslate"><span class="pre">FileSourceScanExec</span></code> as
+<code class="docutils literal notranslate"><span class="pre">originalPlan</span></code>): a filter that still holds the adaptive broadcast placeholder must
+stay in the canonical form, because AQE canonicalizes a query stage as its exchange was before that
+placeholder was converted, and dropping it lets AQE reuse one stage for scans with different
+filters. <code class="docutils literal notranslate"><span class="pre">CometBroadcastExchangeExec</span></code> also compares <code class="docutils literal notranslate"><span class="pre">originalPlan</span></code> before canonicalization,
 but its <code class="docutils literal notranslate"><span class="pre">doCanonicalize</span></code> clears that reference and retains the canonicalized child. Follow each
 operator’s equality and canonicalization together rather than copying an exclusion in isolation.</p>
 </section>

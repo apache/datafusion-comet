@@ -62,10 +62,11 @@ it runs against:
   (before 3.5.2, unless probing merges them). Spark 4.2.0 normalizes their arguments in the plan
   (SPARK-54918). From 4.0.5, 4.1.4 and 4.2.1 they normalize while they evaluate instead
   (SPARK-59602).
-- Map construction (`ArrayBasedMapBuilder`) finds duplicate keys by `Double.equals` in Spark 3.4
-  and 3.5. From Spark 4.0 it normalizes each key first, unless
-  `spark.sql.legacy.disableMapKeyNormalization` is set
-  ([#6549](https://github.com/apache/datafusion-comet/issues/6549)).
+- Map construction (`ArrayBasedMapBuilder`) finds a duplicate `FLOAT` or `DOUBLE` key in a
+  `HashMap` of boxed values, which follows `Double.equals`, and a duplicate struct or array key in a
+  `TreeMap` in the SQL ordering. From Spark 4.0 it normalizes a `FLOAT` or `DOUBLE` key before the
+  lookup, unless `spark.sql.legacy.disableMapKeyNormalization` is set, and `map_from_entries`
+  stores the normalized key ([#6549](https://github.com/apache/datafusion-comet/issues/6549)).
 
 ## How Arrow and DataFusion differ
 

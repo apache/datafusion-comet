@@ -974,6 +974,14 @@ can be null, such as one built from nullable columns, <code class="docutils lite
 array whose elements cannot be null in ascending order, Spark’s generated code puts <code class="docutils literal notranslate"><span class="pre">-0.0</span></code> before
 <code class="docutils literal notranslate"><span class="pre">0.0</span></code>, and so does Comet. All three expressions run natively in strict floating-point mode.</p>
 </section>
+<section id="map-construction">
+<h2>Map construction<a class="headerlink" href="#map-construction" title="Link to this heading">#</a></h2>
+<p><code class="docutils literal notranslate"><span class="pre">map_from_arrays</span></code> and <code class="docutils literal notranslate"><span class="pre">map_from_entries</span></code> don’t build a map natively when its key type holds a
+<code class="docutils literal notranslate"><span class="pre">FLOAT</span></code> or <code class="docutils literal notranslate"><span class="pre">DOUBLE</span></code> at any depth. They run Spark’s code through the codegen dispatcher instead, so
+duplicate keys, including NaNs and zeros of either sign, behave as in Spark. <code class="docutils literal notranslate"><span class="pre">FLOAT</span></code> and <code class="docutils literal notranslate"><span class="pre">DOUBLE</span></code>
+values don’t affect either function. The expressions’ entries in the
+<a class="reference internal" href="#expressions/map.md"><span class="xref myst">expression compatibility guide</span></a> give the reason.</p>
+</section>
 </section>
 
 
@@ -1028,6 +1036,7 @@ array whose elements cannot be null in ascending order, Spark’s generated code
 <li class="toc-h2 nav-item toc-entry"><a class="reference internal nav-link" href="#min-max-greatest-and-least"><code class="docutils literal notranslate"><span class="pre">min</span></code>, <code class="docutils literal notranslate"><span class="pre">max</span></code>, <code class="docutils literal notranslate"><span class="pre">greatest</span></code>, and <code class="docutils literal notranslate"><span class="pre">least</span></code></a></li>
 <li class="toc-h2 nav-item toc-entry"><a class="reference internal nav-link" href="#array-distinct-and-union">Array distinct and union</a></li>
 <li class="toc-h2 nav-item toc-entry"><a class="reference internal nav-link" href="#array-contains-array-remove-and-sort-array"><code class="docutils literal notranslate"><span class="pre">array_contains</span></code>, <code class="docutils literal notranslate"><span class="pre">array_remove</span></code> and <code class="docutils literal notranslate"><span class="pre">sort_array</span></code></a></li>
+<li class="toc-h2 nav-item toc-entry"><a class="reference internal nav-link" href="#map-construction">Map construction</a></li>
 </ul>
   </nav></div>
 

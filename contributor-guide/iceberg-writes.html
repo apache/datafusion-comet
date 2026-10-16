@@ -1040,10 +1040,13 @@ the writer: run the write suites and the Iceberg Spark tests. The pin policy is 
 <tr class="row-even"><td><p>Rust tests in <code class="docutils literal notranslate"><span class="pre">iceberg_dictionary.rs</span></code></p></td>
 <td><p>The per-column dictionary choice against answers recorded from parquet-mr, including columns either side of its cut-off.</p></td>
 </tr>
-<tr class="row-odd"><td><p><code class="docutils literal notranslate"><span class="pre">CometIcebergWriteBenchmark</span></code></p></td>
+<tr class="row-odd"><td><p><code class="docutils literal notranslate"><span class="pre">iceberg_dictionary_chooser</span></code> benchmark in <code class="docutils literal notranslate"><span class="pre">native/core/benches</span></code></p></td>
+<td><p>The time one partition’s dictionary choice takes, over primitive, struct, array, map and nested columns.</p></td>
+</tr>
+<tr class="row-even"><td><p><code class="docutils literal notranslate"><span class="pre">CometIcebergWriteBenchmark</span></code></p></td>
 <td><p>Native versus iceberg-java for unpartitioned, clustered, fanout and copy-on-write delete writes. It checks each arm’s plan before timing it.</p></td>
 </tr>
-<tr class="row-even"><td><p><code class="docutils literal notranslate"><span class="pre">CometIcebergEndToEndBenchmark</span></code></p></td>
+<tr class="row-odd"><td><p><code class="docutils literal notranslate"><span class="pre">CometIcebergEndToEndBenchmark</span></code></p></td>
 <td><p>An Iceberg read, hash repartition and Iceberg write against stock Spark, over primitive, struct, array, map and nested columns. It checks each arm’s plan and the rows it wrote before timing it.</p></td>
 </tr>
 </tbody>

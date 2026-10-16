@@ -1402,7 +1402,7 @@ them like any other production setting.</p>
 <td><p>true</p></td>
 </tr>
 <tr class="row-odd"><td><p><code class="docutils literal notranslate"><span class="pre">spark.comet.exec.existenceJoin.enabled</span></code></p></td>
-<td><p>Whether to enable native ExistenceJoin, produced when EXISTS / NOT EXISTS / IN is combined with another predicate via OR. Sort-merge joins, residual (non-equi) join conditions, computed (non-column) join keys, and NOT IN fall back to Spark.</p></td>
+<td><p>Whether to enable native ExistenceJoin, produced when EXISTS / NOT EXISTS / IN is combined with another predicate via OR. Sort-merge joins, residual (non-equi) join conditions, computed (non-column) join keys, and NOT IN combined with OR fall back to Spark.</p></td>
 <td><p>true</p></td>
 </tr>
 <tr class="row-even"><td><p><code class="docutils literal notranslate"><span class="pre">spark.comet.exec.expand.enabled</span></code></p></td>

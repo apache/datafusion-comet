@@ -1033,7 +1033,7 @@ omitted from the tables below and may be reconsidered based on demand:</p>
 <tbody>
 <tr class="row-even"><td><p><code class="docutils literal notranslate"><span class="pre">BroadcastHashJoinExec</span></code></p></td>
 <td><p>✅</p></td>
-<td><p></p></td>
+<td><p>Falls back to Spark for a <code class="docutils literal notranslate"><span class="pre">NOT</span> <span class="pre">IN</span></code> (null-aware anti join) whose streamed side reports an ordering.</p></td>
 </tr>
 <tr class="row-odd"><td><p><code class="docutils literal notranslate"><span class="pre">ShuffledHashJoinExec</span></code></p></td>
 <td><p>✅</p></td>
@@ -1052,7 +1052,8 @@ omitted from the tables below and may be reconsidered based on demand:</p>
 </div>
 <p><code class="docutils literal notranslate"><span class="pre">ExistenceJoin</span></code> (produced when <code class="docutils literal notranslate"><span class="pre">EXISTS</span></code> / <code class="docutils literal notranslate"><span class="pre">IN</span></code> is combined with another predicate via <code class="docutils literal notranslate"><span class="pre">OR</span></code>) runs
 natively on <code class="docutils literal notranslate"><span class="pre">BroadcastHashJoinExec</span></code> and <code class="docutils literal notranslate"><span class="pre">ShuffledHashJoinExec</span></code>. Existence sort-merge joins, residual
-(non-equi) join conditions, computed (non-column) join keys, and <code class="docutils literal notranslate"><span class="pre">NOT</span> <span class="pre">IN</span></code> fall back to Spark.</p>
+(non-equi) join conditions, and computed (non-column) join keys fall back to Spark. So does <code class="docutils literal notranslate"><span class="pre">NOT</span> <span class="pre">IN</span></code>
+combined with <code class="docutils literal notranslate"><span class="pre">OR</span></code>, which Spark plans as an existence <code class="docutils literal notranslate"><span class="pre">BroadcastNestedLoopJoinExec</span></code>.</p>
 </section>
 <section id="exchanges">
 <h2>Exchanges<a class="headerlink" href="#exchanges" title="Link to this heading">#</a></h2>

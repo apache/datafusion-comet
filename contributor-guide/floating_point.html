@@ -626,10 +626,11 @@ into <code class="docutils literal notranslate"><span class="pre">0.0</span></co
 (before 3.5.2, unless probing merges them). Spark 4.2.0 normalizes their arguments in the plan
 (SPARK-54918). From 4.0.5, 4.1.4 and 4.2.1 they normalize while they evaluate instead
 (SPARK-59602).</p></li>
-<li><p>Map construction (<code class="docutils literal notranslate"><span class="pre">ArrayBasedMapBuilder</span></code>) finds duplicate keys by <code class="docutils literal notranslate"><span class="pre">Double.equals</span></code> in Spark 3.4
-and 3.5. From Spark 4.0 it normalizes each key first, unless
-<code class="docutils literal notranslate"><span class="pre">spark.sql.legacy.disableMapKeyNormalization</span></code> is set
-(<a class="reference external" href="https://github.com/apache/datafusion-comet/issues/6549">#6549</a>).</p></li>
+<li><p>Map construction (<code class="docutils literal notranslate"><span class="pre">ArrayBasedMapBuilder</span></code>) finds a duplicate <code class="docutils literal notranslate"><span class="pre">FLOAT</span></code> or <code class="docutils literal notranslate"><span class="pre">DOUBLE</span></code> key in a
+<code class="docutils literal notranslate"><span class="pre">HashMap</span></code> of boxed values, which follows <code class="docutils literal notranslate"><span class="pre">Double.equals</span></code>, and a duplicate struct or array key in a
+<code class="docutils literal notranslate"><span class="pre">TreeMap</span></code> in the SQL ordering. From Spark 4.0 it normalizes a <code class="docutils literal notranslate"><span class="pre">FLOAT</span></code> or <code class="docutils literal notranslate"><span class="pre">DOUBLE</span></code> key before the
+lookup, unless <code class="docutils literal notranslate"><span class="pre">spark.sql.legacy.disableMapKeyNormalization</span></code> is set, and <code class="docutils literal notranslate"><span class="pre">map_from_entries</span></code>
+stores the normalized key (<a class="reference external" href="https://github.com/apache/datafusion-comet/issues/6549">#6549</a>).</p></li>
 </ul>
 </section>
 <section id="how-arrow-and-datafusion-differ">
