@@ -94,7 +94,7 @@ use datafusion_comet_spark_expr::{
     create_comet_physical_fun, create_comet_physical_fun_with_eval_mode, BinaryOutputStyle,
     BloomFilterAgg, BloomFilterMightContain, CheckedBinaryExpr, CometCollectList, CometCollectSet,
     CsvWriteOptions, EvalMode, ListPositionsExpr, SparkArraysZipFunc, SparkBloomFilterVersion,
-    SparkListAgg, SparkPercentile, Subquery, SumInteger, ToCsv,
+    SparkListAgg, SparkPercentile, Subquery, SumInteger, ToCsv, ZeroOrder,
 };
 use datafusion_datasource::TableSchema;
 use iceberg::expr::Bind;
@@ -3601,7 +3601,14 @@ impl PhysicalPlanner {
                 // its own UDAF rather than DataFusion's percentile_cont because DataFusion
                 // quantizes the interpolation weight.
                 let percentile_value = percentile_value(expr.percentage.as_ref().unwrap())?;
-                let func = AggregateUDF::new_from_impl(SparkPercentile::try_new(percentile_value)?);
+                let func = AggregateUDF::new_from_impl(SparkPercentile::try_new(
+                    percentile_value,
+                    ZeroOrder {
+                        float_input: expr.float_input,
+                        signed_zero_keys: expr.signed_zero_keys,
+                        merge_stage: expr.merge_stage,
+                    },
+                )?);
                 AggregateExprBuilder::new(func.into(), vec![child, percentile])
                     .schema(schema)
                     .alias("percentile")

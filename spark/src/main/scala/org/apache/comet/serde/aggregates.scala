@@ -21,10 +21,12 @@ package org.apache.comet.serde
 
 import scala.jdk.CollectionConverters._
 
+import org.apache.spark.SPARK_VERSION
 import org.apache.spark.sql.catalyst.expressions.{Attribute, Cast, Divide, Expression, Literal}
-import org.apache.spark.sql.catalyst.expressions.aggregate.{AggregateExpression, AggregateFunction, ApproximatePercentile, Average, BitAndAgg, BitOrAgg, BitXorAgg, BloomFilterAggregate, CentralMomentAgg, CollectList, CollectSet, Complete, Corr, Count, Covariance, CovPopulation, CovSample, DeclarativeAggregate, First, HyperLogLogPlusPlus, Last, Max, MaxBy, MaxMinBy, Min, MinBy, Mode, Partial, Percentile, RegrIntercept, RegrR2, RegrReplacement, RegrSlope, RegrSXY, StddevPop, StddevSamp, Sum, VariancePop, VarianceSamp}
+import org.apache.spark.sql.catalyst.expressions.aggregate.{AggregateExpression, AggregateFunction, ApproximatePercentile, Average, BitAndAgg, BitOrAgg, BitXorAgg, BloomFilterAggregate, CentralMomentAgg, CollectList, CollectSet, Complete, Corr, Count, Covariance, CovPopulation, CovSample, DeclarativeAggregate, First, HyperLogLogPlusPlus, Last, Max, MaxBy, MaxMinBy, Min, MinBy, Mode, Partial, PartialMerge, Percentile, RegrIntercept, RegrR2, RegrReplacement, RegrSlope, RegrSXY, StddevPop, StddevSamp, Sum, VariancePop, VarianceSamp}
 import org.apache.spark.sql.catalyst.util.ArrayData
 import org.apache.spark.sql.comet.CometExecUtils
+import org.apache.spark.sql.comet.util.Utils
 import org.apache.spark.sql.internal.SQLConf
 import org.apache.spark.sql.types.{ArrayType, BinaryType, BooleanType, ByteType, DataType, DateType, DayTimeIntervalType, DecimalType, DoubleType, FloatType, IntegerType, LongType, MapType, NullType, NumericType, ShortType, StringType, StructType, TimestampNTZType, TimestampType, YearMonthIntervalType}
 
@@ -734,6 +736,20 @@ object CometPercentile extends CometAggregateExpressionSerde[Percentile] {
   private val descendingReason =
     "Descending order in `WITHIN GROUP (ORDER BY ... DESC)` is not supported."
   private val inputTypeReason = "Only numeric input types are supported."
+  private val signedZeroKeysNote =
+    "Before Spark 3.5.2, Spark can merge `0.0` and `-0.0` into one key and drop the count of " +
+      "one of them (SPARK-45599). Comet keeps every value, so when `FLOAT` or `DOUBLE` input " +
+      "holds both zeros the result can differ from Spark's."
+  // The replay models Spark's hash-based aggregation only; see
+  // `spark_iterates_negative_zero_first` in native/spark-expr for what it leaves out.
+  private val zeroOrderNote =
+    "From Spark 3.5.2, when `FLOAT` or `DOUBLE` input holds both `0.0` and `-0.0`, Spark " +
+      "ranks first the one its hash table reaches first. Comet replays those tables for each " +
+      "task's partial buffer and each merge stage, but not Spark's sort-based fallback once a " +
+      "task holds `spark.sql.objectHashAggregate.sortBased.fallbackThreshold` groups, nor its " +
+      "own aggregates emitting or spilling under memory pressure, so there its zero can differ " +
+      "from Spark's."
+  override def getCompatibleNotes(): Seq[String] = Seq(signedZeroKeysNote, zeroOrderNote)
   override def getUnsupportedReasons(): Seq[String] = Seq(
     arrayOfPercentagesReason,
     nonLiteralPercentageReason,
@@ -759,6 +775,9 @@ object CometPercentile extends CometAggregateExpressionSerde[Percentile] {
       return Unsupported(Some(descendingReason))
     }
     expr.child.dataType match {
+      case FloatType | DoubleType if !keepsSignedZeroKeys(SPARK_VERSION) =>
+        Compatible(Some(signedZeroKeysNote))
+      case FloatType | DoubleType => Compatible(Some(zeroOrderNote))
       case _: NumericType => Compatible()
       case _ => Unsupported(Some(inputTypeReason))
     }
@@ -780,6 +799,15 @@ object CometPercentile extends CometAggregateExpressionSerde[Percentile] {
       val builder = ExprOuterClass.Percentile.newBuilder()
       builder.setChild(childExpr.get)
       builder.setPercentage(percentageExpr.get)
+      val floatingInput = percentile.child.dataType match {
+        case FloatType | DoubleType => true
+        case _ => false
+      }
+      builder.setFloatInput(percentile.child.dataType == FloatType)
+      // Only floating-point input can hold both zeros; the native side tracks Spark's partial
+      // buffers only when this is set.
+      builder.setSignedZeroKeys(floatingInput && keepsSignedZeroKeys(SPARK_VERSION))
+      builder.setMergeStage(aggExpr.mode == PartialMerge)
       // DoubleType always serializes successfully.
       builder.setDatatype(serializeDataType(DoubleType).get)
       Some(
@@ -791,6 +819,13 @@ object CometPercentile extends CometAggregateExpressionSerde[Percentile] {
       None
     }
   }
+
+  // Spark 3.5.2 keeps 0.0 and -0.0 as separate keys in the percentile buffer (SPARK-45599).
+  // Earlier releases can merge the two, which the native percentile does not reproduce.
+  def keepsSignedZeroKeys(version: String): Boolean =
+    Utils.majorMinorPatchVersion(version).exists { case (major, minor, patch) =>
+      major > 3 || (major == 3 && (minor > 5 || (minor == 5 && patch >= 2)))
+    }
 }
 
 object CometApproxPercentile extends CometAggregateExpressionSerde[ApproximatePercentile] {
