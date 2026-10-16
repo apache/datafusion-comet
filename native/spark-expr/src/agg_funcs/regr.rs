@@ -45,7 +45,8 @@ use std::sync::Arc;
 
 use crate::agg_funcs::covariance::CovarianceAccumulator;
 use crate::agg_funcs::variance::VarianceAccumulator;
-use crate::{divide_by_zero_error, EvalMode};
+use crate::agg_funcs::welford::ZeroDivisor;
+use crate::{EvalMode, QueryContextMap};
 
 /// The kind of linear-regression statistic to compute.
 ///
@@ -82,7 +83,7 @@ pub struct Regr {
     /// independent variable to `null`. When `false`, those two cases are reversed.
     r2_constant_dependent_is_perfect_fit: bool,
     /// Only consulted for `R2` when the raw moment product underflows to zero.
-    eval_mode: EvalMode,
+    zero_divisor: ZeroDivisor,
 }
 
 impl Regr {
@@ -92,6 +93,8 @@ impl Regr {
         filter_var_by_pair_nulls: bool,
         r2_constant_dependent_is_perfect_fit: bool,
         eval_mode: EvalMode,
+        expr_id: Option<u64>,
+        registry: Arc<QueryContextMap>,
     ) -> Self {
         Self {
             name: name.into(),
@@ -102,7 +105,7 @@ impl Regr {
             regr_type,
             filter_var_by_pair_nulls,
             r2_constant_dependent_is_perfect_fit,
-            eval_mode,
+            zero_divisor: ZeroDivisor::new(eval_mode, expr_id, registry),
         }
     }
 
@@ -145,7 +148,7 @@ impl AggregateUDFImpl for Regr {
             RegrType::SXY => Box::new(RegrCovAccumulator::try_new()?),
             RegrType::R2 => Box::new(RegrR2Accumulator::try_new(
                 self.r2_constant_dependent_is_perfect_fit,
-                self.eval_mode,
+                self.zero_divisor.clone(),
             )?),
             RegrType::Slope => Box::new(RegrLineAccumulator::try_new(
                 false,
@@ -306,11 +309,11 @@ struct RegrR2Accumulator {
     /// When `true` (after SPARK-55969), a constant dependent variable yields
     /// `1.0` and a constant independent variable yields `null`; reversed otherwise.
     constant_dependent_is_perfect_fit: bool,
-    eval_mode: EvalMode,
+    zero_divisor: ZeroDivisor,
 }
 
 impl RegrR2Accumulator {
-    fn try_new(constant_dependent_is_perfect_fit: bool, eval_mode: EvalMode) -> Result<Self> {
+    fn try_new(constant_dependent_is_perfect_fit: bool, zero_divisor: ZeroDivisor) -> Result<Self> {
         Ok(Self {
             covar: CovarianceAccumulator::try_new(StatsType::Population, false)?,
             var_y: VarianceAccumulator::try_new(StatsType::Population, false)?
@@ -318,7 +321,7 @@ impl RegrR2Accumulator {
             var_x: VarianceAccumulator::try_new(StatsType::Population, false)?
                 .with_pearson_update(),
             constant_dependent_is_perfect_fit,
-            eval_mode,
+            zero_divisor,
         })
     }
 }
@@ -393,10 +396,9 @@ impl Accumulator for RegrR2Accumulator {
             // Spark's Divide handles this only after the constant-input guards.
             let product = m2_y * m2_x;
             if product == 0.0 {
-                return if self.eval_mode == EvalMode::Ansi {
-                    Err(divide_by_zero_error().into())
-                } else {
-                    Ok(ScalarValue::Float64(None))
+                return match self.zero_divisor.error() {
+                    Some(error) => Err(error),
+                    None => Ok(ScalarValue::Float64(None)),
                 };
             }
             // Mirror Spark's exact evaluation order (corr = ck / sqrt(m2_y * m2_x);
@@ -516,16 +518,23 @@ impl Accumulator for RegrLineAccumulator {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::{create_query_context_map, QueryContext, SparkErrorWithContext};
     use arrow::array::Float64Array;
     use datafusion::common::DataFusionError;
     use datafusion_comet_common::SparkError;
+
+    fn zero_divisor(eval_mode: EvalMode) -> ZeroDivisor {
+        ZeroDivisor::new(eval_mode, None, create_query_context_map())
+    }
 
     fn acc(regr_type: RegrType) -> Box<dyn Accumulator> {
         match regr_type {
             RegrType::SXX | RegrType::SYY => Box::new(RegrMomentAccumulator::try_new().unwrap()),
             RegrType::SXY => Box::new(RegrCovAccumulator::try_new().unwrap()),
             // Default to the post-SPARK-55969 degenerate-case semantics.
-            RegrType::R2 => Box::new(RegrR2Accumulator::try_new(true, EvalMode::Legacy).unwrap()),
+            RegrType::R2 => {
+                Box::new(RegrR2Accumulator::try_new(true, zero_divisor(EvalMode::Legacy)).unwrap())
+            }
             // Existing tests exercise the Spark 3.5+ both-non-null semantics.
             RegrType::Slope => Box::new(RegrLineAccumulator::try_new(false, true).unwrap()),
             RegrType::Intercept => Box::new(RegrLineAccumulator::try_new(true, true).unwrap()),
@@ -637,19 +646,49 @@ mod tests {
     }
 
     #[test]
+    fn r2_ansi_error_carries_query_context() {
+        let sql = "SELECT regr_r2(v, v) FROM t";
+        let registry = create_query_context_map();
+        registry.register(
+            7,
+            QueryContext::new(sql.to_string(), 7, 19, None, None, 1, 7),
+        );
+        for perfect_dep in [false, true] {
+            let mut a = RegrR2Accumulator::try_new(
+                perfect_dep,
+                ZeroDivisor::new(EvalMode::Ansi, Some(7), Arc::clone(&registry)),
+            )
+            .unwrap();
+            let v = vec![Some(1e-100), Some(2e-100)];
+            a.update_batch(&cols(v.clone(), v)).unwrap();
+            let DataFusionError::External(error) = a.evaluate().unwrap_err() else {
+                panic!("expected a Spark error with query context");
+            };
+            let error = error.downcast_ref::<SparkErrorWithContext>().unwrap();
+            assert!(matches!(error.error, SparkError::DivideByZero));
+            assert_eq!(error.context.as_ref().unwrap().sql_text.as_str(), sql);
+        }
+    }
+
+    #[test]
     fn r2_moment_product_underflow() {
         for eval_mode in [EvalMode::Legacy, EvalMode::Ansi] {
             for perfect_dep in [false, true] {
                 for sign in [-1.0, 1.0] {
                     for merge in [false, true] {
-                        let mut a = RegrR2Accumulator::try_new(perfect_dep, eval_mode).unwrap();
+                        let mut a =
+                            RegrR2Accumulator::try_new(perfect_dep, zero_divisor(eval_mode))
+                                .unwrap();
                         let y = vec![Some(1e-100), None, Some(2e-100)];
                         let x = vec![Some(sign * 1e-100), Some(1e200), Some(sign * 2e-100)];
                         if merge {
                             // Merge two single-row partials, including an unpaired null.
                             for range in [0..2, 2..3] {
-                                let mut partial =
-                                    RegrR2Accumulator::try_new(perfect_dep, eval_mode).unwrap();
+                                let mut partial = RegrR2Accumulator::try_new(
+                                    perfect_dep,
+                                    zero_divisor(eval_mode),
+                                )
+                                .unwrap();
                                 partial
                                     .update_batch(&cols(
                                         y[range.clone()].to_vec(),
@@ -678,7 +717,8 @@ mod tests {
     fn r2_zero_covariance_with_underflowed_product() {
         for eval_mode in [EvalMode::Legacy, EvalMode::Ansi] {
             for perfect_dep in [false, true] {
-                let mut a = RegrR2Accumulator::try_new(perfect_dep, eval_mode).unwrap();
+                let mut a =
+                    RegrR2Accumulator::try_new(perfect_dep, zero_divisor(eval_mode)).unwrap();
                 // A zero co-moment still divides by zero, rather than returning NaN.
                 let state = [4.0, 0.0, 0.0, 0.0, 4e-200, 4e-200]
                     .into_iter()
@@ -697,7 +737,9 @@ mod tests {
                 for sign in [-1.0, 1.0] {
                     for (values, nan) in [(vec![1e100, 2e100], false), (vec![1e200, -1e200], true)]
                     {
-                        let mut a = RegrR2Accumulator::try_new(perfect_dep, eval_mode).unwrap();
+                        let mut a =
+                            RegrR2Accumulator::try_new(perfect_dep, zero_divisor(eval_mode))
+                                .unwrap();
                         a.update_batch(&cols(
                             values.iter().copied().map(Some).collect(),
                             values.iter().map(|v| Some(sign * v)).collect(),
@@ -739,7 +781,8 @@ mod tests {
 
         for eval_mode in [EvalMode::Legacy, EvalMode::Ansi] {
             let r2 = |perfect_dep: bool, y: Vec<Option<f64>>, x: Vec<Option<f64>>| {
-                let mut a = RegrR2Accumulator::try_new(perfect_dep, eval_mode).unwrap();
+                let mut a =
+                    RegrR2Accumulator::try_new(perfect_dep, zero_divisor(eval_mode)).unwrap();
                 a.update_batch(&cols(y, x)).unwrap();
                 match a.evaluate().unwrap() {
                     ScalarValue::Float64(v) => v,

@@ -65,10 +65,11 @@ are still the reference, and are what you want when updating a diff.
 
 ## 1. Install Comet
 
-Run `make release` in Comet to install the Comet JAR into the local Maven repository, specifying the Spark version.
+Run `make release` in Comet to install the Comet JAR into the local Maven repository, specifying the Spark
+and Scala versions the Iceberg tests will run against. The example below matches step 3.
 
 ```shell
-PROFILES="-Pspark-4.1" make release
+PROFILES="-Pspark-3.5 -Pscala-2.13" make release
 ```
 
 ## 2. Clone Iceberg and Apply Diff
@@ -121,12 +122,12 @@ diff must be generated against its own tag.
 
 ## Running Tests in CI
 
-The `iceberg_spark_test_<version>.yml` workflows apply these diffs and run the three Gradle targets above
-against each Iceberg version, all with Java 17. Iceberg 1.8.1 runs against Spark 3.4.3; Iceberg 1.9.1 and 1.10.0
-run against Spark 3.5.9; Iceberg 1.11.0 runs against Spark 4.1.3. Iceberg 1.11.0 runs in the
-merge queue; 1.8.1, 1.9.1 and 1.10.0 run once a night against `main`. All four run earlier on a
-pull request labeled `run-iceberg-tests`; none runs on an unlabeled pull request. All caller
-workflows delegate to `iceberg_spark_test_reusable.yml`, which holds the build and test job logic. See
+The `iceberg_1_8`, `iceberg_1_9`, `iceberg_1_10` and `iceberg_1_11` jobs in `ci.yml` apply these diffs and
+run the three Gradle targets above against each Iceberg version, all with Java 17. Iceberg 1.8.1 runs against
+Spark 3.4.3; Iceberg 1.9.1 and 1.10.0 run against Spark 3.5.9; Iceberg 1.11.0 runs against Spark 4.1.3.
+Iceberg 1.11.0 runs in the merge queue; 1.8.1, 1.9.1 and 1.10.0 run once a night against `main`. All four
+run earlier on a pull request labeled `run-iceberg-tests`; none runs on an unlabeled pull request. Each job
+calls `iceberg_spark_test_reusable.yml`, which holds the build and test job logic. See
 [.github/workflows/README.md](https://github.com/apache/datafusion-comet/blob/main/.github/workflows/README.md)
 for how the pull-request, merge-queue and nightly tiers differ.
 

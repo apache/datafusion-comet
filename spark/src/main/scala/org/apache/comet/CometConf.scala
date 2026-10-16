@@ -155,6 +155,16 @@ object CometConf extends ShimCometConf {
       .checkValue(v => v > 0, "Data file concurrency limit must be positive")
       .createWithDefault(1)
 
+  val COMET_ICEBERG_NESTED_SCHEMA_PRUNING_ENABLED: ConfigEntry[Boolean] =
+    conf("spark.comet.scan.icebergNative.nestedSchemaPruning.enabled")
+      .category(CATEGORY_SCAN)
+      .doc(
+        "Whether the native Iceberg scan reads only the nested fields of a struct, list, or map " +
+          "column that Spark's nested schema pruning keeps. When false, it reads every nested " +
+          "field of a projected column and drops the unused ones after decoding.")
+      .booleanConf
+      .createWithDefault(true)
+
   val COMET_ICEBERG_IO_TIMEOUT: ConfigEntry[Long] =
     conf("spark.comet.iceberg.ioTimeout")
       .category(CATEGORY_SCAN)
@@ -1228,6 +1238,20 @@ object CometConf extends ShimCometConf {
       .toSequence
       .createWithDefault(Nil)
 
+  val COMET_CONVERT_BROADCAST_BUILD_SIDE_ENABLED: ConfigEntry[Boolean] =
+    conf("spark.comet.convert.broadcastBuildSide.enabled")
+      .category(CATEGORY_EXEC)
+      .doc("When enabled, Comet converts a file or V2 scan that it cannot scan natively (for " +
+        "example a Text source) to Arrow when that scan feeds a broadcast join's build side and " +
+        "every scan on the probe side is already native, so the broadcast join runs natively " +
+        "over the large probe. The build side is usually small (auto-broadcasts are capped by " +
+        "the broadcast threshold), so the row to Arrow copy is usually cheap - though an " +
+        "explicit BROADCAST hint or a selective filter above the scan can make it larger. With " +
+        "dynamic partition pruning the dimension is also read a second time for the pruning " +
+        "subquery. Set this to false to keep such build sides on Spark.")
+      .booleanConf
+      .createWithDefault(true)
+
   val COMET_CASE_CONVERSION_ENABLED: ConfigEntry[Boolean] =
     conf("spark.comet.caseConversion.enabled")
       .category(CATEGORY_EXEC)
@@ -1299,13 +1323,19 @@ object CometConf extends ShimCometConf {
 
   val COMET_LIBHDFS_SCHEMES_KEY = "fs.comet.libhdfs.schemes"
 
+  // Declared so the value appears in the generated config reference and can be set at startup
+  // via `spark.hadoop.*`, but never read through this entry: the scan gates read the Hadoop key
+  // above through `NativeConfig.resolveScanLibhdfsSchemes`, so `core-site.xml` is honored too.
   val COMET_LIBHDFS_SCHEMES: OptionalConfigEntry[String] =
     conf(s"spark.hadoop.$COMET_LIBHDFS_SCHEMES_KEY")
       .category(CATEGORY_SCAN)
       .doc(
         "Defines filesystem schemes (e.g., hdfs, webhdfs) that the native side accesses " +
           "via libhdfs, separated by commas. Valid only when built with hdfs-opendal feature " +
-          "enabled.")
+          "enabled. Read from the Hadoop configuration, so it must be set before the " +
+          "SparkSession is created. A scheme listed only through a reader option is not read " +
+          "natively. libhdfs reads the settings of a listed scheme, such as " +
+          "`fs.<scheme>.impl`, from the executor's `core-site.xml`.")
       .stringConf
       .createOptional
 

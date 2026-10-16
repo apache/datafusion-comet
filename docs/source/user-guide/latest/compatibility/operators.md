@@ -74,6 +74,24 @@ key whose type cannot hold a null element or field, such as `array(coalesce(x, 0
 `spark.comet.expression.SortOrder.allowIncompatible=true` to run the other null orders natively
 anyway.
 
+## Hash Aggregation
+
+Decimal `avg` with input precision 25 or more falls back to Spark, except over `DECIMAL(38, 38)`.
+The native average rescales the sum within 38 digits before dividing it by the count, so a large
+sum returns `NULL` where Spark returns the average. Under ANSI, an average that Spark rejects with
+`NUMERIC_VALUE_OUT_OF_RANGE` also returns `NULL`
+([#7007](https://github.com/apache/datafusion-comet/issues/7007)). Set
+`spark.comet.expression.Average.allowIncompatible=true` to run it natively anyway.
+
+From input precision 28, Spark keeps the running sum of a decimal `avg` at precision 38, which can
+overflow even when the average fits. In an aggregate without grouping keys, and in an
+`ObjectHashAggregateExec`, the native average does not handle that overflow the way Spark does, so
+such an `avg` falls back to Spark whatever `allowIncompatible` is set to
+([#5418](https://github.com/apache/datafusion-comet/issues/5418),
+[#5509](https://github.com/apache/datafusion-comet/issues/5509)). A grouped `HashAggregateExec`
+runs it natively, since both engines return `NULL` for the group, or raise under ANSI, once its
+running sum overflows.
+
 ## Sort Aggregation
 
 Comet runs `SortAggregateExec` natively when Comet shuffle is enabled and Comet supports every
@@ -119,8 +137,17 @@ incorrect result. When any single window expression in a `WindowExec` falls back
   functions.
 - `sum` or `avg` on `DECIMAL` with a sliding (non ever-expanding) frame, because the sliding path would wrap on
   overflow instead of returning Spark's `NULL`.
-- `RANGE` frame with an explicit offset when the `ORDER BY` column is `DATE` or `DECIMAL`
+- `avg` on `DECIMAL` with precision 25 or more. Up to precision 27 it runs natively with
+  `spark.comet.expression.Average.allowIncompatible=true`, as in an aggregate
+  ([#7007](https://github.com/apache/datafusion-comet/issues/7007)). From precision 28 the native average also
+  differs from Spark once the running sum overflows precision 38
+  ([#5418](https://github.com/apache/datafusion-comet/issues/5418)).
+- `RANGE` frame with an explicit offset when the `ORDER BY` column is `DECIMAL`
   ([#4834](https://github.com/apache/datafusion-comet/issues/4834)).
+- `RANGE` frame with an offset above 2144550751 days when the `ORDER BY` column is `DATE`. Spark adds the offset
+  to the date as an `Int` that wraps on overflow, while the native frame treats an overflowing bound as the edge of
+  the partition. Smaller offsets cannot wrap for any date between 0001-01-01 and 9999-12-31
+  ([#5022](https://github.com/apache/datafusion-comet/issues/5022)).
 - `RANGE` frame bounded by `CURRENT ROW` when an `ORDER BY` key is an array of arrays or structs, or a struct
   holding an array, such as `array(named_struct('x', x))`. DataFusion cannot compare those values to find the
   frame's bounds ([apache/datafusion#24937](https://github.com/apache/datafusion/issues/24937)). Ranking functions
@@ -135,6 +162,11 @@ incorrect result. When any single window expression in a `WindowExec` falls back
 - `lag` / `lead` with a non-literal default value ([#4268](https://github.com/apache/datafusion-comet/issues/4268)).
 - A `ROWS` offset that is not an integer or long, or a `RANGE` offset that is not numeric.
 - Any `PARTITION BY` or `ORDER BY` expression that Comet cannot serialize.
+
+A `RANGE` frame with an explicit offset on a `DATE` `ORDER BY` runs natively, but over a date outside Spark's
+supported range of 0001-01-01 to 9999-12-31, such as one produced by `date_add` with a very large day count, the
+native frame can treat the bound as the edge of the partition where Spark compares against it
+([#5022](https://github.com/apache/datafusion-comet/issues/5022)).
 
 `WindowGroupLimitExec` (window-based limit pushdown for `ROW_NUMBER`, `RANK`, and `DENSE_RANK`)
 runs natively; it is controlled by `spark.comet.exec.windowGroupLimit.enabled` (default: true).
