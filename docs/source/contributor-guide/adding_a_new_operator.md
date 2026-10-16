@@ -491,6 +491,12 @@ then the projection restores its order, duplicates and aliases. The predicate st
 original input schema. Both native plans remain for metrics, including when they share a Spark
 plan ID. Computed projections and projections that use every input column are unchanged.
 
+`CometFilterExec` and `CometProjectionExec` are typed aliases of `MetricOwningExec`, which owns
+the stable metrics for their Spark plan nodes. Execution-local child replacements share that
+metric set and register the executing DataFusion operator's fresh metric handles. Plan rewrites,
+including `reset_state`, create a new metric set. The aliases retain their operator-specific
+accessors and distinct downcast types.
+
 #### Implement the Operator
 
 Create the operator implementation, either in an existing file or a new file in `native/core/src/execution/operators/`:
