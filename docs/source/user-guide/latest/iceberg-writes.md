@@ -504,4 +504,4 @@ iceberg-java's _writer-tracked_ state would have recorded, and both are analyzed
 All content not listed above — the logical data, statistics values, and manifest metadata —
 must match iceberg-java exactly, or the write falls back. The open bugs in which a native write
 still differs are listed in
-[Known Correctness Issues](compatibility/parquet-iceberg-known-issues.md#iceberg-writes).
+[Known Issues](compatibility/parquet-iceberg-known-issues.md#iceberg-writes).

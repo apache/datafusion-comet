@@ -20,8 +20,8 @@
 # Parquet Audits
 
 > Audit notes for the native Parquet scan and the native Parquet writer. Absence of an entry means
-> the area has not been audited yet. Open correctness issues are listed for users in
-> [Known Correctness Issues in Parquet and Iceberg Reads and Writes].
+> the area has not been audited yet. Open issues are listed for users in
+> [Known Issues in Parquet and Iceberg Reads and Writes].
 
 ## Native Parquet scan
 
@@ -87,7 +87,7 @@
   not support ([#3193], [#3194]), object-store and HDFS outputs, and write throughput, which needs a
   release build.
 
-[Known Correctness Issues in Parquet and Iceberg Reads and Writes]: ../../user-guide/latest/compatibility/parquet-iceberg-known-issues.md
+[Known Issues in Parquet and Iceberg Reads and Writes]: ../../user-guide/latest/compatibility/parquet-iceberg-known-issues.md
 [apache/datafusion#26393]: https://github.com/apache/datafusion/issues/26393
 [#3193]: https://github.com/apache/datafusion-comet/issues/3193
 [#3194]: https://github.com/apache/datafusion-comet/issues/3194

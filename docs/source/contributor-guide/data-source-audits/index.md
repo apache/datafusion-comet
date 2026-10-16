@@ -31,8 +31,8 @@ audits of expressions. Each page holds dated entries per component. An entry rec
 - what the audit did not cover
 
 A later audit of the same area adds a new dated entry instead of editing an old one, so the history
-stays visible. The open correctness issues that users can hit are listed in the user guide, in
-[Known Correctness Issues in Parquet and Iceberg Reads and Writes](../../user-guide/latest/compatibility/parquet-iceberg-known-issues.md).
+stays visible. The open issues that users can hit are listed in the user guide, in
+[Known Issues in Parquet and Iceberg Reads and Writes](../../user-guide/latest/compatibility/parquet-iceberg-known-issues.md).
 
 ```{toctree}
 :maxdepth: 1

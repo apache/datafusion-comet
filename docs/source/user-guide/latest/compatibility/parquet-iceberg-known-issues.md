@@ -17,16 +17,18 @@
   under the License.
 -->
 
-# Known Correctness Issues in Parquet and Iceberg Reads and Writes
+# Known Issues in Parquet and Iceberg Reads and Writes
 
-This page lists the open issues in which a Comet Parquet or Iceberg read or write gives a different
-result from Spark without falling back to Spark: wrong values, a NULL where Spark returns a value or
-the reverse, rows returned for a read that Spark rejects, and written files that Spark or other
-engines read differently from the files Spark writes. Each entry links to the issue that tracks it.
+This page lists the open issues in Comet's Parquet and Iceberg reads and writes that a fallback to
+Spark does not cover, with a link to the issue that tracks each one:
 
-Queries that fail where Spark succeeds, and the cases where Comet falls back to Spark, are
-documented in [Parquet Compatibility](scans.md), in the
-[current limitations](../iceberg.md#current-limitations) of the Iceberg guide and in
+- [Results that differ from Spark](#results-that-differ-from-spark): wrong values, a NULL where
+  Spark returns a value or the reverse, rows returned for a read that Spark rejects, and written
+  files that Spark or other engines read differently from the files Spark writes.
+- [Queries that fail where Spark succeeds](#queries-that-fail-where-spark-succeeds).
+
+The cases where Comet falls back to Spark are documented in [Parquet Compatibility](scans.md), in
+the [current limitations](../iceberg.md#current-limitations) of the Iceberg guide and in
 [Iceberg Writes](../iceberg-writes.md).
 
 Which entries apply depends on which native paths are enabled:
@@ -38,7 +40,9 @@ Which entries apply depends on which native paths are enabled:
 | Iceberg writer | `spark.comet.write.iceberg.enabled`      | `false`                |
 | Parquet writer | `spark.comet.write.parquet.enabled`      | `false` (testing only) |
 
-## Parquet reads
+## Results that differ from Spark
+
+### Parquet reads
 
 - **Dates and timestamps written with the legacy calendar.** Comet does not rebase dates and
   timestamps written with the hybrid Julian/Gregorian calendar, which Spark versions before 3.0
@@ -87,7 +91,7 @@ Which entries apply depends on which native paths are enabled:
   with large shuffles or with partition coalescing off, and it applies to the native Iceberg scan
   as well ([#6264](https://github.com/apache/datafusion-comet/issues/6264)).
 
-## Iceberg reads
+### Iceberg reads
 
 - **Migrated tables that use a name mapping.** For data files without Iceberg field ids that are
   read through `schema.name-mapping.default`, which the `migrate`, `snapshot` and `add_files`
@@ -106,7 +110,7 @@ Which entries apply depends on which native paths are enabled:
   back, which can resolve a column to a different field id
   ([#5257](https://github.com/apache/datafusion-comet/issues/5257)).
 
-## Parquet writes
+### Parquet writes
 
 The native Parquet writer is experimental and disabled by default. With
 `spark.comet.write.parquet.enabled=true`:
@@ -146,7 +150,7 @@ The native Parquet writer is experimental and disabled by default. With
   ([#3417](https://github.com/apache/datafusion-comet/issues/3417)) and `onTaskCommit`
   ([#3428](https://github.com/apache/datafusion-comet/issues/3428)).
 
-## Iceberg writes
+### Iceberg writes
 
 The native Iceberg writer is disabled by default. With `spark.comet.write.iceberg.enabled=true`:
 
@@ -159,6 +163,89 @@ The native Iceberg writer is disabled by default. With `spark.comet.write.iceber
 
 The physical differences that every native data file has, and why they are safe, are listed in
 [Accepted divergences](../iceberg-writes.md#accepted-divergences).
+
+## Queries that fail where Spark succeeds
+
+In these cases a Comet read or write fails with an error where Spark, or iceberg-java, succeeds.
+Comet does not fall back to Spark for them.
+
+### Parquet reads that fail
+
+- **STRING columns that hold invalid UTF-8.** The read fails with
+  `Parquet error: encountered non UTF-8 data`, where Spark returns the bytes
+  ([#4121](https://github.com/apache/datafusion-comet/issues/4121), part of
+  [#4764](https://github.com/apache/datafusion-comet/issues/4764)).
+- **Duplicate field names.** Selecting a field by name when several physical siblings match it,
+  including inside structs, arrays and maps, fails with a duplicate-field error
+  ([#5884](https://github.com/apache/datafusion-comet/issues/5884),
+  [#5964](https://github.com/apache/datafusion-comet/issues/5964)).
+  [Parquet Compatibility](scans.md) describes the reads this affects.
+- **A duplicate field id in a column the query does not read.** With
+  `spark.sql.parquet.fieldId.read.enabled=true`, a file in which two root columns carry the same
+  field id fails the scan whenever the table schema has a field with that id, even when the query
+  does not read that field ([#7006](https://github.com/apache/datafusion-comet/issues/7006)).
+- **A nested encoding that arrow-rs rejects.** A file fails to read when any column in its schema
+  uses such an encoding, even a column the query does not read
+  ([#7035](https://github.com/apache/datafusion-comet/issues/7035)).
+- **A `DATE` column read as `INTERVAL YEAR TO MONTH`.** Spark reads it, and Comet fails the read
+  ([#5188](https://github.com/apache/datafusion-comet/issues/5188)).
+
+### Iceberg reads that fail
+
+- **A data file that omits an optional nested field.** The native scan fails on a data file that
+  lacks an optional struct field, which a write with `write.spark.accept-any-schema=true` can
+  produce without any schema change
+  ([#7033](https://github.com/apache/datafusion-comet/issues/7033)).
+- **`VERSION AS OF` reads of a column whose type was promoted after the snapshot**
+  ([#6993](https://github.com/apache/datafusion-comet/issues/6993)).
+- **An equality delete keyed on a nested field.** Every query the native scan runs on the table
+  fails with `field not found`, even one that reads the key
+  ([#6782](https://github.com/apache/datafusion-comet/issues/6782)).
+- **Column names that only newer Unicode case data folds together**, such as a pair of Vithkuqi
+  letters, which Unicode 14 added. Queries on such a table fail with a duplicate-field error
+  ([#5540](https://github.com/apache/datafusion-comet/issues/5540)).
+
+### Object store and credential settings
+
+The native Parquet and Iceberg scans resolve storage settings with their own clients rather than
+with Hadoop's. Where the two disagree, a native read can use a different identity or route than
+Spark, and fail where Spark succeeds:
+
+- **S3 settings that Hadoop's S3A client resolves differently**, such as JCEKS-backed secrets and
+  the precedence of per-bucket settings. The native Parquet scan forwards them without checking
+  for a difference ([#5662](https://github.com/apache/datafusion-comet/issues/5662)).
+- **AWS profile credential providers.** The native scans ignore `fs.s3a.auth.profile.name` and
+  `fs.s3a.auth.profile.file` ([#4245](https://github.com/apache/datafusion-comet/issues/4245)),
+  and resolve some profiles differently from Hadoop 3.4 and later, for example profiles that use
+  `credential_process` or chains of assumed roles
+  ([#6575](https://github.com/apache/datafusion-comet/issues/6575)).
+- **Azure credentials.** Container-scoped OAuth settings, Fabric hosts and a few other
+  configurations resolve differently from Hadoop's ABFS driver
+  ([#6605](https://github.com/apache/datafusion-comet/issues/6605)).
+- **`fs.comet.libhdfs.schemes` set only in the Hadoop configuration.** Comet's planner and its
+  native scan read the setting from different places, so they can route a scheme differently
+  ([#6837](https://github.com/apache/datafusion-comet/issues/6837)).
+- **Iceberg tables whose metadata location has no host.** The native Iceberg scan skips the
+  credential provider configured with `s3.comet.credential.provider.class`
+  ([#6536](https://github.com/apache/datafusion-comet/issues/6536)).
+
+### Parquet writes that fail
+
+With `spark.comet.write.parquet.enabled=true`:
+
+- **Row groups that outgrow the memory pool.** The native writer caps row groups by row count
+  only and can't spill, so with wide or nested rows the row group it is building can outgrow the
+  off-heap pool and fail the task, where Spark's writer starts a new row group at
+  `parquet.block.size` ([#5304](https://github.com/apache/datafusion-comet/issues/5304)).
+
+### Iceberg writes that fail
+
+With `spark.comet.write.iceberg.enabled=true`:
+
+- **A write that keeps one file open and outgrows the off-heap pool.** An unpartitioned or
+  clustered write fails its task when its open file outgrows the pool, where iceberg-java writes
+  it on the JVM heap. [Failure handling](../iceberg-writes.md#failure-handling) describes the
+  error and the settings that let such a write fit.
 
 ## Differences that are not Comet bugs
 

@@ -25,7 +25,7 @@ This guide documents areas where Comet's behavior is known to differ from Spark.
 
 - **Parquet**: limitations when reading Parquet files.
 - **Parquet and Iceberg known issues**: open issues in which Parquet and Iceberg reads and writes
-  give different results from Spark without falling back.
+  give different results from Spark, or fail where Spark succeeds, without falling back.
 - **Floating-point comparison**: NaN and signed-zero handling in comparisons.
 - **Regular expressions**: differences between the Rust regexp crate and Java's regex engine.
 - **Operators**: operator-level compatibility notes, including window functions and round-robin partitioning.
@@ -123,7 +123,7 @@ The following native paths silently return values that differ from Spark for edg
 Most also have entries in the per-category expression pages linked above; they are collected here
 so users hunting an unexpected value have a single place to check. Parquet and Iceberg reads and
 writes have their own list, in
-[Known Correctness Issues in Parquet and Iceberg Reads and Writes](parquet-iceberg-known-issues.md):
+[Known Issues in Parquet and Iceberg Reads and Writes](parquet-iceberg-known-issues.md#results-that-differ-from-spark):
 
 - Native `RANGE` window frames with an explicit `PRECEDING` / `FOLLOWING` offset diverge from
   Spark when the boundary arithmetic overflows for `DATE` or `DECIMAL` `ORDER BY` columns

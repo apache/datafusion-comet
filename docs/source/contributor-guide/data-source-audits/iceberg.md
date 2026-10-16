@@ -20,8 +20,8 @@
 # Iceberg Audits
 
 > Audit notes for the native Iceberg scan and the native Iceberg writer. Absence of an entry means
-> the area has not been audited yet. Open correctness issues are listed for users in
-> [Known Correctness Issues in Parquet and Iceberg Reads and Writes].
+> the area has not been audited yet. Open issues are listed for users in
+> [Known Issues in Parquet and Iceberg Reads and Writes].
 
 ## Native Iceberg scan
 
@@ -84,7 +84,7 @@
 - **Not covered:** merge-on-read writes (`WriteDelta`), format v3 types, encryption, object stores,
   and write throughput, which needs a release build.
 
-[Known Correctness Issues in Parquet and Iceberg Reads and Writes]: ../../user-guide/latest/compatibility/parquet-iceberg-known-issues.md
+[Known Issues in Parquet and Iceberg Reads and Writes]: ../../user-guide/latest/compatibility/parquet-iceberg-known-issues.md
 [apache/iceberg#17320]: https://github.com/apache/iceberg/pull/17320
 [apache/iceberg#17560]: https://github.com/apache/iceberg/pull/17560
 [apache/iceberg#17561]: https://github.com/apache/iceberg/issues/17561
