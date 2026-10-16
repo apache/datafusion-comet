@@ -89,6 +89,19 @@ Spill bytes from native sorts, aggregates, and sort-merge joins are also added t
 
 ### Hash Joins
 
+A native shuffled hash join that can spill reports these additional metric keys. See
+[Spilling Shuffled Hash Joins](tuning/operators.md#spilling-shuffled-hash-joins).
+
+| Metric                  | Description                                                                                            |
+| ----------------------- | ------------------------------------------------------------------------------------------------------ |
+| `spill_count`           | Spill files written.                                                                                   |
+| `spilled_bytes`         | Bytes written to spill files.                                                                          |
+| `spilled_rows`          | Rows written to spill files. A row can be written more than once when its bucket is split again.       |
+| `spilled_buckets`       | Build-side buckets written to disk because memory ran out.                                             |
+| `split_buckets`         | Spilled buckets split again because they did not fit when read back.                                   |
+| `chunked_buckets`       | Spilled buckets joined in chunks because splitting could not shrink them.                              |
+| `budget_overflow_bytes` | Memory the join reserved beyond its own estimate. It is accounted, but more than zero points at a bug. |
+
 With `spark.comet.exec.join.dynamicFilter.enabled=true`, native broadcast and shuffled hash joins
 report these additional metric keys. See [Join Runtime Filters](tuning/operators.md#join-runtime-filters) for
 eligibility and reader restrictions.
