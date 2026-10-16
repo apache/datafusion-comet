@@ -50,10 +50,11 @@ not, inherits it. There is no query that fails to tell you.
 | Shared with the scan | `iceberg_common.rs` (`load_file_io`, `storage_factory_for`, `scheme_of`), `IcebergReflection`, `NativeConfig` S3 translation |
 
 `spark.comet.write.iceberg.enabled` switches both write layers. It is off by default, but once a
-user turns it on, a change to the split plan affects every Iceberg write, including writes that
-never reach the native writer, and a change to the native writer affects every eligible one. The
-testing-only `spark.comet.write.iceberg.splitOperator.enabled` plans the split operator with the
-native writer off. A change to a shared file affects the native Iceberg scan too.
+user turns it on, a change to the split plan affects every append, overwrite and copy-on-write
+Iceberg write, including writes that never reach the native writer, and a change to the native
+writer affects every eligible one. The testing-only
+`spark.comet.write.iceberg.splitOperator.enabled` plans the split operator with the native writer
+off. A change to a shared file affects the native Iceberg scan too.
 
 ## 2. Direction of the Gate Change
 
@@ -205,7 +206,7 @@ Read the ownership table in the contributor guide before reviewing any change ne
 | Suite                               | Covers                                                                                          |
 | ----------------------------------- | ----------------------------------------------------------------------------------------------- |
 | `CometIcebergWriteActionSuite`      | Both layers end to end, parity with iceberg-java, DML, failure cleanup, AQE re-plans            |
-| `CometIcebergWriteDetectionSuite`   | One case per eligibility rule                                                                   |
+| `CometIcebergWriteDetectionSuite`   | Most eligibility rules, accepted and declined                                                   |
 | `CometIcebergSystemFunctionSuite`   | Native partition transforms keeping partitioned writes native                                   |
 | `CometIcebergRewriteActionSuite`    | `rewrite_data_files` through the split plan and the native writer                               |
 | `IcebergWriteProtoTranslationSuite` | Property to `IcebergParquetWriteSettings` translation                                           |
@@ -231,7 +232,8 @@ Ask specifically:
       default Spark profile. Reflection, metrics conventions and path spelling differ across
       Iceberg versions, so ask for the `run-iceberg-tests` label or a local run where they matter.
 - [ ] **Is a green Iceberg Spark test run being cited as evidence?** It does not show which writer
-      handled a test ([#6148](https://github.com/apache/datafusion-comet/issues/6148)).
+      handled a test. The job summary counts writes per writer without naming tests (see "Which
+      writer ran each Iceberg write" in `contributor-guide/iceberg-spark-tests.md`).
 
 ## 8. Do the PR Changes Make the Docs Stale?
 
