@@ -341,8 +341,11 @@ holds without reserving them:
   scratch, the headroom, is three times the largest input batch: one copy while its rows are routed, and when a
   writer writes the parts it holds, one while they are concatenated and one while the result is encoded.
 - A batch read back from a spill file can hold up to twice the memory it held when written, as `HashJoinExec`
-  counts it. DataFusion reads spill files in chunks of 128 KiB, and arrow's `StreamDecoder` assembles a message
-  that spans chunks in a buffer that grows by doubling, then slices the batch's buffers from it. A batch read
+  counts it. DataFusion 55.2 reads spill files in chunks of 128 KiB, and arrow's `StreamDecoder` assembles a
+  message that spans chunks in a buffer that grows by doubling, then slices the batch's buffers from it. A small
+  batch inside one chunk keeps the whole chunk.
+  [apache/datafusion#24592] fixed both on DataFusion's main branch after 55.2, by reading each message into an
+  allocation of its own size, and was not backported to 55. A batch read
   from a compressed file also keeps that buffer when any of its buffers was stored uncompressed. So the build
   side of a spilled bucket, which the inner join holds whole, is read back into one batch (see
   [Spilled pairs](#spilled-pairs)), or for nested, dictionary or view columns with every batch copied into buffers
@@ -550,9 +553,11 @@ In priority order.
      for each join type, and the Bloom filters that keep unmatched probe rows off disk.
    - `InProgressSpillFile` cannot be named outside DataFusion, because its module is `pub(crate)`. Ask for it to
      be exported.
-   - A batch read back from a spill file can hold up to twice the memory it held when written: DataFusion reads
-     spill files in chunks of 128 KiB, and arrow assembles a message that spans chunks in a buffer that grows by
-     doubling. DataFusion's own read-back reservations, such as the sort's merge, may not allow for it.
+   - A batch read back from a spill file holding up to twice what it held when written was reported in
+     [apache/datafusion#17340] and fixed by [apache/datafusion#24592], which is not in DataFusion 55.2. Once Comet
+     is on a DataFusion with it, read-back batches hold close to what they held when written, and the compacted
+     read-back can be reconsidered. A batch of a compressed file whose buffers were partly stored uncompressed still
+     keeps its compressed message.
    - arrow-rs compresses each IPC buffer with a new lz4 frame encoder, which allocates and zeroes its tables
      every time, while zstd reuses one compressor. Reusing the encoder was tried in [apache/arrow-rs#8423] and
      showed no gain on large buffers, but every buffer of a small batch pays for it. Spill files of full batches
@@ -588,6 +593,8 @@ code is in `native/operators/src/spilling_hash_join/`, and `mod.rs` there gives 
 [#6785]: https://github.com/apache/datafusion-comet/pull/6785
 [#7057]: https://github.com/apache/datafusion-comet/pull/7057
 [apache/arrow-rs#8423]: https://github.com/apache/arrow-rs/issues/8423
+[apache/datafusion#17340]: https://github.com/apache/datafusion/issues/17340
+[apache/datafusion#24592]: https://github.com/apache/datafusion/pull/24592
 [apache/datafusion#24768]: https://github.com/apache/datafusion/issues/24768
 [apache/datafusion#25217]: https://github.com/apache/datafusion/pull/25217
 [apache/datafusion#26227]: https://github.com/apache/datafusion/pull/26227
