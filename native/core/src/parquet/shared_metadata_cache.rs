@@ -34,8 +34,14 @@
 //! [`MAX_IDLE_CACHES`] that do not. The idle ones matter when an executor runs one task at a
 //! time: the next task of the stage starts after the previous one released its plan.
 
-use datafusion::execution::cache::cache_manager::FileMetadataCache;
+use crate::execution::spark_config::{
+    SparkConfig, COMET_PARQUET_SHARED_METADATA_CACHE_ENABLED, COMET_STAGE_ATTEMPT, COMET_STAGE_ID,
+};
+use datafusion::execution::cache::cache_manager::{
+    FileMetadataCache, DEFAULT_METADATA_CACHE_LIMIT,
+};
 use datafusion::execution::cache::default_cache::DefaultCache;
+use std::collections::HashMap;
 use std::sync::{Arc, Mutex, OnceLock};
 
 /// How many caches of stages with no running task the registry holds on to.
@@ -59,15 +65,18 @@ pub(crate) struct SharedMetadataCaches {
 }
 
 impl SharedMetadataCaches {
-    /// The cache shared by the tasks of `key`, created with `limit` bytes of budget if no task of
-    /// that stage has asked for one yet.
-    pub(crate) fn cache_for(&self, key: StageKey, limit: usize) -> Arc<FileMetadataCache> {
+    /// The cache shared by the tasks of `key`, created if no task of that stage has asked for one
+    /// yet.
+    fn cache_for(&self, key: StageKey) -> Arc<FileMetadataCache> {
         let mut entries = self.entries.lock().unwrap();
         let entry = match entries.iter().position(|e| e.key == key) {
             Some(pos) => entries.remove(pos),
             None => Entry {
                 key,
-                cache: Arc::new(DefaultCache::new(limit).with_name("SharedFileMetadataCache")),
+                cache: Arc::new(
+                    DefaultCache::new(DEFAULT_METADATA_CACHE_LIMIT)
+                        .with_name("SharedFileMetadataCache"),
+                ),
             },
         };
         let cache = Arc::clone(&entry.cache);
@@ -103,17 +112,31 @@ impl SharedMetadataCaches {
     }
 }
 
-/// The registry of this process.
-pub(crate) fn shared_metadata_caches() -> &'static SharedMetadataCaches {
+/// The cache the task with these Spark configs should use, or `None` when sharing is off or the
+/// task's stage is unknown, in which case DataFusion's per-task cache applies.
+pub(crate) fn shared_metadata_cache_for_task(
+    spark_config: &HashMap<String, String>,
+) -> Option<Arc<FileMetadataCache>> {
     static CACHES: OnceLock<SharedMetadataCaches> = OnceLock::new();
-    CACHES.get_or_init(SharedMetadataCaches::default)
+
+    if !spark_config.get_bool(COMET_PARQUET_SHARED_METADATA_CACHE_ENABLED) {
+        return None;
+    }
+    let parse = |name: &str| spark_config.get(name)?.parse::<i32>().ok();
+    let key = StageKey {
+        stage_id: parse(COMET_STAGE_ID)?,
+        stage_attempt: parse(COMET_STAGE_ATTEMPT)?,
+    };
+    Some(
+        CACHES
+            .get_or_init(SharedMetadataCaches::default)
+            .cache_for(key),
+    )
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
-
-    const LIMIT: usize = 1024 * 1024;
 
     fn key(stage_id: i32, stage_attempt: i32) -> StageKey {
         StageKey {
@@ -125,17 +148,17 @@ mod tests {
     #[test]
     fn tasks_of_one_stage_share_a_cache() {
         let caches = SharedMetadataCaches::default();
-        let a = caches.cache_for(key(1, 0), LIMIT);
-        let b = caches.cache_for(key(1, 0), LIMIT);
+        let a = caches.cache_for(key(1, 0));
+        let b = caches.cache_for(key(1, 0));
         assert!(Arc::ptr_eq(&a, &b));
     }
 
     #[test]
     fn stages_and_attempts_do_not_share() {
         let caches = SharedMetadataCaches::default();
-        let first = caches.cache_for(key(1, 0), LIMIT);
-        let other_stage = caches.cache_for(key(2, 0), LIMIT);
-        let retry = caches.cache_for(key(1, 1), LIMIT);
+        let first = caches.cache_for(key(1, 0));
+        let other_stage = caches.cache_for(key(2, 0));
+        let retry = caches.cache_for(key(1, 1));
         assert!(!Arc::ptr_eq(&first, &other_stage));
         assert!(!Arc::ptr_eq(&first, &retry));
     }
@@ -143,22 +166,22 @@ mod tests {
     #[test]
     fn an_idle_cache_is_kept_for_the_next_task_of_its_stage() {
         let caches = SharedMetadataCaches::default();
-        let first = caches.cache_for(key(1, 0), LIMIT);
+        let first = caches.cache_for(key(1, 0));
         let address = Arc::as_ptr(&first) as *const () as usize;
         drop(first);
-        let next = caches.cache_for(key(1, 0), LIMIT);
+        let next = caches.cache_for(key(1, 0));
         assert_eq!(Arc::as_ptr(&next) as *const () as usize, address);
     }
 
     #[test]
     fn idle_caches_are_bounded_but_running_ones_are_not_dropped() {
         let caches = SharedMetadataCaches::default();
-        let running = caches.cache_for(key(0, 0), LIMIT);
+        let running = caches.cache_for(key(0, 0));
         for stage in 1..=10 {
-            drop(caches.cache_for(key(stage, 0), LIMIT));
+            drop(caches.cache_for(key(stage, 0)));
         }
         // The running stage plus the idle ones that fit.
         assert_eq!(caches.len(), 1 + MAX_IDLE_CACHES);
-        assert!(Arc::ptr_eq(&running, &caches.cache_for(key(0, 0), LIMIT)));
+        assert!(Arc::ptr_eq(&running, &caches.cache_for(key(0, 0))));
     }
 }
