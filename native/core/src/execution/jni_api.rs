@@ -44,6 +44,9 @@ use arrow::array::{Array, RecordBatch};
 use arrow::datatypes::DataType as ArrowDataType;
 use datafusion::common::{DataFusionError, Result as DataFusionResult};
 use datafusion::config::SpillCompression;
+use datafusion::execution::cache::cache_manager::{
+    CacheManagerConfig, DEFAULT_METADATA_CACHE_LIMIT,
+};
 use datafusion::execution::disk_manager::DiskManagerMode;
 use datafusion::execution::memory_pool::MemoryPool;
 use datafusion::execution::runtime_env::RuntimeEnvBuilder;
@@ -135,11 +138,13 @@ use crate::execution::spark_config::{
     SparkConfig, COMET_DEBUG_ENABLED, COMET_DEBUG_MEMORY,
     COMET_EXEC_AGGREGATE_SKIP_PARTIAL_ENABLED, COMET_EXEC_SPILL_COMPRESSION_CODEC,
     COMET_EXPLAIN_NATIVE_ENABLED, COMET_MAX_TEMP_DIRECTORY_SIZE,
-    COMET_PARQUET_ROW_FILTER_PUSHDOWN_ENABLED, COMET_STRICT_TIMESTAMP_LABELS,
-    COMET_TRACING_ENABLED, SPARK_EXECUTOR_CORES,
+    COMET_PARQUET_ROW_FILTER_PUSHDOWN_ENABLED, COMET_PARQUET_SHARED_METADATA_CACHE_ENABLED,
+    COMET_STAGE_ATTEMPT, COMET_STAGE_ID, COMET_STRICT_TIMESTAMP_LABELS, COMET_TRACING_ENABLED,
+    SPARK_EXECUTOR_CORES,
 };
 use crate::parquet::encryption_support::{CometEncryptionFactory, ENCRYPTION_FACTORY_ID};
 use crate::parquet::parquet_support::CometObjectStoreRegistry;
+use crate::parquet::shared_metadata_cache::{shared_metadata_caches, StageKey};
 use datafusion_comet_proto::spark_operator::operator::OpStruct;
 use log::{info, warn};
 use std::sync::OnceLock;
@@ -1008,6 +1013,30 @@ fn prepare_datafusion_session_context(
         .with_disk_manager_builder(disk_manager)
         .with_object_store_registry(Arc::new(CometObjectStoreRegistry::default()));
     rt_config = rt_config.with_memory_pool(memory_pool);
+
+    // Let the tasks of one stage on this executor share the Parquet footer and page index cache
+    // instead of each fetching and parsing the footers of the files it reads.
+    if spark_config.get_bool(COMET_PARQUET_SHARED_METADATA_CACHE_ENABLED) {
+        if let (Some(stage_id), Some(stage_attempt)) = (
+            spark_config
+                .get(COMET_STAGE_ID)
+                .and_then(|v| v.parse::<i32>().ok()),
+            spark_config
+                .get(COMET_STAGE_ATTEMPT)
+                .and_then(|v| v.parse::<i32>().ok()),
+        ) {
+            let cache = shared_metadata_caches().cache_for(
+                StageKey {
+                    stage_id,
+                    stage_attempt,
+                },
+                DEFAULT_METADATA_CACHE_LIMIT,
+            );
+            rt_config = rt_config.with_cache_manager(
+                CacheManagerConfig::default().with_file_metadata_cache(Some(cache)),
+            );
+        }
+    }
 
     let mut session_config = SessionConfig::new()
         .with_target_partitions(task_cpus)

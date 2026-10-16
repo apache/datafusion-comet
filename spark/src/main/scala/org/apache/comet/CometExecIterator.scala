@@ -877,6 +877,15 @@ object CometExecIterator extends Logging {
     val executorCores = numDriverOrExecutorCores(SparkEnv.get.conf)
     builder.putEntries("spark.executor.cores", executorCores.toString)
 
+    // The stage of this task, which scopes the Parquet metadata cache the native scan shares
+    // between the tasks of one stage.
+    Option(TaskContext.get()).foreach { context =>
+      builder.putEntries("spark.comet.internal.stageId", context.stageId().toString)
+      builder.putEntries(
+        "spark.comet.internal.stageAttemptNumber",
+        context.stageAttemptNumber().toString)
+    }
+
     // Any Comet config that the native side reads must be added here manually, resolved.
     // `cometSqlConfs` only carries values that were explicitly set, exactly as they were
     // written, so defaults from `createWithDefault(...)` would otherwise not cross JNI, and
@@ -890,6 +899,7 @@ object CometExecIterator extends Logging {
       CometConf.COMET_EXPLAIN_NATIVE_ENABLED,
       CometConf.COMET_MAX_TEMP_DIRECTORY_SIZE,
       CometConf.COMET_PARQUET_ROW_FILTER_PUSHDOWN_ENABLED,
+      CometConf.COMET_PARQUET_SHARED_METADATA_CACHE_ENABLED,
       CometConf.COMET_STRICT_TIMESTAMP_LABELS,
       CometConf.COMET_TRACING_ENABLED).foreach { entry =>
       builder.putEntries(entry.key, entry.get(SQLConf.get).toString)

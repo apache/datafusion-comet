@@ -27,3 +27,4 @@ mod cast_column;
 mod datetime_rebase;
 mod name_fold;
 pub(crate) mod objectstore;
+pub(crate) mod shared_metadata_cache;

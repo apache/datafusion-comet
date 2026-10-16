@@ -30,6 +30,11 @@ pub(crate) const COMET_EXEC_SPILL_COMPRESSION_CODEC: &str =
     "spark.comet.exec.spill.compression.codec";
 pub(crate) const COMET_STRICT_TIMESTAMP_LABELS: &str =
     "spark.comet.testing.strictTimestampLabels.enabled";
+pub(crate) const COMET_PARQUET_SHARED_METADATA_CACHE_ENABLED: &str =
+    "spark.comet.parquet.metadataCache.sharedWithinStage.enabled";
+/// Not a user config: `CometExecIterator.serializeCometSQLConfs` injects the stage of the task.
+pub(crate) const COMET_STAGE_ID: &str = "spark.comet.internal.stageId";
+pub(crate) const COMET_STAGE_ATTEMPT: &str = "spark.comet.internal.stageAttemptNumber";
 pub(crate) const SPARK_EXECUTOR_CORES: &str = "spark.executor.cores";
 
 /// Comet configs read through this trait must be resolved by the JVM first:
