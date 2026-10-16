@@ -67,6 +67,7 @@ fn partitioned_scan(
         false,
         false,
         false,
+        false,
         session,
         false,
         false,

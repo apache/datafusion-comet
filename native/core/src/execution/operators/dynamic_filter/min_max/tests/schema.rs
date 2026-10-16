@@ -127,6 +127,7 @@ async fn reader_pruning_preserves_required_field_validation_for_null_defaults() 
                     false,
                     false,
                     false,
+                    false,
                     &session,
                     false,
                     false,
