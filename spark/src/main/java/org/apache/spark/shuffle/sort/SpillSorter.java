@@ -24,7 +24,6 @@ import java.util.LinkedList;
 import javax.annotation.Nullable;
 
 import org.apache.spark.TaskContext;
-import org.apache.spark.executor.ShuffleWriteMetrics;
 import org.apache.spark.shuffle.ShuffleWriteMetricsReporter;
 import org.apache.spark.shuffle.comet.CometShuffleMemoryAllocatorTrait;
 import org.apache.spark.sql.comet.execution.shuffle.SpillInfo;
@@ -255,18 +254,6 @@ public class SpillSorter extends SpillWriter {
     long arrayAddr = this.sorterArray.getBaseOffset();
     nativeLib.sortRowPartitionsNative(arrayAddr, numRecords, tracingEnabled);
 
-    final ShuffleWriteMetricsReporter writeMetricsToUse;
-
-    if (isLastFile) {
-      // We're writing the final non-spill file, so we _do_ want to count this as shuffle bytes.
-      writeMetricsToUse = writeMetrics;
-    } else {
-      // We're spilling, so bytes written should be counted towards spill rather than write.
-      // Create a dummy WriteMetrics object to absorb these metrics, since we don't want to count
-      // them towards shuffle bytes written.
-      writeMetricsToUse = new ShuffleWriteMetrics();
-    }
-
     // Native code resolves the sorted record pointers through the page table, so the rows are
     // read where they lie, and continues each partition's checksum over the bytes it writes.
     long start = System.nanoTime();
@@ -295,43 +282,21 @@ public class SpillSorter extends SpillWriter {
     }
 
     // Other threads may be updating the metrics at the same time, so we need to synchronize it.
-    synchronized (writeMetricsToUse) {
-      writeMetricsToUse.incWriteTime(System.nanoTime() - start);
-      writeMetricsToUse.incRecordsWritten(numRecords);
-      writeMetricsToUse.incBytesWritten(written);
+    // As in Spark's ShuffleExternalSorter, a spill's records count as written, but its bytes count
+    // as spilled rather than as shuffle bytes, and its time does not count as shuffle write time
+    // (SPARK-3577 tracks spill time separately).
+    synchronized (writeMetrics) {
+      writeMetrics.incRecordsWritten(numRecords);
+      if (isLastFile) {
+        writeMetrics.incWriteTime(System.nanoTime() - start);
+        writeMetrics.incBytesWritten(written);
+      } else {
+        taskContext.taskMetrics().incDiskBytesSpilled(written);
+      }
     }
 
     synchronized (spills) {
       spills.add(spillInfo);
-    }
-
-    if (!isLastFile) { // i.e. this is a spill file
-      // The current semantics of `shuffleRecordsWritten` seem to be that it's updated when
-      // records
-      // are written to disk, not when they enter the shuffle sorting code. DiskBlockObjectWriter
-      // relies on its `recordWritten()` method being called in order to trigger periodic updates
-      // to
-      // `shuffleBytesWritten`. If we were to remove the `recordWritten()` call and increment that
-      // counter at a higher-level, then the in-progress metrics for records written and bytes
-      // written would get out of sync.
-      //
-      // When writing the last file, we pass `writeMetrics` directly to the DiskBlockObjectWriter;
-      // in all other cases, we pass in a dummy write metrics to capture metrics, then copy those
-      // metrics to the true write metrics here. The reason for performing this copying is so that
-      // we can avoid reporting spilled bytes as shuffle write bytes.
-      //
-      // Note that we intentionally ignore the value of `writeMetricsToUse.shuffleWriteTime()`.
-      // Consistent with ExternalSorter, we do not count this IO towards shuffle write time.
-      // SPARK-3577 tracks the spill time separately.
-
-      // This is guaranteed to be a ShuffleWriteMetrics based on the if check in the beginning
-      // of this method.
-      synchronized (writeMetrics) {
-        writeMetrics.incRecordsWritten(((ShuffleWriteMetrics) writeMetricsToUse).recordsWritten());
-        taskContext
-            .taskMetrics()
-            .incDiskBytesSpilled(((ShuffleWriteMetrics) writeMetricsToUse).bytesWritten());
-      }
     }
   }
 

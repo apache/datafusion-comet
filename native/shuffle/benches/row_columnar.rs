@@ -463,17 +463,17 @@ fn build_sorted_spill(num_partitions: usize) -> SortedSpill {
     }
     let page_addr = page.as_ptr() as i64;
 
-    let mut partitions: Vec<(Vec<i64>, Vec<i32>)> = Vec::new();
-    let mut current = usize::MAX;
-    for &(partition, record_offset, row_size) in &records {
-        if partition != current {
-            partitions.push((Vec::new(), Vec::new()));
-            current = partition;
-        }
-        let (addrs, sizes) = partitions.last_mut().unwrap();
-        addrs.push(page_addr + (record_offset + UAO_SIZE + SERIALIZED_ROW_SIZE_BYTES) as i64);
-        sizes.push(row_size as i32);
-    }
+    let partitions = records
+        .chunk_by(|a, b| a.0 == b.0)
+        .map(|run| {
+            run.iter()
+                .map(|&(_, record_offset, row_size)| {
+                    let row_offset = record_offset + UAO_SIZE + SERIALIZED_ROW_SIZE_BYTES;
+                    (page_addr + row_offset as i64, row_size as i32)
+                })
+                .unzip()
+        })
+        .collect();
     // Every record is in page 0, so a pointer is the partition id and the offset in the page.
     let record_pointers = records
         .iter()

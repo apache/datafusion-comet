@@ -3759,11 +3759,7 @@ mod tests {
             // The blocks hold every row, partition by partition.
             let mut decoded = Vec::new();
             for block in shuffle_blocks(&data) {
-                let batch = read_ipc_compressed(block).unwrap();
-                let column = arrow::array::AsArray::as_primitive::<arrow::datatypes::Int64Type>(
-                    batch.column(0),
-                );
-                decoded.extend(column.values().iter().copied());
+                decoded.extend(long_values(&read_ipc_compressed(block).unwrap()));
             }
             let mut expected_values = values.clone();
             expected_values.sort_by_key(|&v| partition_of(v as usize));

@@ -38,12 +38,11 @@ use arrow::array::{
 };
 use arrow::compute::cast;
 use arrow::datatypes::{DataType, Field, Schema, SchemaRef, TimeUnit};
-use arrow::error::ArrowError;
 use datafusion::physical_plan::metrics::Time;
 use datafusion_comet_jni_bridge::errors::CometError;
 use jni::sys::{jint, jlong};
 use std::{
-    fs::OpenOptions,
+    fs::{File, OpenOptions},
     io::{Cursor, Write},
     sync::Arc,
 };
@@ -1371,10 +1370,10 @@ const SERIALIZED_ROW_SIZE_BYTES: i64 = 4;
 /// partitions is not written one partition at a time.
 const OUTPUT_BUFFER_BYTES: usize = 1 << 20;
 
-/// Converts batches of Spark `UnsafeRow`s to Arrow and encodes each batch as a shuffle block.
-/// It holds the state that does not depend on the rows, so one encoder serves every partition of
-/// a spill: the array builders, the block writer with its pre-encoded schema, and the
-/// compression context.
+/// Converts batches of Spark `UnsafeRow`s to Arrow and appends each batch to a file as a shuffle
+/// block. It holds the state that does not depend on the rows, so one encoder serves every
+/// partition of a spill: the array builders, the block writer with its pre-encoded schema, the
+/// compression context and the open file.
 struct SortedRowEncoder<'a> {
     schema: &'a [DataType],
     prefer_dictionary_ratio: f64,
@@ -1382,46 +1381,53 @@ struct SortedRowEncoder<'a> {
     offsets_as_lengths: bool,
     /// `builder_to_array` finishes every builder, which resets it for the next batch.
     data_builders: Vec<Box<dyn ArrayBuilder>>,
-    /// The schema of the last batch, reused while the columns keep their types.
-    batch_schema: Option<SchemaRef>,
-    /// The block writer pre-encodes the batch schema, so it is kept until the schema changes.
+    /// The schema of the last batch and the block writer that pre-encodes it, kept while the
+    /// columns keep their types.
     block_writer: Option<(SchemaRef, ShuffleBlockWriter)>,
     codec_context: ShuffleCodecContext,
-    /// Encoded blocks not yet written to the output.
+    output: File,
+    /// Encoded blocks not yet written to `output`.
     buffer: Vec<u8>,
     /// Encode and compression time across all batches.
     ipc_time: Time,
 }
 
 impl<'a> SortedRowEncoder<'a> {
+    /// Creates an encoder that appends to the file at `output_path`, with builders sized for
+    /// `capacity` rows.
     fn try_new(
         schema: &'a [DataType],
-        batch_size: usize,
+        capacity: usize,
         prefer_dictionary_ratio: f64,
         codec: &'a CompressionCodec,
         offsets_as_lengths: bool,
+        output_path: &str,
     ) -> Result<Self, CometError> {
         let data_builders = schema
             .iter()
-            .map(|dt| make_builders(dt, batch_size, prefer_dictionary_ratio))
+            .map(|dt| make_builders(dt, capacity, prefer_dictionary_ratio))
             .collect::<Result<Vec<_>, _>>()?;
+        let output = OpenOptions::new()
+            .create(true)
+            .append(true)
+            .open(output_path)?;
         Ok(Self {
             schema,
             prefer_dictionary_ratio,
             codec,
             offsets_as_lengths,
             data_builders,
-            batch_schema: None,
             block_writer: None,
             codec_context: ShuffleCodecContext::default(),
+            output,
             buffer: Vec::new(),
             ipc_time: Time::default(),
         })
     }
 
     /// Converts rows `row_start..row_end` of the rows at `row_addresses_ptr` and `row_sizes_ptr`
-    /// to one batch and buffers its shuffle block, adding the block to `checksum`. Returns the
-    /// block's size.
+    /// to one batch and buffers its shuffle block, adding the block to `checksum`. Writes the
+    /// buffered blocks once they reach `OUTPUT_BUFFER_BYTES`. Returns the block's size.
     ///
     /// # Safety
     ///
@@ -1455,46 +1461,10 @@ impl<'a> SortedRowEncoder<'a> {
                 builder_to_array(builder, datatype, self.prefer_dictionary_ratio)
             })
             .collect::<Result<Vec<_>, _>>()?;
-        let batch = self.make_batch(arrays, row_end - row_start)?;
 
         // The schema changes between batches when a dictionary-encoded column falls back to a
         // plain array (see `builder_to_array`).
-        if self
-            .block_writer
-            .as_ref()
-            .is_none_or(|(cached, _)| !Arc::ptr_eq(cached, batch.schema_ref()))
-        {
-            let writer = ShuffleBlockWriter::try_new_with_offsets_as_lengths(
-                batch.schema_ref(),
-                self.codec.clone(),
-                self.offsets_as_lengths,
-            )?;
-            self.block_writer = Some((batch.schema(), writer));
-        }
-        let (_, writer) = self
-            .block_writer
-            .as_ref()
-            .expect("block writer is set above");
-
-        let start = self.buffer.len();
-        let mut cursor = Cursor::new(&mut self.buffer);
-        cursor.set_position(start as u64);
-        let written =
-            writer.write_batch(&batch, &mut cursor, &mut self.codec_context, &self.ipc_time)?;
-        if let Some(checksum) = checksum {
-            checksum.update(&self.buffer[start..]);
-        }
-        Ok(written)
-    }
-
-    /// Builds a batch of `arrays`, reusing the last batch's schema while the columns keep their
-    /// types, so that a new schema means the column types changed.
-    fn make_batch(
-        &mut self,
-        arrays: Vec<ArrayRef>,
-        num_rows: usize,
-    ) -> Result<RecordBatch, ArrowError> {
-        let reusable = self.batch_schema.as_ref().is_some_and(|schema| {
+        let reusable = self.block_writer.as_ref().is_some_and(|(schema, _)| {
             schema
                 .fields()
                 .iter()
@@ -1507,33 +1477,46 @@ impl<'a> SortedRowEncoder<'a> {
                 .enumerate()
                 .map(|(i, array)| Field::new(format!("c{i}"), array.data_type().clone(), true))
                 .collect::<Vec<_>>();
-            self.batch_schema = Some(Arc::new(Schema::new(fields)));
+            let schema = Arc::new(Schema::new(fields));
+            let writer = ShuffleBlockWriter::try_new_with_offsets_as_lengths(
+                &schema,
+                self.codec.clone(),
+                self.offsets_as_lengths,
+            )?;
+            self.block_writer = Some((schema, writer));
         }
-        let schema = Arc::clone(
-            self.batch_schema
-                .as_ref()
-                .expect("batch schema is set above"),
-        );
-        let options = RecordBatchOptions::new().with_row_count(Some(num_rows));
-        RecordBatch::try_new_with_options(schema, arrays, &options)
-    }
+        let (schema, writer) = self
+            .block_writer
+            .as_ref()
+            .expect("block writer is set above");
+        let options = RecordBatchOptions::new().with_row_count(Some(row_end - row_start));
+        let batch = RecordBatch::try_new_with_options(Arc::clone(schema), arrays, &options)?;
 
-    /// Writes the buffered blocks to `output` once they reach `OUTPUT_BUFFER_BYTES`.
-    fn write_if_full(&mut self, output: &mut impl Write) -> Result<(), CometError> {
+        let start = self.buffer.len();
+        let mut cursor = Cursor::new(&mut self.buffer);
+        cursor.set_position(start as u64);
+        let written =
+            writer.write_batch(&batch, &mut cursor, &mut self.codec_context, &self.ipc_time)?;
+        if let Some(checksum) = checksum {
+            checksum.update(&self.buffer[start..]);
+        }
         if self.buffer.len() >= OUTPUT_BUFFER_BYTES {
-            self.write_buffered(output)?;
+            self.write_buffered()?;
         }
-        Ok(())
+        Ok(written)
     }
 
-    fn write_buffered(&mut self, output: &mut impl Write) -> Result<(), CometError> {
-        output.write_all(&self.buffer)?;
+    /// Writes the blocks still buffered and returns the encode and compression time across all
+    /// batches, in nanoseconds.
+    fn finish(mut self) -> Result<i64, CometError> {
+        self.write_buffered()?;
+        Ok(self.ipc_time.value() as i64)
+    }
+
+    fn write_buffered(&mut self) -> Result<(), CometError> {
+        self.output.write_all(&self.buffer)?;
         self.buffer.clear();
         Ok(())
-    }
-
-    fn encode_nanos(&self) -> i64 {
-        self.ipc_time.value() as i64
     }
 }
 
@@ -1570,17 +1553,12 @@ pub fn process_sorted_row_partition(
 
     let mut encoder = SortedRowEncoder::try_new(
         schema,
-        batch_size,
+        batch_size.min(row_num),
         prefer_dictionary_ratio,
         codec,
         offsets_as_lengths,
+        &output_path,
     )?;
-
-    // Open the output file once and reuse it across batches
-    let mut output_data = OpenOptions::new()
-        .create(true)
-        .append(true)
-        .open(&output_path)?;
 
     while current_row < row_num {
         let n = std::cmp::min(batch_size, row_num - current_row);
@@ -1591,15 +1569,14 @@ pub fn process_sorted_row_partition(
             current_row + n,
             current_checksum.as_mut(),
         )?;
-        encoder.write_if_full(&mut output_data)?;
         current_row += n;
     }
-    encoder.write_buffered(&mut output_data)?;
+    let encode_nanos = encoder.finish()?;
 
     Ok((
         written as i64,
         current_checksum.map(|c| c.finalize()),
-        encoder.encode_nanos(),
+        encode_nanos,
     ))
 }
 
@@ -1652,42 +1629,36 @@ pub unsafe fn process_sorted_partitions(
         )));
     }
 
+    // No batch holds more rows than this.
+    let capacity = batch_size.min(record_pointers.len());
     let mut encoder = SortedRowEncoder::try_new(
         schema,
-        batch_size,
+        capacity,
         prefer_dictionary_ratio,
         codec,
         offsets_as_lengths,
+        output_path,
     )?;
-    let mut output = OpenOptions::new()
-        .create(true)
-        .append(true)
-        .open(output_path)?;
 
     // The rows of one batch, resolved from their record pointers.
-    let capacity = batch_size.min(record_pointers.len());
     let mut row_addresses: Vec<jlong> = Vec::with_capacity(capacity);
     let mut row_sizes: Vec<jint> = Vec::with_capacity(capacity);
 
-    let mut start = 0;
-    let mut previous_partition = None;
-    while start < record_pointers.len() {
-        let partition = packed_partition_id(record_pointers[start]);
+    // Each run of pointers with one partition id holds that partition's records.
+    let mut next_partition = 0;
+    for run in record_pointers.chunk_by(|&a, &b| packed_partition_id(a) == packed_partition_id(b)) {
+        let partition = packed_partition_id(run[0]);
         if partition >= num_partitions {
             return Err(CometError::Internal(format!(
                 "Shuffle record for partition {partition} of {num_partitions}"
             )));
         }
-        if previous_partition.is_some_and(|previous| partition <= previous) {
+        if partition < next_partition {
             return Err(CometError::Internal(
                 "Shuffle records are not sorted by partition".to_string(),
             ));
         }
-        previous_partition = Some(partition);
-        let end = record_pointers[start..]
-            .iter()
-            .position(|&pointer| packed_partition_id(pointer) != partition)
-            .map_or(record_pointers.len(), |len| start + len);
+        next_partition = partition + 1;
 
         let mut checksum = checksum_algo
             .map(|algo| {
@@ -1696,7 +1667,7 @@ pub unsafe fn process_sorted_partitions(
             })
             .transpose()?;
         let mut written = 0;
-        for pointers in record_pointers[start..end].chunks(batch_size) {
+        for pointers in run.chunks(batch_size) {
             row_addresses.clear();
             row_sizes.clear();
             for &pointer in pointers {
@@ -1711,18 +1682,14 @@ pub unsafe fn process_sorted_partitions(
                 pointers.len(),
                 checksum.as_mut(),
             )?;
-            encoder.write_if_full(&mut output)?;
         }
 
         partition_lengths[partition] = written as i64;
         if let Some(checksum) = checksum {
             partition_checksums[partition] = checksum.finalize() as i64;
         }
-        start = end;
     }
-    encoder.write_buffered(&mut output)?;
-
-    Ok(encoder.encode_nanos())
+    encoder.finish()
 }
 
 fn packed_partition_id(pointer: i64) -> usize {

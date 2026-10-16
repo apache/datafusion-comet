@@ -108,23 +108,23 @@ class SpillSorterSuite extends AnyFunSuite with BeforeAndAfterEach {
 
   private def createSpillSorter(
       spillCallback: SpillSorter.SpillCallback = () => {},
-      spills: java.util.LinkedList[org.apache.spark.sql.comet.execution.shuffle.SpillInfo] =
-        new java.util.LinkedList[org.apache.spark.sql.comet.execution.shuffle.SpillInfo](),
-      partitionChecksums: Array[Long] = new Array[Long](10)): SpillSorter = {
-    val schema = createTestSchema()
-    val writeMetrics = new ShuffleWriteMetrics()
-    val taskContext = TaskContext.empty()
-
+      // Renamed on import: Spark 3.x has a `SpillInfo` of its own in this package.
+      spills: java.util.LinkedList[CometSpillInfo] = new java.util.LinkedList[CometSpillInfo](),
+      partitionChecksums: Array[Long] = new Array[Long](10),
+      allocator: CometShuffleMemoryAllocatorTrait = this.allocator,
+      checksumAlgorithm: String = "adler32",
+      writeMetrics: ShuffleWriteMetrics = new ShuffleWriteMetrics(),
+      taskContext: TaskContext = TaskContext.empty()): SpillSorter = {
     new SpillSorter(
       allocator,
       INITIAL_SIZE,
-      schema,
+      createTestSchema(),
       UAO_SIZE,
       0.5, // preferDictionaryRatio
       "zstd", // compressionCodec
       1, // compressionLevel
       true, // offsetsAsLengths
-      "adler32", // checksumAlgorithm
+      checksumAlgorithm,
       partitionChecksums,
       writeMetrics,
       taskContext,
@@ -316,25 +316,16 @@ class SpillSorterSuite extends AnyFunSuite with BeforeAndAfterEach {
       val partitionChecksums =
         if (checksumAlgorithm == null) Array.emptyLongArray
         else Array.fill(numPartitions)(Long.MinValue)
-      // Renamed on import: Spark 3.x has a `SpillInfo` of its own in this package.
       val spills = new java.util.LinkedList[CometSpillInfo]()
       val writeMetrics = new ShuffleWriteMetrics()
       val taskContext = TaskContext.empty()
-      val sorter = new SpillSorter(
-        allocator,
-        INITIAL_SIZE,
-        createTestSchema(),
-        UAO_SIZE,
-        10.0, // preferDictionaryRatio
-        "lz4", // compressionCodec
-        1, // compressionLevel
-        true, // offsetsAsLengths
-        checksumAlgorithm,
-        partitionChecksums,
-        writeMetrics,
-        taskContext,
-        spills,
-        () => {})
+      val sorter = createSpillSorter(
+        spills = spills,
+        partitionChecksums = partitionChecksums,
+        allocator = allocator,
+        checksumAlgorithm = checksumAlgorithm,
+        writeMetrics = writeMetrics,
+        taskContext = taskContext)
 
       // A spill, then the final file, with the same records.
       val files = mutable.ArrayBuffer[File]()
@@ -361,22 +352,21 @@ class SpillSorterSuite extends AnyFunSuite with BeforeAndAfterEach {
 
         assert(spills.size === 2)
         val written = Seq(spills.get(0), spills.get(1))
-        written.foreach { spill =>
+        // The bytes of each partition in each file.
+        val partitionBytes = written.map { spill =>
           assert(spill.partitionLengths.sum === spill.file.length())
-          (0 until numPartitions).foreach { p =>
-            assert((spill.partitionLengths(p) > 0) === usedPartitions(p), s"partition $p")
-          }
+          val bytes = Files.readAllBytes(spill.file.toPath)
+          val starts = spill.partitionLengths.scanLeft(0L)(_ + _).map(_.toInt)
+          (0 until numPartitions).map(p => bytes.slice(starts(p), starts(p + 1)))
         }
 
         // Native code found each record through the page table: in both files, every partition
         // decodes to its rows, in the order they were inserted.
-        written.foreach { spill =>
-          val bytes = Files.readAllBytes(spill.file.toPath)
+        partitionBytes.foreach { partitions =>
           (0 until numPartitions).foreach { p =>
-            val start = spill.partitionLengths.take(p).sum.toInt
-            val end = start + spill.partitionLengths(p).toInt
             val ids = records.indices.filter(i => records(i)._2 == p)
-            assert(decodeIds(bytes.slice(start, end)) === ids, s"partition $p")
+            assert(partitions(p).nonEmpty === ids.nonEmpty, s"partition $p")
+            assert(decodeIds(partitions(p)) === ids, s"partition $p")
           }
         }
 
@@ -386,11 +376,7 @@ class SpillSorterSuite extends AnyFunSuite with BeforeAndAfterEach {
           (0 until numPartitions).foreach { p =>
             if (usedPartitions(p)) {
               val adler32 = new Adler32()
-              written.foreach { spill =>
-                val bytes = Files.readAllBytes(spill.file.toPath)
-                val start = spill.partitionLengths.take(p).sum.toInt
-                adler32.update(bytes, start, spill.partitionLengths(p).toInt)
-              }
+              partitionBytes.foreach(partitions => adler32.update(partitions(p)))
               assert(partitionChecksums(p) === adler32.getValue, s"partition $p")
             } else {
               assert(partitionChecksums(p) === Long.MinValue, s"partition $p")
