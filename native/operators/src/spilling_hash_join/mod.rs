@@ -43,6 +43,7 @@
 
 mod bloom;
 mod chunked;
+mod concat;
 mod exec;
 mod memory;
 mod probe;

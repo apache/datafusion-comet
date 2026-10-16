@@ -606,12 +606,24 @@ impl Driver {
         let build_bytes = pair.build.as_ref().map_or(0, |file| file.bytes);
         let read_ahead = pair.build.as_ref().map_or(0, SpilledFile::read_ahead_bytes)
             + pair.probe.as_ref().map_or(0, SpilledFile::read_ahead_bytes);
-        let memory = self.estimator.for_rows(build_rows, build_bytes)?;
+        let mut memory = self.estimator.for_rows(build_rows, build_bytes)?;
+        if pair
+            .build
+            .as_ref()
+            .is_some_and(SpilledFile::reads_as_one_batch)
+        {
+            // The inner join keeps a single build batch as it is, without a concatenated copy.
+            memory.transient = 0;
+        }
         if self.reserve_held(build_bytes)? {
             if self.reserve_inner(memory, read_ahead)? {
-                // The build side is held whole, so it is read back compacted.
+                // The build side is held whole, so it is read back as one batch if it can be, and
+                // compacted otherwise.
                 let build = match &pair.build {
-                    Some(file) => file.read_compacted(&self.build_reader)?,
+                    Some(file) => match file.read_as_one_batch(&self.build_reader).await? {
+                        Some(batch) => batches_stream(self.spec.build_schema(), vec![batch]),
+                        None => file.read_compacted(&self.build_reader)?,
+                    },
                     None => batches_stream(self.spec.build_schema(), vec![]),
                 };
                 let probe = match &pair.probe {

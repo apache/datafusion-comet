@@ -49,6 +49,7 @@ use datafusion::physical_plan::stream::RecordBatchStreamAdapter;
 use datafusion::physical_plan::SendableRecordBatchStream;
 use futures::StreamExt;
 
+use super::concat::{self, record_value_bytes, Concatenator};
 use super::memory::try_reserve;
 
 /// The most memory a writer holds in parts not yet written. With 16 buckets per side, this caps
@@ -66,6 +67,8 @@ pub(super) struct SpilledFile {
     pub(super) bytes: usize,
     /// The in-memory size of the largest batch written.
     pub(super) max_batch_bytes: usize,
+    /// The value bytes of each column, when every column is one that [`concat`] handles.
+    value_bytes: Option<Vec<usize>>,
 }
 
 impl SpilledFile {
@@ -92,6 +95,29 @@ impl SpilledFile {
             schema,
             stream.map(|batch| batch.and_then(|batch| compact(&batch))),
         )))
+    }
+
+    /// Whether [`Self::read_as_one_batch`] reads the file back as one batch.
+    pub(super) fn reads_as_one_batch(&self) -> bool {
+        self.value_bytes.is_some()
+    }
+
+    /// Reads the file back as one batch, in buffers allocated once at their final size, which
+    /// together hold no more than [`Self::bytes`]. None if its columns are not ones [`concat`]
+    /// handles.
+    pub(super) async fn read_as_one_batch(
+        &self,
+        manager: &SpillManager,
+    ) -> Result<Option<RecordBatch>> {
+        let Some(value_bytes) = &self.value_bytes else {
+            return Ok(None);
+        };
+        let mut stream = self.read(manager)?;
+        let mut batch = Concatenator::new(stream.schema(), self.rows, value_bytes);
+        while let Some(part) = stream.next().await.transpose()? {
+            batch.push(&part)?;
+        }
+        Ok(Some(batch.finish()?))
     }
 
     /// The memory reading the file back holds besides the batch being processed: two batches
@@ -158,6 +184,8 @@ impl SpillWriterFactory {
                 reservation: Arc::clone(&self.pending),
             },
             batch_rows: self.batch_rows,
+            value_bytes: concat::supports(&self.schema)
+                .then(|| vec![0; self.schema.fields().len()]),
             rows: 0,
             batches: 0,
             bytes: 0,
@@ -177,6 +205,8 @@ pub(super) struct SpillFileWriter {
     schema: SchemaRef,
     parts: Parts,
     batch_rows: usize,
+    /// The value bytes of each column so far, when every column is one that [`concat`] handles.
+    value_bytes: Option<Vec<usize>>,
     rows: usize,
     batches: usize,
     bytes: usize,
@@ -223,6 +253,9 @@ impl SpillFileWriter {
     fn write(&mut self, batch: &RecordBatch) -> Result<()> {
         let batch = gc_view_arrays(batch)?;
         let size = get_record_batch_memory_size(&batch);
+        if let Some(value_bytes) = &mut self.value_bytes {
+            record_value_bytes(&batch, value_bytes);
+        }
         self.writer.write(&batch)?;
         self.rows += batch.num_rows();
         self.batches += 1;
@@ -252,6 +285,7 @@ impl SpillFileWriter {
             rows: self.rows,
             bytes: self.bytes.saturating_add(rounding),
             max_batch_bytes: self.max_batch_bytes,
+            value_bytes: self.value_bytes,
         })
     }
 }
