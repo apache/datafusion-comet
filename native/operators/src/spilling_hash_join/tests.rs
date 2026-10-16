@@ -21,8 +21,13 @@
 use std::sync::atomic::{AtomicUsize, Ordering as AtomicOrdering};
 use std::sync::Arc;
 
-use arrow::array::{ArrayRef, Int64Array, RecordBatch, StringArray};
-use arrow::datatypes::{DataType, Field, Schema, SchemaRef};
+use arrow::array::{
+    ArrayRef, BinaryArray, BooleanArray, Date32Array, Decimal128Array, DictionaryArray,
+    FixedSizeBinaryArray, Int64Array, LargeStringArray, ListArray, RecordBatch, StringArray,
+    StringViewArray, StructArray, TimestampMicrosecondArray,
+};
+use arrow::buffer::NullBuffer;
+use arrow::datatypes::{DataType, Field, Int32Type, Schema, SchemaRef, TimeUnit};
 use arrow::util::display::{ArrayFormatter, FormatOptions};
 use datafusion::common::config::SpillCompression;
 use datafusion::common::{DataFusionError, JoinSide, JoinType, NullEquality, Result};
@@ -146,6 +151,29 @@ fn filter() -> JoinFilter {
     )
 }
 
+/// The inputs of a join under test.
+struct Input<'a> {
+    build_schema: SchemaRef,
+    build: &'a [RecordBatch],
+    probe_schema: SchemaRef,
+    probe: &'a [RecordBatch],
+    /// The session's batch size, which is also the most rows a batch of a spill file holds.
+    batch_size: usize,
+}
+
+impl<'a> Input<'a> {
+    /// Tables of [`schema`], joined with a batch size of 1000.
+    fn new(build: &'a [RecordBatch], probe: &'a [RecordBatch]) -> Self {
+        Self {
+            build_schema: schema(),
+            build,
+            probe_schema: schema(),
+            probe,
+            batch_size: 1000,
+        }
+    }
+}
+
 fn hash_join(
     build: &[RecordBatch],
     probe: &[RecordBatch],
@@ -153,14 +181,36 @@ fn hash_join(
     with_filter: bool,
     on: &[&str],
 ) -> Result<HashJoinExec> {
-    let build_input = MemorySourceConfig::try_new_exec(&[build.to_vec()], schema(), None)?;
-    let probe_input = MemorySourceConfig::try_new_exec(&[probe.to_vec()], schema(), None)?;
+    hash_join_of(&Input::new(build, probe), join_type, with_filter, on)
+}
+
+fn hash_join_of(
+    input: &Input,
+    join_type: JoinType,
+    with_filter: bool,
+    on: &[&str],
+) -> Result<HashJoinExec> {
+    let build_input = MemorySourceConfig::try_new_exec(
+        &[input.build.to_vec()],
+        Arc::clone(&input.build_schema),
+        None,
+    )?;
+    let probe_input = MemorySourceConfig::try_new_exec(
+        &[input.probe.to_vec()],
+        Arc::clone(&input.probe_schema),
+        None,
+    )?;
     let on = on
         .iter()
         .map(|name| {
-            let index = schema().index_of(name).unwrap();
-            let build: PhysicalExprRef = Arc::new(Column::new(name, index));
-            let probe: PhysicalExprRef = Arc::new(Column::new(name, index));
+            let build: PhysicalExprRef = Arc::new(Column::new(
+                name,
+                input.build_schema.index_of(name).unwrap(),
+            ));
+            let probe: PhysicalExprRef = Arc::new(Column::new(
+                name,
+                input.probe_schema.index_of(name).unwrap(),
+            ));
             (build, probe)
         })
         .collect();
@@ -178,6 +228,14 @@ fn hash_join(
 }
 
 fn context(pool_bytes: Option<usize>, compression: SpillCompression) -> Arc<TaskContext> {
+    context_with(pool_bytes, compression, 1000)
+}
+
+fn context_with(
+    pool_bytes: Option<usize>,
+    compression: SpillCompression,
+    batch_size: usize,
+) -> Arc<TaskContext> {
     let mut runtime = RuntimeEnvBuilder::new();
     if let Some(bytes) = pool_bytes {
         runtime = runtime.with_memory_pool(Arc::new(GreedyMemoryPool::new(bytes)));
@@ -186,7 +244,7 @@ fn context(pool_bytes: Option<usize>, compression: SpillCompression) -> Arc<Task
         TaskContext::default()
             .with_session_config(
                 SessionConfig::new()
-                    .with_batch_size(1000)
+                    .with_batch_size(batch_size)
                     .with_spill_compression(compression),
             )
             .with_runtime(runtime.build_arc().unwrap()),
@@ -246,8 +304,21 @@ async fn check(
     config: SpillingHashJoinConfig,
     pool_bytes: Option<usize>,
 ) -> Result<Spilled> {
-    let plain = Arc::new(hash_join(build, probe, join_type, with_filter, on)?);
-    let unlimited = context(None, SpillCompression::Uncompressed);
+    let input = Input::new(build, probe);
+    check_input(&input, join_type, with_filter, on, config, pool_bytes).await
+}
+
+async fn check_input(
+    input: &Input<'_>,
+    join_type: JoinType,
+    with_filter: bool,
+    on: &[&str],
+    config: SpillingHashJoinConfig,
+    pool_bytes: Option<usize>,
+) -> Result<Spilled> {
+    let (build, probe) = (input.build, input.probe);
+    let plain = Arc::new(hash_join_of(input, join_type, with_filter, on)?);
+    let unlimited = context_with(None, SpillCompression::Uncompressed, input.batch_size);
     let expected = rows(&collect(Arc::clone(&plain) as _, unlimited).await?);
     let mut spilled = Spilled::default();
     for compression in [SpillCompression::Uncompressed, SpillCompression::Lz4Frame] {
@@ -256,7 +327,7 @@ async fn check(
                 .expect("a partitioned join is wrapped"),
         );
         assert_eq!(spilling.schema(), plain.schema());
-        let context = context(pool_bytes, compression);
+        let context = context_with(pool_bytes, compression, input.batch_size);
         let actual = rows(&collect(Arc::clone(&spilling) as _, context).await?);
         let case = format!("{join_type} with filter {with_filter}, {compression:?} spill files");
         assert_eq!(actual.len(), expected.len(), "row count for {case}");
@@ -705,5 +776,280 @@ async fn dropping_the_join_deletes_its_spill_files() -> Result<()> {
         std::thread::sleep(std::time::Duration::from_millis(10));
     }
     assert_eq!(disk.used_disk_space(), 0);
+    Ok(())
+}
+
+/// A column of `keys`, as `data_type`. Equal keys give equal values, and a null key a null.
+fn key_column(keys: &[Option<i64>], data_type: &DataType) -> ArrayRef {
+    let text = |key: i64| format!("key-{key}-of-a-long-enough-string");
+    match data_type {
+        DataType::Decimal128(precision, scale) => Arc::new(
+            Decimal128Array::from_iter(keys.iter().map(|key| key.map(|key| key as i128 * 101)))
+                .with_precision_and_scale(*precision, *scale)
+                .unwrap(),
+        ),
+        DataType::Date32 => Arc::new(Date32Array::from_iter(
+            keys.iter().map(|key| key.map(|key| key as i32)),
+        )),
+        DataType::Timestamp(TimeUnit::Microsecond, timezone) => Arc::new(
+            TimestampMicrosecondArray::from_iter(
+                keys.iter().map(|key| key.map(|key| key * 1_000_003)),
+            )
+            .with_timezone_opt(timezone.clone()),
+        ),
+        DataType::Utf8View => Arc::new(StringViewArray::from_iter(
+            keys.iter().map(|key| key.map(text)),
+        )),
+        DataType::Binary => Arc::new(BinaryArray::from_iter(
+            keys.iter().map(|key| key.map(|key| text(key).into_bytes())),
+        )),
+        DataType::Dictionary(_, _) => {
+            let values: Vec<Option<String>> = keys.iter().map(|key| key.map(text)).collect();
+            Arc::new(
+                values
+                    .iter()
+                    .map(Option::as_deref)
+                    .collect::<DictionaryArray<Int32Type>>(),
+            )
+        }
+        other => unimplemented!("key type {other}"),
+    }
+}
+
+/// A payload column of `rows` rows, as `data_type`, with a null in every seventh row.
+fn payload_column(rows: std::ops::Range<usize>, data_type: &DataType) -> ArrayRef {
+    let value = |row: usize| (row % 7 != 3).then_some(row);
+    match data_type {
+        DataType::List(_) => Arc::new(ListArray::from_iter_primitive::<Int32Type, _, _>(rows.map(
+            |row| {
+                value(row).map(|row| {
+                    (0..row % 4)
+                        .map(|i| Some((row + i) as i32))
+                        .collect::<Vec<_>>()
+                })
+            },
+        ))),
+        DataType::Struct(fields) => {
+            let a = Int64Array::from_iter(rows.clone().map(|row| value(row).map(|row| row as i64)));
+            let b =
+                StringArray::from_iter(rows.clone().map(|row| value(row).map(|r| format!("b{r}"))));
+            let nulls = NullBuffer::from_iter(rows.map(|row| row % 11 != 5));
+            Arc::new(StructArray::new(
+                fields.clone(),
+                vec![Arc::new(a), Arc::new(b)],
+                Some(nulls),
+            ))
+        }
+        DataType::LargeUtf8 => Arc::new(LargeStringArray::from_iter(
+            rows.map(|row| value(row).map(|row| format!("large-{row}"))),
+        )),
+        DataType::Utf8View => {
+            Arc::new(StringViewArray::from_iter(rows.map(|row| {
+                value(row).map(|row| format!("a view longer than twelve bytes {row}"))
+            })))
+        }
+        DataType::Dictionary(_, _) => {
+            let values: Vec<Option<String>> = rows
+                .map(|row| value(row).map(|row| format!("d{}", row % 13)))
+                .collect();
+            Arc::new(
+                values
+                    .iter()
+                    .map(Option::as_deref)
+                    .collect::<DictionaryArray<Int32Type>>(),
+            )
+        }
+        DataType::Decimal128(precision, scale) => Arc::new(
+            Decimal128Array::from_iter(
+                rows.map(|row| value(row).map(|row| row as i128 * 1_000_000_007)),
+            )
+            .with_precision_and_scale(*precision, *scale)
+            .unwrap(),
+        ),
+        DataType::FixedSizeBinary(width) => Arc::new(
+            FixedSizeBinaryArray::try_from_sparse_iter_with_size(
+                rows.map(|row| value(row).map(|row| vec![row as u8; *width as usize])),
+                *width,
+            )
+            .unwrap(),
+        ),
+        DataType::Boolean => Arc::new(BooleanArray::from_iter(
+            rows.map(|row| value(row).map(|row| row % 3 == 0)),
+        )),
+        DataType::Int64 => Arc::new(Int64Array::from_iter(
+            rows.map(|row| value(row).map(|row| row as i64 * 31)),
+        )),
+        DataType::Utf8 => {
+            Arc::new(StringArray::from_iter(rows.map(|row| {
+                value(row).map(|row| format!("{row}-{}", "w".repeat(2000)))
+            })))
+        }
+        other => unimplemented!("payload type {other}"),
+    }
+}
+
+/// A table of a key `k` of `key_type`, drawn as [`table`] draws it, and payload columns `p0`,
+/// `p1` and so on of `payload`, in batches of `batch_rows`.
+fn typed_table(
+    rows: usize,
+    keys: Keys,
+    seed: u64,
+    key_type: &DataType,
+    payload: &[DataType],
+    batch_rows: usize,
+) -> (SchemaRef, Vec<RecordBatch>) {
+    let mut fields = vec![Field::new("k", key_type.clone(), true)];
+    for (index, data_type) in payload.iter().enumerate() {
+        fields.push(Field::new(format!("p{index}"), data_type.clone(), true));
+    }
+    let schema = Arc::new(Schema::new(fields));
+    let mut random = SplitMix64(seed);
+    let all_keys: Vec<Option<i64>> = (0..rows)
+        .map(|row| {
+            let draw = random.next();
+            if keys.null_every > 0 && row % keys.null_every == 0 {
+                None
+            } else if draw % 100 < keys.hot_percent {
+                Some(7)
+            } else {
+                Some(((draw >> 8) % keys.range) as i64)
+            }
+        })
+        .collect();
+    let batches = (0..rows)
+        .step_by(batch_rows)
+        .map(|start| {
+            let end = (start + batch_rows).min(rows);
+            let mut columns = vec![key_column(&all_keys[start..end], key_type)];
+            columns.extend(
+                payload
+                    .iter()
+                    .map(|data_type| payload_column(start..end, data_type)),
+            );
+            RecordBatch::try_new(Arc::clone(&schema), columns).unwrap()
+        })
+        .collect();
+    (schema, batches)
+}
+
+/// Keys of every type a hash join key commonly has, routed, spilled, read back, split again, and
+/// joined in chunks.
+#[tokio::test]
+async fn key_types() -> Result<()> {
+    let key_types = [
+        DataType::Decimal128(18, 2),
+        DataType::Date32,
+        DataType::Timestamp(TimeUnit::Microsecond, Some("UTC".into())),
+        DataType::Utf8View,
+        DataType::Binary,
+        DataType::Dictionary(Box::new(DataType::Int32), Box::new(DataType::Utf8)),
+    ];
+    let hot = Keys {
+        range: 3000,
+        null_every: 53,
+        hot_percent: 30,
+    };
+    for key_type in &key_types {
+        let payload = [DataType::Int64];
+        let (build_schema, build) = typed_table(3000, hot, 30, key_type, &payload, 500);
+        let (probe_schema, probe) = typed_table(3000, UNIFORM, 31, key_type, &payload, 500);
+        let input = Input {
+            build_schema,
+            build: &build,
+            probe_schema,
+            probe: &probe,
+            batch_size: 1000,
+        };
+        for join_type in JOIN_TYPES {
+            for config in [limit(64 * 1024), limit(8 * 1024)] {
+                check_input(&input, join_type, false, &["k"], config, None)
+                    .await
+                    .map_err(|e| e.context(format!("key {key_type}, {join_type}")))?;
+            }
+        }
+    }
+    Ok(())
+}
+
+/// Payloads of nested, variable-width and dictionary types survive routing, the parts a spill
+/// file's writer concatenates, and the copy of a build side read back.
+#[tokio::test]
+async fn payload_types() -> Result<()> {
+    let payload = [
+        DataType::List(Arc::new(Field::new_list_field(DataType::Int32, true))),
+        DataType::Struct(
+            vec![
+                Field::new("a", DataType::Int64, true),
+                Field::new("b", DataType::Utf8, true),
+            ]
+            .into(),
+        ),
+        DataType::LargeUtf8,
+        DataType::Utf8View,
+        DataType::Dictionary(Box::new(DataType::Int32), Box::new(DataType::Utf8)),
+        DataType::Decimal128(38, 10),
+        DataType::FixedSizeBinary(16),
+        DataType::Boolean,
+    ];
+    let key_type = DataType::Utf8View;
+    let (build_schema, build) = typed_table(4000, UNIFORM, 32, &key_type, &payload, 500);
+    let (probe_schema, probe) = typed_table(
+        4000,
+        Keys {
+            range: 12000,
+            null_every: 89,
+            ..UNIFORM
+        },
+        33,
+        &key_type,
+        &payload,
+        500,
+    );
+    let input = Input {
+        build_schema,
+        build: &build,
+        probe_schema,
+        probe: &probe,
+        batch_size: 1000,
+    };
+    for join_type in JOIN_TYPES {
+        for config in [limit(128 * 1024), limit(16 * 1024)] {
+            let spilled = check_input(&input, join_type, false, &["k"], config, None).await?;
+            assert!(spilled.spilled_buckets > 0, "{join_type} did not spill");
+        }
+    }
+    Ok(())
+}
+
+/// Rows of 2 KB, so that the batches a spill file's writer writes are larger than the chunks
+/// DataFusion reads spill files in. A message that spans chunks is read into a buffer that grows
+/// by doubling, and the build side read back is copied so that it holds what was reserved.
+#[tokio::test]
+async fn wide_rows() -> Result<()> {
+    let payload = [DataType::Utf8];
+    let (build_schema, build) = typed_table(1500, UNIFORM, 34, &DataType::Utf8View, &payload, 100);
+    let (probe_schema, probe) = typed_table(
+        3000,
+        Keys {
+            range: 12000,
+            ..UNIFORM
+        },
+        35,
+        &DataType::Utf8View,
+        &[DataType::Int64],
+        100,
+    );
+    let input = Input {
+        build_schema,
+        build: &build,
+        probe_schema,
+        probe: &probe,
+        batch_size: 8192,
+    };
+    for join_type in [JoinType::Inner, JoinType::Full, JoinType::RightAnti] {
+        let spilled =
+            check_input(&input, join_type, false, &["k"], limit(1024 * 1024), None).await?;
+        assert!(spilled.spilled_buckets > 0, "{join_type} did not spill");
+    }
     Ok(())
 }
