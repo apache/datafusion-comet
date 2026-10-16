@@ -99,6 +99,17 @@ reads that fail where Spark succeeds are listed in
   ([SPARK-47447](https://issues.apache.org/jira/browse/SPARK-47447)) and Comet matches Spark's
   behavior.
 
+### Missing Nested Fields
+
+When all requested leaf fields under a nested column are missing from a Parquet file, Spark 3.4
+through 4.0 return NULL for the entire missing subtree, including arrays of structs. Comet follows
+this behavior. On Spark 4.1+, `spark.sql.legacy.parquet.returnNullStructIfAllFieldsMissing=true`
+selects that behavior; the default (`false`) preserves the file's parent nullness instead. A field
+that exists in the file but contains only NULL values is not a missing field.
+
+Native Iceberg schema adaptation uses file parent nullness instead of this Parquet legacy setting.
+Name-mapped nested leaf values remain subject to [#6790](https://github.com/apache/datafusion-comet/issues/6790).
+
 ### Schema Mismatch Handling
 
 The issues in this subsection apply only when the requested read schema differs from the schema written
