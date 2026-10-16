@@ -453,6 +453,7 @@ case class CometExecRule(session: SparkSession, queryStagePrep: Boolean = false)
       case scan: CometBatchScanExec if scan.nativeIcebergScanMetadata.isDefined =>
         convertToComet(scan, CometIcebergNativeScan).getOrElse(scan)
 
+      // A declined native CSV scan falls back to Spark's scan, which produces rows.
       case scan: CometBatchScanExec if scan.wrapped.scan.isInstanceOf[CSVScan] =>
         convertToComet(scan, CometCsvNativeScanExec).getOrElse(scan.wrapped)
 

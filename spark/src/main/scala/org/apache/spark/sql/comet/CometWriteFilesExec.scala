@@ -31,6 +31,7 @@ import org.apache.spark.internal.Logging
 import org.apache.spark.internal.io.{FileCommitProtocol, FileNameSpec, SparkHadoopWriterUtils}
 import org.apache.spark.rdd.RDD
 import org.apache.spark.sql.catalyst.InternalRow
+import org.apache.spark.sql.catalyst.expressions.UnsafeProjection
 import org.apache.spark.sql.comet.execution.arrow.CometArrowStream
 import org.apache.spark.sql.comet.util.{Utils => CometUtils}
 import org.apache.spark.sql.connector.write.WriterCommitMessage
@@ -38,10 +39,11 @@ import org.apache.spark.sql.execution.SparkPlan
 import org.apache.spark.sql.execution.datasources.{BasicWriteTaskStatsTracker, ExecutedWriteSummary, WriteFilesSpec, WriteJobDescription, WriteTaskResult, WriteTaskStatsTracker}
 import org.apache.spark.sql.execution.metric.SQLMetric
 import org.apache.spark.sql.internal.SQLConf
-import org.apache.spark.sql.types.StructType
+import org.apache.spark.sql.types.{DataType, StructType}
 import org.apache.spark.sql.vectorized.ColumnarBatch
 import org.apache.spark.util.Utils
 
+import org.apache.comet.CometConf
 import org.apache.comet.serde.OperatorOuterClass
 import org.apache.comet.serde.OperatorOuterClass.Operator
 import org.apache.comet.serde.operator.{schema2Proto, NativeWriteUtils}
@@ -250,9 +252,7 @@ object CometWriteFilesExec extends Logging {
             s"Comet's native Parquet writer cannot write $codec"))
 
         statsTrackers.foreach(_.newFile(filePath))
-        val rowsWritten =
-          writeNatively(taskWrite, filePath, protoCodec, batches, sparkPartitionId)
-        recordRows(statsTrackers, filePath, rowsWritten)
+        writeNatively(taskWrite, filePath, protoCodec, batches, statsTrackers, sparkPartitionId)
         statsTrackers.foreach(_.closeFile(filePath))
         filePath
       } else {
@@ -281,17 +281,20 @@ object CometWriteFilesExec extends Logging {
   }
 
   /**
-   * Run the native write plan for one task, returning the number of rows written.
+   * Run the native write plan for one task, reporting rows as batches are pulled into native
+   * code.
    *
-   * The row count is taken on the JVM side as batches are pulled into native code. That is exact
-   * because the native writer consumes its whole input before completing.
+   * Trackers must see each batch before it is handed off to Arrow: the child may reuse or release
+   * its vectors when the next batch is pulled. A successful write consumes the whole input;
+   * failures in either the writer or a tracker abort the task without publishing its statistics.
    */
   private def writeNatively(
       taskWrite: NativeWriteTask,
       filePath: String,
       codec: OperatorOuterClass.CompressionCodec,
       batches: Iterator[ColumnarBatch],
-      partitionId: Int): Long = {
+      statsTrackers: Seq[WriteTaskStatsTracker],
+      partitionId: Int): Unit = {
     val parquetWriter = taskWrite.nativeOp.getParquetWriter.toBuilder
       .setOutputPath(filePath)
       .setCompression(codec)
@@ -302,12 +305,21 @@ object CometWriteFilesExec extends Logging {
       .build()
     val taskOp = taskWrite.nativeOp.toBuilder.setParquetWriter(parquetWriter).build()
 
-    var rowsWritten = 0L
-    val countingBatches =
-      CometArrowStream.countingIterator[ColumnarBatch](batches, b => rowsWritten += b.numRows())
+    val reportRows = recordRows(statsTrackers, filePath, taskWrite.childSchema)
+    val trackedBatches = CometArrowStream.countingIterator[ColumnarBatch](
+      batches,
+      batch => {
+        try {
+          reportRows(batch)
+        } catch {
+          case t: Throwable =>
+            // The Arrow reader has not received this batch yet, so its cleanup cannot close it.
+            Utils.tryWithSafeFinally { throw t } { batch.close() }
+        }
+      })
 
     val execIterator = CometExec.getCometIterator(
-      CometArrowStream.inputObjects(countingBatches, taskWrite.childSchema, taskWrite.nodeName),
+      CometArrowStream.inputObjects(trackedBatches, taskWrite.childSchema, taskWrite.nodeName),
       taskWrite.dataColumnNames.length,
       taskOp,
       taskWrite.nativeMetrics,
@@ -326,41 +338,74 @@ object CometWriteFilesExec extends Logging {
     } {
       execIterator.close()
     }
-
-    rowsWritten
   }
 
   /**
-   * Report `count` rows to each stats tracker.
+   * Create a task's callback for reporting rows while each batch's vectors are still valid.
    *
    * `WriteTaskStatsTracker.newRow` is a per-row callback, but the only implementation Spark
-   * ships, [[BasicWriteTaskStatsTracker]], ignores the row and just counts. Comet has columnar
-   * batches rather than `InternalRow`s here, so it passes an empty row instead of materializing
-   * every row just to hand it straight back. A tracker that actually inspects row contents would
-   * therefore see empty rows, so warn rather than silently report wrong statistics.
+   * ships, [[BasicWriteTaskStatsTracker]], ignores the row and just counts. Preserve that fast
+   * path without accessing row contents. Subclasses may override `newRow` to inspect values, so
+   * only the exact basic class qualifies. All other trackers receive materialized rows:
+   * `ColumnarBatchRow` does not implement every `InternalRow` read method, such as `anyNull`.
    *
-   * The loop is per-tracker on the outside so the hot inner loop has a single receiver and no
-   * per-row closure; the trackers are independent per-file counters, so their relative
-   * interleaving carries no meaning.
+   * The projection is created once per task and reuses its row, just as Spark's write path may
+   * reuse rows. Trackers that retain a row beyond `newRow` must copy it. This callback does not
+   * take ownership of the batch.
    *
    * Visible for testing: nothing Spark ships lets a caller install a third-party tracker on a V1
-   * write, so this is the only way to exercise the warning.
+   * write.
    */
   def recordRows(
       statsTrackers: Seq[WriteTaskStatsTracker],
       filePath: String,
-      count: Long): Unit = {
-    statsTrackers.foreach { tracker =>
-      if (!tracker.isInstanceOf[BasicWriteTaskStatsTracker]) {
-        logWarning(
-          s"${tracker.getClass.getName} receives row counts but not row contents from Comet's " +
-            "native Parquet writer. Set spark.comet.write.parquet.enabled=false if this tracker " +
-            "needs to inspect written rows.")
+      schema: StructType): ColumnarBatch => Unit = {
+    val (countTrackers, rowTrackers) =
+      statsTrackers.partition(_.getClass == classOf[BasicWriteTaskStatsTracker])
+    val rowProjection = if (rowTrackers.nonEmpty) {
+      // Arrow erases logical parameters such as interval endpoints. Compare against the
+      // reconstructed schema too, while preserving the declared schema for row materialization.
+      val arrowSchema = CometUtils.fromArrowSchema(
+        CometUtils.toArrowSchema(schema, CometArrowStream.NATIVE_TIMEZONE))
+      Some((UnsafeProjection.create(schema), arrowSchema))
+    } else {
+      None
+    }
+    batch => {
+      countTrackers.foreach { tracker =>
+        var i = 0
+        while (i < batch.numRows()) {
+          tracker.newRow(filePath, InternalRow.empty)
+          i += 1
+        }
       }
-      var i = 0L
-      while (i < count) {
-        tracker.newRow(filePath, InternalRow.empty)
-        i += 1
+      rowProjection.foreach { case (project, arrowSchema) =>
+        // ScanExec can cast differing physical types after import, but a JVM row projection
+        // would read those buffers with the wrong getters before that cast. Fail explicitly
+        // rather than report incorrect statistics. Names, nullability, and logical parameters
+        // erased by the Arrow bridge do not affect the getters used by the row projection.
+        val matchingTypes = batch.numCols() == schema.length && schema.fields.indices.forall {
+          i =>
+            DataType.equalsStructurally(
+              batch.column(i).dataType(),
+              schema(i).dataType,
+              ignoreNullability = true) || DataType.equalsStructurally(
+              batch.column(i).dataType(),
+              arrowSchema(i).dataType,
+              ignoreNullability = true)
+        }
+        if (!matchingTypes) {
+          throw new UnsupportedOperationException(
+            "Comet's native Parquet writer cannot report row statistics for a batch whose " +
+              "types differ from the write schema. Set " +
+              s"${CometConf.COMET_NATIVE_PARQUET_WRITE_ENABLED.key}=false " +
+              "to use Spark's writer.")
+        }
+        val rows = batch.rowIterator()
+        while (rows.hasNext) {
+          val row = project(rows.next())
+          rowTrackers.foreach(_.newRow(filePath, row))
+        }
       }
     }
   }
