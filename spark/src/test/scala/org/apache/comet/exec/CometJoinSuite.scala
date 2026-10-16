@@ -213,7 +213,6 @@ class CometJoinSuite extends CometTestBase {
 
     withSQLConf(
       CometConf.COMET_EXEC_STRICT_FLOATING_POINT.key -> "true",
-      CometConf.getExprAllowIncompatConfigKey("SortOrder") -> "false",
       SQLConf.ADAPTIVE_AUTO_BROADCASTJOIN_THRESHOLD.key -> "-1",
       SQLConf.AUTO_BROADCASTJOIN_THRESHOLD.key -> "-1",
       SQLConf.PREFER_SORTMERGEJOIN.key -> "true") {

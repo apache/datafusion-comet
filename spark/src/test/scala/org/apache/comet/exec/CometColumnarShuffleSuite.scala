@@ -883,9 +883,7 @@ abstract class CometColumnarShuffleSuite extends CometTestBase with AdaptiveSpar
     // Spark's shuffle for no compatibility reason. Consulting a native-serde gate on a path that
     // never goes native is tracked separately in #5971; this test pins the floating-point half of
     // it, which #5506 fixed.
-    withSQLConf(
-      CometConf.COMET_EXEC_STRICT_FLOATING_POINT.key -> "true",
-      CometConf.getExprAllowIncompatConfigKey("SortOrder") -> "false") {
+    withSQLConf(CometConf.COMET_EXEC_STRICT_FLOATING_POINT.key -> "true") {
       withParquetTable(
         (0 until 20).map(i => (if (i % 3 == 0) -0.0d else i.toDouble, i)),
         "range_fp_tbl") {

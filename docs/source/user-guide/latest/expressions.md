@@ -385,7 +385,7 @@ to Spark ([#2837](https://github.com/apache/datafusion-comet/issues/2837)). Enab
 | Function | Status | Implementation | Notes |
 | --- | --- | --- | --- |
 | `aggregate` | ✅ | Codegen dispatch |  |
-| `array_sort` | ✅ | Codegen dispatch |  |
+| `array_sort` | ✅ | Native | The default comparator runs natively; custom comparators and arrays with non-default string collations use the JVM codegen dispatcher |
 | `exists` | ✅ | Codegen dispatch |  |
 | `filter` | ✅ | Native | General lambda routed through the JVM codegen dispatcher; the `array_compact` form runs natively |
 | `forall` | ✅ | Codegen dispatch |  |

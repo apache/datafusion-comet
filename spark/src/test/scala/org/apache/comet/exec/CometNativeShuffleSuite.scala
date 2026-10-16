@@ -1413,8 +1413,7 @@ class CometNativeShuffleSuite extends CometTestBase with AdaptiveSparkPlanHelper
         s"strictFloatingPoint=$strict") {
       withSQLConf(
         CometConf.COMET_SHUFFLE_NATIVE_RANGE_PARTITIONING_ENABLED.key -> "true",
-        CometConf.COMET_EXEC_STRICT_FLOATING_POINT.key -> strict,
-        CometConf.getExprAllowIncompatConfigKey("SortOrder") -> "false") {
+        CometConf.COMET_EXEC_STRICT_FLOATING_POINT.key -> strict) {
         withParquetTable(floatingPointRangePartitionData, "tbl") {
           Seq("FLOAT", "DOUBLE").foreach { sqlType =>
             val df = sql(s"SELECT CAST(_1 AS $sqlType) AS c, _2 FROM tbl")
