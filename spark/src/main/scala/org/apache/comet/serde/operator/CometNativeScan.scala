@@ -113,20 +113,25 @@ object CometNativeScan extends CometOperatorSerde[CometScanExec] with CometTypeS
   private def nativeDataSchema(
       dataSchema: StructType,
       requiredSchema: StructType,
-      resolver: Resolver): StructType =
+      resolver: Resolver): StructType = {
+    // Ordinary fields keep their names, which projection below also matches exactly. Index
+    // only ID-bearing required fields so wide ordinary schemas do not need quadratic lookups.
+    val requiredFieldsWithIds = requiredSchema.fields
+      .filter(ParquetUtils.hasFieldId)
+      .map(field => field.name -> field)
+      .toMap
     StructType(dataSchema.fields.flatMap { field =>
-      val requiredField =
-        requiredSchema.fields.find(requiredField => resolver(requiredField.name, field.name))
       if (containsVariantType(field.dataType)) {
-        requiredField
+        requiredSchema.fields.find(requiredField => resolver(requiredField.name, field.name))
       } else {
         // Nested schema pruning drops root metadata from the relation's data schema. Spark
         // 3.4 still retains it in requiredSchema, which its Parquet reader uses for ID matching.
         // Use that ID here too, without changing the table schema's types or projection indexes.
-        // If requiredSchema also lost the ID (Spark 3.5+), preserve Spark's name-based lookup.
+        // When pruning also drops requiredSchema's ID (Spark 3.5+), leave the missing
+        // data-schema ID untouched so lookup remains name-based.
         Some(
-          requiredField
-            .filter(ParquetUtils.hasFieldId)
+          requiredFieldsWithIds
+            .get(field.name)
             .map { required =>
               field.copy(metadata = new MetadataBuilder()
                 .withMetadata(field.metadata)
@@ -136,6 +141,7 @@ object CometNativeScan extends CometOperatorSerde[CometScanExec] with CometTypeS
             .getOrElse(field))
       }
     })
+  }
 
   /** Determine whether the scan is supported and tag the Spark plan with any fallback reasons */
   def isSupported(scanExec: FileSourceScanExec): Boolean = {
