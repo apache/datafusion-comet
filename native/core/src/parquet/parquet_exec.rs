@@ -23,7 +23,7 @@ use crate::parquet::parquet_support::{
     object_store_authority, ObjectStoreBackend, SparkParquetOptions,
 };
 use crate::parquet::schema_adapter::SparkPhysicalExprAdapterFactory;
-use arrow::datatypes::{Field, FieldRef, Schema, SchemaRef};
+use arrow::datatypes::{DataType, Field, FieldRef, Schema, SchemaRef};
 use datafusion::common::tree_node::TreeNode;
 use datafusion::config::{ParquetOptions, TableParquetOptions};
 use datafusion::datasource::listing::PartitionedFile;
@@ -33,12 +33,13 @@ use datafusion::datasource::physical_plan::{
 use datafusion::datasource::source::DataSourceExec;
 use datafusion::execution::object_store::ObjectStoreUrl;
 use datafusion::physical_expr::expressions::Column;
+use datafusion::physical_expr::projection::{ProjectionExpr, ProjectionExprs};
 use datafusion::physical_expr::PhysicalExpr;
 use datafusion::physical_expr_adapter::PhysicalExprAdapterFactory;
 use datafusion::prelude::SessionContext;
 use datafusion::scalar::ScalarValue;
 use datafusion_comet_spark_expr::jvm_udf::JvmScalarUdfExpr;
-use datafusion_comet_spark_expr::EvalMode;
+use datafusion_comet_spark_expr::{Cast, EvalMode, SparkCastOptions};
 use datafusion_datasource::TableSchema;
 use parquet::variant::VariantType;
 use std::collections::HashMap;
@@ -61,6 +62,62 @@ pub(crate) struct CometParquetScanOptions {
     /// Load the next file's footer and page index while the current file is read
     /// (`spark.comet.parquet.prefetchNextFileMetadata.enabled`).
     pub prefetch_next_file_metadata: bool,
+}
+
+/// Keep top-level Spark string fields as binary while arrow-rs decodes Parquet. arrow-rs only
+/// validates UTF-8 for columns annotated as strings, so decoding an unannotated BINARY column that
+/// `spark.sql.parquet.binaryAsString=true` types as a string straight into Arrow Utf8 would admit
+/// invalid UTF-8. A projection added at the scan boundary converts the binary arrays to valid Utf8
+/// with Spark-compatible replacement semantics.
+fn binary_as_string_read_schema(schema: &SchemaRef) -> SchemaRef {
+    let fields = schema.fields().iter().map(|field| {
+        let read_type = match field.data_type() {
+            DataType::Utf8 => Some(DataType::Binary),
+            DataType::LargeUtf8 => Some(DataType::LargeBinary),
+            _ => None,
+        };
+        read_type.map_or_else(
+            || Arc::clone(field),
+            |data_type| Arc::new(field.as_ref().clone().with_data_type(data_type)),
+        )
+    });
+    Arc::new(Schema::new_with_metadata(
+        fields.collect::<Vec<_>>(),
+        schema.metadata().clone(),
+    ))
+}
+
+fn binary_as_string_projection(
+    read_schema: &SchemaRef,
+    output_schema: &SchemaRef,
+    projection: Option<&[usize]>,
+    parquet_options: &SparkParquetOptions,
+) -> ProjectionExprs {
+    let indices: Vec<usize> = projection
+        .map(<[usize]>::to_vec)
+        .unwrap_or_else(|| (0..read_schema.fields().len()).collect());
+
+    ProjectionExprs::new(indices.into_iter().map(|index| {
+        let read_field = read_schema.field(index);
+        let output_field = output_schema.field(index);
+        let child: Arc<dyn PhysicalExpr> = Arc::new(Column::new(read_field.name().as_str(), index));
+        let expr = if read_field.data_type() == output_field.data_type() {
+            child
+        } else {
+            let mut cast_options =
+                SparkCastOptions::new(parquet_options.eval_mode, &parquet_options.timezone);
+            cast_options.allow_cast_unsigned_ints = parquet_options.allow_cast_unsigned_ints;
+            cast_options.is_adapting_schema = true;
+            Arc::new(Cast::new(
+                child,
+                output_field.data_type().clone(),
+                cast_options,
+                None,
+                None,
+            )) as Arc<dyn PhysicalExpr>
+        };
+        ProjectionExpr::new(expr, output_field.name())
+    }))
 }
 
 /// Initializes a DataSourceExec plan with a ParquetSource for Comet's native Parquet scan.
@@ -98,6 +155,7 @@ pub(crate) fn init_datasource_exec(
     return_null_struct_if_all_fields_missing: bool,
     allow_type_promotion: bool,
     allow_timestamp_ltz_to_ntz: bool,
+    binary_as_string: bool,
     session_ctx: &Arc<SessionContext>,
     encryption_enabled: bool,
     use_field_id: bool,
@@ -197,9 +255,26 @@ pub(crate) fn init_datasource_exec(
         .flat_map(|s| s.fields().iter())
         .map(|f| Arc::new(Field::new(f.name(), f.data_type().clone(), f.is_nullable())))
         .collect();
-    let table_schema = TableSchema::builder(base_schema)
+    let output_table_schema = TableSchema::builder(Arc::clone(&base_schema))
+        .with_table_partition_cols(partition_fields.clone())
+        .build();
+    let read_base_schema = if binary_as_string {
+        binary_as_string_read_schema(&base_schema)
+    } else {
+        Arc::clone(&base_schema)
+    };
+    let table_schema = TableSchema::builder(read_base_schema)
         .with_table_partition_cols(partition_fields)
         .build();
+
+    let binary_projection = binary_as_string.then(|| {
+        binary_as_string_projection(
+            table_schema.table_schema(),
+            output_table_schema.table_schema(),
+            projection.as_deref(),
+            &spark_parquet_options,
+        )
+    });
 
     let mut parquet_source = ParquetSource::new(table_schema)
         .with_table_parquet_options(table_parquet_options)
@@ -297,8 +372,11 @@ pub(crate) fn init_datasource_exec(
             .filter(|filter| !calls_jvm(filter))
             .collect::<Vec<_>>()
     });
-    let file_source: Arc<dyn FileSource> = match data_filters {
-        Some(filters) if !filters.is_empty() => {
+    let mut file_source: Arc<dyn FileSource> = match data_filters {
+        // The Spark Filter above the scan re-evaluates every dataFilter. Until filter expressions
+        // are rewritten from the output Utf8 schema to the Binary read schema, skip only the
+        // optional Parquet pushdown in binaryAsString mode.
+        Some(filters) if !filters.is_empty() && !binary_as_string => {
             let propagation =
                 parquet_source.try_pushdown_filters(filters, session_config.options())?;
             // `updated_node` is `None` when every filter classified as `No`
@@ -309,6 +387,16 @@ pub(crate) fn init_datasource_exec(
         }
         _ => Arc::new(parquet_source),
     };
+
+    if let Some(binary_projection) = &binary_projection {
+        file_source = file_source
+            .try_pushdown_projection(binary_projection)?
+            .ok_or_else(|| {
+                ExecutionError::GeneralError(
+                    "ParquetSource rejected binaryAsString projection pushdown".to_string(),
+                )
+            })?;
+    }
 
     let expr_adapter_factory: Arc<dyn PhysicalExprAdapterFactory> = Arc::new(
         SparkPhysicalExprAdapterFactory::new(spark_parquet_options, default_values),
@@ -323,9 +411,11 @@ pub(crate) fn init_datasource_exec(
         .with_file_groups(file_groups)
         .with_expr_adapter(Some(expr_adapter_factory));
 
-    if let Some(projection) = projection {
-        file_scan_config_builder =
-            file_scan_config_builder.with_projection_indices(Some(projection))?;
+    if binary_projection.is_none() {
+        if let Some(projection) = projection {
+            file_scan_config_builder =
+                file_scan_config_builder.with_projection_indices(Some(projection))?;
+        }
     }
 
     let file_scan_config = file_scan_config_builder.build();
@@ -565,6 +655,7 @@ mod tests {
             false,
             false,
             false,
+            false,
             session_ctx,
             false,
             false,
@@ -702,6 +793,7 @@ mod tests {
             false,
             false,
             false,
+            false,
             &session_ctx,
             false,
             false,
@@ -775,6 +867,7 @@ mod tests {
             None,
             "UTC",
             true,
+            false,
             false,
             false,
             false,
@@ -895,6 +988,7 @@ mod tests {
             None,
             "UTC",
             true,
+            false,
             false,
             false,
             false,
@@ -1045,6 +1139,7 @@ mod tests {
             false,
             false,
             allow_timestamp_ltz_to_ntz,
+            false,
             &session_ctx,
             false,
             false,
@@ -1311,6 +1406,7 @@ mod tests {
             None,
             "UTC",
             true,
+            false,
             false,
             false,
             false,

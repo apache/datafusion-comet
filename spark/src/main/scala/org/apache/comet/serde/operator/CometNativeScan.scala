@@ -308,6 +308,9 @@ object CometNativeScan extends CometOperatorSerde[CometScanExec] with CometTypeS
       hadoopConf = hadoopConf,
       conf = scan.conf) match {
       case Some(commonBuilder) =>
+        // Only Spark's own Parquet schema inference reads this flag, so it is set here rather
+        // than in populateScanConfFlags, which contrib scans with their own schemas share.
+        commonBuilder.setBinaryAsString(scan.conf.getConf(SQLConf.PARQUET_BINARY_AS_STRING))
         // Sink operators don't have children
         builder.clearChildren()
         val nativeScanBuilder = OperatorOuterClass.NativeScan.newBuilder()
