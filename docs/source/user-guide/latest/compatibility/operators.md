@@ -109,6 +109,14 @@ rows by the grouping keys only, and Spark and Comet can leave rows with equal ke
 orders, so a group with more than one candidate value can return a different value than Spark.
 Both results are valid under Spark's semantics for these functions.
 
+## Hash Join
+
+Spark plans `NOT IN` as a null-aware anti join, and the native hash join builds it on Spark's
+streamed side without keeping that side's order. When Spark reports the streamed side as ordered,
+for example the output of a window, a sort-merge join, or a cached table sorted within its
+partitions, Comet falls back to Spark for the join, so that a sort Spark removed above it on the
+strength of that order is not lost.
+
 ## Window Functions
 
 Comet runs `WindowExec` natively and it is enabled by default (`spark.comet.exec.window.enabled`). A broad set of
