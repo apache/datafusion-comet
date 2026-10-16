@@ -864,7 +864,9 @@ See the <a class="reference internal" href="iceberg.html"><span class="std std-d
 <p>Comet provides experimental Rust-based CSV scan support. When <code class="docutils literal notranslate"><span class="pre">spark.comet.scan.csv.v2.enabled</span></code> is enabled, CSV files
 are read in Rust for improved performance. This feature is experimental and performance benefits are
 workload-dependent. Only Spark’s DataSource V2 CSV scan is accelerated, and Spark reads CSV through the V1 API by
-default, so also remove <code class="docutils literal notranslate"><span class="pre">csv</span></code> from <code class="docutils literal notranslate"><span class="pre">spark.sql.sources.useV1SourceList</span></code>.</p>
+default, so also remove <code class="docutils literal notranslate"><span class="pre">csv</span></code> from <code class="docutils literal notranslate"><span class="pre">spark.sql.sources.useV1SourceList</span></code>. Queries that use
+<code class="docutils literal notranslate"><span class="pre">input_file_name()</span></code>, <code class="docutils literal notranslate"><span class="pre">input_file_block_start()</span></code> or <code class="docutils literal notranslate"><span class="pre">input_file_block_length()</span></code> fall back to Spark’s CSV
+reader, which sets the values these functions read.</p>
 <p>Alternatively, when <code class="docutils literal notranslate"><span class="pre">spark.comet.convert.csv.enabled</span></code> is enabled, data from Spark’s CSV reader is immediately
 converted into Arrow format, allowing the Comet pipeline to take over after that.</p>
 </section>
