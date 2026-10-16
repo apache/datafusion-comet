@@ -54,7 +54,7 @@ The status column uses these values:
   - Default: `false`
   - Status: Native (see notes)
   - Affected operator: native Parquet scan
-  - Date: 2026-09-26
+  - Date: 2026-10-16
 
 ## Audit Notes
 
@@ -174,7 +174,9 @@ unannotated `BINARY` columns as `BinaryType`.
 **Test coverage.** `ParquetReadV1Suite` writes a raw Parquet file without Spark schema
 metadata and verifies the inferred schema under both configuration values. It also
 asserts that both values use `CometNativeScanExec`, including a row containing invalid
-UTF-8 bytes and a projection that reads only a non-string column.
+UTF-8 bytes and a projection that reads only a non-string column. A native test in
+`parquet_exec.rs` checks that a filter on a non-string column still prunes row groups when
+it is combined with a filter on a string column.
 
 **Known divergences.** Decoding is not byte-preserving, so the differences described in
 [Strings with non-UTF-8 bytes](../user-guide/latest/compatibility/index.md) apply to any
@@ -183,8 +185,9 @@ hashing, and value identity, where two distinct malformed sequences both become 
 This is the same trade-off taken by `CAST(binary AS string)` (#4763) and by the FFI import
 boundary (#5310).
 
-**Known limitation.** Parquet filter pushdown is skipped while this configuration is
-enabled, because filter expressions are built against the output `Utf8` schema and are not
-yet rewritten against the `Binary` read schema. Results stay correct because Spark's
-`Filter` above the scan re-evaluates every data filter, but a scan that would otherwise
-prune row groups does not.
+**Known limitation.** While this configuration is enabled, data filters that reference a
+top-level string column are not pushed into the Parquet scan, because filter expressions
+are built against the output `Utf8` schema and are not yet rewritten against the `Binary`
+read schema. Filters on other columns are still pushed down. Results stay correct because
+Spark's `Filter` above the scan re-evaluates every data filter, but a filter on a string
+column does not prune row groups.
