@@ -21,7 +21,66 @@
 //! Spark's wire-format state.
 
 use arrow::buffer::NullBuffer;
+use datafusion::common::DataFusionError;
 use datafusion::physical_expr::expressions::StatsType;
+use std::hash::{Hash, Hasher};
+use std::sync::Arc;
+
+use crate::{divide_by_zero_error, EvalMode, QueryContextMap, SparkErrorWithContext};
+
+/// How the `Divide` in Spark's `ck / sqrt(xMk * yMk)`, shared by `corr` and
+/// `regr_r2`, treats a zero denominator. It returns null in LEGACY mode and
+/// raises DIVIDE_BY_ZERO, carrying the aggregate call's query context, in ANSI mode.
+#[derive(Debug, Clone)]
+pub(crate) struct ZeroDivisor {
+    eval_mode: EvalMode,
+    expr_id: Option<u64>,
+    registry: Arc<QueryContextMap>,
+}
+
+impl ZeroDivisor {
+    pub(crate) fn new(
+        eval_mode: EvalMode,
+        expr_id: Option<u64>,
+        registry: Arc<QueryContextMap>,
+    ) -> Self {
+        Self {
+            eval_mode,
+            expr_id,
+            registry,
+        }
+    }
+
+    /// The error to raise for a zero denominator, or `None` to return null.
+    pub(crate) fn error(&self) -> Option<DataFusionError> {
+        if self.eval_mode != EvalMode::Ansi {
+            return None;
+        }
+        let error = divide_by_zero_error();
+        Some(match self.expr_id.and_then(|id| self.registry.get(id)) {
+            Some(ctx) => {
+                DataFusionError::External(Box::new(SparkErrorWithContext::with_context(error, ctx)))
+            }
+            None => error.into(),
+        })
+    }
+}
+
+// Manually implement PartialEq, Eq, and Hash excluding the registry field
+impl PartialEq for ZeroDivisor {
+    fn eq(&self, other: &Self) -> bool {
+        self.eval_mode == other.eval_mode && self.expr_id == other.expr_id
+    }
+}
+
+impl Eq for ZeroDivisor {}
+
+impl Hash for ZeroDivisor {
+    fn hash<H: Hasher>(&self, state: &mut H) {
+        self.eval_mode.hash(state);
+        self.expr_id.hash(state);
+    }
+}
 
 #[derive(Debug, Clone, Copy)]
 pub(super) enum VarianceUpdate {
