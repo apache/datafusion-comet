@@ -134,8 +134,12 @@ object CometDeltaNativeScan
 
     val hadoopConf = memo.hadoopConf
 
+    // declineReason already ran the S3 divergence gate over the data and deletion-vector files.
     val objectStoreOptions =
-      NativeConfig.extractScanObjectStoreOptions(hadoopConf, dataFileUris) match {
+      NativeConfig.extractScanObjectStoreOptions(
+        hadoopConf,
+        dataFileUris,
+        verifyS3Config = false) match {
         case Right(options) => options
         case Left(reason) =>
           // declineReason already declines data files on more than one store; this only

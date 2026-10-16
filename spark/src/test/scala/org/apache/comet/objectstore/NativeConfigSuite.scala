@@ -780,4 +780,81 @@ class NativeConfigSuite extends AnyFunSuite with Matchers {
     assert(!firstFileOnly.contains("fs.gs.project.id"), firstFileOnly.toString)
     NativeConfig.extractScanObjectStoreOptions(hadoopConf, Seq.empty) shouldBe Right(Map.empty)
   }
+
+  // A conf Hadoop's S3AFileSystem and native's S3 client resolve differently: native has no HTTP
+  // proxy support at all (https://github.com/apache/datafusion-comet/issues/5662).
+  private def proxiedConf(): Configuration = {
+    val hadoopConf = new Configuration()
+    hadoopConf.set("fs.s3a.access.key", "s3-access-key")
+    hadoopConf.set("fs.s3a.secret.key", "s3-secret-key")
+    hadoopConf.set("fs.s3a.proxy.host", "proxy.internal.example.com")
+    hadoopConf
+  }
+
+  test("extractScanObjectStoreOptions - s3 scan declines when native resolves S3 differently") {
+    val uris = Seq(new URI("s3a://s3-test-bucket/path/a.parquet"))
+    NativeConfig.extractScanObjectStoreOptions(proxiedConf(), uris) match {
+      case Left(reason) =>
+        reason should include("fs.s3a.proxy.host")
+        reason should include("s3-test-bucket")
+        reason should not include "proxy.internal.example.com"
+      case Right(options) => fail(s"expected a decline, got $options")
+    }
+  }
+
+  test("extractScanObjectStoreOptions - the S3 check names the diverging bucket, not the first") {
+    val hadoopConf = new Configuration()
+    hadoopConf.set("fs.s3a.access.key", "s3-access-key")
+    hadoopConf.set("fs.s3a.secret.key", "s3-secret-key")
+    hadoopConf.set("fs.s3a.bucket.proxied-data.proxy.host", "proxy.internal.example.com")
+    val uris = Seq(
+      new URI("s3a://clean-data/path/a.parquet"),
+      new URI("s3a://clean-data/path/b.parquet"),
+      new URI("s3://proxied-data/path/c.parquet"))
+    NativeConfig.extractScanObjectStoreOptions(hadoopConf, uris) match {
+      case Left(reason) =>
+        reason should include("proxied-data")
+        reason should not include "clean-data"
+      case Right(options) => fail(s"expected a decline, got $options")
+    }
+    // The same conf is fine for the bucket it does not touch.
+    NativeConfig.extractScanObjectStoreOptions(hadoopConf, uris.take(2)).isRight shouldBe true
+  }
+
+  test("extractScanObjectStoreOptions - verifyS3Config = false skips the S3 check") {
+    val uris = Seq(new URI("s3a://bucket/path/a.parquet"))
+    NativeConfig.extractScanObjectStoreOptions(
+      proxiedConf(),
+      uris,
+      verifyS3Config = false) shouldBe
+      Right(NativeConfig.extractObjectStoreOptions(proxiedConf(), uris.head))
+  }
+
+  test("extractScanObjectStoreOptions - the S3 check ignores scans without an s3 file") {
+    // The same conf that declines an s3a scan above leaves other schemes alone: the check is
+    // scoped to the buckets the scan actually reads.
+    val hadoopConf = proxiedConf()
+    Seq("file:///tmp/a.parquet", "hdfs://namenode/path/a.parquet", "gs://bucket/path/a.parquet")
+      .map(new URI(_))
+      .foreach { uri =>
+        NativeConfig.extractScanObjectStoreOptions(hadoopConf, Seq(uri)) shouldBe
+          Right(NativeConfig.extractObjectStoreOptions(hadoopConf, uri))
+      }
+  }
+
+  test("extractScanObjectStoreOptions - the S3 check admits the usual S3 and MinIO confs") {
+    // Mirrors CometS3TestBase: static credentials, a scheme-ful endpoint, path style, a region.
+    val hadoopConf = new Configuration()
+    hadoopConf.set("fs.s3a.access.key", "minio-test-user")
+    hadoopConf.set("fs.s3a.secret.key", "minio-test-password")
+    hadoopConf.set("fs.s3a.endpoint", "http://127.0.0.1:9000")
+    hadoopConf.set("fs.s3a.path.style.access", "true")
+    hadoopConf.set("fs.s3a.endpoint.region", "us-east-1")
+    hadoopConf.set("fs.s3a.bucket.other.endpoint.region", "eu-central-1")
+    val uris = Seq(new URI("s3a://bucket/path/a.parquet"), new URI("s3a://other/path/b.parquet"))
+    NativeConfig.extractScanObjectStoreOptions(hadoopConf, uris) shouldBe
+      Right(NativeConfig.extractObjectStoreOptions(hadoopConf, uris.head))
+    // And the untouched default conf, which carries no S3 settings at all.
+    NativeConfig.extractScanObjectStoreOptions(new Configuration(), uris).isRight shouldBe true
+  }
 }
