@@ -1095,21 +1095,21 @@ class CometNativeCastSuite
       SQLConf.OPTIMIZER_EXCLUDED_RULES.key ->
         ("org.apache.spark.sql.catalyst.optimizer.ConvertToLocalRelation," +
           "org.apache.spark.sql.catalyst.optimizer.CollapseProject")) {
-      Seq(DecimalType(10, -1), DecimalType(20, -5)).foreach { negScaleType =>
-        val unit = math.pow(10, -negScaleType.scale).toLong
-        val base = Seq(10 * unit, -10 * unit, 0L)
-          .map(_.toString)
-          .toDF("s")
-          .select(col("s").cast(negScaleType).as("v"))
-        // int and bigint are guarded, so they go through the dispatcher.
-        Seq("try_cast(v as int)", "cast(v as int)", "cast(v as bigint)").foreach { e =>
-          assertCodegenRan {
-            checkSparkAnswerAndOperator(base.selectExpr(e))
+      Seq((DecimalType(10, -1), 10L), (DecimalType(20, -5), 100000L)).foreach {
+        case (negScaleType, unit) =>
+          val base = Seq(10L * unit, -10L * unit, 0L)
+            .map(_.toString)
+            .toDF("s")
+            .select(col("s").cast(negScaleType).as("v"))
+          // int and bigint are guarded, so they go through the dispatcher.
+          Seq("try_cast(v as int)", "cast(v as int)", "cast(v as bigint)").foreach { e =>
+            assertCodegenRan {
+              checkSparkAnswerAndOperator(base.selectExpr(e))
+            }
           }
-        }
-        // double is not guarded, so it stays on the native path. It reads the same input vector,
-        // so it pins that the reader change did not break the native side.
-        checkSparkAnswerAndOperator(base.selectExpr("cast(v as double)"))
+          // double is not guarded, so it stays on the native path. It reads the same input vector,
+          // so it pins that the reader change did not break the native side.
+          checkSparkAnswerAndOperator(base.selectExpr("cast(v as double)"))
       }
     }
   }
