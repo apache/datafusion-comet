@@ -70,6 +70,7 @@ message Operator {
     IcebergWrite iceberg_write = 120;
     RangeScan range_scan = 121;
     MergeRows merge_rows = 122;
+    CrossJoin cross_join = 123;
     // Extension point for optional, out-of-tree contrib scans (Delta, Lance, ...). The concrete
     // scan message (e.g. `DeltaScan`) is packed into this envelope on the JVM side and dispatched
     // by `type_url` on the native side. Using a single permanent field -- rather than a new oneof
@@ -1113,6 +1114,12 @@ message BroadcastNestedLoopJoin {
   JoinType join_type = 1;
   BuildSide build_side = 2;
   optional spark.spark_expression.Expr condition = 3;
+}
+
+// Spark's CartesianProductExec, delegated to DataFusion's CrossJoinExec. A pure cross product has
+// no join keys and no condition, so the message carries nothing beyond the two child operators
+// (Spark folds any cross-join predicate into a separate FilterExec above this node).
+message CrossJoin {
 }
 
 enum JoinType {

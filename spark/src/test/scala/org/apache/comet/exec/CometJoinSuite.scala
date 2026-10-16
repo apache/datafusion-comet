@@ -35,7 +35,7 @@ import org.apache.spark.sql.catalyst.expressions.{And, AttributeReference, Dynam
 import org.apache.spark.sql.catalyst.optimizer.{BuildLeft, BuildRight}
 import org.apache.spark.sql.catalyst.plans.Inner
 import org.apache.spark.sql.catalyst.plans.logical.Join
-import org.apache.spark.sql.comet.{CometBroadcastExchangeExec, CometBroadcastHashJoinExec, CometBroadcastNestedLoopJoinExec, CometFilterExec, CometHashJoinExec, CometNativeScanExec, CometProjectExec, CometSortExec, CometSortMergeJoinExec, CometUnionExec, CometWindowExec}
+import org.apache.spark.sql.comet.{CometBroadcastExchangeExec, CometBroadcastHashJoinExec, CometBroadcastNestedLoopJoinExec, CometCartesianProductExec, CometFilterExec, CometHashJoinExec, CometNativeScanExec, CometProjectExec, CometSortExec, CometSortMergeJoinExec, CometUnionExec, CometWindowExec}
 import org.apache.spark.sql.execution.{ColumnarToRowTransition, InputAdapter, LocalTableScanExec, SortExec, SparkPlan, WholeStageCodegenExec}
 import org.apache.spark.sql.execution.adaptive.{AdaptiveSparkPlanExec, AQEShuffleReadExec, QueryStageExec}
 import org.apache.spark.sql.execution.datasources.SchemaColumnConvertNotSupportedException
@@ -147,6 +147,60 @@ class CometJoinSuite extends CometTestBase {
               case join: CometBroadcastHashJoinExec => join
             }
           }
+        }
+      }
+    }
+  }
+
+  test("cross join (CartesianProduct) runs natively") {
+    withSQLConf(
+      CometConf.COMET_EXEC_CARTESIAN_PRODUCT_ENABLED.key -> "true",
+      // Disable broadcast so Spark plans a CartesianProductExec rather than a
+      // BroadcastNestedLoopJoinExec for the keyless join.
+      SQLConf.AUTO_BROADCASTJOIN_THRESHOLD.key -> "-1",
+      SQLConf.ADAPTIVE_AUTO_BROADCASTJOIN_THRESHOLD.key -> "-1") {
+      withParquetTable(Seq((0, 10), (1, 11), (2, 12)), "l") {
+        withParquetTable(Seq((0, 100), (1, 101)), "r") {
+          checkSparkAnswerAndOperator(
+            sql(
+              "SELECT * FROM (SELECT /*+ COALESCE(1) */ * FROM l) l " +
+                "CROSS JOIN (SELECT /*+ COALESCE(1) */ * FROM r) r"),
+            Seq(classOf[CometCartesianProductExec]))
+        }
+      }
+    }
+  }
+
+  test("cross join with a join condition falls back to Spark") {
+    withSQLConf(
+      CometConf.COMET_EXEC_CARTESIAN_PRODUCT_ENABLED.key -> "true",
+      SQLConf.AUTO_BROADCASTJOIN_THRESHOLD.key -> "-1",
+      SQLConf.ADAPTIVE_AUTO_BROADCASTJOIN_THRESHOLD.key -> "-1") {
+      withParquetTable(Seq((0, 10), (1, 11), (2, 12)), "l") {
+        withParquetTable(Seq((0, 100), (1, 101)), "r") {
+          // A non-equi inner join plans a CartesianProductExec that carries the predicate; Comet
+          // has no native post-product filter, so results must still match Spark via fallback.
+          checkSparkAnswer(sql("SELECT * FROM l JOIN r ON l._2 > r._2"))
+        }
+      }
+    }
+  }
+
+  test("cross join stays on Spark by default (native path is opt-in)") {
+    // Native CrossJoinExec can't spill, so it's opt-in; by default the cross join stays on Spark.
+    withSQLConf(
+      SQLConf.AUTO_BROADCASTJOIN_THRESHOLD.key -> "-1",
+      SQLConf.ADAPTIVE_AUTO_BROADCASTJOIN_THRESHOLD.key -> "-1",
+      SQLConf.ADAPTIVE_EXECUTION_ENABLED.key -> "false") {
+      withParquetTable(Seq((0, 10), (1, 11), (2, 12)), "l") {
+        withParquetTable(Seq((0, 100), (1, 101)), "r") {
+          val df = sql(
+            "SELECT * FROM (SELECT /*+ COALESCE(1) */ * FROM l) l " +
+              "CROSS JOIN (SELECT /*+ COALESCE(1) */ * FROM r) r")
+          checkSparkAnswer(df)
+          assert(
+            !df.queryExecution.executedPlan.exists(_.isInstanceOf[CometCartesianProductExec]),
+            "cross join must stay on Spark when cartesianProduct.enabled is false")
         }
       }
     }

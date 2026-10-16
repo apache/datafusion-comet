@@ -132,7 +132,7 @@ use arrow::buffer::{BooleanBuffer, NullBuffer, OffsetBuffer};
 use datafusion::common::utils::SingleRowListArrayBuilder;
 use datafusion::common::{NullHandling, UnnestOptions};
 use datafusion::physical_plan::filter::FilterExec;
-use datafusion::physical_plan::joins::NestedLoopJoinExec;
+use datafusion::physical_plan::joins::{CrossJoinExec, NestedLoopJoinExec};
 use datafusion::physical_plan::limit::GlobalLimitExec;
 use datafusion::physical_plan::unnest::ListUnnest;
 use datafusion_comet_proto::spark_expression::ListLiteral;
@@ -2053,6 +2053,36 @@ impl PhysicalPlanner {
                         )),
                     ))
                 }
+            }
+            OpStruct::CrossJoin(_) => {
+                // Spark's CartesianProductExec, delegated to DataFusion's CrossJoinExec. A pure
+                // cross product has no join keys and no condition; the Inner join type here only
+                // satisfies the shared helper and is unused by CrossJoinExec. CrossJoinExec emits
+                // left columns followed by right columns, matching Spark's output order.
+                let (join_params, scans, shuffle_scans) = self.parse_join_parameters(
+                    inputs,
+                    children,
+                    &[],
+                    &[],
+                    JoinType::Inner as i32,
+                    &None,
+                    partition_count,
+                )?;
+
+                let left = Arc::clone(&join_params.left.native_plan);
+                let right = Arc::clone(&join_params.right.native_plan);
+
+                let cross_join = Arc::new(CrossJoinExec::new(left, right));
+
+                Ok((
+                    scans,
+                    shuffle_scans,
+                    Arc::new(SparkPlan::new(
+                        spark_plan.plan_id,
+                        cross_join,
+                        vec![join_params.left, join_params.right],
+                    )),
+                ))
             }
             OpStruct::Limit(limit) => {
                 assert_eq!(children.len(), 1);
