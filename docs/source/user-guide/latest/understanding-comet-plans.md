@@ -300,7 +300,7 @@ by role. Names match what is shown in the plan output.
 | `CometNativeScan`        | Parquet scan that runs entirely in Rust via DataFusion.                                                            |
 | `CometIcebergNativeScan` | Iceberg Parquet scan that runs entirely in Rust via DataFusion.                                                    |
 | `CometCsvNativeScan`     | CSV scan that runs entirely in Rust via DataFusion (experimental).                                                 |
-| `CometInMemoryTableScan` | JVM-side scan of a table cached in Comet's Arrow format (enabled by default from Spark 3.5).                       |
+| `CometInMemoryTableScan` | JVM-side scan of a table cached in Comet's Arrow format (experimental, disabled by default).                       |
 | `CometLocalTableScan`    | JVM-side scan of a `LocalTableScanExec` (disabled by default).                                                     |
 | `CometEmptyRelation`     | Empty native input that replaces `EmptyRelationExec` (Spark 4.0 and later).                                        |
 | `CometRange`             | Generates the rows of `spark.range` and SQL `range()` in native code, replacing `RangeExec` (disabled by default). |
@@ -308,7 +308,9 @@ by role. Names match what is shown in the plan output.
 ### Native Rust Operators
 
 These are implemented in Rust and run in DataFusion. When several appear
-consecutively in a plan, they execute as a single fused block.
+consecutively in a plan, they execute as a single fused block. The write operators
+(`CometWriteFiles`, `CometNativeWrite` and `CometIcebergWrite`) are the exception: each runs as its
+own native plan over its child's output.
 
 | Node                           | Spark equivalent                                                                  |
 | ------------------------------ | --------------------------------------------------------------------------------- |
@@ -331,7 +333,7 @@ consecutively in a plan, they execute as a single fused block.
 | `CometTakeOrderedAndProject`   | `TakeOrderedAndProjectExec`                                                       |
 | `CometWriteFiles`              | `WriteFilesExec` (Spark 4.0 and later, experimental native Parquet writes)        |
 | `CometNativeWrite`             | `DataWritingCommandExec` (Spark 3.x, experimental native Parquet writes)          |
-| `CometIcebergWrite`            | `IcebergWrite` (native Iceberg data-file writes)                                  |
+| `CometIcebergWrite`            | `IcebergWrite` (native Iceberg data-file writes, opt-in)                          |
 
 ### JVM-Side Operators
 

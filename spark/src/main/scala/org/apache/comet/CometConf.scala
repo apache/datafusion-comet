@@ -135,15 +135,14 @@ object CometConf extends ShimCometConf {
   val COMET_ICEBERG_NATIVE_WRITE_ENABLED: ConfigEntry[Boolean] =
     conf("spark.comet.write.iceberg.enabled")
       .category(CATEGORY_EXEC)
-      .doc(
-        "Whether Comet plans Iceberg writes and writes their data files natively. Comet " +
-          "replaces Spark's combined V2 write operator with a file writer (inside AQE) under a " +
-          "committer (outside AQE), and writes the data files of each eligible write with its " +
-          "native (iceberg-rust) writer. Other writes use Iceberg's own writer, and Iceberg " +
-          "commits every write. Merge-on-read writes keep Spark's operator. Set this to false " +
-          "to plan Spark's own V2 write operator.")
+      .doc("Whether Comet plans Iceberg writes and writes their data files natively. When " +
+        "enabled, Comet replaces Spark's combined V2 write operator with a file writer " +
+        "(inside AQE) under a committer (outside AQE), and writes the data files of each " +
+        "eligible write with its native (iceberg-rust) writer. Other writes use Iceberg's own " +
+        "writer, and Iceberg commits every write. Merge-on-read writes keep Spark's operator. " +
+        "When disabled, Spark plans its own V2 write operator.")
       .booleanConf
-      .createWithDefault(true)
+      .createWithDefault(false)
 
   val COMET_ICEBERG_DATA_FILE_CONCURRENCY_LIMIT: ConfigEntry[Int] =
     conf("spark.comet.scan.icebergNative.dataFileConcurrencyLimit")
@@ -379,9 +378,9 @@ object CometConf extends ShimCometConf {
       .category(CATEGORY_EXEC)
       .doc(
         "Whether to enable Comet native scans and fused Spark reads of in-memory cached tables. " +
-          "Requires spark.comet.enabled=true. Defaults to true from Spark 3.5 and to false on " +
-          "Spark 3.4, where AQE cannot coalesce the shuffle partitions of a union that Comet " +
-          "runs with a cached relation in one branch. At startup, this setting also decides " +
+          "Requires spark.comet.enabled=true. On Spark 3.4, AQE cannot coalesce the shuffle " +
+          "partitions of a union that Comet runs with a cached relation in one branch. At " +
+          "startup, this setting also decides " +
           "whether CometDriverPlugin installs Comet's cache serializer, which stores cached " +
           "data in Arrow format. The plugin installs it only if spark.comet.enabled and " +
           "spark.comet.exec.enabled are also enabled at startup, and only with one of Comet's " +
@@ -404,9 +403,7 @@ object CometConf extends ShimCometConf {
           "soon as it is serialized, including the disk half of the default " +
           "MEMORY_AND_DISK storage level.")
       .booleanConf
-      // CometCoalesceShufflePartitions needs a query-stage optimizer rule hook, which Spark 3.4
-      // lacks.
-      .createWithDefault(CometSparkSessionExtensions.isSpark35Plus)
+      .createWithDefault(false)
 
   val COMET_EXEC_IN_MEMORY_CACHE_COMPRESSION_CODEC: ConfigEntry[String] =
     conf("spark.comet.exec.inMemoryCache.compression.codec")
@@ -823,6 +820,18 @@ object CometConf extends ShimCometConf {
       .intConf
       .createWithDefault(1)
 
+  val COMET_SHUFFLE_COMPRESSION_OFFSETS_AS_LENGTHS: ConfigEntry[Boolean] =
+    conf("spark.comet.shuffle.compression.offsetsAsLengths.enabled")
+      .category(CATEGORY_SHUFFLE)
+      .doc(
+        "Whether Comet shuffle stores the offsets of string, binary, array and map columns as " +
+          "lengths before compressing each block. Lengths compress much better than offsets, " +
+          "which makes shuffle files with such columns smaller. Only takes effect when " +
+          s"${COMET_SHUFFLE_COMPRESSION_CODEC.key} is zstd, and not for Celeborn shuffle or " +
+          "for JVM shuffle blocks with dictionary-encoded columns, which keep their offsets.")
+      .booleanConf
+      .createWithDefault(true)
+
   val COMET_SHUFFLE_JVM_MAX_WRITERS_PER_EXECUTOR: ConfigEntry[Int] = {
     conf("spark.comet.shuffle.jvm.maxWritersPerExecutor")
       .withAlternative(
@@ -1218,6 +1227,20 @@ object CometConf extends ShimCometConf {
       .stringConf
       .toSequence
       .createWithDefault(Nil)
+
+  val COMET_CONVERT_BROADCAST_BUILD_SIDE_ENABLED: ConfigEntry[Boolean] =
+    conf("spark.comet.convert.broadcastBuildSide.enabled")
+      .category(CATEGORY_EXEC)
+      .doc("When enabled, Comet converts a file or V2 scan that it cannot scan natively (for " +
+        "example a Text source) to Arrow when that scan feeds a broadcast join's build side and " +
+        "every scan on the probe side is already native, so the broadcast join runs natively " +
+        "over the large probe. The build side is usually small (auto-broadcasts are capped by " +
+        "the broadcast threshold), so the row to Arrow copy is usually cheap - though an " +
+        "explicit BROADCAST hint or a selective filter above the scan can make it larger. With " +
+        "dynamic partition pruning the dimension is also read a second time for the pruning " +
+        "subquery. Set this to false to keep such build sides on Spark.")
+      .booleanConf
+      .createWithDefault(true)
 
   val COMET_CASE_CONVERSION_ENABLED: ConfigEntry[Boolean] =
     conf("spark.comet.caseConversion.enabled")
