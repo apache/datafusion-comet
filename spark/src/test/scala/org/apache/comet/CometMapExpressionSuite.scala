@@ -489,7 +489,7 @@ class CometMapExpressionSuite extends CometTestBase {
   }
 
   // Direct single-level folded map with floating-point keys: `map(CAST(0 AS DOUBLE), 7)` folds to a
-  // literal and `element_at` with a dynamic `-0.0` lookup must match Spark's `+0.0`-normalized key.
+  // literal and `element_at` with a dynamic `-0.0` lookup must match Spark's `+0.0` key.
   // Native `map_extract` compares raw Arrow values, so `MapKeySupport` declines it at `element_at`.
   // Spark returns 7, NULL, NULL. (`element_at_map.sql` covers the folding-off constructor form.)
   test("folded map literal with floating-point keys in element_at falls back (multirow)") {

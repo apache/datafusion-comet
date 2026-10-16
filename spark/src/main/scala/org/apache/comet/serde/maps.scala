@@ -48,9 +48,9 @@ private[serde] object MapKeySupport {
 
   /**
    * The `SupportLevel` for a map-consuming expression whose stored-key type is `keyType`. Spark
-   * finds a key with `TypeUtils.getInterpretedOrdering` over the keys `ArrayBasedMapBuilder`
-   * stored, having first normalized them, while native `map_extract` compares the Arrow values as
-   * they are, so decline the key types where those disagree:
+   * finds a key with `TypeUtils.getInterpretedOrdering` over the map's stored keys, while native
+   * `map_extract` compares the Arrow values as they are, so decline the key types where those
+   * disagree:
    *   - `nanSafeCompareDoubles` treats `-0.0` and `+0.0` as equal and all `NaN`s as equal, so
    *     Spark answers a `-0.0` lookup from a `+0.0` key where native finds nothing, on every
    *     version. (How `ArrayBasedMapBuilder` treats float keys when it builds a map differs by
