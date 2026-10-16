@@ -177,10 +177,12 @@ On the first refused reservation:
 1. Hash the key columns of the buffered batches with `create_hashes` and a dedicated seed. The seed is
    independent of the inner join's table seed and of Spark's Murmur3 shuffle partitioning, which already
    grouped this task's keys.
-2. Route rows by the top 4 bits into 16 buckets. Each resident bucket is kept by an Arrow `BatchCoalescer`
-   (`push_batch_with_filter`), so buckets hold full-size batches instead of 16 slivers of every input batch.
-3. Destage the largest buckets to per-bucket `SpillManager` files until the reservation fits again. Choosing
-   the largest bucket also means a hot key's bucket goes first.
+2. Route rows by the top 4 bits into 16 buckets, with one `take` per bucket. A resident bucket keeps the parts as
+   they are, about 512 rows of every 8192-row input batch, because its inner join concatenates its build batches
+   anyway.
+3. Destage the largest buckets to per-bucket spill files until the reservation fits again. Choosing the largest
+   bucket also means a hot key's bucket goes first. A destaged bucket also gets a filter of its build keys, see
+   [Probe filters](#probe-filters).
 4. Route every later build batch the same way: resident rows are reserved, and rows of spilled buckets are
    appended to their files. Each further refusal destages the largest resident bucket.
 
@@ -196,10 +198,11 @@ needed, and starts the inner join over the resident buckets.
 
 Each probe batch is hashed the same way:
 
-- Rows of resident buckets go to the inner join.
-- Rows of spilled buckets are appended to `probe.Bi` through a per-bucket coalescer. When memory is short, the
-  coalescers are flushed to disk, which always frees memory, so the probe phase cannot fail for lack of memory
-  beyond its headroom.
+- Rows of resident buckets go to the inner join, and so do rows with a null key and rows that the filter of their
+  spilled bucket rejects. Each of those matches nothing, and the inner join emits it as the join type requires.
+- The other rows of spilled buckets are appended to `probe.Bi`. A spill file's writer holds what it is given until
+  it makes a full batch (see [Spill files](#spill-files)), and writes it at once when memory is short, so the probe
+  phase cannot fail for lack of memory beyond its headroom.
 
 **Trap:** `HashJoinStream` stops reading the probe side when the build side is empty and the join type cannot
 produce rows from probe rows alone (`hash_join/stream.rs:526-536`). If every bucket spilled, the resident join
@@ -223,6 +226,28 @@ amount of re-splitting will separate them. See [Skew](#skew).
 
 Spilled pairs are a natural recovery point: the inputs are files that can be read again, and a hash join emits
 nothing until its build completes. A refused build can therefore always be retried another way.
+
+### Probe filters
+
+A probe row of a spilled bucket is written to disk and read back, only to find no match, whenever no build row of
+the bucket has its key. Such a row matches nothing anywhere, so the resident join, where no build row has its key
+either, can take it instead and emit it exactly as the bucket's join would, for every join type. In the benchmark,
+half of the probe rows are like that.
+
+When a bucket is destaged, the operator hashes its build rows into a Bloom filter, and adds every later build row
+of the bucket. During the resident probe, a probe row that its bucket's filter rejects goes to the inner join.
+
+- The lookup has to cost far less than writing and reading a row. A key sets four bits in one 64-bit word, taken
+  from bits of the routing hash that routing at the first level leaves unused, so a lookup is one load and one
+  comparison. A first version with Parquet's split block Bloom filter cost about 9 ns a lookup, as much as it
+  saved.
+- A bucket's final size is not known when it is destaged, so its filter grows as a scalable Bloom filter does: a
+  filter sized for twice the rows so far, at 10 bits a key, and another of twice the size whenever the newest is
+  full. A key is looked up in all of them. The false positive rate is about 2% for each.
+- The filters' memory is reserved. A filter the pool refuses to grow is dropped, because a filter missing a key
+  would send that key's probe rows to the wrong join. A filter that rejects fewer than one in eight of its first
+  64K lookups is dropped too, because then its lookups cost more than they save.
+- `bloom_filtered_rows` counts the probe rows the filters kept off disk.
 
 ### Null keys
 
@@ -303,14 +328,18 @@ holds without reserving them:
   DataFusion does not reserve today. The copy is reserved for the duration of the inner build and released
   when the inner join first reads its probe input, by which point `collect_left_input` has dropped the
   originals.
-- Also reserved: two batches of read-ahead for each open spill stream, the per-batch hash and routing scratch
-  (the headroom, twice the largest input batch), and the chunked fallback's matched bitmap.
-- A spilled bucket's build batches hold more memory once read back than when they were written, as
-  `HashJoinExec` counts them. A batch read from an uncompressed file shares the buffer its IPC message was read
-  into, metadata included, so the file's size bounds it. A batch read from a compressed file holds its
-  decompressed buffers and also the buffer of its compressed message, because buffers too small to compress are
-  stored as they are and read without a copy. The operator reserves the larger of the in-memory and the file
-  size for an uncompressed file, their sum for a compressed one, and 64 bytes a batch for rounding.
+- Also reserved: the parts that spill files' writers hold, the probe filters, two batches of read-ahead for each
+  open spill stream, the per-batch hash and routing scratch, and the chunked fallback's matched bitmap. The
+  scratch, the headroom, is three times the largest input batch: one copy while its rows are routed, and when a
+  writer writes the parts it holds, one while they are concatenated and one while the result is encoded.
+- A batch read back from a spill file can hold up to twice the memory it held when written, as `HashJoinExec`
+  counts it. DataFusion reads spill files in chunks of 128 KiB, and arrow's `StreamDecoder` assembles a message
+  that spans chunks in a buffer that grows by doubling, then slices the batch's buffers from it. A batch read
+  from a compressed file also keeps that buffer when any of its buffers was stored uncompressed. So the build
+  side of a spilled bucket, which the inner join holds whole, is read back with every batch copied into buffers
+  of its own size, dictionary values and view data included, and is reserved at what it held when written, with
+  64 bytes a buffer for rounding. Each batch of read-ahead is reserved at twice the written size of the file's
+  largest batch.
 - An inner join that reserves more than its budget still gets the memory from the task's pool, under the
   operator's consumer, and the excess shows in the `budget_overflow_bytes` metric. The tests assert that it stays
   zero.
@@ -341,6 +370,13 @@ operator keeps one open file per spilled bucket. It writes Arrow IPC streams its
 `SpillFile::open_writer`, with DataFusion's alignment and compression and with view arrays compacted first, and
 reads them back with `SpillManager::read_spill_as_stream`. The writer counts toward
 `spark.comet.maxTempDirectorySize`.
+
+Routing hands a bucket's writer a part of about 512 rows of every input batch, and a split bucket's parts are
+smaller again. Written as they come, every part costs an IPC message, an lz4 frame for each of its buffers, and
+on reading back a decode and a probe batch of the inner join. So a writer holds its parts, reserved, until they
+make a batch of the session's batch size or 256 KiB, and writes them as one batch. When the pool refuses the
+memory for a part, the writer writes what it holds at once. With 16 writers on a side, the parts hold at most
+4 MiB.
 
 ### Naming
 
@@ -376,7 +412,9 @@ join through the spilling path, a lesson from DuckDB's `force_external` mode.
 - **Rust, differential.** Run `SpillingHashJoinExec` and plain `HashJoinExec` on the same inputs and compare the
   outputs as multisets. Cover every join type, with and without a residual filter, null keys on either side,
   empty sides, duplicate-heavy keys, and forced spilling at levels 0, 1 and 2. Small `maxBuildBufferBytes` values
-  make the recursion reachable with small data.
+  make the recursion reachable with small data. Cover keys of decimal, date, timestamp, string view, binary and
+  dictionary type, payloads of list, struct, large string, string view, dictionary, wide decimal, fixed-size
+  binary and boolean type, and rows wide enough that spilled batches span DataFusion's read chunks.
 - **Rust, failure paths.** Check that refusals are matched as `ResourcesExhausted`, that a Spark acquire error
   (`External`) is returned and not treated as a refusal, and that temp files are deleted on cancellation and on
   error.
@@ -388,51 +426,101 @@ join through the spilling path, a lesson from DuckDB's `force_external` mode.
 ## Status
 
 The first version is a research draft, [#7057]. It has the operator with all of its paths, the planner wiring,
-the configs and eligibility checks, the metrics, tests, `CometHashJoinMemoryBenchmark` and the user docs.
+the configs and eligibility checks, the metrics, tests, `CometHashJoinMemoryBenchmark` and the user docs. A second
+round made spilling cheaper: spill files hold full batches instead of slivers, a spilled bucket's build side is read
+back compacted and reserved at what it held when written, and a Bloom filter of each spilled bucket's build keys
+keeps probe rows that match nothing off disk.
 
-What the benchmark showed so far, on a machine another benchmark was also using, so the times are rough:
+`CometHashJoinMemoryBenchmark` on an otherwise idle AMD 7950X3D, pinned to its eight V-cache cores, median of three
+runs, wall time and process CPU time. Before is the first version, after is the second round:
+
+| Inner join, median ms / CPU s | Comet sort-merge join | Hash join, no spilling | Before    | After     |
+| ----------------------------- | --------------------- | ---------------------- | --------- | --------- |
+| 1024 MiB                      | 1033 / 4.4            | 627 / 2.6              | 626 / 2.5 | 648 / 2.7 |
+| 256 MiB                       | 1222 / 5.4            | 626 / 2.4              | 617 / 2.6 | 622 / 2.5 |
+| 192 MiB                       | 1150 / 5.1            | 611 / 2.4              | 730 / 3.2 | 705 / 3.0 |
+| 128 MiB                       | 1168 / 5.1            | fails                  | 864 / 3.8 | 819 / 3.5 |
+| 96 MiB                        | 1141 / 5.1            | fails                  | 873 / 4.0 | 783 / 3.3 |
+| 64 MiB                        | 1134 / 5.1            | fails                  | 889 / 3.9 | 787 / 3.3 |
+
+At 64 MiB, for every join shape:
+
+| 64 MiB, median ms / CPU s                        | Comet sort-merge join | Before     | After     | Join spill MiB, before / after |
+| ------------------------------------------------ | --------------------- | ---------- | --------- | ------------------------------ |
+| Inner                                            | 1134 / 5.1            | 889 / 3.9  | 787 / 3.3 | 232 / 144                      |
+| Left outer, outer side probed                    | 1165 / 5.3            | 918 / 4.1  | 798 / 3.3 | 232 / 144                      |
+| Right outer, outer side built                    | 1162 / 5.3            | 883 / 4.0  | 774 / 3.4 | 232 / 144                      |
+| Full outer                                       | 1162 / 5.2            | 919 / 4.0  | 812 / 3.3 | 232 / 144                      |
+| Left anti                                        | 959 / 4.2             | 539 / 2.2  | 514 / 2.1 | 40 / 20                        |
+| Inner, a quarter of the build rows share one key | 1358 / 5.3            | 1103 / 3.9 | 889 / 3.1 | 239 / 135                      |
+
+Spark's own sort-merge join, which the native budget does not limit, takes 2.3 to 2.8 seconds and 9 to 11 CPU
+seconds for the same joins.
 
 - The join completes for every join shape at every native memory budget, including where today's hash join
   fails.
 - While the build side fits, it costs the same as today's hash join.
 - Reserving the concatenated copy moves the spill point. In the 192 MiB case today's join fits and this one
   spills.
-- When it spills heavily, its CPU time is about the same as Comet's sort-merge join's, so it is not faster yet.
+- When it spills, it is faster than Comet's sort-merge join in wall time and CPU time, at every budget and for
+  every join shape. The first version already was, on an idle machine. The rough numbers in the first draft came
+  from a machine that another benchmark was also using.
+
+The native benchmark, `cargo bench --bench spilling_hash_join`, runs one task's join of the JVM benchmark over
+in-memory batches: 1 million build rows and 5 million probe rows. Pinned to the V-cache cores, mean of two runs:
+
+| Native benchmark, ms | First version | Second round | Change |
+| -------------------- | ------------- | ------------ | ------ |
+| No memory limit      | 90            | 90           | 0%     |
+| 64 MiB, lz4          | 310           | 257          | -17%   |
+| 40 MiB, lz4          | 339           | 257          | -24%   |
+| 20 MiB, lz4          | 360           | 273          | -24%   |
+| 10 MiB, lz4          | 1726          | 448          | -74%   |
+| 20 MiB, zstd         | 559           | 367          | -34%   |
+| 20 MiB, uncompressed | 283           | 232          | -18%   |
+
+At 10 MiB every bucket is split again, and its spill files held slivers of 32 rows. Writing full batches gives most
+of the second round's gains, and the probe filters keep 1.4 to 2.3 million of the 5 million probe rows off disk.
 
 ## Remaining work
 
 In priority order.
 
-1. **Make spilling faster than the sort-merge join.** This is the research question now. The measure of success
-   is `CometHashJoinMemoryBenchmark` at the 64 to 128 MiB budgets, on a quiet machine, in both CPU and wall time.
-   - Profile a spilling run first, to see how the time splits between routing (hashing and `take`), encoding,
-     compressing and decoding spill files, the inner joins, and re-splitting.
-   - Coalesce routed rows into full-size batches per bucket, both for spill files and for the inner joins. Routing
-     now splits each 8192-row batch 16 ways, into slivers of about 512 rows. Arrow's
-     `BatchCoalescer::push_batch_with_filter` can do it without an intermediate `take`. The coalescers' buffers
-     have to be reserved, one batch in progress per bucket.
-   - Build a Bloom filter over each spilled bucket's build keys, and send a probe row that cannot match to the
-     resident join instead of writing it to disk. That is correct for every join type, because the row matches
-     nothing anywhere.
-   - Read the next spilled pair's files ahead while the current pair is joined.
-   - Revisit the fan-out of 16 buckets per level, with the profile in hand.
+1. **Make spilling cheaper still.** Profiled in the native benchmark at a 64 MiB pool, the spilling join now spends
+   about 12% of its time compressing spill files with lz4, 6% decoding and decompressing them, 10% copying, 15%
+   in the inner joins' hash tables, 15% in `take` for routing, the compacted read-back and the joins' output, and
+   9% routing probe rows, the filter lookups included.
+   - Hand each inner join of a spilled bucket one build batch. Arrow's `concat` returns a single array as it is,
+     so the inner join would make no copy, and a spilled bucket would need about its build side and its table
+     instead of twice its build side. The batch has to be built without holding the batches read back and their
+     concatenation at once, from per-column sizes recorded while writing. That would let a bucket fit in half the
+     memory, and avoid the second pass over every bucket that a 10 MiB pool needs in the native benchmark.
+   - Read the next spilled pair's files ahead while the current pair is joined. `SpillManager` already reads two
+     batches ahead on another task.
+   - Revisit the fan-out of 16 buckets per level.
+   - Spill compression is `spark.comet.exec.spill.compression.codec`, shared with sorts and aggregates. With the
+     spill files in the page cache, uncompressed files make the native benchmark's 20 MiB join about 15% faster
+     than lz4, and zstd about 35% slower while writing 40% fewer bytes. Which is best depends on the disks, so
+     the join keeps the shared setting.
+   - The benchmark's in-memory join looks its keys up in DataFusion's perfect hash table, because each of its four
+     tasks holds a quarter of a dense key range. A spilled bucket holds a sixteenth of that, which is too sparse,
+     and is looked up in a hash map. With Spark's default of 200 shuffle partitions, keys are rarely that dense,
+     so the benchmark flatters the join without spilling a little.
 2. **Decide how to account for the concatenated copy.** `collect_left_input` concatenates the build batches into
    one copy without reserving it. Reserving it moves the spill point to about half of where today's join fails,
    for a build side whose memory is mostly its batches.
    - Measure RSS against reserved bytes in a stress run, to see what the copy really costs.
    - Then keep the reservation, or fix the copy upstream: `collect_left_input` could reserve it, which is the F1
-     item of [apache/datafusion#24768], or build it without holding all of its inputs at once.
+     item of [apache/datafusion#24768], or build it without holding all of its inputs at once. For spilled buckets,
+     the single build batch of item 1 avoids the copy without DataFusion's help.
 3. **Get CI verdicts and broaden the tests.**
    - Run the Spark SQL and Iceberg suites with the `run-*` labels, or `dev/local-ci.sh`. They run Comet on-heap,
      where the native pool is unbounded, so they only exercise the path that does not spill. A pass shows that
      the wrapper is transparent.
-   - Compile and test the other Spark profiles: so far only the default profile, Spark 4.1, has been run. Spark
-     3.4 and 3.5 build with Scala 2.12.
+   - Run the Spark suites on the other Spark profiles. All of them, 3.4, 3.5 with strict warnings, 4.0, 4.1 and
+     4.2, compile with the tests, but the tests have run only on Spark 4.1.
    - Check TPC-H and TPC-DS correctness with spilling forced, through a small
      `spark.comet.exec.hashJoin.spill.maxBuildBufferBytes` and `spark.comet.exec.forceShuffledHashJoin`.
-   - Add key and payload types to the Rust differential tests: decimals, dates, timestamps, view types,
-     dictionaries, nested payloads, and wide rows.
-   - Test under the `greedy_unified` memory pool.
 4. **Settle the planner integration and the defaults.**
    - Work out how this fits with [#6785], which plans the forced shuffled hash join at planning time. Once joins
      can spill, `spark.comet.exec.forceShuffledHashJoin.maxBuildSize` decides only when a join spills, so its
@@ -445,18 +533,20 @@ In priority order.
      `forceShuffledHashJoin` can be on by default, which was the goal of this work, after measuring TPC-H and
      TPC-DS at realistic memory sizes.
 5. **Take what was learned upstream.** Search for existing issues before filing any.
-   - Report to [apache/datafusion#24768]: joining each bucket with a stock `HashJoinExec`, and the chunked
-     fallback for each join type.
+   - Report to [apache/datafusion#24768]: joining each bucket with a stock `HashJoinExec`, the chunked fallback
+     for each join type, and the Bloom filters that keep unmatched probe rows off disk.
    - `InProgressSpillFile` cannot be named outside DataFusion, because its module is `pub(crate)`. Ask for it to
      be exported.
-   - A batch read back from a spill file holds more memory than it did when it was written, which DataFusion's
-     own read-back reservations, such as the sort's merge, may not allow for.
+   - A batch read back from a spill file can hold up to twice the memory it held when written: DataFusion reads
+     spill files in chunks of 128 KiB, and arrow assembles a message that spans chunks in a buffer that grows by
+     doubling. DataFusion's own read-back reservations, such as the sort's merge, may not allow for it.
+   - arrow-rs compresses each IPC buffer with a new lz4 frame encoder, which allocates and zeroes its tables
+     every time, while zstd reuses one compressor. Small batches pay that for every buffer.
    - `HashJoinExec` counts its final pass over the build rows as probe input in `input_rows`.
    - `collect_left_input` allocates the concatenated copy and the hash map's chain of row indices without
      reserving them.
-6. **Before leaving draft.** Rerun the benchmark on a quiet machine and replace the rough numbers. Settle the
-   config names, and trim the research notes from the docs. Coordinate with the author of [#6384] and [#6785], who
-   took the Comet side of [#2545].
+6. **Before leaving draft.** Settle the config names, and trim the research notes from the docs. Coordinate with
+   the author of [#6384] and [#6785], who took the Comet side of [#2545].
 
 ## Working on it
 
@@ -466,12 +556,17 @@ code is in `native/operators/src/spilling_hash_join/`, and `mod.rs` there gives 
 - Native tests, from `native/`: `cargo test -p datafusion-comet-operators --lib spilling_hash_join`. The planner
   test, `cargo test -p datafusion-comet --lib -- hash_join`, links against the JVM, so on macOS it needs
   `DYLD_LIBRARY_PATH` set to the JDK's `lib/server` directory.
-- Spark tests, after `make core`: `./mvnw test -Dtest=none -Dsuites="org.apache.comet.exec.CometSpillingHashJoinSuite,org.apache.comet.exec.CometJoinSpillingSuite,org.apache.comet.exec.CometJoinSuite"`.
-- The benchmark:
+- Spark tests, after `make`: `./mvnw test -Dtest=none -Dsuites="org.apache.comet.exec.CometSpillingHashJoinSuite,org.apache.comet.exec.CometSpillingHashJoinGreedyPoolSuite,org.apache.comet.exec.CometJoinSpillingSuite,org.apache.comet.exec.CometJoinSuite"`.
+  The four suites are listed in the Linux and macOS PR workflows.
+- The native benchmark, from `native/`: `cargo bench -p datafusion-comet-operators --bench spilling_hash_join`.
+  Each case prints what it spilled before it is timed. To profile one case, pass `--profile-time 20 20MiB_lz4_frame`
+  after `--`. On a machine with two kinds of cores, such as the 7950X3D, pin it with `taskset`, or the in-memory
+  cases alternate between two speeds.
+- The JVM benchmark:
   `make benchmark-org.apache.spark.sql.benchmark.CometHashJoinMemoryBenchmark`. `PROFILES` passes system
   properties through to narrow it, for example
   `PROFILES="-Dcomet.bench.joins=inner -Dcomet.bench.budgetsMiB=1024,128"`. The properties are listed in the
-  benchmark's scaladoc. A full run takes about 13 minutes, and it needs a quiet machine.
+  benchmark's scaladoc. A full run takes about 7 minutes on an idle 7950X3D, and it needs a quiet machine.
 
 [#2545]: https://github.com/apache/datafusion-comet/issues/2545
 [#6384]: https://github.com/apache/datafusion-comet/pull/6384
