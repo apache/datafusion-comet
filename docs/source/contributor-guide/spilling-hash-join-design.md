@@ -385,33 +385,98 @@ join through the spilling path, a lesson from DuckDB's `force_external` mode.
 - **Queries.** Run TPC-H and TPC-DS correctness with spilling forced. Benchmark under stepped memory budgets
   against the sort-merge join: the failure today, the cost of spilling, and no change when nothing spills.
 
-## Plan
+## Status
 
-1. **Baseline.** `CometHashJoinMemoryBenchmark` sweeps native memory budgets over several join shapes. It
-   shows where today's hash join fails and the sort-merge join completes, and what each costs on either side of
-   that point. Measure hash join against sort-merge join on TPC-H and TPC-DS too, with the existing
-   `comet-hashjoin` engine config.
-2. **First version** (implemented). One PR, one commit per part:
-   - the operator with the fast path, bucketed build, resident probe, spilled pairs, re-splitting and the
-     chunked fallback;
-   - planner wiring, configs (on by default) and the eligibility checks;
-   - metrics, tests and docs.
-3. **Hardening.** Null-key routing, Bloom filters for spilled buckets, and prefetching the next pair. A
-   Bloom-negative probe row can simply be forwarded to the resident join.
-4. **Defaults.** Build a runtime filter over all build rows. Decide whether `forceShuffledHashJoin` can become
-   the default, together with [#6785].
-5. **Upstream.** Offer the operator, or its bucketing and scheduling, to [apache/datafusion#24768].
+The first version is a research draft, [#7057]. It has the operator with all of its paths, the planner wiring,
+the configs and eligibility checks, the metrics, tests, `CometHashJoinMemoryBenchmark` and the user docs.
 
-## Open questions
+What the benchmark showed so far, on a machine another benchmark was also using, so the times are rough:
 
-1. 16 buckets per level, or a wider fan-out such as 32 or 64? That trades open files and small batches
-   against recursion depth.
-2. With spilling on, `forceShuffledHashJoin.maxBuildSize` no longer prevents failures, only spills. Should its
-   default limit be lifted when the new join is enabled, keeping an explicit setting?
+- The join completes for every join shape at every native memory budget, including where today's hash join
+  fails.
+- While the build side fits, it costs the same as today's hash join.
+- Reserving the concatenated copy moves the spill point. In the 192 MiB case today's join fits and this one
+  spills.
+- When it spills heavily, its CPU time is about the same as Comet's sort-merge join's, so it is not faster yet.
+
+## Remaining work
+
+In priority order.
+
+1. **Make spilling faster than the sort-merge join.** This is the research question now. The measure of success
+   is `CometHashJoinMemoryBenchmark` at the 64 to 128 MiB budgets, on a quiet machine, in both CPU and wall time.
+   - Profile a spilling run first, to see how the time splits between routing (hashing and `take`), encoding,
+     compressing and decoding spill files, the inner joins, and re-splitting.
+   - Coalesce routed rows into full-size batches per bucket, both for spill files and for the inner joins. Routing
+     now splits each 8192-row batch 16 ways, into slivers of about 512 rows. Arrow's
+     `BatchCoalescer::push_batch_with_filter` can do it without an intermediate `take`. The coalescers' buffers
+     have to be reserved, one batch in progress per bucket.
+   - Build a Bloom filter over each spilled bucket's build keys, and send a probe row that cannot match to the
+     resident join instead of writing it to disk. That is correct for every join type, because the row matches
+     nothing anywhere.
+   - Read the next spilled pair's files ahead while the current pair is joined.
+   - Revisit the fan-out of 16 buckets per level, with the profile in hand.
+2. **Decide how to account for the concatenated copy.** `collect_left_input` concatenates the build batches into
+   one copy without reserving it. Reserving it moves the spill point to about half of where today's join fails,
+   for a build side whose memory is mostly its batches.
+   - Measure RSS against reserved bytes in a stress run, to see what the copy really costs.
+   - Then keep the reservation, or fix the copy upstream: `collect_left_input` could reserve it, which is the F1
+     item of [apache/datafusion#24768], or build it without holding all of its inputs at once.
+3. **Get CI verdicts and broaden the tests.**
+   - Run the Spark SQL and Iceberg suites with the `run-*` labels, or `dev/local-ci.sh`. They run Comet on-heap,
+     where the native pool is unbounded, so they only exercise the path that does not spill. A pass shows that
+     the wrapper is transparent.
+   - Compile and test the other Spark profiles: so far only the default profile, Spark 4.1, has been run. Spark
+     3.4 and 3.5 build with Scala 2.12.
+   - Check TPC-H and TPC-DS correctness with spilling forced, through a small
+     `spark.comet.exec.hashJoin.spill.maxBuildBufferBytes` and `spark.comet.exec.forceShuffledHashJoin`.
+   - Add key and payload types to the Rust differential tests: decimals, dates, timestamps, view types,
+     dictionaries, nested payloads, and wide rows.
+   - Test under the `greedy_unified` memory pool.
+4. **Settle the planner integration and the defaults.**
+   - Work out how this fits with [#6785], which plans the forced shuffled hash join at planning time. Once joins
+     can spill, `spark.comet.exec.forceShuffledHashJoin.maxBuildSize` decides only when a join spills, so its
+     default limit could be lifted.
+   - Joins whose output order Spark relies on are not eligible, and can still fail. Count how often that happens
+     in TPC-DS plans. For those joins, keeping the sort-merge join may be better.
+   - Joins that use `spark.comet.exec.join.dynamicFilter.enabled` are not eligible either. Build the runtime
+     filter over every build row, resident or spilled: bounds and key domains can be accumulated while routing.
+   - Decide whether spilling stays on by default. It is on now so that CI runs it. Then decide whether
+     `forceShuffledHashJoin` can be on by default, which was the goal of this work, after measuring TPC-H and
+     TPC-DS at realistic memory sizes.
+5. **Take what was learned upstream.** Search for existing issues before filing any.
+   - Report to [apache/datafusion#24768]: joining each bucket with a stock `HashJoinExec`, and the chunked
+     fallback for each join type.
+   - `InProgressSpillFile` cannot be named outside DataFusion, because its module is `pub(crate)`. Ask for it to
+     be exported.
+   - A batch read back from a spill file holds more memory than it did when it was written, which DataFusion's
+     own read-back reservations, such as the sort's merge, may not allow for.
+   - `HashJoinExec` counts its final pass over the build rows as probe input in `input_rows`.
+   - `collect_left_input` allocates the concatenated copy and the hash map's chain of row indices without
+     reserving them.
+6. **Before leaving draft.** Rerun the benchmark on a quiet machine and replace the rough numbers. Settle the
+   config names, and trim the research notes from the docs. Coordinate with the author of [#6384] and [#6785], who
+   took the Comet side of [#2545].
+
+## Working on it
+
+The work is on the `spilling-hash-join-research` branch of `andygrove/datafusion-comet`, in [#7057]. The native
+code is in `native/operators/src/spilling_hash_join/`, and `mod.rs` there gives an overview.
+
+- Native tests, from `native/`: `cargo test -p datafusion-comet-operators --lib spilling_hash_join`. The planner
+  test, `cargo test -p datafusion-comet --lib -- hash_join`, links against the JVM, so on macOS it needs
+  `DYLD_LIBRARY_PATH` set to the JDK's `lib/server` directory.
+- Spark tests, after `make core`: `./mvnw test -Dtest=none -Dsuites="org.apache.comet.exec.CometSpillingHashJoinSuite,org.apache.comet.exec.CometJoinSpillingSuite,org.apache.comet.exec.CometJoinSuite"`.
+- The benchmark:
+  `make benchmark-org.apache.spark.sql.benchmark.CometHashJoinMemoryBenchmark`. `PROFILES` passes system
+  properties through to narrow it, for example
+  `PROFILES="-Dcomet.bench.joins=inner -Dcomet.bench.budgetsMiB=1024,128"`. The properties are listed in the
+  benchmark's scaladoc. A full run takes about 13 minutes, and it needs a quiet machine.
 
 [#2545]: https://github.com/apache/datafusion-comet/issues/2545
 [#6384]: https://github.com/apache/datafusion-comet/pull/6384
 [#6785]: https://github.com/apache/datafusion-comet/pull/6785
+[#7057]: https://github.com/apache/datafusion-comet/pull/7057
 [apache/datafusion#24768]: https://github.com/apache/datafusion/issues/24768
 [apache/datafusion#25217]: https://github.com/apache/datafusion/pull/25217
 [apache/datafusion#26227]: https://github.com/apache/datafusion/pull/26227
