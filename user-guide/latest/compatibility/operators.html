@@ -960,8 +960,12 @@ overflow instead of returning Spark’s <code class="docutils literal notranslat
 (<a class="reference external" href="https://github.com/apache/datafusion-comet/issues/7007">#7007</a>). From precision 28 the native average also
 differs from Spark once the running sum overflows precision 38
 (<a class="reference external" href="https://github.com/apache/datafusion-comet/issues/5418">#5418</a>).</p></li>
-<li><p><code class="docutils literal notranslate"><span class="pre">RANGE</span></code> frame with an explicit offset when the <code class="docutils literal notranslate"><span class="pre">ORDER</span> <span class="pre">BY</span></code> column is <code class="docutils literal notranslate"><span class="pre">DATE</span></code> or <code class="docutils literal notranslate"><span class="pre">DECIMAL</span></code>
+<li><p><code class="docutils literal notranslate"><span class="pre">RANGE</span></code> frame with an explicit offset when the <code class="docutils literal notranslate"><span class="pre">ORDER</span> <span class="pre">BY</span></code> column is <code class="docutils literal notranslate"><span class="pre">DECIMAL</span></code>
 (<a class="reference external" href="https://github.com/apache/datafusion-comet/issues/4834">#4834</a>).</p></li>
+<li><p><code class="docutils literal notranslate"><span class="pre">RANGE</span></code> frame with an offset above 2144550751 days when the <code class="docutils literal notranslate"><span class="pre">ORDER</span> <span class="pre">BY</span></code> column is <code class="docutils literal notranslate"><span class="pre">DATE</span></code>. Spark adds the offset
+to the date as an <code class="docutils literal notranslate"><span class="pre">Int</span></code> that wraps on overflow, while the native frame treats an overflowing bound as the edge of
+the partition. Smaller offsets cannot wrap for any date between 0001-01-01 and 9999-12-31
+(<a class="reference external" href="https://github.com/apache/datafusion-comet/issues/5022">#5022</a>).</p></li>
 <li><p><code class="docutils literal notranslate"><span class="pre">RANGE</span></code> frame bounded by <code class="docutils literal notranslate"><span class="pre">CURRENT</span> <span class="pre">ROW</span></code> when an <code class="docutils literal notranslate"><span class="pre">ORDER</span> <span class="pre">BY</span></code> key is an array of arrays or structs, or a struct
 holding an array, such as <code class="docutils literal notranslate"><span class="pre">array(named_struct('x',</span> <span class="pre">x))</span></code>. DataFusion cannot compare those values to find the
 frame’s bounds (<a class="reference external" href="https://github.com/apache/datafusion/issues/24937">apache/datafusion#24937</a>). Ranking functions
@@ -977,6 +981,10 @@ frames, and a key that cannot hold a null element or field, such as <code class=
 <li><p>A <code class="docutils literal notranslate"><span class="pre">ROWS</span></code> offset that is not an integer or long, or a <code class="docutils literal notranslate"><span class="pre">RANGE</span></code> offset that is not numeric.</p></li>
 <li><p>Any <code class="docutils literal notranslate"><span class="pre">PARTITION</span> <span class="pre">BY</span></code> or <code class="docutils literal notranslate"><span class="pre">ORDER</span> <span class="pre">BY</span></code> expression that Comet cannot serialize.</p></li>
 </ul>
+<p>A <code class="docutils literal notranslate"><span class="pre">RANGE</span></code> frame with an explicit offset on a <code class="docutils literal notranslate"><span class="pre">DATE</span></code> <code class="docutils literal notranslate"><span class="pre">ORDER</span> <span class="pre">BY</span></code> runs natively, but over a date outside Spark’s
+supported range of 0001-01-01 to 9999-12-31, such as one produced by <code class="docutils literal notranslate"><span class="pre">date_add</span></code> with a very large day count, the
+native frame can treat the bound as the edge of the partition where Spark compares against it
+(<a class="reference external" href="https://github.com/apache/datafusion-comet/issues/5022">#5022</a>).</p>
 <p><code class="docutils literal notranslate"><span class="pre">WindowGroupLimitExec</span></code> (window-based limit pushdown for <code class="docutils literal notranslate"><span class="pre">ROW_NUMBER</span></code>, <code class="docutils literal notranslate"><span class="pre">RANK</span></code>, and <code class="docutils literal notranslate"><span class="pre">DENSE_RANK</span></code>)
 runs natively; it is controlled by <code class="docutils literal notranslate"><span class="pre">spark.comet.exec.windowGroupLimit.enabled</span></code> (default: true).</p>
 <p><strong>Falls back to Spark:</strong></p>
