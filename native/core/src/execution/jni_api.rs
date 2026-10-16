@@ -3807,83 +3807,88 @@ mod tests {
         let (values, partitions): (Vec<&str>, Vec<usize>) = inserted.into_iter().unzip();
         let rows = string_rows(&values);
         let records = SorterRecords::new(&rows, &partitions);
-        let dir = tempfile::tempdir().unwrap();
-        let path = dir.path().join("spill");
         let num_partitions = 4;
-        let mut checksums = vec![i64::MIN; num_partitions];
-        let mut lengths = vec![0_i64; num_partitions];
-        unsafe {
-            write_sorted_partitions(
-                &records.pointers,
-                &records.page_addresses,
-                4,
-                &[DataType::Utf8],
-                path.to_str().unwrap(),
-                1.5,
-                2,
-                1,
-                &mut checksums,
-                &mut lengths,
-                "lz4",
-                1,
-                false,
-            )
-        }
-        .unwrap();
-
-        // Writing each partition's rows on its own, with an encoder of its own.
-        let mut expected = Vec::new();
-        for partition in 0..num_partitions {
-            let (addresses, sizes): (Vec<i64>, Vec<i32>) = rows
-                .iter()
-                .zip(&partitions)
-                .filter(|(_, &p)| p == partition)
-                .map(|(row, _)| (row.as_ptr() as i64, row.len() as i32))
-                .unzip();
-            if addresses.is_empty() {
-                assert_eq!(lengths[partition], 0, "partition {partition}");
-                continue;
-            }
-            let partition_path = dir.path().join(format!("partition-{partition}"));
-            let [written, checksum, _] = unsafe {
-                write_sorted_file(
-                    &addresses,
-                    &sizes,
-                    &[DataType::Utf8],
-                    partition_path.to_str().unwrap().to_string(),
-                    1.5,
-                    2,
-                    true,
-                    1,
-                    i64::MIN,
-                    "lz4",
-                    1,
-                    false,
-                )
-            }
-            .unwrap();
-            assert_eq!(lengths[partition], written, "partition {partition}");
-            assert_eq!(checksums[partition], checksum, "partition {partition}");
-            expected.extend(std::fs::read(&partition_path).unwrap());
-        }
-        let data = std::fs::read(&path).unwrap();
-        assert_eq!(data, expected);
-
-        let mut dictionary_blocks = Vec::new();
-        let mut decoded = Vec::new();
-        for block in shuffle_blocks(&data) {
-            let batch = read_ipc_compressed(block).unwrap();
-            let column = batch.column(0);
-            dictionary_blocks.push(matches!(column.data_type(), DataType::Dictionary(_, _)));
-            let strings = arrow::compute::cast(column, &DataType::Utf8).unwrap();
-            let strings = arrow::array::AsArray::as_string::<i32>(&strings);
-            decoded.extend(strings.iter().map(|s| s.unwrap().to_string()));
-        }
-        assert_eq!(dictionary_blocks, [true, false, true, true, false]);
         let mut expected_values = inserted.to_vec();
         expected_values.sort_by_key(|&(_, partition)| partition);
         let expected_values: Vec<&str> = expected_values.iter().map(|&(v, _)| v).collect();
-        assert_eq!(decoded, expected_values);
+        let dir = tempfile::tempdir().unwrap();
+
+        // zstd stores the offsets of a plain string column as lengths, and of a dictionary one
+        // as offsets, so a block writer kept for the wrong schema writes different bytes.
+        for (codec, offsets_as_lengths) in [("lz4", false), ("zstd", true)] {
+            let path = dir.path().join(codec);
+            let mut checksums = vec![i64::MIN; num_partitions];
+            let mut lengths = vec![0_i64; num_partitions];
+            unsafe {
+                write_sorted_partitions(
+                    &records.pointers,
+                    &records.page_addresses,
+                    4,
+                    &[DataType::Utf8],
+                    path.to_str().unwrap(),
+                    1.5,
+                    2,
+                    1,
+                    &mut checksums,
+                    &mut lengths,
+                    codec,
+                    1,
+                    offsets_as_lengths,
+                )
+            }
+            .unwrap();
+
+            // Writing each partition's rows on its own, with an encoder of its own.
+            let mut expected = Vec::new();
+            for partition in 0..num_partitions {
+                let (addresses, sizes): (Vec<i64>, Vec<i32>) = rows
+                    .iter()
+                    .zip(&partitions)
+                    .filter(|(_, &p)| p == partition)
+                    .map(|(row, _)| (row.as_ptr() as i64, row.len() as i32))
+                    .unzip();
+                if addresses.is_empty() {
+                    assert_eq!(lengths[partition], 0, "{codec}: {partition}");
+                    continue;
+                }
+                let partition_path = dir.path().join(format!("{codec}-{partition}"));
+                let [written, checksum, _] = unsafe {
+                    write_sorted_file(
+                        &addresses,
+                        &sizes,
+                        &[DataType::Utf8],
+                        partition_path.to_str().unwrap().to_string(),
+                        1.5,
+                        2,
+                        true,
+                        1,
+                        i64::MIN,
+                        codec,
+                        1,
+                        offsets_as_lengths,
+                    )
+                }
+                .unwrap();
+                assert_eq!(lengths[partition], written, "{codec}: {partition}");
+                assert_eq!(checksums[partition], checksum, "{codec}: {partition}");
+                expected.extend(std::fs::read(&partition_path).unwrap());
+            }
+            let data = std::fs::read(&path).unwrap();
+            assert_eq!(data, expected, "{codec}");
+
+            let mut dictionaries = Vec::new();
+            let mut decoded = Vec::new();
+            for block in shuffle_blocks(&data) {
+                let batch = read_ipc_compressed(block).unwrap();
+                let column = batch.column(0);
+                dictionaries.push(matches!(column.data_type(), DataType::Dictionary(_, _)));
+                let strings = arrow::compute::cast(column, &DataType::Utf8).unwrap();
+                let strings = arrow::array::AsArray::as_string::<i32>(&strings);
+                decoded.extend(strings.iter().map(|s| s.unwrap().to_string()));
+            }
+            assert_eq!(dictionaries, [true, false, true, true, false], "{codec}");
+            assert_eq!(decoded, expected_values, "{codec}");
+        }
     }
 
     #[test]
