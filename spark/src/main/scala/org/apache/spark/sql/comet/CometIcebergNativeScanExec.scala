@@ -135,9 +135,26 @@ case class CometIcebergNativeScanExec(
   // CometPlanAdaptiveDynamicPruningFilters converts the DPP placeholders, so serializing the
   // tasks here would run a placeholder subquery. At execution, CometNativeExec sizes the native
   // RDD from perPartitionData instead.
+  //
+  // UnknownPartitioning (rather than re-reporting the vanilla BatchScanExec's
+  // KeyGroupedPartitioning) also keeps storage-partitioned joins correct: Spark's
+  // EnsureRequirements runs before Comet converts this scan and already eliminated any redundant
+  // shuffle while the leaf was still a BatchScanExec, so the whole SPJ negotiation (including
+  // commonPartitionValues push-down under AQE) stays on BatchScanExec, the only node Spark can
+  // push into.
   override lazy val outputPartitioning: Partitioning = UnknownPartitioning(0)
 
-  override lazy val outputOrdering: Seq[SortOrder] = Nil
+  // Report the Iceberg-reported ordering (gated to what the native per-partition merge honours) so
+  // Spark elides redundant sorts above the scan. The gate ran once in CometScanRule and stashed the
+  // result on nativeIcebergScanMetadata, so this and the proto serialization advertise the exact
+  // same order. Nil on canonicalized instances (originalPlan / metadata nulled) -- they are never
+  // executed and their ordering is irrelevant to equality.
+  override lazy val outputOrdering: Seq[SortOrder] =
+    if (originalPlan == null || nativeIcebergScanMetadata == null) {
+      Nil
+    } else {
+      nativeIcebergScanMetadata.reportedOrdering
+    }
 
   /**
    * Maps Iceberg V2 custom metric types to standard Spark metric types for better UI formatting.
