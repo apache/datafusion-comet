@@ -44,7 +44,7 @@ use arrow::array::{Array, RecordBatch};
 use arrow::datatypes::DataType as ArrowDataType;
 use datafusion::common::{DataFusionError, Result as DataFusionResult};
 use datafusion::config::SpillCompression;
-use datafusion::execution::disk_manager::DiskManagerMode;
+use datafusion::execution::disk_manager::{DiskManager, DiskManagerMode};
 use datafusion::execution::memory_pool::MemoryPool;
 use datafusion::execution::runtime_env::RuntimeEnvBuilder;
 use datafusion::logical_expr::ScalarUDF;
@@ -990,6 +990,44 @@ fn configure_skip_partial_aggregation(config: &mut SessionConfig, plan: &Operato
     }
 }
 
+/// The key of a shared [`DiskManager`]: the local directories and the temp directory size limit.
+type DiskManagerKey = (Vec<String>, u64);
+
+static DISK_MANAGERS: OnceLock<Mutex<HashMap<DiskManagerKey, Arc<DiskManager>>>> = OnceLock::new();
+
+/// Returns the [`DiskManager`] shared by every native plan in this process that uses the same
+/// local directories and size limit.
+///
+/// A `DiskManager` in `Directories` mode creates a `datafusion-*` directory in every local
+/// directory when it is built, and removes it recursively when it is dropped. Building one per
+/// plan costs a `stat` and a `mkdir` per local disk when the plan is created, and a recursive
+/// delete when it is released, whether or not the plan ever spills (#7060). Sharing one makes
+/// that a once-per-executor cost. Spill files are still deleted when their last reference is
+/// dropped, so a long-lived `DiskManager` does not accumulate them.
+///
+/// The size limit then covers all plans sharing the manager, not each plan separately.
+fn shared_disk_manager(
+    local_dirs: Vec<String>,
+    max_temp_directory_size: u64,
+) -> CometResult<Arc<DiskManager>> {
+    let mut managers = DISK_MANAGERS
+        .get_or_init(|| Mutex::new(HashMap::new()))
+        .lock();
+    let key = (local_dirs, max_temp_directory_size);
+    if let Some(disk_manager) = managers.get(&key) {
+        return Ok(Arc::clone(disk_manager));
+    }
+    let paths = key.0.iter().map(PathBuf::from).collect();
+    let disk_manager = Arc::new(
+        DiskManagerBuilder::default()
+            .with_mode(DiskManagerMode::Directories(paths))
+            .with_max_temp_directory_size(max_temp_directory_size)
+            .build()?,
+    );
+    managers.insert(key, Arc::clone(&disk_manager));
+    Ok(disk_manager)
+}
+
 /// Configure DataFusion session context.
 fn prepare_datafusion_session_context(
     batch_size: usize,
@@ -1000,13 +1038,9 @@ fn prepare_datafusion_session_context(
     spark_config: &HashMap<String, String>,
     spark_plan: &Operator,
 ) -> CometResult<SessionContext> {
-    let paths = local_dirs.into_iter().map(PathBuf::from).collect();
-    let disk_manager = DiskManagerBuilder::default()
-        .with_mode(DiskManagerMode::Directories(paths))
-        .with_max_temp_directory_size(max_temp_directory_size);
-    let mut rt_config = RuntimeEnvBuilder::new()
-        .with_disk_manager_builder(disk_manager)
-        .with_object_store_registry(Arc::new(CometObjectStoreRegistry::default()));
+    let mut rt_config = RuntimeEnvBuilder::new();
+    rt_config.disk_manager = Some(shared_disk_manager(local_dirs, max_temp_directory_size)?);
+    rt_config = rt_config.with_object_store_registry(Arc::new(CometObjectStoreRegistry::default()));
     rt_config = rt_config.with_memory_pool(memory_pool);
 
     let mut session_config = SessionConfig::new()
@@ -3659,6 +3693,20 @@ mod tests {
         create_execution_context(inputs, |config| {
             create_memory_pool_with_fake_spark(config, -6201, 1 << 30)
         })
+    }
+
+    #[test]
+    fn plans_share_a_disk_manager_per_set_of_local_dirs() {
+        let dir = tempfile::tempdir().unwrap();
+        let dirs = vec![dir.path().to_str().unwrap().to_string()];
+        let first = shared_disk_manager(dirs.clone(), 1 << 20).unwrap();
+        let second = shared_disk_manager(dirs.clone(), 1 << 20).unwrap();
+        assert!(Arc::ptr_eq(&first, &second));
+        // The temp directory is created once, not per plan.
+        assert_eq!(std::fs::read_dir(dir.path()).unwrap().count(), 1);
+
+        let other_limit = shared_disk_manager(dirs, 1 << 21).unwrap();
+        assert!(!Arc::ptr_eq(&first, &other_limit));
     }
 
     #[test]
