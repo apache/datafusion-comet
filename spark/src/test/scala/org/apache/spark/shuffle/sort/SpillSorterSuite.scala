@@ -19,7 +19,14 @@
 
 package org.apache.spark.shuffle.sort
 
+import java.io.File
+import java.nio.ByteBuffer
+import java.nio.file.Files
+import java.util.UUID
 import java.util.concurrent.atomic.AtomicInteger
+import java.util.zip.Adler32
+
+import scala.collection.mutable
 
 import org.scalatest.BeforeAndAfterEach
 import org.scalatest.funsuite.AnyFunSuite
@@ -28,7 +35,10 @@ import org.apache.spark.{SparkConf, TaskContext}
 import org.apache.spark.executor.ShuffleWriteMetrics
 import org.apache.spark.memory.{TaskMemoryManager, TestMemoryManager}
 import org.apache.spark.shuffle.comet.{CometShuffleMemoryAllocator, CometShuffleMemoryAllocatorTrait}
+import org.apache.spark.sql.catalyst.expressions.UnsafeRow
+import org.apache.spark.sql.comet.execution.shuffle.{SpillInfo => CometSpillInfo}
 import org.apache.spark.sql.types._
+import org.apache.spark.storage.TempShuffleBlockId
 import org.apache.spark.unsafe.Platform
 import org.apache.spark.unsafe.UnsafeAlignedOffset
 
@@ -264,6 +274,127 @@ class SpillSorterSuite extends AnyFunSuite with BeforeAndAfterEach {
     } finally {
       sorter.freeMemory()
       sorter.freeArray()
+    }
+  }
+
+  test("a sorted spill writes every partition in one native call") {
+    // Rows of `createTestSchema` in partitions 0, 2, 3 and 5 of 7, over 1 KiB pages so that they
+    // span several pages.
+    val numPartitions = 7
+    def partitionOf(i: Int): Int = Array(0, 2, 5, 3, 0, 2)(i % 6)
+    val records = (0 until 300).map { i =>
+      val row = new UnsafeRow(1)
+      row.pointTo(new Array[Byte](16), 16)
+      row.setInt(0, i)
+      // A record as `UnsafeRowSerializer` writes it: the row's size, then the row.
+      (ByteBuffer.allocate(4 + 16).putInt(16).put(row.getBytes).array(), partitionOf(i))
+    }
+    val usedPartitions = records.map(_._2).toSet
+
+    def check(allocator: CometShuffleMemoryAllocatorTrait, checksumAlgorithm: String): Unit = {
+      val partitionChecksums =
+        if (checksumAlgorithm == null) Array.emptyLongArray
+        else Array.fill(numPartitions)(Long.MinValue)
+      // Renamed on import: Spark 3.x has a `SpillInfo` of its own in this package.
+      val spills = new java.util.LinkedList[CometSpillInfo]()
+      val writeMetrics = new ShuffleWriteMetrics()
+      val taskContext = TaskContext.empty()
+      val sorter = new SpillSorter(
+        allocator,
+        INITIAL_SIZE,
+        createTestSchema(),
+        UAO_SIZE,
+        10.0, // preferDictionaryRatio
+        "lz4", // compressionCodec
+        1, // compressionLevel
+        true, // offsetsAsLengths
+        checksumAlgorithm,
+        partitionChecksums,
+        writeMetrics,
+        taskContext,
+        spills,
+        () => {})
+
+      // A spill, then the final file, with the same records.
+      val files = mutable.ArrayBuffer[File]()
+      try {
+        Seq(false, true).foreach { isLastFile =>
+          records.foreach { case (record, partition) =>
+            assert(sorter.acquireNewPageIfNecessary(record.length + UAO_SIZE))
+            sorter.insertRecord(
+              record,
+              Platform.BYTE_ARRAY_OFFSET.toLong,
+              record.length,
+              partition)
+          }
+          val file = File.createTempFile("comet-spill-sorter", ".data")
+          files += file
+          sorter.setSpillInfo(
+            new CometSpillInfo(numPartitions, file, TempShuffleBlockId(UUID.randomUUID())))
+          sorter.writeSortedFileNative(isLastFile, false)
+          sorter.freeMemory()
+          if (!isLastFile) {
+            sorter.reset()
+          }
+        }
+
+        assert(spills.size === 2)
+        val written = Seq(spills.get(0), spills.get(1))
+        written.foreach { spill =>
+          assert(spill.partitionLengths.sum === spill.file.length())
+          (0 until numPartitions).foreach { p =>
+            assert((spill.partitionLengths(p) > 0) === usedPartitions(p), s"partition $p")
+          }
+        }
+
+        if (checksumAlgorithm != null) {
+          // A partition's checksum covers its bytes in every file, as Spark checksums the
+          // merged partition. Partitions without rows keep the unset value.
+          (0 until numPartitions).foreach { p =>
+            if (usedPartitions(p)) {
+              val adler32 = new Adler32()
+              written.foreach { spill =>
+                val bytes = Files.readAllBytes(spill.file.toPath)
+                val start = spill.partitionLengths.take(p).sum.toInt
+                adler32.update(bytes, start, spill.partitionLengths(p).toInt)
+              }
+              assert(partitionChecksums(p) === adler32.getValue, s"partition $p")
+            } else {
+              assert(partitionChecksums(p) === Long.MinValue, s"partition $p")
+            }
+          }
+        }
+
+        // Both writes count their records, but only the final file counts as shuffle bytes.
+        assert(writeMetrics.recordsWritten === 2 * records.size)
+        assert(writeMetrics.bytesWritten === written(1).file.length())
+        assert(taskContext.taskMetrics.diskBytesSpilled === written(0).file.length())
+      } finally {
+        sorter.freeMemory()
+        sorter.freeArray()
+        files.foreach(_.delete())
+      }
+    }
+
+    val pageSize = 1024L
+    // On-heap mode: the allocator numbers pages in its own table.
+    check(CometShuffleMemoryAllocator.getInstance(taskMemoryManager, pageSize), "adler32")
+    // Shuffle checksums disabled: no checksum array and no algorithm.
+    check(CometShuffleMemoryAllocator.getInstance(taskMemoryManager, pageSize), null)
+
+    // Off-heap mode: pages are numbered in the TaskMemoryManager's table.
+    val offHeapConf = new SparkConf(false)
+      .set("spark.memory.offHeap.enabled", "true")
+      .set("spark.memory.offHeap.size", "64m")
+    val offHeapMemoryManager = new TestMemoryManager(offHeapConf)
+    offHeapMemoryManager.limit(64L * 1024 * 1024)
+    val offHeapTaskMemoryManager = new TaskMemoryManager(offHeapMemoryManager, 0)
+    try {
+      check(
+        CometShuffleMemoryAllocator.getInstance(offHeapTaskMemoryManager, pageSize),
+        "adler32")
+    } finally {
+      assert(offHeapTaskMemoryManager.cleanUpAllAllocatedMemory() === 0L)
     }
   }
 

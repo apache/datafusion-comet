@@ -75,13 +75,20 @@ public abstract class SpillWriter {
 
   /**
    * Optional shared accumulator for encode + compression time in nanoseconds. When set, every
-   * doSpilling() call adds the native encode time (results[2]) to this accumulator. Multiple
-   * SpillWriter instances can share the same AtomicLong so their times aggregate correctly.
+   * native write adds the encode time it reports to this accumulator. Multiple SpillWriter
+   * instances can share the same AtomicLong so their times aggregate correctly.
    */
   @Nullable private AtomicLong encodeNanosAcc = null;
 
   public void setEncodeNanosAccumulator(AtomicLong acc) {
     this.encodeNanosAcc = acc;
+  }
+
+  /** Adds native encode + compression time to the shared accumulator, if one is set. */
+  protected void addEncodeNanos(long nanos) {
+    if (encodeNanosAcc != null) {
+      encodeNanosAcc.addAndGet(nanos);
+    }
   }
 
   /** Serialize row schema to byte array. */
@@ -104,14 +111,19 @@ public abstract class SpillWriter {
   }
 
   protected void setChecksumAlgo(String checksumAlgo) {
+    this.checksumAlgo = checksumAlgorithmId(checksumAlgo);
+  }
+
+  /** The id native code knows the Spark shuffle checksum algorithm `checksumAlgo` by. */
+  protected static int checksumAlgorithmId(String checksumAlgo) {
     String algo = checksumAlgo.toLowerCase(Locale.ROOT);
 
     if (algo.equals("crc32")) {
-      this.checksumAlgo = 0;
+      return 0;
     } else if (algo.equals("adler32")) {
-      this.checksumAlgo = 1;
+      return 1;
     } else if (algo.equals("crc32c")) {
-      this.checksumAlgo = 2;
+      return 2;
     } else {
       throw new UnsupportedOperationException(
           "Unsupported shuffle checksum algorithm: " + checksumAlgo);
@@ -217,9 +229,7 @@ public abstract class SpillWriter {
     long written = results[0];
     checksum = results[1];
     // results[2] = encode + compression time in nanoseconds (measured by native code)
-    if (encodeNanosAcc != null) {
-      encodeNanosAcc.addAndGet(results[2]);
-    }
+    addEncodeNanos(results[2]);
 
     rowPartition.reset();
 
