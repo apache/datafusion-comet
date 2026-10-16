@@ -56,3 +56,19 @@ FROM test_arrays_zip_nondet
 query expect_native(arrays_zip)
 SELECT _1, arrays_zip(IF(_1 % 2 = 0, array(1), CAST(NULL AS ARRAY<INT>)), array(2)) AS z
 FROM test_arrays_zip_nondet
+
+-- Two dispatched subtrees that differ only in their input column bind to the same ordinals, so
+-- without a per-occurrence tag they would serialize to the same bytes. Each must keep its own
+-- monotonically_increasing_id counter, as in Spark, so both columns hold map values 0 to 3 rather
+-- than b continuing a's count at 4. One partition writes one file, so all four rows come from a
+-- single task.
+statement
+CREATE TABLE test_arrays_zip_nondet_pair(x int, y int) USING parquet
+
+statement
+INSERT INTO test_arrays_zip_nondet_pair SELECT id, id + 100 FROM range(0, 4, 1, 1)
+
+query expect_dispatch(arrays_zip, monotonically_increasing_id)
+SELECT arrays_zip(array(map(x, monotonically_increasing_id()))) AS a,
+  arrays_zip(array(map(y, monotonically_increasing_id()))) AS b
+FROM test_arrays_zip_nondet_pair
