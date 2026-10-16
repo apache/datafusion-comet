@@ -66,6 +66,9 @@ chrono-tz = "0.10"
 # change that re-checks those two tests.
 datasketches = { version = "=0.3.0", features = ["hll"] }
 futures = "0.3.32"
+# Declared once so no crate can drift to another major. That would build a second copy of the
+# binding, whose `JObject` and env types are not interchangeable with this one's.
+jni = "0.22.4"
 num = "0.4"
 rand = "0.10"
 # Before upgrading `regex`, complete the Java-parity fixture gate tracked in

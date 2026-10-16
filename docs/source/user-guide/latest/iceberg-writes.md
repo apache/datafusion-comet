@@ -116,6 +116,7 @@ supports:
 - `INSERT OVERWRITE`, static and dynamic (`OverwriteByExpression`,
   `OverwritePartitionsDynamic`)
 - Copy-on-write `DELETE` / `UPDATE` / `MERGE` (`ReplaceData`)
+- Iceberg's `rewrite_data_files` procedure, which writes each rewritten file group as an append
 
 For an unpartitioned copy-on-write `MERGE`, the native Iceberg writer is reachable on Spark
 3.5+ when `spark.comet.exec.mergeRows.enabled=true`. With the flag disabled, the JVM
@@ -154,10 +155,12 @@ The rewrite is skipped — and the write runs through Spark's stock combined ope
   `spark.comet.write.iceberg.splitOperator.enabled` is on with Spark 3.5+;
 - the statement is CTAS / RTAS on Spark 3.4, where the staged exec writes inline; on Spark
   3.5+ those statements re-plan their inner append, which is intercepted normally;
+- the write is a streaming write (`writeStream` into an Iceberg table);
 - the write requires Spark's commit coordinator, which Comet's per-task commit protocol does
   not use;
 - Comet cannot reflect the Iceberg internals needed to build the two-operator plan (for
-  example an unrecognised write class or a `ReplaceData` projection it cannot map).
+  example an unrecognised write class, or an Iceberg 1.5 `ReplaceIcebergData` plan whose fields
+  it cannot read).
 
 In every fallback case the write is planned as if Comet were absent; there is no correctness
 trade-off, only no plan change.
@@ -173,10 +176,10 @@ depends on is one the native path reproduces exactly, and additionally only when
 feeding the write is fully Comet-native. For a partitioned table that plan includes the hash
 distribution and local sort Iceberg requests on its partition transforms; those stay native
 because the transforms themselves have native implementations (see
-[Iceberg system functions](iceberg.md)). Ineligible writes run through iceberg-java unchanged,
-with the reason reported as a fall-back reason in Comet's extended EXPLAIN output. A write that
-runs natively shows `CometIcebergWrite` under `IcebergCommit` in the physical plan; an ineligible
-write keeps `IcebergWrite`.
+[Iceberg system functions](iceberg.md#iceberg-system-functions)). Ineligible writes run through
+iceberg-java unchanged, with the reason reported as a fall-back reason in Comet's extended EXPLAIN
+output. A write that runs natively shows `CometIcebergWrite` under `IcebergCommit` in the physical
+plan; an ineligible write keeps `IcebergWrite`.
 
 The native writer reads its input as Arrow batches from a Comet operator, so the write's input
 must itself run in Comet. A write whose input is a local relation, such as `INSERT ... VALUES` or
@@ -295,7 +298,7 @@ writer produce different data files: distribution and ordering settings shape th
 identically on both paths, WAP / branch / snapshot properties act on the JVM committer,
 `write.avro.*` / `write.orc.*` apply only to formats already excluded, and merge-on-read
 settings route the write through `WriteDelta`, whose task writer remains iceberg-java rather
-than the native writer. Every native eligibility rule is pinned by
+than the native writer. Most native eligibility rules are pinned by
 `CometIcebergWriteDetectionSuite`.
 
 Manifest `DataFile` metrics are assembled on the JVM before commit: each written file's
@@ -338,7 +341,7 @@ partitions needs memory in proportion to them. When the pool cannot grant it, th
 and closes the partitions holding the most memory until what is left fits, and a closed
 partition's next rows open a new file. The write then finishes with more, smaller files than
 iceberg-java's would. When every partition keeps getting rows, a task given an eighth of the memory
-its partitions need writes about four files per partition instead of one, however many partitions
+its partitions need writes four to five files per partition instead of one, however many partitions
 it writes to. The `files closed early to free memory` metric of its `CometIcebergWrite` operator
 counts the files it closed early. Disabling the fanout writer (`write.spark.fanout.enabled=false`)
 avoids the extra files: Spark then sorts each task's rows by partition, and the task keeps one file
@@ -370,8 +373,9 @@ normal `remove_orphan_files` maintenance.
 When one task fails, the tasks that had already completed leave committed-nothing data files
 too. The committer collects each task's commit message as that task finishes, so on a job
 failure it aborts with the completed messages and deletes their data files through the table
-`FileIO`. (Iceberg's own `SparkWrite.abort` skips cleanup unless a commit failed with a
-cleanable error, so on the stock path those files are left for `remove_orphan_files`.) A
+`FileIO`. (From Iceberg 1.6 on, Iceberg's own `SparkWrite.abort` skips cleanup unless a commit
+failed with a cleanable error, so on the stock path those files are left for
+`remove_orphan_files`. Iceberg 1.5, which the Spark 3.4 profile pins, deletes them.) A
 failure during the driver-side commit itself behaves exactly as on the stock path: the commit
 messages carry genuine `SparkWrite$TaskCommit` objects, so Iceberg's own `SparkWrite.abort`
 cleanup (which deletes the files listed in the commit messages for cleanable failures) applies
@@ -381,11 +385,11 @@ unchanged.
 
 Some differences between parquet-mr and the pinned parquet-rs / iceberg-rust are unconditional —
 they apply to every native write and cannot be configured away. Enabling
-`spark.comet.write.iceberg.enabled` accepts them. They fall into three classes with very
+`spark.comet.write.iceberg.enabled` accepts them. They fall into two classes with very
 different blast radius: differences confined to the physical bytes of a data file (cosmetic —
-no reader decision is based on them), differences visible in manifest metadata (these outlive
-the write and feed later readers' pruning decisions, so each one is analyzed individually
-below), and one operational path-layout caveat.
+no reader decision is based on them), and differences visible in manifest metadata (these
+outlive the write and feed later readers' pruning decisions, so each one is analyzed
+individually below).
 
 ### Physical file layout only (cosmetic)
 
@@ -395,13 +399,12 @@ a data file but not what any reader computes from it:
 - Footer key-value metadata differs: native files carry an `ARROW:schema` entry and no
   `iceberg.schema` entry; iceberg-java files are the opposite.
 - The Parquet root schema element is named `arrow_schema` (iceberg-java: `table`).
-- `created_by` identifies parquet-rs, not parquet-mr.
-- No page CRC checksums and no page-header statistics (parquet-mr writes both by default).
-  Absent page-header statistics can only make a reader scan more pages, never skip pages it
-  should have read; page pruning uses the column index, which the native writer does produce.
+- `created_by` reads `Apache Iceberg <version> (Comet)`, where iceberg-java's files carry
+  parquet-mr's version string.
+- No page CRC checksums: iceberg-java writes one in every page header, and parquet-rs writes none.
+  Neither writer puts statistics in page headers; page pruning uses the column index, which both
+  writers produce.
 - Dictionary-encoded pages are labeled `RLE_DICTIONARY` (parquet-mr v1 files: `PLAIN_DICTIONARY`).
-- Fixed-length binary columns (`uuid`, `fixed`, decimals with precision > 18) are not
-  dictionary-encoded (parquet-mr dictionary-encodes them).
 - The native writer uses parquet-mr's size accounting to choose dictionary encoding: a column
   whose sampled rows show the dictionary saving no space is written plain, with no dictionary page,
   instead of carrying a dictionary page that every selective read of it would have to fetch
@@ -419,10 +422,12 @@ a data file but not what any reader computes from it:
   space. A column that keeps its dictionary and later fills it falls back to plain on both
   writers, but parquet-rs's dictionary page then holds every entry, where parquet-mr's holds
   only the entries earlier pages used.
-- Row-group boundaries: parquet-mr flushes by byte size at a record-count check cadence,
-  parquet-rs buffers by row count. File naming follows the same cadence-style difference
-  (iceberg-java names files `<partition>-<task>-<operation>-<count>`; iceberg-rust uses a
-  process-local counter).
+- Row-group boundaries: both writers close a row group by size, but parquet-mr checks its buffered
+  size only at record-count checkpoints, while parquet-rs checks its own estimate as it writes each
+  batch, so the boundaries land on different rows.
+- File names: both writers name files `<partition>-<task attempt>-<operation>-<count>`, counting
+  per task. The native writer zero-pads the task attempt id and counts from `00000`; iceberg-java
+  leaves the id unpadded and counts from `00001`.
 - Partition directory names match iceberg-java 1.8+'s `PartitionSpec.partitionToPath` for every
   partition type the native writer accepts. Identity partitions on `float` and `double` columns
   fall back (see [Native Parquet write eligibility](#native-parquet-write-eligibility)), so
@@ -460,8 +465,9 @@ a data file but not what any reader computes from it:
   and on which partitions it closes early to free memory. Clustered and unpartitioned writes append
   in creation order on both paths and are unaffected.
 - Compressed page bytes are implementation-defined: the codec and any explicit level are
-  translated, but parquet-rs and parquet-mr embed different encoder implementations and
-  defaults (zstd default levels, LZ4 framing), so byte-identical output is not achievable even
+  translated, and a `zstd` table with no level is written at parquet-mr's default level of 3, but
+  parquet-rs and parquet-mr embed different encoder implementations (LZ4 framing, for one), and
+  their pages and row groups end at different rows, so byte-identical output is not achievable even
   for a default `zstd` table. The decompressed data is identical. For the same reason,
   codec-level side channels (`zlib.compress.level`, `compression.brotli.quality`,
   `io.compression.codec.zstd.level` — the last is present in every Hadoop configuration by
@@ -492,5 +498,5 @@ iceberg-java's _writer-tracked_ state would have recorded, and both are analyzed
   the same amount, so the derived null ratios and `IS NULL` / `IS NOT NULL` pruning decisions
   are unaffected.
 
-All content not listed above — the logical data, encodings for non-FLBA columns, statistics
-values, and manifest metadata — must match iceberg-java exactly, or the write falls back.
+All content not listed above — the logical data, statistics values, and manifest metadata —
+must match iceberg-java exactly, or the write falls back.
