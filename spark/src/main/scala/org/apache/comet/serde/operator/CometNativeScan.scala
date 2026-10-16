@@ -135,7 +135,9 @@ object CometNativeScan extends CometOperatorSerde[CometScanExec] with CometTypeS
             .map { required =>
               field.copy(metadata = new MetadataBuilder()
                 .withMetadata(field.metadata)
-                .putLong(ParquetUtils.FIELD_ID_METADATA_KEY, ParquetUtils.getFieldId(required))
+                .putLong(
+                  ParquetUtils.FIELD_ID_METADATA_KEY,
+                  ParquetUtils.getFieldId(required).toLong)
                 .build())
             }
             .getOrElse(field))
