@@ -141,6 +141,27 @@ object NativeConfig {
     if (StringUtils.isBlank(raw)) Set("hdfs") else parseSchemeSet(raw)
   }
 
+  /**
+   * The libhdfs schemes of one scan. `libhdfs` holds those both the session and the scan list,
+   * which native reads through libhdfs. `scanOnly` holds those listed only through the scan's
+   * reader options, which the scan gates decline.
+   */
+  private[comet] case class ScanLibhdfsSchemes(libhdfs: Set[String], scanOnly: Set[String])
+
+  /**
+   * Splits the `fs.comet.libhdfs.schemes` lists of `sessionConf` (the session's Hadoop conf) and
+   * `scanConf` (the same plus the scan's reader options). Native routes a scheme to libhdfs by
+   * the scan's list, but libhdfs builds its configuration from the executor classpath
+   * (`core-site.xml`), not the scan's options, so a reader option cannot add a libhdfs scheme.
+   */
+  private[comet] def resolveScanLibhdfsSchemes(
+      sessionConf: Configuration,
+      scanConf: Configuration): ScanLibhdfsSchemes = {
+    val session = resolveLibhdfsSchemes(sessionConf)
+    val scan = resolveLibhdfsSchemes(scanConf)
+    ScanLibhdfsSchemes(session.intersect(scan), scan -- session)
+  }
+
   // Schemes the URL standard treats as special: never an S3 alias, and their host is lowercased.
   private val urlSpecialSchemes = Set("file", "http", "https", "ftp", "ws", "wss")
 
