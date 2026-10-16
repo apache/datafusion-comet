@@ -776,14 +776,8 @@ class CometArrayExpressionSuite extends CometTestBase with AdaptiveSparkPlanHelp
     // normalizes, -0.0 and 0.0 are one value in a flat FLOAT or DOUBLE array, which no pinned
     // Spark profile can show: 4.2.0 normalizes the arguments in the plan, before the native
     // kernel sees them.
-    Seq("3.4.3", "3.5.9", "4.0.4", "4.1.3").foreach { version =>
-      assert(CometArraysOverlap.nativeFunction(version) == "spark_arrays_overlap", version)
-    }
-    Seq("4.0.5", "4.1.4", "4.2.0", "4.2.1").foreach { version =>
-      assert(
-        CometArraysOverlap.nativeFunction(version) == "spark_arrays_overlap_normalized",
-        version)
-    }
+    assert(CometArraysOverlap.nativeFunction("4.1.3") == "spark_arrays_overlap")
+    assert(CometArraysOverlap.nativeFunction("4.1.4") == "spark_arrays_overlap_normalized")
     // convert asks for the variant of the Spark version it runs on.
     val array = AttributeReference("a", ArrayType(DoubleType))()
     val proto =

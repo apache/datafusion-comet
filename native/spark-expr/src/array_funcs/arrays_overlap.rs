@@ -30,11 +30,10 @@
 //!   - false if no overlap and neither array contains null elements
 //!
 //! Spark looks up flat elements in a hash set of boxed values, so every NaN is one value, while
-//! `-0.0` and `0.0` are two. Spark 4.2.0 normalizes the arguments in the plan (SPARK-54918), and
-//! 4.0.5, 4.1.4 and 4.2.1 normalize flat `FLOAT` and `DOUBLE` elements before the lookup
-//! (SPARK-59602), which makes the zeros one value too. `spark_arrays_overlap_normalized` matches
-//! them that way, and the serde picks it on those versions. Nested elements compare in Spark's SQL
-//! ordering on every version, where the zeros are equal.
+//! `-0.0` and `0.0` are two. `spark_arrays_overlap` matches that. `spark_arrays_overlap_normalized`
+//! normalizes flat `FLOAT` and `DOUBLE` elements before the lookup, which makes the zeros one value
+//! too. `CometArraysOverlap.nativeFunction` picks the variant for the Spark version. Nested
+//! elements compare in Spark's SQL ordering in both variants, where the zeros are equal.
 
 use arrow::array::{
     make_comparator, Array, ArrayRef, AsArray, BooleanArray, GenericListArray, GenericStringArray,
@@ -85,7 +84,7 @@ impl SparkArraysOverlap {
     }
 
     /// Normalizes flat `FLOAT` and `DOUBLE` elements before matching them, so `-0.0` and `0.0` are
-    /// one value as well as every NaN.
+    /// one value. Every NaN is one value in both variants.
     pub fn normalized() -> Self {
         Self {
             normalize_floats: true,
@@ -151,9 +150,7 @@ impl ScalarUDFImpl for SparkArraysOverlap {
                         self.normalize_floats,
                     )?,
                     (l, r) => {
-                        return exec_err!(
-                            "spark_arrays_overlap does not support types '{l}' and '{r}'"
-                        )
+                        return exec_err!("{} does not support types '{l}' and '{r}'", self.name())
                     }
                 };
                 Ok(ColumnarValue::Array(result))
@@ -174,9 +171,7 @@ impl ScalarUDFImpl for SparkArraysOverlap {
                         self.normalize_floats,
                     )?,
                     (l, r) => {
-                        return exec_err!(
-                            "spark_arrays_overlap does not support types '{l}' and '{r}'"
-                        )
+                        return exec_err!("{} does not support types '{l}' and '{r}'", self.name())
                     }
                 };
                 let scalar = ScalarValue::try_from_array(&result, 0)?;
@@ -914,6 +909,28 @@ mod tests {
             }
         }
         Ok(())
+    }
+
+    #[test]
+    fn test_unsupported_types_error_names_the_variant() {
+        for udf in [SparkArraysOverlap::new(), SparkArraysOverlap::normalized()] {
+            let column = Arc::new(Int32Array::from(vec![1, 2])) as ArrayRef;
+            let arrays = [
+                ColumnarValue::Array(Arc::clone(&column)),
+                ColumnarValue::Array(column),
+            ];
+            let scalars = [
+                ColumnarValue::Scalar(ScalarValue::Int32(Some(1))),
+                ColumnarValue::Scalar(ScalarValue::Int32(Some(2))),
+            ];
+            for (args, rows) in [(arrays, 2), (scalars, 1)] {
+                let message = invoke(&udf, args, rows).unwrap_err().to_string();
+                assert!(
+                    message.contains(&format!("{} does not support types", udf.name())),
+                    "{message}"
+                );
+            }
+        }
     }
 
     #[test]
