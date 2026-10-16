@@ -102,7 +102,9 @@ use iceberg::expr::Bind;
 use crate::execution::operators::ExecutionError::GeneralError;
 use crate::execution::spark_plan::SparkPlan;
 use crate::parquet::objectstore::s3_blob_fs_support::normalize_object_store_url;
-use crate::parquet::parquet_support::{prepare_object_store_with_configs, ObjectStoreBackend};
+use crate::parquet::parquet_support::{
+    object_store_url_key, prepare_object_store_with_configs, ObjectStoreBackend,
+};
 use datafusion::common::scalar::ScalarStructBuilder;
 use datafusion::common::{
     tree_node::{Transformed, TransformedResult, TreeNode, TreeNodeRecursion, TreeNodeRewriter},
@@ -696,7 +698,8 @@ impl PhysicalPlanner {
             .map(Some)
     }
 
-    /// get DataFusion PartitionedFiles from a Spark FilePartition
+    /// get DataFusion PartitionedFiles from a Spark FilePartition. The scan reads a partition
+    /// through a single object store, so every file must resolve to the same one.
     fn get_partitioned_files(
         &self,
         partition: &SparkFilePartition,
@@ -705,6 +708,7 @@ impl PhysicalPlanner {
         let mut files = Vec::with_capacity(partition.partitioned_file.len());
         // Create an empty input schema for partition values because they are all literals.
         let empty_schema = Arc::new(Schema::empty());
+        let mut partition_store: Option<(String, bool)> = None;
         partition.partitioned_file.iter().try_for_each(|file| {
             assert!(file.start + file.length <= file.file_size);
 
@@ -719,7 +723,28 @@ impl PhysicalPlanner {
             // object-store key we hand DataFusion is stripped of the bucket prefix. Skipping this
             // would leave `bucket/key` as the object key, and path-style S3 GETs would double the
             // bucket (`<endpoint>/bucket/bucket/key`).
-            let url = normalize_object_store_url(&file.file_path, object_store_options)?.url;
+            let normalized = normalize_object_store_url(&file.file_path, object_store_options)?;
+            let store = object_store_url_key(&normalized);
+            match &partition_store {
+                None => partition_store = Some(store),
+                Some(first) if *first != store => {
+                    let describe = |(key, is_hdfs): &(String, bool)| {
+                        if *is_hdfs {
+                            format!("{key} (libhdfs)")
+                        } else {
+                            key.clone()
+                        }
+                    };
+                    return Err(GeneralError(format!(
+                        "A native scan partition holds files from two object stores ({} and {}); \
+                         each partition is read through one store",
+                        describe(first),
+                        describe(&store)
+                    )));
+                }
+                Some(_) => {}
+            }
+            let url = normalized.url;
             let path = Path::from_url_path(url.path()).map_err(|e| GeneralError(e.to_string()))?;
             partitioned_file.object_meta.location = path;
 
@@ -1750,6 +1775,45 @@ impl PhysicalPlanner {
                 let (scans, shuffle_scans, child) =
                     self.create_plan(&children[0], inputs, partition_count)?;
 
+                // For `df.agg(sum($"a")).count()`, Spark plans a global aggregate with neither
+                // keys nor functions that emits one row with no columns per partition. DataFusion
+                // can't run that (apache/datafusion#25786), so plan a throwaway `count(NULL)` and
+                // project it away. The count still drains the input, so errors below it surface.
+                // Both Spark stages take this path, since no count passes between them.
+                if agg.grouping_exprs.is_empty() && agg.agg_exprs.is_empty() {
+                    let schema = child.schema();
+                    let count = Self::create_aggr_func_expr(
+                        "count",
+                        Arc::clone(&schema),
+                        vec![Arc::new(Literal::new(ScalarValue::Null))],
+                        Arc::unwrap_or_clone(count_udaf()),
+                    )?;
+                    let aggregate: Arc<dyn ExecutionPlan> = Arc::new(
+                        datafusion::physical_plan::aggregates::AggregateExec::try_new(
+                            DFAggregateMode::Single,
+                            PhysicalGroupBy::default(),
+                            vec![Arc::new(count)],
+                            vec![None],
+                            Arc::clone(&child.native_plan),
+                            schema,
+                        )?,
+                    );
+                    let projection: Arc<dyn ExecutionPlan> = Arc::new(ProjectionExec::try_new(
+                        Vec::<(Arc<dyn PhysicalExpr>, String)>::new(),
+                        Arc::clone(&aggregate),
+                    )?);
+                    return Ok((
+                        scans,
+                        shuffle_scans,
+                        Arc::new(SparkPlan::new_with_additional(
+                            spark_plan.plan_id,
+                            projection,
+                            vec![child],
+                            vec![aggregate],
+                        )),
+                    ));
+                }
+
                 let group_exprs: PhyExprResult = agg
                     .grouping_exprs
                     .iter()
@@ -2139,21 +2203,30 @@ impl PhysicalPlanner {
                     .iter()
                     .map(|(k, v)| (k.clone(), v.clone()))
                     .collect();
-                let one_file = scan
-                    .file_partitions
-                    .first()
-                    .and_then(|f| f.partitioned_file.first())
-                    .map(|f| f.file_path.clone())
-                    .ok_or(GeneralError("Failed to locate file".to_string()))?;
-                let (object_store_url, _, _) = prepare_object_store_with_configs(
-                    self.session_ctx.runtime_env(),
-                    one_file,
-                    &object_store_options,
-                )?;
-                let files = self.get_partitioned_files(
-                    &scan.file_partitions[self.partition as usize],
-                    &object_store_options,
-                )?;
+                let partition = usize::try_from(self.partition)
+                    .ok()
+                    .and_then(|p| scan.file_partitions.get(p))
+                    .ok_or_else(|| {
+                        GeneralError(format!(
+                            "CsvScan has no file partition {} ({} partitions)",
+                            self.partition,
+                            scan.file_partitions.len()
+                        ))
+                    })?;
+                // Build the store from this partition's files; other partitions may read
+                // from a different one.
+                let object_store_url = match partition.partitioned_file.first() {
+                    Some(file) => {
+                        prepare_object_store_with_configs(
+                            self.session_ctx.runtime_env(),
+                            file.file_path.clone(),
+                            &object_store_options,
+                        )?
+                        .0
+                    }
+                    None => ObjectStoreUrl::local_filesystem(),
+                };
+                let files = self.get_partitioned_files(partition, &object_store_options)?;
                 let file_groups: Vec<Vec<PartitionedFile>> = vec![files];
                 let scan = init_csv_datasource_exec(
                     object_store_url,
@@ -3488,6 +3561,9 @@ impl PhysicalPlanner {
                     "correlation",
                     datatype,
                     expr.null_on_divide_by_zero,
+                    from_protobuf_eval_mode(expr.eval_mode)?,
+                    spark_expr.expr_id,
+                    Arc::clone(&self.query_context_registry),
                 ));
                 Self::create_aggr_func_expr("correlation", schema, vec![child1, child2], func)
             }
@@ -3511,6 +3587,9 @@ impl PhysicalPlanner {
                     name,
                     expr.filter_var_by_pair_nulls,
                     expr.r2_constant_dependent_is_perfect_fit,
+                    from_protobuf_eval_mode(expr.eval_mode)?,
+                    spark_expr.expr_id,
+                    Arc::clone(&self.query_context_registry),
                 ));
                 Self::create_aggr_func_expr(name, schema, vec![child1, child2], func)
             }
@@ -5291,6 +5370,7 @@ fn needs_fields_coercion(sig: &TypeSignature) -> bool {
 #[cfg(test)]
 mod tests {
     mod empty_native_scan;
+    mod multi_store_scan;
 
     use futures::{poll, StreamExt};
     use std::{
@@ -6351,6 +6431,76 @@ mod tests {
         );
         assert_eq!(1, projection_exec.children.len());
         assert_eq!("ScanExec", projection_exec.children[0].native_plan.name());
+    }
+
+    #[tokio::test]
+    async fn keyless_aggregate_without_functions_emits_one_empty_row() {
+        use arrow::array::RecordBatchOptions;
+        use datafusion::common::tree_node::{Transformed, TreeNode};
+
+        let scan = Operator {
+            op_struct: Some(OpStruct::Scan(spark_operator::Scan {
+                fields: vec![],
+                source: String::new(),
+            })),
+            ..Default::default()
+        };
+        let schema = Arc::new(Schema::empty());
+        let rows = |num_rows| {
+            RecordBatch::try_new_with_options(
+                Arc::clone(&schema),
+                vec![],
+                &RecordBatchOptions::new().with_row_count(Some(num_rows)),
+            )
+            .unwrap()
+        };
+        let ctx = SessionContext::new();
+        let task_ctx = ctx.task_ctx();
+        let planner = PhysicalPlanner::new(Arc::new(ctx), 0);
+
+        // Spark serializes the stage below its exchange as Partial and the one above as Final.
+        // Both emit one row with no columns per partition, even for an empty input.
+        for mode in [
+            spark_operator::AggregateMode::Partial,
+            spark_operator::AggregateMode::Final,
+        ] {
+            let aggregate = Operator {
+                plan_id: 1,
+                children: vec![scan.clone()],
+                op_struct: Some(OpStruct::HashAgg(spark_operator::HashAggregate {
+                    mode: mode as i32,
+                    ..Default::default()
+                })),
+                ..Default::default()
+            };
+            let (_, _, planned) = planner.create_plan(&aggregate, &mut vec![], 1).unwrap();
+            assert_eq!("ProjectionExec", planned.native_plan.name());
+            assert_eq!(0, planned.schema().fields().len());
+            assert_eq!(1, planned.additional_native_plans.len());
+            assert_eq!("AggregateExec", planned.additional_native_plans[0].name());
+            assert_eq!(1, planned.children.len());
+            assert_eq!("ScanExec", planned.children[0].native_plan.name());
+
+            for batches in [vec![rows(3), rows(2)], vec![]] {
+                let input: Arc<dyn ExecutionPlan> =
+                    MemorySourceConfig::try_new_exec(&[batches], Arc::clone(&schema), None)
+                        .unwrap();
+                let native_plan = Arc::clone(&planned.native_plan)
+                    .transform_up(|node| {
+                        Ok(if node.name() == "ScanExec" {
+                            Transformed::yes(Arc::clone(&input))
+                        } else {
+                            Transformed::no(node)
+                        })
+                    })
+                    .unwrap()
+                    .data;
+                let results = collect(native_plan.execute(0, Arc::clone(&task_ctx)).unwrap())
+                    .await
+                    .unwrap();
+                assert_eq!(1, results.iter().map(RecordBatch::num_rows).sum::<usize>());
+            }
+        }
     }
 
     #[tokio::test]

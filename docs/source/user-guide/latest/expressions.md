@@ -88,7 +88,7 @@ The tables below list every Spark built-in expression with its current status.
 | `approx_count_distinct` | ✅ | Native |  |
 | `approx_percentile` | ✅ | Native | Byte, short, int, long, float, and double input; other input types fall back to Spark |
 | `array_agg` | ✅ | Native | Alias for `collect_list` |
-| `avg` | ✅ | Native | Interval types fall back |
+| `avg` | ✅ | Native | Interval types fall back. `DECIMAL` input with precision 25 or more falls back in most cases, see [Hash Aggregation](compatibility/operators.md#hash-aggregation) |
 | `bit_and` | ✅ | Native |  |
 | `bit_or` | ✅ | Native |  |
 | `bit_xor` | ✅ | Native |  |
@@ -114,7 +114,7 @@ The tables below list every Spark built-in expression with its current status.
 | `listagg` | ✅ | Native | Spark 4.0+. `StringType` input with a literal delimiter; `WITHIN GROUP (ORDER BY ...)` and `BinaryType` inputs fall back to Spark. Without `WITHIN GROUP`, concatenation order is the (non-deterministic) group arrival order, matching Spark. |
 | `max` | ✅ | Native |  |
 | `max_by` | ✅ | Native | Value and ordering must be fixed-length types |
-| `mean` | ✅ | Native |  |
+| `mean` | ✅ | Native | Interval types fall back. `DECIMAL` input with precision 25 or more falls back in most cases, see [Hash Aggregation](compatibility/operators.md#hash-aggregation) |
 | `median` | ✅ | — | Rewrites to `percentile(col, 0.5)` and runs natively for supported percentile inputs |
 | `min` | ✅ | Native |  |
 | `min_by` | ✅ | Native | Value and ordering must be fixed-length types |
@@ -126,12 +126,12 @@ The tables below list every Spark built-in expression with its current status.
 | `regr_avgx` | ✅ | — | Native: Spark rewrites to `Average` (tests in [#4551](https://github.com/apache/datafusion-comet/pull/4551)) |
 | `regr_avgy` | ✅ | — | Native: Spark rewrites to `Average` (tests in [#4551](https://github.com/apache/datafusion-comet/pull/4551)) |
 | `regr_count` | ✅ | — | Native: Spark rewrites to `Count` (tests in [#4551](https://github.com/apache/datafusion-comet/pull/4551)) |
-| `regr_intercept` | ✅ | Native | Falls back by default because the native merge of partial aggregates differs from Spark ([#6423](https://github.com/apache/datafusion-comet/issues/6423)); the native path is opt-in via `spark.comet.expression.RegrIntercept.allowIncompatible=true` |
-| `regr_r2` | ✅ | Native | Falls back by default because the native merge of partial aggregates differs from Spark ([#6423](https://github.com/apache/datafusion-comet/issues/6423)); the native path is opt-in via `spark.comet.expression.RegrR2.allowIncompatible=true` |
-| `regr_slope` | ✅ | Native | Falls back by default because the native merge of partial aggregates differs from Spark ([#6423](https://github.com/apache/datafusion-comet/issues/6423)); the native path is opt-in via `spark.comet.expression.RegrSlope.allowIncompatible=true` |
-| `regr_sxx` | ✅ | Native | Falls back by default because the native merge of partial aggregates differs from Spark ([#6423](https://github.com/apache/datafusion-comet/issues/6423)); the native path is opt-in via `spark.comet.expression.RegrReplacement.allowIncompatible=true` (Spark plans `regr_sxx` as `RegrReplacement`) |
-| `regr_sxy` | ✅ | Native | Falls back by default because the native merge of partial aggregates differs from Spark ([#6423](https://github.com/apache/datafusion-comet/issues/6423)); the native path is opt-in via `spark.comet.expression.RegrSXY.allowIncompatible=true` |
-| `regr_syy` | ✅ | Native | Falls back by default because the native merge of partial aggregates differs from Spark ([#6423](https://github.com/apache/datafusion-comet/issues/6423)); the native path is opt-in via `spark.comet.expression.RegrReplacement.allowIncompatible=true` (Spark plans `regr_syy` as `RegrReplacement`) |
+| `regr_intercept` | ✅ | Native |  |
+| `regr_r2` | ✅ | Native |  |
+| `regr_slope` | ✅ | Native |  |
+| `regr_sxx` | ✅ | Native |  |
+| `regr_sxy` | ✅ | Native |  |
+| `regr_syy` | ✅ | Native |  |
 | `skewness` | 🔜 | — | Not yet implemented natively |
 | `some` | ✅ | — |  |
 | `std` | ✅ | Native |  |
@@ -140,7 +140,7 @@ The tables below list every Spark built-in expression with its current status.
 | `stddev_samp` | ✅ | Native |  |
 | `string_agg` | ✅ | Native | Alias of `listagg`; same restrictions apply. |
 | `sum` | ✅ | Native |  |
-| `try_avg` | ✅ | — | Interval types fall back |
+| `try_avg` | ✅ | — | Interval types fall back. `DECIMAL` input with precision 25 or more falls back in most cases, see [Hash Aggregation](compatibility/operators.md#hash-aggregation) |
 | `try_sum` | ✅ | — |  |
 | `var_pop` | ✅ | Native |  |
 | `var_samp` | ✅ | Native |  |
@@ -156,7 +156,7 @@ The tables below list every Spark built-in expression with its current status.
 | `array_append` | ✅ | Native |  |
 | `array_compact` | ✅ | — |  |
 | `array_contains` | ✅ | Hybrid | Flat float/double element arrays use a native kernel with Spark's equality; nested float elements, non-default string collations, and a value that is not a literal or column over a nullable array, route through the JVM codegen dispatcher |
-| `array_distinct` | ✅ | Native | Floating-point elements fall back on Spark versions other than 4.2.0; signed-zero and NaN results may differ with native opt-in ([details](compatibility/floating-point.md)). Non-default string collations fall back |
+| `array_distinct` | ✅ | Native | Floating-point elements fall back on Spark versions before 4.0.5, 4.1.4, and 4.2; signed-zero results may differ with native opt-in ([details](compatibility/floating-point.md)). Non-default string collations fall back |
 | `array_except` | ✅ | Hybrid | Routes through the JVM codegen dispatcher by default; the incompatible native path is opt-in via allowIncompatible ([details](compatibility/expressions/array.md)) |
 | `array_insert` | ✅ | Native |  |
 | `array_intersect` | ✅ | Hybrid | Routes through the JVM codegen dispatcher by default; the incompatible native path is opt-in via allowIncompatible ([details](compatibility/expressions/array.md)) |
@@ -167,7 +167,7 @@ The tables below list every Spark built-in expression with its current status.
 | `array_prepend` | ✅ | — |  |
 | `array_remove` | ✅ | Native |  |
 | `array_repeat` | ✅ | Native |  |
-| `array_union` | ✅ | Native | Floating-point elements fall back on Spark versions other than 4.2.0; signed-zero and NaN results may differ with native opt-in ([details](compatibility/floating-point.md)). Non-default string collations fall back |
+| `array_union` | ✅ | Native | Floating-point elements fall back on Spark versions before 4.0.5, 4.1.4, and 4.2; signed-zero results may differ with native opt-in ([details](compatibility/floating-point.md)). Non-default string collations fall back |
 | `arrays_overlap` | ✅ | Hybrid | Non-default string collations use the JVM codegen dispatcher |
 | `arrays_zip` | ✅ | Native |  |
 | `element_at` | ✅ | Native |  |

@@ -193,6 +193,19 @@ object CometWindowExec extends CometOperatorSerde[WindowExec] {
     }
   }
 
+  /**
+   * Whether a decimal AVG keeps its running sum at DecimalType.MAX_PRECISION, which Spark does
+   * for input precision 28 and up. Spark's window buffer keeps that sum unbounded, while the
+   * native AVG skips the row that takes it out of the precision, so DECIMAL(38,38) inputs 0.6,
+   * 0.6, -0.6 average to 0 over the whole partition rather than Spark's 0.2, and to 0.6 rather
+   * than 0.2 in a running frame, where ANSI mode raises instead.
+   * https://github.com/apache/datafusion-comet/issues/5418
+   */
+  private def hasMaxPrecisionDecimalSum(avg: Average): Boolean = avg.sumDataType match {
+    case decimal: DecimalType => decimal.precision == DecimalType.MAX_PRECISION
+    case _ => false
+  }
+
   private def windowExprToProto(
       windowExprInfo: WindowExpressionInfo,
       output: Seq[Attribute],
@@ -236,11 +249,16 @@ object CometWindowExec extends CometOperatorSerde[WindowExec] {
                 None
               }
             case a: Average =>
-              if (AggSerde.avgDataTypeSupported(a.dataType)) {
-                Some(agg)
-              } else {
+              if (!AggSerde.avgDataTypeSupported(a.dataType)) {
                 withFallbackReason(windowExpr, s"datatype ${a.dataType} is not supported")
                 None
+              } else if (hasMaxPrecisionDecimalSum(a)) {
+                withFallbackReason(
+                  windowExpr,
+                  "AVG on DECIMAL with precision 28 or more is not supported")
+                None
+              } else {
+                Some(agg)
               }
             case _: First =>
               Some(agg)

@@ -222,8 +222,8 @@ Keep the following in mind when reading the reports:
   also counts its subqueries, so do not add the reports together.
 - Only the JVM side of planning runs. Anything that would fail when DataFusion builds the
   native plan still counts as accelerated, so treat the percentage as an upper bound.
-- Comet's split Iceberg V2 write (`spark.comet.write.iceberg.splitOperator.enabled`) is
-  declined in plan-only mode, so such writes run on, and are reported as, Spark.
+- Comet's split Iceberg V2 write (`spark.comet.write.iceberg.enabled`) is declined in
+  plan-only mode, so such writes run on, and are reported as, Spark.
 - Under AQE the report describes the plan before any adaptive re-planning, so coverage of the
   plan that finally executes can differ. In particular, AQE plans subqueries into the outer
   query only after the report is produced, so the outer report counts their operators as
@@ -298,7 +298,7 @@ by role. Names match what is shown in the plan output.
 | `CometNativeScan`        | Parquet scan that runs entirely in Rust via DataFusion.                                                            |
 | `CometIcebergNativeScan` | Iceberg Parquet scan that runs entirely in Rust via DataFusion.                                                    |
 | `CometCsvNativeScan`     | CSV scan that runs entirely in Rust via DataFusion (experimental).                                                 |
-| `CometInMemoryTableScan` | JVM-side scan of a table cached in Comet's Arrow format (enabled by default from Spark 3.5).                       |
+| `CometInMemoryTableScan` | JVM-side scan of a table cached in Comet's Arrow format (experimental, disabled by default).                       |
 | `CometLocalTableScan`    | JVM-side scan of a `LocalTableScanExec` (disabled by default).                                                     |
 | `CometEmptyRelation`     | Empty native input that replaces `EmptyRelationExec` (Spark 4.0 and later).                                        |
 | `CometRange`             | Generates the rows of `spark.range` and SQL `range()` in native code, replacing `RangeExec` (disabled by default). |
@@ -306,7 +306,9 @@ by role. Names match what is shown in the plan output.
 ### Native Rust Operators
 
 These are implemented in Rust and run in DataFusion. When several appear
-consecutively in a plan, they execute as a single fused block.
+consecutively in a plan, they execute as a single fused block. The write operators
+(`CometWriteFiles`, `CometNativeWrite` and `CometIcebergWrite`) are the exception: each runs as its
+own native plan over its child's output.
 
 | Node                           | Spark equivalent                                                                  |
 | ------------------------------ | --------------------------------------------------------------------------------- |
@@ -329,22 +331,22 @@ consecutively in a plan, they execute as a single fused block.
 | `CometTakeOrderedAndProject`   | `TakeOrderedAndProjectExec`                                                       |
 | `CometWriteFiles`              | `WriteFilesExec` (Spark 4.0 and later, experimental native Parquet writes)        |
 | `CometNativeWrite`             | `DataWritingCommandExec` (Spark 3.x, experimental native Parquet writes)          |
-| `CometIcebergWrite`            | `IcebergWrite` (experimental native Iceberg data-file writes)                     |
+| `CometIcebergWrite`            | `IcebergWrite` (native Iceberg data-file writes, opt-in)                          |
 
 ### JVM-Side Operators
 
 These keep their data on the JVM but participate in the Comet pipeline.
 
-| Node                     | Notes                                                                                                                                       |
-| ------------------------ | ------------------------------------------------------------------------------------------------------------------------------------------- |
-| `CometUnion`             | JVM-side union of Comet inputs. The Rust side reads each branch as a separate scan.                                                         |
-| `CometCoalesce`          | JVM-side partition coalesce.                                                                                                                |
-| `CometCollectLimit`      | JVM-side collect limit, equivalent to `CollectLimitExec`.                                                                                   |
-| `CometBroadcastExchange` | Broadcast exchange producing serialized Arrow batches that the consumer can decode.                                                         |
-| `CometSubqueryBroadcast` | Companion to `CometBroadcastExchange` for dynamic partition pruning subqueries.                                                             |
-| `CometMapInBatch`        | Runs `mapInArrow` / `mapInPandas` Python UDFs on Comet's Arrow batches (experimental). See [PyArrow UDF Acceleration](pyarrow-udfs.md).     |
-| `IcebergWrite`           | Executor-side Iceberg data-file write in Comet's split-operator Iceberg write plan (experimental). See [Iceberg Writes](iceberg-writes.md). |
-| `IcebergCommit`          | Driver-side commit for Comet's split-operator Iceberg write plan (experimental).                                                            |
+| Node                     | Notes                                                                                                                                   |
+| ------------------------ | --------------------------------------------------------------------------------------------------------------------------------------- |
+| `CometUnion`             | JVM-side union of Comet inputs. The Rust side reads each branch as a separate scan.                                                     |
+| `CometCoalesce`          | JVM-side partition coalesce.                                                                                                            |
+| `CometCollectLimit`      | JVM-side collect limit, equivalent to `CollectLimitExec`.                                                                               |
+| `CometBroadcastExchange` | Broadcast exchange producing serialized Arrow batches that the consumer can decode.                                                     |
+| `CometSubqueryBroadcast` | Companion to `CometBroadcastExchange` for dynamic partition pruning subqueries.                                                         |
+| `CometMapInBatch`        | Runs `mapInArrow` / `mapInPandas` Python UDFs on Comet's Arrow batches (experimental). See [PyArrow UDF Acceleration](pyarrow-udfs.md). |
+| `IcebergWrite`           | Executor-side Iceberg data-file write in Comet's split-operator Iceberg write plan. See [Iceberg Writes](iceberg-writes.md).            |
+| `IcebergCommit`          | Driver-side commit for Comet's split-operator Iceberg write plan.                                                                       |
 
 ### Shuffle Operators
 
