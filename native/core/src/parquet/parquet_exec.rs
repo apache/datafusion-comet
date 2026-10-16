@@ -18,7 +18,7 @@
 use crate::execution::operators::ExecutionError;
 use crate::parquet::eager_page_index_reader_factory::{EagerPageIndexReaderFactory, ScanIoSource};
 use crate::parquet::encryption_support::{CometEncryptionConfig, ENCRYPTION_FACTORY_ID};
-use crate::parquet::name_fold::fold_schema_names;
+use crate::parquet::name_fold::{fold_name, fold_names, fold_schema_names};
 use crate::parquet::parquet_support::{
     object_store_authority, ObjectStoreBackend, SparkParquetOptions,
 };
@@ -34,6 +34,7 @@ use datafusion::datasource::source::DataSourceExec;
 use datafusion::execution::object_store::ObjectStoreUrl;
 use datafusion::physical_expr::expressions::Column;
 use datafusion::physical_expr::projection::{ProjectionExpr, ProjectionExprs};
+use datafusion::physical_expr::utils::collect_columns;
 use datafusion::physical_expr::PhysicalExpr;
 use datafusion::physical_expr_adapter::PhysicalExprAdapterFactory;
 use datafusion::prelude::SessionContext;
@@ -42,7 +43,7 @@ use datafusion_comet_spark_expr::jvm_udf::JvmScalarUdfExpr;
 use datafusion_comet_spark_expr::{Cast, EvalMode, SparkCastOptions};
 use datafusion_datasource::TableSchema;
 use parquet::variant::VariantType;
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use std::sync::Arc;
 
 #[cfg(test)]
@@ -60,12 +61,7 @@ pub(crate) const METADATA_SIZE_HINT: usize = 512 * 1024;
 /// with Spark-compatible replacement semantics.
 fn binary_as_string_read_schema(schema: &SchemaRef) -> SchemaRef {
     let fields = schema.fields().iter().map(|field| {
-        let read_type = match field.data_type() {
-            DataType::Utf8 => Some(DataType::Binary),
-            DataType::LargeUtf8 => Some(DataType::LargeBinary),
-            _ => None,
-        };
-        read_type.map_or_else(
+        binary_as_string_read_type(field.data_type()).map_or_else(
             || Arc::clone(field),
             |data_type| Arc::new(field.as_ref().clone().with_data_type(data_type)),
         )
@@ -74,6 +70,30 @@ fn binary_as_string_read_schema(schema: &SchemaRef) -> SchemaRef {
         fields.collect::<Vec<_>>(),
         schema.metadata().clone(),
     ))
+}
+
+/// The type `binary_as_string_read_schema` reads a top-level field of `data_type` as, or `None`
+/// when the field is read as declared.
+fn binary_as_string_read_type(data_type: &DataType) -> Option<DataType> {
+    match data_type {
+        DataType::Utf8 => Some(DataType::Binary),
+        DataType::LargeUtf8 => Some(DataType::LargeBinary),
+        _ => None,
+    }
+}
+
+/// Whether `expr` references a column whose folded name is in `folded_names`.
+fn references_any_column(
+    expr: &Arc<dyn PhysicalExpr>,
+    folded_names: &HashSet<String>,
+    case_sensitive: bool,
+) -> Result<bool, ExecutionError> {
+    for column in collect_columns(expr) {
+        if folded_names.contains(&fold_name(column.name(), case_sensitive)?) {
+            return Ok(true);
+        }
+    }
+    Ok(false)
 }
 
 fn binary_as_string_projection(
@@ -256,6 +276,20 @@ pub(crate) fn init_datasource_exec(
         .with_table_partition_cols(partition_fields)
         .build();
 
+    // Folded names of the columns read as binary. Filters that reference one are kept out of the
+    // scan below.
+    let binary_read_columns: HashSet<String> = if binary_as_string {
+        let names: Vec<&str> = base_schema
+            .fields()
+            .iter()
+            .filter(|field| binary_as_string_read_type(field.data_type()).is_some())
+            .map(|field| field.name().as_str())
+            .collect();
+        fold_names(&names, case_sensitive)?.into_iter().collect()
+    } else {
+        HashSet::new()
+    };
+
     let binary_projection = binary_as_string.then(|| {
         binary_as_string_projection(
             table_schema.table_schema(),
@@ -347,11 +381,23 @@ pub(crate) fn init_datasource_exec(
             .filter(|filter| !calls_jvm(filter))
             .collect::<Vec<_>>()
     });
+    // In binaryAsString mode the filters are typed against the Utf8 output schema, but the scan
+    // reads the string columns as Binary, so drop the filters that reference one for the same
+    // reason. Filters on other columns still prune.
+    let data_filters = match data_filters {
+        Some(filters) if !binary_read_columns.is_empty() => {
+            let mut pushable = Vec::with_capacity(filters.len());
+            for filter in filters {
+                if !references_any_column(&filter, &binary_read_columns, case_sensitive)? {
+                    pushable.push(filter);
+                }
+            }
+            Some(pushable)
+        }
+        other => other,
+    };
     let mut file_source: Arc<dyn FileSource> = match data_filters {
-        // The Spark Filter above the scan re-evaluates every dataFilter. Until filter expressions
-        // are rewritten from the output Utf8 schema to the Binary read schema, skip only the
-        // optional Parquet pushdown in binaryAsString mode.
-        Some(filters) if !filters.is_empty() && !binary_as_string => {
+        Some(filters) if !filters.is_empty() => {
             let propagation =
                 parquet_source.try_pushdown_filters(filters, session_config.options())?;
             // `updated_node` is `None` when every filter classified as `No`
@@ -515,7 +561,7 @@ fn get_options(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use arrow::array::{Date32Array, Int32Array};
+    use arrow::array::{AsArray, BinaryArray, Date32Array, Int32Array};
     use arrow::datatypes::{DataType, Field, Schema};
     use arrow::record_batch::RecordBatch;
     use bytes::Bytes;
@@ -563,6 +609,114 @@ mod tests {
 
         assert!(calls_jvm(&nested));
         assert!(!calls_jvm(&native));
+    }
+
+    #[tokio::test]
+    async fn binary_as_string_prunes_with_filters_on_other_columns() {
+        let file_schema = Arc::new(Schema::new(vec![
+            Field::new("a", DataType::Int32, false),
+            Field::new("s", DataType::Binary, true),
+        ]));
+        let filename = get_temp_filename()
+            .as_path()
+            .as_os_str()
+            .to_str()
+            .unwrap()
+            .to_string();
+        let props = WriterProperties::builder()
+            .set_max_row_group_row_count(Some(500))
+            .build();
+        let file = File::create(&filename).unwrap();
+        let mut writer = ArrowWriter::try_new(file, Arc::clone(&file_schema), Some(props)).unwrap();
+        let invalid_utf8: &[u8] = &[0xff];
+        for start in [0, 1_000] {
+            let batch = RecordBatch::try_new(
+                Arc::clone(&file_schema),
+                vec![
+                    Arc::new(Int32Array::from((start..start + 500).collect::<Vec<i32>>())),
+                    Arc::new(BinaryArray::from_iter_values(
+                        (0..500).map(|_| invalid_utf8),
+                    )),
+                ],
+            )
+            .unwrap();
+            writer.write(&batch).unwrap();
+        }
+        writer.close().unwrap();
+
+        let partitioned_file = PartitionedFile::from_path(filename).unwrap();
+        let session_ctx = Arc::new(SessionContext::new());
+        let required_schema = Arc::new(Schema::new(vec![
+            Field::new("a", DataType::Int32, false),
+            Field::new("s", DataType::Utf8, true),
+        ]));
+        let scan = |filters: Option<Vec<Arc<dyn PhysicalExpr>>>| {
+            init_datasource_exec(
+                Arc::clone(&required_schema),
+                Some(Arc::clone(&required_schema)),
+                None,
+                ObjectStoreUrl::local_filesystem(),
+                ObjectStoreBackend::Local,
+                vec![vec![partitioned_file.clone()]],
+                Some(vec![0, 1]),
+                filters,
+                None,
+                "UTC",
+                true,
+                false,
+                false,
+                false,
+                true,
+                &session_ctx,
+                false,
+                false,
+                false,
+                false,
+                "",
+                "",
+            )
+            .unwrap()
+        };
+
+        let full_scan = scan(None);
+        drain_scan(&full_scan, &session_ctx).await;
+
+        let a_below_500: Arc<dyn PhysicalExpr> = Arc::new(BinaryExpr::new(
+            Arc::new(Column::new("a", 0)),
+            Operator::Lt,
+            Arc::new(Literal::new(ScalarValue::Int32(Some(500)))),
+        ));
+        let s_equals: Arc<dyn PhysicalExpr> = Arc::new(BinaryExpr::new(
+            Arc::new(Column::new("s", 1)),
+            Operator::Eq,
+            Arc::new(Literal::new(ScalarValue::Utf8(Some("x".to_string())))),
+        ));
+        let filtered_scan = scan(Some(vec![a_below_500, s_equals]));
+        let batches: Vec<RecordBatch> = filtered_scan
+            .execute(0, session_ctx.task_ctx())
+            .unwrap()
+            .map(|batch| batch.unwrap())
+            .collect()
+            .await;
+
+        assert_eq!(
+            batches.iter().map(RecordBatch::num_rows).sum::<usize>(),
+            500
+        );
+        for batch in &batches {
+            assert_eq!(batch.schema().field(1).data_type(), &DataType::Utf8);
+            assert!(batch
+                .column(1)
+                .as_string::<i32>()
+                .iter()
+                .all(|value| value == Some("\u{fffd}")));
+        }
+        let full_data = scan_metric(&full_scan, "scan_io_data_bytes");
+        let filtered_data = scan_metric(&filtered_scan, "scan_io_data_bytes");
+        assert!(
+            filtered_data < full_data,
+            "the filter on `a` should prune a row group: filtered={filtered_data}, full={full_data}"
+        );
     }
 
     fn write_scan_io_fixture() -> (String, SchemaRef) {
