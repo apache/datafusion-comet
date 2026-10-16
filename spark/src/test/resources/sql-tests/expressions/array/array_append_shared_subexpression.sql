@@ -16,10 +16,11 @@
 -- under the License.
 
 -- Spark's projection evaluates a subexpression that several of its expressions share for every
--- row, before the expressions that use it. Under ANSI mode a nullable array sends
--- `array_append` through the JVM codegen dispatcher, which compiles each call alone, so a node
--- in its tree that skips a later argument on a NULL input would skip the shared subexpression
--- too, and an error Spark raises would go unraised. Such a call falls back to Spark instead.
+-- row, before the expressions that use it. A nullable array with an item that is not a literal
+-- or column sends `array_append` through the JVM codegen dispatcher, which compiles each call
+-- alone, so a node in its tree that skips a later argument on a NULL input would skip the shared
+-- subexpression too, and an error Spark raises would go unraised. Such a call falls back to Spark
+-- instead.
 --
 -- Spark 4.0 rewrites `array_append` to `array_insert(-1)` before serde, so `CometArrayAppend` is
 -- only reachable on Spark 3.x.

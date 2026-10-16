@@ -153,7 +153,7 @@ The tables below list every Spark built-in expression with its current status.
 | Function | Status | Implementation | Notes |
 | --- | --- | --- | --- |
 | `array` | ✅ | Native |  |
-| `array_append` | ✅ | Hybrid |  |
+| `array_append` | ✅ | Hybrid | A nondeterministic operand, or an item that is not a literal or column over a nullable array, routes through the JVM codegen dispatcher |
 | `array_compact` | ✅ | — |  |
 | `array_contains` | ✅ | Hybrid | Flat float/double element arrays use a native kernel with Spark's equality; nested float elements, non-default string collations, and a value that is not a literal or column over a nullable array, route through the JVM codegen dispatcher |
 | `array_distinct` | ✅ | Native | Floating-point elements fall back on Spark versions before 4.0.5, 4.1.4, and 4.2; signed-zero results may differ with native opt-in ([details](compatibility/floating-point.md)). Non-default string collations fall back |

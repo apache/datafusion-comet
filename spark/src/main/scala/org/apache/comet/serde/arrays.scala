@@ -114,6 +114,22 @@ private[serde] object SharedSubexpressionArgument {
     if (skipsSharedSubexpression(expr)) Some(reason) else None
 }
 
+/**
+ * Whether evaluating `expr` at a different point than Spark does, or not at all, is unobservable.
+ *
+ * A literal or column read cannot throw, carry state or have a side effect, so neither its
+ * evaluation order nor a skipped evaluation can be observed; anything else may raise or drift
+ * where Spark does not. `foldable` is not usable here: ConstantFolding leaves a throwing foldable
+ * expression unfolded in a conditional branch.
+ */
+private[serde] object EvaluationOrder {
+
+  def isUnobservable(expr: Expression): Boolean = expr match {
+    case _: Literal | _: Attribute | _: BoundReference => true
+    case _ => false
+  }
+}
+
 object CometArrayAppend
     extends CometExpressionSerde[ArrayAppend]
     with ArraysBase
@@ -127,31 +143,33 @@ object CometArrayAppend
   override def getUnsupportedReasons(): Seq[String] =
     Seq(NullGuardSupport.nondeterministicReason)
 
-  private val ansiItemNote: String =
-    "With `spark.sql.ansi.enabled=true` and a nullable array, the native `NULL` guard skips " +
-      "the item on a row whose array is `NULL`, so an item that raises there (for example a " +
-      "division by zero) raises in Spark but not on the native path. Such an expression runs " +
-      "through the JVM codegen dispatcher by default; enabling the native path can swallow " +
-      "that error ([#6086](https://github.com/apache/datafusion-comet/issues/6086))."
+  private val skippedItemNote: String =
+    "With a nullable array and an item that is not a literal or column, the native `NULL` " +
+      "guard skips the item on a row whose array is `NULL`, so an item that raises there (for " +
+      "example `element_at` with index 0, or a division by zero under ANSI mode) raises in " +
+      "Spark but not on the native path. Such an expression runs through the JVM codegen " +
+      "dispatcher by default; enabling the native path can swallow that error " +
+      "([#6086](https://github.com/apache/datafusion-comet/issues/6086))."
 
-  override def getIncompatibleReasons(): Seq[String] = Seq(ansiItemNote)
+  override def getIncompatibleReasons(): Seq[String] = Seq(skippedItemNote)
 
-  // Only the ANSI nullable-array case is routed through the dispatcher; every other compatible
-  // instance runs natively by default.
+  // Only a nullable array with an item that is not a literal or column is routed through the
+  // dispatcher; every other compatible instance runs natively by default.
   override def hasConditionalNativeDefault: Boolean = true
 
   // The item sits inside the guard's THEN branch, and DataFusion's CaseExpr evaluates that
   // branch only on the rows the guard selects, while Spark's codegen evaluates the item on
   // every row. A stateful item therefore drifts the same way a stateful array does, and is
-  // declined. The same shape lets an item that raises under ANSI mode go unevaluated on a row
-  // whose array is NULL, so Spark raises where the native path returns NULL. That case is
-  // reported as incompatible, which routes it through the JVM codegen dispatcher by default
-  // and reserves the native guard for allowIncompatible=true. A non-nullable array evaluates
-  // the item on every row on both paths, so it stays native.
+  // declined. The same shape lets an item that raises go unevaluated on a row whose array is
+  // NULL, so Spark raises where the native path returns NULL, whatever the ANSI setting
+  // (`element_at` raises on index 0 either way). Unless the item is a literal or column, which
+  // cannot raise, a nullable array is reported as incompatible, which routes it through the JVM
+  // codegen dispatcher by default and reserves the native guard for allowIncompatible=true. A
+  // non-nullable array evaluates the item on every row on both paths, so it stays native.
   override def getSupportLevel(expr: ArrayAppend): SupportLevel =
     NullGuardSupport.nondeterministicChild(expr.children).getOrElse {
-      if (SQLConf.get.ansiEnabled && expr.left.nullable) {
-        Incompatible(Some(ansiItemNote))
+      if (expr.left.nullable && !EvaluationOrder.isUnobservable(expr.right)) {
+        Incompatible(Some(skippedItemNote))
       } else {
         Compatible()
       }
@@ -233,13 +251,6 @@ object CometArrayContains
     case _ => false
   }
 
-  // Whether evaluating `expr` earlier than Spark would is unobservable: a literal or column read
-  // cannot throw. See CometArrayJoin.orderInsensitive.
-  private def orderInsensitive(expr: Expression): Boolean = expr match {
-    case _: Literal | _: Attribute | _: BoundReference => true
-    case _ => false
-  }
-
   override def getSupportLevel(expr: ArrayContains): SupportLevel = {
     val elementType = expr.left.dataType.asInstanceOf[ArrayType].elementType
     if (hasNonDefaultStringCollation(elementType)) {
@@ -248,7 +259,7 @@ object CometArrayContains
     } else if (isFlatFloat(elementType)) {
       // Spark skips the value when the array is null, so a value that can throw (an ANSI cast,
       // say) must not run for a null array. The native kernel evaluates both arguments first.
-      if (expr.left.nullable && !orderInsensitive(expr.right)) {
+      if (expr.left.nullable && !EvaluationOrder.isUnobservable(expr.right)) {
         Incompatible(Some(eagerEvalReason))
       } else {
         Compatible()
@@ -560,23 +571,12 @@ object CometArrayJoin
     "array_join evaluates its delimiter and null replacement eagerly, while Spark short-circuits " +
       "past them (https://github.com/apache/datafusion-comet/issues/3178)"
 
-  /**
-   * Whether evaluating `expr` earlier than Spark would is unobservable.
-   *
-   * Spark skips ArrayJoin's later arguments once an earlier one is null, and `eval` and
-   * `doGenCode` disagree on that order, while DataFusion evaluates every argument up front. A
-   * literal or column read cannot throw, carry state or have a side effect, so ordering cannot be
-   * observed for it; anything else goes to the codegen dispatcher. `foldable` is not usable here:
-   * ConstantFolding leaves a throwing foldable expression unfolded in a conditional branch.
-   */
-  private def orderInsensitive(expr: Expression): Boolean = expr match {
-    case _: Literal | _: Attribute | _: BoundReference => true
-    case _ => false
-  }
-
   override def getIncompatibleReasons(): Seq[String] = Seq(collationReason, eagerEvalReason)
 
   override def getSupportLevel(expr: ArrayJoin): SupportLevel = {
+    // Spark skips ArrayJoin's later arguments once an earlier one is null, and `eval` and
+    // `doGenCode` disagree on that order, while DataFusion evaluates every argument up front.
+    val laterArgs = expr.delimiter +: expr.nullReplacement.toSeq
     // Spark 4.0 widens ArrayJoin's input to StringTypeWithCollation. Concatenation itself is
     // collation-independent, so the joined value is always correct; only the output string's
     // collation metadata is dropped (Comet columns are UTF8_BINARY). Report Incompatible rather
@@ -584,7 +584,7 @@ object CometArrayJoin
     // array_join native and matching Spark, consistent with CometReverse's #2190 handling.
     if (hasNonDefaultStringCollation(expr.array.dataType)) {
       Incompatible(Some(collationReason))
-    } else if (!(expr.delimiter +: expr.nullReplacement.toSeq).forall(orderInsensitive)) {
+    } else if (!laterArgs.forall(EvaluationOrder.isUnobservable)) {
       Incompatible(Some(eagerEvalReason))
     } else {
       Compatible()
