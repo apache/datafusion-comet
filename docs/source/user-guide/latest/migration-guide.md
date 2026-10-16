@@ -126,10 +126,11 @@ Comet 1.1.0 named this setting `spark.comet.iceberg.write.enabled`, in the testi
 took effect only together with `spark.comet.write.iceberg.splitOperator.enabled`. Comet now ignores
 the old name, so a deployment that turned native writes on that way must set
 `spark.comet.write.iceberg.enabled=true` to keep them.
-`spark.comet.write.iceberg.splitOperator.enabled` is now a testing setting. Comet 1.1.0 documented
-it as the switch for the split plan, and a deployment that still sets it to `true` keeps the split
-plan, with iceberg-java writing the data files, and on Spark 3.5+ it now also plans merge-on-read
-writes as the split plan. Unset it to plan Spark's own operator.
+`spark.comet.write.iceberg.splitOperator.enabled` is a testing setting, as it was in 1.1.0, but
+Comet 1.1.0's Iceberg Writes guide documented it as the switch for the split plan. A deployment
+that still sets it to `true` keeps the split plan, with iceberg-java writing the data files, and
+on Spark 3.5+ it now also plans merge-on-read writes as the split plan. Unset it to plan Spark's
+own operator.
 
 ## Upgrading to Comet 1.1.0
 
