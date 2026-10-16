@@ -41,6 +41,7 @@
 //!
 //! See `docs/source/contributor-guide/spilling-hash-join-design.md` for the design.
 
+mod bloom;
 mod chunked;
 mod exec;
 mod memory;

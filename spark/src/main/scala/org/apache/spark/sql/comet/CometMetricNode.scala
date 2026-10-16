@@ -528,6 +528,8 @@ object CometMetricNode {
         SQLMetrics.createMetric(sc, "Number of spilled buckets split again to fit"),
       "chunked_buckets" ->
         SQLMetrics.createMetric(sc, "Number of spilled buckets joined in chunks"),
+      "bloom_filtered_rows" ->
+        SQLMetrics.createMetric(sc, "Number of probe rows of spilled buckets kept off disk"),
       "budget_overflow_bytes" ->
         SQLMetrics.createSizeMetric(sc, "Memory reserved beyond the join's own estimate"))
   }

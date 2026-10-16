@@ -291,6 +291,7 @@ struct Spilled {
     spilled_buckets: usize,
     split_buckets: usize,
     chunked_buckets: usize,
+    bloom_filtered_rows: usize,
 }
 
 /// Runs the join both ways and checks that they emit the same rows. The spilling join runs with
@@ -366,6 +367,7 @@ async fn check_input(
             spilled_buckets: metric(spilling.as_ref(), "spilled_buckets"),
             split_buckets: metric(spilling.as_ref(), "split_buckets"),
             chunked_buckets: metric(spilling.as_ref(), "chunked_buckets"),
+            bloom_filtered_rows: metric(spilling.as_ref(), "bloom_filtered_rows"),
         };
     }
     Ok(spilled)
@@ -375,6 +377,13 @@ fn emits_probe_rows_without_build(join_type: JoinType) -> bool {
     matches!(
         join_type,
         JoinType::Right | JoinType::Full | JoinType::RightAnti | JoinType::RightMark
+    )
+}
+
+fn emits_build_rows_without_probe(join_type: JoinType) -> bool {
+    matches!(
+        join_type,
+        JoinType::Left | JoinType::Full | JoinType::LeftAnti | JoinType::LeftMark
     )
 }
 
@@ -449,6 +458,13 @@ async fn bucketed() -> Result<()> {
             assert!(spilled.spilled_buckets > 0, "{join_type} did not spill");
             assert_eq!(spilled.split_buckets, 0);
             assert_eq!(spilled.chunked_buckets, 0);
+            // Half of the probe keys are not build keys, so the filters of the spilled buckets
+            // keep many probe rows off disk.
+            assert!(
+                spilled.bloom_filtered_rows > 1000,
+                "{join_type} filtered {} probe rows",
+                spilled.bloom_filtered_rows
+            );
         }
     }
     Ok(())
@@ -520,7 +536,9 @@ async fn hot_key_in_chunks() -> Result<()> {
     Ok(())
 }
 
-/// Build rows with a null key all land in one bucket, which cannot be split either.
+/// Build rows with a null key all land in one bucket, which cannot be split either. A join type
+/// that emits unmatched build rows joins that bucket in chunks. Others may skip it, when the
+/// bucket's filter keeps every probe row of it off disk.
 #[tokio::test]
 async fn many_null_keys_in_chunks() -> Result<()> {
     let nulls = Keys {
@@ -541,7 +559,9 @@ async fn many_null_keys_in_chunks() -> Result<()> {
             None,
         )
         .await?;
-        assert!(spilled.chunked_buckets > 0, "{join_type} was not chunked");
+        if emits_build_rows_without_probe(join_type) {
+            assert!(spilled.chunked_buckets > 0, "{join_type} was not chunked");
+        }
     }
     Ok(())
 }

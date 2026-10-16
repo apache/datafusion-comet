@@ -192,11 +192,13 @@ fn print_spill_metrics(name: &str, plan: &dyn ExecutionPlan) {
             .map_or(0, |value| value.as_usize())
     };
     eprintln!(
-        "{name}: spilled_buckets={} split_buckets={} chunked_buckets={} spill_files={} \
-         spilled_rows={} spilled_bytes={} build_mem_used={} budget_overflow_bytes={}",
+        "{name}: spilled_buckets={} split_buckets={} chunked_buckets={} bloom_filtered_rows={} \
+         spill_files={} spilled_rows={} spilled_bytes={} build_mem_used={} \
+         budget_overflow_bytes={}",
         value("spilled_buckets"),
         value("split_buckets"),
         value("chunked_buckets"),
+        value("bloom_filtered_rows"),
         metrics.spill_count().unwrap_or(0),
         metrics.spilled_rows().unwrap_or(0),
         metrics.spilled_bytes().unwrap_or(0),

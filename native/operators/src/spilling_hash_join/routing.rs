@@ -17,7 +17,7 @@
 
 //! Routing rows of [`super::SpillingHashJoinExec`] to buckets by a hash of their join keys.
 
-use arrow::array::{Array, RecordBatch, UInt32Array};
+use arrow::array::{Array, ArrayRef, RecordBatch, UInt32Array};
 use arrow::buffer::NullBuffer;
 use arrow::compute::take_record_batch;
 use datafusion::common::hash_utils::{create_hashes, QualityRandomState};
@@ -56,6 +56,25 @@ impl Router {
         ((hash >> shift) as usize & (NUM_BUCKETS - 1)) as u8
     }
 
+    /// The routing hash of each row of `batch`.
+    pub(super) fn hash(&mut self, batch: &RecordBatch) -> Result<&[u64]> {
+        self.hash_keys(batch)?;
+        Ok(&self.hashes)
+    }
+
+    /// The routing hash of each row of the batch last hashed or routed.
+    pub(super) fn hashes(&self) -> &[u64] {
+        &self.hashes
+    }
+
+    fn hash_keys(&mut self, batch: &RecordBatch) -> Result<Vec<ArrayRef>> {
+        let keys = evaluate_expressions_to_arrays(&self.keys, batch)?;
+        self.hashes.clear();
+        self.hashes.resize(batch.num_rows(), 0);
+        create_hashes(&keys, &ROUTING_STATE, &mut self.hashes)?;
+        Ok(keys)
+    }
+
     /// The bucket of each row of `batch` at `level`. With `separate_null_keys`, a row with a
     /// null in any join key gets [`NULL_KEY`] instead.
     pub(super) fn route(
@@ -64,10 +83,7 @@ impl Router {
         level: u32,
         separate_null_keys: bool,
     ) -> Result<Vec<u8>> {
-        let keys = evaluate_expressions_to_arrays(&self.keys, batch)?;
-        self.hashes.clear();
-        self.hashes.resize(batch.num_rows(), 0);
-        create_hashes(&keys, &ROUTING_STATE, &mut self.hashes)?;
+        let keys = self.hash_keys(batch)?;
         let nulls = if separate_null_keys {
             keys.iter().fold(None, |nulls: Option<NullBuffer>, key| {
                 NullBuffer::union(nulls.as_ref(), key.logical_nulls().as_ref())

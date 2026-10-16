@@ -37,6 +37,7 @@ use datafusion::physical_plan::{ExecutionPlan, SendableRecordBatchStream};
 use futures::StreamExt;
 use parking_lot::Mutex;
 
+use super::bloom::KeyFilter;
 use super::chunked::ChunkedPair;
 use super::memory::{
     try_reserve, BudgetPool, BuildMemory, BuildMemoryEstimator, PerfectHashConfig,
@@ -115,32 +116,43 @@ enum After {
 }
 
 /// The build rows of each bucket during a bucketed build: held in memory, or written to the
-/// bucket's file once the bucket has been destaged.
-struct BuildBuckets(Vec<BuildBucket>);
+/// bucket's file once the bucket has been destaged, with a filter of the bucket's keys.
+struct BuildBuckets {
+    buckets: Vec<BuildBucket>,
+    /// Hashes the rows of spilled buckets for their filters.
+    filter_router: Router,
+    filter_memory: Arc<MemoryReservation>,
+}
 
 enum BuildBucket {
     Resident {
         batches: Vec<RecordBatch>,
         bytes: usize,
     },
-    Spilled(Box<SpillFileWriter>),
+    Spilled {
+        writer: Box<SpillFileWriter>,
+        /// None if the pool refused its memory.
+        filter: Option<KeyFilter>,
+    },
 }
 
 impl BuildBuckets {
-    fn new() -> Self {
-        Self(
-            (0..NUM_BUCKETS)
+    fn new(keys: Vec<PhysicalExprRef>, filter_memory: Arc<MemoryReservation>) -> Self {
+        Self {
+            buckets: (0..NUM_BUCKETS)
                 .map(|_| BuildBucket::Resident {
                     batches: Vec::new(),
                     bytes: 0,
                 })
                 .collect(),
-        )
+            filter_router: Router::new(keys),
+            filter_memory,
+        }
     }
 
     /// The resident bucket that holds the most memory, unless none holds any.
     fn largest_resident(&self) -> Option<usize> {
-        self.0
+        self.buckets
             .iter()
             .enumerate()
             .filter_map(|(bucket, state)| match state {
@@ -151,52 +163,98 @@ impl BuildBuckets {
             .map(|(bucket, _)| bucket)
     }
 
-    /// Writes a resident bucket to `writer`, which then takes the bucket's later rows. The
-    /// bucket's memory leaves `held` before its rows are written, so that the writer can hold the
-    /// last of them until they make a full batch.
+    /// Writes a resident bucket to `writer`, which then takes the bucket's later rows, and starts
+    /// the filter of the bucket's keys. The bucket's memory leaves `held` before its rows are
+    /// written, so that the writer can hold the last of them until they make a full batch.
     fn destage(
         &mut self,
         bucket: usize,
         mut writer: SpillFileWriter,
         held: &MemoryReservation,
     ) -> Result<()> {
-        let BuildBucket::Resident { batches, bytes } = &mut self.0[bucket] else {
+        let BuildBucket::Resident { batches, bytes } = &mut self.buckets[bucket] else {
             return internal_err!("bucket {bucket} is already spilled");
         };
         let batches = mem::take(batches);
         held.shrink(mem::take(bytes));
+        let rows = batches.iter().map(RecordBatch::num_rows).sum();
+        let mut filter = KeyFilter::try_new(rows, Arc::clone(&self.filter_memory))?;
         for batch in batches {
+            add_to_filter(&mut filter, &mut self.filter_router, &batch)?;
             writer.append(batch)?;
         }
-        self.0[bucket] = BuildBucket::Spilled(Box::new(writer));
+        self.buckets[bucket] = BuildBucket::Spilled {
+            writer: Box::new(writer),
+            filter,
+        };
         Ok(())
     }
 
     fn resident_batches(&self) -> Vec<RecordBatch> {
-        self.0
+        self.buckets
             .iter()
             .flat_map(|state| match state {
                 BuildBucket::Resident { batches, .. } => batches.clone(),
-                BuildBucket::Spilled(_) => vec![],
+                BuildBucket::Spilled { .. } => vec![],
             })
             .collect()
     }
 
-    /// The batches of the resident buckets, and the build file of each spilled bucket.
-    fn finish(self) -> Result<(Vec<RecordBatch>, Vec<Option<SpilledFile>>)> {
+    /// The batches of the resident buckets, and the build file and key filter of each spilled
+    /// bucket.
+    fn finish(self) -> Result<FinishedBuild> {
         let mut resident = Vec::new();
         let mut files = Vec::with_capacity(NUM_BUCKETS);
-        for state in self.0 {
+        let mut filters = Vec::with_capacity(NUM_BUCKETS);
+        for state in self.buckets {
             match state {
                 BuildBucket::Resident { batches, .. } => {
                     resident.extend(batches);
                     files.push(None);
+                    filters.push(None);
                 }
-                BuildBucket::Spilled(writer) => files.push(Some((*writer).finish()?)),
+                BuildBucket::Spilled { writer, filter } => {
+                    files.push(Some((*writer).finish()?));
+                    filters.push(filter);
+                }
             }
         }
-        Ok((resident, files))
+        Ok(FinishedBuild {
+            resident,
+            files,
+            filters,
+        })
     }
+}
+
+/// A bucketed build once the build input has ended.
+struct FinishedBuild {
+    resident: Vec<RecordBatch>,
+    files: Vec<Option<SpilledFile>>,
+    filters: Vec<Option<KeyFilter>>,
+}
+
+/// Adds the keys of `batch` to `filter`, and drops the filter if the pool refuses it the memory
+/// to grow, because a filter missing a key would send that key's probe rows to the wrong join.
+fn add_to_filter(
+    filter: &mut Option<KeyFilter>,
+    router: &mut Router,
+    batch: &RecordBatch,
+) -> Result<()> {
+    let Some(keys) = filter.as_mut() else {
+        return Ok(());
+    };
+    let mut complete = true;
+    for hash in router.hash(batch)? {
+        if !keys.insert(*hash)? {
+            complete = false;
+            break;
+        }
+    }
+    if !complete {
+        *filter = None;
+    }
+    Ok(())
 }
 
 /// Joins one partition.
@@ -231,6 +289,11 @@ pub(super) struct Driver {
     bitmap: MemoryReservation,
     /// Rows that spill file writers hold until they make a full batch.
     pending: Arc<MemoryReservation>,
+    /// The filters of spilled buckets' build keys.
+    filter_memory: Arc<MemoryReservation>,
+    /// Probe rows of spilled buckets that a filter showed to match nothing, and that were joined
+    /// with the resident buckets instead of being written to disk.
+    filtered_probe_rows: Count,
     phase: Phase,
     pairs: Vec<Pair>,
 }
@@ -319,12 +382,15 @@ impl Driver {
                 .peak_memory_usage("build_mem_used", partition),
             chunked_buckets: MetricBuilder::new(&plan_metrics)
                 .counter("chunked_buckets", partition),
+            filtered_probe_rows: MetricBuilder::new(&plan_metrics)
+                .counter("bloom_filtered_rows", partition),
             plan_metrics,
             inner: held.new_empty(),
             concat: held.new_empty(),
             headroom: held.new_empty(),
             bitmap: held.new_empty(),
             pending,
+            filter_memory: Arc::new(held.new_empty()),
             held,
             phase: Phase::Start(build, probe),
             pairs: Vec::new(),
@@ -415,7 +481,8 @@ impl Driver {
         mut build: SendableRecordBatchStream,
         probe: SendableRecordBatchStream,
     ) -> Result<()> {
-        let mut buckets = BuildBuckets::new();
+        let mut buckets =
+            BuildBuckets::new(self.spec.build_keys(), Arc::clone(&self.filter_memory));
         let mut router = Router::new(self.spec.build_keys());
         for (batch, size) in buffered.into_iter().zip(sizes) {
             // The batch's memory passes to the buckets that its rows go to.
@@ -449,7 +516,11 @@ impl Driver {
                 }
             }
         };
-        let (resident, build_files) = buckets.finish()?;
+        let FinishedBuild {
+            resident,
+            files: build_files,
+            filters,
+        } = buckets.finish()?;
         let mut is_resident = [true; NUM_BUCKETS];
         for (bucket, file) in build_files.iter().enumerate() {
             is_resident[bucket] = file.is_none();
@@ -458,7 +529,9 @@ impl Driver {
             probe,
             self.spec.probe_keys(),
             is_resident,
+            filters,
             self.probe_files.clone(),
+            self.filtered_probe_rows.clone(),
         )));
         let routed = RoutedProbeStream::new_stream(Arc::clone(&router), self.spec.probe_schema());
         let budget = self.held.size() + memory.reserved;
@@ -493,8 +566,11 @@ impl Driver {
     ) -> Result<()> {
         let size = get_record_batch_memory_size(&part);
         loop {
-            match &mut buckets.0[bucket] {
-                BuildBucket::Spilled(writer) => return writer.append(part),
+            match &mut buckets.buckets[bucket] {
+                BuildBucket::Spilled { writer, filter } => {
+                    add_to_filter(filter, &mut buckets.filter_router, &part)?;
+                    return writer.append(part);
+                }
                 BuildBucket::Resident { batches, bytes } => {
                     if self.reserve_held(size)? {
                         batches.push(part);
@@ -775,6 +851,7 @@ impl Driver {
             + self.headroom.size()
             + self.bitmap.size()
             + self.pending.size()
+            + self.filter_memory.size()
     }
 
     /// Reserves build batches, within `max_build_buffer_bytes` when it is set.

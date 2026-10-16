@@ -27,10 +27,12 @@ use arrow::record_batch::RecordBatch;
 use datafusion::common::Result;
 use datafusion::execution::RecordBatchStream;
 use datafusion::physical_expr::PhysicalExprRef;
+use datafusion::physical_plan::metrics::Count;
 use datafusion::physical_plan::SendableRecordBatchStream;
 use futures::{Stream, StreamExt};
 use parking_lot::Mutex;
 
+use super::bloom::{FilterUse, KeyFilter};
 use super::routing::{take_rows, Router, NULL_KEY, NUM_BUCKETS};
 use super::spill::{SpillFileWriter, SpillWriterFactory, SpilledFile};
 
@@ -39,8 +41,12 @@ pub(super) struct ProbeRouter {
     input: Option<SendableRecordBatchStream>,
     router: Router,
     resident: [bool; NUM_BUCKETS],
+    /// The filter of each spilled bucket's build keys, if it has one.
+    filters: Vec<Option<KeyFilter>>,
+    uses: Vec<FilterUse>,
     writers: Vec<Option<SpillFileWriter>>,
     files: SpillWriterFactory,
+    filtered_rows: Count,
 }
 
 impl ProbeRouter {
@@ -48,33 +54,59 @@ impl ProbeRouter {
         input: SendableRecordBatchStream,
         keys: Vec<PhysicalExprRef>,
         resident: [bool; NUM_BUCKETS],
+        filters: Vec<Option<KeyFilter>>,
         files: SpillWriterFactory,
+        filtered_rows: Count,
     ) -> Self {
         Self {
             input: Some(input),
             router: Router::new(keys),
             resident,
+            filters,
+            uses: (0..NUM_BUCKETS).map(|_| FilterUse::default()).collect(),
             writers: (0..NUM_BUCKETS).map(|_| None).collect(),
             files,
+            filtered_rows,
         }
     }
 
     /// Writes the rows of spilled buckets to their files, and returns the other rows, or None if
-    /// there are none or `keep_others` is false. A row with a null key goes with the others: it
-    /// matches nothing, so the resident join emits it as every join type requires.
+    /// there are none or `keep_others` is false. A row that matches nothing goes with the others,
+    /// because the resident join emits it as every join type requires: a row with a null key, and
+    /// a row whose bucket's filter shows that no build row has its key.
     pub(super) fn route(
         &mut self,
         batch: &RecordBatch,
         keep_others: bool,
     ) -> Result<Option<RecordBatch>> {
         let buckets = self.router.route(batch, 0, true)?;
+        let hashes = self.router.hashes();
         let mut others = Vec::new();
         let mut spilled = vec![Vec::new(); NUM_BUCKETS];
+        let mut looked_up = [0; NUM_BUCKETS];
+        let mut rejected = [0; NUM_BUCKETS];
         for (row, bucket) in buckets.iter().enumerate() {
-            if *bucket == NULL_KEY || self.resident[*bucket as usize] {
+            let index = *bucket as usize;
+            if *bucket == NULL_KEY || self.resident[index] {
                 others.push(row as u32);
-            } else {
-                spilled[*bucket as usize].push(row as u32);
+                continue;
+            }
+            if let Some(filter) = &self.filters[index] {
+                looked_up[index] += 1;
+                if !filter.may_contain(hashes[row]) {
+                    rejected[index] += 1;
+                    others.push(row as u32);
+                    continue;
+                }
+            }
+            spilled[index].push(row as u32);
+        }
+        for bucket in 0..NUM_BUCKETS {
+            if looked_up[bucket] > 0 {
+                self.filtered_rows.add(rejected[bucket]);
+                if !self.uses[bucket].record(looked_up[bucket], rejected[bucket]) {
+                    self.filters[bucket] = None;
+                }
             }
         }
         for (bucket, rows) in spilled.into_iter().enumerate() {
@@ -99,8 +131,9 @@ impl ProbeRouter {
         self.input.take()
     }
 
-    /// The probe file of each bucket, if it has one.
+    /// The probe file of each bucket, if it has one. The filters are no longer needed.
     pub(super) fn finish(&mut self) -> Result<Vec<Option<SpilledFile>>> {
+        self.filters.clear();
         self.writers
             .iter_mut()
             .map(|writer| writer.take().map(SpillFileWriter::finish).transpose())
