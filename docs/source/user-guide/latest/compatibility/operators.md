@@ -37,12 +37,11 @@ infer the schema from.
 ## In-Memory Cache
 
 Comet can store cached relations (`df.cache()`, `CACHE TABLE`) in Arrow format and scan them
-natively. This is enabled by default from Spark 3.5 but not on Spark 3.4; see
-[In-Memory Cache](../in-memory-cache.md) for how to turn it off or on. Comet does not replace a
-`spark.sql.cache.serializer` that the application has already set. Relations whose schema Comet's
-Arrow writer does not support are cached in Spark's default format, and their scans fall back to
-Spark. Reads that feed Spark operators rather than Comet operators can be slower than Spark's
-cache.
+natively. This is experimental and disabled by default; see [In-Memory Cache](../in-memory-cache.md)
+for how to enable it. Comet does not replace a `spark.sql.cache.serializer` that the application
+has already set. Relations whose schema Comet's Arrow writer does not support are cached in
+Spark's default format, and their scans fall back to Spark. Reads that feed Spark operators rather
+than Comet operators can be slower than Spark's cache.
 
 With Kryo and `spark.kryo.registrationRequired=true`, Comet needs its Kryo registrator whether or
 not the cache is enabled; see [Kryo serialization](../installation.md#kryo-serialization).
@@ -74,6 +73,24 @@ element or field falls back to Spark under `ASC NULLS LAST` or `DESC NULLS FIRST
 key whose type cannot hold a null element or field, such as `array(coalesce(x, 0))`. Set
 `spark.comet.expression.SortOrder.allowIncompatible=true` to run the other null orders natively
 anyway.
+
+## Hash Aggregation
+
+Decimal `avg` with input precision 25 or more falls back to Spark, except over `DECIMAL(38, 38)`.
+The native average rescales the sum within 38 digits before dividing it by the count, so a large
+sum returns `NULL` where Spark returns the average. Under ANSI, an average that Spark rejects with
+`NUMERIC_VALUE_OUT_OF_RANGE` also returns `NULL`
+([#7007](https://github.com/apache/datafusion-comet/issues/7007)). Set
+`spark.comet.expression.Average.allowIncompatible=true` to run it natively anyway.
+
+From input precision 28, Spark keeps the running sum of a decimal `avg` at precision 38, which can
+overflow even when the average fits. In an aggregate without grouping keys, and in an
+`ObjectHashAggregateExec`, the native average does not handle that overflow the way Spark does, so
+such an `avg` falls back to Spark whatever `allowIncompatible` is set to
+([#5418](https://github.com/apache/datafusion-comet/issues/5418),
+[#5509](https://github.com/apache/datafusion-comet/issues/5509)). A grouped `HashAggregateExec`
+runs it natively, since both engines return `NULL` for the group, or raise under ANSI, once its
+running sum overflows.
 
 ## Sort Aggregation
 
@@ -120,6 +137,11 @@ incorrect result. When any single window expression in a `WindowExec` falls back
   functions.
 - `sum` or `avg` on `DECIMAL` with a sliding (non ever-expanding) frame, because the sliding path would wrap on
   overflow instead of returning Spark's `NULL`.
+- `avg` on `DECIMAL` with precision 25 or more. Up to precision 27 it runs natively with
+  `spark.comet.expression.Average.allowIncompatible=true`, as in an aggregate
+  ([#7007](https://github.com/apache/datafusion-comet/issues/7007)). From precision 28 the native average also
+  differs from Spark once the running sum overflows precision 38
+  ([#5418](https://github.com/apache/datafusion-comet/issues/5418)).
 - `RANGE` frame with an explicit offset when the `ORDER BY` column is `DATE` or `DECIMAL`
   ([#4834](https://github.com/apache/datafusion-comet/issues/4834)).
 - `RANGE` frame bounded by `CURRENT ROW` when an `ORDER BY` key is an array of arrays or structs, or a struct
