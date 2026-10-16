@@ -236,8 +236,7 @@ impl IcebergScanExec {
         let scan_metrics = scan_result.metrics().clone();
         let stream = scan_result.stream();
 
-        let spark_options = SparkParquetOptions::new(EvalMode::Legacy, "UTC");
-        let adapter_factory = SparkPhysicalExprAdapterFactory::new(spark_options, None);
+        let adapter_factory = iceberg_adapter_factory();
 
         let adapted_stream =
             stream.map_err(|e| DataFusionError::Execution(format!("Iceberg scan error: {}", e)));
@@ -576,6 +575,14 @@ impl fmt::Debug for RedactedProperties<'_> {
     }
 }
 
+fn iceberg_adapter_factory() -> SparkPhysicalExprAdapterFactory {
+    let mut options = SparkParquetOptions::new(EvalMode::Legacy, "UTC");
+    // Iceberg uses file parent validity; CometScanRule rejects unsupported nested evolution.
+    // Name-mapped leaf values remain tracked by #6790.
+    options.return_null_struct_if_all_fields_missing = false;
+    SparkPhysicalExprAdapterFactory::new(options, None)
+}
+
 /// Build projection expressions that adapt batches from a file schema to the target schema.
 ///
 /// The returned expressions can be cached and reused across multiple batches
@@ -645,6 +652,127 @@ mod tests {
 
     fn fs_file_io() -> FileIO {
         FileIOBuilder::new(Arc::new(OpenDalStorageFactory::Fs)).build()
+    }
+
+    #[test]
+    fn name_mapped_nested_projection_preserves_parent_validity() {
+        use arrow::array::{
+            cast::AsArray, Array, ArrayRef, Int32Array, ListArray, MapArray, StringArray,
+            StructArray,
+        };
+        use arrow::buffer::{NullBuffer, OffsetBuffer};
+        use arrow::datatypes::{DataType, Field, Schema as ArrowSchema};
+        use arrow::record_batch::{RecordBatch, RecordBatchOptions};
+        use datafusion_physical_expr_adapter::PhysicalExprAdapterFactory;
+
+        let elements = Arc::new(StructArray::new(
+            vec![
+                Field::new("old_x", DataType::Int32, true),
+                Field::new("z", DataType::Int32, true),
+            ]
+            .into(),
+            vec![
+                Arc::new(Int32Array::from(vec![1, 2, 3, 4])),
+                Arc::new(Int32Array::from(vec![9; 4])),
+            ],
+            Some(NullBuffer::from(vec![true, false, true, true])),
+        ));
+        let list = Arc::new(ListArray::new(
+            Arc::new(Field::new("element", elements.data_type().clone(), true)),
+            OffsetBuffer::new(vec![0, 2, 2, 3, 4].into()),
+            Arc::clone(&elements) as ArrayRef,
+            Some(NullBuffer::from(vec![true, true, false, true])),
+        ));
+        let values = Arc::new(StructArray::from(vec![(
+            Arc::new(Field::new("items", list.data_type().clone(), true)),
+            Arc::clone(&list) as ArrayRef,
+        )]));
+        let entries = StructArray::from(vec![
+            (
+                Arc::new(Field::new("key", DataType::Utf8, false)),
+                Arc::new(StringArray::from(vec!["a", "b", "c", "d"])) as arrow::array::ArrayRef,
+            ),
+            (
+                Arc::new(Field::new("value", values.data_type().clone(), true)),
+                Arc::clone(&values) as ArrayRef,
+            ),
+        ]);
+        let map = Arc::new(MapArray::new(
+            Arc::new(Field::new("entries", entries.data_type().clone(), false)),
+            OffsetBuffer::new(vec![0, 1, 2, 3, 4].into()),
+            entries,
+            None,
+            false,
+        ));
+        let map_type = |fields| {
+            DataType::Map(
+                Arc::new(Field::new(
+                    "entries",
+                    DataType::Struct(
+                        vec![
+                            Field::new("key", DataType::Utf8, false),
+                            Field::new(
+                                "value",
+                                DataType::Struct(
+                                    vec![Field::new(
+                                        "items",
+                                        DataType::List(Arc::new(Field::new(
+                                            "element",
+                                            DataType::Struct(fields),
+                                            true,
+                                        ))),
+                                        true,
+                                    )]
+                                    .into(),
+                                ),
+                                true,
+                            ),
+                        ]
+                        .into(),
+                    ),
+                    false,
+                )),
+                false,
+            )
+        };
+        // The reader can give its batch logical names while retaining physical names in arrays.
+        // A map forces the projection through Comet's cast rather than a generic narrowing cast.
+        let batch_schema = Arc::new(ArrowSchema::new(vec![Field::new(
+            "m",
+            map_type(
+                vec![
+                    Field::new("new_x", DataType::Int32, true),
+                    Field::new("z", DataType::Int32, true),
+                ]
+                .into(),
+            ),
+            true,
+        )]));
+        let target = Arc::new(ArrowSchema::new(vec![Field::new(
+            "m",
+            map_type(vec![Field::new("new_x", DataType::Int32, true)].into()),
+            true,
+        )]));
+        let batch = RecordBatch::try_new_with_options(
+            Arc::clone(&batch_schema),
+            vec![Arc::clone(&map) as ArrayRef],
+            &RecordBatchOptions::new().with_match_field_names(false),
+        )
+        .unwrap();
+        let adapter = super::iceberg_adapter_factory()
+            .create(Arc::clone(&target), batch_schema)
+            .unwrap();
+        let projection = super::build_projection_expressions(&target, &adapter).unwrap();
+        let result = super::adapt_batch_with_expressions(batch, &target, &projection).unwrap();
+        let result = result.column(0).as_map();
+        assert_eq!(result.nulls(), map.nulls());
+        assert_eq!(result.offsets(), map.offsets());
+        let result_values = result.values().as_struct();
+        assert_eq!(result_values.nulls(), values.nulls());
+        let result_list = result_values.column(0).as_list::<i32>();
+        assert_eq!(result_list.nulls(), list.nulls());
+        assert_eq!(result_list.offsets(), list.offsets());
+        assert_eq!(result_list.values().nulls(), elements.nulls());
     }
 
     #[test]

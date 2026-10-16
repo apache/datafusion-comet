@@ -205,15 +205,17 @@ fn parquet_convert_array(
     to_type: &DataType,
     parquet_options: &SparkParquetOptions,
 ) -> DataFusionResult<ArrayRef> {
-    parquet_convert_array_impl(array, to_type, parquet_options, None)
+    parquet_convert_array_impl(array, to_type, parquet_options, None).map(|(array, _)| array)
 }
 
+// The boolean records whether any requested leaf exists in the file schema, independent
+// of the values' nullness. Spark propagates missing children through nested containers.
 fn parquet_convert_array_impl(
     array: ArrayRef,
     to_type: &DataType,
     parquet_options: &SparkParquetOptions,
     parent_nulls: Option<&NullBuffer>,
-) -> DataFusionResult<ArrayRef> {
+) -> DataFusionResult<(ArrayRef, bool)> {
     use DataType::*;
     let from_type = array.data_type();
     // Only checked millis-to-micros casts consume ancestor visibility. In particular,
@@ -228,14 +230,14 @@ fn parquet_convert_array_impl(
     };
 
     // Try Comet specific handlers first, then arrow-rs cast if supported, and fail otherwise.
-    match (from_type, to_type) {
-        (Struct(_), Struct(_)) => Ok(parquet_convert_struct_to_struct(
+    let converted: DataFusionResult<ArrayRef> = match (from_type, to_type) {
+        (Struct(_), Struct(_)) => return parquet_convert_struct_to_struct(
             array.as_struct(),
             from_type,
             to_type,
             parquet_options,
             visible.as_ref(),
-        )?),
+        ),
         (
             List(_) | LargeList(_) | FixedSizeList(_, _) | ListView(_) | LargeListView(_),
             List(to_inner_type) | LargeList(to_inner_type) | FixedSizeList(to_inner_type, _)
@@ -247,12 +249,15 @@ fn parquet_convert_array_impl(
             } else {
                 None
             };
-            let cast_field = parquet_convert_array_impl(
+            let (cast_field, field_overlap) = parquet_convert_array_impl(
                 make_array(data.child_data()[0].clone()),
                 to_inner_type.data_type(),
                 parquet_options,
                 child_visibility.as_ref(),
             )?;
+            if !field_overlap && parquet_options.return_null_struct_if_all_fields_missing {
+                return Ok((new_null_array(to_type, array.len()), false));
+            }
             // Resolve element fields with Spark's rules before Arrow changes list layout.
             // Casting the original list directly can match missing struct fields by position.
             let resolved_type = match from_type {
@@ -268,11 +273,12 @@ fn parquet_convert_array_impl(
                 .data_type(resolved_type)
                 .child_data(vec![cast_field.to_data()])
                 .build()?);
-            if resolved.data_type() == to_type {
-                Ok(resolved)
+            let output = if resolved.data_type() == to_type {
+                resolved
             } else {
-                Ok(cast_with_options(&resolved, to_type, &PARQUET_OPTIONS)?)
-            }
+                cast_with_options(&resolved, to_type, &PARQUET_OPTIONS)?
+            };
+            return Ok((output, field_overlap));
         }
         (
             Timestamp(TimeUnit::Millisecond, _),
@@ -306,7 +312,7 @@ fn parquet_convert_array_impl(
             ))
         }
         (Map(_, ordered_from), Map(_, ordered_to)) if ordered_from == ordered_to =>
-            parquet_convert_map_to_map(array.as_map(), to_type, parquet_options, *ordered_to, visible.as_ref(), checked_timestamp_overflow)
+            return parquet_convert_map_to_map(array.as_map(), to_type, parquet_options, *ordered_to, visible.as_ref(), checked_timestamp_overflow)
             ,
         // Iceberg stores UUIDs as 16-byte fixed binary but Spark expects string representation.
         // Arrow doesn't support casting FixedSizeBinary to Utf8, so we handle it manually.
@@ -341,7 +347,8 @@ fn parquet_convert_array_impl(
         _ => Err(DataFusionError::Execution(format!(
             "Unsupported Parquet type conversion from {from_type} to {to_type}"
         ))),
-    }
+    };
+    converted.map(|array| (array, true))
 }
 
 // Struct fields are matched by name/field ID later. This type-only check is conservative
@@ -541,7 +548,7 @@ fn parquet_convert_struct_to_struct(
     to_type: &DataType,
     parquet_options: &SparkParquetOptions,
     parent_nulls: Option<&NullBuffer>,
-) -> DataFusionResult<ArrayRef> {
+) -> DataFusionResult<(ArrayRef, bool)> {
     match (from_type, to_type) {
         (DataType::Struct(from_fields), DataType::Struct(to_fields)) => {
             let from_indices = match_struct_fields(from_fields, to_fields, parquet_options)?;
@@ -550,13 +557,14 @@ fn parquet_convert_struct_to_struct(
             let mut cast_fields: Vec<ArrayRef> = Vec::with_capacity(to_fields.len());
             for (to_field, from_index) in to_fields.iter().zip(from_indices) {
                 if let Some(from_index) = from_index {
-                    cast_fields.push(parquet_convert_array_impl(
+                    let (converted, child_overlap) = parquet_convert_array_impl(
                         Arc::clone(array.column(from_index)),
                         to_field.data_type(),
                         parquet_options,
                         parent_nulls,
-                    )?);
-                    field_overlap = true;
+                    )?;
+                    cast_fields.push(converted);
+                    field_overlap |= child_overlap;
                 } else {
                     cast_fields.push(new_null_array(to_field.data_type(), array.len()));
                 }
@@ -575,11 +583,10 @@ fn parquet_convert_struct_to_struct(
                     array.nulls().cloned()
                 };
 
-            Ok(Arc::new(StructArray::try_new(
-                to_fields.clone(),
-                cast_fields,
-                nulls,
-            )?))
+            Ok((
+                Arc::new(StructArray::try_new(to_fields.clone(), cast_fields, nulls)?),
+                field_overlap,
+            ))
         }
         _ => unreachable!(),
     }
@@ -594,7 +601,7 @@ fn parquet_convert_map_to_map(
     to_ordered: bool,
     parent_nulls: Option<&NullBuffer>,
     checked_timestamp_overflow: bool,
-) -> Result<ArrayRef, DataFusionError> {
+) -> Result<(ArrayRef, bool), DataFusionError> {
     match to_data_type {
         DataType::Map(entries_field, _) => {
             let key_field = key_field(entries_field).ok_or(DataFusionError::Internal(
@@ -609,30 +616,37 @@ fn parquet_convert_map_to_map(
             } else {
                 None
             };
-            let key_array = parquet_convert_array_impl(
+            let (key_array, key_overlap) = parquet_convert_array_impl(
                 Arc::clone(from.keys()),
                 key_field.data_type(),
                 parquet_options,
                 child_visibility.as_ref(),
             )?;
-            let value_array = parquet_convert_array_impl(
+            let (value_array, value_overlap) = parquet_convert_array_impl(
                 Arc::clone(from.values()),
                 value_field.data_type(),
                 parquet_options,
                 child_visibility.as_ref(),
             )?;
+            let field_overlap = key_overlap || value_overlap;
+            if !field_overlap && parquet_options.return_null_struct_if_all_fields_missing {
+                return Ok((new_null_array(to_data_type, from.len()), false));
+            }
 
-            Ok(Arc::new(MapArray::try_new(
-                Arc::<arrow::datatypes::Field>::clone(entries_field),
-                from.offsets().clone(),
-                StructArray::try_new(
-                    Fields::from(vec![key_field, value_field]),
-                    vec![key_array, value_array],
-                    from.entries().nulls().cloned(),
-                )?,
-                from.nulls().cloned(),
-                to_ordered,
-            )?))
+            Ok((
+                Arc::new(MapArray::try_new(
+                    Arc::<arrow::datatypes::Field>::clone(entries_field),
+                    from.offsets().clone(),
+                    StructArray::try_new(
+                        Fields::from(vec![key_field, value_field]),
+                        vec![key_array, value_array],
+                        from.entries().nulls().cloned(),
+                    )?,
+                    from.nulls().cloned(),
+                    to_ordered,
+                )?),
+                field_overlap,
+            ))
         }
         dt => Err(DataFusionError::Internal(format!(
             "Expected MapType. Got: {dt}"
@@ -1917,6 +1931,193 @@ mod tests {
                         panic!("test failed")
                     };
                     assert_eq!(e.to_string(), res_e.to_string())
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn test_missing_nested_fields_nullness() {
+        use super::{parquet_convert_array, SparkParquetOptions};
+        use arrow::array::{
+            new_null_array, Array, ArrayRef, ListArray, MapArray, StringArray, StructArray,
+        };
+        use arrow::buffer::{NullBuffer, OffsetBuffer};
+        use arrow::datatypes::{DataType, Field};
+        use datafusion_comet_spark_expr::EvalMode;
+        use std::sync::Arc;
+
+        // A present field remains present even when every value happens to be NULL.
+        let values: ArrayRef = Arc::new(StructArray::from(vec![(
+            Arc::new(Field::new("x", DataType::Int32, true)),
+            new_null_array(&DataType::Int32, 3),
+        )]));
+        let missing = DataType::Struct(vec![Field::new("missing", DataType::Int32, true)].into());
+        let element = Arc::new(Field::new("element", values.data_type().clone(), true));
+        let missing_element = Arc::new(Field::new("element", missing.clone(), true));
+        let list = ListArray::new(
+            Arc::clone(&element),
+            OffsetBuffer::new(vec![0, 1, 2, 3].into()),
+            Arc::clone(&values),
+            Some(NullBuffer::from(vec![true, true, false])),
+        );
+        let representations = |field: &Arc<Field>| {
+            [
+                DataType::List(Arc::clone(field)),
+                DataType::LargeList(Arc::clone(field)),
+                DataType::FixedSizeList(Arc::clone(field), 1),
+                DataType::ListView(Arc::clone(field)),
+                DataType::LargeListView(Arc::clone(field)),
+            ]
+        };
+        let mut cases = Vec::new();
+        for (source, target) in representations(&element)
+            .into_iter()
+            .zip(representations(&missing_element))
+        {
+            cases.push((arrow::compute::cast(&list, &source).unwrap(), target, true));
+        }
+
+        let list: ArrayRef = Arc::new(list);
+        for (child, target_child) in [
+            (Arc::clone(&values), missing.clone()),
+            (
+                Arc::clone(&list),
+                DataType::List(Arc::clone(&missing_element)),
+            ),
+        ] {
+            let parent: ArrayRef = Arc::new(StructArray::from(vec![(
+                Arc::new(Field::new("child", child.data_type().clone(), true)),
+                child,
+            )]));
+            cases.push((
+                parent,
+                DataType::Struct(vec![Field::new("child", target_child, true)].into()),
+                true,
+            ));
+        }
+
+        let entries = StructArray::from(vec![
+            (
+                Arc::new(Field::new("key", DataType::Utf8, false)),
+                Arc::new(StringArray::from(vec!["a", "b", "c"])) as ArrayRef,
+            ),
+            (
+                Arc::new(Field::new("value", values.data_type().clone(), true)),
+                Arc::clone(&values),
+            ),
+        ]);
+        let map: ArrayRef = Arc::new(MapArray::new(
+            Arc::new(Field::new("entries", entries.data_type().clone(), false)),
+            OffsetBuffer::new(vec![0, 1, 2, 3].into()),
+            entries,
+            None,
+            false,
+        ));
+        let target_map = DataType::Map(
+            Arc::new(Field::new(
+                "entries",
+                DataType::Struct(
+                    vec![
+                        Field::new("key", DataType::Utf8, false),
+                        Field::new("value", missing.clone(), true),
+                    ]
+                    .into(),
+                ),
+                false,
+            )),
+            false,
+        );
+        // A map retains a matching leaf through its keys, even if its value fields are absent.
+        cases.push((Arc::clone(&map), target_map.clone(), false));
+        let missing_entries = StructArray::from(vec![
+            (
+                Arc::new(Field::new("key", values.data_type().clone(), false)),
+                Arc::clone(&values),
+            ),
+            (
+                Arc::new(Field::new("value", values.data_type().clone(), true)),
+                Arc::clone(&values),
+            ),
+        ]);
+        let missing_map: ArrayRef = Arc::new(MapArray::new(
+            Arc::new(Field::new(
+                "entries",
+                missing_entries.data_type().clone(),
+                false,
+            )),
+            OffsetBuffer::new(vec![0, 1, 2, 3].into()),
+            missing_entries,
+            None,
+            false,
+        ));
+        cases.push((
+            missing_map,
+            DataType::Map(
+                Arc::new(Field::new(
+                    "entries",
+                    DataType::Struct(
+                        vec![
+                            Field::new("key", missing.clone(), false),
+                            Field::new("value", missing, true),
+                        ]
+                        .into(),
+                    ),
+                    false,
+                )),
+                false,
+            ),
+            true,
+        ));
+        let partial: ArrayRef = Arc::new(StructArray::from(vec![
+            (
+                Arc::new(Field::new("missing", list.data_type().clone(), true)),
+                list,
+            ),
+            (
+                Arc::new(Field::new("kept", map.data_type().clone(), true)),
+                map,
+            ),
+        ]));
+        cases.push((
+            partial,
+            DataType::Struct(
+                vec![
+                    Field::new("missing", DataType::List(missing_element), true),
+                    Field::new("kept", target_map, true),
+                ]
+                .into(),
+            ),
+            false,
+        ));
+        cases.push((Arc::clone(&values), values.data_type().clone(), false));
+
+        for legacy in [true, false] {
+            let mut options = SparkParquetOptions::new(EvalMode::Legacy, "UTC");
+            options.case_sensitive = true;
+            options.return_null_struct_if_all_fields_missing = legacy;
+            for (source, target, all_missing) in &cases {
+                for input in [Arc::clone(source), source.slice(1, 2), source.slice(0, 0)] {
+                    let result =
+                        parquet_convert_array(Arc::clone(&input), target, &options).unwrap();
+                    assert_eq!(result.data_type(), target);
+                    assert_eq!(result.len(), input.len());
+                    let expected_nulls = if legacy && *all_missing {
+                        input.len()
+                    } else {
+                        input.null_count()
+                    };
+                    assert_eq!(
+                        result.null_count(),
+                        expected_nulls,
+                        "{target:?}, legacy={legacy}"
+                    );
+                    if !legacy || !all_missing {
+                        for row in 0..input.len() {
+                            assert_eq!(result.is_null(row), input.is_null(row));
+                        }
+                        assert_eq!(result.to_data().buffers(), input.to_data().buffers());
+                    }
                 }
             }
         }
