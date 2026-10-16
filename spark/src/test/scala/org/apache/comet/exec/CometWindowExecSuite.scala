@@ -1647,10 +1647,8 @@ class CometWindowExecSuite extends CometTestBase {
 
   // ---------------------------------------------------------------------------
   // Tests for issue #4834: RANGE frame with explicit PRECEDING/FOLLOWING offset
-  // on DATE ORDER BY. Today Comet falls back to Spark; these tests are pinned
-  // with `checkSparkAnswerAndOperator` (assertCometNative = true) so they fail
-  // until the native side handles Date32 + Interval arithmetic and the Scala
-  // fallback in CometWindowExec is removed.
+  // on DATE ORDER BY. The planner wraps the offset as IntervalDayTime so these
+  // run natively; `checkSparkAnswerAndOperator` pins that.
   // ---------------------------------------------------------------------------
 
   private def writeDateWindowFixture(dir: java.io.File): Unit = {
@@ -1778,9 +1776,8 @@ class CometWindowExecSuite extends CometTestBase {
   }
 
   test("window: RANGE BETWEEN UNBOUNDED PRECEDING AND CURRENT ROW with DATE ORDER BY") {
-    // Regression baseline: no explicit offset, so the current fallback in
-    // CometWindowExec does NOT trigger and this already runs natively. Keep
-    // this passing throughout the fix.
+    // Regression baseline: no explicit offset, so this ran natively even
+    // before DATE offsets did.
     withTempDir { dir =>
       writeDateWindowFixture(dir)
       spark.read.parquet(dir.toString).createOrReplaceTempView("window_test")
@@ -1791,6 +1788,68 @@ class CometWindowExecSuite extends CometTestBase {
         FROM window_test
       """)
       checkSparkAnswerAndOperator(df)
+    }
+  }
+
+  test("window: RANGE offset on DATE ORDER BY that wraps an Int falls back") {
+    // Spark adds the offset to the date as a plain Int, so 2147483647 FOLLOWING
+    // wraps below the current row and every frame is empty, while DataFusion
+    // would treat the overflowing bound as the end of the partition.
+    // https://github.com/apache/datafusion-comet/issues/5022
+    withTempDir { dir =>
+      Seq("2024-01-01", "2024-01-02", "2024-01-05")
+        .map(java.sql.Date.valueOf)
+        .toDF("d")
+        .repartition(1)
+        .write
+        .mode("overwrite")
+        .parquet(dir.toString)
+      spark.read.parquet(dir.toString).createOrReplaceTempView("date_wrap")
+      for (order <- Seq("ASC", "DESC")) {
+        val df = sql(s"""
+          SELECT d, COUNT(*) OVER (ORDER BY d $order
+                                   RANGE BETWEEN CURRENT ROW AND 2147483647 FOLLOWING) AS cnt
+          FROM date_wrap
+        """)
+        val (_, cometPlan) = checkSparkAnswerAndFallbackReason(
+          df,
+          "RANGE frame on DATE ORDER BY with an offset above 2144550751 days is not supported")
+        assert(collect(cometPlan) { case w: CometWindowExec => w }.isEmpty, cometPlan)
+        // Descending, the bound is `d - offset`, which does not wrap for these dates.
+        if (order == "ASC") {
+          checkAnswer(df.select("cnt"), Seq(Row(0L), Row(0L), Row(0L)))
+        }
+      }
+    }
+  }
+
+  test("window: largest RANGE offset on DATE ORDER BY that cannot wrap runs natively") {
+    // 2144550751 + the day number of 9999-12-31 is Int.MaxValue, so no date in
+    // Spark's supported range wraps. Past chrono's date range the native bound
+    // becomes the partition edge, which agrees with Spark's unwrapped bound
+    // lying beyond every row.
+    withTempDir { dir =>
+      Seq("0001-01-01", "1970-01-01", "2024-01-05", "9999-12-31")
+        .map(java.sql.Date.valueOf)
+        .toDF("d")
+        .repartition(1)
+        .write
+        .mode("overwrite")
+        .parquet(dir.toString)
+      spark.read.parquet(dir.toString).createOrReplaceTempView("date_edge")
+      for {
+        order <- Seq("ASC", "DESC")
+        frame <- Seq(
+          "RANGE BETWEEN 2144550751 PRECEDING AND CURRENT ROW",
+          "RANGE BETWEEN CURRENT ROW AND 2144550751 FOLLOWING",
+          "RANGE BETWEEN 2144550751 PRECEDING AND 2144550751 FOLLOWING")
+      } {
+        val df = sql(s"""
+          SELECT d, COUNT(*) OVER (ORDER BY d $order $frame) AS cnt
+          FROM date_edge
+        """)
+        checkSparkAnswerAndOperator(df)
+      }
     }
   }
 }
