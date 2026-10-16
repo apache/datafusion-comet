@@ -117,7 +117,7 @@ impl ChunkedPair {
             (tracking, matched)
         });
         Ok(Self {
-            build: build.read(build_reader)?,
+            build: build.read_compacted(build_reader)?,
             pending: None,
             probe,
             tracking,

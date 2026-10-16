@@ -151,18 +151,25 @@ impl BuildBuckets {
             .map(|(bucket, _)| bucket)
     }
 
-    /// Writes a resident bucket to `writer`, which then takes the bucket's later rows. Returns
-    /// the bytes the bucket held.
-    fn destage(&mut self, bucket: usize, mut writer: SpillFileWriter) -> Result<usize> {
-        let BuildBucket::Resident { batches, bytes } = &self.0[bucket] else {
+    /// Writes a resident bucket to `writer`, which then takes the bucket's later rows. The
+    /// bucket's memory leaves `held` before its rows are written, so that the writer can hold the
+    /// last of them until they make a full batch.
+    fn destage(
+        &mut self,
+        bucket: usize,
+        mut writer: SpillFileWriter,
+        held: &MemoryReservation,
+    ) -> Result<()> {
+        let BuildBucket::Resident { batches, bytes } = &mut self.0[bucket] else {
             return internal_err!("bucket {bucket} is already spilled");
         };
+        let batches = mem::take(batches);
+        held.shrink(mem::take(bytes));
         for batch in batches {
             writer.append(batch)?;
         }
-        let freed = *bytes;
         self.0[bucket] = BuildBucket::Spilled(Box::new(writer));
-        Ok(freed)
+        Ok(())
     }
 
     fn resident_batches(&self) -> Vec<RecordBatch> {
@@ -222,6 +229,8 @@ pub(super) struct Driver {
     headroom: MemoryReservation,
     /// The chunked fallback's record of matched probe rows.
     bitmap: MemoryReservation,
+    /// Rows that spill file writers hold until they make a full batch.
+    pending: Arc<MemoryReservation>,
     phase: Phase,
     pairs: Vec<Pair>,
 }
@@ -270,6 +279,8 @@ impl Driver {
             },
         )?;
         let compression = context.session_config().spill_compression();
+        let batch_rows = context.session_config().batch_size();
+        let pending = Arc::new(held.new_empty());
         let spill_metrics = SpillMetrics::new(&plan_metrics, partition);
         let build_files = SpillWriterFactory::new(
             Arc::clone(&env),
@@ -277,6 +288,8 @@ impl Driver {
             compression,
             spill_metrics.clone(),
             "HashJoinInput build spill",
+            batch_rows,
+            Arc::clone(&pending),
         );
         let probe_files = SpillWriterFactory::new(
             Arc::clone(&env),
@@ -284,6 +297,8 @@ impl Driver {
             compression,
             spill_metrics.clone(),
             "HashJoinInput probe spill",
+            batch_rows,
+            Arc::clone(&pending),
         );
         let build_reader =
             SpillManager::new(Arc::clone(&env), spill_metrics.clone(), spec.build_schema());
@@ -309,6 +324,7 @@ impl Driver {
             concat: held.new_empty(),
             headroom: held.new_empty(),
             bitmap: held.new_empty(),
+            pending,
             held,
             phase: Phase::Start(build, probe),
             pairs: Vec::new(),
@@ -478,7 +494,7 @@ impl Driver {
         let size = get_record_batch_memory_size(&part);
         loop {
             match &mut buckets.0[bucket] {
-                BuildBucket::Spilled(writer) => return writer.append(&part),
+                BuildBucket::Spilled(writer) => return writer.append(part),
                 BuildBucket::Resident { batches, bytes } => {
                     if self.reserve_held(size)? {
                         batches.push(part);
@@ -496,8 +512,7 @@ impl Driver {
     fn destage(&mut self, buckets: &mut BuildBuckets, bucket: usize) -> Result<()> {
         // Memory peaks when it runs out.
         self.build_mem_used.set_max(self.reserved());
-        let freed = buckets.destage(bucket, self.build_files.create()?)?;
-        self.held.shrink(freed);
+        buckets.destage(bucket, self.build_files.create()?, &self.held)?;
         self.spilled_buckets.add(1);
         Ok(())
     }
@@ -518,8 +533,15 @@ impl Driver {
         let memory = self.estimator.for_rows(build_rows, build_bytes)?;
         if self.reserve_held(build_bytes)? {
             if self.reserve_inner(memory, read_ahead)? {
-                let build = self.read(&pair.build, &self.build_reader, self.spec.build_schema())?;
-                let probe = self.read(&pair.probe, &self.probe_reader, self.spec.probe_schema())?;
+                // The build side is held whole, so it is read back compacted.
+                let build = match &pair.build {
+                    Some(file) => file.read_compacted(&self.build_reader)?,
+                    None => batches_stream(self.spec.build_schema(), vec![]),
+                };
+                let probe = match &pair.probe {
+                    Some(file) => file.read(&self.probe_reader)?,
+                    None => batches_stream(self.spec.probe_schema(), vec![]),
+                };
                 let join = self.inner_join(build, probe)?;
                 return self.start_inner(join, build_bytes + memory.reserved, After::Join);
             }
@@ -529,18 +551,6 @@ impl Driver {
             return self.split_pair(pair).await;
         }
         self.chunk_pair(pair).await
-    }
-
-    fn read(
-        &self,
-        file: &Option<SpilledFile>,
-        reader: &SpillManager,
-        schema: SchemaRef,
-    ) -> Result<SendableRecordBatchStream> {
-        match file {
-            Some(file) => file.read(reader),
-            None => Ok(batches_stream(schema, vec![])),
-        }
     }
 
     /// Splits a spilled pair on the next bits of its rows' hash.
@@ -609,7 +619,7 @@ impl Driver {
                     Some(writer) => writer,
                     None => files.create()?,
                 };
-                writers[bucket].insert(writer).append(&part)?;
+                writers[bucket].insert(writer).append(part)?;
             }
         }
         self.inner.free();
@@ -764,6 +774,7 @@ impl Driver {
             + self.concat.size()
             + self.headroom.size()
             + self.bitmap.size()
+            + self.pending.size()
     }
 
     /// Reserves build batches, within `max_build_buffer_bytes` when it is set.
@@ -791,10 +802,11 @@ impl Driver {
         Ok(true)
     }
 
-    /// Keeps the headroom at twice `batch`'s size: one copy while its rows are routed, and one
-    /// while a part of it is encoded for a spill file.
+    /// Keeps the headroom at three times `batch`'s size: one copy while its rows are routed, and,
+    /// when a spill file writer writes the parts it holds, one while they are concatenated and
+    /// one while the result is encoded.
     fn reserve_headroom(&self, batch: &RecordBatch) -> Result<bool> {
-        let wanted = get_record_batch_memory_size(batch).saturating_mul(2);
+        let wanted = get_record_batch_memory_size(batch).saturating_mul(3);
         if self.headroom.size() >= wanted {
             return Ok(true);
         }

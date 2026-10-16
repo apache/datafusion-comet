@@ -383,7 +383,8 @@ async fn bucketed() -> Result<()> {
     Ok(())
 }
 
-/// Every bucket spills and has to be split again before it fits.
+/// Every bucket spills and has to be split again before it fits: a bucket holds about 10 KB of
+/// build rows, over the limit, and a bucket split again about 600 bytes.
 #[tokio::test]
 async fn split_again() -> Result<()> {
     let build = table(5000, UNIFORM, 5);
@@ -403,7 +404,7 @@ async fn split_again() -> Result<()> {
             join_type,
             true,
             &["k"],
-            limit(12 * 1024),
+            limit(6 * 1024),
             None,
         )
         .await?;

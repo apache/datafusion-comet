@@ -86,7 +86,7 @@ impl ProbeRouter {
                 Some(writer) => writer,
                 None => self.files.create()?,
             };
-            self.writers[bucket].insert(writer).append(&part)?;
+            self.writers[bucket].insert(writer).append(part)?;
         }
         if !keep_others || others.is_empty() {
             return Ok(None);

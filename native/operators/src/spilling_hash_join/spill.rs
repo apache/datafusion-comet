@@ -21,11 +21,18 @@
 //! (`IPCStreamWriter`), so that `SpillManager::read_spill_as_stream` reads them back. DataFusion's
 //! writer, `InProgressSpillFile`, cannot be named outside DataFusion, and the operator needs one
 //! open writer per spilled bucket.
+//!
+//! Routing splits each input batch into one part per bucket, a sixteenth of a batch each, and a
+//! split bucket's parts are split again. Written as they come, every part would cost an IPC
+//! message, a compression frame for each of its buffers, and on reading back, a decode and a
+//! probe batch of the inner join. So a writer holds the parts it is given until they make a full
+//! batch, and writes them as one.
 
 use std::io::{BufWriter, Write};
 use std::sync::Arc;
 
-use arrow::array::{layout, Array, ArrayRef, AsArray, BufferSpec};
+use arrow::array::{layout, Array, ArrayRef, AsArray, BufferSpec, UInt32Array};
+use arrow::compute::{concat_batches, take};
 use arrow::datatypes::{DataType, Schema, SchemaRef};
 use arrow::ipc::writer::{IpcWriteOptions, StreamWriter};
 use arrow::ipc::{CompressionType, MetadataVersion};
@@ -33,36 +40,64 @@ use arrow::record_batch::RecordBatch;
 use datafusion::common::config::SpillCompression;
 use datafusion::common::utils::memory::get_record_batch_memory_size;
 use datafusion::common::{DataFusionError, Result};
+use datafusion::execution::memory_pool::MemoryReservation;
 use datafusion::execution::runtime_env::RuntimeEnv;
 use datafusion::execution::spill_file::{SpillFile, SpillWriter};
 use datafusion::physical_plan::metrics::SpillMetrics;
 use datafusion::physical_plan::spill::SpillManager;
+use datafusion::physical_plan::stream::RecordBatchStreamAdapter;
 use datafusion::physical_plan::SendableRecordBatchStream;
+use futures::StreamExt;
+
+use super::memory::try_reserve;
+
+/// The most memory a writer holds in parts not yet written. With 16 buckets per side, this caps
+/// what the parts of one side hold at 4 MiB, and a batch of narrow rows still reaches the target
+/// row count.
+const MAX_PENDING_BYTES: usize = 256 * 1024;
 
 /// A finished spill file and what it holds.
 #[derive(Clone)]
 pub(super) struct SpilledFile {
     file: Arc<dyn SpillFile>,
     pub(super) rows: usize,
-    /// The memory the batches hold once read back, as `HashJoinExec` counts them, which can be
-    /// more than they held when written. A batch read back from an uncompressed file shares the
-    /// buffer its message was read into, metadata included, so the file's size bounds it. A batch
-    /// read back from a compressed file holds its decompressed buffers, and also the buffer of its
-    /// compressed message, whose small buffers are stored uncompressed and read without a copy.
+    /// The memory the batches held when written, which is what they hold once read back by
+    /// [`Self::read_compacted`], as `HashJoinExec` counts them, up to the rounding of buffers.
     pub(super) bytes: usize,
-    /// The in-memory size of the largest batch written, which bounds what reading it back holds.
+    /// The in-memory size of the largest batch written.
     pub(super) max_batch_bytes: usize,
 }
 
 impl SpilledFile {
     /// Reads the file back. `SpillManager` reads ahead by two batches.
+    ///
+    /// A batch read back can hold up to twice the memory it held when written. DataFusion reads a
+    /// spill file in chunks of 128 KiB, and arrow's `StreamDecoder` assembles a message that spans
+    /// chunks in a buffer that grows by doubling, then slices the batch's buffers from it. A batch
+    /// read from a compressed file holds its decompressed buffers, and also that buffer if any
+    /// of its buffers were stored uncompressed.
     pub(super) fn read(&self, manager: &SpillManager) -> Result<SendableRecordBatchStream> {
         manager.read_spill_as_stream(Arc::clone(&self.file), Some(self.max_batch_bytes))
     }
 
-    /// The memory reading the file back holds besides the batch being processed.
+    /// Reads the file back with each batch copied into buffers of its own size, so that the
+    /// batches hold [`Self::bytes`] together. For a build side, which is held whole.
+    pub(super) fn read_compacted(
+        &self,
+        manager: &SpillManager,
+    ) -> Result<SendableRecordBatchStream> {
+        let stream = self.read(manager)?;
+        let schema = stream.schema();
+        Ok(Box::pin(RecordBatchStreamAdapter::new(
+            schema,
+            stream.map(|batch| batch.and_then(|batch| compact(&batch))),
+        )))
+    }
+
+    /// The memory reading the file back holds besides the batch being processed: two batches
+    /// read ahead, each holding up to twice what it held when written.
     pub(super) fn read_ahead_bytes(&self) -> usize {
-        self.max_batch_bytes.saturating_mul(2)
+        self.max_batch_bytes.saturating_mul(4)
     }
 }
 
@@ -74,6 +109,10 @@ pub(super) struct SpillWriterFactory {
     compression: SpillCompression,
     metrics: SpillMetrics,
     description: &'static str,
+    /// The rows of a batch written while memory allows.
+    batch_rows: usize,
+    /// The memory of the parts that the writers hold, shared by every writer of the join.
+    pending: Arc<MemoryReservation>,
 }
 
 impl SpillWriterFactory {
@@ -83,6 +122,8 @@ impl SpillWriterFactory {
         compression: SpillCompression,
         metrics: SpillMetrics,
         description: &'static str,
+        batch_rows: usize,
+        pending: Arc<MemoryReservation>,
     ) -> Self {
         Self {
             env,
@@ -90,6 +131,8 @@ impl SpillWriterFactory {
             compression,
             metrics,
             description,
+            batch_rows: batch_rows.max(1),
+            pending,
         }
     }
 
@@ -107,12 +150,19 @@ impl SpillWriterFactory {
         Ok(SpillFileWriter {
             file,
             writer,
+            schema: Arc::clone(&self.schema),
+            parts: Parts {
+                batches: Vec::new(),
+                rows: 0,
+                bytes: 0,
+                reservation: Arc::clone(&self.pending),
+            },
+            batch_rows: self.batch_rows,
             rows: 0,
             batches: 0,
             bytes: 0,
             max_batch_bytes: 0,
             metrics: self.metrics.clone(),
-            compressed: Option::<CompressionType>::from(self.compression).is_some(),
         })
     }
 }
@@ -124,19 +174,53 @@ pub(super) struct SpillFileWriter {
     /// is released, so bytes flushed after that would stay counted.
     writer: StreamWriter<BufWriter<CountingWriter>>,
     file: Arc<dyn SpillFile>,
+    schema: SchemaRef,
+    parts: Parts,
+    batch_rows: usize,
     rows: usize,
     batches: usize,
     bytes: usize,
     max_batch_bytes: usize,
     metrics: SpillMetrics,
-    compressed: bool,
 }
 
 impl SpillFileWriter {
-    pub(super) fn append(&mut self, batch: &RecordBatch) -> Result<()> {
-        if batch.num_rows() == 0 {
+    /// Appends `batch`. It is held with the parts before it until they make a full batch, if the
+    /// pool grants the memory, and is otherwise written with them right away.
+    pub(super) fn append(&mut self, batch: RecordBatch) -> Result<()> {
+        let rows = batch.num_rows();
+        if rows == 0 {
             return Ok(());
         }
+        if rows >= self.batch_rows {
+            self.flush()?;
+            return self.write(&batch);
+        }
+        let size = get_record_batch_memory_size(&batch);
+        let full = self.parts.rows + rows >= self.batch_rows
+            || self.parts.bytes + size >= MAX_PENDING_BYTES;
+        if !full && try_reserve(&self.parts.reservation, size)? {
+            self.parts.batches.push(batch);
+            self.parts.rows += rows;
+            self.parts.bytes += size;
+            return Ok(());
+        }
+        self.parts.batches.push(batch);
+        self.flush()
+    }
+
+    /// Writes the parts held as one batch.
+    fn flush(&mut self) -> Result<()> {
+        let batch = match self.parts.batches.len() {
+            0 => return Ok(()),
+            1 => self.parts.batches.pop().expect("one part"),
+            _ => concat_batches(&self.schema, &self.parts.batches)?,
+        };
+        self.parts.clear();
+        self.write(&batch)
+    }
+
+    fn write(&mut self, batch: &RecordBatch) -> Result<()> {
         let batch = gc_view_arrays(batch)?;
         let size = get_record_batch_memory_size(&batch);
         self.writer.write(&batch)?;
@@ -149,6 +233,7 @@ impl SpillFileWriter {
     }
 
     pub(super) fn finish(mut self) -> Result<SpilledFile> {
+        self.flush()?;
         self.writer.finish()?;
         let mut sink = self
             .writer
@@ -157,18 +242,44 @@ impl SpillFileWriter {
             .map_err(|e| DataFusionError::IoError(e.into_error()))?;
         sink.inner.finish()?;
         self.metrics.spilled_bytes.add(sink.written);
-        let rounding = self.batches.saturating_mul(64);
-        let read_back = if self.compressed {
-            self.bytes.saturating_add(sink.written)
-        } else {
-            self.bytes.max(sink.written)
-        };
+        // A buffer copied when read back can be rounded up differently than the one written.
+        let rounding = self
+            .batches
+            .saturating_mul(buffer_count(&self.schema))
+            .saturating_mul(64);
         Ok(SpilledFile {
             file: self.file,
             rows: self.rows,
-            bytes: read_back.saturating_add(rounding),
+            bytes: self.bytes.saturating_add(rounding),
             max_batch_bytes: self.max_batch_bytes,
         })
+    }
+}
+
+/// The parts a writer holds until they make a full batch: written as one batch once they hold
+/// `batch_rows` rows or `MAX_PENDING_BYTES` bytes, or when memory for the next part is refused.
+struct Parts {
+    batches: Vec<RecordBatch>,
+    rows: usize,
+    /// The bytes of `batches` reserved in `reservation`, which a part written as soon as it came
+    /// does not count in.
+    bytes: usize,
+    reservation: Arc<MemoryReservation>,
+}
+
+impl Parts {
+    fn clear(&mut self) {
+        self.batches.clear();
+        self.reservation.shrink(self.bytes);
+        self.rows = 0;
+        self.bytes = 0;
+    }
+}
+
+impl Drop for Parts {
+    /// A writer dropped unfinished, after an error or by a cancelled task, releases its parts.
+    fn drop(&mut self) {
+        self.reservation.shrink(self.bytes);
     }
 }
 
@@ -190,6 +301,36 @@ impl Write for CountingWriter {
     }
 }
 
+/// The buffers of a batch of `schema`, nulls included, and those of nested and dictionary values.
+fn buffer_count(schema: &Schema) -> usize {
+    fn of(data_type: &DataType) -> usize {
+        let own = layout(data_type).buffers.len() + 1;
+        let nested = match data_type {
+            DataType::Dictionary(_, values) => of(values),
+            DataType::List(field)
+            | DataType::LargeList(field)
+            | DataType::ListView(field)
+            | DataType::LargeListView(field)
+            | DataType::FixedSizeList(field, _)
+            | DataType::Map(field, _) => of(field.data_type()),
+            DataType::Struct(fields) => fields.iter().map(|field| of(field.data_type())).sum(),
+            DataType::Union(fields, _) => {
+                fields.iter().map(|(_, field)| of(field.data_type())).sum()
+            }
+            DataType::RunEndEncoded(run_ends, values) => {
+                of(run_ends.data_type()) + of(values.data_type())
+            }
+            _ => 0,
+        };
+        own + nested
+    }
+    schema
+        .fields()
+        .iter()
+        .map(|field| of(field.data_type()))
+        .sum()
+}
+
 /// `get_max_alignment_for_schema`: the largest buffer alignment any column needs, so that reading
 /// the file back does not copy buffers to align them.
 fn ipc_alignment(schema: &Schema) -> usize {
@@ -203,6 +344,34 @@ fn ipc_alignment(schema: &Schema) -> usize {
             _ => minimum,
         })
         .fold(minimum, usize::max)
+}
+
+/// A copy of `batch` in buffers of its own size, which hold what the batch held when it was
+/// written.
+fn compact(batch: &RecordBatch) -> Result<RecordBatch> {
+    let columns = batch
+        .columns()
+        .iter()
+        .map(compact_array)
+        .collect::<Result<Vec<_>>>()?;
+    Ok(RecordBatch::try_new(batch.schema(), columns)?)
+}
+
+/// `take` allocates exactly what the rows need, but a dictionary taken shares its values and a
+/// view array taken shares its data buffers, so those are copied too.
+fn compact_array(array: &ArrayRef) -> Result<ArrayRef> {
+    let rows = u32::try_from(array.len())
+        .map_err(|_| DataFusionError::Internal("a spilled batch holds too many rows".into()))?;
+    let copy = take(array, &UInt32Array::from_iter_values(0..rows), None)?;
+    Ok(match copy.data_type() {
+        DataType::Dictionary(_, _) => {
+            let dictionary = copy.as_any_dictionary();
+            dictionary.with_values(compact_array(dictionary.values())?)
+        }
+        DataType::Utf8View => Arc::new(copy.as_string_view().gc()),
+        DataType::BinaryView => Arc::new(copy.as_binary_view().gc()),
+        _ => copy,
+    })
 }
 
 /// Compacts view arrays before they are written. A view array taken from a larger one keeps all
