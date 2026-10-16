@@ -1217,14 +1217,10 @@ class CometNativeReaderSuite extends CometTestBase with AdaptiveSparkPlanHelper 
 
   test("issue #4136: struct with only NullType fields in file (SPARK-54220)") {
     // The upstream SPARK-54220 test writes `Tuple1((null, null))` which is inferred as a struct
-    // of NullType fields on disk; reading with a schema that asks for Int/String on top of
-    // NullType fails at parquet decode time because Spark encodes NullType as
-    // `BOOLEAN + LogicalType::Unknown` but parquet-rs only accepts `INT32 + Unknown`. See
-    // #4199 for the upstream compatibility gap.
-    assume(
-      false,
-      "Skipped until parquet-rs accepts BOOLEAN + Unknown for NullType " +
-        "(https://github.com/apache/datafusion-comet/issues/4199)")
+    // of NullType fields on disk, then reads it with a schema that asks for Int/String fields
+    // instead. Spark encodes NullType as `BOOLEAN + LogicalType::Unknown`, which parquet-rs
+    // accepts since apache/arrow-rs#9855 (#4199).
+    assume(isSpark41Plus, "Parquet writes of NullType columns need Spark 4.1")
 
     val tableSchema = new StructType().add(
       "_1",
