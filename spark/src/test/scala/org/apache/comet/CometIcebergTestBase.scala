@@ -168,13 +168,13 @@ trait CometIcebergTestBase { this: CometTestBase =>
       .invoke(null, Integer.valueOf(length))
 
   /**
-   * Whether the Iceberg runtime on the classpath can report an output ordering. Not all
-   * releases can, so ordering-dependent tests must gate on this capability rather than on a
-   * version number. We probe for SortOrderAnalyzer, which ships in exactly the builds whose
+   * Whether the Iceberg runtime on the classpath can report an output ordering. Not all releases
+   * can, so ordering-dependent tests must gate on this capability rather than on a version
+   * number. We probe for SortOrderAnalyzer, which ships in exactly the builds whose
    * SparkPartitioningAwareScan reports an ordering. Returns false if the class is missing so
    * those tests skip rather than fail.
    */
-  protected def icebergReportsOrdering: Boolean =
+  protected lazy val icebergReportsOrdering: Boolean =
     try {
       IcebergReflection.loadClass("org.apache.iceberg.spark.source.SortOrderAnalyzer")
       true

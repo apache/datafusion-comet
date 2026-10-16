@@ -33,7 +33,7 @@ import org.apache.iceberg.spark.Spark3Util
 import org.apache.spark.CometListenerBusUtils
 import org.apache.spark.scheduler.{SparkListener, SparkListenerTaskEnd}
 import org.apache.spark.sql.{CometTestBase, DataFrame, Row}
-import org.apache.spark.sql.catalyst.expressions.DynamicPruningExpression
+import org.apache.spark.sql.catalyst.expressions.{Ascending, DynamicPruningExpression, SortOrder}
 import org.apache.spark.sql.comet._
 import org.apache.spark.sql.comet.execution.shuffle.{CometNativeShuffle, CometShuffleExchangeExec}
 import org.apache.spark.sql.execution.{InSubqueryExec, LocalTableScanExec, ReusedSubqueryExec, SparkPlan, SubqueryAdaptiveBroadcastExec, SubqueryBroadcastExec, SubqueryExec}
@@ -47,6 +47,7 @@ import org.apache.spark.sql.types.{ArrayType, IntegerType, StringType, StructTyp
 import org.apache.comet.CometSparkSessionExtensions.{isSpark35Plus, isSpark40Plus, isSpark41Plus, isSpark42Plus}
 import org.apache.comet.cloud.s3.MinioLocationScopedCredentialProvider
 import org.apache.comet.iceberg.{IcebergReflection, RESTCatalogHelper}
+import org.apache.comet.rules.CometScanRule
 import org.apache.comet.serde.{OperatorOuterClass, QueryPlanSerde}
 import org.apache.comet.testing.{FuzzDataGenerator, SchemaGenOptions}
 
@@ -7479,6 +7480,71 @@ class CometIcebergNativeSuite
             "spark.sql.iceberg.planning.preserve-data-ordering" -> "true") {
             checkIcebergNativeScan(query)
           }
+        } finally {
+          spark.sql(s"DROP TABLE IF EXISTS $table PURGE")
+        }
+      }
+    }
+  }
+
+  test("CometScanRule falls back for an Iceberg scan that carries an ordering") {
+    assume(icebergAvailable, "Iceberg not available in classpath")
+
+    withTempIcebergDir { warehouseDir =>
+      withSQLConf(
+        "spark.sql.catalog.sort_cat" -> "org.apache.iceberg.spark.SparkCatalog",
+        "spark.sql.catalog.sort_cat.type" -> "hadoop",
+        "spark.sql.catalog.sort_cat.warehouse" -> warehouseDir.getAbsolutePath,
+        CometConf.COMET_ENABLED.key -> "true",
+        CometConf.COMET_EXEC_ENABLED.key -> "true",
+        CometConf.COMET_ICEBERG_NATIVE_ENABLED.key -> "true") {
+
+        val table = "sort_cat.db.ordered_scan_table"
+        try {
+          spark.sql(s"CREATE TABLE $table (id INT, name STRING) USING iceberg")
+          spark.sql(s"INSERT INTO $table VALUES (3, 'c'), (1, 'a')")
+
+          // Plan the query with Comet off, then give the Iceberg scan the ordering that a
+          // reporting Iceberg runtime would attach. No Iceberg release reports one yet, so this is
+          // the only way to reach the guard on every profile.
+          var sparkPlan: SparkPlan = null
+          withSQLConf(CometConf.COMET_ENABLED.key -> "false") {
+            sparkPlan =
+              stripAQEPlan(spark.sql(s"SELECT * FROM $table").queryExecution.executedPlan)
+          }
+          val scan = collect(sparkPlan) { case b: BatchScanExec => b }.head
+
+          // Apply the rule to the scan alone. BatchScanExec.equals ignores `ordering`, so
+          // TreeNode.transform would treat the copy as unchanged and keep the original.
+          def withOrdering(ordering: Option[Seq[SortOrder]]): SparkPlan =
+            scan.copy(ordering = ordering)
+
+          val ordered = Some(Seq(SortOrder(scan.output.head, Ascending)))
+
+          // CometScanRule marks an accepted Iceberg scan as a CometBatchScanExec. CometExecRule
+          // turns that into the native scan later. The unmodified scan and one with an empty
+          // ordering are both accepted, so the assertion below is not passing for some unrelated
+          // reason.
+          for (ordering <- Seq(None, Some(Seq.empty[SortOrder]))) {
+            val transformed = CometScanRule(spark).apply(withOrdering(ordering))
+            assert(
+              collect(transformed) { case s: CometBatchScanExec => s }.length == 1,
+              s"Expected the scan to be accepted for ordering $ordering. Plan:\n$transformed")
+          }
+
+          val input = withOrdering(ordered)
+          assert(
+            collect(input) { case b: BatchScanExec => b.ordering }.head.exists(_.nonEmpty),
+            s"Expected the copied scan to carry an ordering. Plan:\n$input")
+          val transformed = CometScanRule(spark).apply(input)
+          assert(
+            collect(transformed) { case s: CometBatchScanExec => s }.isEmpty,
+            s"Expected the ordered scan to stay on Spark. Plan:\n$transformed")
+          assert(collect(transformed) { case b: BatchScanExec => b }.length == 1)
+          val reasons = new ExtendedExplainInfo().getFallbackReasons(transformed)
+          assert(
+            reasons.exists(_.contains("Iceberg reports an output ordering")),
+            s"Expected the ordering fallback reason but found: $reasons")
         } finally {
           spark.sql(s"DROP TABLE IF EXISTS $table PURGE")
         }
