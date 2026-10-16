@@ -197,6 +197,9 @@ The following scenarios will fall back to the JVM Iceberg reader:
   or renamed. The native reader cannot yet match such a field to data files written before the
   change. The check uses the table's schema history, so the fallback stays after those files are
   rewritten
+- Scans where no schema in the table's history gives a partition source or equality-delete key a
+  name that the scan's other columns don't use (every task of a native scan must give such a
+  column the same name)
 
 Writes are not covered by this list. By default Spark plans Iceberg writes with its own V2 write
 operator, and iceberg-java writes the data files. With `spark.comet.write.iceberg.enabled=true`,
