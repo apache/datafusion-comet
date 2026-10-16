@@ -173,7 +173,33 @@ object CometArrowWriterBenchmark extends BenchmarkBase {
           false),
         ("array<int>", ArrayType(IntegerType), false),
         ("array<string>", ArrayType(StringType), false),
-        ("map<string,string>", MapType(StringType, StringType), false))
+        ("map<string,string>", MapType(StringType, StringType), false),
+        ("map<int,long>", MapType(IntegerType, LongType), false),
+        (
+          "struct<struct<int,string>,long>",
+          new StructType()
+            .add("inner", new StructType().add("i", IntegerType).add("s", StringType))
+            .add("l", LongType),
+          false),
+        (
+          "struct<struct<struct<int,string>>> (depth 3)",
+          new StructType().add(
+            "a",
+            new StructType()
+              .add("b", new StructType().add("i", IntegerType).add("s", StringType))),
+          false),
+        (
+          "array<struct<int,string>>",
+          ArrayType(new StructType().add("i", IntegerType).add("s", StringType)),
+          false),
+        ("array<array<int>>", ArrayType(ArrayType(IntegerType)), false),
+        (
+          "struct<array<int>,string>",
+          new StructType().add("a", ArrayType(IntegerType)).add("s", StringType),
+          false),
+        ("map<string,array<int>>", MapType(StringType, ArrayType(IntegerType)), false),
+        ("array<decimal(18,2)>", ArrayType(DecimalType(18, 2)), false),
+        ("array<boolean>", ArrayType(BooleanType), false))
       val columnarByType = new Benchmark(
         s"Spark columnar to Arrow by type ($numRows rows)",
         numRows.toLong,
@@ -263,6 +289,8 @@ object CometArrowWriterBenchmark extends BenchmarkBase {
       withNulls: Boolean): Unit = dataType match {
     case struct: StructType =>
       struct.fields.indices.foreach { f =>
+        // A struct that is the element of an array holds one slot per flattened element.
+        vector.getChild(f).reserve(numRows)
         fill(vector.getChild(f), struct.fields(f).dataType, numRows, withNulls)
       }
       // Spark's Parquet reader leaves the fields of a null struct null.
