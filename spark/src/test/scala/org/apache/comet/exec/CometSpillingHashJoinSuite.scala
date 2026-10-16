@@ -162,12 +162,27 @@ class CometSpillingHashJoinSuite extends CometTestBase {
             assert(spillEnabled(broadcast) == Seq(false))
 
             // The sort-merge join below needs no exchange above it, so the hash join probes its
-            // sorted output and Spark reports that order for the hash join too.
+            // sorted output and Spark reports that order for the hash join too. The query's
+            // output keeps that order.
             val ordered = sql(
               "SELECT /*+ MERGE(a, b), SHUFFLE_HASH(c) */ * FROM a JOIN b ON a._1 = b._1 " +
                 "JOIN c ON a._1 = c._1")
             checkSparkAnswerAndOperator(ordered)
             assert(spillEnabled(ordered) == Seq(false))
+
+            // The same hash join under an aggregate: Spark reports the order, but the aggregate
+            // does not use it, so the join spills.
+            withSQLConf(
+              CometConf.COMET_EXEC_HASH_JOIN_SPILL_MAX_BUILD_BUFFER_BYTES.key -> "1024") {
+              val aggregated = sql(
+                "SELECT /*+ MERGE(a, b), SHUFFLE_HASH(c) */ a._1, count(*), sum(c._2) FROM a " +
+                  "JOIN b ON a._1 = b._1 JOIN c ON a._1 = c._1 GROUP BY a._1")
+              val (_, comet) = checkSparkAnswerAndOperator(aggregated)
+              assert(spillEnabled(aggregated) == Seq(true))
+              val joins = collect(comet) { case join: CometHashJoinExec => join }
+              assert(joins.forall(_.outputOrdering.isEmpty))
+              assert(metric(comet, "spilled_buckets") > 0)
+            }
           }
         }
       }

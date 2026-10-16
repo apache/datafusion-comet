@@ -2907,14 +2907,17 @@ trait CometHashJoin {
     val rightKeys = join.rightKeys.map(exprToProto(_, join.right.output))
 
     // The spilling join emits the rows of spilled buckets after the others, so it is used only
-    // where Spark relies on no output order from the join. A broadcast build side is bounded by
-    // the broadcast threshold, and a runtime filter would describe only part of a spilled build.
+    // where Spark relies on no output order from the join: either Spark reports none, or nothing
+    // above uses the order it reports (see `CometExecRule.tagJoinsWhoseOrderIsUnused`). A
+    // broadcast build side is bounded by the broadcast threshold, and a runtime filter would
+    // describe only part of a spilled build.
     val dynamicFilterEnabled = CometConf.COMET_EXEC_JOIN_DYNAMIC_FILTER_ENABLED.get(join.conf)
     val spillEnabled = join.isInstanceOf[ShuffledHashJoinExec] &&
       CometConf.COMET_EXEC_HASH_JOIN_SPILL_ENABLED.get(join.conf) &&
       !isNullAwareAntiJoin &&
       !dynamicFilterEnabled &&
-      join.outputOrdering.isEmpty
+      (join.outputOrdering.isEmpty ||
+        join.getTagValue(CometExecRule.JOIN_ORDER_UNUSED_TAG).isDefined)
 
     if (leftKeys.forall(_.isDefined) &&
       rightKeys.forall(_.isDefined) &&
@@ -3134,11 +3137,13 @@ object CometHashJoinExec extends CometOperatorSerde[HashJoin] with CometHashJoin
     doConvert(join, builder, childOp: _*)
 
   override def createExec(nativeOp: Operator, op: HashJoin): CometNativeExec = {
+    // A spilling join keeps no input order.
+    val outputOrdering = if (nativeOp.getHashJoin.getSpillEnabled) Nil else op.outputOrdering
     CometHashJoinExec(
       nativeOp,
       op,
       op.output,
-      op.outputOrdering,
+      outputOrdering,
       op.leftKeys,
       op.rightKeys,
       op.joinType,

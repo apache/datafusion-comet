@@ -202,6 +202,15 @@ object CometExecRule {
    */
   val BROADCAST_BUILD_SIDE_TAG: org.apache.spark.sql.catalyst.trees.TreeNodeTag[Unit] =
     org.apache.spark.sql.catalyst.trees.TreeNodeTag[Unit]("comet.broadcastBuildSideLeaf")
+
+  /**
+   * Tag set on a shuffled hash join whose output order no operator above it relies on. The
+   * spilling join emits the rows of spilled buckets after the others, so its serde runs a join
+   * that Spark reports an output order for with spilling only when it carries this tag. See
+   * `tagJoinsWhoseOrderIsUnused`.
+   */
+  val JOIN_ORDER_UNUSED_TAG: org.apache.spark.sql.catalyst.trees.TreeNodeTag[Unit] =
+    org.apache.spark.sql.catalyst.trees.TreeNodeTag[Unit]("comet.joinOrderUnused")
 }
 
 /**
@@ -992,6 +1001,10 @@ case class CometExecRule(session: SparkSession, queryStagePrep: Boolean = false)
       // unsupported build-side scan (e.g. Text) to Arrow and let the join run natively (#6008).
       tagBroadcastBuildSideLeaves(planWithJoinRewritten)
 
+      // Tag shuffled hash joins whose output order nothing above relies on, so that they can
+      // spill even when Spark reports an order for them.
+      tagJoinsWhoseOrderIsUnused(planWithJoinRewritten)
+
       var transformed = transform(planWithJoinRewritten)
       // A build-side bridge is only worth keeping when its broadcast join went native. Where the
       // join stayed on Spark, clearWastedBuildSideBridges clears the tag from those scans and we
@@ -1569,6 +1582,42 @@ case class CometExecRule(session: SparkSession, queryStagePrep: Boolean = false)
    * live in expressions, not `children`, so `foreach` never reaches them - that scope is
    * intentional.
    */
+  /**
+   * Tags each shuffled hash join whose output order no operator above it relies on. A join
+   * reports its streamed side's order, for example when it probes the sorted output of a
+   * sort-merge join below it, but that order matters only if an operator above uses it. One does
+   * if it requires a child ordering, which `EnsureRequirements` may have left without a sort
+   * because the order already satisfied it, or if the order reaches the root of the plan, whose
+   * output order a query relies on once `RemoveRedundantSorts` has dropped a sort that the order
+   * satisfied. An operator that reports no output order, such as an exchange or a hash aggregate,
+   * or that sorts its input itself, ends the order. A tag left by an earlier pass is cleared if
+   * the order is relied on now.
+   */
+  private def tagJoinsWhoseOrderIsUnused(plan: SparkPlan): Unit = {
+    def visit(node: SparkPlan, orderRelied: Boolean): Unit = {
+      node match {
+        case join: ShuffledHashJoinExec =>
+          if (orderRelied) {
+            join.unsetTagValue(CometExecRule.JOIN_ORDER_UNUSED_TAG)
+          } else {
+            join.setTagValue(CometExecRule.JOIN_ORDER_UNUSED_TAG, ())
+          }
+        case _ =>
+      }
+      val required = node.requiredChildOrdering
+      node.children.zipWithIndex.foreach { case (child, i) =>
+        val childOrderRelied = node match {
+          case _: SortExec | _: TakeOrderedAndProjectExec => false
+          case _ if required.lift(i).exists(_.nonEmpty) => true
+          case _ if node.outputOrdering.isEmpty => false
+          case _ => orderRelied
+        }
+        visit(child, childOrderRelied)
+      }
+    }
+    visit(plan, orderRelied = true)
+  }
+
   private def tagBroadcastBuildSideLeaves(plan: SparkPlan): Unit = {
     if (!broadcastBuildSideBridgeEnabled) {
       return
