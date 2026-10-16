@@ -506,3 +506,7 @@ harness = false
 [[bench]]
 name = "greatest_least"
 harness = false
+
+[[bench]]
+name = "at_least_n_non_nulls"
+harness = false
