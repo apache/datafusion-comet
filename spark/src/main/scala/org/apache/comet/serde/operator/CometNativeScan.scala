@@ -31,7 +31,7 @@ import org.apache.spark.sql.comet.{CometNativeExec, CometNativeScanExec, CometSc
 import org.apache.spark.sql.execution.{FileSourceScanExec, InSubqueryExec, SubqueryAdaptiveBroadcastExec}
 import org.apache.spark.sql.execution.datasources.parquet.ParquetUtils
 import org.apache.spark.sql.internal.SQLConf
-import org.apache.spark.sql.types.{StructField, StructType}
+import org.apache.spark.sql.types.{MetadataBuilder, StructField, StructType}
 
 import org.apache.comet.{CometConf, ConfigEntry, DataTypeSupport}
 import org.apache.comet.CometConf.COMET_EXEC_ENABLED
@@ -105,8 +105,8 @@ object CometNativeScan extends CometOperatorSerde[CometScanExec] with CometTypeS
    * The data schema the native scan actually serializes.
    *
    * Spark's required schema can prune a Variant column, including a Variant nested under an
-   * unrequested struct, while the complete relation schema still contains it. Keep ordinary
-   * fields unchanged and retain the pruned required field for a requested Variant-bearing root,
+   * unrequested struct, while the complete relation schema still contains it. Keep ordinary field
+   * types unchanged and retain the pruned required field for a requested Variant-bearing root,
    * including a struct whose Variant child was pruned. Entirely unread Variant roots never enter
    * the native schema.
    */
@@ -115,10 +115,25 @@ object CometNativeScan extends CometOperatorSerde[CometScanExec] with CometTypeS
       requiredSchema: StructType,
       resolver: Resolver): StructType =
     StructType(dataSchema.fields.flatMap { field =>
-      if (containsVariantType(field.dataType)) {
+      val requiredField =
         requiredSchema.fields.find(requiredField => resolver(requiredField.name, field.name))
+      if (containsVariantType(field.dataType)) {
+        requiredField
       } else {
-        Some(field)
+        // Nested schema pruning drops root metadata from the relation's data schema. Spark
+        // 3.4 still retains it in requiredSchema, which its Parquet reader uses for ID matching.
+        // Use that ID here too, without changing the table schema's types or projection indexes.
+        // If requiredSchema also lost the ID (Spark 3.5+), preserve Spark's name-based lookup.
+        Some(
+          requiredField
+            .filter(ParquetUtils.hasFieldId)
+            .map { required =>
+              field.copy(metadata = new MetadataBuilder()
+                .withMetadata(field.metadata)
+                .putLong(ParquetUtils.FIELD_ID_METADATA_KEY, ParquetUtils.getFieldId(required))
+                .build())
+            }
+            .getOrElse(field))
       }
     })
 
