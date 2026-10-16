@@ -354,10 +354,10 @@ impl IcebergScanExec {
 
     /// Copies a delete file with its size set to `size`.
     ///
-    /// iceberg-rust 1f3bc34 made `FileScanTaskDeleteFile`'s fields private too, so, as for the
-    /// task in [`Self::rebuild_task_with_deletes`], the copy goes through the builder, forwarding
-    /// every other field through its public accessors. The builder repeats the delete file's
-    /// validation on `build()`.
+    /// `FileScanTaskDeleteFile`'s fields are private with no mutator, so, as for the task in
+    /// [`Self::rebuild_task_with_deletes`], the copy goes through the builder, forwarding every
+    /// other field through its public accessors. The builder repeats the delete file's validation
+    /// on `build()`.
     fn sized_delete_file(
         delete: &FileScanTaskDeleteFile,
         size: u64,
