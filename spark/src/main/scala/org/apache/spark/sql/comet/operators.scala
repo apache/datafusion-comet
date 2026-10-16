@@ -2568,6 +2568,18 @@ object CometHashAggregateExec extends CometBaseAggregate[HashAggregateExec] {
           "Ungrouped decimal SUM at maximum precision without codegen cannot match Spark's " +
             "latching UnsafeRow buffer"))
     }
+    // The native ungrouped AVG neither keeps its running sum unbounded, as Spark does with
+    // codegen, nor latches it, as Spark does without: it skips the row that takes the sum out of
+    // the precision and goes on, so DECIMAL(38,38) inputs 0.6, 0.6, -0.6 average to 0, not 0.2.
+    // Its merge latches, so partials of 0.6 and 0.6 give NULL, where Spark's codegen gives 0.6.
+    // The grouped accumulator latches like Spark's UnsafeRow buffer and stays native.
+    // https://github.com/apache/datafusion-comet/issues/5418
+    if (op.groupingExpressions.isEmpty && hasMaxPrecisionDecimalAvg(op)) {
+      return Unsupported(
+        Some(
+          "Ungrouped decimal AVG with a maximum-precision sum cannot match Spark's " +
+            "aggregation buffer"))
+    }
     Compatible()
   }
 
@@ -2593,11 +2605,20 @@ object CometObjectHashAggregateExec extends CometBaseAggregate[ObjectHashAggrega
   override protected def operatorSupportLevel(op: ObjectHashAggregateExec): SupportLevel = {
     // Spark's object aggregation buffers the intermediate decimal sum unbounded, while Comet's
     // grouped accumulator latches to null once a running sum leaves the precision, so the
-    // grouped case declines. Decimal AVG has the same gap and is tracked separately.
+    // grouped case declines.
     if (op.groupingExpressions.nonEmpty && hasMaxPrecisionDecimalSum(op)) {
       return Unsupported(
         Some(
           "Grouped decimal SUM at maximum precision cannot match Spark's unbounded object " +
+            "aggregation buffer"))
+    }
+    // Decimal AVG has the same gap when grouped. Ungrouped, the native AVG skips the row that
+    // takes its running sum out of the precision, so it declines either way.
+    // https://github.com/apache/datafusion-comet/issues/5509
+    if (hasMaxPrecisionDecimalAvg(op)) {
+      return Unsupported(
+        Some(
+          "Decimal AVG with a maximum-precision sum cannot match Spark's unbounded object " +
             "aggregation buffer"))
     }
     Compatible()
