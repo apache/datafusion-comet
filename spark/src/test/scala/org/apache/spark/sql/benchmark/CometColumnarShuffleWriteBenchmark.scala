@@ -63,7 +63,7 @@ object CometColumnarShuffleWriteBenchmark extends CometBenchmarkBase {
 
   private def shuffleWrite(partitions: Int): Unit = {
     val benchmark =
-      new Benchmark(s"Shuffle write, $partitions partitions", numRows, output = output)
+      new Benchmark(s"Shuffle write, $partitions partitions", numRows.toLong, output = output)
 
     val shufflePartitions = SQLConf.SHUFFLE_PARTITIONS.key -> partitions.toString
     val cases = Seq(

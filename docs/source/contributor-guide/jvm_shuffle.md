@@ -175,15 +175,15 @@ Selection logic in `CometShuffleManager.shouldBypassMergeSort()`:
 1. `ShuffleWriteProcessor` calls `CometShuffleManager.getWriter()`
 2. Writer receives `Iterator[Product2[K, V]]` where V is `UnsafeRow`
 3. Rows are serialized and buffered in off-heap memory pages
-4. When memory threshold or batch size is reached, the buffered rows are written: `CometDiskBlockWriter`
-   calls `SpillWriter.doSpilling()` for its partition, and `CometShuffleExternalSorter` calls
-   `SpillSorter.writeSortedFileNative()` for every partition
+4. When memory threshold or batch size is reached, the buffered rows are written. `CometDiskBlockWriter`
+   calls `SpillWriter.doSpilling()` for its partition. `CometShuffleExternalSorter` calls
+   `SpillSorter.writeSortedFileNative()` once for each spill and once more for the final file, and each
+   call writes every partition
 5. Native code converts the rows to Arrow arrays and writes them as Arrow IPC blocks. `doSpilling()`
    passes one partition's row addresses and sizes to `Native.writeSortedFileNative()`. `SpillSorter`
-   sorts its record pointers by partition with `Native.sortRowPartitionsNative()` and passes them, with
-   the address of each data page, to `Native.writeSortedPartitionsNative()`, which reads the rows in
-   place, writes every partition of the spill in one call, and returns each partition's length and
-   checksum
+   sorts its record pointers by partition with `Native.sortRowPartitionsNative()`, then passes them,
+   with the address of each data page, to `Native.writeSortedPartitionsNative()`. That call reads the
+   rows in place, writes every partition of the spill, and returns each partition's length and checksum
 6. For bypass writer: partition files are concatenated into final output
 7. For sort writer: spill files are merged
 

@@ -19,7 +19,8 @@
 //!
 //! Measures `process_sorted_row_partition()` performance for converting Spark
 //! UnsafeRow data to Arrow arrays, covering primitive, struct (flat/nested),
-//! list, and map types.
+//! list, and map types, and compares it with `process_sorted_partitions()` on
+//! one sorted spill of the sort-based writer.
 
 use arrow::datatypes::{DataType as ArrowDataType, Field, Fields};
 use criterion::{criterion_group, criterion_main, BenchmarkId, Criterion};

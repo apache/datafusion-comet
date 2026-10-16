@@ -19,7 +19,7 @@
 
 package org.apache.spark.shuffle.sort
 
-import java.io.File
+import java.io.{ByteArrayInputStream, File}
 import java.nio.ByteBuffer
 import java.nio.file.Files
 import java.util.UUID
@@ -36,11 +36,15 @@ import org.apache.spark.executor.ShuffleWriteMetrics
 import org.apache.spark.memory.{TaskMemoryManager, TestMemoryManager}
 import org.apache.spark.shuffle.comet.{CometShuffleMemoryAllocator, CometShuffleMemoryAllocatorTrait}
 import org.apache.spark.sql.catalyst.expressions.UnsafeRow
-import org.apache.spark.sql.comet.execution.shuffle.{SpillInfo => CometSpillInfo}
+import org.apache.spark.sql.comet.execution.shuffle.{NativeBatchDecoderIterator, SpillInfo => CometSpillInfo}
+import org.apache.spark.sql.execution.metric.SQLMetric
 import org.apache.spark.sql.types._
 import org.apache.spark.storage.TempShuffleBlockId
 import org.apache.spark.unsafe.Platform
 import org.apache.spark.unsafe.UnsafeAlignedOffset
+
+import org.apache.comet.Native
+import org.apache.comet.vector.NativeUtil
 
 /**
  * Unit tests for [[SpillSorter]].
@@ -83,6 +87,23 @@ class SpillSorterSuite extends AnyFunSuite with BeforeAndAfterEach {
 
   private def createTestSchema(): StructType = {
     new StructType().add("id", IntegerType)
+  }
+
+  /** Decodes the shuffle blocks in `bytes`, rows of `createTestSchema`, into their ids. */
+  private def decodeIds(bytes: Array[Byte]): Seq[Int] = {
+    val nativeUtil = new NativeUtil
+    val decoder = NativeBatchDecoderIterator(
+      new ByteArrayInputStream(bytes),
+      new SQLMetric("decodeTime"),
+      new Native,
+      nativeUtil,
+      tracingEnabled = false)
+    try {
+      decoder.flatMap(batch => (0 until batch.numRows()).map(batch.column(0).getInt)).toList
+    } finally {
+      decoder.close()
+      nativeUtil.close()
+    }
   }
 
   private def createSpillSorter(
@@ -344,6 +365,18 @@ class SpillSorterSuite extends AnyFunSuite with BeforeAndAfterEach {
           assert(spill.partitionLengths.sum === spill.file.length())
           (0 until numPartitions).foreach { p =>
             assert((spill.partitionLengths(p) > 0) === usedPartitions(p), s"partition $p")
+          }
+        }
+
+        // Native code found each record through the page table: in both files, every partition
+        // decodes to its rows, in the order they were inserted.
+        written.foreach { spill =>
+          val bytes = Files.readAllBytes(spill.file.toPath)
+          (0 until numPartitions).foreach { p =>
+            val start = spill.partitionLengths.take(p).sum.toInt
+            val end = start + spill.partitionLengths(p).toInt
+            val ids = records.indices.filter(i => records(i)._2 == p)
+            assert(decodeIds(bytes.slice(start, end)) === ids, s"partition $p")
           }
         }
 

@@ -3610,9 +3610,9 @@ mod tests {
     /// lookup that ignored the page number would read the wrong page.
     const SORTER_PAGE_NUMBERS: [usize; 2] = [3, 1];
 
-    /// 16-byte rows stored the way Spark's sorter stores them: in pages, each record its length
-    /// in 4 bytes, then the row's 4-byte big-endian size from `UnsafeRowSerializer`, then the
-    /// row. Rows alternate between two pages, and `pointers` holds the packed record pointer of
+    /// Rows stored the way Spark's sorter stores them: in pages, each record its length in 4
+    /// bytes, then the row's 4-byte big-endian size from `UnsafeRowSerializer`, then the row.
+    /// Rows alternate between two pages, and `pointers` holds the packed record pointer of
     /// each row, sorted by partition as `sort_row_partitions` sorts them.
     struct SorterRecords {
         _pages: Vec<Vec<u64>>,
@@ -3621,10 +3621,13 @@ mod tests {
     }
 
     impl SorterRecords {
-        fn new(rows: &[[u8; 16]], partitions: &[usize]) -> Self {
+        /// Each row must be whole 8-byte words, as an `UnsafeRow` is, so that every row stays
+        /// aligned in its page.
+        fn new<R: AsRef<[u8]>>(rows: &[R], partitions: &[usize]) -> Self {
             let mut page_bytes: Vec<Vec<u8>> = vec![Vec::new(); SORTER_PAGE_NUMBERS.len()];
             let mut pointers = Vec::new();
             for (i, (row, &partition)) in rows.iter().zip(partitions).enumerate() {
+                let row = row.as_ref();
                 let page = i % SORTER_PAGE_NUMBERS.len();
                 let offset = page_bytes[page].len();
                 page_bytes[page].extend_from_slice(&(4 + row.len() as i32).to_ne_bytes());
@@ -3768,6 +3771,121 @@ mod tests {
         }
     }
 
+    /// Spark `UnsafeRow`s with one non-null string field each: an 8-byte null bitset, the
+    /// field's offset and size, then the string padded to a word.
+    fn string_rows(values: &[&str]) -> Vec<Vec<u8>> {
+        values
+            .iter()
+            .map(|value| {
+                let mut row = vec![0_u8; 16 + value.len().div_ceil(8) * 8];
+                row[8..16].copy_from_slice(&(16_i64 << 32 | value.len() as i64).to_le_bytes());
+                row[16..16 + value.len()].copy_from_slice(value.as_bytes());
+                row
+            })
+            .collect()
+    }
+
+    #[test]
+    fn write_sorted_partitions_matches_writing_each_partition_as_dictionaries_change() {
+        // With a dictionary ratio of 1.5, a 2-row batch of two equal strings stays
+        // dictionary-encoded and one of two different strings is written plain
+        // (`builder_to_array`). So the block schema changes within partitions 0 and 3 and from
+        // partition 0 to 2, and stays the same from partition 2 to 3, where the encoder keeps
+        // its block writer.
+        let inserted = [
+            ("a", 0),
+            ("e", 3),
+            ("a", 0),
+            ("d", 2),
+            ("e", 3),
+            ("b", 0),
+            ("d", 2),
+            ("f", 3),
+            ("c", 0),
+            ("g", 3),
+        ];
+        let (values, partitions): (Vec<&str>, Vec<usize>) = inserted.into_iter().unzip();
+        let rows = string_rows(&values);
+        let records = SorterRecords::new(&rows, &partitions);
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("spill");
+        let num_partitions = 4;
+        let mut checksums = vec![i64::MIN; num_partitions];
+        let mut lengths = vec![0_i64; num_partitions];
+        unsafe {
+            write_sorted_partitions(
+                &records.pointers,
+                &records.page_addresses,
+                4,
+                &[DataType::Utf8],
+                path.to_str().unwrap(),
+                1.5,
+                2,
+                1,
+                &mut checksums,
+                &mut lengths,
+                "lz4",
+                1,
+                false,
+            )
+        }
+        .unwrap();
+
+        // Writing each partition's rows on its own, with an encoder of its own.
+        let mut expected = Vec::new();
+        for partition in 0..num_partitions {
+            let (addresses, sizes): (Vec<i64>, Vec<i32>) = rows
+                .iter()
+                .zip(&partitions)
+                .filter(|(_, &p)| p == partition)
+                .map(|(row, _)| (row.as_ptr() as i64, row.len() as i32))
+                .unzip();
+            if addresses.is_empty() {
+                assert_eq!(lengths[partition], 0, "partition {partition}");
+                continue;
+            }
+            let partition_path = dir.path().join(format!("partition-{partition}"));
+            let [written, checksum, _] = unsafe {
+                write_sorted_file(
+                    &addresses,
+                    &sizes,
+                    &[DataType::Utf8],
+                    partition_path.to_str().unwrap().to_string(),
+                    1.5,
+                    2,
+                    true,
+                    1,
+                    i64::MIN,
+                    "lz4",
+                    1,
+                    false,
+                )
+            }
+            .unwrap();
+            assert_eq!(lengths[partition], written, "partition {partition}");
+            assert_eq!(checksums[partition], checksum, "partition {partition}");
+            expected.extend(std::fs::read(&partition_path).unwrap());
+        }
+        let data = std::fs::read(&path).unwrap();
+        assert_eq!(data, expected);
+
+        let mut dictionary_blocks = Vec::new();
+        let mut decoded = Vec::new();
+        for block in shuffle_blocks(&data) {
+            let batch = read_ipc_compressed(block).unwrap();
+            let column = batch.column(0);
+            dictionary_blocks.push(matches!(column.data_type(), DataType::Dictionary(_, _)));
+            let strings = arrow::compute::cast(column, &DataType::Utf8).unwrap();
+            let strings = arrow::array::AsArray::as_string::<i32>(&strings);
+            decoded.extend(strings.iter().map(|s| s.unwrap().to_string()));
+        }
+        assert_eq!(dictionary_blocks, [true, false, true, true, false]);
+        let mut expected_values = inserted.to_vec();
+        expected_values.sort_by_key(|&(_, partition)| partition);
+        let expected_values: Vec<&str> = expected_values.iter().map(|&(v, _)| v).collect();
+        assert_eq!(decoded, expected_values);
+    }
+
     #[test]
     fn write_sorted_partitions_continues_partition_checksums() {
         let rows = long_rows(&(0..23).collect::<Vec<_>>());
@@ -3808,7 +3926,7 @@ mod tests {
 
     #[test]
     fn write_sorted_partitions_without_records() {
-        let records = SorterRecords::new(&[], &[]);
+        let records = SorterRecords::new::<[u8; 16]>(&[], &[]);
         let dir = tempfile::tempdir().unwrap();
         let path = dir.path().join("empty");
         let mut checksums = vec![i64::MIN; 3];
