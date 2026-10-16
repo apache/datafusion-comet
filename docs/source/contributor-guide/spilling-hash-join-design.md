@@ -505,10 +505,11 @@ In priority order.
    - Read the next spilled pair's files ahead while the current pair is joined. `SpillManager` already reads two
      batches ahead on another task.
    - Revisit the fan-out of 16 buckets per level.
-   - Spill compression is `spark.comet.exec.spill.compression.codec`, shared with sorts and aggregates. With the
-     spill files in the page cache, uncompressed files make the native benchmark's 20 MiB join about 15% faster
-     than lz4, and zstd about 35% slower while writing 40% fewer bytes. Which is best depends on the disks, so
-     the join keeps the shared setting.
+   - Spill compression is `spark.comet.exec.spill.compression.codec`, shared with sorts and aggregates. In
+     `CometHashJoinMemoryBenchmark`'s inner join at 64 MiB, zstd makes the spilling join 14% slower than lz4 and
+     spills 39% fewer bytes, and uncompressed files make it 4% faster and spill twice as many. With the files in
+     the page cache, the native benchmark shows the same more strongly: at 20 MiB, uncompressed files are 15%
+     faster than lz4 and zstd 34% slower. Which is best depends on the disks, so the join keeps the shared setting.
    - The benchmark's in-memory join looks its keys up in DataFusion's perfect hash table, because each of its four
      tasks holds a quarter of a dense key range. A spilled bucket holds a sixteenth of that, which is too sparse,
      and is looked up in a hash map. With Spark's default of 200 shuffle partitions, keys are rarely that dense,
@@ -526,16 +527,19 @@ In priority order.
      the wrapper is transparent.
    - Run the Spark suites on the other Spark profiles. All of them, 3.4, 3.5 with strict warnings, 4.0, 4.1 and
      4.2, compile with the tests, but the tests have run only on Spark 4.1.
-   - Check TPC-DS correctness with spilling forced. TPC-H at scale factor 1 matches the golden answers of
-     `CometTPCHQuerySuite`, all 22 queries, when its shuffled hash join configuration also sets
-     `spark.comet.exec.hashJoin.spill.maxBuildBufferBytes` to 1 MiB, so that every build side over 1 MiB spills.
-     The suites do not take extra configs from outside yet, so that run edited the suite.
+   - TPC-H and TPC-DS at scale factor 1 match the golden answers of `CometTPCHQuerySuite` and
+     `CometTPCDSQuerySuite`, all 22 and all 134 queries, when the suites' shuffled hash join configuration also
+     sets `spark.comet.exec.hashJoin.spill.maxBuildBufferBytes`, to 1 MiB and 256 KiB, so that every larger build
+     side spills. The suites do not take extra configs from outside yet, so those runs edited them. Check them at
+     larger scale factors with real memory pressure.
 4. **Settle the planner integration and the defaults.**
    - Work out how this fits with [#6785], which plans the forced shuffled hash join at planning time. Once joins
      can spill, `spark.comet.exec.forceShuffledHashJoin.maxBuildSize` decides only when a join spills, so its
      default limit could be lifted.
-   - Joins whose output order Spark relies on are not eligible, and can still fail. Count how often that happens
-     in TPC-DS plans. For those joins, keeping the sort-merge join may be better.
+   - Joins whose output order Spark relies on are not eligible, and can still fail. In the TPC-DS plans at scale
+     factor 1, with `spark.comet.exec.forceShuffledHashJoin` and AQE off, that is 10 of 611 native shuffled hash
+     joins, in q14a, q14b, q16, q23b, q69 and q94: inner joins and left anti joins whose probe side is sorted on
+     the join key. For those joins, keeping the sort-merge join may be better.
    - Joins that use `spark.comet.exec.join.dynamicFilter.enabled` are not eligible either. Build the runtime
      filter over every build row, resident or spilled: bounds and key domains can be accumulated while routing.
    - Decide whether spilling stays on by default. It is on now so that CI runs it. Then decide whether
