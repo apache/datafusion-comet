@@ -15,6 +15,8 @@
 // specific language governing permissions and limitations
 // under the License.
 
+mod case_expr;
 mod if_expr;
 
+pub use case_expr::SparkCaseExpr;
 pub use if_expr::{create_if_expr, IfExpr};
