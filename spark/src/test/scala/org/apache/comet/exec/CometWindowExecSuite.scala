@@ -828,6 +828,75 @@ class CometWindowExecSuite extends CometTestBase {
     }
   }
 
+  test("window: decimal AVG at maximum precision falls back for every frame") {
+    // Spark's window buffer keeps the running sum unbounded, so DECIMAL(38,38) inputs 0.6, 0.6,
+    // -0.6 average to 0.6, 0.6, 0.2 in a running frame and to 0.2 over the whole partition. The
+    // native AVG skipped the row that takes its sum out of the precision, which gave 0.6 for the
+    // third running frame, or raised under ANSI, and 0 for the whole partition.
+    // https://github.com/apache/datafusion-comet/issues/5418
+    val low = new java.math.BigDecimal("0.2").setScale(38)
+    val high = new java.math.BigDecimal("0.6").setScale(38)
+    Seq(true, false).foreach { ansiEnabled =>
+      withSQLConf(SQLConf.ANSI_ENABLED.key -> ansiEnabled.toString) {
+        withTempDir { dir =>
+          Seq((1, "0.6"), (2, "0.6"), (3, "-0.6"))
+            .toDF("ord", "raw_v")
+            .selectExpr("ord", "CAST(raw_v AS DECIMAL(38,38)) AS v")
+            .repartition(1)
+            .write
+            .mode("overwrite")
+            .parquet(dir.toString)
+
+          spark.read.parquet(dir.toString).createOrReplaceTempView("dec_avg_max_precision")
+          for {
+            function <- Seq("AVG", "try_avg")
+            (frame, expected) <- Seq(
+              "ROWS BETWEEN UNBOUNDED PRECEDING AND CURRENT ROW" -> Seq(high, high, low),
+              "ROWS BETWEEN UNBOUNDED PRECEDING AND UNBOUNDED FOLLOWING" -> Seq(low, low, low))
+          } {
+            val df = sql(s"""
+              SELECT ord, $function(v) OVER (ORDER BY ord $frame) AS run_avg
+              FROM dec_avg_max_precision
+              ORDER BY ord
+            """)
+            val (_, cometPlan) = checkSparkAnswerAndFallbackReason(
+              df,
+              "AVG on DECIMAL with precision 28 or more is not supported")
+            assert(collect(cometPlan) { case w: CometWindowExec => w }.isEmpty, cometPlan)
+            checkAnswer(df, expected.zipWithIndex.map { case (avg, i) => Row(i + 1, avg) })
+          }
+        }
+      }
+    }
+  }
+
+  test("window: decimal AVG whose rescaled sum can overflow falls back") {
+    // Below precision 28 the sum has headroom above the input, but from precision 25 the native
+    // average can still overflow when it rescales a large sum, as in an aggregate.
+    // https://github.com/apache/datafusion-comet/issues/7007
+    withTempDir { dir =>
+      Seq((1, "1.5"), (2, "2.5"))
+        .toDF("ord", "raw_v")
+        .selectExpr("ord", "CAST(raw_v AS DECIMAL(25,2)) AS v")
+        .repartition(1)
+        .write
+        .mode("overwrite")
+        .parquet(dir.toString)
+
+      spark.read.parquet(dir.toString).createOrReplaceTempView("dec_avg_rescale")
+      val query = "SELECT ord, AVG(v) OVER (ORDER BY ord) AS run_avg FROM dec_avg_rescale"
+      val (_, cometPlan) = checkSparkAnswerAndFallbackReason(
+        query,
+        "a large sum of a DECIMAL with precision 25 or more overflows when the native " +
+          "average rescales it")
+      assert(collect(cometPlan) { case w: CometWindowExec => w }.isEmpty, cometPlan)
+      withSQLConf(CometConf.getExprAllowIncompatConfigKey("Average") -> "true") {
+        val (_, nativePlan) = checkSparkAnswerAndOperator(query)
+        assertCometWindowExecExists(nativePlan)
+      }
+    }
+  }
+
   test("window: MIN and MAX with ORDER BY") {
     withTempDir { dir =>
       (0 until 30)
