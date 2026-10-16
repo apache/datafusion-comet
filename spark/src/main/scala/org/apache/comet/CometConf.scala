@@ -607,6 +607,32 @@ object CometConf extends ShimCometConf {
       .booleanConf
       .createWithDefault(false)
 
+  val COMET_EXEC_HASH_JOIN_SPILL_ENABLED: ConfigEntry[Boolean] =
+    conf(s"$COMET_EXEC_CONFIG_PREFIX.hashJoin.spill.enabled")
+      .category(CATEGORY_EXEC)
+      .doc(
+        "Whether a native shuffled hash join spills its build side to disk when it does not " +
+          "fit in memory, instead of failing the task. While the build side fits, the join " +
+          "runs as it does with this disabled. Applies to joins whose output order nothing " +
+          "relies on, and not to joins that use " +
+          s"`${COMET_EXEC_JOIN_DYNAMIC_FILTER_ENABLED.key}`. $TUNING_GUIDE.")
+      .booleanConf
+      .createWithDefault(true)
+
+  val COMET_EXEC_HASH_JOIN_SPILL_MAX_BUILD_BUFFER_BYTES: ConfigEntry[Long] =
+    conf(s"$COMET_EXEC_CONFIG_PREFIX.hashJoin.spill.maxBuildBufferBytes")
+      .category(CATEGORY_EXEC)
+      .doc(
+        "Maximum number of bytes of build side that a native shuffled hash join holds in " +
+          "memory before it spills, even if the memory pool would grant more. The default of 0 " +
+          "disables this limit, in which case the join spills only when the memory pool denies " +
+          "an allocation. Mainly for testing: a small value runs every join through its " +
+          s"spilling path. Has no effect unless `${COMET_EXEC_HASH_JOIN_SPILL_ENABLED.key}` " +
+          "is enabled.")
+      .bytesConf(ByteUnit.BYTE)
+      .checkValue(v => v >= 0, "Must not be negative")
+      .createWithDefault(0)
+
   val COMET_EXEC_TOPK_FUSION_ENABLED: ConfigEntry[Boolean] =
     conf(s"$COMET_EXEC_CONFIG_PREFIX.topK.fusion.enabled")
       .category(CATEGORY_EXEC)

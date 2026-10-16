@@ -2906,6 +2906,16 @@ trait CometHashJoin {
     val leftKeys = join.leftKeys.map(exprToProto(_, join.left.output))
     val rightKeys = join.rightKeys.map(exprToProto(_, join.right.output))
 
+    // The spilling join emits the rows of spilled buckets after the others, so it is used only
+    // where Spark relies on no output order from the join. A broadcast build side is bounded by
+    // the broadcast threshold, and a runtime filter would describe only part of a spilled build.
+    val dynamicFilterEnabled = CometConf.COMET_EXEC_JOIN_DYNAMIC_FILTER_ENABLED.get(join.conf)
+    val spillEnabled = join.isInstanceOf[ShuffledHashJoinExec] &&
+      CometConf.COMET_EXEC_HASH_JOIN_SPILL_ENABLED.get(join.conf) &&
+      !isNullAwareAntiJoin &&
+      !dynamicFilterEnabled &&
+      join.outputOrdering.isEmpty
+
     if (leftKeys.forall(_.isDefined) &&
       rightKeys.forall(_.isDefined) &&
       childOp.nonEmpty) {
@@ -2917,7 +2927,10 @@ trait CometHashJoin {
         .setBuildSide(if (join.buildSide == BuildLeft) OperatorOuterClass.BuildSide.BuildLeft
         else OperatorOuterClass.BuildSide.BuildRight)
         .setNullAwareAntiJoin(isNullAwareAntiJoin)
-        .setDynamicFilterEnabled(CometConf.COMET_EXEC_JOIN_DYNAMIC_FILTER_ENABLED.get(join.conf))
+        .setDynamicFilterEnabled(dynamicFilterEnabled)
+        .setSpillEnabled(spillEnabled)
+        .setSpillMaxBuildBufferBytes(CometConf.COMET_EXEC_HASH_JOIN_SPILL_MAX_BUILD_BUFFER_BYTES
+          .get(join.conf))
       condition.foreach(joinBuilder.setCondition)
       Some(builder.setHashJoin(joinBuilder).build())
     } else {
@@ -3195,12 +3208,19 @@ case class CometHashJoinExec(
     Objects.hashCode(output, leftKeys, rightKeys, joinType, condition, buildSide, left, right)
 
   override lazy val metrics: Map[String, SQLMetric] = {
+    val hashJoin = nativeOp.getHashJoin
     val joinMetrics = CometMetricNode.joinMetrics(sparkContext)
-    if (nativeOp.getHashJoin.getDynamicFilterEnabled) {
-      joinMetrics ++ CometMetricNode.joinDynamicFilterMetrics(sparkContext)
+    val filterMetrics = if (hashJoin.getDynamicFilterEnabled) {
+      CometMetricNode.joinDynamicFilterMetrics(sparkContext)
     } else {
-      joinMetrics
+      Map.empty[String, SQLMetric]
     }
+    val spillMetrics = if (hashJoin.getSpillEnabled) {
+      CometMetricNode.hashJoinSpillMetrics(sparkContext)
+    } else {
+      Map.empty[String, SQLMetric]
+    }
+    joinMetrics ++ filterMetrics ++ spillMetrics
   }
 }
 

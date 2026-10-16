@@ -88,7 +88,8 @@ use datafusion::{
 };
 use datafusion_comet_operators::{
     range_exec, CometFilterExec, CometProjectionExec, ExpandExec, ExplodeExec,
-    PartitionedRankLimitExec, SampleExec, WindowFnKind,
+    PartitionedRankLimitExec, SampleExec, SpillingHashJoinConfig, SpillingHashJoinExec,
+    WindowFnKind,
 };
 use datafusion_comet_spark_expr::{
     create_comet_physical_fun, create_comet_physical_fun_with_eval_mode, BinaryOutputStyle,
@@ -2819,6 +2820,7 @@ impl PhysicalPlanner {
                         join.dynamic_filter_enabled && !join.null_aware_anti_join,
                         self.session_ctx.copied_config().options(),
                     )?;
+                    let hash_join = Self::apply_spilling_hash_join(hash_join, join)?;
                     Ok((
                         scans,
                         shuffle_scans,
@@ -2836,6 +2838,8 @@ impl PhysicalPlanner {
                         join.dynamic_filter_enabled,
                         self.session_ctx.copied_config().options(),
                     )?;
+                    let swapped_hash_join =
+                        Self::apply_spilling_hash_join(swapped_hash_join, join)?;
 
                     let mut additional_native_plans = vec![];
                     if swapped_hash_join.is::<ProjectionExec>() {
@@ -3089,6 +3093,38 @@ impl PhysicalPlanner {
         }
         prepared.native_plan = native;
         Ok(Arc::new(prepared))
+    }
+
+    /// Runs a shuffled hash join with `SpillingHashJoinExec` when the serde asked for it, after
+    /// the build side is final. A projection that `swap_inputs` emitted stays above it. A join
+    /// with a runtime filter keeps the filter instead, because an inner join's filter would cover
+    /// only the buckets it holds.
+    fn apply_spilling_hash_join(
+        plan: Arc<dyn ExecutionPlan>,
+        join: &spark_operator::HashJoin,
+    ) -> Result<Arc<dyn ExecutionPlan>, ExecutionError> {
+        if !join.spill_enabled || join.null_aware_anti_join || join.dynamic_filter_enabled {
+            return Ok(plan);
+        }
+        if let Some(projection) = plan.downcast_ref::<ProjectionExec>() {
+            let child = Self::apply_spilling_hash_join(Arc::clone(projection.input()), join)?;
+            return Ok(plan.replace_children(
+                vec![child],
+                ReplaceChildrenOptions::new(ChildrenPropertiesMode::Recompute),
+            )?);
+        }
+        let Some(hash_join) = plan.downcast_ref::<HashJoinExec>() else {
+            return Ok(plan);
+        };
+        let config = SpillingHashJoinConfig {
+            max_build_buffer_bytes: usize::try_from(join.spill_max_build_buffer_bytes)
+                .ok()
+                .filter(|bytes| *bytes > 0),
+        };
+        Ok(match SpillingHashJoinExec::try_new(hash_join, config)? {
+            Some(spilling) => Arc::new(spilling),
+            None => plan,
+        })
     }
 
     /// Attach after choosing the final build side, including the projection emitted
@@ -6275,6 +6311,57 @@ mod tests {
     }
 
     #[test]
+    fn spilling_hash_join_wraps_the_join_comet_plans() {
+        use datafusion::physical_plan::joins::HashJoinExec;
+        use datafusion::physical_plan::projection::ProjectionExec;
+        use datafusion_comet_operators::SpillingHashJoinExec;
+        use spark_operator::BuildSide;
+
+        let plan = |build_side: BuildSide, spill_enabled: bool, dynamic_filter_enabled: bool| {
+            let op_join = Operator {
+                children: vec![create_scan(), create_scan()],
+                op_struct: Some(OpStruct::HashJoin(spark_operator::HashJoin {
+                    left_join_keys: vec![create_bound_reference(0)],
+                    right_join_keys: vec![create_bound_reference(0)],
+                    join_type: spark_operator::JoinType::Inner as i32,
+                    build_side: build_side as i32,
+                    dynamic_filter_enabled,
+                    spill_enabled,
+                    ..Default::default()
+                })),
+                ..Default::default()
+            };
+            let (_, _, plan) = PhysicalPlanner::default()
+                .create_plan(&op_join, &mut vec![], 1)
+                .unwrap();
+            Arc::clone(&plan.native_plan)
+        };
+
+        let build_left = plan(BuildSide::BuildLeft, true, false);
+        assert!(build_left.downcast_ref::<SpillingHashJoinExec>().is_some());
+        // It keeps the name of the join it runs.
+        assert_eq!("HashJoinExec", build_left.name());
+
+        // The projection that `swap_inputs` adds stays above the spilling join.
+        let build_right = plan(BuildSide::BuildRight, true, false);
+        let projection = build_right
+            .downcast_ref::<ProjectionExec>()
+            .expect("swap_inputs adds a projection for an inner join");
+        assert!(projection
+            .input()
+            .downcast_ref::<SpillingHashJoinExec>()
+            .is_some());
+
+        // Not asked to spill, or asked for a runtime filter: the plain join.
+        assert!(plan(BuildSide::BuildLeft, false, false)
+            .downcast_ref::<HashJoinExec>()
+            .is_some());
+        assert!(plan(BuildSide::BuildLeft, true, true)
+            .downcast_ref::<SpillingHashJoinExec>()
+            .is_none());
+    }
+
+    #[test]
     fn spark_plan_metrics_hash_join() {
         let op_scan = create_scan();
         let op_join = Operator {
@@ -6289,6 +6376,8 @@ mod tests {
                 build_side: 0,
                 null_aware_anti_join: false,
                 dynamic_filter_enabled: false,
+                spill_enabled: false,
+                spill_max_build_buffer_bytes: 0,
             })),
         };
 
