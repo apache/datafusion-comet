@@ -572,7 +572,7 @@ In priority order.
      a task's share by the same fraction, completes every TPC-H query in both arms at 1, 2 and 16 GiB, with no
      task retried, in up to 3% more total time. At 1 GiB the sort-merge join takes 277.6 s instead of 272.1 s, and
      the spilling join completes all 22 queries in 248.1 s, q21 in 34.0 s. It changes when every Comet operator
-     spills, so it belongs in an issue and a pull request of its own.
+     spills, so it is tracked on its own, in [#7088].
    - The join can also hold back by itself, keeping resident only part of what the pool grants when its probe side
      has operators in the same native plan that need memory. With its build buffer capped at 64 MiB by
      `maxBuildBufferBytes`, q21 completes in 33.9 s.
@@ -633,6 +633,10 @@ In priority order.
    - A forced hash join can be far slower than the sort-merge join when its output is far larger than its inputs,
      with or without spilling: TPC-DS q72 takes 1610 s with it and 378 s without it. Forcing the hash join by
      default needs a guard on the join's fan-out as well as on its build side, or a faster hash join for that case.
+     DataFusion tracks the cost in [apache/datafusion#17494]: for each probe row the hash join walks a chain of the
+     build rows with its key, and once the build side no longer fits in the cache, most steps miss. A DataFusion
+     reproduction with q72's shape, 16 partitions of about 4M build rows with 100 rows a key, takes about 60 s
+     with the hash join and 12 s with the sort-merge join, on DataFusion 55.2 and on main.
 6. **Take what was learned upstream.** Search for existing issues before filing any.
    - Report to [apache/datafusion#24768]: joining each bucket with a stock `HashJoinExec`, the chunked fallback
      for each join type, and the Bloom filters that keep unmatched probe rows off disk.
@@ -677,8 +681,10 @@ code is in `native/operators/src/spilling_hash_join/`, and `mod.rs` there gives 
 [#6384]: https://github.com/apache/datafusion-comet/pull/6384
 [#6785]: https://github.com/apache/datafusion-comet/pull/6785
 [#7057]: https://github.com/apache/datafusion-comet/pull/7057
+[#7088]: https://github.com/apache/datafusion-comet/issues/7088
 [apache/arrow-rs#8423]: https://github.com/apache/arrow-rs/issues/8423
 [apache/datafusion#17340]: https://github.com/apache/datafusion/issues/17340
+[apache/datafusion#17494]: https://github.com/apache/datafusion/issues/17494
 [apache/datafusion#24592]: https://github.com/apache/datafusion/pull/24592
 [apache/datafusion#24768]: https://github.com/apache/datafusion/issues/24768
 [apache/datafusion#25217]: https://github.com/apache/datafusion/pull/25217
