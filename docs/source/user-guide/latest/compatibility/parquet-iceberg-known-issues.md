@@ -58,11 +58,6 @@ for production, so do not turn it off to avoid an entry on this page.
   read back wrong inside lists written in a legacy layout, as Hive and
   `spark.sql.parquet.writeLegacyFormat=true` write them
   ([#7029](https://github.com/apache/datafusion-comet/issues/7029)).
-- **A struct or array with none of its requested fields in the file.** Spark returns NULL for the
-  column. Comet returns a non-null struct or array that holds NULLs. This applies to Spark 3.4, 3.5
-  and 4.0, and to Spark 4.1 and later with
-  `spark.sql.legacy.parquet.returnNullStructIfAllFieldsMissing=true`
-  ([#7030](https://github.com/apache/datafusion-comet/issues/7030)).
 - **Nested BINARY values that are not valid UTF-8, read as STRING.** This applies to a BINARY
   column without the UTF8 annotation that is read as `string`, through the read schema or
   `spark.sql.parquet.binaryAsString=true`. Spark returns the bytes. Comet returns NULL for each
@@ -92,12 +87,6 @@ for production, so do not turn it off to avoid an entry on this page.
 
 ### Iceberg reads
 
-- **Migrated tables that use a name mapping.** The `migrate`, `snapshot` and `add_files`
-  procedures set `schema.name-mapping.default` for files without Iceberg field ids. When a query
-  also reads a top-level primitive column, the native scan returns NULL for nested fields (struct
-  fields, list elements and map values). Filters on those fields then select the wrong rows
-  ([#6790](https://github.com/apache/datafusion-comet/issues/6790)). The fix needs an iceberg-rust
-  upgrade ([#6934](https://github.com/apache/datafusion-comet/issues/6934)).
 - **Data files with neither field ids nor a name mapping.** Spark reads every nested field of such
   a file as NULL, and the native scan returns the values stored in the file
   ([#6794](https://github.com/apache/datafusion-comet/issues/6794)).
