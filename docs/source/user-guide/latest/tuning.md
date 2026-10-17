@@ -29,8 +29,10 @@ guide is split into the following pages:
   implementations, and shuffle compression.
 - [Remote Shuffle with Celeborn](tuning/celeborn.md): bounding frame sizes and memory admission
   for native remote shuffle.
-- [Scan Tuning](tuning/scans.md): Parquet filter pushdown, Parquet split sizing, and Iceberg data
-  file concurrency.
+- [Parquet Scan Tuning](parquet.md#tuning): row filter pushdown and late materialization, and
+  sizing splits so that row groups spread evenly across scan tasks.
+- [Iceberg Scan Tuning](iceberg.md#tuning): reading data files in parallel with
+  `spark.comet.scan.icebergNative.dataFileConcurrencyLimit`.
 - [Operator Tuning](tuning/operators.md): joins, adaptive partial aggregation, and sorting on
   floating-point values.
 - [Reducing Row/Columnar Conversion Overhead](tuning/transitions.md): stages in which many

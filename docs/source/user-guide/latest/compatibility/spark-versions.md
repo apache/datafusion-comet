@@ -43,7 +43,7 @@ release than on the other supported versions. We recommend moving to Spark 3.5 o
 - **Extra `SparkException` layer in Parquet schema mismatch errors**: when a Parquet read is
   rejected because a file's type cannot be converted to the requested type, the error's cause chain
   has one more `SparkException` layer than Spark's own reader produces.
-  See [Parquet Compatibility](scans.md#schema-mismatch-handling) for details.
+  See [Parquet](../parquet.md#schema-mismatch-handling) for details.
 
 ## Spark 3.5
 
@@ -54,7 +54,7 @@ Spark 3.5.9 is supported with Java 17 and Scala 2.12/2.13.
 - **Extra `SparkException` layer in Parquet schema mismatch errors**: when a Parquet read is
   rejected because a file's type cannot be converted to the requested type, the error's cause chain
   has one more `SparkException` layer than Spark's own reader produces.
-  See [Parquet Compatibility](scans.md#schema-mismatch-handling) for details.
+  See [Parquet](../parquet.md#schema-mismatch-handling) for details.
 
 ## Spark 4.0
 
