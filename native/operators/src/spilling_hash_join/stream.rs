@@ -40,7 +40,10 @@ use parking_lot::Mutex;
 
 use super::bloom::KeyFilter;
 use super::chunked::ChunkedPair;
-use super::fallback::{sort_merge_join, JoinProgress, ProbeHandoff, SortMergeFallback};
+use super::fallback::{
+    sort_memory, sort_merge_join, JoinProgress, ProbeHandoff, SortMergeBuild, SortMergeFallback,
+    SortedBuild,
+};
 use super::memory::{
     try_reserve, BudgetPool, BuildMemory, BuildMemoryEstimator, PerfectHashConfig,
 };
@@ -449,8 +452,8 @@ impl Driver {
                             unreachable!()
                         };
                         if let Some((handoff, build)) = self.watched.take() {
-                            if let Some(probe) = handoff.take_switched_input() {
-                                self.switch(build, probe, after)?;
+                            if let Some((probe, sort_memory)) = handoff.take_switched_input() {
+                                self.switch(build, probe, sort_memory, after)?;
                                 continue;
                             }
                         }
@@ -921,7 +924,11 @@ impl Driver {
             .saturating_sub(self.held.size());
         self.held.grow(extra);
         let budget = budget + extra;
-        let (handoff, probe) = ProbeHandoff::new(probe, fallback);
+        // The inner join drops its hash table when it switches, and the build side is sorted in
+        // the memory reserved for the table and what the handoff reserves beyond it.
+        let needed = sort_memory(build.num_rows(), self.spec.template.on().len())
+            .saturating_sub(self.inner.size());
+        let (handoff, probe) = ProbeHandoff::new(probe, fallback, self.held.new_empty(), needed);
         let join = self.inner_join(
             batches_stream(self.spec.build_schema(), vec![build.clone()]),
             probe,
@@ -933,21 +940,31 @@ impl Driver {
     }
 
     /// Joins `build` with `probe`, the probe input that an inner join over `build` left unread
-    /// when it switched, by a sort-merge join, and then carries on as `after` says.
+    /// when it switched, by a sort-merge join, and then carries on as `after` says. `sort_memory`
+    /// is what the handoff reserved for sorting `build`.
     fn switch(
         &mut self,
         build: RecordBatch,
         probe: SendableRecordBatchStream,
+        sort_memory: MemoryReservation,
         after: After,
     ) -> Result<()> {
-        // The inner join has dropped what it reserved, and the sorts reserve what they hold.
-        self.held.free();
-        self.inner.free();
         self.concat.free();
         self.sort_merge = true;
         self.sort_merge_joins.add(1);
-        let build = batches_stream(self.spec.build_schema(), vec![build]);
-        let output = sort_merge_join(&self.spec.template, build, probe, Arc::clone(&self.context))?;
+        // The inner join has dropped its hash table, and the build side is sorted in the memory
+        // reserved for the table and by the handoff. The build side stays held until the
+        // sort-merge join ends, and the order of its rows takes the table's place. The sort of the
+        // probe side reserves what it holds.
+        let build = SortedBuild::try_new(&self.spec.template, build)?;
+        drop(sort_memory);
+        self.inner.resize(build.order_size());
+        let output = sort_merge_join(
+            &self.spec.template,
+            SortMergeBuild::Sorted(build),
+            probe,
+            Arc::clone(&self.context),
+        )?;
         self.phase = Phase::Running(output, after);
         Ok(())
     }
@@ -964,7 +981,12 @@ impl Driver {
             Some(file) => file.read(&self.probe_reader)?,
             None => batches_stream(self.spec.probe_schema(), vec![]),
         };
-        let output = sort_merge_join(&self.spec.template, build, probe, Arc::clone(&self.context))?;
+        let output = sort_merge_join(
+            &self.spec.template,
+            SortMergeBuild::Unsorted(build),
+            probe,
+            Arc::clone(&self.context),
+        )?;
         self.phase = Phase::Running(output, After::Join);
         Ok(())
     }

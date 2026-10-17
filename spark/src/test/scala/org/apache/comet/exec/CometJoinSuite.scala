@@ -2295,3 +2295,14 @@ class CometJoinSpillingSuite extends CometJoinSuite {
   override protected def sparkConf: SparkConf =
     super.sparkConf.set(CometConf.COMET_EXEC_HASH_JOIN_SPILL_MAX_BUILD_BUFFER_BYTES.key, "1")
 }
+
+/**
+ * [[CometJoinSuite]] with every native shuffled inner hash join that can spill switching to a
+ * sort-merge join after its first probe batch, so that each inner join that suite runs as a
+ * shuffled hash join also runs through the sort-merge fallback.
+ */
+class CometJoinSortMergeFallbackSuite extends CometJoinSuite {
+  override protected def sparkConf: SparkConf =
+    super.sparkConf
+      .set(CometConf.COMET_EXEC_HASH_JOIN_SPILL_SORT_MERGE_FALLBACK_ALWAYS.key, "true")
+}

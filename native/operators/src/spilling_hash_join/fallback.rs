@@ -41,17 +41,25 @@
 //! rest of the probe input. Each probe row is joined by one of the two, which is exact for inner
 //! joins, the only join type that switches. The spilled pairs that follow are joined by sort-merge
 //! joins too.
+//!
+//! The build side is one batch in memory, which a `SortExec` could sort only by reserving twice its
+//! size at once. So the operator sorts the batch's row indices by the join keys instead, and the
+//! sort-merge join reads the rows in that order. The join switches only once the memory for that
+//! sort is reserved, beyond what the inner join's hash table, which it drops, had reserved.
 
 use std::fmt::Debug;
+use std::mem::size_of;
 use std::pin::Pin;
 use std::sync::Arc;
 use std::task::{ready, Context, Poll};
 
-use arrow::compute::SortOptions;
+use arrow::array::{Array, UInt32Array};
+use arrow::compute::{lexsort_to_indices, take_record_batch, SortColumn, SortOptions};
 use arrow::datatypes::{Schema, SchemaRef};
 use arrow::record_batch::RecordBatch;
 use datafusion::common::tree_node::{Transformed, TransformedResult, TreeNode};
 use datafusion::common::{internal_datafusion_err, internal_err, JoinSide, Result};
+use datafusion::execution::memory_pool::MemoryReservation;
 use datafusion::execution::TaskContext;
 use datafusion::physical_expr::expressions::Column;
 use datafusion::physical_expr::{LexOrdering, PhysicalExprRef, PhysicalSortExpr};
@@ -60,10 +68,12 @@ use datafusion::physical_plan::joins::{HashJoinExec, SortMergeJoinExec};
 use datafusion::physical_plan::metrics::{Metric, MetricValue, MetricsSet};
 use datafusion::physical_plan::projection::ProjectionExec;
 use datafusion::physical_plan::sorts::sort::SortExec;
+use datafusion::physical_plan::stream::RecordBatchStreamAdapter;
 use datafusion::physical_plan::{ExecutionPlan, RecordBatchStream, SendableRecordBatchStream};
 use futures::{Stream, StreamExt};
 use parking_lot::Mutex;
 
+use super::memory::try_reserve;
 use super::source::StreamSourceExec;
 
 /// When an inner join switches to a sort-merge join. See the [module documentation](self).
@@ -157,21 +167,33 @@ struct HandoffState {
     input: Option<SendableRecordBatchStream>,
     /// Set once the inner join has started executing.
     progress: Option<JoinProgress>,
+    /// What sorting the build side needs beyond what the inner join's hash table has reserved,
+    /// which the join reserves here before it switches.
+    sort_memory: MemoryReservation,
+    sort_memory_needed: usize,
     switched: bool,
+    /// The probe batch the join switched before, which the sort-merge join reads first.
+    next: Option<RecordBatch>,
 }
 
 impl ProbeHandoff {
-    /// Returns the handoff, and the stream for the inner join to read `input` through.
+    /// Returns the handoff, and the stream for the inner join to read `input` through. The join
+    /// switches only once `sort_memory` has reserved `sort_memory_needed` bytes.
     pub(super) fn new(
         input: SendableRecordBatchStream,
         fallback: SortMergeFallback,
+        sort_memory: MemoryReservation,
+        sort_memory_needed: usize,
     ) -> (Arc<Self>, SendableRecordBatchStream) {
         let schema = input.schema();
         let handoff = Arc::new(Self {
             state: Mutex::new(HandoffState {
                 input: Some(input),
                 progress: None,
+                sort_memory,
+                sort_memory_needed,
                 switched: false,
+                next: None,
             }),
             fallback,
         });
@@ -187,14 +209,20 @@ impl ProbeHandoff {
         self.state.lock().progress = progress;
     }
 
-    /// The probe input that the inner join left unread when it switched, or None if it did not.
-    pub(super) fn take_switched_input(&self) -> Option<SendableRecordBatchStream> {
+    /// The probe input that the inner join left unread when it switched, and the memory reserved
+    /// for sorting its build side, or None if it did not switch.
+    pub(super) fn take_switched_input(
+        &self,
+    ) -> Option<(SendableRecordBatchStream, MemoryReservation)> {
         let mut state = self.state.lock();
-        if state.switched {
-            state.input.take()
-        } else {
-            None
+        if !state.switched {
+            return None;
         }
+        let input = state.input.take()?;
+        let schema = input.schema();
+        let rest = futures::stream::iter(state.next.take().map(Ok)).chain(input);
+        let rest = Box::pin(RecordBatchStreamAdapter::new(schema, rest));
+        Some((rest, state.sort_memory.take()))
     }
 }
 
@@ -213,24 +241,29 @@ impl Stream for HandoffStream {
         if state.switched {
             return Poll::Ready(None);
         }
+        let Some(input) = state.input.as_mut() else {
+            return Poll::Ready(None);
+        };
+        let batch = match ready!(input.poll_next_unpin(cx)) {
+            Some(Ok(batch)) => batch,
+            None => {
+                state.input = None;
+                return Poll::Ready(None);
+            }
+            error => return Poll::Ready(error),
+        };
+        // The join switches only with probe input left to give the sort-merge join. Without the
+        // memory to sort the build side, it carries on, and asks again at the next batch.
         let switch = state
             .progress
             .as_ref()
             .is_some_and(|progress| progress.should_switch(&self.handoff.fallback));
-        if switch {
+        if switch && try_reserve(&state.sort_memory, state.sort_memory_needed)? {
             state.switched = true;
+            state.next = Some(batch);
             return Poll::Ready(None);
         }
-        let Some(input) = state.input.as_mut() else {
-            return Poll::Ready(None);
-        };
-        match ready!(input.poll_next_unpin(cx)) {
-            None => {
-                state.input = None;
-                Poll::Ready(None)
-            }
-            batch => Poll::Ready(batch),
-        }
+        Poll::Ready(Some(Ok(batch)))
     }
 }
 
@@ -240,12 +273,72 @@ impl RecordBatchStream for HandoffStream {
     }
 }
 
+/// The memory that sorting the row indices of `rows` build rows by `keys` join keys can take: the
+/// indices, and while they are sorted, an index and a key or a reference to it for each row.
+pub(super) fn sort_memory(rows: usize, keys: usize) -> usize {
+    rows.saturating_mul(2 * size_of::<u32>() + keys * 24)
+}
+
+/// A build batch and the order of its rows by the join keys, in which a sort-merge join reads them.
+pub(super) struct SortedBuild {
+    batch: RecordBatch,
+    order: UInt32Array,
+}
+
+impl SortedBuild {
+    /// Sorts the rows of `batch`, the build side of `template`, by its join keys.
+    pub(super) fn try_new(template: &HashJoinExec, batch: RecordBatch) -> Result<Self> {
+        let rows = batch.num_rows();
+        let keys = template
+            .on()
+            .iter()
+            .map(|(key, _)| {
+                Ok(SortColumn {
+                    values: key.evaluate(&batch)?.into_array(rows)?,
+                    options: Some(SortOptions::default()),
+                })
+            })
+            .collect::<Result<Vec<_>>>()?;
+        let order = lexsort_to_indices(&keys, None)?;
+        Ok(Self { batch, order })
+    }
+
+    /// The memory that the order of the rows takes.
+    pub(super) fn order_size(&self) -> usize {
+        self.order.get_array_memory_size()
+    }
+
+    /// The rows in order, in batches of up to `batch_size` rows.
+    fn into_stream(self, batch_size: usize) -> SendableRecordBatchStream {
+        let Self { batch, order } = self;
+        let schema = batch.schema();
+        let rows = order.len();
+        let batch_size = batch_size.max(1);
+        let batches = (0..rows).step_by(batch_size).map(move |start| {
+            let indices = order.slice(start, batch_size.min(rows - start));
+            Ok(take_record_batch(&batch, &indices)?)
+        });
+        Box::pin(RecordBatchStreamAdapter::new(
+            schema,
+            futures::stream::iter(batches),
+        ))
+    }
+}
+
+/// The build side of a sort-merge join.
+pub(super) enum SortMergeBuild {
+    /// The build batch of an inner join that switched, read in order.
+    Sorted(SortedBuild),
+    /// The build side of a spilled pair, which a `SortExec` sorts.
+    Unsorted(SendableRecordBatchStream),
+}
+
 /// Joins `build` with `probe` by a sort-merge join, as `template`, an inner join, would join them,
 /// and returns the output, with `template`'s schema. The sorts reserve their memory from
 /// `context`'s pool, and spill when it runs out.
 pub(super) fn sort_merge_join(
     template: &HashJoinExec,
-    build: SendableRecordBatchStream,
+    build: SortMergeBuild,
     probe: SendableRecordBatchStream,
     context: Arc<TaskContext>,
 ) -> Result<SendableRecordBatchStream> {
@@ -274,8 +367,14 @@ pub(super) fn sort_merge_join(
         .iter()
         .map(|(_, key)| Arc::clone(key))
         .collect();
+    let build = match build {
+        SortMergeBuild::Sorted(build) => {
+            StreamSourceExec::new_arc(build.into_stream(context.session_config().batch_size()))
+        }
+        SortMergeBuild::Unsorted(build) => sorted(build, build_keys)?,
+    };
     let join: Arc<dyn ExecutionPlan> = Arc::new(SortMergeJoinExec::try_new(
-        sorted(build, build_keys)?,
+        build,
         sorted(probe, probe_keys)?,
         template.on().to_vec(),
         template.filter().map(left_columns_first).transpose()?,

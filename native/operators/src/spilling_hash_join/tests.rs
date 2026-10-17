@@ -32,7 +32,9 @@ use arrow::util::display::{ArrayFormatter, FormatOptions};
 use datafusion::common::config::SpillCompression;
 use datafusion::common::{DataFusionError, JoinSide, JoinType, NullEquality, Result};
 use datafusion::datasource::memory::MemorySourceConfig;
-use datafusion::execution::memory_pool::{GreedyMemoryPool, MemoryPool, MemoryReservation};
+use datafusion::execution::memory_pool::{
+    GreedyMemoryPool, MemoryConsumer, MemoryPool, MemoryReservation,
+};
 use datafusion::execution::runtime_env::RuntimeEnvBuilder;
 use datafusion::execution::TaskContext;
 use datafusion::logical_expr::Operator;
@@ -40,11 +42,16 @@ use datafusion::physical_expr::expressions::{BinaryExpr, Column};
 use datafusion::physical_expr::PhysicalExprRef;
 use datafusion::physical_plan::joins::utils::{ColumnIndex, JoinFilter};
 use datafusion::physical_plan::joins::{HashJoinExec, PartitionMode};
+use datafusion::physical_plan::metrics::{
+    Count, Metric, MetricValue, MetricsSet, RatioMetrics, Time,
+};
 use datafusion::physical_plan::projection::ProjectionExec;
 use datafusion::physical_plan::{collect, ExecutionPlan};
 use datafusion::prelude::SessionConfig;
-use futures::StreamExt;
+use futures::{StreamExt, TryStreamExt};
 
+use super::fallback::{JoinProgress, ProbeHandoff};
+use super::source::batches_stream;
 use super::{SortMergeFallback, SpillingHashJoinConfig, SpillingHashJoinExec};
 
 const JOIN_TYPES: [JoinType; 10] = [
@@ -1108,38 +1115,115 @@ async fn sort_merge_fallback() -> Result<()> {
         },
         22,
     );
-    for with_filter in [false, true] {
+    // Probe rows match about 50 build rows each on `k`, and rarely on `k` and `s`, where a spilled
+    // pair may have matched nothing before its last probe batch, and then does not switch.
+    for (keys, with_filter, spilled_switches) in [
+        (&["k"][..], false, 2),
+        (&["k"][..], true, 2),
+        (&["k", "v"][..], false, 2),
+        (&["k", "s"][..], true, 0),
+    ] {
         let spilled = check(
             &build,
             &probe,
             JoinType::Inner,
             with_filter,
-            &["k"],
+            keys,
             always_switch(None),
             None,
         )
         .await?;
         assert_eq!(spilled.spilled_buckets, 0);
-        assert_eq!(spilled.sort_merge_joins, 1, "filter {with_filter}");
+        assert_eq!(
+            spilled.sort_merge_joins, 1,
+            "{keys:?}, filter {with_filter}"
+        );
 
         let spilled = check(
             &build,
             &probe,
             JoinType::Inner,
             with_filter,
-            &["k"],
+            keys,
             always_switch(Some(16 * 1024)),
             None,
         )
         .await?;
         assert!(spilled.spilled_buckets > 0);
         assert!(
-            spilled.sort_merge_joins > 1,
-            "filter {with_filter}: {spilled:?}"
+            spilled.sort_merge_joins >= spilled_switches,
+            "{keys:?}, filter {with_filter}: {spilled:?}"
         );
         assert_eq!(spilled.split_buckets, 0);
         assert_eq!(spilled.chunked_buckets, 0);
     }
+    Ok(())
+}
+
+/// The metrics of an inner join that has read `probe_rows` probe rows and matched `matches`
+/// build rows, in no time.
+fn join_progress(probe_rows: usize, matches: usize) -> MetricsSet {
+    let mut metrics = MetricsSet::new();
+    let count = Count::new();
+    count.add(probe_rows);
+    let fanout = RatioMetrics::new();
+    fanout.add_part(matches);
+    fanout.add_total(probe_rows);
+    for value in [
+        MetricValue::Count {
+            name: "input_rows".into(),
+            count,
+        },
+        MetricValue::Ratio {
+            name: "avg_fanout".into(),
+            ratio_metrics: fanout,
+        },
+        MetricValue::Time {
+            name: "join_time".into(),
+            time: Time::new(),
+        },
+        MetricValue::Time {
+            name: "build_time".into(),
+            time: Time::new(),
+        },
+    ] {
+        metrics.push(Arc::new(Metric::new(value, None)));
+    }
+    metrics
+}
+
+/// An inner join switches only once it has reserved the memory to sort its build side, and reads
+/// its probe input on until then.
+#[tokio::test]
+async fn sort_merge_fallback_waits_for_memory() -> Result<()> {
+    let probe = table(3000, FEW_KEYS, 29);
+    let total: usize = probe.iter().map(RecordBatch::num_rows).sum();
+    let pool: Arc<dyn MemoryPool> = Arc::new(GreedyMemoryPool::new(64 * 1024));
+    for (needed, switches) in [(64 * 1024 + 1, false), (64 * 1024, true)] {
+        let memory = MemoryConsumer::new("sort").register(&pool);
+        let input = batches_stream(schema(), probe.clone());
+        let (handoff, mut join_input) =
+            ProbeHandoff::new(input, SortMergeFallback::always(), memory, needed);
+        handoff.watch(JoinProgress::find(&join_progress(1, 1)));
+        let mut joined = 0;
+        while let Some(batch) = join_input.next().await.transpose()? {
+            joined += batch.num_rows();
+        }
+        match handoff.take_switched_input() {
+            Some((rest, memory)) => {
+                assert!(switches);
+                assert_eq!(memory.size(), needed);
+                let rest: Vec<RecordBatch> = rest.try_collect().await?;
+                assert_eq!(joined, 0);
+                assert_eq!(rest.iter().map(RecordBatch::num_rows).sum::<usize>(), total);
+            }
+            None => {
+                assert!(!switches);
+                assert_eq!(joined, total);
+            }
+        }
+    }
+    assert_eq!(pool.reserved(), 0);
     Ok(())
 }
 

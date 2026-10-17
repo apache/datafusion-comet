@@ -325,11 +325,15 @@ counts, and even those would not show how many probe rows match. The run does, t
 
 The inner join reads its probe input through a handoff that checks the rule whenever the join asks for a batch.
 When the rule holds, the handoff ends the input, the inner join finishes the batch it has, and a DataFusion
-`SortMergeJoinExec` over two `SortExec`s joins the build side with the rest of the probe input. The sorts reserve
-from the task's pool and spill. So that the sort-merge join can read the build side without a second copy, an
-inner join that may switch gets its build side as one batch, which is the copy it would otherwise make itself.
-After a switch, the spilled pairs that follow are joined by sort-merge joins too, read from their files, and are
-neither split nor joined in chunks.
+`SortMergeJoinExec` joins the build side with the rest of the probe input, which a `SortExec` sorts, reserving
+from the task's pool and spilling. An inner join that may switch gets its build side as one batch, which is the
+copy it would otherwise make itself, so that the sort-merge join can read the same batch. A `SortExec` could sort
+that batch only by reserving twice its size at once, and could not spill it, so the operator sorts the batch's row
+indices by the join keys instead, and the sort-merge join reads the rows in that order. The memory for that sort
+is what the inner join's hash table, which it drops, had reserved, and the handoff reserves what the sort may need
+beyond it before it switches. Without that memory the join carries on as a hash join, and tries again at the next
+batch. After a switch, the spilled pairs that follow are joined by sort-merge joins too, with both sides read from
+their files and sorted by `SortExec`s, and are neither split nor joined in chunks.
 
 The sort-merge join takes the inner join's residual filter with its columns reordered. In DataFusion 55,
 `SortMergeJoinExec` passes a filter the left side's columns and then the right side's, whatever order the filter
@@ -707,8 +711,9 @@ code is in `native/operators/src/spilling_hash_join/`, and `mod.rs` there gives 
 - Native tests, from `native/`: `cargo test -p datafusion-comet-operators --lib spilling_hash_join`. The planner
   test, `cargo test -p datafusion-comet --lib -- hash_join`, links against the JVM, so on macOS it needs
   `DYLD_LIBRARY_PATH` set to the JDK's `lib/server` directory.
-- Spark tests, after `make`: `./mvnw test -Dtest=none -Dsuites="org.apache.comet.exec.CometSpillingHashJoinSuite,org.apache.comet.exec.CometSpillingHashJoinGreedyPoolSuite,org.apache.comet.exec.CometJoinSpillingSuite,org.apache.comet.exec.CometJoinSuite"`.
-  The four suites are listed in the Linux and macOS PR workflows.
+- Spark tests, after `make`: `./mvnw test -Dtest=none -Dsuites="org.apache.comet.exec.CometSpillingHashJoinSuite,org.apache.comet.exec.CometSpillingHashJoinGreedyPoolSuite,org.apache.comet.exec.CometJoinSpillingSuite,org.apache.comet.exec.CometJoinSortMergeFallbackSuite,org.apache.comet.exec.CometJoinSuite"`.
+  The five suites are listed in the Linux and macOS PR workflows. `CometJoinSortMergeFallbackSuite` runs all of
+  `CometJoinSuite` with every inner join that can spill switching to a sort-merge join after its first probe batch.
 - The native benchmark, from `native/`: `cargo bench -p datafusion-comet-operators --bench spilling_hash_join`.
   Each case prints what it spilled before it is timed. To profile one case, pass `--profile-time 20 20MiB_lz4_frame`
   after `--`. On a machine with two kinds of cores, such as the 7950X3D, pin it with `taskset`, or the in-memory
