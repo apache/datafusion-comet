@@ -216,7 +216,7 @@ A write is eligible only when ALL of the following hold:
 | resolved `table.locationProvider()`                                                                                                         | Iceberg's built-in `DefaultLocationProvider`                                                                                                                                                                                                                                                                                                                                                                                                                                    |
 | Hadoop S3A settings for an `s3` / `s3a` data location                                                                                       | only `fs.s3a.access.key`, `secret.key`, `session.token`, `endpoint`, `endpoint.region`, and `path.style.access`, including their `fs.s3a.bucket.<data-bucket>.*` forms; any other effective `fs.s3a.*` setting falls back, apart from the ignored settings listed below                                                                                                                                                                                                         |
 | Iceberg `FileIO` S3 settings for an `s3` / `s3a` data location                                                                              | the S3 endpoint, region, static/session credentials, path-style, SSE (`none`, `s3`, `kms`, or `custom`; not `dsse-kms`), assume-role, anonymous/config-chain settings parsed by the pinned iceberg-rust version, plus Comet's credential-provider class and built-in web-identity properties. When a custom provider is configured, its vendor-owned `s3.*` / `client.*` properties are also forwarded; unsupported Iceberg-defined S3 settings still fall back                 |
-| partition spec                                                                                                                              | any, except an identity partition on a `float` or `double` column, or a `void` field whose source column was dropped beside a live field (see below)                                                                                                                                                                                                                                                                                                                            |
+| partition spec                                                                                                                              | any, except a `void` field whose source column was dropped beside a live field (see below)                                                                                                                                                                                                                                                                                                                                                                                      |
 | column types                                                                                                                                | any except `uuid` (Spark plans it as a string; no Arrow cast reaches `fixed(16)`) and the v3 types `variant`, `unknown`, `timestamp_ns`, `geometry` and `geography`                                                                                                                                                                                                                                                                                                             |
 
 Within the namespaces that shape data-file bytes — `write.parquet.*` and `parquet.*` —
@@ -271,13 +271,6 @@ data-bucket name, so configuration for a longer dotted bucket does not by itself
 native write. If Iceberg's AWS property classes cannot be loaded, vendor `s3.*` / `client.*` keys
 fall back too and planning still completes. The fall-back reason reports only sorted property
 names, never their values, so credentials and tokens do not enter EXPLAIN or plan logs.
-
-An identity partition on a `float` or `double` column falls back. iceberg-rust compares float
-partition values with an equality that treats `-0.0` and `0.0` as one value, so the native writer
-would put rows with either value in the same partition, where iceberg-java writes two. A read
-that prunes on the other value's partition would then miss rows. The fall-back stays until
-iceberg-rust distinguishes the two values
-([apache/iceberg-rust#3325](https://github.com/apache/iceberg-rust/issues/3325)).
 
 On a format-version 3 table with Iceberg 1.10 or newer, a write that rewrites existing rows falls
 back. Copy-on-write `DELETE`, `UPDATE` and `MERGE` and `rewrite_data_files` write the row lineage
@@ -429,9 +422,7 @@ a data file but not what any reader computes from it:
   per task. The native writer zero-pads the task attempt id and counts from `00000`; iceberg-java
   leaves the id unpadded and counts from `00001`.
 - Partition directory names match iceberg-java 1.8+'s `PartitionSpec.partitionToPath` for every
-  partition type the native writer accepts. Identity partitions on `float` and `double` columns
-  fall back (see [Native Parquet write eligibility](#native-parquet-write-eligibility)), so
-  iceberg-java names those directories itself. On Iceberg 1.5.x,
+  partition type the native writer accepts. On Iceberg 1.5.x,
   which the Spark 3.4 profile pins, iceberg-java itself spelled `timestamp` and `timestamptz`
   directories with `LocalDateTime.toString()` / `OffsetDateTime.toString()`
   (`ts=1969-12-31T23:59:58.500Z`) and left the partition field name unescaped; Comet uses the
@@ -494,9 +485,14 @@ iceberg-java's _writer-tracked_ state would have recorded, and both are analyzed
   change pruning decisions.
 - On Iceberg 1.9+, manifest `value_counts` / `null_value_counts` for float/double columns
   nested under a nullable struct count rows whose parent struct is null (they come from the
-  parquet footer), while iceberg-java's writer-tracked counts do not. Both counts inflate by
-  the same amount, so the derived null ratios and `IS NULL` / `IS NOT NULL` pruning decisions
-  are unaffected.
+  parquet footer), while iceberg-java's writer-tracked counts do not. The native counts are the
+  correct ones. iceberg-java's counts leave out rows whose struct is null. When every non-null
+  struct in a file holds a value, iceberg-java records a null count of 0, and `IS NULL` prunes a
+  file that contains matching rows
+  ([apache/iceberg#17561](https://github.com/apache/iceberg/issues/17561)). The native counts
+  never prune such a file. `IS NOT NULL` pruning is the same for both.
 
 All content not listed above — the logical data, statistics values, and manifest metadata —
-must match iceberg-java exactly, or the write falls back.
+must match iceberg-java exactly, or the write falls back. The open bugs in which a native write
+still differs are listed in
+[Known Issues](compatibility/parquet-iceberg-known-issues.md#iceberg-writes).
