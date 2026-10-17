@@ -34,9 +34,7 @@
 //!   reserved against the task's memory pool. The operator still cannot spill, so a window
 //!   partition that does not fit fails the task with a memory error instead of growing
 //!   untracked. A window partition spread over several batches needs up to twice its size,
-//!   because the copy is reserved while the batches it was made from still are. The consumer
-//!   registers with the pool when the first batch is buffered, so that it does not shrink the
-//!   share of a sort below it while the sort reads its input.
+//!   because the copy is reserved while the batches it was made from still are.
 //!
 //! Once DataFusion's `WindowAggExec` does both, this operator can be removed.
 
@@ -253,6 +251,11 @@ struct CometWindowAggStream {
 }
 
 impl CometWindowAggStream {
+    /// Reserves `bytes` more, registering the consumer with the pool on first use.
+    fn grow(&mut self, bytes: usize) -> Result<()> {
+        self.reservation().try_grow(bytes).map_err(with_oom_context)
+    }
+
     fn reservation(&mut self) -> &mut MemoryReservation {
         self.reservation.get_or_insert_with(|| {
             MemoryConsumer::new(self.consumer_name.clone()).register(&self.pool)
@@ -273,9 +276,7 @@ impl CometWindowAggStream {
             return Ok(None);
         }
         let added = self.buffered_memory.count_batch(&batch);
-        self.reservation()
-            .try_grow(added)
-            .map_err(with_oom_context)?;
+        self.grow(added)?;
         if self.partition_by_sort_keys.is_empty() {
             self.buffered.push(batch);
             return Ok(None);
@@ -360,9 +361,7 @@ impl CometWindowAggStream {
         // which is not copied. That is exact, where estimating the copy from each batch would
         // charge every batch sliced from one list array for all of its values.
         let copy = self.buffered_memory.count_batch(&batch);
-        self.reservation()
-            .try_grow(copy)
-            .map_err(with_oom_context)?;
+        self.grow(copy)?;
         drop(batches);
 
         let mut partition_results = vec![];
@@ -478,7 +477,9 @@ mod tests {
     use datafusion::common::ScalarValue;
     use datafusion::datasource::memory::MemorySourceConfig;
     use datafusion::datasource::source::DataSourceExec;
-    use datafusion::execution::memory_pool::{GreedyMemoryPool, TrackConsumersPool};
+    use datafusion::execution::memory_pool::{
+        GreedyMemoryPool, MemoryConsumerMetrics, TrackConsumersPool,
+    };
     use datafusion::execution::runtime_env::{RuntimeEnv, RuntimeEnvBuilder};
     use datafusion::execution::FunctionRegistry;
     use datafusion::logical_expr::{
@@ -680,12 +681,16 @@ mod tests {
         (runtime, context)
     }
 
-    fn registered_consumers(runtime: &RuntimeEnv) -> Vec<String> {
+    fn consumer_metrics(runtime: &RuntimeEnv) -> Vec<MemoryConsumerMetrics> {
         runtime
             .memory_pool
             .downcast_ref::<TrackConsumersPool<GreedyMemoryPool>>()
             .unwrap()
             .metrics()
+    }
+
+    fn registered_consumers(runtime: &RuntimeEnv) -> Vec<String> {
+        consumer_metrics(runtime)
             .into_iter()
             .map(|consumer| consumer.name)
             .collect()
@@ -703,11 +708,7 @@ mod tests {
             output.push(batch?);
         }
         // Read the consumer before dropping the stream unregisters it.
-        let consumer = runtime
-            .memory_pool
-            .downcast_ref::<TrackConsumersPool<GreedyMemoryPool>>()
-            .unwrap()
-            .metrics()
+        let consumer = consumer_metrics(&runtime)
             .into_iter()
             .find(|consumer| consumer.name == CONSUMER)
             .unwrap();

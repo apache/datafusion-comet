@@ -663,6 +663,4 @@ A checklist for triaging an executor OOM kill:
 4. Check whether the operators involved can spill at all. `ShuffledHashJoin` cannot, so
    `spark.comet.exec.forceShuffledHashJoin=true` converts a spillable sort-merge join into one that
    is not, for build sides under `spark.comet.exec.forceShuffledHashJoin.maxBuildSize`. Neither can
-   `CometWindowAggExec`, which runs `PERCENT_RANK`, `CUME_DIST`, `NTILE` and the aggregates whose
-   frame ends at `UNBOUNDED FOLLOWING`. It needs up to twice a window partition's size within its
-   share of the pool, and a window partition that does not fit fails the task.
+   `CometWindowAggExec`; see [Window Functions](../user-guide/latest/tuning/operators.md#window-functions).

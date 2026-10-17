@@ -114,13 +114,10 @@ now buffer one window partition at a time and reserve it from Comet's memory poo
 buffer the task's whole input without reserving anything, so a large or skewed task could grow native
 memory past what Comet and Spark could see. A window partition that does not fit in its share of the
 pool now fails the task with a memory error that names the settings to change, where Spark would
-spill. It needs up to twice its size within that share. Comet does not spill these functions yet.
-
-A deployment that ran such a query only because its memory was untracked can fail it now. There is
-no key that restores the untracked behavior. Increase `spark.memory.offHeap.size`, set
-`spark.comet.exec.memoryPool=greedy_unified` to leave every limit to Spark, or set
-`spark.comet.exec.window.enabled=false` to run window functions in Spark. See
-[Window Functions](tuning/operators.md#window-functions).
+spill. A deployment that ran such a query only because its memory was untracked can fail it now.
+There is no key that restores the untracked behavior. See
+[Window Functions](tuning/operators.md#window-functions) for how much memory a window partition
+needs and what to change.
 
 ## Upgrading to Comet 1.1.0
 
