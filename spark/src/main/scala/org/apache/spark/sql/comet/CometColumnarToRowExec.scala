@@ -29,7 +29,7 @@ import scala.util.control.NonFatal
 import org.apache.spark.{broadcast, SparkException}
 import org.apache.spark.rdd.RDD
 import org.apache.spark.sql.catalyst.InternalRow
-import org.apache.spark.sql.catalyst.expressions.{Attribute, SortOrder, UnsafeProjection}
+import org.apache.spark.sql.catalyst.expressions.{Attribute, SortOrder}
 import org.apache.spark.sql.catalyst.expressions.codegen._
 import org.apache.spark.sql.catalyst.expressions.codegen.Block._
 import org.apache.spark.sql.catalyst.plans.physical.Partitioning
@@ -339,7 +339,7 @@ object CometColumnarToRowExec {
     if (useDirectConverter) {
       val schema = StructType(output.map(a => StructField(a.name, a.dataType, a.nullable)))
       val converter = new DirectColumnarToRowConverter(schema)
-      lazy val toUnsafe = UnsafeProjection.create(output, output)
+      lazy val toUnsafe = CometUnsafeProjection.create(output)
       batches.flatMap { batch =>
         numInputBatches += 1
         numOutputRows += batch.numRows().toLong
@@ -360,7 +360,8 @@ object CometColumnarToRowExec {
         }
       }
     } else {
-      val toUnsafe = UnsafeProjection.create(output, output)
+      // Outside whole-stage codegen this runs once per partition, so reuse the generated class.
+      val toUnsafe = CometUnsafeProjection.create(output)
       batches.flatMap { batch =>
         numInputBatches += 1
         numOutputRows += batch.numRows().toLong

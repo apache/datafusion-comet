@@ -31,7 +31,7 @@ use datafusion::{
     physical_expr::*,
     physical_plan::{ExecutionPlan, *},
 };
-use datafusion_comet_common::decode_string_arrays;
+use datafusion_comet_common::{decode_string_arrays, describe_timestamp_label_mismatch};
 use futures::{task::AtomicWaker, Stream};
 use itertools::Itertools;
 use std::{
@@ -54,6 +54,9 @@ pub struct ScanExec {
     pub input_source_description: String,
     pub data_types: Vec<DataType>,
     pub schema: SchemaRef,
+    /// Fail on an input timestamp whose timezone label differs from `data_types` instead of
+    /// casting it. Test-only; see `spark.comet.testing.strictTimestampLabels.enabled`.
+    pub strict_timestamp_labels: bool,
     /// Used in unit tests to mock the input batch; otherwise written by `pull_next` on each
     /// poll.
     pub batch: Arc<Mutex<Option<InputBatch>>>,
@@ -98,7 +101,13 @@ impl ScanExec {
             metrics: metrics_set,
             baseline_metrics,
             schema,
+            strict_timestamp_labels: false,
         })
+    }
+
+    pub fn with_strict_timestamp_labels(mut self, strict: bool) -> Self {
+        self.strict_timestamp_labels = strict;
+        self
     }
 
     /// Unpack all dictionary types because some DataFusion operators
@@ -311,20 +320,44 @@ impl ScanStream<'_> {
         let new_columns: Vec<ArrayRef> = columns
             .iter()
             .zip(schema_fields.iter())
-            .map(|(column, f)| {
+            .enumerate()
+            .map(|(idx, (column, f))| {
                 if column.data_type() != f.data_type() {
+                    self.check_timestamp_labels(idx, f, column)?;
                     let mut timer = self.cast_time.timer();
                     let cast_array = cast_with_options(column, f.data_type(), &self.cast_options);
                     timer.stop();
-                    cast_array
+                    cast_array.map_err(DataFusionError::from)
                 } else {
                     Ok(Arc::clone(column))
                 }
             })
-            .collect::<Result<Vec<_>, _>>()?;
+            .collect::<DataFusionResult<Vec<_>>>()?;
         let options = RecordBatchOptions::new().with_row_count(Some(num_rows));
         RecordBatch::try_new_with_options(Arc::clone(&self.schema), new_columns, &options)
             .map_err(|e| arrow_datafusion_err!(e))
+    }
+
+    /// In strict test runs, rejects an input column whose timestamps are labelled with a
+    /// different timezone than the declared type, rather than letting the cast hide it.
+    fn check_timestamp_labels(
+        &self,
+        idx: usize,
+        field: &Field,
+        column: &ArrayRef,
+    ) -> DataFusionResult<()> {
+        if !self.scan.strict_timestamp_labels {
+            return Ok(());
+        }
+        match describe_timestamp_label_mismatch(field.name(), field.data_type(), column.data_type())
+        {
+            Some(detail) => Err(DataFusionError::Execution(format!(
+                "ScanExec [{}] col[{idx}] labels a timestamp differently from the type Spark \
+                 declared, at {detail}",
+                self.scan.input_source_description
+            ))),
+            None => Ok(()),
+        }
     }
 }
 
@@ -533,5 +566,34 @@ mod import_tests {
         let out = import_column(&col).unwrap();
         let s = out.as_any().downcast_ref::<StringArray>().unwrap();
         assert_eq!(s.value(0), "\u{FFFD}");
+    }
+
+    /// The cast repairs an input timestamp labelled with another zone, which is what hides the
+    /// drift; a strict test run rejects it instead.
+    #[test]
+    fn strict_scan_rejects_relabelled_timestamps() {
+        use arrow::array::TimestampMicrosecondArray;
+        use arrow::datatypes::TimeUnit;
+        use futures::StreamExt;
+
+        let declared = DataType::Timestamp(TimeUnit::Microsecond, Some("UTC".into()));
+        let scan_one_batch = |strict: bool| {
+            let mut scan =
+                ScanExec::new(TEST_EXEC_CONTEXT_ID, None, "test", vec![declared.clone()])
+                    .unwrap()
+                    .with_strict_timestamp_labels(strict);
+            let mut stream = scan.execute(0, Arc::new(TaskContext::default())).unwrap();
+            let column: ArrayRef =
+                Arc::new(TimestampMicrosecondArray::from(vec![1_i64, 2]).with_timezone("Etc/UTC"));
+            scan.set_input_batch(InputBatch::new(vec![column], Some(2)));
+            futures::executor::block_on(stream.next()).unwrap()
+        };
+
+        let batch = scan_one_batch(false).unwrap();
+        assert_eq!(batch.column(0).data_type(), &declared);
+
+        let err = scan_one_batch(true).unwrap_err().to_string();
+        assert!(err.contains("ScanExec [test] col[0]"), "{err}");
+        assert!(err.contains(r#"found Timestamp(µs, "Etc/UTC")"#), "{err}");
     }
 }

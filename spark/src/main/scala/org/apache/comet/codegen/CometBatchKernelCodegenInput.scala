@@ -58,6 +58,7 @@ private[codegen] object CometBatchKernelCodegenInput extends CometTypeShim {
     classOf[TinyIntVector],
     classOf[SmallIntVector],
     classOf[IntVector],
+    classOf[IntervalYearVector],
     classOf[BigIntVector],
     classOf[Float4Vector],
     classOf[Float8Vector],
