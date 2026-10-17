@@ -40,6 +40,7 @@ mod lance_scan;
 use crate::execution::operators::init_csv_datasource_exec;
 use crate::execution::operators::DynamicFilterJoinExec;
 use crate::execution::operators::IcebergScanExec;
+use crate::execution::operators::SortedInputExec;
 use crate::execution::operators::TopKReaderFilterExec;
 use crate::execution::{
     operators::{
@@ -88,7 +89,7 @@ use datafusion::{
     prelude::SessionContext,
 };
 use datafusion_comet_operators::{
-    range_exec, CometFilterExec, CometProjectionExec, ExpandExec, ExplodeExec,
+    range_exec, range_sort_expr, CometFilterExec, CometProjectionExec, ExpandExec, ExplodeExec,
     PartitionedRankLimitExec, SampleExec, WindowFnKind,
 };
 use datafusion_comet_spark_expr::{
@@ -97,6 +98,8 @@ use datafusion_comet_spark_expr::{
     CsvWriteOptions, EvalMode, ListPositionsExpr, SparkArraysZipFunc, SparkBloomFilterVersion,
     SparkListAgg, SparkPercentile, SparkPivotFirst, Subquery, SumInteger, ToCsv,
 };
+use datafusion_datasource::file_scan_config::FileScanConfig;
+use datafusion_datasource::source::DataSourceExec;
 use datafusion_datasource::TableSchema;
 use iceberg::expr::Bind;
 
@@ -2090,7 +2093,7 @@ impl PhysicalPlanner {
             }
             OpStruct::RangeScan(range) => {
                 // A leaf with no JVM input: each task produces its own partition of the range.
-                let range: Arc<dyn ExecutionPlan> = Arc::new(range_exec(
+                let source: Arc<dyn ExecutionPlan> = Arc::new(range_exec(
                     range.start,
                     range.step,
                     range.num_elements,
@@ -2098,10 +2101,17 @@ impl PhysicalPlanner {
                     self.partition,
                     self.session_ctx.copied_config().batch_size(),
                 )?);
+                // The range's order is real, and Spark's `RangeExec` reports it, so declare it
+                // for the operators above, a hash join in particular: see `SortedInputExec`.
+                let ordering = LexOrdering::new([range_sort_expr(range.step)]);
+                let source: Arc<dyn ExecutionPlan> = match ordering {
+                    Some(ordering) => Arc::new(SortedInputExec::new(source, ordering)),
+                    None => source,
+                };
                 Ok((
                     vec![],
                     vec![],
-                    Arc::new(SparkPlan::new(spark_plan.plan_id, range, vec![])),
+                    Arc::new(SparkPlan::new(spark_plan.plan_id, source, vec![])),
                 ))
             }
             OpStruct::Sample(sample) => {
@@ -2782,8 +2792,21 @@ impl PhysicalPlanner {
                     *probe = Self::prepare_probe_for_runtime_filters(Arc::clone(probe))?;
                 }
 
-                let left = Arc::clone(&join_params.left.native_plan);
-                let right = Arc::clone(&join_params.right.native_plan);
+                let mut left = Arc::clone(&join_params.left.native_plan);
+                let mut right = Arc::clone(&join_params.right.native_plan);
+
+                // Spark dropped any sort above this join that the streamed side's order
+                // satisfies, and the native join keeps that order only if the probe input
+                // declares it; see `SortedInputExec`.
+                if !join.streamed_sort_orders.is_empty() {
+                    let probe = if join.build_side == BuildSide::BuildLeft as i32 {
+                        &mut right
+                    } else {
+                        &mut left
+                    };
+                    *probe =
+                        self.with_declared_order(Arc::clone(probe), &join.streamed_sort_orders)?;
+                }
 
                 // Null-aware anti-join must run in CollectLeft mode. In Partitioned mode
                 // each partition only sees per-partition null/emptiness state, which can
@@ -3090,6 +3113,83 @@ impl PhysicalPlanner {
         }
         prepared.native_plan = native;
         Ok(Arc::new(prepared))
+    }
+
+    /// `plan`, declaring `sort_orders` as the order its rows arrive in, unless it already
+    /// declares one. Spark's plan knows the order of an input that enters the native plan from
+    /// the JVM, and of a scan of sorted files, but the `ScanExec` or the file scan the rows
+    /// arrive through declares none. Only that order is declared: when an operator in between may
+    /// have moved rows, `plan` is left as it is.
+    ///
+    /// The serde sends an order only when the streamed side's Comet operators report it, and it
+    /// checks that nothing under them moves rows (`mayReportFalseOrder`), while this walk asks
+    /// the native operators the same thing through `maintains_input_order`. The two agree as
+    /// long as a Comet operator that reports an order keeps it natively and says so, and a Comet
+    /// leaf that reports one is a source this walk knows or declares its order itself, as the
+    /// native range does. One that does not lands here with `plan` unchanged, and the join then
+    /// moves its unmatched rows after Spark has dropped the sort above it. Nothing here can fall
+    /// back at that point, so the invariant is kept at the operator: see "Adding a New Operator"
+    /// in the contributor guide.
+    fn with_declared_order(
+        &self,
+        plan: Arc<dyn ExecutionPlan>,
+        sort_orders: &[Expr],
+    ) -> Result<Arc<dyn ExecutionPlan>, ExecutionError> {
+        if plan.output_ordering().is_some() || !Self::keeps_source_order(&plan) {
+            return Ok(plan);
+        }
+        let exprs = sort_orders
+            .iter()
+            .map(|expr| self.create_sort_expr(expr, plan.schema()))
+            .collect::<Result<Vec<_>, _>>()?;
+        match LexOrdering::new(exprs) {
+            Some(ordering) => Ok(Arc::new(SortedInputExec::new(plan, ordering))),
+            None => Ok(plan),
+        }
+    }
+
+    /// Whether `plan`'s rows come from a source whose order Spark knows through operators that
+    /// keep their input's order, so that the order Spark reports for them still holds. A source is
+    /// an input from the JVM, or a scan of files, which reads the files of its one file group one
+    /// after the other: Spark reports an order for a file scan only when every partition reads one
+    /// sorted file, as for a sorted bucketed table with one file per bucket. Any other operator may
+    /// have moved rows, such as the null-aware anti join, whose streamed side Comet builds on, and
+    /// declaring Spark's order over it would be wrong.
+    fn keeps_source_order(plan: &Arc<dyn ExecutionPlan>) -> bool {
+        if plan.is::<ScanExec>() || plan.is::<ShuffleScanExec>() {
+            return true;
+        }
+        if let Some(scan) = plan.downcast_ref::<DataSourceExec>() {
+            return scan
+                .data_source()
+                .downcast_ref::<FileScanConfig>()
+                .is_some_and(|config| config.file_groups.len() == 1);
+        }
+        // DataFusion reports every right hash join as keeping its probe order, but a right outer
+        // join keeps it only when the probe declares one, and no input on this path declares an
+        // order. An inner join emits its matches probe row by probe row, and a right semi, anti or
+        // mark join builds its probe indices in ascending order, so none of them depends on a
+        // declaration. Any other join type keeps no probe order at all.
+        if let Some(join) = plan.downcast_ref::<HashJoinExec>() {
+            if !matches!(
+                join.join_type(),
+                DFJoinType::Inner
+                    | DFJoinType::RightSemi
+                    | DFJoinType::RightAnti
+                    | DFJoinType::RightMark
+            ) {
+                return false;
+            }
+        }
+        let mut kept = plan
+            .children()
+            .into_iter()
+            .zip(plan.maintains_input_order())
+            .filter_map(|(child, keeps)| keeps.then_some(child));
+        match (kept.next(), kept.next()) {
+            (Some(child), None) => Self::keeps_source_order(child),
+            _ => false,
+        }
     }
 
     /// Attach after choosing the final build side, including the projection emitted
@@ -6369,6 +6469,7 @@ mod tests {
                 build_side: 0,
                 null_aware_anti_join: false,
                 dynamic_filter_enabled: false,
+                streamed_sort_orders: vec![],
             })),
         };
 
@@ -6381,6 +6482,239 @@ mod tests {
         assert_eq!(2, hash_join_exec.children.len());
         assert_eq!("ScanExec", hash_join_exec.children[0].native_plan.name());
         assert_eq!("ScanExec", hash_join_exec.children[1].native_plan.name());
+    }
+
+    /// The hash join in `plan`, under the projection that `swap_inputs` adds when Spark builds
+    /// on the right.
+    fn planned_hash_join(
+        plan: &Arc<dyn ExecutionPlan>,
+    ) -> &datafusion::physical_plan::joins::HashJoinExec {
+        let join = if plan.is::<datafusion::physical_plan::projection::ProjectionExec>() {
+            plan.children()[0]
+        } else {
+            plan
+        };
+        join.downcast_ref::<datafusion::physical_plan::joins::HashJoinExec>()
+            .expect("a hash join")
+    }
+
+    fn sorted_outer_hash_join(
+        join_type: spark_operator::JoinType,
+        build_side: spark_operator::BuildSide,
+        children: Vec<Operator>,
+    ) -> Operator {
+        Operator {
+            children,
+            op_struct: Some(OpStruct::HashJoin(spark_operator::HashJoin {
+                left_join_keys: vec![create_bound_reference(0)],
+                right_join_keys: vec![create_bound_reference(0)],
+                join_type: join_type as i32,
+                build_side: build_side as i32,
+                streamed_sort_orders: vec![create_sort_order(0, 3, false, true)],
+                ..Default::default()
+            })),
+            ..Default::default()
+        }
+    }
+
+    #[test]
+    fn hash_join_declares_streamed_order_on_probe_input() {
+        // The two outer joins Comet sends the streamed side's order for both run as DataFusion's
+        // right join, whose probe input is its right one, whichever side Spark builds on.
+        for (join_type, build_side) in [
+            (
+                spark_operator::JoinType::RightOuter,
+                spark_operator::BuildSide::BuildLeft,
+            ),
+            (
+                spark_operator::JoinType::LeftOuter,
+                spark_operator::BuildSide::BuildRight,
+            ),
+        ] {
+            let operator =
+                sorted_outer_hash_join(join_type, build_side, vec![create_scan(), create_scan()]);
+            let (_, _, planned) = PhysicalPlanner::default()
+                .create_plan(&operator, &mut vec![], 1)
+                .unwrap();
+            let join = planned_hash_join(&planned.native_plan);
+            assert_eq!(&datafusion::common::JoinType::Right, join.join_type());
+            assert_eq!("ScanExec", join.left().name());
+            let probe = join.right();
+            let sorted = probe
+                .downcast_ref::<crate::execution::operators::SortedInputExec>()
+                .expect("the probe input declares the streamed side's order");
+            assert_eq!("ScanExec", sorted.children()[0].name());
+            assert_eq!(
+                "col_0@0 ASC",
+                probe.properties().output_ordering().unwrap().to_string()
+            );
+            // The join keeps the order in its own output, so the operators above it see it too.
+            assert!(planned.native_plan.properties().output_ordering().is_some());
+        }
+    }
+
+    #[test]
+    fn hash_join_declares_order_through_operators_that_keep_it() {
+        let projection = Operator {
+            children: vec![create_scan()],
+            op_struct: Some(OpStruct::Projection(spark_operator::Projection {
+                project_list: vec![create_bound_reference(0)],
+            })),
+            ..Default::default()
+        };
+        let operator = sorted_outer_hash_join(
+            spark_operator::JoinType::RightOuter,
+            spark_operator::BuildSide::BuildLeft,
+            vec![create_scan(), projection],
+        );
+        let (_, _, planned) = PhysicalPlanner::default()
+            .create_plan(&operator, &mut vec![], 1)
+            .unwrap();
+        let probe = planned_hash_join(&planned.native_plan).right();
+        assert_eq!("SortedInputExec", probe.name());
+        assert_eq!("ProjectionExec", probe.children()[0].name());
+    }
+
+    /// A hash join over two scans, for use as the probe input of the join under test.
+    fn hash_join_over_scans(
+        join_type: spark_operator::JoinType,
+        build_side: spark_operator::BuildSide,
+        null_aware_anti_join: bool,
+    ) -> Operator {
+        Operator {
+            children: vec![create_scan(), create_scan()],
+            op_struct: Some(OpStruct::HashJoin(spark_operator::HashJoin {
+                left_join_keys: vec![create_bound_reference(0)],
+                right_join_keys: vec![create_bound_reference(0)],
+                join_type: join_type as i32,
+                build_side: build_side as i32,
+                null_aware_anti_join,
+                ..Default::default()
+            })),
+            ..Default::default()
+        }
+    }
+
+    #[test]
+    fn hash_join_declares_order_through_joins_that_keep_probe_order() {
+        // An inner join emits its matches probe row by probe row, and a right semi, anti or mark
+        // join emits its probe indices in ascending order. None of them depends on the probe
+        // declaring an order, so the order Spark reports for the outer join's streamed side
+        // still holds above them.
+        use datafusion::common::JoinType as DF;
+        use spark_operator::BuildSide::{BuildLeft, BuildRight};
+        use spark_operator::JoinType::{Existence, Inner, LeftAnti, LeftSemi};
+        for (join_type, build_side, planned_type) in [
+            (Inner, BuildLeft, DF::Inner),
+            (Inner, BuildRight, DF::Inner),
+            (LeftSemi, BuildRight, DF::RightSemi),
+            (LeftAnti, BuildRight, DF::RightAnti),
+            (Existence, BuildRight, DF::RightMark),
+        ] {
+            let operator = sorted_outer_hash_join(
+                spark_operator::JoinType::RightOuter,
+                BuildLeft,
+                vec![
+                    create_scan(),
+                    hash_join_over_scans(join_type, build_side, false),
+                ],
+            );
+            let (_, _, planned) = PhysicalPlanner::default()
+                .create_plan(&operator, &mut vec![], 1)
+                .unwrap();
+            let probe = planned_hash_join(&planned.native_plan).right();
+            assert_eq!(
+                "SortedInputExec",
+                probe.name(),
+                "{join_type:?} {build_side:?}"
+            );
+            let declared = planned_hash_join(probe.children()[0]);
+            assert_eq!(&planned_type, declared.join_type());
+        }
+    }
+
+    #[test]
+    fn hash_join_declares_no_order_over_an_operator_that_may_move_rows() {
+        use spark_operator::BuildSide::{BuildLeft, BuildRight};
+        use spark_operator::JoinType::{FullOuter, LeftAnti, LeftSemi, RightOuter};
+        for (probe_input, reason) in [
+            // Comet builds a null-aware anti join on Spark's streamed side, so its output is not
+            // in the order Spark reports for it.
+            (
+                hash_join_over_scans(LeftAnti, BuildRight, true),
+                "a null-aware anti join",
+            ),
+            // A right join whose probe declares no order moves its unmatched rows, although
+            // DataFusion reports it as keeping its probe order.
+            (
+                hash_join_over_scans(RightOuter, BuildLeft, false),
+                "a right outer join",
+            ),
+            // The remaining types keep no probe order at all: a left semi join built on the left
+            // emits build rows, and a full outer join emits its unmatched build rows last.
+            (
+                hash_join_over_scans(LeftSemi, BuildLeft, false),
+                "a left semi join",
+            ),
+            (
+                hash_join_over_scans(FullOuter, BuildLeft, false),
+                "a full outer join",
+            ),
+        ] {
+            let operator =
+                sorted_outer_hash_join(RightOuter, BuildLeft, vec![create_scan(), probe_input]);
+            let (_, _, planned) = PhysicalPlanner::default()
+                .create_plan(&operator, &mut vec![], 1)
+                .unwrap();
+            let probe = planned_hash_join(&planned.native_plan).right();
+            assert_eq!("HashJoinExec", probe.name(), "{reason}");
+        }
+    }
+
+    #[test]
+    fn hash_join_keeps_probe_input_that_declares_an_order() {
+        // A probe input that already declares an order, such as a sort in the native plan, is
+        // left as it is.
+        let sort = Operator {
+            children: vec![create_scan()],
+            op_struct: Some(OpStruct::Sort(spark_operator::Sort {
+                sort_orders: vec![create_sort_order(0, 3, false, true)],
+                ..Default::default()
+            })),
+            ..Default::default()
+        };
+        let operator = sorted_outer_hash_join(
+            spark_operator::JoinType::RightOuter,
+            spark_operator::BuildSide::BuildLeft,
+            vec![create_scan(), sort],
+        );
+        let (_, _, planned) = PhysicalPlanner::default()
+            .create_plan(&operator, &mut vec![], 1)
+            .unwrap();
+        assert_eq!(
+            "SortExec",
+            planned_hash_join(&planned.native_plan).right().name()
+        );
+    }
+
+    #[test]
+    fn declared_order_reaches_a_scan_of_one_file_group() {
+        // A scan of files reads the files of its one file group one after the other, so the order
+        // Spark reports for it, a sorted bucketed table's, holds. With more than one file group,
+        // DataFusion may hand a file to another partition.
+        let schema = Arc::new(Schema::new(vec![Field::new("a", DataType::Int32, true)]));
+        let scan = |groups: usize| -> Arc<dyn ExecutionPlan> {
+            let source = Arc::new(ParquetSource::new(Arc::clone(&schema))) as Arc<dyn FileSource>;
+            let file_groups = (0..groups)
+                .map(|i| FileGroup::new(vec![PartitionedFile::new(format!("f{i}.parquet"), 8)]))
+                .collect();
+            let config = FileScanConfigBuilder::new(ObjectStoreUrl::local_filesystem(), source)
+                .with_file_groups(file_groups)
+                .build();
+            Arc::new(DataSourceExec::new(Arc::new(config)))
+        };
+        assert!(PhysicalPlanner::keeps_source_order(&scan(1)));
+        assert!(!PhysicalPlanner::keeps_source_order(&scan(2)));
     }
 
     #[tokio::test]
