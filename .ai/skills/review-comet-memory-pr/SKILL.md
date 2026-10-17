@@ -100,19 +100,27 @@ configuration, from the inside out:
 
 - [ ] A new decorator forwards **every** `MemoryPool` method to its inner pool. A partial
       implementation makes `reserved()` disagree between levels.
-- [ ] **`fair_unified` checks the requesting consumer against its share, and the total against
-      the pool.** It divides `pool_size` by the number of registered consumers and rejects if what
-      the consumer holds plus the request exceeds that quotient, or if the pool's total reserved
-      plus the request exceeds `pool_size`. With two consumers and an 8 GiB pool, once one holds
-      3 GiB the other can still reserve up to 4 GiB. The pool keeps a running total for each
-      consumer id, so the sibling reservations that `new_empty()`, `split()` and `take()` create
-      count against one share. A PR that checks `reservation.size()` instead lets an operator with
-      several reservations, such as a sort's streaming merge, take other consumers' shares. It
-      also depends on when DataFusion updates the size, which is after it calls `try_grow` but
-      before it calls `shrink`. If the PR changes either comparison it changes when every query
-      spills, so it needs benchmark evidence, not reasoning.
-- [ ] **`num_consumers` counts every consumer in the task**, across every native plan, because the
-      pool is task-shared.
+- [ ] **`fair_unified` holds the consumers that can spill to a share of the task's share.** The
+      task's share is `spark.memory.offHeap.size` divided by the tasks on the executor running
+      native plans, which `RunningTasks` counts while each task holds its task-shared pool, or
+      `pool_size` if that is smaller. A consumer that can spill is
+      refused if what it holds plus the request exceeds what the consumers that cannot spill leave
+      of the task's share, divided by the registered consumers that can spill, or if the task's
+      total plus the request exceeds the task's share. A consumer that cannot spill is refused only
+      if the task's total plus the request exceeds `pool_size`, which binds before Spark's own
+      limit only while the deprecated fraction is below `1 / N`. With eight running tasks, a 16 GiB
+      pool and two consumers that can spill, each may hold 1 GiB, or 768 MiB while a merge holds
+      512 MiB. The pool keeps a running total for each consumer id, so the sibling reservations
+      that `new_empty()`, `split()` and `take()` create count against one share. A PR that checks
+      `reservation.size()` instead lets an operator with several reservations, such as a sort's
+      streaming merge, take other consumers' shares. It also depends on when DataFusion updates the
+      size, which is after it calls `try_grow` but before it calls `shrink`. A PR that limits a
+      consumer that cannot spill to a share, or sizes the shares from the whole pool, brings back
+      #7088: one operator takes the task's share from Spark and a merge or hash join build fails
+      the task. If the PR changes any of these comparisons it changes when every query spills, so
+      it needs benchmark evidence, not reasoning.
+- [ ] **The consumers that divide the task's share are every consumer that can spill in the
+      task**, across every native plan, because the pool is task-shared.
 - [ ] **Task-shared pool lifetime.** `acquire_task_shared_pool` keeps a process-wide
       `HashMap<task_attempt_id, Weak<TaskSharedMemoryPool>>`. The returned `Arc` is the only
       lifetime handle, so there is no explicit release to forget and a `createPlan` that fails
@@ -204,8 +212,8 @@ will not catch. Check:
 - The **pool stack** diagram, if a decorator is added, removed, or reordered
 - The **pool type** table, if a pool type is added, removed, or changes how it is sized
 - The `memory_limit` formula, if the budget calculation changes
-- The **fair pool** description, which spells out the share and pool-total checks and their
-  consequences
+- The **fair pool** description, which spells out the task share, the share and task-total
+  checks, and their consequences
 - The **Crossing the FFI boundary** section, which names the operators that reserve for imported
   batches
 - The **Open problems** list. If the PR closes one of these gaps, the entry must be removed or

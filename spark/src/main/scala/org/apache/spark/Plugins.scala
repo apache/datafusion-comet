@@ -322,7 +322,7 @@ object CometDriverPlugin extends Logging {
 
   // spark.comet.exec.memoryPool.fraction was documented as holding back part of the off-heap pool
   // for the native memory that Comet does not reserve. It cannot: Spark hands out the whole pool
-  // to the tasks that ask for it, and the fraction only caps each task's consumers under
+  // to the tasks that ask for it, and the fraction only limits the operators that can spill under
   // fair_unified. Users who set it for that purpose need to size the memory overhead instead.
   private[apache] def warnIfMemoryPoolFractionSet(conf: SparkConf): Unit = {
     val key = CometConf.COMET_OFFHEAP_MEMORY_POOL_FRACTION.key
