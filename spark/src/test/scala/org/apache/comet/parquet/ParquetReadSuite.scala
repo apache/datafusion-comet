@@ -49,8 +49,6 @@ import org.apache.spark.sql.functions.col
 import org.apache.spark.sql.internal.SQLConf
 import org.apache.spark.sql.types._
 
-import com.google.common.primitives.UnsignedLong
-
 import org.apache.comet.CometConf
 import org.apache.comet.CometSparkSessionExtensions.{isSpark40Plus, isSpark41Plus}
 import org.apache.comet.vector.CometVector
@@ -1409,8 +1407,8 @@ abstract class ParquetReadSuite extends CometTestBase {
           checkAnswer(
             df,
             (0 until 10).map(n =>
-              Row(
-                new BigDecimal(UnsignedLong.fromLongBits(n + Long.MaxValue).bigIntegerValue()))))
+              Row(new BigDecimal(
+                BigInteger.valueOf(n.toLong).add(BigInteger.valueOf(Long.MaxValue))))))
         }
       }
     }

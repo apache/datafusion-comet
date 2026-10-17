@@ -19,7 +19,11 @@
 
 package org.apache.spark.sql.comet
 
+import java.io.File
 import java.lang.reflect.Modifier
+import java.net.URL
+import java.nio.file.{Files, Paths}
+import java.util.jar.JarFile
 
 import scala.collection.JavaConverters._
 import scala.reflect.runtime.universe.runtimeMirror
@@ -28,8 +32,6 @@ import org.scalatest.funsuite.AnyFunSuite
 
 import org.apache.xbean.asm9.{ClassReader, Opcodes}
 import org.apache.xbean.asm9.tree.{ClassNode, FieldInsnNode, MethodInsnNode}
-
-import com.google.common.reflect.ClassPath
 
 import org.apache.comet.CometSparkSessionExtensions.isSpark42Plus
 import org.apache.comet.util.ClassLoaders
@@ -76,6 +78,48 @@ class CometPlanEqualitySuite extends AnyFunSuite {
       .map(_.name.decodedName.toString)
       .toSet
 
+  private def productionClasses(
+      loader: ClassLoader,
+      location: URL,
+      packageName: String): Seq[Class[_]] = {
+    val packagePath = packageName.replace('.', '/') + "/"
+    val root = Paths.get(location.toURI)
+    val classNames = if (Files.isDirectory(root)) {
+      val stream = Files.walk(root.resolve(packagePath))
+      try {
+        stream
+          .iterator()
+          .asScala
+          .filter(path => Files.isRegularFile(path) && path.toString.endsWith(".class"))
+          .map { path =>
+            root
+              .relativize(path)
+              .toString
+              .stripSuffix(".class")
+              .replace(File.separatorChar, '.')
+          }
+          .toSeq
+      } finally {
+        stream.close()
+      }
+    } else {
+      val jar = new JarFile(root.toFile)
+      try {
+        jar
+          .entries()
+          .asScala
+          .filter(entry =>
+            !entry.isDirectory && entry.getName.startsWith(packagePath) &&
+              entry.getName.endsWith(".class"))
+          .map(_.getName.stripSuffix(".class").replace('/', '.'))
+          .toSeq
+      } finally {
+        jar.close()
+      }
+    }
+    classNames.map(name => Class.forName(name, false, loader))
+  }
+
   /**
    * A structural guard: reads of constructor accessors/fields must occur in equals. This does not
    * prove those reads implement a correct comparison, nor detect semantics never captured as a
@@ -119,12 +163,7 @@ class CometPlanEqualitySuite extends AnyFunSuite {
     val loader = classOf[CometNativeExec].getClassLoader
     val productionLocation =
       classOf[CometNativeExec].getProtectionDomain.getCodeSource.getLocation
-    val classes = ClassPath
-      .from(loader)
-      .getAllClasses
-      .asScala
-      .filter(_.getName.startsWith("org.apache.spark.sql.comet."))
-      .map(_.load())
+    val classes = productionClasses(loader, productionLocation, "org.apache.spark.sql.comet")
       .filter { cls =>
         !Modifier.isAbstract(cls.getModifiers) &&
         cls.getProtectionDomain.getCodeSource.getLocation == productionLocation &&

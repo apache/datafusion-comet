@@ -19,6 +19,7 @@
 
 package org.apache.spark.sql.comet.execution.shuffle
 
+import java.util.Objects
 import java.util.function.Supplier
 
 import scala.collection.mutable.ListBuffer
@@ -48,8 +49,6 @@ import org.apache.spark.sql.vectorized.ColumnarBatch
 import org.apache.spark.util.MutablePair
 import org.apache.spark.util.collection.unsafe.sort.{PrefixComparators, RecordComparator}
 import org.apache.spark.util.random.XORShiftRandom
-
-import com.google.common.base.Objects
 
 import org.apache.comet.{CometConf, CometExplainInfo}
 import org.apache.comet.CometConf.{COMET_SHUFFLE_ENABLED, COMET_SHUFFLE_MODE}
@@ -333,7 +332,7 @@ case class CometShuffleExchangeExec(
   }
 
   override def hashCode(): Int =
-    Objects.hashCode(outputPartitioning, shuffleOrigin, shuffleType, advisoryPartitionSize, child)
+    Objects.hash(outputPartitioning, shuffleOrigin, shuffleType, advisoryPartitionSize, child)
 
   override def stringArgs: Iterator[Any] =
     Iterator(outputPartitioning, shuffleOrigin, shuffleType, child) ++ Iterator(s"[plan_id=$id]")

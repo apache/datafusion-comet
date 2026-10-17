@@ -19,6 +19,8 @@
 
 package org.apache.spark.sql.comet
 
+import java.util.Objects
+
 import scala.jdk.CollectionConverters._
 
 import org.apache.spark.sql.catalyst.expressions.{Alias, Attribute, AttributeSet, Cast, CumeDist, CurrentRow, DenseRank, Divide, Expression, Lag, Lead, Literal, MakeDecimal, NamedExpression, NthValue, NTile, PercentRank, RangeFrame, Rank, RowFrame, RowNumber, SortOrder, SpecialFrameBoundary, SpecifiedWindowFrame, UnboundedFollowing, UnboundedPreceding, UnscaledValue, WindowExpression}
@@ -29,8 +31,6 @@ import org.apache.spark.sql.execution.metric.{SQLMetric, SQLMetrics}
 import org.apache.spark.sql.execution.window.WindowExec
 import org.apache.spark.sql.internal.SQLConf
 import org.apache.spark.sql.types.{ArrayType, DataType, DateType, Decimal, DecimalType, DoubleType, LongType, MapType, NumericType, StructType}
-
-import com.google.common.base.Objects
 
 import org.apache.comet.{CometConf, ConfigEntry}
 import org.apache.comet.CometSparkSessionExtensions.withFallbackReason
@@ -802,5 +802,5 @@ case class CometWindowExec(
   }
 
   override def hashCode(): Int =
-    Objects.hashCode(output, windowExpression, partitionSpec, orderSpec, child)
+    Objects.hash(output, windowExpression, partitionSpec, orderSpec, child)
 }

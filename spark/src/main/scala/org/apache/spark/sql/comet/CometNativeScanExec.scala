@@ -19,6 +19,8 @@
 
 package org.apache.spark.sql.comet
 
+import java.util.Objects
+
 import org.apache.spark.{Partition, TaskContext}
 import org.apache.spark.rdd.RDD
 import org.apache.spark.sql.SparkSession
@@ -34,8 +36,6 @@ import org.apache.spark.sql.types._
 import org.apache.spark.sql.vectorized.ColumnarBatch
 import org.apache.spark.util.SerializableConfiguration
 import org.apache.spark.util.collection._
-
-import com.google.common.base.Objects
 
 import org.apache.comet.parquet.CometParquetUtils
 import org.apache.comet.serde.OperatorOuterClass.Operator
@@ -320,7 +320,7 @@ case class CometNativeScanExec(
   }
 
   override def hashCode(): Int =
-    Objects.hashCode(originalPlan, serializedPlanOpt, partitionFilters, dataFilters)
+    Objects.hash(originalPlan, serializedPlanOpt, partitionFilters, dataFilters)
 
   private val driverMetricKeys =
     Set(
