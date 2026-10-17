@@ -96,11 +96,11 @@ trait MathBase {
   // usable native result, so division stays unsupported here.
   //
   // `Add`, `Subtract`, `Multiply`, `Remainder` and `UnaryMinus` are deliberately not guarded.
-  // Their kernels scale-align by `10^(max_scale - s)`, which is never negative. The `u8`
-  // underflow that used to break them lived in the two width tests this PR rewrites in `i16`,
-  // in `PhysicalPlanner::create_binary_expr_with_options` and `create_modulo_expr`. They run
-  // natively on negative-scale decimals and are pinned by a regression test in
-  // `CometExpressionSuite`. See issue #5013.
+  // Their kernels scale-align by `10^(max_scale - s)`, which is never negative. What used to
+  // break them was the decimal width test in `PhysicalPlanner::create_binary_expr_with_options`
+  // and `create_modulo_expr`, where a negative scale underflowed a `u8` and panicked in a debug
+  // build. Both compute that width in `i16` now. They run natively on negative-scale decimals
+  // and are pinned by a regression test in `CometExpressionSuite`. See issue #5013.
   private[comet] val negScaleDecimalArithmeticReason: String =
     "Decimal division with negative scale is not supported natively"
 

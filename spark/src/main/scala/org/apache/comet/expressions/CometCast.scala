@@ -547,7 +547,6 @@ object CometCast
       // round the exact decimal value once and handle a negative scale deliberately (#5684).
       case DataTypes.FloatType | DataTypes.DoubleType | DataTypes.BooleanType =>
         Compatible()
-        Compatible()
       case _ => Unsupported(Some(s"Cast from DecimalType to $toType is not supported"))
     }
 

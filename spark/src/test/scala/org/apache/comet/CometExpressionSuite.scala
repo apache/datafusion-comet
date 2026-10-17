@@ -1517,10 +1517,10 @@ class CometExpressionSuite extends CometTestBase with AdaptiveSparkPlanHelper {
 
   test("division on negative-scale decimal falls back and returns correct results") {
     // End-to-end proof for issue #5013 that the previously-panicking queries now complete.
-    // `checkSparkAnswerAndFallbackReason` rather than `checkSparkAnswer`: these five serdes do
-    // not mix in `CodegenDispatchFallback`, so `Unsupported` falls the whole projection back to
-    // Spark, and asserting the reason is what proves the guard fired. A plain answer comparison
-    // would pass whether or not it did.
+    // `checkSparkAnswerAndFallbackReason` rather than `checkSparkAnswer`: `CometDivide` and
+    // `CometIntegralDivide` do not mix in `CodegenDispatchFallback`, so `Unsupported` falls the
+    // whole projection back to Spark, and asserting the reason is what proves the guard fired.
+    // A plain answer comparison would pass whether or not it did.
     // ConvertToLocalRelation is excluded so the arithmetic actually runs on the plan rather
     // than being folded at plan time (#4789). `DecimalType(_, s<0)` must be constructed under
     // allowNegativeScaleOfDecimal=true because the case class initializer reads the flag, so
@@ -1530,10 +1530,9 @@ class CometExpressionSuite extends CometTestBase with AdaptiveSparkPlanHelper {
       CometConf.COMET_EXEC_LOCAL_TABLE_SCAN_ENABLED.key -> "true",
       SQLConf.OPTIMIZER_EXCLUDED_RULES.key ->
         "org.apache.spark.sql.catalyst.optimizer.ConvertToLocalRelation") {
-      // Cover a narrow and a wide negative-scale type: at precision 20 the combined operand
-      // width crosses DECIMAL128_MAX_PRECISION, which routes the operation to
-      // `WideDecimalBinaryExpr` / `decimal_div`'s BigInt path rather than the narrow arrow
-      // kernels. `unit` is the smallest magnitude representable at that scale.
+      // A narrow and a wide negative-scale type, so the guard is exercised at both widths.
+      // Neither reaches a native kernel here, since the assertion below is that the projection
+      // falls back to Spark. `unit` is the smallest magnitude representable at that scale.
       val negScaleCases = Seq((DecimalType(10, -1), 10), (DecimalType(20, -5), 100000))
       negScaleCases.foreach { case (negScaleType, unit) =>
         // Build the neg-scale column via string -> Decimal(neg), a known-safe cast, so the
@@ -1576,9 +1575,11 @@ class CometExpressionSuite extends CometTestBase with AdaptiveSparkPlanHelper {
         // UnaryMinus on Decimal(neg) - no alignment, must stay native.
         checkSparkAnswerAndOperator(v.selectExpr("-v"))
         // Add, Subtract and Remainder scale-align by `10^(max_scale - s)`, which is never
-        // negative. They were guarded in an earlier revision of this PR because the `u8`
-        // underflow in the two width tests made them fail. Those are rewritten in `i16` here,
-        // so they run natively again. If either rewrite is reverted these assertions fail.
+        // negative, so a negative scale is safe for them. They reach the decimal width tests in
+        // `PhysicalPlanner::create_binary_expr_with_options` and `create_modulo_expr`, which
+        // compute that width in `i16` for the same reason. A debug build panicked when those
+        // were `u8`, so these assertions catch a regression there only when the native library
+        // is built with overflow checks on.
         Seq(
           "v + v",
           "v - v",

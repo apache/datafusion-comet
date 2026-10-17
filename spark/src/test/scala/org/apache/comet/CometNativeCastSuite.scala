@@ -1121,6 +1121,29 @@ class CometNativeCastSuite
     }
   }
 
+  test("Spark fallback reads a negative-scale decimal column from a Comet batch") {
+    // `CometVector.getDecimal` has the same unscaled-long fast path as the dispatcher's reader,
+    // and Spark reads every Comet batch through it after `CometColumnarToRow`. Using `v` twice
+    // keeps two projections, so the division falls back to Spark while the cast that builds `v`
+    // runs natively, and Spark then reads a `Decimal(10,-1)` column out of a Comet batch. Before
+    // the scale check that threw `ArrayIndexOutOfBoundsException: Index -1`.
+    // `Decimal(20,-5)` takes the `BigDecimal` branch and was never affected, so it is here to pin
+    // that the wide path still works.
+    withSQLConf(
+      "spark.sql.legacy.allowNegativeScaleOfDecimal" -> "true",
+      CometConf.COMET_EXEC_LOCAL_TABLE_SCAN_ENABLED.key -> "true",
+      SQLConf.OPTIMIZER_EXCLUDED_RULES.key ->
+        "org.apache.spark.sql.catalyst.optimizer.ConvertToLocalRelation") {
+      Seq(DecimalType(10, -1), DecimalType(20, -5)).foreach { negScaleType =>
+        val df = Seq("100", "-100", "0")
+          .toDF("s")
+          .select(col("s").cast(negScaleType).as("v"))
+          .selectExpr("v / cast(3 as decimal(10, 0)) as q", "cast(v as int) as i")
+        checkSparkAnswer(df)
+      }
+    }
+  }
+
   test("dispatched cast reads a materialized negative-scale decimal column correctly") {
     // The test above builds the negative-scale column inside the same projection as the cast
     // under test, so `CollapseProject` folds them together and the dispatched expression never

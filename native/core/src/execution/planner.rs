@@ -149,8 +149,9 @@ use datafusion_comet_proto::{
     },
 };
 use datafusion_comet_spark_expr::{
-    coerce_to_common_type, create_case_when, create_if_expr, jvm_udf::JvmScalarUdfExpr,
-    spark_in_list, ApproxPercentile, ArrayInsert, Avg, AvgDecimal, Cast, CheckOverflow,
+    coerce_to_common_type, create_case_when, create_if_expr, decimal128_add_sub_width,
+    jvm_udf::JvmScalarUdfExpr, spark_in_list, ApproxPercentile, ArrayInsert, Avg, AvgDecimal,
+    Cast, CheckOverflow,
     Correlation, Covariance, CreateNamedStruct, DecimalRescaleCheckOverflow, FloatOperands,
     GetArrayStructFields, GetStructField, HllPlusPlus, HllSketchAgg, HllUnionAgg, IfExpr,
     ListExtract, MaxMinBy, Mode, NormalizeNaNAndZero, NormalizeNestedFloats, NullShortCircuit,
@@ -162,7 +163,6 @@ use jni::objects::{Global, JObject};
 use log::warn;
 use num::{BigInt, ToPrimitive};
 use object_store::path::Path;
-use std::cmp::max;
 use std::{collections::HashMap, sync::Arc};
 
 // For clippy error on type_complexity.
@@ -1511,18 +1511,14 @@ impl PhysicalPlanner {
             left.data_type(&input_schema),
             right.data_type(&input_schema),
         ) {
-            // The width test is done in `i16` rather than `u8`: a negative scale makes
-            // `s as u8` wrap to a huge value and `p - s as u8` underflow, which panics in debug
-            // builds and silently selects the wrong branch in release (`overflow-checks = false`).
-            // Precision and scale are both bounded well inside `i16`, so this cannot overflow.
+            // `decimal128_add_sub_width` computes the width in `i16`; see its doc comment for
+            // why a `u8` computation panicked on a negative scale in a debug build.
             (
                 DataFusionOperator::Plus | DataFusionOperator::Minus | DataFusionOperator::Multiply,
                 Ok(DataType::Decimal128(p1, s1)),
                 Ok(DataType::Decimal128(p2, s2)),
             ) if ((op == DataFusionOperator::Plus || op == DataFusionOperator::Minus)
-                && max(s1 as i16, s2 as i16)
-                    + max(p1 as i16 - s1 as i16, p2 as i16 - s2 as i16)
-                    >= DECIMAL128_MAX_PRECISION as i16)
+                && decimal128_add_sub_width(p1, s1, p2, s2) >= DECIMAL128_MAX_PRECISION as i16)
                 || (op == DataFusionOperator::Multiply
                     && p1 as i16 + p2 as i16 >= DECIMAL128_MAX_PRECISION as i16) =>
             {

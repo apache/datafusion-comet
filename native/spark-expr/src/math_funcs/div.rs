@@ -212,6 +212,51 @@ mod tests {
     }
 
     #[test]
+    fn test_decimal_div_rejects_negative_scale() {
+        // `spark_decimal_div` computes its scale-alignment exponents in `u32`, so a negative
+        // scale wraps to roughly 4.29e9, clears the precision check and sends the BigInt branch
+        // into `10.pow(~4.29e9)`, an unbounded allocation that hangs rather than failing. The
+        // guard turns that into an error. Comet's serde keeps a Spark plan away from this, so
+        // the guard is for any other caller.
+        for (left, right, result) in [
+            (
+                DataType::Decimal128(10, -1),
+                DataType::Decimal128(10, 0),
+                DataType::Decimal128(10, 0),
+            ),
+            (
+                DataType::Decimal128(10, 0),
+                DataType::Decimal128(10, -1),
+                DataType::Decimal128(10, 0),
+            ),
+            (
+                DataType::Decimal128(10, 0),
+                DataType::Decimal128(10, 0),
+                DataType::Decimal128(10, -1),
+            ),
+        ] {
+            let (lp, ls) = match left {
+                DataType::Decimal128(p, s) => (p, s),
+                _ => unreachable!(),
+            };
+            let (rp, rs) = match right {
+                DataType::Decimal128(p, s) => (p, s),
+                _ => unreachable!(),
+            };
+            let err = spark_decimal_div(
+                &[decimal(100, lp, ls), decimal(3, rp, rs)],
+                &result,
+                EvalMode::Legacy,
+            )
+            .expect_err("a negative scale must be rejected");
+            assert!(
+                err.to_string().contains("negative decimal scale"),
+                "unexpected error: {err}"
+            );
+        }
+    }
+
+    #[test]
     fn test_integral_divide_overflow_returns_spark_error() {
         let result = quotient_to_i128(&(i64::MAX as i128 + 1), true);
         match result.unwrap_err() {

@@ -179,7 +179,9 @@ overflows when the scale is negative. See
 
 All other cast directions to and from negative-scale decimals run natively: `FloatType` and
 `DoubleType`, `StringType` in both directions (subject to the config gate described above),
-`BooleanType`, and widening to another `DecimalType`.
+casts from a negative-scale decimal to `BooleanType`, and widening to another `DecimalType`.
+Casts from `BooleanType` to a `DecimalType` route through the dispatcher at any scale, which is
+not specific to a negative one.
 
 ## Complex Types
 

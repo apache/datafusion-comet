@@ -134,6 +134,20 @@ fn checked_modulo_kernel<T: ArrowPrimitiveType>(
     })
 }
 
+/// The width a `Decimal128` add, subtract or modulo of these operands needs: the wider scale plus
+/// the widest integral part. Callers compare it against `DECIMAL128_MAX_PRECISION` to decide
+/// whether to take the `Decimal256` path, with their own boundary.
+///
+/// The arithmetic is done in `i16` rather than `u8`. A negative scale, which
+/// `spark.sql.legacy.allowNegativeScaleOfDecimal=true` allows, makes `s as u8` wrap to a huge
+/// value and `p - s as u8` underflow, which panics in a debug build. A release build has
+/// `overflow-checks = false` and the wrapping arithmetic lands back on the true value, so only
+/// debug builds were affected. Precision and scale are both bounded well inside `i16`.
+/// See issue #5013.
+pub fn decimal128_add_sub_width(p1: u8, s1: i8, p2: u8, s2: i8) -> i16 {
+    max(s1 as i16, s2 as i16) + max(p1 as i16 - s1 as i16, p2 as i16 - s2 as i16)
+}
+
 pub fn create_modulo_expr(
     left: Arc<dyn PhysicalExpr>,
     right: Arc<dyn PhysicalExpr>,
@@ -153,19 +167,12 @@ pub fn create_modulo_expr(
     // If the data type is `Decimal128` and the (scale + integral part) exceeds the maximum allowed
     // for `Decimal128`, then cast both operands to `Decimal256` before creating the modulo scalar
     // expression, otherwise, create the modulo scalar expression directly.
-    //
-    // The width test is done in `i16` rather than `u8`: a negative scale makes `s as u8` wrap to
-    // a huge value and `p - s as u8` underflow, which panics in debug builds and silently selects
-    // the wrong branch in release (`overflow-checks = false`). Precision and scale are both
-    // bounded well inside `i16`, so this cannot overflow. Same rewrite as the one in
-    // `PhysicalPlanner::create_binary_expr_with_options`.
     match (
         left.data_type(&input_schema),
         right_non_ansi_safe.data_type(&input_schema),
     ) {
         (Ok(DataType::Decimal128(p1, s1)), Ok(DataType::Decimal128(p2, s2)))
-            if max(s1 as i16, s2 as i16) + max(p1 as i16 - s1 as i16, p2 as i16 - s2 as i16)
-                > DECIMAL128_MAX_PRECISION as i16 =>
+            if decimal128_add_sub_width(p1, s1, p2, s2) > DECIMAL128_MAX_PRECISION as i16 =>
         {
             let left_256 = Arc::new(Cast::new(
                 left,
@@ -400,6 +407,50 @@ mod tests {
             let expected_result = Arc::new(Int32Array::from(vec![0, 2, 0]));
             verify_result(modulo_expr, batch, should_fail, Some(expected_result));
         })
+    }
+
+    #[test]
+    fn test_decimal128_add_sub_width_handles_negative_scale() {
+        // A negative scale is what `spark.sql.legacy.allowNegativeScaleOfDecimal=true` allows.
+        // Computed in `u8` this underflowed and panicked in a debug build; this test only
+        // catches that when the native library is built with overflow checks on.
+        assert_eq!(decimal128_add_sub_width(10, -1, 10, -1), 10);
+        assert_eq!(decimal128_add_sub_width(20, -5, 10, 0), 25);
+        assert_eq!(decimal128_add_sub_width(38, -5, 38, -5), 38);
+        // Matches the non-negative cases it always handled.
+        assert_eq!(decimal128_add_sub_width(18, 4, 18, 4), 18);
+        assert_eq!(decimal128_add_sub_width(38, 38, 38, 0), 76);
+    }
+
+    #[test]
+    fn test_modulo_decimal_negative_scale() {
+        // `Decimal(10,-1)` values 300 and 200, i.e. unscaled 30 and 20. 300 % 200 is 100.
+        let schema = Arc::new(Schema::new(vec![
+            Field::new("a", DataType::Decimal128(10, -1), false),
+            Field::new("b", DataType::Decimal128(10, -1), false),
+        ]));
+        let mut a_builder =
+            Decimal128Builder::with_capacity(1).with_data_type(DataType::Decimal128(10, -1));
+        a_builder.append_value(30);
+        let a_array: ArrayRef = Arc::new(a_builder.finish());
+        let mut b_builder =
+            Decimal128Builder::with_capacity(1).with_data_type(DataType::Decimal128(10, -1));
+        b_builder.append_value(20);
+        let b_array: ArrayRef = Arc::new(b_builder.finish());
+        let batch = RecordBatch::try_new(Arc::clone(&schema), vec![a_array, b_array]).unwrap();
+
+        let expr = create_modulo_expr(
+            Arc::new(Column::new("a", 0)),
+            Arc::new(Column::new("b", 1)),
+            DataType::Decimal128(10, -1),
+            Arc::clone(&schema),
+            false,
+            &SessionContext::new().state(),
+        )
+        .unwrap();
+        let result = expr.evaluate(&batch).unwrap().into_array(1).unwrap();
+        let result = result.as_primitive::<Decimal128Type>();
+        assert_eq!(result.value(0), 10);
     }
 
     #[test]
