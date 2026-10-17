@@ -46,7 +46,9 @@
   holds a map, in more than 20 probes, CTAS included.
 - **Not Comet bugs:** on a table identity-partitioned by a struct field, iceberg-java before 1.12
   reads a NULL struct as a struct of NULLs when the partition source is the struct's first field.
-  [apache/iceberg#17320] fixed it in 1.12.0. The native scan returns NULL, as 1.12 does.
+  [apache/iceberg#17320] fixed it in 1.12.0. Its title names nested initial defaults, but the
+  change also keeps a file column in the read when every projected field of a struct is a constant,
+  and an identity partition value is such a constant. The native scan returns NULL, as 1.12 does.
 - **Not covered:** Variant ([#5438]), encrypted tables, and Iceberg versions other than 1.11.
 
 ## Native Iceberg writer
