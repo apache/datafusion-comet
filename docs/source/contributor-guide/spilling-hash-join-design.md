@@ -532,6 +532,24 @@ three sizes of the off-heap pool. Total time of the 22 queries:
   q21 with spilling.
 - `budget_overflow_bytes` stayed 0 in every query.
 
+TPC-DS at scale factor 100 ran on the same cluster, with 2 GiB and 32 shuffle partitions:
+
+| TPC-DS, 2 GiB, 32 partitions  | Sort-merge join           | Spilling hash join        | Hash join, no spilling |
+| ----------------------------- | ------------------------- | ------------------------- | ---------------------- |
+| All 99 queries                | 974.8 s, 15 tasks retried | 2174.7 s, 3 tasks retried | q72 runs past 40 min   |
+| The 98 queries other than q72 | 596.8 s                   | 564.3 s                   | 564.5 s                |
+
+- Only q72 spills, 162 buckets and 1.45 GB.
+- Every query returned the same rows in every arm, except the two statements of q39, whose `stddev_samp` and `avg`
+  results differ in their last digits from run to run. Every row agrees within a relative 4e-16, and two runs of the
+  sort-merge join differ from each other the same way.
+- q72 is slow with either hash join. Its join of `catalog_sales` with `inventory`, on the item alone and with
+  `inv_quantity_on_hand < cs_quantity` as its residual filter, produces 16.8 billion rows. The tasks of that stage
+  take 179 s on average with the sort-merge join, 678 s with the spilling join, and over 1,000 s without spilling.
+  So the cost is the hash join's and not spilling's: the spilling join, whose buckets have hash tables of their
+  own, is the faster of the two.
+- The retried tasks were again sorts refused memory for their merge.
+
 ## Remaining work
 
 In priority order.
@@ -550,8 +568,11 @@ In priority order.
      limits. q16's broadcast hash join fails in both arms, and so does a sort's merge in q2 with the sort-merge
      join. q17 takes 33 s instead of 26 s in both arms.
    - Limiting only the consumers that can spill, to an even share of what the task's share leaves after the ones
-     that cannot, as DataFusion's `FairSpillPool` does, would cover both cases. It changes when every Comet operator
-     spills, so it needs its own issue and measurements.
+     that cannot, as DataFusion's `FairSpillPool` does, covers both cases. A prototype of it, with the pool set to
+     a task's share by the same fraction, completes every TPC-H query in both arms at 1, 2 and 16 GiB, with no
+     task retried, in up to 3% more total time. At 1 GiB the sort-merge join takes 277.6 s instead of 272.1 s, and
+     the spilling join completes all 22 queries in 248.1 s, q21 in 34.0 s. It changes when every Comet operator
+     spills, so it belongs in an issue and a pull request of its own.
    - The join can also hold back by itself, keeping resident only part of what the pool grants when its probe side
      has operators in the same native plan that need memory. With its build buffer capped at 64 MiB by
      `maxBuildBufferBytes`, q21 completes in 33.9 s.
@@ -583,17 +604,18 @@ In priority order.
      item of [apache/datafusion#24768], or build it without holding all of its inputs at once. A spilled bucket
      with flat columns already avoids the copy, by handing its inner join one batch.
 4. **Get CI verdicts and broaden the tests.**
-   - Run the Spark SQL and Iceberg suites with the `run-*` labels, or `dev/local-ci.sh`. They run Comet on-heap,
-     where the native pool is unbounded, so they only exercise the path that does not spill. A pass shows that
-     the wrapper is transparent.
+   - Run the Iceberg suites, and the Spark SQL suites on the other Spark versions, with the `run-*` labels or
+     `dev/local-ci.sh`. They run Comet on-heap, where the native pool is unbounded, so they only exercise the path
+     that does not spill. A pass shows that the wrapper is transparent. The Spark SQL suites pass on Spark 4.1.
    - Run the Spark suites on the other Spark profiles. All of them, 3.4, 3.5 with strict warnings, 4.0, 4.1 and
      4.2, compile with the tests, but the tests have run only on Spark 4.1.
    - TPC-H and TPC-DS at scale factor 1 match the golden answers of `CometTPCHQuerySuite` and
      `CometTPCDSQuerySuite`, all 22 and all 134 queries, when the suites' shuffled hash join configuration also
      sets `spark.comet.exec.hashJoin.spill.maxBuildBufferBytes`, to 1 MiB and 256 KiB, so that every larger build
-     side spills. The suites do not take extra configs from outside yet, so those runs edited them. TPC-H at scale
-     factor 100 spills under real memory pressure and returns the same rows as the sort-merge join, see
-     [Status](#status). Run TPC-DS at scale too.
+     side spills. The suites do not take extra configs from outside yet, so those runs edited them. TPC-H and TPC-DS
+     at scale factor 100 spill under real memory pressure and return the same rows as the sort-merge join, but
+     for floating point noise in TPC-DS q39, see [Status](#status). Run them at more memory sizes, and on a
+     cluster of separate machines.
 5. **Settle the planner integration and the defaults.**
    - Work out how this fits with [#6785], which plans the forced shuffled hash join at planning time. Once joins
      can spill, `spark.comet.exec.forceShuffledHashJoin.maxBuildSize` decides only when a join spills, so its
@@ -608,6 +630,9 @@ In priority order.
    - Decide whether spilling stays on by default. It is on now so that CI runs it. Then decide whether
      `forceShuffledHashJoin` can be on by default, which was the goal of this work, after measuring TPC-H and
      TPC-DS at realistic memory sizes.
+   - A forced hash join can be far slower than the sort-merge join when its output is far larger than its inputs,
+     with or without spilling: TPC-DS q72 takes 1610 s with it and 378 s without it. Forcing the hash join by
+     default needs a guard on the join's fan-out as well as on its build side, or a faster hash join for that case.
 6. **Take what was learned upstream.** Search for existing issues before filing any.
    - Report to [apache/datafusion#24768]: joining each bucket with a stock `HashJoinExec`, the chunked fallback
      for each join type, and the Bloom filters that keep unmatched probe rows off disk.
