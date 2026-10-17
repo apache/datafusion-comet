@@ -987,6 +987,9 @@ message ShuffleWriter {
   uint64 max_buffer_bytes = 10;
   // Explicit output destination. When absent, use the legacy output file fields.
   PartitionWriter partition_writer = 11;
+  // Store the offsets of variable-width columns as lengths in local shuffle blocks, which compress
+  // better. The native writer applies it only with zstd for now.
+  bool offsets_as_lengths = 12;
 }
 
 message ParquetWriter {

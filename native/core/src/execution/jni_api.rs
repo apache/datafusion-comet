@@ -1840,6 +1840,7 @@ pub unsafe extern "system" fn Java_org_apache_comet_Native_writeSortedFileNative
     current_checksum: jlong,
     compression_codec: JString,
     compression_level: jint,
+    offsets_as_lengths: jboolean,
     tracing_enabled: jboolean,
 ) -> jlongArray {
     try_unwrap_or_throw(&e, |env| unsafe {
@@ -1865,6 +1866,7 @@ pub unsafe extern "system" fn Java_org_apache_comet_Native_writeSortedFileNative
                     current_checksum,
                     &compression_codec,
                     compression_level,
+                    offsets_as_lengths != JNI_FALSE,
                 )?;
 
                 let long_array = env.new_long_array(results.len())?;
@@ -1896,6 +1898,7 @@ unsafe fn write_sorted_file(
     current_checksum: i64,
     compression_codec: &str,
     compression_level: i32,
+    offsets_as_lengths: bool,
 ) -> CometResult<[i64; 3]> {
     if row_sizes.len() < row_addresses.len() {
         return Err(CometError::Internal(format!(
@@ -1932,6 +1935,7 @@ unsafe fn write_sorted_file(
         checksum_algo,
         current_checksum,
         &compression_codec,
+        offsets_as_lengths,
     )?;
 
     let checksum = checksum.map_or(i64::MIN, |checksum| checksum as i64);
@@ -3443,6 +3447,7 @@ mod tests {
                 current_checksum,
                 codec,
                 1,
+                false,
             )
         }?;
         Ok((results, std::fs::read(path).unwrap()))

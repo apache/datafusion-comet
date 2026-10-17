@@ -34,9 +34,10 @@ import org.apache.spark.sql.execution.SparkPlan
 import org.apache.comet.CometSparkSessionExtensions.isSpark42Plus
 
 import software.amazon.awssdk.auth.credentials.{AwsBasicCredentials, StaticCredentialsProvider}
+import software.amazon.awssdk.core.sync.RequestBody
 import software.amazon.awssdk.regions.Region
 import software.amazon.awssdk.services.s3.S3Client
-import software.amazon.awssdk.services.s3.model.{CreateBucketRequest, HeadBucketRequest}
+import software.amazon.awssdk.services.s3.model.{CreateBucketRequest, HeadBucketRequest, PutObjectRequest}
 
 trait CometS3TestBase extends CometTestBase {
 
@@ -125,31 +126,39 @@ trait CometS3TestBase extends CometTestBase {
     case p: CometNativeScanExec => p
   }
 
-  /** An S3 client for the test's MinIO, which the caller closes. */
-  protected def s3Client(): S3Client =
-    S3Client
+  protected def withS3Client[T](f: S3Client => T): T = {
+    val credentials = AwsBasicCredentials.create(userName, password)
+    val s3Client = S3Client
       .builder()
       .endpointOverride(URI.create(minioContainer.getS3URL))
       .region(Region.US_EAST_1)
-      .credentialsProvider(
-        StaticCredentialsProvider.create(AwsBasicCredentials.create(userName, password)))
+      .credentialsProvider(StaticCredentialsProvider.create(credentials))
       .forcePathStyle(true)
       .build()
-
-  protected def createBucketIfNotExists(bucketName: String): Unit = {
-    val client = s3Client()
     try {
-      val bucketExists = Try {
-        client.headBucket(HeadBucketRequest.builder().bucket(bucketName).build())
-        true
-      }.getOrElse(false)
-
-      if (!bucketExists) {
-        val request = CreateBucketRequest.builder().bucket(bucketName).build()
-        client.createBucket(request)
-      }
+      f(s3Client)
     } finally {
-      client.close()
+      s3Client.close()
     }
   }
+
+  protected def createBucketIfNotExists(bucketName: String): Unit = withS3Client { s3Client =>
+    val bucketExists = Try {
+      s3Client.headBucket(HeadBucketRequest.builder().bucket(bucketName).build())
+      true
+    }.getOrElse(false)
+
+    if (!bucketExists) {
+      val request = CreateBucketRequest.builder().bucket(bucketName).build()
+      s3Client.createBucket(request)
+    }
+  }
+
+  /** Writes `bytes` to `bucket` under `key`, so tests can place the same key in two buckets. */
+  protected def putObject(bucket: String, key: String, bytes: Array[Byte]): Unit =
+    withS3Client { s3Client =>
+      s3Client.putObject(
+        PutObjectRequest.builder().bucket(bucket).key(key).build(),
+        RequestBody.fromBytes(bytes))
+    }
 }

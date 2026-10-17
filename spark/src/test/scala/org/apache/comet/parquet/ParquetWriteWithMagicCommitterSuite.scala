@@ -64,18 +64,13 @@ class ParquetWriteWithMagicCommitterSuite
   }
 
   /** The multipart uploads still pending in `bucket`, as their object keys. */
-  private def pendingUploads(bucket: String): Seq[String] = {
-    val client = s3Client()
-    try {
-      client
-        .listMultipartUploads(ListMultipartUploadsRequest.builder().bucket(bucket).build())
-        .uploads()
-        .asScala
-        .map(_.key())
-        .toSeq
-    } finally {
-      client.close()
-    }
+  private def pendingUploads(bucket: String): Seq[String] = withS3Client { client =>
+    client
+      .listMultipartUploads(ListMultipartUploadsRequest.builder().bucket(bucket).build())
+      .uploads()
+      .asScala
+      .map(_.key())
+      .toSeq
   }
 
   /** `rows` rows read natively from a local copy, so the write's input is a Comet scan. */

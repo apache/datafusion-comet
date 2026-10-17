@@ -181,6 +181,8 @@ class Native extends NativeBase {
    *   the compression codec
    * @param compressionLevel
    *   the compression level
+   * @param offsetsAsLengths
+   *   whether to store offsets as lengths where the codec takes it
    * @return
    *   [the number of bytes written to disk, the checksum]
    */
@@ -197,6 +199,7 @@ class Native extends NativeBase {
       currentChecksum: Long,
       compressionCodec: String,
       compressionLevel: Int,
+      offsetsAsLengths: Boolean,
       tracingEnabled: Boolean): Array[Long]
   // scalastyle:on
 

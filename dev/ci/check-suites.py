@@ -36,6 +36,7 @@ if __name__ == "__main__":
         "org.apache.comet.parquet.ParquetReadSuite", # abstract
         "org.apache.comet.parquet.ParquetReadFromS3Suite", # manual test suite
         "org.apache.comet.parquet.ParquetWriteWithMagicCommitterSuite", # manual test suite
+        "org.apache.comet.csv.CsvReadFromS3Suite", # manual test suite
         "org.apache.comet.parquet.ParquetReadFromFakeHadoopFsSuite", # manual test suite (loads libhdfs, see #5023)
         "org.apache.comet.IcebergReadFromS3Suite", # manual test suite
         "org.apache.comet.cloud.s3.CometS3CredentialBridgeSuite", # manual test suite
