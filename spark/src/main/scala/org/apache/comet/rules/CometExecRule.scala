@@ -1114,20 +1114,21 @@ case class CometExecRule(session: SparkSession, queryStagePrep: Boolean = false)
   }
 
   /** Convert a Spark plan to a Comet plan using the specified serde handler */
-  private def convertToComet(op: SparkPlan, handler: CometOperatorSerde[_]): Option[SparkPlan] = {
-    val converted = tryConvertToComet(op, handler)
-    if (converted.isEmpty) {
-      // Comet looked at this operator and declined it, so it stays in the Spark plan. Lift any
-      // reasons recorded on its expressions onto the operator itself - see
-      // `rollUpFallbackReasons` for why this is needed - and then make sure something was
-      // recorded. The order is required, not incidental: `reportUnexplainedFallback` inspects only
-      // the operator's own tag, so a reason still sitting on an expression would look like no
-      // reason at all and trip the strict check.
-      rollUpFallbackReasons(op)
-      reportUnexplainedFallback(op)
+  private def convertToComet(op: SparkPlan, handler: CometOperatorSerde[_]): Option[SparkPlan] =
+    CometExplainInfo.withFallbackReasonScope {
+      val converted = tryConvertToComet(op, handler)
+      if (converted.isEmpty) {
+        // Comet looked at this operator and declined it, so it stays in the Spark plan. Lift any
+        // reasons recorded on its expressions onto the operator itself - see
+        // `rollUpFallbackReasons` for why this is needed - and then make sure something was
+        // recorded. `reportUnexplainedFallback` inspects only the operator's own tag, so a reason
+        // still sitting on an expression would look like no reason at all and trip the strict
+        // check. Keep these two calls together and in this order.
+        rollUpFallbackReasons(op)
+        reportUnexplainedFallback(op)
+      }
+      converted
     }
-    converted
-  }
 
   private def tryConvertToComet(
       op: SparkPlan,
@@ -1195,8 +1196,10 @@ case class CometExecRule(session: SparkSession, queryStagePrep: Boolean = false)
    * used to be hand-written at every serde call site (see
    * https://github.com/apache/datafusion-comet/issues/5230).
    *
-   * Only child *expressions* are collected, not child operators: reasons on a child operator are
-   * already reachable by the explain traversal via `children`.
+   * Only reasons recorded for these expression instances during this conversion are collected.
+   * Tags alone are insufficient: Catalyst may have copied one onto a shared singleton. Only child
+   * *expressions* are collected, not child operators: reasons on a child operator are already
+   * reachable by the explain traversal via `children`.
    *
    * Called only when `op` was left in the Spark plan, which scopes the roll-up to the operator
    * that actually failed conversion. That matters because some expression instances
@@ -1205,11 +1208,10 @@ case class CometExecRule(session: SparkSession, queryStagePrep: Boolean = false)
    *
    * [[reportUnexplainedFallback]] relies on this having run first; the two must not be separated.
    */
-  private def rollUpFallbackReasons(op: SparkPlan): Unit = {
+  private[comet] def rollUpFallbackReasons(op: SparkPlan): Unit = {
     val reasons = op.expressions
       .flatMap(_.collect { case e: Expression => e })
-      .flatMap(_.getTagValue(CometExplainInfo.FALLBACK_REASONS))
-      .flatten
+      .flatMap(CometExplainInfo.currentFallbackReasons)
       .toSet
     if (reasons.nonEmpty) {
       val _ = withFallbackReasons(op, reasons)

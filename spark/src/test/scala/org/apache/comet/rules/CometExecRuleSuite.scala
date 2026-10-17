@@ -19,7 +19,7 @@
 
 package org.apache.comet.rules
 
-import java.util.concurrent.ConcurrentLinkedQueue
+import java.util.concurrent.{ConcurrentLinkedQueue, FutureTask, TimeUnit}
 
 import scala.jdk.CollectionConverters._
 import scala.util.Random
@@ -29,8 +29,9 @@ import org.scalatest.PrivateMethodTester._
 import org.apache.logging.log4j.Level
 import org.apache.spark.sql._
 import org.apache.spark.sql.catalyst.FunctionIdentifier
-import org.apache.spark.sql.catalyst.expressions.{Attribute, AttributeReference, Expression, ExpressionInfo, In, InSet, KnownFloatingPointNormalized, Literal, Not}
+import org.apache.spark.sql.catalyst.expressions.{Alias, Attribute, AttributeReference, Expression, ExpressionInfo, In, InSet, KnownFloatingPointNormalized, Literal, Not, RuntimeReplaceable}
 import org.apache.spark.sql.catalyst.expressions.aggregate.{AggregateExpression, BloomFilterAggregate, Final, Min, Partial, PartialMerge}
+import org.apache.spark.sql.catalyst.expressions.objects.{Invoke, StaticInvoke}
 import org.apache.spark.sql.catalyst.optimizer.NormalizeNaNAndZero
 import org.apache.spark.sql.catalyst.plans.logical.{LocalRelation, LogicalPlan}
 import org.apache.spark.sql.catalyst.plans.physical.{HashPartitioning, RoundRobinPartitioning}
@@ -865,6 +866,180 @@ class CometExecRuleSuite extends CometTestBase {
             }
           }
         }
+      }
+    }
+  }
+
+  if (isSpark40Plus) {
+    Seq(
+      ("StructsToJson", "to_json(named_struct('value', id))"),
+      ("ParseUrl", "parse_url(concat('https://example.com/', id), 'HOST')"),
+      ("LengthOfJsonArray", "json_array_length(concat('[', id, ']'))")).foreach {
+      case (name, sqlExpression) =>
+        test(s"issue #5499: $name shim retains current fallback reasons on its wrapper") {
+          val plan = sql(s"SELECT $sqlExpression FROM range(2)").queryExecution.analyzed
+          val original = plan.expressions
+            .flatMap(_.collect {
+              case expr: RuntimeReplaceable if expr.getClass.getSimpleName == name => expr
+            })
+            .head
+          val wrapper = original.replacement
+          if (name == "LengthOfJsonArray") assert(wrapper.isInstanceOf[StaticInvoke])
+          else assert(wrapper.isInstanceOf[Invoke])
+          val tag = CometExplainInfo.FALLBACK_REASONS
+          wrapper.setTagValue(tag, Set("unrelated conversion"))
+          val key = CometConf.getExprEnabledConfigKey(name)
+          val expected = Set(s"Expression support is disabled. Set $key=true to enable it.")
+          withSQLConf(key -> "false") {
+            CometExplainInfo.withFallbackReasonScope {
+              // Call the shim directly so the generic Invoke handler cannot supply an unrelated
+              // reason and make this test pass when copy-back is broken.
+              assert(
+                QueryPlanSerde
+                  .sparkVersionSpecificExprToProtoInternal(
+                    wrapper,
+                    plan.children.head.output,
+                    binding = true)
+                  .isEmpty)
+              assert(wrapper.getTagValue(tag).contains(expected))
+              assert(CometExplainInfo.currentFallbackReasons(wrapper) == expected)
+            }
+          }
+        }
+    }
+  }
+
+  test("issue #5499: child threads do not inherit expression fallback reasons") {
+    val source = Literal(true)
+    val reason = "parent conversion only"
+    val tag = CometExplainInfo.FALLBACK_REASONS
+    CometExplainInfo.withFallbackReasonScope {
+      withFallbackReason(source, reason)
+      // Create the child while the parent scope is active: an inheritable ThreadLocal would
+      // expose the parent's journal and retain it beyond the parent's conversion.
+      val task = new FutureTask[Set[String]](() => {
+        CometExplainInfo.withExpressionFallbackReasonScope {
+          val owner = Alias(source, "child")()
+          QueryPlanSerde.liftFallbackReasons(source, owner)
+          owner.getTagValue(tag).getOrElse(Set.empty[String])
+        }
+      })
+      val thread = new Thread(task, "comet-fallback-provenance")
+      thread.setDaemon(true)
+      thread.start()
+      try assert(task.get(10, TimeUnit.SECONDS).isEmpty)
+      finally thread.join(10000)
+      val owner = Alias(source, "parent")()
+      QueryPlanSerde.liftFallbackReasons(source, owner)
+      assert(owner.getTagValue(tag).contains(Set(reason)))
+    }
+  }
+
+  test("issue #5499: outermost conversion exceptions do not leak fallback reasons") {
+    val source = Literal(true)
+    val tag = CometExplainInfo.FALLBACK_REASONS
+    intercept[IllegalArgumentException] {
+      CometExplainInfo.withFallbackReasonScope {
+        withFallbackReason(source, "failed conversion")
+        throw new IllegalArgumentException("conversion failed")
+      }
+    }
+    // Reuse the calling thread and source node after the exception, with its old tag intact.
+    CometExplainInfo.withExpressionFallbackReasonScope {
+      val owner = Alias(source, "next_conversion")()
+      QueryPlanSerde.liftFallbackReasons(source, owner)
+      assert(owner.getTagValue(tag).isEmpty)
+      withFallbackReason(source, "current conversion")
+      QueryPlanSerde.liftFallbackReasons(source, owner)
+      assert(owner.getTagValue(tag).contains(Set("current conversion")))
+    }
+  }
+
+  test("issue #5499: stale expression reasons cannot satisfy strict fallback checking") {
+    val literal = Literal.TrueLiteral
+    val tag = CometExplainInfo.FALLBACK_REASONS
+    val previous = literal.getTagValue(tag)
+    val stale = "issue-5499-unrelated-query"
+    try {
+      literal.setTagValue(tag, Set(stale))
+      withTempView("fallback_provenance") {
+        createTestDataFrame.createOrReplaceTempView("fallback_provenance")
+        val sparkPlan = createSparkPlan(spark, "SELECT id * 2 FROM fallback_provenance")
+        withSQLConf(CometConf.COMET_EXEC_LOCAL_TABLE_SCAN_ENABLED.key -> "true") {
+          val nativeChild = stripAQEPlan(applyCometExecRule(sparkPlan)).collectFirst {
+            case op: CometNativeExec => op
+          }.get
+          val rule = CometExecRule(spark)
+          def operator = ProjectExec(Seq(Alias(literal, "value")()), nativeChild)
+          CometExplainInfo.withFallbackReasonScope {
+            val op = operator
+            rule.rollUpFallbackReasons(op)
+            assert(op.getTagValue(tag).isEmpty)
+            intercept[IllegalStateException](rule.reportUnexplainedFallback(op))
+            withSQLConf(CometConf.COMET_STRICT_FALLBACK_REASONS.key -> "false") {
+              rule.reportUnexplainedFallback(op)
+              assert(op.getTagValue(tag).contains(Set(s"${op.nodeName} is not supported")))
+            }
+            // A copied tag is not a current reason, even if its source was tagged in this scope.
+            val source = Literal(true)
+            withFallbackReason(source, stale)
+            val copy = Literal(true)
+            assert(source == copy && !(source eq copy))
+            copy.copyTagsFrom(source)
+            val copied = Alias(copy, "copied")()
+            val copiedProject = ProjectExec(Seq(copied), nativeChild)
+            rule.rollUpFallbackReasons(copiedProject)
+            assert(copiedProject.getTagValue(tag).isEmpty)
+            intercept[IllegalStateException](rule.reportUnexplainedFallback(copiedProject))
+          }
+          // A current reason equal to the stale string must still count.
+          CometExplainInfo.withFallbackReasonScope {
+            val op = operator
+            withFallbackReason(literal, stale)
+            intercept[IllegalArgumentException] {
+              CometExplainInfo.withFallbackReasonScope {
+                withFallbackReason(literal, "nested conversion")
+                throw new IllegalArgumentException("conversion failed")
+              }
+            }
+            rule.rollUpFallbackReasons(op)
+            assert(op.getTagValue(tag).contains(Set(stale)))
+            rule.reportUnexplainedFallback(op)
+          }
+          CometExplainInfo.withFallbackReasonScope {
+            val op = operator
+            rule.rollUpFallbackReasons(op)
+            intercept[IllegalStateException](rule.reportUnexplainedFallback(op))
+          }
+          // Legitimate literal failures must survive both serialization and operator roll-up.
+          val unsupported =
+            Literal.create(new Object, org.apache.spark.sql.types.ObjectType(classOf[Object]))
+          val disabledKey = CometConf.getExprEnabledConfigKey("Literal")
+          Seq(unsupported -> Seq.empty[(String, String)], literal -> Seq(disabledKey -> "false"))
+            .foreach { case (value, configs) =>
+              withSQLConf(configs: _*) {
+                CometExplainInfo.withFallbackReasonScope {
+                  val op = ProjectExec(Seq(Alias(value, "value")()), nativeChild)
+                  assert(
+                    QueryPlanSerde.exprToProto(op.projectList.head, nativeChild.output).isEmpty)
+                  rule.rollUpFallbackReasons(op)
+                  val expected = if (value eq literal) {
+                    s"Expression support is disabled. Set $disabledKey=true to enable it."
+                  } else {
+                    s"Unsupported data type ${unsupported.dataType}"
+                  }
+                  assert(op.getTagValue(tag).contains(Set(expected)))
+                  assert(new ExtendedExplainInfo().generateExtendedInfo(op).contains(expected))
+                  rule.reportUnexplainedFallback(op)
+                }
+              }
+            }
+        }
+      }
+    } finally {
+      previous match {
+        case Some(reasons) => literal.setTagValue(tag, reasons)
+        case None => literal.unsetTagValue(tag)
       }
     }
   }
