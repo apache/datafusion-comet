@@ -1162,8 +1162,12 @@ case class CometExecRule(session: SparkSession, queryStagePrep: Boolean = false)
 
       val builder = OperatorOuterClass.Operator.newBuilder().setPlanId(op.id)
       // Which subexpressions Spark evaluates for every row decides where native execution may
-      // skip a function's arguments (see `QueryPlanSerde.canShortCircuitNulls`)
-      val nativeOp = QueryPlanSerde.withSharedSubexpressions(op.expressions) {
+      // skip a function's arguments (see `QueryPlanSerde.canShortCircuitNulls`). Spark's
+      // generated code for an aggregate shares them whatever
+      // spark.sql.subexpressionElimination.enabled says, and other operators only when it is on.
+      val nativeOp = QueryPlanSerde.withSharedSubexpressions(
+        op.expressions,
+        alwaysShared = op.isInstanceOf[BaseAggregateExec]) {
         if (op.children.nonEmpty && op.children.forall(_.isInstanceOf[CometNativeExec])) {
           val childOp = op.children.map(_.asInstanceOf[CometNativeExec].nativeOp)
           childOp.foreach(builder.addChildren)

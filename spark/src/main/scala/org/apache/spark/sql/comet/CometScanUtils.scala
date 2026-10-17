@@ -25,7 +25,7 @@ import java.util.Locale
 import scala.collection.mutable
 
 import org.apache.spark.sql.catalyst.expressions.{DynamicPruningExpression, Expression, Literal}
-import org.apache.spark.sql.execution.{InSubqueryExec, SubqueryAdaptiveBroadcastExec}
+import org.apache.spark.sql.execution.FileSourceScanExec
 import org.apache.spark.sql.execution.datasources.{FilePartition, PartitionedFile}
 
 import org.apache.comet.objectstore.NativeConfig
@@ -37,20 +37,27 @@ object CometScanUtils {
    * DynamicPruningExpression(Literal.TrueLiteral) during Physical Planning
    */
   def filterUnusedDynamicPruningExpressions(predicates: Seq[Expression]): Seq[Expression] = {
-    // Strip DPP expressions for canonicalization. Matches Spark's
-    // FileSourceScanExec.filterUnusedDynamicPruningExpressions (TrueLiteral).
-    // Also strips unconverted SAB wrappers because AQE stageCache canonicalizes
-    // before our queryStageOptimizerRule converts them, so they would prevent
-    // exchange reuse between otherwise-identical scans.
-    predicates.filterNot {
-      case DynamicPruningExpression(Literal.TrueLiteral) => true
-      case DynamicPruningExpression(
-            InSubqueryExec(_, _: CometSubqueryAdaptiveBroadcastExec, _, _, _, _)) =>
-        true
-      case DynamicPruningExpression(
-            InSubqueryExec(_, _: SubqueryAdaptiveBroadcastExec, _, _, _, _)) =>
-        true
-      case _ => false
+    // Matches Spark's FileSourceScanExec.filterUnusedDynamicPruningExpressions. A DPP filter that
+    // still holds the adaptive broadcast placeholder must stay: AQE keys a query stage by its
+    // exchange as it was before the stage optimizer rules converted that placeholder, so dropping
+    // it makes scans with different DPP filters equal and lets AQE reuse one stage for both.
+    predicates.filterNot(_ == DynamicPruningExpression(Literal.TrueLiteral))
+  }
+
+  /**
+   * Canonicalizes a Comet scan's `originalPlan` (which may be null) without any of its DPP
+   * partition filters. That copy carries the column selection and schema needed for equals and
+   * hashCode, but its DPP filters are stale because no DPP rule rewrites them. The scan's own DPP
+   * filters, passed through [[filterUnusedDynamicPruningExpressions]], carry its DPP identity.
+   */
+  def canonicalizeOriginalPlan(originalPlan: FileSourceScanExec): FileSourceScanExec = {
+    if (originalPlan == null) {
+      null
+    } else {
+      originalPlan
+        .copy(partitionFilters =
+          originalPlan.partitionFilters.filterNot(_.isInstanceOf[DynamicPruningExpression]))
+        .doCanonicalize()
     }
   }
 
