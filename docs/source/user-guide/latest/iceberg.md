@@ -208,6 +208,12 @@ The following scenarios will fall back to the JVM Iceberg reader:
   or renamed. The native reader cannot yet match such a field to data files written before the
   change. The check uses the table's schema history, so the fallback stays after those files are
   rewritten
+- Scans that read a struct, array, or map column from a table with
+  `schema.name-mapping.default`, including tables imported with `snapshot`, `migrate`, or
+  `add_files` ([#6790](https://github.com/apache/datafusion-comet/issues/6790)). The native reader
+  does not apply name mappings to nested fields. Queries that read only primitive columns can
+  still run natively. The fallback remains while the property is set, even if the data files
+  have since been rewritten with field IDs
 - Scans where no schema in the table's history gives a partition source or equality-delete key a
   name that the scan's other columns don't use (every task of a native scan must give such a
   column the same name)
