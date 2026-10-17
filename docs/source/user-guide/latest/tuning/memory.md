@@ -276,10 +276,13 @@ flushes sorted spill files. A value larger than `spark.comet.batchSize` is cappe
 ## Limiting Spill Disk Usage
 
 Native operators that spill to disk (aggregate, sort, shuffle) are bounded by
-`spark.comet.maxTempDirectorySize` (default 100 GB). All Comet native plans in an executor share
-the limit, so it bounds the spill files of the whole executor. If the limit is reached, further
-spills fail and the query errors out. Raise this on workloads with large sort/aggregate/shuffle
-spills, or lower it to protect executors on shared disks.
+`spark.comet.maxTempDirectorySize` (default 100 GB). The operators of one Comet native plan share
+the limit. A Spark task can run more than one native plan at a time, for example the native
+operators on either side of a union or a coalesce, so an executor running `N` concurrent tasks may
+use more than `N` times this value on shared local disks. If the limit is reached, further spills
+fail and the query errors out. Raise this on workloads with large sort/aggregate/shuffle spills, or
+lower it to protect executors on shared disks, remembering that the total across an executor is a
+multiple of this value.
 
 ## Compressing Spill Files
 
