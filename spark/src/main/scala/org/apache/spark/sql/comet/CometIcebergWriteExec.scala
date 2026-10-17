@@ -239,7 +239,12 @@ case class CometIcebergWriteExec(
     }
 
     val childRDD = schedulerProbe
-      .map(probe => new IcebergSchedulerProbeRDD(inputRDD, probe))
+      .map(probe =>
+        new IcebergSchedulerProbeRDD(
+          inputRDD,
+          probe,
+          nativeOp.getIcebergWrite.getCommon.getDataLocation,
+          nativeOp.getIcebergWrite.getCommon.getOperationId))
       .getOrElse(inputRDD)
     val numPartitions = childRDD.getNumPartitions
     // Native side emits the per-task Avro `DataFile` blob and the locations it wrote, one Binary
@@ -250,7 +255,6 @@ case class CometIcebergWriteExec(
     childRDD.mapPartitionsInternal { iter =>
       val partitionId = TaskContext.getPartitionId()
       val taskAttemptId = TaskContext.get().taskAttemptId()
-      val nativeProbe = schedulerProbe.flatMap(_.beforeNative())
 
       // No child metric nodes: the write's native tree (IcebergWrite -> Projection -> Scan) does
       // not line up with the JVM child operators, which own their own native blocks; zipping
@@ -264,9 +268,6 @@ case class CometIcebergWriteExec(
         val builder = capturedNativeOp.getIcebergWrite.toBuilder
           .setPartitionId(partitionId)
           .setTaskAttemptId(taskAttemptId)
-        nativeProbe.foreach { probe =>
-          builder.setCommon(builder.getCommon.toBuilder.setTestProbe(probe))
-        }
         val icebergWrite = builder.build()
         capturedNativeOp.toBuilder.setIcebergWrite(icebergWrite).build()
       }

@@ -115,14 +115,15 @@ case class IcebergCommitExec(
     try {
       messages.foreach(batchWrite.onDataWriterCommit)
       IcebergWriteSummaryShim.commit(batchWrite, messages, child, command)
-      schedulerProbe.foreach(_.committed())
-      logInfo(s"Iceberg commit succeeded with ${messages.length} task message(s)")
     } catch {
       case cause: Throwable =>
         logError(s"Iceberg commit failed; aborting ${messages.length} task message(s)", cause)
         throw abortAfter(messages, cause)
     }
 
+    logInfo(s"Iceberg commit succeeded with ${messages.length} task message(s)")
+    // A post-commit observer failure must never abort already committed files.
+    schedulerProbe.foreach(_.committed())
     Nil
   }
 

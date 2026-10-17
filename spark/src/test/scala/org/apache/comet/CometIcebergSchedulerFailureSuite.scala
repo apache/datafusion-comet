@@ -225,7 +225,7 @@ class CometIcebergSchedulerFailureSuite
         spark.sql(
           s"CREATE TABLE $table (id INT) USING iceberg " +
             "TBLPROPERTIES ('write.distribution-mode'='none', " +
-            "'write.target-file-size-bytes'='1')")
+            "'write.target-file-size-bytes'='1', 'write.parquet.page-row-limit'='1000')")
         tableCreated = true
         // Four files, disjoint ID ranges, many batches per writer; source creation is not
         // part of the monitored write job. Runtime events verify the actual partition count.
@@ -316,7 +316,7 @@ class CometIcebergSchedulerFailureSuite
               !attempts(gates, "handoff").exists(_.attempt == target.attempt),
               "Loss must occur before native close and handoff")
             assert(!listener.ended.asScala.exists(_.attempt == target.attempt))
-            // Paths come from the native tracking generator, never inferred from prefixes.
+            // The JVM input probe inventories only this attempt's unique file-name prefix.
             assert(
               target.files.exists(p =>
                 Files.exists(localPath(p)) &&

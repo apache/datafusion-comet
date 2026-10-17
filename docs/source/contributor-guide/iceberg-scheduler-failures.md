@@ -60,8 +60,8 @@ missing = manifest-referenced files - physical files
 
 For speculation, both sets must be empty after the losing attempt terminates and cleanup finishes.
 For executor loss, `missing` must be empty and `orphan` must be a subset of `rejectedFiles`, the
-native-reported paths belonging to attempts whose messages were not accepted. Unknown orphan
-files fail the test. This checks the storage state even when readers see the correct table rows.
+paths observed through attempt-unique file-name prefixes or native handoff, belonging to
+attempts whose messages were not accepted. Unknown orphan files fail the test. This checks the storage state even when readers see the correct table rows.
 
 `SIGKILL` bypasses executor-side cleanup, so known rejected-attempt orphans do not by themselves
 fail executor-loss recovery. These scenarios do not require immediate `physical == referenced`
@@ -112,10 +112,14 @@ captured in task closures, so executors do not depend on a driver-installed JVM 
 records the successful commit. Duplicate accepted messages or commit markers fail the probe.
 
 `CometIcebergWriteExec` installs per-attempt gates before parent input iteration and after native
-payload handoff. An optional `IcebergWriteCommon.test_probe` also gates the native writer after a
-successful `writer.write()`, before input EOF and `writer.close()`. The normal planner never
-populates this field, and no production SQLConf enables it. JSON markers are published atomically
-under unique run/task-attempt directories; all gate waits have bounded timeouts and diagnostics.
+payload handoff. `IcebergSchedulerProbeRDD` wraps the JVM input iterator and pauses before
+pulling another batch after the configured row threshold. The native writer pulls this input
+through `CometArrowStream.inputObjects`. It can prefetch a batch while a write awaits native I/O,
+so the row count measures supplied input rather than completed writes. The pause occurs before
+input EOF and writer close; the physical-file checks establish actual write progress. The probe
+inventories files under the data location using the attempt-unique `file_name_prefix` (partition ID, task attempt ID and operation ID), recording
+paths and their current byte sizes in `native-progress.json`. There is no native or protobuf test
+hook. JSON markers are published atomically under unique run/task-attempt directories; all gate waits have bounded timeouts and diagnostics.
 
 ### Speculative attempts
 
@@ -130,8 +134,12 @@ both succeed in the scheduler: Spark cancels the loser after accepting the winne
 
 ### Executor process loss
 
-Initial writer attempts pause after 2,000 rows, using 1,000-row batches and a one-byte target file
-size. The second unit rolls the first file to disk; the first unit alone may remain buffered.
+Initial writer attempts pause after supplying 4,000 rows, using 1,000-row batches, a one-byte
+target file size and `write.parquet.page-row-limit=1000`. The native writer holds back each partition's first
+data page before opening a file; its default 20,000-row page exceeds this fixture's 12,000 rows
+per task. The smaller page permits early file rolling. The 4,000-row input threshold leaves
+room for native input prefetch and asynchronous file creation before the JVM iterator pauses.
+The row threshold alone is not evidence of physical write progress.
 Before termination, the test independently requires physical bytes at a native-owned path, no
 native handoff or terminal task event for the target, and progress on another writer partition
 in a different executor process.
@@ -162,7 +170,10 @@ make core
 ```
 
 The local smoke test checks probe serialization, handoff, accepted files, completion markers,
-rows and physical files. It does not prove multi-host scheduler behavior:
+rows and physical files. Additional local cases exercise the executor-loss input hook with
+`release-all` pre-created, assert byte sizes captured before handoff, and verify that a throwing
+post-commit probe never aborts or deletes committed files. These tests run in
+`CometIcebergWriteActionSuite` in ordinary CI; they do not prove multi-host scheduler behavior:
 
 ```bash
 ./mvnw test -Pspark-4.1 -Dtest=none \

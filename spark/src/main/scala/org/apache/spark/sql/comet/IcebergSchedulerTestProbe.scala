@@ -25,14 +25,12 @@ import org.apache.spark.{Partition, TaskContext}
 import org.apache.spark.rdd.RDD
 import org.apache.spark.sql.vectorized.ColumnarBatch
 
-import org.apache.comet.serde.OperatorOuterClass.IcebergWriteTestProbe
-
 /** Internal, explicitly scoped test instrumentation; no SQLConf or production configuration. */
 private[apache] trait IcebergSchedulerTestProbe extends Serializable {
   // Before constructing the parent iterator, including any eager shuffle block fetches.
   def beforeInput(): Unit
-  // Invoked on the executor. The returned native gate belongs to this attempt only.
-  def beforeNative(): Option[IcebergWriteTestProbe]
+  // Invoked before pulling another batch. Rows count supplied input, including prefetch.
+  def afterInput(rows: Long, dataLocation: String, operationId: String): Unit
   def afterHandoff(locations: Seq[String]): Unit
   // Invoked on the driver for messages actually accepted by Spark's runJob result handler.
   def accepted(partition: Int, locations: Seq[String]): Unit
@@ -56,13 +54,39 @@ private[apache] object IcebergSchedulerTestProbe {
  */
 private[comet] class IcebergSchedulerProbeRDD(
     parent: RDD[ColumnarBatch],
-    probe: IcebergSchedulerTestProbe)
+    probe: IcebergSchedulerTestProbe,
+    dataLocation: String,
+    operationId: String)
     extends RDD[ColumnarBatch](parent) {
   override protected def getPartitions: Array[Partition] =
     firstParent[ColumnarBatch].partitions
 
   override def compute(split: Partition, context: TaskContext): Iterator[ColumnarBatch] = {
     probe.beforeInput()
-    firstParent[ColumnarBatch].iterator(split, context)
+    val input = firstParent[ColumnarBatch].iterator(split, context)
+    new Iterator[ColumnarBatch] {
+      private var rows = 0L
+      private var pending = false
+
+      private def observe(): Unit = {
+        if (pending) {
+          pending = false
+          probe.afterInput(rows, dataLocation, operationId)
+        }
+      }
+
+      override def hasNext: Boolean = {
+        observe()
+        input.hasNext
+      }
+
+      override def next(): ColumnarBatch = {
+        observe()
+        val batch = input.next()
+        rows += batch.numRows().toLong
+        pending = true
+        batch
+      }
+    }
   }
 }

@@ -3534,9 +3534,9 @@ class CometIcebergWriteActionSuite
 
   test("native acceleration: a post-native handoff failure retries once") {
     assumeNativeAcceleration()
-    withIcebergCatalog { warehouseDir =>
+    withIcebergCatalog { _ =>
       val table = "handoff_retry_target"
-      createTable(warehouseDir, table, partitionSpec = "")
+      createTable(table, partitionSpec = "")
       val session = spark
       import session.implicits._
       (1 to 1000)
@@ -4195,10 +4195,136 @@ class CometIcebergWriteActionSuite
     }
   }
 
+  test("scheduler probe failure after commit never calls abort") {
+    withTempIcebergDir { gates =>
+      var commits = 0
+      var aborts = 0
+      val batchWrite = new BatchWrite {
+        override def createBatchWriterFactory(info: PhysicalWriteInfo): DataWriterFactory =
+          throw new UnsupportedOperationException
+        override def commit(messages: Array[WriterCommitMessage]): Unit = { commits += 1 }
+        override def abort(messages: Array[WriterCommitMessage]): Unit = { aborts += 1 }
+      }
+      // Duplicate markers throw in the real probe, even with a successful BatchWrite.commit.
+      IcebergSchedulerFiles.touch(gates.toPath.resolve("committed"))
+      val probe = SharedIcebergSchedulerProbe(gates.getAbsolutePath, "smoke", 10000L)
+      IcebergSchedulerTestProbe.withProbe(probe) {
+        val exec =
+          IcebergCommitExec(batchWrite, new Write {}, () => (), FailingLeafExec(failTask = false))
+        intercept[java.nio.file.FileAlreadyExistsException](exec.executeCollect())
+      }
+      assert(commits == 1)
+      assert(aborts == 0, "a post-commit observer must not abort committed data")
+    }
+  }
+
+  test("native acceleration: scheduler probe failure preserves committed files") {
+    assumeNativeAcceleration()
+    withIcebergCatalog { _ =>
+      createTable("scheduler_committed", partitionSpec = "")
+      withTempIcebergDir { gates =>
+        IcebergSchedulerFiles.touch(gates.toPath.resolve("committed"))
+        val probe = SharedIcebergSchedulerProbe(gates.getAbsolutePath, "smoke", 10000L)
+        val before = countSnapshots("scheduler_committed")
+        val plans = withNativeEnabled {
+          capturePlans(spark, includeFailures = true) {
+            val error = intercept[Exception] {
+              IcebergSchedulerTestProbe.withProbe(probe) {
+                coalesceInsert(
+                  "scheduler_committed",
+                  (0 until 100).map(i => (i, "r", i.toDouble)))
+              }
+            }
+            assert(
+              exceptionChain(error).exists(
+                _.isInstanceOf[java.nio.file.FileAlreadyExistsException]))
+          }
+        }
+        assert(plans.exists(p =>
+          collectWithSubqueries(p) { case w: CometIcebergWriteExec =>
+            w
+          }.nonEmpty))
+        assert(countSnapshots("scheduler_committed") - before == 1L)
+        val referenced = spark
+          .sql(s"SELECT file_path FROM $catalog.$ns.scheduler_committed.files")
+          .collect()
+          .map(_.getString(0))
+          .toSet
+        assert(referenced.nonEmpty)
+        assert(referenced.forall(p => Files.size(IcebergSchedulerFiles.localPath(p)) > 0L))
+        assertRows("scheduler_committed", expectedIds = 0 until 100)
+      }
+    }
+  }
+
+  test("native acceleration: scheduler probe observes files before native handoff") {
+    assumeNativeAcceleration()
+    withIcebergCatalog { warehouse =>
+      createTable(
+        "scheduler_progress",
+        partitionSpec = "",
+        properties = Some(
+          "'write.distribution-mode'='none', 'write.target-file-size-bytes'='1', " +
+            "'write.parquet.page-row-limit'='1000'"))
+      val source = new File(warehouse, "scheduler_progress_source")
+      spark
+        .range(0L, 5000L, 1L, 1)
+        .selectExpr("CAST(id AS INT) AS id", "'r' AS region", "CAST(id AS DOUBLE) AS amount")
+        .write
+        .parquet(source.getAbsolutePath)
+      withTempIcebergDir { gates =>
+        IcebergSchedulerFiles.touch(gates.toPath.resolve("release-all"))
+        val probe = SharedIcebergSchedulerProbe(gates.getAbsolutePath, "executor-loss", 10000L)
+        val snapshot = withNativeEnabled {
+          captureWrite("scheduler_progress") {
+            withSQLConf(CometConf.COMET_BATCH_SIZE.key -> "1000") {
+              IcebergSchedulerTestProbe.withProbe(probe) {
+                spark.read
+                  .parquet(source.getAbsolutePath)
+                  .coalesce(1)
+                  .writeTo(s"$catalog.$ns.scheduler_progress")
+                  .append()
+              }
+            }
+          }
+        }
+        assert(snapshot.snapshotDelta == 1L)
+        assert(collectIcebergWriteOps(snapshot.plans)._1.nonEmpty)
+        assert(snapshot.plans.exists(p =>
+          collectWithSubqueries(p) { case w: CometIcebergWriteExec =>
+            w
+          }.nonEmpty))
+        val progress = IcebergSchedulerFiles.progress(gates.toPath)
+        assert(progress.size == 1)
+        val attempt = progress.head
+        assert(
+          attempt.rows == 4000L && attempt.files.nonEmpty,
+          s"progress=$attempt; handoffs=${IcebergSchedulerFiles.attempts(gates.toPath, "handoff")}")
+        val marker = parse(
+          new String(
+            Files.readAllBytes(
+              gates.toPath.resolve(s"attempt-${attempt.attempt}/native-progress.json")),
+            java.nio.charset.StandardCharsets.UTF_8))
+        implicit val formats: Formats = DefaultFormats
+        val sizes = (marker \ "fileBytes").extract[Map[String, Long]]
+        assert(sizes.keySet == attempt.files.toSet)
+        assert(sizes.values.exists(_ > 0L), "no physical bytes before handoff")
+        val handoffs = IcebergSchedulerFiles.attempts(gates.toPath, "handoff")
+        assert(handoffs.size == 1 && handoffs.head.attempt == attempt.attempt)
+        assert(
+          attempt.files
+            .map(IcebergSchedulerFiles.localPath)
+            .toSet
+            .subsetOf(handoffs.head.files.map(IcebergSchedulerFiles.localPath).toSet))
+        assertRows("scheduler_progress", expectedIds = 0 until 5000)
+      }
+    }
+  }
+
   test("native acceleration: scheduler probe records handoff and accepted files") {
     assume(icebergAvailable, "Iceberg not available in classpath")
-    withIcebergCatalog { warehouseDir =>
-      createTable(warehouseDir, "scheduler_smoke", partitionSpec = "")
+    withIcebergCatalog { _ =>
+      createTable("scheduler_smoke", partitionSpec = "")
       withTempIcebergDir { gates =>
         val probe = SharedIcebergSchedulerProbe(gates.getAbsolutePath, "smoke", 10000L)
         // Round-trip the actual probe, rather than depending on local-mode static state.

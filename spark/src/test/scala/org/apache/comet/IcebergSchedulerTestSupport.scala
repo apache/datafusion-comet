@@ -34,8 +34,6 @@ import org.apache.spark.{SparkEnv, TaskContext}
 import org.apache.spark.scheduler.{SparkListener, SparkListenerExecutorRemoved, SparkListenerJobStart, SparkListenerStageCompleted, SparkListenerTaskEnd, SparkListenerTaskStart}
 import org.apache.spark.sql.comet.IcebergSchedulerTestProbe
 
-import org.apache.comet.serde.OperatorOuterClass.IcebergWriteTestProbe
-
 private[comet] case class SchedulerAttempt(
     stage: Int,
     stageAttempt: Int,
@@ -167,20 +165,28 @@ private[comet] case class SharedIcebergSchedulerProbe(
     }
   }
 
-  override def beforeNative(): Option[IcebergWriteTestProbe] = {
+  override def afterInput(rows: Long, dataLocation: String, operationId: String): Unit = {
     val a = context()
     val dir = attemptDir(a)
-    if (mode.endsWith("loss") && a.number == 0 && a.stageAttempt == 0) {
-      // The second 1,000-row unit rolls the first tiny file to disk. The first unit can
-      // still be entirely buffered by Parquet/FileIO, so it cannot prove physical progress.
-      Some(
-        IcebergWriteTestProbe
-          .newBuilder()
-          .setAttemptDirectory(dir.toString)
-          .setPauseAfterRows(2000L)
-          .setTimeoutMillis(timeoutMillis)
-          .build())
-    } else None
+    if (mode.endsWith("loss") && a.number == 0 && a.stageAttempt == 0 && rows >= 4000L &&
+      !Files.exists(dir.resolve("native-progress.json"))) {
+      // Native can prefetch a batch while a write awaits I/O. Four supplied 1,000-row
+      // batches leave room for that lookahead and for the first file to reach disk.
+      // Match the native file_name_prefix, including the separator before the file counter.
+      val prefix = f"${a.partition}%05d-${a.attempt}%05d-$operationId-"
+      val files = paths(localPath(dataLocation))
+        .filter(_.getFileName.toString.startsWith(prefix))
+        .map(_.toUri.toString)
+        .sorted
+      // Capture sizes before releasing the writer: checking after commit would miss buffering.
+      val sizes = files.map(p => p -> Files.size(localPath(p))).toMap
+      write(
+        dir.resolve("native-progress.json"),
+        Map("rows" -> rows, "files" -> files, "fileBytes" -> sizes))
+      await("release-native", timeoutMillis)(
+        Files.exists(dir.resolve("release-native")) || Files.exists(root.resolve("release-all")))(
+        s"rows=$rows, files=$files, bytes=$sizes")
+    }
   }
 
   override def afterHandoff(locations: Seq[String]): Unit = {
