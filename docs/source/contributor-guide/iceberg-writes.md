@@ -253,9 +253,8 @@ Points where Comet adapts iceberg-rust to match iceberg-java:
   NULL past `chrono`'s calendar ([#6145](https://github.com/apache/datafusion-comet/issues/6145)).
   All four of its transforms floor a pre-1970 timestamp that lies exactly 999999 microseconds into a
   unit, which iceberg-java puts in the unit before
-  ([#6426](https://github.com/apache/datafusion-comet/issues/6426)), and its `day` puts some
-  timestamps from the last second before a pre-1970 midnight in the next day. Every other transform
-  stays on iceberg-rust.
+  ([#6426](https://github.com/apache/datafusion-comet/issues/6426)). Every other transform stays on
+  iceberg-rust.
 - **File names.** `file_name_prefix` embeds the partition id, the task attempt id and the operation
   id, so a retried or speculative attempt never reuses another attempt's file names.
 - **Row pacing.** iceberg-java's rolling writer checks the target file size every 1000 rows of the
@@ -424,8 +423,9 @@ Useful places to look when checking parity:
 - `CometIcebergWriteActionSuite` writes the same data through both writers into sibling tables and
   compares rows, `readable_metrics` and partition paths.
 - iceberg-rust's own code, at the pinned revision. iceberg-rust makes different choices from
-  iceberg-java in places that matter to the table's contents, for example grouping partition keys
-  with `OrderedFloat`, which treats `-0.0` and `0.0` as equal
+  iceberg-java in places that matter to the table's contents. For example, until
+  [apache/iceberg-rust#3327](https://github.com/apache/iceberg-rust/pull/3327) it grouped
+  partition keys with `OrderedFloat`, which treats `-0.0` and `0.0` as equal
   ([#6138](https://github.com/apache/datafusion-comet/issues/6138)). Check how iceberg-rust
   compares, hashes and renders values, not only what it writes.
 
@@ -449,6 +449,7 @@ the writer: run the write suites and the Iceberg Spark tests. The pin policy is 
 | `IcebergWriteProtoTranslationSuite`                              | Translation of properties into `IcebergParquetWriteSettings` and the writer mode.                                                                                                                                              |
 | Rust tests in `iceberg_write.rs` and in `iceberg_partition_*.rs` | File rolling on the 1000-row grid, fanout order, clustered input checks, cleanup guard, manifest round trip, memory reservation, partition path rendering, partition values past `chrono`'s calendar.                          |
 | Rust tests in `iceberg_dictionary.rs`                            | The per-column dictionary choice against answers recorded from parquet-mr, including columns either side of its cut-off.                                                                                                       |
+| `iceberg_dictionary_chooser` benchmark in `native/core/benches`  | The time one partition's dictionary choice takes, over primitive, struct, array, map and nested columns.                                                                                                                       |
 | `CometIcebergWriteBenchmark`                                     | Native versus iceberg-java for unpartitioned, clustered, fanout and copy-on-write delete writes. It checks each arm's plan before timing it.                                                                                   |
 | `CometIcebergEndToEndBenchmark`                                  | An Iceberg read, hash repartition and Iceberg write against stock Spark, over primitive, struct, array, map and nested columns. It checks each arm's plan and the rows it wrote before timing it.                              |
 

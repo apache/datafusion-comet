@@ -155,6 +155,16 @@ object CometConf extends ShimCometConf {
       .checkValue(v => v > 0, "Data file concurrency limit must be positive")
       .createWithDefault(1)
 
+  val COMET_ICEBERG_NESTED_SCHEMA_PRUNING_ENABLED: ConfigEntry[Boolean] =
+    conf("spark.comet.scan.icebergNative.nestedSchemaPruning.enabled")
+      .category(CATEGORY_SCAN)
+      .doc(
+        "Whether the native Iceberg scan reads only the nested fields of a struct, list, or map " +
+          "column that Spark's nested schema pruning keeps. When false, it reads every nested " +
+          "field of a projected column and drops the unused ones after decoding.")
+      .booleanConf
+      .createWithDefault(true)
+
   val COMET_ICEBERG_IO_TIMEOUT: ConfigEntry[Long] =
     conf("spark.comet.iceberg.ioTimeout")
       .category(CATEGORY_SCAN)
@@ -328,7 +338,8 @@ object CometConf extends ShimCometConf {
       .doc(
         "Whether to enable native ExistenceJoin, produced when EXISTS / NOT EXISTS / IN is " +
           "combined with another predicate via OR. Sort-merge joins, residual (non-equi) join " +
-          "conditions, computed (non-column) join keys, and NOT IN fall back to Spark.")
+          "conditions, computed (non-column) join keys, and NOT IN combined with OR fall back " +
+          "to Spark.")
       .booleanConf
       .createWithDefault(true)
   val COMET_EXEC_AGGREGATE_ENABLED: ConfigEntry[Boolean] =
@@ -1363,13 +1374,19 @@ object CometConf extends ShimCometConf {
 
   val COMET_LIBHDFS_SCHEMES_KEY = "fs.comet.libhdfs.schemes"
 
+  // Declared so the value appears in the generated config reference and can be set at startup
+  // via `spark.hadoop.*`, but never read through this entry: the scan gates read the Hadoop key
+  // above through `NativeConfig.resolveScanLibhdfsSchemes`, so `core-site.xml` is honored too.
   val COMET_LIBHDFS_SCHEMES: OptionalConfigEntry[String] =
     conf(s"spark.hadoop.$COMET_LIBHDFS_SCHEMES_KEY")
       .category(CATEGORY_SCAN)
       .doc(
         "Defines filesystem schemes (e.g., hdfs, webhdfs) that the native side accesses " +
           "via libhdfs, separated by commas. Valid only when built with hdfs-opendal feature " +
-          "enabled.")
+          "enabled. Read from the Hadoop configuration, so it must be set before the " +
+          "SparkSession is created. A scheme listed only through a reader option is not read " +
+          "natively. libhdfs reads the settings of a listed scheme, such as " +
+          "`fs.<scheme>.impl`, from the executor's `core-site.xml`.")
       .stringConf
       .createOptional
 

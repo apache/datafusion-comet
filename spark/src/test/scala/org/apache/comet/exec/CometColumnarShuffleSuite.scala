@@ -79,6 +79,22 @@ abstract class CometColumnarShuffleSuite extends CometTestBase with AdaptiveSpar
     checkCometExchange(df, 0, false)
   }
 
+  test("Fallback to Spark when shuffling a columnar child that is not a Comet operator") {
+    // Comet's rules run before Spark inserts columnar-to-row transitions, so with the Comet scan
+    // disabled the shuffle's child is Spark's vectorized Parquet scan, which is columnar. If the
+    // columnar shuffle accepted it, the shuffle writer would cast each ColumnarBatch to an
+    // InternalRow and fail with a ClassCastException.
+    withSQLConf(
+      CometConf.COMET_NATIVE_SCAN_ENABLED.key -> "false",
+      SQLConf.PARQUET_VECTORIZED_READER_ENABLED.key -> "true") {
+      withParquetTable((0 until 10).map(i => (i, i % 5)), "tbl") {
+        val df = sql("SELECT * FROM tbl").repartition(10, $"_1")
+        checkSparkAnswerAndFallbackReason(df, "is a neither row-based or a Comet operator")
+        checkCometExchange(df, 0, false)
+      }
+    }
+  }
+
   test("Fallback to Spark when shuffling CalendarIntervalType data") {
     val df = spark
       .sql("select id, make_interval(1,2,3,4,5,6,7) as i from range(100)")

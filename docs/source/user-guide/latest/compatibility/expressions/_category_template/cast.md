@@ -199,6 +199,13 @@ a result ([#5995](https://github.com/apache/datafusion-comet/issues/5995)). This
 casts that Spark accepts under `TRY_CAST`, such as narrowing `BIGINT` to `INT`. Spark rejects a
 `STRING` key cast at analysis.
 
+## Decimal with Negative Scale to Integral Types
+
+Casting a `DecimalType` with a negative scale, which Spark only creates when
+`spark.sql.legacy.allowNegativeScaleOfDecimal=true`, to `ByteType`, `ShortType`, `IntegerType`
+or `LongType` is not supported natively in any eval mode. The native kernels divide by
+`10^scale`, which overflows for a negative scale, so Comet leaves the cast to Spark.
+
 ## Legacy Mode
 
 <!--BEGIN:CAST_LEGACY_TABLE-->
