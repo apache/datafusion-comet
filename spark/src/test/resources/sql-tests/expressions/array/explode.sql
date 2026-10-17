@@ -328,7 +328,7 @@ CREATE TABLE test_explode_empty(id int, arr array<int>) USING parquet
 query
 SELECT id, explode_outer(arr) FROM test_explode_empty
 
--- ===== Map falls back to Spark: outer form must also fall back =====
+-- ===== Map inputs: outer form preserves empty and null maps =====
 
 statement
 CREATE TABLE test_explode_map(id int, m map<string, int>) USING parquet
@@ -339,7 +339,7 @@ INSERT INTO test_explode_map VALUES
   (2, map()),
   (3, NULL)
 
-query expect_fallback(Comet only supports explode/explode_outer for arrays, not maps)
+query
 SELECT id, explode_outer(m) FROM test_explode_map
 
 -- ===== TIMESTAMP_NTZ (Spark 3.4+): distinct Arrow layout (no tz) from LTZ =====
