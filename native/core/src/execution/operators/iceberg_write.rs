@@ -851,8 +851,7 @@ impl ExecutionPlan for IcebergWriteExec {
         context: Arc<TaskContext>,
     ) -> DFResult<SendableRecordBatchStream> {
         let metrics = WriteMetrics::new(&self.metrics, partition);
-        // One consumer for the whole task, however many files it opens: a consumer per file
-        // would shrink every other consumer's share of the fair pool as a fanout write widened.
+        // One consumer for the whole task, however many files it opens.
         let reservation = MemoryConsumer::new(format!("IcebergWriteExec[{partition}]"))
             .register(context.memory_pool());
         let input_stream = self.input.execute(partition, context)?;

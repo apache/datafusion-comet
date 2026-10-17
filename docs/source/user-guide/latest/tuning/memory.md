@@ -62,7 +62,7 @@ while Comet runs; see [Sizing the Overhead from the Memory Usage Log].
 `spark.comet.exec.memoryPool.fraction` is deprecated and does not leave room for it. Spark hands out all of
 `spark.memory.offHeap.size` to the tasks that ask for it, whatever the fraction. The `fair_unified` pool applies the
 fraction to each task separately, where Spark's own limit of an even share of the pool per running task is tighter
-whenever more than one task is running, and the `greedy_unified` pool ignores it.
+unless the fraction is below one over the number of running tasks, and the `greedy_unified` pool ignores it.
 
 For more details about Spark off-heap memory mode, please refer to [Spark documentation].
 
@@ -79,11 +79,13 @@ Both pool types are shared by all the native plans in the same Spark task. A tas
 one native plan at a time, for example the native operators on either side of a union or a
 coalesce. The shared pool ensures that their combined memory usage stays within the per-task limit.
 
-The `fair_unified` pool prevents operators from using more than an even fraction of the available memory
-(i.e. `pool_size / num_consumers`, where `num_consumers` counts the memory consumers registered by all of the task's
-native plans). This pool works best when you know beforehand
-the query has multiple operators that will likely all need to spill. Sometimes it will cause spills even
-when there is sufficient memory in order to leave enough memory for other operators.
+The `fair_unified` pool keeps memory for the operators that cannot spill, such as the final merge of a sort or the
+build side of a hash join. Spark limits each task to an even share of `spark.memory.offHeap.size` among the tasks
+using it, and the pool divides `spark.memory.offHeap.size` the same way among the tasks running native plans. Within
+a task, it limits each operator that can spill to an even share of what the operators that cannot spill leave of the
+task's share, counting the operators of all of the task's native plans. The operators that cannot spill take what
+Spark grants. So an operator that can spill sometimes spills even when there is memory to spare, in order to leave it
+for the task's other operators.
 
 The `greedy_unified` pool type implements a greedy first-come first-serve limit. This pool works well for queries that do not
 need to spill or have a single spillable operator.

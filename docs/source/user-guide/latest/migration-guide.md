@@ -107,6 +107,22 @@ that still sets it to `true` keeps the split plan, with iceberg-java writing the
 on Spark 3.5+ it now also plans merge-on-read writes as the split plan. Unset it to plan Spark's
 own operator.
 
+### Memory Pool Limits
+
+The `fair_unified` memory pool, which is the default for `spark.comet.exec.memoryPool`, limited each
+of a task's operators to a share of all of `spark.memory.offHeap.size`, while Spark limits each task
+to an even share of it among the running tasks. Whenever more than one task was running, the share
+was the looser limit, so one operator could take all of its task's memory, and another operator
+that cannot spill, such as the final merge of a sort, then failed the task
+([#7088](https://github.com/apache/datafusion-comet/issues/7088)). Spark retried such tasks, and the
+retries usually succeeded. Comet 1.2.0 divides `spark.memory.offHeap.size` among the tasks running
+native plans, as Spark does, and within a task limits only the operators that can spill, each to an
+even share of what the operators that cannot spill leave. So sorts, aggregations and the shuffle
+writer can spill sooner when several of them run in one task, and the operators that cannot spill
+are limited only by Spark, unless the deprecated `spark.comet.exec.memoryPool.fraction` is below
+`1.0`. To leave every limit to Spark instead, set `spark.comet.exec.memoryPool=greedy_unified`. See
+[Configuring Comet Memory](tuning/memory.md#configuring-comet-memory).
+
 ## Upgrading to Comet 1.1.0
 
 Comet `1.1.0` makes no behavior changes that need a `spark.comet.legacy.*` key. The changes below

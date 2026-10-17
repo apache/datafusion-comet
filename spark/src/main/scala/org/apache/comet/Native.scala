@@ -49,6 +49,12 @@ class Native extends NativeBase {
    * @param taskMemoryManager
    *   the task-level memory manager that is responsible for tracking memory usage across JVM and
    *   native side.
+   * @param memoryLimit
+   *   the most that the task's native memory pool may reserve, see
+   *   `CometExecIterator.getMemoryConfig`.
+   * @param offHeapSize
+   *   `spark.memory.offHeap.size`, which the `fair_unified` pool shares among the tasks running
+   *   native plans.
    * @param taskContext
    *   the driving Spark task's `TaskContext`, propagated to Tokio workers running JVM UDFs.
    * @param classLoader
@@ -72,6 +78,7 @@ class Native extends NativeBase {
       offHeapMode: Boolean,
       memoryPoolType: String,
       memoryLimit: Long,
+      offHeapSize: Long,
       taskAttemptId: Long,
       taskCPUs: Long,
       keyUnwrapper: CometFileKeyUnwrapper,

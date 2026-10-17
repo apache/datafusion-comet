@@ -148,6 +148,7 @@ class CometExecIterator(
       memoryConfig.offHeapMode,
       memoryConfig.memoryPoolType,
       memoryConfig.memoryLimit,
+      memoryConfig.offHeapSize,
       taskAttemptId,
       taskCPUs,
       keyUnwrapper,
@@ -912,13 +913,13 @@ object CometExecIterator extends Logging {
           s"offHeapSize=${toMB(offHeapSize)}, " +
           s"memoryFraction=$memoryFraction, " +
           s"memoryLimit=${toMB(memoryLimit)}")
-      MemoryConfig(offHeapMode, memoryPoolType, memoryLimit)
+      MemoryConfig(offHeapMode, memoryPoolType, memoryLimit, offHeapSize)
     } else {
       // On-heap mode exists only so that the Spark SQL tests can run against Comet without
       // changing Spark's memory configuration, and native memory cannot be charged to Spark's
       // on-heap pool, so nothing is accounted. See the memory management contributor guide.
       logDebug("on-heap mode: native memory is unbounded and unaccounted")
-      MemoryConfig(offHeapMode, memoryPoolType = "unbounded", memoryLimit = 0)
+      MemoryConfig(offHeapMode, memoryPoolType = "unbounded", memoryLimit = 0, offHeapSize = 0)
     }
   }
 
@@ -950,4 +951,8 @@ object CometExecIterator extends Logging {
   }
 }
 
-case class MemoryConfig(offHeapMode: Boolean, memoryPoolType: String, memoryLimit: Long)
+case class MemoryConfig(
+    offHeapMode: Boolean,
+    memoryPoolType: String,
+    memoryLimit: Long,
+    offHeapSize: Long)
