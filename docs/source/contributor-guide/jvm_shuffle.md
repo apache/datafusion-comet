@@ -152,13 +152,14 @@ Selection logic in `CometShuffleManager.shouldBypassMergeSort()`:
 
 ### Writers
 
-| Class                               | Location                                             | Description                                                                                                         |
-| ----------------------------------- | ---------------------------------------------------- | ------------------------------------------------------------------------------------------------------------------- |
-| `CometBypassMergeSortShuffleWriter` | `.../shuffle/CometBypassMergeSortShuffleWriter.java` | Hash-based writer. Creates one `CometDiskBlockWriter` per partition. Supports async writes.                         |
-| `CometUnsafeShuffleWriter`          | `.../shuffle/CometUnsafeShuffleWriter.java`          | Sort-based writer. Uses `CometShuffleExternalSorter` to buffer and sort records, then merges spill files.           |
-| `CometDiskBlockWriter`              | `.../shuffle/CometDiskBlockWriter.java`              | Buffers rows in memory pages for a single partition. Spills to disk via native encoding. Used by bypass writer.     |
-| `CometShuffleExternalSorter`        | `.../shuffle/sort/CometShuffleExternalSorter.java`   | Buffers records across all partitions, sorts by partition ID, spills sorted data. Used by unsafe writer.            |
-| `SpillWriter`                       | `.../shuffle/SpillWriter.java`                       | Base class for spill logic. Manages memory pages and calls `Native.writeSortedFileNative()` for Arrow IPC encoding. |
+| Class                               | Location                                             | Description                                                                                                                                           |
+| ----------------------------------- | ---------------------------------------------------- | ----------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `CometBypassMergeSortShuffleWriter` | `.../shuffle/CometBypassMergeSortShuffleWriter.java` | Hash-based writer. Creates one `CometDiskBlockWriter` per partition. Supports async writes.                                                           |
+| `CometUnsafeShuffleWriter`          | `.../shuffle/CometUnsafeShuffleWriter.java`          | Sort-based writer. Uses `CometShuffleExternalSorter` to buffer and sort records, then merges spill files.                                             |
+| `CometDiskBlockWriter`              | `.../shuffle/CometDiskBlockWriter.java`              | Buffers rows in memory pages for a single partition. Spills to disk via native encoding. Used by bypass writer.                                       |
+| `CometShuffleExternalSorter`        | `.../shuffle/sort/CometShuffleExternalSorter.java`   | Buffers records across all partitions, sorts by partition ID, spills sorted data. Used by unsafe writer.                                              |
+| `SpillSorter`                       | `.../shuffle/sort/SpillSorter.java`                  | Holds one spill's records for `CometShuffleExternalSorter`. Writes every partition of the spill with one `Native.writeSortedPartitionsNative()` call. |
+| `SpillWriter`                       | `.../shuffle/SpillWriter.java`                       | Base class for spill logic. Manages memory pages. `doSpilling()` encodes one partition's rows with `Native.writeSortedFileNative()`.                  |
 
 ### Reader
 
@@ -174,8 +175,15 @@ Selection logic in `CometShuffleManager.shouldBypassMergeSort()`:
 1. `ShuffleWriteProcessor` calls `CometShuffleManager.getWriter()`
 2. Writer receives `Iterator[Product2[K, V]]` where V is `UnsafeRow`
 3. Rows are serialized and buffered in off-heap memory pages
-4. When memory threshold or batch size is reached, `SpillWriter.doSpilling()` is called
-5. Native code (`Native.writeSortedFileNative()`) converts rows to Arrow arrays and writes IPC format
+4. When memory threshold or batch size is reached, the buffered rows are written. `CometDiskBlockWriter`
+   calls `SpillWriter.doSpilling()` for its partition. `CometShuffleExternalSorter` calls
+   `SpillSorter.writeSortedFileNative()` once for each spill and once more for the final file, and each
+   call writes every partition
+5. Native code converts the rows to Arrow arrays and writes them as Arrow IPC blocks. `doSpilling()`
+   passes one partition's row addresses and sizes to `Native.writeSortedFileNative()`. `SpillSorter`
+   sorts its record pointers by partition with `Native.sortRowPartitionsNative()`, then passes them,
+   with the address of each data page, to `Native.writeSortedPartitionsNative()`. That call reads the
+   rows in place, writes every partition of the spill, and returns each partition's length and checksum
 6. For bypass writer: partition files are concatenated into final output
 7. For sort writer: spill files are merged
 

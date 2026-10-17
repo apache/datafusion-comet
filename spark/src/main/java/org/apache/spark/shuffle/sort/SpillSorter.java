@@ -24,7 +24,6 @@ import java.util.LinkedList;
 import javax.annotation.Nullable;
 
 import org.apache.spark.TaskContext;
-import org.apache.spark.executor.ShuffleWriteMetrics;
 import org.apache.spark.shuffle.ShuffleWriteMetricsReporter;
 import org.apache.spark.shuffle.comet.CometShuffleMemoryAllocatorTrait;
 import org.apache.spark.sql.comet.execution.shuffle.SpillInfo;
@@ -33,7 +32,9 @@ import org.apache.spark.sql.types.StructType;
 import org.apache.spark.unsafe.Platform;
 import org.apache.spark.unsafe.UnsafeAlignedOffset;
 import org.apache.spark.unsafe.array.LongArray;
+import org.apache.spark.unsafe.memory.MemoryBlock;
 
+import org.apache.comet.CometConf;
 import org.apache.comet.Native;
 
 /**
@@ -58,7 +59,8 @@ public class SpillSorter extends SpillWriter {
   private final String compressionCodec;
   private final int compressionLevel;
   private final boolean offsetsAsLengths;
-  private final String checksumAlgorithm;
+  // The checksum algorithm's id for native code, or -1 when shuffle checksums are disabled.
+  private final int checksumAlgoId;
 
   // Shared state (mutable, passed by reference from parent)
   private final long[] partitionChecksums;
@@ -113,7 +115,8 @@ public class SpillSorter extends SpillWriter {
     this.compressionCodec = compressionCodec;
     this.compressionLevel = compressionLevel;
     this.offsetsAsLengths = offsetsAsLengths;
-    this.checksumAlgorithm = checksumAlgorithm;
+    this.checksumAlgoId =
+        partitionChecksums.length > 0 ? checksumAlgorithmId(checksumAlgorithm) : -1;
     this.partitionChecksums = partitionChecksums;
     this.writeMetrics = writeMetrics;
     this.taskContext = taskContext;
@@ -235,135 +238,83 @@ public class SpillSorter extends SpillWriter {
     return this.inMemSorter.numRecords();
   }
 
+  /**
+   * Sorts the buffered records by partition and writes them to the spill file set by {@link
+   * #setSpillInfo}, every partition in one native call, recording each partition's length and
+   * checksum.
+   */
   public void writeSortedFileNative(boolean isLastFile, boolean tracingEnabled) throws IOException {
-    // This call performs the actual sort.
-    long arrayAddr = this.sorterArray.getBaseOffset();
-    int pos = inMemSorter.numRecords();
-    nativeLib.sortRowPartitionsNative(arrayAddr, pos, tracingEnabled);
-    ShuffleInMemorySorter.ShuffleSorterIterator sortedRecords =
-        new ShuffleInMemorySorter.ShuffleSorterIterator(pos, this.sorterArray, 0);
-
-    // If there are no sorted records, so we don't need to create an empty spill file.
-    if (!sortedRecords.hasNext()) {
+    final int numRecords = inMemSorter.numRecords();
+    // If there are no records, we don't need to create an empty spill file.
+    if (numRecords == 0) {
       return;
     }
 
-    final ShuffleWriteMetricsReporter writeMetricsToUse;
+    // This call performs the actual sort.
+    long arrayAddr = this.sorterArray.getBaseOffset();
+    nativeLib.sortRowPartitionsNative(arrayAddr, numRecords, tracingEnabled);
 
-    if (isLastFile) {
-      // We're writing the final non-spill file, so we _do_ want to count this as shuffle bytes.
-      writeMetricsToUse = writeMetrics;
-    } else {
-      // We're spilling, so bytes written should be counted towards spill rather than write.
-      // Create a dummy WriteMetrics object to absorb these metrics, since we don't want to count
-      // them towards shuffle bytes written.
-      writeMetricsToUse = new ShuffleWriteMetrics();
+    // Native code resolves the sorted record pointers through the page table, so the rows are
+    // read where they lie, and continues each partition's checksum over the bytes it writes.
+    long start = System.nanoTime();
+    long encodeNanos =
+        nativeLib.writeSortedPartitionsNative(
+            arrayAddr,
+            numRecords,
+            pageAddresses(),
+            uaoSize,
+            dataTypes,
+            spillInfo.file.getAbsolutePath(),
+            preferDictionaryRatio,
+            CometConf.jvmShuffleBatchSize(),
+            checksumAlgoId,
+            partitionChecksums,
+            spillInfo.partitionLengths,
+            compressionCodec,
+            compressionLevel,
+            offsetsAsLengths,
+            tracingEnabled);
+    addEncodeNanos(encodeNanos);
+
+    long written = 0;
+    for (long length : spillInfo.partitionLengths) {
+      written += length;
     }
 
-    int currentPartition = -1;
-
-    final RowPartition rowPartition = new RowPartition(initialSize);
-
-    while (sortedRecords.hasNext()) {
-      sortedRecords.loadNext();
-      final int partition = sortedRecords.packedRecordPointer.getPartitionId();
-      assert (partition >= currentPartition);
-      if (partition != currentPartition) {
-        // Switch to the new partition
-        if (currentPartition != -1) {
-
-          if (partitionChecksums.length > 0) {
-            // If checksum is enabled, we need to update the checksum for the current partition.
-            setChecksum(partitionChecksums[currentPartition]);
-            setChecksumAlgo(checksumAlgorithm);
-          }
-
-          long written =
-              doSpilling(
-                  dataTypes,
-                  spillInfo.file,
-                  rowPartition,
-                  writeMetricsToUse,
-                  preferDictionaryRatio,
-                  compressionCodec,
-                  compressionLevel,
-                  offsetsAsLengths,
-                  tracingEnabled);
-          spillInfo.partitionLengths[currentPartition] = written;
-
-          // Store the checksum for the current partition.
-          partitionChecksums[currentPartition] = getChecksum();
-        }
-        currentPartition = partition;
-      }
-
-      final long recordPointer = sortedRecords.packedRecordPointer.getRecordPointer();
-      final long recordOffsetInPage = allocator.getOffsetInPage(recordPointer);
-      // Note that we need to skip over record key (partition id)
-      // Note that we already use off-heap memory for serialized rows, so recordPage is always
-      // null.
-      int recordSizeInBytes = UnsafeAlignedOffset.getSize(null, recordOffsetInPage) - 4;
-      long recordReadPosition = recordOffsetInPage + uaoSize + 4; // skip over record length too
-      rowPartition.addRow(recordReadPosition, recordSizeInBytes);
-    }
-
-    if (currentPartition != -1) {
-      if (partitionChecksums.length > 0) {
-        // If checksum is enabled, we need to update the checksum for the last partition.
-        setChecksum(partitionChecksums[currentPartition]);
-        setChecksumAlgo(checksumAlgorithm);
-      }
-
-      long written =
-          doSpilling(
-              dataTypes,
-              spillInfo.file,
-              rowPartition,
-              writeMetricsToUse,
-              preferDictionaryRatio,
-              compressionCodec,
-              compressionLevel,
-              offsetsAsLengths,
-              tracingEnabled);
-      spillInfo.partitionLengths[currentPartition] = written;
-
-      // Store the checksum for the last partition.
-      if (partitionChecksums.length > 0) {
-        partitionChecksums[currentPartition] = getChecksum();
-      }
-
-      synchronized (spills) {
-        spills.add(spillInfo);
+    // Other threads may be updating the metrics at the same time, so we need to synchronize it.
+    // As in Spark's ShuffleExternalSorter, a spill's records count as written, but its bytes count
+    // as spilled rather than as shuffle bytes, and its time does not count as shuffle write time
+    // (SPARK-3577 tracks spill time separately).
+    synchronized (writeMetrics) {
+      writeMetrics.incRecordsWritten(numRecords);
+      if (isLastFile) {
+        writeMetrics.incWriteTime(System.nanoTime() - start);
+        writeMetrics.incBytesWritten(written);
+      } else {
+        taskContext.taskMetrics().incDiskBytesSpilled(written);
       }
     }
 
-    if (!isLastFile) { // i.e. this is a spill file
-      // The current semantics of `shuffleRecordsWritten` seem to be that it's updated when
-      // records
-      // are written to disk, not when they enter the shuffle sorting code. DiskBlockObjectWriter
-      // relies on its `recordWritten()` method being called in order to trigger periodic updates
-      // to
-      // `shuffleBytesWritten`. If we were to remove the `recordWritten()` call and increment that
-      // counter at a higher-level, then the in-progress metrics for records written and bytes
-      // written would get out of sync.
-      //
-      // When writing the last file, we pass `writeMetrics` directly to the DiskBlockObjectWriter;
-      // in all other cases, we pass in a dummy write metrics to capture metrics, then copy those
-      // metrics to the true write metrics here. The reason for performing this copying is so that
-      // we can avoid reporting spilled bytes as shuffle write bytes.
-      //
-      // Note that we intentionally ignore the value of `writeMetricsToUse.shuffleWriteTime()`.
-      // Consistent with ExternalSorter, we do not count this IO towards shuffle write time.
-      // SPARK-3577 tracks the spill time separately.
+    synchronized (spills) {
+      spills.add(spillInfo);
+    }
+  }
 
-      // This is guaranteed to be a ShuffleWriteMetrics based on the if check in the beginning
-      // of this method.
-      synchronized (writeMetrics) {
-        writeMetrics.incRecordsWritten(((ShuffleWriteMetrics) writeMetricsToUse).recordsWritten());
-        taskContext
-            .taskMetrics()
-            .incDiskBytesSpilled(((ShuffleWriteMetrics) writeMetricsToUse).bytesWritten());
+  /**
+   * The base address of each page holding records, indexed by page number, for native code to
+   * resolve the record pointers through. Pages this sorter does not hold are 0.
+   */
+  private long[] pageAddresses() {
+    synchronized (this) {
+      int maxPageNumber = -1;
+      for (MemoryBlock page : allocatedPages) {
+        maxPageNumber = Math.max(maxPageNumber, page.pageNumber);
       }
+      long[] addresses = new long[maxPageNumber + 1];
+      for (MemoryBlock page : allocatedPages) {
+        addresses[page.pageNumber] = page.getBaseOffset();
+      }
+      return addresses;
     }
   }
 
