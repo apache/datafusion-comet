@@ -3406,61 +3406,6 @@ class CometInMemoryCacheSuite extends CometTestBase {
     }
   }
 
-  test("an outer hash join over a native cache scan of a NOT IN keeps each group once") {
-    // The native cache scan reports the order of the plan that wrote the cache. A NOT IN is not in
-    // the order Spark reports for it, since Comet builds it on its streamed side, so the outer
-    // join that reads the cache must not declare the order, or the aggregates above it run in
-    // sorted mode over unsorted rows and split groups. Sparse keys and small batches make each
-    // group span several. A cache with an exchange in its plan is written under AQE, and the scan
-    // reads the final plan behind the adaptive one, so this runs with AQE off and on.
-    Seq(false, true).foreach { adaptive =>
-      withSQLConf(
-        SQLConf.ADAPTIVE_EXECUTION_ENABLED.key -> adaptive.toString,
-        SQLConf.SHUFFLE_PARTITIONS.key -> "2",
-        SQLConf.COLUMN_BATCH_SIZE.key -> "8",
-        CometConf.COMET_BATCH_SIZE.key -> "8",
-        CometConf.COMET_EXEC_IN_MEMORY_CACHE_ENABLED.key -> "true") {
-        withParquetTable((0 until 2000).map(i => ((i % 40) * 1000, i)), "big") {
-          withParquetTable(Seq(1000, 10000, 20000, 100000).map(x => Tuple1(Option(x))), "excl") {
-            withParquetTable((0 until 40 by 2).map(k => (k * 1000, k)), "small") {
-              try {
-                spark
-                  .table("big")
-                  .toDF("k", "v")
-                  .repartition(2, $"k")
-                  .sortWithinPartitions("k")
-                  .cache()
-                  .createOrReplaceTempView("cached")
-                spark.table("cached").count()
-                sql("SELECT * FROM cached WHERE k NOT IN (SELECT _1 FROM excl)")
-                  .cache()
-                  .createOrReplaceTempView("anti")
-                spark.table("anti").count()
-                assert(
-                  !partitionsInOrder(spark.table("anti"), keyOrder(Ascending)),
-                  "the cached NOT IN rows are in order, so nothing here can split a group")
-                val query =
-                  """SELECT /*+ BROADCAST(b) */ a.k, count(*), sum(a.v), count(b._2)
-                    |FROM anti a LEFT JOIN small b ON a.k = b._1
-                    |GROUP BY a.k""".stripMargin
-                checkEachKeyGroupedOnce(
-                  query,
-                  plan =>
-                    assert(
-                      collect(plan) { case s: CometInMemoryTableScanExec => s }.size == 1,
-                      s"the outer join does not read the native cache scan (AQE $adaptive):\n$plan"))
-              } finally {
-                spark.catalog.clearCache()
-                spark.catalog.dropTempView("anti")
-                spark.catalog.dropTempView("cached")
-              }
-            }
-          }
-        }
-      }
-    }
-  }
-
   test("an aggregate on the key above a hash join over a sorted cache groups each key once") {
     // The order the join declares on its probe input reaches past the join, so the aggregate
     // above it in the same native plan groups in sorted, streaming mode. That is right while

@@ -2928,16 +2928,15 @@ trait CometHashJoin {
     // and an input sorted outside the native plan, a relation sorted before it was cached for
     // instance, declares no order to DataFusion. Send the order so the native join declares it
     // on the probe input; see SortedInputExec. Every other join type keeps the probe order as
-    // it is, except the null-aware anti join: Comet builds that one on its streamed side, so its
-    // output is not in the order Spark reports for it, and the planner declares no order above
-    // it.
+    // it is. The null-aware anti join is the exception, as Comet builds that one on its streamed
+    // side, but it runs natively only when that side reports no order, so it reports none.
     //
     // The order Spark reports can be false to begin with. A Comet join that may move its
-    // streamed rows reports it all the same: the null-aware anti join, a right outer join like
-    // this one whose probe input declared no order, and the nested loop join, which keeps the
-    // order of neither input. A cache reports the order of the plan that wrote it, so the rows
-    // of such a join can reach this one through a cache, as a JVM input that the native planner
-    // cannot look behind. Declaring the order there would let an operator above rely on it, an
+    // streamed rows reports it all the same: a right outer join like this one whose probe input
+    // declared no order, and the nested loop join, which keeps the order of neither input. A
+    // cache reports the order of the plan that wrote it, so the rows of such a join can reach
+    // this one through a cache, as a JVM input that the native planner cannot look behind.
+    // Declaring the order there would let an operator above rely on it, an
     // aggregate in sorted mode for instance, which then splits groups. So nothing is declared
     // when such a join feeds the streamed side with no sort in between, or when a leaf reports
     // an order that cannot be checked; see mayReportFalseOrder.
@@ -2992,12 +2991,11 @@ trait CometHashJoin {
 
   // Whether the order that `plan` reports may be false, because something that feeds it with no
   // sort in between cannot be relied on to keep it. Comet's hash joins report the order of their
-  // streamed side, which Spark's own joins keep, but three Comet joins do not always: the
-  // null-aware anti join, which Comet builds on its streamed side; an outer join that runs as
-  // DataFusion's right outer join, which keeps its probe rows in place only if the planner
-  // declared an order on its probe input; and the nested loop join, which DataFusion runs build
-  // row by build row. So does a leaf that reports an order from state this walk cannot check, an
-  // RDD checkpointed from a plan that is gone for one.
+  // streamed side, which Spark's own joins keep, but two Comet joins do not always: an outer join
+  // that runs as DataFusion's right outer join, which keeps its probe rows in place only if the
+  // planner declared an order on its probe input; and the nested loop join, which DataFusion runs
+  // build row by build row. So does a leaf that reports an order from state this walk cannot
+  // check, an RDD checkpointed from a plan that is gone for one.
   //
   // The walk follows the order, so a hash join, which passes on only its streamed side's, is
   // walked through that side alone. A cache reports the order of the plan that wrote it, and the
@@ -3011,7 +3009,6 @@ trait CometHashJoin {
     case _ if plan.outputOrdering.isEmpty => false
     case _: SortExec | _: CometSortExec => false
     case _: CometBroadcastNestedLoopJoinExec => true
-    case join: CometBroadcastHashJoinExec if join.isNullAwareAntiJoin => true
     case join: CometBroadcastHashJoinExec =>
       hashJoinMayReportFalseOrder(
         join.nativeOp,
