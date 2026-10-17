@@ -57,11 +57,11 @@ query expect_fallback(holds a subexpression that the operator's other expression
 SELECT map_from_arrays(k1, array(1.0D / x, 1.0D)), map_from_arrays(k2, array(1.0D / x))
 FROM test_map_from_arrays_shared_nonzero
 
--- With subexpression elimination off a projection shares nothing, but a whole-stage codegen
--- aggregate still does, so the shared `1.0D / x` still sends the calls back to Spark.
+-- With subexpression elimination off a projection shares nothing, so Spark skips the values on
+-- the row whose keys are NULL, as the dispatched calls do.
 statement
 SET spark.sql.subexpressionElimination.enabled=false
 
-query expect_fallback(holds a subexpression that the operator's other expressions share)
+query expect_dispatch(map_from_arrays)
 SELECT map_from_arrays(k1, array(1.0D / x, 1.0D)), map_from_arrays(k2, array(1.0D / x))
 FROM test_map_from_arrays_shared

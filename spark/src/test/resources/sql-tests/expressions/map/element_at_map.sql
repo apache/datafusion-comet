@@ -53,15 +53,14 @@ query
 SELECT element_at(map('a', 1, 'b', 2), 'a'), element_at(map('a', 1, 'b', 2), 'missing'), element_at(map('a', 1, 'b', 2), NULL)
 
 -- Map key types whose Spark equality Comet's native `map_extract` cannot reproduce are routed
--- through the JVM codegen dispatcher, where Spark's own `ElementAt.doGenCode` supplies the key
--- normalization and interpreted-ordering equality. These stay on the constructor path here because
--- the SQL harness excludes `ConstantFolding`; `CometMapExpressionSuite` covers the folded-literal
--- form of each.
+-- through the JVM codegen dispatcher, where Spark's own `ElementAt.doGenCode` supplies the
+-- interpreted-ordering equality. These stay on the constructor path here because the SQL harness
+-- excludes `ConstantFolding`; `CometMapExpressionSuite` covers the folded-literal form of each.
 
--- Spark stores `-0.0` map keys as `+0.0` and compares with `nanSafeCompareDoubles`, so a `-0.0`
--- lookup finds the `+0.0` key. Native lookup compares the raw Arrow values. The lookup must be
--- written `-0.0D`: an unsuffixed `-0.0` is a decimal literal, and a decimal has no signed zero, so
--- `CAST(-0.0 AS DOUBLE)` would look up `+0.0` and find the key on either path.
+-- Spark compares with `nanSafeCompareDoubles`, so a `-0.0` lookup finds the `+0.0` key. Native
+-- lookup compares the raw Arrow values. The lookup must be written `-0.0D`: an unsuffixed `-0.0`
+-- is a decimal literal, and a decimal has no signed zero, so `CAST(-0.0 AS DOUBLE)` would look up
+-- `+0.0` and find the key on either path.
 query expect_dispatch(element_at)
 SELECT element_at(map(CAST(0 AS DOUBLE), 7), -0.0D)
 

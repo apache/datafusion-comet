@@ -160,9 +160,9 @@ SELECT element_at(if(locate(CAST(1.0D / x AS STRING), s, n) > 0, m1, m2), 0.5D),
   element_at(if(locate(CAST(1.0D / x + 1.0D AS STRING), s, n) > 0, m2, m1), 0.5D)
 FROM test_map_lookup_shared_locate_nonzero
 
--- With subexpression elimination off a projection shares nothing, but a whole-stage codegen
--- aggregate still evaluates the subexpressions its functions share for every row, so the shared
--- key still sends the lookups back to Spark.
+-- With subexpression elimination off a projection shares nothing, so its lookups stay
+-- dispatched, but a whole-stage codegen aggregate still evaluates the subexpressions its
+-- functions share for every row, so there the shared key still sends the lookups back to Spark.
 statement
 SET spark.sql.subexpressionElimination.enabled=false
 
@@ -173,23 +173,23 @@ query expect_fallback(holds a subexpression that the operator's other expression
 SELECT max(element_at(m1, 1.0D / x)), max(element_at(m2, 1.0D / x))
 FROM test_map_lookup_shared_nonzero
 
-query expect_fallback(holds a subexpression that the operator's other expressions share)
+query expect_dispatch(element_at)
 SELECT element_at(m1, 1.0D / x), element_at(m2, 1.0D / x) FROM test_map_lookup_shared
 
-query expect_fallback(holds a subexpression that the operator's other expressions share)
+query expect_dispatch(getmapvalue)
 SELECT m1[1.0D / x], m2[1.0D / x] FROM test_map_lookup_shared
 
 -- The dispatcher eliminates a subexpression the lookup repeats only while the setting is on, so
--- with it off the repeated `1.0D / x` counts as shared, and the aggregate raises on the row
--- whose map is NULL.
+-- with it off the repeated `1.0D / x` counts as shared in an aggregate, which raises on the row
+-- whose map is NULL. A projection shares nothing, so there the same lookup stays dispatched.
 query expect_error(DIVIDE_BY_ZERO)
 SELECT max(element_at(m1, 1.0D / x + 1.0D / x)) FROM test_map_lookup_shared
 
 query expect_fallback(holds a subexpression that the operator's other expressions share)
 SELECT max(element_at(m1, 1.0D / x + 1.0D / x)) FROM test_map_lookup_shared_nonzero
 
-query expect_fallback(holds a subexpression that the operator's other expressions share)
-SELECT element_at(m1, 1.0D / x + 1.0D / x) FROM test_map_lookup_shared_nonzero
+query expect_dispatch(element_at)
+SELECT element_at(m1, 1.0D / x + 1.0D / x) FROM test_map_lookup_shared
 
 -- A single lookup still shares nothing.
 query expect_dispatch(element_at)

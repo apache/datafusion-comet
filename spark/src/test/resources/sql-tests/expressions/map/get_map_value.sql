@@ -32,15 +32,15 @@ query spark_answer_only
 SELECT map('a', 1, 'b', 2)['a'], map('a', 1, 'b', 2)['missing'], map('a', 1, 'b', 2)[NULL]
 
 -- Map key types whose Spark equality Comet's native `map_extract` cannot reproduce are routed
--- through the JVM codegen dispatcher, where Spark's own `GetMapValue.doGenCode` supplies the key
--- normalization and interpreted-ordering equality. `x[key]` routes through `GetMapValue` /
+-- through the JVM codegen dispatcher, where Spark's own `GetMapValue.doGenCode` supplies the
+-- interpreted-ordering equality. `x[key]` routes through `GetMapValue` /
 -- `CometMapExtract` (the `element_at` form in `element_at_map.sql` exercises the same guard on
 -- `CometElementAt`). A `map<double,int>` column
 -- is used rather than a `map(...)` literal because Spark's `SimplifyExtractValueOps` rewrites
 -- `map(...)[key]` over a literal map into a `CASE` before it can reach the native lookup. Spark
--- stores a `-0.0` key as `+0.0` and finds it with `nanSafeCompareDoubles`, so it returns `7` for a
--- `-0.0` lookup, while native lookup compares the raw Arrow values. The lookup must be written
--- `-0.0D`: an unsuffixed `-0.0` is a decimal literal, and a decimal has no signed zero, so
+-- compares with `nanSafeCompareDoubles`, so a `-0.0` lookup finds the `+0.0` key and returns `7`,
+-- while native lookup compares the raw Arrow values. The lookup must be written `-0.0D`: an
+-- unsuffixed `-0.0` is a decimal literal, and a decimal has no signed zero, so
 -- `CAST(-0.0 AS DOUBLE)` would look up `+0.0` and find the key on either path.
 statement
 CREATE TABLE test_map_double(m map<double, int>) USING parquet
