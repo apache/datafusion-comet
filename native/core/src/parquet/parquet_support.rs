@@ -116,6 +116,11 @@ pub struct SparkParquetOptions {
     /// (overflow -> NULL), because Spark may discard values through pruning paths that
     /// DataFusion cannot fully mirror before conversion.
     pub checked_timestamp_overflow: bool,
+    /// When true (`spark.sql.parquet.ignoreVariantAnnotation`, Spark 4.1+), a Parquet field
+    /// carrying the VARIANT logical type annotation is read as its plain underlying struct.
+    /// When false (Spark's default), requesting anything but Spark's VariantType for such a
+    /// field is rejected, mirroring `ParquetToSparkSchemaConverter.convertGroupField`.
+    pub ignore_variant_annotation: bool,
     /// When true, resolve each file's datetime calendar-rebase policy from its parquet footer
     /// metadata (`org.apache.spark.legacyDateTime` and friends) and rebase -- or refuse --
     /// affected values, mirroring Spark's per-file `DataSourceUtils.datetimeRebaseSpec`
@@ -147,6 +152,7 @@ impl SparkParquetOptions {
             allow_type_promotion: false,
             allow_timestamp_ltz_to_ntz: false,
             checked_timestamp_overflow: true,
+            ignore_variant_annotation: false,
             rebase_from_file_metadata: false,
             datetime_rebase_mode_in_read: String::new(),
             int96_rebase_mode_in_read: String::new(),
@@ -165,6 +171,7 @@ impl SparkParquetOptions {
             allow_type_promotion: false,
             allow_timestamp_ltz_to_ntz: false,
             checked_timestamp_overflow: true,
+            ignore_variant_annotation: false,
             rebase_from_file_metadata: false,
             datetime_rebase_mode_in_read: String::new(),
             int96_rebase_mode_in_read: String::new(),
