@@ -1480,6 +1480,11 @@ impl PhysicalPlanner {
 
         let left = self.create_expr(left, Arc::clone(&input_schema))?;
         let right = self.create_expr(right, Arc::clone(&input_schema))?;
+        let required_return_type = || {
+            return_type
+                .map(to_arrow_datatype)
+                .ok_or_else(|| GeneralError(format!("Missing return type for {op:?} expression")))
+        };
         match (
             &op,
             left.data_type(&input_schema),
@@ -1494,7 +1499,7 @@ impl PhysicalPlanner {
                     >= DECIMAL128_MAX_PRECISION)
                 || (op == DataFusionOperator::Multiply && p1 + p2 >= DECIMAL128_MAX_PRECISION) =>
             {
-                let data_type = return_type.map(to_arrow_datatype).unwrap();
+                let data_type = required_return_type()?;
                 let (p_out, s_out) = match &data_type {
                     DataType::Decimal128(p, s) => (*p, *s),
                     dt => {
@@ -1523,7 +1528,7 @@ impl PhysicalPlanner {
                 Ok(DataType::Decimal128(_p1, _s1)),
                 Ok(DataType::Decimal128(_p2, _s2)),
             ) => {
-                let data_type = return_type.map(to_arrow_datatype).unwrap();
+                let data_type = required_return_type()?;
                 let func_name = if options.is_integral_div {
                     // Decimal256 division in Arrow may overflow, so we still need this variant of decimal_div.
                     // Otherwise, we may be able to reuse the previous case-match instead of here,
@@ -1590,7 +1595,7 @@ impl PhysicalPlanner {
                 )))
             }
             _ => {
-                let data_type = return_type.map(to_arrow_datatype).unwrap();
+                let data_type = required_return_type()?;
                 if [EvalMode::Try, EvalMode::Ansi].contains(&eval_mode)
                     && (data_type.is_integer()
                         || (data_type.is_floating() && op == DataFusionOperator::Divide))
@@ -1601,7 +1606,9 @@ impl PhysicalPlanner {
                         DataFusionOperator::Multiply => "checked_mul",
                         DataFusionOperator::Divide => "checked_div",
                         _ => {
-                            todo!("ANSI mode for Operator yet to be implemented!");
+                            return Err(GeneralError(format!(
+                                "{op:?} is not supported in {eval_mode:?} mode for {data_type}"
+                            )));
                         }
                     };
                     let fun_expr = create_comet_physical_fun_with_eval_mode(
@@ -5110,16 +5117,13 @@ fn literal_to_array_ref(
                     .into_iter()
                     .map(|v| {
                         let big_integer = BigInt::from_signed_bytes_be(&v);
-                        big_integer
-                            .to_i128()
-                            .ok_or_else(|| {
-                                GeneralError(format!(
-                                    "Cannot parse {big_integer:?} as i128 for Decimal literal"
-                                ))
-                            })
-                            .unwrap()
+                        big_integer.to_i128().ok_or_else(|| {
+                            GeneralError(format!(
+                                "Cannot parse {big_integer:?} as i128 for Decimal literal"
+                            ))
+                        })
                     })
-                    .collect::<Vec<_>>()
+                    .collect::<Result<Vec<_>, _>>()?
                     .into(),
                 Some(nulls.clone().into()),
             )
@@ -7803,6 +7807,174 @@ mod tests {
         assert_eq!(vals3.values(), &[10, 0, 11]);
 
         Ok(())
+    }
+
+    /// Null slots arrive as empty bytes with a false null mask entry, and must decode next to
+    /// valid values: `[123.45, null, -0.01]`.
+    #[test]
+    fn test_literal_to_decimal_list_with_nulls() -> Result<(), ExecutionError> {
+        let data = ListLiteral {
+            decimal_values: vec![
+                12345i128.to_be_bytes().to_vec(),
+                vec![],
+                (-1i128).to_be_bytes().to_vec(),
+            ],
+            null_mask: vec![true, false, true],
+            ..Default::default()
+        };
+
+        let array = literal_to_array_ref(DataType::Decimal128(38, 2), data)?;
+
+        let decimals = array
+            .as_any()
+            .downcast_ref::<arrow::array::Decimal128Array>()
+            .unwrap();
+        assert_eq!(decimals.data_type(), &DataType::Decimal128(38, 2));
+        assert_eq!(decimals.len(), 3);
+        assert_eq!(decimals.value(0), 12345);
+        assert!(decimals.is_null(1));
+        assert_eq!(decimals.value(2), -1);
+        Ok(())
+    }
+
+    /// A decimal list value that does not fit in i128 must return an error instead of panicking.
+    #[test]
+    fn test_literal_to_decimal_list_out_of_range() {
+        // 2^128 needs 17 bytes and exceeds i128::MAX.
+        let mut too_large = vec![0u8; 17];
+        too_large[0] = 0x01;
+        let data = ListLiteral {
+            decimal_values: vec![12345i128.to_be_bytes().to_vec(), too_large],
+            null_mask: vec![true, true],
+            ..Default::default()
+        };
+
+        match literal_to_array_ref(DataType::Decimal128(38, 2), data) {
+            Err(ExecutionError::GeneralError(msg)) => {
+                assert!(msg.contains("Cannot parse"), "unexpected message: {msg}")
+            }
+            other => panic!("expected GeneralError, got {other:?}"),
+        }
+    }
+
+    /// Builds two nullable columns of the same type and bound references to them, as inputs for
+    /// `create_binary_expr`.
+    fn binary_expr_inputs(
+        arrow_type: DataType,
+        proto_type: spark_expression::DataType,
+    ) -> (SchemaRef, Expr, Expr) {
+        let schema = Arc::new(Schema::new(vec![
+            Field::new("a", arrow_type.clone(), true),
+            Field::new("b", arrow_type, true),
+        ]));
+        let bound = |index| Expr {
+            expr_struct: Some(Bound(spark_expression::BoundReference {
+                index,
+                datatype: Some(proto_type.clone()),
+            })),
+            expr_id: None,
+            query_context: None,
+        };
+        (schema, bound(0), bound(1))
+    }
+
+    fn int32_proto_type() -> spark_expression::DataType {
+        spark_expression::DataType {
+            type_id: 3, // INT32
+            type_info: None,
+        }
+    }
+
+    fn decimal_proto_type(precision: i32, scale: i32) -> spark_expression::DataType {
+        use spark_expression::data_type::{
+            data_type_info::DatatypeStruct, DataTypeInfo, DecimalInfo,
+        };
+        spark_expression::DataType {
+            type_id: 10, // DECIMAL
+            type_info: Some(Box::new(DataTypeInfo {
+                datatype_struct: Some(DatatypeStruct::Decimal(DecimalInfo { precision, scale })),
+            })),
+        }
+    }
+
+    /// Checked integer arithmetic only covers `+ - * /`. Any other operator in Try or Ansi mode
+    /// must return an error instead of panicking.
+    #[test]
+    fn test_checked_binary_expr_unsupported_operator() {
+        use datafusion::logical_expr::Operator as DataFusionOperator;
+
+        let planner = PhysicalPlanner::default();
+        let (schema, left, right) = binary_expr_inputs(DataType::Int32, int32_proto_type());
+
+        for eval_mode in [EvalMode::Try, EvalMode::Ansi] {
+            let result = planner.create_binary_expr(
+                &left,
+                &left,
+                &right,
+                Some(&int32_proto_type()),
+                DataFusionOperator::Modulo,
+                Arc::clone(&schema),
+                eval_mode,
+            );
+            match result {
+                Err(ExecutionError::GeneralError(msg)) => assert!(
+                    msg.contains("Modulo") && msg.contains(&format!("{eval_mode:?}")),
+                    "unexpected message: {msg}"
+                ),
+                Err(e) => panic!("expected GeneralError for {eval_mode:?}, got {e:?}"),
+                Ok(expr) => panic!("expected an error for {eval_mode:?}, got {expr:?}"),
+            }
+        }
+    }
+
+    /// `return_type` is optional on the wire. A binary expression without one must return an
+    /// error instead of panicking, in each arm that reads it.
+    #[test]
+    fn test_binary_expr_missing_return_type() {
+        use datafusion::logical_expr::Operator as DataFusionOperator;
+
+        let planner = PhysicalPlanner::default();
+        let cases = [
+            // Generic arm.
+            (
+                DataType::Int32,
+                int32_proto_type(),
+                DataFusionOperator::Plus,
+            ),
+            // Wide decimal arm: 38 integer digits reach DECIMAL128_MAX_PRECISION for Plus.
+            (
+                DataType::Decimal128(38, 0),
+                decimal_proto_type(38, 0),
+                DataFusionOperator::Plus,
+            ),
+            // Decimal Divide arm.
+            (
+                DataType::Decimal128(38, 0),
+                decimal_proto_type(38, 0),
+                DataFusionOperator::Divide,
+            ),
+        ];
+
+        for (arrow_type, proto_type, op) in cases {
+            let (schema, left, right) = binary_expr_inputs(arrow_type.clone(), proto_type);
+            let result = planner.create_binary_expr(
+                &left,
+                &left,
+                &right,
+                None,
+                op,
+                schema,
+                EvalMode::Legacy,
+            );
+            match result {
+                Err(ExecutionError::GeneralError(msg)) => assert!(
+                    msg.contains("Missing return type"),
+                    "unexpected message for {op:?} on {arrow_type}: {msg}"
+                ),
+                Err(e) => panic!("expected GeneralError for {op:?} on {arrow_type}, got {e:?}"),
+                Ok(expr) => panic!("expected an error for {op:?} on {arrow_type}, got {expr:?}"),
+            }
+        }
     }
 
     /// Test that reproduces the "Cast error: Casting from Int8 to Date32 not supported" error
