@@ -82,6 +82,10 @@ Execution is disabled.
 (`CometExecRule`). The order matters, because operator conversion builds its native plan up from the nodes that scan
 conversion produces. Each phase is described below.
 
+With `spark.comet.exec.local.enabled`, the columnar `CometRule` first offers the converted plan to
+local execution, which runs a whole qualifying query as one native graph in a single Spark task
+when the application uses a local master. See [Local Execution](local-execution.md).
+
 ### Phase 1: CometScanRule
 
 `CometScanRule` replaces any Parquet scans with Comet operators. There are different paths for Spark v1 and v2 data sources.
