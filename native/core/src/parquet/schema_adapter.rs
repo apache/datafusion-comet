@@ -27,7 +27,7 @@ use crate::parquet::parquet_support::{
 };
 use arrow::array::new_empty_array;
 use arrow::compute::can_cast_types;
-use arrow::datatypes::{DataType, Field, FieldRef, Schema, SchemaRef};
+use arrow::datatypes::{DataType, Field, FieldRef, Schema, SchemaRef, TimeUnit};
 use arrow::record_batch::RecordBatch;
 use datafusion::common::tree_node::{Transformed, TransformedResult, TreeNode};
 use datafusion::common::{DataFusionError, Result as DataFusionResult};
@@ -512,6 +512,7 @@ fn check_leaf_conversion(
     target_type: &DataType,
     column: &str,
     options: &SparkParquetOptions,
+    in_list: bool,
 ) -> DataFusionResult<ConversionCheck> {
     if physical_type == target_type {
         return Ok(ConversionCheck::Accept);
@@ -537,7 +538,7 @@ fn check_leaf_conversion(
                 target_type,
             ));
         }
-    } else if spark_has_updater(physical_type, target_type, options) {
+    } else if spark_has_updater(physical_type, target_type, options, in_list) {
         return Ok(ConversionCheck::Accept);
     }
     Ok(ConversionCheck::RejectOnNonEmpty {
@@ -549,11 +550,13 @@ fn check_leaf_conversion(
 
 /// Whether Spark's `ParquetVectorUpdaterFactory.getUpdater` has an updater that reads the
 /// primitive Parquet (physical) type as the requested (logical) type. The same rules apply to
-/// top-level columns and, through [`check_conversion`], to nested leaves.
+/// top-level columns and, through [`check_conversion`], to nested leaves. `in_list` is whether
+/// the leaf sits anywhere below a list.
 fn spark_has_updater(
     physical_type: &DataType,
     target_type: &DataType,
     options: &SparkParquetOptions,
+    in_list: bool,
 ) -> bool {
     // Reject reading a string/binary Parquet column as anything else. Spark's
     // `ParquetVectorUpdaterFactory.getUpdater` BINARY case allows StringType /
@@ -687,6 +690,21 @@ fn spark_has_updater(
         return false;
     }
 
+    // Spark has no updater that reads TIMESTAMP(NANOS) as a timestamp; it reads it only as a
+    // long, under `spark.sql.legacy.parquet.nanosAsLong`. INT96 is coerced to microseconds, so
+    // a nanosecond timestamp is TIMESTAMP(NANOS), except below a list, where an INT96 leaf of a
+    // legacy list layout is left as a timezone-free nanosecond timestamp (#7029). There only
+    // the UTC-adjusted form is known to be TIMESTAMP(NANOS). See #7034.
+    if let (
+        DataType::Timestamp(TimeUnit::Nanosecond, physical_tz),
+        DataType::Timestamp(TimeUnit::Microsecond, _),
+    ) = (physical_type, target_type)
+    {
+        if physical_tz.is_some() || !in_list {
+            return false;
+        }
+    }
+
     // Spark 3.x refuses to read a Parquet TimestampLTZ column as
     // TimestampNTZ (SPARK-36182); Spark 4.0 (SPARK-47447) lifted that.
     // The flag tracks Comet's per-Spark-version constant in
@@ -745,9 +763,20 @@ fn check_conversion(
     column: &str,
     options: &SparkParquetOptions,
 ) -> DataFusionResult<ConversionCheck> {
+    check_nested_conversion(physical_type, target_type, column, options, false)
+}
+
+/// [`check_conversion`] for a pair that sits below a list when `in_list` is set.
+fn check_nested_conversion(
+    physical_type: &DataType,
+    target_type: &DataType,
+    column: &str,
+    options: &SparkParquetOptions,
+    in_list: bool,
+) -> DataFusionResult<ConversionCheck> {
     // Normalize before dispatching on shape, including dictionary-wrapped containers.
     if let DataType::Dictionary(_, value_type) = physical_type {
-        return check_conversion(value_type, target_type, column, options);
+        return check_nested_conversion(value_type, target_type, column, options, in_list);
     }
     match (physical_type, target_type) {
         (DataType::Struct(physical_fields), DataType::Struct(target_fields)) => {
@@ -755,11 +784,12 @@ fn check_conversion(
             combine_checks(target_fields.iter().zip(physical_indices).filter_map(
                 |(target_field, physical_index)| {
                     let physical_field = &physical_fields[physical_index?];
-                    Some(check_conversion(
+                    Some(check_nested_conversion(
                         physical_field.data_type(),
                         target_field.data_type(),
                         &format!("{column}, {}", physical_field.name()),
                         options,
+                        in_list,
                     ))
                 },
             ))
@@ -787,11 +817,12 @@ fn check_conversion(
                     target_type,
                 ));
             }
-            check_conversion(
+            check_nested_conversion(
                 physical_item.data_type(),
                 target_item.data_type(),
                 &format!("{column}, list, {}", physical_item.name()),
                 options,
+                true,
             )
         }
         (
@@ -812,7 +843,7 @@ fn check_conversion(
                 }
                 return combine_checks(physical_kv.iter().zip(target_kv.iter()).map(
                     |(physical_field, target_field)| {
-                        check_conversion(
+                        check_nested_conversion(
                             physical_field.data_type(),
                             target_field.data_type(),
                             &format!(
@@ -821,6 +852,7 @@ fn check_conversion(
                                 physical_field.name()
                             ),
                             options,
+                            in_list,
                         )
                     },
                 ));
@@ -831,7 +863,7 @@ fn check_conversion(
                 target_type,
             ))
         }
-        _ => check_leaf_conversion(physical_type, target_type, column, options),
+        _ => check_leaf_conversion(physical_type, target_type, column, options, in_list),
     }
 }
 
@@ -1777,7 +1809,7 @@ pub(crate) mod test {
         new_null_array, Array, ArrayRef, BinaryArray, Date32Array, Decimal128Array,
         DictionaryArray, FixedSizeListArray, Float32Array, Float64Array, Int32Array, Int64Array,
         LargeListArray, ListArray, MapArray, StringArray, StructArray, TimestampMicrosecondArray,
-        TimestampMillisecondArray,
+        TimestampMillisecondArray, TimestampNanosecondArray,
     };
     use arrow::buffer::OffsetBuffer;
     use arrow::datatypes::SchemaRef;
@@ -2195,6 +2227,82 @@ pub(crate) mod test {
             msg.contains("Found: INT32") && msg.contains("Expected: timestamp"),
             "unexpected error: {msg}"
         );
+        Ok(())
+    }
+
+    /// `TIMESTAMP(NANOS)` read as `timestamp` or `timestamp_ntz`: Spark reads nanosecond
+    /// timestamps only as `bigint` (`nanosAsLong`), so the cast to microseconds is rejected
+    /// whether or not the file column is UTC-adjusted. See #7034.
+    #[tokio::test]
+    async fn parquet_nanos_timestamp_read_as_timestamp_errors() -> Result<(), DataFusionError> {
+        for file_tz in [Some("UTC"), None] {
+            for read_tz in [Some("UTC"), None] {
+                let values = Arc::new(
+                    TimestampNanosecondArray::from(vec![1_600_000_000_123_456_789i64])
+                        .with_timezone_opt(file_tz),
+                ) as Arc<dyn arrow::array::Array>;
+                let msg = assert_rejected_conversion(
+                    Field::new(
+                        "t",
+                        DataType::Timestamp(TimeUnit::Nanosecond, file_tz.map(Into::into)),
+                        false,
+                    ),
+                    values,
+                    DataType::Timestamp(TimeUnit::Microsecond, read_tz.map(Into::into)),
+                )
+                .await?;
+                assert!(
+                    msg.contains("Column: [[t]]")
+                        && msg.contains("Found: INT64")
+                        && msg.contains("Expected: timestamp"),
+                    "file tz {file_tz:?}, read tz {read_tz:?}: unexpected error: {msg}"
+                );
+            }
+        }
+        Ok(())
+    }
+
+    /// Below a list, a timezone-free nanosecond timestamp may be an INT96 leaf of a legacy list
+    /// layout that DataFusion leaves uncoerced (#7029), so only the UTC-adjusted form, which is
+    /// always `TIMESTAMP(NANOS)`, is rejected there. Reading nanoseconds as `bigint` stays allowed.
+    #[test]
+    fn nanos_timestamp_rejection_below_a_list() -> Result<(), DataFusionError> {
+        let options = default_options();
+        let nanos = DataType::Timestamp(TimeUnit::Nanosecond, None);
+        let nanos_utc = DataType::Timestamp(TimeUnit::Nanosecond, Some("UTC".into()));
+        let micros_utc = DataType::Timestamp(TimeUnit::Microsecond, Some("UTC".into()));
+        for (physical, target, rejected) in [
+            (
+                list_type(nanos.clone()),
+                list_type(micros_utc.clone()),
+                false,
+            ),
+            (
+                list_type(struct_type(vec![("t", nanos.clone())])),
+                list_type(struct_type(vec![("t", micros_utc.clone())])),
+                false,
+            ),
+            (
+                list_type(nanos_utc.clone()),
+                list_type(micros_utc.clone()),
+                true,
+            ),
+            (
+                struct_type(vec![("t", nanos)]),
+                struct_type(vec![("t", micros_utc.clone())]),
+                true,
+            ),
+            (map_type(nanos_utc.clone()), map_type(micros_utc), true),
+            (nanos_utc.clone(), DataType::Int64, false),
+            (list_type(nanos_utc), list_type(DataType::Int64), false),
+        ] {
+            let check = check_conversion(&physical, &target, "a", &options)?;
+            assert_eq!(
+                matches!(check, ConversionCheck::RejectOnNonEmpty { .. }),
+                rejected,
+                "{physical} read as {target}"
+            );
+        }
         Ok(())
     }
 
