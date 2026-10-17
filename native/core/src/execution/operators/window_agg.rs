@@ -33,7 +33,10 @@
 //! - The buffered batches, and the copy made when concatenating them for evaluation, are
 //!   reserved against the task's memory pool. The operator still cannot spill, so a window
 //!   partition that does not fit fails the task with a memory error instead of growing
-//!   untracked.
+//!   untracked. A window partition spread over several batches needs up to twice its size,
+//!   because the copy is reserved while the batches it was made from still are. The consumer
+//!   registers with the pool when the first batch is buffered, so that it does not shrink the
+//!   share of a sort below it while the sort reads its input.
 //!
 //! Once DataFusion's `WindowAggExec` does both, this operator can be removed.
 
@@ -241,9 +244,9 @@ struct CometWindowAggStream {
     pool: Arc<dyn MemoryPool>,
     consumer_name: String,
     /// Registered when the first batch is buffered rather than when the stream is created. The
-    /// pool divides its memory among the registered consumers, and the sort below this operator
-    /// has used its share by then. Registering earlier would shrink the sort's share while it
-    /// reads its input.
+    /// pool divides its memory among the registered consumers, and a sort below this operator
+    /// has read all of its input by the time its first batch arrives. Registering earlier would
+    /// shrink the sort's share while it reads.
     reservation: Option<MemoryReservation>,
     baseline_metrics: BaselineMetrics,
     finished: bool,
