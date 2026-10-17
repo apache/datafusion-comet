@@ -153,12 +153,19 @@ pub fn create_modulo_expr(
     // If the data type is `Decimal128` and the (scale + integral part) exceeds the maximum allowed
     // for `Decimal128`, then cast both operands to `Decimal256` before creating the modulo scalar
     // expression, otherwise, create the modulo scalar expression directly.
+    //
+    // The width test is done in `i16` rather than `u8`: a negative scale makes `s as u8` wrap to
+    // a huge value and `p - s as u8` underflow, which panics in debug builds and silently selects
+    // the wrong branch in release (`overflow-checks = false`). Precision and scale are both
+    // bounded well inside `i16`, so this cannot overflow. Same rewrite as the one in
+    // `PhysicalPlanner::create_binary_expr_with_options`.
     match (
         left.data_type(&input_schema),
         right_non_ansi_safe.data_type(&input_schema),
     ) {
         (Ok(DataType::Decimal128(p1, s1)), Ok(DataType::Decimal128(p2, s2)))
-            if max(s1, s2) as u8 + max(p1 - s1 as u8, p2 - s2 as u8) > DECIMAL128_MAX_PRECISION =>
+            if max(s1 as i16, s2 as i16) + max(p1 as i16 - s1 as i16, p2 as i16 - s2 as i16)
+                > DECIMAL128_MAX_PRECISION as i16 =>
         {
             let left_256 = Arc::new(Cast::new(
                 left,
