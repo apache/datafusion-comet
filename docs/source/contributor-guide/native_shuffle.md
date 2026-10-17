@@ -87,6 +87,16 @@ Native shuffle (`CometExchange`) is selected when all of the following condition
      than one output partition: native decimal hashing differs from Spark's. A one-partition hash
      exchange stays native because the writer serializes it as `SinglePartition` without hashing.
 
+5. **Partition key expressions convert to protobuf**: native shuffle serializes the partitioning
+   into its protobuf plan, so every `HashPartitioning` expression and every `RangePartitioning`
+   sort order has to convert through `QueryPlanSerde.exprToProto`. An expression Comet has no
+   serde for, or whose serde reports it incompatible, disqualifies native shuffle even when the
+   key's type is supported. One example is the `mapsort(...)` wrapper Spark 4.0 and later adds
+   around a map used as a shuffle key: `CometMapSort` supports scalar map keys only, so a map with
+   array or struct keys fails this check and the exchange falls back to JVM shuffle even with
+   nested hash keys enabled. JVM shuffle has no such requirement because it evaluates the key on
+   the JVM; see [When JVM Shuffle is Used](jvm_shuffle.md#when-jvm-shuffle-is-used).
+
 ## Architecture
 
 ```
