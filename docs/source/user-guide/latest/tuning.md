@@ -50,10 +50,12 @@ cores from the first of these that applies:
   machine's cores unless it is started with a different number (`SPARK_WORKER_CORES`)
 - one on YARN and Kubernetes, which is their default for `spark.executor.cores`
 
-On any other cluster manager, Comet starts a single worker thread when `spark.executor.cores` is not set, and logs a
-warning. Native plans that read no input from the JVM, such as a native Parquet scan feeding a sort, run entirely on
-the worker threads, so tasks share them when an executor runs more tasks at once than it has worker threads. These
-values can be overridden using the environment variables `COMET_WORKER_THREADS` and `COMET_MAX_BLOCKING_THREADS`.
+On any other cluster manager, such as Mesos, Comet cannot tell how many cores the executor has when
+`spark.executor.cores` is not set. It starts one worker thread for each processor available to the executor's JVM, and
+logs a warning unless `COMET_WORKER_THREADS` is set. Too few worker threads cost more than a few idle ones: native plans
+that read no input from the JVM, such as a native Parquet scan feeding a sort, run entirely on the worker threads, so
+tasks share them when an executor runs more tasks at once than it has worker threads. The worker and blocking thread
+counts can be overridden using the environment variables `COMET_WORKER_THREADS` and `COMET_MAX_BLOCKING_THREADS`.
 
 ## Metrics Overhead
 

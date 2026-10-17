@@ -24,6 +24,7 @@ import java.util.Locale
 import java.util.concurrent.{ConcurrentHashMap, Executors, ThreadFactory, TimeUnit}
 import java.util.concurrent.atomic.AtomicBoolean
 
+import scala.util.Try
 import scala.util.control.NonFatal
 
 import org.apache.arrow.memory.BufferAllocator
@@ -504,7 +505,14 @@ object CometExecIterator extends Logging {
    * memory limit and never reads those settings. Comet does not know how any other cluster
    * manager sizes its executors.
    */
-  def isContainerSizedFromOverhead(master: String): Boolean =
+  def isContainerSizedFromOverhead(master: String): Boolean = isYarnOrKubernetes(master)
+
+  /**
+   * Whether `master` is YARN or Kubernetes, the cluster managers that give an executor a
+   * container and a default of one core, which Comet resolves its memory overhead and core count
+   * from.
+   */
+  private def isYarnOrKubernetes(master: String): Boolean =
     master == "yarn" || master.startsWith("k8s://")
 
   /**
@@ -767,24 +775,30 @@ object CometExecIterator extends Logging {
 
   /**
    * The number of cores this JVM runs tasks on, which sizes the native runtime's worker threads.
-   * Falls back to 1, with a warning logged once, if the master does not tell.
+   * If the master does not tell, falls back to the processors available to the JVM and logs a
+   * warning once, unless `COMET_WORKER_THREADS` sets the worker threads regardless.
    */
   private def numDriverOrExecutorCores(conf: SparkConf): Int = {
     val master = conf.get("spark.master")
+    val availableProcessors = Runtime.getRuntime.availableProcessors()
     numDriverOrExecutorCores(
       master,
       conf.getOption("spark.executor.cores"),
-      Runtime.getRuntime.availableProcessors()).getOrElse {
-      if (unknownCoresWarned.compareAndSet(false, true)) {
+      availableProcessors).getOrElse {
+      // The native side takes COMET_WORKER_THREADS over this count, when it parses as a number.
+      val workerThreadsOverridden = sys.env
+        .get("COMET_WORKER_THREADS")
+        .exists(threads => Try(threads.toLong).filter(_ >= 0).isSuccess)
+      if (!workerThreadsOverridden && unknownCoresWarned.compareAndSet(false, true)) {
         logWarning(
           s"Comet cannot tell how many cores this executor has from spark.master=$master when " +
-            "spark.executor.cores is not set, so its native runtime starts one worker thread. " +
-            "Native plans that read no input from the JVM run on the worker threads, so " +
-            "concurrent tasks share this one. Set spark.executor.cores, or the " +
-            "COMET_WORKER_THREADS environment variable, to the executor's core count. " +
-            s"${CometConf.TUNING_GUIDE}.")
+            "spark.executor.cores is not set, so its native runtime starts one worker thread " +
+            s"for each of the $availableProcessors processors available to the JVM. Native " +
+            "plans that read no input from the JVM run on the worker threads, so concurrent " +
+            "tasks share them. Set spark.executor.cores, or the COMET_WORKER_THREADS " +
+            s"environment variable, to the executor's core count. ${CometConf.TUNING_GUIDE}.")
       }
-      1
+      availableProcessors
     }
   }
 
@@ -824,7 +838,7 @@ object CometExecIterator extends Logging {
       case LOCAL_CLUSTER_REGEX(_, coresPerWorker, _) => Some(coresPerWorker.toInt)
       case _ if master.startsWith("spark://") => Some(availableProcessors)
       // The default of spark.executor.cores on YARN and Kubernetes.
-      case _ if master == "yarn" || master.startsWith("k8s://") => Some(1)
+      case _ if isYarnOrKubernetes(master) => Some(1)
       case _ => None
     }
   }
