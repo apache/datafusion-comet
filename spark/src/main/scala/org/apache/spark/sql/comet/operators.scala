@@ -2853,6 +2853,18 @@ trait CometHashJoin {
       return None
     }
 
+    // DataFusion builds a null-aware anti join on Spark's streamed side, and on its hash map path
+    // it emits the build batches last to first, so the output loses the ordering Spark reports
+    // for the join. Remove this fallback once Comet uses a DataFusion release that fixes
+    // https://github.com/apache/datafusion/issues/26226.
+    if (isNullAwareAntiJoin && join.outputOrdering.nonEmpty) {
+      withFallbackReason(
+        join,
+        "null-aware anti-join over an ordered streamed side is not supported natively, " +
+          "because the native join does not keep that order")
+      return None
+    }
+
     val condition = join.condition.map { cond =>
       val condProto = exprToProto(cond, join.left.output ++ join.right.output)
       if (condProto.isEmpty) {
