@@ -40,7 +40,7 @@ use datafusion::execution::object_store::{
 use datafusion::execution::runtime_env::RuntimeEnv;
 use datafusion::physical_plan::ColumnarValue;
 use datafusion_comet_common::SparkError;
-use datafusion_comet_spark_expr::EvalMode;
+use datafusion_comet_spark_expr::{spark_cast, EvalMode, SparkCastOptions};
 use log::debug;
 use object_store::path::Path;
 use object_store::{parse_url, ObjectStore, ObjectStoreScheme};
@@ -329,6 +329,24 @@ fn parquet_convert_array_impl(
                 .collect();
 
             Ok(Arc::new(string_array))
+        }
+        // Parquet's unannotated BINARY is read as Spark StringType when
+        // spark.sql.parquet.binaryAsString is enabled or a read schema declares a string.
+        // Arrow's cast below is safe, so it would turn malformed UTF-8 into NULL. Use Spark's
+        // cast so the scan's top-level projection and nested values replace malformed input
+        // with U+FFFD, as the JVM's `new String(bytes, UTF_8)` does.
+        (Binary, Utf8) | (LargeBinary, LargeUtf8) => {
+            let mut cast_options =
+                SparkCastOptions::new(parquet_options.eval_mode, &parquet_options.timezone);
+            cast_options.allow_cast_unsigned_ints = parquet_options.allow_cast_unsigned_ints;
+            cast_options.is_adapting_schema = true;
+
+            match spark_cast(ColumnarValue::Array(array), to_type, &cast_options)? {
+                ColumnarValue::Array(array) => Ok(array),
+                ColumnarValue::Scalar(_) => Err(DataFusionError::Internal(
+                    "Spark cast returned a scalar for an array input".to_string(),
+                )),
+            }
         }
         // If Arrow cast supports the cast, delegate the cast to Arrow
         _ if can_cast_types(from_type, to_type) => {
@@ -1154,6 +1172,34 @@ mod tests {
                 "{path} with aliases {aliases:?} and libhdfs {libhdfs:?}"
             );
         }
+    }
+
+    /// A nested Binary child converts to Utf8 with Spark's replacement semantics rather than
+    /// becoming NULL the way Arrow's safe cast would. This is the shape an unannotated
+    /// `List<BINARY>` column read as `List<String>` produces.
+    #[test]
+    fn nested_binary_to_string_decodes_invalid_utf8_like_spark() {
+        use super::{parquet_convert_array, SparkParquetOptions};
+        use arrow::array::{ArrayRef, AsArray, BinaryArray, ListArray};
+        use arrow::buffer::OffsetBuffer;
+        use arrow::datatypes::{DataType, Field};
+        use datafusion_comet_spark_expr::EvalMode;
+        use std::sync::Arc;
+
+        let values = BinaryArray::from(vec![Some(b"one".as_slice()), Some(&[0xff])]);
+        let input: ArrayRef = Arc::new(ListArray::new(
+            Arc::new(Field::new("element", DataType::Binary, true)),
+            OffsetBuffer::new(vec![0, 2].into()),
+            Arc::new(values),
+            None,
+        ));
+        let to_type = DataType::List(Arc::new(Field::new("element", DataType::Utf8, true)));
+        let options = SparkParquetOptions::new(EvalMode::Legacy, "UTC");
+
+        let result = parquet_convert_array(input, &to_type, &options).unwrap();
+        let strings = result.as_list::<i32>().values().as_string::<i32>();
+        assert_eq!(strings.value(0), "one");
+        assert_eq!(strings.value(1), "\u{fffd}");
     }
 
     /// Checks parser-backed I/O labels without constructing stores, including libhdfs overrides
