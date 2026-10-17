@@ -99,6 +99,8 @@ For Iceberg (the `opendal` path), set the per-catalog property under the `s3.` n
 spark.sql.catalog.<catalog>.s3.comet.credential.provider.class=com.vendor.MyCometCredentialProvider
 ```
 
+On the Iceberg path Comet builds a table's bridge from the bucket in the table's metadata location, or its data location for a write. A location with no host, such as the `blob:///bucket/...` form of an s3-compliant alias scheme, names no bucket there, so Comet does not use the configured provider for that table at all: opendal's default credential chain signs every request, and a location-scoped provider's locations are not used.
+
 Add the vendor JAR to your Spark executor classpath:
 
 ```sh
@@ -219,7 +221,7 @@ Comet keys provider instances by `(FQCN, dispatchKey, catalogProperties)`. The d
 
 ### Caching, refresh, and distribution
 
-Comet does not maintain a TTL cache, broadcast catalog state, or schedule refresh. Vendors decide:
+Comet does not broadcast catalog state or schedule refresh, and it keeps a credential only as long as the expiry you report allows (see below). Vendors decide:
 
 - Whether to cache credentials and for how long. Iceberg vendors get `software.amazon.awssdk.utils.cache.CachedSupplier` for free inside `VendedCredentialsProvider`; vendors with custom STS write whatever cache fits.
 - When to refresh: proactive timer, on-demand at expiry, on `403` retry, etc.
@@ -239,20 +241,22 @@ public CometS3Credentials getCredentialsForPath(CometS3CredentialContext ctx) th
 
 Spark delegation token propagation is supported on YARN and Kubernetes only. Standalone deployments need a different refresh path, typically a vendor-side service callback authenticated by long-lived state in `catalogProperties` or Hadoop conf.
 
-`expirationEpochMillis` only matters on the Iceberg/`opendal` path. There the bridge implements `reqsign_core::ProvideCredential`, which carries an `expires_in` field that `opendal` uses to schedule the next refresh. Publish a real expiry when you have one. `0` means "unknown"; the bridge then substitutes a 5-minute expiry to bound staleness.
+Publish a real `expirationEpochMillis` when you have one. On both paths Comet reuses a credential until five minutes before that expiry and then asks you again. Comet makes at most one call at a time for each location (each bucket, for a provider without locations), and requests that arrive while it is in flight share its answer, even one Comet cannot keep. `0` means unknown: Comet does not keep the credential and asks you again for every request that does not overlap a call already in flight, and on the Iceberg path it assumes the credential lasts five minutes. `Long.MAX_VALUE` means the credential does not expire, and Comet does not keep it either. A value before 2000, almost always seconds sent as milliseconds, is treated as unknown, with a warning. If a credential can be revoked before the expiry you report, report an earlier one, or `0`.
 
-The Parquet/`object_store` path has no expiry concept: `object_store::CredentialProvider` returns just `AwsCredential` (key/secret/token). The bridge is passed to `with_credentials` without a TTL wrapper, so `object_store` calls into the SPI on every request and relies on the vendor's own cache for hit rates. Expiry handling is fully the vendor's responsibility: the vendor decides when its internal cache refreshes. If `object_store` receives a 403 from an expired session token, its retry layer calls `get_credential()` again, giving the vendor another chance to mint fresh credentials.
+On the Parquet/`object_store` path, `object_store` signs a request once and sends the same signature on every retry, for up to 3 minutes by default, and it does not retry a 403. The five minutes Comet leaves before an expiry cover those retries. A credential you return with less time left than that is used for the request that asked for it and not kept.
+
+The built-in adapters report an expiry when the AWS SDK exposes one, which it does on the Spark 4.x builds (SDK v2). On the Spark 3.4 and 3.5 builds (SDK v1) they cannot, and report `0`.
 
 ### Returned fields
 
-| Field                   | Notes                                                                                                                     |
-| ----------------------- | ------------------------------------------------------------------------------------------------------------------------- |
-| `accessKeyId`           | Required.                                                                                                                 |
-| `secretAccessKey`       | Required.                                                                                                                 |
-| `sessionToken`          | `null` for non-STS credentials.                                                                                           |
-| `expirationEpochMillis` | Iceberg path only. `0` means "unknown"; the bridge substitutes a 5-minute expiry. The Parquet path has no expiry concept. |
+| Field                   | Notes                                                                                                                                       |
+| ----------------------- | ------------------------------------------------------------------------------------------------------------------------------------------- |
+| `accessKeyId`           | Required.                                                                                                                                   |
+| `secretAccessKey`       | Required.                                                                                                                                   |
+| `sessionToken`          | `null` for non-STS credentials.                                                                                                             |
+| `expirationEpochMillis` | When the credential stops working. Comet reuses it until 5 minutes before. `0` means unknown and `Long.MAX_VALUE` never; neither is reused. |
 
-Provide a real `expirationEpochMillis` whenever you have one on the Iceberg path. The Parquet path's `object_store::CredentialProvider` does not consume an expiry, and the bridge invokes the SPI on every `get_credential()` call.
+Provide a real `expirationEpochMillis` whenever you have one. Without it, Comet asks for a credential on every request on the Parquet path, and on every storage call on the Iceberg path, apart from requests that overlap a call already in flight.
 
 ### Returns or throws
 
@@ -269,16 +273,20 @@ public CometS3Credentials getCredentialsForPath(CometS3CredentialContext ctx) th
         return mintFromMyVendorService(ctx.getBucket(), ctx.getPath(), ctx.getMode());
     }
     AwsCredentials c = defaultChain.resolveCredentials();
-    String token = (c instanceof AwsSessionCredentials)
-            ? ((AwsSessionCredentials) c).sessionToken()
-            : null;
-    return new CometS3Credentials(c.accessKeyId(), c.secretAccessKey(), token, 0L);
+    String token = null;
+    long expiresAt = 0L;
+    if (c instanceof AwsSessionCredentials) {
+        AwsSessionCredentials session = (AwsSessionCredentials) c;
+        token = session.sessionToken();
+        expiresAt = session.expirationTime().map(Instant::toEpochMilli).orElse(0L);
+    }
+    return new CometS3Credentials(c.accessKeyId(), c.secretAccessKey(), token, expiresAt);
 }
 ```
 
 ### Credentials per location
 
-On the Parquet path, a `CometS3CredentialProvider` gets one credential per bucket: Comet requests it with the path of the first file it reads from the bucket and uses it for every file there. If your policies differ by location within a bucket, for example one policy for `warehouse/sales` and another for `warehouse/finance`, implement `CometS3LocationScopedCredentialProvider` and tell Comet where those locations are:
+On the Parquet path, a `CometS3CredentialProvider` gets one credential per bucket: Comet requests it with the path of the first file it reads from the bucket and uses it for every file there. On the Iceberg path it gets one per table: Comet requests it with the path of the table's metadata file (its data location, for a write) and uses it for every file the table reads or writes. If your policies differ by location within a bucket, for example one policy for `warehouse/sales` and another for `warehouse/finance`, implement `CometS3LocationScopedCredentialProvider` and tell Comet where those locations are:
 
 ```java
 public final class MyLocationProvider implements CometS3LocationScopedCredentialProvider {
@@ -295,15 +303,15 @@ public final class MyLocationProvider implements CometS3LocationScopedCredential
 }
 ```
 
-Comet serves each request with the credential of the longest location that covers its path. A location covers a path when the path is the location itself or lies below it, compared one `/`-separated segment at a time, so `warehouse/sales` covers `warehouse/sales/part-0.parquet` but not `warehouse/sales_eu/part-0.parquet`. The bucket root covers every path that no returned location covers, and an empty list serves the whole bucket with the root's credential. Write locations the way `CometS3CredentialContext.getPath()` writes paths: percent-encoded, without the scheme or bucket name. A literal `%` must be written as `%25`; other characters may be left unencoded, and a leading or trailing `/` is optional. When several locations decode to the same path, Comet keeps the first.
+Comet serves each request with the credential of the longest location that covers its path. A location covers a path when the path is the location itself or lies below it, compared one `/`-separated segment at a time, so `warehouse/sales` covers `warehouse/sales/part-0.parquet` but not `warehouse/sales_eu/part-0.parquet`. The bucket root covers every path that no returned location covers, and an empty list serves the whole bucket with the root's credential. Write locations the way `CometS3CredentialContext.getPath()` writes paths: percent-encoded, without the scheme or bucket name. A literal `%` must be written as `%25`; other characters may be left unencoded, and a leading or trailing `/` is optional. When several locations decode to the same path, Comet keeps the first. A literal `%` is common on the Iceberg path, where Comet compares a location with each file's key as Iceberg wrote it. Iceberg escapes partition values, so a location for the partition directory `ts=2024-01-01T00%3A00` is written `ts=2024-01-01T00%253A00`.
 
-Comet requests a location's credential by calling `getCredentialsForPath` with the location as the path, as you returned it but with a leading slash. Every request under a location shares that credential, so it must authorize every path the location is the longest match for, and your cache can key on the location. Locations apply to Comet's native Parquet reads only; Iceberg reads call `getCredentialsForPath` as they do for any provider.
+Comet requests a location's credential by calling `getCredentialsForPath` with the location as the path, as you returned it but with a leading slash. Every request under a location shares that credential, so it must authorize every path the location is the longest match for, and your cache can key on the location. Locations apply to Comet's native Parquet reads and to its native Iceberg reads and writes. On the Iceberg path each data and delete file is routed by its own path, in its own bucket, so a table whose files span several locations or buckets gets each file's credential right. A table whose metadata location has no host is the exception; see [Enabling a bridge](#enabling-a-bridge).
 
-**When Comet asks.** Comet calls `getPolicyLocations` when it creates the store for a bucket on an executor and keeps the answer for later reads of that bucket with the same S3 configuration. Reads that start at the same moment may each create a store and call it. If a read then fails with 403, or because `getCredentialsForPath` threw for the location Comet sent it to, Comet asks again, once for all the reads that failed on the same answer, and retries each read once if its path now falls under a different location. So a location added while a job runs is picked up even when you vend no credential for the bucket root, and a location you drop stops being used once its credential fails. A location added or removed without a read failing on it is not seen until the executor creates a new store. Make `getPolicyLocations` thread-safe and independent of where it runs; it may be called on the driver or on executors.
+**When Comet asks.** Comet calls `getPolicyLocations` when it creates the store for a bucket on an executor and keeps the answer for later reads of that bucket with the same S3 configuration. On the Iceberg path it asks once per set of catalog properties and access mode on an executor, for the bucket of the first table's metadata or data location, and again when a table or file in another bucket is first used. Tables share the answers when their catalog properties match, and Comet keeps them while it has one of those tables cached. Comet adds each table's FileIO properties to its catalog properties, so a REST catalog that vends per-table properties, such as per-table credentials, gets its own `getPolicyLocations` calls for each table. Reads that start at the same moment may each create a store and call it. If a read then fails with 403, or because `getCredentialsForPath` threw for the location Comet sent it to, Comet asks again, once for all the reads that failed on the same answer, and retries each read once if its path now falls under a different location. On the Iceberg path writes and deletes do the same, except that a file being streamed is not sent again: its task fails, and Spark's retry of the task writes it with the new answer. So a location added while a job runs is picked up even when you vend no credential for the bucket root. A location you drop stops being used once Comet next asks for its credential and you refuse it. Comet reuses a location's credential until five minutes before the expiry you reported for it, so a dropped location stays in use until then, or until the next request if you reported `0`. A location added or removed without a read failing on it is not seen until the executor creates a new store. Make `getPolicyLocations` thread-safe and independent of where it runs; it may be called on the driver or on executors.
 
 **Failures.** If `getPolicyLocations` throws or returns `null`, or returns a location that is `null` or invalid, the read fails. A location is invalid if, once decoded, it is not valid UTF-8 or has a segment that is empty, `.`, `..`, or contains a control character, so a URI such as `s3://bucket/a` is invalid too. Comet does not fall back to a broader credential.
 
-**Backward compatibility.** Providers that implement only `CometS3CredentialProvider` are unaffected. Comet calls nothing new on them and keeps one credential per bucket, as before.
+**Backward compatibility.** Providers that implement only `CometS3CredentialProvider` are unaffected. Comet calls nothing new on them and keeps one credential per bucket on the Parquet path and one per table on the Iceberg path, as before.
 
 ### Composing multiple credential backends
 
@@ -360,14 +368,20 @@ public final class IcebergRESTVendedS3Provider implements CometS3CredentialProvi
     @Override
     public CometS3Credentials getCredentialsForPath(CometS3CredentialContext ctx) {
         AwsCredentials c = provider.resolveCredentials();
-        String token = (c instanceof AwsSessionCredentials)
-            ? ((AwsSessionCredentials) c).sessionToken() : null;
-        return new CometS3Credentials(c.accessKeyId(), c.secretAccessKey(), token, 0L);
+        String token = null;
+        long expiresAt = 0L;
+        if (c instanceof AwsSessionCredentials) {
+            AwsSessionCredentials session = (AwsSessionCredentials) c;
+            token = session.sessionToken();
+            // Report the vended expiry, so Comet reuses the credential until shortly before it.
+            expiresAt = session.expirationTime().map(Instant::toEpochMilli).orElse(0L);
+        }
+        return new CometS3Credentials(c.accessKeyId(), c.secretAccessKey(), token, expiresAt);
     }
 }
 ```
 
-`VendedCredentialsProvider` reads `credentials.uri`, the catalog endpoint, and OAuth tokens from the supplied map (Comet forwards the unfiltered FileIO bag to `initialize`), and refreshes through its own `CachedSupplier`. Caching, refresh-near-expiry, and the REST round-trip all live in Iceberg, not in Comet. Comet ships a copy of this class under `spark/src/test` as a reference; copy it into your runtime jar alongside `iceberg-aws` and AWS SDK v2.
+`VendedCredentialsProvider` reads `credentials.uri`, the catalog endpoint, and OAuth tokens from the supplied map (Comet forwards the unfiltered FileIO bag to `initialize`), and refreshes through its own `CachedSupplier`. Refresh-near-expiry and the REST round-trip live in Iceberg. Comet only reuses the credential this returns until five minutes before the expiry it reports, so report the expiry: returning `0` turns that reuse off. Comet ships a copy of this class under `spark/src/test` as a reference; copy it into your runtime jar alongside `iceberg-aws` and AWS SDK v2.
 
 ### Access mode
 
@@ -393,4 +407,4 @@ Vendor implementations need the Comet SPI classes at compile time only. Use `pro
 
 ### Iceberg path: error message fidelity
 
-When the bridge is wired into `iceberg-rust`, the outer `reqsign-core::ProvideCredentialChain` currently swallows thrown exceptions into "no credential" before the request reaches `opendal`. The credential is still not issued and the request still fails, only the message is degraded to an opaque anonymous-request failure. No Comet change fixes this; it is resolved upstream if `iceberg-rust` stops wrapping custom loaders in its outer chain or moves its S3 backend to `object_store`.
+When the bridge is wired into `iceberg-rust`, the outer `reqsign-core::ProvideCredentialChain` currently swallows thrown exceptions into "no credential" before the request reaches `opendal`. The credential is still not issued and the request still fails, only the message is degraded to reqsign's generic `failed to load signing credential`. No Comet change fixes this; it is resolved upstream if `iceberg-rust` stops wrapping custom loaders in its outer chain or moves its S3 backend to `object_store`.

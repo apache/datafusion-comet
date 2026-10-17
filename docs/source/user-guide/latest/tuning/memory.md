@@ -39,12 +39,13 @@ off-heap consumers draw down one number.
 
 A larger pool lets the operators that can spill, such as sorts, aggregations and the shuffle writer, keep more in
 memory before they spill to disk. An operator that cannot spill fails the task when it cannot reserve the memory it
-needs.
+needs. A native Iceberg fanout write is the exception: it closes some of its open files early instead (see
+[Iceberg Writes](../iceberg-writes.md#failure-handling)).
 
 Comet's memory pool only tracks memory that an operator explicitly reserves, which in practice means the batches
-an operator deliberately accumulates: the sort buffer, the build side of a hash join, hash aggregation state, and the
-shuffle writer's buffered partitions. Memory that is not reserved is invisible to the pool no matter how much of it
-there is. That includes:
+an operator deliberately accumulates: the sort buffer, the build side of a hash join, hash aggregation state, the
+shuffle writer's buffered partitions, and the files a native writer holds open. Memory that is not reserved is
+invisible to the pool no matter how much of it there is. That includes:
 
 - per-batch working memory in expression kernels and Arrow array builders,
 - decompression buffers and Parquet reader structures,
@@ -157,15 +158,19 @@ Comet native memory usage: allocated 5412.3 MiB, reserved 3890.0 MiB (16 native 
   which allocator a buffer is charged to rather than where it was allocated, so treat the JVM's
   part as an estimate.
 
+When the application writes an event log and runs the Comet plugin, the event log also records a
+summary of these samples; see [Reading the Memory Usage Log from the Event Log].
+
 Comet's untracked memory is what Comet holds outside the JVM heap that Spark's off-heap pool does
 not account for: `allocated`, plus the JVM Arrow figure less the part imported from native, minus
 `reserved`. It is the part of Comet's footprint that has to fit in `spark.executor.memoryOverhead`,
 alongside the JVM's own non-heap memory. To size the overhead from it:
 
 1. Run a representative workload and find the line with the most untracked memory in each
-   executor's log. Take all the figures from the same line: they are sampled together, and figures
-   from different lines describe different moments. Setting `spark.comet.memory.logInterval=1s` for
-   this run makes a short-lived peak less likely to fall between samples.
+   executor's log, or the event with the most for each executor in the event log. Take all the
+   figures from the same line or event: they are sampled together, and figures from different
+   samples describe different moments. Setting `spark.comet.memory.logInterval=1s` for this run
+   makes a short-lived peak less likely to fall between samples.
 2. Start from the overhead the executors had before Comet was enabled, which covers the JVM's own
    non-heap memory, and add the most untracked memory seen on any executor.
 3. Add a margin on top. The log can miss the true peak between samples, and none of the figures
@@ -199,6 +204,64 @@ The executor logs one more line after its last native plan finishes, and an `all
 `spark.comet.memory.logInterval` is read when an executor starts its first Comet native plan, so set
 it when the application is submitted. Set it to `0` to turn the log off.
 
+[Reading the Memory Usage Log from the Event Log]: #reading-the-memory-usage-log-from-the-event-log
+
+### Reading the Memory Usage Log from the Event Log
+
+When `spark.eventLog.enabled` is `true` and the application runs the Comet plugin
+(`spark.plugins=org.apache.spark.CometPlugin`), each executor also sends its samples to the driver,
+which writes a summary of them to the application's event log. The event log keeps every executor's
+samples in one place, next to the jobs and stages they ran alongside, while executor logs are spread
+over the cluster and often go away with their containers.
+
+The driver writes, and flushes, each event of its event log as it goes, so it does not write every
+sample. For each executor, it takes the samples a minute at a time and writes two of them: the one
+with the most untracked memory, and the last, which in the minute an executor goes idle is the one
+after its last native plan finishes. It writes them at the executor's first heartbeat a minute or
+more after the first of them arrived, which comes every `spark.executor.heartbeatInterval`, 10
+seconds by default, busy or not, and when the executor is removed, such as when the cluster manager
+kills it, or the application stops. So each executor adds about two events a minute while it runs
+native plans, however short the interval, and each minute's two reach the event log within about a
+minute of that minute's first sample arriving. The event with the most untracked memory for an
+executor is then its sample with the most, apart from samples it takes while the application stops,
+and samples from the last minute before a driver exits without stopping the application.
+
+Each sample the driver writes is one event, on one line of the event log. It carries the figures of
+the line in bytes, the executor that took the sample, and when it did, in milliseconds since the
+epoch by the executor's clock. The line above looks like this as an event, spread over several lines
+here:
+
+```json
+{
+  "Event": "org.apache.comet.CometExecutorMemoryUsage",
+  "executorId": "3",
+  "time": 1727550000000,
+  "nativeAllocated": 5675212390,
+  "poolsReserved": 4078960640,
+  "pools": 8,
+  "plans": 16,
+  "jvmArrowAllocated": 325478809,
+  "jvmArrowImported": 100873420
+}
+```
+
+`nativeAllocated` is `allocated`, `poolsReserved` is `reserved`, and `jvmArrowAllocated` and
+`jvmArrowImported` are the JVM Arrow figures. With `jq`, for example, this lists the sample with the
+most untracked memory for each executor, in MiB:
+
+```shell
+jq -n -c '[inputs | select(.Event == "org.apache.comet.CometExecutorMemoryUsage")
+    | {executorId, time, untrackedMiB: (([.nativeAllocated - .poolsReserved
+        + ([.jvmArrowAllocated - .jvmArrowImported, 0] | max), 0] | max) / 1048576 | ceil)}]
+  | group_by(.executorId) | map(max_by(.untrackedMiB))[]' <event log files>
+```
+
+From Spark 4.0, event logs are compressed with zstd and split into several files by default, so
+decompress the files first, for example with `zstd -dc`. The Spark history server does not display
+these events, and one without Comet on its classpath logs once that it dropped them. From Spark 4.1,
+`spark.eventLog.excludedPatterns=org.apache.comet.CometExecutorMemoryUsage` leaves them out of the
+event log.
+
 ## Batch Size
 
 Comet processes data in columnar batches. The batch size is controlled by `spark.comet.batchSize` (default
@@ -220,3 +283,13 @@ use more than `N` times this value on shared local disks. If the limit is reache
 fail and the query errors out. Raise this on workloads with large sort/aggregate/shuffle spills, or
 lower it to protect executors on shared disks, remembering that the total across an executor is a
 multiple of this value.
+
+## Compressing Spill Files
+
+`spark.comet.exec.spill.compression.codec` sets the codec for the files that native sorts,
+aggregations, sort-merge joins, and nested loop joins spill to disk. The default is `lz4`, which
+Spark also uses for its own spill files by default. `zstd` writes smaller files, which reduces
+spill I/O and how much of `spark.comet.maxTempDirectorySize` they use, but takes more CPU to
+compress and decompress them. `none` writes them uncompressed. Comet's shuffle writers use
+`spark.comet.shuffle.compression.codec` instead. See
+[Shuffle Compression](shuffle.md#shuffle-compression).

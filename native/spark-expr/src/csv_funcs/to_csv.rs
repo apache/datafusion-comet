@@ -86,7 +86,7 @@ impl PhysicalExpr for ToCsv {
 
     fn evaluate(&self, batch: &RecordBatch) -> Result<ColumnarValue> {
         let input_array = self.expr.evaluate(batch)?.into_array(batch.num_rows())?;
-        let mut cast_options = SparkCastOptions::new(EvalMode::Legacy, &self.timezone, false);
+        let mut cast_options = SparkCastOptions::new(EvalMode::Legacy, &self.timezone);
         cast_options.null_string = self.csv_write_options.null_value.clone();
         let struct_array = as_struct_array(&input_array);
 
