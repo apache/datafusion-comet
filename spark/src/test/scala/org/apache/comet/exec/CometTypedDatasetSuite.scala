@@ -19,13 +19,14 @@
 
 package org.apache.comet.exec
 
+import java.time.Duration
 import java.util.concurrent.atomic.AtomicLong
 
 import org.apache.spark.sql.{CometTestBase, DataFrame, Dataset}
 import org.apache.spark.sql.catalyst.expressions.aggregate.Partial
 import org.apache.spark.sql.comet.{CometBroadcastHashJoinExec, CometHashAggregateExec, CometSparkToColumnarExec}
 import org.apache.spark.sql.execution.{ColumnarToRowExec, ColumnarToRowTransition, SerializeFromObjectExec, SparkPlan, WholeStageCodegenExec}
-import org.apache.spark.sql.functions.{broadcast, col, size, sum}
+import org.apache.spark.sql.functions.{broadcast, col, max, sum}
 import org.apache.spark.sql.internal.SQLConf
 
 import org.apache.comet.{CometConf, ExtendedExplainInfo}
@@ -37,11 +38,11 @@ case class TypedDsWide(i: Int, s: String, d: java.math.BigDecimal, opt: Option[L
 
 case class TypedDsNested(id: Int, inner: TypedDsRec, tags: Seq[String])
 
-case class TypedDsInts(id: Int, xs: Seq[Int])
+case class TypedDsDurations(id: Int, d: Duration)
 
 case class TypedDsDecimal(k: java.math.BigDecimal, v: Long)
 
-case class TypedDsDecimalInts(k: java.math.BigDecimal, xs: Seq[Int])
+case class TypedDsDecimalDurations(k: java.math.BigDecimal, d: Duration)
 
 /** Counts calls to a user function. Comet tests run in local mode, so tasks see this object. */
 object TypedDsCounter {
@@ -198,22 +199,23 @@ class CometTypedDatasetSuite extends CometTestBase {
   }
 
   convertTest("columns the conversion does not support keep the operators above on Spark") {
-    withParquetTable((0 until 20).map(i => (i, Seq(i, i + 1))), "ints") {
-      val ds = spark.sql("SELECT _1 AS id, _2 AS xs FROM ints").as[TypedDsInts]
-      val (_, plan) = checkSparkAnswerAndFallbackReason(
-        // The aggregate reads `xs`, or Spark would prune it from the serializer.
-        ds.map(r => TypedDsInts(r.id % 3, r.xs.reverse)).groupBy("id").agg(sum(size(col("xs")))),
-        "Comet cannot convert the output of a typed Dataset operation to Arrow because it " +
-          "does not support the type of these columns: xs: array<int>")
-      assert(conversions(plan).isEmpty, plan)
-    }
+    val ds = spark
+      .range(20)
+      .map(i => TypedDsDurations((i.longValue % 3).toInt, Duration.ofDays(i.longValue)))
+    val (_, plan) = checkSparkAnswerAndFallbackReason(
+      // The aggregate reads `d`, or Spark would prune it from the serializer.
+      ds.groupBy("id").agg(max(col("d"))),
+      "Comet cannot convert the output of a typed Dataset operation to Arrow because it " +
+        "does not support the type of these columns: d: interval day to second")
+    assert(conversions(plan).isEmpty, plan)
   }
 
   convertTest("a join on wide decimal keys with an input that is not converted") {
-    // The left input converts and the right one, with its array<int> column, does not. Native
-    // shuffle hashes a decimal wider than 18 digits differently from Spark's partitioner (#5994),
-    // so the shuffle above the conversion has to stay on Comet's columnar shuffle like the right
-    // input's, or matching keys land in different partitions and the join loses rows.
+    // The left input converts and the right one, with its interval column, does not, so its
+    // shuffle stays on Spark's. Native shuffle hashes a decimal wider than 18 digits differently
+    // from Spark's partitioner (#5994), so the shuffle above the conversion has to stay on
+    // Comet's columnar shuffle, which hashes as Spark does, or matching keys land in different
+    // partitions and the join loses rows.
     withSQLConf(
       SQLConf.ADAPTIVE_EXECUTION_ENABLED.key -> "false",
       SQLConf.AUTO_BROADCASTJOIN_THRESHOLD.key -> "-1",
@@ -224,13 +226,16 @@ class CometTypedDatasetSuite extends CometTestBase {
         .alias("l")
       val right = spark
         .range(0, 100, 1, 2)
-        .map(i => TypedDsDecimalInts(new java.math.BigDecimal(i.longValue), Seq(i.intValue)))
+        .map(i =>
+          TypedDsDecimalDurations(
+            new java.math.BigDecimal(i.longValue),
+            Duration.ofDays(i.longValue)))
         .alias("r")
-      val df = left.join(right, col("l.k") === col("r.k")).select(col("l.v"), col("r.xs"))
+      val df = left.join(right, col("l.k") === col("r.k")).select(col("l.v"), col("r.d"))
       val (_, plan) = checkSparkAnswer(df)
       assert(conversions(plan).nonEmpty, plan)
-      // One columnar shuffle for each input of the join.
-      checkCometExchange(df, 2, native = false)
+      // The left input's shuffle is the only one of Comet's, and it is not native.
+      checkCometExchange(df, 1, native = false)
     }
   }
 
