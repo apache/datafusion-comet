@@ -940,25 +940,23 @@ object CometExecIterator extends Logging {
   private def numDriverOrExecutorCores(conf: SparkConf): Int = {
     val master = conf.get("spark.master")
     val availableProcessors = Runtime.getRuntime.availableProcessors()
-    numDriverOrExecutorCores(
-      master,
-      conf.getOption("spark.executor.cores"),
-      availableProcessors).getOrElse {
-      // The native side takes COMET_WORKER_THREADS over this count, when it parses as a number.
-      val workerThreadsOverridden = sys.env
-        .get("COMET_WORKER_THREADS")
-        .exists(threads => Try(threads.toLong).filter(_ >= 0).isSuccess)
-      if (!workerThreadsOverridden && unknownCoresWarned.compareAndSet(false, true)) {
-        logWarning(
-          s"Comet cannot tell how many cores this executor has from spark.master=$master when " +
-            "spark.executor.cores is not set, so its native runtime starts one worker thread " +
-            s"for each of the $availableProcessors processors available to the JVM. Native " +
-            "plans that read no input from the JVM run on the worker threads, so concurrent " +
-            "tasks share them. Set spark.executor.cores, or the COMET_WORKER_THREADS " +
-            s"environment variable, to the executor's core count. ${CometConf.TUNING_GUIDE}.")
+    numDriverOrExecutorCores(master, conf.getOption("spark.executor.cores"), availableProcessors)
+      .getOrElse {
+        // The native side takes COMET_WORKER_THREADS over this count, when it parses as a number.
+        val workerThreadsOverridden = sys.env
+          .get("COMET_WORKER_THREADS")
+          .exists(threads => Try(threads.toLong).filter(_ >= 0).isSuccess)
+        if (!workerThreadsOverridden && unknownCoresWarned.compareAndSet(false, true)) {
+          logWarning(
+            s"Comet cannot tell how many cores this executor has from spark.master=$master when " +
+              "spark.executor.cores is not set, so its native runtime starts one worker thread " +
+              s"for each of the $availableProcessors processors available to the JVM. Native " +
+              "plans that read no input from the JVM run on the worker threads, so concurrent " +
+              "tasks share them. Set spark.executor.cores, or the COMET_WORKER_THREADS " +
+              s"environment variable, to the executor's core count. ${CometConf.TUNING_GUIDE}.")
+        }
+        availableProcessors
       }
-      availableProcessors
-    }
   }
 
   // Master URL formats, as SparkContext parses them. See
