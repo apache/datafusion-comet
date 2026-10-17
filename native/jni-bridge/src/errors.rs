@@ -24,13 +24,7 @@ use jni::errors::{Exception, ToException};
 use regex::Regex;
 
 use std::{
-    any::Any,
-    convert,
-    fmt::Write,
-    panic::UnwindSafe,
-    result, str,
-    str::Utf8Error,
-    sync::{Arc, Mutex},
+    any::Any, cell::Cell, convert, fmt::Write, panic::UnwindSafe, result, str, str::Utf8Error,
 };
 
 // This is just a pointer. We'll be returning it from our function. We
@@ -44,8 +38,38 @@ use lazy_static::lazy_static;
 use parquet::errors::ParquetError;
 use thiserror::Error;
 
-lazy_static! {
-    static ref PANIC_BACKTRACE: Arc<Mutex<Option<String>>> = Arc::new(Mutex::new(None));
+/// A panic's message, when it is a string, and its backtrace, as the panic hook captured them.
+struct CapturedPanic {
+    message: Option<String>,
+    backtrace: String,
+}
+
+thread_local! {
+    /// The last panic on this thread, captured by the panic hook and taken at the boundary that
+    /// catches it. Kept per thread because Spark runs many tasks at once.
+    static LAST_PANIC: Cell<Option<CapturedPanic>> = const { Cell::new(None) };
+}
+
+/// Forgets the panic captured on this thread. Every boundary starts with this, so a panic that
+/// was caught and handled before the call is never taken for one raised during it.
+fn clear_captured_panic() {
+    let _ = LAST_PANIC.try_with(Cell::take);
+}
+
+/// The backtrace of the panic with `message` that reached the boundary, if the panic hook
+/// captured it on this thread. A panic resumed from another thread has none: DataFusion runs
+/// some operators' inputs on spawned Tokio tasks and resumes their panics on the consuming
+/// thread with `resume_unwind`, which does not run the hook. Matching the message keeps such a
+/// panic from taking the backtrace of another panic that was caught and handled on this thread
+/// during the same call, for instance by a `catch_unwind` outside Comet's control.
+fn take_panic_backtrace(message: &str) -> Option<String> {
+    LAST_PANIC
+        .try_with(Cell::take)
+        .ok()
+        .flatten()
+        // `CometError::Panic` reports a panic that is not a string as "unknown panic".
+        .filter(|captured| captured.message.as_deref().unwrap_or("unknown panic") == message)
+        .map(|captured| captured.backtrace)
 }
 
 /// Error returned during executing operators.
@@ -187,9 +211,13 @@ pub fn init() {
         // Log the panic message and location to stderr so it is visible in CI logs
         // even if the exception message is lost crossing the FFI boundary
         eprintln!("Comet native panic: {panic_info}");
-        // Capture the backtrace for a panic
-        *PANIC_BACKTRACE.lock().unwrap() =
-            Some(std::backtrace::Backtrace::force_capture().to_string());
+        // Capture the backtrace for a panic. `try_with` because a panic in the hook aborts the
+        // process, and the thread-local is gone while the thread is being torn down.
+        let captured = CapturedPanic {
+            message: panic_info.payload_as_str().map(str::to_string),
+            backtrace: std::backtrace::Backtrace::force_capture().to_string(),
+        };
+        let _ = LAST_PANIC.try_with(|slot| slot.set(Some(captured)));
     }));
 }
 
@@ -643,8 +671,8 @@ pub struct NativeFailure {
 
 impl From<CometError> for NativeFailure {
     fn from(error: CometError) -> Self {
-        let backtrace = match error {
-            CometError::Panic { .. } => PANIC_BACKTRACE.lock().unwrap().take(),
+        let backtrace = match &error {
+            CometError::Panic { msg } => take_panic_backtrace(msg),
             _ => None,
         };
         NativeFailure { error, backtrace }
@@ -664,6 +692,7 @@ pub fn catch_native<T, F>(f: F) -> Result<T, NativeFailure>
 where
     F: FnOnce() -> CometResult<T> + UnwindSafe,
 {
+    clear_captured_panic();
     match std::panic::catch_unwind(f) {
         Ok(Ok(value)) => Ok(value),
         Ok(Err(error)) => Err(NativeFailure::from(error)),
@@ -1080,6 +1109,7 @@ where
     T: JNIDefault,
     F: FnOnce(&mut Env) -> Result<T, CometError> + UnwindSafe,
 {
+    clear_captured_panic();
     let raw = env.as_raw();
     let mut env1 = unsafe { EnvUnowned::from_raw(raw) };
     match env1.with_env(f).into_outcome() {
@@ -1613,6 +1643,127 @@ mod tests {
 
     fn error_source_string(error: &CometError) -> String {
         std::error::Error::source(error).unwrap().to_string()
+    }
+
+    /// Waits twice on a barrier when dropped. Dropped while its thread unwinds, it runs after that
+    /// thread's panic hook and before `catch_native` takes the backtrace.
+    struct WaitOnDrop(Arc<std::sync::Barrier>);
+
+    impl Drop for WaitOnDrop {
+        fn drop(&mut self) {
+            // Both panic hooks have run once both threads pass the first wait.
+            self.0.wait();
+            self.0.wait();
+        }
+    }
+
+    #[inline(never)]
+    fn panic_in_first_thread(barrier: Arc<std::sync::Barrier>) -> CometResult<()> {
+        let _wait = WaitOnDrop(barrier);
+        panic!("first thread")
+    }
+
+    #[inline(never)]
+    fn panic_in_second_thread(barrier: Arc<std::sync::Barrier>) -> CometResult<()> {
+        let _wait = WaitOnDrop(barrier);
+        panic!("second thread")
+    }
+
+    /// Two threads panic at once, and each takes its backtrace only after both panic hooks have
+    /// run. Each must still get the backtrace of its own panic.
+    #[test]
+    fn panic_backtrace_stays_with_its_thread() {
+        init();
+        let barrier = Arc::new(std::sync::Barrier::new(2));
+        let first = {
+            let barrier = Arc::clone(&barrier);
+            std::thread::spawn(move || catch_native(move || panic_in_first_thread(barrier)))
+        };
+        let second = {
+            let barrier = Arc::clone(&barrier);
+            std::thread::spawn(move || catch_native(move || panic_in_second_thread(barrier)))
+        };
+
+        for (handle, own, other) in [
+            (first, "panic_in_first_thread", "panic_in_second_thread"),
+            (second, "panic_in_second_thread", "panic_in_first_thread"),
+        ] {
+            let failure = handle.join().unwrap().unwrap_err();
+            let backtrace = failure
+                .backtrace
+                .unwrap_or_else(|| panic!("no backtrace for {own}"));
+            assert!(backtrace.contains(own), "{own} got another backtrace");
+            assert!(!backtrace.contains(other), "{own} got {other}'s backtrace");
+        }
+    }
+
+    #[inline(never)]
+    fn panic_in_spawned_thread() {
+        panic!("spawned thread")
+    }
+
+    /// Resumes on this thread a panic raised on another one, as DataFusion does with the panics
+    /// of its spawned tasks. `resume_unwind` does not run the panic hook.
+    fn resume_panic_from_another_thread() -> CometResult<()> {
+        let payload = std::thread::spawn(panic_in_spawned_thread)
+            .join()
+            .expect_err("the spawned thread panics");
+        std::panic::resume_unwind(payload)
+    }
+
+    #[test]
+    fn panic_resumed_from_another_thread_has_no_backtrace() {
+        init();
+        let failure = catch_native(resume_panic_from_another_thread).unwrap_err();
+        assert!(
+            matches!(&failure.error, CometError::Panic { msg } if msg == "spawned thread"),
+            "{:?}",
+            failure.error
+        );
+        assert!(failure.backtrace.is_none(), "{:?}", failure.backtrace);
+    }
+
+    /// A panic caught and handled during the call leaves its backtrace on this thread. A panic
+    /// resumed from another thread later in the same call must not take it.
+    #[test]
+    fn resumed_panic_does_not_take_a_handled_panic_backtrace() {
+        init();
+        let failure = catch_native(|| {
+            let handled = std::panic::catch_unwind(|| panic!("handled during the call"));
+            assert!(handled.is_err());
+            resume_panic_from_another_thread()
+        })
+        .unwrap_err();
+        assert!(failure.backtrace.is_none(), "{:?}", failure.backtrace);
+    }
+
+    /// A panic handled before the call, here with the same message as the one the call resumes,
+    /// must not lend its backtrace either.
+    #[test]
+    fn resumed_panic_does_not_take_a_backtrace_from_before_the_call() {
+        init();
+        let handled = std::panic::catch_unwind(|| panic!("spawned thread"));
+        assert!(handled.is_err());
+        let failure = catch_native(resume_panic_from_another_thread).unwrap_err();
+        assert!(failure.backtrace.is_none(), "{:?}", failure.backtrace);
+    }
+
+    #[inline(never)]
+    fn panic_with_formatted_message(value: i32) -> CometResult<()> {
+        panic!("formatted message {value}")
+    }
+
+    #[test]
+    fn panic_with_formatted_message_keeps_its_backtrace() {
+        init();
+        let failure = catch_native(|| panic_with_formatted_message(7)).unwrap_err();
+        assert!(
+            matches!(&failure.error, CometError::Panic { msg } if msg == "formatted message 7"),
+            "{:?}",
+            failure.error
+        );
+        let backtrace = failure.backtrace.expect("the panic's own backtrace");
+        assert!(backtrace.contains("panic_with_formatted_message"));
     }
 
     #[test]
