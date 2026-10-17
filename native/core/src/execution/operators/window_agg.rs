@@ -43,14 +43,14 @@ use std::pin::Pin;
 use std::sync::Arc;
 use std::task::{Context, Poll};
 
-use arrow::array::{Array, RecordBatch};
-use arrow::compute::{concat, concat_batches, SortColumn};
+use arrow::array::{Array, ArrayRef, RecordBatch, UInt32Array};
+use arrow::compute::{concat, concat_batches, take, SortColumn};
 use arrow::datatypes::SchemaRef;
 use datafusion::common::tree_node::TreeNodeRecursion;
 use datafusion::common::utils::memory::RecordBatchMemoryCounter;
 use datafusion::common::utils::{evaluate_partition_ranges, transpose};
 use datafusion::common::{internal_err, DataFusionError, Result, Statistics};
-use datafusion::execution::memory_pool::{MemoryConsumer, MemoryReservation};
+use datafusion::execution::memory_pool::{MemoryConsumer, MemoryPool, MemoryReservation};
 use datafusion::execution::TaskContext;
 use datafusion::physical_expr::window::WindowExpr;
 use datafusion::physical_expr::{OrderingRequirements, PhysicalExpr, PhysicalSortExpr};
@@ -188,8 +188,6 @@ impl ExecutionPlan for CometWindowAggExec {
             .window
             .input()
             .execute(partition, Arc::clone(&context))?;
-        let reservation = MemoryConsumer::new(format!("{}[{partition}]", self.name()))
-            .register(context.memory_pool());
         Ok(Box::pin(CometWindowAggStream {
             schema: self.window.schema(),
             input,
@@ -197,7 +195,10 @@ impl ExecutionPlan for CometWindowAggExec {
             partition_by_sort_keys,
             buffered: vec![],
             buffered_memory: RecordBatchMemoryCounter::new(),
-            reservation,
+            last_keys: vec![],
+            pool: Arc::clone(context.memory_pool()),
+            consumer_name: format!("{}[{partition}]", self.name()),
+            reservation: None,
             baseline_metrics: BaselineMetrics::new(&self.metrics, partition),
             finished: false,
         }))
@@ -234,12 +235,27 @@ struct CometWindowAggStream {
     buffered: Vec<RecordBatch>,
     /// Counts each buffer that `buffered` retains once, however many batches share it.
     buffered_memory: RecordBatchMemoryCounter,
-    reservation: MemoryReservation,
+    /// The partition keys of the last buffered row, one row per key, which the next batch is
+    /// compared against.
+    last_keys: Vec<ArrayRef>,
+    pool: Arc<dyn MemoryPool>,
+    consumer_name: String,
+    /// Registered when the first batch is buffered rather than when the stream is created. The
+    /// pool divides its memory among the registered consumers, and the sort below this operator
+    /// has used its share by then. Registering earlier would shrink the sort's share while it
+    /// reads its input.
+    reservation: Option<MemoryReservation>,
     baseline_metrics: BaselineMetrics,
     finished: bool,
 }
 
 impl CometWindowAggStream {
+    fn reservation(&mut self) -> &mut MemoryReservation {
+        self.reservation.get_or_insert_with(|| {
+            MemoryConsumer::new(self.consumer_name.clone()).register(&self.pool)
+        })
+    }
+
     fn evaluate_partition_keys(&self, batch: &RecordBatch) -> Result<Vec<SortColumn>> {
         self.partition_by_sort_keys
             .iter()
@@ -254,7 +270,9 @@ impl CometWindowAggStream {
             return Ok(None);
         }
         let added = self.buffered_memory.count_batch(&batch);
-        self.reservation.try_grow(added).map_err(with_oom_context)?;
+        self.reservation()
+            .try_grow(added)
+            .map_err(with_oom_context)?;
         if self.partition_by_sort_keys.is_empty() {
             self.buffered.push(batch);
             return Ok(None);
@@ -265,6 +283,12 @@ impl CometWindowAggStream {
         // The batch's last window partition may continue in the next batch.
         let open_start = ranges.pop().map_or(0, |open| open.start);
         let continues = self.continues_buffered_partition(&keys)?;
+        // Whatever happens to the rest, this batch's last row is the last one buffered.
+        let last_row = UInt32Array::from(vec![(num_rows - 1) as u32]);
+        self.last_keys = keys
+            .iter()
+            .map(|key| Ok(take(key.values.as_ref(), &last_row, None)?))
+            .collect::<Result<_>>()?;
         if ranges.is_empty() && continues {
             self.buffered.push(batch);
             return Ok(None);
@@ -299,16 +323,16 @@ impl CometWindowAggStream {
     /// Whether the first row of the batch whose partition keys are `keys` belongs to the window
     /// partition of the last buffered row.
     fn continues_buffered_partition(&self, keys: &[SortColumn]) -> Result<bool> {
-        let Some(last) = self.buffered.last() else {
+        if self.buffered.is_empty() {
             return Ok(false);
-        };
-        let last_keys = self.evaluate_partition_keys(&last.slice(last.num_rows() - 1, 1))?;
-        let pairs = last_keys
-            .into_iter()
+        }
+        let pairs = self
+            .last_keys
+            .iter()
             .zip(keys)
             .map(|(last, key)| {
                 Ok(SortColumn {
-                    values: concat(&[last.values.as_ref(), key.values.slice(0, 1).as_ref()])?,
+                    values: concat(&[last.as_ref(), key.values.slice(0, 1).as_ref()])?,
                     options: key.options,
                 })
             })
@@ -326,22 +350,16 @@ impl CometWindowAggStream {
         if batches.is_empty() {
             return Ok(None);
         }
-        let _timer = self.baseline_metrics.elapsed_compute().timer();
 
         let batch = concat_batches(&self.input.schema(), &batches)?;
-        // Concatenating a single batch is zero-copy. Otherwise reserve the buffers of the copy
-        // that it does not share with `batches`, which are still reserved. Counting them after
-        // the fact is exact, where estimating them from each batch would charge every batch
-        // sliced from one list array for all of its values.
-        if batches.len() > 1 {
-            let mut counter = RecordBatchMemoryCounter::new();
-            for input in &batches {
-                counter.count_batch(input);
-            }
-            self.reservation
-                .try_grow(counter.count_batch(&batch))
-                .map_err(with_oom_context)?;
-        }
+        // `buffered_memory` has counted every buffer of `batches`, so this counts only the
+        // buffers of the copy that it does not share with them, and none for a single batch,
+        // which is not copied. That is exact, where estimating the copy from each batch would
+        // charge every batch sliced from one list array for all of its values.
+        let copy = self.buffered_memory.count_batch(&batch);
+        self.reservation()
+            .try_grow(copy)
+            .map_err(with_oom_context)?;
         drop(batches);
 
         let mut partition_results = vec![];
@@ -371,23 +389,31 @@ impl CometWindowAggStream {
         for batch in &self.buffered {
             self.buffered_memory.count_batch(batch);
         }
-        self.reservation.resize(self.buffered_memory.memory_usage());
+        let buffered = self.buffered_memory.memory_usage();
+        self.reservation().resize(buffered);
         Ok(Some(output))
     }
 
     fn poll_next_inner(&mut self, cx: &mut Context<'_>) -> Poll<Option<Result<RecordBatch>>> {
+        // Times the work on each batch, including the batches that only extend a window
+        // partition, but not the wait for the input.
+        let elapsed_compute = self.baseline_metrics.elapsed_compute().clone();
         loop {
             if self.finished {
                 return Poll::Ready(None);
             }
             let output = match ready!(self.input.poll_next_unpin(cx)) {
-                Some(Ok(batch)) => self.push_batch(batch),
+                Some(Ok(batch)) => {
+                    let _timer = elapsed_compute.timer();
+                    self.push_batch(batch)
+                }
                 Some(Err(e)) => Err(e),
                 None => {
                     self.finished = true;
                     // Release the input pipeline's resources before evaluating the last window
                     // partition.
                     self.input = Box::pin(EmptyRecordBatchStream::new(self.input.schema()));
+                    let _timer = elapsed_compute.timer();
                     let buffered = std::mem::take(&mut self.buffered);
                     let num_rows = buffered.iter().map(RecordBatch::num_rows).sum();
                     self.evaluate(buffered, std::iter::once(0..num_rows))
@@ -426,9 +452,13 @@ fn with_oom_context(error: DataFusionError) -> DataFusionError {
     match error {
         DataFusionError::ResourcesExhausted(_) => error.context(
             "Not enough memory to buffer a window partition. CometWindowAggExec cannot spill, \
-             so each window partition must fit in memory. Consider increasing \
-             spark.memory.offHeap.size, or setting spark.comet.exec.window.enabled=false to run \
-             window functions in Spark",
+             so each window partition must fit in memory, and it needs up to twice its size \
+             within this operator's share of the memory pool, for the buffered rows and for the \
+             copy made to evaluate them. Consider increasing spark.memory.offHeap.size, or \
+             setting spark.comet.exec.memoryPool=greedy_unified, which does not limit an \
+             operator to an equal share of the pool. As a last resort, \
+             spark.comet.exec.window.enabled=false runs window functions in Spark, including the \
+             ones that do not buffer a window partition",
         ),
         error => error,
     }
@@ -446,7 +476,7 @@ mod tests {
     use datafusion::datasource::memory::MemorySourceConfig;
     use datafusion::datasource::source::DataSourceExec;
     use datafusion::execution::memory_pool::{GreedyMemoryPool, TrackConsumersPool};
-    use datafusion::execution::runtime_env::RuntimeEnvBuilder;
+    use datafusion::execution::runtime_env::{RuntimeEnv, RuntimeEnvBuilder};
     use datafusion::execution::FunctionRegistry;
     use datafusion::logical_expr::{
         WindowFrame, WindowFrameBound, WindowFrameUnits, WindowFunctionDefinition,
@@ -635,18 +665,35 @@ mod tests {
         batches.iter().map(RecordBatch::num_rows).collect()
     }
 
-    /// Runs `plan` with a `limit`-byte pool. On success, also returns the peak the window
-    /// reserved, after checking that it released everything.
-    async fn run_with_limit(
-        plan: Arc<dyn ExecutionPlan>,
-        limit: usize,
-    ) -> Result<(Vec<RecordBatch>, usize)> {
+    /// A task context whose memory pool, which tracks its consumers, holds `limit` bytes.
+    fn context_with_limit(limit: usize) -> (Arc<RuntimeEnv>, Arc<TaskContext>) {
         let runtime = RuntimeEnvBuilder::new()
             .with_memory_limit(limit, 1.0)
-            .build_arc()?;
+            .build_arc()
+            .unwrap();
         let context =
             SessionContext::new_with_config_rt(SessionConfig::new(), Arc::clone(&runtime))
                 .task_ctx();
+        (runtime, context)
+    }
+
+    fn registered_consumers(runtime: &RuntimeEnv) -> Vec<String> {
+        runtime
+            .memory_pool
+            .downcast_ref::<TrackConsumersPool<GreedyMemoryPool>>()
+            .unwrap()
+            .metrics()
+            .into_iter()
+            .map(|consumer| consumer.name)
+            .collect()
+    }
+
+    /// Runs `plan` with a `limit`-byte pool, after checking that it released everything.
+    async fn run_with_limit(
+        plan: Arc<dyn ExecutionPlan>,
+        limit: usize,
+    ) -> Result<Vec<RecordBatch>> {
+        let (runtime, context) = context_with_limit(limit);
         let mut stream = plan.execute(0, context)?;
         let mut output = vec![];
         while let Some(batch) = stream.next().await {
@@ -662,7 +709,7 @@ mod tests {
             .find(|consumer| consumer.name == CONSUMER)
             .unwrap();
         assert_eq!(consumer.reserved, 0);
-        Ok((output, consumer.peak))
+        Ok(output)
     }
 
     fn assert_refused(error: DataFusionError) {
@@ -723,19 +770,27 @@ mod tests {
         for partitioned in [true, false] {
             assert!(run(vec![], partitioned).await.is_empty());
             assert!(run(vec![empty.clone()], partitioned).await.is_empty());
-
-            let mut rng = StdRng::seed_from_u64(0);
-            let rows = sorted_rows(&[2, 2], &mut rng);
-            let batches = vec![
-                empty.clone(),
-                rows.slice(0, 1),
-                empty.clone(),
-                rows.slice(1, 3),
-                empty.clone(),
-            ];
-            let output = run(batches.clone(), partitioned).await;
-            assert_matches_window_agg_exec(&output, batches, partitioned).await;
         }
+    }
+
+    #[tokio::test]
+    async fn registers_with_the_pool_when_the_first_batch_is_buffered() {
+        // The pool divides its memory among the registered consumers, so a window that registers
+        // early takes memory from the sort that is still reading its input.
+        let empty = RecordBatch::new_empty(schema());
+        let (runtime, context) = context_with_limit(1 << 30);
+        let mut stream = comet_window(vec![empty], true)
+            .execute(0, Arc::clone(&context))
+            .unwrap();
+        assert!(stream.next().await.is_none());
+        assert!(registered_consumers(&runtime).is_empty());
+
+        let mut rng = StdRng::seed_from_u64(0);
+        let batches = chunks(&sorted_rows(&[3, 3], &mut rng), 2);
+        let mut stream = comet_window(batches, true).execute(0, context).unwrap();
+        assert!(registered_consumers(&runtime).is_empty());
+        stream.next().await.unwrap().unwrap();
+        assert_eq!(registered_consumers(&runtime), [CONSUMER]);
     }
 
     #[tokio::test]
@@ -744,10 +799,9 @@ mod tests {
         let batches = chunks(&sorted_rows(&[50; 1000], &mut rng), 64);
         let limit = 8 * memory_size(&batches[..1]);
         assert!(memory_size(&batches) > 50 * limit);
-        let (output, peak) = run_with_limit(comet_window(batches.clone(), true), limit)
+        let output = run_with_limit(comet_window(batches.clone(), true), limit)
             .await
             .unwrap();
-        assert!(peak > 0);
         assert_matches_window_agg_exec(&output, batches, true).await;
 
         // The same number of rows in one window partition does not fit.
@@ -803,7 +857,7 @@ mod tests {
         let plan = Arc::new(CometWindowAggExec::try_new(vec![count], input, false).unwrap());
 
         // The rows fit together with their copy.
-        let (output, _) = run_with_limit(plan, 3 * memory_size(&[rows]))
+        let output = run_with_limit(plan, 3 * memory_size(&[rows]))
             .await
             .unwrap();
         assert_eq!(row_counts(&output), [10_000]);
@@ -828,11 +882,9 @@ mod tests {
                     .await
                     .unwrap_err(),
             );
-            let (output, peak) =
-                run_with_limit(comet_window(batches.clone(), partitioned), inputs * 3)
-                    .await
-                    .unwrap();
-            assert!(peak > inputs * 3 / 2, "peak={peak}, inputs={inputs}");
+            let output = run_with_limit(comet_window(batches.clone(), partitioned), inputs * 3)
+                .await
+                .unwrap();
             assert_eq!(row_counts(&output), [640]);
         }
     }

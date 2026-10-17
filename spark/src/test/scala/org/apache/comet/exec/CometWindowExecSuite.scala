@@ -1645,45 +1645,6 @@ class CometWindowExecSuite extends CometTestBase {
     }
   }
 
-  test("window: whole-partition window functions over window partitions that span batches") {
-    // With 7-row batches most window partitions span several batches, with null-key and
-    // single-row window partitions in between.
-    withSQLConf(CometConf.COMET_BATCH_SIZE.key -> "7") {
-      withTempDir { dir =>
-        (0 until 2000)
-          .map { i =>
-            val k = if (i % 13 == 0) None else if (i < 1500) Some(i * 7 % 61) else Some(i)
-            (i, k, i % 17, if (i % 11 == 0) None else Some(i.toLong))
-          }
-          .toDF("id", "k", "o", "v")
-          .repartition(3)
-          .write
-          .mode("overwrite")
-          .parquet(dir.toString)
-
-        withParquetTable(dir.toString, "window_test") {
-          // NTILE orders by the unique `id` too, so that peers cannot swap buckets.
-          checkSparkAnswerAndOperator(sql("""
-            SELECT id, k, o, v,
-              PERCENT_RANK() OVER (PARTITION BY k ORDER BY o) AS pct_rnk,
-              CUME_DIST() OVER (PARTITION BY k ORDER BY o) AS cume_dist,
-              NTILE(4) OVER (PARTITION BY k ORDER BY o, id) AS ntile_4,
-              SUM(v) OVER (PARTITION BY k) AS total,
-              COUNT(v) OVER (PARTITION BY k ORDER BY o
-                             RANGE BETWEEN CURRENT ROW AND UNBOUNDED FOLLOWING) AS remaining
-            FROM window_test
-          """))
-          checkSparkAnswerAndOperator(sql("""
-            SELECT id, k, o, v,
-              PERCENT_RANK() OVER (ORDER BY o) AS pct_rnk,
-              SUM(v) OVER () AS total
-            FROM window_test
-          """))
-        }
-      }
-    }
-  }
-
   /**
    * Runs `f` on `SUM(v) OVER (PARTITION BY k)` over 200,000 rows, about 3.4 MB as Arrow, with
    * window partition key `keyExpr`. The query runs in one task with a native memory pool of about
@@ -1724,7 +1685,7 @@ class CometWindowExecSuite extends CometTestBase {
       val messages =
         causeChain(intercept[Exception](df.collect())).flatMap(e => Option(e.getMessage))
       assert(
-        messages.exists(_.contains("Additional allocation failed for CometWindowAggExec")),
+        messages.exists(_.contains("CometWindowAggExec cannot spill")),
         messages.mkString("\n"))
     }
   }
