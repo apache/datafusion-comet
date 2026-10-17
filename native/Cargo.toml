@@ -44,10 +44,11 @@ arrow-select = { version = "59.2.0" }
 async-trait = { version = "0.1" }
 bytes = { version = "1.11.1" }
 parquet = { version = "59.2.0", default-features = false, features = ["experimental"] }
-datafusion = { version = "55.1.0", default-features = false, features = ["unicode_expressions", "crypto_expressions", "nested_expressions", "parquet"] }
-datafusion-datasource = { version = "55.1.0" }
-datafusion-physical-expr-adapter = { version = "55.1.0" }
-datafusion-spark = { version = "55.1.0", features = ["core"] }
+datafusion = { version = "55.2.0", default-features = false, features = ["unicode_expressions", "crypto_expressions", "nested_expressions", "parquet"] }
+datafusion-datasource = { version = "55.2.0" }
+datafusion-functions = { version = "55.2.0", default-features = false, features = ["datetime_expressions"] }
+datafusion-physical-expr-adapter = { version = "55.2.0" }
+datafusion-spark = { version = "55.2.0", features = ["core"] }
 datafusion-comet-spark-expr = { path = "spark-expr" }
 datafusion-comet-common = { path = "common" }
 datafusion-comet-jni-bridge = { path = "jni-bridge" }
@@ -65,6 +66,9 @@ chrono-tz = "0.10"
 # change that re-checks those two tests.
 datasketches = { version = "=0.3.0", features = ["hll"] }
 futures = "0.3.32"
+# Declared once so no crate can drift to another major. That would build a second copy of the
+# binding, whose `JObject` and env types are not interchangeable with this one's.
+jni = "0.22.4"
 num = "0.4"
 rand = "0.10"
 # Before upgrading `regex`, complete the Java-parity fixture gate tracked in

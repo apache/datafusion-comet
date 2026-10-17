@@ -22,7 +22,6 @@ package org.apache.comet.serde
 import org.apache.spark.sql.catalyst.expressions.{Ascending, Attribute, Descending, NullsFirst, NullsLast, SortOrder}
 import org.apache.spark.sql.types.{ArrayType, DataType, StructType}
 
-import org.apache.comet.CometConf
 import org.apache.comet.serde.QueryPlanSerde.exprToProtoInternal
 
 /**
@@ -41,9 +40,8 @@ import org.apache.comet.serde.QueryPlanSerde.exprToProtoInternal
  * null orders, `ASC NULLS FIRST` and `DESC NULLS LAST`, place it where Spark does.
  * https://github.com/apache/datafusion-comet/issues/6476
  *
- * A `RANGE` window frame orders such a null above every other value, so its frames can differ
- * from Spark too. Strict mode keeps the fallback it applied to every nested float key before they
- * were normalized, for the keys that can hit this.
+ * A `RANGE` window frame orders such a null above every other value, so `CometWindowExec`
+ * declines a `RANGE` frame that has to find a row's peers over such a key.
  * https://github.com/apache/datafusion-comet/issues/6477
  */
 object CometSortOrder extends CometExpressionSerde[SortOrder] {
@@ -62,26 +60,14 @@ object CometSortOrder extends CometExpressionSerde[SortOrder] {
       "places it by the null order " +
       "([#6476](https://github.com/apache/datafusion-comet/issues/6476))."
 
-  private val nullableNestedFloatingPointSort =
-    "Sorting on floating-point values nested in an array or struct that can hold a null " +
-      "element or field"
-
-  override def getIncompatibleReasons(): Seq[String] = Seq(
-    nestedNullOrderReason,
-    s"$nullableNestedFloatingPointSort is not 100% compatible with Spark when " +
-      s"`${CometConf.COMET_EXEC_STRICT_FLOATING_POINT.key}=true`")
+  override def getIncompatibleReasons(): Seq[String] = Seq(nestedNullOrderReason)
 
   override def getSupportLevel(expr: SortOrder): SupportLevel = {
-    val dataType = expr.child.dataType
-    if (!canHoldNestedNull(dataType)) {
-      Compatible()
-    } else if (expr.nullOrdering != expr.direction.defaultNullOrdering) {
+    if (canHoldNestedNull(expr.child.dataType) &&
+      expr.nullOrdering != expr.direction.defaultNullOrdering) {
       Incompatible(Some(nestedNullOrderReason))
     } else {
-      SupportLevel
-        .strictFloatingPointReason(dataType, nullableNestedFloatingPointSort)
-        .map(reason => Incompatible(Some(reason)))
-        .getOrElse(Compatible())
+      Compatible()
     }
   }
 
