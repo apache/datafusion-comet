@@ -94,7 +94,10 @@ impl Default for SortMergeFallback {
         Self {
             min_probe_rows: 16 * 1024,
             min_matches_per_probe_row: 16.0,
-            min_nanos_per_match: 30.0,
+            // In TPC-DS q72, a spilled pair whose build side fits in the cache takes about 10 ns a
+            // match. The join of the buckets left in memory, which does not fit, takes 30 ns or
+            // more in most tasks, and 28 ns in some, where it still loses to a sort-merge join.
+            min_nanos_per_match: 20.0,
             min_probe_to_build_time: 4.0,
         }
     }
