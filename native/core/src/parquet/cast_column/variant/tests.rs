@@ -504,16 +504,6 @@ fn canonical_and_shredded_values_normalize_equally() {
     )
     .unwrap();
 
-    let prepared = prepare_variant_for_unshredding(&shredded, None).unwrap();
-    assert!(Arc::ptr_eq(
-        shredded.value_column(),
-        prepared.value_column()
-    ));
-    assert!(Arc::ptr_eq(
-        shredded.typed_value_column().unwrap(),
-        prepared.typed_value_column().unwrap(),
-    ));
-
     let normalize = |array: &VariantArray| {
         let array: ArrayRef = Arc::new(array.inner().clone());
         let output = normalize_variant_array(&array, &target_field(true)).unwrap();
@@ -642,9 +632,14 @@ fn unchanged_values_reuse_buffers_and_still_validate() {
             output.as_binary::<i32>().values().as_ptr()
         );
     }
-    let (output, changed) =
-        rewrite_residual_values(&values, metadata.as_binary::<i32>(), None, &[Some(0), None])
-            .unwrap();
+    let (output, changed) = rewrite_residual_values(
+        &values,
+        metadata.as_binary::<i32>(),
+        None,
+        &[Some(0), None],
+        0,
+    )
+    .unwrap();
     assert!(!changed);
     assert!(Arc::ptr_eq(&values, &output));
 
@@ -665,6 +660,7 @@ fn unchanged_values_reuse_buffers_and_still_validate() {
         missing_metadata.as_binary::<i32>(),
         None,
         &[Some(0), Some(1)],
+        0,
     )
     .is_err());
 }
@@ -699,6 +695,7 @@ fn lazy_rewrites_preserve_prefix_nulls_and_suffix() {
         metadata.as_binary::<i32>(),
         None,
         &[Some(0), None, Some(2), None],
+        0,
     )
     .unwrap();
     assert!(changed);
@@ -1031,4 +1028,330 @@ fn typed_scalar_canonicalizes_nan_and_keeps_negative_zero() {
         panic!("expected a float");
     };
     assert_eq!(v.to_bits(), (-0.0f32).to_bits());
+}
+
+// Construct fixed wire bytes bottom-up, without recursive Variant builders/validation.
+// One key "a", one-byte field ids/counts and four-byte offsets in every container.
+fn nested_variant_bytes(depth: usize, objects: bool) -> Vec<u8> {
+    let mut value = vec![0]; // Variant null
+    for _ in 0..depth {
+        let mut parent = if objects {
+            vec![0x0e, 1, 0]
+        } else {
+            vec![0x0f, 1]
+        };
+        parent.extend_from_slice(&0_u32.to_le_bytes());
+        parent.extend_from_slice(&(value.len() as u32).to_le_bytes());
+        parent.extend_from_slice(&value);
+        value = parent;
+    }
+    value
+}
+
+fn nested_variant_storage(residual_depth: usize, typed_depth: usize, objects: bool) -> ArrayRef {
+    let value = nested_variant_bytes(residual_depth, objects);
+    let state: ArrayRef = Arc::new(StructArray::from(vec![(
+        Arc::new(Field::new("value", DataType::Binary, true)),
+        Arc::new(BinaryArray::from(vec![value.as_slice()])) as ArrayRef,
+    )]));
+    wrap_variant_storage(state, typed_depth, objects)
+}
+
+fn wrap_variant_storage(mut state: ArrayRef, typed_depth: usize, objects: bool) -> ArrayRef {
+    for _ in 0..typed_depth {
+        let typed: ArrayRef = if objects {
+            Arc::new(StructArray::from(vec![(
+                Arc::new(Field::new("a", state.data_type().clone(), true)),
+                state,
+            )]))
+        } else {
+            Arc::new(ListArray::new(
+                Arc::new(Field::new("element", state.data_type().clone(), true)),
+                OffsetBuffer::new(vec![0, 1].into()),
+                state,
+                None,
+            ))
+        };
+        state = Arc::new(StructArray::from(vec![(
+            Arc::new(Field::new("typed_value", typed.data_type().clone(), true)),
+            typed,
+        )]));
+    }
+    // Metadata version 1, dictionary ["a"]. Independent of Comet's encoding routines.
+    let metadata: ArrayRef = Arc::new(BinaryArray::from(vec![&[1, 1, 0, 1, b'a'][..]]));
+    let state = state.as_struct();
+    let mut fields = state.fields().to_vec();
+    let mut columns = state.columns().to_vec();
+    fields.push(Arc::new(Field::new("metadata", DataType::Binary, false)));
+    columns.push(metadata);
+    Arc::new(StructArray::new(fields.into(), columns, None))
+}
+
+// Arrow fixture construction and destruction are outside the operation under test: their
+// own recursive schema checks are not part of Comet's conversion of an already-read column.
+fn with_variant_fixture_stack(test: impl FnOnce() + Send + 'static) {
+    std::thread::Builder::new()
+        .stack_size(64 * 1024 * 1024)
+        .spawn(test)
+        .unwrap()
+        .join()
+        .unwrap();
+}
+
+fn on_variant_worker(test: impl FnOnce() + Send) {
+    std::thread::scope(|scope| {
+        std::thread::Builder::new()
+            .stack_size(1024 * 1024)
+            .spawn_scoped(scope, test)
+            .unwrap()
+            .join()
+            .unwrap();
+    });
+}
+
+#[test]
+fn normalize_variant_nesting_boundary() {
+    with_variant_fixture_stack(|| {
+        for objects in [false, true] {
+            for typed_depth in [0, MAX_VARIANT_NESTING_DEPTH / 2, MAX_VARIANT_NESTING_DEPTH] {
+                let residual_depth = MAX_VARIANT_NESTING_DEPTH - typed_depth;
+                for extra in [0, 1] {
+                    let input =
+                        nested_variant_storage(residual_depth + extra, typed_depth, objects);
+                    on_variant_worker(|| {
+                        let output = normalize_variant_array(&input, &target_field(false));
+                        if extra != 0 {
+                            let error = output.unwrap_err();
+                            assert!(error.to_string().contains("MALFORMED_VARIANT"), "{error}");
+                        } else {
+                            let output = output.unwrap();
+                            let value = Variant::new(
+                                output.as_struct().column(1).as_binary::<i32>().value(0),
+                                output.as_struct().column(0).as_binary::<i32>().value(0),
+                            );
+                            check_variant_depth(value.clone(), 0).unwrap();
+                            let mut leaf = value;
+                            for _ in 0..MAX_VARIANT_NESTING_DEPTH {
+                                leaf = if objects {
+                                    let Variant::Object(object) = leaf else {
+                                        panic!("expected object");
+                                    };
+                                    {
+                                        let child = object.iter().next().unwrap().1;
+                                        child
+                                    }
+                                } else {
+                                    let Variant::List(list) = leaf else {
+                                        panic!("expected list");
+                                    };
+                                    {
+                                        let child = list.iter().next().unwrap();
+                                        child
+                                    }
+                                };
+                            }
+                            assert!(matches!(leaf, Variant::Null));
+                        }
+                    });
+                }
+            }
+        }
+    });
+}
+
+#[test]
+fn normalize_deep_scalar_storage_and_release_temporaries() {
+    with_variant_fixture_stack(|| {
+        for objects in [false, true] {
+            // UInt64 requires widening to Decimal128 and rebuilding every ancestor. This also
+            // exercises releasing the temporary normalized hierarchy on the worker stack.
+            let leaf: ArrayRef = Arc::new(arrow::array::UInt64Array::from(vec![u64::MAX]));
+            let state: ArrayRef = Arc::new(StructArray::from(vec![(
+                Arc::new(Field::new("typed_value", DataType::UInt64, true)),
+                leaf,
+            )]));
+            let input = wrap_variant_storage(state, MAX_VARIANT_NESTING_DEPTH, objects);
+            on_variant_worker(|| {
+                let output = normalize_variant_array(&input, &target_field(false)).unwrap();
+                let mut value = Variant::new(
+                    output.as_struct().column(1).as_binary::<i32>().value(0),
+                    output.as_struct().column(0).as_binary::<i32>().value(0),
+                );
+                for _ in 0..MAX_VARIANT_NESTING_DEPTH {
+                    value = if objects {
+                        let Variant::Object(object) = value else {
+                            panic!("expected object");
+                        };
+                        {
+                            let child = object.iter().next().unwrap().1;
+                            child
+                        }
+                    } else {
+                        let Variant::List(list) = value else {
+                            panic!("expected list");
+                        };
+                        {
+                            let child = list.iter().next().unwrap();
+                            child
+                        }
+                    };
+                }
+                let Variant::Decimal16(value) = value else {
+                    panic!("expected widened scalar");
+                };
+                assert_eq!(value.integer(), i128::from(u64::MAX));
+            });
+        }
+    });
+}
+
+#[test]
+fn reencode_variant_nesting_boundary() {
+    for objects in [false, true] {
+        let bytes = nested_variant_bytes(MAX_VARIANT_NESTING_DEPTH, objects);
+        on_variant_worker(|| {
+            let metadata = VariantMetadata::new(&[1, 1, 0, 1, b'a']);
+            for order in [
+                VariantObjectKeyOrder::ArrowUtf8,
+                VariantObjectKeyOrder::SparkUtf16,
+            ] {
+                let value = variant_bytes(
+                    &metadata,
+                    Variant::new_with_metadata(metadata.clone(), &bytes),
+                    order,
+                )
+                .unwrap();
+                check_variant_depth(Variant::new_with_metadata(metadata.clone(), &value), 0)
+                    .unwrap();
+            }
+        });
+    }
+}
+
+#[test]
+fn rebuild_residual_variant_nesting_boundary() {
+    for objects in [false, true] {
+        for extra in [0, 1] {
+            let input = nested_variant_storage(MAX_VARIANT_NESTING_DEPTH + extra, 0, objects);
+            let state = input.as_struct();
+            let mut fields = state.fields().to_vec();
+            let mut columns = state.columns().to_vec();
+            fields.push(Arc::new(Field::new("typed_value", DataType::Int64, true)));
+            columns.push(Arc::new(Int64Array::from(vec![None])));
+            let input: ArrayRef = Arc::new(StructArray::new(fields.into(), columns, None));
+            on_variant_worker(|| {
+                let output = normalize_variant_array(&input, &target_field(false));
+                if extra == 0 {
+                    let output = output.unwrap();
+                    check_variant_depth(
+                        Variant::new(
+                            output.as_struct().column(1).as_binary::<i32>().value(0),
+                            output.as_struct().column(0).as_binary::<i32>().value(0),
+                        ),
+                        0,
+                    )
+                    .unwrap();
+                } else {
+                    assert!(output
+                        .unwrap_err()
+                        .to_string()
+                        .contains("MALFORMED_VARIANT"));
+                }
+            });
+        }
+    }
+}
+
+#[test]
+fn normalize_rejects_very_deep_residual_without_recursive_validation() {
+    // Run on a normal worker-sized stack. The input is encoded iteratively, so rejection
+    // cannot accidentally depend on the test builder's own recursion limit.
+    std::thread::Builder::new()
+        .stack_size(2 * 1024 * 1024)
+        .spawn(|| {
+            for objects in [false, true] {
+                let input = nested_variant_storage(4096, 0, objects);
+                let error = normalize_variant_array(&input, &target_field(false)).unwrap_err();
+                assert!(error.to_string().contains("MALFORMED_VARIANT"), "{error}");
+            }
+        })
+        .unwrap()
+        .join()
+        .unwrap();
+}
+
+#[test]
+fn variant_reencoding_rejects_excessive_depth() {
+    let metadata = VariantMetadata::new(&[1, 1, 0, 1, b'a']);
+    for objects in [false, true] {
+        let value = nested_variant_bytes(MAX_VARIANT_NESTING_DEPTH + 1, objects);
+        for order in [
+            VariantObjectKeyOrder::ArrowUtf8,
+            VariantObjectKeyOrder::SparkUtf16,
+        ] {
+            let error = variant_bytes(
+                &metadata,
+                Variant::new_with_metadata(metadata.clone(), &value),
+                order,
+            )
+            .unwrap_err();
+            assert!(error.to_string().contains("MALFORMED_VARIANT"), "{error}");
+        }
+    }
+}
+
+#[test]
+fn normalize_rejects_excessive_typed_storage_depth() {
+    with_variant_fixture_stack(|| {
+        for objects in [false, true] {
+            let input = nested_variant_storage(0, MAX_VARIANT_NESTING_DEPTH + 1, objects);
+            let error = normalize_variant_array(&input, &target_field(false)).unwrap_err();
+            assert!(error.to_string().contains("MALFORMED_VARIANT"), "{error}");
+        }
+    });
+}
+
+#[test]
+fn normalize_rejects_conflicting_and_invalid_inactive_states() {
+    let metadata: ArrayRef = Arc::new(BinaryArray::from(vec![&[1_u8, 0, 0][..]]));
+    let residual: ArrayRef = Arc::new(BinaryArray::from(vec![&[0_u8][..]]));
+    let scalar: ArrayRef = Arc::new(Int64Array::from(vec![1]));
+    let list: ArrayRef = Arc::new(ListArray::new(
+        Arc::new(Field::new(
+            "element",
+            DataType::Struct(Fields::empty()),
+            true,
+        )),
+        OffsetBuffer::new(vec![0, 0].into()),
+        Arc::new(StructArray::new_empty_fields(0, None)),
+        None,
+    ));
+    for typed in [scalar, list] {
+        let input: ArrayRef = Arc::new(StructArray::from(vec![
+            (
+                Arc::new(Field::new("metadata", DataType::Binary, false)),
+                Arc::clone(&metadata),
+            ),
+            (
+                Arc::new(Field::new("value", DataType::Binary, true)),
+                Arc::clone(&residual),
+            ),
+            (
+                Arc::new(Field::new("typed_value", typed.data_type().clone(), true)),
+                typed,
+            ),
+        ]));
+        assert!(normalize_variant_array(&input, &target_field(false)).is_err());
+    }
+    // Schema validation must not depend on visiting a non-null row.
+    let input: ArrayRef = Arc::new(StructArray::new(
+        vec![
+            Field::new("metadata", DataType::Binary, false),
+            Field::new("value", DataType::Int64, true),
+        ]
+        .into(),
+        vec![metadata, Arc::new(Int64Array::from(vec![None]))],
+        Some(NullBuffer::from(vec![false])),
+    ));
+    assert!(normalize_variant_array(&input, &target_field(true)).is_err());
 }
