@@ -31,7 +31,7 @@ use datafusion::physical_expr::utils::collect_columns;
 use datafusion::physical_expr::PhysicalExpr;
 use datafusion::physical_plan::ExecutionPlan;
 
-use super::super::CometFilterExec;
+use datafusion_comet_operators::CometFilterExec;
 
 mod schema_adapter;
 
@@ -61,6 +61,14 @@ pub(super) fn try_attach_parquet_reader_filter(
     if input.fetch().is_some() {
         log::debug!("Join dynamic filter reader pushdown skipped: probe has a fetch limit");
         return Ok(None);
+    }
+    // An ancestor join may already filter decoded batches below this join. Keep
+    // that consumer while attaching this join's own predicate to its reader.
+    if let Some(filter) = input.downcast_ref::<super::DynamicFilterExec>() {
+        return Ok(
+            try_attach_parquet_reader_filter(&filter.input, predicate, config)?
+                .map(|reader| filter.with_execution_input(reader)),
+        );
     }
     // Spark inserts IS NOT NULL residuals above equijoin inputs, including AND
     // chains of inferred null checks. A reader predicate can cross those direct

@@ -42,8 +42,10 @@ import org.apache.spark.sql.{CometTestBase, DataFrame, Row}
 import org.apache.spark.sql.catalyst.optimizer.{ConvertToLocalRelation, OptimizeIn}
 import org.apache.spark.sql.catalyst.util.DateTimeUtils
 import org.apache.spark.sql.comet.{CometNativeScanExec, CometScanExec}
+import org.apache.spark.sql.comet.util.Utils
 import org.apache.spark.sql.execution.adaptive.AdaptiveSparkPlanHelper
 import org.apache.spark.sql.execution.datasources.parquet.ParquetUtils
+import org.apache.spark.sql.functions.col
 import org.apache.spark.sql.internal.SQLConf
 import org.apache.spark.sql.types._
 
@@ -824,6 +826,7 @@ abstract class ParquetReadSuite extends CometTestBase {
     // TODO(https://github.com/apache/datafusion-comet/issues/3432): `_metadata.row_index` is
     // generated per row by the reader, not constant per file, so it needs DataFusion's
     // virtual-column mechanism rather than the partition-value path used here. Not covered.
+    // file_block_start and file_block_length fall back; see the test below.
     withTempPath { dir =>
       (1 to 100).toDF("id").repartition(1).write.parquet(dir.getCanonicalPath)
       val df = spark.read
@@ -833,10 +836,39 @@ abstract class ParquetReadSuite extends CometTestBase {
           $"_metadata.file_path",
           $"_metadata.file_name",
           $"_metadata.file_size",
-          $"_metadata.file_block_start",
-          $"_metadata.file_block_length",
           $"_metadata.file_modification_time")
       checkSparkAnswerAndOperator(df)
+    }
+  }
+
+  test("_metadata.file_block_start and file_block_length fall back to Spark") {
+    // When Spark splits a file, DataFusion keeps a row group in the split that holds its first
+    // page and Spark keeps it in the split that holds its midpoint, so these per-split values
+    // would be wrong for some rows if the scan ran natively (#6505).
+    withSQLConf(SQLConf.FILES_MAX_PARTITION_BYTES.key -> "4096") {
+      withTempPath { dir =>
+        spark
+          .range(0, 5000)
+          .selectExpr("id", "concat('value_', cast(id as string)) as s")
+          .coalesce(1)
+          .write
+          .parquet(dir.getCanonicalPath)
+        withSQLConf(CometConf.COMET_ENABLED.key -> "false") {
+          assert(
+            spark.read.parquet(dir.getCanonicalPath).rdd.getNumPartitions > 1,
+            "the file has to be split across partitions for this test to mean anything")
+        }
+
+        val df = spark.read.parquet(dir.getCanonicalPath)
+        for (column <- Seq("file_block_start", "file_block_length")) {
+          checkSparkAnswerAndFallbackReason(
+            df.select($"id", $"s", $"_metadata.$column"),
+            s"Metadata column(s) $column is not supported")
+        }
+        // The per-file constants don't depend on which split reads a row group.
+        checkSparkAnswerAndOperator(
+          df.select($"id", $"s", $"_metadata.file_path", $"_metadata.file_size"))
+      }
     }
   }
 
@@ -1649,6 +1681,149 @@ abstract class ParquetReadSuite extends CometTestBase {
     }
   }
 
+  test("native scan reads files with nothing to decode whose types Spark rejects") {
+    // Regression guard for #6506. Spark checks a conversion only while it decodes a row group,
+    // so an empty file, or one whose only row group a filter prunes, reads even when a column
+    // has a type the read schema can't convert. The native scan used to reject such a file
+    // when it opened it.
+    withSQLConf(SQLConf.USE_V1_SOURCE_LIST.key -> "parquet") {
+      val cases = Seq(
+        // (written expression of the read type, written expression of another type, read type)
+        ("named_struct('x', 1)", "named_struct('x', 'a')", "struct<x:int>"),
+        (
+          "named_struct('d', cast(1.23 as decimal(10,2)))",
+          "named_struct('d', cast(1.2345 as decimal(10,4)))",
+          "struct<d:decimal(10,2)>"),
+        ("array(1)", "array('a')", "array<int>"),
+        ("map('k', 1)", "map('k', 'v')", "map<string,int>"),
+        ("named_struct('x', array(1))", "named_struct('x', 1)", "struct<x:array<int>>"),
+        ("1", "'a'", "int"))
+      cases.foreach { case (matching, mismatched, readType) =>
+        withClue(s"$mismatched read as $readType: ") {
+          withTempPath { dir =>
+            val path = dir.getCanonicalPath
+            spark.sql(s"select $matching as s").write.parquet(path)
+            spark.sql(s"select $mismatched as s where false").write.mode("append").parquet(path)
+            checkSparkAnswerAndOperator(spark.read.schema(s"s $readType").parquet(path))
+          }
+          withTempPath { dir =>
+            val path = dir.getCanonicalPath
+            spark.sql(s"select 100 as id, $matching as s").write.parquet(path)
+            spark.sql(s"select 1 as id, $mismatched as s").write.mode("append").parquet(path)
+            val df = spark.read.schema(s"id int, s $readType").parquet(path)
+            checkSparkAnswerAndOperator(df.where("id = 100"))
+            // The pruned row group still fails in both engines when it is decoded.
+            val (sparkError, cometError) = checkSparkAnswerMaybeThrows(df)
+            assert(sparkError.isDefined && cometError.isDefined, s"$sparkError, $cometError")
+          }
+        }
+      }
+      // Spark fails a shape it can't clip when it opens the file, so an empty file with one
+      // still fails, even after a field whose type Spark only rejects while decoding.
+      withTempPath { dir =>
+        val path = dir.getCanonicalPath
+        spark.sql("select named_struct('a', 1, 'b', 1) as s").write.parquet(path)
+        spark
+          .sql("select named_struct('a', 'x', 'b', array(1)) as s where false")
+          .write
+          .mode("append")
+          .parquet(path)
+        val (sparkError, cometError) =
+          checkSparkAnswerMaybeThrows(spark.read.schema("s struct<a:int, b:int>").parquet(path))
+        assert(sparkError.isDefined && cometError.isDefined, s"$sparkError, $cometError")
+      }
+    }
+  }
+
+  test("native scan rejects legacy LIST shape mismatches before decoding") {
+    for (legacy <- Seq(false, true); empty <- Seq(false, true)) {
+      withSQLConf(
+        SQLConf.USE_V1_SOURCE_LIST.key -> "parquet",
+        SQLConf.PARQUET_WRITE_LEGACY_FORMAT.key -> legacy.toString) {
+        withTempPath { dir =>
+          val path = dir.getCanonicalPath
+          val rows = spark.sql("select 1 as id, array(1) as a")
+          (if (empty) rows.where("false") else rows).write.parquet(path)
+          for (element <- Seq("array<int>", "map<int,int>")) {
+            val df = spark.read
+              .schema(s"id int, a array<$element>")
+              .parquet(path)
+              .where("id = 100")
+            if (legacy) {
+              checkCometOperators(stripAQEPlan(df.queryExecution.executedPlan))
+              val (sparkError, cometError) = checkSparkAnswerMaybeThrows(df)
+              assert(sparkError.isDefined && cometError.isDefined, s"$sparkError, $cometError")
+            } else {
+              checkSparkAnswerAndOperator(df)
+            }
+          }
+        }
+      }
+    }
+  }
+
+  test("native scan preserves duplicate field error types with row filter pushdown") {
+    withTempPath { dir =>
+      val path = dir.getCanonicalPath
+      withSQLConf(SQLConf.CASE_SENSITIVE.key -> "true") {
+        spark.range(5).selectExpr("id as A", "id as B", "id as b").write.parquet(path)
+      }
+      for (pushdown <- Seq(false, true)) {
+        withSQLConf(
+          SQLConf.USE_V1_SOURCE_LIST.key -> "parquet",
+          SQLConf.CASE_SENSITIVE.key -> "false",
+          CometConf.COMET_PARQUET_ROW_FILTER_PUSHDOWN_ENABLED.key -> pushdown.toString) {
+          val df = spark.read.schema("A long, B long").parquet(path).where("A = 1")
+          checkCometOperators(stripAQEPlan(df.queryExecution.executedPlan))
+          val (sparkError, cometError) = checkSparkAnswerMaybeThrows(df)
+          Seq("Spark" -> sparkError, "Comet" -> cometError).foreach { case (engine, error) =>
+            val chain = error.toSeq.flatMap(causeChain)
+            assert(
+              chain.exists(e =>
+                e.getClass.getName == "org.apache.spark.SparkRuntimeException" &&
+                  e.getMessage.contains("Found duplicate field")),
+              s"$engine: ${chain.mkString("\n")}")
+          }
+        }
+      }
+    }
+  }
+
+  test("native scan preserves conversion errors with row filter pushdown") {
+    for (pushdown <- Seq(false, true); nested <- Seq(false, true)) {
+      withSQLConf(
+        SQLConf.USE_V1_SOURCE_LIST.key -> "parquet",
+        CometConf.COMET_PARQUET_ROW_FILTER_PUSHDOWN_ENABLED.key -> pushdown.toString) {
+        withTempPath { dir =>
+          val path = dir.getCanonicalPath
+          val value = if (nested) "named_struct('x', 'bad')" else "'bad'"
+          val readType = if (nested) "struct<x:int>" else "int"
+          spark
+            .sql(s"select 1 as id, $value as s union all select 3 as id, $value as s")
+            .coalesce(1)
+            .write
+            .option("parquet.enable.dictionary", "false")
+            .parquet(path)
+          val df = spark.read.schema(s"id int, s $readType").parquet(path)
+          // Statistics retain [1, 3], but no row passes id = 2.
+          checkCometOperators(stripAQEPlan(df.queryExecution.executedPlan))
+          val (sparkError, cometError) = checkSparkAnswerMaybeThrows(df.where("id = 2"))
+          Seq("Spark" -> sparkError, "Comet" -> cometError).foreach { case (engine, error) =>
+            val chain = error.toSeq.flatMap(causeChain)
+            assert(
+              chain.exists(
+                _.isInstanceOf[org.apache.spark.sql.execution.datasources.SchemaColumnConvertNotSupportedException]),
+              s"$engine: ${chain.mkString("\n")}")
+          }
+          // Format pruning must still suppress the decode-time mismatch (#6506).
+          checkSparkAnswerAndOperator(df.where("id = 100"))
+          // A mismatch in an unrequested column must not affect the scan.
+          checkSparkAnswerAndOperator(df.select("id").where("id = 2"))
+        }
+      }
+    }
+  }
+
   test("nested schema evolution follows Spark's per-version widening rules") {
     // Companion to "schema evolution": `INT32 -> bigint` inside a struct is gated by the same
     // per-Spark-version constant as the top level (see ShimCometConf), and accepted nested
@@ -2421,6 +2596,114 @@ abstract class ParquetReadSuite extends CometTestBase {
           .parquet(dir.getCanonicalPath)
 
         checkSparkAnswerAndOperator(spark.read.schema(schema).parquet(dir.getCanonicalPath))
+      }
+    }
+  }
+
+  // Spark writes timestamps as INT96 by default, and the native scan's INT96 coercion rebuilds
+  // struct, list and map fields, which must keep their metadata or an id on the container is
+  // lost and the column reads as nulls. The read renames the column so only its id matches it.
+  private val int96Ts = Timestamp.valueOf("2020-01-01 00:00:00")
+  private val int96Inner = new StructType().add("a", IntegerType).add("ts", TimestampType)
+
+  Seq[(String, DataType, Any)](
+    ("struct", int96Inner, Row(1, int96Ts)),
+    ("list", ArrayType(int96Inner), Seq(Row(1, int96Ts), Row(2, int96Ts))),
+    ("map", MapType(StringType, int96Inner), Map("k" -> Row(1, int96Ts)))).foreach {
+    case (label, dataType, value) =>
+      test(s"an id on a $label column holding an INT96 timestamp matches it natively") {
+        withSQLConf(SQLConf.PARQUET_FIELD_ID_READ_ENABLED.key -> "true") {
+          withTempPath { dir =>
+            val rows = Seq(Row(value), Row(null))
+            withSQLConf(
+              CometConf.COMET_ENABLED.key -> "false",
+              SQLConf.PARQUET_OUTPUT_TIMESTAMP_TYPE.key -> "INT96") {
+              spark
+                .createDataFrame(
+                  spark.sparkContext.parallelize(rows),
+                  new StructType().add("c", dataType, true, withId(1)))
+                .write
+                .parquet(dir.getCanonicalPath)
+            }
+            val readSchema = new StructType().add("renamed", dataType, true, withId(1))
+            val df = spark.read.schema(readSchema).parquet(dir.getCanonicalPath)
+            checkSparkAnswerAndOperator(df)
+            checkAnswer(df, rows)
+          }
+        }
+      }
+  }
+
+  // Ids on a struct below a struct or a list, and on its INT96 leaf, match renamed fields.
+  // Spark's vectorized reader before 4.0 rejects the renamed struct below the list, so the
+  // comparison with Spark runs from 4.0 on and the pinned rows hold everywhere.
+  test("an id on a struct nested in a struct or list with an INT96 leaf matches it natively") {
+    def schema(innerName: String, tsName: String): StructType = {
+      def inner(innerId: Int, tsId: Int): StructType = new StructType().add(
+        innerName,
+        new StructType().add("a", IntegerType).add(tsName, TimestampType, true, withId(tsId)),
+        true,
+        withId(innerId))
+      new StructType().add("s", inner(2, 3)).add("l", ArrayType(inner(4, 5)))
+    }
+    val rows = Seq(
+      Row(Row(Row(1, int96Ts)), Seq(Row(Row(2, int96Ts)), Row(Row(3, int96Ts)))),
+      Row(Row(null), Seq(Row(Row(4, null)), null)))
+
+    withSQLConf(SQLConf.PARQUET_FIELD_ID_READ_ENABLED.key -> "true") {
+      withTempPath { dir =>
+        withSQLConf(
+          CometConf.COMET_ENABLED.key -> "false",
+          SQLConf.PARQUET_OUTPUT_TIMESTAMP_TYPE.key -> "INT96") {
+          spark
+            .createDataFrame(spark.sparkContext.parallelize(rows), schema("inner", "ts"))
+            .write
+            .parquet(dir.getCanonicalPath)
+        }
+        val df = spark.read
+          .schema(schema("renamed_inner", "renamed_ts"))
+          .parquet(dir.getCanonicalPath)
+        if (isSpark40Plus) {
+          checkSparkAnswerAndOperator(df)
+        }
+        val plan = stripAQEPlan(df.queryExecution.executedPlan)
+        assert(
+          collect(plan) { case scan: CometNativeScanExec => scan }.nonEmpty,
+          s"expected CometNativeScanExec in the plan:\n$plan")
+        checkAnswer(df, rows)
+      }
+    }
+  }
+
+  // A Variant column is a struct of value and metadata in the Arrow schema, so the same coercion
+  // rebuilds it when the file holds an INT96 column anywhere, and its id has to survive.
+  test("an id on a Variant column next to an INT96 timestamp matches it natively") {
+    assume(Utils.variantType.isDefined, "VariantType requires Spark 4.0+")
+    withSQLConf(
+      SQLConf.PARQUET_FIELD_ID_READ_ENABLED.key -> "true",
+      "spark.sql.variant.allowReadingShredded" -> "true",
+      "spark.sql.variant.pushVariantIntoScan" -> "false") {
+      withTempPath { dir =>
+        withSQLConf(
+          CometConf.COMET_ENABLED.key -> "false",
+          SQLConf.PARQUET_OUTPUT_TIMESTAMP_TYPE.key -> "INT96") {
+          spark
+            .sql("""SELECT parse_json(j) AS v, t AS ts FROM VALUES
+              |  ('{"a":1}', TIMESTAMP'2020-01-01 00:00:00'), (NULL, NULL) AS input(j, t)
+              |""".stripMargin)
+            .select(col("v").as("v", withId(1)), col("ts"))
+            .coalesce(1)
+            .write
+            .parquet(dir.getCanonicalPath)
+        }
+        val readSchema = new StructType()
+          .add("renamed", Utils.variantType.get, true, withId(1))
+          .add("ts", TimestampType)
+        val df = spark.read.schema(readSchema).parquet(dir.getCanonicalPath)
+        checkSparkAnswerAndOperator(df)
+        checkAnswer(
+          df.selectExpr("to_json(renamed)", "ts"),
+          Row("""{"a":1}""", int96Ts) :: Row(null, null) :: Nil)
       }
     }
   }

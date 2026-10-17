@@ -315,6 +315,150 @@ def test_map_in_arrow_python_exception_propagates(spark, tmp_path, accelerated):
     )
 
 
+# PySpark does not cast mapInArrow output to the declared schema. The accelerated path checks
+# the returned Arrow schema before reading it and raises Spark's ARROW_TYPE_MISMATCH error
+# (a plain SparkException with the same message on Spark 4.0).
+_OUTPUT_TYPE_MISMATCH = "Invalid schema from SQL_MAP_ARROW_ITER_UDF"
+
+
+def _collect_error(df) -> str:
+    with pytest.raises(Exception) as exc_info:
+        df.collect()
+    return str(exc_info.value)
+
+
+@pytest.mark.parametrize(
+    "returned_type,declared_type",
+    [(pa.int64(), T.IntegerType()), (pa.int32(), T.LongType())],
+    ids=["int64_as_int", "int32_as_bigint"],
+)
+def test_map_in_arrow_integer_width_mismatch_raises(
+    spark, tmp_path, accelerated, returned_type, declared_type
+):
+    """
+    Spark raises when it reads an integer column whose Arrow width differs from the declared
+    type. Reading the buffer at the declared width instead returns wrong values (int64 read as
+    int) or reads past the end of the buffer (int32 read as bigint).
+    """
+    src = str(tmp_path / "src.parquet")
+    spark.range(64).write.parquet(src)
+
+    def cast_id(iterator):
+        for batch in iterator:
+            yield pa.RecordBatch.from_arrays(
+                [batch.column(0).cast(returned_type)], ["id"]
+            )
+
+    schema = T.StructType([T.StructField("id", declared_type)])
+    result_df = spark.read.parquet(src).mapInArrow(cast_id, schema)
+    _assert_plan_matches_mode(_executed_plan(result_df), accelerated)
+
+    message = _collect_error(result_df)
+    if accelerated:
+        assert _OUTPUT_TYPE_MISMATCH in message, message
+
+
+def test_map_in_arrow_decimal_scale_mismatch(spark, tmp_path, accelerated):
+    """
+    Spark rescales a returned decimal(4, 3) value to a declared decimal(10, 2), so 1.234 reads
+    as 1.23. The accelerated path does not rescale; it raises rather than reading the unscaled
+    value at the declared scale (12.34).
+    """
+    src = str(tmp_path / "src.parquet")
+    spark.range(1).write.parquet(src)
+
+    def to_decimal(iterator):
+        for batch in iterator:
+            amounts = pa.array([Decimal("1.234")] * batch.num_rows, pa.decimal128(4, 3))
+            yield pa.RecordBatch.from_arrays([amounts], ["amount"])
+
+    schema = T.StructType([T.StructField("amount", T.DecimalType(10, 2))])
+    result_df = spark.read.parquet(src).mapInArrow(to_decimal, schema)
+    _assert_plan_matches_mode(_executed_plan(result_df), accelerated)
+
+    if accelerated:
+        message = _collect_error(result_df)
+        assert _OUTPUT_TYPE_MISMATCH in message, message
+    else:
+        assert [r["amount"] for r in result_df.collect()] == [Decimal("1.23")]
+
+
+def test_map_in_arrow_dictionary_encoded_output_raises(spark, tmp_path, accelerated):
+    """
+    Spark cannot read a dictionary-encoded column returned for a declared string column. The
+    accelerated path used to fail with a NullPointerException; it now reports the mismatch.
+    """
+    src = str(tmp_path / "src.parquet")
+    spark.range(10).write.parquet(src)
+
+    def encode(iterator):
+        for batch in iterator:
+            names = [f"name_{i % 3}" for i in batch.column(0).to_pylist()]
+            yield pa.RecordBatch.from_arrays(
+                [pa.array(names).dictionary_encode()], ["name"]
+            )
+
+    schema = T.StructType([T.StructField("name", T.StringType())])
+    result_df = spark.read.parquet(src).mapInArrow(encode, schema)
+    _assert_plan_matches_mode(_executed_plan(result_df), accelerated)
+
+    message = _collect_error(result_df)
+    if accelerated:
+        assert _OUTPUT_TYPE_MISMATCH in message, message
+        assert "dictionary" in message, message
+
+
+def test_map_in_arrow_output_differences_that_read_the_same(
+    spark, tmp_path, accelerated
+):
+    """
+    Output that differs from the declared schema only in ways that do not change the values
+    read is accepted on both paths: column names, nullability, 64-bit string and binary offsets,
+    the time zone label of a timestamp, and an all-null column that PyArrow types as `null`.
+    """
+    schema_in = T.StructType(
+        [
+            T.StructField("id", T.LongType()),
+            T.StructField("ts", T.TimestampType()),
+        ]
+    )
+    rows = [(1, dt.datetime(2024, 1, 1, 12, 30, 45)), (2, None)]
+    src = str(tmp_path / "src.parquet")
+    spark.createDataFrame(rows, schema_in).write.parquet(src)
+
+    def relabel(iterator):
+        for batch in iterator:
+            ids = batch.column(0).to_pylist()
+            yield pa.RecordBatch.from_arrays(
+                [
+                    batch.column(0),
+                    batch.column(1).cast(pa.timestamp("us", tz="America/Los_Angeles")),
+                    pa.array([f"s{i}" for i in ids], pa.large_string()),
+                    pa.array([str(i).encode() for i in ids], pa.large_binary()),
+                    pa.nulls(batch.num_rows),
+                ],
+                ["key", "ts", "s", "b", "missing"],
+            )
+
+    schema_out = T.StructType(
+        [
+            T.StructField("id", T.LongType(), nullable=False),
+            T.StructField("ts", T.TimestampType()),
+            T.StructField("s", T.StringType()),
+            T.StructField("b", T.BinaryType()),
+            T.StructField("missing", T.StringType()),
+        ]
+    )
+    result_df = spark.read.parquet(src).mapInArrow(relabel, schema_out)
+    _assert_plan_matches_mode(_executed_plan(result_df), accelerated)
+
+    out = {
+        (r["id"], r["ts"], r["s"], bytes(r["b"]), r["missing"])
+        for r in result_df.collect()
+    }
+    assert out == {(i, ts, f"s{i}", str(i).encode(), None) for i, ts in rows}
+
+
 def test_map_in_arrow_decimal_type(spark, tmp_path, accelerated):
     schema_in = T.StructType(
         [

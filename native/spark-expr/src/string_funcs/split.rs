@@ -17,7 +17,7 @@
 
 use arrow::array::{
     Array, ArrayBuilder, ArrayRef, GenericListArray, GenericStringArray, GenericStringBuilder,
-    ListArray, NullBufferBuilder, OffsetSizeTrait,
+    ListArray, OffsetSizeTrait,
 };
 use arrow::buffer::OffsetBuffer;
 use arrow::datatypes::{DataType, Field};
@@ -364,15 +364,11 @@ fn split_sql_generic_scalar_array<O: OffsetSizeTrait, D: OffsetSizeTrait>(
     let len = delimiter_array.len();
     let mut offsets: Vec<O> = Vec::with_capacity(len + 1);
     let mut values_builder = GenericStringBuilder::<O>::new();
-    let mut nulls = NullBufferBuilder::new(len);
     offsets.push(O::usize_as(0));
 
     for i in 0..len {
-        if delimiter_array.is_null(i) {
-            nulls.append_null();
-        } else {
+        if !delimiter_array.is_null(i) {
             push_split_sql_parts(string, delimiter_array.value(i), &mut values_builder);
-            nulls.append_non_null();
         }
         offsets.push(O::usize_as(values_builder.len()));
     }
@@ -388,7 +384,7 @@ fn split_sql_generic_scalar_array<O: OffsetSizeTrait, D: OffsetSizeTrait>(
         field,
         OffsetBuffer::new(offsets.into()),
         values_array,
-        nulls.finish(),
+        delimiter_array.nulls().cloned(),
     );
 
     Ok(ColumnarValue::Array(Arc::new(list_array)))
@@ -401,19 +397,15 @@ fn split_sql_generic_array<O: OffsetSizeTrait, D: OffsetSizeTrait>(
     let len = string_array.len();
     let mut offsets: Vec<O> = Vec::with_capacity(len + 1);
     let mut values_builder = GenericStringBuilder::<O>::new();
-    let mut nulls = NullBufferBuilder::new(len);
     offsets.push(O::usize_as(0));
 
     for i in 0..len {
-        if string_array.is_null(i) || delimiter_array.is_null(i) {
-            nulls.append_null();
-        } else {
+        if !string_array.is_null(i) && !delimiter_array.is_null(i) {
             push_split_sql_parts(
                 string_array.value(i),
                 delimiter_array.value(i),
                 &mut values_builder,
             );
-            nulls.append_non_null();
         }
         offsets.push(O::usize_as(values_builder.len()));
     }
@@ -429,7 +421,7 @@ fn split_sql_generic_array<O: OffsetSizeTrait, D: OffsetSizeTrait>(
         field,
         OffsetBuffer::new(offsets.into()),
         values_array,
-        nulls.finish(),
+        arrow::buffer::NullBuffer::union(string_array.nulls(), delimiter_array.nulls()),
     );
 
     Ok(ColumnarValue::Array(Arc::new(list_array)))
@@ -445,18 +437,24 @@ fn push_split_parts<O: OffsetSizeTrait>(
     builder: &mut GenericStringBuilder<O>,
 ) {
     if limit == 0 {
-        // limit = 0: split all, drop trailing empties. Need to know the end
-        // before pushing, so collect borrowed slices first (no string copies).
-        let mut parts: Vec<&str> = regex.split(string).collect();
-        while parts.last().is_some_and(|s| s.is_empty()) {
-            parts.pop();
-        }
-        if parts.is_empty() {
-            builder.append_value("");
-        } else {
-            for p in parts {
-                builder.append_value(p);
+        // limit = 0: split all, drop trailing empties. Empty parts are held back until a
+        // non-empty part follows, so the trailing ones are never appended.
+        let mut pending_empty = 0;
+        let mut appended = false;
+        for part in regex.split(string) {
+            if part.is_empty() {
+                pending_empty += 1;
+            } else {
+                for _ in 0..pending_empty {
+                    builder.append_value("");
+                }
+                pending_empty = 0;
+                builder.append_value(part);
+                appended = true;
             }
+        }
+        if !appended {
+            builder.append_value("");
         }
     } else if limit > 0 {
         // limit > 0: at most limit-1 splits.
@@ -769,6 +767,40 @@ mod tests {
                 assert_eq!(list_array.len(), 2);
                 assert!(list_array.is_null(0));
                 assert!(list_array.is_null(1));
+            }
+            _ => panic!("Expected Array result"),
+        }
+    }
+
+    #[test]
+    fn test_split_sql_string_array_delimiter_array() {
+        let string_array = Arc::new(StringArray::from(vec![
+            Some("a,b"),
+            Some("c.d"),
+            None,
+            Some("e"),
+        ])) as ArrayRef;
+        let delimiter_array = Arc::new(StringArray::from(vec![
+            Some(","),
+            None,
+            Some(","),
+            Some(","),
+        ])) as ArrayRef;
+        let result = spark_split_sql(&[
+            ColumnarValue::Array(string_array),
+            ColumnarValue::Array(delimiter_array),
+        ])
+        .unwrap();
+
+        match result {
+            ColumnarValue::Array(arr) => {
+                let list_array = arr.as_any().downcast_ref::<ListArray>().unwrap();
+                assert_eq!(list_array.len(), 4);
+                assert_list_value(list_array, 0, &["a", "b"]);
+                // A NULL delimiter and a NULL string each give a NULL row.
+                assert!(list_array.is_null(1));
+                assert!(list_array.is_null(2));
+                assert_list_value(list_array, 3, &["e"]);
             }
             _ => panic!("Expected Array result"),
         }

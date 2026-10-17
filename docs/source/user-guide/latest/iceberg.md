@@ -186,15 +186,29 @@ The following scenarios will fall back to the JVM Iceberg reader:
 - Encrypted tables with 192-bit data keys (no AES-192-GCM in the underlying crypto)
 - Delete files in a format other than Parquet or Puffin (Avro or ORC positional/equality deletes)
 - Tables backed by Avro or ORC data files (only Parquet is accelerated)
+- Queries that use `input_file_name()`, `input_file_block_start()` or `input_file_block_length()`
 - Scans whose data or delete files span more than one S3 bucket (the native reader uses one
   object-store configuration per scan)
 - Tables partitioned on `BINARY` or `DECIMAL` (with precision >28) columns
 - Scans with residual filters using `truncate`, `bucket`, `year`, `month`, `day`, or `hour`
   transform functions (partition pruning still works, but row-level filtering of these
   transforms falls back)
+- Scans that read a struct, array, or map column with a nested field that schema evolution added
+  or renamed. The native reader cannot yet match such a field to data files written before the
+  change. The check uses the table's schema history, so the fallback stays after those files are
+  rewritten
+- Scans where no schema in the table's history gives a partition source or equality-delete key a
+  name that the scan's other columns don't use (every task of a native scan must give such a
+  column the same name)
 
-Writes are not covered by this list. By default Iceberg writes use Spark's own writer; see
-[Iceberg Writes](iceberg-writes.md) for the experimental native writer and when it applies.
+The cases in which the native reader returns different results from Spark, or fails where Spark
+succeeds, without falling back are listed in
+[Known Issues](compatibility/parquet-iceberg-known-issues.md).
+
+Writes are not covered by this list. By default Spark plans Iceberg writes with its own V2 write
+operator, and iceberg-java writes the data files. With `spark.comet.write.iceberg.enabled=true`,
+Comet plans an Iceberg write with its split-operator plan and writes eligible data files natively;
+see [Iceberg Writes](iceberg-writes.md) for the plan, the native writer, and when each applies.
 
 ### Iceberg UDFs
 
@@ -220,7 +234,9 @@ Iceberg's system functions `bucket`, `truncate`, `years`, `months`, `days`, and 
 form of its partition transforms, for example `SELECT system.bucket(16, id) FROM t`) run natively.
 Spark binds them as static invocations of Iceberg's per-type implementations under
 `org.apache.iceberg.spark.functions`, and Comet recognizes those classes wherever the expression
-appears: in a projection, a filter, a sort key, or the hash partitioning of a shuffle.
+appears: in a projection, a filter, a sort key, or the hash partitioning of a shuffle. The
+exception is a call nested inside an expression that Comet runs through the JVM codegen
+dispatcher, such as `map(...)`. That makes the operator fall back to Spark.
 
 The native kernels reproduce Iceberg's Java semantics exactly rather than approximately:
 
