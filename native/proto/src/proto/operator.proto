@@ -998,7 +998,7 @@ message ParquetWriter {
   // CometNativeWriteExec (Spark 3.x). Naming and staging are owned by Spark's commit protocol so
   // that task-attempt isolation, speculative execution, and committers that track individual
   // files (S3A magic, streaming manifest) all behave as they do for Spark's own writer. The native
-  // writer uses this path verbatim.
+  // writer uses this path verbatim, and creates the file itself unless `jvm_output_stream` is set.
   string output_path = 1;
   CompressionCodec compression = 2;
   repeated string column_names = 4;
@@ -1016,6 +1016,13 @@ message ParquetWriter {
   // Catalyst's target schema, including top-level nullability and Parquet field IDs.
   // Nested collection field IDs are carried by the corresponding DataType messages.
   repeated SparkStructField output_schema = 9;
+  // Whether the JVM has already created `output_path` through Hadoop's FileSystem API and
+  // registered its output stream with the plan (Native.setOutputStream). The native writer then
+  // writes the file's bytes to that stream instead of opening the path itself, and the JVM closes
+  // the file afterwards. Set per task by CometWriteFilesExec and CometNativeWriteExec for every
+  // file that is neither local nor on HDFS, such as the files S3A's magic committer needs S3A
+  // itself to create.
+  bool jvm_output_stream = 10;
 }
 
 enum AggregateMode {

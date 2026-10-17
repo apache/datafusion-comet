@@ -21,7 +21,9 @@ package org.apache.comet.serde.operator
 
 import java.util.Locale
 
+import org.apache.hadoop.conf.Configuration
 import org.apache.hadoop.fs.Path
+import org.apache.hadoop.mapreduce.lib.output.PathOutputCommitterFactory
 import org.apache.parquet.hadoop.ParquetOutputFormat
 import org.apache.spark.sql.catalyst.plans.QueryPlan
 import org.apache.spark.sql.catalyst.util.CaseInsensitiveMap
@@ -186,6 +188,119 @@ object NativeWriteUtils {
           s"on HDFS is not the one the commit protocol chose ($shown). Set " +
           "spark.comet.write.parquet.enabled=false to write this table with Spark.")
     }
+
+  /**
+   * Whether the native writer creates the file at `filePath` itself, which it does for local and
+   * HDFS files. Any other file is created through Hadoop's FileSystem API, as Spark's own writer
+   * creates it, and the native writer only writes its bytes. That is always correct, whatever the
+   * file system and whatever the committer expects of it, which is why this is decided per task
+   * on the path the commit protocol actually returned rather than at planning.
+   */
+  def nativeWriterCreatesFile(filePath: String): Boolean =
+    filePath.startsWith("file:") || filePath.startsWith("hdfs:")
+
+  /**
+   * A fallback reason when the native writer cannot write to `outputPath`'s file system, or
+   * `None` when it can. Local and HDFS files are created natively. A write that S3A's magic
+   * committer commits is supported too, since each of its files is created through S3A (see
+   * `CometWriteFilesExec.writeFile`), which is the only way to give the committer the pending
+   * upload it completes. Other S3 writes stay on Spark until the native writer reproduces what
+   * S3A does at create time.
+   *
+   * @param hadoopConf
+   *   the write's Hadoop configuration, only built for a destination the native writer does not
+   *   create files in
+   */
+  def unsupportedFileSystem(
+      outputPath: String,
+      commitProtocolClass: String,
+      hadoopConf: => Configuration): Option[String] =
+    if (nativeWriterCreatesFile(outputPath) ||
+      usesS3AMagicCommitter(outputPath, commitProtocolClass, hadoopConf)) {
+      None
+    } else {
+      Some("Supported output filesystems: local, HDFS, and S3 with the S3A magic committer")
+    }
+
+  /** Spark's commit protocol for Hadoop's `PathOutputCommitter`s, in spark-hadoop-cloud. */
+  val PathOutputCommitProtocolClass: String =
+    "org.apache.spark.internal.io.cloud.PathOutputCommitProtocol"
+
+  /**
+   * Spark's Parquet output committer that delegates to a `PathOutputCommitter`, in
+   * spark-hadoop-cloud.
+   */
+  val BindingParquetOutputCommitterClass: String =
+    "org.apache.spark.internal.io.cloud.BindingParquetOutputCommitter"
+
+  /** S3A's committer factory that always creates the magic committer. */
+  private val MagicCommitterFactoryClass =
+    "org.apache.hadoop.fs.s3a.commit.magic.MagicS3GuardCommitterFactory"
+
+  /** S3A's committer factory that creates the committer `fs.s3a.committer.name` names. */
+  private val S3ACommitterFactoryClass = "org.apache.hadoop.fs.s3a.commit.S3ACommitterFactory"
+
+  /**
+   * Whether S3A's magic committer commits a write to `outputPath`.
+   *
+   * Spark reaches Hadoop's committer factories through one of two bindings in spark-hadoop-cloud.
+   * Spark 4.1 configures both whenever that module is on the classpath (SPARK-47618), and earlier
+   * versions for a bucket that sets `fs.s3a.bucket.<bucket>.committer.magic.enabled`:
+   *
+   *   - the commit protocol `PathOutputCommitProtocol`, or
+   *   - `BindingParquetOutputCommitter` as `spark.sql.parquet.output.committer.class`, under a
+   *     commit protocol that instantiates that class, as Spark's default one does.
+   *
+   * Either asks Hadoop's `PathOutputCommitterFactory` for the committer. Its factory is
+   * `mapreduce.outputcommitter.factory.class` when set, else
+   * `mapreduce.outputcommitter.factory.scheme.<scheme>`. The committer is the magic committer
+   * when that factory is `MagicS3GuardCommitterFactory`, or when it is `S3ACommitterFactory` and
+   * the committer it is asked for is `magic`: `fs.s3a.committer.name` in the job's configuration,
+   * or failing that in the file system's, where `fs.s3a.bucket.<bucket>.committer.name` replaces
+   * it.
+   *
+   * Only planning asks, to decide whether a write is worth running natively. A wrong answer
+   * cannot misplace data: each task writes the path the committer actually returns, and creates
+   * any file that is not local or on HDFS through Hadoop, see `CometWriteFilesExec.writeFile`.
+   *
+   * @param commitProtocolClass
+   *   the write's `spark.sql.sources.commitProtocolClass`
+   * @param hadoopConf
+   *   the write's Hadoop configuration, which carries `spark.sql.parquet.output.committer.class`
+   *   as Spark's Parquet writer reads it
+   */
+  def usesS3AMagicCommitter(
+      outputPath: String,
+      commitProtocolClass: String,
+      hadoopConf: Configuration): Boolean = {
+    val outputCommitterClass =
+      hadoopConf.getTrimmed(SQLConf.PARQUET_OUTPUT_COMMITTER_CLASS.key, "")
+    val asksCommitterFactory = commitProtocolClass == PathOutputCommitProtocolClass ||
+      (commitProtocolClass == SQLConf.FILE_COMMIT_PROTOCOL_CLASS.defaultValueString &&
+        outputCommitterClass == BindingParquetOutputCommitterClass)
+    val uri = new Path(outputPath).toUri
+    if (!asksCommitterFactory || uri.getScheme == null) {
+      return false
+    }
+
+    val factory = Seq(
+      PathOutputCommitterFactory.COMMITTER_FACTORY_CLASS,
+      PathOutputCommitterFactory.COMMITTER_FACTORY_SCHEME_PATTERN.format(uri.getScheme))
+      .map(key => hadoopConf.getTrimmed(key, ""))
+      .find(_.nonEmpty)
+    factory match {
+      case Some(MagicCommitterFactoryClass) => true
+      case Some(S3ACommitterFactoryClass) =>
+        // S3ACommitterFactory takes the name from the job's configuration when it has one, and
+        // otherwise from the file system's, which S3A has resolved per bucket. A job
+        // configuration set globally therefore wins over a bucket's own setting.
+        val name = Option(hadoopConf.getTrimmed("fs.s3a.committer.name"))
+          .orElse(Option(uri.getHost).flatMap(bucket =>
+            Option(hadoopConf.getTrimmed(s"fs.s3a.bucket.$bucket.committer.name"))))
+        name.contains("magic")
+      case _ => false
+    }
+  }
 
   /** Compression codecs Comet's native Parquet writer can produce. */
   val supportedCompressionCodecs: Set[String] =

@@ -24,7 +24,7 @@ import java.util.concurrent.atomic.AtomicReference
 import scala.util.control.NonFatal
 
 import org.apache.spark.CometListenerBusUtils
-import org.apache.spark.sql.CometTestBase
+import org.apache.spark.sql.{CometTestBase, DataFrame}
 import org.apache.spark.sql.comet.{CometNativeWriteExec, CometWriteFilesExec}
 import org.apache.spark.sql.execution.{QueryExecution, SparkPlan}
 import org.apache.spark.sql.execution.command.DataWritingCommandExec
@@ -41,6 +41,15 @@ abstract class CometParquetWriterTestBase extends CometTestBase {
       nativeWriteAllowIncompatKey -> "true",
       CometConf.COMET_EXEC_ENABLED.key -> "true",
       SQLConf.SESSION_LOCAL_TIMEZONE.key -> "America/Halifax")(f)
+  }
+
+  // Persist `df` to `sourcePath` with Comet disabled and return a DataFrame that reads it back,
+  // so the source plan is a Comet scan (satisfying CometExecRule.requiresNativeChildren).
+  protected def materializeAsCometSource(df: DataFrame, sourcePath: String): DataFrame = {
+    withSQLConf(CometConf.COMET_ENABLED.key -> "false") {
+      df.write.parquet(sourcePath)
+    }
+    spark.read.parquet(sourcePath)
   }
 
   /** The opt-in config key for native writes, which moved with the operator on Spark 4.0+. */

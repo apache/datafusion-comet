@@ -22,12 +22,13 @@
 //! converts the result back. Errors and panics are raised as JVM exceptions by
 //! `try_unwrap_or_throw`, through the boundary error protocol in `errors::NativeError`.
 //!
-//! `createPlan`, `setShufflePartitionPusher`, `executePlan` and `releasePlan` also depend on
-//! upcalls into the JVM (input iterators, the task memory manager, metrics, UDFs and scalar
-//! subqueries). Their core functions (`create_execution_context`,
-//! `register_shuffle_partition_pusher`, `execute_plan` and `release_plan`) take the JVM objects
-//! as JNI global references held by the `ExecutionContext` (`PlanJvmRefs`), and the steps that
-//! need an `Env` as callbacks: the memory pool factory, the pusher factory, and `PublishMetrics`.
+//! `createPlan`, `setShufflePartitionPusher`, `setOutputStream`, `executePlan` and `releasePlan`
+//! also depend on upcalls into the JVM (input iterators, the task memory manager, metrics, UDFs,
+//! scalar subqueries and a native write's output stream). Their core functions
+//! (`create_execution_context`, `register_shuffle_partition_pusher`, `register_output_stream`,
+//! `execute_plan` and `release_plan`) take the JVM objects as JNI global references held by the
+//! `ExecutionContext` (`PlanJvmRefs`), and the steps that need an `Env` as callbacks: the memory
+//! pool factory, the pusher and output stream factories, and `PublishMetrics`.
 
 use super::{serde, utils::SparkArrowConvert};
 use crate::{
@@ -36,7 +37,10 @@ use crate::{
         metrics::utils::update_comet_metric, planner::PhysicalPlanner, serde::to_arrow_datatype,
         shuffle::spark_unsafe::row::process_sorted_row_partition, sort::RdxSort,
     },
-    jvm_bridge::{JVMClasses, JavaShufflePartitionPusher, ShufflePartitionPusher},
+    jvm_bridge::{
+        JVMClasses, JavaOutputStreamSink, JavaShufflePartitionPusher, OutputStreamSink,
+        ShufflePartitionPusher,
+    },
 };
 use std::collections::HashSet;
 
@@ -583,6 +587,10 @@ struct ExecutionContext {
     /// Task-owned remote shuffle callback, registered before native planning starts.
     /// The callback owns a JNI global reference and can safely run on Tokio workers.
     pub shuffle_partition_pusher: Option<Arc<dyn ShufflePartitionPusher>>,
+    /// The output stream of the file this plan's Parquet writer writes, registered before native
+    /// planning starts when the JVM created that file through Hadoop's FileSystem API. Like the
+    /// shuffle callback, it owns a JNI global reference and can run on any native thread.
+    pub output_stream: Option<Arc<dyn OutputStreamSink>>,
     /// Removes this context's tracing memory-pool entry on every exit path.
     memory_pool_registration: Option<ThreadMemoryPoolRegistration>,
 }
@@ -891,6 +899,7 @@ fn create_execution_context(
         task_context: jvm.task_context,
         class_loader: jvm.class_loader,
         shuffle_partition_pusher: None,
+        output_stream: None,
         memory_pool_registration,
     }))
 }
@@ -929,21 +938,78 @@ fn register_shuffle_partition_pusher(
     exec_context: &mut ExecutionContext,
     make_pusher: impl FnOnce() -> CometResult<Arc<dyn ShufflePartitionPusher>>,
 ) -> CometResult<()> {
-    if exec_context.root_op.is_some() {
-        return Err(CometError::Internal(
-            "Remote shuffle callback cannot be registered after native execution starts"
-                .to_string(),
-        ));
+    register_before_execution(
+        exec_context.root_op.is_some(),
+        &mut exec_context.shuffle_partition_pusher,
+        "Remote shuffle callback",
+        make_pusher,
+    )
+}
+
+/// Registers one of a plan's task-owned JVM callbacks in `slot`, built by `make` only once the
+/// plan is known to accept it: before execution has `started`, and once. `what` names the callback
+/// in the errors.
+fn register_before_execution<T: ?Sized>(
+    started: bool,
+    slot: &mut Option<Arc<T>>,
+    what: &str,
+    make: impl FnOnce() -> CometResult<Arc<T>>,
+) -> CometResult<()> {
+    if started {
+        return Err(CometError::Internal(format!(
+            "{what} cannot be registered after native execution starts"
+        )));
     }
 
-    if exec_context.shuffle_partition_pusher.is_some() {
-        return Err(CometError::Internal(
-            "Remote shuffle callback has already been registered for this task".to_string(),
-        ));
+    if slot.is_some() {
+        return Err(CometError::Internal(format!(
+            "{what} has already been registered for this task"
+        )));
     }
 
-    exec_context.shuffle_partition_pusher = Some(make_pusher()?);
+    *slot = Some(make()?);
     Ok(())
+}
+
+/// Binds the output stream of the file the plan's Parquet writer writes, for a file the JVM
+/// created itself, before native execution is initialized.
+///
+/// Separate from `createPlan` for the same reason as `setShufflePartitionPusher`: only native
+/// writes the JVM creates the file for need it, so every other caller keeps the existing ABI.
+#[no_mangle]
+pub extern "system" fn Java_org_apache_comet_Native_setOutputStream(
+    e: EnvUnowned,
+    _class: JClass,
+    exec_context: jlong,
+    output: JObject,
+) {
+    try_unwrap_or_throw(&e, |env| {
+        if exec_context == 0 {
+            return Err(CometError::NullPointer(
+                "A native write's output stream requires a valid native execution plan".to_string(),
+            ));
+        }
+
+        let exec_context = get_execution_context(exec_context);
+        register_output_stream(exec_context, || {
+            Ok(Arc::new(JavaOutputStreamSink::try_new(env, &output)?))
+        })
+    })
+}
+
+/// Registers the output stream of the file the plan's Parquet writer writes, built by
+/// `make_sink` only once the plan is known to accept one: before execution starts, and once. Core
+/// of `Native.setOutputStream`, whose sink calls back into the JVM.
+fn register_output_stream(
+    exec_context: &mut ExecutionContext,
+    make_sink: impl FnOnce() -> CometResult<Arc<dyn OutputStreamSink>>,
+) -> CometResult<()> {
+    register_before_execution(
+        exec_context.root_op.is_some(),
+        &mut exec_context.output_stream,
+        "A native write's output stream",
+        make_sink,
+    )
 }
 
 /// Skipping is opt-in (`spark.comet.exec.aggregate.skipPartial.enabled`): once DataFusion's probe
@@ -1467,7 +1533,8 @@ fn execute_plan(
             .with_sql_text_pool(&exec_context.spark_plan)
             .with_task_context(exec_context.task_context.clone())
             .with_class_loader(exec_context.class_loader.clone())
-            .with_shuffle_partition_pusher(exec_context.shuffle_partition_pusher.clone());
+            .with_shuffle_partition_pusher(exec_context.shuffle_partition_pusher.clone())
+            .with_output_stream(exec_context.output_stream.clone());
         let (scans, shuffle_scans, root_op) = planner.create_plan(
             &exec_context.spark_plan,
             &mut exec_context.input_sources.clone(),

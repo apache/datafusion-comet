@@ -23,6 +23,7 @@ import java.util.Date
 
 import scala.jdk.CollectionConverters._
 
+import org.apache.hadoop.conf.Configuration
 import org.apache.hadoop.mapreduce.{TaskAttemptContext, TaskAttemptID, TaskID, TaskType}
 import org.apache.hadoop.mapreduce.task.TaskAttemptContextImpl
 import org.apache.parquet.hadoop.codec.CodecConfig
@@ -43,7 +44,8 @@ import org.apache.spark.sql.types.{DataType, StructType}
 import org.apache.spark.sql.vectorized.ColumnarBatch
 import org.apache.spark.util.Utils
 
-import org.apache.comet.CometConf
+import org.apache.comet.{CometConf, CometExecIterator}
+import org.apache.comet.parquet.HadoopFileOutput
 import org.apache.comet.serde.OperatorOuterClass
 import org.apache.comet.serde.OperatorOuterClass.Operator
 import org.apache.comet.serde.operator.{schema2Proto, NativeWriteUtils}
@@ -68,7 +70,10 @@ import org.apache.comet.shims.ShimCometWriteFilesExec
  * stats trackers, and commit or abort the task. Notably the path handed back by
  * `FileCommitProtocol.newTaskTempFile` is used verbatim, so staging directories, task-attempt
  * isolation under speculation, and committers that track individual files all behave as they do
- * for Spark's own writer.
+ * for Spark's own writer. A file that is neither local nor on HDFS is created through Hadoop's
+ * FileSystem API, as Spark's writer creates it, and the native writer only supplies its bytes.
+ * That is what S3A's magic committer needs, since only S3A can turn a file into the pending
+ * upload the committer completes.
  *
  * @param nativeOp
  *   Template for the native write plan. `output_path` is a placeholder here and is replaced per
@@ -252,7 +257,14 @@ object CometWriteFilesExec extends Logging {
             s"Comet's native Parquet writer cannot write $codec"))
 
         statsTrackers.foreach(_.newFile(filePath))
-        writeNatively(taskWrite, filePath, protoCodec, batches, statsTrackers, sparkPartitionId)
+        writeNatively(
+          taskWrite,
+          filePath,
+          protoCodec,
+          batches,
+          statsTrackers,
+          sparkPartitionId,
+          taskAttemptContext.getConfiguration)
         statsTrackers.foreach(_.closeFile(filePath))
         filePath
       } else {
@@ -294,16 +306,15 @@ object CometWriteFilesExec extends Logging {
       codec: OperatorOuterClass.CompressionCodec,
       batches: Iterator[ColumnarBatch],
       statsTrackers: Seq[WriteTaskStatsTracker],
-      partitionId: Int): Unit = {
+      partitionId: Int,
+      hadoopConf: Configuration): Unit = {
     val parquetWriter = taskWrite.nativeOp.getParquetWriter.toBuilder
-      .setOutputPath(filePath)
       .setCompression(codec)
       .clearColumnNames()
       .addAllColumnNames(taskWrite.dataColumnNames.asJava)
       .clearOutputSchema()
       .addAllOutputSchema(taskWrite.outputSchema.asJava)
       .build()
-    val taskOp = taskWrite.nativeOp.toBuilder.setParquetWriter(parquetWriter).build()
 
     val reportRows = recordRows(statsTrackers, filePath, taskWrite.childSchema)
     val trackedBatches = CometArrowStream.countingIterator[ColumnarBatch](
@@ -318,25 +329,79 @@ object CometWriteFilesExec extends Logging {
         }
       })
 
-    val execIterator = CometExec.getCometIterator(
+    writeFile(
+      filePath,
+      hadoopConf,
+      taskWrite.nativeOp.toBuilder.setParquetWriter(parquetWriter).build(),
       CometArrowStream.inputObjects(trackedBatches, taskWrite.childSchema, taskWrite.nodeName),
       taskWrite.dataColumnNames.length,
-      taskOp,
       taskWrite.nativeMetrics,
       taskWrite.numPartitions,
-      partitionId,
-      broadcastedHadoopConfForEncryption = None,
-      encryptedFilePaths = Seq.empty)
+      partitionId)
+  }
 
-    // `close()` propagates teardown failures, including from the final native metrics update, so
-    // a plain `finally` would let a cleanup error replace the write error that caused it.
-    Utils.tryWithSafeFinally {
-      // The native writer emits no batches; draining performs the write.
-      while (execIterator.hasNext) {
-        execIterator.next().close()
+  /**
+   * Writes the task file at `filePath` by running `nativeOp`, a native write plan whose Parquet
+   * writer is set up for the task except for the file, over `inputs`. Both native writers write
+   * their files with this: CometWriteFilesExec on Spark 4.0+ and CometNativeWriteExec on 3.x.
+   *
+   * When the native writer cannot create the file itself (see
+   * [[NativeWriteUtils.nativeWriterCreatesFile]]), it is created here first, through Hadoop's
+   * FileSystem API with the task's configuration, and the plan's writer writes the file's bytes
+   * to its [[HadoopFileOutput]]. That is what S3A's magic committer needs: S3A turns a file
+   * created under the committer's `__magic` directory into a pending upload to the file's final
+   * destination, which it records when the file is closed, and only S3A can do that. The file is
+   * closed once the plan has written all of it, and aborted if the plan fails.
+   */
+  private[comet] def writeFile(
+      filePath: String,
+      hadoopConf: Configuration,
+      nativeOp: Operator,
+      inputs: Array[Object],
+      numOutputCols: Int,
+      nativeMetrics: CometMetricNode,
+      numPartitions: Int,
+      partitionId: Int): Unit = {
+    def run(output: Option[HadoopFileOutput]): Unit = {
+      val writer = nativeOp.getParquetWriter.toBuilder
+        .setOutputPath(filePath)
+        .setJvmOutputStream(output.isDefined)
+        .build()
+      val execIterator = new CometExecIterator(
+        CometExec.newIterId,
+        inputs,
+        numOutputCols,
+        CometExec.serializeNativePlan(nativeOp.toBuilder.setParquetWriter(writer).build()),
+        nativeMetrics,
+        numPartitions,
+        partitionId,
+        outputStream = output)
+
+      // `close()` propagates teardown failures, including from the final native metrics update,
+      // so a plain `finally` would let a cleanup error replace the write error that caused it.
+      Utils.tryWithSafeFinally {
+        // The native writer emits no batches; draining performs the write.
+        while (execIterator.hasNext) {
+          execIterator.next().close()
+        }
+      } {
+        execIterator.close()
       }
-    } {
-      execIterator.close()
+    }
+
+    if (NativeWriteUtils.nativeWriterCreatesFile(filePath)) {
+      run(None)
+    } else {
+      val file = HadoopFileOutput.create(filePath, hadoopConf)
+      try {
+        run(Some(file))
+      } catch {
+        case failure: Throwable =>
+          file.abort(failure)
+          throw failure
+      }
+      // Only once the native writer has written every byte of the file and released it.
+      file.close()
     }
   }
 

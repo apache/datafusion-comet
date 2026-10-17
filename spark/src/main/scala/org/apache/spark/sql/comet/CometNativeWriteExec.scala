@@ -51,8 +51,11 @@ import org.apache.comet.serde.operator.NativeWriteUtils
  * Native Parquet writes on Spark 3.x, where Comet replaces the entire write command.
  *
  * Both execution entry points run Spark's job and task commit lifecycle. Native code writes the
- * exact filename supplied by the configured commit protocol, using the prepared Hadoop job. Spark
- * 4.0+ uses CometWriteFilesExec and leaves the surrounding command with Spark instead.
+ * exact filename supplied by the configured commit protocol, using the prepared Hadoop job. A
+ * file that is neither local nor on HDFS is created through Hadoop's FileSystem API, as Spark's
+ * writer creates it, and the native writer only supplies its bytes, which is what S3A's magic
+ * committer needs. Spark 4.0+ uses CometWriteFilesExec and leaves the surrounding command with
+ * Spark instead.
  *
  * @param originalPlan
  *   The JVM data-writing command restored when Comet reverts a transition-heavy stage
@@ -216,33 +219,25 @@ case class CometNativeWriteExec(
               .protoCompressionCodec(codec.name())
               .getOrElse(throw new UnsupportedOperationException(
                 s"Comet's native Parquet writer cannot write $codec"))
+
             val writer = capturedNativeOp.getParquetWriter.toBuilder
-              .setOutputPath(filePath)
               .setCompression(protoCodec)
               .build()
-            val taskOp = capturedNativeOp.toBuilder.setParquetWriter(writer).build()
 
             // Register before the iterator so this listener runs after its cleanup.
             nativeMetrics.reportNativeWriteOutputMetrics(context)
-            val execIterator = CometExec.getCometIterator(
+            // Runs and closes the native plan before the task commits, creating through Hadoop
+            // any file the native writer cannot create itself, such as one S3A's magic committer
+            // hands out.
+            CometWriteFilesExec.writeFile(
+              filePath,
+              taskContext.getConfiguration,
+              capturedNativeOp.toBuilder.setParquetWriter(writer).build(),
               CometArrowStream.inputObjects(batches, childSchema, "CometNativeWriteExec"),
               childSchema.length,
-              taskOp,
               nativeMetrics,
               numPartitions,
-              context.partitionId(),
-              None,
-              Seq.empty)
-
-            // Close before committing. A failed write must remain the primary error even if
-            // native teardown (including the final metrics update) also throws.
-            Utils.tryWithSafeFinally {
-              while (execIterator.hasNext) {
-                execIterator.next().close()
-              }
-            } {
-              execIterator.close()
-            }
+              context.partitionId())
           }
           // `hasNext` already ran an empty partition's child to completion, so there is nothing
           // to drain or release when no file was written.
