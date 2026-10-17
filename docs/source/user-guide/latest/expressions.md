@@ -123,6 +123,7 @@ The tables below list every Spark built-in expression with its current status.
 | `percentile_approx` | ✅ | Native | Alias of `approx_percentile`; same restrictions apply |
 | `percentile_cont` | ✅ | — | Spark 4.0+ `WITHIN GROUP (ORDER BY ...)`; ascending only runs natively, `DESC` falls back to Spark |
 | `percentile_disc` | 🔜 | — | Percentile aggregate |
+| `pivot_first` | ✅ | Native | Internal aggregate for the optimized `PIVOT` fast path. Value type must be in `PivotFirst.supportsDataType` (Boolean, Byte, Short, Int, Long, Float, Double, Decimal); other types keep Spark's standard filtered-aggregate path. Binary, array and struct pivot columns (including pivots on more than one column), non-default collations and pivot lists with duplicate values fall back to Spark |
 | `regr_avgx` | ✅ | — | Native: Spark rewrites to `Average` (tests in [#4551](https://github.com/apache/datafusion-comet/pull/4551)) |
 | `regr_avgy` | ✅ | — | Native: Spark rewrites to `Average` (tests in [#4551](https://github.com/apache/datafusion-comet/pull/4551)) |
 | `regr_count` | ✅ | — | Native: Spark rewrites to `Count` (tests in [#4551](https://github.com/apache/datafusion-comet/pull/4551)) |
@@ -408,8 +409,8 @@ to Spark ([#2837](https://github.com/apache/datafusion-comet/issues/2837)). Enab
 | `map_concat` | ✅ | Codegen dispatch |  |
 | `map_contains_key` | ✅ | — |  |
 | `map_entries` | ✅ | Native |  |
-| `map_from_arrays` | ✅ | Native |  |
-| `map_from_entries` | ✅ | Hybrid | BinaryType keys/values and `spark.sql.mapKeyDedupPolicy=LAST_WIN` route through the JVM codegen dispatcher ([details](compatibility/expressions/map.md)) |
+| `map_from_arrays` | ✅ | Hybrid | `FLOAT` or `DOUBLE` keys and `spark.sql.mapKeyDedupPolicy=LAST_WIN` route through the JVM codegen dispatcher ([details](compatibility/expressions/map.md)) |
+| `map_from_entries` | ✅ | Hybrid | BinaryType keys/values, `FLOAT` or `DOUBLE` keys and `spark.sql.mapKeyDedupPolicy=LAST_WIN` route through the JVM codegen dispatcher ([details](compatibility/expressions/map.md)) |
 | `map_keys` | ✅ | Native |  |
 | `map_values` | ✅ | Native |  |
 | `str_to_map` | ✅ | Hybrid |  |
