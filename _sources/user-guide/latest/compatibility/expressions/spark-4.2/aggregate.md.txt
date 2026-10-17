@@ -151,4 +151,13 @@ The following cases are not supported by Comet and always fall back to Spark, re
 - A frequency argument is not supported.
 - Descending order in `WITHIN GROUP (ORDER BY ... DESC)` is not supported.
 - Only numeric input types are supported.
+
+## PivotFirst
+
+The following cases are not supported by Comet and always fall back to Spark, regardless of any `allowIncompatible` setting:
+
+- Value data type other than Boolean, Byte, Short, Int, Long, Float, Double or Decimal
+- Pivot column of a type other than Boolean, Byte, Short, Int, Long, Float, Double, Decimal, String (UTF8_BINARY collation), Date, Timestamp or TimestampNTZ, which includes the struct that a pivot on more than one column builds
+- Pivot values list is empty
+- Pivot values list contains duplicates, including `0.0` next to `-0.0`
 <!--END:EXPR_COMPAT-->

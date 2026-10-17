@@ -994,6 +994,16 @@ under the License.
 <li><p>Descending order in <code class="docutils literal notranslate"><span class="pre">WITHIN</span> <span class="pre">GROUP</span> <span class="pre">(ORDER</span> <span class="pre">BY</span> <span class="pre">...</span> <span class="pre">DESC)</span></code> is not supported.</p></li>
 <li><p>Only numeric input types are supported.</p></li>
 </ul>
+</section>
+<section id="pivotfirst">
+<h2>PivotFirst<a class="headerlink" href="#pivotfirst" title="Link to this heading">#</a></h2>
+<p>The following cases are not supported by Comet and always fall back to Spark, regardless of any <code class="docutils literal notranslate"><span class="pre">allowIncompatible</span></code> setting:</p>
+<ul class="simple">
+<li><p>Value data type other than Boolean, Byte, Short, Int, Long, Float, Double or Decimal</p></li>
+<li><p>Pivot column of a type other than Boolean, Byte, Short, Int, Long, Float, Double, Decimal, String (UTF8_BINARY collation), Date, Timestamp or TimestampNTZ, which includes the struct that a pivot on more than one column builds</p></li>
+<li><p>Pivot values list is empty</p></li>
+<li><p>Pivot values list contains duplicates, including <code class="docutils literal notranslate"><span class="pre">0.0</span></code> next to <code class="docutils literal notranslate"><span class="pre">-0.0</span></code></p></li>
+</ul>
 <!--END:EXPR_COMPAT-->
 </section>
 </section>
@@ -1060,6 +1070,7 @@ under the License.
 <li class="toc-h2 nav-item toc-entry"><a class="reference internal nav-link" href="#minby">MinBy</a></li>
 <li class="toc-h2 nav-item toc-entry"><a class="reference internal nav-link" href="#mode">Mode</a></li>
 <li class="toc-h2 nav-item toc-entry"><a class="reference internal nav-link" href="#percentile">Percentile</a></li>
+<li class="toc-h2 nav-item toc-entry"><a class="reference internal nav-link" href="#pivotfirst">PivotFirst</a></li>
 </ul>
   </nav></div>
 

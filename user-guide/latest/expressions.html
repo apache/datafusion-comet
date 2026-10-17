@@ -1136,112 +1136,117 @@ expressions. The following function families are <strong>not currently planned</
 <td><p>—</p></td>
 <td><p>Percentile aggregate</p></td>
 </tr>
-<tr class="row-even"><td><p><code class="docutils literal notranslate"><span class="pre">regr_avgx</span></code></p></td>
+<tr class="row-even"><td><p><code class="docutils literal notranslate"><span class="pre">pivot_first</span></code></p></td>
+<td><p>✅</p></td>
+<td><p>—</p></td>
+<td><p>Internal aggregate for the optimized <code class="docutils literal notranslate"><span class="pre">PIVOT</span></code> fast path. Value type must be in <code class="docutils literal notranslate"><span class="pre">PivotFirst.supportsDataType</span></code> (Boolean, Byte, Short, Int, Long, Float, Double, Decimal); other types keep Spark’s standard filtered-aggregate path. Binary, array and struct pivot columns (including pivots on more than one column), non-default collations and pivot lists with duplicate values fall back to Spark</p></td>
+</tr>
+<tr class="row-odd"><td><p><code class="docutils literal notranslate"><span class="pre">regr_avgx</span></code></p></td>
 <td><p>✅</p></td>
 <td><p>—</p></td>
 <td><p>Native: Spark rewrites to <code class="docutils literal notranslate"><span class="pre">Average</span></code> (tests in <a class="reference external" href="https://github.com/apache/datafusion-comet/pull/4551">#4551</a>)</p></td>
 </tr>
-<tr class="row-odd"><td><p><code class="docutils literal notranslate"><span class="pre">regr_avgy</span></code></p></td>
+<tr class="row-even"><td><p><code class="docutils literal notranslate"><span class="pre">regr_avgy</span></code></p></td>
 <td><p>✅</p></td>
 <td><p>—</p></td>
 <td><p>Native: Spark rewrites to <code class="docutils literal notranslate"><span class="pre">Average</span></code> (tests in <a class="reference external" href="https://github.com/apache/datafusion-comet/pull/4551">#4551</a>)</p></td>
 </tr>
-<tr class="row-even"><td><p><code class="docutils literal notranslate"><span class="pre">regr_count</span></code></p></td>
+<tr class="row-odd"><td><p><code class="docutils literal notranslate"><span class="pre">regr_count</span></code></p></td>
 <td><p>✅</p></td>
 <td><p>—</p></td>
 <td><p>Native: Spark rewrites to <code class="docutils literal notranslate"><span class="pre">Count</span></code> (tests in <a class="reference external" href="https://github.com/apache/datafusion-comet/pull/4551">#4551</a>)</p></td>
 </tr>
-<tr class="row-odd"><td><p><code class="docutils literal notranslate"><span class="pre">regr_intercept</span></code></p></td>
+<tr class="row-even"><td><p><code class="docutils literal notranslate"><span class="pre">regr_intercept</span></code></p></td>
 <td><p>✅</p></td>
 <td><p>Native</p></td>
 <td><p></p></td>
 </tr>
-<tr class="row-even"><td><p><code class="docutils literal notranslate"><span class="pre">regr_r2</span></code></p></td>
+<tr class="row-odd"><td><p><code class="docutils literal notranslate"><span class="pre">regr_r2</span></code></p></td>
 <td><p>✅</p></td>
 <td><p>Native</p></td>
 <td><p></p></td>
 </tr>
-<tr class="row-odd"><td><p><code class="docutils literal notranslate"><span class="pre">regr_slope</span></code></p></td>
+<tr class="row-even"><td><p><code class="docutils literal notranslate"><span class="pre">regr_slope</span></code></p></td>
 <td><p>✅</p></td>
 <td><p>Native</p></td>
 <td><p></p></td>
 </tr>
-<tr class="row-even"><td><p><code class="docutils literal notranslate"><span class="pre">regr_sxx</span></code></p></td>
+<tr class="row-odd"><td><p><code class="docutils literal notranslate"><span class="pre">regr_sxx</span></code></p></td>
 <td><p>✅</p></td>
 <td><p>—</p></td>
 <td><p></p></td>
 </tr>
-<tr class="row-odd"><td><p><code class="docutils literal notranslate"><span class="pre">regr_sxy</span></code></p></td>
+<tr class="row-even"><td><p><code class="docutils literal notranslate"><span class="pre">regr_sxy</span></code></p></td>
 <td><p>✅</p></td>
 <td><p>Native</p></td>
 <td><p></p></td>
 </tr>
-<tr class="row-even"><td><p><code class="docutils literal notranslate"><span class="pre">regr_syy</span></code></p></td>
+<tr class="row-odd"><td><p><code class="docutils literal notranslate"><span class="pre">regr_syy</span></code></p></td>
 <td><p>✅</p></td>
 <td><p>—</p></td>
 <td><p></p></td>
 </tr>
-<tr class="row-odd"><td><p><code class="docutils literal notranslate"><span class="pre">skewness</span></code></p></td>
+<tr class="row-even"><td><p><code class="docutils literal notranslate"><span class="pre">skewness</span></code></p></td>
 <td><p>🔜</p></td>
 <td><p>—</p></td>
 <td><p>Not yet implemented natively</p></td>
 </tr>
-<tr class="row-even"><td><p><code class="docutils literal notranslate"><span class="pre">some</span></code></p></td>
+<tr class="row-odd"><td><p><code class="docutils literal notranslate"><span class="pre">some</span></code></p></td>
 <td><p>✅</p></td>
 <td><p>—</p></td>
 <td><p></p></td>
 </tr>
-<tr class="row-odd"><td><p><code class="docutils literal notranslate"><span class="pre">std</span></code></p></td>
+<tr class="row-even"><td><p><code class="docutils literal notranslate"><span class="pre">std</span></code></p></td>
 <td><p>✅</p></td>
 <td><p>Native</p></td>
 <td><p></p></td>
 </tr>
-<tr class="row-even"><td><p><code class="docutils literal notranslate"><span class="pre">stddev</span></code></p></td>
+<tr class="row-odd"><td><p><code class="docutils literal notranslate"><span class="pre">stddev</span></code></p></td>
 <td><p>✅</p></td>
 <td><p>Native</p></td>
 <td><p></p></td>
 </tr>
-<tr class="row-odd"><td><p><code class="docutils literal notranslate"><span class="pre">stddev_pop</span></code></p></td>
+<tr class="row-even"><td><p><code class="docutils literal notranslate"><span class="pre">stddev_pop</span></code></p></td>
 <td><p>✅</p></td>
 <td><p>Native</p></td>
 <td><p></p></td>
 </tr>
-<tr class="row-even"><td><p><code class="docutils literal notranslate"><span class="pre">stddev_samp</span></code></p></td>
+<tr class="row-odd"><td><p><code class="docutils literal notranslate"><span class="pre">stddev_samp</span></code></p></td>
 <td><p>✅</p></td>
 <td><p>Native</p></td>
 <td><p></p></td>
 </tr>
-<tr class="row-odd"><td><p><code class="docutils literal notranslate"><span class="pre">string_agg</span></code></p></td>
+<tr class="row-even"><td><p><code class="docutils literal notranslate"><span class="pre">string_agg</span></code></p></td>
 <td><p>✅</p></td>
 <td><p>Native</p></td>
 <td><p>Alias of <code class="docutils literal notranslate"><span class="pre">listagg</span></code>; same restrictions apply.</p></td>
 </tr>
-<tr class="row-even"><td><p><code class="docutils literal notranslate"><span class="pre">sum</span></code></p></td>
+<tr class="row-odd"><td><p><code class="docutils literal notranslate"><span class="pre">sum</span></code></p></td>
 <td><p>✅</p></td>
 <td><p>Native</p></td>
 <td><p></p></td>
 </tr>
-<tr class="row-odd"><td><p><code class="docutils literal notranslate"><span class="pre">try_avg</span></code></p></td>
+<tr class="row-even"><td><p><code class="docutils literal notranslate"><span class="pre">try_avg</span></code></p></td>
 <td><p>✅</p></td>
 <td><p>—</p></td>
 <td><p>Interval types fall back. <code class="docutils literal notranslate"><span class="pre">DECIMAL</span></code> input with precision 25 or more falls back in most cases, see <a class="reference internal" href="compatibility/operators.html#hash-aggregation"><span class="std std-ref">Hash Aggregation</span></a></p></td>
 </tr>
-<tr class="row-even"><td><p><code class="docutils literal notranslate"><span class="pre">try_sum</span></code></p></td>
+<tr class="row-odd"><td><p><code class="docutils literal notranslate"><span class="pre">try_sum</span></code></p></td>
 <td><p>✅</p></td>
 <td><p>—</p></td>
 <td><p></p></td>
 </tr>
-<tr class="row-odd"><td><p><code class="docutils literal notranslate"><span class="pre">var_pop</span></code></p></td>
+<tr class="row-even"><td><p><code class="docutils literal notranslate"><span class="pre">var_pop</span></code></p></td>
 <td><p>✅</p></td>
 <td><p>Native</p></td>
 <td><p></p></td>
 </tr>
-<tr class="row-even"><td><p><code class="docutils literal notranslate"><span class="pre">var_samp</span></code></p></td>
+<tr class="row-odd"><td><p><code class="docutils literal notranslate"><span class="pre">var_samp</span></code></p></td>
 <td><p>✅</p></td>
 <td><p>Native</p></td>
 <td><p></p></td>
 </tr>
-<tr class="row-odd"><td><p><code class="docutils literal notranslate"><span class="pre">variance</span></code></p></td>
+<tr class="row-even"><td><p><code class="docutils literal notranslate"><span class="pre">variance</span></code></p></td>
 <td><p>✅</p></td>
 <td><p>Native</p></td>
 <td><p></p></td>
