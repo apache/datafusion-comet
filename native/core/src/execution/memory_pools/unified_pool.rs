@@ -119,10 +119,11 @@ impl MemoryPool for CometUnifiedMemoryPool {
             // A partial grant is handed back and refused, which triggers spilling in the caller.
             if let Err(refusal) = self.spark.try_acquire(additional)? {
                 return Err(resources_datafusion_err!(
-                    "Task {} failed to acquire {} bytes plus {} bytes overcommitted, only got {}. Reserved: {}",
+                    "Task {} failed to acquire {} bytes plus {} of {} bytes overcommitted, only got {}. Reserved: {}",
                     self.spark.task_attempt_id(),
                     additional,
                     refusal.overcommit,
+                    self.spark.overcommit(),
                     refusal.granted,
                     self.reserved()
                 ));
@@ -176,6 +177,26 @@ mod tests {
         drop(reservation);
         assert_eq!(pool.reserved(), 0);
         assert_eq!(fake.held(), 0);
+    }
+
+    /// A try_grow refused while another one in flight is asking Spark for the debt reports the
+    /// overcommit outstanding, not only the part it asked for itself.
+    #[test]
+    fn try_grow_refusal_reports_debt_another_try_grow_is_asking_for() {
+        let fake = FakeSpark::with(100);
+        let pool: Arc<dyn MemoryPool> = Arc::new(CometUnifiedMemoryPool::with_spark(fake.memory()));
+        let first = MemoryConsumer::new("first").register(&pool);
+        let second = MemoryConsumer::new("second").register(&pool);
+        // Spark grants 100 of the 150 bytes, so 50 are owed and Spark is full.
+        first.grow(150);
+
+        let (err_tx, err_rx) = std::sync::mpsc::channel();
+        fake.during_next_acquire(move || {
+            let _ = err_tx.send(second.try_grow(1).unwrap_err().to_string());
+        });
+        assert!(first.try_grow(5).is_err());
+        let err = err_rx.recv().unwrap();
+        assert!(err.contains("plus 0 of 50 bytes overcommitted"), "{err}");
     }
 
     #[test]
