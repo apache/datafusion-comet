@@ -89,12 +89,18 @@ runs:
         # declares the artifact "found locally", and fails on the missing JAR
         # without falling back to Maven Central. Delete those partial entries
         # so sbt re-fetches the full artifact remotely.
+        #
+        # A POM that declares no <packaging> defaults to jar, so it counts as
+        # partial too. Arrow's POMs, org.antlr:antlr4's and many others declare
+        # none. A <packaging>pom</packaging> parent has no JAR by design, so it
+        # is kept. Keep this in step with purge_partial_poms in dev/local-ci.sh.
         for repo in "$HOME/.m2/repository" /root/.m2/repository; do
           [ -d "$repo" ] || continue
           find "$repo" -name '*.pom' | while read -r pom; do
             jar="${pom%.pom}.jar"
             [ -f "$jar" ] && continue
-            grep -q '<packaging>jar</packaging>\|<packaging>bundle</packaging>' "$pom" 2>/dev/null || continue
+            packaging="$(sed -n 's:.*<packaging>\(.*\)</packaging>.*:\1:p' "$pom" | head -1)"
+            case "${packaging:-jar}" in jar | bundle) ;; *) continue ;; esac
             rm -f "$pom" "${pom}.sha1" "${pom%.pom}.pom.lastUpdated" \
               "$(dirname "$pom")/_remote.repositories"
           done
