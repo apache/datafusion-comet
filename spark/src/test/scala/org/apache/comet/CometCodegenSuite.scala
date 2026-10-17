@@ -2872,6 +2872,35 @@ class CometCodegenSuite
     }
   }
 
+  test("divide-by-zero through dispatched ScalaUDF surfaces SparkArithmeticException (#4517)") {
+    // Native arithmetic on the result of a dispatched ScalaUDF must surface the same Spark
+    // exception and error class as Spark, not CometNativeException.
+    checkDispatchedUdfError("SELECT 1 / identity_int(a) FROM t", "DIVIDE_BY_ZERO")
+  }
+
+  test("integer overflow through dispatched ScalaUDF surfaces SparkArithmeticException (#4517)") {
+    // A second SparkError variant through the same path.
+    checkDispatchedUdfError("SELECT identity_int(a) + 2147483647 FROM t", "ARITHMETIC_OVERFLOW")
+  }
+
+  /**
+   * Runs `query` over `t (a INT)` holding 0 and 1 with ANSI enabled, where the query applies
+   * native arithmetic to the result of the dispatched ScalaUDF `identity_int`, and checks that
+   * Comet fails with the same exception and `errorClass` as Spark.
+   */
+  private def checkDispatchedUdfError(query: String, errorClass: String): Unit = {
+    spark.udf.register("identity_int", (i: java.lang.Integer) => i)
+    withSQLConf(SQLConf.ANSI_ENABLED.key -> "true") {
+      withTable("t") {
+        sql("CREATE TABLE t (a INT) USING parquet")
+        sql("INSERT INTO t VALUES (0), (1)")
+        assertCodegenRan {
+          checkSparkError(sql(query), errorClass)
+        }
+      }
+    }
+  }
+
   test("Invoke routes through the codegen dispatcher (#5575)") {
     // `Invoke` has no serde of its own beyond the catch-all, so this also pins the registration:
     // reaching a `JvmScalarUdf` proto means `QueryPlanSerde` resolved `CometInvoke`. The target is
