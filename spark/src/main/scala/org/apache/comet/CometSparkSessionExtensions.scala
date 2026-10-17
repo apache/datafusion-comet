@@ -33,7 +33,7 @@ import org.apache.spark.sql.internal.SQLConf
 
 import org.apache.comet.CometConf._
 import org.apache.comet.iceberg.IcebergWriteStrategy
-import org.apache.comet.rules.{CometCoalesceShufflePartitions, CometPlanAdaptiveDynamicPruningFilters, CometReuseSubquery, CometRule, CometSpark34AqeDppFallbackRule}
+import org.apache.comet.rules.{CometCoalesceShufflePartitions, CometPlanAdaptiveDynamicPruningFilters, CometReuseSubquery, CometRule, CometShuffledHashJoinStrategy, CometSpark34AqeDppFallbackRule}
 import org.apache.comet.shims.ShimCometSparkSessionExtensions
 
 /**
@@ -113,6 +113,7 @@ class CometSparkSessionExtensions
     injectQueryStageOptimizerRuleShim(extensions, CometReuseSubquery)
     injectQueryStageOptimizerRuleShim(extensions, CometCoalesceShufflePartitions)
     extensions.injectPlannerStrategy { session => IcebergWriteStrategy(session) }
+    extensions.injectPlannerStrategy { session => CometShuffledHashJoinStrategy(session) }
   }
 
   case class CometColumnar(session: SparkSession) extends ColumnarRule {
