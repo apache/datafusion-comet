@@ -53,8 +53,8 @@ use datafusion_comet_proto::{
 use datafusion_comet_spark_expr::{
     ApproxPercentile, Avg, AvgDecimal, BloomFilterAgg, CometCollectList, CometCollectSet,
     Correlation, Covariance, HllPlusPlus, HllSketchAgg, HllUnionAgg, MaxMinBy, Mode, Regr,
-    RegrType, SparkBloomFilterVersion, SparkListAgg, SparkMinMax, SparkPercentile, Stddev,
-    SumDecimal, SumInteger, Variance,
+    RegrType, SparkBloomFilterVersion, SparkListAgg, SparkMinMax, SparkPercentile, SparkPivotFirst,
+    Stddev, SumDecimal, SumInteger, Variance,
 };
 use jni::objects::{Global, JObject};
 
@@ -737,6 +737,31 @@ impl PhysicalPlanner {
                 let func =
                     AggregateUDF::new_from_impl(Mode::new(datatype, expr.normalize_neg_zero));
                 Self::create_aggr_func_expr("mode", schema, vec![child], func)
+            }
+            AggExprStruct::PivotFirst(expr) => {
+                let pivot_col =
+                    self.create_expr(expr.pivot_column.as_ref().unwrap(), Arc::clone(&schema))?;
+                let value_col =
+                    self.create_expr(expr.value_column.as_ref().unwrap(), Arc::clone(&schema))?;
+                let value_type = to_arrow_datatype(expr.value_datatype.as_ref().unwrap());
+                // Reconstruct pivot values as ScalarValues from the serialized Literal exprs.
+                // The Scala serde builds them as Literal(v, pivot_column.dataType), so they carry
+                // the pivot column's type, which `SparkPivotFirst` builds its lookup index from.
+                let mut pivot_values = Vec::with_capacity(expr.pivot_values.len());
+                for lit_expr in &expr.pivot_values {
+                    let physical = self.create_expr(lit_expr, Arc::clone(&schema))?;
+                    let literal = physical.downcast_ref::<Literal>().ok_or_else(|| {
+                        GeneralError(
+                            "PivotFirst pivot_values must be Literal expressions".to_string(),
+                        )
+                    })?;
+                    pivot_values.push(literal.value().clone());
+                }
+                let func = AggregateUDF::new_from_impl(SparkPivotFirst::try_new(
+                    value_type,
+                    pivot_values,
+                )?);
+                Self::create_aggr_func_expr("pivot_first", schema, vec![pivot_col, value_col], func)
             }
         }
     }

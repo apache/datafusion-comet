@@ -82,32 +82,17 @@ class CometScanSchemeFallbackSuite extends CometTestBase with CometIcebergTestBa
   }
 
   test("native scan declines a filesystem scheme object_store can't read (fake://)") {
-    val path = s"${FakeHDFSFileSystem.PREFIX}${fakeRootDir.getAbsolutePath}/data"
-    spark.range(0, 10).toDF("id").write.format("parquet").mode(SaveMode.Overwrite).save(path)
+    val transformed = applyScanRule(writeParquet(FakeHDFSFileSystem.PREFIX))
 
-    // Clean Spark plan (Comet disabled), then apply CometScanRule directly -- no execution, we
-    // only check whether the rule claims the scan. (var capture: withSQLConf returns Unit on 3.5.)
-    var sparkPlan: SparkPlan = null
-    withSQLConf(CometConf.COMET_ENABLED.key -> "false") {
-      sparkPlan = spark.read.parquet(path).queryExecution.executedPlan
-    }
-
-    withSQLConf(
-      CometConf.COMET_ENABLED.key -> "true",
-      CometConf.COMET_NATIVE_SCAN_ENABLED.key -> "true",
-      CometConf.COMET_EXEC_ENABLED.key -> "true") {
-      val transformed = CometScanRule(spark).apply(stripAQEPlan(sparkPlan))
-
-      val cometScans = transformed.collect { case s: CometScanExec => s }
-      val sparkScans = transformed.collect { case s: FileSourceScanExec => s }
-      assert(
-        cometScans.isEmpty,
-        "`fake://` is not object_store-readable; the native scan must fall back to Spark, " +
-          s"but Comet claimed it:\n$transformed")
-      assert(
-        sparkScans.size == 1,
-        s"expected the scan to remain a Spark FileSourceScanExec:\n$transformed")
-    }
+    val cometScans = transformed.collect { case s: CometScanExec => s }
+    val sparkScans = transformed.collect { case s: FileSourceScanExec => s }
+    assert(
+      cometScans.isEmpty,
+      "`fake://` is not object_store-readable; the native scan must fall back to Spark, " +
+        s"but Comet claimed it:\n$transformed")
+    assert(
+      sparkScans.size == 1,
+      s"expected the scan to remain a Spark FileSourceScanExec:\n$transformed")
   }
 
   test("both gates: a configured s3-compliant scheme (minio) is admitted") {
@@ -368,30 +353,103 @@ class CometScanSchemeFallbackSuite extends CometTestBase with CometIcebergTestBa
 
   test("native scan claims hdfs:// when libhdfs.schemes is unset (native-default lockstep)") {
     // Native `is_hdfs_scheme` treats `hdfs` as readable when `fs.comet.libhdfs.schemes` is unset,
-    // so the JVM gate must agree and CLAIM `hdfs://`. Guards the `case None => Set("hdfs")` default
-    // against the silent-fallback regression from #4525.
-    val path = s"${FakeHdfsSchemeFileSystem.PREFIX}${fakeRootDir.getAbsolutePath}/hdfs-data"
-    spark.range(0, 10).toDF("id").write.format("parquet").mode(SaveMode.Overwrite).save(path)
+    // so the JVM gate must agree and CLAIM `hdfs://`. Guards the `hdfs` default of
+    // NativeConfig.resolveLibhdfsSchemes against the silent-fallback regression from #4525.
+    val transformed = applyScanRule(writeParquet(FakeHdfsSchemeFileSystem.PREFIX))
 
+    val cometScans = transformed.collect { case s: CometScanExec => s }
+    val sparkScans = transformed.collect { case s: FileSourceScanExec => s }
+    assert(
+      cometScans.size == 1,
+      "`hdfs://` is natively readable by default; Comet must claim the scan, " +
+        s"but it fell back to Spark:\n$transformed")
+    assert(sparkScans.isEmpty, s"expected no leftover Spark FileSourceScanExec:\n$transformed")
+  }
+
+  test("scheme gate claims a libhdfs scheme only when the session lists it") {
+    val fakePath = writeParquet(FakeHDFSFileSystem.PREFIX)
+    // The same files through the local filesystem.
+    val localPath = s"file:${fakePath.stripPrefix(FakeHDFSFileSystem.PREFIX)}"
+    val bareKey = CometConf.COMET_LIBHDFS_SCHEMES_KEY
+    val unsupported = "Unsupported filesystem schemes: fake"
+    def readerOnly(scheme: String): String =
+      s"does not support filesystem scheme(s) $scheme listed in $bareKey only through reader " +
+        "options"
+    // (case, path, SQLConf, reader options, expected fallback reason or None when claimed).
+    // newHadoopConf copies the bare key from SQLConf, and a runtime SET of the `spark.hadoop.`
+    // key with its prefix, so native never routes `fake` through libhdfs for the latter. libhdfs
+    // never sees reader options, so a scheme only they list is declined, even a local one.
+    val cases = Seq(
+      (
+        "bare key in SQLConf",
+        fakePath,
+        Seq(bareKey -> "fake,hdfs"),
+        Map.empty[String, String],
+        None),
+      ("reader option", fakePath, Nil, Map(bareKey -> "fake,hdfs"), Some(readerOnly("fake"))),
+      (
+        "runtime SET of the spark.hadoop. key",
+        fakePath,
+        Seq(CometConf.COMET_LIBHDFS_SCHEMES.key -> "fake,hdfs"),
+        Map.empty[String, String],
+        Some(unsupported)),
+      (
+        "reader option removes a session-listed scheme",
+        fakePath,
+        Seq(bareKey -> "fake,hdfs"),
+        Map(bareKey -> "hdfs"),
+        Some(unsupported)),
+      (
+        "reader-only natively readable scheme",
+        localPath,
+        Nil,
+        Map(bareKey -> "file"),
+        Some(readerOnly("file"))))
+    // Every case runs, and the failure lists each one that broke.
+    val errors = cases.flatMap { case (name, path, conf, readOptions, expectedReason) =>
+      val transformed = applyScanRule(path, conf, readOptions)
+      val claimed = transformed.collect { case s: CometScanExec => s }.nonEmpty
+      lazy val reasons = new ExtendedExplainInfo().getFallbackReasons(transformed)
+      expectedReason match {
+        case None if !claimed => Some(s"$name: Comet must claim the scan:\n$transformed")
+        case Some(_) if claimed => Some(s"$name: the scan must fall back:\n$transformed")
+        case Some(reason) if !reasons.exists(_.contains(reason)) =>
+          Some(s"$name: expected a reason containing '$reason', got reasons: $reasons")
+        case _ => None
+      }
+    }
+    assert(errors.isEmpty, errors.mkString("\n"))
+  }
+
+  /** Writes a 10-row Parquet table at `prefix` plus the suite's temp dir and returns its path. */
+  private def writeParquet(prefix: String): String = {
+    val path = s"$prefix${fakeRootDir.getAbsolutePath}/data"
+    spark.range(0, 10).toDF("id").write.format("parquet").mode(SaveMode.Overwrite).save(path)
+    path
+  }
+
+  /**
+   * Plans a read of `path` with `readOptions` and Comet off, then applies `CometScanRule` to that
+   * plan with the native scan enabled and `conf` set. Nothing is executed. (var capture:
+   * withSQLConf returns Unit on 3.5.)
+   */
+  private def applyScanRule(
+      path: String,
+      conf: Seq[(String, String)] = Nil,
+      readOptions: Map[String, String] = Map.empty): SparkPlan = {
     var sparkPlan: SparkPlan = null
     withSQLConf(CometConf.COMET_ENABLED.key -> "false") {
-      sparkPlan = spark.read.parquet(path).queryExecution.executedPlan
+      sparkPlan = spark.read.options(readOptions).parquet(path).queryExecution.executedPlan
     }
-
-    withSQLConf(
+    var transformed: SparkPlan = null
+    val scanConf = Seq(
       CometConf.COMET_ENABLED.key -> "true",
       CometConf.COMET_NATIVE_SCAN_ENABLED.key -> "true",
-      CometConf.COMET_EXEC_ENABLED.key -> "true") {
-      val transformed = CometScanRule(spark).apply(stripAQEPlan(sparkPlan))
-
-      val cometScans = transformed.collect { case s: CometScanExec => s }
-      val sparkScans = transformed.collect { case s: FileSourceScanExec => s }
-      assert(
-        cometScans.size == 1,
-        "`hdfs://` is natively readable by default; Comet must claim the scan, " +
-          s"but it fell back to Spark:\n$transformed")
-      assert(sparkScans.isEmpty, s"expected no leftover Spark FileSourceScanExec:\n$transformed")
+      CometConf.COMET_EXEC_ENABLED.key -> "true")
+    withSQLConf(scanConf ++ conf: _*) {
+      transformed = CometScanRule(spark).apply(stripAQEPlan(sparkPlan))
     }
+    transformed
   }
 
   /** Applies CometScanRule to the Spark plan of `read` and returns the scans it claimed. */
