@@ -53,7 +53,8 @@ use crate::execution::{
 use crate::jvm_bridge::{jni_call, JVMClasses, ShufflePartitionPusher};
 use arrow::compute::CastOptions;
 use arrow::datatypes::{
-    DataType, Field, FieldRef, Fields, IntervalUnit, Schema, TimeUnit, DECIMAL128_MAX_PRECISION,
+    DataType, Field, FieldRef, Fields, IntervalDayTime, IntervalUnit, Schema, TimeUnit,
+    DECIMAL128_MAX_PRECISION,
 };
 use arrow::ffi_stream::{ArrowArrayStreamReader, FFI_ArrowArrayStream};
 use datafusion::functions_aggregate::bit_and_or_xor::{bit_and_udaf, bit_or_udaf, bit_xor_udaf};
@@ -94,7 +95,7 @@ use datafusion_comet_spark_expr::{
     create_comet_physical_fun, create_comet_physical_fun_with_eval_mode, BinaryOutputStyle,
     BloomFilterAgg, BloomFilterMightContain, CheckedBinaryExpr, CometCollectList, CometCollectSet,
     CsvWriteOptions, EvalMode, ListPositionsExpr, SparkArraysZipFunc, SparkBloomFilterVersion,
-    SparkListAgg, SparkPercentile, Subquery, SumInteger, ToCsv,
+    SparkListAgg, SparkPercentile, SparkPivotFirst, Subquery, SumInteger, ToCsv,
 };
 use datafusion_datasource::TableSchema;
 use iceberg::expr::Bind;
@@ -3698,6 +3699,31 @@ impl PhysicalPlanner {
                     AggregateUDF::new_from_impl(Mode::new(datatype, expr.normalize_neg_zero));
                 Self::create_aggr_func_expr("mode", schema, vec![child], func)
             }
+            AggExprStruct::PivotFirst(expr) => {
+                let pivot_col =
+                    self.create_expr(expr.pivot_column.as_ref().unwrap(), Arc::clone(&schema))?;
+                let value_col =
+                    self.create_expr(expr.value_column.as_ref().unwrap(), Arc::clone(&schema))?;
+                let value_type = to_arrow_datatype(expr.value_datatype.as_ref().unwrap());
+                // Reconstruct pivot values as ScalarValues from the serialized Literal exprs.
+                // The Scala serde builds them as Literal(v, pivot_column.dataType), so they carry
+                // the pivot column's type, which `SparkPivotFirst` builds its lookup index from.
+                let mut pivot_values = Vec::with_capacity(expr.pivot_values.len());
+                for lit_expr in &expr.pivot_values {
+                    let physical = self.create_expr(lit_expr, Arc::clone(&schema))?;
+                    let literal = physical.downcast_ref::<Literal>().ok_or_else(|| {
+                        GeneralError(
+                            "PivotFirst pivot_values must be Literal expressions".to_string(),
+                        )
+                    })?;
+                    pivot_values.push(literal.value().clone());
+                }
+                let func = AggregateUDF::new_from_impl(SparkPivotFirst::try_new(
+                    value_type,
+                    pivot_values,
+                )?);
+                Self::create_aggr_func_expr("pivot_first", schema, vec![pivot_col, value_col], func)
+            }
         }
     }
 
@@ -3780,6 +3806,20 @@ impl PhysicalPlanner {
             WindowFrameType::Range => WindowFrameUnits::Range,
         };
 
+        // For RANGE frames the offset scalar must be arithmetic-compatible with
+        // the ORDER BY column, not just numeric. arrow-arith rejects e.g.
+        // `Date32 + Int32` — it requires an Interval RHS. Capture the ORDER BY
+        // datatype once so both bound branches can coerce accordingly.
+        let range_order_by_type = if matches!(units, WindowFrameUnits::Range) {
+            sort_exprs
+                .first()
+                .map(|s| s.expr.data_type(&input_schema))
+                .transpose()
+                .map_err(|e| GeneralError(format!("Failed to resolve ORDER BY type: {e}")))?
+        } else {
+            None
+        };
+
         let lower_bound: WindowFrameBound = match spark_window_frame
             .lower_bound
             .as_ref()
@@ -3815,10 +3855,14 @@ impl PhysicalPlanner {
                             }
                         }
                         WindowFrameUnits::Range => {
-                            let scalar = match offset.range_offset.as_ref() {
+                            let raw = match offset.range_offset.as_ref() {
                                 Some(lit) => numeric_literal_to_scalar(lit)?,
                                 None => ScalarValue::Int64(Some(offset.offset.abs())),
                             };
+                            let scalar = coerce_range_offset_for_order_by(
+                                raw,
+                                range_order_by_type.as_ref(),
+                            )?;
                             WindowFrameBound::Preceding(scalar)
                         }
                         WindowFrameUnits::Groups => {
@@ -3874,10 +3918,12 @@ impl PhysicalPlanner {
                         }
                     }
                     WindowFrameUnits::Range => {
-                        let scalar = match offset.range_offset.as_ref() {
+                        let raw = match offset.range_offset.as_ref() {
                             Some(lit) => numeric_literal_to_scalar(lit)?,
                             None => ScalarValue::Int64(Some(offset.offset)),
                         };
+                        let scalar =
+                            coerce_range_offset_for_order_by(raw, range_order_by_type.as_ref())?;
                         WindowFrameBound::Following(scalar)
                     }
                     WindowFrameUnits::Groups => {
@@ -4418,6 +4464,37 @@ fn numeric_literal_to_scalar(
     Ok(scalar)
 }
 
+/// arrow-arith only provides `Date32 + Interval` kernels, not `Date32 + Int32`.
+/// Spark ships `n PRECEDING/FOLLOWING` as an IntegerType literal, so a DATE
+/// ORDER BY frame would blow up at execution with
+/// "Invalid date arithmetic operation: Date32 + Int32". Wrap integer offsets
+/// as IntervalDayTime (days component) so the frame comparator can compute
+/// `current_date +/- offset` natively.
+fn coerce_range_offset_for_order_by(
+    scalar: ScalarValue,
+    order_by_type: Option<&DataType>,
+) -> Result<ScalarValue, ExecutionError> {
+    let Some(dt) = order_by_type else {
+        return Ok(scalar);
+    };
+    match (dt, &scalar) {
+        (DataType::Date32, ScalarValue::Int32(Some(v))) => Ok(ScalarValue::IntervalDayTime(Some(
+            IntervalDayTime::new(*v, 0),
+        ))),
+        (DataType::Date32, ScalarValue::Int64(Some(v))) => {
+            let days = i32::try_from(*v).map_err(|_| {
+                GeneralError(format!(
+                    "DATE RANGE frame offset {v} does not fit in i32 days"
+                ))
+            })?;
+            Ok(ScalarValue::IntervalDayTime(Some(IntervalDayTime::new(
+                days, 0,
+            ))))
+        }
+        _ => Ok(scalar),
+    }
+}
+
 /// A physical join filter rewritter which rewrites the column indices in the expression
 /// to use the new column indices. See `rewrite_physical_expr`.
 struct JoinFilterRewriter<'a> {
@@ -4739,46 +4816,49 @@ fn parse_file_scan_tasks_from_common(
                 })?
                 .clone();
 
+            // iceberg-rust holds these counts and offsets as `u64`, so a negative one is rejected
+            // here, where the proto's `int64` becomes iceberg-rust's type.
+            let non_negative = |value: Option<i64>, what: &str| {
+                value.map(u64::try_from).transpose().map_err(|_| {
+                    GeneralError(format!("Delete file '{file_path}' has a negative {what}"))
+                })
+            };
             // Required for deletion vectors: iceberg-rust checks it against the number of
             // positions decoded from the blob and errors if it is absent.
-            let record_count = del
-                .record_count
-                .map(u64::try_from)
-                .transpose()
-                .map_err(|_| {
-                    GeneralError(format!(
-                        "Delete file '{}' has a negative record count",
-                        file_path
-                    ))
-                })?;
+            let record_count = non_negative(del.record_count, "record count")?;
+            let content_offset = non_negative(del.content_offset, "content offset")?;
+            let content_size_in_bytes = non_negative(del.content_size_in_bytes, "content size")?;
 
-            Ok(iceberg::scan::FileScanTaskDeleteFile {
+            iceberg::scan::FileScanTaskDeleteFile::builder()
                 // Passed RAW, like `data_file_path` below (same exact-string delete-matching
                 // constraint -- see there).
-                file_path,
-                file_type,
-                file_format,
+                .with_file_path(file_path)
+                .with_file_type(file_type)
+                .with_file_format(file_format)
                 // Not serialized; filled in by IcebergScanExec::fill_delete_file_sizes.
-                file_size_in_bytes: 0,
-                partition_spec_id: del.partition_spec_id,
-                equality_ids: if del.equality_ids.is_empty() {
+                .with_file_size_in_bytes(0)
+                .with_partition_spec_id(del.partition_spec_id)
+                .with_equality_ids(if del.equality_ids.is_empty() {
                     None
                 } else {
                     Some(del.equality_ids.clone())
-                },
+                })
                 // Deletion-vector coordinates, which the serde sets only when file_format is
                 // PUFFIN. referenced_data_file names the data file the vector applies to; the other
                 // two locate the deletion-vector-v1 blob in its Puffin file. file_format above is
                 // the discriminator, since Iceberg also populates referencedDataFile on
                 // file-scoped Parquet position deletes.
-                referenced_data_file: del.referenced_data_file.clone(),
-                content_offset: del.content_offset,
-                content_size_in_bytes: del.content_size_in_bytes,
-                record_count,
+                .with_referenced_data_file(del.referenced_data_file.clone())
+                .with_content_offset(content_offset)
+                .with_content_size_in_bytes(content_size_in_bytes)
+                .with_record_count(record_count)
                 // Plaintext StandardKeyMetadata forwarded verbatim from the JVM; decoded by
                 // iceberg-rust with no KMS unwrap. None for unencrypted delete files.
-                key_metadata: del.key_metadata.clone().map(Vec::into_boxed_slice),
-            })
+                .with_key_metadata(del.key_metadata.clone().map(Vec::into_boxed_slice))
+                // Rejects a deletion vector that lacks its referenced data file, either blob
+                // coordinate or its record count.
+                .build()
+                .map_err(|e| GeneralError(format!("Invalid Iceberg delete file: {e}")))
         })
         .collect::<Result<Vec<_>, ExecutionError>>()?;
 
@@ -8361,6 +8441,70 @@ mod tests {
         // pool before spec_id 0's entry.
         assert_eq!(fields[0].name, "region_new");
         assert_eq!(fields[1].name, "category");
+    }
+
+    /// iceberg-rust holds a deletion vector's record count and blob coordinates as `u64`, so the
+    /// planner rejects a negative one from the proto rather than build the delete file with it. A
+    /// deletion vector without a record count reaches iceberg-rust's builder, whose error must
+    /// come back through the `Invalid Iceberg delete file` mapping.
+    #[test]
+    fn test_delete_file_pool_rejects_invalid_deletion_vectors() {
+        let deletion_vector = spark_operator::IcebergDeleteFile {
+            file_path_idx: 0,
+            content_type: "POSITION_DELETES".to_string(),
+            file_format: "PUFFIN".to_string(),
+            referenced_data_file: Some("file:///tmp/data.parquet".to_string()),
+            content_offset: Some(4),
+            content_size_in_bytes: Some(40),
+            record_count: Some(2),
+            ..Default::default()
+        };
+        let parse = |delete: spark_operator::IcebergDeleteFile| {
+            let proto_common = spark_operator::IcebergScanCommon {
+                delete_file_path_pool: vec!["file:///tmp/dv.puffin".to_string()],
+                delete_file_pool: vec![delete],
+                ..Default::default()
+            };
+            parse_file_scan_tasks_from_common(&proto_common, &[]).map(|_| ())
+        };
+
+        assert!(parse(deletion_vector.clone()).is_ok());
+        for (delete, expected) in [
+            (
+                spark_operator::IcebergDeleteFile {
+                    content_offset: Some(-1),
+                    ..deletion_vector.clone()
+                },
+                "negative content offset",
+            ),
+            (
+                spark_operator::IcebergDeleteFile {
+                    content_size_in_bytes: Some(-1),
+                    ..deletion_vector.clone()
+                },
+                "negative content size",
+            ),
+            (
+                spark_operator::IcebergDeleteFile {
+                    record_count: Some(-1),
+                    ..deletion_vector.clone()
+                },
+                "negative record count",
+            ),
+            (
+                spark_operator::IcebergDeleteFile {
+                    record_count: None,
+                    ..deletion_vector.clone()
+                },
+                "is missing record_count",
+            ),
+        ] {
+            let error = parse(delete).expect_err(expected).to_string();
+            assert!(
+                error.contains(expected),
+                "expected '{expected}' in: {error}"
+            );
+        }
     }
 
     #[test]

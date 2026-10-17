@@ -28,15 +28,13 @@ Native window execution runs by default (`spark.comet.exec.window.enabled`). The
 `dense_rank`, `row_number`, `percent_rank`, `cume_dist`, `ntile`), value functions (`lag`, `lead`, `nth_value`,
 `first_value`, `last_value`), and the `count`, `min`, `max`, `sum`, and `avg` aggregates are accelerated.
 Remaining work is to close the gaps that still fall back to Spark: statistical aggregates (`stddev`, `variance`,
-`corr`, `covar`) and `collect_list` / `collect_set` as window functions ([#4766]), `RANGE` frames with explicit date
-offsets ([#4834]), `first_value` / `last_value` on `RANGE` frames with a literal offset ([#4835]), and
-non-literal `lag` / `lead` default values ([#4268]). See the
+`corr`, `covar`) and `collect_list` / `collect_set` as window functions ([#4766]), `first_value` / `last_value` on
+`RANGE` frames with a literal offset ([#4835]), and non-literal `lag` / `lead` default values ([#4268]). See the
 [window function compatibility guide](../user-guide/latest/compatibility/operators.md) for the complete list of
 supported functions, frames, and fallback cases.
 
 [#4268]: https://github.com/apache/datafusion-comet/issues/4268
 [#4766]: https://github.com/apache/datafusion-comet/issues/4766
-[#4834]: https://github.com/apache/datafusion-comet/issues/4834
 [#4835]: https://github.com/apache/datafusion-comet/issues/4835
 
 ## Native Lambda Evaluation

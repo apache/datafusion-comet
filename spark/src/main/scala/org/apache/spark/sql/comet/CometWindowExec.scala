@@ -394,20 +394,26 @@ object CometWindowExec extends CometOperatorSerde[WindowExec] {
     }
 
     // The RANGE frame offset type follows Spark's WindowFrameTypeCoercion:
-    // DECIMAL ORDER BY casts the offset to the same Decimal type (handled
-    // natively), but DATE keeps the offset as IntegerType. arrow-arith
-    // rejects Date32 + Int32 (it requires an Interval RHS), so DATE ORDER BY
-    // falls back with "Invalid date arithmetic operation: Date32 + Int32".
-    // UNBOUNDED / CURRENT ROW bounds skip the arithmetic and stay native.
+    // DECIMAL ORDER BY casts the offset to the same Decimal type, so it runs
+    // natively. DATE is handled natively by wrapping the offset as
+    // IntervalDayTime in the planner. UNBOUNDED / CURRENT ROW bounds skip the
+    // arithmetic and stay native.
+    //
+    // For DATE, Spark computes the bound with DateAdd, an Int addition that
+    // wraps silently on overflow, while DataFusion treats an overflowing bound
+    // as the partition edge. Over dates in Spark's supported range the two only
+    // disagree when the offset is large enough to wrap, so fall back for those
+    // offsets. https://github.com/apache/datafusion-comet/issues/5022
     f match {
       case SpecifiedWindowFrame(RangeFrame, lb, ub)
           if !lb.isInstanceOf[SpecialFrameBoundary] ||
             !ub.isInstanceOf[SpecialFrameBoundary] =>
         windowExpr.windowSpec.orderSpec.headOption.map(_.dataType) match {
-          case Some(DateType) =>
+          case Some(DateType) if !Seq(lb, ub).forall(isDateRangeOffsetSafe) =>
             withFallbackReason(
               windowExpr,
-              "RANGE frame with explicit offset on DATE ORDER BY is not supported")
+              "RANGE frame on DATE ORDER BY with an offset above " +
+                s"$MaxSafeDateRangeOffset days is not supported")
             return None
           case _ =>
         }
@@ -659,6 +665,30 @@ object CometWindowExec extends CometOperatorSerde[WindowExec] {
         }
       }
     case _ => true
+  }
+
+  // The largest absolute day number of a date in Spark's supported range,
+  // 0001-01-01 to 9999-12-31. 9999-12-31 is further from the epoch.
+  private val MaxSupportedDateDays: Long = java.time.LocalDate.of(9999, 12, 31).toEpochDay
+
+  // The largest DATE RANGE offset for which `current +/- offset` cannot wrap
+  // an Int for any date in Spark's supported range.
+  private val MaxSafeDateRangeOffset: Long = Int.MaxValue.toLong - MaxSupportedDateDays
+
+  private def isDateRangeOffsetSafe(bound: Expression): Boolean = bound match {
+    case _: SpecialFrameBoundary => true
+    case e =>
+      try {
+        e.eval() match {
+          case i: java.lang.Integer => Math.abs(i.longValue()) <= MaxSafeDateRangeOffset
+          case l: java.lang.Long =>
+            l.longValue() != Long.MinValue && Math.abs(l.longValue()) <= MaxSafeDateRangeOffset
+          // Other offsets are rejected when the bound is serialized.
+          case _ => true
+        }
+      } catch {
+        case _: Exception => true
+      }
   }
 
   // Folds a RANGE frame bound expression to a constant and serializes its
