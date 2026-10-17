@@ -309,8 +309,9 @@ match many build rows each, a hash join loses to a sort-merge join whether or no
 scale factor 100, the join of `catalog_sales` and `inventory`, on the item alone with a residual filter, matches
 each probe row with hundreds of build rows: its tasks take 179 s on average as a sort-merge join, 678 s as a
 spilling hash join and over 1,000 s as today's hash join. DataFusion tracks the hash join's cost in
-[apache/datafusion#17494], and making each key's rows contiguous ([apache/datafusion#26447]) narrows the gap but
-does not close it.
+[apache/datafusion#17494]. A DataFusion reproduction with q72's shape, 16 partitions of about 4M build rows with
+100 rows a key, takes about 60 s with the hash join and 12 s with the sort-merge join on DataFusion 55.2 and on
+main, and 17.5 s with the hash join of [apache/datafusion#26447], which stores each key's build rows together.
 
 Spark's statistics cannot show this at planning time: without column statistics there are no distinct key
 counts, and even those would not show how many probe rows match. The run does, through metrics that the inner
@@ -318,9 +319,8 @@ counts, and even those would not show how many probe rows match. The run does, t
 `input_rows`, `join_time` and `build_time`. An inner join switches at the first probe batch boundary where
 
 - its probe rows have matched at least 16 build rows each on average,
-- its probe has spent at least 20 ns on each match, which shows that the build side does not fit in the cache: in
-  q72, a spilled pair whose build side fits takes about 10 ns a match, and the join of the buckets left in memory
-  28 ns or more,
+- its probe has spent at least 20 ns on each match, which shows that the build side does not fit in the cache.
+  In q72, a build side that fits takes about 10 ns a match, and one that does not 28 ns or more,
 - and its probe has taken at least 4 times as long as its build. Sorting the build side costs about as much as
   building its hash table, so by then the hash join has spent more than switching costs, however much probe
   input is left. This is a rent-or-buy rule, which needs no estimate of the probe side's size.
@@ -599,10 +599,10 @@ TPC-DS at scale factor 100 ran on the same cluster, with 2 GiB and 32 shuffle pa
 - The retried tasks were again sorts refused memory for their merge.
 
 A third round adds the [sort-merge fallback](#sort-merge-fallback) for joins like q72's: an inner join whose probe
-rows match many build rows each switches to a sort-merge join for the rest of its probe input. 34 joins switch in
-`CometJoinSortMergeFallbackSuite`. At scale factor 100, on the same cluster with 2 GiB and 32 shuffle partitions,
-every TPC-H and TPC-DS query ran with the fallback on and off, alternating between the two per query, and then with
-the fallback on and its threshold lowered from 30 to 20 ns a match:
+rows match many build rows each switches to a sort-merge join for the rest of its probe input. At scale factor
+100, on the same cluster with 2 GiB and 32 shuffle partitions, every TPC-H and TPC-DS query ran with the fallback
+on and off, alternating between the two per query, and then with the fallback on and its threshold lowered from
+30 to 20 ns a match:
 
 | 2 GiB, 32 partitions                  | Fallback off | Fallback on, 30 ns | Fallback on, 20 ns |
 | ------------------------------------- | ------------ | ------------------ | ------------------ |
@@ -610,21 +610,19 @@ the fallback on and its threshold lowered from 30 to 20 ns a match:
 | TPC-DS, the 98 queries other than q72 | 564.0 s      | 567.0 s            | 565.8 s            |
 | TPC-DS q72                            | 1610 s       | 383.7 to 452 s     | 384.8 s, 380.6 s   |
 
-q72 took 375.2 s with the sort-merge join on the same day. Its time without the fallback is the run of
-[the TPC-DS table above](#status), which was not repeated.
+q72 took 375.2 s with the sort-merge join on the same day. Its time without the fallback is from
+[the TPC-DS table above](#status).
 
 - Only q72 switches. With 20 ns, all 32 of its joins of the buckets left in memory switch, and its 162 spilled pairs
   are joined by sort-merge joins, 194 in all. No join of any other query reaches 16 matches per probe row: the most
   among the 2,028 inner joins with at least 16K probe rows is 12.6.
 - Every query returned the same rows in every arm, q72 included, except q39, as before.
-- With 30 ns, a join of the buckets left in memory in one of q72's 32 tasks measured 28.4 ns a match, at 873 matches
-  per probe row. It did not switch, and its task took 254 s, against 174 to 191 s for the tasks that switched, and q72
-  took 452 s. Of three more runs, one switched every join and took 383.7 s, one missed a switch the same way, and in
-  the other a join switched only after hashing for 156 s, so that its task took 242 s. With 20 ns, both runs switched
-  every join after at most 2.4 s of hashing, and the slowest task of the join's stage took 192 and 188 s, against
-  187 s with the sort-merge join.
-- No other query got slower. None of them switches, and the short TPC-DS queries that differed by more than 6% in
-  one run, q41, q43, q90 and q96, at 2 to 3 s, were within run-to-run noise when rerun three times, alternating.
+- With 30 ns, q72 missed or delayed switches in three of four runs: a join of the buckets left in memory measured
+  28.4 ns a match and hashed on, and its task took up to 254 s, against 174 to 191 s for the tasks that switched.
+  With 20 ns, both runs switched every join after at most 2.4 s of hashing, and the slowest task of the join's
+  stage took 192 and 188 s, against 187 s with the sort-merge join.
+- No other query got slower. q41, q43, q90 and q96, at 2 to 3 s, differed by more than 6% in one run and were
+  within noise when rerun three times, alternating.
 
 ## Remaining work
 
@@ -632,12 +630,11 @@ In priority order.
 
 1. **Extend the sort-merge fallback.** At scale factor 100 it switches q72's joins and no others, and q72 runs
    about as fast as with the sort-merge join, see [Status](#status).
-   - The fallback's sorts report no metrics of their own yet.
-   - Only inner joins switch. The other join types could switch at a spilled pair's boundary, before the pair is
-     probed.
-   - The cost of a match depends on the CPU's cache as well as on the build side. The 20 ns threshold sits between
-     the 10 ns of a q72 build side that fits in the 7950X3D's cache and the 28 ns or more of one that does not.
-     Check it on a machine with a different cache, or derive it from the sizes of the build side and the cache.
+   - Give the fallback's sorts metrics of their own, see [Metrics](#metrics).
+   - Switch the other join types at a spilled pair's boundary, see [Sort-merge fallback](#sort-merge-fallback).
+   - The cost of a match depends on the CPU's cache as well as on the build side, and the 20 ns threshold was set
+     on the 7950X3D's large cache. Check it on a machine with a smaller one, or derive it from the sizes of the
+     build side and the cache.
 2. **Leave memory for the operators that run after the build.** With a 1 GiB pool, TPC-H q21 fails with spilling,
    on every retry. Its anti join takes 124 MB of the task's 130 MB share for its build side. Then a sort below its
    probe side, for the sort-merge join of `EXISTS`, cannot get the 10 MiB it needs to merge. The join takes
@@ -715,15 +712,9 @@ In priority order.
    - Decide whether spilling stays on by default. It is on now so that CI runs it. Then decide whether
      `forceShuffledHashJoin` can be on by default, which was the goal of this work, after measuring TPC-H and
      TPC-DS at realistic memory sizes.
-   - A forced hash join can be far slower than the sort-merge join when its output is far larger than its inputs, with
-     or without spilling: before the sort-merge fallback, TPC-DS q72 took 1610 s with it and 378 s without it. Forcing
-     the hash join by default needs a guard on the join's fan-out as well as on its build side. The fallback is that
-     guard, at run time: with it, q72 takes 381 to 385 s with the spilling join. DataFusion tracks the hash join's
-     cost in [apache/datafusion#17494]: for each probe row the hash join walks a chain of the build rows with its key,
-     and once the build side no longer fits in the cache, most steps miss. A DataFusion reproduction with q72's shape,
-     16 partitions of about 4M build rows with 100 rows a key, takes about 60 s with the hash join and 12 s with the
-     sort-merge join, on DataFusion 55.2 and on main, and 17.5 s with the hash join of [apache/datafusion#26447],
-     which stores each key's build rows together.
+   - A forced hash join can be far slower than the sort-merge join when its output is far larger than its inputs,
+     as in TPC-DS q72. Forcing the hash join by default needs a guard on the join's fan-out as well as on its build
+     side. The [sort-merge fallback](#sort-merge-fallback) is that guard, at run time, see [Status](#status).
 7. **Take what was learned upstream.** Search for existing issues before filing any.
    - Report to [apache/datafusion#24768]: joining each bucket with a stock `HashJoinExec`, the chunked fallback
      for each join type, and the Bloom filters that keep unmatched probe rows off disk.
@@ -739,9 +730,8 @@ In priority order.
      showed no gain on large buffers, but every buffer of a small batch pays for it. Spill files of full batches
      make it matter less.
    - `HashJoinExec` counts its final pass over the build rows as probe input in `input_rows`.
-   - `SortMergeJoinExec` in DataFusion 55 passes a filter the left side's columns first, whatever their order in
-     the filter, which [apache/datafusion#25489] fixed on main. Drop `left_columns_first` once Comet is on a
-     DataFusion with it.
+   - Drop `left_columns_first` once Comet is on a DataFusion with [apache/datafusion#25489], see
+     [Sort-merge fallback](#sort-merge-fallback).
    - `collect_left_input` allocates the concatenated copy and the hash map's chain of row indices without
      reserving them.
 8. **Before leaving draft.** Settle the config names, and trim the research notes from the docs. Coordinate with
