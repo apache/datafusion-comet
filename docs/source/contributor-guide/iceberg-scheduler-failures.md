@@ -171,8 +171,11 @@ make core
 
 The local smoke test checks probe serialization, handoff, accepted files, completion markers,
 rows and physical files. Additional local cases exercise the executor-loss input hook with
-`release-all` pre-created, assert byte sizes captured before handoff, and verify that a throwing
-post-commit probe never aborts or deletes committed files. These tests run in
+`release-all` pre-created and assert byte sizes captured before handoff. Further cases hold a
+write until either its attempt's `release-native` or the run's `release-all` is created, and
+verify that a gate timeout fails the attempt, cleans its files, and retries into one snapshot.
+Commit-hook cases verify that a failed commit never publishes a success marker and that a
+throwing post-commit probe never aborts or deletes committed files. These tests run in
 `CometIcebergWriteActionSuite` in ordinary CI; they do not prove multi-host scheduler behavior:
 
 ```bash

@@ -22,7 +22,7 @@ package org.apache.comet
 import java.io.File
 import java.nio.file.{FileAlreadyExistsException, Files}
 import java.sql.Timestamp
-import java.util.concurrent.{CountDownLatch, TimeUnit}
+import java.util.concurrent.{ConcurrentLinkedQueue, CountDownLatch, TimeUnit}
 import java.util.concurrent.atomic.AtomicReference
 
 import scala.collection.mutable
@@ -4192,6 +4192,162 @@ class CometIcebergWriteActionSuite
       }
       assertSplitUsage(rtasPlans, "RTAS")
       assertRows("ctas_tgt", expectedIds = Seq(1, 2))
+    }
+  }
+
+  test("scheduler probe is not notified when commit fails") {
+    withTempIcebergDir { gates =>
+      val failure = new RuntimeException("injected commit failure")
+      var commits = 0
+      var aborts = 0
+      val batchWrite = new BatchWrite {
+        override def createBatchWriterFactory(info: PhysicalWriteInfo): DataWriterFactory =
+          throw new UnsupportedOperationException
+        override def commit(messages: Array[WriterCommitMessage]): Unit = {
+          commits += 1
+          throw failure
+        }
+        override def abort(messages: Array[WriterCommitMessage]): Unit = { aborts += 1 }
+      }
+      val probe = SharedIcebergSchedulerProbe(gates.getAbsolutePath, "smoke", 10000L)
+      IcebergSchedulerTestProbe.withProbe(probe) {
+        val exec =
+          IcebergCommitExec(batchWrite, new Write {}, () => (), FailingLeafExec(failTask = false))
+        assert(intercept[RuntimeException](exec.executeCollect()) eq failure)
+      }
+      assert(commits == 1 && aborts == 1)
+      assert(!Files.exists(gates.toPath.resolve("committed")))
+    }
+  }
+
+  Seq("release-native", "release-all").foreach { release =>
+    test(s"native acceleration: scheduler probe blocks until $release") {
+      val table = "scheduler_" + release.replace('-', '_')
+      withSchedulerProbeSource(table) { source =>
+        withTempIcebergDir { gates =>
+          val probe = SharedIcebergSchedulerProbe(gates.getAbsolutePath, "executor-loss", 60000L)
+          IcebergSchedulerTestProbe.withProbe(probe) {
+            val job = Future {
+              withNativeEnabled {
+                withSQLConf(CometConf.COMET_BATCH_SIZE.key -> "1000") {
+                  spark.read
+                    .parquet(source.getAbsolutePath)
+                    .coalesce(1)
+                    .writeTo(s"$catalog.$ns.$table")
+                    .append()
+                }
+              }
+            }
+            try {
+              IcebergSchedulerFiles.await("writer input gate", 30000L)({
+                job.value.foreach(_.get)
+                IcebergSchedulerFiles.progress(gates.toPath).nonEmpty
+              })(IcebergSchedulerFiles.paths(gates.toPath).mkString("\n"))
+              val attempt = IcebergSchedulerFiles.progress(gates.toPath).head
+              assert(
+                attempt.files.exists(p => Files.size(IcebergSchedulerFiles.localPath(p)) > 0L))
+              // A ready marker alone cannot show that the hook actually waits. Require the
+              // write to remain blocked, with neither handoff nor commit, before releasing it.
+              intercept[scala.concurrent.TimeoutException](Await.result(job, 250.millis))
+              assert(IcebergSchedulerFiles.attempts(gates.toPath, "handoff").isEmpty)
+              assert(countSnapshots(table) == 0L)
+              val releasePath = if (release == "release-native") {
+                gates.toPath.resolve(s"attempt-${attempt.attempt}/release-native")
+              } else gates.toPath.resolve("release-all")
+              IcebergSchedulerFiles.touch(releasePath)
+              Await.result(job, 30.seconds)
+              val handoffs = IcebergSchedulerFiles.attempts(gates.toPath, "handoff")
+              assert(handoffs.size == 1 && handoffs.head.attempt == attempt.attempt)
+              assert(Files.exists(gates.toPath.resolve("committed")))
+              assert(countSnapshots(table) == 1L)
+              assertRows(table, 0 until 5000)
+            } finally {
+              IcebergSchedulerFiles.touch(gates.toPath.resolve("release-all"))
+              Await.ready(job, 30.seconds)
+            }
+          }
+        }
+      }
+    }
+  }
+
+  test("native acceleration: scheduler probe timeout fails the attempt and retries cleanly") {
+    val table = "scheduler_timeout"
+    withSchedulerProbeSource(table) { source =>
+      withTempIcebergDir { gates =>
+        val failures = new ConcurrentLinkedQueue[SparkListenerTaskEnd]()
+        val listener = new SparkListener {
+          override def onTaskEnd(e: SparkListenerTaskEnd): Unit = {
+            if (e.reason != Success) {
+              val _ = failures.add(e)
+            }
+          }
+        }
+        val context = spark.sparkContext
+        context.addSparkListener(listener)
+        try {
+          val probe = SharedIcebergSchedulerProbe(gates.getAbsolutePath, "executor-loss", 250L)
+          withNativeEnabled {
+            withSQLConf(CometConf.COMET_BATCH_SIZE.key -> "1000") {
+              IcebergSchedulerTestProbe.withProbe(probe) {
+                spark.read
+                  .parquet(source.getAbsolutePath)
+                  .coalesce(1)
+                  .writeTo(s"$catalog.$ns.$table")
+                  .append()
+              }
+            }
+          }
+          CometListenerBusUtils.waitUntilEmpty(context)
+          val progress = IcebergSchedulerFiles.progress(gates.toPath)
+          assert(progress.size == 1 && progress.head.files.nonEmpty)
+          val failed = progress.head
+          assert(
+            failures.asScala.exists(e =>
+              e.taskInfo.taskId == failed.attempt &&
+                e.reason.toString.contains("Timed out waiting for release-native")))
+          assert(
+            IcebergSchedulerFiles
+              .attempts(gates.toPath, "failure")
+              .exists(_.attempt == failed.attempt))
+          val handoffs = IcebergSchedulerFiles.attempts(gates.toPath, "handoff")
+          assert(handoffs.size == 1)
+          assert(handoffs.head.partition == failed.partition && handoffs.head.number == 1)
+          assert(handoffs.head.attempt != failed.attempt)
+          val root = dataDir(table).toPath.toAbsolutePath.normalize()
+          val referenced = spark
+            .sql(s"SELECT file_path FROM $catalog.$ns.$table.files")
+            .collect()
+            .map(r => IcebergSchedulerFiles.relative(root, r.getString(0)))
+            .toSet
+          val winnerFiles = handoffs.head.files.map(IcebergSchedulerFiles.relative(root, _)).toSet
+          val failedFiles = failed.files.map(IcebergSchedulerFiles.relative(root, _)).toSet
+          assert(referenced.nonEmpty && referenced == winnerFiles)
+          assert(IcebergTestFiles.parquetFiles(root) == referenced)
+          assert((failedFiles intersect referenced).isEmpty)
+          assert(countSnapshots(table) == 1L)
+          assertRows(table, 0 until 5000)
+        } finally context.removeSparkListener(listener)
+      }
+    }
+  }
+
+  private def withSchedulerProbeSource(table: String)(body: File => Unit): Unit = {
+    assumeNativeAcceleration()
+    withIcebergCatalog { warehouse =>
+      createTable(
+        table,
+        partitionSpec = "",
+        properties = Some(
+          "'write.distribution-mode'='none', 'write.target-file-size-bytes'='1', " +
+            "'write.parquet.page-row-limit'='1000'"))
+      val source = new File(warehouse, table + "_source")
+      spark
+        .range(0L, 5000L, 1L, 1)
+        .selectExpr("CAST(id AS INT) AS id", "'r' AS region", "CAST(id AS DOUBLE) AS amount")
+        .write
+        .parquet(source.getAbsolutePath)
+      body(source)
     }
   }
 
