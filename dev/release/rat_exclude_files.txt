@@ -33,3 +33,4 @@ spark/src/test/resources/test-data/*.ndjson
 spark/src/test/resources/abfs-auth-parity/*.json
 spark/inspections/CometTPC*results.txt
 benchmarks/tpc/queries/**/*.sql
+benchmarks/nested/queries/*.sql

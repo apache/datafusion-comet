@@ -88,7 +88,7 @@ The tables below list every Spark built-in expression with its current status.
 | `approx_count_distinct` | ✅ | Native |  |
 | `approx_percentile` | ✅ | Native | Byte, short, int, long, float, and double input; other input types fall back to Spark |
 | `array_agg` | ✅ | Native | Alias for `collect_list` |
-| `avg` | ✅ | Native | Interval types fall back |
+| `avg` | ✅ | Native | Interval types fall back. `DECIMAL` input with precision 25 or more falls back in most cases, see [Hash Aggregation](compatibility/operators.md#hash-aggregation) |
 | `bit_and` | ✅ | Native |  |
 | `bit_or` | ✅ | Native |  |
 | `bit_xor` | ✅ | Native |  |
@@ -114,7 +114,7 @@ The tables below list every Spark built-in expression with its current status.
 | `listagg` | ✅ | Native | Spark 4.0+. `StringType` input with a literal delimiter; `WITHIN GROUP (ORDER BY ...)` and `BinaryType` inputs fall back to Spark. Without `WITHIN GROUP`, concatenation order is the (non-deterministic) group arrival order, matching Spark. |
 | `max` | ✅ | Native |  |
 | `max_by` | ✅ | Native | Value and ordering must be fixed-length types |
-| `mean` | ✅ | Native |  |
+| `mean` | ✅ | Native | Interval types fall back. `DECIMAL` input with precision 25 or more falls back in most cases, see [Hash Aggregation](compatibility/operators.md#hash-aggregation) |
 | `median` | ✅ | — | Rewrites to `percentile(col, 0.5)` and runs natively for supported percentile inputs |
 | `min` | ✅ | Native |  |
 | `min_by` | ✅ | Native | Value and ordering must be fixed-length types |
@@ -123,6 +123,7 @@ The tables below list every Spark built-in expression with its current status.
 | `percentile_approx` | ✅ | Native | Alias of `approx_percentile`; same restrictions apply |
 | `percentile_cont` | ✅ | — | Spark 4.0+ `WITHIN GROUP (ORDER BY ...)`; ascending only runs natively, `DESC` falls back to Spark |
 | `percentile_disc` | 🔜 | — | Percentile aggregate |
+| `pivot_first` | ✅ | Native | Internal aggregate for the optimized `PIVOT` fast path. Value type must be in `PivotFirst.supportsDataType` (Boolean, Byte, Short, Int, Long, Float, Double, Decimal); other types keep Spark's standard filtered-aggregate path. Binary, array and struct pivot columns (including pivots on more than one column), non-default collations and pivot lists with duplicate values fall back to Spark |
 | `regr_avgx` | ✅ | — | Native: Spark rewrites to `Average` (tests in [#4551](https://github.com/apache/datafusion-comet/pull/4551)) |
 | `regr_avgy` | ✅ | — | Native: Spark rewrites to `Average` (tests in [#4551](https://github.com/apache/datafusion-comet/pull/4551)) |
 | `regr_count` | ✅ | — | Native: Spark rewrites to `Count` (tests in [#4551](https://github.com/apache/datafusion-comet/pull/4551)) |
@@ -140,7 +141,7 @@ The tables below list every Spark built-in expression with its current status.
 | `stddev_samp` | ✅ | Native |  |
 | `string_agg` | ✅ | Native | Alias of `listagg`; same restrictions apply. |
 | `sum` | ✅ | Native |  |
-| `try_avg` | ✅ | — | Interval types fall back |
+| `try_avg` | ✅ | — | Interval types fall back. `DECIMAL` input with precision 25 or more falls back in most cases, see [Hash Aggregation](compatibility/operators.md#hash-aggregation) |
 | `try_sum` | ✅ | — |  |
 | `var_pop` | ✅ | Native |  |
 | `var_samp` | ✅ | Native |  |
@@ -408,8 +409,8 @@ to Spark ([#2837](https://github.com/apache/datafusion-comet/issues/2837)). Enab
 | `map_concat` | ✅ | Codegen dispatch |  |
 | `map_contains_key` | ✅ | — |  |
 | `map_entries` | ✅ | Native |  |
-| `map_from_arrays` | ✅ | Native |  |
-| `map_from_entries` | ✅ | Hybrid | BinaryType keys/values and `spark.sql.mapKeyDedupPolicy=LAST_WIN` route through the JVM codegen dispatcher ([details](compatibility/expressions/map.md)) |
+| `map_from_arrays` | ✅ | Hybrid | `FLOAT` or `DOUBLE` keys and `spark.sql.mapKeyDedupPolicy=LAST_WIN` route through the JVM codegen dispatcher ([details](compatibility/expressions/map.md)) |
+| `map_from_entries` | ✅ | Hybrid | BinaryType keys/values, `FLOAT` or `DOUBLE` keys and `spark.sql.mapKeyDedupPolicy=LAST_WIN` route through the JVM codegen dispatcher ([details](compatibility/expressions/map.md)) |
 | `map_keys` | ✅ | Native |  |
 | `map_values` | ✅ | Native |  |
 | `str_to_map` | ✅ | Hybrid |  |

@@ -19,6 +19,8 @@
 
 package org.apache.comet.expressions
 
+import scala.util.Try
+
 import org.apache.spark.sql.catalyst.expressions.{Attribute, Cast, Expression, Literal}
 import org.apache.spark.sql.internal.SQLConf
 import org.apache.spark.sql.types.{ArrayType, DataType, DataTypes, DecimalType, MapType, NullType, StructType, TimestampNTZType, TimestampType}
@@ -40,11 +42,19 @@ object CometCast
   private[comet] val negativeScaleDecimalToStringReason: String =
     "Negative-scale decimal requires spark.sql.legacy.allowNegativeScaleOfDecimal=true"
 
-  // Casts between negative-scale decimals and integer / timestamp types have no native path:
-  // they scale-align by multiplying by 10^|scale|, which overflows in debug builds (aborts)
-  // and silently wraps in release builds (wrong results). See issue #5013.
-  private[comet] val negativeScaleDecimalCastReason: String =
-    "Cast between negative-scale decimal and integer/timestamp is not supported natively"
+  // The native decimal to integral kernels divide by 10^scale, which overflows for a negative
+  // scale. A debug build panics on any batch with a value and a release build wraps the divisor,
+  // so the cast is left to Spark. Shared with CometNativeCastSuite like the reason above.
+  private[comet] val negativeScaleDecimalToIntegralReason: String =
+    "Cast from a negative-scale decimal to an integral type is not supported"
+
+  // `cast_decimal_to_timestamp` scale-aligns through 10^|scale| and overflows the same way.
+  private[comet] val negativeScaleDecimalToTimestampReason: String =
+    "Cast from a negative-scale decimal to TimestampType is not supported"
+
+  // The integer to decimal kernels multiply by 10^|scale|, which overflows for a negative scale.
+  private[comet] val negativeScaleDecimalFromIntegralReason: String =
+    "Cast from an integral type to a negative-scale decimal is not supported"
 
   // When `spark.sql.legacy.castComplexTypesToString.enabled` is true, Spark wraps maps and
   // structs with `[]` (instead of `{}`) when casting to string, and omits NULL elements of
@@ -111,6 +121,13 @@ object CometCast
       if (isVariantType(cast.child.dataType) || isVariantType(cast.dataType)) {
         return unsupported(cast.child.dataType, cast.dataType)
       }
+      if (Try(cast.eval()).isFailure) {
+        // The cast fails for this literal, and Spark's `ConstantFolding` kept it because it sits
+        // in a conditional branch that may never run. Spark's own `Cast` must raise the error
+        // only when a row reaches it, so route it through the JVM codegen dispatcher (or fall
+        // back to Spark) rather than a native cast whose parsing could accept the literal.
+        return Unsupported(Some(failedLiteralCastReason))
+      }
       Compatible()
     } else if (CometTimeZone.nativeId(cast.timeZoneId).isEmpty) {
       CometTimeZone.supportLevel(cast.timeZoneId)
@@ -140,6 +157,9 @@ object CometCast
         }
     }
   }
+
+  private val failedLiteralCastReason: String =
+    "Cast of a literal that fails to evaluate runs Spark's Cast so it fails only if reached"
 
 //  Some casts like date -> int/byte / long are always null. Terminate early in planning
   private def isAlwaysCastToNull(
@@ -419,7 +439,7 @@ object CometCast
       case DataTypes.ShortType | DataTypes.IntegerType | DataTypes.LongType =>
         Compatible()
       case d: DecimalType if d.scale < 0 =>
-        Unsupported(Some(negativeScaleDecimalCastReason))
+        Unsupported(Some(negativeScaleDecimalFromIntegralReason))
       case DataTypes.FloatType | DataTypes.DoubleType | _: DecimalType =>
         Compatible()
       case DataTypes.BinaryType if (evalMode == CometEvalMode.LEGACY) =>
@@ -437,7 +457,7 @@ object CometCast
       case DataTypes.ByteType | DataTypes.IntegerType | DataTypes.LongType =>
         Compatible()
       case d: DecimalType if d.scale < 0 =>
-        Unsupported(Some(negativeScaleDecimalCastReason))
+        Unsupported(Some(negativeScaleDecimalFromIntegralReason))
       case DataTypes.FloatType | DataTypes.DoubleType | _: DecimalType =>
         Compatible()
       case DataTypes.BinaryType if (evalMode == CometEvalMode.LEGACY) =>
@@ -457,7 +477,7 @@ object CometCast
       case DataTypes.FloatType | DataTypes.DoubleType =>
         Compatible()
       case d: DecimalType if d.scale < 0 =>
-        Unsupported(Some(negativeScaleDecimalCastReason))
+        Unsupported(Some(negativeScaleDecimalFromIntegralReason))
       case _: DecimalType =>
         Compatible()
       case DataTypes.BinaryType if (evalMode == CometEvalMode.LEGACY) => Compatible()
@@ -476,7 +496,7 @@ object CometCast
       case DataTypes.FloatType | DataTypes.DoubleType =>
         Compatible()
       case d: DecimalType if d.scale < 0 =>
-        Unsupported(Some(negativeScaleDecimalCastReason))
+        Unsupported(Some(negativeScaleDecimalFromIntegralReason))
       case _: DecimalType =>
         Compatible()
       case DataTypes.BinaryType if (evalMode == CometEvalMode.LEGACY) => Compatible()
@@ -507,18 +527,26 @@ object CometCast
 
   private def canCastFromDecimal(fromType: DecimalType, toType: DataType): SupportLevel =
     toType match {
-      // These scale-align by computing 10^|scale|, which overflows for a negative scale, so a
-      // negative-scale source has no native path. See issue #5013.
-      case DataTypes.ByteType | DataTypes.ShortType | DataTypes.IntegerType | DataTypes.LongType |
-          DataTypes.TimestampType =>
+      // The integral and timestamp kernels scale-align through a power of ten that overflows for
+      // a negative scale. Matching each target group once keeps the scale check next to the list
+      // it applies to. See issue #5013.
+      case DataTypes.ByteType | DataTypes.ShortType | DataTypes.IntegerType |
+          DataTypes.LongType =>
         if (fromType.scale < 0) {
-          Unsupported(Some(negativeScaleDecimalCastReason))
+          Unsupported(Some(negativeScaleDecimalToIntegralReason))
+        } else {
+          Compatible()
+        }
+      case DataTypes.TimestampType =>
+        if (fromType.scale < 0) {
+          Unsupported(Some(negativeScaleDecimalToTimestampReason))
         } else {
           Compatible()
         }
       // Float and double are not gated on scale: `decimal128_to_f64` / `decimal128_to_f32`
       // round the exact decimal value once and handle a negative scale deliberately (#5684).
       case DataTypes.FloatType | DataTypes.DoubleType | DataTypes.BooleanType =>
+        Compatible()
         Compatible()
       case _ => Unsupported(Some(s"Cast from DecimalType to $toType is not supported"))
     }
