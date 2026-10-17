@@ -7406,7 +7406,8 @@ class CometIcebergNativeSuite
 
           val query = s"SELECT * FROM $table ORDER BY id"
 
-          // Without k-way merge enabled, Iceberg reports no ordering and the native scan takes over.
+          // Baseline: the preserve-data-grouping and preserve-data-ordering configs are off, so
+          // Iceberg reports no ordering and the native scan takes over.
           checkIcebergNativeScan(query)
 
           // The ordering-based fallback can only be exercised on Iceberg runtimes that actually
@@ -7461,9 +7462,9 @@ class CometIcebergNativeSuite
         val table = "sort_cat.db.unsorted_table"
         try {
           // Unpartitioned and no sort order, so Iceberg cannot report an ordering even with both
-          // k-way merge configs on. This pins the narrowing from dropping the config check: the
-          // fallback keys off a reported ordering, not the config, so turning the config on must
-          // not push a plain read onto Spark. Runs on every profile since it needs no ordering.
+          // k-way merge configs on. The fallback keys off a reported ordering, not the configs,
+          // so turning the configs on must not push a plain read onto Spark. Runs on every
+          // profile since it needs no ordering.
           spark.sql(s"""
             CREATE TABLE $table (
               id INT,
