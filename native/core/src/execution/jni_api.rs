@@ -44,6 +44,7 @@ use arrow::array::{Array, RecordBatch};
 use arrow::datatypes::DataType as ArrowDataType;
 use datafusion::common::{DataFusionError, Result as DataFusionResult};
 use datafusion::config::SpillCompression;
+use datafusion::execution::cache::cache_manager::CacheManagerConfig;
 use datafusion::execution::disk_manager::DiskManagerMode;
 use datafusion::execution::memory_pool::MemoryPool;
 use datafusion::execution::runtime_env::RuntimeEnvBuilder;
@@ -140,6 +141,7 @@ use crate::execution::spark_config::{
 };
 use crate::parquet::encryption_support::{CometEncryptionFactory, ENCRYPTION_FACTORY_ID};
 use crate::parquet::parquet_support::CometObjectStoreRegistry;
+use crate::parquet::shared_metadata_cache::shared_metadata_cache_for_task;
 use datafusion_comet_proto::spark_operator::operator::OpStruct;
 use log::{info, warn};
 use std::sync::OnceLock;
@@ -1008,6 +1010,14 @@ fn prepare_datafusion_session_context(
         .with_disk_manager_builder(disk_manager)
         .with_object_store_registry(Arc::new(CometObjectStoreRegistry::default()));
     rt_config = rt_config.with_memory_pool(memory_pool);
+
+    // Let the tasks of one stage on this executor share the Parquet footer and page index cache
+    // instead of each fetching and parsing the footers of the files it reads.
+    if let Some(cache) = shared_metadata_cache_for_task(spark_config) {
+        rt_config = rt_config.with_cache_manager(
+            CacheManagerConfig::default().with_file_metadata_cache(Some(cache)),
+        );
+    }
 
     let mut session_config = SessionConfig::new()
         .with_target_partitions(task_cpus)

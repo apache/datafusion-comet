@@ -184,6 +184,19 @@ object CometConf extends ShimCometConf {
       .booleanConf
       .createWithDefault(false)
 
+  val COMET_PARQUET_SHARED_METADATA_CACHE_ENABLED: ConfigEntry[Boolean] =
+    conf("spark.comet.parquet.metadataCache.sharedWithinStage.enabled")
+      .category(CATEGORY_PARQUET)
+      .doc(
+        "When enabled, the tasks of one Spark stage that run on the same executor share the " +
+          "native Parquet scan's cache of file footers and page indexes, so a file split " +
+          "across many tasks has its footer fetched and parsed once per executor instead of " +
+          "once per task. The cache is never shared between stages or stage attempts, so a " +
+          "query always reads the footers of its files afresh. When disabled, each task " +
+          "keeps its own cache.")
+      .booleanConf
+      .createWithDefault(true)
+
   val COMET_PARQUET_ROW_FILTER_PUSHDOWN_ENABLED: ConfigEntry[Boolean] =
     conf("spark.comet.parquet.rowFilterPushdown.enabled")
       .category(CATEGORY_PARQUET)
