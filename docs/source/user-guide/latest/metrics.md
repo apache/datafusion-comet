@@ -230,12 +230,16 @@ execution metrics. Counters accumulate per scan operator; they do not instrument
 | `scan_io_object_store_response_bytes_read` | Response bytes actually consumed at that API, including bytes fetched between coalesced ranges. Not HTTP wire bytes.                                                                                                         |
 | `scan_io_metadata_cache_hits`              | Successful, cache-eligible metadata opens requiring no storage reads.                                                                                                                                                        |
 | `scan_io_metadata_cache_misses`            | Successful, cache-eligible metadata opens requiring storage reads. Failed opens and encrypted opens, which bypass this shared cache, increment neither cache counter.                                                        |
+| `scan_io_metadata_prefetches`              | Metadata loads that read storage before their file's open, started when the previous file opened (`spark.comet.parquet.prefetchNextFileMetadata.enabled`). The open that uses one counts as a cache hit.                     |
 | `row_groups_pruned_dynamic_filter`         | Row groups skipped by a runtime predicate whose value changes during execution, such as a local TopK threshold.                                                                                                              |
 
 Reader-level and object-store bytes are two views of the same reads; do not add them together.
 Likewise, footer bytes are a subset of metadata bytes, not a third reader-level category. A warm
-metadata-cache hit contributes no new metadata or footer I/O. A valid plaintext footer followed by
-a page-index failure still contributes footer bytes; an invalid plaintext footer does not.
+metadata-cache hit contributes no new metadata or footer I/O. A prefetched load's footer and
+metadata bytes count when the prefetch reads them, so a prefetch that no open uses, because the
+scan stopped early or pruned the file before opening it, adds bytes without a matching cache hit.
+A valid plaintext footer followed by a page-index failure still contributes footer bytes; an
+invalid plaintext footer does not.
 
 Remote counters follow the backend selected during object-store construction, including native
 S3 (`s3`/`s3a`), GCS (`gs`), Azure (`az`, `adl`, `azure`, `abfs`, `abfss`), and HTTP(S) stores.

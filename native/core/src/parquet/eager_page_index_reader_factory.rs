@@ -76,6 +76,16 @@
 //! row filters enabled, a deferred conversion failure is raised on the first data-page request.
 //! Footer, Bloom-filter and page-index reads still proceed, so format pruning can discard a file
 //! without decoding it, but row selection cannot hide the failure.
+//!
+//! With `with_next_file_metadata_prefetch`, readers also load the next file's metadata before
+//! DataFusion opens it. DataFusion's `FileStream` keeps one I/O outstanding and plans a file
+//! only after the previous file's reader has returned its last batch (apache/datafusion#20916
+//! removed its next-file prefetch), so without this every file boundary waits for a footer and
+//! page-index round trip. When a file opens, its reader spawns a task that loads the metadata of
+//! the next file in the scan's file group through the cache, and that file's open waits for the
+//! task instead of reading the footer itself. This assumes DataFusion opens the files in the
+//! group's order, which holds unless the source reorders them (`ParquetSource::reorder_files`);
+//! a reordered scan would only waste its prefetches.
 
 use crate::parquet::datetime_rebase::stamp_int96_leaves;
 use crate::parquet::parquet_support::SparkParquetOptions;
@@ -85,6 +95,7 @@ use crate::parquet::schema_adapter::{
 use arrow::datatypes::{DataType, FieldRef, Schema, SchemaRef};
 use async_trait::async_trait;
 use bytes::Bytes;
+use datafusion::common::runtime::SpawnedTask;
 use datafusion::common::{DataFusionError, Result as DFResult};
 use datafusion::datasource::physical_plan::parquet::metadata::{
     CachedParquetMetaData, DFParquetMetadata,
@@ -97,7 +108,7 @@ use datafusion::physical_plan::metrics::{
     Count, ExecutionPlanMetricsSet, MetricBuilder, MetricCategory, MetricType,
 };
 use datafusion_comet_common::SparkError;
-use datafusion_datasource::PartitionedFile;
+use datafusion_datasource::{FileRange, PartitionedFile};
 use futures::future::BoxFuture;
 use futures::{FutureExt, StreamExt, TryStreamExt};
 use object_store::path::Path;
@@ -111,6 +122,7 @@ use parquet::arrow::arrow_reader::ArrowReaderOptions;
 use parquet::arrow::async_reader::AsyncFileReader;
 use parquet::arrow::{encode_arrow_schema, parquet_to_arrow_schema, ARROW_SCHEMA_META_KEY};
 use parquet::basic::{ConvertedType, LogicalType};
+use parquet::encryption::decrypt::FileDecryptionProperties;
 use parquet::errors::{ParquetError, Result as ParquetResult};
 use parquet::file::metadata::{FileMetaData, KeyValue, ParquetMetaDataBuilder};
 use parquet::file::metadata::{
@@ -145,6 +157,7 @@ struct ScanIoMetrics {
     object_store_response_bytes_read: Count,
     metadata_cache_hits: Count,
     metadata_cache_misses: Count,
+    metadata_prefetches: Count,
 }
 
 impl ScanIoMetrics {
@@ -167,6 +180,7 @@ impl ScanIoMetrics {
             ),
             metadata_cache_hits: count_counter(metrics, "scan_io_metadata_cache_hits"),
             metadata_cache_misses: count_counter(metrics, "scan_io_metadata_cache_misses"),
+            metadata_prefetches: count_counter(metrics, "scan_io_metadata_prefetches"),
         }
     }
 
@@ -215,6 +229,7 @@ pub struct EagerPageIndexReaderFactory {
     stamp_int96_leaves: bool,
     conversion_check: Option<(SchemaRef, SparkParquetOptions, bool)>,
     deferred_rejections: Arc<Mutex<HashMap<Path, (ObjectMeta, RejectOnNonEmpty)>>>,
+    next_file_prefetch: Option<Arc<NextFileMetadataPrefetch>>,
 }
 
 impl EagerPageIndexReaderFactory {
@@ -247,6 +262,7 @@ impl EagerPageIndexReaderFactory {
             stamp_int96_leaves: false,
             conversion_check: None,
             deferred_rejections: Arc::new(Mutex::new(HashMap::new())),
+            next_file_prefetch: None,
         }
     }
 
@@ -278,6 +294,26 @@ impl EagerPageIndexReaderFactory {
     /// (see the module docs). Off by default.
     pub fn with_int96_leaf_stamp(mut self, enabled: bool) -> Self {
         self.stamp_int96_leaves = enabled;
+        self
+    }
+
+    /// With `Some(files)`, load the footer and page index of the file DataFusion opens next while
+    /// the current file is read (see the module docs). `files` is the scan's one file group, in
+    /// the order DataFusion opens it. `None`, the default, leaves the prefetch off. A prefetch
+    /// carries no decryption properties, so an open that has them neither waits for nor starts
+    /// one.
+    pub(crate) fn with_next_file_metadata_prefetch(
+        mut self,
+        files: Option<&[PartitionedFile]>,
+    ) -> Self {
+        self.next_file_prefetch = files.map(|files| {
+            Arc::new(NextFileMetadataPrefetch::new(
+                files,
+                Arc::clone(&self.store),
+                Arc::clone(&self.scan_io_metrics),
+                Arc::clone(&self.metadata_cache),
+            ))
+        });
         self
     }
 }
@@ -332,6 +368,7 @@ impl ParquetFileReaderFactory for EagerPageIndexReaderFactory {
             conversion_check: self.conversion_check.clone(),
             deferred_rejections: Arc::clone(&self.deferred_rejections),
             deferred_rejection,
+            next_file_prefetch: self.next_file_prefetch.clone(),
         }))
     }
 }
@@ -352,6 +389,7 @@ struct EagerPageIndexReader {
     conversion_check: Option<(SchemaRef, SparkParquetOptions, bool)>,
     deferred_rejections: Arc<Mutex<HashMap<Path, (ObjectMeta, RejectOnNonEmpty)>>>,
     deferred_rejection: Option<RejectOnNonEmpty>,
+    next_file_prefetch: Option<Arc<NextFileMetadataPrefetch>>,
 }
 
 // Arrow infers ENUM as Binary, losing the distinction from raw binary that Spark needs.
@@ -606,11 +644,18 @@ impl AsyncFileReader for EagerPageIndexReader {
         let spark_variant_schema = self.spark_variant_schema;
         let require_field_ids = self.require_field_ids;
         let stamp_enabled = self.stamp_int96_leaves;
+        let file_decryption_properties = options
+            .and_then(|o| o.file_decryption_properties())
+            .map(Arc::clone);
+        let cache_enabled = file_decryption_properties.is_none();
+        // Take the load of this file's metadata that the previous file's open started, if any,
+        // and start the next file's.
+        let pending_load = self
+            .next_file_prefetch
+            .as_ref()
+            .filter(|_| cache_enabled)
+            .and_then(|prefetch| prefetch.open(&self.partitioned_file, metadata_size_hint));
         async move {
-            let file_decryption_properties = options
-                .and_then(|o| o.file_decryption_properties())
-                .map(Arc::clone);
-            let cache_enabled = file_decryption_properties.is_none();
             if spark_variant_schema && file_decryption_properties.is_some() {
                 return Err(ParquetError::General(
                     "Projected Variant with Parquet encryption requires Spark fallback".to_string(),
@@ -621,50 +666,31 @@ impl AsyncFileReader for EagerPageIndexReader {
             } else {
                 options.map(|o| o.column_index_policy())
             };
-            let metadata_storage_reads = Arc::new(AtomicUsize::new(0));
-            let footer_payload_bytes = Arc::new(AtomicUsize::new(0));
-            let metadata_store = ScanIoObjectStore {
-                inner: store,
-                scan_io_metrics: Arc::clone(&scan_io_metrics),
-                role: ScanIoStoreRole::Metadata {
-                    storage_reads: Arc::clone(&metadata_storage_reads),
-                    footer_payload_bytes: Arc::clone(&footer_payload_bytes),
-                    footer_payload: OnceLock::new(),
-                    footer_recorded: AtomicBool::new(false),
-                    file_size: object_meta.size,
-                    record_footer_immediately: !cache_enabled,
-                },
+            // Wait for the prefetch rather than reading the footer a second time. A prefetch
+            // that failed or was cancelled yields nothing, and this open then loads the metadata
+            // itself, so any error it reports is the open's own.
+            let prefetched = match pending_load {
+                Some(load) => load.await.ok().flatten(),
+                None => None,
             };
-
-            let metadata = DFParquetMetadata::new(&metadata_store, &object_meta)
-                .with_decryption_properties(file_decryption_properties)
-                .with_file_metadata_cache(Some(Arc::clone(&metadata_cache)))
-                .with_metadata_size_hint(metadata_size_hint)
-                .with_page_index_policy(page_index_policy)
-                .fetch_metadata()
-                .await
-                .map_err(|e| {
-                    parquet::errors::ParquetError::General(format!(
-                        "Failed to fetch metadata for file {}: {e}",
-                        object_meta.location,
-                    ))
-                });
-
-            if metadata.is_ok() {
-                let footer_bytes = footer_payload_bytes.load(Ordering::Relaxed);
-                if footer_bytes > 0 && cache_enabled {
-                    metadata_store.record_footer(footer_bytes);
+            let (metadata, storage_reads) = match prefetched {
+                Some(metadata) => (metadata, 0),
+                None => {
+                    load_metadata(
+                        store,
+                        Arc::clone(&scan_io_metrics),
+                        Arc::clone(&metadata_cache),
+                        &object_meta,
+                        metadata_size_hint,
+                        file_decryption_properties,
+                        page_index_policy,
+                    )
+                    .await?
                 }
-                if cache_enabled {
-                    scan_io_metrics.record_metadata_cache_result(
-                        metadata_storage_reads.load(Ordering::Relaxed),
-                    );
-                }
-            } else if cache_enabled {
-                metadata_store.record_valid_footer();
+            };
+            if cache_enabled {
+                scan_io_metrics.record_metadata_cache_result(storage_reads);
             }
-
-            let metadata = metadata?;
             // Spark's missing field id check, over the raw Parquet schema as in
             // `ParquetReadSupport`. The JNI layer unwraps the `External` error, so the JVM sees
             // the exception Spark raises.
@@ -747,6 +773,167 @@ impl AsyncFileReader for EagerPageIndexReader {
             Ok(metadata)
         }
         .boxed()
+    }
+}
+
+/// Loads a file's metadata through `metadata_cache`, with the page index as `page_index_policy`
+/// asks, counting the metadata and footer bytes it reads from storage. Returns the metadata
+/// together with the number of storage reads it took, which is zero when the cache already held
+/// the metadata.
+async fn load_metadata(
+    store: Arc<dyn ObjectStore>,
+    scan_io_metrics: Arc<ScanIoMetrics>,
+    metadata_cache: Arc<FileMetadataCache>,
+    object_meta: &ObjectMeta,
+    metadata_size_hint: Option<usize>,
+    file_decryption_properties: Option<Arc<FileDecryptionProperties>>,
+    page_index_policy: Option<PageIndexPolicy>,
+) -> ParquetResult<(Arc<ParquetMetaData>, usize)> {
+    let cache_enabled = file_decryption_properties.is_none();
+    let storage_reads = Arc::new(AtomicUsize::new(0));
+    let footer_payload_bytes = Arc::new(AtomicUsize::new(0));
+    let metadata_store = ScanIoObjectStore {
+        inner: store,
+        scan_io_metrics,
+        role: ScanIoStoreRole::Metadata {
+            storage_reads: Arc::clone(&storage_reads),
+            footer_payload_bytes: Arc::clone(&footer_payload_bytes),
+            footer_payload: OnceLock::new(),
+            footer_recorded: AtomicBool::new(false),
+            file_size: object_meta.size,
+            record_footer_immediately: !cache_enabled,
+        },
+    };
+
+    let metadata = DFParquetMetadata::new(&metadata_store, object_meta)
+        .with_decryption_properties(file_decryption_properties)
+        .with_file_metadata_cache(Some(metadata_cache))
+        .with_metadata_size_hint(metadata_size_hint)
+        .with_page_index_policy(page_index_policy)
+        .fetch_metadata()
+        .await
+        .map_err(|e| {
+            ParquetError::General(format!(
+                "Failed to fetch metadata for file {}: {e}",
+                object_meta.location,
+            ))
+        });
+
+    if metadata.is_ok() {
+        let footer_bytes = footer_payload_bytes.load(Ordering::Relaxed);
+        if footer_bytes > 0 && cache_enabled {
+            metadata_store.record_footer(footer_bytes);
+        }
+    } else if cache_enabled {
+        metadata_store.record_valid_footer();
+    }
+    Ok((metadata?, storage_reads.load(Ordering::Relaxed)))
+}
+
+/// A load of a file's metadata started before DataFusion opens the file. Dropping it aborts the
+/// load.
+type MetadataLoad = SpawnedTask<Option<Arc<ParquetMetaData>>>;
+
+/// The scan-wide state of `with_next_file_metadata_prefetch`.
+#[derive(Debug)]
+struct NextFileMetadataPrefetch {
+    store: Arc<dyn ObjectStore>,
+    scan_io_metrics: Arc<ScanIoMetrics>,
+    metadata_cache: Arc<FileMetadataCache>,
+    /// For each file of the group, keyed by path and byte range, the next file with another path
+    /// and that file's metadata size hint. Further ranges of a file's own path are skipped,
+    /// because opening the file already loads their metadata.
+    next_files: HashMap<(Path, Option<FileRange>), (ObjectMeta, Option<usize>)>,
+    /// The load in flight, with the path it loads. Each open replaces it unless it is for the
+    /// next file, so a load for a file DataFusion never opens, such as one pruned before its
+    /// open, is dropped at the next open.
+    in_flight: Mutex<Option<(Path, MetadataLoad)>>,
+}
+
+impl NextFileMetadataPrefetch {
+    fn new(
+        files: &[PartitionedFile],
+        store: Arc<dyn ObjectStore>,
+        scan_io_metrics: Arc<ScanIoMetrics>,
+        metadata_cache: Arc<FileMetadataCache>,
+    ) -> Self {
+        let mut next_files = HashMap::new();
+        for (position, file) in files.iter().enumerate() {
+            let location = &file.object_meta.location;
+            let next = files[position + 1..]
+                .iter()
+                .find(|next| &next.object_meta.location != location);
+            if let Some(next) = next {
+                next_files
+                    .entry((location.clone(), file.range.clone()))
+                    .or_insert_with(|| (next.object_meta.clone(), next.metadata_size_hint));
+            }
+        }
+        Self {
+            store,
+            scan_io_metrics,
+            metadata_cache,
+            next_files,
+            in_flight: Mutex::new(None),
+        }
+    }
+
+    /// Called as `file` opens: takes the load of its metadata that the previous open started, if
+    /// any, and starts loading the next file's.
+    fn open(
+        &self,
+        file: &PartitionedFile,
+        metadata_size_hint: Option<usize>,
+    ) -> Option<MetadataLoad> {
+        let mut in_flight = self.in_flight.lock().unwrap();
+        let pending = in_flight
+            .take_if(|(location, _)| *location == file.object_meta.location)
+            .map(|(_, load)| load);
+        let key = (file.object_meta.location.clone(), file.range.clone());
+        match self.next_files.get(&key) {
+            // Another range of an earlier file already started this load.
+            Some((next, _))
+                if in_flight
+                    .as_ref()
+                    .is_some_and(|(location, _)| *location == next.location) => {}
+            next => {
+                *in_flight =
+                    next.and_then(|(next, hint)| self.start(next, hint.or(metadata_size_hint)));
+            }
+        }
+        pending
+    }
+
+    /// Starts loading `object_meta`'s metadata on the current Tokio runtime, if there is one.
+    fn start(
+        &self,
+        object_meta: &ObjectMeta,
+        metadata_size_hint: Option<usize>,
+    ) -> Option<(Path, MetadataLoad)> {
+        tokio::runtime::Handle::try_current().ok()?;
+        let store = Arc::clone(&self.store);
+        let scan_io_metrics = Arc::clone(&self.scan_io_metrics);
+        let metadata_cache = Arc::clone(&self.metadata_cache);
+        let object_meta = object_meta.clone();
+        let location = object_meta.location.clone();
+        let load = SpawnedTask::spawn(async move {
+            let (metadata, storage_reads) = load_metadata(
+                store,
+                Arc::clone(&scan_io_metrics),
+                metadata_cache,
+                &object_meta,
+                metadata_size_hint,
+                None,
+                Some(PageIndexPolicy::Optional),
+            )
+            .await
+            .ok()?;
+            if storage_reads > 0 {
+                scan_io_metrics.metadata_prefetches.add(1);
+            }
+            Some(metadata)
+        });
+        Some((location, load))
     }
 }
 
@@ -1495,5 +1682,320 @@ mod tests {
             &rewritten,
             &with_spark_arrow_schema(Arc::clone(&rewritten)).unwrap()
         ));
+    }
+
+    /// An `InMemory` store whose reads of one path wait until `open` is called, counting the
+    /// reads of each path. Each held read keeps a receiver of `gate`.
+    #[derive(Debug)]
+    struct GatedStore {
+        inner: InMemory,
+        gated: Path,
+        gate: tokio::sync::watch::Sender<bool>,
+        reads: Mutex<HashMap<Path, usize>>,
+    }
+
+    impl GatedStore {
+        fn new(gated: &str) -> Self {
+            Self {
+                inner: InMemory::new(),
+                gated: Path::from(gated),
+                gate: tokio::sync::watch::channel(false).0,
+                reads: Mutex::new(HashMap::new()),
+            }
+        }
+
+        fn open(&self) {
+            self.gate.send_replace(true);
+        }
+
+        fn reads(&self, location: &str) -> usize {
+            let reads = self.reads.lock().unwrap();
+            reads.get(&Path::from(location)).copied().unwrap_or(0)
+        }
+
+        /// Waits until a read of the gated path is held at the gate.
+        async fn wait_for_held_read(&self) {
+            tokio::time::timeout(std::time::Duration::from_secs(10), async {
+                while self.gate.receiver_count() == 0 {
+                    tokio::task::yield_now().await;
+                }
+            })
+            .await
+            .expect("the gated path was never read");
+        }
+    }
+
+    impl Display for GatedStore {
+        fn fmt(&self, f: &mut Formatter<'_>) -> std::fmt::Result {
+            write!(f, "gated-store")
+        }
+    }
+
+    #[async_trait]
+    impl ObjectStore for GatedStore {
+        async fn put_opts(
+            &self,
+            p: &Path,
+            v: PutPayload,
+            o: PutOptions,
+        ) -> ObjectStoreResult<PutResult> {
+            self.inner.put_opts(p, v, o).await
+        }
+
+        async fn put_multipart_opts(
+            &self,
+            p: &Path,
+            o: PutMultipartOptions,
+        ) -> ObjectStoreResult<Box<dyn MultipartUpload>> {
+            self.inner.put_multipart_opts(p, o).await
+        }
+
+        async fn get_opts(&self, p: &Path, o: GetOptions) -> ObjectStoreResult<GetResult> {
+            *self.reads.lock().unwrap().entry(p.clone()).or_default() += 1;
+            if p == &self.gated {
+                let mut gate = self.gate.subscribe();
+                gate.wait_for(|open| *open).await.unwrap();
+            }
+            self.inner.get_opts(p, o).await
+        }
+
+        fn delete_stream(
+            &self,
+            paths: futures::stream::BoxStream<'static, ObjectStoreResult<Path>>,
+        ) -> futures::stream::BoxStream<'static, ObjectStoreResult<Path>> {
+            self.inner.delete_stream(paths)
+        }
+
+        fn list(
+            &self,
+            p: Option<&Path>,
+        ) -> futures::stream::BoxStream<'static, ObjectStoreResult<ObjectMeta>> {
+            self.inner.list(p)
+        }
+
+        async fn list_with_delimiter(&self, p: Option<&Path>) -> ObjectStoreResult<ListResult> {
+            self.inner.list_with_delimiter(p).await
+        }
+
+        async fn copy_opts(
+            &self,
+            from: &Path,
+            to: &Path,
+            options: CopyOptions,
+        ) -> ObjectStoreResult<()> {
+            self.inner.copy_opts(from, to, options).await
+        }
+
+        async fn rename_opts(
+            &self,
+            from: &Path,
+            to: &Path,
+            options: RenameOptions,
+        ) -> ObjectStoreResult<()> {
+            self.inner.rename_opts(from, to, options).await
+        }
+    }
+
+    async fn put_int_files(store: &InMemory, locations: &[&str]) -> Vec<PartitionedFile> {
+        let mut files = vec![];
+        for location in locations {
+            files.push(put_int_file(store, location, None).await);
+        }
+        files
+    }
+
+    fn prefetching_factory(
+        store: Arc<dyn ObjectStore>,
+        files: &[PartitionedFile],
+        metrics: &ExecutionPlanMetricsSet,
+    ) -> EagerPageIndexReaderFactory {
+        let runtime = datafusion::execution::runtime_env::RuntimeEnv::default();
+        EagerPageIndexReaderFactory::new(
+            store,
+            runtime.cache_manager.get_file_metadata_cache(),
+            ScanIoSource::Local,
+            metrics,
+        )
+        .with_next_file_metadata_prefetch(Some(files))
+    }
+
+    /// Opens `file` the way DataFusion's opener does: a new reader, then its metadata.
+    async fn open(
+        factory: &EagerPageIndexReaderFactory,
+        file: &PartitionedFile,
+        metrics: &ExecutionPlanMetricsSet,
+    ) -> ParquetResult<Arc<ParquetMetaData>> {
+        let mut reader = factory
+            .create_reader(0, file.clone(), None, metrics)
+            .unwrap();
+        reader.get_metadata(None).await
+    }
+
+    fn metric(metrics: &ExecutionPlanMetricsSet, name: &str) -> usize {
+        metrics
+            .clone_inner()
+            .sum_by_name(name)
+            .unwrap_or_else(|| panic!("missing metric {name}"))
+            .as_usize()
+    }
+
+    fn in_flight_is_empty(factory: &EagerPageIndexReaderFactory) -> bool {
+        let prefetch = factory.next_file_prefetch.as_ref().unwrap();
+        let in_flight = prefetch.in_flight.lock().unwrap();
+        in_flight.is_none()
+    }
+
+    /// Opening a file loads the next file's metadata in the background, so only the first open
+    /// reads storage. Opening the last file starts nothing.
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn opening_a_file_loads_the_next_files_metadata_ahead() {
+        let store = Arc::new(InMemory::new());
+        let files = put_int_files(&store, &["a.parquet", "b.parquet", "c.parquet"]).await;
+        let metrics = ExecutionPlanMetricsSet::new();
+        let factory = prefetching_factory(store, &files, &metrics);
+
+        for file in &files {
+            let metadata = open(&factory, file, &metrics).await.unwrap();
+            assert_eq!(metadata.file_metadata().num_rows(), 2);
+            assert!(metadata.column_index().is_some() && metadata.offset_index().is_some());
+        }
+
+        assert_eq!(metric(&metrics, "scan_io_metadata_cache_misses"), 1);
+        assert_eq!(metric(&metrics, "scan_io_metadata_cache_hits"), 2);
+        assert_eq!(metric(&metrics, "scan_io_metadata_prefetches"), 2);
+        assert_eq!(metric(&metrics, "scan_io_footer_reads"), 3);
+        assert!(in_flight_is_empty(&factory));
+    }
+
+    /// A file DataFusion never opens, such as one pruned before its open, doesn't keep the load
+    /// started for it: the next open reads its own metadata, and the load it then starts replaces
+    /// the stale one.
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn a_load_for_a_file_never_opened_is_replaced_by_the_next_one() {
+        let store = Arc::new(InMemory::new());
+        let files = put_int_files(
+            &store,
+            &["a.parquet", "b.parquet", "c.parquet", "d.parquet"],
+        )
+        .await;
+        let metrics = ExecutionPlanMetricsSet::new();
+        let factory = prefetching_factory(store, &files, &metrics);
+
+        // b is never opened.
+        for file in [&files[0], &files[2], &files[3]] {
+            open(&factory, file, &metrics).await.unwrap();
+        }
+
+        assert_eq!(metric(&metrics, "scan_io_metadata_cache_misses"), 2);
+        assert_eq!(metric(&metrics, "scan_io_metadata_cache_hits"), 1);
+        assert!(in_flight_is_empty(&factory));
+    }
+
+    /// A file whose metadata is still being read ahead when DataFusion opens it waits for that
+    /// read instead of starting its own.
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn an_open_waits_for_the_load_of_its_metadata_in_flight() {
+        let store = Arc::new(GatedStore::new("b.parquet"));
+        let files = put_int_files(&store.inner, &["a.parquet", "b.parquet"]).await;
+        let metrics = ExecutionPlanMetricsSet::new();
+        let factory = prefetching_factory(Arc::clone(&store) as _, &files, &metrics);
+        open(&factory, &files[0], &metrics).await.unwrap();
+        store.wait_for_held_read().await;
+
+        let mut metadata = Box::pin(open(&factory, &files[1], &metrics));
+        assert!((&mut metadata).now_or_never().is_none());
+        assert_eq!(store.reads("b.parquet"), 1, "the open read b itself");
+        store.open();
+        assert_eq!(metadata.await.unwrap().file_metadata().num_rows(), 2);
+
+        assert_eq!(metric(&metrics, "scan_io_metadata_cache_misses"), 1);
+        assert_eq!(metric(&metrics, "scan_io_metadata_cache_hits"), 1);
+        assert_eq!(metric(&metrics, "scan_io_metadata_prefetches"), 1);
+        assert_eq!(metric(&metrics, "scan_io_footer_reads"), 2);
+    }
+
+    /// The next file is the next one with a different path. Further ranges of a file share its
+    /// metadata, so they share its next file too.
+    #[test]
+    fn the_next_file_skips_further_ranges_of_the_same_path() {
+        let file = |path: &str, range: Option<(i64, i64)>| {
+            let file = PartitionedFile::new(path.to_string(), 100);
+            match range {
+                Some((start, end)) => file.with_range(start, end),
+                None => file,
+            }
+        };
+        let files = vec![
+            file("a", Some((0, 50))),
+            file("a", Some((50, 100))),
+            file("b", None),
+        ];
+        let runtime = datafusion::execution::runtime_env::RuntimeEnv::default();
+        let prefetch = NextFileMetadataPrefetch::new(
+            &files,
+            Arc::new(InMemory::new()),
+            Arc::new(ScanIoMetrics::new(&ExecutionPlanMetricsSet::new())),
+            runtime.cache_manager.get_file_metadata_cache(),
+        );
+        let next = |file: &PartitionedFile| {
+            prefetch
+                .next_files
+                .get(&(file.object_meta.location.clone(), file.range.clone()))
+                .map(|(next, _)| next.location.to_string())
+        };
+
+        assert_eq!(next(&files[0]).as_deref(), Some("b"));
+        assert_eq!(next(&files[1]).as_deref(), Some("b"));
+        assert_eq!(next(&files[2]), None);
+        assert_eq!(next(&file("a", Some((0, 10)))), None);
+    }
+
+    /// A prefetch that fails yields nothing, so the file's open loads the metadata itself and
+    /// reports the error.
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn a_failed_prefetch_leaves_the_open_to_report_its_own_error() {
+        let store = Arc::new(GatedStore::new("unused.parquet"));
+        let a = put_int_file(&store.inner, "a.parquet", None).await;
+        let content = Bytes::from_static(b"not a parquet file");
+        let bad = PartitionedFile::new("bad.parquet".to_string(), content.len() as u64);
+        store
+            .put(&Path::from("bad.parquet"), content.into())
+            .await
+            .unwrap();
+        let metrics = ExecutionPlanMetricsSet::new();
+        let files = [a, bad];
+        let factory = prefetching_factory(Arc::clone(&store) as _, &files, &metrics);
+
+        open(&factory, &files[0], &metrics).await.unwrap();
+        // The prefetch's failure doesn't surface until the open of `bad`, which reads it again.
+        let error = open(&factory, &files[1], &metrics).await.unwrap_err();
+        assert!(
+            error
+                .to_string()
+                .contains("Failed to fetch metadata for file bad.parquet"),
+            "unexpected error: {error}"
+        );
+        let reads_per_load = store.reads("bad.parquet") / 2;
+        assert!(reads_per_load > 0);
+        assert_eq!(store.reads("bad.parquet"), 2 * reads_per_load);
+        assert_eq!(metric(&metrics, "scan_io_metadata_prefetches"), 0);
+    }
+
+    /// Dropping the scan cancels a metadata load that is still in flight.
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn dropping_the_scan_aborts_a_metadata_load_in_flight() {
+        let store = Arc::new(GatedStore::new("b.parquet"));
+        let files = put_int_files(&store.inner, &["a.parquet", "b.parquet"]).await;
+        let metrics = ExecutionPlanMetricsSet::new();
+        let factory = prefetching_factory(Arc::clone(&store) as _, &files, &metrics);
+        open(&factory, &files[0], &metrics).await.unwrap();
+        store.wait_for_held_read().await;
+
+        drop(factory);
+        // The held read drops its gate receiver only when its task is aborted.
+        tokio::time::timeout(std::time::Duration::from_secs(10), store.gate.closed())
+            .await
+            .expect("the metadata load in flight was not aborted");
+        assert_eq!(metric(&metrics, "scan_io_metadata_prefetches"), 0);
     }
 }

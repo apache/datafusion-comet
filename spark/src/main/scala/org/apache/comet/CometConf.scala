@@ -200,6 +200,18 @@ object CometConf extends ShimCometConf {
       .booleanConf
       .createWithDefault(false)
 
+  val COMET_PARQUET_PREFETCH_NEXT_FILE_METADATA_ENABLED: ConfigEntry[Boolean] =
+    conf("spark.comet.parquet.prefetchNextFileMetadata.enabled")
+      .category(CATEGORY_PARQUET)
+      .doc(
+        "When enabled, a native Parquet scan that reads several files in one task loads the " +
+          "next file's footer and page index in the background while it reads the current " +
+          "file, so opening the next file doesn't wait for a storage round trip. This helps " +
+          "most when tasks read many small files from high-latency storage such as S3. Scans " +
+          "of encrypted Parquet files never load ahead.")
+      .booleanConf
+      .createWithDefault(false)
+
   val COMET_CONVERT_FROM_PARQUET_ENABLED: ConfigEntry[Boolean] =
     conf("spark.comet.convert.parquet.enabled")
       .category(CATEGORY_EXEC)
