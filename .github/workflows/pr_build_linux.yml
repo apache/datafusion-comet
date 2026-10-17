@@ -565,6 +565,10 @@ jobs:
               org.apache.comet.exec.CometGenerateExecSuite
               org.apache.comet.exec.CometWindowExecSuite
               org.apache.comet.exec.CometJoinSuite
+              org.apache.comet.exec.CometJoinSpillingSuite
+              org.apache.comet.exec.CometJoinSortMergeFallbackSuite
+              org.apache.comet.exec.CometSpillingHashJoinSuite
+              org.apache.comet.exec.CometSpillingHashJoinGreedyPoolSuite
               org.apache.comet.exec.CometTypedDatasetSuite
               org.apache.spark.sql.comet.CometMapInBatchSuite
               org.apache.spark.sql.execution.python.CometArrowPythonRunnerSuite

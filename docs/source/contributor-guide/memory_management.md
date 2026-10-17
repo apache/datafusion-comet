@@ -658,6 +658,7 @@ A checklist for triaging an executor OOM kill:
    simply being too small, or at the JVM side, which the same lines report as `JVM Arrow allocated`.
 3. Check `spark.comet.batchSize` against the schema width. Peak memory scales with
    `batch_size * columns`, and wide or deeply nested schemas amplify it.
-4. Check whether the operators involved can spill at all. `ShuffledHashJoin` cannot, so
-   `spark.comet.exec.forceShuffledHashJoin=true` converts a spillable sort-merge join into one that
-   is not, for build sides under `spark.comet.exec.forceShuffledHashJoin.maxBuildSize`.
+4. Check whether the operators involved can spill at all. A native `ShuffledHashJoin` spills unless
+   `spark.comet.exec.hashJoin.spill.enabled` is off, it is a broadcast join, Spark relies on its
+   output order, or it uses the join runtime filter. A join that cannot spill fails when its build
+   side does not fit.

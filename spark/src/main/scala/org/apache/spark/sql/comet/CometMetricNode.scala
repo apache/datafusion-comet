@@ -516,6 +516,26 @@ object CometMetricNode {
       "join_time" -> SQLMetrics.createNanoTimingMetric(sc, "Total time for joining"))
   }
 
+  /** SQL metrics of a shuffled hash join that spills its build side when it does not fit. */
+  def hashJoinSpillMetrics(sc: SparkContext): Map[String, SQLMetric] = {
+    Map(
+      "spill_count" -> SQLMetrics.createMetric(sc, "Count of spill files"),
+      "spilled_bytes" -> SQLMetrics.createSizeMetric(sc, "Total spilled bytes"),
+      "spilled_rows" -> SQLMetrics.createMetric(sc, "Total spilled rows"),
+      "spilled_buckets" ->
+        SQLMetrics.createMetric(sc, "Number of build-side buckets spilled to disk"),
+      "split_buckets" ->
+        SQLMetrics.createMetric(sc, "Number of spilled buckets split again to fit"),
+      "chunked_buckets" ->
+        SQLMetrics.createMetric(sc, "Number of spilled buckets joined in chunks"),
+      "bloom_filtered_rows" ->
+        SQLMetrics.createMetric(sc, "Number of probe rows of spilled buckets kept off disk"),
+      "sort_merge_joins" ->
+        SQLMetrics.createMetric(sc, "Number of joins run as sort-merge joins instead"),
+      "budget_overflow_bytes" ->
+        SQLMetrics.createSizeMetric(sc, "Memory reserved beyond the join's own estimate"))
+  }
+
   /** Join runtime filtering and reader attachment. These never replace join or scan metrics. */
   def joinDynamicFilterMetrics(sc: SparkContext): Map[String, SQLMetric] = {
     Map(

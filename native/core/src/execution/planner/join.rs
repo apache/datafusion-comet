@@ -43,10 +43,13 @@ use datafusion::{
         ChildrenPropertiesMode, ExecutionPlan, ReplaceChildrenOptions,
     },
 };
-use datafusion_comet_operators::{CometFilterExec, CometProjectionExec};
+use datafusion_comet_operators::{
+    CometFilterExec, CometProjectionExec, SortMergeFallback, SpillingHashJoinConfig,
+    SpillingHashJoinExec,
+};
 use datafusion_comet_proto::{
     spark_expression::Expr,
-    spark_operator::{BuildSide, JoinType, Operator},
+    spark_operator::{BuildSide, HashJoin, JoinType, Operator},
 };
 use itertools::Itertools;
 use jni::objects::{Global, JObject};
@@ -143,6 +146,7 @@ impl OperatorBuilder for HashJoinBuilder {
                 join.dynamic_filter_enabled && !join.null_aware_anti_join,
                 planner.session_ctx.copied_config().options(),
             )?;
+            let hash_join = PhysicalPlanner::apply_spilling_hash_join(hash_join, join)?;
             Ok((
                 scans,
                 shuffle_scans,
@@ -159,6 +163,8 @@ impl OperatorBuilder for HashJoinBuilder {
                 join.dynamic_filter_enabled,
                 planner.session_ctx.copied_config().options(),
             )?;
+            let swapped_hash_join =
+                PhysicalPlanner::apply_spilling_hash_join(swapped_hash_join, join)?;
 
             let mut additional_native_plans = vec![];
             if swapped_hash_join.is::<ProjectionExec>() {
@@ -353,6 +359,45 @@ impl PhysicalPlanner {
         }
         prepared.native_plan = native;
         Ok(Arc::new(prepared))
+    }
+
+    /// Runs a shuffled hash join with `SpillingHashJoinExec` when the serde asked for it, after
+    /// the build side is final. A projection that `swap_inputs` emitted stays above it. A join
+    /// with a runtime filter keeps the filter instead, because an inner join's filter would cover
+    /// only the buckets it holds.
+    fn apply_spilling_hash_join(
+        plan: Arc<dyn ExecutionPlan>,
+        join: &HashJoin,
+    ) -> Result<Arc<dyn ExecutionPlan>, ExecutionError> {
+        if !join.spill_enabled || join.null_aware_anti_join || join.dynamic_filter_enabled {
+            return Ok(plan);
+        }
+        if let Some(projection) = plan.downcast_ref::<ProjectionExec>() {
+            let child = Self::apply_spilling_hash_join(Arc::clone(projection.input()), join)?;
+            return Ok(plan.replace_children(
+                vec![child],
+                ReplaceChildrenOptions::new(ChildrenPropertiesMode::Recompute),
+            )?);
+        }
+        let Some(hash_join) = plan.downcast_ref::<HashJoinExec>() else {
+            return Ok(plan);
+        };
+        let config = SpillingHashJoinConfig {
+            max_build_buffer_bytes: usize::try_from(join.spill_max_build_buffer_bytes)
+                .ok()
+                .filter(|bytes| *bytes > 0),
+            sort_merge_fallback: join.spill_sort_merge_fallback.then(|| {
+                if join.spill_sort_merge_fallback_always {
+                    SortMergeFallback::always()
+                } else {
+                    SortMergeFallback::default()
+                }
+            }),
+        };
+        Ok(match SpillingHashJoinExec::try_new(hash_join, config)? {
+            Some(spilling) => Arc::new(spilling),
+            None => plan,
+        })
     }
 
     /// Attach after choosing the final build side, including the projection emitted

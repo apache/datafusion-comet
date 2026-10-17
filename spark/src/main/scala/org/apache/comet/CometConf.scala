@@ -644,6 +644,56 @@ object CometConf extends ShimCometConf {
       .booleanConf
       .createWithDefault(false)
 
+  val COMET_EXEC_HASH_JOIN_SPILL_ENABLED: ConfigEntry[Boolean] =
+    conf(s"$COMET_EXEC_CONFIG_PREFIX.hashJoin.spill.enabled")
+      .category(CATEGORY_EXEC)
+      .doc(
+        "Whether a native shuffled hash join spills its build side to disk when it does not " +
+          "fit in memory, instead of failing the task. While the build side fits, the join " +
+          "runs as it does with this disabled. Applies to joins whose output order nothing " +
+          "relies on, and not to joins that use " +
+          s"`${COMET_EXEC_JOIN_DYNAMIC_FILTER_ENABLED.key}`. $TUNING_GUIDE.")
+      .booleanConf
+      .createWithDefault(true)
+
+  val COMET_EXEC_HASH_JOIN_SPILL_MAX_BUILD_BUFFER_BYTES: ConfigEntry[Long] =
+    conf(s"$COMET_EXEC_CONFIG_PREFIX.hashJoin.spill.maxBuildBufferBytes")
+      .category(CATEGORY_EXEC)
+      .doc(
+        "Maximum number of bytes of build side that a native shuffled hash join holds in " +
+          "memory before it spills, even if the memory pool would grant more. The default of 0 " +
+          "disables this limit, in which case the join spills only when the memory pool denies " +
+          "an allocation. Mainly for testing: a small value runs every join through its " +
+          s"spilling path. Has no effect unless `${COMET_EXEC_HASH_JOIN_SPILL_ENABLED.key}` " +
+          "is enabled.")
+      .bytesConf(ByteUnit.BYTE)
+      .checkValue(v => v >= 0, "Must not be negative")
+      .createWithDefault(0)
+
+  val COMET_EXEC_HASH_JOIN_SPILL_SORT_MERGE_FALLBACK_ENABLED: ConfigEntry[Boolean] =
+    conf(s"$COMET_EXEC_CONFIG_PREFIX.hashJoin.spill.sortMergeFallback.enabled")
+      .category(CATEGORY_EXEC)
+      .doc(
+        "Whether a spilling native shuffled hash join that is an inner join switches to a " +
+          "sort-merge join for the rest of its input once its probe rows turn out to match " +
+          "many build rows each, its build side does not fit in the CPU cache, and its probe " +
+          "has taken several times as long as its build. A hash join is then several times " +
+          "slower than a sort-merge join. Has no effect unless " +
+          s"`${COMET_EXEC_HASH_JOIN_SPILL_ENABLED.key}` is enabled.")
+      .booleanConf
+      .createWithDefault(true)
+
+  val COMET_EXEC_HASH_JOIN_SPILL_SORT_MERGE_FALLBACK_ALWAYS: ConfigEntry[Boolean] =
+    conf(s"$COMET_EXEC_CONFIG_PREFIX.hashJoin.spill.sortMergeFallback.always")
+      .category(CATEGORY_TESTING)
+      .doc(
+        "For testing: switch every spilling inner join to a sort-merge join after its first " +
+          "probe batch that matches, whatever its matches cost. Has no effect unless " +
+          s"`${COMET_EXEC_HASH_JOIN_SPILL_SORT_MERGE_FALLBACK_ENABLED.key}` is enabled.")
+      .internal()
+      .booleanConf
+      .createWithDefault(false)
+
   val COMET_EXEC_TOPK_FUSION_ENABLED: ConfigEntry[Boolean] =
     conf(s"$COMET_EXEC_CONFIG_PREFIX.topK.fusion.enabled")
       .category(CATEGORY_EXEC)
