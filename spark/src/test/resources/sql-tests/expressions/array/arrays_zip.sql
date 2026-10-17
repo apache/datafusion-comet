@@ -202,8 +202,8 @@ SELECT arrays_zip(array(DATE '1997', DATE '1998', NULL), array(TIMESTAMP '1997-0
 query
 SELECT arrays_zip(array(X'123456', X'123', null), array(array(X'789', X'1', null, null)))
 
--- Arrays of Time (supported bySpark 4.1.0: https://spark.apache.org/docs/latest/api/java/org/apache/spark/sql/types/TimeType.html)
--- SELECT arrays_zip(array(TIME '23:59:59.999999', TIME '2:0:3'));
+-- Arrays of TIME need Spark 4.1 and spark.sql.timeType.enabled, so they live in
+-- arrays_zip_time.sql.
 
 -- Arrays of structs
 query
@@ -218,12 +218,55 @@ SELECT arrays_zip(array(struct(1, 2, 3), struct(2, 3, 4)));
 -- query
 -- SELECT arrays_zip(array(struct(1, 2, 3), struct(2, 3, 4), struct(null, null, null)));
 
--- Arrays of maps
--- FIXME: COMET: map is not supported, unsupported arguments for CreateArray, unsupported arguments for ArraysZip
--- +------------------------------------------------------------------+
--- |arrays_zip(array(map(1.0, 2, 3.0, 4)), array(map(1.0, 2, 3.0, 4)))|
--- +------------------------------------------------------------------+
--- |[{{1.0 -> 2, 3.0 -> 4}, {1.0 -> 2, 3.0 -> 4}}]                    |
--- +------------------------------------------------------------------+
--- query
--- SELECT arrays_zip(array(map(1.0, '2', 3.0, '4')), array(map(1.0, '2', 3.0, '4')));
+-- Arrays of maps. No native arrays_zip kernel takes a map element, so these run through the
+-- JVM codegen dispatcher.
+query expect_dispatch(arrays_zip)
+SELECT arrays_zip(array(map(1.0, '2', 3.0, '4')), array(map(1.0, '2', 3.0, '4')));
+
+statement
+CREATE TABLE test_arrays_zip_map(m array<map<string, int>>, n array<map<int, string>>) USING parquet
+
+statement
+INSERT INTO test_arrays_zip_map VALUES
+  (array(map('a', 1, 'b', 2), map('c', NULL)), array(map(1, 'x'))),
+  (array(CAST(map() AS map<string, int>), NULL), array(map(2, 'y'), map(3, NULL), NULL)),
+  (NULL, array(map(4, 'z'))),
+  (array(map('d', 4)), NULL),
+  (array(), array(map(5, 'w')))
+
+query expect_dispatch(arrays_zip)
+SELECT arrays_zip(m, n) FROM test_arrays_zip_map
+
+-- map column next to an element type the native kernel supports
+query expect_dispatch(arrays_zip)
+SELECT arrays_zip(m, array(1, 2, 3)) FROM test_arrays_zip_map
+
+-- map inside a struct element and inside an inner array
+query expect_dispatch(arrays_zip)
+SELECT arrays_zip(array(named_struct('m', m)), array(n)) FROM test_arrays_zip_map
+
+-- Day-time and year-month interval elements have no native kernel either. A Parquet interval
+-- column falls back at the scan, so the intervals are built from int columns.
+statement
+CREATE TABLE test_arrays_zip_interval(d int, h int, y int, mo int) USING parquet
+
+statement
+INSERT INTO test_arrays_zip_interval VALUES (1, 2, 1, 2), (-3, 0, -3, -4), (0, 0, 0, 0), (NULL, 5, NULL, 6)
+
+query expect_dispatch(arrays_zip)
+SELECT arrays_zip(array(make_dt_interval(d, h), NULL), array(1, 2, 3)) FROM test_arrays_zip_interval
+
+query expect_dispatch(arrays_zip)
+SELECT arrays_zip(array(make_ym_interval(y, mo)), array(make_ym_interval(mo, y), NULL)) FROM test_arrays_zip_interval
+
+-- both interval kinds, one of them inside a struct element
+query expect_dispatch(arrays_zip)
+SELECT arrays_zip(array(make_dt_interval(d)), array(named_struct('i', make_ym_interval(y)))) FROM test_arrays_zip_interval
+
+-- year-month interval inside an inner array
+query expect_dispatch(arrays_zip)
+SELECT arrays_zip(array(array(make_ym_interval(y), NULL)), array(d)) FROM test_arrays_zip_interval
+
+-- interval literals
+query expect_dispatch(arrays_zip)
+SELECT arrays_zip(array(INTERVAL '1 02:03:04.5' DAY TO SECOND, NULL), array(INTERVAL '1-2' YEAR TO MONTH))

@@ -37,10 +37,12 @@ SELECT id,
   map_keys(map_from_entries(array(named_struct('k', -f, 'v', 1), named_struct('k', 2.5F, 'v', 2))))
 FROM float_map_keys
 
+-- Each call has its own values array. The harness turns ConstantFolding off, so a repeated
+-- `array(1, 2)` would be a subexpression the calls share, which keeps them off the dispatcher.
 query expect_dispatch(map_from_arrays)
 SELECT id,
   map_keys(map_from_arrays(array(-d, 2.5D), array(1, 2))),
-  map_keys(map_from_arrays(array(-f, 2.5F), array(1, 2)))
+  map_keys(map_from_arrays(array(-f, 2.5F), array(3, 4)))
 FROM float_map_keys
 
 -- NaNs that differ only in the sign bit are one key on every version.

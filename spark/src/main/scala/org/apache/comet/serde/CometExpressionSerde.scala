@@ -112,7 +112,8 @@ trait CometExpressionSerde[T <: Expression] {
  * `Unsupported`, the expression always routes through the dispatcher -- the serde is declaring
  * "no native path exists for this case; run Spark's code in-pipeline." Spark fallback is reserved
  * for the case where the dispatcher itself cannot handle the expression (e.g. the global codegen
- * flag is off, or the kernel rejects the bound tree).
+ * flag is off, or the kernel rejects the bound tree), and for the expressions the serde declines
+ * through `dispatchDeclineReason`.
  *
  * Contract for `Unsupported` reasons on a `CodegenDispatchFallback` serde: the case must be
  * something `Expression.doGenCode` can compile. If you mark something `Unsupported` because Spark
@@ -122,7 +123,14 @@ trait CometExpressionSerde[T <: Expression] {
  * dispatcher. Every other `Incompatible` expression falls back to Spark, and every other
  * `Unsupported` expression falls back to Spark.
  */
-trait CodegenDispatchFallback extends NativeOptInAvailable { self: CometExpressionSerde[_] => }
+trait CodegenDispatchFallback extends NativeOptInAvailable { self: CometExpressionSerde[_] =>
+
+  /**
+   * Why `expr` must not run through the dispatcher, or `None` to let it. A reason sends `expr`
+   * back to Spark, as for a serde without this mixin.
+   */
+  def dispatchDeclineReason(expr: Expression): Option[String] = None
+}
 
 /**
  * Marker for serdes that have a native implementation the user can opt into. Normally these

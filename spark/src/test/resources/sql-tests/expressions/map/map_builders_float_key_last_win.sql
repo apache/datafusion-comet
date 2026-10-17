@@ -52,11 +52,14 @@ SELECT id,
 FROM float_map_keys_last_win
 
 -- NaNs with different sign bits are one DOUBLE or FLOAT key: one entry, holding the last value.
+-- The FLOAT calls take their own values array. The harness turns ConstantFolding off, so an
+-- `array(1, 2)` repeated across the DOUBLE and FLOAT calls would be a subexpression they share,
+-- which keeps them off the dispatcher.
 query expect_dispatch(map_from_arrays)
 SELECT map_keys(map_from_arrays(array(d, -d), array(1, 2))),
   map_values(map_from_arrays(array(d, -d), array(1, 2))),
-  map_keys(map_from_arrays(array(f, -f), array(1, 2))),
-  map_values(map_from_arrays(array(f, -f), array(1, 2)))
+  map_keys(map_from_arrays(array(f, -f), array(3, 4))),
+  map_values(map_from_arrays(array(f, -f), array(3, 4)))
 FROM float_map_keys_last_win WHERE id = 2
 
 query expect_dispatch(map_from_entries)
@@ -70,8 +73,8 @@ FROM float_map_keys_last_win WHERE id = 2
 query expect_dispatch(map_from_arrays)
 SELECT map_keys(map_from_arrays(array(d, -d), array(1, 2))),
   map_values(map_from_arrays(array(d, -d), array(1, 2))),
-  map_keys(map_from_arrays(array(f, -f), array(1, 2))),
-  map_values(map_from_arrays(array(f, -f), array(1, 2)))
+  map_keys(map_from_arrays(array(f, -f), array(3, 4))),
+  map_values(map_from_arrays(array(f, -f), array(3, 4)))
 FROM float_map_keys_last_win WHERE id = 1
 
 query expect_dispatch(map_from_entries)
