@@ -308,12 +308,23 @@ outer side is the build side. `CometHashJoinExec` copies that ordering (`operato
 `EnsureRequirements` and `RemoveRedundantSorts` may already have relied on it. Rows from spilled buckets are
 emitted after the resident pass, so a spilling join does not keep its probe order.
 
-So a join is eligible only when Spark's join reports no output ordering. That is the usual case, because a
-shuffled join's streamed child is normally an exchange. It is not the case when the streamed side is already
-sorted below the join with no exchange in between, for example the output of another sort-merge join on the
-same keys or a sorted bucketed scan. Those joins stay on today's non-spilling join. With [#6785], which plans
-the forced hash join before `EnsureRequirements`, this check sees the final plan's orderings. On the DataFusion
-side the operator reports `maintains_input_order = [false, false]`.
+So a join is eligible only when nothing above it relies on its output order. Spark reports no order for most
+shuffled joins, because a shuffled join's streamed child is normally an exchange. When the streamed side is already
+sorted below the join with no exchange in between, for example the output of another sort-merge join on the same
+keys or a sorted bucketed scan, Spark reports that order, but it matters only if an operator above uses it.
+`CometExecRule` walks up from each shuffled hash join, after the forced hash join rewrite:
+
+- An operator that requires a child ordering relies on the order, because `EnsureRequirements` may have left it
+  without a sort.
+- The root of the plan relies on it, because `RemoveRedundantSorts` may have dropped a sort that the order
+  satisfied.
+- An operator that reports no order, such as an exchange or a hash aggregate, or that sorts its input itself,
+  ends the order, and so nothing above it can rely on it.
+
+A join whose order nothing relies on is tagged, and its serde runs it with spilling. A spilling join reports no
+output order. In TPC-H q21, the anti join of `NOT EXISTS` probes the output of the sort-merge join of `EXISTS` and
+feeds a shuffle, so Spark reports an order for it that nothing uses, and it can spill. With [#6785], which plans the forced hash join before `EnsureRequirements`, this check sees the final plan's
+orderings. On the DataFusion side the operator reports `maintains_input_order = [false, false]`.
 
 ### Runtime filters
 
@@ -496,11 +507,55 @@ because a spilled bucket's inner join gets one build batch and needs half the me
 batches gives most of the gains, and the probe filters keep 1.4 to 2.3 million of the 5 million probe rows off
 disk.
 
+TPC-H at scale factor 100 ran on the same machine, as a Spark 4.1.1 standalone cluster of two executors with 8
+cores each, with AQE on and one run of each query. It compared Comet's sort-merge join with the forced shuffled hash
+join (`spark.comet.exec.forceShuffledHashJoin`, with `maxBuildSize` set to `-1`), with and without spilling, at
+three sizes of the off-heap pool. Total time of the 22 queries:
+
+| Off-heap pool per executor, shuffle partitions | Sort-merge join           | Spilling hash join      | Hash join, no spilling |
+| ---------------------------------------------- | ------------------------- | ----------------------- | ---------------------- |
+| 16 GiB, 200                                    | 255.5 s                   | 232.8 s                 | 232.5 s                |
+| 2 GiB, 32                                      | 268.0 s, 12 tasks retried | 242.2 s, 1 task retried | q21 fails              |
+| 1 GiB, 16                                      | 272.1 s, 11 tasks retried | q21 fails               | q9, q21 and q22 fail   |
+
+- Every query that completed returned the same rows as with the sort-merge join, by row count and a hash of its
+  sorted rows.
+- With 16 GiB nothing spills, and the spilling join costs nothing over the join without spilling.
+- With 2 GiB, q9 and q21 spill 29 and 384 buckets, 0.11 and 3.84 GB, and every query completes. q21, which the join
+  without spilling fails, takes 33.5 s, against 36.7 s with the sort-merge join.
+- With 1 GiB, q9, q10, q17 and q22 spill, and the probe filters keep 17 million of q10's probe rows off disk. Every
+  query but q21 completes, the 21 of them in 208.0 s, against 235.6 s with the sort-merge join. q21 fails because
+  the join takes memory that a sort below it needs, see [Remaining work](#remaining-work).
+- The joins without spilling fail for lack of memory for their build sides. Every other failed task, in every arm,
+  was a sort refused memory for its merge (`ExternalSorterMerge`) while another consumer of its task, another sort
+  or a spilling join, held most of the task's share. Spark retried them, and the retries succeeded, except in
+  q21 with spilling.
+- `budget_overflow_bytes` stayed 0 in every query.
+
 ## Remaining work
 
 In priority order.
 
-1. **Make spilling cheaper still.** Profiled in the native benchmark at a 64 MiB pool, the spilling join now spends
+1. **Leave memory for the operators that run after the build.** With a 1 GiB pool, TPC-H q21 fails with spilling,
+   on every retry. Its anti join takes 124 MB of the task's 130 MB share for its build side. Then a sort below its
+   probe side, for the sort-merge join of `EXISTS`, cannot get the 10 MiB it needs to merge. The join takes
+   whatever the pool grants and holds its resident buckets until its probe input ends, and a retried task's join
+   takes the larger share that the retry finds. In Comet's sort-merge join one sort starves another the same way,
+   which is what its retried tasks were, but a sort's need is bounded, and those retries succeed.
+   - `fair_unified` limits each consumer to `pool_size / registered consumers`, but `pool_size` is the executor's
+     whole off-heap pool, while Spark limits each task to an even share of that pool among the running tasks. So
+     the fair limit binds only in a task with more consumers than there are running tasks.
+   - Making the pool the task's share is not enough. With `spark.comet.exec.memoryPool.fraction` set to `0.125`,
+     one task's share with 8 cores, q21 completes in 34.9 s, but consumers that cannot spill hit their smaller
+     limits. q16's broadcast hash join fails in both arms, and so does a sort's merge in q2 with the sort-merge
+     join. q17 takes 33 s instead of 26 s in both arms.
+   - Limiting only the consumers that can spill, to an even share of what the task's share leaves after the ones
+     that cannot, as DataFusion's `FairSpillPool` does, would cover both cases. It changes when every Comet operator
+     spills, so it needs its own issue and measurements.
+   - The join can also hold back by itself, keeping resident only part of what the pool grants when its probe side
+     has operators in the same native plan that need memory. With its build buffer capped at 64 MiB by
+     `maxBuildBufferBytes`, q21 completes in 33.9 s.
+2. **Make spilling cheaper still.** Profiled in the native benchmark at a 64 MiB pool, the spilling join now spends
    about 12% of its time compressing spill files with lz4, 6% decoding and decompressing them, 10% copying, 15%
    in the inner joins' hash tables, 15% in `take` for routing, the compacted read-back and the joins' output, and
    9% routing probe rows, the filter lookups included.
@@ -517,14 +572,17 @@ In priority order.
      tasks holds a quarter of a dense key range. A spilled bucket holds a sixteenth of that, which is too sparse,
      and is looked up in a hash map. With Spark's default of 200 shuffle partitions, keys are rarely that dense,
      so the benchmark flatters the join without spilling a little.
-2. **Decide how to account for the concatenated copy.** `collect_left_input` concatenates the build batches into
+3. **Decide how to account for the concatenated copy.** `collect_left_input` concatenates the build batches into
    one copy without reserving it. Reserving it moves the spill point to about half of where today's join fails,
    for a build side whose memory is mostly its batches.
-   - Measure RSS against reserved bytes in a stress run, to see what the copy really costs.
+   - Measure RSS against reserved bytes in a stress run, to see what the copy really costs. The TPC-H runs at scale
+     factor 100 logged native memory against reserved memory with `spark.comet.memory.logInterval`, and saw at most
+     1 GB per executor that no pool tracked, in every arm, but samples a second apart are too coarse to catch the
+     copy.
    - Then keep the reservation, or fix the copy upstream: `collect_left_input` could reserve it, which is the F1
      item of [apache/datafusion#24768], or build it without holding all of its inputs at once. A spilled bucket
      with flat columns already avoids the copy, by handing its inner join one batch.
-3. **Get CI verdicts and broaden the tests.**
+4. **Get CI verdicts and broaden the tests.**
    - Run the Spark SQL and Iceberg suites with the `run-*` labels, or `dev/local-ci.sh`. They run Comet on-heap,
      where the native pool is unbounded, so they only exercise the path that does not spill. A pass shows that
      the wrapper is transparent.
@@ -533,22 +591,24 @@ In priority order.
    - TPC-H and TPC-DS at scale factor 1 match the golden answers of `CometTPCHQuerySuite` and
      `CometTPCDSQuerySuite`, all 22 and all 134 queries, when the suites' shuffled hash join configuration also
      sets `spark.comet.exec.hashJoin.spill.maxBuildBufferBytes`, to 1 MiB and 256 KiB, so that every larger build
-     side spills. The suites do not take extra configs from outside yet, so those runs edited them. Check them at
-     larger scale factors with real memory pressure.
-4. **Settle the planner integration and the defaults.**
+     side spills. The suites do not take extra configs from outside yet, so those runs edited them. TPC-H at scale
+     factor 100 spills under real memory pressure and returns the same rows as the sort-merge join, see
+     [Status](#status). Run TPC-DS at scale too.
+5. **Settle the planner integration and the defaults.**
    - Work out how this fits with [#6785], which plans the forced shuffled hash join at planning time. Once joins
      can spill, `spark.comet.exec.forceShuffledHashJoin.maxBuildSize` decides only when a join spills, so its
      default limit could be lifted.
-   - Joins whose output order Spark relies on are not eligible, and can still fail. In the TPC-DS plans at scale
-     factor 1, with `spark.comet.exec.forceShuffledHashJoin` and AQE off, that is 10 of 611 native shuffled hash
-     joins, in q14a, q14b, q16, q23b, q69 and q94: inner joins and left anti joins whose probe side is sorted on
-     the join key. For those joins, keeping the sort-merge join may be better.
+   - Joins whose output order an operator above relies on are not eligible, and can still fail. In the TPC-DS plans
+     at scale factor 1, with `spark.comet.exec.forceShuffledHashJoin` and AQE off, there are none among the 611
+     native shuffled hash joins. Before the eligibility check looked at the operators above, 10 joins, in q14a,
+     q14b, q16, q23b, q69 and q94, were not eligible because Spark reported an order for them, which nothing used.
+     Where some operator does rely on the order, keeping the sort-merge join may be better.
    - Joins that use `spark.comet.exec.join.dynamicFilter.enabled` are not eligible either. Build the runtime
      filter over every build row, resident or spilled: bounds and key domains can be accumulated while routing.
    - Decide whether spilling stays on by default. It is on now so that CI runs it. Then decide whether
      `forceShuffledHashJoin` can be on by default, which was the goal of this work, after measuring TPC-H and
      TPC-DS at realistic memory sizes.
-5. **Take what was learned upstream.** Search for existing issues before filing any.
+6. **Take what was learned upstream.** Search for existing issues before filing any.
    - Report to [apache/datafusion#24768]: joining each bucket with a stock `HashJoinExec`, the chunked fallback
      for each join type, and the Bloom filters that keep unmatched probe rows off disk.
    - `InProgressSpillFile` cannot be named outside DataFusion, because its module is `pub(crate)`. Ask for it to
@@ -565,7 +625,7 @@ In priority order.
    - `HashJoinExec` counts its final pass over the build rows as probe input in `input_rows`.
    - `collect_left_input` allocates the concatenated copy and the hash map's chain of row indices without
      reserving them.
-6. **Before leaving draft.** Settle the config names, and trim the research notes from the docs. Coordinate with
+7. **Before leaving draft.** Settle the config names, and trim the research notes from the docs. Coordinate with
    the author of [#6384] and [#6785], who took the Comet side of [#2545].
 
 ## Working on it
