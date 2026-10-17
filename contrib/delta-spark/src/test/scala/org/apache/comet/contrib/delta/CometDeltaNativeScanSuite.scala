@@ -27,7 +27,7 @@ import scala.collection.mutable.ListBuffer
 import org.apache.spark.CometListenerBusUtils
 import org.apache.spark.scheduler.{SparkListener, SparkListenerTaskEnd}
 import org.apache.spark.sql.{DataFrame, Row}
-import org.apache.spark.sql.catalyst.expressions.{AttributeReference, DynamicPruningExpression, Expression, NamedExpression, StructsToJson}
+import org.apache.spark.sql.catalyst.expressions.{AttributeReference, DynamicPruningExpression, DynamicPruningSubquery, Expression, NamedExpression, StructsToJson}
 import org.apache.spark.sql.comet.{CometDeltaNativeScanExec, CometSubqueryBroadcastExec}
 import org.apache.spark.sql.execution.{FileSourceScanExec, InSubqueryExec, QueryExecution, ReusedSubqueryExec, ScalarSubquery, SparkPlan, SubqueryBroadcastExec, SubqueryExec}
 import org.apache.spark.sql.execution.datasources.v2.V2TableWriteExec
@@ -1926,6 +1926,112 @@ class CometDeltaNativeScanSuite extends CometDeltaTestBase {
                   "already verified above")
             }
           }
+        }
+      }
+    }
+  }
+
+  // SPARK-32509: with no broadcast join the DPP filter on one side of the self-join degrades to
+  // TrueLiteral, so both fact scans must canonicalize alike and share one shuffle.
+  test("unused DPP filter does not prevent exchange reuse (SPARK-32509)") {
+    withTempPath { dir =>
+      val path = dir.getAbsolutePath
+      spark
+        .range(1, 26)
+        .selectExpr(
+          "cast(id as int) as store_id",
+          "cast(case when id = 15 then 70 else id % 5 * 10 end as int) as units_sold")
+        .write
+        .format("delta")
+        .partitionBy("store_id")
+        .save(path)
+
+      withTempView("dpp_reuse_fact") {
+        spark.read.format("delta").load(path).createOrReplaceTempView("dpp_reuse_fact")
+        withSQLConf(
+          SQLConf.ADAPTIVE_EXECUTION_ENABLED.key -> "true",
+          SQLConf.DYNAMIC_PARTITION_PRUNING_REUSE_BROADCAST_ONLY.key -> "true",
+          SQLConf.AUTO_BROADCASTJOIN_THRESHOLD.key -> "-1") {
+          val df = sql("""WITH v AS (
+              |  SELECT store_id FROM dpp_reuse_fact WHERE units_sold = 70
+              |)
+              |SELECT * FROM v v1 JOIN v v2 ON v1.store_id = v2.store_id""".stripMargin)
+          assert(
+            df.queryExecution.optimizedPlan.exists(_.expressions.exists(_.exists {
+              case _: DynamicPruningSubquery => true
+              case _ => false
+            })),
+            s"expected a DPP filter in the optimized plan:\n${df.queryExecution.optimizedPlan}")
+
+          val (sparkPlan, cometPlan) = checkSparkAnswer(df)
+          checkAnswer(df, Row(15, 15) :: Nil)
+          assert(
+            collect(cometPlan) { case s: CometDeltaNativeScanExec => s }.nonEmpty,
+            s"expected a native Delta scan:\n${cometPlan.treeString}")
+
+          assert(
+            reusedExchanges(sparkPlan).size == 1,
+            s"Spark should reuse the shuffle once:\n$sparkPlan")
+          assertSameExchangeReuseAsSpark(sparkPlan, cometPlan)
+        }
+      }
+    }
+  }
+
+  // Each UNION ALL branch joins the same aggregate over the Delta fact table to a different
+  // dimension group, so the two DPP scans prune to 1 and 3 store partitions. The shuffles above
+  // them differ only in their DPP filter and must not share a query stage. Coalescing is off: a
+  // coalesced read carries per-partition sizes that would keep the parent exchanges apart anyway.
+  test("shuffle over a DPP scan stage is not reused across UNION ALL branches (#6264)") {
+    withTempPath { dir =>
+      val path = dir.getAbsolutePath
+      spark
+        .range(1000)
+        .selectExpr(
+          "cast(id % 10 as int) as store_id",
+          "cast(id % 13 as int) as item",
+          "cast(id as int) as amount")
+        .write
+        .format("delta")
+        .partitionBy("store_id")
+        .save(s"$path/fact")
+      spark
+        .range(10)
+        .selectExpr(
+          "cast(id as int) as store_id",
+          "case when id = 1 then 'a' when id in (2, 3, 4) then 'b' else 'c' end as grp")
+        .write
+        .parquet(s"$path/dim")
+
+      withTempView("dpp_branch_fact", "dpp_branch_dim") {
+        spark.read.format("delta").load(s"$path/fact").createOrReplaceTempView("dpp_branch_fact")
+        spark.read.parquet(s"$path/dim").createOrReplaceTempView("dpp_branch_dim")
+        withSQLConf(
+          SQLConf.ADAPTIVE_EXECUTION_ENABLED.key -> "true",
+          SQLConf.DYNAMIC_PARTITION_PRUNING_REUSE_BROADCAST_ONLY.key -> "true",
+          SQLConf.COALESCE_PARTITIONS_ENABLED.key -> "false") {
+          val query = """WITH x AS (
+              |  SELECT store_id, item, sum(amount) AS s FROM dpp_branch_fact
+              |  GROUP BY store_id, item),
+              |y AS (SELECT store_id, s % 7 AS b, count(*) AS c FROM x GROUP BY store_id, s % 7)
+              |SELECT y.store_id, y.b, y.c FROM y
+              |JOIN dpp_branch_dim d ON y.store_id = d.store_id WHERE d.grp = 'a'
+              |UNION ALL
+              |SELECT y.store_id, y.b, y.c FROM y
+              |JOIN dpp_branch_dim d ON y.store_id = d.store_id WHERE d.grp = 'b'""".stripMargin
+          val (_, cometPlan) = checkSparkAnswer(query)
+
+          val dppScan: PartialFunction[SparkPlan, CometDeltaNativeScanExec] = {
+            case s: CometDeltaNativeScanExec
+                if s.runtimeFilters.exists(_.isInstanceOf[DynamicPruningExpression]) =>
+              s
+          }
+          assert(
+            collect(cometPlan)(dppScan).map(_.metrics("numPartitions").value).sorted ==
+              Seq(1L, 3L),
+            "Expected one native Delta DPP scan per branch, pruned to 1 and 3 partitions:\n" +
+              cometPlan.treeString)
+          assertNoReusedExchangeOverDppScan(cometPlan)(dppScan)
         }
       }
     }
