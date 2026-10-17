@@ -1069,7 +1069,7 @@ iceberg-java resolves per-write options and <code class="docutils literal notran
 <td><p>the S3 endpoint, region, static/session credentials, path-style, SSE (<code class="docutils literal notranslate"><span class="pre">none</span></code>, <code class="docutils literal notranslate"><span class="pre">s3</span></code>, <code class="docutils literal notranslate"><span class="pre">kms</span></code>, or <code class="docutils literal notranslate"><span class="pre">custom</span></code>; not <code class="docutils literal notranslate"><span class="pre">dsse-kms</span></code>), assume-role, anonymous/config-chain settings parsed by the pinned iceberg-rust version, plus Comet’s credential-provider class and built-in web-identity properties. When a custom provider is configured, its vendor-owned <code class="docutils literal notranslate"><span class="pre">s3.*</span></code> / <code class="docutils literal notranslate"><span class="pre">client.*</span></code> properties are also forwarded; unsupported Iceberg-defined S3 settings still fall back</p></td>
 </tr>
 <tr class="row-even"><td><p>partition spec</p></td>
-<td><p>any, except an identity partition on a <code class="docutils literal notranslate"><span class="pre">float</span></code> or <code class="docutils literal notranslate"><span class="pre">double</span></code> column, or a <code class="docutils literal notranslate"><span class="pre">void</span></code> field whose source column was dropped beside a live field (see below)</p></td>
+<td><p>any, except a <code class="docutils literal notranslate"><span class="pre">void</span></code> field whose source column was dropped beside a live field (see below)</p></td>
 </tr>
 <tr class="row-odd"><td><p>column types</p></td>
 <td><p>any except <code class="docutils literal notranslate"><span class="pre">uuid</span></code> (Spark plans it as a string; no Arrow cast reaches <code class="docutils literal notranslate"><span class="pre">fixed(16)</span></code>) and the v3 types <code class="docutils literal notranslate"><span class="pre">variant</span></code>, <code class="docutils literal notranslate"><span class="pre">unknown</span></code>, <code class="docutils literal notranslate"><span class="pre">timestamp_ns</span></code>, <code class="docutils literal notranslate"><span class="pre">geometry</span></code> and <code class="docutils literal notranslate"><span class="pre">geography</span></code></p></td>
@@ -1126,12 +1126,6 @@ data-bucket name, so configuration for a longer dotted bucket does not by itself
 native write. If Iceberg’s AWS property classes cannot be loaded, vendor <code class="docutils literal notranslate"><span class="pre">s3.*</span></code> / <code class="docutils literal notranslate"><span class="pre">client.*</span></code> keys
 fall back too and planning still completes. The fall-back reason reports only sorted property
 names, never their values, so credentials and tokens do not enter EXPLAIN or plan logs.</p>
-<p>An identity partition on a <code class="docutils literal notranslate"><span class="pre">float</span></code> or <code class="docutils literal notranslate"><span class="pre">double</span></code> column falls back. iceberg-rust compares float
-partition values with an equality that treats <code class="docutils literal notranslate"><span class="pre">-0.0</span></code> and <code class="docutils literal notranslate"><span class="pre">0.0</span></code> as one value, so the native writer
-would put rows with either value in the same partition, where iceberg-java writes two. A read
-that prunes on the other value’s partition would then miss rows. The fall-back stays until
-iceberg-rust distinguishes the two values
-(<a class="reference external" href="https://github.com/apache/iceberg-rust/issues/3325">apache/iceberg-rust#3325</a>).</p>
 <p>On a format-version 3 table with Iceberg 1.10 or newer, a write that rewrites existing rows falls
 back. Copy-on-write <code class="docutils literal notranslate"><span class="pre">DELETE</span></code>, <code class="docutils literal notranslate"><span class="pre">UPDATE</span></code> and <code class="docutils literal notranslate"><span class="pre">MERGE</span></code> and <code class="docutils literal notranslate"><span class="pre">rewrite_data_files</span></code> write the row lineage
 columns <code class="docutils literal notranslate"><span class="pre">_row_id</span></code> and <code class="docutils literal notranslate"><span class="pre">_last_updated_sequence_number</span></code> into the new data files, so that rewritten
@@ -1272,9 +1266,7 @@ batch, so the boundaries land on different rows.</p></li>
 per task. The native writer zero-pads the task attempt id and counts from <code class="docutils literal notranslate"><span class="pre">00000</span></code>; iceberg-java
 leaves the id unpadded and counts from <code class="docutils literal notranslate"><span class="pre">00001</span></code>.</p></li>
 <li><p>Partition directory names match iceberg-java 1.8+’s <code class="docutils literal notranslate"><span class="pre">PartitionSpec.partitionToPath</span></code> for every
-partition type the native writer accepts. Identity partitions on <code class="docutils literal notranslate"><span class="pre">float</span></code> and <code class="docutils literal notranslate"><span class="pre">double</span></code> columns
-fall back (see <a class="reference internal" href="#native-parquet-write-eligibility">Native Parquet write eligibility</a>), so
-iceberg-java names those directories itself. On Iceberg 1.5.x,
+partition type the native writer accepts. On Iceberg 1.5.x,
 which the Spark 3.4 profile pins, iceberg-java itself spelled <code class="docutils literal notranslate"><span class="pre">timestamp</span></code> and <code class="docutils literal notranslate"><span class="pre">timestamptz</span></code>
 directories with <code class="docutils literal notranslate"><span class="pre">LocalDateTime.toString()</span></code> / <code class="docutils literal notranslate"><span class="pre">OffsetDateTime.toString()</span></code>
 (<code class="docutils literal notranslate"><span class="pre">ts=1969-12-31T23:59:58.500Z</span></code>) and left the partition field name unescaped; Comet uses the
