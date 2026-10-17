@@ -205,6 +205,11 @@ redirects = {
     "user-guide/tuning.html": "latest/tuning.html",
     # The compatibility guide became a directory of pages in #4055.
     "user-guide/latest/compatibility.html": "compatibility/index.html",
+    # Parquet and Iceberg documentation was consolidated into one page each.
+    "user-guide/latest/compatibility/scans.html": "../parquet.html",
+    "user-guide/latest/compatibility/parquet-iceberg-known-issues.html": "../parquet.html",
+    "user-guide/latest/tuning/scans.html": "../parquet.html",
+    "user-guide/latest/iceberg-writes.html": "iceberg.html",
 }
 
 
