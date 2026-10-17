@@ -19,9 +19,9 @@
 
 package org.apache.spark.sql.comet.util
 
-import java.io.{DataInputStream, DataOutputStream, File}
+import java.io.{DataOutputStream, File, InputStream}
 import java.nio.ByteBuffer
-import java.nio.channels.Channels
+import java.nio.channels.{Channels, ClosedByInterruptException, ClosedChannelException, ReadableByteChannel}
 
 import scala.jdk.CollectionConverters._
 
@@ -341,10 +341,65 @@ object Utils extends CometTypeShim with Logging {
 
     // use Spark's compression codec (LZ4 by default) and not Comet's compression
     val codec = CompressionCodec.createCodec(SparkEnv.get.conf)
-    val cbbis = bytes.toInputStream()
-    val ins = new DataInputStream(codec.compressedInputStream(cbbis))
     // batches are in Arrow IPC format
-    new ArrowReaderIterator(Channels.newChannel(ins), source)
+    new ArrowReaderIterator(ipcChannel(bytes, codec), source)
+  }
+
+  /**
+   * A channel over the Arrow IPC stream in `bytes`, which [[serializeBatches]] wrote through
+   * `codec`.
+   */
+  def ipcChannel(bytes: ChunkedByteBuffer, codec: CompressionCodec): ReadableByteChannel =
+    new InputStreamChannel(codec.compressedInputStream(bytes.toInputStream()))
+
+  /** Largest piece that [[InputStreamChannel]] reads from its stream at a time. */
+  private[util] val MaxReadPiece = 64 * 1024
+
+  /**
+   * Reads `in` into each buffer it is asked to fill until the buffer is full or `in` ends, up to
+   * [[MaxReadPiece]] bytes at a time through one reused array. `Channels.newChannel` reads 8 KiB
+   * at a time, and enters and leaves the JDK's interruptible I/O machinery for each piece. Like
+   * that channel, this one closes and throws `ClosedByInterruptException` before it reads a piece
+   * on an interrupted thread, so a cancelled decode stops within a piece of where it was.
+   */
+  private final class InputStreamChannel(in: InputStream) extends ReadableByteChannel {
+    private var piece = Array.emptyByteArray
+    private var open = true
+
+    override def read(dst: ByteBuffer): Int = {
+      if (!open) {
+        throw new ClosedChannelException
+      }
+      var total = 0
+      var end = false
+      while (dst.hasRemaining && !end) {
+        if (Thread.currentThread().isInterrupted) {
+          close()
+          throw new ClosedByInterruptException
+        }
+        val length = math.min(dst.remaining(), MaxReadPiece)
+        if (piece.length < length) {
+          piece = new Array[Byte](length)
+        }
+        val read = in.read(piece, 0, length)
+        if (read < 0) {
+          end = true
+        } else {
+          dst.put(piece, 0, read)
+          total += read
+        }
+      }
+      if (end && total == 0) -1 else total
+    }
+
+    override def isOpen: Boolean = open
+
+    override def close(): Unit = {
+      if (open) {
+        open = false
+        in.close()
+      }
+    }
   }
 
   /**
@@ -381,10 +436,7 @@ object Utils extends CometTypeShim with Logging {
       val codec = CompressionCodec.createCodec(SparkEnv.get.conf)
       try {
         for (bytes <- buffers) {
-          val compressedInputStream =
-            new DataInputStream(codec.compressedInputStream(bytes.toInputStream()))
-          val reader =
-            new ArrowStreamReader(Channels.newChannel(compressedInputStream), allocator)
+          val reader = new ArrowStreamReader(ipcChannel(bytes, codec), allocator)
           try {
             // Comet decodes dictionaries during execution, so this shouldn't happen.
             // If it does, fall back to the original uncoalesced buffers because each
