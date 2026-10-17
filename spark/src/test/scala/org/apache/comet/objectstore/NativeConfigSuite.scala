@@ -585,6 +585,27 @@ class NativeConfigSuite extends AnyFunSuite with Matchers {
     NativeConfig.resolveLibhdfsSchemes(conf) shouldBe Set("s3a", "fake")
   }
 
+  test("resolveScanLibhdfsSchemes - libhdfs needs the session's list, scan-only is the rest") {
+    def conf(schemes: Option[String]): Configuration = {
+      val c = new Configuration(false)
+      schemes.foreach(c.set(COMET_LIBHDFS_SCHEMES_KEY, _))
+      c
+    }
+    // (session list, scan list, libhdfs, scanOnly)
+    val cases = Seq(
+      (None, None, Set("hdfs"), Set.empty[String]),
+      (None, Some("fake,hdfs"), Set("hdfs"), Set("fake")),
+      (None, Some("file"), Set.empty[String], Set("file")),
+      (Some("fake,hdfs"), Some("hdfs"), Set("hdfs"), Set.empty[String]),
+      (Some("FAKE"), Some(" fake "), Set("fake"), Set.empty[String]))
+    for ((session, scan, libhdfs, scanOnly) <- cases) {
+      withClue(s"session $session, scan $scan: ") {
+        NativeConfig.resolveScanLibhdfsSchemes(conf(session), conf(scan)) shouldBe
+          NativeConfig.ScanLibhdfsSchemes(libhdfs, scanOnly)
+      }
+    }
+  }
+
   test("resolveS3CompliantSchemes - comma list is trimmed and lowercased, empty means none") {
     val conf = new Configuration(false)
     assert(

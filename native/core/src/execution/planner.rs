@@ -53,7 +53,8 @@ use crate::execution::{
 use crate::jvm_bridge::{jni_call, JVMClasses, ShufflePartitionPusher};
 use arrow::compute::CastOptions;
 use arrow::datatypes::{
-    DataType, Field, FieldRef, Fields, IntervalUnit, Schema, TimeUnit, DECIMAL128_MAX_PRECISION,
+    DataType, Field, FieldRef, Fields, IntervalDayTime, IntervalUnit, Schema, TimeUnit,
+    DECIMAL128_MAX_PRECISION,
 };
 use arrow::ffi_stream::{ArrowArrayStreamReader, FFI_ArrowArrayStream};
 use datafusion::functions_aggregate::bit_and_or_xor::{bit_and_udaf, bit_or_udaf, bit_xor_udaf};
@@ -94,7 +95,7 @@ use datafusion_comet_spark_expr::{
     create_comet_physical_fun, create_comet_physical_fun_with_eval_mode, BinaryOutputStyle,
     BloomFilterAgg, BloomFilterMightContain, CheckedBinaryExpr, CometCollectList, CometCollectSet,
     CsvWriteOptions, EvalMode, ListPositionsExpr, SparkArraysZipFunc, SparkBloomFilterVersion,
-    SparkListAgg, SparkPercentile, Subquery, SumInteger, ToCsv,
+    SparkListAgg, SparkPercentile, SparkPivotFirst, Subquery, SumInteger, ToCsv,
 };
 use datafusion_datasource::TableSchema;
 use iceberg::expr::Bind;
@@ -3698,6 +3699,31 @@ impl PhysicalPlanner {
                     AggregateUDF::new_from_impl(Mode::new(datatype, expr.normalize_neg_zero));
                 Self::create_aggr_func_expr("mode", schema, vec![child], func)
             }
+            AggExprStruct::PivotFirst(expr) => {
+                let pivot_col =
+                    self.create_expr(expr.pivot_column.as_ref().unwrap(), Arc::clone(&schema))?;
+                let value_col =
+                    self.create_expr(expr.value_column.as_ref().unwrap(), Arc::clone(&schema))?;
+                let value_type = to_arrow_datatype(expr.value_datatype.as_ref().unwrap());
+                // Reconstruct pivot values as ScalarValues from the serialized Literal exprs.
+                // The Scala serde builds them as Literal(v, pivot_column.dataType), so they carry
+                // the pivot column's type, which `SparkPivotFirst` builds its lookup index from.
+                let mut pivot_values = Vec::with_capacity(expr.pivot_values.len());
+                for lit_expr in &expr.pivot_values {
+                    let physical = self.create_expr(lit_expr, Arc::clone(&schema))?;
+                    let literal = physical.downcast_ref::<Literal>().ok_or_else(|| {
+                        GeneralError(
+                            "PivotFirst pivot_values must be Literal expressions".to_string(),
+                        )
+                    })?;
+                    pivot_values.push(literal.value().clone());
+                }
+                let func = AggregateUDF::new_from_impl(SparkPivotFirst::try_new(
+                    value_type,
+                    pivot_values,
+                )?);
+                Self::create_aggr_func_expr("pivot_first", schema, vec![pivot_col, value_col], func)
+            }
         }
     }
 
@@ -3780,6 +3806,20 @@ impl PhysicalPlanner {
             WindowFrameType::Range => WindowFrameUnits::Range,
         };
 
+        // For RANGE frames the offset scalar must be arithmetic-compatible with
+        // the ORDER BY column, not just numeric. arrow-arith rejects e.g.
+        // `Date32 + Int32` — it requires an Interval RHS. Capture the ORDER BY
+        // datatype once so both bound branches can coerce accordingly.
+        let range_order_by_type = if matches!(units, WindowFrameUnits::Range) {
+            sort_exprs
+                .first()
+                .map(|s| s.expr.data_type(&input_schema))
+                .transpose()
+                .map_err(|e| GeneralError(format!("Failed to resolve ORDER BY type: {e}")))?
+        } else {
+            None
+        };
+
         let lower_bound: WindowFrameBound = match spark_window_frame
             .lower_bound
             .as_ref()
@@ -3815,10 +3855,14 @@ impl PhysicalPlanner {
                             }
                         }
                         WindowFrameUnits::Range => {
-                            let scalar = match offset.range_offset.as_ref() {
+                            let raw = match offset.range_offset.as_ref() {
                                 Some(lit) => numeric_literal_to_scalar(lit)?,
                                 None => ScalarValue::Int64(Some(offset.offset.abs())),
                             };
+                            let scalar = coerce_range_offset_for_order_by(
+                                raw,
+                                range_order_by_type.as_ref(),
+                            )?;
                             WindowFrameBound::Preceding(scalar)
                         }
                         WindowFrameUnits::Groups => {
@@ -3874,10 +3918,12 @@ impl PhysicalPlanner {
                         }
                     }
                     WindowFrameUnits::Range => {
-                        let scalar = match offset.range_offset.as_ref() {
+                        let raw = match offset.range_offset.as_ref() {
                             Some(lit) => numeric_literal_to_scalar(lit)?,
                             None => ScalarValue::Int64(Some(offset.offset)),
                         };
+                        let scalar =
+                            coerce_range_offset_for_order_by(raw, range_order_by_type.as_ref())?;
                         WindowFrameBound::Following(scalar)
                     }
                     WindowFrameUnits::Groups => {
@@ -4416,6 +4462,37 @@ fn numeric_literal_to_scalar(
     };
 
     Ok(scalar)
+}
+
+/// arrow-arith only provides `Date32 + Interval` kernels, not `Date32 + Int32`.
+/// Spark ships `n PRECEDING/FOLLOWING` as an IntegerType literal, so a DATE
+/// ORDER BY frame would blow up at execution with
+/// "Invalid date arithmetic operation: Date32 + Int32". Wrap integer offsets
+/// as IntervalDayTime (days component) so the frame comparator can compute
+/// `current_date +/- offset` natively.
+fn coerce_range_offset_for_order_by(
+    scalar: ScalarValue,
+    order_by_type: Option<&DataType>,
+) -> Result<ScalarValue, ExecutionError> {
+    let Some(dt) = order_by_type else {
+        return Ok(scalar);
+    };
+    match (dt, &scalar) {
+        (DataType::Date32, ScalarValue::Int32(Some(v))) => Ok(ScalarValue::IntervalDayTime(Some(
+            IntervalDayTime::new(*v, 0),
+        ))),
+        (DataType::Date32, ScalarValue::Int64(Some(v))) => {
+            let days = i32::try_from(*v).map_err(|_| {
+                GeneralError(format!(
+                    "DATE RANGE frame offset {v} does not fit in i32 days"
+                ))
+            })?;
+            Ok(ScalarValue::IntervalDayTime(Some(IntervalDayTime::new(
+                days, 0,
+            ))))
+        }
+        _ => Ok(scalar),
+    }
 }
 
 /// A physical join filter rewritter which rewrites the column indices in the expression
