@@ -92,6 +92,23 @@ rows, including if later batches become more selective. The `dynamic_filter_earl
 metrics belong to the join supplying the filter; intermediate joins and projections
 retain their own input/output metrics.
 
+## Window Functions
+
+`PERCENT_RANK`, `CUME_DIST`, `NTILE`, and aggregates whose frame ends at `UNBOUNDED FOLLOWING`, which includes an
+aggregate over `PARTITION BY` with no `ORDER BY` such as `sum(x) OVER (PARTITION BY k)`, need a whole window partition
+before they return anything. Comet buffers one window partition at a time for them and reserves it from its native
+memory pool, but it does not yet provide spill-to-disk for them. A window partition that does not fit in its share of
+the pool, for example because of a heavily skewed key or a window without `PARTITION BY`, fails the task with a memory
+error where Spark would spill. A window partition needs up to twice its size within that share, for the buffered rows
+and for the copy made to evaluate them. Under the default `fair_unified` pool the share is the task's pool divided by
+the number of memory consumers in the task, so a sort below the window leaves the window about a third of the pool.
+
+To fit a larger window partition, increase `spark.memory.offHeap.size` (see
+[Configuring Comet Memory](memory.md#configuring-comet-memory)), or set `spark.comet.exec.memoryPool=greedy_unified`,
+which does not limit an operator to an equal share. As a last resort, set `spark.comet.exec.window.enabled=false` to
+run window functions in Spark. That setting also moves the window functions that do not buffer a window partition
+back to Spark.
+
 ## Adaptive Partial Aggregation
 
 Set `spark.comet.exec.aggregate.skipPartial.enabled=true` to let Comet bypass partial hash

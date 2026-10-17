@@ -43,8 +43,8 @@ use crate::execution::operators::IcebergScanExec;
 use crate::execution::operators::TopKReaderFilterExec;
 use crate::execution::{
     operators::{
-        ExecutionError, MergeActionContext, MergeInstructionExec, MergeRowsExec, ScanExec,
-        ShuffleScanExec,
+        CometWindowAggExec, ExecutionError, MergeActionContext, MergeInstructionExec,
+        MergeRowsExec, ScanExec, ShuffleScanExec,
     },
     planner::expression_registry::ExpressionRegistry,
     planner::operator_registry::OperatorRegistry,
@@ -63,7 +63,7 @@ use datafusion::functions_aggregate::min_max::max_udaf;
 use datafusion::functions_aggregate::min_max::min_udaf;
 use datafusion::functions_aggregate::sum::sum_udaf;
 use datafusion::physical_expr::aggregate::{AggregateExprBuilder, AggregateFunctionExpr};
-use datafusion::physical_plan::windows::{BoundedWindowAggExec, WindowAggExec};
+use datafusion::physical_plan::windows::BoundedWindowAggExec;
 use datafusion::physical_plan::InputOrderMode;
 use datafusion::{
     arrow::{compute::SortOptions, datatypes::SchemaRef},
@@ -2892,11 +2892,11 @@ impl PhysicalPlanner {
                 // run with bounded memory. This uses DataFusion's
                 // `evaluate_stateful` / row-by-row `evaluate` path, which is the
                 // correct implementation for `LEAD` / `LAG` with `IGNORE NULLS`
-                // (`WindowAggExec` calls `evaluate_all`, whose
+                // (`CometWindowAggExec`, like `WindowAggExec`, calls `evaluate_all`, whose
                 // `evaluate_all_with_ignore_null` has a sign-wrap bug for `LEAD`
                 // that produces all-NULL output).
                 //
-                // Fall back to `WindowAggExec` otherwise. That covers
+                // Use `CometWindowAggExec` otherwise. That covers
                 // `PERCENT_RANK` / `CUME_DIST` / `NTILE`
                 // (`!uses_bounded_memory()` — "Can not execute X in a streaming
                 // fashion") and keeps the Spark-compatible Comet UDAFs
@@ -2917,7 +2917,7 @@ impl PhysicalPlanner {
                         !partition_exprs.is_empty(),
                     )?)
                 } else {
-                    Arc::new(WindowAggExec::try_new(
+                    Arc::new(CometWindowAggExec::try_new(
                         window_expr,
                         Arc::clone(&child.native_plan),
                         !partition_exprs.is_empty(),

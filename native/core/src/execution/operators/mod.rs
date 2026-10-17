@@ -46,3 +46,5 @@ mod scan;
 mod shuffle_scan;
 pub use csv_scan::init_csv_datasource_exec;
 pub use shuffle_scan::ShuffleScanExec;
+mod window_agg;
+pub(crate) use window_agg::CometWindowAggExec;
