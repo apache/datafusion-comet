@@ -281,9 +281,10 @@ for production, so do not turn it off to avoid an entry on this page.
   ([#5553](https://github.com/apache/datafusion-comet/issues/5553),
   [#5739](https://github.com/apache/datafusion-comet/issues/5739)).
 - **Reads that Spark rejects.** Comet returns rows where Spark fails the read for
-  `TIMESTAMP(NANOS)` columns read as `timestamp` or `timestamp_ntz`
-  ([#7034](https://github.com/apache/datafusion-comet/issues/7034)), `INT` columns read as
-  `INTERVAL DAY TO SECOND` ([#5188](https://github.com/apache/datafusion-comet/issues/5188)), and
+  `TIMESTAMP(NANOS)` values with `isAdjustedToUTC=false` inside an array, read as `timestamp` or
+  `timestamp_ntz` ([#7034](https://github.com/apache/datafusion-comet/issues/7034)), `INT`
+  columns read as `INTERVAL DAY TO SECOND`
+  ([#5188](https://github.com/apache/datafusion-comet/issues/5188)), and
   Variant-annotated fields read as a plain struct
   ([#5741](https://github.com/apache/datafusion-comet/issues/5741)).
 
