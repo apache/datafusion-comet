@@ -2918,6 +2918,12 @@ trait CometHashJoin {
       !dynamicFilterEnabled &&
       (join.outputOrdering.isEmpty ||
         join.getTagValue(CometExecRule.JOIN_ORDER_UNUSED_TAG).isDefined)
+    // An inner join that spills may switch to a DataFusion sort-merge join, which takes the key
+    // types that `CometSortMergeJoinExec` does.
+    val sortMergeFallback =
+      CometConf.COMET_EXEC_HASH_JOIN_SPILL_SORT_MERGE_FALLBACK_ENABLED.get(join.conf) &&
+        (join.leftKeys ++ join.rightKeys).forall(key =>
+          CometSortMergeJoinExec.supportedSortMergeJoinEqualType(key.dataType))
 
     if (leftKeys.forall(_.isDefined) &&
       rightKeys.forall(_.isDefined) &&
@@ -2934,6 +2940,9 @@ trait CometHashJoin {
         .setSpillEnabled(spillEnabled)
         .setSpillMaxBuildBufferBytes(CometConf.COMET_EXEC_HASH_JOIN_SPILL_MAX_BUILD_BUFFER_BYTES
           .get(join.conf))
+        .setSpillSortMergeFallback(sortMergeFallback)
+        .setSpillSortMergeFallbackAlways(
+          CometConf.COMET_EXEC_HASH_JOIN_SPILL_SORT_MERGE_FALLBACK_ALWAYS.get(join.conf))
       condition.foreach(joinBuilder.setCondition)
       Some(builder.setHashJoin(joinBuilder).build())
     } else {
@@ -3517,15 +3526,16 @@ object CometSortMergeJoinExec extends CometOperatorSerde[SortMergeJoinExec] {
   /**
    * Returns true if given datatype is supported as a key in DataFusion sort merge join.
    */
-  private def supportedSortMergeJoinEqualType(dataType: DataType): Boolean = dataType match {
-    case st: StringType if isStringCollationType(st) => false
-    case _: ByteType | _: ShortType | _: IntegerType | _: LongType | _: FloatType |
-        _: DoubleType | _: StringType | _: BinaryType | _: DateType | _: DecimalType |
-        _: BooleanType =>
-      true
-    case TimestampNTZType | _: TimestampType => true
-    case _ => false
-  }
+  private[comet] def supportedSortMergeJoinEqualType(dataType: DataType): Boolean =
+    dataType match {
+      case st: StringType if isStringCollationType(st) => false
+      case _: ByteType | _: ShortType | _: IntegerType | _: LongType | _: FloatType |
+          _: DoubleType | _: StringType | _: BinaryType | _: DateType | _: DecimalType |
+          _: BooleanType =>
+        true
+      case TimestampNTZType | _: TimestampType => true
+      case _ => false
+    }
 
 }
 

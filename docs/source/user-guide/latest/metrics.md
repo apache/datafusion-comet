@@ -101,6 +101,7 @@ A native shuffled hash join that can spill reports these additional metric keys.
 | `split_buckets`         | Spilled buckets split again because they did not fit when read back.                                   |
 | `chunked_buckets`       | Spilled buckets joined in chunks because splitting could not shrink them.                              |
 | `bloom_filtered_rows`   | Probe rows of spilled buckets that the bucket's key filter showed to match nothing, joined in memory.  |
+| `sort_merge_joins`      | Joins run as sort-merge joins, because an inner join's probe rows matched many build rows each.        |
 | `budget_overflow_bytes` | Memory the join reserved beyond its own estimate. It is accounted, but more than zero points at a bug. |
 
 With `spark.comet.exec.join.dynamicFilter.enabled=true`, native broadcast and shuffled hash joins

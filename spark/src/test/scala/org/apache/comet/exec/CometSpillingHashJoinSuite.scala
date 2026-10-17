@@ -116,6 +116,39 @@ class CometSpillingHashJoinSuite extends CometTestBase {
     }
   }
 
+  test("an inner join that switches to a sort-merge join matches Spark") {
+    // Each key has 20 build rows, so that every probe row matches many.
+    withParquetTable((0 until 8000).map(i => (i % 400, i, s"build-payload-$i")), "build") {
+      withParquetTable((0 until 12000).map(i => (i % 500, i)), "probe") {
+        // The first builds on the right side, which the native plan swaps, and the second on the
+        // left.
+        val queries = Seq(
+          "SELECT /*+ SHUFFLE_HASH(build) */ probe._2, build._2, build._3 FROM probe JOIN build " +
+            "ON probe._1 = build._1 AND build._2 % 7 < probe._2 % 5",
+          "SELECT /*+ SHUFFLE_HASH(build) */ build._3, probe._2 FROM build JOIN probe " +
+            "ON probe._1 = build._1")
+        val always = CometConf.COMET_EXEC_HASH_JOIN_SPILL_SORT_MERGE_FALLBACK_ALWAYS.key -> "true"
+        for (maxBuildBufferBytes <- Seq("0", "65536"); query <- queries) {
+          withSQLConf(
+            shuffledHashJoins ++ Seq(
+              always,
+              CometConf.COMET_EXEC_HASH_JOIN_SPILL_MAX_BUILD_BUFFER_BYTES.key ->
+                maxBuildBufferBytes): _*) {
+            val (_, comet) = checkSparkAnswerAndOperator(sql(query))
+            assert(metric(comet, "sort_merge_joins") > 0, query)
+            assert(metric(comet, "budget_overflow_bytes") == 0, query)
+          }
+        }
+        withSQLConf(shuffledHashJoins ++ Seq(
+          always,
+          CometConf.COMET_EXEC_HASH_JOIN_SPILL_SORT_MERGE_FALLBACK_ENABLED.key -> "false"): _*) {
+          val (_, comet) = checkSparkAnswerAndOperator(sql(queries.head))
+          assert(metric(comet, "sort_merge_joins") == 0)
+        }
+      }
+    }
+  }
+
   test("an existence join matches Spark when the build side spills") {
     withJoinTables {
       withSQLConf(

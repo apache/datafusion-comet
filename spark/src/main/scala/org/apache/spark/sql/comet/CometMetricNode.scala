@@ -530,6 +530,8 @@ object CometMetricNode {
         SQLMetrics.createMetric(sc, "Number of spilled buckets joined in chunks"),
       "bloom_filtered_rows" ->
         SQLMetrics.createMetric(sc, "Number of probe rows of spilled buckets kept off disk"),
+      "sort_merge_joins" ->
+        SQLMetrics.createMetric(sc, "Number of joins run as sort-merge joins instead"),
       "budget_overflow_bytes" ->
         SQLMetrics.createSizeMetric(sc, "Memory reserved beyond the join's own estimate"))
   }

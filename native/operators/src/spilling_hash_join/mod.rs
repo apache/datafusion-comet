@@ -35,6 +35,8 @@
 //! - Each spilled bucket is then joined from its files, one at a time. A bucket that does not fit
 //!   is split on the next bits of the hash, up to [`routing::MAX_LEVEL`] levels. A bucket that
 //!   splitting cannot shrink holds the rows of one key, and is joined in chunks: see [`chunked`].
+//! - An inner join whose probe rows match many build rows each switches to a sort-merge join for
+//!   the rest of the probe input, and so do the spilled pairs after it: see [`fallback`].
 //!
 //! Memory: everything the operator holds, and everything an inner join holds, is reserved under
 //! one consumer, including what `HashJoinExec` allocates without reserving. See [`memory`].
@@ -45,6 +47,7 @@ mod bloom;
 mod chunked;
 mod concat;
 mod exec;
+mod fallback;
 mod memory;
 mod probe;
 mod routing;
@@ -55,3 +58,4 @@ mod stream;
 mod tests;
 
 pub use exec::{SpillingHashJoinConfig, SpillingHashJoinExec};
+pub use fallback::SortMergeFallback;

@@ -633,6 +633,30 @@ object CometConf extends ShimCometConf {
       .checkValue(v => v >= 0, "Must not be negative")
       .createWithDefault(0)
 
+  val COMET_EXEC_HASH_JOIN_SPILL_SORT_MERGE_FALLBACK_ENABLED: ConfigEntry[Boolean] =
+    conf(s"$COMET_EXEC_CONFIG_PREFIX.hashJoin.spill.sortMergeFallback.enabled")
+      .category(CATEGORY_EXEC)
+      .doc(
+        "Whether a spilling native shuffled hash join that is an inner join switches to a " +
+          "sort-merge join for the rest of its input once its probe rows turn out to match " +
+          "many build rows each, its build side does not fit in the CPU cache, and its probe " +
+          "has taken several times as long as its build. A hash join is then several times " +
+          "slower than a sort-merge join. Has no effect unless " +
+          s"`${COMET_EXEC_HASH_JOIN_SPILL_ENABLED.key}` is enabled.")
+      .booleanConf
+      .createWithDefault(true)
+
+  val COMET_EXEC_HASH_JOIN_SPILL_SORT_MERGE_FALLBACK_ALWAYS: ConfigEntry[Boolean] =
+    conf(s"$COMET_EXEC_CONFIG_PREFIX.hashJoin.spill.sortMergeFallback.always")
+      .category(CATEGORY_TESTING)
+      .doc(
+        "For testing: switch every spilling inner join to a sort-merge join after its first " +
+          "probe batch that matches, whatever its matches cost. Has no effect unless " +
+          s"`${COMET_EXEC_HASH_JOIN_SPILL_SORT_MERGE_FALLBACK_ENABLED.key}` is enabled.")
+      .internal()
+      .booleanConf
+      .createWithDefault(false)
+
   val COMET_EXEC_TOPK_FUSION_ENABLED: ConfigEntry[Boolean] =
     conf(s"$COMET_EXEC_CONFIG_PREFIX.topK.fusion.enabled")
       .category(CATEGORY_EXEC)

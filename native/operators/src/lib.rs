@@ -41,4 +41,4 @@ pub use projection::CometProjectionExec;
 pub use range::range_exec;
 pub use rank_limit::{PartitionedRankLimitExec, WindowFnKind};
 pub use sample::SampleExec;
-pub use spilling_hash_join::{SpillingHashJoinConfig, SpillingHashJoinExec};
+pub use spilling_hash_join::{SortMergeFallback, SpillingHashJoinConfig, SpillingHashJoinExec};

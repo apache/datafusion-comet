@@ -1105,6 +1105,11 @@ message HashJoin {
   // When nonzero, spill once the build side holds this many bytes in memory, even if the memory
   // pool would grant more.
   uint64 spill_max_build_buffer_bytes = 12;
+  // Let a spilling inner join switch to a sort-merge join once its probe rows turn out to match
+  // many build rows each.
+  bool spill_sort_merge_fallback = 13;
+  // For tests: with spill_sort_merge_fallback, switch after the first probe batch that matches.
+  bool spill_sort_merge_fallback_always = 14;
 }
 
 message SortMergeJoin {

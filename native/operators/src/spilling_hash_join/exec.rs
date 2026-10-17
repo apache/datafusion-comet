@@ -36,6 +36,7 @@ use datafusion::physical_plan::{
 
 use futures::StreamExt;
 
+use super::fallback::SortMergeFallback;
 use super::stream::{Driver, JoinSpec};
 
 /// Settings of [`SpillingHashJoinExec`].
@@ -45,6 +46,9 @@ pub struct SpillingHashJoinConfig {
     /// grant more. None spills only when the pool refuses. Tests set it low to run every join
     /// through the spilling path.
     pub max_build_buffer_bytes: Option<usize>,
+    /// When an inner join switches to a sort-merge join, or None if it never does. See
+    /// [`SortMergeFallback`].
+    pub sort_merge_fallback: Option<SortMergeFallback>,
 }
 
 /// A shuffled hash join that spills to disk instead of failing when its build side does not fit

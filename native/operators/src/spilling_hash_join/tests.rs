@@ -40,11 +40,12 @@ use datafusion::physical_expr::expressions::{BinaryExpr, Column};
 use datafusion::physical_expr::PhysicalExprRef;
 use datafusion::physical_plan::joins::utils::{ColumnIndex, JoinFilter};
 use datafusion::physical_plan::joins::{HashJoinExec, PartitionMode};
+use datafusion::physical_plan::projection::ProjectionExec;
 use datafusion::physical_plan::{collect, ExecutionPlan};
 use datafusion::prelude::SessionConfig;
 use futures::StreamExt;
 
-use super::{SpillingHashJoinConfig, SpillingHashJoinExec};
+use super::{SortMergeFallback, SpillingHashJoinConfig, SpillingHashJoinExec};
 
 const JOIN_TYPES: [JoinType; 10] = [
     JoinType::Inner,
@@ -292,6 +293,7 @@ struct Spilled {
     split_buckets: usize,
     chunked_buckets: usize,
     bloom_filtered_rows: usize,
+    sort_merge_joins: usize,
 }
 
 /// Runs the join both ways and checks that they emit the same rows. The spilling join runs with
@@ -368,6 +370,7 @@ async fn check_input(
             split_buckets: metric(spilling.as_ref(), "split_buckets"),
             chunked_buckets: metric(spilling.as_ref(), "chunked_buckets"),
             bloom_filtered_rows: metric(spilling.as_ref(), "bloom_filtered_rows"),
+            sort_merge_joins: metric(spilling.as_ref(), "sort_merge_joins"),
         };
     }
     Ok(spilled)
@@ -390,6 +393,7 @@ fn emits_build_rows_without_probe(join_type: JoinType) -> bool {
 fn limit(bytes: usize) -> SpillingHashJoinConfig {
     SpillingHashJoinConfig {
         max_build_buffer_bytes: Some(bytes),
+        ..Default::default()
     }
 }
 
@@ -1071,5 +1075,155 @@ async fn wide_rows() -> Result<()> {
             check_input(&input, join_type, false, &["k"], limit(1024 * 1024), None).await?;
         assert!(spilled.spilled_buckets > 0, "{join_type} did not spill");
     }
+    Ok(())
+}
+
+/// Keys of which each has about 50 build rows, so that every probe row matches many.
+const FEW_KEYS: Keys = Keys {
+    range: 40,
+    null_every: 97,
+    hot_percent: 0,
+};
+
+/// A join that always switches.
+fn always_switch(max_build_buffer_bytes: Option<usize>) -> SpillingHashJoinConfig {
+    SpillingHashJoinConfig {
+        max_build_buffer_bytes,
+        sort_merge_fallback: Some(SortMergeFallback::always()),
+    }
+}
+
+/// An inner join switches to a sort-merge join after its first probe batch, and the sort-merge
+/// join joins the rest of the probe input, in memory and when the build side spills, when the
+/// spilled pairs that follow are joined by sort-merge joins too.
+#[tokio::test]
+async fn sort_merge_fallback() -> Result<()> {
+    let build = table(2000, FEW_KEYS, 21);
+    let probe = table(
+        3000,
+        Keys {
+            range: 50,
+            null_every: 89,
+            ..FEW_KEYS
+        },
+        22,
+    );
+    for with_filter in [false, true] {
+        let spilled = check(
+            &build,
+            &probe,
+            JoinType::Inner,
+            with_filter,
+            &["k"],
+            always_switch(None),
+            None,
+        )
+        .await?;
+        assert_eq!(spilled.spilled_buckets, 0);
+        assert_eq!(spilled.sort_merge_joins, 1, "filter {with_filter}");
+
+        let spilled = check(
+            &build,
+            &probe,
+            JoinType::Inner,
+            with_filter,
+            &["k"],
+            always_switch(Some(16 * 1024)),
+            None,
+        )
+        .await?;
+        assert!(spilled.spilled_buckets > 0);
+        assert!(
+            spilled.sort_merge_joins > 1,
+            "filter {with_filter}: {spilled:?}"
+        );
+        assert_eq!(spilled.split_buckets, 0);
+        assert_eq!(spilled.chunked_buckets, 0);
+    }
+    Ok(())
+}
+
+/// Join types that track which rows matched never switch, because the sort-merge join could not
+/// take over that record.
+#[tokio::test]
+async fn sort_merge_fallback_is_for_inner_joins() -> Result<()> {
+    let build = table(2000, FEW_KEYS, 23);
+    let probe = table(3000, FEW_KEYS, 24);
+    for join_type in JOIN_TYPES {
+        if join_type == JoinType::Inner {
+            continue;
+        }
+        for max_build_buffer_bytes in [None, Some(16 * 1024)] {
+            let spilled = check(
+                &build,
+                &probe,
+                join_type,
+                true,
+                &["k"],
+                always_switch(max_build_buffer_bytes),
+                None,
+            )
+            .await?;
+            assert_eq!(spilled.sort_merge_joins, 0, "{join_type}");
+        }
+    }
+    Ok(())
+}
+
+/// A join whose probe rows match about one build row each does not switch.
+#[tokio::test]
+async fn sort_merge_fallback_needs_many_matches() -> Result<()> {
+    let build = table(5000, UNIFORM, 25);
+    let probe = table(8000, UNIFORM, 26);
+    for max_build_buffer_bytes in [None, Some(96 * 1024)] {
+        let spilled = check(
+            &build,
+            &probe,
+            JoinType::Inner,
+            true,
+            &["k"],
+            SpillingHashJoinConfig {
+                max_build_buffer_bytes,
+                sort_merge_fallback: Some(SortMergeFallback {
+                    min_probe_rows: 1,
+                    ..SortMergeFallback::default()
+                }),
+            },
+            None,
+        )
+        .await?;
+        assert_eq!(spilled.sort_merge_joins, 0);
+    }
+    Ok(())
+}
+
+/// A join that Comet swaps to build on its right input, with a residual filter on both sides,
+/// switches and still matches, as the native plan of a Spark `BuildRight` join does.
+#[tokio::test]
+async fn sort_merge_fallback_of_a_swapped_join() -> Result<()> {
+    let build = table(2000, FEW_KEYS, 27);
+    let probe = table(3000, FEW_KEYS, 28);
+    // Probe on the left and build on the right, swapped the way Comet's planner does it.
+    let unswapped = hash_join(&probe, &build, JoinType::Inner, true, &["k"])?;
+    let swapped = unswapped.swap_inputs(PartitionMode::Partitioned)?;
+    let unlimited = context(None, SpillCompression::Uncompressed);
+    let expected = rows(&collect(Arc::clone(&swapped), Arc::clone(&unlimited)).await?);
+    let projection = swapped
+        .downcast_ref::<ProjectionExec>()
+        .expect("an inner join is reordered after the swap");
+    let inner = projection
+        .input()
+        .downcast_ref::<HashJoinExec>()
+        .expect("under the projection");
+    let spilling: Arc<dyn ExecutionPlan> =
+        Arc::new(SpillingHashJoinExec::try_new(inner, always_switch(None))?.expect("wrapped"));
+    let plan = Arc::new(ProjectionExec::try_new(
+        projection.expr().to_vec(),
+        Arc::clone(&spilling),
+    )?);
+    let actual = rows(&collect(plan, unlimited).await?);
+    assert_eq!(metric(spilling.as_ref(), "sort_merge_joins"), 1);
+    assert_eq!(actual.len(), expected.len());
+    assert_eq!(actual, expected);
     Ok(())
 }

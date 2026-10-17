@@ -20,6 +20,7 @@
 use std::mem;
 use std::sync::Arc;
 
+use arrow::compute::concat_batches;
 use arrow::datatypes::SchemaRef;
 use arrow::record_batch::RecordBatch;
 use datafusion::common::utils::memory::{get_record_batch_memory_size, RecordBatchMemoryCounter};
@@ -30,15 +31,16 @@ use datafusion::execution::TaskContext;
 use datafusion::physical_expr::PhysicalExprRef;
 use datafusion::physical_plan::joins::HashJoinExec;
 use datafusion::physical_plan::metrics::{
-    Count, ExecutionPlanMetricsSet, Gauge, MetricBuilder, SpillMetrics,
+    Count, ExecutionPlanMetricsSet, Gauge, MetricBuilder, MetricsSet, SpillMetrics,
 };
 use datafusion::physical_plan::spill::SpillManager;
 use datafusion::physical_plan::{ExecutionPlan, SendableRecordBatchStream};
-use futures::StreamExt;
+use futures::{StreamExt, TryStreamExt};
 use parking_lot::Mutex;
 
 use super::bloom::KeyFilter;
 use super::chunked::ChunkedPair;
+use super::fallback::{sort_merge_join, JoinProgress, ProbeHandoff, SortMergeFallback};
 use super::memory::{
     try_reserve, BudgetPool, BuildMemory, BuildMemoryEstimator, PerfectHashConfig,
 };
@@ -294,6 +296,18 @@ pub(super) struct Driver {
     /// Probe rows of spilled buckets that a filter showed to match nothing, and that were joined
     /// with the resident buckets instead of being written to disk.
     filtered_probe_rows: Count,
+    /// The task's context, whose pool the sort-merge joins of [`super::fallback`] reserve from.
+    context: Arc<TaskContext>,
+    /// When an inner join switches to a sort-merge join, or None if this join never does.
+    fallback: Option<SortMergeFallback>,
+    /// The probe input and the build side of the running inner join, if it may switch.
+    watched: Option<(Arc<ProbeHandoff>, RecordBatch)>,
+    /// Set once an inner join has switched, after which spilled pairs are joined by sort-merge
+    /// joins too.
+    sort_merge: bool,
+    /// Joins that ran as sort-merge joins: the rest of an inner join that switched, and spilled
+    /// pairs after it.
+    sort_merge_joins: Count,
     phase: Phase,
     pairs: Vec<Pair>,
 }
@@ -366,6 +380,13 @@ impl Driver {
         let build_reader =
             SpillManager::new(Arc::clone(&env), spill_metrics.clone(), spec.build_schema());
         let probe_reader = SpillManager::new(env, spill_metrics, spec.probe_schema());
+        // Each probe row of an inner join is joined by the hash join or by the sort-merge join
+        // that takes over, and emits the same rows either way. Other join types track unmatched
+        // rows, which the sort-merge join could not take over.
+        let fallback = spec
+            .config
+            .sort_merge_fallback
+            .filter(|_| spec.template.join_type == JoinType::Inner);
         Ok(Self {
             partition,
             inner_context,
@@ -384,6 +405,12 @@ impl Driver {
                 .counter("chunked_buckets", partition),
             filtered_probe_rows: MetricBuilder::new(&plan_metrics)
                 .counter("bloom_filtered_rows", partition),
+            sort_merge_joins: MetricBuilder::new(&plan_metrics)
+                .counter("sort_merge_joins", partition),
+            context,
+            fallback,
+            watched: None,
+            sort_merge: false,
             plan_metrics,
             inner: held.new_empty(),
             concat: held.new_empty(),
@@ -421,6 +448,12 @@ impl Driver {
                         else {
                             unreachable!()
                         };
+                        if let Some((handoff, build)) = self.watched.take() {
+                            if let Some(probe) = handoff.take_switched_input() {
+                                self.switch(build, probe, after)?;
+                                continue;
+                            }
+                        }
                         self.finish_stream(after).await?;
                     }
                 },
@@ -463,8 +496,7 @@ impl Driver {
         let memory = self.estimator.for_batches(&batches, self.held.size())?;
         if self.reserve_inner(memory, 0)? {
             let budget = self.held.size() + memory.reserved;
-            let join = self.inner_join(batches_stream(self.spec.build_schema(), batches), probe)?;
-            return self.start_inner(join, budget, After::Join);
+            return self.start_inner_join(batches, probe, budget, After::Join);
         }
         let rest = batches_stream(self.spec.build_schema(), vec![]);
         self.bucketed(batches, sizes, None, rest, probe).await
@@ -535,8 +567,12 @@ impl Driver {
         )));
         let routed = RoutedProbeStream::new_stream(Arc::clone(&router), self.spec.probe_schema());
         let budget = self.held.size() + memory.reserved;
-        let join = self.inner_join(batches_stream(self.spec.build_schema(), resident), routed)?;
-        self.start_inner(join, budget, After::Resident(router, build_files))
+        self.start_inner_join(
+            resident,
+            routed,
+            budget,
+            After::Resident(router, build_files),
+        )
     }
 
     fn place_build_batch(
@@ -603,6 +639,9 @@ impl Driver {
         {
             return Ok(());
         }
+        if self.sort_merge {
+            return self.sort_merge_pair(pair);
+        }
         let build_bytes = pair.build.as_ref().map_or(0, |file| file.bytes);
         let read_ahead = pair.build.as_ref().map_or(0, SpilledFile::read_ahead_bytes)
             + pair.probe.as_ref().map_or(0, SpilledFile::read_ahead_bytes);
@@ -617,6 +656,27 @@ impl Driver {
         }
         if self.reserve_held(build_bytes)? {
             if self.reserve_inner(memory, read_ahead)? {
+                let budget = build_bytes + memory.reserved;
+                let probe = match &pair.probe {
+                    Some(file) => file.read(&self.probe_reader)?,
+                    None => batches_stream(self.spec.probe_schema(), vec![]),
+                };
+                if self.fallback.is_some() {
+                    // A join that may switch gets its build side as one batch, which the
+                    // concatenation reserved above covers when the file does not read as one.
+                    let build = match &pair.build {
+                        Some(file) => match file.read_as_one_batch(&self.build_reader).await? {
+                            Some(batch) => vec![batch],
+                            None => {
+                                file.read_compacted(&self.build_reader)?
+                                    .try_collect()
+                                    .await?
+                            }
+                        },
+                        None => vec![],
+                    };
+                    return self.start_inner_join(build, probe, budget, After::Join);
+                }
                 // The build side is held whole, so it is read back as one batch if it can be, and
                 // compacted otherwise.
                 let build = match &pair.build {
@@ -626,12 +686,9 @@ impl Driver {
                     },
                     None => batches_stream(self.spec.build_schema(), vec![]),
                 };
-                let probe = match &pair.probe {
-                    Some(file) => file.read(&self.probe_reader)?,
-                    None => batches_stream(self.spec.probe_schema(), vec![]),
-                };
                 let join = self.inner_join(build, probe)?;
-                return self.start_inner(join, build_bytes + memory.reserved, After::Join);
+                self.start_inner(join, budget, After::Join)?;
+                return Ok(());
             }
             self.held.free();
         }
@@ -774,7 +831,8 @@ impl Driver {
         self.concat.resize(memory.transient);
         let budget = self.held.size() + memory.reserved;
         let join = chunked.chunk_join(&self.spec.template, batches, &self.probe_reader)?;
-        self.start_inner(join, budget, After::Chunk(chunked))
+        self.start_inner(join, budget, After::Chunk(chunked))?;
+        Ok(())
     }
 
     /// Continues after a stream has emitted everything.
@@ -839,20 +897,99 @@ impl Driver {
             .build()
     }
 
-    fn start_inner(&mut self, join: HashJoinExec, budget: usize, after: After) -> Result<()> {
+    /// Starts an inner join over `build`. When the join may switch to a sort-merge join, its build
+    /// side is made one batch, which the sort-merge join can then read too: the inner join keeps a
+    /// single batch as it is, so this is the copy it would have made, and is reserved as such.
+    fn start_inner_join(
+        &mut self,
+        build: Vec<RecordBatch>,
+        probe: SendableRecordBatchStream,
+        budget: usize,
+        after: After,
+    ) -> Result<()> {
+        let Some(fallback) = self.fallback else {
+            let join = self.inner_join(batches_stream(self.spec.build_schema(), build), probe)?;
+            self.start_inner(join, budget, after)?;
+            return Ok(());
+        };
+        let build = one_batch(&self.spec.build_schema(), build)?;
+        self.concat.free();
+        // The copy can take a few bytes more than the batches it was made from, for padding, and
+        // the inner join reserves what it takes.
+        let extra = RecordBatchMemoryCounter::new()
+            .count_batch(&build)
+            .saturating_sub(self.held.size());
+        self.held.grow(extra);
+        let budget = budget + extra;
+        let (handoff, probe) = ProbeHandoff::new(probe, fallback);
+        let join = self.inner_join(
+            batches_stream(self.spec.build_schema(), vec![build.clone()]),
+            probe,
+        )?;
+        let metrics = self.start_inner(join, budget, after)?;
+        handoff.watch(JoinProgress::find(&metrics));
+        self.watched = Some((handoff, build));
+        Ok(())
+    }
+
+    /// Joins `build` with `probe`, the probe input that an inner join over `build` left unread
+    /// when it switched, by a sort-merge join, and then carries on as `after` says.
+    fn switch(
+        &mut self,
+        build: RecordBatch,
+        probe: SendableRecordBatchStream,
+        after: After,
+    ) -> Result<()> {
+        // The inner join has dropped what it reserved, and the sorts reserve what they hold.
+        self.held.free();
+        self.inner.free();
+        self.concat.free();
+        self.sort_merge = true;
+        self.sort_merge_joins.add(1);
+        let build = batches_stream(self.spec.build_schema(), vec![build]);
+        let output = sort_merge_join(&self.spec.template, build, probe, Arc::clone(&self.context))?;
+        self.phase = Phase::Running(output, after);
+        Ok(())
+    }
+
+    /// Joins a spilled pair by a sort-merge join, which reads both files in sorted order and
+    /// spills as it needs to, so the pair is neither split nor joined in chunks.
+    fn sort_merge_pair(&mut self, pair: Pair) -> Result<()> {
+        self.sort_merge_joins.add(1);
+        let build = match &pair.build {
+            Some(file) => file.read(&self.build_reader)?,
+            None => batches_stream(self.spec.build_schema(), vec![]),
+        };
+        let probe = match &pair.probe {
+            Some(file) => file.read(&self.probe_reader)?,
+            None => batches_stream(self.spec.probe_schema(), vec![]),
+        };
+        let output = sort_merge_join(&self.spec.template, build, probe, Arc::clone(&self.context))?;
+        self.phase = Phase::Running(output, After::Join);
+        Ok(())
+    }
+
+    /// Starts `join` and returns its metrics, which it registers when it starts.
+    fn start_inner(
+        &mut self,
+        join: HashJoinExec,
+        budget: usize,
+        after: After,
+    ) -> Result<MetricsSet> {
         self.budget.set_budget(budget);
         let output = join.execute(self.partition, Arc::clone(&self.inner_context));
         // `HashJoinExec` registers its metrics in `execute`. Keep the live counters of what adds up
         // across the inner joins by name: time and the hit and fanout ratios. Rows, batches and
         // memory are counted for the operator as a whole.
-        for metric in join.metrics().unwrap_or_default().iter() {
+        let metrics = join.metrics().unwrap_or_default();
+        for metric in metrics.iter() {
             if !OWN_METRICS.contains(&metric.value().name()) {
                 self.plan_metrics.register(Arc::clone(metric));
             }
         }
         self.build_mem_used.set_max(self.reserved());
         self.phase = Phase::Running(output?, after);
-        Ok(())
+        Ok(metrics)
     }
 
     /// Everything the operator has reserved.
@@ -901,6 +1038,14 @@ impl Driver {
         }
         try_reserve(&self.headroom, wanted - self.headroom.size())
     }
+}
+
+/// `batches` as one batch, dropping them once they are copied.
+fn one_batch(schema: &SchemaRef, mut batches: Vec<RecordBatch>) -> Result<RecordBatch> {
+    if batches.len() == 1 {
+        return Ok(batches.pop().expect("one batch"));
+    }
+    Ok(concat_batches(schema, &batches)?)
 }
 
 /// The metrics of an inner `HashJoinExec` that the operator reports for itself instead, because

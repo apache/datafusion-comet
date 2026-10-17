@@ -88,8 +88,8 @@ use datafusion::{
 };
 use datafusion_comet_operators::{
     range_exec, CometFilterExec, CometProjectionExec, ExpandExec, ExplodeExec,
-    PartitionedRankLimitExec, SampleExec, SpillingHashJoinConfig, SpillingHashJoinExec,
-    WindowFnKind,
+    PartitionedRankLimitExec, SampleExec, SortMergeFallback, SpillingHashJoinConfig,
+    SpillingHashJoinExec, WindowFnKind,
 };
 use datafusion_comet_spark_expr::{
     create_comet_physical_fun, create_comet_physical_fun_with_eval_mode, BinaryOutputStyle,
@@ -3120,6 +3120,13 @@ impl PhysicalPlanner {
             max_build_buffer_bytes: usize::try_from(join.spill_max_build_buffer_bytes)
                 .ok()
                 .filter(|bytes| *bytes > 0),
+            sort_merge_fallback: join.spill_sort_merge_fallback.then(|| {
+                if join.spill_sort_merge_fallback_always {
+                    SortMergeFallback::always()
+                } else {
+                    SortMergeFallback::default()
+                }
+            }),
         };
         Ok(match SpillingHashJoinExec::try_new(hash_join, config)? {
             Some(spilling) => Arc::new(spilling),
@@ -6378,6 +6385,8 @@ mod tests {
                 dynamic_filter_enabled: false,
                 spill_enabled: false,
                 spill_max_build_buffer_bytes: 0,
+                spill_sort_merge_fallback: false,
+                spill_sort_merge_fallback_always: false,
             })),
         };
 

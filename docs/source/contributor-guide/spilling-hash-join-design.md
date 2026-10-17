@@ -300,6 +300,47 @@ Two other fallbacks were considered. Role reversal builds on the probe file when
 then the replays that chunking costs are cheap anyway. A sort-merge join for the pair would bring in the
 sort-merge join costs listed under [Alternatives considered](#alternatives-considered).
 
+### Sort-merge fallback
+
+A hash join pays for every match: a step along the chain of build rows with the probe row's key, and gathers
+from wherever those rows are in the build batch. Once the build side outgrows the CPU cache, most of them miss. A
+sort-merge join pays once to sort both sides, and then reads each key's matches in order. So where probe rows
+match many build rows each, a hash join loses to a sort-merge join whether or not it spills. In TPC-DS q72 at
+scale factor 100, the join of `catalog_sales` and `inventory`, on the item alone with a residual filter, matches
+each probe row with hundreds of build rows: its tasks take 179 s on average as a sort-merge join, 678 s as a
+spilling hash join and over 1,000 s as today's hash join. DataFusion tracks the hash join's cost in
+[apache/datafusion#17494], and making each key's rows contiguous ([apache/datafusion#26447]) narrows the gap but
+does not close it.
+
+Spark's statistics cannot show this at planning time: without column statistics there are no distinct key
+counts, and even those would not show how many probe rows match. The run does, through metrics that the inner
+`HashJoinExec` keeps anyway: `avg_fanout`, whose numerator counts matches before the residual filter,
+`input_rows`, `join_time` and `build_time`. An inner join switches at the first probe batch boundary where
+
+- its probe rows have matched at least 16 build rows each on average,
+- its probe has spent at least 30 ns on each match, which shows that the build side does not fit in the cache,
+- and its probe has taken at least 4 times as long as its build. Sorting the build side costs about as much as
+  building its hash table, so by then the hash join has spent more than switching costs, however much probe
+  input is left. This is a rent-or-buy rule, which needs no estimate of the probe side's size.
+
+The inner join reads its probe input through a handoff that checks the rule whenever the join asks for a batch.
+When the rule holds, the handoff ends the input, the inner join finishes the batch it has, and a DataFusion
+`SortMergeJoinExec` over two `SortExec`s joins the build side with the rest of the probe input. The sorts reserve
+from the task's pool and spill. So that the sort-merge join can read the build side without a second copy, an
+inner join that may switch gets its build side as one batch, which is the copy it would otherwise make itself.
+After a switch, the spilled pairs that follow are joined by sort-merge joins too, read from their files, and are
+neither split nor joined in chunks.
+
+The sort-merge join takes the inner join's residual filter with its columns reordered. In DataFusion 55,
+`SortMergeJoinExec` passes a filter the left side's columns and then the right side's, whatever order the filter
+lists them in, and the filter of a `BuildRight` join, swapped along with its inputs, lists the right side's first.
+The fallback lists the left side's first until Comet moves to a DataFusion release with [apache/datafusion#25489].
+
+Only inner joins switch. Each probe row is joined by the hash join or by the sort-merge join, and an inner join
+emits the same rows either way. The other join types keep a record of which rows matched, which a sort-merge join
+could not take over in the middle of the probe input; they could switch at a spilled pair's boundary, before the
+pair is probed, but do not yet.
+
 ### Ordering
 
 Spark's `ShuffledHashJoinExec` reports its streamed side's ordering for most join types (Spark 4.1.3
@@ -383,8 +424,8 @@ some rows, the chunked fallback replays probe rows, and its final pass emits row
 - `build_mem_used` is the most memory it has reserved at once.
 
 It adds DataFusion's spill metrics (`spill_count`, `spilled_bytes`, `spilled_rows`), which Comet already feeds
-into the task's spill totals, and `spilled_buckets`, `split_buckets`, `chunked_buckets` and
-`budget_overflow_bytes`.
+into the task's spill totals, and `spilled_buckets`, `split_buckets`, `chunked_buckets`, `sort_merge_joins` and
+`budget_overflow_bytes`. The sorts of a sort-merge fallback report no metrics of their own yet.
 
 ### Spill files
 
@@ -409,10 +450,11 @@ so native explain output does not change either. Whether a join spilled shows in
 
 ### Configuration
 
-| Key                                                   | Default | Purpose                                                                                                                                                                         |
-| ----------------------------------------------------- | ------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| `spark.comet.exec.hashJoin.spill.enabled`             | `true`  | Run eligible shuffled hash joins with the spilling join. `false` restores today's `HashJoinExec`                                                                                |
-| `spark.comet.exec.hashJoin.spill.maxBuildBufferBytes` | `0`     | Spill once the build side buffers this many bytes, even if the pool would grant more. `0` means spill only when the pool refuses. Tests set it low to force every join to spill |
+| Key                                                         | Default | Purpose                                                                                                                                                                                                      |
+| ----------------------------------------------------------- | ------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------ |
+| `spark.comet.exec.hashJoin.spill.enabled`                   | `true`  | Run eligible shuffled hash joins with the spilling join. `false` restores today's `HashJoinExec`                                                                                                             |
+| `spark.comet.exec.hashJoin.spill.maxBuildBufferBytes`       | `0`     | Spill once the build side buffers this many bytes, even if the pool would grant more. `0` means spill only when the pool refuses. Tests set it low to force every join to spill                              |
+| `spark.comet.exec.hashJoin.spill.sortMergeFallback.enabled` | `true`  | Let an inner join switch to a sort-merge join, see [Sort-merge fallback](#sort-merge-fallback). A testing key, `...sortMergeFallback.always`, switches every inner join after its first matching probe batch |
 
 The second key follows `spark.comet.shuffle.native.maxBufferBytes`. It is also how the test suites run every
 join through the spilling path, a lesson from DuckDB's `force_external` mode.
@@ -688,5 +730,7 @@ code is in `native/operators/src/spilling_hash_join/`, and `mod.rs` there gives 
 [apache/datafusion#24592]: https://github.com/apache/datafusion/pull/24592
 [apache/datafusion#24768]: https://github.com/apache/datafusion/issues/24768
 [apache/datafusion#25217]: https://github.com/apache/datafusion/pull/25217
+[apache/datafusion#25489]: https://github.com/apache/datafusion/pull/25489
+[apache/datafusion#26447]: https://github.com/apache/datafusion/pull/26447
 [apache/datafusion#26227]: https://github.com/apache/datafusion/pull/26227
 [apache/datafusion#26277]: https://github.com/apache/datafusion/pull/26277
