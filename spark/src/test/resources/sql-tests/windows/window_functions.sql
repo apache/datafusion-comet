@@ -251,8 +251,8 @@ ORDER BY cate, val_date
 -- Runs natively: Spark's WindowFrameTypeCoercion casts the frame offset to
 -- the same Decimal type as the ORDER BY column, so the boundary arithmetic
 -- keeps the current row's precision and DataFusion's comparator has matching
--- operands. Contrast with the DATE case in 1.11, which still falls back
--- because the offset stays IntegerType and arrow-arith rejects Date32 + Int32.
+-- operands. The DATE case in 1.11 keeps an IntegerType offset instead, which
+-- the native planner coerces to IntervalDayTime.
 -- ============================================================
 
 query

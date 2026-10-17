@@ -1860,9 +1860,9 @@ class CometWindowExecSuite extends CometTestBase {
   // offset -> Decimal(11,0) vs current Decimal(10,0), "Uncomparable values").
   // The upstream fix (apache/datafusion#22174, closes #22113) makes
   // ScalarValue::partial_cmp ignore precision for Decimal128 when scales match,
-  // and is included in DataFusion 54.0.0 which Comet already pins. These tests
-  // pin the behavior with `checkSparkAnswerAndOperator` so results must match
-  // Spark AND run natively.
+  // and was first released in DataFusion 54.0.0. These tests pin the behavior
+  // with `checkSparkAnswerAndOperator` so results must match Spark AND run
+  // natively.
   // ---------------------------------------------------------------------------
 
   private def writeDecimalWindowFixture(dir: java.io.File, decimalType: String): Unit = {
@@ -2105,6 +2105,73 @@ class CometWindowExecSuite extends CometTestBase {
         FROM window_test_dec
       """)
       checkSparkAnswerAndOperator(df)
+    }
+  }
+
+  private def writeDecimalOverflowFixture(dir: java.io.File, values: Seq[String]): Unit = {
+    values
+      .map(Option(_))
+      .:+(Option.empty[String])
+      .toDF("d_str")
+      .selectExpr("CAST(d_str AS DECIMAL(38, 0)) AS d")
+      .repartition(1)
+      .write
+      .mode("overwrite")
+      .parquet(dir.toString)
+  }
+
+  test("window: RANGE offset on DECIMAL(38, 0) ORDER BY that overflows Decimal128 falls back") {
+    // Spark's DecimalAddNoOverflowCheck keeps the exact bound, so the bound 2N of the row N stays
+    // below the trailing NULL. DataFusion's i128 bound overflows and becomes the partition edge,
+    // which takes the NULL in, so this falls back.
+    // https://github.com/apache/datafusion-comet/issues/5022
+    val n = "90000000000000000000000000000000000000"
+    withTempDir { dir =>
+      writeDecimalOverflowFixture(dir, Seq("0", n))
+      spark.read.parquet(dir.toString).createOrReplaceTempView("dec_overflow")
+      for (ansi <- Seq("true", "false")) {
+        withSQLConf(SQLConf.ANSI_ENABLED.key -> ansi) {
+          val df = sql(s"""
+            SELECT d, COUNT(*) OVER (ORDER BY d ASC NULLS LAST
+                                     RANGE BETWEEN $n PRECEDING AND $n FOLLOWING) AS cnt
+            FROM dec_overflow
+          """)
+          val (_, cometPlan) = checkSparkAnswerAndFallbackReason(
+            df,
+            "RANGE frame on decimal(38,0) ORDER BY with an offset whose bound can overflow " +
+              "Decimal128 is not supported")
+          assert(collect(cometPlan) { case w: CometWindowExec => w }.isEmpty, cometPlan)
+          checkAnswer(df, Seq(Row(BigDecimal(0), 2L), Row(BigDecimal(n), 2L), Row(null, 1L)))
+        }
+      }
+    }
+  }
+
+  test(
+    "window: largest RANGE offset on DECIMAL(38, 0) ORDER BY that cannot overflow runs natively") {
+    // The limit is 2^127 - 1 minus the largest DECIMAL(38, 0), that is
+    // 70141183460469231731687303715884105728, so `current +/- offset` stays in an i128 for every
+    // value of the type, including the type's extremes next to NULLs at either edge. Spark negates
+    // a PRECEDING offset with 34 significant digits, which would round the limit itself past it,
+    // so use the largest 34-digit offset under it.
+    val maxValue = "9" * 38
+    val offset = "70141183460469231731687303715884100000"
+    withTempDir { dir =>
+      writeDecimalOverflowFixture(dir, Seq(s"-$maxValue", "0", maxValue))
+      spark.read.parquet(dir.toString).createOrReplaceTempView("dec_edge")
+      for {
+        ansi <- Seq("true", "false")
+        order <- Seq("ASC NULLS LAST", "ASC NULLS FIRST", "DESC NULLS LAST", "DESC NULLS FIRST")
+      } {
+        withSQLConf(SQLConf.ANSI_ENABLED.key -> ansi) {
+          val df = sql(s"""
+            SELECT d, COUNT(*) OVER (ORDER BY d $order
+                                     RANGE BETWEEN $offset PRECEDING AND $offset FOLLOWING) AS cnt
+            FROM dec_edge
+          """)
+          checkSparkAnswerAndOperator(df)
+        }
+      }
     }
   }
 }

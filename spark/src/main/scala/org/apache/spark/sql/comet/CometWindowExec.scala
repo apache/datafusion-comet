@@ -393,22 +393,31 @@ object CometWindowExec extends CometOperatorSerde[WindowExec] {
       }
     }
 
-    // The RANGE frame offset type follows Spark's WindowFrameTypeCoercion:
-    // DECIMAL ORDER BY casts the offset to the same Decimal type, so it runs
-    // natively. DATE is handled natively by wrapping the offset as
-    // IntervalDayTime in the planner. UNBOUNDED / CURRENT ROW bounds skip the
-    // arithmetic and stay native.
+    // DataFusion computes a RANGE frame bound as `current +/- offset` and treats
+    // a bound that overflows as the edge of the partition, which also takes in
+    // NULL keys sorted at that edge. Spark's bound never overflows that way, so
+    // fall back for the offsets that can overflow. UNBOUNDED / CURRENT ROW
+    // bounds skip the arithmetic and stay native.
     //
     // For DATE, Spark computes the bound with DateAdd, an Int addition that
-    // wraps silently on overflow, while DataFusion treats an overflowing bound
-    // as the partition edge. Over dates in Spark's supported range the two only
-    // disagree when the offset is large enough to wrap, so fall back for those
-    // offsets. https://github.com/apache/datafusion-comet/issues/5022
+    // wraps silently on overflow. Over dates in Spark's supported range the two
+    // only disagree when the offset is large enough to wrap, so fall back for
+    // those offsets.
+    //
+    // For DECIMAL, Spark's DecimalAddNoOverflowCheck keeps the exact bound,
+    // while DataFusion adds in Decimal128 and overflows past i128.
+    // https://github.com/apache/datafusion-comet/issues/5022
     f match {
       case SpecifiedWindowFrame(RangeFrame, lb, ub)
           if !lb.isInstanceOf[SpecialFrameBoundary] ||
             !ub.isInstanceOf[SpecialFrameBoundary] =>
         windowExpr.windowSpec.orderSpec.headOption.map(_.dataType) match {
+          case Some(dt: DecimalType) if !Seq(lb, ub).forall(isDecimalRangeOffsetSafe(_, dt)) =>
+            withFallbackReason(
+              windowExpr,
+              s"RANGE frame on ${dt.catalogString} ORDER BY with an offset whose bound can " +
+                "overflow Decimal128 is not supported")
+            return None
           case Some(DateType) if !Seq(lb, ub).forall(isDateRangeOffsetSafe) =>
             withFallbackReason(
               windowExpr,
@@ -690,6 +699,35 @@ object CometWindowExec extends CometOperatorSerde[WindowExec] {
         case _: Exception => true
       }
   }
+
+  private val MaxDecimal128Unscaled: BigInt = BigInt(2).pow(127) - 1
+
+  // DataFusion rescales both operands to the larger scale and adds them as
+  // i128, so the bound cannot overflow when the largest value the ORDER BY
+  // type holds plus the offset fits in an i128.
+  private def isDecimalRangeOffsetSafe(bound: Expression, orderType: DecimalType): Boolean =
+    bound match {
+      case _: SpecialFrameBoundary => true
+      case e =>
+        val offset =
+          try {
+            e.eval()
+          } catch {
+            // Rejected when the bound is serialized.
+            case _: Exception => return true
+          }
+        offset match {
+          case d: Decimal if d.scale >= 0 && orderType.scale >= 0 =>
+            val scale = math.max(orderType.scale, d.scale)
+            val maxValue = (BigInt(10).pow(orderType.precision) - 1) *
+              BigInt(10).pow(scale - orderType.scale)
+            val offsetValue =
+              BigInt(d.toJavaBigDecimal.unscaledValue).abs * BigInt(10).pow(scale - d.scale)
+            maxValue + offsetValue <= MaxDecimal128Unscaled
+          case _: Decimal => false
+          case _ => true
+        }
+    }
 
   // Folds a RANGE frame bound expression to a constant and serializes its
   // magnitude as a typed Literal proto. Spark encodes PRECEDING/FOLLOWING via

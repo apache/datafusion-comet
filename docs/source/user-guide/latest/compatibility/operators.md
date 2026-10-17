@@ -150,6 +150,11 @@ incorrect result. When any single window expression in a `WindowExec` falls back
   ([#7007](https://github.com/apache/datafusion-comet/issues/7007)). From precision 28 the native average also
   differs from Spark once the running sum overflows precision 38
   ([#5418](https://github.com/apache/datafusion-comet/issues/5418)).
+- `RANGE` frame with an offset when the `ORDER BY` column is `DECIMAL` and the bound can overflow `Decimal128`, that
+  is, when the largest value of the `ORDER BY` type plus the offset exceeds 2^127 - 1 unscaled. Only `DECIMAL(38, s)`
+  can reach that, and only with an offset above about 7.01 * 10^37 unscaled. Spark computes the bound exactly, while
+  the native frame treats an overflowing bound as the edge of the partition and so takes in `NULL` keys sorted
+  there ([#5022](https://github.com/apache/datafusion-comet/issues/5022)).
 - `RANGE` frame with an offset above 2144550751 days when the `ORDER BY` column is `DATE`. Spark adds the offset
   to the date as an `Int` that wraps on overflow, while the native frame treats an overflowing bound as the edge of
   the partition. Smaller offsets cannot wrap for any date between 0001-01-01 and 9999-12-31
@@ -168,13 +173,6 @@ incorrect result. When any single window expression in a `WindowExec` falls back
 - `lag` / `lead` with a non-literal default value ([#4268](https://github.com/apache/datafusion-comet/issues/4268)).
 - A `ROWS` offset that is not an integer or long, or a `RANGE` offset that is not numeric.
 - Any `PARTITION BY` or `ORDER BY` expression that Comet cannot serialize.
-
-**Known differences (runs natively but may diverge from Spark on edge cases):**
-
-- `RANGE` frame boundary arithmetic on `DECIMAL` near max precision: when `current +/- offset` overflows the
-  underlying integer, DataFusion collapses the bound to the partition edge, whereas Spark evaluates the boundary
-  through normal decimal arithmetic (returning `NULL` under non-ANSI, throwing under ANSI). The two behaviors
-  agree for values away from `Decimal128` limits.
 
 A `RANGE` frame with an explicit offset on a `DATE` `ORDER BY` runs natively, but over a date outside Spark's
 supported range of 0001-01-01 to 9999-12-31, such as one produced by `date_add` with a very large day count, the
