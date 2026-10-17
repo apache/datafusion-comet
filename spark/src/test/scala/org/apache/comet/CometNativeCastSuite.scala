@@ -1038,7 +1038,11 @@ class CometNativeCastSuite
       Seq((DecimalType(10, -1), 10L), (DecimalType(20, -5), 100000L)).foreach {
         case (negScaleType, unit) =>
           val intTypes =
-            Seq(DataTypes.ByteType, DataTypes.ShortType, DataTypes.IntegerType, DataTypes.LongType)
+            Seq(
+              DataTypes.ByteType,
+              DataTypes.ShortType,
+              DataTypes.IntegerType,
+              DataTypes.LongType)
           intTypes.foreach { intType =>
             assert(
               CometCast.isSupported(intType, negScaleType, None, CometEvalMode.LEGACY) ==
@@ -1046,11 +1050,8 @@ class CometNativeCastSuite
               s"expected $intType -> $negScaleType to be Unsupported")
           }
           assert(
-            CometCast.isSupported(
-              negScaleType,
-              DataTypes.TimestampType,
-              None,
-              CometEvalMode.LEGACY) ==
+            CometCast
+              .isSupported(negScaleType, DataTypes.TimestampType, None, CometEvalMode.LEGACY) ==
               Unsupported(Some(CometCast.negativeScaleDecimalToTimestampReason)))
 
           val values = Seq(10L * unit, 20L * unit, 30L * unit)
