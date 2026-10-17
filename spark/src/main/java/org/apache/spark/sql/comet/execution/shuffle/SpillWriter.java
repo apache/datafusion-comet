@@ -134,6 +134,15 @@ public abstract class SpillWriter {
   protected abstract void spill(int required) throws IOException;
 
   /**
+   * The number of bytes to request for this writer's next page, which must hold a record of {@code
+   * required} bytes. The allocator rounds the request up to its page size. A writer that would
+   * rather start small and grow overrides this.
+   */
+  protected long nextPageRequest(int required) {
+    return required;
+  }
+
+  /**
    * Allocates more memory in order to insert an additional record. This will request additional
    * memory from the memory manager and spill if the requested memory can not be obtained.
    *
@@ -148,7 +157,7 @@ public abstract class SpillWriter {
         || pageCursor + required > currentPage.getBaseOffset() + currentPage.size()) {
       // TODO: try to find space in previous pages
       try {
-        currentPage = allocator.allocate(required);
+        currentPage = allocator.allocate(nextPageRequest(required));
       } catch (SparkOutOfMemoryError error) {
         try {
           // Cannot allocate enough memory, spill
@@ -169,7 +178,7 @@ public abstract class SpillWriter {
   public void initialCurrentPage(int required) {
     assert (currentPage == null);
     try {
-      currentPage = allocator.allocate(required);
+      currentPage = allocator.allocate(nextPageRequest(required));
     } catch (SparkOutOfMemoryError e) {
       logger.error("Unable to acquire {} bytes of memory", required);
       throw e;

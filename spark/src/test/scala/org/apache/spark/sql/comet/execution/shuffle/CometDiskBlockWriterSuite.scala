@@ -20,7 +20,9 @@
 package org.apache.spark.sql.comet.execution.shuffle
 
 import java.io.File
-import java.util.{LinkedList => JLinkedList, Properties}
+import java.util.{LinkedList => JLinkedList, Map => JMap, Properties}
+
+import scala.collection.mutable.ArrayBuffer
 
 import org.scalatest.funsuite.AnyFunSuite
 
@@ -31,6 +33,7 @@ import org.apache.spark.shuffle.api.{ShuffleExecutorComponents, ShuffleMapOutput
 import org.apache.spark.shuffle.api.metadata.MapOutputCommitMessage
 import org.apache.spark.shuffle.comet.CometShuffleMemoryAllocator
 import org.apache.spark.shuffle.sort.SpillSorter
+import org.apache.spark.shuffle.sort.io.LocalDiskShuffleExecutorComponents
 import org.apache.spark.sql.catalyst.InternalRow
 import org.apache.spark.sql.catalyst.expressions.{UnsafeProjection, UnsafeRow}
 import org.apache.spark.sql.execution.UnsafeRowSerializer
@@ -91,6 +94,8 @@ class CometDiskBlockWriterSuite extends AnyFunSuite {
         new CometDiskBlockWriter(
           new File(tempDir, s"taskA-partition$partition"),
           allocatorA,
+          pageSize,
+          pageSize,
           taskContextA,
           serializer,
           schema,
@@ -104,6 +109,8 @@ class CometDiskBlockWriterSuite extends AnyFunSuite {
       val writerB = new CometDiskBlockWriter(
         fileB,
         allocatorB,
+        pageSize,
+        pageSize,
         taskContextB,
         serializer,
         schema,
@@ -213,6 +220,125 @@ class CometDiskBlockWriterSuite extends AnyFunSuite {
       Utils.deleteRecursively(tempDir)
       tmmA.cleanUpAllAllocatedMemory()
       tmmB.cleanUpAllAllocatedMemory()
+    }
+  }
+
+  test("bypass writers with more partitions than full pages fit write without spilling") {
+    // Every partition writer holds a page as soon as it has a row. With pages of Spark's page
+    // size, a task fits only a few of them, so with more partitions than that each new page
+    // spilled a sibling writer holding about one row (#7058).
+    val conf = new SparkConf()
+      .setMaster("local[1]")
+      .setAppName("CometDiskBlockWriterSuite")
+      .set("spark.memory.offHeap.enabled", "true")
+      .set("spark.memory.offHeap.size", "1g")
+      .set("spark.buffer.pageSize", "1m")
+    val sc = new SparkContext(conf)
+    val memoryManager = new TestMemoryManager(conf)
+    // Room for eight pages of Spark's size, for 32 partitions whose rows need far less.
+    memoryManager.limit(8 * 1024 * 1024)
+    val tmm = new TaskMemoryManager(memoryManager, 0L)
+    try {
+      val taskContext = newTaskContext(tmm, 0L)
+      val partitions = 32
+      val rowsPerPartition = 100
+      val partitioner = new Partitioner {
+        override def numPartitions: Int = partitions
+        override def getPartition(key: Any): Int = key.asInstanceOf[Int] % partitions
+      }
+      val dep = new CometShuffleDependency[Int, UnsafeRow, UnsafeRow](
+        _rdd = sc.parallelize(Seq.empty[(Int, UnsafeRow)], 1),
+        partitioner = partitioner,
+        serializer = new UnsafeRowSerializer(1),
+        schema = Some(schema),
+        decodeTime = new SQLMetric("nsTiming"))
+      val shuffleExecutorComponents = new LocalDiskShuffleExecutorComponents(conf)
+      shuffleExecutorComponents.initializeExecutor(
+        sc.applicationId,
+        "driver",
+        JMap.of[String, String]())
+      val writer = new CometBypassMergeSortShuffleWriter[Int, UnsafeRow](
+        SparkEnv.get.blockManager,
+        tmm,
+        taskContext,
+        new CometBypassMergeSortShuffleHandle[Int, UnsafeRow](dep.shuffleId, dep),
+        0L,
+        conf,
+        taskContext.taskMetrics.shuffleWriteMetrics,
+        shuffleExecutorComponents,
+        null)
+
+      val toUnsafe = UnsafeProjection.create(schema)
+      // Round-robin, so that each partition gets a row before any gets a second one.
+      val rows = (0 until partitions * rowsPerPartition).iterator.map { i =>
+        (i % partitions, toUnsafe(InternalRow(new Array[Byte](100))))
+      }
+      writer.write(rows)
+      assert(writer.stop(true).isDefined)
+
+      // No writer had to make room for another, so each partition was written once, on close.
+      assert(taskContext.taskMetrics.memoryBytesSpilled == 0)
+      assert(taskContext.taskMetrics.diskBytesSpilled == 0)
+      val writeMetrics = taskContext.taskMetrics.shuffleWriteMetrics
+      assert(writeMetrics.recordsWritten == partitions * rowsPerPartition)
+      assert(writer.getPartitionLengths.forall(_ > 0))
+      assert(tmm.getMemoryConsumptionForThisTask == 0)
+    } finally {
+      sc.stop()
+      tmm.cleanUpAllAllocatedMemory()
+    }
+  }
+
+  test("a partition writer's pages double from a small first page up to the page size") {
+    val conf = new SparkConf()
+      .set("spark.memory.offHeap.enabled", "true")
+      .set("spark.memory.offHeap.size", "1g")
+    val memoryManager = new TestMemoryManager(conf)
+    memoryManager.limit(64L * 1024 * 1024)
+    val tmm = new TaskMemoryManager(memoryManager, 0L)
+    val taskContext = newTaskContext(tmm, 0L)
+    val kib = 1024L
+    val initialPageSize = 64 * kib
+    val maxPageSize = 1024 * kib
+    val allocator = CometShuffleMemoryAllocator.getInstance(tmm, initialPageSize)
+    val tempDir = Utils.createTempDir()
+    try {
+      val writer = new CometDiskBlockWriter(
+        new File(tempDir, "partition0"),
+        allocator,
+        initialPageSize,
+        maxPageSize,
+        taskContext,
+        new UnsafeRowSerializer(1).newInstance(),
+        schema,
+        new ShuffleWriteMetrics,
+        conf,
+        false,
+        new JLinkedList[CometDiskBlockWriter]())
+      val toUnsafe = UnsafeProjection.create(schema)
+      def insertOne(): Unit = writer.insertRow(toUnsafe(InternalRow(new Array[Byte](1000))), 0)
+
+      // The memory the writer holds after each page it takes.
+      val held = ArrayBuffer.empty[Long]
+      while (held.length < 7) {
+        insertOne()
+        if (!held.lastOption.contains(writer.getActiveMemoryUsage)) {
+          held += writer.getActiveMemoryUsage
+        }
+      }
+      // 64, 128, 256 and 512 KiB pages, then pages of the 1 MiB maximum.
+      assert(held == Seq(64, 192, 448, 960, 1984, 3008, 4032).map(_ * kib))
+
+      // Writing out a full batch frees its pages, and the next batch starts small again.
+      while (writer.getOutputRecords == 0) {
+        insertOne()
+      }
+      assert(writer.getActiveMemoryUsage == initialPageSize)
+      writer.close()
+      assert(allocator.getUsed == 0)
+    } finally {
+      Utils.deleteRecursively(tempDir)
+      tmm.cleanUpAllAllocatedMemory()
     }
   }
 
