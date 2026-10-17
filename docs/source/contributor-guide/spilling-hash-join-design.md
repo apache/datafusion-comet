@@ -52,12 +52,12 @@ DataFusion has an open design for this, [apache/datafusion#24768], but there is 
 
 Comet's case is much simpler than the general DataFusion problem:
 
-| DataFusion has to handle                                                     | Comet                                                                                                                                                               |
-| ---------------------------------------------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| `CollectLeft` builds shared by many probe streams                            | Every shuffled hash join is `PartitionMode::Partitioned` (`planner.rs:2792`), and each Spark task runs its own plan instance on one partition, so nothing is shared |
-| Joins that promise their probe order to `EnforceSorting`                     | Comet does not run DataFusion's physical optimizer. The order contract exists only on the Spark side, where Comet decides eligibility (see [Ordering](#ordering))   |
-| Dynamic filters coupled to the build                                         | Comet's join runtime filter is opt-in (`spark.comet.exec.join.dynamicFilter.enabled`, default `false`) and can be left off for spilling joins                       |
-| Null-aware (`NOT IN`) anti joins, which need global knowledge of build nulls | These are broadcast joins in Spark. Comet plans them as `CollectLeft` broadcast joins, which this design does not touch                                             |
+| DataFusion has to handle                                                     | Comet                                                                                                                                                                   |
+| ---------------------------------------------------------------------------- | ----------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `CollectLeft` builds shared by many probe streams                            | Every shuffled hash join is `PartitionMode::Partitioned` (`planner/join.rs:122`), and each Spark task runs its own plan instance on one partition, so nothing is shared |
+| Joins that promise their probe order to `EnforceSorting`                     | Comet does not run DataFusion's physical optimizer. The order contract exists only on the Spark side, where Comet decides eligibility (see [Ordering](#ordering))       |
+| Dynamic filters coupled to the build                                         | Comet's join runtime filter is opt-in (`spark.comet.exec.join.dynamicFilter.enabled`, default `false`) and can be left off for spilling joins                           |
+| Null-aware (`NOT IN`) anti joins, which need global knowledge of build nulls | These are broadcast joins in Spark. Comet plans them as `CollectLeft` broadcast joins, which this design does not touch                                                 |
 
 So this design covers only Comet's case, and pieces of it can be offered upstream later. One candidate is the
 separate experimental stream proposed on the epic.
@@ -96,7 +96,7 @@ those limits.
 - **Batch ownership.** JVM batches are imported by reference count with no buffer reuse
   (`operators/scan.rs:187`), so holding input batches across polls is safe.
 - **Plan shape.** DataFusion builds on the left. For `BuildRight`, Comet calls `swap_inputs`
-  (`planner.rs:2833`), which can add a `ProjectionExec` above the join to restore the column order.
+  (`planner/join.rs:160`), which can add a `ProjectionExec` above the join to restore the column order.
 
 ## Design
 
