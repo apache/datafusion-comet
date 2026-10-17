@@ -46,7 +46,7 @@ import org.apache.spark.sql.DataFrame
 import org.apache.spark.sql.Row
 import org.apache.spark.sql.catalyst.InternalRow
 import org.apache.spark.sql.catalyst.expressions.Attribute
-import org.apache.spark.sql.comet.{CometIcebergWriteExec, CometMergeRowsExec, IcebergCommitExec, IcebergWriteExec}
+import org.apache.spark.sql.comet.{CometExec, CometIcebergWriteExec, CometMergeRowsExec, IcebergCommitExec, IcebergWriteExec}
 import org.apache.spark.sql.connector.catalog.InMemoryTableCatalog
 import org.apache.spark.sql.connector.write.{BatchWrite, DataWriterFactory, PhysicalWriteInfo, Write, WriterCommitMessage}
 import org.apache.spark.sql.execution.{ColumnarToRowTransition, LeafExecNode, SparkPlan}
@@ -1147,6 +1147,79 @@ class CometIcebergWriteActionSuite
         spark.sql(
           "INSERT INTO cat.db.native_append_values VALUES " +
             "(1, 'us-east', 10.5), (2, 'us-west', 20.3), (3, 'eu', 30.7)")
+      }
+    }
+  }
+
+  // A Comet shuffle directly under the native write is decoded inside the write's native plan by
+  // a `ShuffleScan`, rather than decoded in the JVM and imported again over FFI. Under AQE the
+  // write's child is the shuffle stage or a coalesced read of it. Without AQE, Comet reads no
+  // shuffle directly, so the write keeps its FFI `Scan`. Each case is written twice, with direct
+  // read on and off, so the two input paths are checked against each other as well as the source.
+  test("native acceleration: a write over a shuffle decodes the shuffle blocks natively") {
+    assumeNativeAcceleration()
+    withIcebergCatalog { _ =>
+      val columns = "id BIGINT, s STRING, d DOUBLE, st STRUCT<a: INT, b: STRING>, " +
+        "arr ARRAY<INT>, m MAP<STRING, INT>"
+      spark.sql(s"CREATE TABLE $catalog.$ns.shuffle_src ($columns) USING iceberg")
+      spark.sql(s"""
+        INSERT INTO $catalog.$ns.shuffle_src
+        SELECT id,
+          IF(id % 7 = 0, NULL, CONCAT('s', CAST(id AS STRING))),
+          IF(id % 11 = 0, NULL, id / 3.0),
+          IF(id % 13 = 0, NULL,
+            NAMED_STRUCT('a', CAST(id AS INT), 'b', IF(id % 2 = 0, NULL, CAST(id AS STRING)))),
+          IF(id % 17 = 0, NULL, ARRAY(CAST(id AS INT), NULL)),
+          IF(id % 19 = 0, NULL, MAP(CAST(id AS STRING), CAST(id AS INT)))
+        FROM range(0, 2000)""")
+      val expected = spark.table(s"$catalog.$ns.shuffle_src").collect().toSeq
+
+      // (case, hint, AQE on, the write's leaf when direct read is on). REBALANCE runs on Comet's
+      // JVM columnar shuffle, which writes the same block format as native shuffle.
+      val cases = Seq(
+        ("stage", "REPARTITION(8, id)", true, "SHUFFLE_SCAN"),
+        ("coalesced", "REPARTITION(id)", true, "SHUFFLE_SCAN"),
+        ("columnar", "REBALANCE", true, "SHUFFLE_SCAN"),
+        ("no_aqe", "REPARTITION(8, id)", false, "SCAN"))
+      cases.foreach { case (name, hint, adaptive, directReadLeaf) =>
+        val fileRecordCounts = Seq(true, false).map { directRead =>
+          val table = s"shuffle_${name}_$directRead"
+          spark.sql(s"CREATE TABLE $catalog.$ns.$table ($columns) USING iceberg")
+          // `withSQLConf` returns Unit on Spark 3.x, so it wraps only the statement.
+          val snapshot = withNativeEnabled {
+            captureWrite(table) {
+              withSQLConf(
+                SQLConf.ADAPTIVE_EXECUTION_ENABLED.key -> adaptive.toString,
+                CometConf.COMET_SHUFFLE_DIRECT_READ_ENABLED.key -> directRead.toString) {
+                spark.sql(s"INSERT INTO $catalog.$ns.$table " +
+                  s"SELECT /*+ $hint */ * FROM $catalog.$ns.shuffle_src")
+              }
+            }
+          }
+          assert(
+            snapshot.snapshotDelta == 1L,
+            s"$table: expected 1 commit, got ${snapshot.snapshotDelta}")
+          val leaves = snapshot.plans.flatMap { plan =>
+            collectWithSubqueries(plan) { case write: CometIcebergWriteExec =>
+              CometExec.nativeLeaves(write.nativeOp).map(_.getOpStructCase.name)
+            }
+          }
+          val expectedLeaf = if (directRead) directReadLeaf else "SCAN"
+          assert(
+            leaves == Seq(Seq(expectedLeaf)),
+            s"$table: expected the write to read its input with $expectedLeaf, got $leaves. " +
+              s"Plans:\n${snapshot.plans.mkString("\n--\n")}")
+          checkAnswer(spark.table(s"$catalog.$ns.$table"), expected)
+          spark
+            .sql(s"SELECT record_count FROM $catalog.$ns.$table.files ORDER BY record_count")
+            .collect()
+            .map(_.getLong(0))
+            .toSeq
+        }
+        assert(
+          fileRecordCounts.distinct.length == 1,
+          s"$name: data file record counts differ between direct read on and off: " +
+            fileRecordCounts)
       }
     }
   }

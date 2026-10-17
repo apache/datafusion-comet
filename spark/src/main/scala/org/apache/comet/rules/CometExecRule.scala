@@ -817,8 +817,9 @@ case class CometExecRule(session: SparkSession, queryStagePrep: Boolean = false)
     }
 
   /**
-   * Whether `op` is a writer whose native plan builds its own `Scan` over its child, so that the
-   * child runs as a separate native block instead of inside that plan.
+   * Whether `op` is a writer whose native plan reads its child through a leaf of its own, an FFI
+   * `Scan` or the `ShuffleScan` of a shuffle it reads directly, so that the child runs as a
+   * separate native block instead of inside that plan.
    */
   private def scansChildAsSeparateBlock(op: SparkPlan): Boolean = op match {
     case _: CometNativeWriteExec | _: CometIcebergWriteExec | _: CometWriteFilesExec => true
