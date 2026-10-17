@@ -223,6 +223,42 @@ object CometDatetimeExpressionBenchmark extends CometBenchmarkBase {
     }
   }
 
+  /**
+   * `date - date`, `timestamp - timestamp` and `timestamp + interval` run through the JVM codegen
+   * dispatcher. Each is measured as a bare projection and as a filter over its result, so the
+   * second query also covers the interval feeding a native comparison.
+   */
+  def intervalArithmeticBenchmark(values: Int): Unit = {
+    withTempPath { dir =>
+      withTempTable("parquetV1Table") {
+        prepareTable(
+          dir,
+          spark.sql(s"""SELECT
+               |  date_from_unix_date(CAST(PMOD(value, 3650) AS INT)) AS d1,
+               |  date_from_unix_date(CAST(PMOD(value DIV 3650, 3650) AS INT)) AS d2,
+               |  timestamp_micros(PMOD(value, 315360000000000)) AS ts1,
+               |  timestamp_micros(PMOD(value DIV 7, 315360000000000)) AS ts2
+               |FROM $tbl""".stripMargin))
+        Seq(
+          "Date - Date" -> "SELECT d1 - d2 FROM parquetV1Table",
+          "Date - Date, filter" ->
+            "SELECT d1 FROM parquetV1Table WHERE d1 - d2 > INTERVAL '30' DAY",
+          "Timestamp - Timestamp" -> "SELECT ts1 - ts2 FROM parquetV1Table",
+          "Timestamp - Timestamp, filter" ->
+            ("SELECT ts1 FROM parquetV1Table " +
+              "WHERE ts1 - ts2 > INTERVAL '1 00:00:00' DAY TO SECOND"),
+          "Timestamp + Interval" ->
+            "SELECT ts1 + INTERVAL '1 02:03:04' DAY TO SECOND FROM parquetV1Table",
+          "Timestamp + Interval, filter" ->
+            ("SELECT ts1 FROM parquetV1Table " +
+              "WHERE ts1 + INTERVAL '1 02:03:04' DAY TO SECOND > ts2")).foreach {
+          case (name, query) =>
+            runExpressionBenchmark(name, values.toLong, query)
+        }
+      }
+    }
+  }
+
   override def runCometBenchmark(mainArgs: Array[String]): Unit = {
     val values = 1024 * 1024;
 
@@ -247,6 +283,9 @@ object CometDatetimeExpressionBenchmark extends CometBenchmarkBase {
         }
         runBenchmarkWithTable("TimestampTrunc", values) { v =>
           timestampTruncExprBenchmark(v)
+        }
+        runBenchmarkWithTable("IntervalArithmetic", values) { v =>
+          intervalArithmeticBenchmark(v)
         }
       }
     }
