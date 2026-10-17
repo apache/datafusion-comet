@@ -519,6 +519,7 @@ under the License.
 <ul>
 <li class="toctree-l2"><a class="reference internal" href="compatibility/index.html">Overview</a></li>
 <li class="toctree-l2"><a class="reference internal" href="compatibility/scans.html">Parquet Compatibility</a></li>
+<li class="toctree-l2"><a class="reference internal" href="compatibility/parquet-iceberg-known-issues.html">Known Issues in Parquet and Iceberg Reads and Writes</a></li>
 <li class="toctree-l2"><a class="reference internal" href="compatibility/floating-point.html">Floating-point Number Comparison</a></li>
 <li class="toctree-l2"><a class="reference internal" href="compatibility/regex.html">Regular Expressions</a></li>
 <li class="toctree-l2"><a class="reference internal" href="compatibility/operators.html">Operator Compatibility</a></li>
@@ -1337,12 +1338,17 @@ manifest bounds inherit the normalised values — a strictly conservative wideni
 change pruning decisions.</p></li>
 <li><p>On Iceberg 1.9+, manifest <code class="docutils literal notranslate"><span class="pre">value_counts</span></code> / <code class="docutils literal notranslate"><span class="pre">null_value_counts</span></code> for float/double columns
 nested under a nullable struct count rows whose parent struct is null (they come from the
-parquet footer), while iceberg-java’s writer-tracked counts do not. Both counts inflate by
-the same amount, so the derived null ratios and <code class="docutils literal notranslate"><span class="pre">IS</span> <span class="pre">NULL</span></code> / <code class="docutils literal notranslate"><span class="pre">IS</span> <span class="pre">NOT</span> <span class="pre">NULL</span></code> pruning decisions
-are unaffected.</p></li>
+parquet footer), while iceberg-java’s writer-tracked counts do not. The native counts are the
+correct ones. iceberg-java’s counts leave out rows whose struct is null. When every non-null
+struct in a file holds a value, iceberg-java records a null count of 0, and <code class="docutils literal notranslate"><span class="pre">IS</span> <span class="pre">NULL</span></code> prunes a
+file that contains matching rows
+(<a class="reference external" href="https://github.com/apache/iceberg/issues/17561">apache/iceberg#17561</a>). The native counts
+never prune such a file. <code class="docutils literal notranslate"><span class="pre">IS</span> <span class="pre">NOT</span> <span class="pre">NULL</span></code> pruning is the same for both.</p></li>
 </ul>
 <p>All content not listed above — the logical data, statistics values, and manifest metadata —
-must match iceberg-java exactly, or the write falls back.</p>
+must match iceberg-java exactly, or the write falls back. The open bugs in which a native write
+still differs are listed in
+<a class="reference internal" href="compatibility/parquet-iceberg-known-issues.html#iceberg-writes"><span class="std std-ref">Known Issues</span></a>.</p>
 </section>
 </section>
 </section>

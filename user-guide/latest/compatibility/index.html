@@ -519,6 +519,7 @@ under the License.
 <ul class="current">
 <li class="toctree-l2 current"><a class="current reference internal" href="#">Overview</a></li>
 <li class="toctree-l2"><a class="reference internal" href="scans.html">Parquet Compatibility</a></li>
+<li class="toctree-l2"><a class="reference internal" href="parquet-iceberg-known-issues.html">Known Issues in Parquet and Iceberg Reads and Writes</a></li>
 <li class="toctree-l2"><a class="reference internal" href="floating-point.html">Floating-point Number Comparison</a></li>
 <li class="toctree-l2"><a class="reference internal" href="regex.html">Regular Expressions</a></li>
 <li class="toctree-l2"><a class="reference internal" href="operators.html">Operator Compatibility</a></li>
@@ -850,6 +851,8 @@ under the License.
 <p>This guide documents areas where Comet’s behavior is known to differ from Spark. Topics are grouped by subsystem:</p>
 <ul class="simple">
 <li><p><strong>Parquet</strong>: limitations when reading Parquet files.</p></li>
+<li><p><strong>Parquet and Iceberg known issues</strong>: open issues in which Parquet and Iceberg reads and writes
+give different results from Spark, or fail where Spark succeeds, without falling back.</p></li>
 <li><p><strong>Floating-point comparison</strong>: NaN and signed-zero handling in comparisons.</p></li>
 <li><p><strong>Regular expressions</strong>: differences between the Rust regexp crate and Java’s regex engine.</p></li>
 <li><p><strong>Operators</strong>: operator-level compatibility notes, including window functions and round-robin partitioning.</p></li>
@@ -941,7 +944,9 @@ not yet track (<a class="reference external" href="https://github.com/apache/dat
 <h2>Known result-value divergences<a class="headerlink" href="#known-result-value-divergences" title="Link to this heading">#</a></h2>
 <p>The following native paths silently return values that differ from Spark for edge-case inputs.
 Most also have entries in the per-category expression pages linked above; they are collected here
-so users hunting an unexpected value have a single place to check:</p>
+so users hunting an unexpected value have a single place to check. Parquet and Iceberg reads and
+writes have their own list, in
+<a class="reference internal" href="parquet-iceberg-known-issues.html#results-that-differ-from-spark"><span class="std std-ref">Known Issues in Parquet and Iceberg Reads and Writes</span></a>:</p>
 <ul class="simple">
 <li><p>Native <code class="docutils literal notranslate"><span class="pre">RANGE</span></code> window frames with an explicit <code class="docutils literal notranslate"><span class="pre">PRECEDING</span></code> / <code class="docutils literal notranslate"><span class="pre">FOLLOWING</span></code> offset diverge from
 Spark when the boundary arithmetic overflows for <code class="docutils literal notranslate"><span class="pre">DATE</span></code> or <code class="docutils literal notranslate"><span class="pre">DECIMAL</span></code> <code class="docutils literal notranslate"><span class="pre">ORDER</span> <span class="pre">BY</span></code> columns

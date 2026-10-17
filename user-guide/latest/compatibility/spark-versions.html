@@ -519,6 +519,7 @@ under the License.
 <ul class="current">
 <li class="toctree-l2"><a class="reference internal" href="index.html">Overview</a></li>
 <li class="toctree-l2"><a class="reference internal" href="scans.html">Parquet Compatibility</a></li>
+<li class="toctree-l2"><a class="reference internal" href="parquet-iceberg-known-issues.html">Known Issues in Parquet and Iceberg Reads and Writes</a></li>
 <li class="toctree-l2"><a class="reference internal" href="floating-point.html">Floating-point Number Comparison</a></li>
 <li class="toctree-l2"><a class="reference internal" href="regex.html">Regular Expressions</a></li>
 <li class="toctree-l2"><a class="reference internal" href="operators.html">Operator Compatibility</a></li>
@@ -899,25 +900,12 @@ support. Non-default collated strings are not yet supported by Comet and will fa
 <section id="spark-4-1">
 <h2>Spark 4.1<a class="headerlink" href="#spark-4-1" title="Link to this heading">#</a></h2>
 <p>Spark 4.1.3 is supported with Java 17/21 and Scala 2.13.</p>
-<section id="id3">
-<h3>Known Limitations<a class="headerlink" href="#id3" title="Link to this heading">#</a></h3>
-<ul class="simple">
-<li><p><strong><code class="docutils literal notranslate"><span class="pre">NullType</span></code> columns in Parquet files</strong>
-(<a class="reference external" href="https://github.com/apache/datafusion-comet/issues/4199">#4199</a>): Spark encodes a <code class="docutils literal notranslate"><span class="pre">NullType</span></code>
-column as a Parquet <code class="docutils literal notranslate"><span class="pre">BOOLEAN</span></code> physical type annotated with <code class="docutils literal notranslate"><span class="pre">LogicalType::Unknown</span></code>. The Rust
-<code class="docutils literal notranslate"><span class="pre">parquet</span></code> crate that Comet depends on accepts <code class="docutils literal notranslate"><span class="pre">Unknown</span></code> only when paired with <code class="docutils literal notranslate"><span class="pre">INT32</span></code> and rejects
-any other physical type with <code class="docutils literal notranslate"><span class="pre">Parquet</span> <span class="pre">error:</span> <span class="pre">Cannot</span> <span class="pre">annotate</span> <span class="pre">Unknown</span> <span class="pre">from</span> <span class="pre">BOOLEAN</span> <span class="pre">for</span> <span class="pre">field</span> <span class="pre">'&lt;name&gt;'</span></code>.
-Any attempt to read a Parquet file that contains a <code class="docutils literal notranslate"><span class="pre">NullType</span></code> column fails at decode time before
-Comet’s scan runs. Workaround: project the column away, cast it to a concrete type before
-persisting, or read the file with Comet disabled for that query.</p></li>
-</ul>
-</section>
 </section>
 <section id="spark-4-2">
 <h2>Spark 4.2<a class="headerlink" href="#spark-4-2" title="Link to this heading">#</a></h2>
 <p>Spark 4.2.0 is supported with Java 17 and Scala 2.13.</p>
-<section id="id4">
-<h3>Known Limitations<a class="headerlink" href="#id4" title="Link to this heading">#</a></h3>
+<section id="id3">
+<h3>Known Limitations<a class="headerlink" href="#id3" title="Link to this heading">#</a></h3>
 <ul class="simple">
 <li><p><strong><code class="docutils literal notranslate"><span class="pre">FILTER</span></code> on window aggregates</strong>: Spark 4.2 accepts a <code class="docutils literal notranslate"><span class="pre">FILTER</span> <span class="pre">(WHERE</span> <span class="pre">...)</span></code> clause on an
 aggregate function used as a window function. Comet does not support the clause there, so the
@@ -997,12 +985,9 @@ ANSI-mode arithmetic overflow behavior, and Comet does not match these changes y
 <li class="toc-h3 nav-item toc-entry"><a class="reference internal nav-link" href="#id2">Known Limitations</a></li>
 </ul>
 </li>
-<li class="toc-h2 nav-item toc-entry"><a class="reference internal nav-link" href="#spark-4-1">Spark 4.1</a><ul class="nav section-nav flex-column">
-<li class="toc-h3 nav-item toc-entry"><a class="reference internal nav-link" href="#id3">Known Limitations</a></li>
-</ul>
-</li>
+<li class="toc-h2 nav-item toc-entry"><a class="reference internal nav-link" href="#spark-4-1">Spark 4.1</a></li>
 <li class="toc-h2 nav-item toc-entry"><a class="reference internal nav-link" href="#spark-4-2">Spark 4.2</a><ul class="nav section-nav flex-column">
-<li class="toc-h3 nav-item toc-entry"><a class="reference internal nav-link" href="#id4">Known Limitations</a></li>
+<li class="toc-h3 nav-item toc-entry"><a class="reference internal nav-link" href="#id3">Known Limitations</a></li>
 </ul>
 </li>
 </ul>

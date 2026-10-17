@@ -68,7 +68,7 @@ under the License.
     <script src="../../../_static/comet-ux.js?v=97577a30"></script>
     <link rel="index" title="Index" href="../../../genindex.html" />
     <link rel="search" title="Search" href="../../../search.html" />
-    <link rel="next" title="Floating-point Number Comparison" href="floating-point.html" />
+    <link rel="next" title="Known Issues in Parquet and Iceberg Reads and Writes" href="parquet-iceberg-known-issues.html" />
     <link rel="prev" title="Compatibility Guide" href="index.html" />
 
   <meta name="viewport" content="width=device-width, initial-scale=1"/>
@@ -519,6 +519,7 @@ under the License.
 <ul class="current">
 <li class="toctree-l2"><a class="reference internal" href="index.html">Overview</a></li>
 <li class="toctree-l2 current"><a class="current reference internal" href="#">Parquet Compatibility</a></li>
+<li class="toctree-l2"><a class="reference internal" href="parquet-iceberg-known-issues.html">Known Issues in Parquet and Iceberg Reads and Writes</a></li>
 <li class="toctree-l2"><a class="reference internal" href="floating-point.html">Floating-point Number Comparison</a></li>
 <li class="toctree-l2"><a class="reference internal" href="regex.html">Regular Expressions</a></li>
 <li class="toctree-l2"><a class="reference internal" href="operators.html">Operator Compatibility</a></li>
@@ -881,18 +882,14 @@ Comet Parquet scan regardless.</p></li>
 <code class="docutils literal notranslate"><span class="pre">spark.sql.caseSensitive=false</span></code>. Spark’s analyzer normally rejects such a schema before the scan
 is planned.</p></li>
 </ul>
-<p>The following limitation may produce incorrect results without falling back to Spark:</p>
-<ul class="simple">
-<li><p>No support for datetime rebasing. When reading Parquet files containing dates or timestamps
-written with <code class="docutils literal notranslate"><span class="pre">spark.sql.parquet.datetimeRebaseModeInWrite=LEGACY</span></code> (which is Spark’s default for
-data written before Spark 3.0, using the hybrid Julian/Gregorian calendar), Comet reads them as
-if they were written using the Proleptic Gregorian calendar. This produces silently-wrong
-values for dates before October 15, 1582 in both projections and predicates. Comet also
-ignores <code class="docutils literal notranslate"><span class="pre">spark.sql.parquet.datetimeRebaseModeInRead</span></code> and the file-level
-<code class="docutils literal notranslate"><span class="pre">org.apache.spark.legacyDateTime</span></code> metadata that would tell it to rebase. Tracked by
-<a class="reference external" href="https://github.com/apache/datafusion-comet/issues/5010">#5010</a>.</p></li>
-</ul>
-<p>The following limitations raise an error at scan time rather than falling back to Spark:</p>
+<p>Some Parquet reads return results that differ from Spark without falling back to Spark, such as
+reads of dates and timestamps written with the legacy hybrid Julian/Gregorian calendar
+(<a class="reference external" href="https://github.com/apache/datafusion-comet/issues/5010">#5010</a>).
+<a class="reference internal" href="parquet-iceberg-known-issues.html#parquet-reads"><span class="std std-ref">Known Issues</span></a> lists them, with the
+issues that track them.</p>
+<p>The following limitations raise an error at scan time rather than falling back to Spark. More
+reads that fail where Spark succeeds are listed in
+<a class="reference internal" href="parquet-iceberg-known-issues.html#parquet-reads-that-fail"><span class="std std-ref">Known Issues</span></a>:</p>
 <ul class="simple">
 <li><p>Selecting a field by name when multiple physical siblings match, including inside structs,
 arrays, and maps. Comet raises a duplicate-field error instead of resolving the collision.
@@ -999,11 +996,11 @@ vanilla Spark. See <a class="reference external" href="https://github.com/apache
       </div>
     </a>
     <a class="right-next"
-       href="floating-point.html"
+       href="parquet-iceberg-known-issues.html"
        title="next page">
       <div class="prev-next-info">
         <p class="prev-next-subtitle">next</p>
-        <p class="prev-next-title">Floating-point Number Comparison</p>
+        <p class="prev-next-title">Known Issues in Parquet and Iceberg Reads and Writes</p>
       </div>
       <i class="fa-solid fa-angle-right"></i>
     </a>
