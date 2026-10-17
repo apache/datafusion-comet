@@ -1016,6 +1016,11 @@ message ParquetWriter {
   // Catalyst's target schema, including top-level nullability and Parquet field IDs.
   // Nested collection field IDs are carried by the corresponding DataType messages.
   repeated SparkStructField output_schema = 9;
+  // The Spark version (`SPARK_VERSION_SHORT`) written into the footer's key-value metadata as
+  // `org.apache.spark.version`, as Spark's own ParquetWriteSupport does. Spark's datetime rebase
+  // logic reads it back to tell files written by Spark 3.0+ from older ones. Absent in plans
+  // serialized before the field was added, in which case the key is not written.
+  optional string spark_version = 10;
 }
 
 enum AggregateMode {

@@ -53,9 +53,12 @@ use futures::TryStreamExt;
 use parquet::{
     arrow::ArrowWriter,
     basic::{Compression, GzipLevel, ZstdLevel},
-    file::properties::WriterProperties,
+    file::{metadata::KeyValue, properties::WriterProperties},
 };
 use url::Url;
+
+/// Footer key under which Spark's `ParquetWriteSupport` records the Spark version.
+const SPARK_VERSION_METADATA_KEY: &str = "org.apache.spark.version";
 
 /// Compression codecs supported by the native Parquet writer.
 ///
@@ -245,6 +248,8 @@ pub struct ParquetWriterExec {
     column_names: Vec<String>,
     /// Catalyst's target schema, including nullability and Parquet field metadata.
     output_schema: Option<SchemaRef>,
+    /// Spark version recorded in the footer as `org.apache.spark.version`, if any.
+    spark_version: Option<String>,
     /// Object store configuration options
     object_store_options: HashMap<String, String>,
     /// Metrics
@@ -282,10 +287,18 @@ impl ParquetWriterExec {
             partition_id,
             column_names,
             output_schema,
+            spark_version: None,
             object_store_options,
             metrics: ExecutionPlanMetricsSet::new(),
             cache,
         })
+    }
+
+    /// Record the Spark version in each file's footer key-value metadata, as Spark's
+    /// `ParquetWriteSupport` does.
+    pub fn with_spark_version(mut self, spark_version: Option<String>) -> Self {
+        self.spark_version = spark_version;
+        self
     }
 
     /// Create an Arrow writer based on the storage scheme
@@ -460,15 +473,18 @@ impl ExecutionPlan for ParquetWriterExec {
         children: Vec<Arc<dyn ExecutionPlan>>,
     ) -> Result<Arc<dyn ExecutionPlan>> {
         match children.len() {
-            1 => Ok(Arc::new(ParquetWriterExec::try_new(
-                Arc::clone(&children[0]),
-                self.output_path.clone(),
-                self.compression.clone(),
-                self.partition_id,
-                self.column_names.clone(),
-                self.output_schema.clone(),
-                self.object_store_options.clone(),
-            )?)),
+            1 => Ok(Arc::new(
+                ParquetWriterExec::try_new(
+                    Arc::clone(&children[0]),
+                    self.output_path.clone(),
+                    self.compression.clone(),
+                    self.partition_id,
+                    self.column_names.clone(),
+                    self.output_schema.clone(),
+                    self.object_store_options.clone(),
+                )?
+                .with_spark_version(self.spark_version.clone()),
+            )),
             _ => Err(DataFusionError::Internal(
                 "ParquetWriterExec requires exactly one child".to_string(),
             )),
@@ -514,8 +530,15 @@ impl ExecutionPlan for ParquetWriterExec {
         let part_file = self.output_path.clone();
 
         // Configure writer properties
+        let key_value_metadata = self.spark_version.as_ref().map(|version| {
+            vec![KeyValue::new(
+                SPARK_VERSION_METADATA_KEY.to_string(),
+                version.clone(),
+            )]
+        });
         let props = WriterProperties::builder()
             .set_compression(compression)
+            .set_key_value_metadata(key_value_metadata)
             .build();
 
         let object_store_options = self.object_store_options.clone();
@@ -688,6 +711,48 @@ mod tests {
         let reader = SerializedFileReader::new(File::open(written)?)?;
         assert_eq!(reader.metadata().file_metadata().num_rows(), 3);
 
+        Ok(())
+    }
+
+    /// Spark's datetime rebase logic reads `org.apache.spark.version` back from the footer, and
+    /// `ParquetIOSuite` asserts it is present, so the writer must record the version it is given.
+    #[tokio::test]
+    async fn test_parquet_writer_records_spark_version_in_footer() -> Result<()> {
+        for (spark_version, expected) in [(Some("3.5.9"), Some("3.5.9")), (None, None)] {
+            let schema = Arc::new(Schema::new(vec![Field::new("id", DataType::Int32, true)]));
+            let batch = RecordBatch::try_new(
+                Arc::clone(&schema),
+                vec![Arc::new(Int32Array::from(vec![1]))],
+            )?;
+            let memory_source =
+                MemorySourceConfig::try_new(&[vec![batch]], Arc::clone(&schema), None)?;
+            let input = Arc::new(DataSourceExec::new(Arc::new(memory_source)));
+            let temp_dir = tempfile::tempdir()?;
+            let output_path = format!("file://{}/part-00000.parquet", temp_dir.path().display());
+
+            let writer = ParquetWriterExec::try_new(
+                input,
+                output_path,
+                ParquetCompression::None,
+                0,
+                vec!["id".to_string()],
+                None,
+                HashMap::new(),
+            )?
+            .with_spark_version(spark_version.map(str::to_string));
+            let mut stream = writer.execute(0, SessionContext::new().task_ctx())?;
+            while stream.try_next().await?.is_some() {}
+
+            let reader =
+                SerializedFileReader::new(File::open(temp_dir.path().join("part-00000.parquet"))?)?;
+            let found = reader
+                .metadata()
+                .file_metadata()
+                .key_value_metadata()
+                .and_then(|kvs| kvs.iter().find(|kv| kv.key == SPARK_VERSION_METADATA_KEY))
+                .and_then(|kv| kv.value.as_deref());
+            assert_eq!(found, expected);
+        }
         Ok(())
     }
 
