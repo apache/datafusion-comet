@@ -494,9 +494,14 @@ iceberg-java's _writer-tracked_ state would have recorded, and both are analyzed
   change pruning decisions.
 - On Iceberg 1.9+, manifest `value_counts` / `null_value_counts` for float/double columns
   nested under a nullable struct count rows whose parent struct is null (they come from the
-  parquet footer), while iceberg-java's writer-tracked counts do not. Both counts inflate by
-  the same amount, so the derived null ratios and `IS NULL` / `IS NOT NULL` pruning decisions
-  are unaffected.
+  parquet footer), while iceberg-java's writer-tracked counts do not. The native counts are the
+  correct ones. iceberg-java's counts leave out rows whose struct is null. When every non-null
+  struct in a file holds a value, iceberg-java records a null count of 0, and `IS NULL` prunes a
+  file that contains matching rows
+  ([apache/iceberg#17561](https://github.com/apache/iceberg/issues/17561)). The native counts
+  never prune such a file. `IS NOT NULL` pruning is the same for both.
 
 All content not listed above — the logical data, statistics values, and manifest metadata —
-must match iceberg-java exactly, or the write falls back.
+must match iceberg-java exactly, or the write falls back. The open bugs in which a native write
+still differs are listed in
+[Known Issues](compatibility/parquet-iceberg-known-issues.md#iceberg-writes).
