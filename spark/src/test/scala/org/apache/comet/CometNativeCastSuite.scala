@@ -1014,6 +1014,52 @@ class CometNativeCastSuite extends CometTestBase with AdaptiveSparkPlanHelper {
     }
   }
 
+  test("cast DecimalType with negative scale to integral types is not supported natively") {
+    // The native decimal to integral kernels divide by 10^scale, which overflows for a negative
+    // scale: a debug build panics on a batch with a value, and a release build wraps the divisor
+    // to zero and fails even on an all-null batch. CometCast reports these casts as Unsupported,
+    // so Spark's own cast runs and the results match Spark's. Parquet cannot hold negative-scale
+    // decimals, so the data stays in memory and localTableScan lets Comet plan the cast. Spark
+    // would evaluate a projection over the in-memory rows on the driver, so ConvertToLocalRelation
+    // is excluded to make the cast reach Comet.
+    val integralTypes = Seq(ByteType, ShortType, IntegerType, LongType)
+    withSQLConf(
+      "spark.sql.legacy.allowNegativeScaleOfDecimal" -> "true",
+      "spark.comet.exec.localTableScan.enabled" -> "true",
+      SQLConf.OPTIMIZER_EXCLUDED_RULES.key ->
+        "org.apache.spark.sql.catalyst.optimizer.ConvertToLocalRelation",
+      SQLConf.ANSI_ENABLED.key -> "false") {
+      val negScaleType = DecimalType(7, -2)
+      Seq(CometEvalMode.LEGACY, CometEvalMode.ANSI, CometEvalMode.TRY).foreach { evalMode =>
+        integralTypes.foreach { toType =>
+          assert(
+            CometCast.isSupported(negScaleType, toType, None, evalMode) ==
+              Unsupported(Some(CometCast.negativeScaleDecimalToIntegralReason)))
+        }
+      }
+
+      // One table with values and one that is all null, which the native kernels used to answer
+      // with nulls.
+      val withValues = Seq(
+        Some(BigDecimal("0")),
+        Some(BigDecimal("100")),
+        Some(BigDecimal("12300")),
+        Some(BigDecimal("-99900")),
+        None)
+      val allNull = Seq.fill(3)(Option.empty[BigDecimal])
+      Seq(withValues, allNull).foreach { values =>
+        integralTypes.foreach { toType =>
+          val df = values
+            .toDF("b")
+            .withColumn("a", col("b").cast(negScaleType))
+            .drop("b")
+            .select(col("a").cast(toType).as("result"))
+          checkSparkAnswer(df)
+        }
+      }
+    }
+  }
+
   test("cast DecimalType(10,2) to TimestampType") {
     castTest(generateDecimalsPrecision10Scale2(), DataTypes.TimestampType)
   }
