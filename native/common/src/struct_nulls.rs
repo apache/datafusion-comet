@@ -30,6 +30,7 @@
 
 use arrow::array::{make_array, Array, ArrayRef, StructArray};
 use arrow::buffer::NullBuffer;
+use arrow::datatypes::DataType;
 use arrow::error::ArrowError;
 use std::sync::Arc;
 
@@ -49,6 +50,8 @@ pub fn child_with_parent_nulls(
 ) -> Result<ArrayRef, ArrowError> {
     let child = struct_array.column(ordinal);
     match struct_array.nulls() {
+        // A `NullArray` is already null at every row and cannot carry a null buffer.
+        _ if child.data_type() == &DataType::Null => Ok(Arc::clone(child)),
         Some(parent) if parent.null_count() > 0 => {
             let combined = NullBuffer::union(Some(parent), child.nulls());
             // SAFETY: only nulls are added; every data buffer and child array is carried over
@@ -77,8 +80,8 @@ pub fn children_with_parent_nulls(struct_array: &StructArray) -> Result<Vec<Arra
 #[cfg(test)]
 mod tests {
     use super::*;
-    use arrow::array::Int32Array;
-    use arrow::datatypes::{DataType, Field, Fields};
+    use arrow::array::{Int32Array, NullArray};
+    use arrow::datatypes::{Field, Fields};
 
     fn struct_with(child: ArrayRef, nulls: Option<NullBuffer>) -> StructArray {
         let fields: Fields = vec![Arc::new(Field::new("a", DataType::Int32, true))].into();
@@ -159,5 +162,22 @@ mod tests {
     fn empty_struct_has_no_children() {
         let sa = StructArray::new_empty_fields(2, Some(NullBuffer::from(vec![true, false])));
         assert!(children_with_parent_nulls(&sa).unwrap().is_empty());
+    }
+
+    /// A `NullType` field of a null struct is returned as is: it is null at every row already, and
+    /// a `NullArray` with a null buffer is invalid.
+    #[test]
+    fn null_type_child_is_returned_unchanged() {
+        let fields: Fields = vec![Arc::new(Field::new("n", DataType::Null, true))].into();
+        let child: ArrayRef = Arc::new(NullArray::new(2));
+        let sa = StructArray::new(
+            fields,
+            vec![Arc::clone(&child)],
+            Some(NullBuffer::from(vec![true, false])),
+        );
+
+        let out = child_with_parent_nulls(&sa, 0).unwrap();
+        assert!(Arc::ptr_eq(&out, &child));
+        assert_eq!(out.logical_null_count(), 2);
     }
 }
