@@ -451,6 +451,8 @@ object CometMetricNode {
         SQLMetrics.createMetric(sc, "Metadata loads served without storage I/O"),
       "scan_io_metadata_cache_misses" ->
         SQLMetrics.createMetric(sc, "Metadata loads requiring storage I/O"),
+      "scan_io_metadata_prefetches" ->
+        SQLMetrics.createMetric(sc, "Metadata loads read from storage ahead of the file's open"),
       "pushdown_rows_pruned" ->
         SQLMetrics.createMetric(sc, "Rows filtered out by predicates pushed into parquet scan"),
       "pushdown_rows_matched" ->
