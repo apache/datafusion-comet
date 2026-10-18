@@ -52,18 +52,32 @@
 //! `ignoreMissing` is set, and it walks the raw `MessageType` to decide. That walk has to run
 //! over the Parquet schema rather than the Arrow schema the schema adapter is handed later,
 //! because an id on a repeated `list` or `key_value` group, or on the message root, never
-//! reaches an Arrow field. Until apache/datafusion#24790, which is not in DataFusion 55.1.0,
-//! the INT96 coercion also rebuilt container fields without their metadata, so a struct id could
-//! vanish on the way to Arrow as well.
+//! reaches an Arrow field. DataFusion 55.2.0 preserves container metadata through INT96 coercion
+//! (apache/datafusion#24790), so struct ids no longer vanish on the way to Arrow.
 //!
 //! The second is the Variant footer rewrite, `with_spark_arrow_schema`, which replaces the
 //! Arrow schema hint in the footer for scans that project Variant.
+//!
+//! The third is the INT96 leaf stamp, `with_int96_leaf_stamp`, enabled by rebase-aware scans: the
+//! factory stamps each unencrypted file's INT96 leaf ordinals into the in-memory copy of its footer
+//! key-value metadata -- `datetime_rebase::stamp_int96_leaves`, derived from the footer's own
+//! `SchemaDescriptor` -- and caches the stamped copy in place of the plain one. parquet-rs copies
+//! every key-value pair into the arrow schema it derives from the metadata, which is the only
+//! per-file channel DataFusion's opener gives the expression adapter; the stamp is how the adapter
+//! tells INT96 timestamp columns from INT64 ones after both were coerced to the same arrow type.
+//! The rebuild happens once per file per cache lifetime (later opens find the stamp already
+//! present); encrypted opens are left untouched because the parquet API cannot carry a file
+//! decryptor across the rebuild. `FileMetadataCache` is keyed by object path and shared by every
+//! scan of one `RuntimeEnv`, so a plain (non-stamping) scan of the same file in the same plan sees
+//! the stamped copy too; nothing outside the rebase path reads the key, and the copy is otherwise
+//! identical.
 //!
 //! Conversion checks also use the raw footer to preserve legacy LIST clipping failures. With
 //! row filters enabled, a deferred conversion failure is raised on the first data-page request.
 //! Footer, Bloom-filter and page-index reads still proceed, so format pruning can discard a file
 //! without decoding it, but row selection cannot hide the failure.
 
+use crate::parquet::datetime_rebase::stamp_int96_leaves;
 use crate::parquet::parquet_support::SparkParquetOptions;
 use crate::parquet::schema_adapter::{
     check_file_conversions, RejectOnNonEmpty, REPEATED_PRIMITIVE_KEY,
@@ -72,11 +86,13 @@ use arrow::datatypes::{DataType, FieldRef, Schema, SchemaRef};
 use async_trait::async_trait;
 use bytes::Bytes;
 use datafusion::common::{DataFusionError, Result as DFResult};
-use datafusion::datasource::physical_plan::parquet::metadata::DFParquetMetadata;
+use datafusion::datasource::physical_plan::parquet::metadata::{
+    CachedParquetMetaData, DFParquetMetadata,
+};
 use datafusion::datasource::physical_plan::parquet::{
     ParquetFileMetrics, ParquetFileReaderFactory,
 };
-use datafusion::execution::cache::cache_manager::FileMetadataCache;
+use datafusion::execution::cache::cache_manager::{CachedFileMetadataEntry, FileMetadataCache};
 use datafusion::physical_plan::metrics::{
     Count, ExecutionPlanMetricsSet, MetricBuilder, MetricCategory, MetricType,
 };
@@ -107,6 +123,8 @@ use std::ops::Range;
 use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
 use std::sync::{Arc, Mutex, OnceLock};
 
+use crate::parquet::objectstore::http_metrics::HttpRequestMetrics;
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(crate) enum ScanIoSource {
     ObjectStore,
@@ -116,6 +134,8 @@ pub(crate) enum ScanIoSource {
 
 #[derive(Debug)]
 struct ScanIoMetrics {
+    http_observed_gets: Count,
+    http_retries: Count,
     data_bytes: Count,
     metadata_bytes: Count,
     footer_reads: Count,
@@ -130,6 +150,8 @@ struct ScanIoMetrics {
 impl ScanIoMetrics {
     fn new(metrics: &ExecutionPlanMetricsSet) -> Self {
         Self {
+            http_observed_gets: count_counter(metrics, "scan_io_http_observed_gets"),
+            http_retries: count_counter(metrics, "scan_io_http_retries"),
             data_bytes: byte_counter(metrics, "scan_io_data_bytes"),
             metadata_bytes: byte_counter(metrics, "scan_io_metadata_bytes"),
             footer_reads: count_counter(metrics, "scan_io_footer_reads"),
@@ -190,6 +212,7 @@ pub struct EagerPageIndexReaderFactory {
     // Refuse a file whose Parquet schema carries no field id, as Spark's `ParquetReadSupport`
     // does when the requested schema carries one and `ignoreMissing` is not set.
     require_field_ids: bool,
+    stamp_int96_leaves: bool,
     conversion_check: Option<(SchemaRef, SparkParquetOptions, bool)>,
     deferred_rejections: Arc<Mutex<HashMap<Path, (ObjectMeta, RejectOnNonEmpty)>>>,
 }
@@ -221,6 +244,7 @@ impl EagerPageIndexReaderFactory {
             scan_io_metrics,
             spark_variant_schema: false,
             require_field_ids: false,
+            stamp_int96_leaves: false,
             conversion_check: None,
             deferred_rejections: Arc::new(Mutex::new(HashMap::new())),
         }
@@ -247,6 +271,13 @@ impl EagerPageIndexReaderFactory {
     /// that never calls this reads every file.
     pub fn with_require_field_ids(mut self, enabled: bool) -> Self {
         self.require_field_ids = enabled;
+        self
+    }
+
+    /// Whether readers stamp each unencrypted file's INT96 leaf ordinals into its metadata
+    /// (see the module docs). Off by default.
+    pub fn with_int96_leaf_stamp(mut self, enabled: bool) -> Self {
+        self.stamp_int96_leaves = enabled;
         self
     }
 }
@@ -297,6 +328,7 @@ impl ParquetFileReaderFactory for EagerPageIndexReaderFactory {
             metadata_size_hint,
             spark_variant_schema: self.spark_variant_schema,
             require_field_ids: self.require_field_ids,
+            stamp_int96_leaves: self.stamp_int96_leaves,
             conversion_check: self.conversion_check.clone(),
             deferred_rejections: Arc::clone(&self.deferred_rejections),
             deferred_rejection,
@@ -316,6 +348,7 @@ struct EagerPageIndexReader {
     metadata_size_hint: Option<usize>,
     spark_variant_schema: bool,
     require_field_ids: bool,
+    stamp_int96_leaves: bool,
     conversion_check: Option<(SchemaRef, SparkParquetOptions, bool)>,
     deferred_rejections: Arc<Mutex<HashMap<Path, (ObjectMeta, RejectOnNonEmpty)>>>,
     deferred_rejection: Option<RejectOnNonEmpty>,
@@ -572,6 +605,7 @@ impl AsyncFileReader for EagerPageIndexReader {
         let scan_io_metrics = Arc::clone(&self.scan_io_metrics);
         let spark_variant_schema = self.spark_variant_schema;
         let require_field_ids = self.require_field_ids;
+        let stamp_enabled = self.stamp_int96_leaves;
         async move {
             let file_decryption_properties = options
                 .and_then(|o| o.file_decryption_properties())
@@ -604,7 +638,7 @@ impl AsyncFileReader for EagerPageIndexReader {
 
             let metadata = DFParquetMetadata::new(&metadata_store, &object_meta)
                 .with_decryption_properties(file_decryption_properties)
-                .with_file_metadata_cache(Some(metadata_cache))
+                .with_file_metadata_cache(Some(Arc::clone(&metadata_cache)))
                 .with_metadata_size_hint(metadata_size_hint)
                 .with_page_index_policy(page_index_policy)
                 .fetch_metadata()
@@ -643,6 +677,32 @@ impl AsyncFileReader for EagerPageIndexReader {
                     },
                 )));
             }
+            // Stamp before the Variant rewrite so the shared cache keeps the footer as read
+            // plus the stamp, which the rewrite leaves in place; the rewrite is per open and
+            // never written back. Encrypted opens (`!cache_enabled`) are never stamped:
+            // nothing is cached for them and the rebuild cannot carry a file decryptor.
+            let metadata = if stamp_enabled && cache_enabled {
+                // First open of this file since the cache last held it: rebuild once with the
+                // stamp and replace the cached plain copy so later opens skip the rebuild.
+                // Same entry shape `DFParquetMetadata::cache_metadata` stores, so cache
+                // validation and page-index reuse behave identically.
+                match stamp_int96_leaves(&metadata) {
+                    None => metadata,
+                    Some(stamped) => {
+                        let stamped = Arc::new(stamped);
+                        metadata_cache.put(
+                            &object_meta.location,
+                            CachedFileMetadataEntry::new(
+                                object_meta.clone(),
+                                Arc::new(CachedParquetMetaData::new(Arc::clone(&stamped))),
+                            ),
+                        );
+                        stamped
+                    }
+                }
+            } else {
+                metadata
+            };
             let metadata = if spark_variant_schema {
                 with_spark_arrow_schema(metadata)?
             } else {
@@ -845,9 +905,20 @@ impl ObjectStore for ScanIoObjectStore {
         self.inner.put_multipart_opts(location, options).await
     }
 
-    async fn get_opts(&self, location: &Path, options: GetOptions) -> ObjectStoreResult<GetResult> {
+    async fn get_opts(
+        &self,
+        location: &Path,
+        mut options: GetOptions,
+    ) -> ObjectStoreResult<GetResult> {
         if options.head {
             return self.inner.get_opts(location, options).await;
+        }
+        if matches!(self.role, ScanIoStoreRole::ObjectStore) {
+            HttpRequestMetrics::new(
+                self.scan_io_metrics.http_observed_gets.clone(),
+                self.scan_io_metrics.http_retries.clone(),
+            )
+            .track(&mut options);
         }
 
         let requested = match options.range.as_ref() {
@@ -1341,7 +1412,7 @@ mod tests {
             false,
         )]));
         let mut options =
-            SparkParquetOptions::new(datafusion_comet_spark_expr::EvalMode::Legacy, "UTC", false);
+            SparkParquetOptions::new(datafusion_comet_spark_expr::EvalMode::Legacy, "UTC");
         options.case_sensitive = false;
         let factory = EagerPageIndexReaderFactory::new(
             store,

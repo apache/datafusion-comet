@@ -254,36 +254,43 @@ so `spark.comet.debug.enabled` and `COMET_LOG_LEVEL` do not affect it.
 
 #### Example: dumping window operator output
 
-In `PhysicalPlanner::create_plan` in `native/core/src/execution/planner.rs`,
-the `OpStruct::Window` arm builds a `BoundedWindowAggExec` and hands it to
-`SparkPlan::new`. Wrap the node between those two steps:
+In `WindowBuilder::build` in `native/core/src/execution/planner/window.rs`,
+the window operator builds `window_agg`, either a `BoundedWindowAggExec` or a
+`WindowAggExec` depending on whether every window expression runs with bounded
+memory. It then optionally wraps `window_agg` in a casting `ProjectionExec` as
+`final_plan` and hands `final_plan` to `SparkPlan::new`. To see the raw window
+output, wrap `window_agg` right after it is built, before the cast projection:
 
 ```rust
-let window_agg = Arc::new(BoundedWindowAggExec::try_new(
-    window_expr?,
-    Arc::clone(&child.native_plan),
-    InputOrderMode::Sorted,
-    !partition_exprs.is_empty(),
-)?);
+let window_agg: Arc<dyn ExecutionPlan> = if all_bounded {
+    Arc::new(BoundedWindowAggExec::try_new(
+        window_expr,
+        Arc::clone(&child.native_plan),
+        InputOrderMode::Sorted,
+        !partition_exprs.is_empty(),
+    )?)
+} else {
+    Arc::new(WindowAggExec::try_new(
+        window_expr,
+        Arc::clone(&child.native_plan),
+        !partition_exprs.is_empty(),
+    )?)
+};
 
 #[cfg(debug_assertions)]
-let window_agg: Arc<dyn datafusion::physical_plan::ExecutionPlan> = {
+let window_agg: Arc<dyn ExecutionPlan> = {
     use crate::debug::DebugExecutionDataStream;
     Arc::new(DebugExecutionDataStream::new("window-output", window_agg))
 };
 
-Ok((
-    scans,
-    shuffle_scans,
-    Arc::new(SparkPlan::new(spark_plan.plan_id, window_agg, vec![child])),
-))
+// ... `final_plan` is built from `window_agg`, and
+// `SparkPlan::new(spark_plan.plan_id, final_plan, vec![child])` wraps it.
 ```
 
-The `let` rebinding keeps the original `window_agg` typed concretely on release
-builds (where the `cfg` block is compiled out) and re-binds it to
-`Arc<dyn ExecutionPlan>` when the debug module is active. No annotation is
-needed on the first `let` because release builds use the original binding
-directly.
+Wrapping `window_agg` leaves the rest of the builder unchanged. To see the
+output after the cast, wrap `final_plan` the same way just before the
+`SparkPlan::new` call. The `let` rebinding is only compiled in when
+`debug_assertions` is on, so release builds use the original binding.
 
 Rebuild with `make core` and run a window test, for example:
 
