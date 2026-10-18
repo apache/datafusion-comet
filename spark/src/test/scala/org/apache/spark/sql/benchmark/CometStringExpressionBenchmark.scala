@@ -127,7 +127,7 @@ object CometStringExpressionBenchmark extends CometBenchmarkBase {
           (stringExpressions ++ collatedStringExpressions).foreach { config =>
             val allConfigs = extraConfigs ++ config.extraCometConfigs
             runBenchmark(config.name) {
-              runExpressionBenchmark(config.name, v, config.query, allConfigs)
+              runExpressionBenchmark(config.name, v.toLong, config.query, allConfigs)
             }
           }
         }

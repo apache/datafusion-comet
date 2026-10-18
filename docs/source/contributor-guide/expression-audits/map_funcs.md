@@ -45,9 +45,10 @@
 ## map_from_arrays
 
 - Spark 3.4.3 (audited 2026-05-27): identical to 3.5.8.
-- Spark 3.5.8 (audited 2026-05-27): baseline. `MapFromArrays(left, right) extends BinaryExpression with NullIntolerant`; Spark uses `ArrayBasedMapBuilder` to detect duplicate keys (subject to `spark.sql.mapKeyDedupPolicy`) and rejects null keys with `RuntimeException("Cannot use null as map key")`. Comet `CometMapFromArrays` wraps the inputs in `CaseWhen(IsNotNull(left) AND IsNotNull(right), map(left, right), null)` so NULL-array inputs return NULL rather than triggering the previously reported native crash ([#3327](https://github.com/apache/datafusion-comet/issues/3327)).
-- Spark 4.0.1 (audited 2026-05-27): semantics unchanged; `NullIntolerant` trait replaced by `nullIntolerant: Boolean`.
+- Spark 3.5.8 (audited 2026-05-27): baseline. `MapFromArrays(left, right) extends BinaryExpression with NullIntolerant`; Spark uses `ArrayBasedMapBuilder` to detect duplicate keys (subject to `spark.sql.mapKeyDedupPolicy`) and rejects null keys with `RuntimeException("Cannot use null as map key")`. Comet `CometMapFromArrays` emits nested `CaseWhen(IsNotNull(left), CaseWhen(IsNotNull(right), map(left, right), null), null)` guards so NULL-array inputs return NULL rather than triggering the previously reported native crash ([#3327](https://github.com/apache/datafusion-comet/issues/3327)). The outer key guard preserves Spark's left-before-right evaluation: one `IsNotNull(left) AND IsNotNull(right)` predicate can still evaluate the values child for a NULL-key row in a mixed batch. The native `SparkMapFromArrays` wrapper also validates key/value lengths per non-null row before DataFusion constructs the map, so matching flattened totals cannot pair values across row boundaries.
+- Spark 4.0.1 (audited 2026-05-27): `NullIntolerant` trait replaced by `nullIntolerant: Boolean`. `ArrayBasedMapBuilder` gains the `keyNormalizer` described below.
 - Spark 4.1.1 (audited 2026-05-27): identical to 4.0.1.
+- Floating-point keys (2026-10-14, [#6549](https://github.com/apache/datafusion-comet/issues/6549)): `ArrayBasedMapBuilder` finds a duplicate `FLOAT` or `DOUBLE` key in a `HashMap` of boxed values (`Double.equals`, so NaNs with different bits are one key) and a duplicate struct or array key in a `TreeMap` in the SQL ordering (`-0.0` equals `0.0`). From Spark 4.0 its `keyNormalizer` also normalizes a `FLOAT` or `DOUBLE` key before the lookup, unless `spark.sql.legacy.disableMapKeyNormalization` is set. The native builders compare the keys' bits, so a key type that holds a float at any depth is `Incompatible` on every version (`MapBuilderKeySupport`). `map_from_arrays` routes them through the codegen dispatcher. `from` returns its input arrays when no key repeats, so a lone `-0.0` key stays `-0.0` there.
 
 ## map_from_entries
 
@@ -56,6 +57,7 @@
 - Spark 4.0.1 (audited 2026-05-27): semantics unchanged; trait refactor.
 - Spark 4.1.1 (audited 2026-05-27): identical to 4.0.1.
 - Known limitation: input arrays where the struct's key or value type contains `BinaryType` are marked `Incompatible` and fall back unless `spark.comet.expression.MapFromEntries.allowIncompatible=true`.
+- Floating-point keys (2026-10-14, [#6549](https://github.com/apache/datafusion-comet/issues/6549)): `ArrayBasedMapBuilder` finds a duplicate `FLOAT` or `DOUBLE` key in a `HashMap` of boxed values (`Double.equals`, so NaNs with different bits are one key) and a duplicate struct or array key in a `TreeMap` in the SQL ordering (`-0.0` equals `0.0`). From Spark 4.0 its `keyNormalizer` also normalizes a `FLOAT` or `DOUBLE` key before the lookup, unless `spark.sql.legacy.disableMapKeyNormalization` is set. The native builders compare the keys' bits, so a key type that holds a float at any depth is `Incompatible` on every version (`MapBuilderKeySupport`). `map_from_entries` routes them through the codegen dispatcher. It always calls `build()`, so on Spark 4.0+ it stores a `-0.0` key as `0.0`.
 
 ## map_keys
 
@@ -66,6 +68,7 @@
 
 ## map_sort
 
+- Performance (tuned locally 2026-09-13; [PR #5901](https://github.com/apache/datafusion-comet/pull/5901), related to [#5900](https://github.com/apache/datafusion-comet/issues/5900)): reuse per-batch prefix-tuple sorting scratch for multi-entry `Utf8`/`Int32` maps and bulk-fill all-empty offsets, preserving the singleton path from [#5887](https://github.com/apache/datafusion-comet/pull/5887). Against upstream including #5887, matched 2–10-entry forward normalization was about 3x faster; 2–50-entry maps improved 28–39% in the full run and 33–39% in independent paired confirmation. Benchmarks: `native/spark-expr/benches/map_sort.rs`, `hash.rs`, and `common/matched_maps.rs`.
 - Performance (tuned locally 2026-09-12; [PR #5887](https://github.com/apache/datafusion-comet/pull/5887)): skip Arrow sort dispatch for eligible flat singleton keys, with a batch check and specialized fallback loop for batches without singletons. In the local DataFusion 55.0.0 development cohort, matched singleton normalization measured 19–22x faster in the full run and 18.4x in an independent forward-order confirmation. Benchmarks: `native/spark-expr/benches/map_sort.rs`, `hash.rs`, and `common/matched_maps.rs`; 92 cases cover normalization, hashing, combined execution, nulls, slices, mixed cardinalities, and long Unicode values. Flagged regressions did not remain stable through independent and reversed-order confirmation.
 
 ## map_values

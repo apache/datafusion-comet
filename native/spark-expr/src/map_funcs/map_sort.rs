@@ -15,7 +15,7 @@
 // specific language governing permissions and limitations
 // under the License.
 
-use arrow::array::{Array, ArrayRef, MapArray, StructArray, UInt32Array};
+use arrow::array::{Array, ArrayRef, MapArray, StringArray, StructArray, UInt32Array};
 use arrow::buffer::OffsetBuffer;
 use arrow::compute::{sort_to_indices, take, SortOptions};
 use arrow::datatypes::DataType;
@@ -124,12 +124,39 @@ fn map_sort_indices<const SKIP_SINGLETON: bool>(
     let mut rebased_offsets: Vec<i32> = Vec::with_capacity(offsets.len());
     rebased_offsets.push(0);
 
+    if offsets[offsets.len() - 1] == offsets[0] {
+        // Empty visible slices still need take/rebasing in the caller.
+        rebased_offsets.resize(offsets.len(), 0);
+        return Ok((global_indices, rebased_offsets));
+    }
+
+    // Restrict allocation reuse to the measured map<string, int> shape.
+    // Other types retain Arrow's dispatch and validation.
+    let string_keys = if entries.column(1).data_type() == &DataType::Int32 {
+        entries
+            .column(0)
+            .as_any()
+            .downcast_ref::<StringArray>()
+            .filter(|keys| keys.null_count() == 0)
+    } else {
+        None
+    };
+    let mut scratch = Vec::new();
+
     for idx in 0..offsets.len() - 1 {
         let map_start = offsets[idx] as usize;
         let map_end = offsets[idx + 1] as usize;
         if map_end > map_start {
             if SKIP_SINGLETON && map_end == map_start + 1 {
                 global_indices.push(map_start as u32);
+            } else if let Some(keys) = string_keys {
+                append_string_map_indices(
+                    keys,
+                    map_start,
+                    map_end,
+                    &mut scratch,
+                    &mut global_indices,
+                );
             } else {
                 let map_keys = entries.column(0).slice(map_start, map_end - map_start);
                 let local_indices = sort_to_indices(&map_keys, Some(sort_options), None)?;
@@ -140,6 +167,56 @@ fn map_sort_indices<const SKIP_SINGLETON: bool>(
     }
 
     Ok((global_indices, rebased_offsets))
+}
+
+// Keep Arrow's (index, four-byte prefix, length) sort representation and comparator.
+// In particular, sorting u32 indices instead can change the permutation of equal keys
+// because Rust's unstable sort specializes by element layout. Reusing this buffer avoids
+// a key-array slice and Arrow's per-row index/tuple/output allocations without changing
+// that behavior. Capacity grows only to the largest row, not the whole entries array.
+fn append_string_map_indices(
+    keys: &StringArray,
+    start: usize,
+    end: usize,
+    scratch: &mut Vec<(u32, u32, u64)>,
+    global_indices: &mut Vec<u32>,
+) {
+    scratch.clear();
+    scratch.extend((start..end).map(|index| {
+        // SAFETY: MapArray offsets bound each row within its entries/key array.
+        let bytes = unsafe { keys.value_unchecked(index) }.as_bytes();
+        let prefix = if bytes.len() >= 4 {
+            // SAFETY: At least four initialized bytes are available; alignment is not required.
+            u32::from_be(unsafe { std::ptr::read_unaligned(bytes.as_ptr().cast::<u32>()) })
+        } else if bytes.is_empty() {
+            0
+        } else {
+            let mut prefix = 0u32;
+            for &byte in bytes {
+                prefix = (prefix << 8) | u32::from(byte);
+            }
+            prefix << (8 * (4 - bytes.len()))
+        };
+        (index as u32, prefix, bytes.len() as u64)
+    }));
+    scratch.sort_unstable_by(|a, b| {
+        let order = a.1.cmp(&b.1);
+        if !order.is_eq() {
+            return order;
+        }
+        if a.2 < 4 || b.2 < 4 {
+            let order = a.2.cmp(&b.2);
+            if !order.is_eq() {
+                return order;
+            }
+        }
+        // SAFETY: Both indices were generated from this map's valid entry range above.
+        unsafe {
+            keys.value_unchecked(a.0 as usize)
+                .cmp(keys.value_unchecked(b.0 as usize))
+        }
+    });
+    global_indices.extend(scratch.iter().map(|entry| entry.0));
 }
 
 #[cfg(test)]
@@ -1028,6 +1105,179 @@ mod tests {
                     floats.iter().map(|x| x.to_bits()).collect::<Vec<_>>()
                 );
             }
+        }
+    }
+
+    // A non-default schema makes metadata/field-name preservation observable.
+    fn map_with_int_values(
+        keys: ArrayRef,
+        offsets: Vec<i32>,
+        nulls: Option<arrow::buffer::NullBuffer>,
+        sorted: bool,
+    ) -> MapArray {
+        use arrow::datatypes::Field;
+        let values: ArrayRef = Arc::new(Int32Array::from_iter((0..keys.len()).map(|i| {
+            if i % 2 == 0 {
+                None
+            } else {
+                Some(i as i32)
+            }
+        })));
+        let entries = StructArray::new(
+            vec![
+                Arc::new(Field::new("custom_key", keys.data_type().clone(), false)),
+                Arc::new(Field::new("custom_value", DataType::Int32, true)),
+            ]
+            .into(),
+            vec![keys, values],
+            None,
+        );
+        MapArray::new(
+            Arc::new(
+                Field::new("custom_entries", entries.data_type().clone(), false).with_metadata(
+                    std::collections::HashMap::from([("source".into(), "test".into())]),
+                ),
+            ),
+            OffsetBuffer::new(offsets.into()),
+            entries,
+            nulls,
+            sorted,
+        )
+    }
+
+    fn assert_sorted_permutation(map: MapArray, permutation: Vec<u32>, offsets: Vec<i32>) {
+        let expected = take(map.entries(), &UInt32Array::from(permutation), None).unwrap();
+        let result = spark_map_sort(&[ColumnarValue::Array(Arc::new(map.clone()))]).unwrap();
+        let ColumnarValue::Array(result) = result else {
+            panic!("expected array")
+        };
+        let actual = result.as_any().downcast_ref::<MapArray>().unwrap();
+        assert_eq!(actual.entries().to_data(), expected.to_data());
+        assert_eq!(actual.value_offsets(), offsets);
+        assert_eq!(actual.nulls(), map.nulls());
+        if let Some(expected_nulls) = map.nulls() {
+            let actual_nulls = actual.nulls().unwrap();
+            assert_eq!(actual_nulls.offset(), expected_nulls.offset());
+            assert_eq!(
+                actual_nulls.buffer().as_ptr(),
+                expected_nulls.buffer().as_ptr()
+            );
+        }
+        assert_eq!(actual.data_type(), map.data_type());
+    }
+
+    #[test]
+    fn test_multi_entry_unicode_duplicates_and_sliced_null_maps() {
+        use arrow::buffer::NullBuffer;
+        let prefix = "資料é".repeat(128);
+        let keys: ArrayRef = Arc::new(StringArray::from(vec![
+            "z".into(),
+            "y".into(),
+            "one".into(),
+            "中".into(),
+            "a".into(),
+            "é".into(),
+            "a".into(),
+            "\0".into(),
+            "".into(),
+            format!("{prefix}B"),
+            format!("{prefix}A"),
+            format!("{prefix}A"),
+            "😀".into(),
+        ]));
+        let map = map_with_int_values(
+            keys,
+            vec![0, 2, 2, 3, 9, 9, 13],
+            Some(NullBuffer::from(vec![true, true, true, false, false, true])),
+            false,
+        );
+        assert_sorted_permutation(
+            map.slice(1, 5),
+            vec![2, 8, 7, 4, 6, 5, 3, 10, 11, 9, 12],
+            vec![0, 0, 1, 7, 7, 11],
+        );
+    }
+
+    #[test]
+    fn test_multi_entry_permutation_matches_arrow_for_equal_keys() {
+        // Arrow's unstable sort does not promise stable duplicate ordering. Check the exact
+        // current kernel permutation, including larger rows where insertion sort no longer applies.
+        let mut seed = 42u64;
+        for count in [2, 3, 6, 16, 20, 21, 26, 32, 50, 64, 128, 257] {
+            for distinct in [1, 3, 17, 1000] {
+                let mut text = vec!["unused".to_owned()];
+                for _ in 0..count {
+                    seed ^= seed << 13;
+                    seed ^= seed >> 7;
+                    seed ^= seed << 17;
+                    text.push(format!("{}", seed % distinct));
+                }
+                let keys: ArrayRef = Arc::new(StringArray::from(text));
+                let local = sort_to_indices(
+                    &keys.slice(1, count),
+                    Some(SortOptions {
+                        descending: false,
+                        nulls_first: true,
+                    }),
+                    None,
+                )
+                .unwrap();
+                let expected = local.values().iter().map(|i| i + 1).collect();
+                let map = map_with_int_values(keys, vec![0, 1, count as i32 + 1], None, false);
+                assert_sorted_permutation(map.slice(1, 1), expected, vec![0, count as i32]);
+            }
+        }
+    }
+
+    #[test]
+    fn test_multi_entry_unsupported_keys_preserve_error_under_null_map() {
+        use arrow::buffer::NullBuffer;
+        use arrow::datatypes::Field;
+        let keys: ArrayRef = Arc::new(StructArray::new(
+            vec![Arc::new(Field::new("k", DataType::Int32, false))].into(),
+            vec![Arc::new(Int32Array::from(vec![2, 1]))],
+            None,
+        ));
+        let expected = DataFusionError::from(
+            sort_to_indices(
+                keys.as_ref(),
+                Some(SortOptions {
+                    descending: false,
+                    nulls_first: true,
+                }),
+                None,
+            )
+            .unwrap_err(),
+        )
+        .to_string();
+        let map = map_with_int_values(
+            keys,
+            vec![0, 0, 2],
+            Some(NullBuffer::from(vec![true, false])),
+            false,
+        );
+        assert_eq!(
+            spark_map_sort(&[ColumnarValue::Array(Arc::new(map))])
+                .unwrap_err()
+                .to_string(),
+            expected
+        );
+    }
+
+    #[test]
+    fn test_empty_visible_maps_rebase_and_preserve_nulls() {
+        use arrow::buffer::NullBuffer;
+        for keys in [
+            Arc::new(StringArray::from(vec!["z", "a"])) as ArrayRef,
+            Arc::new(Int32Array::from(vec![2, 1])),
+        ] {
+            let map = map_with_int_values(
+                keys,
+                vec![0, 2, 2, 2],
+                Some(NullBuffer::from(vec![true, true, false])),
+                false,
+            );
+            assert_sorted_permutation(map.slice(1, 2), vec![], vec![0, 0, 0]);
         }
     }
 }

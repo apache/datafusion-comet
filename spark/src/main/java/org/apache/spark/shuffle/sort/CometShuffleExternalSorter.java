@@ -101,6 +101,7 @@ public final class CometShuffleExternalSorter implements CometShuffleChecksumSup
   private final String checksumAlgorithm;
   private final String compressionCodec;
   private final int compressionLevel;
+  private final boolean offsetsAsLengths;
 
   // The memory allocator for this sorter. It is used to allocate/free memory pages for this sorter.
   // Because we need to allocate off-heap memory regardless of configured Spark memory mode
@@ -136,6 +137,8 @@ public final class CometShuffleExternalSorter implements CometShuffleChecksumSup
     this.checksumAlgorithm = getChecksumAlgorithm(conf);
     this.compressionCodec = CometConf$.MODULE$.COMET_SHUFFLE_COMPRESSION_CODEC().get();
     this.compressionLevel = (int) CometConf$.MODULE$.COMET_SHUFFLE_COMPRESSION_ZSTD_LEVEL().get();
+    this.offsetsAsLengths =
+        (boolean) CometConf$.MODULE$.COMET_SHUFFLE_COMPRESSION_OFFSETS_AS_LENGTHS().get();
 
     this.initialSize = initialSize;
     this.tracingEnabled = (boolean) CometConf$.MODULE$.COMET_TRACING_ENABLED().get();
@@ -157,6 +160,7 @@ public final class CometShuffleExternalSorter implements CometShuffleChecksumSup
             preferDictionaryRatio,
             compressionCodec,
             compressionLevel,
+            offsetsAsLengths,
             checksumAlgorithm,
             partitionChecksums,
             writeMetrics,
@@ -254,7 +258,10 @@ public final class CometShuffleExternalSorter implements CometShuffleChecksumSup
   private void growPointerArrayIfNecessary() throws IOException {
     assert (activeSpillSorter != null);
     if (!activeSpillSorter.hasSpaceForAnotherRecord()) {
-      long used = activeSpillSorter.getMemoryUsage();
+      // Size the new array from the pointer array alone, as Spark's ShuffleExternalSorter does.
+      // SpillSorter.getMemoryUsage() also counts the data pages, which would make the array grow
+      // in proportion to the pages instead of doubling.
+      long used = activeSpillSorter.getPointerArrayMemoryUsage();
       LongArray array;
       try {
         // could trigger spilling

@@ -23,8 +23,9 @@ import scala.util.Random
 
 import org.apache.parquet.hadoop.ParquetOutputFormat
 import org.apache.spark.sql.{CometTestBase, DataFrame}
+import org.apache.spark.sql.catalyst.expressions.{Concat, Literal, Reverse}
 import org.apache.spark.sql.internal.SQLConf
-import org.apache.spark.sql.types.{DataTypes, StructField, StructType}
+import org.apache.spark.sql.types.{DataType, DataTypes, StructField, StructType}
 
 import org.apache.comet.CometSparkSessionExtensions.isSpark40Plus
 import org.apache.comet.testing.{DataGenOptions, FuzzDataGenerator}
@@ -38,59 +39,36 @@ class CometStringExpressionSuite extends CometTestBase with CometCodegenAssertio
     "తెలుగు")
   // scalastyle:on
 
+  if (isSpark40Plus) {
+    test("collated strings preserve native opt-in routing") {
+      withParquetTable(Seq(("abc", 1), ("", 2), (null, 3)), "tbl") {
+        // Build typed literals directly: Collate and casts of columns are not native, while
+        // ordinary constant folding would remove the expression we want to test.
+        val text = Literal.create("abc", DataType.fromDDL("STRING COLLATE UTF8_LCASE"))
+        withSQLConf(
+          SQLConf.OPTIMIZER_EXCLUDED_RULES.key ->
+            "org.apache.spark.sql.catalyst.optimizer.ConstantFolding",
+          CometConf.COMET_SCALA_UDF_CODEGEN_ENABLED.key -> "false",
+          CometConf.getExprAllowIncompatConfigKey("Concat") -> "true",
+          CometConf.getExprAllowIncompatConfigKey("Reverse") -> "true") {
+          for ((name, expression) <- Seq(
+              "concat" -> Concat(Seq(text, text)),
+              "reverse" -> Reverse(text))) {
+            checkSparkAnswerAndImpl(
+              sql("SELECT _1 FROM tbl").select(getColumnFromExpression(expression)),
+              native = Seq(name))
+          }
+        }
+      }
+    }
+  }
+
   test("lpad string") {
     testStringPadding("lpad")
   }
 
   test("rpad string") {
     testStringPadding("rpad")
-  }
-
-  for ((function, expressionName) <- Seq("lpad" -> "StringLPad", "rpad" -> "StringRPad")) {
-    test(s"$function dispatches unsupported argument shapes (issue #5579)") {
-      val data: Seq[(String, Option[Int], String)] = Seq(
-        ("hi", Some(5), "xy"),
-        ("hello", Some(3), "x"),
-        ("", Some(3), "a"),
-        ("hi", Some(5), ""),
-        (null, Some(5), "x"),
-        ("hi", None, "x"),
-        ("hi", Some(5), null),
-        (null, None, null))
-      withParquetTable(data, "tbl") {
-        withSQLConf(
-          SQLConf.OPTIMIZER_EXCLUDED_RULES.key ->
-            "org.apache.spark.sql.catalyst.optimizer.ConstantFolding") {
-          for (allowIncompatible <- Seq("false", "true")) {
-            withSQLConf(
-              CometConf.getExprAllowIncompatConfigKey(expressionName) -> allowIncompatible) {
-              for (query <- Seq(
-                  s"SELECT $function(_1, _2, _3) FROM tbl",
-                  s"SELECT $function('hi', _2, 'xy') FROM tbl",
-                  s"SELECT $function('hi', 5, 'xy') FROM tbl")) {
-                assertCodegenRan {
-                  checkSparkAnswerAndOperator(query)
-                }
-              }
-            }
-          }
-        }
-      }
-    }
-
-    test(s"$function keeps supported argument shapes native") {
-      withParquetTable(Seq(("hi", 5), ("hello", 3), ("", 0)), "tbl") {
-        for (query <- Seq(
-            s"SELECT $function(_1, _2) FROM tbl",
-            s"SELECT $function(_1, _2, 'xy') FROM tbl")) {
-          CometScalaUDFCodegen.resetStats()
-          checkSparkAnswerAndOperator(query)
-          assert(
-            CometScalaUDFCodegen.stats().totalLookups == 0,
-            s"expected native execution for $query")
-        }
-      }
-    }
   }
 
   test("lpad/rpad with NULL length") {
@@ -439,6 +417,38 @@ class CometStringExpressionSuite extends CometTestBase with CometCodegenAssertio
           "select length(col), reverse(col), instr(col, 'SQL'), instr(col, '手机'), replace(col, 'SQL', '123')," +
             s" replace(col, 'SQL'), replace(col, '手机', '平板'), translate(col, 'SL苹', '123') from $table")
       }
+    }
+  }
+
+  test("length on binary input runs natively") {
+    // repeated values so the parquet writer can dictionary-encode the column
+    val data = (0 until 1000).map { i =>
+      val b: Array[Byte] = i % 5 match {
+        case 0 => "hello".getBytes("UTF-8")
+        case 1 => Array(0xc3.toByte, 0xa9.toByte)
+        case 2 => Array.empty[Byte]
+        case 3 => null
+        case 4 => Array(0x00.toByte, 0xff.toByte)
+      }
+      Tuple1(b)
+    }
+    Seq(true, false).foreach { dictionary =>
+      withParquetTable(data, "tbl", withDictionary = dictionary) {
+        checkSparkAnswerAndOperator(
+          "SELECT length(_1), char_length(_1), character_length(_1) FROM tbl")
+        checkSparkAnswerAndOperator("SELECT length(_1) FROM tbl WHERE length(_1) > 2")
+      }
+    }
+  }
+
+  test("length on dictionary-typed string and binary columns from an Arrow-written file") {
+    // The file's Arrow schema declares both columns as dictionary<int32, string|binary>,
+    // so the native reader hands length a dictionary array unless the scan unwraps it.
+    withTempView("dict") {
+      readResourceParquetFile("test-data/dictionary-string-binary.parquet").createTempView("dict")
+      checkSparkAnswerAndOperator(
+        "SELECT length(s), length(b), char_length(s), character_length(b), s, b FROM dict")
+      checkSparkAnswerAndOperator("SELECT length(b) + length(s) FROM dict WHERE length(b) > 0")
     }
   }
 

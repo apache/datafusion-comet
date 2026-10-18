@@ -124,7 +124,7 @@
 ## length
 
 - Spark 3.4.3 (audited 2026-05-27): identical to 3.5.8.
-- Spark 3.5.8 (audited 2026-05-27): baseline. `(StringType|BinaryType) -> IntegerType`; eval returns `numChars` for strings and `.length` for binary. `BinaryType` input falls back via `Unsupported` (DataFusion's `character_length` accepts string types only).
+- Spark 3.5.8 (audited 2026-05-27): baseline. `(StringType|BinaryType) -> IntegerType`; eval returns `numChars` for strings and `.length` for binary. `BinaryType` input runs natively since Comet registers `datafusion-spark`'s `length`, which returns the byte count for binary and the character count for strings (audit refreshed 2026-09-12).
 - Spark 4.0.1 (audited 2026-05-27): `inputTypes` widened to `StringTypeWithCollation(supportsTrimCollation = true)`; semantics unchanged. Non-default collations not honoured by Comet ([#4496](https://github.com/apache/datafusion-comet/issues/4496)).
 
 ## lower

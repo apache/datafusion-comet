@@ -116,7 +116,9 @@ fn bench_matched_maps(c: &mut Criterion) {
     matched_maps::bench_maps(c, matched_maps::Stage::HashOnly);
     matched_maps::bench_maps(c, matched_maps::Stage::NormalizeHash);
     matched_maps::bench_regression_maps(c, matched_maps::Stage::HashOnly);
+    matched_maps::bench_multi_entry_int_maps(c, matched_maps::Stage::HashOnly);
     matched_maps::bench_regression_maps(c, matched_maps::Stage::NormalizeHash);
+    matched_maps::bench_multi_entry_int_maps(c, matched_maps::Stage::NormalizeHash);
     c.bench_function("matched_maps/hash_buffer_seed_reset", |b| {
         let mut hashes = vec![42u32; matched_maps::ROWS];
         b.iter(|| {

@@ -16,50 +16,21 @@
 // under the License.
 
 use super::ShuffleBlockWriter;
+use crate::codec_context::ShuffleCodecContext;
 use arrow::array::RecordBatch;
 use arrow::compute::kernels::coalesce::BatchCoalescer;
-use arrow::ipc::writer::IpcWriteContext;
 use datafusion::physical_plan::metrics::Time;
 use std::borrow::Borrow;
 use std::io::{Cursor, Seek, SeekFrom, Write};
-
-/// Task-scoped serialization state threaded through every [`BufBatchWriter`] of a task.
-///
-/// A shuffle task creates one short-lived `BufBatchWriter` per output partition per spill or
-/// finish cycle, so anything the writer owned would be rebuilt `partitions x cycles` times.
-/// Both members here are cheap to keep and were previously rebuilt per writer:
-///
-/// * `buffer` is the byte buffer blocks are serialized into before being handed to the
-///   underlying writer in `buffer_max_size` chunks. It is capped back to `buffer_max_size`
-///   after every drain, so it never retains more than one block past that size.
-/// * `ipc_context` holds arrow-ipc's flatbuffer builder for record-batch metadata. With
-///   arrow's default `reserve_scratch = false`, which is what this uses, the context does not
-///   retain the block body between encodes (each block body is a fresh `Vec` that is dropped
-///   after the write), so sharing it costs one small metadata builder per task, not a block.
-///
-/// The struct is borrowed per call rather than owned, so an error mid-partition cannot strand it
-/// inside a dropped writer and silently end recycling.
-#[derive(Default)]
-pub(crate) struct ShuffleScratch {
-    pub(crate) buffer: Vec<u8>,
-    pub(crate) ipc_context: IpcWriteContext,
-}
-
-impl ShuffleScratch {
-    /// Drops any bytes left in the buffer. Used after an error so a failed partition's bytes
-    /// cannot leak into the next partition's block; the IPC context holds no block data.
-    pub(crate) fn clear(&mut self) {
-        self.buffer.clear();
-    }
-}
 
 /// Write batches to writer while using a buffer to avoid frequent system calls.
 /// The record batches are first written by ShuffleBlockWriter into a caller-provided
 /// scratch buffer. Once the scratch exceeds the max size, it is flushed to the writer.
 ///
-/// The scratch is borrowed per call rather than owned: task-scoped [`ShuffleScratch`] is
-/// threaded through every `write`/`flush`, so one buffer and one IPC context serve all the
-/// short-lived writers of a task.
+/// The scratch buffer is borrowed per call rather than owned: task-scoped scratch is
+/// threaded through every `write`/`flush`, so one buffer serves all the short-lived
+/// writers of a task, and an error mid-partition cannot strand the buffer inside a
+/// dropped writer and silently end recycling.
 ///
 /// A writer either coalesces or passes batches through, chosen at construction:
 ///
@@ -75,6 +46,9 @@ impl ShuffleScratch {
 ///   `PartitionedBatchIterator` that already emits maximal `batch_size` chunks plus one tail:
 ///   there is never a second batch for the tail to coalesce with, so coalescing there would
 ///   only copy the tail's rows into builders and re-emit the same block.
+///
+/// Encoding methods borrow a [`ShuffleCodecContext`] rather than owning one: these writers
+/// are created per output partition, and codec contexts must stay task-scoped.
 pub(crate) struct BufBatchWriter<S: Borrow<ShuffleBlockWriter>, W: Write> {
     shuffle_block_writer: S,
     writer: W,
@@ -84,8 +58,8 @@ pub(crate) struct BufBatchWriter<S: Borrow<ShuffleBlockWriter>, W: Write> {
     coalescer: Option<BatchCoalescer>,
     /// Target batch size for coalescing; `None` selects passthrough mode.
     coalesce_batch_size: Option<usize>,
-    /// Address of the scratch seen on first use; every later call must pass the same one, or
-    /// unflushed bytes in the other buffer would be silently abandoned.
+    /// Address of the scratch `Vec` seen on first use; every later call must pass the same
+    /// one, or unflushed bytes in the other buffer would be silently abandoned.
     #[cfg(debug_assertions)]
     scratch_addr: Option<usize>,
     /// Running total of bytes serialized through this writer, used to report spilled bytes and
@@ -139,19 +113,20 @@ impl<S: Borrow<ShuffleBlockWriter>, W: Write> BufBatchWriter<S, W> {
     /// A fresh writer must start from a drained scratch (stale bytes from a previous owner
     /// would be silently prepended to its first block), and every later call must pass the
     /// same scratch (bytes left unflushed in a swapped-out buffer would be silently lost).
-    /// Identity is the scratch's own address, which is stable for the caller-owned field the
+    /// Identity is the `Vec`'s own address, which is stable for the caller-owned field the
     /// writer is used with, unlike the data pointer that moves on regrowth.
     #[allow(unused_variables)]
-    fn check_scratch(&mut self, scratch: &ShuffleScratch) {
+    #[allow(clippy::ptr_arg)] // identity check needs the Vec's own address, not a slice view
+    fn check_scratch(&mut self, scratch: &Vec<u8>) {
         #[cfg(debug_assertions)]
         {
-            let addr = scratch as *const ShuffleScratch as usize;
+            let addr = scratch as *const Vec<u8> as usize;
             match self.scratch_addr {
                 None => {
                     debug_assert!(
-                        scratch.buffer.is_empty(),
+                        scratch.is_empty(),
                         "fresh BufBatchWriter handed a non-empty scratch buffer ({} bytes)",
-                        scratch.buffer.len()
+                        scratch.len()
                     );
                     self.scratch_addr = Some(addr);
                 }
@@ -163,19 +138,26 @@ impl<S: Borrow<ShuffleBlockWriter>, W: Write> BufBatchWriter<S, W> {
         }
     }
 
-    /// `scratch` is the caller-owned serialization state to encode into; threading the same
-    /// one through every call reuses its capacity instead of regrowing a fresh allocation
-    /// toward `buffer_max_size` for every writer.
+    /// `scratch` is the caller-owned byte buffer to serialize into; threading the same
+    /// buffer through every call reuses its capacity instead of regrowing a fresh
+    /// allocation toward `buffer_max_size` for every writer.
     pub(crate) fn write(
         &mut self,
         batch: &RecordBatch,
-        scratch: &mut ShuffleScratch,
+        scratch: &mut Vec<u8>,
+        codec_context: &mut ShuffleCodecContext,
         encode_time: &Time,
         write_time: &Time,
     ) -> datafusion::common::Result<usize> {
         self.check_scratch(scratch);
         let Some(batch_size) = self.coalesce_batch_size else {
-            return self.write_batch_to_buffer(batch, scratch, encode_time, write_time);
+            return self.write_batch_to_buffer(
+                batch,
+                scratch,
+                codec_context,
+                encode_time,
+                write_time,
+            );
         };
         let coalescer = self.coalescer.get_or_insert_with(|| {
             // Enable BatchCoalescer's zero-copy passthrough for batches that are already big
@@ -202,7 +184,8 @@ impl<S: Borrow<ShuffleBlockWriter>, W: Write> BufBatchWriter<S, W> {
 
         let mut bytes_written = 0;
         for batch in &completed {
-            bytes_written += self.write_batch_to_buffer(batch, scratch, encode_time, write_time)?;
+            bytes_written +=
+                self.write_batch_to_buffer(batch, scratch, codec_context, encode_time, write_time)?;
         }
         Ok(bytes_written)
     }
@@ -211,28 +194,25 @@ impl<S: Borrow<ShuffleBlockWriter>, W: Write> BufBatchWriter<S, W> {
     fn write_batch_to_buffer(
         &mut self,
         batch: &RecordBatch,
-        scratch: &mut ShuffleScratch,
+        scratch: &mut Vec<u8>,
+        codec_context: &mut ShuffleCodecContext,
         encode_time: &Time,
         write_time: &Time,
     ) -> datafusion::common::Result<usize> {
-        let ShuffleScratch {
-            buffer,
-            ipc_context,
-        } = scratch;
-        let mut cursor = Cursor::new(&mut *buffer);
+        let mut cursor = Cursor::new(&mut *scratch);
         cursor.seek(SeekFrom::End(0))?;
         let bytes_written = self.shuffle_block_writer.borrow().write_batch(
             batch,
             &mut cursor,
-            ipc_context,
+            codec_context,
             encode_time,
         )?;
         let pos = cursor.position();
         if pos >= self.buffer_max_size as u64 {
             let mut write_timer = write_time.timer();
-            self.writer.write_all(buffer)?;
+            self.writer.write_all(scratch)?;
             write_timer.stop();
-            buffer.clear();
+            scratch.clear();
         }
         self.total_bytes_written += bytes_written as u64;
         Ok(bytes_written)
@@ -247,7 +227,8 @@ impl<S: Borrow<ShuffleBlockWriter>, W: Write> BufBatchWriter<S, W> {
     /// of every partition ending in its own write syscall.
     pub(crate) fn drain(
         &mut self,
-        scratch: &mut ShuffleScratch,
+        scratch: &mut Vec<u8>,
+        codec_context: &mut ShuffleCodecContext,
         encode_time: &Time,
         write_time: &Time,
     ) -> datafusion::common::Result<()> {
@@ -261,30 +242,31 @@ impl<S: Borrow<ShuffleBlockWriter>, W: Write> BufBatchWriter<S, W> {
             }
         }
         for batch in &remaining {
-            self.write_batch_to_buffer(batch, scratch, encode_time, write_time)?;
+            self.write_batch_to_buffer(batch, scratch, codec_context, encode_time, write_time)?;
         }
 
         // Hand the scratch buffer to the underlying writer
         let mut write_timer = write_time.timer();
-        if !scratch.buffer.is_empty() {
-            self.writer.write_all(&scratch.buffer)?;
+        if !scratch.is_empty() {
+            self.writer.write_all(scratch)?;
         }
         write_timer.stop();
-        scratch.buffer.clear();
+        scratch.clear();
         // The scratch's high-water mark can reach `buffer_max_size` plus the largest block
         // that crossed the threshold; keep only the configured buffer size across reuses.
-        scratch.buffer.shrink_to(self.buffer_max_size);
+        scratch.shrink_to(self.buffer_max_size);
         Ok(())
     }
 
     /// [`Self::drain`], then flushes the underlying writer.
     pub(crate) fn flush(
         &mut self,
-        scratch: &mut ShuffleScratch,
+        scratch: &mut Vec<u8>,
+        codec_context: &mut ShuffleCodecContext,
         encode_time: &Time,
         write_time: &Time,
     ) -> datafusion::common::Result<()> {
-        self.drain(scratch, encode_time, write_time)?;
+        self.drain(scratch, codec_context, encode_time, write_time)?;
         let mut write_timer = write_time.timer();
         self.writer.flush()?;
         write_timer.stop();
@@ -321,16 +303,21 @@ mod tests {
         RecordBatch::try_new(schema, vec![Arc::new(Int64Array::from(values))]).unwrap()
     }
 
-    fn write_one_partition(seed: i64, scratch: &mut ShuffleScratch) -> Vec<u8> {
+    fn write_one_partition(seed: i64, scratch: &mut Vec<u8>) -> Vec<u8> {
         let batch = test_batch(seed);
         let block_writer =
             ShuffleBlockWriter::try_new(batch.schema().as_ref(), CompressionCodec::Zstd(1))
                 .unwrap();
         let mut output = Vec::new();
         let time = Time::default();
+        let mut codec_context = ShuffleCodecContext::default();
         let mut writer = BufBatchWriter::new(block_writer, &mut output, 1 << 20, 8192);
-        writer.write(&batch, scratch, &time, &time).unwrap();
-        writer.flush(scratch, &time, &time).unwrap();
+        writer
+            .write(&batch, scratch, &mut codec_context, &time, &time)
+            .unwrap();
+        writer
+            .flush(scratch, &mut codec_context, &time, &time)
+            .unwrap();
         output
     }
 
@@ -340,15 +327,15 @@ mod tests {
     #[cfg_attr(miri, ignore)] // miri can't call zstd's C FFI
     fn recycled_scratch_matches_fresh_buffers_and_keeps_capacity() {
         let fresh: Vec<Vec<u8>> = (0..3)
-            .map(|p| write_one_partition(p, &mut ShuffleScratch::default()))
+            .map(|p| write_one_partition(p, &mut Vec::new()))
             .collect();
 
-        let mut scratch = ShuffleScratch::default();
+        let mut scratch = Vec::new();
         let mut recycled = Vec::new();
         for p in 0..3 {
             let output = write_one_partition(p, &mut scratch);
             assert!(
-                scratch.buffer.is_empty(),
+                scratch.is_empty(),
                 "recycled scratch must come back drained"
             );
             recycled.push(output);
@@ -356,7 +343,7 @@ mod tests {
 
         assert_eq!(fresh, recycled);
         assert!(
-            scratch.buffer.capacity() > 0,
+            scratch.capacity() > 0,
             "capacity grown in one partition must survive into the next"
         );
         for output in &recycled {
@@ -390,16 +377,18 @@ mod tests {
             ShuffleBlockWriter::try_new(schema.as_ref(), CompressionCodec::None).unwrap();
         let mut output = Vec::new();
         let time = Time::default();
-        let mut scratch = ShuffleScratch::default();
+        let mut scratch = Vec::new();
+        let mut codec_context = ShuffleCodecContext::default();
         let mut writer = BufBatchWriter::new_passthrough(block_writer, &mut output, 1 << 20);
         for batch in &inputs {
-            writer.write(batch, &mut scratch, &time, &time).unwrap();
+            writer
+                .write(batch, &mut scratch, &mut codec_context, &time, &time)
+                .unwrap();
         }
-        writer.drain(&mut scratch, &time, &time).unwrap();
-        assert!(
-            scratch.buffer.is_empty(),
-            "drain must leave the scratch empty"
-        );
+        writer
+            .drain(&mut scratch, &mut codec_context, &time, &time)
+            .unwrap();
+        assert!(scratch.is_empty(), "drain must leave the scratch empty");
         assert_eq!(writer.bytes_written() as usize, output.len());
 
         let mut block_rows = Vec::new();
@@ -433,11 +422,9 @@ mod tests {
         let mut output = Vec::new();
         let time = Time::default();
         let mut writer = BufBatchWriter::new(block_writer, &mut output, 1 << 20, 8192);
-        let mut dirty = ShuffleScratch {
-            buffer: vec![0xAB, 0xCD],
-            ..Default::default()
-        };
-        let _ = writer.write(&batch, &mut dirty, &time, &time);
+        let mut dirty = vec![0xAB, 0xCD];
+        let mut codec_context = ShuffleCodecContext::default();
+        let _ = writer.write(&batch, &mut dirty, &mut codec_context, &time, &time);
     }
 
     /// Swapping in a different scratch mid-writer would silently abandon any bytes still
@@ -452,10 +439,13 @@ mod tests {
         let mut output = Vec::new();
         let time = Time::default();
         let mut writer = BufBatchWriter::new(block_writer, &mut output, 1 << 20, 8192);
-        let mut first = ShuffleScratch::default();
-        writer.write(&batch, &mut first, &time, &time).unwrap();
-        let mut second = ShuffleScratch::default();
-        let _ = writer.write(&batch, &mut second, &time, &time);
+        let mut codec_context = ShuffleCodecContext::default();
+        let mut first = Vec::new();
+        writer
+            .write(&batch, &mut first, &mut codec_context, &time, &time)
+            .unwrap();
+        let mut second = Vec::new();
+        let _ = writer.write(&batch, &mut second, &mut codec_context, &time, &time);
     }
 
     /// A block that crosses `buffer_max_size` grows the scratch past the cap; `flush`
@@ -472,20 +462,25 @@ mod tests {
             ShuffleBlockWriter::try_new(batch.schema().as_ref(), CompressionCodec::None).unwrap();
         let mut output = Vec::new();
         let time = Time::default();
-        let mut scratch = ShuffleScratch::default();
+        let mut codec_context = ShuffleCodecContext::default();
+        let mut scratch = Vec::new();
         let mut writer =
             BufBatchWriter::new(block_writer, &mut output, buffer_max_size, batch_size);
-        writer.write(&batch, &mut scratch, &time, &time).unwrap();
+        writer
+            .write(&batch, &mut scratch, &mut codec_context, &time, &time)
+            .unwrap();
         assert!(
-            scratch.buffer.capacity() > buffer_max_size,
+            scratch.capacity() > buffer_max_size,
             "oversized block must have grown the scratch past the cap"
         );
-        writer.flush(&mut scratch, &time, &time).unwrap();
-        assert!(scratch.buffer.is_empty());
+        writer
+            .flush(&mut scratch, &mut codec_context, &time, &time)
+            .unwrap();
+        assert!(scratch.is_empty());
         assert!(
-            scratch.buffer.capacity() <= buffer_max_size,
+            scratch.capacity() <= buffer_max_size,
             "retained capacity {} exceeds cap {}",
-            scratch.buffer.capacity(),
+            scratch.capacity(),
             buffer_max_size
         );
 
@@ -496,18 +491,22 @@ mod tests {
         let block_writer =
             ShuffleBlockWriter::try_new(batch.schema().as_ref(), CompressionCodec::None).unwrap();
         let mut output = Vec::new();
-        let mut scratch = ShuffleScratch::default();
+        let mut scratch = Vec::new();
         let mut writer = BufBatchWriter::new(block_writer, &mut output, large_cap, batch_size);
-        writer.write(&batch, &mut scratch, &time, &time).unwrap();
-        let cap_after_write = scratch.buffer.capacity();
+        writer
+            .write(&batch, &mut scratch, &mut codec_context, &time, &time)
+            .unwrap();
+        let cap_after_write = scratch.capacity();
         assert!(
             cap_after_write > 0 && cap_after_write <= large_cap,
             "write must have serialized the batch into the scratch"
         );
-        writer.flush(&mut scratch, &time, &time).unwrap();
-        assert!(scratch.buffer.is_empty());
+        writer
+            .flush(&mut scratch, &mut codec_context, &time, &time)
+            .unwrap();
+        assert!(scratch.is_empty());
         assert_eq!(
-            scratch.buffer.capacity(),
+            scratch.capacity(),
             cap_after_write,
             "flush must not shrink a scratch already under the cap"
         );

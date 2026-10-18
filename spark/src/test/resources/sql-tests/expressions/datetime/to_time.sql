@@ -33,10 +33,21 @@ INSERT INTO test_to_time VALUES
   ('00:00:00.001'),
   ('00:00:00.000001'),
   ('00:00:00.1234567'),
+  ('12:30:45.123456789'),
+  ('12:30:45.1234567891'),
   ('23:59:59.999999'),
   ('1:2:3'),
   ('1:2:3.04'),
   ('T12:30:45'),
+  ('T0'),
+  ('T1'),
+  ('T12'),
+  ('T23'),
+  ('T12 AM'),
+  ('T1pm'),
+  ('12:30:45.'),
+  ('12:30:45. AM'),
+  ('12:30:45.PM'),
   ('T1:02:3.04'),
   ('12:00:00 AM'),
   ('1:00:00 AM'),
@@ -54,6 +65,34 @@ INSERT INTO test_to_time VALUES
 -- TODO: promote to full native-verification once SPARK-51779 lands)
 query spark_answer_only
 SELECT s, to_time(s) FROM test_to_time ORDER BY s
+
+-- Native column evaluation of both error modes, without a TimeType shuffle.
+query
+SELECT to_time(s), try_to_time(s) FROM test_to_time
+
+-- Hour-only T prefixes and empty fractions (issue #5366).
+query
+SELECT to_time('T12'), to_time('T1'), to_time('T12 AM'), to_time('12:30:45.')
+
+query
+SELECT try_to_time('T12'), try_to_time('T1pm'), try_to_time('12:30:45.PM')
+
+-- Missing components and malformed suffixes remain invalid.
+query
+SELECT try_to_time('12'), try_to_time('12 AM'), try_to_time('T'),
+  try_to_time('T001'), try_to_time('T24'), try_to_time('T0 AM'),
+  try_to_time('T13 PM'), try_to_time('T12:'), try_to_time('T12.'),
+  try_to_time('12:30.'), try_to_time('12:30:45..'), try_to_time('12:30:45.x')
+
+query expect_error(cannot be parsed to a TIME value)
+SELECT to_time('T24')
+
+query expect_error(cannot be parsed to a TIME value)
+SELECT to_time('12:30:45..')
+
+-- Spark 4.1 truncates to microseconds during parsing; EXTRACT must see the same precision.
+query
+SELECT extract(second from to_time(s)), extract(second from try_to_time(s)) FROM test_to_time
 
 -- literal HH:mm
 query

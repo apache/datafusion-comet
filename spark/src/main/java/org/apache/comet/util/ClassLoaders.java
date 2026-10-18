@@ -25,11 +25,6 @@ public final class ClassLoaders {
   private ClassLoaders() {}
 
   /**
-   * Loads a class using the thread context ClassLoader if available, falling back to the system
-   * ClassLoader. Spark wires user JARs onto the context ClassLoader, so vendor classes named in
-   * Spark configs are reachable through this path.
-   */
-  /**
    * The ClassLoader to use for {@link java.util.ServiceLoader} discovery of optional, out-of-tree
    * contribs.
    *
@@ -48,6 +43,11 @@ public final class ClassLoaders {
     return contextLoader != null ? contextLoader : fallback;
   }
 
+  /**
+   * Loads a class using the thread context ClassLoader if available, falling back to the system
+   * ClassLoader. Spark wires user JARs onto the context ClassLoader, so vendor classes named in
+   * Spark configs are reachable through this path.
+   */
   public static Class<?> loadClass(String className) throws ClassNotFoundException {
     ClassLoader classLoader = Thread.currentThread().getContextClassLoader();
     if (classLoader != null) {
@@ -57,6 +57,22 @@ public final class ClassLoaders {
     }
     // scalastyle:off classforname
     return Class.forName(className);
+    // scalastyle:on classforname
+  }
+
+  /**
+   * Loads a class using an explicitly captured ClassLoader, falling back to {@link
+   * #loadClass(String)} when none was captured. Callers that run on threads without a thread
+   * context ClassLoader (e.g. native worker threads) should capture the loader earlier, on a thread
+   * that has it, and pass it here.
+   */
+  public static Class<?> loadClass(String className, ClassLoader classLoader)
+      throws ClassNotFoundException {
+    if (classLoader == null) {
+      return loadClass(className);
+    }
+    // scalastyle:off classforname
+    return Class.forName(className, true, classLoader);
     // scalastyle:on classforname
   }
 }

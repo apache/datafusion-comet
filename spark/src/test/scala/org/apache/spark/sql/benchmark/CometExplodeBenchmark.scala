@@ -79,7 +79,7 @@ object CometExplodeBenchmark extends CometBenchmarkBase {
    * Rows of an `rows`-row dataset whose [[arrayColumn]] is neither NULL nor empty, which is how
    * many rows reach a non-outer generator with something to emit.
    */
-  private def nonEmptyRows(rows: Int): Long = rows - (rows + 9) / 10 - (rows + 8) / 10
+  private def nonEmptyRows(rows: Int): Long = (rows - (rows + 9) / 10 - (rows + 8) / 10).toLong
 
   /**
    * A SQL expression for an array of `len` elements of `elementExpr`, where `elementExpr` may
@@ -88,7 +88,7 @@ object CometExplodeBenchmark extends CometBenchmarkBase {
    * Elements are wrapped in a never-taken null branch so the array types as `containsNull`; see
    * [[nullableExpr]].
    */
-  private def fullArray(elementExpr: String, len: Int, v: String = "x"): String =
+  private def fullArray(elementExpr: String, len: Int, v: String): String =
     s"transform(sequence(1, $len), $v -> ${nullableExpr(elementExpr, s"$v = 0")})"
 
   /**
@@ -214,7 +214,7 @@ object CometExplodeBenchmark extends CometBenchmarkBase {
   /** Writes a view's rows to Parquet and registers it. */
   private def createView(dir: File, view: TempView): Unit = {
     val path = s"${dir.getAbsolutePath}/${view.name}"
-    spark.range(view.rows).selectExpr(view.columns: _*).write.parquet(path)
+    spark.range(view.rows.toLong).selectExpr(view.columns: _*).write.parquet(path)
     spark.read.parquet(path).createOrReplaceTempView(view.name)
   }
 
@@ -306,7 +306,7 @@ object CometExplodeBenchmark extends CometBenchmarkBase {
   /** Verifies a case's aggregate under both engines, then times it. */
   private def runCase(name: String, benchmarkCase: Case, rows: Int = numRows): Unit = {
     verifySink(name, benchmarkCase.query, benchmarkCase.expected)
-    runExpressionBenchmark(name, rows, benchmarkCase.query)
+    runExpressionBenchmark(name, rows.toLong, benchmarkCase.query)
   }
 
   override def runCometBenchmark(mainArgs: Array[String]): Unit = {
