@@ -29,7 +29,7 @@ import org.apache.spark.executor.{ShuffleWriteMetrics, TaskMetrics}
 import org.apache.spark.memory.{SparkOutOfMemoryError, TaskMemoryManager, TestMemoryManager}
 import org.apache.spark.shuffle.api.{ShuffleExecutorComponents, ShuffleMapOutputWriter, ShufflePartitionWriter}
 import org.apache.spark.shuffle.api.metadata.MapOutputCommitMessage
-import org.apache.spark.shuffle.comet.CometShuffleMemoryAllocator
+import org.apache.spark.shuffle.comet.{CometShuffleMemoryAllocator, CometShuffleMemoryAllocatorTrait}
 import org.apache.spark.shuffle.sort.SpillSorter
 import org.apache.spark.sql.catalyst.InternalRow
 import org.apache.spark.sql.catalyst.expressions.{UnsafeProjection, UnsafeRow}
