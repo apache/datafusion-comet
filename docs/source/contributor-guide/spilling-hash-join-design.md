@@ -624,6 +624,28 @@ q72 took 375.2 s with the sort-merge join on the same day. Its time without the 
 - No other query got slower. q41, q43, q90 and q96, at 2 to 3 s, differed by more than 6% in one run and were
   within noise when rerun three times, alternating.
 
+Then TPC-DS ran on the same day with Comet's sort-merge join and with the forced spilling hash join and the fallback,
+alternating between the two per query:
+
+| TPC-DS, 2 GiB, 32 partitions  | Sort-merge join | Forced hash join |
+| ----------------------------- | --------------- | ---------------- |
+| All 99 queries                | 975.1 s         | 945.7 s          |
+| The 98 queries other than q72 | 597.9 s         | 561.1 s          |
+| TPC-DS q72                    | 377.1 s         | 384.6 s          |
+
+- Every query returned the same rows in both arms.
+- 19 queries are more than 5% faster with the hash join, among them q80 at 10.5 s against 16.4 s, q4 at 20.3 s
+  against 30.8 s, q78 at 16.0 s against 21.5 s and q40 at 5.4 s against 7.2 s. In q4 and q78, the sort-merge join's
+  sorts were also refused memory for their merge, in 5 and 3 tasks that Spark retried.
+- Only q96 and q99, at 2.4 to 3.5 s, are more than 5% slower, by 0.2 s each. In the first run of the hash join they
+  were 2% faster and 2% slower.
+- In that first run, q95 took 11.6 s with the hash join, against 8.0 s, in three runs of each. Its two left semi
+  joins, which the rewrite cannot convert to hash joins ([#2667]), need their input sorted by the order number, and
+  read it from inner joins on the order number. The rewrite turned those inner joins into hash joins and sorted
+  their output, about a billion rows, which took 72 s of task time, against 7 s for the sorts of the sort-merge
+  joins' inputs. Now the rewrite keeps a sort-merge join whose order an operator above reads, and q95 takes 8.0 s.
+  The table is from the run after that change, against the same sort-merge join run.
+
 ## Remaining work
 
 In priority order.
@@ -710,8 +732,9 @@ In priority order.
    - Joins that use `spark.comet.exec.join.dynamicFilter.enabled` are not eligible either. Build the runtime
      filter over every build row, resident or spilled: bounds and key domains can be accumulated while routing.
    - Decide whether spilling stays on by default. It is on now so that CI runs it. Then decide whether
-     `forceShuffledHashJoin` can be on by default, which was the goal of this work, after measuring TPC-H and
-     TPC-DS at realistic memory sizes.
+     `forceShuffledHashJoin` can be on by default, which was the goal of this work. At scale factor 100 with 2 GiB
+     it makes TPC-H 9% and TPC-DS 3% faster, see [Status](#status). Measure it at more memory sizes and on a
+     machine with a smaller cache first.
    - A forced hash join can be far slower than the sort-merge join when its output is far larger than its inputs,
      as in TPC-DS q72. Forcing the hash join by default needs a guard on the join's fan-out as well as on its build
      side. The [sort-merge fallback](#sort-merge-fallback) is that guard, at run time, see [Status](#status).
@@ -766,6 +789,7 @@ code is in `native/operators/src/spilling_hash_join/`, and `mod.rs` there gives 
   among them. Compare the rows of each query by count and a hash of its sorted rows.
 
 [#2545]: https://github.com/apache/datafusion-comet/issues/2545
+[#2667]: https://github.com/apache/datafusion-comet/issues/2667
 [#6384]: https://github.com/apache/datafusion-comet/pull/6384
 [#6785]: https://github.com/apache/datafusion-comet/pull/6785
 [#7057]: https://github.com/apache/datafusion-comet/pull/7057

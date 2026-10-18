@@ -59,6 +59,11 @@ set, else `spark.sql.shuffle.partitions`). When broadcasts are disabled with a n
 threshold of 10 MB is used instead. Set `spark.comet.exec.forceShuffledHashJoin.maxBuildSize` to a size in bytes to use a fixed
 limit, or to a non-positive value to convert every eligible join regardless of size.
 
+A join whose sorted output an operator above it reads is also left as a `SortMergeJoin` when that operator is not
+converted itself, such as a left semi join on the same key that builds its right side. Converting it would mean
+sorting the join's output, which can cost more than the hash join saves, as when the join emits more rows than it
+reads.
+
 ### Join Runtime Filters
 
 Set `spark.comet.exec.join.dynamicFilter.enabled=true` to try experimental native hash join runtime
