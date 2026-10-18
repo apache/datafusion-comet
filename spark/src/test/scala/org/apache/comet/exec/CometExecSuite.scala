@@ -3488,26 +3488,24 @@ class CometExecSuite extends CometTestBase {
     withTempPath { dir =>
       val path = dir.getCanonicalPath
       spark.range(0, 4000, 1, 4).toDF("id").write.parquet(path)
-      // `None` leaves the config unset: the prefetch is opt-in.
-      Seq(Some(true), Some(false), None).foreach { prefetch =>
-        val prefetchConf = prefetch.map { enabled =>
-          CometConf.COMET_PARQUET_PREFETCH_NEXT_FILE_METADATA_ENABLED.key -> enabled.toString
-        }
+      Seq(true, false).foreach { prefetch =>
+        val prefetchConf =
+          CometConf.COMET_PARQUET_PREFETCH_NEXT_FILE_METADATA_ENABLED.key -> prefetch.toString
         // Pack the four files into one task.
         val packConfs = Seq(
           SQLConf.FILES_MIN_PARTITION_NUM.key -> "1",
           SQLConf.FILES_OPEN_COST_IN_BYTES.key -> "1")
-        withSQLConf(packConfs ++ prefetchConf: _*) {
+        withSQLConf((packConfs :+ prefetchConf): _*) {
           val (_, cometPlan) = checkSparkAnswerAndOperator(spark.read.parquet(path))
           val scan = find(cometPlan)(_.isInstanceOf[CometNativeScanExec])
           assert(scan.isDefined, "Expected to find a CometNativeScanExec")
           assert(scan.get.executeColumnar().getNumPartitions == 1)
           val metrics = scan.get.metrics
-          // With the prefetch, each open after the first finds its metadata already loaded.
-          val (misses, hits, prefetches) = if (prefetch.contains(true)) (1, 3, 3) else (4, 0, 0)
-          assert(metrics("scan_io_metadata_cache_misses").value == misses)
-          assert(metrics("scan_io_metadata_cache_hits").value == hits)
-          assert(metrics("scan_io_metadata_prefetches").value == prefetches)
+          // Every file is read from storage either way. With the prefetch, each open after the
+          // first finds its metadata already loaded.
+          assert(metrics("scan_io_metadata_cache_misses").value == 4)
+          assert(metrics("scan_io_metadata_cache_hits").value == 0)
+          assert(metrics("scan_io_metadata_prefetches").value == (if (prefetch) 3 else 0))
           assert(metrics("scan_io_footer_reads").value == 4)
         }
       }

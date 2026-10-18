@@ -86,6 +86,11 @@
 //! task instead of reading the footer itself. This assumes DataFusion opens the files in the
 //! group's order, which holds unless the source reorders them (`ParquetSource::reorder_files`);
 //! a reordered scan would only waste its prefetches.
+//!
+//! This is a stopgap for the overlap DataFusion dropped. It can go once `FileStream` opens the next
+//! file while the current reader runs again; apache/datafusion#5209 (buffer more than one file
+//! open) and apache/datafusion#18470 (prefetch the next row group) are the open issues that would
+//! bring it back.
 
 use crate::parquet::datetime_rebase::stamp_int96_leaves;
 use crate::parquet::parquet_support::SparkParquetOptions;
@@ -674,7 +679,14 @@ impl AsyncFileReader for EagerPageIndexReader {
                 None => None,
             };
             let (metadata, storage_reads) = match prefetched {
-                Some(metadata) => (metadata, 0),
+                Some((metadata, storage_reads)) => {
+                    // The load read from storage ahead of this open, so the open records a cache
+                    // miss, as it would have without the prefetch, and the load counts as overlapped.
+                    if storage_reads > 0 {
+                        scan_io_metrics.metadata_prefetches.add(1);
+                    }
+                    (metadata, storage_reads)
+                }
                 None => {
                     load_metadata(
                         store,
@@ -832,7 +844,8 @@ async fn load_metadata(
 
 /// A load of a file's metadata started before DataFusion opens the file. Dropping it aborts the
 /// load.
-type MetadataLoad = SpawnedTask<Option<Arc<ParquetMetaData>>>;
+/// Its result carries the number of storage reads it took, for the open that uses it to record.
+type MetadataLoad = SpawnedTask<Option<(Arc<ParquetMetaData>, usize)>>;
 
 /// The scan-wide state of `with_next_file_metadata_prefetch`.
 #[derive(Debug)]
@@ -917,9 +930,9 @@ impl NextFileMetadataPrefetch {
         let object_meta = object_meta.clone();
         let location = object_meta.location.clone();
         let load = SpawnedTask::spawn(async move {
-            let (metadata, storage_reads) = load_metadata(
+            load_metadata(
                 store,
-                Arc::clone(&scan_io_metrics),
+                scan_io_metrics,
                 metadata_cache,
                 &object_meta,
                 metadata_size_hint,
@@ -927,11 +940,7 @@ impl NextFileMetadataPrefetch {
                 Some(PageIndexPolicy::Optional),
             )
             .await
-            .ok()?;
-            if storage_reads > 0 {
-                scan_io_metrics.metadata_prefetches.add(1);
-            }
-            Some(metadata)
+            .ok()
         });
         Some((location, load))
     }
@@ -1845,8 +1854,9 @@ mod tests {
         in_flight.is_none()
     }
 
-    /// Opening a file loads the next file's metadata in the background, so only the first open
-    /// reads storage. Opening the last file starts nothing.
+    /// Opening a file loads the next file's metadata in the background. Every file is read from
+    /// storage, so each open is a cache miss, and the two loads that ran ahead of their open are
+    /// counted as prefetches. Opening the last file starts nothing.
     #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
     async fn opening_a_file_loads_the_next_files_metadata_ahead() {
         let store = Arc::new(InMemory::new());
@@ -1860,8 +1870,8 @@ mod tests {
             assert!(metadata.column_index().is_some() && metadata.offset_index().is_some());
         }
 
-        assert_eq!(metric(&metrics, "scan_io_metadata_cache_misses"), 1);
-        assert_eq!(metric(&metrics, "scan_io_metadata_cache_hits"), 2);
+        assert_eq!(metric(&metrics, "scan_io_metadata_cache_misses"), 3);
+        assert_eq!(metric(&metrics, "scan_io_metadata_cache_hits"), 0);
         assert_eq!(metric(&metrics, "scan_io_metadata_prefetches"), 2);
         assert_eq!(metric(&metrics, "scan_io_footer_reads"), 3);
         assert!(in_flight_is_empty(&factory));
@@ -1886,8 +1896,9 @@ mod tests {
             open(&factory, file, &metrics).await.unwrap();
         }
 
-        assert_eq!(metric(&metrics, "scan_io_metadata_cache_misses"), 2);
-        assert_eq!(metric(&metrics, "scan_io_metadata_cache_hits"), 1);
+        assert_eq!(metric(&metrics, "scan_io_metadata_cache_misses"), 3);
+        assert_eq!(metric(&metrics, "scan_io_metadata_cache_hits"), 0);
+        assert_eq!(metric(&metrics, "scan_io_metadata_prefetches"), 1);
         assert!(in_flight_is_empty(&factory));
     }
 
@@ -1908,46 +1919,55 @@ mod tests {
         store.open();
         assert_eq!(metadata.await.unwrap().file_metadata().num_rows(), 2);
 
-        assert_eq!(metric(&metrics, "scan_io_metadata_cache_misses"), 1);
-        assert_eq!(metric(&metrics, "scan_io_metadata_cache_hits"), 1);
+        assert_eq!(metric(&metrics, "scan_io_metadata_cache_misses"), 2);
+        assert_eq!(metric(&metrics, "scan_io_metadata_cache_hits"), 0);
         assert_eq!(metric(&metrics, "scan_io_metadata_prefetches"), 1);
         assert_eq!(metric(&metrics, "scan_io_footer_reads"), 2);
     }
 
     /// The next file is the next one with a different path. Further ranges of a file share its
-    /// metadata, so they share its next file too.
-    #[test]
-    fn the_next_file_skips_further_ranges_of_the_same_path() {
-        let file = |path: &str, range: Option<(i64, i64)>| {
-            let file = PartitionedFile::new(path.to_string(), 100);
-            match range {
-                Some((start, end)) => file.with_range(start, end),
-                None => file,
-            }
-        };
-        let files = vec![
-            file("a", Some((0, 50))),
-            file("a", Some((50, 100))),
-            file("b", None),
+    /// metadata, so they share its next file too, and opening them doesn't start a second load.
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn the_next_file_skips_further_ranges_of_the_same_path() {
+        let store = Arc::new(GatedStore::new("unused.parquet"));
+        let a = put_int_file(&store.inner, "a.parquet", None).await;
+        let b = put_int_file(&store.inner, "b.parquet", None).await;
+        let files = [
+            a.clone().with_range(0, 50),
+            a.with_range(50, 100),
+            b.clone(),
         ];
-        let runtime = datafusion::execution::runtime_env::RuntimeEnv::default();
-        let prefetch = NextFileMetadataPrefetch::new(
-            &files,
-            Arc::new(InMemory::new()),
-            Arc::new(ScanIoMetrics::new(&ExecutionPlanMetricsSet::new())),
-            runtime.cache_manager.get_file_metadata_cache(),
-        );
+        let metrics = ExecutionPlanMetricsSet::new();
+        let factory = prefetching_factory(Arc::clone(&store) as _, &files, &metrics);
+
+        for file in &files {
+            open(&factory, file, &metrics).await.unwrap();
+        }
+
+        // The ranges of a share one load. The second range finds it already in the cache.
         let next = |file: &PartitionedFile| {
+            let prefetch = factory.next_file_prefetch.as_ref().unwrap();
             prefetch
                 .next_files
                 .get(&(file.object_meta.location.clone(), file.range.clone()))
                 .map(|(next, _)| next.location.to_string())
         };
-
-        assert_eq!(next(&files[0]).as_deref(), Some("b"));
-        assert_eq!(next(&files[1]).as_deref(), Some("b"));
+        assert_eq!(next(&files[0]).as_deref(), Some("b.parquet"));
+        assert_eq!(next(&files[1]).as_deref(), Some("b.parquet"));
         assert_eq!(next(&files[2]), None);
-        assert_eq!(next(&file("a", Some((0, 10)))), None);
+        // b is read once, by the load that the first range of a started.
+        let single_load = Arc::new(GatedStore::new("unused.parquet"));
+        let alone = put_int_file(&single_load.inner, "b.parquet", None).await;
+        let alone_metrics = ExecutionPlanMetricsSet::new();
+        let alone_factory = prefetching_factory(
+            Arc::clone(&single_load) as _,
+            std::slice::from_ref(&alone),
+            &alone_metrics,
+        );
+        open(&alone_factory, &alone, &alone_metrics).await.unwrap();
+        assert_eq!(store.reads("b.parquet"), single_load.reads("b.parquet"));
+        assert_eq!(metric(&metrics, "scan_io_metadata_prefetches"), 1);
+        assert!(in_flight_is_empty(&factory));
     }
 
     /// A prefetch that fails yields nothing, so the file's open loads the metadata itself and
@@ -1975,9 +1995,10 @@ mod tests {
                 .contains("Failed to fetch metadata for file bad.parquet"),
             "unexpected error: {error}"
         );
-        let reads_per_load = store.reads("bad.parquet") / 2;
-        assert!(reads_per_load > 0);
-        assert_eq!(store.reads("bad.parquet"), 2 * reads_per_load);
+        assert!(
+            store.reads("bad.parquet") >= 2,
+            "both the prefetch and the open should read bad.parquet",
+        );
         assert_eq!(metric(&metrics, "scan_io_metadata_prefetches"), 0);
     }
 

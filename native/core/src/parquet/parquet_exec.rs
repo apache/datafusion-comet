@@ -244,12 +244,14 @@ pub(crate) fn init_datasource_exec(
     // its footer metadata (see `datetime_rebase.rs`), which is how the expression adapter
     // attributes timestamp columns to Spark's INT64 vs INT96 rebase specs.
     let scan_io_source = scan_io_source(object_store_backend);
-    // Comet's scans read one file group, the only shape the prefetch handles.
+    // Comet's scans read one file group, the only shape the prefetch handles. An encrypted scan
+    // never prefetches, since a prefetch carries no decryption properties.
     let prefetch_files = match file_groups.as_slice() {
         [files]
-            if session_config
-                .get_extension::<CometParquetScanOptions>()
-                .is_some_and(|options| options.prefetch_next_file_metadata) =>
+            if !encryption_enabled
+                && session_config
+                    .get_extension::<CometParquetScanOptions>()
+                    .is_some_and(|options| options.prefetch_next_file_metadata) =>
         {
             Some(files.as_slice())
         }
@@ -1350,9 +1352,8 @@ mod tests {
     }
 
     /// The prefetch is opt-in: a scan of several files loads metadata ahead only when the session
-    /// sets `prefetch_next_file_metadata`. With it, only the first file's open reads metadata from
-    /// storage, since each later file's footer and page index were loaded while the file before
-    /// it was read, and the batches match a scan without it.
+    /// sets `prefetch_next_file_metadata`. With it, each later file's footer and page index are
+    /// loaded while the file before it is read, and the batches match a scan without it.
     #[tokio::test]
     async fn prefetching_the_next_files_metadata_keeps_the_scan_result() {
         let fixtures: Vec<_> = (0..3).map(|_| write_scan_io_fixture()).collect();
@@ -1363,14 +1364,12 @@ mod tests {
             .collect();
 
         let mut results = vec![];
-        // `None` is a session without the options, which every Comet plan attaches.
-        for prefetch in [None, Some(false), Some(true)] {
-            let mut config = datafusion::prelude::SessionConfig::new();
-            if let Some(prefetch) = prefetch {
-                config = config.with_extension(Arc::new(CometParquetScanOptions {
+        for prefetch in [false, true] {
+            let config = datafusion::prelude::SessionConfig::new().with_extension(Arc::new(
+                CometParquetScanOptions {
                     prefetch_next_file_metadata: prefetch,
-                }));
-            }
+                },
+            ));
             let session_ctx = Arc::new(SessionContext::new_with_config(config));
             let scan = init_test_scan(
                 Arc::clone(&schema),
@@ -1390,16 +1389,13 @@ mod tests {
                 3_000
             );
 
-            let (misses, hits, prefetches) = if prefetch == Some(true) {
-                (1, 2, 2)
-            } else {
-                (3, 0, 0)
-            };
-            assert_eq!(scan_metric(&scan, "scan_io_metadata_cache_misses"), misses);
-            assert_eq!(scan_metric(&scan, "scan_io_metadata_cache_hits"), hits);
+            // Every file is read from storage either way, so the prefetch only moves two of the
+            // loads ahead of their open.
+            assert_eq!(scan_metric(&scan, "scan_io_metadata_cache_misses"), 3);
+            assert_eq!(scan_metric(&scan, "scan_io_metadata_cache_hits"), 0);
             assert_eq!(
                 scan_metric(&scan, "scan_io_metadata_prefetches"),
-                prefetches
+                if prefetch { 2 } else { 0 }
             );
             assert_eq!(scan_metric(&scan, "scan_io_footer_reads"), 3);
             results.push(batches);
