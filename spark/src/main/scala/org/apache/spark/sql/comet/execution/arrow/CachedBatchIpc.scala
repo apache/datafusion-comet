@@ -73,24 +73,28 @@ private[comet] object CachedBatchIpc {
     // Constructed directly rather than through CompressionCodec.Factory, which ignores the level
     // and always builds a codec at zstd's default.
     case "zstd" => new ZstdCompressionCodec(zstdLevel)
-    // Arrow's other codec, LZ4_FRAME, is not offered. It is commons-compress's pure-Java LZ4 --
-    // no relation to the JNI-accelerated lz4-java behind spark.io.compression.codec -- and
-    // measures three orders of magnitude slower to write than zstd while also producing larger
-    // output, so nothing prefers it. Reads still accept it, since the factory the read path uses
-    // handles whatever codec a batch records.
+    // Arrow's LZ4_FRAME format, written with lz4-java rather than Arrow's own pure-Java codec;
+    // see Lz4FrameCompressionCodec.
+    case "lz4" => Lz4FrameCompressionCodec
     case other =>
       throw new SparkException(
         s"Unsupported Arrow compression codec for Comet's cache: $other. " +
-          "Supported values: none, zstd")
+          "Supported values: none, zstd, lz4")
   }
 
   // Decompressors are stateless and shared. Resolving one per cached batch would allocate a codec
-  // per batch on every scan, and the enum lookup walks the CodecType values each time.
+  // per batch on every scan, and the enum lookup walks the CodecType values each time. LZ4_FRAME
+  // is read with the codec that writes it rather than with Arrow's pure-Java one, which inflates
+  // through heap copies and streams.
   private val readCodecs: Map[CompressionUtil.CodecType, CompressionCodec] =
     CompressionUtil.CodecType
       .values()
       .filter(_ != CompressionUtil.CodecType.NO_COMPRESSION)
-      .map(t => t -> CommonsCompressionFactory.INSTANCE.createCodec(t))
+      .map {
+        case CompressionUtil.CodecType.LZ4_FRAME =>
+          CompressionUtil.CodecType.LZ4_FRAME -> Lz4FrameCompressionCodec
+        case t => t -> CommonsCompressionFactory.INSTANCE.createCodec(t)
+      }
       .toMap
 
   /**

@@ -129,6 +129,14 @@ object CometCachedBatchHelper {
       deltaEncoding: Boolean = false): ChunkedByteBuffer =
     CachedBatchIpc.serialize(batch, codec, allocator, chunkSize, deltaEncoding)._1
 
+  /**
+   * The codec the cache writer uses for a `spark.comet.exec.inMemoryCache.compression.codec`
+   * value. A thin shim, for tests about a codec's own encoding rather than about a cached
+   * relation.
+   */
+  def compressionCodec(name: String): CompressionCodec =
+    CachedBatchIpc.compressionCodec(name, zstdLevel = 1)
+
   /** A payload [[serialize]] wrote, as the cached batch the writer would have stored it in. */
   def cachedBatch(payload: ChunkedByteBuffer, numRows: Int): CachedBatch =
     CometCachedBatch(numRows, InternalRow.empty, payload)

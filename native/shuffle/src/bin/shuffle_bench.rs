@@ -120,6 +120,11 @@ struct Args {
     /// Each task reads the same input and writes to its own output files.
     #[arg(long, default_value_t = 1)]
     concurrent_tasks: usize,
+
+    /// Store offsets as lengths in shuffle blocks (takes effect with zstd only), as
+    /// spark.comet.shuffle.compression.offsetsAsLengths.enabled does
+    #[arg(long, default_value_t = false)]
+    offsets_as_lengths: bool,
 }
 
 fn main() {
@@ -418,6 +423,7 @@ fn run_shuffle_write(
             args.max_buffer_bytes,
             args.limit,
             data_file.to_string(),
+            args.offsets_as_lengths,
         )
         .await
         .unwrap();
@@ -441,6 +447,7 @@ async fn execute_shuffle_write(
     max_buffer_bytes: Option<usize>,
     limit: usize,
     data_file: String,
+    offsets_as_lengths: bool,
 ) -> datafusion::common::Result<(MetricsSet, MetricsSet)> {
     let mut config = SessionConfig::new().with_batch_size(batch_size);
     // Comet never hands the shuffle writer view types: the serde maps Spark `String` to `Utf8`,
@@ -498,7 +505,8 @@ async fn execute_shuffle_write(
         write_buffer_size,
         max_buffer_bytes,
     )
-    .expect("Failed to create ShuffleWriterExec");
+    .expect("Failed to create ShuffleWriterExec")
+    .with_offsets_as_lengths(offsets_as_lengths);
 
     let task_ctx = ctx.task_ctx();
     let stream = exec.execute(0, task_ctx).unwrap();
@@ -561,6 +569,7 @@ fn run_concurrent_shuffle_writes(
             let write_buffer_size = args.write_buffer_size;
             let max_buffer_bytes = args.max_buffer_bytes;
             let limit = args.limit;
+            let offsets_as_lengths = args.offsets_as_lengths;
 
             handles.push(tokio::spawn(async move {
                 execute_shuffle_write(
@@ -573,6 +582,7 @@ fn run_concurrent_shuffle_writes(
                     max_buffer_bytes,
                     limit,
                     data_file,
+                    offsets_as_lengths,
                 )
                 .await
                 .unwrap()

@@ -122,6 +122,45 @@ trait CometIcebergTestBase { this: CometTestBase =>
       .getMethod("get")
       .invoke(null)
 
+  /**
+   * Adds an `int` column whose initial and write defaults are both `defaultValue`, through
+   * `UpdateSchema.addColumn(name, type, Literal)`. Requires Iceberg 1.10+ and a v3 table. Callers
+   * must `REFRESH TABLE` afterwards.
+   */
+  protected def addIcebergIntColumnWithDefault(
+      icebergTable: AnyRef,
+      columnName: String,
+      defaultValue: Int): Unit = {
+    val intType = IcebergReflection
+      .loadClass("org.apache.iceberg.types.Types$IntegerType")
+      .getMethod("get")
+      .invoke(null)
+    val literal = IcebergReflection
+      .loadClass("org.apache.iceberg.expressions.Expressions")
+      .getMethod("lit", classOf[Object])
+      .invoke(null, Integer.valueOf(defaultValue))
+    val update = IcebergReflection
+      .loadClass("org.apache.iceberg.Table")
+      .getMethod("updateSchema")
+      .invoke(icebergTable)
+    val updateSchemaClass = IcebergReflection.loadClass("org.apache.iceberg.UpdateSchema")
+    updateSchemaClass
+      .getMethod(
+        "addColumn",
+        classOf[String],
+        IcebergReflection.loadClass("org.apache.iceberg.types.Type"),
+        IcebergReflection.loadClass("org.apache.iceberg.expressions.Literal"))
+      .invoke(update, columnName, intType, literal)
+    updateSchemaClass.getMethod("commit").invoke(update)
+  }
+
+  /** Iceberg's v3 `unknown` type. Requires Iceberg 1.10+. */
+  protected def icebergUnknownType(): AnyRef =
+    IcebergReflection
+      .loadClass("org.apache.iceberg.types.Types$UnknownType")
+      .getMethod("get")
+      .invoke(null)
+
   protected def icebergFixedType(length: Int): AnyRef =
     IcebergReflection
       .loadClass("org.apache.iceberg.types.Types$FixedType")
@@ -198,6 +237,9 @@ trait CometIcebergTestBase { this: CometTestBase =>
       override def onFailure(funcName: String, qe: QueryExecution, exception: Exception): Unit =
         if (includeFailures) captured += qe.executedPlan
     }
+    // Events from earlier queries may still be queued; drain them so they do not reach the
+    // listener.
+    CometListenerBusUtils.waitUntilEmpty(spark.sparkContext)
     spark.listenerManager.register(listener)
     try {
       action
@@ -220,6 +262,7 @@ trait CometIcebergTestBase { this: CometTestBase =>
       override def onFailure(funcName: String, qe: QueryExecution, exception: Exception): Unit =
         captured += qe.executedPlan
     }
+    CometListenerBusUtils.waitUntilEmpty(spark.sparkContext)
     spark.listenerManager.register(listener)
     try {
       val error =
