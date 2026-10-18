@@ -23,9 +23,12 @@ import java.io.File
 import java.nio.charset.StandardCharsets
 import java.util.Base64
 
+import scala.collection.mutable
+
 import org.apache.parquet.crypto.DecryptionPropertiesFactory
 import org.apache.parquet.crypto.keytools.{KeyToolkit, PropertiesDrivenCryptoFactory}
 import org.apache.parquet.crypto.keytools.mocks.InMemoryKMS
+import org.apache.spark.CometListenerBusUtils
 import org.apache.spark.SparkConf
 import org.apache.spark.benchmark.Benchmark
 import org.apache.spark.sql.{DataFrame, DataFrameWriter, Row, SparkSession}
@@ -33,14 +36,16 @@ import org.apache.spark.sql.catalyst.expressions.{Alias, AttributeReference, Exp
 import org.apache.spark.sql.catalyst.optimizer.ConstantFolding
 import org.apache.spark.sql.comet.CometPlanChecker
 import org.apache.spark.sql.comet.util.Utils
-import org.apache.spark.sql.execution.{ColumnarToRowExec, InputAdapter, LeafExecNode, ProjectExec, SparkPlan, WholeStageCodegenExec}
+import org.apache.spark.sql.execution.{ColumnarToRowExec, InputAdapter, LeafExecNode, ProjectExec, QueryExecution, SparkPlan, WholeStageCodegenExec}
 import org.apache.spark.sql.execution.adaptive.AdaptiveSparkPlanHelper
 import org.apache.spark.sql.execution.benchmark.SqlBasedBenchmark
 import org.apache.spark.sql.internal.SQLConf
 import org.apache.spark.sql.types.DecimalType
+import org.apache.spark.sql.util.QueryExecutionListener
 
 import org.apache.comet.CometConf
 import org.apache.comet.CometSparkSessionExtensions
+import org.apache.comet.iceberg.IcebergReflection
 
 trait CometBenchmarkBase
     extends SqlBasedBenchmark
@@ -265,6 +270,37 @@ trait CometBenchmarkBase
     benchmark.out.println(s"\n$border\n$message\n$border")
   }
 
+  /** The executed plan of every query that succeeded while `action` ran. */
+  protected def capturePlans(action: => Unit): Seq[SparkPlan] = {
+    val captured = mutable.Buffer.empty[SparkPlan]
+    val listener = new QueryExecutionListener {
+      override def onSuccess(funcName: String, qe: QueryExecution, durationNs: Long): Unit =
+        captured += qe.executedPlan
+      override def onFailure(
+          funcName: String,
+          qe: QueryExecution,
+          exception: Exception): Unit = {}
+    }
+    CometListenerBusUtils.waitUntilEmpty(spark.sparkContext)
+    spark.listenerManager.register(listener)
+    try {
+      action
+      // The listener bus delivers asynchronously, so the plans are not all in hand until it has
+      // drained.
+      CometListenerBusUtils.waitUntilEmpty(spark.sparkContext)
+    } finally {
+      spark.listenerManager.unregister(listener)
+    }
+    captured.toSeq
+  }
+
+  /** Applies `f` to every node of `plans`, including AQE query stages and subqueries. */
+  protected def collectAcross[A](plans: Seq[SparkPlan])(
+      f: PartialFunction[SparkPlan, A]): Seq[A] =
+    plans.flatMap(plan => collectWithSubqueries(plan)(f))
+
+  protected def isComet(plan: SparkPlan): Boolean = plan.nodeName.startsWith("Comet")
+
   protected def addParquetScanCases(
       benchmark: Benchmark,
       query: String,
@@ -321,6 +357,17 @@ trait CometBenchmarkBase
    * `final` so that it is a compile-time constant and a subclass field can initialise from it.
    */
   protected final val defaultIcebergCatalog = "benchmark_cat"
+
+  /**
+   * Whether the Iceberg Spark runtime is on the classpath, which every Iceberg benchmark needs.
+   */
+  protected def icebergOnClasspath: Boolean =
+    try {
+      IcebergReflection.loadClass("org.apache.iceberg.spark.SparkCatalog")
+      true
+    } catch {
+      case _: ClassNotFoundException => false
+    }
 
   /**
    * Registers `catalog` as a Hadoop catalog rooted at `warehouseDir`.

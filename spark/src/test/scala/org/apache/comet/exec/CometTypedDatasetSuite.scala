@@ -340,6 +340,26 @@ class CometTypedDatasetSuite extends CometTestBase {
     }
   }
 
+  // https://github.com/apache/datafusion-comet/issues/6573
+  convertTest("input_file_name above a map keeps the map's output on Spark") {
+    withTempPath { dir =>
+      spark.range(9000).repartition(3).write.parquet(dir.toString)
+      // The filter would run in Comet above the conversion, which would read ahead of the files
+      // Spark's reader is on when Spark evaluates input_file_name in the project.
+      val df = spark.read
+        .parquet(dir.toString)
+        .as[Long]
+        .map(_ + 1)
+        .toDF("id")
+        .where("id >= 0")
+        .selectExpr("input_file_name()", "input_file_block_start()", "input_file_block_length()")
+      val (_, plan) = checkSparkAnswerAndFallbackReason(
+        df,
+        "Spark to Arrow conversion is not compatible with input_file_name")
+      assert(conversions(plan).isEmpty, plan)
+    }
+  }
+
   test("off by default") {
     withRecs() { ds =>
       val (_, plan) = checkSparkAnswer(ds.map(r => TypedDsRec(r.a + 1, r.b)).groupBy("b").count())

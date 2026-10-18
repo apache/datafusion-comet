@@ -294,6 +294,12 @@ trait ShimSparkErrorConverter {
             messageParameters = params.map { case (k, v) => (k, v.toString) },
             cause = null))
 
+      case "InvalidUrl" =>
+        Some(
+          QueryExecutionErrors.invalidUrlError(
+            UTF8String.fromString(params("url").toString),
+            new java.net.URISyntaxException(params("url").toString, "Invalid URL")))
+
       case "DatatypeCannotOrder" =>
         // orderedOperationUnsupportedByDataTypeError takes DataType in Spark 3.4, not String
         Some(

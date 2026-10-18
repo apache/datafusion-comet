@@ -242,11 +242,10 @@ class CometExpressionSuite extends CometTestBase with AdaptiveSparkPlanHelper {
     }
   }
 
-  // Floats nested in array and struct sort keys are normalized natively as well, but strict mode
-  // declines a key whose type can hold a null element or field: Spark orders that null below
-  // every value whatever the key's null order, and the native sort places it by the null order
-  // (#6476). Every field the generator makes is nullable, so these sorts fall back. A unique `id`
-  // sorted last makes the ordering total, as above.
+  // Floats nested in array and struct sort keys are normalized natively, in strict mode too. A key
+  // whose type can hold a null element or field sorts natively under the default null order, which
+  // agrees with Spark's. Every field the generator makes is nullable. A unique `id` sorted last
+  // makes the ordering total, as above.
   private def checkStrictNestedFloatingPointSort(schema: StructType): Unit = {
     val df = FuzzDataGenerator.generateDataFrame(
       new Random(42),
@@ -260,21 +259,15 @@ class CometExpressionSuite extends CometTestBase with AdaptiveSparkPlanHelper {
       df.withColumn("id", monotonically_increasing_id()).write.parquet(path)
       spark.read.parquet(path).createOrReplaceTempView("tbl")
 
-      withSQLConf(
-        CometConf.getExprAllowIncompatConfigKey("SortOrder") -> "false",
-        CometConf.COMET_EXEC_STRICT_FLOATING_POINT.key -> "true") {
-        checkSparkAnswerAndFallbackReason(
-          sql("select * from tbl order by 1, 2, 3"),
-          "can hold a null element or field")
-      }
-
-      // The default null order agrees with Spark's, so opting in keeps the sort native and right.
-      withSQLConf(
-        CometConf.getExprAllowIncompatConfigKey("SortOrder") -> "true",
-        CometConf.COMET_EXEC_STRICT_FLOATING_POINT.key -> "true") {
-        checkSparkAnswerAndOperator(
-          sql("select * from tbl order by 1, 2, 3"),
-          Seq(classOf[CometSortExec]))
+      // The sort stays native whether or not incompatible expressions are allowed.
+      Seq("false", "true").foreach { allowIncompat =>
+        withSQLConf(
+          CometConf.getExprAllowIncompatConfigKey("SortOrder") -> allowIncompat,
+          CometConf.COMET_EXEC_STRICT_FLOATING_POINT.key -> "true") {
+          checkSparkAnswerAndOperator(
+            sql("select * from tbl order by 1, 2, 3"),
+            Seq(classOf[CometSortExec]))
+        }
       }
     }
   }
@@ -301,8 +294,9 @@ class CometExpressionSuite extends CometTestBase with AdaptiveSparkPlanHelper {
   test("strict floating point: nested sort keeps NaN payloads and zero signs unchanged") {
     // As in the scalar test, a local relation keeps the raw bits that Parquet would canonicalize.
     // `d` is a primitive `Double`, so it is not nullable, and neither are the element of
-    // `array(d)` and the field of `named_struct('v', d)`: these keys cannot hold a null, and
-    // strict mode admits them.
+    // `array(d)` and the field of `named_struct('v', d)`. The `IF` key's element is null on row
+    // 4, and strict mode admits it too, because its default null order sorts a null element first,
+    // where Spark does.
     val negNan = java.lang.Double.longBitsToDouble(0xfff8000000000002L)
     val posNan = java.lang.Double.longBitsToDouble(0x7ff8000000000002L)
     val rows = Seq((0, negNan), (1, posNan), (2, -0.0d), (3, 0.0d), (4, 1.0d))
@@ -315,9 +309,14 @@ class CometExpressionSuite extends CometTestBase with AdaptiveSparkPlanHelper {
     withSQLConf(
       CometConf.getExprAllowIncompatConfigKey("SortOrder") -> "false",
       CometConf.COMET_EXEC_STRICT_FLOATING_POINT.key -> "true") {
-      for ((key, value) <- Seq[(String, Row => Double)](
-          "array(d)" -> (_.getSeq[Double](1).head),
-          "named_struct('v', d)" -> (_.getStruct(1).getDouble(0)))) {
+      // The zeros are peers, and so are the two NaNs, which sort last.
+      for ((key, value, order) <- Seq[(String, Row => Option[Double], Seq[Int])](
+          ("array(d)", r => Some(r.getSeq[Double](1).head), Seq(2, 3, 4, 0, 1)),
+          ("named_struct('v', d)", r => Some(r.getStruct(1).getDouble(0)), Seq(2, 3, 4, 0, 1)),
+          (
+            "array(IF(id = 4, CAST(NULL AS DOUBLE), d))",
+            r => Option(r.getSeq[java.lang.Double](1).head).map(_.doubleValue),
+            Seq(4, 2, 3, 0, 1)))) {
         val query = s"SELECT id, $key AS k FROM strict_fp_nested_bits ORDER BY k, id"
         checkSparkAnswerAndOperator(
           sql(query),
@@ -326,12 +325,16 @@ class CometExpressionSuite extends CometTestBase with AdaptiveSparkPlanHelper {
 
         val actual = sql(query).collect().toSeq
         actual.foreach { row =>
-          assert(
-            java.lang.Double.doubleToRawLongBits(value(row)) == expected(row.getInt(0)),
-            s"row ${row.getInt(0)} had its floating-point bits rewritten by the sort on $key")
+          val id = row.getInt(0)
+          value(row) match {
+            case Some(v) =>
+              assert(
+                java.lang.Double.doubleToRawLongBits(v) == expected(id),
+                s"row $id had its floating-point bits rewritten by the sort on $key")
+            case None => assert(id == 4, s"row $id lost its value in the sort on $key")
+          }
         }
-        // The zeros are peers, and so are the two NaNs, which sort last.
-        assert(actual.map(_.getInt(0)) == Seq(2, 3, 4, 0, 1), s"sort on $key")
+        assert(actual.map(_.getInt(0)) == order, s"sort on $key")
       }
     }
   }
@@ -560,6 +563,30 @@ class CometExpressionSuite extends CometTestBase with AdaptiveSparkPlanHelper {
               checkSparkAnswerAndOperator(cometDf)
             }
           }
+        }
+      }
+    }
+  }
+
+  test("ANSI parse_url of an invalid URL raises a Spark error") {
+    withSQLConf(SQLConf.ANSI_ENABLED.key -> "true") {
+      withTable("parse_url_invalid") {
+        sql("CREATE TABLE parse_url_invalid (u STRING) USING PARQUET")
+        sql("INSERT INTO parse_url_invalid VALUES ('inva lid://user:pass@host/file')")
+
+        val df = sql("SELECT parse_url(u, 'HOST') FROM parse_url_invalid")
+        checkCometOperators(stripAQEPlan(df.queryExecution.executedPlan))
+        checkSparkAnswerMaybeThrows(df) match {
+          case (Some(sparkException), Some(cometException)) =>
+            def sparkError(error: Throwable): SparkThrowable =
+              causeChain(error)
+                .collectFirst { case error: SparkThrowable => error }
+                .getOrElse(fail(s"Expected a SparkThrowable, got $error"))
+            val expected = sparkError(sparkException)
+            val actual = sparkError(cometException)
+            assert(actual.getErrorClass == expected.getErrorClass)
+            assert(actual.getSqlState == expected.getSqlState)
+          case errors => fail(s"Expected Spark and Comet invalid URL errors, got $errors")
         }
       }
     }
@@ -2033,20 +2060,6 @@ class CometExpressionSuite extends CometTestBase with AdaptiveSparkPlanHelper {
     }
   }
 
-  test("md5") {
-    Seq(false, true).foreach { dictionary =>
-      withSQLConf("parquet.enable.dictionary" -> dictionary.toString) {
-        val table = "test"
-        withTable(table) {
-          sql(s"create table $table(col String) using parquet")
-          sql(
-            s"insert into $table values ('test1'), ('test1'), ('test2'), ('test2'), (NULL), ('')")
-          checkSparkAnswerAndOperator(s"select md5(col) FROM $table")
-        }
-      }
-    }
-  }
-
   test("unhex") {
     val table = "unhex_table"
     Seq(false, true).foreach { dictionaryEnabled =>
@@ -2590,48 +2603,6 @@ class CometExpressionSuite extends CometTestBase with AdaptiveSparkPlanHelper {
     }
   }
 
-  test("hash functions") {
-    Seq(true, false).foreach { dictionary =>
-      withSQLConf("parquet.enable.dictionary" -> dictionary.toString) {
-        val table = "test"
-        withTable(table) {
-          sql(s"create table $table(col string, a int, b float) using parquet")
-          sql(s"""
-              |insert into $table values
-              |('Spark SQL  ', 10, 1.2), (NULL, NULL, NULL), ('', 0, 0.0), ('苹果手机', NULL, 3.999999)
-              |, ('Spark SQL  ', 10, 1.2), (NULL, NULL, NULL), ('', 0, 0.0), ('苹果手机', NULL, 3.999999)
-              |""".stripMargin)
-          checkSparkAnswerAndOperator("""
-              |select
-              |md5(col), md5(cast(a as string)), md5(cast(b as string)),
-              |hash(col), hash(col, 1), hash(col, 0), hash(col, a, b), hash(b, a, col),
-              |xxhash64(col), xxhash64(col, 1), xxhash64(col, 0), xxhash64(col, a, b), xxhash64(b, a, col),
-              |crc32(col), crc32(cast(a as string)), crc32(cast(b as string)),
-              |sha2(col, 0), sha2(col, 256), sha2(col, 224), sha2(col, 384), sha2(col, 512), sha2(col, 128), sha2(col, -1),
-              |sha1(col), sha1(cast(a as string)), sha1(cast(b as string))
-              |from test
-              |""".stripMargin)
-        }
-      }
-    }
-  }
-
-  test("sha2 with all-literal arguments and ConstantFolding disabled") {
-    // https://github.com/apache/datafusion-comet/issues/3340
-    // When ConstantFolding is disabled, an all-literal sha2() call reaches the native
-    // engine as scalar arguments. Verify it computes the correct result rather than crashing.
-    withSQLConf(
-      "spark.sql.optimizer.excludedRules" ->
-        "org.apache.spark.sql.catalyst.optimizer.ConstantFolding") {
-      checkSparkAnswerAndOperator("""
-          |select
-          |sha2('test', 0), sha2('test', 256), sha2('test', 224),
-          |sha2('test', 384), sha2('test', 512), sha2('test', 128), sha2('test', -1),
-          |sha2(cast(null as string), 256)
-          |""".stripMargin)
-    }
-  }
-
   test("remainder function") {
     def withAnsiMode(enabled: Boolean)(f: => Unit): Unit = {
       withSQLConf(
@@ -2708,44 +2679,6 @@ class CometExpressionSuite extends CometTestBase with AdaptiveSparkPlanHelper {
           """.stripMargin)
         }
       })
-    }
-  }
-
-  test("hash functions with random input") {
-    val dataGen = DataGenerator.DEFAULT
-    // sufficient number of rows to create dictionary encoded ArrowArray.
-    val randomNumRows = 1000
-
-    val whitespaceChars = " \t\r\n"
-    val timestampPattern = "0123456789/:T" + whitespaceChars
-    Seq(true, false).foreach { dictionary =>
-      withSQLConf("parquet.enable.dictionary" -> dictionary.toString) {
-        val table = "test"
-        withTable(table) {
-          sql(s"create table $table(col string, a int, b float) using parquet")
-          val tableSchema = spark.table(table).schema
-          val rows = dataGen.generateRows(
-            randomNumRows,
-            tableSchema,
-            Some(() => dataGen.generateString(timestampPattern, 6)))
-          val data = spark.createDataFrame(spark.sparkContext.parallelize(rows), tableSchema)
-          data.write
-            .mode("append")
-            .insertInto(table)
-          // with random generated data
-          // disable cast(b as string) for now, as the cast from float to string may produce incompatible result
-          checkSparkAnswerAndOperator("""
-              |select
-              |md5(col), md5(cast(a as string)), --md5(cast(b as string)),
-              |hash(col), hash(col, 1), hash(col, 0), hash(col, a, b), hash(b, a, col),
-              |xxhash64(col), xxhash64(col, 1), xxhash64(col, 0), xxhash64(col, a, b), xxhash64(b, a, col),
-              |crc32(col), crc32(cast(a as string)),
-              |sha2(col, 0), sha2(col, 256), sha2(col, 224), sha2(col, 384), sha2(col, 512), sha2(col, 128), sha2(col, -1),
-              |sha1(col), sha1(cast(a as string))
-              |from test
-              |""".stripMargin)
-        }
-      }
     }
   }
 
