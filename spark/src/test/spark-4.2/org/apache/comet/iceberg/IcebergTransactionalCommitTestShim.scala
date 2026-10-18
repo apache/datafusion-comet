@@ -42,7 +42,8 @@ object IcebergTransactionalCommitTestShim {
       null.asInstanceOf[BatchWrite],
       null.asInstanceOf[Write],
       () => (),
-      LocalTableScanExec(Nil, Nil, None))
+      LocalTableScanExec(Nil, Nil, None),
+      command = Some(DeltaUpdate))
     val original = IcebergCommitPlanShim
       .wrap(commit)
       .asInstanceOf[IcebergTransactionalCommitExec]
@@ -58,6 +59,9 @@ object IcebergTransactionalCommitTestShim {
 
     val attached = transformed.asInstanceOf[IcebergTransactionalCommitExec]
     assert(attached.transaction.contains(transaction))
-    assert(attached.clone().transaction.contains(transaction))
+    assert(attached.command.contains(DeltaUpdate))
+    val cloned = attached.clone()
+    assert(cloned.transaction.contains(transaction))
+    assert(cloned.command.contains(DeltaUpdate))
   }
 }

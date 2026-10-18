@@ -34,7 +34,22 @@ guide is split into the following pages:
 - [Operator Tuning](tuning/operators.md): joins, adaptive partial aggregation, and sorting on
   floating-point values.
 - [Reducing Row/Columnar Conversion Overhead](tuning/transitions.md): stages in which many
-  operators fall back to Spark.
+  operators fall back to Spark, and the experimental direct columnar-to-row converter.
+
+## Nested and Wide Data
+
+Rows with many columns, long strings, or nested columns such as arrays of structs make every batch
+larger, so queries over such data spill more. For these workloads:
+
+- Choose the codec for spill files from native sorts, aggregations, and joins, which Comet
+  compresses with `lz4` by default. See
+  [Compressing Spill Files](tuning/memory.md#compressing-spill-files).
+- Lower the batch size if wide batches cause spilling or out-of-memory errors. See
+  [Batch Size](tuning/memory.md#batch-size).
+- Check which shuffles can run natively when partitioning keys are nested. See
+  [Native Shuffle](tuning/shuffle.md#native-shuffle).
+- Watch for row/columnar conversions, which are expensive for such schemas. See
+  [Wide or Deeply Nested Schemas](tuning/transitions.md#wide-or-deeply-nested-schemas).
 
 ## Configuring Tokio Runtime
 

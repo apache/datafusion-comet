@@ -218,7 +218,7 @@ fn criterion_benchmark(c: &mut Criterion) {
                 let cast = Cast::new(
                     Arc::clone(&expr),
                     to_type.clone(),
-                    SparkCastOptions::new(mode, timezone, false),
+                    SparkCastOptions::new(mode, timezone),
                     None,
                     None,
                 );
@@ -238,7 +238,7 @@ fn criterion_benchmark(c: &mut Criterion) {
         let cast = Cast::new(
             Arc::clone(&expr),
             DataType::Timestamp(TimeUnit::Microsecond, Some("UTC".into())),
-            SparkCastOptions::new_with_version(EvalMode::Legacy, "UTC", false, true),
+            SparkCastOptions::new_with_version(EvalMode::Legacy, "UTC", true),
             None,
             None,
         );
