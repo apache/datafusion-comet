@@ -15,10 +15,11 @@
 // specific language governing permissions and limitations
 // under the License.
 
-//! Compare Spark's float comparisons, which normalize each float operand first, with DataFusion's
-//! on the same data, and time `normalize_floats` on its own. Both comparisons return the same
-//! answer except on a NaN with the sign bit set, which is checked before timing; special-value
-//! semantics belong in tests.
+//! Compare Spark's float comparisons, which follow Spark's SQL ordering without normalizing their
+//! operands, with comparing normalized copies of the operands and with DataFusion's comparison, on
+//! the same data, and time `normalize_floats` on its own. All three return the same answer except
+//! that DataFusion's differs on a NaN with the sign bit set, which is checked before timing;
+//! special-value semantics belong in tests.
 
 use arrow::array::{Array, ArrayRef, Float64Array};
 use arrow::datatypes::{DataType, Field, Schema};
@@ -28,7 +29,9 @@ use datafusion::common::ScalarValue;
 use datafusion::logical_expr::Operator;
 use datafusion::physical_expr::expressions::{BinaryExpr, Column, Literal};
 use datafusion::physical_expr::PhysicalExpr;
-use datafusion_comet_spark_expr::{normalize_floats, spark_comparison, FloatOperands};
+use datafusion_comet_spark_expr::{
+    normalize_floats, spark_comparison, FloatOperands, NormalizeNaNAndZero,
+};
 use std::hint::black_box;
 use std::sync::Arc;
 use std::time::Duration;
@@ -72,34 +75,55 @@ fn criterion_benchmark(c: &mut Criterion) {
         let b: Arc<dyn PhysicalExpr> = Arc::new(Column::new("b", 1));
         let literal: Arc<dyn PhysicalExpr> =
             Arc::new(Literal::new(ScalarValue::Float64(Some(500.0))));
-        for (shape, right) in [("column_column", b), ("column_literal", literal)] {
-            let datafusion: Arc<dyn PhysicalExpr> = Arc::new(BinaryExpr::new(
-                Arc::clone(&a),
-                Operator::Lt,
-                Arc::clone(&right),
-            ));
-            let spark = spark_comparison(
-                Arc::clone(&a),
-                Operator::Lt,
-                right,
-                &schema,
-                FloatOperands::Normalize,
-            )
-            .unwrap();
-            let evaluate = |expr: &Arc<dyn PhysicalExpr>| {
-                expr.evaluate(&batch)
-                    .unwrap()
-                    .into_array(ROWS)
-                    .unwrap()
-                    .to_data()
-            };
-            if special.map(f64::to_bits) != Some(NEGATIVE_NAN.to_bits()) {
-                assert_eq!(evaluate(&spark), evaluate(&datafusion));
-            }
-            for (engine, expr) in [("spark", &spark), ("datafusion", &datafusion)] {
-                group.bench_function(BenchmarkId::new(format!("{shape}_{engine}"), data), |b| {
-                    b.iter(|| black_box(expr.evaluate(black_box(&batch)).unwrap()))
-                });
+        for (op_name, op) in [
+            ("lt", Operator::Lt),
+            ("eq", Operator::Eq),
+            ("not_distinct", Operator::IsNotDistinctFrom),
+        ] {
+            for (shape, right) in [("column_column", &b), ("column_literal", &literal)] {
+                let datafusion: Arc<dyn PhysicalExpr> =
+                    Arc::new(BinaryExpr::new(Arc::clone(&a), op, Arc::clone(right)));
+                // Comparing normalized copies of the operands, as `spark_comparison` did before it
+                // compared them in place. It normalized a literal while planning, and 500.0 is
+                // already normal.
+                let normalize = |operand: &Arc<dyn PhysicalExpr>| -> Arc<dyn PhysicalExpr> {
+                    if operand.downcast_ref::<Literal>().is_some() {
+                        Arc::clone(operand)
+                    } else {
+                        NormalizeNaNAndZero::wrap_if_needed(Arc::clone(operand), &schema).unwrap()
+                    }
+                };
+                let normalized: Arc<dyn PhysicalExpr> =
+                    Arc::new(BinaryExpr::new(normalize(&a), op, normalize(right)));
+                let spark = spark_comparison(
+                    Arc::clone(&a),
+                    op,
+                    Arc::clone(right),
+                    &schema,
+                    FloatOperands::Normalize,
+                )
+                .unwrap();
+                let evaluate = |expr: &Arc<dyn PhysicalExpr>| {
+                    expr.evaluate(&batch)
+                        .unwrap()
+                        .into_array(ROWS)
+                        .unwrap()
+                        .to_data()
+                };
+                assert_eq!(evaluate(&spark), evaluate(&normalized));
+                if special.map(f64::to_bits) != Some(NEGATIVE_NAN.to_bits()) {
+                    assert_eq!(evaluate(&spark), evaluate(&datafusion));
+                }
+                for (engine, expr) in [
+                    ("spark", &spark),
+                    ("normalized", &normalized),
+                    ("datafusion", &datafusion),
+                ] {
+                    group.bench_function(
+                        BenchmarkId::new(format!("{op_name}_{shape}_{engine}"), data),
+                        |b| b.iter(|| black_box(expr.evaluate(black_box(&batch)).unwrap())),
+                    );
+                }
             }
         }
         let column = Arc::clone(batch.column(0));

@@ -18,8 +18,9 @@
 use super::normalize_float;
 use arrow::array::{
     Array, ArrayRef, AsArray, FixedSizeListArray, Float32Array, Float64Array, LargeListArray,
-    ListArray, StructArray,
+    ListArray, OffsetSizeTrait, StructArray,
 };
+use arrow::buffer::OffsetBuffer;
 use arrow::datatypes::{DataType, Float32Type, Float64Type, Schema};
 use arrow::record_batch::RecordBatch;
 use datafusion::common::{Result, ScalarValue};
@@ -257,7 +258,7 @@ pub fn normalize_floats(array: &ArrayRef) -> ArrayRef {
 }
 
 /// Applies [`normalize_float`] to a Float32 or Float64 scalar. Other scalars are returned as is.
-fn normalize_float_scalar(value: ScalarValue) -> ScalarValue {
+pub(crate) fn normalize_float_scalar(value: ScalarValue) -> ScalarValue {
     match value {
         ScalarValue::Float32(v) => ScalarValue::Float32(v.map(normalize_float)),
         ScalarValue::Float64(v) => ScalarValue::Float64(v.map(normalize_float)),
@@ -291,6 +292,10 @@ pub(crate) fn is_nested_with_float_leaf(dt: &DataType) -> bool {
 /// keeps the rebuild proportional to the float data, and it also leaves empty structs alone:
 /// `StructArray::new` cannot infer a length from zero columns and would panic. An empty struct
 /// reaches this code through Iceberg's `_partition` metadata column on an unpartitioned table.
+///
+/// A list is rebuilt over only the part of its child array that its offsets reference. A sliced
+/// list keeps its whole child array, and `explode` returns slices of one child array for a whole
+/// input batch, so rebuilding the child as is would copy all of it for every slice.
 pub fn normalize_nested_floats(array: &ArrayRef) -> ArrayRef {
     if !has_float_leaf(array.data_type()) {
         return Arc::clone(array);
@@ -300,21 +305,21 @@ pub fn normalize_nested_floats(array: &ArrayRef) -> ArrayRef {
         DataType::Float32 | DataType::Float64 => normalize_floats(array),
         DataType::List(field) => {
             let list = array.as_list::<i32>();
-            let normalized_values = normalize_nested_floats(list.values());
+            let (offsets, values) = referenced_values(list.offsets(), list.values());
             Arc::new(ListArray::new(
                 Arc::clone(field),
-                list.offsets().clone(),
-                normalized_values,
+                offsets,
+                normalize_nested_floats(&values),
                 list.nulls().cloned(),
             ))
         }
         DataType::LargeList(field) => {
             let list = array.as_list::<i64>();
-            let normalized_values = normalize_nested_floats(list.values());
+            let (offsets, values) = referenced_values(list.offsets(), list.values());
             Arc::new(LargeListArray::new(
                 Arc::clone(field),
-                list.offsets().clone(),
-                normalized_values,
+                offsets,
+                normalize_nested_floats(&values),
                 list.nulls().cloned(),
             ))
         }
@@ -340,6 +345,23 @@ pub fn normalize_nested_floats(array: &ArrayRef) -> ArrayRef {
         }
         _ => Arc::clone(array),
     }
+}
+
+/// The part of a list's child array that `offsets` references, with the offsets rebased onto it.
+/// The child is returned as is when the offsets span all of it.
+fn referenced_values<O: OffsetSizeTrait>(
+    offsets: &OffsetBuffer<O>,
+    values: &ArrayRef,
+) -> (OffsetBuffer<O>, ArrayRef) {
+    let start = offsets[0].as_usize();
+    let end = offsets[offsets.len() - 1].as_usize();
+    if start == 0 && end == values.len() {
+        return (offsets.clone(), Arc::clone(values));
+    }
+    (
+        OffsetBuffer::from_lengths(offsets.lengths()),
+        values.slice(start, end - start),
+    )
 }
 
 #[cfg(test)]
@@ -716,6 +738,38 @@ mod tests {
 
         assert_eq!(inner.value(0).to_bits(), 0.0f64.to_bits());
         assert_eq!(inner.value(1).to_bits(), f64::NAN.to_bits());
+    }
+
+    /// A sliced list keeps its whole child array. Only the part its rows reference is rebuilt, at
+    /// every depth, and the rows keep their values and nulls.
+    #[test]
+    fn test_normalize_sliced_list_rebuilds_only_referenced_values() {
+        let rows = (0..8).map(|i| (i != 4).then(|| vec![Some(-0.0), Some(i as f64)]));
+        let list = ListArray::from_iter_primitive::<Float64Type, _, _>(rows);
+        let sliced: ArrayRef = Arc::new(list.slice(3, 3));
+
+        let normalized = normalize_nested_floats(&sliced);
+        let normalized = normalized.as_list::<i32>();
+        assert_eq!(normalized.offsets().as_ref(), &[0, 2, 2, 4]);
+        assert!(normalized.is_null(1));
+        let values = normalized.values().as_primitive::<Float64Type>();
+        let bits: Vec<u64> = values.values().iter().map(|v| v.to_bits()).collect();
+        assert_eq!(bits, [0.0f64, 3.0, 0.0, 5.0].map(f64::to_bits));
+
+        // Slicing the outer list of a list of lists keeps the inner list whole.
+        let field = Arc::new(Field::new_list_field(list.data_type().clone(), true));
+        let outer = ListArray::new(
+            field,
+            OffsetBuffer::from_lengths([1; 8]),
+            Arc::new(list),
+            None,
+        );
+        let sliced: ArrayRef = Arc::new(outer.slice(3, 3));
+
+        let normalized = normalize_nested_floats(&sliced);
+        let inner = normalized.as_list::<i32>().values().as_list::<i32>();
+        assert_eq!(inner.offsets().as_ref(), &[0, 2, 2, 4]);
+        assert_eq!(inner.values().len(), 4);
     }
 
     /// An empty struct sibling of a float field must survive normalization. Iceberg exposes

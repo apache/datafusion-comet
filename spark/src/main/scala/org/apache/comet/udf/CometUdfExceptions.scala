@@ -21,12 +21,11 @@ package org.apache.comet.udf
 
 import org.apache.comet.CometRuntimeException
 
-/**
- * Thrown when Spark itself evaluates a call to a UDF registered with Comet, which means Comet did
- * not take the operator holding it.
- */
+/** Thrown when Spark itself evaluates a call to a native UDF, which only Comet can evaluate. */
 class CometUdfNotEvaluatedException(name: String)
     extends CometRuntimeException(
       s"UDF '$name' is registered with Comet and runs only inside Comet's native execution, but " +
-        "Spark evaluated it, which means Comet did not take the operator holding the call. The " +
-        "query's extended explain output gives the reason that operator fell back to Spark.")
+        "Spark evaluated it. Either Comet did not take the operator holding the call, and the " +
+        "query's extended explain output gives the reason, or Spark evaluated the call itself " +
+        "while planning: over local data, in a filter on partition columns, or to sample the " +
+        "keys of a global sort.")

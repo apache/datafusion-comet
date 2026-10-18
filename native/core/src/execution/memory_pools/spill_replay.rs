@@ -21,7 +21,8 @@
 //! replays them through an `OrderedFinalAggregateStream` that has no way to spill, so a refused
 //! memory request there fails the task. `FinalHashAggregateStream` does this, and so does
 //! `OrderedFinalAggregateStream` itself, which DataFusion uses when the input is sorted on some of
-//! the grouping keys. The merge reserves read buffers for as many spill files as fit, and those
+//! the grouping keys. So does `SingleHashAggregateStream`, which Comet runs for a Spark
+//! PartialMerge (#6857). The merge reserves read buffers for as many spill files as fit, and those
 //! buffers belong to the same consumer, so the replay often finds the consumer's share already
 //! taken.
 //!
@@ -31,9 +32,9 @@
 //!
 //! This relies on the following in DataFusion 55.1, which a DataFusion upgrade has to re-check:
 //!
-//! - The two aggregates name their consumers `FinalHashAggregateStream[{partition}]` and
-//!   `OrderedFinalAggregateStream[{partition}]`, and their merge and replay reserve through sibling
-//!   reservations of that consumer.
+//! - The three aggregates name their consumers `FinalHashAggregateStream[{partition}]`,
+//!   `OrderedFinalAggregateStream[{partition}]` and `SingleHashAggregateStream[{partition}]`, and
+//!   their merge and replay reserve through sibling reservations of that consumer.
 //! - A final aggregate grows one reservation while another of its reservations holds memory only
 //!   during the replay, while the merge holds its read buffers. Before that, the aggregate's table
 //!   is its only reservation holding memory, so a refusal stands and makes it spill. The merge
@@ -45,7 +46,8 @@
 //!
 //! Remove this, as #6583 describes, once Comet's DataFusion has apache/datafusion#25383, which
 //! leaves the replay room when the merge picks its files. The #6254 tests in `CometAggregateSuite`
-//! fail without this on DataFusion 55.1, so they show whether the replay still needs it.
+//! fail without this on DataFusion 55.1, and its PartialMerge read-back test for #6857 fails
+//! without it on 55.2, so they show whether the replay still needs it.
 
 use std::collections::HashMap;
 use std::fmt;
@@ -174,11 +176,12 @@ pub(super) fn unwrap_spill_replay(pool: &Arc<dyn MemoryPool>) -> Option<&Arc<dyn
         .map(|replay| &replay.inner)
 }
 
-/// Whether `consumer` belongs to a final aggregate whose spill replay can't spill.
+/// Whether `consumer` belongs to a final or single aggregate, whose spill replay can't spill.
 fn is_final_aggregate(consumer: &MemoryConsumer) -> bool {
     let name = consumer.name();
     name.starts_with("FinalHashAggregateStream[")
         || name.starts_with("OrderedFinalAggregateStream[")
+        || name.starts_with("SingleHashAggregateStream[")
 }
 
 #[cfg(test)]
@@ -353,14 +356,14 @@ mod tests {
         for name in [
             "FinalHashAggregateStream[3]",
             "OrderedFinalAggregateStream[0]",
+            "SingleHashAggregateStream[0]",
         ] {
             assert!(is_final_aggregate(&MemoryConsumer::new(name)), "{name}");
         }
-        // Partial aggregates emit early instead of spilling, and Comet never plans single ones.
+        // Partial aggregates emit early instead of spilling.
         for name in [
             "PartialHashAggregateStream[0]",
             "OrderedPartialAggregateStream[0]",
-            "SingleHashAggregateStream[0]",
             "ExternalSorterMerge[0]",
         ] {
             assert!(!is_final_aggregate(&MemoryConsumer::new(name)), "{name}");
