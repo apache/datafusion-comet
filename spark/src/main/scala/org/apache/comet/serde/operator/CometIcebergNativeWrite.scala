@@ -81,11 +81,11 @@ object CometIcebergNativeWrite extends CometOperatorSerde[IcebergWriteExec] {
   }
 
   private val EncryptionPropertyPrefix = "encryption."
-  // `uuid` plus the v3-only types. Iceberg plans `variant` as Spark's VariantType and `unknown`
-  // as NullType, neither of which the native writer handles; Spark cannot plan a write to
-  // `timestamp_ns`, `geometry` or `geography` today, so those are declined in case it learns to.
+  // `uuid` plus the v3-only types. Iceberg plans `variant` as Spark's VariantType, which the
+  // native writer does not handle; Spark cannot plan a write to `timestamp_ns`, `geometry` or
+  // `geography` today, so those are declined in case it learns to. `unknown` is checked below.
   private val UnsupportedWriteTypeIds: Set[String] =
-    Set("UUID", "VARIANT", "UNKNOWN", "TIMESTAMP_NANO", "GEOMETRY", "GEOGRAPHY")
+    Set("UUID", "VARIANT", "TIMESTAMP_NANO", "GEOMETRY", "GEOGRAPHY")
   // Loaded from the native storage factory: `builtin_storage_schemes` in
   // `native/core/src/execution/operators/iceberg_common.rs` is the single point of change and
   // explains why `oss` is read-only and `memory` write-only. Lazy so constructing the serde does
@@ -524,6 +524,9 @@ object CometIcebergNativeWrite extends CometOperatorSerde[IcebergWriteExec] {
       case Some(schema) =>
         IcebergReflection
           .findFieldWithTypeIds(schema, UnsupportedWriteTypeIds)
+          // Nested `unknown` fails in Comet shuffle; top-level is fine.
+          .orElse(
+            IcebergReflection.findFieldWithTypeIds(schema, Set("UNKNOWN"), nestedOnly = true))
           .map { case (name, typeId) =>
             s"column $name has Iceberg type ${typeId.toLowerCase(Locale.ROOT)}, " +
               "which the native writer cannot reproduce"

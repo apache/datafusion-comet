@@ -1680,17 +1680,24 @@ object IcebergReflection extends Logging {
    * write detection to decline schemas containing types the native writer cannot reproduce.
    * Reflection failures are deliberately not swallowed: the caller's detection wrapper turns them
    * into a fall-back, so a failed walk reads as "cannot verify" rather than "supported".
+   * `nestedOnly` skips the top-level columns.
    */
-  def findFieldWithTypeIds(schema: Any, typeIds: Set[String]): Option[(String, String)] = {
+  def findFieldWithTypeIds(
+      schema: Any,
+      typeIds: Set[String],
+      nestedOnly: Boolean = false): Option[(String, String)] = {
     val queue = new java.util.ArrayDeque[AnyRef]()
     queue.addAll(
       schema.getClass.getMethod("columns").invoke(schema).asInstanceOf[java.util.List[AnyRef]])
+    var topLevelLeft = if (nestedOnly) queue.size else 0
     while (!queue.isEmpty) {
       val field = queue.poll()
       val fieldType = field.getClass.getMethod("type").invoke(field)
       val typeId = fieldType.getClass.getMethod("typeId").invoke(fieldType)
       val typeIdName = typeId.asInstanceOf[Enum[_]].name()
-      if (typeIds.contains(typeIdName)) {
+      val skip = topLevelLeft > 0
+      if (skip) topLevelLeft -= 1
+      if (!skip && typeIds.contains(typeIdName)) {
         val name = field.getClass.getMethod("name").invoke(field).asInstanceOf[String]
         return Some((name, typeIdName))
       }
