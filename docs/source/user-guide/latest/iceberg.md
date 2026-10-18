@@ -189,6 +189,9 @@ The following scenarios will fall back to the JVM Iceberg reader:
 - Queries that use `input_file_name()`, `input_file_block_start()` or `input_file_block_length()`
 - Scans whose data or delete files span more than one S3 bucket (the native reader uses one
   object-store configuration per scan)
+- Scans where Iceberg reports an output ordering (for example with
+  `spark.sql.iceberg.planning.preserve-data-ordering=true`). Spark may then skip the sort above the
+  scan, and the native reader does not preserve file order
 - Tables partitioned on `BINARY` or `DECIMAL` (with precision >28) columns
 - Scans with residual filters using `truncate`, `bucket`, `year`, `month`, `day`, or `hour`
   transform functions (partition pruning still works, but row-level filtering of these
