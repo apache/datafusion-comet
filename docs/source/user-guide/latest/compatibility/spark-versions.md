@@ -43,7 +43,7 @@ release than on the other supported versions. We recommend moving to Spark 3.5 o
 - **Extra `SparkException` layer in Parquet schema mismatch errors**: when a Parquet read is
   rejected because a file's type cannot be converted to the requested type, the error's cause chain
   has one more `SparkException` layer than Spark's own reader produces.
-  See [Parquet Compatibility](scans.md#schema-mismatch-handling) for details.
+  See [Parquet](../parquet.md#schema-mismatch-handling) for details.
 
 ## Spark 3.5
 
@@ -54,7 +54,7 @@ Spark 3.5.9 is supported with Java 17 and Scala 2.12/2.13.
 - **Extra `SparkException` layer in Parquet schema mismatch errors**: when a Parquet read is
   rejected because a file's type cannot be converted to the requested type, the error's cause chain
   has one more `SparkException` layer than Spark's own reader produces.
-  See [Parquet Compatibility](scans.md#schema-mismatch-handling) for details.
+  See [Parquet](../parquet.md#schema-mismatch-handling) for details.
 
 ## Spark 4.0
 
@@ -68,17 +68,6 @@ Spark 4.0.4 is supported with Java 17/21 and Scala 2.13.
 ## Spark 4.1
 
 Spark 4.1.3 is supported with Java 17/21 and Scala 2.13.
-
-### Known Limitations
-
-- **`NullType` columns in Parquet files**
-  ([#4199](https://github.com/apache/datafusion-comet/issues/4199)): Spark encodes a `NullType`
-  column as a Parquet `BOOLEAN` physical type annotated with `LogicalType::Unknown`. The Rust
-  `parquet` crate that Comet depends on accepts `Unknown` only when paired with `INT32` and rejects
-  any other physical type with `Parquet error: Cannot annotate Unknown from BOOLEAN for field '<name>'`.
-  Any attempt to read a Parquet file that contains a `NullType` column fails at decode time before
-  Comet's scan runs. Workaround: project the column away, cast it to a concrete type before
-  persisting, or read the file with Comet disabled for that query.
 
 ## Spark 4.2
 

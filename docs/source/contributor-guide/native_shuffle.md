@@ -39,6 +39,12 @@ Compare this to JVM shuffle's data path:
 Comet Native (columnar) → ColumnarToRowExec → rows → JVM Shuffle → Arrow IPC → columnar
 ```
 
+When `RevertNativeForTransitionHeavyStages` restores the map stage to Spark execution, the
+native exchange stays in place. Its input still needs Arrow-backed Comet vectors, even if the
+restored Spark operator supports columnar output. The rule adds `CometSparkToColumnarExec` to
+convert either Spark rows or Spark columnar batches to Arrow before the native shuffle consumes
+them. Spark's `RowToColumnarExec` alone does not satisfy this input contract.
+
 ## When Native Shuffle is Used
 
 Native shuffle (`CometExchange`) is selected when all of the following conditions are met:
@@ -46,7 +52,13 @@ Native shuffle (`CometExchange`) is selected when all of the following condition
 1. **Shuffle mode allows native**: `spark.comet.shuffle.mode` is `native` or `auto`.
 
 2. **Child plan is a Comet native operator**: The child must be a `CometPlan` that produces
-   columnar output. Row-based Spark operators require JVM shuffle.
+   columnar output. Row-based Spark operators require JVM shuffle, unless
+   `spark.comet.convert.shuffleInput.enabled` is set. Then a shuffle that JVM shuffle would take
+   uses native shuffle instead, provided native shuffle supports the partitioning and the
+   columns, and a `CometSparkToColumnarExec` converts the child's rows to Arrow for it. A shuffle
+   that hashes a string, a value computed from a string, or a decimal wider than 18 digits stays
+   on JVM shuffle, because native shuffle would not put every row in the partition Spark's
+   partitioner does (`CometShuffleExchangeExec.convertsInputForNativeShuffle`).
 
 3. **Supported partitioning type**: Native shuffle supports:
    - `HashPartitioning`
@@ -71,12 +83,9 @@ Native shuffle (`CometExchange`) is selected when all of the following condition
      Spark's `mapsort` normalization makes physical entry order irrelevant. A collated string at any
      depth still disqualifies the key. The config defaults to `false` pending measurement of the
      nested hashing paths, so by default a complex hash key falls back to JVM shuffle.
-   - A hash key that is or contains a decimal wider than 18 digits stays on JVM shuffle when the
-     shuffle's stage starts at a typed `Dataset` conversion
-     (`spark.comet.convert.typedDataset.enabled`) and the shuffle has more than one partition.
-     Native shuffle hashes such decimals differently from Spark
-     ([#5994](https://github.com/apache/datafusion-comet/issues/5994)). Without the conversion
-     this shuffle would have used JVM shuffle, and a join partner may still use it.
+     Decimal leaves with precision greater than 18 also disqualify a hash key when there is more
+     than one output partition: native decimal hashing differs from Spark's. A one-partition hash
+     exchange stays native because the writer serializes it as `SinglePartition` without hashing.
 
 ## Architecture
 
@@ -149,6 +158,7 @@ The native shuffle implementation is its own workspace crate, `datafusion-comet-
 | `writers/buf_batch_writer.rs`      | `BufBatchWriter`, which coalesces sub-`batch_size` batches through Arrow's `BatchCoalescer` before serializing.                  |
 | `writers/local/spill.rs`           | `PartitionedSpill`, the one spill file shared by every output partition, and its per-partition byte ranges.                      |
 | `ipc.rs`                           | `read_ipc_compressed` and `read_ipc_compressed_validated`, the decode side used by the shuffle reader.                           |
+| `offsets_as_lengths.rs`            | Which IPC body buffers hold offsets, the rewrite of offsets as lengths in byte planes, and the `LENGTHS_TAG_FLAG` codec-tag bit. |
 
 ## Data Flow
 
@@ -160,11 +170,14 @@ The native shuffle implementation is its own workspace crate, `datafusion-comet-
    - The child plan's `nativeOp` directly, when `CometShuffleExchangeExec`'s child is a
      `CometNativeExec` subtree. The upstream operators run inside the same `CometExecIterator`
      as the writer, with no JVM-to-native batch boundary between them.
-   - A synthetic `Scan("ShuffleWriterInput")` placeholder, when the dep was built via the
-     convenience `prepareShuffleDependency(rdd, ...)` overload (used by
-     `CometCollectLimitExec` and `CometTakeOrderedAndProjectExec`, or when the
-     exchange's child is a non-native `CometPlan` such as `CometSparkToColumnarExec`). Native
-     code reads `ColumnarBatch`es from the JVM input iterator via Arrow C Stream Interface.
+   - A synthetic `Scan("ShuffleWriterInput")` placeholder, when the exchange's child is a
+     non-native `CometPlan`, and for the dependencies that `CometCollectLimitExec` and
+     `CometTakeOrderedAndProjectExec` build. Native code reads the input through the Arrow C
+     Stream Interface. A `CometNativeArrowSource` child, such as `CometSparkToColumnarExec`,
+     exports its own Arrow stream from `doExecuteAsArrowStream()`, which
+     `prepareArrowStreamShuffleDependency` hands to native. Any other input is an
+     `RDD[ColumnarBatch]`, which the convenience `prepareShuffleDependency(rdd, ...)` overload
+     wraps in a stream.
 
 2. **Native execution**: A single `CometExecIterator` per partition runs the unified plan.
 
@@ -179,6 +192,10 @@ The native shuffle implementation is its own workspace crate, `datafusion-comet-
    - Writes compression type header
    - Writes field count header
    - Writes compressed IPC stream
+   - With zstd and `spark.comet.shuffle.compression.offsetsAsLengths.enabled`, first rewrites
+     the IPC body's offsets buffers as lengths in byte planes, and marks the block by setting the
+     high bit of the codec tag's first byte (`native/shuffle/src/offsets_as_lengths.rs`). The
+     reader rebuilds the offsets before decoding.
 
 6. **Output**: One data file holds the concatenated partition data. The writer records the byte
    offset where each partition begins, plus the total length, and keeps them in memory.
@@ -258,8 +275,10 @@ leave that walk consistent with it.
 
 `CometShuffleBlockIterator` reads a 16-byte header per block: an 8-byte compressed length, which
 includes the field count but not itself, followed by an 8-byte field count that is discarded because
-the schema comes from the `ShuffleScan` protobuf fields. The compressed body is read into a reused
-`DirectByteBuffer`, **valid only until the next `hasNext()` call**. Native must fully consume it
+the schema comes from the `ShuffleScan` protobuf fields. The 4-byte codec tag after it is read only by
+native code; the high bit of its first byte marks a block whose offsets buffers hold lengths. The
+compressed body is read into a reused `DirectByteBuffer`, **valid only until the next `hasNext()`
+call**. Native must fully consume it
 before pulling the next block, which `read_ipc_compressed` satisfies because it allocates fresh
 native memory for the decoded data.
 
@@ -498,6 +517,7 @@ independently compressed, allowing parallel decompression during reads.
 | `spark.comet.shuffle.directRead.enabled`                                  | `true`  | Decode shuffle blocks in native code, bypassing Arrow FFI                     |
 | `spark.comet.shuffle.compression.codec`                                   | `lz4`   | Compression codec                                                             |
 | `spark.comet.shuffle.compression.zstd.level`                              | `1`     | Zstd compression level                                                        |
+| `spark.comet.shuffle.compression.offsetsAsLengths.enabled`                | `true`  | Store offsets as lengths in zstd blocks                                       |
 | `spark.comet.shuffle.native.writeBufferSize`                              | `1MB`   | Write buffer size                                                             |
 | `spark.comet.shuffle.native.maxBufferBytes`                               | `0`     | Fixed spill threshold. `0` disables it, leaving pool pressure                 |
 | `spark.comet.shuffle.native.partitioning.hash.enabled`                    | `true`  | Allow `HashPartitioning` on the native path                                   |
@@ -516,7 +536,7 @@ independently compressed, allowing parallel decompression during reads.
 | Input format        | Columnar (direct from Comet operators) | Row-based (via ColumnarToRowExec) |
 | Partitioning logic  | Rust implementation                    | Spark's partitioner               |
 | Supported schemes   | Hash, Range, Single, RoundRobin        | Hash, Range, Single, RoundRobin   |
-| Partition key types | Primitives only (Hash, Range)          | Any type                          |
+| Partition key types | See the hash and range rules above     | Any type                          |
 | Performance         | Higher (no format conversion)          | Lower (columnar→row→columnar)     |
 | Writer variants     | Single path                            | Bypass (hash) and sort-based      |
 
