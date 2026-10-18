@@ -35,6 +35,12 @@ trait CometExprShim {
 
   def binaryOutputStyle: BinaryOutputStyle = BinaryOutputStyle.HEX_DISCRETE
 
+  // Spark 3.4 ships Jackson 2.14, which does not impose the default numeric-token length limit,
+  // but it can run with a newer Jackson, so choose the native variant from the runtime version.
+  def getJsonObjectNativeFunctionName: String =
+    if (CometExprShim.jacksonLimitsNumberLength) "get_json_object"
+    else "get_json_object_spark34"
+
   def sparkVersionSpecificStringExpressions
       : Map[Class[_ <: Expression], CometExpressionSerde[_]] =
     Map(classOf[StringDecode] -> CometStringDecode, classOf[Encode] -> CometEncode)
@@ -51,6 +57,14 @@ trait CometExprShim {
       expr: Expression,
       inputs: Seq[Attribute],
       binding: Boolean): Option[Expr] = None
+}
+
+object CometExprShim {
+  private lazy val jacksonLimitsNumberLength: Boolean = {
+    // Jackson 2.15 added StreamReadConstraints' default 1000-digit number limit
+    val v = com.fasterxml.jackson.core.json.PackageVersion.VERSION
+    v.getMajorVersion > 2 || (v.getMajorVersion == 2 && v.getMinorVersion >= 15)
+  }
 }
 
 object CometEvalModeUtil {

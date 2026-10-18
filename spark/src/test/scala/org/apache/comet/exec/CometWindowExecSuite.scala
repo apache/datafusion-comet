@@ -210,6 +210,68 @@ class CometWindowExecSuite extends CometTestBase {
     }
   }
 
+  test("window group limit: floating-point values nested in the order key") {
+    assume(isSpark35Plus, "WindowGroupLimit was added in Spark 3.5")
+    // The native RANK and DENSE_RANK find ties by byte equality, on order keys that the native
+    // planner has normalized, nested floats included. So [-0.0] and [0.0] are peers, and the
+    // cutoff keeps both rows, as Spark does (#5507). These keys, read back from Parquet, can hold
+    // a null element, but their default null order places it where Spark does (#6476), so they
+    // stay native in strict floating-point mode too. ROW_NUMBER never compares peers, and Spark
+    // normalizes nested floating-point partition keys itself.
+    withTempDir { dir =>
+      val path = new Path(dir.toString, "nested_float_order").toString
+      Seq((1, -0.0f, -0.0d), (2, 0.0f, 0.0d), (3, 1.0f, 1.0d))
+        .toDF("id", "f", "d")
+        .write
+        .parquet(path)
+      spark.read.parquet(path).createOrReplaceTempView("nested_float_order")
+
+      withSQLConf(
+        SQLConf.ADAPTIVE_EXECUTION_ENABLED.key -> "false",
+        SQLConf.SHUFFLE_PARTITIONS.key -> "1",
+        CometConf.COMET_EXEC_STRICT_FLOATING_POINT.key -> "false",
+        CometConf.getExprAllowIncompatConfigKey("SortOrder") -> "false",
+        CometConf.COMET_EXEC_WINDOW_GROUP_LIMIT_ENABLED.key -> "true") {
+        for {
+          rankFunction <- Seq("RANK", "DENSE_RANK")
+          // A struct needs a second key, because a lone struct sort key falls back on its own.
+          orderBy <- Seq("array(f)", "array(d)", "named_struct('x', d), id > 0")
+        } {
+          def rankLimit(): DataFrame = sql(s"""
+               |SELECT id FROM (
+               |  SELECT id, $rankFunction() OVER (ORDER BY $orderBy) AS rnk
+               |  FROM nested_float_order
+               |) WHERE rnk <= 1
+               |""".stripMargin)
+
+          checkSparkAnswerAndOperator(rankLimit(), Seq(classOf[CometWindowGroupLimitExec]))
+          assert(rankLimit().collect().map(_.getInt(0)).sorted.toSeq == Seq(1, 2))
+
+          withSQLConf(CometConf.COMET_EXEC_STRICT_FLOATING_POINT.key -> "true") {
+            checkSparkAnswerAndOperator(rankLimit(), Seq(classOf[CometWindowGroupLimitExec]))
+            assert(rankLimit().collect().map(_.getInt(0)).sorted.toSeq == Seq(1, 2))
+          }
+        }
+
+        checkSparkAnswerAndOperator(
+          sql("""
+              |SELECT id FROM (
+              |  SELECT id, ROW_NUMBER() OVER (PARTITION BY id > 0 ORDER BY array(d), id) AS rn
+              |  FROM nested_float_order
+              |) WHERE rn <= 2
+              |""".stripMargin),
+          Seq(classOf[CometWindowGroupLimitExec]))
+
+        checkSparkAnswer(sql("""
+            |SELECT id FROM (
+            |  SELECT id, RANK() OVER (PARTITION BY array(d) ORDER BY id) AS rnk
+            |  FROM nested_float_order
+            |) WHERE rnk <= 1
+            |""".stripMargin))
+      }
+    }
+  }
+
   for (orderColumn <- Seq("f", "d")) {
     test(s"window: scalar floating-point order key under strict floating point ($orderColumn)") {
       // Deliberately not gated on Spark 3.5, unlike the WindowGroupLimit tests above, so the
@@ -762,6 +824,75 @@ class CometWindowExecSuite extends CometTestBase {
           // try_sum returns null for the frame that does not fit in every mode.
           assertRecovered("try_sum")
         }
+      }
+    }
+  }
+
+  test("window: decimal AVG at maximum precision falls back for every frame") {
+    // Spark's window buffer keeps the running sum unbounded, so DECIMAL(38,38) inputs 0.6, 0.6,
+    // -0.6 average to 0.6, 0.6, 0.2 in a running frame and to 0.2 over the whole partition. The
+    // native AVG skipped the row that takes its sum out of the precision, which gave 0.6 for the
+    // third running frame, or raised under ANSI, and 0 for the whole partition.
+    // https://github.com/apache/datafusion-comet/issues/5418
+    val low = new java.math.BigDecimal("0.2").setScale(38)
+    val high = new java.math.BigDecimal("0.6").setScale(38)
+    Seq(true, false).foreach { ansiEnabled =>
+      withSQLConf(SQLConf.ANSI_ENABLED.key -> ansiEnabled.toString) {
+        withTempDir { dir =>
+          Seq((1, "0.6"), (2, "0.6"), (3, "-0.6"))
+            .toDF("ord", "raw_v")
+            .selectExpr("ord", "CAST(raw_v AS DECIMAL(38,38)) AS v")
+            .repartition(1)
+            .write
+            .mode("overwrite")
+            .parquet(dir.toString)
+
+          spark.read.parquet(dir.toString).createOrReplaceTempView("dec_avg_max_precision")
+          for {
+            function <- Seq("AVG", "try_avg")
+            (frame, expected) <- Seq(
+              "ROWS BETWEEN UNBOUNDED PRECEDING AND CURRENT ROW" -> Seq(high, high, low),
+              "ROWS BETWEEN UNBOUNDED PRECEDING AND UNBOUNDED FOLLOWING" -> Seq(low, low, low))
+          } {
+            val df = sql(s"""
+              SELECT ord, $function(v) OVER (ORDER BY ord $frame) AS run_avg
+              FROM dec_avg_max_precision
+              ORDER BY ord
+            """)
+            val (_, cometPlan) = checkSparkAnswerAndFallbackReason(
+              df,
+              "AVG on DECIMAL with precision 28 or more is not supported")
+            assert(collect(cometPlan) { case w: CometWindowExec => w }.isEmpty, cometPlan)
+            checkAnswer(df, expected.zipWithIndex.map { case (avg, i) => Row(i + 1, avg) })
+          }
+        }
+      }
+    }
+  }
+
+  test("window: decimal AVG whose rescaled sum can overflow falls back") {
+    // Below precision 28 the sum has headroom above the input, but from precision 25 the native
+    // average can still overflow when it rescales a large sum, as in an aggregate.
+    // https://github.com/apache/datafusion-comet/issues/7007
+    withTempDir { dir =>
+      Seq((1, "1.5"), (2, "2.5"))
+        .toDF("ord", "raw_v")
+        .selectExpr("ord", "CAST(raw_v AS DECIMAL(25,2)) AS v")
+        .repartition(1)
+        .write
+        .mode("overwrite")
+        .parquet(dir.toString)
+
+      spark.read.parquet(dir.toString).createOrReplaceTempView("dec_avg_rescale")
+      val query = "SELECT ord, AVG(v) OVER (ORDER BY ord) AS run_avg FROM dec_avg_rescale"
+      val (_, cometPlan) = checkSparkAnswerAndFallbackReason(
+        query,
+        "a large sum of a DECIMAL with precision 25 or more overflows when the native " +
+          "average rescales it")
+      assert(collect(cometPlan) { case w: CometWindowExec => w }.isEmpty, cometPlan)
+      withSQLConf(CometConf.getExprAllowIncompatConfigKey("Average") -> "true") {
+        val (_, nativePlan) = checkSparkAnswerAndOperator(query)
+        assertCometWindowExecExists(nativePlan)
       }
     }
   }
@@ -1511,6 +1642,218 @@ class CometWindowExecSuite extends CometTestBase {
         FROM emp
       """)
       checkSparkAnswerAndOperator(df)
+    }
+  }
+
+  // ---------------------------------------------------------------------------
+  // Tests for issue #4834: RANGE frame with explicit PRECEDING/FOLLOWING offset
+  // on DATE ORDER BY. The planner wraps the offset as IntervalDayTime so these
+  // run natively; `checkSparkAnswerAndOperator` pins that.
+  // ---------------------------------------------------------------------------
+
+  private def writeDateWindowFixture(dir: java.io.File): Unit = {
+    (0 until 30)
+      .map { i =>
+        val day = (i % 28) + 1
+        (i % 3, java.sql.Date.valueOf(f"2024-01-$day%02d"), i * 2)
+      }
+      .toDF("a", "d", "c")
+      .repartition(3)
+      .write
+      .mode("overwrite")
+      .parquet(dir.toString)
+  }
+
+  test("window: RANGE BETWEEN N PRECEDING AND N FOLLOWING with DATE ORDER BY") {
+    withTempDir { dir =>
+      writeDateWindowFixture(dir)
+      spark.read.parquet(dir.toString).createOrReplaceTempView("window_test")
+      val df = sql("""
+        SELECT a, d, c,
+          SUM(c) OVER (PARTITION BY a ORDER BY d
+                       RANGE BETWEEN 2 PRECEDING AND 2 FOLLOWING) as sum_c
+        FROM window_test
+      """)
+      checkSparkAnswerAndOperator(df)
+    }
+  }
+
+  test("window: RANGE BETWEEN N PRECEDING AND CURRENT ROW with DATE ORDER BY") {
+    withTempDir { dir =>
+      writeDateWindowFixture(dir)
+      spark.read.parquet(dir.toString).createOrReplaceTempView("window_test")
+      val df = sql("""
+        SELECT a, d, c,
+          SUM(c) OVER (PARTITION BY a ORDER BY d
+                       RANGE BETWEEN 3 PRECEDING AND CURRENT ROW) as sum_c
+        FROM window_test
+      """)
+      checkSparkAnswerAndOperator(df)
+    }
+  }
+
+  test("window: RANGE BETWEEN CURRENT ROW AND N FOLLOWING with DATE ORDER BY") {
+    withTempDir { dir =>
+      writeDateWindowFixture(dir)
+      spark.read.parquet(dir.toString).createOrReplaceTempView("window_test")
+      val df = sql("""
+        SELECT a, d, c,
+          SUM(c) OVER (PARTITION BY a ORDER BY d
+                       RANGE BETWEEN CURRENT ROW AND 3 FOLLOWING) as sum_c
+        FROM window_test
+      """)
+      checkSparkAnswerAndOperator(df)
+    }
+  }
+
+  test("window: RANGE BETWEEN UNBOUNDED PRECEDING AND N FOLLOWING with DATE ORDER BY") {
+    withTempDir { dir =>
+      writeDateWindowFixture(dir)
+      spark.read.parquet(dir.toString).createOrReplaceTempView("window_test")
+      val df = sql("""
+        SELECT a, d, c,
+          SUM(c) OVER (PARTITION BY a ORDER BY d
+                       RANGE BETWEEN UNBOUNDED PRECEDING AND 2 FOLLOWING) as sum_c
+        FROM window_test
+      """)
+      checkSparkAnswerAndOperator(df)
+    }
+  }
+
+  test("window: RANGE BETWEEN with DATE ORDER BY and duplicate dates") {
+    // RANGE (not ROWS) must aggregate all peer rows that share the same date.
+    // With duplicates we can tell the two apart: ROWS would only include the
+    // literal N rows, RANGE includes every row whose date is within +/- N days.
+    withTempDir { dir =>
+      Seq(
+        (1, java.sql.Date.valueOf("2024-01-01"), 10),
+        (1, java.sql.Date.valueOf("2024-01-01"), 20),
+        (1, java.sql.Date.valueOf("2024-01-02"), 30),
+        (1, java.sql.Date.valueOf("2024-01-02"), 40),
+        (1, java.sql.Date.valueOf("2024-01-05"), 50),
+        (1, java.sql.Date.valueOf("2024-01-05"), 60))
+        .toDF("a", "d", "c")
+        .write
+        .mode("overwrite")
+        .parquet(dir.toString)
+
+      spark.read.parquet(dir.toString).createOrReplaceTempView("window_test")
+      val df = sql("""
+        SELECT a, d, c,
+          SUM(c) OVER (PARTITION BY a ORDER BY d
+                       RANGE BETWEEN 1 PRECEDING AND 1 FOLLOWING) as sum_c
+        FROM window_test
+      """)
+      checkSparkAnswerAndOperator(df)
+    }
+  }
+
+  test("window: RANGE BETWEEN with DATE ORDER BY and NULL dates") {
+    // Null dates land at the head under ASC NULLS FIRST (Spark's default).
+    // Verifies the native frame comparator handles Date32 nulls the same way
+    // Spark does when computing the boundary.
+    withTempDir { dir =>
+      Seq(
+        (1, Option.empty[java.sql.Date], 10),
+        (1, Option(java.sql.Date.valueOf("2024-01-01")), 20),
+        (1, Option(java.sql.Date.valueOf("2024-01-02")), 30),
+        (1, Option.empty[java.sql.Date], 40),
+        (1, Option(java.sql.Date.valueOf("2024-01-05")), 50))
+        .toDF("a", "d", "c")
+        .write
+        .mode("overwrite")
+        .parquet(dir.toString)
+
+      spark.read.parquet(dir.toString).createOrReplaceTempView("window_test")
+      val df = sql("""
+        SELECT a, d, c,
+          SUM(c) OVER (PARTITION BY a ORDER BY d
+                       RANGE BETWEEN 1 PRECEDING AND 1 FOLLOWING) as sum_c
+        FROM window_test
+      """)
+      checkSparkAnswerAndOperator(df)
+    }
+  }
+
+  test("window: RANGE BETWEEN UNBOUNDED PRECEDING AND CURRENT ROW with DATE ORDER BY") {
+    // Regression baseline: no explicit offset, so this ran natively even
+    // before DATE offsets did.
+    withTempDir { dir =>
+      writeDateWindowFixture(dir)
+      spark.read.parquet(dir.toString).createOrReplaceTempView("window_test")
+      val df = sql("""
+        SELECT a, d, c,
+          SUM(c) OVER (PARTITION BY a ORDER BY d
+                       RANGE BETWEEN UNBOUNDED PRECEDING AND CURRENT ROW) as sum_c
+        FROM window_test
+      """)
+      checkSparkAnswerAndOperator(df)
+    }
+  }
+
+  test("window: RANGE offset on DATE ORDER BY that wraps an Int falls back") {
+    // Spark adds the offset to the date as a plain Int, so 2147483647 FOLLOWING
+    // wraps below the current row and every frame is empty, while DataFusion
+    // would treat the overflowing bound as the end of the partition.
+    // https://github.com/apache/datafusion-comet/issues/5022
+    withTempDir { dir =>
+      Seq("2024-01-01", "2024-01-02", "2024-01-05")
+        .map(java.sql.Date.valueOf)
+        .toDF("d")
+        .repartition(1)
+        .write
+        .mode("overwrite")
+        .parquet(dir.toString)
+      spark.read.parquet(dir.toString).createOrReplaceTempView("date_wrap")
+      for (order <- Seq("ASC", "DESC")) {
+        val df = sql(s"""
+          SELECT d, COUNT(*) OVER (ORDER BY d $order
+                                   RANGE BETWEEN CURRENT ROW AND 2147483647 FOLLOWING) AS cnt
+          FROM date_wrap
+        """)
+        val (_, cometPlan) = checkSparkAnswerAndFallbackReason(
+          df,
+          "RANGE frame on DATE ORDER BY with an offset above 2144550751 days is not supported")
+        assert(collect(cometPlan) { case w: CometWindowExec => w }.isEmpty, cometPlan)
+        // Descending, the bound is `d - offset`, which does not wrap for these dates.
+        if (order == "ASC") {
+          checkAnswer(df.select("cnt"), Seq(Row(0L), Row(0L), Row(0L)))
+        }
+      }
+    }
+  }
+
+  test("window: largest RANGE offset on DATE ORDER BY that cannot wrap runs natively") {
+    // 2144550751 + the day number of 9999-12-31 is Int.MaxValue, so no date in
+    // Spark's supported range wraps. Past chrono's date range the native bound
+    // becomes the partition edge, which agrees with Spark's unwrapped bound
+    // lying beyond every row.
+    withTempDir { dir =>
+      // 0001-01-01 predates the Gregorian cutover, and Spark 3.x defaults the write rebase mode to
+      // EXCEPTION, so write it as-is.
+      withSQLConf("spark.sql.parquet.datetimeRebaseModeInWrite" -> "CORRECTED") {
+        Seq("0001-01-01", "1970-01-01", "2024-01-05", "9999-12-31")
+          .map(java.sql.Date.valueOf)
+          .toDF("d")
+          .repartition(1)
+          .write
+          .mode("overwrite")
+          .parquet(dir.toString)
+      }
+      spark.read.parquet(dir.toString).createOrReplaceTempView("date_edge")
+      for {
+        order <- Seq("ASC", "DESC")
+        frame <- Seq(
+          "RANGE BETWEEN 2144550751 PRECEDING AND CURRENT ROW",
+          "RANGE BETWEEN CURRENT ROW AND 2144550751 FOLLOWING",
+          "RANGE BETWEEN 2144550751 PRECEDING AND 2144550751 FOLLOWING")
+      } {
+        val df = sql(s"""
+          SELECT d, COUNT(*) OVER (ORDER BY d $order $frame) AS cnt
+          FROM date_edge
+        """)
+        checkSparkAnswerAndOperator(df)
+      }
     }
   }
 }

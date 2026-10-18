@@ -67,8 +67,8 @@ impl SparkBitArray {
         self.data.capacity() * std::mem::size_of::<u64>()
     }
 
-    pub fn data(&self) -> Vec<u64> {
-        self.data.clone()
+    pub fn data(&self) -> &[u64] {
+        &self.data
     }
 
     /// Number of set bits in the array. Mirrors Spark's `BitArray.cardinality()`.

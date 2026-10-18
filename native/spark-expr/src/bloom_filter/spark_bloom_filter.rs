@@ -16,7 +16,6 @@
 // under the License.
 
 use arrow::array::{ArrowNativeTypeOp, BooleanArray, Int64Array};
-use arrow::datatypes::ToByteSlice;
 use datafusion::common::{DataFusionError, Result as DFResult};
 use std::cmp;
 
@@ -157,19 +156,19 @@ impl SparkBloomFilter {
     /// Serializes a SparkBloomFilter to a byte array conforming to Spark's BloomFilter
     /// binary format. The output format follows the filter's `version`.
     pub fn spark_serialization(&self) -> Vec<u8> {
-        let mut out: Vec<u8> = (self.version.to_int() as u32).to_be_bytes().to_vec();
-        out.append(&mut self.num_hash_functions.to_be_bytes().to_vec());
+        // At most a 16-byte header (version, numHashFunctions, seed, numWords), then the words.
+        let mut out: Vec<u8> = Vec::with_capacity(16 + self.bits.word_size() * 8);
+        out.extend_from_slice(&(self.version.to_int() as u32).to_be_bytes());
+        out.extend_from_slice(&self.num_hash_functions.to_be_bytes());
         if let SparkBloomFilterVersion::V2 = self.version {
             // Spark's BloomFilterImplV2.writeTo writes the seed between
             // numHashFunctions and the bit array.
-            out.append(&mut (self.seed as u32).to_be_bytes().to_vec());
+            out.extend_from_slice(&(self.seed as u32).to_be_bytes());
         }
-        out.append(&mut (self.bits.word_size() as u32).to_be_bytes().to_vec());
-        let mut filter_state: Vec<u64> = self.bits.data();
-        for i in filter_state.iter_mut() {
-            *i = i.to_be();
+        out.extend_from_slice(&(self.bits.word_size() as u32).to_be_bytes());
+        for word in self.bits.data() {
+            out.extend_from_slice(&word.to_be_bytes());
         }
-        out.append(&mut Vec::from(filter_state.to_byte_slice()));
         out
     }
 

@@ -122,7 +122,8 @@ private[shuffle] final class CometCelebornShuffleReader[K, C](
           new Native(),
           nativeUtil,
           CometConf.COMET_TRACING_ENABLED.get(),
-          Some(serializedSchema))
+          Some(serializedSchema),
+          CometConf.COMET_SHUFFLE_READ_BUFFER_SIZE.get().toInt)
       } catch {
         case NonFatal(failure) =>
           Utils.tryWithSafeFinally(throw failure) {
@@ -143,7 +144,7 @@ private[shuffle] final class CometCelebornShuffleReader[K, C](
     }
 
     val rows = decoder.map { batch: ColumnarBatch =>
-      readMetrics.incRecordsRead(batch.numRows())
+      readMetrics.incRecordsRead(batch.numRows().toLong)
       (0, batch)
     }
     val completed = CompletionIterator[(Int, ColumnarBatch), Iterator[(Int, ColumnarBatch)]](
@@ -511,7 +512,7 @@ private[shuffle] object CelebornRawPartitionReader {
       java.util.Objects.checkFromIndexSize(offset, length, buffer.length)
       if (length == 0) return 0
       val readingHeader = bodyRemaining == 0
-      val remaining = if (readingHeader) header.length - headerBytes else bodyRemaining
+      val remaining = if (readingHeader) (header.length - headerBytes).toLong else bodyRemaining
       val count = in.read(buffer, offset, math.min(length.toLong, remaining).toInt)
       if (count < 0) {
         if (headerBytes != 0 || bodyRemaining != 0) {

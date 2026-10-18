@@ -19,6 +19,9 @@
 
 package org.apache.comet
 
+import java.util.Locale
+
+import scala.collection.mutable
 import scala.collection.mutable.ListBuffer
 
 import org.apache.spark.sql.execution.datasources.parquet.ParquetUtils
@@ -89,6 +92,28 @@ object DataTypeSupport {
   /** True when two of `fields` carry byte-identical names. */
   def hasDuplicateFieldNames(fields: Array[StructField]): Boolean =
     fields.map(_.name).distinct.length != fields.length
+
+  /**
+   * True when two sibling struct fields anywhere in `dt` fold to one name under
+   * `toLowerCase(Locale.ROOT)`, the fold Spark's Parquet reader matches requested fields with
+   * when `spark.sql.caseSensitive` is off.
+   *
+   * Like [[hasDuplicateFieldIds]] this inspects only the requested schema and ignores field ids,
+   * so it can decline a read Spark would accept, costing native execution but not correctness.
+   */
+  def hasCaseInsensitiveDuplicateFieldNames(dt: DataType): Boolean = dt match {
+    case StructType(fields) =>
+      val folded = mutable.HashSet.empty[String]
+      fields.exists { f =>
+        !folded.add(f.name.toLowerCase(Locale.ROOT)) ||
+        hasCaseInsensitiveDuplicateFieldNames(f.dataType)
+      }
+    case ArrayType(elementType, _) => hasCaseInsensitiveDuplicateFieldNames(elementType)
+    case MapType(keyType, valueType, _) =>
+      hasCaseInsensitiveDuplicateFieldNames(keyType) ||
+      hasCaseInsensitiveDuplicateFieldNames(valueType)
+    case _ => false
+  }
 
   /**
    * True when two of `fields` declare the same Parquet field id.

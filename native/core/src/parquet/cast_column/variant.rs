@@ -20,12 +20,14 @@ use arrow::{
         make_array, Array, ArrayRef, AsArray, BinaryArray, BinaryBuilder, ListLikeArray,
         StructArray,
     },
+    buffer::OffsetBuffer,
     compute::{cast, cast_with_options},
     datatypes::{DataType, FieldRef, TimeUnit, DECIMAL128_MAX_PRECISION},
     error::ArrowError,
 };
 use datafusion::common::{DataFusionError, Result as DataFusionResult};
 use datafusion_comet_common::SparkError;
+use datafusion_comet_spark_expr::canonicalize_nan;
 use parquet::variant::{
     unshred_variant, ListBuilder, MetadataBuilder, ObjectBuilder, ObjectFieldBuilder, ParentState,
     ReadOnlyMetadataBuilder, ValueBuilder, Variant, VariantArray, VariantBuilderExt,
@@ -72,9 +74,11 @@ pub(super) fn normalize_variant_array(
             error => error.into(),
         })?;
         let (value, metadata) = if variant.typed_value_column().is_some() {
-            let value = cast(unshredded.value_column().as_ref(), &DataType::Binary)?;
-            let metadata = cast(unshredded.metadata_column().as_ref(), &DataType::Binary)?;
-            rebuild_spark_variant(&variant, &value, &metadata)?
+            rebuild_spark_variant(
+                &variant,
+                unshredded.value_column(),
+                unshredded.metadata_column(),
+            )?
         } else {
             // Spark passes unshredded bytes through, including dictionary order, unused keys,
             // and wide scalar encodings. Preparation above still validates legacy input.
@@ -767,7 +771,9 @@ impl MetadataBuilder for SparkOutputMetadata {
     }
 
     fn finish(&mut self) -> usize {
-        self.dictionary.finish()
+        let offset = self.dictionary.finish();
+        self.sort_keys.clear();
+        offset
     }
 }
 
@@ -852,8 +858,8 @@ fn spark_typed_scalar<'m, 'v>(value: Variant<'m, 'v>) -> Variant<'m, 'v> {
             .map(Variant::Decimal4)
             .unwrap_or(value),
         Variant::String(s) => Variant::from(s),
-        Variant::Float(v) if v.is_nan() => Variant::Float(f32::NAN),
-        Variant::Double(v) if v.is_nan() => Variant::Double(f64::NAN),
+        Variant::Float(v) => Variant::Float(canonicalize_nan(v)),
+        Variant::Double(v) => Variant::Double(canonicalize_nan(v)),
         _ => value,
     }
 }
@@ -983,40 +989,60 @@ fn rebuild_spark_variant(
     value: &ArrayRef,
     metadata: &ArrayRef,
 ) -> DataFusionResult<(ArrayRef, ArrayRef)> {
-    let mut values = BinaryBuilder::new();
-    let mut dictionaries = BinaryBuilder::new();
+    // Append directly to batch buffers. Finishing the metadata builder resets the dictionary
+    // for the next row while retaining its output buffer.
+    let mut values = ValueBuilder::new();
+    let mut dictionary = SparkOutputMetadata::default();
+    let mut value_offsets = Vec::with_capacity(source.len() + 1);
+    let mut metadata_offsets = Vec::with_capacity(source.len() + 1);
+    value_offsets.push(0);
+    metadata_offsets.push(0);
+    let checked_offset =
+        |offset: usize| i32::try_from(offset).map_err(|_| ArrowError::OffsetOverflowError(offset));
     for row in 0..source.len() {
-        if source.is_null(row) {
-            values.append_null();
-            dictionaries.append_null();
-            continue;
+        if source.is_valid(row) {
+            catch_unwind(AssertUnwindSafe(|| -> Result<(), ArrowError> {
+                let value =
+                    Variant::try_new(binary_value(metadata, row)?, binary_value(value, row)?)?;
+                // The preparation pass already validated/canonicalized legacy input metadata.
+                let original = VariantMetadata::new(binary_value(source.metadata_column(), row)?);
+                append_spark_variant(
+                    &mut SparkValueBuilder {
+                        value: &mut values,
+                        metadata: &mut dictionary,
+                    },
+                    value,
+                    Some((source.inner(), row)),
+                    &original,
+                )?;
+                dictionary.finish();
+                Ok(())
+            }))
+            .map_err(|_| SparkError::MalformedVariant)?
+            .map_err(|_| SparkError::MalformedVariant)?;
         }
-        let rebuilt = catch_unwind(AssertUnwindSafe(|| -> Result<_, ArrowError> {
-            let value = Variant::try_new(binary_value(metadata, row)?, binary_value(value, row)?)?;
-            // The preparation pass already validated/canonicalized legacy input metadata.
-            let original = VariantMetadata::new(binary_value(source.metadata_column(), row)?);
-            let mut output = ValueBuilder::new();
-            let mut dictionary = SparkOutputMetadata::default();
-            append_spark_variant(
-                &mut SparkValueBuilder {
-                    value: &mut output,
-                    metadata: &mut dictionary,
-                },
-                value,
-                Some((source.inner(), row)),
-                &original,
-            )?;
-            dictionary.finish();
-            let mut metadata = dictionary.dictionary.into_inner();
-            metadata[0] &= !0x10;
-            Ok((output.into_inner(), metadata))
-        }))
-        .map_err(|_| SparkError::MalformedVariant)?
-        .map_err(|_| SparkError::MalformedVariant)?;
-        values.append_value(rebuilt.0);
-        dictionaries.append_value(rebuilt.1);
+        value_offsets.push(checked_offset(values.offset())?);
+        metadata_offsets.push(checked_offset(dictionary.dictionary.offset())?);
     }
-    Ok((Arc::new(values.finish()), Arc::new(dictionaries.finish())))
+    let mut metadata = dictionary.dictionary.into_inner();
+    for (row, &offset) in metadata_offsets[..source.len()].iter().enumerate() {
+        if source.is_valid(row) {
+            metadata[offset as usize] &= !0x10;
+        }
+    }
+    let nulls = source.nulls();
+    Ok((
+        Arc::new(BinaryArray::try_new(
+            OffsetBuffer::new(value_offsets.into()),
+            values.into_inner().into(),
+            nulls.cloned(),
+        )?),
+        Arc::new(BinaryArray::try_new(
+            OffsetBuffer::new(metadata_offsets.into()),
+            metadata.into(),
+            nulls.cloned(),
+        )?),
+    ))
 }
 
 /// Supplies sort-only field names whose Rust ordering matches Java `String.compareTo` ordering.

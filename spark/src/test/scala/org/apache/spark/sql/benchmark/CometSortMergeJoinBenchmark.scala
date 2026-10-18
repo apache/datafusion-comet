@@ -72,12 +72,12 @@ object CometSortMergeJoinBenchmark extends CometBenchmarkBase {
     withTempPath { dir =>
       withTempTable("probe", "build") {
         spark
-          .range(probeRows)
+          .range(probeRows.toLong)
           .selectExpr("id AS k", "id % 100 AS v")
           .write
           .parquet(s"${dir.getAbsolutePath}/probe")
         spark
-          .range(buildRows)
+          .range(buildRows.toLong)
           .selectExpr("id AS k", "id * 10 AS w")
           .write
           .parquet(s"${dir.getAbsolutePath}/build")
@@ -88,7 +88,7 @@ object CometSortMergeJoinBenchmark extends CometBenchmarkBase {
         runBenchmark("SortMergeJoin - inner count") {
           runExpressionBenchmark(
             "inner count",
-            probeRows,
+            probeRows.toLong,
             "SELECT /*+ MERGE(b) */ count(*) FROM probe p JOIN build b ON p.k = b.k",
             cometConfigs)
         }
@@ -96,7 +96,7 @@ object CometSortMergeJoinBenchmark extends CometBenchmarkBase {
         runBenchmark("SortMergeJoin - inner projected") {
           runExpressionBenchmark(
             "inner projected",
-            probeRows,
+            probeRows.toLong,
             "SELECT /*+ MERGE(b) */ p.k, p.v, b.w FROM probe p JOIN build b ON p.k = b.k",
             cometConfigs)
         }
@@ -104,7 +104,7 @@ object CometSortMergeJoinBenchmark extends CometBenchmarkBase {
         runBenchmark("SortMergeJoin - left outer") {
           runExpressionBenchmark(
             "left outer",
-            probeRows,
+            probeRows.toLong,
             "SELECT /*+ MERGE(b) */ count(*) FROM probe p LEFT JOIN build b ON p.k = b.k",
             cometConfigs)
         }
@@ -112,7 +112,7 @@ object CometSortMergeJoinBenchmark extends CometBenchmarkBase {
         runBenchmark("SortMergeJoin - left semi") {
           runExpressionBenchmark(
             "left semi",
-            probeRows,
+            probeRows.toLong,
             "SELECT /*+ MERGE(b) */ count(*) FROM probe p LEFT SEMI JOIN build b ON p.k = b.k",
             cometConfigs)
         }
@@ -120,7 +120,7 @@ object CometSortMergeJoinBenchmark extends CometBenchmarkBase {
         runBenchmark("SortMergeJoin - right outer") {
           runExpressionBenchmark(
             "right outer",
-            probeRows,
+            probeRows.toLong,
             "SELECT /*+ MERGE(p) */ count(*) FROM probe p RIGHT JOIN build b ON p.k = b.k",
             cometConfigs)
         }
