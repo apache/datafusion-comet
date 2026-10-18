@@ -17,10 +17,15 @@
 
 //! Converts Spark physical plan to DataFusion physical plan
 
+mod aggregate;
+mod explode;
 pub mod expression_registry;
+mod join;
 pub mod macros;
+mod merge_rows;
 pub mod operator_registry;
 mod shuffle;
+mod window;
 mod write;
 
 // Glue that wires the optional Delta integration into core's plan-tree builder.
@@ -38,14 +43,10 @@ mod delta_spark_scan;
 mod lance_scan;
 
 use crate::execution::operators::init_csv_datasource_exec;
-use crate::execution::operators::DynamicFilterJoinExec;
 use crate::execution::operators::IcebergScanExec;
 use crate::execution::operators::TopKReaderFilterExec;
 use crate::execution::{
-    operators::{
-        ExecutionError, MergeActionContext, MergeInstructionExec, MergeRowsExec, ScanExec,
-        ShuffleScanExec,
-    },
+    operators::{ExecutionError, ScanExec, ShuffleScanExec},
     planner::expression_registry::ExpressionRegistry,
     planner::operator_registry::OperatorRegistry,
     serde::{to_arrow_datatype, to_arrow_field},
@@ -56,45 +57,25 @@ use arrow::datatypes::{
     DataType, Field, FieldRef, Fields, IntervalUnit, Schema, TimeUnit, DECIMAL128_MAX_PRECISION,
 };
 use arrow::ffi_stream::{ArrowArrayStreamReader, FFI_ArrowArrayStream};
-use datafusion::functions_aggregate::bit_and_or_xor::{bit_and_udaf, bit_or_udaf, bit_xor_udaf};
-use datafusion::functions_aggregate::count::count_udaf;
-use datafusion::functions_aggregate::min_max::max_udaf;
-use datafusion::functions_aggregate::min_max::min_udaf;
-use datafusion::functions_aggregate::sum::sum_udaf;
-use datafusion::physical_expr::aggregate::{AggregateExprBuilder, AggregateFunctionExpr};
-use datafusion::physical_plan::windows::{BoundedWindowAggExec, WindowAggExec};
-use datafusion::physical_plan::InputOrderMode;
 use datafusion::{
     arrow::{compute::SortOptions, datatypes::SchemaRef},
-    common::DataFusionError,
     config::ConfigOptions,
     execution::FunctionRegistry,
-    functions_aggregate::first_last::{FirstValue, LastValue},
     logical_expr::Operator as DataFusionOperator,
     physical_expr::{
         expressions::{BinaryExpr, CastExpr, Column, IsNullExpr, Literal as DataFusionLiteral},
         PhysicalExpr, PhysicalSortExpr, ScalarFunctionExpr,
     },
     physical_plan::{
-        aggregates::{AggregateMode as DFAggregateMode, PhysicalGroupBy},
-        empty::EmptyExec,
-        joins::{utils::JoinFilter, HashJoinExec, PartitionMode, SortMergeJoinExec},
-        limit::LocalLimitExec,
-        projection::ProjectionExec,
-        sorts::sort::SortExec,
-        ChildrenPropertiesMode, ExecutionPlan, ExecutionPlanProperties, ReplaceChildrenOptions,
+        empty::EmptyExec, limit::LocalLimitExec, sorts::sort::SortExec, ExecutionPlan,
     },
     prelude::SessionContext,
 };
-use datafusion_comet_operators::{
-    range_exec, CometFilterExec, CometProjectionExec, ExpandExec, ExplodeExec,
-    PartitionedRankLimitExec, SampleExec, WindowFnKind,
-};
+use datafusion_comet_operators::{range_exec, ExpandExec, SampleExec};
 use datafusion_comet_spark_expr::{
     create_comet_physical_fun, create_comet_physical_fun_with_eval_mode, BinaryOutputStyle,
-    BloomFilterAgg, BloomFilterMightContain, CheckedBinaryExpr, CometCollectList, CometCollectSet,
-    CsvWriteOptions, EvalMode, ListPositionsExpr, SparkArraysZipFunc, SparkBloomFilterVersion,
-    SparkListAgg, SparkPercentile, Subquery, SumInteger, ToCsv,
+    BloomFilterMightContain, CheckedBinaryExpr, CsvWriteOptions, EvalMode, SparkArraysZipFunc,
+    Subquery, ToCsv,
 };
 use datafusion_datasource::TableSchema;
 use iceberg::expr::Bind;
@@ -106,19 +87,12 @@ use crate::parquet::parquet_support::{
     object_store_url_key, prepare_object_store_with_configs, ObjectStoreBackend,
 };
 use datafusion::common::scalar::ScalarStructBuilder;
-use datafusion::common::{
-    tree_node::{Transformed, TransformedResult, TreeNode, TreeNodeRecursion, TreeNodeRewriter},
-    JoinType as DFJoinType, NullEquality, ScalarValue,
-};
+use datafusion::common::ScalarValue;
 use datafusion::datasource::listing::PartitionedFile;
 use datafusion::datasource::object_store::ObjectStoreUrl;
 use datafusion::logical_expr::type_coercion::functions::fields_with_udf;
-use datafusion::logical_expr::{
-    AggregateUDF, ReturnFieldArgs, ScalarUDF, TypeSignature, WindowFrame, WindowFrameBound,
-    WindowFrameUnits, WindowFunctionDefinition,
-};
-use datafusion::physical_expr::expressions::{Literal, StatsType};
-use datafusion::physical_expr::window::WindowExpr;
+use datafusion::logical_expr::{ReturnFieldArgs, ScalarUDF, TypeSignature};
+use datafusion::physical_expr::expressions::Literal;
 use datafusion::physical_expr::LexOrdering;
 
 use crate::parquet::parquet_exec::init_datasource_exec;
@@ -129,32 +103,20 @@ use arrow::array::{
 };
 use arrow::buffer::{BooleanBuffer, NullBuffer, OffsetBuffer};
 use datafusion::common::utils::SingleRowListArrayBuilder;
-use datafusion::common::{NullHandling, UnnestOptions};
 use datafusion::physical_plan::filter::FilterExec;
-use datafusion::physical_plan::joins::NestedLoopJoinExec;
 use datafusion::physical_plan::limit::GlobalLimitExec;
-use datafusion::physical_plan::unnest::ListUnnest;
 use datafusion_comet_proto::spark_expression::ListLiteral;
 use datafusion_comet_proto::spark_operator::SparkFilePartition;
 use datafusion_comet_proto::{
-    spark_expression::{
-        self, agg_expr::ExprStruct as AggExprStruct, expr::ExprStruct, literal::Value, AggExpr,
-        Expr, ScalarFunc,
-    },
-    spark_operator::{
-        self, lower_window_frame_bound::LowerFrameBoundStruct, operator::OpStruct,
-        upper_window_frame_bound::UpperFrameBoundStruct, AggregateMode as ProtoAggregateMode,
-        BuildSide, JoinType, Operator, RankLikeFunction, WindowFrameType,
-    },
+    spark_expression::{self, expr::ExprStruct, literal::Value, Expr, ScalarFunc},
+    spark_operator::{self, operator::OpStruct, Operator},
 };
 use datafusion_comet_spark_expr::{
     coerce_to_common_type, create_case_when, create_if_expr, jvm_udf::JvmScalarUdfExpr,
-    spark_in_list, ApproxPercentile, ArrayInsert, Avg, AvgDecimal, Cast, CheckOverflow,
-    Correlation, Covariance, CreateNamedStruct, DecimalRescaleCheckOverflow, FloatOperands,
-    GetArrayStructFields, GetStructField, HllPlusPlus, HllSketchAgg, HllUnionAgg, IfExpr,
-    ListExtract, MaxMinBy, Mode, NormalizeNaNAndZero, NormalizeNestedFloats, NullShortCircuit,
-    Regr, RegrType, SparkCastOptions, SparkMinMax, Stddev, SumDecimal, ToJson, UnboundColumn,
-    Variance, WideDecimalBinaryExpr, WideDecimalOp,
+    spark_in_list, ArrayInsert, Cast, CheckOverflow, CreateNamedStruct,
+    DecimalRescaleCheckOverflow, FloatOperands, GetArrayStructFields, GetStructField, IfExpr,
+    ListExtract, NormalizeNaNAndZero, NormalizeNestedFloats, NullShortCircuit, SparkCastOptions,
+    ToJson, UnboundColumn, WideDecimalBinaryExpr, WideDecimalOp,
 };
 use itertools::Itertools;
 use jni::objects::{Global, JObject};
@@ -164,119 +126,16 @@ use object_store::path::Path;
 use std::cmp::max;
 use std::{collections::HashMap, sync::Arc};
 
-// For clippy error on type_complexity.
-type PhyAggResult = Result<Vec<AggregateFunctionExpr>, ExecutionError>;
-type PhyExprResult = Result<Vec<(Arc<dyn PhysicalExpr>, String)>, ExecutionError>;
 pub type PlanCreationResult =
     Result<(Vec<ScanExec>, Vec<ShuffleScanExec>, Arc<SparkPlan>), ExecutionError>;
-
-struct JoinParameters {
-    pub left: Arc<SparkPlan>,
-    pub right: Arc<SparkPlan>,
-    pub join_on: Vec<(Arc<dyn PhysicalExpr>, Arc<dyn PhysicalExpr>)>,
-    pub join_filter: Option<JoinFilter>,
-    pub join_type: DFJoinType,
-}
-
-/// Return a copy of `data_type` with every nested field marked nullable. Map key fields are left
-/// non-nullable to preserve Arrow's map invariant. Primitive types are returned unchanged.
-fn make_all_fields_nullable(data_type: &DataType) -> DataType {
-    fn nullable_field(field: &Field, nullable: bool) -> FieldRef {
-        Arc::new(
-            Field::new(
-                field.name(),
-                make_all_fields_nullable(field.data_type()),
-                nullable,
-            )
-            .with_metadata(field.metadata().clone()),
-        )
-    }
-    match data_type {
-        DataType::Struct(fields) => {
-            DataType::Struct(fields.iter().map(|f| nullable_field(f, true)).collect())
-        }
-        DataType::List(field) => DataType::List(nullable_field(field, true)),
-        DataType::LargeList(field) => DataType::LargeList(nullable_field(field, true)),
-        DataType::FixedSizeList(field, len) => {
-            DataType::FixedSizeList(nullable_field(field, true), *len)
-        }
-        DataType::Map(entries, sorted) => {
-            // Map entries are a non-nullable struct of {key (non-null), value}. Recurse into the
-            // key/value types but keep the key field non-nullable per Arrow's map invariant.
-            match entries.data_type() {
-                DataType::Struct(kv) => {
-                    let new_kv = kv
-                        .iter()
-                        .enumerate()
-                        .map(|(i, f)| nullable_field(f, i != 0))
-                        .collect();
-                    let new_entries = Field::new(
-                        entries.name(),
-                        DataType::Struct(new_kv),
-                        entries.is_nullable(),
-                    )
-                    .with_metadata(entries.metadata().clone());
-                    DataType::Map(Arc::new(new_entries), *sorted)
-                }
-                _ => data_type.clone(),
-            }
-        }
-        other => other.clone(),
-    }
-}
-
-/// Returns true when `actual` and `expected` have the same nested shape and leaf types.
-/// Nested field nullability is intentionally ignored: MergeRows normalizes runtime batches to
-/// Spark's declared output schema, validating any nullability narrowing against the actual data.
-fn merge_output_type_compatible(actual: &DataType, expected: &DataType) -> bool {
-    match (actual, expected) {
-        (DataType::Struct(actual_fields), DataType::Struct(expected_fields)) => {
-            actual_fields.len() == expected_fields.len()
-                && actual_fields.iter().zip(expected_fields.iter()).all(
-                    |(actual_field, expected_field)| {
-                        actual_field.name() == expected_field.name()
-                            && merge_output_type_compatible(
-                                actual_field.data_type(),
-                                expected_field.data_type(),
-                            )
-                    },
-                )
-        }
-        (DataType::List(actual_field), DataType::List(expected_field))
-        | (DataType::LargeList(actual_field), DataType::LargeList(expected_field)) => {
-            merge_output_type_compatible(actual_field.data_type(), expected_field.data_type())
-        }
-        (
-            DataType::FixedSizeList(actual_field, actual_size),
-            DataType::FixedSizeList(expected_field, expected_size),
-        ) => {
-            actual_size == expected_size
-                && merge_output_type_compatible(
-                    actual_field.data_type(),
-                    expected_field.data_type(),
-                )
-        }
-        (
-            DataType::Map(actual_entries, actual_sorted),
-            DataType::Map(expected_entries, expected_sorted),
-        ) => {
-            actual_sorted == expected_sorted
-                && merge_output_type_compatible(
-                    actual_entries.data_type(),
-                    expected_entries.data_type(),
-                )
-        }
-        _ => actual == expected,
-    }
-}
 
 /// Return a copy of a `Map` type with only the outer entries `value` field marked nullable, keeping
 /// the key field non-nullable and every nested key/value type byte-for-byte unchanged. Any non-`Map`
 /// type is returned unchanged.
 ///
-/// This is the shallow counterpart of `make_all_fields_nullable`, used for `map_entries`.
-/// `map_entries` reuses the input map's entries array as its output list values but declares that
-/// element's `value` field nullable (`Struct(key non-null, value nullable)`), deriving both nested
+/// This is the shallow counterpart of `make_all_fields_nullable` (in `planner/aggregate.rs`), used
+/// for `map_entries`. `map_entries` reuses the input map's entries array as its output list values
+/// but declares that element's `value` field nullable (`Struct(key non-null, value nullable)`), deriving both nested
 /// types verbatim from the input. Arrow's `GenericListArray::try_new` compares the declared element
 /// field's type against the reused values array's type in full, so the ONLY field that can mismatch
 /// is the entries `value` field's own `nullable` flag; widening just that field is sufficient.
@@ -300,25 +159,6 @@ fn widen_map_entry_value_nullable(data_type: &DataType) -> DataType {
             _ => data_type.clone(),
         },
         other => other.clone(),
-    }
-}
-
-/// If `expr` evaluates to `Timestamp(_, Some(_))` against `schema`, wrap it in a
-/// metadata-only cast to `Timestamp(_, None)`. This is required because
-/// DataFusion's `SortMergeJoinExec` comparator only supports timezone-less
-/// timestamp types, while Spark's `TimestampType` serializes as
-/// `Timestamp(µs, "UTC")`. The cast preserves ordering on the same time unit.
-fn strip_timestamp_tz(
-    expr: Arc<dyn PhysicalExpr>,
-    schema: &Schema,
-) -> Result<Arc<dyn PhysicalExpr>, ExecutionError> {
-    match expr.data_type(schema)? {
-        DataType::Timestamp(unit, Some(_)) => Ok(Arc::new(CastExpr::new(
-            expr,
-            DataType::Timestamp(unit, None),
-            None,
-        ))),
-        _ => Ok(expr),
     }
 }
 
@@ -1505,6 +1345,11 @@ impl PhysicalPlanner {
 
         let left = self.create_expr(left, Arc::clone(&input_schema))?;
         let right = self.create_expr(right, Arc::clone(&input_schema))?;
+        let required_return_type = || {
+            return_type
+                .map(to_arrow_datatype)
+                .ok_or_else(|| GeneralError(format!("Missing return type for {op:?} expression")))
+        };
         match (
             &op,
             left.data_type(&input_schema),
@@ -1519,7 +1364,7 @@ impl PhysicalPlanner {
                     >= DECIMAL128_MAX_PRECISION)
                 || (op == DataFusionOperator::Multiply && p1 + p2 >= DECIMAL128_MAX_PRECISION) =>
             {
-                let data_type = return_type.map(to_arrow_datatype).unwrap();
+                let data_type = required_return_type()?;
                 let (p_out, s_out) = match &data_type {
                     DataType::Decimal128(p, s) => (*p, *s),
                     dt => {
@@ -1548,7 +1393,7 @@ impl PhysicalPlanner {
                 Ok(DataType::Decimal128(_p1, _s1)),
                 Ok(DataType::Decimal128(_p2, _s2)),
             ) => {
-                let data_type = return_type.map(to_arrow_datatype).unwrap();
+                let data_type = required_return_type()?;
                 let func_name = if options.is_integral_div {
                     // Decimal256 division in Arrow may overflow, so we still need this variant of decimal_div.
                     // Otherwise, we may be able to reuse the previous case-match instead of here,
@@ -1615,7 +1460,7 @@ impl PhysicalPlanner {
                 )))
             }
             _ => {
-                let data_type = return_type.map(to_arrow_datatype).unwrap();
+                let data_type = required_return_type()?;
                 if [EvalMode::Try, EvalMode::Ansi].contains(&eval_mode)
                     && (data_type.is_integer()
                         || (data_type.is_floating() && op == DataFusionOperator::Divide))
@@ -1626,7 +1471,9 @@ impl PhysicalPlanner {
                         DataFusionOperator::Multiply => "checked_mul",
                         DataFusionOperator::Divide => "checked_div",
                         _ => {
-                            todo!("ANSI mode for Operator yet to be implemented!");
+                            return Err(GeneralError(format!(
+                                "{op:?} is not supported in {eval_mode:?} mode for {data_type}"
+                            )));
                         }
                     };
                     let fun_expr = create_comet_physical_fun_with_eval_mode(
@@ -1769,289 +1616,6 @@ impl PhysicalPlanner {
                     shuffle_scans,
                     Arc::new(SparkPlan::new(spark_plan.plan_id, filter, vec![child])),
                 ))
-            }
-            OpStruct::HashAgg(agg) => {
-                assert_eq!(children.len(), 1);
-                let (scans, shuffle_scans, child) =
-                    self.create_plan(&children[0], inputs, partition_count)?;
-
-                // For `df.agg(sum($"a")).count()`, Spark plans a global aggregate with neither
-                // keys nor functions that emits one row with no columns per partition. DataFusion
-                // can't run that (apache/datafusion#25786), so plan a throwaway `count(NULL)` and
-                // project it away. The count still drains the input, so errors below it surface.
-                // Both Spark stages take this path, since no count passes between them.
-                if agg.grouping_exprs.is_empty() && agg.agg_exprs.is_empty() {
-                    let schema = child.schema();
-                    let count = Self::create_aggr_func_expr(
-                        "count",
-                        Arc::clone(&schema),
-                        vec![Arc::new(Literal::new(ScalarValue::Null))],
-                        Arc::unwrap_or_clone(count_udaf()),
-                    )?;
-                    let aggregate: Arc<dyn ExecutionPlan> = Arc::new(
-                        datafusion::physical_plan::aggregates::AggregateExec::try_new(
-                            DFAggregateMode::Single,
-                            PhysicalGroupBy::default(),
-                            vec![Arc::new(count)],
-                            vec![None],
-                            Arc::clone(&child.native_plan),
-                            schema,
-                        )?,
-                    );
-                    let projection: Arc<dyn ExecutionPlan> = Arc::new(ProjectionExec::try_new(
-                        Vec::<(Arc<dyn PhysicalExpr>, String)>::new(),
-                        Arc::clone(&aggregate),
-                    )?);
-                    return Ok((
-                        scans,
-                        shuffle_scans,
-                        Arc::new(SparkPlan::new_with_additional(
-                            spark_plan.plan_id,
-                            projection,
-                            vec![child],
-                            vec![aggregate],
-                        )),
-                    ));
-                }
-
-                let group_exprs: PhyExprResult = agg
-                    .grouping_exprs
-                    .iter()
-                    .enumerate()
-                    .map(|(idx, expr)| {
-                        // A native sort normalizes float keys, so normalize float grouping keys
-                        // the same way for DataFusion to see that the sort below a sort aggregate
-                        // orders them. Spark already normalized these values, so this changes
-                        // none of them.
-                        if agg.ordered_by_grouping_keys {
-                            self.create_normalized_key_expr(expr, child.schema())
-                        } else {
-                            self.create_expr(expr, child.schema())
-                        }
-                        .map(|r| (r, format!("col_{idx}")))
-                    })
-                    .collect();
-                let group_by = PhysicalGroupBy::new_single(group_exprs?);
-                let schema = child.schema();
-
-                let proto_mode = ProtoAggregateMode::try_from(agg.mode).map_err(|_| {
-                    ExecutionError::GeneralError(format!(
-                        "Unsupported aggregate mode: {}",
-                        agg.mode
-                    ))
-                })?;
-                let mode = match proto_mode {
-                    ProtoAggregateMode::Partial => DFAggregateMode::Partial,
-                    ProtoAggregateMode::Final => DFAggregateMode::Final,
-                    // Spark's distinct-aggregate plan counts the rows of a PartialMerge, so it must
-                    // emit each key once. DataFusion's Partial emits what it holds when it runs
-                    // short of memory and starts again, while its Single spills. So run the
-                    // PartialMerge as Single, whose MergeAsPartial aggregates merge their input and
-                    // evaluate to their states, and unpack those states below.
-                    ProtoAggregateMode::PartialMerge => DFAggregateMode::Single,
-                };
-
-                // Check if any expression uses PartialMerge mode. When present,
-                // those expressions are wrapped with MergeAsPartial to get merge
-                // semantics with state output.
-                let partial_merge_value = ProtoAggregateMode::PartialMerge as i32;
-                let has_partial_merge = proto_mode == ProtoAggregateMode::PartialMerge
-                    || agg.expr_modes.contains(&partial_merge_value);
-
-                let agg_exprs: PhyAggResult = agg
-                    .agg_exprs
-                    .iter()
-                    .map(|expr| self.create_agg_expr(expr, Arc::clone(&schema)))
-                    .collect();
-
-                let aggr_expr: Vec<Arc<AggregateFunctionExpr>> = if has_partial_merge {
-                    // Wrap PartialMerge expressions with MergeAsPartial.
-                    // State fields in the child's output start at initial_input_buffer_offset.
-                    let mut state_offset = agg.initial_input_buffer_offset as usize;
-                    let per_expr_modes: Vec<i32> = if !agg.expr_modes.is_empty() {
-                        agg.expr_modes.clone()
-                    } else {
-                        vec![agg.mode; agg.agg_exprs.len()]
-                    };
-
-                    agg_exprs?
-                        .into_iter()
-                        .enumerate()
-                        .map(|(idx, expr)| {
-                            if per_expr_modes[idx] == partial_merge_value {
-                                // PartialMerge: wrap with MergeAsPartial
-                                let state_fields = expr
-                                    .state_fields()
-                                    .map_err(|e| ExecutionError::GeneralError(e.to_string()))?;
-                                let num_state_fields = state_fields.len();
-
-                                let state_cols: Vec<Arc<dyn PhysicalExpr>> = (0..num_state_fields)
-                                    .map(|i| {
-                                        let col_idx = state_offset + i;
-                                        let field = schema.field(col_idx);
-                                        Arc::new(Column::new(field.name(), col_idx))
-                                            as Arc<dyn PhysicalExpr>
-                                    })
-                                    .collect();
-                                state_offset += num_state_fields;
-
-                                let merge_udf =
-                                    crate::execution::merge_as_partial::MergeAsPartialUDF::new(
-                                        &expr,
-                                    )
-                                    .map_err(|e| ExecutionError::DataFusionError(e.to_string()))?;
-                                let merge_udf_arc = Arc::new(
-                                    datafusion::logical_expr::AggregateUDF::new_from_impl(
-                                        merge_udf,
-                                    ),
-                                );
-
-                                let merge_expr =
-                                    AggregateExprBuilder::new(merge_udf_arc, state_cols)
-                                        .schema(Arc::clone(&schema))
-                                        .alias(format!("col_{idx}"))
-                                        .with_ignore_nulls(expr.ignore_nulls())
-                                        .with_distinct(expr.is_distinct())
-                                        .build()
-                                        .map_err(|e| {
-                                            ExecutionError::DataFusionError(e.to_string())
-                                        })?;
-
-                                Ok(Arc::new(merge_expr))
-                            } else {
-                                Ok(Arc::new(expr))
-                            }
-                        })
-                        .collect::<Result<Vec<_>, ExecutionError>>()?
-                } else {
-                    agg_exprs?.into_iter().map(Arc::new).collect()
-                };
-
-                // Build per-aggregate filter expressions from the FILTER (WHERE ...) clause.
-                // Filters are only present in Partial mode; Final/PartialMerge always get None.
-                let filter_exprs: Result<Vec<Option<Arc<dyn PhysicalExpr>>>, ExecutionError> = agg
-                    .agg_exprs
-                    .iter()
-                    .map(|expr| {
-                        if let Some(f) = expr.filter.as_ref() {
-                            self.create_expr(f, Arc::clone(&schema)).map(Some)
-                        } else {
-                            Ok(None)
-                        }
-                    })
-                    .collect();
-
-                let aggregate: Arc<dyn ExecutionPlan> = Arc::new(
-                    datafusion::physical_plan::aggregates::AggregateExec::try_new(
-                        mode,
-                        group_by,
-                        aggr_expr,
-                        filter_exprs?,
-                        Arc::clone(&child.native_plan),
-                        Arc::clone(&schema),
-                    )?,
-                );
-
-                let mut output = aggregate;
-                let mut additional_native_plans = vec![];
-                if proto_mode == ProtoAggregateMode::PartialMerge {
-                    additional_native_plans.push(Arc::clone(&output));
-                    output = crate::execution::merge_as_partial::unpack_state_structs(
-                        output,
-                        agg.grouping_exprs.len(),
-                    )?;
-                }
-
-                // Spark's SortAggregateExec reports its output as ordered by the grouping keys,
-                // and Spark may have removed a sort above it on that basis. DataFusion emits
-                // groups in input order only when it sees the input sorted on them. When that
-                // ordering comes from outside this native plan, for example from a cached sorted
-                // relation that reaches native code as an unordered ScanExec, the hash table can
-                // emit groups out of order, so sort the aggregate output instead.
-                if agg.ordered_by_grouping_keys && !agg.grouping_exprs.is_empty() {
-                    let output_schema = output.schema();
-                    let ordering: Vec<PhysicalSortExpr> = (0..agg.grouping_exprs.len())
-                        .map(|idx| {
-                            PhysicalSortExpr::new(
-                                Arc::new(Column::new(output_schema.field(idx).name(), idx)),
-                                SortOptions {
-                                    descending: false,
-                                    nulls_first: true,
-                                },
-                            )
-                        })
-                        .collect();
-                    if !output
-                        .equivalence_properties()
-                        .ordering_satisfy(ordering.clone())?
-                    {
-                        additional_native_plans.push(Arc::clone(&output));
-                        output =
-                            Arc::new(SortExec::new(LexOrdering::new(ordering).unwrap(), output));
-                    }
-                }
-
-                Ok((
-                    scans,
-                    shuffle_scans,
-                    Arc::new(SparkPlan::new_with_additional(
-                        spark_plan.plan_id,
-                        output,
-                        vec![child],
-                        additional_native_plans,
-                    )),
-                ))
-            }
-
-            OpStruct::BroadcastNestedLoopJoin(bnlj) => {
-                let (join_params, scans, shuffle_scans) = self.parse_join_parameters(
-                    inputs,
-                    children,
-                    &[],
-                    &[],
-                    bnlj.join_type,
-                    &bnlj.condition,
-                    partition_count,
-                )?;
-
-                let left = Arc::clone(&join_params.left.native_plan);
-                let right = Arc::clone(&join_params.right.native_plan);
-
-                let nested_loop_join = Arc::new(NestedLoopJoinExec::try_new(
-                    left,
-                    right,
-                    join_params.join_filter,
-                    &join_params.join_type,
-                    None,
-                )?);
-
-                if bnlj.build_side == BuildSide::BuildRight as i32 {
-                    let swapped_join = nested_loop_join.as_ref().swap_inputs()?;
-                    let mut additional_native_plans = vec![];
-                    if swapped_join.is::<ProjectionExec>() {
-                        additional_native_plans.push(Arc::clone(swapped_join.children()[0]));
-                    }
-                    Ok((
-                        scans,
-                        shuffle_scans,
-                        Arc::new(SparkPlan::new_with_additional(
-                            spark_plan.plan_id,
-                            swapped_join,
-                            vec![join_params.left, join_params.right],
-                            additional_native_plans,
-                        )),
-                    ))
-                } else {
-                    Ok((
-                        scans,
-                        shuffle_scans,
-                        Arc::new(SparkPlan::new(
-                            spark_plan.plan_id,
-                            nested_loop_join,
-                            vec![join_params.left, join_params.right],
-                        )),
-                    ))
-                }
             }
             OpStruct::Limit(limit) => {
                 assert_eq!(children.len(), 1);
@@ -2392,1677 +1956,11 @@ impl PhysicalPlanner {
                     Arc::new(SparkPlan::new(spark_plan.plan_id, expand, vec![child])),
                 ))
             }
-            OpStruct::MergeRows(merge) => {
-                let [child] = children.as_slice() else {
-                    return Err(ExecutionError::GeneralError(format!(
-                        "MergeRows expects exactly one child, got {}",
-                        children.len()
-                    )));
-                };
-                let (scans, shuffle_scans, child) =
-                    self.create_plan(child, inputs, partition_count)?;
-
-                let missing_field = |name: &str| {
-                    ExecutionError::GeneralError(format!("MergeRows proto missing `{name}`"))
-                };
-                let is_source_row_present = self.create_expr(
-                    merge
-                        .is_source_row_present
-                        .as_ref()
-                        .ok_or_else(|| missing_field("is_source_row_present"))?,
-                    child.schema(),
-                )?;
-                let is_target_row_present = self.create_expr(
-                    merge
-                        .is_target_row_present
-                        .as_ref()
-                        .ok_or_else(|| missing_field("is_target_row_present"))?,
-                    child.schema(),
-                )?;
-
-                let compile_instructions = |instrs: &[spark_operator::MergeInstruction]| -> Result<
-                    Vec<MergeInstructionExec>,
-                    ExecutionError,
-                > {
-                    instrs
-                        .iter()
-                        .map(|instr| {
-                            let condition = self.create_expr(
-                                instr
-                                    .condition
-                                    .as_ref()
-                                    .ok_or_else(|| missing_field("instruction condition"))?,
-                                child.schema(),
-                            )?;
-                            let outputs = instr
-                                .outputs
-                                .iter()
-                                .map(|row| {
-                                    row.exprs
-                                        .iter()
-                                        .map(|e| self.create_expr(e, child.schema()))
-                                        .collect::<Result<Vec<_>, _>>()
-                                })
-                                .collect::<Result<Vec<_>, _>>()?;
-                            let context = match instr.context {
-                                None | Some(0) => None,
-                                Some(1) => Some(MergeActionContext::Copy),
-                                Some(2) => Some(MergeActionContext::Delete),
-                                Some(3) => Some(MergeActionContext::Insert),
-                                Some(4) => Some(MergeActionContext::Update),
-                                Some(value) => {
-                                    return Err(ExecutionError::GeneralError(format!(
-                                        "MergeRows instruction has unknown action context {value}"
-                                    )))
-                                }
-                            };
-                            Ok(MergeInstructionExec {
-                                condition,
-                                outputs,
-                                context,
-                            })
-                        })
-                        .collect()
-                };
-
-                let matched_instructions = compile_instructions(&merge.matched_instructions)?;
-                let not_matched_instructions =
-                    compile_instructions(&merge.not_matched_instructions)?;
-                let not_matched_by_source_instructions =
-                    compile_instructions(&merge.not_matched_by_source_instructions)?;
-
-                // Spark's declared MergeRows output is the contract presented to the downstream
-                // V2 write. Derive the expression schema as an independent check, then stamp native
-                // batches with Spark's declared types so compatible nested-nullability widening does
-                // not leak a narrower physical schema across the JVM/native boundary.
-                let output_rows: Vec<Vec<Arc<dyn PhysicalExpr>>> = matched_instructions
-                    .iter()
-                    .chain(&not_matched_instructions)
-                    .chain(&not_matched_by_source_instructions)
-                    .flat_map(|instr| instr.outputs.iter().cloned())
-                    .collect();
-                let expected_fields: Vec<Field> = merge
-                    .output_types
-                    .iter()
-                    .map(to_arrow_datatype)
-                    .enumerate()
-                    .map(|(idx, dt)| Field::new(format!("col_{idx}"), dt, true))
-                    .collect();
-                let schema = Arc::new(Schema::new(expected_fields));
-
-                if !output_rows.is_empty() {
-                    let derived_schema = ExpandExec::build_schema(&output_rows, &child.schema())?;
-                    if derived_schema.fields().len() != schema.fields().len() {
-                        return Err(ExecutionError::GeneralError(format!(
-                            "MergeRows projected {} columns but Spark declared {}",
-                            derived_schema.fields().len(),
-                            schema.fields().len()
-                        )));
-                    }
-                    for (idx, (actual, expected)) in derived_schema
-                        .fields()
-                        .iter()
-                        .zip(schema.fields().iter())
-                        .enumerate()
-                    {
-                        if !merge_output_type_compatible(actual.data_type(), expected.data_type()) {
-                            return Err(ExecutionError::GeneralError(format!(
-                                "MergeRows output column {idx} has projected type {:?}, incompatible with Spark output type {:?}",
-                                actual.data_type(),
-                                expected.data_type()
-                            )));
-                        }
-                    }
-                }
-
-                let exec = Arc::new(MergeRowsExec::try_new_with_semantic_metrics(
-                    is_source_row_present,
-                    is_target_row_present,
-                    matched_instructions,
-                    not_matched_instructions,
-                    not_matched_by_source_instructions,
-                    merge.row_id_ordinal.map(|ord| ord as usize),
-                    merge.semantic_metrics_required,
-                    Arc::clone(&child.native_plan),
-                    schema,
-                )?);
-
-                Ok((
-                    scans,
-                    shuffle_scans,
-                    Arc::new(SparkPlan::new(spark_plan.plan_id, exec, vec![child])),
-                ))
-            }
-            OpStruct::Explode(explode) => {
-                assert_eq!(children.len(), 1);
-                let (scans, shuffle_scans, child) =
-                    self.create_plan(&children[0], inputs, partition_count)?;
-
-                // Create the expression for the array to explode
-                let child_expr = if let Some(child_expr) = &explode.child {
-                    self.create_expr(child_expr, child.schema())?
-                } else {
-                    return Err(ExecutionError::GeneralError(
-                        "Explode operator requires a child expression".to_string(),
-                    ));
-                };
-
-                let child_schema = child.schema();
-                let child_field_name = child_expr
-                    .return_field(&child_schema)
-                    .expect("Failed to get field from child expression")
-                    .name()
-                    .to_string();
-
-                // Both posexplode variants reference the array twice: once for positions
-                // and once for values. Materialize computed arrays so both references
-                // share one evaluation. A plain Column is already materialized.
-                let (child_expr, child_native_plan) = if explode.position
-                    && !child_expr.is::<Column>()
-                {
-                    let reserved_name = format!("__comet_explode_{}", child_field_name);
-                    let mut pre_exprs: Vec<(Arc<dyn PhysicalExpr>, String)> = child_schema
-                        .fields()
-                        .iter()
-                        .enumerate()
-                        .map(|(i, f)| {
-                            (
-                                Arc::new(Column::new(f.name(), i)) as Arc<dyn PhysicalExpr>,
-                                f.name().to_string(),
-                            )
-                        })
-                        .collect();
-                    let child_idx = pre_exprs.len();
-                    pre_exprs.push((child_expr, reserved_name.clone()));
-
-                    let pre_exec = Arc::new(ProjectionExec::try_new(
-                        pre_exprs,
-                        Arc::clone(&child.native_plan),
-                    )?);
-                    (
-                        Arc::new(Column::new(&reserved_name, child_idx)) as Arc<dyn PhysicalExpr>,
-                        pre_exec as Arc<dyn ExecutionPlan>,
-                    )
-                } else {
-                    (child_expr, Arc::clone(&child.native_plan))
-                };
-
-                // Create projection expressions for other columns
-                let projections: Vec<Arc<dyn PhysicalExpr>> = explode
-                    .project_list
-                    .iter()
-                    .map(|expr| self.create_expr(expr, child.schema()))
-                    .collect::<Result<Vec<_>, _>>()?;
-
-                // For posexplode, a parallel List<Int32> positions column is added before the
-                // array column so UnnestExec can unnest both in parallel.
-                let mut project_exprs: Vec<(Arc<dyn PhysicalExpr>, String)> = projections
-                    .iter()
-                    .map(|expr| {
-                        let field = expr
-                            .return_field(&child_schema)
-                            .expect("Failed to get field from expression");
-                        let name = field.name().to_string();
-                        (Arc::clone(expr), name)
-                    })
-                    .collect();
-
-                if explode.position {
-                    let positions_expr: Arc<dyn PhysicalExpr> =
-                        Arc::new(ListPositionsExpr::new(Arc::clone(&child_expr)));
-                    project_exprs.push((positions_expr, "pos".to_string()));
-                }
-                project_exprs.push((Arc::clone(&child_expr), child_field_name.clone()));
-
-                let project_exec =
-                    Arc::new(ProjectionExec::try_new(project_exprs, child_native_plan)?);
-
-                let project_schema = project_exec.schema();
-
-                // Build the output schema for UnnestExec
-                let mut output_fields: Vec<Field> = Vec::new();
-
-                // Add all projection columns (non-array columns)
-                for i in 0..projections.len() {
-                    output_fields.push(project_schema.field(i).clone());
-                }
-
-                let array_input_index = if explode.position {
-                    // With outer=true, UnnestExec preserves rows whose array is empty or NULL
-                    // and emits a NULL position for them, so pos must be nullable in that case.
-                    output_fields.push(Field::new("pos", DataType::Int32, explode.outer));
-                    projections.len() + 1
-                } else {
-                    projections.len()
-                };
-
-                // Extract the element type from the list/array type
-                let array_field = project_schema.field(array_input_index);
-                let element_type = match array_field.data_type() {
-                    DataType::List(field) => field.data_type().clone(),
-                    dt => {
-                        return Err(ExecutionError::GeneralError(format!(
-                            "Expected List type for explode, got {:?}",
-                            dt
-                        )))
-                    }
-                };
-
-                output_fields.push(Field::new(
-                    array_field.name(),
-                    element_type,
-                    true, // Element is nullable after unnesting
-                ));
-
-                let output_schema = Arc::new(Schema::new(output_fields));
-
-                let mut list_unnests = Vec::with_capacity(2);
-                if explode.position {
-                    list_unnests.push(ListUnnest {
-                        index_in_input_schema: projections.len(),
-                        depth: 1,
-                    });
-                }
-                list_unnests.push(ListUnnest {
-                    index_in_input_schema: array_input_index,
-                    depth: 1,
-                });
-
-                // Spark's `explode_outer`/`posexplode_outer` emit exactly one null row for both
-                // a NULL array and an empty one, which is `PreserveAndExpandEmpty`. Plain
-                // `explode` drops both.
-                let null_handling = if explode.outer {
-                    NullHandling::PreserveAndExpandEmpty
-                } else {
-                    NullHandling::Drop
-                };
-                let unnest_options = UnnestOptions::new().with_null_handling(null_handling);
-
-                // Comet's specialized fork of `UnnestExec`; see `operators::explode`.
-                let unnest_exec = Arc::new(ExplodeExec::new(
-                    project_exec,
-                    list_unnests,
-                    vec![], // No struct columns to unnest
-                    output_schema,
-                    unnest_options,
-                )?);
-
-                Ok((
-                    scans,
-                    shuffle_scans,
-                    Arc::new(SparkPlan::new(spark_plan.plan_id, unnest_exec, vec![child])),
-                ))
-            }
-            OpStruct::SortMergeJoin(join) => {
-                let (join_params, scans, shuffle_scans) = self.parse_join_parameters(
-                    inputs,
-                    children,
-                    &join.left_join_keys,
-                    &join.right_join_keys,
-                    join.join_type,
-                    &join.condition,
-                    partition_count,
-                )?;
-
-                let sort_options = join
-                    .sort_options
-                    .iter()
-                    .map(|sort_option| {
-                        let sort_expr = self
-                            .create_sort_expr(sort_option, join_params.left.schema())
-                            .unwrap();
-                        SortOptions {
-                            descending: sort_expr.options.descending,
-                            nulls_first: sort_expr.options.nulls_first,
-                        }
-                    })
-                    .collect();
-
-                let left = Arc::clone(&join_params.left.native_plan);
-                let right = Arc::clone(&join_params.right.native_plan);
-
-                let left_schema = left.schema();
-                let right_schema = right.schema();
-                let join_on = join_params
-                    .join_on
-                    .into_iter()
-                    .map(|(l, r)| {
-                        Ok((
-                            strip_timestamp_tz(l, left_schema.as_ref())?,
-                            strip_timestamp_tz(r, right_schema.as_ref())?,
-                        ))
-                    })
-                    .collect::<Result<Vec<_>, ExecutionError>>()?;
-
-                let join = Arc::new(SortMergeJoinExec::try_new(
-                    Arc::clone(&left),
-                    Arc::clone(&right),
-                    join_on,
-                    join_params.join_filter,
-                    join_params.join_type,
-                    sort_options,
-                    // null doesn't equal to null in Spark join key. If the join key is
-                    // `EqualNullSafe`, Spark will rewrite it during planning.
-                    NullEquality::NullEqualsNothing,
-                )?);
-
-                Ok((
-                    scans,
-                    shuffle_scans,
-                    Arc::new(SparkPlan::new(
-                        spark_plan.plan_id,
-                        join,
-                        vec![
-                            Arc::clone(&join_params.left),
-                            Arc::clone(&join_params.right),
-                        ],
-                    )),
-                ))
-            }
-            OpStruct::HashJoin(join) => {
-                let (mut join_params, scans, shuffle_scans) = self.parse_join_parameters(
-                    inputs,
-                    children,
-                    &join.left_join_keys,
-                    &join.right_join_keys,
-                    join.join_type,
-                    &join.condition,
-                    partition_count,
-                )?;
-
-                // Reader attachment and early placement recursively replace probe-side
-                // filters and projections. Keep metrics owned by their Spark nodes.
-                if join.dynamic_filter_enabled && !join.null_aware_anti_join {
-                    let probe = if join.build_side == BuildSide::BuildLeft as i32 {
-                        &mut join_params.right
-                    } else {
-                        &mut join_params.left
-                    };
-                    *probe = Self::prepare_probe_for_runtime_filters(Arc::clone(probe))?;
-                }
-
-                let left = Arc::clone(&join_params.left.native_plan);
-                let right = Arc::clone(&join_params.right.native_plan);
-
-                // Null-aware anti-join must run in CollectLeft mode. In Partitioned mode
-                // each partition only sees per-partition null/emptiness state, which can
-                // produce wrong NOT IN results across partitions. DataFusion's JoinSelection
-                // rewrites null-aware joins to CollectLeft for this reason, but Comet
-                // executes the physical plan directly so we must pick the mode here.
-                let partition_mode = if join.null_aware_anti_join {
-                    PartitionMode::CollectLeft
-                } else {
-                    PartitionMode::Partitioned
-                };
-
-                let hash_join = Arc::new(HashJoinExec::try_new(
-                    left,
-                    right,
-                    join_params.join_on,
-                    join_params.join_filter,
-                    &join_params.join_type,
-                    None,
-                    partition_mode,
-                    // null doesn't equal to null in Spark join key. If the join key is
-                    // `EqualNullSafe`, Spark will rewrite it during planning.
-                    NullEquality::NullEqualsNothing,
-                    join.null_aware_anti_join,
-                )?);
-
-                // If the hash join is build right, we need to swap the left and right.
-                // Exception: null-aware anti-join requires LeftAnti + build-right semantics
-                // (which matches DataFusion's default), and swap_inputs would turn LeftAnti
-                // into RightAnti, which DataFusion rejects with null_aware=true.
-                if join.build_side == BuildSide::BuildLeft as i32 || join.null_aware_anti_join {
-                    let hash_join = Self::apply_join_dynamic_filter(
-                        hash_join,
-                        join.dynamic_filter_enabled && !join.null_aware_anti_join,
-                        self.session_ctx.copied_config().options(),
-                    )?;
-                    Ok((
-                        scans,
-                        shuffle_scans,
-                        Arc::new(SparkPlan::new(
-                            spark_plan.plan_id,
-                            hash_join,
-                            vec![join_params.left, join_params.right],
-                        )),
-                    ))
-                } else {
-                    let swapped_hash_join =
-                        hash_join.as_ref().swap_inputs(PartitionMode::Partitioned)?;
-                    let swapped_hash_join = Self::apply_join_dynamic_filter(
-                        swapped_hash_join,
-                        join.dynamic_filter_enabled,
-                        self.session_ctx.copied_config().options(),
-                    )?;
-
-                    let mut additional_native_plans = vec![];
-                    if swapped_hash_join.is::<ProjectionExec>() {
-                        // a projection was added to the hash join
-                        additional_native_plans.push(Arc::clone(swapped_hash_join.children()[0]));
-                    }
-
-                    Ok((
-                        scans,
-                        shuffle_scans,
-                        Arc::new(SparkPlan::new_with_additional(
-                            spark_plan.plan_id,
-                            swapped_hash_join,
-                            vec![join_params.left, join_params.right],
-                            additional_native_plans,
-                        )),
-                    ))
-                }
-            }
-            OpStruct::Window(wnd) => {
-                let (scans, shuffle_scans, child) =
-                    self.create_plan(&children[0], inputs, partition_count)?;
-                let input_schema = child.schema();
-                let sort_exprs: Result<Vec<PhysicalSortExpr>, ExecutionError> = wnd
-                    .order_by_list
-                    .iter()
-                    .map(|expr| self.create_sort_expr(expr, Arc::clone(&input_schema)))
-                    .collect();
-
-                let partition_exprs: Result<Vec<Arc<dyn PhysicalExpr>>, ExecutionError> = wnd
-                    .partition_by_list
-                    .iter()
-                    .map(|expr| self.create_normalized_key_expr(expr, Arc::clone(&input_schema)))
-                    .collect();
-
-                let sort_exprs = &sort_exprs?;
-                let partition_exprs = &partition_exprs?;
-
-                let window_expr: Result<Vec<Arc<dyn WindowExpr>>, ExecutionError> = wnd
-                    .window_expr
-                    .iter()
-                    .map(|expr| {
-                        self.create_window_expr(
-                            expr,
-                            Arc::clone(&input_schema),
-                            partition_exprs,
-                            sort_exprs,
-                        )
-                    })
-                    .collect();
-
-                // Route to `BoundedWindowAggExec` when every window expression can
-                // run with bounded memory. This uses DataFusion's
-                // `evaluate_stateful` / row-by-row `evaluate` path, which is the
-                // correct implementation for `LEAD` / `LAG` with `IGNORE NULLS`
-                // (`WindowAggExec` calls `evaluate_all`, whose
-                // `evaluate_all_with_ignore_null` has a sign-wrap bug for `LEAD`
-                // that produces all-NULL output).
-                //
-                // Fall back to `WindowAggExec` otherwise. That covers
-                // `PERCENT_RANK` / `CUME_DIST` / `NTILE`
-                // (`!uses_bounded_memory()` — "Can not execute X in a streaming
-                // fashion") and keeps the Spark-compatible Comet UDAFs
-                // (`SumDecimal` / `SumInteger` / `AvgDecimal` / `Avg`) on the
-                // non-streaming path since they don't implement `retract_batch`.
-                // Because `process_agg_func` already picks DataFusion's
-                // retract-capable built-ins for sliding aggregate frames,
-                // ever-expanding aggregate frames (all that route to
-                // `BoundedWindowAggExec` as `PlainAggregateWindowExpr`) never
-                // trigger a retract call.
-                let window_expr = window_expr?;
-                let all_bounded = window_expr.iter().all(|e| e.uses_bounded_memory());
-                let window_agg: Arc<dyn ExecutionPlan> = if all_bounded {
-                    Arc::new(BoundedWindowAggExec::try_new(
-                        window_expr,
-                        Arc::clone(&child.native_plan),
-                        InputOrderMode::Sorted,
-                        !partition_exprs.is_empty(),
-                    )?)
-                } else {
-                    Arc::new(WindowAggExec::try_new(
-                        window_expr,
-                        Arc::clone(&child.native_plan),
-                        !partition_exprs.is_empty(),
-                    )?)
-                };
-
-                // DataFusion's window functions don't always return the same Arrow
-                // type that Spark expects (e.g. `row_number` returns UInt64 while
-                // Spark expects Int32). If any window expression carries a
-                // `result_type` that differs from the actual output type, wrap the
-                // aggregate in a projection that casts the mismatched columns.
-                let final_plan: Arc<dyn ExecutionPlan> = {
-                    let agg_schema = window_agg.schema();
-                    let input_field_count = input_schema.fields().len();
-                    let mut needs_cast = false;
-                    let mut proj_exprs: Vec<(Arc<dyn PhysicalExpr>, String)> =
-                        Vec::with_capacity(agg_schema.fields().len());
-                    for (idx, field) in agg_schema.fields().iter().enumerate() {
-                        let col: Arc<dyn PhysicalExpr> = Arc::new(Column::new(field.name(), idx));
-                        let expr: Arc<dyn PhysicalExpr> = if idx >= input_field_count {
-                            let w = &wnd.window_expr[idx - input_field_count];
-                            match &w.result_type {
-                                Some(t) => {
-                                    let expected = to_arrow_datatype(t);
-                                    if &expected != field.data_type() {
-                                        needs_cast = true;
-                                        Arc::new(CastExpr::new(col, expected, None))
-                                    } else {
-                                        col
-                                    }
-                                }
-                                None => col,
-                            }
-                        } else {
-                            col
-                        };
-                        proj_exprs.push((expr, field.name().to_string()));
-                    }
-                    if needs_cast {
-                        Arc::new(ProjectionExec::try_new(proj_exprs, window_agg)?)
-                    } else {
-                        window_agg
-                    }
-                };
-
-                Ok((
-                    scans,
-                    shuffle_scans,
-                    Arc::new(SparkPlan::new(spark_plan.plan_id, final_plan, vec![child])),
-                ))
-            }
-            OpStruct::WindowGroupLimit(wgl) => {
-                // Route:
-                //   * ROW_NUMBER + empty PARTITION BY -> `LocalLimitExec`. Spark's WGL requires
-                //     the child to be sorted by ORDER BY, so `first K rows per input partition`
-                //     IS the global RANK top-K (Partial phase); the Final phase runs on the
-                //     single-partition post-shuffle stream and stays correct.
-                //   * Everything else (ROW_NUMBER partitioned, RANK / DENSE_RANK with any
-                //     PARTITION BY) -> Comet's streaming `PartitionedRankLimitExec`. Relies on
-                //     the Spark-injected sort of `[partition_keys, order_keys]`, which lets it
-                //     preserve input order for rows tied on the ORDER BY keys (matching Spark's
-                //     `SimpleLimitIterator` for ROW_NUMBER and `RankLimitIterator` for RANK /
-                //     DENSE_RANK). `partition_prefix_len == 0` degenerates to one big partition
-                //     per DF input partition.
-                assert_eq!(children.len(), 1);
-                let (scans, shuffle_scans, child) =
-                    self.create_plan(&children[0], inputs, partition_count)?;
-                let input_schema = child.schema();
-
-                let kind =
-                    match RankLikeFunction::try_from(wgl.rank_like_function).map_err(|_| {
-                        GeneralError(format!(
-                            "Unsupported WindowGroupLimit rank function tag: {}",
-                            wgl.rank_like_function
-                        ))
-                    })? {
-                        RankLikeFunction::RowNumber => WindowFnKind::RowNumber,
-                        RankLikeFunction::Rank => WindowFnKind::Rank,
-                        RankLikeFunction::DenseRank => WindowFnKind::DenseRank,
-                    };
-
-                let partition_prefix_len = wgl.partition_by_list.len();
-                let fetch = wgl.limit as usize;
-
-                // Fast path: ROW_NUMBER without PARTITION BY collapses to `first K rows per
-                // input DF partition`, which is exactly what `LocalLimitExec` does. No
-                // row-encoding overhead, no ORDER BY tie detection needed.
-                let topk: Arc<dyn ExecutionPlan> = if partition_prefix_len == 0
-                    && kind == WindowFnKind::RowNumber
-                {
-                    Arc::new(LocalLimitExec::new(Arc::clone(&child.native_plan), fetch))
-                } else {
-                    // Partition keys arrive as bare exprs (no direction). Spark's WGL
-                    // requires the child to be sorted by partition-keys ASCENDING then by
-                    // order-by keys, so materialize partition keys with SortOptions matching
-                    // Spark's `SortOrder(_, Ascending)` (ascending, nulls_first).
-                    let mut partition_keys: Vec<PhysicalSortExpr> =
-                        Vec::with_capacity(partition_prefix_len);
-                    for expr in &wgl.partition_by_list {
-                        let phys =
-                            self.create_normalized_key_expr(expr, Arc::clone(&input_schema))?;
-                        partition_keys.push(PhysicalSortExpr {
-                            expr: phys,
-                            options: SortOptions::default(),
-                        });
-                    }
-                    let mut order_keys: Vec<PhysicalSortExpr> =
-                        Vec::with_capacity(wgl.order_by_list.len());
-                    for expr in &wgl.order_by_list {
-                        order_keys.push(self.create_sort_expr(expr, Arc::clone(&input_schema))?);
-                    }
-
-                    // Always route to the streaming `PartitionedRankLimitExec`. Spark's
-                    // `WindowGroupLimitExec.requiredChildOrdering` guarantees the child is
-                    // sorted by `[partition_keys..., order_keys...]`, so a single pass
-                    // suffices. A heap-based top-K would be faster asymptotically but would
-                    // reorder rows tied on the ORDER BY keys, which breaks Spark's
-                    // `SimpleLimitIterator` / `RankLimitIterator` semantics: for
-                    // `ROW_NUMBER()`, Spark assigns ranks in input order to tied rows, and
-                    // any deviation surfaces as wrong-row diffs in SPARK-37099-shaped tests.
-                    Arc::new(PartitionedRankLimitExec::try_new(
-                        Arc::clone(&child.native_plan),
-                        partition_keys,
-                        order_keys,
-                        fetch,
-                        kind,
-                    )?)
-                };
-
-                Ok((
-                    scans,
-                    shuffle_scans,
-                    Arc::new(SparkPlan::new(
-                        spark_plan.plan_id,
-                        topk,
-                        vec![Arc::clone(&child)],
-                    )),
-                ))
-            }
             _ => Err(GeneralError(format!(
                 "Unsupported or unregistered operator type: {:?}",
                 spark_plan.op_struct
             ))),
         }
-    }
-
-    /// Keep Spark metric identities for the small set of nodes whose children
-    /// runtime-filter placement can replace. Stop at native/Spark tree boundaries.
-    fn prepare_probe_for_runtime_filters(
-        plan: Arc<SparkPlan>,
-    ) -> Result<Arc<SparkPlan>, ExecutionError> {
-        let mut native: Arc<dyn ExecutionPlan> =
-            if let Some(filter) = plan.native_plan.downcast_ref::<FilterExec>() {
-                Arc::new(CometFilterExec::from_datafusion(filter.clone()))
-            } else if let Some(projection) = plan.native_plan.downcast_ref::<ProjectionExec>() {
-                Arc::new(CometProjectionExec::from_datafusion(projection.clone()))
-            } else {
-                return Ok(plan);
-            };
-        let mut prepared = plan.as_ref().clone();
-        if let ([child], [only]) = (plan.children.as_slice(), native.children().as_slice()) {
-            if Arc::ptr_eq(only, &child.native_plan) {
-                let child = Self::prepare_probe_for_runtime_filters(Arc::clone(child))?;
-                native = native.replace_children(
-                    vec![Arc::clone(&child.native_plan)],
-                    ReplaceChildrenOptions::new(ChildrenPropertiesMode::Recompute),
-                )?;
-                prepared.children = vec![child];
-            }
-        }
-        prepared.native_plan = native;
-        Ok(Arc::new(prepared))
-    }
-
-    /// Attach after choosing the final build side, including the projection emitted
-    /// by `swap_inputs`, without running DataFusion's physical optimizer.
-    pub(crate) fn apply_join_dynamic_filter(
-        plan: Arc<dyn ExecutionPlan>,
-        enabled: bool,
-        config: &ConfigOptions,
-    ) -> Result<Arc<dyn ExecutionPlan>, ExecutionError> {
-        if !enabled {
-            return Ok(plan);
-        }
-        if let Some(projection) = plan.downcast_ref::<ProjectionExec>() {
-            let child =
-                Self::apply_join_dynamic_filter(Arc::clone(projection.input()), enabled, config)?;
-            return if !Arc::ptr_eq(&child, projection.input()) {
-                Ok(plan.replace_children(
-                    vec![child],
-                    ReplaceChildrenOptions::new(ChildrenPropertiesMode::Recompute),
-                )?)
-            } else {
-                Ok(plan)
-            };
-        }
-        let Some(join) = plan.downcast_ref::<HashJoinExec>() else {
-            log::debug!(
-                "Join dynamic filter skipped: unexpected plan shape {}",
-                plan.name()
-            );
-            return Ok(plan);
-        };
-        match DynamicFilterJoinExec::try_new(join, config)? {
-            Some(wrapper) => Ok(Arc::new(wrapper)),
-            None => Ok(plan),
-        }
-    }
-
-    #[allow(clippy::too_many_arguments)]
-    fn parse_join_parameters(
-        &self,
-        inputs: &mut Vec<Arc<Global<JObject<'static>>>>,
-        children: &[Operator],
-        left_join_keys: &[Expr],
-        right_join_keys: &[Expr],
-        join_type: i32,
-        condition: &Option<Expr>,
-        partition_count: usize,
-    ) -> Result<(JoinParameters, Vec<ScanExec>, Vec<ShuffleScanExec>), ExecutionError> {
-        assert_eq!(children.len(), 2);
-        let (mut left_scans, mut left_shuffle_scans, left) =
-            self.create_plan(&children[0], inputs, partition_count)?;
-        let (mut right_scans, mut right_shuffle_scans, right) =
-            self.create_plan(&children[1], inputs, partition_count)?;
-
-        left_scans.append(&mut right_scans);
-        left_shuffle_scans.append(&mut right_shuffle_scans);
-
-        let left_join_exprs: Vec<_> = left_join_keys
-            .iter()
-            .map(|expr| self.create_expr(expr, left.schema()))
-            .collect::<Result<Vec<_>, _>>()?;
-        let right_join_exprs: Vec<_> = right_join_keys
-            .iter()
-            .map(|expr| self.create_expr(expr, right.schema()))
-            .collect::<Result<Vec<_>, _>>()?;
-
-        let join_on = left_join_exprs
-            .into_iter()
-            .zip(right_join_exprs)
-            .collect::<Vec<_>>();
-
-        let join_type = match join_type.try_into() {
-            Ok(JoinType::Inner) => DFJoinType::Inner,
-            Ok(JoinType::LeftOuter) => DFJoinType::Left,
-            Ok(JoinType::RightOuter) => DFJoinType::Right,
-            Ok(JoinType::FullOuter) => DFJoinType::Full,
-            Ok(JoinType::LeftSemi) => DFJoinType::LeftSemi,
-            Ok(JoinType::LeftAnti) => DFJoinType::LeftAnti,
-            Ok(JoinType::Existence) => DFJoinType::LeftMark,
-            Err(_) => {
-                return Err(GeneralError(format!(
-                    "Unsupported join type: {join_type:?}"
-                )));
-            }
-        };
-
-        // Handle join filter as DataFusion `JoinFilter` struct
-        let join_filter = if let Some(expr) = condition {
-            let left_schema = left.schema();
-            let right_schema = right.schema();
-            let left_fields = left_schema.fields();
-            let right_fields = right_schema.fields();
-            let all_fields: Vec<_> = left_fields
-                .into_iter()
-                .chain(right_fields)
-                .cloned()
-                .collect();
-            let full_schema = Arc::new(Schema::new(all_fields));
-
-            // Because we cast dictionary array to array in scan operator,
-            // we need to change dictionary type to data type for join filter expression.
-            let fields: Vec<_> = full_schema
-                .fields()
-                .iter()
-                .map(|f| match f.data_type() {
-                    DataType::Dictionary(_, val_type) => Arc::new(Field::new(
-                        f.name(),
-                        val_type.as_ref().clone(),
-                        f.is_nullable(),
-                    )),
-                    _ => Arc::clone(f),
-                })
-                .collect();
-
-            let full_schema = Arc::new(Schema::new(fields));
-
-            let physical_expr = self.create_expr(expr, full_schema)?;
-            let (left_field_indices, right_field_indices) =
-                expr_to_columns(&physical_expr, left_fields.len(), right_fields.len())?;
-            let column_indices = JoinFilter::build_column_indices(
-                left_field_indices.clone(),
-                right_field_indices.clone(),
-            );
-
-            let filter_fields: Vec<Field> = left_field_indices
-                .clone()
-                .into_iter()
-                .map(|i| left.schema().field(i).clone())
-                .chain(
-                    right_field_indices
-                        .clone()
-                        .into_iter()
-                        .map(|i| right.schema().field(i).clone()),
-                )
-                // Because we cast dictionary array to array in scan operator,
-                // we need to change dictionary type to data type for join filter expression.
-                .map(|f| match f.data_type() {
-                    DataType::Dictionary(_, val_type) => {
-                        Field::new(f.name(), val_type.as_ref().clone(), f.is_nullable())
-                    }
-                    _ => f.clone(),
-                })
-                .collect_vec();
-
-            let filter_schema = Schema::new_with_metadata(filter_fields, HashMap::new());
-
-            // Rewrite the physical expression to use the new column indices.
-            // DataFusion's join filter is bound to intermediate schema which contains
-            // only the fields used in the filter expression. But the Spark's join filter
-            // expression is bound to the full schema. We need to rewrite the physical
-            // expression to use the new column indices.
-            let rewritten_physical_expr = rewrite_physical_expr(
-                physical_expr,
-                left_schema.fields.len(),
-                right_schema.fields.len(),
-                &left_field_indices,
-                &right_field_indices,
-            )?;
-
-            Some(JoinFilter::new(
-                rewritten_physical_expr,
-                column_indices,
-                filter_schema.into(),
-            ))
-        } else {
-            None
-        };
-
-        Ok((
-            JoinParameters {
-                left: Arc::clone(&left),
-                right: Arc::clone(&right),
-                join_on,
-                join_type,
-                join_filter,
-            },
-            left_scans,
-            left_shuffle_scans,
-        ))
-    }
-
-    /// Create a DataFusion physical aggregate expression from Spark physical aggregate expression
-    fn create_agg_expr(
-        &self,
-        spark_expr: &AggExpr,
-        schema: SchemaRef,
-    ) -> Result<AggregateFunctionExpr, ExecutionError> {
-        self.register_query_context(spark_expr.expr_id, spark_expr.query_context.as_ref());
-
-        match spark_expr.expr_struct.as_ref().unwrap() {
-            AggExprStruct::Count(expr) => {
-                assert!(!expr.children.is_empty());
-                let children = expr
-                    .children
-                    .iter()
-                    .map(|child| self.create_expr(child, Arc::clone(&schema)))
-                    .collect::<Result<Vec<_>, _>>()?;
-
-                AggregateExprBuilder::new(count_udaf(), children)
-                    .schema(schema)
-                    .alias("count")
-                    .with_ignore_nulls(false)
-                    .with_distinct(false)
-                    .build()
-                    .map_err(|e| ExecutionError::DataFusionError(e.to_string()))
-            }
-            AggExprStruct::Min(expr) => {
-                let child = self.create_expr(expr.child.as_ref().unwrap(), Arc::clone(&schema))?;
-                let datatype = to_arrow_datatype(expr.datatype.as_ref().unwrap());
-                let func = min_max_udaf(&datatype, false);
-                let child = Arc::new(CastExpr::new(child, datatype.clone(), None));
-
-                AggregateExprBuilder::new(func, vec![child])
-                    .schema(schema)
-                    .alias("min")
-                    .with_ignore_nulls(false)
-                    .with_distinct(false)
-                    .build()
-                    .map_err(|e| ExecutionError::DataFusionError(e.to_string()))
-            }
-            AggExprStruct::Max(expr) => {
-                let child = self.create_expr(expr.child.as_ref().unwrap(), Arc::clone(&schema))?;
-                let datatype = to_arrow_datatype(expr.datatype.as_ref().unwrap());
-                let func = min_max_udaf(&datatype, true);
-                let child = Arc::new(CastExpr::new(child, datatype.clone(), None));
-
-                AggregateExprBuilder::new(func, vec![child])
-                    .schema(schema)
-                    .alias("max")
-                    .with_ignore_nulls(false)
-                    .with_distinct(false)
-                    .build()
-                    .map_err(|e| ExecutionError::DataFusionError(e.to_string()))
-            }
-            AggExprStruct::Sum(expr) => {
-                let child = self.create_expr(expr.child.as_ref().unwrap(), Arc::clone(&schema))?;
-                let datatype = to_arrow_datatype(expr.datatype.as_ref().unwrap());
-
-                let builder = match datatype {
-                    DataType::Decimal128(_, _) => {
-                        let eval_mode = from_protobuf_eval_mode(expr.eval_mode)?;
-                        let func = AggregateUDF::new_from_impl(SumDecimal::try_new(
-                            datatype,
-                            eval_mode,
-                            spark_expr.expr_id,
-                            Arc::clone(&self.query_context_registry),
-                        )?);
-                        AggregateExprBuilder::new(Arc::new(func), vec![child])
-                    }
-                    DataType::Int8 | DataType::Int16 | DataType::Int32 | DataType::Int64 => {
-                        let eval_mode = from_protobuf_eval_mode(expr.eval_mode)?;
-                        let func =
-                            AggregateUDF::new_from_impl(SumInteger::try_new(datatype, eval_mode)?);
-                        AggregateExprBuilder::new(Arc::new(func), vec![child])
-                    }
-                    _ => {
-                        // cast to the result data type of SUM if necessary, we should not expect
-                        // a cast failure since it should have already been checked at Spark side
-                        let child =
-                            Arc::new(CastExpr::new(Arc::clone(&child), datatype.clone(), None));
-                        AggregateExprBuilder::new(sum_udaf(), vec![child])
-                    }
-                };
-                builder
-                    .schema(schema)
-                    .alias("sum")
-                    .with_ignore_nulls(false)
-                    .with_distinct(false)
-                    .build()
-                    .map_err(|e| e.into())
-            }
-            AggExprStruct::Avg(expr) => {
-                let child = self.create_expr(expr.child.as_ref().unwrap(), Arc::clone(&schema))?;
-                let datatype = to_arrow_datatype(expr.datatype.as_ref().unwrap());
-                let input_datatype = to_arrow_datatype(expr.sum_datatype.as_ref().unwrap());
-
-                let builder = match datatype {
-                    DataType::Decimal128(_, _) => {
-                        let eval_mode = from_protobuf_eval_mode(expr.eval_mode)?;
-                        let func = AggregateUDF::new_from_impl(AvgDecimal::new(
-                            datatype,
-                            input_datatype,
-                            eval_mode,
-                            spark_expr.expr_id,
-                            Arc::clone(&self.query_context_registry),
-                        ));
-                        AggregateExprBuilder::new(Arc::new(func), vec![child])
-                    }
-                    _ => {
-                        // For all other numeric types (Int8/16/32/64, Float32/64):
-                        // Cast to Float64 for accumulation
-                        let child: Arc<dyn PhysicalExpr> =
-                            Arc::new(CastExpr::new(Arc::clone(&child), DataType::Float64, None));
-                        let func = AggregateUDF::new_from_impl(Avg::new("avg", DataType::Float64));
-                        AggregateExprBuilder::new(Arc::new(func), vec![child])
-                    }
-                };
-                builder
-                    .schema(schema)
-                    .alias("avg")
-                    .with_ignore_nulls(false)
-                    .with_distinct(false)
-                    .build()
-                    .map_err(|e| e.into())
-            }
-            AggExprStruct::First(expr) => {
-                let child = self.create_expr(expr.child.as_ref().unwrap(), Arc::clone(&schema))?;
-                let func = AggregateUDF::new_from_impl(FirstValue::new());
-
-                AggregateExprBuilder::new(Arc::new(func), vec![child])
-                    .schema(schema)
-                    .alias("first")
-                    .with_ignore_nulls(expr.ignore_nulls)
-                    .with_distinct(false)
-                    .build()
-                    .map_err(|e| e.into())
-            }
-            AggExprStruct::Last(expr) => {
-                let child = self.create_expr(expr.child.as_ref().unwrap(), Arc::clone(&schema))?;
-                let func = AggregateUDF::new_from_impl(LastValue::new());
-
-                AggregateExprBuilder::new(Arc::new(func), vec![child])
-                    .schema(schema)
-                    .alias("last")
-                    .with_ignore_nulls(expr.ignore_nulls)
-                    .with_distinct(false)
-                    .build()
-                    .map_err(|e| e.into())
-            }
-            AggExprStruct::BitAndAgg(expr) => {
-                let child = self.create_expr(expr.child.as_ref().unwrap(), Arc::clone(&schema))?;
-
-                AggregateExprBuilder::new(bit_and_udaf(), vec![child])
-                    .schema(schema)
-                    .alias("bit_and")
-                    .with_ignore_nulls(false)
-                    .with_distinct(false)
-                    .build()
-                    .map_err(|e| e.into())
-            }
-            AggExprStruct::BitOrAgg(expr) => {
-                let child = self.create_expr(expr.child.as_ref().unwrap(), Arc::clone(&schema))?;
-
-                AggregateExprBuilder::new(bit_or_udaf(), vec![child])
-                    .schema(schema)
-                    .alias("bit_or")
-                    .with_ignore_nulls(false)
-                    .with_distinct(false)
-                    .build()
-                    .map_err(|e| e.into())
-            }
-            AggExprStruct::BitXorAgg(expr) => {
-                let child = self.create_expr(expr.child.as_ref().unwrap(), Arc::clone(&schema))?;
-
-                AggregateExprBuilder::new(bit_xor_udaf(), vec![child])
-                    .schema(schema)
-                    .alias("bit_xor")
-                    .with_ignore_nulls(false)
-                    .with_distinct(false)
-                    .build()
-                    .map_err(|e| e.into())
-            }
-            AggExprStruct::Covariance(expr) => {
-                let child1 =
-                    self.create_expr(expr.child1.as_ref().unwrap(), Arc::clone(&schema))?;
-                let child2 =
-                    self.create_expr(expr.child2.as_ref().unwrap(), Arc::clone(&schema))?;
-                let datatype = to_arrow_datatype(expr.datatype.as_ref().unwrap());
-                match expr.stats_type {
-                    0 => {
-                        let func = AggregateUDF::new_from_impl(Covariance::new(
-                            "covariance",
-                            datatype,
-                            StatsType::Sample,
-                            expr.null_on_divide_by_zero,
-                        ));
-
-                        Self::create_aggr_func_expr(
-                            "covariance",
-                            schema,
-                            vec![child1, child2],
-                            func,
-                        )
-                    }
-                    1 => {
-                        let func = AggregateUDF::new_from_impl(Covariance::new(
-                            "covariance_pop",
-                            datatype,
-                            StatsType::Population,
-                            expr.null_on_divide_by_zero,
-                        ));
-
-                        Self::create_aggr_func_expr(
-                            "covariance_pop",
-                            schema,
-                            vec![child1, child2],
-                            func,
-                        )
-                    }
-                    stats_type => Err(GeneralError(format!(
-                        "Unknown StatisticsType {stats_type:?} for Variance"
-                    ))),
-                }
-            }
-            AggExprStruct::Variance(expr) => {
-                let child = self.create_expr(expr.child.as_ref().unwrap(), Arc::clone(&schema))?;
-                let datatype = to_arrow_datatype(expr.datatype.as_ref().unwrap());
-                match expr.stats_type {
-                    0 => {
-                        let func = AggregateUDF::new_from_impl(Variance::new(
-                            "variance",
-                            datatype,
-                            StatsType::Sample,
-                            expr.null_on_divide_by_zero,
-                        ));
-
-                        Self::create_aggr_func_expr("variance", schema, vec![child], func)
-                    }
-                    1 => {
-                        let func = AggregateUDF::new_from_impl(Variance::new(
-                            "variance_pop",
-                            datatype,
-                            StatsType::Population,
-                            expr.null_on_divide_by_zero,
-                        ));
-
-                        Self::create_aggr_func_expr("variance_pop", schema, vec![child], func)
-                    }
-                    stats_type => Err(GeneralError(format!(
-                        "Unknown StatisticsType {stats_type:?} for Variance"
-                    ))),
-                }
-            }
-            AggExprStruct::Stddev(expr) => {
-                let child = self.create_expr(expr.child.as_ref().unwrap(), Arc::clone(&schema))?;
-                let datatype = to_arrow_datatype(expr.datatype.as_ref().unwrap());
-                match expr.stats_type {
-                    0 => {
-                        let func = AggregateUDF::new_from_impl(Stddev::new(
-                            "stddev",
-                            datatype,
-                            StatsType::Sample,
-                            expr.null_on_divide_by_zero,
-                        ));
-
-                        Self::create_aggr_func_expr("stddev", schema, vec![child], func)
-                    }
-                    1 => {
-                        let func = AggregateUDF::new_from_impl(Stddev::new(
-                            "stddev_pop",
-                            datatype,
-                            StatsType::Population,
-                            expr.null_on_divide_by_zero,
-                        ));
-
-                        Self::create_aggr_func_expr("stddev_pop", schema, vec![child], func)
-                    }
-                    stats_type => Err(GeneralError(format!(
-                        "Unknown StatisticsType {stats_type:?} for stddev"
-                    ))),
-                }
-            }
-            AggExprStruct::Correlation(expr) => {
-                let child1 =
-                    self.create_expr(expr.child1.as_ref().unwrap(), Arc::clone(&schema))?;
-                let child2 =
-                    self.create_expr(expr.child2.as_ref().unwrap(), Arc::clone(&schema))?;
-                let datatype = to_arrow_datatype(expr.datatype.as_ref().unwrap());
-                let func = AggregateUDF::new_from_impl(Correlation::new(
-                    "correlation",
-                    datatype,
-                    expr.null_on_divide_by_zero,
-                    from_protobuf_eval_mode(expr.eval_mode)?,
-                    spark_expr.expr_id,
-                    Arc::clone(&self.query_context_registry),
-                ));
-                Self::create_aggr_func_expr("correlation", schema, vec![child1, child2], func)
-            }
-            AggExprStruct::Regr(expr) => {
-                let child1 =
-                    self.create_expr(expr.child1.as_ref().unwrap(), Arc::clone(&schema))?;
-                let child2 =
-                    self.create_expr(expr.child2.as_ref().unwrap(), Arc::clone(&schema))?;
-                let (regr_type, name) = match expr.regr_type() {
-                    spark_expression::regr::RegrType::Slope => (RegrType::Slope, "regr_slope"),
-                    spark_expression::regr::RegrType::Intercept => {
-                        (RegrType::Intercept, "regr_intercept")
-                    }
-                    spark_expression::regr::RegrType::R2 => (RegrType::R2, "regr_r2"),
-                    spark_expression::regr::RegrType::Sxx => (RegrType::SXX, "regr_sxx"),
-                    spark_expression::regr::RegrType::Syy => (RegrType::SYY, "regr_syy"),
-                    spark_expression::regr::RegrType::Sxy => (RegrType::SXY, "regr_sxy"),
-                };
-                let func = AggregateUDF::new_from_impl(Regr::new(
-                    regr_type,
-                    name,
-                    expr.filter_var_by_pair_nulls,
-                    expr.r2_constant_dependent_is_perfect_fit,
-                    from_protobuf_eval_mode(expr.eval_mode)?,
-                    spark_expr.expr_id,
-                    Arc::clone(&self.query_context_registry),
-                ));
-                Self::create_aggr_func_expr(name, schema, vec![child1, child2], func)
-            }
-            AggExprStruct::Percentile(expr) => {
-                let child = self.create_expr(expr.child.as_ref().unwrap(), Arc::clone(&schema))?;
-                let percentile =
-                    self.create_expr(expr.percentage.as_ref().unwrap(), Arc::clone(&schema))?;
-                // Spark's exact Percentile uses full-precision linear interpolation. Comet uses
-                // its own UDAF rather than DataFusion's percentile_cont because DataFusion
-                // quantizes the interpolation weight.
-                let percentile_value = percentile_value(expr.percentage.as_ref().unwrap())?;
-                let func = AggregateUDF::new_from_impl(SparkPercentile::try_new(percentile_value)?);
-                AggregateExprBuilder::new(func.into(), vec![child, percentile])
-                    .schema(schema)
-                    .alias("percentile")
-                    .with_ignore_nulls(false)
-                    .with_distinct(false)
-                    .build()
-                    .map_err(|e| e.into())
-            }
-            AggExprStruct::ApproxPercentile(expr) => {
-                let child = self.create_expr(expr.child.as_ref().unwrap(), Arc::clone(&schema))?;
-                let input_type = to_arrow_datatype(expr.input_type.as_ref().unwrap());
-                let func = AggregateUDF::new_from_impl(ApproxPercentile::new(
-                    expr.percentiles.clone(),
-                    expr.accuracy,
-                    input_type,
-                    expr.return_array,
-                ));
-                Self::create_aggr_func_expr("approx_percentile", schema, vec![child], func)
-            }
-            AggExprStruct::BloomFilterAgg(expr) => {
-                let child = self.create_expr(expr.child.as_ref().unwrap(), Arc::clone(&schema))?;
-                let num_items =
-                    self.create_expr(expr.num_items.as_ref().unwrap(), Arc::clone(&schema))?;
-                let num_bits =
-                    self.create_expr(expr.num_bits.as_ref().unwrap(), Arc::clone(&schema))?;
-                let datatype = to_arrow_datatype(expr.datatype.as_ref().unwrap());
-                let version = match expr.version() {
-                    spark_expression::BloomFilterVersion::V2 => SparkBloomFilterVersion::V2,
-                    // Default (Unspecified or V1) preserves the pre-Spark-4.1 format that
-                    // Comet has always emitted, keeping older Spark versions byte-equivalent.
-                    _ => SparkBloomFilterVersion::V1,
-                };
-                let func = AggregateUDF::new_from_impl(BloomFilterAgg::new(
-                    Arc::clone(&num_items),
-                    Arc::clone(&num_bits),
-                    datatype,
-                    version,
-                ));
-                Self::create_aggr_func_expr("bloom_filter_agg", schema, vec![child], func)
-            }
-            AggExprStruct::HllSketchAgg(expr) => {
-                let child = self.create_expr(expr.child.as_ref().unwrap(), Arc::clone(&schema))?;
-                let func = AggregateUDF::new_from_impl(HllSketchAgg::new(expr.lg_config_k));
-                Self::create_aggr_func_expr("hll_sketch_agg", schema, vec![child], func)
-            }
-            AggExprStruct::CollectSet(expr) => {
-                let child = self.create_expr(expr.child.as_ref().unwrap(), Arc::clone(&schema))?;
-                let child = Self::coerce_collect_child_nullability(child, &schema)?;
-                let func = AggregateUDF::new_from_impl(CometCollectSet::new());
-                Self::create_aggr_func_expr("collect_set", schema, vec![child], func)
-            }
-            AggExprStruct::CollectList(expr) => {
-                let child = self.create_expr(expr.child.as_ref().unwrap(), Arc::clone(&schema))?;
-                let child = Self::coerce_collect_child_nullability(child, &schema)?;
-                let func = AggregateUDF::new_from_impl(CometCollectList::new());
-                Self::create_aggr_func_expr("collect_list", schema, vec![child], func)
-            }
-            AggExprStruct::Hllpp(expr) => {
-                let child = self.create_expr(expr.child.as_ref().unwrap(), Arc::clone(&schema))?;
-                let func = AggregateUDF::new_from_impl(HllPlusPlus::new(expr.precision));
-                Self::create_aggr_func_expr("approx_count_distinct", schema, vec![child], func)
-            }
-            AggExprStruct::HllUnionAgg(expr) => {
-                let child = self.create_expr(expr.child.as_ref().unwrap(), Arc::clone(&schema))?;
-                let func =
-                    AggregateUDF::new_from_impl(HllUnionAgg::new(expr.allow_different_lg_config_k));
-                Self::create_aggr_func_expr("hll_union_agg", schema, vec![child], func)
-            }
-            AggExprStruct::ListAgg(expr) => {
-                let child = self.create_expr(expr.child.as_ref().unwrap(), Arc::clone(&schema))?;
-                let delimiter =
-                    self.create_expr(expr.delimiter.as_ref().unwrap(), Arc::clone(&schema))?;
-                let func = AggregateUDF::new_from_impl(SparkListAgg::new());
-                Self::create_aggr_func_expr("listagg", schema, vec![child, delimiter], func)
-            }
-            AggExprStruct::MaxBy(expr) => {
-                let value = self.create_expr(expr.value.as_ref().unwrap(), Arc::clone(&schema))?;
-                let ordering =
-                    self.create_expr(expr.ordering.as_ref().unwrap(), Arc::clone(&schema))?;
-                let func = AggregateUDF::new_from_impl(MaxMinBy::new_max_by());
-                Self::create_aggr_func_expr("max_by", schema, vec![value, ordering], func)
-            }
-            AggExprStruct::MinBy(expr) => {
-                let value = self.create_expr(expr.value.as_ref().unwrap(), Arc::clone(&schema))?;
-                let ordering =
-                    self.create_expr(expr.ordering.as_ref().unwrap(), Arc::clone(&schema))?;
-                let func = AggregateUDF::new_from_impl(MaxMinBy::new_min_by());
-                Self::create_aggr_func_expr("min_by", schema, vec![value, ordering], func)
-            }
-            AggExprStruct::Mode(expr) => {
-                let child = self.create_expr(expr.child.as_ref().unwrap(), Arc::clone(&schema))?;
-                let datatype = to_arrow_datatype(expr.datatype.as_ref().unwrap());
-                let func =
-                    AggregateUDF::new_from_impl(Mode::new(datatype, expr.normalize_neg_zero));
-                Self::create_aggr_func_expr("mode", schema, vec![child], func)
-            }
-        }
-    }
-
-    /// Create a DataFusion windows physical expression from Spark physical expression
-    fn create_window_expr<'a>(
-        &'a self,
-        spark_expr: &'a spark_operator::WindowExpr,
-        input_schema: SchemaRef,
-        partition_by: &[Arc<dyn PhysicalExpr>],
-        sort_exprs: &[PhysicalSortExpr],
-    ) -> Result<Arc<dyn WindowExpr>, ExecutionError> {
-        let window_func: WindowFunctionDefinition;
-        let window_func_name: String;
-        let window_args: Vec<Arc<dyn PhysicalExpr>>;
-        if let Some(func) = &spark_expr.built_in_window_function {
-            match &func.expr_struct {
-                Some(ExprStruct::ScalarFunc(f)) => {
-                    window_func_name = f.func.clone();
-                    window_args = f
-                        .args
-                        .iter()
-                        .map(|expr| self.create_expr(expr, Arc::clone(&input_schema)))
-                        .collect::<Result<Vec<_>, ExecutionError>>()?;
-                    window_func =
-                        self.find_df_window_function(&window_func_name)
-                            .ok_or_else(|| {
-                                GeneralError(format!(
-                                    "{window_func_name} not supported for window function"
-                                ))
-                            })?;
-                }
-                other => {
-                    return Err(GeneralError(format!(
-                        "{other:?} not supported for window function"
-                    )))
-                }
-            };
-        } else if let Some(agg_func) = &spark_expr.agg_func {
-            // Is the frame ever-expanding (start = UnboundedPreceding)? When it is,
-            // DataFusion uses `PlainAggregateWindowExpr` which does not call
-            // `retract_batch`, so we can safely use Comet's Spark-compatible
-            // UDAFs (SumDecimal/SumInteger/AvgDecimal/Avg). Otherwise it uses
-            // `SlidingAggregateWindowExpr` which requires retract — Comet's UDAFs
-            // don't implement it, so the caller must fall back to DataFusion's
-            // built-ins (which do).
-            let is_ever_expanding = spark_expr
-                .spec
-                .as_ref()
-                .and_then(|s| s.frame_specification.as_ref())
-                .and_then(|f| f.lower_bound.as_ref())
-                .and_then(|lb| lb.lower_frame_bound_struct.as_ref())
-                .map(|inner| matches!(inner, LowerFrameBoundStruct::UnboundedPreceding(_)))
-                .unwrap_or(true);
-            let (func, args) =
-                self.process_agg_func(agg_func, Arc::clone(&input_schema), is_ever_expanding)?;
-            window_func_name = func.name().to_string();
-            window_args = args;
-            window_func = func;
-        } else {
-            return Err(GeneralError(
-                "Both func and agg_func are not set".to_string(),
-            ));
-        }
-
-        let spark_window_frame = match spark_expr
-            .spec
-            .as_ref()
-            .and_then(|inner| inner.frame_specification.as_ref())
-        {
-            Some(frame) => frame,
-            _ => {
-                return Err(ExecutionError::DeserializeError(
-                    "Cannot deserialize window frame".to_string(),
-                ))
-            }
-        };
-
-        let units = match spark_window_frame.frame_type() {
-            WindowFrameType::Rows => WindowFrameUnits::Rows,
-            WindowFrameType::Range => WindowFrameUnits::Range,
-        };
-
-        let lower_bound: WindowFrameBound = match spark_window_frame
-            .lower_bound
-            .as_ref()
-            .and_then(|inner| inner.lower_frame_bound_struct.as_ref())
-        {
-            Some(l) => match l {
-                LowerFrameBoundStruct::UnboundedPreceding(_) => match units {
-                    WindowFrameUnits::Rows => {
-                        WindowFrameBound::Preceding(ScalarValue::UInt64(None))
-                    }
-                    WindowFrameUnits::Range => {
-                        WindowFrameBound::Preceding(ScalarValue::Int64(None))
-                    }
-                    WindowFrameUnits::Groups => {
-                        return Err(GeneralError(
-                            "WindowFrameUnits::Groups is not supported.".to_string(),
-                        ));
-                    }
-                },
-                LowerFrameBoundStruct::Preceding(offset) => {
-                    // Spark encodes ROWS bound direction via the sign of the offset:
-                    // negative => PRECEDING, positive => FOLLOWING. The proto
-                    // `LowerWindowFrameBound` only carries a `Preceding` variant, so
-                    // Comet overloads it for both cases. Route to the matching
-                    // DataFusion `WindowFrameBound` based on the sign.
-                    match units {
-                        WindowFrameUnits::Rows => {
-                            let abs = offset.offset.unsigned_abs();
-                            if offset.offset < 0 {
-                                WindowFrameBound::Preceding(ScalarValue::UInt64(Some(abs)))
-                            } else {
-                                WindowFrameBound::Following(ScalarValue::UInt64(Some(abs)))
-                            }
-                        }
-                        WindowFrameUnits::Range => {
-                            let scalar = match offset.range_offset.as_ref() {
-                                Some(lit) => numeric_literal_to_scalar(lit)?,
-                                None => ScalarValue::Int64(Some(offset.offset.abs())),
-                            };
-                            WindowFrameBound::Preceding(scalar)
-                        }
-                        WindowFrameUnits::Groups => {
-                            return Err(GeneralError(
-                                "WindowFrameUnits::Groups is not supported.".to_string(),
-                            ));
-                        }
-                    }
-                }
-                LowerFrameBoundStruct::CurrentRow(_) => WindowFrameBound::CurrentRow,
-            },
-            None => match units {
-                WindowFrameUnits::Rows => WindowFrameBound::Preceding(ScalarValue::UInt64(None)),
-                WindowFrameUnits::Range => WindowFrameBound::Preceding(ScalarValue::Int64(None)),
-                WindowFrameUnits::Groups => {
-                    return Err(GeneralError(
-                        "WindowFrameUnits::Groups is not supported.".to_string(),
-                    ));
-                }
-            },
-        };
-
-        let upper_bound: WindowFrameBound = match spark_window_frame
-            .upper_bound
-            .as_ref()
-            .and_then(|inner| inner.upper_frame_bound_struct.as_ref())
-        {
-            Some(u) => match u {
-                UpperFrameBoundStruct::UnboundedFollowing(_) => match units {
-                    WindowFrameUnits::Rows => {
-                        WindowFrameBound::Following(ScalarValue::UInt64(None))
-                    }
-                    WindowFrameUnits::Range => {
-                        WindowFrameBound::Following(ScalarValue::Int64(None))
-                    }
-                    WindowFrameUnits::Groups => {
-                        return Err(GeneralError(
-                            "WindowFrameUnits::Groups is not supported.".to_string(),
-                        ));
-                    }
-                },
-                UpperFrameBoundStruct::Following(offset) => match units {
-                    WindowFrameUnits::Rows => {
-                        // Mirror the lower-bound sign handling: the upper proto
-                        // variant is `Following`, but Spark encodes the bound
-                        // direction via sign. Negative => PRECEDING, positive =>
-                        // FOLLOWING.
-                        let abs = offset.offset.unsigned_abs();
-                        if offset.offset < 0 {
-                            WindowFrameBound::Preceding(ScalarValue::UInt64(Some(abs)))
-                        } else {
-                            WindowFrameBound::Following(ScalarValue::UInt64(Some(abs)))
-                        }
-                    }
-                    WindowFrameUnits::Range => {
-                        let scalar = match offset.range_offset.as_ref() {
-                            Some(lit) => numeric_literal_to_scalar(lit)?,
-                            None => ScalarValue::Int64(Some(offset.offset)),
-                        };
-                        WindowFrameBound::Following(scalar)
-                    }
-                    WindowFrameUnits::Groups => {
-                        return Err(GeneralError(
-                            "WindowFrameUnits::Groups is not supported.".to_string(),
-                        ));
-                    }
-                },
-                UpperFrameBoundStruct::CurrentRow(_) => WindowFrameBound::CurrentRow,
-            },
-            None => match units {
-                WindowFrameUnits::Rows => WindowFrameBound::Following(ScalarValue::UInt64(None)),
-                WindowFrameUnits::Range => WindowFrameBound::Following(ScalarValue::Int64(None)),
-                WindowFrameUnits::Groups => {
-                    return Err(GeneralError(
-                        "WindowFrameUnits::Groups is not supported.".to_string(),
-                    ));
-                }
-            },
-        };
-
-        let window_frame = WindowFrame::new_bounds(units, lower_bound, upper_bound);
-        let lex_orderings = LexOrdering::new(sort_exprs.to_vec());
-        let sort_phy_exprs = lex_orderings.as_deref().unwrap_or(&[]);
-
-        datafusion::physical_plan::windows::create_window_expr(
-            &window_func,
-            window_func_name,
-            &window_args,
-            partition_by,
-            sort_phy_exprs,
-            window_frame.into(),
-            input_schema,
-            spark_expr.ignore_nulls,
-            false, // TODO: Spark does not support DISTINCT ... OVER
-            None,
-        )
-        .map_err(|e| ExecutionError::DataFusionError(e.to_string()))
-    }
-
-    fn process_agg_func(
-        &self,
-        agg_func: &AggExpr,
-        schema: SchemaRef,
-        is_ever_expanding: bool,
-    ) -> Result<(WindowFunctionDefinition, Vec<Arc<dyn PhysicalExpr>>), ExecutionError> {
-        // Wrap a freshly-constructed AggregateUDF impl as a WindowFunctionDefinition.
-        fn udaf<U: datafusion::logical_expr::AggregateUDFImpl + 'static>(
-            udaf: U,
-        ) -> WindowFunctionDefinition {
-            WindowFunctionDefinition::AggregateUDF(Arc::new(AggregateUDF::new_from_impl(udaf)))
-        }
-
-        // Resolve a window-capable function by name via the session registry, returning
-        // a clean "X not supported for window function" error if missing.
-        let by_name = |name: &str| -> Result<WindowFunctionDefinition, ExecutionError> {
-            self.find_df_window_function(name)
-                .ok_or_else(|| GeneralError(format!("{name} not supported for window function")))
-        };
-
-        match &agg_func.expr_struct {
-            Some(AggExprStruct::Count(expr)) => {
-                let children = expr
-                    .children
-                    .iter()
-                    .map(|child| self.create_expr(child, Arc::clone(&schema)))
-                    .collect::<Result<Vec<_>, _>>()?;
-                Ok((by_name("count")?, children))
-            }
-            Some(AggExprStruct::Min(expr)) => {
-                let child = self.create_expr(expr.child.as_ref().unwrap(), Arc::clone(&schema))?;
-                let func = min_max_udaf(&child.data_type(&schema)?, false);
-                Ok((WindowFunctionDefinition::AggregateUDF(func), vec![child]))
-            }
-            Some(AggExprStruct::Max(expr)) => {
-                let child = self.create_expr(expr.child.as_ref().unwrap(), Arc::clone(&schema))?;
-                let func = min_max_udaf(&child.data_type(&schema)?, true);
-                Ok((WindowFunctionDefinition::AggregateUDF(func), vec![child]))
-            }
-            Some(AggExprStruct::Sum(expr)) => {
-                // For ever-expanding frames, use Comet's Spark-compatible Sum UDAFs
-                // (SumDecimal / SumInteger) which enforce Spark overflow semantics.
-                // For sliding frames, those UDAFs can't be used (no retract_batch),
-                // so delegate to DataFusion's built-in `sum`, which supports retract
-                // but doesn't enforce Spark's decimal precision overflow-to-NULL.
-                let child = self.create_expr(expr.child.as_ref().unwrap(), Arc::clone(&schema))?;
-                let arrow_type = to_arrow_datatype(expr.datatype.as_ref().unwrap());
-                match arrow_type {
-                    DataType::Decimal128(_, _) if is_ever_expanding => {
-                        let eval_mode = from_protobuf_eval_mode(expr.eval_mode)?;
-                        let func = SumDecimal::try_new(
-                            arrow_type,
-                            eval_mode,
-                            agg_func.expr_id,
-                            Arc::clone(&self.query_context_registry),
-                        )?;
-                        Ok((udaf(func), vec![child]))
-                    }
-                    DataType::Int8 | DataType::Int16 | DataType::Int32 | DataType::Int64
-                        if is_ever_expanding =>
-                    {
-                        let eval_mode = from_protobuf_eval_mode(expr.eval_mode)?;
-                        let func = SumInteger::try_new(arrow_type, eval_mode)?;
-                        Ok((udaf(func), vec![child]))
-                    }
-                    _ => {
-                        let actual = child.data_type(&schema)?;
-                        let child: Arc<dyn PhysicalExpr> = if actual != arrow_type {
-                            Arc::new(CastExpr::new(child, arrow_type, None))
-                        } else {
-                            child
-                        };
-                        Ok((by_name("sum")?, vec![child]))
-                    }
-                }
-            }
-            Some(AggExprStruct::Avg(expr)) => {
-                let child = self.create_expr(expr.child.as_ref().unwrap(), Arc::clone(&schema))?;
-                let datatype = to_arrow_datatype(expr.datatype.as_ref().unwrap());
-                let input_datatype = to_arrow_datatype(expr.sum_datatype.as_ref().unwrap());
-                match datatype {
-                    DataType::Decimal128(_, _) if is_ever_expanding => {
-                        let eval_mode = from_protobuf_eval_mode(expr.eval_mode)?;
-                        let func = AvgDecimal::new(
-                            datatype,
-                            input_datatype,
-                            eval_mode,
-                            agg_func.expr_id,
-                            Arc::clone(&self.query_context_registry),
-                        );
-                        Ok((udaf(func), vec![child]))
-                    }
-                    _ if is_ever_expanding => {
-                        let child: Arc<dyn PhysicalExpr> =
-                            Arc::new(CastExpr::new(child, DataType::Float64, None));
-                        let func = Avg::new("avg", DataType::Float64);
-                        Ok((udaf(func), vec![child]))
-                    }
-                    _ => {
-                        // Sliding frame — DataFusion's built-in `avg` handles retract.
-                        // Cast non-decimal input to Float64 to match Spark's Avg result type.
-                        let child: Arc<dyn PhysicalExpr> = match datatype {
-                            DataType::Decimal128(_, _) => child,
-                            _ => Arc::new(CastExpr::new(child, DataType::Float64, None)),
-                        };
-                        Ok((by_name("avg")?, vec![child]))
-                    }
-                }
-            }
-            Some(AggExprStruct::First(expr)) => {
-                // Spark's FIRST_VALUE → DataFusion's `first_value` UDAF. The UDAF honors
-                // ignore-nulls via the WindowExpr-level `ignore_nulls` flag.
-                let child = self.create_expr(expr.child.as_ref().unwrap(), Arc::clone(&schema))?;
-                Ok((by_name("first_value")?, vec![child]))
-            }
-            Some(AggExprStruct::Last(expr)) => {
-                // Spark's LAST_VALUE → DataFusion's `last_value` UDAF.
-                let child = self.create_expr(expr.child.as_ref().unwrap(), Arc::clone(&schema))?;
-                Ok((by_name("last_value")?, vec![child]))
-            }
-            other => Err(GeneralError(format!(
-                "{other:?} not supported for window function"
-            ))),
-        }
-    }
-
-    /// Find DataFusion's built-in window function by name.
-    fn find_df_window_function(&self, name: &str) -> Option<WindowFunctionDefinition> {
-        let registry = &self.session_ctx.state();
-        // Prefer the WindowUDF (frame-aware) over the AggregateUDF when both exist.
-        // Functions like `nth_value` are registered twice in DataFusion: once as an
-        // aggregate and once as a window function. The window variant has the
-        // correct IGNORE NULLS / frame semantics for an OVER clause; the aggregate
-        // variant wrapped into PlainAggregateWindowExpr does not. Aggregate-only
-        // functions (count/sum/min/max/avg/...) have no UDWF and fall through.
-        registry
-            .udwf(name)
-            .map(WindowFunctionDefinition::WindowUDF)
-            .ok()
-            .or_else(|| {
-                registry
-                    .udaf(name)
-                    .map(WindowFunctionDefinition::AggregateUDF)
-                    .ok()
-            })
     }
 
     fn create_scalar_function_expr(
@@ -4229,40 +2127,6 @@ impl PhysicalPlanner {
         Ok(scalar_expr)
     }
 
-    /// Normalizes a `collect_list` / `collect_set` argument to the all-nullable variant of its
-    /// declared type.
-    ///
-    /// `SparkCollectList::return_type` / `state_fields` (and `SparkCollectSet`) derive the list
-    /// element type from the argument's *declared* type, while the accumulator builds its list
-    /// from the argument arrays it actually received: `ScalarValue::new_list` honors its
-    /// `data_type` parameter only when the value set is empty, and otherwise just concatenates
-    /// the collected scalars. Nothing forces those two to agree, so if an expression's
-    /// `evaluate()` output type differs from its `data_type()` in nested field nullability, the
-    /// grouped `AggregateExec` fails validating its own output batch ("column types must match
-    /// schema types") — `RecordBatch::try_new` compares with `DataType::equals_datatype`, which
-    /// does compare nested nullability.
-    ///
-    /// The grouped path normalizes its own inputs, so this only still matters for the ungrouped
-    /// `Accumulator` (a global aggregate, or a window frame).
-    ///
-    /// Casting unconditionally (rather than only when the declared type has a non-nullable
-    /// nested field) makes this a normalization barrier: the accumulator is guaranteed to see
-    /// arrays of exactly the type the plan declared, whichever direction the drift goes. The
-    /// cast is metadata-only — `cast_struct_to_struct` and `cast_list_values` stamp the target
-    /// fields and clone the child buffers — so it does not copy data.
-    fn coerce_collect_child_nullability(
-        child: Arc<dyn PhysicalExpr>,
-        schema: &SchemaRef,
-    ) -> Result<Arc<dyn PhysicalExpr>, ExecutionError> {
-        let child_type = child.data_type(schema.as_ref())?;
-        if !child_type.is_nested() {
-            // Only nested types carry field-level nullability that can drift.
-            return Ok(child);
-        }
-        let nullable_type = make_all_fields_nullable(&child_type);
-        Ok(Arc::new(CastExpr::new(child, nullable_type, None)))
-    }
-
     /// Casts `child` so its type matches `widen(child_type)`, wrapping it in a `CastExpr` only when
     /// the widened type differs. Used for the `map_entries` argument widening (with
     /// `widen_map_entry_value_nullable`). Unlike `coerce_collect_child_nullability`, which casts
@@ -4282,234 +2146,6 @@ impl PhysicalPlanner {
             Ok(Arc::new(CastExpr::new(child, widened, None)))
         }
     }
-
-    fn create_aggr_func_expr(
-        name: &str,
-        schema: SchemaRef,
-        children: Vec<Arc<dyn PhysicalExpr>>,
-        func: AggregateUDF,
-    ) -> Result<AggregateFunctionExpr, ExecutionError> {
-        AggregateExprBuilder::new(Arc::new(func), children)
-            .schema(schema)
-            .alias(name)
-            .with_ignore_nulls(false)
-            .with_distinct(false)
-            .build()
-            .map_err(|e| e.into())
-    }
-}
-
-/// `min` or `max` over `data_type`: Spark's version for floats, which DataFusion orders
-/// differently, and DataFusion's for every other type.
-fn min_max_udaf(data_type: &DataType, is_max: bool) -> Arc<AggregateUDF> {
-    // Spark has only 32- and 64-bit floating-point types. Keep Float16 on DataFusion's path so
-    // an internal plan using it does not reach SparkMinMax, whose accumulators reject that type.
-    if matches!(data_type, DataType::Float32 | DataType::Float64) {
-        Arc::new(AggregateUDF::new_from_impl(SparkMinMax::new(is_max)))
-    } else if is_max {
-        max_udaf()
-    } else {
-        min_udaf()
-    }
-}
-
-fn percentile_value(expr: &spark_expression::Expr) -> Result<f64, ExecutionError> {
-    match &expr.expr_struct {
-        Some(ExprStruct::Literal(literal)) if !literal.is_null => match &literal.value {
-            Some(Value::DoubleVal(value)) => Ok(*value),
-            Some(Value::FloatVal(value)) => Ok(*value as f64),
-            _ => Err(GeneralError(
-                "Percentile value must be a floating-point literal".to_string(),
-            )),
-        },
-        _ => Err(GeneralError(
-            "Percentile value must be a non-null literal".to_string(),
-        )),
-    }
-}
-
-/// Collects the indices of the columns in the input schema that are used in the expression
-/// and returns them as a pair of vectors, one for the left side and one for the right side.
-fn expr_to_columns(
-    expr: &Arc<dyn PhysicalExpr>,
-    left_field_len: usize,
-    right_field_len: usize,
-) -> Result<(Vec<usize>, Vec<usize>), ExecutionError> {
-    let mut left_field_indices: Vec<usize> = vec![];
-    let mut right_field_indices: Vec<usize> = vec![];
-
-    expr.apply(&mut |expr: &Arc<dyn PhysicalExpr>| {
-        Ok({
-            if let Some(column) = expr.downcast_ref::<Column>() {
-                if column.index() > left_field_len + right_field_len {
-                    return Err(DataFusionError::Internal(format!(
-                        "Column index {} out of range",
-                        column.index()
-                    )));
-                } else if column.index() < left_field_len {
-                    left_field_indices.push(column.index());
-                } else {
-                    right_field_indices.push(column.index() - left_field_len);
-                }
-            }
-            TreeNodeRecursion::Continue
-        })
-    })?;
-
-    left_field_indices.sort();
-    right_field_indices.sort();
-
-    Ok((left_field_indices, right_field_indices))
-}
-
-/// Convert a Spark numeric Literal proto into a `ScalarValue` whose data type
-/// matches the literal's declared type. Used for RANGE window frame offsets,
-/// where the offset's type must match the ORDER BY column's type. Only numeric
-/// types are supported; the Scala side rejects non-numeric RANGE offsets before
-/// reaching here.
-fn numeric_literal_to_scalar(
-    lit: &spark_expression::Literal,
-) -> Result<ScalarValue, ExecutionError> {
-    let data_type = to_arrow_datatype(lit.datatype.as_ref().ok_or_else(|| {
-        GeneralError("RANGE frame offset literal is missing datatype".to_string())
-    })?);
-
-    if lit.is_null {
-        return Err(GeneralError(
-            "RANGE frame offset must not be null".to_string(),
-        ));
-    }
-
-    let value = lit
-        .value
-        .as_ref()
-        .ok_or_else(|| GeneralError("RANGE frame offset literal has no value".to_string()))?;
-
-    let scalar = match value {
-        Value::ByteVal(v) => ScalarValue::Int8(Some(*v as i8)),
-        Value::ShortVal(v) => ScalarValue::Int16(Some(*v as i16)),
-        Value::IntVal(v) => ScalarValue::Int32(Some(*v)),
-        Value::LongVal(v) => ScalarValue::Int64(Some(*v)),
-        Value::FloatVal(v) => ScalarValue::Float32(Some(*v)),
-        Value::DoubleVal(v) => ScalarValue::Float64(Some(*v)),
-        Value::DecimalVal(bytes) => {
-            let big_integer = BigInt::from_signed_bytes_be(bytes);
-            let integer = big_integer.to_i128().ok_or_else(|| {
-                GeneralError(format!(
-                    "Cannot parse {big_integer:?} as i128 for Decimal RANGE frame offset"
-                ))
-            })?;
-            match data_type {
-                DataType::Decimal128(p, s) => ScalarValue::Decimal128(Some(integer), p, s),
-                ref dt => {
-                    return Err(GeneralError(format!(
-                        "Decimal RANGE frame offset has non-Decimal128 datatype: {dt:?}"
-                    )))
-                }
-            }
-        }
-        other => {
-            return Err(GeneralError(format!(
-                "Unsupported value variant for RANGE frame offset: {other:?}"
-            )))
-        }
-    };
-
-    Ok(scalar)
-}
-
-/// A physical join filter rewritter which rewrites the column indices in the expression
-/// to use the new column indices. See `rewrite_physical_expr`.
-struct JoinFilterRewriter<'a> {
-    left_field_len: usize,
-    right_field_len: usize,
-    left_field_indices: &'a [usize],
-    right_field_indices: &'a [usize],
-}
-
-impl JoinFilterRewriter<'_> {
-    fn new<'a>(
-        left_field_len: usize,
-        right_field_len: usize,
-        left_field_indices: &'a [usize],
-        right_field_indices: &'a [usize],
-    ) -> JoinFilterRewriter<'a> {
-        JoinFilterRewriter {
-            left_field_len,
-            right_field_len,
-            left_field_indices,
-            right_field_indices,
-        }
-    }
-}
-
-impl TreeNodeRewriter for JoinFilterRewriter<'_> {
-    type Node = Arc<dyn PhysicalExpr>;
-
-    fn f_down(&mut self, node: Self::Node) -> datafusion::common::Result<Transformed<Self::Node>> {
-        if let Some(column) = node.downcast_ref::<Column>() {
-            if column.index() < self.left_field_len {
-                // left side
-                let new_index = self
-                    .left_field_indices
-                    .iter()
-                    .position(|&x| x == column.index())
-                    .ok_or_else(|| {
-                        DataFusionError::Internal(format!(
-                            "Column index {} not found in left field indices",
-                            column.index()
-                        ))
-                    })?;
-                Ok(Transformed::yes(Arc::new(Column::new(
-                    column.name(),
-                    new_index,
-                ))))
-            } else if column.index() < self.left_field_len + self.right_field_len {
-                // right side
-                let new_index = self
-                    .right_field_indices
-                    .iter()
-                    .position(|&x| x + self.left_field_len == column.index())
-                    .ok_or_else(|| {
-                        DataFusionError::Internal(format!(
-                            "Column index {} not found in right field indices",
-                            column.index()
-                        ))
-                    })?;
-                Ok(Transformed::yes(Arc::new(Column::new(
-                    column.name(),
-                    new_index + self.left_field_indices.len(),
-                ))))
-            } else {
-                Err(DataFusionError::Internal(format!(
-                    "Column index {} out of range",
-                    column.index()
-                )))
-            }
-        } else {
-            Ok(Transformed::no(node))
-        }
-    }
-}
-
-/// Rewrites the physical expression to use the new column indices.
-/// This is necessary when the physical expression is used in a join filter, as the column
-/// indices are different from the original schema.
-fn rewrite_physical_expr(
-    expr: Arc<dyn PhysicalExpr>,
-    left_field_len: usize,
-    right_field_len: usize,
-    left_field_indices: &[usize],
-    right_field_indices: &[usize],
-) -> Result<Arc<dyn PhysicalExpr>, ExecutionError> {
-    let mut rewriter = JoinFilterRewriter::new(
-        left_field_len,
-        right_field_len,
-        left_field_indices,
-        right_field_indices,
-    );
-
-    Ok(expr.rewrite(&mut rewriter).data()?)
 }
 
 /// Strip any [`CheckedBinaryExpr`] wrappers so callers can inspect the expression
@@ -4739,46 +2375,49 @@ fn parse_file_scan_tasks_from_common(
                 })?
                 .clone();
 
+            // iceberg-rust holds these counts and offsets as `u64`, so a negative one is rejected
+            // here, where the proto's `int64` becomes iceberg-rust's type.
+            let non_negative = |value: Option<i64>, what: &str| {
+                value.map(u64::try_from).transpose().map_err(|_| {
+                    GeneralError(format!("Delete file '{file_path}' has a negative {what}"))
+                })
+            };
             // Required for deletion vectors: iceberg-rust checks it against the number of
             // positions decoded from the blob and errors if it is absent.
-            let record_count = del
-                .record_count
-                .map(u64::try_from)
-                .transpose()
-                .map_err(|_| {
-                    GeneralError(format!(
-                        "Delete file '{}' has a negative record count",
-                        file_path
-                    ))
-                })?;
+            let record_count = non_negative(del.record_count, "record count")?;
+            let content_offset = non_negative(del.content_offset, "content offset")?;
+            let content_size_in_bytes = non_negative(del.content_size_in_bytes, "content size")?;
 
-            Ok(iceberg::scan::FileScanTaskDeleteFile {
+            iceberg::scan::FileScanTaskDeleteFile::builder()
                 // Passed RAW, like `data_file_path` below (same exact-string delete-matching
                 // constraint -- see there).
-                file_path,
-                file_type,
-                file_format,
+                .with_file_path(file_path)
+                .with_file_type(file_type)
+                .with_file_format(file_format)
                 // Not serialized; filled in by IcebergScanExec::fill_delete_file_sizes.
-                file_size_in_bytes: 0,
-                partition_spec_id: del.partition_spec_id,
-                equality_ids: if del.equality_ids.is_empty() {
+                .with_file_size_in_bytes(0)
+                .with_partition_spec_id(del.partition_spec_id)
+                .with_equality_ids(if del.equality_ids.is_empty() {
                     None
                 } else {
                     Some(del.equality_ids.clone())
-                },
+                })
                 // Deletion-vector coordinates, which the serde sets only when file_format is
                 // PUFFIN. referenced_data_file names the data file the vector applies to; the other
                 // two locate the deletion-vector-v1 blob in its Puffin file. file_format above is
                 // the discriminator, since Iceberg also populates referencedDataFile on
                 // file-scoped Parquet position deletes.
-                referenced_data_file: del.referenced_data_file.clone(),
-                content_offset: del.content_offset,
-                content_size_in_bytes: del.content_size_in_bytes,
-                record_count,
+                .with_referenced_data_file(del.referenced_data_file.clone())
+                .with_content_offset(content_offset)
+                .with_content_size_in_bytes(content_size_in_bytes)
+                .with_record_count(record_count)
                 // Plaintext StandardKeyMetadata forwarded verbatim from the JVM; decoded by
                 // iceberg-rust with no KMS unwrap. None for unencrypted delete files.
-                key_metadata: del.key_metadata.clone().map(Vec::into_boxed_slice),
-            })
+                .with_key_metadata(del.key_metadata.clone().map(Vec::into_boxed_slice))
+                // Rejects a deletion vector that lacks its referenced data file, either blob
+                // coordinate or its record count.
+                .build()
+                .map_err(|e| GeneralError(format!("Invalid Iceberg delete file: {e}")))
         })
         .collect::<Result<Vec<_>, ExecutionError>>()?;
 
@@ -5149,16 +2788,13 @@ fn literal_to_array_ref(
                     .into_iter()
                     .map(|v| {
                         let big_integer = BigInt::from_signed_bytes_be(&v);
-                        big_integer
-                            .to_i128()
-                            .ok_or_else(|| {
-                                GeneralError(format!(
-                                    "Cannot parse {big_integer:?} as i128 for Decimal literal"
-                                ))
-                            })
-                            .unwrap()
+                        big_integer.to_i128().ok_or_else(|| {
+                            GeneralError(format!(
+                                "Cannot parse {big_integer:?} as i128 for Decimal literal"
+                            ))
+                        })
                     })
-                    .collect::<Vec<_>>()
+                    .collect::<Result<Vec<_>, _>>()?
                     .into(),
                 Some(nulls.clone().into()),
             )
@@ -7845,6 +5481,174 @@ mod tests {
         Ok(())
     }
 
+    /// Null slots arrive as empty bytes with a false null mask entry, and must decode next to
+    /// valid values: `[123.45, null, -0.01]`.
+    #[test]
+    fn test_literal_to_decimal_list_with_nulls() -> Result<(), ExecutionError> {
+        let data = ListLiteral {
+            decimal_values: vec![
+                12345i128.to_be_bytes().to_vec(),
+                vec![],
+                (-1i128).to_be_bytes().to_vec(),
+            ],
+            null_mask: vec![true, false, true],
+            ..Default::default()
+        };
+
+        let array = literal_to_array_ref(DataType::Decimal128(38, 2), data)?;
+
+        let decimals = array
+            .as_any()
+            .downcast_ref::<arrow::array::Decimal128Array>()
+            .unwrap();
+        assert_eq!(decimals.data_type(), &DataType::Decimal128(38, 2));
+        assert_eq!(decimals.len(), 3);
+        assert_eq!(decimals.value(0), 12345);
+        assert!(decimals.is_null(1));
+        assert_eq!(decimals.value(2), -1);
+        Ok(())
+    }
+
+    /// A decimal list value that does not fit in i128 must return an error instead of panicking.
+    #[test]
+    fn test_literal_to_decimal_list_out_of_range() {
+        // 2^128 needs 17 bytes and exceeds i128::MAX.
+        let mut too_large = vec![0u8; 17];
+        too_large[0] = 0x01;
+        let data = ListLiteral {
+            decimal_values: vec![12345i128.to_be_bytes().to_vec(), too_large],
+            null_mask: vec![true, true],
+            ..Default::default()
+        };
+
+        match literal_to_array_ref(DataType::Decimal128(38, 2), data) {
+            Err(ExecutionError::GeneralError(msg)) => {
+                assert!(msg.contains("Cannot parse"), "unexpected message: {msg}")
+            }
+            other => panic!("expected GeneralError, got {other:?}"),
+        }
+    }
+
+    /// Builds two nullable columns of the same type and bound references to them, as inputs for
+    /// `create_binary_expr`.
+    fn binary_expr_inputs(
+        arrow_type: DataType,
+        proto_type: spark_expression::DataType,
+    ) -> (SchemaRef, Expr, Expr) {
+        let schema = Arc::new(Schema::new(vec![
+            Field::new("a", arrow_type.clone(), true),
+            Field::new("b", arrow_type, true),
+        ]));
+        let bound = |index| Expr {
+            expr_struct: Some(Bound(spark_expression::BoundReference {
+                index,
+                datatype: Some(proto_type.clone()),
+            })),
+            expr_id: None,
+            query_context: None,
+        };
+        (schema, bound(0), bound(1))
+    }
+
+    fn int32_proto_type() -> spark_expression::DataType {
+        spark_expression::DataType {
+            type_id: 3, // INT32
+            type_info: None,
+        }
+    }
+
+    fn decimal_proto_type(precision: i32, scale: i32) -> spark_expression::DataType {
+        use spark_expression::data_type::{
+            data_type_info::DatatypeStruct, DataTypeInfo, DecimalInfo,
+        };
+        spark_expression::DataType {
+            type_id: 10, // DECIMAL
+            type_info: Some(Box::new(DataTypeInfo {
+                datatype_struct: Some(DatatypeStruct::Decimal(DecimalInfo { precision, scale })),
+            })),
+        }
+    }
+
+    /// Checked integer arithmetic only covers `+ - * /`. Any other operator in Try or Ansi mode
+    /// must return an error instead of panicking.
+    #[test]
+    fn test_checked_binary_expr_unsupported_operator() {
+        use datafusion::logical_expr::Operator as DataFusionOperator;
+
+        let planner = PhysicalPlanner::default();
+        let (schema, left, right) = binary_expr_inputs(DataType::Int32, int32_proto_type());
+
+        for eval_mode in [EvalMode::Try, EvalMode::Ansi] {
+            let result = planner.create_binary_expr(
+                &left,
+                &left,
+                &right,
+                Some(&int32_proto_type()),
+                DataFusionOperator::Modulo,
+                Arc::clone(&schema),
+                eval_mode,
+            );
+            match result {
+                Err(ExecutionError::GeneralError(msg)) => assert!(
+                    msg.contains("Modulo") && msg.contains(&format!("{eval_mode:?}")),
+                    "unexpected message: {msg}"
+                ),
+                Err(e) => panic!("expected GeneralError for {eval_mode:?}, got {e:?}"),
+                Ok(expr) => panic!("expected an error for {eval_mode:?}, got {expr:?}"),
+            }
+        }
+    }
+
+    /// `return_type` is optional on the wire. A binary expression without one must return an
+    /// error instead of panicking, in each arm that reads it.
+    #[test]
+    fn test_binary_expr_missing_return_type() {
+        use datafusion::logical_expr::Operator as DataFusionOperator;
+
+        let planner = PhysicalPlanner::default();
+        let cases = [
+            // Generic arm.
+            (
+                DataType::Int32,
+                int32_proto_type(),
+                DataFusionOperator::Plus,
+            ),
+            // Wide decimal arm: 38 integer digits reach DECIMAL128_MAX_PRECISION for Plus.
+            (
+                DataType::Decimal128(38, 0),
+                decimal_proto_type(38, 0),
+                DataFusionOperator::Plus,
+            ),
+            // Decimal Divide arm.
+            (
+                DataType::Decimal128(38, 0),
+                decimal_proto_type(38, 0),
+                DataFusionOperator::Divide,
+            ),
+        ];
+
+        for (arrow_type, proto_type, op) in cases {
+            let (schema, left, right) = binary_expr_inputs(arrow_type.clone(), proto_type);
+            let result = planner.create_binary_expr(
+                &left,
+                &left,
+                &right,
+                None,
+                op,
+                schema,
+                EvalMode::Legacy,
+            );
+            match result {
+                Err(ExecutionError::GeneralError(msg)) => assert!(
+                    msg.contains("Missing return type"),
+                    "unexpected message for {op:?} on {arrow_type}: {msg}"
+                ),
+                Err(e) => panic!("expected GeneralError for {op:?} on {arrow_type}, got {e:?}"),
+                Ok(expr) => panic!("expected an error for {op:?} on {arrow_type}, got {expr:?}"),
+            }
+        }
+    }
+
     /// Test that reproduces the "Cast error: Casting from Int8 to Date32 not supported" error
     /// that occurs when performing date subtraction with Int8 (TINYINT) values.
     /// This corresponds to the Scala test "date_sub with int arrays" in CometExpressionSuite.
@@ -8361,6 +6165,70 @@ mod tests {
         // pool before spec_id 0's entry.
         assert_eq!(fields[0].name, "region_new");
         assert_eq!(fields[1].name, "category");
+    }
+
+    /// iceberg-rust holds a deletion vector's record count and blob coordinates as `u64`, so the
+    /// planner rejects a negative one from the proto rather than build the delete file with it. A
+    /// deletion vector without a record count reaches iceberg-rust's builder, whose error must
+    /// come back through the `Invalid Iceberg delete file` mapping.
+    #[test]
+    fn test_delete_file_pool_rejects_invalid_deletion_vectors() {
+        let deletion_vector = spark_operator::IcebergDeleteFile {
+            file_path_idx: 0,
+            content_type: "POSITION_DELETES".to_string(),
+            file_format: "PUFFIN".to_string(),
+            referenced_data_file: Some("file:///tmp/data.parquet".to_string()),
+            content_offset: Some(4),
+            content_size_in_bytes: Some(40),
+            record_count: Some(2),
+            ..Default::default()
+        };
+        let parse = |delete: spark_operator::IcebergDeleteFile| {
+            let proto_common = spark_operator::IcebergScanCommon {
+                delete_file_path_pool: vec!["file:///tmp/dv.puffin".to_string()],
+                delete_file_pool: vec![delete],
+                ..Default::default()
+            };
+            parse_file_scan_tasks_from_common(&proto_common, &[]).map(|_| ())
+        };
+
+        assert!(parse(deletion_vector.clone()).is_ok());
+        for (delete, expected) in [
+            (
+                spark_operator::IcebergDeleteFile {
+                    content_offset: Some(-1),
+                    ..deletion_vector.clone()
+                },
+                "negative content offset",
+            ),
+            (
+                spark_operator::IcebergDeleteFile {
+                    content_size_in_bytes: Some(-1),
+                    ..deletion_vector.clone()
+                },
+                "negative content size",
+            ),
+            (
+                spark_operator::IcebergDeleteFile {
+                    record_count: Some(-1),
+                    ..deletion_vector.clone()
+                },
+                "negative record count",
+            ),
+            (
+                spark_operator::IcebergDeleteFile {
+                    record_count: None,
+                    ..deletion_vector.clone()
+                },
+                "is missing record_count",
+            ),
+        ] {
+            let error = parse(delete).expect_err(expected).to_string();
+            assert!(
+                error.contains(expected),
+                "expected '{expected}' in: {error}"
+            );
+        }
     }
 
     #[test]
