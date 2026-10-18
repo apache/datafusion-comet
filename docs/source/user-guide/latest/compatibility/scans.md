@@ -78,7 +78,15 @@ The following features are not supported and cause Comet to fall back to Spark:
   `spark.sql.caseSensitive=false`. Spark's analyzer normally rejects such a schema before the scan
   is planned.
 
-The following limitations raise an error at scan time rather than falling back to Spark:
+Some Parquet reads return results that differ from Spark without falling back to Spark, such as
+reads of dates and timestamps written with the legacy hybrid Julian/Gregorian calendar
+([#5010](https://github.com/apache/datafusion-comet/issues/5010)).
+[Known Issues](parquet-iceberg-known-issues.md#parquet-reads) lists them, with the
+issues that track them.
+
+The following limitations raise an error at scan time rather than falling back to Spark. More
+reads that fail where Spark succeeds are listed in
+[Known Issues](parquet-iceberg-known-issues.md#parquet-reads-that-fail):
 
 - Selecting a field by name when multiple physical siblings match, including inside structs,
   arrays, and maps. Comet raises a duplicate-field error instead of resolving the collision.

@@ -113,7 +113,7 @@ object CometLiteral extends CometExpressionSerde[Literal] with CometTypeShim wit
 
         case arr: ArrayType =>
           val listLiteralBuilder: ListLiteral.Builder =
-            makeListLiteral(value.asInstanceOf[ArrayData].array, arr)
+            makeListLiteral(value.asInstanceOf[ArrayData].toArray[Any](arr.elementType), arr)
           exprBuilder.setListVal(listLiteralBuilder.build())
           exprBuilder.setDatatype(serializeDataType(dataType).get)
         case dt =>
@@ -225,7 +225,7 @@ object CometLiteral extends CometExpressionSerde[Literal] with CometTypeShim wit
         array.foreach(v => {
           val casted = v.asInstanceOf[ArrayData]
           listLiteralBuilder.addListValues(if (casted != null) {
-            makeListLiteral(casted.array, a)
+            makeListLiteral(casted.toArray[Any](a.elementType), a)
           } else ListLiteral.newBuilder())
           listLiteralBuilder.addNullMask(casted != null)
         })
@@ -465,10 +465,10 @@ object CometLiteral extends CometExpressionSerde[Literal] with CometTypeShim wit
    * instead of asking the ordering to compare it.
    */
   private def hasDuplicateMapKeys(keys: ArrayData, keyType: DataType): Boolean = {
-    if (keys.numElements() < 2) return false
     // Single pass out of the ArrayData; a null slot comes back as null.
     val sorted = keys.toObjectArray(keyType)
     if (sorted.contains(null)) return true
+    if (sorted.length < 2) return false
     val ordering = TypeUtils.getInterpretedOrdering(keyType)
     java.util.Arrays.sort(sorted, ordering.asInstanceOf[Ordering[Object]])
     (1 until sorted.length).exists(i => ordering.compare(sorted(i - 1), sorted(i)) == 0)
