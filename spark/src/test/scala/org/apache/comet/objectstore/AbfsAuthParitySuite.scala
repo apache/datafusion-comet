@@ -43,6 +43,7 @@ import com.fasterxml.jackson.databind.{JsonNode, ObjectMapper}
 import org.apache.comet.objectstore.AbfsAuthParityCases._
 import org.apache.comet.objectstore.AbfsAuthResolver._
 import org.apache.comet.objectstore.AbfsReflection.Handles
+import org.apache.comet.tags.AzureTest
 
 /**
  * Pins the resolver's behaviour per hadoop-azure version and cross-checks it against the real
@@ -184,7 +185,9 @@ class AbfsAuthParitySuite extends AnyFunSuite with Matchers with BeforeAndAfterA
     }
   }
 
-  test("FileSystem.newInstance agrees with the resolver on every case") {
+  // Tagged AzureTest: AzureBlobFileSystem links against Hadoop classes that only a matching
+  // Hadoop has, while the resolver cases above need nothing newer than AbfsConfiguration.
+  test("FileSystem.newInstance agrees with the resolver on every case", AzureTest) {
     val timings = mutable.ArrayBuffer[(String, Long)]()
     val disagreements = cases.flatMap { c =>
       val outcome = resolve(hadoopConf(c), c.uri)

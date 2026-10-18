@@ -28,7 +28,7 @@ Native window execution runs by default (`spark.comet.exec.window.enabled`). The
 `dense_rank`, `row_number`, `percent_rank`, `cume_dist`, `ntile`), value functions (`lag`, `lead`, `nth_value`,
 `first_value`, `last_value`), and the `count`, `min`, `max`, `sum`, and `avg` aggregates are accelerated.
 Remaining work is to close the gaps that still fall back to Spark: statistical aggregates (`stddev`, `variance`,
-`corr`, `covar`) and `collect_list` / `collect_set` as window functions ([#4766]), `RANGE` frames with explicit date or
+`corr`, `covar`) and `collect_list` / `collect_set` as window functions ([#4766]), `RANGE` frames with explicit
 decimal offsets ([#4834]), `first_value` / `last_value` on `RANGE` frames with a literal offset ([#4835]), and
 non-literal `lag` / `lead` default values ([#4268]). See the
 [window function compatibility guide](../user-guide/latest/compatibility/operators.md) for the complete list of
@@ -137,14 +137,14 @@ enabled by default ([#1625]).
 
 ## Iceberg Table Writes
 
-Since Comet 1.2.0, Comet writes Iceberg tables natively by default, controlled by one setting,
-`spark.comet.write.iceberg.enabled` ([#5644]). Comet splits Spark's Iceberg V2 write operator into separate writer
-and committer operators, so the query feeding the write becomes visible to AQE and to Comet's columnar rules
-([#4658]), and delegates each task's Parquet write to `iceberg-rust` when the write passes an eligibility check
-([#5361]); writes that don't pass keep Iceberg Java's writer. Merge-on-read writes keep Spark's write operator
-until the native writer can write them ([#6240]). The remaining work toward the original goal of [#4322], an ETL job that runs end to end in native code, is
-tracked in [#5649]: correctness fixes, failure handling that matches Iceberg Java, and broader coverage. See
-[Iceberg Writes](iceberg-writes.md) for how the write path works.
+Comet can write Iceberg tables natively, controlled by one setting, `spark.comet.write.iceberg.enabled`, which is
+off by default. Comet splits Spark's Iceberg V2 write operator into separate writer and committer operators, so the
+query feeding the write becomes visible to AQE and to Comet's columnar rules ([#4658]), and delegates each task's
+Parquet write to `iceberg-rust` when the write passes an eligibility check ([#5361]); writes that don't pass keep
+Iceberg Java's writer. Merge-on-read writes keep Spark's write operator until the native writer can write them
+([#6240]). The remaining work toward the original goal of [#4322], an ETL job that runs end to end in native code,
+is tracked in [#5649]: correctness fixes, failure handling that matches Iceberg Java, broader coverage, and enabling
+the setting by default ([#5644]). See [Iceberg Writes](iceberg-writes.md) for how the write path works.
 
 [#4322]: https://github.com/apache/datafusion-comet/issues/4322
 [#4658]: https://github.com/apache/datafusion-comet/pull/4658
