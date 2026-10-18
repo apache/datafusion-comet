@@ -659,11 +659,8 @@ fn plan_value<'a>(
                     work.push(Work::Visit(Source::Residual(value, true), depth));
                     continue;
                 };
-                // Partial shredding is defined only for objects. Scalars and arrays cannot
-                // carry a residual alongside a non-null typed value.
-                if residual.is_some() && !matches!(typed.data_type(), DataType::Struct(_)) {
-                    return malformed();
-                }
+                // Spark ignores the residual when a scalar or array typed value is present.
+                // Only shredded objects merge their typed fields with residual fields.
                 match typed.data_type() {
                     DataType::Struct(_) => {
                         if depth >= MAX_VARIANT_NESTING_DEPTH {

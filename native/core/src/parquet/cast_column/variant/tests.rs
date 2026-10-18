@@ -1312,37 +1312,59 @@ fn normalize_rejects_excessive_typed_storage_depth() {
 }
 
 #[test]
-fn normalize_rejects_conflicting_and_invalid_inactive_states() {
+fn normalize_scalar_and_list_typed_values_ignore_redundant_residuals() {
     let metadata: ArrayRef = Arc::new(BinaryArray::from(vec![&[1_u8, 0, 0][..]]));
-    let residual: ArrayRef = Arc::new(BinaryArray::from(vec![&[0_u8][..]]));
-    let scalar: ArrayRef = Arc::new(Int64Array::from(vec![1]));
+    let scalar: ArrayRef = Arc::new(arrow::array::StringArray::from(vec!["invalid"]));
+    let element: ArrayRef = Arc::new(StructArray::from(vec![(
+        Arc::new(Field::new("typed_value", DataType::Int64, true)),
+        Arc::new(Int64Array::from(vec![7])) as ArrayRef,
+    )]));
     let list: ArrayRef = Arc::new(ListArray::new(
-        Arc::new(Field::new(
-            "element",
-            DataType::Struct(Fields::empty()),
-            true,
-        )),
-        OffsetBuffer::new(vec![0, 0].into()),
-        Arc::new(StructArray::new_empty_fields(0, None)),
+        Arc::new(Field::new("element", element.data_type().clone(), true)),
+        OffsetBuffer::new(vec![0, 1].into()),
+        element,
         None,
     ));
-    for typed in [scalar, list] {
-        let input: ArrayRef = Arc::new(StructArray::from(vec![
-            (
-                Arc::new(Field::new("metadata", DataType::Binary, false)),
-                Arc::clone(&metadata),
-            ),
-            (
-                Arc::new(Field::new("value", DataType::Binary, true)),
-                Arc::clone(&residual),
-            ),
-            (
-                Arc::new(Field::new("typed_value", typed.data_type().clone(), true)),
-                typed,
-            ),
-        ]));
-        assert!(normalize_variant_array(&input, &target_field(false)).is_err());
+    // Spark reads the present typed value even when the unused residual is malformed
+    // or exceeds the nesting limit. It must not replace the typed string with null/1.
+    for residual in [
+        vec![0],
+        vec![0x0c, 1], // Variant integer 1
+        vec![0xff],
+        nested_variant_bytes(MAX_VARIANT_NESTING_DEPTH + 1, false),
+    ] {
+        for typed in [&scalar, &list] {
+            let input: ArrayRef = Arc::new(StructArray::from(vec![
+                (
+                    Arc::new(Field::new("metadata", DataType::Binary, false)),
+                    Arc::clone(&metadata),
+                ),
+                (
+                    Arc::new(Field::new("value", DataType::Binary, true)),
+                    Arc::new(BinaryArray::from(vec![residual.as_slice()])) as ArrayRef,
+                ),
+                (
+                    Arc::new(Field::new("typed_value", typed.data_type().clone(), true)),
+                    Arc::clone(typed),
+                ),
+            ]));
+            let output = normalize_variant_array(&input, &target_field(false)).unwrap();
+            let output = VariantArray::try_new(output.as_ref()).unwrap();
+            let value = output.value(0);
+            if matches!(typed.data_type(), DataType::Utf8) {
+                assert_eq!(value.as_string(), Some("invalid"));
+            } else {
+                let list = value.as_list().unwrap();
+                assert_eq!(list.len(), 1);
+                assert_eq!(list.get(0).unwrap().as_int64(), Some(7));
+            }
+        }
     }
+}
+
+#[test]
+fn normalize_rejects_invalid_inactive_states() {
+    let metadata: ArrayRef = Arc::new(BinaryArray::from(vec![&[1_u8, 0, 0][..]]));
     // Schema validation must not depend on visiting a non-null row.
     let input: ArrayRef = Arc::new(StructArray::new(
         vec![
