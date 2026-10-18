@@ -27,7 +27,7 @@ import scala.jdk.CollectionConverters._
 
 import org.apache.arrow.c.CDataDictionaryProvider
 import org.apache.arrow.vector._
-import org.apache.arrow.vector.complex.{ListVector, MapVector, StructVector}
+import org.apache.arrow.vector.complex.{BaseRepeatedValueVector, ListVector, MapVector, StructVector}
 import org.apache.arrow.vector.dictionary.{Dictionary, DictionaryProvider}
 import org.apache.arrow.vector.dictionary.DictionaryProvider.MapDictionaryProvider
 import org.apache.arrow.vector.ipc.{ArrowStreamReader, ArrowStreamWriter}
@@ -275,11 +275,22 @@ object Utils extends CometTypeShim with Logging {
       }
       val provider = batchProviderOpt.getOrElse(dictionaryProvider)
 
-      val writer = new ArrowStreamWriter(root, provider, Channels.newChannel(out))
-      writer.start()
-      writer.writeBatch()
-      root.clear()
-      writer.close()
+      // VectorSchemaRootAppender, which coalesces broadcast batches, assumes offsets that start
+      // at zero, and Arrow Java writes the bytes before the first offset too. A slice of the root
+      // rebases the offsets to zero and leaves those bytes out.
+      val written =
+        if (fieldVectors.forall(offsetsStartAtZero)) root else root.slice(0, root.getRowCount)
+      try {
+        val writer = new ArrowStreamWriter(written, provider, Channels.newChannel(out))
+        writer.start()
+        writer.writeBatch()
+        root.clear()
+        writer.close()
+      } finally {
+        // The slice holds its own references on the batch's buffers, so it is closed even when the
+        // write fails, as it does when a cancelled broadcast interrupts the task.
+        if (written ne root) written.close()
+      }
 
       if (out.size() > 0) {
         (batch.numRows().toLong, cbbos.toChunkedByteBuffer)
@@ -287,6 +298,23 @@ object Utils extends CometTypeShim with Logging {
         (batch.numRows().toLong, new ChunkedByteBuffer(Array.empty[ByteBuffer]))
       }
     }
+  }
+
+  /**
+   * Whether every offset buffer in `vector`, its children included, starts at zero.
+   *
+   * arrow-rs slices a string, binary, list or map array by moving the start of its offsets, and
+   * the C Data import keeps them, so a vector imported from a sliced native array has offsets
+   * that start past zero. The rows before the slice stay at the front of its data buffer, or of
+   * its child vector for a list or map.
+   */
+  private def offsetsStartAtZero(vector: FieldVector): Boolean = {
+    val firstOffset = vector match {
+      case v: BaseVariableWidthVector if v.getValueCount > 0 => v.getOffsetBuffer.getInt(0)
+      case v: BaseRepeatedValueVector if v.getValueCount > 0 => v.getOffsetBuffer.getInt(0)
+      case _ => 0
+    }
+    firstOffset == 0 && vector.getChildrenFromFields.asScala.forall(offsetsStartAtZero)
   }
 
   /**
@@ -388,6 +416,7 @@ object Utils extends CometTypeShim with Logging {
                 targetRoot.allocateNew()
               }
               try {
+                // Appending needs offsets that start at zero, which serializeBatches writes.
                 VectorSchemaRootAppender.append(targetRoot, sourceRoot)
               } catch {
                 case e: IllegalArgumentException =>

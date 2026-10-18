@@ -99,7 +99,8 @@ pub use math_funcs::{
     create_negate_expr, spark_ceil, spark_decimal_div, spark_decimal_integral_div, spark_floor,
     spark_log, spark_make_decimal, spark_modulo, spark_pow, spark_round, spark_signum, spark_sqrt,
     spark_unhex, spark_unscaled_value, CheckOverflow, CheckedBinaryExpr,
-    DecimalRescaleCheckOverflow, NegativeExpr, WideDecimalBinaryExpr, WideDecimalOp,
+    DecimalRescaleCheckOverflow, NegativeExpr, SparkGreatestLeast, WideDecimalBinaryExpr,
+    WideDecimalOp,
 };
 pub use query_context::{create_query_context_map, QueryContext, QueryContextMap};
 pub use string_funcs::*;
@@ -135,6 +136,7 @@ pub enum BinaryOutputStyle {
 pub(crate) fn arithmetic_overflow_error(from_type: &str) -> SparkError {
     SparkError::ArithmeticOverflow {
         from_type: from_type.to_string(),
+        function_name: String::new(),
     }
 }
 

@@ -27,15 +27,17 @@ use crate::math_funcs::modulo_expr::spark_modulo;
 use crate::math_funcs::pow::spark_pow;
 use crate::math_funcs::signum::spark_signum;
 use crate::math_funcs::sqrt::spark_sqrt;
+use crate::math_funcs::SparkGreatestLeast;
 use crate::{
     spark_ceil, spark_day_name, spark_decimal_div, spark_decimal_integral_div, spark_floor,
     spark_isnan, spark_lpad, spark_make_decimal, spark_month_name, spark_read_side_padding,
     spark_round, spark_rpad, spark_sequence, spark_to_time, spark_unhex, spark_unscaled_value,
-    EvalMode, SparkArrayExtrema, SparkArrayPositionFunc, SparkArrayRemove, SparkArraySlice,
-    SparkArraysOverlap, SparkContains, SparkDateDiff, SparkDateFromUnixDate, SparkDateTrunc,
-    SparkDayOfWeek, SparkFlatten, SparkIcebergBucket, SparkIcebergTemporalTransform,
-    SparkIcebergTruncate, SparkMakeDate, SparkMakeInterval, SparkMakeTime, SparkMapExtract,
-    SparkNextDay, SparkSecondsToTimestamp, SparkSizeFunc, SparkSortArray, SparkWeekDay,
+    EvalMode, SparkArrayExtrema, SparkArrayPositionFunc, SparkArrayRemove, SparkArraySetOp,
+    SparkArraySlice, SparkArraysOverlap, SparkContains, SparkDateDiff, SparkDateFromUnixDate,
+    SparkDateTrunc, SparkDayOfWeek, SparkFlatten, SparkFloatArrayContains, SparkIcebergBucket,
+    SparkIcebergTemporalTransform, SparkIcebergTruncate, SparkMakeDate, SparkMakeInterval,
+    SparkMakeTime, SparkMapExtract, SparkNextDay, SparkSecondsToTimestamp, SparkSizeFunc,
+    SparkSortArray, SparkWeekDay,
 };
 use arrow::datatypes::DataType;
 use datafusion::common::{DataFusionError, Result as DataFusionResult};
@@ -315,6 +317,12 @@ pub fn create_comet_physical_fun_with_eval_mode(
         // SparkMakeTime already throws on invalid input, so accept the flag here rather
         // than falling through to the registry fail-closed path.
         "make_time" => Ok(Arc::new(ScalarUDF::new_from_impl(SparkMakeTime::new()))),
+        // Floats need Spark's float ordering, and arrays and structs also Spark's ordering of the
+        // nulls inside them. Other types keep DataFusion's `greatest` and `least` from the
+        // registry.
+        "greatest" | "least" if SparkGreatestLeast::handles(&data_type) => Ok(Arc::new(
+            ScalarUDF::new_from_impl(SparkGreatestLeast::new(fun_name == "greatest")),
+        )),
         // Registry UDFs (including datafusion-spark) cannot receive fail_on_error.
         _ if fail_on_error => Err(DataFusionError::Execution(format!(
             "Function '{fun_name}' is resolved from the UDF registry and cannot \
@@ -336,6 +344,9 @@ fn all_scalar_functions() -> Vec<Arc<ScalarUDF>> {
         Arc::new(ScalarUDF::new_from_impl(SparkArrayExtrema::new(false))),
         Arc::new(ScalarUDF::new_from_impl(SparkArrayPositionFunc::default())),
         Arc::new(ScalarUDF::new_from_impl(SparkArrayRemove::default())),
+        Arc::new(ScalarUDF::new_from_impl(SparkArraySetOp::distinct())),
+        Arc::new(ScalarUDF::new_from_impl(SparkArraySetOp::union())),
+        Arc::new(ScalarUDF::new_from_impl(SparkFloatArrayContains::default())),
         Arc::new(ScalarUDF::new_from_impl(SparkArraySlice::default())),
         Arc::new(ScalarUDF::new_from_impl(SparkArraysOverlap::default())),
         Arc::new(ScalarUDF::new_from_impl(SparkSortArray::default())),
