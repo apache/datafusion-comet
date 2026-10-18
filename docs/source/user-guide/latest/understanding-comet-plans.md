@@ -345,7 +345,7 @@ These keep their data on the JVM but participate in the Comet pipeline.
 | `CometBroadcastExchange` | Broadcast exchange producing serialized Arrow batches that the consumer can decode.                                                     |
 | `CometSubqueryBroadcast` | Companion to `CometBroadcastExchange` for dynamic partition pruning subqueries.                                                         |
 | `CometMapInBatch`        | Runs `mapInArrow` / `mapInPandas` Python UDFs on Comet's Arrow batches (experimental). See [PyArrow UDF Acceleration](pyarrow-udfs.md). |
-| `IcebergWrite`           | Executor-side Iceberg data-file write in Comet's split-operator Iceberg write plan. See [Iceberg Writes](iceberg-writes.md).            |
+| `IcebergWrite`           | Executor-side Iceberg data-file write in Comet's split-operator Iceberg write plan. See [Iceberg Writes](iceberg.md#writes).            |
 | `IcebergCommit`          | Driver-side commit for Comet's split-operator Iceberg write plan.                                                                       |
 
 ### Shuffle Operators
