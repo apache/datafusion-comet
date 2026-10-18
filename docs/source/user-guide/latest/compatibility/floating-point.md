@@ -164,3 +164,11 @@ representations tie, and keeps equal elements in their original order. In an arr
 can be null, such as one built from nullable columns, `-0.0` and `0.0` therefore tie. Sorting an
 array whose elements cannot be null in ascending order, Spark's generated code puts `-0.0` before
 `0.0`, and so does Comet. All three expressions run natively in strict floating-point mode.
+
+## Map construction
+
+`map_from_arrays` and `map_from_entries` don't build a map natively when its key type holds a
+`FLOAT` or `DOUBLE` at any depth. They run Spark's code through the codegen dispatcher instead, so
+duplicate keys, including NaNs and zeros of either sign, behave as in Spark. `FLOAT` and `DOUBLE`
+values don't affect either function. The expressions' entries in the
+[expression compatibility guide](expressions/map.md) give the reason.

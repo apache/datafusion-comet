@@ -97,6 +97,7 @@ class CometInMemoryCacheSuite extends CometTestBase {
     conf.set("spark.comet.exec.enabled", "true")
     conf.set("spark.comet.exec.onHeap.enabled", "true")
     conf.set("spark.comet.metrics.enabled", "true")
+    conf.set(CometConf.COMET_EXEC_IN_MEMORY_CACHE_ENABLED.key, "true")
     conf.set(
       "spark.sql.cache.serializer",
       "org.apache.spark.sql.comet.execution.arrow.ArrowCachedBatchSerializer")
@@ -1492,10 +1493,9 @@ class CometInMemoryCacheSuite extends CometTestBase {
     extraConfs.containsKey(serializerKey)
   }
 
-  test("Comet's cache format is the default from Spark 3.5 and opt-in on Spark 3.4") {
-    // Spark 3.4 has no hook for CometCoalesceShufflePartitions, so AQE could not coalesce the
-    // shuffled branch of a Comet union whose other branch reads a cache in Comet's format.
-    assert(CometConf.COMET_EXEC_IN_MEMORY_CACHE_ENABLED.defaultValue.get == isSpark35Plus)
+  test("Comet's cache format is opt-in") {
+    // Native joins can lose the order a sorted cached relation reports (#6787, #6898, #6922).
+    assert(!CometConf.COMET_EXEC_IN_MEMORY_CACHE_ENABLED.defaultValue.get)
   }
 
   test("Comet plugin installs its cache serializer only if Comet can scan the cache natively") {
