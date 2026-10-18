@@ -46,8 +46,9 @@
 
 - Spark 3.4.3 (audited 2026-05-27): identical to 3.5.8.
 - Spark 3.5.8 (audited 2026-05-27): baseline. `MapFromArrays(left, right) extends BinaryExpression with NullIntolerant`; Spark uses `ArrayBasedMapBuilder` to detect duplicate keys (subject to `spark.sql.mapKeyDedupPolicy`) and rejects null keys with `RuntimeException("Cannot use null as map key")`. Comet `CometMapFromArrays` emits nested `CaseWhen(IsNotNull(left), CaseWhen(IsNotNull(right), map(left, right), null), null)` guards so NULL-array inputs return NULL rather than triggering the previously reported native crash ([#3327](https://github.com/apache/datafusion-comet/issues/3327)). The outer key guard preserves Spark's left-before-right evaluation: one `IsNotNull(left) AND IsNotNull(right)` predicate can still evaluate the values child for a NULL-key row in a mixed batch. The native `SparkMapFromArrays` wrapper also validates key/value lengths per non-null row before DataFusion constructs the map, so matching flattened totals cannot pair values across row boundaries.
-- Spark 4.0.1 (audited 2026-05-27): semantics unchanged; `NullIntolerant` trait replaced by `nullIntolerant: Boolean`.
+- Spark 4.0.1 (audited 2026-05-27): `NullIntolerant` trait replaced by `nullIntolerant: Boolean`. `ArrayBasedMapBuilder` gains the `keyNormalizer` described below.
 - Spark 4.1.1 (audited 2026-05-27): identical to 4.0.1.
+- Floating-point keys (2026-10-14, [#6549](https://github.com/apache/datafusion-comet/issues/6549)): `ArrayBasedMapBuilder` finds a duplicate `FLOAT` or `DOUBLE` key in a `HashMap` of boxed values (`Double.equals`, so NaNs with different bits are one key) and a duplicate struct or array key in a `TreeMap` in the SQL ordering (`-0.0` equals `0.0`). From Spark 4.0 its `keyNormalizer` also normalizes a `FLOAT` or `DOUBLE` key before the lookup, unless `spark.sql.legacy.disableMapKeyNormalization` is set. The native builders compare the keys' bits, so a key type that holds a float at any depth is `Incompatible` on every version (`MapBuilderKeySupport`). `map_from_arrays` routes them through the codegen dispatcher. `from` returns its input arrays when no key repeats, so a lone `-0.0` key stays `-0.0` there.
 
 ## map_from_entries
 
@@ -56,6 +57,7 @@
 - Spark 4.0.1 (audited 2026-05-27): semantics unchanged; trait refactor.
 - Spark 4.1.1 (audited 2026-05-27): identical to 4.0.1.
 - Known limitation: input arrays where the struct's key or value type contains `BinaryType` are marked `Incompatible` and fall back unless `spark.comet.expression.MapFromEntries.allowIncompatible=true`.
+- Floating-point keys (2026-10-14, [#6549](https://github.com/apache/datafusion-comet/issues/6549)): `ArrayBasedMapBuilder` finds a duplicate `FLOAT` or `DOUBLE` key in a `HashMap` of boxed values (`Double.equals`, so NaNs with different bits are one key) and a duplicate struct or array key in a `TreeMap` in the SQL ordering (`-0.0` equals `0.0`). From Spark 4.0 its `keyNormalizer` also normalizes a `FLOAT` or `DOUBLE` key before the lookup, unless `spark.sql.legacy.disableMapKeyNormalization` is set. The native builders compare the keys' bits, so a key type that holds a float at any depth is `Incompatible` on every version (`MapBuilderKeySupport`). `map_from_entries` routes them through the codegen dispatcher. It always calls `build()`, so on Spark 4.0+ it stores a `-0.0` key as `0.0`.
 
 ## map_keys
 

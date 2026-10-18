@@ -131,6 +131,6 @@ Shredded reconstruction can be slower than Spark's reader; see the
 ## See also
 
 - [Comet Compatibility Guide](compatibility/index.md) - known incompatibilities and edge cases.
-- [Parquet Scan Compatibility](compatibility/scans.md) - per-type behavior at scan time.
+- [Parquet](parquet.md#reading) - per-type behavior at scan time.
 - [Supported Spark Operators](operators.md) - the equivalent reference for operators.
 - [Supported Spark Expressions](expressions.md) - the equivalent reference for expressions.

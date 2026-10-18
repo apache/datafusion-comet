@@ -438,6 +438,7 @@ object QueryPlanSerde extends Logging with CometExprShim with CometTypeShim {
       classOf[MinBy] -> CometMinBy,
       classOf[Mode] -> CometMode,
       classOf[Percentile] -> CometPercentile,
+      classOf[PivotFirst] -> CometPivotFirst,
       classOf[RegrIntercept] -> CometRegrIntercept,
       classOf[RegrR2] -> CometRegrR2,
       classOf[RegrReplacement] -> CometRegrReplacement,
@@ -1300,38 +1301,47 @@ object QueryPlanSerde extends Logging with CometExprShim with CometTypeShim {
 
   /**
    * The subexpressions that occur more than once in the expressions of the operator being
-   * serialized, as Spark's subexpression elimination finds them. Spark's generated code for a
-   * projection or an aggregation evaluates each of them for every row, before the expressions
-   * that use them. They are treated that way for every operator, and whatever
-   * `spark.sql.subexpressionElimination.enabled` says, which only keeps them evaluated for every
-   * row where Spark might not. They are found on the first `canShortCircuitNulls` call for the
-   * operator, so an operator without an argument to skip never runs `EquivalentExpressions`.
+   * serialized, as Spark's subexpression elimination finds them. Where Spark eliminates them, it
+   * evaluates each for every row, before the expressions that use them: in the generated code of
+   * an aggregation always, and in a projection, such as a project or a shuffle's partitioning
+   * keys, only when `spark.sql.subexpressionElimination.enabled` is on. Other operators, such as
+   * a filter or a sort, are treated like a projection, which at worst keeps them evaluated for
+   * every row where Spark does not. They are found on the first `canShortCircuitNulls` call for
+   * the operator, so an operator without an argument to skip never runs `EquivalentExpressions`.
    * `None` outside `withSharedSubexpressions`, where they are unknown.
    */
   private val sharedSubexpressions = new DynamicVariable[Option[SharedSubexpressions]](None)
 
-  private final class SharedSubexpressions(expressions: Seq[Expression]) {
-    lazy val common: Seq[Expression] = {
-      val equivalence = new EquivalentExpressions
-      expressions.foreach(equivalence.addExprTree(_))
-      equivalence.getCommonSubexpressions
-    }
+  private final class SharedSubexpressions(expressions: Seq[Expression], alwaysShared: Boolean) {
+    lazy val common: Seq[Expression] =
+      if (alwaysShared || SQLConf.get.subexpressionEliminationEnabled) {
+        val equivalence = new EquivalentExpressions
+        expressions.foreach(equivalence.addExprTree(_))
+        equivalence.getCommonSubexpressions
+      } else {
+        Nil
+      }
   }
 
   /**
    * Runs `f`, which serializes an operator whose expressions are `expressions`. Code that
    * serializes expressions outside an operator's conversion, such as when the plan runs, calls it
-   * with the expressions Spark evaluates together, or no argument is skipped.
+   * with the expressions Spark evaluates together, or no argument is skipped. `alwaysShared` is
+   * for an aggregation, whose shared subexpressions Spark's generated code evaluates for every
+   * row whatever `spark.sql.subexpressionElimination.enabled` says. An aggregation that Spark
+   * runs without generated code shares none when it is off, and stays eager in Comet.
    */
-  def withSharedSubexpressions[T](expressions: Seq[Expression])(f: => T): T =
-    sharedSubexpressions.withValue(Some(new SharedSubexpressions(expressions)))(f)
+  def withSharedSubexpressions[T](expressions: Seq[Expression], alwaysShared: Boolean = false)(
+      f: => T): T =
+    sharedSubexpressions.withValue(Some(new SharedSubexpressions(expressions, alwaysShared)))(f)
 
   /**
    * Whether native execution may skip the arguments of `expr` after the first on the rows where
    * an earlier argument is NULL, as Spark's evaluation of a null-intolerant `BinaryExpression` or
    * `TernaryExpression` does. Not if one of them holds a subexpression that the operator's
-   * expressions share: Spark evaluates that for every row, and raises if it fails on a row whose
-   * array is NULL. Nor outside `withSharedSubexpressions`, where what they share is unknown.
+   * expressions share and Spark eliminates: Spark evaluates that for every row, and raises if it
+   * fails on a row whose array is NULL. Nor outside `withSharedSubexpressions`, where what they
+   * share is unknown.
    */
   def canShortCircuitNulls(expr: Expression): Boolean = {
     val later = expr.children.tail
