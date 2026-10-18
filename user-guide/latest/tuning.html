@@ -884,11 +884,24 @@ compresses with <code class="docutils literal notranslate"><span class="pre">lz4
 </section>
 <section id="configuring-tokio-runtime">
 <h2>Configuring Tokio Runtime<a class="headerlink" href="#configuring-tokio-runtime" title="Link to this heading">#</a></h2>
-<p>Comet uses a global tokio runtime per executor process. By default it starts one worker thread per executor core
-(<code class="docutils literal notranslate"><span class="pre">spark.executor.cores</span></code>, or the thread count of <code class="docutils literal notranslate"><span class="pre">local[N]</span></code> and <code class="docutils literal notranslate"><span class="pre">local[*]</span></code> masters) and allows up to 512 blocking
-threads, which is tokio’s default. If <code class="docutils literal notranslate"><span class="pre">spark.executor.cores</span></code> is not set outside local mode, Comet starts a single
-worker thread. These values can be overridden using the environment variables <code class="docutils literal notranslate"><span class="pre">COMET_WORKER_THREADS</span></code> and
-<code class="docutils literal notranslate"><span class="pre">COMET_MAX_BLOCKING_THREADS</span></code>.</p>
+<p>Comet uses a global tokio runtime per executor process. By default it starts one worker thread per core that the
+executor runs tasks on, and allows up to 512 blocking threads, which is tokio’s default. Comet takes the number of
+cores from the first of these that applies:</p>
+<ul class="simple">
+<li><p>the thread count of a <code class="docutils literal notranslate"><span class="pre">local</span></code>, <code class="docutils literal notranslate"><span class="pre">local[N]</span></code> or <code class="docutils literal notranslate"><span class="pre">local[*]</span></code> master, in local mode</p></li>
+<li><p><code class="docutils literal notranslate"><span class="pre">spark.executor.cores</span></code>, when it is set</p></li>
+<li><p>the cores per worker <code class="docutils literal notranslate"><span class="pre">C</span></code> of a <code class="docutils literal notranslate"><span class="pre">local-cluster[N,</span> <span class="pre">C,</span> <span class="pre">M]</span></code> master</p></li>
+<li><p>the number of processors available to the executor’s JVM on a standalone (<code class="docutils literal notranslate"><span class="pre">spark://</span></code>) cluster, since a standalone
+executor without <code class="docutils literal notranslate"><span class="pre">spark.executor.cores</span></code> takes every core its worker offers, and a worker offers all of its
+machine’s cores unless it is started with a different number (<code class="docutils literal notranslate"><span class="pre">SPARK_WORKER_CORES</span></code>)</p></li>
+<li><p>one on YARN and Kubernetes, which is their default for <code class="docutils literal notranslate"><span class="pre">spark.executor.cores</span></code></p></li>
+</ul>
+<p>On any other cluster manager, such as Mesos, Comet cannot tell how many cores the executor has when
+<code class="docutils literal notranslate"><span class="pre">spark.executor.cores</span></code> is not set. It starts one worker thread for each processor available to the executor’s JVM, and
+logs a warning unless <code class="docutils literal notranslate"><span class="pre">COMET_WORKER_THREADS</span></code> is set. Too few worker threads cost more than a few idle ones: native plans
+that read no input from the JVM, such as a native Parquet scan feeding a sort, run entirely on the worker threads, so
+tasks share them when an executor runs more tasks at once than it has worker threads. The worker and blocking thread
+counts can be overridden using the environment variables <code class="docutils literal notranslate"><span class="pre">COMET_WORKER_THREADS</span></code> and <code class="docutils literal notranslate"><span class="pre">COMET_MAX_BLOCKING_THREADS</span></code>.</p>
 </section>
 <section id="metrics-overhead">
 <h2>Metrics Overhead<a class="headerlink" href="#metrics-overhead" title="Link to this heading">#</a></h2>

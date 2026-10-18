@@ -645,8 +645,10 @@ is torn down on plugin shutdown (via <code class="docutils literal notranslate">
 and the JVM can shut down cleanly:</p>
 <ul class="simple">
 <li><p><strong>Worker threads:</strong> one per executor core by default (<code class="docutils literal notranslate"><span class="pre">spark.executor.cores</span></code>, or the thread
-count of a <code class="docutils literal notranslate"><span class="pre">local[N]</span></code> or <code class="docutils literal notranslate"><span class="pre">local[*]</span></code> master, and one when <code class="docutils literal notranslate"><span class="pre">spark.executor.cores</span></code> is not set
-outside local mode), configurable via <code class="docutils literal notranslate"><span class="pre">COMET_WORKER_THREADS</span></code></p></li>
+count of a <code class="docutils literal notranslate"><span class="pre">local[N]</span></code> or <code class="docutils literal notranslate"><span class="pre">local[*]</span></code> master, the cores per worker of a <code class="docutils literal notranslate"><span class="pre">local-cluster</span></code> master,
+the JVM’s available processors on a standalone cluster, and one on YARN and Kubernetes, when
+<code class="docutils literal notranslate"><span class="pre">spark.executor.cores</span></code> is not set), configurable via <code class="docutils literal notranslate"><span class="pre">COMET_WORKER_THREADS</span></code>. See
+<code class="docutils literal notranslate"><span class="pre">CometExecIterator.numDriverOrExecutorCores</span></code>.</p></li>
 <li><p><strong>Max blocking threads:</strong> 512 by default, configurable via <code class="docutils literal notranslate"><span class="pre">COMET_MAX_BLOCKING_THREADS</span></code></p></li>
 <li><p>All async I/O (S3, HTTP, Parquet reads) runs on worker threads as non-blocking futures</p></li>
 </ul>
