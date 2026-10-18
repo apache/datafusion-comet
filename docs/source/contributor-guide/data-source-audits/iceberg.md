@@ -21,7 +21,7 @@
 
 > Audit notes for the native Iceberg scan and the native Iceberg writer. Absence of an entry means
 > the area has not been audited yet. Open issues are listed for users in
-> [Known Issues in Parquet and Iceberg Reads and Writes].
+> [Known Issues in the Iceberg guide].
 
 ## Native Iceberg scan
 
@@ -86,7 +86,7 @@
 - **Not covered:** merge-on-read writes (`WriteDelta`), format v3 types, encryption, object stores,
   and write throughput, which needs a release build.
 
-[Known Issues in Parquet and Iceberg Reads and Writes]: ../../user-guide/latest/compatibility/parquet-iceberg-known-issues.md
+[Known Issues in the Iceberg guide]: ../../user-guide/latest/iceberg.md#known-issues
 [apache/iceberg#17320]: https://github.com/apache/iceberg/pull/17320
 [apache/iceberg#17560]: https://github.com/apache/iceberg/pull/17560
 [apache/iceberg#17561]: https://github.com/apache/iceberg/issues/17561
