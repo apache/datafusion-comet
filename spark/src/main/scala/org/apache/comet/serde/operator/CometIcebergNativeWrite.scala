@@ -525,7 +525,8 @@ object CometIcebergNativeWrite extends CometOperatorSerde[IcebergWriteExec] {
       case Some(schema) =>
         IcebergReflection
           .findFieldWithTypeIds(schema, UnsupportedWriteTypeIds)
-          // Nested `unknown` fails in Comet shuffle; top-level is fine.
+          // Only top-level `unknown` fields are pruned, so a nested one would still
+          // get a Parquet column that iceberg-java does not write.
           .orElse(
             IcebergReflection.findFieldWithTypeIds(schema, Set("UNKNOWN"), nestedOnly = true))
           .map { case (name, typeId) =>
