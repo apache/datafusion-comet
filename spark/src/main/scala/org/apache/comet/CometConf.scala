@@ -338,7 +338,8 @@ object CometConf extends ShimCometConf {
       .doc(
         "Whether to enable native ExistenceJoin, produced when EXISTS / NOT EXISTS / IN is " +
           "combined with another predicate via OR. Sort-merge joins, residual (non-equi) join " +
-          "conditions, computed (non-column) join keys, and NOT IN fall back to Spark.")
+          "conditions, computed (non-column) join keys, and NOT IN combined with OR fall back " +
+          "to Spark.")
       .booleanConf
       .createWithDefault(true)
   val COMET_EXEC_AGGREGATE_ENABLED: ConfigEntry[Boolean] =
@@ -466,6 +467,32 @@ object CometConf extends ShimCometConf {
           "and is slower than the JVM implementation for small batches.")
       .booleanConf
       .createWithDefault(false)
+
+  val COMET_DIRECT_COLUMNAR_TO_ROW_ENABLED: ConfigEntry[Boolean] =
+    conf(s"$COMET_EXEC_CONFIG_PREFIX.columnarToRow.direct.enabled")
+      .category(CATEGORY_EXEC)
+      .doc(
+        "Experimental: Whether to use the direct columnar to row converter in the JVM " +
+          "columnar to row operator's non-codegen paths (including broadcast relation " +
+          "builds). The direct converter writes values straight from Arrow buffers into " +
+          "UnsafeRow format without per-value object allocation, which is significantly " +
+          "faster for decimal-heavy schemas. Schemas with unsupported data types fall back " +
+          "to the default conversion. Only applies when the JVM columnar to row operator is " +
+          "used (spark.comet.exec.columnarToRow.native.enabled=false).")
+      .booleanConf
+      .createWithDefault(false)
+
+  val COMET_DIRECT_COLUMNAR_TO_ROW_MIN_BATCH_SIZE: ConfigEntry[Int] =
+    conf(s"$COMET_EXEC_CONFIG_PREFIX.columnarToRow.direct.minBatchSize")
+      .category(CATEGORY_EXEC)
+      .doc(
+        "Experimental: Batches with fewer rows than this use the default conversion even " +
+          s"when $COMET_EXEC_CONFIG_PREFIX.columnarToRow.direct.enabled is true, since the " +
+          "direct converter's per-batch setup does not amortize on very small batches. Only " +
+          "applies when the direct columnar to row converter is enabled.")
+      .intConf
+      .checkValue(_ >= 0, "Must be >= 0.")
+      .createWithDefault(128)
 
   val COMET_EXEC_SORT_MERGE_JOIN_WITH_JOIN_FILTER_ENABLED: ConfigEntry[Boolean] =
     conf("spark.comet.exec.sortMergeJoinWithJoinFilter.enabled")
@@ -1323,13 +1350,19 @@ object CometConf extends ShimCometConf {
 
   val COMET_LIBHDFS_SCHEMES_KEY = "fs.comet.libhdfs.schemes"
 
+  // Declared so the value appears in the generated config reference and can be set at startup
+  // via `spark.hadoop.*`, but never read through this entry: the scan gates read the Hadoop key
+  // above through `NativeConfig.resolveScanLibhdfsSchemes`, so `core-site.xml` is honored too.
   val COMET_LIBHDFS_SCHEMES: OptionalConfigEntry[String] =
     conf(s"spark.hadoop.$COMET_LIBHDFS_SCHEMES_KEY")
       .category(CATEGORY_SCAN)
       .doc(
         "Defines filesystem schemes (e.g., hdfs, webhdfs) that the native side accesses " +
           "via libhdfs, separated by commas. Valid only when built with hdfs-opendal feature " +
-          "enabled.")
+          "enabled. Read from the Hadoop configuration, so it must be set before the " +
+          "SparkSession is created. A scheme listed only through a reader option is not read " +
+          "natively. libhdfs reads the settings of a listed scheme, such as " +
+          "`fs.<scheme>.impl`, from the executor's `core-site.xml`.")
       .stringConf
       .createOptional
 

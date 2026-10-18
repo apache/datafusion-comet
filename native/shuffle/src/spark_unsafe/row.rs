@@ -564,6 +564,13 @@ fn append_nested_struct_fields_field_major(
                     nested_fields,
                 )?;
             }
+            // Every value of a NullType field is null, so there is nothing to read from the row.
+            DataType::Null => {
+                let field_builder = get_field_builder!(struct_builder, NullBuilder, field_idx);
+                for _ in 0..num_rows {
+                    field_builder.append_null();
+                }
+            }
             // For list and map, fall back to append_field since they have variable-length elements
             dt @ (DataType::List(_) | DataType::Map(_, _)) => {
                 for row_idx in 0..num_rows {
@@ -1024,6 +1031,13 @@ fn append_struct_fields_field_major(
                     nested_builder,
                     nested_fields,
                 )?;
+            }
+            // Every value of a NullType field is null, so there is nothing to read from the row.
+            DataType::Null => {
+                let field_builder = get_field_builder!(struct_builder, NullBuilder, field_idx);
+                for _ in row_start..row_end {
+                    field_builder.append_null();
+                }
             }
             // For list and map, fall back to append_field since they have variable-length elements
             dt @ (DataType::List(_) | DataType::Map(_, _)) => {
@@ -1975,5 +1989,123 @@ mod test {
                 assert!(error.contains(&format!("page {missing_page}")), "{error}");
             }
         }
+    }
+
+    /// Lays out an 8-byte-aligned `UnsafeRow` with one struct field: the null bitset, the field's
+    /// offset and size, then the nested `UnsafeRow` holding `fields`. A one-word field is stored
+    /// in its slot, a longer one in the variable-length region, and `None` is written as null, as
+    /// Spark writes every `NullType` value. `None` for `fields` makes the struct itself null.
+    fn unsafe_row_with_struct(fields: Option<&[Option<Vec<u64>>]>) -> Vec<u64> {
+        let Some(fields) = fields else {
+            return vec![1, 0];
+        };
+        assert!(fields.len() <= 64);
+        let mut nested = vec![0u64; 1 + fields.len()];
+        let mut variable: Vec<u64> = Vec::new();
+        for (i, field) in fields.iter().enumerate() {
+            match field {
+                None => nested[0] |= 1 << i,
+                Some(value) if value.len() == 1 => nested[1 + i] = value[0],
+                Some(value) => {
+                    let offset = 8 * (nested.len() + variable.len()) as u64;
+                    nested[1 + i] = (offset << 32) | (8 * value.len()) as u64;
+                    variable.extend(value);
+                }
+            }
+        }
+        nested.extend(variable);
+        let mut row = vec![0, (16 << 32) | (8 * nested.len()) as u64];
+        row.extend(nested);
+        row
+    }
+
+    fn struct_column(data_type: &DataType, rows: &[Vec<u64>]) -> ArrayRef {
+        let mut row_addresses: Vec<jlong> = rows.iter().map(|r| r.as_ptr() as jlong).collect();
+        let mut row_sizes: Vec<jint> = rows.iter().map(|r| (r.len() * 8) as jint).collect();
+        let schema = [data_type.clone()];
+        let mut builder = make_builders(data_type, rows.len(), 1.0).unwrap();
+        append_columns(
+            row_addresses.as_mut_ptr(),
+            row_sizes.as_mut_ptr(),
+            0,
+            rows.len(),
+            &schema,
+            0,
+            &mut builder,
+            1.0,
+        )
+        .unwrap();
+        builder.finish()
+    }
+
+    // `named_struct('x', a, 'n', null)` reaches the field-major struct conversion with a
+    // `DataType::Null` field, which it has to accept like `append_field` does.
+    #[test]
+    fn struct_column_with_null_type_field() {
+        let fields = Fields::from(vec![
+            Field::new("x", DataType::Int32, true),
+            Field::new("n", DataType::Null, true),
+        ]);
+        let data_type = DataType::Struct(fields.clone());
+        let rows = [
+            unsafe_row_with_struct(Some(&[Some(vec![7]), None])),
+            unsafe_row_with_struct(None),
+            unsafe_row_with_struct(Some(&[None, None])),
+        ];
+
+        let array = struct_column(&data_type, &rows);
+
+        assert_eq!(array.data_type(), &data_type);
+        let st = array.as_struct();
+        assert_eq!(st.len(), 3);
+        assert_eq!(st.null_count(), 1);
+        assert!(st.is_null(1));
+        let x: Vec<Option<i32>> = st.column(0).as_primitive::<Int32Type>().iter().collect();
+        assert_eq!(x, vec![Some(7), None, None]);
+        let n = st.column(1);
+        assert_eq!(n.data_type(), &DataType::Null);
+        assert_eq!(n.len(), 3);
+        assert_eq!(n.logical_null_count(), 3);
+    }
+
+    // `named_struct('s', named_struct('x', a, 'n', null))` reaches the nested variant.
+    #[test]
+    fn nested_struct_column_with_null_type_field() {
+        let inner_fields = Fields::from(vec![
+            Field::new("x", DataType::Int32, true),
+            Field::new("n", DataType::Null, true),
+        ]);
+        let fields = Fields::from(vec![Field::new(
+            "s",
+            DataType::Struct(inner_fields.clone()),
+            true,
+        )]);
+        let data_type = DataType::Struct(fields.clone());
+        let inner = |x: Option<u64>| {
+            // Drop the outer row's bitset and slot: the nested row starts at its own bitset.
+            unsafe_row_with_struct(Some(&[x.map(|x| vec![x]), None]))[2..].to_vec()
+        };
+        let rows = [
+            unsafe_row_with_struct(Some(&[Some(inner(Some(7)))])),
+            unsafe_row_with_struct(Some(&[None])),
+            unsafe_row_with_struct(None),
+            unsafe_row_with_struct(Some(&[Some(inner(None))])),
+        ];
+
+        let array = struct_column(&data_type, &rows);
+
+        assert_eq!(array.data_type(), &data_type);
+        let st = array.as_struct();
+        assert_eq!(st.len(), 4);
+        assert!(st.is_null(2));
+        let s = st.column(0).as_struct();
+        assert_eq!(s.null_count(), 2);
+        assert!(s.is_null(1) && s.is_null(2));
+        let x: Vec<Option<i32>> = s.column(0).as_primitive::<Int32Type>().iter().collect();
+        assert_eq!(x, vec![Some(7), None, None, None]);
+        let n = s.column(1);
+        assert_eq!(n.data_type(), &DataType::Null);
+        assert_eq!(n.len(), 4);
+        assert_eq!(n.logical_null_count(), 4);
     }
 }

@@ -124,7 +124,7 @@ native integrations for Delta Lake, Hudi, or Paimon. See the [Comet Iceberg guid
 features and known limitations.
 
 [Comet Iceberg guide]: /user-guide/latest/iceberg.md
-[Comet Iceberg writes]: /user-guide/latest/iceberg-writes.md
+[Comet Iceberg writes]: /user-guide/latest/iceberg.md#writes
 
 Gluten ships dedicated modules for Iceberg, Delta Lake (2.3 through 4.1, depending on the Spark version), Hudi, and
 Paimon. Its [Iceberg documentation] says that reads of unpartitioned tables are offloaded, including tables with
