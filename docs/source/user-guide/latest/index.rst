@@ -60,6 +60,7 @@ the navigation menu to read more.
 
    Overview <compatibility/index>
    compatibility/scans
+   compatibility/parquet-iceberg-known-issues
    compatibility/floating-point
    compatibility/regex
    compatibility/operators
@@ -95,6 +96,7 @@ the navigation menu to read more.
    :caption: Integrations
    :hidden:
 
+   Delta Lake (experimental) <delta>
    Iceberg Guide <iceberg>
    Iceberg Writes <iceberg-writes>
    Celeborn Guide <celeborn>

@@ -28,6 +28,9 @@ import org.apache.arrow.vector.ValueVector
  *   - Vector arguments arrive at the row count of the current batch.
  *   - Scalar (literal-folded) arguments arrive as length-1 vectors and must be read at index 0.
  *   - The returned vector's length must match `numRows`.
+ *   - Inputs belong to native execution and must not be modified. Each call receives new vectors,
+ *     but a scalar argument's buffers are the same on every call for the life of the expression,
+ *     and a vector argument can share its buffers with the rest of the plan.
  *
  * `numRows` mirrors DataFusion's `ScalarFunctionArgs.number_rows` and is the batch row count.
  * UDFs that always have at least one batch-length input can read length from it and ignore
@@ -45,4 +48,23 @@ import org.apache.arrow.vector.ValueVector
  */
 trait CometUDF {
   def evaluate(inputs: Array[ValueVector], numRows: Int): ValueVector
+
+  /**
+   * The overload the bridge calls. `partitionIndex` is the index of the partition the calling
+   * native plan computes, which differs from `TaskContext.partitionId()` under a union, a
+   * coalesce or a cartesian product. `planId` tells apart the plans one task runs, such as the
+   * parent partitions of a coalesce. The default ignores both.
+   */
+  def evaluate(
+      inputs: Array[ValueVector],
+      numRows: Int,
+      partitionIndex: Int,
+      planId: Long): ValueVector =
+    evaluate(inputs, numRows)
+
+  /**
+   * Called once native plan `planId` has closed, so an implementation that keeps state per plan
+   * can drop it before the task ends. The default does nothing.
+   */
+  def releasePlan(planId: Long): Unit = ()
 }

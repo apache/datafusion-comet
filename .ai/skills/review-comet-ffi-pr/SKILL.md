@@ -138,6 +138,11 @@ a new subclass needs no new case as long as `getValueVector` returns an Arrow ve
       `ColumnarBatchArrowReader` decodes dictionary-encoded columns before export, and
       `reconcileStreamSchema` advertises the value type. A new reader that exports a dictionary
       would reach `ScanExec` as is, and only the cast in `build_record_batch` would unpack it.
+- [ ] **Timestamps cross unconverted.** Both directions pass the raw microseconds. JVM producers
+      label `TimestampType` with `CometArrowStream.NATIVE_TIMEZONE`, which is `"UTC"`, and a new
+      producer must use it too rather than the session timezone. A change that shifts values by a
+      timezone at the boundary gives wrong answers. See "How Comet represents timestamps" in
+      `docs/source/contributor-guide/timezones.md`.
 
 ## 5. Memory Accounting
 

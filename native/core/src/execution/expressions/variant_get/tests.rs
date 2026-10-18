@@ -69,7 +69,6 @@ fn expression(target: DataType, fail_on_error: bool) -> VariantGet {
             EvalMode::Try,
             "America/Los_Angeles",
             true,
-            true,
         ),
     }
 }

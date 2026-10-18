@@ -139,12 +139,7 @@ impl VariantGet {
             target_sql: expr.target_sql.clone(),
             fail_on_error: expr.fail_on_error,
             size_limit: expr.size_limit as usize,
-            cast_options: SparkCastOptions::new_with_version(
-                EvalMode::Try,
-                &expr.timezone,
-                true,
-                true,
-            ),
+            cast_options: SparkCastOptions::new_with_version(EvalMode::Try, &expr.timezone, true),
         })
     }
 

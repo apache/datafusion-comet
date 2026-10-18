@@ -47,6 +47,7 @@ Development Guide <development>
 Comet Plugin Overview <plugin_overview>
 Arrow FFI <ffi>
 Timezone Handling <timezones>
+Floating-Point Semantics <floating_point>
 JVM Shuffle <jvm_shuffle>
 Native Shuffle <native_shuffle>
 Memory Management <memory_management>
@@ -94,6 +95,7 @@ Tracing <tracing>
 :hidden:
 
 Expression Audits <expression-audits/index>
+Data Source Audits <data-source-audits/index>
 Supported Spark Configurations <spark_configs_support>
 Configuration Conventions <config_conventions>
 ```

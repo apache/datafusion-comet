@@ -1008,6 +1008,52 @@ class CometNativeCastSuite extends CometTestBase with AdaptiveSparkPlanHelper {
     }
   }
 
+  test("cast DecimalType with negative scale to integral types is not supported natively") {
+    // The native decimal to integral kernels divide by 10^scale, which overflows for a negative
+    // scale: a debug build panics on a batch with a value, and a release build wraps the divisor
+    // to zero and fails even on an all-null batch. CometCast reports these casts as Unsupported,
+    // so Spark's own cast runs and the results match Spark's. Parquet cannot hold negative-scale
+    // decimals, so the data stays in memory and localTableScan lets Comet plan the cast. Spark
+    // would evaluate a projection over the in-memory rows on the driver, so ConvertToLocalRelation
+    // is excluded to make the cast reach Comet.
+    val integralTypes = Seq(ByteType, ShortType, IntegerType, LongType)
+    withSQLConf(
+      "spark.sql.legacy.allowNegativeScaleOfDecimal" -> "true",
+      "spark.comet.exec.localTableScan.enabled" -> "true",
+      SQLConf.OPTIMIZER_EXCLUDED_RULES.key ->
+        "org.apache.spark.sql.catalyst.optimizer.ConvertToLocalRelation",
+      SQLConf.ANSI_ENABLED.key -> "false") {
+      val negScaleType = DecimalType(7, -2)
+      Seq(CometEvalMode.LEGACY, CometEvalMode.ANSI, CometEvalMode.TRY).foreach { evalMode =>
+        integralTypes.foreach { toType =>
+          assert(
+            CometCast.isSupported(negScaleType, toType, None, evalMode) ==
+              Unsupported(Some(CometCast.negativeScaleDecimalToIntegralReason)))
+        }
+      }
+
+      // One table with values and one that is all null, which the native kernels used to answer
+      // with nulls.
+      val withValues = Seq(
+        Some(BigDecimal("0")),
+        Some(BigDecimal("100")),
+        Some(BigDecimal("12300")),
+        Some(BigDecimal("-99900")),
+        None)
+      val allNull = Seq.fill(3)(Option.empty[BigDecimal])
+      Seq(withValues, allNull).foreach { values =>
+        integralTypes.foreach { toType =>
+          val df = values
+            .toDF("b")
+            .withColumn("a", col("b").cast(negScaleType))
+            .drop("b")
+            .select(col("a").cast(toType).as("result"))
+          checkSparkAnswer(df)
+        }
+      }
+    }
+  }
+
   test("cast DecimalType(10,2) to TimestampType") {
     castTest(generateDecimalsPrecision10Scale2(), DataTypes.TimestampType)
   }
@@ -1413,6 +1459,47 @@ class CometNativeCastSuite extends CometTestBase with AdaptiveSparkPlanHelper {
         assert(
           errorMessage.contains("select cast(s as date) from cast_error_msg"),
           s"Error message should contain SQL query text but got: $errorMessage")
+      }
+    }
+  }
+
+  test("(ansi) failing cast of a literal raises Spark's own exception when reached") {
+    withSQLConf(SQLConf.ANSI_ENABLED.key -> "true") {
+      withTable("cast_literal_branch") {
+        Seq(0L, 1L, 2L).toDF("id").write.format("parquet").saveAsTable("cast_literal_branch")
+        // cast_literal_ansi.sql covers failing casts that raise an error class. This string's
+        // scale fits in an int, so it parses, but rounding it to the target scale fails in Spark
+        // with a raw `ArithmeticException`, which has no error class to compare.
+        val df = sql(
+          "SELECT CASE WHEN id = 1 THEN CAST('1e-2147483647' AS DECIMAL(10,2)) " +
+            "ELSE CAST(0 AS DECIMAL(10,2)) END FROM cast_literal_branch")
+        checkCometOperators(stripAQEPlan(df.queryExecution.executedPlan))
+        val (sparkError, cometError) = checkSparkAnswerMaybeThrows(df)
+        def rootCause(e: Throwable): Throwable =
+          Iterator.iterate(e)(_.getCause).takeWhile(_ != null).toSeq.last
+        val expected = rootCause(sparkError.getOrElse(fail("Spark did not fail")))
+        val actual = rootCause(cometError.getOrElse(fail("Comet did not fail")))
+        assert(actual.getClass == expected.getClass, s"Spark: $expected, Comet: $actual")
+        assert(actual.getMessage == expected.getMessage)
+      }
+    }
+  }
+
+  test("(ansi) cast string to negative-scale decimal fails when rescaling overflows an int") {
+    withSQLConf(
+      SQLConf.ANSI_ENABLED.key -> "true",
+      "spark.sql.legacy.allowNegativeScaleOfDecimal" -> "true") {
+      withTable("cast_decimal_rescale") {
+        Seq("1e-2147483647").toDF("s").write.format("parquet").saveAsTable("cast_decimal_rescale")
+        // The parsed scale fits in an int, but the difference to the target scale does not, so
+        // Spark's `BigDecimal.setScale` fails. The native cast must not round it to zero. Spark
+        // raises a raw `ArithmeticException`, so only failure is compared here; see
+        // https://github.com/apache/datafusion-comet/issues/6966.
+        val df = spark.table("cast_decimal_rescale").select(col("s").cast(DecimalType(10, -2)))
+        checkCometOperators(stripAQEPlan(df.queryExecution.executedPlan))
+        val (sparkError, cometError) = checkSparkAnswerMaybeThrows(df)
+        assert(sparkError.isDefined, "Spark did not fail")
+        assert(cometError.isDefined, "Comet did not fail")
       }
     }
   }
