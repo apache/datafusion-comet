@@ -193,6 +193,19 @@ object CometWindowExec extends CometOperatorSerde[WindowExec] {
     }
   }
 
+  /**
+   * Whether a decimal AVG keeps its running sum at DecimalType.MAX_PRECISION, which Spark does
+   * for input precision 28 and up. Spark's window buffer keeps that sum unbounded, while the
+   * native AVG skips the row that takes it out of the precision, so DECIMAL(38,38) inputs 0.6,
+   * 0.6, -0.6 average to 0 over the whole partition rather than Spark's 0.2, and to 0.6 rather
+   * than 0.2 in a running frame, where ANSI mode raises instead.
+   * https://github.com/apache/datafusion-comet/issues/5418
+   */
+  private def hasMaxPrecisionDecimalSum(avg: Average): Boolean = avg.sumDataType match {
+    case decimal: DecimalType => decimal.precision == DecimalType.MAX_PRECISION
+    case _ => false
+  }
+
   private def windowExprToProto(
       windowExprInfo: WindowExpressionInfo,
       output: Seq[Attribute],
@@ -236,11 +249,16 @@ object CometWindowExec extends CometOperatorSerde[WindowExec] {
                 None
               }
             case a: Average =>
-              if (AggSerde.avgDataTypeSupported(a.dataType)) {
-                Some(agg)
-              } else {
+              if (!AggSerde.avgDataTypeSupported(a.dataType)) {
                 withFallbackReason(windowExpr, s"datatype ${a.dataType} is not supported")
                 None
+              } else if (hasMaxPrecisionDecimalSum(a)) {
+                withFallbackReason(
+                  windowExpr,
+                  "AVG on DECIMAL with precision 28 or more is not supported")
+                None
+              } else {
+                Some(agg)
               }
             case _: First =>
               Some(agg)
@@ -376,30 +394,35 @@ object CometWindowExec extends CometOperatorSerde[WindowExec] {
     }
 
     // Comet's native window planner ships RANGE frame offsets as
-    // ScalarValue::Int64, but a couple of ORDER BY types don't tolerate that:
-    //   - DATE: arrow-arith requires an Interval RHS for Date32 arithmetic,
-    //     so execution fails with
-    //       Invalid date arithmetic operation: Date32 + Int32
-    //   - DECIMAL: Spark decimal arithmetic widens precision on +/-, so the
-    //     computed boundary (e.g. Decimal(11,0)) doesn't match the current
-    //     value's precision (e.g. Decimal(10,0)) and the comparator fails
-    //     with "Uncomparable values".
-    // Fall back to Spark for those shapes. UNBOUNDED / CURRENT ROW bounds
-    // don't evaluate the offending arithmetic and stay native.
+    // ScalarValue::Int64, which the DECIMAL comparator can't handle: Spark
+    // decimal arithmetic widens precision on +/-, so the computed boundary
+    // (e.g. Decimal(11,0)) doesn't match the current value's precision
+    // (e.g. Decimal(10,0)) and the comparator fails with "Uncomparable
+    // values". Fall back for DECIMAL until the native side normalizes
+    // precision. DATE is now handled natively by wrapping the offset as
+    // IntervalDayTime in the planner. UNBOUNDED / CURRENT ROW bounds don't
+    // evaluate the offending arithmetic and stay native regardless.
+    //
+    // For DATE, Spark computes the bound with DateAdd, an Int addition that
+    // wraps silently on overflow, while DataFusion treats an overflowing bound
+    // as the partition edge. Over dates in Spark's supported range the two only
+    // disagree when the offset is large enough to wrap, so fall back for those
+    // offsets. https://github.com/apache/datafusion-comet/issues/5022
     f match {
       case SpecifiedWindowFrame(RangeFrame, lb, ub)
           if !lb.isInstanceOf[SpecialFrameBoundary] ||
             !ub.isInstanceOf[SpecialFrameBoundary] =>
         windowExpr.windowSpec.orderSpec.headOption.map(_.dataType) match {
-          case Some(DateType) =>
-            withFallbackReason(
-              windowExpr,
-              "RANGE frame with explicit offset on DATE ORDER BY is not supported")
-            return None
           case Some(_: DecimalType) =>
             withFallbackReason(
               windowExpr,
               "RANGE frame with explicit offset on DECIMAL ORDER BY is not supported")
+            return None
+          case Some(DateType) if !Seq(lb, ub).forall(isDateRangeOffsetSafe) =>
+            withFallbackReason(
+              windowExpr,
+              "RANGE frame on DATE ORDER BY with an offset above " +
+                s"$MaxSafeDateRangeOffset days is not supported")
             return None
           case _ =>
         }
@@ -651,6 +674,30 @@ object CometWindowExec extends CometOperatorSerde[WindowExec] {
         }
       }
     case _ => true
+  }
+
+  // The largest absolute day number of a date in Spark's supported range,
+  // 0001-01-01 to 9999-12-31. 9999-12-31 is further from the epoch.
+  private val MaxSupportedDateDays: Long = java.time.LocalDate.of(9999, 12, 31).toEpochDay
+
+  // The largest DATE RANGE offset for which `current +/- offset` cannot wrap
+  // an Int for any date in Spark's supported range.
+  private val MaxSafeDateRangeOffset: Long = Int.MaxValue.toLong - MaxSupportedDateDays
+
+  private def isDateRangeOffsetSafe(bound: Expression): Boolean = bound match {
+    case _: SpecialFrameBoundary => true
+    case e =>
+      try {
+        e.eval() match {
+          case i: java.lang.Integer => Math.abs(i.longValue()) <= MaxSafeDateRangeOffset
+          case l: java.lang.Long =>
+            l.longValue() != Long.MinValue && Math.abs(l.longValue()) <= MaxSafeDateRangeOffset
+          // Other offsets are rejected when the bound is serialized.
+          case _ => true
+        }
+      } catch {
+        case _: Exception => true
+      }
   }
 
   // Folds a RANGE frame bound expression to a constant and serializes its
