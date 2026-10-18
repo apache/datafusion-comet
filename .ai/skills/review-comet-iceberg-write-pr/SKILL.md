@@ -33,7 +33,7 @@ bar, and the output format. This skill only covers Iceberg writes.
 | Doc                                                    | What you need from it                                                                   |
 | ------------------------------------------------------ | --------------------------------------------------------------------------------------- |
 | `docs/source/contributor-guide/iceberg-writes.md`      | The two layers, the gate's properties, the wire format both ways, cleanup ownership     |
-| `docs/source/user-guide/latest/iceberg-writes.md`      | The eligibility table and the accepted divergences from iceberg-java, as users see them |
+| `docs/source/user-guide/latest/iceberg.md` (Writes)    | The eligibility table and the accepted divergences from iceberg-java, as users see them |
 | `docs/source/contributor-guide/iceberg-spark-tests.md` | What the Iceberg Spark test diffs enable, and what a green run does and does not prove  |
 
 The organizing rule is that **the native writer produces what iceberg-java would have produced, or
@@ -111,8 +111,8 @@ only the latest.
       that starts trusting iceberg-rust's metrics, or adds a native-tracked value beyond float and
       double NaN counts and bounds, needs a strong reason.
 - [ ] **Value semantics match, not only formats.** iceberg-rust compares and hashes partition values
-      with its own rules: `OrderedFloat` treats `-0.0` and `0.0` as equal where Java's
-      `Float.compare` does not
+      with its own rules: until apache/iceberg-rust#3327 its `OrderedFloat` equality treated
+      `-0.0` and `0.0` as equal where Java's `Float.compare` does not
       ([#6138](https://github.com/apache/datafusion-comet/issues/6138)). Check equality, hashing,
       ordering and rendering for float, double, timestamp, timestamptz, binary and decimal.
 - [ ] **Timestamp partition values are UTC.** Iceberg's `years`, `months`, `days` and `hours`
@@ -123,7 +123,7 @@ only the latest.
       these transforms back to iceberg-rust, or that makes the kernels read the column's timezone
       label, breaks that agreement. iceberg-rust's `years` and `months` follow the label
       ([apache/iceberg-rust#3142](https://github.com/apache/iceberg-rust/issues/3142)). Ask for a
-      test in a non-UTC session for a change here. "Partition values" in `iceberg-writes.md` lists
+      test in a non-UTC session for a change here. "Partition values" in the Writes section of the user-guide `iceberg.md` lists
       where iceberg-rust differs, and `timezones.md` covers how Comet labels timestamps.
 - [ ] **Partition paths use the Java renderers.** Directory names come from
       `CometLocationGenerator` / `partition_to_path` in `iceberg_partition_path.rs`, which follow
@@ -241,9 +241,10 @@ Ask specifically:
   properties, the proto description, the native adaptations list, the payload columns and the JVM
   steps after them, the cleanup ownership table, the test table, and the Iceberg version per Spark
   profile
-- **`user-guide/latest/iceberg-writes.md`**: the eligibility table, the "falls back" lists, the
+- **`user-guide/latest/iceberg.md`, Writes section**: the eligibility table, the "falls back" lists, the
   failure-handling section, and the accepted-divergences list. A PR that lifts or adds a rule, or
   changes a divergence, must update these. A divergence the code has since fixed must be removed.
-- **`user-guide/latest/iceberg.md`**: its unsupported-features list mentions writes
+- **`user-guide/latest/iceberg.md`, Native Reader section**: its unsupported-features list mentions writes. The
+  Known Issues section lists the open write issues
 - **`contributor-guide/iceberg-spark-tests.md`**: the flags the diffs set
 - `CometConf.scala` doc strings for the two flags, when defaults or scope change
