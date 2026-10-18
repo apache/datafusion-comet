@@ -38,8 +38,9 @@ The following features are not supported and cause Comet to fall back to Spark:
 - Default values that are nested types (e.g., maps, arrays, structs). Literal default values are supported.
 - Spark's Datasource V2 API. When `spark.sql.sources.useV1SourceList` does not include `parquet`, Spark uses the
   V2 API for Parquet scans. Comet's Parquet scan only supports the V1 API.
-- `_metadata.row_index`. Other `_metadata` columns (`file_path`, `file_name`, `file_size`, `file_block_start`,
-  `file_block_length`, `file_modification_time`) are supported.
+- `_metadata.row_index`, `_metadata.file_block_start` and `_metadata.file_block_length`. When Spark splits a file,
+  the native scan and Spark can read a row group in different splits, so the block values would differ. Other
+  `_metadata` columns (`file_path`, `file_name`, `file_size`, `file_modification_time`) are supported.
 - No support for `input_file_name()`, `input_file_block_start()`, or `input_file_block_length()` SQL functions.
   Comet's Parquet scan does not use Spark's `FileScanRDD`, so these functions cannot populate their values.
 - No support for `ignoreMissingFiles` or `ignoreCorruptFiles` being set to `true`
@@ -54,18 +55,15 @@ The following features are not supported and cause Comet to fall back to Spark:
   `spark.sql.caseSensitive=false`. Spark's analyzer normally rejects such a schema before the scan
   is planned.
 
-The following limitation may produce incorrect results without falling back to Spark:
+Some Parquet reads return results that differ from Spark without falling back to Spark, such as
+reads of dates and timestamps written with the legacy hybrid Julian/Gregorian calendar
+([#5010](https://github.com/apache/datafusion-comet/issues/5010)).
+[Known Issues](parquet-iceberg-known-issues.md#parquet-reads) lists them, with the
+issues that track them.
 
-- No support for datetime rebasing. When reading Parquet files containing dates or timestamps
-  written with `spark.sql.parquet.datetimeRebaseModeInWrite=LEGACY` (which is Spark's default for
-  data written before Spark 3.0, using the hybrid Julian/Gregorian calendar), Comet reads them as
-  if they were written using the Proleptic Gregorian calendar. This produces silently-wrong
-  values for dates before October 15, 1582 in both projections and predicates. Comet also
-  ignores `spark.sql.parquet.datetimeRebaseModeInRead` and the file-level
-  `org.apache.spark.legacyDateTime` metadata that would tell it to rebase. Tracked by
-  [#5010](https://github.com/apache/datafusion-comet/issues/5010).
-
-The following limitations raise an error at scan time rather than falling back to Spark:
+The following limitations raise an error at scan time rather than falling back to Spark. More
+reads that fail where Spark succeeds are listed in
+[Known Issues](parquet-iceberg-known-issues.md#parquet-reads-that-fail):
 
 - Selecting a field by name when multiple physical siblings match, including inside structs,
   arrays, and maps. Comet raises a duplicate-field error instead of resolving the collision.
@@ -125,6 +123,11 @@ and `INT32 → DOUBLE` widening that Spark 4.0+ accepts unconditionally; `Timest
 is rejected by Spark 3.x but accepted by Spark 4.0+). Comet aims to follow the per-version Spark
 behavior.
 
+- **Conversion errors precede pushed row filters**. Empty files and files whose row groups or
+  pages are all pruned read without decode-time conversion errors. When row-filter pushdown is
+  enabled, Comet checks rejected conversions before reading surviving data pages, so a row filter
+  cannot suppress the error by discarding every row. Legacy LIST shape mismatches that Spark cannot
+  clip are rejected when the file is opened, including for empty and fully pruned files.
 - **List conversion error paths assume Spark's standard encoding**. Comet inserts `list`
   before the element name when reporting a rejected array element conversion. Arrow's schema
   omits the repeated group name, so paths for legacy LIST encodings or custom group names may

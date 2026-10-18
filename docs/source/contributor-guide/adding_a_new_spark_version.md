@@ -20,8 +20,8 @@
 # Adding Support for a New Spark Version
 
 This guide describes how to bring up support for a new Apache Spark release in
-Comet. Past examples include the work to add Spark 4.0, Spark 4.1, and the
-Spark 4.2 preview profile. The goal is a repeatable recipe that keeps each
+Comet. Past examples include the work to add Spark 4.0, Spark 4.1, and
+Spark 4.2. The goal is a repeatable recipe that keeps each
 pull request small, reviewable, and easy to revert if a problem is discovered
 later.
 
@@ -70,6 +70,10 @@ properties:
   release actually publishes. Use the exact Scala patch version Spark
   publishes, not a looser pin; a mismatch causes `NoSuchMethodError` at
   runtime.
+- `semanticdb.version`: `semanticdb-scalac` is published separately for each
+  Scala patch version, so check that `org.scalameta:semanticdb-scalac_<scala.version>`
+  exists at this version. Without it, `make format` and the Lint Java CI job
+  cannot run scalafix on the new profile.
 - `shims.majorVerSrc` and `shims.minorVerSrc`: the directory names the
   build helper plugin will add to the source path. By convention the
   major-version directory groups shims that are identical across the family
@@ -109,11 +113,13 @@ logic and to skip tests. Add the matching helper for the new version
 
 ### Add a Compile-Only CI Job
 
-Edit `.github/workflows/pr_build_linux.yml` and `pr_build_macos.yml` to add
-the new Spark version to the `build-spark` (or equivalent compile-only) job
-matrix. Do not add it to the heavier test matrices yet. A compile-only job
-keeps the CI cost of stage 1 small and prevents test failures on the new
-version from blocking unrelated PRs.
+Edit `.github/workflows/pr_build_linux.yml` to add the new Spark version to
+the `lint-java` matrix, which compiles each listed profile and runs scalafix
+on every pull request. If `semanticdb-scalac` is not yet published for the new
+Scala version, add a separate compile-only job instead until it is. Do not add
+the version to the heavier test matrices yet. Compiling only keeps the CI cost
+of stage 1 small and prevents test failures on the new version from blocking
+unrelated PRs.
 
 When CI capacity is constrained (the macOS runners in particular), it is
 acceptable to drop an older minor version from the macOS PR matrix while a
@@ -309,14 +315,16 @@ Once stage 3 is merged and CI is green, advertise the version to users.
 
 The single source of truth for which Spark versions Comet works with is the
 `### Supported Spark Versions` section in
-`docs/source/user-guide/latest/installation.md`. It contains two tables and a
-list of per-version jar download links. Update each:
+`docs/source/user-guide/latest/installation.md`. It contains the supported
+versions table, an experimental versions table while any version is
+experimental, and a list of per-version jar download links. Update each:
 
 - Add a row to the **experimental** table (the one introduced by the
   sentence "Experimental support is provided for the following versions
-  ..."). Include the Java version, Scala version, and the `Yes`/`No`
-  values for "Comet Tests in CI" and "Spark SQL Tests in CI" that match
-  what stage 2 and stage 3 actually enabled.
+  ..."). If no version is experimental, add that sentence and table below
+  the supported table first. Include the Java version, Scala version, and
+  the `Yes`/`No` values for "Comet Tests in CI" and "Spark SQL Tests in CI"
+  that match what stage 2 and stage 3 actually enabled.
 - Add a `(Experimental)` jar download link below the existing entries.
 
 Do not add the new version to the main "Supported Spark Versions" table
@@ -374,10 +382,20 @@ is its own small PR, gated by these criteria:
 
 When the criteria are met, the promotion PR moves the version's row from
 the experimental table into the main "Supported Spark Versions" table and
-removes the `(Experimental)` qualifier from the jar download link. No
-shim, code, or test changes should be bundled with this promotion. Keeping
-it as a doc-only PR makes it easy to revert if a problem shows up after
-the promotion.
+removes the `(Experimental)` qualifier from the jar download link.
+
+If the version's jars are not published yet, the same PR adds its profile
+to `dev/release/build-release-comet.sh` and
+`.github/workflows/publish_snapshot.yml`, and its jar to the snapshot and
+release lists in `installation.md`. It also adds the version's expression
+compatibility pages: a `spark-X.Y/index.md` under
+`docs/source/user-guide/latest/compatibility/expressions/`, a toctree entry
+in that directory's `index.md`, and the profile in `SPARK_PROFILES` in both
+`docs/build.sh` and `dev/generate-release-docs.sh`.
+
+No shim, code, or test changes should be bundled with this promotion.
+Keeping it to docs and packaging makes it easy to revert if a problem
+shows up after the promotion.
 
 ## Related Documentation
 

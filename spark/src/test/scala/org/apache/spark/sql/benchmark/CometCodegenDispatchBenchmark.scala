@@ -32,8 +32,8 @@ import org.apache.comet.udf.codegen.CometScalaUDFCodegen
 
 /**
  * Benchmark of the expressions that the JVM codegen dispatcher picks up when no native handler
- * exists: `StaticInvoke` outside `CometStaticInvoke`'s allowlist, and `Invoke`, which has no
- * allowlist at all. Every case here fell the whole projection back to Spark before that catch-all
+ * exists: `StaticInvoke` outside `CometStaticInvoke`'s allowlist, and `Invoke`, when either calls
+ * Spark's own code. Every case here fell the whole projection back to Spark before that catch-all
  * existed, so the interesting comparison is not Comet against Spark but
  *
  *   - `codegen dispatch` -- the expression runs as a Janino-compiled kernel reading and writing

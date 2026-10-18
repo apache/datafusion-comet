@@ -49,6 +49,10 @@ public abstract class NativeBase {
 
   private static final String libraryToLoad = System.mapLibraryName(NATIVE_LIB_NAME);
   private static boolean loaded = false;
+  // The bundled libcomet this class loader unpacked and loaded, or null. Unlike `loaded`, never
+  // reset: unpacking it again yields a new temporary file, which the JVM loads as a second
+  // library with its own uninitialized native state, and JNI methods can then bind to either copy.
+  private static File bundledLibrary = null;
   private static volatile Throwable loadErr = null;
   private static final String searchPattern = "libcomet-";
   private static final AtomicBoolean released = new AtomicBoolean(false);
@@ -74,6 +78,11 @@ public abstract class NativeBase {
   // Only for testing
   static synchronized void setLoaded(boolean b) {
     loaded = b;
+  }
+
+  // Only for testing
+  static synchronized File bundledLibrary() {
+    return bundledLibrary;
   }
 
   static synchronized void load() {
@@ -113,6 +122,11 @@ public abstract class NativeBase {
    * Use the bundled native libraries. Functionally equivalent to <code>System.loadLibrary</code>.
    */
   private static void bundleLoadLibrary() {
+    if (bundledLibrary != null) {
+      loaded = true;
+      return;
+    }
+
     String resourceName = resourceName();
     InputStream is = NativeBase.class.getResourceAsStream(resourceName);
     if (is == null) {
@@ -133,6 +147,7 @@ public abstract class NativeBase {
       Files.copy(is, tempLib.toPath(), StandardCopyOption.REPLACE_EXISTING);
       System.load(tempLib.getAbsolutePath());
       loaded = true;
+      bundledLibrary = tempLib;
     } catch (IOException e) {
       throw new IllegalStateException("Cannot unpack libcomet: " + e);
     } finally {
@@ -369,4 +384,16 @@ public abstract class NativeBase {
    * @return the version compiled into libcomet
    */
   public static native String getTzdataVersion();
+
+  /**
+   * The comma-joined URL schemes the native Iceberg storage factory can open, for reads ({@code
+   * forWrite} false) or writes ({@code forWrite} true). This is the authoritative list the JVM
+   * Iceberg scan and write gates load, so the planner never hardcodes (and drifts from) the set the
+   * native factory actually builds. Opt-in S3-compliant alias schemes are not included; the JVM
+   * adds them from {@code fs.comet.s3Compliant.schemes}.
+   *
+   * @param forWrite true for the write path's schemes, false for the scan path's
+   * @return the supported schemes joined by commas, e.g. "file,memory,gs,s3,s3a"
+   */
+  public static native String icebergStorageSchemes(boolean forWrite);
 }

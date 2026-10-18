@@ -182,6 +182,10 @@ what test was added. Ask for at least one of:
 - A trace comparing `jemalloc_allocated` against the summed
   `thread_NNN_comet_memory_reserved` values, which is the only way to see the accounting gap
 - Spill counts from `spark.comet.explain.native.enabled=true`, before and after
+- For a DataFusion upgrade, or a change to a spilling operator, a run where the operator spills
+  under a tight pool and then reads its spill back. The DataFusion 55.1 final aggregate lost the
+  ability to spill again during that replay, and only a run at a small off-heap size showed it
+  (#6254).
 - For a fix to an OOM report, the exit code that identifies which budget was exceeded. 137 or
   `OOMKilled` is the cgroup. 52 with `java.lang.OutOfMemoryError` is JVM heap. A failed task with
   `SparkOutOfMemoryError` and a surviving executor is Spark's pool, the only one of the three that

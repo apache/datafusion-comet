@@ -73,8 +73,6 @@ impl SparkArrowConvert for ArrayData {
     }
 }
 
-pub use datafusion_comet_common::bytes_to_i128;
-
 #[cfg(test)]
 mod tests {
     use super::*;

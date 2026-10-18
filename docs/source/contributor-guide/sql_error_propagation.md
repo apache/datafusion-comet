@@ -245,7 +245,7 @@ The expression wrappers (`CheckedBinaryExpr`, `CheckOverflow`, `Cast`) catch the
 `SparkError` and attach the SQL context using `SparkErrorWithContext`:
 
 ```rust
-// native/core/src/execution/expressions/arithmetic.rs
+// native/spark-expr/src/math_funcs/checked_binary_expr.rs
 // CheckedBinaryExpr wraps arithmetic operations
 
 impl PhysicalExpr for CheckedBinaryExpr {
