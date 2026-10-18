@@ -177,7 +177,7 @@ Selection logic in `CometShuffleManager.shouldBypassMergeSort()`:
 3. Rows are serialized and buffered in off-heap memory pages
 4. When memory threshold or batch size is reached, the buffered rows are written. `CometDiskBlockWriter`
    calls `SpillWriter.doSpilling()` for its partition. `CometShuffleExternalSorter` calls
-   `SpillSorter.writeSortedFileNative()` once for each spill and once more for the final file, and each
+   `SpillSorter.writeSortedPartitions()` once for each spill and once more for the final file, and each
    call writes every partition
 5. Native code converts the rows to Arrow arrays and writes them as Arrow IPC blocks. `doSpilling()`
    passes one partition's row addresses and sizes to `Native.writeSortedFileNative()`. `SpillSorter`

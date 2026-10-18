@@ -1386,7 +1386,9 @@ struct SortedRowEncoder<'a> {
     block_writer: Option<(SchemaRef, ShuffleBlockWriter)>,
     codec_context: ShuffleCodecContext,
     output: File,
-    /// Encoded blocks not yet written to `output`.
+    /// Encoded blocks not yet written to `output`. Native memory that no memory pool reserves, like
+    /// the builders. Its contents are written out as soon as they reach `OUTPUT_BUFFER_BYTES`, so
+    /// they never exceed that size plus one block. The `Vec` keeps the capacity it grew to.
     buffer: Vec<u8>,
     /// Encode and compression time across all batches.
     ipc_time: Time,

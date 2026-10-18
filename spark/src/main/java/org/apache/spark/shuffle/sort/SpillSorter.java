@@ -243,7 +243,7 @@ public class SpillSorter extends SpillWriter {
    * #setSpillInfo}, every partition in one native call, recording each partition's length and
    * checksum.
    */
-  public void writeSortedFileNative(boolean isLastFile, boolean tracingEnabled) throws IOException {
+  public void writeSortedPartitions(boolean isLastFile, boolean tracingEnabled) throws IOException {
     final int numRecords = inMemSorter.numRecords();
     // If there are no records, we don't need to create an empty spill file.
     if (numRecords == 0) {

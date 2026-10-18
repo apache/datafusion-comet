@@ -343,7 +343,7 @@ class SpillSorterSuite extends AnyFunSuite with BeforeAndAfterEach {
           files += file
           sorter.setSpillInfo(
             new CometSpillInfo(numPartitions, file, TempShuffleBlockId(UUID.randomUUID())))
-          sorter.writeSortedFileNative(isLastFile, false)
+          sorter.writeSortedPartitions(isLastFile, false)
           sorter.freeMemory()
           if (!isLastFile) {
             sorter.reset()

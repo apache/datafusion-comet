@@ -41,6 +41,13 @@ import org.apache.comet.CometConf
  * `spark.comet.shuffle.jvm.spillThreshold` makes Comet spill a fixed number of rows at a time. It
  * does not apply to Spark's shuffle, which does not spill in these cases.
  *
+ * This is separate from `CometShuffleBenchmark`, which also covers the sort-based writer, because
+ * it needs a session of its own. The master is fixed when the session starts, and this benchmark
+ * uses `local[1]` so that the map tasks run one at a time and the time follows their cost, where
+ * `CometShuffleBenchmark` uses `local[5]`. That benchmark also sets a default spill threshold, so
+ * its no-spill cases would spill, and this one leaves the default so that its no-spill case does
+ * not.
+ *
  * To run this benchmark:
  * {{{
  *   SPARK_GENERATE_BENCHMARK_FILES=1 make benchmark-org.apache.spark.sql.benchmark.CometColumnarShuffleWriteBenchmark
