@@ -16,7 +16,7 @@
 // under the License.
 
 use arrow::array::ArrayRef;
-use arrow::datatypes::{DataType, Field, TimeUnit};
+use arrow::datatypes::Field;
 use criterion::{criterion_group, criterion_main, BenchmarkId, Criterion};
 use datafusion::common::config::ConfigOptions;
 use datafusion::logical_expr::{ColumnarValue, ScalarFunctionArgs, ScalarUDFImpl};
@@ -55,6 +55,8 @@ fn criterion_benchmark(c: &mut Criterion) {
     for rows in ROW_COUNTS {
         for (null_ratio, tag) in NULL_RATIOS {
             for (ty, arr) in inputs(rows, null_ratio) {
+                let return_type = udf.return_type(&[arr.data_type().clone()]).unwrap();
+                let return_field = Arc::new(Field::new("result", return_type, true));
                 let args = vec![ColumnarValue::Array(arr)];
                 group.bench_with_input(
                     BenchmarkId::from_parameter(format!("{ty}/{rows}/{tag}")),
@@ -66,11 +68,7 @@ fn criterion_benchmark(c: &mut Criterion) {
                                     args: args.clone(),
                                     arg_fields: vec![],
                                     number_rows: rows,
-                                    return_field: Arc::new(Field::new(
-                                        "result",
-                                        DataType::Timestamp(TimeUnit::Microsecond, None),
-                                        true,
-                                    )),
+                                    return_field: Arc::clone(&return_field),
                                     config_options: Arc::new(ConfigOptions::default()),
                                 })
                                 .unwrap(),

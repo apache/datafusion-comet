@@ -148,7 +148,7 @@ object CometCastNumericToNumericBenchmark extends CometBenchmarkBase {
             generateConfigs(floatToIntPairs) ++
             generateConfigs(decimalPairs) ++
             generateConfigs(floatToDecimalPairs)).foreach { config =>
-            runExpressionBenchmark(config.name, v, config.query, config.extraCometConfigs)
+            runExpressionBenchmark(config.name, v.toLong, config.query, config.extraCometConfigs)
           }
         }
       }

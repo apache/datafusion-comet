@@ -138,6 +138,27 @@ class IcebergReflectionSuite extends AnyFunSuite {
     assert(ex.getCause.getMessage == "boom")
   }
 
+  test("taskCommitFileLocations reads plain SparkWrite task commits") {
+    val commit = new PlainTaskCommit(
+      Array(
+        new LocationFile("s3://bucket/data/a.parquet"),
+        new LocationFile("s3://bucket/data/b.parquet")))
+    assert(
+      IcebergReflection.taskCommitFileLocations(commit) ==
+        Seq("s3://bucket/data/a.parquet", "s3://bucket/data/b.parquet"))
+  }
+
+  test("taskCommitFileLocations reads new files from position-delta task commits") {
+    val commit = new DeltaTaskCommit(
+      Array(new LocationFile("s3://bucket/data/a.parquet")),
+      Array(new LocationFile("s3://bucket/delete/d.parquet")),
+      Array(new LocationFile("s3://bucket/delete/old.parquet")))
+
+    assert(
+      IcebergReflection.taskCommitFileLocations(commit) ==
+        Seq("s3://bucket/data/a.parquet", "s3://bucket/delete/d.parquet"))
+  }
+
   test("getFileFormat reads format() when declared") {
     val file = new FormatFile("PARQUET")
     assert(IcebergReflection.getFileFormat(classOf[FormatFile], file) == Some("PARQUET"))
@@ -259,6 +280,25 @@ class IcebergReflectionSuite extends AnyFunSuite {
       IcebergReflection.executorReflectionUnresolved)
   }
 
+  test("footer re-reads build parquet-mr's read options without a Hadoop Configuration") {
+    // `ParquetFileReader.open(InputFile)` builds its read options from a new Hadoop
+    // `Configuration` on parquet-mr 1.14 and later, and parsing that configuration's XML
+    // resources was most of the cost of rebuilding a native-written file's metrics.
+    IcebergReflection.resolveParquetFooterReflection().readOptions match {
+      case Some(readOptions) =>
+        val options = readOptions.newOptions()
+        val configuration = options.getClass.getMethod("getConfiguration").invoke(options)
+        assert(configuration.getClass.getSimpleName == "PlainParquetConfiguration")
+      case None =>
+        // Only parquet-mr without `ParquetConfiguration` keeps `open(InputFile)`, whose
+        // defaults are built without Hadoop.
+        intercept[ClassNotFoundException] {
+          IcebergReflection.loadClass(
+            "org.apache.iceberg.shaded.org.apache.parquet.conf.ParquetConfiguration")
+        }
+    }
+  }
+
   /** Schema the transform tests below partition on, one column per transform source type. */
   private val transformSchema = new Schema(
     Types.NestedField.optional(1, "id", Types.LongType.get()),
@@ -307,6 +347,19 @@ class IcebergReflectionSuite extends AnyFunSuite {
     // The partition type Comet serializes alongside the rewritten spec has to agree with what
     // iceberg-rust derives for Transform::Unknown, which is string.
     assert(spec.partitionType().fields().get(0).`type`().toString == "string")
+  }
+
+  class PlainTaskCommit(taskFiles: Array[LocationFile]) {
+    def files(): Array[LocationFile] = taskFiles
+  }
+
+  class DeltaTaskCommit(
+      data: Array[LocationFile],
+      deletes: Array[LocationFile],
+      rewrittenDeletes: Array[LocationFile]) {
+    def dataFiles(): Array[LocationFile] = data
+    def deleteFiles(): Array[LocationFile] = deletes
+    def rewrittenDeleteFiles(): Array[LocationFile] = rewrittenDeletes
   }
 
   /** Mimics a newer Iceberg ContentFile, which exposes location(). */

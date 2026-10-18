@@ -19,6 +19,7 @@
 
 package org.apache.comet.cloud.s3;
 
+import java.time.Instant;
 import java.util.Map;
 
 import org.apache.iceberg.aws.s3.VendedCredentialsProvider;
@@ -62,11 +63,16 @@ public final class IcebergRESTVendedS3Provider implements CometS3CredentialProvi
               + "Comet should always invoke initialize before getCredentialsForPath");
     }
     AwsCredentials c = p.resolveCredentials();
-    String sessionToken =
-        (c instanceof AwsSessionCredentials) ? ((AwsSessionCredentials) c).sessionToken() : null;
-    // Expiration is owned by VendedCredentialsProvider's CachedSupplier; we publish 0 so the
-    // native bridge applies its conservative floor to `opendal`'s cache while the inner
-    // CachedSupplier handles refresh on its own schedule.
-    return new CometS3Credentials(c.accessKeyId(), c.secretAccessKey(), sessionToken, 0L);
+    String sessionToken = null;
+    long expirationEpochMillis = 0L;
+    if (c instanceof AwsSessionCredentials) {
+      AwsSessionCredentials session = (AwsSessionCredentials) c;
+      sessionToken = session.sessionToken();
+      // Publish the vended credential's expiry, so Comet reuses it until shortly before and never
+      // after. VendedCredentialsProvider's CachedSupplier still decides when to fetch a new one.
+      expirationEpochMillis = session.expirationTime().map(Instant::toEpochMilli).orElse(0L);
+    }
+    return new CometS3Credentials(
+        c.accessKeyId(), c.secretAccessKey(), sessionToken, expirationEpochMillis);
   }
 }

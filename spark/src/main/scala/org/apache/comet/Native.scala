@@ -167,6 +167,8 @@ class Native extends NativeBase {
    *   the compression codec
    * @param compressionLevel
    *   the compression level
+   * @param offsetsAsLengths
+   *   whether to store offsets as lengths where the codec takes it
    * @return
    *   [the number of bytes written to disk, the checksum]
    */
@@ -183,6 +185,7 @@ class Native extends NativeBase {
       currentChecksum: Long,
       compressionCodec: String,
       compressionLevel: Int,
+      offsetsAsLengths: Boolean,
       tracingEnabled: Boolean): Array[Long]
   // scalastyle:on
 
@@ -272,7 +275,9 @@ class Native extends NativeBase {
    * @return
    *   `[nativeAllocated, poolsReserved, pools, plans]`. `nativeAllocated` is the bytes the native
    *   allocator has handed out. `poolsReserved` is the bytes reserved across every Comet memory
-   *   pool, counting a pool shared by several plans once. `pools` is the number of live pools,
+   *   pool, counting a pool shared by several plans once, less any that a pool recorded beyond
+   *   what Spark granted it. Spark's off-heap pool does not account for those bytes, so they are
+   *   counted with the native memory that no pool tracks. `pools` is the number of live pools,
    *   which with the default task-shared pool types is one per task running native plans, and
    *   `plans` is the number of native plans created and not yet released.
    */
