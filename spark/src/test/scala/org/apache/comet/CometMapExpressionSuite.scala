@@ -399,7 +399,7 @@ class CometMapExpressionSuite extends CometTestBase {
       checkSparkAnswerAndFallbackReason(
         "SELECT _1 AS id, element_at(element_at(map(1, map(CAST(0 AS DOUBLE), 7)), _1), " +
           s"$negZero) AS v FROM tbl",
-        "Spark normalizes floating-point map keys")
+        "Spark looks a key up in its SQL ordering")
     }
   }
 
@@ -442,11 +442,11 @@ class CometMapExpressionSuite extends CometTestBase {
     }
   }
 
-  // `map_contains_key` lowers to `array_contains(map_keys(...), key)`. `CometArrayContains` reports
-  // Incompatible for floating-point element types, because native `array_contains` compares
-  // -0.0/+0.0 and NaN bitwise unlike Spark. So under the default config it codegen-dispatches to
-  // Spark and the query stays native with Spark-exact results and no fallback. Forcing the native
-  // kernel with `ArrayContains.allowIncompatible=true` makes it serialize its children instead, so
+  // `map_contains_key` lowers to `array_contains(map_keys(...), key)`. The key here is a cast,
+  // which `CometArrayContains` keeps on the codegen dispatcher over a nullable array, because Spark
+  // skips the value for a null array while the native kernel evaluates it first. So under the
+  // default config the query stays native with Spark-exact results and no fallback. Forcing the
+  // native kernel with `ArrayContains.allowIncompatible=true` makes it serialize its children, so
   // the folded double-keyed map literal reaches the literal-expansion path. That map is nested
   // inside the INT-keyed outer map, past the outer `element_at` key guard which only sees the INT
   // key. The nested-key walk in the expansion (`mapKeyTypesExpandable`) is what has to decline the
@@ -455,8 +455,8 @@ class CometMapExpressionSuite extends CometTestBase {
   test("map_contains_key over nested floating-point map keys falls back (multirow)") {
     withParquetTable((1 until 4).map(i => (i, i.toLong)), "tbl") {
       val negZero = "CAST(concat('-', CAST(_1 - 1 AS STRING), '.0') AS DOUBLE)"
-      // allowIncompatible flips array_contains from codegen dispatch to the native kernel, so the
-      // nested-map literal is actually serialized and the expansion guard runs.
+      // allowIncompatible lifts array_contains' eager-evaluation guard, so the nested-map literal
+      // is actually serialized and the expansion guard runs.
       withSQLConf(CometConf.getExprAllowIncompatConfigKey(classOf[ArrayContains]) -> "true") {
         checkSparkAnswerAndFallbackReason(
           "SELECT _1 AS id, map_contains_key(" +
@@ -489,7 +489,7 @@ class CometMapExpressionSuite extends CometTestBase {
   }
 
   // Direct single-level folded map with floating-point keys: `map(CAST(0 AS DOUBLE), 7)` folds to a
-  // literal and `element_at` with a dynamic `-0.0` lookup must match Spark's `+0.0`-normalized key.
+  // literal and `element_at` with a dynamic `-0.0` lookup must match Spark's `+0.0` key.
   // Native `map_extract` compares raw Arrow values, so `MapKeySupport` declines it at `element_at`.
   // Spark returns 7, NULL, NULL. (`element_at_map.sql` covers the folding-off constructor form.)
   test("folded map literal with floating-point keys in element_at falls back (multirow)") {
@@ -497,7 +497,7 @@ class CometMapExpressionSuite extends CometTestBase {
       val lookup = "CAST(concat('-', CAST(_1 - 1 AS STRING), '.0') AS DOUBLE)"
       checkSparkAnswerAndFallbackReason(
         s"SELECT _1 AS id, element_at(map(CAST(0 AS DOUBLE), 7), $lookup) AS v FROM tbl",
-        "Spark normalizes floating-point map keys")
+        "Spark looks a key up in its SQL ordering")
     }
   }
 

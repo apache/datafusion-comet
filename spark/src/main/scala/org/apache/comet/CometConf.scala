@@ -125,19 +125,22 @@ object CometConf extends ShimCometConf {
     conf("spark.comet.write.iceberg.splitOperator.enabled")
       .category(CATEGORY_TESTING)
       .doc(
-        "Whether to rewrite Iceberg V2 writes from Spark's combined V2 write/commit operator " +
-          "into Comet's two-operator shape: a file writer exec (inside AQE) and a committer " +
-          "(outside AQE).")
+        "Whether to plan Iceberg writes as Comet's file writer and committer even when " +
+          "`spark.comet.write.iceberg.enabled` is false, so that Iceberg's own writer writes " +
+          "every data file inside Comet's plan. It is also what plans merge-on-read writes on " +
+          "Spark 3.5+ that way. Used by tests to compare the two writers under the same plan.")
       .booleanConf
       .createWithDefault(false)
 
   val COMET_ICEBERG_NATIVE_WRITE_ENABLED: ConfigEntry[Boolean] =
     conf("spark.comet.write.iceberg.enabled")
-      .category(CATEGORY_TESTING)
-      .doc(
-        "Whether to delegate the executor-side Parquet write to Comet's native (iceberg-rust) " +
-          "writer when the table's properties allow it. Requires " +
-          "`spark.comet.write.iceberg.splitOperator.enabled = true`. Off by default.")
+      .category(CATEGORY_EXEC)
+      .doc("Whether Comet plans Iceberg writes and writes their data files natively. When " +
+        "enabled, Comet replaces Spark's combined V2 write operator with a file writer " +
+        "(inside AQE) under a committer (outside AQE), and writes the data files of each " +
+        "eligible write with its native (iceberg-rust) writer. Other writes use Iceberg's own " +
+        "writer, and Iceberg commits every write. Merge-on-read writes keep Spark's operator. " +
+        "When disabled, Spark plans its own V2 write operator.")
       .booleanConf
       .createWithDefault(false)
 
@@ -151,6 +154,16 @@ object CometConf extends ShimCometConf {
       .intConf
       .checkValue(v => v > 0, "Data file concurrency limit must be positive")
       .createWithDefault(1)
+
+  val COMET_ICEBERG_NESTED_SCHEMA_PRUNING_ENABLED: ConfigEntry[Boolean] =
+    conf("spark.comet.scan.icebergNative.nestedSchemaPruning.enabled")
+      .category(CATEGORY_SCAN)
+      .doc(
+        "Whether the native Iceberg scan reads only the nested fields of a struct, list, or map " +
+          "column that Spark's nested schema pruning keeps. When false, it reads every nested " +
+          "field of a projected column and drops the unused ones after decoding.")
+      .booleanConf
+      .createWithDefault(true)
 
   val COMET_ICEBERG_IO_TIMEOUT: ConfigEntry[Long] =
     conf("spark.comet.iceberg.ioTimeout")
@@ -325,7 +338,8 @@ object CometConf extends ShimCometConf {
       .doc(
         "Whether to enable native ExistenceJoin, produced when EXISTS / NOT EXISTS / IN is " +
           "combined with another predicate via OR. Sort-merge joins, residual (non-equi) join " +
-          "conditions, computed (non-column) join keys, and NOT IN fall back to Spark.")
+          "conditions, computed (non-column) join keys, and NOT IN combined with OR fall back " +
+          "to Spark.")
       .booleanConf
       .createWithDefault(true)
   val COMET_EXEC_AGGREGATE_ENABLED: ConfigEntry[Boolean] =
@@ -375,9 +389,11 @@ object CometConf extends ShimCometConf {
       .category(CATEGORY_EXEC)
       .doc(
         "Whether to enable Comet native scans and fused Spark reads of in-memory cached tables. " +
-          "Requires spark.comet.enabled=true. At startup, this setting also decides whether " +
-          "CometDriverPlugin installs Comet's cache serializer, which stores cached data in " +
-          "Arrow format. The plugin installs it only if spark.comet.enabled and " +
+          "Requires spark.comet.enabled=true. On Spark 3.4, AQE cannot coalesce the shuffle " +
+          "partitions of a union that Comet runs with a cached relation in one branch. At " +
+          "startup, this setting also decides " +
+          "whether CometDriverPlugin installs Comet's cache serializer, which stores cached " +
+          "data in Arrow format. The plugin installs it only if spark.comet.enabled and " +
           "spark.comet.exec.enabled are also enabled at startup, and only with one of Comet's " +
           "shuffle managers while Comet shuffle is enabled. " +
           "Because spark.sql.cache.serializer is a " +
@@ -386,7 +402,7 @@ object CometConf extends ShimCometConf {
           "without the fused reader. Relations whose schema Comet's Arrow writer does not " +
           "support are always cached in Spark's default " +
           "format. Each cached batch is stored as one Arrow IPC record batch with per-buffer " +
-          "zstd compression, and a scan copies out only the buffers of the columns it " +
+          "compression, and a scan copies out only the buffers of the columns it " +
           "projected, so the unselected ones are never decompressed. Eligible Spark " +
           "whole-stage codegen consumers read cached vectors directly when vectorized cache " +
           "reading is enabled; other Spark row consumers use a reusable row buffer. Decoding " +
@@ -405,20 +421,20 @@ object CometConf extends ShimCometConf {
       .category(CATEGORY_EXEC)
       .doc(
         "The Arrow IPC compression codec used when Comet's cache serializer writes cached " +
-          "data. Unlike spark.io.compression.codec, this compresses each Arrow buffer " +
-          "separately rather than the batch as a whole, which is what lets a projected scan " +
-          "decompress only the columns it selected. zstd is the default for footprint rather " +
-          "than speed: it stores cached data in a fraction of the memory, but makes " +
-          "materializing slower, and a read slower in proportion to how many columns it " +
-          "selects. Set to none when a relation fits in memory uncompressed and is read at " +
-          "close to full width. " +
+          "data: zstd, lz4 or none. Unlike spark.io.compression.codec, this compresses each " +
+          "Arrow buffer separately rather than the batch as a whole, which is what lets a " +
+          "projected scan decompress only the columns it selected. zstd is the default for " +
+          "footprint rather than speed: it stores cached data in a fraction of the memory, but " +
+          "makes materializing slower, and a read slower in proportion to how many columns it " +
+          "selects. lz4 decompresses several times faster than zstd, which makes wide reads " +
+          "much faster, at around three times zstd's footprint. It uses lz4-java, the " +
+          "JNI-accelerated library behind spark.io.compression.codec, rather than Arrow's own " +
+          "pure-Java lz4. Set to none when a relation fits in memory uncompressed and is read " +
+          "at close to full width. " +
           "Only affects newly cached data; the codec a batch was written with is recorded in " +
-          "the batch itself and is what the read path uses. Arrow's lz4 is deliberately not " +
-          "offered: it is a pure-Java implementation, unrelated to the JNI-accelerated lz4 " +
-          "behind spark.io.compression.codec, and is orders of magnitude slower to write than " +
-          "zstd while also producing larger output.")
+          "the batch itself and is what the read path uses.")
       .stringConf
-      .checkValues(Set("none", "zstd"))
+      .checkValues(Set("none", "zstd", "lz4"))
       .createWithDefault("zstd")
 
   val COMET_EXEC_IN_MEMORY_CACHE_COMPRESSION_ZSTD_LEVEL: ConfigEntry[Int] =
@@ -451,6 +467,32 @@ object CometConf extends ShimCometConf {
           "and is slower than the JVM implementation for small batches.")
       .booleanConf
       .createWithDefault(false)
+
+  val COMET_DIRECT_COLUMNAR_TO_ROW_ENABLED: ConfigEntry[Boolean] =
+    conf(s"$COMET_EXEC_CONFIG_PREFIX.columnarToRow.direct.enabled")
+      .category(CATEGORY_EXEC)
+      .doc(
+        "Experimental: Whether to use the direct columnar to row converter in the JVM " +
+          "columnar to row operator's non-codegen paths (including broadcast relation " +
+          "builds). The direct converter writes values straight from Arrow buffers into " +
+          "UnsafeRow format without per-value object allocation, which is significantly " +
+          "faster for decimal-heavy schemas. Schemas with unsupported data types fall back " +
+          "to the default conversion. Only applies when the JVM columnar to row operator is " +
+          "used (spark.comet.exec.columnarToRow.native.enabled=false).")
+      .booleanConf
+      .createWithDefault(false)
+
+  val COMET_DIRECT_COLUMNAR_TO_ROW_MIN_BATCH_SIZE: ConfigEntry[Int] =
+    conf(s"$COMET_EXEC_CONFIG_PREFIX.columnarToRow.direct.minBatchSize")
+      .category(CATEGORY_EXEC)
+      .doc(
+        "Experimental: Batches with fewer rows than this use the default conversion even " +
+          s"when $COMET_EXEC_CONFIG_PREFIX.columnarToRow.direct.enabled is true, since the " +
+          "direct converter's per-batch setup does not amortize on very small batches. Only " +
+          "applies when the direct columnar to row converter is enabled.")
+      .intConf
+      .checkValue(_ >= 0, "Must be >= 0.")
+      .createWithDefault(128)
 
   val COMET_EXEC_SORT_MERGE_JOIN_WITH_JOIN_FILTER_ENABLED: ConfigEntry[Boolean] =
     conf("spark.comet.exec.sortMergeJoinWithJoinFilter.enabled")
@@ -558,6 +600,22 @@ object CometConf extends ShimCometConf {
         s"for improved performance. This feature is not stable yet. $TUNING_GUIDE.")
       .booleanConf
       .createWithDefault(false)
+
+  val COMET_FORCE_SHJ_MAX_BUILD_SIZE: OptionalConfigEntry[Long] =
+    conf(s"$COMET_EXEC_CONFIG_PREFIX.forceShuffledHashJoin.maxBuildSize")
+      .category(CATEGORY_EXEC)
+      .doc(s"The build side size below which `${COMET_FORCE_SHJ.key}` converts a " +
+        "SortMergeJoin to ShuffledHashJoin. The size is Spark's planning estimate of the build " +
+        "child, or under AQE the materialized shuffle size of the build side. A build side at " +
+        "or over this size, or one with no statistics, keeps the SortMergeJoin. When unset, " +
+        "Spark's own rule applies: `spark.sql.autoBroadcastJoinThreshold` times the initial " +
+        "shuffle partition count (`spark.sql.adaptive.coalescePartitions.initialPartitionNum` " +
+        "when AQE and partition coalescing are both on and it is set, else " +
+        "`spark.sql.shuffle.partitions`). When broadcasts are disabled with a non-positive " +
+        "threshold, Spark's default threshold of 10 MB is used instead. A " +
+        s"non-positive value removes the limit. $TUNING_GUIDE.")
+      .bytesConf(ByteUnit.BYTE)
+      .createOptional
 
   val COMET_EXEC_AGGREGATE_SKIP_PARTIAL_ENABLED: ConfigEntry[Boolean] =
     conf(s"$COMET_EXEC_CONFIG_PREFIX.aggregate.skipPartial.enabled")
@@ -830,6 +888,18 @@ object CometConf extends ShimCometConf {
       .intConf
       .createWithDefault(1)
 
+  val COMET_SHUFFLE_COMPRESSION_OFFSETS_AS_LENGTHS: ConfigEntry[Boolean] =
+    conf("spark.comet.shuffle.compression.offsetsAsLengths.enabled")
+      .category(CATEGORY_SHUFFLE)
+      .doc(
+        "Whether Comet shuffle stores the offsets of string, binary, array and map columns as " +
+          "lengths before compressing each block. Lengths compress much better than offsets, " +
+          "which makes shuffle files with such columns smaller. Only takes effect when " +
+          s"${COMET_SHUFFLE_COMPRESSION_CODEC.key} is zstd, and not for Celeborn shuffle or " +
+          "for JVM shuffle blocks with dictionary-encoded columns, which keep their offsets.")
+      .booleanConf
+      .createWithDefault(true)
+
   val COMET_SHUFFLE_JVM_MAX_WRITERS_PER_EXECUTOR: ConfigEntry[Int] = {
     conf("spark.comet.shuffle.jvm.maxWritersPerExecutor")
       .withAlternative(
@@ -904,6 +974,18 @@ object CometConf extends ShimCometConf {
         v => v > 0 && v <= Int.MaxValue,
         s"Write buffer size must be between 1 and ${Int.MaxValue} bytes")
       .createWithDefault(1024 * 1024)
+
+  val COMET_SHUFFLE_READ_BUFFER_SIZE: ConfigEntry[Long] =
+    conf("spark.comet.shuffle.readBufferSize")
+      .category(CATEGORY_SHUFFLE)
+      .doc(
+        "Size in bytes of each read from a shuffle block stream. Comet reads a shuffle block " +
+          "through a reusable buffer of this size per task thread before decoding it.")
+      .bytesConf(ByteUnit.BYTE)
+      .checkValue(
+        v => v > 0 && v <= Int.MaxValue,
+        s"Read buffer size must be between 1 and ${Int.MaxValue} bytes")
+      .createWithDefault(CometShuffleBlockIterator.DEFAULT_READ_BUFFER_SIZE.toLong)
 
   val COMET_SHUFFLE_JVM_PREFER_DICTIONARY_RATIO: ConfigEntry[Double] = conf(
     "spark.comet.shuffle.jvm.preferDictionary.ratio")
@@ -1081,6 +1163,23 @@ object CometConf extends ShimCometConf {
       .booleanConf
       .createWithDefault(false)
 
+  val COMET_STRICT_TIMESTAMP_LABELS: ConfigEntry[Boolean] =
+    conf("spark.comet.testing.strictTimestampLabels.enabled")
+      .category(CATEGORY_TESTING)
+      .doc(
+        "Test-only. When enabled, Comet fails a query whose native plan labels a timestamp " +
+          "with a different timezone than Comet's convention, which is `UTC` for " +
+          "`TimestampType` and no timezone for `TimestampNTZType`. Every native output batch " +
+          "is checked against the Spark output types, and the casts that scans and the native " +
+          "shuffle writer would otherwise apply to repair a label fail instead. A label never " +
+          "changes the values, so comparing results cannot detect it, but inside a native plan " +
+          "a wrong label breaks comparisons and type coercion, and a missing one makes kernels " +
+          "read the values as wall-clock time. Enabled for all Comet test suites via " +
+          "`CometTestBase`.")
+      .internal()
+      .booleanConf
+      .createWithDefault(false)
+
   val COMET_SCAN_CONTRIB_DETECT_CONFLICTS: ConfigEntry[Boolean] =
     conf("spark.comet.scan.contrib.detectConflicts.enabled")
       .category(CATEGORY_TESTING)
@@ -1197,6 +1296,20 @@ object CometConf extends ShimCometConf {
       .toSequence
       .createWithDefault(Nil)
 
+  val COMET_CONVERT_BROADCAST_BUILD_SIDE_ENABLED: ConfigEntry[Boolean] =
+    conf("spark.comet.convert.broadcastBuildSide.enabled")
+      .category(CATEGORY_EXEC)
+      .doc("When enabled, Comet converts a file or V2 scan that it cannot scan natively (for " +
+        "example a Text source) to Arrow when that scan feeds a broadcast join's build side and " +
+        "every scan on the probe side is already native, so the broadcast join runs natively " +
+        "over the large probe. The build side is usually small (auto-broadcasts are capped by " +
+        "the broadcast threshold), so the row to Arrow copy is usually cheap - though an " +
+        "explicit BROADCAST hint or a selective filter above the scan can make it larger. With " +
+        "dynamic partition pruning the dimension is also read a second time for the pruning " +
+        "subquery. Set this to false to keep such build sides on Spark.")
+      .booleanConf
+      .createWithDefault(true)
+
   val COMET_CASE_CONVERSION_ENABLED: ConfigEntry[Boolean] =
     conf("spark.comet.caseConversion.enabled")
       .category(CATEGORY_EXEC)
@@ -1238,9 +1351,7 @@ object CometConf extends ShimCometConf {
         "When enabled, fall back to Spark for floating-point operations that may differ from " +
           "Spark, such as comparing -0.0 and 0.0. `ORDER BY`, window ordering and range " +
           "partitioning keys are unaffected, including floating-point values nested in arrays " +
-          "and structs, because Comet normalizes those comparison keys to match Spark. The " +
-          "exception is a nested key whose type can hold a null element or field, which falls " +
-          "back until the native sort and window frames order those nulls as Spark does. " +
+          "and structs, because Comet normalizes those comparison keys to match Spark. " +
           "`sort_array` is unaffected too, because it follows Spark's ordering. " +
           s"$COMPAT_GUIDE.")
       .booleanConf
@@ -1270,13 +1381,19 @@ object CometConf extends ShimCometConf {
 
   val COMET_LIBHDFS_SCHEMES_KEY = "fs.comet.libhdfs.schemes"
 
+  // Declared so the value appears in the generated config reference and can be set at startup
+  // via `spark.hadoop.*`, but never read through this entry: the scan gates read the Hadoop key
+  // above through `NativeConfig.resolveScanLibhdfsSchemes`, so `core-site.xml` is honored too.
   val COMET_LIBHDFS_SCHEMES: OptionalConfigEntry[String] =
     conf(s"spark.hadoop.$COMET_LIBHDFS_SCHEMES_KEY")
       .category(CATEGORY_SCAN)
       .doc(
         "Defines filesystem schemes (e.g., hdfs, webhdfs) that the native side accesses " +
           "via libhdfs, separated by commas. Valid only when built with hdfs-opendal feature " +
-          "enabled.")
+          "enabled. Read from the Hadoop configuration, so it must be set before the " +
+          "SparkSession is created. A scheme listed only through a reader option is not read " +
+          "natively. libhdfs reads the settings of a listed scheme, such as " +
+          "`fs.<scheme>.impl`, from the executor's `core-site.xml`.")
       .stringConf
       .createOptional
 
