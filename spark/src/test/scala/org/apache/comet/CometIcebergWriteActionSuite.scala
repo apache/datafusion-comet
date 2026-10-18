@@ -94,7 +94,10 @@ class CometIcebergWriteActionSuite
 
   override protected def sparkConf: SparkConf = {
     super.sparkConf
+      // The split plan with the native writer off: a table written outside `withNativeEnabled` is
+      // the iceberg-java baseline that the native writer's output is compared against.
       .set(CometConf.COMET_ICEBERG_WRITE_SPLIT_OPERATOR_ENABLED.key, "true")
+      .set(CometConf.COMET_ICEBERG_NATIVE_WRITE_ENABLED.key, "false")
       // local[N,M] sets task max failures to M; the retry test needs one retry, and
       // spark.task.maxFailures does not override this part of a local master URL.
       .setMaster("local[5,2]")
@@ -117,25 +120,240 @@ class CometIcebergWriteActionSuite
     }
   }
 
-  test("spark.comet.enabled=false keeps Spark's own write plan with the split flag on") {
+  // Turning off Comet, or only its native execution as an application that uses Comet just for
+  // scans or shuffle does, keeps Spark's own write operator.
+  Seq(CometConf.COMET_ENABLED, CometConf.COMET_EXEC_ENABLED).foreach { flag =>
+    test(s"${flag.key}=false keeps Spark's own write plan with the split flag on") {
+      assume(icebergAvailable, "Iceberg not available in classpath")
+      withIcebergCatalog { _ =>
+        val table = flag.key.replace('.', '_')
+        createTable(table, partitionSpec = "")
+        // withSQLConf returns Unit before Spark 4.0, so the assertions run inside it.
+        withSQLConf(flag.key -> "false") {
+          val snapshot = captureWrite(table) {
+            spark.sql(s"INSERT INTO cat.db.$table VALUES " +
+              "(1, 'us-east', 10.5), (2, 'us-west', 20.3), (3, 'eu', 30.7)")
+          }
+          assert(
+            snapshot.snapshotDelta == 1L,
+            s"expected 1 commit, got ${snapshot.snapshotDelta}")
+          val (commits, writes) = collectIcebergWriteOps(snapshot.plans)
+          assert(
+            commits.isEmpty && writes.isEmpty,
+            s"expected Spark's own write plan with ${flag.key}=false. Plans:\n" +
+              snapshot.plans.mkString("\n--\n"))
+        }
+        assertRows(table, expectedIds = Seq(1, 2, 3))
+      }
+    }
+  }
+
+  // Comet 1.1.0 documented the split flag as a user setting, so a deployment can carry it into 1.2.0.
+  // With it on and `spark.comet.write.iceberg.enabled` off, the split plan stays, with iceberg-java
+  // writing the files. The upgrade guide tells such deployments to unset the split flag to get
+  // Spark's own operator back.
+  test(
+    "the split flag keeps the split plan with iceberg-java's writer when the write flag is off") {
     assume(icebergAvailable, "Iceberg not available in classpath")
     withIcebergCatalog { _ =>
-      createTable("comet_disabled", partitionSpec = "")
-      // withSQLConf returns Unit before Spark 4.0, so the assertions run inside it.
-      withSQLConf(CometConf.COMET_ENABLED.key -> "false") {
-        val snapshot = captureWrite("comet_disabled") {
+      createTable("split_flag_left_on", partitionSpec = "")
+      val snapshot = captureWrite("split_flag_left_on") {
+        withSessionConf(
+          CometConf.COMET_ICEBERG_WRITE_SPLIT_OPERATOR_ENABLED.key -> Some("true"),
+          CometConf.COMET_ICEBERG_NATIVE_WRITE_ENABLED.key -> Some("false")) {
           spark.sql(
-            "INSERT INTO cat.db.comet_disabled VALUES " +
+            "INSERT INTO cat.db.split_flag_left_on VALUES " +
               "(1, 'us-east', 10.5), (2, 'us-west', 20.3), (3, 'eu', 30.7)")
+        }
+      }
+      assertExactlyOneCommit(snapshot)
+      val nativeWrites = snapshot.plans.flatMap { plan =>
+        collectWithSubqueries(plan) { case e: CometIcebergWriteExec => e }
+      }
+      assert(
+        nativeWrites.isEmpty,
+        "expected iceberg-java's IcebergWriteExec. Plans:\n" + snapshot.plans.mkString("\n--\n"))
+      assertRows("split_flag_left_on", expectedIds = Seq(1, 2, 3))
+    }
+  }
+
+  // The suite pins both write flags, so this test unsets them to see what an application that
+  // sets neither gets: Spark's own write operator, even for a write the native writer could take.
+  // A Parquet scan is a native input, so the write is eligible.
+  // https://github.com/apache/datafusion-comet/issues/5644
+  test("an eligible Iceberg write keeps Spark's own write plan when no flag is set") {
+    assume(icebergAvailable, "Iceberg not available in classpath")
+    withIcebergCatalog { _ =>
+      withTempPath { dir =>
+        spark
+          .range(10)
+          .selectExpr("CAST(id AS INT) AS id", "'eu' AS region", "CAST(id AS DOUBLE) AS amount")
+          .write
+          .parquet(dir.getCanonicalPath)
+        createTable("write_defaults", partitionSpec = "")
+        val snapshot = captureWrite("write_defaults") {
+          withSessionConf(
+            CometConf.COMET_ICEBERG_WRITE_SPLIT_OPERATOR_ENABLED.key -> None,
+            CometConf.COMET_ICEBERG_NATIVE_WRITE_ENABLED.key -> None) {
+            spark.read
+              .parquet(dir.getCanonicalPath)
+              .writeTo(s"$catalog.$ns.write_defaults")
+              .append()
+          }
         }
         assert(snapshot.snapshotDelta == 1L, s"expected 1 commit, got ${snapshot.snapshotDelta}")
         val (commits, writes) = collectIcebergWriteOps(snapshot.plans)
         assert(
           commits.isEmpty && writes.isEmpty,
-          "expected Spark's own write plan with Comet disabled. Plans:\n" +
+          "expected Spark's own write plan with no flag set. Plans:\n" +
             snapshot.plans.mkString("\n--\n"))
+        assertRows("write_defaults", expectedIds = 0 until 10)
       }
-      assertRows("comet_disabled", expectedIds = Seq(1, 2, 3))
+    }
+  }
+
+  // An application turns Comet's Iceberg writes on with spark.comet.write.iceberg.enabled alone,
+  // so this test leaves the testing split flag unset. A Parquet scan is a native input, so the
+  // write is eligible.
+  test("an eligible Iceberg write runs natively when only the write flag is set") {
+    assume(icebergAvailable, "Iceberg not available in classpath")
+    withIcebergCatalog { _ =>
+      withTempPath { dir =>
+        spark
+          .range(10)
+          .selectExpr("CAST(id AS INT) AS id", "'eu' AS region", "CAST(id AS DOUBLE) AS amount")
+          .write
+          .parquet(dir.getCanonicalPath)
+        createTable("write_flag_only", partitionSpec = "")
+        val snapshot = captureWrite("write_flag_only") {
+          withSessionConf(
+            CometConf.COMET_ICEBERG_WRITE_SPLIT_OPERATOR_ENABLED.key -> None,
+            CometConf.COMET_ICEBERG_NATIVE_WRITE_ENABLED.key -> Some("true")) {
+            spark.read
+              .parquet(dir.getCanonicalPath)
+              .writeTo(s"$catalog.$ns.write_flag_only")
+              .append()
+          }
+        }
+        assert(snapshot.snapshotDelta == 1L, s"expected 1 commit, got ${snapshot.snapshotDelta}")
+        val (commits, _) = collectIcebergWriteOps(snapshot.plans)
+        val nativeWrites = snapshot.plans.flatMap { plan =>
+          collectWithSubqueries(plan) { case e: CometIcebergWriteExec => e }
+        }
+        assert(
+          commits.nonEmpty && nativeWrites.nonEmpty,
+          "expected an IcebergCommitExec over a CometIcebergWriteExec. Plans:\n" +
+            snapshot.plans.mkString("\n--\n"))
+        assertRows("write_flag_only", expectedIds = 0 until 10)
+      }
+    }
+  }
+
+  // Iceberg's DeltaWriter writes a merge-on-read write's rows under either plan, so with only the
+  // write flag set the write keeps Spark's own operator. Only the testing split flag plans it as
+  // Comet's.
+  // https://github.com/apache/datafusion-comet/issues/6240
+  test("a merge-on-read write keeps Spark's own write plan when only the write flag is set") {
+    assume(icebergAvailable, "Iceberg not available in classpath")
+    assume(isSpark35Plus, "WriteDelta interception starts with Spark 3.5")
+    withIcebergCatalog { _ =>
+      createTable(
+        "mor_defaults",
+        partitionSpec = "PARTITIONED BY (region)",
+        properties = Some("'format-version'='2', 'write.delete.mode'='merge-on-read'"))
+      // Ids 1 and 2 share a data file, so deleting id 1 writes a delete file through WriteDelta
+      // rather than dropping a whole file.
+      coalesceInsert("mor_defaults", Seq((1, "a", 10.0), (2, "a", 20.0), (3, "c", 30.0)))
+      val snapshot = captureWrite("mor_defaults") {
+        withSessionConf(
+          CometConf.COMET_ICEBERG_WRITE_SPLIT_OPERATOR_ENABLED.key -> None,
+          CometConf.COMET_ICEBERG_NATIVE_WRITE_ENABLED.key -> Some("true")) {
+          spark.sql(s"DELETE FROM $catalog.$ns.mor_defaults WHERE id = 1")
+        }
+      }
+      assert(snapshot.snapshotDelta == 1L, s"expected 1 commit, got ${snapshot.snapshotDelta}")
+      val (commits, writes) = collectIcebergWriteOps(snapshot.plans)
+      val sparkDeltaWrites = snapshot.plans.flatMap { plan =>
+        collectWithSubqueries(plan) {
+          case p if p.getClass.getSimpleName == "WriteDeltaExec" => p
+        }
+      }
+      assert(
+        commits.isEmpty && writes.isEmpty && sparkDeltaWrites.nonEmpty,
+        "expected Spark's WriteDeltaExec for a merge-on-read DELETE. Plans:\n" +
+          snapshot.plans.mkString("\n--\n"))
+      assertRows("mor_defaults", expectedIds = Seq(2, 3))
+    }
+  }
+
+  // With only the write flag set, an eligible write becomes a CometIcebergWriteExec, so reverting a
+  // transition-heavy stage has to put a JVM writer back rather than drop the write. The same write
+  // runs first under the default threshold, which leaves its stage alone, so that the reverted run
+  // is known to start from a native write rather than from one that was never eligible.
+  // https://github.com/apache/datafusion-comet/issues/5719
+  for (adaptive <- Seq(false, true)) {
+    test(s"transition-heavy fallback keeps the write under the write flag alone, AQE=$adaptive") {
+      assume(icebergAvailable, "Iceberg not available in classpath")
+      withIcebergCatalog { _ =>
+        withTempPath { dir =>
+          spark
+            .range(3)
+            .selectExpr(
+              "CAST(id + 1 AS INT) AS id",
+              "'eu' AS region",
+              "CAST(id AS DOUBLE) AS amount")
+            .write
+            .parquet(dir.getCanonicalPath)
+          val table = s"transition_defaults_${if (adaptive) "aqe" else "no_aqe"}"
+          createTable(table, partitionSpec = "")
+          // Appends the source with only the write flag set, checks that it committed once, and
+          // returns the plans it ran.
+          def append(maxTransitions: Int): Seq[SparkPlan] = {
+            var plans = Seq.empty[SparkPlan]
+            // withSQLConf returns Unit before Spark 4.0, so the plans are kept from inside it.
+            withSQLConf(
+              SQLConf.ADAPTIVE_EXECUTION_ENABLED.key -> adaptive.toString,
+              CometConf.COMET_EXEC_TRANSITION_REVERT_ENABLED.key -> "true",
+              CometConf.COMET_EXEC_TRANSITION_REVERT_MAX_TRANSITIONS.key -> maxTransitions.toString) {
+              val snapshot = captureWrite(table) {
+                withSessionConf(
+                  CometConf.COMET_ICEBERG_WRITE_SPLIT_OPERATOR_ENABLED.key -> None,
+                  CometConf.COMET_ICEBERG_NATIVE_WRITE_ENABLED.key -> Some("true")) {
+                  spark.read
+                    .parquet(dir.getCanonicalPath)
+                    .writeTo(s"$catalog.$ns.$table")
+                    .append()
+                }
+              }
+              assert(
+                snapshot.snapshotDelta == 1L,
+                s"expected 1 commit, got ${snapshot.snapshotDelta}")
+              plans = snapshot.plans
+            }
+            plans
+          }
+
+          // The default threshold of two transitions leaves the stage alone.
+          val native = append(maxTransitions = 2)
+          val (nativeCommits, _) = collectIcebergWriteOps(native)
+          assert(
+            nativeCommits.nonEmpty && native.exists { plan =>
+              collectWithSubqueries(plan) { case e: CometIcebergWriteExec => e }.nonEmpty
+            },
+            "expected an IcebergCommitExec over a CometIcebergWriteExec. Plans:\n" +
+              native.mkString("\n--\n"))
+
+          val reverted = append(maxTransitions = 0)
+          val (revertedCommits, revertedWrites) = collectIcebergWriteOps(reverted)
+          assert(
+            revertedCommits.nonEmpty && revertedWrites.nonEmpty && reverted.forall { plan =>
+              collectWithSubqueries(plan) { case e: CometIcebergWriteExec => e }.isEmpty
+            },
+            "transition reversion should restore IcebergWriteExec. Plans:\n" +
+              reverted.mkString("\n--\n"))
+          assertRows(table, Seq(1, 1, 2, 2, 3, 3))
+        }
+      }
     }
   }
 
@@ -883,13 +1101,15 @@ class CometIcebergWriteActionSuite
     }
   }
 
-  test("disabled config falls through to Spark's V2ExistingTableWriteExec") {
+  // The split flag is a testing setting, so an application turns Comet's Iceberg writes off with
+  // spark.comet.write.iceberg.enabled alone. The suite already pins that flag off.
+  test("spark.comet.write.iceberg.enabled=false plans Spark's V2ExistingTableWriteExec") {
     assume(icebergAvailable, "Iceberg not available in classpath")
     withIcebergCatalog { _ =>
       createTable("disabled_conf", partitionSpec = "")
 
       val snapshot = captureWrite("disabled_conf") {
-        withSQLConf(CometConf.COMET_ICEBERG_WRITE_SPLIT_OPERATOR_ENABLED.key -> "false") {
+        withSessionConf(CometConf.COMET_ICEBERG_WRITE_SPLIT_OPERATOR_ENABLED.key -> None) {
           spark.sql("INSERT INTO cat.db.disabled_conf VALUES (1, 'us-east', 10.5)")
         }
       }
@@ -2151,51 +2371,108 @@ class CometIcebergWriteActionSuite
     }
   }
 
-  // https://github.com/apache/datafusion-comet/issues/6138. iceberg-rust compares float partition
-  // values with an equality that treats -0.0 and 0.0 as one value, so its writers filed both under
-  // whichever arrived first, and a read that pruned on the other value lost rows. iceberg-java
-  // keeps the two apart, so these writes fall back until iceberg-rust does too.
-  test("signed-zero float and double identity partitions match iceberg-java") {
+  // https://github.com/apache/datafusion-comet/issues/6138. iceberg-rust compared float partition
+  // values with an equality that treated -0.0 and 0.0 as one value, so its writers filed both
+  // under whichever arrived first, and a read that pruned on the other value lost rows. Since
+  // apache/iceberg-rust#3327 it keeps them apart and puts every NaN in one partition, as
+  // iceberg-java does. One shuffle partition puts every row in one task, so the values meet in one
+  // writer. The fanout writer gets them interleaved. The clustered writer gets each partition's
+  // rows together: Spark's sort ties -0.0 with 0.0, so a zero that repeats could come back
+  // unclustered, which both writers reject (see the next test).
+  test("signed-zero and NaN float and double identity partitions match iceberg-java") {
     assumeNativeAcceleration()
     withIcebergCatalog { warehouseDir =>
-      Seq("zero_native", "zero_jvm").foreach { table =>
+      val (negF, posF, nanF) =
+        ("CAST('-0.0' AS FLOAT)", "CAST(0.0 AS FLOAT)", "CAST('NaN' AS FLOAT)")
+      val (negD, posD, nanD) = ("CAST('-0.0' AS DOUBLE)", "0.0D", "CAST('NaN' AS DOUBLE)")
+      val zeros = Seq((negF, posD), (posF, posD), (posF, negD), (negF, negD))
+      val nans = Seq((nanF, nanD), (s"-$nanF", s"-$nanD"))
+      val interleaved = zeros ++ nans ++ zeros.reverse ++ nans
+      Seq("true" -> interleaved, "false" -> (zeros ++ nans)).foreach { case (fanout, rows) =>
+        val (nativeTable, jvmTable) = (s"zero_native_$fanout", s"zero_jvm_$fanout")
+        Seq(nativeTable, jvmTable).foreach { table =>
+          spark.sql(s"""
+            CREATE TABLE $catalog.$ns.$table (id INT, f FLOAT, d DOUBLE)
+            USING iceberg PARTITIONED BY (f, d)
+            TBLPROPERTIES (
+              'write.spark.fanout.enabled'='$fanout', 'write.distribution-mode'='hash')
+          """)
+        }
+        val ids = rows.indices.map(_ + 1)
+        val values = rows.zip(ids).map { case ((f, d), id) => s"($id, $f, $d)" }.mkString(", ")
+        withSQLConf(SQLConf.SHUFFLE_PARTITIONS.key -> "1") {
+          assertNativeWriteEngages(nativeTable, ids) {
+            spark.sql(s"INSERT INTO $catalog.$ns.$nativeTable VALUES $values")
+          }
+          spark.sql(s"INSERT INTO $catalog.$ns.$jvmTable VALUES $values")
+        }
+
+        val dirs = partitionDirs(warehouseDir, nativeTable)
+        assert(dirs == partitionDirs(warehouseDir, jvmTable), s"fanout=$fanout: $dirs")
+        assert(
+          dirs == Set(
+            "f=-0.0/d=0.0",
+            "f=0.0/d=0.0",
+            "f=0.0/d=-0.0",
+            "f=-0.0/d=-0.0",
+            "f=NaN/d=NaN"))
+        val committed = committedPartitions(nativeTable)
+        assert(committed == committedPartitions(jvmTable), s"fanout=$fanout: $committed")
+
+        // Iceberg prunes on the partition value, so a merged partition changes what a read
+        // returns.
+        Seq(s"f = $negF", s"f = $posF", s"d = $negD", s"d = $posD", s"d = $nanD", "isnan(f)")
+          .foreach { predicate =>
+            def matching(table: String): Seq[Int] =
+              spark
+                .sql(s"SELECT id FROM $catalog.$ns.$table WHERE $predicate")
+                .collect()
+                .map(_.getInt(0))
+                .sorted
+                .toSeq
+            assert(matching(nativeTable) == matching(jvmTable), s"fanout=$fanout, $predicate")
+          }
+      }
+    }
+  }
+
+  // https://github.com/apache/datafusion-comet/issues/6138. A clustered writer rejects a row for a
+  // partition it has already closed. While iceberg-rust treated -0.0 and 0.0 as one value, the
+  // native writer accepted these rows as one partition, where iceberg-java rejects them. Spark's
+  // sort ties the two zeros, so `appendUnclustered` skips it to fix the order the writers see.
+  test("clustered writer rejects interleaved signed zeros like the JVM writer") {
+    assumeNativeAcceleration()
+    withIcebergCatalog { _ =>
+      val (nativeTable, jvmTable) = ("zero_unclustered_native", "zero_unclustered_jvm")
+      val tables = Seq(nativeTable, jvmTable)
+      tables.foreach { table =>
         spark.sql(s"""
           CREATE TABLE $catalog.$ns.$table (id INT, f FLOAT, d DOUBLE)
           USING iceberg PARTITIONED BY (f, d)
         """)
       }
-      val values =
-        "(1, CAST('-0.0' AS FLOAT), 0.0D), " +
-          "(2, CAST(0.0 AS FLOAT), 0.0D), " +
-          "(3, CAST(0.0 AS FLOAT), CAST('-0.0' AS DOUBLE))"
+      // The -0.0 partition is revisited after the writer has moved on to 0.0 and closed it.
+      val (negF, posF) = ("CAST('-0.0' AS FLOAT)", "CAST(0.0 AS FLOAT)")
+      val rows = spark.sql(
+        s"SELECT * FROM VALUES (1, $negF, 0.0D), (2, $posF, 0.0D), (3, $negF, 0.0D) " +
+          "AS t(id, f, d)")
 
-      assertNativeWriteDoesNotEngage("zero_native", Seq(1, 2, 3)) {
-        spark.sql(s"INSERT INTO $catalog.$ns.zero_native VALUES $values")
-      }
-      spark.sql(s"INSERT INTO $catalog.$ns.zero_jvm VALUES $values")
+      val (nativeFailure, jvmFailure) =
+        failedWrites(nativeTable, jvmTable)(appendUnclustered(_, rows))
 
-      val dirs = partitionDirs(warehouseDir, "zero_native")
-      assert(dirs == partitionDirs(warehouseDir, "zero_jvm"), s"native enabled: $dirs")
-      assert(dirs == Set("f=-0.0/d=0.0", "f=0.0/d=0.0", "f=0.0/d=-0.0"))
-
-      // Iceberg prunes on the partition value, so a merged partition changes what a read returns.
-      def idsWhereDIsZero(table: String): Seq[Int] =
-        spark
-          .sql(s"SELECT id FROM $catalog.$ns.$table WHERE d = 0.0D")
-          .collect()
-          .map(_.getInt(0))
-          .sorted
-          .toSeq
-      assert(idsWhereDIsZero("zero_native") == idsWhereDIsZero("zero_jvm"))
+      val (_, nativeMessage) = clusteredWriterError(nativeFailure)
+      assert(
+        clusteredWriterError(nativeFailure) == clusteredWriterError(jvmFailure),
+        s"native message differs from the JVM writer's:\n$nativeMessage")
+      assert(nativeMessage.contains("partition 'f=-0.0/d=0.0'"), nativeMessage)
+      // Neither write may have committed.
+      tables.foreach(assertRows(_, Seq.empty))
     }
   }
 
   // iceberg-java renders a `float` or `double` partition value with `Float.toString` /
   // `Double.toString`. Rust's `Display` spelled `Double.MAX_VALUE` as 309 digits instead, past the
-  // 255-byte limit on one path component (apache/datafusion-comet#5836). Float and double identity
-  // partitions now fall back (#6138), so this checks that the fallback keeps iceberg-java's
-  // layout; the unit tests in `iceberg_partition_path.rs` cover how the native writer renders
-  // these values.
+  // 255-byte limit on one path component (apache/datafusion-comet#5836).
   test("float and double partition paths match iceberg-java") {
     assumeNativeAcceleration()
     withIcebergCatalog { warehouseDir =>
@@ -2213,7 +2490,7 @@ class CometIcebergWriteActionSuite
           "(3, CAST(3.4028235E38 AS FLOAT), CAST(4.9E-324 AS DOUBLE)), " +
           "(4, CAST(0.001 AS FLOAT), CAST(1.0E20 AS DOUBLE))"
 
-      assertNativeWriteDoesNotEngage("float_path_native", Seq(1, 2, 3, 4)) {
+      assertNativeWriteEngages("float_path_native", Seq(1, 2, 3, 4)) {
         spark.sql(s"INSERT INTO $catalog.$ns.float_path_native VALUES $values")
       }
       spark.sql(s"INSERT INTO $catalog.$ns.float_path_jvm VALUES $values")
@@ -2226,6 +2503,38 @@ class CometIcebergWriteActionSuite
           "f=-0.5/d=1.7976931348623157E308",
           "f=3.4028235E38/d=4.9E-324",
           "f=0.001/d=1.0E20"))
+    }
+  }
+
+  // Two partition fields of the same decimal type share one named Avro type, `decimal_10_2`.
+  // iceberg-rust defined it once per field, which the Avro specification forbids, until it moved
+  // to apache-avro 0.22 (apache/iceberg-rust#3354). iceberg-java reads each native task's manifest
+  // back, so this checks it still can. `decimal(38, 2)` covers the fixed-length encoding.
+  test("two decimal identity partitions of the same type match iceberg-java") {
+    assumeNativeAcceleration()
+    withIcebergCatalog { warehouseDir =>
+      Seq("10, 2", "38, 2").foreach { decimalType =>
+        val suffix = decimalType.replace(", ", "_")
+        val (nativeTable, jvmTable) = (s"decimal_native_$suffix", s"decimal_jvm_$suffix")
+        Seq(nativeTable, jvmTable).foreach { table =>
+          spark.sql(s"""
+            CREATE TABLE $catalog.$ns.$table (
+              id INT, d1 DECIMAL($decimalType), d2 DECIMAL($decimalType))
+            USING iceberg PARTITIONED BY (d1, d2)
+          """)
+        }
+        val values = "(1, 123.45, -6.78), (2, 0.00, 1.10)"
+        assertNativeWriteEngages(nativeTable, Seq(1, 2)) {
+          spark.sql(s"INSERT INTO $catalog.$ns.$nativeTable VALUES $values")
+        }
+        spark.sql(s"INSERT INTO $catalog.$ns.$jvmTable VALUES $values")
+
+        val dirs = partitionDirs(warehouseDir, nativeTable)
+        assert(dirs == partitionDirs(warehouseDir, jvmTable), s"decimal($decimalType): $dirs")
+        assert(dirs == Set("d1=123.45/d2=-6.78", "d1=0.00/d2=1.10"))
+        val committed = committedPartitions(nativeTable)
+        assert(committed == committedPartitions(jvmTable), s"decimal($decimalType): $committed")
+      }
     }
   }
 
@@ -2279,16 +2588,9 @@ class CometIcebergWriteActionSuite
           s"native: $nativeDirs")
 
         // The committed partition values, not just their spelling in the path.
-        def partitionValues(table: String): Seq[String] = spark
-          .sql(s"SELECT CAST(partition AS STRING) FROM $catalog.$ns.$table.files")
-          .collect()
-          .map(_.getString(0))
-          .toSeq
-          .sorted
-        assert(
-          partitionValues(nativeTable) == partitionValues(jvmTable),
-          s"native: ${partitionValues(nativeTable)}")
-        assert(!partitionValues(nativeTable).exists(_.contains("null")))
+        val committed = committedPartitions(nativeTable)
+        assert(committed == committedPartitions(jvmTable), s"native: $committed")
+        assert(!committed.exists(_.contains("null")))
 
         // `java.sql.Date` cannot hold these dates (`collect` overflows rebasing them), so read
         // them back as `LocalDate` and `Instant`.
@@ -3051,21 +3353,21 @@ class CometIcebergWriteActionSuite
     }
   }
 
-  // The native writer reserves what its open files hold from the task's memory pool. A fanout
-  // write keeps a file open for every partition, so over enough partitions it outgrows the pool
-  // and fails its task, which Spark can retry, instead of growing in memory that no budget
-  // accounts for until the executor is killed.
-  test("native acceleration: a fanout write that outgrows the memory pool fails its task") {
+  // The native writer reserves what its partitions hold from the task's memory pool. A fanout
+  // write keeps every partition it has seen open, so over enough partitions it outgrows the pool.
+  // It then writes out and closes the partitions holding the most, whose next rows open new
+  // files, and finishes with more, smaller files where it would otherwise fail its task.
+  test("native acceleration: a fanout write that outgrows the memory pool closes partitions") {
     assumeNativeAcceleration()
     withIcebergCatalog { _ =>
       val session = spark
       import session.implicits._
-      // One task writes 64 partitions of 1000 random 500-byte strings, a run of rows per
-      // partition. Each open file holds about 500 KB, so the pool of about 4 MiB (0.002 of the
-      // suite's 2 GiB off-heap size) is outgrown long before all 64 files are open.
+      // One task writes 64 partitions of 1000 random 500-byte strings, the partitions taking
+      // turns, so every partition keeps getting rows. That is about 32 MB, and the pool of about
+      // 4 MiB (0.002 of the suite's 2 GiB off-heap size) holds an eighth of it.
       val rows = 64000
       (0 until rows)
-        .map(i => (i, s"r${i / 1000}", new scala.util.Random(i).alphanumeric.take(500).mkString))
+        .map(i => (i, s"r${i % 64}", new scala.util.Random(i).alphanumeric.take(500).mkString))
         .toDF("id", "region", "payload")
         .coalesce(1)
         .createOrReplaceTempView("fanout_oom_src")
@@ -3082,9 +3384,68 @@ class CometIcebergWriteActionSuite
       }
 
       withNativeEnabled {
+        // withSQLConf returns Unit before Spark 4.0, so the assertions run inside it.
+        withSQLConf(CometConf.COMET_OFFHEAP_MEMORY_POOL_FRACTION.key -> "0.002") {
+          val snapshot = captureWrite("fanout_oom") {
+            spark.sql(s"INSERT INTO $catalog.$ns.fanout_oom SELECT * FROM fanout_oom_src")
+          }
+          assert(
+            snapshot.snapshotDelta == 1L,
+            s"expected 1 commit, got ${snapshot.snapshotDelta}")
+          val writers = snapshot.plans.flatMap { plan =>
+            collectWithSubqueries(plan) { case w: CometIcebergWriteExec => w }
+          }
+          assert(
+            writers.nonEmpty,
+            s"the write did not run natively:\n${snapshot.plans.mkString("\n--\n")}")
+          assert(
+            writers.map(_.metrics("files_closed_early").value).sum > 0,
+            "the write closed no partition early")
+        }
+
+        // With the whole pool, every partition keeps its one file open.
+        spark.sql(s"INSERT INTO $catalog.$ns.fanout_oom_control SELECT * FROM fanout_oom_src")
+        assert(parquetFiles(dataDir("fanout_oom_control")).size == 64)
+        assert(
+          parquetFiles(dataDir("fanout_oom")).size > 64,
+          s"${parquetFiles(dataDir("fanout_oom")).size} files for 64 partitions")
+        // Compared with the source rather than the control, which is native too and could lose
+        // the same rows.
+        val written = spark.sql(s"SELECT id, region, payload FROM $catalog.$ns.fanout_oom")
+        val source = spark.table("fanout_oom_src")
+        assert(written.count() == rows)
+        assert(written.exceptAll(source).isEmpty && source.exceptAll(written).isEmpty)
+      }
+    }
+  }
+
+  // A write that keeps one file open has no partition to close early, so when the file outgrows
+  // the pool the task fails, which Spark can retry, instead of growing in memory that no budget
+  // accounts for until the executor is killed.
+  test("native acceleration: a write whose open file outgrows the memory pool fails its task") {
+    assumeNativeAcceleration()
+    withIcebergCatalog { _ =>
+      val session = spark
+      import session.implicits._
+      // One task writes about 32 MB of random 500-byte strings into one file, whose row group
+      // outgrows the pool of about 4 MiB (0.002 of the suite's 2 GiB off-heap size).
+      val rows = 64000
+      (0 until rows)
+        .map(i => (i, "r", new scala.util.Random(i).alphanumeric.take(500).mkString))
+        .toDF("id", "region", "payload")
+        .coalesce(1)
+        .createOrReplaceTempView("file_oom_src")
+      Seq("file_oom", "file_oom_control").foreach { table =>
+        spark.sql(s"""
+          CREATE TABLE $catalog.$ns.$table (id INT, region STRING, payload STRING)
+          USING iceberg
+        """)
+      }
+
+      withNativeEnabled {
         withSQLConf(CometConf.COMET_OFFHEAP_MEMORY_POOL_FRACTION.key -> "0.002") {
           val (failedPlans, error) = captureFailedPlans(spark) {
-            spark.sql(s"INSERT INTO $catalog.$ns.fanout_oom SELECT * FROM fanout_oom_src")
+            spark.sql(s"INSERT INTO $catalog.$ns.file_oom SELECT * FROM file_oom_src")
           }
           assert(
             error.toSeq
@@ -3098,23 +3459,22 @@ class CometIcebergWriteActionSuite
               collectWithSubqueries(p) { case w: CometIcebergWriteExec => w }.nonEmpty),
             s"the failed write did not run natively:\n${failedPlans.mkString("\n--\n")}")
         }
-        assert(countSnapshots("fanout_oom") == 0L, "the failed write must not commit")
+        assert(countSnapshots("file_oom") == 0L, "the failed write must not commit")
         assert(
-          parquetFiles(dataDir("fanout_oom")).isEmpty,
-          s"the failed task left data files behind: ${parquetFiles(dataDir("fanout_oom"))}")
+          parquetFiles(dataDir("file_oom")).isEmpty,
+          s"the failed task left data files behind: ${parquetFiles(dataDir("file_oom"))}")
 
         // The executor outlived the failure, and with the whole pool the same write succeeds.
         val controlPlans = capturePlans(spark) {
-          spark.sql(s"INSERT INTO $catalog.$ns.fanout_oom_control SELECT * FROM fanout_oom_src")
+          spark.sql(s"INSERT INTO $catalog.$ns.file_oom_control SELECT * FROM file_oom_src")
         }
         assert(
           controlPlans.exists(p =>
             collectWithSubqueries(p) { case w: CometIcebergWriteExec => w }.nonEmpty),
           "the control write did not run natively")
         assert(
-          spark.sql(s"SELECT count(*) FROM $catalog.$ns.fanout_oom_control").head().getLong(0)
+          spark.sql(s"SELECT count(*) FROM $catalog.$ns.file_oom_control").head().getLong(0)
             == rows)
-        assert(parquetFiles(dataDir("fanout_oom_control")).size == 64)
       }
     }
   }
@@ -4043,6 +4403,15 @@ class CometIcebergWriteActionSuite
       .toSet
   }
 
+  /** Each data file's committed partition value and record count, sorted. */
+  private def committedPartitions(tableName: String): Seq[String] =
+    spark
+      .sql(s"SELECT CAST(partition AS STRING), record_count FROM $catalog.$ns.$tableName.files")
+      .collect()
+      .map(_.toString)
+      .toSeq
+      .sorted
+
   /**
    * The table's NaN counts summed over its data files, keyed by field id. Two tables created from
    * the same DDL get the same ids, so their maps compare directly.
@@ -4106,17 +4475,27 @@ class CometIcebergWriteActionSuite
    * version / session-state combinations where `withSQLConf` loses the override before the rule
    * fires.
    */
-  private def withNativeEnabled[T](action: => T): T = {
-    val session = spark
-    session.sessionState.conf
-      .setConfString(CometConf.COMET_ICEBERG_NATIVE_WRITE_ENABLED.key, "true")
-    session.sessionState.conf
-      .setConfString(CometConf.COMET_EXEC_LOCAL_TABLE_SCAN_ENABLED.key, "true")
-    try action
-    finally {
-      session.sessionState.conf.unsetConf(CometConf.COMET_EXEC_LOCAL_TABLE_SCAN_ENABLED.key)
-      session.sessionState.conf.unsetConf(CometConf.COMET_ICEBERG_NATIVE_WRITE_ENABLED.key)
+  private def withNativeEnabled[T](action: => T): T =
+    withSessionConf(
+      CometConf.COMET_ICEBERG_NATIVE_WRITE_ENABLED.key -> Some("true"),
+      CometConf.COMET_EXEC_LOCAL_TABLE_SCAN_ENABLED.key -> Some("true"))(action)
+
+  /**
+   * Sets each key to its value, or unsets it for `None`, for the duration of `action`, then puts
+   * back the value each key had before. It writes the session conf directly; see
+   * [[withNativeEnabled]] for why. A key is restored rather than unset because this suite pins
+   * both write flags, and unsetting one would leave its default in place of the suite's value.
+   */
+  private def withSessionConf[T](settings: (String, Option[String])*)(action: => T): T = {
+    val conf = spark.sessionState.conf
+    def set(key: String, value: Option[String]): Unit = value match {
+      case Some(v) => conf.setConfString(key, v)
+      case None => conf.unsetConf(key)
     }
+    val previous = settings.map { case (key, _) => key -> Option(conf.getConfString(key, null)) }
+    settings.foreach { case (key, value) => set(key, value) }
+    try action
+    finally previous.foreach { case (key, value) => set(key, value) }
   }
 
   /**
