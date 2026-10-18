@@ -26,6 +26,10 @@ pub(crate) const COMET_PARQUET_ROW_FILTER_PUSHDOWN_ENABLED: &str =
     "spark.comet.parquet.rowFilterPushdown.enabled";
 pub(crate) const COMET_EXEC_AGGREGATE_SKIP_PARTIAL_ENABLED: &str =
     "spark.comet.exec.aggregate.skipPartial.enabled";
+pub(crate) const COMET_EXEC_SPILL_COMPRESSION_CODEC: &str =
+    "spark.comet.exec.spill.compression.codec";
+pub(crate) const COMET_STRICT_TIMESTAMP_LABELS: &str =
+    "spark.comet.testing.strictTimestampLabels.enabled";
 pub(crate) const SPARK_EXECUTOR_CORES: &str = "spark.executor.cores";
 /// Spark's duplicate map key policy, forwarded to `datafusion.spark.map_key_dedup_policy`.
 pub(crate) const SPARK_MAP_KEY_DEDUP_POLICY: &str = "spark.sql.mapKeyDedupPolicy";

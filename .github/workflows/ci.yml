@@ -141,13 +141,8 @@ jobs:
           distribution: temurin
           java-version: 17
 
-      # Preflight gates every other job, so a single failed download of the
-      # Maven distribution here would fail the whole run.
-      - name: Bootstrap Maven
-        uses: ./.github/actions/maven-bootstrap
-
       - name: Apache RAT license check
-        run: ./mvnw -B -N apache-rat:check
+        run: ./dev/release/check-rat.sh HEAD
 
       - name: Setup Node.js
         uses: actions/setup-node@v7
@@ -189,6 +184,9 @@ jobs:
 
       - name: Check missing suites
         run: python3 dev/ci/check-suites.py
+
+      - name: Check versioned source parity
+        run: python3 dev/ci/check-versioned-source-parity.py
 
       - name: Check micro benchmark runner
         run: python3 dev/ci/check-benchmark-runner.py
@@ -265,6 +263,9 @@ jobs:
       iceberg_1_9:  ${{ steps.compute.outputs.iceberg_1_9 }}
       iceberg_1_10: ${{ steps.compute.outputs.iceberg_1_10 }}
       iceberg_1_11: ${{ steps.compute.outputs.iceberg_1_11 }}
+      delta_3_5:    ${{ steps.compute.outputs.delta_3_5 }}
+      delta_4_0:    ${{ steps.compute.outputs.delta_4_0 }}
+      delta_4_1:    ${{ steps.compute.outputs.delta_4_1 }}
     steps:
       - uses: actions/checkout@v7
         with:
@@ -471,6 +472,43 @@ jobs:
       spark-full: '3.5.9'
       java: 17
 
+  delta_3_5:
+    name: Delta Contrib Tests (Spark 3.5)
+    needs: changes
+    permissions:
+      contents: read
+    # Nightly by default; PRs need the `run-delta-tests` label.
+    if: needs.changes.outputs.delta_3_5 == 'true'
+    uses: ./.github/workflows/delta_contrib_test.yml
+    with:
+      spark: '3.5'
+      java: '17'
+
+  delta_4_0:
+    name: Delta Contrib Tests (Spark 4.0)
+    needs: changes
+    permissions:
+      contents: read
+    # Nightly by default; PRs need the `run-delta-tests` label.
+    if: needs.changes.outputs.delta_4_0 == 'true'
+    uses: ./.github/workflows/delta_contrib_test.yml
+    with:
+      spark: '4.0'
+      java: '17'
+
+  delta_4_1:
+    name: Delta Contrib Tests (Spark 4.1)
+    needs: changes
+    permissions:
+      contents: read
+    # Nightly by default; PRs need the `run-delta-tests` label. No Spark 4.2
+    # caller: the contrib profile is dormant until a Delta release supports it.
+    if: needs.changes.outputs.delta_4_1 == 'true'
+    uses: ./.github/workflows/delta_contrib_test.yml
+    with:
+      spark: '4.1'
+      java: '17'
+
   spark_4_0:
     name: Spark SQL Tests (Spark 4.0)
     needs: changes
@@ -618,6 +656,9 @@ jobs:
       - pyarrow_udf_test
       - spark_3_4
       - spark_3_5
+      - delta_3_5
+      - delta_4_0
+      - delta_4_1
       - spark_4_0
       - spark_4_1
       - spark_4_2
@@ -686,7 +727,7 @@ jobs:
               failed.length ? 'Jobs that did not succeed:' : 'No individual job reported a failure; see the run for details.',
               ...failed,
               '',
-              'The nightly tier runs the Spark and Iceberg versions the merge queue does not',
+              'The nightly tier runs the Spark, Iceberg and Delta versions the merge queue does not',
               '(see `POLICY` in `dev/ci/compute-changes.py`). Close this issue once the failure',
               'is understood; the next red nightly opens a new one.',
             ].join('\n');

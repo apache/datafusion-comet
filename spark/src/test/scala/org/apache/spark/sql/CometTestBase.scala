@@ -37,6 +37,7 @@ import org.apache.parquet.hadoop.example.{ExampleParquetWriter, GroupWriteSuppor
 import org.apache.parquet.schema.{MessageType, MessageTypeParser}
 import org.apache.spark._
 import org.apache.spark.internal.config.{MEMORY_OFFHEAP_ENABLED, MEMORY_OFFHEAP_SIZE, SHUFFLE_MANAGER}
+import org.apache.spark.rdd.RDD
 import org.apache.spark.sql.catalyst.plans.logical
 import org.apache.spark.sql.catalyst.util.sideBySide
 import org.apache.spark.sql.comet.CometPlanChecker
@@ -45,6 +46,7 @@ import org.apache.spark.sql.execution._
 import org.apache.spark.sql.execution.adaptive.{AdaptiveSparkPlanExec, AdaptiveSparkPlanHelper, AQEShuffleReadExec, QueryStageExec}
 import org.apache.spark.sql.execution.exchange.ReusedExchangeExec
 import org.apache.spark.sql.internal._
+import org.apache.spark.sql.sources.{BaseRelation, TableScan}
 import org.apache.spark.sql.test._
 import org.apache.spark.sql.types.{DecimalType, StructType}
 
@@ -68,12 +70,65 @@ abstract class CometTestBase
   protected val shuffleManager: String =
     "org.apache.spark.sql.comet.execution.shuffle.CometShuffleManager"
 
+  /** The reused exchanges in `plan`. */
+  protected def reusedExchanges(plan: SparkPlan): Seq[ReusedExchangeExec] =
+    collect(plan) { case r: ReusedExchangeExec => r }
+
+  /** The reused exchanges in `plan` whose child contains a node that `pf` matches. */
+  protected def reusedExchangesOver[T](plan: SparkPlan)(
+      pf: PartialFunction[SparkPlan, T]): Seq[ReusedExchangeExec] =
+    reusedExchanges(plan).filter(exchange => collect(exchange.child)(pf).nonEmpty)
+
+  /** Asserts that some reused exchange in `plan` sits over a node that `pf` matches. */
   protected def assertExchangeReuseOver[T](plan: SparkPlan, clue: String)(
-      pf: PartialFunction[SparkPlan, T]): Unit = {
-    val reused = collect(plan) {
-      case exchange: ReusedExchangeExec if collect(exchange.child)(pf).nonEmpty => exchange
-    }
-    assert(reused.nonEmpty, s"$clue:\n$plan")
+      pf: PartialFunction[SparkPlan, T]): Unit =
+    assert(reusedExchangesOver(plan)(pf).nonEmpty, s"$clue:\n$plan")
+
+  /** Asserts that no reused exchange in `plan` sits over a scan that `dppScan` matches. */
+  protected def assertNoReusedExchangeOverDppScan[T](plan: SparkPlan)(
+      dppScan: PartialFunction[SparkPlan, T]): Unit =
+    assert(
+      reusedExchangesOver(plan)(dppScan).isEmpty,
+      s"An exchange over a DPP scan was reused by another branch:\n$plan")
+
+  /**
+   * Asserts that Spark reuses at least one exchange in `sparkPlan` and that Comet reuses as many
+   * in `cometPlan`.
+   */
+  protected def assertSameExchangeReuseAsSpark(
+      sparkPlan: SparkPlan,
+      cometPlan: SparkPlan): Unit = {
+    val sparkReused = reusedExchanges(sparkPlan).size
+    val cometReused = reusedExchanges(cometPlan).size
+    assert(sparkReused > 0, s"Spark should reuse an exchange:\n$sparkPlan")
+    assert(
+      cometReused == sparkReused,
+      s"expected $sparkReused reused exchanges, got $cometReused:\n" + cometPlan.treeString)
+  }
+
+  /**
+   * Sets each Spark-to-Arrow conversion that [[sparkConf]] turns on to `enabled`. All but the
+   * `OneRowRelation` conversion are off by default. These are the conversions
+   * `spark.comet.sparkToColumnar.enabled` stood for before each had a config of its own.
+   */
+  protected def sparkToArrowConversionConfs(enabled: Boolean): Seq[(String, String)] =
+    Seq(
+      CometConf.COMET_CONVERT_FROM_RANGE_ENABLED,
+      CometConf.COMET_CONVERT_FROM_IN_MEMORY_CACHE_ENABLED,
+      CometConf.COMET_CONVERT_FROM_RDD_ENABLED,
+      CometConf.COMET_CONVERT_FROM_ONE_ROW_RELATION_ENABLED).map(_.key -> enabled.toString)
+
+  /**
+   * A DataFrame over `rows` that Spark scans with a `RowDataSourceScanExec`, as it does a Data
+   * Source V1 relation that is not file-based, such as a JDBC table.
+   */
+  protected def rowDataSourceDataFrame(rowSchema: StructType, rows: Seq[Row]): DataFrame = {
+    val session = spark
+    session.baseRelationToDataFrame(new BaseRelation with TableScan {
+      override def sqlContext: SQLContext = session.sqlContext
+      override def schema: StructType = rowSchema
+      override def buildScan(): RDD[Row] = session.sparkContext.parallelize(rows, 1)
+    })
   }
 
   protected def sparkConf: SparkConf = {
@@ -90,7 +145,7 @@ abstract class CometTestBase
     conf.set(CometConf.COMET_ONHEAP_ENABLED.key, "true")
     conf.set(CometConf.COMET_EXEC_ENABLED.key, "true")
     conf.set(CometConf.COMET_SHUFFLE_ENABLED.key, "true")
-    conf.set(CometConf.COMET_SPARK_TO_ARROW_ENABLED.key, "true")
+    conf.setAll(sparkToArrowConversionConfs(enabled = true))
     conf.set(CometConf.COMET_NATIVE_SCAN_ENABLED.key, "true")
     conf.set(CometConf.COMET_PARQUET_UNSIGNED_SMALL_INT_CHECK.key, "false")
     conf.set(CometConf.COMET_SCAN_ALLOW_DISABLED_PARQUET_VECTORIZED_READER.key, "true")
@@ -99,6 +154,10 @@ abstract class CometTestBase
     // generic "<operator> is not supported" message mask the missing reason.
     // See https://github.com/apache/datafusion-comet/issues/5230.
     conf.set(CometConf.COMET_STRICT_FALLBACK_REASONS.key, "true")
+    // Fail a native plan that labels a timestamp with another timezone than Comet's convention.
+    // The label never changes the values, so result comparisons cannot catch it, and the casts
+    // at scans and shuffle writes would otherwise repair it without a trace.
+    conf.set(CometConf.COMET_STRICT_TIMESTAMP_LABELS.key, "true")
     // SortOrder is incompatible for mixed zero and negative zero floating point values, but
     // this is an edge case, and we expect most users to allow sorts on floating point, so we
     // enable this for the tests
@@ -1318,6 +1377,42 @@ abstract class CometTestBase
   def stripRandomPlanParts(plan: String): String = {
     plan.replaceFirst("file:.*,", "").replaceAll(raw"#\d+", "")
   }
+
+  /**
+   * Runs `df` and returns the metric `name` of its first Comet shuffle exchange. Answer checks
+   * such as `checkSparkAnswer` execute copies built from the logical plan, so this plan's
+   * exchange has no metrics until `df` itself has run. AdaptiveSparkPlanHelper's `collectFirst`
+   * also looks inside AQE query stages, which a plain tree walk stops above.
+   */
+  protected def cometShuffleMetric(df: DataFrame, name: String): Long = {
+    df.collect()
+    collectFirst(df.queryExecution.executedPlan) { case e: CometShuffleExchangeExec =>
+      e.metrics(name).value
+    }.get
+  }
+
+  /**
+   * Rows for shuffle tests of offsets stored as lengths, with offsets in a string, a binary, an
+   * array, a map and a struct column. Every tenth string is null, and so are the binary, array
+   * and map values next to it. The string after it is empty, and every array holds a null.
+   */
+  protected def rowsWithOffsets(
+      n: Int): Seq[(Int, String, Array[Byte], Seq[String], Map[String, String], (String, Int))] =
+    (0 until n).map { i =>
+      val s = i % 10 match {
+        case 0 => null
+        case 1 => ""
+        case _ => s"str$i"
+      }
+      val value = Option(s)
+      (
+        i,
+        s,
+        value.map(_.getBytes("UTF-8")).orNull,
+        value.map(v => Seq(v, null, s"a$i")).orNull,
+        value.map(v => Map(s"k$i" -> v)).orNull,
+        (s, i))
+    }
 
   protected def checkCometExchange(
       df: DataFrame,

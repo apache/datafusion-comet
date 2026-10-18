@@ -25,7 +25,7 @@ import org.apache.spark.sql.types._
 
 import org.apache.comet.CometConf.COMET_EXEC_STRICT_FLOATING_POINT
 import org.apache.comet.DataTypeSupport.isComplexType
-import org.apache.comet.serde.QueryPlanSerde.{exprToProtoInternal, hasNonDefaultStringCollation, scalarFunctionExprToProto}
+import org.apache.comet.serde.QueryPlanSerde.{exprToProtoInternal, hasNonDefaultStringCollation, scalarFunctionExprToProto, withNullShortCircuit}
 import org.apache.comet.shims.CometTypeShim
 
 /**
@@ -35,7 +35,7 @@ import org.apache.comet.shims.CometTypeShim
 private[serde] object MapKeySupport {
 
   private val floatingPointReason: String =
-    "Spark normalizes floating-point map keys, so `-0.0` matches a `+0.0` key and all `NaN`s " +
+    "Spark looks a key up in its SQL ordering, so `-0.0` matches a `+0.0` key and all `NaN`s " +
       "match each other; Comet's native map lookup compares the raw Arrow values."
 
   private val collationReason: String =
@@ -49,12 +49,13 @@ private[serde] object MapKeySupport {
 
   /**
    * The `SupportLevel` for a map-consuming expression whose stored-key type is `keyType`. Spark
-   * finds a key with `TypeUtils.getInterpretedOrdering` over the keys `ArrayBasedMapBuilder`
-   * stored, having first normalized them, while native `map_extract` compares the Arrow values as
-   * they are, so decline the key types where those disagree:
-   *   - `ArrayBasedMapBuilder` rewrites a `-0.0` key to `+0.0` and canonicalises `NaN`, and
-   *     `nanSafeCompareDoubles` treats `-0.0` and `+0.0` as equal, so Spark answers a `-0.0`
-   *     lookup from a `+0.0` key where native finds nothing.
+   * finds a key with `TypeUtils.getInterpretedOrdering` over the map's stored keys, while native
+   * `map_extract` compares the Arrow values as they are, so decline the key types where those
+   * disagree:
+   *   - `nanSafeCompareDoubles` treats `-0.0` and `+0.0` as equal and all `NaN`s as equal, so
+   *     Spark answers a `-0.0` lookup from a `+0.0` key where native finds nothing, on every
+   *     version. (How `ArrayBasedMapBuilder` treats float keys when it builds a map differs by
+   *     version; see `MapBuilderKeySupport`.)
    *   - a non-default collation compares under rules native applies as `UTF8_BINARY`.
    *   - for a complex key type, `map_extract`'s `coerce_types` returns the map's exact key field
    *     type, so Comet's planner casts the lookup key to it. That cannot reproduce Spark's
@@ -129,7 +130,7 @@ object CometMapExtract extends CometExpressionSerde[GetMapValue] {
     val mapExpr = exprToProtoInternal(expr.child, inputs, binding)
     val keyExpr = exprToProtoInternal(expr.key, inputs, binding)
     val mapExtractExpr = scalarFunctionExprToProto("map_extract", mapExpr, keyExpr)
-    mapExtractExpr
+    withNullShortCircuit(expr, mapExtractExpr)
   }
 }
 
@@ -198,7 +199,9 @@ private object MapBuilderSupport {
     }
 }
 
-object CometMapFromArrays extends CometExpressionSerde[MapFromArrays] {
+object CometMapFromArrays
+    extends CometExpressionSerde[MapFromArrays]
+    with CodegenDispatchFallback {
 
   private val nondeterministicKeysReason: String =
     "a nondeterministic operand as a nullable keys array: the native NULL guard serializes the " +

@@ -20,6 +20,7 @@
 -- `map_from_arrays.sql`.
 
 -- Config: spark.sql.mapKeyDedupPolicy=LAST_WIN
+-- Config: spark.comet.exec.scalaUDF.codegen.enabled=false
 
 statement
 CREATE TABLE test_map_from_arrays_dedup(k array<string>, v array<int>) USING parquet

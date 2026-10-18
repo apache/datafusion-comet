@@ -65,7 +65,7 @@ object CometRangeBenchmark extends CometBenchmarkBase {
       "SparkToColumnar",
       cometConfs ++ Seq(
         CometConf.COMET_EXEC_RANGE_ENABLED.key -> "false",
-        CometConf.COMET_SPARK_TO_ARROW_ENABLED.key -> "true"),
+        CometConf.COMET_CONVERT_FROM_RANGE_ENABLED.key -> "true"),
       plan => {
         assert(collect(plan) { case c: CometSparkToColumnarExec => c }.nonEmpty, plan)
         assert(collect(plan) { case a: CometHashAggregateExec => a }.nonEmpty, plan)
@@ -74,7 +74,7 @@ object CometRangeBenchmark extends CometBenchmarkBase {
       "CometRange",
       cometConfs ++ Seq(
         CometConf.COMET_EXEC_RANGE_ENABLED.key -> "true",
-        CometConf.COMET_SPARK_TO_ARROW_ENABLED.key -> "false"),
+        CometConf.COMET_CONVERT_FROM_RANGE_ENABLED.key -> "false"),
       plan => {
         assert(collect(plan) { case r: CometRangeExec => r }.nonEmpty, plan)
         assert(collect(plan) { case a: CometHashAggregateExec => a }.nonEmpty, plan)

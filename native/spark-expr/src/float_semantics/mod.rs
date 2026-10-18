@@ -35,23 +35,32 @@
 //!   [`compare_floats_java`].
 //! - `Murmur3Hash` and `XxHash64`: `-0.0` hashes as `0.0`, and NaN as the canonical NaN. See
 //!   [`hash_input`].
+//! - Scala's `==` on boxed numbers (`BoxesRunTime.equals`), which keys of a Scala `HashMap[Any, _]`
+//!   such as `PivotFirst`'s pivot value index match on: IEEE 754 equality, so `-0.0` equals `0.0`
+//!   and NaN equals nothing, not even another NaN. See [`ieee_equality_key`].
 //!
 //! A native expression must follow the rule of the Spark function it replaces, so build it from
-//! these helpers rather than a local copy. Where an Arrow kernel sorts, row-encodes or hashes the
-//! values, normalize them first: once `-0.0` is folded and NaN canonicalized, Arrow's total order
-//! agrees with `compareDoubles`. Where Comet compares values itself, or has to return the original
-//! bits as `array_min` does, use [`compare_floats`], [`float_lt`], [`float_gt`],
-//! [`spark_comparator`] or [`spark_equality`]. Non-canonical NaNs are not a corner case: on x86-64
-//! every NaN that arithmetic produces at run time, such as `sqrt(-1)`, has the sign bit set.
+//! these helpers rather than a local copy. Where an Arrow kernel sorts, row-encodes, hashes or
+//! compares the values, normalize them first: once `-0.0` is folded and NaN canonicalized, Arrow's
+//! total order agrees with `compareDoubles`. Where Comet compares values itself, or has to return
+//! the original bits as `array_min` does, use [`compare_floats`], [`float_lt`], [`float_gt`],
+//! [`spark_comparator`] or [`spark_equality`]. The comparison operators compare in place too, with
+//! the kernels in `kernels` for flat floats and with [`spark_comparator`] and [`spark_equality`]
+//! for lists and structs. Non-canonical NaNs are not a corner case: on x86-64 every NaN that
+//! arithmetic produces at run time, such as `sqrt(-1)`, has the sign bit set.
 
 mod compare;
+mod kernels;
 mod normalize;
 
 pub use compare::{spark_comparator, spark_equality};
+pub(crate) use compare::{spark_comparator_ignoring_nulls, spark_equality_ignoring_nulls};
+pub(crate) use kernels::{compare_float_array_scalar, compare_float_arrays, comparison_with_nulls};
 pub use normalize::{
-    has_float_leaf, normalize_floats, normalize_nested_floats, NormalizeNaNAndZero,
-    NormalizeNestedFloats,
+    has_float_leaf, normalize_comparison_operand, normalize_floats, normalize_nested_floats,
+    NormalizeNaNAndZero, NormalizeNestedFloats,
 };
+pub(crate) use normalize::{is_nested_with_float_leaf, normalize_float_scalar};
 
 use num::Float;
 use std::cmp::Ordering;
@@ -77,6 +86,18 @@ pub fn canonicalize_nan<T: Float>(v: T) -> T {
         T::nan()
     } else {
         v
+    }
+}
+
+/// The key that a Scala `HashMap[Any, _]` matches a boxed float on. Scala's `==` on boxed numbers
+/// is IEEE 754 equality, so `-0.0` and `0.0` share a key, and NaN has none: it equals nothing, not
+/// even another NaN.
+#[inline]
+pub fn ieee_equality_key<T: Float>(v: T) -> Option<T> {
+    if v.is_nan() {
+        None
+    } else {
+        Some(normalize_float(v))
     }
 }
 
@@ -135,6 +156,43 @@ pub(crate) const NEGATIVE_NAN: f64 = f64::from_bits(0xfff8_0000_0000_0000);
 #[cfg(test)]
 pub(crate) const PAYLOAD_NAN: f64 = f64::from_bits(0x7ff0_0000_0000_0001);
 
+/// Values on which Spark's ordering and IEEE 754 total order disagree, with neighbors and a null.
+#[cfg(test)]
+pub(crate) const EDGE_VALUES: [Option<f64>; 10] = [
+    Some(f64::NEG_INFINITY),
+    Some(-1.0),
+    Some(-0.0),
+    Some(0.0),
+    Some(1.0),
+    Some(f64::INFINITY),
+    Some(f64::NAN),
+    Some(NEGATIVE_NAN),
+    Some(PAYLOAD_NAN),
+    None,
+];
+
+/// Spark's `greatest` of `values` in order, or `least` if `greatest` is false, which is also how
+/// `Max` and `Min` update their buffer: nulls are skipped, and a value replaces the result only when
+/// [`compare_floats`] ranks it strictly before, so the first of equal values is kept.
+#[cfg(test)]
+pub(crate) fn spark_extreme(values: &[Option<f64>], greatest: bool) -> Option<f64> {
+    values
+        .iter()
+        .flatten()
+        .fold(None, |best, &value| match best {
+            None => Some(value),
+            Some(best) => {
+                let ordering = compare_floats(value, best);
+                let replace = if greatest {
+                    ordering.is_gt()
+                } else {
+                    ordering.is_lt()
+                };
+                Some(if replace { value } else { best })
+            }
+        })
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -164,6 +222,23 @@ mod tests {
             assert_eq!(canonicalize_nan(value).to_bits(), canonical.to_bits());
             assert_eq!(hash_input(value).to_bits(), normalized.to_bits());
         }
+    }
+
+    #[test]
+    fn ieee_equality_keys() {
+        let key = |v: f64| ieee_equality_key(v).map(f64::to_bits);
+        assert_eq!(key(-0.0), Some(0.0f64.to_bits()));
+        assert_eq!(key(0.0), Some(0.0f64.to_bits()));
+        assert_eq!(key(-1.5), Some((-1.5f64).to_bits()));
+        assert_eq!(key(f64::INFINITY), Some(f64::INFINITY.to_bits()));
+        for nan in [f64::NAN, NEGATIVE_NAN, PAYLOAD_NAN] {
+            assert_eq!(key(nan), None);
+        }
+        assert_eq!(
+            ieee_equality_key(-0.0f32).map(f32::to_bits),
+            Some(0.0f32.to_bits())
+        );
+        assert_eq!(ieee_equality_key(NEGATIVE_NAN_F32), None);
     }
 
     #[test]
