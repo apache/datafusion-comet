@@ -15,6 +15,10 @@
 // specific language governing permissions and limitations
 // under the License.
 
+mod case_when;
 mod if_expr;
+mod null_short_circuit;
 
+pub use case_when::{coerce_to_common_type, create_case_when, create_if_expr, CaseWhenExpr};
 pub use if_expr::IfExpr;
+pub use null_short_circuit::NullShortCircuit;

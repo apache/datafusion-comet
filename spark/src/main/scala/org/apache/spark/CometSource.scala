@@ -54,9 +54,9 @@ object CometSource extends Source {
     })
 
   def recordStats(stats: CometCoverageStats): Unit = {
-    NATIVE_OPERATORS.inc(stats.cometOperators)
-    SPARK_OPERATORS.inc(stats.sparkOperators)
-    TRANSITIONS.inc(stats.transitions)
+    NATIVE_OPERATORS.inc(stats.cometOperators.toLong)
+    SPARK_OPERATORS.inc(stats.sparkOperators.toLong)
+    TRANSITIONS.inc(stats.transitions.toLong)
     QUERIES_PLANNED.inc()
   }
 }

@@ -26,7 +26,7 @@ under the License.
     <parent>
         <groupId>org.apache.datafusion</groupId>
         <artifactId>comet-parent-spark${spark.version.short}_${scala.binary.version}</artifactId>
-        <version>1.1.0-SNAPSHOT</version>
+        <version>1.2.0-SNAPSHOT</version>
         <relativePath>../pom.xml</relativePath>
     </parent>
 
@@ -34,10 +34,8 @@ under the License.
     <name>comet-spark-integration</name>
     <packaging>pom</packaging>
 
-  <properties>
-    <!-- Reverse default (skip installation), and then enable only for child modules -->
-    <maven.deploy.skip>false</maven.deploy.skip>
-  </properties>
+    <!-- Only checks the contents of the comet-spark jar. Neither installed (see the plugin below) nor
+         deployed (the deploy skip is inherited from the parent pom). -->
 
     <dependencies>
         <dependency>

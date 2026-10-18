@@ -44,6 +44,8 @@ FILTERS = {
         "common/**",
         "spark/**",
         "spark-integration/**",
+        # The strict warnings job compiles the Delta contrib against Spark 3.5.
+        "contrib/delta-spark/**",
         "pom.xml",
         "**/pom.xml",
         ".mvn/**",
@@ -62,6 +64,7 @@ FILTERS = {
         "!**.md",
         "!native/core/benches/**",
         "!native/spark-expr/benches/**",
+        "!native/operators/benches/**",
         "!spark/src/test/scala/org/apache/spark/sql/benchmark/**",
         "!spark/src/main/scala/org/apache/comet/GenerateDocs.scala",
     ],
@@ -97,12 +100,14 @@ FILTERS = {
         "!**.md",
         "!native/core/benches/**",
         "!native/spark-expr/benches/**",
+        "!native/operators/benches/**",
         "!spark/src/test/scala/org/apache/spark/sql/benchmark/**",
         "!spark/src/main/scala/org/apache/comet/GenerateDocs.scala",
     ],
     "benchmark": [
         "native/core/benches/**",
         "native/spark-expr/benches/**",
+        "native/operators/benches/**",
         "spark/src/test/scala/org/apache/spark/sql/benchmark/**",
     ],
     # dev/verify-contrib-delta-gate.sh proves the default cargo, Maven and
@@ -128,6 +133,7 @@ FILTERS = {
         "!**.md",
         "!native/core/benches/**",
         "!native/spark-expr/benches/**",
+        "!native/operators/benches/**",
         "!spark/src/main/scala/org/apache/comet/GenerateDocs.scala",
     ],
     # A real Python worker against each Spark 4.x Arrow runner. The list is
@@ -157,6 +163,7 @@ FILTERS = {
         "spark/src/main/spark-4.x/org/apache/spark/sql/execution/python/CometArrowPythonRunnerBase.scala",
         "spark/src/test/resources/pyspark/conftest.py",
         "spark/src/test/resources/pyspark/test_pyarrow_udf.py",
+        "spark/src/test/resources/pyspark/test_pyarrow_udf_fuzz.py",
         "spark/src/test/resources/pyspark/test_pyarrow_udf_dictionary_shuffle.py",
         "spark/src/test/spark-3.5/org/apache/spark/sql/comet/CometMapInBatchSuite.scala",
         "spark/src/test/spark-4.x/org/apache/spark/sql/comet/CometMapInBatchSuite.scala",
@@ -430,10 +437,38 @@ FILTERS = {
         ".mvn/**",
         "mvnw",
     ],
+    "delta_3_5": [
+        "contrib/delta-spark/**",
+        "!**.md",
+        "native/**/src/**",
+        "native/**/Cargo.toml",
+        "native/Cargo.lock",
+        "common/src/main/**",
+        "common/pom.xml",
+        "spark/src/main/**",
+        "!spark/src/main/scala/org/apache/comet/GenerateDocs.scala",
+        # The contrib suites extend these through the spark test-jar.
+        "spark/src/test/scala/org/apache/spark/sql/CometTestBase.scala",
+        "spark/src/test/scala/org/apache/comet/CometS3TestBase.scala",
+        "spark/pom.xml",
+        "pom.xml",
+        "rust-toolchain.toml",
+        ".github/workflows/ci.yml",
+        ".github/workflows/delta_contrib_test.yml",
+        ".github/actions/setup-builder/**",
+    ],
+    # Same inputs as delta_3_5: the Delta contrib workflow is called once per
+    # Spark profile, and the three calls share one path filter. Populated
+    # below, after the dict, so the lists cannot drift.
+    "delta_4_0": [],
+    "delta_4_1": [],
 }
 FILTERS["spark_4_1_hive"] = FILTERS["spark_4_1"]
 FILTERS["build_linux_full"] = FILTERS["build_linux"]
+FILTERS["build_macos_full"] = FILTERS["build_macos"]
 FILTERS["build_linux_all_profiles"] = FILTERS["build_linux"]
+FILTERS["delta_4_0"] = FILTERS["delta_3_5"]
+FILTERS["delta_4_1"] = FILTERS["delta_3_5"]
 
 # Which events may run each job, independent of the path filters above.
 #
@@ -480,7 +515,7 @@ POLICY = {
     # own branch or on main, and nowhere else. The queue runs on a throwaway
     # gh-readonly-queue/* branch, so whatever it saves is deleted with that
     # branch. Without a push run, a Cargo.lock or pom.xml change would leave
-    # main's cargo-ci, cargo-debug, Maven and TPC-H/TPC-DS caches stale
+    # main's cargo-ci, Maven and TPC-H/TPC-DS caches stale
     # forever, and every later pull request would pay the delta on top of the
     # restore-keys prefix match.
     #
@@ -500,7 +535,7 @@ POLICY = {
     # day apiece on pull requests in mid-September 2026, and together they
     # were three quarters of the Linux build. A pull request and the queue run
     # the Comet test suites against Spark 4.1 only; the nightly run covers the
-    # other four. The lint-java matrix still compiles Spark 3.4/3.5/4.0 on
+    # other four. The lint-java matrix still compiles every Spark profile on
     # every pull request, so what waits for the nightly is runtime behaviour,
     # not a shim that fails to build. ci.yml turns this output into the
     # workflow's `profiles` input.
@@ -508,7 +543,16 @@ POLICY = {
     # macOS runners are the scarcest capacity we have, and the Linux build
     # already covers rustfmt and the Rust/JVM compile on every PR. The label
     # is for a change that touches platform-specific code.
-    "build_macos": ["queue", "label:run-macos-tests"],
+    #
+    # Split like the Linux build: `build_macos` runs pr_build_macos.yml at all,
+    # `build_macos_full` runs its test matrix too. Push to main sets only the
+    # first, so the workflow runs in cache-refresh-only mode there and keeps
+    # main's macOS cargo cache warm. Nothing else runs on main, and an entry
+    # written from the queue's throwaway branch is visible to nobody, so
+    # without the push run every queue build compiled the native library from
+    # scratch (issue #6390).
+    "build_macos": ["queue", "push", "label:run-macos-tests"],
+    "build_macos_full": ["queue", "label:run-macos-tests"],
     # Benchmark sources are compiled and linted, never run, so a break there
     # cannot affect a PR's correctness verdict; the queue catches it.
     "benchmark": ["queue", "label:run-benchmark-check"],
@@ -562,6 +606,13 @@ POLICY = {
     "iceberg_1_9": ["nightly", "label:run-iceberg-tests"],
     "iceberg_1_10": ["nightly", "label:run-iceberg-tests"],
     "iceberg_1_11": ["queue", "label:run-iceberg-tests"],
+    # The Delta contrib suites all run nightly. The PR tier's strict warnings
+    # job compiles the contrib against Spark 3.5, so a change that breaks its
+    # build on Spark 3.5 fails on its own pull request. One label opts a pull
+    # request into all three.
+    "delta_3_5": ["nightly", "label:run-delta-tests"],
+    "delta_4_0": ["nightly", "label:run-delta-tests"],
+    "delta_4_1": ["nightly", "label:run-delta-tests"],
 }
 
 

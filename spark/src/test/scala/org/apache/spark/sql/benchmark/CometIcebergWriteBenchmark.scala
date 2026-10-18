@@ -19,21 +19,16 @@
 
 package org.apache.spark.sql.benchmark
 
-import scala.collection.mutable
 import scala.concurrent.duration._
 
-import org.apache.spark.CometListenerBusUtils
 import org.apache.spark.SparkConf
 import org.apache.spark.benchmark.Benchmark
 import org.apache.spark.sql.SparkSession
 import org.apache.spark.sql.comet.CometIcebergWriteExec
-import org.apache.spark.sql.execution.{QueryExecution, SparkPlan}
 import org.apache.spark.sql.internal.SQLConf
-import org.apache.spark.sql.util.QueryExecutionListener
 
 import org.apache.comet.CometConf
 import org.apache.comet.CometSparkSessionExtensions
-import org.apache.comet.iceberg.IcebergReflection
 
 /**
  * Benchmark of writes into an Iceberg table with Comet's native (iceberg-rust) writer on and off.
@@ -147,8 +142,6 @@ object CometIcebergWriteBenchmark extends CometBenchmarkBase {
       Seq(
         CometConf.COMET_ENABLED.key -> "true",
         CometConf.COMET_EXEC_ENABLED.key -> "true",
-        // The native writer requires the split-operator plan; enabling it alone is a no-op.
-        CometConf.COMET_ICEBERG_WRITE_SPLIT_OPERATOR_ENABLED.key -> "true",
         CometConf.COMET_ICEBERG_NATIVE_WRITE_ENABLED.key -> "true"),
       expectComet = true,
       expectNativeWrite = true))
@@ -328,7 +321,7 @@ object CometIcebergWriteBenchmark extends CometBenchmarkBase {
     // better-jitted measurement.
     val benchmark = new Benchmark(
       workload.title,
-      values,
+      values.toLong,
       // The iceberg-java baseline is the least repeatable of the three arms - it carries a fifth of
       // its own runtime as spread between iterations, against a few percent for the two Comet arms
       // - and it is also the divisor of every `Relative` figure. Five iterations rather than the
@@ -432,7 +425,7 @@ object CometIcebergWriteBenchmark extends CometBenchmarkBase {
         s"${arm.name}: expected the iceberg-java writer but the plan contains " +
           "CometIcebergWriteExec, so this case would measure the native writer under a " +
           "JVM-writer label. This arm pins the native-write flags off, so they are leaking in " +
-          "from the session defaults (e.g. `-Dspark.comet.iceberg.write.enabled=true` in " +
+          "from the session defaults (e.g. `-Dspark.comet.write.iceberg.enabled=true` in " +
           s"BENCH_MAVEN_OPTS). Plans:\n${plans.mkString("\n--\n")}")
     }
     if (arm.expectNativeWrite && nativeWrites.isEmpty) {
@@ -517,40 +510,4 @@ object CometIcebergWriteBenchmark extends CometBenchmarkBase {
     }
     s"SELECT ${projections.mkString(", ")} FROM $tbl"
   }
-
-  /** The executed plan of every query that succeeded while `action` ran. */
-  private def capturePlans(action: => Unit): Seq[SparkPlan] = {
-    val captured = mutable.Buffer.empty[SparkPlan]
-    val listener = new QueryExecutionListener {
-      override def onSuccess(funcName: String, qe: QueryExecution, durationNs: Long): Unit =
-        captured += qe.executedPlan
-      override def onFailure(
-          funcName: String,
-          qe: QueryExecution,
-          exception: Exception): Unit = {}
-    }
-    spark.listenerManager.register(listener)
-    try {
-      action
-      // The listener bus delivers asynchronously, so the plans are not all in hand until it has
-      // drained.
-      CometListenerBusUtils.waitUntilEmpty(spark.sparkContext)
-    } finally {
-      spark.listenerManager.unregister(listener)
-    }
-    captured.toSeq
-  }
-
-  private def collectAcross[A](plans: Seq[SparkPlan])(f: PartialFunction[SparkPlan, A]): Seq[A] =
-    plans.flatMap(plan => collectWithSubqueries(plan)(f))
-
-  private def isComet(plan: SparkPlan): Boolean = plan.nodeName.startsWith("Comet")
-
-  private def icebergOnClasspath: Boolean =
-    try {
-      IcebergReflection.loadClass("org.apache.iceberg.spark.SparkCatalog")
-      true
-    } catch {
-      case _: ClassNotFoundException => false
-    }
 }
