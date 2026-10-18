@@ -35,6 +35,7 @@ if __name__ == "__main__":
     ignore_list = [
         "org.apache.comet.parquet.ParquetReadSuite", # abstract
         "org.apache.comet.parquet.ParquetReadFromS3Suite", # manual test suite
+        "org.apache.comet.csv.CsvReadFromS3Suite", # manual test suite
         "org.apache.comet.parquet.ParquetReadFromFakeHadoopFsSuite", # manual test suite (loads libhdfs, see #5023)
         "org.apache.comet.IcebergReadFromS3Suite", # manual test suite
         "org.apache.comet.cloud.s3.CometS3CredentialBridgeSuite", # manual test suite
@@ -50,6 +51,10 @@ if __name__ == "__main__":
 
         root = Path(".")
         for path in root.rglob("*Suite.scala"):
+            # contrib suites run via their own module-level workflows
+            # (e.g. delta_contrib_test.yml), not the main PR build matrix
+            if path.parts[0] == "contrib":
+                continue
             class_name = file_to_class_name(path)
             if class_name:
                 if "Shim" in class_name:
