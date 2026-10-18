@@ -93,6 +93,8 @@
 
 Comet uses a native physical expression to preserve per-row short-circuit evaluation. Non-floating types use outer logical nullability; nested nulls and empty collections remain non-null values. Rust tests cover thresholds, sliced and empty batches, dictionary values, literals, and required and skipped child errors. DataFrame tests cover native routing, disabled-expression fallback, complex types and ANSI casts. This internal predicate has no SQL function name.
 
+Native evaluation, like Spark's, may skip the children after the first `n` on a row. When subexpression elimination shares a subexpression with one of those children, Spark evaluates it for every row, so Comet falls back to Spark rather than skip an error Spark would raise. Plain `DataFrame.na.drop` children are columns and stay native.
+
 - The [Criterion benchmark](../../../../native/spark-expr/benches/at_least_n_non_nulls.rs) covers batch sizes around the 64-row bitmap word boundary and NULL/NaN densities.
 
 ## between

@@ -1344,11 +1344,18 @@ object QueryPlanSerde extends Logging with CometExprShim with CometTypeShim {
    * fails on a row whose array is NULL. Nor outside `withSharedSubexpressions`, where what they
    * share is unknown.
    */
-  def canShortCircuitNulls(expr: Expression): Boolean = {
-    val later = expr.children.tail
+  def canShortCircuitNulls(expr: Expression): Boolean = canSkipEvaluation(expr.children.tail)
+
+  /**
+   * Whether native execution may leave `skippable`, expressions that Spark evaluates only for
+   * some rows, unevaluated on the rows Spark skips. Not if one of them holds a subexpression that
+   * the operator's expressions share and Spark eliminates, nor outside
+   * `withSharedSubexpressions`; see `canShortCircuitNulls`.
+   */
+  def canSkipEvaluation(skippable: Seq[Expression]): Boolean = {
     // Subexpression elimination never shares a leaf, such as a column or a literal
-    later.forall(_.isInstanceOf[LeafExpression]) || sharedSubexpressions.value.exists { s =>
-      !later.exists(_.exists(e => s.common.exists(_.semanticEquals(e))))
+    skippable.forall(_.isInstanceOf[LeafExpression]) || sharedSubexpressions.value.exists { s =>
+      !skippable.exists(_.exists(e => s.common.exists(_.semanticEquals(e))))
     }
   }
 
