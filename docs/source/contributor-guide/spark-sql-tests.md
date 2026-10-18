@@ -32,7 +32,10 @@ Here is an overview of the changes that we need to make to Spark:
 - Modify `project/SparkBuild.scala` so that, when Comet is enabled, the `sql` and `hive` test JVMs use
   `CometShuffleManager` as the default shuffle manager. Comet disables itself when its shuffle manager is not
   registered, so without this default the suites that build their own `SparkSession` or `SparkContext` would
-  run without Comet
+  run without Comet. From Spark 3.5, the same JVMs also turn on `spark.comet.exec.inMemoryCache.enabled` and
+  default `spark.sql.cache.serializer` to Comet's `ArrowCachedBatchSerializer`, so that Spark's suites test
+  Comet's cache format although it is disabled by default. The serializer has to be a default for the whole JVM
+  because Spark keeps the first cache serializer it loads for the rest of the JVM
 
 Here are the steps involved in running the Spark SQL tests with Comet, using Spark 3.4.3 for this example.
 

@@ -88,7 +88,7 @@ The tables below list every Spark built-in expression with its current status.
 | `approx_count_distinct` | ✅ | Native |  |
 | `approx_percentile` | ✅ | Native | Byte, short, int, long, float, and double input; other input types fall back to Spark |
 | `array_agg` | ✅ | Native | Alias for `collect_list` |
-| `avg` | ✅ | Native | Interval types fall back |
+| `avg` | ✅ | Native | Interval types fall back. `DECIMAL` input with precision 25 or more falls back in most cases, see [Hash Aggregation](compatibility/operators.md#hash-aggregation) |
 | `bit_and` | ✅ | Native |  |
 | `bit_or` | ✅ | Native |  |
 | `bit_xor` | ✅ | Native |  |
@@ -114,7 +114,7 @@ The tables below list every Spark built-in expression with its current status.
 | `listagg` | ✅ | Native | Spark 4.0+. `StringType` input with a literal delimiter; `WITHIN GROUP (ORDER BY ...)` and `BinaryType` inputs fall back to Spark. Without `WITHIN GROUP`, concatenation order is the (non-deterministic) group arrival order, matching Spark. |
 | `max` | ✅ | Native |  |
 | `max_by` | ✅ | Native | Value and ordering must be fixed-length types |
-| `mean` | ✅ | Native |  |
+| `mean` | ✅ | Native | Interval types fall back. `DECIMAL` input with precision 25 or more falls back in most cases, see [Hash Aggregation](compatibility/operators.md#hash-aggregation) |
 | `median` | ✅ | — | Rewrites to `percentile(col, 0.5)` and runs natively for supported percentile inputs |
 | `min` | ✅ | Native |  |
 | `min_by` | ✅ | Native | Value and ordering must be fixed-length types |
@@ -123,15 +123,16 @@ The tables below list every Spark built-in expression with its current status.
 | `percentile_approx` | ✅ | Native | Alias of `approx_percentile`; same restrictions apply |
 | `percentile_cont` | ✅ | — | Spark 4.0+ `WITHIN GROUP (ORDER BY ...)`; ascending only runs natively, `DESC` falls back to Spark |
 | `percentile_disc` | 🔜 | — | Percentile aggregate |
+| `pivot_first` | ✅ | Native | Internal aggregate for the optimized `PIVOT` fast path. Value type must be in `PivotFirst.supportsDataType` (Boolean, Byte, Short, Int, Long, Float, Double, Decimal); other types keep Spark's standard filtered-aggregate path. Binary, array and struct pivot columns (including pivots on more than one column), non-default collations and pivot lists with duplicate values fall back to Spark |
 | `regr_avgx` | ✅ | — | Native: Spark rewrites to `Average` (tests in [#4551](https://github.com/apache/datafusion-comet/pull/4551)) |
 | `regr_avgy` | ✅ | — | Native: Spark rewrites to `Average` (tests in [#4551](https://github.com/apache/datafusion-comet/pull/4551)) |
 | `regr_count` | ✅ | — | Native: Spark rewrites to `Count` (tests in [#4551](https://github.com/apache/datafusion-comet/pull/4551)) |
-| `regr_intercept` | ✅ | Native | Falls back by default because the native merge of partial aggregates differs from Spark ([#6423](https://github.com/apache/datafusion-comet/issues/6423)); the native path is opt-in via `spark.comet.expression.RegrIntercept.allowIncompatible=true` |
-| `regr_r2` | ✅ | Native | Falls back by default because the native merge of partial aggregates differs from Spark ([#6423](https://github.com/apache/datafusion-comet/issues/6423)); the native path is opt-in via `spark.comet.expression.RegrR2.allowIncompatible=true` |
-| `regr_slope` | ✅ | Native | Falls back by default because the native merge of partial aggregates differs from Spark ([#6423](https://github.com/apache/datafusion-comet/issues/6423)); the native path is opt-in via `spark.comet.expression.RegrSlope.allowIncompatible=true` |
-| `regr_sxx` | ✅ | Native | Falls back by default because the native merge of partial aggregates differs from Spark ([#6423](https://github.com/apache/datafusion-comet/issues/6423)); the native path is opt-in via `spark.comet.expression.RegrReplacement.allowIncompatible=true` (Spark plans `regr_sxx` as `RegrReplacement`) |
-| `regr_sxy` | ✅ | Native | Falls back by default because the native merge of partial aggregates differs from Spark ([#6423](https://github.com/apache/datafusion-comet/issues/6423)); the native path is opt-in via `spark.comet.expression.RegrSXY.allowIncompatible=true` |
-| `regr_syy` | ✅ | Native | Falls back by default because the native merge of partial aggregates differs from Spark ([#6423](https://github.com/apache/datafusion-comet/issues/6423)); the native path is opt-in via `spark.comet.expression.RegrReplacement.allowIncompatible=true` (Spark plans `regr_syy` as `RegrReplacement`) |
+| `regr_intercept` | ✅ | Native |  |
+| `regr_r2` | ✅ | Native |  |
+| `regr_slope` | ✅ | Native |  |
+| `regr_sxx` | ✅ | Native |  |
+| `regr_sxy` | ✅ | Native |  |
+| `regr_syy` | ✅ | Native |  |
 | `skewness` | 🔜 | — | Not yet implemented natively |
 | `some` | ✅ | — |  |
 | `std` | ✅ | Native |  |
@@ -140,7 +141,7 @@ The tables below list every Spark built-in expression with its current status.
 | `stddev_samp` | ✅ | Native |  |
 | `string_agg` | ✅ | Native | Alias of `listagg`; same restrictions apply. |
 | `sum` | ✅ | Native |  |
-| `try_avg` | ✅ | — | Interval types fall back |
+| `try_avg` | ✅ | — | Interval types fall back. `DECIMAL` input with precision 25 or more falls back in most cases, see [Hash Aggregation](compatibility/operators.md#hash-aggregation) |
 | `try_sum` | ✅ | — |  |
 | `var_pop` | ✅ | Native |  |
 | `var_samp` | ✅ | Native |  |
@@ -155,8 +156,8 @@ The tables below list every Spark built-in expression with its current status.
 | `array` | ✅ | Native |  |
 | `array_append` | ✅ | Native |  |
 | `array_compact` | ✅ | — |  |
-| `array_contains` | ✅ | Native | Float/double element arrays route through the JVM codegen dispatcher by default; the native path is opt-in via allowIncompatible |
-| `array_distinct` | ✅ | Native | Floating-point elements fall back on Spark versions other than 4.2.0; signed-zero and NaN results may differ with native opt-in ([details](compatibility/floating-point.md)) |
+| `array_contains` | ✅ | Hybrid | Flat float/double element arrays use a native kernel with Spark's equality; nested float elements, non-default string collations, and a value that is not a literal or column over a nullable array, route through the JVM codegen dispatcher |
+| `array_distinct` | ✅ | Native | Floating-point elements fall back on Spark versions before 4.0.5, 4.1.4, and 4.2; signed-zero results may differ with native opt-in ([details](compatibility/floating-point.md)). Non-default string collations fall back |
 | `array_except` | ✅ | Hybrid | Routes through the JVM codegen dispatcher by default; the incompatible native path is opt-in via allowIncompatible ([details](compatibility/expressions/array.md)) |
 | `array_insert` | ✅ | Native |  |
 | `array_intersect` | ✅ | Hybrid | Routes through the JVM codegen dispatcher by default; the incompatible native path is opt-in via allowIncompatible ([details](compatibility/expressions/array.md)) |
@@ -167,8 +168,8 @@ The tables below list every Spark built-in expression with its current status.
 | `array_prepend` | ✅ | — |  |
 | `array_remove` | ✅ | Native |  |
 | `array_repeat` | ✅ | Native |  |
-| `array_union` | ✅ | Native | Floating-point elements fall back on Spark versions other than 4.2.0; signed-zero and NaN results may differ with native opt-in ([details](compatibility/floating-point.md)) |
-| `arrays_overlap` | ✅ | Native |  |
+| `array_union` | ✅ | Native | Floating-point elements fall back on Spark versions before 4.0.5, 4.1.4, and 4.2; signed-zero results may differ with native opt-in ([details](compatibility/floating-point.md)). Non-default string collations fall back |
+| `arrays_overlap` | ✅ | Hybrid | Non-default string collations use the JVM codegen dispatcher |
 | `arrays_zip` | ✅ | Native |  |
 | `element_at` | ✅ | Native |  |
 | `flatten` | ✅ | Native | Binary/struct/map elements fall back |
@@ -256,7 +257,7 @@ The type-name conversion functions (`bigint`, `binary`, `boolean`, `date`, `deci
 | `convert_timezone` | ✅ | Hybrid | Routes through the JVM codegen dispatcher by default (handles all timezone forms); the native path is opt-in via allowIncompatible ([details](compatibility/expressions/datetime.md)) |
 | `curdate` | ✅ | — | Constant-folded to a literal (alias of `current_date`) |
 | `current_date` | ✅ | — | Constant-folded to a literal before Comet sees the plan |
-| `current_time` | 🔜 | — | Blocked on Spark 4.1 TIME type support ([#4288](https://github.com/apache/datafusion-comet/issues/4288)) |
+| `current_time` | ✅ | — | Spark 4.1+; requires `spark.sql.timeType.enabled=true`, which Spark leaves off by default. Constant-folded to a literal before Comet sees the plan |
 | `current_timestamp` | ✅ | — | Constant-folded to a literal before Comet sees the plan |
 | `current_timezone` | ✅ | — |  |
 | `date_add` | ✅ | Native | The 2-argument form is native; the `date_add(UNIT, n, ts)` form (Spark 3.5+) parses to `timestampadd` and runs through codegen dispatch |
@@ -285,8 +286,8 @@ The type-name conversion functions (`bigint`, `binary`, `boolean`, `date`, `deci
 | `make_interval` | ✅ | Hybrid | Runs natively when each argument after the first nullable one is a column, a literal, or a lossless up-cast of one. Other shapes use the JVM codegen dispatcher to keep Spark's NULL short-circuit. An argument without a native path also uses the dispatcher ([details](compatibility/expressions/datetime.md)) |
 | `make_time` | ✅ | — | Spark 4.1+; requires `spark.sql.timeType.enabled=true`, which Spark leaves off by default. Runs natively; remaining TIME type work is tracked by [#4288](https://github.com/apache/datafusion-comet/issues/4288) |
 | `make_timestamp` | ✅ | Hybrid |  |
-| `make_timestamp_ltz` | ✅ | — | 2-arg TIME form falls back |
-| `make_timestamp_ntz` | ✅ | — | 2-arg TIME form falls back |
+| `make_timestamp_ltz` | ✅ | — | The 2-argument `(date, time)` form (Spark 4.1+) runs through codegen dispatch |
+| `make_timestamp_ntz` | ✅ | — | The 2-argument `(date, time)` form (Spark 4.1+) runs through codegen dispatch |
 | `make_ym_interval` | ✅ | Codegen dispatch |  |
 | `minute` | ✅ | Native |  |
 | `month` | ✅ | Native |  |
@@ -297,8 +298,8 @@ The type-name conversion functions (`bigint`, `binary`, `boolean`, `date`, `deci
 | `quarter` | ✅ | Native |  |
 | `second` | ✅ | Native |  |
 | `session_window` | 🔜 | — | Batch session-window grouping falls back (`UpdatingSessionsExec` is not yet native); tracked by [#4785](https://github.com/apache/datafusion-comet/issues/4785) |
-| `time_diff` | 🔜 | — | Spark 4.1 TIME type; tracked by [#4288](https://github.com/apache/datafusion-comet/issues/4288) |
-| `time_trunc` | 🔜 | — | Spark 4.1 TIME type; tracked by [#4288](https://github.com/apache/datafusion-comet/issues/4288) |
+| `time_diff` | ✅ | Codegen dispatch | Spark 4.1+; requires `spark.sql.timeType.enabled=true`, which Spark leaves off by default |
+| `time_trunc` | ✅ | Codegen dispatch | Spark 4.1+; requires `spark.sql.timeType.enabled=true`, which Spark leaves off by default |
 | `timediff` | ✅ | — | Spark 4.0+ grammar alias that parses to `timestampdiff`; runs through codegen dispatch |
 | `timestamp_micros` | ✅ | Codegen dispatch |  |
 | `timestamp_millis` | ✅ | Codegen dispatch |  |
@@ -306,7 +307,7 @@ The type-name conversion functions (`bigint`, `binary`, `boolean`, `date`, `deci
 | `timestampadd` | ✅ | — | Reached through the grammar rather than the function registry; runs through codegen dispatch |
 | `timestampdiff` | ✅ | — | Reached through the grammar rather than the function registry; runs through codegen dispatch |
 | `to_date` | ✅ | — | Rewrites to `Cast` (or `Cast(GetTimestamp)` with a format) before Comet sees the plan |
-| `to_time` | ✅ | — | Spark 4.1+; requires `spark.sql.timeType.enabled=true`, which Spark leaves off by default. The one-argument form runs natively |
+| `to_time` | ✅ | — | Spark 4.1+; requires `spark.sql.timeType.enabled=true`, which Spark leaves off by default. The one-argument form runs natively, and the form with a format argument runs through codegen dispatch |
 | `to_timestamp` | ✅ | — | Rewrites to `Cast` (or `GetTimestamp` with a format) before Comet sees the plan |
 | `to_timestamp_ltz` | ✅ | — | Rewrites to `to_timestamp` (`TimestampType`) |
 | `to_timestamp_ntz` | ✅ | — | Rewrites to `to_timestamp` (`TimestampNTZType`) |
@@ -408,8 +409,8 @@ to Spark ([#2837](https://github.com/apache/datafusion-comet/issues/2837)). Enab
 | `map_concat` | ✅ | Codegen dispatch |  |
 | `map_contains_key` | ✅ | — |  |
 | `map_entries` | ✅ | Native |  |
-| `map_from_arrays` | ✅ | Native |  |
-| `map_from_entries` | ✅ | Hybrid | BinaryType keys/values and `spark.sql.mapKeyDedupPolicy=LAST_WIN` route through the JVM codegen dispatcher ([details](compatibility/expressions/map.md)) |
+| `map_from_arrays` | ✅ | Hybrid | `FLOAT` or `DOUBLE` keys and `spark.sql.mapKeyDedupPolicy=LAST_WIN` route through the JVM codegen dispatcher ([details](compatibility/expressions/map.md)) |
+| `map_from_entries` | ✅ | Hybrid | BinaryType keys/values, `FLOAT` or `DOUBLE` keys and `spark.sql.mapKeyDedupPolicy=LAST_WIN` route through the JVM codegen dispatcher ([details](compatibility/expressions/map.md)) |
 | `map_keys` | ✅ | Native |  |
 | `map_values` | ✅ | Native |  |
 | `str_to_map` | ✅ | Hybrid |  |

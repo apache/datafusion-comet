@@ -19,14 +19,21 @@
 
 package org.apache.spark.sql.comet.util
 
+import java.nio.channels.ClosedByInterruptException
+import java.nio.charset.StandardCharsets
+
 import scala.jdk.CollectionConverters._
 
 import org.apache.arrow.c.CDataDictionaryProvider
+import org.apache.arrow.memory.BufferAllocator
+import org.apache.arrow.vector.VarCharVector
+import org.apache.arrow.vector.ipc.message.ArrowFieldNode
 import org.apache.arrow.vector.types.pojo.{Field, FieldType}
 import org.apache.spark.sql.CometTestBase
 import org.apache.spark.sql.execution.vectorized.ConstantColumnVector
 import org.apache.spark.sql.types.{ArrayType, CalendarIntervalType, IntegerType, StringType, StructField, StructType, TimestampType}
 import org.apache.spark.sql.vectorized.{ColumnarBatch, ColumnVector}
+import org.apache.spark.util.io.ChunkedByteBuffer
 
 import org.apache.comet.CometArrowAllocator
 import org.apache.comet.vector.CometVector
@@ -89,6 +96,64 @@ class UtilsSuite extends CometTestBase {
 
     val decoded = coalesced.iterator.flatMap(b => Utils.decodeBatches(b, "test")).toSeq
     assert(decoded.map(_.numRows()).sum == expected)
+  }
+
+  test("serializeBatches rebases offsets that start past zero") {
+    // A slice of a native string array reaches the JVM with its original offsets, which start
+    // past zero, and with the bytes of the rows before the slice at the front of its data buffer.
+    // Coalescing such batches for a broadcast used to fold those bytes into each batch's first
+    // value (#6779).
+    val values = (0 until 24).map(i => if (i % 5 == 0) null else s"value-$i")
+    val skips = Seq(8, 16)
+
+    def serialize(vectors: Seq[VarCharVector]): Seq[ChunkedByteBuffer] = {
+      val batches = vectors.map { v =>
+        val column = CometVector.getVector(v, new CDataDictionaryProvider)
+        new ColumnarBatch(Array[ColumnVector](column), v.getValueCount)
+      }
+      try Utils.serializeBatches(batches.iterator).map(_._2).toList
+      finally batches.foreach(_.close())
+    }
+
+    val sliced = serialize(skips.map(slicedStrings(values, _)))
+    val (coalesced, batchCount, _) = Utils.coalesceBroadcastBatches(sliced.iterator)
+    assert(batchCount == skips.length)
+    val it = Utils.decodeBatches(coalesced.head, "test")
+    val out = it.next()
+    val got = (0 until out.numRows()).map { i =>
+      if (out.column(0).isNullAt(i)) null else out.column(0).getUTF8String(i).toString
+    }
+    assert(!it.hasNext)
+    assert(got == skips.flatMap(values.drop))
+
+    // The bytes before a slice are not written either: it takes as many bytes as the same values
+    // in a vector of their own.
+    val fresh = serialize(skips.map(skip => strings(values.drop(skip))))
+    assert(sliced.map(_.size) == fresh.map(_.size))
+  }
+
+  test("serializeBatches closes the slice it writes when the write fails") {
+    // A cancelled broadcast interrupts its task, so the next write to the interruptible channel
+    // serializeBatches writes through fails. The slice holds its own references on the batch's
+    // buffers, and they would outlive the batch unless the slice is closed on that path too.
+    val allocator = CometArrowAllocator.newChildAllocator("sliced-batch", 0, Long.MaxValue)
+    try {
+      val vector = slicedStrings((0 until 24).map(i => s"value-$i"), 8, allocator)
+      val column = CometVector.getVector(vector, new CDataDictionaryProvider)
+      val batch = new ColumnarBatch(Array[ColumnVector](column), vector.getValueCount)
+      Thread.currentThread().interrupt()
+      try {
+        intercept[ClosedByInterruptException] {
+          Utils.serializeBatches(Iterator(batch)).next()
+        }
+      } finally {
+        Thread.interrupted()
+        batch.close()
+      }
+      assert(allocator.getAllocatedMemory == 0)
+    } finally {
+      allocator.close()
+    }
   }
 
   test("serializeBatches materializes ConstantColumnVector columns") {
@@ -228,6 +293,45 @@ class UtilsSuite extends CometTestBase {
       } finally {
         vector.close()
       }
+    }
+  }
+
+  private def strings(
+      values: Seq[String],
+      allocator: BufferAllocator = CometArrowAllocator): VarCharVector = {
+    val vector = new VarCharVector("s", allocator)
+    vector.allocateNew()
+    values.zipWithIndex.foreach {
+      case (null, i) => vector.setNull(i)
+      case (value, i) => vector.setSafe(i, value.getBytes(StandardCharsets.UTF_8))
+    }
+    vector.setValueCount(values.length)
+    vector
+  }
+
+  /**
+   * `values.drop(skip)` in the shape the C Data import gives a slice of a native string array:
+   * the offsets are the original ones from `skip` on, and the data buffer still starts with the
+   * bytes of the first `skip` values. `skip` is a multiple of 8, so the validity bitmap slices on
+   * a byte boundary.
+   */
+  private def slicedStrings(
+      values: Seq[String],
+      skip: Int,
+      allocator: BufferAllocator = CometArrowAllocator): VarCharVector = {
+    val full = strings(values, allocator)
+    try {
+      val length = values.length - skip
+      val sliced = new VarCharVector("s", allocator)
+      sliced.loadFieldBuffers(
+        new ArrowFieldNode(length.toLong, values.drop(skip).count(_ == null).toLong),
+        Seq(
+          full.getValidityBuffer.slice(skip / 8L, (length + 7) / 8L),
+          full.getOffsetBuffer.slice(skip * 4L, (length + 1) * 4L),
+          full.getDataBuffer).asJava)
+      sliced
+    } finally {
+      full.close()
     }
   }
 }

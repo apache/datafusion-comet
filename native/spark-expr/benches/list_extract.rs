@@ -15,7 +15,9 @@
 // specific language governing permissions and limitations
 // under the License.
 
-use arrow::array::{Array, ArrayRef, Int32Array, ListArray, RecordBatch, StringArray};
+use arrow::array::{
+    Array, ArrayRef, Int32Array, ListArray, MapArray, RecordBatch, StringArray, StructArray,
+};
 use arrow::buffer::{NullBuffer, OffsetBuffer};
 use arrow::datatypes::{DataType, Field, Schema};
 use criterion::{criterion_group, criterion_main, BenchmarkId, Criterion};
@@ -218,5 +220,157 @@ fn bench_defaults(c: &mut Criterion) {
     );
 }
 
-criterion_group!(benches, criterion_benchmark, bench_defaults);
+/// Skewed nested lengths expose `take`'s reservation based on the entire input,
+/// rather than the selected children. Include the opposite (long selection), too.
+fn bench_nested(c: &mut Criterion) {
+    let mut group = c.benchmark_group("list_extract_nested");
+    for selected_len in [0, 1, 128] {
+        let lengths = (0..ROWS).flat_map(|_| [selected_len, 128]);
+        let offsets = OffsetBuffer::<i32>::from_lengths(lengths);
+        let count = *offsets.last().unwrap() as usize;
+        let ints: ArrayRef = Arc::new(Int32Array::from_iter_values(0..count as i32));
+        let field = Arc::new(Field::new("item", DataType::Int32, true));
+        let lists = Arc::new(ListArray::new(field, offsets.clone(), ints.clone(), None));
+        let fields = vec![
+            Arc::new(Field::new("key", DataType::Int32, false)),
+            Arc::new(Field::new("value", DataType::Int32, true)),
+        ];
+        let entries = StructArray::new(fields.into(), vec![ints.clone(), ints], None);
+        let maps = Arc::new(MapArray::new(
+            Arc::new(Field::new("entries", entries.data_type().clone(), false)),
+            offsets,
+            entries,
+            None,
+            false,
+        ));
+        let structs = Arc::new(StructArray::new(
+            vec![Arc::new(Field::new(
+                "nested",
+                lists.data_type().clone(),
+                true,
+            ))]
+            .into(),
+            vec![lists.clone()],
+            None,
+        ));
+
+        bench_nested_values(
+            &mut group,
+            selected_len,
+            [
+                ("list", lists as ArrayRef),
+                ("map", maps as ArrayRef),
+                ("struct-list", structs as ArrayRef),
+            ],
+        );
+    }
+    group.finish();
+}
+
+fn bench_nested_values(
+    group: &mut criterion::BenchmarkGroup<'_, criterion::measurement::WallTime>,
+    selected_len: usize,
+    values: impl IntoIterator<Item = (&'static str, ArrayRef)>,
+) {
+    for (ty, values) in values {
+        for null_percent in [0, 25, 75] {
+            let nulls = (null_percent > 0).then(|| {
+                (0..ROWS)
+                    .map(|row| row % 4 >= null_percent / 25)
+                    .collect::<NullBuffer>()
+            });
+            let outer: ArrayRef = Arc::new(ListArray::new(
+                Arc::new(Field::new("item", values.data_type().clone(), true)),
+                OffsetBuffer::from_lengths(std::iter::repeat_n(2, ROWS)),
+                Arc::clone(&values),
+                nulls,
+            ));
+            let batch = single_col_batch(outer);
+            let expr = ListExtract::new(
+                Arc::new(Column::new("c0", 0)),
+                Arc::new(Literal::new(ScalarValue::Int32(Some(0)))),
+                None,
+                false,
+                false,
+                None,
+                create_query_context_map(),
+            );
+            group.bench_function(
+                format!("{ty}/{selected_len}-selected/{null_percent}%-nulls"),
+                |b| b.iter(|| black_box(expr.evaluate(black_box(&batch)).unwrap())),
+            );
+        }
+    }
+}
+
+/// Middle lists have equal lengths. Only the deeper selected lists are short,
+/// exposing reservations propagated into their primitive buffers.
+fn bench_deep_nested(c: &mut Criterion) {
+    const WIDTH: usize = 32;
+    let mut group = c.benchmark_group("list_extract_deep_nested");
+    for selected_len in [0, 1, 16] {
+        let offsets = OffsetBuffer::from_lengths((0..ROWS).flat_map(|_| {
+            std::iter::repeat_n(selected_len, WIDTH).chain(std::iter::repeat_n(16, WIDTH))
+        }));
+        let count = *offsets.last().unwrap();
+        let inner: ArrayRef = Arc::new(ListArray::new(
+            Arc::new(Field::new("item", DataType::Int32, true)),
+            offsets,
+            Arc::new(Int32Array::from_iter_values(0..count)),
+            None,
+        ));
+        let field = Arc::new(Field::new("item", inner.data_type().clone(), true));
+        let lists: ArrayRef = Arc::new(ListArray::new(
+            Arc::clone(&field),
+            OffsetBuffer::from_lengths(std::iter::repeat_n(WIDTH, 2 * ROWS)),
+            Arc::clone(&inner),
+            None,
+        ));
+        let fixed_lists: ArrayRef = Arc::new(arrow::array::FixedSizeListArray::new(
+            field,
+            WIDTH as i32,
+            Arc::clone(&inner),
+            None,
+        ));
+        let entries = StructArray::new(
+            vec![
+                Arc::new(Field::new("key", DataType::Int32, false)),
+                Arc::new(Field::new("value", inner.data_type().clone(), true)),
+            ]
+            .into(),
+            vec![
+                Arc::new(Int32Array::from_iter_values(
+                    (0..2 * ROWS).flat_map(|_| 0..WIDTH as i32),
+                )),
+                inner,
+            ],
+            None,
+        );
+        let maps: ArrayRef = Arc::new(MapArray::new(
+            Arc::new(Field::new("entries", entries.data_type().clone(), false)),
+            OffsetBuffer::from_lengths(std::iter::repeat_n(WIDTH, 2 * ROWS)),
+            entries,
+            None,
+            false,
+        ));
+        bench_nested_values(
+            &mut group,
+            selected_len,
+            [
+                ("list-list", lists),
+                ("map-list", maps),
+                ("fixed-list", fixed_lists),
+            ],
+        );
+    }
+    group.finish();
+}
+
+criterion_group!(
+    benches,
+    criterion_benchmark,
+    bench_defaults,
+    bench_nested,
+    bench_deep_nested
+);
 criterion_main!(benches);
