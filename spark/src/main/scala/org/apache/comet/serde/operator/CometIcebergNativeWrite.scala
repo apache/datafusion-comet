@@ -27,6 +27,7 @@ import scala.util.control.NonFatal
 
 import org.apache.hadoop.conf.Configuration
 import org.apache.spark.sql.comet.{CometIcebergWriteExec, CometNativeExec, IcebergWriteExec}
+import org.apache.spark.sql.types.NullType
 
 import org.apache.comet.{CometConf, ConfigEntry}
 import org.apache.comet.CometSparkSessionExtensions.withFallbackReason
@@ -531,6 +532,10 @@ object CometIcebergNativeWrite extends CometOperatorSerde[IcebergWriteExec] {
             s"column $name has Iceberg type ${typeId.toLowerCase(Locale.ROOT)}, " +
               "which the native writer cannot reproduce"
           }
+          // Pruning would leave no columns, which iceberg-java cannot write either.
+          .orElse(if (IcebergReflection.toSparkSchema(schema).forall(_.dataType == NullType)) {
+            Some("every column has Iceberg type unknown")
+          } else None)
     }
 
   // A format-version-1 spec keeps a dropped partition field as a `void` transform, and its source

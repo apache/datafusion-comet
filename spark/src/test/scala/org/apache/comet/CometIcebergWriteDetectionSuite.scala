@@ -298,6 +298,29 @@ class CometIcebergWriteDetectionSuite extends CometTestBase with CometIcebergTes
     }
   }
 
+  test("fall-back: every column is unknown") {
+    assume(icebergVersionAtLeast(1, 10), "The unknown type requires Iceberg 1.10+")
+    withDetectionCatalog { _ =>
+      createTable("only_unknown", partitionSpec = "", properties = Some("'format-version'='3'"))
+      addIcebergColumn(
+        loadIcebergTable(spark, catalog, ns, "only_unknown"),
+        "u",
+        icebergUnknownType())
+      Seq("id", "region", "amount").foreach { c =>
+        spark.sql(s"ALTER TABLE $catalog.$ns.only_unknown DROP COLUMN $c")
+      }
+      spark.sql(s"REFRESH TABLE $catalog.$ns.only_unknown")
+      // iceberg-java fails this write too: Parquet cannot write an empty schema.
+      val writeExec = captureWriteExec("only_unknown", allowWriteFailure = true) {
+        spark.sql(s"INSERT INTO $catalog.$ns.only_unknown VALUES (NULL)")
+      }
+      assertUnsupportedContains(
+        writeExec,
+        "only_unknown",
+        "every column has Iceberg type unknown")
+    }
+  }
+
   test("fall-back: encryption.kms-client-impl set") {
     withDetectionCatalog { _ =>
       createTable(
