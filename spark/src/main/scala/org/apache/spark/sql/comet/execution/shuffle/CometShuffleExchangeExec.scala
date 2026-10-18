@@ -551,8 +551,7 @@ object CometShuffleExchangeExec
       return Some(CometColumnarShuffle)
     }
 
-    val combined = (nativeReasons ++ columnarReasons).toSet
-    if (combined.nonEmpty) withFallbackReasons(s, combined)
+    withFallbackReasons(s, (nativeReasons ++ columnarReasons).toSet)
     None
   }
 
@@ -763,7 +762,7 @@ object CometShuffleExchangeExec
       return reasons.toSeq
     }
 
-    if (!(!s.child.supportsColumnar || isCometPlan(s.child))) {
+    if (s.child.supportsColumnar && !isCometPlan(s.child)) {
       reasons += s"Child ${s.child.getClass.getName} is a neither row-based or a Comet operator"
       return reasons.toSeq
     }
@@ -821,16 +820,14 @@ object CometShuffleExchangeExec
 
   private def isCometNativeShuffleMode(conf: SQLConf): Boolean = {
     COMET_SHUFFLE_MODE.get(conf) match {
-      case "native" => true
-      case "auto" => true
+      case "native" | "auto" => true
       case _ => false
     }
   }
 
   private def isCometJVMShuffleMode(conf: SQLConf): Boolean = {
     COMET_SHUFFLE_MODE.get(conf) match {
-      case "jvm" => true
-      case "auto" => true
+      case "jvm" | "auto" => true
       case _ => false
     }
   }
