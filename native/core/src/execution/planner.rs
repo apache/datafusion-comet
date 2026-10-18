@@ -1084,14 +1084,7 @@ impl PhysicalPlanner {
                     .iter()
                     .map(|child| self.create_expr(child, Arc::clone(&input_schema)))
                     .collect::<Result<Vec<_>, _>>()?;
-                let threshold = expr
-                    .small_batch_threshold
-                    .map(|threshold| threshold as usize)
-                    .unwrap_or(AtLeastNNonNulls::DEFAULT_SMALL_BATCH_THRESHOLD);
-                Ok(Arc::new(
-                    AtLeastNNonNulls::new(expr.n, children)
-                        .with_small_batch_threshold(threshold)?,
-                ))
+                Ok(Arc::new(AtLeastNNonNulls::new(expr.n, children)))
             }
             ExprStruct::ArraysZip(expr) => {
                 if expr.values.is_empty() {
@@ -3083,40 +3076,6 @@ mod tests {
         },
     };
     use datafusion_comet_spark_expr::EvalMode;
-
-    #[test]
-    fn at_least_n_non_nulls_threshold_round_trip() {
-        use datafusion_comet_spark_expr::AtLeastNNonNulls as NativeAtLeastNNonNulls;
-        use prost::Message;
-
-        let planner = PhysicalPlanner::new(Arc::new(SessionContext::new()), 0);
-        let schema = Arc::new(Schema::empty());
-        for threshold in [None, Some(1), Some(65), Some(128), Some(0)] {
-            let expr = Expr {
-                expr_struct: Some(ExprStruct::AtLeastNNonNulls(
-                    spark_expression::AtLeastNNonNulls {
-                        n: 2,
-                        children: vec![],
-                        small_batch_threshold: threshold,
-                    },
-                )),
-                ..Default::default()
-            };
-            let decoded = Expr::decode(expr.encode_to_vec().as_slice()).unwrap();
-            let result = planner.create_expr(&decoded, Arc::clone(&schema));
-            if threshold == Some(0) {
-                assert!(result.unwrap_err().to_string().contains("must be positive"));
-            } else {
-                let expected = NativeAtLeastNNonNulls::new(2, vec![])
-                    .with_small_batch_threshold(threshold.unwrap_or(64) as usize)
-                    .unwrap();
-                assert_eq!(
-                    result.unwrap().downcast_ref::<NativeAtLeastNNonNulls>(),
-                    Some(&expected)
-                );
-            }
-        }
-    }
 
     #[test]
     fn scan_default_rejects_struct_expressions() {
