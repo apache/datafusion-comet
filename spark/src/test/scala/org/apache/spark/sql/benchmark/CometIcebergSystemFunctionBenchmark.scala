@@ -24,7 +24,6 @@ import org.apache.spark.sql.catalyst.optimizer.ConstantFolding
 import org.apache.spark.sql.internal.SQLConf
 
 import org.apache.comet.CometConf
-import org.apache.comet.iceberg.IcebergReflection
 
 /**
  * Benchmark of Iceberg's system functions (`bucket`, `truncate`, `years`, `months`, `days`,
@@ -154,7 +153,7 @@ object CometIcebergSystemFunctionBenchmark extends CometBenchmarkBase {
             cases.foreach { case (name, query) =>
               verifyOutputsMatch(name, query)
               runBenchmark(name) {
-                runExpressionBenchmark(name, v, query)
+                runExpressionBenchmark(name, v.toLong, query)
               }
             }
           }
@@ -179,12 +178,4 @@ object CometIcebergSystemFunctionBenchmark extends CometBenchmarkBase {
     }
     s"SELECT ${projections.mkString(", ")} FROM $tbl"
   }
-
-  private def icebergOnClasspath: Boolean =
-    try {
-      IcebergReflection.loadClass("org.apache.iceberg.spark.functions.BucketFunction")
-      true
-    } catch {
-      case _: ClassNotFoundException => false
-    }
 }

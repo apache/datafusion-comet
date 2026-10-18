@@ -31,6 +31,12 @@
 # import sys
 # sys.path.insert(0, os.path.abspath('.'))
 
+from pathlib import Path
+
+# docs/, whether this file is read from docs/source/ (a direct sphinx-build) or
+# from the docs/temp/ copy that docs/build.sh generates.
+DOCS_DIR = Path(__file__).resolve().parent.parent
+
 # -- Project information -----------------------------------------------------
 
 project = 'Apache DataFusion Comet'
@@ -79,9 +85,19 @@ myst_fence_as_directive = ['mermaid']
 # build still succeeds but logs a warning and drops the diagrams. See docs/README.md.
 mermaid_output_format = 'svg'
 
-# Render on a transparent background so one SVG suits both the light and dark site themes;
-# mmdc otherwise bakes in a white background.
-mermaid_params = ['-b', 'transparent']
+# -b transparent: render on a transparent background so one SVG suits both the light and dark
+# site themes; mmdc otherwise bakes in a white background.
+#
+# -p puppeteer-config.json: mmdc draws each diagram by driving headless Chrome through puppeteer.
+# Chrome's setuid sandbox needs unprivileged user namespaces, which Ubuntu restricts by AppArmor
+# policy from 23.10 onwards, so on an ubuntu-24.04 runner Chrome can fail to launch at all. The
+# config file turns that sandbox off; the CI container is already the isolation boundary.
+#
+# Any such failure is invisible without help: mmdc exits non-zero, sphinxcontrib-mermaid turns
+# that into a warning and drops the diagram, and the build publishes a page with a hole in it.
+# That is issue #6062, and dev/ci/check-mermaid.py is what makes it loud. It reads the arguments
+# below rather than repeating them, so the check renders exactly as the build does.
+mermaid_params = ['-b', 'transparent', '-p', str(DOCS_DIR / 'puppeteer-config.json')]
 
 # Add any paths that contain templates here, relative to this directory.
 templates_path = ['_templates']
@@ -170,14 +186,18 @@ myst_heading_anchors = 4
 # enable nice rendering of checkboxes for the task lists
 myst_enable_extensions = ["colon_fence", "deflist", "tasklist"]
 
+# Like the extension's default template, but when the old URL carries an anchor, the anchor
+# replaces any anchor in the target, so deep links into a moved page still land on their section.
+redirect_html_template_file = "_templates/redirect.html"
+
 redirects = {
     "overview.html": "index.html",
     "gluten_comparison.html": "about/gluten_comparison.html",
     "user-guide/overview.html": "../index.html",
     "user-guide/gluten_comparison.html": "../about/gluten_comparison.html",
-    "user-guide/compatibility.html": "latest/compatibility.html",
+    "user-guide/compatibility.html": "latest/compatibility/index.html",
     "user-guide/configs.html": "latest/configs.html",
-    "user-guide/datasource.html": "latest/datasource.html",
+    "user-guide/datasources.html": "latest/datasources.html",
     "user-guide/datatypes.html": "latest/datatypes.html",
     "user-guide/expressions.html": "latest/expressions.html",
     "user-guide/iceberg.html": "latest/iceberg.html",
@@ -187,6 +207,13 @@ redirects = {
     "user-guide/operators.html": "latest/operators.html",
     "user-guide/source.html": "latest/source.html",
     "user-guide/tuning.html": "latest/tuning.html",
+    # The compatibility guide became a directory of pages in #4055.
+    "user-guide/latest/compatibility.html": "compatibility/index.html",
+    # Parquet and Iceberg documentation was consolidated into one page each.
+    "user-guide/latest/compatibility/scans.html": "../parquet.html#reading",
+    "user-guide/latest/compatibility/parquet-iceberg-known-issues.html": "../parquet.html#known-issues",
+    "user-guide/latest/tuning/scans.html": "../parquet.html#tuning",
+    "user-guide/latest/iceberg-writes.html": "iceberg.html",
 }
 
 

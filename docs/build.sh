@@ -31,6 +31,7 @@ rm -rf comet-0.15
 rm -rf comet-0.16
 rm -rf comet-0.17
 rm -rf comet-1.0
+rm -rf comet-1.1
 python3 generate-versions.py
 
 # Generate dynamic content (configs, compatibility matrices) for latest docs
@@ -49,7 +50,9 @@ TEMPLATE_DIR="${COMPAT_EXPR_DIR}/_category_template"
 # entries here when adding/dropping support for a Spark version. Each entry must match
 # both a Maven profile id (-P<profile>) and a source-tree subdirectory under
 # docs/source/user-guide/latest/compatibility/expressions/.
-SPARK_PROFILES=(spark-3.4 spark-3.5 spark-4.0 spark-4.1)
+# Every run also rewrites the shared configs.md and expressions.md pages, so the last
+# entry decides their content. Keep the default build profile (spark-4.1) last.
+SPARK_PROFILES=(spark-3.4 spark-3.5 spark-4.0 spark-4.2 spark-4.1)
 
 for profile in "${SPARK_PROFILES[@]}"; do
   echo "Generating compatibility pages for ${profile}..."

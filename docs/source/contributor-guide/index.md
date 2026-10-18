@@ -25,7 +25,7 @@ shuffle, and how data and plans flow between Spark and the DataFusion execution 
 
 It also documents day-to-day workflows including building and testing locally, debugging,
 benchmarking, profiling, tracing, running the SQL test suites, adding new operators and
-expressions, triaging bugs, and the Comet release process.
+expressions, triaging bugs, backporting fixes to release branches, and the Comet release process.
 
 New contributors should start with the Getting Started page. Select a topic from the navigation
 menu to read more.
@@ -47,9 +47,12 @@ Development Guide <development>
 Comet Plugin Overview <plugin_overview>
 Arrow FFI <ffi>
 Scan <scan>
+Timezone Handling <timezones>
+Floating-Point Semantics <floating_point>
 JVM Shuffle <jvm_shuffle>
 Native Shuffle <native_shuffle>
 Memory Management <memory_management>
+Iceberg Writes <iceberg-writes>
 ANSI Error Propagation <sql_error_propagation>
 S3 Credential Provider Design <s3-credential-provider-design>
 ```
@@ -93,6 +96,7 @@ Tracing <tracing>
 :hidden:
 
 Expression Audits <expression-audits/index>
+Data Source Audits <data-source-audits/index>
 Supported Spark Configurations <spark_configs_support>
 Configuration Conventions <config_conventions>
 ```
@@ -103,6 +107,7 @@ Configuration Conventions <config_conventions>
 :hidden:
 
 Bug Triage <bug_triage>
+Backporting <backporting>
 Release Process <release_process>
 Roadmap <roadmap.md>
 Github and Issue Tracker <https://github.com/apache/datafusion-comet>
