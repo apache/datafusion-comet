@@ -40,11 +40,14 @@ import org.apache.comet.annotation.Public;
  * returned but with a leading slash ({@code /} for the bucket root). The credential must authorize
  * every path for which that location is the longest covering one.
  *
- * <p>Locations apply to Comet's native Parquet reads. Iceberg reads do not use them: there Comet
- * calls {@link #getCredentialsForPath(CometS3CredentialContext)} as it does for any provider.
+ * <p>Locations apply to Comet's native Parquet reads and to its native Iceberg reads and writes. On
+ * the Iceberg path each data and delete file is routed by its own path, in its own bucket, so a
+ * table whose files span several locations or buckets reads each file with its location's
+ * credential. A table whose metadata location has no host, such as {@code blob:///bucket/...}, does
+ * not use the provider at all.
  *
  * <p>Providers that implement only {@link CometS3CredentialProvider} are unaffected and keep one
- * credential per bucket.
+ * credential per bucket on the Parquet path and one per table on the Iceberg path.
  */
 @Public
 public interface CometS3LocationScopedCredentialProvider extends CometS3CredentialProvider {
@@ -55,8 +58,10 @@ public interface CometS3LocationScopedCredentialProvider extends CometS3Credenti
    * <p>Locations are written like {@link CometS3CredentialContext#getPath()}: the path within the
    * bucket, percent-encoded as in an {@code s3://} URI, without the scheme or bucket name. A
    * literal {@code %} must be written as {@code %25}; other characters may be left unencoded. A
-   * leading or trailing {@code /} is optional. Comet percent-decodes locations and request paths
-   * before comparing them, and when several locations decode to the same path it keeps the first.
+   * leading or trailing {@code /} is optional. Comet percent-decodes each location and compares it
+   * with the object key a request names, and when several locations decode to the same key it keeps
+   * the first. Iceberg escapes partition values, so a location for the partition directory {@code
+   * ts=2024-01-01T00%3A00} is written {@code ts=2024-01-01T00%253A00}.
    *
    * <p>A location is invalid if, once decoded, it is not valid UTF-8 or has a segment that is
    * empty, {@code .}, {@code ..}, or contains a control character, so a URI such as {@code

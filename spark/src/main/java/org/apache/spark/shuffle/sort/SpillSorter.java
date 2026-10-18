@@ -57,6 +57,7 @@ public class SpillSorter extends SpillWriter {
   private final double preferDictionaryRatio;
   private final String compressionCodec;
   private final int compressionLevel;
+  private final boolean offsetsAsLengths;
   private final String checksumAlgorithm;
 
   // Shared state (mutable, passed by reference from parent)
@@ -82,6 +83,7 @@ public class SpillSorter extends SpillWriter {
    * @param preferDictionaryRatio Dictionary encoding preference ratio
    * @param compressionCodec Compression codec for spill files
    * @param compressionLevel Compression level
+   * @param offsetsAsLengths Whether to store offsets as lengths where the codec takes it
    * @param checksumAlgorithm Checksum algorithm (e.g., "crc32", "adler32")
    * @param partitionChecksums Array to store partition checksums (shared with parent)
    * @param writeMetrics Metrics reporter for shuffle writes
@@ -97,6 +99,7 @@ public class SpillSorter extends SpillWriter {
       double preferDictionaryRatio,
       String compressionCodec,
       int compressionLevel,
+      boolean offsetsAsLengths,
       String checksumAlgorithm,
       long[] partitionChecksums,
       ShuffleWriteMetricsReporter writeMetrics,
@@ -109,6 +112,7 @@ public class SpillSorter extends SpillWriter {
     this.preferDictionaryRatio = preferDictionaryRatio;
     this.compressionCodec = compressionCodec;
     this.compressionLevel = compressionLevel;
+    this.offsetsAsLengths = offsetsAsLengths;
     this.checksumAlgorithm = checksumAlgorithm;
     this.partitionChecksums = partitionChecksums;
     this.writeMetrics = writeMetrics;
@@ -283,6 +287,7 @@ public class SpillSorter extends SpillWriter {
                   preferDictionaryRatio,
                   compressionCodec,
                   compressionLevel,
+                  offsetsAsLengths,
                   tracingEnabled);
           spillInfo.partitionLengths[currentPartition] = written;
 
@@ -320,6 +325,7 @@ public class SpillSorter extends SpillWriter {
               preferDictionaryRatio,
               compressionCodec,
               compressionLevel,
+              offsetsAsLengths,
               tracingEnabled);
       spillInfo.partitionLengths[currentPartition] = written;
 

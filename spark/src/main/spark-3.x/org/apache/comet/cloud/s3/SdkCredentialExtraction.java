@@ -51,8 +51,9 @@ final class SdkCredentialExtraction {
     if (creds instanceof AWSSessionCredentials) {
       sessionToken = ((AWSSessionCredentials) creds).getSessionToken();
     }
-    // The v1 base interface exposes no expiration; report 0 (unknown). Safe: the Parquet path
-    // ignores expiration and the Iceberg path applies a bounded default TTL.
+    // The v1 base interface exposes no expiration, so report 0 (unknown). Comet then asks for a
+    // credential on every request, and the Iceberg path assumes it lasts 5 minutes, which can be
+    // longer than a short-lived session credential has left.
     return new CometS3Credentials(accessKeyId, secretKey, sessionToken, 0L);
   }
 }

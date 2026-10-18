@@ -32,7 +32,7 @@ import org.apache.spark.sql.internal.SQLConf
 import org.apache.spark.sql.types.{DataTypes, StructField, StructType}
 
 import org.apache.comet.CometSparkSessionExtensions.isSpark40Plus
-import org.apache.comet.serde.{CometDateFormat, CometTruncDate, CometTruncTimestamp}
+import org.apache.comet.serde.{CometDateFormat, CometTimeZone, CometTruncDate, CometTruncTimestamp}
 import org.apache.comet.testing.{DataGenOptions, FuzzDataGenerator}
 
 class CometTemporalExpressionSuite extends CometTestBase with AdaptiveSparkPlanHelper {
@@ -40,6 +40,14 @@ class CometTemporalExpressionSuite extends CometTestBase with AdaptiveSparkPlanH
   /** Timezones used to verify that TimestampNTZ operations are timezone-independent. */
   private val crossTimezones =
     Seq("UTC", "America/Los_Angeles", "Europe/London", "Asia/Tokyo")
+
+  /**
+   * Dates around 2024 stay inside DataFusion `date_trunc`'s TimestampNanosecond range
+   * (approximately 1678 through 2262). The fuzz generator's default `baseDate` is year 3333,
+   * which only exercises Comet's wide-range fallback.
+   */
+  private val dataFusionRangeBaseDate: Long =
+    new java.text.SimpleDateFormat("yyyy-MM-dd HH:mm:ss").parse("2024-06-15 12:00:00").getTime
 
   private def deepestSparkThrowable(error: Throwable): SparkThrowable with Throwable =
     causeChain(error)
@@ -80,6 +88,14 @@ class CometTemporalExpressionSuite extends CometTestBase with AdaptiveSparkPlanH
   }
 
   test("trunc (TruncDate)") {
+    checkTruncDate(dataFusionRangeBaseDate)
+  }
+
+  test("trunc (TruncDate) - dates outside DataFusion nanosecond range") {
+    checkTruncDate(FuzzDataGenerator.defaultBaseDate)
+  }
+
+  private def checkTruncDate(baseDate: Long): Unit = {
     val supportedFormats = CometTruncDate.supportedFormats
     val unsupportedFormats = Seq("invalid")
 
@@ -88,7 +104,12 @@ class CometTemporalExpressionSuite extends CometTestBase with AdaptiveSparkPlanH
       Seq(
         StructField("c0", DataTypes.DateType, true),
         StructField("c1", DataTypes.StringType, true)))
-    val df = FuzzDataGenerator.generateDataFrame(r, spark, schema, 1000, DataGenOptions())
+    val df = FuzzDataGenerator.generateDataFrame(
+      r,
+      spark,
+      schema,
+      1000,
+      DataGenOptions(baseDate = baseDate))
 
     df.createOrReplaceTempView("tbl")
 
@@ -108,11 +129,45 @@ class CometTemporalExpressionSuite extends CometTestBase with AdaptiveSparkPlanH
     checkSparkAnswerAndOperator("SELECT c0, trunc(c0, c1) from tbl order by c0, c1")
   }
 
+  test("session timezone IDs are normalized for native code") {
+    // Spark accepts these through `ZoneId.of(id, ZoneId.SHORT_IDS)`, but native code only parses
+    // IANA names and `+HH`, `+HHMM` or `+HH:MM` offsets.
+    val expected = Seq(
+      "UTC" -> Some("UTC"),
+      "Etc/UTC" -> Some("UTC"),
+      "GMT" -> Some("UTC"),
+      "Z" -> Some("UTC"),
+      "+00:00" -> Some("UTC"),
+      "+8" -> Some("+08:00"),
+      "-08" -> Some("-08:00"),
+      "+08:00:00" -> Some("+08:00"),
+      "GMT+8" -> Some("+08:00"),
+      "UTC+08:00" -> Some("+08:00"),
+      "EST" -> Some("-05:00"),
+      "PST" -> Some("America/Los_Angeles"),
+      "IST" -> Some("Asia/Kolkata"),
+      "America/Los_Angeles" -> Some("America/Los_Angeles"),
+      // native code has no way to express an offset with seconds
+      "+05:45:30" -> None)
+    for ((id, nativeId) <- expected) {
+      assert(CometTimeZone.nativeId(Some(id)) == nativeId, id)
+    }
+    // Spark leaves the timezone unset only on casts that do not use it
+    assert(CometTimeZone.nativeId(None).contains("UTC"))
+  }
+
+  test("native tzdata version is reported") {
+    assert(NativeBase.getTzdataVersion.matches("[0-9]{4}[a-z]"), NativeBase.getTzdataVersion)
+    assert(NativeBase.tzdataMismatchWarning("2025b", "2025b") == null)
+    val warning = NativeBase.tzdataMismatchWarning("2025b", "2023c")
+    assert(warning.contains("2025b") && warning.contains("2023c"), warning)
+  }
+
   test("date_trunc (TruncTimestamp) - reading from DataFrame") {
     val supportedFormats = CometTruncTimestamp.supportedFormats
     val unsupportedFormats = Seq("invalid")
 
-    createTimestampTestData().createOrReplaceTempView("tbl")
+    createTimestampTestData(dataFusionRangeBaseDate).createOrReplaceTempView("tbl")
 
     // TODO test fails with non-UTC timezone
     // https://github.com/apache/datafusion-comet/issues/2649
@@ -138,7 +193,9 @@ class CometTemporalExpressionSuite extends CometTestBase with AdaptiveSparkPlanH
     val unsupportedFormats = Seq("invalid")
 
     withTempDir { path =>
-      createTimestampTestData().write.mode(SaveMode.Overwrite).parquet(path.toString)
+      createTimestampTestData(dataFusionRangeBaseDate).write
+        .mode(SaveMode.Overwrite)
+        .parquet(path.toString)
       spark.read.parquet(path.toString).createOrReplaceTempView("tbl")
 
       // TODO test fails with non-UTC timezone
@@ -159,6 +216,15 @@ class CometTemporalExpressionSuite extends CometTestBase with AdaptiveSparkPlanH
         // Non-literal format strings are Incompatible on the native path, so Comet routes them
         // through the codegen dispatcher and still executes natively.
         checkSparkAnswerAndOperator("SELECT c0, date_trunc(fmt, c0) from tbl order by c0, fmt")
+      }
+    }
+  }
+
+  test("date_trunc (TruncTimestamp) - timestamps outside DataFusion nanosecond range") {
+    createTimestampTestData(FuzzDataGenerator.defaultBaseDate).createOrReplaceTempView("tbl")
+    withSQLConf(SQLConf.SESSION_LOCAL_TIMEZONE.key -> "UTC") {
+      for (format <- Seq("year", "week", "hour")) {
+        checkSparkAnswerAndOperator(s"SELECT c0, date_trunc('$format', c0) from tbl order by c0")
       }
     }
   }
@@ -207,9 +273,7 @@ class CometTemporalExpressionSuite extends CometTestBase with AdaptiveSparkPlanH
     // for any non-UTC timezone whose DST transitions are 1-hour and whose dates fall within
     // chrono-tz's precomputed DST horizon (currently ~year 2100). A base date in 2024 keeps the
     // generator well inside that window.
-    val baseDate2024 =
-      new java.text.SimpleDateFormat("yyyy-MM-dd HH:mm:ss").parse("2024-06-15 12:00:00").getTime
-    createTimestampTestData(baseDate2024).createOrReplaceTempView("tbl")
+    createTimestampTestData(dataFusionRangeBaseDate).createOrReplaceTempView("tbl")
 
     val nonUtcTimezones = Seq("America/New_York", "Europe/London", "Asia/Tokyo")
     for (tz <- nonUtcTimezones) {
@@ -293,14 +357,12 @@ class CometTemporalExpressionSuite extends CometTestBase with AdaptiveSparkPlanH
     // Use a reasonable date range (around year 2024) to avoid chrono-tz DST calculation
     // issues with far-future dates. The default baseDate is year 3333 which is beyond
     // the range where chrono-tz can reliably calculate DST transitions.
-    val reasonableBaseDate =
-      new java.text.SimpleDateFormat("yyyy-MM-dd HH:mm:ss").parse("2024-06-15 12:00:00").getTime
     val ntzDF = FuzzDataGenerator.generateDataFrame(
       r,
       spark,
       ntzSchema,
       100,
-      DataGenOptions(baseDate = reasonableBaseDate))
+      DataGenOptions(baseDate = dataFusionRangeBaseDate))
     ntzDF.createOrReplaceTempView("ntz_tbl")
     for (tz <- crossTimezones) {
       withSQLConf(SQLConf.SESSION_LOCAL_TIMEZONE.key -> tz) {
@@ -777,7 +839,7 @@ class CometTemporalExpressionSuite extends CometTestBase with AdaptiveSparkPlanH
       withSQLConf(SQLConf.SESSION_LOCAL_TIMEZONE.key -> timezone) {
         checkDays(
           tsDF.select(col("ts"), getColumnFromExpression(Days(UnresolvedAttribute("ts")))),
-          tsDF.selectExpr("ts", "unix_date(cast(ts as date))"))
+          tsDF.selectExpr("ts", "cast(floor(unix_micros(ts) / 86400000000D) as int)"))
       }
     }
   }
@@ -823,8 +885,16 @@ class CometTemporalExpressionSuite extends CometTestBase with AdaptiveSparkPlanH
                 java.sql.Timestamp.valueOf("2024-06-15 10:30:00"),
                 DataTypes.TimestampType)))),
         dummyDF.selectExpr(
-          "unix_date(cast(TIMESTAMP('1970-01-01 00:00:00') as date))",
-          "unix_date(cast(TIMESTAMP('2024-06-15 10:30:00') as date))"))
+          "cast(floor(unix_micros(TIMESTAMP('1970-01-01 00:00:00')) / 86400000000D) as int)",
+          "cast(floor(unix_micros(TIMESTAMP('2024-06-15 10:30:00')) / 86400000000D) as int)"))
+
+      // One microsecond before the epoch. Days are counted in UTC and floored, so this is day -1
+      // even though it is already 1970-01-01 in Asia/Tokyo.
+      withSQLConf(SQLConf.SESSION_LOCAL_TIMEZONE.key -> "Asia/Tokyo") {
+        checkDays(
+          dummyDF.select(getColumnFromExpression(Days(Literal(-1L, DataTypes.TimestampType)))),
+          dummyDF.selectExpr("-1"))
+      }
 
       // Null handling
       checkDays(

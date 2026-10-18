@@ -23,7 +23,9 @@ Comet aims to provide consistent results with the version of Apache Spark that i
 
 This guide documents areas where Comet's behavior is known to differ from Spark. Topics are grouped by subsystem:
 
-- **Parquet**: limitations when reading Parquet files.
+- **Parquet and Iceberg**: limitations, differences from Spark, and known issues for reading and
+  writing Parquet files and Iceberg tables. These live with the data source, on the
+  [Parquet](../parquet.md) and [Iceberg](../iceberg.md) pages.
 - **Floating-point comparison**: NaN and signed-zero handling in comparisons.
 - **Regular expressions**: differences between the Rust regexp crate and Java's regex engine.
 - **Operators**: operator-level compatibility notes, including window functions and round-robin partitioning.
@@ -112,14 +114,6 @@ Code that catches `SparkException` and only asserts on message substrings is una
 inspects the exception class, `getCondition()`, or the parameterised error class will observe
 divergence:
 
-- Byte / Short `Add`, `Subtract`, and `Multiply` overflow raises `ARITHMETIC_OVERFLOW` (for
-  example `byte overflow`) where Spark raises `BINARY_ARITHMETIC_OVERFLOW`, and integral
-  `ARITHMETIC_OVERFLOW` messages omit Spark's `try_` suggestion
-  ([#6217](https://github.com/apache/datafusion-comet/issues/6217)).
-- Wide-decimal arithmetic overflow, decimal divide-by-zero, and decimal-to-decimal cast overflow
-  raise raw Arrow errors that bypass `SparkErrorConverter` and surface as `CometNativeException`
-  rather than `SparkArithmeticException` with the proper error class and query context
-  ([#5072](https://github.com/apache/datafusion-comet/issues/5072)).
 - Spark 4.2 introduced additional ANSI arithmetic overflow behavior differences that Comet does
   not yet track ([#4967](https://github.com/apache/datafusion-comet/issues/4967)).
 
@@ -127,13 +121,10 @@ divergence:
 
 The following native paths silently return values that differ from Spark for edge-case inputs.
 Most also have entries in the per-category expression pages linked above; they are collected here
-so users hunting an unexpected value have a single place to check:
+so users hunting an unexpected value have a single place to check. Parquet and Iceberg reads and
+writes have their own lists, under Known Issues on the
+[Parquet](../parquet.md#known-issues) and [Iceberg](../iceberg.md#known-issues) pages:
 
-- `CAST(string AS timestamp)` and `CAST(string AS timestamp_ntz)` trim Unicode whitespace.
-  Spark trims only the bytes `0x00`-`0x20` and `0x7F`, so a value padded with an ASCII control byte
-  parses in Spark and returns `NULL` in Comet, while a value padded with non-ASCII whitespace such
-  as `U+3000` returns `NULL` in Spark and parses in Comet
-  ([#5149](https://github.com/apache/datafusion-comet/issues/5149)).
 - Native `RANGE` window frames with an explicit `PRECEDING` / `FOLLOWING` offset diverge from
   Spark when the boundary arithmetic overflows for `DATE` or `DECIMAL` `ORDER BY` columns
   ([#5022](https://github.com/apache/datafusion-comet/issues/5022)).

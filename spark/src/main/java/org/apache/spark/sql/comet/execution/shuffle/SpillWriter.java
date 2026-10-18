@@ -188,6 +188,7 @@ public abstract class SpillWriter {
       double preferDictionaryRatio,
       String compressionCodec,
       int compressionLevel,
+      boolean offsetsAsLengths,
       boolean tracingEnabled) {
     long[] addresses = rowPartition.getRowAddresses();
     int[] sizes = rowPartition.getRowSizes();
@@ -196,7 +197,7 @@ public abstract class SpillWriter {
     long currentChecksum = checksumEnabled ? checksum : 0L;
 
     long start = System.nanoTime();
-    int batchSize = (int) CometConf.COMET_SHUFFLE_JVM_BATCH_SIZE().get();
+    int batchSize = CometConf.jvmShuffleBatchSize();
     long[] results =
         nativeLib.writeSortedFileNative(
             addresses,
@@ -210,6 +211,7 @@ public abstract class SpillWriter {
             currentChecksum,
             compressionCodec,
             compressionLevel,
+            offsetsAsLengths,
             tracingEnabled);
 
     long written = results[0];

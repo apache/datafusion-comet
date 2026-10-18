@@ -85,7 +85,7 @@ object CometComparisonExpressionBenchmark extends CometBenchmarkBase {
             """))
 
           comparisonExpressions.foreach { config =>
-            runExpressionBenchmark(config.name, v, config.query, config.extraCometConfigs)
+            runExpressionBenchmark(config.name, v.toLong, config.query, config.extraCometConfigs)
           }
         }
       }

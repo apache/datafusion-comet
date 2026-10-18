@@ -71,12 +71,12 @@ object CometBroadcastNestedLoopJoinBenchmark extends CometBenchmarkBase {
     withTempPath { dir =>
       withTempTable("probe", "build") {
         spark
-          .range(probeRows)
+          .range(probeRows.toLong)
           .selectExpr("id AS k", "id % 100 AS v")
           .write
           .parquet(s"${dir.getAbsolutePath}/probe")
         spark
-          .range(buildRows)
+          .range(buildRows.toLong)
           .selectExpr("id * 1000 AS lo", "id * 1000 + 500 AS hi")
           .write
           .parquet(s"${dir.getAbsolutePath}/build")
@@ -87,7 +87,7 @@ object CometBroadcastNestedLoopJoinBenchmark extends CometBenchmarkBase {
         runBenchmark("BroadcastNestedLoopJoin - range") {
           runExpressionBenchmark(
             "range join (BETWEEN)",
-            probeRows,
+            probeRows.toLong,
             "SELECT /*+ BROADCAST(b) */ count(*) FROM probe p " +
               "JOIN build b ON p.k BETWEEN b.lo AND b.hi",
             cometConfigs)
@@ -96,7 +96,7 @@ object CometBroadcastNestedLoopJoinBenchmark extends CometBenchmarkBase {
         runBenchmark("BroadcastNestedLoopJoin - inequality") {
           runExpressionBenchmark(
             "inequality join (>)",
-            probeRows,
+            probeRows.toLong,
             "SELECT /*+ BROADCAST(b) */ count(*) FROM probe p " +
               "JOIN build b ON p.k > b.lo",
             cometConfigs)
@@ -105,7 +105,7 @@ object CometBroadcastNestedLoopJoinBenchmark extends CometBenchmarkBase {
         runBenchmark("BroadcastNestedLoopJoin - left outer with non-equi") {
           runExpressionBenchmark(
             "left outer non-equi",
-            probeRows,
+            probeRows.toLong,
             "SELECT /*+ BROADCAST(b) */ count(*) FROM probe p " +
               "LEFT OUTER JOIN build b ON p.k BETWEEN b.lo AND b.hi",
             cometConfigs)
@@ -114,7 +114,7 @@ object CometBroadcastNestedLoopJoinBenchmark extends CometBenchmarkBase {
         runBenchmark("BroadcastNestedLoopJoin - range, materialized rows") {
           runExpressionBenchmark(
             "range join (BETWEEN, projected)",
-            probeRows,
+            probeRows.toLong,
             "SELECT /*+ BROADCAST(b) */ p.k, p.v, b.lo, b.hi FROM probe p " +
               "JOIN build b ON p.k BETWEEN b.lo AND b.hi",
             cometConfigs)

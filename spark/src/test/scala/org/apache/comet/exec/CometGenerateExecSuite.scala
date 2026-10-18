@@ -659,4 +659,67 @@ class CometGenerateExecSuite extends CometTestBase {
     }
   }
 
+  // The native explode slices each output batch out of the exploded child instead of gathering
+  // it, so an exploded boolean, or a boolean field of an exploded struct, leaves native at a
+  // non-zero bit offset. Arrow Java ignores that offset on import, so native has to zero it at
+  // every level before export, including in a struct built over the booleans and in the input to
+  // a Scala UDF, or they come back wrong after the first output batch.
+  // https://github.com/apache/datafusion-comet/issues/6464
+  private def withBooleanArrays(numRows: Long, arrayLength: Long)(f: => Unit): Unit = {
+    withTempPath { dir =>
+      // One file, so a single input batch explodes into several output batches.
+      withSQLConf(CometConf.COMET_ENABLED.key -> "false") {
+        spark
+          .range(0L, numRows, 1L, 1)
+          .selectExpr(
+            "id",
+            s"transform(sequence(1, $arrayLength), i -> named_struct(" +
+              "'b', hash(id, i) % 2 = 0, " +
+              "'bn', IF(hash(id, i, 7) % 5 = 0, NULL, hash(id, i, 3) % 2 = 0), " +
+              "'n', id * 1000 + i)) AS structs",
+            // No NULLs, so the null check Spark wraps around a primitive UDF argument selects
+            // every row, and the UDF reads the exploded batch rather than a filtered copy.
+            s"transform(sequence(1, $arrayLength), i -> hash(id, i, 11) % 2 = 0) AS bools")
+          .write
+          .parquet(dir.getCanonicalPath)
+      }
+      withParquetTable(dir.getCanonicalPath, "t")(f)
+    }
+  }
+
+  for (generator <- Seq("explode", "explode_outer", "posexplode", "posexplode_outer")) {
+    test(s"$generator of structs keeps boolean fields past the first output batch") {
+      // With the default batch size, 13 elements a row give output batches of 8190 rows, so the
+      // later batches start both on and off a byte boundary.
+      withBooleanArrays(numRows = 3000, arrayLength = 13) {
+        checkSparkAnswerAndOperator(sql(s"SELECT id, $generator(structs) FROM t"))
+      }
+    }
+  }
+
+  test("explode of structs keeps boolean fields when one row exceeds the batch size") {
+    // A row longer than the batch size is unnested in one build, which is then sliced into
+    // batch-size pieces on the way out, here at elements 100 and 200.
+    withSQLConf(CometConf.COMET_BATCH_SIZE.key -> "100") {
+      withBooleanArrays(numRows = 1, arrayLength = 250) {
+        checkSparkAnswerAndOperator(sql("SELECT id, explode(structs) FROM t"))
+      }
+    }
+  }
+
+  test("named_struct over an exploded boolean keeps its values") {
+    withBooleanArrays(numRows = 3000, arrayLength = 13) {
+      checkSparkAnswerAndOperator(
+        sql("SELECT id, named_struct('v', v) FROM (SELECT id, explode(bools) AS v FROM t)"))
+    }
+  }
+
+  test("boolean ScalaUDF over an exploded boolean keeps its values") {
+    spark.udf.register("flip", (x: Boolean) => !x)
+    withBooleanArrays(numRows = 3000, arrayLength = 13) {
+      checkSparkAnswerAndOperator(
+        sql("SELECT id, flip(v) FROM (SELECT id, explode(bools) AS v FROM t)"))
+    }
+  }
+
 }

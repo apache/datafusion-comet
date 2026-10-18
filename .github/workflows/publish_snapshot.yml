@@ -242,13 +242,14 @@ jobs:
           }
 
           # One build per published variant. Spark 3.4 and 3.5 are published for
-          # Scala 2.12, which downstream benchmarks still use; 4.0 and 4.1
+          # Scala 2.12, which downstream benchmarks still use; 4.0, 4.1 and 4.2
           # default to Scala 2.13.
           variants=(
             "-Pspark-3.4 -Pscala-2.12"
             "-Pspark-3.5 -Pscala-2.12"
             "-Pspark-4.0"
             "-Pspark-4.1"
+            "-Pspark-4.2"
           )
           # The native libraries live in spark/target/classes, so re-copy them
           # after each clean; the release script
@@ -278,11 +279,12 @@ jobs:
             # target directory the check ran against, and the parent pom pins
             # project.build.outputTimestamp, so it re-creates the same jar.
             #
-            # The root pom skips deploying the parent pom, but consumers need it
-            # to resolve the child poms, and the release publishes it. The user
-            # property overrides every module's setting.
+            # Only comet-spark opts in to deploy (see the root pom), so this
+            # publishes its shaded jar, sources jars and pom and nothing else.
+            # Leave -Dmaven.deploy.skip=false off: as a user property it would
+            # override every module's setting.
             # shellcheck disable=SC2086
-            ./mvnw -B "$GOAL" -DskipTests -Dmaven.deploy.skip=false $profiles
+            ./mvnw -B "$GOAL" -DskipTests $profiles
             echo "::endgroup::"
           done
           ls -l jars
