@@ -935,22 +935,22 @@ object QueryPlanSerde extends Logging with CometExprShim with CometTypeShim {
   def exprToProto(
       expr: Expression,
       inputs: Seq[Attribute],
-      binding: Boolean = true): Option[Expr] = {
-
-    val newExpr = DecimalPrecision.promote(expr)
-    val result = exprToProtoInternal(newExpr, inputs, binding)
-    if (!(newExpr eq expr)) {
-      // `promote` rebuilt the tree, so the tags landed on copies that the operator does not hold.
-      // Lift them onto `expr` so the roll-ups in `CometExecRule`, which walk the operator's own
-      // expressions, still see them. Skipped in the common case where `promote` returned the same
-      // tree and there is nothing to lift.
-      liftCoverageTags(newExpr, expr)
-      if (result.isEmpty) {
-        liftFallbackReasons(newExpr, expr)
+      binding: Boolean = true): Option[Expr] =
+    CometExplainInfo.withExpressionFallbackReasonScope {
+      val newExpr = DecimalPrecision.promote(expr)
+      val result = exprToProtoInternal(newExpr, inputs, binding)
+      if (!(newExpr eq expr)) {
+        // `promote` rebuilt the tree, so the tags landed on copies that the operator does not hold.
+        // Lift them onto `expr` so the roll-ups in `CometExecRule`, which walk the operator's own
+        // expressions, still see them. Skipped in the common case where `promote` returned the same
+        // tree and there is nothing to lift.
+        liftCoverageTags(newExpr, expr)
+        if (result.isEmpty) {
+          liftFallbackReasons(newExpr, expr)
+        }
       }
+      result
     }
-    result
-  }
 
   private def liftCoverageTags(from: Expression, to: Expression): Unit = {
     val exprs = from.collect { case e: Expression => e }
@@ -960,15 +960,18 @@ object QueryPlanSerde extends Logging with CometExprShim with CometTypeShim {
   }
 
   /**
-   * Lift fallback reasons recorded anywhere in the rewritten tree onto the original node, so that
-   * `CometExecRule.rollUpFallbackReasons` and extended explain can see them. Without this the
-   * reason is attached to a copy that is not in the plan and is lost entirely - see
-   * https://github.com/apache/datafusion-comet/issues/5230. Same copy-back that the `Invoke` /
-   * `StaticInvoke` rewrites in `Spark4xCometExprShim` do.
+   * Lift fallback reasons recorded during the current conversion in the rewritten tree onto the
+   * original node, so that `CometExecRule.rollUpFallbackReasons` and extended explain can see
+   * them. Without this the reason is attached to a copy that is not in the plan and is lost
+   * entirely - see https://github.com/apache/datafusion-comet/issues/5230. Same copy-back that
+   * the `Invoke` / `StaticInvoke` rewrites in `Spark4xCometExprShim` do.
    *
    * Callers are the serde paths that rebuild an expression tree before converting it, so the
    * reasons land on copies the operator does not hold: `DecimalPrecision.promote` here, and
    * `CometWindowExec`'s `DecimalAggregates` unwrapping.
+   *
+   * Reads the conversion journal, not tags: a shared literal may carry a tag copied from an
+   * unrelated expression or an earlier query. Callers must run inside a fallback reason scope.
    *
    * Only called when conversion failed: a fallback reason states why an expression could not be
    * converted, so lifting one off a tree that converted fine would attribute a stale reason to an
@@ -977,7 +980,7 @@ object QueryPlanSerde extends Logging with CometExprShim with CometTypeShim {
   def liftFallbackReasons(from: Expression, to: Expression): Unit = {
     val reasons = mutable.Set.empty[String]
     from.foreach { e =>
-      e.getTagValue(CometExplainInfo.FALLBACK_REASONS).foreach(reasons ++= _)
+      reasons ++= CometExplainInfo.currentFallbackReasons(e)
     }
     if (reasons.nonEmpty) {
       val _ = withFallbackReasons(to, reasons.toSet)
@@ -1007,110 +1010,109 @@ object QueryPlanSerde extends Logging with CometExprShim with CometTypeShim {
   def exprToProtoInternal(
       expr: Expression,
       inputs: Seq[Attribute],
-      binding: Boolean): Option[Expr] = {
-
-    def convert[T <: Expression](expr: T, handler: CometExpressionSerde[T]): Option[Expr] = {
-      val exprConfName = handler.getExprConfigName(expr)
-      if (!CometConf.isExprEnabled(exprConfName)) {
-        withFallbackReason(
-          expr,
-          "Expression support is disabled. Set " +
-            s"${CometConf.getExprEnabledConfigKey(exprConfName)}=true to enable it.")
-        return None
-      }
-      handler.getSupportLevel(expr) match {
-        case Unsupported(notes) =>
-          // `CodegenDispatchFallback` serdes have no native path for these cases either, but the
-          // dispatcher can still run Spark's own `doGenCode` inside the Comet pipeline. Try that
-          // before falling the projection back to Spark. No `[COMET-INFO]` hint here: unlike
-          // `Incompatible`, there is no native opt-in for the user to flip, so log at debug level
-          // to give anyone tracing why a projection stayed native something to go on.
-          dispatchIfFallback(handler, expr, inputs, binding)
-            .map { case (_, proto) =>
-              logDebug(
-                s"$expr has no native path (${notes.getOrElse("unsupported")}) but is routed " +
-                  "through the JVM codegen dispatcher to stay in the Comet pipeline.")
-              proto
+      binding: Boolean): Option[Expr] =
+    CometExplainInfo.withExpressionFallbackReasonScope {
+      def convert[T <: Expression](expr: T, handler: CometExpressionSerde[T]): Option[Expr] = {
+        val exprConfName = handler.getExprConfigName(expr)
+        if (!CometConf.isExprEnabled(exprConfName)) {
+          withFallbackReason(
+            expr,
+            "Expression support is disabled. Set " +
+              s"${CometConf.getExprEnabledConfigKey(exprConfName)}=true to enable it.")
+          return None
+        }
+        handler.getSupportLevel(expr) match {
+          case Unsupported(notes) =>
+            // `CodegenDispatchFallback` serdes have no native path for these cases either, but the
+            // dispatcher can still run Spark's own `doGenCode` inside the Comet pipeline. Try that
+            // before falling the projection back to Spark. No `[COMET-INFO]` hint here: unlike
+            // `Incompatible`, there is no native opt-in for the user to flip, so log at debug level
+            // to give anyone tracing why a projection stayed native something to go on.
+            dispatchIfFallback(handler, expr, inputs, binding)
+              .map { case (_, proto) =>
+                logDebug(
+                  s"$expr has no native path (${notes.getOrElse("unsupported")}) but is routed " +
+                    "through the JVM codegen dispatcher to stay in the Comet pipeline.")
+                proto
+              }
+              .orElse {
+                withFallbackReason(expr, notes.getOrElse(""))
+                None
+              }
+          case Incompatible(notes) =>
+            val exprAllowIncompat = CometConf.isExprAllowIncompat(exprConfName)
+            if (exprAllowIncompat) {
+              if (notes.isDefined) {
+                logWarning(
+                  s"Comet supports $expr when " +
+                    s"${CometConf.getExprAllowIncompatConfigKey(exprConfName)}=true " +
+                    s"but has notes: ${notes.get}")
+              }
+              handler.convert(expr, inputs, binding)
+            } else {
+              // Expressions that opt in via `CodegenDispatchFallback` route their `Incompatible`
+              // result through the JVM codegen dispatcher (Spark's own `doGenCode` inside the Comet
+              // pipeline) so the projection stays native while still matching Spark. Everything
+              // else falls back to Spark, as does a dispatcher that cannot handle the expression.
+              val dispatched = dispatchIfFallback(handler, expr, inputs, binding).map {
+                case (h, proto) =>
+                  val key = h.nativeOptInConfigKeyOverride
+                    .getOrElse(CometConf.getExprAllowIncompatConfigKey(exprConfName))
+                  withInfo(expr, NativeOptIn.message(exprConfName, key))
+                  proto
+              }
+              dispatched.orElse {
+                val optionalNotes = notes.map(str => s" ($str)").getOrElse("")
+                withFallbackReason(
+                  expr,
+                  s"$expr is not fully compatible with Spark$optionalNotes. To enable it anyway, " +
+                    s"set ${CometConf.getExprAllowIncompatConfigKey(exprConfName)}=true. " +
+                    s"${CometConf.COMPAT_GUIDE}.")
+                None
+              }
             }
-            .orElse {
-              withFallbackReason(expr, notes.getOrElse(""))
-              None
-            }
-        case Incompatible(notes) =>
-          val exprAllowIncompat = CometConf.isExprAllowIncompat(exprConfName)
-          if (exprAllowIncompat) {
+          case Compatible(notes, nativeOptIn) =>
             if (notes.isDefined) {
-              logWarning(
-                s"Comet supports $expr when " +
-                  s"${CometConf.getExprAllowIncompatConfigKey(exprConfName)}=true " +
-                  s"but has notes: ${notes.get}")
+              logWarning(s"Comet supports $expr but has notes: ${notes.get}")
+            }
+            nativeOptIn.foreach { optIn =>
+              withInfo(expr, NativeOptIn.message(exprConfName, optIn.configKey))
             }
             handler.convert(expr, inputs, binding)
-          } else {
-            // Expressions that opt in via `CodegenDispatchFallback` route their `Incompatible`
-            // result through the JVM codegen dispatcher (Spark's own `doGenCode` inside the Comet
-            // pipeline) so the projection stays native while still matching Spark. Everything else
-            // falls back to Spark. Falling back is also the result when the dispatcher cannot
-            // handle the expression.
-            val dispatched = dispatchIfFallback(handler, expr, inputs, binding).map {
-              case (h, proto) =>
-                val key = h.nativeOptInConfigKeyOverride
-                  .getOrElse(CometConf.getExprAllowIncompatConfigKey(exprConfName))
-                withInfo(expr, NativeOptIn.message(exprConfName, key))
-                proto
-            }
-            dispatched.orElse {
-              val optionalNotes = notes.map(str => s" ($str)").getOrElse("")
-              withFallbackReason(
-                expr,
-                s"$expr is not fully compatible with Spark$optionalNotes. To enable it anyway, " +
-                  s"set ${CometConf.getExprAllowIncompatConfigKey(exprConfName)}=true. " +
-                  s"${CometConf.COMPAT_GUIDE}.")
-              None
-            }
-          }
-        case Compatible(notes, nativeOptIn) =>
-          if (notes.isDefined) {
-            logWarning(s"Comet supports $expr but has notes: ${notes.get}")
-          }
-          nativeOptIn.foreach { optIn =>
-            withInfo(expr, NativeOptIn.message(exprConfName, optIn.configKey))
-          }
-          handler.convert(expr, inputs, binding)
-      }
-    }
-
-    sparkVersionSpecificExprToProtoInternal(expr, inputs, binding)
-      .orElse(expr match {
-
-        case UnaryExpression(child) if expr.prettyName == "promote_precision" =>
-          // `UnaryExpression` includes `PromotePrecision` for Spark 3.3
-          // `PromotePrecision` is just a wrapper, don't need to serialize it.
-          exprToProtoInternal(child, inputs, binding)
-
-        case expr =>
-          QueryPlanSerde.exprSerdeMap.get(expr.getClass) match {
-            case Some(handler) =>
-              convert(expr, handler.asInstanceOf[CometExpressionSerde[Expression]])
-            case _ =>
-              withFallbackReason(expr, s"${expr.prettyName} is not supported")
-              None
-          }
-      })
-      .map { protoExpr =>
-        // Record that this expression stayed in the native pipeline, for the expression coverage
-        // stats in extended explain. `CometScalaUDF.emitJvmCodegenDispatch` marks the expressions
-        // it converted, so anything reaching here without that marker was lowered to a native
-        // DataFusion expression.
-        if (!isStructuralExpr(expr) &&
-          expr.getTagValue(CometExplainInfo.DISPATCHED_SELF).isEmpty) {
-          withNativeExpr(expr, CometExplainInfo.exprDisplayName(expr))
         }
-        // Passthrough serdes such as Alias return an already-identified child expression. Preserve
-        // that child's context instead of replacing it with the structural wrapper's origin.
-        if (protoExpr.hasExprId) protoExpr else attachExprIdAndContext(expr, protoExpr)
       }
-  }
+
+      sparkVersionSpecificExprToProtoInternal(expr, inputs, binding)
+        .orElse(expr match {
+
+          case UnaryExpression(child) if expr.prettyName == "promote_precision" =>
+            // `UnaryExpression` includes `PromotePrecision` for Spark 3.3
+            // `PromotePrecision` is just a wrapper, don't need to serialize it.
+            exprToProtoInternal(child, inputs, binding)
+
+          case expr =>
+            QueryPlanSerde.exprSerdeMap.get(expr.getClass) match {
+              case Some(handler) =>
+                convert(expr, handler.asInstanceOf[CometExpressionSerde[Expression]])
+              case _ =>
+                withFallbackReason(expr, s"${expr.prettyName} is not supported")
+                None
+            }
+        })
+        .map { protoExpr =>
+          // Record that this expression stayed in the native pipeline, for the expression coverage
+          // stats in extended explain. `CometScalaUDF.emitJvmCodegenDispatch` marks the expressions
+          // it converted, so anything reaching here without that marker was lowered to a native
+          // DataFusion expression.
+          if (!isStructuralExpr(expr) &&
+            expr.getTagValue(CometExplainInfo.DISPATCHED_SELF).isEmpty) {
+            withNativeExpr(expr, CometExplainInfo.exprDisplayName(expr))
+          }
+          // Passthrough serdes such as Alias return an already-identified child expression.
+          // Preserve that child's context instead of replacing it with the wrapper's origin.
+          if (protoExpr.hasExprId) protoExpr else attachExprIdAndContext(expr, protoExpr)
+        }
+    }
 
   /**
    * Nodes that carry no computation of their own. They are excluded from the expression coverage
