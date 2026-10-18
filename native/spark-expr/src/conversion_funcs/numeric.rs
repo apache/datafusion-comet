@@ -423,47 +423,31 @@ macro_rules! cast_float_to_int16_down {
             .downcast_ref::<$src_array_type>()
             .expect(concat!("Expected a ", stringify!($src_array_type)));
 
-        let output_array = match $eval_mode {
-            EvalMode::Ansi => cast_array
-                .iter()
-                .map(|value| match value {
-                    Some(value) => {
-                        // Spark's ANSI cast converts to Int with the exact 32-bit range check
-                        // first and then requires the truncated Int to round-trip through the
-                        // narrower type.
-                        if !spark_float_fits_integral(value, i32::MIN as f64, i32::MAX as f64) {
-                            return Err(cast_overflow(
-                                &format!($format_str, value).replace("e", "E"),
-                                $src_type_str,
-                                $dest_type_str,
-                            ));
-                        }
-                        let i32_value = value as i32;
-                        <$rust_dest_type>::try_from(i32_value)
-                            .map_err(|_| {
-                                cast_overflow(
-                                    &format!($format_str, value).replace("e", "E"),
-                                    $src_type_str,
-                                    $dest_type_str,
-                                )
-                            })
-                            .map(Some)
-                    }
-                    None => Ok(None),
+        // The legacy conversion cannot fail, so `unary` maps the values buffer in one pass and
+        // keeps the null buffer. `try_unary` only visits valid slots, so an out-of-range value
+        // under a null cannot raise a spurious overflow error.
+        let output_array: $dest_array_type = match $eval_mode {
+            EvalMode::Ansi => cast_array.try_unary(|value| {
+                // Spark's ANSI cast converts to Int with the exact 32-bit range check
+                // first and then requires the truncated Int to round-trip through the
+                // narrower type.
+                if !spark_float_fits_integral(value, i32::MIN as f64, i32::MAX as f64) {
+                    return Err(cast_overflow(
+                        &format!($format_str, value).replace("e", "E"),
+                        $src_type_str,
+                        $dest_type_str,
+                    ));
+                }
+                let i32_value = value as i32;
+                <$rust_dest_type>::try_from(i32_value).map_err(|_| {
+                    cast_overflow(
+                        &format!($format_str, value).replace("e", "E"),
+                        $src_type_str,
+                        $dest_type_str,
+                    )
                 })
-                .collect::<Result<$dest_array_type, _>>()?,
-            _ => cast_array
-                .iter()
-                .map(|value| match value {
-                    Some(value) => {
-                        let i32_value = value as i32;
-                        Ok::<Option<$rust_dest_type>, SparkError>(Some(
-                            i32_value as $rust_dest_type,
-                        ))
-                    }
-                    None => Ok(None),
-                })
-                .collect::<Result<$dest_array_type, _>>()?,
+            })?,
+            _ => cast_array.unary(|value| value as i32 as $rust_dest_type),
         };
         Ok(Arc::new(output_array) as ArrayRef)
     }};
@@ -486,37 +470,26 @@ macro_rules! cast_float_to_int32_up {
             .downcast_ref::<$src_array_type>()
             .expect(concat!("Expected a ", stringify!($src_array_type)));
 
-        let output_array = match $eval_mode {
-            EvalMode::Ansi => cast_array
-                .iter()
-                .map(|value| match value {
-                    Some(value) => {
-                        if !spark_float_fits_integral(
-                            value,
-                            <$rust_dest_type>::MIN as f64,
-                            <$rust_dest_type>::MAX as f64,
-                        ) {
-                            return Err(cast_overflow(
-                                &format!($format_str, value).replace("e", "E"),
-                                $src_type_str,
-                                $dest_type_str,
-                            ));
-                        }
-                        // `as` truncates towards zero and saturates like the JVM's d2i/d2l
-                        Ok(Some(value as $rust_dest_type))
-                    }
-                    None => Ok(None),
-                })
-                .collect::<Result<$dest_array_type, _>>()?,
-            _ => cast_array
-                .iter()
-                .map(|value| match value {
-                    Some(value) => {
-                        Ok::<Option<$rust_dest_type>, SparkError>(Some(value as $rust_dest_type))
-                    }
-                    None => Ok(None),
-                })
-                .collect::<Result<$dest_array_type, _>>()?,
+        // The legacy conversion cannot fail, so `unary` maps the values buffer in one pass and
+        // keeps the null buffer. `try_unary` only visits valid slots, so an out-of-range value
+        // under a null cannot raise a spurious overflow error.
+        let output_array: $dest_array_type = match $eval_mode {
+            EvalMode::Ansi => cast_array.try_unary(|value| {
+                if !spark_float_fits_integral(
+                    value,
+                    <$rust_dest_type>::MIN as f64,
+                    <$rust_dest_type>::MAX as f64,
+                ) {
+                    return Err(cast_overflow(
+                        &format!($format_str, value).replace("e", "E"),
+                        $src_type_str,
+                        $dest_type_str,
+                    ));
+                }
+                // `as` truncates towards zero and saturates like the JVM's d2i/d2l
+                Ok(value as $rust_dest_type)
+            })?,
+            _ => cast_array.unary(|value| value as $rust_dest_type),
         };
         Ok(Arc::new(output_array) as ArrayRef)
     }};
@@ -540,62 +513,40 @@ macro_rules! cast_decimal_to_int16_down {
             .downcast_ref::<Decimal128Array>()
             .expect("Expected a Decimal128ArrayType");
 
-        let output_array = match $eval_mode {
-            EvalMode::Ansi => cast_array
-                .iter()
-                .map(|value| match value {
-                    Some(value) => {
-                        let divisor = 10_i128.pow($scale as u32);
-                        let truncated = value / divisor;
-                        let is_overflow = truncated.abs() > i32::MAX.into();
-                        if is_overflow {
-                            return Err(cast_overflow(
-                                &format!(
-                                    "{}BD",
-                                    format_decimal_str(
-                                        &value.to_string(),
-                                        $precision as usize,
-                                        $scale
-                                    )
-                                ),
-                                &format!("DECIMAL({},{})", $precision, $scale),
-                                $dest_type_str,
-                            ));
-                        }
-                        let i32_value = truncated as i32;
-                        <$rust_dest_type>::try_from(i32_value)
-                            .map_err(|_| {
-                                cast_overflow(
-                                    &format!(
-                                        "{}BD",
-                                        format_decimal_str(
-                                            &value.to_string(),
-                                            $precision as usize,
-                                            $scale
-                                        )
-                                    ),
-                                    &format!("DECIMAL({},{})", $precision, $scale),
-                                    $dest_type_str,
-                                )
-                            })
-                            .map(Some)
-                    }
-                    None => Ok(None),
+        let divisor = 10_i128.pow($scale as u32);
+        // `try_unary` only visits valid slots, so a value under a null is neither divided nor,
+        // in ANSI mode, checked for overflow. The legacy conversion cannot fail, but the division
+        // is most of the cost for decimals, so it uses `try_unary` too, with a closure that
+        // always returns `Ok`, instead of `unary`, which would divide the slots under nulls.
+        let output_array: $dest_array_type = match $eval_mode {
+            EvalMode::Ansi => cast_array.try_unary(|value| {
+                let truncated = value / divisor;
+                let is_overflow = truncated.abs() > i32::MAX.into();
+                if is_overflow {
+                    return Err(cast_overflow(
+                        &format!(
+                            "{}BD",
+                            format_decimal_str(&value.to_string(), $precision as usize, $scale)
+                        ),
+                        &format!("DECIMAL({},{})", $precision, $scale),
+                        $dest_type_str,
+                    ));
+                }
+                let i32_value = truncated as i32;
+                <$rust_dest_type>::try_from(i32_value).map_err(|_| {
+                    cast_overflow(
+                        &format!(
+                            "{}BD",
+                            format_decimal_str(&value.to_string(), $precision as usize, $scale)
+                        ),
+                        &format!("DECIMAL({},{})", $precision, $scale),
+                        $dest_type_str,
+                    )
                 })
-                .collect::<Result<$dest_array_type, _>>()?,
-            _ => cast_array
-                .iter()
-                .map(|value| match value {
-                    Some(value) => {
-                        let divisor = 10_i128.pow($scale as u32);
-                        let i32_value = (value / divisor) as i32;
-                        Ok::<Option<$rust_dest_type>, SparkError>(Some(
-                            i32_value as $rust_dest_type,
-                        ))
-                    }
-                    None => Ok(None),
-                })
-                .collect::<Result<$dest_array_type, _>>()?,
+            })?,
+            _ => cast_array.try_unary(|value| {
+                Ok::<_, SparkError>((value / divisor) as i32 as $rust_dest_type)
+            })?,
         };
         Ok(Arc::new(output_array) as ArrayRef)
     }};
@@ -617,46 +568,29 @@ macro_rules! cast_decimal_to_int32_up {
             .downcast_ref::<Decimal128Array>()
             .expect("Expected a Decimal128ArrayType");
 
-        let output_array = match $eval_mode {
-            EvalMode::Ansi => cast_array
-                .iter()
-                .map(|value| match value {
-                    Some(value) => {
-                        let divisor = 10_i128.pow($scale as u32);
-                        let truncated = value / divisor;
-                        let is_overflow = truncated.abs() > $max_dest_val.into();
-                        if is_overflow {
-                            return Err(cast_overflow(
-                                &format!(
-                                    "{}BD",
-                                    format_decimal_str(
-                                        &value.to_string(),
-                                        $precision as usize,
-                                        $scale
-                                    )
-                                ),
-                                &format!("DECIMAL({},{})", $precision, $scale),
-                                $dest_type_str,
-                            ));
-                        }
-                        Ok(Some(truncated as $rust_dest_type))
-                    }
-                    None => Ok(None),
-                })
-                .collect::<Result<$dest_array_type, _>>()?,
+        let divisor = 10_i128.pow($scale as u32);
+        // `try_unary` only visits valid slots, so a value under a null is neither divided nor,
+        // in ANSI mode, checked for overflow. The legacy conversion cannot fail, but the division
+        // is most of the cost for decimals, so it uses `try_unary` too, with a closure that
+        // always returns `Ok`, instead of `unary`, which would divide the slots under nulls.
+        let output_array: $dest_array_type = match $eval_mode {
+            EvalMode::Ansi => cast_array.try_unary(|value| {
+                let truncated = value / divisor;
+                let is_overflow = truncated.abs() > $max_dest_val.into();
+                if is_overflow {
+                    return Err(cast_overflow(
+                        &format!(
+                            "{}BD",
+                            format_decimal_str(&value.to_string(), $precision as usize, $scale)
+                        ),
+                        &format!("DECIMAL({},{})", $precision, $scale),
+                        $dest_type_str,
+                    ));
+                }
+                Ok(truncated as $rust_dest_type)
+            })?,
             _ => cast_array
-                .iter()
-                .map(|value| match value {
-                    Some(value) => {
-                        let divisor = 10_i128.pow($scale as u32);
-                        let truncated = value / divisor;
-                        Ok::<Option<$rust_dest_type>, SparkError>(Some(
-                            truncated as $rust_dest_type,
-                        ))
-                    }
-                    None => Ok(None),
-                })
-                .collect::<Result<$dest_array_type, _>>()?,
+                .try_unary(|value| Ok::<_, SparkError>((value / divisor) as $rust_dest_type))?,
         };
         Ok(Arc::new(output_array) as ArrayRef)
     }};
@@ -1780,6 +1714,47 @@ mod tests {
             .unwrap(),
             vec![i16::MIN, -1]
         );
+    }
+
+    /// `unary` and `try_unary` work on the values buffer, so a value that would overflow but
+    /// sits under a null must neither fail an ANSI cast nor reach the result.
+    #[test]
+    fn test_cast_to_integral_ignores_values_under_nulls() {
+        let nulls = arrow::buffer::NullBuffer::from(vec![true, false, true]);
+        let doubles: ArrayRef = Arc::new(Float64Array::new(
+            vec![1.9, f64::MAX, -2.9].into(),
+            Some(nulls.clone()),
+        ));
+        let decimals: ArrayRef = Arc::new(
+            Decimal128Array::new(vec![12345, i128::MAX, -678].into(), Some(nulls))
+                .with_precision_and_scale(38, 2)
+                .unwrap(),
+        );
+
+        // Int8 goes through the `*_to_int16_down!` macros and Int32 through `*_to_int32_up!`
+        for eval_mode in [EvalMode::Legacy, EvalMode::Ansi] {
+            for to_type in [DataType::Int8, DataType::Int32] {
+                for (array, expected) in [
+                    (&doubles, [Some(1), None, Some(-2)]),
+                    (&decimals, [Some(123), None, Some(-6)]),
+                ] {
+                    let result = spark_cast_nonintegral_numeric_to_integral(
+                        array,
+                        eval_mode,
+                        array.data_type(),
+                        &to_type,
+                    )
+                    .unwrap();
+                    let result = arrow::compute::cast(&result, &DataType::Int64).unwrap();
+                    assert_eq!(
+                        result.as_primitive::<Int64Type>(),
+                        &Int64Array::from(expected.to_vec()),
+                        "{eval_mode:?} {:?} to {to_type:?}",
+                        array.data_type()
+                    );
+                }
+            }
+        }
     }
 
     #[test]

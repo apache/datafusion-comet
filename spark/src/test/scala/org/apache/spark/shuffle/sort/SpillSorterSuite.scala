@@ -92,6 +92,7 @@ class SpillSorterSuite extends AnyFunSuite with BeforeAndAfterEach {
       0.5, // preferDictionaryRatio
       "zstd", // compressionCodec
       1, // compressionLevel
+      true, // offsetsAsLengths
       "adler32", // checksumAlgorithm
       partitionChecksums,
       writeMetrics,
