@@ -27,7 +27,7 @@ import org.scalatest.matchers.should.Matchers
 import org.apache.iceberg.{DeleteFile, FileContent}
 import org.apache.iceberg.expressions.Expressions
 import org.apache.spark.sql.catalyst.expressions.AttributeReference
-import org.apache.spark.sql.types.{ArrayType, IntegerType, MapType, StringType, StructType}
+import org.apache.spark.sql.types.{ArrayType, DoubleType, FloatType, IntegerType, MapType, StringType, StructType}
 
 import org.apache.comet.iceberg.IcebergReflection
 
@@ -101,11 +101,7 @@ class CometIcebergNativeScanSuite extends AnyFunSuite with Matchers {
       Expressions.alwaysTrue(),
       Expressions.alwaysFalse(),
       // Iceberg spells a nested field as a dotted path, which is never a scan output attribute.
-      Expressions.equal("outer.value", Integer.valueOf(1)),
-      // A conjunct that does not convert elides the whole residual.
-      Expressions.and(
-        Expressions.equal("value", Integer.valueOf(1)),
-        Expressions.notIn("value", Integer.valueOf(2))))
+      Expressions.equal("outer.value", Integer.valueOf(1)))
     for (expr <- declined) {
       withClue(s"$expr: ") {
         serialize(expr).isEmpty shouldBe true
@@ -119,6 +115,116 @@ class CometIcebergNativeScanSuite extends AnyFunSuite with Matchers {
     serialize(Expressions.equal("value", Integer.valueOf(1))).nonEmpty shouldBe true
   }
 
+  test("positive conjunctions preserve supported predicates beside complex null checks") {
+    val supported = Expressions.greaterThan("value", Integer.valueOf(5))
+    val expected = serialize(supported)
+    expected.nonEmpty shouldBe true
+
+    for (dataType <- Seq(
+        ArrayType(IntegerType),
+        MapType(StringType, IntegerType),
+        new StructType().add("field", IntegerType));
+      unsupported <- Seq(Expressions.isNull("complex"), Expressions.notNull("complex"))) {
+      val output = intColumn :+ AttributeReference("complex", dataType)()
+      for (residual <- Seq(
+          Expressions.and(supported, unsupported),
+          Expressions.and(unsupported, supported))) {
+        withClue(s"$dataType: $residual: ") {
+          CometIcebergNativeScan.serializeResidual(residual, output, Set.empty) shouldBe expected
+        }
+      }
+    }
+  }
+
+  test("floating-point comparisons are not pushed, including under AND, OR and NOT") {
+    val supported = Expressions.greaterThan("value", Integer.valueOf(5))
+    val expected = serialize(supported)
+    for (dataType <- Seq(FloatType, DoubleType)) {
+      val output = intColumn :+ AttributeReference("floating", dataType)()
+      def convert(expr: Any) =
+        CometIcebergNativeScan.serializeResidual(expr, output, Set.empty)
+
+      // Cover ordinary literals too: the column may contain signed zeros or any NaN payload.
+      for (value <- Seq(-0.0, 0.0, 1.0, Double.NegativeInfinity, Double.PositiveInfinity);
+        predicate <- Seq(
+          Expressions.equal("floating", Double.box(value)),
+          Expressions.notEqual("floating", Double.box(value)),
+          Expressions.lessThan("floating", Double.box(value)),
+          Expressions.lessThanOrEqual("floating", Double.box(value)),
+          Expressions.greaterThan("floating", Double.box(value)),
+          Expressions.greaterThanOrEqual("floating", Double.box(value)),
+          Expressions.in("floating", Double.box(value), Double.box(2.0)))) {
+        withClue(s"$dataType: $predicate: ") {
+          convert(predicate).isEmpty shouldBe true
+          convert(Expressions.and(supported, predicate)) shouldBe expected
+          convert(Expressions.and(predicate, supported)) shouldBe expected
+          convert(Expressions.or(supported, predicate)).isEmpty shouldBe true
+          convert(Expressions.not(predicate)).isEmpty shouldBe true
+          convert(Expressions.not(Expressions.and(supported, predicate))).isEmpty shouldBe true
+        }
+      }
+      for (predicate <- Seq(Expressions.isNull("floating"), Expressions.notNull("floating"))) {
+        convert(predicate).nonEmpty shouldBe true
+        convert(Expressions.not(predicate)).nonEmpty shouldBe true
+      }
+    }
+  }
+
+  test("positive conjunctions retain only the supported input scope") {
+    val supported = Expressions.equal("value", Integer.valueOf(1))
+    val unsupported = Expressions.notIn("value", Integer.valueOf(2))
+    serialize(Expressions.and(supported, unsupported)) shouldBe serialize(supported)
+    serialize(Expressions.and(unsupported, unsupported)).isEmpty shouldBe true
+
+    // The same rule applies to a leaf declined by the page-index gate or output projection.
+    val other = Expressions.equal("other", Integer.valueOf(1))
+    val output = intColumn :+ AttributeReference("other", IntegerType)()
+    CometIcebergNativeScan.serializeResidual(
+      Expressions.and(supported, other),
+      output,
+      Set("other")) shouldBe serialize(supported)
+    serialize(Expressions.and(supported, other)) shouldBe serialize(supported)
+  }
+
+  test("positive OR requires a safe predicate from both branches") {
+    val left = Expressions.lessThan("value", Integer.valueOf(5))
+    val right = Expressions.greaterThan("value", Integer.valueOf(10))
+    val unsupported = Expressions.notIn("value", Integer.valueOf(2))
+
+    serialize(Expressions.or(left, unsupported)).isEmpty shouldBe true
+    serialize(Expressions.or(unsupported, left)).isEmpty shouldBe true
+    serialize(
+      Expressions.or(
+        Expressions.and(left, unsupported),
+        Expressions.and(right, unsupported))) shouldBe serialize(Expressions.or(left, right))
+    serialize(Expressions.and(left, Expressions.or(right, unsupported))) shouldBe serialize(left)
+  }
+
+  test("NOT requires an exact child even across nested conjunctions and disjunctions") {
+    val left = Expressions.lessThan("value", Integer.valueOf(5))
+    val right = Expressions.greaterThan("value", Integer.valueOf(10))
+    val unsupported = Expressions.notIn("value", Integer.valueOf(2))
+
+    val declined = Seq(
+      Expressions.not(Expressions.and(left, unsupported)),
+      Expressions.not(Expressions.and(unsupported, left)),
+      Expressions.not(Expressions.or(left, Expressions.and(right, unsupported))),
+      Expressions.not(Expressions.and(left, Expressions.or(right, unsupported))))
+    for (residual <- declined) {
+      withClue(s"$residual: ") {
+        serialize(residual).isEmpty shouldBe true
+      }
+    }
+    // A declined NOT subtree can still sit beside a supported positive conjunct.
+    serialize(Expressions.and(left, declined.head)) shouldBe serialize(left)
+    serialize(Expressions.or(left, declined.head)).isEmpty shouldBe true
+    serialize(Expressions.not(Expressions.and(left, right))).nonEmpty shouldBe true
+    serialize(Expressions.not(Expressions.or(left, right))).nonEmpty shouldBe true
+    // Iceberg removes a double NOT before serde, leaving a positive conjunction.
+    serialize(Expressions.not(Expressions.not(Expressions.and(left, unsupported)))) shouldBe
+      serialize(left)
+  }
+
   test("a transform residual is declined rather than read as its source column") {
     // UnboundTransform answers ref() with the source column, so converting the term like a bare
     // reference would push bucket(4, value) = 1 as value = 1 and drop matching rows.
@@ -129,7 +235,7 @@ class CometIcebergNativeScanSuite extends AnyFunSuite with Matchers {
       Expressions.equal(Expressions.bucket[Integer]("value", 4), Integer.valueOf(1))
     serialize(bucketed).isEmpty shouldBe true
     val nested = Expressions.and(bucketed, Expressions.equal("value", Integer.valueOf(1)))
-    serialize(nested).isEmpty shouldBe true
+    serialize(nested) shouldBe serialize(Expressions.equal("value", Integer.valueOf(1)))
   }
 
   private def translate(

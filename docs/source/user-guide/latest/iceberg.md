@@ -102,8 +102,15 @@ The native Iceberg reader supports the following features:
 
 NULL checks on struct, array, and map columns still use native scans and return correct
 results, but are not pushed into iceberg-rust, which binds accessors only for primitive fields.
-These residuals provide no native row-group pruning, nor do conjunctions containing them;
-safe partial pruning is tracked in [#5883](https://github.com/apache/datafusion-comet/issues/5883).
+These null checks provide no native row-group pruning. In a positive conjunction, supported
+primitive predicates still prune row groups and pages, while the post-scan filter evaluates the
+complete condition. `OR` requires a safely pushable predicate from both branches, and expressions
+inside `NOT` must convert completely before they can be pushed.
+
+Comparisons and `IN` predicates on `FLOAT` and `DOUBLE` columns are evaluated after the native
+scan. They are not pushed into iceberg-rust because its floating-point ordering differs from
+Spark's for signed zeros and NaNs. This applies to standalone predicates as well as predicates
+inside `AND`, `OR`, and `NOT`. Null checks on these columns can still be pushed down.
 
 **Partitioning:**
 

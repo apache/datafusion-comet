@@ -2550,8 +2550,8 @@ fn parse_file_scan_tasks_from_common(
                     .get(idx as usize)
                     .and_then(iceberg_predicate_to_predicate)
                     .and_then(|pred| {
-                        // The residual predicate only drives row-group pruning; the post-scan
-                        // filter still enforces correctness. iceberg-rust cannot bind a datum
+                        // The residual predicate prunes reads and filters rows; the post-scan
+                        // filter enforces any omitted predicates. iceberg-rust cannot bind a datum
                         // whose type has no conversion to the column type, so on a bind failure
                         // we skip pushdown rather than fail the scan.
                         // rewrite_not first: iceberg-rust's scan evaluators require negation-normal
