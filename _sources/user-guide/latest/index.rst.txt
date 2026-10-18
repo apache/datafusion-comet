@@ -28,7 +28,7 @@ types, operators, and expressions that Comet supports, along with a compatibilit
 known differences from Apache Spark.
 
 Operational topics include reading and understanding Comet query plans, tuning, available metrics,
-and integration guides for Apache Iceberg, Apache Celeborn, and Kubernetes. Select a topic from
+and integration guides for Apache Celeborn and Kubernetes. The data source pages cover Parquet, Apache Iceberg, and Delta Lake. Select a topic from
 the navigation menu to read more.
 
 .. _toc.user-guide-links-1.2.0-SNAPSHOT:
@@ -43,10 +43,20 @@ the navigation menu to read more.
 
 .. toctree::
    :maxdepth: 1
-   :caption: What Comet Supports
+   :caption: Data Sources
    :hidden:
 
    Supported Data Sources <datasources>
+   Parquet <parquet>
+   Apache Iceberg <iceberg>
+   Delta Lake (experimental) <delta>
+   S3 Credential Providers <s3-credential-providers>
+
+.. toctree::
+   :maxdepth: 1
+   :caption: What Comet Supports
+   :hidden:
+
    Supported Data Types <datatypes>
    Supported Operators <operators>
    Supported Expressions <expressions>
@@ -59,8 +69,6 @@ the navigation menu to read more.
    :hidden:
 
    Overview <compatibility/index>
-   compatibility/scans
-   compatibility/parquet-iceberg-known-issues
    compatibility/floating-point
    compatibility/regex
    compatibility/operators
@@ -87,7 +95,6 @@ the navigation menu to read more.
    Memory <tuning/memory>
    Shuffle <tuning/shuffle>
    Celeborn Shuffle <tuning/celeborn>
-   Scans <tuning/scans>
    Operators <tuning/operators>
    Row/Columnar Transitions <tuning/transitions>
 
@@ -96,11 +103,7 @@ the navigation menu to read more.
    :caption: Integrations
    :hidden:
 
-   Delta Lake (experimental) <delta>
-   Iceberg Guide <iceberg>
-   Iceberg Writes <iceberg-writes>
    Celeborn Guide <celeborn>
-   S3 Credential Providers <s3-credential-providers>
    Kubernetes Guide <kubernetes>
 
 .. toctree::

@@ -506,9 +506,16 @@ under the License.
 <li class="toctree-l2"><a class="reference internal" href="configs.html">Configuration Settings</a></li>
 <li class="toctree-l2 current"><a class="current reference internal" href="#">Upgrading Comet</a></li>
 </ul>
-<p aria-level="2" class="caption" role="heading"><span class="caption-text">What Comet Supports</span></p>
+<p aria-level="2" class="caption" role="heading"><span class="caption-text">Data Sources</span></p>
 <ul>
 <li class="toctree-l2"><a class="reference internal" href="datasources.html">Supported Data Sources</a></li>
+<li class="toctree-l2"><a class="reference internal" href="parquet.html">Parquet</a></li>
+<li class="toctree-l2"><a class="reference internal" href="iceberg.html">Apache Iceberg</a></li>
+<li class="toctree-l2"><a class="reference internal" href="delta.html">Delta Lake (experimental)</a></li>
+<li class="toctree-l2"><a class="reference internal" href="s3-credential-providers.html">S3 Credential Providers</a></li>
+</ul>
+<p aria-level="2" class="caption" role="heading"><span class="caption-text">What Comet Supports</span></p>
+<ul>
 <li class="toctree-l2"><a class="reference internal" href="datatypes.html">Supported Data Types</a></li>
 <li class="toctree-l2"><a class="reference internal" href="operators.html">Supported Operators</a></li>
 <li class="toctree-l2"><a class="reference internal" href="expressions.html">Supported Expressions</a></li>
@@ -518,8 +525,6 @@ under the License.
 <p aria-level="2" class="caption" role="heading"><span class="caption-text">Compatibility</span></p>
 <ul>
 <li class="toctree-l2"><a class="reference internal" href="compatibility/index.html">Overview</a></li>
-<li class="toctree-l2"><a class="reference internal" href="compatibility/scans.html">Parquet Compatibility</a></li>
-<li class="toctree-l2"><a class="reference internal" href="compatibility/parquet-iceberg-known-issues.html">Known Issues in Parquet and Iceberg Reads and Writes</a></li>
 <li class="toctree-l2"><a class="reference internal" href="compatibility/floating-point.html">Floating-point Number Comparison</a></li>
 <li class="toctree-l2"><a class="reference internal" href="compatibility/regex.html">Regular Expressions</a></li>
 <li class="toctree-l2"><a class="reference internal" href="compatibility/operators.html">Operator Compatibility</a></li>
@@ -607,17 +612,12 @@ under the License.
 <li class="toctree-l2"><a class="reference internal" href="tuning/memory.html">Memory</a></li>
 <li class="toctree-l2"><a class="reference internal" href="tuning/shuffle.html">Shuffle</a></li>
 <li class="toctree-l2"><a class="reference internal" href="tuning/celeborn.html">Celeborn Shuffle</a></li>
-<li class="toctree-l2"><a class="reference internal" href="tuning/scans.html">Scans</a></li>
 <li class="toctree-l2"><a class="reference internal" href="tuning/operators.html">Operators</a></li>
 <li class="toctree-l2"><a class="reference internal" href="tuning/transitions.html">Row/Columnar Transitions</a></li>
 </ul>
 <p aria-level="2" class="caption" role="heading"><span class="caption-text">Integrations</span></p>
 <ul>
-<li class="toctree-l2"><a class="reference internal" href="delta.html">Delta Lake (experimental)</a></li>
-<li class="toctree-l2"><a class="reference internal" href="iceberg.html">Iceberg Guide</a></li>
-<li class="toctree-l2"><a class="reference internal" href="iceberg-writes.html">Iceberg Writes</a></li>
 <li class="toctree-l2"><a class="reference internal" href="celeborn.html">Celeborn Guide</a></li>
-<li class="toctree-l2"><a class="reference internal" href="s3-credential-providers.html">S3 Credential Providers</a></li>
 <li class="toctree-l2"><a class="reference internal" href="kubernetes.html">Kubernetes Guide</a></li>
 </ul>
 <p aria-level="2" class="caption" role="heading"><span class="caption-text">Advanced</span></p>
@@ -931,7 +931,7 @@ which stays off by default. With it on, Comet plans an Iceberg <code class="docu
 and copy-on-write <code class="docutils literal notranslate"><span class="pre">DELETE</span></code>, <code class="docutils literal notranslate"><span class="pre">UPDATE</span></code> or <code class="docutils literal notranslate"><span class="pre">MERGE</span></code> as two operators, <code class="docutils literal notranslate"><span class="pre">IcebergWrite</span></code> under
 <code class="docutils literal notranslate"><span class="pre">IcebergCommit</span></code>, in place of Spark’s single V2 write operator, and writes the data files of each
 eligible write natively with iceberg-rust. A write that is not eligible uses iceberg-java’s writer,
-and iceberg-java commits every write. Before turning it on, see <a class="reference internal" href="iceberg-writes.html"><span class="std std-doc">Iceberg Writes</span></a>
+and iceberg-java commits every write. Before turning it on, see <a class="reference internal" href="iceberg.html#writes"><span class="std std-ref">Iceberg Writes</span></a>
 for how natively written files differ from iceberg-java’s, the footer reads the native path makes on
 S3 or GCS, and how the native writer draws on Comet’s off-heap memory pool.</p>
 <p>Comet 1.1.0 named this setting <code class="docutils literal notranslate"><span class="pre">spark.comet.iceberg.write.enabled</span></code>, in the testing category, and it

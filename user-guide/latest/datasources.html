@@ -68,7 +68,7 @@ under the License.
     <script src="../../_static/comet-ux.js?v=97577a30"></script>
     <link rel="index" title="Index" href="../../genindex.html" />
     <link rel="search" title="Search" href="../../search.html" />
-    <link rel="next" title="Spark Data Type Support" href="datatypes.html" />
+    <link rel="next" title="Parquet" href="parquet.html" />
     <link rel="prev" title="Comet Upgrade Guide" href="migration-guide.html" />
 
   <meta name="viewport" content="width=device-width, initial-scale=1"/>
@@ -506,9 +506,16 @@ under the License.
 <li class="toctree-l2"><a class="reference internal" href="configs.html">Configuration Settings</a></li>
 <li class="toctree-l2"><a class="reference internal" href="migration-guide.html">Upgrading Comet</a></li>
 </ul>
-<p aria-level="2" class="caption" role="heading"><span class="caption-text">What Comet Supports</span></p>
+<p aria-level="2" class="caption" role="heading"><span class="caption-text">Data Sources</span></p>
 <ul class="current">
 <li class="toctree-l2 current"><a class="current reference internal" href="#">Supported Data Sources</a></li>
+<li class="toctree-l2"><a class="reference internal" href="parquet.html">Parquet</a></li>
+<li class="toctree-l2"><a class="reference internal" href="iceberg.html">Apache Iceberg</a></li>
+<li class="toctree-l2"><a class="reference internal" href="delta.html">Delta Lake (experimental)</a></li>
+<li class="toctree-l2"><a class="reference internal" href="s3-credential-providers.html">S3 Credential Providers</a></li>
+</ul>
+<p aria-level="2" class="caption" role="heading"><span class="caption-text">What Comet Supports</span></p>
+<ul>
 <li class="toctree-l2"><a class="reference internal" href="datatypes.html">Supported Data Types</a></li>
 <li class="toctree-l2"><a class="reference internal" href="operators.html">Supported Operators</a></li>
 <li class="toctree-l2"><a class="reference internal" href="expressions.html">Supported Expressions</a></li>
@@ -518,8 +525,6 @@ under the License.
 <p aria-level="2" class="caption" role="heading"><span class="caption-text">Compatibility</span></p>
 <ul>
 <li class="toctree-l2"><a class="reference internal" href="compatibility/index.html">Overview</a></li>
-<li class="toctree-l2"><a class="reference internal" href="compatibility/scans.html">Parquet Compatibility</a></li>
-<li class="toctree-l2"><a class="reference internal" href="compatibility/parquet-iceberg-known-issues.html">Known Issues in Parquet and Iceberg Reads and Writes</a></li>
 <li class="toctree-l2"><a class="reference internal" href="compatibility/floating-point.html">Floating-point Number Comparison</a></li>
 <li class="toctree-l2"><a class="reference internal" href="compatibility/regex.html">Regular Expressions</a></li>
 <li class="toctree-l2"><a class="reference internal" href="compatibility/operators.html">Operator Compatibility</a></li>
@@ -607,17 +612,12 @@ under the License.
 <li class="toctree-l2"><a class="reference internal" href="tuning/memory.html">Memory</a></li>
 <li class="toctree-l2"><a class="reference internal" href="tuning/shuffle.html">Shuffle</a></li>
 <li class="toctree-l2"><a class="reference internal" href="tuning/celeborn.html">Celeborn Shuffle</a></li>
-<li class="toctree-l2"><a class="reference internal" href="tuning/scans.html">Scans</a></li>
 <li class="toctree-l2"><a class="reference internal" href="tuning/operators.html">Operators</a></li>
 <li class="toctree-l2"><a class="reference internal" href="tuning/transitions.html">Row/Columnar Transitions</a></li>
 </ul>
 <p aria-level="2" class="caption" role="heading"><span class="caption-text">Integrations</span></p>
 <ul>
-<li class="toctree-l2"><a class="reference internal" href="delta.html">Delta Lake (experimental)</a></li>
-<li class="toctree-l2"><a class="reference internal" href="iceberg.html">Iceberg Guide</a></li>
-<li class="toctree-l2"><a class="reference internal" href="iceberg-writes.html">Iceberg Writes</a></li>
 <li class="toctree-l2"><a class="reference internal" href="celeborn.html">Celeborn Guide</a></li>
-<li class="toctree-l2"><a class="reference internal" href="s3-credential-providers.html">S3 Credential Providers</a></li>
 <li class="toctree-l2"><a class="reference internal" href="kubernetes.html">Kubernetes Guide</a></li>
 </ul>
 <p aria-level="2" class="caption" role="heading"><span class="caption-text">Advanced</span></p>
@@ -851,15 +851,14 @@ under the License.
 <h2>File Formats<a class="headerlink" href="#file-formats" title="Link to this heading">#</a></h2>
 <section id="parquet">
 <h3>Parquet<a class="headerlink" href="#parquet" title="Link to this heading">#</a></h3>
-<p>Parquet scans run in Rust via DataFusion if all data types in the schema are supported. When the scan
-falls back to Spark, enabling <code class="docutils literal notranslate"><span class="pre">spark.comet.convert.parquet.enabled</span></code> will immediately convert the data into
-Arrow format, allowing the Comet pipeline to take over after that, but the process may not be efficient.</p>
+<p>Parquet scans run in Rust via DataFusion if all data types in the schema are supported. See the
+<a class="reference internal" href="parquet.html"><span class="std std-doc">Parquet</span></a> page for what falls back to Spark, differences from Spark, tuning, and known
+issues.</p>
 </section>
 <section id="apache-iceberg">
 <h3>Apache Iceberg<a class="headerlink" href="#apache-iceberg" title="Link to this heading">#</a></h3>
 <p>Comet accelerates Iceberg scans of Parquet files and can write the data files of eligible Iceberg
-writes natively, an opt-in feature. See the <a class="reference internal" href="iceberg.html"><span class="std std-doc">Iceberg Guide</span></a> and <a class="reference internal" href="iceberg-writes.html"><span class="std std-doc">Iceberg Writes</span></a>
-for more information.</p>
+writes natively, an opt-in feature. See the <a class="reference internal" href="iceberg.html"><span class="std std-doc">Iceberg</span></a> page for more information.</p>
 </section>
 <section id="csv">
 <h3>CSV<a class="headerlink" href="#csv" title="Link to this heading">#</a></h3>
@@ -931,7 +930,7 @@ them, and the conversion and the Comet operators above it would read ahead of th
 <h2>Data Catalogs<a class="headerlink" href="#data-catalogs" title="Link to this heading">#</a></h2>
 <section id="id1">
 <h3>Apache Iceberg<a class="headerlink" href="#id1" title="Link to this heading">#</a></h3>
-<p>See the dedicated <a class="reference internal" href="iceberg.html"><span class="std std-doc">Comet and Iceberg Guide</span></a>.</p>
+<p>See the dedicated <a class="reference internal" href="iceberg.html"><span class="std std-doc">Iceberg</span></a> page.</p>
 </section>
 </section>
 <section id="supported-storages">
@@ -974,7 +973,7 @@ attaches its own worker threads, so a worker that has read from HDFS can crash t
 the HDFS read itself, typically while an unrelated query is running.</p>
 </div>
 <p>Native Iceberg scans do not support HDFS-backed tables; those scans fall back to Spark. See the
-<a class="reference internal" href="iceberg.html"><span class="std std-doc">Comet and Iceberg Guide</span></a>.</p>
+<a class="reference internal" href="iceberg.html"><span class="std std-doc">Iceberg</span></a> page.</p>
 </section>
 <section id="building-comet-with-hdfs-support">
 <h3>Building Comet with HDFS support<a class="headerlink" href="#building-comet-with-hdfs-support" title="Link to this heading">#</a></h3>
@@ -1249,7 +1248,7 @@ override it.</p>
 described in <a class="reference internal" href="#additional-s3-configuration-options">Additional S3 Configuration Options</a>, so the
 credential providers and options documented above also apply to alias-scheme URLs. The same
 translation feeds the native Iceberg scan; see
-<a class="reference internal" href="iceberg.html#object-store-configuration-s3"><span class="std std-ref">Object store configuration (S3)</span></a> in the Iceberg guide.</p>
+<a class="reference internal" href="iceberg.html#object-store-configuration-s3"><span class="std std-ref">Object store configuration (S3)</span></a> on the Iceberg page.</p>
 <p>A native Parquet or CSV scan whose alias-scheme paths span more than one bucket resolves the alias
 settings for each bucket. Alias schemes apply to native scans only: a native Iceberg write to an
 alias-scheme location falls back to iceberg-java.</p>
@@ -1278,12 +1277,14 @@ alias-scheme location falls back to iceberg-java.</p>
 </pre></div>
 </div>
 </section>
-<section id="limitations">
-<h3>Limitations<a class="headerlink" href="#limitations" title="Link to this heading">#</a></h3>
+<section id="s3-limitations">
+<h3>S3 Limitations<a class="headerlink" href="#s3-limitations" title="Link to this heading">#</a></h3>
 <p>Comet’s S3 support has the following limitations:</p>
 <ol class="arabic simple">
 <li><p><strong>Partial Hadoop S3A configuration support</strong>: Not all Hadoop S3A configurations are currently supported. Only the configurations listed in the tables above are translated and applied to the underlying <code class="docutils literal notranslate"><span class="pre">object_store</span></code> crate.</p></li>
 <li><p><strong>Custom credential providers</strong>: Custom credential provider classes named in <code class="docutils literal notranslate"><span class="pre">fs.s3a.aws.credentials.provider</span></code> are not supported; only the standard providers listed in the table above are. To route credential requests through your own Java code, implement Comet’s <code class="docutils literal notranslate"><span class="pre">CometS3CredentialProvider</span></code> SPI; see <a class="reference internal" href="s3-credential-providers.html"><span class="std std-doc">S3 Credential Providers</span></a>. Broader Hadoop S3A integration is tracked in <a class="reference external" href="https://github.com/apache/datafusion-comet/issues/1829">#1829</a>.</p></li>
+<li><p><strong>Settings that Hadoop’s S3A client resolves differently</strong>: The native scans resolve storage settings with their own client rather than with Hadoop’s. Where the two disagree, a native read can use a different identity or route than Spark and fail where Spark succeeds. Examples are JCEKS-backed secrets and the precedence of per-bucket settings, which the native Parquet scan forwards without checking for a difference (<a class="reference external" href="https://github.com/apache/datafusion-comet/issues/5662">#5662</a>).</p></li>
+<li><p><strong>AWS profile credential providers</strong>: The native scans ignore <code class="docutils literal notranslate"><span class="pre">fs.s3a.auth.profile.name</span></code> and <code class="docutils literal notranslate"><span class="pre">fs.s3a.auth.profile.file</span></code> (<a class="reference external" href="https://github.com/apache/datafusion-comet/issues/4245">#4245</a>), and resolve some profiles differently from Hadoop 3.4 and later, for example profiles that use <code class="docutils literal notranslate"><span class="pre">credential_process</span></code> or chains of assumed roles (<a class="reference external" href="https://github.com/apache/datafusion-comet/issues/6575">#6575</a>).</p></li>
 </ol>
 </section>
 </section>
@@ -1423,13 +1424,14 @@ The Hadoop ABFS configuration you already have (the <code class="docutils litera
 <li><p>A configured mechanism the native scan cannot build fails with an error instead of silently reading the environment.</p></li>
 </ul>
 </section>
-<section id="id4">
-<h3>Limitations<a class="headerlink" href="#id4" title="Link to this heading">#</a></h3>
+<section id="azure-limitations">
+<h3>Azure Limitations<a class="headerlink" href="#azure-limitations" title="Link to this heading">#</a></h3>
 <ol class="arabic simple">
 <li><p><strong>Authentication keys only</strong>: Only the keys in the table above reach the native store. Other <code class="docutils literal notranslate"><span class="pre">fs.azure.*</span></code> settings (read-ahead, retries, HTTP tuning) do not apply to the native scan.</p></li>
 <li><p><strong>Supported schemes</strong>: Only <code class="docutils literal notranslate"><span class="pre">abfs</span></code> and <code class="docutils literal notranslate"><span class="pre">abfss</span></code> are routed to the native Azure store. <code class="docutils literal notranslate"><span class="pre">wasb[s]</span></code>, <code class="docutils literal notranslate"><span class="pre">az</span></code>, <code class="docutils literal notranslate"><span class="pre">azure</span></code>, and <code class="docutils literal notranslate"><span class="pre">adl</span></code> are not supported. <code class="docutils literal notranslate"><span class="pre">wasb[s]</span></code> is not recognised by <code class="docutils literal notranslate"><span class="pre">object_store</span></code> at all; <code class="docutils literal notranslate"><span class="pre">az</span></code>, <code class="docutils literal notranslate"><span class="pre">azure</span></code>, and <code class="docutils literal notranslate"><span class="pre">adl</span></code> are recognised by <code class="docutils literal notranslate"><span class="pre">object_store</span></code> but treat the URL host as the <em>container</em> rather than the <em>account</em>, which is incompatible with Hadoop’s account-scoped configuration keys.</p></li>
 <li><p><strong>URL shape</strong>: URLs must include the account in the host, i.e. <code class="docutils literal notranslate"><span class="pre">abfss://&lt;container&gt;&#64;&lt;account&gt;.dfs.core.windows.net/&lt;path&gt;</span></code>. Bare <code class="docutils literal notranslate"><span class="pre">abfs://&lt;container&gt;/&lt;path&gt;</span></code> (fsspec-style, no account in the URL) is not supported because Comet cannot resolve the storage account name.</p></li>
 <li><p><strong>Endpoint hosts</strong>: <code class="docutils literal notranslate"><span class="pre">object_store</span></code> builds an Azure store only for hosts under <code class="docutils literal notranslate"><span class="pre">dfs.core.windows.net</span></code>, <code class="docutils literal notranslate"><span class="pre">blob.core.windows.net</span></code>, <code class="docutils literal notranslate"><span class="pre">dfs.fabric.microsoft.com</span></code> and <code class="docutils literal notranslate"><span class="pre">blob.fabric.microsoft.com</span></code>. Sovereign-cloud endpoints such as <code class="docutils literal notranslate"><span class="pre">dfs.core.chinacloudapi.cn</span></code> are not supported, whatever keys are configured for them.</p></li>
+<li><p><strong>Credentials that resolve differently from Hadoop’s ABFS driver</strong>: Container-scoped OAuth settings, Fabric hosts and a few other configurations resolve differently from Hadoop’s ABFS driver, so a native read can fail where Spark succeeds (<a class="reference external" href="https://github.com/apache/datafusion-comet/issues/6605">#6605</a>).</p></li>
 </ol>
 </section>
 </section>
@@ -1455,11 +1457,11 @@ The Hadoop ABFS configuration you already have (the <code class="docutils litera
       </div>
     </a>
     <a class="right-next"
-       href="datatypes.html"
+       href="parquet.html"
        title="next page">
       <div class="prev-next-info">
         <p class="prev-next-subtitle">next</p>
-        <p class="prev-next-title">Spark Data Type Support</p>
+        <p class="prev-next-title">Parquet</p>
       </div>
       <i class="fa-solid fa-angle-right"></i>
     </a>
@@ -1508,7 +1510,7 @@ The Hadoop ABFS configuration you already have (the <code class="docutils litera
 <li class="toc-h3 nav-item toc-entry"><a class="reference internal nav-link" href="#additional-s3-configuration-options">Additional S3 Configuration Options</a></li>
 <li class="toc-h3 nav-item toc-entry"><a class="reference internal nav-link" href="#s3-compliant-filesystem-schemes">S3-Compliant Filesystem Schemes</a></li>
 <li class="toc-h3 nav-item toc-entry"><a class="reference internal nav-link" href="#examples">Examples</a></li>
-<li class="toc-h3 nav-item toc-entry"><a class="reference internal nav-link" href="#limitations">Limitations</a></li>
+<li class="toc-h3 nav-item toc-entry"><a class="reference internal nav-link" href="#s3-limitations">S3 Limitations</a></li>
 </ul>
 </li>
 <li class="toc-h2 nav-item toc-entry"><a class="reference internal nav-link" href="#azure">Azure</a><ul class="nav section-nav flex-column">
@@ -1521,7 +1523,7 @@ The Hadoop ABFS configuration you already have (the <code class="docutils litera
 <li class="toc-h3 nav-item toc-entry"><a class="reference internal nav-link" href="#credentials-in-transit">Credentials in transit</a></li>
 <li class="toc-h3 nav-item toc-entry"><a class="reference internal nav-link" href="#id3">Examples</a></li>
 <li class="toc-h3 nav-item toc-entry"><a class="reference internal nav-link" href="#changes-from-comet-1-1">Changes from Comet 1.1</a></li>
-<li class="toc-h3 nav-item toc-entry"><a class="reference internal nav-link" href="#id4">Limitations</a></li>
+<li class="toc-h3 nav-item toc-entry"><a class="reference internal nav-link" href="#azure-limitations">Azure Limitations</a></li>
 </ul>
 </li>
 </ul>

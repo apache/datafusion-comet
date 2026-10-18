@@ -562,7 +562,7 @@ aimed at contributors working on datetime expressions, casts, scans, or any nati
 produces or consumes timestamp columns. For user-facing differences from Spark, see the
 datetime and cast sections of the
 <a class="reference internal" href="../user-guide/latest/compatibility/expressions/index.html"><span class="std std-doc">Expression Compatibility</span></a> pages, and the
-<a class="reference internal" href="../user-guide/latest/compatibility/scans.html"><span class="std std-doc">scan compatibility</span></a> notes. Known bugs are tracked in
+<a class="reference internal" href="../user-guide/latest/parquet.html"><span class="std std-doc">Parquet</span></a> notes. Known bugs are tracked in
 <a class="reference external" href="https://github.com/apache/datafusion-comet/issues/6335">#6335</a>.</p>
 <p>The short version: Comet never converts timestamp values at the JVM/native boundary. The session
 timezone is not part of a value. It travels with each timezone-aware expression and is applied
