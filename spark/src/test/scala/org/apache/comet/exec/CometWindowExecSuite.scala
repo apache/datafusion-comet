@@ -2084,11 +2084,10 @@ class CometWindowExecSuite extends CometTestBase {
   }
 
   test("window: RANGE BETWEEN with DECIMAL(38, 0) ORDER BY (max precision)") {
-    // Max-precision Decimal storage. Values are kept well below Decimal128
-    // max so `current +/- offset` never overflows; that keeps the test on
-    // topic (native RANGE frame arithmetic on the widest decimal precision)
-    // and off the overflow-semantics divergence between Spark ANSI and
-    // DataFusion's `add_checked`.
+    // Max-precision Decimal storage. Values and offset are kept well away from
+    // the Decimal128 limit, so `current +/- offset` never overflows and the
+    // frame runs natively; the overflow case falls back and is covered by the
+    // tests further down.
     withTempDir { dir =>
       Seq((1, "10", 10), (1, "13", 20), (1, "15", 30), (1, "18", 40), (1, "22", 50))
         .toDF("a", "d_str", "c")
@@ -2108,12 +2107,15 @@ class CometWindowExecSuite extends CometTestBase {
     }
   }
 
-  private def writeDecimalOverflowFixture(dir: java.io.File, values: Seq[String]): Unit = {
+  private def writeDecimalOverflowFixture(
+      dir: java.io.File,
+      values: Seq[String],
+      decimalType: String = "DECIMAL(38, 0)"): Unit = {
     values
       .map(Option(_))
       .:+(Option.empty[String])
       .toDF("d_str")
-      .selectExpr("CAST(d_str AS DECIMAL(38, 0)) AS d")
+      .selectExpr(s"CAST(d_str AS $decimalType) AS d")
       .repartition(1)
       .write
       .mode("overwrite")
@@ -2168,6 +2170,74 @@ class CometWindowExecSuite extends CometTestBase {
             SELECT d, COUNT(*) OVER (ORDER BY d $order
                                      RANGE BETWEEN $offset PRECEDING AND $offset FOLLOWING) AS cnt
             FROM dec_edge
+          """)
+          checkSparkAnswerAndOperator(df)
+        }
+      }
+    }
+  }
+
+  // With a non-zero scale the limit is the same 2^127 - 1 minus the largest unscaled value,
+  // 70141183460469231731687303715884105728 unscaled, that is
+  // 7014118346046923173168730371.5884105728 at scale 10. A FOLLOWING offset is not negated, so
+  // it reaches Spark's frame exactly.
+  private val maxDecimal38s10 = "9" * 28 + "." + "9" * 10
+  private val decimal38s10Limit = "7014118346046923173168730371.5884105728"
+
+  test(
+    "window: RANGE offset on DECIMAL(38, 10) ORDER BY just over the Decimal128 limit falls back") {
+    // The bound of the largest value, one unscaled unit past 2^127 - 1, overflows natively and
+    // becomes the partition edge, which takes the trailing NULL in under NULLS LAST.
+    // https://github.com/apache/datafusion-comet/issues/5022
+    val offset = "7014118346046923173168730371.5884105729"
+    withTempDir { dir =>
+      writeDecimalOverflowFixture(
+        dir,
+        Seq(s"-$maxDecimal38s10", "0", maxDecimal38s10),
+        "DECIMAL(38, 10)")
+      spark.read.parquet(dir.toString).createOrReplaceTempView("dec_s10_over")
+      for {
+        ansi <- Seq("true", "false")
+        order <- Seq("ASC NULLS LAST", "DESC NULLS FIRST")
+      } {
+        withSQLConf(SQLConf.ANSI_ENABLED.key -> ansi) {
+          val df = sql(s"""
+            SELECT d, COUNT(*) OVER (ORDER BY d $order
+                                     RANGE BETWEEN CURRENT ROW AND $offset FOLLOWING) AS cnt
+            FROM dec_s10_over
+          """)
+          val (_, cometPlan) = checkSparkAnswerAndFallbackReason(
+            df,
+            "RANGE frame on decimal(38,10) ORDER BY with an offset whose bound can overflow " +
+              "Decimal128 is not supported")
+          assert(collect(cometPlan) { case w: CometWindowExec => w }.isEmpty, cometPlan)
+        }
+      }
+    }
+  }
+
+  test("window: RANGE offset on DECIMAL(38, 10) ORDER BY at the Decimal128 limit runs natively") {
+    // At the limit itself the bound of the largest value is exactly 2^127 - 1. A PRECEDING
+    // offset is negated with 34 significant digits, so the two-sided frame uses the largest
+    // 34-digit offset under the limit.
+    withTempDir { dir =>
+      writeDecimalOverflowFixture(
+        dir,
+        Seq(s"-$maxDecimal38s10", "0", maxDecimal38s10),
+        "DECIMAL(38, 10)")
+      spark.read.parquet(dir.toString).createOrReplaceTempView("dec_s10_edge")
+      val under = "7014118346046923173168730371.5884100000"
+      for {
+        ansi <- Seq("true", "false")
+        order <- Seq("ASC NULLS LAST", "ASC NULLS FIRST", "DESC NULLS LAST", "DESC NULLS FIRST")
+        frame <- Seq(
+          s"RANGE BETWEEN CURRENT ROW AND $decimal38s10Limit FOLLOWING",
+          s"RANGE BETWEEN $under PRECEDING AND $under FOLLOWING")
+      } {
+        withSQLConf(SQLConf.ANSI_ENABLED.key -> ansi) {
+          val df = sql(s"""
+            SELECT d, COUNT(*) OVER (ORDER BY d $order $frame) AS cnt
+            FROM dec_s10_edge
           """)
           checkSparkAnswerAndOperator(df)
         }
