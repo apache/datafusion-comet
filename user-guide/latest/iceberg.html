@@ -1013,6 +1013,9 @@ projected is read natively)</p></li>
 <li><p>Queries that use <code class="docutils literal notranslate"><span class="pre">input_file_name()</span></code>, <code class="docutils literal notranslate"><span class="pre">input_file_block_start()</span></code> or <code class="docutils literal notranslate"><span class="pre">input_file_block_length()</span></code></p></li>
 <li><p>Scans whose data or delete files span more than one S3 bucket (the native reader uses one
 object-store configuration per scan)</p></li>
+<li><p>Scans where Iceberg reports an output ordering (for example with
+<code class="docutils literal notranslate"><span class="pre">spark.sql.iceberg.planning.preserve-data-ordering=true</span></code>). Spark may then skip the sort above the
+scan, and the native reader does not preserve file order</p></li>
 <li><p>Tables partitioned on <code class="docutils literal notranslate"><span class="pre">BINARY</span></code> or <code class="docutils literal notranslate"><span class="pre">DECIMAL</span></code> (with precision &gt;28) columns</p></li>
 <li><p>Scans with residual filters using <code class="docutils literal notranslate"><span class="pre">truncate</span></code>, <code class="docutils literal notranslate"><span class="pre">bucket</span></code>, <code class="docutils literal notranslate"><span class="pre">year</span></code>, <code class="docutils literal notranslate"><span class="pre">month</span></code>, <code class="docutils literal notranslate"><span class="pre">day</span></code>, or <code class="docutils literal notranslate"><span class="pre">hour</span></code>
 transform functions (partition pruning still works, but row-level filtering of these
