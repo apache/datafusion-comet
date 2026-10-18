@@ -1489,7 +1489,7 @@ class CometTaskMetricsSuite extends CometTestBase with AdaptiveSparkPlanHelper {
           run(plainQuery, confs)
         val plainScan = collectFirst(plainPlan) { case s: CometNativeScanExec => s }.get
         assert(
-          plainScan.outputPartitioning.numPartitions == 4,
+          plainScan.perPartitionData.length == 4,
           s"Expected one scan partition per file:\n${plainPlan.treeString}")
         assert(plainTasks == 4, s"Expected 4 tasks at interval $interval, got $plainTasks")
         assert(plainRows == totalRows, s"output_rows at interval $interval: $plainRows")

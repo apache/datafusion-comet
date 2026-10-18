@@ -19,15 +19,32 @@
 
 package org.apache.comet.shims
 
+import org.apache.spark.sql.catalyst.plans.logical.{LogicalPlan, MergeRows}
+import org.apache.spark.sql.catalyst.trees.TreeNodeTag
 import org.apache.spark.sql.execution.SparkPlan
+import org.apache.spark.sql.execution.datasources.v2.MergeRowsExec
 
 import org.apache.comet.serde.CometOperatorSerde
+import org.apache.comet.serde.operator.CometMergeRows
 
-/**
- * Spark 4.1+ derives a `MergeSummary` from Spark's concrete `MergeRowsExec` and passes it through
- * the summary-aware V2 commit contract. Keep MergeRows on the JVM until Comet preserves that
- * contract end to end.
- */
+/** Spark 4.1+ native MERGE requires a writer that consumes its semantic counters. */
 object ShimCometMergeRows {
-  val nativeExecs: Map[Class[_ <: SparkPlan], CometOperatorSerde[_]] = Map.empty
+  val nativeExecs: Map[Class[_ <: SparkPlan], CometOperatorSerde[_]] =
+    Map(classOf[MergeRowsExec] -> CometMergeRows)
+
+  private val summaryAware = TreeNodeTag[Boolean]("comet.mergeRows.summaryAware")
+
+  // Clone before tagging: tag-only transforms can discard structurally equal copies. The tag
+  // follows logical links through AQE replanning, where the enclosing writer is no longer present.
+  def withNativeMergeSummary(query: LogicalPlan): LogicalPlan = {
+    val tagged = query.clone()
+    tagged.foreach {
+      case merge: MergeRows => merge.setTagValue(summaryAware, true)
+      case _ =>
+    }
+    tagged
+  }
+
+  def hasNativeMergeSummary(op: MergeRowsExec): Boolean =
+    op.logicalLink.exists(_.getTagValue(summaryAware).contains(true))
 }

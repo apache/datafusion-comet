@@ -78,7 +78,8 @@ object CometExecUtils {
         outputAttribute.length,
         serializedPlan,
         numParts,
-        idx)
+        idx,
+        outputAttribute.map(_.dataType))
     }
   }
 
