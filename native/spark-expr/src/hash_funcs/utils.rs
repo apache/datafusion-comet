@@ -116,7 +116,7 @@ macro_rules! hash_array_primitive {
 
 #[macro_export]
 macro_rules! hash_array_primitive_float {
-    ($array_type: ident, $column: ident, $ty: ident, $ty2: ident, $hashes: ident, $hash_method: ident) => {
+    ($array_type: ident, $column: ident, $hashes: ident, $hash_method: ident) => {
         let array = $column
             .as_any()
             .downcast_ref::<$array_type>()
@@ -132,25 +132,62 @@ macro_rules! hash_array_primitive_float {
         if array.null_count() == 0 {
             // Fast path: no nulls, use direct indexing
             for i in 0..values.len() {
-                let value = values[i];
-                // Spark uses 0 as hash for -0.0, see `Murmur3Hash` expression.
-                if value == 0.0 && value.is_sign_negative() {
-                    $hashes[i] = $hash_method((0 as $ty2).to_le_bytes(), $hashes[i]);
-                } else {
-                    $hashes[i] = $hash_method((value as $ty).to_le_bytes(), $hashes[i]);
-                }
+                let value = $crate::float_semantics::hash_input(values[i]);
+                $hashes[i] = $hash_method(value.to_le_bytes(), $hashes[i]);
             }
         } else {
             // Slow path: check nulls
             for i in 0..values.len() {
                 if !array.is_null(i) {
-                    let value = values[i];
-                    // Spark uses 0 as hash for -0.0, see `Murmur3Hash` expression.
-                    if value == 0.0 && value.is_sign_negative() {
-                        $hashes[i] = $hash_method((0 as $ty2).to_le_bytes(), $hashes[i]);
-                    } else {
-                        $hashes[i] = $hash_method((value as $ty).to_le_bytes(), $hashes[i]);
-                    }
+                    let value = $crate::float_semantics::hash_input(values[i]);
+                    $hashes[i] = $hash_method(value.to_le_bytes(), $hashes[i]);
+                }
+            }
+        }
+    };
+}
+
+#[macro_export]
+macro_rules! hash_array_interval_month_day_nano {
+    ($column: ident, $hashes: ident, $hash_method: ident) => {
+        let array = $column
+            .as_any()
+            .downcast_ref::<IntervalMonthDayNanoArray>()
+            .unwrap_or_else(|| {
+                panic!(
+                    "Failed to downcast column to {}. Actual data type: {:?}.",
+                    stringify!(IntervalMonthDayNanoArray),
+                    $column.data_type()
+                )
+            });
+
+        // The `nanoseconds / 1_000` below is exact: Spark's `CalendarInterval` is
+        // microsecond-based, and both JVM-to-Arrow producers
+        // (`ArrowWriters.CalendarIntervalWriter` and the codegen dispatch kernel) convert
+        // with `Math.multiplyExact(microseconds, 1000L)`, so the nanoseconds field is
+        // always an exact multiple of 1000 and out-of-range intervals throw at
+        // conversion time instead of reaching this hasher.
+        if array.null_count() == 0 {
+            // Fast path: no nulls, use direct indexing
+            for i in 0..$hashes.len() {
+                let value = array.value(i);
+                // Match Spark 4.2 generated code, which omits the days field:
+                // https://github.com/apache/spark/blob/v4.2.0/sql/catalyst/src/main/scala/org/apache/spark/sql/catalyst/expressions/hash.scala#L428-L431
+                // SPARK-58236 includes days starting in Spark 4.3; the version
+                // switch for that is tracked in
+                // https://github.com/apache/datafusion-comet/issues/5498.
+                $hashes[i] =
+                    $hash_method((value.nanoseconds / 1_000).to_le_bytes(), $hashes[i]);
+                $hashes[i] = $hash_method(value.months.to_le_bytes(), $hashes[i]);
+            }
+        } else {
+            // Slow path: check nulls
+            for i in 0..$hashes.len() {
+                if !array.is_null(i) {
+                    let value = array.value(i);
+                    $hashes[i] =
+                        $hash_method((value.nanoseconds / 1_000).to_le_bytes(), $hashes[i]);
+                    $hashes[i] = $hash_method(value.months.to_le_bytes(), $hashes[i]);
                 }
             }
         }
@@ -315,12 +352,12 @@ macro_rules! hash_list_with_primitive_elements {
             DataType::Float32 => {
                 let elem_array = $values.as_any().downcast_ref::<Float32Array>().unwrap();
                 $crate::hash_list_primitive!(offsets: $offsets, $list_array, elem_array, $hashes_buffer, $hash_method,
-                    |v: f32| if v == 0.0 && v.is_sign_negative() { (0_i32).to_le_bytes() } else { v.to_le_bytes() });
+                    |v: f32| $crate::float_semantics::hash_input(v).to_le_bytes());
             }
             DataType::Float64 => {
                 let elem_array = $values.as_any().downcast_ref::<Float64Array>().unwrap();
                 $crate::hash_list_primitive!(offsets: $offsets, $list_array, elem_array, $hashes_buffer, $hash_method,
-                    |v: f64| if v == 0.0 && v.is_sign_negative() { (0_i64).to_le_bytes() } else { v.to_le_bytes() });
+                    |v: f64| $crate::float_semantics::hash_input(v).to_le_bytes());
             }
             DataType::Boolean => {
                 let elem_array = $values.as_any().downcast_ref::<BooleanArray>().unwrap();
@@ -414,12 +451,12 @@ macro_rules! hash_list_with_primitive_elements {
             DataType::Float32 => {
                 let elem_array = $values.as_any().downcast_ref::<Float32Array>().unwrap();
                 $crate::hash_list_primitive!(fixed_size: $list_size, $list_array, elem_array, $hashes_buffer, $hash_method,
-                    |v: f32| if v == 0.0 && v.is_sign_negative() { (0_i32).to_le_bytes() } else { v.to_le_bytes() });
+                    |v: f32| $crate::float_semantics::hash_input(v).to_le_bytes());
             }
             DataType::Float64 => {
                 let elem_array = $values.as_any().downcast_ref::<Float64Array>().unwrap();
                 $crate::hash_list_primitive!(fixed_size: $list_size, $list_array, elem_array, $hashes_buffer, $hash_method,
-                    |v: f64| if v == 0.0 && v.is_sign_negative() { (0_i64).to_le_bytes() } else { v.to_le_bytes() });
+                    |v: f64| $crate::float_semantics::hash_input(v).to_le_bytes());
             }
             DataType::Boolean => {
                 let elem_array = $values.as_any().downcast_ref::<BooleanArray>().unwrap();
@@ -789,7 +826,7 @@ macro_rules! hash_list_array {
 #[macro_export]
 macro_rules! create_hashes_internal {
     ($arrays: ident, $hashes_buffer: ident, $hash_method: ident, $create_dictionary_hash_method: ident, $recursive_hash_method: ident) => {
-        use arrow::datatypes::{DataType, TimeUnit};
+        use arrow::datatypes::{DataType, IntervalUnit, TimeUnit};
         use arrow::array::{types::*, *};
         use datafusion_comet_common::children_with_parent_nulls;
 
@@ -854,8 +891,6 @@ macro_rules! create_hashes_internal {
                     $crate::hash_array_primitive_float!(
                         Float32Array,
                         col,
-                        f32,
-                        i32,
                         $hashes_buffer,
                         $hash_method
                     );
@@ -864,8 +899,6 @@ macro_rules! create_hashes_internal {
                     $crate::hash_array_primitive_float!(
                         Float64Array,
                         col,
-                        f64,
-                        i64,
                         $hashes_buffer,
                         $hash_method
                     );
@@ -929,6 +962,13 @@ macro_rules! create_hashes_internal {
                         Time64NanosecondArray,
                         col,
                         i64,
+                        $hashes_buffer,
+                        $hash_method
+                    );
+                }
+                DataType::Interval(IntervalUnit::MonthDayNano) => {
+                    $crate::hash_array_interval_month_day_nano!(
+                        col,
                         $hashes_buffer,
                         $hash_method
                     );

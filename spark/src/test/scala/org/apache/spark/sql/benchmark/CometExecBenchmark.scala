@@ -46,6 +46,7 @@ object CometExecBenchmark extends CometBenchmarkBase {
       .set(
         "spark.shuffle.manager",
         "org.apache.spark.sql.comet.execution.shuffle.CometShuffleManager")
+      .set("spark.comet.exec.onHeap.enabled", "true")
       .set("spark.comet.shuffle.jvm.spillThreshold", "30000")
 
     val sparkSession = SparkSession
@@ -59,7 +60,6 @@ object CometExecBenchmark extends CometBenchmarkBase {
     sparkSession.conf.set(SQLConf.WHOLESTAGE_CODEGEN_ENABLED.key, "true")
     sparkSession.conf.set(CometConf.COMET_ENABLED.key, "false")
     sparkSession.conf.set(CometConf.COMET_EXEC_ENABLED.key, "false")
-    sparkSession.conf.set(CometConf.COMET_ONHEAP_MEMORY_OVERHEAD.key, "10g")
     // TODO: support dictionary encoding in vectorized execution
     sparkSession.conf.set("parquet.enable.dictionary", "false")
     sparkSession.conf.set("spark.sql.shuffle.partitions", "2")
@@ -70,7 +70,10 @@ object CometExecBenchmark extends CometBenchmarkBase {
   def numericFilterExecBenchmark(values: Int, fractionOfZeros: Double): Unit = {
     val percentageOfZeros = fractionOfZeros * 100
     val benchmark =
-      new Benchmark(s"Project + Filter Exec ($percentageOfZeros% zeros)", values, output = output)
+      new Benchmark(
+        s"Project + Filter Exec ($percentageOfZeros% zeros)",
+        values.toLong,
+        output = output)
 
     withTempPath { dir =>
       withTempTable("parquetV1Table") {
@@ -108,7 +111,7 @@ object CometExecBenchmark extends CometBenchmarkBase {
   }
 
   def subqueryExecBenchmark(values: Int): Unit = {
-    val benchmark = new Benchmark("Subquery", values, output = output)
+    val benchmark = new Benchmark("Subquery", values.toLong, output = output)
 
     withTempPath { dir =>
       withTempTable("parquetV1Table") {
@@ -140,7 +143,7 @@ object CometExecBenchmark extends CometBenchmarkBase {
   }
 
   def sortExecBenchmark(values: Int): Unit = {
-    val benchmark = new Benchmark("Sort Exec", values, output = output)
+    val benchmark = new Benchmark("Sort Exec", values.toLong, output = output)
 
     withTempPath { dir =>
       withTempTable("parquetV1Table") {
@@ -164,7 +167,8 @@ object CometExecBenchmark extends CometBenchmarkBase {
   }
 
   def sampleExecBenchmark(values: Int, fraction: Double): Unit = {
-    val benchmark = new Benchmark(s"Sample Exec (fraction $fraction)", values, output = output)
+    val benchmark =
+      new Benchmark(s"Sample Exec (fraction $fraction)", values.toLong, output = output)
 
     withTempPath { dir =>
       withTempTable("parquetV1Table") {
@@ -194,7 +198,7 @@ object CometExecBenchmark extends CometBenchmarkBase {
   }
 
   def expandExecBenchmark(values: Int): Unit = {
-    val benchmark = new Benchmark("Expand Exec", values, output = output)
+    val benchmark = new Benchmark("Expand Exec", values.toLong, output = output)
 
     withTempPath { dir =>
       withTempTable("parquetV1Table") {
@@ -232,7 +236,7 @@ object CometExecBenchmark extends CometBenchmarkBase {
     val benchmark =
       new Benchmark(
         s"BloomFilterAggregate Exec (cardinality $cardinality)",
-        values,
+        values.toLong,
         output = output)
 
     val funcId_bloom_filter_agg = new FunctionIdentifier("bloom_filter_agg")

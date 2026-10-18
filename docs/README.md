@@ -29,6 +29,26 @@ inside a Python virtualenv.
 
 - Python
 - `pip install -r requirements.txt`
+- Node, and `npm install -g "$(python3 ../dev/ci/check-mermaid.py --cli-spec)"` for the `mmdc` command
+
+`mmdc` draws the ` ```mermaid ` fences into SVG when the docs are built. Without it on
+`PATH` the build still succeeds, but logs a warning and leaves those diagrams out of the pages.
+That is silent all the way to the published site, so two CI checks guard it, both of which you
+can run yourself:
+
+```bash
+python3 ../dev/ci/check-mermaid.py                      # every fence renders under mmdc
+python3 ../dev/ci/check-mermaid.py --built build/html   # every fence reached a page
+```
+
+`mmdc` draws each diagram by driving headless Chrome. Installing mermaid-cli is supposed to fetch
+that browser through puppeteer's `postinstall`, but that script catches its own download failures
+and exits 0, so `Could not find chrome-headless-shell` from the check above means the install went
+green without one. Fetch it explicitly with `npx puppeteer browsers install chrome-headless-shell`.
+
+Chrome's sandbox also cannot start under the AppArmor policy Ubuntu ships from 23.10 onwards.
+`puppeteer-config.json` turns it off, and `mermaid_params` in `source/conf.py` passes that config
+to every render.
 
 ## Build & Preview
 

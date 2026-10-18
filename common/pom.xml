@@ -26,7 +26,7 @@ under the License.
   <parent>
     <groupId>org.apache.datafusion</groupId>
     <artifactId>comet-parent-spark${spark.version.short}_${scala.binary.version}</artifactId>
-    <version>1.1.0-SNAPSHOT</version>
+    <version>1.2.0-SNAPSHOT</version>
     <relativePath>../pom.xml</relativePath>
   </parent>
 
@@ -39,12 +39,11 @@ under the License.
     Kept small on purpose so `mvn compile -pl common` is a cheap prerequisite
     for `cargo test` in the Rust workspace. All other JVM code lives in
     comet-spark.
-  -->
 
-  <properties>
-    <!-- Reverse default (skip installation), and then enable only for child modules -->
-    <maven.deploy.skip>false</maven.deploy.skip>
-  </properties>
+    Not deployed: comet-spark bundles these classes into its shaded jar, so the deploy skip
+    inherited from the parent pom stays in force. It is still installed locally, which is where
+    builds run from inside spark/ look for it.
+  -->
 
   <build>
     <plugins>

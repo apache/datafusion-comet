@@ -31,6 +31,7 @@ extern crate datafusion_comet_jni_bridge;
 
 use jni::{
     objects::{JClass, JString},
+    sys::{jboolean, jstring, JNI_FALSE},
     EnvUnowned,
 };
 use log::info;
@@ -52,8 +53,12 @@ pub mod jvm_bridge {
 
 use errors::{try_unwrap_or_throw, CometError, CometResult};
 
+use crate::cloud::s3::credential_bridge::AccessMode;
+use crate::execution::operators::iceberg_common::builtin_storage_schemes;
+
 pub mod alloc_accounting;
 pub mod cloud;
+pub mod comet_native_udf_bridge;
 pub mod execution;
 pub mod parquet;
 // this module is for non release only. Intended for debugging/profiling purposes
@@ -63,7 +68,8 @@ pub mod debug;
 // Global allocator selection. `backend` names the allocator the feature set asks for: jemalloc
 // where it builds, otherwise mimalloc, otherwise the system allocator. The three cfgs partition
 // every feature combination, so exactly one `backend` exists and a combination matching none would
-// fail to compile rather than install nothing and leave the accounting metric reading zero.
+// fail to compile. Whichever it is, it is installed wrapped in the `AccountingAllocator`, which
+// counts the bytes Rust code holds for the memory usage log and the `native_allocated` metric.
 
 /// jemalloc, on targets where it builds, unless mimalloc was also requested.
 #[cfg(all(
@@ -107,17 +113,15 @@ mod backend {
     pub const NAME: &str = "system";
 }
 
-/// The name of the allocator backend this build selected: `"jemalloc"`, `"mimalloc"` or
-/// `"system"`. The selection is decided here and nowhere else, so the `alloc_overhead` benchmark's
-/// liveness check reads it from here rather than re-deriving it from the feature set.
+/// The allocator backend this build selected, its name (`"jemalloc"`, `"mimalloc"` or
+/// `"system"`), and an instance of it. The selection is decided here and nowhere else, so the
+/// `alloc_overhead` benchmark takes the backend from here to measure it with and without the
+/// accounting wrapper.
 #[doc(hidden)]
-pub use backend::NAME as ALLOCATOR_BACKEND;
+pub use backend::{
+    Backend as AllocatorBackend, BACKEND as BACKEND_ALLOCATOR, NAME as ALLOCATOR_BACKEND,
+};
 
-#[cfg(not(feature = "alloc-accounting"))]
-#[global_allocator]
-static GLOBAL: backend::Backend = backend::BACKEND;
-
-#[cfg(feature = "alloc-accounting")]
 #[global_allocator]
 static GLOBAL: alloc_accounting::AccountingAllocator<backend::Backend> =
     alloc_accounting::AccountingAllocator::new(backend::BACKEND);
@@ -135,20 +139,17 @@ pub extern "system" fn Java_org_apache_comet_NativeBase_init(
     try_unwrap_or_throw(&e, |env| {
         let path: String = log_conf_path.try_to_string(env)?;
 
-        // empty path means there is no custom log4rs config file provided, so fallback to use
-        // the default configuration
-        let log_config = if path.is_empty() {
-            let log_level: String = match log_level.try_to_string(env) {
+        // The log level only applies without a custom log4rs config file.
+        let log_level: String = if path.is_empty() {
+            match log_level.try_to_string(env) {
                 Ok(level) => level,
-                Err(_) => "info".parse().unwrap(),
-            };
-            default_logger_config(&log_level)
+                Err(_) => "info".to_string(),
+            }
         } else {
-            load_config_file(path, Deserializers::default())
-                .map_err(|err| CometError::Config(err.to_string()))
+            String::new()
         };
 
-        let _ = log4rs::init_config(log_config?).map_err(|err| CometError::Config(err.to_string()));
+        init_logging(&path, &log_level)?;
 
         // Initialize the global Java VM
         let java_vm = env.get_java_vm()?;
@@ -158,6 +159,27 @@ pub extern "system" fn Java_org_apache_comet_NativeBase_init(
         info!("Comet native library version {comet_version} initialized");
         Ok(())
     })
+}
+
+/// Initializes logging from the log4rs config file at `log_conf_path`, or, when it is empty, to the
+/// console at `log_level`. Logging can only be initialized once per process; later calls keep the
+/// first configuration. Core of `NativeBase.init`, except for capturing the `JavaVM`.
+pub fn init_logging(log_conf_path: &str, log_level: &str) -> CometResult<()> {
+    let _ = log4rs::init_config(logger_config(log_conf_path, log_level)?)
+        .map_err(|err| CometError::Config(err.to_string()));
+    Ok(())
+}
+
+/// The log4rs config [`init_logging`] installs.
+fn logger_config(log_conf_path: &str, log_level: &str) -> CometResult<Config> {
+    // empty path means there is no custom log4rs config file provided, so fallback to use
+    // the default configuration
+    if log_conf_path.is_empty() {
+        default_logger_config(log_level)
+    } else {
+        load_config_file(log_conf_path, Deserializers::default())
+            .map_err(|err| CometError::Config(err.to_string()))
+    }
 }
 
 #[no_mangle]
@@ -184,15 +206,18 @@ pub extern "system" fn Java_org_apache_comet_NativeBase_isFeatureEnabled(
 ) -> jni::sys::jboolean {
     try_unwrap_or_throw(&env, |env| {
         let feature: String = feature_name.try_to_string(env)?;
-
-        let enabled = match feature.as_str() {
-            "jemalloc" => cfg!(feature = "jemalloc"),
-            "hdfs-opendal" => cfg!(feature = "hdfs-opendal"),
-            _ => false, // Unknown features return false
-        };
-
-        Ok(enabled)
+        Ok(is_feature_enabled(&feature))
     })
+}
+
+/// Whether the native build enables `feature`; unknown features are disabled. Core of
+/// `NativeBase.isFeatureEnabled`.
+pub fn is_feature_enabled(feature: &str) -> bool {
+    match feature {
+        "jemalloc" => cfg!(feature = "jemalloc"),
+        "hdfs-opendal" => cfg!(feature = "hdfs-opendal"),
+        _ => false, // Unknown features return false
+    }
 }
 
 /// JNI: can object_store build a store AND an object key for this URL?
@@ -219,11 +244,54 @@ pub extern "system" fn Java_org_apache_comet_NativeBase_isObjectStoreSchemeSuppo
 ) -> jni::sys::jboolean {
     try_unwrap_or_throw(&env, |env| {
         let url_str: String = url.try_to_string(env)?;
-        let supported = url::Url::parse(&url_str)
-            .ok()
-            .map(|u| object_store::ObjectStoreScheme::parse(&u).is_ok())
-            .unwrap_or(false);
-        Ok(supported)
+        Ok(is_object_store_scheme_supported(&url_str))
+    })
+}
+
+/// Whether object_store can build a store and an object key for `url`. Core of
+/// `NativeBase.isObjectStoreSchemeSupported`.
+pub fn is_object_store_scheme_supported(url: &str) -> bool {
+    url::Url::parse(url)
+        .ok()
+        .map(|u| object_store::ObjectStoreScheme::parse(&u).is_ok())
+        .unwrap_or(false)
+}
+
+/// JNI: the version of the IANA timezone database native code uses, such as `2025b`. chrono-tz
+/// compiles the database into libcomet, so it can differ from the JVM's `tzdb.dat`, and then local
+/// times computed natively can differ from Spark's.
+#[no_mangle]
+pub extern "system" fn Java_org_apache_comet_NativeBase_getTzdataVersion(
+    env: EnvUnowned,
+    _: JClass,
+) -> jni::sys::jstring {
+    try_unwrap_or_throw(&env, |env| Ok(env.new_string(tzdata_version())?.into_raw()))
+}
+
+/// The version of the IANA timezone database compiled into libcomet. Core of
+/// `NativeBase.getTzdataVersion`.
+pub fn tzdata_version() -> &'static str {
+    chrono_tz::IANA_TZDB_VERSION
+}
+
+/// JNI: the comma-joined built-in storage schemes the native Iceberg scan (`for_write` false) or
+/// write (`for_write` true) path admits. This is the source of truth the JVM read and write gates
+/// load. Opt-in S3-compliant alias schemes are not answered here; the JVM adds them from catalog
+/// properties.
+#[no_mangle]
+pub extern "system" fn Java_org_apache_comet_NativeBase_icebergStorageSchemes(
+    env: EnvUnowned,
+    _: JClass,
+    for_write: jboolean,
+) -> jstring {
+    try_unwrap_or_throw(&env, |env| {
+        let access_mode = if for_write != JNI_FALSE {
+            AccessMode::Write
+        } else {
+            AccessMode::Read
+        };
+        let joined = builtin_storage_schemes(access_mode).join(",");
+        Ok(env.new_string(joined)?.into_raw())
     })
 }
 
@@ -243,4 +311,45 @@ fn default_logger_config(log_level: &str) -> CometResult<Config> {
         .appender(appender)
         .build(root)
         .map_err(|err| CometError::Config(err.to_string()))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn feature_enabled() {
+        assert_eq!(is_feature_enabled("jemalloc"), cfg!(feature = "jemalloc"));
+        assert_eq!(
+            is_feature_enabled("hdfs-opendal"),
+            cfg!(feature = "hdfs-opendal")
+        );
+        assert!(!is_feature_enabled("no-such-feature"));
+    }
+
+    #[test]
+    fn logger_config_from_level_or_file() {
+        assert!(logger_config("", "debug").is_ok());
+        assert!(matches!(
+            logger_config("", "not-a-level"),
+            Err(CometError::Config(_))
+        ));
+        assert!(matches!(
+            logger_config("/no/such/log4rs.yaml", "info"),
+            Err(CometError::Config(_))
+        ));
+    }
+
+    #[test]
+    fn tzdata_version_is_set() {
+        assert!(!tzdata_version().is_empty());
+    }
+
+    #[test]
+    fn object_store_scheme_supported() {
+        assert!(is_object_store_scheme_supported("file:///tmp/data.parquet"));
+        assert!(is_object_store_scheme_supported("s3://bucket/key"));
+        assert!(!is_object_store_scheme_supported("unknown://bucket/key"));
+        assert!(!is_object_store_scheme_supported("not a url"));
+    }
 }

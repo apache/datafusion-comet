@@ -15,19 +15,16 @@
 // specific language governing permissions and limitations
 // under the License.
 
-//! Native DataFusion expressions
+//! Builders that convert Spark protobuf expressions into DataFusion physical expressions
 
 pub mod arithmetic;
 pub mod bitwise;
 pub mod comparison;
-pub mod list_empty_to_null;
-pub mod list_positions;
 pub mod logical;
 pub mod nullcheck;
 pub mod partition;
 pub mod random;
 pub mod strings;
-pub mod subquery;
 pub mod temporal;
 
 pub use datafusion_comet_spark_expr::EvalMode;

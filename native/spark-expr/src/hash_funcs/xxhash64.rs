@@ -21,34 +21,56 @@ use twox_hash::XxHash64;
 use datafusion::{
     arrow::{
         array::*,
-        datatypes::{ArrowDictionaryKeyType, ArrowNativeType},
+        datatypes::{ArrowDictionaryKeyType, ArrowNativeType, DataType, Field},
     },
     common::{internal_err, ScalarValue},
+    config::ConfigOptions,
     error::{DataFusionError, Result},
+    logical_expr::{ScalarFunctionArgs, ScalarUDFImpl},
 };
 
 use crate::create_hashes_internal;
 use arrow::array::{Array, ArrayRef, Int64Array};
 use datafusion::physical_plan::ColumnarValue;
-use std::sync::Arc;
+use datafusion_spark::function::hash::xxhash64::SparkXxhash64;
+use std::sync::{Arc, OnceLock};
 
-/// Spark compatible xxhash64 in vectorized execution fashion
+/// Spark's default `XxHash64` seed. `SparkXxhash64` hardcodes this and does not accept a
+/// trailing seed argument, unlike Comet's native UDF (seed is appended by `CometXxHash64`).
+const SPARK_DEFAULT_SEED: i64 = 42;
+
+/// Spark compatible xxhash64 in vectorized execution fashion.
+///
+/// Compatible arguments at the default seed are delegated to `datafusion-spark`'s
+/// `SparkXxhash64`. The Comet kernel is kept for:
+/// - a non-default seed (`SparkXxhash64` always starts from 42)
+/// - `Struct` (and anything containing one): `SparkXxhash64` does not push a parent null
+///   mask into children, so hidden values of a NULL struct would affect the hash
+/// - a `Dictionary` nested in a list/map: `SparkXxhash64` restarts those hashes from 42
+/// - `Time64`, which `SparkXxhash64` does not dispatch
+/// - `Float32`/`Float64` (and anything containing one): `SparkXxhash64` hashes the raw bits of a
+///   NaN, where Spark hashes every NaN as the canonical NaN
+///   (<https://github.com/apache/datafusion/issues/25913>)
 pub fn spark_xxhash64(args: &[ColumnarValue]) -> Result<ColumnarValue, DataFusionError> {
     let length = args.len();
     let seed = &args[length - 1];
     match seed {
         ColumnarValue::Scalar(ScalarValue::Int64(Some(seed))) => {
             // iterate over the arguments to find out the length of the array
-            let num_rows = args[0..args.len() - 1]
+            let data_args = &args[..length - 1];
+            let num_rows = data_args
                 .iter()
                 .find_map(|arg| match arg {
                     ColumnarValue::Array(array) => Some(array.len()),
                     ColumnarValue::Scalar(_) => None,
                 })
                 .unwrap_or(1);
+            if *seed == SPARK_DEFAULT_SEED && args_compatible_with_spark_xxhash64(data_args) {
+                return invoke_spark_xxhash64(data_args, num_rows);
+            }
             let mut hashes: Vec<u64> = vec![0_u64; num_rows];
             hashes.fill(*seed as u64);
-            let arrays = args[0..args.len() - 1]
+            let arrays = data_args
                 .iter()
                 .map(|arg| match arg {
                     ColumnarValue::Array(array) => Arc::clone(array),
@@ -74,6 +96,65 @@ pub fn spark_xxhash64(args: &[ColumnarValue]) -> Result<ColumnarValue, DataFusio
             )
         }
     }
+}
+
+fn spark_xxhash64_config() -> Arc<ConfigOptions> {
+    static CFG: OnceLock<Arc<ConfigOptions>> = OnceLock::new();
+    Arc::clone(CFG.get_or_init(|| Arc::new(ConfigOptions::default())))
+}
+
+fn invoke_spark_xxhash64(
+    args: &[ColumnarValue],
+    num_rows: usize,
+) -> Result<ColumnarValue, DataFusionError> {
+    let arg_fields = args
+        .iter()
+        .enumerate()
+        .map(|(i, a)| Arc::new(Field::new(format!("arg{i}"), a.data_type(), true)))
+        .collect();
+    SparkXxhash64::new().invoke_with_args(ScalarFunctionArgs {
+        args: args.to_vec(),
+        arg_fields,
+        number_rows: num_rows,
+        return_field: Arc::new(Field::new("xxhash64", DataType::Int64, false)),
+        config_options: spark_xxhash64_config(),
+    })
+}
+
+/// Types whose `SparkXxhash64` hashes are bit-identical to Comet at seed 42.
+///
+/// `in_list_or_map` is set when walking list/map element types. A dictionary hashed as a
+/// list/map element is sliced to one row per recursive call, and `SparkXxhash64` then
+/// treats it as a first column and restarts from seed 42.
+fn type_compatible_with_spark_xxhash64(dt: &DataType, in_list_or_map: bool) -> bool {
+    use DataType::*;
+    match dt {
+        Boolean | Int8 | Int16 | Int32 | Int64 => true,
+        Utf8 | LargeUtf8 | Binary | LargeBinary | FixedSizeBinary(_) => true,
+        Date32 | Date64 | Timestamp(_, _) => true,
+        Decimal128(_, _) => true,
+        Dictionary(_, value) if !in_list_or_map => {
+            type_compatible_with_spark_xxhash64(value.as_ref(), true)
+        }
+        List(field) | LargeList(field) | FixedSizeList(field, _) => {
+            type_compatible_with_spark_xxhash64(field.data_type(), true)
+        }
+        Map(field, _) => match field.data_type() {
+            Struct(fields) if fields.len() == 2 => fields
+                .iter()
+                .all(|f| type_compatible_with_spark_xxhash64(f.data_type(), true)),
+            _ => false,
+        },
+        // Struct: `SparkXxhash64` hashes child buffers without applying the parent null
+        // mask. Time64 is a Comet-only dispatch arm. Float32/Float64: `SparkXxhash64` does not
+        // canonicalize NaN.
+        _ => false,
+    }
+}
+
+fn args_compatible_with_spark_xxhash64(args: &[ColumnarValue]) -> bool {
+    args.iter()
+        .all(|a| type_compatible_with_spark_xxhash64(&a.data_type(), false))
 }
 
 #[inline]
@@ -326,6 +407,10 @@ mod tests {
                 Some(-1.0),
                 Some(99999999999.99999999999),
                 Some(-99999999999.99999999999),
+                // Every NaN hashes as the canonical NaN, whatever its sign or payload.
+                Some(f32::NAN),
+                Some(f32::from_bits(0xffc0_0000)),
+                Some(f32::from_bits(0x7f80_0001)),
             ],
             vec![
                 0x9b92689757fcdbd,
@@ -334,6 +419,9 @@ mod tests {
                 0xa2becc0e61bb3823,
                 0x8f20ab82d4f3687f,
                 0xdce4982d97f7ac4,
+                0x255d1be3831088f8,
+                0x255d1be3831088f8,
+                0x255d1be3831088f8,
             ],
         )
     }
@@ -348,6 +436,10 @@ mod tests {
                 Some(-1.0),
                 Some(99999999999.99999999999),
                 Some(-99999999999.99999999999),
+                // Every NaN hashes as the canonical NaN, whatever its sign or payload.
+                Some(f64::NAN),
+                Some(f64::from_bits(0xfff8_0000_0000_0000)),
+                Some(f64::from_bits(0x7ff0_0000_0000_0001)),
             ],
             vec![
                 0xe1fd6e07fee8ad53,
@@ -356,6 +448,9 @@ mod tests {
                 0x8cdde022746f8f1f,
                 0x793c5c88d313eac7,
                 0xc5e60e7b75d9b232,
+                0xd4974f72d7833f32,
+                0xd4974f72d7833f32,
+                0xd4974f72d7833f32,
             ],
         )
     }

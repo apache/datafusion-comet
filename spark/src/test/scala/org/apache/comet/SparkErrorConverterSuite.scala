@@ -21,7 +21,41 @@ package org.apache.comet
 
 import org.scalatest.funsuite.AnyFunSuite
 
+import org.apache.spark.SparkThrowable
+
 class SparkErrorConverterSuite extends AnyFunSuite {
+
+  test("ArithmeticOverflow preserves the suggested function") {
+    for (function <- Seq("try_add", "try_subtract", "try_multiply")) {
+      val error = SparkErrorConverter
+        .convertErrorType(
+          "ArithmeticOverflow",
+          "ARITHMETIC_OVERFLOW",
+          Map("fromType" -> "long", "functionName" -> function),
+          Array.empty,
+          null)
+        .getOrElse(fail("Expected arithmetic overflow"))
+      assert(error.isInstanceOf[ArithmeticException])
+      assert(error.asInstanceOf[SparkThrowable].getErrorClass == "ARITHMETIC_OVERFLOW")
+      assert(
+        error.getMessage.contains(
+          s"Use '$function' to tolerate overflow and return NULL instead."))
+    }
+  }
+
+  test("ArithmeticOverflow without a suggested function remains compatible") {
+    // Accept both older payloads without the key and unary errors with an empty function.
+    for (params <- Seq(
+        Map("fromType" -> "integer"),
+        Map("fromType" -> "integer", "functionName" -> ""))) {
+      val error = SparkErrorConverter
+        .convertErrorType("ArithmeticOverflow", "ARITHMETIC_OVERFLOW", params, Array.empty, null)
+        .getOrElse(fail("Expected arithmetic overflow"))
+      assert(error.asInstanceOf[SparkThrowable].getErrorClass == "ARITHMETIC_OVERFLOW")
+      assert(error.asInstanceOf[SparkThrowable].getMessageParameters.get("alternative") == "")
+      assert(!error.getMessage.contains("try_"))
+    }
+  }
 
   test("CannotReadFile converts to a FAILED_READ_FILE SparkException naming the file") {
     val ex = SparkErrorConverter
@@ -65,6 +99,62 @@ class SparkErrorConverterSuite extends AnyFunSuite {
       taskFilePaths = Seq("file:/tmp/data/fallback.parquet"))
     assert(ex.getMessage.contains("native.parquet"))
     assert(!ex.getMessage.contains("fallback.parquet"))
+  }
+
+  private val ReadAncientDatetimeClass =
+    "INCONSISTENT_BEHAVIOR_CROSS_VERSION.READ_ANCIENT_DATETIME"
+
+  private def assertReadAncientDatetime(
+      ex: Throwable,
+      format: String,
+      config: String,
+      option: String): Unit = ex match {
+    // SparkUpgradeException is private[spark], so match on the public SparkThrowable.
+    case e: SparkThrowable if ex.getClass.getName == "org.apache.spark.SparkUpgradeException" =>
+      assert(e.getErrorClass == ReadAncientDatetimeClass)
+      val params = e.getMessageParameters
+      assert(params.get("format") == format)
+      assert(params.get("config") == s""""$config"""")
+      assert(params.get("option") == s""""$option"""")
+    case other => fail(s"Expected SparkUpgradeException, got $other")
+  }
+
+  Seq(
+    ("Parquet", "spark.sql.parquet.datetimeRebaseModeInRead", "datetimeRebaseMode"),
+    ("Parquet INT96", "spark.sql.parquet.int96RebaseModeInRead", "int96RebaseMode")).foreach {
+    case (format, config, option) =>
+      test(s"ReadAncientDatetime converts to SparkUpgradeException for $format") {
+        val ex = SparkErrorConverter
+          .convertErrorType(
+            "ReadAncientDatetime",
+            ReadAncientDatetimeClass,
+            Map("format" -> format, "column" -> "d"),
+            Array.empty,
+            null)
+          .getOrElse(fail("Expected ReadAncientDatetime to be converted to a Spark exception"))
+        assertReadAncientDatetime(ex, format, config, option)
+      }
+
+      test(s"ReadAncientDatetime native JSON converts to SparkUpgradeException for $format") {
+        val json =
+          s"""{"errorType":"ReadAncientDatetime","errorClass":"$ReadAncientDatetimeClass",""" +
+            s""""params":{"format":"$format","column":"d"}}"""
+        val ex = SparkErrorConverter.convertToSparkException(
+          new org.apache.comet.exceptions.CometQueryExecutionException(json))
+        assertReadAncientDatetime(ex, format, config, option)
+      }
+  }
+
+  test("ReadAncientDatetime with an unknown format fails rather than converting") {
+    val e = intercept[Exception] {
+      SparkErrorConverter.convertErrorType(
+        "ReadAncientDatetime",
+        ReadAncientDatetimeClass,
+        Map("format" -> "ORC", "column" -> "d"),
+        Array.empty,
+        null)
+    }
+    assert(e.getMessage.contains("Unrecognized format ORC"))
   }
 
   private def castOverflowError(fromType: String, value: String): Throwable = {

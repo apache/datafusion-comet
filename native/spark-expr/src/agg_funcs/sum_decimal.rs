@@ -15,13 +15,13 @@
 // specific language governing permissions and limitations
 // under the License.
 
-use crate::{decimal_sum_overflow_error, EvalMode, SparkErrorWithContext};
+use crate::{decimal_sum_overflow_error, EvalMode, SparkError, SparkErrorWithContext};
 use arrow::array::{
     cast::AsArray,
-    types::{Decimal128Type, DecimalType},
+    types::{Decimal128Type, Decimal256Type, DecimalType},
     Array, ArrayRef, BooleanArray, Decimal128Array,
 };
-use arrow::datatypes::{DataType, Field, FieldRef};
+use arrow::datatypes::{i256, DataType, Field, FieldRef, DECIMAL256_MAX_PRECISION};
 use datafusion::common::{not_impl_err, DataFusionError, Result as DFResult, ScalarValue};
 use datafusion::logical_expr::function::{AccumulatorArgs, StateFieldsArgs};
 use datafusion::logical_expr::Volatility::Immutable;
@@ -167,9 +167,14 @@ impl AggregateUDFImpl for SumDecimal {
     }
 }
 
+/// Accumulator for ungrouped aggregates and ever-expanding window frames. Under whole-stage
+/// codegen Spark buffers those unbounded and checks the precision only when the value leaves the
+/// buffer, so the running sum is an `i256` checked in `state` and `evaluate`. With codegen off
+/// Spark's ungrouped buffer is an UnsafeRow that latches like the grouped accumulator below.
 #[derive(Debug)]
 struct SumDecimalAccumulator {
-    sum: Option<i128>,
+    /// The unbounded running sum, or `None` once an overflow is latched from a merged partial.
+    sum: Option<i256>,
     is_empty: bool,
     precision: u8,
     scale: i8,
@@ -189,7 +194,7 @@ impl SumDecimalAccumulator {
         // For decimal sum, always track is_empty regardless of eval_mode
         // This matches Spark's behavior where DecimalType always uses shouldTrackIsEmpty = true
         Self {
-            sum: Some(0),
+            sum: Some(i256::ZERO),
             is_empty: true,
             precision,
             scale,
@@ -200,28 +205,26 @@ impl SumDecimalAccumulator {
     }
 
     fn update_single(&mut self, values: &Decimal128Array, idx: usize) -> DFResult<()> {
-        // If already overflowed (sum is None but not empty), stay in overflow state
-        if !self.is_empty && self.sum.is_none() {
-            return Ok(());
-        }
-
         let v = unsafe { values.value_unchecked(idx) };
-        let running_sum = self.sum.unwrap_or(0);
-        let (new_sum, is_overflow) = running_sum.overflowing_add(v);
-
-        if is_overflow || !Decimal128Type::is_valid_decimal_precision(new_sum, self.precision) {
-            if self.eval_mode == EvalMode::Ansi {
-                let error = decimal_sum_overflow_error("sum");
-                return Err(self.wrap_error_with_context(error));
-            }
-            self.sum = None;
-            self.is_empty = false;
-            return Ok(());
-        }
-
-        self.sum = Some(new_sum);
-        self.is_empty = false;
+        self.add_unbounded(i256::from_i128(v));
         Ok(())
+    }
+
+    /// Adds to the running sum without checking the result precision, so a sum that overshoots
+    /// the precision and comes back is not an overflow. A latched overflow stays latched. An
+    /// `i256` cannot overflow for any Decimal128 input in practice; if it does, the sum latches
+    /// and evaluate reports the sum overflow rather than the out-of-range error.
+    fn add_unbounded(&mut self, v: i256) {
+        self.sum = self.sum.and_then(|sum| sum.checked_add(v));
+        self.is_empty = false;
+    }
+
+    /// The running sum as a value of the result precision, or `None` when it is latched or does
+    /// not fit. This is the check Spark applies when a buffer is written out or evaluated.
+    fn fitted_sum(&self) -> Option<i128> {
+        self.sum
+            .and_then(|sum| sum.to_i128())
+            .filter(|sum| Decimal128Type::is_valid_decimal_precision(*sum, self.precision))
     }
 
     /// Wrap a SparkError with QueryContext if expr_id is available
@@ -270,24 +273,27 @@ impl Accumulator for SumDecimalAccumulator {
     }
 
     fn evaluate(&mut self) -> DFResult<ScalarValue> {
+        let result_type = DataType::Decimal128(self.precision, self.scale);
         if self.is_empty {
-            ScalarValue::new_primitive::<Decimal128Type>(
-                None,
-                &DataType::Decimal128(self.precision, self.scale),
-            )
-        } else {
-            match self.sum {
-                Some(sum_value)
-                    if Decimal128Type::is_valid_decimal_precision(sum_value, self.precision) =>
-                {
-                    ScalarValue::try_new_decimal128(sum_value, self.precision, self.scale)
-                }
-                _ => ScalarValue::new_primitive::<Decimal128Type>(
-                    None,
-                    &DataType::Decimal128(self.precision, self.scale),
-                ),
-            }
+            return ScalarValue::new_primitive::<Decimal128Type>(None, &result_type);
         }
+        if let Some(sum) = self.fitted_sum() {
+            return ScalarValue::try_new_decimal128(sum, self.precision, self.scale);
+        }
+        if self.eval_mode != EvalMode::Ansi {
+            return ScalarValue::new_primitive::<Decimal128Type>(None, &result_type);
+        }
+        // Spark's CheckOverflowInSum raises the sum overflow for a latched null and the
+        // out-of-range error when a value exists but does not fit the result precision.
+        let error = match self.sum {
+            Some(sum) => SparkError::NumericValueOutOfRange {
+                value: Decimal256Type::format_decimal(sum, DECIMAL256_MAX_PRECISION, self.scale),
+                precision: self.precision,
+                scale: self.scale,
+            },
+            None => decimal_sum_overflow_error("sum"),
+        };
+        Err(self.wrap_error_with_context(error))
     }
 
     fn size(&self) -> usize {
@@ -295,10 +301,11 @@ impl Accumulator for SumDecimalAccumulator {
     }
 
     fn state(&mut self) -> DFResult<Vec<ScalarValue>> {
-        let sum = match self.sum {
-            Some(sum_value) => {
-                ScalarValue::try_new_decimal128(sum_value, self.precision, self.scale)?
-            }
+        // A partial whose running sum does not fit leaves as null with is_empty false, which is
+        // what Spark's UnsafeRow write does to a partial's output row, and the final reports the
+        // overflow. A sum that overshoots and comes back inside one partial is unaffected.
+        let sum = match self.fitted_sum() {
+            Some(sum) => ScalarValue::try_new_decimal128(sum, self.precision, self.scale)?,
             None => ScalarValue::new_primitive::<Decimal128Type>(
                 None,
                 &DataType::Decimal128(self.precision, self.scale),
@@ -344,33 +351,17 @@ impl Accumulator for SumDecimalAccumulator {
                 continue;
             }
 
-            if self.is_empty {
-                self.sum = that_sum;
-                self.is_empty = false;
-                continue;
-            }
-
-            let left = self.sum.unwrap();
-            let right = that_sum.unwrap();
-            let (new_sum, is_overflow) = left.overflowing_add(right);
-
-            if is_overflow || !Decimal128Type::is_valid_decimal_precision(new_sum, self.precision) {
-                if self.eval_mode == EvalMode::Ansi {
-                    let error = decimal_sum_overflow_error("sum");
-                    return Err(self.wrap_error_with_context(error));
-                } else {
-                    self.sum = None;
-                    self.is_empty = false;
-                }
-            } else {
-                self.sum = Some(new_sum);
-            }
+            // Spark merges partial sums without a check and decides at evaluate.
+            self.add_unbounded(i256::from_i128(that_sum.unwrap()));
         }
 
         Ok(())
     }
 }
 
+/// Accumulator for grouped aggregates. Spark's grouped hash aggregate buffers each group in an
+/// UnsafeRow, whose decimal write nulls a value that does not fit the precision, so overflow
+/// latches per row there and this accumulator matches it by checking on every update.
 struct SumDecimalGroupsAccumulator {
     sum: Vec<Option<i128>>,
     is_empty: Vec<bool>,
@@ -812,6 +803,157 @@ mod tests {
         match evaluated {
             ScalarValue::Decimal128(Some(v), _, _) => assert_eq!(v, 600),
             other => panic!("unexpected result: {other:?}"),
+        }
+    }
+
+    // Decimal(38, 38) leaves no headroom: 0.6 is 6 * 10^37 unscaled, and two of them exceed the
+    // precision, so these inputs exercise an intermediate overflow that the final sum recovers
+    // from, which is what Spark's ungrouped and window buffers do.
+    const SIX_TENTHS: i128 = 6 * 10_i128.pow(37);
+    const NINE_TENTHS: i128 = 9 * 10_i128.pow(37);
+
+    fn accumulator_38_38(eval_mode: EvalMode) -> SumDecimalAccumulator {
+        SumDecimalAccumulator::new(38, 38, eval_mode, None, crate::create_query_context_map())
+    }
+
+    fn values_38_38(values: &[i128]) -> ArrayRef {
+        Arc::new(
+            Decimal128Array::from(values.to_vec()).with_data_type(DataType::Decimal128(38, 38)),
+        )
+    }
+
+    fn decimal_of(value: ScalarValue) -> Option<i128> {
+        match value {
+            ScalarValue::Decimal128(v, 38, 38) => v,
+            other => panic!("unexpected result: {other:?}"),
+        }
+    }
+
+    #[test]
+    fn accumulator_recovers_after_intermediate_overflow() {
+        for eval_mode in [EvalMode::Legacy, EvalMode::Ansi, EvalMode::Try] {
+            let mut acc = accumulator_38_38(eval_mode);
+            acc.update_batch(&[values_38_38(&[SIX_TENTHS, SIX_TENTHS, -SIX_TENTHS])])
+                .unwrap();
+            assert_eq!(
+                decimal_of(acc.evaluate().unwrap()),
+                Some(SIX_TENTHS),
+                "{eval_mode:?}"
+            );
+        }
+    }
+
+    #[test]
+    fn accumulator_recovers_when_running_sum_exceeds_i128() {
+        // 0.9 + 0.9 does not fit an i128, so the running sum needs the wider intermediate.
+        let mut acc = accumulator_38_38(EvalMode::Ansi);
+        acc.update_batch(&[values_38_38(&[NINE_TENTHS, NINE_TENTHS])])
+            .unwrap();
+        acc.update_batch(&[values_38_38(&[-NINE_TENTHS, -NINE_TENTHS, SIX_TENTHS])])
+            .unwrap();
+        assert_eq!(decimal_of(acc.evaluate().unwrap()), Some(SIX_TENTHS));
+    }
+
+    #[test]
+    fn accumulator_reports_overflow_only_when_the_final_sum_does_not_fit() {
+        let mut legacy = accumulator_38_38(EvalMode::Legacy);
+        legacy
+            .update_batch(&[values_38_38(&[SIX_TENTHS, SIX_TENTHS])])
+            .unwrap();
+        assert_eq!(decimal_of(legacy.evaluate().unwrap()), None);
+
+        let mut try_mode = accumulator_38_38(EvalMode::Try);
+        try_mode
+            .update_batch(&[values_38_38(&[SIX_TENTHS, SIX_TENTHS])])
+            .unwrap();
+        assert_eq!(decimal_of(try_mode.evaluate().unwrap()), None);
+
+        let mut ansi = accumulator_38_38(EvalMode::Ansi);
+        // No error while accumulating; a value that does not fit surfaces at evaluate as the
+        // out-of-range error, the way Spark's CheckOverflowInSum fails in toPrecision.
+        ansi.update_batch(&[values_38_38(&[SIX_TENTHS, SIX_TENTHS])])
+            .unwrap();
+        let error = ansi.evaluate().unwrap_err().to_string();
+        assert!(
+            error.contains(
+                "1.20000000000000000000000000000000000000 cannot be represented as Decimal(38, 38)"
+            ),
+            "{error}"
+        );
+    }
+
+    #[test]
+    fn accumulator_evaluate_between_rows_does_not_latch() {
+        // An ever-expanding window frame updates one row and evaluates after each, so a running
+        // sum that does not fit at one row must still recover on a later row.
+        for eval_mode in [EvalMode::Legacy, EvalMode::Ansi, EvalMode::Try] {
+            let mut acc = accumulator_38_38(eval_mode);
+            acc.update_batch(&[values_38_38(&[SIX_TENTHS])]).unwrap();
+            assert_eq!(decimal_of(acc.evaluate().unwrap()), Some(SIX_TENTHS));
+
+            acc.update_batch(&[values_38_38(&[SIX_TENTHS])]).unwrap();
+            let overshoot = acc.evaluate();
+            if eval_mode == EvalMode::Ansi {
+                let error = overshoot.unwrap_err().to_string();
+                assert!(error.contains("cannot be represented"), "{error}");
+            } else {
+                assert_eq!(decimal_of(overshoot.unwrap()), None);
+            }
+
+            acc.update_batch(&[values_38_38(&[-SIX_TENTHS])]).unwrap();
+            assert_eq!(
+                decimal_of(acc.evaluate().unwrap()),
+                Some(SIX_TENTHS),
+                "{eval_mode:?}"
+            );
+        }
+    }
+
+    #[test]
+    fn accumulator_state_nulls_a_running_sum_that_does_not_fit() {
+        let mut acc = accumulator_38_38(EvalMode::Ansi);
+        acc.update_batch(&[values_38_38(&[SIX_TENTHS, SIX_TENTHS])])
+            .unwrap();
+        let state = acc.state().unwrap();
+        assert_eq!(decimal_of(state[0].clone()), None);
+        assert_eq!(state[1], ScalarValue::from(false));
+
+        acc.update_batch(&[values_38_38(&[-SIX_TENTHS])]).unwrap();
+        let state = acc.state().unwrap();
+        assert_eq!(decimal_of(state[0].clone()), Some(SIX_TENTHS));
+        assert_eq!(state[1], ScalarValue::from(false));
+    }
+
+    #[test]
+    fn accumulator_merge_adds_partials_unbounded_and_keeps_overflow_sticky() {
+        let is_empty = |empty: bool| -> ArrayRef { Arc::new(BooleanArray::from(vec![empty])) };
+        let partial = |sum: Option<i128>| -> ArrayRef {
+            Arc::new(Decimal128Array::from(vec![sum]).with_data_type(DataType::Decimal128(38, 38)))
+        };
+
+        // Three partials that each fit on their own merge into a sum that overshoots and
+        // comes back, and only the merged result is checked.
+        let mut acc = accumulator_38_38(EvalMode::Ansi);
+        for sum in [SIX_TENTHS, SIX_TENTHS, -SIX_TENTHS] {
+            acc.merge_batch(&[partial(Some(sum)), is_empty(false)])
+                .unwrap();
+        }
+        assert_eq!(decimal_of(acc.evaluate().unwrap()), Some(SIX_TENTHS));
+
+        // A partial that overflowed at emission arrives as null with is_empty false and latches,
+        // so later partials cannot bring the sum back.
+        for eval_mode in [EvalMode::Legacy, EvalMode::Ansi] {
+            let mut acc = accumulator_38_38(eval_mode);
+            acc.merge_batch(&[partial(None), is_empty(false)]).unwrap();
+            acc.merge_batch(&[partial(Some(-SIX_TENTHS)), is_empty(false)])
+                .unwrap();
+            let result = acc.evaluate();
+            if eval_mode == EvalMode::Ansi {
+                let error = result.unwrap_err().to_string();
+                assert!(error.contains("Overflow in sum of decimals"), "{error}");
+            } else {
+                assert_eq!(decimal_of(result.unwrap()), None);
+            }
         }
     }
 }

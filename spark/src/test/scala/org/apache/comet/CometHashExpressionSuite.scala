@@ -21,120 +21,25 @@ package org.apache.comet
 
 import scala.util.Random
 
-import org.apache.spark.sql.{CometTestBase, Row}
+import org.apache.spark.sql.CometTestBase
 import org.apache.spark.sql.execution.adaptive.AdaptiveSparkPlanHelper
-import org.apache.spark.sql.types.{IntegerType, StructField, StructType}
 
 import org.apache.comet.testing.{DataGenOptions, FuzzDataGenerator, ParquetGenerator, SchemaGenOptions}
 
 /**
- * Test suite for Spark murmur3 hash function compatibility between Spark and Comet.
+ * Test suite for Spark `hash` (murmur3) and `xxhash64` compatibility between Spark and Comet.
  *
- * These tests verify that Comet's native implementation of murmur3 hash produces identical
- * results to Spark's implementation for all supported data types.
+ * These tests verify that Comet's native implementations produce identical results to Spark for
+ * all supported data types.
  */
 class CometHashExpressionSuite extends CometTestBase with AdaptiveSparkPlanHelper {
-
-  test("hash - boolean") {
-    withTable("t") {
-      sql("CREATE TABLE t(c BOOLEAN) USING parquet")
-      sql("INSERT INTO t VALUES (true), (false), (null)")
-      checkSparkAnswerAndOperator("SELECT c, hash(c) FROM t ORDER BY c")
-    }
-  }
-
-  test("hash - byte/tinyint") {
-    withTable("t") {
-      sql("CREATE TABLE t(c TINYINT) USING parquet")
-      sql("INSERT INTO t VALUES (1), (0), (-1), (127), (-128), (null)")
-      checkSparkAnswerAndOperator("SELECT c, hash(c) FROM t ORDER BY c")
-    }
-  }
-
-  test("hash - short/smallint") {
-    withTable("t") {
-      sql("CREATE TABLE t(c SMALLINT) USING parquet")
-      sql("INSERT INTO t VALUES (1), (0), (-1), (32767), (-32768), (null)")
-      checkSparkAnswerAndOperator("SELECT c, hash(c) FROM t ORDER BY c")
-    }
-  }
-
-  test("hash - int") {
-    withTable("t") {
-      sql("CREATE TABLE t(c INT) USING parquet")
-      sql("INSERT INTO t VALUES (1), (0), (-1), (2147483647), (-2147483648), (null)")
-      checkSparkAnswerAndOperator("SELECT c, hash(c) FROM t ORDER BY c")
-    }
-  }
-
-  test("hash - long/bigint") {
-    withTable("t") {
-      sql("CREATE TABLE t(c BIGINT) USING parquet")
-      sql(
-        "INSERT INTO t VALUES (1), (0), (-1), (9223372036854775807), (-9223372036854775808), (null)")
-      checkSparkAnswerAndOperator("SELECT c, hash(c) FROM t ORDER BY c")
-    }
-  }
-
-  test("hash - float") {
-    withTable("t") {
-      sql("CREATE TABLE t(c FLOAT) USING parquet")
-      sql("INSERT INTO t VALUES (1.0), (0.0), (-0.0), (-1.0), (3.14159), (null)")
-      checkSparkAnswerAndOperator("SELECT c, hash(c) FROM t ORDER BY c")
-    }
-  }
-
-  test("hash - double") {
-    withTable("t") {
-      sql("CREATE TABLE t(c DOUBLE) USING parquet")
-      sql("INSERT INTO t VALUES (1.0), (0.0), (-0.0), (-1.0), (3.14159265358979), (null)")
-      checkSparkAnswerAndOperator("SELECT c, hash(c) FROM t ORDER BY c")
-    }
-  }
-
-  test("hash - string") {
-    withTable("t") {
-      sql("CREATE TABLE t(c STRING) USING parquet")
-      sql("INSERT INTO t VALUES ('hello'), (''), ('Spark SQL'), ('苹果手机'), (null)")
-      checkSparkAnswerAndOperator("SELECT c, hash(c) FROM t ORDER BY c")
-    }
-  }
-
-  test("hash - binary") {
-    withTable("t") {
-      sql("CREATE TABLE t(c BINARY) USING parquet")
-      sql("INSERT INTO t VALUES (X''), (X'00'), (X'0102030405'), (null)")
-      checkSparkAnswerAndOperator("SELECT c, hash(c) FROM t ORDER BY c")
-    }
-  }
-
-  test("hash - date") {
-    withTable("t") {
-      sql("CREATE TABLE t(c DATE) USING parquet")
-      sql(
-        "INSERT INTO t VALUES (DATE '2023-01-01'), (DATE '1970-01-01'), (DATE '2000-12-31'), (null)")
-      checkSparkAnswerAndOperator("SELECT c, hash(c) FROM t ORDER BY c")
-    }
-  }
-
-  test("hash - timestamp") {
-    withTable("t") {
-      sql("CREATE TABLE t(c TIMESTAMP) USING parquet")
-      sql("""INSERT INTO t VALUES
-            (TIMESTAMP '2023-01-01 12:00:00'),
-            (TIMESTAMP '1970-01-01 00:00:00'),
-            (TIMESTAMP '2000-12-31 23:59:59'),
-            (null)""")
-      checkSparkAnswerAndOperator("SELECT c, hash(c) FROM t ORDER BY c")
-    }
-  }
 
   test("hash - decimal (precision <= 18)") {
     Seq((10, 2), (18, 0), (18, 10)).foreach { case (precision, scale) =>
       withTable("t") {
         sql(s"CREATE TABLE t(c DECIMAL($precision, $scale)) USING parquet")
         sql("INSERT INTO t VALUES (1.23), (-1.23), (0.0), (null)")
-        checkSparkAnswerAndOperator("SELECT c, hash(c) FROM t ORDER BY c")
+        checkSparkAnswerAndOperator("SELECT c, hash(c), xxhash64(c) FROM t ORDER BY c")
       }
     }
   }
@@ -145,7 +50,7 @@ class CometHashExpressionSuite extends CometTestBase with AdaptiveSparkPlanHelpe
         sql(s"CREATE TABLE t(c DECIMAL($precision, $scale)) USING parquet")
         sql("INSERT INTO t VALUES (1.23), (-1.23), (0.0), (null)")
         // Large decimals may fall back to Spark, so just check the answer
-        checkSparkAnswer("SELECT c, hash(c) FROM t ORDER BY c")
+        checkSparkAnswer("SELECT c, hash(c), xxhash64(c) FROM t ORDER BY c")
       }
     }
   }
@@ -155,7 +60,7 @@ class CometHashExpressionSuite extends CometTestBase with AdaptiveSparkPlanHelpe
       sql("CREATE TABLE t(c ARRAY<DECIMAL(20, 2)>) USING parquet")
       sql("INSERT INTO t VALUES (array(1.23, 2.34)), (null)")
       // Should fall back to Spark due to nested high-precision decimal
-      checkSparkAnswerAndFallbackReason("SELECT c, hash(c) FROM t", "precision > 18")
+      checkSparkAnswerAndFallbackReason("SELECT c, hash(c), xxhash64(c) FROM t", "precision > 18")
     }
   }
 
@@ -164,7 +69,7 @@ class CometHashExpressionSuite extends CometTestBase with AdaptiveSparkPlanHelpe
       sql("CREATE TABLE t(c STRUCT<a: INT, b: DECIMAL(20, 2)>) USING parquet")
       sql("INSERT INTO t VALUES (named_struct('a', 1, 'b', 1.23)), (null)")
       // Should fall back to Spark due to nested high-precision decimal
-      checkSparkAnswerAndFallbackReason("SELECT c, hash(c) FROM t", "precision > 18")
+      checkSparkAnswerAndFallbackReason("SELECT c, hash(c), xxhash64(c) FROM t", "precision > 18")
     }
   }
 
@@ -174,7 +79,9 @@ class CometHashExpressionSuite extends CometTestBase with AdaptiveSparkPlanHelpe
         sql("CREATE TABLE t(c MAP<STRING, DECIMAL(20, 2)>) USING parquet")
         sql("INSERT INTO t VALUES (map('a', 1.23)), (null)")
         // Should fall back to Spark due to nested high-precision decimal
-        checkSparkAnswerAndFallbackReason("SELECT c, hash(c) FROM t", "precision > 18")
+        checkSparkAnswerAndFallbackReason(
+          "SELECT c, hash(c), xxhash64(c) FROM t",
+          "precision > 18")
       }
     }
   }
@@ -189,7 +96,7 @@ class CometHashExpressionSuite extends CometTestBase with AdaptiveSparkPlanHelpe
             (null),
             (array(null)),
             (array(1, null, 3))""")
-      checkSparkAnswerAndOperator("SELECT c, hash(c) FROM t")
+      checkSparkAnswerAndOperator("SELECT c, hash(c), xxhash64(c) FROM t")
     }
   }
 
@@ -204,7 +111,7 @@ class CometHashExpressionSuite extends CometTestBase with AdaptiveSparkPlanHelpe
             (null),
             (array(null)),
             (array('a', null, 'b'))""")
-      checkSparkAnswerAndOperator("SELECT c, hash(c) FROM t")
+      checkSparkAnswerAndOperator("SELECT c, hash(c), xxhash64(c) FROM t")
     }
   }
 
@@ -216,7 +123,7 @@ class CometHashExpressionSuite extends CometTestBase with AdaptiveSparkPlanHelpe
             (array(-1.0, 0.0, 1.0)),
             (array()),
             (null)""")
-      checkSparkAnswerAndOperator("SELECT c, hash(c) FROM t")
+      checkSparkAnswerAndOperator("SELECT c, hash(c), xxhash64(c) FROM t")
     }
   }
 
@@ -228,7 +135,7 @@ class CometHashExpressionSuite extends CometTestBase with AdaptiveSparkPlanHelpe
             (array(array(), array(1))),
             (array()),
             (null)""")
-      checkSparkAnswerAndOperator("SELECT c, hash(c) FROM t")
+      checkSparkAnswerAndOperator("SELECT c, hash(c), xxhash64(c) FROM t")
     }
   }
 
@@ -241,7 +148,7 @@ class CometHashExpressionSuite extends CometTestBase with AdaptiveSparkPlanHelpe
             (named_struct('a', null, 'b', 'test')),
             (named_struct('a', 42, 'b', null)),
             (null)""")
-      checkSparkAnswerAndOperator("SELECT c, hash(c) FROM t")
+      checkSparkAnswerAndOperator("SELECT c, hash(c), xxhash64(c) FROM t")
     }
   }
 
@@ -253,101 +160,7 @@ class CometHashExpressionSuite extends CometTestBase with AdaptiveSparkPlanHelpe
             (named_struct('a', 2, 'b', named_struct('x', '', 'y', 0.0))),
             (named_struct('a', 3, 'b', null)),
             (null)""")
-      checkSparkAnswerAndOperator("SELECT c, hash(c) FROM t")
-    }
-  }
-
-  test("hash - null struct with a required child field") {
-    // `c` is nullable but its child is REQUIRED, so Spark writes
-    // `optional group c { required int32 a; }`. On read the child leaf has nowhere to record a
-    // null of its own, so its buffer holds a value at exactly the rows where the struct is null.
-    // That is the shape where the parent's null mask has to reach the children; a struct built in
-    // the plan, or one whose child is also nullable, has null children there and hides the bug.
-    withTempPath { dir =>
-      val schema = StructType(
-        Seq(
-          StructField(
-            "c",
-            StructType(Seq(StructField("a", IntegerType, nullable = false))),
-            nullable = true)))
-      withSQLConf(CometConf.COMET_ENABLED.key -> "false") {
-        val rows = Seq(Row(Row(1)), Row(null), Row(Row(3)), Row(null))
-        spark
-          .createDataFrame(spark.sparkContext.parallelize(rows), schema)
-          .coalesce(1)
-          .write
-          .parquet(dir.toString)
-      }
-      spark.read.parquet(dir.toString).createOrReplaceTempView("null_struct_t")
-      checkSparkAnswerAndOperator("SELECT hash(c), xxhash64(c) FROM null_struct_t ORDER BY 1, 2")
-    }
-  }
-
-  test("hash - null struct whose child is itself a struct") {
-    // The union has to recurse: the outer struct's nulls reach the inner struct, whose own
-    // children are required and so carry values under the null.
-    withTempPath { dir =>
-      val inner = StructType(Seq(StructField("x", IntegerType, nullable = false)))
-      val schema = StructType(
-        Seq(
-          StructField(
-            "c",
-            StructType(Seq(StructField("b", inner, nullable = false))),
-            nullable = true)))
-      withSQLConf(CometConf.COMET_ENABLED.key -> "false") {
-        val rows = Seq(Row(Row(Row(1))), Row(null), Row(Row(Row(3))), Row(null))
-        spark
-          .createDataFrame(spark.sparkContext.parallelize(rows), schema)
-          .coalesce(1)
-          .write
-          .parquet(dir.toString)
-      }
-      spark.read.parquet(dir.toString).createOrReplaceTempView("null_nested_struct_t")
-      checkSparkAnswerAndOperator(
-        "SELECT hash(c), xxhash64(c) FROM null_nested_struct_t ORDER BY 1, 2")
-    }
-  }
-
-  test("hash - list element wrapping a null struct with a required child field") {
-    // The per-element path in `hash_list_array!`, which #5567 made usable as a shuffle key.
-    //
-    // Wrapping the struct rather than using it as the element directly is what makes this
-    // reachable: `array(named_struct('tag', 1, 'b', c))` produces an element that is itself
-    // valid, so it is copied rather than rebuilt, and the null `c` inside it keeps the child
-    // values Parquet wrote under it. Using `c` as the element directly does not reproduce,
-    // because a null element is rebuilt on the way in and the hidden values go with it.
-    //
-    // So this covers a null struct nested inside a valid element. The unit test in murmur3.rs
-    // covers the complementary shape, where the element itself is the null struct.
-    withTempPath { dir =>
-      val schema = StructType(
-        Seq(
-          StructField(
-            "c",
-            StructType(Seq(StructField("a", IntegerType, nullable = false))),
-            nullable = true)))
-      withSQLConf(CometConf.COMET_ENABLED.key -> "false") {
-        val rows = Seq(Row(Row(1)), Row(null), Row(Row(3)), Row(null))
-        spark
-          .createDataFrame(spark.sparkContext.parallelize(rows), schema)
-          .coalesce(1)
-          .write
-          .parquet(dir.toString)
-      }
-      spark.read.parquet(dir.toString).createOrReplaceTempView("wrapped_null_struct_t")
-
-      checkSparkAnswerAndOperator("""
-        SELECT
-          hash(array(named_struct('tag', 1, 'b', c))),
-          xxhash64(array(named_struct('tag', 1, 'b', c)))
-        FROM wrapped_null_struct_t ORDER BY 1, 2""")
-
-      // Two elements, so the hash of the second chains onto the first.
-      checkSparkAnswerAndOperator("""
-        SELECT
-          hash(array(named_struct('tag', 1, 'b', c), named_struct('tag', 2, 'b', c))),
-          xxhash64(array(named_struct('tag', 1, 'b', c), named_struct('tag', 2, 'b', c)))
-        FROM wrapped_null_struct_t ORDER BY 1, 2""")
+      checkSparkAnswerAndOperator("SELECT c, hash(c), xxhash64(c) FROM t")
     }
   }
 
@@ -359,7 +172,7 @@ class CometHashExpressionSuite extends CometTestBase with AdaptiveSparkPlanHelpe
             (named_struct('a', 2, 'b', array())),
             (named_struct('a', 3, 'b', null)),
             (null)""")
-      checkSparkAnswerAndOperator("SELECT c, hash(c) FROM t")
+      checkSparkAnswerAndOperator("SELECT c, hash(c), xxhash64(c) FROM t")
     }
   }
 
@@ -371,7 +184,7 @@ class CometHashExpressionSuite extends CometTestBase with AdaptiveSparkPlanHelpe
             (array(named_struct('a', 3, 'b', ''))),
             (array()),
             (null)""")
-      checkSparkAnswerAndOperator("SELECT c, hash(c) FROM t")
+      checkSparkAnswerAndOperator("SELECT c, hash(c), xxhash64(c) FROM t")
     }
   }
 
@@ -385,7 +198,7 @@ class CometHashExpressionSuite extends CometTestBase with AdaptiveSparkPlanHelpe
               (map('x', -1)),
               (map()),
               (null)""")
-        checkSparkAnswerAndOperator("SELECT c, hash(c) FROM t")
+        checkSparkAnswerAndOperator("SELECT c, hash(c), xxhash64(c) FROM t")
       }
     }
   }
@@ -400,21 +213,8 @@ class CometHashExpressionSuite extends CometTestBase with AdaptiveSparkPlanHelpe
               (map('x', array())),
               (map()),
               (null)""")
-        checkSparkAnswerAndOperator("SELECT c, hash(c) FROM t")
+        checkSparkAnswerAndOperator("SELECT c, hash(c), xxhash64(c) FROM t")
       }
-    }
-  }
-
-  test("hash - multiple primitive columns") {
-    withTable("t") {
-      sql("CREATE TABLE t(a INT, b STRING, c DOUBLE) USING parquet")
-      sql("""INSERT INTO t VALUES
-            (1, 'hello', 3.14),
-            (2, '', 0.0),
-            (null, null, null),
-            (-1, 'test', -1.5)""")
-      checkSparkAnswerAndOperator(
-        "SELECT hash(a, b, c), hash(c, b, a), hash(a), hash(b), hash(c) FROM t")
     }
   }
 
@@ -426,7 +226,8 @@ class CometHashExpressionSuite extends CometTestBase with AdaptiveSparkPlanHelpe
             (2, array(), ''),
             (null, null, null),
             (3, array(-1, 0, 1), 'test')""")
-      checkSparkAnswerAndOperator("SELECT hash(a, b, c), hash(b), hash(a, c) FROM t")
+      checkSparkAnswerAndOperator(
+        "SELECT hash(a, b, c), xxhash64(a, b, c), hash(b), xxhash64(b), hash(a, c), xxhash64(a, c) FROM t")
     }
   }
 
@@ -438,7 +239,8 @@ class CometHashExpressionSuite extends CometTestBase with AdaptiveSparkPlanHelpe
             (2, named_struct('x', 20, 'y', '')),
             (null, null),
             (3, named_struct('x', null, 'y', 'test'))""")
-      checkSparkAnswerAndOperator("SELECT hash(a, b), hash(b, a), hash(b) FROM t")
+      checkSparkAnswerAndOperator(
+        "SELECT hash(a, b), xxhash64(a, b), hash(b, a), xxhash64(b, a), hash(b), xxhash64(b) FROM t")
     }
   }
 
@@ -446,7 +248,8 @@ class CometHashExpressionSuite extends CometTestBase with AdaptiveSparkPlanHelpe
     withTable("t") {
       sql("CREATE TABLE t(s STRING, a ARRAY<INT>) USING parquet")
       sql("INSERT INTO t VALUES ('', array()), ('a', array(1))")
-      checkSparkAnswerAndOperator("SELECT hash(s), hash(a), hash(s, a) FROM t")
+      checkSparkAnswerAndOperator(
+        "SELECT hash(s), xxhash64(s), hash(a), xxhash64(a), hash(s, a), xxhash64(s, a) FROM t")
     }
   }
 
@@ -454,17 +257,8 @@ class CometHashExpressionSuite extends CometTestBase with AdaptiveSparkPlanHelpe
     withTable("t") {
       sql("CREATE TABLE t(a INT, b STRING, c ARRAY<INT>) USING parquet")
       sql("INSERT INTO t VALUES (null, null, null)")
-      checkSparkAnswerAndOperator("SELECT hash(a), hash(b), hash(c), hash(a, b, c) FROM t")
-    }
-  }
-
-  test("hash - with custom seed") {
-    withTable("t") {
-      sql("CREATE TABLE t(c INT) USING parquet")
-      sql("INSERT INTO t VALUES (1), (2), (3), (null)")
-      // hash() with seed 42 (default) and seed 0
       checkSparkAnswerAndOperator(
-        "SELECT hash(c), hash(c, 0), hash(c, 42), hash(c, -1) FROM t ORDER BY c")
+        "SELECT hash(a), xxhash64(a), hash(b), xxhash64(b), hash(c), xxhash64(c), hash(a, b, c), xxhash64(a, b, c) FROM t")
     }
   }
 
@@ -474,7 +268,7 @@ class CometHashExpressionSuite extends CometTestBase with AdaptiveSparkPlanHelpe
       // Create an array with 1000 elements
       val largeArray = (1 to 1000).mkString("array(", ", ", ")")
       sql(s"INSERT INTO t VALUES ($largeArray)")
-      checkSparkAnswerAndOperator("SELECT hash(c) FROM t")
+      checkSparkAnswerAndOperator("SELECT hash(c), xxhash64(c) FROM t")
     }
   }
 
@@ -491,20 +285,7 @@ class CometHashExpressionSuite extends CometTestBase with AdaptiveSparkPlanHelpe
             (named_struct('a', 1, 'b', named_struct('x', 'hello', 'y',
               array(named_struct('p', 10, 'q', 'foo'), named_struct('p', 20, 'q', 'bar'))))),
             (null)""")
-      checkSparkAnswerAndOperator("SELECT c, hash(c) FROM t")
-    }
-  }
-
-  test("hash - with dictionary encoding") {
-    Seq(true, false).foreach { dictionary =>
-      withSQLConf("parquet.enable.dictionary" -> dictionary.toString) {
-        withTable("t") {
-          sql("CREATE TABLE t(c STRING) USING parquet")
-          // Repeated values to trigger dictionary encoding
-          sql("INSERT INTO t VALUES ('a'), ('b'), ('a'), ('b'), ('a'), ('c'), (null)")
-          checkSparkAnswerAndOperator("SELECT c, hash(c) FROM t ORDER BY c")
-        }
-      }
+      checkSparkAnswerAndOperator("SELECT c, hash(c), xxhash64(c) FROM t")
     }
   }
 
@@ -518,7 +299,7 @@ class CometHashExpressionSuite extends CometTestBase with AdaptiveSparkPlanHelpe
                 (array('a', 'b')),
                 (array('c')),
                 (null)""")
-          checkSparkAnswerAndOperator("SELECT c, hash(c) FROM t")
+          checkSparkAnswerAndOperator("SELECT c, hash(c), xxhash64(c) FROM t")
         }
       }
     }
@@ -564,7 +345,7 @@ class CometHashExpressionSuite extends CometTestBase with AdaptiveSparkPlanHelpe
             (3, array(named_struct('l', cast(null as array<int>))), null),
             (4, null, array(named_struct('a', 3, 'b', 'z')))""")
       checkSparkAnswerAndOperator(
-        "SELECT id, hash(nested), xxhash64(nested), hash(plain, nested) FROM t ORDER BY id")
+        "SELECT id, hash(nested), xxhash64(nested), hash(plain, nested), xxhash64(plain, nested) FROM t ORDER BY id")
     }
   }
 
@@ -583,7 +364,7 @@ class CometHashExpressionSuite extends CometTestBase with AdaptiveSparkPlanHelpe
       spark.read.parquet(filename.toString).createOrReplaceTempView("t1")
       for (col <- schema.fields) {
         val name = col.name
-        checkSparkAnswer(s"select $name, hash($name) from t1 order by $name")
+        checkSparkAnswer(s"select $name, hash($name), xxhash64($name) from t1 order by $name")
       }
     }
   }

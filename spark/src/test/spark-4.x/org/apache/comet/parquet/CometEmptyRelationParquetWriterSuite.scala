@@ -35,7 +35,7 @@ class CometEmptyRelationParquetWriterSuite extends CometParquetWriterTestBase {
       SQLConf.ADAPTIVE_EXECUTION_ENABLED.key -> "true",
       SQLConf.SHUFFLE_PARTITIONS.key -> "2",
       "spark.sql.optimizer.plannedWrite.enabled" -> "true",
-      CometConf.COMET_SPARK_TO_ARROW_ENABLED.key -> "false",
+      CometConf.COMET_CONVERT_FROM_RANGE_ENABLED.key -> "false",
       CometConf.COMET_SHUFFLE_CONVERT_FROM_SPARK_PLAN_ENABLED.key -> "false") {
       withNativeWriter {
         withTempPath { dir =>
@@ -62,9 +62,15 @@ class CometEmptyRelationParquetWriterSuite extends CometParquetWriterTestBase {
                   assert(readback.schema == StructType(empty.schema.map(_.copy(nullable = true))))
                   assert(readback.collect().isEmpty)
                 }
-                assertNoCometNativeWriteExec(plan)
                 if (nativeEmpty) {
                   assert(collect(plan) { case e: CometEmptyRelationExec => e }.nonEmpty)
+                  // CometWriteFilesExec replaces the zero-partition native empty relation
+                  // with one empty partition, so a task writes the schema-only file above.
+                  assertHasCometNativeWriteExec(plan)
+                } else {
+                  // Spark's own EmptyRelationExec is not a Comet operator, so
+                  // CometWriteFiles.requiresNativeChildren keeps the write on Spark.
+                  assertNoCometNativeWriteExec(plan)
                 }
               }
             }
