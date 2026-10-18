@@ -22,6 +22,7 @@ package org.apache.comet.serde
 import org.scalatest.funsuite.AnyFunSuite
 
 import org.apache.spark.sql.catalyst.expressions.{ArrayContains, ArrayPosition, AttributeReference, Cast}
+import org.apache.spark.sql.internal.SQLConf
 import org.apache.spark.sql.types._
 
 import org.apache.comet.CometSparkSessionExtensions.{isSpark40Plus, isSpark41Plus}
@@ -119,6 +120,33 @@ class QueryPlanSerdeSuite extends AnyFunSuite {
     withSharedSubexpressions(Seq(contains, position)) {
       assert(!canShortCircuitNulls(contains))
       assert(!canShortCircuitNulls(position))
+    }
+  }
+
+  test("canShortCircuitNulls follows subexpression elimination except in aggregates") {
+    val cast = Cast(AttributeReference("s", StringType)(), IntegerType)
+    val array = AttributeReference("ai", ArrayType(IntegerType))()
+    val contains = ArrayContains(array, cast)
+    val shared = Seq(contains, ArrayPosition(array, cast))
+
+    def withSubexpressionElimination(enabled: Boolean)(f: => Unit): Unit = {
+      val conf = new SQLConf
+      conf.setConf(SQLConf.SUBEXPRESSION_ELIMINATION_ENABLED, enabled)
+      SQLConf.withExistingConf(conf) {
+        assert(SQLConf.get.subexpressionEliminationEnabled == enabled)
+        f
+      }
+    }
+
+    withSubexpressionElimination(enabled = false) {
+      withSharedSubexpressions(shared) {
+        assert(canShortCircuitNulls(contains))
+      }
+      withSharedSubexpressions(shared, alwaysShared = true) {
+        assert(!canShortCircuitNulls(contains))
+      }
+      // Outside an operator's conversion what they share is still unknown
+      assert(!canShortCircuitNulls(contains))
     }
   }
 }
