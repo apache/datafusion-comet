@@ -980,9 +980,10 @@ case class CometExecRule(session: SparkSession, queryStagePrep: Boolean = false)
         plan
       }
     } else {
-      // The rewrite removes the sorts of each join it converts, so put back any sort a kept
-      // operator above still needs. This runs before transform(), which converts the sorts it
-      // adds like any other SortExec.
+      // The rewrite removes the sorts of each join it converts, so undo it for a join whose
+      // order a kept operator above still needs, or else sort for that operator. This runs
+      // before transform(), which converts the sort-merge joins and sorts it adds like any
+      // other.
       val planWithJoinRewritten = if (CometConf.COMET_FORCE_SHJ.get()) {
         RewriteJoin.restoreRequiredOrdering(plan.transformUp { case p =>
           RewriteJoin.rewrite(p, conf)

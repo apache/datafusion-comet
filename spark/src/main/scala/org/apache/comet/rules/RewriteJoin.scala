@@ -23,8 +23,10 @@ import org.apache.spark.sql.catalyst.expressions.SortOrder
 import org.apache.spark.sql.catalyst.optimizer.{BuildLeft, BuildRight, BuildSide, JoinSelectionHelper}
 import org.apache.spark.sql.catalyst.plans.{ExistenceJoin, LeftSemi}
 import org.apache.spark.sql.catalyst.plans.logical.Join
-import org.apache.spark.sql.execution.{SortExec, SparkPlan}
-import org.apache.spark.sql.execution.joins.{ShuffledHashJoinExec, SortMergeJoinExec}
+import org.apache.spark.sql.catalyst.trees.TreeNodeTag
+import org.apache.spark.sql.execution.{SortExec, SparkPlan, UnaryExecNode}
+import org.apache.spark.sql.execution.exchange.ShuffleExchangeLike
+import org.apache.spark.sql.execution.joins.{HashJoin, ShuffledHashJoinExec, SortMergeJoinExec}
 import org.apache.spark.sql.internal.SQLConf
 
 import org.apache.comet.CometConf
@@ -36,6 +38,9 @@ import org.apache.comet.CometSparkSessionExtensions.{withFallbackReason, withInf
  * This rule replaces [[SortMergeJoinExec]] with [[ShuffledHashJoinExec]].
  */
 object RewriteJoin extends JoinSelectionHelper {
+
+  /** Marks a hash join that `rewrite` made from a sort-merge join. */
+  private val REWRITTEN_TAG = TreeNodeTag[Unit]("comet.rewrittenFromSortMergeJoin")
 
   private def getSmjBuildSide(join: SortMergeJoinExec): Option[BuildSide] = {
     val leftBuildable = canBuildShuffledHashJoinLeft(join.joinType)
@@ -68,19 +73,61 @@ object RewriteJoin extends JoinSelectionHelper {
   }
 
   /**
-   * Adds a local sort under any operator whose child no longer has the ordering the operator
+   * Restores the ordering of any operator whose child no longer has the ordering the operator
    * requires, using the same check as EnsureRequirements. EnsureRequirements puts no sort above a
    * sort-merge join whose output ordering already satisfies its parent, so when rewrite turns
    * that join into a hash join and removes its sorts, a kept parent such as another sort-merge
-   * join on the same key would read unsorted input. Plans that already satisfy their required
-   * orderings are returned unchanged.
+   * join on the same key would read unsorted input. The rewrite is undone for the joins whose
+   * order the parent reads, since sorting a join's output costs more than sorting its inputs
+   * whenever the join emits more rows than it reads. Where that does not restore the ordering, a
+   * local sort is added under the parent. Plans that already satisfy their required orderings are
+   * returned unchanged.
    */
   def restoreRequiredOrdering(plan: SparkPlan): SparkPlan = plan.transformUp { case p =>
-    p.withNewChildren(p.children.zip(p.requiredChildOrdering).map {
-      case (child, required) if !SortOrder.orderingSatisfies(child.outputOrdering, required) =>
-        SortExec(required, global = false, child = child)
+    withOrderedChildren(p)
+  }
+
+  private def withOrderedChildren(plan: SparkPlan): SparkPlan =
+    plan.withNewChildren(plan.children.zip(plan.requiredChildOrdering).map {
+      case (child, required) if !satisfies(child, required) =>
+        Some(revertOrderedJoins(child))
+          .filter(satisfies(_, required))
+          .getOrElse(SortExec(required, global = false, child = child))
       case (child, _) => child
     })
+
+  private def satisfies(plan: SparkPlan, required: Seq[SortOrder]): Boolean =
+    SortOrder.orderingSatisfies(plan.outputOrdering, required)
+
+  /**
+   * Turns the rewritten hash joins that a plan's output ordering would come from back into
+   * sort-merge joins. The ordering passes through operators with one child, other than a sort or
+   * an exchange, and through a hash join's streamed side. A sort-merge join needs its own inputs
+   * ordered too, so a chain of rewritten joins on the same key is undone down to its first join.
+   */
+  private def revertOrderedJoins(plan: SparkPlan): SparkPlan = plan match {
+    case j: ShuffledHashJoinExec if j.getTagValue(REWRITTEN_TAG).isDefined =>
+      val smj = SortMergeJoinExec(
+        j.leftKeys,
+        j.rightKeys,
+        j.joinType,
+        j.condition,
+        j.left,
+        j.right,
+        j.isSkewJoin)
+      val sorted = withOrderedChildren(smj)
+      // Takes the logical link and the other tags the hash join took from the sort-merge join.
+      sorted.copyTagsFrom(j)
+      sorted.unsetTagValue(REWRITTEN_TAG)
+      sorted
+    case j: HashJoin =>
+      j.buildSide match {
+        case BuildLeft => j.withNewChildren(Seq(j.left, revertOrderedJoins(j.right)))
+        case BuildRight => j.withNewChildren(Seq(revertOrderedJoins(j.left), j.right))
+      }
+    case _: SortExec | _: ShuffleExchangeLike => plan
+    case u: UnaryExecNode => u.withNewChildren(Seq(revertOrderedJoins(u.child)))
+    case _ => plan
   }
 
   /**
@@ -149,7 +196,7 @@ object RewriteJoin extends JoinSelectionHelper {
               withInfo(smj, s"Cannot rewrite SortMergeJoin to HashJoin: $reason")
               plan
             case None =>
-              ShuffledHashJoinExec(
+              val shj = ShuffledHashJoinExec(
                 smj.leftKeys,
                 smj.rightKeys,
                 smj.joinType,
@@ -158,6 +205,11 @@ object RewriteJoin extends JoinSelectionHelper {
                 removeSort(smj.left),
                 removeSort(smj.right),
                 smj.isSkewJoin)
+              // transformUp copies the sort-merge join's tags, such as its logical link, only
+              // to a node that has none, so copy them before adding this one.
+              shj.copyTagsFrom(smj)
+              shj.setTagValue(REWRITTEN_TAG, ())
+              shj
           }
         case _ => plan
       }
