@@ -878,8 +878,13 @@ object CometExecIterator extends Logging {
     builder.putEntries("spark.executor.cores", executorCores.toString)
 
     // The stage of this task, which scopes the Parquet metadata cache the native scan shares
-    // between the tasks of one stage.
-    Option(TaskContext.get()).foreach { context =>
+    // between the tasks of one stage. Stage ids restart at zero in every SparkContext and the
+    // native cache outlives a context stopped in the same JVM, so the application is part of it.
+    for {
+      context <- Option(TaskContext.get())
+      appId <- SparkEnv.get.conf.getOption("spark.app.id")
+    } {
+      builder.putEntries("spark.comet.internal.appId", appId)
       builder.putEntries("spark.comet.internal.stageId", context.stageId().toString)
       builder.putEntries(
         "spark.comet.internal.stageAttemptNumber",

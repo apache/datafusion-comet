@@ -23,6 +23,7 @@ use crate::parquet::parquet_support::{
     object_store_authority, ObjectStoreBackend, SparkParquetOptions,
 };
 use crate::parquet::schema_adapter::SparkPhysicalExprAdapterFactory;
+use crate::parquet::shared_metadata_cache::scope_to_store;
 use arrow::datatypes::{Field, FieldRef, Schema, SchemaRef};
 use datafusion::common::tree_node::TreeNode;
 use datafusion::config::{ParquetOptions, TableParquetOptions};
@@ -227,7 +228,10 @@ pub(crate) fn init_datasource_exec(
     // scan_efficiency_ratio, which continue to derive from bytes_scanned.
     let runtime_env = session_ctx.runtime_env();
     let store = runtime_env.object_store(&object_store_url)?;
-    let metadata_cache = runtime_env.cache_manager.get_file_metadata_cache();
+    let metadata_cache = scope_to_store(
+        runtime_env.cache_manager.get_file_metadata_cache(),
+        &object_store_url,
+    );
     //
     // A rebase-enabled scan also has the factory stamp each file's INT96 leaf ordinals into
     // its footer metadata (see `datetime_rebase.rs`), which is how the expression adapter
@@ -439,7 +443,7 @@ mod tests {
     use datafusion::physical_plan::metrics::ExecutionPlanMetricsSet;
     use datafusion::physical_plan::ExecutionPlan;
     use datafusion_comet_spark_expr::test_common::file_util::get_temp_filename;
-    use futures::StreamExt;
+    use futures::{StreamExt, TryStreamExt};
     use object_store::memory::InMemory;
     use object_store::throttle::{ThrottleConfig, ThrottledStore};
     use object_store::{ObjectStore, ObjectStoreExt};
@@ -1307,10 +1311,13 @@ mod tests {
 
         // The per-task RuntimeEnv metadata cache holds this file's metadata with the page index
         // (column + offset index) loaded, even though this scan pushed no pruning predicate.
-        let cache = session_ctx
-            .runtime_env()
-            .cache_manager
-            .get_file_metadata_cache();
+        let cache = scope_to_store(
+            session_ctx
+                .runtime_env()
+                .cache_manager
+                .get_file_metadata_cache(),
+            &ObjectStoreUrl::local_filesystem(),
+        );
         let entry = cache
             .get(&location)
             .expect("file metadata should be cached");
@@ -2108,6 +2115,133 @@ mod tests {
             assert_eq!(
                 scan_metric(scan, "scan_io_object_store_response_bytes_read"),
                 0
+            );
+        }
+    }
+
+    /// A parquet file of one `a` column holding `values`.
+    fn parquet_of(values: Vec<i32>) -> Bytes {
+        let schema = Arc::new(Schema::new(vec![Field::new("a", DataType::Int32, false)]));
+        let batch = RecordBatch::try_new(
+            Arc::clone(&schema),
+            vec![Arc::new(Int32Array::from(values))],
+        )
+        .unwrap();
+        let mut buffer = Vec::new();
+        let mut writer = ArrowWriter::try_new(&mut buffer, schema, None).unwrap();
+        writer.write(&batch).unwrap();
+        writer.close().unwrap();
+        Bytes::from(buffer)
+    }
+
+    /// Two stores that hold a file at the same path with the same size but different contents
+    /// must not hand each other's footer to a scan, whether the metadata cache is shared by the
+    /// tasks of a stage or private to one task. The path DataFusion keys the cache by has no
+    /// bucket, so the cache a scan uses is keyed by the scan's object store as well.
+    #[tokio::test]
+    async fn equal_paths_in_two_stores_do_not_share_footers() {
+        use crate::parquet::shared_metadata_cache::{SharedMetadataCaches, StageKey};
+        use datafusion::execution::cache::cache_manager::CacheManagerConfig;
+        use datafusion::execution::runtime_env::RuntimeEnvBuilder;
+
+        let location = object_store::path::Path::from("table/part-00000.parquet");
+        let contents = [vec![1, 2, 3], vec![101, 102, 103]];
+        let files: Vec<Bytes> = contents.iter().cloned().map(parquet_of).collect();
+        assert_eq!(
+            files[0].len(),
+            files[1].len(),
+            "the files must have equal sizes for the cache to accept one for the other"
+        );
+        let size = files[0].len() as u64;
+        let urls = [
+            "s3+comet-0000000000000001-native://bucket-a",
+            "s3+comet-0000000000000001-native://bucket-b",
+        ];
+
+        for shared in [true, false] {
+            let registry = SharedMetadataCaches::default();
+            let stage_cache = registry.cache_for(StageKey {
+                app_id: "app-1".to_string(),
+                stage_id: 0,
+                stage_attempt: 0,
+            });
+            let mut scanned = Vec::new();
+            for (url, file) in urls.iter().zip(&files) {
+                // One RuntimeEnv per task, as Comet builds them. A shared cache outlives them.
+                let mut cache_config = CacheManagerConfig::default();
+                if shared {
+                    cache_config =
+                        cache_config.with_file_metadata_cache(Some(Arc::clone(&stage_cache)));
+                }
+                let runtime_env = RuntimeEnvBuilder::new()
+                    .with_cache_manager(cache_config)
+                    .build_arc()
+                    .unwrap();
+                let store: Arc<dyn ObjectStore> = Arc::new(InMemory::new());
+                store.put(&location, file.clone().into()).await.unwrap();
+                let object_store_url = ObjectStoreUrl::parse(url).unwrap();
+                runtime_env.register_object_store(object_store_url.as_ref(), store);
+                let session = Arc::new(SessionContext::new_with_config_rt(
+                    datafusion::prelude::SessionConfig::new(),
+                    runtime_env,
+                ));
+
+                // Only the rows above 100 are wanted. The footer of the first file says it has
+                // none, so a scan handed that footer prunes every row of the second.
+                let schema = Arc::new(Schema::new(vec![Field::new("a", DataType::Int32, false)]));
+                let filter: Arc<dyn PhysicalExpr> = Arc::new(BinaryExpr::new(
+                    Arc::new(Column::new("a", 0)),
+                    Operator::Gt,
+                    Arc::new(Literal::new(ScalarValue::Int32(Some(100)))),
+                ));
+                let scan = init_datasource_exec(
+                    Arc::clone(&schema),
+                    Some(schema),
+                    None,
+                    object_store_url,
+                    ObjectStoreBackend::Remote,
+                    vec![vec![PartitionedFile::new(location.to_string(), size)]],
+                    None,
+                    Some(vec![filter]),
+                    None,
+                    "UTC",
+                    true,
+                    false,
+                    false,
+                    false,
+                    &session,
+                    false,
+                    false,
+                    false,
+                    false,
+                    "",
+                    "",
+                )
+                .unwrap();
+                let batches: Vec<RecordBatch> = scan
+                    .execute(0, session.task_ctx())
+                    .unwrap()
+                    .try_collect()
+                    .await
+                    .unwrap();
+                let rows: Vec<i32> = batches
+                    .iter()
+                    .flat_map(|batch| {
+                        batch
+                            .column(0)
+                            .as_any()
+                            .downcast_ref::<Int32Array>()
+                            .unwrap()
+                            .values()
+                            .to_vec()
+                    })
+                    .collect();
+                scanned.push(rows);
+            }
+            assert_eq!(
+                scanned,
+                vec![vec![], vec![101, 102, 103]],
+                "metadata cache shared within the stage: {shared}"
             );
         }
     }

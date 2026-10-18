@@ -28,88 +28,188 @@
 //! deletes one data file, reads again, and expects `FILE_NOT_EXIST`. Every new query is a new
 //! stage, so it opens its files and sees the deletion, as it does without the registry.
 //!
-//! A stage attempt is part of the key because a retried stage may read a changed file.
+//! A stage attempt is part of the key because a retried stage may read a changed file. So is the
+//! Spark application: stage ids restart at zero in every `SparkContext`, and this registry is
+//! process-wide, so a context started after another one stopped in the same JVM must not match
+//! the stages the old one left behind.
 //!
-//! The registry keeps the cache of the stages that still have a running task, plus the last
-//! [`MAX_IDLE_CACHES`] that do not. The idle ones matter when an executor runs one task at a
-//! time: the next task of the stage starts after the previous one released its plan.
+//! The registry holds a weak reference to the cache of every stage with a running task, since the
+//! tasks own it through their `RuntimeEnv`. It additionally holds strong references to the last
+//! [`MAX_IDLE_CACHES`] caches it handed out. Those matter when an executor runs one task at a
+//! time: the next task of the stage starts after the previous one released its plan. Whatever the
+//! tasks do, at most [`MAX_IDLE_CACHES`] caches outlive the tasks that used them.
+//!
+//! The stage scopes the cache; it does not identify the files in it. DataFusion keys an entry by
+//! the file's path within its object store, which drops the bucket, so [`scope_to_store`] gives
+//! each scan a view of the cache that also keys by the scan's object store.
 
 use crate::execution::spark_config::{
-    SparkConfig, COMET_PARQUET_SHARED_METADATA_CACHE_ENABLED, COMET_STAGE_ATTEMPT, COMET_STAGE_ID,
+    SparkConfig, COMET_APP_ID, COMET_PARQUET_SHARED_METADATA_CACHE_ENABLED, COMET_STAGE_ATTEMPT,
+    COMET_STAGE_ID,
 };
+use datafusion::common::TableReference;
+use datafusion::datasource::object_store::ObjectStoreUrl;
 use datafusion::execution::cache::cache_manager::{
-    FileMetadataCache, DEFAULT_METADATA_CACHE_LIMIT,
+    CachedFileMetadataEntry, FileMetadataCache, DEFAULT_METADATA_CACHE_LIMIT,
 };
 use datafusion::execution::cache::default_cache::DefaultCache;
-use std::collections::HashMap;
-use std::sync::{Arc, Mutex, OnceLock};
+use datafusion::execution::cache::{Cache, CacheEntryInfo};
+use object_store::path::Path;
+use std::collections::{HashMap, VecDeque};
+use std::sync::{Arc, Mutex, OnceLock, Weak};
+use std::time::Duration;
 
 /// How many caches of stages with no running task the registry holds on to.
 const MAX_IDLE_CACHES: usize = 2;
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq, Hash)]
 pub(crate) struct StageKey {
+    pub app_id: String,
     pub stage_id: i32,
     pub stage_attempt: i32,
 }
 
-struct Entry {
-    key: StageKey,
-    cache: Arc<FileMetadataCache>,
+#[derive(Default)]
+struct Registry {
+    /// Every cache that is still alive, running or retained.
+    alive: HashMap<StageKey, Weak<FileMetadataCache>>,
+    /// The caches kept alive for the next task of their stage, least recently requested first.
+    retained: VecDeque<(StageKey, Arc<FileMetadataCache>)>,
 }
 
 #[derive(Default)]
 pub(crate) struct SharedMetadataCaches {
-    /// Ordered from least to most recently requested.
-    entries: Mutex<Vec<Entry>>,
+    registry: Mutex<Registry>,
 }
 
 impl SharedMetadataCaches {
     /// The cache shared by the tasks of `key`, created if no task of that stage has asked for one
     /// yet.
-    fn cache_for(&self, key: StageKey) -> Arc<FileMetadataCache> {
-        let mut entries = self.entries.lock().unwrap();
-        let entry = match entries.iter().position(|e| e.key == key) {
-            Some(pos) => entries.remove(pos),
-            None => Entry {
-                key,
-                cache: Arc::new(
+    pub(crate) fn cache_for(&self, key: StageKey) -> Arc<FileMetadataCache> {
+        let mut registry = self.registry.lock().unwrap();
+        let cache = registry
+            .alive
+            .get(&key)
+            .and_then(Weak::upgrade)
+            .unwrap_or_else(|| {
+                Arc::new(
                     DefaultCache::new(DEFAULT_METADATA_CACHE_LIMIT)
                         .with_name("SharedFileMetadataCache"),
-                ),
-            },
-        };
-        let cache = Arc::clone(&entry.cache);
-        entries.push(entry);
+                )
+            });
+        registry.alive.insert(key.clone(), Arc::downgrade(&cache));
 
-        // The registry holds one reference; a task holds another for as long as its
-        // `RuntimeEnv` lives. The newest entry also has the reference returned from here, which
-        // the task takes over, so it counts as idle at two. The newest entry is never evicted.
-        let newest = entries.len() - 1;
-        let is_idle = |index: usize, entry: &Entry| {
-            Arc::strong_count(&entry.cache) == if index == newest { 2 } else { 1 }
-        };
-        let mut idle = entries
-            .iter()
-            .enumerate()
-            .filter(|(i, e)| is_idle(*i, e))
-            .count();
-        let mut index = 0;
-        entries.retain(|e| {
-            let evict = index != newest && idle > MAX_IDLE_CACHES && is_idle(index, e);
-            index += 1;
-            if evict {
-                idle -= 1;
-            }
-            !evict
-        });
+        registry.retained.retain(|(retained, _)| *retained != key);
+        registry.retained.push_back((key, Arc::clone(&cache)));
+        while registry.retained.len() > MAX_IDLE_CACHES {
+            registry.retained.pop_front();
+        }
+        registry.alive.retain(|_, weak| weak.strong_count() > 0);
         cache
     }
 
     #[cfg(test)]
     fn len(&self) -> usize {
-        self.entries.lock().unwrap().len()
+        self.registry.lock().unwrap().alive.len()
     }
+}
+
+/// A view of a [`FileMetadataCache`] that keys every entry by the object store as well as the
+/// path within it.
+///
+/// DataFusion keys an entry by `ObjectMeta.location`, and the location of a file in a scan has no
+/// bucket or authority, so equal paths in two stores collide. Two files at the same path with the
+/// same size then pass the cache's `(size, modification time)` check, and a task would plan its
+/// scan with the other file's footer and statistics. Only the key changes; the entries, the memory
+/// limit and the eviction are those of the cache underneath, which is why a view can be made per
+/// scan from the cache of the whole stage. `len`, `clear` and `list_entries` act on the whole
+/// cache, not on this scope.
+#[derive(Debug)]
+struct StoreScopedCache {
+    scope: String,
+    inner: Arc<FileMetadataCache>,
+}
+
+impl StoreScopedCache {
+    fn scoped(&self, key: &Path) -> Path {
+        std::iter::once(self.scope.clone())
+            .chain(key.parts().map(|part| part.as_ref().to_string()))
+            .collect()
+    }
+}
+
+impl Cache<Path, CachedFileMetadataEntry> for StoreScopedCache {
+    fn get(&self, key: &Path) -> Option<CachedFileMetadataEntry> {
+        self.inner.get(&self.scoped(key))
+    }
+
+    fn put(&self, key: &Path, value: CachedFileMetadataEntry) -> Option<CachedFileMetadataEntry> {
+        self.inner.put(&self.scoped(key), value)
+    }
+
+    fn remove(&self, key: &Path) -> Option<CachedFileMetadataEntry> {
+        self.inner.remove(&self.scoped(key))
+    }
+
+    fn contains_key(&self, key: &Path) -> bool {
+        self.inner.contains_key(&self.scoped(key))
+    }
+
+    fn len(&self) -> usize {
+        self.inner.len()
+    }
+
+    fn clear(&self) {
+        self.inner.clear()
+    }
+
+    fn name(&self) -> String {
+        self.inner.name()
+    }
+
+    fn cache_limit(&self) -> usize {
+        self.inner.cache_limit()
+    }
+
+    fn update_cache_limit(&self, limit: usize) {
+        self.inner.update_cache_limit(limit)
+    }
+
+    fn cache_ttl(&self) -> Option<Duration> {
+        self.inner.cache_ttl()
+    }
+
+    fn update_cache_ttl(&self, ttl: Option<Duration>) {
+        self.inner.update_cache_ttl(ttl)
+    }
+
+    fn drop_table_entries(&self, table_ref: &TableReference) -> datafusion::error::Result<()> {
+        self.inner.drop_table_entries(table_ref)
+    }
+
+    fn list_entries(
+        &self,
+    ) -> datafusion::common::HashMap<Path, CacheEntryInfo<CachedFileMetadataEntry>> {
+        self.inner.list_entries()
+    }
+}
+
+/// The metadata cache a scan of `object_store_url` should use, given the one of its
+/// `RuntimeEnv`.
+///
+/// `object_store_url` is the URL the scan's store is registered under, which already carries the
+/// backend and a hash of the store's configuration (see `object_store_registration_url`), so two
+/// stores with equal paths never share an entry. The scan and any code that reads the footers
+/// ahead of it, such as the Delta deletion vector planning, must pass the same URL to find each
+/// other's entries.
+pub(crate) fn scope_to_store(
+    cache: Arc<FileMetadataCache>,
+    object_store_url: &ObjectStoreUrl,
+) -> Arc<FileMetadataCache> {
+    Arc::new(StoreScopedCache {
+        scope: object_store_url.as_str().to_string(),
+        inner: cache,
+    })
 }
 
 /// The cache the task with these Spark configs should use, or `None` when sharing is off or the
@@ -124,6 +224,7 @@ pub(crate) fn shared_metadata_cache_for_task(
     }
     let parse = |name: &str| spark_config.get(name)?.parse::<i32>().ok();
     let key = StageKey {
+        app_id: spark_config.get(COMET_APP_ID)?.clone(),
         stage_id: parse(COMET_STAGE_ID)?,
         stage_attempt: parse(COMET_STAGE_ATTEMPT)?,
     };
@@ -140,6 +241,7 @@ mod tests {
 
     fn key(stage_id: i32, stage_attempt: i32) -> StageKey {
         StageKey {
+            app_id: "app-1".to_string(),
             stage_id,
             stage_attempt,
         }
@@ -171,6 +273,41 @@ mod tests {
         drop(first);
         let next = caches.cache_for(key(1, 0));
         assert_eq!(Arc::as_ptr(&next) as *const () as usize, address);
+    }
+
+    #[test]
+    fn applications_do_not_share() {
+        // A context started after another one stopped in the same JVM reuses its stage ids.
+        let caches = SharedMetadataCaches::default();
+        let old = caches.cache_for(key(1, 0));
+        drop(old);
+        let mut other = key(1, 0);
+        other.app_id = "app-2".to_string();
+        let new = caches.cache_for(other);
+        assert_eq!(new.len(), 0);
+        assert!(!Arc::ptr_eq(&new, &caches.cache_for(key(1, 0))));
+    }
+
+    #[test]
+    fn idle_retention_is_bounded_after_all_tasks_finish() {
+        let caches = SharedMetadataCaches::default();
+        let handles: Vec<_> = (0..16)
+            .map(|stage| caches.cache_for(key(stage, 0)))
+            .collect();
+        let weak: Vec<_> = handles.iter().map(Arc::downgrade).collect();
+        drop(handles);
+        assert!(weak.iter().filter(|w| w.upgrade().is_some()).count() <= MAX_IDLE_CACHES);
+    }
+
+    #[test]
+    fn a_dropped_cache_is_forgotten_by_the_next_request() {
+        let caches = SharedMetadataCaches::default();
+        for stage in 0..16 {
+            drop(caches.cache_for(key(stage, 0)));
+        }
+        let _running = caches.cache_for(key(100, 0));
+        // The caches of the first sixteen stages are gone but for the ones retained.
+        assert_eq!(caches.len(), MAX_IDLE_CACHES);
     }
 
     #[test]
