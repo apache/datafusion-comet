@@ -342,6 +342,73 @@ class CometDiskBlockWriterSuite extends AnyFunSuite {
     }
   }
 
+  test("growing pages under real memory pressure spill but still write full batches") {
+    // The partitions' batches together do not fit, so writers must spill, and a growing writer
+    // whose next page is refused spills itself and restarts at the small page. Spilling is
+    // legitimate here, but it must not degrade to writing about one row per batch (#7058).
+    val conf = new SparkConf()
+      .set("spark.memory.offHeap.enabled", "true")
+      .set("spark.memory.offHeap.size", "1g")
+    val memoryManager = new TestMemoryManager(conf)
+    val kib = 1024L
+    val initialPageSize = 64 * kib
+    val maxPageSize = 1024 * kib
+    // 32 partitions fill about 8 MiB below, so this holds well under half of the batches.
+    memoryManager.limit(3 * 1024 * kib)
+    val tmm = new TaskMemoryManager(memoryManager, 0L)
+    val taskContext = newTaskContext(tmm, 0L)
+    val allocator = CometShuffleMemoryAllocator.getInstance(tmm, initialPageSize)
+    val tempDir = Utils.createTempDir()
+    try {
+      val partitions = 32
+      val rowsPerPartition = 2000
+      val currentWriters = new JLinkedList[CometDiskBlockWriter]()
+      val serializer = new UnsafeRowSerializer(1).newInstance()
+      val writers = (0 until partitions).map { partition =>
+        new CometDiskBlockWriter(
+          new File(tempDir, s"partition$partition"),
+          allocator,
+          initialPageSize,
+          maxPageSize,
+          taskContext,
+          serializer,
+          schema,
+          new ShuffleWriteMetrics,
+          conf,
+          false,
+          currentWriters)
+      }
+
+      val toUnsafe = UnsafeProjection.create(schema)
+      // Round-robin, so that each partition gets a row before any gets a second one. A write
+      // under memory pressure can be of any writer, so each insert checks all of them.
+      val written = Array.fill(partitions)(0L)
+      var batches = 0L
+      var rowsInBatches = 0L
+      for (_ <- 0 until rowsPerPartition; partition <- 0 until partitions) {
+        writers(partition).insertRow(toUnsafe(InternalRow(new Array[Byte](100))), 0)
+        for (i <- 0 until partitions if writers(i).getOutputRecords > written(i)) {
+          batches += 1
+          rowsInBatches += writers(i).getOutputRecords - written(i)
+          written(i) = writers(i).getOutputRecords
+        }
+      }
+      writers.foreach(_.close())
+
+      assert(writers.map(_.getOutputRecords).sum == partitions * rowsPerPartition)
+      assert(taskContext.taskMetrics.memoryBytesSpilled > 0)
+      assert(taskContext.taskMetrics.diskBytesSpilled > 0)
+      assert(tmm.getMemoryConsumptionForThisTask == 0)
+      assert(allocator.getUsed == 0)
+      // Writing a page's worth of rows is far more than one row. Pages of Spark's size, when
+      // every writer held one from its first row, gave about one row per batch here.
+      assert(batches > 0 && rowsInBatches / batches >= 100, s"$rowsInBatches rows in $batches")
+    } finally {
+      Utils.deleteRecursively(tempDir)
+      tmm.cleanUpAllAllocatedMemory()
+    }
+  }
+
   test("a fatal error during write() frees the task's buffered pages") {
     // Spark's ShuffleWriteProcessor only calls stop(false) when write() throws an Exception, so a
     // fatal error such as SparkOutOfMemoryError skips it. write() itself must therefore free the
