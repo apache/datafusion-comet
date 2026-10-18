@@ -25,19 +25,18 @@ format, which Comet operators cannot read. Under Comet's default settings the op
 cache scan then run on Spark. With `spark.comet.convert.inMemoryCache.enabled`, a
 `CometSparkColumnarToColumnar` above the scan converts each batch for Comet operators instead.
 
-This feature is **enabled by default** from Spark 3.5. To turn it off, set the config at startup,
-alongside the rest of Comet's configuration:
+This feature is **experimental and disabled by default**; see [Limitations](#limitations). Turn it
+on at startup, alongside the rest of Comet's configuration:
 
 ```shell
 $SPARK_HOME/bin/spark-shell \
     ... \
-    --conf spark.comet.exec.inMemoryCache.enabled=false
+    --conf spark.comet.exec.inMemoryCache.enabled=true
 ```
 
-On Spark 3.4 it is disabled by default, and setting the config to `true` turns it on. Spark 3.4 has
-no hook for the rule through which Comet lets AQE coalesce the shuffle partitions of a union that
-Comet runs, so a union of a shuffle and a relation cached in Comet's format keeps every shuffle
-partition there.
+On Spark 3.4, a union of a shuffle and a relation cached in Comet's format keeps every shuffle
+partition. Spark 3.4 has no hook for the rule through which Comet lets AQE coalesce the shuffle
+partitions of a union that Comet runs.
 
 It has to be set before the `SparkContext` starts. Comet's driver plugin chooses
 `spark.sql.cache.serializer` once, while the context is initializing, so an application keeps the
@@ -137,7 +136,7 @@ nowhere to record either that a column is dictionary encoded or the dictionary i
 
 | Config                                                  | Default | Description                                                                                                                                          |
 | ------------------------------------------------------- | ------- | ---------------------------------------------------------------------------------------------------------------------------------------------------- |
-| `spark.comet.exec.inMemoryCache.enabled`                | `true`  | Whether to store and scan Spark's in-memory cache in Comet's format. Read at startup. Defaults to `false` on Spark 3.4.                              |
+| `spark.comet.exec.inMemoryCache.enabled`                | `false` | Whether to store and scan Spark's in-memory cache in Comet's format. Read at startup.                                                                |
 | `spark.comet.exec.inMemoryCache.compression.codec`      | `zstd`  | Arrow IPC compression codec for cached data: `zstd`, `lz4` or `none`. Affects newly cached data only: a batch records the codec it was written with. |
 | `spark.comet.exec.inMemoryCache.compression.zstd.level` | `1`     | Compression level when the codec is `zstd`. Ignored otherwise.                                                                                       |
 
@@ -275,6 +274,15 @@ in either format under `registrationRequired` needs a registrator. `CometKryoReg
 Spark's cached batch too.
 
 ## Limitations
+
+A relation cached after a sort, such as `sortWithinPartitions`, reports that order to the queries
+that read it, and Spark removes the sorts it makes redundant. Some native joins over such a
+relation do not keep the order, so partitions above them can come back unsorted, and an operator
+that relies on the order, such as a sort-merge join, can return wrong rows. These cases are tracked
+in [#6787](https://github.com/apache/datafusion-comet/issues/6787),
+[#6898](https://github.com/apache/datafusion-comet/issues/6898) and
+[#6922](https://github.com/apache/datafusion-comet/issues/6922), and are why the feature is
+disabled by default.
 
 Reads that feed **Spark** operators rather than Comet ones can be slower than Spark's own cache
 format, because every cached batch is decoded from Arrow before Spark reads it. How a Spark

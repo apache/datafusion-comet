@@ -141,9 +141,9 @@ Common causes of a small speedup are:
 ### Does Comet support Delta Lake, Apache Hudi, or Apache Paimon tables?
 
 Not yet. Comet accelerates [Apache Iceberg](../user-guide/latest/iceberg.md) tables, with a native
-reader and [native writes](../user-guide/latest/iceberg-writes.md) that are both enabled by default.
-It does not accelerate scans of Delta Lake, Hudi, or Paimon tables, so Spark reads those. Native
-Delta Lake reads are in development; see the
+reader that is enabled by default and opt-in
+[native writes](../user-guide/latest/iceberg.md#writes). It does not accelerate scans of Delta Lake,
+Hudi, or Paimon tables, so Spark reads those. Native Delta Lake reads are in development; see the
 [roadmap](../contributor-guide/roadmap.md#delta-lake-support). Hudi and Paimon are not on the
 roadmap.
 

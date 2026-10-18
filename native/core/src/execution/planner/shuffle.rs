@@ -104,15 +104,18 @@ impl OperatorBuilder for ShuffleWriterBuilder {
         // only ever sees a real limit or none at all.
         let max_buffer_bytes =
             (writer.max_buffer_bytes > 0).then_some(writer.max_buffer_bytes as usize);
-        let shuffle_writer = Arc::new(ShuffleWriterExec::try_new_with_destination(
-            writer_input,
-            partitioning,
-            codec,
-            destination,
-            writer.tracing_enabled,
-            write_buffer_size,
-            max_buffer_bytes,
-        )?);
+        let shuffle_writer = Arc::new(
+            ShuffleWriterExec::try_new_with_destination(
+                writer_input,
+                partitioning,
+                codec,
+                destination,
+                writer.tracing_enabled,
+                write_buffer_size,
+                max_buffer_bytes,
+            )?
+            .with_offsets_as_lengths(writer.offsets_as_lengths),
+        );
 
         Ok((
             scans,
