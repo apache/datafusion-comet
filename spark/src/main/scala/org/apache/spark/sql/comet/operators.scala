@@ -1179,9 +1179,10 @@ abstract class CometNativeExec extends CometExec {
       commonByKey = commonByKey,
       perPartitionByKey = perPartitionByKey,
       shuffleScanIndices = shuffleScanIndices,
-      // A leaf Comet scan (`CometNativeScanExec`, `CometIcebergNativeScanExec`) can
-      // contribute `bytes_scanned` / `output_rows` to Spark's task-level input metrics,
-      // which drive the Input column on the UI's Stages and Executors tabs.
+      // A leaf Comet scan (`CometNativeScanExec`, `CometIcebergNativeScanExec`, or a contrib
+      // leaf such as `CometDeltaNativeScanExec`) can contribute `bytes_scanned` /
+      // `output_rows` to Spark's task-level input metrics, which drive the Input column on
+      // the UI's Stages and Executors tabs.
       // Matching on `CometLeafExec` rather than `CometNativeScanExec` keeps every scan
       // reported once the scan is fused into a larger native block, where only the block
       // root's `compute` runs. `reportScanInputMetrics` self-filters on the `bytes_scanned`
@@ -2264,11 +2265,6 @@ trait CometBaseAggregate[T <: BaseAggregateExec] extends CometOperatorSerde[T] {
     val resultExpressions = aggregate.resultExpressions
     val child = aggregate.child
 
-    if (groupingExpressions.isEmpty && aggregateExpressions.isEmpty) {
-      withFallbackReason(aggregate, "No group by or aggregation")
-      return None
-    }
-
     if (groupingExpressions.exists(expr =>
         SupportLevel.containsType(expr.dataType, classOf[MapType]))) {
       withFallbackReason(aggregate, "Grouping on map-containing types is not supported")
@@ -2313,6 +2309,10 @@ trait CometBaseAggregate[T <: BaseAggregateExec] extends CometOperatorSerde[T] {
     //              +- FileScan parquet spark_catalog.default.test[col1#6, col2#7] ......
     // If the aggregateExpressions is empty, we only want to build groupingExpressions,
     // and skip processing of aggregateExpressions.
+    //
+    // The groupingExpressions can be empty too, for the `Aggregate(Nil, Nil, child)` that
+    // ColumnPruning leaves when nothing reads a global aggregate's output. The native planner
+    // handles that shape.
     if (aggregateExpressions.isEmpty) {
       val hashAggBuilder = OperatorOuterClass.HashAggregate.newBuilder()
       hashAggBuilder.addAllGroupingExprs(groupingExprs.map(_.get).asJava)
@@ -2568,6 +2568,18 @@ object CometHashAggregateExec extends CometBaseAggregate[HashAggregateExec] {
           "Ungrouped decimal SUM at maximum precision without codegen cannot match Spark's " +
             "latching UnsafeRow buffer"))
     }
+    // The native ungrouped AVG neither keeps its running sum unbounded, as Spark does with
+    // codegen, nor latches it, as Spark does without: it skips the row that takes the sum out of
+    // the precision and goes on, so DECIMAL(38,38) inputs 0.6, 0.6, -0.6 average to 0, not 0.2.
+    // Its merge latches, so partials of 0.6 and 0.6 give NULL, where Spark's codegen gives 0.6.
+    // The grouped accumulator latches like Spark's UnsafeRow buffer and stays native.
+    // https://github.com/apache/datafusion-comet/issues/5418
+    if (op.groupingExpressions.isEmpty && hasMaxPrecisionDecimalAvg(op)) {
+      return Unsupported(
+        Some(
+          "Ungrouped decimal AVG with a maximum-precision sum cannot match Spark's " +
+            "aggregation buffer"))
+    }
     Compatible()
   }
 
@@ -2593,11 +2605,20 @@ object CometObjectHashAggregateExec extends CometBaseAggregate[ObjectHashAggrega
   override protected def operatorSupportLevel(op: ObjectHashAggregateExec): SupportLevel = {
     // Spark's object aggregation buffers the intermediate decimal sum unbounded, while Comet's
     // grouped accumulator latches to null once a running sum leaves the precision, so the
-    // grouped case declines. Decimal AVG has the same gap and is tracked separately.
+    // grouped case declines.
     if (op.groupingExpressions.nonEmpty && hasMaxPrecisionDecimalSum(op)) {
       return Unsupported(
         Some(
           "Grouped decimal SUM at maximum precision cannot match Spark's unbounded object " +
+            "aggregation buffer"))
+    }
+    // Decimal AVG has the same gap when grouped. Ungrouped, the native AVG skips the row that
+    // takes its running sum out of the precision, so it declines either way.
+    // https://github.com/apache/datafusion-comet/issues/5509
+    if (hasMaxPrecisionDecimalAvg(op)) {
+      return Unsupported(
+        Some(
+          "Decimal AVG with a maximum-precision sum cannot match Spark's unbounded object " +
             "aggregation buffer"))
     }
     Compatible()
@@ -2829,6 +2850,18 @@ trait CometHashJoin {
       withFallbackReason(
         join,
         "null-aware anti-join requires single-column LeftAnti BuildRight with no condition")
+      return None
+    }
+
+    // DataFusion builds a null-aware anti join on Spark's streamed side, and on its hash map path
+    // it emits the build batches last to first, so the output loses the ordering Spark reports
+    // for the join. Remove this fallback once Comet uses a DataFusion release that fixes
+    // https://github.com/apache/datafusion/issues/26226.
+    if (isNullAwareAntiJoin && join.outputOrdering.nonEmpty) {
+      withFallbackReason(
+        join,
+        "null-aware anti-join over an ordered streamed side is not supported natively, " +
+          "because the native join does not keep that order")
       return None
     }
 

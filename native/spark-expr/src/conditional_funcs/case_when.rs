@@ -17,7 +17,8 @@
 
 use crate::{Cast, EvalMode, IfExpr, NormalizeNaNAndZero, SparkCastOptions, SparkComparison};
 use arrow::array::{
-    downcast_primitive, Array, ArrayRef, AsArray, BooleanArray, GenericByteArray, PrimitiveArray,
+    downcast_primitive, new_empty_array, Array, ArrayRef, AsArray, BooleanArray, GenericByteArray,
+    PrimitiveArray,
 };
 use arrow::buffer::{BooleanBuffer, NullBuffer, OffsetBuffer, ScalarBuffer};
 use arrow::compute::nullif;
@@ -104,9 +105,10 @@ pub fn create_if_expr(
     )))
 }
 
-/// Merges conditional branch types positionally, retaining left names and merging nullability.
-/// Spark has already coerced the branches to the same SQL type. DataFusion's struct union may
-/// instead match by name, pairing different positions when names differ only in case.
+/// Merges conditional branch types, or the arguments of `greatest` and `least`, positionally,
+/// retaining left names and merging nullability. Spark has already coerced them to the same SQL
+/// type. DataFusion's struct union may instead match by name, pairing different positions when
+/// names differ only in case.
 fn merge_branch_types(left_type: &DataType, right_type: &DataType) -> Option<DataType> {
     use arrow::datatypes::FieldRef;
 
@@ -164,6 +166,38 @@ fn coerce_branch(
         None,
         None,
     ))
+}
+
+/// Casts the arguments of a Spark `ComplexTypeMergingExpression` such as `greatest` or `least` to
+/// their common type, which keeps the first argument's field names, as Spark's result type does.
+///
+/// Spark has already given the arguments the same SQL type up to nullability, and up to the case
+/// of struct field names when the analysis is case-insensitive. It compares structs field by field
+/// by position. DataFusion's struct coercion and Arrow's struct cast both match fields by name
+/// when two structs hold the same set of names, which pairs different positions when the names
+/// differ only in case, so the arguments are reconciled here positionally instead. The arguments
+/// are returned unchanged when they have no positional common type.
+pub fn coerce_to_common_type(
+    exprs: Vec<Arc<dyn PhysicalExpr>>,
+    input_schema: &Schema,
+) -> Result<Vec<Arc<dyn PhysicalExpr>>> {
+    let types = exprs
+        .iter()
+        .map(|e| e.data_type(input_schema))
+        .collect::<Result<Vec<_>>>()?;
+    let Some((first, rest)) = types.split_first() else {
+        return Ok(exprs);
+    };
+    let Some(common_type) = rest.iter().try_fold(first.clone(), |common, data_type| {
+        merge_branch_types(&common, data_type)
+    }) else {
+        return Ok(exprs);
+    };
+    Ok(exprs
+        .into_iter()
+        .zip(&types)
+        .map(|(e, data_type)| coerce_branch(e, data_type, &common_type))
+        .collect())
 }
 
 /// Spark's `CASE WHEN`, which Comet also uses for `IF` and `COALESCE`.
@@ -353,6 +387,13 @@ impl PhysicalExpr for CaseWhenExpr {
     }
 
     fn evaluate(&self, batch: &RecordBatch) -> Result<ColumnarValue> {
+        // No row chooses a branch, which both the eager and the lazy evaluation answer with a
+        // scalar NULL. A scalar from an empty batch is taken to mean the expression is constant,
+        // as IN does to build its list once, so return an empty array instead.
+        if batch.num_rows() == 0 {
+            let data_type = self.data_type(&batch.schema())?;
+            return Ok(ColumnarValue::Array(new_empty_array(&data_type)));
+        }
         match self
             .eager
             .get_or_init(|| self.eager_result_type(&batch.schema()))
@@ -1314,14 +1355,37 @@ mod tests {
         assert_eq!(scalar(expr), ScalarValue::Int64(None));
     }
 
+    /// A scalar from an empty batch is taken to mean the expression is constant, so a CASE that
+    /// depends on a column has to return an empty array, whichever way it is evaluated.
     #[test]
-    fn empty_batch() {
+    fn empty_batch_returns_an_empty_array() {
         let batch = int_batch(vec![], vec![]);
         let schema = batch.schema();
         let a = col("a", &schema).unwrap();
         let b = col("b", &schema).unwrap();
-        let when_then = vec![(binary(Arc::clone(&a), Operator::Lt, lit(0i64)), a)];
-        check_against_case_expr(&batch, when_then, Some(b));
+        let null = || lit(ScalarValue::Int64(None));
+        let a_is_1 = || binary(Arc::clone(&a), Operator::Eq, lit(1i64));
+        let a_div_b = binary(Arc::clone(&a), Operator::Divide, b);
+        let new_case = |when_then, else_expr| CaseWhenExpr::try_new(when_then, else_expr).unwrap();
+        for (expr, eager) in [
+            // IF(a = 1, NULL, a), as nullif(a, 1) is planned
+            (
+                new_case(vec![(a_is_1(), null())], Some(Arc::clone(&a))),
+                true,
+            ),
+            // A branch that can fail is evaluated lazily, by CaseExpr, which also returns the
+            // NULL literal as a scalar for an empty batch
+            (new_case(vec![(a_is_1(), null())], Some(a_div_b)), false),
+        ] {
+            assert_eq!(expr.eager_result_type(&schema).is_some(), eager, "{expr}");
+            match expr.evaluate(&batch).unwrap() {
+                ColumnarValue::Array(array) => {
+                    assert_eq!(array.len(), 0, "{expr}");
+                    assert_eq!(array.data_type(), &DataType::Int64, "{expr}");
+                }
+                other => panic!("{expr} returned {other:?} for an empty batch"),
+            }
+        }
     }
 
     #[test]
