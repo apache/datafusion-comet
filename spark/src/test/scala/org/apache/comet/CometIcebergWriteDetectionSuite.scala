@@ -277,19 +277,22 @@ class CometIcebergWriteDetectionSuite extends CometTestBase with CometIcebergTes
     }
   }
 
-  test("fall-back: unknown column in the write schema") {
+  test("fall-back: unknown field nested in a struct") {
     assume(icebergVersionAtLeast(1, 10), "The unknown type requires Iceberg 1.10+")
     withDetectionCatalog { _ =>
-      // Spark DDL cannot declare `unknown` (Iceberg plans it as Spark's NullType), so evolve the
-      // schema through the Iceberg API.
+      // Spark DDL cannot declare `unknown`, so add it through the Iceberg API.
       createTable("unknown_col", partitionSpec = "", properties = Some("'format-version'='3'"))
+      spark.sql(s"ALTER TABLE $catalog.$ns.unknown_col ADD COLUMN s STRUCT<a: INT>")
       addIcebergColumn(
         loadIcebergTable(spark, catalog, ns, "unknown_col"),
         "u",
-        icebergUnknownType())
+        icebergUnknownType(),
+        parent = Some("s"))
       spark.sql(s"REFRESH TABLE $catalog.$ns.unknown_col")
       val writeExec = captureWriteExec("unknown_col", allowWriteFailure = true) {
-        spark.sql(s"INSERT INTO $catalog.$ns.unknown_col VALUES (1, 'us', 1.0, NULL)")
+        spark.sql(
+          s"INSERT INTO $catalog.$ns.unknown_col " +
+            "VALUES (1, 'us', 1.0, named_struct('a', 1, 'u', NULL))")
       }
       assertUnsupportedContains(writeExec, "unknown_col", "column u has Iceberg type unknown")
     }
