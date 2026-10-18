@@ -1828,29 +1828,27 @@ class CometWindowExecSuite extends CometTestBase {
     // Spark's supported range wraps. Past chrono's date range the native bound
     // becomes the partition edge, which agrees with Spark's unwrapped bound
     // lying beyond every row.
-    withSQLConf(SQLConf.PARQUET_REBASE_MODE_IN_WRITE.key -> "CORRECTED") {
-      withTempDir { dir =>
-        Seq("0001-01-01", "1970-01-01", "2024-01-05", "9999-12-31")
-          .map(java.sql.Date.valueOf)
-          .toDF("d")
-          .repartition(1)
-          .write
-          .mode("overwrite")
-          .parquet(dir.toString)
-        spark.read.parquet(dir.toString).createOrReplaceTempView("date_edge")
-        for {
-          order <- Seq("ASC", "DESC")
-          frame <- Seq(
-            "RANGE BETWEEN 2144550751 PRECEDING AND CURRENT ROW",
-            "RANGE BETWEEN CURRENT ROW AND 2144550751 FOLLOWING",
-            "RANGE BETWEEN 2144550751 PRECEDING AND 2144550751 FOLLOWING")
-        } {
-          val df = sql(s"""
-            SELECT d, COUNT(*) OVER (ORDER BY d $order $frame) AS cnt
-            FROM date_edge
-          """)
-          checkSparkAnswerAndOperator(df)
-        }
+    withTempDir { dir =>
+      Seq("0001-01-01", "1970-01-01", "2024-01-05", "9999-12-31")
+        .map(java.sql.Date.valueOf)
+        .toDF("d")
+        .repartition(1)
+        .write
+        .mode("overwrite")
+        .parquet(dir.toString)
+      spark.read.parquet(dir.toString).createOrReplaceTempView("date_edge")
+      for {
+        order <- Seq("ASC", "DESC")
+        frame <- Seq(
+          "RANGE BETWEEN 2144550751 PRECEDING AND CURRENT ROW",
+          "RANGE BETWEEN CURRENT ROW AND 2144550751 FOLLOWING",
+          "RANGE BETWEEN 2144550751 PRECEDING AND 2144550751 FOLLOWING")
+      } {
+        val df = sql(s"""
+          SELECT d, COUNT(*) OVER (ORDER BY d $order $frame) AS cnt
+          FROM date_edge
+        """)
+        checkSparkAnswerAndOperator(df)
       }
     }
   }
