@@ -22,6 +22,7 @@ package org.apache.spark.sql.comet
 import java.util.IdentityHashMap
 import java.util.concurrent.ConcurrentHashMap
 
+import scala.collection.mutable
 import scala.jdk.CollectionConverters._
 
 import org.apache.spark.{SparkContext, TaskContext}
@@ -43,6 +44,10 @@ import org.apache.comet.serde.Metric
  */
 case class CometMetricNode(metrics: Map[String, SQLMetric], children: Seq[CometMetricNode])
     extends Logging {
+
+  // The highest value each metric has reported through this node (see [[set]]). A body field
+  // rather than a constructor parameter, so it takes no part in equality.
+  private val lastReported = mutable.HashMap.empty[String, Long]
 
   /**
    * Returns the leaf node (deepest single-child descendant). For a native scan plan like
@@ -91,7 +96,7 @@ case class CometMetricNode(metrics: Map[String, SQLMetric], children: Seq[CometM
    */
   private[comet] def withoutAggregateMetrics(plan: SparkPlan): CometMetricNode =
     CometMetricNode(
-      if (plan.isInstanceOf[CometHashAggregateExec]) {
+      if (plan.isInstanceOf[CometBaseAggregateExec]) {
         metrics -- CometMetricNode.aggregateMetricNames
       } else {
         metrics
@@ -201,17 +206,37 @@ case class CometMetricNode(metrics: Map[String, SQLMetric], children: Seq[CometM
   }
 
   /**
-   * Update the value of a metric. This method will typically be called multiple times for the
-   * same metric during multiple calls to executePlan.
+   * Returns a copy of this tree for one native plan. The copy updates the same `SQLMetric`s but
+   * tracks its own last reported values, so [[set]] can add what this plan reports to what
+   * earlier plans in the same task reported.
+   */
+  def newInstance(): CometMetricNode = CometMetricNode(metrics, children.map(_.newInstance()))
+
+  /**
+   * Folds a value reported by native code into a metric. Called from native, typically many times
+   * for the same metric while the plan runs.
+   *
+   * Native code reports the absolute value for its own plan, while the `SQLMetric` is shared by
+   * every native plan that a task runs over this tree, such as one plan per parent partition
+   * under a coalesce. Each plan works on its own copy of the tree (see [[newInstance]]), and the
+   * metric grows by the increase since that copy's last report, so plans that run one after
+   * another in a task add up. A value below an earlier report adds nothing and the last reported
+   * value keeps the higher one; recording the lower value would count the recovery a second time.
+   * Gauges such as peak memory keep the maximum across the task's plans instead.
    *
    * @param metricName
    *   the name of the metric at native operator.
    * @param v
-   *   the value to set.
+   *   the absolute value native code reports for this plan.
    */
   def set(metricName: String, v: Long): Unit = {
     metrics.get(metricName) match {
-      case Some(metric) => metric.set(v)
+      case Some(metric) if CometMetricNode.gaugeMetricNames.contains(metricName) =>
+        metric.set(math.max(metric.value, v))
+      case Some(metric) =>
+        val last = lastReported.getOrElse(metricName, 0L)
+        metric.add(math.max(0L, v - last))
+        lastReported.update(metricName, math.max(last, v))
       case None =>
         // no-op
         logDebug(s"Non-existing metric: $metricName. Ignored")
@@ -238,6 +263,11 @@ object CometMetricNode {
 
   private val aggregateMetricNames =
     Set("spill_count", "spilled_bytes", "spilled_rows", "peak_mem_used")
+
+  // High-water marks that native code reports, which [[CometMetricNode.set]] keeps the maximum
+  // of rather than adding up. A gauge missing here would be summed across the native plans that
+  // one task runs.
+  private val gaugeMetricNames = Set("peak_mem_used", "build_mem_used")
 
   private type SeenMetricSet = IdentityHashMap[SQLMetric, java.lang.Boolean]
 
@@ -407,6 +437,10 @@ object CometMetricNode {
         SQLMetrics.createSizeMetric(sc, "Serialized Parquet footer payload bytes read"),
       "scan_io_object_store_get_calls" ->
         SQLMetrics.createMetric(sc, "ObjectStore GET operations after range coalescing"),
+      "scan_io_http_observed_gets" ->
+        SQLMetrics.createMetric(sc, "S3 GETs observed by the HTTP connector"),
+      "scan_io_http_retries" ->
+        SQLMetrics.createMetric(sc, "S3 GET HTTP attempts after the first attempt"),
       "scan_io_object_store_get_requested_bytes" ->
         SQLMetrics.createSizeMetric(sc, "ObjectStore GET range bytes after range coalescing"),
       "scan_io_object_store_response_bytes_read" ->
@@ -496,7 +530,15 @@ object CometMetricNode {
       "dynamic_filter_join_filters_attached" ->
         SQLMetrics.createMetric(sc, "Join runtime filters attached to native readers"),
       "dynamic_filter_join_filters_skipped" ->
-        SQLMetrics.createMetric(sc, "Join runtime filters not eligible for native readers"))
+        SQLMetrics.createMetric(sc, "Join runtime filters not eligible for native readers"),
+      "dynamic_filter_early_rows_evaluated" ->
+        SQLMetrics.createMetric(sc, "Rows evaluated before an intermediate join"),
+      "dynamic_filter_early_rows_pruned" ->
+        SQLMetrics.createMetric(sc, "Rows rejected before an intermediate join"),
+      "dynamic_filter_early_rows_bypassed" ->
+        SQLMetrics.createMetric(sc, "Rows bypassing inactive or unselective early filtering"),
+      "dynamic_filter_early_eval_time" ->
+        SQLMetrics.createNanoTimingMetric(sc, "Time evaluating the early join runtime filter"))
   }
 
   /**

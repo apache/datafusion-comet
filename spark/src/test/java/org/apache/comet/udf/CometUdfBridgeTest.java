@@ -228,6 +228,9 @@ public class CometUdfBridgeTest {
                         outArray.memoryAddress(),
                         outSchema.memoryAddress(),
                         NUM_ROWS,
+                        // This test covers memory accounting, not plan scoping.
+                        /* partitionIndex */ 0,
+                        /* planId */ 0L,
                         context,
                         Thread.currentThread().getContextClassLoader());
                     afterEvaluate.add(
@@ -873,6 +876,9 @@ public class CometUdfBridgeTest {
           outArray.memoryAddress(),
           outSchema.memoryAddress(),
           NUM_ROWS,
+          // This test covers memory accounting, not plan scoping.
+          /* partitionIndex */ 0,
+          /* planId */ 0L,
           context,
           Thread.currentThread().getContextClassLoader());
       Data.importVector(rootAllocator, outArray, outSchema, null).close();

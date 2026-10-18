@@ -45,6 +45,9 @@ object CometUDF {
  *     leaving the pressure to native operators, which can spill. With on-heap Tungsten memory
  *     there is no matching Spark pool for off-heap Arrow buffers, so they are tracked by the
  *     allocator but not charged to the task.
+ *   - Inputs belong to native execution and must not be modified. Each call receives new vectors,
+ *     but a scalar argument's buffers are the same on every call for the life of the expression,
+ *     and a vector argument can share its buffers with the rest of the plan.
  *
  * `numRows` mirrors DataFusion's `ScalarFunctionArgs.number_rows` and is the batch row count.
  * UDFs that always have at least one batch-length input can read length from it and ignore
@@ -67,6 +70,26 @@ object CometUDF {
  */
 trait CometUDF {
   def evaluate(allocator: BufferAllocator, inputs: Array[ValueVector], numRows: Int): ValueVector
+
+  /**
+   * The overload the bridge calls. `partitionIndex` is the index of the partition the calling
+   * native plan computes, which differs from `TaskContext.partitionId()` under a union, a
+   * coalesce or a cartesian product. `planId` tells apart the plans one task runs, such as the
+   * parent partitions of a coalesce. The default ignores both.
+   */
+  def evaluate(
+      allocator: BufferAllocator,
+      inputs: Array[ValueVector],
+      numRows: Int,
+      partitionIndex: Int,
+      planId: Long): ValueVector =
+    evaluate(allocator, inputs, numRows)
+
+  /**
+   * Called once native plan `planId` has closed, so an implementation that keeps state per plan
+   * can drop it before the task ends. The default does nothing.
+   */
+  def releasePlan(planId: Long): Unit = ()
 
   /**
    * Releases what this instance holds, in particular buffers it kept from the `allocator` passed

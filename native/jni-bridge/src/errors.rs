@@ -1475,6 +1475,25 @@ mod tests {
     }
 
     #[test]
+    fn native_error_read_ancient_datetime_through_datafusion() {
+        let spark_error = SparkError::read_ancient_datetime("d", false);
+        let json = spark_error.to_json();
+        let (status, class, message, payload) = classify(
+            CometError::from(DataFusionError::External(Box::new(spark_error))),
+            None,
+        );
+        assert_eq!(status, NativeStatus::Error);
+        assert_eq!(class, QUERY_EXECUTION_EXCEPTION);
+        assert_eq!(message, json);
+        assert_eq!(payload["sparkError"]["errorType"], "ReadAncientDatetime");
+        assert_eq!(
+            payload["sparkError"]["errorClass"],
+            "INCONSISTENT_BEHAVIOR_CROSS_VERSION.READ_ANCIENT_DATETIME"
+        );
+        assert_eq!(payload["sparkError"]["params"]["format"], "Parquet");
+    }
+
+    #[test]
     fn native_error_file_read_error() {
         let error = CometError::from(DataFusionError::Context(
             "reading".to_string(),

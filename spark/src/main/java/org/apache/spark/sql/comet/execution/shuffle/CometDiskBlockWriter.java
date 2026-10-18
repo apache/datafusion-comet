@@ -93,6 +93,7 @@ public final class CometDiskBlockWriter {
   private final int columnarBatchSize;
   private final String compressionCodec;
   private final int compressionLevel;
+  private final boolean offsetsAsLengths;
   private final boolean tracingEnabled;
   private final int numElementsForSpillThreshold;
 
@@ -146,6 +147,8 @@ public final class CometDiskBlockWriter {
     this.columnarBatchSize = CometConf$.MODULE$.jvmShuffleBatchSize();
     this.compressionCodec = CometConf$.MODULE$.COMET_SHUFFLE_COMPRESSION_CODEC().get();
     this.compressionLevel = (int) CometConf$.MODULE$.COMET_SHUFFLE_COMPRESSION_ZSTD_LEVEL().get();
+    this.offsetsAsLengths =
+        (boolean) CometConf$.MODULE$.COMET_SHUFFLE_COMPRESSION_OFFSETS_AS_LENGTHS().get();
 
     this.numElementsForSpillThreshold =
         (int) CometConf$.MODULE$.COMET_SHUFFLE_JVM_SPILL_THRESHOLD().get();
@@ -347,6 +350,7 @@ public final class CometDiskBlockWriter {
                 preferDictionaryRatio,
                 compressionCodec,
                 compressionLevel,
+                offsetsAsLengths,
                 tracingEnabled);
       }
 

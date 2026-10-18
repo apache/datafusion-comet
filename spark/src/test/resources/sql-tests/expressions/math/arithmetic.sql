@@ -79,3 +79,11 @@ INSERT INTO test_div_zero VALUES (1, 0, 0.0), (0, 0, 0.0)
 
 query
 SELECT a / b, a % b, d / 0.0 FROM test_div_zero
+
+-- `-0.0D` is a double literal with the sign bit set, and is a zero divisor too
+query
+SELECT d / -0.0D, d % -0.0D, d / double('-0.0'), d % double('-0.0') FROM test_div_zero
+
+-- So is a column that holds `-0.0`, because Spark checks the divisor with `== 0`
+query
+SELECT 1.0D / (-d), 1.0D % (-d) FROM test_div_zero

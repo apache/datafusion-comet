@@ -160,6 +160,17 @@ class CometFuzzTestSuite extends CometFuzzTestBase {
   }
 
   test("distribute by single column (complex types)") {
+    // Inspect only the key schema: any wide decimal leaf requires Spark's hash partition
+    // assignments, even when native hashing of nested keys is enabled.
+    def hasWideDecimal(dataType: DataType): Boolean = dataType match {
+      case decimal: DecimalType => decimal.precision > 18
+      case StructType(fields) => fields.exists(field => hasWideDecimal(field.dataType))
+      case ArrayType(elementType, _) => hasWideDecimal(elementType)
+      case MapType(keyType, valueType, _) =>
+        hasWideDecimal(keyType) || hasWideDecimal(valueType)
+      case _ => false
+    }
+
     val df = spark.read.parquet(filename)
     df.createOrReplaceTempView("t1")
     val columns = df.schema.fields.filter(f => isComplexType(f.dataType)).map(_.name)
@@ -180,15 +191,20 @@ class CometFuzzTestSuite extends CometFuzzTestBase {
       }
       assert(cometShuffleExchanges.length == expectedNumCometShuffles)
 
-      // With the config enabled these keys do run through native shuffle. This is the widest
-      // nested-type coverage in the repo, so it is worth asserting that they are admitted rather
-      // than only that they fall back.
+      // Enabling nested keys admits supported types, but wide decimal leaves still require
+      // Spark's hash partition assignments. JVM shuffle supports both kinds of key.
       withSQLConf(CometConf.COMET_SHUFFLE_NATIVE_HASH_PARTITIONING_NESTED_ENABLED.key -> "true") {
         val enabledDf = spark.sql(sql)
         enabledDf.collect()
         val enabledPlan =
           enabledDf.queryExecution.executedPlan.asInstanceOf[AdaptiveSparkPlanExec].executedPlan
-        assert(collectCometShuffleExchanges(enabledPlan).length == 1)
+        val expectedEnabledShuffles =
+          if (CometConf.COMET_SHUFFLE_MODE.get() == "native" &&
+            hasWideDecimal(df.schema(col).dataType)) 0
+          else 1
+        assert(
+          collectCometShuffleExchanges(enabledPlan).length == expectedEnabledShuffles,
+          s"Unexpected shuffle for ${df.schema(col)}")
       }
     }
   }

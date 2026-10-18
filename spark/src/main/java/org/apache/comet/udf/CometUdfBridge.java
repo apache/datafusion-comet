@@ -54,6 +54,8 @@ import org.apache.spark.memory.MemoryMode;
 import org.apache.spark.memory.TaskMemoryManager;
 import org.apache.spark.util.TaskCompletionListener;
 
+import com.google.common.annotations.VisibleForTesting;
+
 import org.apache.comet.util.ClassLoaders;
 
 /**
@@ -136,6 +138,8 @@ public class CometUdfBridge {
    * @param numRows row count of the current batch. Mirrors DataFusion's {@code
    *     ScalarFunctionArgs.number_rows}; the only batch-size signal a zero-input UDF (e.g. a
    *     zero-arg non-deterministic ScalaUDF) ever sees.
+   * @param partitionIndex index of the partition the calling native plan computes
+   * @param planId id of the calling native plan
    * @param taskContext propagated Spark {@link TaskContext} from the driving Spark task thread, or
    *     {@code null} outside a Spark task. Treated as ground truth for the call: installed as the
    *     thread-local on entry, with the prior value (if any) saved and restored in {@code finally}.
@@ -163,6 +167,8 @@ public class CometUdfBridge {
       long outArrayPtr,
       long outSchemaPtr,
       int numRows,
+      int partitionIndex,
+      long planId,
       TaskContext taskContext,
       ClassLoader classLoader) {
     assert udfClassName != null && !udfClassName.isEmpty() : "udfClassName must be non-empty";
@@ -203,7 +209,9 @@ public class CometUdfBridge {
             outArrayPtr,
             outSchemaPtr,
             numRows,
-            state);
+            state,
+            partitionIndex,
+            planId);
       } finally {
         if (state != null) {
           state.finishEvaluation();
@@ -230,7 +238,9 @@ public class CometUdfBridge {
       long outArrayPtr,
       long outSchemaPtr,
       int numRows,
-      TaskState state) {
+      TaskState state,
+      int partitionIndex,
+      long planId) {
     ConcurrentHashMap<String, CometUDF> perTask =
         state == null ? NO_TASK_INSTANCES : state.instances;
     assert perTask != null : "per-task cache must be non-null after computeIfAbsent";
@@ -271,7 +281,7 @@ public class CometUdfBridge {
         inputs[i] = Data.importVector(importAllocator, inArr, inSch, null);
       }
 
-      result = udf.evaluate(outputAllocator, inputs, numRows);
+      result = udf.evaluate(outputAllocator, inputs, numRows, partitionIndex, planId);
       // Recorded before the checks below, so the invariant holds however this exits.
       resultIsInput = isOneOf(result, inputs);
       if (!(result instanceof FieldVector)) {
@@ -346,6 +356,47 @@ public class CometUdfBridge {
         }
       }
     }
+  }
+
+  /**
+   * Called by {@code CometExecIterator} once native plan {@code planId} of task {@code
+   * taskAttemptId} has closed. Passes the plan to every {@link CometUDF} instance of the task, see
+   * {@code CometUDF.releasePlan}.
+   */
+  public static void releasePlan(long taskAttemptId, long planId) {
+    ConcurrentHashMap<String, CometUDF> perTask = instancesFor(taskAttemptId);
+    if (perTask != null) {
+      for (CometUDF udf : perTask.values()) {
+        udf.releasePlan(planId);
+      }
+    }
+  }
+
+  /** The instance of {@code udfClassName} that task {@code taskAttemptId} holds, or null. */
+  @VisibleForTesting
+  public static CometUDF instanceFor(long taskAttemptId, String udfClassName) {
+    ConcurrentHashMap<String, CometUDF> perTask = instancesFor(taskAttemptId);
+    return perTask == null ? null : perTask.get(udfClassName);
+  }
+
+  /** Sentinel key for calls that carry no {@link TaskContext} (unit tests, direct driver). */
+  private static final long NO_TASK_ID = -1L;
+
+  /**
+   * The UDF instances of task {@code taskAttemptId}, or null when the task holds none. The
+   * instances live in that task's {@link TaskState}, which owns their close and their Arrow
+   * accounting, so this resolves the id against {@link #TASKS} rather than a second cache.
+   */
+  private static ConcurrentHashMap<String, CometUDF> instancesFor(long taskAttemptId) {
+    if (taskAttemptId == NO_TASK_ID) {
+      return NO_TASK_INSTANCES;
+    }
+    for (TaskState state : TASKS.values()) {
+      if (state.taskAttemptId == taskAttemptId) {
+        return state.instances;
+      }
+    }
+    return null;
   }
 
   /** Whether the UDF handed back one of the vectors it was given, rather than a new one. */

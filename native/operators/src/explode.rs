@@ -567,25 +567,23 @@ fn flatten_struct_cols(
     struct_column_indices: &HashSet<usize>,
 ) -> Result<RecordBatch> {
     // horizontal expansion because of struct unnest
-    let columns_expanded = input_batch
-        .iter()
-        .enumerate()
-        .map(|(idx, column_data)| match struct_column_indices.get(&idx) {
+    let mut columns_expanded = Vec::with_capacity(schema.fields().len());
+    for (idx, column_data) in input_batch.iter().enumerate() {
+        match struct_column_indices.get(&idx) {
             Some(_) => match column_data.data_type() {
                 DataType::Struct(_) => {
                     let struct_arr = column_data.as_any().downcast_ref::<StructArray>().unwrap();
-                    Ok(struct_arr.columns().to_vec())
+                    columns_expanded.extend_from_slice(struct_arr.columns());
                 }
-                data_type => internal_err!(
-                    "expecting column {idx} from input plan to be a struct, got {data_type}"
-                ),
+                data_type => {
+                    return internal_err!(
+                        "expecting column {idx} from input plan to be a struct, got {data_type}"
+                    )
+                }
             },
-            None => Ok(vec![Arc::clone(column_data)]),
-        })
-        .collect::<Result<Vec<_>>>()?
-        .into_iter()
-        .flatten()
-        .collect();
+            None => columns_expanded.push(Arc::clone(column_data)),
+        }
+    }
     Ok(RecordBatch::try_new(Arc::clone(schema), columns_expanded)?)
 }
 
@@ -791,7 +789,7 @@ fn build_batch(
     let transformed = match list_type_columns.len() {
         0 => flatten_struct_cols(batch.columns(), schema, struct_column_indices),
         _ => {
-            let mut temp_unnested_result = HashMap::new();
+            let mut temp_unnested_result = HashMap::with_capacity(list_type_columns.len());
             let max_recursion = list_type_columns
                 .iter()
                 .fold(0, |highest_depth, ListUnnest { depth, .. }| {
@@ -831,7 +829,7 @@ fn build_batch(
             }
             let unnested_array_map: HashMap<usize, Vec<UnnestingResult>> =
                 temp_unnested_result.into_iter().fold(
-                    HashMap::new(),
+                    HashMap::with_capacity(list_type_columns.len()),
                     |mut acc,
                      (
                         ListUnnest {
@@ -894,19 +892,16 @@ fn build_batch(
                 )
                 .collect::<HashMap<_, _>>();
 
-            let ret = flatten_arrs
-                .into_iter()
-                .enumerate()
-                .flat_map(|(col_idx, arr)| {
-                    // Convert original column into its unnested version(s)
-                    // Plural because one column can be unnested with different recursion level
-                    // and into separate output columns
-                    match multi_unnested_per_original_index.remove(&col_idx) {
-                        Some(unnested_arrays) => unnested_arrays,
-                        None => vec![arr],
-                    }
-                })
-                .collect::<Vec<_>>();
+            let mut ret = Vec::with_capacity(flatten_arrs.len() + list_type_columns.len());
+            for (col_idx, arr) in flatten_arrs.into_iter().enumerate() {
+                // Convert original column into its unnested version(s)
+                // Plural because one column can be unnested with different recursion level
+                // and into separate output columns
+                match multi_unnested_per_original_index.remove(&col_idx) {
+                    Some(unnested_arrays) => ret.extend(unnested_arrays),
+                    None => ret.push(arr),
+                }
+            }
 
             flatten_struct_cols(&ret, schema, struct_column_indices)
         }

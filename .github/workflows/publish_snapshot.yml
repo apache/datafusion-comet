@@ -279,11 +279,12 @@ jobs:
             # target directory the check ran against, and the parent pom pins
             # project.build.outputTimestamp, so it re-creates the same jar.
             #
-            # The root pom skips deploying the parent pom, but consumers need it
-            # to resolve the child poms, and the release publishes it. The user
-            # property overrides every module's setting.
+            # Only comet-spark opts in to deploy (see the root pom), so this
+            # publishes its shaded jar, sources jars and pom and nothing else.
+            # Leave -Dmaven.deploy.skip=false off: as a user property it would
+            # override every module's setting.
             # shellcheck disable=SC2086
-            ./mvnw -B "$GOAL" -DskipTests -Dmaven.deploy.skip=false $profiles
+            ./mvnw -B "$GOAL" -DskipTests $profiles
             echo "::endgroup::"
           done
           ls -l jars
