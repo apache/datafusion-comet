@@ -1942,7 +1942,22 @@ case class CometExecRule(session: SparkSession, queryStagePrep: Boolean = false)
    * this tagging pass will drift and either crash (missed tag) or over-disable (spurious tag). A
    * shared predicate helper would be preferable.
    */
-  private def canAggregateBeConverted(
+  private[rules] def canAggregateBeConverted(
+      agg: BaseAggregateExec,
+      expectedMode: AggregateMode): Boolean =
+    CometExplainInfo.withFallbackReasonScope {
+      val convertible = checkAggregateConversion(agg, expectedMode)
+      if (!convertible) {
+        // This preflight may discover an expression failure that actual conversion never reaches:
+        // the child can stay in Spark, making conversion decline on buffer compatibility first.
+        // Preserve this probe's diagnostics on their operator before discarding its journal.
+        // Reading only the journal keeps copied or stale expression tags out of the explanation.
+        rollUpFallbackReasons(agg)
+      }
+      convertible
+    }
+
+  private def checkAggregateConversion(
       agg: BaseAggregateExec,
       expectedMode: AggregateMode): Boolean = {
     val handler = allExecs.get(agg.getClass)

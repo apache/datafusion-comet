@@ -935,6 +935,40 @@ class CometExecRuleSuite extends CometTestBase {
     }
   }
 
+  test("issue #5499: aggregate preflight retains current reasons without importing stale tags") {
+    withObjectHashAggPlan { plan =>
+      val agg = partialObjectHashAgg(plan)
+      val tag = CometExplainInfo.FALLBACK_REASONS
+      val expression = agg.aggregateExpressions.head
+      val key =
+        CometConf.getExprEnabledConfigKey(expression.aggregateFunction.getClass.getSimpleName)
+      val stale = "issue-5499-stale-aggregate-preflight"
+      expression.setTagValue(tag, Set(stale))
+      expression.aggregateFunction.setTagValue(tag, Set(stale))
+      val expected = s"Expression support is disabled. Set $key=true to enable it."
+      val rule = CometExecRule(spark)
+      withSQLConf(key -> "false") {
+        CometExplainInfo.withFallbackReasonScope {
+          val outer = Literal(true)
+          withFallbackReason(outer, "outer conversion")
+          assert(!rule.canAggregateBeConverted(agg, Partial))
+          assert(agg.getTagValue(tag).contains(Set(expected)))
+          assert(new ExtendedExplainInfo().generateExtendedInfo(agg).contains(expected))
+          assert(CometExplainInfo.currentFallbackReasons(outer) == Set("outer conversion"))
+          assert(CometExplainInfo.currentFallbackReasons(expression).isEmpty)
+        }
+      }
+    }
+    withObjectHashAggPlan { plan =>
+      val agg = partialObjectHashAgg(plan)
+      agg.aggregateExpressions.head.setTagValue(
+        CometExplainInfo.FALLBACK_REASONS,
+        Set("issue-5499-stale-successful-preflight"))
+      assert(CometExecRule(spark).canAggregateBeConverted(agg, Partial))
+      assert(agg.getTagValue(CometExplainInfo.FALLBACK_REASONS).isEmpty)
+    }
+  }
+
   test("issue #5499: outermost conversion exceptions do not leak fallback reasons") {
     val source = Literal(true)
     val tag = CometExplainInfo.FALLBACK_REASONS
