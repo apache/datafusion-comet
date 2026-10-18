@@ -31,8 +31,8 @@ use std::{env, fs::File};
 
 /// The process-wide allocation counters the tool understands, most preferred first.
 ///
-/// `native_allocated` (the `alloc-accounting` feature) counts only the bytes Rust code holds from
-/// the global allocator, so it is the tighter comparison against pool reservations.
+/// `native_allocated` (emitted by every build) counts only the bytes Rust code holds from the
+/// global allocator, so it is the tighter comparison against pool reservations.
 /// `jemalloc_allocated` (the `jemalloc` feature) also includes jemalloc's own metadata. A trace
 /// that carries both is analyzed against `native_allocated` alone; a trace with neither cannot be
 /// analyzed.
@@ -121,7 +121,7 @@ fn main() {
     }
 
     let file = File::open(&args[1]).expect("Failed to open trace file");
-    let reader = BufReader::new(file);
+    let mut reader = BufReader::new(file);
 
     // Index into ALLOCATED_COUNTERS of the counter being analyzed, once one has been seen
     let mut source: Option<usize> = None;
@@ -147,8 +147,12 @@ fn main() {
 
     // Each line is one JSON event, possibly with a trailing comma.
     // The file starts with "[ " on the first event line or as a prefix.
-    for line in reader.lines() {
-        let line = line.expect("Failed to read line");
+    let mut line = String::new();
+    loop {
+        line.clear();
+        if reader.read_line(&mut line).expect("Failed to read line") == 0 {
+            break;
+        }
         let trimmed = line.trim();
 
         // Skip empty lines or bare array brackets
@@ -250,7 +254,8 @@ fn main() {
     let Some(source) = source.map(|rank| ALLOCATED_COUNTERS[rank]) else {
         eprintln!(
             "No process-wide allocation counter found in the trace: expected one of {}. \
-             Build the native library with the `alloc-accounting` or `jemalloc` feature.",
+             Was the trace produced by a native library older than the `native_allocated` \
+             counter?",
             ALLOCATED_COUNTERS.join(", ")
         );
         std::process::exit(1);

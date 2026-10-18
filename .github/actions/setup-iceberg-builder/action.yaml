@@ -37,3 +37,25 @@ runs:
       run: |
         cd apache-iceberg
         git apply ../dev/diffs/iceberg/${{inputs.iceberg-version}}.diff
+
+    # The Gradle wrapper downloads its distribution from services.gradle.org
+    # the first time it runs, with no retry of its own, so a connection reset
+    # or TLS failure there used to fail the test step before any test ran.
+    # Install it here instead, where a retry costs seconds; the test step then
+    # finds Gradle already in place.
+    - name: Install the Gradle distribution
+      shell: bash
+      run: |
+        cd apache-iceberg
+        for attempt in 1 2 3; do
+          if ./gradlew --version; then
+            exit 0
+          fi
+          if [ "$attempt" -eq 3 ]; then
+            echo "::error::Could not install the Gradle distribution after $attempt attempts."
+            exit 1
+          fi
+          delay=$((15 * attempt))
+          echo "::warning::Gradle distribution download failed (attempt $attempt of 3); retrying in ${delay}s."
+          sleep "$delay"
+        done

@@ -23,7 +23,7 @@ use crate::partitioners::{
     SinglePartitionShufflePartitioner,
 };
 use crate::writers::{LocalPartitionWriter, PartitionWriter, RssPartitionWriter};
-use crate::{CometPartitioning, CompressionCodec, ShuffleBlockWriter};
+use crate::{CometPartitioning, CompressionCodec, RoundRobinStrategy, ShuffleBlockWriter};
 use async_trait::async_trait;
 use datafusion::common::tree_node::TreeNodeRecursion;
 use datafusion::common::{exec_datafusion_err, DataFusionError};
@@ -31,7 +31,7 @@ use datafusion::physical_expr::{EquivalenceProperties, Partitioning, PhysicalExp
 use datafusion::physical_plan::execution_plan::{Boundedness, EmissionType};
 use datafusion::physical_plan::{apply_expression_roots, EmptyRecordBatchStream};
 use datafusion::{
-    arrow::datatypes::SchemaRef,
+    arrow::datatypes::{DataType, Schema, SchemaRef},
     error::Result,
     execution::context::TaskContext,
     physical_plan::{
@@ -128,6 +128,8 @@ pub struct ShuffleWriterExec {
     write_buffer_size: usize,
     /// Maximum bytes buffered in memory before spilling; `None` disables the limit
     max_buffer_bytes: Option<usize>,
+    /// Whether local blocks store offsets as lengths
+    offsets_as_lengths: bool,
 }
 
 impl ShuffleWriterExec {
@@ -195,7 +197,15 @@ impl ShuffleWriterExec {
             tracing_enabled,
             write_buffer_size,
             max_buffer_bytes,
+            offsets_as_lengths: false,
         })
+    }
+
+    /// Store offsets as lengths in local shuffle blocks where the writer can; see
+    /// [`ShuffleBlockWriter::try_new_with_offsets_as_lengths`]. Remote (RSS) blocks keep offsets.
+    pub fn with_offsets_as_lengths(mut self, enabled: bool) -> Self {
+        self.offsets_as_lengths = enabled;
+        self
     }
 }
 
@@ -257,15 +267,18 @@ impl ExecutionPlan for ShuffleWriterExec {
         children: Vec<Arc<dyn ExecutionPlan>>,
     ) -> Result<Arc<dyn ExecutionPlan>> {
         match children.len() {
-            1 => Ok(Arc::new(ShuffleWriterExec::try_new_with_destination(
-                Arc::clone(&children[0]),
-                self.partitioning.clone(),
-                self.codec.clone(),
-                self.destination.clone(),
-                self.tracing_enabled,
-                self.write_buffer_size,
-                self.max_buffer_bytes,
-            )?)),
+            1 => Ok(Arc::new(
+                ShuffleWriterExec::try_new_with_destination(
+                    Arc::clone(&children[0]),
+                    self.partitioning.clone(),
+                    self.codec.clone(),
+                    self.destination.clone(),
+                    self.tracing_enabled,
+                    self.write_buffer_size,
+                    self.max_buffer_bytes,
+                )?
+                .with_offsets_as_lengths(self.offsets_as_lengths),
+            )),
             _ => panic!("ShuffleWriterExec wrong number of children"),
         }
     }
@@ -294,6 +307,7 @@ impl ExecutionPlan for ShuffleWriterExec {
                 self.tracing_enabled,
                 self.write_buffer_size,
                 self.max_buffer_bytes,
+                self.offsets_as_lengths,
             ))
             .try_flatten(),
         )))
@@ -312,6 +326,7 @@ async fn external_shuffle(
     tracing_enabled: bool,
     write_buffer_size: usize,
     max_buffer_bytes: Option<usize>,
+    offsets_as_lengths: bool,
 ) -> Result<SendableRecordBatchStream> {
     let schema = input.schema();
 
@@ -320,7 +335,11 @@ async fn external_shuffle(
             output_data_file,
             partition_offsets,
         } => {
-            let shuffle_block_writer = ShuffleBlockWriter::try_new(schema.as_ref(), codec.clone())?;
+            let shuffle_block_writer = ShuffleBlockWriter::try_new_with_offsets_as_lengths(
+                schema.as_ref(),
+                codec.clone(),
+                offsets_as_lengths,
+            )?;
             let writer = LocalPartitionWriter::try_new(
                 output_data_file,
                 partition_offsets,
@@ -387,6 +406,63 @@ async fn external_shuffle(
     Ok(Box::pin(EmptyRecordBatchStream::new(Arc::clone(&schema))) as SendableRecordBatchStream)
 }
 
+/// True when `data_type` is, or contains, one of Arrow's view layouts.
+///
+/// Arrow's IPC writer truncates a sliced array's buffers per type — numeric and temporal values
+/// through `get_or_truncate_buffer`, byte arrays through `reencode_offsets`, list children through
+/// `get_list_array_buffers`, boolean bitmaps through `bit_slice`, and struct children because
+/// `ArrayData::slice` pushes the slice down into them. The view types are the exception: it slices
+/// the views buffer but serializes every shared data buffer in full, since proving that no
+/// surviving view references a buffer is not cheap.
+///
+/// [`RoundRobinStrategy::RowGroups`] is the only placement that can hand the writer a sliced
+/// array; everything else materializes a fresh batch through `interleave_record_batch`. So a view
+/// column anywhere in the schema would let a short run drag a whole batch's data buffers into the
+/// shuffle output, which is the opposite of what the strategy is for.
+fn contains_view_type(data_type: &DataType) -> bool {
+    match data_type {
+        DataType::Utf8View | DataType::BinaryView => true,
+        DataType::List(field)
+        | DataType::LargeList(field)
+        | DataType::ListView(field)
+        | DataType::LargeListView(field)
+        | DataType::FixedSizeList(field, _)
+        | DataType::Map(field, _) => contains_view_type(field.data_type()),
+        DataType::Struct(fields) => fields.iter().any(|f| contains_view_type(f.data_type())),
+        DataType::Union(fields, _) => fields
+            .iter()
+            .any(|(_, f)| contains_view_type(f.data_type())),
+        DataType::Dictionary(_, value) => contains_view_type(value),
+        DataType::RunEndEncoded(_, values) => contains_view_type(values.data_type()),
+        _ => false,
+    }
+}
+
+/// The partitioning to actually use on `schema`. The planner decides whether positional placement
+/// is safe to retry; this decides whether it is worth doing on this schema, and falls back to
+/// hashing, with the same column cap a hash round robin would have used, where it is not. See
+/// [`contains_view_type`].
+fn partitioning_for_schema(partitioning: CometPartitioning, schema: &Schema) -> CometPartitioning {
+    match partitioning {
+        CometPartitioning::RoundRobin(
+            n,
+            RoundRobinStrategy::RowGroups {
+                max_hash_columns, ..
+            },
+        ) if schema
+            .fields()
+            .iter()
+            .any(|f| contains_view_type(f.data_type())) =>
+        {
+            log::debug!(
+                "schema contains a view type, falling back from positional to hash round robin"
+            );
+            CometPartitioning::RoundRobin(n, RoundRobinStrategy::HashAll { max_hash_columns })
+        }
+        other => other,
+    }
+}
+
 /// Constructs the existing schema-appropriate partitioner for either writer backend.
 #[allow(clippy::too_many_arguments)]
 fn create_repartitioner<T: PartitionWriter + 'static>(
@@ -400,6 +476,7 @@ fn create_repartitioner<T: PartitionWriter + 'static>(
     max_buffer_bytes: Option<usize>,
 ) -> Result<Box<dyn ShufflePartitioner>> {
     let partition_count = partitioning.partition_count();
+    let partitioning = partitioning_for_schema(partitioning, &schema);
 
     if schema.fields().is_empty() {
         log::debug!(
@@ -440,7 +517,7 @@ fn contextualize_shuffle_error(error: DataFusionError, phase: &str) -> DataFusio
 #[cfg(test)]
 mod test {
     use super::*;
-    use crate::{read_ipc_compressed, ShuffleBlockWriter, ShuffleCodecContext};
+    use crate::{read_ipc_compressed, RoundRobinStrategy, ShuffleBlockWriter, ShuffleCodecContext};
     use arrow::array::{Array, Int64Array, StringArray, StringBuilder};
     use arrow::datatypes::{DataType, Field, Schema};
     use arrow::record_batch::RecordBatch;
@@ -1143,7 +1220,7 @@ mod test {
                 Arc::new(row_converter),
                 owned_rows,
             ),
-            CometPartitioning::RoundRobin(num_partitions, 0),
+            CometPartitioning::RoundRobin(num_partitions, RoundRobinStrategy::default()),
         ] {
             let batches = (0..num_batches).map(|_| batch.clone()).collect::<Vec<_>>();
 
@@ -1211,7 +1288,7 @@ mod test {
                 Arc::new(DataSourceExec::new(Arc::new(
                     MemorySourceConfig::try_new(partitions, batch.schema(), None).unwrap(),
                 ))),
-                CometPartitioning::RoundRobin(num_partitions, 0),
+                CometPartitioning::RoundRobin(num_partitions, RoundRobinStrategy::default()),
                 CompressionCodec::Zstd(1),
                 data_file.clone(),
                 false,
@@ -1615,7 +1692,7 @@ mod test {
             Arc::new(DataSourceExec::new(Arc::new(
                 MemorySourceConfig::try_new(partitions, Arc::clone(&schema), None).unwrap(),
             ))),
-            CometPartitioning::RoundRobin(num_partitions, 0),
+            CometPartitioning::RoundRobin(num_partitions, RoundRobinStrategy::default()),
             CompressionCodec::Zstd(1),
             data_file.to_str().unwrap().to_string(),
             false,
@@ -1699,7 +1776,7 @@ mod test {
             Arc::new(DataSourceExec::new(Arc::new(
                 MemorySourceConfig::try_new(partitions, Arc::clone(&schema), None).unwrap(),
             ))),
-            CometPartitioning::RoundRobin(num_partitions, 0),
+            CometPartitioning::RoundRobin(num_partitions, RoundRobinStrategy::default()),
             CompressionCodec::Zstd(1),
             data_file.to_str().unwrap().to_string(),
             false,
@@ -1735,5 +1812,95 @@ mod test {
         for offset in &offsets {
             assert_eq!(*offset, 0, "All offsets should be 0 with zero rows");
         }
+    }
+
+    /// Positional round robin is the only placement that hands a sliced array to the IPC writer,
+    /// and the view types are the one family the writer does not truncate. Find them anywhere in
+    /// the schema, not just at the top level, since the motivating schemas are deeply nested.
+    #[test]
+    fn view_types_are_detected_at_any_depth() {
+        let leaf = |dt: DataType| Field::new("leaf", dt, true);
+        let nested = DataType::Struct(
+            vec![
+                Field::new("a", DataType::Int64, true),
+                Field::new(
+                    "b",
+                    DataType::List(Arc::new(leaf(DataType::Utf8View))),
+                    true,
+                ),
+            ]
+            .into(),
+        );
+        assert!(contains_view_type(&nested));
+        assert!(contains_view_type(&DataType::Utf8View));
+        assert!(contains_view_type(&DataType::BinaryView));
+        assert!(contains_view_type(&DataType::Map(
+            Arc::new(Field::new(
+                "entries",
+                DataType::Struct(
+                    vec![
+                        Field::new("key", DataType::Utf8, false),
+                        Field::new("value", DataType::BinaryView, true),
+                    ]
+                    .into()
+                ),
+                false
+            )),
+            false
+        )));
+
+        assert!(!contains_view_type(&DataType::Utf8));
+        assert!(!contains_view_type(&DataType::Struct(
+            vec![
+                Field::new("a", DataType::Int64, true),
+                Field::new("b", DataType::List(Arc::new(leaf(DataType::Utf8))), true),
+            ]
+            .into()
+        )));
+    }
+
+    /// Falling back from positional placement on a view-typed schema keeps the column cap that
+    /// `maxHashColumns` asked for, rather than silently hashing every column.
+    #[test]
+    fn view_type_fallback_keeps_the_hash_column_cap() {
+        let positional = || {
+            CometPartitioning::RoundRobin(
+                8,
+                RoundRobinStrategy::RowGroups {
+                    start_partition: 3,
+                    group_rows: 64,
+                    max_hash_columns: 4,
+                },
+            )
+        };
+        let view_schema = Schema::new(vec![
+            Field::new("a", DataType::Int64, false),
+            Field::new("s", DataType::Utf8View, true),
+        ]);
+        assert!(matches!(
+            partitioning_for_schema(positional(), &view_schema),
+            CometPartitioning::RoundRobin(
+                8,
+                RoundRobinStrategy::HashAll {
+                    max_hash_columns: 4
+                }
+            )
+        ));
+
+        let plain_schema = Schema::new(vec![
+            Field::new("a", DataType::Int64, false),
+            Field::new("s", DataType::Utf8, true),
+        ]);
+        assert!(matches!(
+            partitioning_for_schema(positional(), &plain_schema),
+            CometPartitioning::RoundRobin(
+                8,
+                RoundRobinStrategy::RowGroups {
+                    start_partition: 3,
+                    group_rows: 64,
+                    max_hash_columns: 4
+                }
+            )
+        ));
     }
 }

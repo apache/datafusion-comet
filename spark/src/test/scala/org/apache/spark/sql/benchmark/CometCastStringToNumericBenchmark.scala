@@ -89,7 +89,7 @@ object CometCastStringToNumericBenchmark extends CometBenchmarkBase {
             """))
 
           castConfigs.foreach { config =>
-            runExpressionBenchmark(config.name, v, config.query, config.extraCometConfigs)
+            runExpressionBenchmark(config.name, v.toLong, config.query, config.extraCometConfigs)
           }
         }
       }

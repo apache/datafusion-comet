@@ -357,7 +357,7 @@ class CometNativeColumnarToRowSuite extends CometTestBase with AdaptiveSparkPlan
         if (isNull) null else s"string_$i",
         if (isNull) null else new Date(baseDate.getTime + i * 24 * 60 * 60 * 1000L),
         if (isNull) null else new Timestamp(baseTs.getTime + i * 1000L),
-        if (isNull) null else BigDecimal(i * 100 + i, 2).bigDecimal)
+        if (isNull) null else BigDecimal((i * 100 + i).toLong, 2).bigDecimal)
     }
 
     val schema = StructType(
@@ -451,7 +451,7 @@ class CometNativeColumnarToRowSuite extends CometTestBase with AdaptiveSparkPlan
       DataGenOptions(generateNegativeZero = false, generateNaN = false, generateInfinity = false)
 
     // Test with multiple random deeply nested schemas
-    for (iteration <- 1 to 3) {
+    for (_ <- 1 to 3) {
       val schema = FuzzDataGenerator.generateNestedSchema(
         random,
         numCols = 5,

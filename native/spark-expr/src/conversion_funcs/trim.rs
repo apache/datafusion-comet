@@ -21,10 +21,10 @@
 //! regimes, and neither of them matches Rust's `str::trim` (which trims Unicode whitespace) or
 //! `<[u8]>::trim_ascii` (which omits `0x0B`):
 //!
-//! | Regime               | Trimmed bytes            | Cast targets                                       |
-//! |----------------------|--------------------------|----------------------------------------------------|
-//! | [`trim_all`]         | `0x00`-`0x20` and `0x7F` | boolean, byte, short, int, long, date, timestamp \* |
-//! | [`trim_java_string`] | `0x00`-`0x20`            | float, double, decimal                             |
+//! | Regime               | Trimmed bytes            | Cast targets                                                    |
+//! |----------------------|--------------------------|-----------------------------------------------------------------|
+//! | [`trim_all`]         | `0x00`-`0x20` and `0x7F` | boolean, byte, short, int, long, date, timestamp, timestamp_ntz |
+//! | [`trim_java_string`] | `0x00`-`0x20`            | float, double, decimal                                          |
 //!
 //! Neither regime trims non-ASCII whitespace (`str::trim` does, which is why it cannot be reused
 //! here). The `String.trim` regime comes from the JDK calls Spark delegates to:
@@ -33,10 +33,6 @@
 //!
 //! `to_time` and `try_to_time` also use [`trim_all`] after detecting an optional AM/PM suffix;
 //! suffix detection itself first removes ASCII spaces only, matching Spark's `stringToTime`.
-//!
-//! \* `timestamp` and `timestamp_ntz` are listed for what Spark does; the Comet parsers for those
-//! two targets have not been migrated to these helpers and still use `str::trim`
-//! (<https://github.com/apache/datafusion-comet/issues/5149>).
 
 /// True for the bytes trimmed by `org.apache.spark.unsafe.types.UTF8String.trimAll`, i.e. the
 /// bytes `b` for which `Character.isWhitespace(b) || Character.isISOControl(b)` holds, which

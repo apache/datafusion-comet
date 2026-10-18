@@ -19,6 +19,11 @@
 
 package org.apache.comet.parquet
 
+import java.util.concurrent.atomic.AtomicReference
+
+import scala.util.control.NonFatal
+
+import org.apache.spark.CometListenerBusUtils
 import org.apache.spark.sql.CometTestBase
 import org.apache.spark.sql.comet.{CometNativeWriteExec, CometWriteFilesExec}
 import org.apache.spark.sql.execution.{QueryExecution, SparkPlan}
@@ -61,42 +66,54 @@ abstract class CometParquetWriterTestBase extends CometTestBase {
 
   /** As above, for a write that names its own target (an `INSERT INTO`, for example). */
   protected def captureWritePlan(writeOp: => Unit): SparkPlan = {
-    var capturedPlan: Option[QueryExecution] = None
+    val (plan, failure) = captureWriteOutcome(writeOp)
+    failure.foreach(throw _)
+    plan.getOrElse(fail("Listener was not called - no execution plan captured"))
+  }
 
+  /**
+   * As above, for a write that is expected to fail. Returns the plan of the failed write, so a
+   * test can check that the failure came from the native writer rather than from Spark's.
+   */
+  protected def captureFailedWritePlan(writeOp: => Unit): (SparkPlan, Throwable) = {
+    val (plan, failure) = captureWriteOutcome(writeOp)
+    val error = failure.getOrElse(fail("Expected the write to fail, but it succeeded"))
+    (plan.getOrElse(fail("Listener was not called - no execution plan captured")), error)
+  }
+
+  private def captureWriteOutcome(writeOp: => Unit): (Option[SparkPlan], Option[Throwable]) = {
+    val capturedPlan = new AtomicReference[QueryExecution]()
+
+    def isWrite(funcName: String): Boolean = funcName == "save" || funcName.contains("command")
     val listener = new org.apache.spark.sql.util.QueryExecutionListener {
       override def onSuccess(funcName: String, qe: QueryExecution, durationNs: Long): Unit = {
-        if (funcName == "save" || funcName.contains("command")) {
-          capturedPlan = Some(qe)
+        if (isWrite(funcName)) {
+          capturedPlan.set(qe)
         }
       }
 
-      override def onFailure(
-          funcName: String,
-          qe: QueryExecution,
-          exception: Exception): Unit = {}
+      override def onFailure(funcName: String, qe: QueryExecution, exception: Exception): Unit = {
+        if (isWrite(funcName)) {
+          capturedPlan.set(qe)
+        }
+      }
     }
 
+    // Listener events are delivered asynchronously, so drain the bus before registering: an
+    // earlier write's event still in flight would otherwise be captured in place of this one.
+    CometListenerBusUtils.waitUntilEmpty(spark.sparkContext)
     spark.listenerManager.register(listener)
 
     try {
-      writeOp
-
-      // Wait for listener to be called with timeout
-      val maxWaitTimeMs = 15000
-      val checkIntervalMs = 100
-      val maxIterations = maxWaitTimeMs / checkIntervalMs
-      var iterations = 0
-
-      while (capturedPlan.isEmpty && iterations < maxIterations) {
-        Thread.sleep(checkIntervalMs)
-        iterations += 1
-      }
-
-      assert(
-        capturedPlan.isDefined,
-        s"Listener was not called within ${maxWaitTimeMs}ms - no execution plan captured")
-
-      stripAQEPlan(capturedPlan.get.executedPlan)
+      val failure =
+        try {
+          writeOp
+          None
+        } catch {
+          case NonFatal(e) => Some(e)
+        }
+      CometListenerBusUtils.waitUntilEmpty(spark.sparkContext)
+      (Option(capturedPlan.get()).map(qe => stripAQEPlan(qe.executedPlan)), failure)
     } finally {
       spark.listenerManager.unregister(listener)
     }

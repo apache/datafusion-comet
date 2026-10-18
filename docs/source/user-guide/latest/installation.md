@@ -49,29 +49,25 @@ Comet requires JDK 17 or later. JDK 11 is no longer supported as of the 1.1.0 re
 
 ```{warning}
 Spark 3.4 support is deprecated as of the 1.0.0 release and will be removed in a future release.
-Apache Spark's own SQL test suite is no longer run against Spark 3.4 on every change; it runs only
-on demand. We recommend moving to Spark 3.5 or later.
+Apache Spark's own SQL test suite no longer runs against Spark 3.4 automatically; it runs only on
+demand. We recommend moving to Spark 3.5 or later.
 ```
 
 | Spark Version | Java Version | Scala Version | Comet Tests in CI | Spark SQL Tests in CI |
 | ------------- | ------------ | ------------- | ----------------- | --------------------- |
-| 3.4.3         | 17           | 2.12/2.13     | Yes               | On demand             |
-| 3.5.9         | 17           | 2.12/2.13     | Yes               | Yes                   |
-| 4.0.4         | 17/21        | 2.13          | Yes               | Yes                   |
-| 4.1.3         | 17/21        | 2.13          | Yes               | Yes                   |
+| 3.4.3         | 17           | 2.12/2.13     | Nightly           | On demand             |
+| 3.5.9         | 17           | 2.12/2.13     | Nightly           | Nightly               |
+| 4.0.4         | 17/21        | 2.13          | Nightly           | Nightly               |
+| 4.1.3         | 17/21        | 2.13          | Before merge      | Before merge          |
+| 4.2.0         | 17           | 2.13          | Nightly           | Nightly               |
 
 Note that we do not test the full matrix of supported Java and Scala versions in CI for every Spark version.
 
-"On demand" in the table above means the suite is not run automatically before a change is merged.
-A contributor can still run it against an individual pull request, but Spark 3.4 is no longer
-covered by default.
-
-Experimental support is provided for the following versions of Apache Spark and is intended for development/testing
-use only and should not be used in production yet.
-
-| Spark Version | Java Version | Scala Version | Comet Tests in CI | Spark SQL Tests in CI |
-| ------------- | ------------ | ------------- | ----------------- | --------------------- |
-| 4.2.0         | 17           | 2.13          | Yes               | No                    |
+"Before merge" in the table above means the suite must pass before a change is merged. "Nightly" means
+the suite runs once a day against the `main` branch, so a regression it finds is caught after the change
+has been merged rather than before. "On demand" means the suite does not run automatically at all. A
+contributor can still run it against an individual pull request, but Spark 3.4 is no longer covered by
+default.
 
 Note that Comet may not fully work with proprietary forks of Apache Spark such as the Spark versions offered by
 Cloud Service Providers.
@@ -101,6 +97,7 @@ The following artifacts are published:
 - `comet-spark-spark3.5_2.12`
 - `comet-spark-spark4.0_2.13`
 - `comet-spark-spark4.1_2.13`
+- `comet-spark-spark4.2_2.13`
 
 To download a snapshot jar, browse to the artifact directory in the snapshot repository, for example
 [comet-spark-spark4.1_2.13/$COMET_VERSION](https://repository.apache.org/content/repositories/snapshots/org/apache/datafusion/comet-spark-spark4.1_2.13/$COMET_VERSION/),
@@ -142,6 +139,7 @@ Here are the direct links for downloading the Comet $COMET_VERSION jar file.
 - [Comet plugin for Spark 3.5 / Scala 2.13](https://repo1.maven.org/maven2/org/apache/datafusion/comet-spark-spark3.5_2.13/$COMET_VERSION/comet-spark-spark3.5_2.13-$COMET_VERSION.jar)
 - [Comet plugin for Spark 4.0 / Scala 2.13](https://repo1.maven.org/maven2/org/apache/datafusion/comet-spark-spark4.0_2.13/$COMET_VERSION/comet-spark-spark4.0_2.13-$COMET_VERSION.jar)
 - [Comet plugin for Spark 4.1 / Scala 2.13](https://repo1.maven.org/maven2/org/apache/datafusion/comet-spark-spark4.1_2.13/$COMET_VERSION/comet-spark-spark4.1_2.13-$COMET_VERSION.jar)
+- [Comet plugin for Spark 4.2 / Scala 2.13](https://repo1.maven.org/maven2/org/apache/datafusion/comet-spark-spark4.2_2.13/$COMET_VERSION/comet-spark-spark4.2_2.13-$COMET_VERSION.jar)
 
 <!-- ENDIF -->
 
@@ -189,7 +187,7 @@ Comet will log output similar to this on Spark 4.0 and later:
 INFO core/src/lib.rs: Comet native library version $COMET_VERSION initialized
 WARN CometExecRule: Comet cannot execute some parts of this plan natively (set spark.comet.explain.fallback.enabled=false to disable this logging):
   Execute InsertIntoHadoopFsRelationCommand
-+- WriteFiles [COMET: Native support for operator WriteFilesExec is disabled. Set spark.comet.parquet.write.enabled=true to enable it.]
++- WriteFiles [COMET: Native support for operator WriteFilesExec is disabled. Set spark.comet.write.parquet.enabled=true to enable it.]
    +-  LocalTableScan [COMET: Native support for operator LocalTableScanExec is disabled. Set spark.comet.exec.localTableScan.enabled=true to enable it.]
 ```
 
@@ -258,4 +256,22 @@ Some cluster managers may require additional configuration, see <https://spark.a
 ### Memory tuning
 
 In addition to Apache Spark memory configuration parameters, Comet introduces additional parameters to configure memory
-allocation for native execution. See [Comet Memory Tuning](./tuning.md) for details.
+allocation for native execution. See [Comet Memory Tuning](./tuning/memory.md) for details.
+
+### Kryo serialization
+
+If the application uses Kryo (`spark.serializer=org.apache.spark.serializer.KryoSerializer`) with
+`spark.kryo.registrationRequired=true`, also register Comet's classes with Kryo:
+
+```shell
+--conf spark.kryo.registrator=org.apache.comet.CometKryoRegistrator
+```
+
+Without it, any query that uses Comet's native broadcast exchange, which is enabled by default,
+fails with Kryo's "Class is not registered" error, for example on the first broadcast hash join.
+Comet's [in-memory cache](in-memory-cache.md#kryo) format needs the same registrations, and while
+Kryo has not registered Comet's cached batch, Comet's plugin keeps caches in Spark's format. Set it
+before the `SparkContext` is created: `KryoSerializer` reads it before Comet's plugin runs, so
+Comet cannot add it for you. `spark.kryo.registrator` accepts a comma-separated list, so an
+application with its own registrator can list both. Comet logs a warning at startup when Kryo
+requires registration and has not registered the classes this registrator covers.
