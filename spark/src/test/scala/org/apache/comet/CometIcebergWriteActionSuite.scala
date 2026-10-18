@@ -1526,7 +1526,7 @@ class CometIcebergWriteActionSuite
 
   Seq(false, true).foreach { partitioned =>
     test(
-      s"native acceleration: a top-level unknown column matches iceberg-java " +
+      "native acceleration: a top-level unknown column matches iceberg-java " +
         s"(partitioned = $partitioned)") {
       assumeNativeAcceleration()
       assume(icebergVersionAtLeast(1, 10), "The unknown type requires Iceberg 1.10+")
@@ -1565,7 +1565,7 @@ class CometIcebergWriteActionSuite
         assert(footerColumns(jvmTable) == footerColumns(nativeTable))
         def metricIds(t: String): Seq[Row] =
           spark
-            .sql(s"SELECT map_keys(column_sizes), map_keys(value_counts), " +
+            .sql("SELECT map_keys(column_sizes), map_keys(value_counts), " +
               s"map_keys(null_value_counts) FROM $catalog.$ns.$t.files")
             .collect()
             .toSeq
