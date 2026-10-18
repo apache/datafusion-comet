@@ -28,6 +28,8 @@ pub(crate) const COMET_EXEC_AGGREGATE_SKIP_PARTIAL_ENABLED: &str =
     "spark.comet.exec.aggregate.skipPartial.enabled";
 pub(crate) const COMET_EXEC_SPILL_COMPRESSION_CODEC: &str =
     "spark.comet.exec.spill.compression.codec";
+pub(crate) const COMET_STRICT_TIMESTAMP_LABELS: &str =
+    "spark.comet.testing.strictTimestampLabels.enabled";
 pub(crate) const SPARK_EXECUTOR_CORES: &str = "spark.executor.cores";
 
 /// Comet configs read through this trait must be resolved by the JVM first:

@@ -43,9 +43,8 @@ query
 SELECT max(q), min(q)
 FROM (SELECT 1.0D / (-d) AS q FROM nan_divisor UNION ALL SELECT 0.0D AS q FROM nan_divisor)
 
--- percentile_approx orders a NaN with the sign bit set below every other value
--- (https://github.com/apache/datafusion-comet/issues/6519). Until that is fixed, Comet keeps
--- normalizing the divisor, which makes the quotient a canonical NaN.
+-- The quotient keeps the sign bit of its NaN, and percentile_approx orders that NaN above every
+-- other value, as Spark does.
 query
 SELECT percentile_approx(q, 1.0D), percentile_approx(q, 0.0D)
 FROM (SELECT /*+ COALESCE(1) */ q
