@@ -38,7 +38,7 @@ index 49eca0f7555..b9e5d69a6c6 100644
    </dependencyManagement>
  
 diff --git a/project/SparkBuild.scala b/project/SparkBuild.scala
-index daa3ebac992..2c721d85961 100644
+index daa3ebac992..8e2147bd670 100644
 --- a/project/SparkBuild.scala
 +++ b/project/SparkBuild.scala
 @@ -459,9 +459,11 @@ object SparkBuild extends PomBuild {
@@ -53,7 +53,7 @@ index daa3ebac992..2c721d85961 100644
  
    enable(SparkConnectCommon.settings)(connectCommon)
    enable(SparkConnect.settings)(connect)
-@@ -1198,6 +1200,35 @@ object SQL {
+@@ -1198,6 +1200,37 @@ object SQL {
    )
  }
  
@@ -61,10 +61,11 @@ index daa3ebac992..2c721d85961 100644
 + * Comet disables itself when its shuffle manager is not registered. When Comet is enabled, make
 + * that shuffle manager the default for every test SparkConf in the modules that have Comet on
 + * their classpath, so that suites which build their own SparkSession or SparkContext run Comet
-+ * too, not just the ones that go through SharedSparkSession or TestHive. Comet's cache serializer
-+ * is made the default the same way. Spark keeps the first cache serializer it loads for the rest
-+ * of the JVM, so a suite that caches through a session of its own would otherwise leave the
-+ * suites after it in Spark's cache format.
++ * too, not just the ones that go through SharedSparkSession or TestHive. Comet's in-memory
++ * cache, which is disabled by default, is turned on the same way, and its serializer made the
++ * default. Spark keeps the first cache serializer it loads for the rest of the JVM, so a suite
++ * that caches through a session of its own would otherwise leave the suites after it in Spark's
++ * cache format.
 + */
 +object CometTestSettings {
 +  private val cometEnabled =
@@ -73,6 +74,7 @@ index daa3ebac992..2c721d85961 100644
 +  private val defaults = Seq(
 +    "spark.shuffle.manager" ->
 +      "org.apache.spark.sql.comet.execution.shuffle.CometShuffleManager",
++    "spark.comet.exec.inMemoryCache.enabled" -> "true",
 +    "spark.sql.cache.serializer" ->
 +      "org.apache.spark.sql.comet.execution.arrow.ArrowCachedBatchSerializer")
 +
@@ -1947,7 +1949,7 @@ index 5a413c77754..207b66e1d7b 100644
  
    import testImplicits._
 diff --git a/sql/core/src/test/scala/org/apache/spark/sql/execution/adaptive/AdaptiveQueryExecSuite.scala b/sql/core/src/test/scala/org/apache/spark/sql/execution/adaptive/AdaptiveQueryExecSuite.scala
-index 2f8e401e743..fc4ce35be4b 100644
+index 2f8e401e743..117bd9ffdde 100644
 --- a/sql/core/src/test/scala/org/apache/spark/sql/execution/adaptive/AdaptiveQueryExecSuite.scala
 +++ b/sql/core/src/test/scala/org/apache/spark/sql/execution/adaptive/AdaptiveQueryExecSuite.scala
 @@ -27,9 +27,11 @@ import org.scalatest.time.SpanSugar._
@@ -2065,17 +2067,7 @@ index 2f8e401e743..fc4ce35be4b 100644
      withSQLConf(
        SQLConf.ADAPTIVE_EXECUTION_ENABLED.key -> "true",
        SQLConf.AUTO_BROADCASTJOIN_THRESHOLD.key -> "80",
-@@ -299,7 +316,8 @@ class AdaptiveQueryExecSuite
-       val localReads = collect(adaptivePlan) {
-         case read: AQEShuffleReadExec if read.isLocalRead => read
-       }
--      assert(localReads.length == 2)
-+      // Comet shuffle changes shuffle metrics
-+      assert(localReads.length == 1)
-       val localShuffleRDD0 = localReads(0).execute().asInstanceOf[ShuffledRowRDD]
-       val localShuffleRDD1 = localReads(1).execute().asInstanceOf[ShuffledRowRDD]
-       // the final parallelism is math.max(1, numReduces / numMappers): math.max(1, 5/2) = 2
-@@ -324,7 +342,9 @@ class AdaptiveQueryExecSuite
+@@ -324,7 +341,9 @@ class AdaptiveQueryExecSuite
            .groupBy($"a").count()
          checkAnswer(testDf, Seq())
          val plan = testDf.queryExecution.executedPlan
@@ -2086,7 +2078,7 @@ index 2f8e401e743..fc4ce35be4b 100644
          val coalescedReads = collect(plan) {
            case r: AQEShuffleReadExec => r
          }
-@@ -338,7 +358,9 @@ class AdaptiveQueryExecSuite
+@@ -338,7 +357,9 @@ class AdaptiveQueryExecSuite
            .groupBy($"a").count()
          checkAnswer(testDf, Seq())
          val plan = testDf.queryExecution.executedPlan
@@ -2097,7 +2089,7 @@ index 2f8e401e743..fc4ce35be4b 100644
          val coalescedReads = collect(plan) {
            case r: AQEShuffleReadExec => r
          }
-@@ -348,7 +370,7 @@ class AdaptiveQueryExecSuite
+@@ -348,7 +369,7 @@ class AdaptiveQueryExecSuite
      }
    }
  
@@ -2106,7 +2098,7 @@ index 2f8e401e743..fc4ce35be4b 100644
      withSQLConf(
          SQLConf.ADAPTIVE_EXECUTION_ENABLED.key -> "true",
          SQLConf.AUTO_BROADCASTJOIN_THRESHOLD.key -> "80") {
-@@ -363,7 +385,7 @@ class AdaptiveQueryExecSuite
+@@ -363,7 +384,7 @@ class AdaptiveQueryExecSuite
      }
    }
  
@@ -2115,7 +2107,7 @@ index 2f8e401e743..fc4ce35be4b 100644
      withSQLConf(
          SQLConf.ADAPTIVE_EXECUTION_ENABLED.key -> "true",
          SQLConf.AUTO_BROADCASTJOIN_THRESHOLD.key -> "80") {
-@@ -379,7 +401,7 @@ class AdaptiveQueryExecSuite
+@@ -379,7 +400,7 @@ class AdaptiveQueryExecSuite
      }
    }
  
@@ -2124,7 +2116,7 @@ index 2f8e401e743..fc4ce35be4b 100644
      withSQLConf(
          SQLConf.ADAPTIVE_EXECUTION_ENABLED.key -> "true",
          SQLConf.AUTO_BROADCASTJOIN_THRESHOLD.key -> "80") {
-@@ -424,7 +446,7 @@ class AdaptiveQueryExecSuite
+@@ -424,7 +445,7 @@ class AdaptiveQueryExecSuite
      }
    }
  
@@ -2133,7 +2125,7 @@ index 2f8e401e743..fc4ce35be4b 100644
      withSQLConf(
          SQLConf.ADAPTIVE_EXECUTION_ENABLED.key -> "true",
          SQLConf.AUTO_BROADCASTJOIN_THRESHOLD.key -> "80") {
-@@ -469,7 +491,7 @@ class AdaptiveQueryExecSuite
+@@ -469,7 +490,7 @@ class AdaptiveQueryExecSuite
      }
    }
  
@@ -2142,7 +2134,7 @@ index 2f8e401e743..fc4ce35be4b 100644
      withSQLConf(
          SQLConf.ADAPTIVE_EXECUTION_ENABLED.key -> "true",
          SQLConf.AUTO_BROADCASTJOIN_THRESHOLD.key -> "500") {
-@@ -515,7 +537,7 @@ class AdaptiveQueryExecSuite
+@@ -515,7 +536,7 @@ class AdaptiveQueryExecSuite
      }
    }
  
@@ -2151,7 +2143,7 @@ index 2f8e401e743..fc4ce35be4b 100644
      withSQLConf(
          SQLConf.ADAPTIVE_EXECUTION_ENABLED.key -> "true",
          SQLConf.AUTO_BROADCASTJOIN_THRESHOLD.key -> "80") {
-@@ -534,7 +556,7 @@ class AdaptiveQueryExecSuite
+@@ -534,7 +555,7 @@ class AdaptiveQueryExecSuite
      }
    }
  
@@ -2160,7 +2152,7 @@ index 2f8e401e743..fc4ce35be4b 100644
      withSQLConf(
          SQLConf.ADAPTIVE_EXECUTION_ENABLED.key -> "true",
          SQLConf.AUTO_BROADCASTJOIN_THRESHOLD.key -> "80") {
-@@ -565,7 +587,9 @@ class AdaptiveQueryExecSuite
+@@ -565,7 +586,9 @@ class AdaptiveQueryExecSuite
        assert(smj.size == 1)
        val bhj = findTopLevelBroadcastHashJoin(adaptivePlan)
        assert(bhj.size == 1)
@@ -2171,7 +2163,7 @@ index 2f8e401e743..fc4ce35be4b 100644
        // Even with local shuffle read, the query stage reuse can also work.
        val ex = findReusedExchange(adaptivePlan)
        assert(ex.nonEmpty)
-@@ -586,7 +610,9 @@ class AdaptiveQueryExecSuite
+@@ -586,7 +609,9 @@ class AdaptiveQueryExecSuite
        assert(smj.size == 1)
        val bhj = findTopLevelBroadcastHashJoin(adaptivePlan)
        assert(bhj.size == 1)
@@ -2182,7 +2174,7 @@ index 2f8e401e743..fc4ce35be4b 100644
        // Even with local shuffle read, the query stage reuse can also work.
        val ex = findReusedExchange(adaptivePlan)
        assert(ex.isEmpty)
-@@ -595,7 +621,8 @@ class AdaptiveQueryExecSuite
+@@ -595,7 +620,8 @@ class AdaptiveQueryExecSuite
      }
    }
  
@@ -2192,7 +2184,7 @@ index 2f8e401e743..fc4ce35be4b 100644
      withSQLConf(
          SQLConf.ADAPTIVE_EXECUTION_ENABLED.key -> "true",
          SQLConf.AUTO_BROADCASTJOIN_THRESHOLD.key -> "20000000",
-@@ -690,7 +717,8 @@ class AdaptiveQueryExecSuite
+@@ -690,7 +716,8 @@ class AdaptiveQueryExecSuite
        val bhj = findTopLevelBroadcastHashJoin(adaptivePlan)
        assert(bhj.size == 1)
        // There is still a SMJ, and its two shuffles can't apply local read.
@@ -2202,7 +2194,7 @@ index 2f8e401e743..fc4ce35be4b 100644
      }
    }
  
-@@ -812,7 +840,8 @@ class AdaptiveQueryExecSuite
+@@ -812,7 +839,8 @@ class AdaptiveQueryExecSuite
      }
    }
  
@@ -2212,7 +2204,7 @@ index 2f8e401e743..fc4ce35be4b 100644
      Seq("SHUFFLE_MERGE", "SHUFFLE_HASH").foreach { joinHint =>
        def getJoinNode(plan: SparkPlan): Seq[ShuffledJoin] = if (joinHint == "SHUFFLE_MERGE") {
          findTopLevelSortMergeJoin(plan)
-@@ -1030,7 +1059,8 @@ class AdaptiveQueryExecSuite
+@@ -1030,7 +1058,8 @@ class AdaptiveQueryExecSuite
      }
    }
  
@@ -2222,7 +2214,7 @@ index 2f8e401e743..fc4ce35be4b 100644
      withSQLConf(SQLConf.ADAPTIVE_EXECUTION_ENABLED.key -> "true") {
        val (_, adaptivePlan) = runAdaptiveAndVerifyResult(
          "SELECT key FROM testData GROUP BY key")
-@@ -1625,7 +1655,7 @@ class AdaptiveQueryExecSuite
+@@ -1625,7 +1654,7 @@ class AdaptiveQueryExecSuite
          val (_, adaptivePlan) = runAdaptiveAndVerifyResult(
            "SELECT id FROM v1 GROUP BY id DISTRIBUTE BY id")
          assert(collect(adaptivePlan) {
@@ -2231,7 +2223,7 @@ index 2f8e401e743..fc4ce35be4b 100644
          }.length == 1)
        }
      }
-@@ -1705,7 +1735,8 @@ class AdaptiveQueryExecSuite
+@@ -1705,7 +1734,8 @@ class AdaptiveQueryExecSuite
      }
    }
  
@@ -2241,7 +2233,7 @@ index 2f8e401e743..fc4ce35be4b 100644
      def hasRepartitionShuffle(plan: SparkPlan): Boolean = {
        find(plan) {
          case s: ShuffleExchangeLike =>
-@@ -1890,6 +1921,9 @@ class AdaptiveQueryExecSuite
+@@ -1890,6 +1920,9 @@ class AdaptiveQueryExecSuite
      def checkNoCoalescePartitions(ds: Dataset[Row], origin: ShuffleOrigin): Unit = {
        assert(collect(ds.queryExecution.executedPlan) {
          case s: ShuffleExchangeExec if s.shuffleOrigin == origin && s.numPartitions == 2 => s
@@ -2251,7 +2243,7 @@ index 2f8e401e743..fc4ce35be4b 100644
        }.size == 1)
        ds.collect()
        val plan = ds.queryExecution.executedPlan
-@@ -1898,6 +1932,9 @@ class AdaptiveQueryExecSuite
+@@ -1898,6 +1931,9 @@ class AdaptiveQueryExecSuite
        }.isEmpty)
        assert(collect(plan) {
          case s: ShuffleExchangeExec if s.shuffleOrigin == origin && s.numPartitions == 2 => s
@@ -2261,7 +2253,7 @@ index 2f8e401e743..fc4ce35be4b 100644
        }.size == 1)
        checkAnswer(ds, testData)
      }
-@@ -2054,7 +2091,8 @@ class AdaptiveQueryExecSuite
+@@ -2054,7 +2090,8 @@ class AdaptiveQueryExecSuite
      }
    }
  
@@ -2271,7 +2263,7 @@ index 2f8e401e743..fc4ce35be4b 100644
      withTempView("t1", "t2") {
        def checkJoinStrategy(shouldShuffleHashJoin: Boolean): Unit = {
          Seq("100", "100000").foreach { size =>
-@@ -2140,7 +2178,8 @@ class AdaptiveQueryExecSuite
+@@ -2140,7 +2177,8 @@ class AdaptiveQueryExecSuite
      }
    }
  
@@ -2281,7 +2273,7 @@ index 2f8e401e743..fc4ce35be4b 100644
      withTempView("v") {
        withSQLConf(
          SQLConf.ADAPTIVE_EXECUTION_ENABLED.key -> "true",
-@@ -2239,7 +2278,7 @@ class AdaptiveQueryExecSuite
+@@ -2239,7 +2277,7 @@ class AdaptiveQueryExecSuite
                runAdaptiveAndVerifyResult(s"SELECT $repartition key1 FROM skewData1 " +
                  s"JOIN skewData2 ON key1 = key2 GROUP BY key1")
              val shuffles1 = collect(adaptive1) {
@@ -2290,7 +2282,7 @@ index 2f8e401e743..fc4ce35be4b 100644
              }
              assert(shuffles1.size == 3)
              // shuffles1.head is the top-level shuffle under the Aggregate operator
-@@ -2252,7 +2291,7 @@ class AdaptiveQueryExecSuite
+@@ -2252,7 +2290,7 @@ class AdaptiveQueryExecSuite
                runAdaptiveAndVerifyResult(s"SELECT $repartition key1 FROM skewData1 " +
                  s"JOIN skewData2 ON key1 = key2")
              val shuffles2 = collect(adaptive2) {
@@ -2299,7 +2291,7 @@ index 2f8e401e743..fc4ce35be4b 100644
              }
              if (hasRequiredDistribution) {
                assert(shuffles2.size == 3)
-@@ -2286,7 +2325,8 @@ class AdaptiveQueryExecSuite
+@@ -2286,7 +2324,8 @@ class AdaptiveQueryExecSuite
      }
    }
  
@@ -2309,7 +2301,7 @@ index 2f8e401e743..fc4ce35be4b 100644
      CostEvaluator.instantiate(
        classOf[SimpleShuffleSortCostEvaluator].getCanonicalName, spark.sparkContext.getConf)
      intercept[IllegalArgumentException] {
-@@ -2452,6 +2492,7 @@ class AdaptiveQueryExecSuite
+@@ -2452,6 +2491,7 @@ class AdaptiveQueryExecSuite
            val (_, adaptive) = runAdaptiveAndVerifyResult(query)
            assert(adaptive.collect {
              case sort: SortExec => sort
@@ -2317,7 +2309,7 @@ index 2f8e401e743..fc4ce35be4b 100644
            }.size == 1)
            val read = collect(adaptive) {
              case read: AQEShuffleReadExec => read
-@@ -2469,7 +2510,8 @@ class AdaptiveQueryExecSuite
+@@ -2469,7 +2509,8 @@ class AdaptiveQueryExecSuite
      }
    }
  
@@ -2327,7 +2319,7 @@ index 2f8e401e743..fc4ce35be4b 100644
      withTempView("v") {
        withSQLConf(
          SQLConf.ADAPTIVE_OPTIMIZE_SKEWS_IN_REBALANCE_PARTITIONS_ENABLED.key -> "true",
-@@ -2581,7 +2623,7 @@ class AdaptiveQueryExecSuite
+@@ -2581,7 +2622,7 @@ class AdaptiveQueryExecSuite
            runAdaptiveAndVerifyResult("SELECT key1 FROM skewData1 JOIN skewData2 ON key1 = key2 " +
              "JOIN skewData3 ON value2 = value3")
          val shuffles1 = collect(adaptive1) {
@@ -2336,7 +2328,7 @@ index 2f8e401e743..fc4ce35be4b 100644
          }
          assert(shuffles1.size == 4)
          val smj1 = findTopLevelSortMergeJoin(adaptive1)
-@@ -2592,7 +2634,7 @@ class AdaptiveQueryExecSuite
+@@ -2592,7 +2633,7 @@ class AdaptiveQueryExecSuite
            runAdaptiveAndVerifyResult("SELECT key1 FROM skewData1 JOIN skewData2 ON key1 = key2 " +
              "JOIN skewData3 ON value1 = value3")
          val shuffles2 = collect(adaptive2) {
@@ -2345,7 +2337,7 @@ index 2f8e401e743..fc4ce35be4b 100644
          }
          assert(shuffles2.size == 4)
          val smj2 = findTopLevelSortMergeJoin(adaptive2)
-@@ -2850,6 +2892,7 @@ class AdaptiveQueryExecSuite
+@@ -2850,6 +2891,7 @@ class AdaptiveQueryExecSuite
          }.size == (if (firstAccess) 1 else 0))
          assert(collect(initialExecutedPlan) {
            case s: SortExec => s
@@ -2353,7 +2345,7 @@ index 2f8e401e743..fc4ce35be4b 100644
          }.size == (if (firstAccess) 2 else 0))
          assert(collect(initialExecutedPlan) {
            case i: InMemoryTableScanLike => i
-@@ -2932,13 +2975,18 @@ class AdaptiveQueryExecSuite
+@@ -2932,13 +2974,18 @@ class AdaptiveQueryExecSuite
  
            val (_, adaptive) = runAdaptiveAndVerifyResult(
              "SELECT * FROM t1 WHERE c1 < (SELECT c2 FROM t2)")
@@ -2374,7 +2366,7 @@ index 2f8e401e743..fc4ce35be4b 100644
      val emptyDf = spark.range(1).where("false")
      val aggDf1 = emptyDf.agg(sum("id").as("id")).withColumn("name", lit("df1"))
      val aggDf2 = emptyDf.agg(sum("id").as("id")).withColumn("name", lit("df2"))
-@@ -2980,7 +3028,9 @@ class AdaptiveQueryExecSuite
+@@ -2980,7 +3027,9 @@ class AdaptiveQueryExecSuite
  
        val plan = df.queryExecution.executedPlan.asInstanceOf[AdaptiveSparkPlanExec]
        assert(plan.inputPlan.isInstanceOf[TakeOrderedAndProjectExec])
@@ -3174,6 +3166,40 @@ index 973c1e0cb3b..d8e86384e4a 100644
  
    sqlConf.setConf(SQLConf.STATE_STORE_PROVIDER_CLASS, classOf[RocksDBStateStoreProvider].getName)
  
+diff --git a/sql/core/src/test/scala/org/apache/spark/sql/execution/ui/SQLAppStatusListenerSuite.scala b/sql/core/src/test/scala/org/apache/spark/sql/execution/ui/SQLAppStatusListenerSuite.scala
+index 67206e9c655..7ce027efad1 100644
+--- a/sql/core/src/test/scala/org/apache/spark/sql/execution/ui/SQLAppStatusListenerSuite.scala
++++ b/sql/core/src/test/scala/org/apache/spark/sql/execution/ui/SQLAppStatusListenerSuite.scala
+@@ -25,6 +25,7 @@ import org.apache.hadoop.conf.Configuration
+ import org.apache.hadoop.fs.{FileSystem, Path}
+ import org.json4s.jackson.JsonMethods._
+ import org.scalatest.BeforeAndAfter
++import org.scalatest.concurrent.Eventually._
+ import org.scalatest.time.SpanSugar._
+ 
+ import org.apache.spark._
+@@ -1119,8 +1120,19 @@ class SQLAppStatusListenerMemoryLeakSuite extends SparkFunSuite {
+         val statusStore = spark.sharedState.statusStore
+         assert(statusStore.executionsCount() <= 50)
+         assert(statusStore.planGraphCount() <= 50)
+-        // No live data should be left behind after all executions end.
+-        assert(statusStore.listener.get.noLiveData())
++        // No live data should be left behind after all executions end. A SQL execution's live
++        // entries are removed only once its end-event count reaches jobs.size + 1 (the
++        // SparkListenerJobEnd(s) plus SparkListenerSQLExecutionEnd). For a failed job the
++        // DAGScheduler notifies the job waiter -- unblocking the failing action on this thread --
++        // *before* it posts SparkListenerJobEnd to the listener bus (see
++        // DAGScheduler.failJobAndIndependentStages). That trailing JobEnd can therefore still be in
++        // flight when this thread calls waitUntilEmpty() above; if it is enqueued just after the
++        // bus is drained, the failed execution never reaches the cleanup threshold and lingers in
++        // liveExecutions. Poll with eventually() so the trailing end event is delivered and the
++        // live entries drain, rather than asserting once immediately.
++        eventually(timeout(5.seconds), interval(10.milliseconds)) {
++          assert(statusStore.listener.get.noLiveData())
++        }
+       }
+     }
+   }
 diff --git a/sql/core/src/test/scala/org/apache/spark/sql/sources/BucketedReadSuite.scala b/sql/core/src/test/scala/org/apache/spark/sql/sources/BucketedReadSuite.scala
 index 746f289c393..f2e0d1c93e5 100644
 --- a/sql/core/src/test/scala/org/apache/spark/sql/sources/BucketedReadSuite.scala
@@ -3623,10 +3649,10 @@ index e937173a590..263934fbe7b 100644
  
      spark.internalCreateDataFrame(withoutFilters.execute(), schema)
 diff --git a/sql/core/src/test/scala/org/apache/spark/sql/test/SharedSparkSession.scala b/sql/core/src/test/scala/org/apache/spark/sql/test/SharedSparkSession.scala
-index c23bf4204f7..d922f0b3d23 100644
+index c23bf4204f7..b6cded1de26 100644
 --- a/sql/core/src/test/scala/org/apache/spark/sql/test/SharedSparkSession.scala
 +++ b/sql/core/src/test/scala/org/apache/spark/sql/test/SharedSparkSession.scala
-@@ -97,6 +97,24 @@ trait SharedSparkSessionBase
+@@ -97,6 +97,27 @@ trait SharedSparkSessionBase
        // this rule may potentially block testing of other optimization rules such as
        // ConstantPropagation etc.
        .set(SQLConf.OPTIMIZER_EXCLUDED_RULES.key, ConvertToLocalRelation.ruleName)
@@ -3642,11 +3668,14 @@ index c23bf4204f7..d922f0b3d23 100644
 +        .set("spark.shuffle.manager",
 +          "org.apache.spark.sql.comet.execution.shuffle.CometShuffleManager")
 +        .set("spark.comet.shuffle.enabled", "true")
-+      // CometDriverPlugin installs Comet's cache serializer when
-+      // spark.comet.exec.inMemoryCache.enabled is on, as it is by default. These sessions do not
-+      // load the plugin, so install it here.
-+      conf.set("spark.sql.cache.serializer",
-+        "org.apache.spark.sql.comet.execution.arrow.ArrowCachedBatchSerializer")
++      // Comet's in-memory cache is disabled by default, so turn it on to run these suites
++      // against Comet's cache format. CometDriverPlugin installs Comet's cache serializer when
++      // spark.comet.exec.inMemoryCache.enabled is on, but these sessions do not load the plugin,
++      // so install it here.
++      conf
++        .set("spark.comet.exec.inMemoryCache.enabled", "true")
++        .set("spark.sql.cache.serializer",
++          "org.apache.spark.sql.comet.execution.arrow.ArrowCachedBatchSerializer")
 +    }
      conf.set(
        StaticSQLConf.WAREHOUSE_PATH,
@@ -3732,10 +3761,10 @@ index 6160c3e5f6c..bfc0c618a9b 100644
  
    test("SPARK-4963 DataFrame sample on mutable row return wrong result") {
 diff --git a/sql/hive/src/test/scala/org/apache/spark/sql/hive/test/TestHive.scala b/sql/hive/src/test/scala/org/apache/spark/sql/hive/test/TestHive.scala
-index 1d646f40b3e..b8a043c6248 100644
+index 1d646f40b3e..800bb0c88cb 100644
 --- a/sql/hive/src/test/scala/org/apache/spark/sql/hive/test/TestHive.scala
 +++ b/sql/hive/src/test/scala/org/apache/spark/sql/hive/test/TestHive.scala
-@@ -53,25 +53,45 @@ object TestHive
+@@ -53,25 +53,48 @@ object TestHive
      new SparkContext(
        System.getProperty("spark.sql.test.master", "local[1]"),
        "TestSQLContext",
@@ -3788,9 +3817,12 @@ index 1d646f40b3e..b8a043c6248 100644
 +              "org.apache.spark.sql.comet.execution.shuffle.CometShuffleManager")
 +            .set("spark.comet.shuffle.enabled", "true")
 +
-+          // As in SharedSparkSession: what CometDriverPlugin would install.
-+          conf.set("spark.sql.cache.serializer",
-+            "org.apache.spark.sql.comet.execution.arrow.ArrowCachedBatchSerializer")
++          // As in SharedSparkSession: Comet's in-memory cache, and the serializer
++          // CometDriverPlugin would install for it.
++          conf
++            .set("spark.comet.exec.inMemoryCache.enabled", "true")
++            .set("spark.sql.cache.serializer",
++              "org.apache.spark.sql.comet.execution.arrow.ArrowCachedBatchSerializer")
 +        }
  
 +        conf

@@ -53,6 +53,17 @@ scalar types. Hash partitioning keys must be scalar types unless
 and later) map keys. That setting is disabled by default until the performance of the nested hashing paths has been
 measured. Columns that are not partitioning keys may contain complex types like maps, structs, and arrays.
 
+Hash partitioning into multiple partitions on decimal keys with precision greater than 18 falls back because native
+hashing does not match Spark's partition assignments. Mixing the two partitioners can silently lose join rows.
+The restriction also applies to decimal leaves in nested hash keys. Wider decimals remain supported as payload
+columns, range partitioning keys, and in single-partition shuffles, including one-partition hash exchanges.
+
+With `spark.comet.shuffle.mode=auto`, Comet uses Columnar Shuffle when eligible, adding a columnar-to-row-to-columnar
+conversion. With `native`, it uses Spark shuffle, which can also restore aggregates such as `collect_list` and
+`collect_set` to Spark to preserve buffer compatibility. Celeborn uses Spark/Celeborn shuffle for unsupported native
+keys because it has no Comet columnar fallback. Spark-compatible native decimal hashing is tracked in
+[#5994](https://github.com/apache/datafusion-comet/issues/5994).
+
 ### Columnar (JVM) Shuffle
 
 Comet Columnar shuffle is JVM-based and supports `HashPartitioning`, `RoundRobinPartitioning`, `RangePartitioning`, and
@@ -102,6 +113,15 @@ both Comet's native shuffle and the JVM columnar shuffle writer. Supported value
 `zstd`, and `snappy`. LZ4 favors CPU efficiency; ZSTD produces smaller shuffle files at higher CPU cost —
 useful when shuffle I/O or network bandwidth is the bottleneck. When ZSTD is selected, the level is
 controlled by `spark.comet.shuffle.compression.zstd.level` (default `1`).
+
+With zstd, Comet also stores the offsets of string, binary, array and map columns as lengths before
+compressing each shuffle block. Lengths compress much better than offsets: in our measurements, shuffle
+files with such columns were 10% to 40% smaller, and zstd was no slower. This applies to native shuffle
+and to JVM shuffle blocks without dictionary-encoded columns. A JVM shuffle block in which
+`spark.comet.shuffle.jvm.preferDictionary.ratio` dictionary-encodes a column keeps the offsets of all
+its columns, and Celeborn shuffle blocks keep theirs too.
+`spark.comet.shuffle.compression.offsetsAsLengths.enabled` turns this off. LZ4 and snappy shuffle blocks
+are written as before.
 
 `spark.shuffle.compress=false` disables compression for Comet's native shuffle only. It has no effect on
 the JVM columnar shuffle writer, which always compresses spill files with the codec above. Disabling

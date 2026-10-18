@@ -117,8 +117,10 @@ is torn down on plugin shutdown (via `release_runtime`) so that the tokio worker
 and the JVM can shut down cleanly:
 
 - **Worker threads:** one per executor core by default (`spark.executor.cores`, or the thread
-  count of a `local[N]` or `local[*]` master, and one when `spark.executor.cores` is not set
-  outside local mode), configurable via `COMET_WORKER_THREADS`
+  count of a `local[N]` or `local[*]` master, the cores per worker of a `local-cluster` master,
+  the JVM's available processors on a standalone cluster, and one on YARN and Kubernetes, when
+  `spark.executor.cores` is not set), configurable via `COMET_WORKER_THREADS`. See
+  `CometExecIterator.numDriverOrExecutorCores`.
 - **Max blocking threads:** 512 by default, configurable via `COMET_MAX_BLOCKING_THREADS`
 - All async I/O (S3, HTTP, Parquet reads) runs on worker threads as non-blocking futures
 
@@ -574,6 +576,44 @@ SPARK_GENERATE_GOLDEN_FILES=1 ./mvnw -Dsuites="org.apache.spark.sql.comet.CometT
 SPARK_GENERATE_GOLDEN_FILES=1 ./mvnw -Dsuites="org.apache.spark.sql.comet.CometTPCDSV2_7_PlanStabilitySuite" -Pspark-4.0 -nsu test
 ```
 
+### ABFS Authentication Parity Files
+
+`AbfsAuthParitySuite` pins how `AbfsAuthResolver` resolves Azure ABFS authentication on each
+hadoop-azure release. `spark/src/test/resources/abfs-auth-parity/expected-<version>.json` holds,
+for every case in `AbfsAuthParityCases`, the outcome kind (`resolved`, `unconfigured`, `declined`,
+`failed`), the auth type, the provider class, the error class and the forwarded values, with
+secrets stored as SHA-256 digests. The suite picks the file from the hadoop-azure on the test
+classpath, so each Spark profile checks one version:
+
+| Profile       | hadoop-azure |
+| ------------- | ------------ |
+| `-Pspark-3.5` | 3.3.4        |
+| `-Pspark-4.0` | 3.4.1        |
+| `-Pspark-4.1` | 3.4.2        |
+| `-Pspark-4.2` | 3.5.0        |
+
+A new case or a hadoop-azure bump requires re-recording all four files. Run the suite once per
+profile with `-Dcomet.abfs.parity.record=<dir>` and copy the written files into the resources
+directory:
+
+```sh
+./mvnw -Pspark-3.5 test -Dtest=none -Dsuites=org.apache.comet.objectstore.AbfsAuthParitySuite -Dsurefire.failIfNoSpecifiedTests=false -Dcomet.abfs.parity.record=<dir>
+./mvnw -Pspark-4.0 test -Dtest=none -Dsuites=org.apache.comet.objectstore.AbfsAuthParitySuite -Dsurefire.failIfNoSpecifiedTests=false -Dcomet.abfs.parity.record=<dir>
+./mvnw -Pspark-4.1 test -Dtest=none -Dsuites=org.apache.comet.objectstore.AbfsAuthParitySuite -Dsurefire.failIfNoSpecifiedTests=false -Dcomet.abfs.parity.record=<dir>
+./mvnw -Pspark-4.2 test -Dtest=none -Dsuites=org.apache.comet.objectstore.AbfsAuthParitySuite -Dsurefire.failIfNoSpecifiedTests=false -Dcomet.abfs.parity.record=<dir>
+```
+
+The per-version pins in the cases and the cross-check against a real `AzureBlobFileSystem`
+still assert while recording, so a recorded file cannot contradict what hadoop-azure does. The
+file is written only when every case ran. Review the diff of the regenerated files before
+committing them: each line that changes is a behaviour change on that hadoop-azure release.
+
+The FileSystem cross-check in `AbfsAuthParitySuite` is tagged `org.apache.comet.tags.AzureTest`.
+It initializes a real `AzureBlobFileSystem`, so it passes only when the test-scoped hadoop-azure
+matches the Hadoop the build runs on. A build against another Hadoop, where no matching
+hadoop-azure is pinned, can skip it with `-DtagsToExclude=org.apache.comet.tags.AzureTest` and
+still run the resolver cases.
+
 ## Benchmark
 
 There's a `make` command to run micro benchmarks in the repo. For
@@ -637,7 +677,7 @@ Make sure to resolve any Clippy warnings before submitting your pull request, as
 The `Strict Scala warnings` job runs on every pull request and in the merge queue. It compiles the main and test sources with scalac warnings promoted to errors, so anything it reports fails the build — an `Int` widened into a `Long` metric, or a discarded builder result, for example. Reproduce it locally with:
 
 ```sh
-./mvnw test-compile -Pspark-3.5 -Pstrict-warnings -DskipTests
+./mvnw test-compile -Pspark-3.5,delta -Pstrict-warnings -DskipTests
 ```
 
 Use the Spark 3.5 profile: it is the one the job runs, and the default build profile will not reproduce it. The default is Spark 4.1 on Scala 2.13, where `-Pstrict-warnings` still fails on warnings unrelated to your change (tracked in [#5893](https://github.com/apache/datafusion-comet/issues/5893)), and where the compiler reports a different set — an adapted argument list, for instance, is flagged under Scala 2.12 but not under 2.13.
