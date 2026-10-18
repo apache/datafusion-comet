@@ -797,7 +797,7 @@ fn natural_exception(error: &CometError) -> JvmException<'static> {
     let exception = error.to_exception();
     JvmException::New {
         class: exception.class,
-        message: with_spill_limit_hint(exception.msg),
+        message: with_comet_config_hint(exception.msg),
     }
 }
 
@@ -810,11 +810,34 @@ const SPILL_LIMIT_HINT: &str = "Comet does not use `datafusion.runtime.*` settin
      the spill limit is `spark.comet.maxTempDirectorySize`. It applies to each Comet native plan \
      separately, so an executor can use several times that much disk.";
 
-fn with_spill_limit_hint(message: String) -> String {
-    if message.contains(DATAFUSION_SPILL_LIMIT_KEY) {
-        format!("{message} {SPILL_LIMIT_HINT}")
-    } else {
-        message
+/// The first config key DataFusion's external-sort OOM error tells users to change. Comet never
+/// uses it, and the sort is identified only by the `Context` string around `ResourcesExhausted`,
+/// so this quoted text is what to match on.
+const DATAFUSION_SORT_MEMORY_KEY: &str = "'datafusion.runtime.memory_limit'";
+
+const SORT_MEMORY_HINT: &str = "Comet does not use `datafusion.runtime.memory_limit`, and in \
+     production it keeps `datafusion.execution.sort_spill_reservation_bytes` at DataFusion's \
+     default of 10 MiB. Native operators reserve memory from Spark's off-heap pool, sized by \
+     `spark.memory.offHeap.size`, and each running task gets a share of it. Raise \
+     `spark.memory.offHeap.size` or run fewer tasks per executor. See the Comet tuning guide: \
+     https://datafusion.apache.org/comet/user-guide/latest/tuning.html";
+
+/// DataFusion error text that names settings unavailable for production tuning in Comet,
+/// paired with the hint that points users at the Comet settings to change instead.
+const COMET_CONFIG_HINTS: &[(&str, &str)] = &[
+    (DATAFUSION_SPILL_LIMIT_KEY, SPILL_LIMIT_HINT),
+    (DATAFUSION_SORT_MEMORY_KEY, SORT_MEMORY_HINT),
+];
+
+/// Appends the matching hint on its own line: the DataFusion text it follows can end mid-sentence,
+/// for example with the `Reserved: N` of a memory pool refusal.
+fn with_comet_config_hint(message: String) -> String {
+    match COMET_CONFIG_HINTS
+        .iter()
+        .find(|(datafusion_key, _)| message.contains(datafusion_key))
+    {
+        Some((_, hint)) => format!("{message}\n{hint}"),
+        None => message,
     }
 }
 
@@ -1493,13 +1516,83 @@ mod tests {
         ] {
             let error = CometError::from(error);
             assert!(error.to_string().contains(DATAFUSION_SPILL_LIMIT_KEY));
-            let expected = format!("{error} {SPILL_LIMIT_HINT}");
+            let expected = format!("{error}\n{SPILL_LIMIT_HINT}");
             let (_, class, message, _) = classify(error);
             assert_eq!(class, "org/apache/comet/CometNativeException");
             assert_eq!(message, expected);
         }
 
         let other = CometError::from(io::Error::other("disk gone"));
+        let expected = other.to_string();
+        let (_, _, message, _) = classify(other);
+        assert_eq!(message, expected);
+    }
+
+    /// DataFusion's external-sort OOM error, produced by a real `SortExec` whose memory pool
+    /// cannot hold a single batch, so a rewording in a DataFusion upgrade fails this test instead
+    /// of silently dropping the hint.
+    fn sort_oom_error() -> DataFusionError {
+        use arrow::array::Int32Array;
+        use arrow::datatypes::{DataType, Field, Schema};
+        use arrow::record_batch::RecordBatch;
+        use datafusion::datasource::memory::MemorySourceConfig;
+        use datafusion::execution::memory_pool::GreedyMemoryPool;
+        use datafusion::execution::runtime_env::RuntimeEnvBuilder;
+        use datafusion::execution::TaskContext;
+        use datafusion::physical_expr::expressions::col;
+        use datafusion::physical_expr::{LexOrdering, PhysicalSortExpr};
+        use datafusion::physical_plan::sorts::sort::SortExec;
+        use datafusion::physical_plan::ExecutionPlan;
+        use futures::StreamExt;
+
+        let schema = Arc::new(Schema::new(vec![Field::new("a", DataType::Int32, false)]));
+        let batch = RecordBatch::try_new(
+            Arc::clone(&schema),
+            vec![Arc::new(Int32Array::from(vec![3, 1, 2]))],
+        )
+        .unwrap();
+        let input =
+            MemorySourceConfig::try_new_exec(&[vec![batch]], Arc::clone(&schema), None).unwrap();
+        let ordering = LexOrdering::new(vec![PhysicalSortExpr::new_default(
+            col("a", &schema).unwrap(),
+        )])
+        .unwrap();
+        let sort = SortExec::new(ordering, input);
+        let runtime = RuntimeEnvBuilder::new()
+            .with_memory_pool(Arc::new(GreedyMemoryPool::new(1)))
+            .build_arc()
+            .unwrap();
+        let task_ctx = Arc::new(TaskContext::default().with_runtime(runtime));
+        let mut stream = sort.execute(0, task_ctx).unwrap();
+        futures::executor::block_on(stream.next())
+            .unwrap()
+            .unwrap_err()
+    }
+
+    #[test]
+    fn sort_oom_error_names_the_comet_config() {
+        assert_eq!(
+            datafusion::common::config::ConfigOptions::default()
+                .execution
+                .sort_spill_reservation_bytes,
+            10 * 1024 * 1024
+        );
+
+        for error in [
+            sort_oom_error(),
+            DataFusionError::Shared(Arc::new(sort_oom_error())),
+        ] {
+            let error = CometError::from(error);
+            assert!(error.to_string().contains(DATAFUSION_SORT_MEMORY_KEY));
+            let expected = format!("{error}\n{SORT_MEMORY_HINT}");
+            let (_, class, message, _) = classify(error);
+            assert_eq!(class, "org/apache/comet/CometNativeException");
+            assert_eq!(message, expected);
+        }
+
+        let other = CometError::from(DataFusionError::ResourcesExhausted(
+            "Failed to acquire 1024 bytes".to_string(),
+        ));
         let expected = other.to_string();
         let (_, _, message, _) = classify(other);
         assert_eq!(message, expected);

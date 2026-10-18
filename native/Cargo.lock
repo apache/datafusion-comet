@@ -2072,6 +2072,7 @@ dependencies = [
  "assertables",
  "datafusion",
  "datafusion-comet-common",
+ "futures",
  "jni",
  "lazy_static",
  "once_cell",
