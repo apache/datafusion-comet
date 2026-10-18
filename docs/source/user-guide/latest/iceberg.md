@@ -767,7 +767,8 @@ This section lists open issues in which Comet's Iceberg reads and writes give a 
 from Spark or iceberg-java, or fail where they succeed, without falling back. Each entry links to
 its tracking issue. The cases where Comet falls back to Spark are listed under
 [Current limitations](#current-limitations) and [When Comet falls back to Spark's write
-operator](#when-comet-falls-back-to-sparks-write-operator).
+operator](#when-comet-falls-back-to-sparks-write-operator). Storage-specific issues are listed under
+the [S3](datasources.md#s3-limitations) and [Azure](datasources.md#azure-limitations) limitations.
 
 Which entries apply depends on which native paths are enabled:
 
@@ -850,6 +851,3 @@ With `spark.comet.write.iceberg.enabled=true`:
   initial defaults, but it fixes this case too: it keeps one file column in the read, so the
   struct's definition level survives when every projected field is a constant, and an identity
   partition value is such a constant.
-- **Field-id reads with a read schema that swaps two nested field names.** Spark's vectorized
-  reader pairs the file's columns with the read fields by the file's names, so it fails with a type
-  mismatch or returns no rows. Comet resolves the fields by id.

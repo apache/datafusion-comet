@@ -162,10 +162,13 @@ SchemaColumnConvertNotSupportedException`) instead of the one-level chain Spark'
 
 ## Writing
 
-Comet can also write Parquet files natively. The native Parquet writer is experimental and disabled
-by default; enable it with `spark.comet.write.parquet.enabled=true`. Parts of Spark's Parquet
-write behavior are not reproduced, as listed under [Known Issues](#known-issues). Iceberg writes
-use a different native writer, described on the [Iceberg](iceberg.md#writes) page.
+Comet can also write Parquet files natively. The native Parquet writer is for testing only and
+should not be used in production. It is disabled by default and enabled with
+`spark.comet.write.parquet.enabled=true`. It handles only non-partitioned, non-bucketed writes;
+partitioned and bucketed writes fall back to Spark, as do writes with
+`spark.sql.files.maxRecordsPerFile` set on Spark 4.0 and later. Parts of Spark's Parquet write
+behavior are not reproduced, as listed under [Known Issues](#known-issues). Iceberg writes use a
+different native writer, described on the [Iceberg](iceberg.md#writes) page.
 
 ## Tuning
 
@@ -216,7 +219,10 @@ worked example and further discussion.
 
 This section lists open issues in which Comet's Parquet reads and writes give a different result
 from Spark, or fail where Spark succeeds, without falling back. Each entry links to its tracking
-issue. The cases where Comet falls back to Spark are listed under [Reading](#reading).
+issue. The cases where Comet falls back to Spark are listed under [Reading](#reading). Iceberg
+tables have their own list under the Iceberg page's [Known Issues](iceberg.md#known-issues).
+Storage-specific issues are listed under the [S3](datasources.md#s3-limitations) and
+[Azure](datasources.md#azure-limitations) limitations.
 
 Which entries apply depends on which native paths are enabled:
 
@@ -315,15 +321,8 @@ With `spark.comet.write.parquet.enabled=true`:
 
 ### Reads that fail where Spark succeeds
 
-- **STRING columns that hold invalid UTF-8.** The read fails with
-  `Parquet error: encountered non UTF-8 data`, where Spark returns the bytes
-  ([#4121](https://github.com/apache/datafusion-comet/issues/4121), part of
-  [#4764](https://github.com/apache/datafusion-comet/issues/4764)).
-- **Duplicate field names.** Selecting a field by name when several physical siblings match it,
-  including inside structs, arrays and maps, fails with a duplicate-field error
-  ([#5884](https://github.com/apache/datafusion-comet/issues/5884),
-  [#5964](https://github.com/apache/datafusion-comet/issues/5964)).
-  The [fall-back and error cases above](#reading) describe the reads this affects.
+- **STRING columns that hold invalid UTF-8**, and **duplicate field names**. See
+  [Unsupported features: error at scan time](#unsupported-features-error-at-scan-time).
 - **A duplicate field id in a column the query does not read.** With a valid read schema and
   `spark.sql.parquet.fieldId.read.enabled=true`, a file in which two root columns carry the same
   field id fails the scan whenever the table schema has a field with that id, even when the query
@@ -343,3 +342,10 @@ With `spark.comet.write.parquet.enabled=true`:
   open row group can outgrow the off-heap pool and fail the task. The audit did not reproduce a
   failure, because a 239 MB row group fit in a 256 MB pool
   ([#5304](https://github.com/apache/datafusion-comet/issues/5304)).
+
+### Differences that are not Comet bugs
+
+- **Field-id reads with a read schema that swaps two nested field names.** With
+  `spark.sql.parquet.fieldId.read.enabled=true`, Spark's vectorized reader pairs the file's columns
+  with the read fields by the file's names, so it fails with a type mismatch or returns no rows.
+  Comet resolves the fields by id.

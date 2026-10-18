@@ -186,6 +186,10 @@ myst_heading_anchors = 4
 # enable nice rendering of checkboxes for the task lists
 myst_enable_extensions = ["colon_fence", "deflist", "tasklist"]
 
+# Like the extension's default template, but when the old URL carries an anchor, the anchor
+# replaces any anchor in the target, so deep links into a moved page still land on their section.
+redirect_html_template_file = "_templates/redirect.html"
+
 redirects = {
     "overview.html": "index.html",
     "gluten_comparison.html": "about/gluten_comparison.html",
@@ -206,9 +210,9 @@ redirects = {
     # The compatibility guide became a directory of pages in #4055.
     "user-guide/latest/compatibility.html": "compatibility/index.html",
     # Parquet and Iceberg documentation was consolidated into one page each.
-    "user-guide/latest/compatibility/scans.html": "../parquet.html",
-    "user-guide/latest/compatibility/parquet-iceberg-known-issues.html": "../parquet.html",
-    "user-guide/latest/tuning/scans.html": "../parquet.html",
+    "user-guide/latest/compatibility/scans.html": "../parquet.html#reading",
+    "user-guide/latest/compatibility/parquet-iceberg-known-issues.html": "../parquet.html#known-issues",
+    "user-guide/latest/tuning/scans.html": "../parquet.html#tuning",
     "user-guide/latest/iceberg-writes.html": "iceberg.html",
 }
 

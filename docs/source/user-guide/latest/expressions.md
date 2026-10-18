@@ -41,21 +41,21 @@ Most expressions can also be disabled with `spark.comet.expression.EXPRNAME.enab
 
 ## Status legend
 
-| Status       | Meaning                                                                                                                                                    |
-| ------------ | ---------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| Status | Meaning |
+| --- | --- |
 | ✅ Supported | Comet produces Spark-compatible results by default. Some inputs or forms may fall back to Spark, and any incompatible behavior is opt-in (off by default). |
-| 🔜 Planned   | Intended; tracked by an open issue or pull request.                                                                                                        |
+| 🔜 Planned | Intended; tracked by an open issue or pull request. |
 
 ## Implementation legend
 
 The **Implementation** column records how Comet executes each expression when it is not falling back to Spark:
 
-| Implementation   | Meaning                                                                                                                                                                                                                                                                     |
-| ---------------- | --------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| Native           | Comet's Rust engine evaluates the expression end to end.                                                                                                                                                                                                                    |
-| Codegen dispatch | Spark's own generated JVM code is evaluated inside the Comet pipeline. Used when a byte-exact match to Spark matters more than the native speedup, or when no native path exists.                                                                                           |
-| Hybrid           | Both paths exist. Comet picks between them based on input, and the user can override with `spark.comet.expression.EXPRNAME.allowIncompatible=true` — see [Native and codegen-dispatch implementations](compatibility/index.md#native-and-codegen-dispatch-implementations). |
-| —                | No direct wire-up: the row is either planned, is rewritten to another expression before Comet sees it (for example `to_date` → `Cast`), or is handled at the operator level rather than the expression level (for example `explode`, window functions).                     |
+| Implementation | Meaning |
+| --- | --- |
+| Native | Comet's Rust engine evaluates the expression end to end. |
+| Codegen dispatch | Spark's own generated JVM code is evaluated inside the Comet pipeline. Used when a byte-exact match to Spark matters more than the native speedup, or when no native path exists. |
+| Hybrid | Both paths exist. Comet picks between them based on input, and the user can override with `spark.comet.expression.EXPRNAME.allowIncompatible=true` — see [Native and codegen-dispatch implementations](compatibility/index.md#native-and-codegen-dispatch-implementations). |
+| — | No direct wire-up: the row is either planned, is rewritten to another expression before Comet sees it (for example `to_date` → `Cast`), or is handled at the operator level rather than the expression level (for example `explode`, window functions). |
 
 The Implementation column is auto-generated from the serde definitions in `QueryPlanSerde`; do not edit it by hand.
 
@@ -81,151 +81,151 @@ The tables below list every Spark built-in expression with its current status.
 
 ## agg_funcs
 
-| Function                | Status | Implementation | Notes                                                                                                                                                                                                                                                                                                                                                                                                |
-| ----------------------- | ------ | -------------- | ---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| `any`                   | ✅     | —              |                                                                                                                                                                                                                                                                                                                                                                                                      |
-| `any_value`             | ✅     | —              |                                                                                                                                                                                                                                                                                                                                                                                                      |
-| `approx_count_distinct` | ✅     | Native         |                                                                                                                                                                                                                                                                                                                                                                                                      |
-| `approx_percentile`     | ✅     | Native         | Byte, short, int, long, float, and double input; other input types fall back to Spark                                                                                                                                                                                                                                                                                                                |
-| `array_agg`             | ✅     | Native         | Alias for `collect_list`                                                                                                                                                                                                                                                                                                                                                                             |
-| `avg`                   | ✅     | Native         | Interval types fall back. `DECIMAL` input with precision 25 or more falls back in most cases, see [Hash Aggregation](compatibility/operators.md#hash-aggregation)                                                                                                                                                                                                                                    |
-| `bit_and`               | ✅     | Native         |                                                                                                                                                                                                                                                                                                                                                                                                      |
-| `bit_or`                | ✅     | Native         |                                                                                                                                                                                                                                                                                                                                                                                                      |
-| `bit_xor`               | ✅     | Native         |                                                                                                                                                                                                                                                                                                                                                                                                      |
-| `bool_and`              | ✅     | —              |                                                                                                                                                                                                                                                                                                                                                                                                      |
-| `bool_or`               | ✅     | —              |                                                                                                                                                                                                                                                                                                                                                                                                      |
-| `collect_list`          | ✅     | Native         |                                                                                                                                                                                                                                                                                                                                                                                                      |
-| `collect_set`           | ✅     | Native         |                                                                                                                                                                                                                                                                                                                                                                                                      |
-| `corr`                  | ✅     | Native         |                                                                                                                                                                                                                                                                                                                                                                                                      |
-| `count`                 | ✅     | Native         |                                                                                                                                                                                                                                                                                                                                                                                                      |
-| `count_if`              | ✅     | —              |                                                                                                                                                                                                                                                                                                                                                                                                      |
-| `covar_pop`             | ✅     | Native         |                                                                                                                                                                                                                                                                                                                                                                                                      |
-| `covar_samp`            | ✅     | Native         |                                                                                                                                                                                                                                                                                                                                                                                                      |
-| `every`                 | ✅     | —              |                                                                                                                                                                                                                                                                                                                                                                                                      |
-| `first`                 | ✅     | Native         |                                                                                                                                                                                                                                                                                                                                                                                                      |
-| `first_value`           | ✅     | Native         |                                                                                                                                                                                                                                                                                                                                                                                                      |
-| `grouping`              | ✅     | —              | Grouping indicator for ROLLUP/CUBE/GROUPING SETS                                                                                                                                                                                                                                                                                                                                                     |
-| `grouping_id`           | ✅     | —              | Grouping indicator for ROLLUP/CUBE/GROUPING SETS                                                                                                                                                                                                                                                                                                                                                     |
-| `hll_sketch_agg`        | ✅     | Native         | Spark 4.0+ only; falls back by default, the native path is opt-in via allowIncompatible ([details](compatibility/expressions/aggregate.md))                                                                                                                                                                                                                                                          |
-| `hll_union_agg`         | ✅     | Native         | Spark 4.0+ only; falls back by default, the native path is opt-in via allowIncompatible ([details](compatibility/expressions/aggregate.md))                                                                                                                                                                                                                                                          |
-| `kurtosis`              | 🔜     | —              | Not yet implemented natively                                                                                                                                                                                                                                                                                                                                                                         |
-| `last`                  | ✅     | Native         |                                                                                                                                                                                                                                                                                                                                                                                                      |
-| `last_value`            | ✅     | Native         |                                                                                                                                                                                                                                                                                                                                                                                                      |
-| `listagg`               | ✅     | Native         | Spark 4.0+. `StringType` input with a literal delimiter; `WITHIN GROUP (ORDER BY ...)` and `BinaryType` inputs fall back to Spark. Without `WITHIN GROUP`, concatenation order is the (non-deterministic) group arrival order, matching Spark.                                                                                                                                                       |
-| `max`                   | ✅     | Native         |                                                                                                                                                                                                                                                                                                                                                                                                      |
-| `max_by`                | ✅     | Native         | Value and ordering must be fixed-length types                                                                                                                                                                                                                                                                                                                                                        |
-| `mean`                  | ✅     | Native         | Interval types fall back. `DECIMAL` input with precision 25 or more falls back in most cases, see [Hash Aggregation](compatibility/operators.md#hash-aggregation)                                                                                                                                                                                                                                    |
-| `median`                | ✅     | —              | Rewrites to `percentile(col, 0.5)` and runs natively for supported percentile inputs                                                                                                                                                                                                                                                                                                                 |
-| `min`                   | ✅     | Native         |                                                                                                                                                                                                                                                                                                                                                                                                      |
-| `min_by`                | ✅     | Native         | Value and ordering must be fixed-length types                                                                                                                                                                                                                                                                                                                                                        |
-| `mode`                  | ✅     | Native         | `mode(col)` only; Spark breaks ties non-deterministically, so Comet returns the smallest tied value and falls back by default, opt-in via allowIncompatible                                                                                                                                                                                                                                          |
-| `percentile`            | ✅     | Native         | Single literal percentage on numeric input runs natively; array of percentages and a frequency argument fall back to Spark                                                                                                                                                                                                                                                                           |
-| `percentile_approx`     | ✅     | Native         | Alias of `approx_percentile`; same restrictions apply                                                                                                                                                                                                                                                                                                                                                |
-| `percentile_cont`       | ✅     | —              | Spark 4.0+ `WITHIN GROUP (ORDER BY ...)`; ascending only runs natively, `DESC` falls back to Spark                                                                                                                                                                                                                                                                                                   |
-| `percentile_disc`       | 🔜     | —              | Percentile aggregate                                                                                                                                                                                                                                                                                                                                                                                 |
-| `pivot_first`           | ✅     | Native         | Internal aggregate for the optimized `PIVOT` fast path. Value type must be in `PivotFirst.supportsDataType` (Boolean, Byte, Short, Int, Long, Float, Double, Decimal); other types keep Spark's standard filtered-aggregate path. Binary, array and struct pivot columns (including pivots on more than one column), non-default collations and pivot lists with duplicate values fall back to Spark |
-| `regr_avgx`             | ✅     | —              | Native: Spark rewrites to `Average` (tests in [#4551](https://github.com/apache/datafusion-comet/pull/4551))                                                                                                                                                                                                                                                                                         |
-| `regr_avgy`             | ✅     | —              | Native: Spark rewrites to `Average` (tests in [#4551](https://github.com/apache/datafusion-comet/pull/4551))                                                                                                                                                                                                                                                                                         |
-| `regr_count`            | ✅     | —              | Native: Spark rewrites to `Count` (tests in [#4551](https://github.com/apache/datafusion-comet/pull/4551))                                                                                                                                                                                                                                                                                           |
-| `regr_intercept`        | ✅     | Native         |                                                                                                                                                                                                                                                                                                                                                                                                      |
-| `regr_r2`               | ✅     | Native         |                                                                                                                                                                                                                                                                                                                                                                                                      |
-| `regr_slope`            | ✅     | Native         |                                                                                                                                                                                                                                                                                                                                                                                                      |
-| `regr_sxx`              | ✅     | Native         |                                                                                                                                                                                                                                                                                                                                                                                                      |
-| `regr_sxy`              | ✅     | Native         |                                                                                                                                                                                                                                                                                                                                                                                                      |
-| `regr_syy`              | ✅     | Native         |                                                                                                                                                                                                                                                                                                                                                                                                      |
-| `skewness`              | 🔜     | —              | Not yet implemented natively                                                                                                                                                                                                                                                                                                                                                                         |
-| `some`                  | ✅     | —              |                                                                                                                                                                                                                                                                                                                                                                                                      |
-| `std`                   | ✅     | Native         |                                                                                                                                                                                                                                                                                                                                                                                                      |
-| `stddev`                | ✅     | Native         |                                                                                                                                                                                                                                                                                                                                                                                                      |
-| `stddev_pop`            | ✅     | Native         |                                                                                                                                                                                                                                                                                                                                                                                                      |
-| `stddev_samp`           | ✅     | Native         |                                                                                                                                                                                                                                                                                                                                                                                                      |
-| `string_agg`            | ✅     | Native         | Alias of `listagg`; same restrictions apply.                                                                                                                                                                                                                                                                                                                                                         |
-| `sum`                   | ✅     | Native         |                                                                                                                                                                                                                                                                                                                                                                                                      |
-| `try_avg`               | ✅     | —              | Interval types fall back. `DECIMAL` input with precision 25 or more falls back in most cases, see [Hash Aggregation](compatibility/operators.md#hash-aggregation)                                                                                                                                                                                                                                    |
-| `try_sum`               | ✅     | —              |                                                                                                                                                                                                                                                                                                                                                                                                      |
-| `var_pop`               | ✅     | Native         |                                                                                                                                                                                                                                                                                                                                                                                                      |
-| `var_samp`              | ✅     | Native         |                                                                                                                                                                                                                                                                                                                                                                                                      |
-| `variance`              | ✅     | Native         |                                                                                                                                                                                                                                                                                                                                                                                                      |
+| Function | Status | Implementation | Notes |
+| --- | --- | --- | --- |
+| `any` | ✅ | — |  |
+| `any_value` | ✅ | — |  |
+| `approx_count_distinct` | ✅ | Native |  |
+| `approx_percentile` | ✅ | Native | Byte, short, int, long, float, and double input; other input types fall back to Spark |
+| `array_agg` | ✅ | Native | Alias for `collect_list` |
+| `avg` | ✅ | Native | Interval types fall back. `DECIMAL` input with precision 25 or more falls back in most cases, see [Hash Aggregation](compatibility/operators.md#hash-aggregation) |
+| `bit_and` | ✅ | Native |  |
+| `bit_or` | ✅ | Native |  |
+| `bit_xor` | ✅ | Native |  |
+| `bool_and` | ✅ | — |  |
+| `bool_or` | ✅ | — |  |
+| `collect_list` | ✅ | Native |  |
+| `collect_set` | ✅ | Native |  |
+| `corr` | ✅ | Native |  |
+| `count` | ✅ | Native |  |
+| `count_if` | ✅ | — |  |
+| `covar_pop` | ✅ | Native |  |
+| `covar_samp` | ✅ | Native |  |
+| `every` | ✅ | — |  |
+| `first` | ✅ | Native |  |
+| `first_value` | ✅ | Native |  |
+| `grouping` | ✅ | — | Grouping indicator for ROLLUP/CUBE/GROUPING SETS |
+| `grouping_id` | ✅ | — | Grouping indicator for ROLLUP/CUBE/GROUPING SETS |
+| `hll_sketch_agg` | ✅ | Native | Spark 4.0+ only; falls back by default, the native path is opt-in via allowIncompatible ([details](compatibility/expressions/aggregate.md)) |
+| `hll_union_agg` | ✅ | Native | Spark 4.0+ only; falls back by default, the native path is opt-in via allowIncompatible ([details](compatibility/expressions/aggregate.md)) |
+| `kurtosis` | 🔜 | — | Not yet implemented natively |
+| `last` | ✅ | Native |  |
+| `last_value` | ✅ | Native |  |
+| `listagg` | ✅ | Native | Spark 4.0+. `StringType` input with a literal delimiter; `WITHIN GROUP (ORDER BY ...)` and `BinaryType` inputs fall back to Spark. Without `WITHIN GROUP`, concatenation order is the (non-deterministic) group arrival order, matching Spark. |
+| `max` | ✅ | Native |  |
+| `max_by` | ✅ | Native | Value and ordering must be fixed-length types |
+| `mean` | ✅ | Native | Interval types fall back. `DECIMAL` input with precision 25 or more falls back in most cases, see [Hash Aggregation](compatibility/operators.md#hash-aggregation) |
+| `median` | ✅ | — | Rewrites to `percentile(col, 0.5)` and runs natively for supported percentile inputs |
+| `min` | ✅ | Native |  |
+| `min_by` | ✅ | Native | Value and ordering must be fixed-length types |
+| `mode` | ✅ | Native | `mode(col)` only; Spark breaks ties non-deterministically, so Comet returns the smallest tied value and falls back by default, opt-in via allowIncompatible |
+| `percentile` | ✅ | Native | Single literal percentage on numeric input runs natively; array of percentages and a frequency argument fall back to Spark |
+| `percentile_approx` | ✅ | Native | Alias of `approx_percentile`; same restrictions apply |
+| `percentile_cont` | ✅ | — | Spark 4.0+ `WITHIN GROUP (ORDER BY ...)`; ascending only runs natively, `DESC` falls back to Spark |
+| `percentile_disc` | 🔜 | — | Percentile aggregate |
+| `pivot_first` | ✅ | Native | Internal aggregate for the optimized `PIVOT` fast path. Value type must be in `PivotFirst.supportsDataType` (Boolean, Byte, Short, Int, Long, Float, Double, Decimal); other types keep Spark's standard filtered-aggregate path. Binary, array and struct pivot columns (including pivots on more than one column), non-default collations and pivot lists with duplicate values fall back to Spark |
+| `regr_avgx` | ✅ | — | Native: Spark rewrites to `Average` (tests in [#4551](https://github.com/apache/datafusion-comet/pull/4551)) |
+| `regr_avgy` | ✅ | — | Native: Spark rewrites to `Average` (tests in [#4551](https://github.com/apache/datafusion-comet/pull/4551)) |
+| `regr_count` | ✅ | — | Native: Spark rewrites to `Count` (tests in [#4551](https://github.com/apache/datafusion-comet/pull/4551)) |
+| `regr_intercept` | ✅ | Native |  |
+| `regr_r2` | ✅ | Native |  |
+| `regr_slope` | ✅ | Native |  |
+| `regr_sxx` | ✅ | Native |  |
+| `regr_sxy` | ✅ | Native |  |
+| `regr_syy` | ✅ | Native |  |
+| `skewness` | 🔜 | — | Not yet implemented natively |
+| `some` | ✅ | — |  |
+| `std` | ✅ | Native |  |
+| `stddev` | ✅ | Native |  |
+| `stddev_pop` | ✅ | Native |  |
+| `stddev_samp` | ✅ | Native |  |
+| `string_agg` | ✅ | Native | Alias of `listagg`; same restrictions apply. |
+| `sum` | ✅ | Native |  |
+| `try_avg` | ✅ | — | Interval types fall back. `DECIMAL` input with precision 25 or more falls back in most cases, see [Hash Aggregation](compatibility/operators.md#hash-aggregation) |
+| `try_sum` | ✅ | — |  |
+| `var_pop` | ✅ | Native |  |
+| `var_samp` | ✅ | Native |  |
+| `variance` | ✅ | Native |  |
 
 ---
 
 ## array_funcs
 
-| Function          | Status | Implementation | Notes                                                                                                                                                                                                                                         |
-| ----------------- | ------ | -------------- | --------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| `array`           | ✅     | Native         |                                                                                                                                                                                                                                               |
-| `array_append`    | ✅     | Native         |                                                                                                                                                                                                                                               |
-| `array_compact`   | ✅     | —              |                                                                                                                                                                                                                                               |
-| `array_contains`  | ✅     | Hybrid         | Flat float/double element arrays use a native kernel with Spark's equality; nested float elements, non-default string collations, and a value that is not a literal or column over a nullable array, route through the JVM codegen dispatcher |
-| `array_distinct`  | ✅     | Native         | Floating-point elements fall back on Spark versions before 4.0.5, 4.1.4, and 4.2; signed-zero results may differ with native opt-in ([details](compatibility/floating-point.md)). Non-default string collations fall back                     |
-| `array_except`    | ✅     | Hybrid         | Routes through the JVM codegen dispatcher by default; the incompatible native path is opt-in via allowIncompatible ([details](compatibility/expressions/array.md))                                                                            |
-| `array_insert`    | ✅     | Native         |                                                                                                                                                                                                                                               |
-| `array_intersect` | ✅     | Hybrid         | Routes through the JVM codegen dispatcher by default; the incompatible native path is opt-in via allowIncompatible ([details](compatibility/expressions/array.md))                                                                            |
-| `array_join`      | ✅     | Hybrid         | Native for literal or column delimiter and null replacement; other cases and non-UTF8_BINARY collations use the JVM codegen dispatcher ([details](compatibility/expressions/array.md))                                                        |
-| `array_max`       | ✅     | Hybrid         | Native Spark-compatible floating-point and nested ordering; non-default string collations use the JVM codegen dispatcher ([details](compatibility/expressions/array.md))                                                                      |
-| `array_min`       | ✅     | Hybrid         | Native Spark-compatible floating-point and nested ordering; non-default string collations use the JVM codegen dispatcher ([details](compatibility/expressions/array.md))                                                                      |
-| `array_position`  | ✅     | Native         | Binary/struct/map/null elements fall back                                                                                                                                                                                                     |
-| `array_prepend`   | ✅     | —              |                                                                                                                                                                                                                                               |
-| `array_remove`    | ✅     | Native         |                                                                                                                                                                                                                                               |
-| `array_repeat`    | ✅     | Native         |                                                                                                                                                                                                                                               |
-| `array_union`     | ✅     | Native         | Floating-point elements fall back on Spark versions before 4.0.5, 4.1.4, and 4.2; signed-zero results may differ with native opt-in ([details](compatibility/floating-point.md)). Non-default string collations fall back                     |
-| `arrays_overlap`  | ✅     | Hybrid         | Non-default string collations use the JVM codegen dispatcher                                                                                                                                                                                  |
-| `arrays_zip`      | ✅     | Native         |                                                                                                                                                                                                                                               |
-| `element_at`      | ✅     | Native         |                                                                                                                                                                                                                                               |
-| `flatten`         | ✅     | Native         | Binary/struct/map elements fall back                                                                                                                                                                                                          |
-| `get`             | ✅     | —              |                                                                                                                                                                                                                                               |
-| `sequence`        | ✅     | Hybrid         | Integral types run natively; date/timestamp sequences use codegen dispatch                                                                                                                                                                    |
-| `shuffle`         | ✅     | Native         | Binary/struct/map elements fall back                                                                                                                                                                                                          |
-| `slice`           | ✅     | Native         | Native ([#4149](https://github.com/apache/datafusion-comet/pull/4149))                                                                                                                                                                        |
-| `sort_array`      | ✅     | Hybrid         | Struct, nested-array, floating-point, and null elements run natively; other element types (for example intervals) route through the JVM codegen dispatcher                                                                                    |
+| Function | Status | Implementation | Notes |
+| --- | --- | --- | --- |
+| `array` | ✅ | Native |  |
+| `array_append` | ✅ | Native |  |
+| `array_compact` | ✅ | — |  |
+| `array_contains` | ✅ | Hybrid | Flat float/double element arrays use a native kernel with Spark's equality; nested float elements, non-default string collations, and a value that is not a literal or column over a nullable array, route through the JVM codegen dispatcher |
+| `array_distinct` | ✅ | Native | Floating-point elements fall back on Spark versions before 4.0.5, 4.1.4, and 4.2; signed-zero results may differ with native opt-in ([details](compatibility/floating-point.md)). Non-default string collations fall back |
+| `array_except` | ✅ | Hybrid | Routes through the JVM codegen dispatcher by default; the incompatible native path is opt-in via allowIncompatible ([details](compatibility/expressions/array.md)) |
+| `array_insert` | ✅ | Native |  |
+| `array_intersect` | ✅ | Hybrid | Routes through the JVM codegen dispatcher by default; the incompatible native path is opt-in via allowIncompatible ([details](compatibility/expressions/array.md)) |
+| `array_join` | ✅ | Hybrid | Native for literal or column delimiter and null replacement; other cases and non-UTF8_BINARY collations use the JVM codegen dispatcher ([details](compatibility/expressions/array.md)) |
+| `array_max` | ✅ | Hybrid | Native Spark-compatible floating-point and nested ordering; non-default string collations use the JVM codegen dispatcher ([details](compatibility/expressions/array.md)) |
+| `array_min` | ✅ | Hybrid | Native Spark-compatible floating-point and nested ordering; non-default string collations use the JVM codegen dispatcher ([details](compatibility/expressions/array.md)) |
+| `array_position` | ✅ | Native | Binary/struct/map/null elements fall back |
+| `array_prepend` | ✅ | — |  |
+| `array_remove` | ✅ | Native |  |
+| `array_repeat` | ✅ | Native |  |
+| `array_union` | ✅ | Native | Floating-point elements fall back on Spark versions before 4.0.5, 4.1.4, and 4.2; signed-zero results may differ with native opt-in ([details](compatibility/floating-point.md)). Non-default string collations fall back |
+| `arrays_overlap` | ✅ | Hybrid | Non-default string collations use the JVM codegen dispatcher |
+| `arrays_zip` | ✅ | Native |  |
+| `element_at` | ✅ | Native |  |
+| `flatten` | ✅ | Native | Binary/struct/map elements fall back |
+| `get` | ✅ | — |  |
+| `sequence` | ✅ | Hybrid | Integral types run natively; date/timestamp sequences use codegen dispatch |
+| `shuffle` | ✅ | Native | Binary/struct/map elements fall back |
+| `slice` | ✅ | Native | Native ([#4149](https://github.com/apache/datafusion-comet/pull/4149)) |
+| `sort_array` | ✅ | Hybrid | Struct, nested-array, floating-point, and null elements run natively; other element types (for example intervals) route through the JVM codegen dispatcher |
 
 ---
 
 ## bitwise_funcs
 
-| Function             | Status | Implementation | Notes                                                |
-| -------------------- | ------ | -------------- | ---------------------------------------------------- |
-| `&`                  | ✅     | Native         |                                                      |
-| `<<`                 | ✅     | —              |                                                      |
-| `>>`                 | ✅     | —              |                                                      |
-| `>>>`                | ✅     | —              | Operator alias for `shiftrightunsigned` (Spark 4.0+) |
-| `^`                  | ✅     | Native         |                                                      |
-| `bit_count`          | ✅     | Native         |                                                      |
-| `bit_get`            | ✅     | Native         |                                                      |
-| `getbit`             | ✅     | Native         |                                                      |
-| `shiftright`         | ✅     | Native         |                                                      |
-| `shiftrightunsigned` | ✅     | Native         |                                                      |
-| `\|`                 | ✅     | Native         |                                                      |
-| `~`                  | ✅     | Native         |                                                      |
+| Function | Status | Implementation | Notes |
+| --- | --- | --- | --- |
+| `&` | ✅ | Native |  |
+| `<<` | ✅ | — |  |
+| `>>` | ✅ | — |  |
+| `>>>` | ✅ | — | Operator alias for `shiftrightunsigned` (Spark 4.0+) |
+| `^` | ✅ | Native |  |
+| `bit_count` | ✅ | Native |  |
+| `bit_get` | ✅ | Native |  |
+| `getbit` | ✅ | Native |  |
+| `shiftright` | ✅ | Native |  |
+| `shiftrightunsigned` | ✅ | Native |  |
+| `\|` | ✅ | Native |  |
+| `~` | ✅ | Native |  |
 
 ---
 
 ## collection_funcs
 
-| Function      | Status | Implementation | Notes                                                                                                                                                                                 |
-| ------------- | ------ | -------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| `array_size`  | ✅     | —              |                                                                                                                                                                                       |
-| `cardinality` | ✅     | Native         |                                                                                                                                                                                       |
-| `concat`      | ✅     | Hybrid         | Binary/array children and non-UTF8_BINARY collations route through the JVM codegen dispatcher                                                                                         |
-| `reverse`     | ✅     | Hybrid         | Binary input (Spark 4.2), arrays with binary, struct, or map elements, and collated strings, route through the JVM codegen dispatcher ([details](compatibility/expressions/array.md)) |
-| `size`        | ✅     | Native         |                                                                                                                                                                                       |
+| Function | Status | Implementation | Notes |
+| --- | --- | --- | --- |
+| `array_size` | ✅ | — |  |
+| `cardinality` | ✅ | Native |  |
+| `concat` | ✅ | Hybrid | Binary/array children and non-UTF8_BINARY collations route through the JVM codegen dispatcher |
+| `reverse` | ✅ | Hybrid | Binary input (Spark 4.2), arrays with binary, struct, or map elements, and collated strings, route through the JVM codegen dispatcher ([details](compatibility/expressions/array.md)) |
+| `size` | ✅ | Native |  |
 
 ---
 
 ## conditional_funcs
 
-| Function     | Status | Implementation   | Notes                             |
-| ------------ | ------ | ---------------- | --------------------------------- |
-| `coalesce`   | ✅     | Native           |                                   |
-| `if`         | ✅     | Native           |                                   |
-| `ifnull`     | ✅     | —                |                                   |
-| `nanvl`      | ✅     | Codegen dispatch |                                   |
-| `nullif`     | ✅     | —                |                                   |
-| `nullifzero` | ✅     | —                | Lowers to `if`/`=` (Spark 4.0+)   |
-| `nvl`        | ✅     | —                |                                   |
-| `nvl2`       | ✅     | —                |                                   |
-| `when`       | ✅     | Native           |                                   |
-| `zeroifnull` | ✅     | —                | Lowers to `coalesce` (Spark 4.0+) |
+| Function | Status | Implementation | Notes |
+| --- | --- | --- | --- |
+| `coalesce` | ✅ | Native |  |
+| `if` | ✅ | Native |  |
+| `ifnull` | ✅ | — |  |
+| `nanvl` | ✅ | Codegen dispatch |  |
+| `nullif` | ✅ | — |  |
+| `nullifzero` | ✅ | — | Lowers to `if`/`=` (Spark 4.0+) |
+| `nvl` | ✅ | — |  |
+| `nvl2` | ✅ | — |  |
+| `when` | ✅ | Native |  |
+| `zeroifnull` | ✅ | — | Lowers to `coalesce` (Spark 4.0+) |
 
 ---
 
@@ -233,104 +233,104 @@ The tables below list every Spark built-in expression with its current status.
 
 The type-name conversion functions (`bigint`, `binary`, `boolean`, `date`, `decimal`, `double`, `float`, `int`, `smallint`, `string`, `timestamp`, `tinyint`) are SQL aliases for `CAST(... AS <type>)` and share the support and caveats of `cast`.
 
-| Function | Status | Implementation | Notes                                                                                                                                                |
-| -------- | ------ | -------------- | ---------------------------------------------------------------------------------------------------------------------------------------------------- |
-| `cast`   | ✅     | Native         | Casts without a native path (for example boolean to decimal) route through the JVM codegen dispatcher ([details](compatibility/expressions/cast.md)) |
+| Function | Status | Implementation | Notes |
+| --- | --- | --- | --- |
+| `cast` | ✅ | Native | Casts without a native path (for example boolean to decimal) route through the JVM codegen dispatcher ([details](compatibility/expressions/cast.md)) |
 
 ---
 
 ## csv_funcs
 
-| Function        | Status | Implementation   | Notes                                                                        |
-| --------------- | ------ | ---------------- | ---------------------------------------------------------------------------- |
-| `from_csv`      | ✅     | Codegen dispatch |                                                                              |
-| `schema_of_csv` | ✅     | Codegen dispatch |                                                                              |
-| `to_csv`        | ✅     | Hybrid           | Codegen dispatch by default; the native path is opt-in via allowIncompatible |
+| Function | Status | Implementation | Notes |
+| --- | --- | --- | --- |
+| `from_csv` | ✅ | Codegen dispatch |  |
+| `schema_of_csv` | ✅ | Codegen dispatch |  |
+| `to_csv` | ✅ | Hybrid | Codegen dispatch by default; the native path is opt-in via allowIncompatible |
 
 ---
 
 ## datetime_funcs
 
-| Function                 | Status | Implementation   | Notes                                                                                                                                                                                                                                                                               |
-| ------------------------ | ------ | ---------------- | ----------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| `add_months`             | ✅     | Codegen dispatch |                                                                                                                                                                                                                                                                                     |
-| `convert_timezone`       | ✅     | Hybrid           | Routes through the JVM codegen dispatcher by default (handles all timezone forms); the native path is opt-in via allowIncompatible ([details](compatibility/expressions/datetime.md))                                                                                               |
-| `curdate`                | ✅     | —                | Constant-folded to a literal (alias of `current_date`)                                                                                                                                                                                                                              |
-| `current_date`           | ✅     | —                | Constant-folded to a literal before Comet sees the plan                                                                                                                                                                                                                             |
-| `current_time`           | ✅     | —                | Spark 4.1+; requires `spark.sql.timeType.enabled=true`, which Spark leaves off by default. Constant-folded to a literal before Comet sees the plan                                                                                                                                  |
-| `current_timestamp`      | ✅     | —                | Constant-folded to a literal before Comet sees the plan                                                                                                                                                                                                                             |
-| `current_timezone`       | ✅     | —                |                                                                                                                                                                                                                                                                                     |
-| `date_add`               | ✅     | Native           | The 2-argument form is native; the `date_add(UNIT, n, ts)` form (Spark 3.5+) parses to `timestampadd` and runs through codegen dispatch                                                                                                                                             |
-| `date_diff`              | ✅     | Native           | The 2-argument form is native; the `date_diff(UNIT, start, end)` form (Spark 3.5+) parses to `timestampdiff` and runs through codegen dispatch                                                                                                                                      |
-| `date_format`            | ✅     | Hybrid           |                                                                                                                                                                                                                                                                                     |
-| `date_from_unix_date`    | ✅     | Native           |                                                                                                                                                                                                                                                                                     |
-| `date_part`              | ✅     | —                |                                                                                                                                                                                                                                                                                     |
-| `date_sub`               | ✅     | Native           |                                                                                                                                                                                                                                                                                     |
-| `date_trunc`             | ✅     | Hybrid           |                                                                                                                                                                                                                                                                                     |
-| `dateadd`                | ✅     | Native           | The 2-argument form is native; the `dateadd(UNIT, n, ts)` form parses to `timestampadd` and runs through codegen dispatch                                                                                                                                                           |
-| `datediff`               | ✅     | Native           | The 2-argument form is native; the `datediff(UNIT, start, end)` form parses to `timestampdiff` and runs through codegen dispatch                                                                                                                                                    |
-| `datepart`               | ✅     | —                |                                                                                                                                                                                                                                                                                     |
-| `day`                    | ✅     | Native           |                                                                                                                                                                                                                                                                                     |
-| `dayname`                | ✅     | —                | Abbreviated day name (Spark 4.0+)                                                                                                                                                                                                                                                   |
-| `dayofmonth`             | ✅     | Native           |                                                                                                                                                                                                                                                                                     |
-| `dayofweek`              | ✅     | Native           |                                                                                                                                                                                                                                                                                     |
-| `dayofyear`              | ✅     | Native           |                                                                                                                                                                                                                                                                                     |
-| `extract`                | ✅     | —                | `SECOND FROM TIME` is native for Spark 4.1+ with `Decimal(8,6)` output                                                                                                                                                                                                              |
-| `from_unixtime`          | ✅     | Hybrid           |                                                                                                                                                                                                                                                                                     |
-| `from_utc_timestamp`     | ✅     | Hybrid           | Routes through the JVM codegen dispatcher by default (handles all timezone forms); the native path is opt-in via allowIncompatible ([details](compatibility/expressions/datetime.md))                                                                                               |
-| `hour`                   | ✅     | Native           |                                                                                                                                                                                                                                                                                     |
-| `last_day`               | ✅     | Native           |                                                                                                                                                                                                                                                                                     |
-| `localtimestamp`         | ✅     | —                |                                                                                                                                                                                                                                                                                     |
-| `make_date`              | ✅     | Native           |                                                                                                                                                                                                                                                                                     |
-| `make_dt_interval`       | ✅     | Codegen dispatch |                                                                                                                                                                                                                                                                                     |
-| `make_interval`          | ✅     | Hybrid           | Routes through the JVM codegen dispatcher by default; intervals outside Arrow's nanosecond range are tracked by [#5279](https://github.com/apache/datafusion-comet/issues/5279); the native path is opt-in via allowIncompatible ([details](compatibility/expressions/datetime.md)) |
-| `make_time`              | ✅     | —                | Spark 4.1+; requires `spark.sql.timeType.enabled=true`, which Spark leaves off by default. Runs natively; remaining TIME type work is tracked by [#4288](https://github.com/apache/datafusion-comet/issues/4288)                                                                    |
-| `make_timestamp`         | ✅     | Hybrid           |                                                                                                                                                                                                                                                                                     |
-| `make_timestamp_ltz`     | ✅     | —                | The 2-argument `(date, time)` form (Spark 4.1+) runs through codegen dispatch                                                                                                                                                                                                       |
-| `make_timestamp_ntz`     | ✅     | —                | The 2-argument `(date, time)` form (Spark 4.1+) runs through codegen dispatch                                                                                                                                                                                                       |
-| `make_ym_interval`       | ✅     | Codegen dispatch |                                                                                                                                                                                                                                                                                     |
-| `minute`                 | ✅     | Native           |                                                                                                                                                                                                                                                                                     |
-| `month`                  | ✅     | Native           |                                                                                                                                                                                                                                                                                     |
-| `monthname`              | ✅     | —                | Abbreviated month name (Spark 4.0+)                                                                                                                                                                                                                                                 |
-| `months_between`         | ✅     | Codegen dispatch |                                                                                                                                                                                                                                                                                     |
-| `next_day`               | ✅     | Hybrid           | Non-UTF8_BINARY collated `dayOfWeek` routes through the JVM codegen dispatcher; other input runs natively                                                                                                                                                                           |
-| `now`                    | ✅     | —                | Constant-folded to a literal (alias of `current_timestamp`)                                                                                                                                                                                                                         |
-| `quarter`                | ✅     | Native           |                                                                                                                                                                                                                                                                                     |
-| `second`                 | ✅     | Native           |                                                                                                                                                                                                                                                                                     |
-| `session_window`         | 🔜     | —                | Batch session-window grouping falls back (`UpdatingSessionsExec` is not yet native); tracked by [#4785](https://github.com/apache/datafusion-comet/issues/4785)                                                                                                                     |
-| `time_diff`              | ✅     | Codegen dispatch | Spark 4.1+; requires `spark.sql.timeType.enabled=true`, which Spark leaves off by default                                                                                                                                                                                           |
-| `time_trunc`             | ✅     | Codegen dispatch | Spark 4.1+; requires `spark.sql.timeType.enabled=true`, which Spark leaves off by default                                                                                                                                                                                           |
-| `timediff`               | ✅     | —                | Spark 4.0+ grammar alias that parses to `timestampdiff`; runs through codegen dispatch                                                                                                                                                                                              |
-| `timestamp_micros`       | ✅     | Codegen dispatch |                                                                                                                                                                                                                                                                                     |
-| `timestamp_millis`       | ✅     | Codegen dispatch |                                                                                                                                                                                                                                                                                     |
-| `timestamp_seconds`      | ✅     | Hybrid           | Integer, long, float and double inputs run natively; decimal, byte and short inputs route through the JVM codegen dispatcher                                                                                                                                                        |
-| `timestampadd`           | ✅     | —                | Reached through the grammar rather than the function registry; runs through codegen dispatch                                                                                                                                                                                        |
-| `timestampdiff`          | ✅     | —                | Reached through the grammar rather than the function registry; runs through codegen dispatch                                                                                                                                                                                        |
-| `to_date`                | ✅     | —                | Rewrites to `Cast` (or `Cast(GetTimestamp)` with a format) before Comet sees the plan                                                                                                                                                                                               |
-| `to_time`                | ✅     | —                | Spark 4.1+; requires `spark.sql.timeType.enabled=true`, which Spark leaves off by default. The one-argument form runs natively, and the form with a format argument runs through codegen dispatch                                                                                   |
-| `to_timestamp`           | ✅     | —                | Rewrites to `Cast` (or `GetTimestamp` with a format) before Comet sees the plan                                                                                                                                                                                                     |
-| `to_timestamp_ltz`       | ✅     | —                | Rewrites to `to_timestamp` (`TimestampType`)                                                                                                                                                                                                                                        |
-| `to_timestamp_ntz`       | ✅     | —                | Rewrites to `to_timestamp` (`TimestampNTZType`)                                                                                                                                                                                                                                     |
-| `to_unix_timestamp`      | ✅     | Hybrid           |                                                                                                                                                                                                                                                                                     |
-| `to_utc_timestamp`       | ✅     | Hybrid           | Routes through the JVM codegen dispatcher by default (handles all timezone forms); the native path is opt-in via allowIncompatible ([details](compatibility/expressions/datetime.md))                                                                                               |
-| `trunc`                  | ✅     | Hybrid           |                                                                                                                                                                                                                                                                                     |
-| `try_make_interval`      | ✅     | —                | Rewrites to `MakeInterval`; same support as `make_interval` (Spark 4.0+)                                                                                                                                                                                                            |
-| `try_make_timestamp`     | ✅     | —                |                                                                                                                                                                                                                                                                                     |
-| `try_make_timestamp_ltz` | ✅     | —                | Same support as `try_make_timestamp` (Spark 4.0+)                                                                                                                                                                                                                                   |
-| `try_make_timestamp_ntz` | ✅     | —                | Same support as `try_make_timestamp` (Spark 4.0+)                                                                                                                                                                                                                                   |
-| `try_to_date`            | ✅     | —                | Rewrites to `Cast`/`GetTimestamp` before Comet sees the plan; same support as `to_date`                                                                                                                                                                                             |
-| `try_to_time`            | ✅     | —                | Same support as `to_time`                                                                                                                                                                                                                                                           |
-| `try_to_timestamp`       | ✅     | —                | Rewrites to `Cast`/`GetTimestamp` before Comet sees the plan; same support as `to_timestamp`                                                                                                                                                                                        |
-| `unix_date`              | ✅     | Native           |                                                                                                                                                                                                                                                                                     |
-| `unix_micros`            | ✅     | Codegen dispatch |                                                                                                                                                                                                                                                                                     |
-| `unix_millis`            | ✅     | Codegen dispatch |                                                                                                                                                                                                                                                                                     |
-| `unix_seconds`           | ✅     | Codegen dispatch |                                                                                                                                                                                                                                                                                     |
-| `unix_timestamp`         | ✅     | Hybrid           | String parsing uses Spark's codegen and honors the time parser policy, ANSI mode, and session time zone. Date and timestamp inputs ignore the format and use native execution.                                                                                                      |
-| `weekday`                | ✅     | Native           |                                                                                                                                                                                                                                                                                     |
-| `weekofyear`             | ✅     | Native           |                                                                                                                                                                                                                                                                                     |
-| `window`                 | ✅     | —                | Batch tumbling and sliding time-window grouping runs natively                                                                                                                                                                                                                       |
-| `window_time`            | ✅     | —                | Batch time-window grouping runs natively                                                                                                                                                                                                                                            |
-| `year`                   | ✅     | Native           |                                                                                                                                                                                                                                                                                     |
+| Function | Status | Implementation | Notes |
+| --- | --- | --- | --- |
+| `add_months` | ✅ | Codegen dispatch |  |
+| `convert_timezone` | ✅ | Hybrid | Routes through the JVM codegen dispatcher by default (handles all timezone forms); the native path is opt-in via allowIncompatible ([details](compatibility/expressions/datetime.md)) |
+| `curdate` | ✅ | — | Constant-folded to a literal (alias of `current_date`) |
+| `current_date` | ✅ | — | Constant-folded to a literal before Comet sees the plan |
+| `current_time` | ✅ | — | Spark 4.1+; requires `spark.sql.timeType.enabled=true`, which Spark leaves off by default. Constant-folded to a literal before Comet sees the plan |
+| `current_timestamp` | ✅ | — | Constant-folded to a literal before Comet sees the plan |
+| `current_timezone` | ✅ | — |  |
+| `date_add` | ✅ | Native | The 2-argument form is native; the `date_add(UNIT, n, ts)` form (Spark 3.5+) parses to `timestampadd` and runs through codegen dispatch |
+| `date_diff` | ✅ | Native | The 2-argument form is native; the `date_diff(UNIT, start, end)` form (Spark 3.5+) parses to `timestampdiff` and runs through codegen dispatch |
+| `date_format` | ✅ | Hybrid |  |
+| `date_from_unix_date` | ✅ | Native |  |
+| `date_part` | ✅ | — |  |
+| `date_sub` | ✅ | Native |  |
+| `date_trunc` | ✅ | Hybrid |  |
+| `dateadd` | ✅ | Native | The 2-argument form is native; the `dateadd(UNIT, n, ts)` form parses to `timestampadd` and runs through codegen dispatch |
+| `datediff` | ✅ | Native | The 2-argument form is native; the `datediff(UNIT, start, end)` form parses to `timestampdiff` and runs through codegen dispatch |
+| `datepart` | ✅ | — |  |
+| `day` | ✅ | Native |  |
+| `dayname` | ✅ | — | Abbreviated day name (Spark 4.0+) |
+| `dayofmonth` | ✅ | Native |  |
+| `dayofweek` | ✅ | Native |  |
+| `dayofyear` | ✅ | Native |  |
+| `extract` | ✅ | — | `SECOND FROM TIME` is native for Spark 4.1+ with `Decimal(8,6)` output |
+| `from_unixtime` | ✅ | Hybrid |  |
+| `from_utc_timestamp` | ✅ | Hybrid | Routes through the JVM codegen dispatcher by default (handles all timezone forms); the native path is opt-in via allowIncompatible ([details](compatibility/expressions/datetime.md)) |
+| `hour` | ✅ | Native |  |
+| `last_day` | ✅ | Native |  |
+| `localtimestamp` | ✅ | — |  |
+| `make_date` | ✅ | Native |  |
+| `make_dt_interval` | ✅ | Codegen dispatch |  |
+| `make_interval` | ✅ | Hybrid | Routes through the JVM codegen dispatcher by default; intervals outside Arrow's nanosecond range are tracked by [#5279](https://github.com/apache/datafusion-comet/issues/5279); the native path is opt-in via allowIncompatible ([details](compatibility/expressions/datetime.md)) |
+| `make_time` | ✅ | — | Spark 4.1+; requires `spark.sql.timeType.enabled=true`, which Spark leaves off by default. Runs natively; remaining TIME type work is tracked by [#4288](https://github.com/apache/datafusion-comet/issues/4288) |
+| `make_timestamp` | ✅ | Hybrid |  |
+| `make_timestamp_ltz` | ✅ | — | The 2-argument `(date, time)` form (Spark 4.1+) runs through codegen dispatch |
+| `make_timestamp_ntz` | ✅ | — | The 2-argument `(date, time)` form (Spark 4.1+) runs through codegen dispatch |
+| `make_ym_interval` | ✅ | Codegen dispatch |  |
+| `minute` | ✅ | Native |  |
+| `month` | ✅ | Native |  |
+| `monthname` | ✅ | — | Abbreviated month name (Spark 4.0+) |
+| `months_between` | ✅ | Codegen dispatch |  |
+| `next_day` | ✅ | Hybrid | Non-UTF8_BINARY collated `dayOfWeek` routes through the JVM codegen dispatcher; other input runs natively |
+| `now` | ✅ | — | Constant-folded to a literal (alias of `current_timestamp`) |
+| `quarter` | ✅ | Native |  |
+| `second` | ✅ | Native |  |
+| `session_window` | 🔜 | — | Batch session-window grouping falls back (`UpdatingSessionsExec` is not yet native); tracked by [#4785](https://github.com/apache/datafusion-comet/issues/4785) |
+| `time_diff` | ✅ | Codegen dispatch | Spark 4.1+; requires `spark.sql.timeType.enabled=true`, which Spark leaves off by default |
+| `time_trunc` | ✅ | Codegen dispatch | Spark 4.1+; requires `spark.sql.timeType.enabled=true`, which Spark leaves off by default |
+| `timediff` | ✅ | — | Spark 4.0+ grammar alias that parses to `timestampdiff`; runs through codegen dispatch |
+| `timestamp_micros` | ✅ | Codegen dispatch |  |
+| `timestamp_millis` | ✅ | Codegen dispatch |  |
+| `timestamp_seconds` | ✅ | Hybrid | Integer, long, float and double inputs run natively; decimal, byte and short inputs route through the JVM codegen dispatcher |
+| `timestampadd` | ✅ | — | Reached through the grammar rather than the function registry; runs through codegen dispatch |
+| `timestampdiff` | ✅ | — | Reached through the grammar rather than the function registry; runs through codegen dispatch |
+| `to_date` | ✅ | — | Rewrites to `Cast` (or `Cast(GetTimestamp)` with a format) before Comet sees the plan |
+| `to_time` | ✅ | — | Spark 4.1+; requires `spark.sql.timeType.enabled=true`, which Spark leaves off by default. The one-argument form runs natively, and the form with a format argument runs through codegen dispatch |
+| `to_timestamp` | ✅ | — | Rewrites to `Cast` (or `GetTimestamp` with a format) before Comet sees the plan |
+| `to_timestamp_ltz` | ✅ | — | Rewrites to `to_timestamp` (`TimestampType`) |
+| `to_timestamp_ntz` | ✅ | — | Rewrites to `to_timestamp` (`TimestampNTZType`) |
+| `to_unix_timestamp` | ✅ | Hybrid |  |
+| `to_utc_timestamp` | ✅ | Hybrid | Routes through the JVM codegen dispatcher by default (handles all timezone forms); the native path is opt-in via allowIncompatible ([details](compatibility/expressions/datetime.md)) |
+| `trunc` | ✅ | Hybrid |  |
+| `try_make_interval` | ✅ | — | Rewrites to `MakeInterval`; same support as `make_interval` (Spark 4.0+) |
+| `try_make_timestamp` | ✅ | — |  |
+| `try_make_timestamp_ltz` | ✅ | — | Same support as `try_make_timestamp` (Spark 4.0+) |
+| `try_make_timestamp_ntz` | ✅ | — | Same support as `try_make_timestamp` (Spark 4.0+) |
+| `try_to_date` | ✅ | — | Rewrites to `Cast`/`GetTimestamp` before Comet sees the plan; same support as `to_date` |
+| `try_to_time` | ✅ | — | Same support as `to_time` |
+| `try_to_timestamp` | ✅ | — | Rewrites to `Cast`/`GetTimestamp` before Comet sees the plan; same support as `to_timestamp` |
+| `unix_date` | ✅ | Native |  |
+| `unix_micros` | ✅ | Codegen dispatch |  |
+| `unix_millis` | ✅ | Codegen dispatch |  |
+| `unix_seconds` | ✅ | Codegen dispatch |  |
+| `unix_timestamp` | ✅ | Hybrid | String parsing uses Spark's codegen and honors the time parser policy, ANSI mode, and session time zone. Date and timestamp inputs ignore the format and use native execution. |
+| `weekday` | ✅ | Native |  |
+| `weekofyear` | ✅ | Native |  |
+| `window` | ✅ | — | Batch tumbling and sliding time-window grouping runs natively |
+| `window_time` | ✅ | — | Batch time-window grouping runs natively |
+| `year` | ✅ | Native |  |
 
 ---
 
@@ -341,314 +341,314 @@ The type-name conversion functions (`bigint`, `binary`, `boolean`, `date`, `deci
 to Spark ([#2837](https://github.com/apache/datafusion-comet/issues/2837)). Enabled by default via
 `spark.comet.exec.explode.enabled`.
 
-| Function           | Status | Implementation | Notes                                                                                                           |
-| ------------------ | ------ | -------------- | --------------------------------------------------------------------------------------------------------------- |
-| `explode`          | ✅     | —              | via `CometExplodeExec`                                                                                          |
-| `explode_outer`    | ✅     | —              | via `CometExplodeExec` ([audit](../../contributor-guide/expression-audits/generator_funcs.md#explode_outer))    |
-| `inline`           | 🔜     | —              | Operator-level generator (like `explode`)                                                                       |
-| `inline_outer`     | 🔜     | —              | Operator-level generator (like `explode`)                                                                       |
-| `posexplode`       | ✅     | —              | via `CometExplodeExec`                                                                                          |
-| `posexplode_outer` | ✅     | —              | via `CometExplodeExec` ([audit](../../contributor-guide/expression-audits/generator_funcs.md#posexplode_outer)) |
-| `stack`            | 🔜     | —              | Operator-level generator                                                                                        |
+| Function | Status | Implementation | Notes |
+| --- | --- | --- | --- |
+| `explode` | ✅ | — | via `CometExplodeExec` |
+| `explode_outer` | ✅ | — | via `CometExplodeExec` ([audit](../../contributor-guide/expression-audits/generator_funcs.md#explode_outer)) |
+| `inline` | 🔜 | — | Operator-level generator (like `explode`) |
+| `inline_outer` | 🔜 | — | Operator-level generator (like `explode`) |
+| `posexplode` | ✅ | — | via `CometExplodeExec` |
+| `posexplode_outer` | ✅ | — | via `CometExplodeExec` ([audit](../../contributor-guide/expression-audits/generator_funcs.md#posexplode_outer)) |
+| `stack` | 🔜 | — | Operator-level generator |
 
 ---
 
 ## hash_funcs
 
-| Function   | Status | Implementation | Notes |
-| ---------- | ------ | -------------- | ----- |
-| `crc32`    | ✅     | Native         |       |
-| `hash`     | ✅     | Native         |       |
-| `md5`      | ✅     | Native         |       |
-| `sha`      | ✅     | Native         |       |
-| `sha1`     | ✅     | Native         |       |
-| `sha2`     | ✅     | Native         |       |
-| `xxhash64` | ✅     | Native         |       |
+| Function | Status | Implementation | Notes |
+| --- | --- | --- | --- |
+| `crc32` | ✅ | Native |  |
+| `hash` | ✅ | Native |  |
+| `md5` | ✅ | Native |  |
+| `sha` | ✅ | Native |  |
+| `sha1` | ✅ | Native |  |
+| `sha2` | ✅ | Native |  |
+| `xxhash64` | ✅ | Native |  |
 
 ---
 
 ## json_funcs
 
-| Function            | Status | Implementation   | Notes                                                                                                                                                                                                                                                                                 |
-| ------------------- | ------ | ---------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| `from_json`         | ✅     | Hybrid           | Routes through the JVM codegen dispatcher by default; the native path (supported schemas only) is opt-in via allowIncompatible ([audit](../../contributor-guide/expression-audits/json_funcs.md#from_json))                                                                           |
-| `get_json_object`   | ✅     | Hybrid           | Routes through the JVM codegen dispatcher by default; the native path is opt-in via allowIncompatible ([audit](../../contributor-guide/expression-audits/json_funcs.md#get_json_object))                                                                                              |
-| `json_array_length` | ✅     | Hybrid           | Routes through the JVM codegen dispatcher by default; the native path, which differs for single-quoted JSON, unescaped control characters, and trailing content, is opt-in via allowIncompatible ([audit](../../contributor-guide/expression-audits/json_funcs.md#json_array_length)) |
-| `json_object_keys`  | ✅     | Codegen dispatch |                                                                                                                                                                                                                                                                                       |
-| `json_tuple`        | 🔜     | —                | [#3160](https://github.com/apache/datafusion-comet/issues/3160)                                                                                                                                                                                                                       |
-| `schema_of_json`    | ✅     | Codegen dispatch |                                                                                                                                                                                                                                                                                       |
-| `to_json`           | ✅     | Hybrid           | Routes through the JVM codegen dispatcher by default, including options and map/array inputs; the native path is opt-in via allowIncompatible ([audit](../../contributor-guide/expression-audits/json_funcs.md#to_json))                                                              |
+| Function | Status | Implementation | Notes |
+| --- | --- | --- | --- |
+| `from_json` | ✅ | Hybrid | Routes through the JVM codegen dispatcher by default; the native path (supported schemas only) is opt-in via allowIncompatible ([audit](../../contributor-guide/expression-audits/json_funcs.md#from_json)) |
+| `get_json_object` | ✅ | Hybrid | Routes through the JVM codegen dispatcher by default; the native path is opt-in via allowIncompatible ([audit](../../contributor-guide/expression-audits/json_funcs.md#get_json_object)) |
+| `json_array_length` | ✅ | Hybrid | Routes through the JVM codegen dispatcher by default; the native path, which differs for single-quoted JSON, unescaped control characters, and trailing content, is opt-in via allowIncompatible ([audit](../../contributor-guide/expression-audits/json_funcs.md#json_array_length)) |
+| `json_object_keys` | ✅ | Codegen dispatch |  |
+| `json_tuple` | 🔜 | — | [#3160](https://github.com/apache/datafusion-comet/issues/3160) |
+| `schema_of_json` | ✅ | Codegen dispatch |  |
+| `to_json` | ✅ | Hybrid | Routes through the JVM codegen dispatcher by default, including options and map/array inputs; the native path is opt-in via allowIncompatible ([audit](../../contributor-guide/expression-audits/json_funcs.md#to_json)) |
 
 ---
 
 ## lambda_funcs
 
-| Function           | Status | Implementation   | Notes                                                                                            |
-| ------------------ | ------ | ---------------- | ------------------------------------------------------------------------------------------------ |
-| `aggregate`        | ✅     | Codegen dispatch |                                                                                                  |
-| `array_sort`       | ✅     | Codegen dispatch |                                                                                                  |
-| `exists`           | ✅     | Codegen dispatch |                                                                                                  |
-| `filter`           | ✅     | Native           | General lambda routed through the JVM codegen dispatcher; the `array_compact` form runs natively |
-| `forall`           | ✅     | Codegen dispatch |                                                                                                  |
-| `map_filter`       | ✅     | Codegen dispatch |                                                                                                  |
-| `map_zip_with`     | ✅     | Codegen dispatch |                                                                                                  |
-| `reduce`           | ✅     | Codegen dispatch |                                                                                                  |
-| `transform`        | ✅     | Codegen dispatch |                                                                                                  |
-| `transform_keys`   | ✅     | Codegen dispatch |                                                                                                  |
-| `transform_values` | ✅     | Codegen dispatch |                                                                                                  |
-| `zip_with`         | ✅     | Codegen dispatch |                                                                                                  |
+| Function | Status | Implementation | Notes |
+| --- | --- | --- | --- |
+| `aggregate` | ✅ | Codegen dispatch |  |
+| `array_sort` | ✅ | Codegen dispatch |  |
+| `exists` | ✅ | Codegen dispatch |  |
+| `filter` | ✅ | Native | General lambda routed through the JVM codegen dispatcher; the `array_compact` form runs natively |
+| `forall` | ✅ | Codegen dispatch |  |
+| `map_filter` | ✅ | Codegen dispatch |  |
+| `map_zip_with` | ✅ | Codegen dispatch |  |
+| `reduce` | ✅ | Codegen dispatch |  |
+| `transform` | ✅ | Codegen dispatch |  |
+| `transform_keys` | ✅ | Codegen dispatch |  |
+| `transform_values` | ✅ | Codegen dispatch |  |
+| `zip_with` | ✅ | Codegen dispatch |  |
 
 ---
 
 ## map_funcs
 
-| Function           | Status | Implementation   | Notes                                                                                                                                                                              |
-| ------------------ | ------ | ---------------- | ---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| `element_at`       | ✅     | Native           |                                                                                                                                                                                    |
-| `map`              | ✅     | Codegen dispatch | Routed through the JVM codegen dispatcher                                                                                                                                          |
-| `map_concat`       | ✅     | Codegen dispatch |                                                                                                                                                                                    |
-| `map_contains_key` | ✅     | —                |                                                                                                                                                                                    |
-| `map_entries`      | ✅     | Native           |                                                                                                                                                                                    |
-| `map_from_arrays`  | ✅     | Hybrid           | `FLOAT` or `DOUBLE` keys and `spark.sql.mapKeyDedupPolicy=LAST_WIN` route through the JVM codegen dispatcher ([details](compatibility/expressions/map.md))                         |
-| `map_from_entries` | ✅     | Hybrid           | BinaryType keys/values, `FLOAT` or `DOUBLE` keys and `spark.sql.mapKeyDedupPolicy=LAST_WIN` route through the JVM codegen dispatcher ([details](compatibility/expressions/map.md)) |
-| `map_keys`         | ✅     | Native           |                                                                                                                                                                                    |
-| `map_values`       | ✅     | Native           |                                                                                                                                                                                    |
-| `str_to_map`       | ✅     | Hybrid           |                                                                                                                                                                                    |
-| `try_element_at`   | ✅     | —                | Lowers to `element_at`                                                                                                                                                             |
+| Function | Status | Implementation | Notes |
+| --- | --- | --- | --- |
+| `element_at` | ✅ | Native |  |
+| `map` | ✅ | Codegen dispatch | Routed through the JVM codegen dispatcher |
+| `map_concat` | ✅ | Codegen dispatch |  |
+| `map_contains_key` | ✅ | — |  |
+| `map_entries` | ✅ | Native |  |
+| `map_from_arrays` | ✅ | Hybrid | `FLOAT` or `DOUBLE` keys and `spark.sql.mapKeyDedupPolicy=LAST_WIN` route through the JVM codegen dispatcher ([details](compatibility/expressions/map.md)) |
+| `map_from_entries` | ✅ | Hybrid | BinaryType keys/values, `FLOAT` or `DOUBLE` keys and `spark.sql.mapKeyDedupPolicy=LAST_WIN` route through the JVM codegen dispatcher ([details](compatibility/expressions/map.md)) |
+| `map_keys` | ✅ | Native |  |
+| `map_values` | ✅ | Native |  |
+| `str_to_map` | ✅ | Hybrid |  |
+| `try_element_at` | ✅ | — | Lowers to `element_at` |
 
 ---
 
 ## math_funcs
 
-| Function       | Status | Implementation   | Notes                                                                                                                                |
-| -------------- | ------ | ---------------- | ------------------------------------------------------------------------------------------------------------------------------------ |
-| `%`            | ✅     | Native           |                                                                                                                                      |
-| `*`            | ✅     | Native           | YearMonth and DayTime interval multiplication routes through the JVM codegen dispatcher; Calendar interval multiplication falls back |
-| `+`            | ✅     | Native           |                                                                                                                                      |
-| `-`            | ✅     | Native           |                                                                                                                                      |
-| `/`            | ✅     | Native           | DayTime interval division routes through the JVM codegen dispatcher; YearMonth and Calendar interval division fall back              |
-| `abs`          | ✅     | Hybrid           | Interval types route through the JVM codegen dispatcher; numeric types run natively                                                  |
-| `acos`         | ✅     | Native           |                                                                                                                                      |
-| `acosh`        | ✅     | Native           |                                                                                                                                      |
-| `asin`         | ✅     | Native           |                                                                                                                                      |
-| `asinh`        | ✅     | Native           |                                                                                                                                      |
-| `atan`         | ✅     | Native           |                                                                                                                                      |
-| `atan2`        | ✅     | Native           |                                                                                                                                      |
-| `atanh`        | ✅     | Native           |                                                                                                                                      |
-| `bin`          | ✅     | Native           |                                                                                                                                      |
-| `bround`       | ✅     | Codegen dispatch |                                                                                                                                      |
-| `cbrt`         | ✅     | Native           |                                                                                                                                      |
-| `ceil`         | ✅     | —                | Two-arg form falls back                                                                                                              |
-| `ceiling`      | ✅     | —                |                                                                                                                                      |
-| `conv`         | ✅     | Codegen dispatch |                                                                                                                                      |
-| `cos`          | ✅     | Native           |                                                                                                                                      |
-| `cosh`         | ✅     | Native           |                                                                                                                                      |
-| `cot`          | ✅     | Native           |                                                                                                                                      |
-| `csc`          | ✅     | Native           |                                                                                                                                      |
-| `degrees`      | ✅     | Native           |                                                                                                                                      |
-| `div`          | ✅     | Native           |                                                                                                                                      |
-| `e`            | ✅     | —                | Folds to a literal (like `pi`)                                                                                                       |
-| `exp`          | ✅     | Native           |                                                                                                                                      |
-| `expm1`        | ✅     | Native           |                                                                                                                                      |
-| `factorial`    | ✅     | Native           |                                                                                                                                      |
-| `floor`        | ✅     | —                | Two-arg form falls back                                                                                                              |
-| `greatest`     | ✅     | Hybrid           | Non-UTF8_BINARY collated input routes through the JVM codegen dispatcher; other input runs natively                                  |
-| `hex`          | ✅     | Native           |                                                                                                                                      |
-| `hypot`        | ✅     | Codegen dispatch |                                                                                                                                      |
-| `least`        | ✅     | Hybrid           | Non-UTF8_BINARY collated input routes through the JVM codegen dispatcher; other input runs natively                                  |
-| `ln`           | ✅     | Native           |                                                                                                                                      |
-| `log`          | ✅     | Native           |                                                                                                                                      |
-| `log10`        | ✅     | Native           |                                                                                                                                      |
-| `log1p`        | ✅     | Codegen dispatch |                                                                                                                                      |
-| `log2`         | ✅     | Native           |                                                                                                                                      |
-| `mod`          | ✅     | Native           |                                                                                                                                      |
-| `negative`     | ✅     | Native           |                                                                                                                                      |
-| `pi`           | ✅     | Native           |                                                                                                                                      |
-| `pmod`         | ✅     | Codegen dispatch |                                                                                                                                      |
-| `positive`     | ✅     | Codegen dispatch |                                                                                                                                      |
-| `pow`          | ✅     | Native           |                                                                                                                                      |
-| `power`        | ✅     | Native           |                                                                                                                                      |
-| `radians`      | ✅     | Native           |                                                                                                                                      |
-| `rand`         | ✅     | Native           |                                                                                                                                      |
-| `randn`        | ✅     | Native           |                                                                                                                                      |
-| `random`       | ✅     | Native           | Alias for `rand`; seed must be a literal                                                                                             |
-| `randstr`      | ✅     | Native           | Random string (Spark 4.0+); length and seed must be literals                                                                         |
-| `rint`         | ✅     | Native           |                                                                                                                                      |
-| `round`        | ✅     | Hybrid           | Float/double inputs route through the JVM codegen dispatcher; other types run natively                                               |
-| `sec`          | ✅     | Native           |                                                                                                                                      |
-| `shiftleft`    | ✅     | Native           |                                                                                                                                      |
-| `sign`         | ✅     | Native           |                                                                                                                                      |
-| `signum`       | ✅     | Native           |                                                                                                                                      |
-| `sin`          | ✅     | Native           |                                                                                                                                      |
-| `sinh`         | ✅     | Native           |                                                                                                                                      |
-| `sqrt`         | ✅     | Native           |                                                                                                                                      |
-| `tan`          | ✅     | Native           |                                                                                                                                      |
-| `tanh`         | ✅     | Native           |                                                                                                                                      |
-| `try_add`      | ✅     | —                | Datetime/interval form falls back                                                                                                    |
-| `try_divide`   | ✅     | —                |                                                                                                                                      |
-| `try_mod`      | ✅     | —                |                                                                                                                                      |
-| `try_multiply` | ✅     | —                |                                                                                                                                      |
-| `try_subtract` | ✅     | —                |                                                                                                                                      |
-| `unhex`        | ✅     | Native           |                                                                                                                                      |
-| `uniform`      | ✅     | —                | Constant-folded; literal arguments only (Spark 4.0+)                                                                                 |
-| `width_bucket` | ✅     | Codegen dispatch |                                                                                                                                      |
+| Function | Status | Implementation | Notes |
+| --- | --- | --- | --- |
+| `%` | ✅ | Native |  |
+| `*` | ✅ | Native | YearMonth and DayTime interval multiplication routes through the JVM codegen dispatcher; Calendar interval multiplication falls back |
+| `+` | ✅ | Native |  |
+| `-` | ✅ | Native |  |
+| `/` | ✅ | Native | DayTime interval division routes through the JVM codegen dispatcher; YearMonth and Calendar interval division fall back |
+| `abs` | ✅ | Hybrid | Interval types route through the JVM codegen dispatcher; numeric types run natively |
+| `acos` | ✅ | Native |  |
+| `acosh` | ✅ | Native |  |
+| `asin` | ✅ | Native |  |
+| `asinh` | ✅ | Native |  |
+| `atan` | ✅ | Native |  |
+| `atan2` | ✅ | Native |  |
+| `atanh` | ✅ | Native |  |
+| `bin` | ✅ | Native |  |
+| `bround` | ✅ | Codegen dispatch |  |
+| `cbrt` | ✅ | Native |  |
+| `ceil` | ✅ | — | Two-arg form falls back |
+| `ceiling` | ✅ | — |  |
+| `conv` | ✅ | Codegen dispatch |  |
+| `cos` | ✅ | Native |  |
+| `cosh` | ✅ | Native |  |
+| `cot` | ✅ | Native |  |
+| `csc` | ✅ | Native |  |
+| `degrees` | ✅ | Native |  |
+| `div` | ✅ | Native |  |
+| `e` | ✅ | — | Folds to a literal (like `pi`) |
+| `exp` | ✅ | Native |  |
+| `expm1` | ✅ | Native |  |
+| `factorial` | ✅ | Native |  |
+| `floor` | ✅ | — | Two-arg form falls back |
+| `greatest` | ✅ | Hybrid | Non-UTF8_BINARY collated input routes through the JVM codegen dispatcher; other input runs natively |
+| `hex` | ✅ | Native |  |
+| `hypot` | ✅ | Codegen dispatch |  |
+| `least` | ✅ | Hybrid | Non-UTF8_BINARY collated input routes through the JVM codegen dispatcher; other input runs natively |
+| `ln` | ✅ | Native |  |
+| `log` | ✅ | Native |  |
+| `log10` | ✅ | Native |  |
+| `log1p` | ✅ | Codegen dispatch |  |
+| `log2` | ✅ | Native |  |
+| `mod` | ✅ | Native |  |
+| `negative` | ✅ | Native |  |
+| `pi` | ✅ | Native |  |
+| `pmod` | ✅ | Codegen dispatch |  |
+| `positive` | ✅ | Codegen dispatch |  |
+| `pow` | ✅ | Native |  |
+| `power` | ✅ | Native |  |
+| `radians` | ✅ | Native |  |
+| `rand` | ✅ | Native |  |
+| `randn` | ✅ | Native |  |
+| `random` | ✅ | Native | Alias for `rand`; seed must be a literal |
+| `randstr` | ✅ | Native | Random string (Spark 4.0+); length and seed must be literals |
+| `rint` | ✅ | Native |  |
+| `round` | ✅ | Hybrid | Float/double inputs route through the JVM codegen dispatcher; other types run natively |
+| `sec` | ✅ | Native |  |
+| `shiftleft` | ✅ | Native |  |
+| `sign` | ✅ | Native |  |
+| `signum` | ✅ | Native |  |
+| `sin` | ✅ | Native |  |
+| `sinh` | ✅ | Native |  |
+| `sqrt` | ✅ | Native |  |
+| `tan` | ✅ | Native |  |
+| `tanh` | ✅ | Native |  |
+| `try_add` | ✅ | — | Datetime/interval form falls back |
+| `try_divide` | ✅ | — |  |
+| `try_mod` | ✅ | — |  |
+| `try_multiply` | ✅ | — |  |
+| `try_subtract` | ✅ | — |  |
+| `unhex` | ✅ | Native |  |
+| `uniform` | ✅ | — | Constant-folded; literal arguments only (Spark 4.0+) |
+| `width_bucket` | ✅ | Codegen dispatch |  |
 
 ---
 
 ## misc_funcs
 
-| Function                      | Status | Implementation | Notes                                                                                                                                  |
-| ----------------------------- | ------ | -------------- | -------------------------------------------------------------------------------------------------------------------------------------- |
-| `aes_decrypt`                 | ✅     | —              | Routed through the JVM codegen dispatcher                                                                                              |
-| `aes_encrypt`                 | ✅     | —              | Routed through the JVM codegen dispatcher; nondeterministic IV by default                                                              |
-| `assert_true`                 | 🔜     | —              | Lowers to `RaiseError`, which falls back                                                                                               |
-| `current_catalog`             | ✅     | —              | Resolved to a literal by the analyzer (`ReplaceCurrentLike`)                                                                           |
-| `current_database`            | ✅     | —              | Resolved to a literal by the analyzer (`ReplaceCurrentLike`)                                                                           |
-| `current_schema`              | ✅     | —              | Alias of `current_database`; resolved to a literal by the analyzer                                                                     |
-| `current_user`                | ✅     | —              | Resolved to a literal by the analyzer; same as `user`                                                                                  |
-| `equal_null`                  | ✅     | —              | Lowers to `<=>` (`EqualNullSafe`)                                                                                                      |
-| `hll_sketch_estimate`         | ✅     | Native         | Spark 4.0+ only; falls back by default, the native path is opt-in via allowIncompatible ([details](compatibility/expressions/misc.md)) |
-| `hll_union`                   | ✅     | Native         | Spark 4.0+ only; falls back by default, the native path is opt-in via allowIncompatible ([details](compatibility/expressions/misc.md)) |
-| `is_variant_null`             | 🔜     | —              | Requires `VariantType` support                                                                                                         |
-| `monotonically_increasing_id` | ✅     | Native         |                                                                                                                                        |
-| `parse_json`                  | 🔜     | —              | Requires `VariantType` support                                                                                                         |
-| `raise_error`                 | 🔜     | —              | Raises a runtime error                                                                                                                 |
-| `rand`                        | ✅     | Native         | Seed must be a literal                                                                                                                 |
-| `randn`                       | ✅     | Native         | Seed must be a literal                                                                                                                 |
-| `schema_of_variant`           | 🔜     | —              | Requires `VariantType` support                                                                                                         |
-| `schema_of_variant_agg`       | 🔜     | —              | Requires `VariantType` support                                                                                                         |
-| `session_user`                | ✅     | —              | Alias of `current_user`; resolved to a literal by the analyzer                                                                         |
-| `spark_partition_id`          | ✅     | Native         |                                                                                                                                        |
-| `to_variant_object`           | 🔜     | —              | Requires `VariantType` support                                                                                                         |
-| `try_aes_decrypt`             | ✅     | —              | Routed through the JVM codegen dispatcher                                                                                              |
-| `try_parse_json`              | 🔜     | —              | Requires `VariantType` support                                                                                                         |
-| `try_variant_get`             | 🔜     | —              | Requires `VariantType` support                                                                                                         |
-| `typeof`                      | ✅     | —              | Foldable; resolved to a literal before Comet sees the plan                                                                             |
-| `user`                        | ✅     | —              | Resolved to a literal by the Spark analyzer before reaching Comet                                                                      |
-| `uuid`                        | ✅     | Native         |                                                                                                                                        |
-| `variant_get`                 | 🔜     | —              | Requires `VariantType` support                                                                                                         |
+| Function | Status | Implementation | Notes |
+| --- | --- | --- | --- |
+| `aes_decrypt` | ✅ | — | Routed through the JVM codegen dispatcher |
+| `aes_encrypt` | ✅ | — | Routed through the JVM codegen dispatcher; nondeterministic IV by default |
+| `assert_true` | 🔜 | — | Lowers to `RaiseError`, which falls back |
+| `current_catalog` | ✅ | — | Resolved to a literal by the analyzer (`ReplaceCurrentLike`) |
+| `current_database` | ✅ | — | Resolved to a literal by the analyzer (`ReplaceCurrentLike`) |
+| `current_schema` | ✅ | — | Alias of `current_database`; resolved to a literal by the analyzer |
+| `current_user` | ✅ | — | Resolved to a literal by the analyzer; same as `user` |
+| `equal_null` | ✅ | — | Lowers to `<=>` (`EqualNullSafe`) |
+| `hll_sketch_estimate` | ✅ | Native | Spark 4.0+ only; falls back by default, the native path is opt-in via allowIncompatible ([details](compatibility/expressions/misc.md)) |
+| `hll_union` | ✅ | Native | Spark 4.0+ only; falls back by default, the native path is opt-in via allowIncompatible ([details](compatibility/expressions/misc.md)) |
+| `is_variant_null` | 🔜 | — | Requires `VariantType` support |
+| `monotonically_increasing_id` | ✅ | Native |  |
+| `parse_json` | 🔜 | — | Requires `VariantType` support |
+| `raise_error` | 🔜 | — | Raises a runtime error |
+| `rand` | ✅ | Native | Seed must be a literal |
+| `randn` | ✅ | Native | Seed must be a literal |
+| `schema_of_variant` | 🔜 | — | Requires `VariantType` support |
+| `schema_of_variant_agg` | 🔜 | — | Requires `VariantType` support |
+| `session_user` | ✅ | — | Alias of `current_user`; resolved to a literal by the analyzer |
+| `spark_partition_id` | ✅ | Native |  |
+| `to_variant_object` | 🔜 | — | Requires `VariantType` support |
+| `try_aes_decrypt` | ✅ | — | Routed through the JVM codegen dispatcher |
+| `try_parse_json` | 🔜 | — | Requires `VariantType` support |
+| `try_variant_get` | 🔜 | — | Requires `VariantType` support |
+| `typeof` | ✅ | — | Foldable; resolved to a literal before Comet sees the plan |
+| `user` | ✅ | — | Resolved to a literal by the Spark analyzer before reaching Comet |
+| `uuid` | ✅ | Native |  |
+| `variant_get` | 🔜 | — | Requires `VariantType` support |
 
 ---
 
 ## predicate_funcs
 
-| Function      | Status | Implementation | Notes                                                                                                                                |
-| ------------- | ------ | -------------- | ------------------------------------------------------------------------------------------------------------------------------------ |
-| `!`           | ✅     | Native         |                                                                                                                                      |
-| `<`           | ✅     | Hybrid         |                                                                                                                                      |
-| `<=`          | ✅     | Hybrid         |                                                                                                                                      |
-| `<=>`         | ✅     | Hybrid         |                                                                                                                                      |
-| `=`           | ✅     | Hybrid         |                                                                                                                                      |
-| `==`          | ✅     | Hybrid         |                                                                                                                                      |
-| `>`           | ✅     | Hybrid         |                                                                                                                                      |
-| `>=`          | ✅     | Hybrid         |                                                                                                                                      |
-| `and`         | ✅     | Native         |                                                                                                                                      |
-| `between`     | ✅     | —              |                                                                                                                                      |
-| `ilike`       | ✅     | —              |                                                                                                                                      |
-| `in`          | ✅     | Hybrid         |                                                                                                                                      |
-| `isnan`       | ✅     | Native         |                                                                                                                                      |
-| `isnotnull`   | ✅     | Native         |                                                                                                                                      |
-| `isnull`      | ✅     | Native         |                                                                                                                                      |
-| `like`        | ✅     | Hybrid         |                                                                                                                                      |
-| `not`         | ✅     | Native         |                                                                                                                                      |
-| `or`          | ✅     | Native         |                                                                                                                                      |
-| `regexp`      | ✅     | Hybrid         | In-subset literal patterns run natively; other patterns route through the JVM codegen dispatcher ([details](compatibility/regex.md)) |
-| `regexp_like` | ✅     | Hybrid         | In-subset literal patterns run natively; other patterns route through the JVM codegen dispatcher ([details](compatibility/regex.md)) |
-| `rlike`       | ✅     | Hybrid         | In-subset literal patterns run natively; other patterns route through the JVM codegen dispatcher ([details](compatibility/regex.md)) |
+| Function | Status | Implementation | Notes |
+| --- | --- | --- | --- |
+| `!` | ✅ | Native |  |
+| `<` | ✅ | Hybrid |  |
+| `<=` | ✅ | Hybrid |  |
+| `<=>` | ✅ | Hybrid |  |
+| `=` | ✅ | Hybrid |  |
+| `==` | ✅ | Hybrid |  |
+| `>` | ✅ | Hybrid |  |
+| `>=` | ✅ | Hybrid |  |
+| `and` | ✅ | Native |  |
+| `between` | ✅ | — |  |
+| `ilike` | ✅ | — |  |
+| `in` | ✅ | Hybrid |  |
+| `isnan` | ✅ | Native |  |
+| `isnotnull` | ✅ | Native |  |
+| `isnull` | ✅ | Native |  |
+| `like` | ✅ | Hybrid |  |
+| `not` | ✅ | Native |  |
+| `or` | ✅ | Native |  |
+| `regexp` | ✅ | Hybrid | In-subset literal patterns run natively; other patterns route through the JVM codegen dispatcher ([details](compatibility/regex.md)) |
+| `regexp_like` | ✅ | Hybrid | In-subset literal patterns run natively; other patterns route through the JVM codegen dispatcher ([details](compatibility/regex.md)) |
+| `rlike` | ✅ | Hybrid | In-subset literal patterns run natively; other patterns route through the JVM codegen dispatcher ([details](compatibility/regex.md)) |
 
 ---
 
 ## string_funcs
 
-| Function             | Status | Implementation   | Notes                                                                                                                                                                                                                                   |
-| -------------------- | ------ | ---------------- | --------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| `ascii`              | ✅     | Native           |                                                                                                                                                                                                                                         |
-| `base64`             | ✅     | Native           |                                                                                                                                                                                                                                         |
-| `bit_length`         | ✅     | Native           |                                                                                                                                                                                                                                         |
-| `btrim`              | ✅     | —                |                                                                                                                                                                                                                                         |
-| `char`               | ✅     | Native           |                                                                                                                                                                                                                                         |
-| `char_length`        | ✅     | Native           |                                                                                                                                                                                                                                         |
-| `character_length`   | ✅     | Native           |                                                                                                                                                                                                                                         |
-| `chr`                | ✅     | Native           |                                                                                                                                                                                                                                         |
-| `collate`            | 🔜     | —                | Spark collation (umbrella [#2190](https://github.com/apache/datafusion-comet/issues/2190))                                                                                                                                              |
-| `collation`          | ✅     | —                | Constant-folded to a literal (Spark 4.0+)                                                                                                                                                                                               |
-| `concat_ws`          | ✅     | Hybrid           | Mixed string and array arguments run natively; all-foldable arguments use codegen dispatch                                                                                                                                              |
-| `contains`           | ✅     | —                |                                                                                                                                                                                                                                         |
-| `decode`             | ✅     | —                |                                                                                                                                                                                                                                         |
-| `elt`                | ✅     | Codegen dispatch |                                                                                                                                                                                                                                         |
-| `encode`             | ✅     | —                |                                                                                                                                                                                                                                         |
-| `endswith`           | ✅     | —                |                                                                                                                                                                                                                                         |
-| `find_in_set`        | ✅     | Codegen dispatch |                                                                                                                                                                                                                                         |
-| `format_number`      | ✅     | Codegen dispatch |                                                                                                                                                                                                                                         |
-| `format_string`      | ✅     | Codegen dispatch |                                                                                                                                                                                                                                         |
-| `initcap`            | ✅     | Hybrid           |                                                                                                                                                                                                                                         |
-| `instr`              | ✅     | Hybrid           | Non-UTF8_BINARY collated input routes through the JVM codegen dispatcher; other input runs natively                                                                                                                                     |
-| `lcase`              | ✅     | Hybrid           |                                                                                                                                                                                                                                         |
-| `left`               | ✅     | Native           |                                                                                                                                                                                                                                         |
-| `len`                | ✅     | Native           |                                                                                                                                                                                                                                         |
-| `length`             | ✅     | Native           |                                                                                                                                                                                                                                         |
-| `levenshtein`        | ✅     | Hybrid           | Non-UTF8_BINARY collated input routes through the JVM codegen dispatcher; other input runs natively                                                                                                                                     |
-| `locate`             | ✅     | Codegen dispatch |                                                                                                                                                                                                                                         |
-| `lower`              | ✅     | Hybrid           |                                                                                                                                                                                                                                         |
-| `lpad`               | ✅     | Hybrid           | String inputs use the native kernel with a column string and literal padding; literal strings and column padding use codegen dispatch. Binary inputs use codegen dispatch.                                                              |
-| `ltrim`              | ✅     | Hybrid           | Non-UTF8_BINARY collated input with a trim string routes through the JVM codegen dispatcher; other input runs natively                                                                                                                  |
-| `luhn_check`         | ✅     | —                | Native via `StaticInvoke` (tests: luhn_check.sql)                                                                                                                                                                                       |
-| `mask`               | ✅     | —                | Routed through the JVM codegen dispatcher                                                                                                                                                                                               |
-| `octet_length`       | ✅     | Native           |                                                                                                                                                                                                                                         |
-| `overlay`            | ✅     | Codegen dispatch |                                                                                                                                                                                                                                         |
-| `position`           | ✅     | Codegen dispatch |                                                                                                                                                                                                                                         |
-| `printf`             | ✅     | Codegen dispatch |                                                                                                                                                                                                                                         |
-| `regexp_count`       | ✅     | —                | Rewrites to `size(regexp_extract_all(...))`; `regexp_extract_all` routes through the JVM codegen dispatcher by default                                                                                                                  |
-| `regexp_extract`     | ✅     | Native           |                                                                                                                                                                                                                                         |
-| `regexp_extract_all` | ✅     | Native           |                                                                                                                                                                                                                                         |
-| `regexp_instr`       | ✅     | Codegen dispatch | Routed through the JVM codegen dispatcher                                                                                                                                                                                               |
-| `regexp_replace`     | ✅     | Hybrid           |                                                                                                                                                                                                                                         |
-| `regexp_substr`      | ✅     | —                | Rewrites to `nullif(regexp_extract(...), '')`; `regexp_extract` routes through the JVM codegen dispatcher by default                                                                                                                    |
-| `repeat`             | ✅     | Native           |                                                                                                                                                                                                                                         |
-| `replace`            | ✅     | Hybrid           |                                                                                                                                                                                                                                         |
-| `right`              | ✅     | Native           |                                                                                                                                                                                                                                         |
-| `rpad`               | ✅     | Hybrid           | String inputs use the native kernel with a column string and literal padding; literal strings and column padding use codegen dispatch. Binary inputs use codegen dispatch.                                                              |
-| `rtrim`              | ✅     | Hybrid           | Non-UTF8_BINARY collated input with a trim string routes through the JVM codegen dispatcher; other input runs natively                                                                                                                  |
-| `soundex`            | ✅     | Native           |                                                                                                                                                                                                                                         |
-| `space`              | ✅     | Native           |                                                                                                                                                                                                                                         |
-| `split`              | ✅     | Hybrid           |                                                                                                                                                                                                                                         |
-| `split_part`         | ✅     | —                | Spark 4.0+                                                                                                                                                                                                                              |
-| `startswith`         | ✅     | —                |                                                                                                                                                                                                                                         |
-| `substr`             | ✅     | Native           |                                                                                                                                                                                                                                         |
-| `substring`          | ✅     | Native           |                                                                                                                                                                                                                                         |
-| `substring_index`    | ✅     | Hybrid           | Non-UTF8_BINARY collated input routes through the JVM codegen dispatcher; other input runs natively                                                                                                                                     |
-| `to_binary`          | ✅     | —                | The hex form runs natively; the base64 and `utf-8` forms route through the JVM codegen dispatcher                                                                                                                                       |
-| `to_char`            | ✅     | Codegen dispatch |                                                                                                                                                                                                                                         |
-| `to_number`          | ✅     | Codegen dispatch |                                                                                                                                                                                                                                         |
-| `to_varchar`         | ✅     | Codegen dispatch |                                                                                                                                                                                                                                         |
-| `translate`          | ✅     | Hybrid           | Codegen dispatch by default: DataFusion's `translate` iterates over Unicode graphemes (Spark uses code points) and substitutes U+0000 instead of treating it as a deletion sentinel, so the native path is opt-in via allowIncompatible |
-| `trim`               | ✅     | Hybrid           | Non-UTF8_BINARY collated input with a trim string routes through the JVM codegen dispatcher; other input runs natively                                                                                                                  |
-| `try_to_binary`      | ✅     | —                | Rewrites to `try_eval(to_binary(...))`, which routes through the JVM codegen dispatcher                                                                                                                                                 |
-| `try_to_number`      | ✅     | Codegen dispatch | Routed through the JVM codegen dispatcher                                                                                                                                                                                               |
-| `ucase`              | ✅     | Hybrid           |                                                                                                                                                                                                                                         |
-| `unbase64`           | ✅     | Codegen dispatch | Column or literal input runs natively; other child expressions, and the strict form used by `to_binary(str, 'base64')`, route through the JVM codegen dispatcher                                                                        |
-| `upper`              | ✅     | Hybrid           |                                                                                                                                                                                                                                         |
+| Function | Status | Implementation | Notes |
+| --- | --- | --- | --- |
+| `ascii` | ✅ | Native |  |
+| `base64` | ✅ | Native |  |
+| `bit_length` | ✅ | Native |  |
+| `btrim` | ✅ | — |  |
+| `char` | ✅ | Native |  |
+| `char_length` | ✅ | Native |  |
+| `character_length` | ✅ | Native |  |
+| `chr` | ✅ | Native |  |
+| `collate` | 🔜 | — | Spark collation (umbrella [#2190](https://github.com/apache/datafusion-comet/issues/2190)) |
+| `collation` | ✅ | — | Constant-folded to a literal (Spark 4.0+) |
+| `concat_ws` | ✅ | Hybrid | Mixed string and array arguments run natively; all-foldable arguments use codegen dispatch |
+| `contains` | ✅ | — |  |
+| `decode` | ✅ | — |  |
+| `elt` | ✅ | Codegen dispatch |  |
+| `encode` | ✅ | — |  |
+| `endswith` | ✅ | — |  |
+| `find_in_set` | ✅ | Codegen dispatch |  |
+| `format_number` | ✅ | Codegen dispatch |  |
+| `format_string` | ✅ | Codegen dispatch |  |
+| `initcap` | ✅ | Hybrid |  |
+| `instr` | ✅ | Hybrid | Non-UTF8_BINARY collated input routes through the JVM codegen dispatcher; other input runs natively |
+| `lcase` | ✅ | Hybrid |  |
+| `left` | ✅ | Native |  |
+| `len` | ✅ | Native |  |
+| `length` | ✅ | Native |  |
+| `levenshtein` | ✅ | Hybrid | Non-UTF8_BINARY collated input routes through the JVM codegen dispatcher; other input runs natively |
+| `locate` | ✅ | Codegen dispatch |  |
+| `lower` | ✅ | Hybrid |  |
+| `lpad` | ✅ | Hybrid | String inputs use the native kernel with a column string and literal padding; literal strings and column padding use codegen dispatch. Binary inputs use codegen dispatch. |
+| `ltrim` | ✅ | Hybrid | Non-UTF8_BINARY collated input with a trim string routes through the JVM codegen dispatcher; other input runs natively |
+| `luhn_check` | ✅ | — | Native via `StaticInvoke` (tests: luhn_check.sql) |
+| `mask` | ✅ | — | Routed through the JVM codegen dispatcher |
+| `octet_length` | ✅ | Native |  |
+| `overlay` | ✅ | Codegen dispatch |  |
+| `position` | ✅ | Codegen dispatch |  |
+| `printf` | ✅ | Codegen dispatch |  |
+| `regexp_count` | ✅ | — | Rewrites to `size(regexp_extract_all(...))`; `regexp_extract_all` routes through the JVM codegen dispatcher by default |
+| `regexp_extract` | ✅ | Native |  |
+| `regexp_extract_all` | ✅ | Native |  |
+| `regexp_instr` | ✅ | Codegen dispatch | Routed through the JVM codegen dispatcher |
+| `regexp_replace` | ✅ | Hybrid |  |
+| `regexp_substr` | ✅ | — | Rewrites to `nullif(regexp_extract(...), '')`; `regexp_extract` routes through the JVM codegen dispatcher by default |
+| `repeat` | ✅ | Native |  |
+| `replace` | ✅ | Hybrid |  |
+| `right` | ✅ | Native |  |
+| `rpad` | ✅ | Hybrid | String inputs use the native kernel with a column string and literal padding; literal strings and column padding use codegen dispatch. Binary inputs use codegen dispatch. |
+| `rtrim` | ✅ | Hybrid | Non-UTF8_BINARY collated input with a trim string routes through the JVM codegen dispatcher; other input runs natively |
+| `soundex` | ✅ | Native |  |
+| `space` | ✅ | Native |  |
+| `split` | ✅ | Hybrid |  |
+| `split_part` | ✅ | — | Spark 4.0+ |
+| `startswith` | ✅ | — |  |
+| `substr` | ✅ | Native |  |
+| `substring` | ✅ | Native |  |
+| `substring_index` | ✅ | Hybrid | Non-UTF8_BINARY collated input routes through the JVM codegen dispatcher; other input runs natively |
+| `to_binary` | ✅ | — | The hex form runs natively; the base64 and `utf-8` forms route through the JVM codegen dispatcher |
+| `to_char` | ✅ | Codegen dispatch |  |
+| `to_number` | ✅ | Codegen dispatch |  |
+| `to_varchar` | ✅ | Codegen dispatch |  |
+| `translate` | ✅ | Hybrid | Codegen dispatch by default: DataFusion's `translate` iterates over Unicode graphemes (Spark uses code points) and substitutes U+0000 instead of treating it as a deletion sentinel, so the native path is opt-in via allowIncompatible |
+| `trim` | ✅ | Hybrid | Non-UTF8_BINARY collated input with a trim string routes through the JVM codegen dispatcher; other input runs natively |
+| `try_to_binary` | ✅ | — | Rewrites to `try_eval(to_binary(...))`, which routes through the JVM codegen dispatcher |
+| `try_to_number` | ✅ | Codegen dispatch | Routed through the JVM codegen dispatcher |
+| `ucase` | ✅ | Hybrid |  |
+| `unbase64` | ✅ | Codegen dispatch | Column or literal input runs natively; other child expressions, and the strict form used by `to_binary(str, 'base64')`, route through the JVM codegen dispatcher |
+| `upper` | ✅ | Hybrid |  |
 
 ---
 
 ## struct_funcs
 
-| Function       | Status | Implementation | Notes                           |
-| -------------- | ------ | -------------- | ------------------------------- |
-| `named_struct` | ✅     | Native         | Duplicate field names fall back |
-| `struct`       | ✅     | Native         |                                 |
+| Function | Status | Implementation | Notes |
+| --- | --- | --- | --- |
+| `named_struct` | ✅ | Native | Duplicate field names fall back |
+| `struct` | ✅ | Native |  |
 
 ---
 
 ## url_funcs
 
-| Function         | Status | Implementation | Notes                                                         |
-| ---------------- | ------ | -------------- | ------------------------------------------------------------- |
-| `parse_url`      | ✅     | Native         |                                                               |
-| `try_parse_url`  | ✅     | —              | Spark 4.0+; runs natively and returns NULL for an invalid URL |
-| `try_url_decode` | ✅     | —              |                                                               |
-| `url_decode`     | ✅     | —              |                                                               |
-| `url_encode`     | ✅     | —              |                                                               |
+| Function | Status | Implementation | Notes |
+| --- | --- | --- | --- |
+| `parse_url` | ✅ | Native |  |
+| `try_parse_url` | ✅ | — | Spark 4.0+; runs natively and returns NULL for an invalid URL |
+| `try_url_decode` | ✅ | — |  |
+| `url_decode` | ✅ | — |  |
+| `url_encode` | ✅ | — |  |
 
 ---
 
@@ -665,36 +665,36 @@ to Spark when used as window functions. A handful of frame shapes also
 fall back. See [window function compatibility](compatibility/operators.md)
 for the full list of supported functions, frames, and fallback cases.
 
-| Function       | Status | Implementation | Notes                                                                                                                   |
-| -------------- | ------ | -------------- | ----------------------------------------------------------------------------------------------------------------------- |
-| `cume_dist`    | ✅     | —              | via `CometWindowExec`                                                                                                   |
-| `dense_rank`   | ✅     | —              | via `CometWindowExec`                                                                                                   |
-| `lag`          | ✅     | —              | via `CometWindowExec`; non-literal default falls back ([#4268](https://github.com/apache/datafusion-comet/issues/4268)) |
-| `lead`         | ✅     | —              | via `CometWindowExec`; non-literal default falls back ([#4268](https://github.com/apache/datafusion-comet/issues/4268)) |
-| `nth_value`    | ✅     | —              | via `CometWindowExec`                                                                                                   |
-| `ntile`        | ✅     | —              | via `CometWindowExec`                                                                                                   |
-| `percent_rank` | ✅     | —              | via `CometWindowExec`                                                                                                   |
-| `rank`         | ✅     | —              | via `CometWindowExec`                                                                                                   |
-| `row_number`   | ✅     | —              | via `CometWindowExec`                                                                                                   |
+| Function | Status | Implementation | Notes |
+| --- | --- | --- | --- |
+| `cume_dist` | ✅ | — | via `CometWindowExec` |
+| `dense_rank` | ✅ | — | via `CometWindowExec` |
+| `lag` | ✅ | — | via `CometWindowExec`; non-literal default falls back ([#4268](https://github.com/apache/datafusion-comet/issues/4268)) |
+| `lead` | ✅ | — | via `CometWindowExec`; non-literal default falls back ([#4268](https://github.com/apache/datafusion-comet/issues/4268)) |
+| `nth_value` | ✅ | — | via `CometWindowExec` |
+| `ntile` | ✅ | — | via `CometWindowExec` |
+| `percent_rank` | ✅ | — | via `CometWindowExec` |
+| `rank` | ✅ | — | via `CometWindowExec` |
+| `row_number` | ✅ | — | via `CometWindowExec` |
 
 ---
 
 ## xml_funcs
 
-| Function        | Status | Implementation   | Notes                   |
-| --------------- | ------ | ---------------- | ----------------------- |
-| `from_xml`      | ✅     | —                | Spark 4.0+              |
-| `schema_of_xml` | ✅     | —                | Spark 4.0+              |
-| `to_xml`        | ✅     | —                | Spark 4.0+              |
-| `xpath`         | ✅     | Codegen dispatch |                         |
-| `xpath_boolean` | ✅     | Codegen dispatch |                         |
-| `xpath_double`  | ✅     | Codegen dispatch |                         |
-| `xpath_float`   | ✅     | Codegen dispatch |                         |
-| `xpath_int`     | ✅     | Codegen dispatch |                         |
-| `xpath_long`    | ✅     | Codegen dispatch |                         |
-| `xpath_number`  | ✅     | Codegen dispatch | Alias of `xpath_double` |
-| `xpath_short`   | ✅     | Codegen dispatch |                         |
-| `xpath_string`  | ✅     | Codegen dispatch |                         |
+| Function | Status | Implementation | Notes |
+| --- | --- | --- | --- |
+| `from_xml` | ✅ | — | Spark 4.0+ |
+| `schema_of_xml` | ✅ | — | Spark 4.0+ |
+| `to_xml` | ✅ | — | Spark 4.0+ |
+| `xpath` | ✅ | Codegen dispatch |  |
+| `xpath_boolean` | ✅ | Codegen dispatch |  |
+| `xpath_double` | ✅ | Codegen dispatch |  |
+| `xpath_float` | ✅ | Codegen dispatch |  |
+| `xpath_int` | ✅ | Codegen dispatch |  |
+| `xpath_long` | ✅ | Codegen dispatch |  |
+| `xpath_number` | ✅ | Codegen dispatch | Alias of `xpath_double` |
+| `xpath_short` | ✅ | Codegen dispatch |  |
+| `xpath_string` | ✅ | Codegen dispatch |  |
 
 ---
 

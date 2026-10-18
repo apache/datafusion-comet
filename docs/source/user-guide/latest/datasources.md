@@ -151,7 +151,7 @@ the HDFS read itself, typically while an unrelated query is running.
 ```
 
 Native Iceberg scans do not support HDFS-backed tables; those scans fall back to Spark. See the
-[Iceberg](iceberg.md).
+[Iceberg](iceberg.md) page.
 
 ### Building Comet with HDFS support
 
@@ -416,7 +416,7 @@ $SPARK_HOME/bin/spark-shell \
 ...
 ```
 
-### Limitations
+### S3 Limitations
 
 Comet's S3 support has the following limitations:
 
@@ -543,7 +543,7 @@ Comet 1.1 started from the environment and overlaid the Hadoop keys it found by 
 - A lower-case `oauth` auth type, or OAuth keys without `fs.azure.account.auth.type`, fail the way they fail for Spark. In the second case Hadoop defaults to `SharedKey` and the key provider fails. On hadoop-azure 3.4.1 and later the driver log names the missing key. 3.3.4 reports only `Failure to initialize configuration`.
 - A configured mechanism the native scan cannot build fails with an error instead of silently reading the environment.
 
-### Limitations
+### Azure Limitations
 
 1. **Authentication keys only**: Only the keys in the table above reach the native store. Other `fs.azure.*` settings (read-ahead, retries, HTTP tuning) do not apply to the native scan.
 
