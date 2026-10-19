@@ -179,6 +179,8 @@ fn criterion_benchmark(c: &mut Criterion) {
                 true,
                 false,
                 EvalMode::Legacy,
+                None,
+                datafusion_comet_spark_expr::create_query_context_map(),
             ))),
         ),
     ];
