@@ -51,7 +51,8 @@ import org.apache.comet.vector.NativeUtil
  * lets a scan decompress only the columns it projected: the message records every buffer's offset
  * and length, so `CachedBatchIpc.Projection.load` copies out just the selected columns' byte
  * ranges. The cache manager still owns storage and eviction; this class only changes the cached
- * payload.
+ * payload. `deltaEncoded` records which top-level long data buffers contain deltas; readers
+ * restore the values before returning vectors, independently of the current write settings.
  *
  * `sizeInBytes` is not the payload's size. It is inherited from `SimpleMetricsCachedBatch`, which
  * sums the decoded per-column sizes in `stats`. `statsRow` explains why they are decoded sizes.
@@ -59,7 +60,8 @@ import org.apache.comet.vector.NativeUtil
 private case class CometCachedBatch(
     override val numRows: Int,
     override val stats: InternalRow,
-    bytes: ChunkedByteBuffer)
+    bytes: ChunkedByteBuffer,
+    deltaEncoded: Array[Boolean] = Array.emptyBooleanArray)
     extends SimpleMetricsCachedBatch
 
 /**
@@ -70,7 +72,11 @@ private case class CometCachedBatch(
  * executor `CometConf` would resolve against whatever `SQLConf` happens to be current on that
  * thread rather than against this session's.
  */
-private case class CacheWriteSettings(codecName: String, zstdLevel: Int, chunkSize: Int)
+private case class CacheWriteSettings(
+    codecName: String,
+    zstdLevel: Int,
+    chunkSize: Int,
+    deltaEncoding: Boolean)
 
 /**
  * Cache serializer that stores Comet-compatible Arrow batches in Spark's in-memory cache.
@@ -385,7 +391,8 @@ class ArrowCachedBatchSerializer extends SimpleMetricsCachedBatchSerializer {
     CacheWriteSettings(
       CometConf.COMET_EXEC_IN_MEMORY_CACHE_COMPRESSION_CODEC.get(conf),
       CometConf.COMET_EXEC_IN_MEMORY_CACHE_COMPRESSION_ZSTD_LEVEL.get(conf),
-      CometConf.COMET_EXEC_IN_MEMORY_CACHE_CHUNK_SIZE.get(conf).toInt)
+      CometConf.COMET_EXEC_IN_MEMORY_CACHE_CHUNK_SIZE.get(conf).toInt,
+      CometConf.COMET_EXEC_IN_MEMORY_CACHE_DELTA_ENCODING_ENABLED.get(conf))
 
   // Serialize each batch to Arrow, gathering the Spark-compatible cache stats first. The stats are
   // stored beside the Arrow bytes so Spark's cache filter can prune a CometCachedBatch without
@@ -417,19 +424,31 @@ class ArrowCachedBatchSerializer extends SimpleMetricsCachedBatchSerializer {
       val writeDirectly =
         Utils.isArrowBacked(batch) && CachedBatchIpc.matchesReaderLayout(batch, readerFields)
 
-      val (bytes, columnSizes) = if (writeDirectly) {
-        CachedBatchIpc.serialize(batch, codec, CometArrowAllocator, settings.chunkSize)
+      val (bytes, columnSizes, deltaEncoded) = if (writeDirectly) {
+        CachedBatchIpc.serialize(
+          batch,
+          codec,
+          CometArrowAllocator,
+          settings.chunkSize,
+          settings.deltaEncoding)
       } else {
         val arrowBatch =
           CometArrowConverters.columnarBatchToArrowBatch(batch, arrowSchema, CometArrowAllocator)
-        try CachedBatchIpc.serialize(arrowBatch, codec, CometArrowAllocator, settings.chunkSize)
+        try
+          CachedBatchIpc.serialize(
+            arrowBatch,
+            codec,
+            CometArrowAllocator,
+            settings.chunkSize,
+            settings.deltaEncoding)
         finally arrowBatch.close()
       }
 
       CometCachedBatch(
         numRows = numRows,
         stats = statsRow(lower, upper, nulls, numRows, columnSizes),
-        bytes = bytes)
+        bytes = bytes,
+        deltaEncoded = deltaEncoded)
     }
   }
 
@@ -609,7 +628,7 @@ class ArrowCachedBatchSerializer extends SimpleMetricsCachedBatchSerializer {
 
     // Decoding happens during construction, so `batches` below can hand out the root directly.
     // `load` releases everything it allocated if it throws, so there is nothing to unwind here.
-    private val root = projection.load(cached.bytes, CometArrowAllocator)
+    private val root = projection.load(cached.bytes, CometArrowAllocator, cached.deltaEncoded)
     private var closed = false
 
     // A cached batch's columns all cover the same rows. Check rather than trust: a mismatch would
