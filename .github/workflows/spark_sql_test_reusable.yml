@@ -245,8 +245,7 @@ jobs:
           name: jvm-compiled-spark-${{ inputs.spark-full }}-jdk${{ inputs.java }}
       - name: Extract apache-spark/ (sources + compiled output)
         run: |
-          # Preserve mtimes to reuse Zinc output where possible. Setup Spark
-          # below can still invalidate it by reinstalling Comet's SNAPSHOT JAR.
+          # Restore mtimes so Zinc skips compilation on the test JVM.
           tar -xzpf apache-spark.tar.gz
           rm -f apache-spark.tar.gz
       - name: Setup Spark
@@ -259,15 +258,11 @@ jobs:
       - name: Run Spark tests
         # Bash rather than the container default `sh`, for the retry below.
         shell: bash
-        # Leave time to upload diagnostics if the Spark 3.4 slow shard stalls
-        # during runner shutdown. Its normal runtime is under 30 minutes.
-        timeout-minutes: ${{ inputs.spark-short == '3.4' && matrix.module.name == 'sql_core-3' && 90 || 360 }}
         run: |
           cd apache-spark
           rm -rf /root/.m2/repository/org/apache/parquet # somehow parquet cache requires cleanups
-          # The launcher appends .sbtopts after -mem and SBT_OPTS. Keep it empty
-          # so it cannot override the orchestrator's heap/metaspace limits below.
-          : > .sbtopts
+          # set SBTOPTS
+          printf -- '-J-Xms1g\n-J-Xmx4g\n-J-XX:MaxMetaspaceSize=1g\n' > .sbtopts
           export SERIAL_SBT_TESTS=1
 
           # Per-row forked-test-JVM caps (read by Spark's SparkBuild.scala). 
@@ -283,26 +278,7 @@ jobs:
           # build job's pre-compile step retries those failures; this is the same
           # retry for this job's own sbt. Once a test result has been printed, a
           # failure belongs to the tests and is never retried.
-          diagnostics="$GITHUB_WORKSPACE/spark-test-diagnostics"
-          mkdir -p "$diagnostics"
-          log="$diagnostics/sbt.log"
-          : > "$log"
-          if [ "${{ inputs.spark-short }}" = '3.4' ] && [ "${{ matrix.module.name }}" = 'sql_core-3' ]; then
-            python3 "$GITHUB_WORKSPACE/dev/ci/spark-test-watchdog.py" \
-              --log "$log" --root-pid "$$" --output-dir "$diagnostics" \
-              > "$diagnostics/watchdog-console.log" 2>&1 &
-            watchdog_pid=$!
-            stop_watchdog() {
-              sbt_status=$?
-              trap - EXIT
-              if jobs -pr | grep -qx "$watchdog_pid"; then
-                kill "$watchdog_pid" 2>/dev/null || true
-              fi
-              wait "$watchdog_pid" || true
-              exit "$sbt_status"
-            }
-            trap stop_watchdog EXIT
-          fi
+          log=$(mktemp)
           for attempt in 1 2 3; do
             # Cap parallel forked test JVMs at 1 so that even when
             # SparkParallelTestGrouping is enabled we don't blow the
@@ -333,23 +309,22 @@ jobs:
           fi
         env:
           LC_ALL: "C.UTF-8"
-          # Restored output is a cache, not a guarantee of no compilation.
-          # Zinc can recompile test sources after Setup Spark installs Comet,
-          # and Spark 4.x exceeds a 1 GiB sbt heap in that phase. Restore the
-          # previous effective 4 GiB ceiling explicitly, independently of the
-          # per-row forked-test-JVM caps. -mem also sets Xms and the code cache;
-          # override those below to retain a 1 GiB initial heap and 128 MiB
-          # code cache rather than committing the whole heap at startup.
-          SBT_MEM: "4096"
-          # SBT_OPTS follows the launcher's generated -mem options. Keep the
-          # previous effective 1 GiB metaspace ceiling for compilation too.
+          # The build-jvm job pre-compiled Spark sources and Test classes, so
+          # SBT here only orchestrates `testOnly` — Zinc verifies "no changes"
+          # against the unpacked apache-spark/ tree and skips compilation. We
+          # cap SBT heap so the freed RAM goes
+          # to the forked test JVM and OS/container overhead, fixing the
+          # cgroup-OOM SIGKILLs we saw on sql_core-* under 7 GB runners.
+          SBT_MEM: "1024"
+          # G1GC + tuning for the SBT orchestrator JVM. -Xss4m replaces the
+          # launcher's -Xss64m default (no compile here, deep recursion not
+          # needed). UseStringDeduplication and MaxMetaspaceSize cap real
+          # and ceiling footprint. ExitOnOutOfMemoryError fails fast.
           SBT_OPTS: >-
-            -Xms1g
             -Xss4m
             -XX:+UseG1GC
             -XX:+UseStringDeduplication
-            -XX:MaxMetaspaceSize=1g
-            -XX:ReservedCodeCacheSize=128m
+            -XX:MaxMetaspaceSize=384m
             -XX:G1HeapRegionSize=2m
             -XX:InitiatingHeapOccupancyPercent=35
             -XX:+ParallelRefProcEnabled
@@ -362,16 +337,6 @@ jobs:
           # reads DEDICATED_JVM_SBT_TESTS and forks a separate JVM per
           # listed suite. Empty value is a safe no-op.
           DEDICATED_JVM_SBT_TESTS: ${{ inputs.spark-short == '4.0' && 'org.apache.spark.sql.execution.datasources.parquet.ParquetFileFormatV1Suite,org.apache.spark.sql.execution.datasources.parquet.ParquetFileFormatV2Suite,org.apache.spark.sql.execution.datasources.orc.OrcSourceV1Suite,org.apache.spark.sql.execution.datasources.orc.OrcSourceV2Suite' || '' }}
-      - name: Upload Spark 3.4 slow-shard diagnostics
-        if: ${{ always() && inputs.spark-short == '3.4' && matrix.module.name == 'sql_core-3' }}
-        uses: ./.github/actions/upload-artifact-retry
-        with:
-          name: spark-test-diagnostics-${{ inputs.spark-full }}-${{ matrix.module.name }}-jdk${{ inputs.java }}
-          path: |
-            spark-test-diagnostics/
-            apache-spark/**/unit-tests.log
-            apache-spark/**/test-reports/*.xml
-          retention-days: 7
       - name: Upload fallback log
         if: ${{ inputs.collect-fallback-logs }}
         uses: ./.github/actions/upload-artifact-retry

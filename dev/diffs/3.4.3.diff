@@ -38,7 +38,7 @@ index d3544881af1..0c0618a5e80 100644
    </dependencyManagement>
  
 diff --git a/project/SparkBuild.scala b/project/SparkBuild.scala
-index 1cbd9a61289..8640875bd3d 100644
+index 1cbd9a61289..74aa1f684c9 100644
 --- a/project/SparkBuild.scala
 +++ b/project/SparkBuild.scala
 @@ -445,9 +445,11 @@ object SparkBuild extends PomBuild {
@@ -79,30 +79,6 @@ index 1cbd9a61289..8640875bd3d 100644
  object Hive {
  
    lazy val settings = Seq(
-@@ -1584,6 +1605,7 @@ object TestSettings {
-       .map { case (k,v) => s"-D$k=$v" }.toSeq,
-     (Test / javaOptions) += "-ea",
-     (Test / javaOptions) ++= {
-+      val heapSize = sys.env.getOrElse("HEAP_SIZE", "4g")
-       val metaspaceSize = sys.env.get("METASPACE_SIZE").getOrElse("1300m")
-       val extraTestJavaArgs = Array("-XX:+IgnoreUnrecognizedVMOptions",
-         "--add-opens=java.base/java.lang=ALL-UNNAMED",
-@@ -1601,12 +1623,13 @@ object TestSettings {
-         "--add-opens=java.base/sun.security.action=ALL-UNNAMED",
-         "--add-opens=java.base/sun.util.calendar=ALL-UNNAMED",
-         "-Djdk.reflect.useDirectMethodHandle=false").mkString(" ")
--      s"-Xmx4g -Xss4m -XX:MaxMetaspaceSize=$metaspaceSize -XX:ReservedCodeCacheSize=128m -Dfile.encoding=UTF-8 $extraTestJavaArgs"
-+      s"-Xmx$heapSize -Xss4m -XX:MaxMetaspaceSize=$metaspaceSize -XX:ReservedCodeCacheSize=128m -Dfile.encoding=UTF-8 $extraTestJavaArgs"
-         .split(" ").toSeq
-     },
-     javaOptions ++= {
-+      val heapSize = sys.env.getOrElse("HEAP_SIZE", "4g")
-       val metaspaceSize = sys.env.get("METASPACE_SIZE").getOrElse("1300m")
--      s"-Xmx4g -XX:MaxMetaspaceSize=$metaspaceSize".split(" ").toSeq
-+      s"-Xmx$heapSize -XX:MaxMetaspaceSize=$metaspaceSize".split(" ").toSeq
-     },
-     (Test / javaOptions) ++= {
-       val jdwpEnabled = sys.props.getOrElse("test.jdwp.enabled", "false").toBoolean
 diff --git a/sql/core/pom.xml b/sql/core/pom.xml
 index b386d135da1..46449e3f3f1 100644
 --- a/sql/core/pom.xml

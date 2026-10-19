@@ -235,22 +235,18 @@ row_label() { printf 'spark-sql-%s / spark-%s-jdk%s\n' "$1" "$FULL" "$JAVA"; }
 spark_row() {
   (
     cd "$6"
-    # .sbtopts takes precedence over -mem and SBT_OPTS in Spark's launcher.
-    # Keep the sbt limits below effective, as in the CI workflow. Restored
-    # output can still need compilation: allow a 4 GiB maximum heap while
-    # retaining a 1 GiB initial heap and 128 MiB code cache.
-    : > .sbtopts
+    printf -- '-J-Xms1g\n-J-Xmx4g\n-J-XX:MaxMetaspaceSize=1g\n' > .sbtopts
     export LC_ALL=C.UTF-8 NOLINT_ON_COMPILE=true
     # shellcheck disable=SC2030
     export ENABLE_COMET=true ENABLE_COMET_ONHEAP=true
-    export SBT_OPTS="-Xms1g -Xss4m -XX:+UseG1GC -XX:+UseStringDeduplication -XX:MaxMetaspaceSize=1g -XX:ReservedCodeCacheSize=128m -XX:G1HeapRegionSize=2m -XX:InitiatingHeapOccupancyPercent=35 -XX:+ParallelRefProcEnabled -XX:+ExitOnOutOfMemoryError"
+    export SBT_OPTS="-Xss4m -XX:+UseG1GC -XX:+UseStringDeduplication -XX:MaxMetaspaceSize=384m -XX:G1HeapRegionSize=2m -XX:InitiatingHeapOccupancyPercent=35 -XX:+ParallelRefProcEnabled -XX:+ExitOnOutOfMemoryError"
     [ -n "$4" ] && export HEAP_SIZE="$4"
     [ -n "$5" ] && export METASPACE_SIZE="$5"
     # What the workflow exports. SERIAL_SBT_TESTS suppresses Spark's own test
     # grouping and parallelExecution; the cap keeps one forked test JVM. Rows run
     # beside each other in their own trees instead, the way CI does it.
     export SERIAL_SBT_TESTS=1
-    set -- -Dsbt.log.noformat=true -mem 4096 \
+    set -- -Dsbt.log.noformat=true -mem 1024 \
       "set Global / concurrentRestrictions := Seq(Tags.limit(Tags.ForkedTestGroup, 1))" \
       ${2:+"$2"} ${3:+"$3"}
     build/sbt "$@"

@@ -165,17 +165,6 @@ ROUTING_CASES = [
     # macOS builds see it too, but no Spark SQL or Iceberg suite does, and
     # neither does the Delta gate, which only inspects build output.
     (["dev/verify-contrib-delta-gate.sh"], {"delta_gate"}),
-    (
-        ["dev/ci/spark-test-watchdog.py"],
-        {
-            "build_linux",
-            "build_linux_full",
-            "build_linux_all_profiles",
-            "build_macos",
-            "build_macos_full",
-            "spark_3_4",
-        },
-    ),
     (["contrib/delta/native/src/lib.rs"], {"delta_gate"}),
     # The Delta contrib feeds its own suites and the Linux build, whose strict
     # warnings job compiles it on every pull request. A README edit feeds
