@@ -196,9 +196,9 @@ object CometWindowExec extends CometOperatorSerde[WindowExec] {
   /**
    * Whether a decimal AVG keeps its running sum at DecimalType.MAX_PRECISION, which Spark does
    * for input precision 28 and up. Spark's window buffer keeps that sum unbounded, while the
-   * native AVG skips the row that takes it out of the precision, so DECIMAL(38,38) inputs 0.6,
-   * 0.6, -0.6 average to 0 over the whole partition rather than Spark's 0.2, and to 0.6 rather
-   * than 0.2 in a running frame, where ANSI mode raises instead.
+   * native AVG latches once the sum leaves the precision. DECIMAL(38,38) inputs 0.6, 0.6,
+   * -0.6 therefore return NULL, or raise under ANSI, where Spark returns 0.2 over the whole
+   * partition and for the last running frame.
    * https://github.com/apache/datafusion-comet/issues/5418
    */
   private def hasMaxPrecisionDecimalSum(avg: Average): Boolean = avg.sumDataType match {
@@ -373,31 +373,24 @@ object CometWindowExec extends CometOperatorSerde[WindowExec] {
       case _: SpecifiedWindowFrame => false
       case _ => true
     }
-    windowExpr.windowFunction match {
-      case AggregateExpression(a: Average, _, _, _, _) if isEverExpanding =>
-        a.sumDataType match {
-          case decimal: DecimalType if decimal.precision == DecimalType.MAX_PRECISION =>
-            // Spark can retain an out-of-precision window sum until AVG divides by count.
-            // Comet records overflow immediately, so the two accumulators can disagree.
-            withFallbackReason(
-              windowExpr,
-              "AVG on DECIMAL with maximum-precision intermediate state is not supported")
-            return None
-          case _ =>
-        }
-      case AggregateExpression(s: Sum, _, _, _, _)
-          if !isEverExpanding && s.dataType.isInstanceOf[DecimalType] =>
-        withFallbackReason(
-          windowExpr,
-          "SUM on DECIMAL with a sliding window frame is not supported")
-        return None
-      case AggregateExpression(a: Average, _, _, _, _)
-          if !isEverExpanding && a.dataType.isInstanceOf[DecimalType] =>
-        withFallbackReason(
-          windowExpr,
-          "AVG on DECIMAL with a sliding window frame is not supported")
-        return None
-      case _ =>
+    if (!isEverExpanding) {
+      windowExpr.windowFunction match {
+        case agg: AggregateExpression =>
+          agg.aggregateFunction match {
+            case s: Sum if s.dataType.isInstanceOf[DecimalType] =>
+              withFallbackReason(
+                windowExpr,
+                "SUM on DECIMAL with a sliding window frame is not supported")
+              return None
+            case a: Average if a.dataType.isInstanceOf[DecimalType] =>
+              withFallbackReason(
+                windowExpr,
+                "AVG on DECIMAL with a sliding window frame is not supported")
+              return None
+            case _ =>
+          }
+        case _ =>
+      }
     }
 
     // Comet's native window planner ships RANGE frame offsets as

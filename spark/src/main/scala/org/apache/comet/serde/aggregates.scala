@@ -235,40 +235,12 @@ object CometAverage extends CometAggregateExpressionSerde[Average] {
   override def supportsSparkPartialToNativeFinal(fn: Average): Boolean =
     !fn.child.dataType.isInstanceOf[DecimalType]
 
-  private val rescaledSumOverflowReason =
-    "a large sum of a DECIMAL with precision 25 or more overflows when the native average " +
-      "rescales it, which returns NULL " +
-      "(https://github.com/apache/datafusion-comet/issues/7007)"
-
   override def getUnsupportedReasons(): Seq[String] = Seq(
     "YearMonthIntervalType and DayTimeIntervalType inputs are not supported")
-
-  override def getIncompatibleReasons(): Seq[String] = Seq(
-    "For a `DECIMAL` input with precision 25 or more, other than `DECIMAL(38, 38)`, the native " +
-      "average rescales the sum within 38 digits before dividing it by the count, so a large " +
-      "sum returns `NULL` where Spark returns the average. Under ANSI, an average that Spark " +
-      "rejects with `NUMERIC_VALUE_OUT_OF_RANGE` also returns `NULL` " +
-      "([#7007](https://github.com/apache/datafusion-comet/issues/7007)).")
-
-  /**
-   * Whether the native average can overflow when it rescales the sum to the result scale. It
-   * multiplies the sum, which holds up to `sumDataType.precision` digits, by 10 to the power of
-   * the scale difference in an `i128`, which holds 38 digits, before dividing by the count, while
-   * Spark divides with `BigDecimal`. That covers input precision 25 and up, except scale 38,
-   * which needs no rescale.
-   */
-  private def rescaledSumCanOverflow(expr: Average): Boolean =
-    (expr.sumDataType, expr.dataType) match {
-      case (sum: DecimalType, result: DecimalType) =>
-        sum.precision + result.scale - sum.scale > DecimalType.MAX_PRECISION
-      case _ => false
-    }
 
   override def getSupportLevel(expr: Average): SupportLevel =
     if (!AggSerde.avgDataTypeSupported(expr.dataType)) {
       Unsupported(Some(s"Unsupported data type: ${expr.dataType}"))
-    } else if (rescaledSumCanOverflow(expr)) {
-      Incompatible(Some(rescaledSumOverflowReason))
     } else {
       Compatible()
     }

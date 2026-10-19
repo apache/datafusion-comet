@@ -18,10 +18,10 @@
 use arrow::array::{
     builder::PrimitiveBuilder,
     cast::AsArray,
-    types::{Decimal128Type, DecimalType, Int64Type},
+    types::{Decimal128Type, Decimal256Type, DecimalType, Int64Type},
     Array, ArrayRef, Decimal128Array, Int64Array, PrimitiveArray,
 };
-use arrow::datatypes::{format_decimal_str, i256, DataType, Field, FieldRef};
+use arrow::datatypes::{i256, DataType, Field, FieldRef};
 use arrow::{array::BooleanBufferBuilder, buffer::NullBuffer, compute::sum};
 use datafusion::common::{not_impl_err, Result, ScalarValue};
 use datafusion::logical_expr::{
@@ -34,8 +34,8 @@ use crate::utils::{build_bool_state, unlikely};
 use crate::{decimal_sum_overflow_error, EvalMode, SparkErrorWithContext};
 use arrow::array::ArrowNativeTypeOp;
 use arrow::datatypes::{
-    DECIMAL128_MAX_PRECISION, DECIMAL128_MAX_SCALE, MAX_DECIMAL128_FOR_EACH_PRECISION,
-    MIN_DECIMAL128_FOR_EACH_PRECISION,
+    DECIMAL128_MAX_PRECISION, DECIMAL128_MAX_SCALE, DECIMAL256_MAX_PRECISION,
+    MAX_DECIMAL128_FOR_EACH_PRECISION, MIN_DECIMAL128_FOR_EACH_PRECISION,
 };
 use datafusion::logical_expr::function::{AccumulatorArgs, StateFieldsArgs};
 use datafusion::logical_expr::Volatility::Immutable;
@@ -657,10 +657,8 @@ fn avg(
 }
 
 fn avg_result_overflow_error(value: i256, precision: u8, scale: i8) -> crate::SparkError {
-    let unscaled = value.to_string();
-    let digits = unscaled.trim_start_matches('-').len();
     crate::SparkError::NumericValueOutOfRange {
-        value: format_decimal_str(&unscaled, digits, scale),
+        value: Decimal256Type::format_decimal(value, DECIMAL256_MAX_PRECISION, scale),
         precision,
         scale,
     }

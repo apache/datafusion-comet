@@ -132,6 +132,8 @@ writes have their own lists, under Known Issues on the
 - Grouped ANSI decimal `AVG` can evaluate an overflowing group in a batch even when Spark would
   stop before that group at `LIMIT`. It remains natively enabled with this error-timing difference;
   disabling `spark.comet.exec.aggregate.enabled` restores Spark's aggregate evaluation.
+  On final result overflow, Comet's error message prints the average rounded to the result scale;
+  Spark 4.0 prints the quotient truncated to 39 fractional digits.
 - Ungrouped decimal `SUM` keeps an unbounded intermediate and checks the result precision only
   when a partial is written out or the sum is evaluated, which matches Spark's whole-stage codegen
   path. Without codegen Spark buffers the aggregate in an `UnsafeRow` and latches as soon as a
