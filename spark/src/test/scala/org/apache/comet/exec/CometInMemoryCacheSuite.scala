@@ -30,7 +30,7 @@ import scala.jdk.CollectionConverters._
 
 import org.apache.arrow.compression.ZstdCompressionCodec
 import org.apache.arrow.memory.{ArrowBuf, BufferAllocator}
-import org.apache.arrow.vector.{BitVector, FixedSizeBinaryVector, IntVector, VarBinaryVector, VarCharVector}
+import org.apache.arrow.vector.{BitVector, FixedSizeBinaryVector, IntVector, LargeVarCharVector, VarBinaryVector, VarCharVector}
 import org.apache.arrow.vector.compression.{CompressionCodec, CompressionUtil, NoCompressionCodec}
 import org.apache.arrow.vector.types.pojo.ArrowType
 import org.apache.spark.{SparkConf, SparkException}
@@ -3037,6 +3037,57 @@ class CometInMemoryCacheSuite extends CometTestBase {
       ints.close()
       strings.close()
     }
+  }
+
+  test("Comet in-memory cache releases the 32-bit copy it makes of a large-offset column") {
+    // A large-offset column is written as a copy with 32-bit offsets, which nothing outside the
+    // writer ever holds. It has to be closed whether the write succeeds or fails, and a copy can
+    // be close to 2 GiB.
+    val rows = 16
+    // Returns the failure of the write, if any, once the batch's own vectors are closed and the
+    // allocator is back where it started.
+    def write(codec: CompressionCodec): Option[Throwable] = {
+      val baseline = CometArrowAllocator.getAllocatedMemory
+      val ints = new IntVector("i", CometArrowAllocator)
+      val large = new LargeVarCharVector("s", CometArrowAllocator)
+      val failure =
+        try {
+          ints.allocateNew(rows)
+          (0 until rows).foreach(i => ints.set(i, i))
+          ints.setValueCount(rows)
+          large.allocateNew(rows)
+          (0 until rows).foreach(i => large.setSafe(i, s"value_$i".getBytes("UTF-8")))
+          large.setValueCount(rows)
+
+          val batch = new ColumnarBatch(
+            Array[ColumnVector](new CometPlainVector(ints), new CometPlainVector(large)),
+            rows)
+          try {
+            CometCachedBatchHelper.serialize(batch, codec, CometArrowAllocator)
+            None
+          } catch {
+            case e: Exception => Some(e)
+          }
+        } finally {
+          ints.close()
+          large.close()
+        }
+      assert(
+        CometArrowAllocator.getAllocatedMemory == baseline,
+        "the copy of the large-offset column must be released")
+      failure
+    }
+
+    assert(write(new ZstdCompressionCodec(1)).isEmpty)
+
+    // The int column's two buffers compress, then the copy's first one fails.
+    val codec = new FailAfterCompressionCodec(succeedFor = 2)
+    val thrown = write(codec).getOrElse(fail("the injected failure must surface"))
+    assert(
+      causeChain(thrown).exists(t =>
+        Option(t.getMessage).contains(FailAfterCompressionCodec.Message)),
+      s"a compression failure must surface as itself: $thrown")
+    assert(codec.compressed == 2, "the failure must come after some buffers were compressed")
   }
 
   test("Comet in-memory cache keeps no compressed bytes alive behind a buffer stored raw") {

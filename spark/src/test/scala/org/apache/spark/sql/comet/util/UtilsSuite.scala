@@ -26,8 +26,10 @@ import scala.jdk.CollectionConverters._
 
 import org.apache.arrow.c.CDataDictionaryProvider
 import org.apache.arrow.memory.BufferAllocator
-import org.apache.arrow.vector.{BaseLargeVariableWidthVector, BitVectorHelper, LargeVarBinaryVector, LargeVarCharVector, ValueVector, VarBinaryVector, VarCharVector, VariableWidthFieldVector}
+import org.apache.arrow.vector.{BaseLargeVariableWidthVector, BitVectorHelper, IntVector, LargeVarBinaryVector, LargeVarCharVector, ValueVector, VarBinaryVector, VarCharVector, VariableWidthFieldVector}
+import org.apache.arrow.vector.dictionary.{Dictionary, DictionaryProvider}
 import org.apache.arrow.vector.ipc.message.ArrowFieldNode
+import org.apache.arrow.vector.types.pojo.{ArrowType, DictionaryEncoding, Field, FieldType}
 import org.apache.spark.SparkException
 import org.apache.spark.sql.CometTestBase
 import org.apache.spark.sql.execution.vectorized.ConstantColumnVector
@@ -237,7 +239,9 @@ class UtilsSuite extends CometTestBase {
     // mapInArrow returning pa.large_string() produces one -- but getFieldVector rejects both, and
     // getBatchFieldVectors writes a 32-bit copy of them rather than the vector itself. A caller
     // taking the direct write path expects the batch's own vectors, so isArrowBacked must report
-    // false and let the caller convert the batch instead.
+    // false and let the caller convert the batch instead. The cache's direct write path also asks
+    // CachedBatchIpc.matchesReaderLayout, which refuses LargeUtf8 against the reader's Utf8, so
+    // either check alone keeps such a batch off it.
     val values = Seq("hello", "world")
     Seq[ValueVector](
       fill(new LargeVarCharVector("s", CometArrowAllocator), values),
@@ -314,7 +318,7 @@ class UtilsSuite extends CometTestBase {
     }
   }
 
-  test("coalesceBroadcastBatches appends a large-offset batch to a 32-bit one") {
+  test("coalesceBroadcastBatches coalesces batches of mixed offset widths") {
     // The coalescer appends every batch to a root built from the first one's schema, and leaves
     // the broadcast uncoalesced when a batch does not match it. A producer can hand back
     // large_string for one batch and string for the next, so both must serialize alike.
@@ -339,19 +343,6 @@ class UtilsSuite extends CometTestBase {
     }
   }
 
-  test("serializeBatches refuses a large-offset column too big for 32-bit offsets") {
-    // The offsets alone claim 2 GiB of data. The size is checked before anything is copied, so
-    // the data itself never has to exist.
-    val strings = tooBigForIntOffsets("s")
-    try {
-      val batch = new ColumnarBatch(Array(cometVector(strings)), 1)
-      val e = intercept[SparkException](Utils.serializeBatches(Iterator(batch)).next())
-      assert(e.getMessage.contains("more than 32-bit offsets can address"), e.getMessage)
-    } finally {
-      strings.close()
-    }
-  }
-
   test("serializeBatches releases the vectors it made when a later column fails") {
     // A materialized constant and a 32-bit copy of a large-offset column are both made before the
     // last column is refused. Nothing outside serializeBatches ever holds them, so it has to
@@ -372,6 +363,49 @@ class UtilsSuite extends CometTestBase {
       tooBig.close()
     }
     assert(CometArrowAllocator.getAllocatedMemory == before)
+  }
+
+  test("serializeBatches releases the vectors it made when the dictionaries of a batch clash") {
+    // The vectors are all made before the dictionaries of the columns are combined, which is where
+    // two columns sharing an ID without sharing a dictionary are refused. By then the caller has
+    // not got them either, and a copy of a large-offset column can be close to 2 GiB.
+    val before = CometArrowAllocator.getAllocatedMemory
+    val large = fill(new LargeVarCharVector("large", CometArrowAllocator), Seq("a"))
+    val (first, firstProvider) = dictionaryEncoded("first", 7L, "x")
+    val (second, secondProvider) = dictionaryEncoded("second", 7L, "y")
+    try {
+      val batch = new ColumnarBatch(
+        Array(
+          cometVector(large),
+          CometVector.getVector(first, firstProvider),
+          CometVector.getVector(second, secondProvider)),
+        1)
+      val e = intercept[SparkException](Utils.serializeBatches(Iterator(batch)).next())
+      assert(e.getMessage.contains("different dictionaries under ID 7"), e.getMessage)
+      assert(large.getValueCount == 1 && large.getObject(0).toString == "a")
+    } finally {
+      large.close()
+      Seq(first, second).foreach(_.close())
+      Seq(firstProvider, secondProvider).foreach(_.lookup(7L).getVector.close())
+    }
+    assert(CometArrowAllocator.getAllocatedMemory == before)
+  }
+
+  /** A dictionary-encoded index column holding the one entry of a dictionary holding `value`. */
+  private def dictionaryEncoded(
+      name: String,
+      id: Long,
+      value: String): (IntVector, DictionaryProvider) = {
+    val encoding = new DictionaryEncoding(id, false, null)
+    val dictionary =
+      new Dictionary(fill(new VarCharVector("dict", CometArrowAllocator), Seq(value)), encoding)
+    val indices = new IntVector(
+      new Field(name, new FieldType(true, new ArrowType.Int(32, true), encoding), null),
+      CometArrowAllocator)
+    indices.allocateNew(1)
+    indices.set(0, 0)
+    indices.setValueCount(1)
+    (indices, new DictionaryProvider.MapDictionaryProvider(dictionary))
   }
 
   /** Writes `values` into `vector`, leaving a null entry unset so that it reads back as null. */

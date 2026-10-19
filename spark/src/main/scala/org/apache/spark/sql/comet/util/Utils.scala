@@ -261,28 +261,36 @@ object Utils extends CometTypeShim with Logging {
       val out = new DataOutputStream(codec.compressedOutputStream(cbbos))
 
       val (fieldVectors, batchProviderOpt) = getBatchFieldVectors(batch)
-      val root = new VectorSchemaRoot(fieldVectors.asJava)
-      if (fieldVectors.isEmpty) {
-        // VSR cannot infer rowCount without field vectors
-        root.setRowCount(batch.numRows())
-      }
-      val provider = batchProviderOpt.getOrElse(dictionaryProvider)
-
-      // VectorSchemaRootAppender, which coalesces broadcast batches, assumes offsets that start
-      // at zero, and Arrow Java writes the bytes before the first offset too. A slice of the root
-      // rebases the offsets to zero and leaves those bytes out.
-      val written =
-        if (fieldVectors.forall(offsetsStartAtZero)) root else root.slice(0, root.getRowCount)
       try {
-        val writer = new ArrowStreamWriter(written, provider, Channels.newChannel(out))
-        writer.start()
-        writer.writeBatch()
-        root.clear()
-        writer.close()
-      } finally {
-        // The slice holds its own references on the batch's buffers, so it is closed even when the
-        // write fails, as it does when a cancelled broadcast interrupts the task.
-        if (written ne root) written.close()
+        val root = new VectorSchemaRoot(fieldVectors.asJava)
+        if (fieldVectors.isEmpty) {
+          // VSR cannot infer rowCount without field vectors
+          root.setRowCount(batch.numRows())
+        }
+        val provider = batchProviderOpt.getOrElse(dictionaryProvider)
+
+        // VectorSchemaRootAppender, which coalesces broadcast batches, assumes offsets that start
+        // at zero, and Arrow Java writes the bytes before the first offset too. A slice of the root
+        // rebases the offsets to zero and leaves those bytes out.
+        val written =
+          if (fieldVectors.forall(offsetsStartAtZero)) root else root.slice(0, root.getRowCount)
+        try {
+          val writer = new ArrowStreamWriter(written, provider, Channels.newChannel(out))
+          writer.start()
+          writer.writeBatch()
+          root.clear()
+          writer.close()
+        } finally {
+          // The slice holds its own references on the batch's buffers, so it is closed even when
+          // the write fails, as it does when a cancelled broadcast interrupts the task.
+          if (written ne root) written.close()
+        }
+      } catch {
+        case NonFatal(e) =>
+          // The batch's own vectors stay with their owner. The ones made for this write are held
+          // by nothing else, and a narrowed copy can be close to 2 GiB.
+          closeAfterFailure(allocatedFor(batch, fieldVectors), e)
+          throw e
       }
 
       if (out.size() > 0) {
@@ -490,11 +498,48 @@ object Utils extends CometTypeShim with Logging {
       }
     }
 
+  /**
+   * Field vectors of `batch` and the dictionaries they refer to, as one provider.
+   *
+   * Some of the vectors may have been allocated here rather than taken from `batch`; see
+   * [[getBatchFieldVectorsWithProviders]]. They are released with the rest when the caller clears
+   * the vectors it wrote, or by [[closeAfterFailure]] if the write fails.
+   */
   def getBatchFieldVectors(
       batch: ColumnarBatch): (Seq[FieldVector], Option[DictionaryProvider]) = {
     val columns = getBatchFieldVectorsWithProviders(batch)
-    (columns.map(_._1), combineDictionaryProviders(columns))
+    val vectors = columns.map(_._1)
+    try {
+      (vectors, combineDictionaryProviders(columns))
+    } catch {
+      case NonFatal(e) =>
+        closeAfterFailure(allocatedFor(batch, vectors), e)
+        throw e
+    }
   }
+
+  /**
+   * The vectors of `vectors`, which were returned for `batch`, that were allocated for it rather
+   * than taken from it: a 32-bit copy of a large-offset column, or a materialized
+   * `ConstantColumnVector`. Whoever holds the returned vectors is the only one who can release
+   * them, and `batch` still owns the rest.
+   */
+  def allocatedFor(batch: ColumnarBatch, vectors: Seq[FieldVector]): Seq[FieldVector] = {
+    val borrowed = (0 until batch.numCols()).flatMap { i =>
+      batch.column(i) match {
+        case v: CometVector => Some(v.getValueVector)
+        case _ => None
+      }
+    }
+    vectors.filterNot(v => borrowed.exists(_ eq v))
+  }
+
+  /** Closes `vectors` for a caller that is failing with `failure`, which keeps any error. */
+  def closeAfterFailure(vectors: Seq[ValueVector], failure: Throwable): Unit =
+    vectors.foreach { v =>
+      try v.close()
+      catch { case NonFatal(closeError) => failure.addSuppressed(closeError) }
+    }
 
   /**
    * The dictionaries every dictionary-encoded column of `columns` refers to, as one provider.
@@ -558,6 +603,12 @@ object Utils extends CometTypeShim with Logging {
    * what a single stream over every column needs. Comet's cache serializer keeps the pairing
    * instead: its payload has no schema message to describe a dictionary encoding, so it decodes
    * each such column against the provider that column arrived with.
+   *
+   * Not every returned vector is `batch`'s own. A large-offset column is replaced by a 32-bit
+   * copy and a `ConstantColumnVector` by a materialized one, and the caller releases those, as
+   * [[allocatedFor]] tells them apart. A caller that only unloads or closes the vectors it
+   * decoded itself would leak them. If a later column fails, the ones already made are closed
+   * here before the failure is rethrown.
    */
   def getBatchFieldVectorsWithProviders(
       batch: ColumnarBatch): Seq[(FieldVector, Option[DictionaryProvider])] = {
@@ -614,9 +665,7 @@ object Utils extends CometTypeShim with Logging {
       }
     } catch {
       case NonFatal(e) =>
-        made.foreach(v =>
-          try v.close()
-          catch { case NonFatal(closeError) => e.addSuppressed(closeError) })
+        closeAfterFailure(made.toSeq, e)
         throw e
     }
   }
