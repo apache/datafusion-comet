@@ -70,12 +70,40 @@ abstract class CometTestBase
   protected val shuffleManager: String =
     "org.apache.spark.sql.comet.execution.shuffle.CometShuffleManager"
 
+  /** The reused exchanges in `plan`. */
+  protected def reusedExchanges(plan: SparkPlan): Seq[ReusedExchangeExec] =
+    collect(plan) { case r: ReusedExchangeExec => r }
+
+  /** The reused exchanges in `plan` whose child contains a node that `pf` matches. */
+  protected def reusedExchangesOver[T](plan: SparkPlan)(
+      pf: PartialFunction[SparkPlan, T]): Seq[ReusedExchangeExec] =
+    reusedExchanges(plan).filter(exchange => collect(exchange.child)(pf).nonEmpty)
+
+  /** Asserts that some reused exchange in `plan` sits over a node that `pf` matches. */
   protected def assertExchangeReuseOver[T](plan: SparkPlan, clue: String)(
-      pf: PartialFunction[SparkPlan, T]): Unit = {
-    val reused = collect(plan) {
-      case exchange: ReusedExchangeExec if collect(exchange.child)(pf).nonEmpty => exchange
-    }
-    assert(reused.nonEmpty, s"$clue:\n$plan")
+      pf: PartialFunction[SparkPlan, T]): Unit =
+    assert(reusedExchangesOver(plan)(pf).nonEmpty, s"$clue:\n$plan")
+
+  /** Asserts that no reused exchange in `plan` sits over a scan that `dppScan` matches. */
+  protected def assertNoReusedExchangeOverDppScan[T](plan: SparkPlan)(
+      dppScan: PartialFunction[SparkPlan, T]): Unit =
+    assert(
+      reusedExchangesOver(plan)(dppScan).isEmpty,
+      s"An exchange over a DPP scan was reused by another branch:\n$plan")
+
+  /**
+   * Asserts that Spark reuses at least one exchange in `sparkPlan` and that Comet reuses as many
+   * in `cometPlan`.
+   */
+  protected def assertSameExchangeReuseAsSpark(
+      sparkPlan: SparkPlan,
+      cometPlan: SparkPlan): Unit = {
+    val sparkReused = reusedExchanges(sparkPlan).size
+    val cometReused = reusedExchanges(cometPlan).size
+    assert(sparkReused > 0, s"Spark should reuse an exchange:\n$sparkPlan")
+    assert(
+      cometReused == sparkReused,
+      s"expected $sparkReused reused exchanges, got $cometReused:\n" + cometPlan.treeString)
   }
 
   /**
