@@ -34,7 +34,7 @@ rm -rf comet-1.0
 rm -rf comet-1.1
 python3 generate-versions.py
 
-# Generate dynamic content (configs, compatibility matrices) for latest docs
+# Generate dynamic content (configs, compatibility matrices) for the dev docs
 # This runs GenerateDocs against the temp copy, not source files. Each supported Spark
 # profile gets its own copy of the compatibility/expressions templates so that the
 # generated content can differ per Spark version (some expressions are only registered
@@ -42,14 +42,14 @@ python3 generate-versions.py
 echo "Generating dynamic documentation content..."
 cd ..
 
-LATEST_USER_GUIDE="$(pwd)/docs/temp/user-guide/latest"
-COMPAT_EXPR_DIR="${LATEST_USER_GUIDE}/compatibility/expressions"
+DEV_USER_GUIDE="$(pwd)/docs/temp/user-guide/dev"
+COMPAT_EXPR_DIR="${DEV_USER_GUIDE}/compatibility/expressions"
 TEMPLATE_DIR="${COMPAT_EXPR_DIR}/_category_template"
 
 # Spark profiles for which we publish per-version compatibility pages. Add or remove
 # entries here when adding/dropping support for a Spark version. Each entry must match
 # both a Maven profile id (-P<profile>) and a source-tree subdirectory under
-# docs/source/user-guide/latest/compatibility/expressions/.
+# docs/source/user-guide/dev/compatibility/expressions/.
 # Every run also rewrites the shared configs.md and expressions.md pages, so the last
 # entry decides their content. Keep the default build profile (spark-4.1) last.
 SPARK_PROFILES=(spark-3.4 spark-3.5 spark-4.0 spark-4.2 spark-4.1)
@@ -59,7 +59,7 @@ for profile in "${SPARK_PROFILES[@]}"; do
   mkdir -p "${COMPAT_EXPR_DIR}/${profile}"
   cp "${TEMPLATE_DIR}"/*.md "${COMPAT_EXPR_DIR}/${profile}/"
   ./mvnw -q package -P${profile} -Pgenerate-docs -DskipTests -Dmaven.test.skip=true \
-    -Dexec.arguments="${LATEST_USER_GUIDE},${profile}"
+    -Dexec.arguments="${DEV_USER_GUIDE},${profile}"
 done
 
 # Templates aren't a real doc page; remove from the build input so Sphinx doesn't see them.
@@ -67,3 +67,7 @@ rm -rf "${TEMPLATE_DIR}"
 cd docs
 
 make SOURCEDIR=`pwd`/temp html
+
+# Serve the newest release's user guide at user-guide/latest as well. Run after the build because
+# it copies the finished HTML.
+python3 generate-versions.py --alias-latest build/html

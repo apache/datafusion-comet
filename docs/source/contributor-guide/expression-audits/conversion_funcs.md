@@ -40,4 +40,4 @@
 - Performance (tuned 2026-07-15, PR [#4939](https://github.com/apache/datafusion-comet/pull/4939)): integer-to-decimal casts (`cast_int_to_decimal128_internal`) now convert in a single vectorized `unary_opt` pass that maps overflowing values to null, replacing the per-element `Decimal128Builder` loop. ANSI raises via an O(1) null-count check plus a rare element-wise rescan. 28-50% faster with no regression on any shape. Benchmark: `benches/cast_int_to_decimal.rs`.
 - Performance (tuned 2026-09-30, PR [#5130](https://github.com/apache/datafusion-comet/pull/5130)): string-to-timestamp and string-to-timestamp_ntz (`timestamp_parser` / `timestamp_ntz_parser`) classify the input shape once with a single byte scan, replacing up to 34 sequential regex `is_match` calls per row (27 for the NTZ variant). The shapes only accept ASCII digits, so the cast no longer runs a regex at all. 40-86% faster (1.7x-6.9x, median 3.0x) across all 118 benchmark cases, none regressed. Benchmark: `benches/cast_string_to_timestamp.rs`.
 
-[Spark Expression Support]: ../../user-guide/latest/expressions.md
+[Spark Expression Support]: ../../user-guide/dev/expressions.md

@@ -73,4 +73,4 @@
 - Spark 4.1.1 (audited 2026-05-27): identical to 4.0.1.
 - Performance (tuned 2026-09-28, PR [#6350](https://github.com/apache/datafusion-comet/pull/6350)): when no branch value and no WHEN after the first can fail, `CaseWhenExpr` evaluates them over the whole batch and takes each row's value with typed merges for primitive, boolean, string and binary results, instead of filtering the batch for each branch and merging the partial results with `MutableArrayData`. A branch is no longer wrapped in a cast to the type it already has, which hid literals and columns from DataFusion's fast paths. 2.8-4x faster with literal results and 2.2-7.8x with column results. When a branch can fail it is about 2% slower, because DataFusion's `CaseExpr` derives the result type of a bare branch for every batch. Benchmark: `benches/conditional.rs`.
 
-[Spark Expression Support]: ../../user-guide/latest/expressions.md
+[Spark Expression Support]: ../../user-guide/dev/expressions.md

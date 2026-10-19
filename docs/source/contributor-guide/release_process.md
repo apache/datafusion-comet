@@ -163,7 +163,7 @@ produce the per-Spark-version compatibility pages, freezing them onto the branch
 
 ```shell
 ./dev/generate-release-docs.sh
-git add docs/source/user-guide/latest/
+git add docs/source/user-guide/dev/
 git commit -m "Generate docs for 0.13.0 release"
 ```
 
@@ -215,7 +215,7 @@ fixes reviewed and backported. Anyone can help with both.
 
 Check that the user guide accurately reflects what is being released:
 
-- Review the [Spark Expression Support](../user-guide/latest/expressions.md) page and the supported operators list
+- Review the [Spark Expression Support](../user-guide/dev/expressions.md) page and the supported operators list
   in the user guide. The expression page is the source of truth for expression support status, so verify that any
   expressions added or changed since the last release appear there with an accurate status (✅ / ⚠️ / 🔜 / 💤).
 - Spot-check the support status of individual expressions by running tests or queries to confirm they work as
@@ -413,19 +413,22 @@ repository.
 
 In `docs` directory:
 
-- Update the main method in `generate-versions.py` to promote the new release to the current one and move the
-  previously current release into the list of older versions:
+- Update the constants at the top of `generate-versions.py` to promote the new release to the current one and move
+  the previously current release into the list of older versions:
 
 ```python
-    latest_released_version = "0.13.0"
-    previous_versions = ["0.10.0", "0.11.0", "0.12.0"]
+LATEST_RELEASED_VERSION = "0.13.0"
+PREVIOUS_VERSIONS = ["0.10.0", "0.11.0", "0.12.0"]
 ```
+
+The build serves the release named by `LATEST_RELEASED_VERSION` at both `user-guide/0.13/` and
+`user-guide/latest/`, so this change is also what moves `latest`. There is no separate alias to update.
 
 - Add a new line to `build.sh` to delete the locally cloned `comet-*` branch for the new release e.g. `comet-0.13`.
   Every version referenced in `generate-versions.py` needs a line here, otherwise a rebuild reuses the stale clone
   from the previous run.
-- Update `docs/source/user-guide/index.md`: change the "current stable release" sentence and the versioned entry in
-  the toctree (e.g. `0.13.x (current) <0.13/index>`).
+- Update `docs/source/user-guide/index.md`: change the "current stable release" sentence, the versioned row in the
+  URL table, and the versioned entry in the toctree (e.g. `0.13.x (current) <0.13/index>`).
 - Update `docs/source/user-guide/older-versions.md`: point the "current stable release" link at the new release and
   add the previously current release to the toctree.
 

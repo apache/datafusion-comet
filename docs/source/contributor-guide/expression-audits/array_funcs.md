@@ -56,7 +56,7 @@
 - Spark 3.5.8 (audited 2026-05-27): baseline. `ArrayDistinct(child)` over `ArraySetLike`; uses `SQLOpenHashSet`, which merges NaNs but keeps `+0.0` and `-0.0` distinct. Wired as `CometScalarFunction("array_distinct")`.
 - Spark 4.0.1 (audited 2026-05-27): `NullIntolerant` -> `nullIntolerant` field refactor.
 - Spark 4.1.1 (audited 2026-05-27): identical to 4.0.1.
-- Float/double element types run natively on Spark 4.0.5+, 4.1.4+, and 4.2+ through `spark_array_distinct`, which normalizes the elements as those releases do (SPARK-54918 in the plan on 4.2.0, SPARK-59602 during evaluation from 4.0.5, 4.1.4, and 4.2.1); earlier versions fall back by default. See [Array distinct and union](../../user-guide/latest/compatibility/floating-point.md#array-distinct-and-union).
+- Float/double element types run natively on Spark 4.0.5+, 4.1.4+, and 4.2+ through `spark_array_distinct`, which normalizes the elements as those releases do (SPARK-54918 in the plan on 4.2.0, SPARK-59602 during evaluation from 4.0.5, 4.1.4, and 4.2.1); earlier versions fall back by default. See [Array distinct and union](../../user-guide/dev/compatibility/floating-point.md#array-distinct-and-union).
 
 ## array_except
 
@@ -205,4 +205,4 @@
 - Current status: elements with a `FLOAT` or `DOUBLE` at any depth go to the native `spark_sort_array`, which sorts as Spark's generated code does: a stable sort in Spark's SQL ordering, except that for an ascending sort of `FLOAT` or `DOUBLE` elements that cannot be null, the serde has it put `-0.0` before `0.0`, as `java.util.Arrays.sort` does. This holds in strict floating-point mode too. Other supported element types use DataFusion's `array_sort`, and unsupported ones route through the codegen dispatcher. `ascendingOrder` may be any foldable boolean, which the serde evaluates.
 - Performance (tuned 2026-10-01, PR [#6518](https://github.com/apache/datafusion-comet/pull/6518)): `FLOAT` and `DOUBLE` rows sort within one copy of all the values, each row's valid values copied without branching next to its nulls. Rows of up to 20 elements use the stable `sort_by`. Longer rows use `sort_unstable_by` and then put the zero and NaN runs back in their original order, because Rust's stable sort is up to 1.8 times slower between 33 and 63 elements. From 2% more to 21% less time than DataFusion's `array_sort`. Benchmark: `benches/float_arrays.rs`.
 
-[Spark Expression Support]: ../../user-guide/latest/expressions.md
+[Spark Expression Support]: ../../user-guide/dev/expressions.md

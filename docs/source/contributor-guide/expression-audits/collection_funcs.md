@@ -50,4 +50,4 @@
 - Both `ArrayType` and `MapType` inputs are `Compatible` and run natively; every other child type is `Unsupported`.
 - Performance (tuned 2026-07-10, PR [#4877](https://github.com/apache/datafusion-comet/pull/4877)): compute list row sizes from the offset buffer instead of allocating a sliced `ArrayRef` per row via `list_array.value(i)`, removing one heap allocation per row. ~94% faster. Benchmark: `benches/array_size.rs`.
 
-[Spark Expression Support]: ../../user-guide/latest/expressions.md
+[Spark Expression Support]: ../../user-guide/dev/expressions.md

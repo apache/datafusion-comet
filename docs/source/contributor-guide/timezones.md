@@ -23,8 +23,8 @@ This page describes how Comet represents timestamps and applies the Spark sessio
 aimed at contributors working on datetime expressions, casts, scans, or any native code that
 produces or consumes timestamp columns. For user-facing differences from Spark, see the
 datetime and cast sections of the
-[Expression Compatibility](../user-guide/latest/compatibility/expressions/index.md) pages, and the
-[Parquet](../user-guide/latest/parquet.md) notes. Known bugs are tracked in
+[Expression Compatibility](../user-guide/dev/compatibility/expressions/index.md) pages, and the
+[Parquet](../user-guide/dev/parquet.md) notes. Known bugs are tracked in
 [#6335](https://github.com/apache/datafusion-comet/issues/6335).
 
 The short version: Comet never converts timestamp values at the JVM/native boundary. The session
@@ -171,7 +171,7 @@ disagree, both for zones whose rules changed between the two database versions a
 timestamps. When the library loads, `NativeBase` compares the native version (`getTzdataVersion`)
 with the JVM's and logs a warning if they differ. The user guide describes the effect under
 "Timezone Database Versions" on the datetime
-[expression compatibility](../user-guide/latest/compatibility/expressions/index.md) page.
+[expression compatibility](../user-guide/dev/compatibility/expressions/index.md) page.
 
 ## Scans
 

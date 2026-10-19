@@ -55,7 +55,7 @@ object NativeConfig {
    * (`fs.s3a.<s3aSuffix>`), and the iceberg-rust catalog key. The camelCase spellings are the
    * ones vendor-branded S3A forks expose; they are not a Hadoop or AWS standard. Single source of
    * truth so adding a setting is one edit rather than one per direction; the user-facing table in
-   * `docs/source/user-guide/latest/datasources.md` mirrors the first two columns.
+   * `docs/source/user-guide/dev/datasources.md` mirrors the first two columns.
    */
   private val s3Properties: Seq[(String, String, String)] = Seq(
     ("awsAccessKeyId", "access.key", "s3.access-key-id"),

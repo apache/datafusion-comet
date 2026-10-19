@@ -315,7 +315,7 @@ Once stage 3 is merged and CI is green, advertise the version to users.
 
 The single source of truth for which Spark versions Comet works with is the
 `### Supported Spark Versions` section in
-`docs/source/user-guide/latest/installation.md`. It contains the supported
+`docs/source/user-guide/dev/installation.md`. It contains the supported
 versions table, an experimental versions table while any version is
 experimental, and a list of per-version jar download links. Update each:
 
@@ -389,7 +389,7 @@ to `dev/release/build-release-comet.sh` and
 `.github/workflows/publish_snapshot.yml`, and its jar to the snapshot and
 release lists in `installation.md`. It also adds the version's expression
 compatibility pages: a `spark-X.Y/index.md` under
-`docs/source/user-guide/latest/compatibility/expressions/`, a toctree entry
+`docs/source/user-guide/dev/compatibility/expressions/`, a toctree entry
 in that directory's `index.md`, and the profile in `SPARK_PROFILES` in both
 `docs/build.sh` and `dev/generate-release-docs.sh`.
 

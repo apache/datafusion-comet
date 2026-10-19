@@ -19,7 +19,7 @@
 # This script freezes generated documentation content onto a release branch.
 # It should be run once when creating a new release branch.
 #
-# On main, docs/source/user-guide/latest/ holds only template markers; CI fills them
+# On main, docs/source/user-guide/dev/ holds only template markers; CI fills them
 # at publish time via docs/build.sh. A release branch instead commits the generated
 # content so that the archived docs for the release render real tables (archived
 # versions are served from the frozen branch, not regenerated at publish).
@@ -37,7 +37,7 @@
 # Example workflow when cutting release 0.13.0 (release-branch changes go via PR):
 #   git checkout -b release-0.13-docs branch-0.13
 #   ./dev/generate-release-docs.sh
-#   git add docs/source/user-guide/latest/
+#   git add docs/source/user-guide/dev/
 #   git commit -m "Generate docs for 0.13.0 release"
 #   # open a PR targeting branch-0.13
 
@@ -48,7 +48,7 @@ PROJECT_ROOT="$(cd "${SCRIPT_DIR}/.." && pwd)"
 
 cd "${PROJECT_ROOT}"
 
-LATEST_USER_GUIDE="${PROJECT_ROOT}/docs/source/user-guide/latest"
+LATEST_USER_GUIDE="${PROJECT_ROOT}/docs/source/user-guide/dev"
 COMPAT_EXPR_DIR="${LATEST_USER_GUIDE}/compatibility/expressions"
 TEMPLATE_DIR="${COMPAT_EXPR_DIR}/_category_template"
 
@@ -81,11 +81,11 @@ echo "Formatting generated Markdown with prettier..."
 npx prettier "${LATEST_USER_GUIDE}/**/*.md" --write
 
 echo ""
-echo "Done! Generated documentation content in docs/source/user-guide/latest/"
+echo "Done! Generated documentation content in docs/source/user-guide/dev/"
 echo "  - configs.md (config reference)"
 echo "  - compatibility/expressions/spark-*/ (per-Spark-version compatibility pages)"
 echo ""
 echo "Next steps (release-branch changes go via PR):"
-echo "  git add docs/source/user-guide/latest/"
+echo "  git add docs/source/user-guide/dev/"
 echo "  git commit -m 'Generate docs for release'"
 echo "  # push to your fork and open a PR targeting the release branch"

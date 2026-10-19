@@ -87,7 +87,7 @@ Both projects target a similar set of Spark releases.
 Comet supports Spark 3.4, 3.5, 4.0, 4.1, and 4.2 in production builds. See the
 [Spark version compatibility guide] for the exact patch versions and JDK/Scala combinations.
 
-[Spark version compatibility guide]: /user-guide/latest/compatibility/spark-versions.md
+[Spark version compatibility guide]: /user-guide/dev/compatibility/spark-versions.md
 
 Gluten 1.7.0 supports Spark 3.3, 3.4, 3.5, 4.0, and 4.1.
 
@@ -123,8 +123,8 @@ iceberg-java writes the rest and commits every write (see [Comet Iceberg writes]
 native integrations for Delta Lake, Hudi, or Paimon. See the [Comet Iceberg guide] for the full list of supported
 features and known limitations.
 
-[Comet Iceberg guide]: /user-guide/latest/iceberg.md
-[Comet Iceberg writes]: /user-guide/latest/iceberg.md#writes
+[Comet Iceberg guide]: /user-guide/dev/iceberg.md
+[Comet Iceberg writes]: /user-guide/dev/iceberg.md#writes
 
 Gluten ships dedicated modules for Iceberg, Delta Lake (2.3 through 4.1, depending on the Spark version), Hudi, and
 Paimon. Its [Iceberg documentation] says that reads of unpartitioned tables are offloaded, including tables with
@@ -202,7 +202,7 @@ native C++ UDFs, and its partial projection (see [Codegen Dispatch](#codegen-dis
 in a projection with vanilla Spark while the rest of the projection runs natively. A UDF in a filter makes the filter
 fall back to Spark. See the [Comet Scala and Java UDF guide] for the full list of supported and unsupported cases.
 
-[Comet Scala and Java UDF guide]: /user-guide/latest/scala_java_udfs.md
+[Comet Scala and Java UDF guide]: /user-guide/dev/scala_java_udfs.md
 
 ## Performance
 

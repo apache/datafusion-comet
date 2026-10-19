@@ -72,6 +72,14 @@ To make changes to the docs, simply make a Pull Request with your
 proposed changes as normal. When the PR is merged the docs will be
 automatically updated.
 
+## Published URLs
+
+The user guide is published under `user-guide/`: `dev/` is the unreleased guide built from `main`,
+`latest/` is a copy of the newest release's guide, and each release also keeps its own versioned
+directory such as `1.1/`. Only the versioned URLs are permanent. Pages under `latest/` and `dev/`
+can be added, moved, or removed between releases, and we do not guarantee that links to them keep
+working. The release version lives in `generate-versions.py`.
+
 ## Release Process
 
 This documentation is hosted at <https://datafusion.apache.org/comet/>

@@ -20,11 +20,27 @@
 
 # This script clones release branches such as branch-0.9 and then copies the user guide markdown
 # for inclusion in the published documentation so that we publish user guides for released versions
-# of Comet
+# of Comet.
+#
+# The published user guide URLs follow the convention used by Apache Spark and Apache Iceberg:
+#
+#   user-guide/dev/      the unreleased user guide on main
+#   user-guide/latest/   the newest release (an alias, see alias_latest below)
+#   user-guide/1.1/      each release, pinned
+#
+# Only the versioned URLs are permanent. What `latest` and `dev` show changes with every release,
+# and pages can be added, moved or removed between releases.
 
 import os
+import shutil
+import sys
 import xml.etree.ElementTree as ET
 from pathlib import Path
+
+# The newest release, and the older releases that are still published. Promote a new release by
+# moving the current one into PREVIOUS_VERSIONS (see the release process guide).
+LATEST_RELEASED_VERSION = "1.1.0"
+PREVIOUS_VERSIONS = ["0.13.0", "0.14.0", "0.15.0", "0.16.0", "0.17.0", "1.0.0"]
 
 def get_major_minor_version(version: str):
     parts = version.split('.')
@@ -111,16 +127,20 @@ def insert_warning_after_asf_header(root: str, warning: str):
         file.write_text("".join(new_lines), encoding="utf-8")
 
 
-def get_user_guide_dir(major_minor: str):
-    if major_minor == "0.8" or major_minor == "0.9":
-        return "docs/source/user-guide"
-    else:
-        return "docs/source/user-guide/latest"
+def get_user_guide_dir(clone_dir: str):
+    # Where a release branch keeps its user guide depends on when it was cut: directly under
+    # user-guide/ before 0.10, under user-guide/latest/ until the 1.1 branch, and under
+    # user-guide/dev/ after that.
+    for candidate in ("docs/source/user-guide/dev", "docs/source/user-guide/latest"):
+        if (Path(clone_dir) / candidate).is_dir():
+            return candidate
+    return "docs/source/user-guide"
 
 def publish_released_version(version: str):
     major_minor = get_major_minor_version(version)
-    dir = get_user_guide_dir(major_minor)
-    os.system(f"git clone --depth 1 https://github.com/apache/datafusion-comet.git -b branch-{major_minor} comet-{major_minor}")
+    clone_dir = f"comet-{major_minor}"
+    os.system(f"git clone --depth 1 https://github.com/apache/datafusion-comet.git -b branch-{major_minor} {clone_dir}")
+    dir = get_user_guide_dir(clone_dir)
     os.system(f"mkdir temp/user-guide/{major_minor}")
     os.system(f"cp -rf comet-{major_minor}/{dir}/* temp/user-guide/{major_minor}")
     # Strip snapshot-only content; keep release-only content
@@ -132,11 +152,11 @@ def publish_released_version(version: str):
 def generate_docs(snapshot_version: str, latest_released_version: str, previous_versions: list[str]):
 
     # Strip release-only content; keep snapshot-only content for the latest (snapshot) docs
-    strip_conditional_blocks("temp/user-guide/latest", "snapshot")
+    strip_conditional_blocks("temp/user-guide/dev", "snapshot")
 
     # Replace $COMET_VERSION with actual version for snapshot version
     for file_pattern in ["*.md", "*.rst"]:
-        replace_in_files(f"temp/user-guide/latest", file_pattern, "$COMET_VERSION", snapshot_version)
+        replace_in_files("temp/user-guide/dev", file_pattern, "$COMET_VERSION", snapshot_version)
 
     # Add user guide content for latest released versions
     publish_released_version(latest_released_version)
@@ -151,9 +171,31 @@ This is **out-of-date** documentation. The latest Comet release is version {late
         major_minor = get_major_minor_version(version)
         insert_warning_after_asf_header(f"temp/user-guide/{major_minor}", warning)
 
+def alias_latest(html_root: str):
+    """Serve the newest release's built user guide at user-guide/latest as well.
+
+    This copies the finished HTML rather than building a second copy of the sources, so Sphinx
+    sees each document once. It is a copy and not a symlink because the site is published by
+    rsync into the asf-site branch, and ASF's web server is not known to follow symlinks. Every
+    link in the pages is relative, so the copy works unchanged one directory over.
+    """
+    user_guide = Path(html_root) / "user-guide"
+    source = user_guide / get_major_minor_version(LATEST_RELEASED_VERSION)
+    if not source.is_dir():
+        raise FileNotFoundError(f"{source} was not built, so there is nothing to alias as latest")
+    target = user_guide / "latest"
+    if target.exists():
+        shutil.rmtree(target)
+    shutil.copytree(source, target)
+    print(f"Aliased {source} as {target}")
+
 if __name__ == "__main__":
+    # `generate-versions.py --alias-latest <html dir>` runs after the Sphinx build.
+    if len(sys.argv) == 3 and sys.argv[1] == "--alias-latest":
+        alias_latest(sys.argv[2])
+        sys.exit(0)
+    if len(sys.argv) != 1:
+        sys.exit("usage: generate-versions.py [--alias-latest <html dir>]")
     print("Generating versioned user guide docs...")
     snapshot_version = get_version_from_pom()
-    latest_released_version = "1.1.0"
-    previous_versions = ["0.13.0", "0.14.0", "0.15.0", "0.16.0", "0.17.0", "1.0.0"]
-    generate_docs(snapshot_version, latest_released_version, previous_versions)
+    generate_docs(snapshot_version, LATEST_RELEASED_VERSION, PREVIOUS_VERSIONS)

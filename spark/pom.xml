@@ -690,7 +690,7 @@ under the License.
                 <configuration>
                   <mainClass>org.apache.comet.GenerateDocs</mainClass>
                   <arguments>
-                    <argument>${project.parent.basedir}/docs/source/user-guide/latest/</argument>
+                    <argument>${project.parent.basedir}/docs/source/user-guide/dev/</argument>
                   </arguments>
                   <classpathScope>compile</classpathScope>
                 </configuration>

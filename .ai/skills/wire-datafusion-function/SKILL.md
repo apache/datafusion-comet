@@ -129,8 +129,8 @@ Use `query expect_fallback(...)` for inputs where the serde returns `None`. Form
 
 Hand-curated (`make` does not regenerate these):
 
-- `docs/source/user-guide/latest/expressions.md` — add `| <ExpressionClass> | \`<sql_name>\` |` to the matching category table, alphabetical.
-- `docs/source/user-guide/latest/expressions.md` — update the function's Status from 🔜/💤 to ✅ (or ⚠️) in the matching category table.
+- `docs/source/user-guide/dev/expressions.md` — add `| <ExpressionClass> | \`<sql_name>\` |` to the matching category table, alphabetical.
+- `docs/source/user-guide/dev/expressions.md` — update the function's Status from 🔜/💤 to ✅ (or ⚠️) in the matching category table.
 
 Per-expression compatibility pages under `compatibility/expressions/*.md` are auto-generated from `getCompatibleNotes` / `getIncompatibleReasons` / `getUnsupportedReasons` — do not hand-edit.
 

@@ -90,7 +90,7 @@ runner-minutes a push and about 40. If you add a job to `pr_build_linux.yml`, gi
 `if: ${{ !inputs.cache-refresh-only }}` unless it writes a cache that `main` needs;
 `dev/ci/check-ci-config.py` fails the build if you forget.
 
-Spark 3.4 is the one suite in neither tier. [Spark 3.4 support is deprecated](../user-guide/latest/compatibility/spark-versions.md#spark-34),
+Spark 3.4 is the one suite in neither tier. [Spark 3.4 support is deprecated](../user-guide/dev/compatibility/spark-versions.md#spark-34),
 so its Spark SQL suite no longer gates a merge. It remains available on demand: apply the
 `run-spark-3.4-tests` label to run it against a pull request, or trigger `ci.yml` from the Actions
 page with **Run workflow**, which runs every suite regardless of tier. A contributor touching Spark

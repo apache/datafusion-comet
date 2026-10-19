@@ -163,7 +163,7 @@ the driver, so there is no data path for Comet to accelerate.
 
 If a new Spark version adds a wrapper node, do not write a serde for it. Add it to the nodes that
 `ExtendedExplainInfo.generateTreeString` skips when counting operators, and to the wrapper list in
-[Understanding Comet Plans](../user-guide/latest/understanding-comet-plans.md), so the coverage
+[Understanding Comet Plans](../user-guide/dev/understanding-comet-plans.md), so the coverage
 summary does not count it as a Spark operator. If `CometExecRule` visits the node, also add it to
 the operators it leaves in place without recording a fallback reason. `ExtendedExplainInfo`
 already skips every `QueryStageExec`, so a new query stage type needs no change there.
@@ -471,7 +471,7 @@ val COMET_EXEC_YOUR_OPERATOR_ENABLED: ConfigEntry[Boolean] =
     .createWithDefault(true)
 ```
 
-Run `make` to update the user guide. The new configuration option will be added to `docs/source/user-guide/latest/configs.md`.
+Run `make` to update the user guide. The new configuration option will be added to `docs/source/user-guide/dev/configs.md`.
 
 ### Step 5: Implement the Native Operator in Rust
 
@@ -636,7 +636,7 @@ mod tests {
 
 ### Step 7: Update Documentation
 
-Add your operator to the supported operators list in `docs/source/user-guide/latest/compatibility/operators.md` or similar documentation.
+Add your operator to the supported operators list in `docs/source/user-guide/dev/compatibility/operators.md` or similar documentation.
 
 ## Implementing a Sink Operator
 

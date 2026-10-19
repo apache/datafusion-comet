@@ -41,4 +41,4 @@
 - 3.5.8, 2026-04-29
 - 4.0.1, 2026-04-29
 
-[Spark Expression Support]: ../../user-guide/latest/expressions.md
+[Spark Expression Support]: ../../user-guide/dev/expressions.md

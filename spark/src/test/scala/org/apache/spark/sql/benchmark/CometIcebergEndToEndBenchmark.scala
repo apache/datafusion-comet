@@ -61,7 +61,7 @@ import org.apache.comet.CometSparkSessionExtensions
  *     pay equally.
  *   - The warehouse is a local temporary directory, so no object-store latency is included.
  *   - The two writers choose different file roll points (see the accepted divergences in
- *     `docs/source/user-guide/latest/iceberg-writes.md`), so the resulting file layouts are not
+ *     `docs/source/user-guide/dev/iceberg-writes.md`), so the resulting file layouts are not
  *     expected to match. What is checked is that every configuration writes the same rows.
  *   - Every group has the same row count but not the same row width, so `Rate` and `Per Row`
  *     compare configurations within a group, not one group with another.

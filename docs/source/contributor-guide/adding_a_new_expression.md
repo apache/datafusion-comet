@@ -25,10 +25,10 @@ Before you start, have a look through [these slides](https://docs.google.com/pre
 
 ## Finding an Expression to Add
 
-You may have a specific expression in mind that you'd like to add, but if not, you can review [Supported Spark Expressions](../user-guide/latest/expressions.md) in the user guide to see which expressions are not yet supported. For deep-dive audit notes on expressions that are already supported, see the [Expression Audits](expression-audits/index.md) section.
+You may have a specific expression in mind that you'd like to add, but if not, you can review [Supported Spark Expressions](../user-guide/dev/expressions.md) in the user guide to see which expressions are not yet supported. For deep-dive audit notes on expressions that are already supported, see the [Expression Audits](expression-audits/index.md) section.
 
 When you add or change an expression, update its status in
-[Supported Spark Expressions](../user-guide/latest/expressions.md).
+[Supported Spark Expressions](../user-guide/dev/expressions.md).
 
 ## Implementing the Expression
 
@@ -291,9 +291,9 @@ In addition to `getSupportLevel`, which governs runtime planning decisions, the 
 - `getIncompatibleReasons(): Seq[String]` - Reasons the expression may produce different results than Spark.
 - `getUnsupportedReasons(): Seq[String]` - Reasons the expression, or certain usages of it, may not be supported by Comet.
 
-These methods do not affect runtime behavior. They are called by `GenerateDocs` (`spark/src/main/scala/org/apache/comet/GenerateDocs.scala`) when building the user-facing Compatibility Guide pages. The Markdown templates live in `docs/source/user-guide/latest/compatibility/expressions/_category_template/` (for example, `math.md`, `datetime.md`, `array.md`, `aggregate.md`, `struct.md`); `docs/build.sh` copies them into per-Spark-version subdirectories (`spark-3.4/`, `spark-3.5/`, `spark-4.0/`, `spark-4.1/`) and runs `GenerateDocs` once per profile, so the published page reflects the expressions registered for that Spark version. Each reason is rendered as a bullet in the corresponding page.
+These methods do not affect runtime behavior. They are called by `GenerateDocs` (`spark/src/main/scala/org/apache/comet/GenerateDocs.scala`) when building the user-facing Compatibility Guide pages. The Markdown templates live in `docs/source/user-guide/dev/compatibility/expressions/_category_template/` (for example, `math.md`, `datetime.md`, `array.md`, `aggregate.md`, `struct.md`); `docs/build.sh` copies them into per-Spark-version subdirectories (`spark-3.4/`, `spark-3.5/`, `spark-4.0/`, `spark-4.1/`) and runs `GenerateDocs` once per profile, so the published page reflects the expressions registered for that Spark version. Each reason is rendered as a bullet in the corresponding page.
 
-`GenerateDocs` also rewrites the **Implementation** column of every table in [`docs/source/user-guide/latest/expressions.md`](../user-guide/latest/expressions.md) based on the serde's trait mixins: `NativeOptInAvailable` (or its subtype `CodegenDispatchFallback`) is reported as `Hybrid`, a plain `CometCodegenDispatch` is reported as `Codegen dispatch`, and anything else is reported as `Native`. Rows whose function name is not registered in Spark's `FunctionRegistry` (or has no matching serde) get an em-dash placeholder.
+`GenerateDocs` also rewrites the **Implementation** column of every table in [`docs/source/user-guide/dev/expressions.md`](../user-guide/dev/expressions.md) based on the serde's trait mixins: `NativeOptInAvailable` (or its subtype `CodegenDispatchFallback`) is reported as `Hybrid`, a plain `CometCodegenDispatch` is reported as `Codegen dispatch`, and anything else is reported as `Native`. Rows whose function name is not registered in Spark's `FunctionRegistry` (or has no matching serde) get an em-dash placeholder.
 
 Key differences from `getSupportLevel`:
 
@@ -347,7 +347,7 @@ override def getUnsupportedReasons(): Seq[String] = Seq(
 
 #### Updating the Supported Expressions Page
 
-The user-facing [Spark Expression Support](../user-guide/latest/expressions.md) page (`docs/source/user-guide/latest/expressions.md`) lists every Spark built-in with its status, implementation kind, and any notes. Unlike the compatibility pages, this file is committed to the repo, so you need to add a row for your new expression and commit it.
+The user-facing [Spark Expression Support](../user-guide/dev/expressions.md) page (`docs/source/user-guide/dev/expressions.md`) lists every Spark built-in with its status, implementation kind, and any notes. Unlike the compatibility pages, this file is committed to the repo, so you need to add a row for your new expression and commit it.
 
 Add the row to the correct category table (matching the section header, for example `## math_funcs`). Fill in the Function, Status, and Notes cells and leave the Implementation cell as `—`; the value is regenerated from the serde and does not need to be set by hand:
 
@@ -359,7 +359,7 @@ To regenerate the Implementation column locally, run the `generate-docs` profile
 
 ```shell
 ./mvnw -q -pl spark -am -Pspark-3.5 -Pgenerate-docs -DskipTests package \
-  -Dexec.arguments="$(pwd)/docs/source/user-guide/latest/,spark-3.5"
+  -Dexec.arguments="$(pwd)/docs/source/user-guide/dev/,spark-3.5"
 ```
 
 That run rewrites every Implementation cell in place, mapping SQL function names to Catalyst classes via Spark's `FunctionRegistry` and looking each class up in `QueryPlanSerde`. Commit the updated `expressions.md` alongside your serde change. If you forget, a reviewer or a subsequent doc regeneration will fill it in — an `—` in the column for a supported expression usually means the row is aliased or rewritten before Comet sees it (for example `to_date` → `Cast`), not that the row is broken.
@@ -585,7 +585,7 @@ replaces each ill-formed sequence with `U+FFFD` exactly as the JVM's `new String
 so Comet's rendered output matches Spark (including the surrogate-range cases where
 `str::from_utf8_lossy` would differ). This is the decoder used by both `CAST(binary AS string)` and
 the native columnar shuffle. See the
-[strings with non-UTF-8 bytes](../user-guide/latest/compatibility/index.md) note in the
+[strings with non-UTF-8 bytes](../user-guide/dev/compatibility/index.md) note in the
 compatibility guide for the user-visible behavior, including the cases where decoding diverges from
 Spark.
 
