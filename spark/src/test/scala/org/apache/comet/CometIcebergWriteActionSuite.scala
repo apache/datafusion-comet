@@ -1574,6 +1574,23 @@ class CometIcebergWriteActionSuite
     }
   }
 
+  test("native acceleration: a partition sourced from an unknown column falls back") {
+    assumeNativeAcceleration()
+    assume(icebergVersionAtLeast(1, 10), "The unknown type requires Iceberg 1.10+")
+    withIcebergCatalog { _ =>
+      val t = "unknown_partition_source"
+      createTable(t, partitionSpec = "", properties = Some("'format-version'='3'"))
+      addIcebergColumn(loadIcebergTable(spark, catalog, ns, t), "u", icebergUnknownType())
+      spark.sql(s"ALTER TABLE $catalog.$ns.$t ADD PARTITION FIELD u")
+      spark.sql(s"REFRESH TABLE $catalog.$ns.$t")
+      // The native writer prunes `u`, so its partition calculator could not resolve the source.
+      assertNativeWriteDoesNotEngage(t, Seq(1, 2)) {
+        spark.sql(
+          s"INSERT INTO $catalog.$ns.$t VALUES (1, 'us', 1.0, NULL), (2, 'eu', 2.0, NULL)")
+      }
+    }
+  }
+
   test("native acceleration: a driver commit failure aborts all completed task files") {
     assumeNativeAcceleration()
     withIcebergCatalog { _ =>

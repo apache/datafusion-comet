@@ -417,6 +417,7 @@ object CometIcebergNativeWrite extends CometOperatorSerde[IcebergWriteExec] {
     requireNoMetadataColumns,
     requireSupportedColumnTypes,
     requireNoVoidFieldWithDroppedSource,
+    requireNoUnknownPartitionSource,
     requireNoEncryptionPrefix,
     requireNoBloomFilterColumnsEnabled,
     requireRowGroupCheckMinRecordCountAtDefault,
@@ -555,6 +556,24 @@ object CometIcebergNativeWrite extends CometOperatorSerde[IcebergWriteExec] {
           IcebergReflection.voidFieldsWithDroppedSource(spec).headOption.map { name =>
             s"partition field $name is a void transform whose source column was dropped, " +
               "beside a live partition field"
+          }
+        } catch {
+          case e: Exception =>
+            Some(s"could not inspect the output partition spec: ${e.getMessage}")
+        }
+    }
+
+  // Top-level `unknown` columns are pruned from the native schema, so a partition field sourced
+  // from one would fail the native partition calculator with `Field not found`.
+  private val requireNoUnknownPartitionSource: TriggerRule = ctx =>
+    IcebergReflection
+      .getOutputSpecIdFromSparkWrite(ctx.sparkWrite)
+      .flatMap(IcebergReflection.getPartitionSpecById(ctx.table, _)) match {
+      case None => Some("could not resolve the output partition spec for unknown source checking")
+      case Some(spec) =>
+        try {
+          IcebergReflection.partitionFieldsWithUnknownSource(spec).headOption.map { name =>
+            s"partition field $name is sourced from a column of Iceberg type unknown"
           }
         } catch {
           case e: Exception =>

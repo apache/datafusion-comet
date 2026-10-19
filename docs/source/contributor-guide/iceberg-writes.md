@@ -277,7 +277,8 @@ Points where Comet adapts iceberg-rust to match iceberg-java:
 - **Field ids and casting.** `decorate_batch_with_field_ids` casts each batch to the
   field-id-annotated Arrow schema derived from the Iceberg schema, with `safe: false`, so a type
   mismatch fails the task instead of writing NULLs. It first drops top-level `unknown` columns,
-  whose fields `parse_iceberg_schema` prunes.
+  whose fields `parse_iceberg_schema` prunes, so the gate declines a partition field sourced from
+  one.
 - **Deterministic output order.** `FanoutPartitions`, Comet's version of iceberg-rust's
   `FanoutWriter`, closes its files in an order that depends on how the rows arrived and on which
   partitions it closed early, so the fanout path sorts its `DataFile`s by path before returning them

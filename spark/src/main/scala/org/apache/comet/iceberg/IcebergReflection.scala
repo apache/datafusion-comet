@@ -918,6 +918,26 @@ object IcebergReflection extends Logging {
     }
   }
 
+  /** Names of the partition fields of `spec` sourced from a top-level `unknown` column. */
+  def partitionFieldsWithUnknownSource(spec: Any): Seq[String] = {
+    import scala.jdk.CollectionConverters._
+    val schema = getMethod(spec.getClass, "schema").invoke(spec)
+    val unknownIds = getMethod(schema.getClass, "columns")
+      .invoke(schema)
+      .asInstanceOf[java.util.List[_]]
+      .asScala
+      .filter(c => fieldTypeOf(c).toString == TypeNames.UNKNOWN)
+      .map(fieldIdOf)
+      .toSet
+    getMethod(spec.getClass, "fields")
+      .invoke(spec)
+      .asInstanceOf[java.util.List[_]]
+      .asScala
+      .toSeq
+      .filter(f => unknownIds(getMethod(f.getClass, "sourceId").invoke(f).asInstanceOf[Int]))
+      .map(f => getMethod(f.getClass, "name").invoke(f).asInstanceOf[String])
+  }
+
   /**
    * Gets the partition spec from an Iceberg table.
    */
