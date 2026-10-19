@@ -870,16 +870,24 @@ impl NextFileMetadataPrefetch {
         scan_io_metrics: Arc<ScanIoMetrics>,
         metadata_cache: Arc<FileMetadataCache>,
     ) -> Self {
+        // One pass from the back, so a long run of ranges of one path costs linear time. The next
+        // file of `files[i]` is `files[i + 1]` when its path differs and `files[i + 1]`'s own next
+        // file otherwise. Inserting while walking backwards lets the earliest of any duplicate
+        // key win.
         let mut next_files = HashMap::new();
-        for (position, file) in files.iter().enumerate() {
+        let mut next: Option<&PartitionedFile> = None;
+        for (position, file) in files.iter().enumerate().rev() {
             let location = &file.object_meta.location;
-            let next = files[position + 1..]
-                .iter()
-                .find(|next| &next.object_meta.location != location);
+            if let Some(following) = files.get(position + 1) {
+                if &following.object_meta.location != location {
+                    next = Some(following);
+                }
+            }
             if let Some(next) = next {
-                next_files
-                    .entry((location.clone(), file.range.clone()))
-                    .or_insert_with(|| (next.object_meta.clone(), next.metadata_size_hint));
+                next_files.insert(
+                    (location.clone(), file.range.clone()),
+                    (next.object_meta.clone(), next.metadata_size_hint),
+                );
             }
         }
         Self {
@@ -1968,6 +1976,42 @@ mod tests {
         assert_eq!(store.reads("b.parquet"), single_load.reads("b.parquet"));
         assert_eq!(metric(&metrics, "scan_io_metadata_prefetches"), 1);
         assert!(in_flight_is_empty(&factory));
+    }
+
+    /// The map of next files comes from one pass over the group, so a path that comes back later
+    /// keeps the next file of its earliest range, and a long run of ranges of one path builds
+    /// without a search per range.
+    #[tokio::test]
+    async fn the_next_file_map_handles_repeated_paths_and_long_runs() {
+        let file = |name: &str| PartitionedFile::new(name.to_string(), 100);
+        let mut files = vec![
+            file("a.parquet"),
+            file("b.parquet"),
+            file("a.parquet"),
+            file("c.parquet"),
+        ];
+        // 40,000 ranges of one path: quadratic construction takes seconds, a linear pass doesn't.
+        files.extend((0..40_000).map(|i| file("d.parquet").with_range(i, i + 1)));
+        let metrics = ExecutionPlanMetricsSet::new();
+        let started = std::time::Instant::now();
+        let factory = prefetching_factory(Arc::new(InMemory::new()), &files, &metrics);
+        assert!(started.elapsed() < std::time::Duration::from_secs(1));
+
+        let prefetch = factory.next_file_prefetch.as_ref().unwrap();
+        let next = |file: &PartitionedFile| {
+            prefetch
+                .next_files
+                .get(&(file.object_meta.location.clone(), file.range.clone()))
+                .map(|(next, _)| next.location.to_string())
+        };
+        // The first a wins over the second, which would give c.
+        assert_eq!(next(&files[0]).as_deref(), Some("b.parquet"));
+        assert_eq!(next(&files[1]).as_deref(), Some("a.parquet"));
+        assert_eq!(next(&files[3]).as_deref(), Some("d.parquet"));
+        // d has no file after its ranges.
+        assert_eq!(next(&files[4]), None);
+        assert_eq!(next(&files[files.len() - 1]), None);
+        assert_eq!(prefetch.next_files.len(), 3);
     }
 
     /// A prefetch that fails yields nothing, so the file's open loads the metadata itself and
