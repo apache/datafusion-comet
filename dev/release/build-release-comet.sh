@@ -91,20 +91,6 @@ then
   usage
 fi
 
-if git ls-remote --exit-code "$REPO" "refs/heads/$BRANCH" "refs/tags/$BRANCH" >/dev/null
-then
-  echo "Found branch or tag $BRANCH in $REPO"
-else
-  STATUS=$?
-  if [ "$STATUS" -eq 2 ]
-  then
-    echo "Error: branch or tag '$BRANCH' does not exist in $REPO"
-  else
-    echo "Error: unable to check branch or tag '$BRANCH' in $REPO"
-  fi
-  exit 1
-fi
-
 echo "Building binaries from $REPO/$BRANCH"
 
 # Check Java version
@@ -121,6 +107,7 @@ echo "Java version check passed: $JAVA_VERSION"
 # local checkout that it is run from, so its current branch, other local changes and stale
 # build output (see https://github.com/apache/datafusion-comet/issues/2232) cannot leak into
 # the release.
+CLEANUP=1
 BUILD_DIR=$(mktemp -d /tmp/comet-release-build-XXXXX)
 git clone "$REPO" "$BUILD_DIR"
 git -C "$BUILD_DIR" checkout "$BRANCH"
@@ -165,7 +152,6 @@ docker build --no-cache \
 # Run the builder container for each architecture. The entrypoint script will build the binaries
 
 # AMD64
-CLEANUP=1
 echo "Building amd64 binary"
 docker run \
    --name comet-amd64-builder-container \
