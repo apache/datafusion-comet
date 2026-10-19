@@ -40,8 +40,10 @@ import org.apache.spark.sql.comet.execution.arrow.{CometArrowStream, CometNative
 import org.apache.spark.sql.comet.execution.shuffle.CometShuffleExchangeExec
 import org.apache.spark.sql.comet.util.Utils
 import org.apache.spark.sql.execution._
-import org.apache.spark.sql.execution.adaptive.{AQEShuffleReadExec, BroadcastQueryStageExec, QueryStageExec, ShuffleQueryStageExec}
+import org.apache.spark.sql.execution.adaptive.{AdaptiveSparkPlanExec, AQEShuffleReadExec, BroadcastQueryStageExec, QueryStageExec, ShuffleQueryStageExec}
 import org.apache.spark.sql.execution.aggregate.{BaseAggregateExec, HashAggregateExec, ObjectHashAggregateExec, SortAggregateExec}
+import org.apache.spark.sql.execution.columnar.InMemoryTableScanExec
+import org.apache.spark.sql.execution.datasources.v2.DataSourceV2ScanExecBase
 import org.apache.spark.sql.execution.exchange.ReusedExchangeExec
 import org.apache.spark.sql.execution.joins.{BroadcastHashJoinExec, BroadcastNestedLoopJoinExec, HashJoin, ShuffledHashJoinExec, SortMergeJoinExec}
 import org.apache.spark.sql.execution.metric.{SQLMetric, SQLMetrics}
@@ -62,7 +64,7 @@ import org.apache.comet.rules.CometExecRule
 import org.apache.comet.serde.{CometCollectBuffer, CometOperatorSerde, Compatible, OperatorOuterClass, QueryContextInterner, SupportLevel, Unsupported}
 import org.apache.comet.serde.OperatorOuterClass.{AggregateMode => CometAggregateMode, Operator}
 import org.apache.comet.serde.QueryPlanSerde
-import org.apache.comet.serde.QueryPlanSerde.{aggExprToProto, exprToProto, isStringCollationType, supportedSortType}
+import org.apache.comet.serde.QueryPlanSerde.{aggExprToProto, exprToProto, hasNonDefaultStringCollation, isStringCollationType, supportedSortType}
 import org.apache.comet.serde.operator.CometSink
 import org.apache.comet.shims.MergeRowsMetricsShim
 
@@ -2918,6 +2920,55 @@ trait CometHashJoin {
     val leftKeys = join.leftKeys.map(exprToProto(_, join.left.output))
     val rightKeys = join.rightKeys.map(exprToProto(_, join.right.output))
 
+    // Spark reports the streamed side's order as the join's, and drops a sort above the join
+    // that it satisfies. DataFusion's hash join keeps the unmatched probe rows of a right outer
+    // join in place only when the probe input declares an order, and otherwise moves them after
+    // the matched rows of each batch. Comet builds on the build side, so a left outer join built
+    // on the right and a right outer join built on the left both run as that right outer join,
+    // and an input sorted outside the native plan, a relation sorted before it was cached for
+    // instance, declares no order to DataFusion. Send the order so the native join declares it
+    // on the probe input; see SortedInputExec. Every other join type keeps the probe order as
+    // it is. The null-aware anti join is the exception, as Comet builds that one on its streamed
+    // side, but it runs natively only when that side reports no order, so it reports none.
+    //
+    // The order Spark reports can be false to begin with. A Comet join that may move its
+    // streamed rows reports it all the same: a right outer join like this one whose probe input
+    // declared no order, and the nested loop join, which keeps the order of neither input. A
+    // cache reports the order of the plan that wrote it, so the rows of such a join can reach
+    // this one through a cache, as a JVM input that the native planner cannot look behind.
+    // Declaring the order there would let an operator above rely on it, an
+    // aggregate in sorted mode for instance, which then splits groups. So nothing is declared
+    // when such a join feeds the streamed side with no sort in between, or when a leaf reports
+    // an order that cannot be checked; see mayReportFalseOrder.
+    //
+    // Declaring any order makes DataFusion keep the probe rows in place, so the longest prefix
+    // of the order that Comet can express is enough. A key that exprToProto takes counts as
+    // expressible, unless it holds a collated string, at the top level or nested, which Spark
+    // orders by its collation but the native side would declare in raw byte order. That is the
+    // check `supportedSortType` makes for a sort. Nothing here can tell whether an operator above
+    // relies on the order, so a join whose first key Comet cannot express stays in Spark.
+    val (streamed, _) = streamedSide(join.buildSide, join.left, join.right)
+    val streamedSortOrders =
+      if (runsAsRightOuterJoin(join.joinType, join.buildSide) &&
+        join.outputOrdering.nonEmpty && !mayReportFalseOrder(streamed)) {
+        val orders = join.outputOrdering.iterator
+          .takeWhile(order => !hasNonDefaultStringCollation(order.dataType))
+          .map(exprToProto(_, streamed.output))
+          .takeWhile(_.isDefined)
+          .flatten
+          .toSeq
+        if (orders.isEmpty) {
+          withFallbackReason(
+            join,
+            "the streamed side's sort order, which this outer join has to keep, cannot be " +
+              "expressed natively")
+          return None
+        }
+        orders
+      } else {
+        Nil
+      }
+
     if (leftKeys.forall(_.isDefined) &&
       rightKeys.forall(_.isDefined) &&
       childOp.nonEmpty) {
@@ -2930,12 +2981,103 @@ trait CometHashJoin {
         else OperatorOuterClass.BuildSide.BuildRight)
         .setNullAwareAntiJoin(isNullAwareAntiJoin)
         .setDynamicFilterEnabled(CometConf.COMET_EXEC_JOIN_DYNAMIC_FILTER_ENABLED.get(join.conf))
+        .addAllStreamedSortOrders(streamedSortOrders.asJava)
       condition.foreach(joinBuilder.setCondition)
       Some(builder.setHashJoin(joinBuilder).build())
     } else {
       None
     }
   }
+
+  // Whether the order that `plan` reports may be false, because something that feeds it with no
+  // sort in between cannot be relied on to keep it. Comet's hash joins report the order of their
+  // streamed side, which Spark's own joins keep, but two Comet joins do not always: an outer join
+  // that runs as DataFusion's right outer join, which keeps its probe rows in place only if the
+  // planner declared an order on its probe input; and the nested loop join, which DataFusion runs
+  // build row by build row. So does a leaf that reports an order from state this walk cannot
+  // check, an RDD checkpointed from a plan that is gone for one.
+  //
+  // The walk follows the order, so a hash join, which passes on only its streamed side's, is
+  // walked through that side alone. A cache reports the order of the plan that wrote it, and the
+  // walk goes on into that plan, picked as Spark's scan picks it: an adaptive plan reports no
+  // order, but the scan reads the final plan behind it once there is one. While CometExecRule
+  // converts a plan, a native plan's JVM inputs sit behind a CometScanWrapper, a leaf, so the
+  // walk looks through that too.
+  private def mayReportFalseOrder(plan: SparkPlan): Boolean = plan match {
+    case adaptive: AdaptiveSparkPlanExec if adaptive.isFinalPlan =>
+      mayReportFalseOrder(adaptive.executedPlan)
+    case _ if plan.outputOrdering.isEmpty => false
+    case _: SortExec | _: CometSortExec => false
+    case _: CometBroadcastNestedLoopJoinExec => true
+    case join: CometBroadcastHashJoinExec =>
+      hashJoinMayReportFalseOrder(
+        join.nativeOp,
+        join.joinType,
+        join.buildSide,
+        join.left,
+        join.right)
+    case join: CometHashJoinExec =>
+      hashJoinMayReportFalseOrder(
+        join.nativeOp,
+        join.joinType,
+        join.buildSide,
+        join.left,
+        join.right)
+    case join: HashJoin =>
+      mayReportFalseOrder(streamedSide(join.buildSide, join.left, join.right)._1)
+    case wrapper: CometScanWrapper => mayReportFalseOrder(wrapper.originalPlan)
+    case scan: CometInMemoryTableScanExec =>
+      mayReportFalseOrder(scan.originalPlan.relation.cachedPlan)
+    case scan: InMemoryTableScanExec => mayReportFalseOrder(scan.relation.cachedPlan)
+    case stage: QueryStageExec => mayReportFalseOrder(stage.plan)
+    // A scan reports an order that Spark already relies on.
+    case _: DataSourceScanExec | _: DataSourceV2ScanExecBase | _: RangeExec | _: CometLeafExec =>
+      false
+    case _ if plan.children.isEmpty => true
+    case _ => plan.children.exists(mayReportFalseOrder)
+  }
+
+  // Whether a Comet hash join that reports an order may not keep it. Only the streamed side's
+  // order reaches the join's output, so a false order on the build side is of no concern, and an
+  // outer join of the two shapes has to have declared the order on its probe input as well.
+  private def hashJoinMayReportFalseOrder(
+      nativeOp: Operator,
+      joinType: JoinType,
+      buildSide: BuildSide,
+      left: SparkPlan,
+      right: SparkPlan): Boolean = {
+    val (streamed, streamedIndex) = streamedSide(buildSide, left, right)
+    mayReportFalseOrder(streamed) ||
+    (runsAsRightOuterJoin(joinType, buildSide) && !declaresStreamedOrder(nativeOp, streamedIndex))
+  }
+
+  // Whether the native planner declares the streamed order on the probe input of the join that
+  // `nativeOp` describes. It does so when the serde sent the order and the probe input reads from
+  // the JVM, which is the case when the join's plan has a scan there. A native operator over that
+  // scan is declared as well, as far as the native walk goes, but that is for the planner to say,
+  // so it counts as not declared.
+  private def declaresStreamedOrder(nativeOp: Operator, streamedIndex: Int): Boolean =
+    nativeOp.getHashJoin.getStreamedSortOrdersCount > 0 &&
+      nativeOp.getChildrenCount > streamedIndex && {
+        val probe = nativeOp.getChildren(streamedIndex)
+        probe.hasScan || probe.hasShuffleScan
+      }
+
+  // The streamed side of a hash join, which is the side it is not built on, and its child index.
+  private def streamedSide(
+      buildSide: BuildSide,
+      left: SparkPlan,
+      right: SparkPlan): (SparkPlan, Int) =
+    if (buildSide == BuildRight) (left, 0) else (right, 1)
+
+  // A left outer join built on the right and a right outer join built on the left both run as
+  // DataFusion's right outer join, which keeps its unmatched probe rows in place only when the
+  // probe input declares an order.
+  private def runsAsRightOuterJoin(joinType: JoinType, buildSide: BuildSide): Boolean =
+    (joinType, buildSide) match {
+      case (LeftOuter, BuildRight) | (RightOuter, BuildLeft) => true
+      case _ => false
+    }
 }
 
 case class CometBroadcastNestedLoopJoinExec(
