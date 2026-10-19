@@ -15,6 +15,7 @@
 // specific language governing permissions and limitations
 // under the License.
 
+use arrow::array::{ArrayRef, Decimal128Array};
 use arrow::datatypes::{DataType, Field};
 use criterion::{criterion_group, criterion_main, BenchmarkId, Criterion};
 use datafusion::common::config::ConfigOptions;
@@ -25,14 +26,25 @@ use std::sync::Arc;
 
 #[path = "common/mod.rs"]
 mod common;
-use common::{f64_array, i32_array, NULL_RATIOS, ROW_COUNTS};
+use common::{i32_array, is_null, NULL_RATIOS, ROW_COUNTS};
+
+/// The kernel accepts only `Decimal(18, 6)` seconds, the type Spark gives the `secs` argument.
+fn seconds_array(rows: usize, null_ratio: f64) -> ArrayRef {
+    let arr = (0..rows)
+        .map(|i| (!is_null(i, null_ratio)).then_some((i % 60_000_000) as i128))
+        .collect::<Decimal128Array>()
+        .with_precision_and_scale(18, 6)
+        .unwrap();
+    Arc::new(arr)
+}
 
 fn criterion_benchmark(c: &mut Criterion) {
     let udf = SparkMakeInterval::new(false);
     let mut group = c.benchmark_group("make_interval");
     for rows in ROW_COUNTS {
         for (null_ratio, tag) in NULL_RATIOS {
-            // make_interval(years, months, weeks, days, hours, mins: Int32, secs: Float64)
+            // make_interval(years, months, weeks, days, hours, mins: Int32,
+            //               secs: Decimal128(18, 6))
             let args = vec![
                 ColumnarValue::Array(i32_array(rows, null_ratio, |i| (i % 10) as i32)),
                 ColumnarValue::Array(i32_array(rows, null_ratio, |i| (i % 12) as i32)),
@@ -40,7 +52,7 @@ fn criterion_benchmark(c: &mut Criterion) {
                 ColumnarValue::Array(i32_array(rows, null_ratio, |i| (i % 28) as i32)),
                 ColumnarValue::Array(i32_array(rows, null_ratio, |i| (i % 24) as i32)),
                 ColumnarValue::Array(i32_array(rows, null_ratio, |i| (i % 60) as i32)),
-                ColumnarValue::Array(f64_array(rows, null_ratio, |i| (i % 60) as f64)),
+                ColumnarValue::Array(seconds_array(rows, null_ratio)),
             ];
             group.bench_with_input(
                 BenchmarkId::from_parameter(format!("{rows}/{tag}")),

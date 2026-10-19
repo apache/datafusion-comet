@@ -391,6 +391,100 @@ mod tests {
         );
     }
 
+    /// Spark hashes a `CalendarInterval` as `hashInt(months, hashLong(microseconds, seed))`, not
+    /// as a struct of its fields, so the tagged interval struct must not reach the generic struct
+    /// arm. That holds bare, nested in an array or struct, and with the children widened to
+    /// nullable.
+    #[test]
+    fn test_calendar_interval_uses_spark_interval_hash() {
+        use crate::hash_funcs::utils::test_utils::calendar_interval_array;
+        use crate::murmur3::{spark_compatible_murmur3_hash, spark_murmur3_hash};
+        use arrow::array::{Array, ListArray, StructArray};
+        use arrow::buffer::OffsetBuffer;
+        use arrow::datatypes::{DataType, Field, Fields};
+        use datafusion::common::ScalarValue;
+        use datafusion::physical_plan::ColumnarValue;
+
+        // `make_interval(1)`, a value that differs only in days, one with every field set, and NULL.
+        let intervals = [
+            Some((12, 0, 0)),
+            Some((12, 5, 0)),
+            Some((14, -3, 7_008_009)),
+            None,
+        ];
+        let interval_hash = |months: i32, micros: i64| {
+            spark_compatible_murmur3_hash(
+                months.to_le_bytes(),
+                spark_compatible_murmur3_hash(micros.to_le_bytes(), 42),
+            )
+        };
+        let expected: Vec<u32> = intervals
+            .iter()
+            .map(|v| v.map_or(42, |(months, _, micros)| interval_hash(months, micros)))
+            .collect();
+        // Spark 4.1.3 returns -351543533 for `hash(make_interval(y))` with y = 1.
+        assert_eq!(expected[0] as i32, -351543533);
+
+        for nullable_children in [false, true] {
+            let array = calendar_interval_array(&intervals, nullable_children);
+            assert_eq!(
+                hash_of(Arc::clone(&array), intervals.len()),
+                expected,
+                "nullable_children = {nullable_children}"
+            );
+
+            // The expression entry point, as `hash(c)` reaches it.
+            let result = spark_murmur3_hash(&[
+                ColumnarValue::Array(Arc::clone(&array)),
+                ColumnarValue::Scalar(ScalarValue::Int32(Some(42))),
+            ])
+            .unwrap();
+            let ColumnarValue::Array(result) = result else {
+                panic!("expected an array result")
+            };
+            let result = result.as_any().downcast_ref::<Int32Array>().unwrap();
+            assert_eq!(result.value(0), -351543533);
+
+            // `array(c)` and `struct(c)` hash a non-null interval exactly as the bare value, and
+            // skip a null one, as Spark's generated code does.
+            let list: ArrayRef = Arc::new(ListArray::new(
+                Arc::new(Field::new("item", array.data_type().clone(), true)),
+                OffsetBuffer::from_lengths(vec![1; intervals.len()]),
+                Arc::clone(&array),
+                None,
+            ));
+            assert_eq!(hash_of(list, intervals.len()), expected);
+            let wrapper_fields: Fields =
+                vec![Arc::new(Field::new("c", array.data_type().clone(), true))].into();
+            let wrapped: ArrayRef = Arc::new(StructArray::new(
+                wrapper_fields,
+                vec![Arc::clone(&array)],
+                None,
+            ));
+            assert_eq!(hash_of(wrapped, intervals.len()), expected);
+        }
+
+        // A user's struct with the same shape but without the marker keeps struct semantics:
+        // every field is hashed in order, days included.
+        let tagged = calendar_interval_array(&intervals[..3], false);
+        let tagged = tagged.as_any().downcast_ref::<StructArray>().unwrap();
+        let plain_fields: Fields = vec![
+            Arc::new(Field::new("months", DataType::Int32, false)),
+            Arc::new(Field::new("days", DataType::Int32, false)),
+            Arc::new(Field::new("microseconds", DataType::Int64, false)),
+        ]
+        .into();
+        let plain: ArrayRef = Arc::new(StructArray::new(
+            plain_fields,
+            tagged.columns().to_vec(),
+            None,
+        ));
+        let mut field_by_field = vec![42u32; 3];
+        create_murmur3_hashes(tagged.columns(), &mut field_by_field).unwrap();
+        assert_eq!(hash_of(plain, 3), field_by_field);
+        assert_ne!(field_by_field, expected[..3]);
+    }
+
     /// One `struct<a: Int32, b: Utf8>` element: `None` is a null struct, and the fields are
     /// independently nullable.
     type StructElem = Option<(Option<i32>, Option<&'static str>)>;

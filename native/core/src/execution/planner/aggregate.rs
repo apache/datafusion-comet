@@ -51,10 +51,11 @@ use datafusion_comet_proto::{
     spark_operator::{AggregateMode as ProtoAggregateMode, Operator},
 };
 use datafusion_comet_spark_expr::{
-    ApproxPercentile, Avg, AvgDecimal, BloomFilterAgg, CometCollectList, CometCollectSet,
-    Correlation, Covariance, HllPlusPlus, HllSketchAgg, HllUnionAgg, MaxMinBy, Mode, Regr,
-    RegrType, SparkBloomFilterVersion, SparkListAgg, SparkMinMax, SparkPercentile, SparkPivotFirst,
-    Stddev, SumDecimal, SumInteger, Variance,
+    calendar_interval_type, is_calendar_interval_fields, ApproxPercentile, Avg, AvgDecimal,
+    BloomFilterAgg, CometCollectList, CometCollectSet, Correlation, Covariance, HllPlusPlus,
+    HllSketchAgg, HllUnionAgg, MaxMinBy, Mode, Regr, RegrType, SparkBloomFilterVersion,
+    SparkListAgg, SparkMinMax, SparkPercentile, SparkPivotFirst, Stddev, SumDecimal, SumInteger,
+    Variance,
 };
 use jni::objects::{Global, JObject};
 
@@ -818,6 +819,13 @@ impl PhysicalPlanner {
 
 /// Return a copy of `data_type` with every nested field marked nullable. Map key fields are left
 /// non-nullable to preserve Arrow's map invariant. Primitive types are returned unchanged.
+///
+/// A Spark `CalendarIntervalType` value, carried as the tagged struct of
+/// [`calendar_interval_type`], is a scalar with a fixed layout rather than a struct, so it is kept
+/// in exactly that layout wherever it appears. Widening its children would make a global
+/// `collect_list` declare a result type that differs from the `ARRAY<INTERVAL>` state its final
+/// stage reads back in the Spark-declared layout, and the final aggregate would then fail
+/// validating its own output batch.
 fn make_all_fields_nullable(data_type: &DataType) -> DataType {
     fn nullable_field(field: &Field, nullable: bool) -> FieldRef {
         Arc::new(
@@ -830,6 +838,7 @@ fn make_all_fields_nullable(data_type: &DataType) -> DataType {
         )
     }
     match data_type {
+        DataType::Struct(fields) if is_calendar_interval_fields(fields) => calendar_interval_type(),
         DataType::Struct(fields) => {
             DataType::Struct(fields.iter().map(|f| nullable_field(f, true)).collect())
         }

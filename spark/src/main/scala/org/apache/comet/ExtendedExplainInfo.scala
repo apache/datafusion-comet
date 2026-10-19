@@ -366,6 +366,31 @@ object CometExplainInfo {
   }
 
   /**
+   * Saves the explain tags on each node of `exprs`. The returned function restores them when a
+   * serde replaces a failed native conversion of these trees.
+   */
+  def saveTags(exprs: Seq[Expression]): () => Unit = {
+    val saved = exprs.flatMap(_.collect { case e => e }).flatMap { node =>
+      Seq(
+        new SavedTag(node, FALLBACK_REASONS),
+        new SavedTag(node, EXTENSION_INFO),
+        new SavedTag(node, CODEGEN_DISPATCH_EXPRS),
+        new SavedTag(node, DISPATCHED_SELF),
+        new SavedTag(node, NATIVE_EXPRS))
+    }
+    () => saved.foreach(_.restore())
+  }
+
+  private final class SavedTag[T](node: Expression, tag: TreeNodeTag[T]) {
+    private val value = node.getTagValue(tag)
+
+    def restore(): Unit = value match {
+      case Some(v) => node.setTagValue(tag, v)
+      case None => node.unsetTagValue(tag)
+    }
+  }
+
+  /**
    * Nodes that never carry their own coverage or info tags, so those tags can only arrive by the
    * copying described in [[collectExprTagValues]]. This set must match
    * `QueryPlanSerde.isStructuralExpr` minus `Alias`; changing either set requires checking the
