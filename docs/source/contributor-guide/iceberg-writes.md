@@ -25,21 +25,25 @@ the JVM/native boundary in each direction, who owns cleanup when a task fails, a
 change to any of it.
 
 For the user-facing view (configuration, the eligibility table, and the accepted differences from
-iceberg-java's output), see [Iceberg Writes](../user-guide/latest/iceberg-writes.md). This page
+iceberg-java's output), see [Iceberg Writes](../user-guide/latest/iceberg.md#writes). This page
 does not repeat those lists; it explains the code that implements them.
 
 ## Overview
 
-Two flags, each of which builds on the one before it:
+Two layers, the second built on the first, both switched by `spark.comet.write.iceberg.enabled`:
 
-| Flag                                              | What it changes                                                                                                                         |
-| ------------------------------------------------- | --------------------------------------------------------------------------------------------------------------------------------------- |
-| `spark.comet.write.iceberg.splitOperator.enabled` | The plan shape. Spark's single V2 write operator becomes `IcebergCommit` over `IcebergWrite`. iceberg-java still writes the data files. |
-| `spark.comet.write.iceberg.enabled`               | Who writes the data files. An eligible `IcebergWrite` becomes `CometIcebergWrite`, which writes Parquet with iceberg-rust.              |
+| Layer                   | What it changes                                                                                                                                 |
+| ----------------------- | ----------------------------------------------------------------------------------------------------------------------------------------------- |
+| The split-operator plan | The plan shape. Spark's single V2 write operator becomes `IcebergCommit` over `IcebergWrite`, and iceberg-java writes the data files inside it. |
+| The native writer       | Who writes the data files. An eligible `IcebergWrite` becomes `CometIcebergWrite`, which writes Parquet with iceberg-rust.                      |
 
-The native flag does nothing without the split flag, because it converts a node only the split plan
-creates. Both default to `false`. The roadmap for making them the default, and the criteria for it,
-are tracked in [#5644](https://github.com/apache/datafusion-comet/issues/5644) under the epic
+The flag defaults to `false`, which plans Spark's own write operator. With it on, a change to the
+split plan reaches every append, overwrite and copy-on-write Iceberg write, and a change to the
+native writer reaches every eligible one.
+The testing-only `spark.comet.write.iceberg.splitOperator.enabled` plans the split operator with the
+native writer off, which the suites use to compare the two writers under the same plan. The
+criteria for turning the flag on by default are tracked in
+[#5644](https://github.com/apache/datafusion-comet/issues/5644) under the epic
 [#5649](https://github.com/apache/datafusion-comet/issues/5649).
 
 One rule runs through the whole native path: **the native writer must produce the outcome
@@ -70,13 +74,13 @@ IcebergCommit                 driver: collect task commit messages, BatchWrite.c
    +- <input query>           scans, projects, exchanges, sorts; inside AQE with or without the split
 ```
 
-| Component                                                                                                                            | Location                                           | Role                                                                                                                                                                                                                                 |
-| ------------------------------------------------------------------------------------------------------------------------------------ | -------------------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------ |
-| `IcebergWriteStrategy`                                                                                                               | `spark/src/main/scala/org/apache/comet/iceberg/`   | Planner strategy. Matches `AppendData`, `OverwriteByExpression`, `OverwritePartitionsDynamic`, `ReplaceData` (and Iceberg's own `ReplaceIcebergData`, which Iceberg 1.5.2 plans on Spark 3.4), plus Spark 3.5+ Iceberg `WriteDelta`. |
-| `IcebergWriteLogical`                                                                                                                | same                                               | Logical anchor for the writer, so AQE re-plans re-emit only the writer and not a second committer.                                                                                                                                   |
-| `IcebergWriteExec`                                                                                                                   | `spark/src/main/scala/org/apache/spark/sql/comet/` | JVM writer. Runs iceberg-java's `DataWriter` or, for `WriteDelta`, `DeltaWriter` per task and returns the serialized `WriterCommitMessage` as one binary row.                                                                        |
-| `IcebergCommitExec`                                                                                                                  | same                                               | Driver committer. A `V2CommandExec`, so `run()` is memoized and the commit happens once.                                                                                                                                             |
-| `IcebergReplaceDataShim`, `IcebergDeltaLogicalShim`, `IcebergDeltaWriterShim`, `IcebergRefreshCacheShim`, `IcebergDriverMetricsShim` | `spark/src/main/spark-*/org/apache/comet/iceberg/` | Version differences: operation-coded `ReplaceData` / `WriteDelta` rows, cache refresh by name on 4.1+, driver metric reporting.                                                                                                      |
+| Component                                                                                                                            | Location                                           | Role                                                                                                                                                                                                                                                              |
+| ------------------------------------------------------------------------------------------------------------------------------------ | -------------------------------------------------- | ----------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `IcebergWriteStrategy`                                                                                                               | `spark/src/main/scala/org/apache/comet/iceberg/`   | Planner strategy. Matches `AppendData`, `OverwriteByExpression`, `OverwritePartitionsDynamic`, `ReplaceData` (and Iceberg's own `ReplaceIcebergData`, which Iceberg 1.5.2 plans on Spark 3.4), plus Spark 3.5+ Iceberg `WriteDelta` under the testing split flag. |
+| `IcebergWriteLogical`                                                                                                                | same                                               | Logical anchor for the writer, so AQE re-plans re-emit only the writer and not a second committer.                                                                                                                                                                |
+| `IcebergWriteExec`                                                                                                                   | `spark/src/main/scala/org/apache/spark/sql/comet/` | JVM writer. Runs iceberg-java's `DataWriter` or, for `WriteDelta`, `DeltaWriter` per task and returns the serialized `WriterCommitMessage` as one binary row.                                                                                                     |
+| `IcebergCommitExec`                                                                                                                  | same                                               | Driver committer. A `V2CommandExec`, so `run()` is memoized and the commit happens once.                                                                                                                                                                          |
+| `IcebergReplaceDataShim`, `IcebergDeltaLogicalShim`, `IcebergDeltaWriterShim`, `IcebergRefreshCacheShim`, `IcebergDriverMetricsShim` | `spark/src/main/spark-*/org/apache/comet/iceberg/` | Version differences: operation-coded `ReplaceData` / `WriteDelta` rows, cache refresh by name on 4.1+, driver metric reporting.                                                                                                                                   |
 
 Things to know before changing this layer:
 
@@ -94,8 +98,10 @@ Things to know before changing this layer:
   position-delta write do not ask for one; the checks in `buildTwoOp` and `buildDeltaTwoOp`
   are defensive.
 - **WriteDelta stays JVM-backed.** Spark 3.5+ merge-on-read commands are intercepted by the split
-  plan, but `IcebergWriteExec` delegates their rows to Iceberg's JVM `DeltaWriter`; the native
-  Iceberg writer is explicitly declined. Spark 3.4 `WriteDelta` keeps Spark's plan.
+  plan only when the testing flag `spark.comet.write.iceberg.splitOperator.enabled` is on, and then
+  `IcebergWriteExec` delegates their rows to Iceberg's JVM `DeltaWriter`; the native Iceberg writer
+  is explicitly declined. Since the split plan gives such a write nothing over Spark's operator,
+  `spark.comet.write.iceberg.enabled` alone leaves it on Spark's plan, as does Spark 3.4.
 - **What is not intercepted:** streaming writes and CTAS/RTAS on Spark 3.4. Those keep Spark's plan.
 
 On Spark 4.1+, `IcebergWriteSummaryShim` finds either Spark's `MergeRowsExec` or
@@ -165,7 +171,8 @@ The gate has these properties, and a new rule has to keep them:
   `scheme_of` split a location's scheme differently). Prefer sharing one implementation, or pin the
   pair with a test that feeds both the same inputs.
 
-Every rule is pinned by `CometIcebergWriteDetectionSuite`. Add a case there for any new rule, for
+Most rules are pinned by `CometIcebergWriteDetectionSuite`, and the row lineage rule by
+`CometIcebergWriteActionSuite`. Add a case to the detection suite for any new rule, for
 both the accepted and the declined side. Update the eligibility table in the user guide in the same
 change. Whether each existing restriction is permanent is tracked in
 [#5643](https://github.com/apache/datafusion-comet/issues/5643).
@@ -233,9 +240,9 @@ Points where Comet adapts iceberg-rust to match iceberg-java:
 - **Location generation.** `CometLocationGenerator` (`iceberg_partition_path.rs`) replaces
   iceberg-rust's `DefaultLocationGenerator` and renders partition directories the way iceberg-java's
   `PartitionSpec.partitionToPath` does. iceberg-rust's own rendering differs for several types, and
-  panics for pre-1970 `timestamptz` and for dates past `chrono`'s calendar. Float and double values
-  use Comet's Java `Double.toString` renderer (`java_float_string`), shared with
-  `cast(float as string)`. The partition type is resolved once when the generator is built, because
+  panics for dates past `chrono`'s calendar. Float and double values use Comet's Java
+  `Double.toString` renderer (`java_float_string`), shared with `cast(float as string)`. The
+  partition type is resolved once when the generator is built, because
   `LocationGenerator::generate_location` cannot return an error.
 - **Partition values.** `PartitionValueCalculator` (`iceberg_partition_value.rs`) replaces
   iceberg-rust's calculator of the same name, and `PartitionSplitter` replaces its
@@ -246,9 +253,8 @@ Points where Comet adapts iceberg-rust to match iceberg-java:
   NULL past `chrono`'s calendar ([#6145](https://github.com/apache/datafusion-comet/issues/6145)).
   All four of its transforms floor a pre-1970 timestamp that lies exactly 999999 microseconds into a
   unit, which iceberg-java puts in the unit before
-  ([#6426](https://github.com/apache/datafusion-comet/issues/6426)), and its `day` puts some
-  timestamps from the last second before a pre-1970 midnight in the next day. Every other transform
-  stays on iceberg-rust.
+  ([#6426](https://github.com/apache/datafusion-comet/issues/6426)). Every other transform stays on
+  iceberg-rust.
 - **File names.** `file_name_prefix` embeds the partition id, the task attempt id and the operation
   id, so a retried or speculative attempt never reuses another attempt's file names.
 - **Row pacing.** iceberg-java's rolling writer checks the target file size every 1000 rows of the
@@ -259,9 +265,10 @@ Points where Comet adapts iceberg-rust to match iceberg-java:
   column's encoding when the file opens
   ([#6114](https://github.com/apache/datafusion-comet/issues/6114)). So each partition's
   `PartitionFeed` holds back the partition's first page of rows (`write.parquet.page-row-limit`,
-  capped by `write.parquet.row-group-size-bytes`, which the fanout feeds share) before any of them
-  reaches the writer. `DictionaryChooser` (`iceberg_dictionary.rs`) replays parquet-mr's accounting
-  over those rows and turns dictionary encoding off for the columns parquet-mr would write plain.
+  at least 100, capped by `write.parquet.row-group-size-bytes`, which the fanout feeds share) before
+  any of them reaches the writer, unless no column has a dictionary choice to make.
+  `DictionaryChooser` (`iceberg_dictionary.rs`) replays parquet-mr's accounting over those rows and
+  turns dictionary encoding off for the columns parquet-mr would write plain.
   It reads only the columns there is a choice for, one at a time, and walks each lazily only as far
   as its first page, so beyond the held rows it keeps no more than one column's dictionary. The
   accounting follows `FallbackValuesWriter`, `DictionaryValuesWriter` and
@@ -342,7 +349,8 @@ backend ignores them. A fallback reason must contain property names only, never 
 Each task emits exactly one batch with one row and two `BINARY` columns (`build_output_schema`):
 
 1. The task's `DataFile`s encoded as an Iceberg v2 data manifest, written by iceberg-rust's
-   `ManifestWriter` into an in-process `memory:` `FileIO`. Empty when the task wrote no files.
+   `ManifestWriter` into an in-process `memory:` `FileIO`. A task that wrote no files sends a
+   manifest with no entries.
 2. Every location the task's writers were handed (`encode_locations`: a big-endian count, then a
    length-prefixed UTF-8 string per location).
 
@@ -363,7 +371,8 @@ Each task emits exactly one batch with one row and two `BINARY` columns (`build_
 Rebuilding metrics on the JVM is the main reason manifest parity holds: metrics modes, truncation,
 the inferred-column cap and list/map bounds suppression are decided by iceberg-java's code. When
 touching the native writer, do not try to make iceberg-rust's own metrics authoritative; the JVM
-discards them. The price is one footer read per written file.
+discards them. The price is reading each written file's footer back from storage, two small reads
+per file.
 
 ## Failure Handling and Cleanup Ownership
 
@@ -414,8 +423,9 @@ Useful places to look when checking parity:
 - `CometIcebergWriteActionSuite` writes the same data through both writers into sibling tables and
   compares rows, `readable_metrics` and partition paths.
 - iceberg-rust's own code, at the pinned revision. iceberg-rust makes different choices from
-  iceberg-java in places that matter to the table's contents, for example grouping partition keys
-  with `OrderedFloat`, which treats `-0.0` and `0.0` as equal
+  iceberg-java in places that matter to the table's contents. For example, until
+  [apache/iceberg-rust#3327](https://github.com/apache/iceberg-rust/pull/3327) it grouped
+  partition keys with `OrderedFloat`, which treats `-0.0` and `0.0` as equal
   ([#6138](https://github.com/apache/datafusion-comet/issues/6138)). Check how iceberg-rust
   compares, hashes and renders values, not only what it writes.
 
@@ -433,18 +443,22 @@ the writer: run the write suites and the Iceberg Spark tests. The pin policy is 
 | Suite                                                            | What it covers                                                                                                                                                                                                                 |
 | ---------------------------------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------ |
 | `CometIcebergWriteActionSuite`                                   | End-to-end writes through the split plan and the native writer: parity with iceberg-java, row-level DML, partition evolution, file order, cleanup on task and job failure, writes outgrowing the memory pool, AQE re-planning. |
-| `CometIcebergWriteDetectionSuite`                                | One case per eligibility rule, accepted and declined.                                                                                                                                                                          |
+| `CometIcebergWriteDetectionSuite`                                | Most eligibility rules, each accepted and declined.                                                                                                                                                                            |
 | `CometIcebergSystemFunctionSuite`                                | Native `bucket`, `truncate`, `years`/`months`/`days`/`hours`, which keep a partitioned write's hash distribution and sort native end to end.                                                                                   |
 | `CometIcebergRewriteActionSuite`                                 | Iceberg's `rewrite_data_files` with the split plan and the native writer.                                                                                                                                                      |
 | `IcebergWriteProtoTranslationSuite`                              | Translation of properties into `IcebergParquetWriteSettings` and the writer mode.                                                                                                                                              |
 | Rust tests in `iceberg_write.rs` and in `iceberg_partition_*.rs` | File rolling on the 1000-row grid, fanout order, clustered input checks, cleanup guard, manifest round trip, memory reservation, partition path rendering, partition values past `chrono`'s calendar.                          |
 | Rust tests in `iceberg_dictionary.rs`                            | The per-column dictionary choice against answers recorded from parquet-mr, including columns either side of its cut-off.                                                                                                       |
+| `iceberg_dictionary_chooser` benchmark in `native/core/benches`  | The time one partition's dictionary choice takes, over primitive, struct, array, map and nested columns.                                                                                                                       |
 | `CometIcebergWriteBenchmark`                                     | Native versus iceberg-java for unpartitioned, clustered, fanout and copy-on-write delete writes. It checks each arm's plan before timing it.                                                                                   |
+| `CometIcebergEndToEndBenchmark`                                  | An Iceberg read, hash repartition and Iceberg write against stock Spark, over primitive, struct, array, map and nested columns. It checks each arm's plan and the rows it wrote before timing it.                              |
 
 The Comet suites run against the Iceberg version each Spark profile pins in `spark/pom.xml`: 1.5.2
-for Spark 3.4, 1.8.1 for 3.5, 1.10.0 for 4.0 and 4.2, and 1.11.0 for 4.1. Only the default profile
-runs on every pull request. Behaviour that differs between Iceberg versions, such as reflection
-targets, metrics conventions and partition path spelling, needs a test that runs on each.
+for Spark 3.4, 1.8.1 for 3.5, 1.10.0 for 4.0, and 1.11.0 for 4.1. No Iceberg runtime is published
+for Spark 4.2, so the 4.2 profile builds against the 4.0 runtime and the Iceberg suites skip there
+(`icebergAvailable` is false on Spark 4.2). Only the default profile runs on every pull request.
+Behaviour that differs between Iceberg versions, such as reflection targets, metrics conventions
+and partition path spelling, needs a test that runs on each.
 
 When writing a native-write test:
 
@@ -463,11 +477,12 @@ When writing a native-write test:
 - **Check storage state for failure tests**, not only the table: list the files under the data
   location and compare them with what the manifests reference.
 
-The upstream Iceberg Spark tests also run with both flags and `localTableScan` enabled (see
+The upstream Iceberg Spark tests also run with the native writer and `localTableScan` enabled (see
 [Running Iceberg Spark Tests](iceberg-spark-tests.md)). They are a broad regression net, but they do
-not assert which writer ran, and Comet's fallback reasons do not appear in their CI logs, so a green
-run is not evidence that the native writer handled a given test
-([#6148](https://github.com/apache/datafusion-comet/issues/6148)).
+not assert which writer ran, so a green run is not evidence that the native writer handled a given
+test. Each job's summary page counts the writes each writer ran and lists the most common reasons
+Comet declined the rest (see
+[Which writer ran each Iceberg write](iceberg-spark-tests.md#which-writer-ran-each-iceberg-write)).
 
 ## Pitfalls
 

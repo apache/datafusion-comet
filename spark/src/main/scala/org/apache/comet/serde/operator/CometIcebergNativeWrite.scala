@@ -95,8 +95,6 @@ object CometIcebergNativeWrite extends CometOperatorSerde[IcebergWriteExec] {
   // scheme reads its bucket from the URL host (`requireSupportedStorageScheme`).
   private val LocalStorageSchemes: Set[String] = Set("file", "memory")
   private val MaxSupportedFormatVersion = 3
-  // The Iceberg spec reserves field ids above `Integer.MAX_VALUE - 200` for metadata columns.
-  private val MaxDataFieldId = Int.MaxValue - 200
   private val ParquetWritePropertyPrefix = "write.parquet."
   private val ParquetMrPropertyPrefix = "parquet."
   private val CometS3CredentialProviderClassProperty =
@@ -326,12 +324,11 @@ object CometIcebergNativeWrite extends CometOperatorSerde[IcebergWriteExec] {
       .getWritePropertiesFromSparkWrite(sparkWrite)
       .getOrElse(return Some("could not read SparkWrite.writeProperties"))
 
-    val context = TriggerContext(
-      table,
-      tableProperties ++ writeProperties,
-      sparkWrite,
-      op.session.sessionState.newHadoopConf(),
-      effectiveHadoopConf(op, table))
+    val hadoopConfs = new LazyHadoopConfs(
+      () => op.session.sessionState.newHadoopConf(),
+      sessionConf => effectiveHadoopConf(op, table, sessionConf))
+    val context =
+      TriggerContext(table, tableProperties ++ writeProperties, sparkWrite, hadoopConfs)
     triggers.iterator.map(rule => rule(context)).collectFirst { case Some(reason) => reason }
   }
 
@@ -339,13 +336,24 @@ object CometIcebergNativeWrite extends CometOperatorSerde[IcebergWriteExec] {
       table: Any,
       properties: Map[String, String],
       sparkWrite: Any,
-      hadoopConf: Configuration,
-      s3HadoopConf: Configuration)
+      hadoopConfs: LazyHadoopConfs) {
+    def hadoopConf: Configuration = hadoopConfs.session
+    def s3HadoopConf: Configuration = hadoopConfs.effective
+  }
+
+  private[comet] final class LazyHadoopConfs(
+      sessionConfBuilder: () => Configuration,
+      effectiveConfBuilder: Configuration => Configuration) {
+    lazy val session: Configuration = sessionConfBuilder()
+    lazy val effective: Configuration = effectiveConfBuilder(session)
+  }
 
   private type TriggerRule = TriggerContext => Option[String]
 
-  private def effectiveHadoopConf(op: IcebergWriteExec, table: Any): Configuration = {
-    val sessionConf = op.session.sessionState.newHadoopConf()
+  private def effectiveHadoopConf(
+      op: IcebergWriteExec,
+      table: Any,
+      sessionConf: Configuration): Configuration = {
     val catalogOverrides = IcebergReflection
       .deriveCatalogName(table)
       .map { catalogName =>
@@ -407,7 +415,6 @@ object CometIcebergNativeWrite extends CometOperatorSerde[IcebergWriteExec] {
     requireSupportedFormatVersion,
     requireNoMetadataColumns,
     requireSupportedColumnTypes,
-    requireNoFloatingPointPartitionField,
     requireNoVoidFieldWithDroppedSource,
     requireNoEncryptionPrefix,
     requireNoBloomFilterColumnsEnabled,
@@ -498,7 +505,7 @@ object CometIcebergNativeWrite extends CometOperatorSerde[IcebergWriteExec] {
       case None => Some("could not resolve the write schema's field ids")
       case Some(fields) =>
         fields.collectFirst {
-          case (name, id) if id > MaxDataFieldId =>
+          case (name, id) if id > IcebergReflection.MaxDataFieldId =>
             s"write schema includes metadata column $name, which iceberg-java fills with row " +
               "lineage and the native writer does not write"
         }
@@ -521,29 +528,6 @@ object CometIcebergNativeWrite extends CometOperatorSerde[IcebergWriteExec] {
             s"column $name has Iceberg type ${typeId.toLowerCase(Locale.ROOT)}, " +
               "which the native writer cannot reproduce"
           }
-    }
-
-  // iceberg-rust holds a float partition value as an `OrderedFloat`, whose equality treats -0.0
-  // and 0.0 as one value, and its fanout and clustered writers group rows by that equality.
-  // iceberg-java keeps the two apart, so the native writer would file both under whichever
-  // arrived first, and a read that prunes on the other value would lose rows (#6138). Remove this
-  // rule once the iceberg-rust pin carries a fix for apache/iceberg-rust#3325; #5643 tracks it.
-  private val requireNoFloatingPointPartitionField: TriggerRule = ctx =>
-    IcebergReflection
-      .getOutputSpecIdFromSparkWrite(ctx.sparkWrite)
-      .flatMap(IcebergReflection.getPartitionSpecById(ctx.table, _)) match {
-      case None => Some("could not resolve the output partition spec for type checking")
-      case Some(spec) =>
-        try {
-          IcebergReflection.floatingPointPartitionFields(spec).headOption.map {
-            case (name, typeName) =>
-              s"partition field $name has Iceberg type $typeName, and the native writer does " +
-                "not keep -0.0 and 0.0 partitions apart"
-          }
-        } catch {
-          case e: Exception =>
-            Some(s"could not inspect the output partition spec: ${e.getMessage}")
-        }
     }
 
   // A format-version-1 spec keeps a dropped partition field as a `void` transform, and its source
@@ -1147,7 +1131,8 @@ object CometIcebergNativeWrite extends CometOperatorSerde[IcebergWriteExec] {
     // effective FileIO Hadoop configuration, translate them to the s3.* keys iceberg-rust
     // consumes, and let FileIO/vended properties win on conflict. The FileIO configuration
     // includes SparkCatalog's catalog-specific `hadoop.*` overrides.
-    val writeHadoopConf = effectiveHadoopConf(op, table)
+    val writeHadoopConf =
+      effectiveHadoopConf(op, table, op.session.sessionState.newHadoopConf())
     val dataUri = new java.net.URI(dataLocation)
     // Promote the data bucket's per-bucket `fs.s3a.bucket.<b>.*` settings to global, mirroring the
     // scan path: iceberg-rust's pinned S3 parser reads only global `s3.*`. Only an S3-family data
