@@ -80,8 +80,9 @@ class CometTemporalExpressionSuite extends CometTestBase with AdaptiveSparkPlanH
               SQLConf.ANSI_ENABLED.key -> ansi.toString,
               SQLConf.WHOLESTAGE_CODEGEN_ENABLED.key -> codegen.toString) {
               val query = "SELECT unix_date(make_date(y, 1, 1)) FROM make_date_limit LIMIT 1"
-              val expected = withSQLConf(CometConf.COMET_ENABLED.key -> "false") {
-                sql(query).collect().toSeq
+              var expected = Seq.empty[Row]
+              withSQLConf(CometConf.COMET_ENABLED.key -> "false") {
+                expected = sql(query).collect().toSeq
               }
               assert(expected == Seq(Row(19723)))
               val df = sql(query)

@@ -133,11 +133,16 @@ class CometExecRuleSuite extends CometTestBase {
       SQLConf.ADAPTIVE_EXECUTION_ENABLED.key -> "false",
       CometConf.COMET_EXEC_LOCAL_TABLE_SCAN_ENABLED.key -> "true") {
       val input = createSparkPlan(spark, "SELECT * FROM VALUES (2024), (6000000) AS t(y)")
+      val sample = createSparkPlan(
+        spark,
+        "SELECT * FROM (SELECT * FROM range(8)) TABLESAMPLE (50 PERCENT)").collectFirst {
+        case op: SampleExec => op
+      }.get
       val consumers: Seq[(String, SparkPlan => SparkPlan)] = Seq(
         ("LIMIT", child => CollectLimitExec(1, child)),
         ("LIMIT", child => LocalLimitExec(1, child)),
         ("LIMIT", child => GlobalLimitExec(1, child)),
-        ("SAMPLE", child => SampleExec(0.0, 0.5, false, 42L, child)),
+        ("SAMPLE", child => sample.withNewChildren(Seq(child))),
         ("FILTER", child => FilterExec(GreaterThan(child.output.head, Literal(0)), child)))
       for (ansi <- Seq(false, true)) {
         def project: SparkPlan = ProjectExec(
