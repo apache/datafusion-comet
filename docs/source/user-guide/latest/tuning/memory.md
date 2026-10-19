@@ -39,12 +39,13 @@ off-heap consumers draw down one number.
 
 A larger pool lets the operators that can spill, such as sorts, aggregations and the shuffle writer, keep more in
 memory before they spill to disk. An operator that cannot spill fails the task when it cannot reserve the memory it
-needs.
+needs. A native Iceberg fanout write is the exception: it closes some of its open files early instead (see
+[Iceberg Writes](../iceberg.md#failure-handling)).
 
 Comet's memory pool only tracks memory that an operator explicitly reserves, which in practice means the batches
-an operator deliberately accumulates: the sort buffer, the build side of a hash join, hash aggregation state, and the
-shuffle writer's buffered partitions. Memory that is not reserved is invisible to the pool no matter how much of it
-there is. That includes:
+an operator deliberately accumulates: the sort buffer, the build side of a hash join, hash aggregation state, the
+shuffle writer's buffered partitions, and the files a native writer holds open. Memory that is not reserved is
+invisible to the pool no matter how much of it there is. That includes:
 
 - per-batch working memory in expression kernels and Arrow array builders,
 - decompression buffers and Parquet reader structures,

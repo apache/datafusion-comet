@@ -32,6 +32,7 @@ import org.apache.spark.sql.execution.datasources.v2.text.TextScan
 import com.google.common.base.Objects
 
 import org.apache.comet.{CometConf, ConfigEntry}
+import org.apache.comet.CometSparkSessionExtensions.withFallbackReason
 import org.apache.comet.objectstore.NativeConfig
 import org.apache.comet.serde.{CometOperatorSerde, OperatorOuterClass}
 import org.apache.comet.serde.OperatorOuterClass.Operator
@@ -56,8 +57,9 @@ case class CometTextNativeScanExec(
   // directory of many files). Mirrors CometNativeScanExec.
   override def stringArgs: Iterator[Any] = Iterator(output)
 
+  // The serialized partitions, which split any Spark partition that mixes object stores.
   override def outputPartitioning: Partitioning = UnknownPartitioning(
-    originalPlan.inputPartitions.length)
+    nativeOp.getTextScan.getFilePartitionsCount)
 
   override def outputOrdering: Seq[SortOrder] = Nil
 
@@ -94,7 +96,50 @@ object CometTextNativeScanExec extends CometOperatorSerde[CometBatchScanExec] {
     val textScan = op.wrapped.scan.asInstanceOf[TextScan]
     val sessionState = op.session.sessionState
     val options = new TextOptions(textScan.options.asScala.toMap)
-    val filePartitions = op.inputPartitions.map(_.asInstanceOf[FilePartition])
+    // Build the Hadoop conf from the scan's read options (case preserved), matching Spark's
+    // TextScan.createReaderFactory, so per-read settings like fs.s3a.endpoint reach native.
+    val hadoopConf =
+      sessionState.newHadoopConfWithOptions(textScan.options.asCaseSensitiveMap.asScala.toMap)
+    val s3CompliantSchemes = NativeConfig.resolveS3CompliantSchemes(hadoopConf)
+    val libhdfsSchemes = NativeConfig.resolveLibhdfsSchemes(hadoopConf)
+    val inputPartitions = op.inputPartitions.map(_.asInstanceOf[FilePartition])
+    val multiStoreReason = CometScanUtils.multiStoreFallbackReason(
+      "Native Text scan",
+      inputPartitions.view.flatMap(_.files.view.map(_.pathUri)),
+      s3CompliantSchemes,
+      libhdfsSchemes,
+      isBucketedScan = false)
+    if (multiStoreReason.nonEmpty) {
+      // CometExecRule falls back to the wrapped scan, so tag it too for the explain output.
+      withFallbackReason(op, multiStoreReason.get)
+      withFallbackReason(op.wrapped, multiStoreReason.get)
+      return None
+    }
+    // The options of every scheme the scan reads, or a decline for the ABFS layouts one
+    // resolution cannot serve. Checked before the split below so that its reason is reported.
+    val fileUris = inputPartitions.view.flatMap(_.files).map(_.pathUri)
+    val objectStoreOptions =
+      NativeConfig.extractScanObjectStoreOptions(hadoopConf, fileUris) match {
+        case Right(options) => options
+        case Left(reason) =>
+          withFallbackReason(op, reason)
+          withFallbackReason(op.wrapped, reason)
+          return None
+      }
+    // Native planning reads each partition through one object store.
+    val filePartitions = CometScanUtils.splitPartitionsByStore(
+      inputPartitions,
+      file => NativeConfig.objectStoreKey(file.pathUri, s3CompliantSchemes, libhdfsSchemes))
+    // Spark 3.4 reports a one-partition scan as SinglePartition and plans no exchange above it,
+    // so the operators above rely on the scan's partition count.
+    if (filePartitions.length != inputPartitions.length &&
+      !op.wrapped.outputPartitioning.isInstanceOf[UnknownPartitioning]) {
+      val reason = "Native Text scan would split a partition that mixes object stores, but " +
+        "Spark planned the operators above it for the scan's own partitioning"
+      withFallbackReason(op, reason)
+      withFallbackReason(op.wrapped, reason)
+      return None
+    }
     val textOptionsProto = textOptions2Proto(options)
     val dataSchemaProto = schema2Proto(textScan.dataSchema)
     val readSchemaFieldNames = textScan.readDataSchema.fieldNames
@@ -105,18 +150,6 @@ object CometTextNativeScanExec extends CometOperatorSerde[CometBatchScanExec] {
       .map(_._2.asInstanceOf[Integer])
     val partitionSchemaProto = schema2Proto(textScan.readPartitionSchema)
     val partitionsProto = filePartitions.map(partition2Proto(_, textScan.readPartitionSchema))
-
-    val objectStoreOptions = filePartitions.headOption
-      .flatMap { partitionFile =>
-        // Build the Hadoop conf from the scan's read options (case preserved), matching Spark's
-        // TextScan.createReaderFactory. Using SparkConf alone would drop per-read settings like
-        // fs.s3a.endpoint and send the wrong endpoint to native execution.
-        val hadoopConf = sessionState
-          .newHadoopConfWithOptions(textScan.options.asCaseSensitiveMap.asScala.toMap)
-        partitionFile.files.headOption
-          .map(file => NativeConfig.extractObjectStoreOptions(hadoopConf, file.pathUri))
-      }
-      .getOrElse(Map.empty)
 
     textScanBuilder.putAllObjectStoreOptions(objectStoreOptions.asJava)
     textScanBuilder.setTextOptions(textOptionsProto)
