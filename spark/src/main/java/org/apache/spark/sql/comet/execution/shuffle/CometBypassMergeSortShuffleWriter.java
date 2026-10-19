@@ -61,8 +61,6 @@ import org.apache.spark.storage.FileSegment;
 import org.apache.spark.storage.TempShuffleBlockId;
 import org.apache.spark.util.Utils;
 
-import com.google.common.io.Closeables;
-
 import org.apache.comet.CometConf$;
 import org.apache.comet.Native;
 
@@ -364,36 +362,19 @@ final class CometBypassMergeSortShuffleWriter<K, V> extends ShuffleWriter<K, V>
 
   private void writePartitionedDataWithChannel(File file, WritableByteChannelWrapper outputChannel)
       throws IOException {
-    boolean copyThrewException = true;
-    try {
-      FileInputStream in = new FileInputStream(file);
-      try (FileChannel inputChannel = in.getChannel()) {
-        Utils.copyFileStreamNIO(inputChannel, outputChannel.channel(), 0L, inputChannel.size());
-        copyThrewException = false;
-      } finally {
-        Closeables.close(in, copyThrewException);
-      }
-    } finally {
-      Closeables.close(outputChannel, copyThrewException);
+    try (FileInputStream in = new FileInputStream(file);
+        WritableByteChannelWrapper ignored = outputChannel) {
+      FileChannel inputChannel = in.getChannel();
+      Utils.copyFileStreamNIO(inputChannel, outputChannel.channel(), 0L, inputChannel.size());
     }
   }
 
   private void writePartitionedDataWithStream(File file, ShufflePartitionWriter writer)
       throws IOException {
-    boolean copyThrewException = true;
-    FileInputStream in = new FileInputStream(file);
-    OutputStream outputStream;
-    try {
-      outputStream = blockManager.serializerManager().wrapForEncryption(writer.openStream());
-
-      try {
-        Utils.copyStream(in, outputStream, false, false);
-        copyThrewException = false;
-      } finally {
-        Closeables.close(outputStream, copyThrewException);
-      }
-    } finally {
-      Closeables.close(in, copyThrewException);
+    try (FileInputStream in = new FileInputStream(file);
+        OutputStream outputStream =
+            blockManager.serializerManager().wrapForEncryption(writer.openStream())) {
+      Utils.copyStream(in, outputStream, false, false);
     }
   }
 

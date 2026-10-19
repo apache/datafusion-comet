@@ -19,6 +19,8 @@
 
 package org.apache.spark.sql.comet
 
+import java.util.Objects
+
 import scala.jdk.CollectionConverters._
 
 import org.apache.spark.{Partition, TaskContext}
@@ -32,8 +34,6 @@ import org.apache.spark.sql.execution.datasources.v2.BatchScanExec
 import org.apache.spark.sql.execution.metric.{SQLMetric, SQLMetrics}
 import org.apache.spark.sql.vectorized.ColumnarBatch
 import org.apache.spark.util.AccumulatorV2
-
-import com.google.common.base.Objects
 
 import org.apache.comet.iceberg.CometIcebergNativeScanMetadata
 import org.apache.comet.serde.OperatorOuterClass.Operator
@@ -397,13 +397,13 @@ case class CometIcebergNativeScanExec(
   }
 
   override def hashCode(): Int =
-    Objects.hashCode(
+    Objects.hash(
       metadataLocation,
       output.asJava,
       serializedPlanOpt,
       runtimeFilters,
       // Ascribe java.lang.Integer: Scala 2.12 rejects the implicit Int -> Object conversion into
-      // the Object... varargs of Guava's Objects.hashCode.
+      // the Object... varargs of java.util.Objects.hash.
       scanHashCode: java.lang.Integer)
 }
 

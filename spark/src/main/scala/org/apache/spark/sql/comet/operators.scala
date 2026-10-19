@@ -20,6 +20,7 @@
 package org.apache.spark.sql.comet
 
 import java.util.Locale
+import java.util.Objects
 
 import scala.collection.mutable
 import scala.collection.mutable.ArrayBuffer
@@ -52,7 +53,6 @@ import org.apache.spark.unsafe.Platform
 import org.apache.spark.util.SerializableConfiguration
 import org.apache.spark.util.io.ChunkedByteBuffer
 
-import com.google.common.base.Objects
 import com.google.protobuf.CodedOutputStream
 
 import org.apache.comet.{CometConf, CometExecIterator, CometRuntimeException, ConfigEntry, ContribServices}
@@ -1479,7 +1479,7 @@ case class CometProjectExec(
     }
   }
 
-  override def hashCode(): Int = Objects.hashCode(output, projectList, child)
+  override def hashCode(): Int = Objects.hash(output, projectList, child)
 
   override protected def outputExpressions: Seq[NamedExpression] = projectList
 }
@@ -1540,7 +1540,7 @@ case class CometFilterExec(
     }
   }
 
-  override def hashCode(): Int = Objects.hashCode(output, condition, child)
+  override def hashCode(): Int = Objects.hash(output, condition, child)
 
   override def verboseStringWithOperatorId(): String = {
     s"""
@@ -1619,7 +1619,7 @@ case class CometSortExec(
     }
   }
 
-  override def hashCode(): Int = Objects.hashCode(output, sortOrder, child)
+  override def hashCode(): Int = Objects.hash(output, sortOrder, child)
 
   override lazy val metrics: Map[String, SQLMetric] =
     CometMetricNode.baselineMetrics(sparkContext) ++
@@ -1688,7 +1688,7 @@ case class CometLocalLimitExec(
     }
   }
 
-  override def hashCode(): Int = Objects.hashCode(output, limit: java.lang.Integer, child)
+  override def hashCode(): Int = Objects.hash(output, limit: java.lang.Integer, child)
 }
 
 object CometGlobalLimitExec extends CometOperatorSerde[GlobalLimitExec] {
@@ -1751,7 +1751,7 @@ case class CometGlobalLimitExec(
   }
 
   override def hashCode(): Int =
-    Objects.hashCode(output, limit: java.lang.Integer, offset: java.lang.Integer, child)
+    Objects.hash(output, limit: java.lang.Integer, offset: java.lang.Integer, child)
 }
 
 object CometExpandExec extends CometOperatorSerde[ExpandExec] {
@@ -1816,7 +1816,7 @@ case class CometExpandExec(
     }
   }
 
-  override def hashCode(): Int = Objects.hashCode(output, projections, child)
+  override def hashCode(): Int = Objects.hash(output, projections, child)
 
   // TODO: support native Expand metrics
   override lazy val metrics: Map[String, SQLMetric] = Map.empty
@@ -1887,7 +1887,7 @@ case class CometMergeRowsExec(
   }
 
   override def hashCode(): Int =
-    Objects.hashCode(
+    Objects.hash(
       output,
       isSourceRowPresent,
       isTargetRowPresent,
@@ -2015,7 +2015,7 @@ case class CometExplodeExec(
   }
 
   override def hashCode(): Int =
-    Objects.hashCode(output, generator, generatorOutput, outer: java.lang.Boolean, child)
+    Objects.hash(output, generator, generatorOutput, outer: java.lang.Boolean, child)
 
   override lazy val metrics: Map[String, SQLMetric] =
     CometMetricNode.baselineMetrics(sparkContext) ++
@@ -2100,7 +2100,7 @@ case class CometUnionExec(
     }
   }
 
-  override def hashCode(): Int = Objects.hashCode(output, children)
+  override def hashCode(): Int = Objects.hash(output, children)
 }
 
 /**
@@ -2754,7 +2754,7 @@ abstract class CometBaseAggregateExec
   }
 
   override def hashCode(): Int =
-    Objects.hashCode(
+    Objects.hash(
       output,
       groupingExpressions,
       aggregateExpressions,
@@ -2983,7 +2983,7 @@ case class CometBroadcastNestedLoopJoinExec(
   }
 
   override def hashCode(): Int =
-    Objects.hashCode(output, joinType, condition, buildSide, left, right)
+    Objects.hash(output, joinType, condition, buildSide, left, right)
 
   override lazy val metrics: Map[String, SQLMetric] =
     CometMetricNode.joinMetrics(sparkContext)
@@ -3204,7 +3204,7 @@ case class CometHashJoinExec(
   }
 
   override def hashCode(): Int =
-    Objects.hashCode(output, leftKeys, rightKeys, joinType, condition, buildSide, left, right)
+    Objects.hash(output, leftKeys, rightKeys, joinType, condition, buildSide, left, right)
 
   override lazy val metrics: Map[String, SQLMetric] = {
     val joinMetrics = CometMetricNode.joinMetrics(sparkContext)
@@ -3359,7 +3359,7 @@ case class CometBroadcastHashJoinExec(
   }
 
   override def hashCode(): Int =
-    Objects.hashCode(
+    Objects.hash(
       output,
       leftKeys,
       rightKeys,
@@ -3564,7 +3564,7 @@ case class CometSortMergeJoinExec(
   }
 
   override def hashCode(): Int =
-    Objects.hashCode(output, leftKeys, rightKeys, joinType, condition, left, right)
+    Objects.hash(output, leftKeys, rightKeys, joinType, condition, left, right)
 
   override lazy val metrics: Map[String, SQLMetric] =
     CometMetricNode.sortMergeJoinMetrics(sparkContext)

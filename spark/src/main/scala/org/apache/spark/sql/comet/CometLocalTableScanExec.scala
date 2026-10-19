@@ -19,6 +19,8 @@
 
 package org.apache.spark.sql.comet
 
+import java.util.Objects
+
 import scala.collection.mutable.ListBuffer
 import scala.reflect.ClassTag
 
@@ -32,8 +34,6 @@ import org.apache.spark.sql.comet.util.Utils
 import org.apache.spark.sql.execution.{LeafExecNode, LocalTableScanExec}
 import org.apache.spark.sql.execution.metric.{SQLMetric, SQLMetrics}
 import org.apache.spark.sql.types.{DataType, StructType}
-
-import com.google.common.base.Objects
 
 import org.apache.comet.{CometConf, ConfigEntry, DataTypeSupport}
 import org.apache.comet.CometSparkSessionExtensions.withFallbackReason
@@ -120,7 +120,7 @@ case class CometLocalTableScanExec(
     }
   }
 
-  override def hashCode(): Int = Objects.hashCode(originalPlan, originalPlan.schema, output)
+  override def hashCode(): Int = Objects.hash(originalPlan, originalPlan.schema, output)
 }
 
 object CometLocalTableScanExec extends CometSink[LocalTableScanExec] with DataTypeSupport {

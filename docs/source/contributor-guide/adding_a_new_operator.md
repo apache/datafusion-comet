@@ -229,7 +229,7 @@ The validation workflow in `CometExecRule.isOperatorEnabled`:
 #### Simple Example (Filter)
 
 ```scala
-import com.google.common.base.Objects
+import java.util.Objects
 
 object CometFilterExec extends CometOperatorSerde[FilterExec] {
 
@@ -287,14 +287,14 @@ case class CometFilterExec(
     }
   }
 
-  override def hashCode(): Int = Objects.hashCode(output, condition, child)
+  override def hashCode(): Int = Objects.hash(output, condition, child)
 }
 ```
 
 #### More Complex Example (Project)
 
 ```scala
-import com.google.common.base.Objects
+import java.util.Objects
 
 object CometProjectExec extends CometOperatorSerde[ProjectExec] {
 
@@ -351,7 +351,7 @@ case class CometProjectExec(
     }
   }
 
-  override def hashCode(): Int = Objects.hashCode(output, projectList, child)
+  override def hashCode(): Int = Objects.hash(output, projectList, child)
 
   override protected def outputExpressions: Seq[NamedExpression] = projectList
 }
