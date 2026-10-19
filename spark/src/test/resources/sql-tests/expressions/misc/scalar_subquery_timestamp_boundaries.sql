@@ -54,6 +54,53 @@ SELECT hour((SELECT max(ts) AS maximum FROM timestamp_boundary WHERE id < 2)),
        second((SELECT min(ts) AS minimum FROM timestamp_boundary WHERE id < 2))
 FROM timestamp_boundary
 
+-- Row-dependent wrappers turn merged scalar fields into arrays. Their full-range clock
+-- components must remain native and must not become NULL through calendar conversion.
+query expect_native(hour,minute,second)
+SELECT id,
+       hour(IF(id % 2 = 0, (SELECT max(ts) FROM timestamp_boundary), ts)),
+       minute(IF(id % 2 = 0, (SELECT max(ts) FROM timestamp_boundary), ts)),
+       second(IF(id % 2 = 0, (SELECT max(ts) FROM timestamp_boundary), ts)),
+       hour((SELECT min(ts) FROM timestamp_boundary))
+FROM timestamp_boundary
+
+query expect_native(hour,minute,second)
+SELECT id,
+       hour(CASE WHEN id % 2 = 0 THEN (SELECT min(ts) FROM timestamp_boundary) ELSE ts END),
+       minute(CASE WHEN id % 2 = 0 THEN (SELECT min(ts) FROM timestamp_boundary) ELSE ts END),
+       second(CASE WHEN id % 2 = 0 THEN (SELECT min(ts) FROM timestamp_boundary) ELSE ts END),
+       hour((SELECT max(ts) FROM timestamp_boundary))
+FROM timestamp_boundary
+
+-- Null array elements must keep their validity, including sparse and dense null inputs.
+query expect_native(hour,minute,second)
+SELECT id,
+       hour(IF(id = 0, (SELECT max(ts) FROM timestamp_boundary), CAST(NULL AS TIMESTAMP))),
+       minute(IF(id = 0, (SELECT max(ts) FROM timestamp_boundary), CAST(NULL AS TIMESTAMP))),
+       second(IF(id = 0, (SELECT max(ts) FROM timestamp_boundary), CAST(NULL AS TIMESTAMP))),
+       hour((SELECT min(ts) FROM timestamp_boundary))
+FROM timestamp_boundary
+
+query expect_native(hour,minute,second)
+SELECT id,
+       hour(IF(id = 0, CAST(NULL AS TIMESTAMP), (SELECT min(ts) FROM timestamp_boundary))),
+       minute(IF(id = 0, CAST(NULL AS TIMESTAMP), (SELECT min(ts) FROM timestamp_boundary))),
+       second(IF(id = 0, CAST(NULL AS TIMESTAMP), (SELECT min(ts) FROM timestamp_boundary))),
+       hour((SELECT max(ts) FROM timestamp_boundary))
+FROM timestamp_boundary
+
+-- A wrong NULL would also silently lose rows and change aggregate results.
+query expect_native(hour,minute,second)
+SELECT count(*), sum(h), sum(m), sum(s)
+FROM (
+  SELECT hour(IF(id % 2 = 0, (SELECT max(ts) FROM timestamp_boundary), ts)) AS h,
+         minute(IF(id % 2 = 0, (SELECT max(ts) FROM timestamp_boundary), ts)) AS m,
+         second(IF(id % 2 = 0, (SELECT max(ts) FROM timestamp_boundary), ts)) AS s,
+         hour((SELECT min(ts) FROM timestamp_boundary)) AS lower_hour
+  FROM timestamp_boundary
+) clocks
+WHERE h IS NOT NULL AND lower_hour IS NOT NULL
+
 -- Immediately before and at chrono's minimum.
 query expect_native(hour,minute,second)
 SELECT hour((SELECT max(ts) AS maximum FROM timestamp_boundary WHERE id IN (2, 3))),

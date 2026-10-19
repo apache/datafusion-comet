@@ -3396,6 +3396,77 @@ class CometExecSuite extends CometTestBase {
     }
   }
 
+  test("merged timestamp scalar clocks over a mixed two-row batch") {
+    withSQLConf(
+      SQLConf.SUBQUERY_REUSE_ENABLED.key -> "true",
+      SQLConf.PARQUET_OUTPUT_TIMESTAMP_TYPE.key -> "TIMESTAMP_MICROS",
+      SQLConf.PARQUET_REBASE_MODE_IN_WRITE.key -> "CORRECTED",
+      SQLConf.PARQUET_REBASE_MODE_IN_READ.key -> "CORRECTED",
+      CometConf.COMET_BATCH_SIZE.key -> "1024",
+      CometConf.COMET_SHUFFLE_MODE.key -> "jvm",
+      CometConf.COMET_SCALA_UDF_CODEGEN_ENABLED.key -> "false") {
+      for (endpoint <- Seq(Long.MinValue, Long.MaxValue)) {
+        withTempPath { dir =>
+          withSQLConf(CometConf.COMET_ENABLED.key -> "false") {
+            Seq((0, endpoint), (1, 0L))
+              .toDF("id", "micros")
+              .selectExpr("id", "timestamp_micros(micros) AS ts")
+              .coalesce(1)
+              .write
+              .parquet(dir.getCanonicalPath)
+          }
+          withParquetTable(dir.getCanonicalPath, "mixed_clock") {
+            for {
+              timezone <- Seq("UTC", "+01:00", "-03:30")
+              aqe <- Seq(false, true)
+            } {
+              withSQLConf(
+                SQLConf.SESSION_LOCAL_TIMEZONE.key -> timezone,
+                SQLConf.ADAPTIVE_EXECUTION_ENABLED.key -> aqe.toString) {
+                val extreme = if (endpoint < 0) "min" else "max"
+                val other = if (endpoint < 0) "max" else "min"
+                val df = sql(s"""
+                    |SELECT id,
+                    |       hour(IF(id = 0, (SELECT $extreme(ts) FROM mixed_clock), ts)),
+                    |       minute(IF(id = 0, (SELECT $extreme(ts) FROM mixed_clock), ts)),
+                    |       second(IF(id = 0, (SELECT $extreme(ts) FROM mixed_clock), ts)),
+                    |       hour((SELECT $other(ts) FROM mixed_clock))
+                    |FROM mixed_clock
+                    |""".stripMargin)
+                val merged =
+                  df.queryExecution.optimizedPlan.exists(_.expressions.exists(_.exists {
+                    case GetStructField(s: LogicalScalarSubquery, _, _) =>
+                      s.dataType.isInstanceOf[StructType]
+                    case _ => false
+                  }))
+                assert(
+                  merged,
+                  s"Expected merged scalar subqueries:\n${df.queryExecution.optimizedPlan}")
+                val (_, cometPlan) =
+                  checkSparkAnswerAndOperator(df, Seq(classOf[CometProjectExec]))
+                val projections = stripAQEPlan(cometPlan).collect {
+                  case p: CometProjectExec
+                      if p.projectList.exists(_.exists(_.prettyName == "hour")) =>
+                    p
+                }
+                assert(projections.nonEmpty, s"Expected native clock projection:\n$cometPlan")
+                projections.foreach { projection =>
+                  val batches = projection
+                    .executeColumnar()
+                    .mapPartitions(iter => iter.map(_.numRows()))
+                    .collect()
+                  assert(
+                    batches.toSeq == Seq(2),
+                    s"Expected one mixed two-row batch: ${batches.toSeq}")
+                }
+              }
+            }
+          }
+        }
+      }
+    }
+  }
+
   test("struct scalar subquery with nested Parquet field IDs") {
     import org.apache.spark.sql.types.{IntegerType, LongType, MetadataBuilder, StringType, StructField}
 

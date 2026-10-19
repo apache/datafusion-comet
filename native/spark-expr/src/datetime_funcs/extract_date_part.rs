@@ -17,7 +17,9 @@
 
 use crate::utils::array_with_timezone;
 use arrow::array::timezone::Tz;
-use arrow::array::{Array, ArrayRef, Decimal128Array, Int32Array, TimestampMicrosecondArray};
+use arrow::array::{
+    Array, ArrayRef, Decimal128Array, DictionaryArray, Int32Array, TimestampMicrosecondArray,
+};
 use arrow::compute::{date_part, DatePart};
 use arrow::datatypes::{DataType, Int32Type, TimeUnit::Microsecond};
 use chrono::{DateTime, NaiveDateTime, Offset, TimeZone};
@@ -88,6 +90,54 @@ fn minute_of_hour(micros: i64) -> i32 {
 #[inline]
 fn second_of_minute(micros: i64) -> i32 {
     micros.div_euclid(MICROS_PER_SECOND).rem_euclid(60) as i32
+}
+
+fn map_clock_fields(micros: &TimestampMicrosecondArray, kernel: impl Fn(i64) -> i32) -> ArrayRef {
+    // `unary` carries the null buffer over untouched and vectorizes. At high null density,
+    // `unary_opt` avoids computing fields for the mostly null values.
+    let result: Int32Array = if micros.null_count() * 2 <= micros.len() {
+        micros.unary::<_, Int32Type>(kernel)
+    } else {
+        micros.unary_opt::<_, Int32Type>(|v| Some(kernel(v)))
+    };
+    Arc::new(result)
+}
+
+/// Clock fields in fixed-offset zones are arithmetic over the full Spark timestamp range,
+/// including values outside chrono's calendar range. Handle arrays as well as scalar inputs:
+/// a row-dependent IF around a scalar subquery can produce either shape at runtime.
+fn fixed_offset_clock_fields(
+    array: &ArrayRef,
+    timezone: &str,
+    kernel: impl Fn(i64) -> i32 + Copy,
+) -> Option<ArrayRef> {
+    if let Some(micros) = micros_without_offset(array, timezone) {
+        // Keep the existing UTC/NTZ loop: no extra modulo or offset work per row.
+        return Some(map_clock_fields(micros, kernel));
+    }
+    if let Some(dict) = array.as_any().downcast_ref::<DictionaryArray<Int32Type>>() {
+        let values = fixed_offset_clock_fields(dict.values(), timezone, kernel)?;
+        return Some(Arc::new(dict.with_values(values)));
+    }
+    let micros = array.as_any().downcast_ref::<TimestampMicrosecondArray>()?;
+    // Arrow's Tz keeps its fixed-offset variant private. Signed numeric IDs use its fixed
+    // offset parser; all named regions retain the general path. CometTimeZone.nativeId sends
+    // Spark's normalized fixed zones as UTC or +/-HH:MM. Use Arrow to validate the spelling
+    // and obtain the offset rather than parsing it ourselves or sampling a region's rules.
+    if !timezone.starts_with(['+', '-']) {
+        return None;
+    }
+    let timezone: Tz = timezone.parse().ok()?;
+    let offset = i64::from(
+        timezone
+            .offset_from_utc_datetime(&NaiveDateTime::default())
+            .fix()
+            .local_minus_utc(),
+    ) * MICROS_PER_SECOND;
+    Some(map_clock_fields(micros, |value| {
+        // Reduce before shifting: adding an offset directly to i64::MIN/MAX can overflow.
+        kernel(value.rem_euclid(MICROS_PER_DAY) + offset)
+    }))
 }
 
 macro_rules! extract_date_part {
@@ -166,41 +216,28 @@ macro_rules! extract_date_part {
                 }
                 let is_scalar = matches!(arg, ColumnarValue::Scalar(_));
                 let array = arg.into_array(1)?;
-                let result: ArrayRef =
-                    if let Some(micros) = micros_without_offset(&array, &self.timezone) {
-                        // Fast path: when no offset applies the field is arithmetic on the stored
-                        // microseconds, so no calendar datetime is built per row. `unary` carries
-                        // the null buffer over untouched.
-                        // `unary` evaluates every slot and vectorizes; `unary_opt` visits
-                        // only valid indices but costs more per element. The `date_part`
-                        // path this replaces uses `unary_opt`, so an almost entirely null
-                        // batch was nearly free there. Skipping only pays off once most of
-                        // the batch is null, so switch on density rather than on the mere
-                        // presence of a null.
-                        let result: Int32Array = if micros.null_count() * 2 <= micros.len() {
-                            micros.unary::<_, Int32Type>($kernel)
-                        } else {
-                            micros.unary_opt::<_, Int32Type>(|v| Some($kernel(v)))
-                        };
-                        Arc::new(result)
+                let result: ArrayRef = if let Some(result) =
+                    fixed_offset_clock_fields(&array, &self.timezone, $kernel)
+                {
+                    result
+                } else {
+                    // TimestampNTZ values are stored as local wall-clock time, so the date
+                    // part is extracted directly. Timezone-aware timestamps are stored in UTC
+                    // and must be shifted to the session timezone first.
+                    let array = if is_timestamp_ntz(array.data_type()) {
+                        array
                     } else {
-                        // TimestampNTZ values are stored as local wall-clock time, so the date
-                        // part is extracted directly. Timezone-aware timestamps are stored in UTC
-                        // and must be shifted to the session timezone first.
-                        let array = if is_timestamp_ntz(array.data_type()) {
-                            array
-                        } else {
-                            array_with_timezone(
-                                array,
-                                self.timezone.clone(),
-                                Some(&DataType::Timestamp(
-                                    Microsecond,
-                                    Some(self.timezone.clone().into()),
-                                )),
-                            )?
-                        };
-                        date_part(&array, DatePart::$date_part_variant)?
+                        array_with_timezone(
+                            array,
+                            self.timezone.clone(),
+                            Some(&DataType::Timestamp(
+                                Microsecond,
+                                Some(self.timezone.clone().into()),
+                            )),
+                        )?
                     };
+                    date_part(&array, DatePart::$date_part_variant)?
+                };
                 if is_scalar {
                     Ok(ColumnarValue::Scalar(ScalarValue::try_from_array(
                         &result, 0,
@@ -435,6 +472,255 @@ mod tests {
                     udf.name()
                 );
             }
+        }
+    }
+
+    #[test]
+    fn fixed_offset_arrays_cover_full_timestamp_range() {
+        // Expected clock fields follow Spark's java.time conversion. Test a sliced array so
+        // carrying its validity bitmap also exercises a nonzero bit offset.
+        for (timezone, hours, minutes) in [
+            ("UTC", [4, 19, 23, 0], [0, 59, 59, 0]),
+            ("Etc/UTC", [4, 19, 23, 0], [0, 59, 59, 0]),
+            ("+01:00", [5, 20, 0, 1], [0, 59, 59, 0]),
+            ("-03:30", [0, 16, 20, 20], [30, 29, 29, 30]),
+            ("+05:45", [9, 1, 5, 5], [45, 44, 44, 45]),
+            ("+18:00", [22, 13, 17, 18], [0, 59, 59, 0]),
+            ("-18:00", [10, 1, 5, 6], [0, 59, 59, 0]),
+        ] {
+            for input_timezone in [Some("UTC"), None] {
+                let array = TimestampMicrosecondArray::from(vec![
+                    Some(123),
+                    Some(i64::MAX),
+                    Some(i64::MIN),
+                    Some(-1),
+                    Some(0),
+                    None,
+                ])
+                .with_timezone_opt(input_timezone.map(str::to_string))
+                .slice(1, 5);
+                let (hours, minutes) = if input_timezone.is_none() {
+                    ([4, 19, 23, 0], [0, 59, 59, 0])
+                } else {
+                    (hours, minutes)
+                };
+                for (udf, expected) in [
+                    (
+                        Box::new(SparkHour::new(timezone.into())) as Box<dyn ScalarUDFImpl>,
+                        hours,
+                    ),
+                    (Box::new(SparkMinute::new(timezone.into())), minutes),
+                    (Box::new(SparkSecond::new(timezone.into())), [54, 5, 59, 0]),
+                ] {
+                    let expected = Int32Array::from_iter(
+                        expected.into_iter().map(Some).chain(std::iter::once(None)),
+                    );
+                    assert_eq!(
+                        invoke_all(udf.as_ref(), Arc::new(array.clone())),
+                        expected,
+                        "{} in {timezone}, input timezone {input_timezone:?}",
+                        udf.name()
+                    );
+                    for (value, expected) in array.iter().zip(expected.iter()) {
+                        let result = udf
+                            .invoke_with_args(ScalarFunctionArgs {
+                                args: vec![ColumnarValue::Scalar(
+                                    ScalarValue::TimestampMicrosecond(
+                                        value,
+                                        input_timezone.map(Into::into),
+                                    ),
+                                )],
+                                number_rows: 8,
+                                return_field: Arc::new(Field::new("v", DataType::Int32, true)),
+                                config_options: Arc::new(ConfigOptions::default()),
+                                arg_fields: vec![],
+                            })
+                            .unwrap();
+                        let ColumnarValue::Scalar(result) = result else {
+                            panic!("scalar input must remain scalar before broadcasting")
+                        };
+                        assert_eq!(result, ScalarValue::Int32(expected));
+                    }
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn fixed_offset_arrays_preserve_dense_nulls_and_empty_inputs() {
+        for values in [
+            vec![None, None, Some(i64::MAX), None, None, None, None, None],
+            vec![None; 8],
+            vec![],
+        ] {
+            let array: ArrayRef =
+                Arc::new(TimestampMicrosecondArray::from(values.clone()).with_timezone("UTC"));
+            for (udf, expected) in [
+                (
+                    Box::new(SparkHour::new("+01:00".into())) as Box<dyn ScalarUDFImpl>,
+                    5,
+                ),
+                (Box::new(SparkMinute::new("+01:00".into())), 0),
+                (Box::new(SparkSecond::new("+01:00".into())), 54),
+            ] {
+                assert_eq!(
+                    invoke_all(udf.as_ref(), Arc::clone(&array)),
+                    Int32Array::from_iter(values.iter().map(|v| v.map(|_| expected)))
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn fixed_offset_dictionary_values_keep_keys_and_nulls() {
+        use arrow::array::DictionaryArray;
+        for (timezone, input_timezone, expected) in [
+            ("+01:00", Some("UTC"), [Some(5), Some(20), None, Some(1)]),
+            ("UTC", Some("UTC"), [Some(4), Some(19), None, Some(0)]),
+            (
+                "America/Los_Angeles",
+                None,
+                [Some(4), Some(19), None, Some(0)],
+            ),
+        ] {
+            let values: ArrayRef = Arc::new(
+                TimestampMicrosecondArray::from(vec![
+                    Some(i64::MAX),
+                    Some(i64::MIN),
+                    None,
+                    Some(0),
+                ])
+                .with_timezone_opt(input_timezone.map(str::to_string)),
+            );
+            let keys = Int32Array::from(vec![Some(3), None, Some(2), Some(1), Some(0)]).slice(1, 4);
+            let input: ArrayRef = Arc::new(DictionaryArray::<Int32Type>::new(keys.clone(), values));
+            for (udf, expected) in [
+                (
+                    Box::new(SparkHour::new(timezone.into())) as Box<dyn ScalarUDFImpl>,
+                    expected,
+                ),
+                (
+                    Box::new(SparkMinute::new(timezone.into())),
+                    [Some(0), Some(59), None, Some(0)],
+                ),
+                (
+                    Box::new(SparkSecond::new(timezone.into())),
+                    [Some(54), Some(5), None, Some(0)],
+                ),
+            ] {
+                let return_type = udf.return_type(&[input.data_type().clone()]).unwrap();
+                let result = udf
+                    .invoke_with_args(ScalarFunctionArgs {
+                        args: vec![ColumnarValue::Array(Arc::clone(&input))],
+                        number_rows: keys.len(),
+                        return_field: Arc::new(Field::new("v", return_type.clone(), true)),
+                        config_options: Arc::new(ConfigOptions::default()),
+                        arg_fields: vec![],
+                    })
+                    .unwrap();
+                let ColumnarValue::Array(result) = result else {
+                    panic!("expected dictionary array")
+                };
+                assert_eq!(result.data_type(), &return_type);
+                let result = result
+                    .as_any()
+                    .downcast_ref::<DictionaryArray<Int32Type>>()
+                    .unwrap();
+                assert_eq!(result.keys(), &keys);
+                assert_eq!(
+                    result.values().as_ref(),
+                    &Int32Array::from(expected.to_vec())
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn fixed_offset_path_does_not_classify_named_regions_or_invalid_offsets() {
+        let array: ArrayRef =
+            Arc::new(TimestampMicrosecondArray::from(vec![MICROS]).with_timezone("UTC"));
+        for timezone in [
+            "America/Los_Angeles",
+            "Asia/Tokyo",
+            "Etc/GMT+0",
+            "+24:00",
+            "+bad",
+        ] {
+            assert!(fixed_offset_clock_fields(&array, timezone, hour_of_day).is_none());
+        }
+        for timezone in ["+01:00", "-03:30", "+0545", "-08"] {
+            let actual = fixed_offset_clock_fields(&array, timezone, hour_of_day).unwrap();
+            let tagged = TimestampMicrosecondArray::from(vec![MICROS]).with_timezone(timezone);
+            assert_eq!(
+                actual.as_ref(),
+                date_part(&tagged, DatePart::Hour).unwrap().as_ref()
+            );
+        }
+    }
+
+    #[test]
+    fn clock_fields_of_struct_scalar_in_mixed_row_if() {
+        use crate::{GetStructField, IfExpr};
+        use arrow::array::{BooleanArray, StructArray};
+        use arrow::datatypes::Schema;
+        use arrow::record_batch::RecordBatch;
+        use datafusion::physical_expr::expressions::{col, lit};
+        use datafusion::physical_expr::PhysicalExpr;
+
+        let timestamp_type = DataType::Timestamp(Microsecond, Some("UTC".into()));
+        let schema = Arc::new(Schema::new(vec![
+            Field::new("p", DataType::Boolean, false),
+            Field::new("ts", timestamp_type.clone(), true),
+        ]));
+        let batch = RecordBatch::try_new(
+            Arc::clone(&schema),
+            vec![
+                Arc::new(BooleanArray::from(vec![true, false, false])),
+                Arc::new(
+                    TimestampMicrosecondArray::from(vec![Some(0), Some(0), None])
+                        .with_timezone("UTC"),
+                ),
+            ],
+        )
+        .unwrap();
+        let value = ScalarValue::Struct(Arc::new(StructArray::new(
+            vec![Arc::new(Field::new("maximum", timestamp_type, true))].into(),
+            vec![Arc::new(
+                TimestampMicrosecondArray::from(vec![i64::MAX]).with_timezone("UTC"),
+            )],
+            None,
+        )));
+        let field = Arc::new(GetStructField::new(lit(value), 0));
+        assert!(matches!(
+            field.evaluate(&batch).unwrap(),
+            ColumnarValue::Scalar(_)
+        ));
+        let expr = IfExpr::new(
+            col("p", &schema).unwrap(),
+            field,
+            col("ts", &schema).unwrap(),
+        );
+        let ColumnarValue::Array(array) = expr.evaluate(&batch).unwrap() else {
+            panic!("mixed-row IF must produce an array")
+        };
+        for (udf, expected) in [
+            (
+                Box::new(SparkHour::new("+01:00".into())) as Box<dyn ScalarUDFImpl>,
+                vec![Some(5), Some(1), None],
+            ),
+            (
+                Box::new(SparkMinute::new("+01:00".into())),
+                vec![Some(0), Some(0), None],
+            ),
+            (
+                Box::new(SparkSecond::new("+01:00".into())),
+                vec![Some(54), Some(0), None],
+            ),
+        ] {
+            assert_eq!(
+                invoke_all(udf.as_ref(), Arc::clone(&array)),
+                Int32Array::from(expected)
+            );
         }
     }
 

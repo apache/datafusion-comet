@@ -726,7 +726,9 @@ to Spark, including when an intermediate projection names the scalar result, bec
 values can exceed the native calendar range. This also avoids
 differences in far-future daylight saving time. Scalar-subquery `hour`, `minute`, and `second`
 remain native for UTC, fixed offsets, and timezone-independent `timestamp_ntz` inputs; regional
-`timestamp` inputs fall back. Similarly, `unix_timestamp` stays native for timestamp inputs, but
+`timestamp` inputs fall back. The native clock path covers the full timestamp range, including
+row-dependent expressions such as `IF` that mix scalar-subquery results with column values.
+Similarly, `unix_timestamp` stays native for timestamp inputs, but
 scalar date inputs fall back. Raw timestamp transport, comparisons, and supported epoch arithmetic
 remain native.
 

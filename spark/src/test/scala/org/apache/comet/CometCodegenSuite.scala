@@ -628,8 +628,8 @@ class CometCodegenSuite
   test("non-deterministic dispatched subtrees serialize per occurrence") {
     // The dispatcher keys its per-task kernel cache on the digest the serde ships, so two
     // identical non-deterministic occurrences must ship distinct bytes, digested after tagging,
-    // to get distinct state. A deterministic tree is shipped untouched, so identical occurrences
-    // keep sharing one kernel.
+    // to get distinct state. A deterministic tree keeps its expression structure, so identical
+    // occurrences keep sharing one kernel.
     def payload(e: Expression, attrs: Seq[AttributeReference]): (Array[Byte], Array[Byte]) = {
       val proto = QueryPlanSerde.exprToProto(Alias(e, "v")(), attrs).get
       assert(proto.hasJvmScalarUdf, s"expected $e to dispatch, got $proto")
@@ -651,12 +651,16 @@ class CometCodegenSuite
     def deterministic(): Expression = Hypot(Cast(x, DoubleType), Literal(4.0d))
     val bound = BindReferences.bindReference(deterministic(), AttributeSeq(Seq(x)))
     val serializer = SparkEnv.get.closureSerializer.newInstance()
-    val buffer = serializer.serialize(bound)
-    val plain = new Array[Byte](buffer.remaining())
-    buffer.get(plain)
     val (detDigest, detBytes) = payload(deterministic(), Seq(x))
     val (againDigest, againBytes) = payload(deterministic(), Seq(x))
-    assert(detBytes.sameElements(plain))
+    // The scalar-consumer guard inspects PLAN_EXPRESSION before binding. Spark memoizes that
+    // inspection in treePatternBits, which Java serialization includes on retained literal
+    // children. Compare the expression structure with the raw bound tree, not its uninspected
+    // bytes; equal serialized payloads across serde calls still pin deterministic kernel reuse.
+    val decoded = serializer.deserialize[Expression](java.nio.ByteBuffer.wrap(detBytes))
+    assert(decoded == bound)
+    assert(!decoded.exists(_.isInstanceOf[DispatchOccurrence]))
+    assert(detDigest.sameElements(CometScalaUDFCodegen.digest(detBytes)))
     assert(detBytes.sameElements(againBytes))
     assert(detDigest.sameElements(againDigest))
     assert(DispatchOccurrence.tag(bound) eq bound)
