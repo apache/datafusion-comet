@@ -936,6 +936,25 @@ streamed side without keeping that side’s order. When Spark reports the stream
 for example the output of a window, a sort-merge join, or a cached table sorted within its
 partitions, Comet falls back to Spark for the join, so that a sort Spark removed above it on the
 strength of that order is not lost.</p>
+<section id="output-order">
+<h3>Output Order<a class="headerlink" href="#output-order" title="Link to this heading">#</a></h3>
+<p>Spark reports the sort order of a hash join’s streamed side as the join’s own, and drops a sort
+above the join that this order satisfies. Comet’s native hash joins keep that order where Comet can
+show that it holds. That includes a left or right outer join over a streamed side that was sorted
+outside the native plan, such as a sorted relation read from the <a class="reference internal" href="#in-memory-cache">in-memory cache</a>.</p>
+<p>Comet passes the order to the native join as sort keys, and an outer join needs at least the first
+key to be one that Comet can express natively. Declaring any leading part of the order keeps the
+rows in place, so the join does not need the rest. An outer join whose first sort key Comet cannot
+express falls back to Spark and records a fallback reason (see
+<a class="reference internal" href="../understanding-comet-plans.html"><span class="std std-doc">Understanding Comet Plans</span></a>), because Comet cannot tell whether
+an operator above the join relies on the order.</p>
+<p>Where the order Spark reports might not hold, Comet declares nothing and an outer join can return
+its unmatched rows out of order. The output of a nested loop join
+(<a class="reference external" href="https://github.com/apache/datafusion-comet/issues/6898">#6898</a>) is one such case, and so is a
+cache or checkpoint that one wrote. Comet also declares nothing when it cannot follow the
+order back to its source, as with an RDD checkpoint, and over some caches written by an outer hash
+join whose order does hold (<a class="reference external" href="https://github.com/apache/datafusion-comet/issues/6922">#6922</a>).</p>
+</section>
 </section>
 <section id="window-functions">
 <h2>Window Functions<a class="headerlink" href="#window-functions" title="Link to this heading">#</a></h2>
@@ -1122,7 +1141,10 @@ they will be identical to Spark. Unsorted results may have different row orderin
 <li class="toc-h2 nav-item toc-entry"><a class="reference internal nav-link" href="#sort">Sort</a></li>
 <li class="toc-h2 nav-item toc-entry"><a class="reference internal nav-link" href="#hash-aggregation">Hash Aggregation</a></li>
 <li class="toc-h2 nav-item toc-entry"><a class="reference internal nav-link" href="#sort-aggregation">Sort Aggregation</a></li>
-<li class="toc-h2 nav-item toc-entry"><a class="reference internal nav-link" href="#hash-join">Hash Join</a></li>
+<li class="toc-h2 nav-item toc-entry"><a class="reference internal nav-link" href="#hash-join">Hash Join</a><ul class="nav section-nav flex-column">
+<li class="toc-h3 nav-item toc-entry"><a class="reference internal nav-link" href="#output-order">Output Order</a></li>
+</ul>
+</li>
 <li class="toc-h2 nav-item toc-entry"><a class="reference internal nav-link" href="#window-functions">Window Functions</a></li>
 <li class="toc-h2 nav-item toc-entry"><a class="reference internal nav-link" href="#merge-into-mergerowsexec">MERGE INTO (MergeRowsExec)</a></li>
 <li class="toc-h2 nav-item toc-entry"><a class="reference internal nav-link" href="#round-robin-partitioning">Round-Robin Partitioning</a></li>

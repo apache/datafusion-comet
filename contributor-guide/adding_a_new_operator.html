@@ -878,6 +878,27 @@ already skips every <code class="docutils literal notranslate"><span class="pre"
 </pre></div>
 </div>
 </section>
+<section id="reporting-an-output-ordering">
+<h4>Reporting an Output Ordering<a class="headerlink" href="#reporting-an-output-ordering" title="Link to this heading">#</a></h4>
+<p>An operator that overrides <code class="docutils literal notranslate"><span class="pre">outputOrdering</span></code>, as <code class="docutils literal notranslate"><span class="pre">CometFilterExec</span></code> does above with
+<code class="docutils literal notranslate"><span class="pre">child.outputOrdering</span></code>, makes a claim that Spark acts on: it drops a sort above the operator that
+the order satisfies. Report what the Spark operator reports and nothing more. <code class="docutils literal notranslate"><span class="pre">SampleExec</span></code>, for
+example, reports no order, so <code class="docutils literal notranslate"><span class="pre">CometSampleExec</span></code> must not report its child’s.</p>
+<p>The claim has to hold at run time as well. A native hash join declares the order Spark reports for
+its streamed side to DataFusion, and an aggregate above the join may then run in sorted mode, or a
+top-k sort may stop reading early, on the strength of that order. If the order is false, the
+result is wrong groups or wrong rows, not only rows out of order. So an operator that reports an
+ordering must keep it natively, and the native operator must say so by returning <code class="docutils literal notranslate"><span class="pre">true</span></code> from
+<code class="docutils literal notranslate"><span class="pre">maintains_input_order</span></code> for that child, as DataFusion’s filter and projection do. The planner
+declares the order through an operator only when the operator says it keeps it. An operator that
+cannot keep the order natively must not report it, or has to be added to <code class="docutils literal notranslate"><span class="pre">mayReportFalseOrder</span></code> in
+<code class="docutils literal notranslate"><span class="pre">operators.scala</span></code>, which makes the hash join serde send no order over it.</p>
+<p>A leaf that reports an ordering is where the order starts, so the planner has to know that the
+native operator produces its rows in that order. It knows that of an input from the JVM and of a
+scan of files, which reads the files of each partition one after the other, and the native range
+declares its order itself through <code class="docutils literal notranslate"><span class="pre">SortedInputExec</span></code>. A new leaf that reports an ordering must
+declare it natively the same way.</p>
+</section>
 <section id="plan-identity-and-exchange-reuse">
 <h4>Plan Identity and Exchange Reuse<a class="headerlink" href="#plan-identity-and-exchange-reuse" title="Link to this heading">#</a></h4>
 <p>Spark’s <code class="docutils literal notranslate"><span class="pre">ReuseExchangeAndSubquery</span></code> identifies equivalent plans through canonicalization and may
@@ -1423,6 +1444,7 @@ copy of the operator around the one that is already there.</p>
 <li class="toc-h3 nav-item toc-entry"><a class="reference internal nav-link" href="#step-2-create-a-cometoperatorserde-implementation">Step 2: Create a CometOperatorSerde Implementation</a><ul class="nav section-nav flex-column">
 <li class="toc-h4 nav-item toc-entry"><a class="reference internal nav-link" href="#simple-example-filter">Simple Example (Filter)</a></li>
 <li class="toc-h4 nav-item toc-entry"><a class="reference internal nav-link" href="#more-complex-example-project">More Complex Example (Project)</a></li>
+<li class="toc-h4 nav-item toc-entry"><a class="reference internal nav-link" href="#reporting-an-output-ordering">Reporting an Output Ordering</a></li>
 <li class="toc-h4 nav-item toc-entry"><a class="reference internal nav-link" href="#plan-identity-and-exchange-reuse">Plan Identity and Exchange Reuse</a></li>
 <li class="toc-h4 nav-item toc-entry"><a class="reference internal nav-link" href="#using-getsupportlevel">Using getSupportLevel</a></li>
 </ul>
