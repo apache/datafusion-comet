@@ -225,7 +225,7 @@ index in the background while the current file is read. The setting is off by de
 
 The cost is one extra footer and page index read for a file that is never opened, such as when a scan stops
 early or the file is pruned before it opens. Scans of encrypted Parquet files never prefetch. The
-`scan_io_metadata_prefetches` metric counts the opens that used a prefetched load.
+`scan_io_metadata_prefetches` metric counts the opens that used a load which read storage ahead of them.
 
 ## Known Issues
 
