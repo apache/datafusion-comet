@@ -707,7 +707,7 @@ to protobuf and implements the partitioning logic in native code.</p>
 </div>
 <p>Selection logic in <code class="docutils literal notranslate"><span class="pre">CometShuffleManager.shouldBypassMergeSort()</span></code>:</p>
 <ul class="simple">
-<li><p>Uses bypass if partitions &lt; threshold AND partitions × cores ≤ max threads</p></li>
+<li><p>Uses bypass if partitions ≤ threshold AND partitions × cores ≤ max threads</p></li>
 <li><p>Otherwise uses sort-based to avoid OOM from many concurrent writers</p></li>
 </ul>
 </section>
@@ -737,9 +737,13 @@ to protobuf and implements the partitioning logic in native code.</p>
 <td><p><code class="docutils literal notranslate"><span class="pre">.../shuffle/sort/CometShuffleExternalSorter.java</span></code></p></td>
 <td><p>Buffers records across all partitions, sorts by partition ID, spills sorted data. Used by unsafe writer.</p></td>
 </tr>
-<tr class="row-even"><td><p><code class="docutils literal notranslate"><span class="pre">SpillWriter</span></code></p></td>
+<tr class="row-even"><td><p><code class="docutils literal notranslate"><span class="pre">SpillSorter</span></code></p></td>
+<td><p><code class="docutils literal notranslate"><span class="pre">.../shuffle/sort/SpillSorter.java</span></code></p></td>
+<td><p>Holds one spill’s records for <code class="docutils literal notranslate"><span class="pre">CometShuffleExternalSorter</span></code>. Writes every partition of the spill with one <code class="docutils literal notranslate"><span class="pre">Native.writeSortedPartitionsNative()</span></code> call.</p></td>
+</tr>
+<tr class="row-odd"><td><p><code class="docutils literal notranslate"><span class="pre">SpillWriter</span></code></p></td>
 <td><p><code class="docutils literal notranslate"><span class="pre">.../shuffle/SpillWriter.java</span></code></p></td>
-<td><p>Base class for spill logic. Manages memory pages and calls <code class="docutils literal notranslate"><span class="pre">Native.writeSortedFileNative()</span></code> for Arrow IPC encoding.</p></td>
+<td><p>Base class for spill logic. Manages memory pages. <code class="docutils literal notranslate"><span class="pre">doSpilling()</span></code> encodes one partition’s rows with <code class="docutils literal notranslate"><span class="pre">Native.writeSortedFileNative()</span></code>.</p></td>
 </tr>
 </tbody>
 </table>
@@ -776,8 +780,15 @@ to protobuf and implements the partitioning logic in native code.</p>
 <li><p><code class="docutils literal notranslate"><span class="pre">ShuffleWriteProcessor</span></code> calls <code class="docutils literal notranslate"><span class="pre">CometShuffleManager.getWriter()</span></code></p></li>
 <li><p>Writer receives <code class="docutils literal notranslate"><span class="pre">Iterator[Product2[K,</span> <span class="pre">V]]</span></code> where V is <code class="docutils literal notranslate"><span class="pre">UnsafeRow</span></code></p></li>
 <li><p>Rows are serialized and buffered in off-heap memory pages</p></li>
-<li><p>When memory threshold or batch size is reached, <code class="docutils literal notranslate"><span class="pre">SpillWriter.doSpilling()</span></code> is called</p></li>
-<li><p>Native code (<code class="docutils literal notranslate"><span class="pre">Native.writeSortedFileNative()</span></code>) converts rows to Arrow arrays and writes IPC format</p></li>
+<li><p>When memory threshold or batch size is reached, the buffered rows are written. <code class="docutils literal notranslate"><span class="pre">CometDiskBlockWriter</span></code>
+calls <code class="docutils literal notranslate"><span class="pre">SpillWriter.doSpilling()</span></code> for its partition. <code class="docutils literal notranslate"><span class="pre">CometShuffleExternalSorter</span></code> calls
+<code class="docutils literal notranslate"><span class="pre">SpillSorter.writeSortedPartitions()</span></code> once for each spill and once more for the final file, and each
+call writes every partition</p></li>
+<li><p>Native code converts the rows to Arrow arrays and writes them as Arrow IPC blocks. <code class="docutils literal notranslate"><span class="pre">doSpilling()</span></code>
+passes one partition’s row addresses and sizes to <code class="docutils literal notranslate"><span class="pre">Native.writeSortedFileNative()</span></code>. <code class="docutils literal notranslate"><span class="pre">SpillSorter</span></code>
+sorts its record pointers by partition with <code class="docutils literal notranslate"><span class="pre">Native.sortRowPartitionsNative()</span></code>, then passes them,
+with the address of each data page, to <code class="docutils literal notranslate"><span class="pre">Native.writeSortedPartitionsNative()</span></code>. That call reads the
+rows in place, writes every partition of the spill, and returns each partition’s length and checksum</p></li>
 <li><p>For bypass writer: partition files are concatenated into final output</p></li>
 <li><p>For sort writer: spill files are merged</p></li>
 </ol>
@@ -818,6 +829,12 @@ That mode exists only so the Spark SQL tests can run against Comet. See
 <code class="docutils literal notranslate"><span class="pre">CometShuffleExternalSorter</span></code> spills at <code class="docutils literal notranslate"><span class="pre">spark.comet.shuffle.jvm.spillThreshold</span></code> alone, which
 defaults to <code class="docutils literal notranslate"><span class="pre">Int.MaxValue</span></code>, so on the sort path that trigger is effectively off by default.</p></li>
 <li><p><code class="docutils literal notranslate"><span class="pre">CometDiskBlockWriter</span></code> coordinates spilling across all partition writers (largest first)</p></li>
+<li><p>The bypass writer’s partition writers each hold a page as soon as they buffer a row. Each one
+starts a batch on a 64 KiB page and doubles each further page, up to Spark’s page size
+(<code class="docutils literal notranslate"><span class="pre">spark.buffer.pageSize</span></code>, capped at 128 MB). Spark sizes its page so that a task fits only 16 to
+32 of them, so pages of that size would make the writers spill each other about one row at a
+time once a shuffle has more partitions than that. The sort-based writer has a single sorter per
+task, and uses Spark’s page size from the first page.</p></li>
 </ul>
 </section>
 <section id="configuration">

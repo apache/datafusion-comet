@@ -1096,10 +1096,6 @@ such nested value. Top-level values match Spark in a release build, because the 
 reach an Arrow string array unchecked. A debug build panics on them
 (<a class="reference external" href="https://github.com/apache/datafusion-comet/issues/7032">#7032</a>, part of
 <a class="reference external" href="https://github.com/apache/datafusion-comet/issues/4764">#4764</a>).</p></li>
-<li><p><strong>Spark 3.4: a struct matched by field id under a different name.</strong> With
-<code class="docutils literal notranslate"><span class="pre">spark.sql.parquet.fieldId.read.enabled=true</span></code>, a struct column that the read schema matches to
-the file by field id but under another name reads as NULL when Spark prunes its nested fields
-(<a class="reference external" href="https://github.com/apache/datafusion-comet/issues/7031">#7031</a>).</p></li>
 <li><p><strong>Field-id reads where one file column matches a field by id and a sibling by name.</strong> With
 <code class="docutils literal notranslate"><span class="pre">spark.sql.parquet.fieldId.read.enabled=true</span></code>, Comet returns NULL for the sibling at the top
 level. Inside a struct, it returns the values of the field matched by id. Spark’s own readers
