@@ -509,7 +509,10 @@ abstract class CometTestBase
     }
   }
 
-  /** Checks Spark exception parity and, by default, native execution. */
+  /**
+   * Checks Spark exception parity and, by default, native execution. Set `checkNative = false`
+   * only when fallback to Spark is the expected outcome.
+   */
   protected def checkSparkError(
       df: DataFrame,
       errorClass: String,

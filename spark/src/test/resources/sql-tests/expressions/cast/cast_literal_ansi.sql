@@ -18,8 +18,9 @@
 -- A cast of a literal that fails under ANSI must not fail the query while Comet plans it. Spark
 -- raises the error only when a row reaches the cast, so a branch no row chooses returns rows.
 -- ConstantFolding is left enabled: it keeps a failing cast unfolded inside a conditional branch,
--- which is how such a cast reaches Comet in a real query. Comet runs such a cast with Spark's
--- own Cast through the JVM codegen dispatcher.
+-- which is how such a cast reaches Comet in a real query. Comet leaves the projection to Spark:
+-- a codegen-dispatched projection evaluates a whole batch and can reach a throwing row that
+-- Spark skips under LIMIT.
 
 -- Config: spark.sql.ansi.enabled=true
 -- ConstantFolding: enabled
@@ -31,20 +32,20 @@ statement
 INSERT INTO test_cast_literal_ansi VALUES (0), (1), (2)
 
 -- no row reaches the failing cast
-query expect_dispatch(cast)
+query expect_fallback(Cast of a literal threw during planning)
 SELECT id, CASE WHEN id = 5 THEN CAST('bad' AS BIGINT) ELSE id END FROM test_cast_literal_ansi
 
-query expect_dispatch(cast)
+query expect_fallback(Cast of a literal threw during planning)
 SELECT id, IF(id > 5, CAST('2147483648' AS INT), 0) FROM test_cast_literal_ansi
 
-query expect_dispatch(cast)
+query expect_fallback(Cast of a literal threw during planning)
 SELECT id, COALESCE(id, CAST('bad' AS BIGINT)) FROM test_cast_literal_ansi
 
-query expect_dispatch(cast)
+query expect_fallback(Cast of a literal threw during planning)
 SELECT id, CASE WHEN id = 5 THEN CAST('NaNF' AS DOUBLE) ELSE 0D END,
   IF(id > 5, CAST('InfinityD' AS FLOAT), 0F) FROM test_cast_literal_ansi
 
-query expect_dispatch(cast)
+query expect_fallback(Cast of a literal threw during planning)
 SELECT id, CASE WHEN id = 5 THEN CAST('1e-2147483648' AS DECIMAL(10,2))
   ELSE CAST(0 AS DECIMAL(10,2)) END FROM test_cast_literal_ansi
 
@@ -52,21 +53,21 @@ SELECT id, CASE WHEN id = 5 THEN CAST('1e-2147483648' AS DECIMAL(10,2))
 query
 SELECT id, CASE WHEN id = 1 THEN CAST('7' AS BIGINT) ELSE id END FROM test_cast_literal_ansi
 
--- a row reaches the failing cast
-query expect_error_class(CAST_INVALID_INPUT)
+-- a row reaches the failing cast on the intentional Spark fallback path
+query expect_error(CAST_INVALID_INPUT)
 SELECT id, CASE WHEN id = 1 THEN CAST('bad' AS BIGINT) ELSE id END FROM test_cast_literal_ansi
 
-query expect_error_class(CAST_INVALID_INPUT)
+query expect_error(CAST_INVALID_INPUT)
 SELECT id, CASE WHEN id = 1 THEN CAST('NaNF' AS DOUBLE) ELSE 0D END FROM test_cast_literal_ansi
 
-query expect_error_class(CAST_INVALID_INPUT)
+query expect_error(CAST_INVALID_INPUT)
 SELECT id, IF(id > 1, CAST('InfinityD' AS FLOAT), 0F) FROM test_cast_literal_ansi
 
-query expect_error_class(CAST_INVALID_INPUT)
+query expect_error(CAST_INVALID_INPUT)
 SELECT id, CASE WHEN id = 1 THEN CAST('1e-2147483648' AS DECIMAL(10,2))
   ELSE CAST(0 AS DECIMAL(10,2)) END FROM test_cast_literal_ansi
 
-query expect_error_class(CAST_OVERFLOW)
+query expect_error(CAST_OVERFLOW)
 SELECT id, IF(id > 1, CAST(2147483648L AS INT), 0) FROM test_cast_literal_ansi
 
 -- The native cast of a column parses these like Spark. Java only allows a D/F suffix after a

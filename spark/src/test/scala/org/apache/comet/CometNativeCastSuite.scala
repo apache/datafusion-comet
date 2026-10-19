@@ -31,7 +31,7 @@ import org.apache.spark.SparkConf
 import org.apache.spark.sql.{CometTestBase, DataFrame, Row, SaveMode}
 import org.apache.spark.sql.catalyst.expressions.{Cast, Literal}
 import org.apache.spark.sql.catalyst.parser.ParseException
-import org.apache.spark.sql.comet.{CometNativeScanExec, CometProjectExec}
+import org.apache.spark.sql.comet.CometNativeScanExec
 import org.apache.spark.sql.execution.adaptive.AdaptiveSparkPlanHelper
 import org.apache.spark.sql.functions.{col, monotonically_increasing_id}
 import org.apache.spark.sql.internal.SQLConf
@@ -96,13 +96,19 @@ class CometNativeCastSuite
                 c
             })
           assert(badCasts.nonEmpty)
-          val (_, plan) =
-            checkSparkAnswerAndFallbackReason(masked, CometCast.literalCastConditionalEvalReason)
-          assert(collect(plan) { case scan: CometNativeScanExec => scan }.nonEmpty)
-          checkSparkError(
-            sql(s"SELECT $cast FROM cast_branch_rows"),
-            "CAST_INVALID_INPUT",
-            checkNative = false)
+          for (dispatch <- Seq("true", "false")) {
+            withSQLConf(CometConf.COMET_SCALA_UDF_CODEGEN_ENABLED.key -> dispatch) {
+              val (_, plan) =
+                checkSparkAnswerAndFallbackReason(
+                  masked,
+                  CometCast.literalCastConditionalEvalReason)
+              assert(collect(plan) { case scan: CometNativeScanExec => scan }.nonEmpty)
+              checkSparkError(
+                sql(s"SELECT $cast FROM cast_branch_rows"),
+                "CAST_INVALID_INPUT",
+                checkNative = false)
+            }
+          }
         }
       }
     }
@@ -114,21 +120,13 @@ class CometNativeCastSuite
         withSQLConf(SQLConf.ANSI_ENABLED.key -> ansi) {
           val query = "SELECT CAST(IF(_1 = 1, '1', CAST(_1 AS STRING)) AS INT) " +
             "FROM cast_branch_controls"
-          val (_, plan) = checkSparkAnswerAndOperator(sql(query))
-          assert(collect(plan) { case project: CometProjectExec => project }.nonEmpty)
-          assert(
-            !plan.exists(_.getTagValue(CometExplainInfo.FALLBACK_REASONS)
-              .exists(_.contains(CometCast.literalCastConditionalEvalReason))))
+          checkSparkAnswerAndOperator(sql(query))
         }
       }
       withSQLConf(SQLConf.ANSI_ENABLED.key -> "false") {
         val query = "SELECT CAST(IF(_1 = 1, 'bad', CAST(_1 AS STRING)) AS INT) " +
           "FROM cast_branch_controls"
-        val (_, plan) = checkSparkAnswerAndOperator(sql(query))
-        assert(collect(plan) { case project: CometProjectExec => project }.nonEmpty)
-        assert(
-          !plan.exists(_.getTagValue(CometExplainInfo.FALLBACK_REASONS)
-            .exists(_.contains(CometCast.literalCastConditionalEvalReason))))
+        checkSparkAnswerAndOperator(sql(query))
       }
     }
   }
@@ -1691,7 +1689,8 @@ class CometNativeCastSuite
         val df = sql(
           "SELECT CASE WHEN id = 1 THEN CAST('1e-2147483647' AS DECIMAL(10,2)) " +
             "ELSE CAST(0 AS DECIMAL(10,2)) END FROM cast_literal_branch")
-        checkCometOperators(stripAQEPlan(df.queryExecution.executedPlan))
+        val reasons = new ExtendedExplainInfo().getFallbackReasons(df.queryExecution.executedPlan)
+        assert(reasons.exists(_.contains(CometCast.literalCastConditionalEvalReason)))
         val (sparkError, cometError) = checkSparkAnswerMaybeThrows(df)
         def rootCause(e: Throwable): Throwable =
           Iterator.iterate(e)(_.getCause).takeWhile(_ != null).toSeq.last
