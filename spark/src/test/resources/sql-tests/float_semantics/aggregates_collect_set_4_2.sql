@@ -23,7 +23,6 @@
 --
 -- Each pair of edge values is expanded from one input row (see aggregates.sql).
 
--- ConstantFolding: enabled
 -- MinSparkVersion: 4.2
 
 statement
@@ -69,9 +68,9 @@ FROM fs_edge_float a CROSS JOIN fs_edge_float b
 -- DOUBLE
 query
 WITH p AS (SELECT id, IF(lneg, -l, l) AS l, IF(rneg, -r, r) AS r FROM fs_pair_double)
-SELECT id, size(collect_set(x)) FROM (SELECT id, pos, x FROM p LATERAL VIEW posexplode(array(l, r)) t AS pos, x) GROUP BY id
+SELECT id, size(collect_set(x)) FROM (SELECT id, x FROM p LATERAL VIEW explode(array(l, r)) t AS x) GROUP BY id
 
 -- FLOAT
 query
 WITH p AS (SELECT id, IF(lneg, -l, l) AS l, IF(rneg, -r, r) AS r FROM fs_pair_float)
-SELECT id, size(collect_set(x)) FROM (SELECT id, pos, x FROM p LATERAL VIEW posexplode(array(l, r)) t AS pos, x) GROUP BY id
+SELECT id, size(collect_set(x)) FROM (SELECT id, x FROM p LATERAL VIEW explode(array(l, r)) t AS x) GROUP BY id

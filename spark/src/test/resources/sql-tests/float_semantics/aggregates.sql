@@ -25,7 +25,6 @@
 --
 -- collect_set is in aggregates_collect_set_4_2.sql.
 
--- ConstantFolding: enabled
 
 statement
 CREATE TABLE fs_edge_double(id INT, c DOUBLE, neg BOOLEAN) USING parquet

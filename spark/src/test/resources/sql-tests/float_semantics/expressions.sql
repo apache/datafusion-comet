@@ -24,6 +24,9 @@
 --
 -- hash and xxhash64 of a float, an array and a struct are in expressions/hash/hash.sql.
 -- collect_set is in aggregates_collect_set_4_2.sql.
+--
+-- ConstantFolding is on so that the IN query reaches Comet with a folded literal, as Spark
+-- plans it.
 
 -- ConstantFolding: enabled
 

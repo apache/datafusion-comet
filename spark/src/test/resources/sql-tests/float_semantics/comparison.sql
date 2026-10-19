@@ -27,12 +27,7 @@
 --
 -- comparison_joins.sql covers join conditions and comparison_nested.sql covers comparisons of
 -- arrays and structs. literal_comparison.sql compares a column with a literal.
---
--- The fixtures run with Spark's ConstantFolding on, which the sweep always did. The literal
--- queries need it for a literal to arrive as a sign-bit NaN, and nothing here is an
--- all-literal expression that the default exclusion would keep from being folded.
 
--- ConstantFolding: enabled
 
 statement
 CREATE TABLE fs_edge_double(id INT, c DOUBLE, neg BOOLEAN) USING parquet

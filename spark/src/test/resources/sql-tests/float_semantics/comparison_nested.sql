@@ -18,7 +18,6 @@
 -- Comparisons of arrays and structs that hold one float, over every ordered pair of the edge
 -- values (see comparison.sql). Spark compares the elements and fields with SQL ordering.
 
--- ConstantFolding: enabled
 
 statement
 CREATE TABLE fs_edge_double(id INT, c DOUBLE, neg BOOLEAN) USING parquet

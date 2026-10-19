@@ -21,7 +21,6 @@
 -- alone; its = and <=> make it an equi-join, which Spark plans as a hash join, so they repeat
 -- the join keys of keys.sql.
 
--- ConstantFolding: enabled
 
 statement
 CREATE TABLE fs_edge_double(id INT, c DOUBLE, neg BOOLEAN) USING parquet

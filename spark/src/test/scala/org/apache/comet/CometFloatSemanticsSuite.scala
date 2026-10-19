@@ -35,9 +35,7 @@ import org.apache.spark.sql.CometTestBase
  * fix, or a DataFusion upgrade that changes float behavior, removes the test instead of leaving
  * it stale. `aggregates_collect_set_4_2.sql` covers Spark 4.2, where the answers match.
  *
- * The edge values are `0.0`, `-0.0`, a canonical NaN and a NaN with the sign bit set, plus `1.0`,
- * `-1.0`, both infinities and `NULL`. A Parquet round trip through Spark's writer canonicalizes
- * NaN, so the sign-bit NaN is made at query time by negating a stored NaN.
+ * The edge values and how the sign-bit NaN is made are described in `comparison.sql`.
  */
 class CometFloatSemanticsSuite extends CometTestBase {
 
@@ -45,16 +43,14 @@ class CometFloatSemanticsSuite extends CometTestBase {
 
   override def beforeAll(): Unit = {
     super.beforeAll()
-    sql("CREATE TABLE fs_edge_raw(id INT, d DOUBLE, f FLOAT, neg BOOLEAN) USING parquet")
-    sql(s"INSERT INTO fs_edge_raw VALUES ${edgeRows.mkString(", ")}")
-    sql("""CREATE TABLE fs_pair_raw USING parquet AS
+    sql(s"""CREATE TABLE fs_pair_raw USING parquet AS
+        |WITH edge(id, d, f, neg) AS (VALUES ${edgeRows.mkString(", ")})
         |SELECT a.id * 10 + b.id AS id, a.d, a.f, a.neg AS dneg, b.d AS e, b.f AS h, b.neg AS eneg
-        |FROM fs_edge_raw a CROSS JOIN fs_edge_raw b""".stripMargin)
+        |FROM edge a CROSS JOIN edge b""".stripMargin)
   }
 
   override def afterAll(): Unit = {
     try {
-      sql("DROP TABLE IF EXISTS fs_edge_raw")
       sql("DROP TABLE IF EXISTS fs_pair_raw")
     } finally {
       super.afterAll()
@@ -65,13 +61,11 @@ class CometFloatSemanticsSuite extends CometTestBase {
   if (!CometSparkSessionExtensions.isSpark42Plus) {
     for ((name, l, r) <- Seq(("double", "d", "e"), ("float", "f", "h"))) {
       test(s"known gap #5312: collect_set before Spark 4.2 [$name]") {
-        // Each pair is expanded from one input row, so its two values reach the same partial
-        // aggregate in array order.
         val query =
           s"""WITH p AS (
              |  SELECT id, IF(dneg, -$l, $l) AS l, IF(eneg, -$r, $r) AS r FROM fs_pair_raw)
              |SELECT id, size(collect_set(x))
-             |FROM (SELECT id, pos, x FROM p LATERAL VIEW posexplode(array(l, r)) t AS pos, x)
+             |FROM (SELECT id, x FROM p LATERAL VIEW explode(array(l, r)) t AS x)
              |GROUP BY id""".stripMargin
         val matched =
           try {

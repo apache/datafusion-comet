@@ -25,6 +25,9 @@
 --
 -- Nested ORDER BY and window order keys are in windows/nested_float_order_keys.sql, which
 -- uses the same edge values.
+--
+-- ConstantFolding is on so that the IN list reaches Comet with folded literals, as Spark
+-- plans it.
 
 -- ConstantFolding: enabled
 

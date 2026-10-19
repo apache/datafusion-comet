@@ -203,13 +203,11 @@ and only for a type that contains a `FLOAT` or `DOUBLE`.
   Scala.
 - Add the expression to the sweep in `float_semantics/`, which crosses the edge values with
   operator contexts and with every expression and aggregate that accepts floating-point input.
-  `comparison.sql`, `comparison_joins.sql` and `comparison_nested.sql` cover comparisons,
-  `literal_comparison.sql` compares a column with literals, and `keys.sql` covers grouping, join,
-  sort and window keys. A new expression goes in `expressions.sql`, or in `aggregates.sql` for an
-  aggregate, with one query for `DOUBLE` and one for `FLOAT`. If one does not match Spark yet,
-  mark its queries `ignore(<issue>)`. A SQL file test cannot expect a difference, so a gap that
-  should fail once it is fixed goes in `CometFloatSemanticsSuite`, whose test for `collect_set`
-  before Spark 4.2 fails when the answers start to match.
+  A new expression goes in `expressions.sql`, or in `aggregates.sql` for an aggregate, with one
+  query for `DOUBLE` and one for `FLOAT`. If one does not match Spark yet, mark its queries
+  `ignore(<issue>)`. A SQL file test cannot expect a difference, so a gap that should fail once it
+  is fixed goes in `CometFloatSemanticsSuite`, whose test for `collect_set` before Spark 4.2 fails
+  when the answers start to match.
 
 Fixtures to start from include `expressions/conditional/float_comparisons.sql`,
 `expressions/math/nan_divisor.sql`, `expressions/math/greatest_least_floating_point.sql`,
