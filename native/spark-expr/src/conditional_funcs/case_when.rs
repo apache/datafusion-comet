@@ -1145,6 +1145,92 @@ mod tests {
         Arc::new(BinaryExpr::new(left, op, right))
     }
 
+    /// The plan `CometArrayAppend` serializes for a nullable array, with the array standing in for
+    /// the appended list: THEN the list, ELSE an evaluation of the item that returns NULL. Spark's
+    /// generated code evaluates the item for every row, so an item that fails must fail on a row
+    /// whose array is NULL (#6086). Both levels of ELSE are NULL of the list type THEN returns: an
+    /// element-typed NULL made the inner CASE return Int32 where the outer CASE returns lists, and
+    /// the two could not be merged.
+    #[test]
+    fn evaluating_the_item_for_null_arrays_keeps_the_list_type() {
+        use arrow::array::ListArray;
+        use arrow::datatypes::Int32Type;
+
+        let list_type = DataType::List(Arc::new(Field::new("item", DataType::Int32, true)));
+        let schema = Schema::new(vec![
+            Field::new("arr", list_type.clone(), true),
+            Field::new("a", DataType::Int32, true),
+            Field::new("b", DataType::Int32, true),
+        ]);
+        let c = |name: &str| col(name, &schema).unwrap();
+        // CASE WHEN arr IS NOT NULL THEN arr
+        //      ELSE CASE WHEN a / b IS NOT NULL THEN NULL ELSE NULL END END
+        let plan = |null_else: ScalarValue| {
+            let null_else = lit(null_else);
+            let evaluate_item = create_case_when(
+                vec![(
+                    Arc::new(IsNotNullExpr::new(binary(c("a"), Operator::Divide, c("b"))))
+                        as Arc<dyn PhysicalExpr>,
+                    Arc::clone(&null_else),
+                )],
+                Some(null_else),
+                &schema,
+            )
+            .unwrap();
+            create_case_when(
+                vec![(
+                    Arc::new(IsNotNullExpr::new(c("arr"))) as Arc<dyn PhysicalExpr>,
+                    c("arr"),
+                )],
+                Some(evaluate_item),
+                &schema,
+            )
+            .unwrap()
+        };
+        let batch = |arrays: Vec<Option<Vec<Option<i32>>>>, divisors: Vec<Option<i32>>| {
+            let len = arrays.len();
+            RecordBatch::try_new(
+                Arc::new(schema.clone()),
+                vec![
+                    Arc::new(ListArray::from_iter_primitive::<Int32Type, _, _>(arrays)),
+                    Arc::new(Int32Array::from(vec![Some(6); len])),
+                    Arc::new(Int32Array::from(divisors)),
+                ],
+            )
+            .unwrap()
+        };
+        let expr = plan(ScalarValue::try_new_null(&list_type).unwrap());
+
+        // Some arrays are NULL and the item divides without failing: the lists come back as they
+        // were, and the NULLs stay NULL, with the list type
+        let arrays = vec![Some(vec![Some(1)]), None, Some(vec![Some(2)]), None];
+        let input = batch(arrays, vec![Some(2), Some(3), Some(0), Some(4)]);
+        let result = expr.evaluate(&input).unwrap().into_array(4).unwrap();
+        assert_eq!(result.data_type(), &list_type);
+        assert_eq!(&result, input.column(0));
+
+        // Every array is NULL: every row chooses ELSE, which still has to produce lists
+        let input = batch(vec![None, None], vec![Some(2), Some(3)]);
+        let result = expr.evaluate(&input).unwrap().into_array(2).unwrap();
+        assert_eq!(result.data_type(), &list_type);
+        assert_eq!(result.null_count(), 2);
+
+        // No array is NULL: ELSE is never evaluated, so a zero divisor goes unnoticed
+        let input = batch(
+            vec![Some(vec![Some(1)]), Some(vec![])],
+            vec![Some(0), Some(0)],
+        );
+        let result = expr.evaluate(&input).unwrap().into_array(2).unwrap();
+        assert_eq!(&result, input.column(0));
+
+        // The item fails on a row whose array is NULL, as in Spark
+        let arrays = vec![Some(vec![Some(1)]), None];
+        let err = expr
+            .evaluate(&batch(arrays, vec![Some(2), Some(0)]))
+            .unwrap_err();
+        assert!(err.to_string().contains("Divide by zero"), "{err}");
+    }
+
     #[test]
     fn branch_that_can_fail_is_evaluated_lazily() {
         // CASE WHEN b != 0 THEN a / b ELSE 0 END: integer division fails for b = 0, which the

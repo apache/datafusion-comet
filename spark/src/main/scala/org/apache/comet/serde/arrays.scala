@@ -132,8 +132,14 @@ object CometArrayAppend extends CometExpressionSerde[ArrayAppend] with ArraysBas
       binding,
       (builder, unaryExpr) => builder.setIsNotNull(unaryExpr))
 
+    // The NULL a row with a NULL array returns. It has to be typed as the list that THEN returns,
+    // not as an element: typed as an element, the inner CASE below returns elements, and the outer
+    // CASE cannot merge those with the lists of its other branch.
     val nullLiteralProto =
-      exprToProtoInternal(Literal(null, elementType), Seq.empty, binding = true)
+      exprToProtoInternal(
+        Literal(null, ArrayType(elementType, containsNull = true)),
+        Seq.empty,
+        binding = true)
 
     // DataFusion's CaseExpr evaluates the THEN branch only on the rows the guard selects, but
     // Spark evaluates the item on every row. Evaluate it on the remaining rows in the ELSE
