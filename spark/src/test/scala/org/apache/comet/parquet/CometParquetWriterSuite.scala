@@ -2031,11 +2031,10 @@ class CometParquetWriterSuite extends CometParquetWriterTestBase {
     }
 
   test("a task file the native writer cannot create is created through Hadoop") {
-    // The native writer creates only local and HDFS files. Every other file, such as the one
-    // S3A's magic committer hands out under its `__magic` directory, has to be created through
-    // Hadoop's FileSystem API so the FileSystem can do whatever it does at create time, and the
-    // native writer only supplies the bytes. RecordingFileSystemCommitProtocol puts task files on
-    // a scheme the native writer cannot open at all, so the write can only succeed that way.
+    // The native writer creates only local and HDFS files. Every other file is created through
+    // Hadoop's FileSystem API (see HadoopFileOutput) and the native writer only supplies the
+    // bytes. RecordingFileSystemCommitProtocol puts task files on a scheme the native writer
+    // cannot open at all, so the write can only succeed that way.
     withRecordingFileSystem(rows = 1000, partitions = 3) { (df, outputPath) =>
       val plan = captureWritePlan(p => df.write.parquet(p), outputPath)
       assertHasCometNativeWriteExec(plan)
@@ -2082,8 +2081,8 @@ class CometParquetWriterSuite extends CometParquetWriterTestBase {
 
   test("S3 writes plan natively when S3A's magic committer commits them") {
     // Planning admits an S3 destination only when the magic committer will commit it, as
-    // `PathOutputCommitterFactory` and `S3ACommitterFactory` resolve the committer. Its tasks
-    // then have S3A create each file. Other S3 writes stay on Spark's writer.
+    // `PathOutputCommitterFactory` and `S3ACommitterFactory` resolve the committer. Other S3
+    // writes stay on Spark's writer for now, see `NativeWriteUtils.unsupportedFileSystem`.
     val pathOutput = NativeWriteUtils.PathOutputCommitProtocolClass
     val defaultProtocol = SQLConf.FILE_COMMIT_PROTOCOL_CLASS.defaultValueString
     val bindingCommitter =
@@ -2144,24 +2143,23 @@ class CometParquetWriterSuite extends CometParquetWriterTestBase {
         !usesMagic(pathOutput, s3aSchemeFactory, "fs.s3a.committer.name" -> name)(),
         s"committer name '$name'")
     }
-    // A bucket's committer name applies when the job sets none of its own, and a global name in
-    // the job's configuration wins over it, as S3ACommitterFactory reads the job's first.
+    // A bucket's own committer name never decides it. S3ACommitterFactory reads the job's name
+    // first, and Spark's Hadoop configuration always has one, `file` from core-default.xml.
+    assert(new Configuration().getTrimmed("fs.s3a.committer.name") == "file")
+    def usesMagicWithDefaults(settings: (String, String)*): Boolean = {
+      val conf = new Configuration()
+      conf.set("mapreduce.outputcommitter.factory.scheme.s3a", s3aFactory)
+      settings.foreach { case (key, value) => conf.set(key, value) }
+      NativeWriteUtils.usesS3AMagicCommitter("s3a://bucket/warehouse/table", pathOutput, conf)
+    }
+    assert(!usesMagicWithDefaults())
+    assert(!usesMagicWithDefaults("fs.s3a.bucket.bucket.committer.name" -> "magic"))
+    assert(usesMagicWithDefaults(magicName))
+    assert(usesMagicWithDefaults(magicName, "fs.s3a.bucket.bucket.committer.name" -> "file"))
     assert(
-      usesMagic(pathOutput, s3aSchemeFactory, "fs.s3a.bucket.bucket.committer.name" -> "magic")())
-    assert(
-      !usesMagic(pathOutput, s3aSchemeFactory, "fs.s3a.bucket.other.committer.name" -> "magic")())
-    assert(
-      !usesMagic(
-        pathOutput,
-        s3aSchemeFactory,
+      !usesMagicWithDefaults(
         "fs.s3a.committer.name" -> "directory",
-        "fs.s3a.bucket.bucket.committer.name" -> "magic")())
-    assert(
-      usesMagic(
-        pathOutput,
-        s3aSchemeFactory,
-        magicName,
-        "fs.s3a.bucket.bucket.committer.name" -> "file")())
+        "fs.s3a.bucket.bucket.committer.name" -> "magic"))
 
     // Each task then decides by the path its committer returned: the magic committer's own files
     // are created through S3A, while local and HDFS files are created natively.

@@ -71,9 +71,7 @@ import org.apache.comet.shims.ShimCometWriteFilesExec
  * `FileCommitProtocol.newTaskTempFile` is used verbatim, so staging directories, task-attempt
  * isolation under speculation, and committers that track individual files all behave as they do
  * for Spark's own writer. A file that is neither local nor on HDFS is created through Hadoop's
- * FileSystem API, as Spark's writer creates it, and the native writer only supplies its bytes.
- * That is what S3A's magic committer needs, since only S3A can turn a file into the pending
- * upload the committer completes.
+ * FileSystem API, see [[org.apache.comet.parquet.HadoopFileOutput]].
  *
  * @param nativeOp
  *   Template for the native write plan. `output_path` is a placeholder here and is replaced per
@@ -347,11 +345,9 @@ object CometWriteFilesExec extends Logging {
    *
    * When the native writer cannot create the file itself (see
    * [[NativeWriteUtils.nativeWriterCreatesFile]]), it is created here first, through Hadoop's
-   * FileSystem API with the task's configuration, and the plan's writer writes the file's bytes
-   * to its [[HadoopFileOutput]]. That is what S3A's magic committer needs: S3A turns a file
-   * created under the committer's `__magic` directory into a pending upload to the file's final
-   * destination, which it records when the file is closed, and only S3A can do that. The file is
-   * closed once the plan has written all of it, and aborted if the plan fails.
+   * FileSystem API with the task's configuration, as [[HadoopFileOutput]] explains, and the
+   * plan's writer writes the file's bytes to it. The file is closed once the plan has written all
+   * of it, and aborted if the plan fails.
    */
   private[comet] def writeFile(
       filePath: String,

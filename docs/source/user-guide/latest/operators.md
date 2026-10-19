@@ -144,9 +144,9 @@ Native Parquet writes support local and HDFS destinations, and S3 writes that th
 committer commits. Spark 4.1 configures that committer by default when spark-hadoop-cloud is on the
 classpath, and earlier versions for a bucket that sets
 `fs.s3a.bucket.<bucket>.committer.magic.enabled`. S3A creates each of those files, through the same
-call Spark's own writer makes, and Comet's native writer only produces the Parquet bytes. The magic
-committer and S3A's write settings, such as server-side encryption, ACLs, storage class and object
-headers, therefore apply exactly as they do for Spark's writer. Other S3 writes fall back to Spark.
+call Spark's own writer makes, so the magic committer and S3A's write settings, such as server-side
+encryption, ACLs, storage class and object headers, apply exactly as they do for Spark's writer.
+Other S3 writes fall back to Spark.
 
 ## Python and UDF
 

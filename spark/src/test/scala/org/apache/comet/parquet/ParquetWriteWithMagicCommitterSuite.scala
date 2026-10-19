@@ -209,8 +209,8 @@ class ParquetWriteWithMagicCommitterSuite
   }
 
   test("an S3 write that S3A's magic committer does not commit stays on Spark") {
-    // Only the magic committer's writes have S3A create each file. The others need the native
-    // writer to do what S3A does at create time, which it does not yet.
+    // Only the magic committer's writes are in scope for the native writer for now, see
+    // NativeWriteUtils.unsupportedFileSystem.
     Seq("file", "directory").foreach { committer =>
       withTempPath { dir =>
         val df = source(100, dir)

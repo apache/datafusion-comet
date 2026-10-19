@@ -52,10 +52,9 @@ import org.apache.comet.serde.operator.NativeWriteUtils
  *
  * Both execution entry points run Spark's job and task commit lifecycle. Native code writes the
  * exact filename supplied by the configured commit protocol, using the prepared Hadoop job. A
- * file that is neither local nor on HDFS is created through Hadoop's FileSystem API, as Spark's
- * writer creates it, and the native writer only supplies its bytes, which is what S3A's magic
- * committer needs. Spark 4.0+ uses CometWriteFilesExec and leaves the surrounding command with
- * Spark instead.
+ * file that is neither local nor on HDFS is created through Hadoop's FileSystem API, see
+ * [[org.apache.comet.parquet.HadoopFileOutput]]. Spark 4.0+ uses CometWriteFilesExec and leaves
+ * the surrounding command with Spark instead.
  *
  * @param originalPlan
  *   The JVM data-writing command restored when Comet reverts a transition-heavy stage
@@ -226,9 +225,8 @@ case class CometNativeWriteExec(
 
             // Register before the iterator so this listener runs after its cleanup.
             nativeMetrics.reportNativeWriteOutputMetrics(context)
-            // Runs and closes the native plan before the task commits, creating through Hadoop
-            // any file the native writer cannot create itself, such as one S3A's magic committer
-            // hands out.
+            // Runs and closes the native plan before the task commits. See writeFile for which
+            // files the native writer does not create itself.
             CometWriteFilesExec.writeFile(
               filePath,
               taskContext.getConfiguration,

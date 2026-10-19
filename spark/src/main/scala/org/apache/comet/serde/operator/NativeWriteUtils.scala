@@ -191,21 +191,24 @@ object NativeWriteUtils {
 
   /**
    * Whether the native writer creates the file at `filePath` itself, which it does for local and
-   * HDFS files. Any other file is created through Hadoop's FileSystem API, as Spark's own writer
-   * creates it, and the native writer only writes its bytes. That is always correct, whatever the
-   * file system and whatever the committer expects of it, which is why this is decided per task
-   * on the path the commit protocol actually returned rather than at planning.
+   * HDFS files. Any other file is created through Hadoop's FileSystem API and the native writer
+   * only writes its bytes, see [[org.apache.comet.parquet.HadoopFileOutput]]. That is always
+   * correct, whatever the file system and whatever the committer expects of it, which is why this
+   * is decided per task on the path the commit protocol actually returned rather than at
+   * planning.
    */
   def nativeWriterCreatesFile(filePath: String): Boolean =
     filePath.startsWith("file:") || filePath.startsWith("hdfs:")
 
   /**
    * A fallback reason when the native writer cannot write to `outputPath`'s file system, or
-   * `None` when it can. Local and HDFS files are created natively. A write that S3A's magic
-   * committer commits is supported too, since each of its files is created through S3A (see
-   * `CometWriteFilesExec.writeFile`), which is the only way to give the committer the pending
-   * upload it completes. Other S3 writes stay on Spark until the native writer reproduces what
-   * S3A does at create time.
+   * `None` when it can. Local and HDFS files are created natively, and so are the files of a
+   * write that S3A's magic committer commits, through S3A (see
+   * [[org.apache.comet.parquet.HadoopFileOutput]]).
+   *
+   * That is a matter of scope, not of correctness: any file, including any other S3A file, could
+   * be written the same way. Other S3 writes stay on Spark until the cost of streaming a file
+   * through S3A has been measured against uploading it natively (#6944).
    *
    * @param hadoopConf
    *   the write's Hadoop configuration, only built for a destination the native writer does not
@@ -255,13 +258,14 @@ object NativeWriteUtils {
    * `mapreduce.outputcommitter.factory.class` when set, else
    * `mapreduce.outputcommitter.factory.scheme.<scheme>`. The committer is the magic committer
    * when that factory is `MagicS3GuardCommitterFactory`, or when it is `S3ACommitterFactory` and
-   * the committer it is asked for is `magic`: `fs.s3a.committer.name` in the job's configuration,
-   * or failing that in the file system's, where `fs.s3a.bucket.<bucket>.committer.name` replaces
-   * it.
+   * the committer it is asked for is `magic`: `fs.s3a.committer.name` in the job's configuration.
+   * `S3ACommitterFactory` reads the file system's configuration, where a bucket's own
+   * `fs.s3a.bucket.<bucket>.committer.name` applies, only for a job that sets no name. Hadoop's
+   * `core-default.xml` sets `file`, so a Spark job always has one and a bucket's name never wins.
    *
-   * Only planning asks, to decide whether a write is worth running natively. A wrong answer
-   * cannot misplace data: each task writes the path the committer actually returns, and creates
-   * any file that is not local or on HDFS through Hadoop, see `CometWriteFilesExec.writeFile`.
+   * Only planning asks, to decide whether a write is in scope for the native writer. A wrong
+   * answer cannot misplace data, because each task writes the path the committer actually
+   * returns.
    *
    * @param commitProtocolClass
    *   the write's `spark.sql.sources.commitProtocolClass`
@@ -291,13 +295,7 @@ object NativeWriteUtils {
     factory match {
       case Some(MagicCommitterFactoryClass) => true
       case Some(S3ACommitterFactoryClass) =>
-        // S3ACommitterFactory takes the name from the job's configuration when it has one, and
-        // otherwise from the file system's, which S3A has resolved per bucket. A job
-        // configuration set globally therefore wins over a bucket's own setting.
-        val name = Option(hadoopConf.getTrimmed("fs.s3a.committer.name"))
-          .orElse(Option(uri.getHost).flatMap(bucket =>
-            Option(hadoopConf.getTrimmed(s"fs.s3a.bucket.$bucket.committer.name"))))
-        name.contains("magic")
+        Option(hadoopConf.getTrimmed("fs.s3a.committer.name")).contains("magic")
       case _ => false
     }
   }

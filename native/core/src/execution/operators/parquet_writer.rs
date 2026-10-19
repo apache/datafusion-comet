@@ -101,9 +101,8 @@ enum ParquetWriter {
         Box<Operator>,
         String,
     ),
-    /// Writer for a file the JVM created through Hadoop's FileSystem API, which only supplies the
-    /// file's bytes. Whatever the file system does to create and store the file, S3A's magic
-    /// committer support among it, is the JVM's.
+    /// Writer for a file the JVM created through Hadoop's FileSystem API (`HadoopFileOutput`),
+    /// which only supplies the file's bytes.
     OutputStream(ArrowWriter<OutputStreamWriter>),
 }
 
@@ -1139,7 +1138,7 @@ mod tests {
 
     /// A file the JVM created gets exactly the bytes the writer would have written to a file of
     /// its own, in writes no larger than the stream accepts, and the writer never opens the path
-    /// itself: here an S3A magic committer path, which only S3A can create correctly.
+    /// itself.
     #[tokio::test]
     async fn test_parquet_writer_writes_a_jvm_created_file_through_its_output_stream() -> Result<()>
     {
