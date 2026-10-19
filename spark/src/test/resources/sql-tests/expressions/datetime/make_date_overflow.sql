@@ -18,6 +18,7 @@
 -- ConfigMatrix: spark.sql.ansi.enabled=false,true
 -- Config: spark.comet.exec.scalaUDF.codegen.enabled=false
 -- Config: spark.sql.subexpressionElimination.enabled=true
+-- Config: spark.sql.datetime.java8API.enabled=true
 
 statement
 CREATE TABLE make_date_overflow(y INT, m INT, d INT) USING parquet
@@ -64,7 +65,7 @@ FROM make_date_arguments WHERE m IS NOT NULL
 -- A later NULL must not hide an error in the required first argument.
 query expect_error_class(ARITHMETIC_OVERFLOW)
 SELECT make_date(year(make_date(inner_y, 1, 1)), 1, y)
-FROM make_date_arguments
+FROM make_date_arguments WHERE inner_y = 6000000
 
 statement
 CREATE TABLE make_date_parents(lhs INT, guard BOOLEAN, y INT, d INT) USING parquet
