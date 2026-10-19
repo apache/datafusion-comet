@@ -93,7 +93,7 @@ which stays off by default. With it on, Comet plans an Iceberg `INSERT INTO`, `I
 and copy-on-write `DELETE`, `UPDATE` or `MERGE` as two operators, `IcebergWrite` under
 `IcebergCommit`, in place of Spark's single V2 write operator, and writes the data files of each
 eligible write natively with iceberg-rust. A write that is not eligible uses iceberg-java's writer,
-and iceberg-java commits every write. Before turning it on, see [Iceberg Writes](iceberg-writes.md)
+and iceberg-java commits every write. Before turning it on, see [Iceberg Writes](iceberg.md#writes)
 for how natively written files differ from iceberg-java's, the footer reads the native path makes on
 S3 or GCS, and how the native writer draws on Comet's off-heap memory pool.
 
@@ -101,10 +101,11 @@ Comet 1.1.0 named this setting `spark.comet.iceberg.write.enabled`, in the testi
 took effect only together with `spark.comet.write.iceberg.splitOperator.enabled`. Comet now ignores
 the old name, so a deployment that turned native writes on that way must set
 `spark.comet.write.iceberg.enabled=true` to keep them.
-`spark.comet.write.iceberg.splitOperator.enabled` is now a testing setting. Comet 1.1.0 documented
-it as the switch for the split plan, and a deployment that still sets it to `true` keeps the split
-plan, with iceberg-java writing the data files, and on Spark 3.5+ it now also plans merge-on-read
-writes as the split plan. Unset it to plan Spark's own operator.
+`spark.comet.write.iceberg.splitOperator.enabled` is a testing setting, as it was in 1.1.0, but
+Comet 1.1.0's Iceberg Writes guide documented it as the switch for the split plan. A deployment
+that still sets it to `true` keeps the split plan, with iceberg-java writing the data files, and
+on Spark 3.5+ it now also plans merge-on-read writes as the split plan. Unset it to plan Spark's
+own operator.
 
 ## Upgrading to Comet 1.1.0
 
