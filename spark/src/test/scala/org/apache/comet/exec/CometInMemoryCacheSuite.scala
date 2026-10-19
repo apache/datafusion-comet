@@ -21,6 +21,7 @@ package org.apache.comet.exec
 
 import java.{util => ju}
 import java.io.ByteArrayInputStream
+import java.lang.management.ManagementFactory
 import java.nio.charset.StandardCharsets
 
 import scala.concurrent.{Await, Future}
@@ -30,7 +31,7 @@ import scala.jdk.CollectionConverters._
 
 import org.apache.arrow.compression.ZstdCompressionCodec
 import org.apache.arrow.memory.{ArrowBuf, BufferAllocator}
-import org.apache.arrow.vector.{BitVector, FixedSizeBinaryVector, IntVector, VarBinaryVector, VarCharVector}
+import org.apache.arrow.vector.{BitVector, FieldVector, FixedSizeBinaryVector, IntVector, VarBinaryVector, VarCharVector, VectorSchemaRoot}
 import org.apache.arrow.vector.compression.{CompressionCodec, CompressionUtil, NoCompressionCodec}
 import org.apache.arrow.vector.types.pojo.ArrowType
 import org.apache.spark.{SparkConf, SparkException}
@@ -3145,6 +3146,106 @@ class CometInMemoryCacheSuite extends CometTestBase {
         f(relation)
       } finally {
         spark.catalog.clearCache()
+      }
+    }
+  }
+
+  test("Comet in-memory cache writes a payload under the chunk size into one chunk of its size") {
+    // ChunkedByteBufferOutputStream allocates a whole chunk on its first write and copies a
+    // part-filled last chunk into an exactly sized buffer. With a fixed 1 MiB chunk, every cached
+    // batch under 1 MiB cost a spare 1 MiB array and a copy of its payload (#6951).
+    val threads = ManagementFactory.getThreadMXBean match {
+      case bean: com.sun.management.ThreadMXBean
+          if bean.isThreadAllocatedMemorySupported && bean.isThreadAllocatedMemoryEnabled =>
+        bean
+      case _ => cancel("this JVM does not count the bytes a thread allocates")
+    }
+    val rows = 20000
+    // Writes one batch of about 500 KB, uncompressed so that the codec allocates nothing on the
+    // heap, and returns the payload's size and chunk count with the bytes this thread allocated
+    // to write it.
+    def write(): (Long, Int, Long) = {
+      val ints = new IntVector("i", CometArrowAllocator)
+      val chars = new VarCharVector("s", CometArrowAllocator)
+      try {
+        ints.allocateNew(rows)
+        chars.allocateNew(rows.toLong * 16, rows)
+        (0 until rows).foreach { i =>
+          ints.set(i, i)
+          chars.setSafe(i, f"value-$i%010d".getBytes(StandardCharsets.UTF_8))
+        }
+        ints.setValueCount(rows)
+        chars.setValueCount(rows)
+        val batch = new ColumnarBatch(
+          Array[ColumnVector](new CometPlainVector(ints), new CometPlainVector(chars)),
+          rows)
+        val thread = Thread.currentThread().getId
+        val before = threads.getThreadAllocatedBytes(thread)
+        val payload =
+          CometCachedBatchHelper.serialize(
+            batch,
+            NoCompressionCodec.INSTANCE,
+            CometArrowAllocator)
+        val allocated = threads.getThreadAllocatedBytes(thread) - before
+        (payload.size, payload.getChunks().length, allocated)
+      } finally {
+        ints.close()
+        chars.close()
+      }
+    }
+
+    // The first write loads and links everything the write path touches.
+    write()
+    val (size, chunks, allocated) = write()
+    assert(size > 256 * 1024 && size < 1024 * 1024, s"the payload is $size bytes")
+    assert(chunks == 1)
+    // The payload itself, plus the metadata, the channel's transfer buffer and small objects.
+    assert(
+      allocated < size + 64 * 1024,
+      s"writing a $size-byte payload allocated $allocated bytes")
+  }
+
+  test("Comet in-memory cache computes a payload's size the way Arrow writes it") {
+    // The writer sizes a payload's chunk from this before writing anything, so it has to match
+    // MessageSerializer's framing byte for byte. A few bytes short spills the end of the payload
+    // into a second chunk, and a few over leaves the chunk part-filled, which costs a copy when
+    // the stream closes. Each column lengthens the metadata, and so moves its padding.
+    val rows = 1000
+    for {
+      columns <- 0 to 6
+      codec <- Seq[CompressionCodec](NoCompressionCodec.INSTANCE, new ZstdCompressionCodec(1))
+    } {
+      val vectors = (0 until columns).map { c =>
+        val vector: FieldVector = c % 3 match {
+          case 0 =>
+            val ints = new IntVector(s"c$c", CometArrowAllocator)
+            ints.allocateNew(rows)
+            (0 until rows).foreach(i => if (i % 5 == 0) ints.setNull(i) else ints.set(i, i))
+            ints
+          case 1 =>
+            val chars = new VarCharVector(s"c$c", CometArrowAllocator)
+            chars.allocateNew(rows.toLong * 8, rows)
+            (0 until rows).foreach { i =>
+              if (i % 5 == 0) chars.setNull(i)
+              else chars.setSafe(i, s"v$i".getBytes(StandardCharsets.UTF_8))
+            }
+            chars
+          case _ =>
+            val bits = new BitVector(s"c$c", CometArrowAllocator)
+            bits.allocateNew(rows)
+            (0 until rows).foreach(i => if (i % 5 == 0) bits.setNull(i) else bits.set(i, i % 2))
+            bits
+        }
+        vector
+      }
+      val root = new VectorSchemaRoot(vectors.asJava)
+      try {
+        root.setRowCount(rows)
+        val (computed, written) =
+          CometCachedBatchHelper.computedAndWrittenMessageSize(root, codec)
+        assert(computed == written, s"$columns columns, ${codec.getCodecType}")
+      } finally {
+        root.close()
       }
     }
   }
