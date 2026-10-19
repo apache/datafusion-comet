@@ -40,6 +40,16 @@ private[rules] object MakeDateEvaluation {
   private def containsMakeDate(expressions: Seq[Expression]): Boolean =
     expressions.exists(_.exists(_.isInstanceOf[MakeDate]))
 
+  private def copyLogicalLinks(from: SparkPlan, to: SparkPlan): Unit = {
+    if (from ne to) {
+      // setLogicalLink promotes inherited links to direct links and rewrites descendants.
+      // Keep each tag's role and retain the fallback plan's links when the source has none.
+      Seq(SparkPlan.LOGICAL_PLAN_TAG, SparkPlan.LOGICAL_PLAN_INHERITED_TAG).foreach { tag =>
+        from.getTagValue(tag).foreach(to.setTagValue(tag, _))
+      }
+    }
+  }
+
   private def nativeBroadcastInput(plan: SparkPlan): Option[SparkPlan] = plan match {
     case _: CometBroadcastExchangeExec => Some(plan)
     case stage: BroadcastQueryStageExec => nativeBroadcastInput(stage.plan).map(_ => stage)
@@ -57,7 +67,7 @@ private[rules] object MakeDateEvaluation {
         // mode, including through AQE/reuse wrappers, without re-executing the build input.
         val restored = CometColumnarToRowExec(input)
         restored.setTagValue(sparkEvaluation, reason)
-        plan.logicalLink.foreach(restored.setLogicalLink)
+        copyLogicalLinks(plan, restored)
         restored
       }
       .getOrElse(plan)
@@ -165,7 +175,7 @@ private[rules] object MakeDateEvaluation {
           original.withNewChildren(children)
         case _ => node.withNewChildren(children)
       }
-      node.logicalLink.foreach(rebuilt.setLogicalLink)
+      copyLogicalLinks(node, rebuilt)
       fallbackReason.foreach(rebuilt.setTagValue(sparkEvaluation, _))
       (rebuilt, fallbackReason)
     }
