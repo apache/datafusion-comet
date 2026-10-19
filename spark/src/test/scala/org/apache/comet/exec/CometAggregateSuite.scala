@@ -33,6 +33,7 @@ import org.apache.spark.sql.catalyst.optimizer.EliminateSorts
 import org.apache.spark.sql.catalyst.plans.physical.{HashPartitioning, RangePartitioning}
 import org.apache.spark.sql.comet.{CometBaseAggregateExec, CometFilterExec, CometHashAggregateExec, CometNativeExec, CometProjectExec, CometSortAggregateExec, CometSortExec}
 import org.apache.spark.sql.comet.execution.shuffle.CometShuffleExchangeExec
+import org.apache.spark.sql.comet.shims.ShimSparkErrorCondition.errorCondition
 import org.apache.spark.sql.execution.LocalTableScanExec
 import org.apache.spark.sql.execution.SQLExecution
 import org.apache.spark.sql.execution.adaptive.{AdaptiveSparkPlanExec, AdaptiveSparkPlanHelper, ShuffleQueryStageExec}
@@ -3963,9 +3964,9 @@ class CometAggregateSuite extends CometTestBase with AdaptiveSparkPlanHelper {
     }
     val expected = structured(sparkError)
     val actual = structured(cometError)
-    assert(expected.getErrorClass == "ARITHMETIC_OVERFLOW")
+    assert(errorCondition(expected) == "ARITHMETIC_OVERFLOW")
     assert(actual.getClass == expected.getClass)
-    assert(actual.getErrorClass == expected.getErrorClass)
+    assert(errorCondition(actual) == errorCondition(expected))
     assert(actual.getSqlState == expected.getSqlState)
     assert(actual.getMessageParameters == expected.getMessageParameters)
     assert(actual.getMessage.contains("try_add"))

@@ -47,6 +47,7 @@ import org.apache.spark.sql.Row
 import org.apache.spark.sql.catalyst.InternalRow
 import org.apache.spark.sql.catalyst.expressions.Attribute
 import org.apache.spark.sql.comet.{CometIcebergWriteExec, CometMergeRowsExec, IcebergCommitExec, IcebergWriteExec}
+import org.apache.spark.sql.comet.shims.ShimSparkErrorCondition.errorCondition
 import org.apache.spark.sql.connector.catalog.InMemoryTableCatalog
 import org.apache.spark.sql.connector.write.{BatchWrite, DataWriterFactory, PhysicalWriteInfo, Write, WriterCommitMessage}
 import org.apache.spark.sql.execution.{ColumnarToRowTransition, LeafExecNode, SparkPlan}
@@ -2839,7 +2840,7 @@ class CometIcebergWriteActionSuite
           val depth = chain.indexWhere(_.isInstanceOf[ArithmeticException])
           assert(depth >= 0, s"no ArithmeticException in the cause chain of $failure")
           val error = chain(depth).asInstanceOf[Throwable with SparkThrowable]
-          (depth, error.getClass, error.getErrorClass, error.getSqlState)
+          (depth, error.getClass, errorCondition(error), error.getSqlState)
         }
         assert(overflow(jvmFailure)._3 == "ARITHMETIC_OVERFLOW", s"JVM writer: $jvmFailure")
         assert(

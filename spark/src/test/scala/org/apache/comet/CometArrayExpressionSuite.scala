@@ -137,8 +137,8 @@ class CometArrayExpressionSuite extends CometTestBase with AdaptiveSparkPlanHelp
     withTempDir { dir =>
       withTempView("array_set_nan") {
         sql("SELECT float('NaN') AS f, double('NaN') AS d, 0.0D AS z").write
-          .parquet(dir + "/data")
-        spark.read.parquet(dir + "/data").createOrReplaceTempView("array_set_nan")
+          .parquet(s"$dir/data")
+        spark.read.parquet(s"$dir/data").createOrReplaceTempView("array_set_nan")
         // Negate scanned values because Parquet canonicalizes NaNs on write. Every Spark version
         // merges these elements: older ones canonicalize a flat NaN and compare nested floats with
         // the SQL ordering, so the native path must normalize them even under the opt-in.
@@ -171,8 +171,8 @@ class CometArrayExpressionSuite extends CometTestBase with AdaptiveSparkPlanHelp
   test("array set nested signed-zero normalization") {
     withTempDir { dir =>
       withTempView("array_set_zero") {
-        sql("SELECT float('0.0') AS f, double('0.0') AS d").write.parquet(dir + "/data")
-        spark.read.parquet(dir + "/data").createOrReplaceTempView("array_set_zero")
+        sql("SELECT float('0.0') AS f, double('0.0') AS d").write.parquet(s"$dir/data")
+        spark.read.parquet(s"$dir/data").createOrReplaceTempView("array_set_zero")
         // Spark deduplicates nested -0.0 and 0.0 on every version, and the native path normalizes
         // them first. The positive zero comes first, so even older Spark, which returns the first
         // of the equal elements, matches the normalized native result under the opt-in.

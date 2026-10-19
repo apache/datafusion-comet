@@ -23,6 +23,7 @@ import org.apache.logging.log4j.Level
 import org.apache.logging.log4j.core.LogEvent
 import org.apache.spark.{CometTaskMemoryManager, TaskContext, TaskContextImpl, TaskMemoryTestUtils}
 import org.apache.spark.memory.SparkOutOfMemoryError
+import org.apache.spark.sql.comet.shims.ShimSparkErrorCondition.errorCondition
 
 class CometUnifiedShuffleMemoryAllocatorSuite extends TaskMemoryTestUtils {
 
@@ -62,7 +63,7 @@ class CometUnifiedShuffleMemoryAllocatorSuite extends TaskMemoryTestUtils {
       val allocator = new CometUnifiedShuffleMemoryAllocator(taskMemoryManager, PageSize)
       val events = logEvents(Level.INFO) {
         val thrown = intercept[SparkOutOfMemoryError](allocation(allocator))
-        assert(thrown.getErrorClass == "UNABLE_TO_ACQUIRE_MEMORY")
+        assert(errorCondition(thrown) == "UNABLE_TO_ACQUIRE_MEMORY")
         assert(thrown.getMessageParameters.get("requestedBytes") == requested)
         assert(thrown.getMessageParameters.get("receivedBytes") == "0")
         // The last attempt's exception carries the task id and where Spark was waiting.

@@ -257,6 +257,7 @@ public class RESTCatalogAdapter implements RESTClient {
     }
   }
 
+  @SuppressWarnings("unchecked")
   private static OAuthTokenResponse handleOAuthRequest(Object body) {
     Map<String, String> request = (Map<String, String>) castRequest(Map.class, body);
     String grantType = request.get("grant_type");
@@ -305,6 +306,9 @@ public class RESTCatalogAdapter implements RESTClient {
     return response;
   }
 
+  // NAMESPACE_SPLITTER and CatalogHandlers.loadTable(Catalog, TableIdentifier) are deprecated in
+  // newer Iceberg versions, but the replacements do not exist in every supported version.
+  @SuppressWarnings("deprecation")
   private <T extends RESTResponse> T doHandleRequest(
       Route route, Map<String, String> vars, Object body, Class<T> responseType) {
     switch (route) {
@@ -672,6 +676,7 @@ public class RESTCatalogAdapter implements RESTClient {
         .withStackTrace(exc);
   }
 
+  @SuppressWarnings("deprecation")
   private static Namespace namespaceFromPathVars(Map<String, String> pathVars) {
     return RESTUtil.decodeNamespace(pathVars.get("namespace"));
   }

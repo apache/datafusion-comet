@@ -42,6 +42,7 @@ import org.apache.spark.sql.catalyst.plans.logical
 import org.apache.spark.sql.catalyst.util.sideBySide
 import org.apache.spark.sql.comet.CometPlanChecker
 import org.apache.spark.sql.comet.execution.shuffle.{CometColumnarShuffle, CometNativeShuffle, CometShuffleExchangeExec}
+import org.apache.spark.sql.comet.shims.ShimSparkErrorCondition.errorCondition
 import org.apache.spark.sql.execution._
 import org.apache.spark.sql.execution.adaptive.{AdaptiveSparkPlanExec, AdaptiveSparkPlanHelper, AQEShuffleReadExec, QueryStageExec}
 import org.apache.spark.sql.execution.exchange.ReusedExchangeExec
@@ -531,9 +532,9 @@ abstract class CometTestBase
 
     val expected = structuredError(sparkError, "Spark")
     val actual = structuredError(cometError, "Comet")
-    assert(expected.getErrorClass == errorClass)
+    assert(errorCondition(expected) == errorClass)
     assert(actual.getClass == expected.getClass)
-    assert(actual.getErrorClass == errorClass)
+    assert(errorCondition(actual) == errorClass)
     assert(actual.getSqlState == expected.getSqlState)
     actual
   }

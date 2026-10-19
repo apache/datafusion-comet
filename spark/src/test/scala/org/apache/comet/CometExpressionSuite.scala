@@ -27,6 +27,7 @@ import org.apache.spark.sql.{Column, CometTestBase, DataFrame, Row}
 import org.apache.spark.sql.catalyst.expressions.{Alias, Cast, FromUnixTime, In, InSet, Literal, StructsToJson, TruncDate, TruncTimestamp}
 import org.apache.spark.sql.catalyst.optimizer.{ConvertToLocalRelation, OptimizeIn, SimplifyExtractValueOps}
 import org.apache.spark.sql.comet.{CometFilterExec, CometProjectExec, CometSortExec, CometTakeOrderedAndProjectExec}
+import org.apache.spark.sql.comet.shims.ShimSparkErrorCondition.errorCondition
 import org.apache.spark.sql.execution.{LocalTableScanExec, ProjectExec, SparkPlan}
 import org.apache.spark.sql.execution.adaptive.AdaptiveSparkPlanHelper
 import org.apache.spark.sql.functions._
@@ -584,7 +585,7 @@ class CometExpressionSuite extends CometTestBase with AdaptiveSparkPlanHelper {
                 .getOrElse(fail(s"Expected a SparkThrowable, got $error"))
             val expected = sparkError(sparkException)
             val actual = sparkError(cometException)
-            assert(actual.getErrorClass == expected.getErrorClass)
+            assert(errorCondition(actual) == errorCondition(expected))
             assert(actual.getSqlState == expected.getSqlState)
           case errors => fail(s"Expected Spark and Comet invalid URL errors, got $errors")
         }
@@ -605,7 +606,7 @@ class CometExpressionSuite extends CometTestBase with AdaptiveSparkPlanHelper {
             case (Some(sparkException), Some(cometException)) =>
               val expected = arithmeticError(sparkException)
               val actual = arithmeticError(cometException)
-              assert(actual.getErrorClass == expected.getErrorClass)
+              assert(errorCondition(actual) == errorCondition(expected))
               assert(actual.getSqlState == expected.getSqlState)
               assert(
                 actual.getQueryContext.map(_.fragment()).toSeq ==
@@ -632,7 +633,7 @@ class CometExpressionSuite extends CometTestBase with AdaptiveSparkPlanHelper {
           case (Some(sparkException), Some(cometException)) =>
             val expected = arithmeticError(sparkException)
             val actual = arithmeticError(cometException)
-            assert(actual.getErrorClass == expected.getErrorClass)
+            assert(errorCondition(actual) == errorCondition(expected))
             assert(actual.getSqlState == expected.getSqlState)
             assert(
               actual.getQueryContext.map(_.fragment()).toSeq ==
@@ -1844,7 +1845,7 @@ class CometExpressionSuite extends CometTestBase with AdaptiveSparkPlanHelper {
           case (Some(sparkExc), Some(cometExc)) =>
             val expected = arithmeticError(sparkExc)
             val actual = arithmeticError(cometExc)
-            assert(actual.getErrorClass == expected.getErrorClass)
+            assert(errorCondition(actual) == errorCondition(expected))
             assert(actual.getSqlState == expected.getSqlState)
             assert(
               actual.getQueryContext.map(_.fragment()).toSeq ==
@@ -3391,9 +3392,9 @@ class CometExpressionSuite extends CometTestBase with AdaptiveSparkPlanHelper {
             }
             val expected = structured(sparkError)
             val actual = structured(cometError)
-            assert(expected.getErrorClass == expectedErrorClass, query)
+            assert(errorCondition(expected) == expectedErrorClass, query)
             assert(actual.getClass == expected.getClass, query)
-            assert(actual.getErrorClass == expected.getErrorClass, query)
+            assert(errorCondition(actual) == errorCondition(expected), query)
             assert(actual.getSqlState == expected.getSqlState, query)
             assert(actual.getMessageParameters == expected.getMessageParameters, query)
             // Spark 3.x's Byte/Short error has no functionName parameter; the shim must
