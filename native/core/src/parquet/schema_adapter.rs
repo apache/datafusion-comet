@@ -2270,6 +2270,67 @@ pub(crate) mod test {
         Ok(())
     }
 
+    /// An INT96 array in the legacy `bag` list layout reaches the conversion check as a
+    /// timezone-free nanosecond leaf below a list (#7029), so the `TIMESTAMP(NANOS)` rejection
+    /// must leave it alone. Write such a file and read it through the scan, so that a change
+    /// in how DataFusion types that leaf shows up here.
+    #[tokio::test]
+    async fn legacy_int96_array_still_reads_as_timestamp() -> Result<(), DataFusionError> {
+        use parquet::data_type::{Int96, Int96Type};
+        use parquet::file::writer::SerializedFileWriter;
+        use parquet::schema::parser::parse_message_type;
+
+        let schema = Arc::new(parse_message_type(
+            "message spark_schema {
+                OPTIONAL GROUP a (LIST) {
+                    REPEATED GROUP bag { OPTIONAL INT96 array; }
+                }
+            }",
+        )?);
+        // 1970-01-02 00:00:00.001 and 1970-01-03 00:00:00: INT96 holds the nanoseconds of the
+        // day (low word first) and then the Julian day.
+        const UNIX_EPOCH_JULIAN_DAY: u32 = 2_440_588;
+        let mut first = Int96::new();
+        first.set_data(1_000_000, 0, UNIX_EPOCH_JULIAN_DAY + 1);
+        let mut second = Int96::new();
+        second.set_data(0, 0, UNIX_EPOCH_JULIAN_DAY + 2);
+
+        let filename = get_temp_filename().to_str().unwrap().to_string();
+        let mut writer =
+            SerializedFileWriter::new(File::create(&filename)?, schema, Default::default())?;
+        let mut row_group = writer.next_row_group()?;
+        let mut a = row_group.next_column()?.unwrap();
+        a.typed::<Int96Type>()
+            .write_batch(&[first, second], Some(&[3, 3]), Some(&[0, 1]))?;
+        a.close()?;
+        row_group.close()?;
+        writer.close()?;
+
+        let micros_utc = DataType::Timestamp(TimeUnit::Microsecond, Some("UTC".into()));
+        let required = Arc::new(Schema::new(vec![Field::new(
+            "a",
+            list_type(micros_utc),
+            true,
+        )]));
+        let mut stream = scan_parquet_file(filename, required, default_options(), None, false)?;
+        let batch = stream.next().await.unwrap()?;
+        assert!(stream.next().await.is_none());
+
+        let list = batch.column(0).as_list::<i32>();
+        assert_eq!(list.len(), 1);
+        let values = list.value(0);
+        let expected = TimestampMicrosecondArray::from(vec![86_400_001_000i64, 172_800_000_000])
+            .with_timezone("UTC");
+        assert_eq!(
+            values
+                .as_any()
+                .downcast_ref::<TimestampMicrosecondArray>()
+                .expect("timestamp(us, UTC) values"),
+            &expected
+        );
+        Ok(())
+    }
+
     /// `Int64 -> Date32` similarly: raw INT64 (no DATE annotation, otherwise
     /// the file would surface as `Date32`).
     #[tokio::test]
