@@ -1047,7 +1047,7 @@ index b5b34922694..a72403780c4 100644
    protected val baseResourcePath = {
      // use the same way as `SQLQueryTestSuite` to get the resource path
 diff --git a/sql/core/src/test/scala/org/apache/spark/sql/SQLQuerySuite.scala b/sql/core/src/test/scala/org/apache/spark/sql/SQLQuerySuite.scala
-index 525d97e4998..aded8906d75 100644
+index 525d97e4998..2e96cd4aa73 100644
 --- a/sql/core/src/test/scala/org/apache/spark/sql/SQLQuerySuite.scala
 +++ b/sql/core/src/test/scala/org/apache/spark/sql/SQLQuerySuite.scala
 @@ -1508,7 +1508,8 @@ class SQLQuerySuite extends QueryTest with SharedSparkSession with AdaptiveSpark
@@ -1087,6 +1087,16 @@ index 525d97e4998..aded8906d75 100644
      val sc = spark.sparkContext
      val hiveVersion = "2.3.9"
      // transitive=false, only download specified jar
+@@ -3989,7 +3998,8 @@ class SQLQuerySuite extends QueryTest with SharedSparkSession with AdaptiveSpark
+     }
+   }
+ 
+-  test("SPARK-26138 Pushdown limit through InnerLike when condition is empty") {
++  test("SPARK-26138 Pushdown limit through InnerLike when condition is empty",
++    IgnoreComet("Comet's nested loop join emits rows in a different order than Spark")) {
+     withTable("t1", "t2") {
+       spark.range(5).repartition(1).write.saveAsTable("t1")
+       spark.range(5).repartition(1).write.saveAsTable("t2")
 diff --git a/sql/core/src/test/scala/org/apache/spark/sql/SQLQueryTestSuite.scala b/sql/core/src/test/scala/org/apache/spark/sql/SQLQueryTestSuite.scala
 index 2dabcf01be7..8fcec0d1ce4 100644
 --- a/sql/core/src/test/scala/org/apache/spark/sql/SQLQueryTestSuite.scala

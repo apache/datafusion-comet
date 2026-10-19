@@ -2876,7 +2876,8 @@ trait CometHashJoin {
     val joinType = {
       import OperatorOuterClass.JoinType
       join.joinType match {
-        case Inner => JoinType.Inner
+        // Cross, the type of an explicit cross join, runs as an inner join in Spark.
+        case _: InnerLike => JoinType.Inner
         case LeftOuter => JoinType.LeftOuter
         case RightOuter => JoinType.RightOuter
         case FullOuter => JoinType.FullOuter
@@ -2909,7 +2910,6 @@ trait CometHashJoin {
               s"${CometConf.COMET_EXEC_EXISTENCE_JOIN_ENABLED.key}=true to enable it")
           return None
         case _ =>
-          // Spark doesn't support other join types
           withFallbackReason(join, s"Unsupported join type ${join.joinType}")
           return None
       }
@@ -3006,7 +3006,7 @@ object CometBroadcastNestedLoopJoinExec extends CometOperatorSerde[BroadcastNest
 
   override def getSupportLevel(op: BroadcastNestedLoopJoinExec): SupportLevel =
     (op.joinType, op.buildSide) match {
-      case (Inner, _) | (LeftOuter, BuildRight) | (RightOuter, BuildLeft) |
+      case (_: InnerLike, _) | (LeftOuter, BuildRight) | (RightOuter, BuildLeft) |
           (LeftSemi, BuildRight) | (LeftAnti, BuildRight) =>
         Compatible(None)
       case (LeftOuter | RightOuter | FullOuter | LeftSemi | LeftAnti, _) =>
@@ -3043,14 +3043,14 @@ object CometBroadcastNestedLoopJoinExec extends CometOperatorSerde[BroadcastNest
     val joinType = {
       import OperatorOuterClass.JoinType
       join match {
-        case Inner => JoinType.Inner
+        // Cross, the type of an explicit cross join, runs as an inner join in Spark.
+        case _: InnerLike => JoinType.Inner
         case LeftOuter => JoinType.LeftOuter
         case RightOuter => JoinType.RightOuter
         case FullOuter => JoinType.FullOuter
         case LeftSemi => JoinType.LeftSemi
         case LeftAnti => JoinType.LeftAnti
         case _ =>
-          // Spark doesn't support other join types
           withFallbackReason(op, s"Unsupported join type $join")
           return None
       }
@@ -3427,7 +3427,8 @@ object CometSortMergeJoinExec extends CometOperatorSerde[SortMergeJoinExec] {
     val joinType = {
       import OperatorOuterClass.JoinType
       join.joinType match {
-        case Inner => JoinType.Inner
+        // Cross, the type of an explicit cross join, runs as an inner join in Spark.
+        case _: InnerLike => JoinType.Inner
         case LeftOuter => JoinType.LeftOuter
         case RightOuter => JoinType.RightOuter
         case FullOuter => JoinType.FullOuter
@@ -3437,7 +3438,6 @@ object CometSortMergeJoinExec extends CometOperatorSerde[SortMergeJoinExec] {
         // before emitting, risking OOM on large equal-key groups. Tracked in
         // https://github.com/apache/datafusion-comet/issues/6514.
         case _ =>
-          // Spark doesn't support other join types
           withFallbackReason(join, s"Unsupported join type ${join.joinType}")
           return None
       }
