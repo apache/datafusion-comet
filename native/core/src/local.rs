@@ -41,6 +41,7 @@ use crate::execution::jni_api::{
     PlanInputs, PlanJvmRefs,
 };
 use crate::execution::memory_pools::create_memory_pool;
+use crate::execution::spark_config::{SparkConfig, SPARK_EXECUTOR_CORES};
 
 struct Entry {
     query: QueryHandle,
@@ -92,6 +93,9 @@ pub extern "system" fn Java_org_apache_comet_local_NativeLocal_createQuery(
         }
         let start = Instant::now();
         let settings = prepare_plan_settings(&env.convert_byte_array(serialized_spark_configs)?)?;
+        // Run as many partitions at once as Spark would run tasks, which also bounds how many
+        // operators share the memory pool. `local[N]` resolves to N here.
+        let max_running = settings.spark_config.get_usize(SPARK_EXECUTOR_CORES, 1);
         JVMClasses::init(env);
         let serialized_plan = env.convert_byte_array(serialized_query)?;
         let task_memory_manager =
@@ -129,7 +133,8 @@ pub extern "system" fn Java_org_apache_comet_local_NativeLocal_createQuery(
                 "Local output schema width mismatch".into(),
             ));
         }
-        let query = LocalQuery::new(plan, context.session_ctx.task_ctx()).in_partition_order();
+        let query =
+            LocalQuery::new(plan, context.session_ctx.task_ctx()).in_partition_order(max_running);
         let query = QueryHandle::start(query, &get_runtime())?;
         register(
             id,

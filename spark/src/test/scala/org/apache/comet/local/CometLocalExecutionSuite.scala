@@ -113,7 +113,7 @@ class CometLocalExecutionSuite
     spark.sparkContext
       .runJob(
         spark.sparkContext.parallelize(Seq(0), 1),
-        { _: Iterator[Int] =>
+        { (_: Iterator[Int]) =>
           f(TaskContext.get())
         })
       .head
@@ -270,6 +270,19 @@ class CometLocalExecutionSuite
       val failure = intercept[Exception](all().collect())
       assert(failure.getMessage.contains("DIVIDE_BY_ZERO"), failure.getMessage)
     }
+  }
+
+  test("many partitions with sorts fit the memory pool") {
+    // Each sort registers its consumers when its partition starts and reserves memory for its
+    // merge up front. Running only as many partitions at once as Spark runs tasks keeps their
+    // fair shares of the 256 MiB pool large enough, as with ordinary execution.
+    def query(): DataFrame =
+      spark
+        .range(0, 32000, 1, 32)
+        .selectExpr("id", "sha2(cast(id as string), 256) AS k")
+        .sortWithinPartitions("k")
+    assert(localNodes(query()).size == 1, query().queryExecution.executedPlan.toString)
+    assert(query().collect().toSeq == expected(query()))
   }
 
   test("repeated actions build fresh executions and iterator results") {

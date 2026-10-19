@@ -720,7 +720,7 @@ impl ExecutionContext {
 
 /// What `createPlan` takes from the Spark configs.
 pub(crate) struct PlanSettings {
-    spark_config: HashMap<String, String>,
+    pub(crate) spark_config: HashMap<String, String>,
     debug_native: bool,
     strict_timestamp_labels: bool,
     explain_native: bool,

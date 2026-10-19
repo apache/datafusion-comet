@@ -58,8 +58,11 @@ single partition. That partition's task creates the native graph:
   Spark task would create them. Partition `i` of the graph is the output of the operators created
   for partition `i`, so per-partition state such as a range slice is the same as with ordinary
   Comet execution.
-- `native/local` runs all partitions concurrently on Comet's Tokio runtime and delivers them in
-  partition order, each up to two batches ahead. The result therefore has Spark's row order, and
+- `native/local` runs the partitions on Comet's Tokio runtime and delivers them in partition
+  order. At most `spark.executor.cores` partitions (N for `local[N]`) run at once, each up to two
+  batches ahead, and the next starts when the first is delivered, as Spark runs at most that
+  many tasks. A partition's operators register their memory consumers when it starts, so this
+  also bounds how many share the task's memory pool. The result therefore has Spark's row order, and
   a limit returns the same rows as Spark's `executeTake`. A partition's error is reported when its
   turn comes, so a limit satisfied by earlier partitions does not fail on a later one, as with
   `executeTake`, which never evaluates the partitions it does not need.
@@ -121,8 +124,8 @@ cd ..
 ./mvnw test -Dsuites=org.apache.comet.local.CometLocalExecutionSuite
 ```
 
-The native tests cover partition-order delivery, errors reported in a partition's turn, cancellation with busy workers,
+The native tests cover partition-order delivery, the bound on running partitions, errors reported in a partition's turn, cancellation with busy workers,
 the one-batch handoff and runtime shutdown. `CometLocalExecutionSuite` compares admitted queries
 with Spark's results and order, and covers ranges Spark would overflow, declined expressions,
-AQE, reported orderings, limits that stop before a failing partition, iterators, caching, the result size limit, job and task cancellation, and native errors. After
+AQE, reported orderings, limits that stop before a failing partition, iterators, many partitions with sorts in a small memory pool, caching, the result size limit, job and task cancellation, and native errors. After
 each test it checks that no native query, imported Arrow memory or result slot is left.

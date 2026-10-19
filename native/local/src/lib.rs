@@ -51,7 +51,8 @@ const PARTITION_BUFFER: usize = 2;
 pub struct LocalQuery {
     plan: Arc<dyn ExecutionPlan>,
     context: Arc<TaskContext>,
-    in_partition_order: bool,
+    /// Delivers the partitions in order, with at most this many running at once.
+    in_partition_order: Option<usize>,
 }
 
 impl LocalQuery {
@@ -63,16 +64,19 @@ impl LocalQuery {
         Self {
             plan,
             context,
-            in_partition_order: false,
+            in_partition_order: None,
         }
     }
 
     /// Delivers the root partitions one after another, in partition order, as Spark returns
-    /// the partitions of a result. All partitions still run concurrently, each up to a few
-    /// batches ahead. Only for roots whose partitions do not share an exchange: a partition
-    /// that waits to be delivered would otherwise leave its exchange buffering for the others.
-    pub fn in_partition_order(mut self) -> Self {
-        self.in_partition_order = true;
+    /// the partitions of a result. Up to `max_running` partitions run at once, each up to a few
+    /// batches ahead, and the next one starts when the first is delivered, as Spark runs at most
+    /// as many tasks as it has cores. A partition's operators register their memory consumers
+    /// when it starts, so this also bounds how many share the memory pool. Only for roots whose
+    /// partitions do not share an exchange: a partition that waits to be delivered would
+    /// otherwise leave its exchange buffering for the others.
+    pub fn in_partition_order(mut self, max_running: usize) -> Self {
+        self.in_partition_order = Some(max_running.max(1));
         self
     }
 
@@ -86,8 +90,8 @@ impl LocalQuery {
             DataFusionError::Execution("LocalQuery requires an active Tokio runtime".into())
         })?;
         let schema = self.plan.schema();
-        let stream = if self.in_partition_order {
-            in_partition_order(&self.plan, &self.context)?
+        let stream = if let Some(max_running) = self.in_partition_order {
+            in_partition_order(&self.plan, &self.context, max_running)?
         } else {
             execute_stream(Arc::clone(&self.plan), Arc::clone(&self.context))?
         };
@@ -102,17 +106,21 @@ impl LocalQuery {
 fn in_partition_order(
     plan: &Arc<dyn ExecutionPlan>,
     context: &Arc<TaskContext>,
+    max_running: usize,
 ) -> Result<SendableRecordBatchStream> {
-    let runtime = tokio::runtime::Handle::current();
-    let partitions = (0..plan.output_partitioning().partition_count())
-        .map(|partition| {
-            let stream = plan.execute(partition, Arc::clone(context))?;
-            Ok(Partition::spawn(&runtime, stream))
-        })
-        .collect::<Result<VecDeque<_>>>()?;
+    let mut order = PartitionOrder {
+        plan: Arc::clone(plan),
+        context: Arc::clone(context),
+        runtime: tokio::runtime::Handle::current(),
+        next: 0,
+        max_running,
+        running: VecDeque::new(),
+    };
+    // Start the first partitions now, so that a failure to start them fails here.
+    order.start_partitions()?;
     Ok(Box::pin(RecordBatchStreamAdapter::new(
         plan.schema(),
-        PartitionOrder { partitions },
+        order,
     )))
 }
 
@@ -188,7 +196,33 @@ impl Drop for Partition {
 /// Spark's `executeTake` evaluates a later partition only when it needs that partition's rows:
 /// a consumer that stops early never sees the failure of a partition it did not reach.
 struct PartitionOrder {
-    partitions: VecDeque<Partition>,
+    plan: Arc<dyn ExecutionPlan>,
+    context: Arc<TaskContext>,
+    runtime: tokio::runtime::Handle,
+    /// The first partition not started yet.
+    next: usize,
+    max_running: usize,
+    /// Started partitions, the first of which is being delivered.
+    running: VecDeque<Partition>,
+}
+
+impl PartitionOrder {
+    fn start_partitions(&mut self) -> Result<()> {
+        let partitions = self.plan.output_partitioning().partition_count();
+        while self.running.len() < self.max_running && self.next < partitions {
+            let stream = self.plan.execute(self.next, Arc::clone(&self.context))?;
+            self.running
+                .push_back(Partition::spawn(&self.runtime, stream));
+            self.next += 1;
+        }
+        Ok(())
+    }
+
+    fn fail(&mut self, error: DataFusionError) -> Poll<Option<Result<RecordBatch>>> {
+        self.running.clear();
+        self.next = usize::MAX;
+        Poll::Ready(Some(Err(error)))
+    }
 }
 
 impl Stream for PartitionOrder {
@@ -196,23 +230,22 @@ impl Stream for PartitionOrder {
 
     fn poll_next(mut self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<Option<Self::Item>> {
         loop {
-            let Some(partition) = self.partitions.front_mut() else {
+            if let Err(error) = self.start_partitions() {
+                return self.fail(error);
+            }
+            let Some(partition) = self.running.front_mut() else {
                 return Poll::Ready(None);
             };
             match partition.batches.poll_recv(cx) {
                 Poll::Ready(Some(Ok(batch))) => return Poll::Ready(Some(Ok(batch))),
-                Poll::Ready(Some(Err(error))) => {
-                    self.partitions.clear();
-                    return Poll::Ready(Some(Err(error)));
-                }
+                Poll::Ready(Some(Err(error))) => return self.fail(error),
                 Poll::Ready(None) if partition.ended.load(Ordering::Acquire) => {
-                    self.partitions.pop_front();
+                    self.running.pop_front();
                 }
                 Poll::Ready(None) => {
-                    self.partitions.clear();
-                    return Poll::Ready(Some(Err(DataFusionError::Execution(
+                    return self.fail(DataFusionError::Execution(
                         "Local query partition stopped without completing".into(),
-                    ))));
+                    ))
                 }
                 Poll::Pending => return Poll::Pending,
             }

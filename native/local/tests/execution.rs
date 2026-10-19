@@ -460,7 +460,7 @@ async fn partition_order_delivers_partitions_in_turn() {
     let batches: Vec<RecordBatch> = timeout(
         DEADLINE,
         LocalQuery::new(plan, context())
-            .in_partition_order()
+            .in_partition_order(usize::MAX)
             .execute()
             .unwrap()
             .try_collect(),
@@ -496,7 +496,7 @@ fn failing() -> Arc<dyn ExecutionPlan> {
 async fn partition_order_reports_a_later_failure_in_its_turn() {
     let plan = UnionExec::try_new(vec![ordered_input(1, 3), failing()]).unwrap();
     let mut stream = LocalQuery::new(plan, context())
-        .in_partition_order()
+        .in_partition_order(usize::MAX)
         .execute()
         .unwrap();
     // The earlier partition's batches come first, even though the later one failed at once.
@@ -522,7 +522,7 @@ async fn partition_order_never_reports_the_failure_of_a_partition_not_reached() 
     let refs = blocking.refs();
     let plan = UnionExec::try_new(vec![Arc::new(blocking), failing()]).unwrap();
     let mut stream = LocalQuery::new(plan, context())
-        .in_partition_order()
+        .in_partition_order(usize::MAX)
         .execute()
         .unwrap();
     // A consumer that stops in the first partition, as a limit does, sees no error.
@@ -540,7 +540,7 @@ async fn partition_order_cancel_releases_running_partitions() {
     let refs = blocking.refs();
     let (blocking, observations) = observe(Arc::new(blocking));
     let mut stream = LocalQuery::new(blocking, context())
-        .in_partition_order()
+        .in_partition_order(usize::MAX)
         .execute()
         .unwrap();
     wait_started(&observations, 3).await;
@@ -548,4 +548,37 @@ async fn partition_order_cancel_releases_running_partitions() {
     stream.cancel();
     assert!(stream.next().await.is_none());
     wait_released(&refs).await;
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn partition_order_runs_at_most_the_given_number_of_partitions() {
+    let (plan, observations) = observe(ordered_input(6, 3));
+    let executed = || observations.executions.lock().unwrap().clone();
+    let mut stream = LocalQuery::new(plan, context())
+        .in_partition_order(2)
+        .execute()
+        .unwrap();
+    // The first two partitions start with the query; the rest wait for their turn.
+    assert_eq!(executed(), vec![0, 1]);
+    for _ in 0..3 {
+        timeout(DEADLINE, stream.next())
+            .await
+            .unwrap()
+            .unwrap()
+            .unwrap();
+    }
+    assert_eq!(executed(), vec![0, 1]);
+    // Finishing the first partition starts the third.
+    timeout(DEADLINE, stream.next())
+        .await
+        .unwrap()
+        .unwrap()
+        .unwrap();
+    assert_eq!(executed(), vec![0, 1, 2]);
+    let rest: Vec<RecordBatch> = timeout(DEADLINE, stream.try_collect())
+        .await
+        .unwrap()
+        .unwrap();
+    assert_eq!(rest.len(), 6 * 3 - 4);
+    assert_executed_once(&observations, 6);
 }
