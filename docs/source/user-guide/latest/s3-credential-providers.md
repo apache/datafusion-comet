@@ -403,7 +403,7 @@ public final class IcebergRESTVendedS3Provider implements CometS3CredentialProvi
 | Value   | Used for                                                                                                                                                                                       |
 | ------- | ---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
 | `READ`  | All native scan paths (raw Parquet, Iceberg).                                                                                                                                                  |
-| `WRITE` | The native Iceberg writer (see [Iceberg Writes](iceberg-writes.md)). If the configured provider fails to initialize, the write fails rather than falling back to the default credential chain. |
+| `WRITE` | The native Iceberg writer (see [Iceberg Writes](iceberg.md#writes)). If the configured provider fails to initialize, the write fails rather than falling back to the default credential chain. |
 
 A `WRITE` credential is not implicitly read-capable. Vendors that need read-during-write workflows include the required read permissions in the IAM policy attached to their `WRITE` credentials.
 
