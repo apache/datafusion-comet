@@ -25,11 +25,11 @@ import org.apache.spark.broadcast.Broadcast
 import org.apache.spark.rdd.RDD
 import org.apache.spark.sql.comet.execution.shuffle.CometShuffledBatchRDD
 import org.apache.spark.sql.execution.ScalarSubquery
+import org.apache.spark.sql.types.DataType
 import org.apache.spark.sql.vectorized.ColumnarBatch
 import org.apache.spark.util.SerializableConfiguration
 
 import org.apache.comet.{CometExecIterator, CometRuntimeException, CometShuffleBlockIterator}
-import org.apache.comet.serde.OperatorOuterClass
 
 /**
  * Partition that carries per-partition planning data, avoiding closure capture of all partitions.
@@ -60,6 +60,7 @@ private[spark] class CometExecRDD(
     commonByKey: Map[String, Array[Byte]],
     @transient perPartitionByKey: Map[String, Array[Array[Byte]]],
     serializedPlan: Array[Byte],
+    planFingerprint: Long,
     defaultNumPartitions: Int,
     numOutputCols: Int,
     nativeMetrics: CometMetricNode,
@@ -67,7 +68,12 @@ private[spark] class CometExecRDD(
     broadcastedHadoopConfForEncryption: Option[Broadcast[SerializableConfiguration]] = None,
     encryptedFilePaths: Seq[String] = Seq.empty,
     shuffleScanIndices: Set[Int] = Set.empty,
-    @transient perPartitionFilePaths: Array[Seq[String]] = Array.empty)
+    @transient perPartitionFilePaths: Array[Seq[String]] = Array.empty,
+    outputTypes: Seq[DataType] = Seq.empty,
+    // Set by a contrib leaf scan (e.g. the Delta contrib's `CometDeltaNativeScanExec`) that
+    // builds this RDD directly, bypassing `CometNativeExec.executeColumnarWithContext`'s own
+    // `ctx.hasScanInput` check, so it reports task input metrics without subclassing this RDD.
+    reportScanInputMetrics: Boolean = false)
     extends RDD[ColumnarBatch](sc, inputRDDs.map(rdd => new OneToOneDependency(rdd))) {
 
   // Determine partition count: from inputs if available, otherwise from parameter
@@ -102,6 +108,11 @@ private[spark] class CometExecRDD(
     // reverse registration order, so registering first means this listener runs last, after
     // nested native blocks and the iterator have published their final metric values.
     Option(context).foreach(nativeMetrics.reportSpillMetrics)
+    // Registered here for the same reason: it has to run after the iterator's close has
+    // published the final scan metrics.
+    if (reportScanInputMetrics) {
+      Option(context).foreach(nativeMetrics.reportScanInputMetrics)
+    }
 
     val partition = split.asInstanceOf[CometExecPartition]
 
@@ -112,9 +123,12 @@ private[spark] class CometExecRDD(
         shuffleScanIndices,
         context)
 
-    // Only inject if we have per-partition planning data
+    // Only inject if we have per-partition planning data. The base plan bytes are identical
+    // for every partition of the stage, so the parsed tree and its prepared per-scan data are
+    // shared across this executor's tasks instead of being recomputed per task. The driver
+    // fingerprints the bytes once so the probe here does not rehash them.
     val actualPlan = if (commonByKey.nonEmpty) {
-      val basePlan = OperatorOuterClass.Operator.parseFrom(serializedPlan)
+      val basePlan = PlanDataInjector.parseBasePlan(serializedPlan, planFingerprint)
       val injected =
         PlanDataInjector.injectPlanData(basePlan, commonByKey, partition.planDataByKey)
       PlanDataInjector.serializeOperator(injected)
@@ -133,7 +147,8 @@ private[spark] class CometExecRDD(
       broadcastedHadoopConfForEncryption,
       encryptedFilePaths,
       shuffleBlockIters,
-      taskFilePaths = partition.filePaths)
+      taskFilePaths = partition.filePaths,
+      outputTypes = outputTypes)
 
     // Register ScalarSubqueries so native code can look them up
     subqueries.foreach(sub => CometScalarSubquery.setSubquery(it.id, sub))
@@ -218,6 +233,7 @@ object CometExecRDD {
       commonByKey: Map[String, Array[Byte]],
       perPartitionByKey: Map[String, Array[Array[Byte]]],
       serializedPlan: Array[Byte],
+      planFingerprint: Long,
       numPartitions: Int,
       numOutputCols: Int,
       nativeMetrics: CometMetricNode,
@@ -225,7 +241,9 @@ object CometExecRDD {
       broadcastedHadoopConfForEncryption: Option[Broadcast[SerializableConfiguration]] = None,
       encryptedFilePaths: Seq[String] = Seq.empty,
       shuffleScanIndices: Set[Int] = Set.empty,
-      perPartitionFilePaths: Array[Seq[String]] = Array.empty): CometExecRDD = {
+      perPartitionFilePaths: Array[Seq[String]] = Array.empty,
+      outputTypes: Seq[DataType] = Seq.empty,
+      reportScanInputMetrics: Boolean = false): CometExecRDD = {
     // scalastyle:on
 
     new CometExecRDD(
@@ -234,6 +252,7 @@ object CometExecRDD {
       commonByKey,
       perPartitionByKey,
       serializedPlan,
+      planFingerprint,
       numPartitions,
       numOutputCols,
       nativeMetrics,
@@ -241,6 +260,8 @@ object CometExecRDD {
       broadcastedHadoopConfForEncryption,
       encryptedFilePaths,
       shuffleScanIndices,
-      perPartitionFilePaths)
+      perPartitionFilePaths,
+      outputTypes,
+      reportScanInputMetrics)
   }
 }

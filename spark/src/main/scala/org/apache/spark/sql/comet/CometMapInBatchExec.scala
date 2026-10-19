@@ -85,13 +85,14 @@ case class CometMapInBatchExec(
     // Resolve every `SQLConf`-derived input on the driver. `SQLConf.get` reads from a thread-local
     // `ConfigReader` that only exists on the driver, so dereferencing `conf` from inside the task
     // closure NPEs.
-    val resolvedRunnerInputs = runnerInputs(Seq(func.asInstanceOf[PythonUDF]), conf)
+    val pythonUDF = func.asInstanceOf[PythonUDF]
+    val resolvedRunnerInputs = runnerInputs(Seq(pythonUDF), pythonUDF.dataType, conf)
 
     val inputRDD = child.executeColumnar()
 
     def processPartition(batches: Iterator[ColumnarBatch]): Iterator[ColumnarBatch] = {
       val context = TaskContext.get()
-      val counting = batches.map { b => numInputRows += b.numRows(); b }
+      val counting = batches.map { b => numInputRows += b.numRows().toLong; b }
 
       val columnarBatchIter = computeArrowPython(
         resolvedRunnerInputs,
@@ -113,7 +114,7 @@ case class CometMapInBatchExec(
           outputAttrs.indices.map(i => structVector.getChild(i)).toArray
         val flattenedBatch = new ColumnarBatch(outputVectors)
         flattenedBatch.setNumRows(batch.numRows())
-        numOutputRows += flattenedBatch.numRows()
+        numOutputRows += flattenedBatch.numRows().toLong
         numOutputBatches += 1
         flattenedBatch
       }

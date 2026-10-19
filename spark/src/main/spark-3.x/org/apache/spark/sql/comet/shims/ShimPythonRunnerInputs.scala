@@ -21,6 +21,7 @@ package org.apache.spark.sql.comet.shims
 
 import org.apache.spark.sql.catalyst.expressions.PythonUDF
 import org.apache.spark.sql.internal.SQLConf
+import org.apache.spark.sql.types.DataType
 
 /**
  * Spark 3.x stub for the driver-resolved inputs Comet's Arrow Python runners need.
@@ -33,7 +34,10 @@ trait ShimPythonRunnerInputs {
   /** Stub; never constructed on Spark 3.x because the operator matchers always return `None`. */
   protected case class RunnerInputs()
 
-  protected def runnerInputs(pythonUDFs: Seq[PythonUDF], conf: SQLConf): RunnerInputs =
+  protected def runnerInputs(
+      pythonUDFs: Seq[PythonUDF],
+      outputSchema: DataType,
+      conf: SQLConf): RunnerInputs =
     throw new UnsupportedOperationException(
       "Comet's Arrow Python runner is not supported on Spark 3.x")
 }

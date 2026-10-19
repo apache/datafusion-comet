@@ -24,6 +24,7 @@ import org.apache.spark.sql.catalyst.util.DateTimeTestUtils.{withDefaultTimeZone
 import org.apache.spark.sql.internal.SQLConf
 
 import org.apache.comet.CometConf
+import org.apache.comet.CometSparkSessionExtensions.isSpark40Plus
 
 // spotless:off
 /**
@@ -44,7 +45,7 @@ object CometDatetimeExpressionBenchmark extends CometBenchmarkBase {
         Seq("YEAR", "MONTH").foreach { level =>
           val name = s"Date Truncate - $level"
           val query = s"select trunc(dt, '$level') from parquetV1Table"
-          runExpressionBenchmark(name, values, query)
+          runExpressionBenchmark(name, values.toLong, query)
         }
       }
     }
@@ -69,7 +70,7 @@ object CometDatetimeExpressionBenchmark extends CometBenchmarkBase {
           "MICROSECOND").foreach { level =>
           val name = s"Timestamp Truncate - $level"
           val query = s"select date_trunc('$level', ts) from parquetV1Table"
-          runExpressionBenchmark(name, values, query)
+          runExpressionBenchmark(name, values.toLong, query)
         }
       }
     }
@@ -84,7 +85,7 @@ object CometDatetimeExpressionBenchmark extends CometBenchmarkBase {
         withSQLConf(SQLConf.SESSION_LOCAL_TIMEZONE.key -> timeZone) {
           val name = s"Unix Timestamp from Timestamp ($timeZone)"
           val query = "select unix_timestamp(ts) from parquetV1Table"
-          runExpressionBenchmark(name, values, query)
+          runExpressionBenchmark(name, values.toLong, query)
         }
       }
     }
@@ -100,7 +101,7 @@ object CometDatetimeExpressionBenchmark extends CometBenchmarkBase {
         withSQLConf(SQLConf.SESSION_LOCAL_TIMEZONE.key -> timeZone) {
           val name = s"Unix Timestamp from Date ($timeZone)"
           val query = "select unix_timestamp(dt) from parquetV1Table"
-          runExpressionBenchmark(name, values, query)
+          runExpressionBenchmark(name, values.toLong, query)
         }
       }
     }
@@ -115,7 +116,7 @@ object CometDatetimeExpressionBenchmark extends CometBenchmarkBase {
             s"select concat(cast(abs(value) % 24 as string), ':', lpad(cast(abs(value) % 60 as string), 2, '0'), ':', lpad(cast(abs(value) % 60 as string), 2, '0')) as s FROM $tbl"))
         val name = "to_time"
         val query = "select to_time(s) from parquetV1Table"
-        runExpressionBenchmark(name, values, query)
+        runExpressionBenchmark(name, values.toLong, query)
       }
     }
   }
@@ -129,7 +130,7 @@ object CometDatetimeExpressionBenchmark extends CometBenchmarkBase {
             s"select cast(abs(value) % 24 as int) as h, cast(abs(value) % 60 as int) as m, cast(abs(value) % 60 as decimal(16,6)) as s FROM $tbl"))
         val name = "make_time"
         val query = "select make_time(h, m, s) from parquetV1Table"
-        runExpressionBenchmark(name, values, query)
+        runExpressionBenchmark(name, values.toLong, query)
       }
     }
   }
@@ -153,7 +154,7 @@ object CometDatetimeExpressionBenchmark extends CometBenchmarkBase {
         def consumeIntervals(): Unit = {
           spark.sql(query).queryExecution.toRdd.foreachPartition(_.foreach(_.getInterval(0)))
         }
-        val benchmark = new Benchmark("MakeInterval", values, output = output)
+        val benchmark = new Benchmark("MakeInterval", values.toLong, output = output)
         val cometConfigs = Map(
           CometConf.COMET_ENABLED.key -> "true",
           CometConf.COMET_EXEC_ENABLED.key -> "true",
@@ -178,6 +179,46 @@ object CometDatetimeExpressionBenchmark extends CometBenchmarkBase {
           }
         }
         benchmark.run()
+      }
+    }
+  }
+
+  /**
+   * `next_day` over a default-collation and, on Spark 4.0+, a collated `dayOfWeek`. The native
+   * kernel reads the argument as raw bytes, so CometNextDay reports a collated argument as
+   * Incompatible and CodegenDispatchFallback runs it through the JVM codegen dispatcher. The
+   * collated case therefore measures the dispatcher rather than the native kernel. See
+   * https://github.com/apache/datafusion-comet/issues/5591.
+   */
+  def nextDayExprBenchmark(values: Int): Unit = {
+    withTempPath { dir =>
+      withTempTable("parquetV1Table") {
+        prepareTable(
+          dir,
+          spark.sql(s"""
+            SELECT
+              date_from_unix_date(CAST(PMOD(value, 3650) AS INT)) AS dt,
+              CASE CAST(PMOD(value, 7) AS INT)
+                WHEN 0 THEN 'MON'
+                WHEN 1 THEN 'TUE'
+                WHEN 2 THEN 'WED'
+                WHEN 3 THEN 'THU'
+                WHEN 4 THEN 'FRI'
+                WHEN 5 THEN 'SAT'
+                ELSE 'SUN'
+              END AS dow
+            FROM $tbl
+          """))
+        runExpressionBenchmark(
+          "NextDay",
+          values.toLong,
+          "select next_day(dt, dow) from parquetV1Table")
+        if (isSpark40Plus) {
+          runExpressionBenchmark(
+            "NextDay - collated dayOfWeek",
+            values.toLong,
+            "select next_day(dt, dow collate utf8_lcase) from parquetV1Table")
+        }
       }
     }
   }
@@ -221,6 +262,10 @@ object CometDatetimeExpressionBenchmark extends CometBenchmarkBase {
 
     runBenchmarkWithTable("MakeInterval", values) { v =>
       makeIntervalBenchmark(v)
+    }
+
+    runBenchmarkWithTable("NextDay", values) { v =>
+      nextDayExprBenchmark(v)
     }
   }
 

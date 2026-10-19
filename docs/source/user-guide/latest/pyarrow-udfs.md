@@ -32,7 +32,7 @@ using the Arrow IPC format.
 
 Without Comet, the execution path for these UDFs involves unnecessary data conversions:
 
-1. Comet reads data in Arrow columnar format (via CometScan)
+1. Comet reads data in Arrow columnar format (via `CometNativeScan`)
 2. Spark inserts a ColumnarToRow transition (converts Arrow to UnsafeRow)
 3. The Python runner converts those rows back to Arrow to send to Python
 4. Python executes the UDF on Arrow batches
@@ -44,8 +44,8 @@ Steps 2 and 3 are redundant since the data starts and ends in Arrow format.
 
 ### Batch APIs: `mapInArrow` and `mapInPandas`
 
-When enabled, Comet detects `PythonMapInArrowExec` / `MapInArrowExec` and `MapInPandasExec`
-operators in the physical plan and replaces them with `CometMapInBatchExec`, which:
+When enabled, Comet detects `MapInArrowExec` and `MapInPandasExec` operators in the physical plan
+and replaces them with `CometMapInBatchExec` (shown as `CometMapInBatch` in plans), which:
 
 - Reads Arrow columnar batches directly from the upstream Comet operator
 - Feeds them to the Python runner without the expensive UnsafeProjection copy
@@ -81,18 +81,16 @@ One operator covers three user-facing UDF families, because Spark routes all of 
 Without Comet's optimization:
 
 ```
-PythonMapInArrow / MapInArrow / MapInPandas
-+- ColumnarToRow         <- Arrow -> Row copy
-   +- CometNativeExec    <- Arrow batch
-      +- CometScan
+MapInArrow / MapInPandas
++- CometColumnarToRow    <- Arrow -> Row copy
+   +- CometNativeScan    <- Arrow batch
 ```
 
 With the optimization enabled:
 
 ```
 CometMapInBatch          <- Arrow batch in/out, Python runner attached
-+- CometNativeExec
-   +- CometScan
++- CometNativeScan
 ```
 
 For a scalar UDF, without the optimization:
@@ -146,7 +144,7 @@ about performance.
 
 | PySpark API                                    | Spark Plan Node             | Supported |
 | ---------------------------------------------- | --------------------------- | --------- |
-| `df.mapInArrow(func, schema)`                  | `PythonMapInArrowExec`      | Yes       |
+| `df.mapInArrow(func, schema)`                  | `MapInArrowExec`            | Yes       |
 | `df.mapInPandas(func, schema)`                 | `MapInPandasExec`           | Yes       |
 | `udf()` with `pythonUDF.arrow.enabled`         | `ArrowEvalPythonExec`       | Yes       |
 | `@pandas_udf` (scalar)                         | `ArrowEvalPythonExec`       | Yes       |
@@ -168,6 +166,7 @@ spark = SparkSession.builder \
     .config("spark.comet.exec.pyarrowUDF.enabled", "true") \
     .config("spark.memory.offHeap.enabled", "true") \
     .config("spark.memory.offHeap.size", "2g") \
+    .config("spark.executor.memoryOverhead", "2g") \
     .getOrCreate()
 
 df = spark.read.parquet("data.parquet")
@@ -217,17 +216,15 @@ You should see:
 
 ```
 CometMapInBatch ...
-+- CometNativeExec ...
-   +- CometScan ...
++- CometNativeScan parquet ...
 ```
 
 Instead of the unoptimized plan:
 
 ```
-PythonMapInArrow ...
-+- ColumnarToRow
-   +- CometNativeExec ...
-      +- CometScan ...
+MapInArrow ...
++- CometColumnarToRow
+   +- CometNativeScan parquet ...
 ```
 
 When AQE is enabled (the Spark default) and the query contains a shuffle, the
@@ -236,7 +233,7 @@ running an action will show the unoptimized plan:
 
 ```
 AdaptiveSparkPlan isFinalPlan=false
-+- PythonMapInArrow ...
++- MapInArrow ...
    +- CometExchange ...
 ```
 
@@ -269,8 +266,9 @@ on the unoptimized path.
   interpreter cost dominate. See
   [Enabling Arrow-optimized `udf()`](#enabling-arrow-optimized-udf).
 - The optimization requires Arrow data on the input side. If a shuffle sits between the upstream
-  Comet operator and the Python UDF, you need Comet's native shuffle for the optimization to
-  apply. Set `spark.shuffle.manager` to
+  Comet operator and the Python UDF, use Comet's columnar shuffle for the optimization to apply.
+  Both the `jvm` and `native` shuffle modes can feed `CometMapInBatch`. Set
+  `spark.shuffle.manager` to
   `org.apache.spark.sql.comet.execution.shuffle.CometShuffleManager` and enable
   `spark.comet.shuffle.enabled=true` at session startup. With a vanilla Spark `Exchange`
   in the plan the data leaves the shuffle as rows and the optimization cannot fire.
@@ -295,10 +293,42 @@ on the unoptimized path.
   requested by the configuration. `EliminateRedundantTransitions` therefore skips the rewrite
   and vanilla Spark handles the operation. Comet can read `large_string` and `large_binary`
   columns returned by a Python worker; that output support does not widen the input vectors.
-- Comet writes input Arrow IPC record batches directly from its existing vector buffers. For
-  `mapInArrow` / `mapInPandas` the only additional Arrow buffer is the validity bitmap for the
-  non-null struct that wraps the input columns. Writing the IPC bytes to the Python worker's pipe
-  still requires one copy; that copy is inherent to Spark's process-based Python transport.
+- PySpark does not convert the batches a `mapInArrow` UDF returns to the declared output schema,
+  so Comet checks their Arrow schema before reading them. When a column cannot be read as its
+  declared type, Comet raises Spark's `ARROW_TYPE_MISMATCH` error (on Spark 4.0, a
+  `SparkException` with the same message). Column names, nullability, `large_string` and
+  `large_binary` offsets, the time zone of a timestamp, and an all-null column of Arrow type
+  `null` may differ from the declared schema. Vanilla Spark reads some mismatches that Comet
+  rejects, unless `spark.sql.execution.arrow.pyspark.validateSchema.enabled` is set: it rescales
+  a decimal to the declared precision and scale, reads a timestamp without a time zone as
+  `TimestampType`, reads other types of the same width (for example `int64` as a timestamp), and
+  ignores extra columns. Return the declared types, or set
+  `spark.comet.exec.pyarrowUDF.enabled=false` for such UDFs.
+- Comet applies `spark.sql.execution.arrow.maxRecordsPerBatch` to every input batch, including
+  batches with only plain columns. Before decoding dictionary-encoded shuffle columns, Comet also
+  compares their estimated decoded size with `spark.sql.execution.arrow.maxBytesPerBatch`.
+  When either threshold requires splitting, every column is sliced at the same row boundaries.
+  Temporary slices and decoded dictionary vectors are released after each synchronous write.
+  Comet returns control to Spark after each slice so Spark can drain its Python transport buffer;
+  small slices may share that buffer until Spark reaches its buffering threshold. The source
+  batch remains alive until its last slice has been written.
+- The byte estimate covers only the logical buffers of decoded dictionary columns: values,
+  offsets, and validity bits. It excludes plain columns and is a soft limit: the row that crosses
+  the threshold stays in the batch, and a single oversized row remains intact. A separate guard
+  prevents combining rows whose estimated decoded dictionary size exceeds Arrow's signed 32-bit
+  limit (2 GiB minus 1 byte). This guard cannot split an individually oversized row and does not
+  guarantee that Arrow allocations stay below that limit. Arrow rounds buffer capacities up, so
+  an allocation can approach twice its logical size; existing input buffers and other overhead
+  also consume memory. `maxBytesPerBatch` is therefore not a ceiling on actual memory use.
+- Dictionary-encoded values nested inside a struct, list, or map are not supported on the
+  optimized input path. Comet rejects them with an error naming the field path. Comet's current
+  shuffle does not produce these nested dictionaries.
+- Comet writes input Arrow IPC record batches directly from plain vector buffers. For an unsplit
+  plain `mapInArrow` / `mapInPandas` batch, the only additional Arrow buffer is the validity bitmap for the non-null struct
+  that wraps the input columns. Slicing may allocate offset or validity buffers. Writing the IPC
+  bytes to the Python worker's pipe still requires one copy; that copy is inherent to Spark's
+  process-based Python transport. Borrowed buffers are not transferred between Arrow allocators or
+  given new ownership.
 - The scalar UDF path additionally copies each input batch once. Its output batch is the input
   batch's columns plus the worker's result columns, so the input has to stay valid until the
   worker replies, while Comet's native operators recycle the buffers behind consecutive batches.

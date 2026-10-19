@@ -20,11 +20,21 @@
 package org.apache.spark.shuffle.comet;
 
 import java.io.IOException;
+import java.util.Map;
+import java.util.function.Supplier;
 
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
+
+import org.apache.spark.TaskContext;
 import org.apache.spark.memory.MemoryConsumer;
 import org.apache.spark.memory.MemoryMode;
+import org.apache.spark.memory.SparkOutOfMemoryError;
 import org.apache.spark.memory.TaskMemoryManager;
+import org.apache.spark.unsafe.array.LongArray;
 import org.apache.spark.unsafe.memory.MemoryBlock;
+
+import org.apache.comet.MissingTaskEntryRetry;
 
 /**
  * A simple memory allocator used by `CometShuffleExternalSorter` to allocate memory blocks which
@@ -33,13 +43,20 @@ import org.apache.spark.unsafe.memory.MemoryBlock;
  * configured with `MemoryMode.OFF_HEAP`, i.e. it is using off-heap memory.
  *
  * <p>If the user does not enable off-heap memory then we want to use
- * CometBoundedShuffleMemoryAllocator. The tests also need to default to using this because off-heap
- * is not enabled when running the Spark SQL tests.
+ * CometUnboundedShuffleMemoryAllocator. The tests also need to default to using this because
+ * off-heap is not enabled when running the Spark SQL tests.
  */
 public final class CometUnifiedShuffleMemoryAllocator extends CometShuffleMemoryAllocatorTrait {
 
+  private static final Logger logger =
+      LoggerFactory.getLogger(CometUnifiedShuffleMemoryAllocator.class);
+
+  /** The task's context, or null outside a task; see retryMissingTaskEntry. */
+  private final TaskContext taskContext;
+
   CometUnifiedShuffleMemoryAllocator(TaskMemoryManager taskMemoryManager, long pageSize) {
     super(taskMemoryManager, pageSize, MemoryMode.OFF_HEAP);
+    this.taskContext = TaskContext.get();
     if (taskMemoryManager.getTungstenMemoryMode() != MemoryMode.OFF_HEAP) {
       throw new IllegalArgumentException(
           "CometUnifiedShuffleMemoryAllocator should be used with off-heap "
@@ -54,7 +71,41 @@ public final class CometUnifiedShuffleMemoryAllocator extends CometShuffleMemory
   }
 
   public synchronized MemoryBlock allocate(long required) {
-    return this.allocatePage(required);
+    return retryMissingTaskEntry(required, () -> this.allocatePage(required));
+  }
+
+  /**
+   * Allocates a pointer array, retrying like {@link #allocate}. The inherited method asks Spark for
+   * the page directly rather than through allocate, and the sorters' pointer arrays come through
+   * here.
+   */
+  @Override
+  public LongArray allocateArray(long size) {
+    return retryMissingTaskEntry(size * 8L, () -> super.allocateArray(size));
+  }
+
+  /**
+   * Runs an allocation through Spark, retrying when an allocation waiting in Spark lost the task's
+   * entry; see {@link MissingTaskEntryRetry}. When the retries run out, or the task has ended, the
+   * allocation fails with a SparkOutOfMemoryError, which the shuffle writers handle like any other
+   * refused page, caused by the last attempt's exception.
+   */
+  private <T> T retryMissingTaskEntry(long required, Supplier<T> allocation) {
+    return MissingTaskEntryRetry.retry(
+        logger,
+        taskContext,
+        required,
+        allocation,
+        e -> {
+          SparkOutOfMemoryError error =
+              new SparkOutOfMemoryError(
+                  "UNABLE_TO_ACQUIRE_MEMORY",
+                  Map.of(
+                      "requestedBytes", String.valueOf(required),
+                      "receivedBytes", String.valueOf(0)));
+          error.initCause(e);
+          throw error;
+        });
   }
 
   public synchronized long free(MemoryBlock block) {

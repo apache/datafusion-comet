@@ -28,3 +28,14 @@ SELECT map(k, v) FROM test_create_map
 
 query
 SELECT map(1, 'a', 2, 'b'), map('x', array(1, 2), 'y', array(3))
+
+-- Arrow addresses a struct vector's children by name, so the two `x` fields collapse into one
+-- child and the dispatcher's generated writer NPEs on the missing ordinal-1 vector. Spark keeps
+-- both values. A struct that is only a map value never reaches `CometCreateNamedStruct`'s check.
+-- https://github.com/apache/datafusion-comet/issues/5544
+query expect_fallback(codegen dispatch: unsupported output type)
+SELECT map(1, named_struct('x', 10, 'x', 20))
+
+-- Distinct field names are unaffected.
+query
+SELECT map(1, named_struct('x', 10, 'y', 20))

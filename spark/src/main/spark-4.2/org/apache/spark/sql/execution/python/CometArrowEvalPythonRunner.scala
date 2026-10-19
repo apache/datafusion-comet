@@ -21,10 +21,11 @@ package org.apache.spark.sql.execution.python
 
 import java.io.DataOutputStream
 
+import org.apache.spark.SparkException
 import org.apache.spark.api.python.{BasePythonRunner, ChainedPythonFunctions}
 import org.apache.spark.sql.execution.metric.SQLMetric
 import org.apache.spark.sql.execution.python.EvalPythonExec.ArgumentMetadata
-import org.apache.spark.sql.types.StructType
+import org.apache.spark.sql.types.{DataType, StructType}
 import org.apache.spark.sql.vectorized.ColumnarBatch
 
 /**
@@ -41,6 +42,7 @@ class CometArrowEvalPythonRunner(
     evalType: Int,
     argOffsets: Array[Array[Int]],
     override val schema: StructType,
+    override val outputSchema: DataType,
     pythonRunnerConf: Map[String, String],
     override val pythonMetrics: Map[String, SQLMetric],
     jobArtifactUUID: Option[String])
@@ -53,6 +55,12 @@ class CometArrowEvalPythonRunner(
     with CometArrowPythonRunnerBase {
 
   override protected def wrapInputInStruct: Boolean = false
+
+  // Each input batch is sent whole, because the operator pairs every batch the worker returns
+  // with the input batch it retained, one to one. Splitting a batch to honour
+  // `spark.sql.execution.arrow.maxRecordsPerBatch` or `maxBytesPerBatch` would break that pairing.
+  override protected def arrowMaxRecordsPerBatch: Int = 0
+  override protected def arrowMaxBytesPerBatch: Long = 0L
 
   override protected def workerConf: Map[String, String] = pythonRunnerConf
 
@@ -78,4 +86,14 @@ class CometArrowEvalPythonRunner(
     val argMetas = argOffsets.map(_.map(offset => ArgumentMetadata(offset, None)))
     PythonUDFRunner.writeUDFs(dataOut, funcs, argMetas)
   }
+
+  override protected def outputSchemaMismatchError(
+      operation: String,
+      expected: String,
+      actual: String): Throwable =
+    new SparkException(
+      errorClass = "ARROW_TYPE_MISMATCH",
+      messageParameters =
+        Map("operation" -> operation, "outputTypes" -> expected, "actualDataTypes" -> actual),
+      cause = null)
 }

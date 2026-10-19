@@ -56,30 +56,52 @@ use url::Url;
 use crate::execution::operators::ExecutionError;
 use crate::parquet::parquet_support::{is_hdfs_scheme, scheme_in_list};
 
+/// A URL after alias normalization, paired with the libhdfs routing decision that produced it.
+///
+/// [`Self::is_hdfs`] is answered on the URL AS WRITTEN, before any rewrite, and callers must read
+/// it from here rather than re-running [`is_hdfs_scheme`] on [`Self::url`]. Normalization can land
+/// an alias on a scheme the user listed in `fs.comet.libhdfs.schemes`: `s3a://bucket/k` becomes
+/// `s3://bucket/k`, so a `fs.comet.libhdfs.schemes=s3` that never mentioned `s3a` would capture it
+/// on the second look and push an S3 read through the libhdfs bridge. That would also break
+/// lockstep with the JVM gate, which matches `libhdfsSchemes` against the scheme the user wrote
+/// (`CometScanRule.classifyRootPaths`) and so admits the scan as object_store-native.
+pub(crate) struct NormalizedObjectStoreUrl {
+    pub(crate) url: Url,
+    pub(crate) is_hdfs: bool,
+}
+
 /// Rewrites `s3a` and the configured s3-compliant aliases to `s3://bucket/key`, promoting a missing
 /// authority into the host. Non-alias schemes are returned unchanged. `s3a` routed through libhdfs
 /// (`fs.comet.libhdfs.schemes`) is left alone.
 pub(crate) fn normalize_object_store_url(
     url_str: &str,
     object_store_configs: &HashMap<String, String>,
-) -> Result<Url, ExecutionError> {
+) -> Result<NormalizedObjectStoreUrl, ExecutionError> {
     let url = Url::parse(url_str)
         .map_err(|e| ExecutionError::GeneralError(format!("Error parsing URL {url_str}: {e}")))?;
     if is_hdfs_scheme(&url, object_store_configs) {
-        return Ok(url);
+        return Ok(NormalizedObjectStoreUrl { url, is_hdfs: true });
     }
     let scheme = url.scheme();
     if scheme != "s3a" && !is_s3_compliant_alias_scheme(scheme, object_store_configs) {
-        return Ok(url);
+        return Ok(NormalizedObjectStoreUrl {
+            url,
+            is_hdfs: false,
+        });
     }
-    rewrite_alias_to_s3(url)
+    Ok(NormalizedObjectStoreUrl {
+        url: rewrite_alias_to_s3(url)?,
+        is_hdfs: false,
+    })
 }
 
 /// True if `scheme` is a configured s3-compliant alias (`fs.comet.s3Compliant.schemes`; empty or
 /// unset means none). These route to `AmazonS3` but are not recognized by
 /// `ObjectStoreScheme::parse`. `s3a` is excluded -- object_store knows it and callers special-case
-/// it. Shared by the Parquet normalizer above and the Iceberg storage-factory gate
-/// (`iceberg_common::storage_factory_for`) so both admit the same schemes.
+/// it. Case-insensitive, which is safe for the Parquet normalizer above because it rewrites the
+/// alias to `s3://` before anything opens the path. The Iceberg storage-factory gate opens the
+/// recorded location as written, so it wraps this in `iceberg_common::is_iceberg_alias_scheme`,
+/// which additionally requires the scheme to be lowercase.
 pub(crate) fn is_s3_compliant_alias_scheme(
     scheme: &str,
     object_store_configs: &HashMap<String, String>,
@@ -178,20 +200,25 @@ impl StorageFactory for BlobHostPromotingS3StorageFactory {
             customized_credential_load: self.customized_credential_load.clone(),
         }
         .build(config)?;
-        Ok(Arc::new(BlobHostPromotingS3Storage { inner }))
+        Ok(Arc::new(BlobHostPromotingS3Storage::new(inner)))
     }
 }
 
 /// [`Storage`] that promotes hostless s3-compliant-alias locations (see
-/// [`promote_hostless_alias_url`]) at the open boundary, then delegates to the opendal S3 storage
-/// [`OpenDalStorageFactory::S3`] built from the same [`StorageConfig`]. Serde exists only to
-/// satisfy the `Storage` typetag supertraits; Comet never serializes storage during a scan.
+/// [`promote_hostless_alias_url`]) at the open boundary, then delegates to `inner`: the opendal S3
+/// storage [`OpenDalStorageFactory::S3`] built from the same [`StorageConfig`], or the
+/// location-scoped storage when the provider is location-scoped. Serde exists only to satisfy the
+/// `Storage` typetag supertraits; Comet never serializes storage during a scan.
 #[derive(Debug, Serialize, Deserialize)]
 pub(crate) struct BlobHostPromotingS3Storage {
     inner: Arc<dyn Storage>,
 }
 
 impl BlobHostPromotingS3Storage {
+    pub(crate) fn new(inner: Arc<dyn Storage>) -> Self {
+        Self { inner }
+    }
+
     /// Promote a hostless path, surfacing failures as an iceberg [`Error`].
     fn promote<'a>(&self, path: &'a str) -> IcebergResult<Cow<'a, str>> {
         promote_hostless_alias_url(path)
@@ -261,6 +288,7 @@ mod tests {
     fn normalized(url: &str, configs: &HashMap<String, String>) -> String {
         normalize_object_store_url(url, configs)
             .unwrap()
+            .url
             .as_str()
             .to_string()
     }
@@ -318,6 +346,84 @@ mod tests {
         ] {
             assert_eq!(normalized(input, configs), expected, "input: {input}");
         }
+    }
+
+    /// Config routing `schemes` through libhdfs, optionally opting `aliases` in as S3 aliases.
+    fn libhdfs_configs(schemes: &str, aliases: Option<&str>) -> HashMap<String, String> {
+        let mut configs = HashMap::new();
+        configs.insert("fs.comet.libhdfs.schemes".to_string(), schemes.to_string());
+        if let Some(aliases) = aliases {
+            configs.insert(
+                "fs.comet.s3Compliant.schemes".to_string(),
+                aliases.to_string(),
+            );
+        }
+        configs
+    }
+
+    #[test]
+    fn test_libhdfs_routing_uses_the_scheme_as_written() {
+        // The libhdfs decision must be read off the URL the user wrote, never off the normalized
+        // one. `fs.comet.libhdfs.schemes=s3` asks for `s3://` to go through libhdfs and says
+        // nothing about `s3a` or aliases, but normalization rewrites both onto `s3://`, so a
+        // second `is_hdfs_scheme` call on the result would capture them. `CometScanRule` matches
+        // the scheme as written too, and would already have admitted such a scan as
+        // object_store-native, so the recompute also desyncs the planner from the executor.
+        for (input, configs, expect_hdfs, expect_url) in [
+            // `s3a` and an opted-in alias both normalize onto `s3`, which IS in the libhdfs list.
+            // They must still route to the S3 store.
+            (
+                "s3a://bucket/f.parquet",
+                libhdfs_configs("s3", None),
+                false,
+                "s3://bucket/f.parquet",
+            ),
+            (
+                "blob://bucket/f.parquet",
+                libhdfs_configs("s3", Some("blob")),
+                false,
+                "s3://bucket/f.parquet",
+            ),
+            // Listing `s3a` itself is the supported way to route it through libhdfs: honored, and
+            // the URL is left alone so the name node keeps the scheme the user configured.
+            (
+                "s3a://bucket/f.parquet",
+                libhdfs_configs("s3a", None),
+                true,
+                "s3a://bucket/f.parquet",
+            ),
+            // With the config unset only `hdfs` routes to libhdfs, so the default is unaffected.
+            (
+                "s3a://bucket/f.parquet",
+                HashMap::new(),
+                false,
+                "s3://bucket/f.parquet",
+            ),
+            (
+                "hdfs://nn:8020/f.parquet",
+                HashMap::new(),
+                true,
+                "hdfs://nn:8020/f.parquet",
+            ),
+        ] {
+            let normalized = normalize_object_store_url(input, &configs).unwrap();
+            assert_eq!(normalized.is_hdfs, expect_hdfs, "is_hdfs for {input}");
+            assert_eq!(normalized.url.as_str(), expect_url, "url for {input}");
+            // The flag always agrees with the scheme as written. That is the whole contract.
+            let as_written = Url::parse(input).unwrap();
+            assert_eq!(
+                is_hdfs_scheme(&as_written, &configs),
+                expect_hdfs,
+                "as-written scheme for {input}"
+            );
+        }
+
+        // Pin the trap itself: re-deriving the flag from the normalized URL DOES flip, which is
+        // why `NormalizedObjectStoreUrl` carries it rather than leaving callers to recompute.
+        let configs = libhdfs_configs("s3", None);
+        let normalized = normalize_object_store_url("s3a://bucket/f.parquet", &configs).unwrap();
+        assert!(!normalized.is_hdfs);
+        assert!(is_hdfs_scheme(&normalized.url, &configs));
     }
 
     #[test]

@@ -121,7 +121,7 @@ query
 SELECT a, b, array_intersect(a, b) FROM test_intersect_long
 
 -- Float arrays with NaN, Infinity, and -Infinity. Signed-zero membership cases are
--- isolated below (see the SPARK-54918 note).
+-- covered in array_set_signed_zero*.sql.
 statement
 CREATE TABLE test_intersect_float(a array<float>, b array<float>) USING parquet
 
@@ -138,7 +138,7 @@ INSERT INTO test_intersect_float VALUES
 query
 SELECT a, b, array_intersect(a, b) FROM test_intersect_float
 
--- Double arrays with NaN, Infinity, and -Infinity. Signed-zero cases isolated below.
+-- Double arrays with NaN, Infinity, and -Infinity. Signed-zero cases are in array_set_signed_zero*.sql.
 statement
 CREATE TABLE test_intersect_dbl(a array<double>, b array<double>) USING parquet
 
@@ -155,37 +155,6 @@ INSERT INTO test_intersect_dbl VALUES
 
 query
 SELECT a, b, array_intersect(a, b) FROM test_intersect_dbl
-
--- Signed-zero membership. Spark keeps -0.0 distinct from 0.0 while Comet (DataFusion)
--- collapses them, so array_intersect([-0.0], [0.0]) is [] in Spark but [0.0] in Comet,
--- and array_intersect([-0.0], [-0.0]) is [-0.0] in Spark but [0.0] in Comet.
--- NormalizeFloatingNumbers only rewrites literals, not parquet columns. Skip until
--- Spark normalizes these zeros (Spark 4.2+, SPARK-54918).
-statement
-CREATE TABLE test_intersect_flt_negzero(a array<float>, b array<float>) USING parquet
-
-statement
-INSERT INTO test_intersect_flt_negzero VALUES
-  (array(cast(0.0 as float), float('-0.0')), array(cast(0.0 as float))),
-  (array(float('-0.0')), array(float('0.0'))),
-  (array(float('0.0')), array(float('-0.0'))),
-  (array(float('-0.0')), array(float('-0.0')))
-
-query ignore(https://issues.apache.org/jira/browse/SPARK-54918)
-SELECT a, b, array_intersect(a, b) FROM test_intersect_flt_negzero
-
-statement
-CREATE TABLE test_intersect_dbl_negzero(a array<double>, b array<double>) USING parquet
-
-statement
-INSERT INTO test_intersect_dbl_negzero VALUES
-  (array(0.0, double('-0.0')), array(0.0)),
-  (array(double('-0.0')), array(double('0.0'))),
-  (array(double('0.0')), array(double('-0.0'))),
-  (array(double('-0.0')), array(double('-0.0')))
-
-query ignore(https://issues.apache.org/jira/browse/SPARK-54918)
-SELECT a, b, array_intersect(a, b) FROM test_intersect_dbl_negzero
 
 -- decimal arrays
 statement

@@ -122,7 +122,9 @@ case class CometArrowEvalPythonExec(
     // Resolve every `SQLConf`-derived input on the driver. `SQLConf.get` reads from a thread-local
     // `ConfigReader` that only exists on the driver, so dereferencing `conf` from inside the task
     // closure NPEs.
-    val resolvedRunnerInputs = runnerInputs(udfs, conf)
+    val resultSchema = StructType(
+      resultAttrs.map(a => StructField(a.name, a.dataType, a.nullable)))
+    val resolvedRunnerInputs = runnerInputs(udfs, resultSchema, conf)
 
     child.executeColumnar().mapPartitionsInternal { batches =>
       val context = TaskContext.get()

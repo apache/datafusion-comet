@@ -34,7 +34,7 @@ This feature is enabled by default. Set `spark.comet.exec.scalaUDF.codegen.enabl
 ## Supported
 
 - User functions registered via `udf(...)`, `spark.udf.register(...)` (Scala or Java functional interfaces), or SQL `CREATE FUNCTION ... AS 'com.example.MyUDF'`.
-- Scalar input/output types: `Boolean`, `Byte`, `Short`, `Int`, `Long`, `Float`, `Double`, `Decimal`, `String`, `Binary`, `Date`, `Timestamp`, `TimestampNTZ`.
+- Scalar input/output types: `Boolean`, `Byte`, `Short`, `Int`, `Long`, `Float`, `Double`, `Decimal`, `String`, `Binary`, `Date`, `Timestamp`, `TimestampNTZ`, `YearMonthInterval`, `DayTimeInterval`, `CalendarInterval`.
 - Complex input/output types with arbitrary nesting: `ArrayType`, `StructType`, `MapType`.
 - Composition with other Catalyst expressions inside the argument tree (e.g. `myUdf(upper(s))` runs as one unit in the Comet pipeline).
 - Higher-order functions (`transform`, `filter`, `exists`, `aggregate`, `zip_with`, `map_filter`, `map_zip_with`, etc.) inside the argument tree.
@@ -45,7 +45,7 @@ This feature is enabled by default. Set `spark.comet.exec.scalaUDF.codegen.enabl
 - Table UDFs and generators.
 - Python `@udf` and Pandas `@pandas_udf`.
 - Hive `GenericUDF` and `SimpleUDF`.
-- `CalendarIntervalType`, `NullType`, and `UserDefinedType` arguments and return types. UDT-typed columns fall back to Spark; to keep execution in the Comet pipeline, store and read the underlying representation directly (e.g. write MLlib `Vector` outputs as `Struct<type: Byte, size: Int, indices: Array<Int>, values: Array<Double>>` rather than `VectorUDT`).
+- `NullType` and `UserDefinedType` arguments and return types. UDT-typed columns fall back to Spark; to keep execution in the Comet pipeline, store and read the underlying representation directly (e.g. write MLlib `Vector` outputs as `Struct<type: Byte, size: Int, indices: Array<Int>, values: Array<Double>>` rather than `VectorUDT`).
 - Trees whose total nested-field count (output plus all input columns the UDF tree references) exceeds `spark.sql.codegen.maxFields` (default 100). Comet refuses these at plan time and the operator falls back to Spark.
 
 When a UDF is rejected, the reason surfaces through Comet's standard fallback diagnostics; the query still runs on Spark.

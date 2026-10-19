@@ -24,6 +24,7 @@ import org.apache.spark.api.python.ChainedPythonFunctions
 import org.apache.spark.sql.catalyst.expressions.PythonUDF
 import org.apache.spark.sql.execution.python.ArrowPythonRunner
 import org.apache.spark.sql.internal.SQLConf
+import org.apache.spark.sql.types.DataType
 
 /**
  * The driver-resolved inputs every 4.x Comet Arrow Python runner needs, in the same shape across
@@ -34,23 +35,36 @@ trait ShimPythonRunnerInputs {
 
   protected case class RunnerInputs(
       chainedFunc: Seq[(ChainedPythonFunctions, Long)],
+      outputSchema: DataType,
       pythonRunnerConf: Map[String, String],
-      jobArtifactUUID: Option[String])
+      jobArtifactUUID: Option[String],
+      arrowMaxRecordsPerBatch: Int,
+      arrowMaxBytesPerBatch: Long)
 
   /**
    * Resolves the `SQLConf`-derived inputs the `ArrowPythonRunner` needs. Must be called on the
    * driver: `SQLConf.get` reads from a thread-local `ConfigReader` that only exists on the
    * driver, so dereferencing `conf` from a task closure NPEs.
    *
+   * `outputSchema` is the type the worker's output is checked against: the struct of output
+   * columns for `mapInArrow` / `mapInPandas`, and the struct of the UDFs' result types for a
+   * scalar UDF operator.
+   *
    * Each UDF contributes one chained function. Spark's `EvalPythonEvaluatorFactory` also folds a
    * `PythonUDF` applied to another `PythonUDF` into a single chain; that shape never reaches
    * here, because a nested UDF is not an `AttributeReference` and so fails the argument check
    * that admits an operator to the native path.
    */
-  protected def runnerInputs(pythonUDFs: Seq[PythonUDF], conf: SQLConf): RunnerInputs =
+  protected def runnerInputs(
+      pythonUDFs: Seq[PythonUDF],
+      outputSchema: DataType,
+      conf: SQLConf): RunnerInputs =
     RunnerInputs(
       chainedFunc =
         pythonUDFs.map(udf => (ChainedPythonFunctions(Seq(udf.func)), udf.resultId.id)),
+      outputSchema = outputSchema,
       pythonRunnerConf = ArrowPythonRunner.getPythonRunnerConfMap(conf),
-      jobArtifactUUID = JobArtifactSet.getCurrentJobArtifactState.map(_.uuid))
+      jobArtifactUUID = JobArtifactSet.getCurrentJobArtifactState.map(_.uuid),
+      arrowMaxRecordsPerBatch = conf.arrowMaxRecordsPerBatch,
+      arrowMaxBytesPerBatch = conf.arrowMaxBytesPerBatch)
 }

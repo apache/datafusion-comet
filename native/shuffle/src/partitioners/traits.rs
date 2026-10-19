@@ -22,6 +22,6 @@ use datafusion::common::Result;
 pub(crate) trait ShufflePartitioner: Send {
     /// Insert a batch into the partitioner
     async fn insert_batch(&mut self, batch: RecordBatch) -> Result<()>;
-    /// Write shuffle data and shuffle index file to disk
+    /// Write the buffered shuffle data to the partition writer
     fn shuffle_write(&mut self) -> Result<()>;
 }

@@ -34,6 +34,7 @@ import org.apache.spark.TestUtils
 import org.apache.spark.benchmark.Benchmark
 import org.apache.spark.sql.{DataFrame, SparkSession}
 import org.apache.spark.sql.execution.datasources.parquet.VectorizedParquetRecordReader
+import org.apache.spark.sql.execution.metric.SQLMetrics
 import org.apache.spark.sql.types._
 import org.apache.spark.sql.vectorized.ColumnVector
 
@@ -47,9 +48,106 @@ import org.apache.comet.{CometConf, WithHdfsCluster}
  */
 class CometReadBaseBenchmark extends CometBenchmarkBase {
 
+  /**
+   * Measure scan I/O accumulators separately from storage work. Run this benchmark with
+   * `--scan-metric-overhead`; add `--reverse-cases` to reverse the comparisons. Compare the
+   * original nine metrics with the current eleven (including observed GETs and retries) and a
+   * hypothetical twelfth counter for total HTTP attempts. The first two benchmarks isolate driver
+   * creation and task-copy/merge costs. The last runs 10,000 Spark tasks, including task
+   * serialization and scheduler updates, and adds a zero-accumulator baseline. This excludes
+   * native counters, JNI traversal, the SQL UI's per-node rendering, and storage I/O.
+   */
+  def scanMetricAccumulatorBenchmark(reverseCases: Boolean): Unit = {
+    val names = Seq(
+      "scan_io_data_bytes",
+      "scan_io_metadata_bytes",
+      "scan_io_footer_reads",
+      "scan_io_footer_bytes",
+      "scan_io_object_store_get_calls",
+      "scan_io_object_store_get_requested_bytes",
+      "scan_io_object_store_response_bytes_read",
+      "scan_io_metadata_cache_hits",
+      "scan_io_metadata_cache_misses",
+      "scan_io_http_observed_gets",
+      "scan_io_http_retries",
+      // A hypothetical redundant counter: attempts = observed GETs + retries.
+      "scan_io_http_attempts")
+    val metricCounts =
+      Seq(names.count(!_.startsWith("scan_io_http_")), names.size - 1, names.size)
+    val cases = if (reverseCases) metricCounts.reverse else metricCounts
+    def createMetrics(count: Int) = names.take(count).map { name =>
+      if (name.endsWith("bytes") || name.endsWith("bytes_read")) {
+        SQLMetrics.createSizeMetric(spark.sparkContext, name)
+      } else {
+        SQLMetrics.createMetric(spark.sparkContext, name)
+      }
+    }
+
+    val operators = 1024
+    val creation =
+      new Benchmark(
+        "Scan I/O SQL metrics: creation",
+        operators.toLong,
+        minNumIters = 5,
+        output = output)
+    cases.foreach { count =>
+      creation.addCase(s"$count metrics per operator") { _ =>
+        var operator = 0
+        while (operator < operators) {
+          assert(createMetrics(count).size == count)
+          operator += 1
+        }
+      }
+    }
+    creation.run()
+
+    val tasks = 10000
+    val updates = new Benchmark(
+      "Scan I/O SQL metrics: task snapshots",
+      tasks.toLong,
+      minNumIters = 5,
+      output = output)
+    cases.foreach { count =>
+      val driverMetrics = createMetrics(count)
+      updates.addCase(s"copy, update and merge $count metrics") { _ =>
+        driverMetrics.foreach(_.reset())
+        var task = 0
+        while (task < tasks) {
+          driverMetrics.foreach { driver =>
+            val local = driver.copyAndReset()
+            local.add(64L)
+            driver.merge(local)
+          }
+          task += 1
+        }
+        assert(driverMetrics.forall(_.value == tasks * 64L))
+      }
+    }
+    updates.run()
+
+    val partitions = spark.sparkContext.parallelize(0 until tasks, tasks)
+    val jobs = new Benchmark(
+      "Scan I/O SQL metrics: 10000-task Spark job",
+      tasks.toLong,
+      minNumIters = 3,
+      output = output)
+    val jobCases = if (reverseCases) cases :+ 0 else 0 +: cases
+    jobCases.foreach { count =>
+      val metrics = createMetrics(count)
+      jobs.addCase(s"$count extra SQL accumulators") { _ =>
+        metrics.foreach(_.reset())
+        partitions.foreachPartition { _ =>
+          metrics.foreach(_.add(64L))
+        }
+        assert(metrics.forall(_.value == tasks * 64L))
+      }
+    }
+    jobs.run()
+  }
+
   def numericScanBenchmark(values: Int, dataType: DataType): Unit = {
     val sqlBenchmark =
-      new Benchmark(s"SQL Single ${dataType.sql} Column Scan", values, output = output)
+      new Benchmark(s"SQL Single ${dataType.sql} Column Scan", values.toLong, output = output)
 
     withTempPath { dir =>
       withTempTable("parquetV1Table") {
@@ -68,7 +166,10 @@ class CometReadBaseBenchmark extends CometBenchmarkBase {
 
   def encryptedScanBenchmark(values: Int, dataType: DataType): Unit = {
     val sqlBenchmark =
-      new Benchmark(s"SQL Single ${dataType.sql} Encrypted Column Scan", values, output = output)
+      new Benchmark(
+        s"SQL Single ${dataType.sql} Encrypted Column Scan",
+        values.toLong,
+        output = output)
 
     val encoder = Base64.getEncoder
     val footerKey =
@@ -109,7 +210,7 @@ class CometReadBaseBenchmark extends CometBenchmarkBase {
   def decimalScanBenchmark(values: Int, precision: Int, scale: Int): Unit = {
     val sqlBenchmark = new Benchmark(
       s"SQL Single Decimal(precision: $precision, scale: $scale) Column Scan",
-      values,
+      values.toLong,
       output = output)
 
     withTempPath { dir =>
@@ -128,7 +229,7 @@ class CometReadBaseBenchmark extends CometBenchmarkBase {
 
   def readerBenchmark(values: Int, dataType: DataType): Unit = {
     val sqlBenchmark =
-      new Benchmark(s"Parquet reader benchmark for $dataType", values, output = output)
+      new Benchmark(s"Parquet reader benchmark for $dataType", values.toLong, output = output)
 
     withTempPath { dir =>
       withTempTable("parquetV1Table") {
@@ -186,7 +287,10 @@ class CometReadBaseBenchmark extends CometBenchmarkBase {
   def numericFilterScanBenchmark(values: Int, fractionOfZeros: Double): Unit = {
     val percentageOfZeros = fractionOfZeros * 100
     val benchmark =
-      new Benchmark(s"Numeric Filter Scan ($percentageOfZeros% zeros)", values, output = output)
+      new Benchmark(
+        s"Numeric Filter Scan ($percentageOfZeros% zeros)",
+        values.toLong,
+        output = output)
 
     withTempPath { dir =>
       withTempTable("parquetV1Table", "parquetV2Table") {
@@ -204,7 +308,7 @@ class CometReadBaseBenchmark extends CometBenchmarkBase {
 
   def stringWithDictionaryScanBenchmark(values: Int): Unit = {
     val sqlBenchmark =
-      new Benchmark("String Scan with Dictionary Encoding", values, output = output)
+      new Benchmark("String Scan with Dictionary Encoding", values.toLong, output = output)
 
     withTempPath { dir =>
       withTempTable("parquetV1Table", "parquetV2Table") {
@@ -234,7 +338,10 @@ class CometReadBaseBenchmark extends CometBenchmarkBase {
   def stringWithNullsScanBenchmark(values: Int, fractionOfNulls: Double): Unit = {
     val percentageOfNulls = fractionOfNulls * 100
     val benchmark =
-      new Benchmark(s"String with Nulls Scan ($percentageOfNulls%)", values, output = output)
+      new Benchmark(
+        s"String with Nulls Scan ($percentageOfNulls%)",
+        values.toLong,
+        output = output)
 
     withTempPath { dir =>
       withTempTable("parquetV1Table") {
@@ -255,7 +362,7 @@ class CometReadBaseBenchmark extends CometBenchmarkBase {
 
   def columnsBenchmark(values: Int, width: Int): Unit = {
     val benchmark =
-      new Benchmark(s"Single Column Scan from $width columns", values, output = output)
+      new Benchmark(s"Single Column Scan from $width columns", values.toLong, output = output)
 
     withTempPath { dir =>
       withTempTable("t1", "parquetV1Table") {
@@ -276,7 +383,7 @@ class CometReadBaseBenchmark extends CometBenchmarkBase {
     val benchmark =
       new Benchmark(
         s"Large String Filter Scan ($percentageOfZeros% zeros)",
-        values,
+        values.toLong,
         output = output)
 
     withTempPath { dir =>
@@ -298,7 +405,7 @@ class CometReadBaseBenchmark extends CometBenchmarkBase {
     val benchmark =
       new Benchmark(
         s"Sorted Lg Str Filter Scan ($percentageOfZeros% zeros)",
-        values,
+        values.toLong,
         output = output)
 
     withTempPath { dir =>
@@ -316,6 +423,10 @@ class CometReadBaseBenchmark extends CometBenchmarkBase {
   }
 
   override def runCometBenchmark(mainArgs: Array[String]): Unit = {
+    if (mainArgs.contains("--scan-metric-overhead")) {
+      scanMetricAccumulatorBenchmark(mainArgs.contains("--reverse-cases"))
+      return
+    }
     runBenchmarkWithTable("Parquet Reader", 1024 * 1024 * 15) { v =>
       Seq(
         BooleanType,

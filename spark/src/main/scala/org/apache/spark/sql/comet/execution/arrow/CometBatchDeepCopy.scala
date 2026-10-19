@@ -21,15 +21,16 @@ package org.apache.spark.sql.comet.execution.arrow
 
 import java.util.{ArrayList => JArrayList}
 
-import scala.collection.mutable.ListBuffer
 import scala.jdk.CollectionConverters._
 
 import org.apache.arrow.memory.{ArrowBuf, BufferAllocator}
 import org.apache.arrow.util.AutoCloseables
-import org.apache.arrow.vector.{FieldVector, VectorLoader, VectorSchemaRoot, VectorUnloader}
+import org.apache.arrow.vector.{VectorLoader, VectorSchemaRoot, VectorUnloader}
 import org.apache.arrow.vector.ipc.message.ArrowRecordBatch
 import org.apache.arrow.vector.types.pojo.Schema
 import org.apache.spark.sql.vectorized.ColumnarBatch
+
+import org.apache.comet.vector.{CometVector, CometVectorUtils}
 
 /**
  * Copies an Arrow-backed `ColumnarBatch` produced by a Comet operator into buffers owned by a
@@ -52,18 +53,16 @@ private[comet] object CometBatchDeepCopy {
    * the returned root and must close it. `batch` is left open and unmodified.
    */
   def copy(batch: ColumnarBatch, allocator: BufferAllocator): VectorSchemaRoot = {
-    // Plain vectors decoded from dictionary-encoded columns. We own these and close them once
-    // their contents have been copied into the target root.
-    val decoded = ListBuffer.empty[FieldVector]
-    try {
-      val sourceVectors = CometArrowVectors.materialize(batch, allocator, decoded)
-      val fields = sourceVectors.asScala.map(_.getField).asJava
+    // A dictionary-encoded column is decoded for the copy, so the copy is plain.
+    val columns = (0 until batch.numCols()).map(batch.column(_).asInstanceOf[CometVector])
+    CometVectorUtils.withDecodedVectors(columns, allocator) { sourceVectors =>
+      val fields = sourceVectors.map(_.getField).asJava
 
       // Borrows `batch`'s field vectors, so it must not be closed: that would release references
       // the source batch still owns. The row count is passed to the constructor rather than set
       // afterwards, because `setRowCount` would call `setValueCount` on the borrowed vectors and
       // so mutate the source batch.
-      val transient = new VectorSchemaRoot(fields, sourceVectors, batch.numRows())
+      val transient = new VectorSchemaRoot(fields, sourceVectors.asJava, batch.numRows())
 
       val target = VectorSchemaRoot.create(new Schema(fields), allocator)
       var loaded = false
@@ -86,8 +85,6 @@ private[comet] object CometBatchDeepCopy {
       } finally {
         if (!loaded) target.close()
       }
-    } finally {
-      AutoCloseables.close(decoded.asJava)
     }
   }
 

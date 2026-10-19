@@ -16,12 +16,15 @@
 // under the License.
 
 use crate::execution::operators::ExecutionError;
-use crate::parquet::eager_page_index_reader_factory::EagerPageIndexReaderFactory;
+use crate::parquet::eager_page_index_reader_factory::{EagerPageIndexReaderFactory, ScanIoSource};
 use crate::parquet::encryption_support::{CometEncryptionConfig, ENCRYPTION_FACTORY_ID};
 use crate::parquet::name_fold::fold_schema_names;
-use crate::parquet::parquet_support::SparkParquetOptions;
+use crate::parquet::parquet_support::{
+    object_store_authority, ObjectStoreBackend, SparkParquetOptions,
+};
 use crate::parquet::schema_adapter::SparkPhysicalExprAdapterFactory;
-use arrow::datatypes::{Field, FieldRef, SchemaRef};
+use arrow::datatypes::{Field, FieldRef, Schema, SchemaRef};
+use datafusion::common::tree_node::TreeNode;
 use datafusion::config::{ParquetOptions, TableParquetOptions};
 use datafusion::datasource::listing::PartitionedFile;
 use datafusion::datasource::physical_plan::{
@@ -34,10 +37,20 @@ use datafusion::physical_expr::PhysicalExpr;
 use datafusion::physical_expr_adapter::PhysicalExprAdapterFactory;
 use datafusion::prelude::SessionContext;
 use datafusion::scalar::ScalarValue;
+use datafusion_comet_spark_expr::jvm_udf::JvmScalarUdfExpr;
 use datafusion_comet_spark_expr::EvalMode;
 use datafusion_datasource::TableSchema;
+use parquet::variant::VariantType;
 use std::collections::HashMap;
 use std::sync::Arc;
+
+#[cfg(test)]
+mod variant_tests;
+
+/// Footer/page-index prefetch size for metadata reads, same as DataFusion's default. Shared
+/// with the Delta DV path so its cache-populating footer fetch issues the identical read the
+/// scan would.
+pub(crate) const METADATA_SIZE_HINT: usize = 512 * 1024;
 
 /// Initializes a DataSourceExec plan with a ParquetSource for Comet's native Parquet scan.
 ///
@@ -64,6 +77,7 @@ pub(crate) fn init_datasource_exec(
     data_schema: Option<SchemaRef>,
     partition_schema: Option<SchemaRef>,
     object_store_url: ObjectStoreUrl,
+    object_store_backend: ObjectStoreBackend,
     file_groups: Vec<Vec<PartitionedFile>>,
     projection_vector: Option<Vec<usize>>,
     data_filters: Option<Vec<Arc<dyn PhysicalExpr>>>,
@@ -76,7 +90,10 @@ pub(crate) fn init_datasource_exec(
     session_ctx: &Arc<SessionContext>,
     encryption_enabled: bool,
     use_field_id: bool,
-    ignore_missing_field_id: bool,
+    require_field_ids: bool,
+    rebase_from_file_metadata: bool,
+    datetime_rebase_mode_in_read: &str,
+    int96_rebase_mode_in_read: &str,
 ) -> Result<Arc<DataSourceExec>, ExecutionError> {
     // Computed once and reused below for `try_pushdown_filters`. `copied_config()` clones only
     // `SessionConfig` (an `Arc<ConfigOptions>` plus a small extensions map); `SessionContext::
@@ -94,13 +111,15 @@ pub(crate) fn init_datasource_exec(
         &session_config.options().execution.parquet,
     );
     spark_parquet_options.use_field_id = use_field_id;
-    spark_parquet_options.ignore_missing_field_id = ignore_missing_field_id;
     // Spark can discard filtered-out values before timestamp conversion using statistics,
     // dictionary, and row-level filters. Comet cannot mirror every pruning path, so applying
     // checked conversion in a filtered scan can fail on values Spark never reads. Preserve the
     // existing safe cast for filtered scans and use checked conversion only when every value is
     // necessarily read.
     spark_parquet_options.checked_timestamp_overflow = data_filters.is_none();
+    spark_parquet_options.rebase_from_file_metadata = rebase_from_file_metadata;
+    spark_parquet_options.datetime_rebase_mode_in_read = datetime_rebase_mode_in_read.to_string();
+    spark_parquet_options.int96_rebase_mode_in_read = int96_rebase_mode_in_read.to_string();
 
     // Determine the schema and projection to use for ParquetSource.
     // When data_schema is provided, use it as the base schema so DataFusion knows the full
@@ -114,8 +133,8 @@ pub(crate) fn init_datasource_exec(
             // Fold the data and required field names once (the same JVM `toLowerCase(Locale.ROOT)`
             // fold the schema adapter uses), then match on the folded names so this plan-time
             // projection stays consistent with the adapter's case-insensitive remap.
-            let data_folded = fold_schema_names(schema, case_sensitive);
-            let required_folded = fold_schema_names(&required_schema, case_sensitive);
+            let data_folded = fold_schema_names(schema, case_sensitive)?;
+            let required_folded = fold_schema_names(&required_schema, case_sensitive)?;
             let projection: Vec<usize> = required_folded
                 .iter()
                 .filter_map(|req| data_folded.iter().position(|d| d == req))
@@ -132,6 +151,36 @@ pub(crate) fn init_datasource_exec(
         }
         _ => (Arc::clone(&required_schema), None),
     };
+
+    // DataFusion's parquet opener skips the physical-expr adapter entirely when no predicate
+    // is pushed down AND the logical and physical file schemas compare equal (the
+    // `needs_rewrite` fast path in `opener/mod.rs`). A parquet file with no footer key-value
+    // metadata -- exactly the non-Spark files whose rebase policy falls back to the session
+    // read modes -- can produce a physical schema identical to the logical one, silently
+    // bypassing the per-file rebase handling (which must refuse, or rebase, ancient values).
+    // Stamp a marker into the logical file schema's metadata so that equality can never hold
+    // for a rebase-enabled scan: parquet footers do not produce this key (Spark-written files
+    // carry `org.apache.spark.*` pairs that already break equality, and a crafted file
+    // embedding the marker via `ARROW:schema` merely degrades to the skip behavior). The
+    // marker propagates into `DataSourceExec::schema()`'s schema-level metadata (TableSchema
+    // copies it); that stays native-side only -- the JVM FFI export in `prepare_output` reads
+    // per-FIELD metadata, never the schema-level map -- but a future consumer comparing this
+    // scan's full `Schema` (metadata included) against an independently built one must expect
+    // the key.
+    let base_schema = if rebase_from_file_metadata {
+        let mut metadata = base_schema.metadata().clone();
+        metadata.insert(
+            "comet.rebase_from_file_metadata".to_string(),
+            "true".to_string(),
+        );
+        Arc::new(Schema::new_with_metadata(
+            base_schema.fields().clone(),
+            metadata,
+        ))
+    } else {
+        base_schema
+    };
+
     let partition_fields: Vec<FieldRef> = partition_schema
         .iter()
         .flat_map(|s| s.fields().iter())
@@ -143,8 +192,17 @@ pub(crate) fn init_datasource_exec(
 
     let mut parquet_source = ParquetSource::new(table_schema)
         .with_table_parquet_options(table_parquet_options)
-        .with_metadata_size_hint(512 * 1024); // Same as DataFusion's default
+        .with_metadata_size_hint(METADATA_SIZE_HINT);
 
+    let projects_variant = required_schema
+        .fields()
+        .iter()
+        .any(|field| field.has_valid_extension_type::<VariantType>());
+    if projects_variant && encryption_enabled {
+        return Err(ExecutionError::GeneralError(
+            "Projected Variant with Parquet encryption requires Spark fallback".to_string(),
+        ));
+    }
     if encryption_enabled {
         parquet_source = parquet_source.with_encryption_factory(
             session_ctx
@@ -161,17 +219,40 @@ pub(crate) fn init_datasource_exec(
     // `store_sales`), the page index is re-fetched, uncached, on every open (comet#3978).
     // `EagerPageIndexReaderFactory` forces the page index to load on the first fetch and be
     // cached with the footer, at the cost of losing the skip's benefit when it would have
-    // applied. Filed upstream as apache/datafusion#23978; revert this once that's fixed.
+    // applied. Filed upstream as apache/datafusion#23978.
     //
-    // TODO: metadata I/O is invisible in metrics. `fetch_metadata` reads via `ObjectStore::get_ranges`,
-    // bypassing the `get_bytes` path where `bytes_scanned` is counted. A byte-counting ObjectStore
-    // wrapper would surface it.
+    // Preserve bytes_scanned's existing requested data/Bloom-filter range accounting. Footer
+    // and page-index reads through get_metadata bypass it, and coalescing may fetch extra bytes.
+    // The scan I/O counters expose those gaps without changing task inputMetrics.bytesRead or
+    // scan_efficiency_ratio, which continue to derive from bytes_scanned.
     let runtime_env = session_ctx.runtime_env();
     let store = runtime_env.object_store(&object_store_url)?;
     let metadata_cache = runtime_env.cache_manager.get_file_metadata_cache();
-    parquet_source = parquet_source.with_parquet_file_reader_factory(Arc::new(
-        EagerPageIndexReaderFactory::new(store, metadata_cache),
-    ));
+    //
+    // A rebase-enabled scan also has the factory stamp each file's INT96 leaf ordinals into
+    // its footer metadata (see `datetime_rebase.rs`), which is how the expression adapter
+    // attributes timestamp columns to Spark's INT64 vs INT96 rebase specs.
+    let scan_io_source = scan_io_source(object_store_backend);
+    let reader_factory = Arc::new(
+        EagerPageIndexReaderFactory::new(
+            store,
+            metadata_cache,
+            scan_io_source,
+            parquet_source.metrics(),
+        )
+        .with_spark_variant_schema(projects_variant)
+        .with_require_field_ids(require_field_ids)
+        .with_int96_leaf_stamp(rebase_from_file_metadata)
+        .with_conversion_check(
+            Arc::clone(&required_schema),
+            spark_parquet_options.clone(),
+            session_config.options().execution.parquet.pushdown_filters
+                && data_filters
+                    .as_ref()
+                    .is_some_and(|filters| !filters.is_empty()),
+        ),
+    );
+    parquet_source = parquet_source.with_parquet_file_reader_factory(reader_factory);
 
     // Route data filters through `try_pushdown_filters` rather than calling
     // `with_predicate` directly. This is the contract DataFusion's optimizer
@@ -183,7 +264,14 @@ pub(crate) fn init_datasource_exec(
     // config only gates per-row `RowFilter` evaluation. We discard
     // `propagation.parent_pushdown_result` because Spark's Filter above the
     // scan re-evaluates every dataFilter, so No-classified filters stay
-    // correct without us inserting a FilterExec here.
+    // correct without us inserting a FilterExec here. That also makes it safe
+    // to drop the filters that call into the JVM first; see `calls_jvm`.
+    let data_filters = data_filters.map(|filters| {
+        filters
+            .into_iter()
+            .filter(|filter| !calls_jvm(filter))
+            .collect::<Vec<_>>()
+    });
     let file_source: Arc<dyn FileSource> = match data_filters {
         Some(filters) if !filters.is_empty() => {
             let propagation =
@@ -220,6 +308,43 @@ pub(crate) fn init_datasource_exec(
     let data_source_exec = Arc::new(DataSourceExec::new(Arc::new(file_scan_config)));
 
     Ok(data_source_exec)
+}
+
+/// Whether `expr` evaluates any part of itself in the JVM. Such a filter is kept out of the scan:
+/// DataFusion's parquet `RowFilter` flattens an evaluation error to a string, which drops the Java
+/// throwable a JVM UDF raises (e.g. a Spark `SparkIllegalArgumentException`) and surfaces it as a
+/// generic `CometNativeException`. Spark's Filter above the scan evaluates the predicate anyway, and
+/// a JVM call is opaque to row-group, page-index, and bloom-filter pruning, so nothing is lost.
+fn calls_jvm(expr: &Arc<dyn PhysicalExpr>) -> bool {
+    expr.exists(|e| Ok(e.downcast_ref::<JvmScalarUdfExpr>().is_some()))
+        .unwrap_or(true)
+}
+
+// Registration URLs use a reserved suffix to distinguish backend/configuration
+// identities. Encryption must use the physical URI that Spark registered. Match
+// the complete suffix, from the right, so custom Hadoop schemes are preserved.
+fn physical_object_store_scheme(object_store_url: &ObjectStoreUrl) -> &str {
+    let store_url: &url::Url = object_store_url.as_ref();
+    let scheme = store_url.scheme();
+    if let Some((physical_scheme, identity)) = scheme.rsplit_once("+comet-") {
+        if let Some((hash, backend)) = identity.split_once('-') {
+            if hash.len() == 16
+                && hash.bytes().all(|byte| byte.is_ascii_hexdigit())
+                && matches!(backend, "native" | "hdfs")
+            {
+                return physical_scheme;
+            }
+        }
+    }
+    scheme
+}
+
+fn scan_io_source(backend: ObjectStoreBackend) -> ScanIoSource {
+    match backend {
+        ObjectStoreBackend::Local => ScanIoSource::Local,
+        ObjectStoreBackend::Remote => ScanIoSource::ObjectStore,
+        ObjectStoreBackend::Other => ScanIoSource::OtherObjectStore,
+    }
 }
 
 #[allow(clippy::too_many_arguments)]
@@ -272,8 +397,7 @@ fn get_options(
     // distinguish INT96-derived TimestampLTZ from a true TimestampNTZ source
     // and apply the pre-Spark-4 SPARK-36182 rejection (#4219).
     table_parquet_options.global.coerce_int96_tz = Some("UTC".to_string());
-    let mut spark_parquet_options =
-        SparkParquetOptions::new(EvalMode::Legacy, session_timezone, false);
+    let mut spark_parquet_options = SparkParquetOptions::new(EvalMode::Legacy, session_timezone);
     spark_parquet_options.allow_cast_unsigned_ints = true;
     spark_parquet_options.case_sensitive = case_sensitive;
     spark_parquet_options.return_null_struct_if_all_fields_missing =
@@ -282,10 +406,15 @@ fn get_options(
     spark_parquet_options.allow_timestamp_ltz_to_ntz = allow_timestamp_ltz_to_ntz;
 
     if encryption_enabled {
+        let store_url: &url::Url = object_store_url.as_ref();
         table_parquet_options.crypto.configure_factory(
             ENCRYPTION_FACTORY_ID,
             &CometEncryptionConfig {
-                uri_base: object_store_url.to_string(),
+                uri_base: format!(
+                    "{}://{}/",
+                    physical_object_store_scheme(object_store_url),
+                    object_store_authority(store_url),
+                ),
             },
         );
     }
@@ -296,16 +425,771 @@ fn get_options(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use arrow::array::Int32Array;
+    use arrow::array::{Date32Array, Int32Array};
     use arrow::datatypes::{DataType, Field, Schema};
     use arrow::record_batch::RecordBatch;
-    use datafusion::datasource::physical_plan::parquet::metadata::CachedParquetMetaData;
+    use bytes::Bytes;
+    use datafusion::datasource::physical_plan::parquet::metadata::{
+        CachedParquetMetaData, DFParquetMetadata,
+    };
+    use datafusion::datasource::physical_plan::parquet::ParquetFileReaderFactory;
+    use datafusion::execution::cache::cache_manager::CachedFileMetadataEntry;
+    use datafusion::logical_expr::Operator;
+    use datafusion::physical_expr::expressions::{BinaryExpr, Literal};
+    use datafusion::physical_plan::metrics::ExecutionPlanMetricsSet;
     use datafusion::physical_plan::ExecutionPlan;
     use datafusion_comet_spark_expr::test_common::file_util::get_temp_filename;
     use futures::StreamExt;
+    use object_store::memory::InMemory;
+    use object_store::throttle::{ThrottleConfig, ThrottledStore};
+    use object_store::{ObjectStore, ObjectStoreExt};
+    use parquet::arrow::arrow_reader::ArrowReaderOptions;
     use parquet::arrow::ArrowWriter;
+    use parquet::encryption::decrypt::{FileDecryptionProperties, KeyRetriever};
+    use parquet::encryption::encrypt::FileEncryptionProperties;
+    use parquet::file::metadata::{KeyValue, PageIndexPolicy, ParquetMetaDataReader};
     use parquet::file::properties::{EnabledStatistics, WriterProperties};
     use std::fs::File;
+    use std::time::Duration;
+
+    #[test]
+    fn calls_jvm_finds_a_nested_jvm_udf() {
+        let column: Arc<dyn PhysicalExpr> = Arc::new(Column::new("a", 0));
+        let udf: Arc<dyn PhysicalExpr> = Arc::new(JvmScalarUdfExpr::new(
+            "org.example.Udf".to_string(),
+            vec![Arc::clone(&column)],
+            DataType::Int32,
+            true,
+            None,
+            None,
+            0,
+            0,
+        ));
+        let literal: Arc<dyn PhysicalExpr> = Arc::new(Literal::new(ScalarValue::Int32(Some(1))));
+        let nested: Arc<dyn PhysicalExpr> =
+            Arc::new(BinaryExpr::new(udf, Operator::Gt, Arc::clone(&literal)));
+        let native: Arc<dyn PhysicalExpr> =
+            Arc::new(BinaryExpr::new(column, Operator::Gt, literal));
+
+        assert!(calls_jvm(&nested));
+        assert!(!calls_jvm(&native));
+    }
+
+    fn write_scan_io_fixture() -> (String, SchemaRef) {
+        let schema = Arc::new(Schema::new(vec![
+            Field::new("a", DataType::Int32, false),
+            Field::new("b", DataType::Int32, false),
+        ]));
+        let first = RecordBatch::try_new(
+            Arc::clone(&schema),
+            vec![
+                Arc::new(Int32Array::from((0..500).collect::<Vec<i32>>())),
+                Arc::new(Int32Array::from((10_000..10_500).collect::<Vec<i32>>())),
+            ],
+        )
+        .unwrap();
+        let second = RecordBatch::try_new(
+            Arc::clone(&schema),
+            vec![
+                Arc::new(Int32Array::from((1_000..1_500).collect::<Vec<i32>>())),
+                Arc::new(Int32Array::from((11_000..11_500).collect::<Vec<i32>>())),
+            ],
+        )
+        .unwrap();
+
+        let filename = get_temp_filename()
+            .as_path()
+            .as_os_str()
+            .to_str()
+            .unwrap()
+            .to_string();
+        let props = WriterProperties::builder()
+            .set_statistics_enabled(EnabledStatistics::Page)
+            .set_data_page_row_count_limit(100)
+            .set_max_row_group_row_count(Some(500))
+            .build();
+        let file = File::create(&filename).unwrap();
+        let mut writer = ArrowWriter::try_new(file, Arc::clone(&schema), Some(props)).unwrap();
+        writer.write(&first).unwrap();
+        writer.write(&second).unwrap();
+        writer.close().unwrap();
+
+        (filename, schema)
+    }
+
+    fn init_test_scan(
+        required_schema: SchemaRef,
+        data_schema: SchemaRef,
+        partitioned_file: PartitionedFile,
+        projection: Option<Vec<usize>>,
+        filters: Option<Vec<Arc<dyn PhysicalExpr>>>,
+        session_ctx: &Arc<SessionContext>,
+    ) -> Arc<DataSourceExec> {
+        init_datasource_exec(
+            required_schema,
+            Some(data_schema),
+            None,
+            ObjectStoreUrl::local_filesystem(),
+            ObjectStoreBackend::Local,
+            vec![vec![partitioned_file]],
+            projection,
+            filters,
+            None,
+            "UTC",
+            true,
+            false,
+            false,
+            false,
+            session_ctx,
+            false,
+            false,
+            false,
+            false,
+            "",
+            "",
+        )
+        .unwrap()
+    }
+
+    async fn drain_scan(scan: &Arc<DataSourceExec>, session_ctx: &Arc<SessionContext>) {
+        let mut stream = scan.execute(0, session_ctx.task_ctx()).unwrap();
+        while let Some(batch) = stream.next().await {
+            batch.unwrap();
+        }
+    }
+
+    fn scan_metric(scan: &Arc<DataSourceExec>, name: &str) -> usize {
+        scan.metrics()
+            .unwrap()
+            .sum_by_name(name)
+            .unwrap_or_else(|| panic!("missing metric {name}"))
+            .as_usize()
+    }
+
+    fn reader_metric(metrics: &ExecutionPlanMetricsSet, name: &str) -> usize {
+        metrics
+            .clone_inner()
+            .sum_by_name(name)
+            .unwrap_or_else(|| panic!("missing metric {name}"))
+            .as_usize()
+    }
+
+    #[test]
+    fn preserves_physical_uri_for_isolated_encrypted_object_stores() {
+        fn encryption_uri(url: &str) -> String {
+            let object_store_url = ObjectStoreUrl::parse(url).unwrap();
+            let (options, _) = get_options(
+                "UTC",
+                true,
+                false,
+                false,
+                false,
+                &object_store_url,
+                true,
+                &ParquetOptions::default(),
+            );
+            let encryption: CometEncryptionConfig = options
+                .crypto
+                .factory_options
+                .to_extension_options()
+                .unwrap();
+            encryption.uri_base
+        }
+
+        // Native s3a is canonicalized to s3 before registration; Hadoop-selected
+        // s3a keeps its physical spelling. Both must strip only the identity suffix.
+        for scheme in ["s3", "s3a", "abfss", "custom+comet-existing"] {
+            let normal = format!("{scheme}://bucket:9000/");
+            for backend in ["native", "hdfs"] {
+                let isolated = format!("{scheme}+comet-0123456789abcdef-{backend}://bucket:9000/");
+                assert_eq!(encryption_uri(&isolated), encryption_uri(&normal));
+                assert_eq!(encryption_uri(&isolated), normal);
+            }
+        }
+        assert_eq!(encryption_uri("file:///"), "file:///");
+        assert_eq!(
+            encryption_uri("file+comet-0123456789abcdef-hdfs:///"),
+            "file:///"
+        );
+        assert_eq!(
+            encryption_uri(
+                "abfss+comet-0123456789abcdef-native://container@account.dfs.core.windows.net/"
+            ),
+            "abfss://container@account.dfs.core.windows.net/"
+        );
+        // A physical custom scheme containing a similar, incomplete suffix is not
+        // itself a synthetic registration URL.
+        for scheme in ["custom+comet-name", "custom+comet-1234-native"] {
+            let normal = format!("{scheme}://bucket/");
+            assert_eq!(encryption_uri(&normal), normal);
+        }
+    }
+
+    /// End-to-end pin for the per-file datetime rebase (see `datetime_rebase.rs`): the parquet
+    /// footer's Spark writer metadata must survive DataFusion's opener into the expr adapter,
+    /// and the resulting scan must return rebased dates -- but ONLY when the arm opted in.
+    /// The hybrid day count a legacy writer stores for Julian `1500-01-01` is numerically the
+    /// proleptic day of `1500-01-10` (-171655); rebasing restores proleptic `1500-01-01`
+    /// (-171664), the exact 9-day shift of the silent-corruption repro.
+    async fn scan_legacy_date_file(rebase_from_file_metadata: bool) -> Vec<i32> {
+        let schema = Arc::new(Schema::new(vec![Field::new("d", DataType::Date32, false)]));
+        let batch = RecordBatch::try_new(
+            Arc::clone(&schema),
+            vec![Arc::new(Date32Array::from(vec![-171655, 0]))],
+        )
+        .unwrap();
+
+        let filename = get_temp_filename()
+            .as_path()
+            .as_os_str()
+            .to_str()
+            .unwrap()
+            .to_string();
+        let props = WriterProperties::builder()
+            .set_key_value_metadata(Some(vec![
+                KeyValue::new("org.apache.spark.version".to_string(), "3.5.9".to_string()),
+                KeyValue::new(
+                    "org.apache.spark.legacyDateTime".to_string(),
+                    "".to_string(),
+                ),
+                KeyValue::new("org.apache.spark.timeZone".to_string(), "UTC".to_string()),
+            ]))
+            .build();
+        let file = File::create(&filename).unwrap();
+        let mut writer = ArrowWriter::try_new(file, Arc::clone(&schema), Some(props)).unwrap();
+        writer.write(&batch).unwrap();
+        writer.close().unwrap();
+
+        let partitioned_file = PartitionedFile::from_path(filename).unwrap();
+        let session_ctx = Arc::new(SessionContext::new());
+        let scan = init_datasource_exec(
+            Arc::clone(&schema),
+            None,
+            None,
+            ObjectStoreUrl::local_filesystem(),
+            ObjectStoreBackend::Local,
+            vec![vec![partitioned_file]],
+            None,
+            None,
+            None,
+            "UTC",
+            true,
+            false,
+            false,
+            false,
+            &session_ctx,
+            false,
+            false,
+            false,
+            rebase_from_file_metadata,
+            "",
+            "",
+        )
+        .unwrap();
+
+        let mut values = Vec::new();
+        let mut stream = scan.execute(0, session_ctx.task_ctx()).unwrap();
+        while let Some(batch) = stream.next().await {
+            let batch = batch.unwrap();
+            let dates = batch
+                .column(0)
+                .as_any()
+                .downcast_ref::<Date32Array>()
+                .unwrap();
+            values.extend(dates.iter().map(|v| v.unwrap()));
+        }
+        values
+    }
+
+    #[tokio::test]
+    async fn rebases_legacy_dates_from_file_metadata_when_opted_in() {
+        assert_eq!(scan_legacy_date_file(true).await, vec![-171664, 0]);
+    }
+
+    #[tokio::test]
+    async fn keeps_no_rebase_behavior_when_not_opted_in() {
+        // NativeScan's documented behavior (#5010): the legacy flag is ignored and the raw
+        // day count comes back unchanged.
+        assert_eq!(scan_legacy_date_file(false).await, vec![-171655, 0]);
+    }
+
+    /// End-to-end pin for the session-read-mode fallback: a file with NO Spark writer metadata
+    /// (a non-Spark writer) resolves its rebase policy from the forwarded read modes --
+    /// `DataSourceUtils.getRebaseSpec`'s `modeByConfig` fallback -- which must survive
+    /// `init_datasource_exec` into the expr adapter.
+    async fn scan_no_metadata_date_file(datetime_rebase_mode: &str) -> Result<Vec<i32>, String> {
+        let schema = Arc::new(Schema::new(vec![Field::new("d", DataType::Date32, false)]));
+        let batch = RecordBatch::try_new(
+            Arc::clone(&schema),
+            vec![Arc::new(Date32Array::from(vec![-171655, 0]))],
+        )
+        .unwrap();
+
+        let filename = get_temp_filename()
+            .as_path()
+            .as_os_str()
+            .to_str()
+            .unwrap()
+            .to_string();
+        let file = File::create(&filename).unwrap();
+        let mut writer = ArrowWriter::try_new(file, Arc::clone(&schema), None).unwrap();
+        writer.write(&batch).unwrap();
+        writer.close().unwrap();
+
+        let partitioned_file = PartitionedFile::from_path(filename).unwrap();
+        let session_ctx = Arc::new(SessionContext::new());
+        let scan = init_datasource_exec(
+            Arc::clone(&schema),
+            None,
+            None,
+            ObjectStoreUrl::local_filesystem(),
+            ObjectStoreBackend::Local,
+            vec![vec![partitioned_file]],
+            None,
+            None,
+            None,
+            "UTC",
+            true,
+            false,
+            false,
+            false,
+            &session_ctx,
+            false,
+            false,
+            false,
+            true,
+            datetime_rebase_mode,
+            datetime_rebase_mode,
+        )
+        .unwrap();
+
+        let mut values = Vec::new();
+        let mut stream = scan.execute(0, session_ctx.task_ctx()).unwrap();
+        while let Some(batch) = stream.next().await {
+            let batch = batch.map_err(|e| e.to_string())?;
+            let dates = batch
+                .column(0)
+                .as_any()
+                .downcast_ref::<Date32Array>()
+                .unwrap();
+            values.extend(dates.iter().map(|v| v.unwrap()));
+        }
+        Ok(values)
+    }
+
+    #[tokio::test]
+    async fn non_spark_file_reads_ancient_dates_verbatim_under_corrected_read_mode() {
+        // Spark 4.0's default read mode: values pass through untouched, ancient included.
+        assert_eq!(
+            scan_no_metadata_date_file("CORRECTED").await.unwrap(),
+            vec![-171655, 0]
+        );
+    }
+
+    #[tokio::test]
+    async fn non_spark_file_rebases_ancient_dates_under_legacy_read_mode() {
+        // LEGACY read mode: the stored hybrid-calendar day count rebases to proleptic
+        // Gregorian (dates are zone-free, so the full rebase applies).
+        assert_eq!(
+            scan_no_metadata_date_file("LEGACY").await.unwrap(),
+            vec![-171664, 0]
+        );
+    }
+
+    #[tokio::test]
+    async fn non_spark_file_refuses_ancient_dates_under_default_read_mode() {
+        // An empty mode (older proto producer) keeps the conservative EXCEPTION posture.
+        let err = scan_no_metadata_date_file("").await.unwrap_err();
+        assert!(err.contains("rebase"), "unexpected error: {err}");
+    }
+
+    /// Writes a metadata-free parquet file with one INT64 `TIMESTAMP_MICROS` column (`ts`) and
+    /// one INT96 column (`ts96`) through the low-level writer (arrow's writer cannot emit
+    /// INT96), then scans it with the given session read modes. `int96_days` is the day count
+    /// since the epoch the INT96 value nominally encodes (its Julian Day Number is
+    /// `2440588 + int96_days`). Returns the two values of the single row.
+    async fn scan_int96_and_int64_file(
+        int64_micros: i64,
+        int96_days: i32,
+        datetime_rebase_mode: &str,
+        int96_rebase_mode: &str,
+    ) -> Result<(i64, i64), String> {
+        use parquet::data_type::{Int64Type, Int96, Int96Type};
+        use parquet::file::writer::SerializedFileWriter;
+        use parquet::schema::parser::parse_message_type;
+
+        let filename = get_temp_filename()
+            .as_path()
+            .as_os_str()
+            .to_str()
+            .unwrap()
+            .to_string();
+        let parquet_schema = Arc::new(
+            parse_message_type(
+                "message m { required int64 ts (TIMESTAMP(MICROS,true)); required int96 ts96; }",
+            )
+            .unwrap(),
+        );
+        let file = File::create(&filename).unwrap();
+        let mut writer =
+            SerializedFileWriter::new(file, parquet_schema, Arc::new(WriterProperties::default()))
+                .unwrap();
+        let mut row_group = writer.next_row_group().unwrap();
+        let mut col = row_group.next_column().unwrap().unwrap();
+        col.typed::<Int64Type>()
+            .write_batch(&[int64_micros], None, None)
+            .unwrap();
+        col.close().unwrap();
+        let mut col = row_group.next_column().unwrap().unwrap();
+        let mut int96 = Int96::new();
+        int96.set_data(0, 0, (2_440_588 + int96_days as i64) as u32);
+        col.typed::<Int96Type>()
+            .write_batch(&[int96], None, None)
+            .unwrap();
+        col.close().unwrap();
+        row_group.close().unwrap();
+        writer.close().unwrap();
+
+        let ts_type =
+            DataType::Timestamp(arrow::datatypes::TimeUnit::Microsecond, Some("UTC".into()));
+        let schema = Arc::new(Schema::new(vec![
+            Field::new("ts", ts_type.clone(), false),
+            Field::new("ts96", ts_type, false),
+        ]));
+        let partitioned_file = PartitionedFile::from_path(filename).unwrap();
+        let session_ctx = Arc::new(SessionContext::new());
+        let scan = init_datasource_exec(
+            Arc::clone(&schema),
+            None,
+            None,
+            ObjectStoreUrl::local_filesystem(),
+            ObjectStoreBackend::Local,
+            vec![vec![partitioned_file]],
+            None,
+            None,
+            None,
+            "UTC",
+            true,
+            false,
+            false,
+            false,
+            &session_ctx,
+            false,
+            false,
+            false,
+            true,
+            datetime_rebase_mode,
+            int96_rebase_mode,
+        )
+        .unwrap();
+
+        let mut stream = scan.execute(0, session_ctx.task_ctx()).unwrap();
+        let mut values = Vec::new();
+        while let Some(batch) = stream.next().await {
+            let batch = batch.map_err(|e| e.to_string())?;
+            let ts = batch
+                .column(0)
+                .as_any()
+                .downcast_ref::<arrow::array::TimestampMicrosecondArray>()
+                .unwrap();
+            let ts96 = batch
+                .column(1)
+                .as_any()
+                .downcast_ref::<arrow::array::TimestampMicrosecondArray>()
+                .unwrap();
+            values.extend(
+                ts.values()
+                    .iter()
+                    .zip(ts96.values().iter())
+                    .map(|(a, b)| (*a, *b)),
+            );
+        }
+        assert_eq!(values.len(), 1);
+        Ok(values[0])
+    }
+
+    /// Proleptic `1500-01-01T00:00:00Z` in days / micros since the epoch.
+    const ANCIENT_DAYS: i32 = -171_664;
+    const ANCIENT_MICROS: i64 = ANCIENT_DAYS as i64 * 86_400_000_000;
+
+    #[tokio::test]
+    async fn int64_timestamps_follow_the_datetime_spec_when_the_int96_spec_differs() {
+        // Spark selects `datetimeRebaseSpec` for INT64 MICROS/MILLIS columns and `int96RebaseSpec`
+        // only for INT96 columns: under datetime CORRECTED + int96 EXCEPTION, an ancient INT64
+        // timestamp reads verbatim even though the INT96 spec would refuse an ancient INT96
+        // value. The INT96 column here holds a modern value, so the whole row must read.
+        assert_eq!(
+            scan_int96_and_int64_file(ANCIENT_MICROS, 0, "CORRECTED", "EXCEPTION")
+                .await
+                .unwrap(),
+            (ANCIENT_MICROS, 0)
+        );
+    }
+
+    #[tokio::test]
+    async fn int96_timestamps_follow_the_int96_spec() {
+        // Same modes, ancient INT96 value: the INT96 spec (EXCEPTION) refuses it, naming the
+        // INT96 column -- not the INT64 one, which is fine under CORRECTED.
+        let err = scan_int96_and_int64_file(0, ANCIENT_DAYS, "CORRECTED", "EXCEPTION")
+            .await
+            .unwrap_err();
+        assert!(err.contains("rebase"), "unexpected error: {err}");
+        assert!(err.contains("'ts96'"), "unexpected error: {err}");
+
+        // Mirror image: datetime EXCEPTION + int96 CORRECTED reads an ancient INT96 value
+        // verbatim while a modern INT64 value passes the check.
+        assert_eq!(
+            scan_int96_and_int64_file(0, ANCIENT_DAYS, "EXCEPTION", "CORRECTED")
+                .await
+                .unwrap(),
+            (0, ANCIENT_MICROS)
+        );
+    }
+
+    /// The one value of a raw timestamp column, written through the low-level writer.
+    enum RawTimestamp {
+        Int64(i64),
+        /// Midnight of the day with this Julian Day Number, INT96-encoded.
+        Int96Midnight(u32),
+    }
+
+    /// Writes a parquet file holding the single column `ts` of `message_type` (footer key-value
+    /// pairs from `key_values`, none by default: a non-Spark writer) with the one value
+    /// `value`, then scans it with `ts` requested as `requested` under the given session read
+    /// modes. Returns the column's microsecond values.
+    async fn scan_single_timestamp_column(
+        message_type: &str,
+        value: RawTimestamp,
+        key_values: Option<Vec<KeyValue>>,
+        requested: DataType,
+        allow_timestamp_ltz_to_ntz: bool,
+        datetime_rebase_mode: &str,
+        int96_rebase_mode: &str,
+    ) -> Result<Vec<i64>, String> {
+        use parquet::data_type::{Int64Type, Int96, Int96Type};
+        use parquet::file::writer::SerializedFileWriter;
+        use parquet::schema::parser::parse_message_type;
+
+        let filename = get_temp_filename()
+            .as_path()
+            .as_os_str()
+            .to_str()
+            .unwrap()
+            .to_string();
+        let parquet_schema = Arc::new(parse_message_type(message_type).unwrap());
+        let props = WriterProperties::builder()
+            .set_key_value_metadata(key_values)
+            .build();
+        let file = File::create(&filename).unwrap();
+        let mut writer = SerializedFileWriter::new(file, parquet_schema, Arc::new(props)).unwrap();
+        let mut row_group = writer.next_row_group().unwrap();
+        let mut col = row_group.next_column().unwrap().unwrap();
+        match value {
+            RawTimestamp::Int64(micros) => {
+                col.typed::<Int64Type>()
+                    .write_batch(&[micros], None, None)
+                    .unwrap();
+            }
+            RawTimestamp::Int96Midnight(julian_day) => {
+                let mut int96 = Int96::new();
+                int96.set_data(0, 0, julian_day);
+                col.typed::<Int96Type>()
+                    .write_batch(&[int96], None, None)
+                    .unwrap();
+            }
+        }
+        col.close().unwrap();
+        row_group.close().unwrap();
+        writer.close().unwrap();
+
+        let schema = Arc::new(Schema::new(vec![Field::new("ts", requested, false)]));
+        let partitioned_file = PartitionedFile::from_path(filename).unwrap();
+        let session_ctx = Arc::new(SessionContext::new());
+        let scan = init_datasource_exec(
+            Arc::clone(&schema),
+            None,
+            None,
+            ObjectStoreUrl::local_filesystem(),
+            ObjectStoreBackend::Local,
+            vec![vec![partitioned_file]],
+            None,
+            None,
+            None,
+            "UTC",
+            true,
+            false,
+            false,
+            allow_timestamp_ltz_to_ntz,
+            &session_ctx,
+            false,
+            false,
+            false,
+            true,
+            datetime_rebase_mode,
+            int96_rebase_mode,
+        )
+        .unwrap();
+
+        let mut stream = scan.execute(0, session_ctx.task_ctx()).unwrap();
+        let mut values = Vec::new();
+        while let Some(batch) = stream.next().await {
+            let batch = batch.map_err(|e| e.to_string())?;
+            let ts = batch
+                .column(0)
+                .as_any()
+                .downcast_ref::<arrow::array::TimestampMicrosecondArray>()
+                .unwrap();
+            values.extend(ts.values().iter().copied());
+        }
+        Ok(values)
+    }
+
+    /// Julian `1500-01-01T00:00:00` as a legacy writer stores it: the hybrid day count is
+    /// numerically the proleptic day of `1500-01-10`, so a UTC rebase restores `ANCIENT_MICROS`.
+    const HYBRID_1500_MICROS: i64 = -171_655 * 86_400_000_000;
+    /// Proleptic `1800-01-01T00:00:00Z` as a Julian Day Number and in micros since the epoch:
+    /// 62091 days before the epoch, ancient by Spark's 1900-01-01 timestamp cutoff.
+    const JDN_1800_01_01: u32 = 2_378_497;
+    const MICROS_1800_01_01: i64 = (JDN_1800_01_01 as i64 - 2_440_588) * 86_400_000_000;
+
+    const TZ_FREE_INT64_MICROS: &str = "message m { required int64 ts (TIMESTAMP(MICROS,false)); }";
+    const ADJUSTED_INT64_MICROS: &str = "message m { required int64 ts (TIMESTAMP(MICROS,true)); }";
+    const INT96: &str = "message m { required int96 ts; }";
+
+    fn ltz_micros() -> DataType {
+        DataType::Timestamp(arrow::datatypes::TimeUnit::Microsecond, Some("UTC".into()))
+    }
+
+    fn ntz_micros() -> DataType {
+        DataType::Timestamp(arrow::datatypes::TimeUnit::Microsecond, None)
+    }
+
+    #[tokio::test]
+    async fn tz_free_int64_timestamps_requested_as_ltz_follow_the_datetime_spec() {
+        // Spark's INT64 branch keys on the requested type and checks only the unit
+        // (isTimestampTypeMatched), so a TIMESTAMP(MICROS, isAdjustedToUTC=false) column read
+        // as TIMESTAMP takes LongWithRebaseUpdater under the datetime spec: EXCEPTION refuses
+        // the ancient value, CORRECTED passes it verbatim, and LEGACY rebases it (exactly with
+        // a UTC writer zone, refused without one, since the JVM default zone is unknown here).
+        let err = scan_single_timestamp_column(
+            TZ_FREE_INT64_MICROS,
+            RawTimestamp::Int64(HYBRID_1500_MICROS),
+            None,
+            ltz_micros(),
+            false,
+            "EXCEPTION",
+            "CORRECTED",
+        )
+        .await
+        .unwrap_err();
+        assert!(err.contains("rebase"), "unexpected error: {err}");
+        assert!(err.contains("'ts'"), "unexpected error: {err}");
+
+        assert_eq!(
+            scan_single_timestamp_column(
+                TZ_FREE_INT64_MICROS,
+                RawTimestamp::Int64(HYBRID_1500_MICROS),
+                None,
+                ltz_micros(),
+                false,
+                "CORRECTED",
+                "EXCEPTION",
+            )
+            .await
+            .unwrap(),
+            vec![HYBRID_1500_MICROS]
+        );
+
+        let err = scan_single_timestamp_column(
+            TZ_FREE_INT64_MICROS,
+            RawTimestamp::Int64(HYBRID_1500_MICROS),
+            None,
+            ltz_micros(),
+            false,
+            "LEGACY",
+            "CORRECTED",
+        )
+        .await
+        .unwrap_err();
+        assert!(err.contains("timezone tables"), "unexpected error: {err}");
+
+        assert_eq!(
+            scan_single_timestamp_column(
+                TZ_FREE_INT64_MICROS,
+                RawTimestamp::Int64(HYBRID_1500_MICROS),
+                Some(vec![KeyValue::new(
+                    "org.apache.spark.timeZone".to_string(),
+                    "UTC".to_string(),
+                )]),
+                ltz_micros(),
+                false,
+                "LEGACY",
+                "CORRECTED",
+            )
+            .await
+            .unwrap(),
+            vec![ANCIENT_MICROS]
+        );
+
+        // Read as TIMESTAMP_NTZ, the same column takes LongUpdater: no rebase in any mode.
+        assert_eq!(
+            scan_single_timestamp_column(
+                TZ_FREE_INT64_MICROS,
+                RawTimestamp::Int64(HYBRID_1500_MICROS),
+                None,
+                ntz_micros(),
+                false,
+                "EXCEPTION",
+                "EXCEPTION",
+            )
+            .await
+            .unwrap(),
+            vec![HYBRID_1500_MICROS]
+        );
+    }
+
+    #[tokio::test]
+    async fn timestamps_requested_as_ntz_are_never_rebased() {
+        // Spark 4.x reads an INT96 column as TIMESTAMP_NTZ through BinaryToSQLTimestampUpdater
+        // and an adjusted INT64 column through LongUpdater; neither consults a rebase mode
+        // (Spark 3.x refuses the pairing before any rebase decision, which Comet's
+        // allow_timestamp_ltz_to_ntz gate reproduces).
+        for (datetime_mode, int96_mode) in [
+            ("EXCEPTION", "EXCEPTION"),
+            ("CORRECTED", "CORRECTED"),
+            ("LEGACY", "LEGACY"),
+        ] {
+            assert_eq!(
+                scan_single_timestamp_column(
+                    INT96,
+                    RawTimestamp::Int96Midnight(JDN_1800_01_01),
+                    None,
+                    ntz_micros(),
+                    true,
+                    datetime_mode,
+                    int96_mode,
+                )
+                .await
+                .unwrap_or_else(|e| panic!("{datetime_mode}/{int96_mode}: {e}")),
+                vec![MICROS_1800_01_01],
+                "{datetime_mode}/{int96_mode}"
+            );
+        }
+        assert_eq!(
+            scan_single_timestamp_column(
+                ADJUSTED_INT64_MICROS,
+                RawTimestamp::Int64(ANCIENT_MICROS),
+                None,
+                ntz_micros(),
+                true,
+                "EXCEPTION",
+                "EXCEPTION",
+            )
+            .await
+            .unwrap(),
+            vec![ANCIENT_MICROS]
+        );
+    }
 
     // Regression test for #4990: a fresh `TableParquetOptions::new()` ignored session-level
     // `datafusion.execution.parquet.*` settings entirely, so `spark.comet.datafusion.
@@ -395,6 +1279,7 @@ mod tests {
             None,
             None,
             ObjectStoreUrl::local_filesystem(),
+            ObjectStoreBackend::Local,
             vec![vec![partitioned_file]],
             None,
             None,
@@ -408,6 +1293,9 @@ mod tests {
             false,
             false,
             false,
+            false,
+            "",
+            "",
         )
         .unwrap();
 
@@ -436,5 +1324,791 @@ mod tests {
             parquet_meta.column_index().is_some() && parquet_meta.offset_index().is_some(),
             "cached metadata must include the page index"
         );
+    }
+
+    #[tokio::test]
+    async fn reports_cold_and_warm_metadata_io_without_data_reads() {
+        let (filename, _schema) = write_scan_io_fixture();
+        let file_bytes = std::fs::read(&filename).unwrap();
+        let footer_bytes = usize::try_from(u32::from_le_bytes(
+            file_bytes[file_bytes.len() - 8..file_bytes.len() - 4]
+                .try_into()
+                .unwrap(),
+        ))
+        .unwrap();
+        let partitioned_file = PartitionedFile::from_path(filename).unwrap();
+        let session_ctx = Arc::new(SessionContext::new());
+        let runtime_env = session_ctx.runtime_env();
+        let store = runtime_env
+            .object_store(ObjectStoreUrl::local_filesystem())
+            .unwrap();
+        let cold_metrics = ExecutionPlanMetricsSet::new();
+        let metadata_cache = runtime_env.cache_manager.get_file_metadata_cache();
+        let cold_factory = EagerPageIndexReaderFactory::new(
+            Arc::clone(&store),
+            Arc::clone(&metadata_cache),
+            ScanIoSource::Local,
+            &cold_metrics,
+        );
+        let mut cold_reader = cold_factory
+            .create_reader(0, partitioned_file.clone(), Some(512 * 1024), &cold_metrics)
+            .unwrap();
+        cold_reader.get_metadata(None).await.unwrap();
+
+        let cold_metadata_bytes = reader_metric(&cold_metrics, "scan_io_metadata_bytes");
+        assert!(cold_metadata_bytes > footer_bytes);
+        assert_eq!(reader_metric(&cold_metrics, "scan_io_data_bytes"), 0);
+        assert_eq!(reader_metric(&cold_metrics, "scan_io_footer_reads"), 1);
+        assert_eq!(
+            reader_metric(&cold_metrics, "scan_io_footer_bytes"),
+            footer_bytes
+        );
+        assert_eq!(
+            reader_metric(&cold_metrics, "scan_io_object_store_get_calls"),
+            0
+        );
+        assert_eq!(
+            reader_metric(&cold_metrics, "scan_io_object_store_get_requested_bytes"),
+            0
+        );
+        assert_eq!(
+            reader_metric(&cold_metrics, "scan_io_object_store_response_bytes_read"),
+            0
+        );
+        assert_eq!(
+            reader_metric(&cold_metrics, "scan_io_metadata_cache_hits"),
+            0
+        );
+        assert_eq!(
+            reader_metric(&cold_metrics, "scan_io_metadata_cache_misses"),
+            1
+        );
+
+        let warm_metrics = ExecutionPlanMetricsSet::new();
+        let warm_factory = EagerPageIndexReaderFactory::new(
+            store,
+            metadata_cache,
+            ScanIoSource::Local,
+            &warm_metrics,
+        );
+        let mut warm_reader = warm_factory
+            .create_reader(0, partitioned_file, Some(512 * 1024), &warm_metrics)
+            .unwrap();
+        warm_reader.get_metadata(None).await.unwrap();
+
+        assert_eq!(reader_metric(&warm_metrics, "scan_io_metadata_bytes"), 0);
+        assert_eq!(reader_metric(&warm_metrics, "scan_io_footer_reads"), 0);
+        assert_eq!(reader_metric(&warm_metrics, "scan_io_footer_bytes"), 0);
+        assert_eq!(
+            reader_metric(&warm_metrics, "scan_io_metadata_cache_hits"),
+            1
+        );
+        assert_eq!(
+            reader_metric(&warm_metrics, "scan_io_metadata_cache_misses"),
+            0
+        );
+    }
+
+    #[tokio::test]
+    async fn upgrades_partial_cached_metadata_with_local_direct_reads() {
+        let (filename, _schema) = write_scan_io_fixture();
+        let partitioned_file = PartitionedFile::from_path(filename).unwrap();
+        let session_ctx = Arc::new(SessionContext::new());
+        let runtime_env = session_ctx.runtime_env();
+        let store = runtime_env
+            .object_store(ObjectStoreUrl::local_filesystem())
+            .unwrap();
+        let metadata_cache = runtime_env.cache_manager.get_file_metadata_cache();
+        let footer_metadata = DFParquetMetadata::new(store.as_ref(), &partitioned_file.object_meta)
+            .with_page_index_policy(Some(PageIndexPolicy::Skip))
+            .fetch_metadata()
+            .await
+            .unwrap();
+        assert!(footer_metadata.column_index().is_none());
+        assert!(footer_metadata.offset_index().is_none());
+        metadata_cache.put(
+            &partitioned_file.object_meta.location,
+            CachedFileMetadataEntry::new(
+                partitioned_file.object_meta.clone(),
+                Arc::new(CachedParquetMetaData::new(footer_metadata)),
+            ),
+        );
+
+        let metrics = ExecutionPlanMetricsSet::new();
+        let factory =
+            EagerPageIndexReaderFactory::new(store, metadata_cache, ScanIoSource::Local, &metrics);
+        let mut reader = factory
+            .create_reader(0, partitioned_file, Some(512 * 1024), &metrics)
+            .unwrap();
+        let metadata = reader.get_metadata(None).await.unwrap();
+
+        assert!(metadata.column_index().is_some());
+        assert!(metadata.offset_index().is_some());
+        let metadata_bytes = reader_metric(&metrics, "scan_io_metadata_bytes");
+        assert!(metadata_bytes > 0);
+        assert_eq!(reader_metric(&metrics, "scan_io_data_bytes"), 0);
+        assert_eq!(reader_metric(&metrics, "scan_io_footer_reads"), 0);
+        assert_eq!(reader_metric(&metrics, "scan_io_footer_bytes"), 0);
+        assert_eq!(reader_metric(&metrics, "scan_io_metadata_cache_hits"), 0);
+        assert_eq!(reader_metric(&metrics, "scan_io_metadata_cache_misses"), 1);
+
+        let column = metadata.row_group(0).column(0);
+        let page_index_offset = u64::try_from(column.column_index_offset().unwrap()).unwrap();
+        let page_index_length = u64::try_from(column.column_index_length().unwrap()).unwrap();
+        reader
+            .get_bytes(page_index_offset..page_index_offset + page_index_length)
+            .await
+            .unwrap();
+        assert_eq!(
+            reader_metric(&metrics, "scan_io_metadata_bytes"),
+            metadata_bytes + page_index_length as usize
+        );
+        assert_eq!(reader_metric(&metrics, "scan_io_data_bytes"), 0);
+    }
+
+    #[test]
+    fn registers_scan_io_metrics_once_per_execution_plan() {
+        let (filename, _schema) = write_scan_io_fixture();
+        let partitioned_file = PartitionedFile::from_path(filename).unwrap();
+        let session_ctx = Arc::new(SessionContext::new());
+        let runtime_env = session_ctx.runtime_env();
+        let store = runtime_env
+            .object_store(ObjectStoreUrl::local_filesystem())
+            .unwrap();
+        let metadata_cache = runtime_env.cache_manager.get_file_metadata_cache();
+        let metrics = ExecutionPlanMetricsSet::new();
+        let factory =
+            EagerPageIndexReaderFactory::new(store, metadata_cache, ScanIoSource::Local, &metrics);
+
+        for partition in 0..8 {
+            factory
+                .create_reader(partition, partitioned_file.clone(), None, &metrics)
+                .unwrap();
+        }
+
+        let registered_metrics = metrics.clone_inner();
+        let scan_io_metrics = registered_metrics
+            .iter()
+            .filter(|metric| metric.value().name().starts_with("scan_io_"))
+            .collect::<Vec<_>>();
+        assert_eq!(scan_io_metrics.len(), 11);
+        for metric in scan_io_metrics {
+            assert!(metric.labels().is_empty());
+            assert_eq!(metric.partition(), None);
+        }
+    }
+
+    #[tokio::test]
+    async fn reports_object_store_read_amplification_after_range_coalescing() {
+        let file_size = 524_416;
+        let location = object_store::path::Path::from("coalesced.parquet");
+        let store: Arc<dyn ObjectStore> = Arc::new(InMemory::new());
+        store
+            .put(&location, Bytes::from(vec![0; file_size]).into())
+            .await
+            .unwrap();
+
+        let session_ctx = Arc::new(SessionContext::new());
+        let metadata_cache = session_ctx
+            .runtime_env()
+            .cache_manager
+            .get_file_metadata_cache();
+        let metrics = ExecutionPlanMetricsSet::new();
+        let factory = EagerPageIndexReaderFactory::new(
+            store,
+            metadata_cache,
+            ScanIoSource::ObjectStore,
+            &metrics,
+        );
+        let mut reader = factory
+            .create_reader(
+                0,
+                PartitionedFile::new(location.to_string(), file_size as u64),
+                None,
+                &metrics,
+            )
+            .unwrap();
+        let buffers = reader
+            .get_byte_ranges(vec![0..64, 524_352..524_416])
+            .await
+            .unwrap();
+
+        assert_eq!(buffers.iter().map(Bytes::len).sum::<usize>(), 128);
+        assert_eq!(reader_metric(&metrics, "bytes_scanned"), 128);
+        assert_eq!(reader_metric(&metrics, "scan_io_data_bytes"), 128);
+        assert_eq!(reader_metric(&metrics, "scan_io_metadata_bytes"), 0);
+        assert_eq!(reader_metric(&metrics, "scan_io_object_store_get_calls"), 1);
+        // Logical GETs do not imply coverage by the S3 HTTP connector.
+        assert_eq!(reader_metric(&metrics, "scan_io_http_observed_gets"), 0);
+        assert_eq!(reader_metric(&metrics, "scan_io_http_retries"), 0);
+        assert_eq!(
+            reader_metric(&metrics, "scan_io_object_store_get_requested_bytes"),
+            file_size
+        );
+        assert_eq!(
+            reader_metric(&metrics, "scan_io_object_store_response_bytes_read"),
+            file_size
+        );
+    }
+
+    #[tokio::test]
+    async fn reports_object_store_footer_and_metadata_reads() {
+        let (filename, _schema) = write_scan_io_fixture();
+        let file_bytes = std::fs::read(filename).unwrap();
+        let file_size = file_bytes.len();
+        let footer_bytes = usize::try_from(u32::from_le_bytes(
+            file_bytes[file_size - 8..file_size - 4].try_into().unwrap(),
+        ))
+        .unwrap();
+        let location = object_store::path::Path::from("footer.parquet");
+        let store: Arc<dyn ObjectStore> = Arc::new(InMemory::new());
+        store
+            .put(&location, Bytes::from(file_bytes).into())
+            .await
+            .unwrap();
+
+        let session_ctx = Arc::new(SessionContext::new());
+        let metadata_cache = session_ctx
+            .runtime_env()
+            .cache_manager
+            .get_file_metadata_cache();
+        let metrics = ExecutionPlanMetricsSet::new();
+        let factory = EagerPageIndexReaderFactory::new(
+            store,
+            metadata_cache,
+            ScanIoSource::ObjectStore,
+            &metrics,
+        );
+        let mut reader = factory
+            .create_reader(
+                0,
+                PartitionedFile::new(location.to_string(), file_size as u64),
+                Some(512 * 1024),
+                &metrics,
+            )
+            .unwrap();
+        reader.get_metadata(None).await.unwrap();
+
+        assert_eq!(reader_metric(&metrics, "scan_io_data_bytes"), 0);
+        assert_eq!(reader_metric(&metrics, "scan_io_metadata_bytes"), file_size);
+        assert_eq!(reader_metric(&metrics, "scan_io_footer_reads"), 1);
+        assert_eq!(
+            reader_metric(&metrics, "scan_io_footer_bytes"),
+            footer_bytes
+        );
+        assert_eq!(reader_metric(&metrics, "scan_io_object_store_get_calls"), 1);
+        assert_eq!(
+            reader_metric(&metrics, "scan_io_object_store_get_requested_bytes"),
+            file_size
+        );
+        assert_eq!(
+            reader_metric(&metrics, "scan_io_object_store_response_bytes_read"),
+            file_size
+        );
+        assert_eq!(reader_metric(&metrics, "scan_io_metadata_cache_misses"), 1);
+    }
+
+    #[tokio::test]
+    async fn reports_plaintext_footer_before_page_index_read() {
+        let (filename, _schema) = write_scan_io_fixture();
+        let file_bytes = std::fs::read(filename).unwrap();
+        let file_size = file_bytes.len();
+        let footer_bytes = usize::try_from(u32::from_le_bytes(
+            file_bytes[file_size - 8..file_size - 4].try_into().unwrap(),
+        ))
+        .unwrap();
+        let location = object_store::path::Path::from("plaintext-footer.parquet");
+        let store: Arc<dyn ObjectStore> = Arc::new(ThrottledStore::new(
+            InMemory::new(),
+            ThrottleConfig {
+                wait_get_per_call: Duration::from_millis(10),
+                ..Default::default()
+            },
+        ));
+        store
+            .put(&location, Bytes::from(file_bytes).into())
+            .await
+            .unwrap();
+
+        let session_ctx = Arc::new(SessionContext::new());
+        let metadata_cache = session_ctx
+            .runtime_env()
+            .cache_manager
+            .get_file_metadata_cache();
+        let metrics = ExecutionPlanMetricsSet::new();
+        let factory = EagerPageIndexReaderFactory::new(
+            store,
+            metadata_cache,
+            ScanIoSource::ObjectStore,
+            &metrics,
+        );
+        let mut reader = factory
+            .create_reader(
+                0,
+                PartitionedFile::new(location.to_string(), file_size as u64),
+                Some(footer_bytes + 8),
+                &metrics,
+            )
+            .unwrap();
+        let metadata = reader.get_metadata(None);
+        tokio::pin!(metadata);
+
+        tokio::select! {
+            result = &mut metadata => {
+                panic!("metadata load completed before the page-index read: {result:?}");
+            }
+            () = async {
+                while reader_metric(&metrics, "scan_io_object_store_get_calls") < 2 {
+                    tokio::task::yield_now().await;
+                }
+            } => {
+                assert_eq!(reader_metric(&metrics, "scan_io_footer_reads"), 1);
+                assert_eq!(reader_metric(&metrics, "scan_io_footer_bytes"), footer_bytes);
+            }
+        }
+
+        metadata.await.unwrap();
+        assert_eq!(reader_metric(&metrics, "scan_io_footer_reads"), 1);
+        assert_eq!(
+            reader_metric(&metrics, "scan_io_footer_bytes"),
+            footer_bytes
+        );
+    }
+
+    #[tokio::test]
+    async fn reports_plaintext_footer_when_prefetched_page_index_is_invalid() {
+        let (filename, _schema) = write_scan_io_fixture();
+        let mut file_bytes = std::fs::read(filename).unwrap();
+        let file_size = file_bytes.len();
+        let footer_bytes = usize::try_from(u32::from_le_bytes(
+            file_bytes[file_size - 8..file_size - 4].try_into().unwrap(),
+        ))
+        .unwrap();
+        let footer_start = file_size - 8 - footer_bytes;
+        let footer =
+            ParquetMetaDataReader::decode_metadata(&file_bytes[footer_start..file_size - 8])
+                .unwrap();
+        let column = footer.row_group(0).column(0);
+        let index_start = usize::try_from(column.column_index_offset().unwrap()).unwrap();
+        let index_bytes = usize::try_from(column.column_index_length().unwrap()).unwrap();
+        file_bytes[index_start..index_start + index_bytes].fill(0xff);
+
+        let location = object_store::path::Path::from("invalid-prefetched-page-index.parquet");
+        let store: Arc<dyn ObjectStore> = Arc::new(InMemory::new());
+        store
+            .put(&location, Bytes::from(file_bytes).into())
+            .await
+            .unwrap();
+
+        let session_ctx = Arc::new(SessionContext::new());
+        let metadata_cache = session_ctx
+            .runtime_env()
+            .cache_manager
+            .get_file_metadata_cache();
+        let metrics = ExecutionPlanMetricsSet::new();
+        let factory = EagerPageIndexReaderFactory::new(
+            store,
+            metadata_cache,
+            ScanIoSource::ObjectStore,
+            &metrics,
+        );
+        let mut reader = factory
+            .create_reader(
+                0,
+                PartitionedFile::new(location.to_string(), file_size as u64),
+                Some(512 * 1024),
+                &metrics,
+            )
+            .unwrap();
+
+        assert!(reader.get_metadata(None).await.is_err());
+        assert_eq!(reader_metric(&metrics, "scan_io_metadata_bytes"), file_size);
+        assert_eq!(reader_metric(&metrics, "scan_io_object_store_get_calls"), 1);
+        assert_eq!(reader_metric(&metrics, "scan_io_footer_reads"), 1);
+        assert_eq!(
+            reader_metric(&metrics, "scan_io_footer_bytes"),
+            footer_bytes
+        );
+    }
+
+    #[tokio::test]
+    async fn reports_encrypted_footer_before_key_retrieval() {
+        assert_encrypted_footer_before_key_retrieval(0, false).await;
+    }
+
+    #[tokio::test]
+    async fn does_not_report_encrypted_footer_before_payload_is_read() {
+        assert_encrypted_footer_before_key_retrieval(512 * 1024, false).await;
+    }
+
+    #[tokio::test]
+    async fn counts_complete_encrypted_footer_even_when_authentication_fails() {
+        assert_encrypted_footer_before_key_retrieval(0, true).await;
+    }
+
+    async fn assert_encrypted_footer_before_key_retrieval(footer_padding: usize, corrupt: bool) {
+        struct ObservingKeyRetriever {
+            key: Vec<u8>,
+            metrics: Arc<ExecutionPlanMetricsSet>,
+            footer_bytes: usize,
+        }
+
+        impl KeyRetriever for ObservingKeyRetriever {
+            fn retrieve_key(&self, _key_metadata: &[u8]) -> parquet::errors::Result<Vec<u8>> {
+                assert_eq!(reader_metric(&self.metrics, "scan_io_footer_reads"), 1);
+                assert_eq!(
+                    reader_metric(&self.metrics, "scan_io_footer_bytes"),
+                    self.footer_bytes
+                );
+                Ok(self.key.clone())
+            }
+        }
+
+        let key = b"0123456789012345".to_vec();
+        let encryption = FileEncryptionProperties::builder(key.clone())
+            .with_footer_key_metadata(b"footer".to_vec())
+            .build()
+            .unwrap();
+        let properties = WriterProperties::builder()
+            .with_file_encryption_properties(encryption)
+            .set_key_value_metadata((footer_padding > 0).then(|| {
+                vec![KeyValue::new(
+                    "padding".to_string(),
+                    "x".repeat(footer_padding),
+                )]
+            }))
+            .build();
+        let schema = Arc::new(Schema::new(vec![Field::new("a", DataType::Int32, false)]));
+        let batch = RecordBatch::try_new(
+            Arc::clone(&schema),
+            vec![Arc::new(Int32Array::from(vec![1, 2, 3]))],
+        )
+        .unwrap();
+        let filename = get_temp_filename();
+        let mut writer =
+            ArrowWriter::try_new(File::create(&filename).unwrap(), schema, Some(properties))
+                .unwrap();
+        writer.write(&batch).unwrap();
+        writer.close().unwrap();
+
+        let mut file_bytes = std::fs::read(&filename).unwrap();
+        let file_size = file_bytes.len();
+        let footer_bytes = usize::try_from(u32::from_le_bytes(
+            file_bytes[file_size - 8..file_size - 4].try_into().unwrap(),
+        ))
+        .unwrap();
+        let location = object_store::path::Path::from("encrypted-footer.parquet");
+        if corrupt {
+            // Corrupt the encrypted payload's authentication tag, preserving its length/trailer
+            // and key metadata. Complete I/O is counted before decryption is attempted.
+            file_bytes[file_size - 9] ^= 1;
+        }
+        let store: Arc<dyn ObjectStore> = if footer_padding > 0 {
+            assert!(footer_bytes > 512 * 1024);
+            Arc::new(ThrottledStore::new(
+                InMemory::new(),
+                ThrottleConfig {
+                    wait_get_per_call: Duration::from_millis(10),
+                    ..Default::default()
+                },
+            ))
+        } else {
+            Arc::new(InMemory::new())
+        };
+        store
+            .put(&location, Bytes::from(file_bytes).into())
+            .await
+            .unwrap();
+
+        let session_ctx = Arc::new(SessionContext::new());
+        let metadata_cache = session_ctx
+            .runtime_env()
+            .cache_manager
+            .get_file_metadata_cache();
+        let metrics = Arc::new(ExecutionPlanMetricsSet::new());
+        let factory = EagerPageIndexReaderFactory::new(
+            store,
+            metadata_cache,
+            ScanIoSource::ObjectStore,
+            &metrics,
+        );
+        let mut reader = factory
+            .create_reader(
+                0,
+                PartitionedFile::new(location.to_string(), file_size as u64),
+                Some(512 * 1024),
+                &metrics,
+            )
+            .unwrap();
+        let decryption =
+            FileDecryptionProperties::with_key_retriever(Arc::new(ObservingKeyRetriever {
+                key,
+                metrics: Arc::clone(&metrics),
+                footer_bytes,
+            }))
+            .build()
+            .unwrap();
+        let options = ArrowReaderOptions::new().with_file_decryption_properties(decryption);
+
+        if footer_padding > 0 {
+            let metadata = reader.get_metadata(Some(&options));
+            tokio::pin!(metadata);
+
+            tokio::select! {
+                result = &mut metadata => {
+                    panic!("metadata load completed before the second footer read: {result:?}");
+                }
+                () = async {
+                    while reader_metric(&metrics, "scan_io_object_store_get_calls") < 2 {
+                        tokio::task::yield_now().await;
+                    }
+                } => {
+                    assert_eq!(reader_metric(&metrics, "scan_io_footer_reads"), 0);
+                    assert_eq!(reader_metric(&metrics, "scan_io_footer_bytes"), 0);
+                }
+            }
+
+            metadata.await.unwrap();
+        } else if corrupt {
+            assert!(reader.get_metadata(Some(&options)).await.is_err());
+        } else {
+            reader.get_metadata(Some(&options)).await.unwrap();
+        }
+
+        assert_eq!(reader_metric(&metrics, "scan_io_footer_reads"), 1);
+        assert_eq!(
+            reader_metric(&metrics, "scan_io_footer_bytes"),
+            footer_bytes
+        );
+    }
+
+    #[tokio::test]
+    async fn does_not_report_footer_metrics_when_metadata_decoding_fails() {
+        let (filename, _schema) = write_scan_io_fixture();
+        let mut file_bytes = std::fs::read(&filename).unwrap();
+        let file_size = file_bytes.len();
+        let footer_bytes = usize::try_from(u32::from_le_bytes(
+            file_bytes[file_size - 8..file_size - 4].try_into().unwrap(),
+        ))
+        .unwrap();
+        file_bytes[file_size - 8 - footer_bytes..file_size - 8].fill(0xff);
+        std::fs::write(&filename, file_bytes).unwrap();
+
+        let session_ctx = Arc::new(SessionContext::new());
+        let runtime_env = session_ctx.runtime_env();
+        let store = runtime_env
+            .object_store(ObjectStoreUrl::local_filesystem())
+            .unwrap();
+        let metadata_cache = runtime_env.cache_manager.get_file_metadata_cache();
+        let metrics = ExecutionPlanMetricsSet::new();
+        let factory =
+            EagerPageIndexReaderFactory::new(store, metadata_cache, ScanIoSource::Local, &metrics);
+        let mut reader = factory
+            .create_reader(
+                0,
+                PartitionedFile::from_path(filename).unwrap(),
+                Some(512 * 1024),
+                &metrics,
+            )
+            .unwrap();
+
+        assert!(reader.get_metadata(None).await.is_err());
+        assert!(reader_metric(&metrics, "scan_io_metadata_bytes") > 0);
+        assert_eq!(reader_metric(&metrics, "scan_io_footer_reads"), 0);
+        assert_eq!(reader_metric(&metrics, "scan_io_footer_bytes"), 0);
+        assert_eq!(reader_metric(&metrics, "scan_io_metadata_cache_hits"), 0);
+        assert_eq!(reader_metric(&metrics, "scan_io_metadata_cache_misses"), 0);
+    }
+
+    #[tokio::test]
+    async fn classifies_bloom_filter_reads_as_metadata() {
+        let schema = Arc::new(Schema::new(vec![Field::new("a", DataType::Int32, false)]));
+        let batch = RecordBatch::try_new(
+            Arc::clone(&schema),
+            vec![Arc::new(Int32Array::from(
+                (0..500).map(|value| value * 2).collect::<Vec<i32>>(),
+            ))],
+        )
+        .unwrap();
+        let filename = get_temp_filename()
+            .as_path()
+            .as_os_str()
+            .to_str()
+            .unwrap()
+            .to_string();
+        let props = WriterProperties::builder()
+            .set_statistics_enabled(EnabledStatistics::Page)
+            .set_bloom_filter_max_ndv(500)
+            .set_bloom_filter_fpp(0.0001)
+            .build();
+        let file = File::create(&filename).unwrap();
+        let mut writer = ArrowWriter::try_new(file, Arc::clone(&schema), Some(props)).unwrap();
+        writer.write(&batch).unwrap();
+        writer.close().unwrap();
+
+        let filter: Arc<dyn PhysicalExpr> = Arc::new(BinaryExpr::new(
+            Arc::new(Column::new("a", 0)),
+            Operator::Eq,
+            Arc::new(Literal::new(ScalarValue::Int32(Some(501)))),
+        ));
+        let session_ctx = Arc::new(SessionContext::new());
+        let scan = init_test_scan(
+            Arc::clone(&schema),
+            schema,
+            PartitionedFile::from_path(filename).unwrap(),
+            None,
+            Some(vec![filter]),
+            &session_ctx,
+        );
+        drain_scan(&scan, &session_ctx).await;
+
+        let bloom_bytes = scan_metric(&scan, "bytes_scanned");
+        assert!(bloom_bytes > 0);
+        assert_eq!(scan_metric(&scan, "scan_io_data_bytes"), 0);
+        assert!(scan_metric(&scan, "scan_io_metadata_bytes") >= bloom_bytes);
+    }
+
+    /// A bloom filter holds the bits of each value, so `-0.0` and `0.0` are separate entries in it,
+    /// while Spark's `=` matches either zero. A data filter that only prunes (no row-level
+    /// pushdown) probes the filter for both zeros, so the row group holding `-0.0` and no `0.0`
+    /// is read for `d = 0.0` and for `d = -0.0`, and a value the filter does not hold still
+    /// prunes it. The column statistics cover all three values, so only the bloom filter prunes.
+    #[tokio::test]
+    async fn bloom_filter_pruning_matches_either_signed_zero() {
+        use arrow::array::Float64Array;
+        use datafusion::physical_plan::metrics::MetricValue;
+        use datafusion_comet_spark_expr::{spark_comparison, FloatOperands};
+
+        let schema = Arc::new(Schema::new(vec![Field::new("d", DataType::Float64, false)]));
+        let batch = RecordBatch::try_new(
+            Arc::clone(&schema),
+            vec![Arc::new(Float64Array::from(vec![-1.0, -0.0, 1.0]))],
+        )
+        .unwrap();
+        let filename = get_temp_filename()
+            .as_path()
+            .as_os_str()
+            .to_str()
+            .unwrap()
+            .to_string();
+        let props = WriterProperties::builder()
+            .set_bloom_filter_enabled(true)
+            .build();
+        let file = File::create(&filename).unwrap();
+        let mut writer = ArrowWriter::try_new(file, Arc::clone(&schema), Some(props)).unwrap();
+        writer.write(&batch).unwrap();
+        writer.close().unwrap();
+
+        let session_ctx = Arc::new(SessionContext::new());
+        for (value, read) in [(-0.0, true), (0.0, true), (0.5, false)] {
+            let filter = spark_comparison(
+                Arc::new(Column::new("d", 0)),
+                Operator::Eq,
+                Arc::new(Literal::new(ScalarValue::Float64(Some(value)))),
+                &schema,
+                FloatOperands::Raw,
+            )
+            .unwrap();
+            let scan = init_test_scan(
+                Arc::clone(&schema),
+                Arc::clone(&schema),
+                PartitionedFile::from_path(filename.clone()).unwrap(),
+                None,
+                Some(vec![filter]),
+                &session_ctx,
+            );
+            let mut stream = scan.execute(0, session_ctx.task_ctx()).unwrap();
+            let mut rows = 0;
+            while let Some(batch) = stream.next().await {
+                rows += batch.unwrap().num_rows();
+            }
+            let bloom_filter = scan
+                .metrics()
+                .unwrap()
+                .sum_by_name("row_groups_pruned_bloom_filter");
+            let Some(MetricValue::PruningMetrics {
+                pruning_metrics, ..
+            }) = bloom_filter
+            else {
+                panic!("missing bloom filter pruning metrics: {bloom_filter:?}");
+            };
+            let expected = if read { (0, 1, 3) } else { (1, 0, 0) };
+            assert_eq!(
+                (pruning_metrics.pruned(), pruning_metrics.matched(), rows),
+                expected,
+                "d = {value:?}"
+            );
+        }
+    }
+
+    #[tokio::test]
+    async fn reports_projected_and_predicate_pruned_data_io() {
+        let (filename, schema) = write_scan_io_fixture();
+        let partitioned_file = PartitionedFile::from_path(filename).unwrap();
+        let session_ctx = Arc::new(SessionContext::new());
+
+        let full_scan = init_test_scan(
+            Arc::clone(&schema),
+            Arc::clone(&schema),
+            partitioned_file.clone(),
+            None,
+            None,
+            &session_ctx,
+        );
+        drain_scan(&full_scan, &session_ctx).await;
+
+        let projected_schema = Arc::new(Schema::new(vec![Field::new("a", DataType::Int32, false)]));
+        let projected_scan = init_test_scan(
+            Arc::clone(&projected_schema),
+            Arc::clone(&schema),
+            partitioned_file.clone(),
+            Some(vec![0]),
+            None,
+            &session_ctx,
+        );
+        drain_scan(&projected_scan, &session_ctx).await;
+
+        let filter: Arc<dyn PhysicalExpr> = Arc::new(BinaryExpr::new(
+            Arc::new(Column::new("a", 0)),
+            Operator::Lt,
+            Arc::new(Literal::new(ScalarValue::Int32(Some(500)))),
+        ));
+        let filtered_scan = init_test_scan(
+            projected_schema,
+            schema,
+            partitioned_file,
+            Some(vec![0]),
+            Some(vec![filter]),
+            &session_ctx,
+        );
+        drain_scan(&filtered_scan, &session_ctx).await;
+
+        let full_data = scan_metric(&full_scan, "scan_io_data_bytes");
+        let projected_data = scan_metric(&projected_scan, "scan_io_data_bytes");
+        let filtered_data = scan_metric(&filtered_scan, "scan_io_data_bytes");
+        assert!(
+            projected_data < full_data,
+            "projection should request fewer data bytes: projected={projected_data}, full={full_data}"
+        );
+        assert!(
+            filtered_data < projected_data,
+            "row-group pruning should request fewer data bytes: filtered={filtered_data}, projected={projected_data}"
+        );
+
+        for scan in [&full_scan, &projected_scan, &filtered_scan] {
+            assert_eq!(
+                scan_metric(scan, "bytes_scanned"),
+                scan_metric(scan, "scan_io_data_bytes")
+            );
+            assert_eq!(scan_metric(scan, "scan_io_object_store_get_calls"), 0);
+            assert_eq!(
+                scan_metric(scan, "scan_io_object_store_get_requested_bytes"),
+                0
+            );
+            assert_eq!(
+                scan_metric(scan, "scan_io_object_store_response_bytes_read"),
+                0
+            );
+        }
     }
 }

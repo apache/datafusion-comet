@@ -46,6 +46,7 @@ trait ShimCometArrowEvalPython extends Spark4xArrowEvalPythonSupport {
       evalType,
       argOffsets,
       schema,
+      runnerInputs.outputSchema,
       runnerInputs.pythonRunnerConf,
       pythonMetrics,
       runnerInputs.jobArtifactUUID).compute(batchIter, partitionId, context)

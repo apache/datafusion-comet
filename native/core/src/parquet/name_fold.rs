@@ -39,25 +39,36 @@ use std::sync::{OnceLock, RwLock};
 /// Pure-ASCII names are folded inline with `to_ascii_lowercase`: for an all-ASCII string this is
 /// provably identical to Java's `toLowerCase(Locale.ROOT)` (`Locale.ROOT` excludes the
 /// Turkish/Lithuanian rules, no ASCII codepoint lowercases to a non-ASCII one, and `Final_Sigma`
-/// needs a sigma to fire), so it keeps the lock, the JVM crossing, and the fallback off the hot
+/// needs a sigma to fire), so it keeps the lock and the JVM crossing off the hot
 /// path -- for almost every real schema every name is ASCII.
 ///
 /// Non-ASCII names are delegated to the JVM (`CometSchemaUtils.toLowerCaseRoot`) so Comet folds
 /// exactly as Spark does. Those folds are memoized process-wide (see [`fold_cache`]); the same
 /// field names recur across every batch and file, so this is one JVM crossing per distinct
-/// non-ASCII name for the life of the process. Outside a Comet task there is no attached JVM (e.g.
-/// Rust unit tests) or the JNI call fails, so fall back to Rust's own Unicode fold (see
-/// [`fold_uncached`]).
-pub(crate) fn fold_names(names: &[&str], case_sensitive: bool) -> Vec<String> {
+/// non-ASCII name until the cache fills. Returns owned names in input order. A missing JVM or JNI
+/// failure is returned to the caller without caching any new folds: Rust's Unicode table can
+/// differ from the JVM's and must never be used to continue a native scan after a failure.
+pub(crate) fn fold_names(names: &[&str], case_sensitive: bool) -> DataFusionResult<Vec<String>> {
+    fold_names_with(names, case_sensitive, jvm_fold_all)
+}
+
+/// Apply the shared fast paths and cache using `fold` for non-ASCII cache misses. The callback
+/// returns one owned fold per name in input order, or an error that aborts the entire batch.
+/// Passing the JVM operation explicitly lets tests inject failures without process-wide hooks.
+fn fold_names_with(
+    names: &[&str],
+    case_sensitive: bool,
+    fold: impl FnOnce(&[&str]) -> DataFusionResult<Vec<String>>,
+) -> DataFusionResult<Vec<String>> {
     if case_sensitive {
-        return names.iter().map(|n| n.to_string()).collect();
+        return Ok(names.iter().map(|n| n.to_string()).collect());
     }
 
     // ASCII fast path: for an all-ASCII batch (the overwhelmingly common case) fold inline with no
     // `Option` buffer, no cache, and no JVM crossing. `to_ascii_lowercase` is provably identical to
     // Java's `toLowerCase(Locale.ROOT)` for ASCII (see the doc above).
     if names.iter().all(|n| n.is_ascii()) {
-        return names.iter().map(|n| n.to_ascii_lowercase()).collect();
+        return Ok(names.iter().map(|n| n.to_ascii_lowercase()).collect());
     }
 
     // Mixed batch: fold the ASCII names inline and route the non-ASCII ones through the cache/JVM.
@@ -71,17 +82,24 @@ pub(crate) fn fold_names(names: &[&str], case_sensitive: bool) -> Vec<String> {
         }
     }
     // `non_ascii_positions` is non-empty here (the all-ASCII case returned above).
-    fold_non_ascii(names, &non_ascii_positions, &mut result);
+    fold_non_ascii(names, &non_ascii_positions, &mut result, fold)?;
 
-    result
+    Ok(result
         .into_iter()
         .map(|folded| folded.expect("every name folded"))
-        .collect()
+        .collect())
 }
 
 /// Fold the non-ASCII `names` at `positions`, writing each fold into `result`. Split out of
 /// [`fold_names`] so the common all-ASCII path stays a tight loop with no cache or JVM machinery.
-fn fold_non_ascii(names: &[&str], positions: &[usize], result: &mut [Option<String>]) {
+/// Cached entries may be copied before `fold` fails, but misses are published only after the
+/// whole callback succeeds. Callers must discard the partial output on error.
+fn fold_non_ascii(
+    names: &[&str],
+    positions: &[usize],
+    result: &mut [Option<String>],
+    fold: impl FnOnce(&[&str]) -> DataFusionResult<Vec<String>>,
+) -> DataFusionResult<()> {
     let cache = fold_cache();
     let mut miss_positions: Vec<usize> = Vec::new();
     {
@@ -95,12 +113,12 @@ fn fold_non_ascii(names: &[&str], positions: &[usize], result: &mut [Option<Stri
     }
 
     if miss_positions.is_empty() {
-        return;
+        return Ok(());
     }
 
     let miss_names: Vec<&str> = miss_positions.iter().map(|&i| names[i]).collect();
-    let (folded, cacheable) = fold_uncached(&miss_names);
-    if cacheable {
+    let folded = fold(&miss_names)?;
+    {
         let mut write = cache.write().unwrap();
         for (pos, &i) in miss_positions.iter().enumerate() {
             // Bound the process-wide cache: an executor JVM is long-lived, so stop inserting
@@ -115,27 +133,33 @@ fn fold_non_ascii(names: &[&str], positions: &[usize], result: &mut [Option<Stri
     for (pos, &i) in miss_positions.iter().enumerate() {
         result[i] = Some(folded[pos].clone());
     }
+    Ok(())
 }
 
 /// Fold a single field name. Convenience wrapper over [`fold_names`] for the per-column-reference
 /// lookups; the schema side is always folded in bulk via [`fold_schema_names`]. Short-circuits the
 /// common single-name cases (identity when case-sensitive, inline ASCII fold otherwise) so a lone
 /// name never allocates a throwaway `Vec` or touches the cache; non-ASCII names use the bulk path.
-pub(crate) fn fold_name(name: &str, case_sensitive: bool) -> String {
+/// Returns an owned name, propagating JVM failures without substituting a different Unicode fold.
+pub(crate) fn fold_name(name: &str, case_sensitive: bool) -> DataFusionResult<String> {
     if case_sensitive {
-        return name.to_string();
+        return Ok(name.to_string());
     }
     if name.is_ascii() {
-        return name.to_ascii_lowercase();
+        return Ok(name.to_ascii_lowercase());
     }
-    let mut folded = fold_names(&[name], false);
-    folded
+    let mut folded = fold_names(&[name], false)?;
+    Ok(folded
         .pop()
-        .expect("fold_names returns one entry per input name")
+        .expect("fold_names returns one entry per input name"))
 }
 
-/// Fold every field name in `schema`. See [`fold_names`].
-pub(crate) fn fold_schema_names(schema: &SchemaRef, case_sensitive: bool) -> Vec<String> {
+/// Return owned folds for every field name in `schema`, preserving order and propagating JVM
+/// failures. Does not modify the schema. See [`fold_names`].
+pub(crate) fn fold_schema_names(
+    schema: &SchemaRef,
+    case_sensitive: bool,
+) -> DataFusionResult<Vec<String>> {
     let names: Vec<&str> = schema.fields().iter().map(|f| f.name().as_str()).collect();
     fold_names(&names, case_sensitive)
 }
@@ -154,37 +178,21 @@ fn fold_cache() -> &'static RwLock<HashMap<String, String>> {
     CACHE.get_or_init(|| RwLock::new(HashMap::new()))
 }
 
-/// Fold names that missed the cache. These are always non-ASCII (ASCII names never reach here).
-/// Returns the folds and whether they may be cached: a transient JVM failure returns the fallback
-/// but is NOT cached, so it cannot poison later lookups once the JVM recovers.
-///
-/// The fallback is Rust's `str::to_lowercase` (full Unicode), not `to_ascii_lowercase`: ASCII
-/// folding leaves every non-ASCII cased letter untouched (~1367 mismatches against JDK 17),
-/// whereas Rust's Unicode fold only differs from the JVM on the handful of codepoints where the
-/// JDK's Unicode table version differs from Rust's (~95 against JDK 17). It also lets the
-/// no-JVM path resolve names whose case mapping is stable across Unicode versions (e.g. `Ω`/`ω`,
-/// `MÜNCHEN`), which is what the Rust unit tests rely on.
-fn fold_uncached(names: &[&str]) -> (Vec<String>, bool) {
-    if crate::JAVA_VM.get().is_some() {
-        match jvm_fold_all(names) {
-            Ok(folded) => return (folded, true),
-            Err(e) => log::warn!(
-                "JVM case-fold failed; falling back to Rust Unicode lowercasing, which can differ \
-                 from Spark on codepoints where the JDK's Unicode table version differs: {e}"
-            ),
-        }
-        (names.iter().map(|n| n.to_lowercase()).collect(), false)
-    } else {
-        // No attached JVM (e.g. Rust unit tests): Rust's Unicode fold is the permanent mode and is
-        // cacheable.
-        (names.iter().map(|n| n.to_lowercase()).collect(), true)
-    }
-}
-
 /// Lower-case a batch of names via the JVM's `String.toLowerCase(Locale.ROOT)`, matching Spark's
 /// `ParquetReadSupport` byte-for-byte. Folds in chunks so at most `CHUNK * 2` JNI local refs are
 /// live in a single frame, keeping wide schemas within `DEFAULT_LOCAL_FRAME_CAPACITY` (32).
+/// Returns owned strings only after every chunk succeeds; missing JVM and JNI errors propagate.
 fn jvm_fold_all(names: &[&str]) -> DataFusionResult<Vec<String>> {
+    if crate::JAVA_VM.get().is_none() {
+        // Standalone Rust unit tests exercise stable Unicode mappings without starting Spark.
+        // This substitute is absent from production builds and cannot handle a JNI failure.
+        #[cfg(test)]
+        return Ok(names.iter().map(|name| name.to_lowercase()).collect());
+        #[cfg(not(test))]
+        return Err(DataFusionError::Execution(
+            "JVM is not initialized for Parquet field-name folding".to_string(),
+        ));
+    }
     const CHUNK: usize = 16;
     let mut folded = Vec::with_capacity(names.len());
     for chunk in names.chunks(CHUNK) {
@@ -219,7 +227,7 @@ fn jvm_fold_all(names: &[&str]) -> DataFusionResult<Vec<String>> {
 #[cfg(test)]
 mod test {
     /// The process-wide fold cache populates on first fold of a non-ASCII name and serves repeated
-    /// lookups. Runs under the Rust Unicode fallback (no JVM in `cargo test`), which exercises the
+    /// lookups. Runs under the test-only Rust Unicode substitute, which exercises the
     /// cacheable path. Uses a non-ASCII name because ASCII names take the inline fast path and are
     /// intentionally never cached.
     #[test]
@@ -227,7 +235,7 @@ mod test {
         // Unique non-ASCII name so parallel tests don't share this cache entry.
         let name = "ΩFoldMemoUnique";
         let folded = name.to_lowercase();
-        let first = super::fold_names(&[name], false);
+        let first = super::fold_names(&[name], false).unwrap();
         assert_eq!(first, vec![folded.clone()]);
         assert_eq!(
             super::fold_cache()
@@ -238,7 +246,7 @@ mod test {
             Some(folded.as_str())
         );
         // Second call is served from the cache with the same result.
-        assert_eq!(super::fold_names(&[name], false), first);
+        assert_eq!(super::fold_names(&[name], false).unwrap(), first);
     }
 
     /// ASCII names take the inline fast path and must never touch the cache.
@@ -246,7 +254,7 @@ mod test {
     fn fold_names_ascii_is_fast_path_and_uncached() {
         let name = "FoldAsciiUnique";
         assert_eq!(
-            super::fold_names(&[name], false),
+            super::fold_names(&[name], false).unwrap(),
             vec!["foldasciiunique".to_string()]
         );
         assert!(super::fold_cache().read().unwrap().get(name).is_none());
@@ -256,7 +264,83 @@ mod test {
     #[test]
     fn fold_names_case_sensitive_is_identity_and_uncached() {
         let name = "ΩFoldCaseSensitiveUnique";
-        assert_eq!(super::fold_names(&[name], true), vec![name.to_string()]);
+        assert_eq!(
+            super::fold_names(&[name], true).unwrap(),
+            vec![name.to_string()]
+        );
         assert!(super::fold_cache().read().unwrap().get(name).is_none());
+    }
+
+    /// A failed JNI fold must abort the mixed batch without caching Rust's different Unicode
+    /// mapping; a later successful JVM fold must retain the distinct names and become cacheable.
+    #[test]
+    fn fold_names_propagates_jni_failure_without_caching_fallback() {
+        // Unique suffixes keep other parallel tests from populating these cache entries. JDK 17
+        // leaves U+A7DC unchanged, while Rust lowercases it to U+019B and would falsely match.
+        let file_name = "Ƛ_jni_failure_unique";
+        let requested_name = "ƛ_jni_failure_unique";
+        let names = ["ASCII", file_name, requested_name];
+        assert_eq!(file_name.to_lowercase(), requested_name);
+        {
+            let cache = super::fold_cache().read().unwrap();
+            assert!(!cache.contains_key(file_name));
+            assert!(!cache.contains_key(requested_name));
+        }
+
+        let error = super::fold_names_with(&names, false, |misses| {
+            assert_eq!(misses, &[file_name, requested_name]);
+            Err(super::DataFusionError::Execution(
+                "injected JNI fold failure".to_string(),
+            ))
+        })
+        .unwrap_err();
+        assert!(matches!(
+            error,
+            super::DataFusionError::Execution(message) if message == "injected JNI fold failure"
+        ));
+        {
+            let cache = super::fold_cache().read().unwrap();
+            assert!(!cache.contains_key(file_name));
+            assert!(!cache.contains_key(requested_name));
+        }
+
+        let expected = vec![
+            "ascii".to_string(),
+            file_name.to_string(),
+            requested_name.to_string(),
+        ];
+        let recovered = super::fold_names_with(&names, false, |misses| {
+            assert_eq!(misses, &[file_name, requested_name]);
+            // Simulate a recovered JDK 17 operation, whose Unicode table keeps this pair distinct.
+            Ok(misses.iter().map(|name| name.to_string()).collect())
+        })
+        .unwrap();
+        assert_eq!(recovered, expected);
+        assert_eq!(
+            super::fold_names_with(&names, false, |_| panic!("cached folds must skip JNI"))
+                .unwrap(),
+            expected
+        );
+    }
+
+    /// ASCII folding and case-sensitive identity require no JVM, so even a failing JNI operation
+    /// must remain unused and the names must be returned with the appropriate local semantics.
+    #[test]
+    fn fold_names_fast_paths_skip_failing_jni_operation() {
+        for (names, case_sensitive, expected) in [
+            (["ASCII", "MixedCase"], false, ["ascii", "mixedcase"]),
+            (["Ƛ", "ƛ"], true, ["Ƛ", "ƛ"]),
+        ] {
+            let mut called = false;
+            let folded = super::fold_names_with(&names, case_sensitive, |_| {
+                called = true;
+                Err(super::DataFusionError::Execution(
+                    "unexpected JNI operation".to_string(),
+                ))
+            })
+            .unwrap();
+            assert!(!called);
+            assert_eq!(folded, expected);
+        }
     }
 }

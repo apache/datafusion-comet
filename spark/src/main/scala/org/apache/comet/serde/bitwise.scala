@@ -37,7 +37,6 @@ object CometBitwiseAnd extends CometExpressionSerde[BitwiseAnd] {
       { case _: BitwiseAnd => true; case _ => false },
       { case b: BitwiseAnd => (b.left, b.right) })
     createBalancedBinaryExpr(
-      expr,
       operands,
       inputs,
       binding,
@@ -50,7 +49,7 @@ object CometBitwiseNot extends CometExpressionSerde[BitwiseNot] {
       expr: BitwiseNot,
       inputs: Seq[Attribute],
       binding: Boolean): Option[ExprOuterClass.Expr] = {
-    val childProto = exprToProto(expr.child, inputs, binding)
+    val childProto = exprToProtoInternal(expr.child, inputs, binding)
     val bitNotScalarExpr =
       scalarFunctionExprToProto("bitwise_not", childProto)
     bitNotScalarExpr
@@ -67,7 +66,6 @@ object CometBitwiseOr extends CometExpressionSerde[BitwiseOr] {
       { case _: BitwiseOr => true; case _ => false },
       { case b: BitwiseOr => (b.left, b.right) })
     createBalancedBinaryExpr(
-      expr,
       operands,
       inputs,
       binding,
@@ -85,7 +83,6 @@ object CometBitwiseXor extends CometExpressionSerde[BitwiseXor] {
       { case _: BitwiseXor => true; case _ => false },
       { case b: BitwiseXor => (b.left, b.right) })
     createBalancedBinaryExpr(
-      expr,
       operands,
       inputs,
       binding,
@@ -107,7 +104,6 @@ object CometShiftRight extends CometExpressionSerde[ShiftRight] {
     }
 
     createBinaryExpr(
-      expr,
       expr.left,
       rightExpression,
       inputs,
@@ -130,7 +126,6 @@ object CometShiftLeft extends CometExpressionSerde[ShiftLeft] {
     }
 
     createBinaryExpr(
-      expr,
       expr.left,
       rightExpression,
       inputs,
@@ -144,8 +139,8 @@ object CometBitwiseGet extends CometExpressionSerde[BitwiseGet] {
       expr: BitwiseGet,
       inputs: Seq[Attribute],
       binding: Boolean): Option[ExprOuterClass.Expr] = {
-    val argProto = exprToProto(expr.left, inputs, binding)
-    val posProto = exprToProto(expr.right, inputs, binding)
+    val argProto = exprToProtoInternal(expr.left, inputs, binding)
+    val posProto = exprToProtoInternal(expr.right, inputs, binding)
     val bitGetScalarExpr =
       scalarFunctionExprToProtoWithReturnType("bit_get", ByteType, false, argProto, posProto)
     bitGetScalarExpr

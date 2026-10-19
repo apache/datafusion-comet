@@ -19,19 +19,23 @@
 
 package org.apache.spark.sql.comet.execution.arrow
 
-import scala.collection.mutable.ListBuffer
+import scala.jdk.CollectionConverters._
 
 import org.apache.arrow.memory.BufferAllocator
-import org.apache.arrow.vector.{FieldVector, VectorSchemaRoot, VectorUnloader}
+import org.apache.arrow.vector.{VectorSchemaRoot, VectorUnloader}
 import org.apache.arrow.vector.ipc.ArrowReader
 import org.apache.arrow.vector.types.pojo.Schema
 import org.apache.spark.sql.vectorized.ColumnarBatch
+
+import org.apache.comet.vector.{CometVector, CometVectorUtils}
 
 /**
  * `ArrowReader` over an iterator of Arrow-backed `ColumnarBatch`es. The unload/load step
  * decouples this reader's stable VSR from the source's buffers: `loadRecordBatch` takes its own
  * retained references, so each source batch can be closed right after loading while a batch
- * already exported to native stays valid via the export's independent ref.
+ * already exported to native stays valid via the export's independent ref. The reader allocator
+ * and borrowed plain-column buffers must share a root allocator, as Arrow requires when
+ * associating those existing buffers with the reader's vectors.
  */
 private[comet] class ColumnarBatchArrowReader(
     allocator: BufferAllocator,
@@ -45,6 +49,7 @@ private[comet] class ColumnarBatchArrowReader(
 
   override protected def closeReadSource(): Unit = ()
 
+  // The source is consumed; the reader retains its own buffers before decoded temporaries close.
   override def loadNextBatch(): Boolean = {
     prepareLoadNextBatch()
 
@@ -53,26 +58,17 @@ private[comet] class ColumnarBatchArrowReader(
     }
 
     val src = source.next()
-    // Plain vectors we decode from dictionary-encoded columns; we own these and close them below.
-    // The stable VSR was built from the logical (non-dict) schema, so a dict-encoded source's
-    // indices layout would mismatch the dest buffer count on load. Native unpacks downstream
-    // anyway via copy_or_unpack_array.
-    val materialized = ListBuffer.empty[FieldVector]
     try {
-      val sourceVectors = CometArrowVectors.materialize(src, allocator, materialized)
-      val transient = new VectorSchemaRoot(sourceVectors)
-      transient.setRowCount(src.numRows())
-
-      val unloader = new VectorUnloader(transient)
-      // loadRecordBatch closes the record batch after loading it into the stable VSR.
-      loadRecordBatch(unloader.getRecordBatch)
-      // Do not close `transient`. It shares FieldVectors with `src`; closing `src` below
-      // releases the producer-side refs. Closing `transient` would double-release.
-    } finally {
-      materialized.foreach { v =>
-        try v.close()
-        catch { case _: Throwable => () }
+      val columns = (0 until src.numCols()).map(src.column(_).asInstanceOf[CometVector])
+      CometVectorUtils.withDecodedVectors(columns, allocator) { sourceVectors =>
+        // The stable root has the logical schema, so dictionary indices must be decoded before
+        // unloading. loadRecordBatch closes the record batch after retaining its buffers.
+        val transient = new VectorSchemaRoot(sourceVectors.asJava)
+        transient.setRowCount(src.numRows())
+        loadRecordBatch(new VectorUnloader(transient).getRecordBatch)
+        // Do not close this borrowed root: src and the helper own its vectors.
       }
+    } finally {
       src.close()
     }
     true
