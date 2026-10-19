@@ -98,8 +98,13 @@ underlying bytes rather than on the rendered text:
   such as `contains` can therefore disagree with Spark when non-UTF-8 bytes are involved.
 
 Both differences require string data that is not valid UTF-8, which does not occur for text read from
-Parquet or produced by string expressions. Consistent handling of invalid UTF-8 across all native
-string paths is tracked by
+Parquet or produced by string expressions. It can occur in a Text file written in another encoding,
+such as Latin-1, or in a string cast from binary. Comet reads Text files with Spark, except a Text
+scan on the build side of a broadcast join, which Comet converts to Arrow by default (see
+[Data Sources](../datasources.md)). The strings from such a scan go through the decoding above, so
+`hex`, `length`, and join keys computed from them can differ from Spark. Set
+`spark.comet.convert.broadcastBuildSide.enabled=false` to keep those build sides on Spark.
+Consistent handling of invalid UTF-8 across all native string paths is tracked by
 [#4764](https://github.com/apache/datafusion-comet/issues/4764).
 
 Separately, Comet's native Parquet scan currently rejects string columns whose stored bytes are not

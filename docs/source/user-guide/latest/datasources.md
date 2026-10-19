@@ -78,8 +78,11 @@ runs natively over the large probe. This is controlled by
 `spark.comet.convert.broadcastBuildSide.enabled`, which is **on by default**, unlike the switches
 above. The build side is usually small, but an explicit `BROADCAST` hint or a selective filter above
 the scan can make the copied volume larger, and with dynamic partition pruning the dimension is read
-a second time for the pruning subquery. Set `spark.comet.convert.broadcastBuildSide.enabled=false` to
-keep such build sides on Spark.
+a second time for the pruning subquery. Converting a string column to Arrow replaces bytes that are
+not valid UTF-8, as described in
+[Strings with non-UTF-8 bytes](compatibility/index.md#strings-with-non-utf-8-bytes), so a Text file
+in another encoding can give different results from Spark. Set
+`spark.comet.convert.broadcastBuildSide.enabled=false` to keep such build sides on Spark.
 
 ### Spark-to-Comet conversion types
 
