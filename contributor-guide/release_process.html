@@ -862,17 +862,12 @@ git<span class="w"> </span>push<span class="w"> </span>apache<span class="w"> </
 <h3>Build the jars<a class="headerlink" href="#build-the-jars" title="Link to this heading">#</a></h3>
 <section id="a-note-on-workspace-cleanliness">
 <h4>A note on workspace cleanliness<a class="headerlink" href="#a-note-on-workspace-cleanliness" title="Link to this heading">#</a></h4>
-<p>The <code class="docutils literal notranslate"><span class="pre">common/pom.xml</span></code> resource configuration unconditionally bundles
-<code class="docutils literal notranslate"><span class="pre">native/target/{x86_64,aarch64}-apple-darwin/release/libcomet.dylib</span></code> into the
-<code class="docutils literal notranslate"><span class="pre">common</span></code> jar when those files exist on disk. Maven’s <code class="docutils literal notranslate"><span class="pre">clean</span></code> removes
-<code class="docutils literal notranslate"><span class="pre">common/target</span></code> but does not touch Cargo’s <code class="docutils literal notranslate"><span class="pre">native/target</span></code> directory, so a
-stale dylib left over from a prior local <code class="docutils literal notranslate"><span class="pre">make</span> <span class="pre">release</span></code> or <code class="docutils literal notranslate"><span class="pre">make</span> <span class="pre">release-linux</span></code>
-on the release manager’s workstation can silently end up in a release jar
-(see <a class="reference external" href="https://github.com/apache/datafusion-comet/issues/2232">#2232</a> for the
-incident in 0.9.1).</p>
-<p>The <code class="docutils literal notranslate"><span class="pre">build-release-comet.sh</span></code> script now runs <code class="docutils literal notranslate"><span class="pre">cargo</span> <span class="pre">clean</span></code> for you, but as a
-defensive measure, prefer running the release build from a fresh clone of the
-repository rather than your day-to-day working tree.</p>
+<p>The <code class="docutils literal notranslate"><span class="pre">build-release-comet.sh</span></code> script does not build Comet from your local checkout. It resolves the requested
+branch to a single commit when it starts, and builds the Docker images, the native binaries (inside the Docker
+containers) and the jars from fresh clones of the repository at that commit. The script itself is the only file it
+uses from your checkout, so uncommitted changes and stale build output elsewhere in your working tree cannot end up
+in the release artifacts (see <a class="reference external" href="https://github.com/apache/datafusion-comet/issues/2232">#2232</a> for how a stale
+<code class="docutils literal notranslate"><span class="pre">libcomet.dylib</span></code> from a local build ended up in the 0.9.1 release jars).</p>
 </section>
 <section id="setup-to-do-the-build">
 <h4>Setup to do the build<a class="headerlink" href="#setup-to-do-the-build" title="Link to this heading">#</a></h4>
@@ -893,13 +888,20 @@ $<span class="w"> </span>docker<span class="w"> </span>context<span class="w"> <
 <p>The <code class="docutils literal notranslate"><span class="pre">build-release-comet.sh</span></code> script will create a docker image for each architecture and use the image
 to build the platform specific binaries. These builder images are created every time this script is run.
 The branch or tag to build is required, and the script optionally allows overriding the repository. For a release,
-always build from the release candidate tag created in the previous step. The remote tag is used to build the native
-binaries, while the local checkout is used to build the final uber jar, so check out the same tag locally before
-running the script.</p>
+always build from the release candidate tag created in the previous step. The tag is resolved to a single commit when
+the script starts, and the builder images, the native binaries and the final uber jar are all built from that commit.
+Only the script itself comes from your local checkout, so the branch you have checked out does not matter.</p>
 <div class="highlight-shell notranslate"><div class="highlight"><pre><span></span>Usage:<span class="w"> </span>build-release-comet.sh<span class="w"> </span><span class="o">[</span>options<span class="o">]</span>
 
 This<span class="w"> </span>script<span class="w"> </span>builds<span class="w"> </span>comet<span class="w"> </span>native<span class="w"> </span>binaries<span class="w"> </span>inside<span class="w"> </span>a<span class="w"> </span>docker<span class="w"> </span>image.<span class="w"> </span>The<span class="w"> </span>image<span class="w"> </span>is<span class="w"> </span>named
-<span class="s2">"comet-rm"</span><span class="w"> </span>and<span class="w"> </span>will<span class="w"> </span>be<span class="w"> </span>generated<span class="w"> </span>by<span class="w"> </span>this<span class="w"> </span>script
+<span class="s2">"comet-rm"</span><span class="w"> </span>and<span class="w"> </span>will<span class="w"> </span>be<span class="w"> </span>generated<span class="w"> </span>by<span class="w"> </span>this<span class="w"> </span>script.<span class="w"> </span>It<span class="w"> </span><span class="k">then</span><span class="w"> </span>builds<span class="w"> </span>the<span class="w"> </span>jars<span class="w"> </span>and<span class="w"> </span>installs
+them<span class="w"> </span>to<span class="w"> </span>a<span class="w"> </span>temporary<span class="w"> </span><span class="nb">local</span><span class="w"> </span>Maven<span class="w"> </span>repository.
+
+The<span class="w"> </span>branch<span class="w"> </span>is<span class="w"> </span>resolved<span class="w"> </span>to<span class="w"> </span>a<span class="w"> </span>single<span class="w"> </span>commit<span class="w"> </span>when<span class="w"> </span>the<span class="w"> </span>script<span class="w"> </span>starts,<span class="w"> </span>and<span class="w"> </span>the<span class="w"> </span>docker
+images,<span class="w"> </span>the<span class="w"> </span>native<span class="w"> </span>binaries<span class="w"> </span>and<span class="w"> </span>the<span class="w"> </span>jars<span class="w"> </span>are<span class="w"> </span>all<span class="w"> </span>built<span class="w"> </span>from<span class="w"> </span>fresh<span class="w"> </span>clones<span class="w"> </span>of<span class="w"> </span>the<span class="w"> </span>repo
+at<span class="w"> </span>that<span class="w"> </span>commit.<span class="w"> </span>Apart<span class="w"> </span>from<span class="w"> </span>this<span class="w"> </span>script,<span class="w"> </span>nothing<span class="w"> </span>is<span class="w"> </span>taken<span class="w"> </span>from<span class="w"> </span>the<span class="w"> </span><span class="nb">local</span><span class="w"> </span>checkout<span class="w"> </span>that
+it<span class="w"> </span>is<span class="w"> </span>run<span class="w"> </span>from,<span class="w"> </span>so<span class="w"> </span>the<span class="w"> </span>checkout<span class="err">'</span>s<span class="w"> </span>current<span class="w"> </span>branch<span class="w"> </span>and<span class="w"> </span><span class="nb">local</span><span class="w"> </span>changes<span class="w"> </span>to<span class="w"> </span>other<span class="w"> </span>files<span class="w"> </span><span class="k">do</span>
+not<span class="w"> </span>end<span class="w"> </span>up<span class="w"> </span><span class="k">in</span><span class="w"> </span>the<span class="w"> </span>release.
 
 Options<span class="w"> </span>are:
 
@@ -909,8 +911,7 @@ Options<span class="w"> </span>are:
 </pre></div>
 </div>
 <p>Example:</p>
-<div class="highlight-shell notranslate"><div class="highlight"><pre><span></span>git<span class="w"> </span>checkout<span class="w"> </span><span class="m">0</span>.13.0-rc1
-<span class="nb">cd</span><span class="w"> </span>dev/release<span class="w"> </span><span class="o">&amp;&amp;</span><span class="w"> </span>./build-release-comet.sh<span class="w"> </span>-b<span class="w"> </span><span class="m">0</span>.13.0-rc1<span class="w"> </span><span class="o">&amp;&amp;</span><span class="w"> </span><span class="nb">cd</span><span class="w"> </span>../..
+<div class="highlight-shell notranslate"><div class="highlight"><pre><span></span><span class="nb">cd</span><span class="w"> </span>dev/release<span class="w"> </span><span class="o">&amp;&amp;</span><span class="w"> </span>./build-release-comet.sh<span class="w"> </span>-b<span class="w"> </span><span class="m">0</span>.13.0-rc1<span class="w"> </span><span class="o">&amp;&amp;</span><span class="w"> </span><span class="nb">cd</span><span class="w"> </span>../..
 </pre></div>
 </div>
 </section>
@@ -918,7 +919,8 @@ Options<span class="w"> </span>are:
 <h4>Build output<a class="headerlink" href="#build-output" title="Link to this heading">#</a></h4>
 <p>The build output is installed to a temporary local maven repository. The build script will print the name of the
 repository location at the end. This location will be required at the time of deploying the artifacts to a staging
-repository.</p>
+repository. The script also prints the commit that the artifacts were built from, which should be the commit that the
+release candidate tag points to.</p>
 </section>
 </section>
 <section id="publishing-documentation">
@@ -1046,8 +1048,8 @@ Voters can also use the <code class="docutils literal notranslate"><span class="
 <section id="if-the-vote-fails">
 <h3>If the Vote Fails<a class="headerlink" href="#if-the-vote-fails" title="Link to this heading">#</a></h3>
 <p>If the vote does not pass, address the issues raised, increment the release candidate number, and repeat from
-the <a class="reference internal" href="#tag-the-release-candidate">Tag the Release Candidate</a> step. For example, the next attempt would be tagged
-<code class="docutils literal notranslate"><span class="pre">0.13.0-rc2</span></code>.</p>
+the <a class="reference internal" href="#generate-the-change-log">Generate the Change Log</a> step, so that the change log, the CI run, the jars and the
+tag all include the fixes. For example, the next attempt would be tagged <code class="docutils literal notranslate"><span class="pre">0.13.0-rc2</span></code>.</p>
 <p>Before staging the next RC, drop the previous RC’s staging repository in the
 <a class="reference external" href="https://repository.apache.org/#stagingRepositories">Nexus UI</a> by selecting it and clicking “Drop”. This avoids
 leaving multiple closed staging repositories for the same version and prevents accidentally releasing the wrong
