@@ -39,7 +39,6 @@ import org.apache.spark.sql.internal.SQLConf
 import org.apache.spark.sql.types.{ArrayType, DataType, MapType, StructType}
 
 import org.apache.comet.CometConf
-import org.apache.comet.CometConf.COMET_LIBHDFS_SCHEMES
 import org.apache.comet.objectstore.NativeConfig
 import org.apache.comet.parquet.CometParquetUtils
 import org.apache.comet.rules.{CometScanRule, CometScanTypeChecker}
@@ -293,8 +292,16 @@ object DeltaScanSupport {
     }
 
     // Only claim scans whose root paths object_store (or the configured libhdfs schemes) can
-    // actually read (mirrors core's unsupportedFsSchemes gate).
-    val libhdfs = libhdfsSchemes
+    // actually read (mirrors core's unsupportedFsSchemes gate). A scheme the reader options add
+    // to the libhdfs list is declined; see NativeConfig.resolveScanLibhdfsSchemes.
+    val libhdfsSchemes = NativeConfig.resolveScanLibhdfsSchemes(
+      scanExec.relation.sparkSession.sessionState.newHadoopConf(),
+      hadoopConf)
+    val libhdfs = libhdfsSchemes.libhdfs
+    val scanOnlyRoot = scanOnlyLibhdfsSchemeReason(rootUris, libhdfsSchemes.scanOnly)
+    if (scanOnlyRoot.isDefined) {
+      return scanOnlyRoot
+    }
     val unsupportedRootSchemes = unsupportedSchemes(rootUris, libhdfs)
     if (unsupportedRootSchemes.nonEmpty) {
       return Some(
@@ -324,6 +331,11 @@ object DeltaScanSupport {
     // The root-path gate above only inspects the table root(s); selected files can resolve
     // through a different scheme (e.g. `viewfs:`). Checked before the authority gates below,
     // which presume every URI is natively resolvable.
+    val scanOnlySelected =
+      scanOnlyLibhdfsSchemeReason(dataFileUris ++ dvUris, libhdfsSchemes.scanOnly)
+    if (scanOnlySelected.isDefined) {
+      return scanOnlySelected
+    }
     val unsupportedSelected = unsupportedSelectedSchemeReason(dataFileUris ++ dvUris, libhdfs)
     if (unsupportedSelected.isDefined) {
       return unsupportedSelected
@@ -461,16 +473,6 @@ object DeltaScanSupport {
   }
 
   /**
-   * The libhdfs scheme exemption set from [[org.apache.comet.CometConf.COMET_LIBHDFS_SCHEMES]],
-   * parsed exactly like core's scan gate (`NativeConfig.parseSchemeSet`: split on commas,
-   * trimmed, lowercased) and defaulting to `Set("hdfs")` when unset.
-   */
-  private[delta] def libhdfsSchemes: Set[String] = COMET_LIBHDFS_SCHEMES.get() match {
-    case Some(s) => NativeConfig.parseSchemeSet(s)
-    case None => Set("hdfs")
-  }
-
-  /**
    * Decline reason when any of `uris` uses a scheme opted in as an S3-compliant alias through
    * `fs.comet.s3Compliant.schemes` (e.g. `blob`), or `None`. Core's native Parquet scan admits
    * such a scheme and reads it through its S3 client, with `NativeConfig` translating the vendor
@@ -523,6 +525,25 @@ object DeltaScanSupport {
       }
       .map(_.getScheme.toLowerCase(Locale.ROOT))
       .toSet
+  }
+
+  /**
+   * Decline reason when any of `uris` uses a scheme in `scanOnly`, one listed in
+   * `fs.comet.libhdfs.schemes` only through the scan's reader options, or `None`. Native would
+   * route it to libhdfs, which never sees reader options.
+   */
+  private[delta] def scanOnlyLibhdfsSchemeReason(
+      uris: Seq[URI],
+      scanOnly: Set[String]): Option[String] = {
+    val schemes = uris.flatMap(NativeConfig.lowerScheme).filter(scanOnly.contains).distinct
+    if (schemes.isEmpty) {
+      None
+    } else {
+      Some(
+        "Native Delta scan does not support filesystem scheme(s) " +
+          s"${schemes.sorted.mkString(", ")} listed in " +
+          s"${CometConf.COMET_LIBHDFS_SCHEMES_KEY} only through reader options")
+    }
   }
 
   /**

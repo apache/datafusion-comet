@@ -21,7 +21,7 @@ use std::sync::Arc;
 use crate::float_semantics::{float_gt, float_lt, spark_comparator};
 use arrow::array::{
     make_array, new_empty_array, Array, ArrayRef, AsArray, BooleanArray, ListArray,
-    MutableArrayData, PrimitiveArray, PrimitiveBuilder, StructArray, UInt32Array,
+    MutableArrayData, PrimitiveArray, PrimitiveBuilder, StructArray, UInt32Array, UInt32Builder,
 };
 use arrow::buffer::{NullBuffer, OffsetBuffer};
 use arrow::compute::take;
@@ -165,7 +165,7 @@ fn nested_extrema(array: &ListArray, is_min: bool) -> Result<ArrayRef> {
     } else {
         Ordering::Greater
     };
-    let mut indices = Vec::with_capacity(array.len());
+    let mut indices = UInt32Builder::with_capacity(array.len());
     for (row, offsets) in array.offsets().windows(2).enumerate() {
         let mut best = None;
         if array.is_valid(row) {
@@ -178,9 +178,9 @@ fn nested_extrema(array: &ListArray, is_min: bool) -> Result<ArrayRef> {
                 }
             }
         }
-        indices.push(best.map(|index| index as u32));
+        indices.append_option(best.map(|index| index as u32));
     }
-    take_extrema_values(values, &UInt32Array::from(indices))
+    take_extrema_values(values, &indices.finish())
 }
 
 #[inline(never)]
