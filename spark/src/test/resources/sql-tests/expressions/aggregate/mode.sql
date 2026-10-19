@@ -112,67 +112,8 @@ INSERT INTO mode_nums VALUES
 query
 SELECT grp, mode(b), mode(s), mode(l) FROM mode_nums GROUP BY grp ORDER BY grp
 
--- ============================================================
--- Float / Double
---
--- Whether `-0.0` and `0.0` share a frequency-map key is version-dependent: Spark 3.4-4.1 key on
--- `java.lang.Double.equals` and keep them apart, while Spark 4.2.0+ folds `-0.0` into `0.0`
--- (SPARK-57329). Each group below still has a unique winner under both behaviours.
---
--- Negative zero must be written as `-0.0D`, not `CAST(-0.0 AS DOUBLE)`: an unsuffixed `-0.0` is a
--- DecimalType literal, and Decimal has no signed zero, so the cast yields `+0.0` and the column
--- would silently contain no negative zeros at all.
--- ============================================================
-
-statement
-CREATE TABLE mode_double(v double, grp string) USING parquet
-
-statement
-INSERT INTO mode_double VALUES
-  (1.5, 'a'), (1.5, 'a'), (2.5, 'a'), (NULL, 'a'),
-  (0.0D, 'b'), (-0.0D, 'b'), (-0.0D, 'b'), (7.0, 'b')
-
-query
-SELECT grp, mode(v) FROM mode_double GROUP BY grp ORDER BY grp
-
--- ============================================================
--- Signed zeros: which value wins depends on whether -0.0 and 0.0 share a key
---
--- The counts are -0.0:2, 0.0:2, 5.0:3 (the SPARK-57329 reproducer). Keeping the zeros apart makes
--- 5.0 the unique winner; folding them together makes the zero win with 4. The two candidate
--- answers differ in magnitude, so this catches the divergence even where a `-0.0` vs `0.0`
--- difference would not be visible. Neither behaviour produces a tie, so there is no dependence on
--- Spark's non-deterministic tie-break.
--- ============================================================
-
-statement
-CREATE TABLE mode_signed_zero(v double, grp string) USING parquet
-
-statement
-INSERT INTO mode_signed_zero VALUES
-  (-0.0D, 'a'), (-0.0D, 'a'),
-  (0.0D, 'a'), (0.0D, 'a'),
-  (5.0D, 'a'), (5.0D, 'a'), (5.0D, 'a')
-
-query
-SELECT grp, mode(v) FROM mode_signed_zero GROUP BY grp ORDER BY grp
-
--- ============================================================
--- NaN collapses to a single key on every supported version
---
--- `doubleToLongBits` maps every NaN bit pattern to one value, so the two NaNs outvote the single
--- 1.0 and the mode is NaN.
--- ============================================================
-
-statement
-CREATE TABLE mode_nan(v double, grp string) USING parquet
-
-statement
-INSERT INTO mode_nan VALUES
-  (CAST('NaN' AS DOUBLE), 'a'), (CAST('NaN' AS DOUBLE), 'a'), (1.0D, 'a')
-
-query
-SELECT grp, mode(v) FROM mode_nan GROUP BY grp ORDER BY grp
+-- Float / Double input is in mode_floating_point.sql, which needs Spark 3.5.2 or later. Before
+-- that, mode counts each NaN as a key of its own and falls back (mode_floating_point_spark_3_4.sql).
 
 -- ============================================================
 -- Decimal
