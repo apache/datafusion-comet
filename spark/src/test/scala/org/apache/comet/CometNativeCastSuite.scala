@@ -39,7 +39,7 @@ import org.apache.spark.sql.types.{ArrayType, BinaryType, BooleanType, ByteType,
 
 import org.apache.comet.expressions.{CometCast, CometEvalMode}
 import org.apache.comet.rules.CometScanTypeChecker
-import org.apache.comet.serde.{Compatible, Incompatible, Unsupported}
+import org.apache.comet.serde.{Compatible, Incompatible, QueryPlanSerde, Unsupported}
 
 /**
  * Spark-parity coverage for Comet's **native** `Cast` implementation, and for the
@@ -69,7 +69,7 @@ class CometNativeCastSuite
 
   import testImplicits._
 
-  test("literal cast failure in an unvisited conditional branch does not fail planning") {
+  test("LIMIT skips a row with a failing conditional literal cast") {
     withTempPath { path =>
       withSQLConf(CometConf.COMET_ENABLED.key -> "false") {
         spark
@@ -81,6 +81,8 @@ class CometNativeCastSuite
       }
       withSQLConf(SQLConf.ANSI_ENABLED.key -> "true") {
         withParquetTable(path.getCanonicalPath, "cast_branch_rows") {
+          // Both rows share a batch. Row 1 selects the failing branch, but Spark stops after
+          // row 0. A conditional mask includes row 1 even when only its Cast is dispatched.
           val cast = "CAST(IF(id = 1, 'bad', value) AS INT)"
           val masked = s"SELECT $cast AS parsed FROM cast_branch_rows LIMIT 1"
           withSQLConf(CometConf.COMET_ENABLED.key -> "false") {
@@ -114,16 +116,21 @@ class CometNativeCastSuite
     }
   }
 
-  test("successful literal casts and non-ANSI invalid casts retain native projection") {
+  test("successful and non-ANSI literal casts fold and retain Comet projection") {
     withParquetTable(Seq(Tuple1(0), Tuple1(1)), "cast_branch_controls") {
       for (ansi <- Seq("true", "false")) {
         withSQLConf(SQLConf.ANSI_ENABLED.key -> ansi) {
+          // Serialize directly so Spark's ConstantFolding cannot hide Comet's folding path.
+          val folded = QueryPlanSerde.exprToProto(Cast(Literal("1"), IntegerType), Seq.empty)
+          assert(folded.exists(expr => expr.hasLiteral && expr.getLiteral.getIntVal == 1))
           val query = "SELECT CAST(IF(_1 = 1, '1', CAST(_1 AS STRING)) AS INT) " +
             "FROM cast_branch_controls"
           checkSparkAnswerAndOperator(sql(query))
         }
       }
       withSQLConf(SQLConf.ANSI_ENABLED.key -> "false") {
+        val folded = QueryPlanSerde.exprToProto(Cast(Literal("bad"), IntegerType), Seq.empty)
+        assert(folded.exists(expr => expr.hasLiteral && expr.getLiteral.getIsNull))
         val query = "SELECT CAST(IF(_1 = 1, 'bad', CAST(_1 AS STRING)) AS INT) " +
           "FROM cast_branch_controls"
         checkSparkAnswerAndOperator(sql(query))

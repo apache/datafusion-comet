@@ -147,8 +147,9 @@ object CometCast
             case NonFatal(_) =>
               // ConstantFolding.tryFold leaves failed conditional expressions unfolded. Its
               // FAILED_TO_EVALUATE tag is private[sql], so evaluate defensively here instead.
-              // Deliberately keep this in convert: a codegen-dispatched projection evaluates
-              // a whole batch and can reach a throwing row that Spark skips under LIMIT.
+              // Deliberately keep this in convert: a native projection evaluates a whole
+              // input batch. Conditional masks still select matching rows that Spark skips
+              // under LIMIT, so dispatching only the Cast subtree does not preserve that limit.
               withFallbackReason(cast, literalCastConditionalEvalReason)
               return None
           }
