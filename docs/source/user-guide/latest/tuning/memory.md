@@ -40,7 +40,7 @@ off-heap consumers draw down one number.
 A larger pool lets the operators that can spill, such as sorts, aggregations and the shuffle writer, keep more in
 memory before they spill to disk. An operator that cannot spill fails the task when it cannot reserve the memory it
 needs. A native Iceberg fanout write is the exception: it closes some of its open files early instead (see
-[Iceberg Writes](../iceberg-writes.md#failure-handling)).
+[Iceberg Writes](../iceberg.md#failure-handling)).
 
 Comet's memory pool only tracks memory that an operator explicitly reserves, which in practice means the batches
 an operator deliberately accumulates: the sort buffer, the build side of a hash join, hash aggregation state, the

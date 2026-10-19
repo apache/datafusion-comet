@@ -1874,13 +1874,17 @@ class CometWindowExecSuite extends CometTestBase {
     // becomes the partition edge, which agrees with Spark's unwrapped bound
     // lying beyond every row.
     withTempDir { dir =>
-      Seq("0001-01-01", "1970-01-01", "2024-01-05", "9999-12-31")
-        .map(java.sql.Date.valueOf)
-        .toDF("d")
-        .repartition(1)
-        .write
-        .mode("overwrite")
-        .parquet(dir.toString)
+      // 0001-01-01 predates the Gregorian cutover, and Spark 3.x defaults the write rebase mode to
+      // EXCEPTION, so write it as-is.
+      withSQLConf("spark.sql.parquet.datetimeRebaseModeInWrite" -> "CORRECTED") {
+        Seq("0001-01-01", "1970-01-01", "2024-01-05", "9999-12-31")
+          .map(java.sql.Date.valueOf)
+          .toDF("d")
+          .repartition(1)
+          .write
+          .mode("overwrite")
+          .parquet(dir.toString)
+      }
       spark.read.parquet(dir.toString).createOrReplaceTempView("date_edge")
       for {
         order <- Seq("ASC", "DESC")

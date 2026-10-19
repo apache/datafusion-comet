@@ -71,7 +71,7 @@ expressions. The following function families are **not currently planned** for n
 - **UTF-8 validation** (`is_valid_utf8`, `make_valid_utf8`, `validate_utf8`, `try_validate_utf8`): niche Spark 4.x string-validation helpers.
 - **Miscellaneous niche** (`histogram_numeric`, `version`, `sentences`, `quote`): low-value or specialized functions with little benefit from native acceleration.
 
-The file-metadata functions `input_file_name`, `input_file_block_start`, and `input_file_block_length` depend on scan-internal per-row file information rather than the expression layer; their support status is covered in the [scan compatibility guide](compatibility/scans.md).
+The file-metadata functions `input_file_name`, `input_file_block_start`, and `input_file_block_length` depend on scan-internal per-row file information rather than the expression layer; their support status is covered in the [Parquet page](parquet.md#reading).
 
 Note that `median` and `mode` are supported: they are mainstream exact aggregates. `mode` runs natively only with `spark.comet.expression.Mode.allowIncompatible=true`. `approx_count_distinct` is supported because Comet ports Spark's `HyperLogLogPlusPlus` exactly, so its result is bit-identical to Spark.
 

@@ -93,7 +93,7 @@ which stays off by default. With it on, Comet plans an Iceberg `INSERT INTO`, `I
 and copy-on-write `DELETE`, `UPDATE` or `MERGE` as two operators, `IcebergWrite` under
 `IcebergCommit`, in place of Spark's single V2 write operator, and writes the data files of each
 eligible write natively with iceberg-rust. A write that is not eligible uses iceberg-java's writer,
-and iceberg-java commits every write. Before turning it on, see [Iceberg Writes](iceberg-writes.md)
+and iceberg-java commits every write. Before turning it on, see [Iceberg Writes](iceberg.md#writes)
 for how natively written files differ from iceberg-java's, the footer reads the native path makes on
 S3 or GCS, and how the native writer draws on Comet's off-heap memory pool.
 
