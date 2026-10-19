@@ -54,17 +54,18 @@ case class CometLocalResultExec(child: SparkPlan) extends UnaryExecNode {
     else if (sparkContext.isLocal) LocalResultHandoff.collect(execute(), n, maxResultSize)
     else super.executeTake(n)
 
-  /**
-   * Runs the query as ordinary Comet execution instead. An iterator fetches one result partition
-   * at a time to bound what it holds, and a local query has a single partition holding the whole
-   * result, so the native block runs as Spark tasks, one per partition, as without local
-   * execution.
-   */
-  override def executeToIterator(): Iterator[InternalRow] =
+  // An iterator fetches one result partition at a time to bound what it holds, and a tail scans
+  // partitions from the last one until it has enough rows. A local query has a single partition
+  // holding the whole result, so both run the native block as ordinary Comet execution instead,
+  // one Spark task per partition, as without local execution.
+  override def executeToIterator(): Iterator[InternalRow] = ordinary.executeToIterator()
+
+  override def executeTail(n: Int): Array[InternalRow] = ordinary.executeTail(n)
+
+  private def ordinary: SparkPlan =
     child
       .collectFirst { case local: CometLocalExec => ColumnarToRowExec(local.block) }
       .getOrElse(child)
-      .executeToIterator()
 
   // Spark enforces this on serialized task results; this boundary enforces it while copying.
   private def maxResultSize: Long =

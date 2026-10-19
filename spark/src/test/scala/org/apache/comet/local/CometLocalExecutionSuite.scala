@@ -300,6 +300,22 @@ class CometLocalExecutionSuite
     assert(tracker.getJobIdsForGroup(group).length == 8)
   }
 
+  test("a tail scans partitions from the last one through ordinary execution") {
+    withConf("spark.sql.ansi.enabled", "true") {
+      // As PySpark's tail does. The first partition divides by zero at id 0, but Spark reads only
+      // the last partition, which has enough rows.
+      def query(): DataFrame = spark.range(0, 20, 1, 2).selectExpr("100L DIV id AS v")
+      val plan = query().queryExecution.executedPlan
+      assert(plan.isInstanceOf[CometLocalResultExec], plan.toString)
+      assert(plan.executeTail(1).map(_.getLong(0)).toSeq == Seq(5L))
+      val sparkTail = withConf("spark.comet.enabled", "false") {
+        query().queryExecution.executedPlan.executeTail(3).map(_.getLong(0)).toSeq
+      }
+      assert(plan.executeTail(3).map(_.getLong(0)).toSeq == sparkTail)
+      assert(plan.executeTail(0).isEmpty)
+    }
+  }
+
   test("collect and take hand local results to the driver within a Spark job") {
     val query = spark.range(0, 200, 1, 5).selectExpr("id", "id % 3 AS k")
     assert(query.queryExecution.executedPlan.isInstanceOf[CometLocalResultExec])
