@@ -58,7 +58,9 @@ class CometTemporalExpressionSuite extends CometTestBase with AdaptiveSparkPlanH
       .getOrElse(
         fail(s"No SparkThrowable in cause chain: ${causeChain(error).map(_.getClass.getName)}"))
 
-  test("make_date does not evaluate an overflowing row beyond LIMIT") {
+  test("make_date does not evaluate an overflowing row beyond a partial consumer") {
+    import testImplicits._
+
     withSQLConf(
       SQLConf.ADAPTIVE_EXECUTION_ENABLED.key -> "false",
       SQLConf.OPTIMIZER_EXCLUDED_RULES.key ->
@@ -96,8 +98,24 @@ class CometTemporalExpressionSuite extends CometTestBase with AdaptiveSparkPlanH
                 plan.treeString)
               assert(df.collect().toSeq == expected)
 
-              // Without the limit the second row must be evaluated by the native expression.
-              val _ = checkSparkError(sql(query.stripSuffix(" LIMIT 1")), "ARITHMETIC_OVERFLOW")
+              val unlimited = query.stripSuffix(" LIMIT 1")
+              val partialConsumers: Seq[(String, DataFrame => Seq[Row])] = Seq(
+                ("RDD.take", df => df.rdd.take(1).toSeq),
+                (
+                  "mapPartitions",
+                  df => df.as[Int].mapPartitions(_.take(1)).collect().toSeq.map(Row(_))))
+              partialConsumers.foreach { case (name, consume) =>
+                withClue(s"$name ansi=$ansi codegen=$codegen: ") {
+                  withSQLConf(CometConf.COMET_ENABLED.key -> "false") {
+                    expected = consume(sql(unlimited))
+                  }
+                  assert(expected == Seq(Row(19723)))
+                  assert(consume(sql(unlimited)) == expected)
+                }
+              }
+
+              // A full collection must still evaluate the second row in the native expression.
+              val _ = checkSparkError(sql(unlimited), "ARITHMETIC_OVERFLOW")
             }
           }
         }

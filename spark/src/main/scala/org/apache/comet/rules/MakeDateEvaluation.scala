@@ -131,6 +131,7 @@ private[rules] object MakeDateEvaluation {
         case _ if join || rowDemand.contains("JOIN") => Some("JOIN")
         case _ if startsLimit => Some("LIMIT")
         case _: SampleExec => Some("SAMPLE")
+        case _: MapPartitionsExec => Some("a mapPartitions function")
         case _ if localMaterialization => None
         case _ => rowDemand
       }
@@ -180,6 +181,14 @@ private[rules] object MakeDateEvaluation {
       (rebuilt, fallbackReason)
     }
 
-    visit(plan, None, None)._1
+    // Dataset.rdd adds an object-producing root, and its caller may read only a few objects.
+    // EliminateSerialization can leave a typed operator, filter, or project at that root.
+    def producesObjects(op: SparkPlan): Boolean = op match {
+      case _: ObjectProducerExec => true
+      case _: FilterExec | _: ProjectExec => producesObjects(op.children.head)
+      case _ => false
+    }
+    val rootDemand = if (producesObjects(plan)) Some("code reading Dataset.rdd") else None
+    visit(plan, rootDemand, None)._1
   }
 }
