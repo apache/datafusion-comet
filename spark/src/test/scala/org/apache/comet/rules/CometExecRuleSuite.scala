@@ -28,13 +28,14 @@ import org.scalatest.PrivateMethodTester._
 
 import org.apache.logging.log4j.Level
 import org.apache.spark.sql._
-import org.apache.spark.sql.catalyst.FunctionIdentifier
-import org.apache.spark.sql.catalyst.expressions.{Alias, Attribute, AttributeReference, Descending, Expression, ExpressionInfo, GreaterThan, In, InSet, KnownFloatingPointNormalized, Literal, Not, RuntimeReplaceable, SortOrder}
+import org.apache.spark.sql.catalyst.{FunctionIdentifier, InternalRow}
+import org.apache.spark.sql.catalyst.expressions.{Alias, Ascending, Attribute, AttributeReference, BoundReference, Descending, Expression, ExpressionInfo, GreaterThan, In, InSet, KnownFloatingPointNormalized, Literal, MakeDate, Not, RuntimeReplaceable, SortOrder}
 import org.apache.spark.sql.catalyst.expressions.aggregate.{AggregateExpression, BloomFilterAggregate, Final, Min, Partial, PartialMerge}
 import org.apache.spark.sql.catalyst.expressions.objects.{Invoke, StaticInvoke}
-import org.apache.spark.sql.catalyst.optimizer.NormalizeNaNAndZero
+import org.apache.spark.sql.catalyst.optimizer.{BuildRight, NormalizeNaNAndZero}
+import org.apache.spark.sql.catalyst.plans.Inner
 import org.apache.spark.sql.catalyst.plans.logical.{LocalRelation, LogicalPlan}
-import org.apache.spark.sql.catalyst.plans.physical.{HashPartitioning, RoundRobinPartitioning}
+import org.apache.spark.sql.catalyst.plans.physical.{HashPartitioning, RoundRobinPartitioning, SinglePartition}
 import org.apache.spark.sql.catalyst.rules.Rule
 import org.apache.spark.sql.comet._
 import org.apache.spark.sql.comet.CometExec.nativeLeaves
@@ -43,7 +44,8 @@ import org.apache.spark.sql.execution._
 import org.apache.spark.sql.execution.adaptive.{AdaptiveSparkPlanExec, AQEShuffleReadExec, BroadcastQueryStageExec, LogicalQueryStage, QueryStageExec, ShuffleQueryStageExec, SimpleCost, SimpleCostEvaluator}
 import org.apache.spark.sql.execution.aggregate.{HashAggregateExec, ObjectHashAggregateExec, SortAggregateExec}
 import org.apache.spark.sql.execution.datasources.v2.BatchScanExec
-import org.apache.spark.sql.execution.exchange.{BroadcastExchangeExec, ShuffleExchangeExec}
+import org.apache.spark.sql.execution.exchange.{BroadcastExchangeExec, ReusedExchangeExec, ShuffleExchangeExec}
+import org.apache.spark.sql.execution.joins.{BroadcastHashJoinExec, HashedRelationBroadcastMode, SortMergeJoinExec}
 import org.apache.spark.sql.internal.SQLConf
 import org.apache.spark.sql.types.{DataTypes, DoubleType, FloatType, StructField, StructType}
 
@@ -124,6 +126,151 @@ class CometExecRuleSuite extends CometTestBase {
         countOperators(stage.plan, opClass)
       case op if op.getClass.isAssignableFrom(opClass) => 1
     }.sum
+  }
+
+  test("make_date preserves row demand below lazy consumers, including reused native plans") {
+    withSQLConf(
+      SQLConf.ADAPTIVE_EXECUTION_ENABLED.key -> "false",
+      CometConf.COMET_EXEC_LOCAL_TABLE_SCAN_ENABLED.key -> "true") {
+      val input = createSparkPlan(spark, "SELECT * FROM VALUES (2024), (6000000) AS t(y)")
+      val consumers: Seq[(String, SparkPlan => SparkPlan)] = Seq(
+        ("LIMIT", child => CollectLimitExec(1, child)),
+        ("LIMIT", child => LocalLimitExec(1, child)),
+        ("LIMIT", child => GlobalLimitExec(1, child)),
+        ("SAMPLE", child => SampleExec(0.0, 0.5, false, 42L, child)),
+        ("FILTER", child => FilterExec(GreaterThan(child.output.head, Literal(0)), child)))
+      for (ansi <- Seq(false, true)) {
+        def project: SparkPlan = ProjectExec(
+          Seq(
+            input.output.head,
+            Alias(MakeDate(input.output.head, Literal(1), Literal(1), ansi), "date")()),
+          input)
+        val native = applyCometExecRule(project)
+        assert(countOperators(native, classOf[CometProjectExec]) == 1, native.treeString)
+        for ((boundary, consume) <- consumers; reused <- Seq(false, true)) {
+          val child = if (reused) applyCometExecRule(project) else project
+          val converted = applyCometExecRule(consume(child))
+          for (result <- Seq(converted, applyCometExecRule(converted))) {
+            withClue(s"ansi=$ansi reused=$reused $boundary\n${result.treeString}") {
+              assert(countOperators(result, classOf[ProjectExec]) == 1)
+              assert(countOperators(result, classOf[CometProjectExec]) == 0)
+              assert(
+                new ExtendedExplainInfo()
+                  .getFallbackReasons(result)
+                  .exists(_.contains(s"make_date requires Spark evaluation below $boundary")))
+            }
+          }
+        }
+
+        // These consumers evaluate their complete input independently of the outer limit.
+        val materializers: Seq[SparkPlan => SparkPlan] = Seq(
+          child => SortExec(Seq(SortOrder(child.output.head, Ascending)), false, child),
+          child => ShuffleExchangeExec(SinglePartition, child))
+        materializers.foreach { materialize =>
+          val result = applyCometExecRule(LocalLimitExec(1, materialize(project)))
+          assert(countOperators(result, classOf[CometProjectExec]) == 1, result.treeString)
+          assert(
+            !new ExtendedExplainInfo()
+              .getFallbackReasons(result)
+              .exists(_.contains("make_date requires Spark evaluation below LIMIT")))
+        }
+      }
+    }
+  }
+
+  test("make_date join input demand reaches local sorts before hash join rewriting") {
+    withSQLConf(
+      SQLConf.ADAPTIVE_EXECUTION_ENABLED.key -> "false",
+      CometConf.COMET_EXEC_LOCAL_TABLE_SCAN_ENABLED.key -> "true",
+      CometConf.COMET_FORCE_SHJ.key -> "true",
+      CometConf.COMET_FORCE_SHJ_MAX_BUILD_SIZE.key -> "-1") {
+      val left = createSparkPlan(spark, "SELECT * FROM VALUES (2024), (6000000) AS t(y)")
+      val right = createSparkPlan(spark, "SELECT * FROM VALUES (2024) AS t(y)")
+      val date = MakeDate(left.output.head, Literal(1), Literal(1), failOnError = false)
+      val projection = ProjectExec(Seq(left.output.head, Alias(date, "date")()), left)
+      def sort(child: SparkPlan): SparkPlan =
+        SortExec(Seq(SortOrder(child.output.head, Ascending)), false, child)
+      val join = SortMergeJoinExec(
+        Seq(left.output.head),
+        Seq(right.output.head),
+        Inner,
+        None,
+        sort(applyCometExecRule(projection)),
+        sort(right))
+      val converted = applyCometExecRule(join)
+      for (result <- Seq(converted, applyCometExecRule(converted))) {
+        assert(countOperators(result, classOf[SortMergeJoinExec]) == 1, result.treeString)
+        assert(countOperators(result, classOf[CometProjectExec]) == 0, result.treeString)
+        assert(countOperators(result, classOf[ProjectExec]) == 1, result.treeString)
+        assert(
+          new ExtendedExplainInfo()
+            .getFallbackReasons(result)
+            .exists(_.contains("make_date requires Spark evaluation below JOIN")))
+      }
+    }
+  }
+
+  test("make_date fallback reuses native broadcast rows in Spark's broadcast representation") {
+    withSQLConf(
+      SQLConf.ADAPTIVE_EXECUTION_ENABLED.key -> "false",
+      SQLConf.WHOLESTAGE_CODEGEN_ENABLED.key -> "false",
+      CometConf.COMET_EXEC_RANGE_ENABLED.key -> "true",
+      CometConf.COMET_EXEC_LOCAL_TABLE_SCAN_ENABLED.key -> "true") {
+      val input = createSparkPlan(spark, "SELECT * FROM VALUES (2024) AS t(y)")
+      val date = MakeDate(input.output.head, Literal(1), Literal(1), failOnError = false)
+      val probe =
+        applyCometExecRule(ProjectExec(Seq(input.output.head, Alias(date, "date")()), input))
+      val build = applyCometExecRule(
+        createSparkPlan(spark, "SELECT CAST(id AS INT) AS y FROM range(2024, 2026, 1, 2)"))
+      assert(build.isInstanceOf[CometNativeExec], build.treeString)
+      val key = build.output.head
+      val mode = HashedRelationBroadcastMode(Seq(BoundReference(0, key.dataType, key.nullable)))
+      val sparkExchange = BroadcastExchangeExec(mode, build)
+      val exchange = CometBroadcastExchangeExec(sparkExchange, build.output, mode, build)
+      val reused = ReusedExchangeExec(build.output.map(_.newInstance()), exchange)
+      val inputs = Seq[SparkPlan](
+        exchange,
+        reused,
+        BroadcastQueryStageExec(0, exchange, exchange.canonicalized),
+        BroadcastQueryStageExec(1, reused, reused.canonicalized))
+      inputs.zipWithIndex.foreach { case (broadcast, index) =>
+        val original = BroadcastHashJoinExec(
+          Seq(probe.output.head),
+          Seq(broadcast.output.head),
+          Inner,
+          BuildRight,
+          None,
+          probe,
+          broadcast)
+        // Model a native plan supplied by an earlier planning pass; its parent must restore it.
+        val native = CometBroadcastHashJoinExec.createExec(
+          OperatorOuterClass.Operator.getDefaultInstance,
+          original)
+        val converted = applyCometExecRule(native)
+        for (result <- Seq(converted, applyCometExecRule(converted))) {
+          val join = result.asInstanceOf[BroadcastHashJoinExec]
+          val restored = join.right.asInstanceOf[CometColumnarToRowExec]
+          assert(restored.output == broadcast.output)
+          assert(restored.child eq broadcast)
+          assert(countOperators(join.left, classOf[CometProjectExec]) == 0)
+        }
+        if (index == 0) {
+          val restored = converted
+            .asInstanceOf[BroadcastHashJoinExec]
+            .right
+            .asInstanceOf[CometColumnarToRowExec]
+          // HashedRelation is private[execution]; inspect Spark's broadcast through its keys/get
+          // methods. A two-partition build must not duplicate relation rows.
+          val relation = restored.executeBroadcast[Any]().value.asInstanceOf[AnyRef]
+          val keys = PrivateMethod[Iterator[InternalRow]](Symbol("keys"))
+          val get = PrivateMethod[Iterator[InternalRow]](Symbol("get"))
+          val rows = (relation invokePrivate keys()).flatMap { key =>
+            (relation invokePrivate get(key)).map(_.copy()).toVector
+          }.toVector
+          assert(rows.map(_.getInt(0)).sorted == Seq(2024, 2025))
+        }
+      }
+    }
   }
 
   /**
