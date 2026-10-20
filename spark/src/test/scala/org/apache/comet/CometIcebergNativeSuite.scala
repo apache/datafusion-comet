@@ -1272,6 +1272,256 @@ class CometIcebergNativeSuite
     }
   }
 
+  /**
+   * Runs each query through [[checkIcebergNativeScan]] and returns one message per query that
+   * failed, so every query is reported rather than only the first.
+   */
+  private def failingNativeScanChecks(queries: Seq[String]): Seq[String] =
+    queries.flatMap { q =>
+      try {
+        checkIcebergNativeScan(q)
+        None
+      } catch {
+        case scala.util.control.NonFatal(e) =>
+          val plan =
+            try spark.sql(q).queryExecution.executedPlan.toString
+            catch { case scala.util.control.NonFatal(pe) => s"<plan failed: ${pe.getMessage}>" }
+          Some(s"QUERY: $q\nERROR: ${e.getMessage}\nPLAN:\n$plan")
+      }
+    }
+
+  private def withCaseCatalog(warehouseDir: File, caseSensitive: Boolean)(f: => Unit): Unit =
+    withSQLConf(
+      "spark.sql.catalog.case_cat" -> "org.apache.iceberg.spark.SparkCatalog",
+      "spark.sql.catalog.case_cat.type" -> "hadoop",
+      "spark.sql.catalog.case_cat.warehouse" -> warehouseDir.getAbsolutePath,
+      SQLConf.CASE_SENSITIVE.key -> caseSensitive.toString,
+      CometConf.COMET_ENABLED.key -> "true",
+      CometConf.COMET_EXEC_ENABLED.key -> "true",
+      CometConf.COMET_ICEBERG_NATIVE_ENABLED.key -> "true")(f)
+
+  test("issue 5540: case-sensitive read of columns a and A") {
+    assume(icebergAvailable, "Iceberg not available in classpath")
+    withTempIcebergDir { warehouseDir =>
+      withCaseCatalog(warehouseDir, caseSensitive = true) {
+        val t = "case_cat.db.case_pair"
+        spark.sql(s"CREATE TABLE $t (a INT, A INT) USING iceberg")
+        spark.sql(s"INSERT INTO $t VALUES (1, 20), (3, 40)")
+        val failures = failingNativeScanChecks(
+          Seq(
+            s"SELECT a, A FROM $t ORDER BY a",
+            s"SELECT A, a FROM $t ORDER BY a",
+            s"SELECT A FROM $t ORDER BY A",
+            s"SELECT a FROM $t ORDER BY a",
+            s"SELECT * FROM $t ORDER BY a"))
+        spark.sql(s"DROP TABLE $t")
+        assert(failures.isEmpty, failures.mkString("\n\n=====\n\n"))
+      }
+    }
+  }
+
+  test("issue 5540: case-sensitive filters on columns a and A") {
+    assume(icebergAvailable, "Iceberg not available in classpath")
+    withTempIcebergDir { warehouseDir =>
+      withCaseCatalog(warehouseDir, caseSensitive = true) {
+        val t = "case_cat.db.case_pair_filter"
+        spark.sql(s"CREATE TABLE $t (a INT, A INT) USING iceberg")
+        spark.sql(s"INSERT INTO $t VALUES (1, 20), (3, 40)")
+        // a spans [1, 3] and A spans [20, 40]: a filter on one column bound to the other would
+        // prune the whole row group or keep the wrong row.
+        val failures = failingNativeScanChecks(
+          Seq(
+            s"SELECT a FROM $t WHERE A = 40",
+            s"SELECT A FROM $t WHERE a = 3",
+            s"SELECT A FROM $t WHERE A = 40",
+            s"SELECT a FROM $t WHERE a = 3",
+            s"SELECT a, A FROM $t WHERE A = 40",
+            s"SELECT a, A FROM $t WHERE a = 3",
+            s"SELECT a FROM $t WHERE A > 30",
+            s"SELECT a FROM $t WHERE A IN (20)",
+            s"SELECT A FROM $t WHERE a < 2"))
+        spark.sql(s"DROP TABLE $t")
+        assert(failures.isEmpty, failures.mkString("\n\n=====\n\n"))
+      }
+    }
+  }
+
+  test("issue 5540: case-sensitive equality deletes keyed on a and on A") {
+    assume(icebergAvailable, "Iceberg not available in classpath")
+    withTempIcebergDir { warehouseDir =>
+      withCaseCatalog(warehouseDir, caseSensitive = true) {
+        val t = "case_cat.db.case_pair_eq"
+        spark.sql(
+          s"CREATE TABLE $t (a INT, A INT) USING iceberg TBLPROPERTIES ('format-version' = '2')")
+        spark.sql(s"INSERT INTO $t VALUES (1, 20), (3, 40), (5, 60)")
+        // One delete keyed on `a` and one keyed on `A`: binding either key by a folded name
+        // misreads one of them whichever field the fold resolves to. Only (5, 60) survives.
+        commitEqualityDelete("case_cat", "db", "case_pair_eq", "a", 1, warehouseDir)
+        commitEqualityDelete("case_cat", "db", "case_pair_eq", "A", 40, warehouseDir)
+        val failures = failingNativeScanChecks(
+          Seq(
+            s"SELECT a, A FROM $t ORDER BY a",
+            s"SELECT A FROM $t ORDER BY A",
+            s"SELECT a FROM $t ORDER BY a",
+            s"SELECT count(*) FROM $t"))
+        spark.sql(s"DROP TABLE $t")
+        assert(failures.isEmpty, failures.mkString("\n\n=====\n\n"))
+      }
+    }
+  }
+
+  test("issue 5540: case-insensitive control on mixed-case column names") {
+    assume(icebergAvailable, "Iceberg not available in classpath")
+    withTempIcebergDir { warehouseDir =>
+      withCaseCatalog(warehouseDir, caseSensitive = false) {
+        val t = "case_cat.db.mixed_case"
+        spark.sql(
+          s"CREATE TABLE $t (Id INT, Val INT) USING iceberg " +
+            "TBLPROPERTIES ('format-version' = '2')")
+        spark.sql(s"INSERT INTO $t VALUES (1, 20), (3, 40), (5, 60)")
+        commitEqualityDelete("case_cat", "db", "mixed_case", "Id", 1, warehouseDir)
+        val failures = failingNativeScanChecks(
+          Seq(
+            s"SELECT id, VAL FROM $t ORDER BY ID",
+            s"SELECT ID FROM $t WHERE val = 40",
+            s"SELECT * FROM $t WHERE ID > 2 ORDER BY id"))
+        spark.sql(s"DROP TABLE $t")
+        assert(failures.isEmpty, failures.mkString("\n\n=====\n\n"))
+      }
+    }
+  }
+
+  test("issue 5540: case-insensitive read of columns a and A with equality deletes") {
+    assume(icebergAvailable, "Iceberg not available in classpath")
+    withTempIcebergDir { warehouseDir =>
+      val t = "case_cat.db.case_pair_ci"
+      withCaseCatalog(warehouseDir, caseSensitive = true) {
+        spark.sql(
+          s"CREATE TABLE $t (a INT, A INT) USING iceberg TBLPROPERTIES ('format-version' = '2')")
+        spark.sql(s"INSERT INTO $t VALUES (1, 20), (3, 40), (5, 60)")
+        commitEqualityDelete("case_cat", "db", "case_pair_ci", "a", 1, warehouseDir)
+        commitEqualityDelete("case_cat", "db", "case_pair_ci", "A", 40, warehouseDir)
+      }
+      // `a` is ambiguous here, so the queries name no column: only (5, 60) survives. Spark 4.1+
+      // rejects the duplicate columns itself before any scan runs.
+      withCaseCatalog(warehouseDir, caseSensitive = false) {
+        Seq(s"SELECT * FROM $t", s"SELECT count(*) FROM $t").foreach { query =>
+          if (isSpark41Plus) {
+            val e = intercept[org.apache.spark.sql.AnalysisException](spark.sql(query).collect())
+            assert(e.getMessage.contains("COLUMN_ALREADY_EXISTS"), e.getMessage)
+          } else {
+            checkIcebergNativeScan(query)
+          }
+        }
+      }
+      withCaseCatalog(warehouseDir, caseSensitive = true) {
+        spark.sql(s"DROP TABLE $t")
+      }
+    }
+  }
+
+  test("issue 5540: equality delete survives a case-only column rename") {
+    assume(icebergAvailable, "Iceberg not available in classpath")
+    withTempIcebergDir { warehouseDir =>
+      val t = "case_cat.db.case_rename"
+      withCaseCatalog(warehouseDir, caseSensitive = true) {
+        spark.sql(
+          s"CREATE TABLE $t (id INT, val INT) USING iceberg " +
+            "TBLPROPERTIES ('format-version' = '2')")
+        spark.sql(s"INSERT INTO $t VALUES (1, 10), (2, 20), (3, 30)")
+        commitEqualityDelete("case_cat", "db", "case_rename", "id", 2, warehouseDir)
+        spark.sql(s"ALTER TABLE $t RENAME COLUMN id TO ID")
+      }
+      Seq(true, false).foreach { caseSensitive =>
+        withCaseCatalog(warehouseDir, caseSensitive) {
+          checkIcebergNativeScan(s"SELECT ID, val FROM $t ORDER BY ID")
+          checkIcebergNativeScan(s"SELECT count(*) FROM $t")
+        }
+      }
+      withCaseCatalog(warehouseDir, caseSensitive = true) {
+        spark.sql(s"DROP TABLE $t")
+      }
+    }
+  }
+
+  test("issue 5540: name mapping onto physical columns that differ in case") {
+    assume(icebergAvailable, "Iceberg not available in classpath")
+    withTempIcebergDir { warehouseDir =>
+      val t = "case_cat.db.case_mapped"
+      val dataPath = s"${warehouseDir.getAbsolutePath}/case_mapped_src"
+      withCaseCatalog(warehouseDir, caseSensitive = false) {
+        spark
+          .sql("SELECT CAST(id AS INT) AS ID, CAST(id * 10 AS INT) AS Val FROM range(1, 4)")
+          .coalesce(1)
+          .write
+          .parquet(dataPath)
+        spark.sql(s"CREATE TABLE $t (id INT, val INT) USING iceberg")
+        // Set before the import, which computes the file's column metrics by field id through
+        // this mapping, so `WHERE id = 2` reads a file with stats.
+        spark.sql(
+          s"ALTER TABLE $t SET TBLPROPERTIES ('schema.name-mapping.default' = " +
+            """'[{"field-id":1,"names":["ID"]},{"field-id":2,"names":["Val"]}]')""")
+        val icebergTable = spark.sessionState.catalogManager
+          .catalog("case_cat")
+          .asInstanceOf[org.apache.iceberg.spark.SparkCatalog]
+          .loadTable(
+            org.apache.spark.sql.connector.catalog.Identifier.of(Array("db"), "case_mapped"))
+          .asInstanceOf[org.apache.iceberg.spark.source.SparkTable]
+          .table()
+        spark.sql(s"CREATE TABLE parquet_case_mapped USING parquet LOCATION '$dataPath'")
+        try {
+          Class
+            .forName("org.apache.iceberg.spark.SparkTableUtil")
+            .getMethod(
+              "importSparkTable",
+              classOf[org.apache.spark.sql.SparkSession],
+              classOf[org.apache.spark.sql.catalyst.TableIdentifier],
+              classOf[org.apache.iceberg.Table],
+              classOf[String])
+            .invoke(
+              null,
+              spark,
+              new org.apache.spark.sql.catalyst.TableIdentifier("parquet_case_mapped"),
+              icebergTable,
+              s"${warehouseDir.getAbsolutePath}/staging")
+          Seq(true, false).foreach { caseSensitive =>
+            withCaseCatalog(warehouseDir, caseSensitive) {
+              checkIcebergNativeScan(s"SELECT id, val FROM $t ORDER BY id")
+              checkIcebergNativeScan(s"SELECT val FROM $t WHERE id = 2")
+            }
+          }
+        } finally {
+          spark.sql("DROP TABLE IF EXISTS parquet_case_mapped")
+          spark.sql(s"DROP TABLE IF EXISTS $t")
+        }
+      }
+    }
+  }
+
+  test("issue 5540: nested struct field renamed by case only") {
+    assume(icebergAvailable, "Iceberg not available in classpath")
+    withTempIcebergDir { warehouseDir =>
+      val t = "case_cat.db.case_nested"
+      withCaseCatalog(warehouseDir, caseSensitive = true) {
+        spark.sql(s"CREATE TABLE $t (id INT, s STRUCT<x: INT, y: INT>) USING iceberg")
+        spark.sql(
+          s"INSERT INTO $t VALUES (1, named_struct('x', 10, 'y', 100)), " +
+            "(2, named_struct('x', 20, 'y', 200))")
+        spark.sql(s"ALTER TABLE $t RENAME COLUMN s.x TO X")
+      }
+      // A nested rename falls back, so the native reader never sees `s.x` under the name `s.X`.
+      withCaseCatalog(warehouseDir, caseSensitive = false) {
+        Seq(
+          s"SELECT id, s FROM $t ORDER BY id",
+          s"SELECT id, s.X FROM $t ORDER BY id",
+          s"SELECT id FROM $t WHERE s.X = 20").foreach { query =>
+          checkNestedFieldEvolutionFallback(query, "s.X (renamed from x)")
+        }
+        spark.sql(s"DROP TABLE $t")
+      }
+    }
+  }
+
   test("MOR table with multiple delete operations - mixed delete types") {
     assume(icebergAvailable, "Iceberg not available in classpath")
 

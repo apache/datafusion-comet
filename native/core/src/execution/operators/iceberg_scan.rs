@@ -236,8 +236,7 @@ impl IcebergScanExec {
         let scan_metrics = scan_result.metrics().clone();
         let stream = scan_result.stream();
 
-        let spark_options = SparkParquetOptions::new(EvalMode::Legacy, "UTC");
-        let adapter_factory = SparkPhysicalExprAdapterFactory::new(spark_options, None);
+        let adapter_factory = SparkPhysicalExprAdapterFactory::new(iceberg_parquet_options(), None);
 
         let adapted_stream =
             stream.map_err(|e| DataFusionError::Execution(format!("Iceberg scan error: {}", e)));
@@ -488,12 +487,13 @@ where
                             .adapter_factory
                             .create(Arc::clone(&self.schema), Arc::clone(&file_schema))?;
                         let exprs =
-                            build_projection_expressions(&self.schema, &adapter).map_err(|e| {
-                                DataFusionError::Execution(format!(
-                                    "Failed to build projection expressions: {}",
-                                    e
-                                ))
-                            })?;
+                            build_projection_expressions(&self.schema, &file_schema, &adapter)
+                                .map_err(|e| {
+                                    DataFusionError::Execution(format!(
+                                        "Failed to build projection expressions: {}",
+                                        e
+                                    ))
+                                })?;
                         self.cached = Some(CachedProjection {
                             file_schema,
                             projection_exprs: exprs,
@@ -576,21 +576,39 @@ impl fmt::Debug for RedactedProperties<'_> {
     }
 }
 
+/// Adapter options for iceberg-rust batches. Both the batches and Spark's scan attributes carry
+/// the table schema's names, so matching is exact: folding case would only report columns that
+/// differ in case as duplicates.
+fn iceberg_parquet_options() -> SparkParquetOptions {
+    let mut options = SparkParquetOptions::new(EvalMode::Legacy, "UTC");
+    options.case_sensitive = true;
+    options
+}
+
 /// Build projection expressions that adapt batches from a file schema to the target schema.
 ///
 /// The returned expressions can be cached and reused across multiple batches
 /// that share the same file schema, avoiding repeated expression construction.
+///
+/// iceberg-rust emits every projected top-level column, present even when the file lacks it, so
+/// a top-level target column absent from `file_schema` is an error rather than a null column.
 fn build_projection_expressions(
     target_schema: &SchemaRef,
+    file_schema: &SchemaRef,
     adapter: &Arc<dyn PhysicalExprAdapter>,
 ) -> DFResult<Vec<Arc<dyn PhysicalExpr>>> {
     target_schema
         .fields()
         .iter()
-        .enumerate()
-        .map(|(i, _field)| {
+        .map(|field| {
+            if file_schema.fields().find(field.name()).is_none() {
+                return Err(DataFusionError::Execution(format!(
+                    "Iceberg scan column '{}' is missing from the batch read by iceberg-rust",
+                    field.name()
+                )));
+            }
             let col_expr: Arc<dyn PhysicalExpr> = Arc::new(Column::new_with_schema(
-                target_schema.field(i).name(),
+                field.name(),
                 target_schema.as_ref(),
             )?);
             adapter.rewrite(col_expr)
@@ -658,9 +676,8 @@ mod tests {
             Field::new("a", DataType::Int64, false),
             Field::new("b", DataType::Int64, false),
         ]));
-        let mut options = super::SparkParquetOptions::new(super::EvalMode::Legacy, "UTC");
-        options.case_sensitive = true;
-        let factory = super::SparkPhysicalExprAdapterFactory::new(options, None);
+        let factory =
+            super::SparkPhysicalExprAdapterFactory::new(super::iceberg_parquet_options(), None);
         for name in ["a", "b"] {
             let target = Arc::new(ArrowSchema::new(vec![Field::new(
                 name,
@@ -670,7 +687,7 @@ mod tests {
             let adapter = factory
                 .create(Arc::clone(&target), Arc::clone(&physical))
                 .unwrap();
-            let result = super::build_projection_expressions(&target, &adapter);
+            let result = super::build_projection_expressions(&target, &physical, &adapter);
             if name == "a" {
                 let error = result
                     .expect_err("selected root must be ambiguous")
@@ -702,6 +719,78 @@ mod tests {
         }
     }
 
+    #[test]
+    fn projection_distinguishes_case_variant_roots() {
+        use arrow::array::Int64Array;
+        use arrow::datatypes::{DataType, Field, Schema as ArrowSchema};
+        use datafusion_physical_expr_adapter::PhysicalExprAdapterFactory;
+
+        let physical = Arc::new(ArrowSchema::new(vec![
+            Field::new("a", DataType::Int64, false),
+            Field::new("A", DataType::Int64, false),
+        ]));
+        let batch = super::RecordBatch::try_new(
+            Arc::clone(&physical),
+            vec![
+                Arc::new(Int64Array::from(vec![1])),
+                Arc::new(Int64Array::from(vec![2])),
+            ],
+        )
+        .unwrap();
+        let factory =
+            super::SparkPhysicalExprAdapterFactory::new(super::iceberg_parquet_options(), None);
+        for (names, expected) in [
+            (vec!["a", "A"], vec![1, 2]),
+            (vec!["A"], vec![2]),
+            (vec!["a"], vec![1]),
+        ] {
+            let target = Arc::new(ArrowSchema::new(
+                names
+                    .iter()
+                    .map(|name| Field::new(*name, DataType::Int64, false))
+                    .collect::<Vec<_>>(),
+            ));
+            let adapter = factory
+                .create(Arc::clone(&target), Arc::clone(&physical))
+                .unwrap();
+            let exprs = super::build_projection_expressions(&target, &physical, &adapter)
+                .unwrap_or_else(|e| panic!("{names:?}: {e}"));
+            let output =
+                super::adapt_batch_with_expressions(batch.clone(), &target, &exprs).unwrap();
+            let values: Vec<i64> = output
+                .columns()
+                .iter()
+                .map(|c| c.as_any().downcast_ref::<Int64Array>().unwrap().value(0))
+                .collect();
+            assert_eq!(values, expected, "{names:?}");
+        }
+    }
+
+    #[test]
+    fn projection_rejects_missing_top_level_column() {
+        use arrow::datatypes::{DataType, Field, Schema as ArrowSchema};
+        use datafusion_physical_expr_adapter::PhysicalExprAdapterFactory;
+
+        let physical = Arc::new(ArrowSchema::new(vec![Field::new(
+            "a",
+            DataType::Int64,
+            true,
+        )]));
+        let target = Arc::new(ArrowSchema::new(vec![
+            Field::new("a", DataType::Int64, true),
+            Field::new("b", DataType::Int64, true),
+        ]));
+        let factory =
+            super::SparkPhysicalExprAdapterFactory::new(super::iceberg_parquet_options(), None);
+        let adapter = factory
+            .create(Arc::clone(&target), Arc::clone(&physical))
+            .unwrap();
+        let error = super::build_projection_expressions(&target, &physical, &adapter)
+            .expect_err("a missing top-level column must not read as null")
+            .to_string();
+        assert!(error.contains("'b' is missing"), "{error}");
+    }
+
     fn task_with_deletes(deletes: Vec<FileScanTaskDeleteFile>) -> FileScanTask {
         FileScanTask::builder()
             .with_file_size_in_bytes(0)
@@ -712,7 +801,7 @@ mod tests {
             .with_schema(Arc::new(Schema::builder().build().unwrap()))
             .with_project_field_ids(vec![])
             .with_deletes(deletes)
-            .with_case_sensitive(false)
+            .with_case_sensitive(true)
             .build()
             .unwrap()
     }
