@@ -23,7 +23,7 @@ import scala.annotation.tailrec
 import scala.jdk.CollectionConverters._
 
 import org.apache.spark.SPARK_VERSION
-import org.apache.spark.sql.catalyst.expressions.{And, ArrayAggregate, ArrayAppend, ArrayContains, ArrayDistinct, ArrayExcept, ArrayExists, ArrayFilter, ArrayForAll, ArrayInsert, ArrayIntersect, ArrayJoin, ArrayMax, ArrayMin, ArrayPosition, ArrayRemove, ArraySort, ArraysOverlap, ArraysZip, ArrayTransform, ArrayUnion, Attribute, BoundReference, Cast, CreateArray, ElementAt, EmptyRow, Expression, Flatten, GetArrayItem, IsNotNull, IsNull, LambdaFunction, Literal, NamedLambdaVariable, Reverse, Sequence, Size, Slice, SortArray, ZipWith}
+import org.apache.spark.sql.catalyst.expressions.{And, ArrayAggregate, ArrayAppend, ArrayContains, ArrayDistinct, ArrayExcept, ArrayExists, ArrayFilter, ArrayForAll, ArrayInsert, ArrayIntersect, ArrayJoin, ArrayMax, ArrayMin, ArrayPosition, ArrayRemove, ArraySort, ArraysOverlap, ArraysZip, ArrayTransform, ArrayUnion, Attribute, BoundReference, Cast, CreateArray, ElementAt, EmptyRow, Expression, Flatten, GetArrayItem, GreaterThan, If, IsNotNull, IsNull, LambdaFunction, LessThan, Literal, NamedLambdaVariable, Reverse, Sequence, Size, Slice, SortArray, ZipWith}
 import org.apache.spark.sql.catalyst.util.GenericArrayData
 import org.apache.spark.sql.comet.util.Utils
 import org.apache.spark.sql.internal.SQLConf
@@ -469,6 +469,16 @@ object CometArraysOverlap
   override def getSupportLevel(expr: ArraysOverlap): SupportLevel =
     ArrayElementEqualitySupport.getSupportLevel("arrays_overlap", expr.left.dataType)
 
+  /**
+   * The native variant for a Spark version. Where ArraySetSupport.normalizesFloats holds, Spark
+   * normalizes flat FLOAT and DOUBLE elements, so -0.0 and 0.0 are one value, and the
+   * `_normalized` variant matches them that way. Earlier releases keep the zeros apart. Both
+   * variants treat every NaN as one value and compare nested elements in Spark's SQL ordering.
+   */
+  def nativeFunction(version: String): String =
+    if (ArraySetSupport.normalizesFloats(version)) "spark_arrays_overlap_normalized"
+    else "spark_arrays_overlap"
+
   override def convert(
       expr: ArraysOverlap,
       inputs: Seq[Attribute],
@@ -477,7 +487,7 @@ object CometArraysOverlap
     val rightArrayExprProto = exprToProtoInternal(expr.right, inputs, binding)
 
     val arraysOverlapScalarExpr = scalarFunctionExprToProtoWithReturnType(
-      "spark_arrays_overlap",
+      nativeFunction(SPARK_VERSION),
       BooleanType,
       false,
       leftArrayExprProto,
@@ -721,7 +731,8 @@ private[comet] object ArraySetSupport {
   // Spark 4.2.0 normalizes the arguments of these functions in the plan (SPARK-54918), and 4.0.5,
   // 4.1.4 and 4.2.1 normalize while evaluating them (SPARK-59602). Either way, Spark treats -0.0
   // and 0.0, and every NaN, as one value at any depth, which the spark_ variants match. Earlier
-  // releases keep -0.0 and 0.0 apart in a flat array. The check reads the version rather than a
+  // releases keep -0.0 and 0.0 apart in a flat array. Both changes cover arrays_overlap too (see
+  // CometArraysOverlap.nativeFunction). The check reads the version rather than a
   // KnownFloatingPointNormalized marker, because SPARK-59602 adds no marker, and SPARK-54918
   // normalizes CreateArray, If, CaseWhen and Coalesce without wrapping the resulting array.
   def normalizesFloats(version: String): Boolean =
@@ -1293,7 +1304,39 @@ object CometArrayForAll extends CometCodegenDispatch[ArrayForAll]
 
 object CometArrayAggregate extends CometCodegenDispatch[ArrayAggregate]
 
-object CometArraySort extends CometCodegenDispatch[ArraySort]
+object CometArraySort extends CometExpressionSerde[ArraySort] with CometTypeShim {
+  private def usesDefaultComparator(expr: ArraySort): Boolean = expr.function match {
+    case lambda: LambdaFunction if lambda.arguments.length == 2 =>
+      val left = lambda.arguments.head
+      val right = lambda.arguments(1)
+      val noNulls = If(
+        LessThan(left, right),
+        Literal(-1),
+        If(GreaterThan(left, right), Literal(1), Literal(0)))
+      val withNulls = If(
+        And(IsNull(left), IsNull(right)),
+        Literal(0),
+        If(IsNull(left), Literal(1), If(IsNull(right), Literal(-1), noNulls)))
+      lambda.function == withNulls ||
+      (!expr.argument.dataType.asInstanceOf[ArrayType].containsNull &&
+        lambda.function == noNulls)
+    case _ => false
+  }
+
+  override def convert(
+      expr: ArraySort,
+      inputs: Seq[Attribute],
+      binding: Boolean): Option[ExprOuterClass.Expr] = {
+    val elementType = expr.argument.dataType.asInstanceOf[ArrayType].elementType
+    if (usesDefaultComparator(expr) && !hasNonDefaultStringCollation(elementType)) {
+      scalarFunctionExprToProto(
+        "spark_array_sort",
+        exprToProtoInternal(expr.argument, inputs, binding))
+    } else {
+      CometScalaUDF.emitJvmCodegenDispatch(expr, inputs, binding)
+    }
+  }
+}
 
 object CometZipWith extends CometCodegenDispatch[ZipWith]
 
