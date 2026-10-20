@@ -39,6 +39,14 @@ import org.apache.hadoop.security.alias.CredentialProviderFactory
  */
 class S3ConfigGateSuite extends AnyFunSuite {
 
+  /**
+   * A Hadoop `Configuration` variable reference to `key`, as `Configuration#get` expands it.
+   * Built by concatenation: written as a literal, it reads to scalac as a string missing its `s`
+   * interpolator, and adding the `s` (escaping the dollar) is then flagged by scalafix as
+   * redundant.
+   */
+  private def varRef(key: String): String = "${" + key + "}"
+
   // The build points java.io.tmpdir under target/, which a fresh checkout may not have yet; the
   // keystore and temp-directory fixtures below create their files there.
   Files.createDirectories(Paths.get(System.getProperty("java.io.tmpdir")))
@@ -287,19 +295,19 @@ class S3ConfigGateSuite extends AnyFunSuite {
   }
 
   test("s3ConfigDivergenceReason declines when a long-form bucket credential holds a Hadoop " +
-    s"$${...} reference that DOES resolve, with nothing else set (substitution alone does not " +
+    s"${varRef("...")} reference that DOES resolve, with nothing else set (substitution alone does not " +
     "erase the long-form divergence: native's short-then-global read never consults the long " +
     "form regardless of what it expands to), naming the base key and bucket but never a value") {
     val conf = new Configuration(false)
     conf.set("review.longFormAccess", "AKIALONGRESOLVED")
-    conf.set("fs.s3a.bucket.mybucket.fs.s3a.access.key", s"$${review.longFormAccess}")
+    conf.set("fs.s3a.bucket.mybucket.fs.s3a.access.key", varRef("review.longFormAccess"))
     val reason = S3ConfigGate
       .s3ConfigDivergenceReason(conf, Seq(new URI("s3a://mybucket/part-0.parquet")))
     assert(reason.isDefined)
     assert(reason.get.contains("fs.s3a.access.key"))
     assert(reason.get.contains("mybucket"))
     assert(!reason.get.contains("AKIALONGRESOLVED"))
-    assert(!reason.get.contains(s"$${review.longFormAccess}"))
+    assert(!reason.get.contains(varRef("review.longFormAccess")))
   }
 
   test(
@@ -360,7 +368,7 @@ class S3ConfigGateSuite extends AnyFunSuite {
       "bucket options, still resolves the global one), naming the base key and bucket but " +
       "never a credential value") {
     val conf = new Configuration(false)
-    conf.set("fs.s3a.bucket.mybucket.access.key", s"$${fs.s3a.custom.ref}")
+    conf.set("fs.s3a.bucket.mybucket.access.key", varRef("fs.s3a.custom.ref"))
     conf.set("fs.s3a.bucket.mybucket.custom.ref", "bucket-scoped-value")
     conf.set("fs.s3a.custom.ref", "global-value")
 
@@ -386,7 +394,7 @@ class S3ConfigGateSuite extends AnyFunSuite {
       "bucket-scoped key whose propagated value happens to equal the global value (no actual " +
       "divergence, despite the same shadowing mechanism as the declining case above)") {
     val conf = new Configuration(false)
-    conf.set("fs.s3a.bucket.mybucket.access.key", s"$${fs.s3a.custom.ref}")
+    conf.set("fs.s3a.bucket.mybucket.access.key", varRef("fs.s3a.custom.ref"))
     conf.set("fs.s3a.bucket.mybucket.custom.ref", "same-value")
     conf.set("fs.s3a.custom.ref", "same-value")
     assert(
@@ -397,7 +405,7 @@ class S3ConfigGateSuite extends AnyFunSuite {
 
   test(
     "s3ConfigDivergenceReason declines, without any keystore I/O, when a bucket-scoped " +
-      s"long-form credential-provider-path key (Arm A) is itself set via a $${...} reference " +
+      s"long-form credential-provider-path key (Arm A) is itself set via a ${varRef("...")} reference " +
       "to another bucket-scoped key that Hadoop's real propagate-then-resolve order shadows " +
       "the global value with -- naming only the provider path key and bucket, never either " +
       "resolved path") {
@@ -413,7 +421,7 @@ class S3ConfigGateSuite extends AnyFunSuite {
     val conf = new Configuration(false)
     conf.set(
       "fs.s3a.bucket.mybucket.fs.s3a.security.credential.provider.path",
-      s"$${fs.s3a.custom.ref}")
+      varRef("fs.s3a.custom.ref"))
     conf.set(
       "fs.s3a.bucket.mybucket.custom.ref",
       "jceks://file/does-not-exist-bucket-scoped.jceks")
@@ -520,7 +528,7 @@ class S3ConfigGateSuite extends AnyFunSuite {
   }
 
   test(
-    s"s3ConfigDivergenceReason declines when a per-bucket override redirects the $${...} " +
+    s"s3ConfigDivergenceReason declines when a per-bucket override redirects the ${varRef("...")} " +
       "reference inside the short-form bucket endpoint while a long-form endpoint alias holds " +
       "the value native resolves (Hadoop's endpoint consumer is propagateBucketOptions plus " +
       "plain Configuration#get, which follows the redirected reference and never reads the " +
@@ -528,7 +536,7 @@ class S3ConfigGateSuite extends AnyFunSuite {
     val conf = new Configuration(false)
     conf.set("fs.s3a.custom.ref", "https://store-a.example")
     conf.set("fs.s3a.bucket.data-bucket.custom.ref", "https://store-b.example")
-    conf.set("fs.s3a.bucket.data-bucket.endpoint", s"$${fs.s3a.custom.ref}")
+    conf.set("fs.s3a.bucket.data-bucket.endpoint", varRef("fs.s3a.custom.ref"))
     conf.set("fs.s3a.bucket.data-bucket.fs.s3a.endpoint", "https://store-a.example")
 
     // Real Hadoop code, not a Comet stand-in: propagation overwrites the global referent with
@@ -549,11 +557,11 @@ class S3ConfigGateSuite extends AnyFunSuite {
 
   test(
     "control: s3ConfigDivergenceReason passes the same endpoint shape without the per-bucket " +
-      s"referent override (the $${...} reference expands identically with and without " +
+      s"referent override (the ${varRef("...")} reference expands identically with and without " +
       "bucket-option propagation, so Hadoop's plain-get endpoint read and native agree)") {
     val conf = new Configuration(false)
     conf.set("fs.s3a.custom.ref", "https://store-a.example")
-    conf.set("fs.s3a.bucket.data-bucket.endpoint", s"$${fs.s3a.custom.ref}")
+    conf.set("fs.s3a.bucket.data-bucket.endpoint", varRef("fs.s3a.custom.ref"))
     conf.set("fs.s3a.bucket.data-bucket.fs.s3a.endpoint", "https://store-a.example")
     assert(
       S3ConfigGate
@@ -871,7 +879,7 @@ class S3ConfigGateSuite extends AnyFunSuite {
       "the class-support check does, so no divergence exists to decline)") {
     val conf = new Configuration(false)
     conf.set("review.provider", "org.apache.hadoop.fs.s3a.SimpleAWSCredentialsProvider")
-    conf.set("fs.s3a.aws.credentials.provider", s"$${review.provider}")
+    conf.set("fs.s3a.aws.credentials.provider", varRef("review.provider"))
     assert(
       S3ConfigGate
         .providerClassGateReason(conf, Seq(new URI("s3a://mybucket/part-0.parquet")))
@@ -887,7 +895,7 @@ class S3ConfigGateSuite extends AnyFunSuite {
       "fs.s3a.aws.credentials.provider",
       "org.apache.hadoop.fs.s3a.SimpleAWSCredentialsProvider")
     conf.set("review.bucketProvider", "org.apache.hadoop.fs.s3a.SimpleAWSCredentialsProvider")
-    conf.set("fs.s3a.bucket.mybucket.aws.credentials.provider", s"$${review.bucketProvider}")
+    conf.set("fs.s3a.bucket.mybucket.aws.credentials.provider", varRef("review.bucketProvider"))
     assert(
       S3ConfigGate
         .providerClassGateReason(conf, Seq(new URI("s3a://mybucket/part-0.parquet")))
@@ -902,7 +910,7 @@ class S3ConfigGateSuite extends AnyFunSuite {
       "fs.s3a.aws.credentials.provider",
       "org.apache.hadoop.fs.s3a.auth.AssumedRoleCredentialProvider")
     conf.set("review.baseProvider", "org.apache.hadoop.fs.s3a.SimpleAWSCredentialsProvider")
-    conf.set("fs.s3a.assumed.role.credentials.provider", s"$${review.baseProvider}")
+    conf.set("fs.s3a.assumed.role.credentials.provider", varRef("review.baseProvider"))
     assert(
       S3ConfigGate
         .providerClassGateReason(conf, Seq(new URI("s3a://mybucket/part-0.parquet")))
@@ -936,16 +944,20 @@ class S3ConfigGateSuite extends AnyFunSuite {
       "(not routed through s3ConfigDivergenceReason, which masks this for the same keys when " +
       "checked first -- this pins the gate's OWN containment, not that coupling)") {
     val conf = new Configuration(false)
-    conf.set("fs.s3a.aws.credentials.provider", s"$${fs.s3a.assumed.role.credentials.provider}")
-    conf.set("fs.s3a.assumed.role.credentials.provider", s"$${fs.s3a.aws.credentials.provider}")
+    conf.set(
+      "fs.s3a.aws.credentials.provider",
+      varRef("fs.s3a.assumed.role.credentials.provider"))
+    conf.set(
+      "fs.s3a.assumed.role.credentials.provider",
+      varRef("fs.s3a.aws.credentials.provider"))
     val reason =
       S3ConfigGate
         .providerClassGateReason(conf, Seq(new URI("s3a://mybucket/part-0.parquet")))
     assert(reason.isDefined)
     assert(reason.get.contains("fs.s3a.aws.credentials.provider"))
     assert(reason.get.contains("IllegalStateException"))
-    assert(!reason.get.contains(s"$${fs.s3a.assumed.role.credentials.provider}"))
-    assert(!reason.get.contains(s"$${fs.s3a.aws.credentials.provider}"))
+    assert(!reason.get.contains(varRef("fs.s3a.assumed.role.credentials.provider")))
+    assert(!reason.get.contains(varRef("fs.s3a.aws.credentials.provider")))
   }
 
   test(
@@ -990,7 +1002,7 @@ class S3ConfigGateSuite extends AnyFunSuite {
       "extraction forwards the SAME expanded value this comparator reads, so both sides agree)") {
     val conf = new Configuration(false)
     conf.set("review.access", "AKIAEXAMPLE")
-    conf.set("fs.s3a.access.key", s"$${review.access}")
+    conf.set("fs.s3a.access.key", varRef("review.access"))
     assert(
       S3ConfigGate
         .s3ConfigDivergenceReason(conf, Seq(new URI("s3a://mybucket/part-0.parquet")))
@@ -1013,7 +1025,7 @@ class S3ConfigGateSuite extends AnyFunSuite {
     "s3ConfigDivergenceReason passes when a credential key references an undefined variable " +
       "(Hadoop leaves the literal unresolved, so native and Hadoop see the identical value)") {
     val conf = new Configuration(false)
-    conf.set("fs.s3a.access.key", s"$${undefined.var}")
+    conf.set("fs.s3a.access.key", varRef("undefined.var"))
     assert(
       S3ConfigGate
         .s3ConfigDivergenceReason(conf, Seq(new URI("s3a://mybucket/part-0.parquet")))
@@ -1026,7 +1038,7 @@ class S3ConfigGateSuite extends AnyFunSuite {
       "beyond the plain global key)") {
     val conf = new Configuration(false)
     conf.set("review.secret", "topSecretValue")
-    conf.set("fs.s3a.bucket.mybucket.secret.key", s"$${review.secret}")
+    conf.set("fs.s3a.bucket.mybucket.secret.key", varRef("review.secret"))
     assert(
       S3ConfigGate
         .s3ConfigDivergenceReason(conf, Seq(new URI("s3a://mybucket/part-0.parquet")))
@@ -1040,7 +1052,7 @@ class S3ConfigGateSuite extends AnyFunSuite {
       "an undefined variable, not a MAX_SUBST failure)") {
     val conf = new Configuration(false)
     conf.set("fs.s3a.secret.key", "realSecretValue")
-    conf.set("fs.s3a.access.key", s"$${fs.s3a.access.key}")
+    conf.set("fs.s3a.access.key", varRef("fs.s3a.access.key"))
     val reason = S3ConfigGate
       .s3ConfigDivergenceReason(conf, Seq(new URI("s3a://mybucket/part-0.parquet")))
     assert(
@@ -1052,10 +1064,10 @@ class S3ConfigGateSuite extends AnyFunSuite {
   test(
     "s3ConfigDivergenceReason declines rather than throws when two credential keys form a " +
       "mutual Hadoop variable-reference cycle (Configuration#get raises IllegalStateException " +
-      s"once $${...} substitution recurses past Hadoop's MAX_SUBST bound)") {
+      s"once ${varRef("...")} substitution recurses past Hadoop's MAX_SUBST bound)") {
     val conf = new Configuration(false)
-    conf.set("fs.s3a.access.key", s"$${fs.s3a.secret.key}")
-    conf.set("fs.s3a.secret.key", s"$${fs.s3a.access.key}")
+    conf.set("fs.s3a.access.key", varRef("fs.s3a.secret.key"))
+    conf.set("fs.s3a.secret.key", varRef("fs.s3a.access.key"))
     val reason = S3ConfigGate
       .s3ConfigDivergenceReason(conf, Seq(new URI("s3a://mybucket/part-0.parquet")))
     assert(reason.isDefined)
@@ -1177,13 +1189,13 @@ class S3ConfigGateSuite extends AnyFunSuite {
     val conf = new Configuration(false)
     conf.set("fs.s3a.custom.ref", globalRef)
     bucketRef.foreach(conf.set("fs.s3a.bucket.data-bucket.custom.ref", _))
-    conf.set(algorithmKey, s"$${fs.s3a.custom.ref}")
+    conf.set(algorithmKey, varRef("fs.s3a.custom.ref"))
     conf
   }
 
   test(
     "unsupportedEncryptionAlgorithmReason declines SSE-C that a bucket override selects " +
-      s"through a $${...} reference, resolving the algorithm on the propagated view as Hadoop " +
+      s"through a ${varRef("...")} reference, resolving the algorithm on the propagated view as Hadoop " +
       "does, and never names the customer key") {
     val customerKey = "c3VwZXItc2VjcmV0LWN1c3RvbWVyLWtleQ=="
     for (algorithmKey <- EncryptionAlgorithmKeys) {
@@ -1200,7 +1212,7 @@ class S3ConfigGateSuite extends AnyFunSuite {
   }
 
   test(
-    s"unsupportedEncryptionAlgorithmReason passes AES256 selected through a $${...} reference " +
+    s"unsupportedEncryptionAlgorithmReason passes AES256 selected through a ${varRef("...")} reference " +
       "when no bucket override redirects it") {
     for (algorithmKey <- EncryptionAlgorithmKeys) {
       val conf = referencedAlgorithmConf(algorithmKey, "AES256", None)
@@ -1213,7 +1225,7 @@ class S3ConfigGateSuite extends AnyFunSuite {
 
   test(
     "unsupportedEncryptionAlgorithmReason passes SSE-KMS that a bucket override selects " +
-      s"through a $${...} reference (both views resolve an allowlisted algorithm)") {
+      s"through a ${varRef("...")} reference (both views resolve an allowlisted algorithm)") {
     for (algorithmKey <- EncryptionAlgorithmKeys) {
       val conf = referencedAlgorithmConf(algorithmKey, "AES256", Some("SSE-KMS"))
       assert(hadoopEncryptionAlgorithm(conf, "data-bucket") == "SSE-KMS")
@@ -1240,7 +1252,7 @@ class S3ConfigGateSuite extends AnyFunSuite {
     "unsupportedEncryptionAlgorithmReason never prints an algorithm value that expands to the " +
       "customer key, whether the propagated or the raw view resolves it") {
     val customerKey = "TESTKEY-NEVER-PRINT-123"
-    val keyRef = s"$${fs.s3a.encryption.key}"
+    val keyRef = varRef("fs.s3a.encryption.key")
     // (global ref, bucket ref): both views, propagated view only, raw view only.
     val shapes = Seq((keyRef, None), ("AES256", Some(keyRef)), (keyRef, Some("AES256")))
     for (algorithmKey <- EncryptionAlgorithmKeys; (globalRef, bucketRef) <- shapes) {
@@ -1260,7 +1272,7 @@ class S3ConfigGateSuite extends AnyFunSuite {
     for (key <- providerKeys) {
       val conf = new Configuration(false)
       conf.set("fs.s3a.secret.key", secret)
-      conf.set(key, s"$${fs.s3a.secret.key}")
+      conf.set(key, varRef("fs.s3a.secret.key"))
       val reason = S3ConfigGate
         .providerClassGateReason(conf, Seq(new URI("s3a://mybucket/part-0.parquet")))
       assert(reason.isDefined, s"expected a decline for $key")
