@@ -16,7 +16,9 @@
 // under the License.
 
 use crate::execution::operators::ExecutionError;
-use crate::parquet::eager_page_index_reader_factory::{EagerPageIndexReaderFactory, ScanIoSource};
+use crate::parquet::eager_page_index_reader_factory::{
+    decode_buffer_estimate, EagerPageIndexReaderFactory, ScanIoSource,
+};
 use crate::parquet::encryption_support::{CometEncryptionConfig, ENCRYPTION_FACTORY_ID};
 use crate::parquet::name_fold::fold_schema_names;
 use crate::parquet::parquet_support::{
@@ -241,6 +243,13 @@ pub(crate) fn init_datasource_exec(
             parquet_source.metrics(),
         )
         .with_spark_variant_schema(projects_variant)
+        .with_memory_pool(
+            Arc::clone(&runtime_env.memory_pool),
+            decode_buffer_estimate(
+                &required_schema,
+                session_config.options().execution.batch_size.into(),
+            ),
+        )
         .with_require_field_ids(require_field_ids)
         .with_int96_leaf_stamp(rebase_from_file_metadata)
         .with_conversion_check(
@@ -1491,7 +1500,7 @@ mod tests {
             .iter()
             .filter(|metric| metric.value().name().starts_with("scan_io_"))
             .collect::<Vec<_>>();
-        assert_eq!(scan_io_metrics.len(), 11);
+        assert_eq!(scan_io_metrics.len(), 12);
         for metric in scan_io_metrics {
             assert!(metric.labels().is_empty());
             assert_eq!(metric.partition(), None);
