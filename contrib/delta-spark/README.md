@@ -32,7 +32,7 @@ Support is experimental and explicitly opt-in. Two things are required:
    alone does nothing.
 
 Unsupported tables and features fall back to Spark's reader. See the
-[user guide](https://datafusion.apache.org/comet/user-guide/dev/delta.html)
+[user guide](https://datafusion.apache.org/comet/user-guide/latest/delta.html)
 for configuration details.
 
 ## Supported versions

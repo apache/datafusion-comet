@@ -725,7 +725,7 @@ After completing the audit (whether or not tests were added), record the finding
 expression's category page under `docs/source/contributor-guide/expression-audits/`.
 The page is named after the Spark function-registry category (e.g. `agg_funcs.md`,
 `string_funcs.md`, `datetime_funcs.md`). If you are unsure of the category, match the one
-used for the expression in `docs/source/user-guide/dev/expressions.md`.
+used for the expression in `docs/source/user-guide/latest/expressions.md`.
 
 - If the category page does not exist yet, create it with the ASF license header, a
   `# <category> Expression Audits` title, and the standard intro blockquote used by the

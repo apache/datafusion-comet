@@ -180,7 +180,7 @@ SELECT a, b, score FROM (
 -- FP edge cases in the ORDER BY column (NaN / +Inf / -Inf / 0 / NULL). NaN sorts
 -- greater than any finite value in Spark, so NaN gets rank 1 under DESC.
 -- Native scalar sort and rank keys normalize NaNs and signed zeros before row
--- encoding. See docs/source/user-guide/dev/compatibility/floating-point.md.
+-- encoding. See docs/source/user-guide/latest/compatibility/floating-point.md.
 -- ================================================================================
 
 statement
