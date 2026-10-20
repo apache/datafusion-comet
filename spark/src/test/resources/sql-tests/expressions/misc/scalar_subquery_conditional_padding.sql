@@ -25,7 +25,8 @@ SET spark.comet.enabled=false
 
 statement
 CREATE TABLE conditional_pad_subq USING parquet AS
-SELECT id, p, s, CAST(NULL AS STRING) AS nr, CAST(NULL AS ARRAY<STRING>) AS na
+SELECT /*+ COALESCE(1) */ id, p, s,
+       CAST(NULL AS STRING) AS nr, CAST(NULL AS ARRAY<STRING>) AS na
 FROM VALUES (0, true, 'a'), (1, true, 'b') AS rows(id, p, s)
 
 statement
@@ -52,39 +53,39 @@ SELECT lpad(concat_ws(CAST(NULL AS STRING), s), 8, '0'),
        (SELECT min(s) FROM conditional_pad_subq)
 FROM conditional_pad_subq
 
--- References to p and s do not imply an array result: every row selects the
--- scalar subquery branch, and max/min merge into a struct scalar subquery.
-query expect_fallback(Scalar values are not supported for the `str` argument)
+-- Every row selects a merged scalar-subquery field. Field extraction expands
+-- that value to the input batch length before the padding kernel consumes it.
+query expect_native(lpad)
 SELECT lpad(IF(p, (SELECT max(s) FROM conditional_pad_subq), s), 8, '0'),
        (SELECT min(s) FROM conditional_pad_subq)
 FROM conditional_pad_subq
 
-query expect_fallback(Scalar values are not supported for the `str` argument)
+query expect_native(rpad)
 SELECT rpad(IF(p, (SELECT max(s) FROM conditional_pad_subq), s), 8, '0'),
        (SELECT min(s) FROM conditional_pad_subq)
 FROM conditional_pad_subq
 
--- The scalar ELSE branch and CASE WHEN must receive the same protection.
-query expect_fallback(Scalar values are not supported for the `str` argument)
+-- The ELSE branch and CASE WHEN must also preserve native padding.
+query expect_native(lpad,rpad)
 SELECT lpad(IF(NOT p, s, (SELECT max(s) FROM conditional_pad_subq)), 8, '0'),
        rpad(CASE WHEN p THEN (SELECT min(s) FROM conditional_pad_subq) ELSE s END, 8, '0')
 FROM conditional_pad_subq
 
--- A mixed batch may produce an array, but other batches of the same expression
--- can select one scalar branch. Planning must not depend on the first batch.
-query expect_fallback(Scalar values are not supported for the `str` argument)
+-- Mixed and homogeneous batches must both preserve native padding.
+query expect_native(lpad,rpad)
 SELECT id, lpad(IF(id = 0, (SELECT max(s) FROM conditional_pad_subq), s), 8, '0'),
        rpad(IF(id = 0, (SELECT min(s) FROM conditional_pad_subq), s), 8, '0')
 FROM conditional_pad_subq
 
--- Wrappers cannot hide a conditional subquery input, including runtime NULLs.
-query expect_fallback(Scalar values are not supported for the `str` argument)
+-- Wrappers and runtime NULL fields retain native padding and NULL semantics.
+query expect_native(lpad,rpad)
 SELECT lpad(concat(IF(p, (SELECT max(s) FROM conditional_pad_subq), s), ''), 8, '0'),
        rpad(IF(p, (SELECT min(s) FROM conditional_pad_subq WHERE id < 0), s), 8, '0')
 FROM conditional_pad_subq
 
--- A non-merged scalar subquery must be safe too.
-query expect_fallback(Scalar values are not supported for the `str` argument)
+-- A non-merged scalar subquery can still produce a scalar branch; the runtime
+-- adapter handles that shape without changing the literal-string fallback.
+query expect_native(rpad)
 SELECT rpad(IF(p, (SELECT max(s) FROM conditional_pad_subq), s), 8, '0')
 FROM conditional_pad_subq
 

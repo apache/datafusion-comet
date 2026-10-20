@@ -20,7 +20,6 @@
 package org.apache.comet.serde
 
 import org.apache.spark.sql.catalyst.expressions.{Attribute, Base64, BitLength, Cast, Concat, ConcatWs, Contains, Elt, Empty2Null, EndsWith, Expression, FindInSet, FormatNumber, FormatString, GetJsonObject, InitCap, Left, Length, Levenshtein, Like, Literal, Lower, Mask, OctetLength, Overlay, RegExpExtract, RegExpExtractAll, RegExpInStr, RegExpReplace, Right, RLike, SoundEx, StartsWith, StringInstr, StringLocate, StringLPad, StringRepeat, StringReplace, StringRPad, StringSplit, StringTranslate, StringTrim, StringTrimLeft, StringTrimRight, Substring, SubstringIndex, ToCharacter, ToNumber, TryToNumber, UnBase64, Upper}
-import org.apache.spark.sql.execution.ExecSubqueryExpression
 import org.apache.spark.sql.types.{ArrayType, BinaryType, DataTypes, IntegerType, LongType, StringType}
 import org.apache.spark.unsafe.types.UTF8String
 
@@ -531,7 +530,7 @@ object CometStringRPad extends CometExpressionSerde[StringRPad] with CodegenDisp
 
   override def getSupportLevel(expr: StringRPad): SupportLevel = {
     // Guard only the string: scalar subquery lengths remain supported.
-    if (expr.str.references.isEmpty || ExecSubqueryExpression.hasSubquery(expr.str)) {
+    if (expr.str.references.isEmpty) {
       return Unsupported(Some(PadReasons.literalStrReason))
     }
     if (!expr.pad.isInstanceOf[Literal]) {
@@ -561,7 +560,7 @@ object CometStringLPad extends CometExpressionSerde[StringLPad] with CodegenDisp
     Seq(PadReasons.literalStrReason, PadReasons.nonLiteralPadReason)
 
   override def getSupportLevel(expr: StringLPad): SupportLevel = {
-    if (expr.str.references.isEmpty || ExecSubqueryExpression.hasSubquery(expr.str)) {
+    if (expr.str.references.isEmpty) {
       return Unsupported(Some(PadReasons.literalStrReason))
     }
     if (!expr.pad.isInstanceOf[Literal]) {

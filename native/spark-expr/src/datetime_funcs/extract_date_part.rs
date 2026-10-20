@@ -691,10 +691,13 @@ mod tests {
             None,
         )));
         let field = Arc::new(GetStructField::new(lit(value), 0));
-        assert!(matches!(
-            field.evaluate(&batch).unwrap(),
-            ColumnarValue::Scalar(_)
-        ));
+        let ColumnarValue::Array(field_array) = field.evaluate(&batch).unwrap() else {
+            panic!("struct field must expand to the consuming batch")
+        };
+        assert_eq!(
+            field_array.as_ref(),
+            &TimestampMicrosecondArray::from(vec![i64::MAX; batch.num_rows()]).with_timezone("UTC")
+        );
         let expr = IfExpr::new(
             col("p", &schema).unwrap(),
             field,

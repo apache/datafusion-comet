@@ -20,7 +20,7 @@
 package org.apache.comet.serde
 
 import org.apache.spark.sql.CometTestBase
-import org.apache.spark.sql.catalyst.expressions.{Alias, Literal, NamedExpression}
+import org.apache.spark.sql.catalyst.expressions.{Alias, Cast, Coalesce, DateAdd, DateDiff, DayOfWeek, EqualNullSafe, GetStructField, Hour, If, Literal, NamedExpression, TruncDate, UnixDate, WeekDay}
 import org.apache.spark.sql.execution.{ProjectExec, ScalarSubquery, SubqueryExec}
 import org.apache.spark.sql.types._
 
@@ -134,5 +134,52 @@ class CometScalarSubquerySuite extends CometTestBase with CometTypeShim {
         assert(supported(struct(struct(dt))), dt)
       }
     }
+  }
+
+  test("calendar consumers require an allow-list even when their result is not a date") {
+    val date = GetStructField(subquery(struct(DateType)), 0)
+    val epoch = Literal.create(0, DateType)
+    val difference = DateDiff(date, epoch)
+    val unlisted = Seq(
+      difference,
+      DateAdd(date, Literal(1)),
+      TruncDate(date, Literal("YEAR")),
+      Cast(date, StringType),
+      Coalesce(Seq(difference, Literal(0))),
+      If(Literal(true), difference, Literal(0)))
+    unlisted.foreach { expr =>
+      assert(
+        CometScalarSubquery
+          .consumerFallbackReason(expr)
+          .exists(_.contains("Calendar operations")),
+        expr)
+    }
+    // Ordinary column/literal expressions must not acquire scalar-subquery provenance.
+    assert(CometScalarSubquery.consumerFallbackReason(DateDiff(epoch, epoch)).isEmpty)
+  }
+
+  test("calendar allow-list retains raw transport comparison epoch and clock consumers") {
+    val date = GetStructField(subquery(struct(DateType)), 0)
+    val timestamp = GetStructField(subquery(struct(TimestampType)), 0)
+    val ntz = GetStructField(subquery(struct(TimestampNTZType)), 0)
+    val allowed = Seq(
+      date,
+      Alias(date, "renamed")(),
+      Coalesce(Seq(date, Literal.create(0, DateType))),
+      If(Literal(true), date, Literal.create(null, DateType)),
+      EqualNullSafe(date, date),
+      UnixDate(date),
+      DayOfWeek(date),
+      WeekDay(date),
+      Cast(timestamp, LongType, Some("UTC")),
+      Hour(timestamp, Some("+01:00")),
+      Hour(ntz, Some("America/Los_Angeles")))
+    allowed.foreach { expr =>
+      assert(CometScalarSubquery.consumerFallbackReason(expr).isEmpty, expr)
+    }
+    assert(
+      CometScalarSubquery
+        .consumerFallbackReason(Hour(timestamp, Some("America/Los_Angeles")))
+        .exists(_.contains("non-fixed timezones")))
   }
 }

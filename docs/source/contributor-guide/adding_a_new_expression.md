@@ -572,6 +572,11 @@ must return an empty array there, not a scalar. `IN` evaluates its candidates on
 decide whether they are constants, and uses the value of a candidate that returns a scalar there for
 every row.
 
+`GetStructField` expands a field of a scalar struct to an array of the consuming batch's length,
+including zero rows for an empty batch. This gives its consumers the same shape as a struct
+column and keeps whole-batch `IF` shortcuts from passing an unexpected scalar into a kernel.
+Kernels that also accept plain scalar subqueries or literals still need their scalar path.
+
 #### Producing strings from arbitrary bytes
 
 Spark's `StringType` may contain bytes that are not valid UTF-8 (Spark stores them verbatim), but

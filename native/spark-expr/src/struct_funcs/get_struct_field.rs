@@ -101,10 +101,12 @@ impl PhysicalExpr for GetStructField {
             }
             ColumnarValue::Scalar(ScalarValue::Struct(struct_array)) => {
                 let child = child_with_parent_nulls(&struct_array, self.ordinal)?;
-                Ok(ColumnarValue::Scalar(ScalarValue::try_from_array(
-                    child.as_ref(),
-                    0,
-                )?))
+                // Match a struct column's batch-sized output so downstream expressions,
+                // including IF's whole-batch branch shortcut, never receive a scalar field.
+                Ok(ColumnarValue::Array(
+                    ScalarValue::try_from_array(child.as_ref(), 0)?
+                        .to_array_of_size(batch.num_rows())?,
+                ))
             }
             value => Err(DataFusionError::Execution(format!(
                 "Expected a struct array, got {value:?}"
@@ -140,30 +142,33 @@ impl Display for GetStructField {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use arrow::array::{ArrayRef, Int64Array};
+    use crate::{spark_in_list, spark_lpad, spark_rpad, IfExpr};
+    use arrow::array::{ArrayRef, BooleanArray, Int64Array, StringArray};
     use arrow::buffer::NullBuffer;
     use arrow::datatypes::Fields;
     use datafusion::physical_expr::expressions::{Column, Literal};
 
-    fn assert_scalar_for_batch_sizes(expr: &GetStructField, expected: ScalarValue) {
+    fn assert_array_for_batch_sizes(expr: &GetStructField, expected: ScalarValue) {
         for num_rows in [4, 1, 0] {
             let schema = Arc::new(Schema::new(vec![Field::new("id", DataType::Int64, false)]));
             let input = Arc::new(Int64Array::from_iter_values(0..num_rows as i64));
             let batch = RecordBatch::try_new(schema, vec![input]).unwrap();
             let result = expr.evaluate(&batch).unwrap();
 
-            // A projection materializes scalars to its input batch length. Returning the
-            // one-element struct child as an array fails this check for multi-row/empty batches.
-            let output = result.clone().into_array_of_size(num_rows).unwrap();
+            // Consumers must receive an array directly, including through IF's whole-batch
+            // branch shortcut. A scalar or the one-element struct child violates this contract.
+            let ColumnarValue::Array(output) = result else {
+                panic!("expected a batch-sized struct field array, got {result:?}");
+            };
             assert_eq!(output.len(), num_rows);
+            assert_eq!(
+                output.data_type(),
+                &expr.data_type(&batch.schema()).unwrap()
+            );
             assert_eq!(
                 output.as_ref(),
                 expected.to_array_of_size(num_rows).unwrap().as_ref()
             );
-            match result {
-                ColumnarValue::Scalar(value) => assert_eq!(value, expected),
-                other => panic!("expected a scalar struct field, got {other:?}"),
-            }
         }
     }
 
@@ -174,7 +179,7 @@ mod tests {
         let scalar = ScalarValue::Struct(Arc::new(StructArray::new(fields, vec![child], None)));
         let expr = GetStructField::new(Arc::new(Literal::new(scalar)), 0);
 
-        assert_scalar_for_batch_sizes(&expr, ScalarValue::Int64(Some(42)));
+        assert_array_for_batch_sizes(&expr, ScalarValue::Int64(Some(42)));
     }
 
     #[test]
@@ -189,7 +194,7 @@ mod tests {
         )));
         let expr = GetStructField::new(Arc::new(Literal::new(scalar)), 0);
 
-        assert_scalar_for_batch_sizes(&expr, ScalarValue::Int64(None));
+        assert_array_for_batch_sizes(&expr, ScalarValue::Int64(None));
     }
 
     #[test]
@@ -199,16 +204,19 @@ mod tests {
         let scalar = ScalarValue::Struct(Arc::new(StructArray::new(fields, vec![child], None)));
         let expr = GetStructField::new(Arc::new(Literal::new(scalar)), 0);
 
-        assert_scalar_for_batch_sizes(&expr, ScalarValue::Int64(None));
+        assert_array_for_batch_sizes(&expr, ScalarValue::Int64(None));
     }
 
     #[test]
-    fn nested_scalar_field_retains_scalar_semantics() {
+    fn nested_scalar_field_retains_nulls_and_metadata() {
         for outer_valid in [true, false] {
             for inner_valid in [true, false] {
                 for value in [Some(42_i64), None] {
                     let inner_fields =
-                        Fields::from(vec![Field::new("value", DataType::Int64, true)]);
+                        Fields::from(vec![Field::new("value", DataType::Int64, true)
+                            .with_metadata(
+                                [("comment".to_string(), "nested scalar field".to_string())].into(),
+                            )]);
                     let inner = Arc::new(StructArray::new(
                         inner_fields.clone(),
                         vec![Arc::new(Int64Array::from(vec![value]))],
@@ -230,7 +238,7 @@ mod tests {
                     } else {
                         Arc::new(StructArray::new_null(inner_fields, 1))
                     };
-                    assert_scalar_for_batch_sizes(&nested, ScalarValue::Struct(expected_inner));
+                    assert_array_for_batch_sizes(&nested, ScalarValue::Struct(expected_inner));
 
                     let leaf = GetStructField::new(Arc::new(nested), 0);
                     let expected_value = if outer_valid && inner_valid {
@@ -238,7 +246,137 @@ mod tests {
                     } else {
                         None
                     };
-                    assert_scalar_for_batch_sizes(&leaf, ScalarValue::Int64(expected_value));
+                    assert_array_for_batch_sizes(&leaf, ScalarValue::Int64(expected_value));
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn scalar_field_as_in_candidate_handles_empty_and_multirow_batches() {
+        let schema = Arc::new(Schema::new(vec![Field::new("id", DataType::Int64, true)]));
+        let batch = RecordBatch::try_new(
+            Arc::clone(&schema),
+            vec![Arc::new(Int64Array::from(vec![
+                Some(42),
+                Some(7),
+                None,
+                Some(42),
+            ]))],
+        )
+        .unwrap();
+        for value in [Some(42_i64), None] {
+            let fields = Fields::from(vec![Field::new("value", DataType::Int64, true)]);
+            let scalar = ScalarValue::Struct(Arc::new(StructArray::new(
+                fields,
+                vec![Arc::new(Int64Array::from(vec![value]))],
+                None,
+            )));
+            let candidate: Arc<dyn PhysicalExpr> =
+                Arc::new(GetStructField::new(Arc::new(Literal::new(scalar)), 0));
+            // IN probes candidates with an empty batch. An empty array selects its dynamic
+            // path; it must still compare every input row with the scalar struct's field.
+            assert!(matches!(
+                candidate.evaluate(&RecordBatch::new_empty(Arc::clone(&schema))).unwrap(),
+                ColumnarValue::Array(array) if array.is_empty()
+            ));
+            for negated in [false, true] {
+                let expr = spark_in_list(
+                    Arc::new(Column::new("id", 0)),
+                    vec![Arc::clone(&candidate)],
+                    negated,
+                    &schema,
+                )
+                .unwrap();
+                let expected = BooleanArray::from(if value.is_some() {
+                    vec![Some(!negated), Some(negated), None, Some(!negated)]
+                } else {
+                    vec![None; 4]
+                });
+                for num_rows in [0, 1, 4] {
+                    let output = expr.evaluate(&batch.slice(0, num_rows)).unwrap();
+                    let ColumnarValue::Array(output) = output else {
+                        panic!("expected an IN result array, got {output:?}");
+                    };
+                    assert_eq!(output.as_ref(), &expected.slice(0, num_rows));
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn scalar_field_through_if_remains_an_array_for_padding() {
+        for parent_valid in [true, false] {
+            for value in [Some("b"), None] {
+                let fields = Fields::from(vec![Field::new("value", DataType::Utf8, true)]);
+                let scalar = ScalarValue::Struct(Arc::new(StructArray::new(
+                    fields,
+                    vec![Arc::new(StringArray::from(vec![value]))],
+                    Some(NullBuffer::from(vec![parent_valid])),
+                )));
+                let expr = IfExpr::new(
+                    Arc::new(Column::new("p", 0)),
+                    Arc::new(GetStructField::new(Arc::new(Literal::new(scalar)), 0)),
+                    Arc::new(Column::new("s", 1)),
+                );
+                for predicates in [
+                    vec![Some(true); 4],
+                    vec![Some(false); 4],
+                    vec![Some(true), Some(false), None, Some(true)],
+                    vec![Some(true)],
+                    vec![],
+                ] {
+                    let num_rows = predicates.len();
+                    let schema = Arc::new(Schema::new(vec![
+                        Field::new("p", DataType::Boolean, true),
+                        Field::new("s", DataType::Utf8, false),
+                    ]));
+                    let batch = RecordBatch::try_new(
+                        schema,
+                        vec![
+                            Arc::new(BooleanArray::from(predicates.clone())),
+                            Arc::new(StringArray::from(vec!["a"; num_rows])),
+                        ],
+                    )
+                    .unwrap();
+                    let selected = expr.evaluate(&batch).unwrap();
+                    // All-true batches return the THEN expression directly. Pin its shape
+                    // before padding's scalar adapter can hide a regression in the field read.
+                    assert!(
+                        matches!(&selected, ColumnarValue::Array(array) if array.len() == num_rows),
+                        "expected a batch-sized IF array, got {selected:?}"
+                    );
+                    for (pad, scalar_value, column_value) in [
+                        (
+                            spark_lpad as fn(&[ColumnarValue]) -> DataFusionResult<ColumnarValue>,
+                            "000b",
+                            "000a",
+                        ),
+                        (spark_rpad, "b000", "a000"),
+                    ] {
+                        let output = pad(&[
+                            selected.clone(),
+                            ColumnarValue::Scalar(ScalarValue::Int32(Some(4))),
+                            ColumnarValue::Scalar(ScalarValue::Utf8(Some("0".to_string()))),
+                        ])
+                        .unwrap();
+                        let expected = StringArray::from(
+                            predicates
+                                .iter()
+                                .map(|predicate| {
+                                    if *predicate == Some(true) {
+                                        value.filter(|_| parent_valid).map(|_| scalar_value)
+                                    } else {
+                                        Some(column_value)
+                                    }
+                                })
+                                .collect::<Vec<_>>(),
+                        );
+                        let ColumnarValue::Array(output) = output else {
+                            panic!("expected an array after padding, got {output:?}");
+                        };
+                        assert_eq!(output.as_ref(), &expected);
+                    }
                 }
             }
         }

@@ -721,9 +721,11 @@ subject to the compatibility differences described in
 [Strings with non-UTF-8 bytes](compatibility/index.md#strings-with-non-utf-8-bytes).
 
 Native value transfer does not imply that every consumer of a struct scalar result runs natively.
-Calendar conversions, date truncation (`trunc`), and fields such as `year` and `month` fall back
-to Spark on execution paths enabled by struct scalar subqueries, because runtime values can
-exceed the native calendar range. This protection follows aliases and generated columns such as
+Date and timestamp consumers on execution paths enabled by struct scalar subqueries use an
+allow-list. Raw value transport and comparisons, supported epoch conversions, `dayofweek` and
+`weekday` remain native. Other consumers, including calendar conversions, date truncation
+(`trunc`), `year` and `month`, fall back to Spark by default because runtime values can exceed
+the native calendar range. This protection follows aliases and generated columns such as
 `explode`, covers sibling calendar expressions, and remains active above projections that drop
 the struct result. Ordinary supported date columns on independent paths retain native execution. This also avoids differences in far-future
 daylight saving time. Scalar-subquery `hour`, `minute`, and `second` remain native for UTC, fixed
@@ -733,11 +735,13 @@ as `IF` that mix scalar-subquery results with column values. Similarly, `unix_ti
 native for timestamp inputs, but scalar date inputs fall back. Raw timestamp transport,
 comparisons, and supported epoch arithmetic remain native.
 
-String inputs to `lpad` and `rpad` that contain scalar subqueries fall back to Spark, including
-conditional inputs such as `IF` and `CASE WHEN`. Column strings with scalar-subquery lengths,
-including NULL lengths, remain native. Other expressions can also produce a scalar string for
-an entire batch, even when they reference columns. The native padding adapter broadcasts these
-runtime scalar strings through the existing array kernel, preserving scalar and per-row lengths.
+String inputs to `lpad` and `rpad` that contain scalar subqueries and have no column references
+fall back to Spark. Conditional inputs such as `IF` and `CASE WHEN` that reference
+columns can run natively, including when every row selects a struct-subquery field.
+Column strings with scalar-subquery lengths, including NULL lengths, remain native.
+Other expressions can also produce a scalar string for an entire batch, even when they
+reference columns. The native padding adapter broadcasts these runtime scalar strings
+through the existing array kernel, preserving scalar and per-row lengths.
 
 ## See also
 

@@ -21,7 +21,7 @@ package org.apache.comet.serde
 
 import scala.util.DynamicVariable
 
-import org.apache.spark.sql.catalyst.expressions.{Attribute, Cast, DayOfWeek, Expression, ExprId, GetDateField, Hour, LastDay, Minute, NamedExpression, NextDay, Second, TimeZoneAwareExpression, ToUnixTimestamp, TruncDate, UnixTimestamp, WeekDay}
+import org.apache.spark.sql.catalyst.expressions.{Alias, Attribute, BoundReference, CaseWhen, Cast, Coalesce, CreateArray, CreateMap, CreateNamedStruct, DateFromUnixDate, DayOfWeek, ElementAt, EqualNullSafe, EqualTo, Expression, ExprId, GetArrayItem, GetArrayStructFields, GetMapValue, GetStructField, GreaterThan, GreaterThanOrEqual, Greatest, Hour, If, In, InSet, IsNotNull, IsNull, KnownNotNull, KnownNullable, Least, LessThan, LessThanOrEqual, Literal, Minute, NamedExpression, PreciseTimestampConversion, Second, SortOrder, ToUnixTimestamp, TryEval, UnixDate, UnixTimestamp, WeekDay}
 import org.apache.spark.sql.catalyst.trees.TreeNodeTag
 import org.apache.spark.sql.catalyst.trees.TreePattern.PLAN_EXPRESSION
 import org.apache.spark.sql.comet.CometExec
@@ -203,9 +203,9 @@ object CometScalarSubquery extends CometExpressionSerde[ScalarSubquery] {
   }
 
   /**
-   * Keep newly supported scalar consumers on Spark when native calendar or timezone rules cannot
-   * cover their unknown runtime values. The struct bridge itself remains compatible: transport,
-   * field access, comparisons and epoch arithmetic do not interpret a calendar.
+   * Admit only reviewed consumers of dates and timestamps on newly supported struct-subquery
+   * paths. Unknown consumers stay on Spark by default, including expressions whose result is not
+   * a calendar type. Transport, comparisons and epoch arithmetic do not interpret a calendar.
    *
    * Check the whole expression before serialization or codegen dispatch, including wrappers and
    * whole-struct casts. A physical subquery may be reused, but it is still an
@@ -222,47 +222,49 @@ object CometScalarSubquery extends CometExpressionSerde[ScalarSubquery] {
       return None
     }
 
+    val touchesCalendar =
+      containsCalendarType(expr.dataType) ||
+        expr.children.exists(child => containsCalendarType(child.dataType))
+
     val reason = expr match {
-      case cast: Cast if hasStructSubqueryContext(cast) =>
-        val from = cast.child.dataType
-        val to = cast.dataType
-        if (from != to && !isEpochCast(from, to) &&
-          (containsCalendarType(from) || containsCalendarType(to))) {
-          Some(calendarConsumerFallbackReason)
-        } else {
-          None
-        }
-      // These two date fields use epoch-day arithmetic rather than chrono's calendar.
-      case _: DayOfWeek | _: WeekDay => None
-      case field: GetDateField if hasStructSubqueryContext(field) =>
-        Some(calendarConsumerFallbackReason)
-      case lastDay: LastDay if hasStructSubqueryContext(lastDay) =>
-        Some(calendarConsumerFallbackReason)
-      case nextDay: NextDay if hasStructSubqueryContext(nextDay) =>
-        Some(calendarConsumerFallbackReason)
-      // TruncDate is a TruncInstant, not a GetDateField or TimeZoneAwareExpression.
-      case trunc: TruncDate if hasStructSubqueryContext(trunc.date) =>
-        Some(calendarConsumerFallbackReason)
-      // These scalar kernels cover the full timestamp range without calendar conversion when
-      // the offset is fixed, and NTZ clock fields never apply the session timezone.
-      case hour: Hour => clockFallbackReason(hour.child, hour.timeZoneId)
-      case minute: Minute => clockFallbackReason(minute.child, minute.timeZoneId)
-      case second: Second => clockFallbackReason(second.child, second.timeZoneId)
-      // Timestamp-to-epoch conversions are arithmetic; dates first need calendar conversion.
-      case unix: UnixTimestamp if isTimestamp(unix.timeExp.dataType) => None
-      case unix: ToUnixTimestamp if isTimestamp(unix.timeExp.dataType) => None
+      // Preserve the existing guard for plain scalar date subqueries as well as struct fields.
       case unix: UnixTimestamp
           if unix.timeExp.dataType == DateType &&
             (ExecSubqueryExpression.hasSubquery(unix.timeExp) || hasStructSubqueryContext(
               unix.timeExp)) =>
         Some(dateUnixTimestampFallbackReason)
-      // Other newly admitted timezone-aware consumers can use chrono even in UTC (for example
-      // date_format). Unlike the exceptions above, their full runtime range is not compatible.
-      case aware: TimeZoneAwareExpression if hasStructSubqueryContext(aware) =>
-        Some(calendarConsumerFallbackReason)
-      case _ => None
+      // Retain timezone protection for plain scalar subqueries too.
+      case hour: Hour => clockFallbackReason(hour.child, hour.timeZoneId)
+      case minute: Minute => clockFallbackReason(minute.child, minute.timeZoneId)
+      case second: Second => clockFallbackReason(second.child, second.timeZoneId)
+      case _ if !hasStructSubqueryContext(expr) || !touchesCalendar => None
+      // These nodes only carry, select, compare or inspect the validity of raw values.
+      // Keep the list explicit: a new date-consuming expression must be reviewed before admission.
+      case _: Literal | _: Attribute | _: BoundReference | _: ScalarSubquery | _: Alias |
+          _: GetStructField | _: CreateNamedStruct | _: CreateArray | _: CreateMap |
+          _: GetArrayItem | _: GetArrayStructFields | _: GetMapValue | _: ElementAt | _: If |
+          _: CaseWhen | _: Coalesce | _: Greatest | _: Least | _: KnownNotNull |
+          _: KnownNullable | _: TryEval | _: SortOrder | _: IsNull | _: IsNotNull | _: In |
+          _: InSet | _: EqualTo | _: EqualNullSafe | _: LessThan | _: LessThanOrEqual |
+          _: GreaterThan | _: GreaterThanOrEqual =>
+        None
+      case cast: Cast
+          if cast.child.dataType == cast.dataType ||
+            isEpochCast(cast.child.dataType, cast.dataType) =>
+        None
+      case conversion: PreciseTimestampConversion
+          if isEpochCast(conversion.fromType, conversion.toType) =>
+        None
+      case _: UnixDate | _: DateFromUnixDate => None
+      // These two date fields use epoch-day arithmetic rather than chrono's calendar.
+      case _: DayOfWeek | _: WeekDay => None
+      // Timestamp-to-epoch conversions are arithmetic; dates first need calendar conversion.
+      case unix: UnixTimestamp if isTimestamp(unix.timeExp.dataType) => None
+      case unix: ToUnixTimestamp if isTimestamp(unix.timeExp.dataType) => None
+      case _ => Some(calendarConsumerFallbackReason)
     }
 
+    // An allowed wrapper must not hide an unreviewed consumer in its children.
     reason.orElse {
       expr.children.iterator.map(consumerFallbackReason).collectFirst { case Some(childReason) =>
         childReason

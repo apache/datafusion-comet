@@ -174,12 +174,15 @@ with the JVM's and logs a warning if they differ. The user guide describes the e
 [expression compatibility](../user-guide/latest/compatibility/expressions/index.md) page.
 
 Struct scalar subqueries can expose these differences on paths that previously ran in Spark.
-Their calendar conversions and calendar-field extraction therefore fall back, since the value is
-not available when the plan is serialized and can also exceed chrono's calendar range. Regional
-timezone consumers of these results fall back as well. Scalar clock-field extraction retains its
+Their consumers use an explicit allow-list: raw transport and comparisons, supported epoch
+conversions, `DayOfWeek`, `WeekDay`, and the clock fields described below. Unknown consumers fall
+back by default, including those that take a date or timestamp but return another type. The
+value is not available when the plan is serialized and can exceed chrono's calendar range.
+Regional timezone consumers of these results fall back as well. Clock-field extraction retains its
 native path for fixed-offset zones and `TimestampNTZType`, and epoch extraction from timestamps
 remains timezone-independent. The consumer guard checks the timezone stamped on each expression
-and recursively checks wrapped subqueries before serialization, including casts of whole structs.
+and recursively checks the children of allowed wrappers before serialization, including casts of
+whole structs. Allowing an outer wrapper never exempts an unreviewed consumer inside it.
 Plan-local provenance follows derived columns through projections, exchanges and AQE stages so
 an intermediate alias cannot hide a scalar consumer from the guard. Ordinary columns do not acquire
 this provenance merely because they contain dates or timestamps.
