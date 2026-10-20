@@ -633,6 +633,12 @@ It is possible to debug both native and JVM code concurrently as described in th
 
 ## Submitting a Pull Request
 
+With coding agents, the number of open PRs can far exceed our review capacity. To help reviewers
+focus on fewer PRs at a time, users without write access are limited to **3 open, non-draft PRs**.
+If you reach the limit, wait for existing PRs to be merged, close them, or convert them to drafts
+before opening another. Prefer a single PR with one commit per part over a series of small PRs
+that are opened at the same time.
+
 Use `git push` for normal updates to your PR branch. If you need to force push after a rebase
 or amend, use `git push --force-with-lease` instead of `git push --force` (or `-f`). This reduces
 the risk of accidentally overwriting another maintainer's commits when multiple people push
