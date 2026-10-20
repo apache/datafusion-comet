@@ -71,7 +71,7 @@ expressions. The following function families are **not currently planned** for n
 - **UTF-8 validation** (`is_valid_utf8`, `make_valid_utf8`, `validate_utf8`, `try_validate_utf8`): niche Spark 4.x string-validation helpers.
 - **Miscellaneous niche** (`histogram_numeric`, `version`, `sentences`, `quote`): low-value or specialized functions with little benefit from native acceleration.
 
-The file-metadata functions `input_file_name`, `input_file_block_start`, and `input_file_block_length` depend on scan-internal per-row file information rather than the expression layer; their support status is covered in the [scan compatibility guide](compatibility/scans.md).
+The file-metadata functions `input_file_name`, `input_file_block_start`, and `input_file_block_length` depend on scan-internal per-row file information rather than the expression layer; their support status is covered in the [Parquet page](parquet.md#reading).
 
 Note that `median` and `mode` are supported: they are mainstream exact aggregates. `mode` runs natively only with `spark.comet.expression.Mode.allowIncompatible=true`. `approx_count_distinct` is supported because Comet ports Spark's `HyperLogLogPlusPlus` exactly, so its result is bit-identical to Spark.
 
@@ -358,12 +358,12 @@ to Spark ([#2837](https://github.com/apache/datafusion-comet/issues/2837)). Enab
 | Function | Status | Implementation | Notes |
 | --- | --- | --- | --- |
 | `crc32` | ✅ | Native |  |
-| `hash` | ✅ | Native |  |
+| `hash` | ✅ | Native | Includes decimals with precision 19–38 and nested decimals |
 | `md5` | ✅ | Native |  |
 | `sha` | ✅ | Native |  |
 | `sha1` | ✅ | Native |  |
 | `sha2` | ✅ | Native |  |
-| `xxhash64` | ✅ | Native |  |
+| `xxhash64` | ✅ | Native | Includes decimals with precision 19–38 and nested decimals |
 
 ---
 
@@ -386,7 +386,7 @@ to Spark ([#2837](https://github.com/apache/datafusion-comet/issues/2837)). Enab
 | Function | Status | Implementation | Notes |
 | --- | --- | --- | --- |
 | `aggregate` | ✅ | Codegen dispatch |  |
-| `array_sort` | ✅ | Codegen dispatch |  |
+| `array_sort` | ✅ | Native | The default comparator runs natively; custom comparators and arrays with non-default string collations use the JVM codegen dispatcher |
 | `exists` | ✅ | Codegen dispatch |  |
 | `filter` | ✅ | Native | General lambda routed through the JVM codegen dispatcher; the `array_compact` form runs natively |
 | `forall` | ✅ | Codegen dispatch |  |
@@ -605,7 +605,7 @@ to Spark ([#2837](https://github.com/apache/datafusion-comet/issues/2837)). Enab
 | `regexp_replace` | ✅ | Hybrid |  |
 | `regexp_substr` | ✅ | — | Rewrites to `nullif(regexp_extract(...), '')`; `regexp_extract` routes through the JVM codegen dispatcher by default |
 | `repeat` | ✅ | Native |  |
-| `replace` | ✅ | Hybrid |  |
+| `replace` | ✅ | Hybrid | Native by default for a direct string column with a non-empty, valid UTF-8 search literal and either a replacement literal (both at most 64 KiB) or a replacement column (search at most 256 bytes and at most 8 MiB when broadcast per batch), under UTF8_BINARY collation; other cases use the JVM codegen dispatcher by default |
 | `right` | ✅ | Native |  |
 | `rpad` | ✅ | Hybrid | String inputs use the native kernel with a column string and literal padding; literal strings and column padding use codegen dispatch. Binary inputs use codegen dispatch. |
 | `rtrim` | ✅ | Hybrid | Non-UTF8_BINARY collated input with a trim string routes through the JVM codegen dispatcher; other input runs natively |
