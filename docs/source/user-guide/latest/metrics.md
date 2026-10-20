@@ -93,14 +93,21 @@ With `spark.comet.exec.join.dynamicFilter.enabled=true`, native broadcast and sh
 report these additional metric keys. See [Join Runtime Filters](tuning/operators.md#join-runtime-filters) for
 eligibility and reader restrictions.
 
-| Metric                                 | Description                                                       |
-| -------------------------------------- | ----------------------------------------------------------------- |
-| `dynamic_filter_join_rows_evaluated`   | Probe rows evaluated by the runtime filter.                       |
-| `dynamic_filter_join_rows_pruned`      | Probe rows rejected by that filter before the hash probe.         |
-| `dynamic_filter_join_rows_bypassed`    | Probe rows passed through while the runtime filter is inactive.   |
-| `dynamic_filter_join_eval_time`        | Time evaluating the runtime filter.                               |
-| `dynamic_filter_join_filters_attached` | Executions that attach their runtime filter to a native reader.   |
-| `dynamic_filter_join_filters_skipped`  | Executions whose probe input is ineligible for reader attachment. |
+| Metric                                 | Description                                                                                                   |
+| -------------------------------------- | ------------------------------------------------------------------------------------------------------------- |
+| `dynamic_filter_join_rows_evaluated`   | Probe rows evaluated by the runtime filter.                                                                   |
+| `dynamic_filter_join_rows_pruned`      | Probe rows rejected by that filter before the hash probe.                                                     |
+| `dynamic_filter_join_rows_bypassed`    | Probe rows passed through while the runtime filter is inactive.                                               |
+| `dynamic_filter_join_eval_time`        | Time evaluating the runtime filter.                                                                           |
+| `dynamic_filter_join_filters_attached` | Executions that attach their runtime filter to a native reader.                                               |
+| `dynamic_filter_join_filters_skipped`  | Executions whose probe input is ineligible for reader attachment.                                             |
+| `dynamic_filter_early_rows_evaluated`  | Rows evaluated before an intermediate join on this join's probe path.                                         |
+| `dynamic_filter_early_rows_pruned`     | Rows rejected there before the intermediate join does its probe work.                                         |
+| `dynamic_filter_early_rows_bypassed`   | Rows passed through while early filtering is inactive or has stopped after two nonempty all-matching batches. |
+| `dynamic_filter_early_eval_time`       | Time evaluating that early filter.                                                                            |
+
+See [early filtering in join chains](tuning/operators.md#early-filtering-in-join-chains)
+for placement and adaptive bypass behavior.
 
 The row counters measure residual filtering of decoded probe batches. They exclude rows skipped
 by the reader. An attached filter does not guarantee that any row groups are pruned: compare the
@@ -243,6 +250,30 @@ coalescing and metadata overhead. For a metadata-only scan, data bytes are zero:
 metadata and remote totals instead of dividing by zero. Cancellation can leave late asynchronous
 work outside the final metric snapshot; these counters are not a guarantee of complete network
 traffic accounting after cancellation.
+
+### S3 HTTP attempts and retries
+
+Native Parquet scans of S3 paths also count the GETs observed by the HTTP connector and their
+retries, after range coalescing, without changing the retry policy:
+
+| Metric suffix        | Meaning                                              |
+| -------------------- | ---------------------------------------------------- |
+| `http_observed_gets` | GETs reaching the instrumented HTTP connector.       |
+| `http_retries`       | Calls after the first attempt for each observed GET. |
+
+The total number of HTTP attempts is `scan_io_http_observed_gets` plus `scan_io_http_retries`.
+Each scan counts only its own requests, even when scans share an S3 client.
+Retries include HTTP-status retries, interrupted-body resumes, and Comet's location-scoped
+re-routing after a permission error refreshes the credential locations. A nonzero retry count
+can therefore reflect stale location credentials as well as S3 throttling or network failures.
+HEAD requests, credential requests, bucket-region lookups, and redirects or protocol retries
+handled inside reqwest are not counted.
+
+Only scans using the native S3 connector fill these counters. GCS, Azure, HTTP(S), local, and
+HDFS scans always report zero, which does not mean their requests were never retried. This also
+applies to S3 paths routed through HDFS by `fs.comet.libhdfs.schemes`. For a native S3 scan,
+`scan_io_http_observed_gets` normally matches `scan_io_object_store_get_calls`, the number of
+GETs after range coalescing.
 
 ## Task-Level Input Metrics on Spark 4.1+
 

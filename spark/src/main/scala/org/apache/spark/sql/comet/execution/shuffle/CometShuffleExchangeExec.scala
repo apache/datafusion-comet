@@ -36,11 +36,11 @@ import org.apache.spark.sql.catalyst.expressions.{Attribute, BoundReference, Exp
 import org.apache.spark.sql.catalyst.expressions.codegen.LazilyGeneratedOrdering
 import org.apache.spark.sql.catalyst.plans.logical.Statistics
 import org.apache.spark.sql.catalyst.plans.physical._
-import org.apache.spark.sql.comet.{CometFilterExec, CometMetricNode, CometNativeExec, CometNativeScanExec, CometPlan, CometProjectExec, CometScanWrapper, CometSinkPlaceHolder, CometSparkToColumnarExec, NativeExecContext}
+import org.apache.spark.sql.comet.{CometFilterExec, CometMetricNode, CometNativeExec, CometNativeScanExec, CometPlan, CometProjectExec, CometSinkPlaceHolder, CometSparkToColumnarExec, NativeExecContext}
 import org.apache.spark.sql.comet.execution.arrow.{CometArrowStream, CometNativeArrowSource}
 import org.apache.spark.sql.execution._
 import org.apache.spark.sql.execution.adaptive.ShuffleQueryStageExec
-import org.apache.spark.sql.execution.exchange.{ENSURE_REQUIREMENTS, Exchange, ShuffleExchangeExec, ShuffleExchangeLike, ShuffleOrigin}
+import org.apache.spark.sql.execution.exchange.{ENSURE_REQUIREMENTS, ShuffleExchangeExec, ShuffleExchangeLike, ShuffleOrigin}
 import org.apache.spark.sql.execution.metric.{SQLMetric, SQLMetrics, SQLShuffleReadMetricsReporter, SQLShuffleWriteMetricsReporter}
 import org.apache.spark.sql.internal.SQLConf
 import org.apache.spark.sql.types.{ArrayType, BinaryType, BooleanType, ByteType, DataType, DateType, DecimalType, DoubleType, FloatType, IntegerType, LongType, MapType, ShortType, StringType, StructField, StructType, TimestampNTZType, TimestampType}
@@ -551,8 +551,7 @@ object CometShuffleExchangeExec
       return Some(CometColumnarShuffle)
     }
 
-    val combined = (nativeReasons ++ columnarReasons).toSet
-    if (combined.nonEmpty) withFallbackReasons(s, combined)
+    withFallbackReasons(s, (nativeReasons ++ columnarReasons).toSet)
     None
   }
 
@@ -579,37 +578,19 @@ object CometShuffleExchangeExec
    * Whether the shuffle hashes into more than one partition a key that native shuffle, reading
    * converted rows, may put in a different partition from Spark's partitioner. Native shuffle
    * must not take over such a shuffle from the JVM columnar shuffle: a join with an input that is
-   * still partitioned by Spark would put matching keys in different partitions. The keys are:
-   *
-   *   - A decimal wider than 18 digits, which native shuffle hashes differently (#5994).
-   *   - A string, or any value computed from one, such as `hash(s)`. Spark reads the string's
-   *     bytes as they are, but the import of the converted batch into native replaces invalid
-   *     UTF-8 before native shuffle evaluates the key.
-   *
-   * TODO: allow wide decimals once native hashing matches Spark for them.
+   * still partitioned by Spark would put matching keys in different partitions. Such a key is a
+   * string, or any value computed from one, such as `hash(s)`. Spark reads the string's bytes as
+   * they are, but the import of the converted batch into native replaces invalid UTF-8 before
+   * native shuffle evaluates the key.
    */
   private def hashesDifferentlyFromSpark(s: ShuffleExchangeExec): Boolean =
     s.outputPartitioning match {
       case HashPartitioning(expressions, numPartitions) =>
         numPartitions > 1 && expressions.exists { key =>
-          key.dataType.existsRecursively(DecimalType.isByteArrayDecimalType) ||
           key.exists(_.dataType.existsRecursively(_.isInstanceOf[StringType]))
         }
       case _ => false
     }
-
-  /**
-   * Whether the stage feeding a shuffle starts at a typed Dataset conversion (see
-   * [[CometConf.COMET_CONVERT_FROM_TYPED_DATASET_ENABLED]]). `CometExecRule` decides the shuffle
-   * before it removes its placeholders, so the conversion is still inside its `CometScanWrapper`.
-   */
-  private def readsTypedDatasetConversion(plan: SparkPlan): Boolean = plan match {
-    case _: Exchange => false
-    case CometScanWrapper(_, wrapped) => readsTypedDatasetConversion(wrapped)
-    case conversion: CometSparkToColumnarExec =>
-      conversion.child.isInstanceOf[SerializeFromObjectExec]
-    case other => other.children.exists(readsTypedDatasetConversion)
-  }
 
   /**
    * Reasons the native shuffle path cannot handle this shuffle. Empty means native is supported.
@@ -642,12 +623,11 @@ object CometShuffleExchangeExec
           _: FloatType | _: DoubleType | _: StringType | _: BinaryType | _: TimestampType |
           _: TimestampNTZType | _: DateType =>
         true
-      case _: DecimalType =>
-        // TODO enforce this check
-        // https://github.com/apache/datafusion-comet/issues/3079
-        // Decimals with precision > 18 require Java BigDecimal conversion before hashing
-        // d.precision <= 18
-        true
+      case d: DecimalType =>
+        // Match the SQL hash restriction in serde/HashUtils until #5994 fixes native encoding.
+        // Different partition assignments break mixed native/Spark joins. A single partition
+        // does not hash the key: CometNativeShuffleWriter serializes it as SinglePartition.
+        d.precision <= 18 || s.outputPartitioning.numPartitions == 1
       case dt if isTimeType(dt) =>
         true
       case StructType(fields) if nestedHashPartitioningEnabled =>
@@ -708,19 +688,6 @@ object CometShuffleExchangeExec
           if (!supportedHashPartitioningDataType(dt)) {
             reasons += s"unsupported hash partitioning data type for native shuffle: $dt"
           }
-        }
-        // A typed Dataset conversion moves the shuffle above it from Comet's columnar shuffle,
-        // which partitions with Spark's hash, to native shuffle. Native shuffle hashes a decimal
-        // wider than 18 digits differently from Spark, so a join with an input that is still on
-        // the columnar shuffle would put matching keys in different partitions. Leave such a
-        // shuffle where it was. A single partition hashes nothing.
-        // TODO: remove once native hashing matches Spark for wide decimals (#5994).
-        if (CometConf.COMET_CONVERT_FROM_TYPED_DATASET_ENABLED.get(conf) && reasons.isEmpty &&
-          partitioning.numPartitions > 1 &&
-          expressions.exists(_.dataType.existsRecursively(DecimalType.isByteArrayDecimalType)) &&
-          readsTypedDatasetConversion(s.child)) {
-          reasons += "a shuffle above a typed Dataset conversion that hashes a decimal wider " +
-            "than 18 digits stays on Comet's columnar shuffle, which hashes it as Spark does"
         }
       case SinglePartition =>
       // we already checked that the input types are supported
@@ -795,7 +762,7 @@ object CometShuffleExchangeExec
       return reasons.toSeq
     }
 
-    if (!(!s.child.supportsColumnar || isCometPlan(s.child))) {
+    if (s.child.supportsColumnar && !isCometPlan(s.child)) {
       reasons += s"Child ${s.child.getClass.getName} is a neither row-based or a Comet operator"
       return reasons.toSeq
     }
@@ -853,16 +820,14 @@ object CometShuffleExchangeExec
 
   private def isCometNativeShuffleMode(conf: SQLConf): Boolean = {
     COMET_SHUFFLE_MODE.get(conf) match {
-      case "native" => true
-      case "auto" => true
+      case "native" | "auto" => true
       case _ => false
     }
   }
 
   private def isCometJVMShuffleMode(conf: SQLConf): Boolean = {
     COMET_SHUFFLE_MODE.get(conf) match {
-      case "jvm" => true
-      case "auto" => true
+      case "jvm" | "auto" => true
       case _ => false
     }
   }

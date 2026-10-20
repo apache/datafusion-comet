@@ -22,35 +22,54 @@ statement
 CREATE TABLE test_regexp_extract(s string) USING parquet
 
 statement
-INSERT INTO test_regexp_extract VALUES ('abc123def'), ('no match'), (NULL), ('xyz789'), ('hello world'), ('aa')
+INSERT INTO test_regexp_extract VALUES
+  ('abc123def'), ('no match'), (NULL), ('xyz789'), ('hello world'), ('aa'),
+  ('foo123bar'), ('abc'), ('def'), ('ab'), ('bb'), ('foobar'), ('foobaz'),
+  ('FOO123'), ('foo456'), ('bar789')
 
 -- group 0: entire match
 query expect_dispatch(regexp_extract)
-SELECT regexp_extract(s, r'\d+', 0) FROM test_regexp_extract
+SELECT s, regexp_extract(s, r'\d+', 0) FROM test_regexp_extract
 
 -- group 1: first capturing group
 query expect_dispatch(regexp_extract)
-SELECT regexp_extract(s, r'([a-z]+)(\d+)', 1) FROM test_regexp_extract
+SELECT s, regexp_extract(s, r'([a-z]+)(\d+)', 1) FROM test_regexp_extract
 
 -- group 2: second capturing group
 query expect_dispatch(regexp_extract)
-SELECT regexp_extract(s, r'([a-z]+)(\d+)', 2) FROM test_regexp_extract
+SELECT s, regexp_extract(s, r'([a-z]+)(\d+)', 2) FROM test_regexp_extract
 
 -- no match returns empty string
 query expect_dispatch(regexp_extract)
-SELECT regexp_extract(s, 'NOMATCH', 0) FROM test_regexp_extract
+SELECT s, regexp_extract(s, 'NOMATCH', 0) FROM test_regexp_extract
 
 -- backreference pattern (Java-only)
 query expect_dispatch(regexp_extract)
-SELECT regexp_extract(s, r'(\w)\1', 0) FROM test_regexp_extract
+SELECT s, regexp_extract(s, r'(\w)\1', 0) FROM test_regexp_extract
 
 -- lookahead (Java-only)
 query expect_dispatch(regexp_extract)
-SELECT regexp_extract(s, r'abc(?=\d)', 0) FROM test_regexp_extract
+SELECT s, regexp_extract(s, r'abc(?=\d)', 0) FROM test_regexp_extract
+
+query expect_dispatch(regexp_extract)
+SELECT s, regexp_extract(s, 'foo(?=bar)', 0) FROM test_regexp_extract
 
 -- embedded flags (Java-only)
 query expect_dispatch(regexp_extract)
-SELECT regexp_extract(s, '(?i)HELLO', 0) FROM test_regexp_extract
+SELECT s, regexp_extract(s, '(?i)HELLO', 0) FROM test_regexp_extract
+
+query expect_dispatch(regexp_extract)
+SELECT s, regexp_extract(s, r'(?i)(foo)(\d+)', 2) FROM test_regexp_extract
+
+-- Keep a separate all-null input batch, rather than only nulls mixed with matching rows.
+statement
+CREATE TABLE test_regexp_extract_nulls(s string) USING parquet
+
+statement
+INSERT INTO test_regexp_extract_nulls VALUES (NULL), (NULL), (NULL)
+
+query expect_dispatch(regexp_extract)
+SELECT regexp_extract(s, r'(\d+)', 1) FROM test_regexp_extract_nulls
 
 -- literal arguments
 query expect_dispatch(regexp_extract)
