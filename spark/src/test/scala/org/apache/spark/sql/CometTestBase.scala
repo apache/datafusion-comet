@@ -38,17 +38,19 @@ import org.apache.parquet.schema.{MessageType, MessageTypeParser}
 import org.apache.spark._
 import org.apache.spark.internal.config.{MEMORY_OFFHEAP_ENABLED, MEMORY_OFFHEAP_SIZE, SHUFFLE_MANAGER}
 import org.apache.spark.rdd.RDD
+import org.apache.spark.sql.catalyst.expressions.{BoundReference, InterpretedOrdering, SortDirection, SortOrder}
 import org.apache.spark.sql.catalyst.plans.logical
 import org.apache.spark.sql.catalyst.util.sideBySide
-import org.apache.spark.sql.comet.CometPlanChecker
+import org.apache.spark.sql.comet.{CometInMemoryTableScanExec, CometPlanChecker}
 import org.apache.spark.sql.comet.execution.shuffle.{CometColumnarShuffle, CometNativeShuffle, CometShuffleExchangeExec}
 import org.apache.spark.sql.execution._
 import org.apache.spark.sql.execution.adaptive.{AdaptiveSparkPlanExec, AdaptiveSparkPlanHelper, AQEShuffleReadExec, QueryStageExec}
+import org.apache.spark.sql.execution.columnar.InMemoryTableScanExec
 import org.apache.spark.sql.execution.exchange.ReusedExchangeExec
 import org.apache.spark.sql.internal._
 import org.apache.spark.sql.sources.{BaseRelation, TableScan}
 import org.apache.spark.sql.test._
-import org.apache.spark.sql.types.{DecimalType, StructType}
+import org.apache.spark.sql.types.{DecimalType, IntegerType, StructType}
 
 import org.apache.comet._
 import org.apache.comet.shims.ShimCometSparkSessionExtensions
@@ -1660,6 +1662,54 @@ abstract class CometTestBase
         (None, None)
       case _ =>
         (expected.failed.toOption, actual.failed.toOption)
+    }
+  }
+
+  // Whether every partition of `df` is in `order`, which is bound to its output.
+  protected def partitionsInOrder(df: DataFrame, order: SortOrder*): Boolean = {
+    val ordering = new InterpretedOrdering(order)
+    df.queryExecution.toRdd.map(_.copy()).glom().collect().forall { part =>
+      part.zip(part.drop(1)).forall { case (a, b) => !ordering.gt(a, b) }
+    }
+  }
+
+  // The order of the integer key in the first output column.
+  protected def keyOrder(direction: SortDirection): SortOrder =
+    SortOrder(BoundReference(0, IntegerType, nullable = true), direction)
+
+  // Runs `query`, which groups by the integer key in its first column and returns three longs,
+  // with Comet and with Spark, and checks that Comet returns each key once and Spark's rows.
+  // `checkPlan` sees the plan Comet ran.
+  protected def checkEachKeyGroupedOnce(
+      query: String,
+      checkPlan: SparkPlan => Unit = _ => ()): Unit = {
+    def rows(): Seq[(Int, Long, Long, Long)] =
+      sql(query)
+        .collect()
+        .map(r => (r.getInt(0), r.getLong(1), r.getLong(2), r.getLong(3)))
+        .toSeq
+        .sorted
+    val cometRows = rows()
+    checkPlan(sql(query).queryExecution.executedPlan)
+    // withSQLConf returns Unit on Spark 3.x, so Spark's rows are assigned inside it.
+    var sparkRows = Seq.empty[(Int, Long, Long, Long)]
+    withSQLConf(CometConf.COMET_ENABLED.key -> "false") {
+      sparkRows = rows()
+    }
+    assert(cometRows.map(_._1).distinct.size == cometRows.size, "a key is grouped twice")
+    assert(cometRows == sparkRows)
+  }
+
+  // The physical plan that wrote the cache `df` reads, as Spark's scan reports its order: for an
+  // adaptive cached plan that is the final plan behind it.
+  protected def cachedPlanOf(df: DataFrame): SparkPlan = {
+    val cachedPlan = collectFirst(df.queryExecution.executedPlan) {
+      case scan: CometInMemoryTableScanExec => scan.originalPlan.relation.cachedPlan
+      case scan: InMemoryTableScanExec => scan.relation.cachedPlan
+    }.getOrElse(fail(s"no cache scan in\n${df.queryExecution.executedPlan}"))
+    cachedPlan match {
+      case adaptive: AdaptiveSparkPlanExec if adaptive.isFinalPlan => adaptive.executedPlan
+      case other => other
     }
   }
 }
