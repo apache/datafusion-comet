@@ -19,8 +19,12 @@
 
 package org.apache.comet
 
+import java.io.File
+import java.nio.charset.StandardCharsets.UTF_8
+import java.nio.file.Files
+
 import org.apache.spark.SparkConf
-import org.apache.spark.sql.CometTestBase
+import org.apache.spark.sql.{CometTestBase, DataFrame, Row}
 import org.apache.spark.sql.catalyst.expressions.{DynamicPruningExpression, Literal}
 import org.apache.spark.sql.comet._
 import org.apache.spark.sql.execution._
@@ -31,15 +35,16 @@ import org.apache.spark.sql.internal.SQLConf
 
 import org.apache.comet.CometSparkSessionExtensions.isSpark35Plus
 
-// ORC and Iceberg build sides that Comet cannot scan natively, bridged by
-// spark.comet.convert.broadcastBuildSide.enabled (from the PR #6786 review of issue #6008). Each
-// query is compared with Spark through checkSparkAnswer, and every combination asserts that the
-// broadcast join ran natively (bridged when the scan is unsupported). See issue #6008.
+// Tests for the broadcast build-side bridge, spark.comet.convert.broadcastBuildSide.enabled (issue
+// #6008). A build-side scan that Comet cannot read natively, such as ORC, Text or an Iceberg table
+// the native reader declines, is converted to Arrow so that the broadcast join runs natively. Each
+// query is compared with Spark, and the tests assert where the bridge must and must not appear.
 class CometBroadcastBuildSideSuite extends CometTestBase with CometIcebergTestBase {
 
-  // The bridge is off by default (see issue #7118); these tests exercise it.
+  // Most tests use a Text build side. Text is bridged only with its own opt-in, which is off by
+  // default because a Text file can hold bytes that are not valid UTF-8 (see issue #7118).
   override protected def sparkConf: SparkConf =
-    super.sparkConf.set(CometConf.COMET_CONVERT_BROADCAST_BUILD_SIDE_ENABLED.key, "true")
+    super.sparkConf.set(CometConf.COMET_CONVERT_BROADCAST_BUILD_SIDE_TEXT_ENABLED.key, "true")
 
   /** Every node, descending through AQE, stages and subqueries, but not into reused exchanges. */
   private def allNodes(p: SparkPlan): Seq[SparkPlan] = {
@@ -261,10 +266,10 @@ class CometBroadcastBuildSideSuite extends CometTestBase with CometIcebergTestBa
   test("broadcast build side with unsupported text source goes native (#6008)") {
     // A tiny lookup table read from a Text file (which Comet cannot scan natively) sits on the
     // build side of a broadcast join over a large native probe. Without the auto-bridge the whole
-    // join stays on Spark. With spark.comet.convert.broadcastBuildSide.enabled the text leaf is
-    // bridged to Arrow so the broadcast and the join run natively. The config is off by default
-    // because Arrow strings must be valid UTF-8 and a Text file may not be (see #7118).
-    assert(CometConf.COMET_CONVERT_BROADCAST_BUILD_SIDE_ENABLED.defaultValue.contains(false))
+    // join stays on Spark. With spark.comet.convert.broadcastBuildSide.enabled (default on) and
+    // its Text opt-in (on for this suite) the text leaf is bridged to Arrow so the broadcast and
+    // the join run natively.
+    assert(CometConf.COMET_CONVERT_BROADCAST_BUILD_SIDE_ENABLED.defaultValue.contains(true))
     withTempDir { dir =>
       val probePath = s"${dir.getAbsolutePath}/probe.parquet"
       val allowPath = s"${dir.getAbsolutePath}/allow.txt"
@@ -289,25 +294,22 @@ class CometBroadcastBuildSideSuite extends CometTestBase with CometIcebergTestBa
           val query =
             "SELECT /*+ BROADCAST(a) */ p.v FROM probe_6008 p JOIN allow_6008 a ON p.key = a.value"
 
-          // On: the text build side is bridged to Arrow and the join goes native. The plan is
+          // Default: the text build side is bridged to Arrow and the join goes native. The plan is
           // fully native (the bridge counts as a native leaf), so use checkSparkAnswerAndOperator -
           // checkSparkAnswer would fail under COMET_STRICT_TESTING on a fully-native plan.
-          withSQLConf(CometConf.COMET_CONVERT_BROADCAST_BUILD_SIDE_ENABLED.key -> "true") {
-            val (_, cometPlan) = checkSparkAnswerAndOperator(sql(query))
-            assert(
-              collect(cometPlan) { case s: CometSparkToColumnarExec => s }.nonEmpty,
-              s"aqe=$aqe: expected a CometSparkToColumnarExec on the text build side:\n" +
-                cometPlan.treeString)
-            assert(
-              collect(cometPlan) { case b: CometBroadcastExchangeExec => b }.nonEmpty,
-              s"aqe=$aqe: expected a CometBroadcastExchangeExec:\n${cometPlan.treeString}")
-            assert(
-              collect(cometPlan) { case j: CometBroadcastHashJoinExec => j }.nonEmpty,
-              s"aqe=$aqe: expected a CometBroadcastHashJoinExec:\n${cometPlan.treeString}")
-          }
+          val (_, cometPlan) = checkSparkAnswerAndOperator(sql(query))
+          assert(
+            collect(cometPlan) { case s: CometSparkToColumnarExec => s }.nonEmpty,
+            s"aqe=$aqe: expected a CometSparkToColumnarExec on the text build side:\n" +
+              cometPlan.treeString)
+          assert(
+            collect(cometPlan) { case b: CometBroadcastExchangeExec => b }.nonEmpty,
+            s"aqe=$aqe: expected a CometBroadcastExchangeExec:\n${cometPlan.treeString}")
+          assert(
+            collect(cometPlan) { case j: CometBroadcastHashJoinExec => j }.nonEmpty,
+            s"aqe=$aqe: expected a CometBroadcastHashJoinExec:\n${cometPlan.treeString}")
 
-          // Off (the default): the unsupported text leaf blocks native execution of the broadcast
-          // and the join.
+          // Off: the unsupported text leaf blocks native execution of the broadcast and the join.
           withSQLConf(CometConf.COMET_CONVERT_BROADCAST_BUILD_SIDE_ENABLED.key -> "false") {
             val (_, cometPlanOff) = checkSparkAnswer(sql(query))
             assert(
@@ -322,6 +324,77 @@ class CometBroadcastBuildSideSuite extends CometTestBase with CometIcebergTestBa
               collect(cometPlanOff) { case j: CometBroadcastHashJoinExec => j }.isEmpty,
               s"aqe=$aqe: expected no CometBroadcastHashJoinExec when disabled:\n" +
                 cometPlanOff.treeString)
+          }
+        }
+      }
+    }
+  }
+
+  test("a Text build side keeps Spark's bytes unless its opt-in is on (#7118)") {
+    // The bridge is on by default, but a Text build side also needs
+    // spark.comet.convert.broadcastBuildSide.text.enabled. A Text file can hold bytes that are not
+    // valid UTF-8, here a Latin-1 "é" (0xE9) and "ï" (0xEF), and converting them to Arrow replaces
+    // each ill-formed sequence with U+FFFD. Without the opt-in the join stays on Spark and keeps
+    // the bytes, as in 1.1.0, and the scan records why it was not converted.
+    assert(CometConf.COMET_CONVERT_BROADCAST_BUILD_SIDE_TEXT_ENABLED.defaultValue.contains(false))
+    assert(CometConf.COMET_CONVERT_FROM_TEXT_ENABLED.defaultValue.contains(false))
+    withTempDir { dir =>
+      val factPath = s"${dir.getAbsolutePath}/fact.parquet"
+      val dimFile = new File(dir, "dim.txt")
+      withSQLConf(CometConf.COMET_ENABLED.key -> "false") {
+        spark
+          .range(0, 20)
+          .selectExpr("CAST(id % 2 + 1 AS STRING) AS k", "id AS v")
+          .write
+          .parquet(factPath)
+      }
+      Files.write(
+        dimFile.toPath,
+        "1 caf".getBytes(UTF_8) ++ Array(0xe9.toByte) ++ "\n2 na".getBytes(UTF_8) ++
+          Array(0xef.toByte) ++ "ve\n".getBytes(UTF_8))
+      val query =
+        """SELECT /*+ BROADCAST(d) */ f.v, hex(d.value) AS h, length(d.value) AS n
+          |FROM fact_7118 f JOIN dim_7118 d ON f.k = substring(d.value, 1, 1)""".stripMargin
+      def hexAndLength(df: DataFrame): Set[Row] = df.select("h", "n").collect().toSet
+      def bridged(df: DataFrame): Boolean =
+        collect(df.queryExecution.executedPlan) { case s: CometSparkToColumnarExec => s }.nonEmpty
+      for {
+        aqe <- Seq("false", "true")
+        // V1 FileSourceScanExec, then V2 BatchScanExec (TextScan).
+        v1List <- Seq("parquet,text", "parquet")
+      } {
+        withSQLConf(
+          SQLConf.ADAPTIVE_EXECUTION_ENABLED.key -> aqe,
+          SQLConf.USE_V1_SOURCE_LIST.key -> v1List) {
+          spark.read.parquet(factPath).createOrReplaceTempView("fact_7118")
+          spark.read.text(dimFile.getAbsolutePath).createOrReplaceTempView("dim_7118")
+          val ctx = s"aqe=$aqe v1=$v1List"
+
+          withSQLConf(CometConf.COMET_CONVERT_BROADCAST_BUILD_SIDE_TEXT_ENABLED.key -> "false") {
+            checkSparkAnswerAndFallbackReason(
+              sql(query),
+              "Comet converts a Text scan on a broadcast build side to Arrow only when")
+            val df = sql(query)
+            assert(hexAndLength(df) == Set(Row("3120636166E9", 6), Row("32206E61EF7665", 5)), ctx)
+            assert(!bridged(df), s"$ctx: the Text build side must stay on Spark")
+          }
+
+          // With the opt-in the bridge converts the Text build side, and each ill-formed byte comes
+          // back as U+FFFD (EF BF BD), which changes `hex` and `length`. The compatibility guide
+          // quotes these values.
+          val df = sql(query)
+          assert(
+            hexAndLength(df) == Set(Row("3120636166EFBFBD", 6), Row("32206E61EFBFBD7665", 7)),
+            ctx)
+          assert(bridged(df), s"$ctx: expected the Text build side to be bridged")
+
+          // spark.comet.convert.text.enabled converts every Text scan, the build side included.
+          withSQLConf(
+            CometConf.COMET_CONVERT_BROADCAST_BUILD_SIDE_TEXT_ENABLED.key -> "false",
+            CometConf.COMET_CONVERT_FROM_TEXT_ENABLED.key -> "true") {
+            val df = sql(query)
+            assert(hexAndLength(df).size == 2, ctx)
+            assert(bridged(df), s"$ctx: expected spark.comet.convert.text.enabled to convert")
           }
         }
       }
@@ -447,9 +520,10 @@ class CometBroadcastBuildSideSuite extends CometTestBase with CometIcebergTestBa
   }
 
   test("broadcast build side with an unsupported DSv2 scan goes native (#6008)") {
-    // Exercises the BatchScanExec arm: an unsupported-format scan (Text read as DSv2) on the build
-    // side is bridged so the join goes native. Keep parquet on the V1 list so the probe stays a
-    // native CometScan; drop text from the list so it is read as a DSv2 BatchScan/TextScan.
+    // Exercises the BatchScanExec arm for Text: a Text scan read as DSv2 on the build side is
+    // bridged so the join goes native (the ORC test covers the arm for other formats). Keep parquet
+    // on the V1 list so the probe stays a native CometScan; drop text from the list so it is read
+    // as a DSv2 BatchScan/TextScan.
     withTempDir { dir =>
       val allowPath = s"${dir.getAbsolutePath}/allow.txt"
       val probePath = s"${dir.getAbsolutePath}/probe.parquet"

@@ -5069,6 +5069,33 @@ class CometExecSuite extends CometTestBase {
     }
   }
 
+  test("read Text file") {
+    withTempPath { dir =>
+      withSQLConf(CometConf.COMET_ENABLED.key -> "false") {
+        spark.range(0, 10).selectExpr("CAST(id AS STRING)").write.text(dir.toString)
+      }
+      Seq("", "text").foreach { v1List =>
+        withSQLConf(SQLConf.USE_V1_SOURCE_LIST.key -> v1List) {
+          spark.read.text(dir.toString).createOrReplaceTempView("tbl")
+          val query = "SELECT CAST(value AS INT) + 1 FROM tbl"
+          // Off by default, because a Text file can hold bytes that are not valid UTF-8.
+          val (_, plan) = checkSparkAnswer(query)
+          assert(collect(plan) { case c: CometSparkToColumnarExec => c }.isEmpty)
+          withSQLConf(CometConf.COMET_CONVERT_FROM_TEXT_ENABLED.key -> "true") {
+            checkSparkAnswerAndOperator(query)
+          }
+          // The general switch still converts Text, as it did before Text had a config.
+          val operatorList = CometConf.COMET_SPARK_TO_ARROW_SUPPORTED_OPERATOR_LIST.key
+          withSQLConf(
+            CometConf.COMET_SPARK_TO_ARROW_ENABLED.key -> "true",
+            operatorList -> "FileSourceScan,BatchScan") {
+            checkSparkAnswerAndOperator(query)
+          }
+        }
+      }
+    }
+  }
+
   test("Supported file formats for CometScanExec") {
     assert(CometScanExec.isFileFormatSupported(new ParquetFileFormat()))
 

@@ -97,24 +97,36 @@ underlying bytes rather than on the rendered text:
   bytes) but `true` in Comet. Equality, joins, grouping, ordering, and byte-based string functions
   such as `contains` can therefore disagree with Spark when non-UTF-8 bytes are involved.
 
-Both differences require string data that is not valid UTF-8. Such data does not occur for text read
-from Parquet, which Spark requires to be valid UTF-8, or produced by most string expressions. It
-can reach Comet in these ways, which are the ones to check before relying on a result:
+Both differences require string data that is not valid UTF-8. Comet's native Parquet scan never
+produces such strings (it rejects them, see below), and neither do most string expressions. They can
+reach Comet in these ways, which are the ones to check before relying on a result:
 
-- **Text and other row-based sources.** A Text, CSV or JSON file in a non-UTF-8 encoding such as
-  Latin-1 holds bytes that are not valid UTF-8. These sources are read by Spark, and the bytes are
-  decoded when Comet converts the rows to Arrow. A Text scan on a broadcast build side is converted
-  only when `spark.comet.convert.broadcastBuildSide.enabled=true`, which is off by default for this
-  reason (see [Data sources](../datasources.md)). With it on, a build-side file holding the bytes
-  `1 caf\xE9` gives `hex(value)` = `3120636166EFBFBD` instead of Spark's `3120636166E9`, and
-  `length` of `2 na\xEFve` is 7 instead of 5. Enabling any other `spark.comet.convert.*` or
-  `spark.comet.sparkToColumnar.*` switch for a source that holds such bytes applies the same decode.
+- **Text files.** Spark's Text reader keeps the bytes of each line as they are, so a Text file in an
+  encoding other than UTF-8, such as Latin-1, holds strings that are not valid UTF-8. Comet decodes
+  them when it converts a Text scan to Arrow, which it does only when
+  `spark.comet.convert.text.enabled=true`, when the scan is on a broadcast build side and
+  `spark.comet.convert.broadcastBuildSide.text.enabled=true`, or when
+  `spark.comet.sparkToColumnar.enabled=true` and `spark.comet.sparkToColumnar.supportedOperatorList`
+  names the scan (see [Data sources](../datasources.md#text)). For example, with a build-side file
+  holding the bytes `1 caf\xE9`, `hex(value)` returns `3120636166EFBFBD` instead of Spark's
+  `3120636166E9`, and `length` of `2 na\xEFve` is 7 instead of 5. Spark decodes CSV files as it reads
+  them, so they never hold such strings, and its JSON reader treats a line with such bytes as
+  malformed, so only the corrupt record column keeps them. Spark's ORC and Avro readers keep stored
+  bytes without checking them, but those formats define strings as UTF-8, so only a malformed file is
+  affected.
+- **Comet columnar shuffle.** When Comet shuffles rows that come from a Spark operator, such as a
+  Text scan or a Spark partial aggregate, it converts them to Arrow and decodes their strings in the
+  same way. It does this with the default `spark.comet.shuffle.mode=auto`, so, for example,
+  repartitioning a Latin-1 Text table can return `U+FFFD` where Spark keeps the original bytes.
+  Setting `spark.comet.shuffle.mode=native` keeps such shuffles on Spark.
 - **`CAST(binary AS STRING)`.** Comet decodes the bytes where Spark keeps them. Because `min` and `max`
   over strings run natively, a cast below them is decoded before the comparison, and the two can swap.
   With `b` holding `X'80'` and `X'C3A9'`, Spark returns `min(CAST(b AS STRING))` = the `0x80` string
   and `max` = `é`, whereas Comet returns `min` = `é` and `max` = `U+FFFD`. This is the ordering
-  difference above and is not controlled by a config; disable Comet for the query if the cast input can hold
-  non-UTF-8 bytes.
+  difference above. If the cast input can hold bytes that are not valid UTF-8, disable Comet for the
+  query, or set `spark.comet.expression.Min.enabled=false`, `spark.comet.expression.Max.enabled=false`
+  and `spark.comet.shuffle.mode=native`. All three are needed: with only the first two, the aggregate
+  runs in Spark, but Comet's columnar shuffle still decodes its partial results.
 
 Consistent handling of invalid UTF-8 across all native string paths is tracked by
 [#4764](https://github.com/apache/datafusion-comet/issues/4764).
