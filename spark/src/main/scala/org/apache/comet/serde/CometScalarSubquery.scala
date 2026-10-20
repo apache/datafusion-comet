@@ -21,11 +21,11 @@ package org.apache.comet.serde
 
 import scala.util.DynamicVariable
 
-import org.apache.spark.sql.catalyst.expressions.{Attribute, Cast, DayOfWeek, Expression, ExprId, GetDateField, Hour, LastDay, Minute, NamedExpression, NextDay, Second, TimeZoneAwareExpression, ToUnixTimestamp, UnixTimestamp, WeekDay}
+import org.apache.spark.sql.catalyst.expressions.{Attribute, Cast, DayOfWeek, Expression, ExprId, GetDateField, Hour, LastDay, Minute, NamedExpression, NextDay, Second, TimeZoneAwareExpression, ToUnixTimestamp, TruncDate, UnixTimestamp, WeekDay}
 import org.apache.spark.sql.catalyst.trees.TreeNodeTag
 import org.apache.spark.sql.catalyst.trees.TreePattern.PLAN_EXPRESSION
 import org.apache.spark.sql.comet.CometExec
-import org.apache.spark.sql.execution.{ExecSubqueryExpression, ExpandExec, ScalarSubquery, SparkPlan, UnionExec}
+import org.apache.spark.sql.execution.{ExecSubqueryExpression, ExpandExec, GenerateExec, ScalarSubquery, SparkPlan, UnionExec}
 import org.apache.spark.sql.execution.adaptive.{AdaptiveSparkPlanExec, QueryStageExec}
 import org.apache.spark.sql.execution.aggregate.BaseAggregateExec
 import org.apache.spark.sql.execution.exchange.ReusedExchangeExec
@@ -38,7 +38,10 @@ object CometScalarSubquery extends CometExpressionSerde[ScalarSubquery] {
 
   private val structSubqueryInputs =
     new TreeNodeTag[Set[ExprId]]("CometStructScalarSubqueryInputs")
+  private val structSubqueryContext =
+    new TreeNodeTag[Boolean]("CometStructScalarSubqueryContext")
   private val currentStructSubqueryInputs = new DynamicVariable[Set[ExprId]](Set.empty)
+  private val currentPlanHasStructSubquery = new DynamicVariable[Boolean](false)
 
   /**
    * Trace struct scalar values before native conversion replaces their producing projections.
@@ -58,6 +61,7 @@ object CometScalarSubquery extends CometExpressionSerde[ScalarSubquery] {
       if (visited.containsKey(plan)) return visited.get(plan)
       remember(plan, Set.empty)
       plan.unsetTagValue(structSubqueryInputs)
+      plan.unsetTagValue(structSubqueryContext)
 
       val original = plan match {
         case comet: CometExec => comet.originalPlan
@@ -72,6 +76,13 @@ object CometScalarSubquery extends CometExpressionSerde[ScalarSubquery] {
       }
       val childSources = children.map(visit)
       var sources = childSources.flatten.toSet
+      // A struct subquery can enable native conversion of both its operator and ancestors.
+      // Keep that context even when a later projection drops the struct: sibling/ancestor
+      // calendar consumers can still receive ordinary columns outside the native range.
+      val hasStructContext =
+        children.exists(_.getTagValue(structSubqueryContext).contains(true)) ||
+          original.expressions.exists(hasStructSubquerySource(_, sources))
+      plan.setTagValue(structSubqueryContext, hasStructContext)
       if (sources.isEmpty &&
         !original.expressions.exists(_.containsPattern(PLAN_EXPRESSION))) {
         return Set.empty
@@ -110,6 +121,9 @@ object CometScalarSubquery extends CometExpressionSerde[ScalarSubquery] {
                   sources ++= function.inputAggBufferAttributes.map(_.exprId)
                 }
             }
+          case generate: GenerateExec if hasStructSubquerySource(generate.generator, sources) =>
+            // Generators expose fresh attributes rather than NamedExpression aliases.
+            sources ++= generate.generatorOutput.map(_.exprId)
           case expand: ExpandExec =>
             expand.output.zipWithIndex.foreach { case (output, ordinal) =>
               if (expand.projections.exists(p => hasStructSubquerySource(p(ordinal), sources))) {
@@ -131,9 +145,13 @@ object CometScalarSubquery extends CometExpressionSerde[ScalarSubquery] {
   }
 
   /** Keep the lineage local to this conversion, even when an attribute was copied or rebound. */
-  private[comet] def withPlanInputs[T](plan: SparkPlan)(f: => T): T =
-    currentStructSubqueryInputs.withValue(
-      plan.getTagValue(structSubqueryInputs).getOrElse(Set.empty))(f)
+  private[comet] def withPlanInputs[T](plan: SparkPlan)(f: => T): T = {
+    val inputs = plan.getTagValue(structSubqueryInputs).getOrElse(Set.empty)
+    currentStructSubqueryInputs.withValue(inputs) {
+      currentPlanHasStructSubquery.withValue(
+        plan.getTagValue(structSubqueryContext).getOrElse(false))(f)
+    }
+  }
 
   private val calendarConsumerFallbackReason =
     "Calendar operations on struct scalar subqueries require Spark because their runtime values " +
@@ -171,6 +189,9 @@ object CometScalarSubquery extends CometExpressionSerde[ScalarSubquery] {
   private def hasStructSubquery(expr: Expression): Boolean =
     hasStructSubquerySource(expr, currentStructSubqueryInputs.value)
 
+  private def hasStructSubqueryContext(expr: Expression): Boolean =
+    currentPlanHasStructSubquery.value || hasStructSubquery(expr)
+
   private def clockFallbackReason(
       child: Expression,
       timeZoneId: Option[String]): Option[String] = {
@@ -191,17 +212,18 @@ object CometScalarSubquery extends CometExpressionSerde[ScalarSubquery] {
    * [[ExecSubqueryExpression]]; its result must never be evaluated while planning this check.
    */
   private[serde] def consumerFallbackReason(expr: Expression): Option[String] = {
-    // The cached pattern check skips direct-subquery searches for ordinary expressions. Aliased
-    // values still carry their struct-subquery origin through the owning plan's input ExprIds.
+    // Skip paths without struct subqueries. A newly admitted calendar consumer can be a
+    // sibling or ancestor of a struct-producing operator without using its result directly.
+    // Aliases still carry value provenance through the owning plan's ExprIds.
     val derivedInput =
       expr.references.exists(a => currentStructSubqueryInputs.value.contains(a.exprId))
-    if (!derivedInput &&
+    if (!currentPlanHasStructSubquery.value && !derivedInput &&
       (!expr.containsPattern(PLAN_EXPRESSION) || !ExecSubqueryExpression.hasSubquery(expr))) {
       return None
     }
 
     val reason = expr match {
-      case cast: Cast if hasStructSubquery(cast) =>
+      case cast: Cast if hasStructSubqueryContext(cast) =>
         val from = cast.child.dataType
         val to = cast.dataType
         if (from != to && !isEpochCast(from, to) &&
@@ -212,11 +234,14 @@ object CometScalarSubquery extends CometExpressionSerde[ScalarSubquery] {
         }
       // These two date fields use epoch-day arithmetic rather than chrono's calendar.
       case _: DayOfWeek | _: WeekDay => None
-      case field: GetDateField if hasStructSubquery(field) =>
+      case field: GetDateField if hasStructSubqueryContext(field) =>
         Some(calendarConsumerFallbackReason)
-      case lastDay: LastDay if hasStructSubquery(lastDay) =>
+      case lastDay: LastDay if hasStructSubqueryContext(lastDay) =>
         Some(calendarConsumerFallbackReason)
-      case nextDay: NextDay if hasStructSubquery(nextDay) =>
+      case nextDay: NextDay if hasStructSubqueryContext(nextDay) =>
+        Some(calendarConsumerFallbackReason)
+      // TruncDate is a TruncInstant, not a GetDateField or TimeZoneAwareExpression.
+      case trunc: TruncDate if hasStructSubqueryContext(trunc.date) =>
         Some(calendarConsumerFallbackReason)
       // These scalar kernels cover the full timestamp range without calendar conversion when
       // the offset is fixed, and NTZ clock fields never apply the session timezone.
@@ -228,12 +253,12 @@ object CometScalarSubquery extends CometExpressionSerde[ScalarSubquery] {
       case unix: ToUnixTimestamp if isTimestamp(unix.timeExp.dataType) => None
       case unix: UnixTimestamp
           if unix.timeExp.dataType == DateType &&
-            (ExecSubqueryExpression.hasSubquery(unix.timeExp) || hasStructSubquery(
+            (ExecSubqueryExpression.hasSubquery(unix.timeExp) || hasStructSubqueryContext(
               unix.timeExp)) =>
         Some(dateUnixTimestampFallbackReason)
       // Other newly admitted timezone-aware consumers can use chrono even in UTC (for example
       // date_format). Unlike the exceptions above, their full runtime range is not compatible.
-      case aware: TimeZoneAwareExpression if hasStructSubquery(aware) =>
+      case aware: TimeZoneAwareExpression if hasStructSubqueryContext(aware) =>
         Some(calendarConsumerFallbackReason)
       case _ => None
     }

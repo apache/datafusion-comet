@@ -20,13 +20,14 @@
 package org.apache.comet.serde
 
 import org.apache.spark.sql.catalyst.expressions.{Attribute, Base64, BitLength, Cast, Concat, ConcatWs, Contains, Elt, Empty2Null, EndsWith, Expression, FindInSet, FormatNumber, FormatString, GetJsonObject, InitCap, Left, Length, Levenshtein, Like, Literal, Lower, Mask, OctetLength, Overlay, RegExpExtract, RegExpExtractAll, RegExpInStr, RegExpReplace, Right, RLike, SoundEx, StartsWith, StringInstr, StringLocate, StringLPad, StringRepeat, StringReplace, StringRPad, StringSplit, StringTranslate, StringTrim, StringTrimLeft, StringTrimRight, Substring, SubstringIndex, ToCharacter, ToNumber, TryToNumber, UnBase64, Upper}
+import org.apache.spark.sql.execution.ExecSubqueryExpression
 import org.apache.spark.sql.types.{ArrayType, BinaryType, DataTypes, IntegerType, LongType, StringType}
 import org.apache.spark.unsafe.types.UTF8String
 
 import org.apache.comet.CometConf
 import org.apache.comet.expressions.{CometRegex, RegexFlavor}
 import org.apache.comet.serde.ExprOuterClass.Expr
-import org.apache.comet.serde.QueryPlanSerde.{createBinaryExpr, exprToProtoInternal, scalarFunctionExprToProto, scalarFunctionExprToProtoWithReturnType}
+import org.apache.comet.serde.QueryPlanSerde.{createBinaryExpr, exprToProtoInternal, scalarFunctionExprToProto, scalarFunctionExprToProtoWithReturnType, withNullShortCircuit}
 import org.apache.comet.shims.{CometExprShim, CometTypeShim}
 
 object CometStringRepeat extends CometExpressionSerde[StringRepeat] {
@@ -529,7 +530,8 @@ object CometStringRPad extends CometExpressionSerde[StringRPad] with CodegenDisp
     Seq(PadReasons.literalStrReason, PadReasons.nonLiteralPadReason)
 
   override def getSupportLevel(expr: StringRPad): SupportLevel = {
-    if (expr.str.references.isEmpty) {
+    // Guard only the string: scalar subquery lengths remain supported.
+    if (expr.str.references.isEmpty || ExecSubqueryExpression.hasSubquery(expr.str)) {
       return Unsupported(Some(PadReasons.literalStrReason))
     }
     if (!expr.pad.isInstanceOf[Literal]) {
@@ -543,11 +545,13 @@ object CometStringRPad extends CometExpressionSerde[StringRPad] with CodegenDisp
       inputs: Seq[Attribute],
       binding: Boolean): Option[Expr] = {
 
-    scalarFunctionExprToProto(
-      "rpad",
-      exprToProtoInternal(expr.str, inputs, binding),
-      exprToProtoInternal(expr.len, inputs, binding),
-      exprToProtoInternal(expr.pad, inputs, binding))
+    withNullShortCircuit(
+      expr,
+      scalarFunctionExprToProto(
+        "rpad",
+        exprToProtoInternal(expr.str, inputs, binding),
+        exprToProtoInternal(expr.len, inputs, binding),
+        exprToProtoInternal(expr.pad, inputs, binding)))
   }
 }
 
@@ -557,7 +561,7 @@ object CometStringLPad extends CometExpressionSerde[StringLPad] with CodegenDisp
     Seq(PadReasons.literalStrReason, PadReasons.nonLiteralPadReason)
 
   override def getSupportLevel(expr: StringLPad): SupportLevel = {
-    if (expr.str.references.isEmpty) {
+    if (expr.str.references.isEmpty || ExecSubqueryExpression.hasSubquery(expr.str)) {
       return Unsupported(Some(PadReasons.literalStrReason))
     }
     if (!expr.pad.isInstanceOf[Literal]) {
@@ -570,11 +574,13 @@ object CometStringLPad extends CometExpressionSerde[StringLPad] with CodegenDisp
       expr: StringLPad,
       inputs: Seq[Attribute],
       binding: Boolean): Option[Expr] = {
-    scalarFunctionExprToProto(
-      "lpad",
-      exprToProtoInternal(expr.str, inputs, binding),
-      exprToProtoInternal(expr.len, inputs, binding),
-      exprToProtoInternal(expr.pad, inputs, binding))
+    withNullShortCircuit(
+      expr,
+      scalarFunctionExprToProto(
+        "lpad",
+        exprToProtoInternal(expr.str, inputs, binding),
+        exprToProtoInternal(expr.len, inputs, binding),
+        exprToProtoInternal(expr.pad, inputs, binding)))
   }
 }
 

@@ -721,16 +721,23 @@ subject to the compatibility differences described in
 [Strings with non-UTF-8 bytes](compatibility/index.md#strings-with-non-utf-8-bytes).
 
 Native value transfer does not imply that every consumer of a struct scalar result runs natively.
-Calendar conversions and fields such as `year` and `month` over struct scalar subqueries fall back
-to Spark, including when an intermediate projection names the scalar result, because their runtime
-values can exceed the native calendar range. This also avoids
-differences in far-future daylight saving time. Scalar-subquery `hour`, `minute`, and `second`
-remain native for UTC, fixed offsets, and timezone-independent `timestamp_ntz` inputs; regional
-`timestamp` inputs fall back. The native clock path covers the full timestamp range, including
-row-dependent expressions such as `IF` that mix scalar-subquery results with column values.
-Similarly, `unix_timestamp` stays native for timestamp inputs, but
-scalar date inputs fall back. Raw timestamp transport, comparisons, and supported epoch arithmetic
-remain native.
+Calendar conversions, date truncation (`trunc`), and fields such as `year` and `month` fall back
+to Spark on execution paths enabled by struct scalar subqueries, because runtime values can
+exceed the native calendar range. This protection follows aliases and generated columns such as
+`explode`, covers sibling calendar expressions, and remains active above projections that drop
+the struct result. Ordinary supported date columns on independent paths retain native execution. This also avoids differences in far-future
+daylight saving time. Scalar-subquery `hour`, `minute`, and `second` remain native for UTC, fixed
+offsets, and timezone-independent `timestamp_ntz` inputs; regional `timestamp` inputs fall back.
+The native clock path covers the full timestamp range, including row-dependent expressions such
+as `IF` that mix scalar-subquery results with column values. Similarly, `unix_timestamp` stays
+native for timestamp inputs, but scalar date inputs fall back. Raw timestamp transport,
+comparisons, and supported epoch arithmetic remain native.
+
+String inputs to `lpad` and `rpad` that contain scalar subqueries fall back to Spark, including
+conditional inputs such as `IF` and `CASE WHEN`. Column strings with scalar-subquery lengths,
+including NULL lengths, remain native. Other expressions can also produce a scalar string for
+an entire batch, even when they reference columns. The native padding adapter broadcasts these
+runtime scalar strings through the existing array kernel, preserving scalar and per-row lengths.
 
 ## See also
 

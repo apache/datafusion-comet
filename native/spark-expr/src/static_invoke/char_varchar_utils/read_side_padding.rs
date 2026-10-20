@@ -47,6 +47,27 @@ fn spark_read_side_padding2(
     truncate: bool,
     is_left_pad: bool,
 ) -> Result<ColumnarValue, DataFusionError> {
+    if let [ColumnarValue::Scalar(string @ (ScalarValue::Utf8(_) | ScalarValue::LargeUtf8(_))), length, ..] =
+        args
+    {
+        // Conditional expressions and serde rewrites can yield a scalar even when their
+        // Spark expression references columns. Reuse the array kernel for these values.
+        let rows = match length {
+            ColumnarValue::Array(array) => array.len(),
+            ColumnarValue::Scalar(_) => 1,
+        };
+        let mut array_args = args.to_vec();
+        array_args[0] = ColumnarValue::Array(string.to_array_of_size(rows)?);
+        let result = spark_read_side_padding2(&array_args, truncate, is_left_pad)?;
+        return match length {
+            ColumnarValue::Scalar(_) => Ok(ColumnarValue::Scalar(ScalarValue::try_from_array(
+                &result.to_array(1)?,
+                0,
+            )?)),
+            ColumnarValue::Array(_) => Ok(result),
+        };
+    }
+
     match args {
         [ColumnarValue::Array(array), ColumnarValue::Scalar(ScalarValue::Int32(None))]
         | [ColumnarValue::Array(array), ColumnarValue::Scalar(ScalarValue::Int32(None)), ColumnarValue::Scalar(ScalarValue::Utf8(_))] => {
@@ -422,22 +443,92 @@ mod tests {
     }
 
     #[test]
-    fn scalar_strings_are_unsupported() {
+    fn scalar_strings_match_array_kernel() {
         for pad in [spark_lpad, spark_rpad, spark_read_side_padding] {
-            for input in [
-                ScalarValue::Utf8(Some("abc".to_string())),
-                ScalarValue::Utf8(None),
-                ScalarValue::LargeUtf8(Some("abc".to_string())),
-                ScalarValue::LargeUtf8(None),
-            ] {
-                for length in [len_scalar(5), len_array(&[Some(5), None])] {
-                    let args = [ColumnarValue::Scalar(input.clone()), length];
-                    assert!(pad(&args)
-                        .unwrap_err()
-                        .to_string()
-                        .contains("Unsupported arguments"));
+            for large in [false, true] {
+                for text in [Some("abc"), Some("é🙂界"), Some(""), None] {
+                    let input = if large {
+                        ScalarValue::LargeUtf8(text.map(str::to_owned))
+                    } else {
+                        ScalarValue::Utf8(text.map(str::to_owned))
+                    };
+                    for length in [
+                        len_scalar(-1),
+                        len_scalar(0),
+                        len_scalar(2),
+                        len_scalar(8),
+                        ColumnarValue::Scalar(ScalarValue::Int32(None)),
+                        len_array(&[Some(-1), Some(0), Some(2), Some(8), None]),
+                        len_array(&[]),
+                    ] {
+                        let rows = match &length {
+                            ColumnarValue::Array(array) => array.len(),
+                            ColumnarValue::Scalar(_) => 1,
+                        };
+                        for padding in [
+                            None,
+                            Some(pad_scalar("ö🙂")),
+                            Some(pad_scalar("")),
+                            Some(ColumnarValue::Scalar(ScalarValue::Utf8(None))),
+                        ] {
+                            let mut args =
+                                vec![ColumnarValue::Scalar(input.clone()), length.clone()];
+                            args.extend(padding);
+                            let actual = pad(&args).unwrap();
+                            assert_eq!(
+                                matches!(&actual, ColumnarValue::Scalar(_)),
+                                matches!(&length, ColumnarValue::Scalar(_)),
+                                "unexpected result shape for {args:?}"
+                            );
+
+                            args[0] = ColumnarValue::Array(input.to_array_of_size(rows).unwrap());
+                            let expected = pad(&args).unwrap().to_array(rows).unwrap();
+                            let actual = actual.to_array(rows).unwrap();
+                            assert_eq!(
+                                actual.to_data(),
+                                expected.to_data(),
+                                "scalar and array padding differ for {args:?}"
+                            );
+                        }
+                    }
                 }
             }
+        }
+    }
+
+    #[test]
+    fn scalar_unicode_padding_and_truncation() {
+        for large in [false, true] {
+            let string = |text: &str| {
+                if large {
+                    ScalarValue::LargeUtf8(Some(text.to_owned()))
+                } else {
+                    ScalarValue::Utf8(Some(text.to_owned()))
+                }
+            };
+            let scalar = |result| match result {
+                ColumnarValue::Scalar(value) => value,
+                ColumnarValue::Array(_) => panic!("expected scalar padding result"),
+            };
+            let mut args = vec![
+                ColumnarValue::Scalar(string("é🙂")),
+                len_scalar(5),
+                pad_scalar("界a"),
+            ];
+            assert_eq!(scalar(spark_lpad(&args).unwrap()), string("界a界é🙂"));
+            assert_eq!(scalar(spark_rpad(&args).unwrap()), string("é🙂界a界"));
+            assert_eq!(
+                scalar(spark_read_side_padding(&args).unwrap()),
+                string("é🙂界a界")
+            );
+
+            args[1] = len_scalar(1);
+            assert_eq!(scalar(spark_lpad(&args).unwrap()), string("é"));
+            assert_eq!(scalar(spark_rpad(&args).unwrap()), string("é"));
+            assert_eq!(
+                scalar(spark_read_side_padding(&args).unwrap()),
+                string("é🙂")
+            );
         }
     }
 
