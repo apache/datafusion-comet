@@ -36,9 +36,10 @@ import org.apache.spark.unsafe.memory.UnsafeMemoryAllocator;
  * serialized rows when Spark runs in on-heap mode.
  *
  * <p>Spark's own allocator cannot be used here. `TaskMemoryManager.allocatePage` hands out pages
- * from `tungstenMemoryAllocator`, which is the on-heap allocator in this mode, and the row
- * addresses derived from these pages are passed to `writeSortedFileNative` for Rust to dereference.
- * The pages therefore have to be `Unsafe`-allocated regardless of Spark's memory mode.
+ * from `tungstenMemoryAllocator`, which is the on-heap allocator in this mode, and Rust reads the
+ * rows straight from these pages, through the row addresses passed to `writeSortedFileNative` or
+ * the page addresses passed to `writeSortedPartitionsNative`. The pages therefore have to be
+ * `Unsafe`-allocated regardless of Spark's memory mode.
  *
  * <p>Nothing bounds these allocations. On-heap mode exists so that the Spark SQL tests can run
  * against Comet without changing Spark's memory configuration; it is not a production

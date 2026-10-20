@@ -32,7 +32,7 @@ use datafusion::{
     config::ConfigOptions,
     physical_expr::{
         expressions::{CastExpr, Column},
-        PhysicalExpr,
+        LexOrdering, PhysicalExpr,
     },
     physical_plan::{
         filter::FilterExec,
@@ -40,7 +40,7 @@ use datafusion::{
             utils::JoinFilter, HashJoinExec, NestedLoopJoinExec, PartitionMode, SortMergeJoinExec,
         },
         projection::ProjectionExec,
-        ChildrenPropertiesMode, ExecutionPlan, ReplaceChildrenOptions,
+        ChildrenPropertiesMode, ExecutionPlan, ExecutionPlanProperties, ReplaceChildrenOptions,
     },
 };
 use datafusion_comet_operators::{
@@ -49,15 +49,18 @@ use datafusion_comet_operators::{
 };
 use datafusion_comet_proto::{
     spark_expression::Expr,
-    spark_operator::{BuildSide, HashJoin, JoinType, Operator},
+    spark_operator::{operator::OpStruct, BuildSide, HashJoin, JoinType, Operator},
 };
+use datafusion_datasource::{file_scan_config::FileScanConfig, source::DataSourceExec};
 use itertools::Itertools;
 use jni::objects::{Global, JObject};
 
 use super::{operator_registry::OperatorBuilder, PhysicalPlanner, PlanCreationResult};
 use crate::{
     execution::{
-        operators::{DynamicFilterJoinExec, ExecutionError, ScanExec, ShuffleScanExec},
+        operators::{
+            DynamicFilterJoinExec, ExecutionError, ScanExec, ShuffleScanExec, SortedInputExec,
+        },
         spark_plan::SparkPlan,
     },
     extract_op,
@@ -100,16 +103,31 @@ impl OperatorBuilder for HashJoinBuilder {
         // Reader attachment and early placement recursively replace probe-side
         // filters and projections. Keep metrics owned by their Spark nodes.
         if join.dynamic_filter_enabled && !join.null_aware_anti_join {
-            let probe = if join.build_side == BuildSide::BuildLeft as i32 {
-                &mut join_params.right
+            let (probe, source) = if join.build_side == BuildSide::BuildLeft as i32 {
+                (&mut join_params.right, &children[1])
             } else {
-                &mut join_params.left
+                (&mut join_params.left, &children[0])
             };
-            *probe = PhysicalPlanner::prepare_probe_for_runtime_filters(Arc::clone(probe))?;
+            *probe = PhysicalPlanner::prepare_probe_for_runtime_filters(
+                Arc::clone(probe),
+                Some(source),
+            )?;
         }
 
-        let left = Arc::clone(&join_params.left.native_plan);
-        let right = Arc::clone(&join_params.right.native_plan);
+        let mut left = Arc::clone(&join_params.left.native_plan);
+        let mut right = Arc::clone(&join_params.right.native_plan);
+
+        // Spark dropped any sort above this join that the streamed side's order
+        // satisfies, and the native join keeps that order only if the probe input
+        // declares it; see `SortedInputExec`.
+        if !join.streamed_sort_orders.is_empty() {
+            let probe = if join.build_side == BuildSide::BuildLeft as i32 {
+                &mut right
+            } else {
+                &mut left
+            };
+            *probe = planner.with_declared_order(Arc::clone(probe), &join.streamed_sort_orders)?;
+        }
 
         // Null-aware anti-join must run in CollectLeft mode. In Partitioned mode
         // each partition only sees per-partition null/emptiness state, which can
@@ -337,10 +355,36 @@ impl PhysicalPlanner {
     /// runtime-filter placement can replace. Stop at native/Spark tree boundaries.
     fn prepare_probe_for_runtime_filters(
         plan: Arc<SparkPlan>,
+        source: Option<&Operator>,
     ) -> Result<Arc<SparkPlan>, ExecutionError> {
+        // Walk the serialized and Spark trees together. A mismatch must not lend
+        // another filter's permission to this node or any of its descendants.
+        let source = source.filter(|source| {
+            source.plan_id == plan.plan_id
+                && source.children.len() == plan.children.len()
+                && plan.children.len() == plan.native_plan.children().len()
+                && plan
+                    .native_plan
+                    .children()
+                    .iter()
+                    .zip(&plan.children)
+                    .all(|(native, spark)| Arc::ptr_eq(native, &spark.native_plan))
+                && match &source.op_struct {
+                    Some(OpStruct::Filter(_)) => plan.native_plan.is::<FilterExec>(),
+                    Some(OpStruct::Projection(_)) => plan.native_plan.is::<ProjectionExec>(),
+                    _ => false,
+                }
+        });
         let mut native: Arc<dyn ExecutionPlan> =
             if let Some(filter) = plan.native_plan.downcast_ref::<FilterExec>() {
-                Arc::new(CometFilterExec::from_datafusion(filter.clone()))
+                let allowed = matches!(
+                    source.and_then(|source| source.op_struct.as_ref()),
+                    Some(OpStruct::Filter(filter)) if filter.allow_runtime_filter_pushdown
+                );
+                Arc::new(
+                    CometFilterExec::from_datafusion(filter.clone())
+                        .with_runtime_filter_pushdown(allowed),
+                )
             } else if let Some(projection) = plan.native_plan.downcast_ref::<ProjectionExec>() {
                 Arc::new(CometProjectionExec::from_datafusion(projection.clone()))
             } else {
@@ -349,7 +393,10 @@ impl PhysicalPlanner {
         let mut prepared = plan.as_ref().clone();
         if let ([child], [only]) = (plan.children.as_slice(), native.children().as_slice()) {
             if Arc::ptr_eq(only, &child.native_plan) {
-                let child = Self::prepare_probe_for_runtime_filters(Arc::clone(child))?;
+                let child = Self::prepare_probe_for_runtime_filters(
+                    Arc::clone(child),
+                    source.and_then(|source| source.children.first()),
+                )?;
                 native = native.replace_children(
                     vec![Arc::clone(&child.native_plan)],
                     ReplaceChildrenOptions::new(ChildrenPropertiesMode::Recompute),
@@ -359,6 +406,83 @@ impl PhysicalPlanner {
         }
         prepared.native_plan = native;
         Ok(Arc::new(prepared))
+    }
+
+    /// `plan`, declaring `sort_orders` as the order its rows arrive in, unless it already
+    /// declares one. Spark's plan knows the order of an input that enters the native plan from
+    /// the JVM, and of a scan of sorted files, but the `ScanExec` or the file scan the rows
+    /// arrive through declares none. Only that order is declared: when an operator in between may
+    /// have moved rows, `plan` is left as it is.
+    ///
+    /// The serde sends an order only when the streamed side's Comet operators report it, and it
+    /// checks that nothing under them moves rows (`mayReportFalseOrder`), while this walk asks
+    /// the native operators the same thing through `maintains_input_order`. The two agree as
+    /// long as a Comet operator that reports an order keeps it natively and says so, and a Comet
+    /// leaf that reports one is a source this walk knows or declares its order itself, as the
+    /// native range does. One that does not lands here with `plan` unchanged, and the join then
+    /// moves its unmatched rows after Spark has dropped the sort above it. Nothing here can fall
+    /// back at that point, so the invariant is kept at the operator: see "Adding a New Operator"
+    /// in the contributor guide.
+    fn with_declared_order(
+        &self,
+        plan: Arc<dyn ExecutionPlan>,
+        sort_orders: &[Expr],
+    ) -> Result<Arc<dyn ExecutionPlan>, ExecutionError> {
+        if plan.output_ordering().is_some() || !Self::keeps_source_order(&plan) {
+            return Ok(plan);
+        }
+        let exprs = sort_orders
+            .iter()
+            .map(|expr| self.create_sort_expr(expr, plan.schema()))
+            .collect::<Result<Vec<_>, _>>()?;
+        match LexOrdering::new(exprs) {
+            Some(ordering) => Ok(Arc::new(SortedInputExec::new(plan, ordering))),
+            None => Ok(plan),
+        }
+    }
+
+    /// Whether `plan`'s rows come from a source whose order Spark knows through operators that
+    /// keep their input's order, so that the order Spark reports for them still holds. A source is
+    /// an input from the JVM, or a scan of files, which reads the files of its one file group one
+    /// after the other: Spark reports an order for a file scan only when every partition reads one
+    /// sorted file, as for a sorted bucketed table with one file per bucket. Any other operator may
+    /// have moved rows, such as the null-aware anti join, whose streamed side Comet builds on, and
+    /// declaring Spark's order over it would be wrong.
+    pub(super) fn keeps_source_order(plan: &Arc<dyn ExecutionPlan>) -> bool {
+        if plan.is::<ScanExec>() || plan.is::<ShuffleScanExec>() {
+            return true;
+        }
+        if let Some(scan) = plan.downcast_ref::<DataSourceExec>() {
+            return scan
+                .data_source()
+                .downcast_ref::<FileScanConfig>()
+                .is_some_and(|config| config.file_groups.len() == 1);
+        }
+        // DataFusion reports every right hash join as keeping its probe order, but a right outer
+        // join keeps it only when the probe declares one, and no input on this path declares an
+        // order. An inner join emits its matches probe row by probe row, and a right semi, anti or
+        // mark join builds its probe indices in ascending order, so none of them depends on a
+        // declaration. Any other join type keeps no probe order at all.
+        if let Some(join) = plan.downcast_ref::<HashJoinExec>() {
+            if !matches!(
+                join.join_type(),
+                DFJoinType::Inner
+                    | DFJoinType::RightSemi
+                    | DFJoinType::RightAnti
+                    | DFJoinType::RightMark
+            ) {
+                return false;
+            }
+        }
+        let mut kept = plan
+            .children()
+            .into_iter()
+            .zip(plan.maintains_input_order())
+            .filter_map(|(child, keeps)| keeps.then_some(child));
+        match (kept.next(), kept.next()) {
+            (Some(child), None) => Self::keeps_source_order(child),
+            _ => false,
+        }
     }
 
     /// Runs a shuffled hash join with `SpillingHashJoinExec` when the serde asked for it, after
@@ -725,4 +849,145 @@ fn rewrite_physical_expr(
     );
 
     Ok(expr.rewrite(&mut rewriter).data()?)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use datafusion_comet_proto::{spark_expression, spark_operator};
+
+    fn column() -> Expr {
+        Expr {
+            expr_struct: Some(spark_expression::expr::ExprStruct::Bound(
+                spark_expression::BoundReference {
+                    index: 0,
+                    datatype: Some(spark_expression::DataType::default()),
+                },
+            )),
+            ..Default::default()
+        }
+    }
+
+    fn scan() -> Operator {
+        Operator {
+            op_struct: Some(OpStruct::Scan(spark_operator::Scan {
+                fields: vec![spark_expression::DataType::default()],
+                ..Default::default()
+            })),
+            ..Default::default()
+        }
+    }
+
+    fn filter(child: Operator, allowed: bool) -> Operator {
+        Operator {
+            plan_id: child.plan_id + 1,
+            children: vec![child],
+            op_struct: Some(OpStruct::Filter(spark_operator::Filter {
+                predicate: Some(column()),
+                allow_runtime_filter_pushdown: allowed,
+            })),
+            ..Default::default()
+        }
+    }
+
+    fn projection(child: Operator) -> Operator {
+        Operator {
+            plan_id: child.plan_id + 1,
+            children: vec![child],
+            op_struct: Some(OpStruct::Projection(spark_operator::Projection {
+                project_list: vec![column()],
+            })),
+            ..Default::default()
+        }
+    }
+
+    fn plan(source: &Operator) -> Arc<SparkPlan> {
+        PhysicalPlanner::default()
+            .create_plan(source, &mut vec![], 1)
+            .unwrap()
+            .2
+    }
+
+    fn allowed(plan: &SparkPlan) -> bool {
+        plan.native_plan
+            .downcast_ref::<CometFilterExec>()
+            .unwrap()
+            .allows_runtime_filter_pushdown()
+    }
+
+    #[test]
+    fn probe_filter_permission_below_projection_follows_its_source() {
+        for permission in [false, true] {
+            let source = projection(filter(scan(), permission));
+            let prepared =
+                PhysicalPlanner::prepare_probe_for_runtime_filters(plan(&source), Some(&source))
+                    .unwrap();
+            assert!(prepared.native_plan.is::<CometProjectionExec>());
+            assert_eq!(allowed(&prepared.children[0]), permission);
+            assert!(Arc::ptr_eq(
+                prepared.native_plan.children()[0],
+                &prepared.children[0].native_plan
+            ));
+        }
+    }
+
+    #[test]
+    fn stacked_probe_filters_keep_independent_permissions() {
+        for outer in [false, true] {
+            for inner in [false, true] {
+                let source = filter(filter(scan(), inner), outer);
+                let prepared = PhysicalPlanner::prepare_probe_for_runtime_filters(
+                    plan(&source),
+                    Some(&source),
+                )
+                .unwrap();
+                assert_eq!(allowed(&prepared), outer);
+                assert_eq!(allowed(&prepared.children[0]), inner);
+                assert!(Arc::ptr_eq(
+                    prepared.native_plan.children()[0],
+                    &prepared.children[0].native_plan
+                ));
+            }
+        }
+    }
+
+    #[test]
+    fn probe_filter_permissions_default_to_false_on_source_mismatch() {
+        let source = filter(filter(scan(), true), true);
+        let original = plan(&source);
+        let mut wrong_id = source.clone();
+        wrong_id.plan_id += 1;
+        let mut wrong_arity = source.clone();
+        wrong_arity.children.push(scan());
+        let wrong_type = projection(source.children[0].clone());
+        for mismatched in [None, Some(&wrong_id), Some(&wrong_arity), Some(&wrong_type)] {
+            let prepared = PhysicalPlanner::prepare_probe_for_runtime_filters(
+                Arc::clone(&original),
+                mismatched,
+            )
+            .unwrap();
+            assert!(!allowed(&prepared));
+            assert!(!allowed(&prepared.children[0]));
+        }
+
+        // A mismatch below an otherwise matching node cannot borrow its permission.
+        let mut wrong_child = source.clone();
+        wrong_child.children[0] = scan();
+        let prepared = PhysicalPlanner::prepare_probe_for_runtime_filters(
+            Arc::clone(&original),
+            Some(&wrong_child),
+        )
+        .unwrap();
+        assert!(allowed(&prepared));
+        assert!(!allowed(&prepared.children[0]));
+
+        // Native and Spark children can differ at planner-generated boundaries.
+        let mut mismatched = original.as_ref().clone();
+        mismatched.children = vec![plan(&scan())];
+        let prepared =
+            PhysicalPlanner::prepare_probe_for_runtime_filters(Arc::new(mismatched), Some(&source))
+                .unwrap();
+        assert!(!allowed(&prepared));
+        assert!(prepared.native_plan.children()[0].is::<FilterExec>());
+    }
 }

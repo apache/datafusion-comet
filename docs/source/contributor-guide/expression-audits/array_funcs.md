@@ -149,6 +149,7 @@
 - Spark 3.5.8 (audited 2026-05-27): baseline. `ArraysOverlap(left, right)`; three-valued logic (TRUE if any common non-null element, NULL if a null is present and no overlap is found in non-nulls, FALSE otherwise). Comet routes via `CometArraysOverlap` to the native `spark_arrays_overlap` UDF, which implements the same three-valued logic.
 - Spark 4.0.1 (audited 2026-05-27): `NullIntolerant` -> `nullIntolerant` field refactor.
 - Spark 4.1.1 (audited 2026-05-27): identical to 4.0.1.
+- Spark 4.0.5, 4.1.4 and 4.2.1 (release candidates, 2026-10-14): `fastEval` and its generated code normalize each flat `FLOAT` or `DOUBLE` element with `NormalizeFloatingNumbers.FLOAT_NORMALIZER` / `DOUBLE_NORMALIZER` before the `java.util.HashSet` lookup (SPARK-59602), so `-0.0` and `0.0` are one value. Spark 4.2.0 normalizes the arguments in the plan instead (SPARK-54918). Earlier releases keep the zeros apart, and every release treats all NaNs as one value. On the versions where `ArraySetSupport.normalizesFloats` holds, `CometArraysOverlap.nativeFunction` picks `spark_arrays_overlap_normalized`, which keys flat floats by `normalize_float`; otherwise `spark_arrays_overlap`, which keys them by `canonicalize_nan`. Nested elements compare in Spark's SQL ordering in both.
 
 ## arrays_zip
 
