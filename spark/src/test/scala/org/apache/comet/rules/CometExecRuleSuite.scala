@@ -305,6 +305,28 @@ class CometExecRuleSuite extends CometTestBase {
     }
   }
 
+  test("collect limit preserves filter column pruning for column-only projections") {
+    withSQLConf(SQLConf.ADAPTIVE_EXECUTION_ENABLED.key -> "false") {
+      withParquetTable(Seq((0, "a", 1), (1, "b", 2), (2, "c", 3)), "limit_columns") {
+        for (projection <- Seq("_1", "_1 AS value", "_3 AS a, _1 AS b, _3 AS c")) {
+          val df = sql(s"""SELECT $projection FROM limit_columns
+              |WHERE _1 % 2 = 0 AND length(_2) > 0 AND _3 > 0 LIMIT 1""".stripMargin)
+          val (_, plan) = checkSparkAnswerAndOperator(
+            df,
+            includeClasses = Seq(classOf[CometProjectExec], classOf[CometFilterExec]))
+          val project = plan.collectFirst { case p: CometProjectExec => p }.get
+          // Native filter output pruning requires a direct Project -> Filter edge, including
+          // aliases, reordered columns, and duplicates that outnumber the distinct inputs.
+          assert(project.child.isInstanceOf[CometFilterExec])
+          assert(project.child.output.size > project.references.size)
+          val serialized =
+            OperatorOuterClass.Operator.parseFrom(project.serializedPlanOpt.plan.get)
+          assert(serialized.getChildren(0).hasFilter)
+        }
+      }
+    }
+  }
+
   test("collect limit projection input cap respects disabled native local limits") {
     withSQLConf(
       SQLConf.ADAPTIVE_EXECUTION_ENABLED.key -> "false",

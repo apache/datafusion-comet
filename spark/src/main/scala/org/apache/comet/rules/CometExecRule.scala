@@ -25,7 +25,7 @@ import scala.collection.mutable.ListBuffer
 import scala.jdk.CollectionConverters._
 
 import org.apache.spark.sql.SparkSession
-import org.apache.spark.sql.catalyst.expressions.{Expression, SortOrder}
+import org.apache.spark.sql.catalyst.expressions.{Alias, Attribute, Expression, SortOrder}
 import org.apache.spark.sql.catalyst.expressions.aggregate.{AggregateMode, Final, Partial, PartialMerge}
 import org.apache.spark.sql.catalyst.optimizer.{BuildLeft, BuildRight, BuildSide}
 import org.apache.spark.sql.catalyst.rules.Rule
@@ -739,6 +739,13 @@ case class CometExecRule(session: SparkSession, queryStagePrep: Boolean = false)
     case limit: CollectLimitExec if limit.limit >= 0 =>
       limit.child match {
         case project: CometProjectExec =>
+          // Selecting or renaming columns cannot throw. Keep Project -> Filter adjacent so
+          // native planning can prune columns used only by the filter's predicate.
+          val onlyColumns = project.projectList.forall {
+            case _: Attribute | Alias(_: Attribute, _) => true
+            case _ => false
+          }
+          if (onlyColumns) return op
           project.child match {
             case cap: CometLocalLimitExec if cap.limit <= limit.limit => return op
             case _ =>
