@@ -47,15 +47,15 @@ Comet uses implementations that match Spark, including running Spark's own gener
 expressions whose native implementations behave differently. Those native implementations are
 opt-in, one expression at a time. The known differences that remain, such as the handling of strings
 that contain invalid UTF-8, are listed in the
-[Compatibility Guide](../user-guide/latest/compatibility/index.md). If you find a difference that is
+[Compatibility Guide](../user-guide/dev/compatibility/index.md). If you find a difference that is
 not documented, please [file an issue](https://github.com/apache/datafusion-comet/issues).
 
 ### Which Spark and Java versions does Comet support?
 
 Spark 3.4, 3.5, 4.0, 4.1, and 4.2, on Java 17 or later. Spark 3.4 is deprecated. The
-[installation guide](../user-guide/latest/installation.md#supported-spark-versions) lists the exact
+[installation guide](../user-guide/dev/installation.md#supported-spark-versions) lists the exact
 Spark, Java, and Scala versions, and the
-[Spark Version Compatibility](../user-guide/latest/compatibility/spark-versions.md) page lists known
+[Spark Version Compatibility](../user-guide/dev/compatibility/spark-versions.md) page lists known
 issues for each Spark version.
 
 Comet drops a Spark version some time after the Spark project stops maintaining it. Spark 3.3 and
@@ -70,13 +70,13 @@ Comet is built and tested against open-source Apache Spark only. Spark distribut
 providers and other vendors can change the internal Spark APIs that Comet calls and add operators
 that Comet does not recognize, so Comet may fail with errors such as `NoSuchMethodError`, or leave
 much of the work to Spark. To use Comet in the cloud, run open-source Apache Spark there, for example
-on Kubernetes as described in the [Kubernetes guide](../user-guide/latest/kubernetes.md).
+on Kubernetes as described in the [Kubernetes guide](../user-guide/dev/kubernetes.md).
 
 ### Which platforms do the published jars support?
 
 The jars in Maven Central include native libraries for Linux on amd64 and arm64, and need glibc 2.31
 or newer. They do not load on distributions with an older glibc, such as RHEL 7 and CentOS 7. On
-those systems and on macOS, [build Comet from source](../user-guide/latest/source.md).
+those systems and on macOS, [build Comet from source](../user-guide/dev/source.md).
 
 For performance, the libraries target CPUs that are common in data centers: `x86-64-v3`, which
 includes AVX2, on amd64, and Arm Neoverse N1 or newer cores on arm64. If Comet crashes with `SIGILL`
@@ -94,7 +94,7 @@ Spark could not find the Comet jar when it created the shuffle manager. On Spark
 executors create the shuffle manager before they load jars passed with `--jars` or `--packages`, so
 the jar must be on the startup classpath. Either copy it into `$SPARK_HOME/jars` on every machine, or
 set `spark.driver.extraClassPath` and `spark.executor.extraClassPath` to its path, as the
-[installation guide](../user-guide/latest/installation.md#run-spark-shell-with-comet-enabled) shows.
+[installation guide](../user-guide/dev/installation.md#run-spark-shell-with-comet-enabled) shows.
 
 These two settings take a local file path, not an `hdfs://` or other URL. The JVM silently ignores
 classpath entries that do not exist, so the jar must be at that path on every machine that runs a
@@ -112,13 +112,13 @@ Comet also uses memory that the pool does not track, which has to fit in
 `spark.executor.memoryOverhead`. If the cluster manager kills executors for exceeding their memory
 limit, raise the overhead rather than the pool. Each executor logs its native memory use while Comet
 runs, which you can use to size these settings. See
-[Memory Tuning](../user-guide/latest/tuning/memory.md).
+[Memory Tuning](../user-guide/dev/tuning/memory.md).
 
 ### Why isn't my query faster with Comet?
 
 First check how much of the query Comet runs. Set `spark.comet.explain.fallback.enabled=true` to log
 the reasons that parts of each query run in Spark, and see
-[Understanding Comet Plans](../user-guide/latest/understanding-comet-plans.md) to read the plan. To
+[Understanding Comet Plans](../user-guide/dev/understanding-comet-plans.md) to read the plan. To
 estimate how much of a workload Comet would accelerate without changing how it runs, set
 `spark.comet.explain.planOnly.enabled=true`.
 
@@ -126,13 +126,13 @@ Common causes of a small speedup are:
 
 - **Fallbacks inside a stage.** Each switch between Comet and Spark converts data between columnar
   and row formats, which can cost more than Comet saves. See
-  [Reducing Row/Columnar Conversion Overhead](../user-guide/latest/tuning/transitions.md).
+  [Reducing Row/Columnar Conversion Overhead](../user-guide/dev/tuning/transitions.md).
 - **Comet's shuffle manager is not set.** If `spark.shuffle.manager` does not name Comet's shuffle
   manager, Comet disables itself and logs a warning, unless `spark.comet.shuffle.enabled=false`, in
   which case Comet runs but every shuffle runs in Spark. See
-  [Shuffle Tuning](../user-guide/latest/tuning/shuffle.md).
+  [Shuffle Tuning](../user-guide/dev/tuning/shuffle.md).
 - **Too little memory.** Native operators spill to disk when the off-heap pool is too small. See
-  [Memory Tuning](../user-guide/latest/tuning/memory.md).
+  [Memory Tuning](../user-guide/dev/tuning/memory.md).
 - **Little computation to accelerate.** Queries that spend most of their time reading from storage,
   listing files, or planning, or that process little data, have less to gain.
 
@@ -140,9 +140,9 @@ Common causes of a small speedup are:
 
 ### Does Comet support Delta Lake, Apache Hudi, or Apache Paimon tables?
 
-Not yet. Comet accelerates [Apache Iceberg](../user-guide/latest/iceberg.md) tables, with a native
+Not yet. Comet accelerates [Apache Iceberg](../user-guide/dev/iceberg.md) tables, with a native
 reader that is enabled by default and opt-in
-[native writes](../user-guide/latest/iceberg.md#writes). It does not accelerate scans of Delta Lake,
+[native writes](../user-guide/dev/iceberg.md#writes). It does not accelerate scans of Delta Lake,
 Hudi, or Paimon tables, so Spark reads those. Native Delta Lake reads are in development; see the
 [roadmap](../contributor-guide/roadmap.md#delta-lake-support). Hudi and Paimon are not on the
 roadmap.
@@ -150,20 +150,20 @@ roadmap.
 ### Does Comet accelerate PySpark jobs and Python UDFs?
 
 PySpark DataFrame and SQL queries produce the same physical plans as Scala, so Comet accelerates them
-the same way. Set Comet up as the [installation guide](../user-guide/latest/installation.md)
+the same way. Set Comet up as the [installation guide](../user-guide/dev/installation.md)
 describes. There is no pip package.
 
 For Python UDFs, Comet has experimental support for `mapInArrow` and `mapInPandas` on Spark 4.0 and
 later. It keeps their data in Arrow format instead of converting it to rows and back, and is disabled
 by default. To enable it, set `spark.comet.exec.pyarrowUDF.enabled=true`; see
-[PyArrow UDF Acceleration](../user-guide/latest/pyarrow-udfs.md). Scalar `@pandas_udf` functions are
+[PyArrow UDF Acceleration](../user-guide/dev/pyarrow-udfs.md). Scalar `@pandas_udf` functions are
 not accelerated yet, and Python UDFs that do not use Arrow are not planned.
 
 ### Does Comet plan to add an API for vectorized Java/Scala UDFs similar to the Rust UDF API?
 
 Not at the moment. Comet already runs ordinary Scala and Java UDFs in its pipeline without code
 changes, compiling each call into a loop over a whole batch that the JVM optimizes well. See
-[Scala UDF and Java UDF Support](../user-guide/latest/scala_java_udfs.md).
+[Scala UDF and Java UDF Support](../user-guide/dev/scala_java_udfs.md).
 
 A prototype ([#6697](https://github.com/apache/datafusion-comet/pull/6697)) found that, once the code
 generator's overheads were reduced, a vectorized rewrite of a simple function such as `x + 1` saved
@@ -174,19 +174,19 @@ the code generator instead.
 If you have a use case that a function of one row handles poorly, such as working on the UTF-8 bytes
 of strings or calling a library that processes whole batches, please describe it in
 [#6694](https://github.com/apache/datafusion-comet/issues/6694). For native speed, see the
-experimental [Rust UDF API](../user-guide/latest/rust_udfs.md).
+experimental [Rust UDF API](../user-guide/dev/rust_udfs.md).
 
 ### Does Comet support Structured Streaming?
 
 No. Comet targets batch queries and leaves streaming queries to Spark, and streaming support is not
-on the roadmap. See [Spark Operator Support](../user-guide/latest/operators.md#not-currently-planned).
+on the roadmap. See [Spark Operator Support](../user-guide/dev/operators.md#not-currently-planned).
 
 ### Can I use Comet with a remote shuffle service?
 
 Yes, with [Apache Celeborn](https://celeborn.apache.org/). Comet accelerates scans, filters, and
 other operators, and Celeborn's own Spark integration handles the shuffle. With the released Celeborn
 0.6.x and 0.7.x clients, Comet's native shuffle cannot run through Celeborn. See
-[Using Comet with Apache Celeborn](../user-guide/latest/celeborn.md). Native shuffle with Apache
+[Using Comet with Apache Celeborn](../user-guide/dev/celeborn.md). Native shuffle with Apache
 Uniffle is not supported yet ([#4913](https://github.com/apache/datafusion-comet/issues/4913)).
 
 ## Project and Community

@@ -205,7 +205,7 @@ whether the cache is bounded, and how credential refresh is handled (if applicab
 
 ## Development Setup
 
-1. Make sure `JAVA_HOME` is set and point to JDK using [support matrix](../user-guide/latest/installation.md)
+1. Make sure `JAVA_HOME` is set and point to JDK using [support matrix](../user-guide/dev/installation.md)
 2. Install Rust toolchain. The easiest way is to use
    [rustup](https://rustup.rs).
 

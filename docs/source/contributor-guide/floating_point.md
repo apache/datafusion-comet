@@ -23,7 +23,7 @@ This page describes how Comet matches Spark's handling of `-0.0` and NaN in `FLO
 values. It is aimed at contributors working on an expression or operator that compares, orders,
 hashes, deduplicates or groups floating-point values, including values nested in arrays, structs
 and maps. For user-facing differences from Spark, see
-[Floating-point Number Comparison](../user-guide/latest/compatibility/floating-point.md). The work
+[Floating-point Number Comparison](../user-guide/dev/compatibility/floating-point.md). The work
 to apply these rules systematically is tracked in
 [#6385](https://github.com/apache/datafusion-comet/issues/6385).
 

@@ -86,7 +86,7 @@
 - **Not covered:** merge-on-read writes (`WriteDelta`), format v3 types, encryption, object stores,
   and write throughput, which needs a release build.
 
-[Known Issues in the Iceberg guide]: ../../user-guide/latest/iceberg.md#known-issues
+[Known Issues in the Iceberg guide]: ../../user-guide/dev/iceberg.md#known-issues
 [apache/iceberg#17320]: https://github.com/apache/iceberg/pull/17320
 [apache/iceberg#17560]: https://github.com/apache/iceberg/pull/17560
 [apache/iceberg#17561]: https://github.com/apache/iceberg/issues/17561

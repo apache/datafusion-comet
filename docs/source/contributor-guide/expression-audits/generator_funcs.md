@@ -37,4 +37,4 @@
 
 - Same `CometExplodeExec` path as `posexplode`. Compatible for array inputs; empty and NULL arrays both emit one row with null `pos` and null `value` per Spark's `outer` semantics, which the planner requests as DataFusion's `NullHandling::PreserveAndExpandEmpty`.
 
-[Spark Expression Support]: ../../user-guide/latest/expressions.md
+[Spark Expression Support]: ../../user-guide/dev/expressions.md

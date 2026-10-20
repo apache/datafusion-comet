@@ -87,7 +87,7 @@
   not support ([#3193], [#3194]), object-store and HDFS outputs, and write throughput, which needs a
   release build.
 
-[Known Issues in the Parquet guide]: ../../user-guide/latest/parquet.md#known-issues
+[Known Issues in the Parquet guide]: ../../user-guide/dev/parquet.md#known-issues
 [apache/datafusion#26393]: https://github.com/apache/datafusion/issues/26393
 [#3193]: https://github.com/apache/datafusion-comet/issues/3193
 [#3194]: https://github.com/apache/datafusion-comet/issues/3194

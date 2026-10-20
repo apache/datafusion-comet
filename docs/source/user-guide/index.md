@@ -26,12 +26,25 @@ The **current stable release** is 1.1.x. Most users should start there. The **de
 tracks the upcoming release and may include features and fixes that are not yet generally available.
 User guides for **older releases** are kept for reference under [Older Versions](older-versions).
 
+The published site serves each guide at a URL under `user-guide/`:
+
+| URL                  | Content                                                          |
+| -------------------- | ---------------------------------------------------------------- |
+| `user-guide/latest/` | The newest release. It moves to the next release when one ships. |
+| `user-guide/dev/`    | The development snapshot, built from the main branch.            |
+| `user-guide/1.1/`    | Release 1.1.x. Each release keeps its own permanent URL.         |
+
+Link to `latest` when you mean "whatever is current". Link to a versioned URL when you need a page
+that does not change. Only the versioned URLs are permanent: pages under `latest` and `dev` can be
+added, moved, or removed from one release to the next, and links to them are not guaranteed to
+keep working.
+
 ```{toctree}
 :maxdepth: 2
 :caption: User Guide
 :hidden:
 
 1.1.x (current) <1.1/index>
-Development Snapshot <latest/index>
+Development Snapshot <dev/index>
 Older Versions <older-versions>
 ```

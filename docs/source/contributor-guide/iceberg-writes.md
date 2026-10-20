@@ -25,7 +25,7 @@ the JVM/native boundary in each direction, who owns cleanup when a task fails, a
 change to any of it.
 
 For the user-facing view (configuration, the eligibility table, and the accepted differences from
-iceberg-java's output), see [Iceberg Writes](../user-guide/latest/iceberg.md#writes). This page
+iceberg-java's output), see [Iceberg Writes](../user-guide/dev/iceberg.md#writes). This page
 does not repeat those lists; it explains the code that implements them.
 
 ## Overview
