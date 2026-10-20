@@ -17,16 +17,19 @@
 
 //! Benchmarks for the map lookup behind `GetMapValue` and `element_at(<map>, key)`.
 //!
-//! Each shape is run against both Comet's `SparkMapExtract` and the
+//! Each flat string-map shape is run against both Comet's `SparkMapExtract` and the
 //! `datafusion-functions-nested` `map_extract` it overrides, so the gap that motivated
-//! <https://github.com/apache/datafusion-comet/issues/5795> stays visible.
+//! <https://github.com/apache/datafusion-comet/issues/5795> stays visible. The nested groups
+//! run Comet only, to track the retained-capacity compaction of nested `take` results.
 //!
 //! Historical ratios were measured against DataFusion 55.1.0, whose `map_extract`
 //! implementation is unchanged in 55.2.0. Re-run the comparison after dependency upgrades
 //! rather than assuming a permanent gap. Comet's kernel avoids the `ListExtract`
 //! unwrapping pass required by DataFusion's array-valued result.
 
-use arrow::array::builder::{Int32Builder, ListBuilder, MapBuilder, StringBuilder};
+use arrow::array::builder::{
+    ArrayBuilder, BooleanBuilder, Int32Builder, ListBuilder, MapBuilder, StringBuilder,
+};
 use arrow::array::{
     Array, ArrayRef, Int32Array, LargeListArray, ListArray, MapArray, MapFieldNames, StringArray,
     StructArray,
@@ -137,7 +140,8 @@ fn criterion_benchmark(c: &mut Criterion) {
     group.finish();
 }
 
-/// Two entries per row: key 1 selects a short value; key 2 holds an unselected long value.
+/// Two entries per row: key 1 selects a `selected_len`-element value (empty, short, or as long
+/// as the other); key 2 holds an unselected 128-element value.
 /// Equal middle lengths in the deep case expose capacity propagated to grandchildren.
 /// NULL outer maps deliberately retain their entries, a valid Arrow representation that
 /// also exercises dense-null selections without changing the candidate distribution.
@@ -291,9 +295,37 @@ fn nested_benchmark(c: &mut Criterion) {
     group.finish();
 }
 
-fn nested_string_benchmark(c: &mut Criterion) {
+/// Two entries per row, keys 1 and 2, each holding a list of `selected_len` and `other_len`
+/// leaves. A NULL map row either has an empty entry range or keeps its entries.
+fn leaf_list_map<B: ArrayBuilder>(
+    leaves: B,
+    lens: (usize, usize),
+    null_percent: usize,
+    retain_null_entries: bool,
+    append_leaf: impl Fn(&mut B, i32),
+) -> MapArray {
+    let mut builder = MapBuilder::new(None, Int32Builder::new(), ListBuilder::new(leaves));
+    for row in 0..BATCH_SIZE {
+        let valid = row % 4 >= null_percent / 25;
+        if valid || retain_null_entries {
+            for (key, len) in [(1, lens.0), (2, lens.1)] {
+                builder.keys().append_value(key);
+                for _ in 0..len {
+                    append_leaf(builder.values().values(), key);
+                }
+                builder.values().append(true);
+            }
+        }
+        builder.append(valid).unwrap();
+    }
+    builder.finish()
+}
+
+/// Leaf types that `take` gathers through its generic nested path. Retained-capacity
+/// compaction must not slow these common `m[k]` shapes.
+fn nested_leaf_benchmark(c: &mut Criterion) {
     let comet = SparkMapExtract::new();
-    let mut group = c.benchmark_group("map_extract_nested_string");
+    let mut group = c.benchmark_group("map_extract_nested_leaf");
     for (shape, selected_len, other_len, width) in [
         ("short", 1, 1, 1),
         ("skewed", 1, 128, 1),
@@ -306,47 +338,54 @@ fn nested_string_benchmark(c: &mut Criterion) {
                 if null_percent == 0 && retain_null_entries {
                     continue;
                 }
-                let mut builder = MapBuilder::new(
-                    None,
-                    Int32Builder::new(),
-                    ListBuilder::new(StringBuilder::new()),
-                );
-                for row in 0..BATCH_SIZE {
-                    let valid = row % 4 >= null_percent / 25;
-                    if valid || retain_null_entries {
-                        for (key, len) in [(1, selected_len), (2, other_len)] {
-                            builder.keys().append_value(key);
-                            for _ in 0..len {
-                                builder.values().values().append_value(&text);
-                            }
-                            builder.values().append(true);
-                        }
-                    }
-                    builder.append(valid).unwrap();
-                }
-                let map = builder.finish();
-                let field = Arc::new(Field::new("result", map.value_type().clone(), true));
-                let map = ColumnarValue::Array(Arc::new(map));
-                for (key_shape, key) in [
-                    ("scalar", ColumnarValue::Scalar(ScalarValue::Int32(Some(1)))),
-                    (
-                        "column",
-                        ColumnarValue::Array(Arc::new(Int32Array::from(vec![1; BATCH_SIZE]))),
+                let lens = (selected_len, other_len);
+                let mut maps = vec![(
+                    "string",
+                    leaf_list_map(
+                        StringBuilder::new(),
+                        lens,
+                        null_percent,
+                        retain_null_entries,
+                        |b, _| b.append_value(&text),
                     ),
-                ] {
-                    let args = vec![map.clone(), key];
-                    group.bench_with_input(
-                        BenchmarkId::new(
-                            format!("{shape}/{key_shape}/{null_percent}%-nulls"),
-                            if retain_null_entries {
-                                "retained"
-                            } else {
-                                "empty"
-                            },
+                )];
+                // A Boolean leaf has no width, so the long-string shape does not apply.
+                if width == 1 {
+                    maps.push((
+                        "boolean",
+                        leaf_list_map(
+                            BooleanBuilder::new(),
+                            lens,
+                            null_percent,
+                            retain_null_entries,
+                            |b, key| b.append_value(key == 1),
                         ),
-                        &args,
-                        |b, args| b.iter(|| call(&comet, args, &field)),
-                    );
+                    ));
+                }
+                for (leaf, map) in maps {
+                    let field = Arc::new(Field::new("result", map.value_type().clone(), true));
+                    let map = ColumnarValue::Array(Arc::new(map));
+                    for (key_shape, key) in [
+                        ("scalar", ColumnarValue::Scalar(ScalarValue::Int32(Some(1)))),
+                        (
+                            "column",
+                            ColumnarValue::Array(Arc::new(Int32Array::from(vec![1; BATCH_SIZE]))),
+                        ),
+                    ] {
+                        let args = vec![map.clone(), key];
+                        group.bench_with_input(
+                            BenchmarkId::new(
+                                format!("{leaf}/{shape}/{key_shape}/{null_percent}%-nulls"),
+                                if retain_null_entries {
+                                    "retained"
+                                } else {
+                                    "empty"
+                                },
+                            ),
+                            &args,
+                            |b, args| b.iter(|| call(&comet, args, &field)),
+                        );
+                    }
                 }
             }
         }
@@ -358,6 +397,6 @@ criterion_group!(
     benches,
     criterion_benchmark,
     nested_benchmark,
-    nested_string_benchmark
+    nested_leaf_benchmark
 );
 criterion_main!(benches);

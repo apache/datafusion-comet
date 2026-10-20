@@ -16,8 +16,7 @@
 // under the License.
 
 use arrow::array::{
-    Array, ArrayData, AsArray, GenericListArray, Int32Array, MutableArrayData, OffsetSizeTrait,
-    UInt64Builder,
+    Array, GenericListArray, Int32Array, MutableArrayData, OffsetSizeTrait, UInt64Builder,
 };
 use arrow::compute::take;
 use arrow::datatypes::{DataType, FieldRef, Schema};
@@ -34,6 +33,7 @@ use std::{
     sync::Arc,
 };
 
+use crate::nested_compaction::compact_nested_take_result;
 use crate::SparkError;
 
 #[derive(Debug, Clone)]
@@ -360,113 +360,6 @@ fn list_extract<O: OffsetSizeTrait>(
     )))
 }
 
-// Inspect owned output capacity directly: nested builders can propagate a reservation
-// into deeper children even when the immediate child count was estimated correctly.
-// Keep ordinary growth headroom and small aligned buffers to avoid unnecessary copies.
-fn has_excess_nested_capacity(array: &dyn Array) -> bool {
-    let oversized = has_excess_capacity;
-    if array
-        .nulls()
-        .is_some_and(|nulls| oversized(nulls.buffer().capacity(), nulls.len().div_ceil(8)))
-    {
-        return true;
-    }
-    match array.data_type() {
-        DataType::List(_) => {
-            let list = array.as_list::<i32>();
-            has_excess_nested_capacity(list.values().as_ref())
-                || oversized(
-                    list.offsets().inner().inner().capacity(),
-                    list.offsets().len() * 4,
-                )
-        }
-        DataType::LargeList(_) => {
-            let list = array.as_list::<i64>();
-            has_excess_nested_capacity(list.values().as_ref())
-                || oversized(
-                    list.offsets().inner().inner().capacity(),
-                    list.offsets().len() * 8,
-                )
-        }
-        DataType::Map(_, _) => {
-            let map = array.as_map();
-            has_excess_nested_capacity(map.entries())
-                || oversized(
-                    map.offsets().inner().inner().capacity(),
-                    map.offsets().len() * 4,
-                )
-        }
-        DataType::Struct(_) => array
-            .as_struct()
-            .columns()
-            .iter()
-            .any(|column| has_excess_nested_capacity(column.as_ref())),
-        DataType::FixedSizeList(_, _) => {
-            has_excess_nested_capacity(array.as_fixed_size_list().values().as_ref())
-        }
-        data_type => {
-            let used = match data_type {
-                DataType::Boolean => array.len().div_ceil(8),
-                DataType::Utf8 => {
-                    array.as_string::<i32>().value_data().len() + (array.len() + 1) * 4
-                }
-                DataType::LargeUtf8 => {
-                    array.as_string::<i64>().value_data().len() + (array.len() + 1) * 8
-                }
-                DataType::Binary => {
-                    array.as_binary::<i32>().value_data().len() + (array.len() + 1) * 4
-                }
-                DataType::LargeBinary => {
-                    array.as_binary::<i64>().value_data().len() + (array.len() + 1) * 8
-                }
-                DataType::FixedSizeBinary(width) => array.len().saturating_mul(*width as usize),
-                _ => match data_type.primitive_width() {
-                    Some(width) => array.len().saturating_mul(width),
-                    None => return false,
-                },
-            };
-            let null_bytes = array.nulls().map_or(0, |nulls| nulls.len().div_ceil(8));
-            oversized(
-                array.get_buffer_memory_size(),
-                used.saturating_add(null_bytes),
-            )
-        }
-    }
-}
-
-fn has_excess_capacity(capacity: usize, used: usize) -> bool {
-    // Allow growth headroom plus one alignment block. Without the padding allowance,
-    // an offset buffer just above four times its used size can trigger compaction.
-    capacity > used.saturating_mul(4).saturating_add(64)
-}
-
-fn compact_nested_data(data: ArrayData) -> ArrayData {
-    let (data_type, len, mut nulls, offset, mut buffers, children) = data.into_parts();
-    for buffer in &mut buffers {
-        if has_excess_capacity(buffer.capacity(), buffer.len()) {
-            buffer.shrink_to_fit();
-        }
-    }
-    if let Some(nulls) = &mut nulls {
-        if has_excess_capacity(nulls.buffer().capacity(), nulls.buffer().len()) {
-            nulls.shrink_to_fit();
-        }
-    }
-    let children = children.into_iter().map(compact_nested_data).collect();
-    // SAFETY: this data came from a valid Arrow take result. Only buffer capacities
-    // changed: bytes, lengths, offsets, types, and validity are preserved. Rechecking
-    // every nested offset or string would add a scan without changing these invariants.
-    unsafe {
-        ArrayData::builder(data_type)
-            .len(len)
-            .offset(offset)
-            .nulls(nulls)
-            .buffers(buffers)
-            .child_data(children)
-            .build_unchecked()
-    }
-}
-
 fn list_extract_without_default<O: OffsetSizeTrait>(
     list_array: &GenericListArray<O>,
     index_array: &Int32Array,
@@ -497,13 +390,8 @@ fn list_extract_without_default<O: OffsetSizeTrait>(
     let indices = indices.finish();
     // Every gathered index was validated by `resolve_row` against its row's list bounds,
     // and `take` masks null index slots, so the default unchecked `TakeOptions` is safe.
-    let mut result = take(values.as_ref(), &indices, None)?;
-    if values.data_type().is_nested() && has_excess_nested_capacity(result.as_ref()) {
-        // Convert only oversized results, releasing the array before shrinking its
-        // owned buffers. Preserve headroom in other buffers to avoid needless copies.
-        result = arrow::array::make_array(compact_nested_data(result.into_data()));
-    }
-    Ok(ColumnarValue::Array(result))
+    let result = take(values.as_ref(), &indices, None)?;
+    Ok(ColumnarValue::Array(compact_nested_take_result(result)))
 }
 
 impl Display for ListExtract {
@@ -519,7 +407,7 @@ impl Display for ListExtract {
 #[cfg(test)]
 mod test {
     use super::*;
-    use arrow::array::{Array, Int32Array, ListArray};
+    use arrow::array::{Array, AsArray, Int32Array, ListArray};
     use arrow::datatypes::{Field, Int32Type};
     use datafusion::common::{Result, ScalarValue};
     use datafusion::physical_expr::expressions::Column;
@@ -595,7 +483,24 @@ mod test {
             )),
             Some((0..2 * ROWS).map(|i| i % 7 != 0).collect::<NullBuffer>()),
         ));
-        vec![lists, large_lists, maps, structs, nullable_lists]
+        // `take` zero-fills a child validity bitmap for its full reservation, which dominates
+        // the retained size of small Boolean leaves.
+        let boolean_lists = Arc::new(ListArray::new(
+            Arc::new(Field::new("item", DataType::Boolean, true)),
+            OffsetBuffer::from_lengths((0..ROWS).flat_map(|_| [selected_len, 128])),
+            Arc::new(arrow::array::BooleanArray::from_iter(
+                (0..count).map(|i| (i % 5 != 0).then_some(i % 2 == 0)),
+            )),
+            None,
+        ));
+        vec![
+            lists,
+            large_lists,
+            maps,
+            structs,
+            nullable_lists,
+            boolean_lists,
+        ]
     }
 
     #[test]
@@ -632,7 +537,7 @@ mod test {
                         };
                         assert_eq!(result.to_data(), expected.to_data());
                         // Allow builder alignment/headroom without accepting capacity sized
-                        // from the unselected 128-element children (at least 2 MiB).
+                        // from the unselected 128-element children.
                         assert!(
                             result.get_buffer_memory_size() <= 2 * expected.get_buffer_memory_size(),
                             "{:?}, selected_len={selected_len}, nullable={nullable}: retained {} bytes vs {} for the row-wise gather",

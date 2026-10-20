@@ -19,8 +19,8 @@
 // The lint makes easier for code reader/reviewer separate references clones from more heavyweight ones
 #![deny(clippy::clone_on_ref_ptr)]
 
-mod array_gather;
 mod error;
+mod nested_compaction;
 mod query_context;
 
 pub mod kernels;

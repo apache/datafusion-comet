@@ -16,8 +16,8 @@
 // under the License.
 
 use arrow::array::{
-    new_null_array, Array, ArrayRef, AsArray, BooleanBufferBuilder, MapArray, NullBufferBuilder,
-    Scalar, UInt32Array,
+    new_null_array, Array, ArrayRef, BooleanBufferBuilder, MapArray, NullBufferBuilder, Scalar,
+    UInt32Array,
 };
 use arrow::buffer::BooleanBuffer;
 use arrow::compute::kernels::cmp::eq;
@@ -30,7 +30,7 @@ use datafusion::logical_expr::{
 };
 use std::sync::Arc;
 
-use crate::array_gather::{compact_nested_buffers, take_nested_values, take_selected_lists};
+use crate::nested_compaction::compact_nested_take_result;
 
 /// Spark's map lookup: `GetMapValue` (`m[k]`) and `element_at(<map>, k)`.
 ///
@@ -44,7 +44,8 @@ use crate::array_gather::{compact_nested_buffers, take_nested_values, take_selec
 ///     other Comet map kernel and slower than Spark itself
 ///     ([#5795](https://github.com/apache/datafusion-comet/issues/5795)). Here a single Arrow
 ///     `eq` covers the whole batch of entries at once, the per-row work is a bit scan over the
-///     resulting mask, and the selected value ranges are gathered once.
+///     resulting mask, and the values are gathered with one `take`, then nested results release
+///     capacity reserved for unselected values.
 ///
 /// Spark's own lookup returns the first entry whose key compares equal, so the mask scan stops at
 /// the first match too. A missing key, a `NULL` map row, and a `NULL` lookup key all produce
@@ -208,28 +209,6 @@ fn spark_map_extract(
     // representation the format permits rather than one known to arrive here. Guard it anyway:
     // Spark returns NULL for a NULL map under both ANSI modes, for `element_at` and `GetMapValue`
     // alike, and only `element_at` has a nullable-input guard upstream of this kernel.
-    if matches!(value_type, DataType::List(_) | DataType::LargeList(_)) {
-        let selected = (0..num_rows).map(|row| {
-            if map_array.is_null(row) {
-                return None;
-            }
-            let start = offsets[row] as usize - entries_start;
-            let end = offsets[row + 1] as usize - entries_start;
-            (start..end)
-                .find(|&i| matched.value(i))
-                .map(|i| i + entries_start)
-        });
-        let result = match value_type {
-            DataType::List(_) => {
-                take_selected_lists(map_array.values().as_list::<i32>(), selected)?
-            }
-            DataType::LargeList(_) => {
-                take_selected_lists(map_array.values().as_list::<i64>(), selected)?
-            }
-            _ => unreachable!(),
-        };
-        return Ok(ColumnarValue::Array(compact_nested_buffers(result)));
-    }
     let map_nulls = map_array.nulls();
     let mut indices = vec![0u32; num_rows];
     let mut nulls = NullBufferBuilder::new(num_rows);
@@ -248,8 +227,8 @@ fn spark_map_extract(
     }
     let indices = UInt32Array::new(indices.into(), nulls.finish());
 
-    let result = take_nested_values(map_array.values(), &indices)?;
-    Ok(ColumnarValue::Array(compact_nested_buffers(result)))
+    let result = take(map_array.values(), &indices, None)?;
+    Ok(ColumnarValue::Array(compact_nested_take_result(result)))
 }
 
 /// Reject a lookup key this kernel cannot compare against `key_type`.
@@ -333,7 +312,7 @@ fn elementwise_match_mask(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use arrow::array::{Int32Array, StringArray, StructArray};
+    use arrow::array::{BooleanArray, Int32Array, StringArray, StructArray};
     use arrow::buffer::{NullBuffer, OffsetBuffer};
     use arrow::datatypes::{Field, Fields};
     use datafusion::common::ScalarValue;
@@ -739,11 +718,28 @@ mod tests {
         ));
         let string_lists: ArrayRef = Arc::new(ListArray::new(
             Arc::new(Field::new("item", DataType::Utf8, true)),
-            offsets,
+            offsets.clone(),
             strings,
             None,
         ));
-        vec![lists, large_lists, structs, maps, deep, string_lists]
+        let booleans: ArrayRef = Arc::new(BooleanArray::from_iter(
+            (0..*offsets.last().unwrap()).map(|i| (i % 5 != 0).then_some(i % 2 == 0)),
+        ));
+        let boolean_lists: ArrayRef = Arc::new(ListArray::new(
+            Arc::new(Field::new("item", DataType::Boolean, true)),
+            offsets,
+            booleans,
+            None,
+        ));
+        vec![
+            lists,
+            large_lists,
+            structs,
+            maps,
+            deep,
+            string_lists,
+            boolean_lists,
+        ]
     }
 
     #[test]

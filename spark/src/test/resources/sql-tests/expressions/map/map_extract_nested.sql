@@ -22,8 +22,8 @@
 statement
 CREATE TABLE test_map_extract_nested(m map<int,array<int>>, d map<int,array<array<int>>>, s map<int,struct<n:array<int>>>, mm map<int,map<int,array<int>>>, k int) USING parquet
 
--- Long unselected values expose over-reservation even with small batches. Equal middle
--- lengths in d and mm also exercise excess capacity in nested grandchildren.
+-- Nested results, NULL values and multi-batch input stay native and match Spark when the
+-- unselected values are much longer. Retained capacity is asserted by the Rust tests.
 statement
 INSERT INTO test_map_extract_nested VALUES
   (map(1, array(), 2, sequence(1, 128)), map(1, array_repeat(array(), 8), 2, array_repeat(sequence(1, 128), 8)), map(1, named_struct('n', array()), 2, named_struct('n', sequence(1, 128))), map(1, map(1, array()), 2, map(1, sequence(1, 128))), 1),
