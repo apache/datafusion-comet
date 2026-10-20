@@ -983,9 +983,42 @@ rather than accept a function whose volatility it would go on to ignore.</p>
 <p><code class="docutils literal notranslate"><span class="pre">libraryPath</span></code> is passed to the platform’s dynamic loader. An absolute path is what you want in
 practice, and it is what the rest of this page assumes, but a bare library name resolves the same
 way it would for any other shared object, through <code class="docutils literal notranslate"><span class="pre">LD_LIBRARY_PATH</span></code> on Linux and
-<code class="docutils literal notranslate"><span class="pre">DYLD_LIBRARY_PATH</span></code> on macOS. That is a convenience, not a sandbox: Comet does not restrict which
-paths may be loaded, so it makes no difference to the trust decision described under
-<a class="reference internal" href="#limitations">Limitations</a>.</p>
+<code class="docutils literal notranslate"><span class="pre">DYLD_LIBRARY_PATH</span></code> on macOS. That is a convenience, not a sandbox: unless you set the configs
+below, Comet does not restrict which paths may be loaded, so it makes no difference to the trust
+decision described under <a class="reference internal" href="#limitations">Limitations</a>.</p>
+</section>
+<section id="restricting-which-libraries-can-be-loaded">
+<h2>Restricting which libraries can be loaded<a class="headerlink" href="#restricting-which-libraries-can-be-loaded" title="Link to this heading">#</a></h2>
+<p>Loading a library runs its code with the privileges of the JVM, so an operator can limit it:</p>
+<div class="pst-scrollable-table-container"><table class="table">
+<thead>
+<tr class="row-odd"><th class="head"><p>Config</p></th>
+<th class="head"><p>Default</p></th>
+<th class="head"><p>Effect</p></th>
+</tr>
+</thead>
+<tbody>
+<tr class="row-even"><td><p><code class="docutils literal notranslate"><span class="pre">spark.comet.nativeUdf.enabled</span></code></p></td>
+<td><p><code class="docutils literal notranslate"><span class="pre">true</span></code></p></td>
+<td><p>When <code class="docutils literal notranslate"><span class="pre">false</span></code>, no native UDF library is loaded.</p></td>
+</tr>
+<tr class="row-odd"><td><p><code class="docutils literal notranslate"><span class="pre">spark.comet.nativeUdf.allowedPaths</span></code></p></td>
+<td><p>empty</p></td>
+<td><p>Comma-separated directories a library must be under, if set.</p></td>
+</tr>
+</tbody>
+</table>
+</div>
+<p>With <code class="docutils literal notranslate"><span class="pre">allowedPaths</span></code> set, a library is loaded only if its path is absolute and, once symlinks and
+<code class="docutils literal notranslate"><span class="pre">..</span></code> are resolved, lies under one of the listed directories (which are resolved the same way). A bare
+library name is refused, because the dynamic loader’s search path is not something Comet can check.
+The check applies on the driver, where <code class="docutils literal notranslate"><span class="pre">register</span></code> fails with <code class="docutils literal notranslate"><span class="pre">CometNativeUdfNotAllowedException</span></code>,
+and again on each executor before it loads a library named in a plan.</p>
+<p>These are ordinary Spark configs, so they are set in the cluster’s defaults and are not a defense
+against a user who can change session configuration: such a user can set them back. The allow-list
+limits which files Comet will load, not what the code in them does, and a file that is replaced
+between the check and the load is not detected. List only directories that are writable by users
+you trust.</p>
 <section id="when-spark-evaluates-the-call">
 <h3>When Spark evaluates the call<a class="headerlink" href="#when-spark-evaluates-the-call" title="Link to this heading">#</a></h3>
 <p>A call runs only inside Comet’s native execution. Spark cannot run the function, so wherever Spark
@@ -1150,7 +1183,9 @@ Downcast defensively in <code class="docutils literal notranslate"><span class="
 layout.</p></li>
 <li><p><strong>Loading a library is loading native code.</strong> It runs with the full privileges of the executor
 process and Comet cannot sandbox it: a bug in a UDF can corrupt memory or crash the executor.
-Only register libraries you trust and control.</p></li>
+Only register libraries you trust and control. See
+<a class="reference internal" href="#restricting-which-libraries-can-be-loaded">Restricting which libraries can be loaded</a> for the
+configs that turn the feature off or limit the directories libraries may come from.</p></li>
 <li><p>Once loaded, a library stays loaded for the life of the process, and <code class="docutils literal notranslate"><span class="pre">register</span></code> loads it on the
 driver as well as on the executors. To deploy a new build, write it to a new path and register
 that, or restart the executors and the driver. Never copy a new build over a library that is
@@ -1212,7 +1247,8 @@ Rebuild your UDF library when upgrading Comet.</p></li>
   <nav class="bd-toc-nav page-toc" aria-labelledby="pst-page-navigation-heading-2">
     <ul class="visible nav section-nav flex-column">
 <li class="toc-h2 nav-item toc-entry"><a class="reference internal nav-link" href="#writing-a-udf">Writing a UDF</a></li>
-<li class="toc-h2 nav-item toc-entry"><a class="reference internal nav-link" href="#registering-and-calling-a-udf">Registering and calling a UDF</a><ul class="nav section-nav flex-column">
+<li class="toc-h2 nav-item toc-entry"><a class="reference internal nav-link" href="#registering-and-calling-a-udf">Registering and calling a UDF</a></li>
+<li class="toc-h2 nav-item toc-entry"><a class="reference internal nav-link" href="#restricting-which-libraries-can-be-loaded">Restricting which libraries can be loaded</a><ul class="nav section-nav flex-column">
 <li class="toc-h3 nav-item toc-entry"><a class="reference internal nav-link" href="#when-spark-evaluates-the-call">When Spark evaluates the call</a></li>
 </ul>
 </li>
