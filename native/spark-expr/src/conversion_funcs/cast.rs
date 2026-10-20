@@ -880,14 +880,25 @@ fn cast_binary_to_string<O: OffsetSizeTrait>(
     let offsets = input.value_offsets();
     let start = offsets[0].as_usize();
     let end = offsets[num_rows].as_usize();
+    // Bytes of the non-null rows. A null row can still span bytes, for example after `nullif`.
+    let live_bytes = match input.nulls().filter(|nulls| nulls.null_count() > 0) {
+        Some(nulls) => nulls
+            .valid_indices()
+            .map(|i| offsets[i + 1].as_usize() - offsets[i].as_usize())
+            .sum(),
+        None => end - start,
+    };
 
     // Check the bytes the rows span once. If they are valid UTF-8, reuse the input's value buffer;
-    // otherwise copy the rows in the valid prefix and decode the rest.
+    // otherwise copy the rows in the valid prefix and decode the rest. Skip this when null rows
+    // span more than half of those bytes: decoding the live rows one at a time then reads less
+    // and returns a compact buffer instead of keeping the null rows' bytes alive.
     let mut valid_prefix = "";
     if matches!(
         spark_cast_options.binary_output_style,
         None | Some(BinaryOutputStyle::Utf8)
-    ) {
+    ) && 2 * live_bytes >= end - start
+    {
         let data = input.value_data();
         match std::str::from_utf8(&data[start..end]) {
             Ok(valid) => {
@@ -923,7 +934,7 @@ fn cast_binary_to_string<O: OffsetSizeTrait>(
         }
     }
 
-    let value_bytes = end - start;
+    let value_bytes = live_bytes;
     // Upper bound on the encoded length so the value buffer is allocated once. For the
     // JVM-lossy UTF-8 decoder path, valid UTF-8 sits at 1x; the builder grows on the rare
     // invalid byte that expands to U+FFFD. Base64 rounds up to a full 4-char group via
@@ -1282,6 +1293,42 @@ mod tests {
         let strings = result.as_string::<i32>();
         assert_eq!(strings.value(0), "\u{FFFD}");
         assert_eq!(strings.value(1), "\u{FFFD}");
+    }
+
+    #[test]
+    fn test_cast_binary_to_string_mostly_null_copies_live_rows() {
+        use arrow::buffer::NullBuffer;
+
+        let cast_options = SparkCastOptions::new(EvalMode::Legacy, "UTC");
+        let payload = [b'a'; 1024];
+        let values = BinaryArray::from(vec![payload.as_slice(); 64]);
+        let with_nulls = |live: &dyn Fn(usize) -> bool| {
+            let nulls = NullBuffer::from((0..64).map(live).collect::<Vec<_>>());
+            BinaryArray::new(
+                values.offsets().clone(),
+                values.values().clone(),
+                Some(nulls),
+            )
+            .slice(16, 32)
+        };
+
+        // Nulls hide most of the slice's bytes: only the two live rows are copied.
+        let mostly_null = with_nulls(&|i| i == 20 || i == 40);
+        let result = cast_binary_to_string::<i32>(&mostly_null, &cast_options).unwrap();
+        let strings = result.as_string::<i32>();
+        assert_ne!(strings.values().as_ptr(), mostly_null.value(0).as_ptr());
+        assert_eq!(strings.value_data().len(), 2 * payload.len());
+        assert!(strings.values().capacity() < 4 * payload.len());
+        assert_eq!(strings.null_count(), 30);
+        assert_eq!(strings.value(4).as_bytes(), payload);
+        assert_eq!(strings.value(24).as_bytes(), payload);
+
+        // Nulls hide less than half: the slice's bytes are checked and reused.
+        let mostly_live = with_nulls(&|i| i % 4 != 0);
+        let result = cast_binary_to_string::<i32>(&mostly_live, &cast_options).unwrap();
+        let strings = result.as_string::<i32>();
+        assert_eq!(strings.values().as_ptr(), mostly_live.value(0).as_ptr());
+        assert_eq!(strings.nulls(), mostly_live.nulls());
     }
 
     #[test]
