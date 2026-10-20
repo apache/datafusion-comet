@@ -242,7 +242,7 @@ merge. Never ask the contributor to hand-edit them. Check what feeds them:
 
 - `docs/source/user-guide/dev/expressions.md`, the supported-expressions list. A new expression
   belongs here.
-- Other `latest/compatibility/` pages such as `floating-point.md`, `regex.md`, `operators.md`.
+- Other `dev/compatibility/` pages such as `floating-point.md`, `regex.md`, `operators.md`.
 
 ### Does the PR make the contributor guide stale?
 

@@ -128,13 +128,15 @@ def insert_warning_after_asf_header(root: str, warning: str):
 
 
 def get_user_guide_dir(clone_dir: str):
-    # Where a release branch keeps its user guide depends on when it was cut: directly under
-    # user-guide/ before 0.10, under user-guide/latest/ until the 1.1 branch, and under
-    # user-guide/dev/ after that.
+    # Where a release branch keeps its user guide depends on when it was cut: under
+    # user-guide/latest/ up to the 1.1 branch, and under user-guide/dev/ after that.
     for candidate in ("docs/source/user-guide/dev", "docs/source/user-guide/latest"):
         if (Path(clone_dir) / candidate).is_dir():
             return candidate
-    return "docs/source/user-guide"
+    raise FileNotFoundError(
+        f"{clone_dir} has no docs/source/user-guide/dev or docs/source/user-guide/latest; "
+        "did the git clone fail?"
+    )
 
 def publish_released_version(version: str):
     major_minor = get_major_minor_version(version)
@@ -151,7 +153,14 @@ def publish_released_version(version: str):
 
 def generate_docs(snapshot_version: str, latest_released_version: str, previous_versions: list[str]):
 
-    # Strip release-only content; keep snapshot-only content for the latest (snapshot) docs
+    # user-guide/latest is the release alias that alias_latest replaces after the Sphinx build, so
+    # a page sourced from there would be built and then silently deleted.
+    if (Path(__file__).parent / "source/user-guide/latest").exists():
+        raise RuntimeError(
+            "docs/source/user-guide/latest is reserved for the release alias; use user-guide/dev"
+        )
+
+    # Strip release-only content; keep snapshot-only content for the dev docs
     strip_conditional_blocks("temp/user-guide/dev", "snapshot")
 
     # Replace $COMET_VERSION with actual version for snapshot version
