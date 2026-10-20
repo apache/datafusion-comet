@@ -35,9 +35,9 @@ use crate::{
     execution::{
         metrics::utils::update_comet_metric,
         planner::PhysicalPlanner,
+        row_partition_sort::sort_row_partitions,
         serde::to_arrow_datatype,
         shuffle::spark_unsafe::row::{process_sorted_partitions, process_sorted_row_partition},
-        sort::RdxSort,
     },
     jvm_bridge::{JVMClasses, JavaShufflePartitionPusher, ShufflePartitionPusher},
 };
@@ -2018,6 +2018,7 @@ pub extern "system" fn Java_org_apache_comet_Native_sortRowPartitionsNative(
     _class: JClass,
     address: jlong,
     size: jlong,
+    capacity: jlong,
     tracing_enabled: jboolean,
 ) {
     try_unwrap_or_throw(&e, |_| {
@@ -2025,27 +2026,33 @@ pub extern "system" fn Java_org_apache_comet_Native_sortRowPartitionsNative(
             "sortRowPartitionsNative",
             tracing_enabled != JNI_FALSE,
             || {
+                let size = usize::try_from(size).map_err(|_| {
+                    CometError::Internal(format!("sortRowPartitionsNative: negative size {size}"))
+                })?;
+                // The sort uses the `size` longs after the records as scratch space.
+                let capacity = usize::try_from(capacity)
+                    .ok()
+                    .filter(|capacity| capacity / 2 >= size)
+                    .ok_or_else(|| {
+                        CometError::Internal(format!(
+                            "sortRowPartitionsNative: an array of {capacity} longs has no room \
+                             for {size} longs of scratch space after {size} records"
+                        ))
+                    })?;
                 // SAFETY: JVM unsafe memory allocation is aligned with long.
                 debug_assert!(address != 0, "sortRowPartitionsNative: null address");
-                debug_assert!(size >= 0, "sortRowPartitionsNative: negative size {size}");
                 debug_assert_eq!(
                     (address as usize) % std::mem::align_of::<i64>(),
                     0,
                     "sortRowPartitionsNative: address not aligned to i64"
                 );
                 let array =
-                    unsafe { std::slice::from_raw_parts_mut(address as *mut i64, size as usize) };
-                sort_row_partitions(array);
+                    unsafe { std::slice::from_raw_parts_mut(address as *mut i64, capacity) };
+                sort_row_partitions(array, size);
                 Ok(())
             },
         )
     })
-}
-
-/// Sorts packed shuffle record pointers in place by the partition id in their upper 24 bits,
-/// keeping the order of the pointers within a partition. Core of `Native.sortRowPartitionsNative`.
-fn sort_row_partitions(packed_pointers: &mut [i64]) {
-    packed_pointers.rdxsort();
 }
 
 #[no_mangle]
@@ -3384,24 +3391,6 @@ mod tests {
     }
 
     #[test]
-    fn sort_row_partitions_sorts_in_place() {
-        let mut pointers = vec![
-            5_i64 << 40 | 3,
-            1,
-            2_i64 << 40,
-            1_i64 << 40 | 7,
-            0,
-            5_i64 << 40,
-        ];
-        let mut expected = pointers.clone();
-        // Stable, so the lower 40 bits keep their input order within a partition.
-        expected.sort_by_key(|pointer| (*pointer as u64) >> 40);
-        sort_row_partitions(&mut pointers);
-        assert_eq!(pointers, expected);
-        assert_eq!(&pointers[..2], &[1, 0]);
-    }
-
-    #[test]
     fn shuffle_partition_offsets_requires_an_executed_shuffle_write() {
         let error = shuffle_partition_offsets(None).unwrap_err();
         assert!(
@@ -3640,7 +3629,10 @@ mod tests {
                         | offset as i64,
                 );
             }
-            sort_row_partitions(&mut pointers);
+            let num_records = pointers.len();
+            pointers.resize(2 * num_records, 0);
+            sort_row_partitions(&mut pointers, num_records);
+            pointers.truncate(num_records);
 
             // `u64` elements keep the rows 8-byte aligned, as in a Spark page.
             let pages: Vec<Vec<u64>> = page_bytes
