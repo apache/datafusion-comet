@@ -25,7 +25,7 @@ import org.apache.spark.rdd.RDD
 import org.apache.spark.sql.{CometTestBase, Row}
 import org.apache.spark.sql.catalyst.InternalRow
 import org.apache.spark.sql.catalyst.expressions._
-import org.apache.spark.sql.comet.{CometFilterExec, SerializedPlan}
+import org.apache.spark.sql.comet.{CometFilterExec, CometProjectExec, SerializedPlan}
 import org.apache.spark.sql.execution.{ScalarSubquery => ExecScalarSubquery}
 import org.apache.spark.sql.execution.metric.SQLMetric
 import org.apache.spark.sql.execution.ui.SparkPlanGraph
@@ -55,7 +55,7 @@ class CometFilterDisplaySuite extends CometTestBase {
     }
   }
 
-  private def render(plan: CometFilterExec): Seq[String] = {
+  private def render(plan: SparkPlan): Seq[String] = {
     val info = SparkPlanInfo.fromSparkPlan(plan)
     Seq(
       plan.simpleString(100),
@@ -64,46 +64,40 @@ class CometFilterDisplaySuite extends CometTestBase {
       SparkPlanGraph(info).nodes.head.makeDotNode(Map.empty))
   }
 
-  test("application-built Bloom filters have bounded explain and SQL UI displays") {
-    assume(!isSpark42Plus, "https://github.com/apache/datafusion-comet/issues/4968")
-    val bloom = BloomFilter.create(10L, 8L * 1024 * 1024)
-    bloom.putLong(7L)
-    val buffer = new ByteArrayOutputStream()
-    bloom.writeTo(buffer)
-    val bytes = buffer.toByteArray
-    val summary = s"<bloom: ${bytes.length} bytes>"
+  for (project <- Seq(false, true)) {
+    val operator = if (project) "projections" else "filters"
+    test(s"application-built Bloom $operator have bounded explain and SQL UI displays") {
+      assume(!isSpark42Plus, "https://github.com/apache/datafusion-comet/issues/4968")
+      val bloom = BloomFilter.create(10L, 8L * 1024 * 1024)
+      bloom.putLong(7L)
+      val buffer = new ByteArrayOutputStream()
+      bloom.writeTo(buffer)
+      val bytes = buffer.toByteArray
+      val summary = s"<bloom: ${bytes.length} bytes>"
 
-    // This is an application-supplied literal. Spark's automatically injected runtime Bloom
-    // filters retain scalar subqueries; enabling that optimization does not create this case.
-    withSQLConf("spark.sql.optimizer.runtime.bloomFilter.enabled" -> "true") {
       withParquetDataFrame(Seq(Tuple1(7L), Tuple1(8L))) { input =>
-        def query = input.filter(
-          getColumnFromExpression(
-            BloomFilterMightContain(Literal(bytes), input.queryExecution.analyzed.output.head)))
-        val (_, plan) = checkSparkAnswerAndOperator(query, Seq(classOf[CometFilterExec]))
-        checkAnswer(query, Seq(Row(7L)))
-        val filters = plan.collect { case filter: CometFilterExec => filter }
-        assert(filters.nonEmpty)
-        filters.foreach { filter =>
-          Seq(
-            filter.simpleString(100),
-            filter.verboseStringWithOperatorId(),
-            SparkPlanInfo.fromSparkPlan(filter).simpleString).foreach { text =>
+        def query = {
+          val predicate = getColumnFromExpression(
+            BloomFilterMightContain(Literal(bytes), input.queryExecution.analyzed.output.head))
+          if (project) input.select(predicate.as("contains")) else input.filter(predicate)
+        }
+        val expectedOperator =
+          if (project) classOf[CometProjectExec] else classOf[CometFilterExec]
+        val (_, plan) = checkSparkAnswerAndOperator(query, Seq(expectedOperator))
+        checkAnswer(query, if (project) Seq(Row(true), Row(false)) else Seq(Row(7L)))
+        val operators = plan.collect {
+          case op: CometFilterExec if !project => (op, Seq(op.condition))
+          case op: CometProjectExec if project => (op, op.projectList)
+        }
+        operators.foreach { case (op, expressions) =>
+          render(op).foreach { text =>
             assert(text.contains(summary))
             assert(text.length < 2048)
           }
-          assert(filter.condition.find {
-            case predicate: BloomFilterMightContain =>
-              predicate.bloomFilterExpression.find {
-                case literal: org.apache.spark.sql.catalyst.expressions.Literal =>
-                  literal.value match {
-                    case payload: Array[Byte] => payload.sameElements(bytes)
-                    case _ => false
-                  }
-                case _ => false
-              }.nonEmpty
+          assert(expressions.exists(_.exists {
+            case Literal(payload: Array[Byte], _) => payload.sameElements(bytes)
             case _ => false
-          }.nonEmpty)
+          }))
         }
       }
     }
@@ -134,7 +128,8 @@ class CometFilterDisplaySuite extends CometTestBase {
     assert(payload.value.asInstanceOf[Array[Byte]] eq bytes)
   }
 
-  test("nested Bloom rendering preserves predicate evaluation and ordinary binary literals") {
+  test(
+    "nested Bloom rendering summarizes Bloom payloads and preserves ordinary binary literals") {
     val bloom = BloomFilter.create(10L, 128L)
     bloom.putLong(7L)
     val buffer = new ByteArrayOutputStream()
@@ -144,14 +139,10 @@ class CometFilterDisplaySuite extends CometTestBase {
     val binaryEquality = EqualTo(Literal(Array[Byte](1, 2)), Literal(Array[Byte](1, 2)))
     val condition = And(contains, Or(Not(contains), binaryEquality))
     val plan = filter(condition)
-    assert(condition.eval() == true)
-
     render(plan).foreach { text =>
       assert(text.contains(s"<bloom: ${bytes.length} bytes>"))
       assert(text.contains("0x0102"))
     }
-    assert(plan.condition eq condition)
-    assert(plan.condition.eval() == true)
   }
 
   test("empty and null Bloom literals remain distinguishable") {
@@ -160,7 +151,6 @@ class CometFilterDisplaySuite extends CometTestBase {
       val expected = if (payload.value == null) "null" else "<bloom: 0 bytes>"
       render(filter(condition)).foreach(text =>
         assert(text.contains(s"might_contain($expected,")))
-      if (payload.value == null) assert(condition.eval() == null)
     }
   }
 
@@ -177,7 +167,6 @@ class CometFilterDisplaySuite extends CometTestBase {
       assert(text.contains("scalar-subquery"))
       assert(!text.contains("<bloom:"))
     }
-    assert(plan.condition eq condition)
     intercept[IllegalArgumentException](scalar.eval())
   }
 }

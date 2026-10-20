@@ -1465,7 +1465,8 @@ case class CometProjectExec(
   override protected def withNewChildInternal(newChild: SparkPlan): SparkPlan =
     this.copy(child = newChild)
 
-  override def stringArgs: Iterator[Any] = Iterator(output, projectList, child)
+  override def stringArgs: Iterator[Any] =
+    Iterator(output, projectList.map(CometExpressionDisplay.summarizeBloomLiterals), child)
 
   override def equals(obj: Any): Boolean = {
     obj match {
