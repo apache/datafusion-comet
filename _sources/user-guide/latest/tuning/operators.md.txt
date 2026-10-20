@@ -187,12 +187,15 @@ nested in arrays and structs, so `ORDER BY`, window ordering and range partition
 even with `spark.comet.exec.strictFloatingPoint=true`. Only the comparison key is normalized; returned values keep their
 original NaN representation and zero sign.
 
-A key that nests values in an array or struct whose type can hold a null element or field falls back in every mode under
-`ASC NULLS LAST` or `DESC NULLS FIRST`, and in a `RANGE` window frame that has to find a row's peers, because Spark orders
-such a null below every other value and the native sort and window frames would not
-([#6476](https://github.com/apache/datafusion-comet/issues/6476),
-[#6477](https://github.com/apache/datafusion-comet/issues/6477)). The default null orders run natively, and
-`spark.comet.expression.SortOrder.allowIncompatible=true` forces the other null orders onto the native path.
+A key that nests values in an array or struct whose type can hold a null element or field stays native under
+`ASC NULLS LAST` and `DESC NULLS FIRST` too: Comet separates the key's root null placement from its nested ordering
+([#6476](https://github.com/apache/datafusion-comet/issues/6476)). A `RANGE` window frame that has to find a row's
+peers over such a key still falls back to Spark
+([#6477](https://github.com/apache/datafusion-comet/issues/6477)).
 
 `sort_array` sorts array elements rather than ordering rows. It follows Spark's floating-point ordering as well, so it
 also stays native with `spark.comet.exec.strictFloatingPoint=true`.
+
+The default `array_sort` comparator also runs natively. It puts null array elements last while comparing nulls
+inside nested arrays and structs below non-null values. A custom `array_sort` comparator or an
+array with a non-default string collation continues through the JVM codegen dispatcher.

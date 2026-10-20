@@ -2215,8 +2215,8 @@ to Spark (<a class="reference external" href="https://github.com/apache/datafusi
 </tr>
 <tr class="row-odd"><td><p><code class="docutils literal notranslate"><span class="pre">array_sort</span></code></p></td>
 <td><p>✅</p></td>
-<td><p>Codegen dispatch</p></td>
-<td><p></p></td>
+<td><p>Native</p></td>
+<td><p>The default comparator runs natively; custom comparators and arrays with non-default string collations use the JVM codegen dispatcher</p></td>
 </tr>
 <tr class="row-even"><td><p><code class="docutils literal notranslate"><span class="pre">exists</span></code></p></td>
 <td><p>✅</p></td>

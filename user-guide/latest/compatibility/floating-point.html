@@ -903,10 +903,10 @@ force a fallback for them: sort keys, window and rank order keys, and range part
 stay native under strict mode, whether the floats in them are scalar or nested.</p>
 <p>That includes a key that nests floats in an array or struct whose type can hold a null element or
 field. Spark orders such a null below every other value, whatever the key’s <code class="docutils literal notranslate"><span class="pre">NULLS</span> <span class="pre">FIRST</span></code> or
-<code class="docutils literal notranslate"><span class="pre">NULLS</span> <span class="pre">LAST</span></code>, so Comet falls back in every mode, not only in strict mode, for the two shapes where
-the native sort or window frame would place it differently: <code class="docutils literal notranslate"><span class="pre">ASC</span> <span class="pre">NULLS</span> <span class="pre">LAST</span></code> or <code class="docutils literal notranslate"><span class="pre">DESC</span> <span class="pre">NULLS</span> <span class="pre">FIRST</span></code>
-on such a key (<a class="reference external" href="https://github.com/apache/datafusion-comet/issues/6476">#6476</a>), and a <code class="docutils literal notranslate"><span class="pre">RANGE</span></code>
-window frame that has to find a row’s peers over it
+<code class="docutils literal notranslate"><span class="pre">NULLS</span> <span class="pre">LAST</span></code>. Comet keeps the key’s root null placement separate from its nested comparison, so
+sorts and ranking windows stay native under either null order
+(<a class="reference external" href="https://github.com/apache/datafusion-comet/issues/6476">#6476</a>). A <code class="docutils literal notranslate"><span class="pre">RANGE</span></code> window frame that
+has to find a row’s peers over such a key still falls back to Spark
 (<a class="reference external" href="https://github.com/apache/datafusion-comet/issues/6477">#6477</a>). The
 <a class="reference internal" href="operators.html"><span class="std std-doc">operator compatibility notes</span></a> describe both.</p>
 <p><code class="docutils literal notranslate"><span class="pre">array_min</span></code> and <code class="docutils literal notranslate"><span class="pre">array_max</span></code> use Spark-compatible native comparisons in both strict and non-strict

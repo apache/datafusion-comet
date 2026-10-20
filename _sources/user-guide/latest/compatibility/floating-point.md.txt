@@ -84,10 +84,10 @@ stay native under strict mode, whether the floats in them are scalar or nested.
 
 That includes a key that nests floats in an array or struct whose type can hold a null element or
 field. Spark orders such a null below every other value, whatever the key's `NULLS FIRST` or
-`NULLS LAST`, so Comet falls back in every mode, not only in strict mode, for the two shapes where
-the native sort or window frame would place it differently: `ASC NULLS LAST` or `DESC NULLS FIRST`
-on such a key ([#6476](https://github.com/apache/datafusion-comet/issues/6476)), and a `RANGE`
-window frame that has to find a row's peers over it
+`NULLS LAST`. Comet keeps the key's root null placement separate from its nested comparison, so
+sorts and ranking windows stay native under either null order
+([#6476](https://github.com/apache/datafusion-comet/issues/6476)). A `RANGE` window frame that
+has to find a row's peers over such a key still falls back to Spark
 ([#6477](https://github.com/apache/datafusion-comet/issues/6477)). The
 [operator compatibility notes](operators.md) describe both.
 
