@@ -1359,8 +1359,7 @@ object CometApproxCountDistinct extends CometAggregateExpressionSerde[HyperLogLo
   // Types that Comet's native `xxhash64` hashes identically to Spark's `XxHash64Function`.
   // `StringType` here is the default UTF8_BINARY collation; a collated `StringType(collationId)`
   // falls through to the `case _` because Spark hashes those via the collation sort key.
-  // `DecimalType` is limited to precision <= 18, since Spark hashes wider decimals through
-  // `BigDecimal` (two's-complement big-endian bytes), which the native `i128` path does not match.
+  // Wide decimals remain unsupported here pending HLL register compatibility tests.
   private def hashableType(dt: DataType): Boolean = dt match {
     case BooleanType => true
     case ByteType | ShortType | IntegerType | LongType => true
