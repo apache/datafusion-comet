@@ -196,6 +196,7 @@ The following scenarios will fall back to the JVM Iceberg reader:
   projected is read natively)
 - Encrypted tables with 192-bit data keys (no AES-192-GCM in the underlying crypto)
 - Delete files in a format other than Parquet or Puffin (Avro or ORC positional/equality deletes)
+- Equality deletes keyed on a field nested in a struct
 - Tables backed by Avro or ORC data files (only Parquet is accelerated)
 - Queries that use `input_file_name()`, `input_file_block_start()` or `input_file_block_length()`
 - Scans whose data or delete files span more than one S3 bucket (the native reader uses one
@@ -822,9 +823,6 @@ The physical differences that every native data file has, and why they are safe,
   ([#7033](https://github.com/apache/datafusion-comet/issues/7033)).
 - **`VERSION AS OF` reads of a column whose type was promoted after the snapshot**
   ([#6993](https://github.com/apache/datafusion-comet/issues/6993)).
-- **An equality delete keyed on a nested field.** Every query the native scan runs on the table
-  fails with `field not found`, even one that reads the key
-  ([#6782](https://github.com/apache/datafusion-comet/issues/6782)).
 - **Column names that only newer Unicode case data folds together**, such as a pair of Vithkuqi
   letters, which Unicode 14 added. Queries on such a table fail with a duplicate-field error
   ([#5540](https://github.com/apache/datafusion-comet/issues/5540)).

@@ -47,12 +47,10 @@ use arrow::array::{Array, RecordBatch};
 use arrow::datatypes::DataType as ArrowDataType;
 use datafusion::common::{DataFusionError, Result as DataFusionResult};
 use datafusion::config::SpillCompression;
-use datafusion::execution::disk_manager::DiskManagerMode;
 use datafusion::execution::memory_pool::MemoryPool;
 use datafusion::execution::runtime_env::RuntimeEnvBuilder;
 use datafusion::logical_expr::ScalarUDF;
 use datafusion::{
-    execution::disk_manager::DiskManagerBuilder,
     physical_plan::{display::DisplayableExecutionPlan, SendableRecordBatchStream},
     prelude::{SessionConfig, SessionContext},
 };
@@ -128,6 +126,7 @@ use crate::execution::shuffle::{
     decode_remote_shuffle_batch, read_ipc_compressed, CompressionCodec, ShuffleWriterExec,
 };
 use crate::execution::spark_plan::SparkPlan;
+use crate::execution::spill_dirs::plan_disk_manager;
 
 use crate::execution::tracing::{
     get_thread_id, log_memory_usage, trace_begin, trace_end, with_trace, POOL_TOTAL_METRIC,
@@ -1004,11 +1003,8 @@ fn prepare_datafusion_session_context(
     spark_plan: &Operator,
 ) -> CometResult<SessionContext> {
     let paths = local_dirs.into_iter().map(PathBuf::from).collect();
-    let disk_manager = DiskManagerBuilder::default()
-        .with_mode(DiskManagerMode::Directories(paths))
-        .with_max_temp_directory_size(max_temp_directory_size);
     let mut rt_config = RuntimeEnvBuilder::new()
-        .with_disk_manager_builder(disk_manager)
+        .with_disk_manager_builder(plan_disk_manager(paths, max_temp_directory_size))
         .with_object_store_registry(Arc::new(CometObjectStoreRegistry::default()));
     rt_config = rt_config.with_memory_pool(memory_pool);
 
@@ -1061,6 +1057,11 @@ fn prepare_datafusion_session_context(
             session_config = session_config.set_str(&df_key, value);
         }
     }
+
+    // The planner reads this back to decide whether a plan may load a native UDF library.
+    session_config = session_config.with_extension(Arc::new(
+        crate::execution::c_udf::policy::NativeUdfPolicy::from_spark_config(spark_config),
+    ));
 
     configure_skip_partial_aggregation(
         &mut session_config,

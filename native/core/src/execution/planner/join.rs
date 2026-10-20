@@ -46,7 +46,7 @@ use datafusion::{
 use datafusion_comet_operators::{CometFilterExec, CometProjectionExec};
 use datafusion_comet_proto::{
     spark_expression::Expr,
-    spark_operator::{BuildSide, JoinType, Operator},
+    spark_operator::{operator::OpStruct, BuildSide, JoinType, Operator},
 };
 use datafusion_datasource::{file_scan_config::FileScanConfig, source::DataSourceExec};
 use itertools::Itertools;
@@ -100,12 +100,15 @@ impl OperatorBuilder for HashJoinBuilder {
         // Reader attachment and early placement recursively replace probe-side
         // filters and projections. Keep metrics owned by their Spark nodes.
         if join.dynamic_filter_enabled && !join.null_aware_anti_join {
-            let probe = if join.build_side == BuildSide::BuildLeft as i32 {
-                &mut join_params.right
+            let (probe, source) = if join.build_side == BuildSide::BuildLeft as i32 {
+                (&mut join_params.right, &children[1])
             } else {
-                &mut join_params.left
+                (&mut join_params.left, &children[0])
             };
-            *probe = PhysicalPlanner::prepare_probe_for_runtime_filters(Arc::clone(probe))?;
+            *probe = PhysicalPlanner::prepare_probe_for_runtime_filters(
+                Arc::clone(probe),
+                Some(source),
+            )?;
         }
 
         let mut left = Arc::clone(&join_params.left.native_plan);
@@ -346,10 +349,36 @@ impl PhysicalPlanner {
     /// runtime-filter placement can replace. Stop at native/Spark tree boundaries.
     fn prepare_probe_for_runtime_filters(
         plan: Arc<SparkPlan>,
+        source: Option<&Operator>,
     ) -> Result<Arc<SparkPlan>, ExecutionError> {
+        // Walk the serialized and Spark trees together. A mismatch must not lend
+        // another filter's permission to this node or any of its descendants.
+        let source = source.filter(|source| {
+            source.plan_id == plan.plan_id
+                && source.children.len() == plan.children.len()
+                && plan.children.len() == plan.native_plan.children().len()
+                && plan
+                    .native_plan
+                    .children()
+                    .iter()
+                    .zip(&plan.children)
+                    .all(|(native, spark)| Arc::ptr_eq(native, &spark.native_plan))
+                && match &source.op_struct {
+                    Some(OpStruct::Filter(_)) => plan.native_plan.is::<FilterExec>(),
+                    Some(OpStruct::Projection(_)) => plan.native_plan.is::<ProjectionExec>(),
+                    _ => false,
+                }
+        });
         let mut native: Arc<dyn ExecutionPlan> =
             if let Some(filter) = plan.native_plan.downcast_ref::<FilterExec>() {
-                Arc::new(CometFilterExec::from_datafusion(filter.clone()))
+                let allowed = matches!(
+                    source.and_then(|source| source.op_struct.as_ref()),
+                    Some(OpStruct::Filter(filter)) if filter.allow_runtime_filter_pushdown
+                );
+                Arc::new(
+                    CometFilterExec::from_datafusion(filter.clone())
+                        .with_runtime_filter_pushdown(allowed),
+                )
             } else if let Some(projection) = plan.native_plan.downcast_ref::<ProjectionExec>() {
                 Arc::new(CometProjectionExec::from_datafusion(projection.clone()))
             } else {
@@ -358,7 +387,10 @@ impl PhysicalPlanner {
         let mut prepared = plan.as_ref().clone();
         if let ([child], [only]) = (plan.children.as_slice(), native.children().as_slice()) {
             if Arc::ptr_eq(only, &child.native_plan) {
-                let child = Self::prepare_probe_for_runtime_filters(Arc::clone(child))?;
+                let child = Self::prepare_probe_for_runtime_filters(
+                    Arc::clone(child),
+                    source.and_then(|source| source.children.first()),
+                )?;
                 native = native.replace_children(
                     vec![Arc::clone(&child.native_plan)],
                     ReplaceChildrenOptions::new(ChildrenPropertiesMode::Recompute),
@@ -772,4 +804,145 @@ fn rewrite_physical_expr(
     );
 
     Ok(expr.rewrite(&mut rewriter).data()?)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use datafusion_comet_proto::{spark_expression, spark_operator};
+
+    fn column() -> Expr {
+        Expr {
+            expr_struct: Some(spark_expression::expr::ExprStruct::Bound(
+                spark_expression::BoundReference {
+                    index: 0,
+                    datatype: Some(spark_expression::DataType::default()),
+                },
+            )),
+            ..Default::default()
+        }
+    }
+
+    fn scan() -> Operator {
+        Operator {
+            op_struct: Some(OpStruct::Scan(spark_operator::Scan {
+                fields: vec![spark_expression::DataType::default()],
+                ..Default::default()
+            })),
+            ..Default::default()
+        }
+    }
+
+    fn filter(child: Operator, allowed: bool) -> Operator {
+        Operator {
+            plan_id: child.plan_id + 1,
+            children: vec![child],
+            op_struct: Some(OpStruct::Filter(spark_operator::Filter {
+                predicate: Some(column()),
+                allow_runtime_filter_pushdown: allowed,
+            })),
+            ..Default::default()
+        }
+    }
+
+    fn projection(child: Operator) -> Operator {
+        Operator {
+            plan_id: child.plan_id + 1,
+            children: vec![child],
+            op_struct: Some(OpStruct::Projection(spark_operator::Projection {
+                project_list: vec![column()],
+            })),
+            ..Default::default()
+        }
+    }
+
+    fn plan(source: &Operator) -> Arc<SparkPlan> {
+        PhysicalPlanner::default()
+            .create_plan(source, &mut vec![], 1)
+            .unwrap()
+            .2
+    }
+
+    fn allowed(plan: &SparkPlan) -> bool {
+        plan.native_plan
+            .downcast_ref::<CometFilterExec>()
+            .unwrap()
+            .allows_runtime_filter_pushdown()
+    }
+
+    #[test]
+    fn probe_filter_permission_below_projection_follows_its_source() {
+        for permission in [false, true] {
+            let source = projection(filter(scan(), permission));
+            let prepared =
+                PhysicalPlanner::prepare_probe_for_runtime_filters(plan(&source), Some(&source))
+                    .unwrap();
+            assert!(prepared.native_plan.is::<CometProjectionExec>());
+            assert_eq!(allowed(&prepared.children[0]), permission);
+            assert!(Arc::ptr_eq(
+                prepared.native_plan.children()[0],
+                &prepared.children[0].native_plan
+            ));
+        }
+    }
+
+    #[test]
+    fn stacked_probe_filters_keep_independent_permissions() {
+        for outer in [false, true] {
+            for inner in [false, true] {
+                let source = filter(filter(scan(), inner), outer);
+                let prepared = PhysicalPlanner::prepare_probe_for_runtime_filters(
+                    plan(&source),
+                    Some(&source),
+                )
+                .unwrap();
+                assert_eq!(allowed(&prepared), outer);
+                assert_eq!(allowed(&prepared.children[0]), inner);
+                assert!(Arc::ptr_eq(
+                    prepared.native_plan.children()[0],
+                    &prepared.children[0].native_plan
+                ));
+            }
+        }
+    }
+
+    #[test]
+    fn probe_filter_permissions_default_to_false_on_source_mismatch() {
+        let source = filter(filter(scan(), true), true);
+        let original = plan(&source);
+        let mut wrong_id = source.clone();
+        wrong_id.plan_id += 1;
+        let mut wrong_arity = source.clone();
+        wrong_arity.children.push(scan());
+        let wrong_type = projection(source.children[0].clone());
+        for mismatched in [None, Some(&wrong_id), Some(&wrong_arity), Some(&wrong_type)] {
+            let prepared = PhysicalPlanner::prepare_probe_for_runtime_filters(
+                Arc::clone(&original),
+                mismatched,
+            )
+            .unwrap();
+            assert!(!allowed(&prepared));
+            assert!(!allowed(&prepared.children[0]));
+        }
+
+        // A mismatch below an otherwise matching node cannot borrow its permission.
+        let mut wrong_child = source.clone();
+        wrong_child.children[0] = scan();
+        let prepared = PhysicalPlanner::prepare_probe_for_runtime_filters(
+            Arc::clone(&original),
+            Some(&wrong_child),
+        )
+        .unwrap();
+        assert!(allowed(&prepared));
+        assert!(!allowed(&prepared.children[0]));
+
+        // Native and Spark children can differ at planner-generated boundaries.
+        let mut mismatched = original.as_ref().clone();
+        mismatched.children = vec![plan(&scan())];
+        let prepared =
+            PhysicalPlanner::prepare_probe_for_runtime_filters(Arc::new(mismatched), Some(&source))
+                .unwrap();
+        assert!(!allowed(&prepared));
+        assert!(prepared.native_plan.children()[0].is::<FilterExec>());
+    }
 }
