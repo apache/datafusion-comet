@@ -179,9 +179,11 @@ Selection logic in `CometShuffleManager.shouldBypassMergeSort()`:
    call writes every partition
 5. Native code converts the rows to Arrow arrays and writes them as Arrow IPC blocks. `doSpilling()`
    passes one partition's row addresses and sizes to `Native.writeSortedFileNative()`. `SpillSorter`
-   sorts its record pointers by partition with `Native.sortRowPartitionsNative()`, then passes them,
-   with the address of each data page, to `Native.writeSortedPartitionsNative()`. That call reads the
-   rows in place, writes every partition of the spill, and returns each partition's length and checksum
+   sorts its record pointers by partition with `Native.sortRowPartitionsNative()`, a radix sort that
+   uses the half of the pointer array `ShuffleInMemorySorter` keeps free as scratch space, then
+   passes them, with the address of each data page, to `Native.writeSortedPartitionsNative()`. That
+   call reads the rows in place, writes every partition of the spill, and returns each partition's
+   length and checksum
 6. For bypass writer: partition files are concatenated into final output
 7. For sort writer: spill files are merged
 
