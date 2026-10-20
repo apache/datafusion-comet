@@ -784,9 +784,11 @@ calls <code class="docutils literal notranslate"><span class="pre">SpillWriter.d
 call writes every partition</p></li>
 <li><p>Native code converts the rows to Arrow arrays and writes them as Arrow IPC blocks. <code class="docutils literal notranslate"><span class="pre">doSpilling()</span></code>
 passes one partition’s row addresses and sizes to <code class="docutils literal notranslate"><span class="pre">Native.writeSortedFileNative()</span></code>. <code class="docutils literal notranslate"><span class="pre">SpillSorter</span></code>
-sorts its record pointers by partition with <code class="docutils literal notranslate"><span class="pre">Native.sortRowPartitionsNative()</span></code>, then passes them,
-with the address of each data page, to <code class="docutils literal notranslate"><span class="pre">Native.writeSortedPartitionsNative()</span></code>. That call reads the
-rows in place, writes every partition of the spill, and returns each partition’s length and checksum</p></li>
+sorts its record pointers by partition with <code class="docutils literal notranslate"><span class="pre">Native.sortRowPartitionsNative()</span></code>, a radix sort that
+uses the half of the pointer array <code class="docutils literal notranslate"><span class="pre">ShuffleInMemorySorter</span></code> keeps free as scratch space, then
+passes them, with the address of each data page, to <code class="docutils literal notranslate"><span class="pre">Native.writeSortedPartitionsNative()</span></code>. That
+call reads the rows in place, writes every partition of the spill, and returns each partition’s
+length and checksum</p></li>
 <li><p>For bypass writer: partition files are concatenated into final output</p></li>
 <li><p>For sort writer: spill files are merged</p></li>
 </ol>
