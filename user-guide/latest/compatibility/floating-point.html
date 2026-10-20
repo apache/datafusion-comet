@@ -960,6 +960,17 @@ differences are acceptable for your data.</p>
 <p>The check uses the Spark version number, not the changes a build contains. A vendor build that
 reports an older version but includes SPARK-54918 or SPARK-59602 still falls back.</p>
 </section>
+<section id="arrays-overlap">
+<h2><code class="docutils literal notranslate"><span class="pre">arrays_overlap</span></code><a class="headerlink" href="#arrays-overlap" title="Link to this heading">#</a></h2>
+<p><code class="docutils literal notranslate"><span class="pre">arrays_overlap</span></code> runs natively on every Spark version and follows that version’s rule for <code class="docutils literal notranslate"><span class="pre">FLOAT</span></code>
+and <code class="docutils literal notranslate"><span class="pre">DOUBLE</span></code> elements in a flat array. Spark 4.0.5+, 4.1.4+, and 4.2+ treat <code class="docutils literal notranslate"><span class="pre">-0.0</span></code> and <code class="docutils literal notranslate"><span class="pre">0.0</span></code> as one
+value (SPARK-54918, SPARK-59602), and earlier releases keep them apart. Every NaN representation is
+one value on every version, and nested arrays and structs compare their elements in Spark’s order,
+in which the two zeros are equal.</p>
+<p>Comet chooses the rule by the Spark version number. On a vendor build that reports an older
+version but includes SPARK-59602, Comet returns <code class="docutils literal notranslate"><span class="pre">false</span></code> for two flat arrays whose only common value
+is a zero of opposite sign, where Spark returns <code class="docutils literal notranslate"><span class="pre">true</span></code>.</p>
+</section>
 <section id="array-contains-array-remove-and-sort-array">
 <h2><code class="docutils literal notranslate"><span class="pre">array_contains</span></code>, <code class="docutils literal notranslate"><span class="pre">array_remove</span></code> and <code class="docutils literal notranslate"><span class="pre">sort_array</span></code><a class="headerlink" href="#array-contains-array-remove-and-sort-array" title="Link to this heading">#</a></h2>
 <p><code class="docutils literal notranslate"><span class="pre">array_contains</span></code> compares <code class="docutils literal notranslate"><span class="pre">FLOAT</span></code> and <code class="docutils literal notranslate"><span class="pre">DOUBLE</span></code> elements as Spark does: <code class="docutils literal notranslate"><span class="pre">-0.0</span></code> equals <code class="docutils literal notranslate"><span class="pre">0.0</span></code>, and all
@@ -1036,6 +1047,7 @@ values don’t affect either function. The expressions’ entries in the
 <li class="toc-h2 nav-item toc-entry"><a class="reference internal nav-link" href="#ordering-nan-and-signed-zero-0-0-vs-0-0">Ordering: NaN and signed zero (<code class="docutils literal notranslate"><span class="pre">-0.0</span></code> vs <code class="docutils literal notranslate"><span class="pre">+0.0</span></code>)</a></li>
 <li class="toc-h2 nav-item toc-entry"><a class="reference internal nav-link" href="#min-max-greatest-and-least"><code class="docutils literal notranslate"><span class="pre">min</span></code>, <code class="docutils literal notranslate"><span class="pre">max</span></code>, <code class="docutils literal notranslate"><span class="pre">greatest</span></code>, and <code class="docutils literal notranslate"><span class="pre">least</span></code></a></li>
 <li class="toc-h2 nav-item toc-entry"><a class="reference internal nav-link" href="#array-distinct-and-union">Array distinct and union</a></li>
+<li class="toc-h2 nav-item toc-entry"><a class="reference internal nav-link" href="#arrays-overlap"><code class="docutils literal notranslate"><span class="pre">arrays_overlap</span></code></a></li>
 <li class="toc-h2 nav-item toc-entry"><a class="reference internal nav-link" href="#array-contains-array-remove-and-sort-array"><code class="docutils literal notranslate"><span class="pre">array_contains</span></code>, <code class="docutils literal notranslate"><span class="pre">array_remove</span></code> and <code class="docutils literal notranslate"><span class="pre">sort_array</span></code></a></li>
 <li class="toc-h2 nav-item toc-entry"><a class="reference internal nav-link" href="#map-construction">Map construction</a></li>
 </ul>

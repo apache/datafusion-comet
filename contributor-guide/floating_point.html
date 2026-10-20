@@ -631,6 +631,11 @@ into <code class="docutils literal notranslate"><span class="pre">0.0</span></co
 (before 3.5.2, unless probing merges them). Spark 4.2.0 normalizes their arguments in the plan
 (SPARK-54918). From 4.0.5, 4.1.4 and 4.2.1 they normalize while they evaluate instead
 (SPARK-59602).</p></li>
+<li><p><code class="docutils literal notranslate"><span class="pre">arrays_overlap</span></code> looks up the elements of a flat array in a <code class="docutils literal notranslate"><span class="pre">java.util.HashSet</span></code> of boxed values,
+so it follows <code class="docutils literal notranslate"><span class="pre">Double.equals</span></code> and keeps signed zeros apart up to Spark 4.0.4 and 4.1.3. The same
+two changes make the zeros one value: Spark 4.2.0 normalizes its arguments in the plan
+(SPARK-54918), and 4.0.5, 4.1.4 and 4.2.1 normalize each flat <code class="docutils literal notranslate"><span class="pre">FLOAT</span></code> or <code class="docutils literal notranslate"><span class="pre">DOUBLE</span></code> element before
+the lookup (SPARK-59602). Nested elements compare in the SQL ordering on every version.</p></li>
 <li><p>Map construction (<code class="docutils literal notranslate"><span class="pre">ArrayBasedMapBuilder</span></code>) finds a duplicate <code class="docutils literal notranslate"><span class="pre">FLOAT</span></code> or <code class="docutils literal notranslate"><span class="pre">DOUBLE</span></code> key in a
 <code class="docutils literal notranslate"><span class="pre">HashMap</span></code> of boxed values, which follows <code class="docutils literal notranslate"><span class="pre">Double.equals</span></code>, and a duplicate struct or array key in a
 <code class="docutils literal notranslate"><span class="pre">TreeMap</span></code> in the SQL ordering. From Spark 4.0 it normalizes a <code class="docutils literal notranslate"><span class="pre">FLOAT</span></code> or <code class="docutils literal notranslate"><span class="pre">DOUBLE</span></code> key before the
