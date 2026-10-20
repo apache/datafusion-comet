@@ -43,8 +43,10 @@ use crate::{cast_whole_num_to_binary, BinaryOutputStyle};
 use crate::{EvalMode, SparkError};
 use arrow::array::builder::{GenericStringBuilder, StringBuilder};
 use arrow::array::{
-    new_null_array, BinaryBuilder, GenericByteArray, ListArray, MapArray, StringArray, StructArray,
+    new_null_array, BinaryBuilder, GenericByteArray, GenericStringArray, ListArray, MapArray,
+    StringArray, StructArray,
 };
+use arrow::buffer::OffsetBuffer;
 use arrow::datatypes::{format_decimal_str, DataType, GenericBinaryType, Schema};
 use arrow::error::ArrowError;
 use arrow::{
@@ -876,7 +878,52 @@ fn cast_binary_to_string<O: OffsetSizeTrait>(
 
     let num_rows = input.len();
     let offsets = input.value_offsets();
-    let value_bytes = offsets[num_rows].as_usize() - offsets[0].as_usize();
+    let start = offsets[0].as_usize();
+    let end = offsets[num_rows].as_usize();
+
+    // Check the bytes the rows span once. If they are valid UTF-8, reuse the input's value buffer;
+    // otherwise copy the rows in the valid prefix and decode the rest.
+    let mut valid_prefix = "";
+    if matches!(
+        spark_cast_options.binary_output_style,
+        None | Some(BinaryOutputStyle::Utf8)
+    ) {
+        let data = input.value_data();
+        match std::str::from_utf8(&data[start..end]) {
+            Ok(valid) => {
+                // An offset splits a code point only if it points at a continuation byte.
+                if offsets.iter().all(|offset| {
+                    let offset = offset.as_usize();
+                    offset == end || !matches!(data[offset], 0x80..=0xBF)
+                }) {
+                    // Rebase a slice's offsets onto the narrowed value buffer.
+                    let offsets = if start == 0 {
+                        input.offsets().clone()
+                    } else {
+                        OffsetBuffer::from_lengths(input.offsets().lengths())
+                    };
+                    // SAFETY: the value buffer is valid UTF-8 and every offset falls on a char
+                    // boundary, which is what `GenericStringArray::try_new` checks.
+                    let strings = unsafe {
+                        GenericStringArray::<O>::new_unchecked(
+                            offsets,
+                            input.values().slice_with_length(start, end - start),
+                            input.nulls().cloned(),
+                        )
+                    };
+                    return Ok(Arc::new(strings));
+                }
+                valid_prefix = valid;
+            }
+            // SAFETY: `valid_up_to` is the length of the longest prefix that is valid UTF-8.
+            Err(error) => {
+                valid_prefix =
+                    unsafe { std::str::from_utf8_unchecked(&data[start..][..error.valid_up_to()]) }
+            }
+        }
+    }
+
+    let value_bytes = end - start;
     // Upper bound on the encoded length so the value buffer is allocated once. For the
     // JVM-lossy UTF-8 decoder path, valid UTF-8 sits at 1x; the builder grows on the rare
     // invalid byte that expands to U+FFFD. Base64 rounds up to a full 4-char group via
@@ -892,7 +939,7 @@ fn cast_binary_to_string<O: OffsetSizeTrait>(
     let mut builder = GenericStringBuilder::<O>::with_capacity(num_rows, capacity);
     // Base64 is the only style that cannot encode straight into the builder.
     let mut base64_buffer = String::new();
-    for value in input.iter() {
+    for (value, range) in input.iter().zip(offsets.windows(2)) {
         let Some(value) = value else {
             // The previous iteration always finalized its row with `append_value("")`, so no
             // bytes are pending in the builder here; a future edit that adds a `continue` or
@@ -904,14 +951,17 @@ fn cast_binary_to_string<O: OffsetSizeTrait>(
         // the row. Writing to the builder is infallible.
         let written = match spark_cast_options.binary_output_style {
             // Default CAST(binary AS string) and the UTF8 ToPrettyString style (Spark 4.0+) both
-            // render via `new String(bytes, UTF_8)`. Route through the shared JVM-compatible lossy
-            // decoder so ill-formed bytes become U+FFFD (matching Spark) instead of being
-            // reinterpreted unchecked (UB) or panicking on non-UTF-8 input (#4488, #4763). The
-            // valid-UTF-8 path borrows, so it copies once (into the Arrow value buffer). Divergence
-            // for byte-level round-trips such as CAST(CAST(x AS string) AS binary) and value
-            // identity is documented in the compatibility guide and tracked by #4764.
+            // render via `new String(bytes, UTF_8)`. Values in the valid prefix are copied as is;
+            // the rest go through the shared JVM-compatible lossy decoder so ill-formed bytes
+            // become U+FFFD (matching Spark) instead of being reinterpreted unchecked (UB) or
+            // panicking on non-UTF-8 input (#4488, #4763). Divergence for byte-level round-trips
+            // such as CAST(CAST(x AS string) AS binary) and value identity is documented in the
+            // compatibility guide and tracked by #4764.
             None | Some(BinaryOutputStyle::Utf8) => {
-                builder.write_str(&decode_utf8_spark_lossy(value))
+                match valid_prefix.get(range[0].as_usize() - start..range[1].as_usize() - start) {
+                    Some(valid) => builder.write_str(valid),
+                    None => builder.write_str(&decode_utf8_spark_lossy(value)),
+                }
             }
             Some(BinaryOutputStyle::Basic) => write_bracketed(&mut builder, value, ", ", write_i8),
             Some(BinaryOutputStyle::Base64) => {
@@ -1143,6 +1193,95 @@ mod tests {
         assert_eq!(result.value(0), "\u{FFFD}\u{FFFD}");
         assert!(result.is_null(1));
         assert_eq!(result.value(2), "héllo");
+    }
+
+    #[test]
+    fn test_cast_binary_to_string_valid_utf8_reuses_buffers() {
+        let input = BinaryArray::from_opt_vec(vec![Some("héllo".as_bytes()), None, Some(b"")]);
+        for style in [None, Some(BinaryOutputStyle::Utf8)] {
+            let mut cast_options = SparkCastOptions::new(EvalMode::Legacy, "UTC");
+            cast_options.binary_output_style = style;
+
+            let result = cast_binary_to_string::<i32>(&input, &cast_options).unwrap();
+
+            let strings = result.as_string::<i32>();
+            assert_eq!(strings.values().as_ptr(), input.values().as_ptr());
+            assert_eq!(strings.nulls(), input.nulls());
+            assert_eq!(strings.value(0), "héllo");
+            assert!(strings.is_null(1));
+            assert_eq!(strings.value(2), "");
+        }
+    }
+
+    #[test]
+    fn test_cast_binary_to_string_invalid_bytes_under_null_fall_back() {
+        use arrow::buffer::{Buffer, NullBuffer};
+
+        let cast_options = SparkCastOptions::new(EvalMode::Legacy, "UTC");
+
+        let under_null = BinaryArray::new(
+            OffsetBuffer::new(vec![0, 3, 4, 6].into()),
+            Buffer::from(b"abc\xff\xc3\xa9".as_slice()),
+            Some(NullBuffer::from(vec![true, false, true])),
+        );
+        let result = cast_binary_to_string::<i32>(&under_null, &cast_options).unwrap();
+        let strings = result.as_string::<i32>();
+        assert_eq!(strings.len(), 3);
+        assert_eq!(strings.value(0), "abc");
+        assert!(strings.is_null(1));
+        assert_eq!(strings.value(2), "é");
+
+        // An offset that splits a code point turns both halves into U+FFFD.
+        let split = BinaryArray::from(vec![b"\xc3".as_slice(), b"\xa9".as_slice()]);
+        let result = cast_binary_to_string::<i32>(&split, &cast_options).unwrap();
+        let strings = result.as_string::<i32>();
+        assert_eq!(strings.value(0), "\u{FFFD}");
+        assert_eq!(strings.value(1), "\u{FFFD}");
+    }
+
+    #[test]
+    fn test_cast_binary_to_string_slice_checks_only_its_rows() {
+        let cast_options = SparkCastOptions::new(EvalMode::Legacy, "UTC");
+        let parent = BinaryArray::from_opt_vec(vec![
+            Some(b"\xff".as_slice()),
+            Some(b"ab".as_slice()),
+            None,
+            Some("cé".as_bytes()),
+            Some(b"\xff".as_slice()),
+        ]);
+
+        let valid = parent.slice(1, 3);
+        let result = cast_binary_to_string::<i32>(&valid, &cast_options).unwrap();
+        let strings = result.as_string::<i32>();
+        assert_eq!(strings.values().as_ptr(), valid.value(0).as_ptr());
+        assert_eq!(strings.value_data(), "abcé".as_bytes());
+        assert_eq!(strings.value_offsets(), [0, 2, 2, 5]);
+        assert_eq!(strings.nulls(), valid.nulls());
+        assert_eq!(strings.value(0), "ab");
+        assert!(strings.is_null(1));
+        assert_eq!(strings.value(2), "cé");
+
+        // In a slice with an invalid row, the rows before it are unchanged and it becomes U+FFFD.
+        let invalid = parent.slice(1, 4);
+        let result = cast_binary_to_string::<i32>(&invalid, &cast_options).unwrap();
+        let strings = result.as_string::<i32>();
+        assert_eq!(strings.len(), 4);
+        assert_eq!(strings.value(0), "ab");
+        assert!(strings.is_null(1));
+        assert_eq!(strings.value(2), "cé");
+        assert_eq!(strings.value(3), "\u{FFFD}");
+
+        // An offset inside a slice that splits a code point turns both halves into U+FFFD.
+        let split = BinaryArray::from(vec![
+            b"\xff".as_slice(),
+            b"\xc3".as_slice(),
+            b"\xa9".as_slice(),
+        ])
+        .slice(1, 2);
+        let result = cast_binary_to_string::<i32>(&split, &cast_options).unwrap();
+        let strings = result.as_string::<i32>();
+        assert_eq!(strings.value(0), "\u{FFFD}");
+        assert_eq!(strings.value(1), "\u{FFFD}");
     }
 
     #[test]

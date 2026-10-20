@@ -146,6 +146,75 @@ abstract class ParquetReadSuite extends CometTestBase {
     }
   }
 
+  test("native scan decodes invalid UTF-8 in nested BINARY read as string") {
+    withTempDir { dir =>
+      val path = new Path(dir.toURI.toString, "nested-binary.parquet")
+      val parquetSchema = MessageTypeParser.parseMessageType("""message root {
+          |  optional group arr (LIST) {
+          |    repeated group list {
+          |      optional binary element;
+          |    }
+          |  }
+          |  optional group st {
+          |    optional binary name;
+          |  }
+          |  optional group m (MAP) {
+          |    repeated group key_value {
+          |      required binary key;
+          |      optional binary value;
+          |    }
+          |  }
+          |  optional int32 id;
+          |}
+          |""".stripMargin)
+      val valid = Binary.fromString("one")
+      val invalid = Binary.fromConstantByteArray(Array[Byte](0x41, 0xff.toByte, 0x42))
+      val writer = createParquetWriter(parquetSchema, path)
+      try {
+        Seq(valid, invalid).zipWithIndex.foreach { case (value, id) =>
+          val row = new SimpleGroup(parquetSchema)
+          val arr = row.addGroup("arr")
+          arr.addGroup("list").append("element", valid)
+          arr.addGroup("list").append("element", value)
+          row.addGroup("st").append("name", value)
+          row.addGroup("m").addGroup("key_value").append("key", value).append("value", value)
+          row.add("id", id)
+          writer.write(row)
+        }
+      } finally {
+        writer.close()
+      }
+
+      val readSchema = "arr array<string>, st struct<name: string>, m map<string, string>, id int"
+      // Reads with binaryAsString, then with a read schema that declares the strings.
+      Seq(("true", None), ("false", Some(readSchema))).foreach { case (binaryAsString, schema) =>
+        withSQLConf(SQLConf.PARQUET_BINARY_AS_STRING.key -> binaryAsString) {
+          val reader = schema.map(spark.read.schema(_)).getOrElse(spark.read)
+          val df = reader.parquet(path.toString)
+          assert(
+            df.schema.catalogString ===
+              "struct<arr:array<string>,st:struct<name:string>,m:map<string,string>,id:int>")
+
+          // Collected values match Spark, and the scan runs natively.
+          val (_, cometPlan) = checkSparkAnswerAndOperator(df)
+          assert(
+            collect(cometPlan) { case scan: CometNativeScanExec => scan }.nonEmpty,
+            s"Expected a CometNativeScanExec:\n${cometPlan.treeString}")
+
+          // Each invalid nested value holds U+FFFD (EF BF BD) in place of FF.
+          checkAnswer(
+            df.where("id = 1")
+              .selectExpr(
+                "hex(arr[1])",
+                "hex(st.name)",
+                "hex(map_keys(m)[0])",
+                "hex(map_values(m)[0])"),
+            Row("41EFBFBD42", "41EFBFBD42", "41EFBFBD42", "41EFBFBD42"))
+        }
+      }
+    }
+  }
+
   test("basic data types") {
     Seq(7, 1024).foreach { batchSize =>
       withSQLConf(CometConf.COMET_BATCH_SIZE.key -> batchSize.toString) {
