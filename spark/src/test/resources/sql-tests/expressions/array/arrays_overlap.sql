@@ -275,6 +275,18 @@ INSERT INTO test_overlap_struct VALUES (array(named_struct('x', 1, 'y', 2)), arr
 query
 SELECT a, b, arrays_overlap(a, b) FROM test_overlap_struct
 
+-- array_repeat keeps the non-nullable x field while array() widens it to nullable, so the two
+-- sides' element types differ only in nested nullability
+statement
+CREATE TABLE test_overlap_mixed_ctor(i int) USING parquet
+
+statement
+INSERT INTO test_overlap_mixed_ctor VALUES (1), (2), (NULL)
+
+query
+SELECT i, arrays_overlap(array_repeat(named_struct('x', 1, 'y', i), 1), array(named_struct('x', 1, 'y', i)))
+FROM test_overlap_mixed_ctor
+
 -- mixed column and literal with NULL elements
 query
 SELECT arrays_overlap(a, array(99, NULL)) FROM test_arrays_overlap
