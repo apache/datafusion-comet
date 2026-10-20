@@ -523,7 +523,12 @@ class CometWindowExecSuite extends CometTestBase {
 
   test("Native window operator reports its output rows and time") {
     withTempDir { dir =>
-      (0 until 1000).map(i => (i % 10, i)).toDF("k", "v").write.parquet(dir.toString)
+      (0 until 1000)
+        .map(i => (i % 10, i))
+        .toDF("k", "v")
+        .write
+        .mode("overwrite")
+        .parquet(dir.toString)
       withTempView("window_metrics") {
         spark.read.parquet(dir.toString).createOrReplaceTempView("window_metrics")
         // `row_number` returns a type Spark does not expect, so the planner casts it in a
