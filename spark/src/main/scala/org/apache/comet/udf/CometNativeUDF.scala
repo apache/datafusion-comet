@@ -23,6 +23,7 @@ import org.apache.spark.sql.SparkSession
 import org.apache.spark.sql.comet.CometUdfErrors
 import org.apache.spark.sql.types.DataType
 
+import org.apache.comet.CometConf
 import org.apache.comet.serde.QueryPlanSerde
 import org.apache.comet.shims.ShimSessionFunctionRegistry
 
@@ -48,9 +49,11 @@ object CometNativeUDF {
    * Register a single native UDF with an explicit signature.
    *
    * Checks that Comet can carry the argument and return types natively and validates the library
-   * on the driver (loads it, confirms a UDF named `name` exists), then installs `name` as a
-   * temporary function of the session, as `spark.udf.register` would: other sessions do not see
-   * it, and registering another function under the same name replaces it.
+   * on the driver (checks that `spark.comet.nativeUdf.enabled` and
+   * `spark.comet.nativeUdf.allowedPaths` allow it, loads it, confirms a UDF named `name` exists),
+   * then installs `name` as a temporary function of the session, as `spark.udf.register` would:
+   * other sessions do not see it, and registering another function under the same name replaces
+   * it.
    *
    * Executors need no registration: the library path travels with the plan in the
    * `NativeScalarUdf` proto, and each executor loads the library itself on first use. The path
@@ -94,7 +97,7 @@ object CometNativeUDF {
         s"native UDF '$name': Comet has no native representation for type " +
           s"${t.catalogString}, so no call to it could run.")
     }
-    validateLibrary(libraryPath, name)
+    validateLibrary(spark, libraryPath, name)
     ShimSessionFunctionRegistry
       .functionRegistry(spark)
       .createOrReplaceTempFunction(
@@ -116,9 +119,14 @@ object CometNativeUDF {
    * Load the library on the driver and confirm it exposes a UDF named `name`, translating the
    * native failure into a typed exception.
    */
-  private def validateLibrary(libraryPath: String, name: String): Unit = {
+  private def validateLibrary(spark: SparkSession, libraryPath: String, name: String): Unit = {
+    val conf = spark.sessionState.conf
     try {
-      CometNativeUdfBridge.validateLibrary(libraryPath, name)
+      CometNativeUdfBridge.validateLibrary(
+        libraryPath,
+        name,
+        CometConf.COMET_NATIVE_UDF_ENABLED.get(conf),
+        CometConf.COMET_NATIVE_UDF_ALLOWED_PATHS.get(conf).mkString(","))
     } catch {
       case t: Throwable => throw classifyNativeError(libraryPath, t)
     }
@@ -128,7 +136,8 @@ object CometNativeUDF {
    * Map a native loader failure onto a typed exception.
    *
    * The native side reports these as plain messages, so the mapping keys on the wording produced
-   * by `LoaderError`'s `Display` impl (`native/core/src/execution/c_udf/loader.rs`) and by
+   * by `LoaderError`'s `Display` impl (`native/core/src/execution/c_udf/loader.rs`), by
+   * `PolicyError`'s (`policy.rs`, which names the config key it enforces) and by
    * `comet_native_udf_bridge.rs`. Each phrase below is matched in full rather than by a fragment
    * like "ABI", because every one of those messages interpolates the library path: a library
    * under a directory named `ABI` would otherwise have its "failed to open" reported as an ABI
@@ -138,7 +147,10 @@ object CometNativeUDF {
    */
   private def classifyNativeError(libraryPath: String, t: Throwable): RuntimeException = {
     val m = Option(t.getMessage).getOrElse("")
-    if (m.contains("missing required symbol") || m.contains("reports ABI v") ||
+    if (m.contains(CometConf.COMET_NATIVE_UDF_ALLOWED_PATHS.key) ||
+      m.contains(s"${CometConf.COMET_NATIVE_UDF_ENABLED.key}=false")) {
+      new CometNativeUdfNotAllowedException(m)
+    } else if (m.contains("missing required symbol") || m.contains("reports ABI v") ||
       m.contains("does not export")) {
       new CometNativeUdfAbiException(m)
     } else if (m.contains("' not found in ")) {
