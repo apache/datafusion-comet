@@ -413,100 +413,13 @@ mod test {
     use datafusion::physical_expr::expressions::Column;
     use datafusion::physical_plan::ColumnarValue;
 
-    fn reference_gather(
-        values: &dyn Array,
-        source_rows: &[Option<usize>],
-    ) -> Result<arrow::array::ArrayRef> {
-        let data = values.to_data();
-        let mut result = MutableArrayData::new(vec![&data], true, source_rows.len());
-        for &row in source_rows {
-            match row {
-                Some(index) => result.try_extend(0, index, index + 1)?,
-                None => result.try_extend_nulls(1)?,
-            }
-        }
-        Ok(arrow::array::make_array(result.freeze()))
-    }
-
-    fn skewed_nested_values(selected_len: usize) -> Vec<arrow::array::ArrayRef> {
-        use arrow::array::{LargeListArray, MapArray, StructArray};
-        use arrow::buffer::{NullBuffer, OffsetBuffer};
-        const ROWS: usize = 8192;
-        let offsets =
-            OffsetBuffer::<i32>::from_lengths((0..ROWS).flat_map(|_| [selected_len, 128]));
-        let count = *offsets.last().unwrap() as usize;
-        let ints: arrow::array::ArrayRef = Arc::new(Int32Array::from_iter_values(0..count as i32));
-        let field = Arc::new(Field::new("item", DataType::Int32, true));
-        let lists = Arc::new(ListArray::new(
-            Arc::clone(&field),
-            offsets.clone(),
-            Arc::clone(&ints),
-            None,
-        ));
-        let large_lists = Arc::new(LargeListArray::new(
-            Arc::clone(&field),
-            OffsetBuffer::<i64>::from_lengths((0..ROWS).flat_map(|_| [selected_len, 128])),
-            Arc::clone(&ints),
-            None,
-        ));
-        let entries = StructArray::new(
-            vec![
-                Arc::new(Field::new("key", DataType::Int32, false)),
-                Arc::new(Field::new("value", DataType::Int32, true)),
-            ]
-            .into(),
-            vec![Arc::clone(&ints), ints],
-            None,
-        );
-        let maps = Arc::new(MapArray::new(
-            Arc::new(Field::new("entries", entries.data_type().clone(), false)),
-            offsets,
-            entries,
-            None,
-            false,
-        ));
-        let structs = Arc::new(StructArray::new(
-            vec![Arc::new(Field::new(
-                "nested",
-                lists.data_type().clone(),
-                true,
-            ))]
-            .into(),
-            vec![Arc::<ListArray>::clone(&lists)],
-            None,
-        ));
-        let nullable_lists = Arc::new(ListArray::new(
-            field,
-            OffsetBuffer::from_lengths((0..ROWS).flat_map(|_| [selected_len, 128])),
-            Arc::new(Int32Array::from_iter(
-                (0..count as i32).map(|i| (i % 11 != 0).then_some(i)),
-            )),
-            Some((0..2 * ROWS).map(|i| i % 7 != 0).collect::<NullBuffer>()),
-        ));
-        // `take` zero-fills a child validity bitmap for its full reservation, which dominates
-        // the retained size of small Boolean leaves.
-        let boolean_lists = Arc::new(ListArray::new(
-            Arc::new(Field::new("item", DataType::Boolean, true)),
-            OffsetBuffer::from_lengths((0..ROWS).flat_map(|_| [selected_len, 128])),
-            Arc::new(arrow::array::BooleanArray::from_iter(
-                (0..count).map(|i| (i % 5 != 0).then_some(i % 2 == 0)),
-            )),
-            None,
-        ));
-        vec![
-            lists,
-            large_lists,
-            maps,
-            structs,
-            nullable_lists,
-            boolean_lists,
-        ]
-    }
+    use crate::nested_compaction::test_util::{
+        assert_compact, reference_gather, skewed_nested_values, ROWS,
+    };
 
     #[test]
     fn test_list_extract_nested_retained_capacity() -> Result<()> {
         use arrow::buffer::{NullBuffer, OffsetBuffer};
-        const ROWS: usize = 8192;
         let error_wrapper = |error: SparkError| DataFusionError::from(error);
         for selected_len in [0, 1] {
             for values in skewed_nested_values(selected_len) {
@@ -535,13 +448,14 @@ mod test {
                         else {
                             unreachable!()
                         };
-                        assert_eq!(result.to_data(), expected.to_data());
-                        // Allow builder alignment/headroom without accepting capacity sized
-                        // from the unselected 128-element children.
-                        assert!(
-                            result.get_buffer_memory_size() <= 2 * expected.get_buffer_memory_size(),
-                            "{:?}, selected_len={selected_len}, nullable={nullable}: retained {} bytes vs {} for the row-wise gather",
-                            values.data_type(), result.get_buffer_memory_size(), expected.get_buffer_memory_size(),
+                        assert_compact(
+                            result.as_ref(),
+                            expected.as_ref(),
+                            &format!(
+                                "{:?}, selected_len={selected_len}, nullable={nullable}, default={}",
+                                values.data_type(),
+                                default.is_some(),
+                            ),
                         );
                     }
                 }
@@ -634,9 +548,9 @@ mod test {
         for values in skewed_nested_values(1) {
             let outer = ListArray::new(
                 Arc::new(Field::new("item", values.data_type().clone(), true)),
-                OffsetBuffer::from_lengths(std::iter::repeat_n(2, 8192)),
+                OffsetBuffer::from_lengths(std::iter::repeat_n(2, ROWS)),
                 Arc::clone(&values),
-                Some((0..8192).map(|row| row % 4 != 0).collect::<NullBuffer>()),
+                Some((0..ROWS).map(|row| row % 4 != 0).collect::<NullBuffer>()),
             )
             .slice(1, 8);
             // The sliced rows are: first child, last child, null index, null list,

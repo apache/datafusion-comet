@@ -156,6 +156,161 @@ fn compact_nested_data(data: ArrayData) -> ArrayData {
     }
 }
 
+/// Fixtures shared by the retained-capacity tests of the kernels that call
+/// [`compact_nested_take_result`].
+#[cfg(test)]
+pub(crate) mod test_util {
+    use arrow::array::{
+        make_array, Array, ArrayRef, BooleanArray, Int32Array, LargeListArray, ListArray, MapArray,
+        MutableArrayData, StringArray, StructArray,
+    };
+    use arrow::buffer::{NullBuffer, OffsetBuffer};
+    use arrow::datatypes::{DataType, Field};
+    use datafusion::common::Result;
+    use std::sync::Arc;
+
+    pub(crate) const ROWS: usize = 8192;
+
+    /// Nested values in pairs: index `2 * row` holds a `selected_len`-element value and
+    /// `2 * row + 1` an unselected 128-element one, so a gather that sizes children from the
+    /// average candidate over-reserves by about 64x.
+    pub(crate) fn skewed_nested_values(selected_len: usize) -> Vec<ArrayRef> {
+        let lengths = || (0..ROWS).flat_map(|_| [selected_len, 128]);
+        let offsets = OffsetBuffer::<i32>::from_lengths(lengths());
+        let count = *offsets.last().unwrap();
+        let ints: ArrayRef = Arc::new(Int32Array::from_iter_values(0..count));
+        let list_of = |item: DataType, values: ArrayRef, nulls: Option<NullBuffer>| -> ArrayRef {
+            Arc::new(ListArray::new(
+                Arc::new(Field::new("item", item, true)),
+                offsets.clone(),
+                values,
+                nulls,
+            ))
+        };
+        let lists = list_of(DataType::Int32, Arc::clone(&ints), None);
+        let large_lists: ArrayRef = Arc::new(LargeListArray::new(
+            Arc::new(Field::new("item", DataType::Int32, true)),
+            OffsetBuffer::from_lengths(lengths()),
+            Arc::clone(&ints),
+            None,
+        ));
+        let nullable_lists = list_of(
+            DataType::Int32,
+            Arc::new(Int32Array::from_iter(
+                (0..count).map(|i| (i % 11 != 0).then_some(i)),
+            )),
+            Some((0..2 * ROWS).map(|i| i % 7 != 0).collect()),
+        );
+        let entry_fields = vec![
+            Arc::new(Field::new("key", DataType::Int32, false)),
+            Arc::new(Field::new("value", DataType::Int32, true)),
+        ];
+        let maps: ArrayRef = Arc::new(MapArray::new(
+            Arc::new(Field::new(
+                "entries",
+                DataType::Struct(entry_fields.clone().into()),
+                false,
+            )),
+            offsets.clone(),
+            StructArray::new(
+                entry_fields.into(),
+                vec![Arc::clone(&ints), Arc::clone(&ints)],
+                None,
+            ),
+            None,
+            false,
+        ));
+        let structs: ArrayRef = Arc::new(StructArray::new(
+            vec![Arc::new(Field::new(
+                "items",
+                lists.data_type().clone(),
+                true,
+            ))]
+            .into(),
+            vec![Arc::clone(&lists)],
+            None,
+        ));
+        // Equal middle lengths expose a reservation propagated into the grandchildren.
+        const WIDTH: usize = 8;
+        let inner_offsets = OffsetBuffer::<i32>::from_lengths((0..ROWS).flat_map(|_| {
+            std::iter::repeat_n(selected_len, WIDTH).chain(std::iter::repeat_n(128, WIDTH))
+        }));
+        let inner = ListArray::new(
+            Arc::new(Field::new("item", DataType::Int32, true)),
+            inner_offsets.clone(),
+            Arc::new(Int32Array::from_iter_values(
+                0..*inner_offsets.last().unwrap(),
+            )),
+            Some((0..2 * ROWS * WIDTH).map(|i| i % 13 != 0).collect()),
+        );
+        let deep: ArrayRef = Arc::new(ListArray::new(
+            Arc::new(Field::new("item", inner.data_type().clone(), true)),
+            OffsetBuffer::from_lengths(std::iter::repeat_n(WIDTH, 2 * ROWS)),
+            Arc::new(inner),
+            Some((0..2 * ROWS).map(|i| i % 7 != 0).collect()),
+        ));
+        let strings = list_of(
+            DataType::Utf8,
+            Arc::new(StringArray::from_iter(
+                (0..count).map(|i| (i % 7 != 0).then_some("é")),
+            )),
+            None,
+        );
+        // `take` zero-fills a child validity bitmap for its full reservation, which dominates
+        // the retained size of small Boolean leaves.
+        let booleans = list_of(
+            DataType::Boolean,
+            Arc::new(BooleanArray::from_iter(
+                (0..count).map(|i| (i % 5 != 0).then_some(i % 2 == 0)),
+            )),
+            None,
+        );
+        vec![
+            lists,
+            large_lists,
+            nullable_lists,
+            maps,
+            structs,
+            deep,
+            strings,
+            booleans,
+        ]
+    }
+
+    /// Row-wise oracle: gathers `values[index]` for each `Some(index)` and NULL otherwise,
+    /// reserving only what is copied.
+    pub(crate) fn reference_gather(
+        values: &dyn Array,
+        source_rows: &[Option<usize>],
+    ) -> Result<ArrayRef> {
+        let data = values.to_data();
+        let mut result = MutableArrayData::new(vec![&data], true, source_rows.len());
+        for &row in source_rows {
+            match row {
+                Some(index) => result.try_extend(0, index, index + 1)?,
+                None => result.try_extend_nulls(1)?,
+            }
+        }
+        Ok(make_array(result.freeze()))
+    }
+
+    /// Assert `result` equals `expected` and retains at most about twice the row-wise
+    /// gather, allowing builder alignment and headroom but not capacity sized from the
+    /// unselected 128-element values.
+    pub(crate) fn assert_compact(result: &dyn Array, expected: &dyn Array, context: &str) {
+        result.to_data().validate_full().unwrap();
+        assert_eq!(result.to_data(), expected.to_data(), "{context}");
+        let (retained, row_wise) = (
+            result.get_buffer_memory_size(),
+            expected.get_buffer_memory_size(),
+        );
+        assert!(
+            retained <= 2 * row_wise + 64,
+            "{context}: retained {retained} bytes vs {row_wise} for the row-wise gather",
+        );
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
