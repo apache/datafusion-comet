@@ -423,9 +423,9 @@ object DeltaScanSupport {
    * such a scheme and reads it through its S3 client, with `NativeConfig` translating the vendor
    * `fs.<scheme>.<authority>.*` keys into `fs.s3a.bucket.*` options. Spark, however, reads the
    * same table through the vendor's own Hadoop FileSystem, not `S3AFileSystem`, and every S3
-   * divergence gate ([[org.apache.comet.objectstore.S3ConfigGate]]) is verified
-   * against `S3AFileSystem`'s consumers only. With no model of how the vendor filesystem resolves
-   * its configuration, whether native and Spark would agree cannot be decided, so the scan is
+   * divergence gate ([[org.apache.comet.objectstore.S3ConfigGate]]) is verified against
+   * `S3AFileSystem`'s consumers only. With no model of how the vendor filesystem resolves its
+   * configuration, whether native and Spark would agree cannot be decided, so the scan is
    * declined rather than claimed on a guess. Selected data-file and deletion-vector URIs under an
    * alias scheme are declined by the generic scheme gates, which never admit an alias (see
    * [[unsupportedSchemes]]).
