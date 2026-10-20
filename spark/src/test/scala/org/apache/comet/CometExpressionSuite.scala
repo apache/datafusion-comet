@@ -24,7 +24,7 @@ import scala.util.Random
 import org.apache.hadoop.fs.Path
 import org.apache.spark.SparkThrowable
 import org.apache.spark.sql.{Column, CometTestBase, DataFrame, Row}
-import org.apache.spark.sql.catalyst.expressions.{Add, Alias, AtLeastNNonNulls, Cast, FromUnixTime, In, InSet, Literal, StructsToJson, TruncDate, TruncTimestamp}
+import org.apache.spark.sql.catalyst.expressions.{Add, Alias, AtLeastNNonNulls, Cast, Divide, FromUnixTime, In, InSet, Literal, StructsToJson, TruncDate, TruncTimestamp}
 import org.apache.spark.sql.catalyst.optimizer.{ConvertToLocalRelation, OptimizeIn, SimplifyExtractValueOps}
 import org.apache.spark.sql.comet.{CometFilterExec, CometProjectExec, CometSortExec, CometTakeOrderedAndProjectExec}
 import org.apache.spark.sql.execution.{LocalTableScanExec, ProjectExec, SparkPlan}
@@ -193,6 +193,40 @@ class CometExpressionSuite extends CometTestBase with AdaptiveSparkPlanHelper {
               }
             case result => fail(s"Expected both Spark and Comet to fail, got $result")
           }
+        }
+      }
+    }
+  }
+
+  test("AtLeastNNonNulls: shared decimal subexpressions preserve divide-by-zero errors") {
+    val rows = Seq((Some(1), BigDecimal(1), BigDecimal(0)), (None, BigDecimal(7), BigDecimal(1)))
+    withParquetTable(rows, "nonnulls") {
+      withSQLConf(SQLConf.ANSI_ENABLED.key -> "true") {
+        def query: DataFrame = {
+          val df = spark.table("nonnulls")
+          val cast = Cast(Divide(df.col("_2").expr, df.col("_3").expr), IntegerType)
+          df.select(
+            getColumnFromExpression(
+              AtLeastNNonNulls(2, Seq(Literal(1), df.col("_1").expr, cast, cast))))
+        }
+
+        withSQLConf(SQLConf.SUBEXPRESSION_ELIMINATION_ENABLED.key -> "false") {
+          checkSparkAnswerAndImpl(query, native = Seq("atleastnnonnulls"))
+        }
+        withSQLConf(SQLConf.SUBEXPRESSION_ELIMINATION_ENABLED.key -> "true") {
+          val df = query
+          checkSparkAnswerMaybeThrows(df) match {
+            case (Some(sparkException), Some(cometException)) =>
+              for (error <- Seq(sparkException, cometException)) {
+                assert(arithmeticError(error).getErrorClass == "DIVIDE_BY_ZERO")
+              }
+            case result => fail(s"Expected both Spark and Comet to fail, got $result")
+          }
+          val reasons =
+            new ExtendedExplainInfo().getFallbackReasons(df.queryExecution.executedPlan)
+          assert(
+            reasons.exists(_.contains("would skip a subexpression that Spark evaluates")),
+            reasons)
         }
       }
     }
