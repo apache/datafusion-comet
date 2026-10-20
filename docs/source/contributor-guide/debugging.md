@@ -169,6 +169,11 @@ Note:
 - The backtrace coverage in DataFusion is still improving. So there is a chance the error still not covered, if so feel free to file a [ticket](https://github.com/apache/arrow-datafusion/issues)
 - The backtrace evaluation comes with performance cost and intended mostly for debugging purposes
 
+A panic in native code is different: it is always logged, with its location and backtrace, to the
+stderr of the executor where it happened, on a line starting with `Comet native panic:`. The
+`CometNativeException` it surfaces as carries the panic message only, because a panic can reach the
+JVM on a different thread than the one that raised it.
+
 ### Native log configuration
 
 By default, Comet emits native-side logs at the `INFO` level to `stderr`.
