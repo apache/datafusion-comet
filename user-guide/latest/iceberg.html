@@ -1009,6 +1009,7 @@ configure Spark to use a REST catalog with Comet’s native Iceberg scan:</p>
 projected is read natively)</p></li>
 <li><p>Encrypted tables with 192-bit data keys (no AES-192-GCM in the underlying crypto)</p></li>
 <li><p>Delete files in a format other than Parquet or Puffin (Avro or ORC positional/equality deletes)</p></li>
+<li><p>Equality deletes keyed on a field nested in a struct</p></li>
 <li><p>Tables backed by Avro or ORC data files (only Parquet is accelerated)</p></li>
 <li><p>Queries that use <code class="docutils literal notranslate"><span class="pre">input_file_name()</span></code>, <code class="docutils literal notranslate"><span class="pre">input_file_block_start()</span></code> or <code class="docutils literal notranslate"><span class="pre">input_file_block_length()</span></code></p></li>
 <li><p>Scans whose data or delete files span more than one S3 bucket (the native reader uses one
@@ -1666,9 +1667,6 @@ produce without any schema change
 (<a class="reference external" href="https://github.com/apache/datafusion-comet/issues/7033">#7033</a>).</p></li>
 <li><p><strong><code class="docutils literal notranslate"><span class="pre">VERSION</span> <span class="pre">AS</span> <span class="pre">OF</span></code> reads of a column whose type was promoted after the snapshot</strong>
 (<a class="reference external" href="https://github.com/apache/datafusion-comet/issues/6993">#6993</a>).</p></li>
-<li><p><strong>An equality delete keyed on a nested field.</strong> Every query the native scan runs on the table
-fails with <code class="docutils literal notranslate"><span class="pre">field</span> <span class="pre">not</span> <span class="pre">found</span></code>, even one that reads the key
-(<a class="reference external" href="https://github.com/apache/datafusion-comet/issues/6782">#6782</a>).</p></li>
 <li><p><strong>Column names that only newer Unicode case data folds together</strong>, such as a pair of Vithkuqi
 letters, which Unicode 14 added. Queries on such a table fail with a duplicate-field error
 (<a class="reference external" href="https://github.com/apache/datafusion-comet/issues/5540">#5540</a>).</p></li>
