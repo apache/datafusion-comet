@@ -271,10 +271,6 @@ for production, so do not turn it off to avoid an entry on this page.
   reach an Arrow string array unchecked. A debug build panics on them
   ([#7032](https://github.com/apache/datafusion-comet/issues/7032), part of
   [#4764](https://github.com/apache/datafusion-comet/issues/4764)).
-- **Spark 3.4: a struct matched by field id under a different name.** With
-  `spark.sql.parquet.fieldId.read.enabled=true`, a struct column that the read schema matches to
-  the file by field id but under another name reads as NULL when Spark prunes its nested fields
-  ([#7031](https://github.com/apache/datafusion-comet/issues/7031)).
 - **Field-id reads where one file column matches a field by id and a sibling by name.** With
   `spark.sql.parquet.fieldId.read.enabled=true`, Comet returns NULL for the sibling at the top
   level. Inside a struct, it returns the values of the field matched by id. Spark's own readers
