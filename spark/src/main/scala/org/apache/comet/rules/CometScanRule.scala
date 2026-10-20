@@ -970,6 +970,10 @@ case class CometScanRule(session: SparkSession)
           try {
             if (!taskValidation.deleteFiles.isEmpty) {
               val historicSchemas = IcebergReflection.getAllSchemas(metadata.table)
+              // Check every schema, as a dropped equality key exists only in the history.
+              val topLevelIds = (metadata.tableSchema +: historicSchemas)
+                .flatMap(IcebergReflection.buildFieldIdMapping(_).values)
+                .toSet
               val contentFileClass =
                 IcebergReflection.loadClass(IcebergReflection.ClassNames.CONTENT_FILE)
               val deleteFileClass =
@@ -1015,6 +1019,13 @@ case class CometScanRule(session: SparkSession)
                           "schema; resolved from schema history (likely a dropped column)")
                     }
                     fieldInfo match {
+                      // Nested keys fall back: iceberg-rust only looks up top-level columns.
+                      case Some((fieldName, _)) if !topLevelIds(fid) =>
+                        hasUnsupportedDeletes = true
+                        fallbackReasons +=
+                          s"Equality delete on nested field '$fieldName' (id $fid) is not yet " +
+                            "supported by iceberg-rust, which resolves equality field ids " +
+                            "among top-level columns only."
                       case Some((fieldName, fieldType)) =>
                         if (fieldType.contains("struct") || fieldType.equalsIgnoreCase(
                             "variant")) {
