@@ -1039,6 +1039,17 @@ more splits overall, so some idle tasks may remain — tune the value against yo
 <p>See <a class="reference external" href="https://github.com/apache/datafusion-comet/issues/3817#issuecomment-4193279630">#3817</a> for a
 worked example and further discussion.</p>
 </section>
+<section id="prefetching-the-next-file-s-metadata">
+<h3>Prefetching the Next File’s Metadata<a class="headerlink" href="#prefetching-the-next-file-s-metadata" title="Link to this heading">#</a></h3>
+<p>A native Parquet scan opens a task’s files one after another, and each open waits for a round trip to read
+the file’s footer and page index before its data fetch can start. For tasks that read many small files from
+high-latency storage such as S3, that wait is paid once per file. By default, Comet loads the next file’s
+footer and page index in the background while the current file is read. Set
+<code class="docutils literal notranslate"><span class="pre">spark.comet.parquet.prefetchNextFileMetadata.enabled</span></code> to <code class="docutils literal notranslate"><span class="pre">false</span></code> to turn this off.</p>
+<p>The cost is one extra footer and page index read for a file that is never opened, such as when a scan stops
+early or the file is pruned before it opens. Scans of encrypted Parquet files never prefetch. The
+<code class="docutils literal notranslate"><span class="pre">scan_io_metadata_prefetches</span></code> metric counts the opens that used a load which read storage ahead of them.</p>
+</section>
 </section>
 <section id="known-issues">
 <h2>Known Issues<a class="headerlink" href="#known-issues" title="Link to this heading">#</a></h2>
@@ -1253,6 +1264,7 @@ Comet resolves the fields by id.</p></li>
 <li class="toc-h2 nav-item toc-entry"><a class="reference internal nav-link" href="#tuning">Tuning</a><ul class="nav section-nav flex-column">
 <li class="toc-h3 nav-item toc-entry"><a class="reference internal nav-link" href="#filter-pushdown-late-materialization">Filter Pushdown / Late Materialization</a></li>
 <li class="toc-h3 nav-item toc-entry"><a class="reference internal nav-link" href="#row-group-assignment-to-splits">Row Group Assignment to Splits</a></li>
+<li class="toc-h3 nav-item toc-entry"><a class="reference internal nav-link" href="#prefetching-the-next-file-s-metadata">Prefetching the Next File’s Metadata</a></li>
 </ul>
 </li>
 <li class="toc-h2 nav-item toc-entry"><a class="reference internal nav-link" href="#known-issues">Known Issues</a><ul class="nav section-nav flex-column">

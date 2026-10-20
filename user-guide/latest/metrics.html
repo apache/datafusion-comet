@@ -1247,7 +1247,10 @@ execution metrics. Counters accumulate per scan operator; they do not instrument
 <tr class="row-even"><td><p><code class="docutils literal notranslate"><span class="pre">scan_io_metadata_cache_misses</span></code></p></td>
 <td><p>Successful, cache-eligible metadata opens requiring storage reads. Failed opens and encrypted opens, which bypass this shared cache, increment neither cache counter.</p></td>
 </tr>
-<tr class="row-odd"><td><p><code class="docutils literal notranslate"><span class="pre">row_groups_pruned_dynamic_filter</span></code></p></td>
+<tr class="row-odd"><td><p><code class="docutils literal notranslate"><span class="pre">scan_io_metadata_prefetches</span></code></p></td>
+<td><p>Opens that used a load which read storage ahead of them, started when the previous file opened (<code class="docutils literal notranslate"><span class="pre">spark.comet.parquet.prefetchNextFileMetadata.enabled</span></code>). Each also counts as a cache miss.</p></td>
+</tr>
+<tr class="row-even"><td><p><code class="docutils literal notranslate"><span class="pre">row_groups_pruned_dynamic_filter</span></code></p></td>
 <td><p>Row groups skipped by a runtime predicate whose value changes during execution, such as a local TopK threshold.</p></td>
 </tr>
 </tbody>
@@ -1255,8 +1258,12 @@ execution metrics. Counters accumulate per scan operator; they do not instrument
 </div>
 <p>Reader-level and object-store bytes are two views of the same reads; do not add them together.
 Likewise, footer bytes are a subset of metadata bytes, not a third reader-level category. A warm
-metadata-cache hit contributes no new metadata or footer I/O. A valid plaintext footer followed by
-a page-index failure still contributes footer bytes; an invalid plaintext footer does not.</p>
+metadata-cache hit contributes no new metadata or footer I/O. A prefetched load’s footer and
+metadata bytes count when the prefetch reads them, so a prefetch that no open uses, because the
+scan stopped early or pruned the file before opening it, adds bytes with no matching cache miss and
+no <code class="docutils literal notranslate"><span class="pre">scan_io_metadata_prefetches</span></code>.
+A valid plaintext footer followed by a page-index failure still contributes footer bytes; an
+invalid plaintext footer does not.</p>
 <p>Remote counters follow the backend selected during object-store construction, including native
 S3 (<code class="docutils literal notranslate"><span class="pre">s3</span></code>/<code class="docutils literal notranslate"><span class="pre">s3a</span></code>), GCS (<code class="docutils literal notranslate"><span class="pre">gs</span></code>), Azure (<code class="docutils literal notranslate"><span class="pre">az</span></code>, <code class="docutils literal notranslate"><span class="pre">adl</span></code>, <code class="docutils literal notranslate"><span class="pre">azure</span></code>, <code class="docutils literal notranslate"><span class="pre">abfs</span></code>, <code class="docutils literal notranslate"><span class="pre">abfss</span></code>), and HTTP(S) stores.
 Configured S3-compatible aliases are normalized before this classification.

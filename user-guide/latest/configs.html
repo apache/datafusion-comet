@@ -910,7 +910,11 @@ under the License.
 </tr>
 </thead>
 <tbody>
-<tr class="row-even"><td><p><code class="docutils literal notranslate"><span class="pre">spark.comet.parquet.rowFilterPushdown.enabled</span></code></p></td>
+<tr class="row-even"><td><p><code class="docutils literal notranslate"><span class="pre">spark.comet.parquet.prefetchNextFileMetadata.enabled</span></code></p></td>
+<td><p>When enabled, a native Parquet scan that reads several files in one task loads the next file’s footer and page index in the background while it reads the current file, so opening the next file doesn’t wait for a storage round trip. This helps most when tasks read many small files from high-latency storage such as S3. Scans of encrypted Parquet files never load ahead.</p></td>
+<td><p>true</p></td>
+</tr>
+<tr class="row-odd"><td><p><code class="docutils literal notranslate"><span class="pre">spark.comet.parquet.rowFilterPushdown.enabled</span></code></p></td>
 <td><p>When enabled, the native Parquet reader evaluates pushed filters during decode and lazily materializes projected columns for surviving rows (DataFusion’s pushdown_filters / late-materialization). Format-level pruning (row-group statistics, page index, bloom filters) runs whenever Spark’s spark.sql.parquet.filterPushdown is enabled, except that while this flag is enabled, a pushed filter that compares FLOAT or DOUBLE values does not prune, because the reader must evaluate it with Spark’s NaN and signed-zero semantics. Disabling this flag still lets format-level pruning work; the per-row eval falls back to the CometFilter operator above the scan.</p></td>
 <td><p>false</p></td>
 </tr>
