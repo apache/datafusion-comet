@@ -358,12 +358,12 @@ to Spark ([#2837](https://github.com/apache/datafusion-comet/issues/2837)). Enab
 | Function | Status | Implementation | Notes |
 | --- | --- | --- | --- |
 | `crc32` | ✅ | Native |  |
-| `hash` | ✅ | Native |  |
+| `hash` | ✅ | Native | Includes decimals with precision 19–38 and nested decimals |
 | `md5` | ✅ | Native |  |
 | `sha` | ✅ | Native |  |
 | `sha1` | ✅ | Native |  |
 | `sha2` | ✅ | Native |  |
-| `xxhash64` | ✅ | Native |  |
+| `xxhash64` | ✅ | Native | Includes decimals with precision 19–38 and nested decimals |
 
 ---
 
@@ -386,7 +386,7 @@ to Spark ([#2837](https://github.com/apache/datafusion-comet/issues/2837)). Enab
 | Function | Status | Implementation | Notes |
 | --- | --- | --- | --- |
 | `aggregate` | ✅ | Codegen dispatch |  |
-| `array_sort` | ✅ | Codegen dispatch |  |
+| `array_sort` | ✅ | Native | The default comparator runs natively; custom comparators and arrays with non-default string collations use the JVM codegen dispatcher |
 | `exists` | ✅ | Codegen dispatch |  |
 | `filter` | ✅ | Native | General lambda routed through the JVM codegen dispatcher; the `array_compact` form runs natively |
 | `forall` | ✅ | Codegen dispatch |  |

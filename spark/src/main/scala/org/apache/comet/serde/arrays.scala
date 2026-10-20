@@ -23,7 +23,7 @@ import scala.annotation.tailrec
 import scala.jdk.CollectionConverters._
 
 import org.apache.spark.SPARK_VERSION
-import org.apache.spark.sql.catalyst.expressions.{And, ArrayAggregate, ArrayAppend, ArrayContains, ArrayDistinct, ArrayExcept, ArrayExists, ArrayFilter, ArrayForAll, ArrayInsert, ArrayIntersect, ArrayJoin, ArrayMax, ArrayMin, ArrayPosition, ArrayRemove, ArraySort, ArraysOverlap, ArraysZip, ArrayTransform, ArrayUnion, Attribute, BoundReference, Cast, CreateArray, ElementAt, EmptyRow, Expression, Flatten, GetArrayItem, IsNotNull, IsNull, LambdaFunction, Literal, NamedLambdaVariable, Reverse, Sequence, Size, Slice, SortArray, ZipWith}
+import org.apache.spark.sql.catalyst.expressions.{And, ArrayAggregate, ArrayAppend, ArrayContains, ArrayDistinct, ArrayExcept, ArrayExists, ArrayFilter, ArrayForAll, ArrayInsert, ArrayIntersect, ArrayJoin, ArrayMax, ArrayMin, ArrayPosition, ArrayRemove, ArraySort, ArraysOverlap, ArraysZip, ArrayTransform, ArrayUnion, Attribute, BoundReference, Cast, CreateArray, ElementAt, EmptyRow, Expression, Flatten, GetArrayItem, GreaterThan, If, IsNotNull, IsNull, LambdaFunction, LessThan, Literal, NamedLambdaVariable, Reverse, Sequence, Size, Slice, SortArray, ZipWith}
 import org.apache.spark.sql.catalyst.util.GenericArrayData
 import org.apache.spark.sql.comet.util.Utils
 import org.apache.spark.sql.internal.SQLConf
@@ -1183,7 +1183,39 @@ object CometArrayForAll extends CometCodegenDispatch[ArrayForAll]
 
 object CometArrayAggregate extends CometCodegenDispatch[ArrayAggregate]
 
-object CometArraySort extends CometCodegenDispatch[ArraySort]
+object CometArraySort extends CometExpressionSerde[ArraySort] with CometTypeShim {
+  private def usesDefaultComparator(expr: ArraySort): Boolean = expr.function match {
+    case lambda: LambdaFunction if lambda.arguments.length == 2 =>
+      val left = lambda.arguments.head
+      val right = lambda.arguments(1)
+      val noNulls = If(
+        LessThan(left, right),
+        Literal(-1),
+        If(GreaterThan(left, right), Literal(1), Literal(0)))
+      val withNulls = If(
+        And(IsNull(left), IsNull(right)),
+        Literal(0),
+        If(IsNull(left), Literal(1), If(IsNull(right), Literal(-1), noNulls)))
+      lambda.function == withNulls ||
+      (!expr.argument.dataType.asInstanceOf[ArrayType].containsNull &&
+        lambda.function == noNulls)
+    case _ => false
+  }
+
+  override def convert(
+      expr: ArraySort,
+      inputs: Seq[Attribute],
+      binding: Boolean): Option[ExprOuterClass.Expr] = {
+    val elementType = expr.argument.dataType.asInstanceOf[ArrayType].elementType
+    if (usesDefaultComparator(expr) && !hasNonDefaultStringCollation(elementType)) {
+      scalarFunctionExprToProto(
+        "spark_array_sort",
+        exprToProtoInternal(expr.argument, inputs, binding))
+    } else {
+      CometScalaUDF.emitJvmCodegenDispatch(expr, inputs, binding)
+    }
+  }
+}
 
 object CometZipWith extends CometCodegenDispatch[ZipWith]
 
