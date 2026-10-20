@@ -509,17 +509,11 @@ abstract class CometTestBase
     }
   }
 
-  /**
-   * Checks Spark exception parity and, by default, native execution. Set `checkNative = false`
-   * only when fallback to Spark is the expected outcome.
-   */
+  /** Checks native execution and Spark exception type, error class and SQLSTATE parity. */
   protected def checkSparkError(
       df: DataFrame,
-      errorClass: String,
-      checkNative: Boolean = true): SparkThrowable with Throwable = {
-    if (checkNative) {
-      checkCometOperators(stripAQEPlan(df.queryExecution.executedPlan))
-    }
+      errorClass: String): SparkThrowable with Throwable = {
+    checkCometOperators(stripAQEPlan(df.queryExecution.executedPlan))
     val (sparkError, cometError) = checkSparkAnswerMaybeThrows(df)
 
     def structuredError(

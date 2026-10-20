@@ -29,7 +29,7 @@ import org.scalatest.PrivateMethodTester._
 import org.apache.logging.log4j.Level
 import org.apache.spark.sql._
 import org.apache.spark.sql.catalyst.FunctionIdentifier
-import org.apache.spark.sql.catalyst.expressions.{Alias, Attribute, AttributeReference, Expression, ExpressionInfo, In, InSet, KnownFloatingPointNormalized, Literal, Not, RuntimeReplaceable}
+import org.apache.spark.sql.catalyst.expressions.{Alias, Attribute, AttributeReference, Descending, Expression, ExpressionInfo, GreaterThan, In, InSet, KnownFloatingPointNormalized, Literal, Not, RuntimeReplaceable, SortOrder}
 import org.apache.spark.sql.catalyst.expressions.aggregate.{AggregateExpression, BloomFilterAggregate, Final, Min, Partial, PartialMerge}
 import org.apache.spark.sql.catalyst.expressions.objects.{Invoke, StaticInvoke}
 import org.apache.spark.sql.catalyst.optimizer.NormalizeNaNAndZero
@@ -301,6 +301,74 @@ class CometExecRuleSuite extends CometTestBase {
             assert(current.getTagValue(SparkPlan.LOGICAL_PLAN_TAG).exists(_ eq logicalStage))
           }
         }
+      }
+    }
+  }
+
+  test("collect limit projection input cap respects disabled native local limits") {
+    withSQLConf(
+      SQLConf.ADAPTIVE_EXECUTION_ENABLED.key -> "false",
+      SQLConf.WHOLESTAGE_CODEGEN_ENABLED.key -> "false",
+      CometConf.COMET_CONVERT_FROM_RANGE_ENABLED.key -> "true",
+      CometConf.COMET_EXEC_LOCAL_LIMIT_ENABLED.key -> "false") {
+      val original =
+        createSparkPlan(spark, "SELECT id + 1 AS value FROM range(0, 10, 1, 1) LIMIT 2")
+      val result = applyCometExecRule(original)
+      assert(result.collect { case p: CometProjectExec => p }.size == 1)
+      assert(!result.exists(_.isInstanceOf[ProjectExec]))
+      assert(!result.exists(_.isInstanceOf[CometLocalLimitExec]))
+      assert(result.executeCollect().map(_.getLong(0)).toSeq == Seq(1L, 2L))
+    }
+  }
+
+  test("collect limit projection input cap preserves AQE links and repeated planning") {
+    withSQLConf(
+      SQLConf.ADAPTIVE_EXECUTION_ENABLED.key -> "false",
+      SQLConf.WHOLESTAGE_CODEGEN_ENABLED.key -> "false",
+      CometConf.COMET_CONVERT_FROM_RANGE_ENABLED.key -> "true") {
+      val original = createSparkPlan(spark, "SELECT id + 1 AS value FROM range(0, 10, 1, 1)")
+      val project = applyCometExecRule(original).asInstanceOf[CometProjectExec]
+      val stage = LogicalQueryStage(project.originalPlan.logicalLink.get, project)
+      val reused = spark.sessionState.planner.plan(stage).next()
+      assert(reused eq project)
+
+      val result = applyCometExecRule(CollectLimitExec(2, reused))
+      val bounded = result.collectFirst { case p: CometProjectExec => p }.get
+      assert(bounded.getTagValue(SparkPlan.LOGICAL_PLAN_TAG).exists(_ eq stage))
+      assert(bounded.child.asInstanceOf[CometLocalLimitExec].limit == 2)
+      assert(bounded.nativeOp.getChildren(0).getLimit.getLimit == 2)
+      val serialized = OperatorOuterClass.Operator.parseFrom(bounded.serializedPlanOpt.plan.get)
+      assert(serialized.getChildren(0).getLimit.getLimit == 2)
+
+      // AQE may wrap a previously converted projection in a newly planned collect limit.
+      val repeated = applyCometExecRule(CollectLimitExec(2, bounded))
+      val again = repeated.collectFirst { case p: CometProjectExec => p }.get
+      assert(again.nativeOp eq bounded.nativeOp)
+      assert(again.getTagValue(SparkPlan.LOGICAL_PLAN_TAG).exists(_ eq stage))
+      assert(repeated.collect { case cap: CometLocalLimitExec => cap }.size == 1)
+    }
+  }
+
+  test("collect limit projection input cap does not cross a filter or sort") {
+    withSQLConf(
+      SQLConf.ADAPTIVE_EXECUTION_ENABLED.key -> "false",
+      SQLConf.WHOLESTAGE_CODEGEN_ENABLED.key -> "false",
+      CometConf.COMET_CONVERT_FROM_RANGE_ENABLED.key -> "true") {
+      Seq(false, true).foreach { sorted =>
+        val original = createSparkPlan(spark, "SELECT id + 1 AS value FROM range(0, 10, 1, 1)")
+        val project = applyCometExecRule(original).asInstanceOf[CometProjectExec]
+        val child = if (sorted) {
+          SortExec(
+            Seq(SortOrder(project.output.head, Descending)),
+            global = false,
+            child = project)
+        } else {
+          FilterExec(GreaterThan(project.output.head, Literal(2L)), project)
+        }
+        val result = applyCometExecRule(CollectLimitExec(1, child))
+        assert(!result.exists(_.isInstanceOf[CometLocalLimitExec]))
+        val expected = if (sorted) 10L else 3L
+        assert(result.executeCollect().map(_.getLong(0)).toSeq == Seq(expected))
       }
     }
   }

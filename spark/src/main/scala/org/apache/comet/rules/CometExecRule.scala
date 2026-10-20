@@ -716,13 +716,54 @@ case class CometExecRule(session: SparkSession, queryStagePrep: Boolean = false)
     }
 
     plan.transformUp { case op =>
-      val converted = convertNode(refreshStaleShuffleScans(op))
+      val converted = convertNode(limitCollectProjectionInput(refreshStaleShuffleScans(op)))
       // Replace SubqueryBroadcastExec with CometSubqueryBroadcastExec in DPP expressions
       // when the broadcast child has a Comet plan underneath. This enables exchange reuse
       // between the DPP subquery and the join's CometBroadcastExchangeExec because both
       // will have the same CometBroadcastExchangeExec type and canonical form.
       convertSubqueryBroadcasts(converted)
     }
+  }
+
+  /**
+   * Spark's collect limit consumes at most `limit` rows per partition, but a native projection
+   * evaluates its whole input batch before that limit can stop reading. Limit the projection's
+   * input first so an expression on an unconsumed row cannot raise an error. Keep the outer
+   * limit: it still combines partitions and drops OFFSET rows, which Spark evaluates before
+   * dropping.
+   *
+   * Only handle an immediately adjacent native projection. A filter or join between the limit and
+   * projection can require more input rows, and a blocking operator must consume its input.
+   */
+  private def limitCollectProjectionInput(op: SparkPlan): SparkPlan = op match {
+    case limit: CollectLimitExec if limit.limit >= 0 =>
+      limit.child match {
+        case project: CometProjectExec =>
+          project.child match {
+            case cap: CometLocalLimitExec if cap.limit <= limit.limit => return op
+            case _ =>
+          }
+          val bounded = for {
+            cap <- convertToComet(LocalLimitExec(limit.limit, project.child), CometLocalLimitExec)
+            rebuilt <- convertToComet(
+              project.originalPlan.withNewChildren(Seq(cap)),
+              CometProjectExec)
+          } yield {
+            // AQE can link the current projection to a materialized logical query stage.
+            // Its originalPlan may have an older link; serde also adds tags, so copyTagsFrom
+            // (which only copies into an empty tag map) would not preserve the current link.
+            project.getTagValue(SparkPlan.LOGICAL_PLAN_TAG).foreach { link =>
+              rebuilt.setTagValue(SparkPlan.LOGICAL_PLAN_TAG, link)
+            }
+            project.getTagValue(SparkPlan.LOGICAL_PLAN_INHERITED_TAG).foreach { link =>
+              rebuilt.setTagValue(SparkPlan.LOGICAL_PLAN_INHERITED_TAG, link)
+            }
+            limit.withNewChildren(Seq(rebuilt))
+          }
+          bounded.getOrElse(op)
+        case _ => op
+      }
+    case _ => op
   }
 
   /**

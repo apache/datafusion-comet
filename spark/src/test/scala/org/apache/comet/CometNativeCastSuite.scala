@@ -31,7 +31,7 @@ import org.apache.spark.SparkConf
 import org.apache.spark.sql.{CometTestBase, DataFrame, Row, SaveMode}
 import org.apache.spark.sql.catalyst.expressions.{Cast, Literal}
 import org.apache.spark.sql.catalyst.parser.ParseException
-import org.apache.spark.sql.comet.CometNativeScanExec
+import org.apache.spark.sql.comet.{CometCollectLimitExec, CometProjectExec}
 import org.apache.spark.sql.execution.adaptive.AdaptiveSparkPlanHelper
 import org.apache.spark.sql.functions.{col, monotonically_increasing_id}
 import org.apache.spark.sql.internal.SQLConf
@@ -69,25 +69,25 @@ class CometNativeCastSuite
 
   import testImplicits._
 
-  test("LIMIT skips a row with a failing conditional literal cast") {
+  test("LIMIT skips a failing conditional literal cast and retains Comet projection") {
     withTempPath { path =>
       withSQLConf(CometConf.COMET_ENABLED.key -> "false") {
         spark
-          .range(2)
+          .range(5)
           .selectExpr("id", "CAST(id AS STRING) AS value")
           .coalesce(1)
           .write
           .parquet(path.getCanonicalPath)
       }
-      withSQLConf(SQLConf.ANSI_ENABLED.key -> "true") {
+      withSQLConf(
+        SQLConf.ANSI_ENABLED.key -> "true",
+        CometConf.COMET_SCALA_UDF_CODEGEN_ENABLED.key -> "true",
+        CometConf.COMET_BATCH_SIZE.key -> "8192") {
         withParquetTable(path.getCanonicalPath, "cast_branch_rows") {
-          // Both rows share a batch. Row 1 selects the failing branch, but Spark stops after
-          // row 0. A conditional mask includes row 1 even when only its Cast is dispatched.
+          // Both rows share a batch. The native projection must receive only row 0: masking
+          // the cast by its IF condition alone would still evaluate the failing row 1.
           val cast = "CAST(IF(id = 1, 'bad', value) AS INT)"
           val masked = s"SELECT $cast AS parsed FROM cast_branch_rows LIMIT 1"
-          withSQLConf(CometConf.COMET_ENABLED.key -> "false") {
-            assert(sql(masked).collect().toSeq == Seq(Row(0)))
-          }
           // ConstantFolding must leave the throwing literal cast inside the conditional.
           val badCasts = sql(masked).queryExecution.optimizedPlan
             .flatMap(_.expressions)
@@ -98,20 +98,57 @@ class CometNativeCastSuite
                 c
             })
           assert(badCasts.nonEmpty)
-          for (dispatch <- Seq("true", "false")) {
-            withSQLConf(CometConf.COMET_SCALA_UDF_CODEGEN_ENABLED.key -> dispatch) {
-              val (_, plan) =
-                checkSparkAnswerAndFallbackReason(
-                  masked,
-                  CometCast.literalCastConditionalEvalReason)
-              assert(collect(plan) { case scan: CometNativeScanExec => scan }.nonEmpty)
-              checkSparkError(
-                sql(s"SELECT $cast FROM cast_branch_rows"),
-                "CAST_INVALID_INPUT",
-                checkNative = false)
-            }
+          val (_, plan) = checkSparkAnswerAndOperator(
+            sql(masked),
+            includeClasses = Seq(classOf[CometProjectExec]))
+          assert(new ExtendedExplainInfo().getCodegenDispatchExpressions(plan).contains("cast"))
+          checkSparkError(
+            sql(s"SELECT $cast FROM cast_branch_rows LIMIT 2"),
+            "CAST_INVALID_INPUT")
+
+          // CollectLimit evaluates the prefix before dropping OFFSET rows. Moving an offset
+          // below the projection would incorrectly hide this error in the skipped first row.
+          checkSparkError(
+            sql(
+              "SELECT CAST(IF(id = 0, 'bad', value) AS INT) " +
+                "FROM cast_branch_rows LIMIT 1 OFFSET 1"),
+            "CAST_INVALID_INPUT")
+
+          withSQLConf(CometConf.COMET_BATCH_SIZE.key -> "2") {
+            // The cap is cumulative across batches: emit [0, 1], then slice [2, 3] to [2].
+            val acrossBatches = "SELECT CAST(IF(id = 3, 'bad', value) AS INT) " +
+              "FROM cast_branch_rows"
+            checkSparkAnswerAndOperator(
+              sql(s"$acrossBatches LIMIT 3"),
+              includeClasses = Seq(classOf[CometProjectExec]))
+            checkSparkError(sql(s"$acrossBatches LIMIT 4"), "CAST_INVALID_INPUT")
           }
         }
+      }
+    }
+  }
+
+  test("LIMIT caps each partition before a failing conditional literal cast") {
+    withSQLConf(
+      SQLConf.ANSI_ENABLED.key -> "true",
+      CometConf.COMET_SCALA_UDF_CODEGEN_ENABLED.key -> "true",
+      CometConf.COMET_EXEC_RANGE_ENABLED.key -> "true") {
+      withTempView("cast_partition_rows") {
+        spark.range(0, 4, 1, 2).createOrReplaceTempView("cast_partition_rows")
+        val (_, plan) = checkSparkAnswerAndOperator(
+          sql(
+            "SELECT CAST(IF(id % 2 = 1, 'bad', '0') AS INT) " +
+              "FROM cast_partition_rows LIMIT 1"),
+          includeClasses = Seq(classOf[CometProjectExec]))
+        val limit = collect(plan) { case p: CometCollectLimitExec => p }.head
+        assert(limit.child.executeColumnar().getNumPartitions == 2)
+        // executeCollect may stop after the first partition. The columnar path reads both
+        // partitions before the final limit, so each must cap its input before its bad row.
+        val rowsPerPartition = limit
+          .executeColumnar()
+          .mapPartitions(batches => Iterator.single(batches.map(_.numRows()).sum))
+          .collect()
+        assert(rowsPerPartition.toSeq == Seq(1))
       }
     }
   }
@@ -1696,8 +1733,7 @@ class CometNativeCastSuite
         val df = sql(
           "SELECT CASE WHEN id = 1 THEN CAST('1e-2147483647' AS DECIMAL(10,2)) " +
             "ELSE CAST(0 AS DECIMAL(10,2)) END FROM cast_literal_branch")
-        val reasons = new ExtendedExplainInfo().getFallbackReasons(df.queryExecution.executedPlan)
-        assert(reasons.exists(_.contains(CometCast.literalCastConditionalEvalReason)))
+        checkCometOperators(stripAQEPlan(df.queryExecution.executedPlan))
         val (sparkError, cometError) = checkSparkAnswerMaybeThrows(df)
         def rootCause(e: Throwable): Throwable =
           Iterator.iterate(e)(_.getCause).takeWhile(_ != null).toSeq.last
