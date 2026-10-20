@@ -413,6 +413,29 @@ fn python_traceback_error(py: Python<'_>, error: PyErr) -> ArrowError {
 }
 
 #[cfg(test)]
+pub(crate) mod test_util {
+    use super::*;
+
+    /// Pickles the Python expression `source` as a `(function, returnType)` command.
+    pub(crate) fn cloudpickled_lambda(py: Python<'_>, source: &std::ffi::CStr) -> Vec<u8> {
+        let _imports = IMPORT_LOCK
+            .lock_py_attached(py)
+            .unwrap_or_else(PoisonError::into_inner);
+        let callable = py.eval(source, None, None).unwrap();
+        py.import("cloudpickle")
+            .unwrap()
+            .call_method1("dumps", ((callable.unbind(), py.None()),))
+            .unwrap()
+            .extract()
+            .unwrap()
+    }
+
+    pub(crate) fn initialize() {
+        initialize_python().unwrap();
+    }
+}
+
+#[cfg(test)]
 mod tests {
     use super::*;
     use arrow::array::{Int32Array, Int64Array, StringArray};
@@ -506,18 +529,7 @@ mod tests {
         });
     }
 
-    fn cloudpickled_lambda(py: Python<'_>, source: &std::ffi::CStr) -> Vec<u8> {
-        let _imports = IMPORT_LOCK
-            .lock_py_attached(py)
-            .unwrap_or_else(PoisonError::into_inner);
-        let callable = py.eval(source, None, None).unwrap();
-        py.import("cloudpickle")
-            .unwrap()
-            .call_method1("dumps", ((callable.unbind(), py.None()),))
-            .unwrap()
-            .extract()
-            .unwrap()
-    }
+    use super::test_util::cloudpickled_lambda;
 
     #[test]
     fn accepts_array_like_results_only_when_requested() {

@@ -344,15 +344,11 @@ impl ExecutionPlan for ArrowPythonUdfExec {
                 Err(error) => (None, None, Some(error)),
             };
             let mut offset = 0;
-            let mut failed = false;
             // RecordBatch::slice shares Arrow buffers. Produce one result per poll
             // so the remaining slices do not pin a second set of output batches.
             stream::iter(std::iter::from_fn(move || {
                 if let Some(error) = error.take() {
                     return Some(Err(error));
-                }
-                if failed {
-                    return None;
                 }
                 let batch = batch.as_ref()?;
                 let args = args.as_ref()?;
@@ -368,10 +364,7 @@ impl ExecutionPlan for ArrowPythonUdfExec {
                     max_bytes_per_batch,
                 ) {
                     Ok(length) => length,
-                    Err(error) => {
-                        failed = true;
-                        return Some(Err(error));
-                    }
+                    Err(error) => return Some(Err(error)),
                 };
                 // Keep the JVM scan path synchronous so its Pending loop does not spin while
                 // Python runs. On a tokio worker, this hands its other tasks to another worker.
@@ -394,6 +387,18 @@ impl ExecutionPlan for ArrowPythonUdfExec {
                 Some(result)
             }))
         });
+        // End the stream after its first error. Polling on would evaluate the next
+        // slice or child batch, calling Python again while the task is failing.
+        let mut stream = stream;
+        let mut finished = false;
+        let stream = stream::poll_fn(move |cx| {
+            if finished {
+                return std::task::Poll::Ready(None);
+            }
+            let item = std::task::ready!(stream.poll_next_unpin(cx));
+            finished = matches!(item, None | Some(Err(_)));
+            std::task::Poll::Ready(item)
+        });
         Ok(Box::pin(RecordBatchStreamAdapter::new(
             Arc::clone(&self.schema),
             stream,
@@ -405,9 +410,80 @@ impl ExecutionPlan for ArrowPythonUdfExec {
 mod tests {
     use std::sync::Arc;
 
-    use arrow::array::{ArrayRef, Int64Array, StringArray};
+    use arrow::array::{ArrayRef, Int64Array, RecordBatch, StringArray};
+    use arrow::datatypes::{DataType, Field, Schema};
+    use datafusion::datasource::memory::MemorySourceConfig;
+    use datafusion::datasource::source::DataSourceExec;
+    use datafusion::execution::TaskContext;
+    use datafusion::physical_expr::expressions::Column;
+    use datafusion::physical_plan::ExecutionPlan;
+    use futures::StreamExt;
+    use pyo3::prelude::*;
 
-    use super::ArrowPythonUdfExec;
+    use super::{ArrowPythonUdfExec, ArrowPythonUdfSpec};
+    use crate::execution::python_udf::test_util::{cloudpickled_lambda, initialize};
+
+    #[tokio::test(flavor = "multi_thread")]
+    async fn stops_calling_python_after_the_first_error() {
+        initialize();
+        let command = Python::attach(|py| {
+            py.import("sys")
+                .unwrap()
+                .setattr("comet_failing_udf_calls", 0)
+                .unwrap();
+            cloudpickled_lambda(
+                py,
+                c"lambda a: (setattr(__import__('sys'), 'comet_failing_udf_calls', __import__('sys').comet_failing_udf_calls + 1), 1 // 0)[1]",
+            )
+        });
+        let schema = Arc::new(Schema::new(vec![Field::new("v", DataType::Int64, true)]));
+        let batch = |values: Vec<i64>| {
+            RecordBatch::try_new(
+                Arc::clone(&schema),
+                vec![Arc::new(Int64Array::from(values)) as ArrayRef],
+            )
+            .unwrap()
+        };
+        // Two child batches, each split into two slices by the one-row cap.
+        let source = MemorySourceConfig::try_new(
+            &[vec![batch(vec![1, 2]), batch(vec![3, 4])]],
+            Arc::clone(&schema),
+            None,
+        )
+        .unwrap();
+        let spec = ArrowPythonUdfSpec {
+            command,
+            args: vec![Arc::new(Column::new("v", 0))],
+            arg_names: vec![String::new()],
+            return_type: DataType::Int64,
+            return_name: "r".to_string(),
+            python_version: String::new(),
+        };
+        let exec = ArrowPythonUdfExec::try_new(
+            Arc::new(DataSourceExec::new(Arc::new(source))),
+            vec![spec],
+            1,
+            0,
+            false,
+        )
+        .unwrap();
+        let results: Vec<_> = exec
+            .execute(0, Arc::new(TaskContext::default()))
+            .unwrap()
+            .collect()
+            .await;
+        assert_eq!(results.len(), 1);
+        assert!(results[0].is_err());
+        let calls: i64 = Python::attach(|py| {
+            py.import("sys")
+                .unwrap()
+                .getattr("comet_failing_udf_calls")
+                .unwrap()
+                .extract()
+                .unwrap()
+        });
+        assert_eq!(calls, 1);
+    }
 
     #[test]
     fn byte_limit_splits_fixed_width_udf_arguments() {
