@@ -2101,7 +2101,10 @@ impl PhysicalPlanner {
             fun_expr,
             args.to_vec(),
             Arc::new(Field::new(fun_name, data_type.clone(), true)),
-            Arc::new(ConfigOptions::default()),
+            // The session's options rather than DataFusion's defaults, so a kernel that reads one
+            // (the map constructors read `datafusion.spark.map_key_dedup_policy`) sees what
+            // `prepare_datafusion_session_context` set.
+            Arc::clone(self.session_ctx.copied_config().options()),
         ));
         let scalar_expr = if expr.null_short_circuit {
             NullShortCircuit::wrap(scalar_expr, &input_schema)?

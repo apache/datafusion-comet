@@ -15,25 +15,38 @@
 // specific language governing permissions and limitations
 // under the License.
 
-use arrow::array::builder::{ListBuilder, StringBuilder};
+use arrow::array::builder::{Int32Builder, ListBuilder, StringBuilder};
 use arrow::array::ArrayRef;
-use arrow::datatypes::Field;
+use arrow::datatypes::{Field, FieldRef};
 use criterion::{criterion_group, criterion_main, BenchmarkId, Criterion};
 use datafusion::common::config::ConfigOptions;
-use datafusion::logical_expr::{ColumnarValue, ScalarFunctionArgs, ScalarUDFImpl};
+use datafusion::logical_expr::{ColumnarValue, ReturnFieldArgs, ScalarFunctionArgs, ScalarUDFImpl};
 use datafusion_comet_spark_expr::SparkMapFromArrays;
 use std::hint::black_box;
 use std::sync::Arc;
 
 const BATCH_SIZE: usize = 8192;
 
-/// A `List<Utf8>` column of `BATCH_SIZE` rows, each holding `entries` strings. Values are made
-/// distinct per row so the map constructor never hits a duplicate key.
-fn string_list(entries: usize, prefix: &str) -> ArrayRef {
+/// A `List<Int32>` column of `BATCH_SIZE` rows. Each row holds `entries` values, and no value
+/// repeats inside a row.
+fn int32_lists(entries: usize) -> ArrayRef {
+    let mut builder = ListBuilder::new(Int32Builder::new());
+    for row in 0..BATCH_SIZE {
+        for e in 0..entries {
+            builder.values().append_value((row * entries + e) as i32);
+        }
+        builder.append(true);
+    }
+    Arc::new(builder.finish())
+}
+
+/// A `List<Utf8>` column of `BATCH_SIZE` rows. Each row holds `entries` strings, and no string
+/// repeats inside a row.
+fn utf8_lists(entries: usize) -> ArrayRef {
     let mut builder = ListBuilder::new(StringBuilder::new());
     for row in 0..BATCH_SIZE {
         for e in 0..entries {
-            builder.values().append_value(format!("{prefix}{row}_{e}"));
+            builder.values().append_value(format!("k{row}_{e}"));
         }
         builder.append(true);
     }
@@ -42,31 +55,45 @@ fn string_list(entries: usize, prefix: &str) -> ArrayRef {
 
 fn criterion_benchmark(c: &mut Criterion) {
     let udf = SparkMapFromArrays::default();
+    let config_options = Arc::new(ConfigOptions::default());
     let mut group = c.benchmark_group("map_from_arrays");
-    for entries in [2usize, 8, 32] {
-        let keys = string_list(entries, "k");
-        let values = string_list(entries, "v");
-        let return_type = udf
-            .return_type(&[keys.data_type().clone(), values.data_type().clone()])
-            .unwrap();
-        let args = vec![
-            ColumnarValue::Array(Arc::clone(&keys)),
-            ColumnarValue::Array(Arc::clone(&values)),
-        ];
-        group.bench_with_input(BenchmarkId::from_parameter(entries), &args, |b, args| {
-            b.iter(|| {
-                black_box(
-                    udf.invoke_with_args(ScalarFunctionArgs {
-                        args: args.to_vec(),
-                        arg_fields: vec![],
-                        number_rows: BATCH_SIZE,
-                        return_field: Arc::new(Field::new("result", return_type.clone(), true)),
-                        config_options: Arc::new(ConfigOptions::default()),
-                    })
-                    .unwrap(),
-                )
-            })
-        });
+    for entries in [1usize, 8, 64] {
+        let values = int32_lists(entries);
+        for (key_type, keys) in [
+            ("int32", int32_lists(entries)),
+            ("utf8", utf8_lists(entries)),
+        ] {
+            // The UDF derives its map type from the argument fields, as DataFusion's planner
+            // asks it to.
+            let arg_fields: Vec<FieldRef> = vec![
+                Arc::new(Field::new("keys", keys.data_type().clone(), true)),
+                Arc::new(Field::new("values", values.data_type().clone(), true)),
+            ];
+            let return_field = udf
+                .return_field_from_args(ReturnFieldArgs {
+                    arg_fields: &arg_fields,
+                    scalar_arguments: &[None, None],
+                })
+                .unwrap();
+            let args = vec![
+                ColumnarValue::Array(keys),
+                ColumnarValue::Array(Arc::clone(&values)),
+            ];
+            group.bench_with_input(BenchmarkId::new(key_type, entries), &args, |b, args| {
+                b.iter(|| {
+                    black_box(
+                        udf.invoke_with_args(ScalarFunctionArgs {
+                            args: args.to_vec(),
+                            arg_fields: arg_fields.clone(),
+                            number_rows: BATCH_SIZE,
+                            return_field: Arc::clone(&return_field),
+                            config_options: Arc::clone(&config_options),
+                        })
+                        .unwrap(),
+                    )
+                })
+            });
+        }
     }
     group.finish();
 }

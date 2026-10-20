@@ -70,7 +70,9 @@ mod hll_scalar;
 pub use hll_scalar::spark_hll_sketch_estimate;
 pub use hll_scalar::spark_hll_union;
 mod map_funcs;
-pub use map_funcs::{spark_map_sort, SparkMapExtract, SparkMapFromArrays};
+pub use map_funcs::{
+    spark_map_sort, SparkMapExtract, SparkMapFromArrays, SparkMapFromEntries, SparkStrToMap,
+};
 mod math_funcs;
 mod nondetermenistic_funcs;
 pub mod url_funcs;

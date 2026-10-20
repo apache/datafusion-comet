@@ -15,14 +15,9 @@
 -- specific language governing permissions and limitations
 -- under the License.
 
--- Verifies that `map_from_arrays` falls back to Spark when `spark.sql.mapKeyDedupPolicy` is set
--- to `LAST_WIN`. Spark's ArrayBasedMapBuilder keeps the last occurrence of each duplicate key;
--- Comet's native `map` scalar has no LAST_WIN path. `CometMapFromArrays` mixes in
--- `CodegenDispatchFallback`, so its native `Incompatible` normally routes through the JVM codegen
--- dispatcher; we disable the dispatcher here so the incompat branch surfaces as a genuine Spark
--- fallback rather than in-pipeline codegen. The dispatched path, with a key that really repeats, is
--- covered by `map_builders_float_key_last_win.sql`. The default `EXCEPTION` mode agrees with Comet
--- and is covered by `map_from_arrays.sql`.
+-- Verifies that `map_from_arrays` runs natively under `spark.sql.mapKeyDedupPolicy` = `LAST_WIN`
+-- and keeps the last value for each duplicate key. The default `EXCEPTION` mode is covered by
+-- `map_from_arrays.sql`.
 
 -- Config: spark.sql.mapKeyDedupPolicy=LAST_WIN
 -- Config: spark.comet.exec.scalaUDF.codegen.enabled=false
@@ -34,13 +29,23 @@ statement
 INSERT INTO test_map_from_arrays_dedup VALUES
   (array('a', 'b', 'c'), array(1, 2, 3)),
   (array('a', 'a', 'b'), array(1, 2, 3)),
-  (array('x', 'x'), array(10, 20))
+  (array('x', 'x'), array(10, 20)),
+  (array('a', 'a', 'a'), array(1, 2, 3)),
+  (array('a', 'b', 'a'), array(1, 2, 3)),
+  (array('a', 'a', 'b'), array(1, NULL, 3)),
+  (array(), array()),
+  (NULL, array(99))
 
--- literal duplicate keys under LAST_WIN: Spark keeps the last value; Comet must fall back.
-query expect_fallback(mapKeyDedupPolicy)
+-- literal arguments, for the all-scalar path
+query
 SELECT map_from_arrays(array('a', 'a', 'b'), array(1, 2, 3))
 
--- column input falls back the same way; the incompat branch is triggered by the SQLConf value,
--- not per-row content.
-query expect_fallback(mapKeyDedupPolicy)
-SELECT map_from_arrays(k, v) FROM test_map_from_arrays_dedup
+-- A repeated key keeps the position of its first occurrence and takes its last value, as
+-- `ArrayBasedMapBuilder` does, so ('a', 'b', 'a') gives {a -> 3, b -> 2}; a NULL can be the value
+-- that wins. Maps compare equal in any entry order, so `map_keys` and `map_values` pin the order.
+query expect_native(map_from_arrays)
+SELECT map_keys(map_from_arrays(k, v)), map_values(map_from_arrays(k, v)) FROM test_map_from_arrays_dedup
+
+-- LAST_WIN does not weaken the NULL key check
+query expect_error(NULL_MAP_KEY)
+SELECT map_from_arrays(array('a', NULL), array(1, 2))
