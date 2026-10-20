@@ -60,9 +60,9 @@ import org.apache.comet.CometSparkSessionExtensions
  *   - The timed statement includes the driver-side Iceberg commit, which all three configurations
  *     pay equally. It dilutes the writer's factor rather than inflating it.
  *   - The warehouse is a local temporary directory, so no object-store latency is included.
- *   - The two writers choose different file roll points (see the "Accepted divergences" section of
- *     `docs/source/user-guide/dev/iceberg.md`), so the resulting file layouts are not
- *     expected to match. Only wall clock and row counts are compared.
+ *   - The two writers choose different file roll points (see the "Accepted divergences" section
+ *     of `docs/source/user-guide/dev/iceberg.md`), so the resulting file layouts are not expected
+ *     to match. Only wall clock and row counts are compared.
  *   - `Rate` and `Per Row` are always computed against the corpus size, so for the `DELETE` case
  *     they describe the rows the statement passed over, not the far smaller number it removed.
  *   - The corpus below is this benchmark's own, not the one #5361 measured. The factors are the
