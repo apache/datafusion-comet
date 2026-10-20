@@ -2636,6 +2636,141 @@ class CometJoinSuite extends CometTestBase {
     }
   }
 
+  test("outer hash joins over a checkpointed streamed side fall back and keep its order") {
+    // A checkpoint reports the order of the plan it was taken from, and Spark drops the sort
+    // above the join on that basis. The order walk cannot check that order, so the join cannot
+    // declare it on its probe input and stays in Spark; see CometHashJoin.doConvert. The
+    // checkpoint is taken with AQE off, as an adaptive plan reports no order.
+    withSQLConf(
+      SQLConf.ADAPTIVE_EXECUTION_ENABLED.key -> "false",
+      SQLConf.AUTO_BROADCASTJOIN_THRESHOLD.key -> "-1",
+      SQLConf.SHUFFLE_PARTITIONS.key -> "2",
+      CometConf.COMET_CONVERT_FROM_RDD_ENABLED.key -> "true",
+      CometConf.COMET_EXEC_RANGE_ENABLED.key -> "true") {
+      val streamed = spark
+        .range(2000)
+        .selectExpr("id % 100 AS k", "id AS v")
+        .repartition(2, $"k")
+        .sortWithinPartitions("k", "v")
+        .localCheckpoint(eager = true)
+      val build = spark.range(10).selectExpr("id * 10 AS k", "id AS w")
+      val order =
+        (0 to 1).map(i => SortOrder(BoundReference(i, LongType, nullable = true), Ascending))
+      for (adaptive <- Seq(false, true))
+        withSQLConf(SQLConf.ADAPTIVE_EXECUTION_ENABLED.key -> adaptive.toString) {
+          for {
+            (hint, sparkJoin) <- Seq(
+              "shuffle_hash" -> classOf[ShuffledHashJoinExec],
+              "broadcast" -> classOf[BroadcastHashJoinExec])
+            joinType <- Seq("left_outer", "right_outer")
+          } {
+            def df: DataFrame = {
+              val on = streamed("k") === build("k")
+              val joined = if (joinType == "left_outer") {
+                streamed.join(build.hint(hint), on, joinType)
+              } else {
+                build.hint(hint).join(streamed, on, joinType)
+              }
+              joined
+                .select(streamed("k"), streamed("v"), build("w"))
+                .sortWithinPartitions("k", "v")
+            }
+            val (_, plan) = checkSparkAnswerAndFallbackReason(
+              df,
+              "the streamed side's sort order, which this outer join has to keep, cannot be " +
+                "checked, so it is not declared natively")
+            val context = s"$hint $joinType AQE=$adaptive\n$plan"
+            assert(collect(plan) { case j if j.getClass == sparkJoin => j }.size == 1, context)
+            assert(
+              collect(plan) {
+                case j: CometHashJoinExec => j
+                case j: CometBroadcastHashJoinExec => j
+              }.isEmpty,
+              context)
+            assert(
+              collect(plan) { case s @ (_: CometSortExec | _: SortExec) => s }.isEmpty,
+              context)
+            assert(partitionsInOrder(df, order: _*), context)
+          }
+        }
+    }
+  }
+
+  test("an outer hash join over a native inner join over a checkpoint falls back") {
+    // The inner join keeps the checkpoint's order and runs natively. The outer join above it
+    // reaches the checkpoint through the inner join's streamed side, so it stays in Spark.
+    withSQLConf(
+      SQLConf.ADAPTIVE_EXECUTION_ENABLED.key -> "false",
+      SQLConf.AUTO_BROADCASTJOIN_THRESHOLD.key -> "-1",
+      SQLConf.SHUFFLE_PARTITIONS.key -> "2",
+      CometConf.COMET_CONVERT_FROM_RDD_ENABLED.key -> "true",
+      CometConf.COMET_EXEC_RANGE_ENABLED.key -> "true") {
+      val streamed = spark
+        .range(2000)
+        .selectExpr("id % 100 AS k", "id AS v")
+        .repartition(2, $"k")
+        .sortWithinPartitions("k", "v")
+        .localCheckpoint(eager = true)
+      val d1 = spark.range(100).where("id % 4 != 3").selectExpr("id AS k", "id AS a")
+      val d2 = spark.range(10).selectExpr("id * 10 AS k", "id AS w")
+      val order =
+        (0 to 1).map(i => SortOrder(BoundReference(i, LongType, nullable = true), Ascending))
+      def df: DataFrame = streamed
+        .join(d1.hint("broadcast"), streamed("k") === d1("k"), "inner")
+        .join(d2.hint("broadcast"), streamed("k") === d2("k"), "left_outer")
+        .select(streamed("k"), streamed("v"), d1("a"), d2("w"))
+        .sortWithinPartitions("k", "v")
+      val (_, plan) = checkSparkAnswerAndFallbackReason(
+        df,
+        "the streamed side's sort order, which this outer join has to keep, cannot be " +
+          "checked, so it is not declared natively")
+      val inner = collect(plan) { case j: CometBroadcastHashJoinExec => j.joinType }
+      assert(inner == Seq(Inner), plan)
+      val outer = collect(plan) { case j: BroadcastHashJoinExec => j.joinType }
+      assert(outer == Seq(LeftOuter), plan)
+      assert(collect(plan) { case s @ (_: CometSortExec | _: SortExec) => s }.isEmpty, plan)
+      assert(partitionsInOrder(df, order: _*), plan)
+    }
+  }
+
+  test("chained outer hash joins over a native window keep its order natively") {
+    // The window reports its input's (k, v) order through both broadcast outer joins, and Spark
+    // drops the sort above them on that basis. Both joins and the window share one native plan.
+    withParquetTable((0 until 2000).map(i => (i % 40, i)), "t") {
+      withParquetTable((0 until 40 by 2).map(k => (k, k * 10)), "d1") {
+        withParquetTable((0 until 40 by 3).map(k => (k, k * 100)), "d2") {
+          val order = (0 to 1).map { i =>
+            SortOrder(BoundReference(i, IntegerType, nullable = true), Ascending)
+          }
+          for (adaptive <- Seq(false, true)) {
+            withSQLConf(SQLConf.ADAPTIVE_EXECUTION_ENABLED.key -> adaptive.toString) {
+              def df: DataFrame = sql("""SELECT w.k, w.v, w.rn, d1._2 AS x, d2._2 AS y
+                  |FROM (SELECT k, v, row_number() OVER (PARTITION BY k ORDER BY v) AS rn
+                  |      FROM (SELECT _1 AS k, _2 AS v FROM t)) w
+                  |LEFT JOIN d1 ON w.k = d1._1
+                  |LEFT JOIN d2 ON w.k = d2._1""".stripMargin)
+                .sortWithinPartitions("k", "v")
+              val (_, plan) = checkSparkAnswer(df)
+              val context = s"AQE=$adaptive\n$plan"
+              assert(new ExtendedExplainInfo().getFallbackReasons(plan).isEmpty, context)
+              val joins = collect(plan) { case j: CometBroadcastHashJoinExec => j }
+              assert(joins.size == 2 && joins.forall(_.joinType == LeftOuter), context)
+              assert(collect(plan) { case w: CometWindowExec => w }.size == 1, context)
+              assert(
+                collect(plan) {
+                  case s @ (_: CometSortExec | _: SortExec)
+                      if s.find(_.isInstanceOf[CometBroadcastHashJoinExec]).isDefined =>
+                    s
+                }.isEmpty,
+                context)
+              assert(partitionsInOrder(df, order: _*), context)
+            }
+          }
+        }
+      }
+    }
+  }
+
   // Compares the rows of a fresh `df` with the ones Spark returns for it, as a multiset unless
   // `isSorted`. The rows of a key tie under a sort, so their order within it can differ between
   // the two.
@@ -3107,6 +3242,71 @@ class CometJoinSuite extends CometTestBase {
       }
       QueryTest.sameRows(expected, df.collect().toSeq).foreach(fail(_))
       assert(partitionsInOrder(df, keyOrder(Ascending)), plan)
+    }
+  }
+
+  test("chained outer hash joins over a native filter over a sorted cache stay native") {
+    // The first join declares the cache's order on its probe input, the filter, so it keeps its
+    // rows in place. The second join's probe input is the first join in the same native plan,
+    // whose order DataFusion sees, so it sends no order and neither join falls back.
+    withSortedCache() {
+      def df: DataFrame = sql("""SELECT /*+ BROADCAST(b), BROADCAST(c) */ a.k, a.v, b._2, c._2
+                                 |FROM (SELECT * FROM cached WHERE v >= 0) a
+                                 |LEFT JOIN small b ON a.k = b._1
+                                 |LEFT JOIN small c ON a.k = c._1""".stripMargin)
+        .sortWithinPartitions("k")
+      val (_, plan) = checkSparkAnswer(df)
+      // Spark's cache format adds a reason of its own to the cache scan.
+      assert(
+        !new ExtendedExplainInfo().getFallbackReasons(plan).exists(_.contains("sort order")),
+        plan)
+      val joins = collect(plan) { case j: CometBroadcastHashJoinExec => j }
+      assert(joins.size == 2 && joins.forall(_.joinType == LeftOuter), plan)
+      val (first, second) =
+        joins.partition(_.left.find(_.isInstanceOf[CometBroadcastHashJoinExec]).isEmpty)
+      assert(first.size == 1 && second.size == 1, plan)
+      assert(collect(first.head.left) { case f: CometFilterExec => f }.size == 1, plan)
+      assert(first.head.nativeOp.getHashJoin.getStreamedSortOrdersCount > 0, plan)
+      assert(second.head.nativeOp.getHashJoin.getStreamedSortOrdersCount == 0, plan)
+      assert(collect(plan) { case s @ (_: CometSortExec | _: SortExec) => s }.isEmpty, plan)
+      assert(partitionsInOrder(df, keyOrder(Ascending)), plan)
+    }
+  }
+
+  test("an outer hash join over a native nested loop join falls back") {
+    // The nested loop join reports the cache's order but DataFusion keeps the order of neither
+    // input, so the outer join above it stays in Spark. Over two build rows the rows reach it
+    // out of order already (#6898), so they are compared as a multiset. Over one build row they
+    // stay in order, and Spark's join keeps it.
+    withSortedCache() {
+      withParquetTable(Seq(Tuple1(0), Tuple1(1)), "two") {
+        withParquetTable(Seq(Tuple1(1)), "one") {
+          def query(nlBuild: String): String =
+            s"""SELECT /*+ BROADCAST(n), BROADCAST(b) */ a.k, a.v, n._1 AS z, b._2 AS w
+               |FROM cached a JOIN $nlBuild n ON a.v % 2 <= n._1
+               |LEFT JOIN small b ON a.k = b._1""".stripMargin
+          val reason = "the streamed side's sort order, which this outer join has to keep, " +
+            "cannot be checked, so it is not declared natively"
+          def checkFallback(df: => DataFrame): SparkPlan = {
+            sameRowsAsSpark(df)
+            val plan = df.queryExecution.executedPlan
+            val reasons = new ExtendedExplainInfo().getFallbackReasons(plan)
+            assert(reasons.exists(_.contains(reason)), plan)
+            val nestedLoopJoins = collect(plan) { case j: CometBroadcastNestedLoopJoinExec => j }
+            assert(nestedLoopJoins.size == 1, plan)
+            val outer = collect(plan) { case j: BroadcastHashJoinExec => j.joinType }
+            assert(outer == Seq(LeftOuter), plan)
+            plan
+          }
+
+          checkFallback(sql(query("two")))
+
+          def ordered: DataFrame = sql(query("one")).sortWithinPartitions("k")
+          val plan = checkFallback(ordered)
+          assert(collect(plan) { case s @ (_: CometSortExec | _: SortExec) => s }.isEmpty, plan)
+          assert(partitionsInOrder(ordered, keyOrder(Ascending)), plan)
+        }
+      }
     }
   }
 

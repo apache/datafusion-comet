@@ -131,12 +131,15 @@ express falls back to Spark and records a fallback reason (see
 [Understanding Comet Plans](../understanding-comet-plans.md)), because Comet cannot tell whether
 an operator above the join relies on the order.
 
-Where the order Spark reports might not hold, Comet declares nothing and an outer join can return
-its unmatched rows out of order. The output of a nested loop join
-([#6898](https://github.com/apache/datafusion-comet/issues/6898)) is one such case, and so is a
-cache or checkpoint that one wrote. Comet also declares nothing when it cannot follow the
-order back to its source, as with an RDD checkpoint, and over some caches written by an outer hash
-join whose order does hold ([#6922](https://github.com/apache/datafusion-comet/issues/6922)).
+Where Comet cannot check the order Spark reports, it declares nothing. If that order reaches the
+outer join through an input from the JVM, such as an RDD checkpoint or some caches written by an
+outer hash join whose own probe input was not a scan
+([#6922](https://github.com/apache/datafusion-comet/issues/6922)), or through a nested
+loop join, the join falls back to Spark, which keeps the rows in the order they arrive. The output
+of a nested loop join can already be out of order when it reaches the join
+([#6898](https://github.com/apache/datafusion-comet/issues/6898)). A join over other native
+operators in the same plan does not fall back for its order, since DataFusion keeps the order it
+can see there.
 
 ## Window Functions
 
