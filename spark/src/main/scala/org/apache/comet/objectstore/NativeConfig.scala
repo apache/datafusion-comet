@@ -156,10 +156,18 @@ object NativeConfig {
    */
   private[comet] def resolveScanLibhdfsSchemes(
       sessionConf: Configuration,
+      scanConf: Configuration): ScanLibhdfsSchemes =
+    resolveScanLibhdfsSchemes(resolveLibhdfsSchemes(sessionConf), scanConf)
+
+  /**
+   * As above, with the session's list already resolved by [[resolveLibhdfsSchemes]], so a caller
+   * planning many scans copies the session's Hadoop conf once.
+   */
+  private[comet] def resolveScanLibhdfsSchemes(
+      sessionSchemes: Set[String],
       scanConf: Configuration): ScanLibhdfsSchemes = {
-    val session = resolveLibhdfsSchemes(sessionConf)
     val scan = resolveLibhdfsSchemes(scanConf)
-    ScanLibhdfsSchemes(session.intersect(scan), scan -- session)
+    ScanLibhdfsSchemes(sessionSchemes.intersect(scan), scan -- sessionSchemes)
   }
 
   // Schemes the URL standard treats as special: never an S3 alias, and their host is lowercased.
