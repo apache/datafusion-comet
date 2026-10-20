@@ -1824,6 +1824,70 @@ abstract class ParquetReadSuite extends CometTestBase {
     }
   }
 
+  test("native scan rejects TIMESTAMP(NANOS) read as timestamp like Spark") {
+    // Regression guard for https://github.com/apache/datafusion-comet/issues/7034. Spark's
+    // writer cannot produce TIMESTAMP(NANOS), so timestamp_nanos.parquet was written with
+    // PyArrow. Next to `id int`, it holds TIMESTAMP(NANOS) leaves that are UTC-adjusted (`t`,
+    // `s.t` and the elements of `a`) or not (`u` and the elements of `b`), all set to
+    // 2020-09-13 12:26:40.123456789 UTC in the row with id 1 and null or empty in the row with
+    // id 2. Spark has no updater that reads TIMESTAMP(NANOS) as timestamp or timestamp_ntz.
+    val path = getResourceParquetFilePath("test-data/timestamp_nanos.parquet")
+    val readTypes = Seq(
+      "t timestamp",
+      "u timestamp",
+      "s struct<t: timestamp>",
+      "a array<timestamp>",
+      "b array<timestamp>",
+      "t timestamp_ntz",
+      "u timestamp_ntz")
+    for (pushdown <- Seq(false, true); readType <- readTypes) {
+      withSQLConf(
+        SQLConf.USE_V1_SOURCE_LIST.key -> "parquet",
+        CometConf.COMET_PARQUET_ROW_FILTER_PUSHDOWN_ENABLED.key -> pushdown.toString) {
+        val df = spark.read.schema(s"id int, $readType").parquet(path).where("id > 0")
+        checkCometOperators(stripAQEPlan(df.queryExecution.executedPlan))
+        val (sparkError, cometError) = checkSparkAnswerMaybeThrows(df)
+        Seq("Spark" -> sparkError, "Comet" -> cometError).foreach { case (engine, error) =>
+          val chain = error.toSeq.flatMap(causeChain)
+          assert(
+            chain.exists(_.isInstanceOf[
+              org.apache.spark.sql.execution.datasources.SchemaColumnConvertNotSupportedException]),
+            s"$engine, $readType, row filter pushdown $pushdown: ${chain.mkString("\n")}")
+        }
+        // The TIMESTAMP(NANOS) leaves only fail the read when they are requested.
+        checkSparkAnswerAndOperator(spark.read.schema("id int").parquet(path).where("id > 0"))
+      }
+    }
+  }
+
+  test("native scan reads INT96 timestamps with row filter pushdown like Spark") {
+    // The row filter path checks conversions against the file's raw Arrow schema, where an
+    // INT96 leaf is still a nanosecond timestamp, so this guards against mistaking it for
+    // TIMESTAMP(NANOS) (#7034).
+    withTempPath { dir =>
+      val path = dir.getCanonicalPath
+      withSQLConf(SQLConf.PARQUET_OUTPUT_TIMESTAMP_TYPE.key -> "INT96") {
+        spark
+          .sql("""
+            |SELECT 1 AS id, ts, named_struct('ts', ts) AS s, array(ts, NULL) AS a
+            |FROM VALUES (TIMESTAMP'2020-01-01 01:02:03.123456') AS v(ts)
+            |UNION ALL SELECT 2, NULL, NULL, NULL
+            |""".stripMargin)
+          .coalesce(1)
+          .write
+          .parquet(path)
+      }
+      for (pushdown <- Seq(false, true)) {
+        withSQLConf(
+          SQLConf.USE_V1_SOURCE_LIST.key -> "parquet",
+          CometConf.COMET_PARQUET_ROW_FILTER_PUSHDOWN_ENABLED.key -> pushdown.toString) {
+          checkSparkAnswerAndOperator(spark.read.parquet(path).where("id > 0"))
+          checkSparkAnswerAndOperator(spark.read.parquet(path).where("id > 0").select("ts"))
+        }
+      }
+    }
+  }
+
   test("nested schema evolution follows Spark's per-version widening rules") {
     // Companion to "schema evolution": `INT32 -> bigint` inside a struct is gated by the same
     // per-Spark-version constant as the top level (see ShimCometConf), and accepted nested
