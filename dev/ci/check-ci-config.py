@@ -166,6 +166,21 @@ ROUTING_CASES = [
     # neither does the Delta gate, which only inspects build output.
     (["dev/verify-contrib-delta-gate.sh"], {"delta_gate"}),
     (["contrib/delta/native/src/lib.rs"], {"delta_gate"}),
+    # The Delta contrib feeds its own suites and the Linux build, whose strict
+    # warnings job compiles it on every pull request. A README edit feeds
+    # neither.
+    (
+        ["contrib/delta-spark/src/main/scala/org/apache/comet/contrib/delta/X.scala"],
+        {
+            "build_linux",
+            "build_linux_full",
+            "build_linux_all_profiles",
+            "delta_3_5",
+            "delta_4_0",
+            "delta_4_1",
+        },
+    ),
+    (["contrib/delta-spark/README.md"], set()),
     (
         ["spark/src/test/resources/pyspark/test_pyarrow_udf.py"],
         {
@@ -198,9 +213,10 @@ QUEUE_TIER = PR_TIER | {
     "delta_gate",
     "pyarrow_udf",
 }
-# Every other Spark and Iceberg version, and the linux-test matrix's other
-# Spark profiles (`build_linux_all_profiles`, part of the Linux build's call
-# rather than a job of its own), run once a night against main instead.
+# Every other Spark and Iceberg version, every Delta version, and the
+# linux-test matrix's other Spark profiles (`build_linux_all_profiles`, part of
+# the Linux build's call rather than a job of its own), run once a night
+# against main instead.
 NIGHTLY_TIER = {
     "spark_3_5",
     "spark_4_0",
@@ -208,6 +224,9 @@ NIGHTLY_TIER = {
     "iceberg_1_8",
     "iceberg_1_9",
     "iceberg_1_10",
+    "delta_3_5",
+    "delta_4_0",
+    "delta_4_1",
     "build_linux_all_profiles",
 }
 # Spark 3.4 is deprecated and sits outside the queue and nightly tiers
@@ -219,6 +238,8 @@ SPARK_DEPRECATED = {"spark_3_4"}
 # One label opts a pull request into every Iceberg version, whichever tier
 # each sits in.
 ICEBERG_OPT_IN = {"iceberg_1_8", "iceberg_1_9", "iceberg_1_10", "iceberg_1_11"}
+# Likewise one label for every Delta profile.
+DELTA_OPT_IN = {"delta_3_5", "delta_4_0", "delta_4_1"}
 ALL_JOBS = QUEUE_TIER | NIGHTLY_TIER | SPARK_DEPRECATED | {"docs"}
 assert not QUEUE_TIER & NIGHTLY_TIER, "a job is queue or nightly, never both"
 
@@ -249,6 +270,20 @@ POLICY_CASES = [
     (
         {"name": "pull_request", "action": "synchronize", "labels": ["run-spark-3.5-tests"]},
         PR_TIER | {"spark_3_5"},
+    ),
+    # The Delta label adds every Delta profile.
+    (
+        {"name": "pull_request", "action": "synchronize", "labels": ["run-delta-tests"]},
+        PR_TIER | DELTA_OPT_IN,
+    ),
+    (
+        {
+            "name": "pull_request",
+            "action": "labeled",
+            "label": "run-delta-tests",
+            "labels": ["run-delta-tests"],
+        },
+        DELTA_OPT_IN,
     ),
     # The macOS build and the benchmark compile check are queue-only, each
     # with its own label. Neither label pulls in the other.
@@ -1202,9 +1237,55 @@ def check_label_runs_separate():
                 f"and nothing else; any other type would run ci.yml twice per push"
             )
 
+    # ci_label.yml calls ci.yml with an explicit `permissions:` ceiling, and
+    # GitHub refuses to start the run at all if any job in ci.yml asks for more,
+    # even a job the `labeled` event would skip. That is how the `docs` job's
+    # `contents: write` stopped every label run on 2026-09-29.
+    if label_workflow.exists():
+        granted = permission_blocks(label_workflow.read_text(encoding="utf-8").splitlines())
+        ceiling = {}
+        for block in granted:
+            for scope, level in block.items():
+                ceiling[scope] = max(ceiling.get(scope, 0), PERMISSION_RANK[level])
+        ci = (WORKFLOWS / "ci.yml").read_text(encoding="utf-8").splitlines()
+        for block in permission_blocks(ci):
+            for scope, level in block.items():
+                if PERMISSION_RANK[level] > ceiling.get(scope, 0):
+                    failures.append(
+                        f"ci.yml requests `{scope}: {level}`, but ci_label.yml grants "
+                        f"the call at most `{scope}: "
+                        f"{PERMISSION_NAME[ceiling.get(scope, 0)]}`, so every label "
+                        f"run fails at startup. Raise the grant in ci_label.yml"
+                    )
+
     for failure in failures:
         print(f"label runs: {failure}")
     return not failures
+
+
+PERMISSION_RANK = {"none": 0, "read": 1, "write": 2}
+PERMISSION_NAME = {rank: name for name, rank in PERMISSION_RANK.items()}
+PERMISSIONS_KEY = re.compile(r"^(\s*)permissions:\s*(\{\s*\})?\s*$")
+PERMISSION_ENTRY = re.compile(r"^(\s*)([a-z-]+):\s*(read|write|none)\s*$")
+
+
+def permission_blocks(lines):
+    """Every `permissions:` mapping in a workflow, as a list of {scope: level}."""
+    blocks = []
+    for index, line in enumerate(lines):
+        match = PERMISSIONS_KEY.match(line)
+        if not match:
+            continue
+        indent, block = len(match.group(1)), {}
+        for entry in lines[index + 1:]:
+            if not entry.strip() or entry.lstrip().startswith("#"):
+                continue
+            found = PERMISSION_ENTRY.match(entry)
+            if not found or len(found.group(1)) <= indent:
+                break
+            block[found.group(2)] = found.group(3)
+        blocks.append(block)
+    return blocks
 
 
 def caller_passes_cache_refresh(ci_lines, workflow_name):

@@ -158,6 +158,16 @@ class CometExec3_4PlusSuite extends CometTestBase {
     }
   }
 
+  test("test NULL inputs for BloomFilterMightContain without a FROM clause") {
+    assume(!isSpark42Plus, "https://github.com/apache/datafusion-comet/issues/4968")
+    checkSparkAnswer("""
+         |SELECT might_contain(null, null) both_null,
+         |       might_contain(null, 1L) null_bf,
+         |       might_contain((SELECT bloom_filter_agg(cast(id as long)) FROM range(1, 10000)),
+         |            null) null_value
+         |""".stripMargin)
+  }
+
   test("test NULL inputs for BloomFilterMightContain") {
     assume(!isSpark42Plus, "https://github.com/apache/datafusion-comet/issues/4968")
     val table = "test"

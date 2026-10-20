@@ -42,15 +42,17 @@ import org.apache.spark.sql.{CometTestBase, DataFrame, Row}
 import org.apache.spark.sql.catalyst.optimizer.{ConvertToLocalRelation, OptimizeIn}
 import org.apache.spark.sql.catalyst.util.DateTimeUtils
 import org.apache.spark.sql.comet.{CometNativeScanExec, CometScanExec}
+import org.apache.spark.sql.comet.util.Utils
 import org.apache.spark.sql.execution.adaptive.AdaptiveSparkPlanHelper
 import org.apache.spark.sql.execution.datasources.parquet.ParquetUtils
+import org.apache.spark.sql.functions.col
 import org.apache.spark.sql.internal.SQLConf
 import org.apache.spark.sql.types._
 
 import com.google.common.primitives.UnsignedLong
 
 import org.apache.comet.CometConf
-import org.apache.comet.CometSparkSessionExtensions.{isSpark40Plus, isSpark41Plus}
+import org.apache.comet.CometSparkSessionExtensions.{isSpark35Plus, isSpark40Plus, isSpark41Plus}
 import org.apache.comet.vector.CometVector
 
 abstract class ParquetReadSuite extends CometTestBase {
@@ -2253,6 +2255,102 @@ abstract class ParquetReadSuite extends CometTestBase {
     }
   }
 
+  Seq(false, true).foreach { arrayOfStruct =>
+    val shape = if (arrayOfStruct) "array of struct" else "struct"
+    test(s"pruned Parquet field ids follow the scan schema for a renamed root $shape") {
+      val inner = new StructType()
+        .add("a", IntegerType, true, withId(11))
+        .add("b", IntegerType, true, withId(12))
+      val dataType = if (arrayOfStruct) ArrayType(inner) else inner
+      val writeSchema = new StructType()
+        .add("id", IntegerType, true, withId(2))
+        .add("original", dataType, true, withId(1))
+        .add("part", IntegerType)
+      val readSchema = new StructType()
+        .add("id", IntegerType, true, withId(2))
+        .add("renamed", dataType, true, withId(1))
+        .add("part", IntegerType)
+      val nestedRows = if (arrayOfStruct) {
+        Seq(
+          Row(Seq(Row(1, 10), null, Row(null, 30))),
+          Row(Seq(Row(2, 20))),
+          Row(Seq.empty),
+          Row(null),
+          Row(Seq(Row(3, 40))))
+      } else {
+        Seq(Row(Row(1, 10)), Row(Row(2, 20)), Row(Row(null, 30)), Row(null), Row(Row(3, 40)))
+      }
+      val rows = nestedRows.zipWithIndex.map { case (row, id) => Row(id, row.get(0), id % 2) }
+      val projected = if (arrayOfStruct) {
+        Seq(Row(Seq(1, null, null)), Row(Seq(2)), Row(Seq.empty), Row(null), Row(Seq(3)))
+      } else {
+        Seq(Row(1), Row(2), Row(null), Row(null), Row(3))
+      }
+      val predicate = if (arrayOfStruct) "array_contains(renamed.a, 2)" else "renamed.a > 1"
+      val filtered = if (arrayOfStruct) Seq(Row(Seq(2))) else Seq(Row(2), Row(3))
+      val filteredIds = if (arrayOfStruct) Seq(Row(1, 1)) else Seq(Row(1, 1), Row(4, 0))
+      val nonNullCount = if (arrayOfStruct) 4L else 3L
+
+      withSQLConf(
+        SQLConf.PARQUET_FIELD_ID_WRITE_ENABLED.key -> "true",
+        SQLConf.PARQUET_FIELD_ID_READ_ENABLED.key -> "true") {
+        withTempPath { dir =>
+          spark
+            .createDataFrame(spark.sparkContext.parallelize(rows), writeSchema)
+            .write
+            .partitionBy("part")
+            .parquet(dir.getCanonicalPath)
+          Seq(false, true).foreach { pruning =>
+            withSQLConf(SQLConf.NESTED_SCHEMA_PRUNING_ENABLED.key -> pruning.toString) {
+              withClue(s"nested schema pruning $pruning: ") {
+                // Spark 3.4 keeps the root id in requiredSchema. From 3.5, pruning removes it
+                // while scan.output still carries it. With no id, the renamed root is absent
+                // from the file by name, so Spark reads null even though its output has an id.
+                val hasRootId = !pruning || !isSpark35Plus
+                def read(): DataFrame =
+                  spark.read.schema(readSchema).parquet(dir.getCanonicalPath)
+                def checkRead(query: => DataFrame, expected: Seq[Row]): Unit = {
+                  val (_, plan) = checkSparkAnswerAndOperator(query)
+                  val scans = collect(plan) { case scan: CometNativeScanExec => scan }
+                  assert(scans.size == 1, s"expected one CometNativeScanExec:\n$plan")
+                  val root = scans.head.requiredSchema("renamed")
+                  assert(root.metadata.contains(ParquetUtils.FIELD_ID_METADATA_KEY) == hasRootId)
+                  val requestedInner = root.dataType match {
+                    case ArrayType(elementType: StructType, _) => elementType
+                    case struct: StructType => struct
+                    case other => fail(s"unexpected root type: $other")
+                  }
+                  assert(
+                    requestedInner.fieldNames.toSeq == (if (pruning) Seq("a") else Seq("a", "b")))
+                  checkAnswer(query, expected)
+                }
+
+                checkRead(
+                  read().select("renamed.a"),
+                  if (hasRootId) projected else Seq.fill(rows.size)(Row(null)))
+                checkRead(
+                  read().where(predicate).select("renamed.a"),
+                  if (hasRootId) filtered else Seq.empty)
+                // A filter-only nested root must not shift the data or partition outputs.
+                checkRead(
+                  read().where(predicate).select("id", "part"),
+                  if (hasRootId) filteredIds else Seq.empty)
+                checkRead(
+                  read().selectExpr("count(renamed.a)"),
+                  Seq(Row(if (hasRootId) nonNullCount else 0L)))
+                if (pruning) {
+                  withSQLConf(SQLConf.PARQUET_FIELD_ID_READ_ENABLED.key -> "false") {
+                    checkRead(read().select("renamed.a"), Seq.fill(rows.size)(Row(null)))
+                  }
+                }
+              }
+            }
+          }
+        }
+      }
+    }
+  }
+
   // The two shapes of #6192. A nested column dropped and added back under its old name gets a
   // fresh field id, so the file holds `struct<x (id 1), y (id 2)>` while the table reads
   // `struct<x (id 3), y (id 2)>`, and a swapped pair reads `struct<x (id 2), y (id 1)>`. The
@@ -2594,6 +2692,114 @@ abstract class ParquetReadSuite extends CometTestBase {
           .parquet(dir.getCanonicalPath)
 
         checkSparkAnswerAndOperator(spark.read.schema(schema).parquet(dir.getCanonicalPath))
+      }
+    }
+  }
+
+  // Spark writes timestamps as INT96 by default, and the native scan's INT96 coercion rebuilds
+  // struct, list and map fields, which must keep their metadata or an id on the container is
+  // lost and the column reads as nulls. The read renames the column so only its id matches it.
+  private val int96Ts = Timestamp.valueOf("2020-01-01 00:00:00")
+  private val int96Inner = new StructType().add("a", IntegerType).add("ts", TimestampType)
+
+  Seq[(String, DataType, Any)](
+    ("struct", int96Inner, Row(1, int96Ts)),
+    ("list", ArrayType(int96Inner), Seq(Row(1, int96Ts), Row(2, int96Ts))),
+    ("map", MapType(StringType, int96Inner), Map("k" -> Row(1, int96Ts)))).foreach {
+    case (label, dataType, value) =>
+      test(s"an id on a $label column holding an INT96 timestamp matches it natively") {
+        withSQLConf(SQLConf.PARQUET_FIELD_ID_READ_ENABLED.key -> "true") {
+          withTempPath { dir =>
+            val rows = Seq(Row(value), Row(null))
+            withSQLConf(
+              CometConf.COMET_ENABLED.key -> "false",
+              SQLConf.PARQUET_OUTPUT_TIMESTAMP_TYPE.key -> "INT96") {
+              spark
+                .createDataFrame(
+                  spark.sparkContext.parallelize(rows),
+                  new StructType().add("c", dataType, true, withId(1)))
+                .write
+                .parquet(dir.getCanonicalPath)
+            }
+            val readSchema = new StructType().add("renamed", dataType, true, withId(1))
+            val df = spark.read.schema(readSchema).parquet(dir.getCanonicalPath)
+            checkSparkAnswerAndOperator(df)
+            checkAnswer(df, rows)
+          }
+        }
+      }
+  }
+
+  // Ids on a struct below a struct or a list, and on its INT96 leaf, match renamed fields.
+  // Spark's vectorized reader before 4.0 rejects the renamed struct below the list, so the
+  // comparison with Spark runs from 4.0 on and the pinned rows hold everywhere.
+  test("an id on a struct nested in a struct or list with an INT96 leaf matches it natively") {
+    def schema(innerName: String, tsName: String): StructType = {
+      def inner(innerId: Int, tsId: Int): StructType = new StructType().add(
+        innerName,
+        new StructType().add("a", IntegerType).add(tsName, TimestampType, true, withId(tsId)),
+        true,
+        withId(innerId))
+      new StructType().add("s", inner(2, 3)).add("l", ArrayType(inner(4, 5)))
+    }
+    val rows = Seq(
+      Row(Row(Row(1, int96Ts)), Seq(Row(Row(2, int96Ts)), Row(Row(3, int96Ts)))),
+      Row(Row(null), Seq(Row(Row(4, null)), null)))
+
+    withSQLConf(SQLConf.PARQUET_FIELD_ID_READ_ENABLED.key -> "true") {
+      withTempPath { dir =>
+        withSQLConf(
+          CometConf.COMET_ENABLED.key -> "false",
+          SQLConf.PARQUET_OUTPUT_TIMESTAMP_TYPE.key -> "INT96") {
+          spark
+            .createDataFrame(spark.sparkContext.parallelize(rows), schema("inner", "ts"))
+            .write
+            .parquet(dir.getCanonicalPath)
+        }
+        val df = spark.read
+          .schema(schema("renamed_inner", "renamed_ts"))
+          .parquet(dir.getCanonicalPath)
+        if (isSpark40Plus) {
+          checkSparkAnswerAndOperator(df)
+        }
+        val plan = stripAQEPlan(df.queryExecution.executedPlan)
+        assert(
+          collect(plan) { case scan: CometNativeScanExec => scan }.nonEmpty,
+          s"expected CometNativeScanExec in the plan:\n$plan")
+        checkAnswer(df, rows)
+      }
+    }
+  }
+
+  // A Variant column is a struct of value and metadata in the Arrow schema, so the same coercion
+  // rebuilds it when the file holds an INT96 column anywhere, and its id has to survive.
+  test("an id on a Variant column next to an INT96 timestamp matches it natively") {
+    assume(Utils.variantType.isDefined, "VariantType requires Spark 4.0+")
+    withSQLConf(
+      SQLConf.PARQUET_FIELD_ID_READ_ENABLED.key -> "true",
+      "spark.sql.variant.allowReadingShredded" -> "true",
+      "spark.sql.variant.pushVariantIntoScan" -> "false") {
+      withTempPath { dir =>
+        withSQLConf(
+          CometConf.COMET_ENABLED.key -> "false",
+          SQLConf.PARQUET_OUTPUT_TIMESTAMP_TYPE.key -> "INT96") {
+          spark
+            .sql("""SELECT parse_json(j) AS v, t AS ts FROM VALUES
+              |  ('{"a":1}', TIMESTAMP'2020-01-01 00:00:00'), (NULL, NULL) AS input(j, t)
+              |""".stripMargin)
+            .select(col("v").as("v", withId(1)), col("ts"))
+            .coalesce(1)
+            .write
+            .parquet(dir.getCanonicalPath)
+        }
+        val readSchema = new StructType()
+          .add("renamed", Utils.variantType.get, true, withId(1))
+          .add("ts", TimestampType)
+        val df = spark.read.schema(readSchema).parquet(dir.getCanonicalPath)
+        checkSparkAnswerAndOperator(df)
+        checkAnswer(
+          df.selectExpr("to_json(renamed)", "ts"),
+          Row("""{"a":1}""", int96Ts) :: Row(null, null) :: Nil)
       }
     }
   }

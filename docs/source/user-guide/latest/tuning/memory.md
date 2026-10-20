@@ -39,12 +39,13 @@ off-heap consumers draw down one number.
 
 A larger pool lets the operators that can spill, such as sorts, aggregations and the shuffle writer, keep more in
 memory before they spill to disk. An operator that cannot spill fails the task when it cannot reserve the memory it
-needs.
+needs. A native Iceberg fanout write is the exception: it closes some of its open files early instead (see
+[Iceberg Writes](../iceberg.md#failure-handling)).
 
 Comet's memory pool only tracks memory that an operator explicitly reserves, which in practice means the batches
-an operator deliberately accumulates: the sort buffer, the build side of a hash join, hash aggregation state, and the
-shuffle writer's buffered partitions. Memory that is not reserved is invisible to the pool no matter how much of it
-there is. That includes:
+an operator deliberately accumulates: the sort buffer, the build side of a hash join, hash aggregation state, the
+shuffle writer's buffered partitions, and the files a native writer holds open. Memory that is not reserved is
+invisible to the pool no matter how much of it there is. That includes:
 
 - per-batch working memory in expression kernels and Arrow array builders,
 - decompression buffers and Parquet reader structures,
@@ -282,3 +283,13 @@ use more than `N` times this value on shared local disks. If the limit is reache
 fail and the query errors out. Raise this on workloads with large sort/aggregate/shuffle spills, or
 lower it to protect executors on shared disks, remembering that the total across an executor is a
 multiple of this value.
+
+## Compressing Spill Files
+
+`spark.comet.exec.spill.compression.codec` sets the codec for the files that native sorts,
+aggregations, sort-merge joins, and nested loop joins spill to disk. The default is `lz4`, which
+Spark also uses for its own spill files by default. `zstd` writes smaller files, which reduces
+spill I/O and how much of `spark.comet.maxTempDirectorySize` they use, but takes more CPU to
+compress and decompress them. `none` writes them uncompressed. Comet's shuffle writers use
+`spark.comet.shuffle.compression.codec` instead. See
+[Shuffle Compression](shuffle.md#shuffle-compression).

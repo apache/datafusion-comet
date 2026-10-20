@@ -58,7 +58,7 @@ rc=$2
 tag="${version}-rc${rc}"
 
 echo "Attempting to create ${tarball} from tag ${tag}"
-release_hash=$(cd "${DEV_RELEASE_TOP_DIR}" && git rev-list --max-count=1 ${tag})
+release_hash=$(cd "${DEV_RELEASE_TOP_DIR}" && git rev-list --max-count=1 "${tag}")
 
 release=apache-datafusion-comet-${version}
 distdir=${DEV_RELEASE_TOP_DIR}/dev/dist/${release}-rc${rc}
@@ -111,22 +111,23 @@ echo "---------------------------------------------------------"
 
 # create <tarball> containing the files in git at $release_hash
 # the files in the tarball are prefixed with {version} (e.g. 4.0.1)
-mkdir -p ${distdir}
-(cd "${DEV_RELEASE_TOP_DIR}" && git archive ${release_hash} --prefix ${release}/ | gzip > ${tarball})
+mkdir -p "${distdir}"
+"${DEV_RELEASE_DIR}/create-source-tarball.sh" \
+  "${release_hash}" "${release}" "${tarball}"
 
 echo "Running rat license checker on ${tarball}"
-${DEV_RELEASE_DIR}/run-rat.sh ${tarball}
+"${DEV_RELEASE_DIR}/run-rat.sh" "${tarball}"
 
 echo "Signing tarball and creating checksums"
-gpg --pinentry-mode loopback --armor --output ${tarball}.asc --detach-sig ${tarball}
+gpg --pinentry-mode loopback --armor --output "${tarball}.asc" --detach-sig "${tarball}"
 # create signing with relative path of tarball
 # so that they can be verified with a command such as
 #  shasum --check apache-datafusion-comet-0.1.0-rc1.tar.gz.sha512
-(cd ${distdir} && shasum -a 256 ${tarname}) > ${tarball}.sha256
-(cd ${distdir} && shasum -a 512 ${tarname}) > ${tarball}.sha512
+(cd "${distdir}" && shasum -a 256 "${tarname}") > "${tarball}.sha256"
+(cd "${distdir}" && shasum -a 512 "${tarname}") > "${tarball}.sha512"
 
 
 echo "Uploading to datafusion dist/dev to ${url}"
-svn co --depth=empty https://dist.apache.org/repos/dist/dev/datafusion ${DEV_RELEASE_TOP_DIR}/dev/dist
-svn add ${distdir}
-svn ci -m "Apache DataFusion Comet ${version} ${rc}" ${distdir}
+svn co --depth=empty https://dist.apache.org/repos/dist/dev/datafusion "${DEV_RELEASE_TOP_DIR}/dev/dist"
+svn add "${distdir}"
+svn ci -m "Apache DataFusion Comet ${version} ${rc}" "${distdir}"

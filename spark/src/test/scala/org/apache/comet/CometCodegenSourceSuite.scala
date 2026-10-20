@@ -1436,8 +1436,8 @@ class CometCodegenSourceSuite extends AnyFunSuite {
   }
 
   test("closure-serialized bytes diverge for failOnError / roundOff / timeZoneId variants") {
-    // The dispatcher caches kernels by the closure-serialized bytes of the bound expression
-    // (`CacheKey.bytesKey`). For expression classes that carry a runtime-dependent boolean
+    // The dispatcher caches kernels by a digest of the closure-serialized bytes of the bound
+    // expression (`CacheKey.digest`). For expression classes that carry a runtime-dependent boolean
     // (failOnError, roundOff) or string (timeZoneId), two plan instances differing only in that
     // field must serialize to distinct byte sequences so they receive distinct cache entries.
     // A collision would let a kernel compiled for one variant (e.g. ANSI throw site) silently
@@ -1523,20 +1523,20 @@ class CometCodegenSourceSuite extends AnyFunSuite {
   }
 
   test("CacheKey discriminates on ArrowColumnSpec.nullable") {
-    // Structural regression: same expression bytes and same Arrow vector class with different
+    // Structural regression: same expression digest and same Arrow vector class with different
     // `nullable` must produce non-equal cache keys. The dispatcher today hardcodes `nullable=true`
     // for top-level specs, so the two variants don't both arise from runtime data, but the case
     // class equality contract still has to discriminate so that any future tiered cache or test
     // construction can rely on it. The non-nullable variant's generated source emits a literal
     // `false` from `isNullAt`, distinct codegen output that we never want to silently share with
     // the nullable variant.
-    val bytes = java.nio.ByteBuffer.wrap(Array[Byte](1, 2, 3))
+    val digest = java.nio.ByteBuffer.wrap(Array[Byte](1, 2, 3))
     val nullable =
       IndexedSeq[ArrowColumnSpec](ArrowColumnSpec(varCharVectorClass, nullable = true))
     val nonNullable =
       IndexedSeq[ArrowColumnSpec](ArrowColumnSpec(varCharVectorClass, nullable = false))
-    val k1 = CometScalaUDFCodegen.CacheKey(bytes, nullable)
-    val k2 = CometScalaUDFCodegen.CacheKey(bytes, nonNullable)
+    val k1 = CometScalaUDFCodegen.CacheKey(0L, digest, nullable)
+    val k2 = CometScalaUDFCodegen.CacheKey(0L, digest, nonNullable)
     assert(
       k1 != k2,
       "expected nullable=true and nullable=false specs to produce distinct cache keys")
