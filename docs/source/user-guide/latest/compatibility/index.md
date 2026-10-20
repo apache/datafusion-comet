@@ -79,7 +79,8 @@ codegen dispatcher covers only scalar expressions; see the
 Spark's `StringType` can hold arbitrary bytes, including sequences that are not valid UTF-8 (for
 example `CAST(X'FF' AS STRING)`). Arrow's string type requires valid UTF-8, so Comet cannot store
 the raw bytes natively. When Comet produces a string from arbitrary bytes (such as
-`CAST(binary AS string)` or a columnar shuffle), it decodes them the same way the JVM does
+`CAST(binary AS string)`, a columnar shuffle, or a nested Parquet BINARY value read as a string),
+it decodes them the same way the JVM does
 (`new String(bytes, UTF_8)`), replacing each ill-formed sequence with the Unicode replacement
 character `U+FFFD`. Spark itself applies the identical replacement whenever such a string is
 materialized (collected, printed, or passed to most string functions), so the rendered result
@@ -98,9 +99,15 @@ underlying bytes rather than on the rendered text:
   such as `contains` can therefore disagree with Spark when non-UTF-8 bytes are involved.
 
 Both differences require string data that is not valid UTF-8. Comet's native Parquet scan never
-produces such strings (it rejects them, see below), and neither do most string expressions. They can
-reach Comet in these ways, which are the ones to check before relying on a result:
+produces such strings from UTF8-annotated columns (it rejects them, see below), and neither do most
+string expressions. They can reach Comet in these ways, which are the ones to check before relying on
+a result:
 
+- **Parquet BINARY columns read as strings.** A BINARY column without the UTF8 annotation can hold
+  bytes that are not valid UTF-8 when it is read as `string`, through the read schema or
+  `spark.sql.parquet.binaryAsString=true`. Comet decodes such a value in a struct field, list element
+  or map. Top-level values are not checked; see
+  [Parquet](../parquet.md#reads-that-differ-from-spark).
 - **Text files.** Spark's Text reader keeps the bytes of each line as they are, so a Text file in an
   encoding other than UTF-8, such as Latin-1, holds strings that are not valid UTF-8. Comet decodes
   them when it converts a Text scan to Arrow, which it does only when
