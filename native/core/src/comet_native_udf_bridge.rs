@@ -20,11 +20,14 @@
 
 use crate::errors::{try_unwrap_or_throw, CometError};
 use crate::execution::c_udf::cache::get_or_load;
+use crate::execution::c_udf::policy::NativeUdfPolicy;
 use jni::objects::{JClass, JString};
+use jni::sys::jboolean;
 use jni::EnvUnowned;
 
 /// Validate that `library_path` loads and exposes a UDF named
-/// `expected_name`.
+/// `expected_name`, once `enabled` and `allowed_paths` (the driver's
+/// `spark.comet.nativeUdf.*` configs) have allowed the path.
 ///
 /// Returns normally when it does and throws otherwise. The driver only
 /// needs that yes-or-no answer: everything else it knows about the UDF
@@ -37,6 +40,8 @@ pub extern "system" fn Java_org_apache_comet_udf_CometNativeUdfBridge_validateLi
     _class: JClass,
     library_path: JString,
     expected_name: JString,
+    enabled: jboolean,
+    allowed_paths: JString,
 ) {
     try_unwrap_or_throw(&e, |env| {
         let path: String = library_path
@@ -44,6 +49,12 @@ pub extern "system" fn Java_org_apache_comet_udf_CometNativeUdfBridge_validateLi
             .map_err(|e| CometError::Internal(e.to_string()))?;
         let name: String = expected_name
             .try_to_string(env)
+            .map_err(|e| CometError::Internal(e.to_string()))?;
+        let allowed_paths: String = allowed_paths
+            .try_to_string(env)
+            .map_err(|e| CometError::Internal(e.to_string()))?;
+        NativeUdfPolicy::new(enabled, &allowed_paths)
+            .check(&path)
             .map_err(|e| CometError::Internal(e.to_string()))?;
         let lib = get_or_load(&path).map_err(|e| CometError::Internal(e.to_string()))?;
         if !lib.udfs.iter().any(|u| u.name == name) {

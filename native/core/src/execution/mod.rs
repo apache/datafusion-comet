@@ -33,6 +33,7 @@ pub(crate) mod sort;
 pub(crate) mod spark_aggregate_state;
 pub(crate) mod spark_config;
 pub(crate) mod spark_plan;
+pub(crate) mod spill_dirs;
 pub(crate) mod tracing;
 pub(crate) mod utils;
 
