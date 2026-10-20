@@ -3024,6 +3024,8 @@ trait CometHashJoin {
     case _ if plan.outputOrdering.isEmpty => false
     case _: SortExec | _: CometSortExec => false
     // Over a one-row build side its rows stay in order, which a native join above would move.
+    // Over two or more build rows they are already out of order (#6898), so the fallback gives
+    // up the native join for nothing. This case can go once #6898 is fixed.
     case _: CometBroadcastNestedLoopJoinExec => true
     case join: CometBroadcastHashJoinExec =>
       hashJoinMayReportFalseOrder(

@@ -38,7 +38,7 @@ import org.apache.spark.CometDriverPlugin
 import org.apache.spark.sql.{CometTestBase, DataFrame, Observation, QueryTest, Row}
 import org.apache.spark.sql.catalyst.expressions.{And, Ascending, Attribute, AttributeReference, EqualTo, Expression, GreaterThan, GreaterThanOrEqual, LessThan, Literal}
 import org.apache.spark.sql.catalyst.optimizer.{BuildLeft, BuildRight, BuildSide}
-import org.apache.spark.sql.catalyst.plans.LeftOuter
+import org.apache.spark.sql.catalyst.plans.{LeftOuter, RightOuter}
 import org.apache.spark.sql.columnar.{CachedBatch, SimpleMetricsCachedBatch}
 import org.apache.spark.sql.comet.{CometBroadcastHashJoinExec, CometHashAggregateExec, CometHashJoinExec, CometInMemoryTableScanExec, CometSortAggregateExec, CometSortExec, CometSortMergeJoinExec}
 import org.apache.spark.sql.comet.execution.arrow.{ArrowCachedBatchSerializer, CometCachedBatchHelper}
@@ -3553,11 +3553,19 @@ class CometInMemoryCacheSuite extends CometTestBase {
     // declares the order through the filter, so the cache that join writes is sorted, but the
     // serde counts a join as declared only when its probe input is a scan. The second outer join
     // reads that cache as an input from the JVM and cannot check the order, so it stays in Spark,
-    // which keeps the cache's order. The same holds with Spark's cache format.
+    // which keeps the cache's order. The same holds with Spark's cache format, and for a right
+    // outer join built on the left, the other shape that runs as DataFusion's right outer join.
     for {
+      rightOuter <- Seq(false, true)
       nativeCache <- Seq(true, false)
       adaptive <- Seq(false, true)
     } {
+      val (joinType, buildSide) =
+        if (rightOuter) (RightOuter, BuildLeft) else (LeftOuter, BuildRight)
+      // The small side is broadcast and the cached side is streamed in both shapes.
+      def outerJoin(streamed: String, small: String, on: String): String =
+        if (rightOuter) s"$small RIGHT JOIN $streamed ON $on"
+        else s"$streamed LEFT JOIN $small ON $on"
       withSQLConf(
         SQLConf.ADAPTIVE_EXECUTION_ENABLED.key -> adaptive.toString,
         SQLConf.SHUFFLE_PARTITIONS.key -> "2",
@@ -3577,18 +3585,17 @@ class CometInMemoryCacheSuite extends CometTestBase {
                   .cache()
                   .createOrReplaceTempView("cached")
                 spark.table("cached").count()
-                sql("""SELECT /*+ BROADCAST(b) */ a.k, a.v, b._2 AS w
-                      |FROM (SELECT * FROM cached WHERE v >= 0) a
-                      |LEFT JOIN small b ON a.k = b._1""".stripMargin)
+                sql("SELECT /*+ BROADCAST(b) */ a.k, a.v, b._2 AS w FROM " +
+                  outerJoin("(SELECT * FROM cached WHERE v >= 0) a", "small b", "a.k = b._1"))
                   .cache()
                   .createOrReplaceTempView("joined")
                 spark.table("joined").count()
                 val cachedPlan = cachedPlanOf(spark.table("joined"))
-                val context = s"nativeCache=$nativeCache AQE=$adaptive"
+                val context = s"$joinType nativeCache=$nativeCache AQE=$adaptive"
                 assert(
                   find(cachedPlan) {
                     case join: CometBroadcastHashJoinExec =>
-                      join.joinType == LeftOuter &&
+                      join.joinType == joinType && join.buildSide == buildSide &&
                       join.nativeOp.getHashJoin.getStreamedSortOrdersCount > 0
                     case _ => false
                   }.isDefined,
@@ -3598,9 +3605,8 @@ class CometInMemoryCacheSuite extends CometTestBase {
                   partitionsInOrder(spark.table("joined"), keyOrder(Ascending)),
                   s"$context: the cached outer join rows are out of order")
 
-                def df: DataFrame = sql("""SELECT /*+ BROADCAST(c) */ j.k, j.v, c._2
-                                          |FROM joined j
-                                          |LEFT JOIN small c ON j.k = c._1""".stripMargin)
+                def df: DataFrame = sql("SELECT /*+ BROADCAST(c) */ j.k, j.v, c._2 FROM " +
+                  outerJoin("joined j", "small c", "j.k = c._1"))
                   .sortWithinPartitions("k")
                 val (_, plan) = checkSparkAnswerAndFallbackReason(
                   df,
@@ -3621,7 +3627,9 @@ class CometInMemoryCacheSuite extends CometTestBase {
                     planContext)
                 }
                 assert(
-                  collect(plan) { case j: BroadcastHashJoinExec => j }.size == 1,
+                  collect(plan) { case j: BroadcastHashJoinExec =>
+                    (j.joinType, j.buildSide)
+                  } == Seq((joinType, buildSide)),
                   planContext)
                 assert(
                   collect(plan) { case j: CometBroadcastHashJoinExec => j }.isEmpty,
