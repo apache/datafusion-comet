@@ -1018,9 +1018,13 @@ under the License.
 </section>
 <section id="stringreplace">
 <h2>StringReplace<a class="headerlink" href="#stringreplace" title="Link to this heading">#</a></h2>
-<p>By default, <code class="docutils literal notranslate"><span class="pre">StringReplace</span></code> is evaluated in the JVM using Spark’s own code-generated implementation (run inside the Comet pipeline), which matches Spark exactly. Set <code class="docutils literal notranslate"><span class="pre">spark.comet.expression.StringReplace.allowIncompatible=true</span></code> to opt into Comet’s native implementation instead, which has the following differences from Spark:</p>
+<p>The following cases use Comet’s native implementation by default:</p>
 <ul class="simple">
-<li><p>Produces different results from Spark when the search string is empty</p></li>
+<li><p>Native by default for a direct string column with a non-empty, valid UTF-8 search literal and either a replacement literal (both at most 64 KiB) or a replacement column (search at most 256 bytes and at most 8 MiB when broadcast per batch), under UTF8_BINARY collation. Other cases use the JVM codegen dispatcher by default.</p></li>
+</ul>
+<p>For applicable cases that are not selected for native execution automatically, <code class="docutils literal notranslate"><span class="pre">StringReplace</span></code> is evaluated in the JVM using Spark’s own code-generated implementation (run inside the Comet pipeline) by default. Set <code class="docutils literal notranslate"><span class="pre">spark.comet.expression.StringReplace.allowIncompatible=true</span></code> to explicitly select Comet’s native implementation, which has the following differences from Spark:</p>
+<ul class="simple">
+<li><p>Unrestricted native arguments can change malformed UTF-8 results or Spark’s NULL short-circuit behavior, ignore non-default collations, or overflow Arrow offsets when scalars are broadcast</p></li>
 </ul>
 </section>
 <section id="stringsplit">

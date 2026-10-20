@@ -3216,7 +3216,7 @@ to Spark (<a class="reference external" href="https://github.com/apache/datafusi
 <tr class="row-odd"><td><p><code class="docutils literal notranslate"><span class="pre">replace</span></code></p></td>
 <td><p>✅</p></td>
 <td><p>Hybrid</p></td>
-<td><p></p></td>
+<td><p>Native by default for a direct string column with a non-empty, valid UTF-8 search literal and either a replacement literal (both at most 64 KiB) or a replacement column (search at most 256 bytes and at most 8 MiB when broadcast per batch), under UTF8_BINARY collation; other cases use the JVM codegen dispatcher by default</p></td>
 </tr>
 <tr class="row-even"><td><p><code class="docutils literal notranslate"><span class="pre">right</span></code></p></td>
 <td><p>✅</p></td>

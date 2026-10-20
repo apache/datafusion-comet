@@ -756,10 +756,140 @@ under the License.
 </section>
 <section id="replace">
 <h2>replace<a class="headerlink" href="#replace" title="Link to this heading">#</a></h2>
-<ul class="simple">
+<ul>
 <li><p>Spark 3.4.3 (audited 2026-05-27): identical to 3.5.8.</p></li>
-<li><p>Spark 3.5.8 (audited 2026-05-27): baseline. <code class="docutils literal notranslate"><span class="pre">StringReplace(src,</span> <span class="pre">search,</span> <span class="pre">replace)</span></code>; when <code class="docutils literal notranslate"><span class="pre">search</span></code> is empty, Spark returns <code class="docutils literal notranslate"><span class="pre">src</span></code> unchanged (short-circuit on <code class="docutils literal notranslate"><span class="pre">search.numBytes</span> <span class="pre">==</span> <span class="pre">0</span></code>). DataFusion <code class="docutils literal notranslate"><span class="pre">replace</span></code> instead inserts <code class="docutils literal notranslate"><span class="pre">replace</span></code> between every character, so <code class="docutils literal notranslate"><span class="pre">CometStringReplace</span></code> reports <code class="docutils literal notranslate"><span class="pre">Compatible</span></code> with a <code class="docutils literal notranslate"><span class="pre">NativeOptIn</span></code> and runs Spark’s own generated code inside the Comet pipeline by default. The native DataFusion <code class="docutils literal notranslate"><span class="pre">replace</span></code> is used only when <code class="docutils literal notranslate"><span class="pre">spark.comet.expression.StringReplace.allowIncompatible=true</span></code>.</p></li>
+<li><p>Spark 3.5.8 (audited 2026-05-27): baseline. <code class="docutils literal notranslate"><span class="pre">StringReplace(src,</span> <span class="pre">search,</span> <span class="pre">replace)</span></code>; when <code class="docutils literal notranslate"><span class="pre">search</span></code> is empty, Spark returns <code class="docutils literal notranslate"><span class="pre">src</span></code> unchanged (short-circuit on <code class="docutils literal notranslate"><span class="pre">search.numBytes</span> <span class="pre">==</span> <span class="pre">0</span></code>). Earlier DataFusion versions inserted <code class="docutils literal notranslate"><span class="pre">replace</span></code> between every character, so Comet routed the expression through Spark’s generated code by default.</p></li>
 <li><p>Spark 4.0.1 (audited 2026-05-27): routes through <code class="docutils literal notranslate"><span class="pre">CollationSupport.StringReplace.exec</span></code>; semantics unchanged for <code class="docutils literal notranslate"><span class="pre">UTF8_BINARY</span></code>. Non-default collations not honoured by Comet (<a class="reference external" href="https://github.com/apache/datafusion-comet/issues/4496">#4496</a>).</p></li>
+<li><p>DataFusion 55.1.0 (implementation reviewed 2026-10-05, <a class="reference external" href="https://github.com/apache/datafusion-comet/issues/5354">#5354</a>): an empty search now returns the source unchanged. A direct source column and non-null literal search/replacement use its scalar fast path, which does not broadcast the literals into Arrow <code class="docutils literal notranslate"><span class="pre">Utf8</span></code> arrays. With a replacement column, its general path broadcasts the search literal into an Arrow array, so Comet limits that search to 256 bytes and the configured batch’s broadcast to 8 MiB. The 256-byte limit also avoids a measured regression for a 1024-byte search literal. The literal-replacement path allows valid UTF-8 literals of at most 64 KiB. Both paths require a non-empty search and <code class="docutils literal notranslate"><span class="pre">UTF8_BINARY</span></code> operands. Large literals retain the JVM codegen dispatcher, including the 256 KiB regression cases from <a class="reference external" href="https://github.com/apache/datafusion-comet/pull/5409">#5409</a>. All other shapes also retain the dispatcher by default. The explicit <code class="docutils literal notranslate"><span class="pre">spark.comet.expression.StringReplace.allowIncompatible=true</span></code> opt-in remains available. The table below measures literal replacement only.</p></li>
+<li><p>Benchmark (2026-10-05): <code class="docutils literal notranslate"><span class="pre">CometStringExpressionBenchmark</span></code> on Apple M4, macOS 26.7.1, JDK 21.0.12, Spark 4.1, release build, 65,536 rows, one run per route. The same query and Parquet inputs were used with only the default <code class="docutils literal notranslate"><span class="pre">replace</span></code> routing changed. These end-to-end figures include scan and projection; 10% match density is approximate.</p>
+<div class="pst-scrollable-table-container"><table class="table">
+<thead>
+<tr class="row-odd"><th class="head"><p>Match density</p></th>
+<th class="head text-right"><p>Dispatcher ns/row</p></th>
+<th class="head text-right"><p>Native ns/row</p></th>
+<th class="head text-right"><p>Dispatcher M rows/s</p></th>
+<th class="head text-right"><p>Native M rows/s</p></th>
+<th class="head text-right"><p>Native speedup</p></th>
+</tr>
+</thead>
+<tbody>
+<tr class="row-even"><td><p>0%</p></td>
+<td class="text-right"><p>207.5</p></td>
+<td class="text-right"><p>149.5</p></td>
+<td class="text-right"><p>4.8</p></td>
+<td class="text-right"><p>6.7</p></td>
+<td class="text-right"><p>1.39×</p></td>
+</tr>
+<tr class="row-odd"><td><p>~10%</p></td>
+<td class="text-right"><p>277.5</p></td>
+<td class="text-right"><p>141.8</p></td>
+<td class="text-right"><p>3.6</p></td>
+<td class="text-right"><p>7.1</p></td>
+<td class="text-right"><p>1.96×</p></td>
+</tr>
+<tr class="row-even"><td><p>100%</p></td>
+<td class="text-right"><p>309.9</p></td>
+<td class="text-right"><p>170.5</p></td>
+<td class="text-right"><p>3.2</p></td>
+<td class="text-right"><p>5.9</p></td>
+<td class="text-right"><p>1.82×</p></td>
+</tr>
+</tbody>
+</table>
+</div>
+</li>
+<li><p>Column replacement benchmark rerun (2026-10-05): same Apple M4, Spark 4.1 release build and 65,536-row setup, one run. Spark versus native Comet measured 263.5 versus 149.9 ns/row (3.8 versus 6.7 M rows/s) at 0% matches, 225.2 versus 136.9 (4.4 versus 7.3 M rows/s) at about 10%, and 286.5 versus 164.9 (3.5 versus 6.1 M rows/s) at 100%. End-to-end scan and projection times.</p></li>
+<li><p>Column replacement dispatcher baseline (2026-10-05): same machine and setup, with only the default route temporarily forced through the JVM codegen dispatcher. Dispatcher versus native measured 184.4 versus 149.9 ns/row (5.4 versus 6.7 M rows/s, 1.23× native speedup) at 0% matches, 243.3 versus 136.9 (4.1 versus 7.3 M rows/s, 1.78×) at about 10%, and 281.5 versus 164.9 (3.6 versus 6.1 M rows/s, 1.71×) at 100%. The dispatcher and native runs were separate single runs; benchmark timing includes scan and projection.</p></li>
+<li><p>Long search literal benchmark (2026-10-05): Apple M4, macOS 26.7.1, JDK 21.0.12, Spark 4.1 release build, 65,536 rows, one run per route and case. Source strings were 2,048 bytes; search literals were 16, 256, or 1,024 ASCII bytes with 0%, about 10%, or 100% match density. Each run includes scan and projection. Dispatcher / native ns per row and native speedup over dispatcher:</p>
+<div class="pst-scrollable-table-container"><table class="table">
+<thead>
+<tr class="row-odd"><th class="head text-right"><p>Search bytes</p></th>
+<th class="head"><p>Match density</p></th>
+<th class="head text-right"><p>Dispatcher ns/row</p></th>
+<th class="head text-right"><p>Native ns/row</p></th>
+<th class="head text-right"><p>Dispatcher M rows/s</p></th>
+<th class="head text-right"><p>Native M rows/s</p></th>
+<th class="head text-right"><p>Native speedup</p></th>
+</tr>
+</thead>
+<tbody>
+<tr class="row-even"><td class="text-right"><p>16</p></td>
+<td><p>0%</p></td>
+<td class="text-right"><p>1,734.6</p></td>
+<td class="text-right"><p>723.6</p></td>
+<td class="text-right"><p>0.6</p></td>
+<td class="text-right"><p>1.4</p></td>
+<td class="text-right"><p>2.40×</p></td>
+</tr>
+<tr class="row-odd"><td class="text-right"><p>16</p></td>
+<td><p>~10%</p></td>
+<td class="text-right"><p>3,071.5</p></td>
+<td class="text-right"><p>715.8</p></td>
+<td class="text-right"><p>0.3</p></td>
+<td class="text-right"><p>1.4</p></td>
+<td class="text-right"><p>4.29×</p></td>
+</tr>
+<tr class="row-even"><td class="text-right"><p>16</p></td>
+<td><p>100%</p></td>
+<td class="text-right"><p>2,667.7</p></td>
+<td class="text-right"><p>715.1</p></td>
+<td class="text-right"><p>0.4</p></td>
+<td class="text-right"><p>1.4</p></td>
+<td class="text-right"><p>3.73×</p></td>
+</tr>
+<tr class="row-odd"><td class="text-right"><p>256</p></td>
+<td><p>0%</p></td>
+<td class="text-right"><p>2,823.3</p></td>
+<td class="text-right"><p>1,270.9</p></td>
+<td class="text-right"><p>0.4</p></td>
+<td class="text-right"><p>0.8</p></td>
+<td class="text-right"><p>2.22×</p></td>
+</tr>
+<tr class="row-even"><td class="text-right"><p>256</p></td>
+<td><p>~10%</p></td>
+<td class="text-right"><p>2,802.2</p></td>
+<td class="text-right"><p>1,280.0</p></td>
+<td class="text-right"><p>0.4</p></td>
+<td class="text-right"><p>0.8</p></td>
+<td class="text-right"><p>2.19×</p></td>
+</tr>
+<tr class="row-odd"><td class="text-right"><p>256</p></td>
+<td><p>100%</p></td>
+<td class="text-right"><p>2,234.7</p></td>
+<td class="text-right"><p>1,464.3</p></td>
+<td class="text-right"><p>0.4</p></td>
+<td class="text-right"><p>0.7</p></td>
+<td class="text-right"><p>1.53×</p></td>
+</tr>
+<tr class="row-even"><td class="text-right"><p>1,024</p></td>
+<td><p>0%</p></td>
+<td class="text-right"><p>1,847.0</p></td>
+<td class="text-right"><p>3,239.8</p></td>
+<td class="text-right"><p>0.5</p></td>
+<td class="text-right"><p>0.3</p></td>
+<td class="text-right"><p>0.57×</p></td>
+</tr>
+<tr class="row-odd"><td class="text-right"><p>1,024</p></td>
+<td><p>~10%</p></td>
+<td class="text-right"><p>1,808.6</p></td>
+<td class="text-right"><p>3,287.6</p></td>
+<td class="text-right"><p>0.6</p></td>
+<td class="text-right"><p>0.3</p></td>
+<td class="text-right"><p>0.55×</p></td>
+</tr>
+<tr class="row-even"><td class="text-right"><p>1,024</p></td>
+<td><p>100%</p></td>
+<td class="text-right"><p>1,195.0</p></td>
+<td class="text-right"><p>4,004.1</p></td>
+<td class="text-right"><p>0.8</p></td>
+<td class="text-right"><p>0.2</p></td>
+<td class="text-right"><p>0.30×</p></td>
+</tr>
+</tbody>
+</table>
+</div>
+<p>These results led to the 256-byte default limit for replacement-column routing. Runs are independent single benchmark invocations, so treat small differences as directional rather than statistically conclusive.</p>
+</li>
 </ul>
 </section>
 <section id="right">
