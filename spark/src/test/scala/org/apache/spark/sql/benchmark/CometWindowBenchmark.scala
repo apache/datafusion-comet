@@ -22,6 +22,7 @@ package org.apache.spark.sql.benchmark
 import java.io.File
 
 import org.apache.spark.benchmark.Benchmark
+import org.apache.spark.sql.Row
 import org.apache.spark.sql.comet.CometWindowExec
 
 import org.apache.comet.CometConf
@@ -124,7 +125,12 @@ object CometWindowBenchmark extends CometBenchmarkBase {
    */
   private def runWindowCase(name: String, query: String): Unit = {
     val results = arms.map { case (arm, confs) =>
-      arm -> withSQLConf(confs: _*)(spark.sql(query).collect().toSeq)
+      // `withSQLConf` returns `Unit` before Spark 4.0, so the rows leave through a variable.
+      var rows = Seq.empty[Row]
+      withSQLConf(confs: _*) {
+        rows = spark.sql(query).collect().toSeq
+      }
+      arm -> rows
     }
     results.foreach { case (arm, rows) =>
       if (rows != results.head._2) {
@@ -142,7 +148,7 @@ object CometWindowBenchmark extends CometBenchmarkBase {
       }
     }
 
-    val benchmark = new Benchmark(name, numRows, output = output)
+    val benchmark = new Benchmark(name, numRows.toLong, output = output)
     arms.foreach { case (arm, confs) =>
       benchmark.addCase(arm) { _ =>
         withSQLConf(confs: _*)(spark.sql(query).noop())
