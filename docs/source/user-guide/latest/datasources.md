@@ -71,15 +71,18 @@ format other than Parquet, JSON and CSV, set `spark.comet.sparkToColumnar.enable
 operator in `spark.comet.sparkToColumnar.supportedOperatorList` by its Spark class name without the
 `Exec` suffix, such as `BatchScan` or `FileSourceScan`.
 
-One case is converted automatically: when the build (broadcast) side of a broadcast join is a file
-or V2 scan Comet cannot read natively - for example a small Text lookup table - and every scan on
-the probe side is already native, Comet converts that build-side scan to Arrow so the whole join
-runs natively over the large probe. This is controlled by
-`spark.comet.convert.broadcastBuildSide.enabled`, which is **on by default**, unlike the switches
-above. The build side is usually small, but an explicit `BROADCAST` hint or a selective filter above
-the scan can make the copied volume larger, and with dynamic partition pruning the dimension is read
-a second time for the pruning subquery. Set `spark.comet.convert.broadcastBuildSide.enabled=false` to
-keep such build sides on Spark.
+One case can be converted automatically, but it is **off by default**: when the build (broadcast)
+side of a broadcast join is a file or V2 scan Comet cannot read natively - for example a small Text
+lookup table - and every scan on the probe side is already native, Comet can convert that
+build-side scan to Arrow so the whole join runs natively over the large probe. Set
+`spark.comet.convert.broadcastBuildSide.enabled=true` to turn this on. It is off by default because
+Text is the source most likely to hold bytes that are not valid UTF-8 (for example a Latin-1 file),
+and Arrow strings must be valid UTF-8, so Comet replaces those bytes with `U+FFFD` and results that
+depend on the original bytes can differ from Spark. See
+[Strings with non-UTF-8 bytes](compatibility/index.md#strings-with-non-utf-8-bytes). The build side
+is usually small, but an explicit `BROADCAST` hint or a selective filter above the scan can make the
+copied volume larger, and with dynamic partition pruning the dimension is read a second time for the
+pruning subquery.
 
 ### Spark-to-Comet conversion types
 

@@ -1275,9 +1275,12 @@ object CometConf extends ShimCometConf {
         "the broadcast threshold), so the row to Arrow copy is usually cheap - though an " +
         "explicit BROADCAST hint or a selective filter above the scan can make it larger. With " +
         "dynamic partition pruning the dimension is also read a second time for the pruning " +
-        "subquery. Set this to false to keep such build sides on Spark.")
+        "subquery. This is off by default because Arrow strings must be valid UTF-8, so " +
+        "Comet decodes invalid UTF-8 bytes (for example in a Latin-1 Text file) to U+FFFD, " +
+        "which can change results that depend on the original bytes. See the compatibility " +
+        "guide.")
       .booleanConf
-      .createWithDefault(true)
+      .createWithDefault(false)
 
   val COMET_CASE_CONVERSION_ENABLED: ConfigEntry[Boolean] =
     conf("spark.comet.caseConversion.enabled")

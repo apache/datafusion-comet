@@ -19,6 +19,7 @@
 
 package org.apache.comet
 
+import org.apache.spark.SparkConf
 import org.apache.spark.sql.CometTestBase
 import org.apache.spark.sql.catalyst.expressions.{DynamicPruningExpression, Literal}
 import org.apache.spark.sql.comet._
@@ -32,6 +33,10 @@ import org.apache.spark.sql.internal.SQLConf
 // query is compared with Spark through checkSparkAnswer, and every combination asserts that the
 // broadcast join ran natively (bridged when the scan is unsupported). See issue #6008.
 class CometBroadcastBuildSideSuite extends CometTestBase with CometIcebergTestBase {
+
+  // The bridge is off by default (see issue #7118); these tests exercise it.
+  override protected def sparkConf: SparkConf =
+    super.sparkConf.set(CometConf.COMET_CONVERT_BROADCAST_BUILD_SIDE_ENABLED.key, "true")
 
   /** Every node, descending through AQE, stages and subqueries, but not into reused exchanges. */
   private def allNodes(p: SparkPlan): Seq[SparkPlan] = {

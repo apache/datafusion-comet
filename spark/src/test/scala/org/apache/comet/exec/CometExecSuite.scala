@@ -307,12 +307,24 @@ class CometExecSuite extends CometTestBase {
     }
   }
 
+  /**
+   * A test that runs with the broadcast build side bridge on. The bridge is off by default
+   * because it decodes invalid UTF-8 (see #7118).
+   */
+  private def bridgeTest(name: String)(body: => Unit): Unit =
+    test(name) {
+      withSQLConf(CometConf.COMET_CONVERT_BROADCAST_BUILD_SIDE_ENABLED.key -> "true") {
+        body
+      }
+    }
+
   test("broadcast build side with unsupported text source goes native (#6008)") {
     // A tiny lookup table read from a Text file (which Comet cannot scan natively) sits on the
     // build side of a broadcast join over a large native probe. Without the auto-bridge the whole
-    // join stays on Spark. With spark.comet.convert.broadcastBuildSide.enabled (default on)
-    // the text leaf is bridged to Arrow so the broadcast and the join run natively.
-    assert(CometConf.COMET_CONVERT_BROADCAST_BUILD_SIDE_ENABLED.defaultValue.contains(true))
+    // join stays on Spark. With spark.comet.convert.broadcastBuildSide.enabled the text leaf is
+    // bridged to Arrow so the broadcast and the join run natively. The config is off by default
+    // because Arrow strings must be valid UTF-8 and a Text file may not be (see #7118).
+    assert(CometConf.COMET_CONVERT_BROADCAST_BUILD_SIDE_ENABLED.defaultValue.contains(false))
     withTempDir { dir =>
       val probePath = s"${dir.getAbsolutePath}/probe.parquet"
       val allowPath = s"${dir.getAbsolutePath}/allow.txt"
@@ -337,22 +349,25 @@ class CometExecSuite extends CometTestBase {
           val query =
             "SELECT /*+ BROADCAST(a) */ p.v FROM probe_6008 p JOIN allow_6008 a ON p.key = a.value"
 
-          // Default: the text build side is bridged to Arrow and the join goes native. The plan is
+          // On: the text build side is bridged to Arrow and the join goes native. The plan is
           // fully native (the bridge counts as a native leaf), so use checkSparkAnswerAndOperator -
           // checkSparkAnswer would fail under COMET_STRICT_TESTING on a fully-native plan.
-          val (_, cometPlan) = checkSparkAnswerAndOperator(sql(query))
-          assert(
-            collect(cometPlan) { case s: CometSparkToColumnarExec => s }.nonEmpty,
-            s"aqe=$aqe: expected a CometSparkToColumnarExec on the text build side:\n" +
-              cometPlan.treeString)
-          assert(
-            collect(cometPlan) { case b: CometBroadcastExchangeExec => b }.nonEmpty,
-            s"aqe=$aqe: expected a CometBroadcastExchangeExec:\n${cometPlan.treeString}")
-          assert(
-            collect(cometPlan) { case j: CometBroadcastHashJoinExec => j }.nonEmpty,
-            s"aqe=$aqe: expected a CometBroadcastHashJoinExec:\n${cometPlan.treeString}")
+          withSQLConf(CometConf.COMET_CONVERT_BROADCAST_BUILD_SIDE_ENABLED.key -> "true") {
+            val (_, cometPlan) = checkSparkAnswerAndOperator(sql(query))
+            assert(
+              collect(cometPlan) { case s: CometSparkToColumnarExec => s }.nonEmpty,
+              s"aqe=$aqe: expected a CometSparkToColumnarExec on the text build side:\n" +
+                cometPlan.treeString)
+            assert(
+              collect(cometPlan) { case b: CometBroadcastExchangeExec => b }.nonEmpty,
+              s"aqe=$aqe: expected a CometBroadcastExchangeExec:\n${cometPlan.treeString}")
+            assert(
+              collect(cometPlan) { case j: CometBroadcastHashJoinExec => j }.nonEmpty,
+              s"aqe=$aqe: expected a CometBroadcastHashJoinExec:\n${cometPlan.treeString}")
+          }
 
-          // Off: the unsupported text leaf blocks native execution of the broadcast and the join.
+          // Off (the default): the unsupported text leaf blocks native execution of the broadcast
+          // and the join.
           withSQLConf(CometConf.COMET_CONVERT_BROADCAST_BUILD_SIDE_ENABLED.key -> "false") {
             val (_, cometPlanOff) = checkSparkAnswer(sql(query))
             assert(
@@ -406,7 +421,8 @@ class CometExecSuite extends CometTestBase {
     }
   }
 
-  test("broadcast build side scan below an aggregate is bridged, shuffle stage is not (#6008)") {
+  bridgeTest(
+    "broadcast build side scan below an aggregate is bridged, shuffle stage is not (#6008)") {
     // A file scan can sit BELOW build-side operators. Broadcasting an aggregated Text table puts a
     // Text FileSourceScanExec under a partial aggregate + shuffle on the build side. The tag
     // pre-pass walks the whole broadcast subtree, so the deep text scan must be bridged to Arrow,
@@ -491,7 +507,7 @@ class CometExecSuite extends CometTestBase {
     }
   }
 
-  test("broadcast build side with an unsupported DSv2 scan goes native (#6008)") {
+  bridgeTest("broadcast build side with an unsupported DSv2 scan goes native (#6008)") {
     // Exercises the BatchScanExec arm: an unsupported-format scan (Text read as DSv2) on the build
     // side is bridged so the join goes native. Keep parquet on the V1 list so the probe stays a
     // native CometScan; drop text from the list so it is read as a DSv2 BatchScan/TextScan.
@@ -565,7 +581,8 @@ class CometExecSuite extends CometTestBase {
     }
   }
 
-  test("broadcast build side on the left (BuildLeft) with a text source goes native (#6008)") {
+  bridgeTest(
+    "broadcast build side on the left (BuildLeft) with a text source goes native (#6008)") {
     // All other tests broadcast the right table (BuildRight). Put the small text table first and
     // hint it so it becomes the left build side, exercising the BuildLeft arm of tagBuildIfProbeNative.
     withTempDir { dir =>
@@ -623,7 +640,7 @@ class CometExecSuite extends CometTestBase {
     }
   }
 
-  test("AQE DPP with a text dimension on the broadcast build side runs natively (#6008)") {
+  bridgeTest("AQE DPP with a text dimension on the broadcast build side runs natively (#6008)") {
     // A Text dimension on a broadcast build side joined to a PARTITIONED Parquet fact triggers DPP.
     // The build-side bridge makes the join a CometBroadcastHashJoinExec; the DPP subquery's own
     // build (the text scan) is not bridged, so CometPlanAdaptiveDynamicPruningFilters must NOT wrap

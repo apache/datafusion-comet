@@ -97,9 +97,26 @@ underlying bytes rather than on the rendered text:
   bytes) but `true` in Comet. Equality, joins, grouping, ordering, and byte-based string functions
   such as `contains` can therefore disagree with Spark when non-UTF-8 bytes are involved.
 
-Both differences require string data that is not valid UTF-8, which does not occur for text read from
-Parquet or produced by string expressions. Consistent handling of invalid UTF-8 across all native
-string paths is tracked by
+Both differences require string data that is not valid UTF-8. Such data does not occur for text read
+from Parquet, which Spark requires to be valid UTF-8, or produced by most string expressions. It
+can reach Comet in these ways, which are the ones to check before relying on a result:
+
+- **Text and other row-based sources.** A Text, CSV or JSON file in a non-UTF-8 encoding such as
+  Latin-1 holds bytes that are not valid UTF-8. These sources are read by Spark, and the bytes are
+  decoded when Comet converts the rows to Arrow. A Text scan on a broadcast build side is converted
+  only when `spark.comet.convert.broadcastBuildSide.enabled=true`, which is off by default for this
+  reason (see [Data sources](../datasources.md)). With it on, a build-side file holding the bytes
+  `1 caf\xE9` gives `hex(value)` = `3120636166EFBFBD` instead of Spark's `3120636166E9`, and
+  `length` of `2 na\xEFve` is 7 instead of 5. Enabling any other `spark.comet.convert.*` or
+  `spark.comet.sparkToColumnar.*` switch for a source that holds such bytes applies the same decode.
+- **`CAST(binary AS STRING)`.** Comet decodes the bytes where Spark keeps them. Because `min` and `max`
+  over strings run natively, a cast below them is decoded before the comparison, and the two can swap.
+  With `b` holding `X'80'` and `X'C3A9'`, Spark returns `min(CAST(b AS STRING))` = the `0x80` string
+  and `max` = `é`, whereas Comet returns `min` = `é` and `max` = `U+FFFD`. This is the ordering
+  difference above and is not controlled by a config; disable Comet for the query if the cast input can hold
+  non-UTF-8 bytes.
+
+Consistent handling of invalid UTF-8 across all native string paths is tracked by
 [#4764](https://github.com/apache/datafusion-comet/issues/4764).
 
 Separately, Comet's native Parquet scan currently rejects string columns whose stored bytes are not
