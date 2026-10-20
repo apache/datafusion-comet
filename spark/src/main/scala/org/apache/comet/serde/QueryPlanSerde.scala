@@ -1359,15 +1359,16 @@ object QueryPlanSerde extends Logging with CometExprShim with CometTypeShim {
   /**
    * Whether some node of `expr` with more than one child holds, in a child it can skip, a
    * subexpression that the operator's expressions share. A node can skip any child after its
-   * first, a `DivModLike` or `Pmod` its dividend too, and a `StringLocate`, which evaluates its
-   * start first, its other two children, while an `ArrayAppend` skips none. Spark evaluates that
-   * subexpression for every row, while `expr` evaluated alone, as the JVM codegen dispatcher
-   * does, can skip it on the rows where a child evaluated before it is NULL, so an ANSI error
-   * Spark raises goes unraised. With `spark.sql.subexpressionElimination.enabled` off only an
-   * aggregation shares subexpressions (see `sharedSubexpressions`). A subexpression that `expr`
-   * itself repeats does not count while the setting is on: the dispatcher then eliminates it too,
-   * and evaluates it for every row. False outside `withSharedSubexpressions`, where what the
-   * operator shares is unknown.
+   * first, a `DivModLike` or `Pmod` its dividend too, a `StringLocate`, which evaluates its start
+   * first, its other two children, and an `ArrayJoin` with a nullable replacement, which
+   * evaluates that first, its array and delimiter, while an `ArrayAppend` skips none. Spark
+   * evaluates that subexpression for every row, while `expr` evaluated alone, as the JVM codegen
+   * dispatcher does, can skip it on the rows where a child evaluated before it is NULL, so an
+   * ANSI error Spark raises goes unraised. With `spark.sql.subexpressionElimination.enabled` off
+   * only an aggregation shares subexpressions (see `sharedSubexpressions`). A subexpression that
+   * `expr` itself repeats does not count while the setting is on: the dispatcher then eliminates
+   * it too, and evaluates it for every row. False outside `withSharedSubexpressions`, where what
+   * the operator shares is unknown.
    */
   def skipsSharedSubexpression(expr: Expression): Boolean =
     sharedSubexpressions.value.exists { s =>
@@ -1381,6 +1382,8 @@ object QueryPlanSerde extends Logging with CometExprShim with CometTypeShim {
           case _: DivModLike | _: Pmod => node.children
           // `StringLocate` evaluates `start`, its last child, first and skips the others on NULL
           case _: StringLocate => node.children.init
+          // `ArrayJoin` evaluates a nullable replacement first and skips the rest when it is NULL
+          case j: ArrayJoin if j.nullReplacement.exists(_.nullable) => node.children.init
           // Spark 3.x's `ArrayAppend` evaluates both children before its NULL check
           case _: ArrayAppend => Nil
           case _ => node.children.drop(1)

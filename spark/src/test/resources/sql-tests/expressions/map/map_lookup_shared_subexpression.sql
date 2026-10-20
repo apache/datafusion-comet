@@ -160,6 +160,104 @@ SELECT element_at(if(locate(CAST(1.0D / x AS STRING), s, n) > 0, m1, m2), 0.5D),
   element_at(if(locate(CAST(1.0D / x + 1.0D AS STRING), s, n) > 0, m2, m1), 0.5D)
 FROM test_map_lookup_shared_locate_nonzero
 
+-- `array_join` with a nullable replacement evaluates the replacement first and skips its array
+-- and delimiter when the replacement is NULL, so on the row whose `r` is NULL each lookup skips
+-- the shared `array(CAST(1.0D / x AS STRING))`, although it sits in the array, the first
+-- argument. The delimiters are nullable columns, which keeps clear of SPARK-57200: before Spark
+-- 4.2 generated code for a join whose array and delimiter cannot be NULL returns NULL for every
+-- row when its replacement can.
+statement
+CREATE TABLE test_map_lookup_shared_array_join(
+  m1 map<double, int>, m2 map<double, int>, x double, d1 string, d2 string, r string)
+USING parquet
+
+statement
+INSERT INTO test_map_lookup_shared_array_join VALUES
+  (map(0.5D, 5), map(0.5D, 6), 0.0D, ',', ';', CAST(NULL AS STRING)),
+  (map(0.5D, 5), map(0.5D, 6), 2.0D, ',', ';', 'z')
+
+query expect_error(DIVIDE_BY_ZERO)
+SELECT element_at(if(array_join(array(CAST(1.0D / x AS STRING)), d1, r) IS NULL, m1, m2), 0.5D),
+  element_at(if(array_join(array(CAST(1.0D / x AS STRING)), d2, r) IS NULL, m2, m1), 0.5D)
+FROM test_map_lookup_shared_array_join
+
+-- A NULL literal replacement can be NULL too, so it still declines.
+query expect_error(DIVIDE_BY_ZERO)
+SELECT element_at(if(array_join(array(CAST(1.0D / x AS STRING)), d1, CAST(NULL AS STRING)) IS NULL,
+    m1, m2), 0.5D),
+  element_at(if(array_join(array(CAST(1.0D / x AS STRING)), d2, CAST(NULL AS STRING)) IS NULL,
+    m2, m1), 0.5D)
+FROM test_map_lookup_shared_array_join
+
+-- The NULL replacement skips the delimiter too.
+query expect_error(DIVIDE_BY_ZERO)
+SELECT element_at(if(array_join(array('a', 'b'), CAST(1.0D / x AS STRING), r) IS NULL, m1, m2),
+    0.5D),
+  element_at(if(array_join(array('a', 'c'), CAST(1.0D / x AS STRING), r) IS NULL, m2, m1), 0.5D)
+FROM test_map_lookup_shared_array_join
+
+-- Without a replacement `array_join` evaluates its array first, so the divide raises in Spark and
+-- in the dispatcher alike; the nonzero table below pins that the lookups stay dispatched.
+query expect_error(DIVIDE_BY_ZERO)
+SELECT element_at(if(array_join(array(CAST(1.0D / x AS STRING)), d1) IS NULL, m1, m2), 0.5D),
+  element_at(if(array_join(array(CAST(1.0D / x AS STRING)), d2) IS NULL, m2, m1), 0.5D)
+FROM test_map_lookup_shared_array_join
+
+-- Likewise for a shared divide in the replacement, evaluated first, and in the array of a join
+-- whose replacement cannot be NULL; the nonzero table below pins that these stay dispatched.
+query expect_error(DIVIDE_BY_ZERO)
+SELECT element_at(if(array_join(array('a'), d1, CAST(1.0D / x AS STRING)) IS NULL, m1, m2), 0.5D),
+  element_at(if(array_join(array('b'), d2, CAST(1.0D / x AS STRING)) IS NULL, m2, m1), 0.5D)
+FROM test_map_lookup_shared_array_join
+
+query expect_error(DIVIDE_BY_ZERO)
+SELECT element_at(if(array_join(array(CAST(1.0D / x AS STRING)), d1, 'z') IS NULL, m1, m2), 0.5D),
+  element_at(if(array_join(array(CAST(1.0D / x AS STRING)), d2, 'z') IS NULL, m2, m1), 0.5D)
+FROM test_map_lookup_shared_array_join
+
+-- A single lookup shares nothing, so Spark skips the divide on the NULL replacement too.
+query expect_dispatch(element_at)
+SELECT element_at(if(array_join(array(CAST(1.0D / x AS STRING)), d1, r) IS NULL, m1, m2), 0.5D)
+FROM test_map_lookup_shared_array_join
+
+statement
+CREATE TABLE test_map_lookup_shared_array_join_nonzero(
+  m1 map<double, int>, m2 map<double, int>, x double, d1 string, d2 string, r string)
+USING parquet
+
+statement
+INSERT INTO test_map_lookup_shared_array_join_nonzero VALUES
+  (map(0.5D, 5), map(0.5D, 6), 4.0D, ',', ';', CAST(NULL AS STRING)),
+  (map(0.5D, 5), map(0.5D, 6), 2.0D, ',', ';', 'z')
+
+query expect_fallback(holds a subexpression that the operator's other expressions share)
+SELECT element_at(if(array_join(array(CAST(1.0D / x AS STRING)), d1, r) IS NULL, m1, m2), 0.5D),
+  element_at(if(array_join(array(CAST(1.0D / x AS STRING)), d2, r) IS NULL, m2, m1), 0.5D)
+FROM test_map_lookup_shared_array_join_nonzero
+
+query expect_fallback(holds a subexpression that the operator's other expressions share)
+SELECT element_at(if(array_join(array('a', 'b'), CAST(1.0D / x AS STRING), r) IS NULL, m1, m2),
+    0.5D),
+  element_at(if(array_join(array('a', 'c'), CAST(1.0D / x AS STRING), r) IS NULL, m2, m1), 0.5D)
+FROM test_map_lookup_shared_array_join_nonzero
+
+query expect_dispatch(element_at)
+SELECT element_at(if(array_join(array(CAST(1.0D / x AS STRING)), d1) IS NULL, m1, m2), 0.5D),
+  element_at(if(array_join(array(CAST(1.0D / x AS STRING)), d2) IS NULL, m2, m1), 0.5D)
+FROM test_map_lookup_shared_array_join_nonzero
+
+-- The replacement is evaluated first, so a shared divide there alone is never skipped.
+query expect_dispatch(element_at)
+SELECT element_at(if(array_join(array('a'), d1, CAST(1.0D / x AS STRING)) IS NULL, m1, m2), 0.5D),
+  element_at(if(array_join(array('b'), d2, CAST(1.0D / x AS STRING)) IS NULL, m2, m1), 0.5D)
+FROM test_map_lookup_shared_array_join_nonzero
+
+-- A replacement that cannot be NULL skips nothing, so the shared divide in the array is safe.
+query expect_dispatch(element_at)
+SELECT element_at(if(array_join(array(CAST(1.0D / x AS STRING)), d1, 'z') IS NULL, m1, m2), 0.5D),
+  element_at(if(array_join(array(CAST(1.0D / x AS STRING)), d2, 'z') IS NULL, m2, m1), 0.5D)
+FROM test_map_lookup_shared_array_join_nonzero
+
 -- With subexpression elimination off a projection shares nothing, so its lookups stay
 -- dispatched, but a whole-stage codegen aggregate still evaluates the subexpressions its
 -- functions share for every row, so there the shared key still sends the lookups back to Spark.
