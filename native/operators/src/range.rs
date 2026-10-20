@@ -16,8 +16,11 @@
 // under the License.
 
 use arrow::array::{Int64Array, RecordBatch};
+use arrow::compute::SortOptions;
 use arrow::datatypes::{DataType, Field, Schema, SchemaRef};
 use datafusion::common::Result;
+use datafusion::physical_expr::expressions::Column;
+use datafusion::physical_expr::PhysicalSortExpr;
 use datafusion::physical_plan::memory::{LazyBatchGenerator, LazyMemoryExec};
 use datafusion::physical_plan::Partitioning;
 use parking_lot::RwLock;
@@ -56,6 +59,23 @@ pub fn range_exec(
     let mut exec = LazyMemoryExec::try_new(schema, vec![Arc::new(RwLock::new(generator))])?;
     exec.try_set_partitioning(Partitioning::UnknownPartitioning(1))?;
     Ok(exec)
+}
+
+/// The order a range's values come out in. They are `partition_start + i * step` and never
+/// overflow, so they ascend for a positive step and descend for a negative one, which is the order
+/// Spark's `RangeExec` reports.
+///
+/// `LazyMemoryExec::add_ordering` does not refresh the plan properties' cached output ordering in
+/// DataFusion 55, so `output_ordering()` would still be `None` after it. The planner declares this
+/// order by wrapping the range in a `SortedInputExec` instead.
+pub fn range_sort_expr(step: i64) -> PhysicalSortExpr {
+    PhysicalSortExpr::new(
+        Arc::new(Column::new("id", 0)),
+        SortOptions {
+            descending: step < 0,
+            nulls_first: step > 0,
+        },
+    )
 }
 
 /// The first value of partition `partition` and the number of values in it, computed the way
@@ -245,6 +265,20 @@ mod tests {
             .map(|i| (i64::MIN as i128 + i * step as i128) as i64)
             .collect();
         assert_eq!(collect(i64::MIN, step, n, 1, 1000).await, expected);
+    }
+
+    #[tokio::test]
+    async fn test_sort_expr_matches_the_values() {
+        for step in [1i64, 3, -1, -7] {
+            let n = num_elements(0, 100 * step, step);
+            let values = collect(0, step, n, 2, 8).await;
+            let expr = range_sort_expr(step);
+            assert_eq!(expr.options.descending, step < 0, "step {step}");
+            let mut sorted = values.clone();
+            sorted.sort_by_key(|v| if expr.options.descending { -v } else { *v });
+            // Both partitions are in order, and the partitions follow each other.
+            assert_eq!(values, sorted, "step {step}");
+        }
     }
 
     #[test]
