@@ -1351,9 +1351,10 @@ mod tests {
         );
     }
 
-    /// The prefetch is opt-in: a scan of several files loads metadata ahead only when the session
-    /// sets `prefetch_next_file_metadata`. With it, each later file's footer and page index are
-    /// loaded while the file before it is read, and the batches match a scan without it.
+    /// A scan of several files loads metadata ahead only when the session sets
+    /// `prefetch_next_file_metadata`, which the JVM side does by default. With it, each later
+    /// file's footer and page index are loaded while the file before it is read, and the batches
+    /// match a scan without it.
     #[tokio::test]
     async fn prefetching_the_next_files_metadata_keeps_the_scan_result() {
         let fixtures: Vec<_> = (0..3).map(|_| write_scan_io_fixture()).collect();

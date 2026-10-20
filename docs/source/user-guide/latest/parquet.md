@@ -219,9 +219,9 @@ worked example and further discussion.
 
 A native Parquet scan opens a task's files one after another, and each open waits for a round trip to read
 the file's footer and page index before its data fetch can start. For tasks that read many small files from
-high-latency storage such as S3, that wait is paid once per file. Set
-`spark.comet.parquet.prefetchNextFileMetadata.enabled` to `true` to load the next file's footer and page
-index in the background while the current file is read. The setting is off by default.
+high-latency storage such as S3, that wait is paid once per file. By default, Comet loads the next file's
+footer and page index in the background while the current file is read. Set
+`spark.comet.parquet.prefetchNextFileMetadata.enabled` to `false` to turn this off.
 
 The cost is one extra footer and page index read for a file that is never opened, such as when a scan stops
 early or the file is pruned before it opens. Scans of encrypted Parquet files never prefetch. The

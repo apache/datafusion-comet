@@ -210,7 +210,7 @@ object CometConf extends ShimCometConf {
           "most when tasks read many small files from high-latency storage such as S3. Scans " +
           "of encrypted Parquet files never load ahead.")
       .booleanConf
-      .createWithDefault(false)
+      .createWithDefault(true)
 
   val COMET_CONVERT_FROM_PARQUET_ENABLED: ConfigEntry[Boolean] =
     conf("spark.comet.convert.parquet.enabled")
