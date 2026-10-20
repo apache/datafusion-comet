@@ -414,7 +414,23 @@ class CometWindowExecSuite extends CometTestBase {
     val df2 =
       df.select($"value", sum($"value").over(window.rangeBetween(1L, Window.unboundedFollowing)))
 
-    checkSparkAnswer(df2)
+    checkSparkAnswerAndFallbackReason(df2, "Unsupported RANGE frame lower offset")
+    val cometWindowExecs = collect(df2.queryExecution.executedPlan) { case w: CometWindowExec =>
+      w
+    }
+    assert(cometWindowExecs.isEmpty)
+  }
+
+  test("window query with rangeBetween PRECEDING upper bound falls back to Spark") {
+    // `rangeBetween(unboundedPreceding, -1L)` puts a negative offset (PRECEDING semantic)
+    // in the upper bound position, which the proto only encodes as Following. We fall
+    // back to Spark rather than serialize the magnitude as a FOLLOWING bound.
+    val df = Seq(1, 2, 4, 3, 2, 1).toDF("value")
+    val window = Window.orderBy($"value".desc)
+    val df2 =
+      df.select($"value", sum($"value").over(window.rangeBetween(Window.unboundedPreceding, -1L)))
+
+    checkSparkAnswerAndFallbackReason(df2, "Unsupported RANGE frame upper offset")
     val cometWindowExecs = collect(df2.queryExecution.executedPlan) { case w: CometWindowExec =>
       w
     }
