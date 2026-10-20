@@ -19,6 +19,7 @@
 -- Config: spark.comet.exec.scalaUDF.codegen.enabled=false
 -- Config: spark.sql.subexpressionElimination.enabled=true
 -- Config: spark.sql.datetime.java8API.enabled=true
+-- Config: spark.sql.session.timeZone=UTC
 
 statement
 CREATE TABLE make_date_overflow(y INT, m INT, d INT) USING parquet
@@ -52,6 +53,23 @@ CREATE TABLE make_date_arguments(y INT, m INT, inner_y INT) USING parquet
 statement
 INSERT INTO make_date_arguments VALUES
   (NULL, 1, 6000000), (2024, NULL, 6000000), (2024, 1, 2024)
+
+-- These date functions always evaluate their first operand, even when it returns NULL.
+query expect_native(make_date, date_add)
+SELECT date_add(make_date(y, m, 1), 1) FROM make_date_arguments
+
+query expect_native(make_date, date_sub)
+SELECT date_sub(make_date(y, m, 1), 1) FROM make_date_arguments
+
+query expect_native(make_date, date_format)
+SELECT date_format(make_date(y, m, 1), 'yyyy-MM-dd') FROM make_date_arguments
+
+query expect_native(make_date, datediff)
+SELECT datediff(make_date(y, m, 1), DATE '2024-01-01') FROM make_date_arguments
+
+-- A NULL first operand still skips the overflowing date in the second operand.
+query expect_fallback(make_date requires Spark evaluation under DateDiff)
+SELECT datediff(make_date(y, m, 1), make_date(inner_y, 1, 1)) FROM make_date_arguments
 
 -- Year and month NULLs skip the overflowing day expression on just those rows.
 query expect_native(make_date)

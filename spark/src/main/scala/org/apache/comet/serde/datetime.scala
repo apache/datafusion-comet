@@ -476,9 +476,12 @@ object CometMakeDate extends CometExpressionSerde[MakeDate] {
           // These parents evaluate every child in Spark, including NULL values.
           case _: EqualNullSafe | _: CreateArray | _: CreateNamedStruct =>
             pushChildren(None)
-          case comparison: BinaryComparison =>
-            val rightMask = if (comparison.left.nullable) Some(current.nodeName) else None
-            pending = (comparison.left, None) :: (comparison.right, rightMask) :: pending
+          // These parents evaluate left first and skip right only when left is NULL.
+          case _: BinaryComparison | _: DateAdd | _: DateSub | _: DateDiff | _: DateFormatClass =>
+            val left = current.children.head
+            val right = current.children(1)
+            val rightMask = if (left.nullable) Some(current.nodeName) else None
+            pending = (left, None) :: (right, rightMask) :: pending
           case _: SortOrder => pushChildren(Some(current.nodeName))
           // Empty membership can skip its sole operand in Spark.
           case in: In if in.list.isEmpty => pushChildren(Some(current.nodeName))
