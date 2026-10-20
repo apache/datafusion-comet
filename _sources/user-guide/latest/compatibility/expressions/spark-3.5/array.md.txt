@@ -21,6 +21,12 @@ under the License.
 
 <!--BEGIN:EXPR_COMPAT[array]-->
 
+## ArrayAppend
+
+The following cases are not supported by Comet and always fall back to Spark, regardless of any `allowIncompatible` setting:
+
+- array_append with a nullable array and a nondeterministic operand such as `rand()`: the native NULL guard evaluates the operands more than once, on subsets of the rows
+
 ## ArrayContains
 
 For applicable cases that are not selected for native execution automatically, `ArrayContains` is evaluated in the JVM using Spark's own code-generated implementation (run inside the Comet pipeline) by default. Set `spark.comet.expression.ArrayContains.allowIncompatible=true` to explicitly select Comet's native implementation, which has the following differences from Spark:

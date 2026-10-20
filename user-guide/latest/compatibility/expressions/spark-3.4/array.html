@@ -854,6 +854,13 @@ under the License.
 <section id="array-expressions">
 <h1>Array Expressions<a class="headerlink" href="#array-expressions" title="Link to this heading">#</a></h1>
 <!--BEGIN:EXPR_COMPAT[array]-->
+<section id="arrayappend">
+<h2>ArrayAppend<a class="headerlink" href="#arrayappend" title="Link to this heading">#</a></h2>
+<p>The following cases are not supported by Comet and always fall back to Spark, regardless of any <code class="docutils literal notranslate"><span class="pre">allowIncompatible</span></code> setting:</p>
+<ul class="simple">
+<li><p>array_append with a nullable array and a nondeterministic operand such as <code class="docutils literal notranslate"><span class="pre">rand()</span></code>: the native NULL guard evaluates the operands more than once, on subsets of the rows</p></li>
+</ul>
+</section>
 <section id="arraycontains">
 <h2>ArrayContains<a class="headerlink" href="#arraycontains" title="Link to this heading">#</a></h2>
 <p>For applicable cases that are not selected for native execution automatically, <code class="docutils literal notranslate"><span class="pre">ArrayContains</span></code> is evaluated in the JVM using Spark’s own code-generated implementation (run inside the Comet pipeline) by default. Set <code class="docutils literal notranslate"><span class="pre">spark.comet.expression.ArrayContains.allowIncompatible=true</span></code> to explicitly select Comet’s native implementation, which has the following differences from Spark:</p>
@@ -995,6 +1002,7 @@ under the License.
   </div>
   <nav class="bd-toc-nav page-toc" aria-labelledby="pst-page-navigation-heading-2">
     <ul class="visible nav section-nav flex-column">
+<li class="toc-h2 nav-item toc-entry"><a class="reference internal nav-link" href="#arrayappend">ArrayAppend</a></li>
 <li class="toc-h2 nav-item toc-entry"><a class="reference internal nav-link" href="#arraycontains">ArrayContains</a></li>
 <li class="toc-h2 nav-item toc-entry"><a class="reference internal nav-link" href="#arraydistinct">ArrayDistinct</a></li>
 <li class="toc-h2 nav-item toc-entry"><a class="reference internal nav-link" href="#arrayexcept">ArrayExcept</a></li>
