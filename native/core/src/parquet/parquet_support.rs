@@ -45,6 +45,7 @@ use log::debug;
 use object_store::path::Path;
 use object_store::{parse_url, ObjectStore, ObjectStoreScheme};
 use parquet::arrow::PARQUET_FIELD_ID_META_KEY;
+use std::borrow::Cow;
 use std::collections::HashMap;
 use std::sync::OnceLock;
 use std::time::Duration;
@@ -60,6 +61,7 @@ use super::objectstore;
 use super::objectstore::s3_blob_fs_support::{
     normalize_object_store_url, NormalizedObjectStoreUrl,
 };
+use super::objectstore::url_redaction::{authority_without_password, without_credentials};
 
 pub(crate) fn duplicate_parquet_field_error(name: &str) -> DataFusionError {
     DataFusionError::Execution(format!("Found duplicate Parquet field name '{name}'"))
@@ -687,14 +689,14 @@ fn uses_azure_container_key(scheme: &str) -> bool {
         || scheme.starts_with("abfss+comet-")
 }
 
-pub(crate) fn object_store_authority(url: &Url) -> &str {
-    let start = if uses_azure_container_key(url.scheme()) {
-        // ABFS URLs encode the container in the userinfo.
-        url::Position::BeforeUsername
+/// `host[:port]` of `url`, prefixed with `container@` for ABFS, which encodes the container in
+/// the username. Never includes the password.
+pub(crate) fn object_store_authority(url: &Url) -> Cow<'_, str> {
+    if uses_azure_container_key(url.scheme()) {
+        authority_without_password(url)
     } else {
-        url::Position::BeforeHost
-    };
-    &url[start..url::Position::AfterPort]
+        Cow::Borrowed(&url[url::Position::BeforeHost..url::Position::AfterPort])
+    }
 }
 
 fn registry_url_key(url: &Url) -> String {
@@ -733,7 +735,10 @@ impl ObjectStoreRegistry for CometObjectStoreRegistry {
                 .unwrap_or_else(PoisonError::into_inner)
                 .remove(&registry_url_key(url))
                 .ok_or_else(|| {
-                    DataFusionError::Internal(format!("No suitable object store found for {url}"))
+                    DataFusionError::Internal(format!(
+                        "No suitable object store found for {}",
+                        registry_url_key(url)
+                    ))
                 })
         } else {
             self.default.deregister_store(url)
@@ -909,8 +914,9 @@ fn object_store_backend(url: &Url, is_hdfs: bool) -> Result<ObjectStoreBackend, 
         // Custom libhdfs schemes may look like cloud URLs but retain their own range-read API.
         return Ok(ObjectStoreBackend::Other);
     }
-    let (scheme, _) =
-        ObjectStoreScheme::parse(url).map_err(|e| ExecutionError::GeneralError(e.to_string()))?;
+    // The parser quotes the URL it rejects.
+    let (scheme, _) = ObjectStoreScheme::parse(&without_credentials(url))
+        .map_err(|e| ExecutionError::GeneralError(e.to_string()))?;
     Ok(match scheme {
         ObjectStoreScheme::Local => ObjectStoreBackend::Local,
         ObjectStoreScheme::AmazonS3
@@ -1139,6 +1145,27 @@ mod tests {
             (abfss_path.as_str(), "", "", abfss, false),
             (abfs_path.as_str(), "", "", abfs, false),
             (
+                "abfss://container:secret@account.dfs.core.windows.net/k.parquet",
+                "",
+                "",
+                abfss,
+                false,
+            ),
+            (
+                "abfss://container:secret@account.dfs.core.windows.net:8443/k.parquet",
+                "",
+                "",
+                "abfss://container@account.dfs.core.windows.net:8443",
+                false,
+            ),
+            (
+                "abfss://:secret@account.dfs.core.windows.net/k.parquet",
+                "",
+                "",
+                "abfss://account.dfs.core.windows.net",
+                false,
+            ),
+            (
                 "wasbs://container@account.blob.core.windows.net/k.parquet",
                 "",
                 "",
@@ -1179,6 +1206,10 @@ mod tests {
             "http://example.com/path",
             "https://example.com/path",
             "https://account.blob.core.windows.net/container/path",
+            // Userinfo and query are stripped before parsing and do not change the class.
+            "s3://alice:SECRET@bucket/path?sig=SAS-MARKER",
+            "abfss://data:SECRET@acct.dfs.core.windows.net/path?sig=SAS-MARKER",
+            "https://alice:SECRET@account.blob.core.windows.net/container/path?sig=SAS-MARKER",
         ] {
             let url = url::Url::parse(address).unwrap();
             assert_eq!(
@@ -1791,6 +1822,158 @@ mod tests {
             &runtime.object_store(&url_b).unwrap(),
             &store_b
         ));
+    }
+
+    #[test]
+    fn object_store_authority_drops_only_the_abfs_password() {
+        for (url, expected) in [
+            (
+                "abfss://data:SECRET@acct.dfs.core.windows.net/p?sig=SAS-MARKER",
+                "data@acct.dfs.core.windows.net",
+            ),
+            (
+                "abfs://data@acct.dfs.core.windows.net:8443/p",
+                "data@acct.dfs.core.windows.net:8443",
+            ),
+            (
+                "abfss://:SECRET@acct.dfs.core.windows.net/p",
+                "acct.dfs.core.windows.net",
+            ),
+            (
+                "abfss+comet-0123456789abcdef-native://data:SECRET@acct.dfs.core.windows.net/",
+                "data@acct.dfs.core.windows.net",
+            ),
+            (
+                "s3://alice:SECRET@bucket:9000/k?sig=SAS-MARKER",
+                "bucket:9000",
+            ),
+            ("hdfs://nn:8020/t", "nn:8020"),
+        ] {
+            let parsed = url::Url::parse(url).unwrap();
+            assert_eq!(super::object_store_authority(&parsed), expected, "{url}");
+        }
+    }
+
+    #[test]
+    fn deregister_error_does_not_echo_the_password_or_query() {
+        use datafusion::execution::object_store::ObjectStoreRegistry;
+
+        let url = url::Url::parse("abfss://data:SECRET@acct.dfs.core.windows.net/p?sig=SAS-MARKER")
+            .unwrap();
+        let err = super::CometObjectStoreRegistry::default()
+            .deregister_store(&url)
+            .expect_err("nothing is registered")
+            .to_string();
+        for leaked in ["SECRET", "SAS-MARKER"] {
+            assert!(!err.contains(leaked), "{leaked} echoed: {err}");
+        }
+        assert!(
+            err.contains("abfss://data@acct.dfs.core.windows.net"),
+            "{err}"
+        );
+    }
+
+    #[test]
+    fn prepare_errors_do_not_echo_userinfo_or_query() {
+        let runtime = Arc::new(RuntimeEnv::default());
+        let options = HashMap::from([
+            ("comet.azure.resolution".into(), "resolved".into()),
+            ("comet.azure.auth.type".into(), "SharedKey".into()),
+            ("fs.azure.account.key".into(), "c2VjcmV0".into()),
+        ]);
+        let errors: Vec<(String, &str)> = [
+            // Rejected by the Azure builder, which recognises only public cloud and Fabric hosts.
+            // The username is the container here, so it may appear.
+            (
+                "abfss://data:SECRET@acct.dfs.core.chinacloudapi.cn/x?sig=SAS-MARKER",
+                "URL did not match any known pattern",
+            ),
+            // Rejected by `ObjectStoreScheme::parse`.
+            (
+                "foo://alice:SECRET@host/x?sig=SAS-MARKER",
+                "Unable to recognise URL",
+            ),
+            // Rejected by `Url::parse`.
+            (
+                "s3a://alice:SECRET@bucket:notaport/x?sig=SAS-MARKER",
+                "invalid port number",
+            ),
+        ]
+        .into_iter()
+        .map(|(url, reason)| {
+            let err = prepare_object_store_with_configs(Arc::clone(&runtime), url.into(), &options)
+                .expect_err("the URL is rejected")
+                .to_string();
+            (err, reason)
+        })
+        .collect();
+        for (err, reason) in &errors {
+            assert!(err.contains(reason), "{err}");
+        }
+        assert!(
+            errors[2].0.contains("Error parsing s3a URL"),
+            "{}",
+            errors[2].0
+        );
+        let leaks: Vec<&String> = errors
+            .iter()
+            .map(|(err, _)| err)
+            .filter(|err| {
+                ["alice", "SECRET", "SAS-MARKER"]
+                    .iter()
+                    .any(|s| err.contains(s))
+            })
+            .collect();
+        assert!(leaks.is_empty(), "credentials echoed: {leaks:#?}");
+    }
+
+    /// The ABFS password stays out of the cache key and registration URL, so two URLs that
+    /// differ only by password share one store. The container stays in both.
+    #[test]
+    fn abfs_password_stays_out_of_store_identity() {
+        use datafusion::execution::runtime_env::RuntimeEnvBuilder;
+
+        let host = "comet-password-identity.dfs.core.windows.net";
+        let options = HashMap::from([
+            ("comet.azure.resolution".into(), "resolved".into()),
+            ("comet.azure.auth.type".into(), "SharedKey".into()),
+            ("fs.azure.account.key".into(), "c2VjcmV0".into()),
+        ]);
+        let runtime = RuntimeEnvBuilder::new()
+            .with_object_store_registry(Arc::new(super::CometObjectStoreRegistry::default()))
+            .build_arc()
+            .unwrap();
+        let register = |password: &str| {
+            let (url, _, _) = prepare_object_store_with_configs(
+                Arc::clone(&runtime),
+                format!("abfss://data:{password}@{host}/p/file.parquet?sig=SAS-MARKER"),
+                &options,
+            )
+            .unwrap();
+            (url.clone(), runtime.object_store(&url).unwrap())
+        };
+
+        let (url, store) = register("SECRET");
+        for leaked in ["SECRET", "SAS-MARKER"] {
+            assert!(!url.as_str().contains(leaked), "{leaked} in {url}");
+        }
+        assert!(url.as_str().contains(&format!("://data@{host}")), "{url}");
+        let (other_url, other_store) = register("OTHER");
+        assert_eq!(other_url, url);
+        assert!(Arc::ptr_eq(&other_store, &store));
+
+        let keys: Vec<String> = object_store_cache()
+            .read()
+            .unwrap()
+            .keys()
+            .filter(|(key, _, _)| key.contains(host))
+            .map(|(key, _, _)| key.clone())
+            .collect();
+        object_store_cache()
+            .write()
+            .unwrap()
+            .retain(|(key, _, _), _| !key.contains(host));
+        assert_eq!(keys, vec![format!("abfss://data@{host}")]);
     }
 
     /// Parses the url, registers the object store, and returns a tuple of the object store url and object store path

@@ -133,6 +133,25 @@ object NativeConfig {
   }
 
   /**
+   * The raw authority as `[user@]host[:port]`, without the password. For ABFS the user is the
+   * container. As in native, the user ends at the first `:` and the host follows the last `@`.
+   */
+  private def authorityWithoutPassword(uri: URI): String = {
+    val rawAuthority = Option(uri.getRawAuthority).getOrElse("")
+    val at = rawAuthority.lastIndexOf('@')
+    val user = rawAuthority.take(at).takeWhile(_ != ':')
+    val host = rawAuthority.substring(at + 1)
+    if (user.isEmpty) host else s"$user@$host"
+  }
+
+  /**
+   * `scheme://[user@]host[:port]` of `uri` for messages: no password, path or query. A path
+   * without a scheme is local, as in [[objectStoreKey]].
+   */
+  private[comet] def displayAuthority(uri: URI): String =
+    s"${lowerScheme(uri).getOrElse("file")}://${authorityWithoutPassword(uri)}"
+
+  /**
    * The schemes native reads through libhdfs: the `fs.comet.libhdfs.schemes` list, or only `hdfs`
    * when it is unset or blank, as native `is_hdfs_scheme` decides.
    */
@@ -186,10 +205,10 @@ object NativeConfig {
    * The object store native planning resolves for `uri`. Mirrors native
    * `normalize_object_store_url` followed by `object_store_url_key`: a libhdfs scheme (decided on
    * the scheme as written) keeps its spelling, `s3a` and opted-in aliases become `s3` with a
-   * hostless bucket promoted from the path, user info is dropped except for ABFS containers, and
-   * a path without a scheme is local. The one divergence is a default port of a special scheme
-   * (`https://host:443`), which native drops; that only splits files across more partitions.
-   * Files with different keys cannot share a native partition.
+   * hostless bucket promoted from the path, user info is dropped except for ABFS containers
+   * (never their password), and a path without a scheme is local. The one divergence is a default
+   * port of a special scheme (`https://host:443`), which native drops; that only splits files
+   * across more partitions. Files with different keys cannot share a native partition.
    */
   def objectStoreKey(
       uri: URI,
@@ -198,7 +217,7 @@ object NativeConfig {
     val scheme = lowerScheme(uri).getOrElse("file")
     val isLibhdfs = libhdfsSchemes.contains(scheme)
     val authority =
-      if (scheme == "abfs" || scheme == "abfss") Option(uri.getRawAuthority).getOrElse("")
+      if (scheme == "abfs" || scheme == "abfss") authorityWithoutPassword(uri)
       else hostAndPort(uri)
     val isS3Alias = !isLibhdfs &&
       (scheme == "s3a" ||
@@ -424,9 +443,13 @@ object NativeConfig {
             s"(${first.getScheme} and ${uri.getScheme})")
       }
       if (firstIsAbfs && uri.getRawAuthority != first.getRawAuthority) {
+        // Hadoop reads the whole user info as the container, so a different password is
+        // another container to it.
+        val (a, b) = (displayAuthority(first), displayAuthority(uri))
+        val stores = if (a == b) s"$a, with different user info" else s"$a and $b"
         return Left(
           "Native scan does not support ABFS files from more than one container or account " +
-            s"(${first.getRawAuthority} and ${uri.getRawAuthority})")
+            s"($stores)")
       }
     }
     if (firstIsAbfs) {

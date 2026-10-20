@@ -71,13 +71,15 @@
 
 use log::debug;
 use std::collections::HashMap;
-use url::{Position, Url};
+use url::Url;
 
 use object_store::{
     azure::{AzureConfigKey, MicrosoftAzureBuilder},
     path::Path,
     ObjectStore, ObjectStoreScheme,
 };
+
+use super::url_redaction::{display_authority, redacted, without_credentials, without_secrets};
 
 const MARKER_RESOLUTION: &str = "comet.azure.resolution";
 const MARKER_AUTH_TYPE: &str = "comet.azure.auth.type";
@@ -326,50 +328,6 @@ fn optional(
 /// Hadoop appends a slash; object_store joins `<authority host>/<tenant>/oauth2/v2.0/token`.
 fn authority_host(authority: &str) -> String {
     authority.trim_end_matches('/').to_string()
-}
-
-// A URL's password and query (where a SAS token sits) can carry a credential, so no message
-// or URL handed to object_store, which quotes URLs in its errors, keeps them. The path is not
-// treated as secret.
-
-/// `url` without its password, query and fragment. The username stays: in an ABFS URL it is the
-/// container, which `MicrosoftAzureBuilder` reads.
-fn without_secrets(url: &Url) -> Url {
-    let mut stripped = url.clone();
-    stripped.set_query(None);
-    stripped.set_fragment(None);
-    // Fails only for a URL that cannot have userinfo, so there is nothing to clear.
-    let _ = stripped.set_password(None);
-    stripped
-}
-
-/// [`without_secrets`] without the username too, for a URL that may not be Azure, where the
-/// username can be an access key ID. `ObjectStoreScheme::parse` reads only the scheme, host and
-/// path.
-fn without_credentials(url: &Url) -> Url {
-    let mut stripped = without_secrets(url);
-    // Fails only for a URL that cannot have userinfo, so there is nothing to clear.
-    let _ = stripped.set_username("");
-    stripped
-}
-
-/// `scheme://[container@]host[:port]` of an ABFS URL, for messages.
-fn display_authority(url: &Url) -> String {
-    let safe = without_secrets(url);
-    format!(
-        "{}://{}",
-        safe.scheme(),
-        &safe[Position::BeforeUsername..Position::AfterPort]
-    )
-}
-
-/// `scheme://host[:port]` of a URL that may not be Azure, for messages.
-fn redacted(url: &Url) -> String {
-    format!(
-        "{}://{}",
-        url.scheme(),
-        &url[Position::BeforeHost..Position::AfterPort]
-    )
 }
 
 fn config_error(message: String) -> object_store::Error {
