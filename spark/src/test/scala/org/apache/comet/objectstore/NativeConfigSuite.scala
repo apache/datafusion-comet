@@ -602,6 +602,10 @@ class NativeConfigSuite extends AnyFunSuite with Matchers {
       withClue(s"session $session, scan $scan: ") {
         NativeConfig.resolveScanLibhdfsSchemes(conf(session), conf(scan)) shouldBe
           NativeConfig.ScanLibhdfsSchemes(libhdfs, scanOnly)
+        // The overload taking the pre-resolved session list agrees.
+        NativeConfig.resolveScanLibhdfsSchemes(
+          NativeConfig.resolveLibhdfsSchemes(conf(session)),
+          conf(scan)) shouldBe NativeConfig.ScanLibhdfsSchemes(libhdfs, scanOnly)
       }
     }
   }

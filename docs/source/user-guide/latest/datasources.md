@@ -23,17 +23,14 @@
 
 ### Parquet
 
-Parquet scans run in Rust via DataFusion if all data types in the schema are supported. When the scan
-falls back to Spark, enabling `spark.comet.convert.parquet.enabled` will immediately convert the data into
-Arrow format, allowing the Comet pipeline to take over after that, but the process may not be efficient.
+Parquet scans run in Rust via DataFusion if all data types in the schema are supported. See the
+[Parquet](parquet.md) page for what falls back to Spark, differences from Spark, tuning, and known
+issues.
 
 ### Apache Iceberg
 
 Comet accelerates Iceberg scans of Parquet files and can write the data files of eligible Iceberg
-writes natively, an opt-in feature. See the [Iceberg Guide] and [Iceberg Writes](iceberg-writes.md)
-for more information.
-
-[iceberg guide]: iceberg.md
+writes natively, an opt-in feature. See the [Iceberg](iceberg.md) page for more information.
 
 ### CSV
 
@@ -109,7 +106,7 @@ them, and the conversion and the Comet operators above it would read ahead of th
 
 ### Apache Iceberg
 
-See the dedicated [Comet and Iceberg Guide](iceberg.md).
+See the dedicated [Iceberg](iceberg.md) page.
 
 ## Supported Storages
 
@@ -154,7 +151,7 @@ the HDFS read itself, typically while an unrelated query is running.
 ```
 
 Native Iceberg scans do not support HDFS-backed tables; those scans fall back to Spark. See the
-[Comet and Iceberg Guide](iceberg.md).
+[Iceberg](iceberg.md) page.
 
 ### Building Comet with HDFS support
 
@@ -383,7 +380,7 @@ Once translated, these values are applied at the same `fs.s3a.bucket.{bucket-nam
 described in [Additional S3 Configuration Options](#additional-s3-configuration-options), so the
 credential providers and options documented above also apply to alias-scheme URLs. The same
 translation feeds the native Iceberg scan; see
-[Object store configuration (S3)](iceberg.md#object-store-configuration-s3) in the Iceberg guide.
+[Object store configuration (S3)](iceberg.md#object-store-configuration-s3) on the Iceberg page.
 
 A native Parquet or CSV scan whose alias-scheme paths span more than one bucket resolves the alias
 settings for each bucket. Alias schemes apply to native scans only: a native Iceberg write to an
@@ -419,7 +416,7 @@ $SPARK_HOME/bin/spark-shell \
 ...
 ```
 
-### Limitations
+### S3 Limitations
 
 Comet's S3 support has the following limitations:
 
@@ -449,6 +446,8 @@ Comet's S3 support has the following limitations:
    Buckets whose credentials come from a Comet `CometS3CredentialProvider` (`fs.s3a.comet.credential.provider.class`)
    are exempt from the credential provider class and assumed-role policy checks, because the native client never reads
    those settings for them. Run `explain` with Comet's extended explain info enabled to see the fallback reason.
+
+4. **AWS profile credential providers**: The native scans ignore `fs.s3a.auth.profile.name` and `fs.s3a.auth.profile.file` ([#4245](https://github.com/apache/datafusion-comet/issues/4245)), and resolve some profiles differently from Hadoop 3.4 and later, for example profiles that use `credential_process` or chains of assumed roles ([#6575](https://github.com/apache/datafusion-comet/issues/6575)).
 
 ## Azure
 
@@ -565,7 +564,7 @@ Comet 1.1 started from the environment and overlaid the Hadoop keys it found by 
 - A lower-case `oauth` auth type, or OAuth keys without `fs.azure.account.auth.type`, fail the way they fail for Spark. In the second case Hadoop defaults to `SharedKey` and the key provider fails. On hadoop-azure 3.4.1 and later the driver log names the missing key. 3.3.4 reports only `Failure to initialize configuration`.
 - A configured mechanism the native scan cannot build fails with an error instead of silently reading the environment.
 
-### Limitations
+### Azure Limitations
 
 1. **Authentication keys only**: Only the keys in the table above reach the native store. Other `fs.azure.*` settings (read-ahead, retries, HTTP tuning) do not apply to the native scan.
 
@@ -574,3 +573,5 @@ Comet 1.1 started from the environment and overlaid the Hadoop keys it found by 
 3. **URL shape**: URLs must include the account in the host, i.e. `abfss://<container>@<account>.dfs.core.windows.net/<path>`. Bare `abfs://<container>/<path>` (fsspec-style, no account in the URL) is not supported because Comet cannot resolve the storage account name.
 
 4. **Endpoint hosts**: `object_store` builds an Azure store only for hosts under `dfs.core.windows.net`, `blob.core.windows.net`, `dfs.fabric.microsoft.com` and `blob.fabric.microsoft.com`. Sovereign-cloud endpoints such as `dfs.core.chinacloudapi.cn` are not supported, whatever keys are configured for them.
+
+5. **Credentials that resolve differently from Hadoop's ABFS driver**: Container-scoped OAuth settings, Fabric hosts and a few other configurations resolve differently from Hadoop's ABFS driver, so a native read can fail where Spark succeeds ([#6605](https://github.com/apache/datafusion-comet/issues/6605)).
