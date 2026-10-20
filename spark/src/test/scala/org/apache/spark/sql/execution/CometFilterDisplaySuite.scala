@@ -57,11 +57,10 @@ class CometFilterDisplaySuite extends CometTestBase {
 
   private def render(plan: SparkPlan): Seq[String] = {
     val info = SparkPlanInfo.fromSparkPlan(plan)
-    Seq(
-      plan.simpleString(100),
-      plan.verboseStringWithOperatorId(),
-      info.simpleString,
-      SparkPlanGraph(info).nodes.head.makeDotNode(Map.empty))
+    val node = SparkPlanGraph(info).nodes.head
+    // Older Spark versions omit the description from DOT output.
+    assert(node.makeDotNode(Map.empty).length < 2048)
+    Seq(plan.simpleString(100), plan.verboseStringWithOperatorId(), info.simpleString, node.desc)
   }
 
   for (project <- Seq(false, true)) {
