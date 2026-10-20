@@ -19,7 +19,7 @@
 
 package org.apache.comet.rules
 
-import org.apache.spark.sql.catalyst.expressions.{Expression, MakeDate, SortOrder}
+import org.apache.spark.sql.catalyst.expressions.{Alias, And, Attribute, AttributeSet, BinaryComparison, Cast, ConditionalExpression, CreateArray, CreateNamedStruct, DateAdd, DateDiff, DateFormatClass, DateSub, EqualNullSafe, Expression, IsNotNull, IsNull, MakeDate, Not, Or, SortOrder}
 import org.apache.spark.sql.catalyst.trees.TreeNodeTag
 import org.apache.spark.sql.comet._
 import org.apache.spark.sql.comet.execution.shuffle.CometShuffleExchangeExec
@@ -44,6 +44,25 @@ private[rules] object MakeDateEvaluation {
 
   private def containsMakeDate(expressions: Seq[Expression]): Boolean =
     expressions.exists(_.exists(_.isInstanceOf[MakeDate]))
+
+  private case class ProjectionDemand(boundary: String, deferred: AttributeSet)
+
+  /** References that can be evaluated before the expression without changing skipped inputs. */
+  private def eagerReferences(expression: Expression): AttributeSet = expression match {
+    case attribute: Attribute => AttributeSet(Seq(attribute))
+    case _ =>
+      val children = expression match {
+        case conditional: ConditionalExpression => conditional.alwaysEvaluatedInputs
+        case _: Alias | _: Cast | _: IsNull | _: IsNotNull | _: Not => expression.children
+        case _: EqualNullSafe | _: CreateArray | _: CreateNamedStruct => expression.children
+        case _: And | _: Or => expression.children.take(1)
+        case _: BinaryComparison | _: DateAdd | _: DateSub | _: DateDiff | _: DateFormatClass =>
+          expression.children.take(if (expression.children.head.nullable) 1 else 2)
+        // Unknown expressions may skip inputs or catch errors raised by their children.
+        case _ => Nil
+      }
+      AttributeSet(children.flatMap(eagerReferences))
+  }
 
   private def copyLogicalLinks(from: SparkPlan, to: SparkPlan): Unit = {
     if (from ne to) {
@@ -89,7 +108,7 @@ private[rules] object MakeDateEvaluation {
     def visit(
         node: SparkPlan,
         rowDemand: Option[String],
-        projectionDemand: Option[String]): (SparkPlan, Option[String]) = {
+        projectionDemand: Option[ProjectionDemand]): (SparkPlan, Option[String]) = {
       node match {
         // Materialized stages are independent producers. Their plans have already been guarded.
         case _: QueryStageExec | _: ReusedExchangeExec => return (node, None)
@@ -144,7 +163,20 @@ private[rules] object MakeDateEvaluation {
       }
       val childProjectionDemand = original match {
         // Generated filters can defer deterministic projection outputs until a row is accepted.
-        case _: FilterExec => Some("FILTER")
+        case filter: FilterExec => Some(ProjectionDemand("FILTER", filter.child.outputSet))
+        case project: ProjectExec =>
+          val deferred = projectionDemand.map(_.deferred).getOrElse(AttributeSet.empty)
+          val eager = project.projectList
+            .filter(output => !output.deterministic || !deferred.contains(output.toAttribute))
+            .flatMap(eagerReferences)
+          // ProjectExec forces repeated inputs and nondeterministic outputs. Other inputs can
+          // remain inlined in a consumer's conditional, even across intervening aliases.
+          val skipped = project.child.outputSet -- project.usedInputs -- AttributeSet(eager)
+          if (skipped.isEmpty) {
+            None
+          } else {
+            Some(ProjectionDemand(projectionDemand.map(_.boundary).getOrElse("PROJECT"), skipped))
+          }
         case _ if exchange || localMaterialization || join => None
         case _ => projectionDemand
       }
@@ -155,10 +187,13 @@ private[rules] object MakeDateEvaluation {
           rowDemand
             .map(boundary => s"make_date requires Spark evaluation below $boundary")
             .orElse(original match {
-              case project: ProjectExec
-                  if containsMakeDate(project.projectList.filter(_.deterministic)) =>
-                projectionDemand.map(boundary =>
-                  s"make_date requires Spark evaluation below $boundary")
+              case project: ProjectExec =>
+                projectionDemand
+                  .filter(demand =>
+                    project.projectList.exists(output =>
+                      output.deterministic && demand.deferred.contains(output.toAttribute) &&
+                        containsMakeDate(Seq(output))))
+                  .map(demand => s"make_date requires Spark evaluation below ${demand.boundary}")
               // Join keys/conditions and aggregate updates can be skipped inside the operator.
               case _: BaseJoinExec | _: BaseAggregateExec | _: TakeOrderedAndProjectExec =>
                 Some(s"make_date requires Spark evaluation in ${original.nodeName}")

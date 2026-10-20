@@ -216,6 +216,90 @@ class CometExecRuleSuite extends CometTestBase {
     }
   }
 
+  test("make_date remains deferred across conditional projections") {
+    withSQLConf(
+      SQLConf.ANSI_ENABLED.key -> "false",
+      SQLConf.WHOLESTAGE_CODEGEN_ENABLED.key -> "true",
+      SQLConf.DATETIME_JAVA8API_ENABLED.key -> "false") {
+      val selectedDate = java.sql.Date.valueOf("2024-01-01")
+      val rows = Seq((6000000, null.asInstanceOf[java.sql.Date]), (2024, selectedDate))
+      withParquetTable(rows, "make_date_deferred") {
+        def checkProjection(query: String)(checkSparkRows: Seq[Row] => Unit): SparkPlan = {
+          var expected = Seq.empty[Row]
+          withSQLConf(CometConf.COMET_ENABLED.key -> "false") {
+            expected = sql(query).collect().toSeq
+          }
+          checkSparkRows(expected)
+          val df = sql(query)
+          checkCometAnswer(df, expected)
+          stripAQEPlan(df.queryExecution.executedPlan)
+        }
+
+        def assertDeferredProjection(plan: SparkPlan): Unit = {
+          assert(countOperators(plan, classOf[ProjectExec]) == 2, plan.treeString)
+          assert(countOperators(plan, classOf[CometProjectExec]) == 0, plan.treeString)
+          assert(countOperators(plan, classOf[CometNativeScanExec]) == 1, plan.treeString)
+          assert(
+            new ExtendedExplainInfo()
+              .getFallbackReasons(plan)
+              .exists(_.contains("make_date requires Spark evaluation below PROJECT")))
+        }
+
+        val expressions = Seq(
+          "IF(r < 0, dt, DATE '2024-01-01')",
+          "COALESCE(IF(r >= 0, DATE '2024-01-01', NULL), dt)")
+        for (aqe <- Seq(false, true); expression <- expressions) {
+          withSQLConf(SQLConf.ADAPTIVE_EXECUTION_ENABLED.key -> aqe.toString) {
+            // Reusing nondeterministic r prevents the optimizer from merging the projections.
+            val query = s"""
+              |SELECT r, $expression AS d FROM (
+              |  SELECT rand(7L) AS r, make_date(_1, 1, 1) AS dt FROM make_date_deferred
+              |)
+              |""".stripMargin
+            val plan = checkProjection(query) { expected =>
+              assert(expected.map(_.getDate(1)) == Seq.fill(2)(selectedDate))
+            }
+            withClue(s"aqe=$aqe expression=$expression\n${plan.treeString}") {
+              assertDeferredProjection(plan)
+            }
+          }
+        }
+
+        for (aqe <- Seq(false, true)) {
+          withSQLConf(SQLConf.ADAPTIVE_EXECUTION_ENABLED.key -> aqe.toString) {
+            val plan = checkProjection("""
+              |SELECT r, datediff(nullable_date, dt) AS d, r + 1 AS repeated_r FROM (
+              |  SELECT rand(7L) AS r, _2 AS nullable_date, make_date(_1, 1, 1) AS dt
+              |  FROM make_date_deferred
+              |)
+              |""".stripMargin) { expected =>
+              assert(expected.size == 2)
+              assert(expected.map(_.get(1)).toSet == Set(null, 0))
+            }
+            assertDeferredProjection(plan)
+          }
+        }
+
+        withSQLConf(SQLConf.ADAPTIVE_EXECUTION_ENABLED.key -> "false") {
+          val plan = checkProjection("""
+            |SELECT r, date_add(dt, 1) AS d, IF(r < 0, 0, r + 1) AS repeated_r FROM (
+            |  SELECT rand(7L) AS r, make_date(_1, 1, 1) AS dt
+            |  FROM make_date_deferred WHERE _1 < 3000
+            |)
+            |""".stripMargin) { expected =>
+            assert(expected.map(_.getDate(1)) == Seq(java.sql.Date.valueOf("2024-01-02")))
+          }
+          assert(countOperators(plan, classOf[CometProjectExec]) == 2, plan.treeString)
+          assert(countOperators(plan, classOf[CometNativeScanExec]) == 1, plan.treeString)
+          assert(
+            !new ExtendedExplainInfo()
+              .getFallbackReasons(plan)
+              .exists(_.contains("make_date requires Spark evaluation below PROJECT")))
+        }
+      }
+    }
+  }
+
   test("make_date aggregate arguments retain Spark execution") {
     withSQLConf(
       SQLConf.ADAPTIVE_EXECUTION_ENABLED.key -> "false",

@@ -723,7 +723,10 @@ the consuming operator decides which rows it needs.
 By default, Comet keeps affected operators in Spark to preserve that behavior. This applies
 to date projections below `LIMIT`, `SAMPLE`, `FILTER`, joins, `mapPartitions`, and
 `Dataset.rdd` consumers; date expressions inside joins, aggregates, and ordered limits;
-and projections below a window group limit. Only affected parts of the plan fall back.
+and projections below a window group limit. A parent projection can also defer a date output
+when an `IF`, `COALESCE`, or NULL-skipping operand does not need it. Comet preserves that
+evaluation across projections while allowing eager date consumers to remain native.
+Only affected parts of the plan fall back.
 An ordinary native scan can remain native. Exchanges materialize their inputs independently,
 and local sorts and aggregates can also separate date evaluation from an outer limit.
 
