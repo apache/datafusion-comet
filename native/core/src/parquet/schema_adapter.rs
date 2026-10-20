@@ -31,7 +31,10 @@ use arrow::datatypes::{DataType, Field, FieldRef, Schema, SchemaRef};
 use arrow::record_batch::RecordBatch;
 use datafusion::common::tree_node::{Transformed, TransformedResult, TreeNode};
 use datafusion::common::{DataFusionError, Result as DataFusionResult};
-use datafusion::physical_expr::expressions::Column;
+use datafusion::logical_expr::Operator;
+use datafusion::physical_expr::expressions::{
+    in_list, BinaryExpr, CastExpr, Column, InListExpr, IsNotNullExpr, IsNullExpr, Literal,
+};
 use datafusion::physical_expr::PhysicalExpr;
 use datafusion::physical_plan::ColumnarValue;
 use datafusion::scalar::ScalarValue;
@@ -862,6 +865,24 @@ fn check_decoded_field_names(data_type: &DataType) -> DataFusionResult<()> {
     Ok(())
 }
 
+/// A Binary literal `expr` as a literal of `data_type` holding the same bytes, or `None` when it
+/// isn't a non-null Binary literal or its bytes aren't valid UTF-8 for a string type.
+fn binary_literal_as(
+    expr: &Arc<dyn PhysicalExpr>,
+    data_type: &DataType,
+) -> Option<Arc<dyn PhysicalExpr>> {
+    let ScalarValue::Binary(Some(bytes)) = expr.downcast_ref::<Literal>()?.value() else {
+        return None;
+    };
+    let value = match data_type {
+        DataType::Utf8 | DataType::LargeUtf8 | DataType::Utf8View => {
+            ScalarValue::Utf8(Some(String::from_utf8(bytes.clone()).ok()?))
+        }
+        _ => ScalarValue::Binary(Some(bytes.clone())),
+    };
+    Some(Arc::new(Literal::new(value.cast_to(data_type).ok()?)))
+}
+
 /// Check an expression before it can decode its entire physical subtree.
 fn checked_decoded_expr(
     physical_type: &DataType,
@@ -1203,6 +1224,8 @@ impl PhysicalExprAdapter for SparkPhysicalExprAdapter {
                 // - CometCastColumnExpr (for Struct/List/Map, uses spark_parquet_convert)
                 // - Spark Cast (for simple scalar types)
                 rewritten
+                    .transform(|e| self.unwrap_cast_to_binary_comparison(e))
+                    .data()?
                     .transform(|e| self.replace_with_spark_cast(e))
                     .data()?
             }
@@ -1384,6 +1407,80 @@ impl SparkPhysicalExprAdapter {
             Ok(Transformed::no(e))
         })
         .data()
+    }
+
+    /// A `binaryAsString` scan reads string columns as Binary, so for a file that annotates one
+    /// as a string, the default adapter compares `CAST(s AS BINARY)` in the pushed filters, and
+    /// pruning can't see through the cast. The cast keeps the bytes, so `CAST(s AS BINARY) = X'..'`
+    /// holds exactly when `s` equals the same bytes in its own type, and likewise for `IN` and
+    /// `IS [NOT] NULL`. Compare the column directly so the file can still prune.
+    fn unwrap_cast_to_binary_comparison(
+        &self,
+        expr: Arc<dyn PhysicalExpr>,
+    ) -> DataFusionResult<Transformed<Arc<dyn PhysicalExpr>>> {
+        if let Some(binary) = expr.downcast_ref::<BinaryExpr>() {
+            if binary.op() == &Operator::Eq {
+                let (left, right) = (binary.left(), binary.right());
+                if let Some((column, data_type)) = self.column_cast_to_binary(left) {
+                    if let Some(literal) = binary_literal_as(right, &data_type) {
+                        let eq = BinaryExpr::new(column, Operator::Eq, literal);
+                        return Ok(Transformed::yes(Arc::new(eq)));
+                    }
+                }
+                if let Some((column, data_type)) = self.column_cast_to_binary(right) {
+                    if let Some(literal) = binary_literal_as(left, &data_type) {
+                        let eq = BinaryExpr::new(literal, Operator::Eq, column);
+                        return Ok(Transformed::yes(Arc::new(eq)));
+                    }
+                }
+            }
+        } else if let Some(list) = expr.downcast_ref::<InListExpr>() {
+            if let Some((column, data_type)) = self.column_cast_to_binary(list.expr()) {
+                let values: Option<Vec<_>> = list
+                    .list()
+                    .iter()
+                    .map(|value| binary_literal_as(value, &data_type))
+                    .collect();
+                if let Some(values) = values {
+                    let negated = list.negated();
+                    let list = in_list(column, values, &negated, &self.physical_file_schema)?;
+                    return Ok(Transformed::yes(list));
+                }
+            }
+        } else if let Some(is_null) = expr.downcast_ref::<IsNullExpr>() {
+            if let Some((column, _)) = self.column_cast_to_binary(is_null.arg()) {
+                return Ok(Transformed::yes(Arc::new(IsNullExpr::new(column))));
+            }
+        } else if let Some(is_not_null) = expr.downcast_ref::<IsNotNullExpr>() {
+            if let Some((column, _)) = self.column_cast_to_binary(is_not_null.arg()) {
+                return Ok(Transformed::yes(Arc::new(IsNotNullExpr::new(column))));
+            }
+        }
+        Ok(Transformed::no(expr))
+    }
+
+    /// The column and its file type when `expr` casts a string or binary column to Binary, which
+    /// keeps every value's bytes.
+    fn column_cast_to_binary(
+        &self,
+        expr: &Arc<dyn PhysicalExpr>,
+    ) -> Option<(Arc<dyn PhysicalExpr>, DataType)> {
+        let cast = expr.downcast_ref::<CastExpr>()?;
+        if cast.target_field().data_type() != &DataType::Binary {
+            return None;
+        }
+        let column = cast.expr();
+        column.downcast_ref::<Column>()?;
+        let data_type = column.data_type(&self.physical_file_schema).ok()?;
+        matches!(
+            data_type,
+            DataType::Utf8
+                | DataType::LargeUtf8
+                | DataType::Utf8View
+                | DataType::LargeBinary
+                | DataType::BinaryView
+        )
+        .then(|| (Arc::clone(column), data_type))
     }
 
     /// Replace CastExpr (DataFusion's cast) with Spark's Cast expression.
