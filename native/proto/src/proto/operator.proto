@@ -1106,6 +1106,17 @@ message HashJoin {
   // native join keeps it only if the probe input declares it: a left outer join built on the
   // right, or a right outer join built on the left. Empty otherwise.
   repeated spark.spark_expression.Expr streamed_sort_orders = 11;
+  // Spill the build side to disk when it does not fit in memory, instead of failing. Set only for
+  // shuffled hash joins whose output order nothing relies on.
+  bool spill_enabled = 12;
+  // When nonzero, spill once the build side holds this many bytes in memory, even if the memory
+  // pool would grant more.
+  uint64 spill_max_build_buffer_bytes = 13;
+  // Let a spilling inner join switch to a sort-merge join once its probe rows turn out to match
+  // many build rows each.
+  bool spill_sort_merge_fallback = 14;
+  // For tests: with spill_sort_merge_fallback, switch after the first probe batch that matches.
+  bool spill_sort_merge_fallback_always = 15;
 }
 
 message SortMergeJoin {

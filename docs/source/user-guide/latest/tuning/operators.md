@@ -25,9 +25,29 @@ Spark often chooses `SortMergeJoin` over `ShuffledHashJoin` for stability reason
 `ShuffledHashJoin` is very large then it could lead to OOM in Spark.
 
 Vectorized query engines tend to perform better with `ShuffledHashJoin`, so for best performance it is often preferable
-to configure Comet to convert `SortMergeJoin` to `ShuffledHashJoin`. Comet does not yet provide spill-to-disk for
-`ShuffledHashJoin` so this could result in OOM. Also, `SortMergeJoin` may still be faster in some cases. It is best
-to test with both for your specific workloads.
+to configure Comet to convert `SortMergeJoin` to `ShuffledHashJoin`. `SortMergeJoin` may still be faster in some cases,
+so it is best to test with both for your specific workloads.
+
+### Spilling Shuffled Hash Joins
+
+A native `ShuffledHashJoin` spills its build side to disk when it does not fit in memory, instead of failing the
+task. While the build side fits, the join runs as it does without spilling. When memory runs out, the join splits
+both sides into buckets by a hash of the join keys, keeps as many buckets in memory as fit, writes the rest to disk,
+and joins those buckets one at a time afterwards. A bucket that still does not fit is split again, and a bucket that
+splitting cannot shrink, because most of its rows share one key or have a null key, is joined in chunks.
+
+The join reserves all of the memory it holds in Comet's memory pool, including memory that a join without spilling
+uses without reserving it, so a build side that only just fits without spilling may spill. The `spilled_buckets`,
+`split_buckets` and `chunked_buckets` metrics, and the spill metrics, show whether a join spilled.
+
+Spilling is enabled by default with `spark.comet.exec.hashJoin.spill.enabled`. It does not apply to:
+
+- broadcast hash joins, whose build side is bounded by the broadcast threshold;
+- joins whose output order Spark relies on, such as a join probing the sorted output of a sort-merge join below it
+  with no exchange in between, because rows of spilled buckets are emitted after the others;
+- joins that use the runtime filter of `spark.comet.exec.join.dynamicFilter.enabled`.
+
+Those joins still fail if their build side does not fit.
 
 To configure Comet to convert `SortMergeJoin` to `ShuffledHashJoin`, set `spark.comet.exec.forceShuffledHashJoin=true`.
 The conversion only happens when the build side is under a size limit, and a join whose build side has no statistics
@@ -38,6 +58,11 @@ shuffle size of the build side. By default the limit is Spark's own rule for cho
 set, else `spark.sql.shuffle.partitions`). When broadcasts are disabled with a non-positive threshold, Spark's default
 threshold of 10 MB is used instead. Set `spark.comet.exec.forceShuffledHashJoin.maxBuildSize` to a size in bytes to use a fixed
 limit, or to a non-positive value to convert every eligible join regardless of size.
+
+A join whose sorted output an operator above it reads is also left as a `SortMergeJoin` when that operator is not
+converted itself, such as a left semi join on the same key that builds its right side. Converting it would mean
+sorting the join's output, which can cost more than the hash join saves, as when the join emits more rows than it
+reads.
 
 ### Join Runtime Filters
 

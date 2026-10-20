@@ -2973,6 +2973,25 @@ trait CometHashJoin {
         Nil
       }
 
+    // The spilling join emits the rows of spilled buckets after the others, so it is used only
+    // where Spark relies on no output order from the join: either Spark reports none, or nothing
+    // above uses the order it reports (see `CometExecRule.tagJoinsWhoseOrderIsUnused`). A
+    // broadcast build side is bounded by the broadcast threshold, and a runtime filter would
+    // describe only part of a spilled build.
+    val dynamicFilterEnabled = CometConf.COMET_EXEC_JOIN_DYNAMIC_FILTER_ENABLED.get(join.conf)
+    val spillEnabled = join.isInstanceOf[ShuffledHashJoinExec] &&
+      CometConf.COMET_EXEC_HASH_JOIN_SPILL_ENABLED.get(join.conf) &&
+      !isNullAwareAntiJoin &&
+      !dynamicFilterEnabled &&
+      (join.outputOrdering.isEmpty ||
+        join.getTagValue(CometExecRule.JOIN_ORDER_UNUSED_TAG).isDefined)
+    // An inner join that spills may switch to a DataFusion sort-merge join, which takes the key
+    // types that `CometSortMergeJoinExec` does.
+    val sortMergeFallback =
+      CometConf.COMET_EXEC_HASH_JOIN_SPILL_SORT_MERGE_FALLBACK_ENABLED.get(join.conf) &&
+        (join.leftKeys ++ join.rightKeys).forall(key =>
+          CometSortMergeJoinExec.supportedSortMergeJoinEqualType(key.dataType))
+
     if (leftKeys.forall(_.isDefined) &&
       rightKeys.forall(_.isDefined) &&
       childOp.nonEmpty) {
@@ -2984,8 +3003,14 @@ trait CometHashJoin {
         .setBuildSide(if (join.buildSide == BuildLeft) OperatorOuterClass.BuildSide.BuildLeft
         else OperatorOuterClass.BuildSide.BuildRight)
         .setNullAwareAntiJoin(isNullAwareAntiJoin)
-        .setDynamicFilterEnabled(CometConf.COMET_EXEC_JOIN_DYNAMIC_FILTER_ENABLED.get(join.conf))
+        .setDynamicFilterEnabled(dynamicFilterEnabled)
         .addAllStreamedSortOrders(streamedSortOrders.asJava)
+        .setSpillEnabled(spillEnabled)
+        .setSpillMaxBuildBufferBytes(CometConf.COMET_EXEC_HASH_JOIN_SPILL_MAX_BUILD_BUFFER_BYTES
+          .get(join.conf))
+        .setSpillSortMergeFallback(sortMergeFallback)
+        .setSpillSortMergeFallbackAlways(
+          CometConf.COMET_EXEC_HASH_JOIN_SPILL_SORT_MERGE_FALLBACK_ALWAYS.get(join.conf))
       condition.foreach(joinBuilder.setCondition)
       Some(builder.setHashJoin(joinBuilder).build())
     } else {
@@ -3279,11 +3304,13 @@ object CometHashJoinExec extends CometOperatorSerde[HashJoin] with CometHashJoin
     doConvert(join, builder, childOp: _*)
 
   override def createExec(nativeOp: Operator, op: HashJoin): CometNativeExec = {
+    // A spilling join keeps no input order.
+    val outputOrdering = if (nativeOp.getHashJoin.getSpillEnabled) Nil else op.outputOrdering
     CometHashJoinExec(
       nativeOp,
       op,
       op.output,
-      op.outputOrdering,
+      outputOrdering,
       op.leftKeys,
       op.rightKeys,
       op.joinType,
@@ -3353,12 +3380,19 @@ case class CometHashJoinExec(
     Objects.hashCode(output, leftKeys, rightKeys, joinType, condition, buildSide, left, right)
 
   override lazy val metrics: Map[String, SQLMetric] = {
+    val hashJoin = nativeOp.getHashJoin
     val joinMetrics = CometMetricNode.joinMetrics(sparkContext)
-    if (nativeOp.getHashJoin.getDynamicFilterEnabled) {
-      joinMetrics ++ CometMetricNode.joinDynamicFilterMetrics(sparkContext)
+    val filterMetrics = if (hashJoin.getDynamicFilterEnabled) {
+      CometMetricNode.joinDynamicFilterMetrics(sparkContext)
     } else {
-      joinMetrics
+      Map.empty[String, SQLMetric]
     }
+    val spillMetrics = if (hashJoin.getSpillEnabled) {
+      CometMetricNode.hashJoinSpillMetrics(sparkContext)
+    } else {
+      Map.empty[String, SQLMetric]
+    }
+    joinMetrics ++ filterMetrics ++ spillMetrics
   }
 }
 
@@ -3650,15 +3684,16 @@ object CometSortMergeJoinExec extends CometOperatorSerde[SortMergeJoinExec] {
   /**
    * Returns true if given datatype is supported as a key in DataFusion sort merge join.
    */
-  private def supportedSortMergeJoinEqualType(dataType: DataType): Boolean = dataType match {
-    case st: StringType if isStringCollationType(st) => false
-    case _: ByteType | _: ShortType | _: IntegerType | _: LongType | _: FloatType |
-        _: DoubleType | _: StringType | _: BinaryType | _: DateType | _: DecimalType |
-        _: BooleanType =>
-      true
-    case TimestampNTZType | _: TimestampType => true
-    case _ => false
-  }
+  private[comet] def supportedSortMergeJoinEqualType(dataType: DataType): Boolean =
+    dataType match {
+      case st: StringType if isStringCollationType(st) => false
+      case _: ByteType | _: ShortType | _: IntegerType | _: LongType | _: FloatType |
+          _: DoubleType | _: StringType | _: BinaryType | _: DateType | _: DecimalType |
+          _: BooleanType =>
+        true
+      case TimestampNTZType | _: TimestampType => true
+      case _ => false
+    }
 
 }
 

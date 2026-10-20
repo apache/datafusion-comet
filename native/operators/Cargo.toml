@@ -47,3 +47,7 @@ path = "src/lib.rs"
 [[bench]]
 name = "explode"
 harness = false
+
+[[bench]]
+name = "spilling_hash_join"
+harness = false

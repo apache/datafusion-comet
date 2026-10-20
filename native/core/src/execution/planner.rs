@@ -3934,6 +3934,57 @@ mod tests {
     }
 
     #[test]
+    fn spilling_hash_join_wraps_the_join_comet_plans() {
+        use datafusion::physical_plan::joins::HashJoinExec;
+        use datafusion::physical_plan::projection::ProjectionExec;
+        use datafusion_comet_operators::SpillingHashJoinExec;
+        use spark_operator::BuildSide;
+
+        let plan = |build_side: BuildSide, spill_enabled: bool, dynamic_filter_enabled: bool| {
+            let op_join = Operator {
+                children: vec![create_scan(), create_scan()],
+                op_struct: Some(OpStruct::HashJoin(spark_operator::HashJoin {
+                    left_join_keys: vec![create_bound_reference(0)],
+                    right_join_keys: vec![create_bound_reference(0)],
+                    join_type: spark_operator::JoinType::Inner as i32,
+                    build_side: build_side as i32,
+                    dynamic_filter_enabled,
+                    spill_enabled,
+                    ..Default::default()
+                })),
+                ..Default::default()
+            };
+            let (_, _, plan) = PhysicalPlanner::default()
+                .create_plan(&op_join, &mut vec![], 1)
+                .unwrap();
+            Arc::clone(&plan.native_plan)
+        };
+
+        let build_left = plan(BuildSide::BuildLeft, true, false);
+        assert!(build_left.downcast_ref::<SpillingHashJoinExec>().is_some());
+        // It keeps the name of the join it runs.
+        assert_eq!("HashJoinExec", build_left.name());
+
+        // The projection that `swap_inputs` adds stays above the spilling join.
+        let build_right = plan(BuildSide::BuildRight, true, false);
+        let projection = build_right
+            .downcast_ref::<ProjectionExec>()
+            .expect("swap_inputs adds a projection for an inner join");
+        assert!(projection
+            .input()
+            .downcast_ref::<SpillingHashJoinExec>()
+            .is_some());
+
+        // Not asked to spill, or asked for a runtime filter: the plain join.
+        assert!(plan(BuildSide::BuildLeft, false, false)
+            .downcast_ref::<HashJoinExec>()
+            .is_some());
+        assert!(plan(BuildSide::BuildLeft, true, true)
+            .downcast_ref::<SpillingHashJoinExec>()
+            .is_none());
+    }
+
+    #[test]
     fn spark_plan_metrics_hash_join() {
         let op_scan = create_scan();
         let op_join = Operator {
@@ -3949,6 +4000,10 @@ mod tests {
                 null_aware_anti_join: false,
                 dynamic_filter_enabled: false,
                 streamed_sort_orders: vec![],
+                spill_enabled: false,
+                spill_max_build_buffer_bytes: 0,
+                spill_sort_merge_fallback: false,
+                spill_sort_merge_fallback_always: false,
             })),
         };
 

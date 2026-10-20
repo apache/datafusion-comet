@@ -32,6 +32,7 @@ mod projection;
 mod range;
 mod rank_limit;
 mod sample;
+mod spilling_hash_join;
 
 pub use expand::ExpandExec;
 pub use explode::ExplodeExec;
@@ -40,3 +41,4 @@ pub use projection::CometProjectionExec;
 pub use range::{range_exec, range_sort_expr};
 pub use rank_limit::{PartitionedRankLimitExec, WindowFnKind};
 pub use sample::SampleExec;
+pub use spilling_hash_join::{SortMergeFallback, SpillingHashJoinConfig, SpillingHashJoinExec};
