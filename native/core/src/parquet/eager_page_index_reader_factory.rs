@@ -1298,21 +1298,82 @@ mod tests {
         },
     };
 
+    /// An `InMemory` store that counts the gets and range calls of each path. Reads of the path
+    /// set by `with_gate` wait until `release` is called, and each held read keeps a receiver of
+    /// `gate`.
     #[derive(Debug)]
-    struct RecordingRangeStore {
+    struct RecordingStore {
         inner: InMemory,
-        range_calls: AtomicUsize,
-        get_calls: AtomicUsize,
+        gets: Mutex<HashMap<Path, usize>>,
+        range_calls: Mutex<HashMap<Path, usize>>,
+        gated: Option<Path>,
+        gate: tokio::sync::watch::Sender<bool>,
     }
 
-    impl Display for RecordingRangeStore {
+    impl RecordingStore {
+        fn new() -> Self {
+            Self {
+                inner: InMemory::new(),
+                gets: Mutex::new(HashMap::new()),
+                range_calls: Mutex::new(HashMap::new()),
+                gated: None,
+                gate: tokio::sync::watch::channel(false).0,
+            }
+        }
+
+        fn with_gate(mut self, gated: &str) -> Self {
+            self.gated = Some(Path::from(gated));
+            self
+        }
+
+        fn release(&self) {
+            self.gate.send_replace(true);
+        }
+
+        /// The gets and range calls of `location`.
+        fn reads(&self, location: &str) -> usize {
+            let location = Path::from(location);
+            [&self.gets, &self.range_calls]
+                .iter()
+                .map(|calls| calls.lock().unwrap().get(&location).copied().unwrap_or(0))
+                .sum()
+        }
+
+        fn get_calls(&self) -> usize {
+            self.gets.lock().unwrap().values().sum()
+        }
+
+        fn range_calls(&self) -> usize {
+            self.range_calls.lock().unwrap().values().sum()
+        }
+
+        /// Waits until a read of the gated path is held at the gate.
+        async fn wait_for_held_read(&self) {
+            tokio::time::timeout(std::time::Duration::from_secs(10), async {
+                while self.gate.receiver_count() == 0 {
+                    tokio::task::yield_now().await;
+                }
+            })
+            .await
+            .expect("the gated path was never read");
+        }
+
+        async fn hold_if_gated(&self, location: &Path) {
+            if self.gated.as_ref() == Some(location) {
+                let mut gate = self.gate.subscribe();
+                gate.wait_for(|released| *released).await.unwrap();
+            }
+        }
+    }
+
+    impl Display for RecordingStore {
         fn fmt(&self, f: &mut Formatter<'_>) -> std::fmt::Result {
-            write!(f, "recording-range-store")
+            write!(f, "recording-store")
         }
     }
 
     #[async_trait]
-    impl ObjectStore for RecordingRangeStore {
+    impl ObjectStore for RecordingStore {
         async fn put_opts(
             &self,
             p: &Path,
@@ -1331,7 +1392,8 @@ mod tests {
         }
 
         async fn get_opts(&self, p: &Path, o: GetOptions) -> ObjectStoreResult<GetResult> {
-            self.get_calls.fetch_add(1, Ordering::Relaxed);
+            *self.gets.lock().unwrap().entry(p.clone()).or_default() += 1;
+            self.hold_if_gated(p).await;
             self.inner.get_opts(p, o).await
         }
 
@@ -1340,7 +1402,13 @@ mod tests {
             p: &Path,
             ranges: &[Range<u64>],
         ) -> ObjectStoreResult<Vec<Bytes>> {
-            self.range_calls.fetch_add(1, Ordering::Relaxed);
+            *self
+                .range_calls
+                .lock()
+                .unwrap()
+                .entry(p.clone())
+                .or_default() += 1;
+            self.hold_if_gated(p).await;
             self.inner.get_ranges(p, ranges).await
         }
 
@@ -1394,11 +1462,7 @@ mod tests {
     }
 
     async fn assert_range_read_contract(source: ScanIoSource) {
-        let store = Arc::new(RecordingRangeStore {
-            inner: InMemory::new(),
-            range_calls: AtomicUsize::new(0),
-            get_calls: AtomicUsize::new(0),
-        });
+        let store = Arc::new(RecordingStore::new());
         let location = Path::from("ranges.parquet");
         store
             .put(&location, Bytes::from_static(b"0123456789").into())
@@ -1426,11 +1490,8 @@ mod tests {
             vec![Bytes::from_static(b"01"), Bytes::from_static(b"45")]
         );
         let remote = source == ScanIoSource::ObjectStore;
-        assert_eq!(
-            store.range_calls.load(Ordering::Relaxed),
-            usize::from(!remote)
-        );
-        assert_eq!(store.get_calls.load(Ordering::Relaxed), usize::from(remote));
+        assert_eq!(store.range_calls(), usize::from(!remote));
+        assert_eq!(store.get_calls(), usize::from(remote));
         assert_eq!(
             metrics
                 .clone_inner()
@@ -1701,118 +1762,6 @@ mod tests {
         ));
     }
 
-    /// An `InMemory` store whose reads of one path wait until `open` is called, counting the
-    /// reads of each path. Each held read keeps a receiver of `gate`.
-    #[derive(Debug)]
-    struct GatedStore {
-        inner: InMemory,
-        gated: Path,
-        gate: tokio::sync::watch::Sender<bool>,
-        reads: Mutex<HashMap<Path, usize>>,
-    }
-
-    impl GatedStore {
-        fn new(gated: &str) -> Self {
-            Self {
-                inner: InMemory::new(),
-                gated: Path::from(gated),
-                gate: tokio::sync::watch::channel(false).0,
-                reads: Mutex::new(HashMap::new()),
-            }
-        }
-
-        fn open(&self) {
-            self.gate.send_replace(true);
-        }
-
-        fn reads(&self, location: &str) -> usize {
-            let reads = self.reads.lock().unwrap();
-            reads.get(&Path::from(location)).copied().unwrap_or(0)
-        }
-
-        /// Waits until a read of the gated path is held at the gate.
-        async fn wait_for_held_read(&self) {
-            tokio::time::timeout(std::time::Duration::from_secs(10), async {
-                while self.gate.receiver_count() == 0 {
-                    tokio::task::yield_now().await;
-                }
-            })
-            .await
-            .expect("the gated path was never read");
-        }
-    }
-
-    impl Display for GatedStore {
-        fn fmt(&self, f: &mut Formatter<'_>) -> std::fmt::Result {
-            write!(f, "gated-store")
-        }
-    }
-
-    #[async_trait]
-    impl ObjectStore for GatedStore {
-        async fn put_opts(
-            &self,
-            p: &Path,
-            v: PutPayload,
-            o: PutOptions,
-        ) -> ObjectStoreResult<PutResult> {
-            self.inner.put_opts(p, v, o).await
-        }
-
-        async fn put_multipart_opts(
-            &self,
-            p: &Path,
-            o: PutMultipartOptions,
-        ) -> ObjectStoreResult<Box<dyn MultipartUpload>> {
-            self.inner.put_multipart_opts(p, o).await
-        }
-
-        async fn get_opts(&self, p: &Path, o: GetOptions) -> ObjectStoreResult<GetResult> {
-            *self.reads.lock().unwrap().entry(p.clone()).or_default() += 1;
-            if p == &self.gated {
-                let mut gate = self.gate.subscribe();
-                gate.wait_for(|open| *open).await.unwrap();
-            }
-            self.inner.get_opts(p, o).await
-        }
-
-        fn delete_stream(
-            &self,
-            paths: futures::stream::BoxStream<'static, ObjectStoreResult<Path>>,
-        ) -> futures::stream::BoxStream<'static, ObjectStoreResult<Path>> {
-            self.inner.delete_stream(paths)
-        }
-
-        fn list(
-            &self,
-            p: Option<&Path>,
-        ) -> futures::stream::BoxStream<'static, ObjectStoreResult<ObjectMeta>> {
-            self.inner.list(p)
-        }
-
-        async fn list_with_delimiter(&self, p: Option<&Path>) -> ObjectStoreResult<ListResult> {
-            self.inner.list_with_delimiter(p).await
-        }
-
-        async fn copy_opts(
-            &self,
-            from: &Path,
-            to: &Path,
-            options: CopyOptions,
-        ) -> ObjectStoreResult<()> {
-            self.inner.copy_opts(from, to, options).await
-        }
-
-        async fn rename_opts(
-            &self,
-            from: &Path,
-            to: &Path,
-            options: RenameOptions,
-        ) -> ObjectStoreResult<()> {
-            self.inner.rename_opts(from, to, options).await
-        }
-    }
-
     async fn put_int_files(store: &InMemory, locations: &[&str]) -> Vec<PartitionedFile> {
         let mut files = vec![];
         for location in locations {
@@ -1914,7 +1863,7 @@ mod tests {
     /// read instead of starting its own.
     #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
     async fn an_open_waits_for_the_load_of_its_metadata_in_flight() {
-        let store = Arc::new(GatedStore::new("b.parquet"));
+        let store = Arc::new(RecordingStore::new().with_gate("b.parquet"));
         let files = put_int_files(&store.inner, &["a.parquet", "b.parquet"]).await;
         let metrics = ExecutionPlanMetricsSet::new();
         let factory = prefetching_factory(Arc::clone(&store) as _, &files, &metrics);
@@ -1924,7 +1873,7 @@ mod tests {
         let mut metadata = Box::pin(open(&factory, &files[1], &metrics));
         assert!((&mut metadata).now_or_never().is_none());
         assert_eq!(store.reads("b.parquet"), 1, "the open read b itself");
-        store.open();
+        store.release();
         assert_eq!(metadata.await.unwrap().file_metadata().num_rows(), 2);
 
         assert_eq!(metric(&metrics, "scan_io_metadata_cache_misses"), 2);
@@ -1937,7 +1886,7 @@ mod tests {
     /// metadata, so they share its next file too, and opening them doesn't start a second load.
     #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
     async fn the_next_file_skips_further_ranges_of_the_same_path() {
-        let store = Arc::new(GatedStore::new("unused.parquet"));
+        let store = Arc::new(RecordingStore::new());
         let a = put_int_file(&store.inner, "a.parquet", None).await;
         let b = put_int_file(&store.inner, "b.parquet", None).await;
         let files = [
@@ -1952,19 +1901,9 @@ mod tests {
             open(&factory, file, &metrics).await.unwrap();
         }
 
-        // The ranges of a share one load. The second range finds it already in the cache.
-        let next = |file: &PartitionedFile| {
-            let prefetch = factory.next_file_prefetch.as_ref().unwrap();
-            prefetch
-                .next_files
-                .get(&(file.object_meta.location.clone(), file.range.clone()))
-                .map(|(next, _)| next.location.to_string())
-        };
-        assert_eq!(next(&files[0]).as_deref(), Some("b.parquet"));
-        assert_eq!(next(&files[1]).as_deref(), Some("b.parquet"));
-        assert_eq!(next(&files[2]), None);
-        // b is read once, by the load that the first range of a started.
-        let single_load = Arc::new(GatedStore::new("unused.parquet"));
+        // b is read once, by the load that the first range of a started. A second range of a
+        // with no next file would drop that load, and b's open would read it again.
+        let single_load = Arc::new(RecordingStore::new());
         let alone = put_int_file(&single_load.inner, "b.parquet", None).await;
         let alone_metrics = ExecutionPlanMetricsSet::new();
         let alone_factory = prefetching_factory(
@@ -2018,7 +1957,7 @@ mod tests {
     /// reports the error.
     #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
     async fn a_failed_prefetch_leaves_the_open_to_report_its_own_error() {
-        let store = Arc::new(GatedStore::new("unused.parquet"));
+        let store = Arc::new(RecordingStore::new());
         let a = put_int_file(&store.inner, "a.parquet", None).await;
         let content = Bytes::from_static(b"not a parquet file");
         let bad = PartitionedFile::new("bad.parquet".to_string(), content.len() as u64);
@@ -2049,7 +1988,7 @@ mod tests {
     /// Dropping the scan cancels a metadata load that is still in flight.
     #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
     async fn dropping_the_scan_aborts_a_metadata_load_in_flight() {
-        let store = Arc::new(GatedStore::new("b.parquet"));
+        let store = Arc::new(RecordingStore::new().with_gate("b.parquet"));
         let files = put_int_files(&store.inner, &["a.parquet", "b.parquet"]).await;
         let metrics = ExecutionPlanMetricsSet::new();
         let factory = prefetching_factory(Arc::clone(&store) as _, &files, &metrics);

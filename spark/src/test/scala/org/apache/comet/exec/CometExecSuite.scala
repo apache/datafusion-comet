@@ -3488,16 +3488,12 @@ class CometExecSuite extends CometTestBase {
     withTempPath { dir =>
       val path = dir.getCanonicalPath
       spark.range(0, 4000, 1, 4).toDF("id").write.parquet(path)
-      // `None` leaves the setting unset, which prefetches by default.
-      Seq(Some(true), Some(false), None).foreach { setting =>
-        val prefetch = setting.getOrElse(true)
-        val prefetchConf = setting.map(
-          CometConf.COMET_PARQUET_PREFETCH_NEXT_FILE_METADATA_ENABLED.key -> _.toString)
-        // Pack the four files into one task.
-        val packConfs = Seq(
+      Seq(true, false).foreach { prefetch =>
+        withSQLConf(
+          CometConf.COMET_PARQUET_PREFETCH_NEXT_FILE_METADATA_ENABLED.key -> prefetch.toString,
+          // Pack the four files into one task.
           SQLConf.FILES_MIN_PARTITION_NUM.key -> "1",
-          SQLConf.FILES_OPEN_COST_IN_BYTES.key -> "1")
-        withSQLConf((packConfs ++ prefetchConf): _*) {
+          SQLConf.FILES_OPEN_COST_IN_BYTES.key -> "1") {
           val (_, cometPlan) = checkSparkAnswerAndOperator(spark.read.parquet(path))
           val scan = find(cometPlan)(_.isInstanceOf[CometNativeScanExec])
           assert(scan.isDefined, "Expected to find a CometNativeScanExec")

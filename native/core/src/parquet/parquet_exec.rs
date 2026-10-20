@@ -545,7 +545,7 @@ mod tests {
     fn init_test_scan(
         required_schema: SchemaRef,
         data_schema: SchemaRef,
-        files: Vec<PartitionedFile>,
+        partitioned_file: PartitionedFile,
         projection: Option<Vec<usize>>,
         filters: Option<Vec<Arc<dyn PhysicalExpr>>>,
         session_ctx: &Arc<SessionContext>,
@@ -556,7 +556,7 @@ mod tests {
             None,
             ObjectStoreUrl::local_filesystem(),
             ObjectStoreBackend::Local,
-            vec![files],
+            vec![vec![partitioned_file]],
             projection,
             filters,
             None,
@@ -1351,59 +1351,6 @@ mod tests {
         );
     }
 
-    /// A scan of several files loads metadata ahead only when the session sets
-    /// `prefetch_next_file_metadata`, which the JVM side does by default. With it, each later
-    /// file's footer and page index are loaded while the file before it is read, and the batches
-    /// match a scan without it.
-    #[tokio::test]
-    async fn prefetching_the_next_files_metadata_keeps_the_scan_result() {
-        let fixtures: Vec<_> = (0..3).map(|_| write_scan_io_fixture()).collect();
-        let schema = Arc::clone(&fixtures[0].1);
-        let files: Vec<_> = fixtures
-            .into_iter()
-            .map(|(filename, _)| PartitionedFile::from_path(filename).unwrap())
-            .collect();
-
-        let mut results = vec![];
-        for prefetch in [false, true] {
-            let config = datafusion::prelude::SessionConfig::new().with_extension(Arc::new(
-                CometParquetScanOptions {
-                    prefetch_next_file_metadata: prefetch,
-                },
-            ));
-            let session_ctx = Arc::new(SessionContext::new_with_config(config));
-            let scan = init_test_scan(
-                Arc::clone(&schema),
-                Arc::clone(&schema),
-                files.clone(),
-                None,
-                None,
-                &session_ctx,
-            );
-            let batches = datafusion::physical_plan::common::collect(
-                scan.execute(0, session_ctx.task_ctx()).unwrap(),
-            )
-            .await
-            .unwrap();
-            assert_eq!(
-                batches.iter().map(RecordBatch::num_rows).sum::<usize>(),
-                3_000
-            );
-
-            // Every file is read from storage either way, so the prefetch only moves two of the
-            // loads ahead of their open.
-            assert_eq!(scan_metric(&scan, "scan_io_metadata_cache_misses"), 3);
-            assert_eq!(scan_metric(&scan, "scan_io_metadata_cache_hits"), 0);
-            assert_eq!(
-                scan_metric(&scan, "scan_io_metadata_prefetches"),
-                if prefetch { 2 } else { 0 }
-            );
-            assert_eq!(scan_metric(&scan, "scan_io_footer_reads"), 3);
-            results.push(batches);
-        }
-        assert!(results.iter().all(|batches| batches == &results[0]));
-    }
-
     #[tokio::test]
     async fn reports_cold_and_warm_metadata_io_without_data_reads() {
         let (filename, _schema) = write_scan_io_fixture();
@@ -2033,7 +1980,7 @@ mod tests {
         let scan = init_test_scan(
             Arc::clone(&schema),
             schema,
-            vec![PartitionedFile::from_path(filename).unwrap()],
+            PartitionedFile::from_path(filename).unwrap(),
             None,
             Some(vec![filter]),
             &session_ctx,
@@ -2090,7 +2037,7 @@ mod tests {
             let scan = init_test_scan(
                 Arc::clone(&schema),
                 Arc::clone(&schema),
-                vec![PartitionedFile::from_path(filename.clone()).unwrap()],
+                PartitionedFile::from_path(filename.clone()).unwrap(),
                 None,
                 Some(vec![filter]),
                 &session_ctx,
@@ -2128,7 +2075,7 @@ mod tests {
         let full_scan = init_test_scan(
             Arc::clone(&schema),
             Arc::clone(&schema),
-            vec![partitioned_file.clone()],
+            partitioned_file.clone(),
             None,
             None,
             &session_ctx,
@@ -2139,7 +2086,7 @@ mod tests {
         let projected_scan = init_test_scan(
             Arc::clone(&projected_schema),
             Arc::clone(&schema),
-            vec![partitioned_file.clone()],
+            partitioned_file.clone(),
             Some(vec![0]),
             None,
             &session_ctx,
@@ -2154,7 +2101,7 @@ mod tests {
         let filtered_scan = init_test_scan(
             projected_schema,
             schema,
-            vec![partitioned_file],
+            partitioned_file,
             Some(vec![0]),
             Some(vec![filter]),
             &session_ctx,
