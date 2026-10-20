@@ -120,3 +120,15 @@ any version other than 4.2.0 falls back even if it includes SPARK-54918. A vendo
 reports 4.2.0 but includes SPARK-59602 still runs natively; set
 `spark.comet.expression.ArrayDistinct.enabled=false` and
 `spark.comet.expression.ArrayUnion.enabled=false` on such a build.
+
+## `arrays_overlap`
+
+`arrays_overlap` runs natively on every Spark version and follows that version's rule for `FLOAT`
+and `DOUBLE` elements in a flat array. Spark 4.0.5+, 4.1.4+, and 4.2+ treat `-0.0` and `0.0` as one
+value (SPARK-54918, SPARK-59602), and earlier releases keep them apart. Every NaN representation is
+one value on every version, and nested arrays and structs compare their elements in Spark's order,
+in which the two zeros are equal.
+
+Comet chooses the rule by the Spark version number. On a vendor build that reports an older
+version but includes SPARK-59602, Comet returns `false` for two flat arrays whose only common value
+is a zero of opposite sign, where Spark returns `true`.

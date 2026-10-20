@@ -23,7 +23,7 @@ import scala.util.Random
 
 import org.apache.hadoop.fs.Path
 import org.apache.spark.sql.CometTestBase
-import org.apache.spark.sql.catalyst.expressions.{ArrayAppend, ArrayDistinct, ArrayExcept, ArrayInsert, ArrayIntersect, ArrayJoin, ArrayRepeat, ArrayUnion}
+import org.apache.spark.sql.catalyst.expressions.{ArrayAppend, ArrayDistinct, ArrayExcept, ArrayInsert, ArrayIntersect, ArrayJoin, ArrayRepeat, ArraysOverlap, ArrayUnion}
 import org.apache.spark.sql.catalyst.expressions.{ArrayContains, ArrayRemove}
 import org.apache.spark.sql.catalyst.expressions.{AttributeReference, Cast, CreateArray, ElementAt, Literal, MonotonicallyIncreasingID}
 import org.apache.spark.sql.execution.adaptive.AdaptiveSparkPlanHelper
@@ -33,7 +33,7 @@ import org.apache.spark.sql.types.{ArrayType, DoubleType, FloatType, IntegerType
 
 import org.apache.comet.CometSparkSessionExtensions.{isSpark35Plus, isSpark40Plus}
 import org.apache.comet.DataTypeSupport.isComplexType
-import org.apache.comet.serde.{ArraySetSupport, CometArrayDistinct, CometArrayExcept, CometArrayJoin, CometArrayRemove, CometArrayReverse, CometArrayUnion, CometFlatten, Compatible, ExprOuterClass, Incompatible}
+import org.apache.comet.serde.{ArraySetSupport, CometArrayDistinct, CometArrayExcept, CometArrayJoin, CometArrayRemove, CometArrayReverse, CometArraysOverlap, CometArrayUnion, CometFlatten, Compatible, ExprOuterClass, Incompatible}
 import org.apache.comet.testing.{DataGenOptions, ParquetGenerator, SchemaGenOptions}
 
 class CometArrayExpressionSuite extends CometTestBase with AdaptiveSparkPlanHelper {
@@ -729,6 +729,29 @@ class CometArrayExpressionSuite extends CometTestBase with AdaptiveSparkPlanHelp
     // A nullable delimiter needs none: array_to_string already returns null for it.
     val nullableDelimiter = convert(ArrayJoin(nullableArray, nullableStr, None))
     assert(nullableDelimiter.isDefined && !nullableDelimiter.get.hasIf)
+  }
+
+  test("arrays_overlap native variant by Spark version") {
+    // 4.2.0 normalizes the arguments in the plan (SPARK-54918), and 4.0.5+, 4.1.4+ and 4.2.1+
+    // normalize during evaluation (SPARK-59602). Where Spark normalizes, -0.0 and 0.0 are one
+    // value in a flat FLOAT or DOUBLE array, which no pinned Spark profile can show: 4.2.0
+    // normalizes the arguments before the native kernel sees them.
+    Seq("3.4.3", "3.5.9", "4.0.0", "4.0.4", "4.0.4-SNAPSHOT", "4.1.0", "4.1.3").foreach {
+      version =>
+        assert(CometArraysOverlap.nativeFunction(version) == "spark_arrays_overlap", version)
+    }
+    Seq("4.0.5", "4.0.10", "4.1.4", "4.2.0", "4.2.1", "4.3.0", "5.0.0").foreach { version =>
+      assert(
+        CometArraysOverlap.nativeFunction(version) == "spark_arrays_overlap_normalized",
+        version)
+    }
+    // convert asks for the variant of the Spark version it runs on.
+    val array = AttributeReference("a", ArrayType(DoubleType))()
+    val proto =
+      CometArraysOverlap.convert(ArraysOverlap(array, array), Seq(array), binding = false)
+    assert(
+      proto.map(_.getScalarFunc.getFunc) ==
+        Some(CometArraysOverlap.nativeFunction(org.apache.spark.SPARK_VERSION)))
   }
 
   test("arrays_overlap") {

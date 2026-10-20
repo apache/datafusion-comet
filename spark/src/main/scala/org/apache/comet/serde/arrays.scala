@@ -289,6 +289,16 @@ object CometArraysOverlap
   override def getSupportLevel(expr: ArraysOverlap): SupportLevel =
     ArrayElementEqualitySupport.getSupportLevel("arrays_overlap", expr.left.dataType)
 
+  /**
+   * The native variant for a Spark version. Where ArraySetSupport.normalizesFloats holds, Spark
+   * normalizes flat FLOAT and DOUBLE elements, so -0.0 and 0.0 are one value, and the
+   * `_normalized` variant matches them that way. Earlier releases keep the zeros apart. Both
+   * variants treat every NaN as one value and compare nested elements in Spark's SQL ordering.
+   */
+  def nativeFunction(version: String): String =
+    if (ArraySetSupport.normalizesFloats(version)) "spark_arrays_overlap_normalized"
+    else "spark_arrays_overlap"
+
   override def convert(
       expr: ArraysOverlap,
       inputs: Seq[Attribute],
@@ -297,7 +307,7 @@ object CometArraysOverlap
     val rightArrayExprProto = exprToProtoInternal(expr.right, inputs, binding)
 
     val arraysOverlapScalarExpr = scalarFunctionExprToProtoWithReturnType(
-      "spark_arrays_overlap",
+      nativeFunction(SPARK_VERSION),
       BooleanType,
       false,
       leftArrayExprProto,
@@ -554,6 +564,19 @@ private[comet] object ArraySetSupport {
   // CreateArray, If, CaseWhen, and Coalesce recursively without wrapping the resulting array.
   def normalizesArgumentsInPlan(version: String): Boolean =
     Utils.majorMinorPatchVersion(version).contains((4, 2, 0))
+
+  // Spark 4.2.0 normalizes the arguments of arrays_overlap in the plan (SPARK-54918), and 4.0.5,
+  // 4.1.4 and 4.2.1 normalize while evaluating it (SPARK-59602). Either way, Spark treats -0.0
+  // and 0.0 as one value in a flat FLOAT or DOUBLE array, which CometArraysOverlap.nativeFunction
+  // matches. Earlier releases keep them apart. The check reads the version rather than a
+  // KnownFloatingPointNormalized marker, because SPARK-59602 adds no marker, and SPARK-54918
+  // normalizes CreateArray, If, CaseWhen and Coalesce without wrapping the resulting array.
+  def normalizesFloats(version: String): Boolean =
+    Utils.majorMinorPatchVersion(version).exists {
+      case (4, 0, patch) => patch >= 5
+      case (4, 1, patch) => patch >= 4
+      case (major, minor, _) => major > 4 || (major == 4 && minor >= 2)
+    }
 
   def supportLevel(dataType: DataType): SupportLevel = {
     if (SupportLevel.containsType(dataType, classOf[FloatType], classOf[DoubleType]) &&
