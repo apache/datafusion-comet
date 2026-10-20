@@ -42,7 +42,7 @@ admitted when:
 - it has between 1 and 1024 partitions.
 
 A root `CollectLimitExec`, which Spark plans for `take`, `head` and `show`, is kept above the
-local query. Such plans have no exchange, so AQE does not wrap them and they are admitted
+local query, and reads it as described under result delivery. Such plans have no exchange, so AQE does not wrap them and they are admitted
 whether or not AQE is enabled.
 
 ## Execution
@@ -62,10 +62,8 @@ single partition. That partition's task creates the native graph:
   order. At most `spark.executor.cores` partitions (N for `local[N]`) run at once, each up to two
   batches ahead, and the next starts when the first is delivered, as Spark runs at most that
   many tasks. A partition's operators register their memory consumers when it starts, so this
-  also bounds how many share the task's memory pool. The result therefore has Spark's row order, and
-  a limit returns the same rows as Spark's `executeTake`. A partition's error is reported when its
-  turn comes, so a limit satisfied by earlier partitions does not fail on a later one, as with
-  `executeTake`, which never evaluates the partitions it does not need.
+  also bounds how many share the task's memory pool. The result therefore has Spark's row order.
+  A partition's error is reported when its turn comes.
 
 `CometLocalExec` reports `UnknownPartitioning(1)`: the result is one partition, but its rows
 are not clustered by anything, so a query over a cached local result still gets the exchange
@@ -84,21 +82,24 @@ Arrow arrays use `prepare_output` and `NativeUtil`; an imported batch stays vali
 native query is closed, until the JVM closes it. A pull returns "pending" after 50 ms, so that
 the task can check whether it was killed.
 
-`CometLocalResultExec` sits above Spark's columnar-to-row transition. For `collect` and `take`
-it still runs the single task as a Spark job, which keeps cancellation, job groups and SQL
-metrics, but the task copies its rows into a driver-side slot instead of returning an encoded
-task result. Spark would otherwise encode and compress every row in that one task and decode
+`CometLocalResultExec` sits above Spark's columnar-to-row transition. For `collect` it still
+runs the single task as a Spark job, which keeps cancellation, job groups and SQL metrics, but
+the task copies its rows into a driver-side slot instead of returning an encoded task result. Spark would otherwise encode and compress every row in that one task and decode
 them on the driver, all on one thread. While copying, the task counts uncompressed `UnsafeRow`
 bytes and stops reading, which closes the native query, once they exceed
 `spark.driver.maxResultSize`; the driver then fails the action. Spark counts compressed bytes,
 so this check is the stricter one. On a non-local master the node uses Spark's ordinary
 collect.
 
-An iterator fetches one result partition at a time so that it holds at most one, but a local
-query has a single partition holding the whole result. `toLocalIterator`, which also serves the
-Thrift server's incremental collect, therefore runs the native block as ordinary Comet execution,
-one Spark task per partition. Consumers that read the result RDD partition by partition, such as
-PySpark's `toLocalIterator`, still receive the whole result as one partition.
+Spark's other actions read a result partition by partition: a take requests partitions in
+growing batches until it has enough rows, an iterator fetches one partition at a time so that it
+holds at most one, and a tail scans partitions from the last one. A local query has a single
+partition holding the whole result, so `take`, `head`, `show`, `limit(n).collect()`,
+`toLocalIterator` (which also serves the Thrift server's incremental collect) and PySpark's
+`tail` run the native block as ordinary Comet execution, one Spark task per partition. The
+partitions they evaluate, and so the rows they return and the errors they raise, are Spark's.
+Consumers that read the result RDD partition by partition, such as PySpark's `toLocalIterator`,
+still receive the whole result as one partition.
 
 ## Lifecycle and cancellation
 
@@ -127,5 +128,5 @@ cd ..
 The native tests cover partition-order delivery, the bound on running partitions, errors reported in a partition's turn, cancellation with busy workers,
 the one-batch handoff and runtime shutdown. `CometLocalExecutionSuite` compares admitted queries
 with Spark's results and order, and covers ranges Spark would overflow, declined expressions,
-AQE, reported orderings, limits that stop before a failing partition, iterators, many partitions with sorts in a small memory pool, caching, the result size limit, job and task cancellation, and native errors. After
+AQE, reported orderings, takes and limits, iterators, tails, many partitions with sorts in a small memory pool, caching, the result size limit, job and task cancellation, and native errors. After
 each test it checks that no native query, imported Arrow memory or result slot is left.

@@ -329,13 +329,33 @@ class CometLocalExecutionSuite
     }
   }
 
-  test("collect and take hand local results to the driver within a Spark job") {
+  test("collect hands local results to the driver, and take runs as ordinary execution") {
     val query = spark.range(0, 200, 1, 5).selectExpr("id", "id % 3 AS k")
     assert(query.queryExecution.executedPlan.isInstanceOf[CometLocalResultExec])
     assert(
       query.collect().toSeq == expected(
         spark.range(0, 200, 1, 5).selectExpr("id", "id % 3 AS k")))
     assert(query.take(4).map(_.getLong(0)).toSeq == (0L until 4L))
+  }
+
+  test("a take evaluates the partitions Spark requests together") {
+    withConf("spark.sql.ansi.enabled", "true") {
+      // After the first partition supplies one row, Spark requests the second and third
+      // together, and the third divides by zero at id 4, although the second has the missing row.
+      def query(): DataFrame =
+        spark
+          .range(0, 6, 1, 3)
+          .filter("id % 2 = 0")
+          .selectExpr("100L DIV (4L - id) AS v")
+          .limit(2)
+      assert(localNodes(query()).size == 1, query().queryExecution.executedPlan.toString)
+      val failure = intercept[Exception](query().collect())
+      assert(failure.getMessage.contains("DIVIDE_BY_ZERO"), failure.getMessage)
+      val sparkFailure = withConf("spark.comet.enabled", "false") {
+        intercept[Exception](query().collect())
+      }
+      assert(sparkFailure.getMessage.contains("DIVIDE_BY_ZERO"), sparkFailure.getMessage)
+    }
   }
 
   test("job group cancellation interrupts a local collect") {
@@ -370,15 +390,17 @@ class CometLocalExecutionSuite
     assert(plan.isInstanceOf[CometLocalResultExec], plan.toString)
     // Each two-long UnsafeRow is 24 bytes, so 1,000 bytes fit 41 rows and the 42nd exceeds it.
     val failure = intercept[SparkException] {
-      LocalResultHandoff.collect(plan.execute(), -1, 1000)
+      LocalResultHandoff.collect(plan.execute(), 1000)
     }
     assert(failure.getMessage.contains("spark.driver.maxResultSize"), failure.getMessage)
     assert(failure.getMessage.contains("at least 1008 bytes"), failure.getMessage)
     assert(new NativeLocal().activeQueries() == 0)
-    // A take within the limit still succeeds against the same bound.
-    assert(LocalResultHandoff.collect(plan.execute(), 41, 1000).length == 41)
+    // A result within the limit still succeeds against the same bound.
+    def bounded(rows: Long) =
+      spark.range(0, rows, 1, 7).selectExpr("id", "id AS other").queryExecution.executedPlan
+    assert(LocalResultHandoff.collect(bounded(41).execute(), 1000).length == 41)
     // Non-positive limits mean unlimited, as in Spark.
-    assert(LocalResultHandoff.collect(plan.execute(), 100, 0).length == 100)
+    assert(LocalResultHandoff.collect(bounded(100).execute(), 0).length == 100)
   }
 
   test("Spark job cancellation releases a live local execution") {
