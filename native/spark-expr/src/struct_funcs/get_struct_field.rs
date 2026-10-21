@@ -15,12 +15,12 @@
 // specific language governing permissions and limitations
 // under the License.
 
-use arrow::array::{Array, StructArray};
+use arrow::array::{Array, ArrayRef, StructArray};
 use arrow::datatypes::{DataType, Field, Schema};
 use arrow::record_batch::RecordBatch;
 use datafusion::common::{DataFusionError, Result as DataFusionResult, ScalarValue};
 use datafusion::logical_expr::ColumnarValue;
-use datafusion::physical_expr::PhysicalExpr;
+use datafusion::physical_expr::{expressions::Literal, PhysicalExpr};
 use datafusion_comet_common::child_with_parent_nulls;
 use std::{
     fmt::{Display, Formatter},
@@ -49,6 +49,34 @@ impl PartialEq for GetStructField {
 impl GetStructField {
     pub fn new(child: Arc<dyn PhysicalExpr>, ordinal: usize) -> Self {
         Self { child, ordinal }
+    }
+
+    /// Read only an already-materialized literal field for consumer sizing. Do not evaluate
+    /// expressions or include unrelated sibling fields in the repeated-input estimate.
+    pub(crate) fn literal_field(&self) -> Option<ArrayRef> {
+        let value: ArrayRef = if let Some(literal) = self.child.downcast_ref::<Literal>() {
+            let ScalarValue::Struct(value) = literal.value() else {
+                return None;
+            };
+            Arc::<StructArray>::clone(value)
+        } else {
+            self.child.downcast_ref::<Self>()?.literal_field()?
+        };
+        let structure = value.as_any().downcast_ref::<StructArray>()?;
+        if structure.len() != 1 || self.ordinal >= structure.num_columns() {
+            return None;
+        }
+        child_with_parent_nulls(structure, self.ordinal).ok()
+    }
+
+    fn broadcast_field(child: ArrayRef, rows: usize) -> DataFusionResult<ColumnarValue> {
+        if rows == 1 {
+            // The masked child already has the required shape; retain its buffers.
+            return Ok(ColumnarValue::Array(child));
+        }
+        Ok(ColumnarValue::Array(
+            ScalarValue::try_from_array(child.as_ref(), 0)?.to_array_of_size(rows)?,
+        ))
     }
 
     fn child_field(&self, input_schema: &Schema) -> DataFusionResult<Arc<Field>> {
@@ -83,6 +111,11 @@ impl PhysicalExpr for GetStructField {
     }
 
     fn evaluate(&self, batch: &RecordBatch) -> DataFusionResult<ColumnarValue> {
+        // Select the full literal field chain before expanding it, so an unused wide sibling
+        // of a nested field is never materialized for every input row.
+        if let Some(child) = self.literal_field() {
+            return Self::broadcast_field(child, batch.num_rows());
+        }
         let child_value = self.child.evaluate(batch)?;
 
         match child_value {
@@ -101,12 +134,8 @@ impl PhysicalExpr for GetStructField {
             }
             ColumnarValue::Scalar(ScalarValue::Struct(struct_array)) => {
                 let child = child_with_parent_nulls(&struct_array, self.ordinal)?;
-                // Match a struct column's batch-sized output so downstream expressions,
-                // including IF's whole-batch branch shortcut, never receive a scalar field.
-                Ok(ColumnarValue::Array(
-                    ScalarValue::try_from_array(child.as_ref(), 0)?
-                        .to_array_of_size(batch.num_rows())?,
-                ))
+                // Keep the same array shape as a struct column, including IF branch shortcuts.
+                Self::broadcast_field(child, batch.num_rows())
             }
             value => Err(DataFusionError::Execution(format!(
                 "Expected a struct array, got {value:?}"

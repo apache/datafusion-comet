@@ -19,6 +19,7 @@
 
 package org.apache.comet.serde
 
+import scala.jdk.CollectionConverters._
 import scala.util.DynamicVariable
 
 import org.apache.spark.sql.catalyst.expressions.{Alias, Attribute, BoundReference, CaseWhen, Cast, Coalesce, CreateArray, CreateMap, CreateNamedStruct, DateFromUnixDate, DayOfWeek, ElementAt, EqualNullSafe, EqualTo, Expression, ExprId, GetArrayItem, GetArrayStructFields, GetMapValue, GetStructField, GreaterThan, GreaterThanOrEqual, Greatest, Hour, If, In, InSet, IsNotNull, IsNull, KnownNotNull, KnownNullable, Least, LessThan, LessThanOrEqual, Literal, Minute, NamedExpression, PreciseTimestampConversion, Second, SortOrder, ToUnixTimestamp, TryEval, UnixDate, UnixTimestamp, WeekDay}
@@ -30,6 +31,8 @@ import org.apache.spark.sql.execution.adaptive.{AdaptiveSparkPlanExec, QueryStag
 import org.apache.spark.sql.execution.aggregate.BaseAggregateExec
 import org.apache.spark.sql.execution.exchange.ReusedExchangeExec
 import org.apache.spark.sql.types._
+
+import com.google.protobuf.Message
 
 import org.apache.comet.CometSparkSessionExtensions.withFallbackReason
 import org.apache.comet.serde.QueryPlanSerde.{serializeDataType, supportedDataType}
@@ -173,6 +176,43 @@ object CometScalarSubquery extends CometExpressionSerde[ScalarSubquery] {
     case _ => false
   }
 
+  private def containsVariableWidth(dt: DataType): Boolean = dt match {
+    case StringType | BinaryType => true
+    case s: StructType => s.fields.exists(f => containsVariableWidth(f.dataType))
+    case _ => false
+  }
+
+  private def hasVariableWidthStructSubquery(expr: Expression): Boolean =
+    expr.containsPattern(PLAN_EXPRESSION) && expr.exists {
+      case subquery: ExecSubqueryExpression =>
+        subquery.dataType.isInstanceOf[StructType] && containsVariableWidth(subquery.dataType)
+      case _ => false
+    }
+
+  /** Opaque JVM kernels cannot participate in the native consumer's bounded evaluation. */
+  private[serde] def dispatchedConsumerFallbackReason(
+      expr: Expression,
+      proto: ExprOuterClass.Expr): Option[String] = {
+    def containsDispatch(message: Message): Boolean = message match {
+      case e: ExprOuterClass.Expr if e.hasJvmScalarUdf => true
+      case other =>
+        other.getAllFields.values().asScala.exists {
+          case child: Message => containsDispatch(child)
+          case children: java.util.List[_] =>
+            children.asScala.exists {
+              case child: Message => containsDispatch(child)
+              case _ => false
+            }
+          case _ => false
+        }
+    }
+    if (hasVariableWidthStructSubquery(expr) && containsDispatch(proto)) {
+      Some("JVM-dispatched consumers of variable-width struct scalar subqueries require Spark")
+    } else {
+      None
+    }
+  }
+
   private def isTimestamp(dt: DataType): Boolean =
     dt == TimestampType || dt == TimestampNTZType
 
@@ -220,6 +260,13 @@ object CometScalarSubquery extends CometExpressionSerde[ScalarSubquery] {
     if (!currentPlanHasStructSubquery.value && !derivedInput &&
       (!expr.containsPattern(PLAN_EXPRESSION) || !ExecSubqueryExpression.hasSubquery(expr))) {
       return None
+    }
+
+    // Native consumers may change batch boundaries to avoid repeating a large scalar field.
+    // Stateful consumers must retain Spark's evaluation order and their pre-existing fallback.
+    if (!expr.deterministic && hasVariableWidthStructSubquery(expr)) {
+      return Some(
+        "Nondeterministic consumers of variable-width struct scalar subqueries require Spark")
     }
 
     val touchesCalendar =

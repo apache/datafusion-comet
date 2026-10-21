@@ -3396,6 +3396,61 @@ class CometExecSuite extends CometTestBase {
     }
   }
 
+  test("large merged scalar fields are consumed before broadcast") {
+    val numRows = 8192
+    val bytes = 262144
+    withSQLConf(
+      SQLConf.ADAPTIVE_EXECUTION_ENABLED.key -> "false",
+      SQLConf.SUBQUERY_REUSE_ENABLED.key -> "true",
+      CometConf.COMET_BATCH_SIZE.key -> numRows.toString,
+      CometConf.COMET_SHUFFLE_MODE.key -> "jvm") {
+      withTempPath { source =>
+        withTempPath { outer =>
+          withSQLConf(CometConf.COMET_ENABLED.key -> "false") {
+            Seq("a" * bytes, "b" * bytes)
+              .toDF("s")
+              .coalesce(1)
+              .write
+              .parquet(source.getCanonicalPath)
+            spark.range(0, numRows.toLong, 1, 1).write.parquet(outer.getCanonicalPath)
+          }
+          withParquetTable(source.getCanonicalPath, "large_scalar_source") {
+            withParquetTable(outer.getCanonicalPath, "large_scalar_outer") {
+              assert(spark.table("large_scalar_outer").inputFiles.length == 1)
+              val df = sql("""
+                |SELECT id, octet_length((SELECT max(s) FROM large_scalar_source)),
+                |           octet_length((SELECT min(s) FROM large_scalar_source))
+                |FROM large_scalar_outer
+                |""".stripMargin)
+              val merged = df.queryExecution.optimizedPlan.collect { case p =>
+                p.expressions.flatMap(_.collect {
+                  case GetStructField(s: LogicalScalarSubquery, _, _)
+                      if s.dataType.isInstanceOf[StructType] =>
+                    s
+                })
+              }.flatten
+              assert(merged.exists(_.dataType.asInstanceOf[StructType].length == 2))
+              val (_, plan) = checkSparkAnswerAndOperator(df, Seq(classOf[CometProjectExec]))
+              val projections = stripAQEPlan(plan).collect {
+                case p: CometProjectExec
+                    if p.projectList.exists(_.exists(_.prettyName == "octet_length")) =>
+                  p
+              }
+              assert(projections.nonEmpty, s"Expected a native octet_length projection: $plan")
+              projections.foreach { projection =>
+                val sizes = projection
+                  .executeColumnar()
+                  .mapPartitions(batches => batches.map(_.numRows()))
+                  .collect()
+                assert(sizes.toSeq == Seq(numRows), s"Expected one full batch: ${sizes.toSeq}")
+              }
+            }
+          }
+        }
+      }
+    }
+  }
+
   test("merged timestamp scalar clocks over a mixed two-row batch") {
     withSQLConf(
       SQLConf.SUBQUERY_REUSE_ENABLED.key -> "true",

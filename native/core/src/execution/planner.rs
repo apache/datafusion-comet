@@ -115,8 +115,9 @@ use datafusion_comet_spark_expr::{
     coerce_to_common_type, create_case_when, create_if_expr, jvm_udf::JvmScalarUdfExpr,
     spark_in_list, ArrayInsert, Cast, CheckOverflow, CreateNamedStruct,
     DecimalRescaleCheckOverflow, FloatOperands, GetArrayStructFields, GetStructField, IfExpr,
-    ListExtract, NormalizeNaNAndZero, NormalizeNestedFloats, NullShortCircuit, SparkCastOptions,
-    ToJson, UnboundColumn, WideDecimalBinaryExpr, WideDecimalOp,
+    ListExtract, NormalizeNaNAndZero, NormalizeNestedFloats, NullShortCircuit,
+    ScalarSubqueryConsumer, SparkCastOptions, ToJson, UnboundColumn, WideDecimalBinaryExpr,
+    WideDecimalOp,
 };
 use itertools::Itertools;
 use jni::objects::{Global, JObject};
@@ -616,6 +617,16 @@ impl PhysicalPlanner {
 
     /// Create a DataFusion physical expression from Spark physical expression
     pub(crate) fn create_expr(
+        &self,
+        spark_expr: &Expr,
+        input_schema: SchemaRef,
+    ) -> Result<Arc<dyn PhysicalExpr>, ExecutionError> {
+        Ok(ScalarSubqueryConsumer::wrap(
+            self.create_expr_inner(spark_expr, input_schema)?,
+        ))
+    }
+
+    fn create_expr_inner(
         &self,
         spark_expr: &Expr,
         input_schema: SchemaRef,

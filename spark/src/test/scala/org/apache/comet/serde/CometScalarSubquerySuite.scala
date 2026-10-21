@@ -20,7 +20,7 @@
 package org.apache.comet.serde
 
 import org.apache.spark.sql.CometTestBase
-import org.apache.spark.sql.catalyst.expressions.{Alias, Cast, Coalesce, DateAdd, DateDiff, DayOfWeek, EqualNullSafe, GetStructField, Hour, If, Literal, NamedExpression, TruncDate, UnixDate, WeekDay}
+import org.apache.spark.sql.catalyst.expressions.{Alias, Cast, Coalesce, DateAdd, DateDiff, DayOfWeek, EqualNullSafe, GetStructField, GreaterThanOrEqual, Hour, If, Literal, NamedExpression, OctetLength, Rand, TruncDate, UnixDate, WeekDay}
 import org.apache.spark.sql.execution.{ProjectExec, ScalarSubquery, SubqueryExec}
 import org.apache.spark.sql.types._
 
@@ -134,6 +134,46 @@ class CometScalarSubquerySuite extends CometTestBase with CometTypeShim {
         assert(supported(struct(struct(dt))), dt)
       }
     }
+  }
+
+  test("nondeterministic variable-width consumers retain Spark fallback") {
+    val condition = GreaterThanOrEqual(Rand(Literal(42L)), Literal(0.0))
+    Seq(StringType, BinaryType, struct(StringType)).foreach { dt =>
+      val field = GetStructField(subquery(struct(dt)), 0)
+      val expr = If(condition, field, Literal.create(null, dt))
+      assert(
+        CometScalarSubquery.consumerFallbackReason(expr).exists(_.startsWith("Nondeterministic")))
+      assert(QueryPlanSerde.exprToProtoInternal(expr, Seq.empty, binding = false).isEmpty)
+    }
+    val numeric = GetStructField(subquery(struct(LongType)), 0)
+    assert(
+      CometScalarSubquery.consumerFallbackReason(If(condition, numeric, Literal(0L))).isEmpty)
+    val plain = If(condition, Literal("x"), Literal(""))
+    assert(CometScalarSubquery.consumerFallbackReason(plain).isEmpty)
+    val deterministic = OctetLength(GetStructField(subquery(struct(StringType)), 0))
+    assert(CometScalarSubquery.consumerFallbackReason(deterministic).isEmpty)
+  }
+
+  test("opaque serialized consumers retain Spark fallback only for variable-width sources") {
+    val text = GetStructField(subquery(struct(StringType)), 0)
+    val numeric = GetStructField(subquery(struct(LongType)), 0)
+    val opaque = ExprOuterClass.Expr
+      .newBuilder()
+      .setJvmScalarUdf(ExprOuterClass.JvmScalarUdf.newBuilder().setClassName("opaque"))
+      .build()
+    val parent = ExprOuterClass.Expr
+      .newBuilder()
+      .setScalarFunc(ExprOuterClass.ScalarFunc.newBuilder().setFunc("test").addArgs(opaque))
+      .build()
+    Seq(opaque, parent).foreach { proto =>
+      assert(CometScalarSubquery.dispatchedConsumerFallbackReason(text, proto).isDefined)
+      assert(CometScalarSubquery.dispatchedConsumerFallbackReason(numeric, proto).isEmpty)
+      assert(CometScalarSubquery.dispatchedConsumerFallbackReason(Literal("x"), proto).isEmpty)
+    }
+    assert(
+      CometScalarSubquery
+        .dispatchedConsumerFallbackReason(text, ExprOuterClass.Expr.getDefaultInstance)
+        .isEmpty)
   }
 
   test("calendar consumers require an allow-list even when their result is not a date") {

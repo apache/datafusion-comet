@@ -1104,6 +1104,14 @@ object QueryPlanSerde extends Logging with CometExprShim with CometTypeShim {
               None
           }
       })
+      .filter { protoExpr =>
+        CometScalarSubquery.dispatchedConsumerFallbackReason(expr, protoExpr) match {
+          case Some(reason) =>
+            withFallbackReason(expr, reason)
+            false
+          case None => true
+        }
+      }
       .map { protoExpr =>
         // Record that this expression stayed in the native pipeline, for the expression coverage
         // stats in extended explain. `CometScalaUDF.emitJvmCodegenDispatch` marks the expressions
