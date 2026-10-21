@@ -148,12 +148,18 @@ object CometConf extends ShimCometConf {
     conf("spark.comet.scan.icebergNative.dataFileConcurrencyLimit")
       .category(CATEGORY_SCAN)
       .doc(
-        "The number of Iceberg data files to read concurrently within a single task. " +
-          "Higher values improve throughput for tables with many small files by overlapping " +
-          "I/O latency, but increase memory usage. Values between 2 and 8 are suggested.")
+        "The number of Iceberg data files the native Iceberg scan reads concurrently within " +
+          "a single task. Reading several files at once overlaps the latency of opening each " +
+          "one, which speeds up tables with many small files and high-latency storage such as " +
+          "S3, but each file in flight holds its own buffers, so memory use grows with the " +
+          "limit. When it is above 1, the scan returns batches from different files in no " +
+          "particular order, so rows can come back in a different order than with 1. Set it " +
+          "to 1 to read the files one after another, in the order Spark assigned them. The " +
+          "Iceberg Spark test jobs pin it to 1 through the environment variable, because " +
+          "Iceberg's tests expect file order from queries without an ORDER BY.")
       .intConf
       .checkValue(v => v > 0, "Data file concurrency limit must be positive")
-      .createWithDefault(1)
+      .createWithEnvVarOrDefault("COMET_ICEBERG_DATA_FILE_CONCURRENCY_LIMIT", 2)
 
   val COMET_ICEBERG_NESTED_SCHEMA_PRUNING_ENABLED: ConfigEntry[Boolean] =
     conf("spark.comet.scan.icebergNative.nestedSchemaPruning.enabled")
@@ -199,6 +205,18 @@ object CometConf extends ShimCometConf {
           "back to the CometFilter operator above the scan.")
       .booleanConf
       .createWithDefault(false)
+
+  val COMET_PARQUET_PREFETCH_NEXT_FILE_METADATA_ENABLED: ConfigEntry[Boolean] =
+    conf("spark.comet.parquet.prefetchNextFileMetadata.enabled")
+      .category(CATEGORY_PARQUET)
+      .doc(
+        "When enabled, a native Parquet scan that reads several files in one task loads the " +
+          "next file's footer and page index in the background while it reads the current " +
+          "file, so opening the next file doesn't wait for a storage round trip. This helps " +
+          "most when tasks read many small files from high-latency storage such as S3. Scans " +
+          "of encrypted Parquet files never load ahead.")
+      .booleanConf
+      .createWithDefault(true)
 
   val COMET_CONVERT_FROM_PARQUET_ENABLED: ConfigEntry[Boolean] =
     conf("spark.comet.convert.parquet.enabled")
