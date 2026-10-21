@@ -344,8 +344,14 @@ fn parquet_convert_array_impl(
         }
         // Unannotated BINARY read as a string. Spark's cast replaces malformed UTF-8 with
         // U+FFFD, where Arrow's safe cast below would return NULL. Top-level columns don't
-        // reach this arm (#7032).
-        (Binary, Utf8) => {
+        // reach this arm (#7032). The reader keeps a file's ARROW:schema types, so an Arrow
+        // writer's `LargeBinary` or `BinaryView` arrives as is; Spark's cast takes only
+        // `Binary`, and converting `LargeBinary` reuses its value buffer.
+        (Binary | LargeBinary | BinaryView, Utf8) => {
+            let array = match from_type {
+                Binary => array,
+                _ => cast_with_options(&array, &Binary, &PARQUET_OPTIONS)?,
+            };
             let mut cast_options =
                 SparkCastOptions::new(parquet_options.eval_mode, &parquet_options.timezone);
             cast_options.allow_cast_unsigned_ints = parquet_options.allow_cast_unsigned_ints;
