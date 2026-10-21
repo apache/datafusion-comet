@@ -155,6 +155,16 @@ object CometConf extends ShimCometConf {
       .checkValue(v => v > 0, "Data file concurrency limit must be positive")
       .createWithDefault(1)
 
+  val COMET_ICEBERG_NESTED_SCHEMA_PRUNING_ENABLED: ConfigEntry[Boolean] =
+    conf("spark.comet.scan.icebergNative.nestedSchemaPruning.enabled")
+      .category(CATEGORY_SCAN)
+      .doc(
+        "Whether the native Iceberg scan reads only the nested fields of a struct, list, or map " +
+          "column that Spark's nested schema pruning keeps. When false, it reads every nested " +
+          "field of a projected column and drops the unused ones after decoding.")
+      .booleanConf
+      .createWithDefault(true)
+
   val COMET_ICEBERG_IO_TIMEOUT: ConfigEntry[Long] =
     conf("spark.comet.iceberg.ioTimeout")
       .category(CATEGORY_SCAN)
@@ -189,6 +199,18 @@ object CometConf extends ShimCometConf {
           "back to the CometFilter operator above the scan.")
       .booleanConf
       .createWithDefault(false)
+
+  val COMET_PARQUET_PREFETCH_NEXT_FILE_METADATA_ENABLED: ConfigEntry[Boolean] =
+    conf("spark.comet.parquet.prefetchNextFileMetadata.enabled")
+      .category(CATEGORY_PARQUET)
+      .doc(
+        "When enabled, a native Parquet scan that reads several files in one task loads the " +
+          "next file's footer and page index in the background while it reads the current " +
+          "file, so opening the next file doesn't wait for a storage round trip. This helps " +
+          "most when tasks read many small files from high-latency storage such as S3. Scans " +
+          "of encrypted Parquet files never load ahead.")
+      .booleanConf
+      .createWithDefault(true)
 
   val COMET_CONVERT_FROM_PARQUET_ENABLED: ConfigEntry[Boolean] =
     conf("spark.comet.convert.parquet.enabled")
@@ -284,9 +306,8 @@ object CometConf extends ShimCometConf {
           "comes from a Spark operator converts that input to Arrow format and uses Comet " +
           "native shuffle instead. This applies only where native shuffle supports the " +
           "partitioning and Comet can convert all of the input's columns, which rules out " +
-          "calendar intervals. A shuffle that hashes a decimal wider than 18 digits, or a " +
-          "string or a value computed from a string, stays on the JVM columnar shuffle, so " +
-          "that it partitions rows as Spark does.")
+          "calendar intervals. A shuffle that hashes a string or a value computed from a string " +
+          "stays on the JVM columnar shuffle, so that it partitions rows as Spark does.")
       .booleanConf
       .createWithDefault(false)
 
@@ -328,7 +349,8 @@ object CometConf extends ShimCometConf {
       .doc(
         "Whether to enable native ExistenceJoin, produced when EXISTS / NOT EXISTS / IN is " +
           "combined with another predicate via OR. Sort-merge joins, residual (non-equi) join " +
-          "conditions, computed (non-column) join keys, and NOT IN fall back to Spark.")
+          "conditions, computed (non-column) join keys, and NOT IN combined with OR fall back " +
+          "to Spark.")
       .booleanConf
       .createWithDefault(true)
   val COMET_EXEC_AGGREGATE_ENABLED: ConfigEntry[Boolean] =
@@ -456,6 +478,32 @@ object CometConf extends ShimCometConf {
           "and is slower than the JVM implementation for small batches.")
       .booleanConf
       .createWithDefault(false)
+
+  val COMET_DIRECT_COLUMNAR_TO_ROW_ENABLED: ConfigEntry[Boolean] =
+    conf(s"$COMET_EXEC_CONFIG_PREFIX.columnarToRow.direct.enabled")
+      .category(CATEGORY_EXEC)
+      .doc(
+        "Experimental: Whether to use the direct columnar to row converter in the JVM " +
+          "columnar to row operator's non-codegen paths (including broadcast relation " +
+          "builds). The direct converter writes values straight from Arrow buffers into " +
+          "UnsafeRow format without per-value object allocation, which is significantly " +
+          "faster for decimal-heavy schemas. Schemas with unsupported data types fall back " +
+          "to the default conversion. Only applies when the JVM columnar to row operator is " +
+          "used (spark.comet.exec.columnarToRow.native.enabled=false).")
+      .booleanConf
+      .createWithDefault(false)
+
+  val COMET_DIRECT_COLUMNAR_TO_ROW_MIN_BATCH_SIZE: ConfigEntry[Int] =
+    conf(s"$COMET_EXEC_CONFIG_PREFIX.columnarToRow.direct.minBatchSize")
+      .category(CATEGORY_EXEC)
+      .doc(
+        "Experimental: Batches with fewer rows than this use the default conversion even " +
+          s"when $COMET_EXEC_CONFIG_PREFIX.columnarToRow.direct.enabled is true, since the " +
+          "direct converter's per-batch setup does not amortize on very small batches. Only " +
+          "applies when the direct columnar to row converter is enabled.")
+      .intConf
+      .checkValue(_ >= 0, "Must be >= 0.")
+      .createWithDefault(128)
 
   val COMET_EXEC_SORT_MERGE_JOIN_WITH_JOIN_FILTER_ENABLED: ConfigEntry[Boolean] =
     conf("spark.comet.exec.sortMergeJoinWithJoinFilter.enabled")
@@ -607,6 +655,21 @@ object CometConf extends ShimCometConf {
       .booleanConf
       .createWithDefault(false)
 
+  val COMET_EXEC_JOIN_DYNAMIC_FILTER_ALLOW_DETERMINISTIC_FILTER_PUSHDOWN: ConfigEntry[Boolean] =
+    conf(s"$COMET_EXEC_CONFIG_PREFIX.join.dynamicFilter.allowDeterministicFilterPushdown")
+      .category(CATEGORY_EXEC)
+      .doc(
+        "Allow native join runtime filters to reach Parquet readers through deterministic " +
+          "residual predicates. Requires spark.comet.exec.join.dynamicFilter.enabled. " +
+          "This can skip expression errors on rows eliminated before the residual runs, " +
+          "including division-by-zero and ANSI cast errors. Errors on retained rows and " +
+          "Parquet schema conversion checks are preserved. Nondeterministic predicates, " +
+          "all standalone projections (including column-only projections), and limits remain " +
+          "reader propagation boundaries. When false, " +
+          "only direct-column IS NOT NULL checks combined with AND can be crossed.")
+      .booleanConf
+      .createWithDefault(false)
+
   val COMET_EXEC_TOPK_FUSION_ENABLED: ConfigEntry[Boolean] =
     conf(s"$COMET_EXEC_CONFIG_PREFIX.topK.fusion.enabled")
       .category(CATEGORY_EXEC)
@@ -629,6 +692,37 @@ object CometConf extends ShimCometConf {
           "Unsupported readers retain ordinary TopK execution.")
       .booleanConf
       .createWithDefault(false)
+
+  // Used on native side. Check spark_config.rs how the config is used
+  val COMET_NATIVE_UDF_ENABLED: ConfigEntry[Boolean] =
+    conf("spark.comet.nativeUdf.enabled")
+      .category(CATEGORY_EXEC)
+      .doc(
+        "Whether native UDF libraries may be loaded. A native UDF is a shared library that " +
+          "runs with the full privileges of the JVM process, so an operator who does not want " +
+          "any can turn the feature off. When false, `CometNativeUDF.register` fails on the " +
+          "driver, and a plan that names a native UDF library fails on the executor rather " +
+          "than loading it.")
+      .booleanConf
+      .createWithDefault(true)
+
+  // Used on native side. Check spark_config.rs how the config is used
+  val COMET_NATIVE_UDF_ALLOWED_PATHS: ConfigEntry[Seq[String]] =
+    conf("spark.comet.nativeUdf.allowedPaths")
+      .category(CATEGORY_EXEC)
+      .doc(
+        "A comma-separated list of directories that native UDF libraries may be loaded from. " +
+          "When set, a library is loaded only if its path is absolute and, after symlinks and " +
+          "`..` are resolved, lies under one of these directories, which are themselves " +
+          "resolved the same way. A path outside them fails on the driver at registration and " +
+          "again on the executor. When empty, any path is allowed. This limits which files " +
+          "Comet will load, not what the code in them does, and it cannot protect against a " +
+          "file that is replaced after the check, so the directories should be writable only " +
+          "by trusted users. Like any session config, it can be changed by a user who can " +
+          "set Spark configs.")
+      .stringConf
+      .toSequence
+      .createWithDefault(Nil)
 
   val COMET_SCALA_UDF_CODEGEN_ENABLED: ConfigEntry[Boolean] =
     conf("spark.comet.exec.scalaUDF.codegen.enabled")
@@ -1228,6 +1322,20 @@ object CometConf extends ShimCometConf {
       .toSequence
       .createWithDefault(Nil)
 
+  val COMET_CONVERT_BROADCAST_BUILD_SIDE_ENABLED: ConfigEntry[Boolean] =
+    conf("spark.comet.convert.broadcastBuildSide.enabled")
+      .category(CATEGORY_EXEC)
+      .doc("When enabled, Comet converts a file or V2 scan that it cannot scan natively (for " +
+        "example a Text source) to Arrow when that scan feeds a broadcast join's build side and " +
+        "every scan on the probe side is already native, so the broadcast join runs natively " +
+        "over the large probe. The build side is usually small (auto-broadcasts are capped by " +
+        "the broadcast threshold), so the row to Arrow copy is usually cheap - though an " +
+        "explicit BROADCAST hint or a selective filter above the scan can make it larger. With " +
+        "dynamic partition pruning the dimension is also read a second time for the pruning " +
+        "subquery. Set this to false to keep such build sides on Spark.")
+      .booleanConf
+      .createWithDefault(true)
+
   val COMET_CASE_CONVERSION_ENABLED: ConfigEntry[Boolean] =
     conf("spark.comet.caseConversion.enabled")
       .category(CATEGORY_EXEC)
@@ -1299,13 +1407,19 @@ object CometConf extends ShimCometConf {
 
   val COMET_LIBHDFS_SCHEMES_KEY = "fs.comet.libhdfs.schemes"
 
+  // Declared so the value appears in the generated config reference and can be set at startup
+  // via `spark.hadoop.*`, but never read through this entry: the scan gates read the Hadoop key
+  // above through `NativeConfig.resolveScanLibhdfsSchemes`, so `core-site.xml` is honored too.
   val COMET_LIBHDFS_SCHEMES: OptionalConfigEntry[String] =
     conf(s"spark.hadoop.$COMET_LIBHDFS_SCHEMES_KEY")
       .category(CATEGORY_SCAN)
       .doc(
         "Defines filesystem schemes (e.g., hdfs, webhdfs) that the native side accesses " +
           "via libhdfs, separated by commas. Valid only when built with hdfs-opendal feature " +
-          "enabled.")
+          "enabled. Read from the Hadoop configuration, so it must be set before the " +
+          "SparkSession is created. A scheme listed only through a reader option is not read " +
+          "natively. libhdfs reads the settings of a listed scheme, such as " +
+          "`fs.<scheme>.impl`, from the executor's `core-site.xml`.")
       .stringConf
       .createOptional
 

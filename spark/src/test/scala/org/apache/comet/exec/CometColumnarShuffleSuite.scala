@@ -79,6 +79,22 @@ abstract class CometColumnarShuffleSuite extends CometTestBase with AdaptiveSpar
     checkCometExchange(df, 0, false)
   }
 
+  test("Fallback to Spark when shuffling a columnar child that is not a Comet operator") {
+    // Comet's rules run before Spark inserts columnar-to-row transitions, so with the Comet scan
+    // disabled the shuffle's child is Spark's vectorized Parquet scan, which is columnar. If the
+    // columnar shuffle accepted it, the shuffle writer would cast each ColumnarBatch to an
+    // InternalRow and fail with a ClassCastException.
+    withSQLConf(
+      CometConf.COMET_NATIVE_SCAN_ENABLED.key -> "false",
+      SQLConf.PARQUET_VECTORIZED_READER_ENABLED.key -> "true") {
+      withParquetTable((0 until 10).map(i => (i, i % 5)), "tbl") {
+        val df = sql("SELECT * FROM tbl").repartition(10, $"_1")
+        checkSparkAnswerAndFallbackReason(df, "is a neither row-based or a Comet operator")
+        checkCometExchange(df, 0, false)
+      }
+    }
+  }
+
   test("Fallback to Spark when shuffling CalendarIntervalType data") {
     val df = spark
       .sql("select id, make_interval(1,2,3,4,5,6,7) as i from range(100)")
@@ -124,6 +140,23 @@ abstract class CometColumnarShuffleSuite extends CometTestBase with AdaptiveSpar
     val df = sql("SELECT id, map(id, null) AS m FROM VALUES (1), (2), (3) AS t(id)")
     val shuffled = df.repartition(2, $"id")
     checkShuffleAnswer(shuffled, 1)
+  }
+
+  // Regression test for https://github.com/apache/datafusion-comet/issues/7062: the native
+  // row-to-Arrow conversion panicked on a struct with a `NullType` field, at the top level and
+  // inside another struct.
+  test("columnar shuffle on struct with NullType field") {
+    withParquetTable((0 until 50).map(i => Tuple1(i)), "tbl") {
+      Seq(
+        "SELECT _1, named_struct('x', _1, 'n', null) AS st FROM tbl",
+        "SELECT _1, named_struct('s', named_struct('x', _1, 'n', null)) AS st FROM tbl").foreach {
+        query =>
+          val roundRobin = sql(query).repartition(4)
+          checkShuffleAnswer(roundRobin, 1)
+          val hash = sql(query).repartition(4, $"_1")
+          checkShuffleAnswer(hash, 1)
+      }
+    }
   }
 
   test("columnar shuffle on nested struct including nulls") {
@@ -883,9 +916,7 @@ abstract class CometColumnarShuffleSuite extends CometTestBase with AdaptiveSpar
     // Spark's shuffle for no compatibility reason. Consulting a native-serde gate on a path that
     // never goes native is tracked separately in #5971; this test pins the floating-point half of
     // it, which #5506 fixed.
-    withSQLConf(
-      CometConf.COMET_EXEC_STRICT_FLOATING_POINT.key -> "true",
-      CometConf.getExprAllowIncompatConfigKey("SortOrder") -> "false") {
+    withSQLConf(CometConf.COMET_EXEC_STRICT_FLOATING_POINT.key -> "true") {
       withParquetTable(
         (0 until 20).map(i => (if (i % 3 == 0) -0.0d else i.toDouble, i)),
         "range_fp_tbl") {

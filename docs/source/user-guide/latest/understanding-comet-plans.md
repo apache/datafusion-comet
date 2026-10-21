@@ -306,7 +306,9 @@ by role. Names match what is shown in the plan output.
 ### Native Rust Operators
 
 These are implemented in Rust and run in DataFusion. When several appear
-consecutively in a plan, they execute as a single fused block.
+consecutively in a plan, they execute as a single fused block. The write operators
+(`CometWriteFiles`, `CometNativeWrite` and `CometIcebergWrite`) are the exception: each runs as its
+own native plan over its child's output.
 
 | Node                           | Spark equivalent                                                                  |
 | ------------------------------ | --------------------------------------------------------------------------------- |
@@ -329,7 +331,7 @@ consecutively in a plan, they execute as a single fused block.
 | `CometTakeOrderedAndProject`   | `TakeOrderedAndProjectExec`                                                       |
 | `CometWriteFiles`              | `WriteFilesExec` (Spark 4.0 and later, experimental native Parquet writes)        |
 | `CometNativeWrite`             | `DataWritingCommandExec` (Spark 3.x, experimental native Parquet writes)          |
-| `CometIcebergWrite`            | `IcebergWrite` (native Iceberg data-file writes)                                  |
+| `CometIcebergWrite`            | `IcebergWrite` (native Iceberg data-file writes, opt-in)                          |
 
 ### JVM-Side Operators
 
@@ -343,7 +345,7 @@ These keep their data on the JVM but participate in the Comet pipeline.
 | `CometBroadcastExchange` | Broadcast exchange producing serialized Arrow batches that the consumer can decode.                                                     |
 | `CometSubqueryBroadcast` | Companion to `CometBroadcastExchange` for dynamic partition pruning subqueries.                                                         |
 | `CometMapInBatch`        | Runs `mapInArrow` / `mapInPandas` Python UDFs on Comet's Arrow batches (experimental). See [PyArrow UDF Acceleration](pyarrow-udfs.md). |
-| `IcebergWrite`           | Executor-side Iceberg data-file write in Comet's split-operator Iceberg write plan. See [Iceberg Writes](iceberg-writes.md).            |
+| `IcebergWrite`           | Executor-side Iceberg data-file write in Comet's split-operator Iceberg write plan. See [Iceberg Writes](iceberg.md#writes).            |
 | `IcebergCommit`          | Driver-side commit for Comet's split-operator Iceberg write plan.                                                                       |
 
 ### Shuffle Operators

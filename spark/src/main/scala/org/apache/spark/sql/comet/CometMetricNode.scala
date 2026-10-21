@@ -437,6 +437,10 @@ object CometMetricNode {
         SQLMetrics.createSizeMetric(sc, "Serialized Parquet footer payload bytes read"),
       "scan_io_object_store_get_calls" ->
         SQLMetrics.createMetric(sc, "ObjectStore GET operations after range coalescing"),
+      "scan_io_http_observed_gets" ->
+        SQLMetrics.createMetric(sc, "S3 GETs observed by the HTTP connector"),
+      "scan_io_http_retries" ->
+        SQLMetrics.createMetric(sc, "S3 GET HTTP attempts after the first attempt"),
       "scan_io_object_store_get_requested_bytes" ->
         SQLMetrics.createSizeMetric(sc, "ObjectStore GET range bytes after range coalescing"),
       "scan_io_object_store_response_bytes_read" ->
@@ -447,6 +451,10 @@ object CometMetricNode {
         SQLMetrics.createMetric(sc, "Metadata loads served without storage I/O"),
       "scan_io_metadata_cache_misses" ->
         SQLMetrics.createMetric(sc, "Metadata loads requiring storage I/O"),
+      "scan_io_metadata_prefetches" ->
+        SQLMetrics.createMetric(
+          sc,
+          "Metadata loads read from storage ahead of the file's open and used by it"),
       "pushdown_rows_pruned" ->
         SQLMetrics.createMetric(sc, "Rows filtered out by predicates pushed into parquet scan"),
       "pushdown_rows_matched" ->
