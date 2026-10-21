@@ -106,6 +106,32 @@ Separately, Comet's native Parquet scan currently rejects string columns whose s
 valid UTF-8 rather than reading them like Spark
 ([#4121](https://github.com/apache/datafusion-comet/issues/4121)).
 
+## ANSI errors from rows skipped by LIMIT
+
+Native operators evaluate batches of rows. With `spark.sql.ansi.enabled=true`, some `LIMIT`
+plan shapes can therefore raise an expression error from a row that Spark stops before evaluating.
+For example, with a Parquet batch read in the order `(id, value) = (0, '0'), (1, '1')`:
+
+```sql
+SELECT value FROM t
+WHERE CAST(IF(id = 1, 'bad', value) AS INT) >= 0
+LIMIT 1
+```
+
+Spark returns `'0'` after the first row matches. Comet can evaluate the filter predicate on the
+second row in the same batch and raise `CAST_INVALID_INPUT`. SQL without `ORDER BY` does not
+guarantee this input order; the example describes a physical scan order that exposes the difference.
+
+Comet caps projection input when a collect limit directly consumes the projection. This protects
+that projection's expressions, but does not bound evaluation inside its child operators. Throwing
+filter predicates and projections beneath non-collect `LocalLimit` / `GlobalLimit` plans, such as
+a `LIMIT` inside a subquery, remain affected. These existing limitations and the investigation of
+already-ordered `TakeOrderedAndProject` inputs are tracked in
+[#7147](https://github.com/apache/datafusion-comet/issues/7147).
+
+An error on a row absent from the final result is not always a mismatch: Spark can also need to
+evaluate that row, for example to sort the input or process an `OFFSET` prefix.
+
 ## ANSI-mode error classes and messages
 
 Under `spark.sql.ansi.enabled=true`, several native error paths raise the error at the correct

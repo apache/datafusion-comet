@@ -734,6 +734,9 @@ case class CometExecRule(session: SparkSession, queryStagePrep: Boolean = false)
    *
    * Only handle an immediately adjacent native projection. A filter or join between the limit and
    * projection can require more input rows, and a blocking operator must consume its input.
+   * Non-collect LocalLimit/GlobalLimit plans can still evaluate a projection before limiting its
+   * output. That preexisting gap and throwing filter predicates are tracked separately in
+   * https://github.com/apache/datafusion-comet/issues/7147.
    */
   private def limitCollectProjectionInput(op: SparkPlan): SparkPlan = op match {
     case limit: CollectLimitExec if limit.limit >= 0 =>
@@ -745,29 +748,36 @@ case class CometExecRule(session: SparkSession, queryStagePrep: Boolean = false)
             case _: Attribute | Alias(_: Attribute, _) => true
             case _ => false
           }
-          if (onlyColumns) return op
-          project.child match {
-            case cap: CometLocalLimitExec if cap.limit <= limit.limit => return op
-            case _ =>
+          val alreadyCapped = project.child match {
+            case cap: CometLocalLimitExec => cap.limit <= limit.limit
+            case _ => false
           }
-          val bounded = for {
-            cap <- convertToComet(LocalLimitExec(limit.limit, project.child), CometLocalLimitExec)
-            rebuilt <- convertToComet(
-              project.originalPlan.withNewChildren(Seq(cap)),
-              CometProjectExec)
-          } yield {
-            // AQE can link the current projection to a materialized logical query stage.
-            // Its originalPlan may have an older link; serde also adds tags, so copyTagsFrom
-            // (which only copies into an empty tag map) would not preserve the current link.
-            project.getTagValue(SparkPlan.LOGICAL_PLAN_TAG).foreach { link =>
-              rebuilt.setTagValue(SparkPlan.LOGICAL_PLAN_TAG, link)
+          if (onlyColumns || alreadyCapped) {
+            op
+          } else {
+            // Use normal config and serde gating for the synthetic limit. If conversion fails,
+            // its fallback tags are discarded with it and the original plan is retained.
+            val bounded = for {
+              cap <- convertToComet(
+                LocalLimitExec(limit.limit, project.child),
+                CometLocalLimitExec)
+              rebuilt <- convertToComet(
+                project.originalPlan.withNewChildren(Seq(cap)),
+                CometProjectExec)
+            } yield {
+              // AQE can link the current projection to a materialized logical query stage.
+              // Its originalPlan may have an older link; serde also adds tags, so copyTagsFrom
+              // (which only copies into an empty tag map) would not preserve the current link.
+              project.getTagValue(SparkPlan.LOGICAL_PLAN_TAG).foreach { link =>
+                rebuilt.setTagValue(SparkPlan.LOGICAL_PLAN_TAG, link)
+              }
+              project.getTagValue(SparkPlan.LOGICAL_PLAN_INHERITED_TAG).foreach { link =>
+                rebuilt.setTagValue(SparkPlan.LOGICAL_PLAN_INHERITED_TAG, link)
+              }
+              limit.withNewChildren(Seq(rebuilt))
             }
-            project.getTagValue(SparkPlan.LOGICAL_PLAN_INHERITED_TAG).foreach { link =>
-              rebuilt.setTagValue(SparkPlan.LOGICAL_PLAN_INHERITED_TAG, link)
-            }
-            limit.withNewChildren(Seq(rebuilt))
+            bounded.getOrElse(op)
           }
-          bounded.getOrElse(op)
         case _ => op
       }
     case _ => op
