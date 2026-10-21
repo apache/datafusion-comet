@@ -1032,6 +1032,22 @@ Spark’s behavior of using Java <code class="docutils literal notranslate"><spa
 notation (e.g. a value of 12300 stored as <code class="docutils literal notranslate"><span class="pre">Decimal(7,-2)</span></code> with unscaled value 123 is rendered
 as <code class="docutils literal notranslate"><span class="pre">&quot;1.23E+4&quot;</span></code>).</p>
 </section>
+<section id="decimal-with-negative-scale-to-integer-and-timestamp">
+<h2>Decimal with Negative Scale to Integer and Timestamp<a class="headerlink" href="#decimal-with-negative-scale-to-integer-and-timestamp" title="Link to this heading">#</a></h2>
+<p>Casting a <code class="docutils literal notranslate"><span class="pre">DecimalType</span></code> with a negative scale to <code class="docutils literal notranslate"><span class="pre">ByteType</span></code>, <code class="docutils literal notranslate"><span class="pre">ShortType</span></code>, <code class="docutils literal notranslate"><span class="pre">IntegerType</span></code>,
+<code class="docutils literal notranslate"><span class="pre">LongType</span></code> or <code class="docutils literal notranslate"><span class="pre">TimestampType</span></code> has no native implementation, and neither does casting any of the
+integer types to a negative-scale <code class="docutils literal notranslate"><span class="pre">DecimalType</span></code>. Comet reports these as unsupported, which
+routes them through the JVM codegen dispatcher (Spark’s own generated code) inside the Comet
+pipeline, so the results match Spark exactly.</p>
+<p>The native kernels align scale by computing <code class="docutils literal notranslate"><span class="pre">10^|scale|</span></code> in fixed-point arithmetic, which
+overflows when the scale is negative. See
+<a class="reference external" href="https://github.com/apache/datafusion-comet/issues/5013">#5013</a>.</p>
+<p>All other cast directions to and from negative-scale decimals run natively: <code class="docutils literal notranslate"><span class="pre">FloatType</span></code> and
+<code class="docutils literal notranslate"><span class="pre">DoubleType</span></code>, <code class="docutils literal notranslate"><span class="pre">StringType</span></code> in both directions (subject to the config gate described above),
+casts from a negative-scale decimal to <code class="docutils literal notranslate"><span class="pre">BooleanType</span></code>, and widening to another <code class="docutils literal notranslate"><span class="pre">DecimalType</span></code>.
+Casts from <code class="docutils literal notranslate"><span class="pre">BooleanType</span></code> to a <code class="docutils literal notranslate"><span class="pre">DecimalType</span></code> route through the dispatcher at any scale, which is
+not specific to a negative one.</p>
+</section>
 <section id="complex-types">
 <h2>Complex Types<a class="headerlink" href="#complex-types" title="Link to this heading">#</a></h2>
 <p>Comet casts arrays, structs, and maps by casting each element, field, key, and value with the
@@ -1855,6 +1871,7 @@ or <code class="docutils literal notranslate"><span class="pre">LongType</span><
 <li class="toc-h2 nav-item toc-entry"><a class="reference internal nav-link" href="#timestampntz-casts">TimestampNTZ Casts</a></li>
 <li class="toc-h2 nav-item toc-entry"><a class="reference internal nav-link" href="#date-to-string">Date to String</a></li>
 <li class="toc-h2 nav-item toc-entry"><a class="reference internal nav-link" href="#decimal-with-negative-scale-to-string">Decimal with Negative Scale to String</a></li>
+<li class="toc-h2 nav-item toc-entry"><a class="reference internal nav-link" href="#decimal-with-negative-scale-to-integer-and-timestamp">Decimal with Negative Scale to Integer and Timestamp</a></li>
 <li class="toc-h2 nav-item toc-entry"><a class="reference internal nav-link" href="#complex-types">Complex Types</a></li>
 <li class="toc-h2 nav-item toc-entry"><a class="reference internal nav-link" href="#decimal-with-negative-scale-to-integral-types">Decimal with Negative Scale to Integral Types</a></li>
 <li class="toc-h2 nav-item toc-entry"><a class="reference internal nav-link" href="#legacy-mode">Legacy Mode</a></li>
