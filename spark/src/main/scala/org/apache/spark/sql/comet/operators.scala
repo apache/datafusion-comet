@@ -2816,6 +2816,14 @@ case class CometSortAggregateExec(
     this.copy(child = newChild)
 }
 
+object CometHashJoin {
+
+  // The fallback reason for an outer join whose streamed order cannot be checked.
+  private[apache] val uncheckedStreamedOrderReason: String =
+    "the streamed side's sort order, which this outer join has to keep, cannot be checked, " +
+      "so the join stays in Spark"
+}
+
 trait CometHashJoin {
 
   // Only BroadcastHashJoinExec can be null-aware (NOT IN subqueries).
@@ -2957,10 +2965,7 @@ trait CometHashJoin {
     val keepsStreamedOrder =
       runsAsRightOuterJoin(join.joinType, join.buildSide) && join.outputOrdering.nonEmpty
     if (keepsStreamedOrder && mayReportFalseOrder(streamed, countInPlan = false)) {
-      withFallbackReason(
-        join,
-        "the streamed side's sort order, which this outer join has to keep, cannot be " +
-          "checked, so it is not declared natively")
+      withFallbackReason(join, CometHashJoin.uncheckedStreamedOrderReason)
       return None
     }
     val streamedSortOrders =

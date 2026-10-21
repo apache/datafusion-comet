@@ -40,7 +40,7 @@ import org.apache.spark.sql.catalyst.expressions.{And, Ascending, Attribute, Att
 import org.apache.spark.sql.catalyst.optimizer.{BuildLeft, BuildRight, BuildSide}
 import org.apache.spark.sql.catalyst.plans.{LeftOuter, RightOuter}
 import org.apache.spark.sql.columnar.{CachedBatch, SimpleMetricsCachedBatch}
-import org.apache.spark.sql.comet.{CometBroadcastHashJoinExec, CometHashAggregateExec, CometHashJoinExec, CometInMemoryTableScanExec, CometSortAggregateExec, CometSortExec, CometSortMergeJoinExec}
+import org.apache.spark.sql.comet.{CometBroadcastHashJoinExec, CometHashAggregateExec, CometHashJoin, CometHashJoinExec, CometInMemoryTableScanExec, CometSortAggregateExec, CometSortExec, CometSortMergeJoinExec}
 import org.apache.spark.sql.comet.execution.arrow.{ArrowCachedBatchSerializer, CometCachedBatchHelper}
 import org.apache.spark.sql.comet.execution.shuffle.CometCelebornShuffleManager
 import org.apache.spark.sql.comet.util.Utils
@@ -3608,10 +3608,10 @@ class CometInMemoryCacheSuite extends CometTestBase {
                 def df: DataFrame = sql("SELECT /*+ BROADCAST(c) */ j.k, j.v, c._2 FROM " +
                   outerJoin("joined j", "small c", "j.k = c._1"))
                   .sortWithinPartitions("k")
-                val (_, plan) = checkSparkAnswerAndFallbackReason(
-                  df,
-                  "the streamed side's sort order, which this outer join has to keep, cannot " +
-                    "be checked, so it is not declared natively")
+                val (_, plan) =
+                  checkSparkAnswerAndFallbackReason(
+                    df,
+                    CometHashJoin.uncheckedStreamedOrderReason)
                 val planContext = s"$context\n$plan"
                 if (nativeCache) {
                   assert(
