@@ -1077,10 +1077,8 @@ class CometJoinSuite extends CometTestBase {
     }
   }
 
-  // Without forceShuffledHashJoin, and with broadcasts off, Spark plans a SortMergeJoin.
   private val forcedSmjQuery = "SELECT * FROM tbl_a JOIN tbl_b ON tbl_a._2 = tbl_b._1"
 
-  // tbl_b is the smaller side, so the hash join builds on the right.
   private def withForcedSmjTables(f: => Unit): Unit = {
     withParquetTable((0 until 1000).map(i => (i, i % 5)), "tbl_a") {
       withParquetTable((0 until 10).map(i => (i % 10, i + 2)), "tbl_b") {
@@ -1092,9 +1090,7 @@ class CometJoinSuite extends CometTestBase {
   private def rewriteReason(reason: String): String =
     s"Cannot rewrite SortMergeJoin to HashJoin: $reason"
 
-  // Checks that the SortMergeJoin and its sorts survived and that the kept join, which still
-  // runs natively, is not reported as a fallback. Returns Spark's size estimate of the build
-  // side, read through the join's logical link.
+  // Returns Spark's size estimate of the build side.
   private def assertSortMergeJoinKept(plan: SparkPlan): BigInt = {
     val joins = collect(plan) { case j: CometSortMergeJoinExec => j }
     assert(joins.size == 1, plan)
@@ -1210,8 +1206,6 @@ class CometJoinSuite extends CometTestBase {
   }
 
   test("forceShuffledHashJoin without maxBuildSize uses Spark's shuffled hash join size rule") {
-    // The limit is autoBroadcastJoinThreshold times the shuffle partition count. AQE is off so
-    // every run compares the same planning estimate.
     withForcedSmjTables {
       var estimate = BigInt(0)
       withSQLConf(
@@ -1223,8 +1217,6 @@ class CometJoinSuite extends CometTestBase {
         estimate = assertSortMergeJoinKept(cometPlan)
         assertKeptWithReason(cometPlan, 2)
       }
-      // A threshold just under the build side keeps it from being broadcast, while twice the
-      // threshold is over it.
       withSQLConf(
         SQLConf.ADAPTIVE_EXECUTION_ENABLED.key -> "false",
         CometConf.COMET_FORCE_SHJ.key -> "true",
@@ -1262,8 +1254,6 @@ class CometJoinSuite extends CometTestBase {
   }
 
   test("forceShuffledHashJoin keeps a SortMergeJoin whose build side has no size estimate") {
-    // A relation read from an RDD has no statistics, so Spark reports
-    // spark.sql.defaultSizeInBytes for it, which no limit admits.
     val schema = StructType(Seq(StructField("k", IntegerType), StructField("v", IntegerType)))
     def unsized(name: String): Unit = spark
       .createDataFrame(spark.sparkContext.parallelize((0 until 10).map(i => Row(i, i))), schema)
@@ -1303,9 +1293,7 @@ class CometJoinSuite extends CometTestBase {
     }
   }
 
-  // Both joins are on the same key, so EnsureRequirements puts no sort between them: the inner
-  // sort-merge join's output ordering satisfies the outer one. When the inner join becomes a
-  // hash join and the outer one is kept, the outer join needs a sort of its own.
+  // Both joins are on the same key, so EnsureRequirements puts no sort between them.
   private def withChainedJoinTables(midRows: Int, midKeys: Int)(f: => Unit): Unit = {
     withParquetTable((0 until 10000).map(i => (i % 100, i)), "big") {
       withParquetTable((0 until 10).map(i => (i * 10, i)), "small") {
@@ -1316,8 +1304,6 @@ class CometJoinSuite extends CometTestBase {
     }
   }
 
-  // forceShuffledHashJoin with no build size limit and broadcasts off, over the chained join
-  // tables.
   private def withForcedShjTables(adaptive: Boolean)(f: => Unit): Unit = withSQLConf(
     SQLConf.ADAPTIVE_EXECUTION_ENABLED.key -> adaptive.toString,
     SQLConf.ADAPTIVE_AUTO_BROADCASTJOIN_THRESHOLD.key -> "-1",
@@ -1346,8 +1332,6 @@ class CometJoinSuite extends CometTestBase {
     case _ => false
   }
 
-  // Checks the answer first, then that a kept sort-merge join reads the forced hash join
-  // through a sort.
   private def checkSortRestoredOverHashJoin(query: String): Unit = {
     val (_, cometPlan) = checkSparkAnswer(query)
     val inputs = collect(cometPlan) {
@@ -1389,11 +1373,7 @@ class CometJoinSuite extends CometTestBase {
     }
   }
 
-  // forceShuffledHashJoin never converts a LeftSemi or ExistenceJoin that builds on the right,
-  // whatever the build size, so these joins are kept above the forced inner join with no size
-  // limit.
-  // Each predicate also refers to small, so neither the filter nor the semi join is pushed below
-  // the inner join.
+  // Each predicate refers to small, so neither the filter nor the semi join is pushed down.
   for (adaptive <- Seq(false, true)) {
     test(s"forceShuffledHashJoin restores ordering for a kept ExistenceJoin, AQE=$adaptive") {
       withForcedShjTables(adaptive) {
@@ -1417,7 +1397,7 @@ class CometJoinSuite extends CometTestBase {
   }
 
   // A window partitioned by the join key gets no sort of its own, since the sort-merge join's
-  // output ordering satisfies it, so the window needs a sort once the join is a hash join.
+  // output ordering satisfies it, so the window needs that ordering restored too.
   for (adaptive <- Seq(false, true)) {
     test(s"forceShuffledHashJoin restores ordering for a window over the join, AQE=$adaptive") {
       withForcedShjTables(adaptive) {
@@ -1430,8 +1410,6 @@ class CometJoinSuite extends CometTestBase {
     }
   }
 
-  // Both joins use big._1, so no exchange separates them and the outer join's filter on small's
-  // keys reaches big below the intermediate join. Each build side is the smaller input.
   test("forceShuffledHashJoin chain keeps early join dynamic filtering") {
     withForcedShjTables(adaptive = false) {
       val query = "SELECT big._1, big._2, mid._2, small._2 FROM big " +
@@ -1441,8 +1419,7 @@ class CometJoinSuite extends CometTestBase {
           val (_, plan) = checkSparkAnswerAndOperator(sql(query))
           val joins = collect(plan) { case join: CometHashJoinExec => join }
           assert(joins.map(_.buildSide) == Seq(BuildRight, BuildRight), plan)
-          // big has 100 rows for each of its 100 keys, mid 30, and small one for keys 0 to 90
-          // in steps of 10. Each of the two shuffle partitions holds some of small's keys.
+          // big has 100 rows per key, mid 30, and small one row for keys 0 to 90 by 10.
           val outputs = joins.map(_.metrics("output_rows").value).sorted
           assert(outputs == (if (enabled) Seq(30000L, 30000L) else Seq(30000L, 300000L)))
           if (enabled) {
@@ -1457,9 +1434,6 @@ class CometJoinSuite extends CometTestBase {
     }
   }
 
-  // Checks that a hash join ran, that the rows match Spark's, and that every partition is sorted
-  // on the first column. A local sort leaves rows with equal keys in any order, so the rows are
-  // compared without their order.
   private def checkPartitionsSortedOverHashJoin(df: => DataFrame): Unit = {
     // withSQLConf returns Unit on Spark 3.x, so the expected rows are assigned inside it.
     var expected = Seq.empty[String]
@@ -1482,8 +1456,7 @@ class CometJoinSuite extends CometTestBase {
   private val sortLossJoin =
     "SELECT big._1 AS k, big._2 AS v FROM big JOIN small ON big._1 = small._1"
 
-  // Spark removes a sort above a sort-merge join whose output ordering satisfies it, so the
-  // forced hash join must be chosen before that happens or the sort is lost (#6770).
+  // Spark drops a sort that the sort-merge join's ordering satisfies (#6770).
   for (adaptive <- Seq(false, true)) {
     test(s"forceShuffledHashJoin keeps sortWithinPartitions on the join key, AQE=$adaptive") {
       withForcedShjTables(adaptive) {
@@ -1491,8 +1464,7 @@ class CometJoinSuite extends CometTestBase {
       }
     }
 
-    // The planned write sorts on the partition column, and the single dynamic partition writer
-    // fails when a partition value comes back after its file was closed.
+    // Unsorted partition values make the single dynamic partition writer reopen a closed file.
     test(s"forceShuffledHashJoin keeps the sort of a partitioned insert, AQE=$adaptive") {
       withForcedShjTables(adaptive) {
         withTable("out") {
@@ -1514,8 +1486,6 @@ class CometJoinSuite extends CometTestBase {
       }
     }
 
-    // RightOuter builds on the smaller left side. A full outer join reports no output ordering,
-    // so Spark keeps that sort on its own; the case guards the BuildLeft full outer join.
     for ((joinType, key) <- Seq("RIGHT" -> "big._1", "FULL" -> "coalesce(big._1, small._1)")) {
       test(
         s"forceShuffledHashJoin keeps sortWithinPartitions over a $joinType join, " +
@@ -1530,9 +1500,6 @@ class CometJoinSuite extends CometTestBase {
     }
   }
 
-  // The streamed side is already partitioned and sorted on the key, so no exchange is added
-  // under it and Spark trusts the hash join to keep its order instead of sorting again. The sort
-  // runs natively in the same plan as the join, so the native join sees the ordered input.
   test("forceShuffledHashJoin keeps probe side order when no exchange is added") {
     withForcedShjTables(adaptive = false) {
       val streamed = spark.table("big").repartition(2, $"_1").sortWithinPartitions("_1")
@@ -1545,13 +1512,8 @@ class CometJoinSuite extends CometTestBase {
     }
   }
 
-  // The streamed side is a cache sorted within its partitions, so Spark drops the sort above
-  // the join, and the cache reaches the native join as a JVM input that declares no order. The
-  // join keeps the unmatched streamed rows in place only because it declares the cache's order
-  // on its probe input.
+  // The cache reaches the native join with no declared order, so the join must declare it.
   test("forceShuffledHashJoin keeps the order of a sorted cache through an outer join") {
-    // Under AQE the cached plan, which has an exchange, is adaptive and reports no order, so
-    // Spark keeps the sort above the join.
     withForcedShjTables(adaptive = false) {
       withSQLConf(
         CometConf.COMET_EXEC_IN_MEMORY_CACHE_ENABLED.key -> "false",
@@ -1607,7 +1569,7 @@ class CometJoinSuite extends CometTestBase {
         val (_, merge) = checkSparkAnswerAndOperator(hinted("MERGE(tbl_a)"))
         assert(collect(merge) { case j: CometSortMergeJoinExec => j }.size == 1, merge)
         assert(collect(merge) { case j: CometHashJoinExec => j }.isEmpty, merge)
-        // Spark builds the hinted side, where the forced conversion would build the smaller tbl_b.
+        // BuildLeft proves Spark planned it: the forced conversion would build the smaller tbl_b.
         val (_, shuffleHash) = checkSparkAnswer(hinted("SHUFFLE_HASH(tbl_a)"))
         assert(
           collect(shuffleHash) { case j: CometHashJoinExec => j.buildSide } == Seq(BuildLeft),
@@ -1618,13 +1580,8 @@ class CometJoinSuite extends CometTestBase {
     }
   }
 
-  // AQE marks the side of a join whose shuffle has few non-empty partitions NO_BROADCAST_HASH
-  // when it re-plans. That hint is not in JoinStrategyHint.strategies, so the join stays a hash
-  // join instead of going back to a sort-merge join with the same shuffles, which AQE would
-  // adopt.
   test("forceShuffledHashJoin ignores AQE's NO_BROADCAST_HASH hint") {
     var hints = Seq.empty[JoinHint]
-    // Records only the Comet run; checkSparkAnswer's Spark run gets the same hint.
     val recordJoinHints = new SparkStrategy {
       override def apply(plan: LogicalPlan): Seq[SparkPlan] = {
         plan match {
@@ -1635,7 +1592,7 @@ class CometJoinSuite extends CometTestBase {
       }
     }
     withForcedShjTables(adaptive = true) {
-      // oneKey has a single key, so 1 of its 10 shuffle partitions is non-empty.
+      // oneKey fills 1 of 10 shuffle partitions, so AQE adds NO_BROADCAST_HASH on re-plan.
       withSQLConf(SQLConf.SHUFFLE_PARTITIONS.key -> "10") {
         withParquetTable((0 until 100).map(i => (10, i)), "oneKey") {
           val strategies = spark.experimental.extraStrategies
@@ -1660,7 +1617,6 @@ class CometJoinSuite extends CometTestBase {
     }
   }
 
-  // AQE plans a broadcast once the build side's shuffle turns out to be small.
   test("forceShuffledHashJoin leaves a runtime broadcast to AQE") {
     withForcedShjTables(adaptive = true) {
       withSQLConf(SQLConf.ADAPTIVE_AUTO_BROADCASTJOIN_THRESHOLD.key -> "10MB") {
@@ -1676,7 +1632,6 @@ class CometJoinSuite extends CometTestBase {
     }
   }
 
-  // OptimizeSkewedJoin splits the skewed partitions of the forced hash join.
   test("forceShuffledHashJoin handles a skewed join under AQE") {
     withSQLConf(
       SQLConf.ADAPTIVE_EXECUTION_ENABLED.key -> "true",
@@ -1702,9 +1657,7 @@ class CometJoinSuite extends CometTestBase {
     }
   }
 
-  // Spark does not hash join keys whose collation is not binary stable, so the forced conversion
-  // leaves them to Spark too. Spark rewrites a comparison of two collated columns to compare
-  // their collation keys, so the key here is computed.
+  // A computed key stops Spark from rewriting the join to compare collation keys.
   test("forceShuffledHashJoin keeps a SortMergeJoin on collated keys") {
     assume(isSpark40Plus)
     withSQLConf(
@@ -1724,13 +1677,7 @@ class CometJoinSuite extends CometTestBase {
     }
   }
 
-  // A join Spark broadcasts from the static estimate stays a broadcast after AQE re-plans with
-  // the adaptive threshold off, and no re-plan hash joins the broadcast stage. The 10 KB
-  // threshold lets Spark broadcast small (about 3 KB) from its static estimate but not big
-  // (about 46 KB). On the re-plan, small is a broadcast stage measured against the adaptive
-  // threshold, which is off, so only the broadcast stage check keeps the strategy away from the
-  // join. AQE discards a re-plan that hash joins the stage, so the final plan cannot show one;
-  // the warning AQE logs for it can.
+  // AQE discards a re-plan that hash joins the broadcast stage, so only its warning shows one.
   test("forceShuffledHashJoin leaves a planned broadcast stage to AQE") {
     val appender = new LogAppender("AQE re-plans")
     val logger = classOf[AdaptiveSparkPlanExec].getName
@@ -1757,8 +1704,7 @@ class CometJoinSuite extends CometTestBase {
             assert(collect(cometPlan) { case j: ShuffledHashJoinExec => j }.isEmpty, cometPlan)
           }
         } finally {
-          // For a logger with no config of its own, withLogAppender adds one and never removes
-          // it. That config does not pass events up, so it would keep them out of the test log.
+          // withLogAppender never removes the config it adds for an unconfigured logger.
           if (isUnconfigured) {
             context.getConfiguration.removeLogger(logger)
             context.updateLoggers()
@@ -1767,7 +1713,6 @@ class CometJoinSuite extends CometTestBase {
       }
     }
     val messages = appender.loggingEvents.map(_.getMessage.getFormattedMessage)
-    // AQE logs the final plan at the same level, so this shows the appender saw its events.
     assert(messages.exists(_.contains("Final plan")), messages.mkString("\n"))
     val invalidStages = messages.filter(_.contains("Invalid broadcast query stage"))
     assert(invalidStages.isEmpty, invalidStages.mkString("\n"))
@@ -2834,10 +2779,7 @@ class CometJoinSuite extends CometTestBase {
   }
 
   test("ExistenceJoin via SortMergeJoin stays on Spark even with forceShuffledHashJoin") {
-    // forceShuffledHashJoin never plans an existence join as a BuildRight ShuffledHashJoin
-    // (https://github.com/apache/datafusion-comet/issues/2697), so even with forced SHJ the join
-    // must stay on Spark rather than run as a native hash join. Assert on the plan (no native join
-    // form) rather than the fallback reason, which is the robust signal for this guard.
+    // Never a BuildRight hash join: https://github.com/apache/datafusion-comet/issues/2697
     withSQLConf(
       CometConf.COMET_EXEC_EXISTENCE_JOIN_ENABLED.key -> "true",
       CometConf.COMET_FORCE_SHJ.key -> "true",

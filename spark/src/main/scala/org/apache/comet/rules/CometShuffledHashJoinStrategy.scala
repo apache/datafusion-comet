@@ -35,13 +35,8 @@ import org.apache.comet.CometSparkSessionExtensions.{isCometLoaded, withFallback
 import org.apache.comet.shims.ShimJoinSelection
 
 /**
- * Plans an equi-join as a ShuffledHashJoinExec where Spark would plan a SortMergeJoinExec, when
- * spark.comet.exec.forceShuffledHashJoin is on. Choosing the join here, before EnsureRequirements
- * and RemoveRedundantSorts run, lets Spark place and keep every sort the plan needs above the
- * join. Planner strategies also run again on every AQE re-plan, where the join's children carry
- * the materialized shuffle sizes.
- *
- * Adapted from the equivalent rule in Apache Gluten.
+ * Plans a ShuffledHashJoinExec in place of a SortMergeJoinExec, before EnsureRequirements and
+ * RemoveRedundantSorts, so the sorts above the join survive. Adapted from Apache Gluten.
  */
 case class CometShuffledHashJoinStrategy(session: SparkSession)
     extends SparkStrategy
@@ -54,8 +49,7 @@ case class CometShuffledHashJoinStrategy(session: SparkSession)
 
   private def sqlConf: SQLConf = session.sessionState.conf
 
-  // Planner strategies run whether or not Comet is enabled, and before CometRule, so plan-only
-  // mode needs its own check here.
+  // Planner strategies run with Comet off and before CometRule, which applies plan-only mode.
   private def isEnabled(join: Join): Boolean =
     CometConf.COMET_FORCE_SHJ.get(sqlConf) &&
       CometConf.COMET_EXEC_ENABLED.get(sqlConf) &&
@@ -77,8 +71,7 @@ case class CometShuffledHashJoinStrategy(session: SparkSession)
         case Some(side) =>
           buildSideOverLimit(join, side) match {
             case Some(reason) =>
-              // The sort-merge join still runs natively, so this is information for extended
-              // explain rather than a fallback reason.
+              // Not a fallback: the kept sort-merge join still runs natively.
               planBySpark(join)(smj => withInfo(smj, declineReason(reason)))
             case None =>
               Seq(
@@ -96,23 +89,18 @@ case class CometShuffledHashJoinStrategy(session: SparkSession)
     case _ => Nil
   }
 
-  // Broadcasts, including the ones AQE plans once a stage turns out small, and joins with a
-  // strategy hint are planned by Spark as usual.
   private def isLeftToSpark(join: Join, hint: JoinHint): Boolean =
     isBroadcastStage(join.left) || isBroadcastStage(join.right) ||
       canPlanAsBroadcastHashJoin(join, sqlConf) || hasStrategyHint(hint)
 
-  // Spark's LogicalQueryStageStrategy plans a join over a broadcast stage as a broadcast join,
-  // but runs after this strategy. canPlanAsBroadcastHashJoin can miss such a join, since it
-  // checks the stage's runtime size against the adaptive threshold, which can be lower or off.
-  // AQE then throws away a re-plan that hash joins the stage, with everything else it changed.
+  // canPlanAsBroadcastHashJoin misses a broadcast stage when the adaptive threshold is lower or
+  // off, and AQE discards a re-plan that hash joins one.
   private def isBroadcastStage(plan: LogicalPlan): Boolean = plan match {
     case LogicalQueryStage(_, _: BroadcastQueryStageExec) => true
     case _ => false
   }
 
-  // The hints in JoinStrategyHint.strategies count, including a SHUFFLE_HASH that AQE sets;
-  // AQE's NO_BROADCAST_HASH and PREFER_SHUFFLE_HASH do not.
+  // AQE's NO_BROADCAST_HASH and PREFER_SHUFFLE_HASH are outside JoinStrategyHint.strategies.
   private def hasStrategyHint(hint: JoinHint): Boolean =
     Seq(hint.leftHint, hint.rightHint).exists(
       _.exists(_.strategy.exists(JoinStrategyHint.strategies.contains)))
@@ -120,8 +108,6 @@ case class CometShuffledHashJoinStrategy(session: SparkSession)
   private def declineReason(reason: String): String =
     s"Cannot rewrite SortMergeJoin to HashJoin: $reason"
 
-  // Lets Spark plan a join this strategy declines and records why on each sort-merge join in
-  // the result, so the reason reaches extended explain.
   private def planBySpark(join: Join)(
       record: SortMergeJoinExec => SortMergeJoinExec): Seq[SparkPlan] = {
     val planned = session.sessionState.planner.JoinSelection(join)
@@ -157,13 +143,7 @@ case class CometShuffledHashJoinStrategy(session: SparkSession)
     }
   }
 
-  /**
-   * The largest build side this strategy plans as a hash join, or None when the limit is switched
-   * off. Unset means Spark's own rule for choosing a shuffled hash join by size: the broadcast
-   * threshold times the initial shuffle partition count. A non-positive threshold only disables
-   * broadcast joins and says nothing about the hash table an executor can hold, so Spark's
-   * default threshold stands in for it.
-   */
+  /** The largest build side to hash join, or None when the limit is off. */
   private def maxBuildSize: Option[BigInt] =
     CometConf.COMET_FORCE_SHJ_MAX_BUILD_SIZE.get(sqlConf) match {
       case Some(limit) if limit <= 0 => None
@@ -176,10 +156,8 @@ case class CometShuffledHashJoinStrategy(session: SparkSession)
     }
 
   /**
-   * Why the build side is too large for a hash join, or None when it fits. Like Spark's
-   * canBuildLocalHashMapBySize, the size must be strictly under the limit. The hash join cannot
-   * spill, so a build side of unknown size, which Spark reports as spark.sql.defaultSizeInBytes
-   * (Long.MaxValue by default), is refused by the same comparison.
+   * Why the build side is not strictly under the limit, as in canBuildLocalHashMapBySize. An
+   * unknown size is spark.sql.defaultSizeInBytes, so it never fits.
    */
   private def buildSideOverLimit(join: Join, side: BuildSide): Option[String] =
     maxBuildSize.flatMap { limit =>

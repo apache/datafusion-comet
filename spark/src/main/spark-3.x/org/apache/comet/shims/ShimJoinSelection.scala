@@ -25,11 +25,11 @@ import org.apache.spark.sql.catalyst.plans.JoinType
 
 trait ShimJoinSelection extends JoinSelectionHelper {
 
-  /** Spark 3.x has no collations, so every key it can hash join is hashed correctly. */
+  /** Spark 3.x has no collations. */
   protected def hashJoinSupportedShim(
       leftKeys: Seq[Expression],
       rightKeys: Seq[Expression]): Boolean = true
 
-  /** Every join type Spark 3.x can hash join can also be planned as a sort-merge join. */
+  /** Spark 3.x has no LeftSingle. */
   protected def canSortMergeJoin(joinType: JoinType): Boolean = true
 }
