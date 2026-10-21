@@ -683,28 +683,67 @@ object CometIcebergNativeScan extends CometOperatorSerde[CometBatchScanExec] wit
    * @param promotedColumns
    *   columns whose older data files may hold a narrower type; see
    *   [[IcebergReflection.promotedColumns]]
+   * @param partialPushdown
+   *   whether the table allows a residual that does not convert whole to push the conjuncts that
+   *   do, leaving the rest to the post-scan filter
    */
   def icebergExprToProto(
       icebergExpr: Any,
       output: Seq[Attribute],
       pageIndexUnsupportedColumns: Set[String],
-      promotedColumns: Set[String]): Option[OperatorOuterClass.IcebergPredicate] =
-    icebergExprToProto(
-      icebergExpr,
-      output.map(attr => attr.name -> attr).toMap,
-      pageIndexUnsupportedColumns,
-      promotedColumns,
-      underNot = false)
+      promotedColumns: Set[String],
+      partialPushdown: Boolean): Option[OperatorOuterClass.IcebergPredicate] = {
+    val attributes = output.map(attr => attr.name -> attr).toMap
+    def convert(promoted: Set[String], dropUnconvertedConjuncts: Boolean) =
+      icebergExprToProto(
+        icebergExpr,
+        attributes,
+        pageIndexUnsupportedColumns,
+        promoted,
+        dropUnconvertedConjuncts,
+        underNot = false)
+    // A residual that converts whole is pushed as before. Otherwise this pushes the conjuncts
+    // that convert, which were previously left to the post-scan filter, so it cannot rely on
+    // the schema history to rule out a promotion: one made before Iceberg 0.12 left no older
+    // schema. It treats every column of a type that a promotion can produce as promoted, as
+    // IcebergReflection.promotedColumns does when expiring snapshots removed older schemas.
+    def partialPromoted = promotedColumns ++ output.collect {
+      case attr if isPromotionTarget(attr.dataType) => attr.name
+    }
+    convert(promotedColumns, dropUnconvertedConjuncts = false).orElse {
+      if (partialPushdown) convert(partialPromoted, dropUnconvertedConjuncts = true) else None
+    }
+  }
 
   /**
-   * `underNot` is true beneath a NOT. The native side pushes that NOT down to the leaves, so a
-   * leaf whose negation the native reader evaluates differently from Spark is declined.
+   * Whether a type promotion can produce `dataType`: int to long, float to double, or a wider
+   * decimal precision.
+   */
+  private def isPromotionTarget(dataType: DataType): Boolean = dataType match {
+    case LongType | DoubleType | _: DecimalType => true
+    case _ => false
+  }
+
+  /**
+   * Converts one node of a residual.
+   *
+   * @param attributes
+   *   the scan output by column name
+   * @param promotedColumns
+   *   columns compared only by equality outside NOT and by null checks
+   * @param dropUnconvertedConjuncts
+   *   whether an AND outside NOT that does not convert whole may push the conjuncts that do
+   * @param underNot
+   *   true beneath a NOT. The native side pushes that NOT down to the leaves, so every descendant
+   *   must convert exactly, and a leaf whose negation the native reader evaluates differently
+   *   from Spark is declined.
    */
   private def icebergExprToProto(
       icebergExpr: Any,
       attributes: Map[String, Attribute],
       pageIndexUnsupportedColumns: Set[String],
       promotedColumns: Set[String],
+      dropUnconvertedConjuncts: Boolean,
       underNot: Boolean): Option[OperatorOuterClass.IcebergPredicate] = {
     val exprClass = icebergExpr.getClass
     def call(method: String): Any =
@@ -715,6 +754,7 @@ object CometIcebergNativeScan extends CometOperatorSerde[CometBatchScanExec] wit
         childAttributes,
         pageIndexUnsupportedColumns,
         promotedColumns,
+        dropUnconvertedConjuncts,
         underNot)
 
     if (exprClass.getName.endsWith(Constants.ExpressionTypes.UNBOUND_PREDICATE)) {
@@ -776,11 +816,11 @@ object CometIcebergNativeScan extends CometOperatorSerde[CometBatchScanExec] wit
       val left = convertChild(call("left"), underNot, nonNullAttributes)
       val right = convertChild(call("right"), underNot, nonNullAttributes)
       (left, right) match {
-        // Push the residual only if it converts whole. Dropping a conjunct is safe in positive
-        // position but strengthens the predicate under a NOT (De Morgan), which would wrongly
-        // prune, and tracking polarity across arbitrary nesting is error prone. So an
-        // unconvertible conjunct elides the whole residual; the post-scan CometFilter is exact.
         case (Some(l), Some(r)) => Some(logicalPredicate(isAnd = true, l, r))
+        // Dropping a positive conjunct weakens the predicate; the post-scan filter stays exact.
+        // Under a NOT it would strengthen the predicate (De Morgan) and wrongly prune, so every
+        // descendant of a NOT must convert exactly, including nested AND/OR nodes.
+        case (l, r) if dropUnconvertedConjuncts && !underNot => l.orElse(r)
         case _ => None
       }
     } else if (exprClass.getName.endsWith(Constants.ExpressionTypes.OR)) {
@@ -792,6 +832,8 @@ object CometIcebergNativeScan extends CometOperatorSerde[CometBatchScanExec] wit
         case _ => None
       }
     } else if (exprClass.getName.endsWith(Constants.ExpressionTypes.NOT)) {
+      // Negating a weakened predicate strengthens it and could discard qualifying rows, so the
+      // whole child must convert exactly.
       convertChild(call("child"), underNot = true, attributes).map(notPredicate)
     } else {
       // Anything else, such as Expressions.alwaysTrue or alwaysFalse, or a node type a future
@@ -844,9 +886,15 @@ object CometIcebergNativeScan extends CometOperatorSerde[CometBatchScanExec] wit
       residual: Any,
       output: Seq[Attribute],
       pageIndexUnsupportedColumns: Set[String],
-      promotedColumns: Set[String]): Option[OperatorOuterClass.IcebergPredicate] =
+      promotedColumns: Set[String],
+      partialPushdown: Boolean): Option[OperatorOuterClass.IcebergPredicate] =
     try {
-      icebergExprToProto(residual, output, pageIndexUnsupportedColumns, promotedColumns)
+      icebergExprToProto(
+        residual,
+        output,
+        pageIndexUnsupportedColumns,
+        promotedColumns,
+        partialPushdown)
     } catch {
       case e: Exception =>
         val msg = "Iceberg reflection failure: Failed to convert residual expression " +
@@ -1092,6 +1140,12 @@ object CometIcebergNativeScan extends CometOperatorSerde[CometBatchScanExec] wit
     val promotedColumns = Seq(metadata.tableSchema, metadata.scanSchema)
       .flatMap(IcebergReflection.promotedColumns(metadata.table, _))
       .toSet
+    // add_files, migrate and snapshot set a name mapping and import files without checking their
+    // types against the schema. Such files commonly hold narrower physical types, such as Hive
+    // TINYINT and SMALLINT stored as INT32 with INT_8 or INT_16 annotations, which iceberg-rust
+    // compares incorrectly. So partial pushdown is not extended to these tables, and they push a
+    // residual only when it converts whole.
+    val partialPushdown = metadata.nameMapping.isEmpty
 
     // iceberg-rust reads every leaf of a projected column that the task schema holds. Reading with
     // the pruned task schema skips the nested fields Spark's schema pruning removed, which the
@@ -1262,7 +1316,8 @@ object CometIcebergNativeScan extends CometOperatorSerde[CometBatchScanExec] wit
                     residualMethod.invoke(task),
                     output,
                     pageIndexUnsupportedColumns,
-                    promotedColumns)
+                    promotedColumns,
+                    partialPushdown)
 
                 residualExprOpt.foreach { residual =>
                   val residualIdx = residualToPoolIndex.getOrElseUpdate(
