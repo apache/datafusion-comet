@@ -120,7 +120,17 @@ native plans, as Spark does, and within a task limits only the operators that ca
 even share of what the operators that cannot spill leave. So sorts, aggregations and the shuffle
 writer can spill sooner when several of them run in one task, and the operators that cannot spill
 are limited only by Spark, unless the deprecated `spark.comet.exec.memoryPool.fraction` is below
-`1.0`. To leave every limit to Spark instead, set `spark.comet.exec.memoryPool=greedy_unified`. See
+`1.0`. The native Iceberg fanout writer is one of the operators that can spill: it closes files
+rather than take memory from the others, so it can write more files.
+
+An operator's limit can now be well below what Spark would grant its task, and a sort can fail
+where it used to run. A sort fails with "Not enough memory to continue external sort" instead of
+spilling when a single batch is larger than its share, which wide rows, many cores per executor, a
+small `spark.memory.offHeap.size` and several operators that can spill in one task make likelier.
+It can also fail when operators that cannot spill, such as the build side of a shuffled hash join,
+hold the whole of the task's share. To avoid either, give the executors more off-heap memory,
+lower `spark.comet.batchSize`, or leave every limit to Spark by setting
+`spark.comet.exec.memoryPool=greedy_unified`. See
 [Configuring Comet Memory](tuning/memory.md#configuring-comet-memory).
 
 ## Upgrading to Comet 1.1.0

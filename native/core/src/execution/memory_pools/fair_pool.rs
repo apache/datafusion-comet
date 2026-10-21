@@ -36,10 +36,20 @@ use parking_lot::Mutex;
 /// Spark limits each task to an even share of its off-heap pool among the tasks that hold memory
 /// from it, and it cannot ask a native consumer to spill. So, as DataFusion's `FairSpillPool` does
 /// over its whole pool, this pool limits each consumer that can spill to an even share of what the
-/// consumers that cannot spill leave of the task's share, which is an even share of the off-heap
-/// pool among the tasks running native plans. That keeps the memory that Spark grants the task
-/// for the consumers that cannot spill, which take what Spark grants. A request that would take
-/// the task past `pool_size` is refused.
+/// consumers that cannot spill leave of the task's share:
+///
+/// ```text
+/// task_share = min(off_heap_size / running_tasks, pool_size)
+/// limit      = (task_share - unspillable) / num_spill
+/// ```
+///
+/// `running_tasks` counts the tasks running native plans, this one included, `unspillable` is the
+/// bytes held by consumers that cannot spill and `num_spill` is the number of registered
+/// consumers that can. A request from a consumer that can spill is refused when what the consumer
+/// holds plus the request passes `limit`, or when the task's total plus the request passes
+/// `task_share`. That keeps the memory that Spark grants the task for the consumers that cannot
+/// spill, which take what Spark grants. A request from one of them is refused only when the task's
+/// total would pass `pool_size`.
 pub struct CometFairMemoryPool {
     spark: SparkMemory,
     /// The most that the task may reserve.
@@ -405,6 +415,53 @@ mod tests {
         assert!(sort.try_grow(1).is_err());
         sort.shrink(150);
         sort.try_grow(83).unwrap();
+        assert!(sort.try_grow(1).is_err());
+    }
+
+    #[test]
+    fn the_tasks_total_is_checked_against_the_tasks_share_not_the_pool() {
+        // One task has the whole 200-byte pool, and its sort takes half.
+        let fake = FakeSpark::with(usize::MAX);
+        let tasks = RunningTasks::default();
+        let _running = tasks.start();
+        let pool = shared_pool(&fake, 200, &tasks);
+        let first = spillable("ExternalSorter[0]", &pool);
+        first.try_grow(100).unwrap();
+
+        // Another task starts, which halves the task's share to the 100 bytes that the sort holds.
+        // A second sort is under its own limit of 50 bytes, but the task's total is at its share.
+        let _other_task = tasks.start();
+        let second = spillable("ExternalSorter[1]", &pool);
+        let error = second.try_grow(50).unwrap_err().to_string();
+        assert!(error.contains("the task's share is 100 bytes"), "{error}");
+
+        // A consumer that cannot spill is limited by the pool, not by the task's share.
+        let merge = MemoryConsumer::new("ExternalSorterMerge[1]").register(&pool);
+        merge.try_grow(100).unwrap();
+        assert_eq!(pool.reserved(), 200);
+    }
+
+    /// The trade-off that the migration guide describes: a consumer that cannot spill can take
+    /// what Spark grants, which can be the task's whole share, and then a consumer that can spill
+    /// is refused its first request, so a sort fails where it used to run.
+    #[test]
+    fn a_consumer_that_can_spill_is_refused_once_the_others_hold_the_tasks_share() {
+        let fake = FakeSpark::with(usize::MAX);
+        let tasks = RunningTasks::default();
+        let _running = start(&tasks, 4);
+        let pool = shared_pool(&fake, 400, &tasks);
+        // Like a shuffled hash join's build side, which Spark lets grow past `off_heap_size / 4`
+        // while the other tasks hold nothing yet.
+        let build = MemoryConsumer::new("HashJoinInput[0]").register(&pool);
+        build.try_grow(100).unwrap();
+        let sort = spillable("ExternalSorter[0]", &pool);
+
+        let error = sort.try_grow(1).unwrap_err().to_string();
+        assert!(error.contains("the fair limit is 0 bytes"), "{error}");
+
+        // The sort can reserve again once the build side gives memory back.
+        build.shrink(60);
+        sort.try_grow(60).unwrap();
         assert!(sort.try_grow(1).is_err());
     }
 

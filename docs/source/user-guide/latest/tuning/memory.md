@@ -85,7 +85,10 @@ using it, and the pool divides `spark.memory.offHeap.size` the same way among th
 a task, it limits each operator that can spill to an even share of what the operators that cannot spill leave of the
 task's share, counting the operators of all of the task's native plans. The operators that cannot spill take what
 Spark grants. So an operator that can spill sometimes spills even when there is memory to spare, in order to leave it
-for the task's other operators.
+for the task's other operators. A limit that small can be less than one batch of wide rows, and a sort cannot spill a
+batch it has not yet reserved, so it then fails with "Not enough memory to continue external sort". Give the
+executors more off-heap memory, lower `spark.comet.batchSize`, or use `greedy_unified`, which leaves every limit to
+Spark.
 
 The `greedy_unified` pool type implements a greedy first-come first-serve limit. This pool works well for queries that do not
 need to spill or have a single spillable operator.

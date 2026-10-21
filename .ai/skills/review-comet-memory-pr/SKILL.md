@@ -151,14 +151,16 @@ reclamation, that is a significant change and needs to say what it does to in-fl
 ## 5. Budget and Configuration
 
 `CometExecIterator.getMemoryConfig` computes the budget once per executor and passes it across JNI
-as `memory_limit`:
+as `memory_limit`, along with `spark.memory.offHeap.size` itself as `off_heap_size`, which
+`fair_unified` divides among the tasks running native plans:
 
 ```text
 memory_limit = spark.memory.offHeap.size * spark.comet.exec.memoryPool.fraction
+off_heap_size = spark.memory.offHeap.size
 ```
 
 - [ ] A new memory config goes through `getMemoryConfig` rather than being read separately in
-      native code.
+      native code, and a new value crossing JNI is added to `createPlan` on both sides.
 - [ ] Changing `memoryPool.fraction` semantics affects every deployment that tuned it as a haircut
       for the accounting gap.
 - [ ] On Kubernetes, `spark.memory.offHeap.size` is **part of** the pod limit, not headroom on top

@@ -322,10 +322,36 @@ DataFusion's `FairSpillPool` does over its whole pool
 
 The task's share is `off_heap_size` divided by the number of tasks on the executor that are running
 native plans, that is, that hold a task-shared pool of either type, or `pool_size` if that is
-smaller, which it is only while the deprecated fraction is below `1 / N`. Like Spark's own divisor,
-the number follows tasks as they start and finish, so a task that runs alone has the whole pool.
-Spark's count differs in two ways: it includes tasks that run no native plan, and it counts a task
-only while the task holds memory.
+smaller, which it is only while the deprecated fraction is below `1 / N`. A consumer that can
+spill is limited to an even share of what the consumers that cannot spill leave of that:
+
+```text
+task_share = min(off_heap_size / running_tasks, pool_size)
+limit      = (task_share - unspillable) / num_spill
+```
+
+Here `unspillable` is the bytes held by consumers that cannot spill, and `num_spill` is the number
+of registered consumers that can.
+
+Like Spark's own divisor, the number of running tasks follows tasks as they start and finish, so a
+task that runs alone has the whole pool. It is still not Spark's number or Spark's pool, and the
+differences go in these directions:
+
+- Spark counts a task from its first acquire until its balance returns to zero, whether or not it
+  runs a native plan. Tasks that run no native plan but hold off-heap memory, such as the JVM
+  operators of a mixed stage, are in Spark's count and not Comet's. Comet then divides by fewer
+  tasks than Spark does, the task's share is more than Spark will grant it, and the shares of its
+  consumers that can spill can add up to more than Spark grants. That is
+  [issue #7088](https://github.com/apache/datafusion-comet/issues/7088) again, so look here first
+  when a stage that mixes JVM and native operators still fails a sort's merge.
+- A task that holds a native pool but no memory, such as a native scan that feeds a JVM shuffle,
+  is in Comet's count and not Spark's. Comet then divides by more tasks than Spark does, and its
+  consumers that can spill spill earlier than Spark requires. Look here when a mixed workload
+  spills more under `fair_unified` than under `greedy_unified`.
+- Spark divides the pool minus the off-heap storage in use, up to the storage region, which is
+  `spark.memory.storageFraction` of the pool. With `StorageLevel.OFF_HEAP` caching, Spark's limit
+  on a task can be about half of `off_heap_size / running_tasks` at the default fraction, while
+  `task_share` divides all of `off_heap_size`, so the shares can add up to more than Spark grants.
 
 Before it asks Spark for a consumer that can spill, the pool makes two checks, and refuses the
 request without calling Spark if either fails:
@@ -347,7 +373,7 @@ A consumer that cannot spill takes what Spark grants. The pool refuses it only w
 total plus the request would exceed `pool_size`, which Spark's own limit on the task is at least as
 tight as unless the deprecated fraction is below `1 / N`.
 
-Two details matter for tuning:
+Three details matter for tuning:
 
 - The pool is task-shared (see below), so the consumers that divide the task's share include those
   of every native plan in the task, not just the plan making the request. Registering a consumer
@@ -356,6 +382,18 @@ Two details matter for tuning:
 - A consumer at its share is refused, and spills, even when the rest of the task's share is free.
   That keeps the memory for the task's other consumers, and is why `fair_unified` can spill earlier
   than `greedy_unified`.
+- A consumer's limit can be well below what Spark would grant the task, and some operators fail
+  where a consumer that can spill is refused. In DataFusion 55.2 an `ExternalSorter` returns "Not
+  enough memory to continue external sort" instead of spilling when it cannot reserve a batch while
+  it holds nothing, when it cannot reserve it again after spilling, and when it cannot resize its
+  reservation for a sorted batch. A sort can therefore fail when one batch is larger than its
+  share, as can happen with wide rows, many cores, little off-heap memory and several consumers
+  that can spill in the task. It can also fail on its first request when consumers that cannot
+  spill, such as the build side of a shuffled hash join or a sort-merge join's buffered rows, hold
+  the task's whole share, because the limit is then zero. Spark lets such a consumer hold more than
+  `off_heap_size / running_tasks` while other tasks have not yet asked for memory. A larger
+  `spark.memory.offHeap.size`, a smaller `spark.comet.batchSize` or `spark.comet.exec.memoryPool=greedy_unified`
+  avoids it, and the migration guide says so too.
 
 ### Task-shared pools and their lifetime
 
@@ -451,9 +489,12 @@ the executor.
   tables, unencoded dictionary indices and buffer capacity. Native writes decline Bloom filters
   today, and neither figure would include them.
 
-The writers register one consumer per task rather than one per open file. They cannot spill, so
-`fair_unified` does not hold them to a share, and what they hold comes out of the share that the
-task's operators that can spill divide.
+The writers register one consumer per task rather than one per open file. A fanout write registers
+it as a consumer that can spill, because the writer answers a refusal by closing partitions, so
+`fair_unified` holds it to a share and it ends with more files rather than take memory from the
+task's sorts. The unpartitioned and clustered writers keep their one file open, so a refusal fails
+the task. They cannot spill, `fair_unified` does not hold them to a share, and what they hold comes
+out of the share that the task's operators that can spill divide.
 
 ## Crossing the FFI boundary
 

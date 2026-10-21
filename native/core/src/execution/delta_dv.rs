@@ -579,10 +579,15 @@ const DV_FETCH_CONCURRENCY: usize = 8;
 /// Registers one memory consumer for the whole call and hands every DV'd file
 /// its own empty reservation from that one registration. The per-file grow,
 /// resize and release stay as they are, but the pool sees one consumer for the
-/// partition rather than one per file. The reservations live in the returned
-/// files until the task ends. The registration itself is dropped when the last
-/// file holding a reservation from it is dropped. When no file carries a DV, it
-/// is dropped when this call returns.
+/// partition rather than one per file. A partition can have thousands of DV'd
+/// files, and the pool keeps an entry for every registered consumer, as does
+/// `TrackConsumersPool` (whose out-of-memory report lists the ten consumers
+/// holding the most), so one consumer per file would grow those maps with the
+/// number of files and fill the report with this one operator's files. The
+/// reservations live in the returned files until the task ends. The
+/// registration itself is dropped when the last file holding a reservation from
+/// it is dropped. When no file carries a DV, it is dropped when this call
+/// returns.
 pub async fn attach_access_plans(
     runtime_env: Arc<RuntimeEnv>,
     files: Vec<DvScanFile>,
@@ -1808,9 +1813,11 @@ mod tests {
     }
 
     /// One `attach_access_plans` call must add exactly one consumer to the task's pool no
-    /// matter how many DV'd files it attaches. Each file's bytes must still return to the pool
-    /// when that file alone drops, while the shared registration stays until the last file is
-    /// gone, whatever other consumers the task registers meanwhile.
+    /// matter how many DV'd files it attaches, because the pool keeps an entry for each
+    /// registered consumer, and a partition can have thousands of DV'd files. Each file's
+    /// bytes must still return to the pool when that file alone drops, while the shared
+    /// registration stays until the last file is gone, whatever other consumers the task
+    /// registers meanwhile.
     #[tokio::test]
     async fn attach_access_plans_registers_one_consumer_per_call() {
         let tmp_a = tempfile::tempdir().unwrap();

@@ -262,11 +262,13 @@ mod tests {
     fn concurrent_acquire_and_drop_leaves_a_consistent_registry() {
         use std::thread;
 
+        let tasks = RunningTasks::default();
         let threads: Vec<_> = (0..8)
             .map(|_| {
-                thread::spawn(|| {
+                let tasks = tasks.clone();
+                thread::spawn(move || {
                     for _ in 0..1_000 {
-                        drop(acquire(-1007));
+                        drop(acquire_counted(-1007, &tasks));
                     }
                 })
             })
@@ -279,6 +281,9 @@ mod tests {
             !is_registered(-1007),
             "registry entry survived after every reference was dropped"
         );
+        // `fetch_sub` wraps, so a drop that ran without its matching start would leave a count of
+        // nearly `usize::MAX`, and a task share of nothing.
+        assert_eq!(tasks.count(), 0);
 
         // The registry must still work for the task after the churn.
         let _pool = acquire(-1007);

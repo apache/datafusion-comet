@@ -851,9 +851,8 @@ impl ExecutionPlan for IcebergWriteExec {
         context: Arc<TaskContext>,
     ) -> DFResult<SendableRecordBatchStream> {
         let metrics = WriteMetrics::new(&self.metrics, partition);
-        // One consumer for the whole task, however many files it opens.
-        let reservation = MemoryConsumer::new(format!("IcebergWriteExec[{partition}]"))
-            .register(context.memory_pool());
+        let reservation =
+            write_consumer(partition, self.writer_mode).register(context.memory_pool());
         let input_stream = self.input.execute(partition, context)?;
         let common = Arc::clone(&self.common);
         let iceberg_schema = Arc::clone(&self.iceberg_schema);
@@ -967,8 +966,8 @@ impl WriteMetrics {
 ///
 /// After every batch, `reservation` is resized to what the task's writers hold between batches
 /// (see [`InnerWriter::reserve`]), and a fanout write the pool refuses closes partitions early
-/// until what is left fits. The writer cannot spill, so a reservation the pool still refuses
-/// fails the task.
+/// until what is left fits. The other writers cannot close a file early, so a reservation the pool
+/// refuses fails the task.
 ///
 /// On success the still-armed [`AbortOnDrop`] is returned along with the data files: the caller
 /// owns cleanup until the JVM acknowledges the output after recording its locations.
@@ -1472,6 +1471,18 @@ impl InnerWriter {
 }
 
 // --- helpers -------------------------------------------------------------
+
+/// The consumer that a task's writer reserves through, one for the whole task however many files it
+/// opens. A fanout write answers a refused resize by closing partitions early (see
+/// [`InnerWriter::reserve`]), which gives the memory back, so the pool treats it as a consumer
+/// that can spill: it limits it to a share, and the task's other consumers that can spill, such as
+/// a sort, are not left with less because the write grew. The unpartitioned and clustered writers
+/// keep their one file open, so a refusal fails the task and the pool must not hold them to a
+/// share.
+fn write_consumer(partition: usize, writer_mode: ProtoIcebergWriterMode) -> MemoryConsumer {
+    MemoryConsumer::new(format!("IcebergWriteExec[{partition}]"))
+        .with_can_spill(writer_mode == ProtoIcebergWriterMode::IcebergWriterFanout)
+}
 
 /// Whether `e`, from resizing a reservation, is the pool refusing the memory, which every pool
 /// reports as `ResourcesExhausted` and a fanout write answers by closing partitions early. A pool
@@ -4939,7 +4950,7 @@ mod tests {
                 target_file_size_bytes,
             );
             let pool: Arc<dyn MemoryPool> = Arc::<P>::clone(pool);
-            let reservation = MemoryConsumer::new("IcebergWriteExec[0]").register(&pool);
+            let reservation = write_consumer(0, writer_mode).register(&pool);
             let written = run_write_task(
                 input_stream(batches),
                 common,
@@ -5300,6 +5311,49 @@ mod tests {
                     tight.len() < 6 * partitions,
                     "{} files for {partitions} partitions",
                     tight.len()
+                );
+            }
+        }
+
+        /// Only a fanout write, which closes partitions early when the pool refuses it, is a
+        /// consumer that can spill. Under `fair_unified` it is held to a share, so it closes files
+        /// rather than take what a sort in its task could use, while the other writers, which a
+        /// refusal fails, are limited only by Spark.
+        #[test]
+        fn only_a_fanout_write_is_held_to_a_share_of_the_pool() {
+            use crate::execution::memory_pools::{
+                create_memory_pool_with_fake_spark, MemoryPoolConfig, MemoryPoolType,
+            };
+
+            for (writer_mode, task_attempt_id, held_to_a_share) in [
+                (ProtoIcebergWriterMode::IcebergWriterFanout, -6301, true),
+                (ProtoIcebergWriterMode::IcebergWriterClustered, -6302, false),
+                (
+                    ProtoIcebergWriterMode::IcebergWriterUnpartitioned,
+                    -6303,
+                    false,
+                ),
+            ] {
+                let config = MemoryPoolConfig::new(MemoryPoolType::FairUnified, 100);
+                let pool = create_memory_pool_with_fake_spark(&config, task_attempt_id, usize::MAX);
+                let sort = MemoryConsumer::new("ExternalSorter[0]")
+                    .with_can_spill(true)
+                    .register(&pool);
+                let write = write_consumer(0, writer_mode).register(&pool);
+
+                // A write that can spill divides the task's 100 bytes with the sort, so it is
+                // refused at its half. One that cannot takes more, and what it holds comes out of
+                // the sort's share.
+                write.try_grow(50).unwrap();
+                assert_eq!(
+                    write.try_grow(1).is_err(),
+                    held_to_a_share,
+                    "{writer_mode:?}"
+                );
+                assert_eq!(
+                    sort.try_grow(50).is_ok(),
+                    held_to_a_share,
+                    "{writer_mode:?}"
                 );
             }
         }

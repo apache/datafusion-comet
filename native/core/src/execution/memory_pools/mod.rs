@@ -48,11 +48,24 @@ pub(crate) fn create_memory_pool(
     comet_task_memory_manager: Arc<Global<JObject<'static>>>,
     task_attempt_id: i64,
 ) -> Arc<dyn MemoryPool> {
+    create_executor_pool(memory_pool_config, task_attempt_id, || {
+        SparkMemory::new(comet_task_memory_manager, task_attempt_id)
+    })
+}
+
+/// Creates the pool that [`create_memory_pool`] does, counting the task among the tasks of this
+/// executor that run native plans, with `spark` connecting it to Spark's memory manager, so that
+/// tests can connect it to a fake instead.
+fn create_executor_pool(
+    memory_pool_config: &MemoryPoolConfig,
+    task_attempt_id: i64,
+    spark: impl FnOnce() -> SparkMemory,
+) -> Arc<dyn MemoryPool> {
     create_pool(
         memory_pool_config,
         task_attempt_id,
         RunningTasks::of_executor(),
-        || SparkMemory::new(comet_task_memory_manager, task_attempt_id),
+        spark,
     )
 }
 
@@ -183,6 +196,29 @@ mod tests {
         assert!(sort.try_grow(1).is_err());
 
         // Once it finishes, the task has the pool to itself.
+        drop(other_task);
+        sort.try_grow(50).unwrap();
+        assert!(sort.try_grow(1).is_err());
+    }
+
+    /// The tasks of an executor share one count, which `create_memory_pool` takes from
+    /// [`RunningTasks::of_executor`]. A pool created with a count of its own would see only its
+    /// own task and give it the whole pool. No other test counts tasks in the executor's count.
+    #[test]
+    fn the_tasks_of_an_executor_share_one_count() {
+        let fake = spark_memory::fake::FakeSpark::with(usize::MAX);
+        let config = MemoryPoolConfig::with_off_heap_size(MemoryPoolType::FairUnified, 100, 100);
+        let pool = create_executor_pool(&config, -3007, || fake.memory());
+        let other_task = create_executor_pool(&config, -3008, || fake.memory());
+        let sort = MemoryConsumer::new("ExternalSorter[0]")
+            .with_can_spill(true)
+            .register(&pool);
+
+        // Two tasks share the 100-byte pool.
+        sort.try_grow(50).unwrap();
+        assert!(sort.try_grow(1).is_err());
+
+        // Once the other task finishes, this one has it to itself.
         drop(other_task);
         sort.try_grow(50).unwrap();
         assert!(sort.try_grow(1).is_err());
