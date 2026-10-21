@@ -746,9 +746,10 @@ object CometPercentile extends CometAggregateExpressionSerde[Percentile] {
     "From Spark 3.5.2, when `FLOAT` or `DOUBLE` input holds both `0.0` and `-0.0`, Spark " +
       "ranks first the one its hash table reaches first. Comet replays those tables for each " +
       "task's partial buffer and each merge stage, but not Spark's sort-based fallback once a " +
-      "task holds `spark.sql.objectHashAggregate.sortBased.fallbackThreshold` groups, nor its " +
-      "own aggregates emitting or spilling under memory pressure, so there its zero can differ " +
-      "from Spark's."
+      "task holds `spark.sql.objectHashAggregate.sortBased.fallbackThreshold` groups, nor " +
+      "Comet's own aggregates emitting groups early or spilling under memory pressure, where a " +
+      "spill inside a merge stage nests that stage's partials one level deeper than Spark does. " +
+      "In those cases Comet's zero can differ from Spark's."
   override def getCompatibleNotes(): Seq[String] = Seq(signedZeroKeysNote, zeroOrderNote)
   override def getUnsupportedReasons(): Seq[String] = Seq(
     arrayOfPercentagesReason,
