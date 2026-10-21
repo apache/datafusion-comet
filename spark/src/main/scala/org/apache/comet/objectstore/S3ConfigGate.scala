@@ -996,18 +996,26 @@ object S3ConfigGate {
       propagatedConf: Configuration,
       bucket: String,
       baseKey: String,
-      consumer: S3ConfigConsumer): Option[String] = {
+      consumer: S3ConfigConsumer,
+      adapterView: Option[Configuration] = None): Option[String] = {
+    def effectiveOn(conf: Configuration): Either[String, Option[String]] = consumer match {
+      case LookupPasswordConsumer =>
+        hadoopLookupPasswordEffective(conf, bucket, baseKey)
+      case PropagatedOptionConsumer =>
+        Right(Option(conf.get(baseKey)))
+    }
     try {
-      val hadoopEffective: Either[String, Option[String]] = consumer match {
-        case LookupPasswordConsumer =>
-          hadoopLookupPasswordEffective(propagatedConf, bucket, baseKey)
-        case PropagatedOptionConsumer =>
-          Right(Option(propagatedConf.get(baseKey)))
-      }
+      val hadoopEffective = effectiveOn(propagatedConf)
       hadoopEffective match {
         case Left(reason) => Some(reason)
         case Right(hadoopValue) =>
-          val nativeValue = nativeShortThenGlobal(hadoopConf, bucket, baseKey)
+          // On an SPI bucket the value that matters is the one the SPI provider reconstructs
+          // from the forwarded options (see [[spiAdapterView]]), not native's own
+          // short-then-global read.
+          val nativeValue = adapterView match {
+            case Some(view) => effectiveOn(view).toOption.flatten
+            case None => nativeShortThenGlobal(hadoopConf, bucket, baseKey)
+          }
           if (hadoopValue.map(_.trim) != nativeValue.map(_.trim)) {
             Some(effectiveValueDivergenceReason(bucket, baseKey))
           } else {
@@ -1055,15 +1063,19 @@ object S3ConfigGate {
             propagatedConfCache.getOrElseUpdate(
               bucket,
               propagateBucketOptions(hadoopConf, bucket))
-          val spiResolvesCredentials =
-            spiResolvesCredentialsLikeHadoop(hadoopConf, propagatedConf, bucket)
+          val adapterView = spiAdapterView(hadoopConf, propagatedConf, bucket)
           S3ConfigKeyConsumers.foldLeft(Option.empty[String]) {
             case (keyDeclined, (key, consumer)) =>
-              if (keyDeclined.isDefined || (spiResolvesCredentials && NativeCredentialChainKeys
-                  .contains(key))) {
+              if (keyDeclined.isDefined) {
                 keyDeclined
               } else {
-                s3KeyDivergenceReason(hadoopConf, propagatedConf, bucket, key, consumer)
+                s3KeyDivergenceReason(
+                  hadoopConf,
+                  propagatedConf,
+                  bucket,
+                  key,
+                  consumer,
+                  adapterView.filter(_ => NativeCredentialChainKeys.contains(key)))
               }
           }
         } catch {
@@ -1220,7 +1232,7 @@ object S3ConfigGate {
    * The compared keys only native's own credential chain reads: the static credentials, the
    * provider class list and the assumed-role settings. On a bucket that uses Comet's
    * credential-provider SPI native never reads them (see [[cometProviderClassConfigured]]), so
-   * their native-versus-Hadoop equality does not decide which identity the scan runs as.
+   * what matters is Hadoop's value against the SPI provider's (see [[spiAdapterView]]).
    */
   private val NativeCredentialChainKeys: Set[String] = Set(
     "fs.s3a.access.key",
@@ -1232,21 +1244,41 @@ object S3ConfigGate {
     "fs.s3a.assumed.role.credentials.provider")
 
   /**
-   * True when `bucket` uses Comet's credential-provider SPI and nothing about its Hadoop
-   * credential resolution can differ from what the SPI provider sees, so the comparison of
-   * [[NativeCredentialChainKeys]] can be skipped. The built-in adapters rebuild Hadoop's provider
-   * chain over the forwarded `fs.s3a.*` options, applying `propagateBucketOptions` themselves, so
-   * they resolve long-form and per-bucket aliases exactly as Hadoop does. They cannot see a
-   * Hadoop credential provider (any keystore path, which is never forwarded or not readable) or a
-   * disabled clear-text fallback, so a bucket with either still gets the full comparison.
+   * For a bucket on Comet's credential-provider SPI whose Hadoop credential resolution the SPI
+   * provider can reproduce, the configuration that provider reconstructs; `None` otherwise. The
+   * built-in adapters rebuild Hadoop's provider chain from the options native forwards, which are
+   * the `fs.s3a.*` entries with every `${...}` reference already expanded against the ORIGINAL,
+   * unpropagated conf, and then apply `propagateBucketOptions` themselves. Long-form and
+   * per-bucket aliases therefore resolve as in Hadoop, but a reference whose target a bucket
+   * override shadows is already pinned to the global value, so [[NativeCredentialChainKeys]] are
+   * compared against this view instead of native's own read. The adapter cannot see a Hadoop
+   * credential provider (a keystore path) or a disabled clear-text fallback, so a bucket with
+   * either gets no view and keeps the full comparison.
    */
-  private def spiResolvesCredentialsLikeHadoop(
+  private def spiAdapterView(
       hadoopConf: Configuration,
       propagatedConf: Configuration,
-      bucket: String): Boolean =
-    cometProviderClassConfigured(hadoopConf, bucket) &&
+      bucket: String): Option[Configuration] =
+    if (cometProviderClassConfigured(hadoopConf, bucket) &&
       credentialProviderArm(propagatedConf, bucket) == NoProvider &&
-      propagatedConf.getBoolean(ClearTextFallbackKey, true)
+      propagatedConf.getBoolean(ClearTextFallbackKey, true)) {
+      val forwarded = new Configuration(false)
+      hadoopConf.iterator().asScala.foreach { entry =>
+        val key = entry.getKey
+        if (key.startsWith("fs.s3a.")) {
+          val value =
+            try {
+              Option(hadoopConf.get(key)).getOrElse(entry.getValue)
+            } catch {
+              case _: IllegalStateException => entry.getValue
+            }
+          forwarded.set(key, value)
+        }
+      }
+      Some(propagateBucketOptions(forwarded, bucket))
+    } else {
+      None
+    }
 
   private val CometCredentialProviderClassKey = "fs.s3a.comet.credential.provider.class"
 

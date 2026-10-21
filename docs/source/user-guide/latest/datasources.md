@@ -445,9 +445,10 @@ Comet's S3 support has the following limitations:
 
    Buckets whose credentials come from a Comet `CometS3CredentialProvider` (`fs.s3a.comet.credential.provider.class`)
    are exempt from the credential provider class, assumed-role policy and STS endpoint checks, because the native
-   client never reads those settings for them. Their credential keys are compared with Hadoop's only when Hadoop
-   resolves them through a credential provider or with the clear-text fallback disabled, which the provider cannot
-   see. Schemes routed through libhdfs (`fs.comet.libhdfs.schemes`) are not checked, since Hadoop's own filesystem
+   client never reads those settings for them. Their credential keys are still compared with what the provider
+   receives: Comet forwards `${...}` references already expanded, so a reference whose target a bucket override
+   shadows resolves differently than in Hadoop, and so does a credential held in a credential provider or hidden by
+   a disabled clear-text fallback, none of which the provider can see. Schemes routed through libhdfs (`fs.comet.libhdfs.schemes`) are not checked, since Hadoop's own filesystem
    reads them. Run `explain` with Comet's extended explain info enabled to see the fallback reason.
 
    The native Iceberg scan, native writes, and `fs.comet.s3Compliant.schemes` aliases forward `fs.s3a.*` options

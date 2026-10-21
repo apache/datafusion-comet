@@ -2073,6 +2073,37 @@ class S3ConfigGateSuite extends AnyFunSuite {
     conf.set("fs.s3a.connection.ssl.enabled", "false")
     assert(S3ConfigGate.hadoopOnlyEndpointGateReason(conf, SpiUris).isDefined)
   }
+
+  test("the Comet SPI compares credential references a bucket override shadows") {
+    // Native forwards each value expanded against the unpropagated conf, so the adapter's own
+    // propagateBucketOptions can no longer redirect a reference: it receives the global
+    // credentials where Hadoop resolves the bucket's.
+    val conf = new Configuration(false)
+    conf.set("fs.s3a.comet.credential.provider.class", SpiAdapter)
+    conf.set(
+      "fs.s3a.aws.credentials.provider",
+      "org.apache.hadoop.fs.s3a.SimpleAWSCredentialsProvider")
+    conf.set("fs.s3a.access.key", varRef("fs.s3a.custom.access"))
+    conf.set("fs.s3a.secret.key", varRef("fs.s3a.custom.secret"))
+    conf.set("fs.s3a.custom.access", "AKIAGLOBALREF")
+    conf.set("fs.s3a.custom.secret", "globalRefSecret")
+    conf.set("fs.s3a.bucket.spi-bucket.custom.access", "AKIABUCKETREF")
+    conf.set("fs.s3a.bucket.spi-bucket.custom.secret", "bucketRefSecret")
+
+    // Real Hadoop code: propagation runs before expansion, so Hadoop selects the bucket's values.
+    val propagated = S3AUtils.propagateBucketOptions(conf, "spi-bucket")
+    assert(propagated.get("fs.s3a.access.key") == "AKIABUCKETREF")
+
+    val reason = S3ConfigGate.declineReason(conf, SpiUris)
+    assert(reason.exists(_.contains("fs.s3a.access.key")))
+    assert(!reason.get.contains("AKIAGLOBALREF"))
+    assert(!reason.get.contains("AKIABUCKETREF"))
+
+    // The same references are fine once the override agrees with the global value.
+    conf.set("fs.s3a.bucket.spi-bucket.custom.access", "AKIAGLOBALREF")
+    conf.set("fs.s3a.bucket.spi-bucket.custom.secret", "globalRefSecret")
+    assert(S3ConfigGate.declineReason(conf, SpiUris).isEmpty)
+  }
 }
 
 object S3ConfigGateSuite {
