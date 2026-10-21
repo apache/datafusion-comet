@@ -20,8 +20,9 @@
 //! Execution-local child replacements share the owner's metric set. Each execution
 //! registers the fresh DataFusion operator's handles on that set, even if opening
 //! its child fails. Plan rewrites, including `reset_state`, start a new metric set.
+//! Both keep the operator's Comet settings.
 
-use std::fmt::Formatter;
+use std::fmt::{Debug, Formatter};
 use std::sync::Arc;
 
 use datafusion::common::tree_node::TreeNodeRecursion;
@@ -37,15 +38,19 @@ use datafusion::physical_plan::{
     DisplayAs, DisplayFormatType, ExecutionPlan, PlanProperties, SendableRecordBatchStream,
 };
 
-/// The typed input accessor for the unary operators wrapped in this module.
+/// The typed input accessor and Comet settings for the unary operators wrapped in this module.
 pub trait UnaryExec: ExecutionPlan + Clone {
+    /// Comet settings that child replacements and plan rewrites keep.
+    type Settings: Clone + Debug + Default + Send + Sync;
+
     fn input(&self) -> &Arc<dyn ExecutionPlan>;
 }
 
 #[derive(Debug)]
-pub struct MetricOwningExec<T> {
+pub struct MetricOwningExec<T: UnaryExec> {
     inner: T,
     metrics: ExecutionPlanMetricsSet,
+    settings: T::Settings,
 }
 
 impl<T: UnaryExec> MetricOwningExec<T> {
@@ -53,11 +58,20 @@ impl<T: UnaryExec> MetricOwningExec<T> {
         Self {
             inner,
             metrics: ExecutionPlanMetricsSet::new(),
+            settings: T::Settings::default(),
         }
     }
 
     pub(crate) fn inner(&self) -> &T {
         &self.inner
+    }
+
+    pub(crate) fn settings(&self) -> &T::Settings {
+        &self.settings
+    }
+
+    pub(crate) fn settings_mut(&mut self) -> &mut T::Settings {
+        &mut self.settings
     }
 
     pub fn input(&self) -> &Arc<dyn ExecutionPlan> {
@@ -79,19 +93,25 @@ impl<T: UnaryExec> MetricOwningExec<T> {
         Ok(inner.clone())
     }
 
+    fn rebuild(&self, inner: T, metrics: ExecutionPlanMetricsSet) -> Arc<dyn ExecutionPlan> {
+        Arc::new(Self {
+            inner,
+            metrics,
+            settings: self.settings.clone(),
+        })
+    }
+
     /// Replace the child for one execution while keeping the metric identity
     /// owned by the permanent Spark plan node.
     pub fn with_execution_input(
         &self,
         input: Arc<dyn ExecutionPlan>,
     ) -> Result<Arc<dyn ExecutionPlan>> {
-        Ok(Arc::new(Self {
-            inner: self.replace_input(
-                input,
-                ReplaceChildrenOptions::new(ChildrenPropertiesMode::Recompute),
-            )?,
-            metrics: self.metrics.clone(),
-        }))
+        let inner = self.replace_input(
+            input,
+            ReplaceChildrenOptions::new(ChildrenPropertiesMode::Recompute),
+        )?;
+        Ok(self.rebuild(inner, self.metrics.clone()))
     }
 }
 
@@ -137,9 +157,8 @@ impl<T: UnaryExec> ExecutionPlan for MetricOwningExec<T> {
         if children.len() != 1 {
             return internal_err!("{} requires one child", self.inner.name());
         }
-        Ok(Arc::new(Self::from_datafusion(
-            self.replace_input(children.remove(0), options)?,
-        )))
+        let inner = self.replace_input(children.remove(0), options)?;
+        Ok(self.rebuild(inner, ExecutionPlanMetricsSet::new()))
     }
 
     fn with_new_children(
@@ -197,13 +216,13 @@ impl<T: UnaryExec> ExecutionPlan for MetricOwningExec<T> {
     fn with_fetch(&self, fetch: Option<usize>) -> Option<Arc<dyn ExecutionPlan>> {
         let inner = self.inner.with_fetch(fetch)?;
         let inner = inner.downcast_ref::<T>()?.clone();
-        Some(Arc::new(Self::from_datafusion(inner)))
+        Some(self.rebuild(inner, ExecutionPlanMetricsSet::new()))
     }
 
     fn with_preserve_order(&self, preserve_order: bool) -> Option<Arc<dyn ExecutionPlan>> {
         let inner = self.inner.with_preserve_order(preserve_order)?;
         let inner = inner.downcast_ref::<T>()?.clone();
-        Some(Arc::new(Self::from_datafusion(inner)))
+        Some(self.rebuild(inner, ExecutionPlanMetricsSet::new()))
     }
 }
 

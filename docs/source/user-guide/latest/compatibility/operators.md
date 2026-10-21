@@ -65,14 +65,12 @@ it draws from a Poisson distribution that Comet does not implement natively
 ## Sort
 
 Spark orders a null element of an array sort key, or a null field of a struct sort key, below
-every other value, whatever the key's `NULLS FIRST` or `NULLS LAST`. Comet's native sort places it
-by the key's null order instead. So a sort, TopK, or window order key whose type can hold a null
-element or field falls back to Spark under `ASC NULLS LAST` or `DESC NULLS FIRST`
-([#6476](https://github.com/apache/datafusion-comet/issues/6476)). The default null orders,
-`ASC NULLS FIRST` and `DESC NULLS LAST`, place it where Spark does and run natively, and so does a
-key whose type cannot hold a null element or field, such as `array(coalesce(x, 0))`. Set
-`spark.comet.expression.SortOrder.allowIncompatible=true` to run the other null orders natively
-anyway.
+every other value, whatever the root key's `NULLS FIRST` or `NULLS LAST`. Comet compares nested
+values by Spark's order and applies the requested null placement only to the root key. Sort,
+TopK, and ranking window order keys run natively under both default and nondefault null orders
+([#6476](https://github.com/apache/datafusion-comet/issues/6476)). A `RANGE` window frame that
+searches boundaries over a nullable nested key still runs on Spark
+([#6477](https://github.com/apache/datafusion-comet/issues/6477)).
 
 ## Hash Aggregation
 
@@ -109,6 +107,35 @@ rows by the grouping keys only, and Spark and Comet can leave rows with equal ke
 orders, so a group with more than one candidate value can return a different value than Spark.
 Both results are valid under Spark's semantics for these functions.
 
+## Hash Join
+
+Spark plans `NOT IN` as a null-aware anti join, and the native hash join builds it on Spark's
+streamed side without keeping that side's order. When Spark reports the streamed side as ordered,
+for example the output of a window, a sort-merge join, or a cached table sorted within its
+partitions, Comet falls back to Spark for the join, so that a sort Spark removed above it on the
+strength of that order is not lost.
+
+### Output Order
+
+Spark reports the sort order of a hash join's streamed side as the join's own, and drops a sort
+above the join that this order satisfies. Comet's native hash joins keep that order where Comet can
+show that it holds. That includes a left or right outer join over a streamed side that was sorted
+outside the native plan, such as a sorted relation read from the [in-memory cache](#in-memory-cache).
+
+Comet passes the order to the native join as sort keys, and an outer join needs at least the first
+key to be one that Comet can express natively. Declaring any leading part of the order keeps the
+rows in place, so the join does not need the rest. An outer join whose first sort key Comet cannot
+express falls back to Spark and records a fallback reason (see
+[Understanding Comet Plans](../understanding-comet-plans.md)), because Comet cannot tell whether
+an operator above the join relies on the order.
+
+Where the order Spark reports might not hold, Comet declares nothing and an outer join can return
+its unmatched rows out of order. The output of a nested loop join
+([#6898](https://github.com/apache/datafusion-comet/issues/6898)) is one such case, and so is a
+cache or checkpoint that one wrote. Comet also declares nothing when it cannot follow the
+order back to its source, as with an RDD checkpoint, and over some caches written by an outer hash
+join whose order does hold ([#6922](https://github.com/apache/datafusion-comet/issues/6922)).
+
 ## Window Functions
 
 Comet runs `WindowExec` natively and it is enabled by default (`spark.comet.exec.window.enabled`). A broad set of
@@ -142,8 +169,12 @@ incorrect result. When any single window expression in a `WindowExec` falls back
   ([#7007](https://github.com/apache/datafusion-comet/issues/7007)). From precision 28 the native average also
   differs from Spark once the running sum overflows precision 38
   ([#5418](https://github.com/apache/datafusion-comet/issues/5418)).
-- `RANGE` frame with an explicit offset when the `ORDER BY` column is `DATE` or `DECIMAL`
+- `RANGE` frame with an explicit offset when the `ORDER BY` column is `DECIMAL`
   ([#4834](https://github.com/apache/datafusion-comet/issues/4834)).
+- `RANGE` frame with an offset above 2144550751 days when the `ORDER BY` column is `DATE`. Spark adds the offset
+  to the date as an `Int` that wraps on overflow, while the native frame treats an overflowing bound as the edge of
+  the partition. Smaller offsets cannot wrap for any date between 0001-01-01 and 9999-12-31
+  ([#5022](https://github.com/apache/datafusion-comet/issues/5022)).
 - `RANGE` frame bounded by `CURRENT ROW` when an `ORDER BY` key is an array of arrays or structs, or a struct
   holding an array, such as `array(named_struct('x', x))`. DataFusion cannot compare those values to find the
   frame's bounds ([apache/datafusion#24937](https://github.com/apache/datafusion/issues/24937)). Ranking functions
@@ -158,6 +189,11 @@ incorrect result. When any single window expression in a `WindowExec` falls back
 - `lag` / `lead` with a non-literal default value ([#4268](https://github.com/apache/datafusion-comet/issues/4268)).
 - A `ROWS` offset that is not an integer or long, or a `RANGE` offset that is not numeric.
 - Any `PARTITION BY` or `ORDER BY` expression that Comet cannot serialize.
+
+A `RANGE` frame with an explicit offset on a `DATE` `ORDER BY` runs natively, but over a date outside Spark's
+supported range of 0001-01-01 to 9999-12-31, such as one produced by `date_add` with a very large day count, the
+native frame can treat the bound as the edge of the partition where Spark compares against it
+([#5022](https://github.com/apache/datafusion-comet/issues/5022)).
 
 `WindowGroupLimitExec` (window-based limit pushdown for `ROW_NUMBER`, `RANK`, and `DENSE_RANK`)
 runs natively; it is controlled by `spark.comet.exec.windowGroupLimit.enabled` (default: true).

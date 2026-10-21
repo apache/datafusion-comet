@@ -27,6 +27,8 @@ use crate::metric_owning::{MetricOwningExec, UnaryExec};
 pub type CometProjectionExec = MetricOwningExec<ProjectionExec>;
 
 impl UnaryExec for ProjectionExec {
+    type Settings = ();
+
     fn input(&self) -> &Arc<dyn ExecutionPlan> {
         ProjectionExec::input(self)
     }

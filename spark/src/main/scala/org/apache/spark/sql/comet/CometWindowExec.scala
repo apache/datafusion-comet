@@ -21,7 +21,7 @@ package org.apache.spark.sql.comet
 
 import scala.jdk.CollectionConverters._
 
-import org.apache.spark.sql.catalyst.expressions.{Alias, Attribute, AttributeSet, Cast, CumeDist, CurrentRow, DenseRank, Divide, Expression, Lag, Lead, Literal, MakeDecimal, NamedExpression, NthValue, NTile, PercentRank, RangeFrame, Rank, RowFrame, RowNumber, SortOrder, SpecialFrameBoundary, SpecifiedWindowFrame, UnboundedFollowing, UnboundedPreceding, UnscaledValue, WindowExpression}
+import org.apache.spark.sql.catalyst.expressions.{Alias, Attribute, AttributeSet, Cast, CumeDist, CurrentRow, DenseRank, Divide, Expression, FrameType, Lag, Lead, Literal, MakeDecimal, NamedExpression, NthValue, NTile, PercentRank, RangeFrame, Rank, RowFrame, RowNumber, SortOrder, SpecialFrameBoundary, SpecifiedWindowFrame, UnboundedFollowing, UnboundedPreceding, UnscaledValue, WindowExpression}
 import org.apache.spark.sql.catalyst.expressions.aggregate.{AggregateExpression, Average, Complete, Count, First, Last, Max, Min, Sum}
 import org.apache.spark.sql.catalyst.plans.physical.Partitioning
 import org.apache.spark.sql.execution.SparkPlan
@@ -394,30 +394,35 @@ object CometWindowExec extends CometOperatorSerde[WindowExec] {
     }
 
     // Comet's native window planner ships RANGE frame offsets as
-    // ScalarValue::Int64, but a couple of ORDER BY types don't tolerate that:
-    //   - DATE: arrow-arith requires an Interval RHS for Date32 arithmetic,
-    //     so execution fails with
-    //       Invalid date arithmetic operation: Date32 + Int32
-    //   - DECIMAL: Spark decimal arithmetic widens precision on +/-, so the
-    //     computed boundary (e.g. Decimal(11,0)) doesn't match the current
-    //     value's precision (e.g. Decimal(10,0)) and the comparator fails
-    //     with "Uncomparable values".
-    // Fall back to Spark for those shapes. UNBOUNDED / CURRENT ROW bounds
-    // don't evaluate the offending arithmetic and stay native.
+    // ScalarValue::Int64, which the DECIMAL comparator can't handle: Spark
+    // decimal arithmetic widens precision on +/-, so the computed boundary
+    // (e.g. Decimal(11,0)) doesn't match the current value's precision
+    // (e.g. Decimal(10,0)) and the comparator fails with "Uncomparable
+    // values". Fall back for DECIMAL until the native side normalizes
+    // precision. DATE is now handled natively by wrapping the offset as
+    // IntervalDayTime in the planner. UNBOUNDED / CURRENT ROW bounds don't
+    // evaluate the offending arithmetic and stay native regardless.
+    //
+    // For DATE, Spark computes the bound with DateAdd, an Int addition that
+    // wraps silently on overflow, while DataFusion treats an overflowing bound
+    // as the partition edge. Over dates in Spark's supported range the two only
+    // disagree when the offset is large enough to wrap, so fall back for those
+    // offsets. https://github.com/apache/datafusion-comet/issues/5022
     f match {
       case SpecifiedWindowFrame(RangeFrame, lb, ub)
           if !lb.isInstanceOf[SpecialFrameBoundary] ||
             !ub.isInstanceOf[SpecialFrameBoundary] =>
         windowExpr.windowSpec.orderSpec.headOption.map(_.dataType) match {
-          case Some(DateType) =>
-            withFallbackReason(
-              windowExpr,
-              "RANGE frame with explicit offset on DATE ORDER BY is not supported")
-            return None
           case Some(_: DecimalType) =>
             withFallbackReason(
               windowExpr,
               "RANGE frame with explicit offset on DECIMAL ORDER BY is not supported")
+            return None
+          case Some(DateType) if !Seq(lb, ub).forall(isDateRangeOffsetSafe) =>
+            withFallbackReason(
+              windowExpr,
+              "RANGE frame on DATE ORDER BY with an offset above " +
+                s"$MaxSafeDateRangeOffset days is not supported")
             return None
           case _ =>
         }
@@ -506,44 +511,26 @@ object CometWindowExec extends CometOperatorSerde[WindowExec] {
               .newBuilder()
               .setCurrentRow(OperatorOuterClass.CurrentRow.newBuilder().build())
               .build()
-          case e if frameType == RowFrame =>
-            val offset = e.eval() match {
-              case i: Integer => i.toLong
-              case l: Long => l
-              case _ =>
-                withFallbackReason(
-                  windowExpr,
-                  s"Unsupported ROWS frame lower offset: $e (${e.dataType})")
+          case e =>
+            val preceding = boundOffset(e, frameType, isLower = true, output) match {
+              case Right(RowOffset(offset)) =>
+                OperatorOuterClass.Preceding
+                  .newBuilder()
+                  .setOffset(offset)
+                  .build()
+              case Right(RangeOffset(lit)) =>
+                OperatorOuterClass.Preceding
+                  .newBuilder()
+                  .setRangeOffset(lit)
+                  .build()
+              case Left(reason) =>
+                withFallbackReason(windowExpr, reason)
                 return None
             }
             OperatorOuterClass.LowerWindowFrameBound
               .newBuilder()
-              .setPreceding(
-                OperatorOuterClass.Preceding
-                  .newBuilder()
-                  .setOffset(offset)
-                  .build())
+              .setPreceding(preceding)
               .build()
-          case e if frameType == RangeFrame && e.dataType.isInstanceOf[NumericType] =>
-            rangeBoundLiteral(e, isLower = true, output) match {
-              case Some(lit) =>
-                OperatorOuterClass.LowerWindowFrameBound
-                  .newBuilder()
-                  .setPreceding(
-                    OperatorOuterClass.Preceding
-                      .newBuilder()
-                      .setRangeOffset(lit)
-                      .build())
-                  .build()
-              case None =>
-                withFallbackReason(windowExpr, s"Unsupported RANGE frame lower offset: $e")
-                return None
-            }
-          case e =>
-            withFallbackReason(
-              windowExpr,
-              s"RANGE frame with non-numeric offset is not supported: ${e.dataType}")
-            return None
         }
 
         val uBoundProto = uBound match {
@@ -557,44 +544,26 @@ object CometWindowExec extends CometOperatorSerde[WindowExec] {
               .newBuilder()
               .setCurrentRow(OperatorOuterClass.CurrentRow.newBuilder().build())
               .build()
-          case e if frameType == RowFrame =>
-            val offset = e.eval() match {
-              case i: Integer => i.toLong
-              case l: Long => l
-              case _ =>
-                withFallbackReason(
-                  windowExpr,
-                  s"Unsupported ROWS frame upper offset: $e (${e.dataType})")
+          case e =>
+            val following = boundOffset(e, frameType, isLower = false, output) match {
+              case Right(RowOffset(offset)) =>
+                OperatorOuterClass.Following
+                  .newBuilder()
+                  .setOffset(offset)
+                  .build()
+              case Right(RangeOffset(lit)) =>
+                OperatorOuterClass.Following
+                  .newBuilder()
+                  .setRangeOffset(lit)
+                  .build()
+              case Left(reason) =>
+                withFallbackReason(windowExpr, reason)
                 return None
             }
             OperatorOuterClass.UpperWindowFrameBound
               .newBuilder()
-              .setFollowing(
-                OperatorOuterClass.Following
-                  .newBuilder()
-                  .setOffset(offset)
-                  .build())
+              .setFollowing(following)
               .build()
-          case e if frameType == RangeFrame && e.dataType.isInstanceOf[NumericType] =>
-            rangeBoundLiteral(e, isLower = false, output) match {
-              case Some(lit) =>
-                OperatorOuterClass.UpperWindowFrameBound
-                  .newBuilder()
-                  .setFollowing(
-                    OperatorOuterClass.Following
-                      .newBuilder()
-                      .setRangeOffset(lit)
-                      .build())
-                  .build()
-              case None =>
-                withFallbackReason(windowExpr, s"Unsupported RANGE frame upper offset: $e")
-                return None
-            }
-          case e =>
-            withFallbackReason(
-              windowExpr,
-              s"RANGE frame with non-numeric offset is not supported: ${e.dataType}")
-            return None
         }
 
         (frameProto, lBoundProto, uBoundProto)
@@ -669,6 +638,59 @@ object CometWindowExec extends CometOperatorSerde[WindowExec] {
         }
       }
     case _ => true
+  }
+
+  // The largest absolute day number of a date in Spark's supported range,
+  // 0001-01-01 to 9999-12-31. 9999-12-31 is further from the epoch.
+  private val MaxSupportedDateDays: Long = java.time.LocalDate.of(9999, 12, 31).toEpochDay
+
+  // The largest DATE RANGE offset for which `current +/- offset` cannot wrap
+  // an Int for any date in Spark's supported range.
+  private val MaxSafeDateRangeOffset: Long = Int.MaxValue.toLong - MaxSupportedDateDays
+
+  private def isDateRangeOffsetSafe(bound: Expression): Boolean = bound match {
+    case _: SpecialFrameBoundary => true
+    case e =>
+      try {
+        e.eval() match {
+          case i: java.lang.Integer => Math.abs(i.longValue()) <= MaxSafeDateRangeOffset
+          case l: java.lang.Long =>
+            l.longValue() != Long.MinValue && Math.abs(l.longValue()) <= MaxSafeDateRangeOffset
+          // Other offsets are rejected when the bound is serialized.
+          case _ => true
+        }
+      } catch {
+        case _: Exception => true
+      }
+  }
+
+  private sealed trait BoundOffset
+  private case class RowOffset(offset: Long) extends BoundOffset
+  private case class RangeOffset(literal: LiteralOuterClass.Literal) extends BoundOffset
+
+  // Resolves the offset of a PRECEDING/FOLLOWING frame bound, shared by the
+  // lower and upper bound so both apply the same checks. Returns the fallback
+  // reason on Left when the offset cannot be serialized.
+  private def boundOffset(
+      bound: Expression,
+      frameType: FrameType,
+      isLower: Boolean,
+      output: Seq[Attribute]): Either[String, BoundOffset] = {
+    val side = if (isLower) "lower" else "upper"
+    bound match {
+      case e if frameType == RowFrame =>
+        e.eval() match {
+          case i: Integer => Right(RowOffset(i.toLong))
+          case l: Long => Right(RowOffset(l))
+          case _ => Left(s"Unsupported ROWS frame $side offset: $e (${e.dataType})")
+        }
+      case e if frameType == RangeFrame && e.dataType.isInstanceOf[NumericType] =>
+        rangeBoundLiteral(e, isLower, output)
+          .map(RangeOffset)
+          .toRight(s"Unsupported RANGE frame $side offset: $e")
+      case e =>
+        Left(s"RANGE frame with non-numeric offset is not supported: ${e.dataType}")
+    }
   }
 
   // Folds a RANGE frame bound expression to a constant and serializes its

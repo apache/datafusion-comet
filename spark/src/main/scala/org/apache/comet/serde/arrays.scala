@@ -23,7 +23,7 @@ import scala.annotation.tailrec
 import scala.jdk.CollectionConverters._
 
 import org.apache.spark.SPARK_VERSION
-import org.apache.spark.sql.catalyst.expressions.{And, ArrayAggregate, ArrayAppend, ArrayContains, ArrayDistinct, ArrayExcept, ArrayExists, ArrayFilter, ArrayForAll, ArrayInsert, ArrayIntersect, ArrayJoin, ArrayMax, ArrayMin, ArrayPosition, ArrayRemove, ArraySort, ArraysOverlap, ArraysZip, ArrayTransform, ArrayUnion, Attribute, BoundReference, Cast, CreateArray, ElementAt, EmptyRow, Expression, Flatten, GetArrayItem, IsNotNull, IsNull, LambdaFunction, Literal, NamedLambdaVariable, Reverse, Sequence, Size, Slice, SortArray, ZipWith}
+import org.apache.spark.sql.catalyst.expressions.{And, ArrayAggregate, ArrayAppend, ArrayContains, ArrayDistinct, ArrayExcept, ArrayExists, ArrayFilter, ArrayForAll, ArrayInsert, ArrayIntersect, ArrayJoin, ArrayMax, ArrayMin, ArrayPosition, ArrayRemove, ArraySort, ArraysOverlap, ArraysZip, ArrayTransform, ArrayUnion, Attribute, BoundReference, Cast, CreateArray, ElementAt, EmptyRow, Expression, Flatten, GetArrayItem, GreaterThan, If, IsNotNull, IsNull, LambdaFunction, LessThan, Literal, NamedLambdaVariable, Reverse, Sequence, Size, Slice, SortArray, ZipWith}
 import org.apache.spark.sql.catalyst.util.GenericArrayData
 import org.apache.spark.sql.comet.util.Utils
 import org.apache.spark.sql.internal.SQLConf
@@ -62,6 +62,40 @@ object CometArrayRemove
 
 object CometArrayAppend extends CometExpressionSerde[ArrayAppend] with ArraysBase {
 
+  /**
+   * Spark's generated code for `ArrayAppend` evaluates the item for every row and guards only the
+   * assignment of the result, so an item that raises under ANSI raises on a row whose array is
+   * NULL too (#6086). With a nullable array, `convert` reproduces that by also evaluating the
+   * item in the `ELSE` branch of its `CASE WHEN <array> IS NOT NULL` guard. The guard serializes
+   * the array twice and the `ELSE` serializes the item a second time, and a stateful operand
+   * cannot survive that: each copy sees only a subset of the rows, so the copies advance its
+   * state independently and silently move values and NULLs. Either operand is declined when it is
+   * nondeterministic. A non-nullable array needs no guard, so `convert` emits no `CASE` for it
+   * and evaluates each operand once over the whole batch, in order, whatever the operands are.
+   */
+  private val nondeterministicReason: String =
+    "array_append with a nullable array and a nondeterministic operand such as `rand()`: the " +
+      "native NULL guard evaluates the operands more than once, on subsets of the rows"
+
+  override def getUnsupportedReasons(): Seq[String] = Seq(nondeterministicReason)
+
+  /**
+   * Whether evaluating `expr` for a row Spark would not guard it on is unobservable: a literal or
+   * column read cannot throw. `foldable` is not usable here, see CometArrayJoin.orderInsensitive.
+   */
+  private def cannotThrow(expr: Expression): Boolean = expr match {
+    case _: Literal | _: Attribute | _: BoundReference => true
+    case _ => false
+  }
+
+  override def getSupportLevel(expr: ArrayAppend): SupportLevel = {
+    if (expr.left.nullable && expr.children.exists(!_.deterministic)) {
+      Unsupported(Some(nondeterministicReason))
+    } else {
+      Compatible()
+    }
+  }
+
   override def convert(
       expr: ArrayAppend,
       inputs: Seq[Attribute],
@@ -83,6 +117,13 @@ object CometArrayAppend extends CometExpressionSerde[ArrayAppend] with ArraysBas
         arrayExprProto,
         keyExprProto)
 
+    // A non-nullable array never takes the NULL branch, so the guard is dead weight. Without it
+    // each operand is evaluated once over the whole batch, which also keeps a nondeterministic
+    // operand in step.
+    if (!expr.children.head.nullable) {
+      return arrayAppendScalarExpr
+    }
+
     // IS NOT NULL does not care about element nullability, so use the un-widened source and skip
     // serializing a redundant cast.
     val isNotNullExpr = createUnaryExpr(
@@ -91,15 +132,47 @@ object CometArrayAppend extends CometExpressionSerde[ArrayAppend] with ArraysBas
       binding,
       (builder, unaryExpr) => builder.setIsNotNull(unaryExpr))
 
+    // The NULL a row with a NULL array returns. It has to be typed as the list that THEN returns,
+    // not as an element: typed as an element, the inner CASE below returns elements, and the outer
+    // CASE cannot merge those with the lists of its other branch.
     val nullLiteralProto =
-      exprToProtoInternal(Literal(null, elementType), Seq.empty, binding = true)
+      exprToProtoInternal(
+        Literal(null, ArrayType(elementType, containsNull = true)),
+        Seq.empty,
+        binding = true)
 
-    if (arrayAppendScalarExpr.isDefined && isNotNullExpr.isDefined && nullLiteralProto.isDefined) {
+    // DataFusion's CaseExpr evaluates the THEN branch only on the rows the guard selects, but
+    // Spark evaluates the item on every row. Evaluate it on the remaining rows in the ELSE
+    // branch, so that it raises there as well, and still once per row. See
+    // `nondeterministicReason` for why this is restricted to deterministic operands.
+    val elseExprProto =
+      if (cannotThrow(expr.children(1))) {
+        nullLiteralProto
+      } else {
+        for {
+          itemProto <- keyExprProto
+          nullLit <- nullLiteralProto
+        } yield {
+          val itemIsNotNull = ExprOuterClass.Expr
+            .newBuilder()
+            .setIsNotNull(ExprOuterClass.UnaryExpr.newBuilder().setChild(itemProto))
+            .build()
+          val evaluateItem = ExprOuterClass.CaseWhen
+            .newBuilder()
+            .addWhen(itemIsNotNull)
+            .addThen(nullLit)
+            .setElseExpr(nullLit)
+            .build()
+          ExprOuterClass.Expr.newBuilder().setCaseWhen(evaluateItem).build()
+        }
+      }
+
+    if (arrayAppendScalarExpr.isDefined && isNotNullExpr.isDefined && elseExprProto.isDefined) {
       val caseWhenExpr = ExprOuterClass.CaseWhen
         .newBuilder()
         .addWhen(isNotNullExpr.get)
         .addThen(arrayAppendScalarExpr.get)
-        .setElseExpr(nullLiteralProto.get)
+        .setElseExpr(elseExprProto.get)
         .build()
       Some(
         ExprOuterClass.Expr
@@ -363,6 +436,16 @@ object CometArraysOverlap
   override def getSupportLevel(expr: ArraysOverlap): SupportLevel =
     ArrayElementEqualitySupport.getSupportLevel("arrays_overlap", expr.left.dataType)
 
+  /**
+   * The native variant for a Spark version. Where ArraySetSupport.normalizesFloats holds, Spark
+   * normalizes flat FLOAT and DOUBLE elements, so -0.0 and 0.0 are one value, and the
+   * `_normalized` variant matches them that way. Earlier releases keep the zeros apart. Both
+   * variants treat every NaN as one value and compare nested elements in Spark's SQL ordering.
+   */
+  def nativeFunction(version: String): String =
+    if (ArraySetSupport.normalizesFloats(version)) "spark_arrays_overlap_normalized"
+    else "spark_arrays_overlap"
+
   override def convert(
       expr: ArraysOverlap,
       inputs: Seq[Attribute],
@@ -371,7 +454,7 @@ object CometArraysOverlap
     val rightArrayExprProto = exprToProtoInternal(expr.right, inputs, binding)
 
     val arraysOverlapScalarExpr = scalarFunctionExprToProtoWithReturnType(
-      "spark_arrays_overlap",
+      nativeFunction(SPARK_VERSION),
       BooleanType,
       false,
       leftArrayExprProto,
@@ -626,7 +709,8 @@ private[comet] object ArraySetSupport {
   // Spark 4.2.0 normalizes the arguments of these functions in the plan (SPARK-54918), and 4.0.5,
   // 4.1.4 and 4.2.1 normalize while evaluating them (SPARK-59602). Either way, Spark treats -0.0
   // and 0.0, and every NaN, as one value at any depth, which the spark_ variants match. Earlier
-  // releases keep -0.0 and 0.0 apart in a flat array. The check reads the version rather than a
+  // releases keep -0.0 and 0.0 apart in a flat array. Both changes cover arrays_overlap too (see
+  // CometArraysOverlap.nativeFunction). The check reads the version rather than a
   // KnownFloatingPointNormalized marker, because SPARK-59602 adds no marker, and SPARK-54918
   // normalizes CreateArray, If, CaseWhen and Coalesce without wrapping the resulting array.
   def normalizesFloats(version: String): Boolean =
@@ -1172,7 +1256,39 @@ object CometArrayForAll extends CometCodegenDispatch[ArrayForAll]
 
 object CometArrayAggregate extends CometCodegenDispatch[ArrayAggregate]
 
-object CometArraySort extends CometCodegenDispatch[ArraySort]
+object CometArraySort extends CometExpressionSerde[ArraySort] with CometTypeShim {
+  private def usesDefaultComparator(expr: ArraySort): Boolean = expr.function match {
+    case lambda: LambdaFunction if lambda.arguments.length == 2 =>
+      val left = lambda.arguments.head
+      val right = lambda.arguments(1)
+      val noNulls = If(
+        LessThan(left, right),
+        Literal(-1),
+        If(GreaterThan(left, right), Literal(1), Literal(0)))
+      val withNulls = If(
+        And(IsNull(left), IsNull(right)),
+        Literal(0),
+        If(IsNull(left), Literal(1), If(IsNull(right), Literal(-1), noNulls)))
+      lambda.function == withNulls ||
+      (!expr.argument.dataType.asInstanceOf[ArrayType].containsNull &&
+        lambda.function == noNulls)
+    case _ => false
+  }
+
+  override def convert(
+      expr: ArraySort,
+      inputs: Seq[Attribute],
+      binding: Boolean): Option[ExprOuterClass.Expr] = {
+    val elementType = expr.argument.dataType.asInstanceOf[ArrayType].elementType
+    if (usesDefaultComparator(expr) && !hasNonDefaultStringCollation(elementType)) {
+      scalarFunctionExprToProto(
+        "spark_array_sort",
+        exprToProtoInternal(expr.argument, inputs, binding))
+    } else {
+      CometScalaUDF.emitJvmCodegenDispatch(expr, inputs, binding)
+    }
+  }
+}
 
 object CometZipWith extends CometCodegenDispatch[ZipWith]
 
