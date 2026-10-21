@@ -246,14 +246,23 @@ class Native extends NativeBase {
   // scalastyle:on
 
   /**
-   * Sorts partition ids of Spark unsafe rows in place. Used by Comet shuffle external sorter.
+   * Sorts the packed record pointers of Spark unsafe rows in place by partition id, keeping the
+   * order of the pointers within a partition. Used by Comet shuffle external sorter.
    *
    * @param addr
-   *   the address of the array of compacted partition ids.
+   *   the address of the array of packed record pointers.
    * @param size
-   *   the size of the array.
+   *   the number of records, at the start of the array.
+   * @param capacity
+   *   the length of the array in longs. The sort uses the `size` longs after the records as
+   *   scratch space, so it must be at least `2 * size`, which `ShuffleInMemorySorter` keeps free
+   *   when it sorts with radix sort.
    */
-  @native def sortRowPartitionsNative(addr: Long, size: Long, tracingEnabled: Boolean): Unit
+  @native def sortRowPartitionsNative(
+      addr: Long,
+      size: Long,
+      capacity: Long,
+      tracingEnabled: Boolean): Unit
 
   /**
    * Decompress and decode a native shuffle block.
