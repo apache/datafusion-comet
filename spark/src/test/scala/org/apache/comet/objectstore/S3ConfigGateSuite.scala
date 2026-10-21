@@ -2030,17 +2030,61 @@ class S3ConfigGateSuite extends AnyFunSuite {
     assert(!reason.get.contains("AKIALONGSPI"))
   }
 
-  test(
-    "the Comet SPI still gets the credential comparison when Hadoop resolves through a keystore") {
-    // The adapter rebuilds its Configuration from the forwarded fs.s3a.* options and cannot read
-    // a Hadoop credential provider, so these buckets keep the full comparison.
-    val scoped = spiAdapterConf()
-    scoped.set("fs.s3a.security.credential.provider.path", "jceks://file/does-not-exist.jceks")
-    assert(S3ConfigGate.declineReason(scoped, SpiUris).isDefined)
-
+  test("the Comet SPI keeps the credential comparison for a keystore the adapter cannot read") {
+    // The adapter rebuilds its Configuration from the forwarded fs.s3a.* options, so it cannot see
+    // a generic Hadoop credential provider or a keystore that is not a local file.
     val global = spiAdapterConf()
     global.set("hadoop.security.credential.provider.path", "jceks://hdfs/nn/creds.jceks")
     assert(S3ConfigGate.declineReason(global, SpiUris).isDefined)
+
+    val nonLocal = spiAdapterConf()
+    nonLocal.set("fs.s3a.security.credential.provider.path", "jceks://hdfs/nn/creds.jceks")
+    assert(S3ConfigGate.declineReason(nonLocal, SpiUris).isDefined)
+
+    val longForm = spiAdapterConf()
+    longForm.set(
+      "fs.s3a.bucket.spi-bucket.fs.s3a.security.credential.provider.path",
+      "jceks://file/does-not-exist.jceks")
+    assert(S3ConfigGate.declineReason(longForm, SpiUris).isDefined)
+  }
+
+  // The adapters promote an S3A-scoped provider path into hadoop.security.credential.provider.path
+  // before building Hadoop's provider chain (AdapterSupport.patchSecurityCredentialProviders), as
+  // S3AFileSystem does, so a readable local keystore resolves the same credentials on both sides.
+  private def withS3aKeystore(entries: Map[String, String])(test: Configuration => Unit): Unit =
+    withJceks(entries) { jceksConf =>
+      val conf = spiAdapterConf()
+      conf.unset("fs.s3a.bucket.spi-bucket.fs.s3a.access.key")
+      conf.unset("fs.s3a.bucket.spi-bucket.fs.s3a.secret.key")
+      conf.set(
+        "fs.s3a.security.credential.provider.path",
+        jceksConf.get("hadoop.security.credential.provider.path"))
+      test(conf)
+    }
+
+  test(
+    "declineReason admits credentials held in a local S3A keystore when the Comet SPI is set") {
+    withS3aKeystore(
+      Map("fs.s3a.access.key" -> "AKIAKEYSTORESPI", "fs.s3a.secret.key" -> "keystoreSpiSecret")) {
+      conf =>
+        assert(S3ConfigGate.declineReason(conf, SpiUris).isEmpty)
+
+        // Without the SPI native cannot read a keystore at all.
+        conf.unset("fs.s3a.comet.credential.provider.class")
+        assert(S3ConfigGate.declineReason(conf, SpiUris).isDefined)
+    }
+  }
+
+  test("the Comet SPI still declines an encryption algorithm held only in a local keystore") {
+    withS3aKeystore(
+      Map(
+        "fs.s3a.access.key" -> "AKIAKEYSTORESPI",
+        "fs.s3a.secret.key" -> "keystoreSpiSecret",
+        "fs.s3a.encryption.algorithm" -> "SSE-C")) { conf =>
+      val reason = S3ConfigGate.declineReason(conf, SpiUris)
+      assert(reason.exists(_.contains("fs.s3a.encryption.algorithm")))
+      assert(!reason.get.contains("keystoreSpiSecret"))
+    }
   }
 
   test("the Comet SPI still gets the credential comparison when clear-text fallback is off") {
@@ -2103,6 +2147,29 @@ class S3ConfigGateSuite extends AnyFunSuite {
     conf.set("fs.s3a.bucket.spi-bucket.custom.access", "AKIAGLOBALREF")
     conf.set("fs.s3a.bucket.spi-bucket.custom.secret", "globalRefSecret")
     assert(S3ConfigGate.declineReason(conf, SpiUris).isEmpty)
+  }
+
+  test("the Comet SPI compares STS endpoints a bucket override shadows") {
+    val conf = new Configuration(false)
+    conf.set("fs.s3a.comet.credential.provider.class", SpiAdapter)
+    conf.set("fs.s3a.assumed.role.sts.endpoint", varRef("fs.s3a.custom.sts"))
+    conf.set("fs.s3a.custom.sts", "sts.global.example.com")
+    conf.set("fs.s3a.bucket.spi-bucket.custom.sts", "sts.bucket.example.com")
+
+    // Real Hadoop code: propagation runs before expansion, so Hadoop selects the bucket's value.
+    assert(
+      S3AUtils
+        .propagateBucketOptions(conf, "spi-bucket")
+        .get("fs.s3a.assumed.role.sts.endpoint") == "sts.bucket.example.com")
+
+    val reason = S3ConfigGate.hadoopOnlyEndpointGateReason(conf, SpiUris)
+    assert(reason.exists(_.contains("fs.s3a.assumed.role.sts.endpoint")))
+    assert(!reason.get.contains("sts.global.example.com"))
+    assert(!reason.get.contains("sts.bucket.example.com"))
+
+    // Once the override agrees with the global value the forwarded endpoint is what Hadoop uses.
+    conf.set("fs.s3a.bucket.spi-bucket.custom.sts", "sts.global.example.com")
+    assert(S3ConfigGate.hadoopOnlyEndpointGateReason(conf, SpiUris).isEmpty)
   }
 }
 

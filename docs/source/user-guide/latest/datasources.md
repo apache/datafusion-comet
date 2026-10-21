@@ -444,11 +444,13 @@ Comet's S3 support has the following limitations:
    - a credential provider class the native client does not recognize (see item 2).
 
    Buckets whose credentials come from a Comet `CometS3CredentialProvider` (`fs.s3a.comet.credential.provider.class`)
-   are exempt from the credential provider class, assumed-role policy and STS endpoint checks, because the native
-   client never reads those settings for them. Their credential keys are still compared with what the provider
-   receives: Comet forwards `${...}` references already expanded, so a reference whose target a bucket override
-   shadows resolves differently than in Hadoop, and so does a credential held in a credential provider or hidden by
-   a disabled clear-text fallback, none of which the provider can see. Schemes routed through libhdfs (`fs.comet.libhdfs.schemes`) are not checked, since Hadoop's own filesystem
+   are exempt from the credential provider class and assumed-role policy checks, because the native client never reads
+   those settings for them. Their credential keys and STS endpoint are still compared with what the provider receives:
+   Comet forwards `${...}` references already expanded, so a reference whose target a bucket override shadows resolves
+   differently than in Hadoop. A local keystore named by `fs.s3a.security.credential.provider.path` is read the same
+   way on both sides and is accepted. A `hadoop.security.credential.provider.path`, a keystore that is not a local
+   file, a long-form bucket provider path or a disabled clear-text fallback is not visible to the provider, so such a
+   bucket still declines. Schemes routed through libhdfs (`fs.comet.libhdfs.schemes`) are not checked, since Hadoop's own filesystem
    reads them. Run `explain` with Comet's extended explain info enabled to see the fallback reason.
 
    The native Iceberg scan, native writes, and `fs.comet.s3Compliant.schemes` aliases forward `fs.s3a.*` options

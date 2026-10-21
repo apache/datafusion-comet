@@ -538,8 +538,11 @@ object S3ConfigGate {
             propagatedConfCache.getOrElseUpdate(
               bucket,
               propagateBucketOptions(hadoopConf, bucket))
-          encryptionAlgorithmReason(propagatedConf, bucket)
-            .orElse(encryptionAlgorithmReason(hadoopConf, bucket))
+          // A bucket on the SPI whose S3A keystore path the adapters promote like Hadoop does is
+          // read through that keystore, so an algorithm held only there is still seen.
+          val spi = spiViews(hadoopConf, propagatedConf, bucket)
+          encryptionAlgorithmReason(spi.map(_.hadoopPropagated).getOrElse(propagatedConf), bucket)
+            .orElse(encryptionAlgorithmReason(spi.map(_.hadoopRaw).getOrElse(hadoopConf), bucket))
         } catch {
           case e @ (_: IOException | _: RuntimeException) =>
             Some(unverifiableValueReason(bucket, S3EncryptionAlgorithmKey, e))
@@ -759,9 +762,16 @@ object S3ConfigGate {
           if (schemeless && !propagatedConf.getBoolean(S3SslEnabledKey, true)) {
             Some(insecureEndpointReason(bucket))
           } else if (cometProviderClassConfigured(hadoopConf, bucket)) {
-            // The STS endpoint only matters to native's own assume-role provider, which the SPI
-            // bridge replaces; the endpoint check above applies to the store itself.
-            None
+            // Native's own assume-role provider, which never reads the STS endpoint, is replaced
+            // by the SPI bridge. The built-in adapters pass the endpoint they reconstruct from
+            // the forwarded options on to Hadoop's assume-role provider, so it only has to
+            // agree with Hadoop's own value (a shadowed `${...}` reference may not).
+            val adapterConf = adapterPropagatedConf(hadoopConf, bucket)
+            def normalized(conf: Configuration, key: String): Option[String] =
+              Option(conf.get(key)).map(_.trim).filter(_.nonEmpty)
+            S3StsEndpointKeys
+              .find(key => normalized(propagatedConf, key) != normalized(adapterConf, key))
+              .map(key => stsEndpointReason(bucket, key))
           } else {
             S3StsEndpointKeys
               .find(key => propagatedConf.getTrimmed(key, "").nonEmpty)
@@ -997,7 +1007,7 @@ object S3ConfigGate {
       bucket: String,
       baseKey: String,
       consumer: S3ConfigConsumer,
-      adapterView: Option[Configuration]): Option[String] = {
+      spi: Option[SpiViews]): Option[String] = {
     def effectiveOn(conf: Configuration): Either[String, Option[String]] = consumer match {
       case LookupPasswordConsumer =>
         hadoopLookupPasswordEffective(conf, bucket, baseKey)
@@ -1005,17 +1015,17 @@ object S3ConfigGate {
         Right(Option(conf.get(baseKey)))
     }
     try {
-      val hadoopEffective = effectiveOn(propagatedConf)
-      hadoopEffective match {
-        case Left(reason) => Some(reason)
-        case Right(hadoopValue) =>
-          // On an SPI bucket the value that matters is the one the SPI provider reconstructs
-          // from the forwarded options (see [[spiAdapterView]]), not native's own
-          // short-then-global read.
-          val nativeValue = adapterView match {
-            case Some(view) => effectiveOn(view).toOption.flatten
-            case None => nativeShortThenGlobal(hadoopConf, bucket, baseKey)
-          }
+      // On an SPI bucket the value that matters is the one the SPI provider reconstructs from
+      // the forwarded options (see [[spiViews]]), not native's own short-then-global read.
+      val hadoopEffective = effectiveOn(spi.map(_.hadoopPropagated).getOrElse(propagatedConf))
+      val nativeEffective = spi match {
+        case Some(views) => effectiveOn(views.adapter)
+        case None => Right(nativeShortThenGlobal(hadoopConf, bucket, baseKey))
+      }
+      (hadoopEffective, nativeEffective) match {
+        case (Left(reason), _) => Some(reason)
+        case (_, Left(reason)) => Some(reason)
+        case (Right(hadoopValue), Right(nativeValue)) =>
           if (hadoopValue.map(_.trim) != nativeValue.map(_.trim)) {
             Some(effectiveValueDivergenceReason(bucket, baseKey))
           } else {
@@ -1063,7 +1073,7 @@ object S3ConfigGate {
             propagatedConfCache.getOrElseUpdate(
               bucket,
               propagateBucketOptions(hadoopConf, bucket))
-          val adapterView = spiAdapterView(hadoopConf, propagatedConf, bucket)
+          val spi = spiViews(hadoopConf, propagatedConf, bucket)
           S3ConfigKeyConsumers.foldLeft(Option.empty[String]) {
             case (keyDeclined, (key, consumer)) =>
               if (keyDeclined.isDefined) {
@@ -1075,7 +1085,7 @@ object S3ConfigGate {
                   bucket,
                   key,
                   consumer,
-                  adapterView.filter(_ => NativeCredentialChainKeys.contains(key)))
+                  spi.filter(_ => NativeCredentialChainKeys.contains(key)))
               }
           }
         } catch {
@@ -1232,7 +1242,7 @@ object S3ConfigGate {
    * The compared keys only native's own credential chain reads: the static credentials, the
    * provider class list and the assumed-role settings. On a bucket that uses Comet's
    * credential-provider SPI native never reads them (see [[cometProviderClassConfigured]]), so
-   * what matters is Hadoop's value against the SPI provider's (see [[spiAdapterView]]).
+   * what matters is Hadoop's value against the SPI provider's (see [[spiViews]]).
    */
   private val NativeCredentialChainKeys: Set[String] = Set(
     "fs.s3a.access.key",
@@ -1244,38 +1254,97 @@ object S3ConfigGate {
     "fs.s3a.assumed.role.credentials.provider")
 
   /**
-   * For a bucket on Comet's credential-provider SPI whose Hadoop credential resolution the SPI
-   * provider can reproduce, the configuration that provider reconstructs; `None` otherwise. The
-   * built-in adapters rebuild Hadoop's provider chain from the options native forwards, which are
-   * the `fs.s3a.*` entries with every `${...}` reference already expanded against the ORIGINAL,
-   * unpropagated conf, and then apply `propagateBucketOptions` themselves. Long-form and
-   * per-bucket aliases therefore resolve as in Hadoop, but a reference whose target a bucket
-   * override shadows is already pinned to the global value, so [[NativeCredentialChainKeys]] are
-   * compared against this view instead of native's own read. The adapter cannot see a Hadoop
-   * credential provider (a keystore path) or a disabled clear-text fallback, so a bucket with
-   * either gets no view and keeps the full comparison.
+   * The configuration the built-in SPI adapters reconstruct for `bucket` from the options native
+   * forwards: the `fs.s3a.*` entries with every `${...}` reference already expanded against the
+   * ORIGINAL, unpropagated conf (see `NativeConfig.extractObjectStoreOptions`), then
+   * `propagateBucketOptions`. Per-bucket and long-form aliases therefore resolve as in Hadoop,
+   * but a reference whose target a bucket override shadows is already pinned to the global value.
    */
-  private def spiAdapterView(
+  private def adapterPropagatedConf(hadoopConf: Configuration, bucket: String): Configuration = {
+    val forwarded = new Configuration(false)
+    hadoopConf.iterator().asScala.foreach { entry =>
+      val key = entry.getKey
+      if (key.startsWith("fs.s3a.")) {
+        val value =
+          try {
+            Option(hadoopConf.get(key)).getOrElse(entry.getValue)
+          } catch {
+            case _: IllegalStateException => entry.getValue
+          }
+        forwarded.set(key, value)
+      }
+    }
+    propagateBucketOptions(forwarded, bucket)
+  }
+
+  /**
+   * True when every entry of `conf`'s effective `fs.s3a.security.credential.provider.path` is a
+   * local keystore (or filesystem-free) provider, which can be read without any filesystem I/O
+   * beyond the local file.
+   */
+  private def s3aProviderPathIsLocal(conf: Configuration): Boolean = {
+    val path = conf.getTrimmed(S3aCredentialProviderPathKey, "")
+    val isLocalFileSystem = Option(conf.get("fs.file.impl"))
+      .forall(_ == "org.apache.hadoop.fs.LocalFileSystem")
+    path.isEmpty || path.split(",").forall(isLocalOrFilesystemFreeProvider(_, isLocalFileSystem))
+  }
+
+  /**
+   * `conf` with the S3A-scoped credential provider path promoted into Hadoop's generic
+   * `hadoop.security.credential.provider.path`, exactly as
+   * `S3AUtils#patchSecurityCredentialProviders` does for `S3AFileSystem` and
+   * `AdapterSupport.patchSecurityCredentialProviders` does for the adapters, and the S3A keys
+   * removed so the resolution below reads the keystore through `Configuration#getPassword`.
+   * `s3aPath` is the effective path of the propagated conf. Returns `conf` itself when no S3A
+   * path is set.
+   */
+  private def promoteS3aProviderPath(
+      conf: Configuration,
+      s3aPath: String,
+      bucket: String): Configuration =
+    if (s3aPath.isEmpty) {
+      conf
+    } else {
+      val promoted = new Configuration(conf)
+      promoted.set(HadoopCredentialProviderPathKey, s3aPath)
+      promoted.unset(S3aCredentialProviderPathKey)
+      promoted.unset(s3aBucketProviderPathKey(bucket))
+      promoted
+    }
+
+  /**
+   * Hadoop's own view of `bucket`'s credentials as the SPI provider can reproduce it, or `None`
+   * when it cannot. Eligible only for a bucket on Comet's credential-provider SPI whose Hadoop
+   * credential resolution the built-in adapters rebuild from the forwarded options: no generic
+   * `hadoop.security.credential.provider.path`, no long-form bucket path key, an S3A-scoped path
+   * (if any) that is a local keystore, and the clear-text fallback left on. Everything else keeps
+   * the full comparison, because the adapter cannot see it. The result holds, for the propagated
+   * conf, the raw conf and the adapter's reconstruction, each with an S3A keystore path promoted,
+   * so a keystore is read the same way on both sides.
+   */
+  private case class SpiViews(
+      hadoopPropagated: Configuration,
+      hadoopRaw: Configuration,
+      adapter: Configuration)
+
+  private def spiViews(
       hadoopConf: Configuration,
       propagatedConf: Configuration,
-      bucket: String): Option[Configuration] =
+      bucket: String): Option[SpiViews] =
     if (cometProviderClassConfigured(hadoopConf, bucket) &&
-      credentialProviderArm(propagatedConf, bucket) == NoProvider &&
-      propagatedConf.getBoolean(ClearTextFallbackKey, true)) {
-      val forwarded = new Configuration(false)
-      hadoopConf.iterator().asScala.foreach { entry =>
-        val key = entry.getKey
-        if (key.startsWith("fs.s3a.")) {
-          val value =
-            try {
-              Option(hadoopConf.get(key)).getOrElse(entry.getValue)
-            } catch {
-              case _: IllegalStateException => entry.getValue
-            }
-          forwarded.set(key, value)
-        }
-      }
-      Some(propagateBucketOptions(forwarded, bucket))
+      propagatedConf.getBoolean(ClearTextFallbackKey, true) &&
+      !nonEmptyConf(hadoopConf, s3aBucketLongProviderPathKey(bucket)) &&
+      !nonEmptyConf(propagatedConf, s3aBucketLongProviderPathKey(bucket)) &&
+      !nonEmptyConf(hadoopConf, HadoopCredentialProviderPathKey) &&
+      s3aProviderPathIsLocal(propagatedConf)) {
+      val adapterConf = adapterPropagatedConf(hadoopConf, bucket)
+      val hadoopPath = propagatedConf.getTrimmed(S3aCredentialProviderPathKey, "")
+      val adapterPath = adapterConf.getTrimmed(S3aCredentialProviderPathKey, "")
+      Some(
+        SpiViews(
+          promoteS3aProviderPath(propagatedConf, hadoopPath, bucket),
+          promoteS3aProviderPath(hadoopConf, hadoopPath, bucket),
+          promoteS3aProviderPath(adapterConf, adapterPath, bucket)))
     } else {
       None
     }
