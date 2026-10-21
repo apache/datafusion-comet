@@ -988,6 +988,28 @@ and pick the jar with the newest timestamp. Then use it as described in
 <p>Refer to the <a class="reference internal" href="source.html"><span class="std std-doc">Building from source</span></a> guide for instructions from building Comet from source, either from official
 source releases, or from the latest code in the GitHub repository.</p>
 </section>
+<section id="native-library-extraction-directory">
+<h2>Native library extraction directory<a class="headerlink" href="#native-library-extraction-directory" title="Link to this heading">#</a></h2>
+<p>Comet extracts its bundled native library into a private <code class="docutils literal notranslate"><span class="pre">0700</span></code> directory under the JVM’s
+<code class="docutils literal notranslate"><span class="pre">java.io.tmpdir</span></code>, creates the library exclusively, and makes the completed file owner-readable
+only before loading it. This keeps extraction within Spark’s configured temporary storage,
+including YARN container directories and Kubernetes <code class="docutils literal notranslate"><span class="pre">emptyDir</span></code> volumes.</p>
+<p>If that storage is mounted <code class="docutils literal notranslate"><span class="pre">noexec</span></code>, set the JVM system property <code class="docutils literal notranslate"><span class="pre">comet.native.workdir</span></code> to an
+existing writable directory on an executable filesystem. Configure it for both driver and executor
+JVMs, for example:</p>
+<div class="highlight-shell notranslate"><div class="highlight"><pre><span></span>--conf<span class="w"> </span><span class="s1">'spark.driver.extraJavaOptions=-Dcomet.native.workdir=/path/to/comet-tmp'</span><span class="w"> </span><span class="se">\</span>
+--conf<span class="w"> </span><span class="s1">'spark.executor.extraJavaOptions=-Dcomet.native.workdir=/path/to/comet-tmp'</span>
+</pre></div>
+</div>
+<p>The chosen directory and its parents must be controlled by the application or trusted administrators.
+The loader relies on this deployment boundary rather than rejecting managed directories based on
+ancestor ownership or sticky-bit permissions. It does not silently switch to other temporary roots
+if the configured location cannot be used.</p>
+<p>Failed extractions are removed immediately, and successful extractions are removed when the JVM
+exits normally. Forced termination such as <code class="docutils literal notranslate"><span class="pre">SIGKILL</span></code> cannot run JVM cleanup. The container manager
+or deployment temporary-file cleanup policy must then remove leftover directories, including any
+custom work directory, after the owning JVMs have stopped.</p>
+</section>
 <section id="deploying-to-kubernetes">
 <h2>Deploying to Kubernetes<a class="headerlink" href="#deploying-to-kubernetes" title="Link to this heading">#</a></h2>
 <p>See the <a class="reference internal" href="kubernetes.html"><span class="std std-doc">Comet Kubernetes Guide</span></a> guide.</p>
@@ -1152,6 +1174,7 @@ requires registration and has not registered the classes this registrator covers
 </li>
 <li class="toc-h2 nav-item toc-entry"><a class="reference internal nav-link" href="#using-a-published-jar-file">Using a Published JAR File</a></li>
 <li class="toc-h2 nav-item toc-entry"><a class="reference internal nav-link" href="#building-from-source">Building from source</a></li>
+<li class="toc-h2 nav-item toc-entry"><a class="reference internal nav-link" href="#native-library-extraction-directory">Native library extraction directory</a></li>
 <li class="toc-h2 nav-item toc-entry"><a class="reference internal nav-link" href="#deploying-to-kubernetes">Deploying to Kubernetes</a></li>
 <li class="toc-h2 nav-item toc-entry"><a class="reference internal nav-link" href="#run-spark-shell-with-comet-enabled">Run Spark Shell with Comet enabled</a><ul class="nav section-nav flex-column">
 <li class="toc-h3 nav-item toc-entry"><a class="reference internal nav-link" href="#verify-comet-enabled-for-spark-sql-query">Verify Comet enabled for Spark SQL query</a></li>
