@@ -19,6 +19,8 @@
 
 package org.apache.spark.sql.comet
 
+import java.io.DataInputStream
+import java.nio.channels.Channels
 import java.util.IdentityHashMap
 import java.util.concurrent.{CountDownLatch, TimeUnit}
 
@@ -211,8 +213,8 @@ private[comet] class DecodedBroadcastCache(
       started = true
       val (entry, loading) = acquire(chunks)
       context.addTaskCompletionListener[Unit] { _ =>
-        closeCurrent()
-        release(entry)
+        try closeCurrent()
+        finally release(entry)
       }
       try {
         batches = (if (loading) entry.load(source) else entry.await(context)) match {
@@ -268,7 +270,8 @@ private[comet] object DecodedBroadcastCache {
       val streams = chunks.iterator.filter(_.size > 0)
       var supported = true
       while (supported && streams.hasNext) {
-        val reader = new ArrowStreamReader(Utils.ipcChannel(streams.next(), codec), allocator)
+        val in = new DataInputStream(codec.compressedInputStream(streams.next().toInputStream()))
+        val reader = new ArrowStreamReader(Channels.newChannel(in), allocator)
         try {
           val root = reader.getVectorSchemaRoot
           supported = reader.getDictionaryVectors.isEmpty

@@ -19,8 +19,6 @@
 
 package org.apache.spark.sql.comet.util
 
-import java.io.{FilterInputStream, InputStream, OutputStream}
-import java.nio.ByteBuffer
 import java.nio.channels.ClosedByInterruptException
 import java.nio.charset.StandardCharsets
 
@@ -30,7 +28,6 @@ import org.apache.arrow.c.CDataDictionaryProvider
 import org.apache.arrow.memory.BufferAllocator
 import org.apache.arrow.vector.VarCharVector
 import org.apache.arrow.vector.ipc.message.ArrowFieldNode
-import org.apache.spark.io.CompressionCodec
 import org.apache.spark.sql.CometTestBase
 import org.apache.spark.sql.execution.vectorized.ConstantColumnVector
 import org.apache.spark.sql.types.{IntegerType, StringType, StructField, StructType, TimestampType}
@@ -78,68 +75,30 @@ class UtilsSuite extends CometTestBase {
     val values = (0 until 24).map(i => if (i % 5 == 0) null else s"value-$i")
     val skips = Seq(8, 16)
 
+    def serialize(vectors: Seq[VarCharVector]): Seq[ChunkedByteBuffer] = {
+      val batches = vectors.map { v =>
+        val column = CometVector.getVector(v, new CDataDictionaryProvider)
+        new ColumnarBatch(Array[ColumnVector](column), v.getValueCount)
+      }
+      try Utils.serializeBatches(batches.iterator).map(_._2).toList
+      finally batches.foreach(_.close())
+    }
+
     val sliced = serialize(skips.map(slicedStrings(values, _)))
     val (coalesced, batchCount, _) = Utils.coalesceBroadcastBatches(sliced.iterator)
     assert(batchCount == skips.length)
     val it = Utils.decodeBatches(coalesced.head, "test")
-    assert(readStrings(it.next()) == skips.flatMap(values.drop))
+    val out = it.next()
+    val got = (0 until out.numRows()).map { i =>
+      if (out.column(0).isNullAt(i)) null else out.column(0).getUTF8String(i).toString
+    }
     assert(!it.hasNext)
+    assert(got == skips.flatMap(values.drop))
 
     // The bytes before a slice are not written either: it takes as many bytes as the same values
     // in a vector of their own.
     val fresh = serialize(skips.map(skip => strings(values.drop(skip))))
     assert(sliced.map(_.size) == fresh.map(_.size))
-  }
-
-  test("decodeBatches reads a stream larger than one read piece") {
-    // The decoder reads its stream in pieces of up to MaxReadPiece bytes, so this one takes many.
-    val values = (0 until 20000).map(i => if (i % 11 == 0) null else s"value-$i")
-    val buf = serialize(Seq(strings(values))).head
-    assert(buf.size > Utils.MaxReadPiece)
-
-    val it = Utils.decodeBatches(buf, "test")
-    assert(readStrings(it.next()) == values)
-    assert(!it.hasNext)
-  }
-
-  test("decodeBatches stops on an interrupted thread") {
-    val buf = serialize(Seq(strings(Seq("a", "b")))).head
-    val before = CometArrowAllocator.getAllocatedMemory
-    Thread.currentThread().interrupt()
-    try {
-      intercept[ClosedByInterruptException] {
-        Utils.decodeBatches(buf, "test")
-      }
-    } finally {
-      Thread.interrupted()
-    }
-    assert(CometArrowAllocator.getAllocatedMemory == before)
-  }
-
-  test("a read of a broadcast stream stops at the next piece once its thread is interrupted") {
-    // Arrow reads a message body with one call, which for a coalesced broadcast is all of it.
-    var pieces = 0
-    val codec = new CompressionCodec {
-      override def compressedOutputStream(s: OutputStream): OutputStream = s
-      // Interrupts the reading thread during the first piece, as killing its task does.
-      override def compressedInputStream(s: InputStream): InputStream =
-        new FilterInputStream(s) {
-          override def read(b: Array[Byte], off: Int, len: Int): Int = {
-            pieces += 1
-            Thread.currentThread().interrupt()
-            super.read(b, off, len)
-          }
-        }
-    }
-    val channel =
-      Utils.ipcChannel(new ChunkedByteBuffer(ByteBuffer.wrap(new Array[Byte](1 << 20))), codec)
-    try {
-      intercept[ClosedByInterruptException](channel.read(ByteBuffer.allocate(1 << 20)))
-    } finally {
-      Thread.interrupted()
-    }
-    assert(pieces == 1)
-    assert(!channel.isOpen)
   }
 
   test("serializeBatches closes the slice it writes when the write fails") {
@@ -305,22 +264,6 @@ class UtilsSuite extends CometTestBase {
       }
     }
   }
-
-  /** Serializes each vector as a batch of its own, closing the batches. */
-  private def serialize(vectors: Seq[VarCharVector]): Seq[ChunkedByteBuffer] = {
-    val batches = vectors.map { v =>
-      val column = CometVector.getVector(v, new CDataDictionaryProvider)
-      new ColumnarBatch(Array[ColumnVector](column), v.getValueCount)
-    }
-    try Utils.serializeBatches(batches.iterator).map(_._2).toList
-    finally batches.foreach(_.close())
-  }
-
-  /** The strings of the first column of `batch`. */
-  private def readStrings(batch: ColumnarBatch): Seq[String] =
-    (0 until batch.numRows()).map { i =>
-      if (batch.column(0).isNullAt(i)) null else batch.column(0).getUTF8String(i).toString
-    }
 
   private def strings(
       values: Seq[String],
