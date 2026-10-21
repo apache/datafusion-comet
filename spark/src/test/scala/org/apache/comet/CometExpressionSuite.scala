@@ -130,6 +130,63 @@ class CometExpressionSuite extends CometTestBase with AdaptiveSparkPlanHelper {
         input.select(round(checked) + lit(1.0)),
         native = Seq("add"),
         dispatched = Seq("round", "assertnotnull"))
+      checkSparkAnswerAndImpl(
+        input.select(round(checked) + lit(1.0)).limit(1),
+        native = Seq("add"),
+        dispatched = Seq("round", "assertnotnull"))
+      checkSparkAnswerAndImpl(
+        input.select(checked).repartition(1).limit(1),
+        native = Seq("assertnotnull"))
+    }
+  }
+
+  Seq(false, true).foreach { adaptive =>
+    test(
+      s"AssertNotNull respects partially consumed blocking-operator output with AQE=$adaptive") {
+      withSQLConf(SQLConf.ADAPTIVE_EXECUTION_ENABLED.key -> adaptive.toString) {
+        withTempPath { path =>
+          Seq[(Int, Integer)]((1, 1), (2, null))
+            .toDF("id", "a")
+            .coalesce(1)
+            .write
+            .parquet(path.toString)
+          val input = spark.read.parquet(path.toString)
+          val checked = getColumnFromExpression(AssertNotNull(input.col("a").expr, Seq("a")))
+          checkSparkAnswerAndImpl(
+            input.orderBy("id").limit(1).select(checked),
+            native = Seq("assertnotnull"))
+          val selected = input.orderBy("id").limit(2).select(checked)
+          checkSparkAnswerAndFallbackReason(
+            selected.as[Int].mapPartitions(_.take(1)).toDF(),
+            "Native AssertNotNull below a mapPartitions function could check rows Spark does not read")
+          assert(selected.rdd.take(1).toSeq == Seq(Row(1)))
+          // Aggregate result expressions are another late projection inside a blocking operator.
+          // Keep all groups here because an aggregate does not promise an output order.
+          val grouped = input.groupBy("id").agg(max("id").as("m"))
+          val checkedResult =
+            getColumnFromExpression(AssertNotNull(grouped.col("m").expr, Seq("m")))
+          checkSparkAnswerAndFallbackReason(
+            grouped.select(checkedResult).limit(2),
+            "Native AssertNotNull below a limit could check rows Spark does not read")
+        }
+      }
+    }
+  }
+
+  Seq(false, true).foreach { adaptive =>
+    test(s"AssertNotNull respects partially consumed input with AQE=$adaptive") {
+      withSQLConf(
+        SQLConf.ADAPTIVE_EXECUTION_ENABLED.key -> adaptive.toString,
+        CometConf.COMET_CONVERT_FROM_TYPED_DATASET_ENABLED.key -> "false") {
+        withTempPath { path =>
+          Seq[Integer](1, null).toDF("a").coalesce(1).write.parquet(path.toString)
+          val input = spark.read.parquet(path.toString)
+          val checked = getColumnFromExpression(AssertNotNull(input.col("a").expr, Seq("a")))
+          checkSparkAnswerAndFallbackReason(
+            input.select(checked).limit(1),
+            "Native AssertNotNull below a limit could check rows Spark does not read")
+        }
+      }
     }
   }
 

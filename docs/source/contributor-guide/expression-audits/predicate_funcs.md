@@ -86,7 +86,7 @@
 
 ## assertnotnull
 
-Internal Catalyst runtime nullability check, with no public SQL function. Native evaluation preserves the child value and checks its outer logical validity, including dictionary values. Structural and lazy conditional parents used by V2 writes are supported. Other native parents conservatively fall back to preserve Spark's evaluation order. Assertions captured entirely in JVM codegen dispatch retain their existing execution path, including under native parents.
+Internal Catalyst runtime nullability check, with no public SQL function. Native evaluation preserves the child value and checks its outer logical validity, including dictionary values. Structural and lazy conditional parents used by V2 writes are supported. Other native parents conservatively fall back to preserve Spark's evaluation order. Operators whose consumers may stop reading early also fall back for native assertions, so a limit does not check later rows in a batch. Full-consumption barriers end this restriction, while late TopK and aggregate result projections preserve any external partial consumer's row-by-row behavior. Assertions captured entirely in JVM codegen dispatch retain their existing execution path, including under native parents.
 
 - Spark 3.4.3 (audited 2026-10-22): full `NullPointerException` message and newline-delimited walked path. Nullable-source V2 writes to required columns are rejected during analysis.
 - Spark 3.5.9 (audited 2026-10-22): same expression error contract as 3.4.3. V2 writes insert runtime assertions for required fields.

@@ -181,11 +181,11 @@ object CometExecRule {
   private[rules] val warnedDeprecatedConversions = ConcurrentHashMap.newKeySet[String]()
 
   /**
-   * Tag set on a `SerializeFromObjectExec` whose output an operator above it can stop reading
-   * early, naming that operator. See `tagPartiallyReadTypedDatasetOutputs`.
+   * Tag set on an operator whose output a consumer can stop reading early, naming that consumer.
+   * See `tagPartiallyReadOutputs`.
    */
-  private val TYPED_DATASET_PARTIAL_READER: TreeNodeTag[String] =
-    TreeNodeTag[String]("comet.typedDatasetPartialReader")
+  private val PARTIAL_READER: TreeNodeTag[String] =
+    TreeNodeTag[String]("comet.partialReader")
 
   /** Why Comet does not convert rows to Arrow in a plan that reads `InputFileBlockHolder`. */
   private val INPUT_FILE_BLOCK_FALLBACK_REASON: String =
@@ -428,9 +428,7 @@ case class CometExecRule(session: SparkSession, queryStagePrep: Boolean = false)
     // Walks the whole plan, so it is lazy: only consulted once a node could be converted.
     lazy val readsInputFileBlock = CometScanRule.readsInputFileBlock(plan)
 
-    if (CometConf.COMET_CONVERT_FROM_TYPED_DATASET_ENABLED.get(conf)) {
-      tagPartiallyReadTypedDatasetOutputs(plan)
-    }
+    tagPartiallyReadOutputs(plan)
 
     def convertNode(op: SparkPlan): SparkPlan = op match {
       // Scan marker produced by an optional, out-of-tree scan contrib (e.g. contrib/delta).
@@ -543,7 +541,7 @@ case class CometExecRule(session: SparkSession, queryStagePrep: Boolean = false)
       // Arrow lets the operators above the typed operation run natively.
       case op: SerializeFromObjectExec
           if CometConf.COMET_CONVERT_FROM_TYPED_DATASET_ENABLED.get(conf) =>
-        op.getTagValue(CometExecRule.TYPED_DATASET_PARTIAL_READER) match {
+        op.getTagValue(CometExecRule.PARTIAL_READER) match {
           case Some(reader) =>
             withFallbackReason(
               op,
@@ -1176,11 +1174,46 @@ case class CometExecRule(session: SparkSession, queryStagePrep: Boolean = false)
           serde.convert(op, builder)
         }
       }
-      return nativeOp.map { nativeOp =>
-        val exec = serde.createExec(nativeOp, op)
-        rollUpInfoMessages(op, exec)
-        exec
-      }
+      return nativeOp
+        .filter { proto =>
+          // A serde may emit several native nodes for one Spark operator. Inspect those nodes,
+          // but stop at real Spark children, whose consumption context was tagged independently.
+          def containsOwnAssertion(node: Operator): Boolean =
+            CometAssertNotNull.containsNativeAssertion(node.toBuilder.clearChildren().build()) ||
+              node.getChildrenList.asScala.exists { child =>
+                child.getPlanId == proto.getPlanId && containsOwnAssertion(child)
+              }
+
+          def hasNativeAssertion: Boolean = op match {
+            // TopK's sink proto omits its runtime projection over the selected rows.
+            case topK: TakeOrderedAndProjectExec =>
+              QueryPlanSerde.withSharedSubexpressions(topK.projectList) {
+                topK.projectList.exists { expression =>
+                  QueryPlanSerde
+                    .exprToProto(expression, topK.child.output)
+                    .exists(CometAssertNotNull.containsNativeAssertion)
+                }
+              }
+            case _: HashAggregateExec | _: ObjectHashAggregateExec =>
+              // Input/grouping expressions consume all rows; only the result projection is lazy.
+              proto.hasProjection && CometAssertNotNull.containsNativeAssertion(
+                proto.getProjection)
+            case _ => containsOwnAssertion(proto)
+          }
+          op.getTagValue(CometExecRule.PARTIAL_READER) match {
+            case Some(reader) if hasNativeAssertion =>
+              withFallbackReason(
+                op,
+                s"Native AssertNotNull below $reader could check rows Spark does not read")
+              false
+            case _ => true
+          }
+        }
+        .map { nativeOp =>
+          val exec = serde.createExec(nativeOp, op)
+          rollUpInfoMessages(op, exec)
+          exec
+        }
     }
     None
   }
@@ -1325,26 +1358,26 @@ case class CometExecRule(session: SparkSession, queryStagePrep: Boolean = false)
     allExecs.get(op.getClass).exists(_.enabledConfig.forall(_.get(op.conf)))
 
   /**
-   * Tags each `SerializeFromObjectExec` whose output an operator above it can stop reading early
-   * with that operator, so `transform` does not convert it. Spark computes the rows of a typed
-   * Dataset operation one at a time, as the operator above reads them, while the conversion fills
-   * a whole Arrow batch first. Below a limit, a `mapPartitions` function such as `_.take(1)`, or
-   * code reading `Dataset.rdd`, the conversion would run the user function on rows Spark never
-   * reaches, and a function that throws on one of them would fail a query that succeeds in Spark.
-   * An operator that reads all of its input before it returns a row ends the search, since Spark
+   * Tags operators whose output a consumer can stop reading early. Spark computes rows as the
+   * consumer reads them, while native expressions and typed Dataset conversion fill a whole Arrow
+   * batch first. Below a limit, a `mapPartitions` function such as `_.take(1)`, or code reading
+   * `Dataset.rdd`, an assertion or user function could throw on rows Spark never reaches. An
+   * operator that reads all of its input before it returns a row ends the search, since Spark
    * computes every row below it anyway: an exchange, a sort, a hash aggregate, or a top-k over
    * input that is not already sorted.
    *
    * Conversion is bottom-up, so this runs first. TreeNode tags survive the child copies made
-   * during transformUp, while an identity set would not.
+   * during transformUp, while an identity set would not. Retain established tags when AQE visits
+   * a fragment without its limiting ancestor.
    */
-  private def tagPartiallyReadTypedDatasetOutputs(plan: SparkPlan): Unit = {
+  private def tagPartiallyReadOutputs(plan: SparkPlan): Unit = {
     def visit(op: SparkPlan, partialReader: Option[String]): Unit = {
-      val childReader = op match {
-        case serialize: SerializeFromObjectExec =>
-          partialReader.foreach(
-            serialize.setTagValue(CometExecRule.TYPED_DATASET_PARTIAL_READER, _))
-          partialReader
+      // A repeated transform can already contain Comet limits and consumption barriers.
+      val original = op match {
+        case comet: CometExec => comet.originalPlan
+        case other => other
+      }
+      val childReader = original match {
         case _: CollectLimitExec | _: LocalLimitExec | _: GlobalLimitExec => Some("a limit")
         // A top-k reads only its first rows when its input is already sorted.
         case topK: TakeOrderedAndProjectExec
@@ -1356,6 +1389,14 @@ case class CometExecRule(session: SparkSession, queryStagePrep: Boolean = false)
           None
         case _ => partialReader
       }
+      // TopK and aggregate result projections run after selection/aggregation. An external
+      // consumer can still skip their output rows, even though their input is fully consumed.
+      val ownReader = original match {
+        case _: TakeOrderedAndProjectExec | _: HashAggregateExec | _: ObjectHashAggregateExec =>
+          partialReader
+        case _ => childReader
+      }
+      ownReader.foreach(op.setTagValue(CometExecRule.PARTIAL_READER, _))
       op.children.foreach(visit(_, childReader))
     }
     // `Dataset.rdd` reads the objects the plan produces, and the RDD's own code decides how many

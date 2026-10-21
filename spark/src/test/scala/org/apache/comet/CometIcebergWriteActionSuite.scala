@@ -191,6 +191,35 @@ class CometIcebergWriteActionSuite
     }
   }
 
+  Seq(false, true).foreach { adaptive =>
+    test(s"native AssertNotNull respects limited write input with AQE=$adaptive") {
+      assume(icebergAvailable && isSpark35Plus)
+      withSQLConf(SQLConf.ADAPTIVE_EXECUTION_ENABLED.key -> adaptive.toString) {
+        withIcebergCatalog { _ =>
+          withTempPath { path =>
+            sql("SELECT 1 AS id UNION ALL SELECT CAST(NULL AS INT)")
+              .coalesce(1)
+              .write
+              .parquet(path.toString)
+            val tableName = s"assert_limited_input_$adaptive"
+            sql(s"CREATE TABLE cat.db.$tableName (id INT NOT NULL) USING iceberg")
+            val snapshot = withNativeEnabled {
+              captureWrite(tableName) {
+                spark.read
+                  .parquet(path.toString)
+                  .limit(1)
+                  .writeTo(s"cat.db.$tableName")
+                  .append()
+              }
+            }
+            assert(snapshot.snapshotDelta == 1)
+            checkAnswer(sql(s"SELECT * FROM cat.db.$tableName"), Seq(Row(1)))
+          }
+        }
+      }
+    }
+  }
+
   Seq(
     ("id INT NOT NULL", "CAST(NULL AS INT) AS id"),
     (

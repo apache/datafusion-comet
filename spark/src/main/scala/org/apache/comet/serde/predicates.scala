@@ -513,7 +513,7 @@ object CometAssertNotNull extends CometExpressionSerde[AssertNotNull] {
   // A dispatched subtree captures its assertions in opaque closure bytes. Only assertions
   // left in the native proto need this guard, including beneath a dispatched child's parent.
   // Walk message fields so repeated arguments and new expression containers are not missed.
-  private def containsNativeAssertion(message: Message): Boolean = message match {
+  private[comet] def containsNativeAssertion(message: Message): Boolean = message match {
     case expr: Expr if expr.hasAssertNotNull => true
     case _ =>
       message.getAllFields.values.asScala.exists {
