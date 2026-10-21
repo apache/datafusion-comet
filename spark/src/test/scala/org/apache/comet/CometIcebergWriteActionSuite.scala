@@ -4537,9 +4537,12 @@ class CometIcebergWriteActionSuite
       assert(paths.size == 8, s"expected one file per partition, got $paths")
       assert(paths == paths.sorted, s"fanout data files are not listed in path order: $paths")
 
-      // The manifest order is what an unordered read comes back in, so it is stable too.
-      val ids = spark.sql(s"SELECT id FROM $catalog.$ns.fanout_order").collect().toSeq
-      assert(ids.map(_.getInt(0)) == (0 until 8), s"unordered read: ${ids.mkString(", ")}")
+      // The manifest order is what an unordered read comes back in, so it is stable too, as long
+      // as the native scan reads one data file at a time.
+      withSQLConf(CometConf.COMET_ICEBERG_DATA_FILE_CONCURRENCY_LIMIT.key -> "1") {
+        val ids = spark.sql(s"SELECT id FROM $catalog.$ns.fanout_order").collect().toSeq
+        assert(ids.map(_.getInt(0)) == (0 until 8), s"unordered read: ${ids.mkString(", ")}")
+      }
     }
   }
 

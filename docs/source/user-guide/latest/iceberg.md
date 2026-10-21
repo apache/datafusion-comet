@@ -63,11 +63,20 @@ Catalog configuration is standard Iceberg-on-Spark and independent of Comet. The
 
 ### Tuning
 
-Comet’s native Iceberg reader supports fetching multiple files in parallel to hide I/O latency with the
-config `spark.comet.scan.icebergNative.dataFileConcurrencyLimit`. This value defaults to 1 to
-maintain test behavior on Iceberg Java tests without `ORDER BY` clauses, but we suggest increasing it to
-values between 2 and 8 based on your workload, at the cost of extra memory. This helps most for
-tables with many small files or high-latency storage.
+Comet’s native Iceberg reader fetches multiple data files in parallel to hide I/O latency. The config
+`spark.comet.scan.icebergNative.dataFileConcurrencyLimit` sets how many files one task reads at a time.
+It defaults to 2, which helps most for tables with many small files or high-latency storage such as S3.
+Values between 2 and 8 are reasonable; raise it based on your workload, at the cost of extra memory,
+because each file in flight holds its own buffers.
+
+When the limit is above 1, batches from different files are returned in no particular order, so a
+query without an `ORDER BY` can return rows in a different order than with a limit of 1. Spark does
+not guarantee that order, but some tests and applications depend on it. Set the limit to `1` to read
+the files one after another, in the order Spark assigned them.
+
+The Iceberg Spark tests are an example. They expect file order from queries without an `ORDER BY`, so
+the Iceberg test jobs set the environment variable `COMET_ICEBERG_DATA_FILE_CONCURRENCY_LIMIT=1`,
+which overrides the default. See [Iceberg Spark tests](../../contributor-guide/iceberg-spark-tests.md).
 
 ### Supported features
 

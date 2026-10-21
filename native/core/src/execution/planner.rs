@@ -113,8 +113,8 @@ use datafusion_comet_proto::{
     spark_operator::{self, operator::OpStruct, Operator},
 };
 use datafusion_comet_spark_expr::{
-    coerce_to_common_type, create_case_when, create_if_expr, jvm_udf::JvmScalarUdfExpr,
-    spark_in_list, ArrayInsert, Cast, CheckOverflow, CreateNamedStruct,
+    coerce_to_common_type, create_case_when, create_if_expr, decimal128_add_sub_width,
+    jvm_udf::JvmScalarUdfExpr, spark_in_list, ArrayInsert, Cast, CheckOverflow, CreateNamedStruct,
     DecimalRescaleCheckOverflow, FloatOperands, GetArrayStructFields, GetStructField, IfExpr,
     ListExtract, NormalizeNaNAndZero, NormalizeNestedFloats, NullShortCircuit, SparkCastOptions,
     ToJson, UnboundColumn, WideDecimalBinaryExpr, WideDecimalOp,
@@ -124,7 +124,6 @@ use jni::objects::{Global, JObject};
 use log::warn;
 use num::{BigInt, ToPrimitive};
 use object_store::path::Path;
-use std::cmp::max;
 use std::{collections::HashMap, sync::Arc};
 
 pub type PlanCreationResult =
@@ -1370,14 +1369,16 @@ impl PhysicalPlanner {
             left.data_type(&input_schema),
             right.data_type(&input_schema),
         ) {
+            // `decimal128_add_sub_width` computes the width in `i16`; see its doc comment for
+            // why a `u8` computation panicked on a negative scale in a debug build.
             (
                 DataFusionOperator::Plus | DataFusionOperator::Minus | DataFusionOperator::Multiply,
                 Ok(DataType::Decimal128(p1, s1)),
                 Ok(DataType::Decimal128(p2, s2)),
             ) if ((op == DataFusionOperator::Plus || op == DataFusionOperator::Minus)
-                && max(s1, s2) as u8 + max(p1 - s1 as u8, p2 - s2 as u8)
-                    >= DECIMAL128_MAX_PRECISION)
-                || (op == DataFusionOperator::Multiply && p1 + p2 >= DECIMAL128_MAX_PRECISION) =>
+                && decimal128_add_sub_width(p1, s1, p2, s2) >= DECIMAL128_MAX_PRECISION as i16)
+                || (op == DataFusionOperator::Multiply
+                    && p1 as i16 + p2 as i16 >= DECIMAL128_MAX_PRECISION as i16) =>
             {
                 let data_type = required_return_type()?;
                 let (p_out, s_out) = match &data_type {
