@@ -1099,9 +1099,7 @@ object QueryPlanSerde extends Logging with CometExprShim with CometTypeShim {
           }
       })
       .filter { protoExpr =>
-        // Whole-tree JVM dispatch uses Spark's evaluation order and needs no native guard.
-        val supported =
-          protoExpr.hasJvmScalarUdf || !CometAssertNotNull.hasUnsupportedParent(expr)
+        val supported = !CometAssertNotNull.hasUnsupportedParent(expr, protoExpr)
         if (!supported) {
           withFallbackReason(
             expr,

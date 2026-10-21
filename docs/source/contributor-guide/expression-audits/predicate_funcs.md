@@ -84,6 +84,16 @@
 - Spark 4.0.1 (audited 2026-05-27): semantics unchanged.
 - Spark 4.1.1 (audited 2026-05-27): identical to 4.0.1.
 
+## assertnotnull
+
+Internal Catalyst runtime nullability check, with no public SQL function. Native evaluation preserves the child value and checks its outer logical validity, including dictionary values. Structural and lazy conditional parents used by V2 writes are supported. Other native parents conservatively fall back to preserve Spark's evaluation order. Assertions captured entirely in JVM codegen dispatch retain their existing execution path, including under native parents.
+
+- Spark 3.4.3 (audited 2026-10-22): full `NullPointerException` message and newline-delimited walked path. Nullable-source V2 writes to required columns are rejected during analysis.
+- Spark 3.5.9 (audited 2026-10-22): same expression error contract as 3.4.3. V2 writes insert runtime assertions for required fields.
+- Spark 4.0.4 (audited 2026-10-22): `SparkRuntimeException` with `NOT_NULL_ASSERT_VIOLATION` and `walkedTypePath`.
+- Spark 4.1.3 (audited 2026-10-22): same expression contract as 4.0.4.
+- Spark 4.2.0 (audited 2026-10-22): same expression contract as 4.0.4.
+
 ## between
 
 - Spark 3.4.3 (audited 2026-05-27): the SQL form `expr BETWEEN low AND high` is rewritten at the parser level to `expr >= low AND expr <= high`. Comet sees only the resulting `And(GreaterThanOrEqual, LessThanOrEqual)` and routes via `CometAnd` + `CometGreaterThanOrEqual` + `CometLessThanOrEqual`.

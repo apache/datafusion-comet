@@ -126,6 +126,10 @@ class CometExpressionSuite extends CometTestBase with AdaptiveSparkPlanHelper {
       val input = spark.read.parquet(path.toString)
       val checked = getColumnFromExpression(AssertNotNull(input.col("a").expr))
       checkSparkAnswerAndImpl(input.select(round(checked)), dispatched = Seq("round"))
+      checkSparkAnswerAndImpl(
+        input.select(round(checked) + lit(1.0)),
+        native = Seq("add"),
+        dispatched = Seq("round", "assertnotnull"))
     }
   }
 

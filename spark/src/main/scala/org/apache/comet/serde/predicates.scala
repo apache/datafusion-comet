@@ -28,6 +28,8 @@ import org.apache.spark.sql.catalyst.trees.TreePattern.NULL_CHECK
 import org.apache.spark.sql.internal.SQLConf
 import org.apache.spark.sql.types.{BooleanType, DoubleType, FloatType}
 
+import com.google.protobuf.Message
+
 import org.apache.comet.CometConf
 import org.apache.comet.CometSparkSessionExtensions.{isSpark35Plus, isSpark40Plus}
 import org.apache.comet.serde.ExprOuterClass.Expr
@@ -500,13 +502,29 @@ object CometAssertNotNull extends CometExpressionSerde[AssertNotNull] {
   // structural and lazy conditional contexts used by V2 writes; keep other compositions in
   // Spark until their evaluation order has been verified. Check every parent during serde so
   // a safe wrapper cannot hide an unsafe descendant.
-  private[serde] def hasUnsupportedParent(expr: Expression): Boolean = expr match {
+  private[serde] def hasUnsupportedParent(expr: Expression, proto: Expr): Boolean = expr match {
     case _: Alias | _: AssertNotNull | _: CreateNamedStruct | _: GetStructField | _: If |
         _: CaseWhen =>
       false
     case _ =>
-      expr.containsPattern(NULL_CHECK) &&
-      expr.children.exists(_.exists(_.isInstanceOf[AssertNotNull]))
+      expr.containsPattern(NULL_CHECK) && containsNativeAssertion(proto)
+  }
+
+  // A dispatched subtree captures its assertions in opaque closure bytes. Only assertions
+  // left in the native proto need this guard, including beneath a dispatched child's parent.
+  // Walk message fields so repeated arguments and new expression containers are not missed.
+  private def containsNativeAssertion(message: Message): Boolean = message match {
+    case expr: Expr if expr.hasAssertNotNull => true
+    case _ =>
+      message.getAllFields.values.asScala.exists {
+        case child: Message => containsNativeAssertion(child)
+        case children: java.util.List[_] =>
+          children.asScala.exists {
+            case child: Message => containsNativeAssertion(child)
+            case _ => false
+          }
+        case _ => false
+      }
   }
 
   override def convert(
