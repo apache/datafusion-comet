@@ -122,8 +122,10 @@ The native Iceberg reader supports the following features:
 
 NULL checks on struct, array, and map columns still use native scans and return correct
 results, but are not pushed into iceberg-rust, which binds accessors only for primitive fields.
-These residuals provide no native row-group pruning, nor do conjunctions containing them;
-safe partial pruning is tracked in [#5883](https://github.com/apache/datafusion-comet/issues/5883).
+These null checks are not pushed, but the other predicates in a positive conjunction still are.
+iceberg-rust uses a pushed predicate to skip row groups and pages and to filter rows during
+decode, and the filter above the scan evaluates the complete condition. `OR` is pushed only when
+both branches can be, and `NOT` only when its whole child can be.
 
 Some predicates are left to the filter above the scan because iceberg-rust would return
 different rows than Spark:
@@ -132,6 +134,9 @@ different rows than Spark:
 - `NOT` over equality on a nullable column.
 - Comparisons other than `=` on a column whose type was promoted. This applies to every `BIGINT`
   and `DOUBLE` column when expiring snapshots removed older schemas.
+
+Tables with a `schema.name-mapping.default` property push a condition only when all of it can be
+pushed.
 
 **Partitioning:**
 
