@@ -107,6 +107,16 @@ that still sets it to `true` keeps the split plan, with iceberg-java writing the
 on Spark 3.5+ it now also plans merge-on-read writes as the split plan. Unset it to plan Spark's
 own operator.
 
+### Native Iceberg Scan File Concurrency
+
+`spark.comet.scan.icebergNative.dataFileConcurrencyLimit` now defaults to 2, where Comet `1.1.0`
+defaulted to 1. The native Iceberg scan reads two data files at once within a task, which hides the
+latency of opening each file on tables with many small files or on high-latency storage such as S3.
+Each file in flight holds its own buffers, so a task can use more off-heap memory, and a query
+without an `ORDER BY` can return rows in a different order than before, because batches from the two
+files interleave. Spark does not guarantee the order of such a result. To read one file at a time in
+the order Spark assigned them, as before, set the setting to `1`. See [Iceberg tuning](iceberg.md#tuning).
+
 ## Upgrading to Comet 1.1.0
 
 Comet `1.1.0` makes no behavior changes that need a `spark.comet.legacy.*` key. The changes below
