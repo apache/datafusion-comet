@@ -44,6 +44,7 @@ import org.apache.spark.sql.catalyst.util.DateTimeUtils
 import org.apache.spark.sql.comet.{CometNativeScanExec, CometScanExec}
 import org.apache.spark.sql.comet.util.Utils
 import org.apache.spark.sql.execution.adaptive.AdaptiveSparkPlanHelper
+import org.apache.spark.sql.execution.datasources.SchemaColumnConvertNotSupportedException
 import org.apache.spark.sql.execution.datasources.parquet.ParquetUtils
 import org.apache.spark.sql.functions.col
 import org.apache.spark.sql.internal.SQLConf
@@ -1827,10 +1828,13 @@ abstract class ParquetReadSuite extends CometTestBase {
   test("native scan rejects TIMESTAMP(NANOS) read as timestamp like Spark") {
     // Regression guard for https://github.com/apache/datafusion-comet/issues/7034. Spark's
     // writer cannot produce TIMESTAMP(NANOS), so timestamp_nanos.parquet was written with
-    // PyArrow. Next to `id int`, it holds TIMESTAMP(NANOS) leaves that are UTC-adjusted (`t`,
-    // `s.t` and the elements of `a`) or not (`u` and the elements of `b`), all set to
-    // 2020-09-13 12:26:40.123456789 UTC in the row with id 1 and null or empty in the row with
-    // id 2. Spark has no updater that reads TIMESTAMP(NANOS) as timestamp or timestamp_ntz.
+    // PyArrow. Its leaves, in file order, are `id int`, then TIMESTAMP(NANOS) leaves that are
+    // UTC-adjusted (`t`, `s.t`, the elements of `a` and the values of `m`) or not (`u`, the
+    // elements of `b` and `v.element.n`), with non-NANOS leaves in between (`s.i`, `m.key`,
+    // `v.element.x`) and a trailing TIMESTAMP_MICROS `w`. `v` is a list_view in the file's
+    // ARROW:schema. In the row with id 1 every NANOS value is 2020-09-13 12:26:40.123456789 UTC
+    // and `w` is 2020-09-13 12:26:40.123456 UTC; the row with id 2 is null or empty. Spark has
+    // no updater that reads TIMESTAMP(NANOS) as timestamp or timestamp_ntz.
     val path = getResourceParquetFilePath("test-data/timestamp_nanos.parquet")
     val readTypes = Seq(
       "t timestamp",
@@ -1838,24 +1842,37 @@ abstract class ParquetReadSuite extends CometTestBase {
       "s struct<t: timestamp>",
       "a array<timestamp>",
       "b array<timestamp>",
+      "m map<string, timestamp>",
+      "v array<struct<n: timestamp>>",
       "t timestamp_ntz",
       "u timestamp_ntz")
-    for (pushdown <- Seq(false, true); readType <- readTypes) {
+    for (pushdown <- Seq(false, true)) {
       withSQLConf(
         SQLConf.USE_V1_SOURCE_LIST.key -> "parquet",
         CometConf.COMET_PARQUET_ROW_FILTER_PUSHDOWN_ENABLED.key -> pushdown.toString) {
-        val df = spark.read.schema(s"id int, $readType").parquet(path).where("id > 0")
-        checkCometOperators(stripAQEPlan(df.queryExecution.executedPlan))
-        val (sparkError, cometError) = checkSparkAnswerMaybeThrows(df)
-        Seq("Spark" -> sparkError, "Comet" -> cometError).foreach { case (engine, error) =>
-          val chain = error.toSeq.flatMap(causeChain)
-          assert(
-            chain.exists(_.isInstanceOf[
-              org.apache.spark.sql.execution.datasources.SchemaColumnConvertNotSupportedException]),
-            s"$engine, $readType, row filter pushdown $pushdown: ${chain.mkString("\n")}")
+        for (readType <- readTypes) {
+          val df = spark.read.schema(s"id int, $readType").parquet(path).where("id > 0")
+          checkCometOperators(stripAQEPlan(df.queryExecution.executedPlan))
+          val (sparkError, cometError) = checkSparkAnswerMaybeThrows(df)
+          Seq("Spark" -> sparkError, "Comet" -> cometError).foreach { case (engine, error) =>
+            val chain = error.toSeq.flatMap(causeChain)
+            assert(
+              chain.exists(_.isInstanceOf[SchemaColumnConvertNotSupportedException]),
+              s"$engine, $readType, row filter pushdown $pushdown: ${chain.mkString("\n")}")
+          }
         }
-        // The TIMESTAMP(NANOS) leaves only fail the read when they are requested.
-        checkSparkAnswerAndOperator(spark.read.schema("id int").parquet(path).where("id > 0"))
+        // The TIMESTAMP(NANOS) leaves only fail the read when they are requested as timestamps.
+        // Spark reads them as bigint, which must still match with the footer check now running
+        // for this file. The other leaves must keep their own Parquet types: a miscount in the
+        // footer check's leaf marking would tag one of them as TIMESTAMP(NANOS) and fail them.
+        Seq(
+          "id int",
+          "id int, t bigint, s struct<t: bigint>, b array<bigint>, m map<string, bigint>",
+          "id int, w timestamp",
+          "id int, s struct<i: int>",
+          "id int, v array<struct<x: int>>").foreach { schema =>
+          checkSparkAnswerAndOperator(spark.read.schema(schema).parquet(path).where("id > 0"))
+        }
       }
     }
   }

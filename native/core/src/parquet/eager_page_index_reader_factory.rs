@@ -72,10 +72,11 @@
 //! the stamped copy too; nothing outside the rebase path reads the key, and the copy is otherwise
 //! identical.
 //!
-//! Conversion checks also use the raw footer to preserve legacy LIST clipping failures. With
-//! row filters enabled, a deferred conversion failure is raised on the first data-page request.
-//! Footer, Bloom-filter and page-index reads still proceed, so format pruning can discard a file
-//! without decoding it, but row selection cannot hide the failure.
+//! Conversion checks also use the raw footer to preserve legacy LIST clipping failures and to see
+//! which leaves the file declares `TIMESTAMP(NANOS)`. With row filters enabled, or for a file with
+//! a `TIMESTAMP(NANOS)` leaf even without them, a deferred conversion failure is raised on the
+//! first data-page request. Footer, Bloom-filter and page-index reads still proceed, so format
+//! pruning can discard a file without decoding it, but row selection cannot hide the failure.
 //!
 //! With `with_next_file_metadata_prefetch`, readers also load the next file's metadata before
 //! DataFusion opens it. DataFusion's `FileStream` keeps one I/O outstanding and plans a file
@@ -271,8 +272,9 @@ impl EagerPageIndexReaderFactory {
         }
     }
 
-    /// Retain raw LIST encoding for open-time validation. When row filters are enabled,
-    /// enforce deferred failures at the first data-page read, after format pruning.
+    /// Retain raw LIST encoding and `TIMESTAMP(NANOS)` leaves for open-time validation. When row
+    /// filters are enabled, or the file has a `TIMESTAMP(NANOS)` leaf, enforce deferred failures
+    /// at the first data-page read, after format pruning.
     pub(crate) fn with_conversion_check(
         mut self,
         required: SchemaRef,
@@ -557,6 +559,8 @@ fn mark_parquet_leaves(schema: &Schema, parquet: &SchemaDescriptor) -> Schema {
             DataType::FixedSizeList(item, size) => {
                 DataType::FixedSizeList(mark(item, columns, index), *size)
             }
+            DataType::ListView(item) => DataType::ListView(mark(item, columns, index)),
+            DataType::LargeListView(item) => DataType::LargeListView(mark(item, columns, index)),
             DataType::Map(entries, sorted) => DataType::Map(mark(entries, columns, index), *sorted),
             _ => {
                 let column = columns.get(*index);

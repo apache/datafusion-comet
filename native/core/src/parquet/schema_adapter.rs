@@ -2230,7 +2230,9 @@ pub(crate) mod test {
 
     /// `TIMESTAMP(NANOS)` read as `timestamp` or `timestamp_ntz`: Spark reads nanosecond
     /// timestamps only as `bigint` (`nanosAsLong`), so the cast to microseconds is rejected
-    /// whether or not the file column is UTC-adjusted. See #7034.
+    /// whether or not the file column is UTC-adjusted, at the top level and below a list. See
+    /// #7034. The JVM test `native scan rejects TIMESTAMP(NANOS) read as timestamp like Spark`
+    /// covers the same reads against Spark; this one pins the leaf path in the error.
     #[tokio::test]
     async fn parquet_nanos_timestamp_read_as_timestamp_errors() -> Result<(), DataFusionError> {
         for file_tz in [Some("UTC"), None] {
@@ -2256,6 +2258,31 @@ pub(crate) mod test {
                     "file tz {file_tz:?}, read tz {read_tz:?}: unexpected error: {msg}"
                 );
             }
+            // Below a list, the error names the full leaf path.
+            let values = TimestampNanosecondArray::from(vec![1_600_000_000_123_456_789i64])
+                .with_timezone_opt(file_tz);
+            let element = Arc::new(Field::new("element", values.data_type().clone(), true));
+            let list = Arc::new(ListArray::new(
+                Arc::clone(&element),
+                OffsetBuffer::from_lengths([1]),
+                Arc::new(values),
+                None,
+            )) as Arc<dyn arrow::array::Array>;
+            let msg = assert_rejected_conversion(
+                Field::new("a", DataType::List(element), false),
+                list,
+                list_type(DataType::Timestamp(
+                    TimeUnit::Microsecond,
+                    Some("UTC".into()),
+                )),
+            )
+            .await?;
+            assert!(
+                msg.contains("Column: [[a, list, element]]")
+                    && msg.contains("Found: INT64")
+                    && msg.contains("Expected: timestamp"),
+                "array, file tz {file_tz:?}: unexpected error: {msg}"
+            );
         }
         Ok(())
     }
@@ -2512,78 +2539,107 @@ pub(crate) mod test {
         assert_int96_reads_as_timestamp(&write_int96_file(Some(&hint))?).await
     }
 
-    /// `TIMESTAMP(NANOS)` is rejected below a list too, with or without row filters and
-    /// whether or not it is UTC-adjusted, since the rule no longer has to leave timezone-free
-    /// nanosecond leaves below a list to INT96.
+    /// `mark_parquet_leaves` counts Parquet leaves while walking the Arrow schema, so every
+    /// nested Arrow type must advance the count once per leaf below it. Write leaves
+    /// `a.list.element.x INT32`, `a.list.element.n TIMESTAMP(NANOS)` and `t INT96`, with an
+    /// `ARROW:schema` hint that restores `a` as a `ListView` or `LargeListView` of the struct,
+    /// and read only `t` as `timestamp`: a miscount would put `n`'s marker on `t`.
     #[tokio::test]
-    async fn nanos_timestamp_array_read_as_timestamp_errors() -> Result<(), DataFusionError> {
-        for file_tz in [None, Some("UTC")] {
-            let values = TimestampNanosecondArray::from(vec![1_600_000_000_123_456_789i64])
-                .with_timezone_opt(file_tz);
-            let element = Arc::new(Field::new("element", values.data_type().clone(), true));
-            let list = ListArray::new(
-                Arc::clone(&element),
-                OffsetBuffer::from_lengths([1]),
-                Arc::new(values),
-                None,
-            );
-            let schema = Arc::new(Schema::new(vec![
-                Field::new("id", DataType::Int32, false),
-                Field::new("a", DataType::List(element), true),
-            ]));
-            let batch = RecordBatch::try_new(
-                Arc::clone(&schema),
-                vec![Arc::new(Int32Array::from(vec![1])), Arc::new(list)],
-            )?;
-            let filename = get_temp_filename().to_str().unwrap().to_string();
-            let mut writer = ArrowWriter::try_new(File::create(&filename)?, schema, None)?;
-            writer.write(&batch)?;
-            writer.close()?;
+    async fn int96_after_list_view_with_nanos_leaf_reads_as_timestamp(
+    ) -> Result<(), DataFusionError> {
+        use parquet::arrow::{encode_arrow_schema, ARROW_SCHEMA_META_KEY};
+        use parquet::data_type::{Int32Type as ParquetInt32, Int64Type, Int96, Int96Type};
+        use parquet::file::metadata::KeyValue;
+        use parquet::file::properties::WriterProperties;
+        use parquet::file::writer::SerializedFileWriter;
+        use parquet::schema::parser::parse_message_type;
 
-            let required = Arc::new(Schema::new(vec![
-                Field::new("id", DataType::Int32, false),
+        let element = Arc::new(Field::new(
+            "element",
+            DataType::Struct(Fields::from(vec![
+                Field::new("x", DataType::Int32, true),
+                Field::new("n", DataType::Timestamp(TimeUnit::Nanosecond, None), true),
+            ])),
+            true,
+        ));
+        for list_view in [
+            DataType::ListView(Arc::clone(&element)),
+            DataType::LargeListView(Arc::clone(&element)),
+        ] {
+            let hint = Schema::new(vec![
+                Field::new("a", list_view.clone(), true),
                 Field::new(
-                    "a",
-                    list_type(DataType::Timestamp(
-                        TimeUnit::Microsecond,
-                        Some("UTC".into()),
-                    )),
+                    "t",
+                    DataType::Timestamp(TimeUnit::Nanosecond, Some("UTC".into())),
                     true,
                 ),
-            ]));
-            for row_filters in [false, true] {
-                let id_positive: Arc<dyn PhysicalExpr> = Arc::new(BinaryExpr::new(
-                    Arc::new(Column::new("id", 0)),
-                    Operator::Gt,
-                    Arc::new(Literal::new(ScalarValue::Int32(Some(0)))),
-                ));
-                let mut stream = scan_parquet_file(
-                    filename.clone(),
-                    Arc::clone(&required),
-                    default_options(),
-                    Some(id_positive),
-                    row_filters,
-                )?;
-                let mut error = None;
-                while let Some(batch) = stream.next().await {
-                    match batch {
-                        Ok(batch) => assert_eq!(batch.num_rows(), 0),
-                        Err(e) => {
-                            error = Some(e.to_string());
-                            break;
+            ]);
+            let schema = Arc::new(parse_message_type(
+                "message spark_schema {
+                    OPTIONAL GROUP a (LIST) {
+                        REPEATED GROUP list {
+                            OPTIONAL GROUP element {
+                                OPTIONAL INT32 x;
+                                OPTIONAL INT64 n (TIMESTAMP(NANOS, false));
+                            }
                         }
                     }
-                }
-                let msg = error.unwrap_or_else(|| {
-                    panic!("file tz {file_tz:?}, row filters {row_filters}: no error")
-                });
-                assert!(
-                    msg.contains("Column: [[a, list, element]]")
-                        && msg.contains("Found: INT64")
-                        && msg.contains("Expected: timestamp"),
-                    "file tz {file_tz:?}, row filters {row_filters}: unexpected error: {msg}"
-                );
-            }
+                    OPTIONAL INT96 t;
+                }",
+            )?);
+            let properties = WriterProperties::builder()
+                .set_key_value_metadata(Some(vec![KeyValue::new(
+                    ARROW_SCHEMA_META_KEY.to_string(),
+                    encode_arrow_schema(&hint),
+                )]))
+                .build();
+            let mut t = Int96::new();
+            t.set_data(1_000_000, 0, 2_440_589);
+
+            let filename = get_temp_filename().to_str().unwrap().to_string();
+            let mut writer =
+                SerializedFileWriter::new(File::create(&filename)?, schema, Arc::new(properties))?;
+            let mut row_group = writer.next_row_group()?;
+            let mut x = row_group.next_column()?.unwrap();
+            x.typed::<ParquetInt32>()
+                .write_batch(&[1], Some(&[4]), Some(&[0]))?;
+            x.close()?;
+            let mut n = row_group.next_column()?.unwrap();
+            n.typed::<Int64Type>().write_batch(
+                &[1_600_000_000_123_456_789],
+                Some(&[4]),
+                Some(&[0]),
+            )?;
+            n.close()?;
+            let mut column = row_group.next_column()?.unwrap();
+            column
+                .typed::<Int96Type>()
+                .write_batch(&[t], Some(&[1]), None)?;
+            column.close()?;
+            row_group.close()?;
+            writer.close()?;
+
+            let required = Arc::new(Schema::new(vec![Field::new(
+                "t",
+                DataType::Timestamp(TimeUnit::Microsecond, Some("UTC".into())),
+                true,
+            )]));
+            let mut stream = scan_parquet_file(filename, required, default_options(), None, false)?;
+            let batch = stream
+                .next()
+                .await
+                .unwrap()
+                .unwrap_or_else(|e| panic!("{list_view}: {e}"));
+            assert!(stream.next().await.is_none());
+            assert_eq!(
+                batch
+                    .column(0)
+                    .as_any()
+                    .downcast_ref::<TimestampMicrosecondArray>()
+                    .expect("timestamp(us, UTC) values"),
+                &TimestampMicrosecondArray::from(vec![86_400_001_000i64]).with_timezone("UTC"),
+                "{list_view}"
+            );
         }
         Ok(())
     }
