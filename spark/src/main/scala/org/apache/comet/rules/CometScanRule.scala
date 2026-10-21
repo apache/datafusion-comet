@@ -91,6 +91,14 @@ case class CometScanRule(session: SparkSession)
 
     val fullPlan = plan
 
+    // The session's `fs.comet.libhdfs.schemes`, resolved once per relation session for this
+    // application: `newHadoopConf()` copies the whole Hadoop conf, and every V1 scan needs it.
+    val sessionLibhdfsSchemes = mutable.Map.empty[SparkSession, Set[String]]
+    def libhdfsSchemesOf(relationSession: SparkSession): Set[String] =
+      sessionLibhdfsSchemes.getOrElseUpdate(
+        relationSession,
+        NativeConfig.resolveLibhdfsSchemes(relationSession.sessionState.newHadoopConf()))
+
     def transformScan(scanNode: SparkPlan): SparkPlan = scanNode match {
       // Tagged by CometSpark34AqeDppFallbackRule on Spark < 3.5 to keep a peer scan
       // Spark-native for canonical symmetry in SMJ self-joins (SPARK-32509).
@@ -102,7 +110,7 @@ case class CometScanRule(session: SparkSession)
 
       // data source V1
       case scanExec: FileSourceScanExec =>
-        transformV1Scan(fullPlan, scanExec)
+        transformV1Scan(fullPlan, scanExec, libhdfsSchemesOf)
 
       // data source V2
       //
@@ -151,7 +159,10 @@ case class CometScanRule(session: SparkSession)
     metadataTableSuffix.exists(name.endsWith)
   }
 
-  private def transformV1Scan(plan: SparkPlan, scanExec: FileSourceScanExec): SparkPlan = {
+  private def transformV1Scan(
+      plan: SparkPlan,
+      scanExec: FileSourceScanExec,
+      sessionLibhdfsSchemes: SparkSession => Set[String]): SparkPlan = {
     // Give any optional, out-of-tree scan contrib (e.g. Delta) first crack at this scan, ahead of
     // every built-in guard below. A contrib may support things Comet's built-in V1 scan does not
     // -- the Delta contrib synthesises `_metadata.*` in its own reader -- so applying those guards
@@ -226,7 +237,8 @@ case class CometScanRule(session: SparkSession)
           return scanExec
         }
 
-        nativeScan(plan, session, scanExec, r, hadoopConf).getOrElse(scanExec)
+        nativeScan(plan, session, scanExec, r, hadoopConf, sessionLibhdfsSchemes)
+          .getOrElse(scanExec)
 
       case _ =>
         withFallbackReason(scanExec, s"Unsupported relation ${scanExec.relation}")
@@ -238,7 +250,8 @@ case class CometScanRule(session: SparkSession)
       session: SparkSession,
       scanExec: FileSourceScanExec,
       r: HadoopFsRelation,
-      hadoopConf: Configuration): Option[SparkPlan] = {
+      hadoopConf: Configuration,
+      sessionLibhdfsSchemes: SparkSession => Set[String]): Option[SparkPlan] = {
     if (!COMET_EXEC_ENABLED.get()) {
       withFallbackReason(
         scanExec,
@@ -250,7 +263,7 @@ case class CometScanRule(session: SparkSession)
     val rootPathReason = CometScanRule.rootPathFallbackReason(
       "Native Parquet scan",
       r.location.rootPaths.map(_.toUri),
-      r.sparkSession.sessionState.newHadoopConf(),
+      sessionLibhdfsSchemes(r.sparkSession),
       hadoopConf,
       scanExec.bucketedScan)
     if (rootPathReason.nonEmpty) {
@@ -540,7 +553,7 @@ case class CometScanRule(session: SparkSession)
           .rootPathFallbackReason(
             "Native Text scan",
             scan.fileIndex.rootPaths.map(_.toUri),
-            session.sessionState.newHadoopConf(),
+            NativeConfig.resolveLibhdfsSchemes(session.sessionState.newHadoopConf()),
             hadoopConf,
             isBucketedScan = false)
           .foreach(fallbackReasons += _)
@@ -1045,6 +1058,10 @@ case class CometScanRule(session: SparkSession)
           try {
             if (!taskValidation.deleteFiles.isEmpty) {
               val historicSchemas = IcebergReflection.getAllSchemas(metadata.table)
+              // Check every schema, as a dropped equality key exists only in the history.
+              val topLevelIds = (metadata.tableSchema +: historicSchemas)
+                .flatMap(IcebergReflection.buildFieldIdMapping(_).values)
+                .toSet
               val contentFileClass =
                 IcebergReflection.loadClass(IcebergReflection.ClassNames.CONTENT_FILE)
               val deleteFileClass =
@@ -1090,6 +1107,13 @@ case class CometScanRule(session: SparkSession)
                           "schema; resolved from schema history (likely a dropped column)")
                     }
                     fieldInfo match {
+                      // Nested keys fall back: iceberg-rust only looks up top-level columns.
+                      case Some((fieldName, _)) if !topLevelIds(fid) =>
+                        hasUnsupportedDeletes = true
+                        fallbackReasons +=
+                          s"Equality delete on nested field '$fieldName' (id $fid) is not yet " +
+                            "supported by iceberg-rust, which resolves equality field ids " +
+                            "among top-level columns only."
                       case Some((fieldName, fieldType)) =>
                         if (fieldType.contains("struct") || fieldType.equalsIgnoreCase(
                             "variant")) {
@@ -1418,16 +1442,17 @@ object CometScanRule extends Logging {
    * `scanName` starts each reason.
    *
    * EXCEPT schemes native routes through libhdfs (`hdfs` by default). A scheme the reader options
-   * add to that list is declined; see NativeConfig.resolveScanLibhdfsSchemes. `sessionHadoopConf`
-   * is the session's Hadoop conf, and `hadoopConf` is that conf with the scan's reader options.
+   * add to that list is declined; see NativeConfig.resolveScanLibhdfsSchemes.
+   * `sessionLibhdfsSchemes` is the session's libhdfs list, and `hadoopConf` is the session's conf
+   * with the scan's reader options.
    */
   private[rules] def rootPathFallbackReason(
       scanName: String,
       rootUris: Seq[URI],
-      sessionHadoopConf: Configuration,
+      sessionLibhdfsSchemes: Set[String],
       hadoopConf: Configuration,
       isBucketedScan: Boolean): Option[String] = {
-    val libhdfs = NativeConfig.resolveScanLibhdfsSchemes(sessionHadoopConf, hadoopConf)
+    val libhdfs = NativeConfig.resolveScanLibhdfsSchemes(sessionLibhdfsSchemes, hadoopConf)
     val libhdfsSchemes = libhdfs.libhdfs
     // Opt-in S3-compliant alias schemes (e.g. `blob`) from `fs.comet.s3Compliant.schemes`. Read
     // from the Hadoop config, like the libhdfs list above, so `core-site.xml` is honored. The

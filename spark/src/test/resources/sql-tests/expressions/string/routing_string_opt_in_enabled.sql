@@ -29,8 +29,13 @@ INSERT INTO routing_string_opt_in VALUES ('hello world', '{"a":1}'), ('', '{}'),
 query expect_dispatch(initcap)
 SELECT initcap(s) FROM routing_string_opt_in
 
-query expect_dispatch(replace)
+-- A direct column with bounded, non-empty literals is native even without opt-in.
+query expect_native(replace)
 SELECT replace(s, 'l', 'L') FROM routing_string_opt_in
+
+-- Empty search remains outside the native default subset and needs the dispatcher.
+query expect_dispatch(replace)
+SELECT replace(s, '', 'L') FROM routing_string_opt_in
 
 query expect_dispatch(get_json_object)
 SELECT get_json_object(j, '$.a') FROM routing_string_opt_in
