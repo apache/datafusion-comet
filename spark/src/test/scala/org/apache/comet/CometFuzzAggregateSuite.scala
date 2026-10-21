@@ -19,10 +19,6 @@
 
 package org.apache.comet
 
-import org.apache.spark.sql.execution.aggregate.HashAggregateExec
-import org.apache.spark.sql.execution.exchange.ShuffleExchangeExec
-import org.apache.spark.sql.types.DecimalType
-
 import org.apache.comet.DataTypeSupport.isComplexType
 
 class CometFuzzAggregateSuite extends CometFuzzTestBase {
@@ -35,16 +31,7 @@ class CometFuzzAggregateSuite extends CometFuzzTestBase {
       val (_, cometPlan) = checkSparkAnswer(sql)
       assert(1 == collectNativeScans(cometPlan).length)
 
-      val hasWideDecimalKey = df.schema(col).dataType match {
-        case d: DecimalType => d.precision > 18
-        case _ => false
-      }
-      // Wide decimal hash keys require Spark shuffle when columnar shuffle is disabled.
-      if (CometConf.COMET_SHUFFLE_MODE.get() == "native" && hasWideDecimalKey) {
-        checkSparkAnswerAndOperator(sql, classOf[HashAggregateExec], classOf[ShuffleExchangeExec])
-      } else {
-        checkSparkAnswerAndOperator(sql)
-      }
+      checkSparkAnswerAndOperator(sql)
     }
   }
 
@@ -68,18 +55,7 @@ class CometFuzzAggregateSuite extends CometFuzzTestBase {
       val (_, cometPlan) = checkSparkAnswer(sql)
       assert(1 == collectNativeScans(cometPlan).length)
 
-      val hasWideDecimalKey = Seq("c1", "c2", "c3", col).exists { key =>
-        df.schema(key).dataType match {
-          case d: DecimalType => d.precision > 18
-          case _ => false
-        }
-      }
-      // Check both GROUP BY and DISTINCT keys, not unrelated decimal payload columns.
-      if (CometConf.COMET_SHUFFLE_MODE.get() == "native" && hasWideDecimalKey) {
-        checkSparkAnswerAndOperator(sql, classOf[HashAggregateExec], classOf[ShuffleExchangeExec])
-      } else {
-        checkSparkAnswerAndOperator(sql)
-      }
+      checkSparkAnswerAndOperator(sql)
     }
   }
 

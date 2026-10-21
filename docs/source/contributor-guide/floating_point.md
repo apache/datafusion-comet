@@ -62,6 +62,11 @@ it runs against:
   (before 3.5.2, unless probing merges them). Spark 4.2.0 normalizes their arguments in the plan
   (SPARK-54918). From 4.0.5, 4.1.4 and 4.2.1 they normalize while they evaluate instead
   (SPARK-59602).
+- `arrays_overlap` looks up the elements of a flat array in a `java.util.HashSet` of boxed values,
+  so it follows `Double.equals` and keeps signed zeros apart up to Spark 4.0.4 and 4.1.3. The same
+  two changes make the zeros one value: Spark 4.2.0 normalizes its arguments in the plan
+  (SPARK-54918), and 4.0.5, 4.1.4 and 4.2.1 normalize each flat `FLOAT` or `DOUBLE` element before
+  the lookup (SPARK-59602). Nested elements compare in the SQL ordering on every version.
 - Map construction (`ArrayBasedMapBuilder`) finds a duplicate `FLOAT` or `DOUBLE` key in a
   `HashMap` of boxed values, which follows `Double.equals`, and a duplicate struct or array key in a
   `TreeMap` in the SQL ordering. From Spark 4.0 it normalizes a `FLOAT` or `DOUBLE` key before the
