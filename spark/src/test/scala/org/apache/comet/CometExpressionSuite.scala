@@ -25,6 +25,7 @@ import org.apache.hadoop.fs.Path
 import org.apache.spark.SparkThrowable
 import org.apache.spark.sql.{Column, CometTestBase, DataFrame, Row}
 import org.apache.spark.sql.catalyst.expressions.{Add, Alias, AttributeReference, Cast, Divide, FromUnixTime, In, InSet, IntegralDivide, Literal, Multiply, Remainder, StructsToJson, Subtract, TruncDate, TruncTimestamp}
+import org.apache.spark.sql.catalyst.expressions.objects.AssertNotNull
 import org.apache.spark.sql.catalyst.optimizer.{ConvertToLocalRelation, OptimizeIn, SimplifyExtractValueOps}
 import org.apache.spark.sql.comet.{CometFilterExec, CometProjectExec, CometSortExec, CometTakeOrderedAndProjectExec}
 import org.apache.spark.sql.execution.{LocalTableScanExec, ProjectExec, SparkPlan}
@@ -43,6 +44,90 @@ class CometExpressionSuite extends CometTestBase with AdaptiveSparkPlanHelper {
 
   val DIVIDE_BY_ZERO_EXCEPTION_MSG =
     """Division by zero. Use `try_divide` to tolerate divisor being 0 and return NULL instead"""
+
+  test("AssertNotNull preserves values and runs natively") {
+    withTempPath { path =>
+      sql("""SELECT 1 AS i, 'value' AS s, CAST(1.25 AS DECIMAL(10, 2)) AS d,
+        |array(1, NULL) AS a, map('a', CAST(NULL AS INT)) AS m,
+        |named_struct('a', CAST(NULL AS INT)) AS st""".stripMargin).write.parquet(path.toString)
+      val input = spark.read.parquet(path.toString)
+      val result = input.select(input.columns.toSeq.map { name =>
+        getColumnFromExpression(AssertNotNull(input.col(name).expr, Seq(name)))
+      }: _*)
+      assert(result.schema.forall(!_.nullable))
+      checkSparkAnswerAndImpl(result, native = Seq("assertnotnull"))
+    }
+  }
+
+  test("AssertNotNull preserves Spark's error and walked type path") {
+    withTempPath { path =>
+      Seq[Integer](1, null).toDF("a").coalesce(1).write.parquet(path.toString)
+      val input = spark.read.parquet(path.toString)
+      val expression = AssertNotNull(input.col("a").expr, Seq("s", "a"))
+      val expected = intercept[Exception] {
+        AssertNotNull(Literal.create(null, IntegerType), expression.walkedTypePath).eval()
+      }
+      val result = input.select(getColumnFromExpression(expression))
+      assert(result.queryExecution.executedPlan.collect { case p: CometProjectExec =>
+        p
+      }.nonEmpty)
+      val error = intercept[Exception](result.collect())
+      val actual = causeChain(error)
+        .find(_.getClass == expected.getClass)
+        .getOrElse(fail(s"Expected ${expected.getClass.getName}, got $error"))
+      assert(actual.getMessage == expected.getMessage)
+      if (isSpark40Plus) {
+        assert(actual.asInstanceOf[SparkThrowable].getErrorClass == "NOT_NULL_ASSERT_VIOLATION")
+        assert(
+          actual.asInstanceOf[SparkThrowable].getMessageParameters ==
+            expected.asInstanceOf[SparkThrowable].getMessageParameters)
+      }
+    }
+  }
+
+  test("AssertNotNull evaluates only selected conditional rows") {
+    withTempPath { path =>
+      Seq[Integer](1, null, 2).toDF("a").coalesce(1).write.parquet(path.toString)
+      val input = spark.read.parquet(path.toString)
+      val checked = getColumnFromExpression(AssertNotNull(input.col("a").expr, Seq("a")))
+      checkSparkAnswerAndImpl(
+        input.select(when(input.col("a").isNotNull, checked).otherwise(lit(-1))),
+        native = Seq("assertnotnull"))
+    }
+  }
+
+  Seq("and", "or", "add").foreach { operation =>
+    test(s"AssertNotNull preserves short circuit evaluation in $operation") {
+      withTempPath { path =>
+        sql("""SELECT false AS a, CAST(NULL AS BOOLEAN) AS b,
+          |CAST(NULL AS INT) AS x, CAST(NULL AS INT) AS y
+          |UNION ALL SELECT true, true, 1, 2""".stripMargin)
+          .coalesce(1)
+          .write
+          .parquet(path.toString)
+        val input = spark.read.parquet(path.toString)
+        val boolean = getColumnFromExpression(AssertNotNull(input.col("b").expr))
+        val integer = getColumnFromExpression(AssertNotNull(input.col("y").expr))
+        val result = operation match {
+          case "and" => input.col("a") && boolean
+          case "or" => !input.col("a") || boolean
+          case "add" => input.col("x") + integer
+        }
+        val df = input.select(result)
+        assert(df.queryExecution.executedPlan.collect { case p: ProjectExec => p }.nonEmpty)
+        checkSparkAnswer(df)
+      }
+    }
+  }
+
+  test("AssertNotNull retains existing whole-tree codegen dispatch") {
+    withTempPath { path =>
+      Seq(1.25, 2.75).toDF("a").write.parquet(path.toString)
+      val input = spark.read.parquet(path.toString)
+      val checked = getColumnFromExpression(AssertNotNull(input.col("a").expr))
+      checkSparkAnswerAndImpl(input.select(round(checked)), dispatched = Seq("round"))
+    }
+  }
 
   private def arithmeticError(error: Throwable): SparkThrowable =
     causeChain(error)

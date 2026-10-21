@@ -95,6 +95,7 @@ message Expr {
     RandStr rand_str = 73;
     Uuid uuid = 74;
     NativeScalarUdf native_scalar_udf = 75;
+    AssertNotNull assert_not_null = 76;
   }
 
   reserved 20;
@@ -766,4 +767,9 @@ message NativeScalarUdf {
   // to express a volatile one. The field is carried so that honoring it later
   // does not need a wire change.
   bool deterministic = 5;
+}
+
+message AssertNotNull {
+  Expr child = 1;
+  string walked_type_path = 2;
 }

@@ -29,7 +29,7 @@ import scala.util.DynamicVariable
 import org.apache.spark.internal.Logging
 import org.apache.spark.sql.catalyst.expressions._
 import org.apache.spark.sql.catalyst.expressions.aggregate._
-import org.apache.spark.sql.catalyst.expressions.objects.{Invoke, StaticInvoke}
+import org.apache.spark.sql.catalyst.expressions.objects.{AssertNotNull, Invoke, StaticInvoke}
 import org.apache.spark.sql.catalyst.expressions.xml.{XPathBoolean, XPathDouble, XPathFloat, XPathInt, XPathList, XPathLong, XPathShort, XPathString}
 import org.apache.spark.sql.comet.DecimalPrecision
 import org.apache.spark.sql.execution.{ScalarSubquery, SparkPlan}
@@ -108,6 +108,7 @@ object QueryPlanSerde extends Logging with CometExprShim with CometTypeShim {
     classOf[LessThanOrEqual] -> CometLessThanOrEqual,
     classOf[In] -> CometIn,
     classOf[IsNotNull] -> CometIsNotNull,
+    classOf[AssertNotNull] -> CometAssertNotNull,
     classOf[IsNull] -> CometIsNull,
     classOf[InSet] -> CometInSet,
     classOf[Not] -> CometNot,
@@ -1097,6 +1098,18 @@ object QueryPlanSerde extends Logging with CometExprShim with CometTypeShim {
               None
           }
       })
+      .filter { protoExpr =>
+        // Whole-tree JVM dispatch uses Spark's evaluation order and needs no native guard.
+        val supported =
+          protoExpr.hasJvmScalarUdf || !CometAssertNotNull.hasUnsupportedParent(expr)
+        if (!supported) {
+          withFallbackReason(
+            expr,
+            s"Native AssertNotNull inside ${expr.prettyName} " +
+              "cannot preserve Spark's evaluation order")
+        }
+        supported
+      }
       .map { protoExpr =>
         // Record that this expression stayed in the native pipeline, for the expression coverage
         // stats in extended explain. `CometScalaUDF.emitJvmCodegenDispatch` marks the expressions

@@ -21,8 +21,10 @@ package org.apache.comet.serde
 
 import scala.jdk.CollectionConverters._
 
-import org.apache.spark.sql.catalyst.expressions.{And, Attribute, BinaryExpression, EqualNullSafe, EqualTo, Expression, GreaterThan, GreaterThanOrEqual, In, InSet, IsNaN, IsNotNull, IsNull, KnownFloatingPointNormalized, LessThan, LessThanOrEqual, Literal, Not, Or}
+import org.apache.spark.sql.catalyst.expressions.{Alias, And, Attribute, BinaryExpression, CaseWhen, CreateNamedStruct, EqualNullSafe, EqualTo, Expression, GetStructField, GreaterThan, GreaterThanOrEqual, If, In, InSet, IsNaN, IsNotNull, IsNull, KnownFloatingPointNormalized, LessThan, LessThanOrEqual, Literal, Not, Or}
+import org.apache.spark.sql.catalyst.expressions.objects.AssertNotNull
 import org.apache.spark.sql.catalyst.optimizer.NormalizeNaNAndZero
+import org.apache.spark.sql.catalyst.trees.TreePattern.NULL_CHECK
 import org.apache.spark.sql.internal.SQLConf
 import org.apache.spark.sql.types.{BooleanType, DoubleType, FloatType}
 
@@ -488,6 +490,38 @@ object ComparisonUtils {
       liftFallbackReasons(serializedValue, expr)
       serializedList.foreach(liftFallbackReasons(_, expr))
       None
+    }
+  }
+}
+
+object CometAssertNotNull extends CometExpressionSerde[AssertNotNull] {
+  // Enabling this previously unsupported expression must not make an enclosing eager kernel
+  // check rows that Spark skips (for example, false AND assertnotnull(NULL)). Admit the
+  // structural and lazy conditional contexts used by V2 writes; keep other compositions in
+  // Spark until their evaluation order has been verified. Check every parent during serde so
+  // a safe wrapper cannot hide an unsafe descendant.
+  private[serde] def hasUnsupportedParent(expr: Expression): Boolean = expr match {
+    case _: Alias | _: AssertNotNull | _: CreateNamedStruct | _: GetStructField | _: If |
+        _: CaseWhen =>
+      false
+    case _ =>
+      expr.containsPattern(NULL_CHECK) &&
+      expr.children.exists(_.exists(_.isInstanceOf[AssertNotNull]))
+  }
+
+  override def convert(
+      expr: AssertNotNull,
+      inputs: Seq[Attribute],
+      binding: Boolean): Option[Expr] = {
+    exprToProtoInternal(expr.child, inputs, binding).map { child =>
+      Expr
+        .newBuilder()
+        .setAssertNotNull(
+          ExprOuterClass.AssertNotNull
+            .newBuilder()
+            .setChild(child)
+            .setWalkedTypePath(expr.walkedTypePath.mkString("\n", "\n", "\n")))
+        .build()
     }
   }
 }

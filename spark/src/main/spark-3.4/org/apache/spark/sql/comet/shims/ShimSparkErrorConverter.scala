@@ -189,8 +189,11 @@ trait ShimSparkErrorConverter {
 
       case "NotNullAssertViolation" =>
         Some(
-          QueryExecutionErrors.foundNullValueForNotNullableFieldError(
-            params("fieldName").toString))
+          new NullPointerException(
+            "Null value appeared in non-nullable field:" + params("walkedTypePath") +
+              "If the schema is inferred from a Scala tuple/case class, or a Java bean, " +
+              "please try to use scala.Option[_] or other nullable types " +
+              "(e.g. java.lang.Integer instead of int/scala.Int)."))
 
       case "ValueIsNull" =>
         Some(
