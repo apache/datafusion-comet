@@ -860,8 +860,11 @@ fn write_bracketed<W: Write>(
     out.write_char(']')
 }
 
-/// Casts a binary array to a string array. Without a binary output style the bytes are
-/// reinterpreted as a string as-is, which is what Spark's `Cast` does.
+/// Casts a binary array to a string array. Without a binary output style, or with the `UTF8`
+/// style, the bytes are decoded the way the JVM's `new String(bytes, UTF_8)` does, replacing each
+/// ill-formed sequence with U+FFFD. Spark's `Cast` keeps the bytes, so the strings match what
+/// Spark returns but byte-level results can differ (#4764). Valid input can share the input's
+/// value buffer.
 ///
 /// The other styles mimic the [BinaryFormatter]: https://github.com/apache/spark/blob/v4.0.0/sql/catalyst/src/main/scala/org/apache/spark/sql/catalyst/expressions/ToStringBase.scala#L449-L468
 /// used by SparkSQL's ToPrettyString expression.
@@ -908,25 +911,22 @@ fn cast_binary_to_string<O: OffsetSizeTrait>(
                     let offset = offset.as_usize();
                     offset == end || !matches!(data[offset], 0x80..=0xBF)
                 }) {
-                    // A slice of a large array shares its whole allocation, and memory accounting
-                    // such as a sort's charges all of it to every batch that holds it. Copy the
-                    // bytes into a compact buffer then, without decoding them again.
-                    let (offsets, values) = if 2 * (end - start) >= input.values().capacity() {
-                        // Rebase a slice's offsets onto the narrowed value buffer.
-                        let offsets = if start == 0 {
-                            input.offsets().clone()
-                        } else {
-                            OffsetBuffer::from_lengths(input.offsets().lengths())
-                        };
-                        (
-                            offsets,
-                            input.values().slice_with_length(start, end - start),
-                        )
+                    // Reuse a buffer only when the rows fill at least half of its allocation. A
+                    // slice of a large array shares the whole allocation, and memory accounting
+                    // such as a sort's charges all of it to every batch that holds it, so the
+                    // values are copied then, without decoding them again.
+                    let fills = |buffer: &Buffer, used: usize| 2 * used >= buffer.capacity();
+                    let offset_buffer = input.offsets().inner().inner();
+                    let offsets = if start == 0 && fills(offset_buffer, offset_buffer.len()) {
+                        input.offsets().clone()
                     } else {
-                        (
-                            OffsetBuffer::from_lengths(input.offsets().lengths()),
-                            Buffer::from_slice_ref(&data[start..end]),
-                        )
+                        // Rebases a slice's offsets onto the narrowed value buffer.
+                        OffsetBuffer::from_lengths(input.offsets().lengths())
+                    };
+                    let values = if fills(input.values(), end - start) {
+                        input.values().slice_with_length(start, end - start)
+                    } else {
+                        Buffer::from_slice_ref(&data[start..end])
                     };
                     // SAFETY: the value buffer is valid UTF-8 and every offset falls on a char
                     // boundary, which is what `GenericStringArray::try_new` checks.
@@ -1320,6 +1320,8 @@ mod tests {
 
     #[test]
     fn test_cast_binary_to_string_small_slice_gets_compact_copy() {
+        use arrow::buffer::MutableBuffer;
+
         let cast_options = SparkCastOptions::new(EvalMode::Legacy, "UTC");
         let payload = [b'a'; 1024];
         let parent = BinaryArray::from(vec![payload.as_slice(); 64]);
@@ -1333,6 +1335,35 @@ mod tests {
         assert!(strings.values().capacity() < 2 * 8 * payload.len());
         assert_eq!(strings.value_offsets()[0], 0);
         assert!((0..8).all(|i| strings.value(i).as_bytes() == payload));
+
+        // The first slice's offsets need no rebasing, but they fill little of the parent's
+        // offsets allocation, so they are rebuilt as well.
+        let first = parent.slice(0, 8);
+        let result = cast_binary_to_string::<i32>(&first, &cast_options).unwrap();
+        let strings = result.as_string::<i32>();
+        assert_ne!(strings.values().as_ptr(), first.value(0).as_ptr());
+        assert_ne!(
+            strings.value_offsets().as_ptr(),
+            first.value_offsets().as_ptr()
+        );
+        assert_eq!(strings.value_offsets(), first.value_offsets());
+
+        // An unsliced array whose value buffer is oversized keeps its offsets.
+        let mut oversized = MutableBuffer::with_capacity(8 * payload.len());
+        oversized.extend_from_slice(&payload);
+        let unsliced = BinaryArray::new(
+            OffsetBuffer::new(vec![0, 1024].into()),
+            oversized.into(),
+            None,
+        );
+        let result = cast_binary_to_string::<i32>(&unsliced, &cast_options).unwrap();
+        let strings = result.as_string::<i32>();
+        assert_ne!(strings.values().as_ptr(), unsliced.value(0).as_ptr());
+        assert_eq!(
+            strings.value_offsets().as_ptr(),
+            unsliced.value_offsets().as_ptr()
+        );
+        assert_eq!(strings.value(0).as_bytes(), payload);
 
         // A slice whose bytes fill at least half of it still reuses the buffer.
         let large = parent.slice(16, 40);
