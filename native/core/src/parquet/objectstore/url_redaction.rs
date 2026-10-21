@@ -55,12 +55,3 @@ pub(crate) fn authority_without_password(url: &Url) -> Cow<'_, str> {
 pub(crate) fn display_authority(url: &Url) -> String {
     format!("{}://{}", url.scheme(), authority_without_password(url))
 }
-
-/// `scheme://host[:port]` of a URL that may not be Azure, for messages.
-pub(crate) fn redacted(url: &Url) -> String {
-    format!(
-        "{}://{}",
-        url.scheme(),
-        &url[Position::BeforeHost..Position::AfterPort]
-    )
-}

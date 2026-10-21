@@ -79,7 +79,7 @@ use object_store::{
     ObjectStore, ObjectStoreScheme,
 };
 
-use super::url_redaction::{display_authority, redacted, without_credentials, without_secrets};
+use super::url_redaction::{display_authority, without_credentials, without_secrets};
 
 const MARKER_RESOLUTION: &str = "comet.azure.resolution";
 const MARKER_AUTH_TYPE: &str = "comet.azure.auth.type";
@@ -126,7 +126,7 @@ pub fn create_store(
     if scheme != ObjectStoreScheme::MicrosoftAzure {
         return Err(config_error(format!(
             "Scheme of URL is not Azure: {}",
-            redacted(url)
+            url.scheme()
         )));
     }
     let path = Path::parse(path)?;
@@ -552,13 +552,10 @@ mod tests {
             "s3://alice:{SECRET}@bucket/dir/file.parquet?sig=SAS-MARKER"
         ));
         assert!(
-            not_azure.contains("Scheme of URL is not Azure: s3://bucket"),
+            not_azure.ends_with("Scheme of URL is not Azure: s3"),
             "{not_azure}"
         );
-        assert!(
-            !not_azure.contains("file.parquet"),
-            "path echoed: {not_azure}"
-        );
+        assert!(!not_azure.contains("bucket"), "host echoed: {not_azure}");
         error_for(format!(
             "foo://alice:{SECRET}@host/dir/file.parquet?sig=SAS-MARKER"
         ));
