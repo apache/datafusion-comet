@@ -997,7 +997,7 @@ object S3ConfigGate {
       bucket: String,
       baseKey: String,
       consumer: S3ConfigConsumer,
-      adapterView: Option[Configuration] = None): Option[String] = {
+      adapterView: Option[Configuration]): Option[String] = {
     def effectiveOn(conf: Configuration): Either[String, Option[String]] = consumer match {
       case LookupPasswordConsumer =>
         hadoopLookupPasswordEffective(conf, bucket, baseKey)
