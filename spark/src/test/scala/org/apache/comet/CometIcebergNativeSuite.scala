@@ -1300,57 +1300,32 @@ class CometIcebergNativeSuite
       CometConf.COMET_EXEC_ENABLED.key -> "true",
       CometConf.COMET_ICEBERG_NATIVE_ENABLED.key -> "true")(f)
 
-  test("issue 5540: case-sensitive read of columns a and A") {
-    assume(icebergAvailable, "Iceberg not available in classpath")
-    withTempIcebergDir { warehouseDir =>
-      withCaseCatalog(warehouseDir, caseSensitive = true) {
-        val t = "case_cat.db.case_pair"
-        spark.sql(s"CREATE TABLE $t (a INT, A INT) USING iceberg")
-        spark.sql(s"INSERT INTO $t VALUES (1, 20), (3, 40)")
-        val failures = failingNativeScanChecks(
-          Seq(
-            s"SELECT a, A FROM $t ORDER BY a",
-            s"SELECT A, a FROM $t ORDER BY a",
-            s"SELECT A FROM $t ORDER BY A",
-            s"SELECT a FROM $t ORDER BY a",
-            s"SELECT * FROM $t ORDER BY a"))
-        spark.sql(s"DROP TABLE $t")
-        assert(failures.isEmpty, failures.mkString("\n\n=====\n\n"))
-      }
-    }
-  }
+  /** Imports the files of session table `sourceTable` into `table` with SparkTableUtil. */
+  private def importParquetInto(
+      table: org.apache.iceberg.Table,
+      sourceTable: String,
+      stagingDir: String): Unit =
+    Class
+      .forName("org.apache.iceberg.spark.SparkTableUtil")
+      .getMethod(
+        "importSparkTable",
+        classOf[org.apache.spark.sql.SparkSession],
+        classOf[org.apache.spark.sql.catalyst.TableIdentifier],
+        classOf[org.apache.iceberg.Table],
+        classOf[String])
+      .invoke(
+        null,
+        spark,
+        new org.apache.spark.sql.catalyst.TableIdentifier(sourceTable),
+        table,
+        stagingDir)
 
-  test("issue 5540: case-sensitive filters on columns a and A") {
+  test("issue 5540: equality deletes keyed on columns a and A") {
     assume(icebergAvailable, "Iceberg not available in classpath")
     withTempIcebergDir { warehouseDir =>
+      val t = "case_cat.db.case_pair_eq"
+      var failures = Seq.empty[String]
       withCaseCatalog(warehouseDir, caseSensitive = true) {
-        val t = "case_cat.db.case_pair_filter"
-        spark.sql(s"CREATE TABLE $t (a INT, A INT) USING iceberg")
-        spark.sql(s"INSERT INTO $t VALUES (1, 20), (3, 40)")
-        // a spans [1, 3] and A spans [20, 40]: a filter on one column bound to the other would
-        // prune the whole row group or keep the wrong row.
-        val failures = failingNativeScanChecks(
-          Seq(
-            s"SELECT a FROM $t WHERE A = 40",
-            s"SELECT A FROM $t WHERE a = 3",
-            s"SELECT A FROM $t WHERE A = 40",
-            s"SELECT a FROM $t WHERE a = 3",
-            s"SELECT a, A FROM $t WHERE A = 40",
-            s"SELECT a, A FROM $t WHERE a = 3",
-            s"SELECT a FROM $t WHERE A > 30",
-            s"SELECT a FROM $t WHERE A IN (20)",
-            s"SELECT A FROM $t WHERE a < 2"))
-        spark.sql(s"DROP TABLE $t")
-        assert(failures.isEmpty, failures.mkString("\n\n=====\n\n"))
-      }
-    }
-  }
-
-  test("issue 5540: case-sensitive equality deletes keyed on a and on A") {
-    assume(icebergAvailable, "Iceberg not available in classpath")
-    withTempIcebergDir { warehouseDir =>
-      withCaseCatalog(warehouseDir, caseSensitive = true) {
-        val t = "case_cat.db.case_pair_eq"
         spark.sql(
           s"CREATE TABLE $t (a INT, A INT) USING iceberg TBLPROPERTIES ('format-version' = '2')")
         spark.sql(s"INSERT INTO $t VALUES (1, 20), (3, 40), (5, 60)")
@@ -1358,15 +1333,29 @@ class CometIcebergNativeSuite
         // misreads one of them whichever field the fold resolves to. Only (5, 60) survives.
         commitEqualityDelete("case_cat", "db", "case_pair_eq", "a", 1, warehouseDir)
         commitEqualityDelete("case_cat", "db", "case_pair_eq", "A", 40, warehouseDir)
-        val failures = failingNativeScanChecks(
+        failures = failingNativeScanChecks(
           Seq(
             s"SELECT a, A FROM $t ORDER BY a",
             s"SELECT A FROM $t ORDER BY A",
             s"SELECT a FROM $t ORDER BY a",
             s"SELECT count(*) FROM $t"))
-        spark.sql(s"DROP TABLE $t")
-        assert(failures.isEmpty, failures.mkString("\n\n=====\n\n"))
       }
+      // `a` is ambiguous when case-insensitive, so these queries name no column. Spark 4.1+
+      // rejects the duplicate columns itself before any scan runs.
+      withCaseCatalog(warehouseDir, caseSensitive = false) {
+        Seq(s"SELECT * FROM $t", s"SELECT count(*) FROM $t").foreach { query =>
+          if (isSpark41Plus) {
+            val e = intercept[org.apache.spark.sql.AnalysisException](spark.sql(query).collect())
+            assert(e.getMessage.contains("COLUMN_ALREADY_EXISTS"), e.getMessage)
+          } else {
+            checkIcebergNativeScan(query)
+          }
+        }
+      }
+      withCaseCatalog(warehouseDir, caseSensitive = true) {
+        spark.sql(s"DROP TABLE $t")
+      }
+      assert(failures.isEmpty, failures.mkString("\n\n=====\n\n"))
     }
   }
 
@@ -1387,35 +1376,6 @@ class CometIcebergNativeSuite
             s"SELECT * FROM $t WHERE ID > 2 ORDER BY id"))
         spark.sql(s"DROP TABLE $t")
         assert(failures.isEmpty, failures.mkString("\n\n=====\n\n"))
-      }
-    }
-  }
-
-  test("issue 5540: case-insensitive read of columns a and A with equality deletes") {
-    assume(icebergAvailable, "Iceberg not available in classpath")
-    withTempIcebergDir { warehouseDir =>
-      val t = "case_cat.db.case_pair_ci"
-      withCaseCatalog(warehouseDir, caseSensitive = true) {
-        spark.sql(
-          s"CREATE TABLE $t (a INT, A INT) USING iceberg TBLPROPERTIES ('format-version' = '2')")
-        spark.sql(s"INSERT INTO $t VALUES (1, 20), (3, 40), (5, 60)")
-        commitEqualityDelete("case_cat", "db", "case_pair_ci", "a", 1, warehouseDir)
-        commitEqualityDelete("case_cat", "db", "case_pair_ci", "A", 40, warehouseDir)
-      }
-      // `a` is ambiguous here, so the queries name no column: only (5, 60) survives. Spark 4.1+
-      // rejects the duplicate columns itself before any scan runs.
-      withCaseCatalog(warehouseDir, caseSensitive = false) {
-        Seq(s"SELECT * FROM $t", s"SELECT count(*) FROM $t").foreach { query =>
-          if (isSpark41Plus) {
-            val e = intercept[org.apache.spark.sql.AnalysisException](spark.sql(query).collect())
-            assert(e.getMessage.contains("COLUMN_ALREADY_EXISTS"), e.getMessage)
-          } else {
-            checkIcebergNativeScan(query)
-          }
-        }
-      }
-      withCaseCatalog(warehouseDir, caseSensitive = true) {
-        spark.sql(s"DROP TABLE $t")
       }
     }
   }
@@ -1470,20 +1430,7 @@ class CometIcebergNativeSuite
           .table()
         spark.sql(s"CREATE TABLE parquet_case_mapped USING parquet LOCATION '$dataPath'")
         try {
-          Class
-            .forName("org.apache.iceberg.spark.SparkTableUtil")
-            .getMethod(
-              "importSparkTable",
-              classOf[org.apache.spark.sql.SparkSession],
-              classOf[org.apache.spark.sql.catalyst.TableIdentifier],
-              classOf[org.apache.iceberg.Table],
-              classOf[String])
-            .invoke(
-              null,
-              spark,
-              new org.apache.spark.sql.catalyst.TableIdentifier("parquet_case_mapped"),
-              icebergTable,
-              s"${warehouseDir.getAbsolutePath}/staging")
+          importParquetInto(icebergTable, "parquet_case_mapped", s"$warehouseDir/staging")
           Seq(true, false).foreach { caseSensitive =>
             withCaseCatalog(warehouseDir, caseSensitive) {
               checkIcebergNativeScan(s"SELECT id, val FROM $t ORDER BY id")
@@ -1530,20 +1477,7 @@ class CometIcebergNativeSuite
           icebergTable.refresh()
           spark.sql(s"CREATE TABLE parquet_$name USING parquet LOCATION '$dataPath'")
           try {
-            Class
-              .forName("org.apache.iceberg.spark.SparkTableUtil")
-              .getMethod(
-                "importSparkTable",
-                classOf[org.apache.spark.sql.SparkSession],
-                classOf[org.apache.spark.sql.catalyst.TableIdentifier],
-                classOf[org.apache.iceberg.Table],
-                classOf[String])
-              .invoke(
-                null,
-                spark,
-                new org.apache.spark.sql.catalyst.TableIdentifier(s"parquet_$name"),
-                icebergTable,
-                s"${warehouseDir.getAbsolutePath}/staging")
+            importParquetInto(icebergTable, s"parquet_$name", s"$warehouseDir/staging")
             // Spark itself reads the mapped children, so matching Spark means reading values.
             withSQLConf(CometConf.COMET_ENABLED.key -> "false") {
               assert(
