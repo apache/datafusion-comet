@@ -15,9 +15,10 @@
 -- specific language governing permissions and limitations
 -- under the License.
 
--- Config: spark.comet.exec.localTableScan.enabled=true
 -- Config: spark.comet.shuffle.mode=native
 -- Config: spark.comet.shuffle.native.partitioning.roundrobin.enabled=true
+-- Positional placement is off by default, but pinned here on purpose: these queries test the
+-- content-hash placement, which positional placement would skip.
 -- Config: spark.comet.shuffle.native.partitioning.roundrobin.positional.enabled=false
 
 -- Without positional placement, native round-robin shuffle places each row by a murmur3 hash of

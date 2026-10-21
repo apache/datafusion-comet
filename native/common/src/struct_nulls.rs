@@ -38,7 +38,8 @@ use std::sync::Arc;
 ///
 /// Skips the work when the parent has no null to contribute, which covers both no null buffer at
 /// all and an all-valid buffer — the latter is what slicing leaves behind. `NullBuffer` stores its
-/// null count, so the test is O(1).
+/// null count, so the test is O(1). A `NullType` child is returned unchanged too: it is null at
+/// every row already, and a `NullArray` cannot carry a null buffer.
 ///
 /// The union only ever adds nulls, so the child's data buffers are untouched and are not
 /// revalidated. Callers on a hot path depend on that: the hash kernels reach this once per element
@@ -50,9 +51,7 @@ pub fn child_with_parent_nulls(
 ) -> Result<ArrayRef, ArrowError> {
     let child = struct_array.column(ordinal);
     match struct_array.nulls() {
-        // A `NullArray` is already null at every row and cannot carry a null buffer.
-        _ if child.data_type() == &DataType::Null => Ok(Arc::clone(child)),
-        Some(parent) if parent.null_count() > 0 => {
+        Some(parent) if parent.null_count() > 0 && child.data_type() != &DataType::Null => {
             let combined = NullBuffer::union(Some(parent), child.nulls());
             // SAFETY: only nulls are added; every data buffer and child array is carried over
             // unchanged, which is the same argument `StructArray::flatten` makes.

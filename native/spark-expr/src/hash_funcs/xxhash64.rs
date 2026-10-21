@@ -461,6 +461,51 @@ mod tests {
         assert_eq!(hashes[2], 42, "a null struct must leave the seed untouched");
     }
 
+    /// Lists whose elements are `NullType` or an ANSI interval type go through the recursive
+    /// list path into the `Null`, `Interval(YearMonth)` and `Duration(Microsecond)` arms. A list
+    /// of nulls leaves the hash unchanged, and a list of intervals hashes like the same list of
+    /// ints or longs.
+    #[test]
+    fn test_lists_of_null_type_and_intervals() {
+        use arrow::array::{
+            DurationMicrosecondArray, IntervalYearMonthArray, ListArray, NullArray,
+        };
+        use arrow::buffer::{NullBuffer, OffsetBuffer};
+        use arrow::datatypes::Field;
+
+        // Rows [v0, v1], [], null and [v2].
+        let as_list = |values: ArrayRef| -> ArrayRef {
+            Arc::new(ListArray::new(
+                Arc::new(Field::new("item", values.data_type().clone(), true)),
+                OffsetBuffer::from_lengths([2, 0, 0, 1]),
+                values,
+                Some(NullBuffer::from(vec![true, true, false, true])),
+            ))
+        };
+        let hash = |list: ArrayRef| {
+            let mut hashes = vec![42u64; 4];
+            create_xxhash64_hashes(&[list], &mut hashes).unwrap();
+            hashes
+        };
+
+        assert_eq!(hash(as_list(Arc::new(NullArray::new(3)))), vec![42u64; 4]);
+
+        let months = vec![Some(1), None, Some(i32::MIN)];
+        assert_eq!(
+            hash(as_list(Arc::new(IntervalYearMonthArray::from(
+                months.clone()
+            )))),
+            hash(as_list(Arc::new(Int32Array::from(months))))
+        );
+        let micros = vec![Some(-1), Some(i64::MAX), None];
+        assert_eq!(
+            hash(as_list(Arc::new(DurationMicrosecondArray::from(
+                micros.clone()
+            )))),
+            hash(as_list(Arc::new(Int64Array::from(micros))))
+        );
+    }
+
     #[test]
     fn test_f32() {
         test_xxhash64_hash::<f32, Float32Array>(
