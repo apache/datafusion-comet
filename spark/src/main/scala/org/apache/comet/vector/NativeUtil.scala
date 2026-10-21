@@ -24,7 +24,7 @@ import scala.jdk.CollectionConverters._
 
 import org.apache.arrow.c.{ArrowArray, ArrowImporter, ArrowSchema, CDataDictionaryProvider, Data}
 import org.apache.arrow.util.AutoCloseables
-import org.apache.arrow.vector.VectorSchemaRoot
+import org.apache.arrow.vector.{LargeVarBinaryVector, LargeVarCharVector, VectorSchemaRoot}
 import org.apache.arrow.vector.dictionary.DictionaryProvider
 import org.apache.arrow.vector.types.pojo.{ArrowType, Field}
 import org.apache.spark.SparkException
@@ -142,22 +142,15 @@ class NativeUtil extends AutoCloseable {
           // Don't need to deallocate them here.
           val arrowSchema = ArrowSchema.wrap(schemaAddrs(index))
           val arrowArray = ArrowArray.wrap(arrayAddrs(index))
-          narrowLargeOffsets(valueVector) match {
-            case Some(narrow) =>
-              // A PyArrow UDF can return large_string or large_binary, which the native side
-              // does not plan for. Export a 32-bit copy instead, as serialization does. The
-              // export retains the copy's buffers, so the copy itself is closed here and its
-              // memory is freed when native releases the array.
-              try Data.exportVector(allocator, narrow, provider, arrowArray, arrowSchema)
-              finally narrow.close()
-            case None =>
-              Data.exportVector(
-                allocator,
-                getFieldVector(valueVector, "export"),
-                provider,
-                arrowArray,
-                arrowSchema)
+          // A PyArrow UDF can return large_string or large_binary, which getFieldVector rejects.
+          // Export those as they are: native columnar-to-row casts each column to its planned
+          // type in maybe_cast_to_schema_type, which rebuilds the offsets and keeps the data.
+          val fieldVector = valueVector match {
+            case v: LargeVarCharVector => v
+            case v: LargeVarBinaryVector => v
+            case v => getFieldVector(v, "export")
           }
+          Data.exportVector(allocator, fieldVector, provider, arrowArray, arrowSchema)
         case cv: ConstantColumnVector =>
           // Spark uses ConstantColumnVector for partition columns / per-batch constants (e.g.
           // partition values, synthetic columns). Materialise to a fresh Arrow vector so Comet's

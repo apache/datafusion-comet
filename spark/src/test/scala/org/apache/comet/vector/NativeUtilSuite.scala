@@ -27,7 +27,7 @@ import scala.util.Using
 
 import org.apache.arrow.c.{ArrowArray, ArrowSchema, Data}
 import org.apache.arrow.memory.RootAllocator
-import org.apache.arrow.vector.{IntVector, LargeVarBinaryVector, LargeVarCharVector, TimeStampMicroTZVector, UInt4Vector, VarBinaryVector, VarCharVector}
+import org.apache.arrow.vector.{IntVector, LargeVarBinaryVector, LargeVarCharVector, TimeStampMicroTZVector, UInt4Vector, VarCharVector}
 import org.apache.arrow.vector.complex.StructVector
 import org.apache.arrow.vector.dictionary.Dictionary
 import org.apache.arrow.vector.dictionary.DictionaryProvider.MapDictionaryProvider
@@ -373,7 +373,8 @@ class NativeUtilSuite extends CometTestBase {
     }
   }
 
-  test("exportBatch exports large-offset string and binary vectors with 32-bit offsets") {
+  test("exportBatch exports large-offset string and binary vectors as they are") {
+    // Native columnar-to-row narrows them to its planned type; see CometNativeColumnarToRowSuite.
     val values = Seq("hello", null, "", "wörld")
     val before = CometArrowAllocator.getAllocatedMemory
     val strings = new LargeVarCharVector("s", CometArrowAllocator)
@@ -408,8 +409,8 @@ class NativeUtilSuite extends CometTestBase {
 
       val stringColumn = imported.column(0).asInstanceOf[CometVector]
       val binaryColumn = imported.column(1).asInstanceOf[CometVector]
-      assert(stringColumn.getValueVector.isInstanceOf[VarCharVector])
-      assert(binaryColumn.getValueVector.isInstanceOf[VarBinaryVector])
+      assert(stringColumn.getValueVector.isInstanceOf[LargeVarCharVector])
+      assert(binaryColumn.getValueVector.isInstanceOf[LargeVarBinaryVector])
       def read(column: CometVector, get: Int => Array[Byte]): Seq[String] =
         values.indices.map { i =>
           if (column.isNullAt(i)) null else new String(get(i), StandardCharsets.UTF_8)

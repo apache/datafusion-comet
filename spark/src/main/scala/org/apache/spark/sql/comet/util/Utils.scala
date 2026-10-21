@@ -630,9 +630,10 @@ object Utils extends CometTypeShim with Logging {
               if (valueVector.getField.getDictionary != null) Some(a.getDictionaryProvider)
               else None
 
-            val fieldVector = narrowLargeOffsets(valueVector) match {
-              case Some(narrow) => keep(narrow)
-              case None => getFieldVector(valueVector, "serialize")
+            val fieldVector = valueVector match {
+              case v: LargeVarCharVector => keep(narrowOffsets(v, ArrowType.Utf8.INSTANCE))
+              case v: LargeVarBinaryVector => keep(narrowOffsets(v, ArrowType.Binary.INSTANCE))
+              case v => getFieldVector(v, "serialize")
             }
             (fieldVector, provider)
 
@@ -667,17 +668,6 @@ object Utils extends CometTypeShim with Logging {
         closeAfterFailure(made.toSeq, e)
         throw e
     }
-  }
-
-  /**
-   * A 32-bit copy of `vector` when it is a `LargeVarCharVector` or `LargeVarBinaryVector`, which
-   * [[getFieldVector]] rejects, or `None` for any other vector. The caller owns the copy and
-   * closes it. See [[narrowOffsets]].
-   */
-  def narrowLargeOffsets(vector: ValueVector): Option[FieldVector] = vector match {
-    case v: LargeVarCharVector => Some(narrowOffsets(v, ArrowType.Utf8.INSTANCE))
-    case v: LargeVarBinaryVector => Some(narrowOffsets(v, ArrowType.Binary.INSTANCE))
-    case _ => None
   }
 
   /**
