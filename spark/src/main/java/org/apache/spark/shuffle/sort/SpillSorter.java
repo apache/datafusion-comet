@@ -250,9 +250,11 @@ public class SpillSorter extends SpillWriter {
       return;
     }
 
-    // This call performs the actual sort.
+    // This call performs the actual sort. The sorter is a radix sort one, so it keeps the second
+    // half of the pointer array free, and the native sort uses it as scratch space.
     long arrayAddr = this.sorterArray.getBaseOffset();
-    nativeLib.sortRowPartitionsNative(arrayAddr, numRecords, tracingEnabled);
+    nativeLib.sortRowPartitionsNative(
+        arrayAddr, numRecords, this.sorterArray.size(), tracingEnabled);
 
     // Native code resolves the sorted record pointers through the page table, so the rows are
     // read where they lie, and continues each partition's checksum over the bytes it writes.
