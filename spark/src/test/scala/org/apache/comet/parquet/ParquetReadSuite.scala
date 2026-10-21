@@ -532,6 +532,48 @@ abstract class ParquetReadSuite extends CometTestBase {
     }
   }
 
+  // DataFusion's INT96 coercion finds a leaf by a Parquet path that assumes the standard
+  // `list` / `element` layout. A leaf in a legacy list layout (`bag` / `array`, as Spark writes
+  // with `writeLegacyFormat=true`) was never coerced, so a value outside the nanosecond range
+  // (1677 to 2262) wrapped to a wrong timestamp with no error
+  // (https://github.com/apache/datafusion-comet/issues/7029).
+  test("INT96 timestamps outside the nanosecond range inside lists in either layout") {
+    val timestamps = Seq(
+      "9999-12-31 23:59:59",
+      "1600-01-01 00:00:00",
+      "2263-01-01 00:00:00",
+      "2020-01-01 00:00:00").map(Timestamp.valueOf)
+    val schema = new StructType()
+      .add("id", IntegerType)
+      .add("at", ArrayType(TimestampType))
+      .add("st", ArrayType(new StructType().add("ts", TimestampType)))
+      .add("m", MapType(StringType, ArrayType(TimestampType)))
+    val rows = timestamps.zipWithIndex.map { case (ts, i) =>
+      Row(i, Seq(ts), Seq(Row(ts)), Map("k" -> Seq(ts)))
+    }
+    for (legacyFormat <- Seq(true, false)) {
+      withSQLConf(
+        SQLConf.SESSION_LOCAL_TIMEZONE.key -> "UTC",
+        SQLConf.PARQUET_INT96_REBASE_MODE_IN_READ.key -> "CORRECTED") {
+        withTempPath { dir =>
+          withSQLConf(
+            CometConf.COMET_ENABLED.key -> "false",
+            SQLConf.PARQUET_WRITE_LEGACY_FORMAT.key -> legacyFormat.toString,
+            SQLConf.PARQUET_OUTPUT_TIMESTAMP_TYPE.key -> "INT96",
+            SQLConf.PARQUET_INT96_REBASE_MODE_IN_WRITE.key -> "CORRECTED") {
+            spark
+              .createDataFrame(spark.sparkContext.parallelize(rows, 1), schema)
+              .write
+              .parquet(dir.getCanonicalPath)
+          }
+          val df = spark.read.parquet(dir.getCanonicalPath)
+          checkSparkAnswerAndOperator(df)
+          checkAnswer(df, rows)
+        }
+      }
+    }
+  }
+
   test("batch paging on basic types") {
     Seq(1, 2, 4, 9).foreach { batchSize =>
       withSQLConf(CometConf.COMET_BATCH_SIZE.key -> batchSize.toString) {

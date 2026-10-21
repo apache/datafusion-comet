@@ -18,6 +18,7 @@
 use crate::execution::operators::ExecutionError;
 use crate::parquet::eager_page_index_reader_factory::{EagerPageIndexReaderFactory, ScanIoSource};
 use crate::parquet::encryption_support::{CometEncryptionConfig, ENCRYPTION_FACTORY_ID};
+use crate::parquet::int96_coercion::{COERCE_INT96_TZ, COERCE_INT96_UNIT};
 use crate::parquet::name_fold::fold_schema_names;
 use crate::parquet::parquet_support::{
     object_store_authority, ObjectStoreBackend, SparkParquetOptions,
@@ -416,12 +417,12 @@ fn get_options(
     table_parquet_options.global.pruning = session_parquet_options.pruning;
 
     // Hardcoded for Spark compatibility, not session-overridable.
-    table_parquet_options.global.coerce_int96 = Some("us".to_string());
+    table_parquet_options.global.coerce_int96 = Some(COERCE_INT96_UNIT.to_string());
     // INT96 columns encode UTC-adjusted instants; attaching the UTC timezone
     // preserves that signal at the Arrow level so the schema adapter can
     // distinguish INT96-derived TimestampLTZ from a true TimestampNTZ source
     // and apply the pre-Spark-4 SPARK-36182 rejection (#4219).
-    table_parquet_options.global.coerce_int96_tz = Some("UTC".to_string());
+    table_parquet_options.global.coerce_int96_tz = Some(COERCE_INT96_TZ.to_string());
     let mut spark_parquet_options = SparkParquetOptions::new(EvalMode::Legacy, session_timezone);
     spark_parquet_options.allow_cast_unsigned_ints = true;
     spark_parquet_options.case_sensitive = case_sensitive;

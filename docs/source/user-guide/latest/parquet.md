@@ -255,9 +255,11 @@ for production, so do not turn it off to avoid an entry on this page.
   `spark.sql.parquet.datetimeRebaseModeInRead` and the file's `org.apache.spark.legacyDateTime`
   metadata ([#5010](https://github.com/apache/datafusion-comet/issues/5010)). The
   [Delta scan](delta.md) rebases.
-- **INT96 timestamps inside legacy-format lists.** INT96 timestamps outside the years 1677 to 2262
-  read back wrong inside lists written in a legacy layout, as Hive and
-  `spark.sql.parquet.writeLegacyFormat=true` write them
+- **INT96 timestamps inside legacy-format lists, in a scan with Parquet encryption.** INT96
+  timestamps outside the years 1677 to 2262 read back wrong inside lists written in a legacy layout,
+  as Hive and `spark.sql.parquet.writeLegacyFormat=true` write them, when the scan has Parquet
+  modular encryption configured. This covers every file of such a scan, encrypted or not. Scans
+  without it read these values correctly
   ([#7029](https://github.com/apache/datafusion-comet/issues/7029)).
 - **A struct or array with none of its requested fields in the file.** Spark returns NULL for the
   column. Comet returns a non-null struct or array that holds NULLs. This applies to Spark 3.4, 3.5
