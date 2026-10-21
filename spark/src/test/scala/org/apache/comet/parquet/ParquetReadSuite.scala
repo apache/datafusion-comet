@@ -171,16 +171,27 @@ abstract class ParquetReadSuite extends CometTestBase {
       val invalid = Binary.fromConstantByteArray(Array[Byte](0x41, 0xff.toByte, 0x42))
       val writer = createParquetWriter(parquetSchema, path)
       try {
-        Seq(valid, invalid).zipWithIndex.foreach { case (value, id) =>
+        // Valid values, then a null list element, struct field and map value, then invalid
+        // values, then null containers, so one batch mixes nulls, valid and invalid values.
+        Seq(Some(valid), None, Some(invalid)).zipWithIndex.foreach { case (value, id) =>
           val row = new SimpleGroup(parquetSchema)
           val arr = row.addGroup("arr")
           arr.addGroup("list").append("element", valid)
-          arr.addGroup("list").append("element", value)
-          row.addGroup("st").append("name", value)
-          row.addGroup("m").addGroup("key_value").append("key", value).append("value", value)
+          val element = arr.addGroup("list")
+          val st = row.addGroup("st")
+          val entry =
+            row.addGroup("m").addGroup("key_value").append("key", value.getOrElse(valid))
+          value.foreach { value =>
+            element.append("element", value)
+            st.append("name", value)
+            entry.append("value", value)
+          }
           row.add("id", id)
           writer.write(row)
         }
+        val nullContainers = new SimpleGroup(parquetSchema)
+        nullContainers.add("id", 3)
+        writer.write(nullContainers)
       } finally {
         writer.close()
       }
@@ -203,7 +214,7 @@ abstract class ParquetReadSuite extends CometTestBase {
 
           // Each invalid nested value holds U+FFFD (EF BF BD) in place of FF.
           checkAnswer(
-            df.where("id = 1")
+            df.where("id = 2")
               .selectExpr(
                 "hex(arr[1])",
                 "hex(st.name)",

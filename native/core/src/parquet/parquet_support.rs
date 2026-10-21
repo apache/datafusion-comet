@@ -340,17 +340,10 @@ fn parquet_convert_array_impl(
                 Binary => array,
                 _ => cast_with_options(&array, &Binary, &PARQUET_OPTIONS)?,
             };
-            let mut cast_options =
-                SparkCastOptions::new(parquet_options.eval_mode, &parquet_options.timezone);
-            cast_options.allow_cast_unsigned_ints = parquet_options.allow_cast_unsigned_ints;
-            cast_options.is_adapting_schema = true;
-
-            match spark_cast(ColumnarValue::Array(array), to_type, &cast_options)? {
-                ColumnarValue::Array(array) => Ok(array),
-                ColumnarValue::Scalar(_) => Err(DataFusionError::Internal(
-                    "Spark cast returned a scalar for an array input".to_string(),
-                )),
-            }
+            // Binary to Utf8 reads only the binary output style, which a scan leaves unset.
+            let cast_options = SparkCastOptions::new_without_timezone(EvalMode::Legacy);
+            let len = array.len();
+            spark_cast(ColumnarValue::Array(array), to_type, &cast_options)?.into_array(len)
         }
         // If Arrow cast supports the cast, delegate the cast to Arrow
         _ if can_cast_types(from_type, to_type) => {
