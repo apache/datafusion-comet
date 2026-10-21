@@ -2004,6 +2004,75 @@ class S3ConfigGateSuite extends AnyFunSuite {
     conf.set("fs.s3a.proxy.host", "proxy.internal.example.com")
     assert(S3ConfigGate.declineReason(conf, SpiUris).exists(_.contains("fs.s3a.proxy.host")))
   }
+
+  // With the SPI active, native never reads its own credential chain keys, and the built-in
+  // adapters resolve long-form and per-bucket aliases exactly as Hadoop does, so credentials held
+  // only in long-form bucket aliases must not decline the scan.
+  private def spiAdapterConf(): Configuration = {
+    val conf = new Configuration(false)
+    conf.set("fs.s3a.comet.credential.provider.class", SpiAdapter)
+    conf.set(
+      "fs.s3a.aws.credentials.provider",
+      "org.apache.hadoop.fs.s3a.SimpleAWSCredentialsProvider")
+    conf.set("fs.s3a.bucket.spi-bucket.fs.s3a.access.key", "AKIALONGSPI")
+    conf.set("fs.s3a.bucket.spi-bucket.fs.s3a.secret.key", "longSpiSecret")
+    conf
+  }
+
+  test("declineReason admits long-form bucket credentials when the Comet SPI is set") {
+    val conf = spiAdapterConf()
+    assert(S3ConfigGate.declineReason(conf, SpiUris).isEmpty)
+
+    // Without the SPI the same conf diverges: native's short-then-global read never sees them.
+    conf.unset("fs.s3a.comet.credential.provider.class")
+    val reason = S3ConfigGate.declineReason(conf, SpiUris)
+    assert(reason.exists(_.contains("fs.s3a.access.key")))
+    assert(!reason.get.contains("AKIALONGSPI"))
+  }
+
+  test(
+    "the Comet SPI still gets the credential comparison when Hadoop resolves through a keystore") {
+    // The adapter rebuilds its Configuration from the forwarded fs.s3a.* options and cannot read
+    // a Hadoop credential provider, so these buckets keep the full comparison.
+    val scoped = spiAdapterConf()
+    scoped.set("fs.s3a.security.credential.provider.path", "jceks://file/does-not-exist.jceks")
+    assert(S3ConfigGate.declineReason(scoped, SpiUris).isDefined)
+
+    val global = spiAdapterConf()
+    global.set("hadoop.security.credential.provider.path", "jceks://hdfs/nn/creds.jceks")
+    assert(S3ConfigGate.declineReason(global, SpiUris).isDefined)
+  }
+
+  test("the Comet SPI still gets the credential comparison when clear-text fallback is off") {
+    val conf = spiAdapterConf()
+    conf.set("hadoop.security.credential.clear-text-fallback", "false")
+    conf.set("fs.s3a.access.key", "AKIAPLAIN")
+    conf.set("fs.s3a.secret.key", "plainSecret")
+    assert(S3ConfigGate.declineReason(conf, SpiUris).isDefined)
+  }
+
+  test("the Comet SPI still compares the store-level keys") {
+    val conf = spiAdapterConf()
+    conf.set("fs.s3a.custom.ref", "https://store-a.example")
+    conf.set("fs.s3a.bucket.spi-bucket.custom.ref", "https://store-b.example")
+    conf.set("fs.s3a.bucket.spi-bucket.endpoint", varRef("fs.s3a.custom.ref"))
+    conf.set("fs.s3a.bucket.spi-bucket.fs.s3a.endpoint", "https://store-a.example")
+    assert(S3ConfigGate.declineReason(conf, SpiUris).exists(_.contains("fs.s3a.endpoint")))
+  }
+
+  test("hadoopOnlyEndpointGateReason admits an STS endpoint when the Comet SPI is set") {
+    val conf = new Configuration(false)
+    conf.set("fs.s3a.assumed.role.sts.endpoint", "sts.internal.example.com")
+    assert(S3ConfigGate.hadoopOnlyEndpointGateReason(conf, SpiUris).isDefined)
+
+    conf.set("fs.s3a.comet.credential.provider.class", SpiAdapter)
+    assert(S3ConfigGate.hadoopOnlyEndpointGateReason(conf, SpiUris).isEmpty)
+
+    // The scheme-less endpoint check applies to the store itself, so the SPI does not relax it.
+    conf.set("fs.s3a.endpoint", "minio.internal.example.com:9000")
+    conf.set("fs.s3a.connection.ssl.enabled", "false")
+    assert(S3ConfigGate.hadoopOnlyEndpointGateReason(conf, SpiUris).isDefined)
+  }
 }
 
 object S3ConfigGateSuite {

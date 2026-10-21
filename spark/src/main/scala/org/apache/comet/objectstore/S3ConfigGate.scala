@@ -758,6 +758,10 @@ object S3ConfigGate {
           val schemeless = endpoint.nonEmpty && !endpoint.contains("://")
           if (schemeless && !propagatedConf.getBoolean(S3SslEnabledKey, true)) {
             Some(insecureEndpointReason(bucket))
+          } else if (cometProviderClassConfigured(hadoopConf, bucket)) {
+            // The STS endpoint only matters to native's own assume-role provider, which the SPI
+            // bridge replaces; the endpoint check above applies to the store itself.
+            None
           } else {
             S3StsEndpointKeys
               .find(key => propagatedConf.getTrimmed(key, "").nonEmpty)
@@ -1051,9 +1055,12 @@ object S3ConfigGate {
             propagatedConfCache.getOrElseUpdate(
               bucket,
               propagateBucketOptions(hadoopConf, bucket))
+          val spiResolvesCredentials =
+            spiResolvesCredentialsLikeHadoop(hadoopConf, propagatedConf, bucket)
           S3ConfigKeyConsumers.foldLeft(Option.empty[String]) {
             case (keyDeclined, (key, consumer)) =>
-              if (keyDeclined.isDefined) {
+              if (keyDeclined.isDefined || (spiResolvesCredentials && NativeCredentialChainKeys
+                  .contains(key))) {
                 keyDeclined
               } else {
                 s3KeyDivergenceReason(hadoopConf, propagatedConf, bucket, key, consumer)
@@ -1208,6 +1215,38 @@ object S3ConfigGate {
           }
     }
   }
+
+  /**
+   * The compared keys only native's own credential chain reads: the static credentials, the
+   * provider class list and the assumed-role settings. On a bucket that uses Comet's
+   * credential-provider SPI native never reads them (see [[cometProviderClassConfigured]]), so
+   * their native-versus-Hadoop equality does not decide which identity the scan runs as.
+   */
+  private val NativeCredentialChainKeys: Set[String] = Set(
+    "fs.s3a.access.key",
+    "fs.s3a.secret.key",
+    "fs.s3a.session.token",
+    "fs.s3a.aws.credentials.provider",
+    "fs.s3a.assumed.role.arn",
+    "fs.s3a.assumed.role.session.name",
+    "fs.s3a.assumed.role.credentials.provider")
+
+  /**
+   * True when `bucket` uses Comet's credential-provider SPI and nothing about its Hadoop
+   * credential resolution can differ from what the SPI provider sees, so the comparison of
+   * [[NativeCredentialChainKeys]] can be skipped. The built-in adapters rebuild Hadoop's provider
+   * chain over the forwarded `fs.s3a.*` options, applying `propagateBucketOptions` themselves, so
+   * they resolve long-form and per-bucket aliases exactly as Hadoop does. They cannot see a
+   * Hadoop credential provider (any keystore path, which is never forwarded or not readable) or a
+   * disabled clear-text fallback, so a bucket with either still gets the full comparison.
+   */
+  private def spiResolvesCredentialsLikeHadoop(
+      hadoopConf: Configuration,
+      propagatedConf: Configuration,
+      bucket: String): Boolean =
+    cometProviderClassConfigured(hadoopConf, bucket) &&
+      credentialProviderArm(propagatedConf, bucket) == NoProvider &&
+      propagatedConf.getBoolean(ClearTextFallbackKey, true)
 
   private val CometCredentialProviderClassKey = "fs.s3a.comet.credential.provider.class"
 

@@ -861,4 +861,19 @@ class NativeConfigSuite extends AnyFunSuite with Matchers {
     // And the untouched default conf, which carries no S3 settings at all.
     NativeConfig.extractScanObjectStoreOptions(new Configuration(), uris).isRight shouldBe true
   }
+
+  test(
+    "extractScanObjectStoreOptions - the S3 check skips schemes native reads through libhdfs") {
+    // Native keeps only the fs.comet.* options for a libhdfs scheme and Hadoop's own filesystem
+    // reads it, so the S3 settings the check compares do not apply.
+    val hadoopConf = proxiedConf()
+    hadoopConf.set(COMET_LIBHDFS_SCHEMES_KEY, "s3a")
+    NativeConfig
+      .extractScanObjectStoreOptions(hadoopConf, Seq(new URI("s3a://hdfs-bucket/a.parquet")))
+      .isRight shouldBe true
+    // Only the listed scheme is exempt.
+    NativeConfig
+      .extractScanObjectStoreOptions(hadoopConf, Seq(new URI("s3://plain-bucket/a.parquet")))
+      .isLeft shouldBe true
+  }
 }

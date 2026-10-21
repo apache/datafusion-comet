@@ -426,9 +426,13 @@ object NativeConfig {
     val firstIsAbfs = isAbfs(first)
     // One representative URI per S3 bucket: the gate decides per bucket, so the files of a large
     // scan need not each be re-examined by every gate.
+    // A scheme routed through libhdfs reads through Hadoop's own filesystem, and native keeps only
+    // its `fs.comet.*` options, so none of the S3 settings the gate compares apply to it.
+    val libhdfsSchemes =
+      if (verifyS3Config) resolveLibhdfsSchemes(hadoopConf) else Set.empty[String]
     val s3Uris = scala.collection.mutable.LinkedHashMap.empty[String, URI]
     def collectS3(uri: URI): Unit =
-      if (verifyS3Config) {
+      if (verifyS3Config && !lowerScheme(uri).exists(libhdfsSchemes.contains)) {
         S3ConfigGate.s3Bucket(uri).foreach(bucket => s3Uris.getOrElseUpdate(bucket, uri))
       }
     collectS3(first)
