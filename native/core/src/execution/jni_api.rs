@@ -175,10 +175,8 @@ fn log_native_allocated() {
 ///
 /// Never read a pool's reservation while holding this registry's lock; copy the pools out with
 /// [`snapshot_registry`] and read them after it is released. `reserved()` takes the pool's own
-/// lock, and this registry must never wait on a pool: `releasePlan` takes the registry lock to
-/// unregister while the task's other plans keep reserving and releasing, so a pool lock taken
-/// under it would put every context on the executor behind that one pool.
-/// `reservations_are_read_outside_the_registry_lock` pins the rule.
+/// lock, and a pool lock taken under this one would put every context on the executor behind
+/// that one pool.
 type ThreadPoolMap = HashMap<u64, HashMap<i64, Arc<dyn MemoryPool>>>;
 
 static THREAD_MEMORY_POOLS: OnceLock<Mutex<ThreadPoolMap>> = OnceLock::new();
@@ -2831,8 +2829,7 @@ mod tests {
         assert_eq!(memory_usage().pools_reserved - before.pools_reserved, 3072);
     }
 
-    /// Stands in for a pool whose `reserved()` takes its own lock: it counts its reservation
-    /// reads, and notes whether the registry lock was held during any of them.
+    /// Counts its `reserved()` reads and notes whether the registry lock was held during any.
     #[derive(Debug, Default)]
     struct RegistryProbePool {
         reads: std::sync::atomic::AtomicUsize,

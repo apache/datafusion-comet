@@ -167,7 +167,6 @@ class CometTaskMemoryManagerSuite extends TaskMemoryTestUtils {
   }
 
   test("a short grant is handed back while another acquire of the task waits in Spark") {
-    // Another task holds 82 bytes and a third holds 1.
     val memoryManager = offHeapMemoryManager()
     val otherTask = new OffHeapConsumer(new TaskMemoryManager(memoryManager, 1L))
     val thirdTask = new OffHeapConsumer(new TaskMemoryManager(memoryManager, 2L))
@@ -190,12 +189,11 @@ class CometTaskMemoryManagerSuite extends TaskMemoryTestUtils {
 
     withTaskContext(taskMemoryManager) { _ =>
       val manager = new CometTaskMemoryManager(1L, 0L)
-      // Hold one byte so that handing back the short grant never empties the task's balance,
-      // which would drop its entry from Spark's pool under the waiting acquire.
+      // Keeps the task's balance above zero, so handing back the short grant never drops its
+      // entry from Spark's pool under the waiting acquire.
       assert(manager.acquireMemory(1L) == 1L)
 
-      // Three active tasks and 16 bytes free: a 30 byte request is short granted 16 bytes, which
-      // native code then hands back.
+      // Three active tasks and 16 bytes free: a 30 byte request is short granted 16 bytes.
       val first = new NativeThread(
         "the first acquire",
         () => {
@@ -211,15 +209,13 @@ class CometTaskMemoryManagerSuite extends TaskMemoryTestUtils {
         val messages = logEvents(Level.DEBUG) {
           first.start()
           assert(shortGrant.await(TimeoutSeconds, TimeUnit.SECONDS), s"no short grant: $first")
-          // The third task leaves. With two active tasks this task's minimum share is 25 bytes
-          // and 1 byte is free, so a 10 byte request waits inside Spark holding the task's
-          // monitor.
+          // Two active tasks: a 25 byte minimum share and 1 byte free, so 10 bytes waits inside
+          // Spark holding the task's monitor.
           thirdTask.freeMemory(1L)
           second.start()
           withClue(second)(awaitWaitingInSpark(second.thread))
           secondParked.countDown()
 
-          // Handing back the short grant is what lets the second acquire through.
           assert(second.result(first) == 10L)
           assert(first.result(second) == 16L)
         }.map(_.getMessage.getFormattedMessage)
@@ -373,7 +369,6 @@ class CometTaskMemoryManagerSuite extends TaskMemoryTestUtils {
 
     def join(): Unit = thread.join(TimeUnit.SECONDS.toMillis(TimeoutSeconds))
 
-    /** Waits for `body` to return and gives its result, adding `clue` to a failure. */
     def result(clue: => Any = ""): Long = {
       join()
       assert(!thread.isAlive && failure.get == null, s"$this. $clue")

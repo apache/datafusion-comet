@@ -179,15 +179,12 @@ mod tests {
         assert_eq!(fake.held(), 0);
     }
 
-    /// A try_grow refused while another one in flight is asking Spark for the debt reports the
-    /// overcommit outstanding, not only the part it asked for itself.
     #[test]
     fn try_grow_refusal_reports_debt_another_try_grow_is_asking_for() {
         let fake = FakeSpark::with(100);
         let pool: Arc<dyn MemoryPool> = Arc::new(CometUnifiedMemoryPool::with_spark(fake.memory()));
         let first = MemoryConsumer::new("first").register(&pool);
         let second = MemoryConsumer::new("second").register(&pool);
-        // Spark grants 100 of the 150 bytes, so 50 are owed and Spark is full.
         first.grow(150);
 
         let (err_tx, err_rx) = std::sync::mpsc::channel();

@@ -34,10 +34,8 @@ use parking_lot::Mutex;
 /// A DataFusion fair `MemoryPool` implementation for Comet. Internally this is
 /// implemented via delegating calls to [`crate::jvm_bridge::CometTaskMemoryManager`].
 ///
-/// No lock is held across a JVM call, so a release can land while an acquire of the same task
-/// waits inside Spark. If that release takes the task's balance to zero, Spark drops the task's
-/// `memoryForTask` entry and the waiting acquire fails when it wakes; `CometTaskMemoryManager`
-/// asks Spark again in that case.
+/// No lock is held across a JVM call, so a release can drain the task's `memoryForTask` entry
+/// under an acquire parked in Spark; `CometTaskMemoryManager` asks Spark again in that case.
 pub struct CometFairMemoryPool {
     spark: SparkMemory,
     pool_size: usize,
@@ -50,8 +48,7 @@ struct CometFairPoolState {
     /// reservations that `new_empty()`, `split()` and `take()` create belong to the same consumer,
     /// so they count against one share. The pool keeps these totals itself because
     /// `reservation.size()` covers only one reservation, and DataFusion updates it after calling
-    /// `try_grow` but before calling `shrink`. Bytes are charged here and to `used` together, and
-    /// settle together once the JVM has answered.
+    /// `try_grow` but before calling `shrink`.
     consumers: HashMap<usize, usize>,
 }
 
@@ -63,14 +60,12 @@ impl CometFairPoolState {
             .expect("reservation's consumer is not registered with the pool")
     }
 
-    /// Charges `bytes` to the pool's total and to `consumer`'s share.
     fn charge(&mut self, consumer: usize, bytes: usize) {
         self.used = self.used.saturating_add(bytes);
         let consumer_used = self.consumer_used(consumer);
         *consumer_used = consumer_used.saturating_add(bytes);
     }
 
-    /// Takes `charged` bytes off the pool's total and `consumer`'s share and puts `held` back.
     fn settle(&mut self, consumer: usize, charged: usize, held: usize) {
         let settle = |total: usize| {
             total
@@ -113,15 +108,13 @@ impl CometFairMemoryPool {
         self.spark.overcommit()
     }
 
-    /// Settles a release the JVM has accepted: the bytes come off the pool's total and the
-    /// consumer's share only now, so a grow is never admitted on bytes Spark still holds.
+    /// Called only once the JVM has accepted the release, so no grow is admitted on bytes Spark
+    /// still holds.
     fn settle_release(&self, consumer: usize, bytes: usize) {
         self.state.lock().settle(consumer, bytes, 0);
     }
 
-    /// Settles a finished JVM acquire. `charged` bytes went on the pool's total and the
-    /// consumer's share before the call and `held` is what Spark granted and still holds, which
-    /// stays charged until it is handed back. The difference is rolled back.
+    /// `held` is what Spark granted and still holds; it stays charged until handed back.
     fn settle_acquire(&self, consumer: usize, charged: usize, held: usize) {
         self.state.lock().settle(consumer, charged, held);
     }
@@ -163,16 +156,13 @@ impl MemoryPool for CometFairMemoryPool {
             return;
         }
         let consumer = reservation.consumer().id();
-        // Charged before the JVM call, as in try_grow, so a try_grow racing this one is checked
-        // against totals that already include these bytes. The JVM call then runs without the
-        // lock held.
+        // Charged before the JVM call so a racing try_grow is checked against these bytes.
         self.state.lock().charge(consumer, additional);
         let outcome = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
             self.spark.acquire(additional);
         }));
         if let Err(panic) = outcome {
-            // The caller's reservation never records bytes its grow panicked on, so the charge
-            // must not outlive the panic either.
+            // The reservation does not record bytes whose grow panicked, so drop the charge too.
             self.settle_acquire(consumer, additional, 0);
             std::panic::resume_unwind(panic);
         }
@@ -189,15 +179,10 @@ impl MemoryPool for CometFairMemoryPool {
                     )
                 }
             }
-            // The JVM release runs without the lock so a blocked acquire on another thread can
-            // never stall this release. The bytes stay charged until Spark has them back, so a
-            // grow racing this shrink is not admitted on them and sent to Spark ahead of the
-            // release. Outstanding overcommit is repaid before anything goes back to Spark. A
-            // failed release here panics (the caller already gave the bytes up, there is no one
-            // left to handle an error), while the short-grant path in try_grow returns Err
-            // because its caller can still spill. The check above is advisory once the lock is
-            // dropped: DataFusion never shrinks a reservation past its size, which is what keeps
-            // the subtraction in settle_release in range.
+            // Released without the lock so an acquire parked in Spark cannot stall it. A failure
+            // panics because the caller has already given the bytes up. DataFusion never shrinks
+            // a reservation past its size, which keeps settle_release in range once the lock is
+            // dropped.
             self.spark
                 .release(subtractive)
                 .unwrap_or_else(|_| panic!("Failed to release {subtractive} bytes"));
@@ -212,10 +197,8 @@ impl MemoryPool for CometFairMemoryPool {
     ) -> Result<(), DataFusionError> {
         if additional > 0 {
             let consumer = reservation.consumer().id();
-            // Checking both limits and charging the bytes is one atomic step, so concurrent grows
-            // can never jointly take a consumer past its share or the pool past pool_size. The
-            // blocking JVM calls then run without any lock held, and the charge rolls back if
-            // the JVM does not back it.
+            // Check and charge under one lock so concurrent grows cannot jointly exceed a share
+            // or pool_size.
             {
                 let mut state = self.state.lock();
                 let num = state.consumers.len();
@@ -243,11 +226,8 @@ impl MemoryPool for CometFairMemoryPool {
                 state.charge(consumer, additional);
             }
 
-            // Spark is asked for the request plus the overcommit no other try_grow in flight is
-            // asking for, and a full grant repays it. A short grant stays with Spark until this
-            // pool hands it back below, so the bytes can stay charged meanwhile. The JVM call can
-            // panic inside its JNI frame; the optimistic reservation must not outlive it, or the
-            // leaked bytes poison the task-shared pool for every other consumer.
+            // A leaked charge would poison the task-shared pool for every other consumer, so it
+            // is rolled back on error and on panic.
             let refusal = match std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
                 self.spark.try_acquire_leaving_a_short_grant(additional)
             })) {
@@ -262,14 +242,10 @@ impl MemoryPool for CometFairMemoryPool {
                     std::panic::resume_unwind(panic);
                 }
             };
-            // A grant that falls short of the request is handed back whole and reported so the
-            // caller can spill. The bytes Spark did not back come off the books at once. The
-            // granted bytes, which can exceed the request when overcommit was asked for on top
-            // of it, stay charged until Spark has them back, like a shrink, so no grow is
-            // admitted on them meanwhile. A failed return leaves Spark holding them until the
-            // task ends, and they stay charged here to match. The caller still gets the short
-            // grant error below so a spillable operator spills. A panic in that release leaves
-            // the same state as an error.
+            // The granted bytes, which can exceed the request by the overcommit asked for, stay
+            // charged until Spark has them back. If that release fails Spark keeps them until the
+            // task ends, so they stay charged to match. The caller still gets the short-grant
+            // error so it can spill.
             let granted = refusal.granted;
             self.settle_acquire(consumer, additional, granted);
             if granted > 0 {
@@ -316,20 +292,16 @@ mod tests {
     const MIB: usize = 1 << 20;
     const GIB: usize = 1 << 30;
 
-    /// The task this pool belongs to and neighbours that compete with it for the same pool.
     const THIS_TASK: i64 = 0;
     const OTHER_TASK: i64 = 1;
     const THIRD_TASK: i64 = 2;
 
-    /// Real Spark parks a starved acquire forever; the stub gives up after this long and fails
-    /// the test instead, so a deadlock shows up as a panic rather than a hung test binary. A
-    /// heavily loaded CI box may need this lengthened.
+    /// Real Spark parks a starved acquire forever; the stub panics after this so a deadlock
+    /// fails the test instead of hanging it.
     const WAIT_TIMEOUT: Duration = Duration::from_secs(5);
     const TEST_TIMEOUT: Duration = Duration::from_secs(20);
 
-    /// A pause point inside a bridge call. While armed, the call announces itself on `entered`
-    /// and blocks until the test opens the gate, so a test can interleave a second thread at a
-    /// precise moment of a JNI call.
+    /// While armed, holds a bridge call until the test opens it, to interleave another thread.
     struct Gate {
         armed: AtomicBool,
         entered: (Sender<()>, Mutex<Receiver<()>>),
@@ -355,7 +327,6 @@ mod tests {
             self.armed.store(false, SeqCst);
         }
 
-        /// Called from the bridge thread.
         fn pass(&self) {
             if self.armed.load(SeqCst) {
                 let _ = self.entered.0.send(());
@@ -390,41 +361,30 @@ mod tests {
         }
     }
 
-    /// In-process stand-in for Spark's task memory manager that models Spark 4.1.3's
-    /// `ExecutionMemoryPool.acquireMemory` and `releaseMemory` for this task, including the
-    /// per-task entry lifecycle, the 1/N and 1/(2N) share rules, and the wait loop, together
-    /// with `CometTaskMemoryManager` asking again when a waiter's entry is gone. Re-adding the
-    /// entry in the wait loop stands in for that JVM retry, so these tests do not cover the
-    /// retry itself.
+    /// Models Spark 4.1.3's `ExecutionMemoryPool` acquire and release for this task: the entry
+    /// lifecycle, the 1/N and 1/(2N) shares and the wait loop. Re-adding the entry in the wait
+    /// loop stands in for the `CometTaskMemoryManager` retry, which these tests do not cover.
     struct StubTaskMemory {
         pool: Mutex<SparkPool>,
         /// Spark's `lock`: parked acquires wait on it and every release does `notifyAll`.
         lock: Condvar,
         releases: AtomicUsize,
         acquires: AtomicUsize,
-        /// The size of every acquire, in the order they reached Spark.
         requests: Mutex<Vec<usize>>,
-        /// `CometTaskMemoryManager.used`: bytes granted and not yet released. This is what the
-        /// JVM checks for leaked reservations once the task's last plan has closed.
+        /// `CometTaskMemoryManager.used`, which the JVM checks for leaks at task end.
         used: AtomicI64,
-        /// When non-zero, every n-th acquire asks Spark for only half of the requested bytes,
-        /// which is how a caller sees a short grant that must be rolled back.
+        /// When non-zero, every n-th acquire asks Spark for only half of the requested bytes.
         short_every: usize,
-        /// When set, acquire fails outright.
         fail_acquire: AtomicBool,
-        /// When set, release fails outright, like a JVM exception on the way back.
         fail_release: AtomicBool,
-        /// When set, acquire panics, like a failure inside the bridge's JNI frame.
         panic_acquire: AtomicBool,
-        /// Pauses an acquire before it takes the pool monitor, like `TaskMemoryManager`
-        /// spilling other consumers between two pool calls.
+        /// Pauses an acquire before the pool monitor, like `TaskMemoryManager` spilling.
         acquire_gate: Gate,
         /// Pauses a release before it takes the pool monitor, like the JNI hop.
         release_gate: Gate,
         /// Pauses an acquire after Spark has granted it, before the pool sees the answer.
         granted_gate: Gate,
-        /// Announces every trip into `lock.wait()`, so a waiter that is woken and parks again
-        /// announces twice.
+        /// Announces every trip into `lock.wait()`, so a waiter that parks again announces twice.
         parked: (Sender<()>, Mutex<Receiver<()>>),
     }
 
@@ -471,8 +431,7 @@ mod tests {
             self.pool.lock().memory_free()
         }
 
-        /// Another task of the same executor takes `bytes` from the pool, which also raises
-        /// `numActiveTasks` and shrinks this task's shares.
+        /// A task new to the pool raises `numActiveTasks` and shrinks this task's shares.
         fn task_holds(&self, task: i64, bytes: i64) {
             let mut pool = self.pool.lock();
             assert!(
@@ -492,8 +451,7 @@ mod tests {
             self.task_holds(THIS_TASK, bytes);
         }
 
-        /// A neighbour hands `bytes` back, dropping out of the active set at zero, which wakes
-        /// every parked acquire like Spark's notifyAll.
+        /// Like Spark, drops the task's entry at zero and wakes every parked acquire.
         fn task_releases(&self, task: i64, bytes: i64) {
             let mut pool = self.pool.lock();
             let balance = pool
@@ -512,8 +470,6 @@ mod tests {
             self.task_releases(OTHER_TASK, bytes);
         }
 
-        /// The sibling consumer hands `bytes` of this task back, which removes the task's entry
-        /// if that empties it.
         fn sibling_consumer_releases(&self, bytes: i64) {
             self.task_releases(THIS_TASK, bytes);
         }
@@ -551,9 +507,8 @@ mod tests {
 
             let mut pool = self.pool.lock();
             loop {
-                // Spark adds the task's entry on the way in. A woken waiter whose entry a
-                // release has removed meanwhile gets a NoSuchElementException, and
-                // `CometTaskMemoryManager` then asks again, which adds it back.
+                // A woken waiter whose entry a release removed gets NoSuchElementException in
+                // Spark, and the `CometTaskMemoryManager` retry adds the entry back.
                 if let Entry::Vacant(entry) = pool.memory_for_task.entry(THIS_TASK) {
                     entry.insert(0);
                     self.lock.notify_all();
@@ -586,8 +541,7 @@ mod tests {
             }
             self.release_gate.pass();
             let mut pool = self.pool.lock();
-            // Spark only warns and clamps here; the pool must never hand back more than the
-            // task holds, so the stub makes that a hard failure.
+            // Spark only warns and clamps here; the stub fails so an over-release cannot hide.
             let cur_mem = pool.memory_for_task.get(&THIS_TASK).copied().unwrap_or(0);
             assert!(
                 cur_mem >= size as i64,
@@ -605,8 +559,7 @@ mod tests {
         }
     }
 
-    /// Keeps the count `CometTaskMemoryManager` keeps on top of Spark's balance. Like the JVM,
-    /// a release calls Spark first and moves the count only once it has answered.
+    /// Like `CometTaskMemoryManager`, a release moves `used` only once Spark has answered.
     impl SparkMemoryManager for Arc<StubTaskMemory> {
         fn acquire(&self, additional: usize) -> CometResult<i64> {
             let granted = self.grant(additional)?;
@@ -636,14 +589,12 @@ mod tests {
         let pool: Arc<dyn MemoryPool> = Arc::clone(&fair) as _;
         let reservation = MemoryConsumer::new("consumer").register(&pool);
 
-        // Spark grants 100 of the 150 byte grow and 50 becomes overcommit.
         reservation.grow(150);
         assert_eq!(fake.held(), 100);
         assert_eq!(pool.reserved(), 150);
         assert_eq!(fair.overcommit(), 50);
 
-        // 20 bytes of new headroom, not enough for the 5 byte request plus the 50 owed. Spark
-        // hands over more than the request itself, and all of it must go back.
+        // 20 bytes free: more than the 5 requested, short of 5 plus the 50 owed.
         fake.set_limit(120);
         let err = reservation.try_grow(5).unwrap_err();
         assert!(err.to_string().contains("only got"), "{err}");
@@ -658,8 +609,6 @@ mod tests {
         );
     }
 
-    /// A try_grow refused while another one in flight is asking Spark for the debt reports the
-    /// overcommit outstanding, not only the part it asked for itself.
     #[test]
     fn try_grow_refusal_reports_debt_another_try_grow_is_asking_for() {
         let fake = FakeSpark::with(100);
@@ -667,7 +616,6 @@ mod tests {
             Arc::new(CometFairMemoryPool::with_spark(fake.memory(), 10_000));
         let first = MemoryConsumer::new("first").register(&pool);
         let second = MemoryConsumer::new("second").register(&pool);
-        // Spark grants 100 of the 150 bytes, so 50 are owed and Spark is full.
         first.grow(150);
 
         let (err_tx, err_rx) = channel();
@@ -744,7 +692,6 @@ mod tests {
 
         first.try_grow(600).unwrap();
 
-        // A second consumer halves the fair limit, so the pool is now over it.
         let second = MemoryConsumer::new("second").register(&pool);
         let err = first.try_grow(1).unwrap_err();
         assert!(err.to_string().contains("fair limit"), "{err}");
@@ -801,9 +748,6 @@ mod tests {
         pool.shrink(&res, 100);
     }
 
-    /// A panic escaping the bridge's acquire must propagate, but it must not leave the
-    /// optimistically reserved bytes behind, or the task-shared pool would be poisoned for
-    /// every other consumer.
     #[test]
     fn panicking_acquire_rolls_back_the_reservation() {
         let stub = Arc::new(StubTaskMemory::new(GIB));
@@ -827,8 +771,6 @@ mod tests {
         assert_eq!(stub.outstanding(), 0);
     }
 
-    /// `grow` cannot refuse, but a panic in the bridge's acquire still propagates, and the bytes
-    /// it charged before the call must come off the pool's total and the consumer's share.
     #[test]
     fn panicking_acquire_in_grow_rolls_back_the_reservation() {
         let stub = Arc::new(StubTaskMemory::new(GIB));
@@ -846,7 +788,6 @@ mod tests {
         );
         assert_eq!(res.size(), 100);
 
-        // The consumer's share is back to 100 bytes, so its 1000 byte fair limit admits 900.
         stub.panic_acquire.store(false, SeqCst);
         res.try_grow(900)
             .expect("the consumer's share still holds the panicked grow");
@@ -855,8 +796,6 @@ mod tests {
         assert_eq!(stub.outstanding(), 0);
     }
 
-    /// Many threads hammering grow/shrink must keep the pool's accounting and the Spark-side
-    /// balance consistent, including through fairness rejections and partial-grant rollbacks.
     #[test]
     fn concurrent_grow_and_shrink_keep_accounting_consistent() {
         const THREADS: usize = 8;
@@ -881,27 +820,23 @@ mod tests {
                 thread::spawn(move || {
                     for i in 0..ITERS {
                         let size = 1 + (i * 37 + t * 101) % 509;
-                        // Fairness rejections and short grants are expected; only the
-                        // accounting invariants below must hold.
+                        // Refusals are expected; only the invariants below must hold.
                         let _ = res.try_grow(size);
                         if i % 3 == 0 && res.size() > 0 {
                             res.shrink(res.size() / 2 + 1);
                         }
-                        // Occasional full drains push the task's balance toward zero while
-                        // other threads still have acquires in flight.
+                        // Drains the task's balance to zero under acquires in flight.
                         if (i + t) % 41 == 0 {
                             res.free();
                         }
-                        // Each consumer has one reservation, so its size is the consumer's
-                        // share of the pool.
+                        // One reservation per consumer, so its size is the consumer's share.
                         assert!(
                             res.size() <= POOL_SIZE / THREADS,
                             "consumer exceeded its fair limit"
                         );
                         assert!(pool.reserved() <= POOL_SIZE, "pool exceeded its size");
                     }
-                    // Keep all consumers registered until every thread stops growing, so the
-                    // fair-limit assertion above stays valid for the whole run.
+                    // Stay registered until every thread stops so the fair limit is fixed.
                     barrier.wait();
                     res.free();
                 })
@@ -925,8 +860,6 @@ mod tests {
         );
     }
 
-    /// A thread stuck inside the blocking acquire call must not prevent another thread from
-    /// releasing memory: the release path cannot wait on any lock held across that call.
     #[test]
     fn shrink_is_not_blocked_by_a_slow_acquire_on_another_thread() {
         let stub = Arc::new(StubTaskMemory::new(GIB));
@@ -962,9 +895,8 @@ mod tests {
         );
     }
 
-    /// Spark can park an acquire for as long as other tasks hold the memory it needs. Reading
-    /// the pool's usage, as the memory usage logger does from its own thread, must return at
-    /// once meanwhile, so no lock that `reserved` takes may be held across the Spark call.
+    /// The memory usage logger reads `reserved` from its own thread while an acquire may be
+    /// parked in Spark.
     #[test]
     fn reserved_is_not_blocked_by_an_acquire_parked_in_spark() {
         let stub = Arc::new(StubTaskMemory::new(100));
@@ -973,8 +905,7 @@ mod tests {
         let holder = MemoryConsumer::new("holder").register(&pool);
         let grower = MemoryConsumer::new("grower").register(&pool);
         holder.try_grow(10).unwrap();
-        // Fill the pool so Spark parks the grower below its minimum share until the holder
-        // frees, which only happens after the read below.
+        // Parks the grower below its minimum share until the holder frees.
         stub.other_task_holds(stub.memory_free());
 
         let grower_thread = thread::spawn(move || {
@@ -988,13 +919,10 @@ mod tests {
         let reader_thread = thread::spawn(move || {
             let _ = reserved_tx.send(reader_pool.reserved());
         });
-        // Keep this wait well below the stub's WAIT_TIMEOUT so a blocked read shows up as a
-        // timeout. Once the stub gives up, the grower's charge rolls back and a blocked read
-        // returns 10 instead, which fails as a less telling count mismatch.
+        // Well below WAIT_TIMEOUT so a blocked read fails here, not as a count mismatch after the
+        // rollback.
         let reserved_during = reserved_rx.recv_timeout(Duration::from_secs(1));
 
-        // Freeing the holder wakes the grower. If the lock were held across the Spark call, the
-        // free would itself wait until the stub gives up, which still bounds the run.
         holder.free();
         let grower_result = grower_thread.join();
         reader_thread.join().unwrap();
@@ -1008,11 +936,8 @@ mod tests {
         assert_eq!(pool.reserved(), 0);
     }
 
-    /// Two threads of one task: the pool is full and this task sits below its 1/(2N) minimum
-    /// share, so Spark parks the second acquire until memory is freed. The first thread then
-    /// frees everything it holds. The release must go through in full and be what wakes the
-    /// waiter. It takes the task's balance to zero, so Spark drops the task's entry and the
-    /// waiter fails on waking; the bridge asks again and the freed bytes are granted.
+    /// The release takes the task's balance to zero, so Spark drops the entry under the waiter,
+    /// which fails on waking until the bridge asks again.
     #[test]
     fn full_release_wakes_an_acquire_parked_below_its_minimum_share() {
         let stub = Arc::new(StubTaskMemory::new(100));
@@ -1054,12 +979,9 @@ mod tests {
         assert_eq!(stub.outstanding(), 0);
     }
 
-    /// Modeled on Spark 4.1.3's `ExecutionMemoryPool`: a 1 GiB execution pool, another task
-    /// holding 924 MiB, this task holding 100 MiB, and a second native consumer of this task
-    /// asking for 100 MiB. Spark parks it below the 256 MiB minimum share. When the holder frees
-    /// its 100 MiB, Spark computes toGrant = min(request, memoryFree); anything less than the
-    /// full 100 MiB leaves toGrant < request with curMem + toGrant still under 256 MiB, and the
-    /// waiter sleeps again with nobody left to wake it.
+    /// Spark parks the 100 MiB request below the 256 MiB minimum share. Unless the holder frees
+    /// all 100 MiB, toGrant = min(request, memoryFree) stays short and the waiter sleeps again
+    /// with nobody left to wake it.
     #[test]
     fn min_share_wait_is_granted_after_the_holder_frees_its_memory_in_full() {
         let stub = Arc::new(StubTaskMemory::new(GIB));
@@ -1068,7 +990,6 @@ mod tests {
         let holder = MemoryConsumer::new("holder").register(&pool);
         let grower = MemoryConsumer::new("grower").register(&pool);
         holder.try_grow(100 * MIB).unwrap();
-        // The neighbour takes the rest of the pool, 924 MiB.
         stub.other_task_holds(stub.memory_free());
         assert_eq!(stub.memory_free(), 0);
 
@@ -1094,10 +1015,7 @@ mod tests {
         assert_eq!(stub.outstanding(), 0);
     }
 
-    /// A release that is already on its way to Spark when a new acquire arrives and parks: the
-    /// release removes the task's entry from under the waiter, and the bridge asks again.
-    /// Reproduced by holding the release at the JNI hop, starting a grow that parks below its
-    /// minimum share, then letting the release land.
+    /// The release removes the task's entry from under the waiter, and the bridge asks again.
     #[test]
     fn late_acquire_survives_a_release_already_on_its_way() {
         let stub = Arc::new(StubTaskMemory::new(100));
@@ -1108,12 +1026,10 @@ mod tests {
         holder.try_grow(10).unwrap();
         stub.other_task_holds(stub.memory_free());
 
-        // The holder's full release is planned and dispatched, then held before Spark sees it.
         stub.release_gate.arm();
         let holder_thread = thread::spawn(move || holder.free());
         stub.release_gate.wait_entered("holder release");
 
-        // Only now does the grower arrive; the pool is full so it parks inside Spark.
         let grower_thread = thread::spawn(move || {
             grower.try_grow(10).unwrap();
             grower.free();
@@ -1130,11 +1046,8 @@ mod tests {
         assert_eq!(stub.outstanding(), 0);
     }
 
-    /// A short grant is handed back whole, and that release can land while a sibling of this
-    /// task is parked inside Spark. Here the first consumer's rollback is held at the JNI hop, a
-    /// third task then leaves the pool (which raises this task's minimum share), and a second
-    /// consumer's acquire arrives and parks. The rollback takes the task's balance to zero and
-    /// wakes it, and the acquire gets the bytes once the bridge has asked again.
+    /// The rollback takes the task's balance to zero, dropping the entry under the parked
+    /// sibling, which is granted once the bridge has asked again.
     #[test]
     fn short_grant_rollback_landing_under_a_parked_sibling_wakes_it() {
         let stub = Arc::new(StubTaskMemory::new(100));
@@ -1142,8 +1055,7 @@ mod tests {
 
         let first = MemoryConsumer::new("first").register(&pool);
         let second = MemoryConsumer::new("second").register(&pool);
-        // Three active tasks: 17 free with a 16 byte minimum share, so a 30 byte request gets
-        // a short grant of 17 rather than parking.
+        // Three active tasks: 17 free and a 16 byte minimum share, so 30 bytes gets 17.
         stub.task_holds(OTHER_TASK, 82);
         stub.task_holds(THIRD_TASK, 1);
 
@@ -1174,7 +1086,6 @@ mod tests {
         assert_eq!(stub.outstanding(), 0);
     }
 
-    /// A pool that never grows never touches Spark.
     #[test]
     fn pool_that_never_grows_never_calls_spark() {
         let stub = Arc::new(StubTaskMemory::new(GIB));
@@ -1186,17 +1097,15 @@ mod tests {
         assert_eq!(stub.releases.load(SeqCst), 0);
     }
 
-    /// Spark's shuffle allocator is another off-heap consumer of the same task. When it frees
-    /// its last page while an acquire of this pool is parked, Spark drops the task's entry, and
-    /// the acquire is granted once the bridge has asked again.
+    /// Spark's shuffle allocator is another consumer of the task; its last free drops the
+    /// task's entry under the parked acquire.
     #[test]
     fn sibling_consumer_freeing_its_last_page_under_a_parked_acquire() {
         let stub = Arc::new(StubTaskMemory::new(100));
         let pool = pool_with(&stub, 1_000_000);
         let grower = MemoryConsumer::new("grower").register(&pool);
 
-        // A sibling consumer holds 10 bytes of this task and a neighbour fills the rest, so a
-        // 10 byte request parks below the 25 byte minimum share.
+        // With the pool full, a 10 byte request parks below the 25 byte minimum share.
         stub.sibling_consumer_holds(10);
         stub.other_task_holds(stub.memory_free());
         let grower_thread = thread::spawn(move || {
@@ -1213,10 +1122,8 @@ mod tests {
         assert_eq!(stub.outstanding(), 0);
     }
 
-    /// One consumer's acquire is parked inside Spark. A second consumer's acquire that Spark can
-    /// grant at once must not queue behind it on the pool's lock. This covers the Rust pool's lock
-    /// only: in the JVM, `TaskMemoryManager` serializes a task's acquires on its own monitor,
-    /// which the parked acquire keeps while it waits.
+    /// Covers the Rust pool's lock only: in the JVM, `TaskMemoryManager` serializes a task's
+    /// acquires on its own monitor.
     #[test]
     fn second_acquire_does_not_queue_behind_a_parked_one() {
         let stub = Arc::new(StubTaskMemory::new(100));
@@ -1224,8 +1131,7 @@ mod tests {
 
         let first = MemoryConsumer::new("first").register(&pool);
         let second = MemoryConsumer::new("second").register(&pool);
-        // 4 bytes free with a 25 byte minimum share: a 20 byte request parks, a 4 byte one
-        // is granted outright.
+        // 4 bytes free with a 25 byte minimum share: 20 bytes parks, 4 bytes is granted.
         stub.other_task_holds(stub.memory_free() - 4);
 
         let first_thread = thread::spawn(move || {
@@ -1263,8 +1169,6 @@ mod tests {
         ))
     }
 
-    /// Asks for `size` bytes through `try_grow` or, with `infallible`, through `grow`, and checks
-    /// that Spark granted all of them in a single call without parking.
     fn assert_granted_in_one_call(
         stub: &StubTaskMemory,
         fair: &CometFairMemoryPool,
@@ -1294,9 +1198,8 @@ mod tests {
         assert!(stub.parked.1.lock().try_recv().is_err(), "nothing parked");
     }
 
-    /// Another task holds 90 of Spark's 100 bytes and this task holds nothing, so a 10 byte
-    /// request is exactly what is free and is under the task's 25 byte minimum share. Spark
-    /// grants it at once, and the pool must ask for nothing besides it.
+    /// 10 bytes is exactly what is free and under the 25 byte minimum share, so the pool must
+    /// ask for nothing besides it.
     fn exact_fit_below_the_minimum_share(infallible: bool) {
         let stub = Arc::new(StubTaskMemory::new(100));
         stub.other_task_holds(90);
@@ -1320,8 +1223,7 @@ mod tests {
         exact_fit_below_the_minimum_share(true);
     }
 
-    /// The same exact fit for a request that reaches the task's minimum share: another task
-    /// holds 70 bytes, and 30 are granted in full rather than short.
+    /// 30 bytes is exactly what is free and reaches the minimum share.
     fn exact_fit_at_the_minimum_share(infallible: bool) {
         let stub = Arc::new(StubTaskMemory::new(100));
         stub.other_task_holds(70);
@@ -1345,8 +1247,6 @@ mod tests {
         exact_fit_at_the_minimum_share(true);
     }
 
-    /// Once the pool has handed everything back, it holds nothing from Spark, so the next exact
-    /// fit sees the same free bytes as the first one and is granted in one call too.
     fn exact_fit_after_a_full_release(infallible: bool) {
         let stub = Arc::new(StubTaskMemory::new(100));
         let fair = fair_pool_with(&stub, 1_000);
@@ -1376,17 +1276,12 @@ mod tests {
         exact_fit_after_a_full_release(true);
     }
 
-    /// A shrink hands its bytes back to Spark before the pool stops counting them. While that
-    /// release is still on its way, a grow of the same consumer that only fits if the shrunk
-    /// bytes were free is refused at the fair limit without a JVM call, instead of reaching
-    /// Spark ahead of the release and coming back with a short grant.
     #[test]
     fn grow_racing_a_shrink_is_not_admitted_on_bytes_the_jvm_still_holds() {
         let stub = Arc::new(StubTaskMemory::new(100));
         // Two consumers: a 100 byte fair limit against a task whose Spark share is 100 bytes.
         let pool = pool_with(&stub, 200);
         let holder = MemoryConsumer::new("holder").register(&pool);
-        // A sibling reservation draws on the holder's share.
         let grower = holder.new_empty();
         let other = MemoryConsumer::new("other").register(&pool);
         holder.try_grow(100).unwrap();
@@ -1404,7 +1299,7 @@ mod tests {
         let acquires_during = stub.acquires.load(SeqCst);
         let reserved_during = pool.reserved();
 
-        // Let the release land before asserting so no thread stays parked on failure.
+        // Opened before asserting so no thread stays parked on failure.
         stub.release_gate.disarm();
         stub.release_gate.open();
         let holder = holder_thread.join().unwrap();
@@ -1434,21 +1329,16 @@ mod tests {
         assert_eq!(stub.outstanding(), 0);
     }
 
-    /// A short grant is rolled back by handing the granted bytes to Spark. Until that
-    /// release lands, the pool keeps charging them, so a grow of the same consumer on another
-    /// thread cannot be admitted on bytes Spark still holds for this task.
     #[test]
     fn short_grant_rollback_keeps_the_bytes_charged_until_the_jvm_has_them_back() {
         let stub = Arc::new(StubTaskMemory::new(GIB).short_every(2));
         // Two consumers: a 100 byte fair limit.
         let pool = pool_with(&stub, 200);
         let first = MemoryConsumer::new("first").register(&pool);
-        // A sibling reservation draws on the first consumer's share.
         let second = first.new_empty();
         let other = MemoryConsumer::new("other").register(&pool);
-        // The stub halves every second acquire. This 1 byte grow takes the first, so the 100
-        // byte request below is granted 50 and the 60 byte grow after the rollback, the third,
-        // in full.
+        // Uses up the first acquire, so the 100 byte request is the halved second and the 60
+        // byte grow after the rollback is granted in full.
         first.try_grow(1).unwrap();
         first.free();
 
@@ -1499,17 +1389,12 @@ mod tests {
         assert_eq!(stub.outstanding(), 0);
     }
 
-    /// A grow is charged to the pool when it passes the limits, before Spark answers it. While
-    /// it is in flight, another consumer's grow that would push the total past the pool size is
-    /// refused, which is what keeps two grows from jointly exceeding the pool. The charge is
-    /// rolled back if Spark does not back it.
     #[test]
     fn a_grow_in_flight_counts_against_the_pool_limit_until_it_settles() {
         let stub = Arc::new(StubTaskMemory::new(GIB));
         let pool = pool_with(&stub, 100);
         let grower = MemoryConsumer::new("grower").register(&pool);
 
-        // Alone, the grower's share is the whole pool.
         stub.acquire_gate.arm();
         let grower_thread = thread::spawn(move || {
             grower.try_grow(60).unwrap();
@@ -1517,7 +1402,7 @@ mod tests {
         });
         stub.acquire_gate.wait_entered("grower acquire");
 
-        // A second consumer halves the shares. The 60 bytes in flight still count for the pool.
+        // 50 bytes fit the halved share, but not the pool beside the 60 in flight.
         let other = MemoryConsumer::new("other").register(&pool);
         let reserved_during = pool.reserved();
         let acquires_before = stub.acquires.load(SeqCst);
@@ -1547,17 +1432,12 @@ mod tests {
         assert_eq!(stub.outstanding(), 0);
     }
 
-    /// The rollback of a short grant hands the granted bytes back, and that release can fail.
-    /// Spark then holds the bytes until the task ends, so the pool keeps them charged, and the
-    /// caller still gets the short grant error so a spillable operator spills.
     #[test]
     fn failed_short_grant_rollback_keeps_the_bytes_charged_and_reports_a_short_grant() {
-        // Every acquire is granted half.
         let stub = Arc::new(StubTaskMemory::new(GIB).short_every(1));
         // Two consumers: a 100 byte fair limit.
         let pool = pool_with(&stub, 200);
         let first = MemoryConsumer::new("first").register(&pool);
-        // A sibling reservation draws on the first consumer's share.
         let second = first.new_empty();
         let other = MemoryConsumer::new("other").register(&pool);
         stub.fail_release.store(true, SeqCst);
@@ -1589,8 +1469,6 @@ mod tests {
         );
     }
 
-    /// A request that overflows the running total is refused like any other over-limit grow,
-    /// without reaching Spark.
     #[test]
     fn grow_that_overflows_the_total_is_refused_without_calling_spark() {
         let stub = Arc::new(StubTaskMemory::new(GIB));
@@ -1606,10 +1484,8 @@ mod tests {
         res.free();
     }
 
-    /// The window that settling after the JVM call leaves open. A grow that fits under the fair
-    /// limit without the shrunk bytes still reaches Spark ahead of the shrink's release, and at
-    /// the task's Spark share it comes back with a zero grant. This pins the behaviour rather
-    /// than changing it.
+    /// Pins the window that settling after the JVM call leaves open: a grow that fits without
+    /// the shrunk bytes reaches Spark ahead of the release and gets a zero grant.
     #[test]
     fn grow_racing_a_shrink_gets_a_short_grant_at_the_spark_share() {
         let stub = Arc::new(StubTaskMemory::new(100));
@@ -1654,11 +1530,8 @@ mod tests {
         assert_eq!(stub.outstanding(), 0);
     }
 
-    /// Two try_grows of one task race on the same overcommit. The first asks Spark for its byte
-    /// plus the one byte owed and is held after Spark grants both, before it repays the debt.
-    /// The second must ask for its own byte only and finish while the first is held: one byte is
-    /// free, and a two byte request parks below the task's minimum share with nothing left to
-    /// wake it once the debt is repaid.
+    /// If the second also asked for the byte owed, its two byte request would park below the
+    /// minimum share with nothing left to wake it once the first repays the debt.
     #[test]
     fn concurrent_try_grows_ask_spark_for_the_overcommit_once() {
         let stub = Arc::new(StubTaskMemory::new(100));
@@ -1666,8 +1539,7 @@ mod tests {
         let pool: Arc<dyn MemoryPool> = Arc::clone(&fair) as _;
         let first = MemoryConsumer::new("first").register(&pool);
         let second = MemoryConsumer::new("second").register(&pool);
-        // Three active tasks: 16 bytes free and a 16 byte minimum share, so a 17 byte grow is
-        // granted 16 and one byte is owed.
+        // Three active tasks: 16 free and a 16 byte minimum share, so 17 bytes owes one.
         stub.task_holds(OTHER_TASK, 83);
         stub.task_holds(THIRD_TASK, 1);
         first.grow(17);
@@ -1689,15 +1561,13 @@ mod tests {
             let _ = second_done_tx.send(());
             result.map(|()| second)
         });
-        // The first is still held at the gate. Wait well below the stub's WAIT_TIMEOUT, so a
-        // request parked in Spark shows up here rather than as a stub panic.
+        // Well below WAIT_TIMEOUT, so a request parked in Spark shows up here.
         let second_done_while_first_held =
             second_done_rx.recv_timeout(Duration::from_secs(2)).is_ok();
         stub.granted_gate.open();
         let requests = stub.requests.lock().clone();
         if !second_done_while_first_held {
-            // The first repaying the debt wakes nothing parked in Spark, so free memory to let
-            // both threads finish before the assertions below fail.
+            // Repaying the debt wakes nothing in Spark, so free memory to let both finish.
             stub.other_task_releases(10);
         }
         let first = first_thread.join().unwrap().expect("first try_grow");
