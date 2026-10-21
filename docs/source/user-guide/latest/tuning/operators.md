@@ -95,6 +95,37 @@ rows, including if later batches become more selective. The `dynamic_filter_earl
 metrics belong to the join supplying the filter; intermediate joins and projections
 retain their own input/output metrics.
 
+#### Join runtime filters through residual predicates
+
+Native join runtime filtering is enabled with
+`spark.comet.exec.join.dynamicFilter.enabled`. It can reject probe rows whose keys
+are absent from the completed build side and use eligible Parquet readers to prune
+row groups. By default, an intervening residual filter permits reader propagation
+only for direct-column `IS NOT NULL` checks combined with `AND`.
+
+Set `spark.comet.exec.join.dynamicFilter.allowDeterministicFilterPushdown=true` to
+let the join filter pass through other deterministic residual predicates, such as
+`quantity > 0` or a Spark-generated Bloom check. The original residual and the
+exact join remain in place. For example, when the build contains only item IDs
+17 and 42, a row for item 99 can be rejected before evaluating its quantity.
+Nondeterministic predicates, limits, all standalone projections (including column-only
+projections), and execution boundaries continue to stop reader propagation. Spark can
+insert a standalone projection to drop residual-only columns, so the example requires
+keeping `quantity` in the output alongside `item_id`. Projection within the Parquet
+scan itself remains supported. Parquet schema conversion checks remain active.
+Reader attachment through column-only projections is tracked in
+[#7113](https://github.com/apache/datafusion-comet/issues/7113).
+
+The separate setting lets applications keep the existing runtime-filter behavior
+while choosing whether to allow broader reader pruning. Spark can already skip
+residual evaluation through other pruning paths, but those paths are not present in
+every plan. This setting defaults to false because deterministic expressions can
+throw. Earlier pruning can skip division-by-zero or ANSI cast errors on rows that
+cannot join. Errors on retained rows still propagate. Enable it only when skipping
+such errors on eliminated rows is acceptable. Parquet row filtering during decoding
+also requires `spark.comet.parquet.rowFilterPushdown.enabled`; row-group statistics
+pruning does not require that setting.
+
 ## Adaptive Partial Aggregation
 
 Set `spark.comet.exec.aggregate.skipPartial.enabled=true` to let Comet bypass partial hash
@@ -190,12 +221,15 @@ nested in arrays and structs, so `ORDER BY`, window ordering and range partition
 even with `spark.comet.exec.strictFloatingPoint=true`. Only the comparison key is normalized; returned values keep their
 original NaN representation and zero sign.
 
-A key that nests values in an array or struct whose type can hold a null element or field falls back in every mode under
-`ASC NULLS LAST` or `DESC NULLS FIRST`, and in a `RANGE` window frame that has to find a row's peers, because Spark orders
-such a null below every other value and the native sort and window frames would not
-([#6476](https://github.com/apache/datafusion-comet/issues/6476),
-[#6477](https://github.com/apache/datafusion-comet/issues/6477)). The default null orders run natively, and
-`spark.comet.expression.SortOrder.allowIncompatible=true` forces the other null orders onto the native path.
+A key that nests values in an array or struct whose type can hold a null element or field stays native under
+`ASC NULLS LAST` and `DESC NULLS FIRST` too: Comet separates the key's root null placement from its nested ordering
+([#6476](https://github.com/apache/datafusion-comet/issues/6476)). A `RANGE` window frame that has to find a row's
+peers over such a key still falls back to Spark
+([#6477](https://github.com/apache/datafusion-comet/issues/6477)).
 
 `sort_array` sorts array elements rather than ordering rows. It follows Spark's floating-point ordering as well, so it
 also stays native with `spark.comet.exec.strictFloatingPoint=true`.
+
+The default `array_sort` comparator also runs natively. It puts null array elements last while comparing nulls
+inside nested arrays and structs below non-null values. A custom `array_sort` comparator or an
+array with a non-default string collation continues through the JVM codegen dispatcher.

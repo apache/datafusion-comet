@@ -215,6 +215,18 @@ more splits overall, so some idle tasks may remain — tune the value against yo
 See [#3817](https://github.com/apache/datafusion-comet/issues/3817#issuecomment-4193279630) for a
 worked example and further discussion.
 
+### Prefetching the Next File's Metadata
+
+A native Parquet scan opens a task's files one after another, and each open waits for a round trip to read
+the file's footer and page index before its data fetch can start. For tasks that read many small files from
+high-latency storage such as S3, that wait is paid once per file. By default, Comet loads the next file's
+footer and page index in the background while the current file is read. Set
+`spark.comet.parquet.prefetchNextFileMetadata.enabled` to `false` to turn this off.
+
+The cost is one extra footer and page index read for a file that is never opened, such as when a scan stops
+early or the file is pruned before it opens. Scans of encrypted Parquet files never prefetch. The
+`scan_io_metadata_prefetches` metric counts the opens that used a load which read storage ahead of them.
+
 ## Known Issues
 
 This section lists open issues in which Comet's Parquet reads and writes give a different result
