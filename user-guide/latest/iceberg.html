@@ -885,11 +885,18 @@ matching your Spark and Scala versions (Comet also ships Spark 3.5 / Scala 2.13 
 <p>Catalog configuration is standard Iceberg-on-Spark and independent of Comet. The native reader has been tested with Hadoop, Hive, and REST catalogs. The example above uses a Hadoop catalog. For the full catalog configuration reference, see Iceberg’s <a class="reference external" href="https://iceberg.apache.org/docs/latest/spark-configuration/#catalogs">Spark catalog configuration</a>.</p>
 <section id="tuning">
 <h3>Tuning<a class="headerlink" href="#tuning" title="Link to this heading">#</a></h3>
-<p>Comet’s native Iceberg reader supports fetching multiple files in parallel to hide I/O latency with the
-config <code class="docutils literal notranslate"><span class="pre">spark.comet.scan.icebergNative.dataFileConcurrencyLimit</span></code>. This value defaults to 1 to
-maintain test behavior on Iceberg Java tests without <code class="docutils literal notranslate"><span class="pre">ORDER</span> <span class="pre">BY</span></code> clauses, but we suggest increasing it to
-values between 2 and 8 based on your workload, at the cost of extra memory. This helps most for
-tables with many small files or high-latency storage.</p>
+<p>Comet’s native Iceberg reader fetches multiple data files in parallel to hide I/O latency. The config
+<code class="docutils literal notranslate"><span class="pre">spark.comet.scan.icebergNative.dataFileConcurrencyLimit</span></code> sets how many files one task reads at a time.
+It defaults to 2, which helps most for tables with many small files or high-latency storage such as S3.
+Values between 2 and 8 are reasonable; raise it based on your workload, at the cost of extra memory,
+because each file in flight holds its own buffers.</p>
+<p>When the limit is above 1, batches from different files are returned in no particular order, so a
+query without an <code class="docutils literal notranslate"><span class="pre">ORDER</span> <span class="pre">BY</span></code> can return rows in a different order than with a limit of 1. Spark does
+not guarantee that order, but some tests and applications depend on it. Set the limit to <code class="docutils literal notranslate"><span class="pre">1</span></code> to read
+the files one after another, in the order Spark assigned them.</p>
+<p>The Iceberg Spark tests are an example. They expect file order from queries without an <code class="docutils literal notranslate"><span class="pre">ORDER</span> <span class="pre">BY</span></code>, so
+the Iceberg test jobs set the environment variable <code class="docutils literal notranslate"><span class="pre">COMET_ICEBERG_DATA_FILE_CONCURRENCY_LIMIT=1</span></code>,
+which overrides the default. See <a class="reference internal" href="../../contributor-guide/iceberg-spark-tests.html"><span class="std std-doc">Iceberg Spark tests</span></a>.</p>
 </section>
 <section id="supported-features">
 <h3>Supported features<a class="headerlink" href="#supported-features" title="Link to this heading">#</a></h3>

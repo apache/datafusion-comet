@@ -613,11 +613,16 @@ git<span class="w"> </span>apply<span class="w"> </span>../datafusion-comet/dev/
 </section>
 <section id="run-iceberg-spark-tests">
 <h2>3. Run Iceberg Spark Tests<a class="headerlink" href="#run-iceberg-spark-tests" title="Link to this heading">#</a></h2>
-<div class="highlight-shell notranslate"><div class="highlight"><pre><span></span><span class="nv">ENABLE_COMET</span><span class="o">=</span><span class="nb">true</span><span class="w"> </span>./gradlew<span class="w"> </span>-DsparkVersions<span class="o">=</span><span class="m">3</span>.5<span class="w"> </span>-DscalaVersion<span class="o">=</span><span class="m">2</span>.13<span class="w"> </span>-DflinkVersions<span class="o">=</span><span class="w"> </span>-DkafkaVersions<span class="o">=</span><span class="w"> </span><span class="se">\</span>
+<div class="highlight-shell notranslate"><div class="highlight"><pre><span></span><span class="nv">ENABLE_COMET</span><span class="o">=</span><span class="nb">true</span><span class="w"> </span><span class="nv">COMET_ICEBERG_DATA_FILE_CONCURRENCY_LIMIT</span><span class="o">=</span><span class="m">1</span><span class="w"> </span><span class="se">\</span>
+<span class="w">  </span>./gradlew<span class="w"> </span>-DsparkVersions<span class="o">=</span><span class="m">3</span>.5<span class="w"> </span>-DscalaVersion<span class="o">=</span><span class="m">2</span>.13<span class="w"> </span>-DflinkVersions<span class="o">=</span><span class="w"> </span>-DkafkaVersions<span class="o">=</span><span class="w"> </span><span class="se">\</span>
 <span class="w">  </span>:iceberg-spark:iceberg-spark-3.5_2.13:test<span class="w"> </span><span class="se">\</span>
 <span class="w">  </span>-Pquick<span class="o">=</span><span class="nb">true</span><span class="w"> </span>-x<span class="w"> </span>javadoc
 </pre></div>
 </div>
+<p><code class="docutils literal notranslate"><span class="pre">COMET_ICEBERG_DATA_FILE_CONCURRENCY_LIMIT=1</span></code> is the environment variable behind
+<code class="docutils literal notranslate"><span class="pre">spark.comet.scan.icebergNative.dataFileConcurrencyLimit</span></code>, which defaults to 2. Iceberg’s tests expect
+file order from queries without an <code class="docutils literal notranslate"><span class="pre">ORDER</span> <span class="pre">BY</span></code>, and a limit above 1 returns batches from different files
+in no particular order, so the CI jobs and <code class="docutils literal notranslate"><span class="pre">dev/local-ci.sh</span></code> pin it to 1.</p>
 <p>The three Gradle targets tested in CI are:</p>
 <div class="pst-scrollable-table-container"><table class="table">
 <thead>
