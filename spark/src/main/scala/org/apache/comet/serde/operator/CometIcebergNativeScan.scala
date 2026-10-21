@@ -679,17 +679,47 @@ object CometIcebergNativeScan extends CometOperatorSerde[CometBatchScanExec] wit
    *   - An exception means reflection over Iceberg's expression API did something unexpected, so
    *     no such decision was reached. It propagates instead of folding into `None`, which would
    *     make the two indistinguishable; see [[serializeResidual]].
+   *
+   * @param promotedColumns
+   *   columns whose older data files may hold a narrower type; see
+   *   [[IcebergReflection.promotedColumns]]
    */
   def icebergExprToProto(
       icebergExpr: Any,
       output: Seq[Attribute],
-      pageIndexUnsupportedColumns: Set[String]): Option[OperatorOuterClass.IcebergPredicate] = {
+      pageIndexUnsupportedColumns: Set[String],
+      promotedColumns: Set[String]): Option[OperatorOuterClass.IcebergPredicate] =
+    icebergExprToProto(
+      icebergExpr,
+      output.map(attr => attr.name -> attr).toMap,
+      pageIndexUnsupportedColumns,
+      promotedColumns,
+      underNot = false)
+
+  /**
+   * `underNot` is true beneath a NOT. The native side pushes that NOT down to the leaves, so a
+   * leaf whose negation the native reader evaluates differently from Spark is declined.
+   */
+  private def icebergExprToProto(
+      icebergExpr: Any,
+      attributes: Map[String, Attribute],
+      pageIndexUnsupportedColumns: Set[String],
+      promotedColumns: Set[String],
+      underNot: Boolean): Option[OperatorOuterClass.IcebergPredicate] = {
     val exprClass = icebergExpr.getClass
-    val attributeMap = output.map(attr => attr.name -> attr).toMap
+    def call(method: String): Any =
+      IcebergReflection.getMethod(exprClass, method).invoke(icebergExpr)
+    def convertChild(child: Any, underNot: Boolean) =
+      icebergExprToProto(
+        child,
+        attributes,
+        pageIndexUnsupportedColumns,
+        promotedColumns,
+        underNot)
 
     if (exprClass.getName.endsWith(Constants.ExpressionTypes.UNBOUND_PREDICATE)) {
-      val operation = IcebergReflection.getMethod(exprClass, "op").invoke(icebergExpr).toString
-      val term = IcebergReflection.getMethod(exprClass, "term").invoke(icebergExpr)
+      val operation = call("op").toString
+      val term = call("term")
 
       // Only a bare column reference converts. UnboundTransform (and UnboundExtract, on Iceberg
       // versions that have it) answers ref() with its *source* column, so reading the name off
@@ -706,7 +736,7 @@ object CometIcebergNativeScan extends CometOperatorSerde[CometBatchScanExec] wit
         // Iceberg names a nested reference by its dotted path ("struct.field"), which never matches
         // a top-level scan output attribute, so a residual on a nested field drops here. That miss
         // is also why the top-level-only pageIndexUnsupportedColumns gate below stays sound.
-        attributeMap.get(columnName).flatMap { attribute =>
+        attributes.get(columnName).flatMap { attribute =>
           import Constants.Operations._
           import OperatorOuterClass.IcebergPredicateOperator
           // iceberg-rust binds accessors only for primitive fields. Containers cannot be partition
@@ -720,6 +750,23 @@ object CometIcebergNativeScan extends CometOperatorSerde[CometBatchScanExec] wit
               case IS_NULL => Some(unaryPredicate(columnName, IcebergPredicateOperator.IsNull))
               case IS_NOT_NULL | NOT_NULL =>
                 Some(unaryPredicate(columnName, IcebergPredicateOperator.NotNull))
+              // Files written before the promotion still hold the older type, which iceberg-rust
+              // compares with a literal incorrectly (see IcebergReflection.promotedColumns),
+              // except for equality outside NOT: pruning keeps every row group and page for it,
+              // and a literal the older type cannot hold matches no row there anyway.
+              case op if promotedColumns.contains(columnName) && (op != EQ || underNot) =>
+                None
+              // Iceberg converts Spark's null-safe `id <=> 1` to `id = 1`, which Spark evaluates
+              // to false for a NULL id and the native reader to NULL. Both reject the row, but
+              // for `NOT (id <=> 1)` Spark keeps it while the native reader still drops it.
+              case EQ if underNot && attribute.nullable => None
+              // Spark sorts every NaN above all numbers. The native row filter sorts negative NaNs
+              // below them, and iceberg-rust prunes row groups on min/max statistics that can
+              // leave NaN out, or hold it as both when parquet-mr 1.9 or earlier starts a row
+              // group with NaN (apache/iceberg-rust#3494).
+              case LT | LT_EQ | GT | GT_EQ
+                  if attribute.dataType == FloatType || attribute.dataType == DoubleType =>
+                None
               case op if binaryOps.contains(op) =>
                 binaryPredicate(exprClass, icebergExpr, columnName, attribute, binaryOps(op))
               case IN => setPredicate(exprClass, icebergExpr, columnName, attribute)
@@ -730,14 +777,8 @@ object CometIcebergNativeScan extends CometOperatorSerde[CometBatchScanExec] wit
         }
       }
     } else if (exprClass.getName.endsWith(Constants.ExpressionTypes.AND)) {
-      val left = icebergExprToProto(
-        IcebergReflection.getMethod(exprClass, "left").invoke(icebergExpr),
-        output,
-        pageIndexUnsupportedColumns)
-      val right = icebergExprToProto(
-        IcebergReflection.getMethod(exprClass, "right").invoke(icebergExpr),
-        output,
-        pageIndexUnsupportedColumns)
+      val left = convertChild(call("left"), underNot)
+      val right = convertChild(call("right"), underNot)
       (left, right) match {
         // Push the residual only if it converts whole. Dropping a conjunct is safe in positive
         // position but strengthens the predicate under a NOT (De Morgan), which would wrongly
@@ -747,22 +788,15 @@ object CometIcebergNativeScan extends CometOperatorSerde[CometBatchScanExec] wit
         case _ => None
       }
     } else if (exprClass.getName.endsWith(Constants.ExpressionTypes.OR)) {
-      val left = icebergExprToProto(
-        IcebergReflection.getMethod(exprClass, "left").invoke(icebergExpr),
-        output,
-        pageIndexUnsupportedColumns)
-      val right = icebergExprToProto(
-        IcebergReflection.getMethod(exprClass, "right").invoke(icebergExpr),
-        output,
-        pageIndexUnsupportedColumns)
+      val left = convertChild(call("left"), underNot)
+      val right = convertChild(call("right"), underNot)
       // Dropping a disjunct would strengthen the predicate and wrongly prune, so require both.
       (left, right) match {
         case (Some(l), Some(r)) => Some(logicalPredicate(isAnd = false, l, r))
         case _ => None
       }
     } else if (exprClass.getName.endsWith(Constants.ExpressionTypes.NOT)) {
-      val child = IcebergReflection.getMethod(exprClass, "child").invoke(icebergExpr)
-      icebergExprToProto(child, output, pageIndexUnsupportedColumns).map(notPredicate)
+      convertChild(call("child"), underNot = true).map(notPredicate)
     } else {
       // Anything else, such as Expressions.alwaysTrue or alwaysFalse, or a node type a future
       // Iceberg introduces, carries no pushdown this serde can express.
@@ -780,9 +814,10 @@ object CometIcebergNativeScan extends CometOperatorSerde[CometBatchScanExec] wit
   private[operator] def serializeResidual(
       residual: Any,
       output: Seq[Attribute],
-      pageIndexUnsupportedColumns: Set[String]): Option[OperatorOuterClass.IcebergPredicate] =
+      pageIndexUnsupportedColumns: Set[String],
+      promotedColumns: Set[String]): Option[OperatorOuterClass.IcebergPredicate] =
     try {
-      icebergExprToProto(residual, output, pageIndexUnsupportedColumns)
+      icebergExprToProto(residual, output, pageIndexUnsupportedColumns, promotedColumns)
     } catch {
       case e: Exception =>
         val msg = "Iceberg reflection failure: Failed to convert residual expression " +
@@ -876,8 +911,8 @@ object CometIcebergNativeScan extends CometOperatorSerde[CometBatchScanExec] wit
 
   /**
    * Builds a predicate literal from its Iceberg value and the column's Spark type. Returns None
-   * for null (IS NULL is a separate op) and for Spark types this serde does not map to an
-   * IcebergLiteral, so the predicate degrades to no pushdown rather than an incorrect one.
+   * for null (IS NULL is a separate op), for Spark types that cannot be mapped safely to an
+   * IcebergLiteral, and for float literals the native reader compares differently from Spark.
    * Columns backed by Parquet FIXED_LEN_BYTE_ARRAY (decimal/uuid/fixed) or BYTE_ARRAY (binary)
    * are dropped earlier by the column gate in icebergExprToProto and never reach here.
    */
@@ -895,9 +930,22 @@ object CometIcebergNativeScan extends CometOperatorSerde[CometBatchScanExec] wit
       case _: ByteType | _: ShortType | _: IntegerType =>
         builder.setIntVal(value.asInstanceOf[java.lang.Number].intValue())
       case _: LongType => builder.setLongVal(value.asInstanceOf[java.lang.Number].longValue())
-      case _: FloatType => builder.setFloatVal(value.asInstanceOf[java.lang.Number].floatValue())
+      // The native reader compares floats by bit pattern, so -0.0 does not equal 0.0 as it does
+      // in Spark. Any other literal except NaN compares the same way in both. A FLOAT literal must
+      // also narrow exactly, or the native reader would compare against a different value.
+      case _: FloatType =>
+        val number = value.asInstanceOf[java.lang.Number]
+        val narrowed = number.floatValue()
+        if (narrowed.isNaN || narrowed == 0.0f || narrowed.toDouble != number.doubleValue()) {
+          return None
+        }
+        builder.setFloatVal(narrowed)
       case _: DoubleType =>
-        builder.setDoubleVal(value.asInstanceOf[java.lang.Number].doubleValue())
+        val double = value.asInstanceOf[java.lang.Number].doubleValue()
+        if (double.isNaN || double == 0.0) {
+          return None
+        }
+        builder.setDoubleVal(double)
       case _: DateType => builder.setDateVal(value.asInstanceOf[java.lang.Number].intValue())
       case _: StringType => builder.setStringVal(value.toString)
       case _: TimestampType =>
@@ -1009,6 +1057,12 @@ object CometIcebergNativeScan extends CometOperatorSerde[CometBatchScanExec] wit
     // schema so a filter column projected out of the scan output is still recognized.
     val pageIndexUnsupportedColumns =
       IcebergReflection.pageIndexUnsupportedColumns(metadata.tableSchema)
+    // Columns whose type changed over the table's history; residual predicates comparing them
+    // with a literal are dropped, except equality. The scan schema also covers a column that
+    // VERSION AS OF reads after it was dropped from the table.
+    val promotedColumns = Seq(metadata.tableSchema, metadata.scanSchema)
+      .flatMap(IcebergReflection.promotedColumns(metadata.table, _))
+      .toSet
 
     // iceberg-rust reads every leaf of a projected column that the task schema holds. Reading with
     // the pruned task schema skips the nested fields Spark's schema pruning removed, which the
@@ -1178,7 +1232,8 @@ object CometIcebergNativeScan extends CometOperatorSerde[CometBatchScanExec] wit
                   serializeResidual(
                     residualMethod.invoke(task),
                     output,
-                    pageIndexUnsupportedColumns)
+                    pageIndexUnsupportedColumns,
+                    promotedColumns)
 
                 residualExprOpt.foreach { residual =>
                   val residualIdx = residualToPoolIndex.getOrElseUpdate(

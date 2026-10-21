@@ -2572,21 +2572,7 @@ fn parse_file_scan_tasks_from_common(
                     .residual_pool
                     .get(idx as usize)
                     .and_then(iceberg_predicate_to_predicate)
-                    .and_then(|pred| {
-                        // The residual predicate only drives row-group pruning; the post-scan
-                        // filter still enforces correctness. iceberg-rust cannot bind a datum
-                        // whose type has no conversion to the column type, so on a bind failure
-                        // we skip pushdown rather than fail the scan.
-                        // rewrite_not first: iceberg-rust's scan evaluators require negation-normal
-                        // form and reject a bare NOT (e.g. from a `NOT (a = b)` residual).
-                        match pred.rewrite_not().bind(Arc::clone(&schema_ref), true) {
-                            Ok(bound) => Some(bound),
-                            Err(e) => {
-                                log::warn!("Skipping Iceberg predicate pushdown; bind failed: {e}");
-                                None
-                            }
-                        }
-                    })
+                    .and_then(|pred| bind_residual(pred, Arc::clone(&schema_ref)))
             } else {
                 None
             };
@@ -2953,6 +2939,24 @@ fn iceberg_predicate_to_predicate(
     }
 }
 
+/// Binds a residual predicate to the file's schema. The residual prunes reads and filters rows; the
+/// post-scan filter enforces any omitted predicates. iceberg-rust cannot bind a datum whose type
+/// has no conversion to the column type, so on a bind failure we skip pushdown rather than fail
+/// the scan. rewrite_not first: iceberg-rust's scan evaluators require negation-normal form and
+/// reject a bare NOT (e.g. from a `NOT (a = b)` residual).
+fn bind_residual(
+    pred: iceberg::expr::Predicate,
+    schema: Arc<iceberg::spec::Schema>,
+) -> Option<iceberg::expr::BoundPredicate> {
+    match pred.rewrite_not().bind(schema, true) {
+        Ok(bound) => Some(bound),
+        Err(e) => {
+            log::warn!("Skipping Iceberg predicate pushdown; bind failed: {e}");
+            None
+        }
+    }
+}
+
 /// Combines the two children of a logical residual node (And/Or), returning `None` unless both
 /// converted. A missing child is not expected: the Scala serde emits a logical node only when both
 /// children convert, and Rust decodes every node it emits, so both sides always convert for a
@@ -3071,7 +3075,7 @@ mod tests {
 
     use crate::execution::operators::ExecutionError;
     use crate::execution::planner::{
-        convert_spark_types_to_arrow_schema, literal_to_array_ref,
+        bind_residual, convert_spark_types_to_arrow_schema, literal_to_array_ref,
         parse_file_scan_tasks_from_common,
     };
     use crate::execution::shuffle::CometPartitioning;
@@ -3091,6 +3095,26 @@ mod tests {
         },
     };
     use datafusion_comet_spark_expr::EvalMode;
+
+    #[test]
+    fn iceberg_residual_bind_failure_skips_pushdown() {
+        use iceberg::expr::Reference;
+        use iceberg::spec::{Datum, NestedField, PrimitiveType, Schema as IcebergSchema, Type};
+
+        let schema = Arc::new(
+            IcebergSchema::builder()
+                .with_fields(vec![Arc::new(NestedField::optional(
+                    1,
+                    "id",
+                    Type::Primitive(PrimitiveType::Int),
+                ))])
+                .build()
+                .unwrap(),
+        );
+        let id = Reference::new("id");
+        assert!(bind_residual(!id.clone().equal_to(Datum::int(1)), Arc::clone(&schema)).is_some());
+        assert!(bind_residual(id.equal_to(Datum::bool(true)), schema).is_none());
+    }
 
     #[test]
     fn scan_default_rejects_struct_expressions() {

@@ -125,6 +125,14 @@ results, but are not pushed into iceberg-rust, which binds accessors only for pr
 These residuals provide no native row-group pruning, nor do conjunctions containing them;
 safe partial pruning is tracked in [#5883](https://github.com/apache/datafusion-comet/issues/5883).
 
+Some predicates are left to the filter above the scan because iceberg-rust would return
+different rows than Spark:
+
+- Range comparisons on `FLOAT` and `DOUBLE` columns, and comparisons with `0.0`, `-0.0` or NaN.
+- `NOT` over equality on a nullable column.
+- Comparisons other than `=` on a column whose type was promoted. This applies to every `BIGINT`
+  and `DOUBLE` column when expiring snapshots removed older schemas.
+
 **Partitioning:**
 
 - Standard partitioning with partition pruning
@@ -801,6 +809,13 @@ Which entries apply depends on which native paths are enabled:
 - **Data files with neither field ids nor a name mapping.** Spark reads every nested field of such
   a file as NULL, and the native scan returns the values stored in the file
   ([#6794](https://github.com/apache/datafusion-comet/issues/6794)).
+- **Data files that store a narrower type than their column.** Files written before a type
+  promotion, such as `INT` to `BIGINT`, keep the older type, and files imported by `add_files`,
+  `migrate` or `snapshot` can store any narrower type. iceberg-rust compares such a file with a
+  filter literal incorrectly, so comparisons other than `=` pushed to the native scan can drop
+  matching rows. Comet avoids this for promotions that the schema history records, but not for
+  imported files or promotions made before Iceberg 0.12
+  ([#7138](https://github.com/apache/datafusion-comet/issues/7138)).
 - **`VERSION AS OF` reads of a column renamed after the snapshot.** The renamed column reads as
   NULL, and two columns that swapped names return each other's values
   ([#6822](https://github.com/apache/datafusion-comet/issues/6822)).
