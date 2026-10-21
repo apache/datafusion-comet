@@ -33,8 +33,11 @@ use super::{serde, utils::SparkArrowConvert};
 use crate::{
     errors::{try_unwrap_or_throw, CometError, CometResult},
     execution::{
-        metrics::utils::update_comet_metric, planner::PhysicalPlanner, serde::to_arrow_datatype,
-        shuffle::spark_unsafe::row::process_sorted_row_partition, sort::RdxSort,
+        metrics::utils::update_comet_metric,
+        planner::PhysicalPlanner,
+        row_partition_sort::sort_row_partitions,
+        serde::to_arrow_datatype,
+        shuffle::spark_unsafe::row::{process_sorted_partitions, process_sorted_row_partition},
     },
     jvm_bridge::{JVMClasses, JavaShufflePartitionPusher, ShufflePartitionPusher},
 };
@@ -45,12 +48,10 @@ use arrow::datatypes::DataType as ArrowDataType;
 use datafusion::common::{DataFusionError, Result as DataFusionResult};
 use datafusion::config::SpillCompression;
 use datafusion::execution::cache::cache_manager::CacheManagerConfig;
-use datafusion::execution::disk_manager::DiskManagerMode;
 use datafusion::execution::memory_pool::MemoryPool;
 use datafusion::execution::runtime_env::RuntimeEnvBuilder;
 use datafusion::logical_expr::ScalarUDF;
 use datafusion::{
-    execution::disk_manager::DiskManagerBuilder,
     physical_plan::{display::DisplayableExecutionPlan, SendableRecordBatchStream},
     prelude::{SessionConfig, SessionContext},
 };
@@ -126,6 +127,7 @@ use crate::execution::shuffle::{
     decode_remote_shuffle_batch, read_ipc_compressed, CompressionCodec, ShuffleWriterExec,
 };
 use crate::execution::spark_plan::SparkPlan;
+use crate::execution::spill_dirs::plan_disk_manager;
 
 use crate::execution::tracing::{
     get_thread_id, log_memory_usage, trace_begin, trace_end, with_trace, POOL_TOTAL_METRIC,
@@ -136,10 +138,11 @@ use crate::execution::spark_config::{
     SparkConfig, COMET_DEBUG_ENABLED, COMET_DEBUG_MEMORY,
     COMET_EXEC_AGGREGATE_SKIP_PARTIAL_ENABLED, COMET_EXEC_SPILL_COMPRESSION_CODEC,
     COMET_EXPLAIN_NATIVE_ENABLED, COMET_MAX_TEMP_DIRECTORY_SIZE,
-    COMET_PARQUET_ROW_FILTER_PUSHDOWN_ENABLED, COMET_STRICT_TIMESTAMP_LABELS,
-    COMET_TRACING_ENABLED, SPARK_EXECUTOR_CORES,
+    COMET_PARQUET_PREFETCH_NEXT_FILE_METADATA_ENABLED, COMET_PARQUET_ROW_FILTER_PUSHDOWN_ENABLED,
+    COMET_STRICT_TIMESTAMP_LABELS, COMET_TRACING_ENABLED, SPARK_EXECUTOR_CORES,
 };
 use crate::parquet::encryption_support::{CometEncryptionFactory, ENCRYPTION_FACTORY_ID};
+use crate::parquet::parquet_exec::CometParquetScanOptions;
 use crate::parquet::parquet_support::CometObjectStoreRegistry;
 use crate::parquet::shared_metadata_cache::shared_metadata_cache_for_task;
 use datafusion_comet_proto::spark_operator::operator::OpStruct;
@@ -1003,11 +1006,8 @@ fn prepare_datafusion_session_context(
     spark_plan: &Operator,
 ) -> CometResult<SessionContext> {
     let paths = local_dirs.into_iter().map(PathBuf::from).collect();
-    let disk_manager = DiskManagerBuilder::default()
-        .with_mode(DiskManagerMode::Directories(paths))
-        .with_max_temp_directory_size(max_temp_directory_size);
     let mut rt_config = RuntimeEnvBuilder::new()
-        .with_disk_manager_builder(disk_manager)
+        .with_disk_manager_builder(plan_disk_manager(paths, max_temp_directory_size))
         .with_object_store_registry(Arc::new(CometObjectStoreRegistry::default()));
     rt_config = rt_config.with_memory_pool(memory_pool);
 
@@ -1040,6 +1040,13 @@ fn prepare_datafusion_session_context(
             session_config.set_str("datafusion.execution.parquet.reorder_filters", "true");
     }
 
+    // Native Parquet scan options that DataFusion has no setting for travel as a session config
+    // extension, which every scan in the plan reads.
+    session_config = session_config.with_extension(Arc::new(CometParquetScanOptions {
+        prefetch_next_file_metadata: spark_config
+            .get_bool(COMET_PARQUET_PREFETCH_NEXT_FILE_METADATA_ENABLED),
+    }));
+
     // Translate Comet's spill codec into DataFusion's spill compression, which DataFusion
     // otherwise leaves uncompressed. Set before the pass-through below for the same reason,
     // so an explicit `spark.comet.datafusion.execution.spill_compression` still wins.
@@ -1068,6 +1075,11 @@ fn prepare_datafusion_session_context(
             session_config = session_config.set_str(&df_key, value);
         }
     }
+
+    // The planner reads this back to decide whether a plan may load a native UDF library.
+    session_config = session_config.with_extension(Arc::new(
+        crate::execution::c_udf::policy::NativeUdfPolicy::from_spark_config(spark_config),
+    ));
 
     configure_skip_partial_aggregation(
         &mut session_config,
@@ -1765,7 +1777,7 @@ fn shuffle_partition_offsets(
     Ok(offsets)
 }
 
-/// Used by Comet shuffle external sorter to write sorted records to disk.
+/// Used by the bypass merge sort shuffle writer to write one partition's records to disk.
 /// # Safety
 /// This function is inherently unsafe since it deals with raw pointers passed from JNI.
 #[no_mangle]
@@ -1858,12 +1870,7 @@ unsafe fn write_sorted_file(
         Some(current_checksum as u32)
     };
 
-    let compression_codec = match compression_codec {
-        "zstd" => CompressionCodec::Zstd(compression_level),
-        "lz4" => CompressionCodec::Lz4Frame,
-        "snappy" => CompressionCodec::Snappy,
-        _ => CompressionCodec::Lz4Frame,
-    };
+    let compression_codec = jvm_shuffle_codec(compression_codec, compression_level);
 
     // `process_sorted_row_partition` only reads through the pointers.
     let (written_bytes, checksum, encode_nanos) = process_sorted_row_partition(
@@ -1885,6 +1892,143 @@ unsafe fn write_sorted_file(
     Ok([written_bytes, checksum, encode_nanos])
 }
 
+/// The codec `spark.comet.shuffle.compression.codec` names. Unknown names fall back to lz4.
+fn jvm_shuffle_codec(name: &str, level: i32) -> CompressionCodec {
+    match name {
+        "zstd" => CompressionCodec::Zstd(level),
+        "lz4" => CompressionCodec::Lz4Frame,
+        "snappy" => CompressionCodec::Snappy,
+        _ => CompressionCodec::Lz4Frame,
+    }
+}
+
+/// Used by Comet shuffle external sorter to write every partition of one sorted spill to disk.
+/// # Safety
+/// This function is inherently unsafe since it deals with raw pointers passed from JNI.
+#[no_mangle]
+pub unsafe extern "system" fn Java_org_apache_comet_Native_writeSortedPartitionsNative(
+    e: EnvUnowned,
+    _class: JClass,
+    record_pointers_addr: jlong,
+    num_records: jint,
+    page_addresses: JLongArray,
+    uao_size: jint,
+    serialized_datatypes: JObjectArray,
+    file_path: JString,
+    prefer_dictionary_ratio: jdouble,
+    batch_size: jint,
+    checksum_algo: jint,
+    partition_checksums: JLongArray,
+    partition_lengths: JLongArray,
+    compression_codec: JString,
+    compression_level: jint,
+    offsets_as_lengths: jboolean,
+    tracing_enabled: jboolean,
+) -> jlong {
+    try_unwrap_or_throw(&e, |env| unsafe {
+        with_trace(
+            "writeSortedPartitionsNative",
+            tracing_enabled != JNI_FALSE,
+            || {
+                let num_records = usize::try_from(num_records).map_err(|_| {
+                    CometError::Internal(format!("Negative record count {num_records}"))
+                })?;
+                let record_pointers: &[i64] = if num_records == 0 {
+                    &[]
+                } else {
+                    // SAFETY: JVM unsafe memory allocation is aligned with long.
+                    debug_assert!(
+                        record_pointers_addr != 0,
+                        "writeSortedPartitionsNative: null record pointers"
+                    );
+                    debug_assert_eq!(
+                        (record_pointers_addr as usize) % std::mem::align_of::<i64>(),
+                        0,
+                        "writeSortedPartitionsNative: record pointers not aligned to i64"
+                    );
+                    std::slice::from_raw_parts(record_pointers_addr as *const i64, num_records)
+                };
+                let data_types = convert_datatype_arrays(env, serialized_datatypes)?;
+                let mut pages = vec![0_i64; page_addresses.len(env)?];
+                page_addresses.get_region(env, 0, &mut pages)?;
+                let mut checksums = vec![0_i64; partition_checksums.len(env)?];
+                partition_checksums.get_region(env, 0, &mut checksums)?;
+                let mut lengths = vec![0_i64; partition_lengths.len(env)?];
+                let output_path: String = file_path.try_to_string(env)?;
+                let compression_codec: String = compression_codec.try_to_string(env)?;
+
+                let encode_nanos = write_sorted_partitions(
+                    record_pointers,
+                    &pages,
+                    uao_size,
+                    &data_types,
+                    &output_path,
+                    prefer_dictionary_ratio,
+                    batch_size,
+                    checksum_algo,
+                    &mut checksums,
+                    &mut lengths,
+                    &compression_codec,
+                    compression_level,
+                    offsets_as_lengths != JNI_FALSE,
+                )?;
+
+                partition_lengths.set_region(env, 0, &lengths)?;
+                partition_checksums.set_region(env, 0, &checksums)?;
+                Ok(encode_nanos)
+            },
+        )
+    })
+}
+
+/// Converts the rows of one sorted spill, every partition of it, into Arrow batches of
+/// `data_types` and appends them to `output_path` in partition order. `record_pointers` are the
+/// sorter's sorted Spark `PackedRecordPointer`s, whose page numbers index `page_addresses`.
+/// Fills `partition_lengths` and, when `checksum_algo` is not -1, continues each written
+/// partition's checksum in `partition_checksums`, where `i64::MIN` is a checksum not yet started.
+/// Returns the encode nanos. Core of `Native.writeSortedPartitionsNative`.
+///
+/// # Safety
+/// Each pointer must resolve, through `page_addresses`, to a readable record.
+#[allow(clippy::too_many_arguments)]
+unsafe fn write_sorted_partitions(
+    record_pointers: &[i64],
+    page_addresses: &[i64],
+    uao_size: i32,
+    data_types: &[ArrowDataType],
+    output_path: &str,
+    prefer_dictionary_ratio: f64,
+    batch_size: i32,
+    checksum_algo: i32,
+    partition_checksums: &mut [i64],
+    partition_lengths: &mut [i64],
+    compression_codec: &str,
+    compression_level: i32,
+    offsets_as_lengths: bool,
+) -> CometResult<i64> {
+    let uao_size = usize::try_from(uao_size)
+        .map_err(|_| CometError::Internal(format!("Unsupported record length size {uao_size}")))?;
+    let batch_size = usize::try_from(batch_size)
+        .map_err(|_| CometError::Internal(format!("Unsupported batch size {batch_size}")))?;
+    let checksum_algo = (checksum_algo != -1).then_some(checksum_algo);
+    let compression_codec = jvm_shuffle_codec(compression_codec, compression_level);
+
+    process_sorted_partitions(
+        record_pointers,
+        page_addresses,
+        uao_size,
+        data_types,
+        output_path,
+        prefer_dictionary_ratio,
+        batch_size,
+        checksum_algo,
+        partition_checksums,
+        partition_lengths,
+        &compression_codec,
+        offsets_as_lengths,
+    )
+}
+
 #[no_mangle]
 /// Used by Comet shuffle external sorter to sort in-memory row partition ids.
 pub extern "system" fn Java_org_apache_comet_Native_sortRowPartitionsNative(
@@ -1892,6 +2036,7 @@ pub extern "system" fn Java_org_apache_comet_Native_sortRowPartitionsNative(
     _class: JClass,
     address: jlong,
     size: jlong,
+    capacity: jlong,
     tracing_enabled: jboolean,
 ) {
     try_unwrap_or_throw(&e, |_| {
@@ -1899,27 +2044,33 @@ pub extern "system" fn Java_org_apache_comet_Native_sortRowPartitionsNative(
             "sortRowPartitionsNative",
             tracing_enabled != JNI_FALSE,
             || {
+                let size = usize::try_from(size).map_err(|_| {
+                    CometError::Internal(format!("sortRowPartitionsNative: negative size {size}"))
+                })?;
+                // The sort uses the `size` longs after the records as scratch space.
+                let capacity = usize::try_from(capacity)
+                    .ok()
+                    .filter(|capacity| capacity / 2 >= size)
+                    .ok_or_else(|| {
+                        CometError::Internal(format!(
+                            "sortRowPartitionsNative: an array of {capacity} longs has no room \
+                             for {size} longs of scratch space after {size} records"
+                        ))
+                    })?;
                 // SAFETY: JVM unsafe memory allocation is aligned with long.
                 debug_assert!(address != 0, "sortRowPartitionsNative: null address");
-                debug_assert!(size >= 0, "sortRowPartitionsNative: negative size {size}");
                 debug_assert_eq!(
                     (address as usize) % std::mem::align_of::<i64>(),
                     0,
                     "sortRowPartitionsNative: address not aligned to i64"
                 );
                 let array =
-                    unsafe { std::slice::from_raw_parts_mut(address as *mut i64, size as usize) };
-                sort_row_partitions(array);
+                    unsafe { std::slice::from_raw_parts_mut(address as *mut i64, capacity) };
+                sort_row_partitions(array, size);
                 Ok(())
             },
         )
     })
-}
-
-/// Sorts packed shuffle record pointers in place by the partition id in their upper 24 bits,
-/// keeping the order of the pointers within a partition. Core of `Native.sortRowPartitionsNative`.
-fn sort_row_partitions(packed_pointers: &mut [i64]) {
-    packed_pointers.rdxsort();
 }
 
 #[no_mangle]
@@ -3258,24 +3409,6 @@ mod tests {
     }
 
     #[test]
-    fn sort_row_partitions_sorts_in_place() {
-        let mut pointers = vec![
-            5_i64 << 40 | 3,
-            1,
-            2_i64 << 40,
-            1_i64 << 40 | 7,
-            0,
-            5_i64 << 40,
-        ];
-        let mut expected = pointers.clone();
-        // Stable, so the lower 40 bits keep their input order within a partition.
-        expected.sort_by_key(|pointer| (*pointer as u64) >> 40);
-        sort_row_partitions(&mut pointers);
-        assert_eq!(pointers, expected);
-        assert_eq!(&pointers[..2], &[1, 0]);
-    }
-
-    #[test]
     fn shuffle_partition_offsets_requires_an_executed_shuffle_write() {
         let error = shuffle_partition_offsets(None).unwrap_err();
         assert!(
@@ -3479,6 +3612,394 @@ mod tests {
                 .contains("1 row sizes for 2 row addresses"),
             "{error}"
         );
+    }
+
+    /// The page numbers `SorterRecords` stores rows under. They are not contiguous, so that a
+    /// lookup that ignored the page number would read the wrong page.
+    const SORTER_PAGE_NUMBERS: [usize; 2] = [3, 1];
+
+    /// Rows stored the way Spark's sorter stores them: in pages, each record its length in 4
+    /// bytes, then the row's 4-byte big-endian size from `UnsafeRowSerializer`, then the row.
+    /// Rows alternate between two pages, and `pointers` holds the packed record pointer of
+    /// each row, sorted by partition as `sort_row_partitions` sorts them.
+    struct SorterRecords {
+        _pages: Vec<Vec<u64>>,
+        page_addresses: Vec<i64>,
+        pointers: Vec<i64>,
+    }
+
+    impl SorterRecords {
+        /// Each row must be whole 8-byte words, as an `UnsafeRow` is, so that every row stays
+        /// aligned in its page.
+        fn new<R: AsRef<[u8]>>(rows: &[R], partitions: &[usize]) -> Self {
+            let mut page_bytes: Vec<Vec<u8>> = vec![Vec::new(); SORTER_PAGE_NUMBERS.len()];
+            let mut pointers = Vec::new();
+            for (i, (row, &partition)) in rows.iter().zip(partitions).enumerate() {
+                let row = row.as_ref();
+                let page = i % SORTER_PAGE_NUMBERS.len();
+                let offset = page_bytes[page].len();
+                page_bytes[page].extend_from_slice(&(4 + row.len() as i32).to_ne_bytes());
+                page_bytes[page].extend_from_slice(&(row.len() as i32).to_be_bytes());
+                page_bytes[page].extend_from_slice(row);
+                pointers.push(
+                    (partition as i64) << 40
+                        | (SORTER_PAGE_NUMBERS[page] as i64) << 27
+                        | offset as i64,
+                );
+            }
+            let num_records = pointers.len();
+            pointers.resize(2 * num_records, 0);
+            sort_row_partitions(&mut pointers, num_records);
+            pointers.truncate(num_records);
+
+            // `u64` elements keep the rows 8-byte aligned, as in a Spark page.
+            let pages: Vec<Vec<u64>> = page_bytes
+                .iter()
+                .map(|bytes| {
+                    let mut page = vec![0_u64; bytes.len().div_ceil(8)];
+                    unsafe {
+                        std::ptr::copy_nonoverlapping(
+                            bytes.as_ptr(),
+                            page.as_mut_ptr() as *mut u8,
+                            bytes.len(),
+                        )
+                    };
+                    page
+                })
+                .collect();
+            let mut page_addresses = vec![0_i64; SORTER_PAGE_NUMBERS.iter().max().unwrap() + 1];
+            for (page, &number) in pages.iter().zip(&SORTER_PAGE_NUMBERS) {
+                page_addresses[number] = page.as_ptr() as i64;
+            }
+            Self {
+                _pages: pages,
+                page_addresses,
+                pointers,
+            }
+        }
+
+        /// Writes the records with `write_sorted_partitions` in batches of 2 rows.
+        fn write(
+            &self,
+            path: &std::path::Path,
+            checksum_algo: i32,
+            partition_checksums: &mut [i64],
+            partition_lengths: &mut [i64],
+            codec: &str,
+        ) -> CometResult<i64> {
+            unsafe {
+                write_sorted_partitions(
+                    &self.pointers,
+                    &self.page_addresses,
+                    4,
+                    &[DataType::Int64],
+                    path.to_str().unwrap(),
+                    1.0,
+                    2,
+                    checksum_algo,
+                    partition_checksums,
+                    partition_lengths,
+                    codec,
+                    1,
+                    false,
+                )
+            }
+        }
+    }
+
+    /// The partition of row `i` of `long_rows(0..23)`: partitions 1, 3 and 6 of 7 get no rows,
+    /// and every other one more than one 2-row batch.
+    fn partition_of(i: usize) -> usize {
+        [0, 2, 4, 5, 2, 0, 4][i % 7]
+    }
+
+    #[test]
+    fn write_sorted_partitions_matches_writing_each_partition() {
+        let values: Vec<i64> = (0..23).collect();
+        let rows = long_rows(&values);
+        let partitions: Vec<usize> = (0..rows.len()).map(partition_of).collect();
+        let num_partitions = 7;
+        let records = SorterRecords::new(&rows, &partitions);
+        let dir = tempfile::tempdir().unwrap();
+
+        // Every codec and checksum algorithm, and no checksum (-1) with no checksum array.
+        for (codec, algo) in [("lz4", 1), ("zstd", 0), ("snappy", 2), ("lz4", -1)] {
+            let name = format!("{codec}-{algo}");
+            let path = dir.path().join(&name);
+            let mut checksums = vec![i64::MIN; if algo == -1 { 0 } else { num_partitions }];
+            let mut lengths = vec![0_i64; num_partitions];
+            records
+                .write(&path, algo, &mut checksums, &mut lengths, codec)
+                .unwrap();
+
+            // Writing each partition's rows, in the order the sorter keeps them, on its own.
+            let mut expected = Vec::new();
+            for partition in 0..num_partitions {
+                let partition_rows: Vec<[u8; 16]> = rows
+                    .iter()
+                    .zip(&partitions)
+                    .filter(|(_, &p)| p == partition)
+                    .map(|(row, _)| *row)
+                    .collect();
+                if partition_rows.is_empty() {
+                    assert_eq!(lengths[partition], 0, "{name}: partition {partition}");
+                    if algo != -1 {
+                        assert_eq!(checksums[partition], i64::MIN, "{name}: {partition}");
+                    }
+                    continue;
+                }
+                let sizes = vec![16_i32; partition_rows.len()];
+                let ([written, checksum, _], data) = write_long_rows(
+                    &partition_rows,
+                    &sizes,
+                    &dir.path().join(format!("{name}-{partition}")),
+                    (algo != -1).then_some(algo),
+                    i64::MIN,
+                    codec,
+                )
+                .unwrap();
+                assert_eq!(lengths[partition], written, "{name}: partition {partition}");
+                if algo != -1 {
+                    assert_eq!(checksums[partition], checksum, "{name}: {partition}");
+                }
+                expected.extend(data);
+            }
+            let data = std::fs::read(&path).unwrap();
+            assert_eq!(data, expected, "{name}");
+
+            // The blocks hold every row, partition by partition.
+            let mut decoded = Vec::new();
+            for block in shuffle_blocks(&data) {
+                decoded.extend(long_values(&read_ipc_compressed(block).unwrap()));
+            }
+            let mut expected_values = values.clone();
+            expected_values.sort_by_key(|&v| partition_of(v as usize));
+            assert_eq!(decoded, expected_values, "{name}");
+        }
+    }
+
+    /// Spark `UnsafeRow`s with one non-null string field each: an 8-byte null bitset, the
+    /// field's offset and size, then the string padded to a word.
+    fn string_rows(values: &[&str]) -> Vec<Vec<u8>> {
+        values
+            .iter()
+            .map(|value| {
+                let mut row = vec![0_u8; 16 + value.len().div_ceil(8) * 8];
+                row[8..16].copy_from_slice(&(16_i64 << 32 | value.len() as i64).to_le_bytes());
+                row[16..16 + value.len()].copy_from_slice(value.as_bytes());
+                row
+            })
+            .collect()
+    }
+
+    #[test]
+    fn write_sorted_partitions_matches_writing_each_partition_as_dictionaries_change() {
+        // With a dictionary ratio of 1.5, a 2-row batch of two equal strings stays
+        // dictionary-encoded and one of two different strings is written plain
+        // (`builder_to_array`). So the block schema changes within partitions 0 and 3 and from
+        // partition 0 to 2, and stays the same from partition 2 to 3, where the encoder keeps
+        // its block writer.
+        let inserted = [
+            ("a", 0),
+            ("e", 3),
+            ("a", 0),
+            ("d", 2),
+            ("e", 3),
+            ("b", 0),
+            ("d", 2),
+            ("f", 3),
+            ("c", 0),
+            ("g", 3),
+        ];
+        let (values, partitions): (Vec<&str>, Vec<usize>) = inserted.into_iter().unzip();
+        let rows = string_rows(&values);
+        let records = SorterRecords::new(&rows, &partitions);
+        let num_partitions = 4;
+        let mut expected_values = inserted.to_vec();
+        expected_values.sort_by_key(|&(_, partition)| partition);
+        let expected_values: Vec<&str> = expected_values.iter().map(|&(v, _)| v).collect();
+        let dir = tempfile::tempdir().unwrap();
+
+        // zstd stores the offsets of a plain string column as lengths, and of a dictionary one
+        // as offsets, so a block writer kept for the wrong schema writes different bytes.
+        for (codec, offsets_as_lengths) in [("lz4", false), ("zstd", true)] {
+            let path = dir.path().join(codec);
+            let mut checksums = vec![i64::MIN; num_partitions];
+            let mut lengths = vec![0_i64; num_partitions];
+            unsafe {
+                write_sorted_partitions(
+                    &records.pointers,
+                    &records.page_addresses,
+                    4,
+                    &[DataType::Utf8],
+                    path.to_str().unwrap(),
+                    1.5,
+                    2,
+                    1,
+                    &mut checksums,
+                    &mut lengths,
+                    codec,
+                    1,
+                    offsets_as_lengths,
+                )
+            }
+            .unwrap();
+
+            // Writing each partition's rows on its own, with an encoder of its own.
+            let mut expected = Vec::new();
+            for partition in 0..num_partitions {
+                let (addresses, sizes): (Vec<i64>, Vec<i32>) = rows
+                    .iter()
+                    .zip(&partitions)
+                    .filter(|(_, &p)| p == partition)
+                    .map(|(row, _)| (row.as_ptr() as i64, row.len() as i32))
+                    .unzip();
+                if addresses.is_empty() {
+                    assert_eq!(lengths[partition], 0, "{codec}: {partition}");
+                    continue;
+                }
+                let partition_path = dir.path().join(format!("{codec}-{partition}"));
+                let [written, checksum, _] = unsafe {
+                    write_sorted_file(
+                        &addresses,
+                        &sizes,
+                        &[DataType::Utf8],
+                        partition_path.to_str().unwrap().to_string(),
+                        1.5,
+                        2,
+                        true,
+                        1,
+                        i64::MIN,
+                        codec,
+                        1,
+                        offsets_as_lengths,
+                    )
+                }
+                .unwrap();
+                assert_eq!(lengths[partition], written, "{codec}: {partition}");
+                assert_eq!(checksums[partition], checksum, "{codec}: {partition}");
+                expected.extend(std::fs::read(&partition_path).unwrap());
+            }
+            let data = std::fs::read(&path).unwrap();
+            assert_eq!(data, expected, "{codec}");
+
+            let mut dictionaries = Vec::new();
+            let mut decoded = Vec::new();
+            for block in shuffle_blocks(&data) {
+                let batch = read_ipc_compressed(block).unwrap();
+                let column = batch.column(0);
+                dictionaries.push(matches!(column.data_type(), DataType::Dictionary(_, _)));
+                let strings = arrow::compute::cast(column, &DataType::Utf8).unwrap();
+                let strings = arrow::array::AsArray::as_string::<i32>(&strings);
+                decoded.extend(strings.iter().map(|s| s.unwrap().to_string()));
+            }
+            assert_eq!(dictionaries, [true, false, true, true, false], "{codec}");
+            assert_eq!(decoded, expected_values, "{codec}");
+        }
+    }
+
+    #[test]
+    fn write_sorted_partitions_continues_partition_checksums() {
+        let rows = long_rows(&(0..23).collect::<Vec<_>>());
+        let partitions: Vec<usize> = (0..rows.len()).map(partition_of).collect();
+        let num_partitions = 7;
+        let records = SorterRecords::new(&rows, &partitions);
+        let dir = tempfile::tempdir().unwrap();
+
+        // Two spills share the checksums, so after the second each partition's checksum covers
+        // its bytes in both files, as Spark checksums the merged partition.
+        let algorithms = [(0, crc32fast::hash as fn(&[u8]) -> u32), (1, adler32)];
+        for (algo, checksum_of) in algorithms {
+            let mut checksums = vec![i64::MIN; num_partitions];
+            let mut spills = Vec::new();
+            for spill in 0..2 {
+                let path = dir.path().join(format!("{algo}-{spill}"));
+                let mut lengths = vec![0_i64; num_partitions];
+                records
+                    .write(&path, algo, &mut checksums, &mut lengths, "lz4")
+                    .unwrap();
+                spills.push((std::fs::read(&path).unwrap(), lengths));
+            }
+
+            for partition in [0, 2, 4, 5] {
+                let mut bytes = Vec::new();
+                for (data, lengths) in &spills {
+                    let start = lengths[..partition].iter().sum::<i64>() as usize;
+                    bytes.extend_from_slice(&data[start..start + lengths[partition] as usize]);
+                }
+                assert_eq!(
+                    checksums[partition],
+                    checksum_of(&bytes) as i64,
+                    "algorithm {algo}, partition {partition}"
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn write_sorted_partitions_without_records() {
+        let records = SorterRecords::new::<[u8; 16]>(&[], &[]);
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("empty");
+        let mut checksums = vec![i64::MIN; 3];
+        let mut lengths = vec![0_i64; 3];
+        records
+            .write(&path, 1, &mut checksums, &mut lengths, "lz4")
+            .unwrap();
+        assert_eq!(lengths, [0, 0, 0]);
+        assert_eq!(checksums, [i64::MIN; 3]);
+        assert!(std::fs::read(&path).unwrap().is_empty());
+    }
+
+    #[test]
+    fn write_sorted_partitions_rejects_bad_record_pointers() {
+        let rows = long_rows(&[1, 2, 3]);
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("bad");
+        let write = |records: &SorterRecords, num_partitions: usize| {
+            records
+                .write(&path, -1, &mut [], &mut vec![0; num_partitions], "lz4")
+                .unwrap_err()
+                .to_string()
+        };
+
+        let records = SorterRecords::new(&rows, &[0, 1, 2]);
+        let error = write(&records, 2);
+        assert!(error.contains("partition 2 of 2"), "{error}");
+
+        let mut unsorted = SorterRecords::new(&rows, &[0, 1, 2]);
+        unsorted.pointers.reverse();
+        let error = write(&unsorted, 3);
+        assert!(error.contains("not sorted by partition"), "{error}");
+
+        let mut missing_page = SorterRecords::new(&rows, &[0, 1, 2]);
+        missing_page.page_addresses[SORTER_PAGE_NUMBERS[1]] = 0;
+        let error = write(&missing_page, 3);
+        assert!(
+            error.contains(&format!("page {}", SORTER_PAGE_NUMBERS[1])),
+            "{error}"
+        );
+
+        let error = unsafe {
+            write_sorted_partitions(
+                &records.pointers,
+                &records.page_addresses,
+                2,
+                &[DataType::Int64],
+                path.to_str().unwrap(),
+                1.0,
+                2,
+                -1,
+                &mut [],
+                &mut [0; 3],
+                "lz4",
+                1,
+                false,
+            )
+        }
+        .unwrap_err()
+        .to_string();
+        assert!(error.contains("record length size 2"), "{error}");
     }
 
     /// Exports `columns` as Arrow C Data structs and converts them with `columnar_to_row_convert`,
