@@ -118,14 +118,11 @@ object CometMapValues extends CometExpressionSerde[MapValues] {
   }
 }
 
-object CometMapExtract extends CometExpressionSerde[GetMapValue] with CodegenDispatchFallback {
+object CometMapExtract
+    extends CometExpressionSerde[GetMapValue]
+    with GatedCodegenDispatchFallback {
 
   override def getUnsupportedReasons(): Seq[String] = MapKeySupport.reasons
-
-  override def dispatchDeclineReason(expr: Expression): Option[String] =
-    CalendarIntervalOutput
-      .declineReason(expr)
-      .orElse(SharedSubexpressionArgument.declineReason(expr))
 
   override def getSupportLevel(expr: GetMapValue): SupportLevel = expr.child.dataType match {
     case MapType(keyType, _, _) => MapKeySupport.keySupport(keyType)
@@ -181,18 +178,13 @@ private object MapKeyDedupPolicySupport {
 
 object CometMapFromArrays
     extends CometExpressionSerde[MapFromArrays]
-    with CodegenDispatchFallback {
+    with GatedCodegenDispatchFallback {
 
   override def getIncompatibleReasons(): Seq[String] =
     Seq(MapBuilderKeySupport.floatingPointReason, MapKeyDedupPolicySupport.incompatibleReason)
 
   override def getUnsupportedReasons(): Seq[String] =
     Seq(NullGuardSupport.nondeterministicReason)
-
-  override def dispatchDeclineReason(expr: Expression): Option[String] =
-    CalendarIntervalOutput
-      .declineReason(expr)
-      .orElse(SharedSubexpressionArgument.declineReason(expr))
 
   override def getCompatibleNotes(): Seq[String] =
     Seq(MapKeyDedupPolicySupport.nullKeyReason)

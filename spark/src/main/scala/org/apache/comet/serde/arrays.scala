@@ -81,40 +81,6 @@ private[serde] object NullGuardSupport {
 }
 
 /**
- * Keeps a result holding a calendar interval, at any nesting depth, off the JVM codegen
- * dispatcher. The dispatcher writes the interval's microseconds to Arrow as nanoseconds, which
- * overflows a long beyond about 292 years, a range Spark represents
- * ([#5279](https://github.com/apache/datafusion-comet/issues/5279)). Such an expression falls
- * back to Spark instead.
- */
-private[serde] object CalendarIntervalOutput {
-
-  private val reason: String =
-    "the result holds a calendar interval, whose microseconds overflow the dispatcher's Arrow " +
-      "nanoseconds beyond about 292 years"
-
-  def declineReason(expr: Expression): Option[String] =
-    if (SupportLevel.containsType(expr.dataType, classOf[CalendarIntervalType])) Some(reason)
-    else None
-}
-
-/**
- * Keeps an expression off the JVM codegen dispatcher when one of its nodes could skip an argument
- * holding a subexpression that the operator's other expressions share (see
- * `QueryPlanSerde.skipsSharedSubexpression`). Spark evaluates such a subexpression for every row,
- * so the expression falls back to Spark instead.
- */
-private[serde] object SharedSubexpressionArgument {
-
-  private val reason: String =
-    "an argument this expression can skip holds a subexpression that the operator's other " +
-      "expressions share, which Spark evaluates for every row before this expression's NULL check"
-
-  def declineReason(expr: Expression): Option[String] =
-    if (skipsSharedSubexpression(expr)) Some(reason) else None
-}
-
-/**
  * Whether evaluating `expr` at a different point than Spark does, or not at all, is unobservable.
  *
  * A literal or column read cannot throw, carry state or have a side effect, so neither its
@@ -133,47 +99,7 @@ private[serde] object EvaluationOrder {
 object CometArrayAppend
     extends CometExpressionSerde[ArrayAppend]
     with ArraysBase
-    with CodegenDispatchFallback {
-
-  override def dispatchDeclineReason(expr: Expression): Option[String] =
-    CalendarIntervalOutput
-      .declineReason(expr)
-      .orElse(SharedSubexpressionArgument.declineReason(expr))
-
-  override def getUnsupportedReasons(): Seq[String] =
-    Seq(NullGuardSupport.nondeterministicReason)
-
-  private val skippedItemNote: String =
-    "With a nullable array and an item that is not a literal or column, the native `NULL` " +
-      "guard skips the item on a row whose array is `NULL`, so an item that raises there (for " +
-      "example `element_at` with index 0, or a division by zero under ANSI mode) raises in " +
-      "Spark but not on the native path. Such an expression runs through the JVM codegen " +
-      "dispatcher by default; enabling the native path can swallow that error " +
-      "([#6086](https://github.com/apache/datafusion-comet/issues/6086))."
-
-  override def getIncompatibleReasons(): Seq[String] = Seq(skippedItemNote)
-
-  // Only a nullable array with an item that is not a literal or column is routed through the
-  // dispatcher; every other compatible instance runs natively by default.
-  override def hasConditionalNativeDefault: Boolean = true
-
-  // The item sits inside the guard's THEN branch, and DataFusion's CaseExpr evaluates that
-  // branch only on the rows the guard selects, while Spark's codegen evaluates the item on
-  // every row. A stateful item therefore drifts the same way a stateful array does, and is
-  // declined. The same shape lets an item that raises go unevaluated on a row whose array is
-  // NULL, so Spark raises where the native path returns NULL, whatever the ANSI setting
-  // (`element_at` raises on index 0 either way). Unless the item is a literal or column, which
-  // cannot raise, a nullable array is reported as incompatible, which routes it through the JVM
-  // codegen dispatcher by default and reserves the native guard for allowIncompatible=true. A
-  // non-nullable array evaluates the item on every row on both paths, so it stays native.
-  override def getSupportLevel(expr: ArrayAppend): SupportLevel =
-    NullGuardSupport.nondeterministicChild(expr.children).getOrElse {
-      if (expr.left.nullable && !EvaluationOrder.isUnobservable(expr.right)) {
-        Incompatible(Some(skippedItemNote))
-      } else {
-        Compatible()
-      }
-    }
+    with GatedCodegenDispatchFallback {
 
   /**
    * Spark's generated code for `ArrayAppend` evaluates the item for every row and guards only the
@@ -187,19 +113,11 @@ object CometArrayAppend
    * and evaluates each operand once over the whole batch, in order, whatever the operands are.
    */
   private val nondeterministicReason: String =
-    "array_append with a nullable array and a nondeterministic operand such as `rand()`: the " +
-      "native NULL guard evaluates the operands more than once, on subsets of the rows"
+    "With a nullable array, Comet has no native path for a nondeterministic operand such as " +
+      "`rand()` or `monotonically_increasing_id()`, because the native `NULL` guard would " +
+      "evaluate it twice."
 
   override def getUnsupportedReasons(): Seq[String] = Seq(nondeterministicReason)
-
-  /**
-   * Whether evaluating `expr` for a row Spark would not guard it on is unobservable: a literal or
-   * column read cannot throw. `foldable` is not usable here, see CometArrayJoin.orderInsensitive.
-   */
-  private def cannotThrow(expr: Expression): Boolean = expr match {
-    case _: Literal | _: Attribute | _: BoundReference => true
-    case _ => false
-  }
 
   override def getSupportLevel(expr: ArrayAppend): SupportLevel = {
     if (expr.left.nullable && expr.children.exists(!_.deterministic)) {
@@ -257,9 +175,10 @@ object CometArrayAppend
     // DataFusion's CaseExpr evaluates the THEN branch only on the rows the guard selects, but
     // Spark evaluates the item on every row. Evaluate it on the remaining rows in the ELSE
     // branch, so that it raises there as well, and still once per row. See
-    // `nondeterministicReason` for why this is restricted to deterministic operands.
+    // `nondeterministicReason` for why this is restricted to deterministic operands. A literal or
+    // column read cannot throw.
     val elseExprProto =
-      if (cannotThrow(expr.children(1))) {
+      if (EvaluationOrder.isUnobservable(expr.children(1))) {
         nullLiteralProto
       } else {
         for {
@@ -996,7 +915,7 @@ object CometArrayReverse extends CometExpressionSerde[Reverse] with ArraysBase {
 
 }
 
-object CometElementAt extends CometExpressionSerde[ElementAt] with CodegenDispatchFallback {
+object CometElementAt extends CometExpressionSerde[ElementAt] with GatedCodegenDispatchFallback {
 
   /**
    * Under ANSI, neither native shape reproduces Spark for a nullable nondeterministic operand.
@@ -1019,11 +938,6 @@ object CometElementAt extends CometExpressionSerde[ElementAt] with CodegenDispat
     expr.failOnError && expr.left.nullable
 
   override def getUnsupportedReasons(): Seq[String] = eagerIndexReason +: MapKeySupport.reasons
-
-  override def dispatchDeclineReason(expr: Expression): Option[String] =
-    CalendarIntervalOutput
-      .declineReason(expr)
-      .orElse(SharedSubexpressionArgument.declineReason(expr))
 
   override def getSupportLevel(expr: ElementAt): SupportLevel = {
     if (needsNullGuard(expr) && !expr.left.deterministic) {
@@ -1153,13 +1067,10 @@ object CometArrayFilter extends CometExpressionSerde[ArrayFilter] {
   }
 }
 
-object CometSize extends CometExpressionSerde[Size] with CodegenDispatchFallback {
+object CometSize extends CometExpressionSerde[Size] with GatedCodegenDispatchFallback {
 
   override def getUnsupportedReasons(): Seq[String] =
     Seq(NullGuardSupport.nondeterministicReason)
-
-  override def dispatchDeclineReason(expr: Expression): Option[String] =
-    SharedSubexpressionArgument.declineReason(expr)
 
   override def getSupportLevel(expr: Size): SupportLevel = {
     NullGuardSupport.nondeterministicChild(Seq(expr.child)).getOrElse {
@@ -1239,20 +1150,15 @@ object CometArrayPosition extends CometExpressionSerde[ArrayPosition] with Array
   }
 }
 
-object CometArraysZip extends CometExpressionSerde[ArraysZip] with CodegenDispatchFallback {
+// `arrays_zip` skips the arguments after a NULL one, as can a node nested in an argument, and the
+// dispatcher compiles the whole tree, so either can skip a shared subexpression.
+object CometArraysZip extends CometExpressionSerde[ArraysZip] with GatedCodegenDispatchFallback {
 
   override def getUnsupportedReasons(): Seq[String] = Seq(
     "An array whose element type is a map, a day-time or year-month interval, a variant, a " +
       "`TIME` value or a user-defined type has no native `arrays_zip` kernel, and neither does " +
       "a struct or inner array that holds one of those.",
     NullGuardSupport.nondeterministicReason)
-
-  // `arrays_zip` skips the arguments after a NULL one, as can a node nested in an argument, and
-  // the dispatcher compiles the whole tree, so either can skip a shared subexpression.
-  override def dispatchDeclineReason(expr: Expression): Option[String] =
-    CalendarIntervalOutput
-      .declineReason(expr)
-      .orElse(SharedSubexpressionArgument.declineReason(expr))
 
   private def isTypeSupported(dt: DataType): Boolean = {
     import DataTypes._

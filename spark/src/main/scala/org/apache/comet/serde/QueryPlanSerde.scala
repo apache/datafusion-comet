@@ -1359,9 +1359,10 @@ object QueryPlanSerde extends Logging with CometExprShim with CometTypeShim {
   /**
    * Whether some node of `expr` with more than one child holds, in a child it can skip, a
    * subexpression that the operator's expressions share. A node can skip any child after its
-   * first, a `DivModLike` or `Pmod` its dividend too, a `StringLocate`, which evaluates its start
-   * first, its other two children, and an `ArrayJoin` with a nullable replacement, which
-   * evaluates that first, its array and delimiter, while an `ArrayAppend` skips none. Spark
+   * first, a `DivModLike` or `Pmod`, which evaluates its divisor first, only its dividend, a
+   * `StringLocate`, which evaluates its start first, its other two children, and an `ArrayJoin`
+   * with a nullable replacement, which evaluates that first, its array and delimiter, while a
+   * Spark 3.x `ArrayAppend`, whose generated code evaluates both children, skips none. Spark
    * evaluates that subexpression for every row, while `expr` evaluated alone, as the JVM codegen
    * dispatcher does, can skip it on the rows where a child evaluated before it is NULL, so an
    * ANSI error Spark raises goes unraised. With `spark.sql.subexpressionElimination.enabled` off
@@ -1378,13 +1379,15 @@ object QueryPlanSerde extends Logging with CometExprShim with CometTypeShim {
         else Nil
       expr.exists { node =>
         val skippable = node match {
-          // `DivModLike` and `Pmod` skip the dividend when the divisor, evaluated first, is NULL
-          case _: DivModLike | _: Pmod => node.children
+          // skip the dividend (`left`) when the divisor, evaluated first, is NULL
+          case _: DivModLike | _: Pmod => node.children.take(1)
           // `StringLocate` evaluates `start`, its last child, first and skips the others on NULL
           case _: StringLocate => node.children.init
           // `ArrayJoin` evaluates a nullable replacement first and skips the rest when it is NULL
           case j: ArrayJoin if j.nullReplacement.exists(_.nullable) => node.children.init
-          // Spark 3.x's `ArrayAppend` evaluates both children before its NULL check
+          // Spark 3.x's generated code for `ArrayAppend` evaluates both children before its NULL
+          // check, and the dispatcher runs that code, so it skips neither. From 4.0 it is
+          // replaced by `ArrayInsert` before it gets here.
           case _: ArrayAppend => Nil
           case _ => node.children.drop(1)
         }

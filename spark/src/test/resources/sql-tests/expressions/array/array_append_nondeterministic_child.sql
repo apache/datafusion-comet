@@ -15,13 +15,13 @@
 -- specific language governing permissions and limitations
 -- under the License.
 
--- `CometArrayAppend` reproduces Spark's NULL propagation with a `CASE WHEN array IS NOT NULL`
--- guard that serializes the array twice. A stateful array advances each copy independently, so
--- the guard and the `array_append` see different rows and the result silently drifts from Spark.
--- The item sits inside the guard's THEN branch, which DataFusion evaluates only on the selected
--- rows while Spark evaluates it on every row, so a stateful item drifts too. The serde declines
--- either nondeterministic operand and routes it through the JVM codegen dispatcher, which
--- evaluates each once. A deterministic nullable array keeps the native guard.
+-- For a nullable array, `CometArrayAppend` reproduces Spark's NULL propagation with a
+-- `CASE WHEN array IS NOT NULL` guard that serializes the array twice and evaluates the item in
+-- both branches. A stateful operand advances each copy independently, on a subset of the rows, so
+-- the result silently drifts from Spark. The serde declines either nondeterministic operand over a
+-- nullable array and routes it through the JVM codegen dispatcher, which evaluates each once. A
+-- non-nullable array gets no guard, so each operand is evaluated once over the whole batch and
+-- stays native, and so does a deterministic nullable array.
 --
 -- Spark 4.0 rewrites `array_append` to `array_insert(-1)` before serde, so `CometArrayAppend` is
 -- only reachable on Spark 3.x.
@@ -40,21 +40,20 @@ query expect_dispatch(array_append)
 SELECT _1, array_append(IF(monotonically_increasing_id() % 2 = 0, array(1), CAST(NULL AS ARRAY<INT>)), 2) AS a
 FROM test_array_append_nondet
 
--- A non-nullable stateful array is declined too, rather than relying on the guard matching
--- every row.
-query expect_dispatch(array_append)
+-- A non-nullable stateful array gets no guard and is evaluated once, so it stays native.
+query expect_native(array_append)
 SELECT _1, array_append(array(monotonically_increasing_id()), 2) AS a
 FROM test_array_append_nondet
 
 -- A stateful item over a nullable array: Spark advances the counter on all 16 rows, so the
--- even rows carry [1, 0], [1, 2], [1, 4] and so on, which the filtered native branch cannot
--- reproduce.
+-- even rows carry [1, 0], [1, 2], [1, 4] and so on, which the native guard's two branches, each
+-- on a subset of the rows, cannot reproduce.
 query expect_dispatch(array_append)
 SELECT _1, array_append(IF(_1 % 2 = 0, array(1), CAST(NULL AS ARRAY<INT>)), monotonically_increasing_id()) AS a
 FROM test_array_append_nondet
 
--- A stateful item over a non-nullable array is declined the same way.
-query expect_dispatch(array_append)
+-- A stateful item over a non-nullable array is evaluated once over the whole batch too.
+query expect_native(array_append)
 SELECT _1, array_append(array(1), monotonically_increasing_id()) AS a
 FROM test_array_append_nondet
 

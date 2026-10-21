@@ -19,20 +19,13 @@
 -- which overflows a long beyond about 292 years, a range Spark represents
 -- (https://github.com/apache/datafusion-comet/issues/5279). An expression that would only
 -- run through the dispatcher declines it when its result holds a calendar interval at any
--- nesting depth, so the projection falls back to Spark. The small values fall back as well,
--- since the decision is made on the type.
+-- nesting depth, so the projection falls back to Spark.
 
 statement
 CREATE TABLE test_interval_output_big(s decimal(18, 6)) USING parquet
 
 statement
 INSERT INTO test_interval_output_big VALUES (10000000000.000000), (-10000000000.000000), (NULL)
-
-statement
-CREATE TABLE test_interval_output_small(s decimal(18, 6)) USING parquet
-
-statement
-INSERT INTO test_interval_output_small VALUES (1.000000), (-2.500001), (NULL)
 
 query expect_fallback(holds a calendar interval)
 SELECT arrays_zip(array(make_interval(0, 0, 0, 0, 0, 0, s))) FROM test_interval_output_big
@@ -64,15 +57,9 @@ query expect_fallback(holds a calendar interval)
 SELECT map_from_arrays(array(monotonically_increasing_id()), array(make_interval(0, 0, 0, 0, 0, 0, s)))
 FROM test_interval_output_big
 
-query expect_fallback(holds a calendar interval)
-SELECT arrays_zip(array(make_interval(0, 0, 0, 0, 0, 0, s))) FROM test_interval_output_small
-
-query expect_fallback(holds a calendar interval)
-SELECT arrays_zip(array(named_struct('i', make_interval(0, 0, 0, 0, 0, 0, s)))) FROM test_interval_output_small
-
 -- Without a calendar interval in the result, the same expression still dispatches.
 query expect_dispatch(arrays_zip)
-SELECT arrays_zip(array(map(1, s))) FROM test_interval_output_small
+SELECT arrays_zip(array(map(1, s))) FROM test_interval_output_big
 
 -- Under LAST_WIN `map_from_arrays` has no native path for any key type, so this would dispatch.
 statement

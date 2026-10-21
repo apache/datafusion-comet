@@ -25,6 +25,7 @@
 -- Config: spark.sql.ansi.enabled=true
 -- Config: spark.sql.subexpressionElimination.enabled=true
 
+-- On the last row both `1.0D / x` and `1.0D / (x + 1.0D)` find a key.
 statement
 CREATE TABLE test_map_lookup_shared(
   m1 map<double, int>, m2 map<double, int>, x double, y double, k int)
@@ -34,7 +35,8 @@ statement
 INSERT INTO test_map_lookup_shared VALUES
   (CAST(NULL AS MAP<DOUBLE, INT>), CAST(NULL AS MAP<DOUBLE, INT>), 0.0D, CAST(NULL AS DOUBLE),
    1),
-  (map(0.5D, 5), map(0.5D, 6), 2.0D, 4.0D, 2)
+  (map(0.5D, 5), map(0.5D, 6), 2.0D, 4.0D, 2),
+  (map(1.0D, 7, 0.5D, 8), map(1.0D, 9, 0.5D, 10), 1.0D, 3.0D, 3)
 
 -- The shared `1.0D / x` divides by zero on the row whose maps are NULL.
 query expect_error(DIVIDE_BY_ZERO)
@@ -60,32 +62,52 @@ FROM test_map_lookup_shared
 query expect_error(DIVIDE_BY_ZERO)
 SELECT max(element_at(m1, 1.0D / x)), max(element_at(m2, 1.0D / x)) FROM test_map_lookup_shared
 
--- On rows where the divide cannot fail, the shared key still sends the lookups back to Spark.
-statement
-CREATE TABLE test_map_lookup_shared_nonzero(
-  m1 map<double, int>, m2 map<double, int>, x double, y double)
-USING parquet
-
-statement
-INSERT INTO test_map_lookup_shared_nonzero VALUES
-  (CAST(NULL AS MAP<DOUBLE, INT>), CAST(NULL AS MAP<DOUBLE, INT>), 4.0D, CAST(NULL AS DOUBLE)),
-  (map(0.5D, 5), map(0.5D, 6), 2.0D, 4.0D)
+-- With a divisor of `x + 1.0D`, which is never zero, the divide cannot fail, and the shared key
+-- still sends the lookups back to Spark.
+query expect_fallback(holds a subexpression that the operator's other expressions share)
+SELECT element_at(m1, 1.0D / (x + 1.0D)), element_at(m2, 1.0D / (x + 1.0D))
+FROM test_map_lookup_shared
 
 query expect_fallback(holds a subexpression that the operator's other expressions share)
-SELECT element_at(m1, 1.0D / x), element_at(m2, 1.0D / x) FROM test_map_lookup_shared_nonzero
-
-query expect_fallback(holds a subexpression that the operator's other expressions share)
-SELECT element_at(if((1.0D / x) / y > 0.0D, m1, m2), 0.5D),
-  element_at(if((1.0D / x) / (y + 1.0D) > 0.0D, m2, m1), 0.5D)
-FROM test_map_lookup_shared_nonzero
+SELECT element_at(if((1.0D / (x + 1.0D)) / y > 0.0D, m1, m2), 0.5D),
+  element_at(if((1.0D / (x + 1.0D)) / (y + 1.0D) > 0.0D, m2, m1), 0.5D)
+FROM test_map_lookup_shared
 
 query expect_dispatch(element_at)
-SELECT element_at(if((1.0D / x) / y > 0.0D, m1, m2), 0.5D) FROM test_map_lookup_shared_nonzero
+SELECT element_at(if((1.0D / (x + 1.0D)) / y > 0.0D, m1, m2), 0.5D) FROM test_map_lookup_shared
 
 -- `pmod` skips its dividend the same way.
 query expect_error(DIVIDE_BY_ZERO)
 SELECT element_at(if(pmod(1.0D / x, y) > 0.0D, m1, m2), 0.5D),
   element_at(if(pmod(1.0D / x, y + 1.0D) > 0.0D, m2, m1), 0.5D)
+FROM test_map_lookup_shared
+
+query expect_fallback(holds a subexpression that the operator's other expressions share)
+SELECT element_at(if(pmod(1.0D / (x + 1.0D), y) > 0.0D, m1, m2), 0.5D),
+  element_at(if(pmod(1.0D / (x + 1.0D), y + 1.0D) > 0.0D, m2, m1), 0.5D)
+FROM test_map_lookup_shared
+
+-- A shared subexpression in the divisor is never skipped, because the divisor is evaluated first.
+-- Spark and the dispatcher both raise on the row whose `x` is zero, and with a divisor that cannot
+-- be zero the lookups stay dispatched.
+query expect_error(DIVIDE_BY_ZERO)
+SELECT element_at(if(y / (1.0D / x) > 0.0D, m1, m2), 0.5D),
+  element_at(if((y + 1.0D) / (1.0D / x) > 0.0D, m2, m1), 0.5D)
+FROM test_map_lookup_shared
+
+query expect_dispatch(element_at)
+SELECT element_at(if(y / (1.0D / (x + 1.0D)) > 0.0D, m1, m2), 0.5D),
+  element_at(if((y + 1.0D) / (1.0D / (x + 1.0D)) > 0.0D, m2, m1), 0.5D)
+FROM test_map_lookup_shared
+
+query expect_error(DIVIDE_BY_ZERO)
+SELECT element_at(if(pmod(y, 1.0D / x) > 0.0D, m1, m2), 0.5D),
+  element_at(if(pmod(y + 1.0D, 1.0D / x) > 0.0D, m2, m1), 0.5D)
+FROM test_map_lookup_shared
+
+query expect_dispatch(element_at)
+SELECT element_at(if(pmod(y, 1.0D / (x + 1.0D)) > 0.0D, m1, m2), 0.5D),
+  element_at(if(pmod(y + 1.0D, 1.0D / (x + 1.0D)) > 0.0D, m2, m1), 0.5D)
 FROM test_map_lookup_shared
 
 -- A lookup that repeats `1.0D / x` in its key stays dispatched: the dispatcher eliminates the
@@ -95,7 +117,7 @@ query expect_error(DIVIDE_BY_ZERO)
 SELECT element_at(m1, 1.0D / x + 1.0D / x) FROM test_map_lookup_shared
 
 query expect_dispatch(element_at)
-SELECT element_at(m1, 1.0D / x + 1.0D / x) FROM test_map_lookup_shared_nonzero
+SELECT element_at(m1, 1.0D / (x + 1.0D) + 1.0D / (x + 1.0D)) FROM test_map_lookup_shared
 
 -- Subexpression elimination shares only what an `if` evaluates on every row, its predicate and
 -- what both branches hold, so the `1.0D / x` in its else branch alone is not shared with the
@@ -145,20 +167,11 @@ SELECT element_at(if(locate(CAST(1.0D / x AS STRING), s, n) > 0, m1, m2), 0.5D),
   element_at(if(locate(CAST(1.0D / x + 1.0D AS STRING), s, n) > 0, m2, m1), 0.5D)
 FROM test_map_lookup_shared_locate
 
-statement
-CREATE TABLE test_map_lookup_shared_locate_nonzero(
-  m1 map<double, int>, m2 map<double, int>, x double, s string, n int)
-USING parquet
-
-statement
-INSERT INTO test_map_lookup_shared_locate_nonzero VALUES
-  (map(0.5D, 5), map(0.5D, 6), 4.0D, 'abc', CAST(NULL AS INT)),
-  (map(0.5D, 5), map(0.5D, 6), 2.0D, 'x0.5', 1)
-
+-- With a divisor that cannot be zero, the shared key still sends the lookups back to Spark.
 query expect_fallback(holds a subexpression that the operator's other expressions share)
-SELECT element_at(if(locate(CAST(1.0D / x AS STRING), s, n) > 0, m1, m2), 0.5D),
-  element_at(if(locate(CAST(1.0D / x + 1.0D AS STRING), s, n) > 0, m2, m1), 0.5D)
-FROM test_map_lookup_shared_locate_nonzero
+SELECT element_at(if(locate(CAST(1.0D / (x + 1.0D) AS STRING), s, n) > 0, m1, m2), 0.5D),
+  element_at(if(locate(CAST(1.0D / (x + 1.0D) + 1.0D AS STRING), s, n) > 0, m2, m1), 0.5D)
+FROM test_map_lookup_shared_locate
 
 -- `array_join` with a nullable replacement evaluates the replacement first and skips its array
 -- and delimiter when the replacement is NULL, so on the row whose `r` is NULL each lookup skips
@@ -197,14 +210,15 @@ SELECT element_at(if(array_join(array('a', 'b'), CAST(1.0D / x AS STRING), r) IS
 FROM test_map_lookup_shared_array_join
 
 -- Without a replacement `array_join` evaluates its array first, so the divide raises in Spark and
--- in the dispatcher alike; the nonzero table below pins that the lookups stay dispatched.
+-- in the dispatcher alike; the `x + 1.0D` divisor below pins that the lookups stay dispatched.
 query expect_error(DIVIDE_BY_ZERO)
 SELECT element_at(if(array_join(array(CAST(1.0D / x AS STRING)), d1) IS NULL, m1, m2), 0.5D),
   element_at(if(array_join(array(CAST(1.0D / x AS STRING)), d2) IS NULL, m2, m1), 0.5D)
 FROM test_map_lookup_shared_array_join
 
 -- Likewise for a shared divide in the replacement, evaluated first, and in the array of a join
--- whose replacement cannot be NULL; the nonzero table below pins that these stay dispatched.
+-- whose replacement cannot be NULL; the `x + 1.0D` divisor below pins that these stay
+-- dispatched.
 query expect_error(DIVIDE_BY_ZERO)
 SELECT element_at(if(array_join(array('a'), d1, CAST(1.0D / x AS STRING)) IS NULL, m1, m2), 0.5D),
   element_at(if(array_join(array('b'), d2, CAST(1.0D / x AS STRING)) IS NULL, m2, m1), 0.5D)
@@ -220,43 +234,43 @@ query expect_dispatch(element_at)
 SELECT element_at(if(array_join(array(CAST(1.0D / x AS STRING)), d1, r) IS NULL, m1, m2), 0.5D)
 FROM test_map_lookup_shared_array_join
 
-statement
-CREATE TABLE test_map_lookup_shared_array_join_nonzero(
-  m1 map<double, int>, m2 map<double, int>, x double, d1 string, d2 string, r string)
-USING parquet
-
-statement
-INSERT INTO test_map_lookup_shared_array_join_nonzero VALUES
-  (map(0.5D, 5), map(0.5D, 6), 4.0D, ',', ';', CAST(NULL AS STRING)),
-  (map(0.5D, 5), map(0.5D, 6), 2.0D, ',', ';', 'z')
+-- With a divisor that cannot be zero, the shared key still sends the lookups back to Spark.
+query expect_fallback(holds a subexpression that the operator's other expressions share)
+SELECT element_at(if(array_join(array(CAST(1.0D / (x + 1.0D) AS STRING)), d1, r) IS NULL,
+    m1, m2), 0.5D),
+  element_at(if(array_join(array(CAST(1.0D / (x + 1.0D) AS STRING)), d2, r) IS NULL,
+    m2, m1), 0.5D)
+FROM test_map_lookup_shared_array_join
 
 query expect_fallback(holds a subexpression that the operator's other expressions share)
-SELECT element_at(if(array_join(array(CAST(1.0D / x AS STRING)), d1, r) IS NULL, m1, m2), 0.5D),
-  element_at(if(array_join(array(CAST(1.0D / x AS STRING)), d2, r) IS NULL, m2, m1), 0.5D)
-FROM test_map_lookup_shared_array_join_nonzero
-
-query expect_fallback(holds a subexpression that the operator's other expressions share)
-SELECT element_at(if(array_join(array('a', 'b'), CAST(1.0D / x AS STRING), r) IS NULL, m1, m2),
-    0.5D),
-  element_at(if(array_join(array('a', 'c'), CAST(1.0D / x AS STRING), r) IS NULL, m2, m1), 0.5D)
-FROM test_map_lookup_shared_array_join_nonzero
+SELECT element_at(if(array_join(array('a', 'b'), CAST(1.0D / (x + 1.0D) AS STRING), r) IS NULL,
+    m1, m2), 0.5D),
+  element_at(if(array_join(array('a', 'c'), CAST(1.0D / (x + 1.0D) AS STRING), r) IS NULL,
+    m2, m1), 0.5D)
+FROM test_map_lookup_shared_array_join
 
 query expect_dispatch(element_at)
-SELECT element_at(if(array_join(array(CAST(1.0D / x AS STRING)), d1) IS NULL, m1, m2), 0.5D),
-  element_at(if(array_join(array(CAST(1.0D / x AS STRING)), d2) IS NULL, m2, m1), 0.5D)
-FROM test_map_lookup_shared_array_join_nonzero
+SELECT element_at(if(array_join(array(CAST(1.0D / (x + 1.0D) AS STRING)), d1) IS NULL,
+    m1, m2), 0.5D),
+  element_at(if(array_join(array(CAST(1.0D / (x + 1.0D) AS STRING)), d2) IS NULL,
+    m2, m1), 0.5D)
+FROM test_map_lookup_shared_array_join
 
 -- The replacement is evaluated first, so a shared divide there alone is never skipped.
 query expect_dispatch(element_at)
-SELECT element_at(if(array_join(array('a'), d1, CAST(1.0D / x AS STRING)) IS NULL, m1, m2), 0.5D),
-  element_at(if(array_join(array('b'), d2, CAST(1.0D / x AS STRING)) IS NULL, m2, m1), 0.5D)
-FROM test_map_lookup_shared_array_join_nonzero
+SELECT element_at(if(array_join(array('a'), d1, CAST(1.0D / (x + 1.0D) AS STRING)) IS NULL,
+    m1, m2), 0.5D),
+  element_at(if(array_join(array('b'), d2, CAST(1.0D / (x + 1.0D) AS STRING)) IS NULL,
+    m2, m1), 0.5D)
+FROM test_map_lookup_shared_array_join
 
 -- A replacement that cannot be NULL skips nothing, so the shared divide in the array is safe.
 query expect_dispatch(element_at)
-SELECT element_at(if(array_join(array(CAST(1.0D / x AS STRING)), d1, 'z') IS NULL, m1, m2), 0.5D),
-  element_at(if(array_join(array(CAST(1.0D / x AS STRING)), d2, 'z') IS NULL, m2, m1), 0.5D)
-FROM test_map_lookup_shared_array_join_nonzero
+SELECT element_at(if(array_join(array(CAST(1.0D / (x + 1.0D) AS STRING)), d1, 'z') IS NULL,
+    m1, m2), 0.5D),
+  element_at(if(array_join(array(CAST(1.0D / (x + 1.0D) AS STRING)), d2, 'z') IS NULL,
+    m2, m1), 0.5D)
+FROM test_map_lookup_shared_array_join
 
 -- With subexpression elimination off a projection shares nothing, so its lookups stay
 -- dispatched, but a whole-stage codegen aggregate still evaluates the subexpressions its
@@ -268,8 +282,8 @@ query expect_error(DIVIDE_BY_ZERO)
 SELECT max(element_at(m1, 1.0D / x)), max(element_at(m2, 1.0D / x)) FROM test_map_lookup_shared
 
 query expect_fallback(holds a subexpression that the operator's other expressions share)
-SELECT max(element_at(m1, 1.0D / x)), max(element_at(m2, 1.0D / x))
-FROM test_map_lookup_shared_nonzero
+SELECT max(element_at(m1, 1.0D / (x + 1.0D))), max(element_at(m2, 1.0D / (x + 1.0D)))
+FROM test_map_lookup_shared
 
 query expect_dispatch(element_at)
 SELECT element_at(m1, 1.0D / x), element_at(m2, 1.0D / x) FROM test_map_lookup_shared
@@ -284,7 +298,7 @@ query expect_error(DIVIDE_BY_ZERO)
 SELECT max(element_at(m1, 1.0D / x + 1.0D / x)) FROM test_map_lookup_shared
 
 query expect_fallback(holds a subexpression that the operator's other expressions share)
-SELECT max(element_at(m1, 1.0D / x + 1.0D / x)) FROM test_map_lookup_shared_nonzero
+SELECT max(element_at(m1, 1.0D / (x + 1.0D) + 1.0D / (x + 1.0D))) FROM test_map_lookup_shared
 
 query expect_dispatch(element_at)
 SELECT element_at(m1, 1.0D / x + 1.0D / x) FROM test_map_lookup_shared

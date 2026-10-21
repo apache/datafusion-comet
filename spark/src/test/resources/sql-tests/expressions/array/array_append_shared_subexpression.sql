@@ -16,11 +16,13 @@
 -- under the License.
 
 -- Spark's projection evaluates a subexpression that several of its expressions share for every
--- row, before the expressions that use it. A nullable array with an item that is not a literal
--- or column sends `array_append` through the JVM codegen dispatcher, which compiles each call
--- alone, so a node in its tree that skips a later argument on a NULL input would skip the shared
--- subexpression too, and an error Spark raises would go unraised. Such a call falls back to Spark
--- instead.
+-- row, before the expressions that use it. A nullable array that is nondeterministic sends
+-- `array_append` through the JVM codegen dispatcher, which compiles each call alone, so a node in
+-- its tree that skips a later argument on a NULL input would skip the shared subexpression too,
+-- and an error Spark raises would go unraised. Such a call falls back to Spark instead. Here
+-- `IF(rand(7) * 0.0D = 0.0D, a1, NULL)` is always `a1`, but it is nullable and nondeterministic,
+-- which forces the dispatcher. Spark's `OptimizeRand` would fold a direct comparison such as
+-- `rand(7) >= 0.0D` to true, and the `IF` with it.
 --
 -- Spark 4.0 rewrites `array_append` to `array_insert(-1)` before serde, so `CometArrayAppend` is
 -- only reachable on Spark 3.x.
@@ -44,37 +46,33 @@ INSERT INTO test_array_append_shared VALUES
 -- The item is a map lookup, which skips its key on the row whose map is NULL, and the shared
 -- `1.0D / x` divides by zero there.
 query expect_error(DIVIDE_BY_ZERO)
-SELECT array_append(a1, element_at(m1, 1.0D / x)), array_append(a2, element_at(m2, 1.0D / x))
+SELECT array_append(IF(rand(7) * 0.0D = 0.0D, a1, NULL), element_at(m1, 1.0D / x)),
+  array_append(IF(rand(7) * 0.0D = 0.0D, a2, NULL), element_at(m2, 1.0D / x))
 FROM test_array_append_shared
 
 -- A single call shares nothing, so Spark skips the divide on the NULL map too.
 query expect_dispatch(array_append)
-SELECT array_append(a1, element_at(m1, 1.0D / x)) FROM test_array_append_shared
+SELECT array_append(IF(rand(7) * 0.0D = 0.0D, a1, NULL), element_at(m1, 1.0D / x))
+FROM test_array_append_shared
 
 -- `array_append` itself evaluates its item before its NULL check, so a shared `1.0D / x` directly
--- in the item raises on the row whose array is NULL on both paths, and the calls stay dispatched.
+-- in the item raises on the row whose array is NULL on both paths.
 query expect_error(DIVIDE_BY_ZERO)
-SELECT array_append(a1, 1.0D / x), array_append(a2, 1.0D / x) FROM test_array_append_shared
+SELECT array_append(IF(rand(7) * 0.0D = 0.0D, a1, NULL), 1.0D / x),
+  array_append(IF(rand(7) * 0.0D = 0.0D, a2, NULL), 1.0D / x)
+FROM test_array_append_shared
 
-statement
-CREATE TABLE test_array_append_shared_nonzero(
-  a1 array<double>, a2 array<double>, m1 map<double, double>, m2 map<double, double>, x double)
-USING parquet
-
-statement
-INSERT INTO test_array_append_shared_nonzero VALUES
-  (CAST(NULL AS ARRAY<DOUBLE>), CAST(NULL AS ARRAY<DOUBLE>),
-   CAST(NULL AS MAP<DOUBLE, DOUBLE>), CAST(NULL AS MAP<DOUBLE, DOUBLE>), 4.0D),
-  (array(1.5D), array(2.5D), map(0.5D, 5.0D), map(0.5D, 6.0D), 2.0D)
-
+-- The same calls with a divisor that is never zero stay dispatched.
 query expect_dispatch(array_append)
-SELECT array_append(a1, 1.0D / x), array_append(a2, 1.0D / x)
-FROM test_array_append_shared_nonzero
+SELECT array_append(IF(rand(7) * 0.0D = 0.0D, a1, NULL), 1.0D / (x + 1.0D)),
+  array_append(IF(rand(7) * 0.0D = 0.0D, a2, NULL), 1.0D / (x + 1.0D))
+FROM test_array_append_shared
 
 -- The map lookup in the item still declines the dispatcher.
 query expect_fallback(holds a subexpression that the operator's other expressions share)
-SELECT array_append(a1, element_at(m1, 1.0D / x)), array_append(a2, element_at(m2, 1.0D / x))
-FROM test_array_append_shared_nonzero
+SELECT array_append(IF(rand(7) * 0.0D = 0.0D, a1, NULL), element_at(m1, 1.0D / (x + 1.0D))),
+  array_append(IF(rand(7) * 0.0D = 0.0D, a2, NULL), element_at(m2, 1.0D / (x + 1.0D)))
+FROM test_array_append_shared
 
 -- With subexpression elimination off a projection shares nothing, so Spark skips the divide on
 -- the row whose map is NULL, as the dispatched calls do.
@@ -82,5 +80,6 @@ statement
 SET spark.sql.subexpressionElimination.enabled=false
 
 query expect_dispatch(array_append)
-SELECT array_append(a1, element_at(m1, 1.0D / x)), array_append(a2, element_at(m2, 1.0D / x))
+SELECT array_append(IF(rand(7) * 0.0D = 0.0D, a1, NULL), element_at(m1, 1.0D / x)),
+  array_append(IF(rand(7) * 0.0D = 0.0D, a2, NULL), element_at(m2, 1.0D / x))
 FROM test_array_append_shared

@@ -23,6 +23,7 @@
 -- Config: spark.sql.ansi.enabled=true
 -- Config: spark.sql.subexpressionElimination.enabled=true
 
+-- On the last row both `1.0D / x` and `1.0D / (x + 1.0D)` find a key.
 statement
 CREATE TABLE test_size_shared(m1 map<double, array<int>>, m2 map<double, array<int>>, x double)
 USING parquet
@@ -30,7 +31,8 @@ USING parquet
 statement
 INSERT INTO test_size_shared VALUES
   (CAST(NULL AS MAP<DOUBLE, ARRAY<INT>>), CAST(NULL AS MAP<DOUBLE, ARRAY<INT>>), 0.0D),
-  (map(0.5D, array(1, 2)), map(0.5D, array(3)), 2.0D)
+  (map(0.5D, array(1, 2)), map(0.5D, array(3)), 2.0D),
+  (map(1.0D, array(1), 0.5D, array(1, 2, 3)), map(1.0D, array(4, 5), 0.5D, array(6)), 1.0D)
 
 -- Without a nondeterministic key `size` runs natively, so this query exercises the decline of the
 -- dispatched `element_at`.
@@ -47,19 +49,9 @@ FROM test_size_shared
 query expect_dispatch(size)
 SELECT size(element_at(m1, 1.0D / x + rand(7) * 0.0D)) FROM test_size_shared
 
--- On rows where the divide cannot fail, the shared `1.0D / x` still sends the calls back to
--- Spark.
-statement
-CREATE TABLE test_size_shared_nonzero(
-  m1 map<double, array<int>>, m2 map<double, array<int>>, x double)
-USING parquet
-
-statement
-INSERT INTO test_size_shared_nonzero VALUES
-  (CAST(NULL AS MAP<DOUBLE, ARRAY<INT>>), CAST(NULL AS MAP<DOUBLE, ARRAY<INT>>), 4.0D),
-  (map(0.5D, array(1, 2)), map(0.5D, array(3)), 2.0D)
-
+-- With a divisor of `x + 1.0D`, which is never zero, the divide cannot fail, and the shared
+-- `1.0D / (x + 1.0D)` still sends the calls back to Spark.
 query expect_fallback(holds a subexpression that the operator's other expressions share)
-SELECT size(element_at(m1, 1.0D / x + rand(7) * 0.0D)),
-  size(element_at(m2, 1.0D / x + rand(7) * 0.0D))
-FROM test_size_shared_nonzero
+SELECT size(element_at(m1, 1.0D / (x + 1.0D) + rand(7) * 0.0D)),
+  size(element_at(m2, 1.0D / (x + 1.0D) + rand(7) * 0.0D))
+FROM test_size_shared

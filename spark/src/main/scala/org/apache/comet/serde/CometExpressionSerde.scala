@@ -20,6 +20,9 @@
 package org.apache.comet.serde
 
 import org.apache.spark.sql.catalyst.expressions.{Attribute, Expression}
+import org.apache.spark.sql.types.CalendarIntervalType
+
+import org.apache.comet.serde.QueryPlanSerde.skipsSharedSubexpression
 
 /**
  * Trait for providing serialization logic for expressions.
@@ -130,6 +133,54 @@ trait CodegenDispatchFallback extends NativeOptInAvailable { self: CometExpressi
    * back to Spark, as for a serde without this mixin.
    */
   def dispatchDeclineReason(expr: Expression): Option[String] = None
+}
+
+/**
+ * `CodegenDispatchFallback` for serdes that must keep two kinds of expression off the dispatcher:
+ * a result holding a calendar interval (`CalendarIntervalOutput`) and a skippable argument
+ * holding a shared subexpression (`SharedSubexpressionArgument`). Both fall back to Spark.
+ */
+trait GatedCodegenDispatchFallback extends CodegenDispatchFallback {
+  self: CometExpressionSerde[_] =>
+
+  override def dispatchDeclineReason(expr: Expression): Option[String] =
+    CalendarIntervalOutput
+      .declineReason(expr)
+      .orElse(SharedSubexpressionArgument.declineReason(expr))
+}
+
+/**
+ * Keeps a result holding a calendar interval, at any nesting depth, off the JVM codegen
+ * dispatcher. The dispatcher writes the interval's microseconds to Arrow as nanoseconds, which
+ * overflows a long beyond about 292 years, a range Spark represents
+ * ([#5279](https://github.com/apache/datafusion-comet/issues/5279)). Such an expression falls
+ * back to Spark instead.
+ */
+private[serde] object CalendarIntervalOutput {
+
+  private val reason: String =
+    "the result holds a calendar interval, whose microseconds overflow the dispatcher's Arrow " +
+      "nanoseconds beyond about 292 years"
+
+  def declineReason(expr: Expression): Option[String] =
+    if (SupportLevel.containsType(expr.dataType, classOf[CalendarIntervalType])) Some(reason)
+    else None
+}
+
+/**
+ * Keeps an expression off the JVM codegen dispatcher when one of its nodes could skip an argument
+ * holding a subexpression that the operator's other expressions share (see
+ * `QueryPlanSerde.skipsSharedSubexpression`). Spark evaluates such a subexpression for every row,
+ * so the expression falls back to Spark instead.
+ */
+private[serde] object SharedSubexpressionArgument {
+
+  private val reason: String =
+    "an argument this expression can skip holds a subexpression that the operator's other " +
+      "expressions share, which Spark evaluates for every row before this expression's NULL check"
+
+  def declineReason(expr: Expression): Option[String] =
+    if (skipsSharedSubexpression(expr)) Some(reason) else None
 }
 
 /**

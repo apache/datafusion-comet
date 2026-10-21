@@ -15,10 +15,10 @@
 -- specific language governing permissions and limitations
 -- under the License.
 
--- A nondeterministic item has no native `array_append` path, but the JVM codegen dispatcher writes
--- a calendar interval's microseconds to Arrow as nanoseconds, which overflows a long beyond about
--- 292 years (https://github.com/apache/datafusion-comet/issues/5279). A result holding a calendar
--- interval therefore falls back to Spark rather than dispatching.
+-- A nullable nondeterministic array has no native `array_append` path, but the JVM codegen
+-- dispatcher writes a calendar interval's microseconds to Arrow as nanoseconds, which overflows a
+-- long beyond about 292 years (https://github.com/apache/datafusion-comet/issues/5279). A result
+-- holding a calendar interval therefore falls back to Spark rather than dispatching.
 --
 -- Spark 4.0 rewrites `array_append` to `array_insert(-1)` before serde, so `CometArrayAppend` is
 -- only reachable on Spark 3.x.
@@ -32,6 +32,7 @@ statement
 INSERT INTO test_array_append_interval VALUES (10000000000.000000), (-10000000000.000000), (1.000000), (NULL)
 
 query expect_fallback(holds a calendar interval)
-SELECT array_append(array(make_interval(0, 0, 0, 0, 0, 0, s)),
-  IF(monotonically_increasing_id() >= 0, make_interval(0, 0, 0, 0, 0, 0, s), NULL))
+SELECT array_append(
+  IF(monotonically_increasing_id() >= 0, array(make_interval(0, 0, 0, 0, 0, 0, s)), NULL),
+  make_interval(0, 0, 0, 0, 0, 0, s))
 FROM test_array_append_interval

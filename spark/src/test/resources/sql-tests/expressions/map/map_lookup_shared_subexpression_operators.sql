@@ -28,22 +28,14 @@ statement
 CREATE TABLE test_map_lookup_shared_ops(m1 map<double, int>, m2 map<double, int>, x double)
 USING parquet
 
+-- `1.0D / (x + 1.0D)`, whose divisor is never zero, finds a key in the last three rows.
 statement
 INSERT INTO test_map_lookup_shared_ops VALUES
   (CAST(NULL AS MAP<DOUBLE, INT>), CAST(NULL AS MAP<DOUBLE, INT>), 0.0D),
-  (map(0.5D, 5), map(0.5D, 6), 2.0D)
-
-statement
-CREATE TABLE test_map_lookup_shared_ops_nonzero(
-  m1 map<double, int>, m2 map<double, int>, x double)
-USING parquet
-
-statement
-INSERT INTO test_map_lookup_shared_ops_nonzero VALUES
-  (CAST(NULL AS MAP<DOUBLE, INT>), CAST(NULL AS MAP<DOUBLE, INT>), 16.0D),
   (map(0.5D, 5), map(0.5D, 6), 2.0D),
-  (map(0.25D, 1), map(0.25D, 2), 4.0D),
-  (map(0.125D, 3), map(0.125D, 4), 8.0D)
+  (map(0.5D, 7), map(0.5D, 8), 1.0D),
+  (map(0.25D, 1), map(0.25D, 2), 3.0D),
+  (map(0.125D, 3), map(0.125D, 4), 7.0D)
 
 -- Hash partitioning keys: native shuffle declines, and the JVM columnar shuffle evaluates the
 -- keys with Spark's projection.
@@ -54,8 +46,8 @@ DISTRIBUTE BY element_at(m1, 1.0D / x), element_at(m2, 1.0D / x)
 
 query
 SELECT x
-FROM test_map_lookup_shared_ops_nonzero
-DISTRIBUTE BY element_at(m1, 1.0D / x), element_at(m2, 1.0D / x)
+FROM test_map_lookup_shared_ops
+DISTRIBUTE BY element_at(m1, 1.0D / (x + 1.0D)), element_at(m2, 1.0D / (x + 1.0D))
 
 -- Range partitioning keys of a global sort. The sort itself declines the lookups too.
 query expect_error(DIVIDE_BY_ZERO)
@@ -63,10 +55,11 @@ SELECT x
 FROM test_map_lookup_shared_ops
 ORDER BY element_at(m1, 1.0D / x), element_at(m2, 1.0D / x)
 
+-- Two rows miss both lookups, so `x` breaks the tie.
 query expect_fallback(holds a subexpression that the operator's other expressions share)
 SELECT x
-FROM test_map_lookup_shared_ops_nonzero
-ORDER BY element_at(m1, 1.0D / x), element_at(m2, 1.0D / x)
+FROM test_map_lookup_shared_ops
+ORDER BY element_at(m1, 1.0D / (x + 1.0D)), element_at(m2, 1.0D / (x + 1.0D)), x
 
 -- The projection of a TakeOrderedAndProject. The subquery keeps the projection above the sort,
 -- where the outer query's ORDER BY would put it in a Project below the sort.
@@ -76,8 +69,8 @@ FROM (SELECT m1, m2, x FROM test_map_lookup_shared_ops ORDER BY x)
 LIMIT 10
 
 query expect_fallback(unsupported projection)
-SELECT element_at(m1, 1.0D / x), element_at(m2, 1.0D / x)
-FROM (SELECT m1, m2, x FROM test_map_lookup_shared_ops_nonzero ORDER BY x)
+SELECT element_at(m1, 1.0D / (x + 1.0D)), element_at(m2, 1.0D / (x + 1.0D))
+FROM (SELECT m1, m2, x FROM test_map_lookup_shared_ops ORDER BY x)
 LIMIT 10
 
 -- Without ANSI mode the divide returns NULL, but the decline does not depend on ANSI mode.
@@ -92,7 +85,7 @@ DISTRIBUTE BY element_at(m1, 1.0D / x), element_at(m2, 1.0D / x)
 query expect_fallback(holds a subexpression that the operator's other expressions share)
 SELECT x
 FROM test_map_lookup_shared_ops
-ORDER BY element_at(m1, 1.0D / x), element_at(m2, 1.0D / x)
+ORDER BY element_at(m1, 1.0D / x), element_at(m2, 1.0D / x), x
 
 query expect_fallback(unsupported projection)
 SELECT element_at(m1, 1.0D / x), element_at(m2, 1.0D / x)

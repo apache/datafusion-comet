@@ -42,20 +42,12 @@ FROM test_map_from_arrays_shared
 query expect_dispatch(map_from_arrays)
 SELECT map_from_arrays(k1, array(1.0D / x, 1.0D)) FROM test_map_from_arrays_shared
 
--- On rows where the divide cannot fail, the shared `1.0D / x` still sends the calls back to
--- Spark.
-statement
-CREATE TABLE test_map_from_arrays_shared_nonzero(k1 array<int>, k2 array<int>, x double)
-USING parquet
-
-statement
-INSERT INTO test_map_from_arrays_shared_nonzero VALUES
-  (CAST(NULL AS ARRAY<INT>), CAST(NULL AS ARRAY<INT>), 4.0D),
-  (array(1, 1), array(2), 2.0D)
-
+-- With a divisor of `x + 1.0D`, which is never zero, the divide cannot fail, and the shared
+-- `1.0D / (x + 1.0D)` still sends the calls back to Spark.
 query expect_fallback(holds a subexpression that the operator's other expressions share)
-SELECT map_from_arrays(k1, array(1.0D / x, 1.0D)), map_from_arrays(k2, array(1.0D / x))
-FROM test_map_from_arrays_shared_nonzero
+SELECT map_from_arrays(k1, array(1.0D / (x + 1.0D), 1.0D)),
+  map_from_arrays(k2, array(1.0D / (x + 1.0D)))
+FROM test_map_from_arrays_shared
 
 -- With subexpression elimination off a projection shares nothing, so Spark skips the values on
 -- the row whose keys are NULL, as the dispatched calls do.

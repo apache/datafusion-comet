@@ -27,6 +27,7 @@
 -- Config: spark.sql.ansi.enabled=true
 -- Config: spark.sql.subexpressionElimination.enabled=true
 
+-- On the last row both `1.0D / x` and `1.0D / (x + 1.0D)` find a key.
 statement
 CREATE TABLE test_arrays_zip_shared(
   a1 array<int>, a2 array<int>, m1 map<double, int>, m2 map<double, int>, x double)
@@ -35,7 +36,8 @@ USING parquet
 statement
 INSERT INTO test_arrays_zip_shared VALUES
   (array(1), array(2), CAST(NULL AS MAP<DOUBLE, INT>), CAST(NULL AS MAP<DOUBLE, INT>), 0.0D),
-  (array(3), array(4), map(0.5D, 5), map(0.5D, 6), 2.0D)
+  (array(3), array(4), map(0.5D, 5), map(0.5D, 6), 2.0D),
+  (array(5), array(6), map(1.0D, 7, 0.5D, 8), map(1.0D, 9, 0.5D, 10), 1.0D)
 
 -- The shared `1.0D / x` divides by zero on the row whose maps are NULL.
 query expect_error(DIVIDE_BY_ZERO)
@@ -47,21 +49,12 @@ FROM test_arrays_zip_shared
 query expect_dispatch(arrays_zip)
 SELECT arrays_zip(a1, array(element_at(m1, 1.0D / x + rand(7) * 0.0D))) FROM test_arrays_zip_shared
 
--- On rows where the divide cannot fail, the shared key still sends the calls back to Spark.
-statement
-CREATE TABLE test_arrays_zip_shared_nonzero(
-  a1 array<int>, a2 array<int>, m1 map<double, int>, m2 map<double, int>, x double)
-USING parquet
-
-statement
-INSERT INTO test_arrays_zip_shared_nonzero VALUES
-  (array(1), array(2), CAST(NULL AS MAP<DOUBLE, INT>), CAST(NULL AS MAP<DOUBLE, INT>), 4.0D),
-  (array(3), array(4), map(0.5D, 5), map(0.5D, 6), 2.0D)
-
+-- With a divisor of `x + 1.0D`, which is never zero, the divide cannot fail, and the shared key
+-- still sends the calls back to Spark.
 query expect_fallback(holds a subexpression that the operator's other expressions share)
-SELECT arrays_zip(a1, array(element_at(m1, 1.0D / x + rand(7) * 0.0D))),
-  arrays_zip(a2, array(element_at(m2, 1.0D / x + rand(7) * 0.0D)))
-FROM test_arrays_zip_shared_nonzero
+SELECT arrays_zip(a1, array(element_at(m1, 1.0D / (x + 1.0D) + rand(7) * 0.0D))),
+  arrays_zip(a2, array(element_at(m2, 1.0D / (x + 1.0D) + rand(7) * 0.0D)))
+FROM test_arrays_zip_shared
 
 -- The shared `1.0D / x` sits directly in the second argument of each call, which `arrays_zip`
 -- skips on the row whose first argument is NULL.
@@ -82,16 +75,9 @@ FROM test_arrays_zip_shared_null_array
 query expect_dispatch(arrays_zip)
 SELECT arrays_zip(a1, array(1.0D / x + rand(7) * 0.0D)) FROM test_arrays_zip_shared_null_array
 
-statement
-CREATE TABLE test_arrays_zip_shared_null_array_nonzero(a1 array<int>, a2 array<int>, x double)
-USING parquet
-
-statement
-INSERT INTO test_arrays_zip_shared_null_array_nonzero VALUES
-  (CAST(NULL AS ARRAY<INT>), CAST(NULL AS ARRAY<INT>), 4.0D),
-  (array(3), array(4), 2.0D)
-
+-- With a divisor that cannot be zero, the shared subexpression still sends the calls back to
+-- Spark.
 query expect_fallback(holds a subexpression that the operator's other expressions share)
-SELECT arrays_zip(a1, array(1.0D / x + rand(7) * 0.0D)),
-  arrays_zip(a2, array(1.0D / x + rand(7) * 0.0D))
-FROM test_arrays_zip_shared_null_array_nonzero
+SELECT arrays_zip(a1, array(1.0D / (x + 1.0D) + rand(7) * 0.0D)),
+  arrays_zip(a2, array(1.0D / (x + 1.0D) + rand(7) * 0.0D))
+FROM test_arrays_zip_shared_null_array
