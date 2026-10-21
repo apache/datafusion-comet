@@ -117,8 +117,10 @@ use tokio::runtime::{Handle, Runtime};
 use tokio::sync::mpsc;
 use tokio::task::JoinHandle;
 
+// Re-exported for local execution, whose memory pool is the one `createPlan` creates.
+pub(crate) use crate::execution::memory_pools::create_memory_pool;
 use crate::execution::memory_pools::{
-    create_memory_pool, overcommit, parse_memory_pool_config, MemoryPoolConfig, PlanMemoryPool,
+    overcommit, parse_memory_pool_config, MemoryPoolConfig, PlanMemoryPool,
 };
 use crate::execution::operators::{ScanExec, ShuffleScanExec};
 use crate::execution::shuffle::{

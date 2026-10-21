@@ -37,10 +37,9 @@ use parking_lot::Mutex;
 
 use crate::errors::{try_unwrap_or_throw, CometError, CometResult};
 use crate::execution::jni_api::{
-    create_execution_context, get_runtime, prepare_output, prepare_plan_settings, ExecutionContext,
-    PlanInputs, PlanJvmRefs,
+    create_execution_context, create_memory_pool, get_runtime, prepare_output,
+    prepare_plan_settings, ExecutionContext, PlanInputs, PlanJvmRefs,
 };
-use crate::execution::memory_pools::create_memory_pool;
 use crate::execution::spark_config::{SparkConfig, SPARK_EXECUTOR_CORES};
 
 struct Entry {
