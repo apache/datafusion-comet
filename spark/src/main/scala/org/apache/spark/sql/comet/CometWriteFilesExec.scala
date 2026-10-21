@@ -24,18 +24,21 @@ import java.util.Date
 import scala.jdk.CollectionConverters._
 
 import org.apache.hadoop.conf.Configuration
+import org.apache.hadoop.fs.FileAlreadyExistsException
 import org.apache.hadoop.mapreduce.{TaskAttemptContext, TaskAttemptID, TaskID, TaskType}
 import org.apache.hadoop.mapreduce.task.TaskAttemptContextImpl
 import org.apache.parquet.hadoop.codec.CodecConfig
-import org.apache.spark.TaskContext
+import org.apache.spark.{TaskContext, TaskOutputFileAlreadyExistException}
 import org.apache.spark.internal.Logging
 import org.apache.spark.internal.io.{FileCommitProtocol, FileNameSpec, SparkHadoopWriterUtils}
 import org.apache.spark.rdd.RDD
+import org.apache.spark.shuffle.FetchFailedException
 import org.apache.spark.sql.catalyst.InternalRow
 import org.apache.spark.sql.catalyst.expressions.UnsafeProjection
 import org.apache.spark.sql.comet.execution.arrow.CometArrowStream
 import org.apache.spark.sql.comet.util.{Utils => CometUtils}
 import org.apache.spark.sql.connector.write.WriterCommitMessage
+import org.apache.spark.sql.errors.QueryExecutionErrors
 import org.apache.spark.sql.execution.SparkPlan
 import org.apache.spark.sql.execution.datasources.{BasicWriteTaskStatsTracker, ExecutedWriteSummary, WriteFilesSpec, WriteJobDescription, WriteTaskResult, WriteTaskStatsTracker}
 import org.apache.spark.sql.execution.metric.SQLMetric
@@ -44,7 +47,7 @@ import org.apache.spark.sql.types.{DataType, StructType}
 import org.apache.spark.sql.vectorized.ColumnarBatch
 import org.apache.spark.util.Utils
 
-import org.apache.comet.{CometConf, CometExecIterator}
+import org.apache.comet.CometConf
 import org.apache.comet.parquet.HadoopFileOutput
 import org.apache.comet.serde.OperatorOuterClass
 import org.apache.comet.serde.OperatorOuterClass.Operator
@@ -263,18 +266,24 @@ object CometWriteFilesExec extends Logging {
           statsTrackers,
           sparkPartitionId,
           taskAttemptContext.getConfiguration)
-        statsTrackers.foreach(_.closeFile(filePath))
-        filePath
+        Some(filePath)
       } else {
         // `hasNext` already ran the child to completion, so there is nothing to drain or release
         // here. Spark's EmptyDirectoryDataWriter writes nothing in this case either.
-        "no file"
+        None
       }
 
-      val (taskCommitMessage, taskCommitTime) = Utils.timeTakenMs {
-        committer.commitTask(taskAttemptContext)
+      // `FileFormatDataWriter.commit` closes the file for the trackers and commits the task, and
+      // reports a failure in either for the write's path.
+      val (taskCommitMessage, taskCommitTime) = enrichWriteError(description.path) {
+        writtenFile.foreach(file => statsTrackers.foreach(_.closeFile(file)))
+        Utils.timeTakenMs {
+          committer.commitTask(taskAttemptContext)
+        }
       }
-      logDebug(s"Task ${taskAttemptContext.getTaskAttemptID} committed $writtenFile")
+      logDebug(
+        s"Task ${taskAttemptContext.getTaskAttemptID} committed " +
+          writtenFile.getOrElse("no file"))
 
       Iterator(
         WriteTaskResult(
@@ -289,6 +298,29 @@ object CometWriteFilesExec extends Logging {
       logError(s"Task ${taskAttemptContext.getTaskAttemptID} aborted")
     })
   }
+
+  /**
+   * Runs `f`, failing the task the way Spark's writer does when `f` fails, as
+   * `FileFormatDataWriter.enrichWriteError` does on Spark 4.0+ and `FileFormatWriter.executeTask`
+   * on 3.x: a `FetchFailedException` as it was, so that Spark reruns the stage that produced the
+   * lost shuffle output, a `FileAlreadyExistsException` as a
+   * `TaskOutputFileAlreadyExistException` when `spark.sql.execution.fastFailOnFileFormatOutput`
+   * is set, which fails the job without retrying the task, and anything else as
+   * `TASK_WRITE_FAILED` for `path`.
+   *
+   * Spark's writer creates a task's file before this applies. So does Comet for a file it creates
+   * through Hadoop, but the native writer creates local and HDFS files during the write, so a
+   * failure to create one of those is enriched here and not in Spark.
+   */
+  private[comet] def enrichWriteError[T](path: => String)(f: => T): T =
+    try {
+      f
+    } catch {
+      case e: FetchFailedException => throw e
+      case e: FileAlreadyExistsException if SQLConf.get.fastFailFileFormatOutput =>
+        throw new TaskOutputFileAlreadyExistException(e)
+      case t: Throwable => throw QueryExecutionErrors.taskFailedWhileWritingRowsError(path, t)
+    }
 
   /**
    * Run the native write plan for one task, reporting rows as batches are pulled into native
@@ -312,7 +344,6 @@ object CometWriteFilesExec extends Logging {
       .addAllColumnNames(taskWrite.dataColumnNames.asJava)
       .clearOutputSchema()
       .addAllOutputSchema(taskWrite.outputSchema.asJava)
-      .build()
 
     val reportRows = recordRows(statsTrackers, filePath, taskWrite.childSchema)
     val trackedBatches = CometArrowStream.countingIterator[ColumnarBatch](
@@ -329,8 +360,11 @@ object CometWriteFilesExec extends Logging {
 
     writeFile(
       filePath,
+      // Spark reports a failure while writing rows for the file's own path.
+      filePath,
       hadoopConf,
-      taskWrite.nativeOp.toBuilder.setParquetWriter(parquetWriter).build(),
+      taskWrite.nativeOp,
+      parquetWriter,
       CometArrowStream.inputObjects(trackedBatches, taskWrite.childSchema, taskWrite.nodeName),
       taskWrite.dataColumnNames.length,
       taskWrite.nativeMetrics,
@@ -339,38 +373,43 @@ object CometWriteFilesExec extends Logging {
   }
 
   /**
-   * Writes the task file at `filePath` by running `nativeOp`, a native write plan whose Parquet
-   * writer is set up for the task except for the file, over `inputs`. Both native writers write
-   * their files with this: CometWriteFilesExec on Spark 4.0+ and CometNativeWriteExec on 3.x.
+   * Writes the task file at `filePath` by running the native write plan `nativeOp` with `writer`
+   * as its Parquet writer, over `inputs`. `writer` is set up for the task except for the file,
+   * which this sets. Both native writers write their files with this: CometWriteFilesExec on
+   * Spark 4.0+ and CometNativeWriteExec on 3.x.
    *
    * When the native writer cannot create the file itself (see
    * [[NativeWriteUtils.nativeWriterCreatesFile]]), it is created here first, through Hadoop's
    * FileSystem API with the task's configuration, as [[HadoopFileOutput]] explains, and the
    * plan's writer writes the file's bytes to it. The file is closed once the plan has written all
    * of it, and aborted if the plan fails.
+   *
+   * A failure to write or close the file fails the task as Spark's writer fails it, reported for
+   * `errorPath` (see [[enrichWriteError]]). As in Spark, a failure to create the file through
+   * Hadoop is not enriched.
    */
   private[comet] def writeFile(
       filePath: String,
+      errorPath: String,
       hadoopConf: Configuration,
       nativeOp: Operator,
+      writer: OperatorOuterClass.ParquetWriter.Builder,
       inputs: Array[Object],
       numOutputCols: Int,
       nativeMetrics: CometMetricNode,
       numPartitions: Int,
       partitionId: Int): Unit = {
     def run(output: Option[HadoopFileOutput]): Unit = {
-      val writer = nativeOp.getParquetWriter.toBuilder
-        .setOutputPath(filePath)
-        .setJvmOutputStream(output.isDefined)
-        .build()
-      val execIterator = new CometExecIterator(
-        CometExec.newIterId,
+      writer.setOutputPath(filePath).setJvmOutputStream(output.isDefined)
+      val execIterator = CometExec.getCometIterator(
         inputs,
         numOutputCols,
-        CometExec.serializeNativePlan(nativeOp.toBuilder.setParquetWriter(writer).build()),
+        nativeOp.toBuilder.setParquetWriter(writer).build(),
         nativeMetrics,
         numPartitions,
         partitionId,
+        broadcastedHadoopConfForEncryption = None,
+        encryptedFilePaths = Seq.empty,
         outputStream = output)
 
       // `close()` propagates teardown failures, including from the final native metrics update,
@@ -386,18 +425,20 @@ object CometWriteFilesExec extends Logging {
     }
 
     if (NativeWriteUtils.nativeWriterCreatesFile(filePath)) {
-      run(None)
+      enrichWriteError(errorPath)(run(None))
     } else {
       val file = HadoopFileOutput.create(filePath, hadoopConf)
-      try {
-        run(Some(file))
-      } catch {
-        case failure: Throwable =>
-          file.abort(failure)
-          throw failure
+      enrichWriteError(errorPath) {
+        try {
+          run(Some(file))
+        } catch {
+          case failure: Throwable =>
+            file.abort(failure)
+            throw failure
+        }
+        // Only once the native writer has written every byte of the file and released it.
+        file.close()
       }
-      // Only once the native writer has written every byte of the file and released it.
-      file.close()
     }
   }
 

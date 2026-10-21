@@ -24,6 +24,7 @@ import java.io.OutputStream;
 import java.net.URI;
 import java.util.List;
 import java.util.concurrent.CopyOnWriteArrayList;
+import java.util.concurrent.atomic.AtomicInteger;
 
 import org.apache.hadoop.fs.Abortable;
 import org.apache.hadoop.fs.FSDataOutputStream;
@@ -34,8 +35,9 @@ import org.apache.hadoop.util.Progressable;
 
 /**
  * A local-disk-backed FileSystem under its own scheme that records every file created through it
- * and how each file's stream ended, and can fail writes on demand. Its streams can abort, as S3A's
- * do, and an aborted file is deleted, as an aborted S3A upload never becomes an object.
+ * and how each file's stream ended, and can fail writes and closes on demand. Its streams can
+ * abort, as S3A's do, and an aborted file is deleted, as an aborted S3A upload never becomes an
+ * object.
  *
  * <p>It lets a test check that a file was created through Hadoop's FileSystem API without a remote
  * store: Comet's native writer creates only local and HDFS files itself. The recordings are static,
@@ -47,8 +49,11 @@ public class RecordingFileSystem extends RawLocalFileSystem {
 
   public static final String PREFIX = SCHEME + "://recording";
 
-  /** The message of the {@link IOException} every write throws while {@link #failWrites} is set. */
+  /** The message of the {@link IOException} a failing write throws. */
   public static final String WRITE_FAILURE = "injected output stream failure";
+
+  /** The message of the {@link IOException} a failing close throws. */
+  public static final String CLOSE_FAILURE = "injected output stream close failure";
 
   /** The files created through this FileSystem, in order. */
   public static final List<String> created = new CopyOnWriteArrayList<>();
@@ -59,13 +64,37 @@ public class RecordingFileSystem extends RawLocalFileSystem {
   /** The files whose stream was aborted. */
   public static final List<String> aborted = new CopyOnWriteArrayList<>();
 
+  /** The length of every write to a stream, in order, across all files. */
+  public static final List<Integer> writeLengths = new CopyOnWriteArrayList<>();
+
+  /** Every write fails. */
   public static volatile boolean failWrites = false;
+
+  /** When positive, the write with this number, counting from 1 in each file, fails. */
+  public static volatile int failAtWrite = 0;
+
+  /** Every close fails, after closing the file underneath. */
+  public static volatile boolean failCloses = false;
+
+  /** Whether streams report that they can abort, as S3A's do. */
+  public static volatile boolean abortable = true;
+
+  /**
+   * How many more files the failures above apply to. Each file created while it is positive takes
+   * one, and files created once it reaches 0 write and close normally.
+   */
+  public static final AtomicInteger failingFiles = new AtomicInteger(Integer.MAX_VALUE);
 
   public static void reset() {
     created.clear();
     closed.clear();
     aborted.clear();
+    writeLengths.clear();
     failWrites = false;
+    failAtWrite = 0;
+    failCloses = false;
+    abortable = true;
+    failingFiles.set(Integer.MAX_VALUE);
   }
 
   public RecordingFileSystem() {
@@ -105,6 +134,8 @@ public class RecordingFileSystem extends RawLocalFileSystem {
       implements Abortable, StreamCapabilities {
     private final Path path;
     private final OutputStream out;
+    private final boolean failing = failingFiles.getAndDecrement() > 0;
+    private int writes = 0;
     private boolean finished = false;
 
     RecordingStream(Path path, OutputStream out) {
@@ -114,20 +145,22 @@ public class RecordingFileSystem extends RawLocalFileSystem {
 
     @Override
     public void write(int b) throws IOException {
-      checkWritable();
+      checkWritable(1);
       out.write(b);
     }
 
     @Override
     public void write(byte[] b, int off, int len) throws IOException {
-      checkWritable();
+      checkWritable(len);
       out.write(b, off, len);
     }
 
-    private void checkWritable() throws IOException {
-      if (failWrites) {
+    private void checkWritable(int length) throws IOException {
+      writes++;
+      if (failing && (failWrites || writes == failAtWrite)) {
         throw new IOException(WRITE_FAILURE);
       }
+      writeLengths.add(length);
     }
 
     @Override
@@ -135,6 +168,9 @@ public class RecordingFileSystem extends RawLocalFileSystem {
       if (!finished) {
         finished = true;
         out.close();
+        if (failing && failCloses) {
+          throw new IOException(CLOSE_FAILURE);
+        }
         closed.add(path.toString());
       }
     }
@@ -169,7 +205,7 @@ public class RecordingFileSystem extends RawLocalFileSystem {
 
     @Override
     public boolean hasCapability(String capability) {
-      return StreamCapabilities.ABORTABLE_STREAM.equals(capability);
+      return abortable && StreamCapabilities.ABORTABLE_STREAM.equals(capability);
     }
   }
 }

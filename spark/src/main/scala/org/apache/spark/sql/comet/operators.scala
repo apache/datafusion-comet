@@ -57,7 +57,7 @@ import com.google.protobuf.CodedOutputStream
 
 import org.apache.comet.{CometConf, CometExecIterator, CometRuntimeException, ConfigEntry, ContribServices}
 import org.apache.comet.CometSparkSessionExtensions.{isCometShuffleEnabled, isSpark35Plus, withFallbackReason}
-import org.apache.comet.parquet.CometParquetUtils
+import org.apache.comet.parquet.{CometParquetUtils, HadoopFileOutput}
 import org.apache.comet.rules.CometExecRule
 import org.apache.comet.serde.{CometCollectBuffer, CometOperatorSerde, Compatible, OperatorOuterClass, QueryContextInterner, SupportLevel, Unsupported}
 import org.apache.comet.serde.OperatorOuterClass.{AggregateMode => CometAggregateMode, Operator}
@@ -789,7 +789,8 @@ object CometExec {
       numParts,
       partitionIdx,
       broadcastedHadoopConfForEncryption = None,
-      encryptedFilePaths = Seq.empty)
+      encryptedFilePaths = Seq.empty,
+      outputStream = None)
   }
 
   /**
@@ -824,7 +825,8 @@ object CometExec {
       numParts: Int,
       partitionIdx: Int,
       broadcastedHadoopConfForEncryption: Option[Broadcast[SerializableConfiguration]],
-      encryptedFilePaths: Seq[String]): CometExecIterator = {
+      encryptedFilePaths: Seq[String],
+      outputStream: Option[HadoopFileOutput]): CometExecIterator = {
     val bytes = serializeNativePlan(nativePlan)
     new CometExecIterator(
       newIterId,
@@ -835,7 +837,8 @@ object CometExec {
       numParts,
       partitionIdx,
       broadcastedHadoopConfForEncryption,
-      encryptedFilePaths)
+      encryptedFilePaths,
+      outputStream = outputStream)
   }
 
   /**

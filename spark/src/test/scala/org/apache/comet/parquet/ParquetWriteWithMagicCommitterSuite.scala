@@ -196,16 +196,96 @@ class ParquetWriteWithMagicCommitterSuite
             s"Expected the division by zero to fail the write, got: $error")
         }
       }
-      val tablePath = new Path(table)
-      val fs = tablePath.getFileSystem(spark.sessionState.newHadoopConf())
-      if (fs.exists(tablePath)) {
-        val iterator = fs.listFiles(tablePath, true)
-        val files =
-          Iterator.continually(iterator).takeWhile(_.hasNext).map(_.next().getPath).toList
-        assert(files.isEmpty, s"A failed write left ${files.mkString(", ")}")
-      }
-      assert(pendingUploads(testBucketName).isEmpty, pendingUploads(testBucketName))
+      assertRolledBack(table)
     }
+  }
+
+  /**
+   * Checks that a failed write to `table` left nothing behind: no object under it, so no data and
+   * no `__magic` directory, and no pending upload in its bucket.
+   */
+  private def assertRolledBack(table: String): Unit = {
+    val tablePath = new Path(table)
+    val fs = tablePath.getFileSystem(spark.sessionState.newHadoopConf())
+    if (fs.exists(tablePath)) {
+      val iterator = fs.listFiles(tablePath, true)
+      val files =
+        Iterator.continually(iterator).takeWhile(_.hasNext).map(_.next().getPath).toList
+      assert(files.isEmpty, s"A failed write left ${files.mkString(", ")}")
+    }
+    val bucket = tablePath.toUri.getHost
+    assert(pendingUploads(bucket).isEmpty, pendingUploads(bucket))
+  }
+
+  test("a native write that fails after S3A uploaded part of its file leaves nothing behind") {
+    // With 5 MiB parts, S3A has uploaded a part of the file by the time the write fails, so
+    // aborting the file has to cancel an upload that already holds data. The native writer
+    // passes a row group to the stream once it has 1048576 rows, about 8 MiB of uncompressed
+    // doubles here, and the division by zero comes after that. Its own bucket, since S3A reads
+    // the part size from the file system instance it caches per bucket.
+    val bucket = "magic-multipart"
+    createBucketIfNotExists(bucket)
+    withTempPath { dir =>
+      val divisors = materializeAsCometSource(
+        spark
+          .range(1, 1200001)
+          .select(col("id").cast("int").as("id"), (col("id") - 1100000).cast("int").as("divisor"))
+          .coalesce(1),
+        new File(dir, "source.parquet").getAbsolutePath)
+      val table = s"s3a://$bucket/failed-after-a-part"
+      withNativeWriter {
+        withSQLConf(
+          SQLConf.ANSI_ENABLED.key -> "true",
+          "fs.s3a.multipart.size" -> "5M",
+          "fs.s3a.committer.abort.pending.uploads" -> "false") {
+          // Built under ANSI mode, which Spark 3.x division captures when it is created.
+          val df = divisors.select((col("id") / col("divisor")).as("quotient")).coalesce(1)
+          val (plan, error) =
+            captureFailedWritePlan(df.write.option("compression", "none").parquet(table))
+          assertHasCometNativeWriteExec(plan)
+          assert(
+            causeChain(error).exists(_.getMessage.contains("DIVIDE_BY_ZERO")),
+            s"Expected the division by zero to fail the write, got: $error")
+        }
+      }
+      assertRolledBack(table)
+    }
+  }
+
+  // A commit that fails after the file is closed. S3A has recorded the file's pending upload by
+  // then, so only the magic committer's own abort can cancel it: abortTask for a failed task
+  // commit, and abortJob for a failed job commit, which on Spark 3.x is Comet's own call.
+  Seq(
+    "task" -> (() => FailingPathOutputCommitProtocol.failCommitTask = true,
+    FailingPathOutputCommitProtocol.CommitTaskFailure),
+    "job" -> (() => FailingPathOutputCommitProtocol.failCommitJob = true,
+    FailingPathOutputCommitProtocol.CommitJobFailure)).foreach {
+    case (stage, (failCommit, failure)) =>
+      test(s"a native write whose $stage commit fails leaves nothing behind") {
+        withTempPath { dir =>
+          val df = source(1000, dir).coalesce(1)
+          val table = s"s3a://$testBucketName/failed-$stage-commit"
+          FailingPathOutputCommitProtocol.reset()
+          try {
+            withNativeWriter {
+              withSQLConf(
+                SQLConf.FILE_COMMIT_PROTOCOL_CLASS.key ->
+                  classOf[FailingPathOutputCommitProtocol].getName,
+                "fs.s3a.committer.abort.pending.uploads" -> "false") {
+                failCommit()
+                val (plan, error) = captureFailedWritePlan(df.write.parquet(table))
+                assertHasCometNativeWriteExec(plan)
+                assert(
+                  causeChain(error).exists(e => Option(e.getMessage).exists(_.contains(failure))),
+                  s"Expected the injected $stage commit failure, got: $error")
+              }
+            }
+          } finally {
+            FailingPathOutputCommitProtocol.reset()
+          }
+          assertRolledBack(table)
+        }
+      }
   }
 
   test("an S3 write that S3A's magic committer does not commit stays on Spark") {

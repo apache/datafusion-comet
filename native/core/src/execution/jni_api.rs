@@ -22,13 +22,14 @@
 //! converts the result back. Errors and panics are raised as JVM exceptions by
 //! `try_unwrap_or_throw`, through the boundary error protocol in `errors::NativeError`.
 //!
-//! `createPlan`, `setShufflePartitionPusher`, `setOutputStream`, `executePlan` and `releasePlan`
-//! also depend on upcalls into the JVM (input iterators, the task memory manager, metrics, UDFs,
-//! scalar subqueries and a native write's output stream). Their core functions
-//! (`create_execution_context`, `register_shuffle_partition_pusher`, `register_output_stream`,
-//! `execute_plan` and `release_plan`) take the JVM objects as JNI global references held by the
-//! `ExecutionContext` (`PlanJvmRefs`), and the steps that need an `Env` as callbacks: the memory
-//! pool factory, the pusher and output stream factories, and `PublishMetrics`.
+//! `createPlan`, `setShufflePartitionPusher`, `executePlan` and `releasePlan` also depend on
+//! upcalls into the JVM (input iterators, the task memory manager, metrics, UDFs and scalar
+//! subqueries). Their core functions (`create_execution_context`,
+//! `register_shuffle_partition_pusher`, `execute_plan` and `release_plan`) take the JVM objects as
+//! JNI global references held by the `ExecutionContext` (`PlanJvmRefs`), and the steps that need
+//! an `Env` as callbacks: the memory pool factory, the pusher factory, and `PublishMetrics`.
+//! `setOutputStream` registers a native write's output stream through the same
+//! `register_before_execution` check as the pusher.
 
 use super::{serde, utils::SparkArrowConvert};
 use crate::{
@@ -991,25 +992,17 @@ pub extern "system" fn Java_org_apache_comet_Native_setOutputStream(
         }
 
         let exec_context = get_execution_context(exec_context);
-        register_output_stream(exec_context, || {
-            Ok(Arc::new(JavaOutputStreamSink::try_new(env, &output)?))
-        })
+        register_before_execution(
+            exec_context.root_op.is_some(),
+            &mut exec_context.output_stream,
+            "A native write's output stream",
+            || {
+                let sink: Arc<dyn OutputStreamSink> =
+                    Arc::new(JavaOutputStreamSink::try_new(env, &output)?);
+                Ok(sink)
+            },
+        )
     })
-}
-
-/// Registers the output stream of the file the plan's Parquet writer writes, built by
-/// `make_sink` only once the plan is known to accept one: before execution starts, and once. Core
-/// of `Native.setOutputStream`, whose sink calls back into the JVM.
-fn register_output_stream(
-    exec_context: &mut ExecutionContext,
-    make_sink: impl FnOnce() -> CometResult<Arc<dyn OutputStreamSink>>,
-) -> CometResult<()> {
-    register_before_execution(
-        exec_context.root_op.is_some(),
-        &mut exec_context.output_stream,
-        "A native write's output stream",
-        make_sink,
-    )
 }
 
 /// Skipping is opt-in (`spark.comet.exec.aggregate.skipPartial.enabled`): once DataFusion's probe

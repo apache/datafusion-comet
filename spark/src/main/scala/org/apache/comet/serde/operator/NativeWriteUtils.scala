@@ -21,6 +21,8 @@ package org.apache.comet.serde.operator
 
 import java.util.Locale
 
+import scala.util.Try
+
 import org.apache.hadoop.conf.Configuration
 import org.apache.hadoop.fs.Path
 import org.apache.hadoop.mapreduce.lib.output.PathOutputCommitterFactory
@@ -202,8 +204,8 @@ object NativeWriteUtils {
 
   /**
    * A fallback reason when the native writer cannot write to `outputPath`'s file system, or
-   * `None` when it can. Local and HDFS files are created natively, and so are the files of a
-   * write that S3A's magic committer commits, through S3A (see
+   * `None` when it can. Local and HDFS files are created natively. The files of a write that
+   * S3A's magic committer commits are created through S3A and written natively (see
    * [[org.apache.comet.parquet.HadoopFileOutput]]).
    *
    * That is a matter of scope, not of correctness: any file, including any other S3A file, could
@@ -250,7 +252,7 @@ object NativeWriteUtils {
    * Spark 4.1 configures both whenever that module is on the classpath (SPARK-47618), and earlier
    * versions for a bucket that sets `fs.s3a.bucket.<bucket>.committer.magic.enabled`:
    *
-   *   - the commit protocol `PathOutputCommitProtocol`, or
+   *   - the commit protocol `PathOutputCommitProtocol`, or a subclass of it, or
    *   - `BindingParquetOutputCommitter` as `spark.sql.parquet.output.committer.class`, under a
    *     commit protocol that instantiates that class, as Spark's default one does.
    *
@@ -279,7 +281,7 @@ object NativeWriteUtils {
       hadoopConf: Configuration): Boolean = {
     val outputCommitterClass =
       hadoopConf.getTrimmed(SQLConf.PARQUET_OUTPUT_COMMITTER_CLASS.key, "")
-    val asksCommitterFactory = commitProtocolClass == PathOutputCommitProtocolClass ||
+    val asksCommitterFactory = isPathOutputCommitProtocol(commitProtocolClass) ||
       (commitProtocolClass == SQLConf.FILE_COMMIT_PROTOCOL_CLASS.defaultValueString &&
         outputCommitterClass == BindingParquetOutputCommitterClass)
     val uri = new Path(outputPath).toUri
@@ -299,6 +301,21 @@ object NativeWriteUtils {
       case _ => false
     }
   }
+
+  /**
+   * Whether `commitProtocolClass` is `PathOutputCommitProtocol` or a subclass of it. A subclass
+   * asks the committer factory too unless it overrides how its committer is created, and even
+   * then each task writes the path its committer returns.
+   */
+  private def isPathOutputCommitProtocol(commitProtocolClass: String): Boolean =
+    commitProtocolClass == PathOutputCommitProtocolClass || Try {
+      val loader = Thread.currentThread().getContextClassLoader
+      // scalastyle:off classforname
+      Class
+        .forName(PathOutputCommitProtocolClass, false, loader)
+        .isAssignableFrom(Class.forName(commitProtocolClass, false, loader))
+      // scalastyle:on classforname
+    }.getOrElse(false)
 
   /** Compression codecs Comet's native Parquet writer can produce. */
   val supportedCompressionCodecs: Set[String] =

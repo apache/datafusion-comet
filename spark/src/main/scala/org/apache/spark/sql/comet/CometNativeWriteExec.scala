@@ -188,6 +188,7 @@ case class CometNativeWriteExec(
     val capturedNativeOp = nativeOp
     val capturedCommitter = committer
     val capturedJobTrackerID = jobTrackerID
+    val capturedOutputPath = outputPath
     val writerFactory = outputWriterFactory
     val nativeMetrics = CometMetricNode.fromCometPlan(this)
     val commitMessages = new Array[TaskCommitMessage](numPartitions)
@@ -221,7 +222,6 @@ case class CometNativeWriteExec(
 
             val writer = capturedNativeOp.getParquetWriter.toBuilder
               .setCompression(protoCodec)
-              .build()
 
             // Register before the iterator so this listener runs after its cleanup.
             nativeMetrics.reportNativeWriteOutputMetrics(context)
@@ -229,8 +229,10 @@ case class CometNativeWriteExec(
             // files the native writer does not create itself.
             CometWriteFilesExec.writeFile(
               filePath,
+              capturedOutputPath,
               taskContext.getConfiguration,
-              capturedNativeOp.toBuilder.setParquetWriter(writer).build(),
+              capturedNativeOp,
+              writer,
               CometArrowStream.inputObjects(batches, childSchema, "CometNativeWriteExec"),
               childSchema.length,
               nativeMetrics,
@@ -239,7 +241,11 @@ case class CometNativeWriteExec(
           }
           // `hasNext` already ran an empty partition's child to completion, so there is nothing
           // to drain or release when no file was written.
-          capturedCommitter.commitTask(taskContext)
+          // Spark 3.x's `FileFormatWriter.executeTask` reports a failure in the write or the
+          // commit for the write's path.
+          CometWriteFilesExec.enrichWriteError(capturedOutputPath) {
+            capturedCommitter.commitTask(taskContext)
+          }
         })(catchBlock = capturedCommitter.abortTask(taskContext))
       },
       writeRDD.partitions.indices,
