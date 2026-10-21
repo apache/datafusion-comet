@@ -34,6 +34,7 @@
 - Spark 3.5.8 (audited 2026-05-27): identical to 3.4.3.
 - Spark 4.0.1 (audited 2026-05-27): now `RuntimeReplaceable` and rewritten to `ArrayInsert(arr, Literal(-1), elem)`. `CometArrayAppend` is therefore unreachable; dispatch goes through `CometArrayInsert` (which carries its own `Incompatible` notes documented at the `array_insert` entry).
 - Spark 4.1.1 (audited 2026-05-27): identical to 4.0.1.
+- Spark 3.4, 3.5 (2026-10-15, [#6086](https://github.com/apache/datafusion-comet/issues/6086)): Spark disagrees with itself here. Interpreted `ArrayAppend.eval` returns NULL for a NULL array without evaluating the item, but `doGenCode` emits the item's code outside `nullSafeExec`, so generated code evaluates the item on every row, including rows whose array is `NULL`, and an item that raises under ANSI raises there. Comet follows the generated code, which is what runs under whole-stage codegen. Its `CASE WHEN <array> IS NOT NULL THEN array_append(...) ELSE null` guard skipped the item on those rows; the `ELSE` branch now evaluates it too, when it is not a literal or a column read, and returns a NULL typed as the list. A nondeterministic array or item with a nullable array falls back to Spark, because the guard serializes the operands more than once. A non-nullable array gets no guard at all, so each operand is evaluated once over the whole batch.
 
 ## array_compact
 
