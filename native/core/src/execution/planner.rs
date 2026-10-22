@@ -3265,7 +3265,7 @@ impl PhysicalPlanner {
                 let child = self.create_expr(expr.child.as_ref().unwrap(), Arc::clone(&schema))?;
                 let datatype = to_arrow_datatype(expr.datatype.as_ref().unwrap());
                 let func = min_max_udaf(&datatype, false);
-                let child = Arc::new(CastExpr::new(child, datatype.clone(), None));
+                let child = Self::cast_min_max_child(child, &datatype);
 
                 AggregateExprBuilder::new(func, vec![child])
                     .schema(schema)
@@ -3279,7 +3279,7 @@ impl PhysicalPlanner {
                 let child = self.create_expr(expr.child.as_ref().unwrap(), Arc::clone(&schema))?;
                 let datatype = to_arrow_datatype(expr.datatype.as_ref().unwrap());
                 let func = min_max_udaf(&datatype, true);
-                let child = Arc::new(CastExpr::new(child, datatype.clone(), None));
+                let child = Self::cast_min_max_child(child, &datatype);
 
                 AggregateExprBuilder::new(func, vec![child])
                     .schema(schema)
@@ -3659,6 +3659,27 @@ impl PhysicalPlanner {
                     AggregateUDF::new_from_impl(Mode::new(datatype, expr.normalize_neg_zero));
                 Self::create_aggr_func_expr("mode", schema, vec![child], func)
             }
+        }
+    }
+
+    /// Cast a min/max input to the aggregate's declared type. Native expressions such as
+    /// `struct(...)` can report nullable fields where Spark declares them non-nullable, and
+    /// DataFusion's `CastExpr` rejects that narrowing. Comet's `Cast` relabels the fields
+    /// instead, so the input matches the state that shuffle and scans stamp with Spark's type.
+    fn cast_min_max_child(
+        child: Arc<dyn PhysicalExpr>,
+        datatype: &DataType,
+    ) -> Arc<dyn PhysicalExpr> {
+        if matches!(datatype, DataType::Struct(_)) {
+            Arc::new(Cast::new(
+                child,
+                datatype.clone(),
+                SparkCastOptions::new_without_timezone(EvalMode::Legacy),
+                None,
+                None,
+            ))
+        } else {
+            Arc::new(CastExpr::new(child, datatype.clone(), None))
         }
     }
 

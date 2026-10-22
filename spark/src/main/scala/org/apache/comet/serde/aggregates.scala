@@ -43,6 +43,8 @@ object CometMin extends CometAggregateExpressionSerde[Min] {
 
   override def getUnsupportedReasons(): Seq[String] = AggSerde.minMaxUnsupportedReasons
 
+  override def getIncompatibleReasons(): Seq[String] = AggSerde.minMaxIncompatibleReasons
+
   override def getSupportLevel(expr: Min): SupportLevel =
     AggSerde.minMaxSupportLevel(expr.dataType)
 
@@ -83,6 +85,8 @@ object CometMax extends CometAggregateExpressionSerde[Max] {
   override def supportsNativePartialToSparkFinal(fn: Max): Boolean = true
 
   override def getUnsupportedReasons(): Seq[String] = AggSerde.minMaxUnsupportedReasons
+
+  override def getIncompatibleReasons(): Seq[String] = AggSerde.minMaxIncompatibleReasons
 
   override def getSupportLevel(expr: Max): SupportLevel =
     AggSerde.minMaxSupportLevel(expr.dataType)
@@ -1483,14 +1487,60 @@ object AggSerde {
       Unsupported(Some(ComparisonUtils.nonDefaultCollationReason("min/max")))
     // DataFusion's grouped hash aggregate under-reports the memory these values hold (#6936).
     case _: StringType | BinaryType => Compatible()
+    case st: StructType => minMaxStructSupportLevel(st)
     case _ if minMaxDataTypeSupported(dt) => Compatible()
     case _ => Unsupported(Some(s"Unsupported data type: $dt"))
   }
 
+  /**
+   * Why a leaf type of a struct cannot be compared natively, or None if it can. DataFusion orders
+   * floats with IEEE rules (NaN compares false) while Spark treats NaN as the largest value.
+   */
+  private def structLeafUnsupportedReason(dt: DataType): Option[String] = dt match {
+    case FloatType | DoubleType =>
+      Some("a float or double field, which DataFusion orders differently for NaN")
+    case _: StringType if isStringCollationType(dt) =>
+      Some("a string field with a non-default collation")
+    case _: StringType | BinaryType => None
+    case st: StructType =>
+      st.fields.toSeq.view.flatMap(f => structLeafUnsupportedReason(f.dataType)).headOption
+    case _ if minMaxDataTypeSupported(dt) => None
+    case _ => Some(s"a field of type $dt")
+  }
+
+  private def structHasNullableField(dt: DataType): Boolean = dt match {
+    case st: StructType => st.fields.exists(f => f.nullable || structHasNullableField(f.dataType))
+    case _ => false
+  }
+
+  /**
+   * DataFusion skips a null field when comparing two structs, while Spark orders null as the
+   * smallest value. The two can pick different rows, so a struct is only Compatible when none of
+   * its fields (at any depth) can be null. Otherwise it is opt-in.
+   */
+  private def minMaxStructSupportLevel(st: StructType): SupportLevel =
+    structLeafUnsupportedReason(st) match {
+      case Some(reason) => Unsupported(Some(s"Struct min/max over $reason"))
+      case None if structHasNullableField(st) =>
+        Incompatible(
+          Some(
+            "Struct min/max with nullable fields: DataFusion skips null fields when comparing," +
+              " Spark orders null as the smallest value"))
+      case None => Compatible()
+    }
+
+  /** Reasons a struct min/max is not Compatible, for the generated compatibility guide. */
+  val minMaxIncompatibleReasons: Seq[String] = Seq(
+    "A struct with a nullable field (at any depth). DataFusion skips a null field when" +
+      " comparing structs, while Spark orders null as the smallest value, so the two can pick" +
+      " different rows when the deciding field is null.")
+
   /** The inputs that `minMaxSupportLevel` rejects, for the generated compatibility guide. */
   val minMaxUnsupportedReasons: Seq[String] = Seq(
     "Input of a type other than boolean, integral, floating-point, decimal, date, timestamp," +
-      " string or binary, such as timestamp without time zone, intervals, arrays and structs.",
+      " string or binary, such as timestamp without time zone, intervals, arrays and maps." +
+      " A struct is supported only if all of its fields are of supported types other than" +
+      " float and double.",
     "A string with a non-default collation (Spark 4.0+), which Spark orders by its collation" +
       " while Comet compares raw bytes.")
 
