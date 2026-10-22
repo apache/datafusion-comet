@@ -52,7 +52,7 @@ The status column uses these values:
   - Date: 2026-07-18
 - `spark.sql.parquet.binaryAsString`
   - Default: `false`
-  - Status: Native (see notes)
+  - Status: Partial (see notes)
   - Affected operator: native Parquet scan
   - Date: 2026-10-21
 
@@ -194,11 +194,13 @@ and verifies the inferred schema under both configuration values, Spark answer p
 `CometNativeScanExec`, including a row containing invalid UTF-8 bytes and a projection that reads
 only a non-string column. A second test reads two partition directories holding a valid value,
 `0xff` and a null, and a Spark-written file, with row-filter pushdown off and on. It compares `=`,
-`IN`, `IS [NOT] NULL`, a range, an `OR`, a self-join on the string column and an
+`IN`, `NOT IN`, `IS [NOT] NULL`, a range, an `OR`, a self-join on the string column and an
 `ORDER BY ... LIMIT` against Spark, and checks that `value = 'one'` reaches the row filter. Native
 tests in `parquet_exec.rs` check which row groups each filter prunes, for an unannotated and an
-annotated column, with and without row filters. They include a range and a `U+FFFD` literal,
-neither of which may prune.
+annotated column, with and without row filters. They include `NOT IN`, a range and `U+FFFD`
+literals, none of which may prune. A native test in `schema_adapter.rs` checks that the adapter
+compares an annotated column directly for `NOT IN` as for `IN`, and leaves a filter with a null or
+invalid UTF-8 literal unchanged.
 
 **Known divergences.** Decoding is not byte-preserving, so the differences described in
 [Strings with non-UTF-8 bytes](../user-guide/latest/compatibility/index.md) apply to any
