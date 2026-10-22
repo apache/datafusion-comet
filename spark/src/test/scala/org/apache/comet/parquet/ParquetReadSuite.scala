@@ -312,6 +312,7 @@ abstract class ParquetReadSuite extends CometTestBase {
           Seq(
             "SELECT * FROM t WHERE value = 'one'",
             "SELECT * FROM t WHERE value IN ('one', 'two')",
+            "SELECT * FROM t WHERE value NOT IN ('one', 'two')",
             "SELECT * FROM t WHERE value IS NULL",
             "SELECT * FROM t WHERE value IS NOT NULL",
             "SELECT * FROM t WHERE value > 'o'",

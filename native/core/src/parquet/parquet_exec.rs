@@ -892,7 +892,7 @@ mod tests {
         ))
     }
 
-    fn s_in(values: &[&str]) -> Arc<dyn PhysicalExpr> {
+    fn s_in(values: &[&str], negated: bool) -> Arc<dyn PhysicalExpr> {
         let values = values
             .iter()
             .map(|value| {
@@ -901,7 +901,7 @@ mod tests {
             })
             .collect();
         let schema = binary_as_string_required_schema();
-        in_list(Arc::new(Column::new("s", 1)), values, &false, &schema).unwrap()
+        in_list(Arc::new(Column::new("s", 1)), values, &negated, &schema).unwrap()
     }
 
     fn groups(values: &[Option<&str>]) -> DecodedCounts {
@@ -929,7 +929,7 @@ mod tests {
         let every_group = groups(&[Some("one"), Some("\u{fffd}"), None]);
         let cases: Vec<(&str, Arc<dyn PhysicalExpr>, DecodedCounts)> = vec![
             ("=", compare_s(Operator::Eq, "one"), groups(&[Some("one")])),
-            ("IN", s_in(&["one", "zzz"]), groups(&[Some("one")])),
+            ("IN", s_in(&["one", "zzz"], false), groups(&[Some("one")])),
             ("IS NULL", Arc::new(IsNullExpr::new(s())), groups(&[None])),
             (
                 "IS NOT NULL",
@@ -939,11 +939,19 @@ mod tests {
             // Pushed, this would prune the null group. It isn't, because a range on the decoded
             // strings can disagree with the same range on the bytes.
             ("range", compare_s(Operator::Gt, "a"), every_group.clone()),
+            // The scan pushes only `=`, `IN` and `IS [NOT] NULL`, so `NOT IN` stays above it.
+            ("NOT IN", s_in(&["one"], true), every_group.clone()),
             // The invalid group decodes to U+FFFD, so comparing the literal's bytes would prune a
             // group that matches.
             (
                 "U+FFFD literal",
                 compare_s(Operator::Eq, "\u{fffd}"),
+                every_group.clone(),
+            ),
+            // Nor is an `IN` list holding one: pushing its other values would prune that group too.
+            (
+                "IN with a U+FFFD literal",
+                s_in(&["one", "\u{fffd}"], false),
                 every_group,
             ),
             // A filter on another column still prunes, and `AND` keeps the side that is pushed.
@@ -1005,7 +1013,12 @@ mod tests {
         let s = || Arc::new(Column::new("s", 1)) as Arc<dyn PhysicalExpr>;
         let cases: Vec<(&str, Arc<dyn PhysicalExpr>, DecodedCounts)> = vec![
             ("=", compare_s(Operator::Eq, "one"), groups(&[Some("one")])),
-            ("IN", s_in(&["two"]), groups(&[Some("two")])),
+            ("IN", s_in(&["two"], false), groups(&[Some("two")])),
+            (
+                "NOT IN",
+                s_in(&["one"], true),
+                groups(&[Some("one"), Some("two"), None]),
+            ),
             ("IS NULL", Arc::new(IsNullExpr::new(s())), groups(&[None])),
             (
                 "IS NOT NULL",
