@@ -225,7 +225,7 @@ class CometExpressionSuite extends CometTestBase with AdaptiveSparkPlanHelper {
   for (readChecked <- Seq(false, true);
     codegen <- Seq(false, true); adaptive <- Seq(false, true)) {
     test(
-      s"AssertNotNull preserves deferred projection fields: " +
+      "AssertNotNull preserves deferred projection fields: " +
         s"readChecked=$readChecked, codegen=$codegen, AQE=$adaptive") {
       withSQLConf(
         SQLConf.ADAPTIVE_EXECUTION_ENABLED.key -> adaptive.toString,
