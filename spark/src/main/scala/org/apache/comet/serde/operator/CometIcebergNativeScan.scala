@@ -692,14 +692,37 @@ object CometIcebergNativeScan extends CometOperatorSerde[CometBatchScanExec] wit
       output: Seq[Attribute],
       pageIndexUnsupportedColumns: Set[String],
       promotedColumns: Set[String],
-      partialPushdown: Boolean): Option[OperatorOuterClass.IcebergPredicate] =
-    icebergExprToProto(
-      icebergExpr,
-      output.map(attr => attr.name -> attr).toMap,
-      pageIndexUnsupportedColumns,
-      promotedColumns,
-      dropUnconvertedConjuncts = partialPushdown,
-      underNot = false)
+      partialPushdown: Boolean): Option[OperatorOuterClass.IcebergPredicate] = {
+    val attributes = output.map(attr => attr.name -> attr).toMap
+    def convert(promoted: Set[String], dropUnconvertedConjuncts: Boolean) =
+      icebergExprToProto(
+        icebergExpr,
+        attributes,
+        pageIndexUnsupportedColumns,
+        promoted,
+        dropUnconvertedConjuncts,
+        underNot = false)
+    // A residual that converts whole is pushed as before. Otherwise this pushes the conjuncts
+    // that convert, which were previously left to the post-scan filter, so it cannot rely on
+    // the schema history to rule out a promotion: one made before Iceberg 0.12 left no older
+    // schema. It treats every column of a type that a promotion can produce as promoted, as
+    // IcebergReflection.promotedColumns does when expiring snapshots removed older schemas.
+    def partialPromoted = promotedColumns ++ output.collect {
+      case attr if isPromotionTarget(attr.dataType) => attr.name
+    }
+    convert(promotedColumns, dropUnconvertedConjuncts = false).orElse {
+      if (partialPushdown) convert(partialPromoted, dropUnconvertedConjuncts = true) else None
+    }
+  }
+
+  /**
+   * Whether a type promotion can produce `dataType`: int to long, float to double, or a wider
+   * decimal precision.
+   */
+  private def isPromotionTarget(dataType: DataType): Boolean = dataType match {
+    case LongType | DoubleType | _: DecimalType => true
+    case _ => false
+  }
 
   /**
    * Converts one node of a residual.

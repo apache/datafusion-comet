@@ -173,13 +173,13 @@ object CometIcebergReadBenchmark extends CometBenchmarkBase {
 
   /**
    * Filters that pair a null check on an array column, which iceberg-rust cannot evaluate, with
-   * an `INT` or `BIGINT` range it can. The native scan pushes the range and leaves the null check
-   * to the filter above the scan. On `clustered`, sorted within each file, and `clustered_long`,
-   * which holds the same values as `BIGINT`, row-group and page statistics skip most of the file.
-   * On `scattered`, hashed over the same range, they skip nothing, so the pushed range is
-   * evaluated row by row during decode. That drops rows before the filter above the scan, which
-   * evaluates the range again. Every file covers the whole range of every filtered column, so
-   * file pruning in Iceberg's planning skips nothing either.
+   * an `INT` range or a `BIGINT` equality it can. The native scan pushes that predicate and
+   * leaves the null check to the filter above the scan. On `clustered`, sorted within each file,
+   * and `clustered_long`, which holds the same values as `BIGINT`, row-group and page statistics
+   * skip most of the file. On `scattered`, hashed over the same range, they skip nothing, so the
+   * pushed range is evaluated row by row during decode. That drops rows before the filter above
+   * the scan, which evaluates the range again. Every file covers the whole range of every
+   * filtered column, so file pruning in Iceberg's planning skips nothing either.
    */
   def icebergPartialFilterBenchmark(values: Int): Unit = {
     withTempPath { dir =>
@@ -213,7 +213,7 @@ object CometIcebergReadBenchmark extends CometBenchmarkBase {
         "1% of a clustered column" -> s"clustered < ${values / 100}",
         "1% of a scattered column" -> s"scattered < ${values / 100}",
         "90% of a scattered column" -> s"scattered < ${values / 10 * 9}",
-        "1% of a clustered BIGINT column" -> s"clustered_long < ${values / 100}")
+        "one value of a clustered BIGINT column" -> s"clustered_long = ${values / 2}")
         .foreach { case (name, range) =>
           val query = s"SELECT sum(length(payload)) FROM $table WHERE l IS NOT NULL AND $range"
           val benchmark =

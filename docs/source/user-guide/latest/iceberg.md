@@ -133,7 +133,8 @@ different rows than Spark:
 - Range comparisons on `FLOAT` and `DOUBLE` columns, and comparisons with `0.0`, `-0.0` or NaN.
 - `NOT` over equality on a nullable column.
 - Comparisons other than `=` on a column whose type was promoted. This applies to every `BIGINT`
-  and `DOUBLE` column when expiring snapshots removed older schemas.
+  and `DOUBLE` column when only part of a condition is pushed, or when expiring snapshots removed
+  older schemas.
 
 Tables with a `schema.name-mapping.default` property push a condition only when all of it can be
 pushed.
@@ -818,8 +819,9 @@ Which entries apply depends on which native paths are enabled:
   promotion, such as `INT` to `BIGINT`, keep the older type, and files imported by `add_files`,
   `migrate` or `snapshot` can store any narrower type. iceberg-rust compares such a file with a
   filter literal incorrectly, so comparisons other than `=` pushed to the native scan can drop
-  matching rows. Comet avoids this for promotions that the schema history records, but not for
-  imported files or promotions made before Iceberg 0.12
+  matching rows. Comet avoids this for promotions that the schema history records. When only part
+  of a condition is pushed, it also avoids this for promotions made before Iceberg 0.12 and for
+  tables with a name mapping, which those procedures set. Other cases can still drop rows
   ([#7138](https://github.com/apache/datafusion-comet/issues/7138)).
 - **`VERSION AS OF` reads of a column renamed after the snapshot.** The renamed column reads as
   NULL, and two columns that swapped names return each other's values

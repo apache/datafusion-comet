@@ -4283,19 +4283,27 @@ class CometIcebergNativeSuite
             partialBytes * 2 < fullBytes,
             s"Partial residual must prune reads: partial=$partialBytes, full=$fullBytes")
 
-          // A BIGINT range is pushed the same with or without a conjunct that is not pushed.
-          val bigBytes =
-            checkAndGetScan("big BETWEEN 1000 AND 1099").metrics("bytes_scanned").value
-          val partialBigBytes =
+          // A partial residual keeps equality on a BIGINT column but not a range, which an
+          // unrecorded promotion could make drop rows.
+          val partialBigEqBytes =
+            checkAndGetScan("l IS NOT NULL AND big = 1050").metrics("bytes_scanned").value
+          assert(
+            partialBigEqBytes * 2 < fullBytes,
+            s"BIGINT equality must prune reads: partial=$partialBigEqBytes, full=$fullBytes")
+          // Spark adds `big IS NOT NULL` to the range, and that is all the residual keeps.
+          val partialBigRangeBytes =
             checkAndGetScan("l IS NOT NULL AND big BETWEEN 1000 AND 1099")
               .metrics("bytes_scanned")
               .value
+          val bigNotNullBytes =
+            checkAndGetScan("l IS NOT NULL AND big IS NOT NULL").metrics("bytes_scanned").value
           assert(
-            partialBigBytes == bigBytes && partialBigBytes * 2 < fullBytes,
-            s"BIGINT range must prune reads: partial=$partialBigBytes, alone=$bigBytes, " +
-              s"full=$fullBytes")
+            partialBigRangeBytes == bigNotNullBytes && partialBigRangeBytes * 2 > fullBytes,
+            s"BIGINT range must not be pushed: partial=$partialBigRangeBytes, " +
+              s"not null=$bigNotNullBytes, full=$fullBytes")
 
-          // An OR keeps the supported side of each branch, while a NOT keeps nothing.
+          // An OR keeps the supported side of each branch, but nothing when one branch keeps
+          // nothing. Spark simplifies `NOT (id < 2000 AND l IS NOT NULL)` to this form.
           val orBytes =
             checkAndGetScan("(id < 100 AND l IS NOT NULL) OR (id >= 9900 AND m IS NOT NULL)")
               .metrics("bytes_scanned")
@@ -4303,11 +4311,12 @@ class CometIcebergNativeSuite
           assert(
             orBytes * 2 < fullBytes,
             s"OR residual must prune reads: or=$orBytes, full=$fullBytes")
-          val notBytes =
-            checkAndGetScan("NOT (id < 2000 AND l IS NOT NULL)").metrics("bytes_scanned").value
+          val unprunedOrBytes =
+            checkAndGetScan("id >= 2000 OR l IS NULL").metrics("bytes_scanned").value
           assert(
-            notBytes == fullBytes,
-            s"NOT residual must read the whole file: not=$notBytes, full=$fullBytes")
+            unprunedOrBytes == fullBytes,
+            "OR with an unsupported branch must read the whole file: " +
+              s"or=$unprunedOrBytes, full=$fullBytes")
 
           Seq(
             "m IS NOT NULL AND id BETWEEN 1000 AND 1099",
@@ -4590,6 +4599,65 @@ class CometIcebergNativeSuite
           }
         } finally {
           spark.sql(s"DROP TABLE $table")
+        }
+      }
+    }
+  }
+
+  test("partial residuals do not compare columns promoted before Iceberg 0.12") {
+    assume(icebergAvailable, "Iceberg not available in classpath")
+
+    withHadoopCatalog("test_cat") {
+      withSQLConf(
+        CometConf.COMET_ENABLED.key -> "true",
+        CometConf.COMET_EXEC_ENABLED.key -> "true",
+        CometConf.COMET_ICEBERG_NATIVE_ENABLED.key -> "true") {
+        val source = "test_cat.db.unrecorded_promotion_source"
+        val table = "test_cat.db.unrecorded_promotion_test"
+        // Both tables assign the same field ids. Appending the source's file to the target leaves
+        // INT and FLOAT data under BIGINT and DOUBLE columns, with a single schema and no name
+        // mapping, as a promotion made before Iceberg 0.12 does.
+        spark.sql(s"CREATE TABLE $source (id INT, l ARRAY<INT>, d FLOAT) USING iceberg")
+        spark.sql(s"CREATE TABLE $table (id BIGINT, l ARRAY<INT>, d DOUBLE) USING iceberg")
+        try {
+          withSQLConf(CometConf.COMET_ENABLED.key -> "false") {
+            spark.sql(s"""
+              INSERT INTO $source VALUES
+                (1, array(1), CAST(0.1 AS FLOAT)),
+                (2, array(2), CAST(0.5 AS FLOAT)),
+                (3, NULL, CAST(1.5 AS FLOAT))
+            """)
+          }
+          val sourceTable =
+            loadIcebergTable(spark, "test_cat", "db", "unrecorded_promotion_source")
+              .asInstanceOf[org.apache.iceberg.Table]
+          val icebergTable =
+            loadIcebergTable(spark, "test_cat", "db", "unrecorded_promotion_test")
+              .asInstanceOf[org.apache.iceberg.Table]
+          val append = icebergTable.newAppend()
+          sourceTable.currentSnapshot().addedDataFiles(sourceTable.io()).asScala.foreach { file =>
+            append.appendFile(DataFiles.builder(icebergTable.spec()).copy(file).build())
+          }
+          append.commit()
+          spark.sql(s"REFRESH TABLE $table")
+          assert(icebergTable.schemas().size() == 1)
+
+          // The array null check is never pushed, so each residual converts only in part. Pushing
+          // the others would skip the file's INT pages, narrow 3000000000 to NULL, or compare the
+          // stored 0.1f with 0.1 narrowed to FLOAT, which Spark compares as DOUBLE.
+          for (predicate <- Seq(
+              "id > 0",
+              "id < 3000000000",
+              "id != 3000000000",
+              "id IN (1, 3000000000)",
+              "d != 0.1",
+              "id = 2",
+              "d = 0.5")) {
+            checkIcebergNativeScan(s"SELECT id FROM $table WHERE l IS NOT NULL AND $predicate")
+          }
+        } finally {
+          spark.sql(s"DROP TABLE IF EXISTS $table")
+          spark.sql(s"DROP TABLE IF EXISTS $source")
         }
       }
     }

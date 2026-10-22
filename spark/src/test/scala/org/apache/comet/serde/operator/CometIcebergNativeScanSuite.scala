@@ -377,50 +377,54 @@ class CometIcebergNativeScanSuite extends AnyFunSuite with Matchers {
     convert(whole) shouldBe serialize(whole)
   }
 
-  test("a partial residual pushes BIGINT and DOUBLE predicates as a whole residual does") {
+  test("a partial residual compares BIGINT and DOUBLE columns only by equality") {
+    // A promotion made before Iceberg 0.12 left no older schema, so a partial residual treats
+    // every BIGINT and DOUBLE column as promoted. A whole residual relies on the recorded history.
     val output = intColumn ++ Seq(
       AttributeReference("big", LongType)(),
       AttributeReference("dbl", DoubleType)(),
       AttributeReference("l", ArrayType(IntegerType))())
-    def convert(expr: Any, promoted: Set[String]) =
+    def convert(expr: Any, promoted: Set[String] = Set.empty) =
       CometIcebergNativeScan.serializeResidual(
         expr,
         output,
         Set.empty,
         promoted,
         partialPushdown = true)
+    val supported = Expressions.greaterThan("value", Integer.valueOf(5))
     val unsupported =
       Seq(Expressions.notIn("value", Integer.valueOf(2)), Expressions.notNull("l"))
     val ranged = Seq(
       Expressions.greaterThan("big", java.lang.Long.valueOf(5)),
-      Expressions.lessThan("big", java.lang.Long.valueOf(100)),
-      Expressions.in("big", java.lang.Long.valueOf(5), java.lang.Long.valueOf(6)),
+      Expressions.lessThan("big", java.lang.Long.valueOf(3000000000L)),
+      Expressions.notEqual("big", java.lang.Long.valueOf(5)),
+      Expressions.in("big", java.lang.Long.valueOf(1), java.lang.Long.valueOf(3000000000L)),
+      Expressions.notEqual("dbl", Double.box(0.1)),
       Expressions.in("dbl", Double.box(1.5), Double.box(2.5)))
     val equalities = Seq(
       Expressions.equal("big", java.lang.Long.valueOf(5)),
       Expressions.equal("dbl", Double.box(1.5)),
-      Expressions.notNull("big"))
-    for (predicate <- ranged ++ equalities; sibling <- unsupported) {
-      withClue(s"$predicate AND $sibling: ") {
-        convert(predicate, Set.empty).nonEmpty shouldBe true
-        convert(Expressions.and(predicate, sibling), Set.empty) shouldBe
-          convert(predicate, Set.empty)
-        convert(Expressions.and(sibling, predicate), Set.empty) shouldBe
-          convert(predicate, Set.empty)
-      }
-    }
-    // A column the schema history records as promoted keeps only equality and null checks.
-    val promoted = Set("big", "dbl")
-    for (predicate <- ranged; sibling <- unsupported) {
-      withClue(s"$predicate AND $sibling: ") {
-        convert(Expressions.and(predicate, sibling), promoted).isEmpty shouldBe true
+      Expressions.notNull("big"),
+      Expressions.isNull("dbl"))
+    for (predicate <- ranged) {
+      withClue(s"$predicate: ") {
+        convert(predicate).nonEmpty shouldBe true
+        convert(Expressions.and(predicate, supported)).nonEmpty shouldBe true
+        convert(Expressions.and(predicate, supported), Set("big", "dbl")) shouldBe
+          serialize(supported)
+        for (sibling <- unsupported) {
+          convert(Expressions.and(predicate, sibling)).isEmpty shouldBe true
+          convert(Expressions.and(sibling, predicate)).isEmpty shouldBe true
+          convert(Expressions.and(Expressions.and(predicate, supported), sibling)) shouldBe
+            serialize(supported)
+        }
       }
     }
     for (predicate <- equalities; sibling <- unsupported) {
       withClue(s"$predicate AND $sibling: ") {
-        convert(Expressions.and(predicate, sibling), promoted) shouldBe
-          convert(predicate, promoted)
-        convert(predicate, promoted).nonEmpty shouldBe true
+        convert(predicate).nonEmpty shouldBe true
+        convert(Expressions.and(predicate, sibling)) shouldBe convert(predicate)
+        convert(Expressions.and(sibling, predicate)) shouldBe convert(predicate)
       }
     }
   }
