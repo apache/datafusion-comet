@@ -403,6 +403,12 @@ trait ShimSparkErrorConverter {
           QueryExecutionErrors
             .fileNotExistError(path, new FileNotFoundException(s"File $path does not exist")))
 
+      case "ParquetTimestampOverflow" =>
+        val filePath = params.get("filePath").map(_.toString).getOrElse("")
+        Some(
+          QueryExecutionErrors
+            .cannotReadFilesError(new ArithmeticException("long overflow"), filePath))
+
       case "ReadAncientDatetime" =>
         // Spark raises this unwrapped, not as FAILED_READ_FILE. The helper picks the rebase
         // config for the format and throws on a format it does not know.
