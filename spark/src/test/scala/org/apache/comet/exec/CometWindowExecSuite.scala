@@ -167,9 +167,6 @@ class CometWindowExecSuite extends CometTestBase {
         SQLConf.ADAPTIVE_EXECUTION_ENABLED.key -> "false",
         SQLConf.SHUFFLE_PARTITIONS.key -> "1",
         CometConf.COMET_EXEC_STRICT_FLOATING_POINT.key -> strictFloatingPoint,
-        // Defaults to true under CometTestBase; pin it so strict mode exercises the shipped
-        // admission policy rather than the test harness's escape hatch.
-        CometConf.getExprAllowIncompatConfigKey("SortOrder") -> "false",
         CometConf.COMET_EXEC_WINDOW_GROUP_LIMIT_ENABLED.key -> "true") {
         withTempView("floating_window_peers") {
           // LocalTableScan preserves NaN payloads, unlike a Parquet round trip. Check the input
@@ -230,7 +227,6 @@ class CometWindowExecSuite extends CometTestBase {
         SQLConf.ADAPTIVE_EXECUTION_ENABLED.key -> "false",
         SQLConf.SHUFFLE_PARTITIONS.key -> "1",
         CometConf.COMET_EXEC_STRICT_FLOATING_POINT.key -> "false",
-        CometConf.getExprAllowIncompatConfigKey("SortOrder") -> "false",
         CometConf.COMET_EXEC_WINDOW_GROUP_LIMIT_ENABLED.key -> "true") {
         for {
           rankFunction <- Seq("RANK", "DENSE_RANK")
@@ -272,6 +268,37 @@ class CometWindowExecSuite extends CometTestBase {
     }
   }
 
+  test("window group limit: nested null peers with non-default root null ordering") {
+    assume(isSpark35Plus, "WindowGroupLimit was added in Spark 3.5")
+    withSQLConf(
+      SQLConf.ADAPTIVE_EXECUTION_ENABLED.key -> "false",
+      SQLConf.SHUFFLE_PARTITIONS.key -> "1",
+      "spark.sql.optimizer.windowGroupLimitThreshold" -> "1000",
+      CometConf.COMET_EXEC_WINDOW_GROUP_LIMIT_ENABLED.key -> "true") {
+      withTempView("nested_null_group_limit") {
+        Seq((1, Some(1)), (2, Some(1)), (3, Some(2)), (4, None), (5, None))
+          .toDF("id", "i")
+          .createOrReplaceTempView("nested_null_group_limit")
+
+        for ((ordering, cutoff, expected) <- Seq(
+            ("ASC NULLS LAST", 3, Seq((1, 3), (2, 3), (4, 1), (5, 1))),
+            ("DESC NULLS FIRST", 2, Seq((1, 2), (2, 2), (3, 1))))) {
+          val query = sql(s"""
+               |SELECT id, rnk FROM (
+               |  SELECT id, RANK() OVER (ORDER BY array(i) $ordering) AS rnk
+               |  FROM nested_null_group_limit
+               |) WHERE rnk <= $cutoff
+               |""".stripMargin)
+          checkSparkAnswerAndOperator(
+            query,
+            Seq(classOf[CometSortExec], classOf[CometWindowGroupLimitExec]))
+          assert(
+            query.collect().map(row => row.getInt(0) -> row.getInt(1)).sorted.toSeq == expected)
+        }
+      }
+    }
+  }
+
   for (orderColumn <- Seq("f", "d")) {
     test(s"window: scalar floating-point order key under strict floating point ($orderColumn)") {
       // Deliberately not gated on Spark 3.5, unlike the WindowGroupLimit tests above, so the
@@ -293,7 +320,6 @@ class CometWindowExecSuite extends CometTestBase {
 
         withSQLConf(
           CometConf.COMET_EXEC_STRICT_FLOATING_POINT.key -> "true",
-          CometConf.getExprAllowIncompatConfigKey("SortOrder") -> "false",
           CometConf.COMET_EXEC_WINDOW_GROUP_LIMIT_ENABLED.key -> "false") {
           checkSparkAnswerAndOperator(
             sql(s"""SELECT id, SUM(id) OVER (ORDER BY $orderColumn) AS running
