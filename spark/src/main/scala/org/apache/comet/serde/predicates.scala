@@ -507,7 +507,8 @@ object CometAssertNotNull extends CometExpressionSerde[AssertNotNull] {
         _: CaseWhen =>
       false
     case _ =>
-      expr.containsPattern(NULL_CHECK) && containsNativeAssertion(proto)
+      expr.containsPattern(NULL_CHECK) && expr.exists(_.isInstanceOf[AssertNotNull]) &&
+      containsNativeAssertion(proto)
   }
 
   // A dispatched subtree captures its assertions in opaque closure bytes. Only assertions

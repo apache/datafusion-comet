@@ -92,6 +92,8 @@ Semi/anti join conditions fall back when their serialized expressions contain na
 
 Aggregate arguments and filters also fall back when their serialized aggregate contains a native assertion. They are independent scalar roots, but Spark can skip their values during lazy updates (such as `first`), filtered updates and nullable-argument checks (such as `count`). Grouping and result expressions are outside this restriction, and opaque JVM-dispatched arguments keep their existing path.
 
+Native projections evaluate columns across a batch. If multiple asserted fields contain NULLs on different rows, the first reported field can differ from Spark's row-wise evaluation order. The query still fails with the corresponding field's nullability error; a globally identical first failing row or field is not guaranteed.
+
 - Spark 3.4.3 (audited 2026-10-22): full `NullPointerException` message and newline-delimited walked path. Nullable-source V2 writes to required columns are rejected during analysis.
 - Spark 3.5.9 (audited 2026-10-22): same expression error contract as 3.4.3. V2 writes insert runtime assertions for required fields.
 - Spark 4.0.4 (audited 2026-10-22): `SparkRuntimeException` with `NOT_NULL_ASSERT_VIOLATION` and `walkedTypePath`.
