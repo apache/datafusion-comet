@@ -20,10 +20,8 @@
 package org.apache.spark.sql.comet.shims
 
 import org.apache.spark.TaskContext
-import org.apache.spark.sql.catalyst.expressions.PythonUDF
 import org.apache.spark.sql.execution.SparkPlan
 import org.apache.spark.sql.execution.metric.SQLMetric
-import org.apache.spark.sql.internal.SQLConf
 import org.apache.spark.sql.types.StructType
 import org.apache.spark.sql.vectorized.ColumnarBatch
 
@@ -41,17 +39,11 @@ import org.apache.spark.sql.vectorized.ColumnarBatch
  * `writeNextBatchToArrowStream` batch-at-a-time), so neither version can host the columnar input
  * implementation without a separate rewrite.
  */
-trait ShimCometMapInBatch {
+trait ShimCometMapInBatch extends ShimPythonRunnerInputs {
 
   protected def matchMapInArrow(plan: SparkPlan): Option[MapInBatchInfo] = None
 
   protected def matchMapInPandas(plan: SparkPlan): Option[MapInBatchInfo] = None
-
-  /** Stub; never constructed on Spark 3.x because the matchers always return `None`. */
-  protected case class RunnerInputs()
-
-  protected def runnerInputs(pythonUDF: PythonUDF, conf: SQLConf): RunnerInputs =
-    throw new UnsupportedOperationException("CometMapInBatchExec is not supported on Spark 3.x")
 
   protected def computeArrowPython(
       runnerInputs: RunnerInputs,

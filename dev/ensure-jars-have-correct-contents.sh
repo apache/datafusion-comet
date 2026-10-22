@@ -91,13 +91,14 @@ allowed_expr+="|^org/apache/spark/shuffle/comet/.*$"
 allowed_expr+="|^org/apache/spark/sql/$"
 # allow ExplainPlanGenerator trait since it may not be available in older Spark versions
 allowed_expr+="|^org/apache/spark/sql/ExtendedExplainGenerator.*$"
-# PyArrow UDF acceleration runner classes are under org/apache/spark/sql/execution/python
+# Python UDF acceleration runner classes are under org/apache/spark/sql/execution/python
 # because PythonArrowInput and BasicPythonArrowOutput are private[python]; Comet's classes
 # must be in that package to mix them in.
 allowed_expr+="|^org/apache/spark/sql/execution/$"
 allowed_expr+="|^org/apache/spark/sql/execution/python/$"
 allowed_expr+="|^org/apache/spark/sql/execution/python/CometColumnarPythonInput.*$"
 allowed_expr+="|^org/apache/spark/sql/execution/python/CometArrowPythonRunner.*$"
+allowed_expr+="|^org/apache/spark/sql/execution/python/CometArrowEvalPythonRunner.*$"
 allowed_expr+="|^org/apache/spark/CometPlugin.class$"
 allowed_expr+="|^org/apache/spark/CometDriverPlugin.*$"
 allowed_expr+="|^org/apache/spark/CometExecutorPlugin.*$"

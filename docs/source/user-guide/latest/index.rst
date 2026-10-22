@@ -84,7 +84,7 @@ the navigation menu to read more.
    Understanding Comet Plans <understanding-comet-plans>
    Metrics Guide <metrics>
    In-Memory Cache <in-memory-cache>
-   PyArrow UDF Acceleration <pyarrow-udfs>
+   Python UDF Acceleration <pyarrow-udfs>
 
 .. toctree::
    :maxdepth: 1

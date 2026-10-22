@@ -85,7 +85,8 @@ case class CometMapInBatchExec(
     // Resolve every `SQLConf`-derived input on the driver. `SQLConf.get` reads from a thread-local
     // `ConfigReader` that only exists on the driver, so dereferencing `conf` from inside the task
     // closure NPEs.
-    val resolvedRunnerInputs = runnerInputs(func.asInstanceOf[PythonUDF], conf)
+    val pythonUDF = func.asInstanceOf[PythonUDF]
+    val resolvedRunnerInputs = runnerInputs(Seq(pythonUDF), pythonUDF.dataType, conf)
 
     val inputRDD = child.executeColumnar()
 

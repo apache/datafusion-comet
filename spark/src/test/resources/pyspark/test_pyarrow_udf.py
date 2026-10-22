@@ -38,59 +38,14 @@ Usage:
 """
 
 import datetime as dt
-import os
 from collections import Counter
 from decimal import Decimal
 
 import pyarrow as pa
 import pytest
-from pyspark.sql import SparkSession, types as T
+from pyspark.sql import types as T
 
-from conftest import resolve_comet_jar
-
-
-@pytest.fixture(scope="session")
-def spark():
-    jar = resolve_comet_jar()
-    # PYSPARK_SUBMIT_ARGS is consumed when pyspark launches its JVM. Setting
-    # --jars puts the Comet jar on both driver and executor classpaths so the
-    # CometPlugin can be loaded.
-    os.environ["PYSPARK_SUBMIT_ARGS"] = (
-        f"--jars {jar} --driver-class-path {jar} pyspark-shell"
-    )
-    session = (
-        SparkSession.builder.master("local[2]")
-        .appName("comet-pyarrow-udf-tests")
-        .config("spark.plugins", "org.apache.spark.CometPlugin")
-        .config("spark.comet.enabled", "true")
-        .config("spark.comet.exec.enabled", "true")
-        # spark.comet.shuffle.enabled defaults to true, and
-        # CometSparkSessionExtensions.isCometLoaded refuses to register Comet's rules
-        # at all when shuffle is on but spark.shuffle.manager is not the Comet manager.
-        # These tests do not need Comet shuffle, so disable it explicitly to keep
-        # Comet's scan and exec rules active without configuring shuffle.
-        .config("spark.comet.shuffle.enabled", "false")
-        .config("spark.memory.offHeap.enabled", "true")
-        .config("spark.memory.offHeap.size", "2g")
-        .getOrCreate()
-    )
-    try:
-        yield session
-    finally:
-        session.stop()
-
-
-@pytest.fixture(params=[True, False], ids=["accelerated", "fallback"])
-def accelerated(request, spark) -> bool:
-    spark.conf.set(
-        "spark.comet.exec.pyarrowUDF.enabled",
-        "true" if request.param else "false",
-    )
-    return request.param
-
-
-def _executed_plan(df) -> str:
-    return df._jdf.queryExecution().executedPlan().toString()
+from conftest import executed_plan as _executed_plan
 
 
 def _assert_plan_matches_mode(

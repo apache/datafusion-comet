@@ -35,6 +35,9 @@ jobs:
   pyarrow-udf:
     name: PyArrow UDF (${{ matrix.name }}, JDK 17, Python 3.11)
     runs-on: ubuntu-24.04
+    # A Python worker protocol mismatch blocks the worker forever rather than failing, so without
+    # a cap the job would sit until GitHub's 6-hour default. The build plus tests take ~17 min.
+    timeout-minutes: 45
     strategy:
       fail-fast: false
       matrix:
@@ -90,7 +93,7 @@ jobs:
           /tmp/venv/bin/pip install --upgrade pip
           /tmp/venv/bin/pip install "pyspark==${{ matrix.pyspark }}" "pyarrow>=14" pandas pytest
 
-      - name: Run PyArrow UDF pytest
+      - name: Run Python UDF pytest
         env:
           # Spark launches Python workers in a fresh subprocess and looks up `python3`
           # on PATH unless PYSPARK_PYTHON is set. Without this, workers use the system
@@ -100,7 +103,8 @@ jobs:
           PYSPARK_DRIVER_PYTHON: /tmp/venv/bin/python
         run: |
           /tmp/venv/bin/python -m pytest -v \
-            spark/src/test/resources/pyspark/test_pyarrow_udf.py
+            spark/src/test/resources/pyspark/test_pyarrow_udf.py \
+            spark/src/test/resources/pyspark/test_scalar_python_udf.py
           /tmp/venv/bin/python -m pytest -v \
             spark/src/test/resources/pyspark/test_pyarrow_udf_dictionary_shuffle.py
           /tmp/venv/bin/python -m pytest -v \
