@@ -17,10 +17,11 @@
 mod variant;
 
 use self::variant::normalize_variant_array;
+use crate::execution::serde::WHOLE_VARIANT_REQUEST_META_KEY;
 use arrow::{
     array::{make_array, Array, ArrayRef, LargeListArray, ListArray, MapArray, StructArray},
     compute::CastOptions,
-    datatypes::{DataType, FieldRef, Schema, TimeUnit},
+    datatypes::{DataType, Field, FieldRef, Schema, TimeUnit},
     record_batch::RecordBatch,
 };
 
@@ -35,6 +36,29 @@ use std::{
     hash::Hash,
     sync::Arc,
 };
+
+/// The Variant to reconstruct for a direct projection or Spark's full-value scan request.
+pub(crate) fn variant_projection_field(field: &Field) -> Option<&Field> {
+    if field.has_valid_extension_type::<VariantType>() {
+        return Some(field);
+    }
+    let DataType::Struct(fields) = field.data_type() else {
+        return None;
+    };
+    if fields.len() != 1
+        || fields[0].name() != "0"
+        || field
+            .metadata()
+            .get(WHOLE_VARIANT_REQUEST_META_KEY)
+            .map(String::as_str)
+            != Some("true")
+    {
+        return None;
+    }
+    fields[0]
+        .has_valid_extension_type::<VariantType>()
+        .then_some(fields[0].as_ref())
+}
 
 /// Returns true if two DataTypes are structurally equivalent (same data layout)
 /// but may differ in field names within nested types. With `use_field_id`, a struct
@@ -283,12 +307,24 @@ impl PhysicalExpr for CometCastColumnExpr {
     fn evaluate(&self, batch: &RecordBatch) -> DataFusionResult<ColumnarValue> {
         let value = self.expr.evaluate(batch)?;
 
-        if self.target_field.has_valid_extension_type::<VariantType>() {
+        if let Some(variant_field) = variant_projection_field(&self.target_field) {
             return match value {
-                ColumnarValue::Array(array) => Ok(ColumnarValue::Array(normalize_variant_array(
-                    &array,
-                    &self.target_field,
-                )?)),
+                ColumnarValue::Array(array) => {
+                    let normalized = normalize_variant_array(&array, variant_field)?;
+                    if self.target_field.has_valid_extension_type::<VariantType>() {
+                        Ok(ColumnarValue::Array(normalized))
+                    } else {
+                        let DataType::Struct(fields) = self.target_field.data_type() else {
+                            unreachable!();
+                        };
+                        let nulls = normalized.nulls().cloned();
+                        Ok(ColumnarValue::Array(Arc::new(StructArray::try_new(
+                            fields.clone(),
+                            vec![normalized],
+                            nulls,
+                        )?)))
+                    }
+                }
                 ColumnarValue::Scalar(_) => Err(DataFusionError::Execution(
                     "Variant Parquet projection requires an array".to_string(),
                 )),

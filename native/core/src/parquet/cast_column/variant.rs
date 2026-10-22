@@ -22,7 +22,7 @@ use arrow::{
     },
     buffer::OffsetBuffer,
     compute::{cast, cast_with_options},
-    datatypes::{DataType, FieldRef, TimeUnit, DECIMAL128_MAX_PRECISION},
+    datatypes::{DataType, Field, FieldRef, TimeUnit, DECIMAL128_MAX_PRECISION},
     error::ArrowError,
 };
 use datafusion::common::{DataFusionError, Result as DataFusionResult};
@@ -40,7 +40,7 @@ use std::{
 
 pub(super) fn normalize_variant_array(
     array: &ArrayRef,
-    target_field: &FieldRef,
+    target_field: &Field,
 ) -> DataFusionResult<ArrayRef> {
     let DataType::Struct(fields) = target_field.data_type() else {
         return Err(DataFusionError::Execution(
@@ -867,6 +867,8 @@ fn spark_typed_scalar<'m, 'v>(value: Variant<'m, 'v>) -> Variant<'m, 'v> {
 /// Arrow provides the decoded typed values and validates the shredding states. The original
 /// state retains Spark's traversal order and distinguishes typed scalars (which Spark narrows)
 /// from residual scalars (whose existing encoding Spark preserves).
+/// Residuals were validated during preparation and unshredding. Use shallow iteration here:
+/// full validation would reject the original Spark dictionary's empty-key offsets again.
 fn append_spark_variant(
     builder: &mut impl VariantBuilderExt,
     value: Variant<'_, '_>,
@@ -927,8 +929,7 @@ fn append_spark_variant(
                             "Expected residual object".into(),
                         ));
                     };
-                    for entry in residual.iter_try() {
-                        let (name, value) = entry?;
+                    for (name, value) in residual.iter() {
                         append_spark_variant(
                             &mut ObjectFieldBuilder::new(name, &mut builder),
                             value,
@@ -938,8 +939,7 @@ fn append_spark_variant(
                     }
                 }
             } else {
-                for entry in object.iter_try() {
-                    let (name, value) = entry?;
+                for (name, value) in object.iter() {
                     append_spark_variant(
                         &mut ObjectFieldBuilder::new(name, &mut builder),
                         value,

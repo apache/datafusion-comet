@@ -15,7 +15,7 @@
 // specific language governing permissions and limitations
 // under the License.
 
-use crate::parquet::cast_column::CometCastColumnExpr;
+use crate::parquet::cast_column::{variant_projection_field, CometCastColumnExpr};
 use crate::parquet::datetime_rebase::{
     resolve_file_rebase_policies, wrap_datetime_rebase, FileRebasePolicies, RebaseReadMode,
     SessionRebaseModes,
@@ -41,7 +41,6 @@ use datafusion_physical_expr_adapter::{
     replace_columns_with_literals, DefaultPhysicalExprAdapterFactory, PhysicalExprAdapter,
     PhysicalExprAdapterFactory,
 };
-use parquet::variant::VariantType;
 use std::collections::{HashMap, HashSet};
 use std::fmt::{self, Display};
 use std::hash::{Hash, Hasher};
@@ -1265,7 +1264,7 @@ impl SparkPhysicalExprAdapter {
         let Ok(logical_field) = self.logical_file_schema.field_with_name(column.name()) else {
             return Ok(expr);
         };
-        if !logical_field.has_valid_extension_type::<VariantType>() {
+        if variant_projection_field(logical_field).is_none() {
             return Ok(expr);
         }
         let Some(physical_field) = self.physical_file_schema.fields().get(column.index()) else {
@@ -1329,7 +1328,7 @@ impl SparkPhysicalExprAdapter {
                         Arc::clone(&e)
                     };
 
-                    if logical_field.has_valid_extension_type::<VariantType>()
+                    if variant_projection_field(logical_field).is_some()
                         || logical_field.data_type() != physical_field.data_type()
                     {
                         // Apply the same Spark conversion rules as `replace_with_spark_cast`;
@@ -1409,10 +1408,7 @@ impl SparkPhysicalExprAdapter {
             };
             let physical_type = input_field.data_type();
 
-            if cast
-                .target_field()
-                .has_valid_extension_type::<VariantType>()
-            {
+            if variant_projection_field(cast.target_field()).is_some() {
                 let comet_cast: Arc<dyn PhysicalExpr> = Arc::new(
                     CometCastColumnExpr::try_new(
                         child,
