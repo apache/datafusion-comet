@@ -34,7 +34,7 @@ import org.apache.spark.sql.execution.exchange.ValidateRequirements
 import org.apache.spark.sql.internal.SQLConf
 import org.apache.spark.sql.test.TestSparkSession
 
-import org.apache.comet.{CometConf, ExtendedExplainInfo}
+import org.apache.comet.{COMET_VERSION, CometConf, CometDocs, ExtendedExplainInfo}
 import org.apache.comet.CometSparkSessionExtensions.{isSpark35Plus, isSpark40Plus, isSpark41Plus, isSpark42Plus}
 
 /**
@@ -205,6 +205,14 @@ trait CometPlanStabilitySuite extends DisableAdaptiveExecutionSuite with TPCDSBa
       "Location [not included in comparison]/{warehouse_dir}/")
   }
 
+  // Messages in the plan link to the user guide for the running Comet version. Keep that out of the
+  // goldens so that they do not change when the version is bumped for a release.
+  private def normalizeDocsVersion(plan: String): String = {
+    plan.replace(
+      s"/comet/user-guide/${CometDocs.userGuideVersion(COMET_VERSION)}/",
+      "/comet/user-guide/{version}/")
+  }
+
   /**
    * Test a TPC-DS query. Depending on the settings this test will either check if the plan
    * matches a golden file or it will create a new golden file.
@@ -229,7 +237,7 @@ trait CometPlanStabilitySuite extends DisableAdaptiveExecutionSuite with TPCDSBa
       val qe = sql(queryString).queryExecution
       val plan = qe.executedPlan
       val extendedExplain = new ExtendedExplainInfo().generateExtendedInfo(qe.executedPlan)
-      val extended = normalizeLocation(normalizeIds(extendedExplain))
+      val extended = normalizeDocsVersion(normalizeLocation(normalizeIds(extendedExplain)))
       assert(ValidateRequirements.validate(plan))
 
       val name = query + suffix
