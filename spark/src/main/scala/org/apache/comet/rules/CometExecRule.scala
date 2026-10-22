@@ -181,8 +181,8 @@ object CometExecRule {
   private[rules] val warnedDeprecatedConversions = ConcurrentHashMap.newKeySet[String]()
 
   /**
-   * A consumer that may skip input rows or defer projected fields until a row is selected.
-   * See `tagPartiallyReadOutputs`.
+   * A consumer that may skip input rows or defer projected fields until a row is selected. See
+   * `tagPartiallyReadOutputs`.
    */
   private case class PartialReader(description: String, canSkipInput: Boolean = true)
 
