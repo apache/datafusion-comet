@@ -3549,12 +3549,8 @@ class CometInMemoryCacheSuite extends CometTestBase {
   }
 
   test("an outer hash join over a cache of an outer hash join over a native filter keeps order") {
-    // The first outer join's probe input is a native filter over the sorted cache. The planner
-    // declares the order through the filter, so the cache that join writes is sorted, but the
-    // serde counts a join as declared only when its probe input is a scan. The second outer join
-    // reads that cache as an input from the JVM and cannot check the order, so it stays in Spark,
-    // which keeps the cache's order. The same holds with Spark's cache format, and for a right
-    // outer join built on the left, the other shape that runs as DataFusion's right outer join.
+    // The filter keeps the serde from seeing that the first join declared its order, so the
+    // second join, reading that join's cache from the JVM, cannot check the order.
     for {
       rightOuter <- Seq(false, true)
       nativeCache <- Seq(true, false)
@@ -3562,7 +3558,6 @@ class CometInMemoryCacheSuite extends CometTestBase {
     } {
       val (joinType, buildSide) =
         if (rightOuter) (RightOuter, BuildLeft) else (LeftOuter, BuildRight)
-      // The small side is broadcast and the cached side is streamed in both shapes.
       def outerJoin(streamed: String, small: String, on: String): String =
         if (rightOuter) s"$small RIGHT JOIN $streamed ON $on"
         else s"$streamed LEFT JOIN $small ON $on"
@@ -3618,7 +3613,6 @@ class CometInMemoryCacheSuite extends CometTestBase {
                     collect(plan) { case s: CometInMemoryTableScanExec => s }.size == 1,
                     planContext)
                 } else {
-                  // The cache scan feeds Spark's join, so it stays Spark's scan.
                   assert(
                     collect(plan) { case s: InMemoryTableScanExec => s }.size == 1,
                     planContext)

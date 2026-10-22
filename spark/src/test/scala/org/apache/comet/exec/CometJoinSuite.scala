@@ -2712,8 +2712,7 @@ class CometJoinSuite extends CometTestBase {
     }
   }
 
-  // Runs `f` over a checkpoint of (k, v) rows sorted by k and v within each of two partitions.
-  // The checkpoint is taken with AQE off, as an adaptive plan reports no order.
+  // Takes the checkpoint with AQE off, as an adaptive plan reports no order.
   private def withOrderedCheckpoint(f: DataFrame => Unit): Unit =
     withSQLConf(
       SQLConf.ADAPTIVE_EXECUTION_ENABLED.key -> "false",
@@ -2731,9 +2730,7 @@ class CometJoinSuite extends CometTestBase {
     }
 
   test("outer hash joins over a checkpointed streamed side fall back and keep its order") {
-    // A checkpoint reports the order of the plan it was taken from, and Spark drops the sort
-    // above the join on that basis. The order walk cannot check that order, so the join cannot
-    // declare it on its probe input and stays in Spark; see CometHashJoin.doConvert.
+    // Spark drops the sort above the join for the checkpoint's order, which Comet cannot check.
     withOrderedCheckpoint { streamed =>
       val build = spark.range(10).selectExpr("id * 10 AS k", "id AS w")
       val order =
@@ -2777,8 +2774,7 @@ class CometJoinSuite extends CometTestBase {
   }
 
   test("an outer hash join over a native inner join over a checkpoint falls back") {
-    // The inner join keeps the checkpoint's order and runs natively. The outer join above it
-    // reaches the checkpoint through the inner join's streamed side, so it stays in Spark.
+    // The order walk reaches the checkpoint through the inner join's streamed side.
     withOrderedCheckpoint { streamed =>
       val d1 = spark.range(100).where("id % 4 != 3").selectExpr("id AS k", "id AS a")
       val d2 = spark.range(10).selectExpr("id * 10 AS k", "id AS w")
@@ -2801,8 +2797,7 @@ class CometJoinSuite extends CometTestBase {
   }
 
   test("chained outer hash joins over a native window keep its order natively") {
-    // The window reports its input's (k, v) order through both broadcast outer joins, and Spark
-    // drops the sort above them on that basis. Both joins and the window share one native plan.
+    // The window and both joins share one native plan, where DataFusion sees the order itself.
     withParquetTable((0 until 2000).map(i => (i % 40, i)), "t") {
       withParquetTable((0 until 40 by 2).map(k => (k, k * 10)), "d1") {
         withParquetTable((0 until 40 by 3).map(k => (k, k * 100)), "d2") {
@@ -3313,9 +3308,7 @@ class CometJoinSuite extends CometTestBase {
   }
 
   test("chained outer hash joins over a native filter over a sorted cache stay native") {
-    // The first join declares the cache's order on its probe input, the filter, so it keeps its
-    // rows in place. The second join's probe input is the first join in the same native plan,
-    // whose order DataFusion sees, so it sends no order and neither join falls back.
+    // DataFusion sees the first join's order, in the same native plan, so the second sends none.
     withSortedCache() {
       def df: DataFrame = sql("""SELECT /*+ BROADCAST(b), BROADCAST(c) */ a.k, a.v, b._2, c._2
                                  |FROM (SELECT * FROM cached WHERE v >= 0) a
@@ -3341,10 +3334,8 @@ class CometJoinSuite extends CometTestBase {
   }
 
   test("an outer hash join over a native nested loop join falls back") {
-    // The nested loop join reports the cache's order but DataFusion keeps the order of neither
-    // input, so the outer join above it stays in Spark. Over two build rows the rows reach it
-    // out of order already (#6898), so they are compared as a multiset. Over one build row they
-    // stay in order, and Spark's join keeps it.
+    // Over two build rows the nested loop join emits rows out of order (#6898), so they are
+    // compared as a multiset. Over one build row they stay in order, and Spark's join keeps it.
     withSortedCache() {
       withParquetTable(Seq(Tuple1(0), Tuple1(1)), "two") {
         withParquetTable(Seq(Tuple1(1)), "one") {

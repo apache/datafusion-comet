@@ -2818,7 +2818,6 @@ case class CometSortAggregateExec(
 
 object CometHashJoin {
 
-  // The fallback reason for an outer join whose streamed order cannot be checked.
   private[apache] val uncheckedStreamedOrderReason: String =
     "the streamed side's sort order, which this outer join has to keep, cannot be checked, " +
       "so the join stays in Spark"
@@ -2951,9 +2950,8 @@ trait CometHashJoin {
     // Declaring the order there would let an operator above rely on it, an
     // aggregate in sorted mode for instance, which then splits groups. So nothing is declared
     // when such a join feeds the streamed side with no sort in between, or when a leaf reports
-    // an order that cannot be checked; see mayReportFalseOrder. When that order comes through
-    // an input from the JVM, or from a nested loop join, the join stays in Spark instead, since
-    // Spark may have dropped a sort above it that relies on the order.
+    // an order that cannot be checked; see mayReportFalseOrder. When it comes from the JVM or a
+    // nested loop join, the join stays in Spark, as Spark may have dropped a sort above it.
     //
     // Declaring any order makes DataFusion keep the probe rows in place, so the longest prefix
     // of the order that Comet can express is enough. A key that exprToProto takes counts as
@@ -3023,18 +3021,15 @@ trait CometHashJoin {
   // converts a plan, a native plan's JVM inputs sit behind a CometScanWrapper, a leaf, so the
   // walk looks through that too.
   //
-  // With `countInPlan` off, a Comet hash join in the same native plan does not count. DataFusion
-  // sees the order of that join's probe input itself, so the join either keeps the order or has
-  // already moved its rows, and only an order that comes through an input from the JVM can
-  // decide a fallback. The walk past such an input counts every join again.
+  // With `countInPlan` off, a Comet hash join in the same native plan does not count: DataFusion
+  // sees its probe input's order itself. Past an input from the JVM, every join counts again.
   private def mayReportFalseOrder(plan: SparkPlan, countInPlan: Boolean): Boolean = plan match {
     case adaptive: AdaptiveSparkPlanExec if adaptive.isFinalPlan =>
       mayReportFalseOrder(adaptive.executedPlan, countInPlan)
     case _ if plan.outputOrdering.isEmpty => false
     case _: SortExec | _: CometSortExec => false
-    // Over a one-row build side its rows stay in order, which a native join above would move.
-    // Over two or more build rows they are already out of order (#6898), so the fallback gives
-    // up the native join for nothing. This case can go once #6898 is fixed.
+    // Its rows stay in order only over a one-row build side, and a native join above would move
+    // them. Over more build rows they are already out of order (#6898); drop this once fixed.
     case _: CometBroadcastNestedLoopJoinExec => true
     case join: CometBroadcastHashJoinExec =>
       hashJoinMayReportFalseOrder(
@@ -3069,9 +3064,8 @@ trait CometHashJoin {
   }
 
   // Whether a Comet hash join that reports an order may not keep it. Only the streamed side's
-  // order reaches the join's output, so a false order on the build side is of no concern. With
-  // `countInPlan` set, an outer join of the two shapes also has to have declared the order on its
-  // probe input.
+  // order reaches the join's output, so a false order on the build side is of no concern, and an
+  // outer join of the two shapes has to have declared the order on its probe input if counted.
   private def hashJoinMayReportFalseOrder(
       nativeOp: Operator,
       joinType: JoinType,
