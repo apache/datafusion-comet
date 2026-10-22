@@ -15,10 +15,7 @@
 -- specific language governing permissions and limitations
 -- under the License.
 
--- Columns `a` and `A` in one Iceberg table under spark.sql.caseSensitive=true. The native scan
--- has to bind each projected column and each filter to its own field rather than match names
--- case-insensitively (https://github.com/apache/datafusion-comet/issues/5540).
--- CometIcebergNativeSuite covers equality deletes, name mapping, and metadata columns.
+-- `a` and `A` each bind their own field: https://github.com/apache/datafusion-comet/issues/5540
 
 -- No Iceberg spark-runtime is published for Spark 4.2 yet, and the 4.0 runtime the build reuses
 -- is binary-incompatible with it. See https://github.com/apache/datafusion-comet/issues/4969.
@@ -38,13 +35,10 @@ DROP TABLE IF EXISTS test_cat.db.case_pair
 statement
 CREATE TABLE test_cat.db.case_pair (a INT, A INT) USING iceberg
 
--- `a` spans [1, 3] and `A` spans [20, 40], so a filter bound to the other column prunes the
--- whole row group or keeps the wrong row.
+-- Disjoint ranges: a filter bound to the other column prunes the row group or keeps wrong rows.
 statement
 INSERT INTO test_cat.db.case_pair VALUES (1, 20), (3, 40)
 
--- A plain query fails on any operator that is not Comet's, so each one also checks that the
--- Iceberg scan ran natively.
 query
 SELECT a, A FROM test_cat.db.case_pair ORDER BY a
 

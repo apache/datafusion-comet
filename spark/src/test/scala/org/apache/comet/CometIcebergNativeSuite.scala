@@ -1272,10 +1272,7 @@ class CometIcebergNativeSuite
     }
   }
 
-  /**
-   * Runs each query through [[checkIcebergNativeScan]] and returns one message per query that
-   * failed, so every query is reported rather than only the first.
-   */
+  /** Returns one message per query failing [[checkIcebergNativeScan]], so all are reported. */
   private def failingNativeScanChecks(queries: Seq[String]): Seq[String] =
     queries.flatMap { q =>
       try {
@@ -1300,7 +1297,6 @@ class CometIcebergNativeSuite
       CometConf.COMET_EXEC_ENABLED.key -> "true",
       CometConf.COMET_ICEBERG_NATIVE_ENABLED.key -> "true")(f)
 
-  /** Imports the files of session table `sourceTable` into `table` with SparkTableUtil. */
   private def importParquetInto(
       table: org.apache.iceberg.Table,
       sourceTable: String,
@@ -1329,8 +1325,7 @@ class CometIcebergNativeSuite
         spark.sql(
           s"CREATE TABLE $t (a INT, A INT) USING iceberg TBLPROPERTIES ('format-version' = '2')")
         spark.sql(s"INSERT INTO $t VALUES (1, 20), (3, 40), (5, 60)")
-        // One delete keyed on `a` and one keyed on `A`: binding either key by a folded name
-        // misreads one of them whichever field the fold resolves to. Only (5, 60) survives.
+        // Binding either delete key by a folded name would misread one of them.
         commitEqualityDelete("case_cat", "db", "case_pair_eq", "a", 1, warehouseDir)
         commitEqualityDelete("case_cat", "db", "case_pair_eq", "A", 40, warehouseDir)
         failures = failingNativeScanChecks(
@@ -1340,8 +1335,7 @@ class CometIcebergNativeSuite
             s"SELECT a FROM $t ORDER BY a",
             s"SELECT count(*) FROM $t"))
       }
-      // `a` is ambiguous when case-insensitive, so these queries name no column. Spark 4.1+
-      // rejects the duplicate columns itself before any scan runs.
+      // `a` is ambiguous here, so name no column; Spark 4.1+ rejects the duplicates itself.
       withCaseCatalog(warehouseDir, caseSensitive = false) {
         Seq(s"SELECT * FROM $t", s"SELECT count(*) FROM $t").foreach { query =>
           if (isSpark41Plus) {
@@ -1416,8 +1410,7 @@ class CometIcebergNativeSuite
           .write
           .parquet(dataPath)
         spark.sql(s"CREATE TABLE $t (id INT, val INT) USING iceberg")
-        // Set before the import, which computes the file's column metrics by field id through
-        // this mapping, so `WHERE id = 2` reads a file with stats.
+        // Set before the import so the file's column metrics are computed through the mapping.
         spark.sql(
           s"ALTER TABLE $t SET TBLPROPERTIES ('schema.name-mapping.default' = " +
             """'[{"field-id":1,"names":["ID"]},{"field-id":2,"names":["Val"]}]')""")
@@ -1450,8 +1443,7 @@ class CometIcebergNativeSuite
     val name = "case_mapped_nested"
     val t = s"case_cat.db.$name"
     var failures = Seq.empty[String]
-    // (struct, x, y) names as written in the file, mapped by field id onto `s STRUCT<x, y>`. The
-    // first shape matches the table's names exactly, as a control.
+    // Physical (s, x, y) names; the first matches the table exactly, as a control.
     Seq(("s", "x", "y"), ("S", "X", "Y"), ("s", "X", "y")).foreach { case (sName, xName, yName) =>
       withTempIcebergDir { warehouseDir =>
         val dataPath = s"${warehouseDir.getAbsolutePath}/${name}_src"
@@ -1471,14 +1463,13 @@ class CometIcebergNativeSuite
               s"""{"field-id":${fieldId("s")},"names":["$sName"],"fields":[""" +
               s"""{"field-id":${fieldId("s.x")},"names":["$xName"]},""" +
               s"""{"field-id":${fieldId("s.y")},"names":["$yName"]}]}]"""
-          // Set before the import, which computes the file's column metrics through the mapping.
           spark.sql(
             s"ALTER TABLE $t SET TBLPROPERTIES ('schema.name-mapping.default' = '$mapping')")
           icebergTable.refresh()
           spark.sql(s"CREATE TABLE parquet_$name USING parquet LOCATION '$dataPath'")
           try {
             importParquetInto(icebergTable, s"parquet_$name", s"$warehouseDir/staging")
-            // Spark itself reads the mapped children, so matching Spark means reading values.
+            // Spark reads the mapped children, so the checks below compare against real values.
             withSQLConf(CometConf.COMET_ENABLED.key -> "false") {
               assert(
                 spark.sql(s"SELECT id, s FROM $t ORDER BY id").collect().toSeq ==
@@ -1493,10 +1484,8 @@ class CometIcebergNativeSuite
                   CometConf.COMET_ICEBERG_NESTED_SCHEMA_PRUNING_ENABLED.key -> pruning.toString) {
                   val label = s"file $sName<$xName, $yName>, caseSensitive=$caseSensitive, " +
                     s"nestedPruning=$pruning"
-                  // iceberg-rust applies a name mapping to top-level fields only, so two reads
-                  // return wrong values whatever the case setting: any read that also projects a
-                  // top-level column (`s` comes back NULL, #6790), and a pruned `s.y` over
-                  // physical `X`, `Y` (it reads `X`, #7134). Neither is checked here.
+                  // Unchecked, as iceberg-rust maps top-level names only: `s` beside `id` is
+                  // NULL (#6790), and a pruned `s.y` over physical `X`, `Y` reads `X` (#7134).
                   val skipsPrunedY = pruning && xName == "X" && yName == "Y"
                   val queries = Seq(
                     s"SELECT s FROM $t ORDER BY s.x",
@@ -1529,8 +1518,7 @@ class CometIcebergNativeSuite
             "PARTITIONED BY (Region) TBLPROPERTIES ('format-version' = '2')")
         spark.sql(s"INSERT INTO $t VALUES (1, 'a', 10), (2, 'a', 20), (3, 'b', 30)")
       }
-      // Metadata columns resolve by reserved field id rather than through the task schema, so
-      // the exact top-level name check must leave them alone.
+      // Metadata columns resolve by reserved field id, so the exact name check must skip them.
       Seq(true, false).foreach { caseSensitive =>
         withCaseCatalog(warehouseDir, caseSensitive) {
           failures ++= failingNativeScanChecks(Seq(
@@ -1561,7 +1549,6 @@ class CometIcebergNativeSuite
             "(2, named_struct('x', 20, 'y', 200))")
         spark.sql(s"ALTER TABLE $t RENAME COLUMN s.x TO X")
       }
-      // A nested rename falls back, so the native reader never sees `s.x` under the name `s.X`.
       withCaseCatalog(warehouseDir, caseSensitive = false) {
         Seq(
           s"SELECT id, s FROM $t ORDER BY id",

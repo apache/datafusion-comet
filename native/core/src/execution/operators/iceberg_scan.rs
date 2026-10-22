@@ -576,9 +576,7 @@ impl fmt::Debug for RedactedProperties<'_> {
     }
 }
 
-/// Adapter options for iceberg-rust batches. Both the batches and Spark's scan attributes carry
-/// the table schema's names, so matching is exact: folding case would only report columns that
-/// differ in case as duplicates.
+/// Exact name matching: iceberg-rust batches and Spark's attributes carry the table's own names.
 fn iceberg_parquet_options() -> SparkParquetOptions {
     let mut options = SparkParquetOptions::new(EvalMode::Legacy, "UTC");
     options.case_sensitive = true;
@@ -590,8 +588,7 @@ fn iceberg_parquet_options() -> SparkParquetOptions {
 /// The returned expressions can be cached and reused across multiple batches
 /// that share the same file schema, avoiding repeated expression construction.
 ///
-/// iceberg-rust emits every projected top-level column, present even when the file lacks it, so
-/// a top-level target column absent from `file_schema` is an error rather than a null column.
+/// A top-level column absent from `file_schema` is a bug: iceberg-rust emits every one it projects.
 fn build_projection_expressions(
     target_schema: &SchemaRef,
     file_schema: &SchemaRef,
