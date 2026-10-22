@@ -158,7 +158,7 @@ class CometExpressionSuite extends CometTestBase with AdaptiveSparkPlanHelper {
           val selected = input.orderBy("id").limit(2).select(checked)
           checkSparkAnswerAndFallbackReason(
             selected.as[Int].mapPartitions(_.take(1)).toDF(),
-            "Native AssertNotNull below a mapPartitions function could check rows Spark does not read")
+            "Native AssertNotNull below a mapPartitions function could change which values Spark checks")
           assert(selected.rdd.take(1).toSeq == Seq(Row(1)))
           // Aggregate result expressions are another late projection inside a blocking operator.
           // Keep all groups here because an aggregate does not promise an output order.
@@ -167,7 +167,7 @@ class CometExpressionSuite extends CometTestBase with AdaptiveSparkPlanHelper {
             getColumnFromExpression(AssertNotNull(grouped.col("m").expr, Seq("m")))
           checkSparkAnswerAndFallbackReason(
             grouped.select(checkedResult).limit(2),
-            "Native AssertNotNull below a limit could check rows Spark does not read")
+            "Native AssertNotNull below a limit could change which values Spark checks")
         }
       }
     }
@@ -184,7 +184,38 @@ class CometExpressionSuite extends CometTestBase with AdaptiveSparkPlanHelper {
           val checked = getColumnFromExpression(AssertNotNull(input.col("a").expr, Seq("a")))
           checkSparkAnswerAndFallbackReason(
             input.select(checked).limit(1),
-            "Native AssertNotNull below a limit could check rows Spark does not read")
+            "Native AssertNotNull below a limit could change which values Spark checks")
+        }
+      }
+    }
+  }
+
+  for (consumer <- Seq("filter", "sample");
+    codegen <- Seq(false, true); adaptive <- Seq(false, true)) {
+    test(s"AssertNotNull preserves deferred $consumer fields: codegen=$codegen, AQE=$adaptive") {
+      withSQLConf(
+        SQLConf.ADAPTIVE_EXECUTION_ENABLED.key -> adaptive.toString,
+        SQLConf.WHOLESTAGE_CODEGEN_ENABLED.key -> codegen.toString) {
+        withTempPath { path =>
+          Seq[(Int, Integer)]((0, null)).toDF("id", "value").write.parquet(path.toString)
+          val input = spark.read.parquet(path.toString)
+          val checked = getColumnFromExpression(AssertNotNull(input("value").expr))
+          // Keep the projection below the consumer; generated Spark defers the checked field.
+          val projected = input.select(input("id"), checked.as("value"), rand(0).as("nonce"))
+          val selected =
+            if (consumer == "filter") projected.filter(projected("id") < 0)
+            else projected.sample(withReplacement = false, fraction = 0.0, seed = 0L)
+          val (sparkError, cometError) = checkSparkAnswerMaybeThrows(selected)
+          assert(sparkError.isDefined == !codegen)
+          assert(sparkError.isDefined == cometError.isDefined)
+          val expected = intercept[Exception] {
+            AssertNotNull(Literal.create(null, IntegerType)).eval()
+          }
+          for (error <- sparkError.toSeq ++ cometError.toSeq) {
+            assert(causeChain(error).exists { cause =>
+              cause.getClass == expected.getClass && cause.getMessage == expected.getMessage
+            })
+          }
         }
       }
     }

@@ -181,11 +181,13 @@ object CometExecRule {
   private[rules] val warnedDeprecatedConversions = ConcurrentHashMap.newKeySet[String]()
 
   /**
-   * Tag set on an operator whose output a consumer can stop reading early, naming that consumer.
+   * A consumer that may skip input rows or defer projected fields until a row is selected.
    * See `tagPartiallyReadOutputs`.
    */
-  private val PARTIAL_READER: TreeNodeTag[String] =
-    TreeNodeTag[String]("comet.partialReader")
+  private case class PartialReader(description: String, canSkipInput: Boolean = true)
+
+  private val PARTIAL_READER: TreeNodeTag[PartialReader] =
+    TreeNodeTag[PartialReader]("comet.partialReader")
 
   /** Why Comet does not convert rows to Arrow in a plan that reads `InputFileBlockHolder`. */
   private val INPUT_FILE_BLOCK_FALLBACK_REASON: String =
@@ -542,17 +544,17 @@ case class CometExecRule(session: SparkSession, queryStagePrep: Boolean = false)
       case op: SerializeFromObjectExec
           if CometConf.COMET_CONVERT_FROM_TYPED_DATASET_ENABLED.get(conf) =>
         op.getTagValue(CometExecRule.PARTIAL_READER) match {
-          case Some(reader) =>
+          case Some(reader) if reader.canSkipInput =>
             withFallbackReason(
               op,
               "Comet does not convert the output of a typed Dataset operation when " +
-                s"$reader can stop reading it early, because filling an Arrow batch would " +
-                "run the user function on rows that Spark never reaches")
+                s"${reader.description} can stop reading it early, because filling an Arrow " +
+                "batch would run the user function on rows that Spark never reaches")
           // The conversion reads ahead of input_file_name and friends, as it does over a leaf.
           // See shouldApplySparkToColumnar.
-          case None if readsInputFileBlock =>
+          case _ if readsInputFileBlock =>
             withFallbackReason(op, CometExecRule.INPUT_FILE_BLOCK_FALLBACK_REASON)
-          case None =>
+          case _ =>
             convertTypedDatasetOutput(op)
         }
 
@@ -1204,7 +1206,8 @@ case class CometExecRule(session: SparkSession, queryStagePrep: Boolean = false)
             op.getTagValue(CometExecRule.PARTIAL_READER)
               .filter(_ => hasNativeAssertion)
               .map(reader =>
-                s"Native AssertNotNull below $reader could check rows Spark does not read")
+                s"Native AssertNotNull below ${reader.description} could change which values " +
+                  "Spark checks")
           }
           fallback.foreach(reason => withFallbackReason(op, reason))
           fallback.isEmpty
@@ -1222,7 +1225,8 @@ case class CometExecRule(session: SparkSession, queryStagePrep: Boolean = false)
     import OperatorOuterClass.JoinType
 
     // These consumers can skip candidates even without a LIMIT above the join. Inspect only
-    // the serialized condition, leaving child projections and opaque JVM dispatch alone.
+    // the serialized condition. Child projections use the partial-reader tags independently;
+    // assertions captured inside opaque JVM dispatch keep their existing execution path.
     val condition = if (proto.hasHashJoin) {
       val join = proto.getHashJoin
       Some(join.getJoinType -> join.getCondition)
@@ -1407,42 +1411,66 @@ case class CometExecRule(session: SparkSession, queryStagePrep: Boolean = false)
     allExecs.get(op.getClass).exists(_.enabledConfig.forall(_.get(op.conf)))
 
   /**
-   * Tags operators whose output a consumer can stop reading early. Spark computes rows as the
+   * Tags operators whose output a consumer can skip evaluating. Spark computes rows as the
    * consumer reads them, while native expressions and typed Dataset conversion fill a whole Arrow
    * batch first. Below a limit, a `mapPartitions` function such as `_.take(1)`, or code reading
-   * `Dataset.rdd`, an assertion or user function could throw on rows Spark never reaches. An
-   * operator that reads all of its input before it returns a row ends the search, since Spark
-   * computes every row below it anyway: an exchange, a sort, a hash aggregate, or a top-k over
-   * input that is not already sorted.
+   * `Dataset.rdd`, an assertion or user function could throw on rows Spark never reaches. Joins
+   * can also skip an input, and generated filters, samples and joins can defer projected fields
+   * until a row passes the condition. Conversely, native joins can skip input Spark would
+   * evaluate. An operator that reads all of its input before it returns a row ends the search,
+   * since Spark computes every row below it anyway: an exchange, a sort, a hash aggregate, or a
+   * top-k over input that is not already sorted.
    *
    * Conversion is bottom-up, so this runs first. TreeNode tags survive the child copies made
    * during transformUp, while an identity set would not. Retain established tags when AQE visits
    * a fragment without its limiting ancestor.
    */
   private def tagPartiallyReadOutputs(plan: SparkPlan): Unit = {
-    def visit(op: SparkPlan, partialReader: Option[String]): Unit = {
+    import CometExecRule.PartialReader
+
+    def visit(op: SparkPlan, partialReader: Option[PartialReader]): Unit = {
+      // AQE can revisit a fragment without the ancestor that could skip whole rows. A new
+      // field-only reader must not weaken that established context or its child propagation.
+      val inheritedReader = op
+        .getTagValue(CometExecRule.PARTIAL_READER)
+        .filter(_.canSkipInput)
+        .orElse(partialReader)
       // A repeated transform can already contain Comet limits and consumption barriers.
       val original = op match {
         case comet: CometExec => comet.originalPlan
         case other => other
       }
       val childReader = original match {
-        case _: CollectLimitExec | _: LocalLimitExec | _: GlobalLimitExec => Some("a limit")
+        case _: CollectLimitExec | _: LocalLimitExec | _: GlobalLimitExec =>
+          Some(PartialReader("a limit"))
         // A top-k reads only its first rows when its input is already sorted.
         case topK: TakeOrderedAndProjectExec
             if SortOrder.orderingSatisfies(topK.child.outputOrdering, topK.sortOrder) =>
-          Some("a limit")
-        case _: MapPartitionsExec => Some("a mapPartitions function")
+          Some(PartialReader("a limit"))
+        case _: MapPartitionsExec => Some(PartialReader("a mapPartitions function"))
+        // These consumers defer projected fields, but still read every input object. Keep
+        // typed Dataset conversion eligible unless an ancestor can skip whole input rows.
+        case _: FilterExec =>
+          inheritedReader.orElse(Some(PartialReader("a filter", canSkipInput = false)))
+        case _: SampleExec =>
+          inheritedReader.orElse(Some(PartialReader("a sample", canSkipInput = false)))
+        case _: BroadcastHashJoinExec | _: ShuffledHashJoinExec | _: SortMergeJoinExec |
+            _: BroadcastNestedLoopJoinExec =>
+          Some(PartialReader("a join"))
         case _: Exchange | _: SortExec | _: HashAggregateExec | _: ObjectHashAggregateExec |
             _: TakeOrderedAndProjectExec =>
           None
-        case _ => partialReader
+        case _ => inheritedReader
       }
       // TopK and aggregate result projections run after selection/aggregation. An external
       // consumer can still skip their output rows, even though their input is fully consumed.
+      // Filters, samples and joins introduce a context for their children only. A join's own
+      // keys and condition have separate checks for their evaluation order.
       val ownReader = original match {
-        case _: TakeOrderedAndProjectExec | _: HashAggregateExec | _: ObjectHashAggregateExec =>
-          partialReader
+        case _: TakeOrderedAndProjectExec | _: HashAggregateExec | _: ObjectHashAggregateExec |
+            _: FilterExec | _: SampleExec | _: BroadcastHashJoinExec | _: ShuffledHashJoinExec |
+            _: SortMergeJoinExec | _: BroadcastNestedLoopJoinExec =>
+          inheritedReader
         case _ => childReader
       }
       ownReader.foreach(op.setTagValue(CometExecRule.PARTIAL_READER, _))
@@ -1459,7 +1487,9 @@ case class CometExecRule(session: SparkSession, queryStagePrep: Boolean = false)
       case _: FilterExec | _: ProjectExec => producesObjects(op.children.head)
       case _ => false
     }
-    visit(plan, if (producesObjects(plan)) Some("code reading Dataset.rdd") else None)
+    visit(
+      plan,
+      if (producesObjects(plan)) Some(PartialReader("code reading Dataset.rdd")) else None)
   }
 
   /**

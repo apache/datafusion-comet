@@ -43,7 +43,7 @@ import org.apache.spark.sql.execution.aggregate.SortAggregateExec
 import org.apache.spark.sql.execution.datasources.SchemaColumnConvertNotSupportedException
 import org.apache.spark.sql.execution.exchange.{ReusedExchangeExec, ShuffleExchangeLike}
 import org.apache.spark.sql.execution.joins.{BroadcastHashJoinExec, BroadcastNestedLoopJoinExec, ShuffledHashJoinExec, SortMergeJoinExec}
-import org.apache.spark.sql.functions.{array, count, lit, struct, sum, when}
+import org.apache.spark.sql.functions.{array, count, lit, rand, struct, sum, when}
 import org.apache.spark.sql.internal.SQLConf
 import org.apache.spark.sql.types.{ArrayType, BooleanType, DoubleType, IntegerType, LongType, MetadataBuilder, StructField, StructType}
 
@@ -2217,6 +2217,73 @@ class CometJoinSuite extends CometTestBase {
     }
   }
 
+  for (codegen <- Seq(false, true);
+    scenario <- Seq(
+      "nested-loop-semi",
+      "nested-loop-anti",
+      "null-aware-anti",
+      "hash-inner",
+      "hash-semi",
+      "unmatched-payload")) {
+    test(s"AssertNotNull preserves join input evaluation: $scenario, codegen=$codegen") {
+      withSQLConf(
+        SQLConf.ADAPTIVE_EXECUTION_ENABLED.key -> "false",
+        SQLConf.WHOLESTAGE_CODEGEN_ENABLED.key -> codegen.toString,
+        SQLConf.OPTIMIZER_EXCLUDED_RULES.key ->
+          "org.apache.spark.sql.catalyst.optimizer.InferFiltersFromConstraints") {
+        withTempDir { dir =>
+          val id: Integer = if (scenario == "unmatched-payload") 0 else null
+          Seq[(Integer, Integer)]((id, null))
+            .toDF("id", "value")
+            .coalesce(1)
+            .write
+            .parquet(s"$dir/left")
+          val buildRows: Seq[Integer] = scenario match {
+            case "nested-loop-semi" => Seq.empty
+            case "nested-loop-anti" | "unmatched-payload" => Seq(1)
+            case _ => Seq(null)
+          }
+          buildRows.toDF("id").coalesce(1).write.parquet(s"$dir/right")
+          val source = spark.read.parquet(s"$dir/left")
+          val field = if (scenario == "unmatched-payload") "value" else "id"
+          val checked = getColumnFromExpression(AssertNotNull(source(field).expr))
+          // A nondeterministic sibling keeps the projection below the join. Spark codegen
+          // can still defer its deterministic fields until a match needs their values.
+          val left =
+            source.select(source("id").as("key"), checked.as("checked"), rand(0).as("nonce"))
+          val right = spark.read.parquet(s"$dir/right").hint("broadcast")
+          val key = if (scenario == "unmatched-payload") left("key") else left("checked")
+          val equal = key === right("id")
+          val (condition, joinType) = scenario match {
+            case "nested-loop-semi" => (lit(true), "left_semi")
+            case "nested-loop-anti" => (lit(true), "left_anti")
+            case "null-aware-anti" => (equal || equal.isNull, "left_anti")
+            case "hash-semi" => (equal, "left_semi")
+            case _ => (equal, "inner")
+          }
+          val joined = left.join(right, condition, joinType)
+          val reasons =
+            new ExtendedExplainInfo().getFallbackReasons(joined.queryExecution.executedPlan)
+          assert(
+            reasons.exists(_.contains(
+              "Native AssertNotNull below a join could change which values Spark checks")))
+          val (sparkError, cometError) = checkSparkAnswerMaybeThrows(joined)
+          assert(sparkError.isDefined == cometError.isDefined)
+          // The reference can differ between generated and interpreted Spark execution.
+          // If it fails, verify the assertion rather than accepting an unrelated error.
+          val expected = intercept[Exception] {
+            AssertNotNull(Literal.create(null, IntegerType)).eval()
+          }
+          for (error <- sparkError.toSeq ++ cometError.toSeq) {
+            assert(causeChain(error).exists { cause =>
+              cause.getClass == expected.getClass && cause.getMessage == expected.getMessage
+            })
+          }
+        }
+      }
+    }
+  }
+
   test("AssertNotNull retains safe native join expressions") {
     withSQLConf(SQLConf.ADAPTIVE_EXECUTION_ENABLED.key -> "false") {
       withTempDir { dir =>
@@ -2236,9 +2303,9 @@ class CometJoinSuite extends CometTestBase {
         checkSparkAnswerAndImpl(
           left.join(right, checkedLeft === right("id"), "left_outer"),
           native = Seq("assertnotnull"))
-        val projected = left.select(checkedLeft.as("id"))
+        val projected = right.select(checkedRight.as("id")).hint("broadcast")
         checkSparkAnswerAndImpl(
-          projected.join(right, projected("id") === right("id"), "left_semi"),
+          left.join(projected, left("id") === projected("id"), "left_semi"),
           native = Seq("assertnotnull"))
         val checkedDouble =
           getColumnFromExpression(AssertNotNull(left("id").cast("double").expr))
