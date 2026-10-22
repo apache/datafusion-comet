@@ -31,7 +31,8 @@ import org.apache.spark.SparkException
 import org.apache.spark.sql.{Column, CometTestBase, DataFrame, QueryTest, Row}
 import org.apache.spark.sql.catalyst.TableIdentifier
 import org.apache.spark.sql.catalyst.analysis.UnresolvedRelation
-import org.apache.spark.sql.catalyst.expressions.{And, Ascending, AttributeReference, BoundReference, Descending, DynamicPruningExpression, IsNotNull, SortOrder}
+import org.apache.spark.sql.catalyst.expressions.{And, Ascending, AttributeReference, BoundReference, Descending, DynamicPruningExpression, IsNotNull, Literal, SortOrder}
+import org.apache.spark.sql.catalyst.expressions.objects.AssertNotNull
 import org.apache.spark.sql.catalyst.optimizer.{BuildLeft, BuildRight, BuildSide}
 import org.apache.spark.sql.catalyst.plans.{Inner, LeftOuter, LeftSemi}
 import org.apache.spark.sql.catalyst.plans.logical.Join
@@ -41,10 +42,10 @@ import org.apache.spark.sql.execution.adaptive.{AdaptiveSparkPlanExec, AQEShuffl
 import org.apache.spark.sql.execution.aggregate.SortAggregateExec
 import org.apache.spark.sql.execution.datasources.SchemaColumnConvertNotSupportedException
 import org.apache.spark.sql.execution.exchange.{ReusedExchangeExec, ShuffleExchangeLike}
-import org.apache.spark.sql.execution.joins.{BroadcastHashJoinExec, ShuffledHashJoinExec, SortMergeJoinExec}
-import org.apache.spark.sql.functions.{array, count, lit, struct, sum}
+import org.apache.spark.sql.execution.joins.{BroadcastHashJoinExec, BroadcastNestedLoopJoinExec, ShuffledHashJoinExec, SortMergeJoinExec}
+import org.apache.spark.sql.functions.{array, count, lit, struct, sum, when}
 import org.apache.spark.sql.internal.SQLConf
-import org.apache.spark.sql.types.{ArrayType, DoubleType, IntegerType, LongType, MetadataBuilder, StructField, StructType}
+import org.apache.spark.sql.types.{ArrayType, BooleanType, DoubleType, IntegerType, LongType, MetadataBuilder, StructField, StructType}
 
 import org.apache.comet.{CometConf, CometExplainInfo, ExtendedExplainInfo}
 import org.apache.comet.CometSparkSessionExtensions.{hasFallbackReason, isSpark35Plus}
@@ -2075,6 +2076,178 @@ class CometJoinSuite extends CometTestBase {
                 s"got $coalesced")
           }
         }
+      }
+    }
+  }
+
+  for (joinType <- Seq("left_semi", "left_anti"); adaptive <- Seq(false, true)) {
+    test(s"AssertNotNull respects early-exit nested-loop $joinType with AQE=$adaptive") {
+      withSQLConf(SQLConf.ADAPTIVE_EXECUTION_ENABLED.key -> adaptive.toString) {
+        withTempDir { dir =>
+          Seq(0).toDF("id").coalesce(1).write.parquet(s"$dir/left")
+          Seq(0, 1).toDF("id").coalesce(1).write.parquet(s"$dir/right")
+          val left = spark.read.parquet(s"$dir/left")
+          val right = spark.read.parquet(s"$dir/right").hint("broadcast")
+          val checked = getColumnFromExpression(AssertNotNull(Literal.create(null, BooleanType)))
+          val condition = when(left("id") === right("id"), lit(true)).otherwise(checked)
+          val joined = left.join(right, condition, joinType)
+          // AQE can copy the Spark join without its explanatory tags. Pin the final operator
+          // as well as the results, and check the fallback reason on the non-adaptive path.
+          val (_, plan) =
+            if (adaptive) checkSparkAnswer(joined)
+            else {
+              checkSparkAnswerAndFallbackReason(
+                joined,
+                "Native AssertNotNull in an early-exit join condition could check candidates Spark skips")
+            }
+          assert(collectFirst(plan) { case join: BroadcastNestedLoopJoinExec => join }.nonEmpty)
+          checkAnswer(joined, if (joinType == "left_semi") Seq(Row(0)) else Seq.empty)
+        }
+      }
+    }
+  }
+
+  for (hint <- Seq("broadcast", "shuffle_hash", "merge");
+    joinType <- Seq("left_semi", "left_anti")) {
+    test(s"AssertNotNull respects early-exit $hint $joinType conditions") {
+      withSQLConf(
+        SQLConf.ADAPTIVE_EXECUTION_ENABLED.key -> "false",
+        SQLConf.SHUFFLE_PARTITIONS.key -> "1",
+        CometConf.COMET_EXEC_SORT_MERGE_JOIN_ENABLED.key -> "true",
+        CometConf.COMET_EXEC_SORT_MERGE_JOIN_WITH_JOIN_FILTER_ENABLED.key -> "true") {
+        withTempDir { dir =>
+          Seq((0, 0), (0, 1)).toDF("k", "id").coalesce(1).write.parquet(s"$dir/input")
+          // Spark's hashed relation visits duplicate keys in reverse insertion order.
+          val buildRows = if (hint == "merge") Seq((0, 0), (0, 1)) else Seq((0, 1), (0, 0))
+          buildRows.toDF("k", "id").coalesce(1).write.parquet(s"$dir/build")
+          val left = spark.read.parquet(s"$dir/input")
+          val right = spark.read.parquet(s"$dir/build").hint(hint)
+          val checked = getColumnFromExpression(AssertNotNull(Literal.create(null, BooleanType)))
+          val condition = when(left("id") === right("id"), lit(true))
+            .when(left("id") > right("id"), lit(false))
+            .otherwise(checked)
+          val joined = left.join(right, left("k") === right("k") && condition, joinType)
+          checkSparkAnswerAndFallbackReason(
+            joined,
+            "Native AssertNotNull in an early-exit join condition could check candidates Spark skips")
+          checkAnswer(
+            joined,
+            if (joinType == "left_semi") Seq(Row(0, 0), Row(0, 1)) else Seq.empty)
+        }
+      }
+    }
+  }
+
+  for (codegen <- Seq(false, true)) {
+    test(s"AssertNotNull skips anti-join keys for an empty build with codegen=$codegen") {
+      withSQLConf(
+        SQLConf.ADAPTIVE_EXECUTION_ENABLED.key -> "false",
+        SQLConf.WHOLESTAGE_CODEGEN_ENABLED.key -> codegen.toString) {
+        withTempDir { dir =>
+          Seq[Integer](null).toDF("id").write.parquet(s"$dir/left")
+          Seq.empty[Int].toDF("id").write.parquet(s"$dir/right")
+          val left = spark.read.parquet(s"$dir/left")
+          val right = spark.read.parquet(s"$dir/right").hint("broadcast")
+          val checked = getColumnFromExpression(AssertNotNull(left("id").expr))
+          checkSparkAnswerAndFallbackReason(
+            left.join(right, checked === right("id"), "left_anti"),
+            "Native AssertNotNull in hash join keys could change which keys Spark checks")
+        }
+      }
+    }
+  }
+
+  for (joinType <- Seq("inner", "left_semi");
+    buildSide <- (if (joinType == "inner") Seq("left", "right") else Seq("right"));
+    codegen <- Seq(false, true)) {
+    test(
+      s"AssertNotNull checks $joinType keys for a null-only $buildSide build, codegen=$codegen") {
+      withSQLConf(
+        SQLConf.ADAPTIVE_EXECUTION_ENABLED.key -> "false",
+        SQLConf.OPTIMIZER_EXCLUDED_RULES.key ->
+          "org.apache.spark.sql.catalyst.optimizer.InferFiltersFromConstraints",
+        SQLConf.WHOLESTAGE_CODEGEN_ENABLED.key -> codegen.toString) {
+        withTempDir { dir =>
+          Seq[Integer](null).toDF("id").write.parquet(s"$dir/input")
+          val streamed = spark.read.parquet(s"$dir/input")
+          val build = spark.read.parquet(s"$dir/input").hint("broadcast")
+          val checked = getColumnFromExpression(AssertNotNull(streamed("id").expr))
+          val joined = if (buildSide == "left") {
+            build.join(streamed, build("id") === checked, joinType)
+          } else streamed.join(build, checked === build("id"), joinType)
+          val (sparkError, cometError) = checkSparkAnswerMaybeThrows(joined)
+          val expected = intercept[Exception] {
+            AssertNotNull(Literal.create(null, IntegerType)).eval()
+          }
+          for (error <- Seq(sparkError, cometError)) {
+            assert(error.exists(e =>
+              causeChain(e).exists { cause =>
+                cause.getClass == expected.getClass && cause.getMessage == expected.getMessage
+              }))
+          }
+        }
+      }
+    }
+  }
+
+  for (scenario <- Seq("empty", "all-null", "build-key")) {
+    test(s"AssertNotNull respects null-aware anti-join keys: $scenario") {
+      withSQLConf(SQLConf.ADAPTIVE_EXECUTION_ENABLED.key -> "false") {
+        withTempDir { dir =>
+          val value: Integer = if (scenario == "build-key") 1 else null
+          Seq(value).toDF("id").write.parquet(s"$dir/left")
+          val buildRows: Seq[(Int, Integer)] =
+            if (scenario == "empty") Seq.empty else Seq((0, null), (1, null))
+          buildRows.toDF("ordinal", "id").coalesce(1).write.parquet(s"$dir/right")
+          val left = spark.read.parquet(s"$dir/left")
+          val right = spark.read.parquet(s"$dir/right").hint("broadcast")
+          val leftKey =
+            if (scenario == "build-key") left("id")
+            else getColumnFromExpression(AssertNotNull(left("id").expr))
+          val rightKey = if (scenario == "build-key") {
+            when(right("ordinal") === lit(0), lit(null).cast("int"))
+              .otherwise(getColumnFromExpression(AssertNotNull(right("id").expr)))
+          } else right("id")
+          val equal = leftKey === rightKey
+          checkSparkAnswerAndFallbackReason(
+            left.join(right, equal || equal.isNull, "left_anti"),
+            "Native AssertNotNull in hash join keys could change which keys Spark checks")
+        }
+      }
+    }
+  }
+
+  test("AssertNotNull retains safe native join expressions") {
+    withSQLConf(SQLConf.ADAPTIVE_EXECUTION_ENABLED.key -> "false") {
+      withTempDir { dir =>
+        Seq((0, true), (1, true)).toDF("id", "ok").write.parquet(s"$dir/input")
+        val left = spark.read.parquet(s"$dir/input")
+        val right = spark.read.parquet(s"$dir/input").hint("broadcast")
+        val checked = getColumnFromExpression(AssertNotNull(right("ok").expr))
+        val condition = when(left("id") === right("id"), checked).otherwise(lit(false))
+        checkSparkAnswerAndImpl(
+          left.join(right, condition, "inner"),
+          native = Seq("assertnotnull"))
+        val checkedRight = getColumnFromExpression(AssertNotNull(right("id").expr))
+        checkSparkAnswerAndImpl(
+          left.join(right, left("id") === checkedRight, "inner"),
+          native = Seq("assertnotnull"))
+        val checkedLeft = getColumnFromExpression(AssertNotNull(left("id").expr))
+        checkSparkAnswerAndImpl(
+          left.join(right, checkedLeft === right("id"), "left_outer"),
+          native = Seq("assertnotnull"))
+        val projected = left.select(checkedLeft.as("id"))
+        checkSparkAnswerAndImpl(
+          projected.join(right, projected("id") === right("id"), "left_semi"),
+          native = Seq("assertnotnull"))
+        val checkedDouble =
+          getColumnFromExpression(AssertNotNull(left("id").cast("double").expr))
+        checkSparkAnswerAndImpl(
+          left.join(
+            right,
+            org.apache.spark.sql.functions.round(checkedDouble) === right("id"),
+            "inner"),
+          dispatched = Seq("round", "assertnotnull"))
       }
     }
   }

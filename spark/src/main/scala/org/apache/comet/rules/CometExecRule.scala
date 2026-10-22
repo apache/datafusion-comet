@@ -1200,20 +1200,69 @@ case class CometExecRule(session: SparkSession, queryStagePrep: Boolean = false)
                 proto.getProjection)
             case _ => containsOwnAssertion(proto)
           }
-          op.getTagValue(CometExecRule.PARTIAL_READER) match {
-            case Some(reader) if hasNativeAssertion =>
-              withFallbackReason(
-                op,
+          val fallback = nativeAssertionJoinFallback(proto).orElse {
+            op.getTagValue(CometExecRule.PARTIAL_READER)
+              .filter(_ => hasNativeAssertion)
+              .map(reader =>
                 s"Native AssertNotNull below $reader could check rows Spark does not read")
-              false
-            case _ => true
           }
+          fallback.foreach(reason => withFallbackReason(op, reason))
+          fallback.isEmpty
         }
         .map { nativeOp =>
           val exec = serde.createExec(nativeOp, op)
           rollUpInfoMessages(op, exec)
           exec
         }
+    }
+    None
+  }
+
+  private def nativeAssertionJoinFallback(proto: Operator): Option[String] = {
+    import OperatorOuterClass.JoinType
+
+    // These consumers can skip candidates even without a LIMIT above the join. Inspect only
+    // the serialized condition, leaving child projections and opaque JVM dispatch alone.
+    val condition = if (proto.hasHashJoin) {
+      val join = proto.getHashJoin
+      Some(join.getJoinType -> join.getCondition)
+    } else if (proto.hasSortMergeJoin) {
+      val join = proto.getSortMergeJoin
+      Some(join.getJoinType -> join.getCondition)
+    } else if (proto.hasBroadcastNestedLoopJoin) {
+      val join = proto.getBroadcastNestedLoopJoin
+      Some(join.getJoinType -> join.getCondition)
+    } else None
+
+    if (condition.exists {
+        case (JoinType.LeftSemi | JoinType.LeftAnti, expression) =>
+          CometAssertNotNull.containsNativeAssertion(expression)
+        case _ => false
+      }) {
+      return Some(
+        "Native AssertNotNull in an early-exit join condition could check candidates Spark skips")
+    }
+
+    if (proto.hasHashJoin) {
+      val join = proto.getHashJoin
+      val leftKeys = join.getLeftJoinKeysList.asScala
+      val rightKeys = join.getRightJoinKeysList.asScala
+      // Empty and all-NULL build relations can skip different streamed keys in Spark and
+      // DataFusion. Null-aware anti joins also stop building at the first NULL key in Spark,
+      // while native execution builds on the opposite side and evaluates keys in batches.
+      val keys = if (join.getNullAwareAntiJoin) {
+        leftKeys ++ rightKeys
+      } else {
+        join.getJoinType match {
+          case JoinType.Inner | JoinType.LeftSemi | JoinType.LeftAnti =>
+            if (join.getBuildSide == OperatorOuterClass.BuildSide.BuildRight) leftKeys
+            else rightKeys
+          case _ => Seq.empty
+        }
+      }
+      if (keys.exists(CometAssertNotNull.containsNativeAssertion)) {
+        return Some("Native AssertNotNull in hash join keys could change which keys Spark checks")
+      }
     }
     None
   }
