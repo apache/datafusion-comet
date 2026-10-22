@@ -942,7 +942,8 @@ not yet track (<a class="reference external" href="https://github.com/apache/dat
 </section>
 <section id="known-result-value-divergences">
 <h2>Known result-value divergences<a class="headerlink" href="#known-result-value-divergences" title="Link to this heading">#</a></h2>
-<p>The following native paths silently return values that differ from Spark for edge-case inputs.
+<p>The following native paths can return different values or raise errors that Spark does not raise
+for edge-case inputs.
 Most also have entries in the per-category expression pages linked above; they are collected here
 so users hunting an unexpected value have a single place to check. Parquet and Iceberg reads and
 writes have their own lists, under Known Issues on the
@@ -951,6 +952,11 @@ writes have their own lists, under Known Issues on the
 <li><p>Native <code class="docutils literal notranslate"><span class="pre">RANGE</span></code> window frames with an explicit <code class="docutils literal notranslate"><span class="pre">PRECEDING</span></code> / <code class="docutils literal notranslate"><span class="pre">FOLLOWING</span></code> offset diverge from
 Spark when the boundary arithmetic overflows for <code class="docutils literal notranslate"><span class="pre">DATE</span></code> or <code class="docutils literal notranslate"><span class="pre">DECIMAL</span></code> <code class="docutils literal notranslate"><span class="pre">ORDER</span> <span class="pre">BY</span></code> columns
 (<a class="reference external" href="https://github.com/apache/datafusion-comet/issues/5022">#5022</a>).</p></li>
+<li><p>Grouped ANSI decimal <code class="docutils literal notranslate"><span class="pre">AVG</span></code> can evaluate an overflowing group in a batch even when Spark would
+stop before that group at <code class="docutils literal notranslate"><span class="pre">LIMIT</span></code>. It remains natively enabled with this error-timing difference;
+disabling <code class="docutils literal notranslate"><span class="pre">spark.comet.exec.aggregate.enabled</span></code> restores Spark’s aggregate evaluation.
+On final result overflow, Comet’s error message prints the average rounded to the result scale;
+Spark 4.0 prints the quotient truncated to 39 fractional digits.</p></li>
 <li><p>Ungrouped decimal <code class="docutils literal notranslate"><span class="pre">SUM</span></code> keeps an unbounded intermediate and checks the result precision only
 when a partial is written out or the sum is evaluated, which matches Spark’s whole-stage codegen
 path. Without codegen Spark buffers the aggregate in an <code class="docutils literal notranslate"><span class="pre">UnsafeRow</span></code> and latches as soon as a

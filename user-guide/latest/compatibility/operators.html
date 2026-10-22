@@ -897,20 +897,22 @@ searches boundaries over a nullable nested key still runs on Spark
 </section>
 <section id="hash-aggregation">
 <h2>Hash Aggregation<a class="headerlink" href="#hash-aggregation" title="Link to this heading">#</a></h2>
-<p>Decimal <code class="docutils literal notranslate"><span class="pre">avg</span></code> with input precision 25 or more falls back to Spark, except over <code class="docutils literal notranslate"><span class="pre">DECIMAL(38,</span> <span class="pre">38)</span></code>.
-The native average rescales the sum within 38 digits before dividing it by the count, so a large
-sum returns <code class="docutils literal notranslate"><span class="pre">NULL</span></code> where Spark returns the average. Under ANSI, an average that Spark rejects with
-<code class="docutils literal notranslate"><span class="pre">NUMERIC_VALUE_OUT_OF_RANGE</span></code> also returns <code class="docutils literal notranslate"><span class="pre">NULL</span></code>
-(<a class="reference external" href="https://github.com/apache/datafusion-comet/issues/7007">#7007</a>). Set
-<code class="docutils literal notranslate"><span class="pre">spark.comet.expression.Average.allowIncompatible=true</span></code> to run it natively anyway.</p>
-<p>From input precision 28, Spark keeps the running sum of a decimal <code class="docutils literal notranslate"><span class="pre">avg</span></code> at precision 38, which can
-overflow even when the average fits. In an aggregate without grouping keys, and in an
-<code class="docutils literal notranslate"><span class="pre">ObjectHashAggregateExec</span></code>, the native average does not handle that overflow the way Spark does, so
-such an <code class="docutils literal notranslate"><span class="pre">avg</span></code> falls back to Spark whatever <code class="docutils literal notranslate"><span class="pre">allowIncompatible</span></code> is set to
-(<a class="reference external" href="https://github.com/apache/datafusion-comet/issues/5418">#5418</a>,
-<a class="reference external" href="https://github.com/apache/datafusion-comet/issues/5509">#5509</a>). A grouped <code class="docutils literal notranslate"><span class="pre">HashAggregateExec</span></code>
-runs it natively, since both engines return <code class="docutils literal notranslate"><span class="pre">NULL</span></code> for the group, or raise under ANSI, once its
-running sum overflows.</p>
+<p>Ungrouped <code class="docutils literal notranslate"><span class="pre">AVG</span></code> and <code class="docutils literal notranslate"><span class="pre">TRY_AVG</span></code> on <code class="docutils literal notranslate"><span class="pre">DECIMAL(p,</span> <span class="pre">s)</span></code> fall back to Spark when the intermediate sum
+has reached precision 38 (<code class="docutils literal notranslate"><span class="pre">p</span> <span class="pre">&gt;=</span> <span class="pre">28</span></code>). Spark’s generated aggregation code can retain a wider
+intermediate sum and check precision after dividing by the count. Comet instead records an
+overflow while accumulating that sum, which can discard a valid average. A wider scalar AVG
+accumulator, following the decimal SUM implementation, is tracked in
+<a class="reference external" href="https://github.com/apache/datafusion-comet/issues/7116">#7116</a>.</p>
+<p>This fallback applies to the whole aggregate operator: a single wide-decimal <code class="docutils literal notranslate"><span class="pre">AVG</span></code> or <code class="docutils literal notranslate"><span class="pre">TRY_AVG</span></code>
+also moves sibling aggregates such as <code class="docutils literal notranslate"><span class="pre">MIN</span></code>, <code class="docutils literal notranslate"><span class="pre">MAX</span></code>, <code class="docutils literal notranslate"><span class="pre">COUNT</span></code>, and <code class="docutils literal notranslate"><span class="pre">SUM</span></code> to Spark. Both partial and
+final aggregate operators stay in Spark, including when a shuffle separates them. Narrower
+ungrouped decimal averages remain eligible for native execution.</p>
+<p>Grouped decimal <code class="docutils literal notranslate"><span class="pre">AVG</span></code> remains eligible for native execution with hash aggregation. With Spark’s
+object aggregation, decimal <code class="docutils literal notranslate"><span class="pre">AVG</span></code> and <code class="docutils literal notranslate"><span class="pre">TRY_AVG</span></code> fall back when their intermediate sum has precision
+38, because Spark’s object buffer can recover after an intermediate overflow. As with the ungrouped
+case, the whole aggregate operator falls back. Native finalization can raise an
+ANSI overflow for a group that Spark would never consume after <code class="docutils literal notranslate"><span class="pre">LIMIT</span></code>; this error-timing difference
+is documented under <a class="reference internal" href="index.html#known-result-value-divergences"><span class="std std-ref">known divergences</span></a>.</p>
 </section>
 <section id="sort-aggregation">
 <h2>Sort Aggregation<a class="headerlink" href="#sort-aggregation" title="Link to this heading">#</a></h2>
@@ -981,11 +983,9 @@ the batch aggregates, so these fall back in both contexts.</p></li>
 functions.</p></li>
 <li><p><code class="docutils literal notranslate"><span class="pre">sum</span></code> or <code class="docutils literal notranslate"><span class="pre">avg</span></code> on <code class="docutils literal notranslate"><span class="pre">DECIMAL</span></code> with a sliding (non ever-expanding) frame, because the sliding path would wrap on
 overflow instead of returning Spark’s <code class="docutils literal notranslate"><span class="pre">NULL</span></code>.</p></li>
-<li><p><code class="docutils literal notranslate"><span class="pre">avg</span></code> on <code class="docutils literal notranslate"><span class="pre">DECIMAL</span></code> with precision 25 or more. Up to precision 27 it runs natively with
-<code class="docutils literal notranslate"><span class="pre">spark.comet.expression.Average.allowIncompatible=true</span></code>, as in an aggregate
-(<a class="reference external" href="https://github.com/apache/datafusion-comet/issues/7007">#7007</a>). From precision 28 the native average also
-differs from Spark once the running sum overflows precision 38
-(<a class="reference external" href="https://github.com/apache/datafusion-comet/issues/5418">#5418</a>).</p></li>
+<li><p><code class="docutils literal notranslate"><span class="pre">avg</span></code> or <code class="docutils literal notranslate"><span class="pre">try_avg</span></code> on <code class="docutils literal notranslate"><span class="pre">DECIMAL(p,</span> <span class="pre">s)</span></code> with an expanding frame when <code class="docutils literal notranslate"><span class="pre">p</span> <span class="pre">&gt;=</span> <span class="pre">28</span></code>, because Spark can preserve
+a wider intermediate sum until division, as described under hash aggregation above. Removing this restriction
+with a wider scalar accumulator is tracked in <a class="reference external" href="https://github.com/apache/datafusion-comet/issues/7116">#7116</a>.</p></li>
 <li><p><code class="docutils literal notranslate"><span class="pre">RANGE</span></code> frame with an explicit offset when the <code class="docutils literal notranslate"><span class="pre">ORDER</span> <span class="pre">BY</span></code> column is <code class="docutils literal notranslate"><span class="pre">DECIMAL</span></code>
 (<a class="reference external" href="https://github.com/apache/datafusion-comet/issues/4834">#4834</a>).</p></li>
 <li><p><code class="docutils literal notranslate"><span class="pre">RANGE</span></code> frame with an offset above 2144550751 days when the <code class="docutils literal notranslate"><span class="pre">ORDER</span> <span class="pre">BY</span></code> column is <code class="docutils literal notranslate"><span class="pre">DATE</span></code>. Spark adds the offset

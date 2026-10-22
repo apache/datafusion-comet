@@ -31,10 +31,6 @@ The following cases are not supported by Comet and always fall back to Spark, re
 
 ## Average
 
-The following incompatibilities cause `Average` to fall back to Spark by default. Set `spark.comet.expression.Average.allowIncompatible=true` to enable Comet acceleration despite these differences.
-
-- For a `DECIMAL` input with precision 25 or more, other than `DECIMAL(38, 38)`, the native average rescales the sum within 38 digits before dividing it by the count, so a large sum returns `NULL` where Spark returns the average. Under ANSI, an average that Spark rejects with `NUMERIC_VALUE_OUT_OF_RANGE` also returns `NULL` ([#7007](https://github.com/apache/datafusion-comet/issues/7007)).
-
 The following cases are not supported by Comet and always fall back to Spark, regardless of any `allowIncompatible` setting:
 
 - YearMonthIntervalType and DayTimeIntervalType inputs are not supported
