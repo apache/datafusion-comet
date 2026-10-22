@@ -222,6 +222,48 @@ class CometExpressionSuite extends CometTestBase with AdaptiveSparkPlanHelper {
     }
   }
 
+  for (readChecked <- Seq(false, true);
+    codegen <- Seq(false, true); adaptive <- Seq(false, true)) {
+    test(
+      s"AssertNotNull preserves deferred projection fields: " +
+        s"readChecked=$readChecked, codegen=$codegen, AQE=$adaptive") {
+      withSQLConf(
+        SQLConf.ADAPTIVE_EXECUTION_ENABLED.key -> adaptive.toString,
+        SQLConf.WHOLESTAGE_CODEGEN_ENABLED.key -> codegen.toString,
+        CometConf.COMET_EXEC_RANGE_ENABLED.key -> "true") {
+        val input = spark.range(1).repartition(1)
+        val checked = getColumnFromExpression(
+          AssertNotNull(
+            when(input("id") === 0L, lit(null).cast("long"))
+              .otherwise(input("id"))
+              .expr,
+            Seq("checked")))
+        // Keep both projections: Spark can defer checked until the outer IF needs it.
+        val projected = input.select(input("id"), checked.as("checked"), rand(0).as("nonce"))
+        val result =
+          if (readChecked) when(projected("id") === 0L, projected("checked")).otherwise(lit(0L))
+          else when(projected("id") === 0L, lit(0L)).otherwise(projected("checked"))
+        val selected = projected.select(result.as("result"), projected("nonce"))
+        assert(selected.queryExecution.optimizedPlan.collect {
+          case _: org.apache.spark.sql.catalyst.plans.logical.Project => true
+        }.size == 2)
+        val (sparkError, cometError) = checkSparkAnswerMaybeThrows(selected)
+        assert(sparkError.isDefined == (readChecked || !codegen))
+        assert(
+          sparkError.isDefined == cometError.isDefined,
+          s"Spark: $sparkError, Comet: $cometError\n${selected.queryExecution.executedPlan}")
+        val expected = intercept[Exception] {
+          AssertNotNull(Literal.create(null, LongType), Seq("checked")).eval()
+        }
+        for (error <- sparkError.toSeq ++ cometError.toSeq) {
+          assert(causeChain(error).exists { cause =>
+            cause.getClass == expected.getClass && cause.getMessage == expected.getMessage
+          })
+        }
+      }
+    }
+  }
+
   for (scenario <- Seq(
       "first",
       "first-ignore-nulls",
