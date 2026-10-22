@@ -256,7 +256,7 @@ so `spark.comet.debug.enabled` and `COMET_LOG_LEVEL` do not affect it.
 
 In `WindowBuilder::build` in `native/core/src/execution/planner/window.rs`,
 the window operator builds `window_agg`, either a `BoundedWindowAggExec` or a
-`WindowAggExec` depending on whether every window expression runs with bounded
+`CometWindowAggExec` depending on whether every window expression runs with bounded
 memory. It then optionally wraps `window_agg` in a casting `ProjectionExec` as
 `final_plan` and hands `final_plan` to `SparkPlan::new`. To see the raw window
 output, wrap `window_agg` right after it is built, before the cast projection:
@@ -270,7 +270,7 @@ let window_agg: Arc<dyn ExecutionPlan> = if all_bounded {
         !partition_exprs.is_empty(),
     )?)
 } else {
-    Arc::new(WindowAggExec::try_new(
+    Arc::new(CometWindowAggExec::try_new(
         window_expr,
         Arc::clone(&child.native_plan),
         !partition_exprs.is_empty(),

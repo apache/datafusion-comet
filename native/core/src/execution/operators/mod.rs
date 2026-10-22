@@ -48,3 +48,5 @@ mod sorted_input;
 pub use csv_scan::init_csv_datasource_exec;
 pub use shuffle_scan::ShuffleScanExec;
 pub use sorted_input::SortedInputExec;
+mod window_agg;
+pub(crate) use window_agg::CometWindowAggExec;

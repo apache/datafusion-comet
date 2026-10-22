@@ -460,7 +460,9 @@ unbounded, so nobody charged for them at allocation time. Whether they are charg
 on who holds them. DataFusion's `ExternalSorter` reserves `get_reserved_bytes_for_record_batch` for
 every batch it retains, and the hash join build side reserves `get_record_batch_memory_size` for
 each incoming batch; both read buffer sizes off the `ArrayData` and apply equally to imported
-buffers. So an imported batch that a sort or join has buffered _is_ reserved in Comet's pool, and
+buffers. `CometWindowAggExec` counts the buffers of the window partition it holds the same way, so
+it can reserve scan or shuffle batches directly: a window without `PARTITION BY` has no sort below
+it. So an imported batch that a sort, join or window has buffered _is_ reserved in Comet's pool, and
 through a unified pool is charged to Spark. The same batch held by an operator that does not reserve
 (a projection or filter, or `ScanExec` itself between polls) is charged to nothing.
 
@@ -660,4 +662,5 @@ A checklist for triaging an executor OOM kill:
    `batch_size * columns`, and wide or deeply nested schemas amplify it.
 4. Check whether the operators involved can spill at all. `ShuffledHashJoin` cannot, so
    `spark.comet.exec.forceShuffledHashJoin=true` converts a spillable sort-merge join into one that
-   is not, for build sides under `spark.comet.exec.forceShuffledHashJoin.maxBuildSize`.
+   is not, for build sides under `spark.comet.exec.forceShuffledHashJoin.maxBuildSize`. Neither can
+   `CometWindowAggExec`; see [Window Functions](../user-guide/latest/tuning/operators.md#window-functions).

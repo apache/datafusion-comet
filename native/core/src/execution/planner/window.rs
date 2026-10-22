@@ -34,9 +34,7 @@ use datafusion::{
         LexOrdering, PhysicalExpr, PhysicalSortExpr,
     },
     physical_plan::{
-        limit::LocalLimitExec,
-        projection::ProjectionExec,
-        windows::{BoundedWindowAggExec, WindowAggExec},
+        limit::LocalLimitExec, projection::ProjectionExec, windows::BoundedWindowAggExec,
         ExecutionPlan, InputOrderMode,
     },
 };
@@ -60,7 +58,11 @@ use super::{
     PhysicalPlanner, PlanCreationResult,
 };
 use crate::{
-    execution::{operators::ExecutionError, serde::to_arrow_datatype, spark_plan::SparkPlan},
+    execution::{
+        operators::{CometWindowAggExec, ExecutionError},
+        serde::to_arrow_datatype,
+        spark_plan::SparkPlan,
+    },
     extract_op,
 };
 
@@ -115,11 +117,11 @@ impl OperatorBuilder for WindowBuilder {
         // run with bounded memory. This uses DataFusion's
         // `evaluate_stateful` / row-by-row `evaluate` path, which is the
         // correct implementation for `LEAD` / `LAG` with `IGNORE NULLS`
-        // (`WindowAggExec` calls `evaluate_all`, whose
+        // (`CometWindowAggExec`, like `WindowAggExec`, calls `evaluate_all`, whose
         // `evaluate_all_with_ignore_null` has a sign-wrap bug for `LEAD`
         // that produces all-NULL output).
         //
-        // Fall back to `WindowAggExec` otherwise. That covers
+        // Use `CometWindowAggExec` otherwise. That covers
         // `PERCENT_RANK` / `CUME_DIST` / `NTILE`
         // (`!uses_bounded_memory()` — "Can not execute X in a streaming
         // fashion") and keeps the Spark-compatible Comet UDAFs
@@ -140,7 +142,7 @@ impl OperatorBuilder for WindowBuilder {
                 !partition_exprs.is_empty(),
             )?)
         } else {
-            Arc::new(WindowAggExec::try_new(
+            Arc::new(CometWindowAggExec::try_new(
                 window_expr,
                 Arc::clone(&child.native_plan),
                 !partition_exprs.is_empty(),

@@ -44,7 +44,8 @@ needs. A native Iceberg fanout write is the exception: it closes some of its ope
 
 Comet's memory pool only tracks memory that an operator explicitly reserves, which in practice means the batches
 an operator deliberately accumulates: the sort buffer, the build side of a hash join, hash aggregation state, the
-shuffle writer's buffered partitions, and the files a native writer holds open. Memory that is not reserved is
+shuffle writer's buffered partitions, the window partition a native window function buffers, and the files a native
+writer holds open. Memory that is not reserved is
 invisible to the pool no matter how much of it there is. That includes:
 
 - per-batch working memory in expression kernels and Arrow array builders,

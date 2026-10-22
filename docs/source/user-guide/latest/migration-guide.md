@@ -107,6 +107,18 @@ that still sets it to `true` keeps the split plan, with iceberg-java writing the
 on Spark 3.5+ it now also plans merge-on-read writes as the split plan. Unset it to plan Spark's
 own operator.
 
+### Window Functions
+
+Native `PERCENT_RANK`, `CUME_DIST`, `NTILE`, and aggregates whose frame ends at `UNBOUNDED FOLLOWING`
+now buffer one window partition at a time and reserve it from Comet's memory pool. They used to
+buffer the task's whole input without reserving anything, so a large or skewed task could grow native
+memory past what Comet and Spark could see. A window partition that does not fit in its share of the
+pool now fails the task with a memory error that names the settings to change, where Spark would
+spill. A deployment that ran such a query only because its memory was untracked can fail it now.
+There is no key that restores the untracked behavior. See
+[Window Functions](tuning/operators.md#window-functions) for how much memory a window partition
+needs and what to change.
+
 ### Native Iceberg Scan File Concurrency
 
 `spark.comet.scan.icebergNative.dataFileConcurrencyLimit` now defaults to 2, where Comet `1.1.0`
