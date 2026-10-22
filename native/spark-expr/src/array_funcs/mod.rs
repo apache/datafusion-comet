@@ -49,7 +49,7 @@ pub use list_positions::ListPositionsExpr;
 pub use nested_comparison::{spark_comparison, spark_in_list, FloatOperands, SparkComparison};
 pub use sequence::spark_sequence;
 pub use size::{spark_size, SparkSizeFunc};
-pub use sort_array::SparkSortArray;
+pub use sort_array::{SparkArraySort, SparkSortArray};
 
 use arrow::array::{ArrayRef, ListArray};
 use arrow::buffer::{BooleanBuffer, NullBuffer, OffsetBuffer};
