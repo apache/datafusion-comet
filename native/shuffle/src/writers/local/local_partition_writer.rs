@@ -81,9 +81,8 @@ enum DataOutput {
 pub(crate) struct LocalPartitionWriter {
     partition_offsets: Arc<PartitionOffsets>,
     data_output: DataOutput,
-    /// Charges the multi-partition buffers (see [`Self::buffer_bytes_held`]) to the
-    /// partitioner's consumer, separately from its batches. `None` until attached and for
-    /// single-partition output. Kept equal to the bytes held at every call boundary.
+    /// Kept equal to [`Self::buffer_bytes_held`] at every call boundary. `None` for
+    /// single-partition output.
     buffers: Option<MemoryReservation>,
     /// Compression state shared by every block this task writes; the per-partition
     /// `BufBatchWriter`s borrow it (see [`ShuffleCodecContext`]). Retention is bounded:
@@ -176,9 +175,6 @@ impl LocalPartitionWriter {
         }
     }
 
-    /// Bytes the multi-partition buffers hold right now, which is what the buffer
-    /// reservation tracks: the two file buffers, the spill copy buffer, the encode scratch
-    /// and the cached zstd context.
     pub(crate) fn buffer_bytes_held(&self) -> usize {
         match &self.data_output {
             DataOutput::Multi {
@@ -198,8 +194,7 @@ impl LocalPartitionWriter {
         }
     }
 
-    /// Brings the buffer reservation up to date with the bytes held. A no-op on the pool
-    /// while nothing changed, so steady-state writes make no pool calls.
+    /// No pool call when nothing changed, so steady-state writes stay off the pool.
     fn sync_buffer_reservation(&self) {
         if let Some(buffers) = &self.buffers {
             buffers.resize(self.buffer_bytes_held());
@@ -211,7 +206,6 @@ impl LocalPartitionWriter {
         self.buffers.as_ref().map_or(0, MemoryReservation::size)
     }
 
-    /// Test hook: capacity of the encode scratch.
     #[cfg(test)]
     pub(crate) fn scratch_capacity(&self) -> usize {
         match &self.data_output {
@@ -222,8 +216,6 @@ impl LocalPartitionWriter {
         }
     }
 
-    /// Test hook: capacities of the data file buffer, the spill file buffer and the spill
-    /// copy buffer.
     #[cfg(test)]
     pub(crate) fn buffer_capacities(&self) -> (usize, usize, usize) {
         match &self.data_output {
@@ -252,8 +244,7 @@ impl PartitionWriter for LocalPartitionWriter {
     where
         I: Iterator<Item = datafusion::common::Result<RecordBatch>>,
     {
-        // The reservation is synced on every exit, including errors, so it keeps matching
-        // the buffers a failed write left behind.
+        // Synced on every exit, errors included, so it matches what a failed write left.
         let result: datafusion::common::Result<()> = (|| {
             match &mut self.data_output {
                 DataOutput::Single { writer, scratch } => {
@@ -322,8 +313,7 @@ impl PartitionWriter for LocalPartitionWriter {
         let write_buffer_size = self.write_buffer_size;
         let batch_size = self.batch_size;
 
-        // The reservation is synced on every exit, including errors, so it keeps matching
-        // the buffers a failed partition left behind.
+        // Synced on every exit, errors included, so it matches what a failed partition left.
         let result: datafusion::common::Result<()> = (|| {
             match &mut self.data_output {
                 DataOutput::Single { writer, scratch } => {
@@ -364,8 +354,7 @@ impl PartitionWriter for LocalPartitionWriter {
                                         .to_string(),
                                 )
                             })?;
-                            // Open before charging, so a failed open leaves nothing on the
-                            // reservation. Ranges larger than the buffer go through io::copy.
+                            // Open first, so a failed open leaves nothing charged.
                             let spill_file = File::open(path)?;
                             let buffer_size =
                                 self.buffers.as_ref().map_or(write_buffer_size, |buffers| {
@@ -473,9 +462,7 @@ impl PartitionWriter for LocalPartitionWriter {
         // sit on the zstd workspace.
         self.codec_context.release_zstd();
         self.sync_buffer_reservation();
-        // A spill under pool pressure opens the spill file while its batches are still
-        // charged, so the buffer may have fallen back to the small size. The spill has freed
-        // them by now, so ask for the configured size again.
+        // A pressure spill opened its file while the batches still held the pool; now they don't.
         if let (Some(buffers), DataOutput::Multi { spill, .. }) =
             (&self.buffers, &mut self.data_output)
         {
@@ -492,9 +479,7 @@ impl PartitionWriter for LocalPartitionWriter {
         };
         // Attached once, before any write: the rebuild below must not discard buffered bytes.
         debug_assert!(self.buffers.is_none() && output_writer.buffer().is_empty());
-        // The data file buffer was allocated at full size before the consumer existed. When
-        // the pool refuses it now, rebuild it at the size that was charged; nothing has been
-        // written yet, so the old buffer is empty.
+        // The data file buffer was allocated before the consumer existed; shrink it if refused.
         let capacity = super::reserve_buffer(&reservation, self.write_buffer_size);
         if capacity != output_writer.capacity() {
             let output_file = output_writer
@@ -565,7 +550,6 @@ mod tests {
         test_batch_of(100)
     }
 
-    /// One Int64 column of `rows` rows, eight bytes each.
     fn test_batch_of(rows: i64) -> RecordBatch {
         let schema = Arc::new(Schema::new(vec![Field::new("a", DataType::Int64, false)]));
         RecordBatch::try_new(
@@ -834,7 +818,6 @@ mod tests {
         Arc::new(GreedyMemoryPool::new(limit))
     }
 
-    /// The reservation tracks exactly the bytes the buffers hold, and the pool sees nothing else.
     fn assert_buffers_charged(writer: &LocalPartitionWriter, pool: &Arc<dyn MemoryPool>) {
         assert_eq!(
             writer.buffer_reservation_size(),
@@ -844,16 +827,12 @@ mod tests {
         assert_eq!(pool.reserved(), writer.buffer_bytes_held());
     }
 
-    /// A pool with room for the data and spill file buffers but not the spill copy buffer:
-    /// the copy buffer falls back to 8 KiB, a range larger than that goes through `io::copy`
-    /// while a smaller one still takes the pread path, and the output is what a writer with
-    /// a large pool produces.
     #[test]
     fn refused_copy_buffer_falls_back_to_small_buffer() {
         let write_buffer_size = 1 << 20;
         let fallback = crate::writers::local::FALLBACK_BUFFER_SIZE;
         let metrics = ShufflePartitionerMetrics::new(&ExecutionPlanMetricsSet::new(), 0);
-        // Partition 0 spills a block well over the fallback buffer, partition 1 one under it.
+        // Partition 0's block exceeds the fallback buffer (`io::copy`), partition 1's fits (pread).
         let batch_for = |pid: usize| {
             if pid == 0 {
                 test_batch_of(4096)
@@ -862,7 +841,7 @@ mod tests {
             }
         };
         let mut outputs = Vec::new();
-        // 64 KiB of headroom covers the encode scratch for these blocks.
+        // Room for both file buffers and the encode scratch, but not the copy buffer.
         for limit in [1 << 30, 2 * write_buffer_size + 64 * 1024] {
             let dir = tempfile::tempdir().unwrap();
             let pool = greedy_pool(limit);
@@ -923,8 +902,6 @@ mod tests {
         );
     }
 
-    /// The encode scratch is charged on its own: a write that grows nothing but the scratch
-    /// moves the reservation by exactly the scratch's capacity delta.
     #[test]
     fn encode_scratch_growth_is_charged() {
         let dir = tempfile::tempdir().unwrap();
@@ -942,7 +919,6 @@ mod tests {
             .unwrap();
         let metrics = ShufflePartitionerMetrics::new(&ExecutionPlanMetricsSet::new(), 0);
 
-        // The first write creates the spill file buffer and a scratch sized for a small block.
         writer
             .write(0, &mut vec![Ok(test_batch())].into_iter(), &metrics)
             .unwrap();
@@ -962,8 +938,6 @@ mod tests {
         assert_buffers_charged(&writer, &pool);
     }
 
-    /// The zstd context is charged for as long as it is cached: the reservation grows by its
-    /// size after an encode and drops by it when the burst ends and when the write finishes.
     #[test]
     fn zstd_context_is_charged_while_retained() {
         let dir = tempfile::tempdir().unwrap();

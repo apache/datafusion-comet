@@ -88,7 +88,7 @@ impl PartitionedSpill {
     }
 
     /// Appends partition `pid`'s batches to the spill file. `recycled_buffer` is left drained,
-    /// including on error. The spill file's write buffer is charged to `buffers` when given.
+    /// including on error.
     #[allow(clippy::too_many_arguments)]
     pub(crate) fn write<I: Iterator<Item = datafusion::common::Result<RecordBatch>>>(
         &mut self,
@@ -234,9 +234,8 @@ impl PartitionedSpill {
         Ok(())
     }
 
-    /// Grows a spill file buffer that the pool cut down to the fallback size back to the
-    /// configured size, when `buffers` grants the difference. Buffered bytes move to the new
-    /// buffer, so nothing is written to the file here.
+    /// Grows a fallback-sized buffer back to the configured size if `buffers` grants it.
+    /// Buffered bytes move to the new buffer; nothing is written to the file.
     pub(crate) fn restore_buffer(&mut self, buffers: &MemoryReservation) {
         if self.failed {
             return;
@@ -262,15 +261,13 @@ impl PartitionedSpill {
             }
         };
         let mut writer = BufWriter::with_capacity(self.write_buffer_size, file);
-        // The old bytes fit the larger, empty buffer, so this copies them without writing to
-        // the file and cannot fail.
+        // The bytes fit the larger, empty buffer, so this copies without touching the file.
         if writer.write_all(&buffered).is_err() {
             self.failed = true;
         }
         self.spill_file = Some(ActiveSpillFile { temp_file, writer });
     }
 
-    /// Capacity of the spill file's write buffer, zero before the first spill.
     pub(crate) fn buffer_capacity(&self) -> usize {
         self.spill_file
             .as_ref()
@@ -509,8 +506,6 @@ mod tests {
     /// `partitioned_spill`'s configured write buffer size.
     const WRITE_BUFFER: usize = 1 << 20;
 
-    /// A pool one write buffer in size, filled by the `batches` reservation, and an empty
-    /// `buffers` reservation for the spill file buffer.
     fn full_pool() -> (Arc<dyn MemoryPool>, MemoryReservation, MemoryReservation) {
         let pool: Arc<dyn MemoryPool> = Arc::new(GreedyMemoryPool::new(WRITE_BUFFER));
         let batches = MemoryConsumer::new("batches").register(&pool);
@@ -535,9 +530,6 @@ mod tests {
         )
     }
 
-    /// A spill buffer the full pool cut to the fallback size grows back once the pool has room:
-    /// the reservation grows by exactly the difference, and the bytes already buffered move to
-    /// the new buffer without reaching the file and decode after the flush.
     #[test]
     fn restore_buffer_moves_buffered_bytes_without_writing() {
         let fallback = super::super::FALLBACK_BUFFER_SIZE;
@@ -594,7 +586,6 @@ mod tests {
         assert_eq!(values, (0..100).collect::<Vec<i64>>());
     }
 
-    /// A spill file that failed a write is not grown back.
     #[test]
     fn restore_buffer_skips_a_failed_spill_file() {
         let fallback = super::super::FALLBACK_BUFFER_SIZE;

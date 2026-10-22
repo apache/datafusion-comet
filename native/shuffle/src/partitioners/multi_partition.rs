@@ -654,8 +654,7 @@ impl<T: PartitionWriter> MultiPartitionShuffleRepartitioner<T> {
             let memory_spilled_bytes = self.reservation.free().saturating_add(unreserved_bytes);
             self.metrics.memory_spilled_bytes.add(memory_spilled_bytes);
             self.pinned_buffers.clear();
-            // After the batches are freed, so the writer can grow buffers the spill had to take
-            // small.
+            // After the free, so the writer can regrow buffers the pool cut short during the spill.
             self.partition_writer.write_burst_complete();
             self.metrics.spill_count.add(1);
             write_result
@@ -1438,7 +1437,6 @@ mod tests {
         );
     }
 
-    /// A `GreedyMemoryPool` of `limit` bytes.
     fn runtime_with_pool(limit: usize) -> Arc<RuntimeEnv> {
         Arc::new(
             RuntimeEnvBuilder::new()
@@ -1471,7 +1469,6 @@ mod tests {
         .unwrap()
     }
 
-    /// A hash repartitioner over `int64_batch` rows with `batch_size` 1024.
     fn hash_repartitioner<W: PartitionWriter>(
         writer: W,
         num_partitions: usize,
@@ -1491,8 +1488,6 @@ mod tests {
         .unwrap()
     }
 
-    /// Pool usage is the batches plus the writer's buffers, and the buffer reservation is
-    /// exactly what the buffers hold.
     fn assert_local_buffers_charged(
         repartitioner: &MultiPartitionShuffleRepartitioner<LocalPartitionWriter>,
         runtime: &RuntimeEnv,
@@ -1511,8 +1506,6 @@ mod tests {
         charged
     }
 
-    /// The local writer's buffers are charged to the pool from creation, through a spill and
-    /// the final write, and released when the writer is dropped.
     #[tokio::test]
     async fn local_writer_buffers_are_charged_and_released() {
         let write_buffer_size = 1 << 20;
@@ -1555,7 +1548,6 @@ mod tests {
         assert_eq!(runtime.memory_pool.reserved(), 0);
     }
 
-    /// Spills every chunk through a local writer and returns the output file's bytes.
     async fn spill_every_chunk(
         dir: &tempfile::TempDir,
         runtime: Arc<RuntimeEnv>,
@@ -1584,8 +1576,6 @@ mod tests {
         )
     }
 
-    /// When the pool refuses a buffer, the writer takes a small one and charges that, so the
-    /// reservation still matches what is held, and the output is unchanged.
     #[tokio::test]
     async fn refused_buffers_fall_back_to_small_buffers() {
         let write_buffer_size = 1 << 20;
@@ -1599,8 +1589,7 @@ mod tests {
         );
 
         for (limit, expected) in [
-            // room for the data file buffer; the batches then hold the rest, so the spill
-            // buffer and the copy buffer are refused
+            // room for the data file buffer only; the batches take the rest
             (
                 write_buffer_size + 512 * 1024,
                 (write_buffer_size, fallback, fallback),
@@ -1616,7 +1605,6 @@ mod tests {
         }
     }
 
-    /// Every value in a shuffle data file, sorted.
     fn output_values(bytes: &[u8]) -> Vec<i64> {
         let mut values = Vec::new();
         let mut pos = 0;
@@ -1635,11 +1623,9 @@ mod tests {
         values
     }
 
+    /// 32 MiB of values, so even the 16 MiB pool below spills more than once.
     const PRESSURE_ROWS: i64 = 4096 * 1024;
 
-    /// Writes 1024 chunks (32 MiB of values) with no buffer limit, so a small pool spills under
-    /// pressure, then finishes the output. Returns the values written and the spill buffer
-    /// capacity seen after each spill.
     async fn spill_under_pressure(
         dir: &tempfile::TempDir,
         runtime: Arc<RuntimeEnv>,
@@ -1668,10 +1654,8 @@ mod tests {
         (output_values(&bytes), spill_buffers)
     }
 
-    /// With no buffer limit every spill is a pressure spill, so the spill file buffer is asked
-    /// for while the batches still fill the pool and falls back to the small size. Once the
-    /// spill has freed the batches, the buffer is grown back to the configured size, and every
-    /// value is written once.
+    /// With no buffer limit every spill is a pressure spill, so the spill file buffer is taken
+    /// small while the batches still fill the pool.
     #[tokio::test]
     async fn pressure_spill_restores_the_spill_buffer() {
         let write_buffer_size = 256 * 1024;
@@ -1695,7 +1679,6 @@ mod tests {
         }
     }
 
-    /// Runs eight chunks through `writer` with a limit that spills every one of them.
     async fn spill_metrics_with_buffer_limit<W: PartitionWriter>(
         writer: W,
         runtime: Arc<RuntimeEnv>,
@@ -1711,8 +1694,6 @@ mod tests {
         repartitioner
     }
 
-    /// The buffer reservation is separate from the batch reservation: spills neither release
-    /// it nor report it as spilled memory, and the fixed buffer limit does not see it.
     #[tokio::test]
     async fn buffer_charges_do_not_count_as_spilled_memory() {
         let baseline = spill_metrics_with_buffer_limit(

@@ -20,12 +20,10 @@ mod spill;
 
 use datafusion::execution::memory_pool::MemoryReservation;
 
-/// Buffer size the local writer falls back to when the pool refuses the configured one.
 const FALLBACK_BUFFER_SIZE: usize = 8 * 1024;
 
-/// Charges a buffer of `size` bytes to `reservation` and returns the capacity to allocate:
-/// the configured size when the pool grants it, otherwise a small fallback charged without
-/// asking, so the task carries on and the reservation still matches what is held.
+/// Returns the capacity to allocate. A refused size falls back to a small buffer charged with
+/// `grow`, so the task carries on and the reservation still matches what is held.
 fn reserve_buffer(reservation: &MemoryReservation, size: usize) -> usize {
     if reservation.try_grow(size).is_ok() {
         return size;
