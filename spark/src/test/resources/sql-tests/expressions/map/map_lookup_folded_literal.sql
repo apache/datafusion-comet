@@ -15,10 +15,8 @@
 -- specific language governing permissions and limitations
 -- under the License.
 
--- With constant folding on, a map built from literals folds to a literal. A lookup whose key type
--- has no native kernel runs through the JVM codegen dispatcher, which then receives the folded
--- map as part of the lookup. The constructor forms, where the harness excludes `ConstantFolding`,
--- live in `element_at_map.sql` and `get_map_value.sql`.
+-- Folding turns the literal maps into literals that the dispatched lookup receives. The
+-- constructor forms are in `element_at_map.sql` and `get_map_value.sql`.
 
 -- ConstantFolding: enabled
 
@@ -28,24 +26,20 @@ CREATE TABLE test_map_lookup_folded(_1 int, _2 bigint) USING parquet
 statement
 INSERT INTO test_map_lookup_folded VALUES (1, 1), (2, 2), (3, 3)
 
--- Native `map_extract` compares floating-point keys by their bits, so a `-0.0` lookup would miss
--- Spark's `+0.0` key, and the lookup is dispatched. Spark returns 7, NULL, NULL.
+-- A per-row key keeps the lookup itself from folding; `-0.0` must find the `+0.0` key
 query expect_dispatch(element_at)
 SELECT _1 AS id, element_at(map(CAST(0 AS DOUBLE), 7),
   CAST(concat('-', CAST(_1 - 1 AS STRING), '.0') AS DOUBLE)) AS v
 FROM test_map_lookup_folded
 
--- The DOUBLE-keyed map is nested in a map value, so the dispatcher receives it whole and its keys
--- never reach `CometLiteral`. The lookup on the folded `map(1, ...)` has INT keys, so the decline
--- has to come from the lookup whose map argument is `MAP<DOUBLE, INT>`, and it takes the whole
--- nested lookup with it.
+-- The DOUBLE-keyed map is nested in a map value, so its keys never reach `CometLiteral`; the
+-- decline must come from the lookup whose map argument is `MAP<DOUBLE, INT>`
 query expect_dispatch(element_at)
 SELECT _1 AS id, element_at(element_at(map(1, map(CAST(0 AS DOUBLE), 7)), _1),
   CAST(concat('-', CAST(_1 - 1 AS STRING), '.0') AS DOUBLE)) AS v
 FROM test_map_lookup_folded
 
--- Spark permits a lookup array holding a NULL element. Native `map_extract` cannot reproduce
--- Spark's equality for a complex key, so the lookup is dispatched. Spark returns 7, NULL, NULL.
+-- Spark permits a lookup array holding a NULL element
 query expect_dispatch(element_at)
 SELECT _1 AS id, element_at(map(array(1), 7), array(IF(_1 = 2, CAST(NULL AS INT), _1))) AS v
 FROM test_map_lookup_folded

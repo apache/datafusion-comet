@@ -15,13 +15,9 @@
 -- specific language governing permissions and limitations
 -- under the License.
 
--- A nullable nondeterministic array has no native `array_append` path, but the JVM codegen
--- dispatcher writes a calendar interval's microseconds to Arrow as nanoseconds, which overflows a
--- long beyond about 292 years (https://github.com/apache/datafusion-comet/issues/5279). A result
--- holding a calendar interval therefore falls back to Spark rather than dispatching.
---
--- Spark 4.0 rewrites `array_append` to `array_insert(-1)` before serde, so `CometArrayAppend` is
--- only reachable on Spark 3.x.
+-- The nondeterministic nullable array forces the dispatcher, whose interval conversion overflows
+-- past about 292 years (#5279), as the 1e10-second rows do, so the result falls back to Spark.
+-- Spark 4.0 rewrites `array_append` to `array_insert(-1)`, so this is Spark 3.x only.
 
 -- MaxSparkVersion: 3.5
 

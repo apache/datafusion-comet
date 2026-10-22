@@ -1307,9 +1307,9 @@ object QueryPlanSerde extends Logging with CometExprShim with CometTypeShim {
    * keys, only when `spark.sql.subexpressionElimination.enabled` is on. Other operators, such as
    * a filter or a sort, are treated like a projection, which at worst keeps them evaluated for
    * every row where Spark does not, or sends to Spark an expression the dispatcher could run.
-   * They are found on the first `canShortCircuitNulls` or `skipsSharedSubexpression` call for the
-   * operator, so an operator without an argument to skip never runs `EquivalentExpressions`.
-   * `None` outside `withSharedSubexpressions`, where they are unknown.
+   * They are found on the first `canShortCircuitNulls` call for the operator (or
+   * `skipsSharedSubexpression`), so an operator without an argument to skip never runs
+   * `EquivalentExpressions`. `None` outside `withSharedSubexpressions`, where they are unknown.
    */
   private val sharedSubexpressions = new DynamicVariable[Option[SharedSubexpressions]](None)
 
@@ -1357,38 +1357,28 @@ object QueryPlanSerde extends Logging with CometExprShim with CometTypeShim {
   }
 
   /**
-   * Whether some node of `expr` with more than one child holds, in a child it can skip, a
-   * subexpression that the operator's expressions share. A node can skip any child after its
-   * first, a `DivModLike` or `Pmod`, which evaluates its divisor first, only its dividend, a
-   * `StringLocate`, which evaluates its start first, its other two children, and an `ArrayJoin`
-   * with a nullable replacement, which evaluates that first, its array and delimiter, while a
-   * Spark 3.x `ArrayAppend`, whose generated code evaluates both children, skips none. Spark
-   * evaluates that subexpression for every row, while `expr` evaluated alone, as the JVM codegen
-   * dispatcher does, can skip it on the rows where a child evaluated before it is NULL, so an
-   * ANSI error Spark raises goes unraised. With `spark.sql.subexpressionElimination.enabled` off
-   * only an aggregation shares subexpressions (see `sharedSubexpressions`). A subexpression that
-   * `expr` itself repeats does not count while the setting is on: the dispatcher then eliminates
-   * it too, and evaluates it for every row. False outside `withSharedSubexpressions`, where what
-   * the operator shares is unknown.
+   * Whether a node of `expr` can skip a child holding a subexpression the operator's expressions
+   * share. Spark evaluates that subexpression for every row, but the dispatcher, compiling `expr`
+   * alone, can skip it and so miss an ANSI error. While subexpression elimination is on, a
+   * subexpression `expr` itself repeats does not count, as the dispatcher eliminates it too.
+   * False outside `withSharedSubexpressions`.
    */
   def skipsSharedSubexpression(expr: Expression): Boolean =
     sharedSubexpressions.value.exists { s =>
-      // The dispatcher eliminates subexpressions only while the setting is on
       lazy val repeated =
         if (SQLConf.get.subexpressionEliminationEnabled) commonSubexpressions(Seq(expr))
         else Nil
       expr.exists { node =>
         val skippable = node match {
-          // skip the dividend (`left`) when the divisor, evaluated first, is NULL
+          // the divisor is evaluated first, so only the dividend (`left`) can be skipped
           case _: DivModLike | _: Pmod => node.children.take(1)
           // `StringLocate` evaluates `start`, its last child, first and skips the others on NULL
           case _: StringLocate => node.children.init
           // `ArrayJoin` evaluates a nullable replacement first and skips the rest when it is NULL
           case j: ArrayJoin if j.nullReplacement.exists(_.nullable) => node.children.init
-          // Spark 3.x's generated code for `ArrayAppend` evaluates both children before its NULL
-          // check, and the dispatcher runs that code, so it skips neither. From 4.0 it is
-          // replaced by `ArrayInsert` before it gets here.
+          // Spark 3.x codegen evaluates both children first; 4.0 rewrites it to `ArrayInsert`
           case _: ArrayAppend => Nil
+          // Spark's codegen evaluates children in order and skips the rest after a NULL one
           case _ => node.children.drop(1)
         }
         !skippable.forall(_.isInstanceOf[LeafExpression]) &&

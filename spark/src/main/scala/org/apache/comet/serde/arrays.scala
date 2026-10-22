@@ -61,11 +61,8 @@ object CometArrayRemove
 }
 
 /**
- * Shared gate for serdes whose native NULL guard (`CASE WHEN child IS NOT NULL`) serializes the
- * child twice: a stateful child drifts between the two copies, so it is declined and runs through
- * the JVM codegen dispatcher, where Spark evaluates it once. Nullability is not consulted: a
- * non-nullable stateful child only stays in step because DataFusion skips the filter when the
- * guard matches every row, which is not a contract to lean on.
+ * The native NULL guard serializes a child twice, so a nondeterministic child is declined,
+ * nullable or not: a non-nullable one stays in step only through a DataFusion shortcut.
  */
 private[serde] object NullGuardSupport {
 
@@ -73,7 +70,6 @@ private[serde] object NullGuardSupport {
     "Comet has no native path for a nondeterministic operand such as `rand()` or " +
       "`monotonically_increasing_id()`, because the native `NULL` guard would evaluate it twice."
 
-  /** `Unsupported` when any of `children` is nondeterministic, otherwise `None`. */
   def nondeterministicChild(children: Seq[Expression]): Option[SupportLevel] =
     children
       .find(child => !child.deterministic)
@@ -81,12 +77,9 @@ private[serde] object NullGuardSupport {
 }
 
 /**
- * Whether evaluating `expr` at a different point than Spark does, or not at all, is unobservable.
- *
- * A literal or column read cannot throw, carry state or have a side effect, so neither its
- * evaluation order nor a skipped evaluation can be observed; anything else may raise or drift
- * where Spark does not. `foldable` is not usable here: ConstantFolding leaves a throwing foldable
- * expression unfolded in a conditional branch.
+ * Whether evaluating `expr` out of Spark's order, or not at all, is unobservable. A literal or
+ * column read cannot throw, carry state or have a side effect. `foldable` is not enough:
+ * ConstantFolding leaves a throwing foldable expression in a conditional branch.
  */
 private[serde] object EvaluationOrder {
 
@@ -175,8 +168,7 @@ object CometArrayAppend
     // DataFusion's CaseExpr evaluates the THEN branch only on the rows the guard selects, but
     // Spark evaluates the item on every row. Evaluate it on the remaining rows in the ELSE
     // branch, so that it raises there as well, and still once per row. See
-    // `nondeterministicReason` for why this is restricted to deterministic operands. A literal or
-    // column read cannot throw.
+    // `nondeterministicReason` for why this is restricted to deterministic operands.
     val elseExprProto =
       if (EvaluationOrder.isUnobservable(expr.children(1))) {
         nullLiteralProto
@@ -576,8 +568,6 @@ object CometArrayJoin
   override def getIncompatibleReasons(): Seq[String] = Seq(collationReason, eagerEvalReason)
 
   override def getSupportLevel(expr: ArrayJoin): SupportLevel = {
-    // Spark skips ArrayJoin's later arguments once an earlier one is null, and `eval` and
-    // `doGenCode` disagree on that order, while DataFusion evaluates every argument up front.
     val laterArgs = expr.delimiter +: expr.nullReplacement.toSeq
     // Spark 4.0 widens ArrayJoin's input to StringTypeWithCollation. Concatenation itself is
     // collation-independent, so the joined value is always correct; only the output string's
@@ -1150,8 +1140,6 @@ object CometArrayPosition extends CometExpressionSerde[ArrayPosition] with Array
   }
 }
 
-// `arrays_zip` skips the arguments after a NULL one, as can a node nested in an argument, and the
-// dispatcher compiles the whole tree, so either can skip a shared subexpression.
 object CometArraysZip extends CometExpressionSerde[ArraysZip] with GatedCodegenDispatchFallback {
 
   override def getUnsupportedReasons(): Seq[String] = Seq(

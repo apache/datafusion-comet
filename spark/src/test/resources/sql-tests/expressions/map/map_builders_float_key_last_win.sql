@@ -52,9 +52,7 @@ SELECT id,
 FROM float_map_keys_last_win
 
 -- NaNs with different sign bits are one DOUBLE or FLOAT key: one entry, holding the last value.
--- The FLOAT calls take their own values array. The harness turns ConstantFolding off, so an
--- `array(1, 2)` repeated across the DOUBLE and FLOAT calls would be a subexpression they share,
--- which keeps them off the dispatcher.
+-- `array(3, 4)`: with folding off a repeated `array(1, 2)` is shared and blocks dispatch
 query expect_dispatch(map_from_arrays)
 SELECT map_keys(map_from_arrays(array(d, -d), array(1, 2))),
   map_values(map_from_arrays(array(d, -d), array(1, 2))),

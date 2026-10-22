@@ -31,17 +31,14 @@ SELECT m['x'], m['missing'] FROM test_map
 query spark_answer_only
 SELECT map('a', 1, 'b', 2)['a'], map('a', 1, 'b', 2)['missing'], map('a', 1, 'b', 2)[NULL]
 
--- Map key types whose Spark equality Comet's native `map_extract` cannot reproduce are routed
--- through the JVM codegen dispatcher, where Spark's own `GetMapValue.doGenCode` supplies the
--- interpreted-ordering equality. `x[key]` routes through `GetMapValue` /
--- `CometMapExtract` (the `element_at` form in `element_at_map.sql` exercises the same guard on
--- `CometElementAt`). A `map<double,int>` column
+-- Map key types whose Spark equality native `map_extract` cannot reproduce are dispatched.
+-- `x[key]` routes through `GetMapValue` / `CometMapExtract` (the `element_at` form in
+-- `element_at_map.sql` exercises the same guard on `CometElementAt`). A `map<double,int>` column
 -- is used rather than a `map(...)` literal because Spark's `SimplifyExtractValueOps` rewrites
 -- `map(...)[key]` over a literal map into a `CASE` before it can reach the native lookup. Spark
--- compares with `nanSafeCompareDoubles`, so a `-0.0` lookup finds the `+0.0` key and returns `7`,
--- while native lookup compares the raw Arrow values. The lookup must be written `-0.0D`: an
--- unsuffixed `-0.0` is a decimal literal, and a decimal has no signed zero, so
--- `CAST(-0.0 AS DOUBLE)` would look up `+0.0` and find the key on either path.
+-- compares with `nanSafeCompareDoubles`, so a `-0.0` lookup finds the `+0.0` key and returns `7`;
+-- native lookup compares the raw Arrow values.
+-- `-0.0D` because a decimal `-0.0` has no signed zero.
 statement
 CREATE TABLE test_map_double(m map<double, int>) USING parquet
 
@@ -58,9 +55,6 @@ INSERT INTO test_map_double VALUES (map(CAST('NaN' AS DOUBLE), 9))
 query expect_dispatch(getmapvalue)
 SELECT m[CAST('NaN' AS DOUBLE)] FROM test_map_double
 
--- A struct-keyed map column with a per-row lookup key, including a NULL inside the lookup struct
--- and a NULL key. Native `map_extract` would cast the lookup key to the map's exact Arrow key type,
--- which cannot reproduce Spark's equality for a complex key, so the lookup is dispatched.
 statement
 CREATE TABLE test_map_struct_key(m map<struct<a:int, b:string>, int>, k int) USING parquet
 

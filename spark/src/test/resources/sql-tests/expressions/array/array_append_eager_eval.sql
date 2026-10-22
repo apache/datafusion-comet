@@ -56,8 +56,8 @@ SELECT _1, array_append(IF(_1 % 2 = 0, array(1), CAST(NULL AS ARRAY<INT>)), _1) 
 FROM array_append_eager
 
 -- A nondeterministic operand is declined when the array can be NULL: the native guard would
--- serialize it more than once, and each copy would see only a subset of the rows. The expression
--- runs through the JVM codegen dispatcher instead. This covers the item and the array alike.
+-- serialize it more than once, and each copy would see only a subset of the rows. This covers the
+-- item and the array alike.
 query expect_dispatch(array_append)
 SELECT _1, array_append(IF(_1 % 2 = 0, array(1), CAST(NULL AS ARRAY<INT>)), CAST(rand(7L) * 3 AS INT)) AS a
 FROM array_append_eager
@@ -72,7 +72,6 @@ query expect_native(array_append)
 SELECT _1, array_append(array(1, 2), CAST(rand(7L) * 3 AS INT)) AS a
 FROM array_append_eager
 
--- A non-nullable array with a column item
 query expect_native(array_append)
 SELECT _1, array_append(array(1), _1) AS a
 FROM array_append_eager
@@ -108,8 +107,6 @@ SELECT _1, array_append(arr, 1 / (_1 - 1)) AS a FROM array_append_no_null
 query expect_native(array_append)
 SELECT _1, array_append(arr, 1 / (_1 + 1)) AS a FROM array_append_no_null
 
--- Some arrays NULL: a computed item that does not raise stays native, over a column array and over
--- a non-nullable array alike
 statement
 CREATE TABLE array_append_mixed_null(_1 INT, arr ARRAY<INT>) USING parquet
 
@@ -151,8 +148,7 @@ FROM array_append_eager
 query expect_native(array_append)
 SELECT _1, array_append(arr, _1 + 1) AS a FROM array_append_all_null
 
--- `element_at` raises on index 0 whatever the ANSI setting, so an item that reads index 0 on a row
--- whose array is NULL still raises.
+-- `element_at` raises on index 0 even without ANSI, so the item raises on the NULL-array row
 query expect_error_class(INVALID_INDEX_OF_ZERO)
 SELECT _1, array_append(IF(_1 % 2 = 0, array(1), CAST(NULL AS ARRAY<INT>)),
   element_at(array(1), _1 - 1)) AS a
@@ -167,9 +163,8 @@ query expect_error_class(INVALID_INDEX_OF_ZERO)
 SELECT _1, element_at(array(1), _1 - 1) AS e
 FROM array_append_eager
 
--- The two items are map lookups that share `element_at(array(1), _1 - 1)`, which Spark's
--- projection evaluates on every row, so it raises on the row whose arrays and maps are NULL even
--- though each lookup skips its key on a NULL map.
+-- Spark's projection evaluates the shared `element_at(array(1), _1 - 1)` on every row, so it
+-- raises on the all-NULL row although each lookup skips its key on a NULL map
 statement
 CREATE TABLE array_append_shared_item(
   _1 INT, a1 ARRAY<INT>, a2 ARRAY<INT>, m1 MAP<INT, INT>, m2 MAP<INT, INT>)

@@ -15,11 +15,9 @@
 -- specific language governing permissions and limitations
 -- under the License.
 
--- Under `LAST_WIN` `map_from_arrays` runs through the JVM codegen dispatcher, which compiles each
--- call alone, so Spark's own `nullSafeCodeGen` there would skip the values on a row whose keys
--- are NULL. Spark's projection evaluates a subexpression of the values that several of its
--- expressions share for every row, so under ANSI mode it raises on that row where the dispatched
--- call would return NULL. Such a call falls back to Spark instead.
+-- Under `LAST_WIN` the call is dispatched, where `nullSafeCodeGen` skips the values on a NULL-keys
+-- row, while Spark's projection evaluates a shared subexpression of them on every row, so such a
+-- call falls back.
 
 -- Config: spark.sql.ansi.enabled=true
 -- Config: spark.sql.subexpressionElimination.enabled=true
@@ -42,15 +40,13 @@ FROM test_map_from_arrays_shared
 query expect_dispatch(map_from_arrays)
 SELECT map_from_arrays(k1, array(1.0D / x, 1.0D)) FROM test_map_from_arrays_shared
 
--- With a divisor of `x + 1.0D`, which is never zero, the divide cannot fail, and the shared
--- `1.0D / (x + 1.0D)` still sends the calls back to Spark.
+-- `x + 1.0D` is never zero, yet the shared values still decline the dispatcher
 query expect_fallback(holds a subexpression that the operator's other expressions share)
 SELECT map_from_arrays(k1, array(1.0D / (x + 1.0D), 1.0D)),
   map_from_arrays(k2, array(1.0D / (x + 1.0D)))
 FROM test_map_from_arrays_shared
 
--- With subexpression elimination off a projection shares nothing, so Spark skips the values on
--- the row whose keys are NULL, as the dispatched calls do.
+-- With elimination off nothing is shared, so Spark skips the values on the NULL-keys row too
 statement
 SET spark.sql.subexpressionElimination.enabled=false
 

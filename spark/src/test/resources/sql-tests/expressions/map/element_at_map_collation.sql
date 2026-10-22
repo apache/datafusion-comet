@@ -19,9 +19,8 @@
 
 -- Spark 4.0+ supports string collations. Spark compares a map key under its declared collation,
 -- so a `UTF8_LCASE` map matches `A1` against a dynamic `a1` lookup and returns `7`. Comet's native
--- `map_extract` compares string keys as `UTF8_BINARY`, so `CometElementAt` declines the native
--- lookup and routes it through the JVM codegen dispatcher, where Spark's own `ElementAt.doGenCode`
--- compares under the declared collation. The `element_at` form is used rather than `m[key]` because
+-- `map_extract` compares string keys as `UTF8_BINARY`, so `CometElementAt` declines the lookup and
+-- runs it through the dispatcher. The `element_at` form is used rather than `m[key]` because
 -- Spark's `SimplifyExtractValueOps` rewrites `map(...)[key]` over a literal map into a `CASE`
 -- before it can reach the native map lookup.
 

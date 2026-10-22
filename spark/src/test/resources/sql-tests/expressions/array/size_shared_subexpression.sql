@@ -15,10 +15,8 @@
 -- specific language governing permissions and limitations
 -- under the License.
 
--- Spark's projection evaluates a subexpression that several of its expressions share for every
--- row, before the expressions that use it. A `size` over a lookup whose key holds a
--- nondeterministic `rand(7)` goes through the dispatcher, whose decline check walks the whole
--- tree and finds the lookup skipping the shared `1.0D / x` on the row whose map is NULL.
+-- A `size` over a lookup whose key holds `rand(7)` is dispatched, and the decline check finds the
+-- lookup skipping the shared `1.0D / x` on the NULL-map row. `rand(7) * 0.0D` changes no value.
 
 -- Config: spark.sql.ansi.enabled=true
 -- Config: spark.sql.subexpressionElimination.enabled=true
@@ -34,12 +32,10 @@ INSERT INTO test_size_shared VALUES
   (map(0.5D, array(1, 2)), map(0.5D, array(3)), 2.0D),
   (map(1.0D, array(1), 0.5D, array(1, 2, 3)), map(1.0D, array(4, 5), 0.5D, array(6)), 1.0D)
 
--- Without a nondeterministic key `size` runs natively, so this query exercises the decline of the
--- dispatched `element_at`.
+-- Without `rand(7)` `size` is native, so this exercises the dispatched `element_at`
 query expect_error(DIVIDE_BY_ZERO)
 SELECT size(element_at(m1, 1.0D / x)), size(element_at(m2, 1.0D / x)) FROM test_size_shared
 
--- The `+ rand(7) * 0.0D` leaves the key's value unchanged.
 query expect_error(DIVIDE_BY_ZERO)
 SELECT size(element_at(m1, 1.0D / x + rand(7) * 0.0D)),
   size(element_at(m2, 1.0D / x + rand(7) * 0.0D))
@@ -49,8 +45,7 @@ FROM test_size_shared
 query expect_dispatch(size)
 SELECT size(element_at(m1, 1.0D / x + rand(7) * 0.0D)) FROM test_size_shared
 
--- With a divisor of `x + 1.0D`, which is never zero, the divide cannot fail, and the shared
--- `1.0D / (x + 1.0D)` still sends the calls back to Spark.
+-- `x + 1.0D` is never zero, yet the shared key still declines the dispatcher
 query expect_fallback(holds a subexpression that the operator's other expressions share)
 SELECT size(element_at(m1, 1.0D / (x + 1.0D) + rand(7) * 0.0D)),
   size(element_at(m2, 1.0D / (x + 1.0D) + rand(7) * 0.0D))

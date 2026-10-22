@@ -676,8 +676,7 @@ object CometShuffleExchangeExec
           reasons +=
             s"${CometConf.COMET_SHUFFLE_NATIVE_HASH_PARTITIONING_ENABLED.key} is disabled"
         }
-        // Spark evaluates the keys in one projection, so check them in the scope that
-        // CometNativeShuffleWriter serializes them in
+        // The same scope as CometNativeShuffleWriter, which serializes the keys as one projection
         QueryPlanSerde.withSharedSubexpressions(expressions) {
           for (expr <- expressions) {
             if (QueryPlanSerde.exprToProto(expr, inputs).isEmpty) {

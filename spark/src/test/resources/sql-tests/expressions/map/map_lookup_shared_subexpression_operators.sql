@@ -15,10 +15,8 @@
 -- specific language governing permissions and limitations
 -- under the License.
 
--- Shuffle keys and the projection of a TakeOrderedAndProject share subexpressions as a project
--- list does (see map_lookup_shared_subexpression.sql). The planner must decline a DOUBLE-keyed
--- lookup there in the same scope as the execution-time serialization, or it picks the native
--- path and execution then fails to serialize the lookup.
+-- Shuffle keys and a TakeOrderedAndProject's projection share subexpressions like a project list,
+-- so the planner must decline in the scope execution serializes them in.
 
 -- Config: spark.sql.ansi.enabled=true
 -- Config: spark.sql.subexpressionElimination.enabled=true
@@ -37,8 +35,7 @@ INSERT INTO test_map_lookup_shared_ops VALUES
   (map(0.25D, 1), map(0.25D, 2), 3.0D),
   (map(0.125D, 3), map(0.125D, 4), 7.0D)
 
--- Hash partitioning keys: native shuffle declines, and the JVM columnar shuffle evaluates the
--- keys with Spark's projection.
+-- Native shuffle declines; JVM columnar shuffle evaluates the keys with Spark's projection
 query expect_error(DIVIDE_BY_ZERO)
 SELECT x
 FROM test_map_lookup_shared_ops
@@ -49,7 +46,6 @@ SELECT x
 FROM test_map_lookup_shared_ops
 DISTRIBUTE BY element_at(m1, 1.0D / (x + 1.0D)), element_at(m2, 1.0D / (x + 1.0D))
 
--- Range partitioning keys of a global sort. The sort itself declines the lookups too.
 query expect_error(DIVIDE_BY_ZERO)
 SELECT x
 FROM test_map_lookup_shared_ops
@@ -61,8 +57,7 @@ SELECT x
 FROM test_map_lookup_shared_ops
 ORDER BY element_at(m1, 1.0D / (x + 1.0D)), element_at(m2, 1.0D / (x + 1.0D)), x
 
--- The projection of a TakeOrderedAndProject. The subquery keeps the projection above the sort,
--- where the outer query's ORDER BY would put it in a Project below the sort.
+-- The subquery keeps the projection above the sort, as a TakeOrderedAndProject
 query expect_error(DIVIDE_BY_ZERO)
 SELECT element_at(m1, 1.0D / x), element_at(m2, 1.0D / x)
 FROM (SELECT m1, m2, x FROM test_map_lookup_shared_ops ORDER BY x)
@@ -73,7 +68,7 @@ SELECT element_at(m1, 1.0D / (x + 1.0D)), element_at(m2, 1.0D / (x + 1.0D))
 FROM (SELECT m1, m2, x FROM test_map_lookup_shared_ops ORDER BY x)
 LIMIT 10
 
--- Without ANSI mode the divide returns NULL, but the decline does not depend on ANSI mode.
+-- The decline does not depend on ANSI mode
 statement
 SET spark.sql.ansi.enabled=false
 

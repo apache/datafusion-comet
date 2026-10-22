@@ -52,15 +52,11 @@ SELECT element_at(mi, CAST(1 AS BIGINT)), element_at(mi, CAST(2 AS SMALLINT)) FR
 query
 SELECT element_at(map('a', 1, 'b', 2), 'a'), element_at(map('a', 1, 'b', 2), 'missing'), element_at(map('a', 1, 'b', 2), NULL)
 
--- Map key types whose Spark equality Comet's native `map_extract` cannot reproduce are routed
--- through the JVM codegen dispatcher, where Spark's own `ElementAt.doGenCode` supplies the
--- interpreted-ordering equality. These stay on the constructor path here because the SQL harness
--- excludes `ConstantFolding`; `CometMapExpressionSuite` covers the folded-literal form of each.
+-- Map key types whose Spark equality Comet's native `map_extract` cannot reproduce are dispatched.
+-- The folded-literal forms, which need `ConstantFolding`, are in `map_lookup_folded_literal.sql`.
 
 -- Spark compares with `nanSafeCompareDoubles`, so a `-0.0` lookup finds the `+0.0` key. Native
--- lookup compares the raw Arrow values. The lookup must be written `-0.0D`: an unsuffixed `-0.0`
--- is a decimal literal, and a decimal has no signed zero, so `CAST(-0.0 AS DOUBLE)` would look up
--- `+0.0` and find the key on either path.
+-- lookup compares the raw Arrow values. `-0.0D` because a decimal `-0.0` has no signed zero.
 query expect_dispatch(element_at)
 SELECT element_at(map(CAST(0 AS DOUBLE), 7), -0.0D)
 
@@ -84,8 +80,6 @@ SELECT element_at(map(array(1), 7), array(CAST(NULL AS INT)))
 query expect_dispatch(element_at)
 SELECT element_at(map(named_struct('a', 1), 7), named_struct('a', 1))
 
--- A struct-keyed map column with a per-row lookup key, including a NULL inside the lookup struct
--- and a NULL key.
 statement
 CREATE TABLE test_element_at_struct_key(m map<struct<a:int, b:string>, int>, k int) USING parquet
 

@@ -29,8 +29,7 @@ import org.apache.comet.shims.CometTypeShim
 
 /**
  * Shared gate for the native map kernels that compare a lookup key against a map's stored keys
- * (`map_extract`, reached from both `GetMapValue` and `ElementAt`). Both consumers mix in
- * `CodegenDispatchFallback`, so a declined key type runs through Spark's own `doGenCode`.
+ * (`map_extract`, reached from both `GetMapValue` and `ElementAt`).
  */
 private[serde] object MapKeySupport {
 

@@ -15,11 +15,8 @@
 -- specific language governing permissions and limitations
 -- under the License.
 
--- The JVM codegen dispatcher writes a calendar interval's microseconds to Arrow as nanoseconds,
--- which overflows a long beyond about 292 years, a range Spark represents
--- (https://github.com/apache/datafusion-comet/issues/5279). An expression that would only
--- run through the dispatcher declines it when its result holds a calendar interval at any
--- nesting depth, so the projection falls back to Spark.
+-- The dispatcher's interval conversion overflows past about 292 years (#5279), so a would-be
+-- dispatched expression whose result holds a calendar interval falls back to Spark.
 
 statement
 CREATE TABLE test_interval_output_big(s decimal(18, 6)) USING parquet
@@ -30,11 +27,9 @@ INSERT INTO test_interval_output_big VALUES (10000000000.000000), (-10000000000.
 query expect_fallback(holds a calendar interval)
 SELECT arrays_zip(array(make_interval(0, 0, 0, 0, 0, 0, s))) FROM test_interval_output_big
 
--- An interval inside a struct inside the zipped array.
 query expect_fallback(holds a calendar interval)
 SELECT arrays_zip(array(named_struct('i', make_interval(0, 0, 0, 0, 0, 0, s)))) FROM test_interval_output_big
 
--- An interval as a map value inside the zipped array.
 query expect_fallback(holds a calendar interval)
 SELECT arrays_zip(array(map(1, make_interval(0, 0, 0, 0, 0, 0, s)))) FROM test_interval_output_big
 
@@ -57,7 +52,6 @@ query expect_fallback(holds a calendar interval)
 SELECT map_from_arrays(array(monotonically_increasing_id()), array(make_interval(0, 0, 0, 0, 0, 0, s)))
 FROM test_interval_output_big
 
--- Without a calendar interval in the result, the same expression still dispatches.
 query expect_dispatch(arrays_zip)
 SELECT arrays_zip(array(map(1, s))) FROM test_interval_output_big
 

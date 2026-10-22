@@ -18,7 +18,7 @@
 -- MinSparkVersion: 4.1
 -- Config: spark.sql.timeType.enabled=true
 
--- TIME elements have no native arrays_zip kernel and run through the JVM codegen dispatcher.
+-- TIME elements have no native arrays_zip kernel, so these dispatch
 query expect_dispatch(arrays_zip)
 SELECT arrays_zip(array(TIME '23:59:59.999999', TIME '2:0:3'))
 

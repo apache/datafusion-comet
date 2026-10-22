@@ -17,10 +17,7 @@
 
 -- MinSparkVersion: 4.0
 
--- The collated counterpart of `map_lookup_folded_literal.sql`. Native `map_extract` compares
--- string keys bytewise, so a case-insensitive `a1` lookup cannot match a stored `A1`, and the
--- lookup is dispatched to compare under the declared collation. The constructor form lives in
--- `element_at_map_collation.sql`.
+-- The collated counterpart of `map_lookup_folded_literal.sql`
 
 -- ConstantFolding: enabled
 
@@ -35,9 +32,8 @@ SELECT element_at(map(CAST('A1' AS STRING COLLATE UTF8_LCASE), 7),
   CAST(_1 AS STRING COLLATE UTF8_LCASE)) AS v
 FROM test_map_lookup_folded_collation
 
--- The collated map is nested in a map value, and the column key `_2` keeps the lookup on the
--- folded `map(1, ...)` from folding too. That lookup has INT keys, so the decline has to come from
--- the lookup whose map argument is `MAP<STRING COLLATE UTF8_LCASE, INT>`.
+-- The column key `_2` keeps the INT-keyed lookup on `map(1, ...)` from folding, so the decline
+-- must come from the lookup whose map argument is `MAP<STRING COLLATE UTF8_LCASE, INT>`
 query expect_dispatch(element_at)
 SELECT element_at(element_at(map(1, map(CAST('A1' AS STRING COLLATE UTF8_LCASE), 7)), _2),
   CAST(_1 AS STRING COLLATE UTF8_LCASE)) AS v
