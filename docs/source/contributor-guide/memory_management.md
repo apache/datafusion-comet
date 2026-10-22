@@ -508,6 +508,13 @@ diverge for several structural reasons:
   because several names suggest otherwise: the other Parquet codecs are pure Rust in this build,
   `snap` for Snappy, `lz4_flex` for LZ4 and `zlib-rs` for gzip, as is `libbz2-rs-sys` despite its
   name, so those allocations do pass through `GlobalAlloc` and are counted.
+- **Native caches that outlive their task.** The native Parquet scan's cache of decoded footers and
+  page indexes is not reserved from the pool. With
+  `spark.comet.parquet.metadataCache.sharedWithinStage.enabled`, the default, the tasks of a stage
+  share one cache per executor, which holds up to 50 MiB for each task the executor runs at once,
+  and the two most recently used caches are kept after their tasks finish, for the next task of
+  their stage. So up to twice that limit stays resident with no task running. With the setting off,
+  each task has its own 50 MiB cache, freed with the task.
 - **Batches in flight across the FFI boundary.** Reservations stop at the operator that made them.
   Imported JVM batches are reserved only while a reserving operator holds them, and exported native
   batches have usually been released by the time the JVM receives them yet stay resident until the

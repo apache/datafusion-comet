@@ -2166,7 +2166,9 @@ mod tests {
     #[tokio::test]
     async fn equal_paths_in_two_stores_do_not_share_footers() {
         use crate::parquet::shared_metadata_cache::{SharedMetadataCaches, StageKey};
-        use datafusion::execution::cache::cache_manager::CacheManagerConfig;
+        use datafusion::execution::cache::cache_manager::{
+            CacheManagerConfig, DEFAULT_METADATA_CACHE_LIMIT,
+        };
         use datafusion::execution::runtime_env::RuntimeEnvBuilder;
 
         let location = object_store::path::Path::from("table/part-00000.parquet");
@@ -2185,23 +2187,33 @@ mod tests {
 
         for shared in [true, false] {
             let registry = SharedMetadataCaches::default();
-            let stage_cache = registry.cache_for(StageKey {
-                app_id: "app-1".to_string(),
-                stage_id: 0,
-                stage_attempt: 0,
-            });
+            // Without sharing, the two scans can only meet in one task's cache, so they run in
+            // one plan with one RuntimeEnv.
+            let task_env = (!shared).then(|| RuntimeEnvBuilder::new().build_arc().unwrap());
             let mut scanned = Vec::new();
             for (url, file) in urls.iter().zip(&files) {
-                // One RuntimeEnv per task, as Comet builds them. A shared cache outlives them.
-                let mut cache_config = CacheManagerConfig::default();
-                if shared {
-                    cache_config =
-                        cache_config.with_file_metadata_cache(Some(Arc::clone(&stage_cache)));
-                }
-                let runtime_env = RuntimeEnvBuilder::new()
-                    .with_cache_manager(cache_config)
-                    .build_arc()
-                    .unwrap();
+                // With sharing, one RuntimeEnv per task, as Comet builds them, over the cache of
+                // the stage, which outlives them.
+                let runtime_env = match &task_env {
+                    Some(env) => Arc::clone(env),
+                    None => {
+                        let stage_cache = registry.cache_for(
+                            StageKey {
+                                app_id: "app-1".to_string(),
+                                stage_id: 0,
+                                stage_attempt: 0,
+                            },
+                            DEFAULT_METADATA_CACHE_LIMIT,
+                        );
+                        RuntimeEnvBuilder::new()
+                            .with_cache_manager(
+                                CacheManagerConfig::default()
+                                    .with_file_metadata_cache(Some(stage_cache)),
+                            )
+                            .build_arc()
+                            .unwrap()
+                    }
+                };
                 let store: Arc<dyn ObjectStore> = Arc::new(InMemory::new());
                 store.put(&location, file.clone().into()).await.unwrap();
                 let object_store_url = ObjectStoreUrl::parse(url).unwrap();

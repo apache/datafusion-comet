@@ -196,10 +196,14 @@ object CometConf extends ShimCometConf {
       .doc(
         "When enabled, the tasks of one Spark stage that run on the same executor share the " +
           "native Parquet scan's cache of file footers and page indexes, so a file split " +
-          "across many tasks has its footer fetched and parsed once per executor instead of " +
-          "once per task. The cache is never shared between stages or stage attempts, so a " +
-          "query always reads the footers of its files afresh. When disabled, each task " +
-          "keeps its own cache.")
+          "across many tasks can have its footer fetched and parsed once per executor instead " +
+          "of once per task. Tasks that start together each fetch it, so the saving grows " +
+          "with the number of splits per file. The cache is never shared between stages or " +
+          "stage attempts, so a query always reads the footers of its files afresh. A stage's " +
+          "cache holds up to 50 MiB of decoded footers and page indexes for each task the " +
+          "executor runs at once, outside Spark's memory accounting, and up to two such " +
+          "caches are kept after their tasks finish, for the next task of their stage. When " +
+          "disabled, each task keeps its own 50 MiB cache, which is freed when the task ends.")
       .booleanConf
       .createWithDefault(true)
 

@@ -39,6 +39,13 @@
 //! time: the next task of the stage starts after the previous one released its plan. Whatever the
 //! tasks do, at most [`MAX_IDLE_CACHES`] caches outlive the tasks that used them.
 //!
+//! A stage's cache holds DataFusion's per-task limit for every task the executor runs at once, so
+//! that sharing does not shrink the room each task had with a cache of its own: tasks that read
+//! different files would otherwise evict each other's entries, among them the footers the Delta
+//! deletion vector planning loads before the scan opens them. Shared entries are stored once, so
+//! the tasks of a stage hold no more than they did, but the retained caches can hold as much after
+//! their tasks finish.
+//!
 //! The stage scopes the cache; it does not identify the files in it. DataFusion keys an entry by
 //! the file's path within its object store, which drops the bucket, so [`scope_to_store`] gives
 //! each scan a view of the cache that also keys by the scan's object store.
@@ -83,19 +90,16 @@ pub(crate) struct SharedMetadataCaches {
 }
 
 impl SharedMetadataCaches {
-    /// The cache shared by the tasks of `key`, created if no task of that stage has asked for one
-    /// yet.
-    pub(crate) fn cache_for(&self, key: StageKey) -> Arc<FileMetadataCache> {
+    /// The cache shared by the tasks of `key`, created with a memory limit of `limit` bytes if no
+    /// task of that stage has asked for one yet.
+    pub(crate) fn cache_for(&self, key: StageKey, limit: usize) -> Arc<FileMetadataCache> {
         let mut registry = self.registry.lock().unwrap();
         let cache = registry
             .alive
             .get(&key)
             .and_then(Weak::upgrade)
             .unwrap_or_else(|| {
-                Arc::new(
-                    DefaultCache::new(DEFAULT_METADATA_CACHE_LIMIT)
-                        .with_name("SharedFileMetadataCache"),
-                )
+                Arc::new(DefaultCache::new(limit).with_name("SharedFileMetadataCache"))
             });
         registry.alive.insert(key.clone(), Arc::downgrade(&cache));
 
@@ -212,11 +216,22 @@ pub(crate) fn scope_to_store(
     })
 }
 
-/// The cache the task with these Spark configs should use, or `None` when sharing is off or the
-/// task's stage is unknown, in which case DataFusion's per-task cache applies.
+/// The memory limit of the cache shared by the tasks of a stage on an executor that runs
+/// `task_slots` tasks at once: DataFusion's limit for one task's cache, for each of them.
+pub(crate) fn shared_cache_limit(task_slots: usize) -> usize {
+    DEFAULT_METADATA_CACHE_LIMIT.saturating_mul(task_slots.max(1))
+}
+
+/// The cache the task with these Spark configs should use, with its memory limit, or `None` when
+/// sharing is off or the task's stage is unknown, in which case DataFusion's per-task cache
+/// applies. `task_slots` is how many tasks the executor runs at once.
+///
+/// The limit must also be the `metadata_cache_limit` of the task's `CacheManagerConfig`, since
+/// `CacheManager::try_new` applies that limit to the cache it is given.
 pub(crate) fn shared_metadata_cache_for_task(
     spark_config: &HashMap<String, String>,
-) -> Option<Arc<FileMetadataCache>> {
+    task_slots: usize,
+) -> Option<(Arc<FileMetadataCache>, usize)> {
     static CACHES: OnceLock<SharedMetadataCaches> = OnceLock::new();
 
     if !spark_config.get_bool(COMET_PARQUET_SHARED_METADATA_CACHE_ENABLED) {
@@ -228,11 +243,13 @@ pub(crate) fn shared_metadata_cache_for_task(
         stage_id: parse(COMET_STAGE_ID)?,
         stage_attempt: parse(COMET_STAGE_ATTEMPT)?,
     };
-    Some(
+    let limit = shared_cache_limit(task_slots);
+    Some((
         CACHES
             .get_or_init(SharedMetadataCaches::default)
-            .cache_for(key),
-    )
+            .cache_for(key, limit),
+        limit,
+    ))
 }
 
 #[cfg(test)]
@@ -250,17 +267,17 @@ mod tests {
     #[test]
     fn tasks_of_one_stage_share_a_cache() {
         let caches = SharedMetadataCaches::default();
-        let a = caches.cache_for(key(1, 0));
-        let b = caches.cache_for(key(1, 0));
+        let a = caches.cache_for(key(1, 0), DEFAULT_METADATA_CACHE_LIMIT);
+        let b = caches.cache_for(key(1, 0), DEFAULT_METADATA_CACHE_LIMIT);
         assert!(Arc::ptr_eq(&a, &b));
     }
 
     #[test]
     fn stages_and_attempts_do_not_share() {
         let caches = SharedMetadataCaches::default();
-        let first = caches.cache_for(key(1, 0));
-        let other_stage = caches.cache_for(key(2, 0));
-        let retry = caches.cache_for(key(1, 1));
+        let first = caches.cache_for(key(1, 0), DEFAULT_METADATA_CACHE_LIMIT);
+        let other_stage = caches.cache_for(key(2, 0), DEFAULT_METADATA_CACHE_LIMIT);
+        let retry = caches.cache_for(key(1, 1), DEFAULT_METADATA_CACHE_LIMIT);
         assert!(!Arc::ptr_eq(&first, &other_stage));
         assert!(!Arc::ptr_eq(&first, &retry));
     }
@@ -268,10 +285,10 @@ mod tests {
     #[test]
     fn an_idle_cache_is_kept_for_the_next_task_of_its_stage() {
         let caches = SharedMetadataCaches::default();
-        let first = caches.cache_for(key(1, 0));
+        let first = caches.cache_for(key(1, 0), DEFAULT_METADATA_CACHE_LIMIT);
         let address = Arc::as_ptr(&first) as *const () as usize;
         drop(first);
-        let next = caches.cache_for(key(1, 0));
+        let next = caches.cache_for(key(1, 0), DEFAULT_METADATA_CACHE_LIMIT);
         assert_eq!(Arc::as_ptr(&next) as *const () as usize, address);
     }
 
@@ -279,20 +296,23 @@ mod tests {
     fn applications_do_not_share() {
         // A context started after another one stopped in the same JVM reuses its stage ids.
         let caches = SharedMetadataCaches::default();
-        let old = caches.cache_for(key(1, 0));
+        let old = caches.cache_for(key(1, 0), DEFAULT_METADATA_CACHE_LIMIT);
         drop(old);
         let mut other = key(1, 0);
         other.app_id = "app-2".to_string();
-        let new = caches.cache_for(other);
+        let new = caches.cache_for(other, DEFAULT_METADATA_CACHE_LIMIT);
         assert_eq!(new.len(), 0);
-        assert!(!Arc::ptr_eq(&new, &caches.cache_for(key(1, 0))));
+        assert!(!Arc::ptr_eq(
+            &new,
+            &caches.cache_for(key(1, 0), DEFAULT_METADATA_CACHE_LIMIT)
+        ));
     }
 
     #[test]
     fn idle_retention_is_bounded_after_all_tasks_finish() {
         let caches = SharedMetadataCaches::default();
         let handles: Vec<_> = (0..16)
-            .map(|stage| caches.cache_for(key(stage, 0)))
+            .map(|stage| caches.cache_for(key(stage, 0), DEFAULT_METADATA_CACHE_LIMIT))
             .collect();
         let weak: Vec<_> = handles.iter().map(Arc::downgrade).collect();
         drop(handles);
@@ -300,25 +320,25 @@ mod tests {
     }
 
     #[test]
-    fn a_dropped_cache_is_forgotten_by_the_next_request() {
+    fn a_stage_cache_holds_the_per_task_limit_for_every_task_slot() {
         let caches = SharedMetadataCaches::default();
-        for stage in 0..16 {
-            drop(caches.cache_for(key(stage, 0)));
-        }
-        let _running = caches.cache_for(key(100, 0));
-        // The caches of the first sixteen stages are gone but for the ones retained.
-        assert_eq!(caches.len(), MAX_IDLE_CACHES);
+        let cache = caches.cache_for(key(1, 0), shared_cache_limit(8));
+        assert_eq!(cache.cache_limit(), 8 * DEFAULT_METADATA_CACHE_LIMIT);
+        assert_eq!(shared_cache_limit(0), DEFAULT_METADATA_CACHE_LIMIT);
     }
 
     #[test]
     fn idle_caches_are_bounded_but_running_ones_are_not_dropped() {
         let caches = SharedMetadataCaches::default();
-        let running = caches.cache_for(key(0, 0));
+        let running = caches.cache_for(key(0, 0), DEFAULT_METADATA_CACHE_LIMIT);
         for stage in 1..=10 {
-            drop(caches.cache_for(key(stage, 0)));
+            drop(caches.cache_for(key(stage, 0), DEFAULT_METADATA_CACHE_LIMIT));
         }
         // The running stage plus the idle ones that fit.
         assert_eq!(caches.len(), 1 + MAX_IDLE_CACHES);
-        assert!(Arc::ptr_eq(&running, &caches.cache_for(key(0, 0))));
+        assert!(Arc::ptr_eq(
+            &running,
+            &caches.cache_for(key(0, 0), DEFAULT_METADATA_CACHE_LIMIT)
+        ));
     }
 }

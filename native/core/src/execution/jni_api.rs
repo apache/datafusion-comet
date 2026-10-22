@@ -47,7 +47,7 @@ use arrow::array::{Array, RecordBatch};
 use arrow::datatypes::DataType as ArrowDataType;
 use datafusion::common::{DataFusionError, Result as DataFusionResult};
 use datafusion::config::SpillCompression;
-use datafusion::execution::cache::cache_manager::CacheManagerConfig;
+use datafusion::execution::cache::cache_manager::{CacheManagerConfig, FileMetadataCache};
 use datafusion::execution::memory_pool::MemoryPool;
 use datafusion::execution::runtime_env::RuntimeEnvBuilder;
 use datafusion::logical_expr::ScalarUDF;
@@ -995,6 +995,15 @@ fn configure_skip_partial_aggregation(config: &mut SessionConfig, plan: &Operato
     }
 }
 
+/// A task's cache manager config over the metadata cache it shares with its stage. The limit is
+/// set here too: `CacheManager::try_new` applies the config's `metadata_cache_limit` to the cache
+/// it is given, so leaving the default would reset the stage's cache to one task's limit.
+fn shared_cache_manager_config(cache: Arc<FileMetadataCache>, limit: usize) -> CacheManagerConfig {
+    CacheManagerConfig::default()
+        .with_file_metadata_cache(Some(cache))
+        .with_metadata_cache_limit(limit)
+}
+
 /// Configure DataFusion session context.
 fn prepare_datafusion_session_context(
     batch_size: usize,
@@ -1013,10 +1022,9 @@ fn prepare_datafusion_session_context(
 
     // Let the tasks of one stage on this executor share the Parquet footer and page index cache
     // instead of each fetching and parsing the footers of the files it reads.
-    if let Some(cache) = shared_metadata_cache_for_task(spark_config) {
-        rt_config = rt_config.with_cache_manager(
-            CacheManagerConfig::default().with_file_metadata_cache(Some(cache)),
-        );
+    let task_slots = spark_config.get_usize(SPARK_EXECUTOR_CORES, 1) / task_cpus.max(1);
+    if let Some((cache, limit)) = shared_metadata_cache_for_task(spark_config, task_slots) {
+        rt_config = rt_config.with_cache_manager(shared_cache_manager_config(cache, limit));
     }
 
     let mut session_config = SessionConfig::new()
@@ -4324,5 +4332,31 @@ mod tests {
             "{error}"
         );
         release_plan(exec_context, &mut |_| Ok(())).unwrap();
+    }
+
+    /// Every task builds a `RuntimeEnv` over its stage's metadata cache, and building one applies
+    /// the config's `metadata_cache_limit` to that cache. The config has to carry the stage's
+    /// limit, or each new task would shrink the cache back to one task's.
+    #[test]
+    fn a_task_keeps_the_limit_of_its_stage_metadata_cache() {
+        use crate::parquet::shared_metadata_cache::shared_cache_limit;
+        use datafusion::execution::cache::cache_manager::DEFAULT_METADATA_CACHE_LIMIT;
+        use datafusion::execution::cache::default_cache::DefaultCache;
+
+        let limit = shared_cache_limit(8);
+        let cache: Arc<FileMetadataCache> = Arc::new(DefaultCache::new(limit));
+        RuntimeEnvBuilder::new()
+            .with_cache_manager(shared_cache_manager_config(Arc::clone(&cache), limit))
+            .build()
+            .unwrap();
+        assert_eq!(cache.cache_limit(), limit);
+
+        RuntimeEnvBuilder::new()
+            .with_cache_manager(
+                CacheManagerConfig::default().with_file_metadata_cache(Some(Arc::clone(&cache))),
+            )
+            .build()
+            .unwrap();
+        assert_eq!(cache.cache_limit(), DEFAULT_METADATA_CACHE_LIMIT);
     }
 }

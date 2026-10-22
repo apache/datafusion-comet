@@ -3569,13 +3569,22 @@ class CometExecSuite extends CometTestBase {
         // The relation keeps its file listing, as a cached table does, so the second query is
         // given a file that no longer exists. It must find that out by opening the file.
         val table = spark.read.parquet(path)
-        assert(table.count() == 1000)
+        val first = table.selectExpr("count(*)")
+        assert(first.collect().head.getLong(0) == 1000)
+        assert(
+          find(first.queryExecution.executedPlan)(_.isInstanceOf[CometNativeScanExec]).isDefined,
+          s"Expected a native scan:\n${first.queryExecution.executedPlan}")
         val deleted = new java.io.File(dir, "table")
           .listFiles()
           .filter(_.getName.endsWith(".parquet"))
           .head
         assert(deleted.delete())
-        intercept[SparkException](table.count())
+        val error = intercept[SparkException](table.selectExpr("count(*)").collect())
+        // FAILED_READ_FILE.FILE_NOT_EXIST on Spark 4.0+, as HiveMetadataCacheSuite expects, and
+        // Spark 3.x's file-not-found read error, both caused by the missing file.
+        assert(
+          causeChain(error).exists(_.isInstanceOf[java.io.FileNotFoundException]),
+          s"Expected the missing file to fail the read, got: $error")
       }
     }
   }
