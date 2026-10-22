@@ -477,10 +477,13 @@ case class CometScanRule(session: SparkSession)
         }
         // Comet's native plan does not carry a compression codec, so the native reader would feed
         // raw compressed bytes to the line splitter. Spark auto-detects a codec by file extension.
-        // Use the options-aware Hadoop conf (so a per-read codec option is honored) and the
+        // Use the options-aware Hadoop conf, built from the case-preserving option map like
+        // Spark's TextScan.createReaderFactory (Hadoop keys are case sensitive, but the scan's
+        // option map lowercases them), so a per-read codec option is honored, and the
         // version-aware ShimFileFormat.isCompressedFile, which on Spark 4.1+ also catches the
         // non-standard .gzip/.zstd extensions that CompressionCodecFactory alone misses.
-        val hadoopConf = session.sessionState.newHadoopConfWithOptions(scan.options.asScala.toMap)
+        val hadoopConf = session.sessionState.newHadoopConfWithOptions(
+          scan.options.asCaseSensitiveMap.asScala.toMap)
         val hasCompressedFile = scan.fileIndex.inputFiles.exists { path =>
           ShimFileFormat.isCompressedFile(hadoopConf, new org.apache.hadoop.fs.Path(path))
         }

@@ -391,6 +391,32 @@ class CometTextNativeReadSuite extends CometTestBase {
     }
   }
 
+  test(
+    "native text read - line.maxlength from the Hadoop conf is not overridden by a differently " +
+      "cased read option") {
+    withTempDir { dir =>
+      val file = new File(dir, "lines-case.txt")
+      Files.write(file.toPath, "ab\nabcdefghij\nxy".getBytes(StandardCharsets.UTF_8))
+      val key = "mapreduce.input.linerecordreader.line.maxlength"
+      val hadoopConf = spark.sparkContext.hadoopConfiguration
+      hadoopConf.set(key, "5")
+      try {
+        withTextConf {
+          // Hadoop keys are case sensitive, so this option does not override the limit of 5 and
+          // Spark skips the long line. The gate must see the option with its case preserved, or it
+          // reads an unlimited length and the native scan returns the long line too.
+          checkSparkAnswerAndFallbackReason(
+            spark.read
+              .option("mapreduce.input.linerecordreader.line.maxLength", "2147483647")
+              .text(file.getAbsolutePath),
+            key)
+        }
+      } finally {
+        hadoopConf.unset(key)
+      }
+    }
+  }
+
   test("native text read - fallback for files larger than the size ceiling") {
     withTempDir { dir =>
       val file = new File(dir, "big.txt")
