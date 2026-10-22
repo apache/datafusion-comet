@@ -154,6 +154,10 @@ class CometScanSchemeFallbackSuite extends CometTestBase with CometIcebergTestBa
     assert(
       !write.contains("oss"),
       s"oss must not be in the native write schemes ${write.toSeq.sorted}")
+    assert(read.contains("hdfs"), s"hdfs must be in the native read schemes ${read.toSeq.sorted}")
+    assert(
+      !write.contains("hdfs"),
+      s"hdfs must not be in the native write schemes ${write.toSeq.sorted}")
     assert(
       write.contains("memory"),
       s"memory must be in the native write schemes ${write.toSeq.sorted}")
@@ -181,7 +185,8 @@ class CometScanSchemeFallbackSuite extends CometTestBase with CometIcebergTestBa
       "s3://bucket/key.parquet",
       "s3a://bucket/key.parquet",
       "gs://bucket/key.parquet",
-      "oss://bucket/key.parquet").foreach { u =>
+      "oss://bucket/key.parquet",
+      "hdfs://nn:8020/key.parquet").foreach { u =>
       assert(
         CometScanRule.isIcebergReadableScheme(new URI(u), Set.empty),
         s"$u must be iceberg-readable; icebergReadableSchemes has regressed")
@@ -284,6 +289,9 @@ class CometScanSchemeFallbackSuite extends CometTestBase with CometIcebergTestBa
     assert(
       !openable("s3:///bucket/k.parquet"),
       "authorityless s3:/// has no host and no alias promotion")
+    assert(
+      !openable("hdfs:///warehouse/k.parquet"),
+      "authorityless hdfs:/// needs a default NameNode, which Comet does not pass to native")
     // blob not opted in: no promotion, so the hostless form is not openable either.
     assert(
       !openable("blob:///bucket/k.parquet", Set.empty),
