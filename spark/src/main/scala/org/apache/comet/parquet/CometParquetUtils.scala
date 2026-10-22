@@ -24,10 +24,15 @@ import org.apache.parquet.crypto.DecryptionPropertiesFactory
 import org.apache.parquet.crypto.keytools.{KeyToolkit, PropertiesDrivenCryptoFactory}
 import org.apache.spark.sql.internal.SQLConf
 
+import org.apache.comet.CometSparkSessionExtensions.isSpark41Plus
+
 object CometParquetUtils {
   private val PARQUET_FIELD_ID_WRITE_ENABLED = "spark.sql.parquet.fieldId.write.enabled"
   private val PARQUET_FIELD_ID_READ_ENABLED = "spark.sql.parquet.fieldId.read.enabled"
   private val IGNORE_MISSING_PARQUET_FIELD_ID = "spark.sql.parquet.fieldId.read.ignoreMissing"
+  // `SQLConf.PARQUET_IGNORE_VARIANT_ANNOTATION`, read by key because the conf only exists from
+  // Spark 4.1 while this file compiles against 3.4 through 4.1.
+  private val IGNORE_VARIANT_ANNOTATION = "spark.sql.parquet.ignoreVariantAnnotation"
 
   // Field-metadata key arrow-rs writes when it lifts Parquet field IDs into the Arrow schema
   // (`parquet::arrow::PARQUET_FIELD_ID_META_KEY`). Spark's local key for the same concept is
@@ -56,6 +61,18 @@ object CometParquetUtils {
 
   def ignoreMissingIds(conf: SQLConf): Boolean =
     conf.getConfString(IGNORE_MISSING_PARQUET_FIELD_ID, "false").toBoolean
+
+  /**
+   * Whether the native reader should read a VARIANT-annotated Parquet field as its plain
+   * underlying struct instead of rejecting the read.
+   *
+   * Spark only validates the annotation from 4.1: `ParquetToSparkSchemaConverter` gained the
+   * `VariantLogicalTypeAnnotation` branch and `spark.sql.parquet.ignoreVariantAnnotation` in that
+   * release, and neither exists in 3.4, 3.5 or 4.0. Comet's check mirrors that rule, so on
+   * earlier versions it is switched off rather than inventing a failure Spark does not have.
+   */
+  def ignoreVariantAnnotation(conf: SQLConf): Boolean =
+    !isSpark41Plus || conf.getConfString(IGNORE_VARIANT_ANNOTATION, "false").toBoolean
 
   /**
    * Checks if the given Hadoop configuration contains any unsupported encryption settings.

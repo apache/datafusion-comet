@@ -468,6 +468,7 @@ impl PhysicalPlanner {
             rebase_from_file_metadata,
             datetime_rebase_mode_in_read,
             int96_rebase_mode_in_read,
+            common.ignore_variant_annotation,
         )?;
         Ok(Arc::new(SparkPlan::new(plan_id, scan, vec![])))
     }
