@@ -1333,6 +1333,16 @@ object CometSequence extends CometExpressionSerde[Sequence] with CodegenDispatch
   override def getUnsupportedReasons(): Seq[String] =
     Seq(temporalUnsupportedReason, unsafeArgUnsupportedReason)
 
+  /**
+   * The native variant for a Spark version. Where SparkFixes.sequenceRecomputesOverflowedLength
+   * holds (SPARK-58821), Spark returns the exact length when `stop - start` overflows a long but
+   * the length is small, and `spark_sequence_recomputed` does the same. Earlier releases raise
+   * INTERNAL_ERROR("Unreachable code reached.") there, as `spark_sequence` does.
+   */
+  def nativeFunction(version: String): String =
+    if (SparkFixes.sequenceRecomputesOverflowedLength(version)) "spark_sequence_recomputed"
+    else "spark_sequence"
+
   override def convert(
       expr: Sequence,
       inputs: Seq[Attribute],
@@ -1344,7 +1354,7 @@ object CometSequence extends CometExpressionSerde[Sequence] with CodegenDispatch
     val argProtos = Seq(startExprProto, stopExprProto) ++
       expr.stepOpt.map(exprToProtoInternal(_, inputs, binding))
     scalarFunctionExprToProtoWithReturnType(
-      "spark_sequence",
+      nativeFunction(SPARK_VERSION),
       expr.dataType,
       failOnError = false,
       argProtos: _*)

@@ -26,15 +26,15 @@ import org.apache.spark.SparkException
 import org.apache.spark.sql.CometTestBase
 import org.apache.spark.sql.catalyst.expressions.{ArrayAppend, ArrayDistinct, ArrayExcept, ArrayInsert, ArrayIntersect, ArrayJoin, ArrayMax, ArrayMin, ArrayRepeat, ArraysOverlap, ArrayUnion}
 import org.apache.spark.sql.catalyst.expressions.{ArrayContains, ArrayRemove}
-import org.apache.spark.sql.catalyst.expressions.{AttributeReference, Cast, CreateArray, ElementAt, Literal, MonotonicallyIncreasingID}
+import org.apache.spark.sql.catalyst.expressions.{AttributeReference, Cast, CreateArray, ElementAt, Literal, MonotonicallyIncreasingID, Sequence}
 import org.apache.spark.sql.execution.adaptive.AdaptiveSparkPlanHelper
 import org.apache.spark.sql.functions._
 import org.apache.spark.sql.internal.SQLConf
-import org.apache.spark.sql.types.{ArrayType, DataType, DoubleType, FloatType, IntegerType, StringType, StructType}
+import org.apache.spark.sql.types.{ArrayType, DataType, DoubleType, FloatType, IntegerType, LongType, StringType, StructType}
 
 import org.apache.comet.CometSparkSessionExtensions.{isSpark35Plus, isSpark40Plus}
 import org.apache.comet.DataTypeSupport.isComplexType
-import org.apache.comet.serde.{ArrayElementEqualitySupport, ArraySetSupport, CometArrayDistinct, CometArrayExcept, CometArrayJoin, CometArrayRemove, CometArrayReverse, CometArraysOverlap, CometArrayUnion, CometFlatten, Compatible, ExprOuterClass, Incompatible}
+import org.apache.comet.serde.{ArrayElementEqualitySupport, ArraySetSupport, CometArrayDistinct, CometArrayExcept, CometArrayJoin, CometArrayRemove, CometArrayReverse, CometArraysOverlap, CometArrayUnion, CometFlatten, CometSequence, Compatible, ExprOuterClass, Incompatible, SparkFixes}
 import org.apache.comet.testing.{DataGenOptions, ParquetGenerator, SchemaGenOptions}
 
 class CometArrayExpressionSuite extends CometTestBase with AdaptiveSparkPlanHelper {
@@ -1773,6 +1773,52 @@ class CometArrayExpressionSuite extends CometTestBase with AdaptiveSparkPlanHelp
       assert(e.getMessage.contains("spark.comet.batchSize"), e.getMessage)
       withSQLConf(CometConf.COMET_BATCH_SIZE.key -> "256") {
         checkSparkAnswerAndOperator(query)
+      }
+    }
+  }
+
+  test("sequence native variant by Spark version") {
+    // SPARK-58821 is in 4.0.5, 4.1.4 and 4.2.1.
+    Seq("3.4.3", "3.5.9", "4.0.4", "4.1.3", "4.2.0", "4.2.0-SNAPSHOT").foreach { version =>
+      assert(!SparkFixes.sequenceRecomputesOverflowedLength(version), version)
+      assert(CometSequence.nativeFunction(version) == "spark_sequence", version)
+    }
+    Seq("4.0.5", "4.1.4", "4.2.1", "4.3.0", "5.0.0").foreach { version =>
+      assert(SparkFixes.sequenceRecomputesOverflowedLength(version), version)
+      assert(CometSequence.nativeFunction(version) == "spark_sequence_recomputed", version)
+    }
+    // convert asks for the variant of the Spark version it runs on.
+    val start = AttributeReference("start", LongType)()
+    val stop = AttributeReference("stop", LongType)()
+    val step = AttributeReference("step", LongType)()
+    val proto = CometSequence.convert(
+      Sequence(start, stop, Some(step)),
+      Seq(start, stop, step),
+      binding = false)
+    assert(
+      proto.map(_.getScalarFunc.getFunc) ==
+        Some(CometSequence.nativeFunction(org.apache.spark.SPARK_VERSION)))
+  }
+
+  // When stop - start overflows a long but the sequence is short, Spark returns its elements
+  // where releases without SPARK-58821 raise INTERNAL_ERROR("Unreachable code reached.").
+  test("sequence whose stop - start overflows a long") {
+    val rows = Seq(
+      (Long.MinValue, Long.MaxValue, Long.MaxValue),
+      (Long.MinValue, 0L, 1L << 62),
+      (Long.MaxValue, Long.MinValue, -Long.MaxValue))
+    withParquetTable(rows, "t") {
+      val query = "SELECT _1, _2, _3, sequence(_1, _2, _3) FROM t"
+      if (SparkFixes.sequenceRecomputesOverflowedLength(org.apache.spark.SPARK_VERSION)) {
+        checkSparkAnswerAndOperator(query)
+      } else {
+        val df = sql(query)
+        checkCometOperators(stripAQEPlan(df.queryExecution.executedPlan))
+        val (sparkError, cometError) = checkSparkAnswerMaybeThrows(df)
+        Seq("Spark" -> sparkError, "Comet" -> cometError).foreach { case (engine, error) =>
+          assert(error.isDefined, s"$engine did not fail")
+          assert(error.get.getMessage.contains("Unreachable code reached"), error.get.getMessage)
+        }
       }
     }
   }

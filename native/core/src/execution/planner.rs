@@ -768,14 +768,16 @@ impl PhysicalPlanner {
                     registry.get(expr_id)
                 });
 
+                let mut cast_options = SparkCastOptions::new_with_version(
+                    eval_mode,
+                    &expr.timezone,
+                    expr.is_spark4_plus,
+                );
+                cast_options.decimal_zero_any_exponent = expr.decimal_zero_any_exponent;
                 Ok(Arc::new(Cast::new(
                     child,
                     datatype,
-                    SparkCastOptions::new_with_version(
-                        eval_mode,
-                        &expr.timezone,
-                        expr.is_spark4_plus,
-                    ),
+                    cast_options,
                     spark_expr.expr_id,
                     query_context,
                 )))
