@@ -418,7 +418,11 @@ impl CometWindowAggStream {
                     let _timer = elapsed_compute.timer();
                     let buffered = std::mem::take(&mut self.buffered);
                     let num_rows = buffered.iter().map(RecordBatch::num_rows).sum();
-                    self.evaluate(buffered, std::iter::once(0..num_rows))
+                    let output = self.evaluate(buffered, std::iter::once(0..num_rows));
+                    // Nothing is buffered now. Unregister so that the downstream operators get
+                    // the share back while they consume the output.
+                    self.reservation = None;
+                    output
                 }
             };
             match output {
@@ -696,7 +700,7 @@ mod tests {
             .collect()
     }
 
-    /// Runs `plan` with a `limit`-byte pool, after checking that it released everything.
+    /// Runs `plan` with a `limit`-byte pool, after checking that it unregistered its consumer.
     async fn run_with_limit(
         plan: Arc<dyn ExecutionPlan>,
         limit: usize,
@@ -707,12 +711,9 @@ mod tests {
         while let Some(batch) = stream.next().await {
             output.push(batch?);
         }
-        // Read the consumer before dropping the stream unregisters it.
-        let consumer = consumer_metrics(&runtime)
-            .into_iter()
-            .find(|consumer| consumer.name == CONSUMER)
-            .unwrap();
-        assert_eq!(consumer.reserved, 0);
+        // The last window partition is out, so the stream has given everything back and left the
+        // pool, even though it is still alive.
+        assert!(registered_consumers(&runtime).is_empty());
         Ok(output)
     }
 
@@ -795,6 +796,13 @@ mod tests {
         assert!(registered_consumers(&runtime).is_empty());
         stream.next().await.unwrap().unwrap();
         assert_eq!(registered_consumers(&runtime), [CONSUMER]);
+
+        // It unregisters once it has evaluated the last window partition, so that the operators
+        // consuming its output get the share back.
+        while let Some(batch) = stream.next().await {
+            batch.unwrap();
+        }
+        assert!(registered_consumers(&runtime).is_empty());
     }
 
     #[tokio::test]
