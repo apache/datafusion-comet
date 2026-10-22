@@ -871,9 +871,6 @@ object QueryPlanSerde extends Logging with CometExprShim with CometTypeShim {
 
     // Attach QueryContext and expr_id to the aggregate expression
     protoAggExprOpt.flatMap { protoAggExpr =>
-      // Aggregate functions never route through the JVM codegen dispatcher, so reaching here
-      // always means a native lowering. Recorded for the coverage stats in extended explain.
-      withNativeExpr(fn, CometExplainInfo.exprDisplayName(fn))
       val builder = protoAggExpr.toBuilder
       builder.setExprId(nextExprId())
 
@@ -900,7 +897,22 @@ object QueryPlanSerde extends Logging with CometExprShim with CometTypeShim {
       extractQueryContext(fn).foreach { ctx =>
         builder.setQueryContext(ctx)
       }
-      Some(builder.build())
+      val result = builder.build()
+      // Aggregate arguments are serialized as independent roots, so the scalar parent guard
+      // cannot see their consumer. Spark can skip them in lazy updates (for example First),
+      // filtered updates or null checks, while native aggregates can evaluate whole arrays.
+      if (CometAssertNotNull.containsNativeAssertion(result)) {
+        withFallbackReason(
+          aggExpr,
+          "Native AssertNotNull in aggregate arguments or filters could change which values " +
+            "Spark checks")
+        None
+      } else {
+        // Aggregate functions never route through the JVM codegen dispatcher. Record only
+        // successful native lowerings for the coverage stats in extended explain.
+        withNativeExpr(fn, CometExplainInfo.exprDisplayName(fn))
+        Some(result)
+      }
     }
   }
 

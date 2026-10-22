@@ -24,7 +24,8 @@ import scala.util.Random
 import org.apache.hadoop.fs.Path
 import org.apache.spark.SparkThrowable
 import org.apache.spark.sql.{Column, CometTestBase, DataFrame, Row}
-import org.apache.spark.sql.catalyst.expressions.{Add, Alias, AttributeReference, Cast, Divide, FromUnixTime, In, InSet, IntegralDivide, Literal, Multiply, Remainder, StructsToJson, Subtract, TruncDate, TruncTimestamp}
+import org.apache.spark.sql.catalyst.expressions.{Add, Alias, AttributeReference, Cast, Divide, EqualTo, FromUnixTime, In, InSet, IntegralDivide, Literal, Multiply, NamedExpression, Remainder, StructsToJson, Subtract, TruncDate, TruncTimestamp}
+import org.apache.spark.sql.catalyst.expressions.aggregate.{AggregateExpression, Complete, Count, Sum}
 import org.apache.spark.sql.catalyst.expressions.objects.AssertNotNull
 import org.apache.spark.sql.catalyst.optimizer.{ConvertToLocalRelation, OptimizeIn, SimplifyExtractValueOps}
 import org.apache.spark.sql.comet.{CometFilterExec, CometProjectExec, CometSortExec, CometTakeOrderedAndProjectExec}
@@ -217,6 +218,86 @@ class CometExpressionSuite extends CometTestBase with AdaptiveSparkPlanHelper {
             })
           }
         }
+      }
+    }
+  }
+
+  for (scenario <- Seq(
+      "first",
+      "first-ignore-nulls",
+      "filtered-global",
+      "filtered-grouped",
+      "count");
+    codegen <- Seq(false, true)) {
+    test(s"AssertNotNull preserves aggregate argument evaluation: $scenario, codegen=$codegen") {
+      withSQLConf(
+        SQLConf.ADAPTIVE_EXECUTION_ENABLED.key -> "false",
+        SQLConf.WHOLESTAGE_CODEGEN_ENABLED.key -> codegen.toString,
+        SQLConf.SHUFFLE_PARTITIONS.key -> "1") {
+        withTempPath { path =>
+          Seq[(Int, Integer, Integer)]((0, 1, 1), (1, null, 1))
+            .toDF("id", "a", "b")
+            .coalesce(1)
+            .write
+            .parquet(path.toString)
+          val input = spark.read.parquet(path.toString)
+          val assertion = AssertNotNull(input("a").expr)
+          val checked = getColumnFromExpression(assertion)
+          val filteredSum = getColumnFromExpression(
+            AggregateExpression(
+              Sum(assertion),
+              Complete,
+              isDistinct = false,
+              filter = Some(EqualTo(input("id").expr, Literal(0))),
+              resultId = NamedExpression.newExprId))
+          val aggregated = scenario match {
+            case "first" => input.agg(first(checked, ignoreNulls = false))
+            case "first-ignore-nulls" => input.agg(first(checked, ignoreNulls = true))
+            case "filtered-global" => input.agg(filteredSum)
+            case "filtered-grouped" => input.groupBy("id").agg(filteredSum)
+            // Spark COUNT only checks nullable children; the assertion reports non-nullable.
+            case "count" =>
+              input.agg(
+                getColumnFromExpression(
+                  Count(Seq(input("b").expr, assertion)).toAggregateExpression()))
+          }
+          val reasons =
+            new ExtendedExplainInfo().getFallbackReasons(aggregated.queryExecution.executedPlan)
+          assert(reasons.exists(_.contains(
+            "Native AssertNotNull in aggregate arguments or filters could change which values " +
+              "Spark checks")))
+          val (sparkError, cometError) = checkSparkAnswerMaybeThrows(aggregated)
+          assert(sparkError.isDefined == cometError.isDefined)
+          if (scenario != "first-ignore-nulls") assert(sparkError.isEmpty)
+          val expected = intercept[Exception] {
+            AssertNotNull(Literal.create(null, IntegerType)).eval()
+          }
+          for (error <- sparkError.toSeq ++ cometError.toSeq) {
+            assert(causeChain(error).exists { cause =>
+              cause.getClass == expected.getClass && cause.getMessage == expected.getMessage
+            })
+          }
+        }
+      }
+    }
+  }
+
+  test("AssertNotNull retains native aggregate grouping, results and opaque arguments") {
+    withSQLConf(SQLConf.ADAPTIVE_EXECUTION_ENABLED.key -> "false") {
+      withTempPath { path =>
+        Seq(1, 2).toDF("id").write.parquet(path.toString)
+        val input = spark.read.parquet(path.toString)
+        val checked = getColumnFromExpression(AssertNotNull(input("id").expr))
+        checkSparkAnswerAndImpl(input.groupBy(checked).count(), native = Seq("assertnotnull"))
+        val aggregated = input.agg(sum("id").as("total"))
+        checkSparkAnswerAndImpl(
+          aggregated.select(getColumnFromExpression(AssertNotNull(aggregated("total").expr))),
+          native = Seq("assertnotnull"))
+        val checkedDouble =
+          getColumnFromExpression(AssertNotNull(input("id").cast("double").expr))
+        checkSparkAnswerAndImpl(
+          input.agg(sum(round(checkedDouble))),
+          dispatched = Seq("round", "assertnotnull"))
       }
     }
   }
