@@ -743,6 +743,50 @@ class CometWindowExecSuite extends CometTestBase {
     }
   }
 
+  test("window: high-precision decimal AVG and TRY_AVG fall back to Spark") {
+    withTempDir { dir =>
+      Seq((1, 1, "0.6"), (1, 2, "0.6"))
+        .toDF("g", "ord", "raw_v")
+        .selectExpr(
+          "g",
+          "ord",
+          "CAST(raw_v AS DECIMAL(27,27)) AS v27",
+          "CAST(raw_v AS DECIMAL(28,28)) AS v28",
+          "CAST(raw_v AS DECIMAL(38,38)) AS v38")
+        .coalesce(1)
+        .write
+        .mode("overwrite")
+        .parquet(dir.toString)
+      withParquetTable(spark.read.parquet(dir.toString), "window_avg") {
+        withSQLConf(SQLConf.ANSI_ENABLED.key -> "true") {
+          // Pin the 27/28 boundary and both error modes when the running sum exceeds 38 digits.
+          for ((aggregate, precision) <- Seq(
+              ("AVG", 27),
+              ("AVG", 28),
+              ("AVG", 38),
+              ("TRY_AVG", 38))) {
+            val df = sql(s"""
+              SELECT g, ord, $aggregate(v$precision) OVER (
+                PARTITION BY g ORDER BY ord
+                ROWS BETWEEN UNBOUNDED PRECEDING AND CURRENT ROW) AS running_avg
+              FROM window_avg ORDER BY g, ord
+            """)
+            if (precision == 27) {
+              val (_, plan) = checkSparkAnswerAndOperator(df)
+              assertCometWindowExecExists(plan)
+            } else {
+              val (_, plan) = checkSparkAnswerAndFallbackReason(
+                df,
+                "AVG on DECIMAL with precision 28 or more is not supported")
+              assert(collect(plan) { case window: SparkWindowExec => window }.nonEmpty)
+              assert(collect(plan) { case window: CometWindowExec => window }.isEmpty)
+            }
+          }
+        }
+      }
+    }
+  }
+
   test("window: decimal AVG fuzz with PARTITION BY and ORDER BY") {
     Seq((9, 1), (9, 4), (10, 2), (11, 3), (11, 6)).foreach { case (precision, scale) =>
       withTempDir { dir =>
@@ -873,8 +917,8 @@ class CometWindowExecSuite extends CometTestBase {
   test("window: decimal AVG at maximum precision falls back for every frame") {
     // Spark's window buffer keeps the running sum unbounded, so DECIMAL(38,38) inputs 0.6, 0.6,
     // -0.6 average to 0.6, 0.6, 0.2 in a running frame and to 0.2 over the whole partition. The
-    // native AVG skipped the row that takes its sum out of the precision, which gave 0.6 for the
-    // third running frame, or raised under ANSI, and 0 for the whole partition.
+    // native AVG latches once the sum leaves the precision, returning NULL or raising under
+    // ANSI instead of Spark's average for the last running frame and the whole partition.
     // https://github.com/apache/datafusion-comet/issues/5418
     val low = new java.math.BigDecimal("0.2").setScale(38)
     val high = new java.math.BigDecimal("0.6").setScale(38)
@@ -912,9 +956,9 @@ class CometWindowExecSuite extends CometTestBase {
     }
   }
 
-  test("window: decimal AVG whose rescaled sum can overflow falls back") {
-    // Below precision 28 the sum has headroom above the input, but from precision 25 the native
-    // average can still overflow when it rescales a large sum, as in an aggregate.
+  test("window: decimal AVG below precision 28 runs natively by default") {
+    // Widening the rescaled numerator removes the precision-25 fallback. The separate
+    // precision-28 guard still protects Spark's unbounded intermediate sum.
     // https://github.com/apache/datafusion-comet/issues/7007
     withTempDir { dir =>
       Seq((1, "1.5"), (2, "2.5"))
@@ -927,15 +971,8 @@ class CometWindowExecSuite extends CometTestBase {
 
       spark.read.parquet(dir.toString).createOrReplaceTempView("dec_avg_rescale")
       val query = "SELECT ord, AVG(v) OVER (ORDER BY ord) AS run_avg FROM dec_avg_rescale"
-      val (_, cometPlan) = checkSparkAnswerAndFallbackReason(
-        query,
-        "a large sum of a DECIMAL with precision 25 or more overflows when the native " +
-          "average rescales it")
-      assert(collect(cometPlan) { case w: CometWindowExec => w }.isEmpty, cometPlan)
-      withSQLConf(CometConf.getExprAllowIncompatConfigKey("Average") -> "true") {
-        val (_, nativePlan) = checkSparkAnswerAndOperator(query)
-        assertCometWindowExecExists(nativePlan)
-      }
+      val (_, cometPlan) = checkSparkAnswerAndOperator(query)
+      assertCometWindowExecExists(cometPlan)
     }
   }
 

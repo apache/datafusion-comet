@@ -1659,6 +1659,180 @@ mod tests {
         }
     }
 
+    /// The same reconciliation as above through the arrays, maps and structs that hold the structs,
+    /// with either branch first, and with the `CASE WHEN x IS NOT NULL THEN x ELSE y END` that
+    /// COALESCE is planned as. The result takes the first branch's names and widens neither INT
+    /// nor DOUBLE, as it would if fields were paired by name.
+    #[test]
+    fn conditional_branches_reconcile_nested_case_variant_fields_positionally() {
+        use arrow::array::{Float64Array, ListArray, MapArray};
+        use arrow::datatypes::Fields;
+
+        /// The structure a struct is nested in.
+        #[derive(Clone, Copy, Debug)]
+        enum Layer {
+            List,
+            MapValue,
+            StructField,
+        }
+
+        /// Nests `inner` in `layers`, innermost first, with one element per row at every level.
+        /// Only the outermost level has `nulls`.
+        fn nest(inner: ArrayRef, layers: &[Layer], nulls: NullBuffer) -> ArrayRef {
+            let len = inner.len();
+            let mut array = inner;
+            for (i, layer) in layers.iter().enumerate() {
+                let nulls = (i + 1 == layers.len()).then(|| nulls.clone());
+                let offsets = OffsetBuffer::from_lengths(vec![1; len]);
+                array = match layer {
+                    Layer::List => Arc::new(ListArray::new(
+                        Arc::new(Field::new("item", array.data_type().clone(), true)),
+                        offsets,
+                        array,
+                        nulls,
+                    )),
+                    Layer::MapValue => {
+                        let fields: Fields = vec![
+                            Field::new("key", DataType::Utf8, false),
+                            Field::new("value", array.data_type().clone(), true),
+                        ]
+                        .into();
+                        let keys: StringArray = (0..len).map(|_| Some("k")).collect();
+                        let entries = StructArray::new(fields, vec![Arc::new(keys), array], None);
+                        Arc::new(MapArray::new(
+                            Arc::new(Field::new("entries", entries.data_type().clone(), false)),
+                            offsets,
+                            entries,
+                            nulls,
+                            false,
+                        ))
+                    }
+                    Layer::StructField => Arc::new(StructArray::new(
+                        vec![Field::new("s", array.data_type().clone(), true)].into(),
+                        vec![array],
+                        nulls,
+                    )),
+                };
+            }
+            array
+        }
+
+        // The first field of each struct is an INT and the second a DOUBLE, whatever their names
+        let then_fields: Fields = vec![
+            Field::new("x", DataType::Int32, true),
+            Field::new("X", DataType::Float64, false),
+        ]
+        .into();
+        let else_fields: Fields = vec![
+            Field::new("X", DataType::Int32, false),
+            Field::new("x", DataType::Float64, true),
+        ]
+        .into();
+        let result_fields = |names: [&str; 2]| -> Fields {
+            vec![
+                Field::new(names[0], DataType::Int32, true),
+                Field::new(names[1], DataType::Float64, true),
+            ]
+            .into()
+        };
+        let structs = |fields: &Fields, ints: Vec<Option<i32>>, doubles: Vec<Option<f64>>| {
+            Arc::new(StructArray::new(
+                fields.clone(),
+                vec![
+                    Arc::new(Int32Array::from(ints)) as ArrayRef,
+                    Arc::new(Float64Array::from(doubles)),
+                ],
+                None,
+            )) as ArrayRef
+        };
+        // Each branch is NULL in the row the other chooses, so whichever is first, the first row
+        // takes the THEN value and the second row the ELSE value.
+        let then_nulls = NullBuffer::from(vec![true, false]);
+        let else_nulls = NullBuffer::from(vec![false, true]);
+
+        for layers in [
+            vec![],
+            vec![Layer::List],
+            vec![Layer::MapValue],
+            vec![Layer::StructField, Layer::List],
+            vec![Layer::List, Layer::MapValue],
+            vec![Layer::MapValue, Layer::StructField],
+        ] {
+            let then_inner = structs(
+                &then_fields,
+                vec![Some(7), None],
+                vec![Some(5.5), Some(5.5)],
+            );
+            let else_inner = structs(&else_fields, vec![Some(0), Some(0)], vec![Some(9.5), None]);
+            let then_array = if layers.is_empty() {
+                // There is no outer array to carry the NULL, so the struct carries it itself
+                let columns = then_inner.as_struct().columns().to_vec();
+                Arc::new(StructArray::new(
+                    then_fields.clone(),
+                    columns,
+                    Some(then_nulls.clone()),
+                )) as ArrayRef
+            } else {
+                nest(then_inner, &layers, then_nulls.clone())
+            };
+            let else_array = if layers.is_empty() {
+                let columns = else_inner.as_struct().columns().to_vec();
+                Arc::new(StructArray::new(
+                    else_fields.clone(),
+                    columns,
+                    Some(else_nulls.clone()),
+                )) as ArrayRef
+            } else {
+                nest(else_inner, &layers, else_nulls.clone())
+            };
+            let schema = Schema::new(vec![
+                Field::new("t", then_array.data_type().clone(), true),
+                Field::new("e", else_array.data_type().clone(), true),
+            ]);
+            let batch = RecordBatch::try_new(
+                Arc::new(schema.clone()),
+                vec![Arc::clone(&then_array), Arc::clone(&else_array)],
+            )
+            .unwrap();
+            let c = |name: &str| col(name, &schema).unwrap();
+
+            // Which branch is first, and so which struct field names the result has
+            for (first, second, names) in [("t", "e", ["x", "X"]), ("e", "t", ["X", "x"])] {
+                let expected_inner = structs(
+                    &result_fields(names),
+                    vec![Some(7), Some(0)],
+                    vec![Some(5.5), None],
+                );
+                let expected = nest(expected_inner, &layers, NullBuffer::new_valid(2));
+                let exprs = [
+                    create_if_expr(
+                        Arc::new(IsNotNullExpr::new(c(first))),
+                        c(first),
+                        c(second),
+                        &schema,
+                    )
+                    .unwrap(),
+                    create_case_when(
+                        vec![(Arc::new(IsNotNullExpr::new(c(first))), c(first))],
+                        Some(c(second)),
+                        &schema,
+                    )
+                    .unwrap(),
+                ];
+                for expr in exprs {
+                    let context = format!("{layers:?} {expr}");
+                    assert_eq!(
+                        expr.data_type(&schema).unwrap(),
+                        *expected.data_type(),
+                        "{context}"
+                    );
+                    let result = evaluate_conditional(&expr, &batch);
+                    assert_eq!(result.as_ref(), expected.as_ref(), "{context}");
+                }
+            }
+        }
+    }
+
     /// IF branches that share a Spark timestamp type but carry different Arrow timezone labels are
     /// reconciled by relabelling one of them, as CASE branches are. The result has the THEN
     /// branch's label, which `IfExpr` reported before the ELSE branch was cast, unless it has none.
