@@ -123,7 +123,7 @@ object CometTimeExtractBenchmark extends CometBenchmarkBase {
       serialized.setValueCount(1)
       val dispatcher = new CometScalaUDFCodegen()
       val inputs = Array[org.apache.arrow.vector.ValueVector](digest, serialized, time)
-      val result = dispatcher.evaluate(inputs, size)
+      val result = dispatcher.evaluate(org.apache.comet.CometArrowAllocator, inputs, size)
       try {
         val vector =
           CometVector.getVector(result.asInstanceOf[org.apache.arrow.vector.FieldVector], null)
@@ -150,7 +150,7 @@ object CometTimeExtractBenchmark extends CometBenchmarkBase {
         }
         benchmark.addCase("JVM dispatcher (direct)") { _ =>
           val result = dispatcher
-            .evaluate(inputs, size)
+            .evaluate(org.apache.comet.CometArrowAllocator, inputs, size)
             .asInstanceOf[org.apache.arrow.vector.DecimalVector]
           try {
             var sum = 0L

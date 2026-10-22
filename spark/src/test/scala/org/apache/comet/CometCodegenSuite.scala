@@ -242,7 +242,7 @@ class CometCodegenSuite
     val input = new IntervalMonthDayNanoVector("in", CometArrowAllocator)
     val field =
       CometBatchKernelCodegen.toFfiArrowField("out", CalendarIntervalType, nullable = true)
-    val output = CometBatchKernelCodegen.allocateOutput(field, 2, 0)
+    val output = CometBatchKernelCodegen.allocateOutput(CometArrowAllocator, field, 2, 0)
     try {
       input.allocateNew()
       input.setSafe(0, 14, -3, 1234567000L)
@@ -290,7 +290,7 @@ class CometCodegenSuite
       val allocator =
         CometArrowAllocator.newChildAllocator(s"allocateOutput($dataType)", 0, Long.MaxValue)
       try {
-        CometBatchKernelCodegen.allocateOutput(field, 4, 0, allocator).close()
+        CometBatchKernelCodegen.allocateOutput(allocator, field, 4, 0).close()
         assert(
           allocator.getAllocatedMemory == 0,
           s"the $dataType output did not release all of its memory")
@@ -2699,7 +2699,10 @@ class CometCodegenSuite
       exprVec.setSafe(0, bytes)
       exprVec.setValueCount(1)
 
-      out = new CometScalaUDFCodegen().evaluate(Array(digestVec, exprVec, timeVec), 2)
+      out = new CometScalaUDFCodegen().evaluate(
+        CometArrowAllocator,
+        Array(digestVec, exprVec, timeVec),
+        2)
       val comet = CometVector.getVector(out.asInstanceOf[FieldVector], null)
       assert(comet.getLong(0) === 45296000000000L)
       assert(comet.isNullAt(1))
@@ -2735,7 +2738,7 @@ class CometCodegenSuite
         exprVec.allocateNew()
         exprVec.setSafe(0, bytes)
         exprVec.setValueCount(1)
-        out = dispatcher.evaluate(Array(digestVec, exprVec), n)
+        out = dispatcher.evaluate(CometArrowAllocator, Array(digestVec, exprVec), n)
         val comet = CometVector.getVector(out.asInstanceOf[FieldVector], null)
         (0 until n).map(comet.getLong)
       } finally {
@@ -2783,7 +2786,9 @@ class CometCodegenSuite
       val dispatcher = new CometScalaUDFCodegen()
       Seq(exprVec, nullExprVec).foreach { arg1 =>
         val out =
-          dispatcher.evaluate(Array(digestVec, arg1, input), 2).asInstanceOf[BigIntVector]
+          dispatcher
+            .evaluate(CometArrowAllocator, Array(digestVec, arg1, input), 2)
+            .asInstanceOf[BigIntVector]
         try {
           assert(out.get(0) === 42L)
           assert(out.isNull(1))
@@ -2793,7 +2798,7 @@ class CometCodegenSuite
       // The layout before the digest, with the serialized expression at arg 0, is refused
       // rather than taken for a digest.
       val e = intercept[IllegalArgumentException] {
-        dispatcher.evaluate(Array(exprVec, input), 2)
+        dispatcher.evaluate(CometArrowAllocator, Array(exprVec, input), 2)
       }
       assert(e.getMessage.contains("expression digest"), e.getMessage)
     } finally {

@@ -37,7 +37,10 @@ import org.apache.comet.vector.NativeUtil
  * from inside the call.
  */
 class ImportAllocatorProbeUdf extends CometUDF {
-  override def evaluate(inputs: Array[ValueVector], numRows: Int): ValueVector = {
+  override def evaluate(
+      allocator: BufferAllocator,
+      inputs: Array[ValueVector],
+      numRows: Int): ValueVector = {
     ImportAllocatorProbeUdf.inputAllocator = Some(inputs.head.getAllocator)
 
     // Allocated from the root: a UDF result is memory the JVM allocated.
@@ -61,7 +64,10 @@ object ImportAllocatorProbeUdf {
  * output would be charged to it and counted as imported memory.
  */
 class InputAllocatorOutputUdf extends CometUDF {
-  override def evaluate(inputs: Array[ValueVector], numRows: Int): ValueVector = {
+  override def evaluate(
+      allocator: BufferAllocator,
+      inputs: Array[ValueVector],
+      numRows: Int): ValueVector = {
     val out = new IntVector("out", inputs.head.getAllocator)
     out.allocateNew(numRows)
     (0 until numRows).foreach(row => out.setSafe(row, 7))
@@ -78,7 +84,10 @@ class InputAllocatorOutputUdf extends CometUDF {
  * producer allocated.
  */
 class IdentityUdf extends CometUDF {
-  override def evaluate(inputs: Array[ValueVector], numRows: Int): ValueVector = inputs.head
+  override def evaluate(
+      allocator: BufferAllocator,
+      inputs: Array[ValueVector],
+      numRows: Int): ValueVector = inputs.head
 }
 
 class CometUdfBridgeSuite extends AnyFunSuite {

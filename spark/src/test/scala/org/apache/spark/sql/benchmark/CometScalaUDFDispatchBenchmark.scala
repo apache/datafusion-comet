@@ -183,7 +183,11 @@ object CometScalaUDFDispatchBenchmark extends CometBenchmarkBase {
         kernel.init(0)
         val field = CometBatchKernelCodegen.toFfiArrowField("r", bound.dataType, bound.nullable)
         addBatchCase(s"generated kernel only, $param") { () =>
-          val out = CometBatchKernelCodegen.allocateOutput(field, batchRows, 0)
+          val out = CometBatchKernelCodegen.allocateOutput(
+            org.apache.comet.CometArrowAllocator,
+            field,
+            batchRows,
+            0)
           kernel.process(inputs, out, batchRows)
           out.setValueCount(batchRows)
           out
@@ -193,7 +197,7 @@ object CometScalaUDFDispatchBenchmark extends CometBenchmarkBase {
         val dispatcher = new CometScalaUDFCodegen
         val dispatchInputs: Array[ValueVector] = (leading :+ in).toArray
         addBatchCase(s"dispatcher evaluate, $param (${bytes.length}-byte expression)") { () =>
-          dispatcher.evaluate(dispatchInputs, batchRows)
+          dispatcher.evaluate(org.apache.comet.CometArrowAllocator, dispatchInputs, batchRows)
         }
         leading
       }

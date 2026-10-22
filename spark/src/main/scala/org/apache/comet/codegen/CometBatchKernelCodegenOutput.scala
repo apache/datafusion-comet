@@ -86,10 +86,10 @@ private[codegen] object CometBatchKernelCodegenOutput extends CometTypeShim {
    * Closes the vector on any failure so a partially-initialized tree doesn't leak buffers.
    */
   def allocateOutput(
+      allocator: BufferAllocator,
       field: Field,
       numRows: Int,
-      estimatedBytes: Int,
-      allocator: BufferAllocator): FieldVector = {
+      estimatedBytes: Int): FieldVector = {
     val vec: FieldVector = field.getType match {
       case _: ArrowType.List | _: ArrowType.LargeList | _: ArrowType.FixedSizeList =>
         val v = new RenamedListVector(field, allocator)
