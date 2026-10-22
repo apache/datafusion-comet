@@ -709,10 +709,10 @@ object CometIcebergNativeScan extends CometOperatorSerde[CometBatchScanExec] wit
     val exprClass = icebergExpr.getClass
     def call(method: String): Any =
       IcebergReflection.getMethod(exprClass, method).invoke(icebergExpr)
-    def convertChild(child: Any, underNot: Boolean) =
+    def convertChild(child: Any, underNot: Boolean, childAttributes: Map[String, Attribute]) =
       icebergExprToProto(
         child,
-        attributes,
+        childAttributes,
         pageIndexUnsupportedColumns,
         promotedColumns,
         underNot)
@@ -758,7 +758,8 @@ object CometIcebergNativeScan extends CometOperatorSerde[CometBatchScanExec] wit
                 None
               // Iceberg converts Spark's null-safe `id <=> 1` to `id = 1`, which Spark evaluates
               // to false for a NULL id and the native reader to NULL. Both reject the row, but
-              // for `NOT (id <=> 1)` Spark keeps it while the native reader still drops it.
+              // for `NOT (id <=> 1)` Spark keeps it while the native reader still drops it. A
+              // NOT_NULL conjunct of an enclosing AND makes the column non-nullable here.
               case EQ if underNot && attribute.nullable => None
               // Spark sorts every NaN above all numbers. The native row filter sorts negative NaNs
               // below them, and iceberg-rust prunes row groups on min/max statistics that can
@@ -777,8 +778,15 @@ object CometIcebergNativeScan extends CometOperatorSerde[CometBatchScanExec] wit
         }
       }
     } else if (exprClass.getName.endsWith(Constants.ExpressionTypes.AND)) {
-      val left = convertChild(call("left"), underNot)
-      val right = convertChild(call("right"), underNot)
+      // A row whose column is NULL fails a conjunct `NOT_NULL(column)`, so the whole AND is
+      // false in Spark and the native reader alike. The other conjuncts can then treat the column
+      // as non-nullable. Spark infers that conjunct for the columns a filter compares, so it keeps
+      // `c = false`, which Spark rewrites to `NOT c`, pushable on a nullable boolean.
+      val nonNullAttributes = attributes ++ notNullColumns(icebergExpr).flatMap { name =>
+        attributes.get(name).map(attribute => name -> attribute.withNullability(false))
+      }
+      val left = convertChild(call("left"), underNot, nonNullAttributes)
+      val right = convertChild(call("right"), underNot, nonNullAttributes)
       (left, right) match {
         // Push the residual only if it converts whole. Dropping a conjunct is safe in positive
         // position but strengthens the predicate under a NOT (De Morgan), which would wrongly
@@ -788,19 +796,42 @@ object CometIcebergNativeScan extends CometOperatorSerde[CometBatchScanExec] wit
         case _ => None
       }
     } else if (exprClass.getName.endsWith(Constants.ExpressionTypes.OR)) {
-      val left = convertChild(call("left"), underNot)
-      val right = convertChild(call("right"), underNot)
+      val left = convertChild(call("left"), underNot, attributes)
+      val right = convertChild(call("right"), underNot, attributes)
       // Dropping a disjunct would strengthen the predicate and wrongly prune, so require both.
       (left, right) match {
         case (Some(l), Some(r)) => Some(logicalPredicate(isAnd = false, l, r))
         case _ => None
       }
     } else if (exprClass.getName.endsWith(Constants.ExpressionTypes.NOT)) {
-      convertChild(call("child"), underNot = true).map(notPredicate)
+      convertChild(call("child"), underNot = true, attributes).map(notPredicate)
     } else {
       // Anything else, such as Expressions.alwaysTrue or alwaysFalse, or a node type a future
       // Iceberg introduces, carries no pushdown this serde can express.
       None
+    }
+  }
+
+  /** Columns that a `NOT_NULL` conjunct of this AND chain checks by bare reference. */
+  private def notNullColumns(icebergExpr: Any): Set[String] = {
+    val exprClass = icebergExpr.getClass
+    def call(method: String): Any =
+      IcebergReflection.getMethod(exprClass, method).invoke(icebergExpr)
+    val className = exprClass.getName
+    if (className.endsWith(Constants.ExpressionTypes.AND)) {
+      notNullColumns(call("left")) ++ notNullColumns(call("right"))
+    } else if (className.endsWith(Constants.ExpressionTypes.UNBOUND_PREDICATE)) {
+      val term = call("term")
+      val operation = call("op").toString
+      if ((operation == Constants.Operations.NOT_NULL ||
+          operation == Constants.Operations.IS_NOT_NULL) &&
+        term.getClass.getName.endsWith(Constants.ExpressionTypes.NAMED_REFERENCE)) {
+        Set(IcebergReflection.getMethod(term.getClass, "name").invoke(term).asInstanceOf[String])
+      } else {
+        Set.empty
+      }
+    } else {
+      Set.empty
     }
   }
 

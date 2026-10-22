@@ -315,6 +315,36 @@ class CometIcebergNativeScanSuite extends AnyFunSuite with Matchers {
       .nonEmpty shouldBe true
   }
 
+  test("a NOT_NULL conjunct lets equality on the same column convert under NOT") {
+    // A NULL value fails the AND in Spark and in the native reader alike, so the negated
+    // equality only sees non-NULL values. Spark writes `b = false` as `b IS NOT NULL AND NOT b`.
+    val eq = Expressions.equal("value", Integer.valueOf(1))
+    val lt = Expressions.lessThan("value", Integer.valueOf(5))
+    val notNull = Expressions.notNull("value")
+    for (residual <- Seq(
+        Expressions.and(notNull, Expressions.not(eq)),
+        Expressions.and(Expressions.and(lt, notNull), Expressions.not(eq)),
+        Expressions.and(notNull, Expressions.or(lt, Expressions.not(eq))),
+        Expressions.not(Expressions.and(notNull, eq)))) {
+      withClue(s"$residual: ") {
+        serialize(residual).nonEmpty shouldBe true
+      }
+    }
+    // The check must be a conjunct of an AND that encloses the equality.
+    val twoColumns = intColumn :+ AttributeReference("other", IntegerType)()
+    for (residual <- Seq(
+        Expressions.or(notNull, Expressions.not(eq)),
+        Expressions.and(Expressions.or(notNull, lt), Expressions.not(eq)),
+        Expressions.and(Expressions.not(notNull), Expressions.not(eq)),
+        Expressions.and(Expressions.notNull("other"), Expressions.not(eq)))) {
+      withClue(s"$residual: ") {
+        CometIcebergNativeScan
+          .serializeResidual(residual, twoColumns, Set.empty, Set.empty)
+          .isEmpty shouldBe true
+      }
+    }
+  }
+
   test("a transform residual is declined rather than read as its source column") {
     // UnboundTransform answers ref() with the source column, so converting the term like a bare
     // reference would push bucket(4, value) = 1 as value = 1 and drop matching rows.

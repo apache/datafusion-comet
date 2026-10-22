@@ -4303,7 +4303,8 @@ class CometIcebergNativeSuite
           }
           // Iceberg converts `id <=> 1` to an equality, which is false for a NULL id in Spark but
           // NULL in the native reader, so only its negation can drop the NULL row. Spark also
-          // writes that negation as IS DISTINCT FROM and, for booleans, IS NOT TRUE.
+          // writes that negation as IS DISTINCT FROM and, for booleans, IS NOT TRUE. A null
+          // check ANDed with it rejects the NULL row either way.
           val predicates = Seq(
             "NOT (id <=> 1)",
             "NOT (id <=> 1 AND id < 5)",
@@ -4311,11 +4312,24 @@ class CometIcebergNativeSuite
             "id IS DISTINCT FROM 1",
             "b IS NOT TRUE",
             "NOT b",
+            "b = false",
+            "id IS NOT NULL AND NOT (id <=> 1)",
             "NOT (id = 1)",
             "id != 1")
           for (predicate <- predicates;
             prefix <- Seq("", "l IS NOT NULL AND ")) {
             checkIcebergNativeScan(s"SELECT id FROM $table WHERE $prefix($predicate)")
+          }
+          // Spark writes `b = false` as `b IS NOT NULL AND NOT b`, so it is still pushed.
+          // Planning commonData leaks manifest streams on Iceberg versions before 1.8.0.
+          if (icebergVersionAtLeast(1, 8)) {
+            for (predicate <- Seq("b = false", "id IS NOT NULL AND NOT (id <=> 1)")) {
+              val (_, cometPlan) = checkSparkAnswer(s"SELECT id FROM $table WHERE $predicate")
+              val scans = collectIcebergNativeScans(cometPlan)
+              assert(scans.length == 1, s"$cometPlan")
+              val common = OperatorOuterClass.IcebergScanCommon.parseFrom(scans.head.commonData)
+              assert(common.getResidualPoolCount == 1, s"expected a pushed residual: $predicate")
+            }
           }
         } finally {
           spark.sql(s"DROP TABLE $table")
