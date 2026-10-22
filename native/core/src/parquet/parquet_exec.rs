@@ -2166,9 +2166,7 @@ mod tests {
     #[tokio::test]
     async fn equal_paths_in_two_stores_do_not_share_footers() {
         use crate::parquet::shared_metadata_cache::{SharedMetadataCaches, StageKey};
-        use datafusion::execution::cache::cache_manager::{
-            CacheManagerConfig, DEFAULT_METADATA_CACHE_LIMIT,
-        };
+        use datafusion::execution::cache::cache_manager::{CacheManagerConfig, FileMetadataCache};
         use datafusion::execution::runtime_env::RuntimeEnvBuilder;
 
         let location = object_store::path::Path::from("table/part-00000.parquet");
@@ -2197,14 +2195,11 @@ mod tests {
                 let runtime_env = match &task_env {
                     Some(env) => Arc::clone(env),
                     None => {
-                        let stage_cache = registry.cache_for(
-                            StageKey {
-                                app_id: "app-1".to_string(),
-                                stage_id: 0,
-                                stage_attempt: 0,
-                            },
-                            DEFAULT_METADATA_CACHE_LIMIT,
-                        );
+                        let stage_cache: Arc<FileMetadataCache> = registry.cache_for(StageKey {
+                            app_id: "app-1".to_string(),
+                            stage_id: 0,
+                            stage_attempt: 0,
+                        });
                         RuntimeEnvBuilder::new()
                             .with_cache_manager(
                                 CacheManagerConfig::default()
