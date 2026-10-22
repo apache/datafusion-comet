@@ -5600,4 +5600,89 @@ pub(crate) mod test {
             "expected duplicate field id error, got: {msg}"
         );
     }
+
+    /// A `binaryAsString` scan reads a column the file annotates as a string as Binary, so the
+    /// default adapter casts the column to Binary in a pushed filter. The adapter compares the
+    /// column with string literals instead, for `NOT IN` as for `IN`. It leaves the filter
+    /// unchanged when a literal is null or isn't valid UTF-8, since no string literal stands for it.
+    #[test]
+    fn binary_filter_on_annotated_string_compares_column_only_for_utf8_literals() {
+        use datafusion::physical_expr::expressions::{in_list, InListExpr};
+
+        fn s() -> Arc<dyn PhysicalExpr> {
+            Arc::new(Column::new("s", 0))
+        }
+        fn binary(bytes: Option<&[u8]>) -> Arc<dyn PhysicalExpr> {
+            Arc::new(Literal::new(ScalarValue::Binary(bytes.map(<[u8]>::to_vec))))
+        }
+
+        let logical = Arc::new(Schema::new(vec![Field::new("s", DataType::Binary, true)]));
+        let physical = Arc::new(Schema::new(vec![Field::new("s", DataType::Utf8, true)]));
+        let adapter = SparkPhysicalExprAdapterFactory::new(
+            SparkParquetOptions::new(EvalMode::Legacy, "UTC"),
+            None,
+        )
+        .create(Arc::clone(&logical), Arc::clone(&physical))
+        .unwrap();
+        let batch = RecordBatch::try_new(
+            Arc::clone(&physical),
+            vec![Arc::new(StringArray::from(vec![
+                Some("one"),
+                Some("two"),
+                None,
+            ]))],
+        )
+        .unwrap();
+        let s_eq = |bytes: Option<&[u8]>| -> Arc<dyn PhysicalExpr> {
+            Arc::new(BinaryExpr::new(s(), Operator::Eq, binary(bytes)))
+        };
+        let s_in = |values: Vec<Option<&[u8]>>, negated: bool| {
+            let values = values.into_iter().map(binary).collect();
+            in_list(s(), values, &negated, &logical).unwrap()
+        };
+        let one = Some(b"one".as_slice());
+        let invalid = Some(b"\xff".as_slice());
+
+        // Each case gives whether the rewritten filter compares the column itself, and its result.
+        let cases = [
+            (
+                "NOT IN",
+                s_in(vec![one], true),
+                true,
+                [Some(false), Some(true), None],
+            ),
+            (
+                "invalid UTF-8",
+                s_eq(invalid),
+                false,
+                [Some(false), Some(false), None],
+            ),
+            ("null", s_eq(None), false, [None, None, None]),
+            (
+                "IN with invalid UTF-8",
+                s_in(vec![one, invalid], false),
+                false,
+                [Some(true), Some(false), None],
+            ),
+        ];
+        for (name, filter, compares_column, expected) in cases {
+            let rewritten = adapter.rewrite(filter).unwrap();
+            let operand = match rewritten.downcast_ref::<InListExpr>() {
+                Some(list) => list.expr(),
+                None => rewritten.downcast_ref::<BinaryExpr>().unwrap().left(),
+            };
+            assert_eq!(
+                operand.downcast_ref::<Column>().is_some(),
+                compares_column,
+                "{name}"
+            );
+            let result = rewritten.evaluate(&batch).unwrap();
+            let result = result.into_array(batch.num_rows()).unwrap();
+            assert_eq!(
+                result.as_boolean().iter().collect::<Vec<_>>(),
+                expected,
+                "{name}"
+            );
+        }
+    }
 }
