@@ -33,13 +33,8 @@ import org.apache.spark.sql.functions.{col, sum}
 import org.apache.comet.CometS3TestBase
 
 /**
- * End-to-end MinIO tests for Hadoop's `ProfileAWSCredentialsProvider` on the native Parquet path
- * with no `comet.credential.provider.class` configured. The native store picks
- * [[HadoopS3ACredentialProviderAdapter]] on its own, so Hadoop reads the profile.
- *
- * The credentials file holds wrong keys under `[default]` and the MinIO keys under the named
- * profile, so a read that ignored the profile name fails. Spark's own S3A writes and lists
- * through the same profile.
+ * MinIO tests for Hadoop's `ProfileAWSCredentialsProvider` on the native Parquet path with no
+ * Comet provider class set. `[default]` holds wrong keys, so ignoring the profile name fails.
  */
 class HadoopProfileCredentialsProviderSuite extends CometS3TestBase with AdaptiveSparkPlanHelper {
 
@@ -51,11 +46,7 @@ class HadoopProfileCredentialsProviderSuite extends CometS3TestBase with Adaptiv
 
   private var credentialsFile: Path = _
 
-  /**
-   * Written before the base class starts MinIO and Spark, so a failure here aborts only this
-   * suite and leaks nothing. The test JVM's java.io.tmpdir may not exist yet, so it is created
-   * first; `Files.createTempFile` gives the file owner-only permissions.
-   */
+  /** Runs before MinIO starts so a failure leaks nothing; java.io.tmpdir may not exist yet. */
   private def writeCredentialsFile(): Path = {
     val dir = Files.createDirectories(Paths.get(System.getProperty("java.io.tmpdir")))
     val file = Files.createTempFile(dir, "comet-profile-credentials", ".ini")

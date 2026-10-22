@@ -52,9 +52,9 @@ use std::{
 ///
 /// When the configured `CometS3CredentialProvider` implements
 /// `CometS3LocationScopedCredentialProvider`, the store is a [`LocationScopedObjectStore`] that
-/// serves each of the provider's policy locations with its own credential. With no provider
-/// class configured, a bucket whose provider list names Hadoop's `ProfileAWSCredentialsProvider`
-/// uses the built-in `HadoopS3ACredentialProviderAdapter`.
+/// serves each of the provider's policy locations with its own credential.
+/// With no provider class configured, a bucket whose provider list names Hadoop's
+/// `ProfileAWSCredentialsProvider` uses the built-in `HadoopS3ACredentialProviderAdapter`.
 ///
 /// # Arguments
 ///
@@ -89,8 +89,8 @@ pub fn create_store(
         Some(provider_class) => {
             // Parquet path: forward the full fs.s3a.* config subset so the SPI provider sees the
             // same config Spark would (e.g. the built-in adapters read fs.s3a.aws.credentials.provider
-            // and any static keys a chain resolves through). Only built when a bridge is used.
-            // See s3-credential-provider-design.md.
+            // and any static keys a chain resolves through). Only built when a bridge is actually
+            // used. See s3-credential-provider-design.md.
             let forwarded_props = forward_catalog_properties(configs);
             // Fail rather than fall back to the default chain, which could resolve to the wrong
             // identity for a user who explicitly named a provider.
@@ -332,10 +332,8 @@ pub async fn resolve_bucket_region(bucket: &str) -> Result<String, Box<dyn Error
     Ok(region)
 }
 
-/// The HeadBucket URL for `bucket` on the global endpoint. A bucket the AWS SDK would not
-/// virtual-host (see `is_virtual_hostable_bucket`) is probed path-style, since a dotted host
-/// falls outside S3's wildcard certificate and a hostname would lowercase a mixed-case bucket
-/// into a different one.
+/// HeadBucket URL on the global endpoint. A bucket the SDK would not virtual-host goes in the
+/// path, since a hostname would lowercase a mixed-case legacy name into a different bucket.
 fn region_probe_url(bucket: &str) -> String {
     if is_virtual_hostable_bucket(bucket, false) {
         format!("https://{bucket}.s3.amazonaws.com")
@@ -367,16 +365,13 @@ fn extract_s3_config_options(
         s3_configs.insert(AmazonS3ConfigKey::Region, region.to_string());
     }
 
-    // Hadoop defaults fs.s3a.path.style.access to false, which means virtual-hosted addressing,
-    // and treats non-boolean text as that default. object_store expects the inverse flag.
+    // Extract and handle path style access (virtual hosted style)
+    // Hadoop reads anything but "true" as false (virtual-hosted); object_store takes the inverse.
     let path_style_access = get_config_trimmed(configs, bucket, "path.style.access")
         .is_some_and(|value| value.eq_ignore_ascii_case("true"));
     let mut virtual_hosted_style_request = !path_style_access;
 
-    // Extract endpoint configuration and shape it for the selected addressing style. The flag is
-    // taken from the normalized result so the endpoint and the flag never disagree. A custom
-    // endpoint decides the bucket-name rule by its own scheme inside normalize_endpoint; the
-    // default AWS endpoint is HTTPS, so the rule applies to it here without dots.
+    // Extract endpoint configuration and modify if virtual hosted style is enabled
     let custom_endpoint = get_config_trimmed(configs, bucket, "endpoint")
         .and_then(|endpoint| normalize_endpoint(endpoint, bucket, virtual_hosted_style_request));
     match custom_endpoint {
@@ -385,6 +380,7 @@ fn extract_s3_config_options(
             s3_configs.insert(AmazonS3ConfigKey::Endpoint, normalized.endpoint);
         }
         None => {
+            // The default endpoint is HTTPS, where the SDK allows no dots
             if !is_virtual_hostable_bucket(bucket, false) {
                 virtual_hosted_style_request = false;
             }
@@ -407,12 +403,9 @@ fn extract_s3_config_options(
     s3_configs
 }
 
-/// Whether the AWS SDK would virtual-host `bucket`, following its `isVirtualHostableS3Bucket`
-/// endpoint rule: 3 to 63 lowercase letters, digits and hyphens that start and end with a letter
-/// or digit. Other names, such as mixed-case legacy buckets, are addressed path-style, since a
-/// hostname is case-insensitive. The SDK allows dots only over plain HTTP, since a dotted host
-/// falls outside S3's wildcard certificate, and then rejects an IPv4-shaped name and a dot or
-/// hyphen next to another.
+/// Mirrors the AWS SDK's `isVirtualHostableS3Bucket`: 3 to 63 lowercase letters, digits and
+/// hyphens that start and end with a letter or digit. Dots only over plain HTTP, since a dotted
+/// host falls outside S3's wildcard certificate, and then no IPv4 shape or adjacent separators.
 fn is_virtual_hostable_bucket(bucket: &str, allow_dots: bool) -> bool {
     let bytes = bucket.as_bytes();
     let edge = |b: &u8| b.is_ascii_lowercase() || b.is_ascii_digit();
@@ -434,16 +427,13 @@ fn is_virtual_hostable_bucket(bucket: &str, allow_dots: bool) -> bool {
     !(allow_dots && (ipv4_shaped || separators_touch))
 }
 
-/// An endpoint shaped for object_store together with the addressing mode it was shaped for.
+/// An endpoint and the addressing mode it was shaped for, so the two never disagree.
 #[derive(Debug, Clone, PartialEq)]
 struct NormalizedEndpoint {
     endpoint: String,
     virtual_hosted_style_request: bool,
 }
 
-/// Shapes a Hadoop `fs.s3a.endpoint` value into the endpoint object_store expects: for
-/// virtual-hosted requests the bucket becomes the leading host label (`scheme://bucket.host[:port]`),
-/// while for path-style requests object_store appends `/bucket` itself so the value passes through.
 fn normalize_endpoint(
     endpoint: &str,
     bucket: &str,
@@ -472,6 +462,7 @@ fn normalize_endpoint(
             virtual_hosted_style_request: false,
         })
     };
+    // Path-style endpoints pass through, since object_store appends `/bucket` itself.
     if !virtual_hosted_style_request {
         return path_style(endpoint);
     }
@@ -479,13 +470,11 @@ fn normalize_endpoint(
         return path_style(endpoint);
     }
 
-    // Fall back to the endpoint as written when it cannot be parsed so object_store reports
-    // the malformed value instead of a mangled one
+    // Pass an unparseable endpoint through so object_store reports it as written
     let Ok(url) = Url::parse(&endpoint) else {
         return path_style(endpoint);
     };
-    // The AWS SDK endpoint rules address IP-literal hosts path-style since `bucket.127.0.0.1` is
-    // not a valid host. Hadoop does not special-case `localhost`, so neither does this.
+    // The AWS SDK addresses IP-literal hosts path-style; like Hadoop, `localhost` is not special
     let host = match url.host() {
         Some(Host::Domain(host)) => host,
         _ => return path_style(endpoint),
@@ -551,12 +540,10 @@ pub(super) const NATIVE_S3A_CONFIG_PROPERTIES: &[&str] = &[
 /// Per-bucket override is honored via [`get_config_trimmed`].
 const PROVIDER_CLASS_PROPERTY: &str = "comet.credential.provider.class";
 
-/// The built-in adapter that builds Hadoop S3A's own provider list on the executor.
 const HADOOP_S3A_ADAPTER: &str = "org.apache.comet.cloud.s3.HadoopS3ACredentialProviderAdapter";
 
-/// The `CometS3CredentialProvider` class for `bucket`: the configured one, else the Hadoop
-/// adapter when the bucket's provider list names Hadoop's profile provider, so Hadoop resolves
-/// the profile as it does for Spark. A configured blank value means no bridge.
+/// The configured class, else the Hadoop adapter when the provider list names Hadoop's profile
+/// provider, which the native reader cannot resolve. A blank configured class means no bridge.
 fn lookup_provider_class<'a>(
     configs: &'a HashMap<String, String>,
     bucket: &str,
@@ -1434,8 +1421,6 @@ mod tests {
 
     #[test]
     fn test_region_probe_url() {
-        // Only a DNS-label bucket is probed virtual-hosted; any other name goes in the path
-        // with its case kept
         let short = "ab";
         let longest = "a".repeat(63);
         let too_long = "a".repeat(64);
@@ -1590,7 +1575,6 @@ mod tests {
         let suffixed = format!("{HADOOP_PROFILE}2");
         let without_profile = format!("{HADOOP_SIMPLE},{AWS_ENVIRONMENT}");
         type Properties<'a> = Vec<(&'a str, &'a str)>;
-        // (label, properties, expected class)
         let cases: Vec<(&str, Properties, Option<&str>)> = vec![
             (
                 "list names the profile provider",
@@ -2054,8 +2038,7 @@ mod tests {
     #[test]
     #[cfg_attr(miri, ignore)] // AWS credential providers call foreign functions
     fn test_opted_out_bucket_rejects_hadoop_profile_provider() {
-        // A blank provider class keeps the native reader, which cannot read Hadoop's profile
-        // provider, so the store fails rather than resolving another identity.
+        // Failing is safer than letting the native chain resolve a different identity
         let url = Url::parse("s3a://test-bucket/data.parquet").unwrap();
         let configs = TestConfigBuilder::new()
             .with_credential_provider(HADOOP_PROFILE)
@@ -2619,8 +2602,6 @@ mod tests {
 
     #[test]
     fn test_normalize_endpoint_virtual_hosted_style() {
-        // Virtual-hosted addressing inserts the bucket as the leading host label. The scheme,
-        // port and any path suffix are preserved and a trailing slash is dropped.
         let cases = [
             (
                 "custom.endpoint.com",
@@ -2666,8 +2647,6 @@ mod tests {
             );
         }
 
-        // A dotted bucket over HTTPS stays path-style, as the AWS SDK addresses it, since the
-        // dotted host falls outside S3's wildcard certificate; over HTTP it is virtual-hosted.
         assert_eq!(
             normalize_endpoint("custom.endpoint.com", "my.dotted.bucket", true),
             Some(NormalizedEndpoint {
@@ -2686,8 +2665,6 @@ mod tests {
 
     #[test]
     fn test_normalize_endpoint_path_style() {
-        // Path-style leaves the endpoint as configured apart from the https default, since
-        // object_store appends the bucket itself
         let cases = [
             ("custom.endpoint.com", "https://custom.endpoint.com"),
             ("http://custom.endpoint.com", "http://custom.endpoint.com"),
@@ -2731,8 +2708,6 @@ mod tests {
 
     #[test]
     fn test_normalize_endpoint_ip_host_forces_path_style() {
-        // The AWS SDK endpoint rules address IP-literal hosts path-style whatever the
-        // configuration says, since `bucket.127.0.0.1` is not a valid host
         let cases = [
             ("http://127.0.0.1:9000", "http://127.0.0.1:9000"),
             ("http://127.0.0.1", "http://127.0.0.1"),
@@ -2773,9 +2748,8 @@ mod tests {
         }
     }
 
-    /// The URL object_store sends a GET for `s3a://<bucket>/object` to, from a store built the way
-    /// `create_store` builds one and read from a presigned URL so no request leaves the test.
-    /// `configs` must set a region, so creating the store never probes for one.
+    /// The URL a GET for `s3a://<bucket>/object` goes to, read from a presigned URL so no request
+    /// leaves the test.
     async fn final_url(bucket: &str, configs: &HashMap<String, String>) -> String {
         use object_store::signer::Signer;
 
@@ -2817,11 +2791,6 @@ mod tests {
     #[tokio::test]
     #[cfg_attr(miri, ignore)] // object_store calls foreign functions
     async fn test_extract_s3_config_final_url() {
-        // Hadoop defaults fs.s3a.path.style.access to false (virtual-hosted) and, like
-        // Configuration.getBoolean, falls back to that default for non-boolean text. A bucket
-        // the AWS SDK cannot virtual-host goes path-style whatever the flag says: one that is
-        // not 3 to 63 lowercase letters, digits and hyphens starting and ending with a letter or
-        // digit, or a dotted one over HTTPS. So does an IP-literal endpoint host.
         let endpoint = "fs.s3a.endpoint";
         let path_style = "fs.s3a.path.style.access";
         let custom = (endpoint, "custom.endpoint.com");
@@ -2844,9 +2813,7 @@ mod tests {
             ("fs.s3a.bucket.ps-bucket.path.style.access", "true"),
         ];
         type Properties<'a> = Vec<(&'a str, &'a str)>;
-        // (properties on top of the us-east-1 region, bucket, expected URL)
         let cases: Vec<(Properties, &str, &str)> = vec![
-            // Default endpoint, including the Hadoop default value and an empty one
             (
                 vec![],
                 "test-bucket",
@@ -2893,7 +2860,6 @@ mod tests {
                 "https://s3.us-east-1.amazonaws.com/legacy-bucket-/object",
             ),
             (vec![], long.as_str(), long_url.as_str()),
-            // Custom HTTPS endpoint with the flag unset, false, invalid and true
             (
                 vec![custom],
                 "test-bucket",
@@ -2905,7 +2871,7 @@ mod tests {
                 "https://test-bucket.custom.endpoint.com/object",
             ),
             (
-                vec![custom, (path_style, "yes")],
+                vec![custom, (path_style, "yes")], // non-boolean text
                 "test-bucket",
                 "https://test-bucket.custom.endpoint.com/object",
             ),
@@ -2919,7 +2885,6 @@ mod tests {
                 "test-bucket",
                 "https://custom.endpoint.com/test-bucket/object",
             ),
-            // HTTP endpoints keep their scheme and port
             (
                 vec![minio, (path_style, "false")],
                 "test-bucket",
@@ -2930,8 +2895,7 @@ mod tests {
                 "test-bucket",
                 "http://minio.internal:9000/test-bucket/object",
             ),
-            // Over plain HTTP the SDK also accepts dots, but not an IPv4-shaped name, a dot next
-            // to a hyphen or an uppercase letter
+            // Plain HTTP allows dots, but not an IPv4 shape, `-.` or uppercase
             (
                 vec![http],
                 "my.dotted.bucket",
@@ -2952,7 +2916,6 @@ mod tests {
                 "LegacyBucket",
                 "http://storage.example.test/LegacyBucket/object",
             ),
-            // IP-literal hosts
             (
                 vec![(endpoint, "http://127.0.0.1:9000")],
                 "test-bucket",
@@ -2963,7 +2926,6 @@ mod tests {
                 "test-bucket",
                 "http://[::1]/test-bucket/object",
             ),
-            // A bucket overrides the endpoint and the flag in either direction
             (
                 vh_bucket_override.clone(),
                 "vh-bucket",

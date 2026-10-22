@@ -44,9 +44,7 @@ import static org.junit.Assume.assumeTrue;
  * Offline test of the v2 Hadoop adapter: delegating to Hadoop's {@code
  * SimpleAWSCredentialsProvider} with static keys resolves without any network. The unit test
  * supplies the {@code fs.s3a.*} map directly (the end-to-end forwarding is covered by the MinIO
- * bridge suite). The profile tests point Hadoop's {@code ProfileAWSCredentialsProvider} at
- * temporary credentials files, so they never read the developer's own AWS files, and are skipped on
- * hadoop-aws releases older than 3.4.2.
+ * bridge suite).
  */
 public class HadoopS3ACredentialProviderAdapterTest {
 
@@ -75,7 +73,6 @@ public class HadoopS3ACredentialProviderAdapterTest {
     }
   }
 
-  /** Hadoop's profile provider first shipped in hadoop-aws 3.4.2. */
   private static void assumeProfileProviderAvailable() {
     boolean available;
     try {
@@ -87,7 +84,6 @@ public class HadoopS3ACredentialProviderAdapterTest {
     assumeTrue("needs hadoop-aws 3.4.2 or later", available);
   }
 
-  /** Writes an owner-only temporary file, deleted after the test, and returns its path. */
   private String writeTempFile(String content) throws Exception {
     Path file = Files.createTempFile("comet-credentials", ".ini");
     tempFiles.add(file);
@@ -95,7 +91,6 @@ public class HadoopS3ACredentialProviderAdapterTest {
     return file.toAbsolutePath().toString();
   }
 
-  /** A credentials file with a default profile and an {@code analytics} profile. */
   private String writeCredentialsFile() throws Exception {
     return writeTempFile(
         "[default]\n"
@@ -224,9 +219,8 @@ public class HadoopS3ACredentialProviderAdapterTest {
 
   @Test
   public void resolvesNamedProfileFromConfiguredFile() throws Exception {
-    // Comet forwards the per-bucket profile keys as written; the adapter promotes them the way
-    // S3AFileSystem does, so Hadoop's provider reads the named profile from the named file. The
-    // global file holds decoy keys under the same profile name, so the per-bucket file must win.
+    // The adapter promotes per-bucket keys as S3AFileSystem does, so the per-bucket file must
+    // beat the global one, which holds decoy keys under the same profile name.
     assumeProfileProviderAvailable();
     String decoyFile =
         writeTempFile(
@@ -247,7 +241,6 @@ public class HadoopS3ACredentialProviderAdapterTest {
 
   @Test
   public void profileProviderFallsThroughHadoopList() throws Exception {
-    // A profile missing from the file fails that entry, and Hadoop's list moves on to the next.
     assumeProfileProviderAvailable();
     Map<String, String> props = new HashMap<>();
     props.put(
