@@ -58,13 +58,16 @@ class CometCelebornShuffleReaderSuite extends CometTestBase {
 
   import testImplicits._
 
-  private def frameBytes(payload: Byte*): Array[Byte] = ByteBuffer
-    .allocate(20 + payload.size)
+  private def frameBytes(payload: Byte*): Array[Byte] = frameArray(payload.toArray)
+
+  // Takes an Array because passing one to a varargs parameter copies it on Scala 2.13 and warns.
+  private def frameArray(payload: Array[Byte]): Array[Byte] = ByteBuffer
+    .allocate(20 + payload.length)
     .order(ByteOrder.LITTLE_ENDIAN)
-    .putLong(12L + payload.size)
+    .putLong(12L + payload.length)
     .putLong(0L)
     .put(Array[Byte](78, 79, 78, 69)) // NONE codec; raw-reader tests need only a framed payload.
-    .put(payload.toArray)
+    .put(payload)
     .array()
 
   private final class TrackingInputStream(bytes: Array[Byte])
@@ -1143,7 +1146,7 @@ class CometCelebornShuffleReaderSuite extends CometTestBase {
           0,
           java.util.Collections.singleton[Object]("worker"))
         client.streams.put(0, new ByteArrayInputStream(frames.next()))
-        val metrics = context.taskMetrics.createTempShuffleReadMetrics()
+        val metrics = context.taskMetrics().createTempShuffleReadMetrics()
         val partitions = new CelebornRawPartitionReader(
           client,
           dependency.shuffleId,
@@ -1239,7 +1242,7 @@ class CometCelebornShuffleReaderSuite extends CometTestBase {
         writer.end()
         output.toByteArray
       } finally writer.close()
-    val frame = frameBytes(payload: _*)
+    val frame = frameArray(payload)
     ByteBuffer
       .wrap(frame)
       .order(ByteOrder.LITTLE_ENDIAN)
@@ -1529,7 +1532,7 @@ class CometCelebornShuffleReaderSuite extends CometTestBase {
       .toSeq
     assert(positions.size == 1)
     ByteBuffer.wrap(payload).order(ByteOrder.LITTLE_ENDIAN).putInt(positions.head + 8, 2)
-    val frame = frameBytes(payload: _*)
+    val frame = frameArray(payload)
     ByteBuffer.wrap(frame).order(ByteOrder.LITTLE_ENDIAN).putLong(8, 1L)
     val attributes = Seq(AttributeReference("value", StringType)())
 

@@ -1868,6 +1868,9 @@ class DetectionDelegatingFileIO extends FileIO with HadoopConfigurable {
   // No `override` modifier: `Configurable.getConf` exists on some supported Iceberg versions
   // (e.g. 1.8.1) and not others, and a plain def satisfies both shapes.
   def getConf: Configuration = delegate.getConf
+  // Deprecated in newer Iceberg versions. Marking the override deprecated silences the warning
+  // for the call to the deprecated delegate method inside it.
+  @deprecated("Iceberg deprecated HadoopFileIO.serializeConfWith", "")
   override def serializeConfWith(
       confSerializer: java.util.function.Function[
         Configuration,

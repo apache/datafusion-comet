@@ -27,6 +27,7 @@ import org.apache.spark.SparkConf
 import org.apache.spark.sql.{CometTestBase, DataFrame, Row}
 import org.apache.spark.sql.comet.CometNativeColumnarToRowExec
 import org.apache.spark.sql.comet.CometNativeScanExec
+import org.apache.spark.sql.comet.shims.ShimSparkErrorCondition.errorCondition
 import org.apache.spark.sql.comet.util.Utils
 import org.apache.spark.sql.execution.{ColumnarToRowExec, CommandResultExec, ProjectExec, SparkPlan}
 import org.apache.spark.sql.execution.command.DataWritingCommandExec
@@ -195,7 +196,7 @@ class CometVariantProjectionSuite extends CometTestBase {
           assert(
             causes
               .collect { case e: org.apache.spark.SparkThrowable =>
-                e.getErrorClass
+                errorCondition(e)
               }
               .contains("MALFORMED_VARIANT"))
         }

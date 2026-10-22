@@ -809,8 +809,13 @@ private[shuffle] final class CelebornShuffleGenerationCoordinator(
 
   private def invalidateOwners(shuffleId: Int): Unit = {
     generationEpochs.update(shuffleId, currentEpoch(shuffleId) + 1L)
-    claimOwners.retain { case ((ownerShuffleId, _, _, _), _) => ownerShuffleId != shuffleId }
-    deniedAttempts.retain { case ((ownerShuffleId, _, _, _), _) => ownerShuffleId != shuffleId }
+    dropOwners(shuffleId)
+  }
+
+  // `retain` is deprecated on Scala 2.13 and `filterInPlace` does not exist on 2.12.
+  private def dropOwners(shuffleId: Int): Unit = {
+    claimOwners --= claimOwners.keys.filter(_._1 == shuffleId).toList
+    deniedAttempts --= deniedAttempts.keys.filter(_._1 == shuffleId).toList
   }
 
   private def attemptCanRun(
@@ -1077,10 +1082,7 @@ private[shuffle] final class CelebornShuffleGenerationCoordinator(
     generations.remove(shuffleId)
     invalidatedGenerations.remove(shuffleId)
     generationEpochs.remove(shuffleId)
-    claimOwners.retain { case ((ownerShuffleId, _, _, _), _) => ownerShuffleId != shuffleId }
-    val _ = deniedAttempts.retain { case ((ownerShuffleId, _, _, _), _) =>
-      ownerShuffleId != shuffleId
-    }
+    dropOwners(shuffleId)
   }
 }
 

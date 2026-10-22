@@ -21,7 +21,7 @@ package org.apache.spark.sql.comet.execution.arrow
 
 import java.lang.{Boolean => JBoolean, Byte => JByte, Double => JDouble, Float => JFloat, Integer => JInteger, Long => JLong, Short => JShort}
 
-import scala.collection.JavaConverters._
+import scala.jdk.CollectionConverters._
 
 import org.apache.spark.TaskContext
 import org.apache.spark.rdd.RDD

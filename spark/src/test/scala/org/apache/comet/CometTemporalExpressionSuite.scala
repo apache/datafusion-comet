@@ -26,6 +26,7 @@ import org.apache.spark.sql.{CometTestBase, DataFrame, Row, SaveMode}
 import org.apache.spark.sql.catalyst.analysis.UnresolvedAttribute
 import org.apache.spark.sql.catalyst.expressions.{Days, Hours, Literal}
 import org.apache.spark.sql.catalyst.util.DateTimeUtils
+import org.apache.spark.sql.comet.shims.ShimSparkErrorCondition.errorCondition
 import org.apache.spark.sql.execution.adaptive.AdaptiveSparkPlanHelper
 import org.apache.spark.sql.functions.col
 import org.apache.spark.sql.internal.SQLConf
@@ -78,7 +79,7 @@ class CometTemporalExpressionSuite extends CometTestBase with AdaptiveSparkPlanH
           val actual = deepestSparkThrowable(cometFailure)
 
           assert(actual.getClass == expected.getClass)
-          assert(actual.getErrorClass == expected.getErrorClass)
+          assert(errorCondition(actual) == errorCondition(expected))
           assert(actual.getSqlState == expected.getSqlState)
           assert(actual.getMessageParameters == expected.getMessageParameters)
           assert(actual.getMessage == expected.getMessage)

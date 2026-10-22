@@ -210,7 +210,13 @@ class CometTPCDSQueryTestSuite extends QueryTest with TPCDSBase with CometSQLQue
       allJoinConfCombinations.contains(conf),
       s"Join configurations [$conf] should be one of $allJoinConfCombinations"))
 
-  if (tpcdsDataPath.nonEmpty) {
+  /**
+   * Registers the TPC-DS tests. A subclass that overrides `tpcdsQueries` must call this at the
+   * end of its own body, once its overrides are initialized. Calling it from this class's
+   * constructor would see them as null, which previously required an early initializer in the
+   * subclass.
+   */
+  protected def registerTpcdsQueryTests(): Unit = if (tpcdsDataPath.nonEmpty) {
     tpcdsQueries.foreach { name =>
       val queryString = resourceToString(
         s"tpcds/$name.sql",
