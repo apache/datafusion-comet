@@ -758,7 +758,6 @@ class NativeConfigSuite extends AnyFunSuite with Matchers {
     NativeConfig.displayAuthority(
       new URI("ABFSS://data:SECRET@acct.dfs.core.windows.net:8443/p?sig=SAS-MARKER")) shouldBe
       "abfss://data@acct.dfs.core.windows.net:8443"
-    // A path without a scheme is local, as in objectStoreKey.
     NativeConfig.displayAuthority(new URI("/tmp/t/k.parquet")) shouldBe "file://"
   }
 

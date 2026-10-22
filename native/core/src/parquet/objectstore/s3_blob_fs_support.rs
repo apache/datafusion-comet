@@ -78,8 +78,7 @@ pub(crate) fn normalize_object_store_url(
     object_store_configs: &HashMap<String, String>,
 ) -> Result<NormalizedObjectStoreUrl, ExecutionError> {
     let url = Url::parse(url_str).map_err(|e| {
-        // `url_str` may carry credentials, so only a valid scheme is named. `ParseError` names
-        // the problem without quoting the input.
+        // `url_str` may carry credentials; `ParseError` does not quote it.
         let message = match scheme_of_unparsed(url_str) {
             Some(scheme) => format!("Error parsing {scheme} URL: {e}"),
             None => format!("Error parsing URL: {e}"),
@@ -332,11 +331,10 @@ mod tests {
             "{err}"
         );
         assert!(!err.contains("alice") && !err.contains("SECRET"), "{err}");
-        // The text before `://` is not a scheme, so none of the input is echoed.
+        // A leading digit, then an '@': neither is a scheme, so none of the input is echoed.
         let err = error("1alice:SECRET@host://x");
         assert!(err.contains("Error parsing URL: "), "{err}");
         assert!(!err.contains("alice") && !err.contains("SECRET"), "{err}");
-        // Starts like a scheme, but '@' is not a scheme character.
         let err = error("alice@host://x");
         assert!(err.contains("Error parsing URL: "), "{err}");
         assert!(!err.contains("alice") && !err.contains("host"), "{err}");

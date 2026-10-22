@@ -689,10 +689,9 @@ fn uses_azure_container_key(scheme: &str) -> bool {
         || scheme.starts_with("abfss+comet-")
 }
 
-/// `host[:port]` of `url`, prefixed with `container@` for ABFS, which encodes the container in
-/// the username. Never includes the password.
 pub(crate) fn object_store_authority(url: &Url) -> Cow<'_, str> {
     if uses_azure_container_key(url.scheme()) {
+        // ABFS URLs encode the container in the userinfo.
         authority_without_password(url)
     } else {
         Cow::Borrowed(&url[url::Position::BeforeHost..url::Position::AfterPort])
@@ -1206,7 +1205,7 @@ mod tests {
             "http://example.com/path",
             "https://example.com/path",
             "https://account.blob.core.windows.net/container/path",
-            // Userinfo and query are stripped before parsing and do not change the class.
+            // Stripping the credentials before parsing must not change the class.
             "s3://alice:SECRET@bucket/path?sig=SAS-MARKER",
             "abfss://data:SECRET@acct.dfs.core.windows.net/path?sig=SAS-MARKER",
             "https://alice:SECRET@account.blob.core.windows.net/container/path?sig=SAS-MARKER",
@@ -1882,18 +1881,15 @@ mod tests {
             ("fs.azure.account.key".into(), "c2VjcmV0".into()),
         ]);
         let errors: Vec<(String, &str)> = [
-            // Rejected by the Azure builder, which recognises only public cloud and Fabric hosts.
-            // The username is the container here, so it may appear.
+            // The Azure builder recognises only public cloud and Fabric hosts.
             (
                 "abfss://data:SECRET@acct.dfs.core.chinacloudapi.cn/x?sig=SAS-MARKER",
                 "URL did not match any known pattern",
             ),
-            // Rejected by `ObjectStoreScheme::parse`.
             (
                 "foo://alice:SECRET@host/x?sig=SAS-MARKER",
                 "Unable to recognise URL",
             ),
-            // Rejected by `Url::parse`.
             (
                 "s3a://alice:SECRET@bucket:notaport/x?sig=SAS-MARKER",
                 "invalid port number",
@@ -1927,8 +1923,7 @@ mod tests {
         assert!(leaks.is_empty(), "credentials echoed: {leaks:#?}");
     }
 
-    /// The ABFS password stays out of the cache key and registration URL, so two URLs that
-    /// differ only by password share one store. The container stays in both.
+    /// Credentials come from the configuration, so the key keeps the container but no password.
     #[test]
     fn abfs_password_stays_out_of_store_identity() {
         use datafusion::execution::runtime_env::RuntimeEnvBuilder;

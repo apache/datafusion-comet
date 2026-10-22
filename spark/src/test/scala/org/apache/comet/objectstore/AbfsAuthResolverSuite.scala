@@ -344,7 +344,6 @@ class AbfsAuthResolverSuite extends AnyFunSuite with Matchers {
   }
 
   test("Failed - the forwarded message drops the URI's password, path and query") {
-    // Hadoop reads the container as everything before the first '@', password included.
     val shortUri = new URI("abfss://data:SECRET@myacct/path?sig=SAS-MARKER")
     val outcome = resolve(conf("fs.azure.account.key.myacct" -> "c2VjcmV0"), shortUri)
     outcome shouldBe a[Failed]
@@ -354,8 +353,7 @@ class AbfsAuthResolverSuite extends AnyFunSuite with Matchers {
   }
 
   test("Failed - a forwarded message is scrubbed of the URI's password and query") {
-    // ClassNotFoundException is forwarded verbatim, so its message stands in for a Hadoop one
-    // that quotes the URI.
+    // Forwarded verbatim, so it stands in for a Hadoop message that quotes the URI.
     val secretUri = new URI(s"abfss://data:the-uri-password@$account/p?sig=the-sas-signature")
     val thrown = new ClassNotFoundException(s"no class for $secretUri")
     val message = toOptions(resolve(conf(), secretUri, Failure(thrown)))(Markers.ERROR_MESSAGE)

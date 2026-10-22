@@ -132,10 +132,7 @@ object NativeConfig {
     rawAuthority.substring(rawAuthority.lastIndexOf('@') + 1)
   }
 
-  /**
-   * The raw authority as `[user@]host[:port]`, without the password. For ABFS the user is the
-   * container. As in native, the user ends at the first `:` and the host follows the last `@`.
-   */
+  /** As in native, the user ends at the first `:` and the host follows the last `@`. */
   private def authorityWithoutPassword(uri: URI): String = {
     val rawAuthority = Option(uri.getRawAuthority).getOrElse("")
     val at = rawAuthority.lastIndexOf('@')
@@ -144,10 +141,7 @@ object NativeConfig {
     if (user.isEmpty) host else s"$user@$host"
   }
 
-  /**
-   * `scheme://[user@]host[:port]` of `uri` for messages: no password, path or query. A path
-   * without a scheme is local, as in [[objectStoreKey]].
-   */
+  /** `scheme://[user@]host[:port]` of `uri`, for messages: no password, path or query. */
   private[comet] def displayAuthority(uri: URI): String =
     s"${lowerScheme(uri).getOrElse("file")}://${authorityWithoutPassword(uri)}"
 
@@ -205,10 +199,10 @@ object NativeConfig {
    * The object store native planning resolves for `uri`. Mirrors native
    * `normalize_object_store_url` followed by `object_store_url_key`: a libhdfs scheme (decided on
    * the scheme as written) keeps its spelling, `s3a` and opted-in aliases become `s3` with a
-   * hostless bucket promoted from the path, user info is dropped except for ABFS containers
-   * (never their password), and a path without a scheme is local. The one divergence is a default
-   * port of a special scheme (`https://host:443`), which native drops; that only splits files
-   * across more partitions. Files with different keys cannot share a native partition.
+   * hostless bucket promoted from the path, user info is dropped except for ABFS containers, and
+   * a path without a scheme is local. The one divergence is a default port of a special scheme
+   * (`https://host:443`), which native drops; that only splits files across more partitions.
+   * Files with different keys cannot share a native partition.
    */
   def objectStoreKey(
       uri: URI,
@@ -443,8 +437,7 @@ object NativeConfig {
             s"(${first.getScheme} and ${uri.getScheme})")
       }
       if (firstIsAbfs && uri.getRawAuthority != first.getRawAuthority) {
-        // Hadoop reads the whole user info as the container, so a different password is
-        // another container to it.
+        // Hadoop reads the whole user info, password too, as the container.
         val (a, b) = (displayAuthority(first), displayAuthority(uri))
         val stores = if (a == b) s"$a, with different user info" else s"$a and $b"
         return Left(

@@ -15,15 +15,13 @@
 // specific language governing permissions and limitations
 // under the License.
 
-//! URL forms safe to put in messages, store keys and URLs handed to object_store, which quotes
-//! URLs in its errors. A URL's password and query (where a SAS token sits) can carry a
-//! credential. The path is not treated as secret.
+//! URL forms for messages, store keys and object_store, which quotes URLs in its errors. The
+//! password and query (a SAS token) can carry a credential; the path is not treated as secret.
 
 use std::borrow::Cow;
 use url::{Position, Url};
 
-/// `url` without its password, query and fragment. The username stays: in an ABFS URL it is the
-/// container, which `MicrosoftAzureBuilder` reads.
+/// Keeps the username: in an ABFS URL it is the container, which `MicrosoftAzureBuilder` reads.
 pub(crate) fn without_secrets(url: &Url) -> Url {
     let mut stripped = url.clone();
     stripped.set_query(None);
@@ -33,9 +31,7 @@ pub(crate) fn without_secrets(url: &Url) -> Url {
     stripped
 }
 
-/// [`without_secrets`] without the username too, for a URL that may not be Azure, where the
-/// username can be an access key ID. `ObjectStoreScheme::parse` reads only the scheme, host and
-/// path.
+/// [`without_secrets`] minus the username, which outside Azure can be an access key ID.
 pub(crate) fn without_credentials(url: &Url) -> Url {
     let mut stripped = without_secrets(url);
     // Fails only for a URL that cannot have userinfo, so there is nothing to clear.
@@ -43,7 +39,6 @@ pub(crate) fn without_credentials(url: &Url) -> Url {
     stripped
 }
 
-/// `[username@]host[:port]` of `url`, without the password.
 pub(crate) fn authority_without_password(url: &Url) -> Cow<'_, str> {
     if url.password().is_none() {
         return Cow::Borrowed(&url[Position::BeforeUsername..Position::AfterPort]);
@@ -51,7 +46,6 @@ pub(crate) fn authority_without_password(url: &Url) -> Cow<'_, str> {
     Cow::Owned(without_secrets(url)[Position::BeforeUsername..Position::AfterPort].to_string())
 }
 
-/// `scheme://[container@]host[:port]` of an ABFS URL, for messages.
 pub(crate) fn display_authority(url: &Url) -> String {
     format!("{}://{}", url.scheme(), authority_without_password(url))
 }

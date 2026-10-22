@@ -489,8 +489,7 @@ private[comet] object AbfsAuthResolver extends Logging {
     (password ++ Option(uri.getRawQuery)).filter(_.nonEmpty).toSeq
   }
 
-  // Hadoop's messages quote the whole URI. These reach native errors and logs, so they leave out
-  // the password, path and query, which can carry a credential.
+  // Messages reach native errors and logs, so they omit the password, path and query.
   private def display(uri: URI): String = NativeConfig.displayAuthority(uri)
 
   private def failed(uri: URI, e: Throwable, secrets: Iterable[String]): Failed = {
