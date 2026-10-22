@@ -3051,6 +3051,7 @@ mod tests {
         FileGroup, FileScanConfigBuilder, FileSource, ParquetSource,
     };
     use datafusion::error::DataFusionError;
+    use datafusion::execution::SendableRecordBatchStream;
     use datafusion::logical_expr::ScalarUDF;
     use datafusion::logical_expr::{AggregateUDF, EmitTo};
     use datafusion::physical_expr::expressions::Column;
@@ -3066,7 +3067,10 @@ mod tests {
     use tempfile::TempDir;
     use tokio::sync::mpsc;
 
-    use crate::execution::{operators::InputBatch, planner::PhysicalPlanner};
+    use crate::execution::{
+        operators::{InputBatch, ScanExec},
+        planner::PhysicalPlanner,
+    };
 
     use crate::execution::operators::ExecutionError;
     use crate::execution::planner::{
@@ -4241,27 +4245,9 @@ mod tests {
                         .collect::<Vec<_>>()
                         .into_iter()
                 });
-                let mut stream = planned.native_plan.execute(0, session.task_ctx()).unwrap();
-                let mut output_rows = 0;
-                while let Some(batch) = futures::future::poll_fn(|cx| {
-                    let result = stream.poll_next_unpin(cx);
-                    if result.is_pending() {
-                        for (scan, input) in scans.iter_mut().zip(inputs.iter_mut()) {
-                            if scan.batch.try_lock().unwrap().is_none() {
-                                if let Some(batch) = input.next() {
-                                    scan.set_input_batch(batch);
-                                    cx.waker().wake_by_ref();
-                                }
-                            }
-                        }
-                    }
-                    result
-                })
-                .await
-                {
-                    output_rows += batch.unwrap().num_rows();
-                }
-                assert_eq!(output_rows, 4);
+                let stream = planned.native_plan.execute(0, session.task_ctx()).unwrap();
+                let batches = collect_with_inputs(stream, &mut scans, &mut inputs).await;
+                assert_eq!(batches.iter().map(|b| b.num_rows()).sum::<usize>(), 4);
                 let metrics = to_native_metric_node(&planned).unwrap();
                 assert_eq!(metrics.children.len(), 2);
                 assert_eq!(metrics.metrics["output_rows"], 4);
@@ -4344,35 +4330,20 @@ mod tests {
         assert_eq!(planned.additional_native_plans.len(), 1);
 
         let rows = 100;
-        let mut inputs = vec![
+        let mut inputs = [vec![
             InputBatch::Batch(
                 vec![Arc::new(Int32Array::from((0..rows).collect::<Vec<_>>())) as ArrayRef],
                 rows as usize,
             ),
             InputBatch::EOF,
         ]
-        .into_iter();
-        let mut stream = planned.native_plan.execute(0, session.task_ctx()).unwrap();
-        let mut output_rows = 0;
-        while let Some(batch) = futures::future::poll_fn(|cx| {
-            let result = stream.poll_next_unpin(cx);
-            if result.is_pending() {
-                for scan in scans.iter_mut() {
-                    if scan.batch.try_lock().unwrap().is_none() {
-                        if let Some(batch) = inputs.next() {
-                            scan.set_input_batch(batch);
-                            cx.waker().wake_by_ref();
-                        }
-                    }
-                }
-            }
-            result
-        })
-        .await
-        {
-            output_rows += batch.unwrap().num_rows();
-        }
-        assert_eq!(output_rows, rows as usize);
+        .into_iter()];
+        let stream = planned.native_plan.execute(0, session.task_ctx()).unwrap();
+        let batches = collect_with_inputs(stream, &mut scans, &mut inputs).await;
+        assert_eq!(
+            batches.iter().map(|b| b.num_rows()).sum::<usize>(),
+            rows as usize
+        );
 
         let elapsed = |plan: &Arc<dyn ExecutionPlan>| {
             plan.metrics()
@@ -4864,30 +4835,18 @@ mod tests {
                     Arc::new(Int32Array::from(vec![20, 21, 22])) as ArrayRef,
                     Arc::new(Int32Array::from(vec![30, 31, 32])) as ArrayRef,
                 ];
-                let mut input = vec![
+                let mut inputs = [vec![
                     InputBatch::Batch(columns.clone(), 3),
                     InputBatch::Batch(columns, 3),
                     InputBatch::EOF,
                 ]
-                .into_iter();
-                let mut stream = planned
+                .into_iter()];
+                let stream = planned
                     .native_plan
                     .execute(0, SessionContext::new().task_ctx())
                     .unwrap();
                 let mut rows = 0;
-                while let Some(batch) = futures::future::poll_fn(|cx| {
-                    let result = stream.poll_next_unpin(cx);
-                    if result.is_pending() && scans[0].batch.try_lock().unwrap().is_none() {
-                        if let Some(batch) = input.next() {
-                            scans[0].set_input_batch(batch);
-                            cx.waker().wake_by_ref();
-                        }
-                    }
-                    result
-                })
-                .await
-                {
-                    let batch = batch.unwrap();
+                for batch in collect_with_inputs(stream, &mut scans, &mut inputs).await {
                     assert_eq!(batch.num_columns(), indices.len());
                     for row in 0..batch.num_rows() {
                         for (column, &source) in indices.iter().enumerate() {
@@ -4934,6 +4893,35 @@ mod tests {
             query_context: None,
             expr_id: None,
         }
+    }
+
+    /// Drives `stream` to completion, feeding each scan its next input batch whenever the stream
+    /// is pending and that scan has none, and returns the output batches.
+    async fn collect_with_inputs(
+        mut stream: SendableRecordBatchStream,
+        scans: &mut [ScanExec],
+        inputs: &mut [std::vec::IntoIter<InputBatch>],
+    ) -> Vec<RecordBatch> {
+        let mut batches = vec![];
+        while let Some(batch) = futures::future::poll_fn(|cx| {
+            let result = stream.poll_next_unpin(cx);
+            if result.is_pending() {
+                for (scan, input) in scans.iter_mut().zip(inputs.iter_mut()) {
+                    if scan.batch.try_lock().unwrap().is_none() {
+                        if let Some(batch) = input.next() {
+                            scan.set_input_batch(batch);
+                            cx.waker().wake_by_ref();
+                        }
+                    }
+                }
+            }
+            result
+        })
+        .await
+        {
+            batches.push(batch.unwrap());
+        }
+        batches
     }
 
     fn create_scan() -> Operator {
