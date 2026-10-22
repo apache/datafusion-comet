@@ -37,8 +37,10 @@ FROM test_coalesce_field_names
 
 -- Case-distinct names repeat across positions in the opposite order. Spark aligns fields by
 -- position, so x stays an INT. Pairing fields by name would widen it to DOUBLE, and to_json would
--- emit 7.0. Each INSERT writes its own files, and a batch never spans files, so the first has
--- every row take the first argument, the second every row take the last, and the third mixes them.
+-- emit 7.0. The rows of an INSERT ... VALUES are written as separate one-row files, and a batch
+-- never spans files, so the first two INSERTs have every batch take the first or the last argument
+-- alone. COALESCE(1) writes the third as a single file, so its rows reach COALESCE as one batch
+-- that mixes the two.
 -- https://github.com/apache/datafusion-comet/issues/6532
 statement
 CREATE TABLE test_coalesce_positional(p boolean, i int, d double) USING parquet
@@ -50,7 +52,7 @@ statement
 INSERT INTO test_coalesce_positional VALUES (false, 7, 9.5), (false, NULL, NULL)
 
 statement
-INSERT INTO test_coalesce_positional VALUES (true, 7, 9.5), (false, 8, 10.5), (NULL, NULL, NULL), (false, 3, NULL)
+INSERT INTO test_coalesce_positional SELECT /*+ COALESCE(1) */ * FROM VALUES (true, 7, 9.5), (false, 8, 10.5), (NULL, NULL, NULL), (false, 3, NULL) AS v(p, i, d)
 
 -- Both argument orders
 query expect_native(coalesce)
@@ -80,11 +82,11 @@ FROM test_coalesce_positional
 query expect_native(coalesce)
 SELECT
   to_json(coalesce(
-    CASE WHEN p THEN array(named_struct('x', i, 'X', CAST(5.5 AS DOUBLE))) END,
-    array(named_struct('X', 0, 'x', d)))[0]),
+    CASE WHEN p THEN array_repeat(named_struct('x', i, 'X', CAST(5.5 AS DOUBLE)), 1) END,
+    array_repeat(named_struct('X', 0, 'x', d), 1))[0]),
   to_json(coalesce(
-    CASE WHEN p THEN array(named_struct('X', 0, 'x', d)) END,
-    array(named_struct('x', i, 'X', CAST(5.5 AS DOUBLE))))[0])
+    CASE WHEN p THEN array_repeat(named_struct('X', 0, 'x', d), 1) END,
+    array_repeat(named_struct('x', i, 'X', CAST(5.5 AS DOUBLE)), 1))[0])
 FROM test_coalesce_positional
 
 query expect_native(coalesce)
