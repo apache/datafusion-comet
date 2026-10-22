@@ -348,6 +348,33 @@ class CometTextNativeReadSuite extends CometTestBase {
     }
   }
 
+  // Hadoop's LineRecordReader strips a leading BOM from the first record whatever the separator.
+  test("native text read - custom lineSep still strips a leading BOM from the first record") {
+    withTempDir { dir =>
+      val bom = "\uFEFF"
+      withTextConf {
+        // `BOM a|b` -> ["a", "b"]
+        val ab = new File(dir, "bom-a-b.txt")
+        Files.write(ab.toPath, s"${bom}a|b".getBytes(StandardCharsets.UTF_8))
+        checkSparkAnswerAndOperator(spark.read.option("lineSep", "|").text(ab.getAbsolutePath))
+        // `BOM|x` -> ["", "x"]
+        val bx = new File(dir, "bom-sep-x.txt")
+        Files.write(bx.toPath, s"$bom|x".getBytes(StandardCharsets.UTF_8))
+        checkSparkAnswerAndOperator(spark.read.option("lineSep", "|").text(bx.getAbsolutePath))
+      }
+    }
+  }
+
+  test("native text read - BOM-only file with a custom lineSep has no rows") {
+    withTempDir { dir =>
+      val f = new File(dir, "bom-only-pipe.txt")
+      Files.write(f.toPath, "\uFEFF".getBytes(StandardCharsets.UTF_8))
+      withTextConf {
+        checkSparkAnswerAndOperator(spark.read.option("lineSep", "|").text(f.getAbsolutePath))
+      }
+    }
+  }
+
   test("native text read - fallback for line.maxlength") {
     withTempDir { dir =>
       val file = new File(dir, "lines.txt")

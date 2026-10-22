@@ -250,14 +250,14 @@ impl FileOpener for TextOpener {
             };
 
             let mut timer = baseline_metrics.elapsed_compute().timer();
-            // Spark's line reader strips a leading UTF-8 BOM at the start of the file, but only with
-            // the default separator. With a custom lineSep the BOM is ordinary data (Spark leaves it
-            // for the splitter, so e.g. a file `BOM a BOM b` read with lineSep=BOM yields
-            // ["", "a", "b"]). Only strip in line mode, at file offset 0 (native reads unsplit files
-            // only), and when no custom lineSep is set. wholetext keeps the BOM.
+            // Spark's line reader (Hadoop LineRecordReader.skipUtfByteOrderMark) strips a leading
+            // UTF-8 BOM from the first record at file offset 0, whatever the separator. It does so
+            // after finding the first record, so split first and then strip. Native reads unsplit
+            // files only. wholetext keeps the BOM.
             let at_file_start = range.as_ref().map(|r| r.start == 0).unwrap_or(true);
-            let content = strip_leading_bom(&buf, whole_text, at_file_start, line_sep.is_some());
+            let content: &[u8] = &buf;
             let mut lines = split_lines(content, whole_text, line_sep.as_deref());
+            strip_first_record_bom(&mut lines, content.len(), whole_text, at_file_start);
             // Spark may split an uncompressed file into byte ranges (TextScan.isSplitable). A line
             // belongs to the split whose [start, end) contains the line's start offset -- so each
             // line is emitted by exactly one split, with no duplication or gaps across splits. See
@@ -275,20 +275,31 @@ impl FileOpener for TextOpener {
     }
 }
 
-/// Strip a single leading UTF-8 BOM the way Spark's default line reader does: only in line mode
-/// (not wholetext), only for the split that starts at file offset 0, and only with the default
-/// separator. With a custom lineSep the BOM is left in place as ordinary data.
-fn strip_leading_bom(
-    buf: &[u8],
+/// Strip a leading UTF-8 BOM from the first record the way Hadoop's LineRecordReader does: only
+/// in line mode (not wholetext), only for the split that starts at file offset 0, and from the
+/// first record only. Hadoop reads the first record, then drops the BOM from its text. When that
+/// leaves nothing and the record was not terminated (the file is only the BOM), it counts as end
+/// of input, so the file has no rows. A BOM followed by a separator leaves an empty row. A custom
+/// `lineSep` equal to the BOM never reaches the strip, because the BOM is then the separator and
+/// the first record does not start with it.
+fn strip_first_record_bom<'a>(
+    lines: &mut Vec<&'a [u8]>,
+    file_len: usize,
     whole_text: bool,
     at_file_start: bool,
-    custom_line_sep: bool,
-) -> &[u8] {
-    if !whole_text && at_file_start && !custom_line_sep && buf.starts_with(UTF8_BOM) {
-        &buf[UTF8_BOM.len()..]
-    } else {
-        buf
+) {
+    if whole_text || !at_file_start {
+        return;
     }
+    if !lines.first().is_some_and(|l| l.starts_with(UTF8_BOM)) {
+        return;
+    }
+    if file_len == UTF8_BOM.len() {
+        lines.clear();
+        return;
+    }
+    let record: &'a [u8] = lines[0];
+    lines[0] = &record[UTF8_BOM.len()..];
 }
 
 /// Split a decompressed file buffer into text lines following Spark's semantics.
@@ -546,49 +557,78 @@ mod tests {
         assert_eq!(batches[0].num_rows(), 3);
     }
 
+    /// Split, then strip the first-record BOM, as the opener does.
+    fn lines_after_bom(
+        buf: &[u8],
+        whole_text: bool,
+        at_file_start: bool,
+        line_sep: Option<&[u8]>,
+    ) -> Vec<String> {
+        let mut lines = split_lines(buf, whole_text, line_sep);
+        strip_first_record_bom(&mut lines, buf.len(), whole_text, at_file_start);
+        lines
+            .iter()
+            .map(|l| String::from_utf8_lossy(l).into_owned())
+            .collect()
+    }
+
     #[test]
-    fn strips_leading_utf8_bom_in_line_mode() {
+    fn strips_first_record_bom_in_line_mode() {
         let bom = [0xEFu8, 0xBB, 0xBF];
         let with_hello = [&bom[..], b"hello"].concat();
         // Default separator at file start: the BOM is stripped.
-        assert_eq!(strip_leading_bom(&with_hello, false, true, false), b"hello");
-        // BOM then newline -> ["", "hello"] after split.
+        assert_eq!(
+            lines_after_bom(&with_hello, false, true, None),
+            vec!["hello"]
+        );
+        // BOM then newline -> ["", "hello"].
         let bom_nl = [&bom[..], b"\nhello"].concat();
         assert_eq!(
-            lines_as_str(strip_leading_bom(&bom_nl, false, true, false), false, None),
+            lines_after_bom(&bom_nl, false, true, None),
             vec!["", "hello"]
         );
-        // BOM-only file, default separator -> empty after strip -> zero lines.
-        assert!(split_lines(strip_leading_bom(&bom, false, true, false), false, None).is_empty());
-        // NOT stripped: a custom lineSep (BOM is data), so `BOM a BOM b` split on BOM is
-        // ["", "a", "b"]; wholetext; a non-start split; or no BOM present.
+        // BOM-only file, default separator -> no rows.
+        assert!(lines_after_bom(&bom, false, true, None).is_empty());
+        // BOM only plus its terminator -> one empty row.
+        let bom_only_nl = [&bom[..], b"\n"].concat();
+        assert_eq!(lines_after_bom(&bom_only_nl, false, true, None), vec![""]);
+        // Custom separator: the BOM is still stripped from the first record.
+        let bom_a_b = [&bom[..], b"a|b"].concat();
+        assert_eq!(
+            lines_after_bom(&bom_a_b, false, true, Some(b"|")),
+            vec!["a", "b"]
+        );
+        // BOM-only file with a custom separator -> no rows.
+        assert!(lines_after_bom(&bom, false, true, Some(b"|")).is_empty());
+        // BOM then separator -> an empty row, then the rest.
+        let bom_sep_x = [&bom[..], b"|x"].concat();
+        assert_eq!(
+            lines_after_bom(&bom_sep_x, false, true, Some(b"|")),
+            vec!["", "x"]
+        );
+        // lineSep equal to the BOM: the BOM is the separator, so the first record does not start
+        // with it and nothing is stripped. `BOM a BOM b` -> ["", "a", "b"].
         let bom_a_bom_b = [&bom[..], b"a", &bom[..], b"b"].concat();
         assert_eq!(
-            lines_as_str(
-                strip_leading_bom(&bom_a_bom_b, false, true, true),
-                false,
-                Some(&bom)
-            ),
+            lines_after_bom(&bom_a_bom_b, false, true, Some(&bom)),
             vec!["", "a", "b"]
         );
         // BOM-only file with lineSep=BOM -> one empty record (trailing separator dropped).
+        assert_eq!(lines_after_bom(&bom, false, true, Some(&bom)), vec![""]);
+        // Not stripped: wholetext, a split that does not start at offset 0, or no BOM present.
         assert_eq!(
-            lines_as_str(
-                strip_leading_bom(&bom, false, true, true),
-                false,
-                Some(&bom)
-            ),
-            vec![""]
-        );
-        assert_eq!(
-            strip_leading_bom(&with_hello, true, true, false),
+            lines_after_bom(&with_hello, true, true, None)
+                .concat()
+                .as_bytes(),
             &with_hello[..]
         );
         assert_eq!(
-            strip_leading_bom(&with_hello, false, false, false),
+            lines_after_bom(&with_hello, false, false, None)
+                .concat()
+                .as_bytes(),
             &with_hello[..]
         );
-        assert_eq!(strip_leading_bom(b"hello", false, true, false), b"hello");
+        assert_eq!(lines_after_bom(b"hello", false, true, None), vec!["hello"]);
     }
 
     #[test]
