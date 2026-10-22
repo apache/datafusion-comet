@@ -278,7 +278,7 @@ jobs:
               org.apache.spark.sql.comet.DecimalPrecisionSuite
               org.apache.spark.sql.comet.CometScanWithPlanDataSuite
               org.apache.spark.sql.comet.util.UtilsSuite
-              org.apache.spark.sql.comet.DecodedBroadcastCacheSuite
+              org.apache.spark.sql.comet.CometBroadcastValueSuite
               org.apache.comet.vector.NativeUtilSuite
               org.apache.comet.vector.CometVectorUtilsSuite
               org.apache.comet.udf.CometUdfBridgeSuite

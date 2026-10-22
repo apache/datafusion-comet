@@ -21,7 +21,6 @@ package org.apache.spark.sql.comet
 
 import java.io.DataInputStream
 import java.nio.channels.Channels
-import java.util.IdentityHashMap
 import java.util.concurrent.{CountDownLatch, TimeUnit}
 
 import scala.collection.mutable.ArrayBuffer
@@ -42,71 +41,86 @@ import org.apache.comet.CometArrowAllocator
 import org.apache.comet.vector.NativeUtil
 
 /**
- * Lets the tasks of an executor that read a Comet broadcast at the same time share one decoded
- * copy of it.
+ * The value of a Comet broadcast: the Arrow IPC streams that [[Utils.serializeBatches]] wrote,
+ * compressed with Spark's codec. It lets the tasks of an executor that read the broadcast at the
+ * same time share one decoded copy of it.
  *
- * A Comet broadcast holds Arrow IPC streams compressed with Spark's codec, and without this cache
- * every task that reads it decompresses and decodes all of it. Spark keeps one copy of a
- * broadcast's value per executor, so the tasks of an executor get the same value instance, and
- * that instance is the key here. The first task to read a value decodes it into buffers that the
- * cache owns. Tasks that come while it is decoding wait for it. Each task then reads vectors of
- * its own that hold references on those buffers, so a consumer can close what it reads, as
+ * Without this, every task that reads the broadcast decompresses and decodes all of it. Spark
+ * keeps one deserialized copy of a broadcast's value per executor, so the tasks of an executor
+ * get the same instance of this class, and the state that they share lives on it. It is not
+ * serialized, so each executor's instance starts with no decode.
+ *
+ * @param chunks
+ *   the compressed Arrow IPC streams
+ */
+private[comet] final class CometBroadcastValue(val chunks: Array[ChunkedByteBuffer])
+    extends Serializable {
+
+  // A lazy val rather than a field initializer, because deserializing this class, with Java
+  // serialization or with Kryo, does not run its constructor.
+  @transient private lazy val shared = new SharedDecode(chunks, SharedDecode.decode)
+
+  /** See [[SharedDecode.batches]]. */
+  def batches(context: TaskContext, source: String): Iterator[ColumnarBatch] =
+    shared.batches(context, source)
+
+  /** See [[SharedDecode.holders]]. */
+  def holders: Int = shared.holders
+}
+
+/**
+ * One broadcast value's decode, shared by the tasks that read it. The first task to read the
+ * value decodes it into buffers that this object owns. Tasks that come while it is decoding wait
+ * for it. Each task then reads vectors of its own that hold references on those buffers, so a
+ * consumer can close what it reads, as
  * [[org.apache.spark.sql.comet.execution.arrow.ColumnarBatchArrowReader]] does, without affecting
  * another task.
  *
- * An entry is freed when the last task holding it completes, and a task that reads the broadcast
+ * The decode is freed when the last task holding it completes, and a task that reads the value
  * after that decodes it again. A native join keeps a build side of one batch, which is what
  * coalescing makes of a broadcast, for as long as its task runs, so for such a broadcast the
- * cache holds no memory that the tasks would not hold anyway. A native join copies a build side
- * of several batches, so the cache keeps one copy of such a broadcast that the tasks would have
+ * decode holds no memory that the tasks would not hold anyway. A native join copies a build side
+ * of several batches, so the decode keeps one copy of such a broadcast that the tasks would have
  * freed once they built their tables.
  *
+ * @param chunks
+ *   the compressed Arrow IPC streams of the broadcast value
  * @param decode
- *   decodes a broadcast's value; `None` makes each task decode the value for itself
+ *   decodes the streams; `None` makes each task decode them for itself
  */
-private[comet] class DecodedBroadcastCache(
-    decode: (Array[ChunkedByteBuffer], String) => Option[DecodedBroadcastCache.Decoded]) {
-  import DecodedBroadcastCache.{Decoded, KillCheckIntervalMs}
+private[comet] final class SharedDecode(
+    chunks: Array[ChunkedByteBuffer],
+    decode: (Array[ChunkedByteBuffer], String) => Option[SharedDecode.Decoded]) {
+  import SharedDecode.{Decoded, KillCheckIntervalMs}
 
-  // The broadcast values that running tasks hold, by identity. Guarded by itself.
-  private val entries = new IdentityHashMap[Array[ChunkedByteBuffer], Entry]()
+  // The decode that running tasks hold, if there are any. Guarded by `this`.
+  private var current: Entry = _
 
   /**
-   * The batches of `chunks`, the value of a Comet broadcast, for the task of `context`. As with
+   * The batches of the broadcast value for the task of `context`. As with
    * [[Utils.decodeBatches]], each batch is valid until the next call to `hasNext` or `next`, or
-   * until the task completes.
+   * until the task completes. A task must read them on its own thread, because that is where its
+   * completion listener runs and gives back the buffers.
    */
-  def batches(
-      chunks: Array[ChunkedByteBuffer],
-      context: TaskContext,
-      source: String): Iterator[ColumnarBatch] =
-    new SharedBatchIterator(chunks, context, source)
+  def batches(context: TaskContext, source: String): Iterator[ColumnarBatch] =
+    new SharedBatchIterator(context, source)
 
-  /** The number of broadcast values that running tasks hold. */
-  def size: Int = entries.synchronized(entries.size)
+  /** The number of holds on the decode, one for each read by a running task. */
+  def holders: Int = synchronized(if (current == null) 0 else current.holders)
 
-  /** The number of holds on the entry for `chunks`, one for each read by a running task. */
-  def holders(chunks: Array[ChunkedByteBuffer]): Int =
-    entries.synchronized(Option(entries.get(chunks)).map(_.holders).getOrElse(0))
-
-  /** Hands out the entry for `chunks`, creating it if no task holds one. True if it did. */
-  private def acquire(chunks: Array[ChunkedByteBuffer]): (Entry, Boolean) =
-    entries.synchronized {
-      val existing = entries.get(chunks)
-      val entry = if (existing != null) {
-        existing
-      } else {
-        val created = new Entry(chunks)
-        entries.put(chunks, created)
-        created
-      }
-      entry.holders += 1
-      (entry, existing == null)
+  /** Hands out the entry that tasks hold, creating it if none does. True if it did. */
+  private def acquire(): (Entry, Boolean) = synchronized {
+    val loading = current == null
+    if (loading) {
+      current = new Entry
     }
+    current.holders += 1
+    (current, loading)
+  }
 
   /** Gives back a task's hold on `entry`, and frees the entry once no task holds it. */
   private def release(entry: Entry): Unit = {
-    val unheld = entries.synchronized {
+    val unheld = synchronized {
       entry.holders -= 1
       val unheld = entry.holders == 0
       if (unheld) {
@@ -119,15 +133,15 @@ private[comet] class DecodedBroadcastCache(
     }
   }
 
-  /** Stops handing `entry` out, unless a newer entry has replaced it. Callers hold `entries`. */
+  /** Stops handing `entry` out, unless a newer entry has replaced it. Callers hold `this`. */
   private def forget(entry: Entry): Unit = {
-    if (entries.get(entry.chunks) eq entry) {
-      val _ = entries.remove(entry.chunks)
+    if (current eq entry) {
+      current = null
     }
   }
 
-  private final class Entry(val chunks: Array[ChunkedByteBuffer]) {
-    // One hold for each read of the broadcast by a running task. Guarded by `entries`.
+  private final class Entry {
+    // One hold for each read of the broadcast by a running task. Guarded by the outer `this`.
     var holders = 0
     private val done = new CountDownLatch(1)
     // Written by the task that loads the entry before `done` opens, and read by others after.
@@ -136,25 +150,13 @@ private[comet] class DecodedBroadcastCache(
     /** Decodes the broadcast for every task that holds the entry. Runs in the first of them. */
     def load(source: String): Option[Decoded] = {
       try {
-        val result = decode(chunks, source)
-        // A task whose completion listener runs on another thread can give the entry back
-        // during the decode. If it was the last holder the entry has been freed already, and
-        // nothing would free what it kept now.
-        val kept = entries.synchronized {
-          if (holders > 0) {
-            decoded = result
-          }
-          holders > 0
-        }
-        if (!kept) {
-          result.foreach(_.close())
-        }
+        decoded = decode(chunks, source)
         decoded
       } catch {
         case t: Throwable =>
           // The task may have failed only because it was killed, so let a later task try again.
           // The tasks that are waiting decode the broadcast for themselves.
-          entries.synchronized(forget(this))
+          SharedDecode.this.synchronized(forget(this))
           throw t
       } finally {
         done.countDown()
@@ -174,17 +176,14 @@ private[comet] class DecodedBroadcastCache(
   }
 
   /**
-   * One task's read of a broadcast: views of the shared batches when the entry has them, or the
+   * One task's read of the broadcast: views of the shared batches when the entry has them, or the
    * task's own decode when it does not.
    */
-  private final class SharedBatchIterator(
-      chunks: Array[ChunkedByteBuffer],
-      context: TaskContext,
-      source: String)
+  private final class SharedBatchIterator(context: TaskContext, source: String)
       extends Iterator[ColumnarBatch] {
 
     // The task takes its hold on the first call to hasNext, which is also when reading the
-    // broadcast without the cache starts to decode it.
+    // broadcast without sharing starts to decode it.
     private var started = false
     private var failure: Throwable = _
     private var batches: Iterator[ColumnarBatch] = _
@@ -211,7 +210,7 @@ private[comet] class DecodedBroadcastCache(
 
     private def start(): Unit = {
       started = true
-      val (entry, loading) = acquire(chunks)
+      val (entry, loading) = acquire()
       context.addTaskCompletionListener[Unit] { _ =>
         try closeCurrent()
         finally release(entry)
@@ -241,15 +240,7 @@ private[comet] class DecodedBroadcastCache(
   }
 }
 
-private[comet] object DecodedBroadcastCache {
-
-  /**
-   * The cache that the tasks of this executor share. It is a process-wide singleton because
-   * sharing across tasks is its purpose. It holds one entry per broadcast that a running task
-   * reads, so it is bounded by the tasks running on the executor, and it holds no configuration
-   * or credentials.
-   */
-  val shared: DecodedBroadcastCache = new DecodedBroadcastCache(decode)
+private[comet] object SharedDecode {
 
   /** How often a task waiting for another task's decode checks whether it has been killed. */
   private val KillCheckIntervalMs = 100L
@@ -299,7 +290,7 @@ private[comet] object DecodedBroadcastCache {
    * The batches of a broadcast. Each is kept as an `ArrowRecordBatch`, with its schema, and holds
    * references on its buffers, which `allocator` allocated, until it is closed.
    */
-  final class Decoded private[DecodedBroadcastCache] (
+  final class Decoded private[SharedDecode] (
       allocator: BufferAllocator,
       batches: Array[(Schema, ArrowRecordBatch)]) {
 
