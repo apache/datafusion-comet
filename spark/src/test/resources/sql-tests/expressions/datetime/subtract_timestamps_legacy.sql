@@ -15,10 +15,9 @@
 -- specific language governing permissions and limitations
 -- under the License.
 
--- timestamp - timestamp in legacy interval mode resolves to SubtractTimestamps with a
--- CalendarIntervalType result holding the elapsed microseconds. The codegen dispatcher's
--- calendar-interval output cannot carry that span past about 292 years, so the expression falls
--- back to Spark. America/Los_Angeles is pinned so the DST rows below straddle real transitions.
+-- Legacy mode falls back for every span: CalendarInterval microseconds overflow as nanoseconds
+-- in the dispatcher (#5279).
+-- America/Los_Angeles is pinned so the DST rows straddle real transitions.
 -- Config: spark.sql.session.timeZone=America/Los_Angeles
 -- Config: spark.comet.exec.scalaUDF.codegen.enabled=true
 -- Config: spark.sql.legacy.interval.enabled=true
@@ -58,20 +57,16 @@ INSERT INTO test_subtract_timestamps_legacy VALUES
   (timestamp'2024-01-01 00:00:00', NULL, timestamp_ntz'2024-01-01 00:00:00', NULL, NULL, 4),
   (NULL, NULL, NULL, NULL, NULL, 5)
 
--- TIMESTAMP columns in both directions. Across a DST transition legacy mode reports the elapsed
--- 23 or 25 hours rather than one calendar day.
+-- across a DST transition legacy mode reports the elapsed 23 or 25 hours, not one day
 query expect_fallback(cannot carry a span past about 292 years)
 SELECT ts1, ts2, ts1 - ts2, ts2 - ts1 FROM test_subtract_timestamps_legacy
 
--- TIMESTAMP_NTZ columns never see the session time zone
 query expect_fallback(cannot carry a span past about 292 years)
 SELECT ntz1 - ntz2, ntz2 - ntz1 FROM test_subtract_timestamps_legacy
 
--- a DATE operand is implicitly cast to TIMESTAMP
 query expect_fallback(cannot carry a span past about 292 years)
 SELECT ts1 - d, d - ts1 FROM test_subtract_timestamps_legacy
 
--- literal on either side
 query expect_fallback(cannot carry a span past about 292 years)
 SELECT
   ts1 - timestamp'2024-01-01 00:00:00',
@@ -79,7 +74,6 @@ SELECT
   ntz1 - timestamp_ntz'2024-01-01 00:00:00'
 FROM test_subtract_timestamps_legacy
 
--- all-literal operands (constant folding is disabled by the test suite)
 query expect_fallback(cannot carry a span past about 292 years)
 SELECT
   timestamp'2024-03-15 10:30:45.123456' - timestamp'2024-01-01 00:00:00',

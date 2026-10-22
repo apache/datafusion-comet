@@ -223,11 +223,7 @@ object CometDatetimeExpressionBenchmark extends CometBenchmarkBase {
     }
   }
 
-  /**
-   * `date - date`, `timestamp - timestamp` and `timestamp + interval` run through the JVM codegen
-   * dispatcher. Each is measured as a bare projection and as a filter over its result, so the
-   * second query also covers the interval feeding a native comparison.
-   */
+  /** Dispatched interval arithmetic, bare and feeding a native filter. */
   def intervalArithmeticBenchmark(values: Int): Unit = {
     withTempPath { dir =>
       withTempTable("parquetV1Table") {

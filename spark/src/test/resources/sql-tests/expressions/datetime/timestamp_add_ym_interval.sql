@@ -15,9 +15,7 @@
 -- specific language governing permissions and limitations
 -- under the License.
 
--- timestamp + year-month interval resolves to TimestampAddYMInterval and runs through the
--- codegen dispatcher so results match Spark exactly. TIMESTAMP values are shifted on local
--- time in the session zone, so America/Los_Angeles is pinned and two rows cross a DST change.
+-- TIMESTAMP values shift on local time, so America/Los_Angeles is pinned.
 -- Config: spark.sql.session.timeZone=America/Los_Angeles
 -- Config: spark.comet.exec.scalaUDF.codegen.enabled=true
 -- Config: spark.comet.shuffle.mode=native
@@ -44,18 +42,14 @@ INSERT INTO test_timestamp_add_ym_interval VALUES
   (timestamp'2024-06-15 08:00:00', timestamp_ntz'2024-06-15 08:00:00', 1, NULL, 5),
   (NULL, NULL, 1, 1, 6)
 
--- TIMESTAMP column plus an interval built from columns, both directions
 query expect_dispatch(timestampaddyminterval)
 SELECT ts, y, m, ts + make_ym_interval(y, m), make_ym_interval(y, m) + ts
 FROM test_timestamp_add_ym_interval
 
--- TIMESTAMP_NTZ compiles a separate kernel and never sees the session time zone
 query
 SELECT ts_ntz, ts_ntz + make_ym_interval(y, m), make_ym_interval(y, m) + ts_ntz
 FROM test_timestamp_add_ym_interval
 
--- interval literals in the unit, unit-to-unit and multi-unit spellings. Subtraction rewrites
--- to an addition of the negated interval.
 query
 SELECT
   ts + INTERVAL '1' YEAR,
@@ -67,7 +61,6 @@ SELECT
   ts_ntz - INTERVAL '1' MONTH
 FROM test_timestamp_add_ym_interval
 
--- all-literal operands (constant folding is disabled by the test suite)
 query
 SELECT
   timestamp'2024-01-31 10:30:45.123456' + INTERVAL '1' MONTH,
@@ -75,7 +68,6 @@ SELECT
   timestamp_ntz'2024-01-31 10:30:45.123456' + INTERVAL '1' MONTH,
   timestamp'2024-03-31 00:00:00' - INTERVAL '1' MONTH
 
--- timestamp output through native shuffle
 query
 SELECT k, ts + make_ym_interval(y, m) AS r, ts_ntz + make_ym_interval(y, m) AS r_ntz
 FROM test_timestamp_add_ym_interval

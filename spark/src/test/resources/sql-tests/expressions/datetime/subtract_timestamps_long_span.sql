@@ -15,9 +15,8 @@
 -- specific language governing permissions and limitations
 -- under the License.
 
--- timestamp - timestamp over a span past about 292 years. In default mode the result is a
--- DayTimeIntervalType that holds the microseconds in a long, so the span fits and the expression
--- stays on the codegen dispatcher. UTC is pinned so the elapsed microseconds are exact.
+-- DayTimeIntervalType holds microseconds in a long, so a span past 292 years still fits.
+-- UTC is pinned so the elapsed microseconds are exact.
 -- Config: spark.sql.session.timeZone=UTC
 -- Config: spark.comet.exec.scalaUDF.codegen.enabled=true
 -- Config: spark.sql.legacy.interval.enabled=false
@@ -37,10 +36,8 @@ INSERT INTO test_subtract_timestamps_long_span VALUES
   (timestamp'1970-01-01 00:00:00', timestamp'2300-01-01 00:00:00',
    timestamp_ntz'1970-01-01 00:00:00', timestamp_ntz'2300-01-01 00:00:00')
 
--- TIMESTAMP columns in both operand orders
 query expect_dispatch(subtracttimestamps)
 SELECT ts1, ts2, ts1 - ts2, ts2 - ts1 FROM test_subtract_timestamps_long_span
 
--- TIMESTAMP_NTZ columns in both operand orders
 query
 SELECT ntz1 - ntz2, ntz2 - ntz1 FROM test_subtract_timestamps_long_span

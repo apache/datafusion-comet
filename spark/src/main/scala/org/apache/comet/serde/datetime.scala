@@ -945,18 +945,14 @@ object CometTimestampAdd extends CometCodegenDispatch[TimestampAdd]
 
 object CometTimestampDiff extends CometCodegenDispatch[TimestampDiff]
 
-// Date and timestamp interval arithmetic. `timestamp + day-time or calendar interval` resolves
-// to `TimeAdd` on Spark 3.4 through 4.0 and to `TimestampAddInterval` on 4.1+, so that serde
-// lives in the version shims.
+// No `timestamp + interval` serde here: Spark 4.1 renames `TimeAdd`, so the shims own it.
 object CometDateAddInterval extends CometCodegenDispatch[DateAddInterval]
 
 object CometDateAddYMInterval extends CometCodegenDispatch[DateAddYMInterval]
 
 object CometTimestampAddYMInterval extends CometCodegenDispatch[TimestampAddYMInterval]
 
-// DateTimeUtils.subtractDates always writes microseconds 0 into the calendar interval, so
-// the result fits the dispatcher's calendar-interval output in legacy mode as well and this
-// expression needs no legacy guard, unlike CometSubtractTimestamps below.
+// subtractDates leaves microseconds at 0, so legacy mode needs no guard here.
 object CometSubtractDates extends CometCodegenDispatch[SubtractDates]
 
 object CometSubtractTimestamps extends CometCodegenDispatch[SubtractTimestamps] {
@@ -969,10 +965,7 @@ object CometSubtractTimestamps extends CometCodegenDispatch[SubtractTimestamps] 
 
   override def getUnsupportedReasons(): Seq[String] = Seq(legacyIntervalReason)
 
-  // Same `Math.multiplyExact(microseconds, 1000L)` limit `CometMakeInterval` documents as a
-  // compatible note. That one only overflows on extreme arguments; `ts - ts` produces an
-  // arbitrary span from ordinary data, and legacy mode is off by default, so decline it.
-  // Remove this branch once #5279 carries CalendarInterval across the boundary losslessly.
+  // Unlike `make_interval`, `ts - ts` can exceed the #5279 span limit on ordinary data.
   override def getSupportLevel(expr: SubtractTimestamps): SupportLevel = expr.dataType match {
     case CalendarIntervalType => Unsupported(Some(legacyIntervalReason))
     case _ => Compatible()

@@ -15,10 +15,8 @@
 -- specific language governing permissions and limitations
 -- under the License.
 
--- date + calendar interval resolves to DateAddInterval and runs through the codegen dispatcher
--- so results match Spark exactly. With ANSI off, an interval carrying a time part is applied
--- on the timestamp and the result truncated back to a date; the ANSI error case lives in
--- date_add_interval_ansi.sql. America/Los_Angeles is pinned so the 25-hour row crosses DST.
+-- ANSI errors are in date_add_interval_ansi.sql. America/Los_Angeles is pinned so the 25-hour
+-- row crosses DST.
 -- Config: spark.sql.session.timeZone=America/Los_Angeles
 -- Config: spark.comet.exec.scalaUDF.codegen.enabled=true
 -- Config: spark.comet.shuffle.mode=native
@@ -42,12 +40,10 @@ INSERT INTO test_date_add_interval VALUES
   (date'2024-06-15', 0, 0, 0, NULL, 6),
   (NULL, 1, 1, 1, 0, 7)
 
--- column date plus a calendar interval built from columns. Month arithmetic clamps to the end
--- of the shorter month before the day part is added.
+-- month arithmetic clamps to the end of the shorter month before the day part is added
 query expect_dispatch(dateaddinterval)
 SELECT d, y, m, dd, d + make_interval(y, m, 0, dd) FROM test_date_add_interval
 
--- interval on the left
 query
 SELECT make_interval(y, m, 0, dd) + d FROM test_date_add_interval
 
@@ -55,9 +51,7 @@ SELECT make_interval(y, m, 0, dd) + d FROM test_date_add_interval
 query
 SELECT d, h, d + make_interval(y, m, 0, dd, h) FROM test_date_add_interval
 
--- The parser rejects interval literals that mix year-month and day-time units unless
--- spark.sql.legacy.interval.enabled is set, so literal calendar intervals come from
--- make_interval. Subtraction rewrites to an addition of the negated interval.
+-- make_interval, as the parser rejects literals mixing year-month and day-time units
 query
 SELECT
   d + make_interval(1, 0, 0, 1),
@@ -68,14 +62,12 @@ SELECT
   d - make_interval(0, 1, 0, 1)
 FROM test_date_add_interval
 
--- all-literal operands (constant folding is disabled by the test suite)
 query
 SELECT
   date'2024-01-31' + make_interval(0, 1, 0, 1),
   date'2024-02-29' + make_interval(1, 0, 0, 1),
   date'2024-01-31' - make_interval(0, 1, 0, 1)
 
--- date output through native shuffle
 query
 SELECT k, d + make_interval(y, m, 0, dd) AS r
 FROM test_date_add_interval

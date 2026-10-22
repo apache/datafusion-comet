@@ -15,10 +15,7 @@
 -- specific language governing permissions and limitations
 -- under the License.
 
--- timestamp + day-time or calendar interval resolves to TimeAdd (TimestampAddInterval on
--- Spark 4.1+) and runs through the codegen dispatcher so results match Spark exactly. Days and
--- months are applied on local time in the session zone, so America/Los_Angeles is pinned and
--- the DST rows straddle the spring-forward and fall-back transitions.
+-- Days and months apply on local time, so America/Los_Angeles is pinned to cross DST.
 -- Config: spark.sql.session.timeZone=America/Los_Angeles
 -- Config: spark.comet.exec.scalaUDF.codegen.enabled=true
 -- Config: spark.comet.shuffle.mode=native
@@ -58,32 +55,25 @@ INSERT INTO test_timestamp_add_interval VALUES
    date'2024-06-15', 1, 1, 1, NULL, 5),
   (NULL, NULL, NULL, 1, 1, 1, 1, 6)
 
--- TIMESTAMP column plus a day-time interval built from columns, both directions
--- The root is TimeAdd through Spark 4.0 and TimestampAddInterval from 4.1, so the sentinel
--- pins the interval builder, which is dispatched only as part of the same kernel.
+-- the root is TimeAdd before Spark 4.1 and TimestampAddInterval from 4.1, so the sentinel pins
+-- the interval builder, which is dispatched only inside the same kernel
 query expect_dispatch(make_dt_interval)
 SELECT ts, dd, h, mi, s, ts + make_dt_interval(dd, h, mi, s), make_dt_interval(dd, h, mi, s) + ts
 FROM test_timestamp_add_interval
 
--- TIMESTAMP column plus a calendar interval built from columns, both directions
 query
 SELECT ts + make_interval(0, 1, 0, dd, h, mi, s), make_interval(0, 1, 0, dd, h, mi, s) + ts
 FROM test_timestamp_add_interval
 
--- TIMESTAMP_NTZ compiles a separate kernel and never sees the session time zone
 query
 SELECT ts_ntz + make_dt_interval(dd, h, mi, s), ts_ntz + make_interval(0, 1, 0, dd, h, mi, s)
 FROM test_timestamp_add_interval
 
--- a DATE operand is cast to TIMESTAMP before a day-time interval finer than a day is added
 query
 SELECT d + make_dt_interval(dd, h, mi, s), d + INTERVAL '1 12:00:00' DAY TO SECOND
 FROM test_timestamp_add_interval
 
--- day-time interval literals in the unit, unit-to-unit and multi-unit spellings. The parser
--- rejects literals that mix year-month and day-time units unless spark.sql.legacy.interval.enabled
--- is set, so literal calendar intervals come from make_interval. Subtraction rewrites to an
--- addition of the negated interval.
+-- make_interval, as the parser rejects literals mixing year-month and day-time units
 query
 SELECT
   ts + INTERVAL '1' DAY,
@@ -97,7 +87,6 @@ SELECT
   ts_ntz - make_interval(0, 1, 0, 1)
 FROM test_timestamp_add_interval
 
--- all-literal operands (constant folding is disabled by the test suite)
 query
 SELECT
   timestamp'2024-03-09 12:00:00' + INTERVAL '1' DAY,
@@ -105,7 +94,6 @@ SELECT
   timestamp'2024-01-31 23:00:00' + make_interval(0, 1, 0, 1),
   timestamp_ntz'2024-03-09 12:00:00' + INTERVAL '1' DAY
 
--- timestamp output through native shuffle
 query
 SELECT k, ts + make_dt_interval(dd, h, mi, s) AS r, ts_ntz + make_interval(0, 1, 0, dd) AS r_ntz
 FROM test_timestamp_add_interval

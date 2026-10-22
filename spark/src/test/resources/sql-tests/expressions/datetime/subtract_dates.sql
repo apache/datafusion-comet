@@ -15,9 +15,7 @@
 -- specific language governing permissions and limitations
 -- under the License.
 
--- date - date resolves to SubtractDates and runs through the codegen dispatcher so results
--- match Spark exactly. The output type follows spark.sql.legacy.interval.enabled: a
--- DayTimeIntervalType(DAY) by default, a CalendarIntervalType in legacy mode.
+-- The result is DayTimeIntervalType(DAY) by default and CalendarIntervalType in legacy mode.
 -- Config: spark.comet.exec.scalaUDF.codegen.enabled=true
 -- Config: spark.comet.shuffle.mode=native
 -- ConfigMatrix: spark.sql.legacy.interval.enabled=false,true
@@ -25,8 +23,8 @@
 statement
 CREATE TABLE test_subtract_dates(d1 date, d2 date, k int) USING parquet
 
--- the 2300 rows span about 330 years, past the 292-year limit of a nanosecond long, but the
--- day count of a date difference never touches that field
+-- the 2300 rows span about 330 years, past the 292-year nanosecond limit, which the day count
+-- of a date difference never touches
 statement
 INSERT INTO test_subtract_dates VALUES
   (date'2024-03-15', date'2024-01-01', 1),
@@ -41,24 +39,19 @@ INSERT INTO test_subtract_dates VALUES
   (date'2024-01-01', NULL, 4),
   (NULL, NULL, 5)
 
--- column - column in both directions, covering negative and zero spans
 query expect_dispatch(subtractdates)
 SELECT d1, d2, d1 - d2, d2 - d1 FROM test_subtract_dates
 
--- literal on either side
 query
 SELECT d1 - date'2024-01-01', date'2024-01-01' - d2 FROM test_subtract_dates
 
--- all-literal operands (constant folding is disabled by the test suite). A NULL literal operand
--- is left out: NullPropagation folds it to a NULL literal before Comet sees the plan, so it
--- would not reach the kernel. The column rows above cover NULL operands.
+-- no NULL literal: NullPropagation folds it before Comet sees the plan
 query
 SELECT
   date'2024-03-15' - date'2024-01-01',
   date'2024-01-01' - date'2024-03-15',
   date'2024-01-01' - date'2024-01-01'
 
--- interval output through native shuffle, at top level and nested in a struct
 query
 SELECT k, d1 - d2 AS i, named_struct('i', d2 - d1) AS s
 FROM test_subtract_dates

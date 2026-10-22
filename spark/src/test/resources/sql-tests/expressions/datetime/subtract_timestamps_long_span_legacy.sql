@@ -15,10 +15,8 @@
 -- specific language governing permissions and limitations
 -- under the License.
 
--- timestamp - timestamp over a span past about 292 years in legacy interval mode. The result is
--- a CalendarIntervalType whose microseconds the codegen dispatcher writes as nanoseconds, which
--- overflows a long for this span, so the expression must fall back to Spark. UTC is pinned so the
--- elapsed microseconds are exact.
+-- Legacy mode's CalendarIntervalType microseconds become nanoseconds in the dispatcher, which
+-- overflows a long past about 292 years (#5279). UTC is pinned so the microseconds are exact.
 -- Config: spark.sql.session.timeZone=UTC
 -- Config: spark.comet.exec.scalaUDF.codegen.enabled=true
 -- Config: spark.sql.legacy.interval.enabled=true
@@ -38,10 +36,8 @@ INSERT INTO test_subtract_timestamps_long_span_legacy VALUES
   (timestamp'1970-01-01 00:00:00', timestamp'2300-01-01 00:00:00',
    timestamp_ntz'1970-01-01 00:00:00', timestamp_ntz'2300-01-01 00:00:00')
 
--- TIMESTAMP columns in both operand orders
 query expect_fallback(cannot carry a span past about 292 years)
 SELECT ts1, ts2, ts1 - ts2, ts2 - ts1 FROM test_subtract_timestamps_long_span_legacy
 
--- TIMESTAMP_NTZ columns in both operand orders
 query expect_fallback(cannot carry a span past about 292 years)
 SELECT ntz1 - ntz2, ntz2 - ntz1 FROM test_subtract_timestamps_long_span_legacy

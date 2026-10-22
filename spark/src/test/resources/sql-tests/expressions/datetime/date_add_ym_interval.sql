@@ -15,9 +15,7 @@
 -- specific language governing permissions and limitations
 -- under the License.
 
--- date + year-month interval resolves to DateAddYMInterval and runs through the codegen
--- dispatcher so results match Spark exactly. Month arithmetic clamps to the last day of the
--- target month.
+-- Month arithmetic clamps to the last day of the target month (the 01-31 and 02-29 rows).
 -- Config: spark.comet.exec.scalaUDF.codegen.enabled=true
 -- Config: spark.comet.shuffle.mode=native
 
@@ -37,13 +35,10 @@ INSERT INTO test_date_add_ym_interval VALUES
   (date'2024-06-15', 1, NULL, 5),
   (NULL, 1, 1, 6)
 
--- column date plus an interval built from columns, both directions
 query expect_dispatch(dateaddyminterval)
 SELECT d, y, m, d + make_ym_interval(y, m), make_ym_interval(y, m) + d
 FROM test_date_add_ym_interval
 
--- interval literals in the unit, unit-to-unit and multi-unit spellings. Subtraction rewrites
--- to an addition of the negated interval.
 query
 SELECT
   d + INTERVAL '1' YEAR,
@@ -55,14 +50,12 @@ SELECT
   d - INTERVAL '1' YEAR
 FROM test_date_add_ym_interval
 
--- all-literal operands (constant folding is disabled by the test suite)
 query
 SELECT
   date'2024-01-31' + INTERVAL '1' MONTH,
   date'2024-02-29' + INTERVAL '1' YEAR,
   date'2024-03-31' - INTERVAL '1' MONTH
 
--- date output through native shuffle
 query
 SELECT k, d + make_ym_interval(y, m) AS r
 FROM test_date_add_ym_interval

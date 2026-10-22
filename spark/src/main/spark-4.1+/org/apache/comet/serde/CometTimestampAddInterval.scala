@@ -21,8 +21,5 @@ package org.apache.comet.serde
 
 import org.apache.spark.sql.catalyst.expressions.TimestampAddInterval
 
-/**
- * `timestamp + day-time or calendar interval` resolves to `TimestampAddInterval` on Spark 4.1+
- * (`TimeAdd` on earlier versions) and runs through the codegen dispatcher.
- */
+/** `timestamp + interval` on Spark 4.1+, which earlier versions call `TimeAdd`. */
 object CometTimestampAddInterval extends CometCodegenDispatch[TimestampAddInterval]

@@ -15,9 +15,7 @@
 -- specific language governing permissions and limitations
 -- under the License.
 
--- With ANSI on, DateAddInterval keeps day-granular intervals on the date path and rejects an
--- interval that carries hours, minutes, seconds or fractions of a second. The parser rejects
--- interval literals that mix year-month and day-time units, so make_interval builds them.
+-- With ANSI on, day-granular intervals stay on the date path and any time part is rejected.
 -- Config: spark.sql.ansi.enabled=true
 -- Config: spark.comet.exec.scalaUDF.codegen.enabled=true
 -- MinSparkVersion: 4.0
@@ -33,13 +31,11 @@ INSERT INTO test_date_add_interval_ansi VALUES
   (date'2024-06-15', NULL, 1),
   (NULL, 1, 1)
 
--- sentinel: a day-granular interval succeeds and asserts native execution. The row with a
--- NULL month builds a NULL interval inside the kernel and yields NULL rather than an error;
--- a literal NULL interval would be folded away by NullPropagation before reaching Comet.
+-- the NULL month row builds a NULL interval in the kernel and yields NULL, not an error; a NULL
+-- literal would be folded
 query expect_dispatch(dateaddinterval)
 SELECT d, m, dd, d + make_interval(0, m, 0, dd), d - make_interval(0, 1, 0, 1)
 FROM test_date_add_interval_ansi
 
--- an interval with a time part is rejected
 query expect_error(INVALID_INTERVAL_WITH_MICROSECONDS_ADDITION)
 SELECT d + make_interval(0, 1, 0, 1, 12) FROM test_date_add_interval_ansi
