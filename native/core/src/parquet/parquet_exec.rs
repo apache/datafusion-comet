@@ -829,14 +829,20 @@ mod tests {
     }
 
     /// The reader keeps the nested types of a file's ARROW:schema, so an Arrow writer's
-    /// `LargeBinary` or `BinaryView` list elements reach the conversion to Spark's string type
-    /// as those types, not as `Binary`. A malformed value must still decode to U+FFFD.
+    /// `LargeBinary`, `BinaryView` or dictionary-encoded list elements reach the conversion to
+    /// Spark's string type as those types, not as `Binary`. A malformed value must still decode
+    /// to U+FFFD.
     #[tokio::test]
-    async fn nested_large_and_view_binary_read_as_string_decode_invalid_utf8() {
+    async fn nested_arrow_binary_types_read_as_string_decode_invalid_utf8() {
         use arrow::array::{Array, AsArray, BinaryArray, ListArray};
         use arrow::buffer::OffsetBuffer;
 
-        for binary_type in [DataType::LargeBinary, DataType::BinaryView] {
+        for binary_type in [
+            DataType::LargeBinary,
+            DataType::BinaryView,
+            DataType::Dictionary(Box::new(DataType::Int32), Box::new(DataType::Binary)),
+            DataType::Dictionary(Box::new(DataType::Int8), Box::new(DataType::LargeBinary)),
+        ] {
             let element = Arc::new(Field::new("element", binary_type.clone(), true));
             let values = arrow::compute::cast(
                 &BinaryArray::from(vec![b"one".as_slice(), &[0xff]]),

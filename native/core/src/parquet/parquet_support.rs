@@ -22,7 +22,7 @@ use arrow::array::{
     make_array, FixedSizeBinaryArray, GenericListViewArray, MapArray, OffsetSizeTrait, StringArray,
 };
 use arrow::buffer::NullBuffer;
-use arrow::compute::can_cast_types;
+use arrow::compute::{can_cast_types, take};
 use arrow::datatypes::{FieldRef, Fields};
 use arrow::{
     array::{
@@ -344,6 +344,18 @@ fn parquet_convert_array_impl(
             let cast_options = SparkCastOptions::new_without_timezone(EvalMode::Legacy);
             let len = array.len();
             spark_cast(ColumnarValue::Array(array), to_type, &cast_options)?.into_array(len)
+        }
+        // The same schema can dictionary-encode such a value. Decode each dictionary value once
+        // through the arm above, then expand the keys, as Arrow's cast would.
+        (Dictionary(_, value_type), Utf8) if matches!(value_type.as_ref(), Binary | LargeBinary) => {
+            let dictionary = array.as_any_dictionary();
+            let values = parquet_convert_array_impl(
+                Arc::clone(dictionary.values()),
+                to_type,
+                parquet_options,
+                None,
+            )?;
+            Ok(take(values.as_ref(), dictionary.keys(), None)?)
         }
         // If Arrow cast supports the cast, delegate the cast to Arrow
         _ if can_cast_types(from_type, to_type) => {
