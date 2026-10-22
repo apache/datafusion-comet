@@ -140,7 +140,7 @@ because each table bucket is read as one partition.
 The Apache DataFusion Comet Rust-based reader seamlessly scans files from remote HDFS for [supported formats](#supported-spark-data-sources)
 
 ```{warning}
-HDFS support is experimental and is not covered by continuous integration. Comet reads HDFS through
+HDFS support is experimental. Comet reads HDFS through
 `libhdfs`, whose thread-local destructor detaches the calling thread from the JVM regardless of
 which component attached it
 ([HDFS-16021](https://issues.apache.org/jira/browse/HDFS-16021), still open in Hadoop). Comet
@@ -259,7 +259,7 @@ JAVA_HOME="/opt/homebrew/opt/openjdk@17" make release PROFILES="-Pspark-4.1" RUS
 Or use `spark-shell` with HDFS support as described [above](#building-comet-with-hdfs-support)
 
 Comet also has a test suite that exercises a native scan through `libhdfs` against a fake Hadoop
-filesystem, so it needs no cluster. It is excluded from CI and run by hand:
+filesystem, so it needs no cluster. It runs in CI and can be run by hand:
 
 ```shell
 ./mvnw test -Dtest=none -Dsuites="org.apache.comet.parquet.ParquetReadFromFakeHadoopFsSuite"

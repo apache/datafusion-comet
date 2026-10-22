@@ -500,6 +500,7 @@ jobs:
               org.apache.comet.parquet.CometEmptyRelationParquetWriterSuite
               org.apache.spark.sql.comet.CometNativeWriteSuite
               org.apache.comet.parquet.ParquetReadV1Suite
+              org.apache.comet.parquet.ParquetReadFromFakeHadoopFsSuite
               org.apache.comet.parquet.ParquetTimestampLtzAsNtzSuite
               org.apache.spark.sql.comet.ParquetEncryptionITCase
               org.apache.comet.exec.CometNativeReaderSuite

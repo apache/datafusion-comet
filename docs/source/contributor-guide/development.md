@@ -744,7 +744,7 @@ does not have or because running them there is not worth the cost. These are lis
 excluded and how to run it. Run a manual suite with:
 
 ```sh
-./mvnw test -Dtest=none -Dsuites="org.apache.comet.parquet.ParquetReadFromFakeHadoopFsSuite"
+./mvnw test -Dtest=none -Dsuites="org.apache.comet.parquet.ParquetReadFromS3Suite"
 ```
 
 Only add a suite to that list with a good reason; the default is that a new suite runs in CI.
