@@ -191,9 +191,6 @@ fn criterion_benchmark(c: &mut Criterion) {
     high_partition_group.finish();
 }
 
-/// Times one execution of a freshly built writer per iteration. A `ShuffleWriterExec`
-/// publishes its partition offsets once, so it cannot be re-executed; building it is
-/// setup and stays outside the measurement.
 // Include decimal SUM's non-null is_empty state, nullable Boolean-heavy rows,
 // and an Int64-only control. Both low and high partition counts matter because
 // short runs are more common with fewer hash partitions.
@@ -203,19 +200,22 @@ fn boolean_state_benchmark(c: &mut Criterion) {
     for shape in ["decimal_sum", "nullable_booleans", "int64_control"] {
         for partitions in [4, 200] {
             for key_run in [1, 64] {
-                let schema_batch = boolean_state_batch(8192, shape, key_run);
+                // Build distinct batches so the gather reads independent buffers and the
+                // writer does not encode and compress the same rows 100 times.
+                let batches = (0..100)
+                    .map(|batch_index| boolean_state_batch(8192, shape, key_run, batch_index))
+                    .collect::<Vec<_>>();
                 group.bench_function(
                     format!("{shape}/partitions={partitions}/key_run={key_run}"),
                     |b| {
                         bench_end_to_end(b, || {
-                            let batches = vec![schema_batch.clone(); 100];
                             create_shuffle_writer_from_batches(
                                 CompressionCodec::Lz4Frame,
                                 CometPartitioning::Hash(
                                     vec![Arc::new(Column::new("key", 0))],
                                     partitions,
                                 ),
-                                batches,
+                                batches.clone(),
                             )
                         })
                     },
@@ -226,33 +226,44 @@ fn boolean_state_benchmark(c: &mut Criterion) {
     group.finish();
 }
 
-fn boolean_state_batch(rows: usize, shape: &str, key_run: usize) -> RecordBatch {
+fn boolean_state_batch(
+    rows: usize,
+    shape: &str,
+    key_run: usize,
+    batch_index: usize,
+) -> RecordBatch {
+    let first_row = batch_index * rows;
+    let row_range = first_row..first_row + rows;
     let mut fields = vec![Field::new("key", DataType::Int64, false)];
     let mut columns: Vec<ArrayRef> = vec![Arc::new(Int64Array::from_iter_values(
-        (0..rows).map(|row| (row / key_run) as i64),
+        row_range.clone().map(|row| (row / key_run) as i64),
     ))];
     if shape == "decimal_sum" {
         fields.push(Field::new("sum", DataType::Decimal128(38, 2), true));
         fields.push(Field::new("is_empty", DataType::Boolean, false));
         columns.push(Arc::new(
-            Decimal128Array::from_iter((0..rows).map(|row| (row % 7 != 0).then_some(row as i128)))
-                .with_precision_and_scale(38, 2)
-                .unwrap(),
+            Decimal128Array::from_iter(
+                row_range
+                    .clone()
+                    .map(|row| (row % 7 != 0).then_some(row as i128)),
+            )
+            .with_precision_and_scale(38, 2)
+            .unwrap(),
         ));
         columns.push(Arc::new(BooleanArray::from_iter(
-            (0..rows).map(|row| Some(row % 7 == 0)),
+            row_range.clone().map(|row| Some(row % 7 == 0)),
         )));
     } else {
         for column in 0..8 {
             if shape == "nullable_booleans" {
                 fields.push(Field::new(format!("b{column}"), DataType::Boolean, true));
-                columns.push(Arc::new(BooleanArray::from_iter((0..rows).map(|row| {
-                    ((row + column) % 5 != 0).then_some((row + column) % 3 == 0)
-                }))));
+                columns.push(Arc::new(BooleanArray::from_iter(row_range.clone().map(
+                    |row| ((row + column) % 5 != 0).then_some((row + column) % 3 == 0),
+                ))));
             } else {
                 fields.push(Field::new(format!("i{column}"), DataType::Int64, false));
                 columns.push(Arc::new(Int64Array::from_iter_values(
-                    (0..rows).map(|row| (row + column) as i64),
+                    row_range.clone().map(|row| (row + column) as i64),
                 )));
             }
         }
@@ -260,6 +271,9 @@ fn boolean_state_batch(rows: usize, shape: &str, key_run: usize) -> RecordBatch 
     RecordBatch::try_new(Arc::new(Schema::new(fields)), columns).unwrap()
 }
 
+/// Times one execution of a freshly built writer per iteration. A `ShuffleWriterExec`
+/// publishes its partition offsets once, so it cannot be re-executed; building it is
+/// setup and stays outside the measurement.
 fn bench_end_to_end(b: &mut Bencher, make_exec: impl Fn() -> ShuffleWriterExec) {
     let ctx = SessionContext::new();
     b.iter_batched(
