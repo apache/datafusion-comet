@@ -1415,8 +1415,8 @@ case class CometExecRule(session: SparkSession, queryStagePrep: Boolean = false)
    * consumer reads them, while native expressions and typed Dataset conversion fill a whole Arrow
    * batch first. Below a limit, a `mapPartitions` function such as `_.take(1)`, or code reading
    * `Dataset.rdd`, an assertion or user function could throw on rows Spark never reaches. Joins
-   * can also skip an input, and generated filters, samples and joins can defer projected fields
-   * until a row passes the condition. Conversely, native joins can skip input Spark would
+   * can also skip an input, and generated projections, filters, samples and joins can defer child
+   * fields until an expression needs them. Conversely, native joins can skip input Spark would
    * evaluate. An operator that reads all of its input before it returns a row ends the search,
    * since Spark computes every row below it anyway: an exchange, a sort, a hash aggregate, or a
    * top-k over input that is not already sorted.
@@ -1450,6 +1450,8 @@ case class CometExecRule(session: SparkSession, queryStagePrep: Boolean = false)
         case _: MapPartitionsExec => Some(PartialReader("a mapPartitions function"))
         // These consumers defer projected fields, but still read every input object. Keep
         // typed Dataset conversion eligible unless an ancestor can skip whole input rows.
+        case _: ProjectExec =>
+          inheritedReader.orElse(Some(PartialReader("a projection", canSkipInput = false)))
         case _: FilterExec =>
           inheritedReader.orElse(Some(PartialReader("a filter", canSkipInput = false)))
         case _: SampleExec =>
@@ -1464,12 +1466,12 @@ case class CometExecRule(session: SparkSession, queryStagePrep: Boolean = false)
       }
       // TopK and aggregate result projections run after selection/aggregation. An external
       // consumer can still skip their output rows, even though their input is fully consumed.
-      // Filters, samples and joins introduce a context for their children only. A join's own
-      // keys and condition have separate checks for their evaluation order.
+      // Projections, filters, samples and joins introduce a context for their children only.
+      // A join's own keys and condition have separate checks for their evaluation order.
       val ownReader = original match {
         case _: TakeOrderedAndProjectExec | _: HashAggregateExec | _: ObjectHashAggregateExec |
-            _: FilterExec | _: SampleExec | _: BroadcastHashJoinExec | _: ShuffledHashJoinExec |
-            _: SortMergeJoinExec | _: BroadcastNestedLoopJoinExec =>
+            _: ProjectExec | _: FilterExec | _: SampleExec | _: BroadcastHashJoinExec |
+            _: ShuffledHashJoinExec | _: SortMergeJoinExec | _: BroadcastNestedLoopJoinExec =>
           inheritedReader
         case _ => childReader
       }
