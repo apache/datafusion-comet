@@ -15,8 +15,10 @@
 // specific language governing permissions and limitations
 // under the License.
 
+mod at_least_n_non_nulls;
 mod is_nan;
 mod rlike;
 
+pub use at_least_n_non_nulls::AtLeastNNonNulls;
 pub use is_nan::spark_isnan;
 pub use rlike::RLike;

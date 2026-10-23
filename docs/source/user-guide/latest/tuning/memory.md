@@ -148,8 +148,10 @@ one line every 10 seconds for the whole executor:
 Comet native memory usage: allocated 5412.3 MiB, reserved 3890.0 MiB (16 native plans, 8 memory pools); JVM Arrow allocated 310.4 MiB, 96.2 MiB of it imported from native
 ```
 
-- `allocated` is the memory that Comet's native code has allocated and not yet freed, whether or not
-  a pool tracks it.
+- `allocated` is the memory allocated through Comet's Rust global allocator and not yet freed,
+  whether or not a pool tracks it. It excludes allocations made by native libraries outside that
+  allocator, including the embedded Python interpreter and PyArrow when native Arrow UDFs are
+  enabled.
 - `reserved` is the part that Comet's memory pools have reserved from Spark's off-heap memory. It is
   charged against `spark.memory.offHeap.size`, so the container already has room for it. A pool
   sometimes has to track memory that Spark could not grant, such as a spilled batch read back from
@@ -185,7 +187,11 @@ alongside the JVM's own non-heap memory. To size the overhead from it:
    partition reserves its context while spilling or writing its output, so that memory is in
    `reserved` but never in `allocated`, and the untracked memory worked out from the log
    understates what has to fit in the overhead by one context per such task (about 1.3 MiB at the
-   default level, close to 8 MiB at levels 7 and 8).
+   default level, close to 8 MiB at levels 7 and 8). With native Arrow UDFs, budget the embedded
+   Python interpreter and PyArrow allocations in addition to the untracked memory calculated from
+   the log. A PyArrow result buffer later imported into the JVM can appear in the
+   `imported from native` figure that the estimate subtracts, even though Rust's `allocated` does
+   not count it. Use the executor's peak resident memory to size this additional overhead.
 
 For example, a 16 GiB executor derives an overhead of 1638 MiB. If the line above has the most
 untracked memory in its log, that is 5412.3 + (310.4 - 96.2) - 3890.0 = 1736.5 MiB. The overhead
