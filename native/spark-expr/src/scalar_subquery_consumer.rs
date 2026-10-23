@@ -51,12 +51,18 @@ const SCALAR_INPUT_BYTES: usize = 1024 * 1024;
 
 impl ScalarSubqueryConsumer {
     pub fn wrap(inner: Arc<dyn PhysicalExpr>) -> Arc<dyn PhysicalExpr> {
-        // A field projection must still materialize its output. Wrap its consumer instead.
-        if inner.is::<GetStructField>() || inner.is::<Self>() {
+        // Keep literals and direct field chains visible so a narrow field can be selected
+        // before broadcasting. A field read over a computed struct is itself a consumer.
+        if inner.is::<Literal>()
+            || inner.is::<Self>()
+            || inner
+                .downcast_ref::<GetStructField>()
+                .is_some_and(|field| field.literal_field().is_some())
+        {
             return inner;
         }
         if let Some(properties) = consumer_properties(&inner) {
-            if properties.has_field && (properties.constant || properties.bytes != 0) {
+            if properties.has_scalar_struct && (properties.constant || properties.bytes != 0) {
                 return Arc::new(Self {
                     inner,
                     constant: properties.constant,
@@ -70,7 +76,7 @@ impl ScalarSubqueryConsumer {
 
 struct ConsumerProperties {
     constant: bool,
-    has_field: bool,
+    has_scalar_struct: bool,
     bytes: usize,
 }
 
@@ -83,7 +89,7 @@ fn consumer_properties(expr: &Arc<dyn PhysicalExpr>) -> Option<ConsumerPropertie
     {
         return Some(ConsumerProperties {
             constant: true,
-            has_field: true,
+            has_scalar_struct: true,
             bytes: variable_bytes(&value.to_data()),
         });
     }
@@ -96,7 +102,7 @@ fn consumer_properties(expr: &Arc<dyn PhysicalExpr>) -> Option<ConsumerPropertie
         };
         return Some(ConsumerProperties {
             constant: true,
-            has_field: false,
+            has_scalar_struct: matches!(literal.value(), ScalarValue::Struct(_)),
             bytes,
         });
     }
@@ -105,14 +111,14 @@ fn consumer_properties(expr: &Arc<dyn PhysicalExpr>) -> Option<ConsumerPropertie
     if expr.is::<Subquery>() {
         return Some(ConsumerProperties {
             constant: true,
-            has_field: false,
+            has_scalar_struct: false,
             bytes: 0,
         });
     }
     if expr.is::<Column>() {
         return Some(ConsumerProperties {
             constant: false,
-            has_field: false,
+            has_scalar_struct: false,
             bytes: 0,
         });
     }
@@ -149,16 +155,16 @@ fn consumer_properties(expr: &Arc<dyn PhysicalExpr>) -> Option<ConsumerPropertie
     }
     let mut properties = ConsumerProperties {
         constant: true,
-        has_field: false,
+        has_scalar_struct: false,
         bytes: 0,
     };
     for child in expr.children() {
         let child = consumer_properties(child)?;
         properties.constant &= child.constant;
-        properties.has_field |= child.has_field;
+        properties.has_scalar_struct |= child.has_scalar_struct;
         properties.bytes = properties.bytes.saturating_add(child.bytes);
     }
-    properties.has_field |= expr.is::<GetStructField>() && properties.constant;
+    properties.has_scalar_struct |= expr.is::<GetStructField>() && properties.constant;
     Some(properties)
 }
 

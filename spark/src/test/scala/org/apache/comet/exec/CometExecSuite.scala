@@ -3451,6 +3451,74 @@ class CometExecSuite extends CometTestBase {
     }
   }
 
+  test("whole struct scalar consumers bound intermediate strings") {
+    val numRows = 8192
+    val bytes = 524288
+    withSQLConf(
+      SQLConf.SUBQUERY_REUSE_ENABLED.key -> "true",
+      CometConf.COMET_BATCH_SIZE.key -> numRows.toString,
+      CometConf.COMET_SHUFFLE_MODE.key -> "jvm") {
+      withTempPath { source =>
+        withTempPath { outer =>
+          withSQLConf(CometConf.COMET_ENABLED.key -> "false") {
+            Seq("x" * bytes).toDF("s").write.parquet(source.getCanonicalPath)
+            spark.range(0, numRows.toLong, 1, 1).write.parquet(outer.getCanonicalPath)
+          }
+          withParquetTable(source.getCanonicalPath, "whole_struct_source") {
+            withParquetTable(outer.getCanonicalPath, "whole_struct_outer") {
+              val maxStruct =
+                "(SELECT max(named_struct('s', s, 'd', 0D)) FROM whole_struct_source)"
+              val minStruct =
+                "(SELECT min(named_struct('s', s, 'd', 0D)) FROM whole_struct_source)"
+              val consumers: Seq[(String, Long => Any)] = Seq(
+                (
+                  s"octet_length(CAST(IF(id > 0, $maxStruct, " +
+                    "named_struct('s', 'small', 'd', 0D)) AS STRING))",
+                  id => if (id == 0L) 12 else bytes + 7),
+                (s"(IF(id > 0, $maxStruct, $minStruct)).d", _ => 0.0d),
+                (s"(CAST($maxStruct AS STRUCT<s:STRING,d:FLOAT>)).d", _ => 0.0f))
+              for {
+                aqe <- Seq(false, true)
+                (consumer, expected) <- consumers
+              } {
+                withSQLConf(SQLConf.ADAPTIVE_EXECUTION_ENABLED.key -> aqe.toString) {
+                  val df = sql(s"SELECT id, $consumer AS n FROM whole_struct_outer")
+                  val structs = df.queryExecution.optimizedPlan.collect { case p =>
+                    p.expressions.flatMap(_.collect {
+                      case s: LogicalScalarSubquery if s.dataType.isInstanceOf[StructType] => s
+                    })
+                  }.flatten
+                  assert(
+                    structs.nonEmpty,
+                    s"Expected a whole-struct subquery: ${df.queryExecution}")
+                  val (_, plan) = checkSparkAnswerAndOperator(df, Seq(classOf[CometProjectExec]))
+                  val result = df.collect()
+                  assert(result.length == numRows)
+                  result.foreach { row =>
+                    assert(row.get(1) == expected(row.getLong(0)))
+                  }
+                  val projections = stripAQEPlan(plan).collect {
+                    case p: CometProjectExec if p.output.exists(_.name == "n") => p
+                  }
+                  assert(projections.nonEmpty, s"Expected native whole-struct consumer: $plan")
+                  projections.foreach { projection =>
+                    val sizes = projection
+                      .executeColumnar()
+                      .mapPartitions(batches => batches.map(_.numRows()))
+                      .collect()
+                    assert(
+                      sizes.toSeq == Seq(numRows),
+                      s"Expected one full batch: ${sizes.toSeq}")
+                  }
+                }
+              }
+            }
+          }
+        }
+      }
+    }
+  }
+
   test("merged timestamp scalar clocks over a mixed two-row batch") {
     withSQLConf(
       SQLConf.SUBQUERY_REUSE_ENABLED.key -> "true",

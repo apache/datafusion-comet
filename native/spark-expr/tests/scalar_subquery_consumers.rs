@@ -549,3 +549,138 @@ fn literal_field_chain_preserves_each_parent_null_and_empty_shape() {
         }
     }
 }
+
+#[test]
+fn whole_struct_conditional_is_consumed_in_bounded_batches() {
+    use arrow::array::Float64Array;
+    use arrow::buffer::NullBuffer;
+    use datafusion::logical_expr::Operator;
+    use datafusion::physical_expr::expressions::{BinaryExpr, Column};
+    use datafusion_comet_spark_expr::{Cast, IfExpr, SparkCastOptions};
+    for parent_null in [false, true] {
+        for otherwise in [Some("{small, 0.0}".to_string()), None] {
+            let structure = ScalarValue::Struct(Arc::new(StructArray::new(
+                vec![
+                    Field::new("s", DataType::Utf8, false),
+                    Field::new("d", DataType::Float64, false),
+                ]
+                .into(),
+                vec![
+                    Arc::new(StringArray::from(vec!["x".repeat(524288)])),
+                    Arc::new(Float64Array::from(vec![0.0])),
+                ],
+                parent_null.then(|| NullBuffer::new_null(1)),
+            )));
+            let literal: Arc<dyn PhysicalExpr> = Arc::new(Literal::new(structure));
+            // The planner wraps at each construction point. Keep the source scalar, so a
+            // surrounding field read can still select its field before broadcasting it.
+            let source = ScalarSubqueryConsumer::wrap(literal.clone());
+            assert!(Arc::ptr_eq(&source, &literal));
+            let cast = ScalarSubqueryConsumer::wrap(Arc::new(Cast::new(
+                source,
+                DataType::Utf8,
+                SparkCastOptions::new(datafusion_comet_spark_expr::EvalMode::Legacy, "UTC"),
+                None,
+                None,
+            )));
+            let condition = Arc::new(BinaryExpr::new(
+                Arc::new(Column::new("id", 0)),
+                Operator::Gt,
+                Arc::new(Literal::new(ScalarValue::Int64(Some(0)))),
+            ));
+            let conditional = ScalarSubqueryConsumer::wrap(Arc::new(IfExpr::new(
+                condition,
+                cast,
+                Arc::new(Literal::new(ScalarValue::Utf8(otherwise.clone()))),
+            )));
+            let expr = ScalarSubqueryConsumer::wrap(octet(conditional));
+            // Check admission before evaluating: the unfixed path can build several GiB.
+            assert!(expr.is::<ScalarSubqueryConsumer>());
+            for rows in [0, 1, 8192] {
+                let output = expr
+                    .evaluate(&batch(rows))
+                    .unwrap()
+                    .into_array(rows)
+                    .unwrap();
+                let expected = Int32Array::from_iter((0..rows).map(|id| {
+                    if id == 0 {
+                        otherwise.as_ref().map(|s| s.len() as i32)
+                    } else if parent_null {
+                        None
+                    } else {
+                        Some(524295)
+                    }
+                }));
+                assert_eq!(output.as_ref(), &expected);
+            }
+        }
+    }
+}
+
+#[test]
+fn field_reads_bound_computed_structs_before_selecting_narrow_fields() {
+    use arrow::array::Float64Array;
+    use datafusion::logical_expr::Operator;
+    use datafusion::physical_expr::expressions::{BinaryExpr, Column};
+    use datafusion_comet_spark_expr::{Cast, EvalMode, IfExpr, SparkCastOptions};
+    let structure = ScalarValue::Struct(Arc::new(StructArray::new(
+        vec![
+            Field::new("s", DataType::Utf8, false),
+            Field::new("d", DataType::Float64, false),
+        ]
+        .into(),
+        vec![
+            Arc::new(StringArray::from(vec!["x".repeat(524288)])),
+            Arc::new(Float64Array::from(vec![0.0])),
+        ],
+        None,
+    )));
+    for cast in [false, true] {
+        let literal: Arc<dyn PhysicalExpr> = Arc::new(Literal::new(structure.clone()));
+        let computed: Arc<dyn PhysicalExpr> = if cast {
+            Arc::new(Cast::new(
+                literal,
+                DataType::Struct(
+                    vec![
+                        Field::new("s", DataType::Utf8, false),
+                        Field::new("d", DataType::Float32, false),
+                    ]
+                    .into(),
+                ),
+                SparkCastOptions::new(EvalMode::Legacy, "UTC"),
+                None,
+                None,
+            ))
+        } else {
+            Arc::new(IfExpr::new(
+                Arc::new(BinaryExpr::new(
+                    Arc::new(Column::new("id", 0)),
+                    Operator::Gt,
+                    Arc::new(Literal::new(ScalarValue::Int64(Some(0)))),
+                )),
+                literal,
+                Arc::new(Literal::new(structure.clone())),
+            ))
+        };
+        let child = ScalarSubqueryConsumer::wrap(computed);
+        let expr = ScalarSubqueryConsumer::wrap(Arc::new(GetStructField::new(child, 1)));
+        // Without the outer wrapper, evaluating the child duplicates the unused 512 KiB field.
+        assert!(expr.is::<ScalarSubqueryConsumer>());
+        for rows in [0, 1, 8192] {
+            let output = expr
+                .evaluate(&batch(rows))
+                .unwrap()
+                .into_array(rows)
+                .unwrap();
+            let expected = if cast {
+                ScalarValue::Float32(Some(0.0))
+            } else {
+                ScalarValue::Float64(Some(0.0))
+            };
+            assert_eq!(
+                output.as_ref(),
+                expected.to_array_of_size(rows).unwrap().as_ref()
+            );
+        }
+    }
+}
