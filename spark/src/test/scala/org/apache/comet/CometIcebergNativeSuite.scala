@@ -2829,6 +2829,102 @@ class CometIcebergNativeSuite
     }
   }
 
+  // A table migrated from Spark-written Parquet reads its files, which have no field ids, through
+  // its name mapping. iceberg-rust cannot open the list layout that `spark.sql.parquet.writeLegacyFormat`
+  // writes (a two-level list) through a name mapping: the read schema it supplies keeps a field
+  // id on the list's element field and the Parquet reader rejects it. The layout is only known
+  // from the file, so the scan falls back for the list column and stays native for the primitives.
+  test("name-mapped table with a list column from a legacy Parquet layout falls back") {
+    assume(icebergAvailable, "Iceberg not available in classpath")
+
+    withTempIcebergDir { warehouseDir =>
+      withSQLConf(
+        "spark.sql.catalog.test_cat" -> "org.apache.iceberg.spark.SparkCatalog",
+        "spark.sql.catalog.test_cat.type" -> "hadoop",
+        "spark.sql.catalog.test_cat.warehouse" -> warehouseDir.getAbsolutePath,
+        CometConf.COMET_ENABLED.key -> "true",
+        CometConf.COMET_EXEC_ENABLED.key -> "true",
+        CometConf.COMET_ICEBERG_NATIVE_ENABLED.key -> "true") {
+
+        val dataPath = s"${warehouseDir.getAbsolutePath}/legacy_list"
+        // Non-null elements and a non-null struct field: with `writeLegacyFormat` Spark then writes
+        // the two-level layout, `repeated group array { required int32 col2 }`, the list's
+        // element being the repeated group itself.
+        val sparkSchema = StructType(
+          Seq(
+            org.apache.spark.sql.types.StructField("id", IntegerType, nullable = false),
+            org.apache.spark.sql.types.StructField(
+              "col1",
+              ArrayType(
+                StructType(Seq(
+                  org.apache.spark.sql.types.StructField("col2", IntegerType, nullable = false))),
+                containsNull = false))))
+        val jsonRows = (0 until 10).map(i => s"""{"id": $i, "col1": [{"col2": ${i * 2}}]}""")
+        withSQLConf("spark.sql.parquet.writeLegacyFormat" -> "true") {
+          spark.read
+            .schema(sparkSchema)
+            .json(spark.createDataset(jsonRows)(org.apache.spark.sql.Encoders.STRING))
+            .coalesce(1)
+            .write
+            .parquet(dataPath)
+        }
+        spark.sql("CREATE NAMESPACE IF NOT EXISTS test_cat.db")
+        val table = "test_cat.db.legacy_list"
+        spark.sql(s"CREATE TABLE $table (id INT, col1 ARRAY<STRUCT<col2: INT>>) USING iceberg")
+        try {
+          val tableUtilClass = Class.forName("org.apache.iceberg.spark.SparkTableUtil")
+          val icebergTable = spark.sessionState.catalogManager
+            .catalog("test_cat")
+            .asInstanceOf[org.apache.iceberg.spark.SparkCatalog]
+            .loadTable(
+              org.apache.spark.sql.connector.catalog.Identifier.of(Array("db"), "legacy_list"))
+            .asInstanceOf[org.apache.iceberg.spark.source.SparkTable]
+            .table()
+          // What the migrate and snapshot actions set for a table they create: `importSparkTable`
+          // reads a mapping that is already there and does not create one.
+          icebergTable
+            .updateProperties()
+            .set(
+              "schema.name-mapping.default",
+              org.apache.iceberg.mapping.NameMappingParser
+                .toJson(org.apache.iceberg.mapping.MappingUtil.create(icebergTable.schema())))
+            .commit()
+          spark.sql(s"CREATE TABLE parquet_legacy_list USING parquet LOCATION '$dataPath'")
+          tableUtilClass
+            .getMethod(
+              "importSparkTable",
+              classOf[org.apache.spark.sql.SparkSession],
+              classOf[org.apache.spark.sql.catalyst.TableIdentifier],
+              classOf[org.apache.iceberg.Table],
+              classOf[String])
+            .invoke(
+              null,
+              spark,
+              new org.apache.spark.sql.catalyst.TableIdentifier("parquet_legacy_list"),
+              icebergTable,
+              s"${warehouseDir.getAbsolutePath}/staging")
+
+          // The list column: declined at planning, and Spark reads the file's values.
+          val (_, listPlan) = checkSparkAnswerAndFallbackReason(
+            s"SELECT id, col1 FROM $table ORDER BY id",
+            "table with a name mapping")
+          assert(
+            collect(listPlan) { case s: CometIcebergNativeScanExec => s }.isEmpty,
+            s"$listPlan")
+          val read = spark.sql(s"SELECT col1[0].col2 FROM $table ORDER BY id").collect()
+          assert(read.map(_.getInt(0)).toSeq == (0 until 10).map(_ * 2), read.mkString(","))
+
+          // The primitives alone stay native.
+          val (_, idPlan) = checkSparkAnswer(s"SELECT id FROM $table ORDER BY id")
+          assertSingleNativeScan(idPlan)
+        } finally {
+          spark.sql(s"DROP TABLE IF EXISTS $table")
+          spark.sql("DROP TABLE IF EXISTS parquet_legacy_list")
+        }
+      }
+    }
+  }
+
   test("UUID type - native Iceberg UUID column (reproduces type mismatch)") {
     assume(icebergAvailable, "Iceberg not available in classpath")
 

@@ -230,6 +230,10 @@ The following scenarios will fall back to the JVM Iceberg reader:
   object-store configuration per scan)
 - HDFS scans on a cluster with Kerberos, and HDFS file locations without a port that name an
   undeclared nameservice or that have no authority (see [HDFS](#hdfs))
+- Scans that read a list or map column of a table with a name mapping (`schema.name-mapping.default`,
+  which the `migrate`, `snapshot` and `add_files` procedures set). The native reader cannot open the
+  Parquet list layouts that Hive and Spark's `writeLegacyFormat` write through a name mapping, and a
+  file's layout is not known at planning time
 - Scans where Iceberg reports an output ordering (for example with
   `spark.sql.iceberg.planning.preserve-data-ordering=true`). Spark may then skip the sort above the
   scan, and the native reader does not preserve file order

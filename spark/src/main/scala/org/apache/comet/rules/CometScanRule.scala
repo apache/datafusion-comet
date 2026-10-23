@@ -928,6 +928,29 @@ case class CometScanRule(session: SparkSession)
           !secure && undeclared.isEmpty
         }
 
+        // iceberg-rust reads a data file that has no field ids through the table's name mapping
+        // (`schema.name-mapping.default`, which migrate, snapshot and add_files set). It cannot
+        // open the list layouts that Hive and Spark's `writeLegacyFormat` write (a two-level list,
+        // or a three-level one with `bag`/`array_element` groups) that way: the read schema it
+        // supplies keeps a field id on the list's element field, and the Parquet reader rejects it
+        // as incompatible. A file's layout is only known from its footer, so a scan of such a
+        // table falls back whenever it reads a list or map column, at any depth.
+        val nameMappedContainersSupported = {
+          val hasNameMapping = IcebergReflection
+            .getTableProperties(metadata.table)
+            .exists(_.containsKey("schema.name-mapping.default"))
+          val containers =
+            scanExec.output.filter(a => CometScanRule.containsArrayOrMap(a.dataType)).map(_.name)
+          if (hasNameMapping && containers.nonEmpty) {
+            fallbackReasons += "Iceberg scan reads list or map columns " +
+              s"(${containers.mkString(", ")}) of a table with a name mapping " +
+              "(schema.name-mapping.default); Comet's native reader cannot open Hive-style or " +
+              "two-level Parquet lists through a name mapping, and a file's layout is not known " +
+              "at planning"
+          }
+          !hasNameMapping || containers.isEmpty
+        }
+
         if (!taskValidation.allParquet) {
           fallbackReasons += "Iceberg scan contains non-Parquet files (ORC or Avro). " +
             "Comet only supports Parquet files in Iceberg tables"
@@ -1141,7 +1164,8 @@ case class CometScanRule(session: SparkSession)
           taskValidation.allParquet && allSupportedFilesystems && allLocationsOpenable &&
           metadataSchemeSupported && partitionTypesSupported && unifiedPartitionTypeSupported &&
           transformFunctionsSupported && deleteFileTypesSupported && dppSubqueriesSupported &&
-          nestedFieldsSupported && taskSchemaNamesSupported && hdfsSupported) {
+          nestedFieldsSupported && taskSchemaNamesSupported && hdfsSupported &&
+          nameMappedContainersSupported) {
           CometBatchScanExec(
             scanExec.clone().asInstanceOf[BatchScanExec],
             runtimeFilters = scanExec.runtimeFilters,
@@ -1427,6 +1451,13 @@ object CometScanRule extends Logging {
    * the bucket from the first path segment (`s3_blob_fs_support.rs`), so a hostless
    * `blob:///bucket/key.parquet` IS openable when it carries a promotable bucket segment.
    */
+  /** Whether `dataType` is, or anywhere contains, an array or a map. */
+  private[rules] def containsArrayOrMap(dataType: DataType): Boolean = dataType match {
+    case _: ArrayType | _: MapType => true
+    case StructType(fields) => fields.exists(f => containsArrayOrMap(f.dataType))
+    case _ => false
+  }
+
   private[rules] def hasOpenableAuthority(uri: URI, s3CompliantSchemes: Set[String]): Boolean = {
     val scheme = NativeConfig.lowerScheme(uri)
     scheme.isEmpty || scheme.contains("file") || uri.getRawAuthority != null ||
