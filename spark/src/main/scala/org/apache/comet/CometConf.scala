@@ -203,9 +203,9 @@ object CometConf extends ShimCometConf {
           "cache holds up to 50 MiB of decoded footers and page indexes for each of its " +
           "running tasks, outside Spark's memory accounting. Up to two caches are kept after " +
           "their tasks finish, for the next task of their stage, and each of those holds up " +
-          "to 50 MiB until tasks of two other stages run on the executor or the executor " +
-          "shuts down. When disabled, each task keeps its own 50 MiB cache, which is freed " +
-          "when the task ends.")
+          "to 50 MiB until no task of its stage has run for 10 seconds, tasks of two other " +
+          "stages run on the executor, or the executor shuts down. When disabled, each task " +
+          "keeps its own 50 MiB cache, which is freed when the task ends.")
       .booleanConf
       .createWithDefault(true)
 

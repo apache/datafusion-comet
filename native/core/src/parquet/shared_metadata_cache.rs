@@ -37,11 +37,11 @@
 //! tasks own it through their `RuntimeEnv`. It additionally holds strong references to the last
 //! [`MAX_IDLE_CACHES`] caches it handed out. Those matter when an executor runs one task at a
 //! time: the next task of the stage starts after the previous one released its plan. Whatever the
-//! tasks do, at most [`MAX_IDLE_CACHES`] caches outlive the tasks that used them. A retained cache
-//! is freed when tasks of [`MAX_IDLE_CACHES`] other stages have asked for theirs since, or when
-//! the plugin shuts down and [`clear_shared_metadata_caches`] runs. Nothing frees it sooner: an
-//! executor is not told that a stage has finished, so one that goes idle after a query keeps the
-//! caches of its last stages until it shuts down.
+//! tasks do, at most [`MAX_IDLE_CACHES`] caches outlive the tasks that used them. An executor is
+//! not told that a stage has finished, so a retained cache is freed once no task of its stage has
+//! run for [`IDLE_CACHE_TIMEOUT`], once tasks of [`MAX_IDLE_CACHES`] other stages have asked for
+//! theirs, or when the plugin shuts down and [`clear_shared_metadata_caches`] runs, whichever comes
+//! first. An executor that goes idle after a query frees them within the timeout.
 //!
 //! A stage's cache holds DataFusion's per-task limit for each of its tasks that is running, and one
 //! task's limit once none is, so that sharing does not shrink the room each task had with a cache
@@ -56,6 +56,7 @@
 //! the file's path within its object store, which drops the bucket, so [`scope_to_store`] gives
 //! each scan a view of the cache that also keys by the scan's object store.
 
+use crate::execution::jni_api::get_runtime;
 use crate::execution::spark_config::{
     SparkConfig, COMET_APP_ID, COMET_PARQUET_SHARED_METADATA_CACHE_ENABLED, COMET_STAGE_ATTEMPT,
     COMET_STAGE_ID,
@@ -69,11 +70,16 @@ use datafusion::execution::cache::default_cache::DefaultCache;
 use datafusion::execution::cache::{Cache, CacheEntryInfo};
 use object_store::path::Path;
 use std::collections::{HashMap, VecDeque};
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, LazyLock, Mutex, Weak};
-use std::time::Duration;
+use std::time::{Duration, Instant};
 
 /// How many caches of stages with no running task the registry holds on to.
 const MAX_IDLE_CACHES: usize = 2;
+
+/// How long the registry holds on to the cache of a stage with no running task. The next task of a
+/// stage that runs one task at a time on an executor starts well within it.
+const IDLE_CACHE_TIMEOUT: Duration = Duration::from_secs(10);
 
 #[derive(Debug, Clone, PartialEq, Eq, Hash)]
 pub(crate) struct StageKey {
@@ -82,10 +88,17 @@ pub(crate) struct StageKey {
     pub stage_attempt: i32,
 }
 
+/// How many tasks of a stage are running, and since when none has been.
+#[derive(Default)]
+struct Running {
+    tasks: usize,
+    idle_since: Option<Instant>,
+}
+
 /// The cache of one stage, and how many of its tasks are running.
 struct StageCache {
     cache: Arc<DefaultCache<Path, CachedFileMetadataEntry>>,
-    running: Mutex<usize>,
+    running: Mutex<Running>,
 }
 
 impl StageCache {
@@ -95,7 +108,7 @@ impl StageCache {
                 DefaultCache::new(DEFAULT_METADATA_CACHE_LIMIT)
                     .with_name("SharedFileMetadataCache"),
             ),
-            running: Mutex::new(0),
+            running: Mutex::new(Running::default()),
         }
     }
 
@@ -103,9 +116,15 @@ impl StageCache {
     /// evicts the least recently used entries down to it.
     fn update_running(&self, update: impl FnOnce(usize) -> usize) {
         let mut running = self.running.lock().unwrap();
-        *running = update(*running);
+        running.tasks = update(running.tasks);
+        running.idle_since = (running.tasks == 0).then(Instant::now);
         self.cache
-            .update_cache_limit(DEFAULT_METADATA_CACHE_LIMIT.saturating_mul((*running).max(1)));
+            .update_cache_limit(DEFAULT_METADATA_CACHE_LIMIT.saturating_mul(running.tasks.max(1)));
+    }
+
+    /// When the cache has gone unused for `timeout`, or `None` while a task of the stage runs.
+    fn expires_at(&self, timeout: Duration) -> Option<Instant> {
+        Some(self.running.lock().unwrap().idle_since? + timeout)
     }
 }
 
@@ -138,7 +157,7 @@ impl Drop for TaskCache {
 impl std::fmt::Debug for TaskCache {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         f.debug_struct("TaskCache")
-            .field("running", &*self.stage.running.lock().unwrap())
+            .field("running", &self.stage.running.lock().unwrap().tasks)
             .finish()
     }
 }
@@ -208,6 +227,8 @@ struct Registry {
 #[derive(Default)]
 pub(crate) struct SharedMetadataCaches {
     registry: Mutex<Registry>,
+    /// Whether a task that frees the idle caches is running.
+    expiring: AtomicBool,
 }
 
 impl SharedMetadataCaches {
@@ -231,10 +252,60 @@ impl SharedMetadataCaches {
         Arc::new(TaskCache::new(stage))
     }
 
+    /// Frees the retained caches that have gone unused for `timeout` at `now`, and returns when
+    /// the next of the remaining ones would, or `None` when none is retained.
+    fn expire_idle(&self, now: Instant, timeout: Duration) -> Option<Instant> {
+        let mut registry = self.registry.lock().unwrap();
+        let mut expired = Vec::new();
+        let mut next: Option<Instant> = None;
+        registry
+            .retained
+            .retain(|(_, stage)| match stage.expires_at(timeout) {
+                Some(at) if at <= now => {
+                    expired.push(Arc::clone(stage));
+                    false
+                }
+                at => {
+                    // A stage with a running task is checked again a whole timeout later.
+                    let at = at.unwrap_or(now + timeout);
+                    next = Some(next.map_or(at, |next| next.min(at)));
+                    true
+                }
+            });
+        drop(expired);
+        registry.alive.retain(|_, weak| weak.strong_count() > 0);
+        next
+    }
+
+    /// Starts a task on `runtime` that frees retained caches as they time out, unless one is
+    /// running. It stops once no cache is retained, and the next request for a cache starts another.
+    fn expire_idle_on(&'static self, runtime: &tokio::runtime::Handle, timeout: Duration) {
+        if self.expiring.swap(true, Ordering::AcqRel) {
+            return;
+        }
+        runtime.spawn(async move {
+            loop {
+                while let Some(next) = self.expire_idle(Instant::now(), timeout) {
+                    tokio::time::sleep_until(next.into()).await;
+                }
+                self.expiring.store(false, Ordering::Release);
+                // A cache retained after the last check found this task still running, so carry
+                // on unless no cache is retained or another task has started since.
+                if self.registry.lock().unwrap().retained.is_empty()
+                    || self.expiring.swap(true, Ordering::AcqRel)
+                {
+                    break;
+                }
+            }
+        });
+    }
+
     /// Forgets every stage, freeing the retained caches. Running tasks keep the caches they hold.
     fn clear(&self) {
         let dropped = std::mem::take(&mut *self.registry.lock().unwrap());
         drop(dropped);
+        // The runtime that ran the expiring task is shut down along with the caches.
+        self.expiring.store(false, Ordering::Release);
     }
 
     #[cfg(test)]
@@ -364,6 +435,7 @@ pub(crate) fn shared_metadata_cache_for_task(
         stage_attempt: parse(COMET_STAGE_ATTEMPT)?,
     };
     let cache: Arc<FileMetadataCache> = CACHES.cache_for(key);
+    CACHES.expire_idle_on(&get_runtime(), IDLE_CACHE_TIMEOUT);
     Some(cache)
 }
 
@@ -445,6 +517,67 @@ mod tests {
         // The running stage plus the idle ones that fit.
         assert_eq!(caches.len(), 1 + MAX_IDLE_CACHES);
         assert!(same_stage(&running, &caches.cache_for(key(0, 0))));
+    }
+
+    #[test]
+    fn an_idle_cache_is_freed_after_the_timeout() {
+        let caches = SharedMetadataCaches::default();
+        let running = caches.cache_for(key(0, 0));
+        let idle = Arc::downgrade(&caches.cache_for(key(1, 0)).stage);
+        let idle_since = Instant::now();
+        let timeout = Duration::from_secs(10);
+
+        // Not yet timed out; the running stage is checked a timeout from now.
+        let next = caches.expire_idle(idle_since, timeout).unwrap();
+        assert!(idle.upgrade().is_some());
+        assert!(next <= idle_since + timeout + Duration::from_secs(1));
+
+        let later = idle_since + timeout + Duration::from_secs(1);
+        assert!(caches.expire_idle(later, timeout).is_some());
+        assert!(idle.upgrade().is_none());
+        assert_eq!(caches.len(), 1);
+        // A stage with a running task is never timed out.
+        assert!(same_stage(&running, &caches.cache_for(key(0, 0))));
+
+        drop(running);
+        let much_later = later + 2 * timeout;
+        assert!(caches.expire_idle(much_later, timeout).is_none());
+        assert_eq!(caches.len(), 0);
+    }
+
+    #[test]
+    fn a_task_of_the_stage_resets_its_timeout() {
+        let caches = SharedMetadataCaches::default();
+        drop(caches.cache_for(key(1, 0)));
+        let timeout = Duration::from_secs(10);
+        let start = Instant::now();
+        std::thread::sleep(Duration::from_millis(20));
+        // The next task of the stage runs and finishes, so the cache went idle after `start`.
+        drop(caches.cache_for(key(1, 0)));
+        assert!(caches
+            .expire_idle(start + timeout, timeout)
+            .is_some_and(|next| next > start + timeout));
+        assert_eq!(caches.len(), 1);
+    }
+
+    #[test]
+    fn the_expiring_task_frees_idle_caches_and_stops() {
+        static CACHES: LazyLock<SharedMetadataCaches> =
+            LazyLock::new(SharedMetadataCaches::default);
+        let runtime = tokio::runtime::Builder::new_current_thread()
+            .enable_time()
+            .build()
+            .unwrap();
+        let idle = Arc::downgrade(&CACHES.cache_for(key(1, 0)).stage);
+        let timeout = Duration::from_millis(50);
+        CACHES.expire_idle_on(runtime.handle(), timeout);
+        runtime.block_on(async {
+            while CACHES.expiring.load(Ordering::Acquire) {
+                tokio::time::sleep(Duration::from_millis(10)).await;
+            }
+        });
+        assert!(idle.upgrade().is_none());
+        assert_eq!(CACHES.len(), 0);
     }
 
     #[test]
