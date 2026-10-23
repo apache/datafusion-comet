@@ -24,6 +24,7 @@ import java.lang.reflect.InvocationTargetException
 import org.scalatest.funsuite.AnyFunSuite
 import org.scalatest.matchers.should.Matchers
 
+import org.apache.hadoop.conf.Configuration
 import org.apache.iceberg.{DeleteFile, FileContent}
 import org.apache.iceberg.expressions.Expressions
 import org.apache.spark.sql.catalyst.expressions.AttributeReference
@@ -238,6 +239,28 @@ class CometIcebergNativeScanSuite extends AnyFunSuite with Matchers {
 
     out("s3.endpoint") shouldBe "https://global.example.com"
     out.values.toSet should not contain "https://some.example.com"
+  }
+
+  test("HDFS nameservices are declared from the Hadoop configuration") {
+    val conf = new Configuration(false)
+    conf.set("dfs.ha.namenodes.ns1", "nn2, nn1")
+    conf.set("dfs.namenode.rpc-address.ns1.nn1", "host1:8020")
+    conf.set("dfs.namenode.rpc-address.ns1.nn2", "host2:8020")
+    // A NameNode without a port cannot be dialed, so ns2 is not declared.
+    conf.set("dfs.ha.namenodes.ns2", "nn1")
+    conf.set("dfs.namenode.rpc-address.ns2.nn1", "host3")
+    val authorities = Set("ns1", "ns2", "ns3", "host4:8020")
+
+    val properties = CometIcebergNativeScan.hadoopToIcebergHdfsProperties(conf, authorities)
+
+    // NameNodes keep their declaration order, and an authority with a port needs no declaration.
+    properties shouldBe Map("hdfs.name-node.ns1" -> "host2:8020,host1:8020")
+    CometIcebergNativeScan.undeclaredHdfsNameservice(authorities, properties) shouldBe Some("ns2")
+    // A catalog's own declaration counts in either form.
+    val catalog = Map("hdfs.name-node.ns2" -> "host3:8020", "hadoop.dfs.ha.namenodes.ns3" -> "a")
+    CometIcebergNativeScan.undeclaredHdfsNameservice(
+      authorities,
+      properties ++ catalog) shouldBe None
   }
 
   private def keyMetadataMethod(clazz: Class[_]) = clazz.getMethod("keyMetadata")

@@ -138,8 +138,7 @@ safe partial pruning is tracked in [#5883](https://github.com/apache/datafusion-
 - Local filesystem
 - S3-compatible storage (AWS S3, MinIO)
 - Google Cloud Storage (`gs`) and Alibaba Cloud OSS (`oss`)
-
-HDFS-backed tables are not supported by the native Iceberg reader and fall back to Spark.
+- HDFS (`hdfs`), experimental (see [HDFS](#hdfs))
 
 ### REST Catalog
 
@@ -194,6 +193,25 @@ For a custom S3-compatible endpoint, configure the catalog with the endpoint, pa
 
 These `s3.*` storage properties are not specific to the Hive catalog shown here. When `s3.access-key-id` / `s3.secret-access-key` are omitted, credentials come from the standard AWS chain (environment variables, instance profiles, and so on). The region is not auto-detected: when neither the catalog (`client.region` or `s3.region`) nor the executor environment (`AWS_REGION` or `AWS_DEFAULT_REGION`) supplies one, Comet uses `us-east-1`, so set it for AWS buckets in any other region. If your REST catalog vends temporary credentials, the native reader does not consume them automatically, and wiring that requires the credential provider bridge. See Iceberg's [S3 FileIO](https://iceberg.apache.org/docs/latest/aws/#s3-fileio) docs for the full property list, and [S3 Credential Providers](s3-credential-providers.md) for vended or per-request credentials.
 
+### HDFS
+
+The native reader reads HDFS through iceberg-rust's experimental `hdfs-native` backend, a Rust HDFS
+client that uses neither libhdfs nor the JVM. The client reads `core-site.xml` and `hdfs-site.xml`
+from `$HADOOP_CONF_DIR`, or from `$HADOOP_HOME/etc/hadoop`, on each executor, so `spark.hadoop.*`
+settings do not reach it. The one exception is an HA nameservice. A location such as
+`hdfs://ns1/warehouse` has no port, and Comet passes the client the NameNodes that the session's
+Hadoop configuration declares for `ns1` with `dfs.ha.namenodes.ns1` and
+`dfs.namenode.rpc-address.ns1.<id>`.
+
+A scan of HDFS files falls back to Spark when `hadoop.security.authentication` is not `simple`,
+because the client cannot authenticate with the delegation tokens that Spark executors use on a
+Kerberos cluster. It also falls back when a file location has no port and names a nameservice that
+the Hadoop configuration does not declare, or when it has no authority (`hdfs:///path`).
+
+On a cluster without Kerberos, the client connects as `HADOOP_USER_NAME`, or as the executor's
+operating system user when that variable is unset, rather than as the Spark user. Writes to HDFS
+use Iceberg's own writer.
+
 ### Current limitations
 
 The following scenarios will fall back to the JVM Iceberg reader:
@@ -210,6 +228,8 @@ The following scenarios will fall back to the JVM Iceberg reader:
 - Queries that use `input_file_name()`, `input_file_block_start()` or `input_file_block_length()`
 - Scans whose data or delete files span more than one S3 bucket (the native reader uses one
   object-store configuration per scan)
+- HDFS scans on a cluster with Kerberos, and HDFS file locations without a port that name an
+  undeclared nameservice or that have no authority (see [HDFS](#hdfs))
 - Scans where Iceberg reports an output ordering (for example with
   `spark.sql.iceberg.planning.preserve-data-ordering=true`). Spark may then skip the sort above the
   scan, and the native reader does not preserve file order
@@ -838,6 +858,8 @@ The physical differences that every native data file has, and why they are safe,
 - **Iceberg tables whose metadata location has no host.** The native Iceberg scan skips the
   credential provider configured with `s3.comet.credential.provider.class`
   ([#6536](https://github.com/apache/datafusion-comet/issues/6536)).
+- **Files in an HDFS encryption zone.** The native reader's HDFS client is built without KMS
+  support, so it cannot decrypt them.
 
 ### Writes that fail where Spark succeeds
 

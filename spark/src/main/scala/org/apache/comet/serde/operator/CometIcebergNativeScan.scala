@@ -30,6 +30,7 @@ import scala.jdk.CollectionConverters._
 import org.json4s.JsonDSL._
 import org.json4s.jackson.JsonMethods._
 
+import org.apache.hadoop.conf.Configuration
 import org.apache.spark.internal.Logging
 import org.apache.spark.sql.catalyst.expressions._
 import org.apache.spark.sql.comet.{CometBatchScanExec, CometNativeExec}
@@ -654,6 +655,51 @@ object CometIcebergNativeScan extends CometOperatorSerde[CometBatchScanExec] wit
 
     global.result() ++ promoted.result()
   }
+
+  /**
+   * Declares the HDFS nameservices among `authorities` for iceberg-rust's HDFS backend. That
+   * backend dials an authority with a port as written, but resolves a portless one
+   * (`hdfs://ns1/...`) only through a nameservice declared in the FileIO properties, never
+   * through `$HADOOP_CONF_DIR`. A nameservice the Hadoop configuration declares in full, with
+   * `dfs.ha.namenodes.<ns>` and a `host:port` `dfs.namenode.rpc-address.<ns>.<id>` for each
+   * NameNode, becomes `hdfs.name-node.<ns>` with its NameNodes in declaration order. Any other is
+   * left out, and [[undeclaredHdfsNameservice]] then declines the scan.
+   */
+  def hadoopToIcebergHdfsProperties(
+      hadoopConf: Configuration,
+      authorities: Set[String]): Map[String, String] =
+    hdfsNameservices(authorities).flatMap { ns =>
+      val nameNodes = hadoopConf
+        .getTrimmedStrings(s"dfs.ha.namenodes.$ns")
+        .map(id => hadoopConf.getTrimmed(s"dfs.namenode.rpc-address.$ns.$id"))
+      if (nameNodes.nonEmpty && nameNodes.forall(hasPort)) {
+        Some(s"hdfs.name-node.$ns" -> nameNodes.mkString(","))
+      } else {
+        None
+      }
+    }.toMap
+
+  /**
+   * The first portless HDFS authority among `authorities` that `properties` declares neither with
+   * iceberg-rust's `hdfs.name-node.<ns>` nor with Hadoop's `dfs.ha.namenodes.<ns>`.
+   */
+  def undeclaredHdfsNameservice(
+      authorities: Set[String],
+      properties: Map[String, String]): Option[String] =
+    hdfsNameservices(authorities).find { ns =>
+      !properties.contains(s"hdfs.name-node.$ns") &&
+      !properties.contains(s"hadoop.dfs.ha.namenodes.$ns")
+    }
+
+  private def hdfsNameservices(authorities: Set[String]): Seq[String] =
+    authorities.filterNot(hasPort).toSeq.sorted
+
+  private def hasPort(address: String): Boolean =
+    address != null && {
+      val colon = address.lastIndexOf(':')
+      colon > address.lastIndexOf(']') && colon < address.length - 1 &&
+      address.substring(colon + 1).forall(_.isDigit)
+    }
 
   /** iceberg-rust's per-I/O-call timeout, set from `spark.comet.iceberg.ioTimeout`. */
   def ioTimeoutProperty(): (String, String) =

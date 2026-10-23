@@ -45,8 +45,11 @@ const ICEBERG_PROVIDER_CLASS_PROPERTY: &str = "s3.comet.credential.provider.clas
 /// Key prefixes forwarded to iceberg-rust's `FileIO`. The full unfiltered catalog bag (catalog
 /// URI, OAuth tokens, credentials.uri, tenant-id, etc.) is kept upstream so
 /// `CometS3CredentialBridge` can read whatever the vendor needs. `opendal.` carries
-/// iceberg-storage-opendal's own settings, such as `opendal.io-timeout-ms`.
-const STORAGE_PROPERTY_PREFIXES: &[&str] = &["s3.", "gcs.", "adls.", "client.", "opendal."];
+/// iceberg-storage-opendal's own settings, such as `opendal.io-timeout-ms`. `hdfs.` and `hadoop.`
+/// carry the HDFS backend's NameNode declarations and Hadoop client settings.
+const STORAGE_PROPERTY_PREFIXES: &[&str] = &[
+    "s3.", "gcs.", "adls.", "client.", "opendal.", "hdfs.", "hadoop.",
+];
 
 /// Pick an OpenDAL storage backend for a URI whose scheme `builtin_storage_schemes` lists for
 /// `access_mode`, or that is an opted-in S3-compliant alias written in lowercase; anything else is
@@ -79,6 +82,7 @@ pub(crate) fn storage_factory_for(
         "memory" => Ok((Arc::new(OpenDalStorageFactory::Memory), true)),
         "gs" => Ok((Arc::new(OpenDalStorageFactory::Gcs), true)),
         "oss" => Ok((Arc::new(OpenDalStorageFactory::Oss), true)),
+        "hdfs" => Ok((Arc::new(OpenDalStorageFactory::HdfsNative), true)),
         // s3, s3a, and any opted-in s3-compliant alias (e.g. blob) route to the S3 backend. Listed
         // last so the built-in backends above stay authoritative even if one of their schemes is
         // also named in `fs.comet.s3Compliant.schemes`. An alias additionally gets a wrapper that
@@ -302,9 +306,10 @@ fn cached_file_io(
 /// mode; the JVM read and write gates load these lists over JNI. `memory` is write-only: an OpenDAL
 /// memory backend is a fresh empty in-process store the write path assembles manifests in, so a
 /// read finds nothing. `oss` is read-only: no `oss.*` property is forwarded and no test covers it.
+/// `hdfs` is read-only: the write path has not been tested against it.
 pub(crate) fn builtin_storage_schemes(access_mode: AccessMode) -> &'static [&'static str] {
     match access_mode {
-        AccessMode::Read => &["file", "gs", "oss", "s3", "s3a"],
+        AccessMode::Read => &["file", "gs", "hdfs", "oss", "s3", "s3a"],
         AccessMode::Write => &["file", "memory", "gs", "s3", "s3a"],
     }
 }
@@ -848,6 +853,35 @@ mod tests {
     }
 
     #[test]
+    fn hdfs_scheme_is_readable_but_not_writable() {
+        assert!(factory_result("hdfs://nn:8020/db/table", AccessMode::Read).is_ok());
+        let err = factory_result("hdfs://nn:8020/db/table", AccessMode::Write).unwrap_err();
+        assert!(
+            err.contains("Unsupported storage scheme: hdfs"),
+            "unexpected error: {err}"
+        );
+    }
+
+    /// The JVM declares a nameservice as `hdfs.name-node.<ns>`, and a catalog can declare one with
+    /// Hadoop's own keys under `hadoop.`.
+    #[test]
+    fn hdfs_properties_reach_the_file_io() {
+        let props = HashMap::from([
+            ("hdfs.name-node.ns1".to_string(), "nn1:8020".to_string()),
+            ("hadoop.dfs.ha.namenodes.ns2".to_string(), "a".to_string()),
+            (
+                "hadoop.dfs.namenode.rpc-address.ns2.a".to_string(),
+                "nn2:8020".to_string(),
+            ),
+        ]);
+        let (file_io, _) =
+            build_file_io(&props, "hdfs://ns2/warehouse", "", AccessMode::Read).unwrap();
+        for (key, value) in &props {
+            assert_eq!(file_io.config().get(key), Some(value), "{key}");
+        }
+    }
+
+    #[test]
     fn memory_scheme_is_writable_but_not_readable() {
         // The write path assembles manifests in a fresh in-process memory store. A read against
         // a new memory store can never find data, so the factory must decline it up front.
@@ -948,7 +982,7 @@ mod tests {
 
     #[test]
     fn unknown_scheme_is_rejected() {
-        let err = factory_result("hdfs://nn/db/table", AccessMode::Read).unwrap_err();
+        let err = factory_result("viewfs://cluster/db/table", AccessMode::Read).unwrap_err();
         assert!(
             err.contains("Unsupported storage scheme"),
             "unexpected error: {err}"
@@ -997,7 +1031,7 @@ mod tests {
     #[test]
     fn unlisted_schemes_are_rejected_for_both_modes() {
         let unlisted = [
-            "hdfs", "abfs", "abfss", "wasb", "wasbs", "gcs", "http", "https", "azure",
+            "viewfs", "abfs", "abfss", "wasb", "wasbs", "gcs", "http", "https", "azure",
         ];
         for mode in [AccessMode::Read, AccessMode::Write] {
             for scheme in unlisted {
