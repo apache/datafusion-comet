@@ -909,6 +909,31 @@ class CometExecRuleSuite extends CometTestBase {
     }
   }
 
+  test("fallback reasons accumulate on unscoped expressions and remain sticky on operators") {
+    val expr = Literal(42)
+    val tag = CometExplainInfo.FALLBACK_REASONS
+    withFallbackReason(expr, "unscoped first")
+    withFallbackReason(expr, "unscoped second")
+    assert(expr.getTagValue(tag).contains(Set("unscoped first", "unscoped second")))
+
+    val op = spark.sessionState.planner.plan(LocalRelation(Seq.empty[Attribute])).next()
+    withFallbackReason(op, "prior rule veto")
+    CometExplainInfo.withFallbackReasonScope {
+      withFallbackReason(expr, "current expression reason")
+      withFallbackReason(expr, "another expression reason")
+      val current = Set("current expression reason", "another expression reason")
+      assert(expr.getTagValue(tag).contains(current))
+      assert(CometExplainInfo.currentFallbackReasons(expr) == current)
+      withFallbackReason(op, "current operator reason")
+      assert(op.getTagValue(tag).contains(Set("prior rule veto", "current operator reason")))
+    }
+    withFallbackReason(expr, "after scope")
+    assert(
+      expr
+        .getTagValue(tag)
+        .contains(Set("current expression reason", "another expression reason", "after scope")))
+  }
+
   test("issue #5499: child threads do not inherit expression fallback reasons") {
     val source = Literal(true)
     val reason = "parent conversion only"

@@ -340,11 +340,15 @@ object CometSparkSessionExtensions extends Logging {
         logWarning(s"Comet cannot accelerate ${node.getClass.getSimpleName} because: $reason")
       }
     }
-    val recorded = CometExplainInfo.recordFallbackReasons(node, info)
-    val existingNodeInfos = recorded.filter(_ => node.isInstanceOf[Expression]).getOrElse {
-      node.getTagValue(CometExplainInfo.FALLBACK_REASONS).getOrElse(Set.empty[String])
+    val reasons = node match {
+      case expr: Expression =>
+        CometExplainInfo.recordFallbackReasons(expr, info).getOrElse {
+          expr.getTagValue(CometExplainInfo.FALLBACK_REASONS).getOrElse(Set.empty[String]) ++ info
+        }
+      case _ =>
+        node.getTagValue(CometExplainInfo.FALLBACK_REASONS).getOrElse(Set.empty[String]) ++ info
     }
-    node.setTagValue(CometExplainInfo.FALLBACK_REASONS, existingNodeInfos ++ info)
+    node.setTagValue(CometExplainInfo.FALLBACK_REASONS, reasons)
     node
   }
 

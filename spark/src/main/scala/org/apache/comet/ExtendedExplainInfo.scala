@@ -322,11 +322,11 @@ object CometExplainInfo {
   // rather than trusting mutable tags which Catalyst can copy onto shared expression instances.
   // Identity keys distinguish equal expressions. This is deliberately not inheritable: planning
   // a subquery on another thread must not retain or share its parent's mutable journal.
-  private val fallbackJournal = new ThreadLocal[IdentityHashMap[TreeNode[_], Set[String]]]
+  private val fallbackJournal = new ThreadLocal[IdentityHashMap[Expression, Set[String]]]
 
   private[comet] def withFallbackReasonScope[T](body: => T): T = {
     val previous = fallbackJournal.get()
-    fallbackJournal.set(new IdentityHashMap[TreeNode[_], Set[String]]())
+    fallbackJournal.set(new IdentityHashMap[Expression, Set[String]]())
     try body
     finally {
       if (previous == null) fallbackJournal.remove() else fallbackJournal.set(previous)
@@ -338,7 +338,7 @@ object CometExplainInfo {
   }
 
   private[comet] def recordFallbackReasons(
-      node: TreeNode[_],
+      node: Expression,
       reasons: Set[String]): Option[Set[String]] = {
     Option(fallbackJournal.get()).map { journal =>
       val previous = Option(journal.get(node)).getOrElse(Set.empty[String])
@@ -348,7 +348,7 @@ object CometExplainInfo {
     }
   }
 
-  private[comet] def currentFallbackReasons(node: TreeNode[_]): Set[String] = {
+  private[comet] def currentFallbackReasons(node: Expression): Set[String] = {
     Option(fallbackJournal.get())
       .flatMap(journal => Option(journal.get(node)))
       .getOrElse(Set.empty)
