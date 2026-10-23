@@ -33,6 +33,7 @@ datafusion = { workspace = true }
 datafusion-functions = { workspace = true }
 datafusion-spark = { workspace = true }
 num = { workspace = true }
+lexical-parse-float = { version = "1.0", features = ["format", "power-of-two"] }
 regex = { workspace = true }
 # preserve_order: needed for get_json_object to match Spark's JSON key ordering
 serde_json = { version = "1.0", features = ["preserve_order"] }

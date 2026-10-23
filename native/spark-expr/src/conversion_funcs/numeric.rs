@@ -414,7 +414,7 @@ macro_rules! cast_int_to_int_macro {
     }};
 }
 
-/// Spark's ANSI range check for casting a floating point value to a 32-bit or 64-bit integer,
+/// Spark's ANSI/TRY range check for casting a floating point value to a 32-bit or 64-bit integer,
 /// from `FloatExactNumeric`/`DoubleExactNumeric.toInt`/`toLong` in Spark's `numerics.scala`:
 /// `Math.floor(x) <= MaxValue && Math.ceil(x) >= MinValue`. The JVM widens a float source to
 /// double for `Math.floor`/`Math.ceil` and converts the integer bounds to double for the
@@ -472,6 +472,14 @@ macro_rules! cast_float_to_int16_down {
                     )
                 })
             })?,
+            EvalMode::Try => cast_array.unary_opt(|value| {
+                // TRY applies the same exact range check as ANSI above, but yields NULL
+                // instead of raising, so it cannot use the fallible kernel.
+                if !spark_float_fits_integral(value, i32::MIN as f64, i32::MAX as f64) {
+                    return None;
+                }
+                <$rust_dest_type>::try_from(value as i32).ok()
+            }),
             _ => cast_array.unary(|value| value as i32 as $rust_dest_type),
         };
         Ok(Arc::new(output_array) as ArrayRef)
@@ -514,6 +522,19 @@ macro_rules! cast_float_to_int32_up {
                 // `as` truncates towards zero and saturates like the JVM's d2i/d2l
                 Ok(value as $rust_dest_type)
             })?,
+            EvalMode::Try => cast_array.unary_opt(|value| {
+                // TRY applies the same exact range check as ANSI above, but yields NULL
+                // instead of raising, so it cannot use the fallible kernel.
+                if !spark_float_fits_integral(
+                    value,
+                    <$rust_dest_type>::MIN as f64,
+                    <$rust_dest_type>::MAX as f64,
+                ) {
+                    return None;
+                }
+                // `as` truncates towards zero and saturates like the JVM's d2i/d2l
+                Some(value as $rust_dest_type)
+            }),
             _ => cast_array.unary(|value| value as $rust_dest_type),
         };
         Ok(Arc::new(output_array) as ArrayRef)

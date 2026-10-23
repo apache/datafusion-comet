@@ -96,4 +96,16 @@
 - Spark 4.0.1 (audited 2026-07-24): adds `def this(seed: Expression)`, exposing the `uuid(seed)` SQL form (the seed must be an integer or long literal, validated at analysis time). `RandomUUIDGenerator` and the per-row algorithm are unchanged, so results are identical to 3.4.3 for a given seed.
 - Spark 4.1.1 (audited 2026-07-24): identical to 4.0.1, plus `withShiftedSeed`. No runtime change.
 
+## variant_get / try_variant_get
+
+- Spark 3.4.3 (audited 2026-10-04): the expressions are absent.
+- Spark 3.5.8 (audited 2026-10-04): the expressions are absent.
+- Spark 4.0.1 (audited 2026-10-04): selected-value getters use ANSI cast-admission rules with TRY-mode casts and explicit long/decimal-to-timestamp overflow checks. `variant_get` raises `INVALID_VARIANT_CAST` on conversion failure; `try_variant_get` returns NULL. Both retain malformed-value and invalid-path errors.
+- Spark 4.1.1 (audited 2026-10-04): the same scalar extraction rules apply. Spark 4.1.3, 4.2.0 and current master were also checked for subsequent changes.
+- Comet serializes Spark-parsed foldable paths. Invalid paths stay in Spark because their error timing depends on null inputs and code generation. Native traversal follows Spark's small-object linear lookup and large-object UTF-16 binary lookup, including empty keys and insertion-ordered metadata. It does not validate unrelated values. Current Spark master adds UTF-8 lookup with a legacy fallback; released Spark 4.x still uses UTF-16 ordering.
+- Spark uses a 128 MiB Variant size limit outside tests and 16 MiB in testing. Comet transports Spark's current limit with the expression.
+- Selected scalar values reuse the native Spark cast kernels in batches grouped by source type. Explicit adaptations cover timestamp-to-numeric, Boolean-to-decimal and checked numeric-to-timestamp conversions. Raw dates and timestamps preserve the full Spark integer range for identity extraction. Strict failures carry the original value and path to the JVM, where Spark constructs the exact version/JDK-dependent error parameters.
+- STRING targets remain unsupported: matching Spark requires JSON and scalar formatting beyond the shared native formatter. Decimal targets are opt-in because floating-point decimal conversion can differ on JDK 17. Date/time targets are opt-in because native parsing and timezone conversion have narrower ranges. These remaining scalar compatibility requirements are tracked by [#5424](https://github.com/apache/datafusion-comet/issues/5424).
+- TIME targets, dynamic paths, nested targets and Variant outputs fall back. Native admission is restricted to explicit Variant consumers; generic grouping, ordering and hashing remain restricted. Extraction consumes the decoded whole value; selective Parquet reads remain separate work.
+
 [Spark Expression Support]: ../../user-guide/latest/expressions.md

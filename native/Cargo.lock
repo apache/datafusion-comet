@@ -2151,6 +2151,7 @@ dependencies = [
  "datasketches",
  "futures",
  "jni",
+ "lexical-parse-float",
  "memchr",
  "num",
  "paste",
