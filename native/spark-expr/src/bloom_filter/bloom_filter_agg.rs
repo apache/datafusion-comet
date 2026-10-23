@@ -190,15 +190,82 @@ impl Accumulator for SparkBloomFilter {
             "Expect one element in 'states' but found {}",
             states.len()
         );
-        assert_eq!(states[0].len(), 1);
-        let state_sv = downcast_value!(states[0], BinaryArray);
-        self.merge_filter(state_sv.value_data())
+        let states = downcast_value!(states[0], BinaryArray);
+        // Spill replay can supply multiple states for a group. Use each row's
+        // slice so that sliced arrays also honor their offsets.
+        for state in states.iter().flatten() {
+            self.merge_filter(state)?;
+        }
+        Ok(())
     }
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    fn filter_with_values(version: SparkBloomFilterVersion, values: &[i64]) -> SparkBloomFilter {
+        let mut filter = SparkBloomFilter::new(version, 3, 1024, 0);
+        for &value in values {
+            filter.put_long(value);
+        }
+        filter
+    }
+
+    #[test]
+    fn merge_batch_merges_each_row() {
+        for version in [SparkBloomFilterVersion::V1, SparkBloomFilterVersion::V2] {
+            let first = filter_with_values(version, &[11]).state_as_bytes();
+            let second = filter_with_values(version, &[22]).state_as_bytes();
+            let states =
+                BinaryArray::from(vec![Some(first.as_slice()), None, Some(second.as_slice())]);
+            let mut acc = filter_with_values(version, &[33]);
+            acc.merge_batch(&[Arc::new(states)]).unwrap();
+            assert_eq!(
+                acc.state_as_bytes(),
+                filter_with_values(version, &[11, 22, 33]).state_as_bytes()
+            );
+        }
+    }
+
+    #[test]
+    fn merge_batch_respects_sliced_row_offsets() {
+        for version in [SparkBloomFilterVersion::V1, SparkBloomFilterVersion::V2] {
+            let excluded = filter_with_values(version, &[99]).state_as_bytes();
+            let included = filter_with_values(version, &[11]).state_as_bytes();
+            let states = BinaryArray::from(vec![
+                excluded.as_slice(),
+                included.as_slice(),
+                excluded.as_slice(),
+            ]);
+            let mut acc = filter_with_values(version, &[]);
+            acc.merge_batch(&[Arc::new(states.slice(1, 1))]).unwrap();
+            assert_eq!(acc.state_as_bytes(), included);
+        }
+    }
+
+    #[test]
+    fn merge_batch_ignores_empty_and_null_states() {
+        let mut acc = filter_with_values(SparkBloomFilterVersion::V1, &[11]);
+        let expected = acc.state_as_bytes();
+        for states in [
+            BinaryArray::from(Vec::<Option<&[u8]>>::new()),
+            BinaryArray::from(vec![None::<&[u8]>]),
+        ] {
+            acc.merge_batch(&[Arc::new(states)]).unwrap();
+            assert_eq!(acc.state_as_bytes(), expected);
+        }
+    }
+
+    #[test]
+    fn merge_batch_propagates_incompatible_state_error() {
+        let first = filter_with_values(SparkBloomFilterVersion::V1, &[11]).state_as_bytes();
+        let second = filter_with_values(SparkBloomFilterVersion::V2, &[22]).state_as_bytes();
+        let states = BinaryArray::from(vec![first.as_slice(), second.as_slice()]);
+        let mut acc = filter_with_values(SparkBloomFilterVersion::V1, &[]);
+        let error = acc.merge_batch(&[Arc::new(states)]).unwrap_err();
+        assert!(error.to_string().contains("version mismatch"));
+    }
 
     /// Spark's BloomFilterAggregate.eval returns NULL when the filter saw no
     /// non-null input (cardinality 0); an untouched accumulator must match.
