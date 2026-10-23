@@ -34,8 +34,8 @@ import org.scalatest.funsuite.AnyFunSuite
 import org.scalatest.matchers.should.Matchers
 
 import org.apache.arrow.c.{ArrowArray, ArrowSchema, Data}
-import org.apache.arrow.memory.{BufferAllocator, RootAllocator}
-import org.apache.arrow.vector.{BaseVariableWidthVector, BigIntVector, FieldVector, IntVector, NullVector, VarBinaryVector, VarCharVector, VectorSchemaRoot}
+import org.apache.arrow.memory.{ArrowBuf, BufferAllocator, OutOfMemoryException, RootAllocator}
+import org.apache.arrow.vector.{BaseVariableWidthVector, BigIntVector, FieldVector, FixedSizeBinaryVector, IntVector, LargeVarBinaryVector, LargeVarCharVector, NullVector, VarBinaryVector, VarCharVector, VectorSchemaRoot}
 import org.apache.arrow.vector.complex.{ListVector, MapVector, StructVector}
 import org.apache.arrow.vector.dictionary.{Dictionary, DictionaryProvider}
 import org.apache.arrow.vector.ipc.{ArrowStreamReader, ArrowStreamWriter, WriteChannel}
@@ -45,7 +45,7 @@ import org.apache.spark.{SparkConf, SparkEnv, SparkException, TaskContext, TaskC
 import org.apache.spark.api.python.{BasePythonRunner, ChainedPythonFunctions, PythonEvalType, SimplePythonFunction, SpecialLengths}
 import org.apache.spark.sql.comet.util.Utils
 import org.apache.spark.sql.execution.metric.SQLMetric
-import org.apache.spark.sql.execution.python.CometArrowPythonRunnerBase.{hasCompatibleSchema, inputBatchRanges, outputSchemaMismatch, serializeBatch, withInputBatchRange, withMaterializedInputVectors}
+import org.apache.spark.sql.execution.python.CometArrowPythonRunnerBase.{hasCompatibleSchema, inputBatchRanges, outputSchemaMismatch, serializeBatch, withInputBatchRange, withLargeVarTypes, withMaterializedInputVectors}
 import org.apache.spark.sql.types._
 import org.apache.spark.sql.vectorized.{ColumnarBatch, ColumnVector}
 import org.apache.spark.util.DirectByteBufferOutputStream
@@ -60,7 +60,9 @@ class CometArrowPythonRunnerSuite extends AnyFunSuite with Matchers {
    * input batches; the task context owns the writer allocator and must be completed after use.
    * The BasePythonRunner constructor is common to all supported Spark 4.x versions.
    */
-  private class InputWriterRunner(functions: Seq[ChainedPythonFunctions])
+  private class InputWriterRunner(
+      functions: Seq[ChainedPythonFunctions],
+      override protected val workerConf: Map[String, String])
       extends BasePythonRunner[Iterator[ColumnarBatch], ColumnarBatch](
         functions,
         PythonEvalType.SQL_MAP_ARROW_ITER_UDF,
@@ -68,7 +70,6 @@ class CometArrowPythonRunnerSuite extends AnyFunSuite with Matchers {
         None,
         Map.empty)
       with CometArrowPythonRunnerBase {
-    override protected val workerConf: Map[String, String] = Map.empty
     override protected val pythonMetrics: Map[String, SQLMetric] =
       Map("pythonDataSent" -> new SQLMetric("size", 0L))
     override protected val schema: StructType = StructType(
@@ -105,7 +106,11 @@ class CometArrowPythonRunnerSuite extends AnyFunSuite with Matchers {
    * on failure. No Spark services or worker processes are created. Restore the caller's
    * environment after allocator cleanup; source batches remain owned by the caller throughout.
    */
-  private def withInputWriterRunner(body: (InputWriterRunner, TaskContextImpl) => Unit): Unit = {
+  private def withInputWriterRunner(body: (InputWriterRunner, TaskContextImpl) => Unit): Unit =
+    withInputWriterRunner(Map.empty[String, String])(body)
+
+  private def withInputWriterRunner(workerConf: Map[String, String])(
+      body: (InputWriterRunner, TaskContextImpl) => Unit): Unit = {
     val previousEnv = SparkEnv.get
     val env = new SparkEnv(
       "python-writer-test",
@@ -131,7 +136,7 @@ class CometArrowPythonRunnerSuite extends AnyFunSuite with Matchers {
         "3",
         java.util.Collections.emptyList(),
         null)
-      body(new InputWriterRunner(Seq(ChainedPythonFunctions(Seq(function)))), context)
+      body(new InputWriterRunner(Seq(ChainedPythonFunctions(Seq(function))), workerConf), context)
     } finally {
       try {
         context.markTaskCompleted(None)
@@ -310,7 +315,13 @@ class CometArrowPythonRunnerSuite extends AnyFunSuite with Matchers {
         case ((offset, length), batch) =>
           withInputBatchRange(columns, rows, offset, length, allocator) { (vectors, count) =>
             failWrites = batch + 1 == failAt
-            try serializeBatch(new WriteChannel(channel), vectors, count, allocator)
+            try
+              serializeBatch(
+                new WriteChannel(channel),
+                vectors,
+                count,
+                allocator,
+                useLargeVarTypes = false)
             finally failWrites = false
           }
       }
@@ -367,9 +378,11 @@ class CometArrowPythonRunnerSuite extends AnyFunSuite with Matchers {
     ranges.toSeq
   }
 
-  Seq((64 * 1024, 256), (16, 600)).foreach { case (valueBytes, firstRows) =>
+  for ((valueBytes, firstRows) <- Seq((64 * 1024, 256), (16, 600));
+    useLargeVarTypes <- Seq(false, true)) {
     test(
-      s"input writer bounds Spark transport buffering for $valueBytes-byte dictionary values") {
+      s"input writer bounds Spark transport buffering for $valueBytes-byte dictionary values, " +
+        s"large=$useLargeVarTypes") {
       val firstValue = "a" * valueBytes
       val secondValue = "b" * valueBytes
       val secondRows = 3
@@ -378,58 +391,62 @@ class CometArrowPythonRunnerSuite extends AnyFunSuite with Matchers {
       val transport = new DirectByteBufferOutputStream()
       val wireBytes = new ByteArrayOutputStream()
       try {
-        withInputWriterRunner { (runner, context) =>
-          var emittedBatches = 0
+        withInputWriterRunner(
+          Map("spark.sql.execution.arrow.useLargeVarTypes" -> useLargeVarTypes.toString)) {
+          (runner, context) =>
+            var emittedBatches = 0
 
-          val input = Iterator(
-            Iterator.empty,
-            guardedSource(first) { emittedBatches shouldBe firstRows },
-            Iterator.empty,
-            guardedSource(second) { emittedBatches shouldBe firstRows + secondRows },
-            Iterator.empty)
-          val writer = runner.inputWriter(input, context)
-          val checkSource =
-            unchanged(Seq(first.allocator, second.allocator), first.buffers ++ second.buffers)
-          val writerBytes = CometArrowAllocator.getAllocatedMemory
-          var hasInput = true
-          var peakPending = 0
-          var maxCallsPerDrain = 0
-          var countedBytes = 0L
-          while (hasInput) {
-            // Spark fills this direct buffer until its byte threshold, then drains to the socket.
-            // Reset only after capturing every pending byte; small slices may share one drain.
-            transport.reset()
-            val dataOut = new DataOutputStream(transport)
-            val callsBeforeDrain = emittedBatches
-            while (transport.size() < runner.transportBufferSize && hasInput) {
-              val bytesBeforeCall = transport.size()
-              hasInput = writer.writeNextInputToStream(dataOut)
-              if (hasInput) {
-                emittedBatches += 1
-                countedBytes += transport.size() - bytesBeforeCall
+            val input = Iterator(
+              Iterator.empty,
+              guardedSource(first) { emittedBatches shouldBe firstRows },
+              Iterator.empty,
+              guardedSource(second) { emittedBatches shouldBe firstRows + secondRows },
+              Iterator.empty)
+            val writer = runner.inputWriter(input, context)
+            val checkSource =
+              unchanged(Seq(first.allocator, second.allocator), first.buffers ++ second.buffers)
+            val writerBytes = CometArrowAllocator.getAllocatedMemory
+            var hasInput = true
+            var peakPending = 0
+            var maxCallsPerDrain = 0
+            var countedBytes = 0L
+            while (hasInput) {
+              // Spark fills this direct buffer until its byte threshold, then drains to the socket.
+              // Reset only after capturing every pending byte; small slices may share one drain.
+              transport.reset()
+              val dataOut = new DataOutputStream(transport)
+              val callsBeforeDrain = emittedBatches
+              while (transport.size() < runner.transportBufferSize && hasInput) {
+                val bytesBeforeCall = transport.size()
+                hasInput = writer.writeNextInputToStream(dataOut)
+                if (hasInput) {
+                  emittedBatches += 1
+                  countedBytes += transport.size() - bytesBeforeCall
+                }
+                CometArrowAllocator.getAllocatedMemory shouldBe writerBytes
+                checkSource()
               }
-              CometArrowAllocator.getAllocatedMemory shouldBe writerBytes
-              checkSource()
+              peakPending = math.max(peakPending, transport.size())
+              maxCallsPerDrain = math.max(maxCallsPerDrain, emittedBatches - callsBeforeDrain)
+              // One call may cross Spark's soft threshold by one row plus Arrow IPC metadata.
+              transport.size() should be <= (runner.transportBufferSize + valueBytes + 1024)
+              val pending = transport.toByteBuffer
+              val bytes = new Array[Byte](pending.remaining())
+              pending.get(bytes)
+              wireBytes.write(bytes)
             }
-            peakPending = math.max(peakPending, transport.size())
-            maxCallsPerDrain = math.max(maxCallsPerDrain, emittedBatches - callsBeforeDrain)
-            // One call may cross Spark's soft threshold by one row plus Arrow IPC metadata.
-            transport.size() should be <= (runner.transportBufferSize + valueBytes + 1024)
-            val pending = transport.toByteBuffer
-            val bytes = new Array[Byte](pending.remaining())
-            pending.get(bytes)
-            wireBytes.write(bytes)
-          }
-          emittedBatches shouldBe firstRows + secondRows
-          runner.bytesSent shouldBe countedBytes
-          peakPending.toLong should be < (firstRows.toLong * (valueBytes + 128L))
-          if (valueBytes < runner.transportBufferSize) {
-            maxCallsPerDrain should be > 1
-          }
-          readInput(wireBytes.toByteArray) { (result, offset) =>
-            result.getChild("text").getObject(0).toString shouldBe
-              (if (offset < firstRows) firstValue else secondValue)
-          } shouldBe Seq.fill(firstRows + secondRows)(1)
+            emittedBatches shouldBe firstRows + secondRows
+            runner.bytesSent shouldBe countedBytes
+            peakPending.toLong should be < (firstRows.toLong * (valueBytes + 128L))
+            if (valueBytes < runner.transportBufferSize) {
+              maxCallsPerDrain should be > 1
+            }
+            readInput(wireBytes.toByteArray) { (result, offset) =>
+              result.getChild("text").getField.getType shouldBe
+                (if (useLargeVarTypes) ArrowType.LargeUtf8.INSTANCE else ArrowType.Utf8.INSTANCE)
+              result.getChild("text").getObject(0).toString shouldBe
+                (if (offset < firstRows) firstValue else secondValue)
+            } shouldBe Seq.fill(firstRows + secondRows)(1)
         }
       } finally {
         transport.close()
@@ -803,7 +820,12 @@ class CometArrowPythonRunnerSuite extends AnyFunSuite with Matchers {
 
       withWriter(Seq(field), writerAllocator, Channels.newChannel(output)) { channel =>
         val originalWriterAllocation = writerAllocator.getAllocatedMemory
-        serializeBatch(new WriteChannel(channel), Seq(vector), 2, writerAllocator)
+        serializeBatch(
+          new WriteChannel(channel),
+          Seq(vector),
+          2,
+          writerAllocator,
+          useLargeVarTypes = false)
 
         writerAllocator.getAllocatedMemory shouldBe originalWriterAllocation
         buffers.map(_.refCnt()) shouldBe originalReferenceCounts
@@ -829,8 +851,12 @@ class CometArrowPythonRunnerSuite extends AnyFunSuite with Matchers {
     }
   }
 
-  for (failSerialization <- Seq(false, true)) {
-    test(s"direct FFI batches release temporary references (write failure: $failSerialization)") {
+  for {
+    failSerialization <- Seq(false, true)
+    useLargeVarTypes <- Seq(false, true)
+  } {
+    test(
+      s"direct FFI batches release references (failure: $failSerialization, large: $useLargeVarTypes)") {
       // Arrow's JNI loader extracts its library here; Maven's target/tmp may not exist yet.
       Files.createDirectories(Paths.get(System.getProperty("java.io.tmpdir")))
       val sourceAllocator = new RootAllocator(Long.MaxValue)
@@ -869,38 +895,50 @@ class CometArrowPythonRunnerSuite extends AnyFunSuite with Matchers {
         val originalSourceAllocation = sourceAllocator.getAllocatedMemory
         originalSourceAllocation should be > 0L
 
-        withWriter(Seq(imported.getField), writerAllocator, Channels.newChannel(output)) {
-          channel =>
-            val originalWriterAllocation = writerAllocator.getAllocatedMemory
-            failWrites = failSerialization
-            try {
-              if (failSerialization) {
-                val error = intercept[IOException] {
-                  serializeBatch(new WriteChannel(channel), Seq(imported), 2, writerAllocator)
-                }
-                error.getMessage shouldBe "injected Arrow IPC write failure"
-              } else {
-                serializeBatch(new WriteChannel(channel), Seq(imported), 2, writerAllocator)
+        val field =
+          if (useLargeVarTypes) withLargeVarTypes(imported.getField) else imported.getField
+        withWriter(Seq(field), writerAllocator, Channels.newChannel(output)) { channel =>
+          val originalWriterAllocation = writerAllocator.getAllocatedMemory
+          failWrites = failSerialization
+          try {
+            if (failSerialization) {
+              val error = intercept[IOException] {
+                serializeBatch(
+                  new WriteChannel(channel),
+                  Seq(imported),
+                  2,
+                  writerAllocator,
+                  useLargeVarTypes)
               }
-            } finally {
-              failWrites = false
+              error.getMessage shouldBe "injected Arrow IPC write failure"
+            } else {
+              serializeBatch(
+                new WriteChannel(channel),
+                Seq(imported),
+                2,
+                writerAllocator,
+                useLargeVarTypes)
             }
+          } finally {
+            failWrites = false
+          }
 
-            buffers.map(_.refCnt()) shouldBe originalReferenceCounts
-            importAllocator.getAllocatedMemory shouldBe originalImportAllocation
-            sourceAllocator.getAllocatedMemory shouldBe originalSourceAllocation
-            writerAllocator.getAllocatedMemory shouldBe originalWriterAllocation
-            imported.getValueCount shouldBe 2
-            imported.get(0) shouldBe payload
-            imported.isNull(1) shouldBe true
+          buffers.map(_.refCnt()) shouldBe originalReferenceCounts
+          importAllocator.getAllocatedMemory shouldBe originalImportAllocation
+          sourceAllocator.getAllocatedMemory shouldBe originalSourceAllocation
+          writerAllocator.getAllocatedMemory shouldBe originalWriterAllocation
+          imported.getValueCount shouldBe 2
+          imported.get(0) shouldBe payload
+          imported.isNull(1) shouldBe true
         }
 
         if (!failSerialization) {
           withReader(output.toByteArray) { reader =>
             reader.loadNextBatch() shouldBe true
             val struct = reader.getVectorSchemaRoot.getVector(0).asInstanceOf[StructVector]
-            val result = struct.getChild("payload").asInstanceOf[VarCharVector]
-            result.get(0) shouldBe payload
+            val result = struct.getChild("payload")
+            result.getField.getType shouldBe field.getType
+            result.getObject(0).toString shouldBe new String(payload, "UTF-8")
             result.isNull(1) shouldBe true
             reader.loadNextBatch() shouldBe false
           }
@@ -1203,102 +1241,364 @@ class CometArrowPythonRunnerSuite extends AnyFunSuite with Matchers {
     }
   }
 
-  test("direct batches preserve nested list, struct, map, and null field layouts") {
+  test("large input types widen offsets without copying string or binary payloads") {
     val sourceAllocator = new RootAllocator(Long.MaxValue)
-    val writerAllocator = new RootAllocator(Long.MaxValue)
-    val list = ListVector.empty("items", sourceAllocator)
-    val struct = StructVector.empty("details", sourceAllocator)
-    val map = MapVector.empty("mapping", sourceAllocator, false)
-    val nulls = new NullVector("nulls", 3)
+    val writerAllocator = new RootAllocator(1024)
+    val text = new VarCharVector("text", sourceAllocator)
+    val binary = new VarBinaryVector("binary", sourceAllocator)
     val output = new ByteArrayOutputStream()
     try {
-      val listWriter = list.getWriter
-      listWriter.setPosition(0)
-      listWriter.startList()
-      listWriter.integer().writeInt(11)
-      listWriter.integer().writeInt(12)
-      listWriter.endList()
-      listWriter.setPosition(1)
-      listWriter.writeNull()
-      listWriter.setPosition(2)
-      listWriter.startList()
-      listWriter.integer().writeInt(13)
-      listWriter.endList()
-      listWriter.setValueCount(3)
-
-      val structWriter = struct.getWriter
-      structWriter.setPosition(0)
-      structWriter.start()
-      structWriter.integer("count").writeInt(21)
-      structWriter.end()
-      structWriter.setPosition(1)
-      structWriter.writeNull()
-      structWriter.setPosition(2)
-      structWriter.start()
-      structWriter.integer("count").writeNull()
-      structWriter.end()
-      structWriter.setValueCount(3)
-
-      val mapWriter = map.getWriter
-      mapWriter.setPosition(0)
-      mapWriter.startMap()
-      mapWriter.startEntry()
-      mapWriter.key().integer().writeInt(31)
-      mapWriter.value().integer().writeInt(32)
-      mapWriter.endEntry()
-      mapWriter.endMap()
-      mapWriter.setPosition(1)
-      mapWriter.writeNull()
-      mapWriter.setPosition(2)
-      mapWriter.startMap()
-      mapWriter.startEntry()
-      mapWriter.key().integer().writeInt(33)
-      mapWriter.value().integer().writeNull()
-      mapWriter.endEntry()
-      mapWriter.endMap()
-      mapWriter.setValueCount(3)
-
-      val vectors = Seq[FieldVector](list, struct, map, nulls)
-      withWriter(vectors.map(_.getField), writerAllocator, Channels.newChannel(output)) {
-        channel =>
-          serializeBatch(new WriteChannel(channel), vectors, 3, writerAllocator)
+      val strings = Seq(
+        Array.fill[Byte](16 * 1024)('x'.toByte),
+        Array.emptyByteArray,
+        "λ中文".getBytes("UTF-8"))
+      val bytes =
+        Seq(Array.fill[Byte](16 * 1024)(0xff.toByte), Array.emptyByteArray, Array[Byte](0, 1, -1))
+      text.allocateNew()
+      binary.allocateNew()
+      Seq(0, 2, 3).zipWithIndex.foreach { case (row, i) =>
+        text.setSafe(row, strings(i))
+        binary.setSafe(row, bytes(i))
       }
+      text.setNull(1)
+      binary.setNull(1)
+      text.setValueCount(4)
+      binary.setValueCount(4)
+      val vectors = Seq[FieldVector](text, binary)
+      val buffers = vectors.flatMap(_.getFieldBuffers.asScala)
+      val refs = buffers.map(_.refCnt())
+      val sourceBytes = sourceAllocator.getAllocatedMemory
 
+      withWriter(
+        vectors.map(v => withLargeVarTypes(v.getField)),
+        writerAllocator,
+        Channels.newChannel(output)) { channel =>
+        serializeBatch(
+          new WriteChannel(channel),
+          vectors,
+          4,
+          writerAllocator,
+          useLargeVarTypes = true)
+        writerAllocator.getAllocatedMemory shouldBe 0L
+        sourceAllocator.getAllocatedMemory shouldBe sourceBytes
+        buffers.map(_.refCnt()) shouldBe refs
+        text.getLastSet shouldBe 3
+        binary.getLastSet shouldBe 3
+        text.get(3) shouldBe strings(2)
+        binary.get(3) shouldBe bytes(2)
+      }
       withReader(output.toByteArray) { reader =>
         reader.loadNextBatch() shouldBe true
-        val result = reader.getVectorSchemaRoot.getVector(0).asInstanceOf[StructVector]
-        result.getNullCount shouldBe 0
-
-        val resultList = result.getChild("items").asInstanceOf[ListVector]
-        resultList.getObject(0).asScala.toSeq shouldBe Seq(11, 12)
-        resultList.isNull(1) shouldBe true
-        resultList.getObject(2).asScala.toSeq shouldBe Seq(13)
-
-        val resultStruct = result.getChild("details").asInstanceOf[StructVector]
-        resultStruct.getChild("count").asInstanceOf[IntVector].get(0) shouldBe 21
-        resultStruct.isNull(1) shouldBe true
-        resultStruct.getChild("count").isNull(2) shouldBe true
-
-        val resultMap = result.getChild("mapping").asInstanceOf[MapVector]
-        val entries = resultMap.getDataVector.asInstanceOf[StructVector]
-        entries.getChildByOrdinal(0).getField.getName shouldBe MapVector.KEY_NAME
-        entries.getChildByOrdinal(1).getField.getName shouldBe MapVector.VALUE_NAME
-        entries.getChildByOrdinal(0).asInstanceOf[IntVector].get(0) shouldBe 31
-        entries.getChildByOrdinal(1).asInstanceOf[IntVector].get(0) shouldBe 32
-        resultMap.isNull(1) shouldBe true
-        entries.getChildByOrdinal(1).isNull(1) shouldBe true
-
-        val resultNulls = result.getChild("nulls").asInstanceOf[NullVector]
-        resultNulls.getNullCount shouldBe 3
+        val struct = reader.getVectorSchemaRoot.getVector(0).asInstanceOf[StructVector]
+        val resultText = struct.getChild("text").asInstanceOf[LargeVarCharVector]
+        val resultBinary = struct.getChild("binary").asInstanceOf[LargeVarBinaryVector]
+        Seq(0, 2, 3).zipWithIndex.foreach { case (row, i) =>
+          resultText.get(row) shouldBe strings(i)
+          resultBinary.get(row) shouldBe bytes(i)
+        }
+        resultText.isNull(1) shouldBe true
+        resultBinary.isNull(1) shouldBe true
         reader.loadNextBatch() shouldBe false
       }
     } finally {
-      nulls.close()
-      map.close()
-      struct.close()
-      list.close()
+      binary.close()
+      text.close()
       writerAllocator.close()
       sourceAllocator.close()
+    }
+  }
+
+  test("large input types preserve empty batches and reuse already-large offsets") {
+    val sourceAllocator = new RootAllocator(Long.MaxValue)
+    val writerAllocator = new RootAllocator(64)
+    val first = new VarCharVector("value", sourceAllocator)
+    val empty = new VarCharVector("value", sourceAllocator)
+    val last = new LargeVarCharVector("value", sourceAllocator)
+    val output = new ByteArrayOutputStream()
+    try {
+      first.allocateNew()
+      first.setSafe(0, "first".getBytes("UTF-8"))
+      first.setValueCount(1)
+      last.allocateNew()
+      last.setSafe(0, "last".getBytes("UTF-8"))
+      last.setValueCount(1)
+      val largeBuffers = last.getFieldBuffers.asScala.toSeq
+      val largeRefs = largeBuffers.map(_.refCnt())
+      val largeField = withLargeVarTypes(first.getField)
+      hasCompatibleSchema(Seq(largeField), Seq(withLargeVarTypes(last.getField))) shouldBe true
+
+      withWriter(Seq(largeField), writerAllocator, Channels.newChannel(output)) { channel =>
+        serializeBatch(
+          new WriteChannel(channel),
+          Seq(first),
+          1,
+          writerAllocator,
+          useLargeVarTypes = true)
+        serializeBatch(
+          new WriteChannel(channel),
+          Seq(empty),
+          0,
+          writerAllocator,
+          useLargeVarTypes = true)
+        // Only the wrapping bitmap fits: an already-large input must not allocate new offsets.
+        writerAllocator.setLimit(8L)
+        serializeBatch(
+          new WriteChannel(channel),
+          Seq(last),
+          1,
+          writerAllocator,
+          useLargeVarTypes = true)
+        largeBuffers.map(_.refCnt()) shouldBe largeRefs
+        writerAllocator.getAllocatedMemory shouldBe 0L
+      }
+      withReader(output.toByteArray) { reader =>
+        Seq(Some("first"), None, Some("last")).foreach { expected =>
+          reader.loadNextBatch() shouldBe true
+          reader.getVectorSchemaRoot.getRowCount shouldBe expected.size
+          val struct = reader.getVectorSchemaRoot.getVector(0).asInstanceOf[StructVector]
+          val value = struct.getChild("value").asInstanceOf[LargeVarCharVector]
+          expected.foreach(v => value.getObject(0).toString shouldBe v)
+        }
+        reader.loadNextBatch() shouldBe false
+      }
+    } finally {
+      last.close()
+      empty.close()
+      first.close()
+      writerAllocator.close()
+      sourceAllocator.close()
+    }
+  }
+
+  test("large input conversion releases earlier offsets when a later allocation fails") {
+    val sourceAllocator = new RootAllocator(Long.MaxValue)
+    // The wrapping bitmap and one 32-byte offset buffer fit, but the second offset buffer cannot.
+    val writerAllocator = new RootAllocator(40)
+    val vectors = Seq(
+      new VarCharVector("first", sourceAllocator),
+      new VarCharVector("second", sourceAllocator))
+    val output = new ByteArrayOutputStream()
+    try {
+      vectors.foreach { vector =>
+        vector.allocateNew()
+        (0 until 3).foreach(i => vector.setSafe(i, s"value-$i".getBytes("UTF-8")))
+        vector.setValueCount(3)
+      }
+      val buffers = vectors.flatMap(_.getFieldBuffers.asScala)
+      val refs = buffers.map(_.refCnt())
+      val sourceBytes = sourceAllocator.getAllocatedMemory
+      withWriter(
+        vectors.map(v => withLargeVarTypes(v.getField)),
+        writerAllocator,
+        Channels.newChannel(output)) { channel =>
+        intercept[OutOfMemoryException] {
+          serializeBatch(
+            new WriteChannel(channel),
+            vectors,
+            3,
+            writerAllocator,
+            useLargeVarTypes = true)
+        }
+        writerAllocator.getPeakMemoryAllocation should be > 8L
+        writerAllocator.getAllocatedMemory shouldBe 0L
+        buffers.map(_.refCnt()) shouldBe refs
+        sourceAllocator.getAllocatedMemory shouldBe sourceBytes
+        vectors.foreach(_.getObject(2).toString shouldBe "value-2")
+      }
+    } finally {
+      vectors.foreach(_.close())
+      writerAllocator.close()
+      sourceAllocator.close()
+    }
+  }
+
+  for (useLargeVarTypes <- Seq(false, true)) {
+    test(s"direct batches preserve mixed nested layouts (large: $useLargeVarTypes)") {
+      val sourceAllocator = new RootAllocator(Long.MaxValue)
+      val writerAllocator = new RootAllocator(Long.MaxValue)
+      val details = StructVector.empty("details", sourceAllocator)
+      val texts = ListVector.empty("texts", sourceAllocator)
+      val mapping = MapVector.empty("mapping", sourceAllocator, false)
+      val records = ListVector.empty("records", sourceAllocator)
+      val nulls = new NullVector("nulls", 3)
+      val fixed = new FixedSizeBinaryVector("fixed", sourceAllocator, 4)
+      val trailing = new VarCharVector("trailing", sourceAllocator)
+      val output = new ByteArrayOutputStream()
+      try {
+        val detailsWriter = details.getWriter
+        detailsWriter.setPosition(0)
+        detailsWriter.start()
+        detailsWriter.varChar("text").writeVarChar("alpha")
+        detailsWriter.integer("count").writeInt(21)
+        detailsWriter.varBinary("data").writeVarBinary(Array[Byte](1, 2))
+        detailsWriter.end()
+        detailsWriter.setPosition(1)
+        detailsWriter.writeNull()
+        detailsWriter.setPosition(2)
+        detailsWriter.start()
+        detailsWriter.varChar("text").writeVarChar("")
+        detailsWriter.integer("count").writeNull()
+        detailsWriter.varBinary("data").writeVarBinary(Array[Byte](3, 4))
+        detailsWriter.end()
+        detailsWriter.setValueCount(3)
+
+        val textsWriter = texts.getWriter
+        textsWriter.setPosition(0)
+        textsWriter.startList()
+        textsWriter.varChar().writeVarChar("one")
+        textsWriter.varChar().writeVarChar("")
+        textsWriter.endList()
+        textsWriter.setPosition(1)
+        textsWriter.writeNull()
+        textsWriter.setPosition(2)
+        textsWriter.startList()
+        textsWriter.varChar().writeVarChar("three")
+        textsWriter.endList()
+        textsWriter.setValueCount(3)
+
+        val mapWriter = mapping.getWriter
+        mapWriter.setPosition(0)
+        mapWriter.startMap()
+        mapWriter.startEntry()
+        mapWriter.key().varChar().writeVarChar("key-0")
+        mapWriter.value().varChar().writeVarChar("value-0")
+        mapWriter.endEntry()
+        mapWriter.endMap()
+        mapWriter.setPosition(1)
+        mapWriter.writeNull()
+        mapWriter.setPosition(2)
+        mapWriter.startMap()
+        mapWriter.startEntry()
+        mapWriter.key().varChar().writeVarChar("key-2")
+        mapWriter.value().varChar().writeVarChar("value-2")
+        mapWriter.endEntry()
+        mapWriter.endMap()
+        mapWriter.setValueCount(3)
+
+        val recordsWriter = records.getWriter
+        val recordWriter = recordsWriter.struct()
+        recordsWriter.setPosition(0)
+        recordsWriter.startList()
+        recordWriter.start()
+        recordWriter.varChar("text").writeVarChar("record-0")
+        recordWriter.end()
+        recordsWriter.endList()
+        recordsWriter.setPosition(1)
+        recordsWriter.writeNull()
+        recordsWriter.setPosition(2)
+        recordsWriter.startList()
+        recordWriter.start()
+        recordWriter.varChar("text").writeVarChar("record-2")
+        recordWriter.end()
+        recordsWriter.endList()
+        recordsWriter.setValueCount(3)
+
+        fixed.allocateNew()
+        fixed.setSafe(0, Array[Byte](5, 6, 7, 8))
+        fixed.setNull(1)
+        fixed.setSafe(2, Array[Byte](9, 10, 11, 12))
+        fixed.setValueCount(3)
+
+        trailing.allocateNew()
+        trailing.setSafe(0, "tail-0".getBytes("UTF-8"))
+        trailing.setNull(1)
+        trailing.setSafe(2, "tail-2".getBytes("UTF-8"))
+        trailing.setValueCount(3)
+
+        val vectors = Seq[FieldVector](details, texts, mapping, records, nulls, fixed, trailing)
+        def buffers(vector: FieldVector): Seq[ArrowBuf] =
+          vector.getFieldBuffers.asScala.toSeq ++
+            vector.getChildrenFromFields.asScala.toSeq.flatMap(buffers)
+        val sourceBuffers = vectors.flatMap(buffers)
+        val sourceRefs = sourceBuffers.map(_.refCnt())
+        val sourceBytes = sourceAllocator.getAllocatedMemory
+        val streamFields = vectors.map { vector =>
+          if (useLargeVarTypes) withLargeVarTypes(vector.getField) else vector.getField
+        }
+
+        withWriter(streamFields, writerAllocator, Channels.newChannel(output)) { channel =>
+          serializeBatch(new WriteChannel(channel), vectors, 3, writerAllocator, useLargeVarTypes)
+          writerAllocator.getAllocatedMemory shouldBe 0L
+          sourceAllocator.getAllocatedMemory shouldBe sourceBytes
+          sourceBuffers.map(_.refCnt()) shouldBe sourceRefs
+        }
+
+        withReader(output.toByteArray) { reader =>
+          reader.loadNextBatch() shouldBe true
+          val result = reader.getVectorSchemaRoot.getVector(0).asInstanceOf[StructVector]
+          result.getNullCount shouldBe 0
+          val expectedUtf8 =
+            if (useLargeVarTypes) ArrowType.LargeUtf8.INSTANCE else ArrowType.Utf8.INSTANCE
+          val expectedBinary =
+            if (useLargeVarTypes) ArrowType.LargeBinary.INSTANCE else ArrowType.Binary.INSTANCE
+
+          val resultDetails = result.getChild("details").asInstanceOf[StructVector]
+          val detailText = resultDetails.getChild("text")
+          val detailCount = resultDetails.getChild("count").asInstanceOf[IntVector]
+          val detailData = resultDetails.getChild("data")
+          detailText.getField.getType shouldBe expectedUtf8
+          detailData.getField.getType shouldBe expectedBinary
+          detailText.getObject(0).toString shouldBe "alpha"
+          detailCount.get(0) shouldBe 21
+          detailData.getObject(0).asInstanceOf[Array[Byte]] shouldBe Array[Byte](1, 2)
+          resultDetails.isNull(1) shouldBe true
+          detailText.getObject(2).toString shouldBe ""
+          detailCount.isNull(2) shouldBe true
+          detailData.getObject(2).asInstanceOf[Array[Byte]] shouldBe Array[Byte](3, 4)
+
+          val resultTexts = result.getChild("texts").asInstanceOf[ListVector]
+          resultTexts.getDataVector.getField.getType shouldBe expectedUtf8
+          resultTexts.getObject(0).asScala.map(_.toString).toSeq shouldBe Seq("one", "")
+          resultTexts.isNull(1) shouldBe true
+          resultTexts.getObject(2).asScala.map(_.toString).toSeq shouldBe Seq("three")
+
+          val resultMap = result.getChild("mapping").asInstanceOf[MapVector]
+          val entries = resultMap.getDataVector.asInstanceOf[StructVector]
+          val keys = entries.getChildByOrdinal(0)
+          val values = entries.getChildByOrdinal(1)
+          keys.getField.getName shouldBe MapVector.KEY_NAME
+          values.getField.getName shouldBe MapVector.VALUE_NAME
+          keys.getField.getType shouldBe expectedUtf8
+          values.getField.getType shouldBe expectedUtf8
+          keys.getObject(0).toString shouldBe "key-0"
+          values.getObject(0).toString shouldBe "value-0"
+          resultMap.isNull(1) shouldBe true
+          keys.getObject(1).toString shouldBe "key-2"
+          values.getObject(1).toString shouldBe "value-2"
+
+          val resultRecords = result.getChild("records").asInstanceOf[ListVector]
+          val recordStruct = resultRecords.getDataVector.asInstanceOf[StructVector]
+          val recordText = recordStruct.getChild("text")
+          recordText.getField.getType shouldBe expectedUtf8
+          resultRecords.getObject(0).size() shouldBe 1
+          recordText.getObject(0).toString shouldBe "record-0"
+          resultRecords.isNull(1) shouldBe true
+          resultRecords.getObject(2).size() shouldBe 1
+          recordText.getObject(1).toString shouldBe "record-2"
+
+          result.getChild("nulls").asInstanceOf[NullVector].getNullCount shouldBe 3
+          val resultFixed = result.getChild("fixed").asInstanceOf[FixedSizeBinaryVector]
+          resultFixed.get(0) shouldBe Array[Byte](5, 6, 7, 8)
+          resultFixed.isNull(1) shouldBe true
+          resultFixed.get(2) shouldBe Array[Byte](9, 10, 11, 12)
+          val resultTrailing = result.getChild("trailing")
+          resultTrailing.getField.getType shouldBe expectedUtf8
+          resultTrailing.getObject(0).toString shouldBe "tail-0"
+          resultTrailing.isNull(1) shouldBe true
+          resultTrailing.getObject(2).toString shouldBe "tail-2"
+          reader.loadNextBatch() shouldBe false
+        }
+      } finally {
+        trailing.close()
+        fixed.close()
+        nulls.close()
+        records.close()
+        mapping.close()
+        texts.close()
+        details.close()
+        writerAllocator.close()
+        sourceAllocator.close()
+      }
     }
   }
 
@@ -1320,9 +1620,24 @@ class CometArrowPythonRunnerSuite extends AnyFunSuite with Matchers {
       last.setValueCount(1)
 
       withWriter(Seq(first.getField), writerAllocator, Channels.newChannel(output)) { channel =>
-        serializeBatch(new WriteChannel(channel), Seq(first), 2, writerAllocator)
-        serializeBatch(new WriteChannel(channel), Seq(empty), 0, writerAllocator)
-        serializeBatch(new WriteChannel(channel), Seq(last), 1, writerAllocator)
+        serializeBatch(
+          new WriteChannel(channel),
+          Seq(first),
+          2,
+          writerAllocator,
+          useLargeVarTypes = false)
+        serializeBatch(
+          new WriteChannel(channel),
+          Seq(empty),
+          0,
+          writerAllocator,
+          useLargeVarTypes = false)
+        serializeBatch(
+          new WriteChannel(channel),
+          Seq(last),
+          1,
+          writerAllocator,
+          useLargeVarTypes = false)
       }
 
       withReader(output.toByteArray) { reader =>
@@ -1350,7 +1665,12 @@ class CometArrowPythonRunnerSuite extends AnyFunSuite with Matchers {
     val output = new ByteArrayOutputStream()
     try {
       withWriter(Seq.empty, allocator, Channels.newChannel(output)) { channel =>
-        serializeBatch(new WriteChannel(channel), Seq.empty, 3, allocator)
+        serializeBatch(
+          new WriteChannel(channel),
+          Seq.empty,
+          3,
+          allocator,
+          useLargeVarTypes = false)
       }
 
       withReader(output.toByteArray) { reader =>
@@ -1400,7 +1720,12 @@ class CometArrowPythonRunnerSuite extends AnyFunSuite with Matchers {
         failWrites = true
         try {
           val error = intercept[IOException] {
-            serializeBatch(new WriteChannel(channel), Seq(source), 1, writerAllocator)
+            serializeBatch(
+              new WriteChannel(channel),
+              Seq(source),
+              1,
+              writerAllocator,
+              useLargeVarTypes = false)
           }
           error.getMessage shouldBe "injected Arrow IPC write failure"
         } finally {
