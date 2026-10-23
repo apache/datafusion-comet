@@ -1558,6 +1558,40 @@ class CometJoinSuite extends CometTestBase {
     }
   }
 
+  // Spark drops the final sort for the checkpoint's order, which Comet cannot check.
+  test("forceShuffledHashJoin keeps the order of a sorted checkpoint through an outer join") {
+    withOrderedCheckpoint { streamed =>
+      withSQLConf(CometConf.COMET_FORCE_SHJ.key -> "true") {
+        val build = spark.range(10).selectExpr("id * 10 AS k")
+        val order =
+          (0 to 1).map(i => SortOrder(BoundReference(i, LongType, nullable = true), Ascending))
+        for {
+          (joinType, buildSide) <- Seq("left_outer" -> BuildRight, "right_outer" -> BuildLeft)
+        } {
+          def df: DataFrame = {
+            val on = streamed("k") === build("k")
+            val joined = if (joinType == "left_outer") {
+              streamed.join(build, on, joinType)
+            } else {
+              build.join(streamed, on, joinType)
+            }
+            joined.select(streamed("k"), streamed("v")).sortWithinPartitions("k", "v")
+          }
+          val plan = df.queryExecution.executedPlan
+          val context = s"$joinType\n$plan"
+          assert(partitionsInOrder(df, order: _*), context)
+          checkSparkAnswerAndFallbackReason(df, CometHashJoin.uncheckedStreamedOrderReason)
+          val joins = collect(plan) { case j: ShuffledHashJoinExec => j.buildSide }
+          assert(joins == Seq(buildSide), context)
+          assert(collect(plan) { case j: CometHashJoinExec => j }.isEmpty, context)
+          assert(
+            collect(plan) { case s @ (_: CometSortExec | _: SortExec) => s }.isEmpty,
+            context)
+        }
+      }
+    }
+  }
+
   test("forceShuffledHashJoin respects join strategy hints") {
     withSQLConf(
       CometConf.COMET_FORCE_SHJ.key -> "true",
