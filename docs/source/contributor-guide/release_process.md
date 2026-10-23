@@ -174,7 +174,8 @@ targeting the release branch.
 
 Open a PR targeting the release branch that changes the Maven version from `0.13.0-SNAPSHOT` to `0.13.0` in:
 
-- the `pom.xml` files: `pom.xml`, `common/pom.xml`, `spark/pom.xml`, and `spark-integration/pom.xml`
+- the `pom.xml` files: `pom.xml`, `common/pom.xml`, `spark/pom.xml`, `spark-integration/pom.xml`, and
+  `contrib/delta-spark/pom.xml`
 - the `<comet.version>` property in the Spark test diffs under `dev/diffs`
 - the `comet` version in the Iceberg test diffs under `dev/diffs/iceberg`, which use a Gradle version
   catalog entry (`comet = "0.13.0"`) rather than a Maven property
@@ -187,7 +188,8 @@ Once the version is bumped, verify that no references to the old version remain:
 git grep -n '0.13.0-SNAPSHOT' -- . ':!docs/source/changelog'
 ```
 
-Any hit outside the change log is a place that will break on the release branch. Note that dropping the
+Any hit outside the change log is a place that will break on the release branch. This also catches a module
+added since the last release that the list above doesn't name yet. Note that dropping the
 `-SNAPSHOT` qualifier changes the built artifact file names, so anything that locates the jar by glob must
 match a bare version too. Prefer patterns such as `comet-spark-spark3.5_2.12-*.jar` over
 `comet-spark-spark3.5_2.12-*-SNAPSHOT.jar`, and prefer resolving the jar by glob over hardcoding a version.
