@@ -422,10 +422,10 @@ object CometNativeScan extends CometOperatorSerde[CometScanExec] with CometTypeS
       CometTimeZone.nativeId(Some(sessionTimeZone)).getOrElse(sessionTimeZone))
     commonBuilder.setCaseSensitive(conf.getConf[Boolean](SQLConf.CASE_SENSITIVE))
 
-    // SPARK-53535 (Spark 4.1+): when reading a struct whose requested fields are all
-    // missing in the Parquet file, the new default preserves the parent struct's
-    // nullness from the file (so non-null parents materialize as a struct of all-null
-    // fields). Older Spark versions always use legacy behavior and ignore this key.
+    // SPARK-53535 (Spark 4.1+): when none of the requested leaves of a struct, list or
+    // map exist in the Parquet file, the new default preserves the parent's nullness
+    // from the file (so non-null parents keep their structure with all-null leaves).
+    // Older Spark versions always use legacy behavior and ignore this key.
     val returnNullStructConfKey =
       "spark.sql.legacy.parquet.returnNullStructIfAllFieldsMissing"
     commonBuilder.setReturnNullStructIfAllFieldsMissing(

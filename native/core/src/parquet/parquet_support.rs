@@ -93,10 +93,11 @@ pub struct SparkParquetOptions {
     pub use_legacy_date_timestamp_or_ntz: bool,
     // Whether schema field names are case sensitive
     pub case_sensitive: bool,
-    /// SPARK-53535 (Spark 4.1+): when reading a struct whose requested fields are all
-    /// missing in the Parquet file, true returns the entire struct as null (pre-4.1
-    /// legacy behavior); false preserves the parent struct's nullness from the file
-    /// so non-null parents return a struct of all-null fields.
+    /// SPARK-53535 (Spark 4.1+): when none of the requested leaves of a struct, list or
+    /// map exist in the Parquet file, true returns the entire value as null (pre-4.1
+    /// legacy behavior); false preserves the parent's nullness from the file, so
+    /// non-null parents keep their structure with all-null leaves. Comet sets it to true
+    /// on Spark 3.4 through 4.0, which always use the legacy behavior.
     pub return_null_struct_if_all_fields_missing: bool,
     /// When true, resolve fields by parquet.field.id metadata instead of name
     /// (mirrors Spark's `spark.sql.parquet.fieldId.read.enabled`). Only takes effect
@@ -570,12 +571,13 @@ fn parquet_convert_struct_to_struct(
                 }
             }
 
-            // When the file's struct contains none of the requested fields, the
-            // returned validity buffer depends on Spark's
-            // `spark.sql.legacy.parquet.returnNullStructIfAllFieldsMissing` (SPARK-53535,
-            // Spark 4.1+). Legacy mode marks the whole column null; the new default
-            // preserves the file's parent-row nullness so non-null parents materialize
-            // as a struct of all-null fields.
+            // When no requested leaf exists in the file, directly or through nested
+            // struct, list or map children, the returned validity buffer depends on
+            // Spark's `spark.sql.legacy.parquet.returnNullStructIfAllFieldsMissing`
+            // (SPARK-53535, Spark 4.1+). Legacy mode marks the whole column null; the new
+            // default preserves the file's parent-row nullness so non-null parents keep
+            // their nested structure with all-null leaves. The list and map arms apply the
+            // same rule.
             let nulls =
                 if !field_overlap && parquet_options.return_null_struct_if_all_fields_missing {
                     Some(NullBuffer::new_null(array.len()))
