@@ -62,3 +62,49 @@ SELECT g, max(struct(coalesce(ts, 0L) AS ts, 1.5D AS d)) FROM test_mm_struct GRO
 -- Array field: unsupported.
 query expect_fallback(Struct min/max over a field of type ArrayType)
 SELECT g, max(struct(coalesce(ts, 0L) AS ts, array(1, 2) AS a)) FROM test_mm_struct GROUP BY g ORDER BY g
+
+-- Spark cannot order maps, so it rejects a struct holding one during analysis.
+query expect_error(INVALID_ORDERING_TYPE)
+SELECT g, max(struct(coalesce(ts, 0L) AS ts, map('k', 1) AS m)) FROM test_mm_struct GROUP BY g ORDER BY g
+
+-- timestamp_ntz is not supported by native min/max, so a struct holding one falls back too.
+query expect_fallback(Struct min/max over a field of type TimestampNTZType)
+SELECT g, max(struct(coalesce(ts, 0L) AS ts, TIMESTAMP_NTZ'2020-01-01 00:00:00' AS t)) FROM test_mm_struct GROUP BY g ORDER BY g
+
+-- Boolean, integral and binary fields. Spark marks narrowing casts nullable, so each one is
+-- wrapped in coalesce to keep the struct Compatible.
+query
+SELECT g,
+  min(struct(coalesce(ts, 0L) > 5 AS b, coalesce(CAST(ts % 100 AS TINYINT), 0Y) AS i8,
+    coalesce(CAST(ts % 30000 AS SMALLINT), 0S) AS i16, coalesce(CAST(ts % 100000 AS INT), 0) AS i32,
+    coalesce(CAST(s AS BINARY), X'') AS bin)),
+  max(struct(coalesce(ts, 0L) > 5 AS b, coalesce(CAST(ts % 100 AS TINYINT), 0Y) AS i8,
+    coalesce(CAST(ts % 30000 AS SMALLINT), 0S) AS i16, coalesce(CAST(ts % 100000 AS INT), 0) AS i32,
+    coalesce(CAST(s AS BINARY), X'') AS bin))
+FROM test_mm_struct GROUP BY g ORDER BY g
+
+-- Ties on the first field are decided by the next one. Group 1 has two rows with ts = 9, and
+-- '中文' sorts before '日本語' as raw UTF-8 bytes.
+query
+SELECT g, min(struct(coalesce(ts, 0L) AS ts, coalesce(s, '') AS s)),
+  max(struct(coalesce(ts, 0L) AS ts, coalesce(s, '') AS s))
+FROM test_mm_struct WHERE ts = 9 GROUP BY g ORDER BY g
+
+-- count(DISTINCT) makes Spark plan a PartialMerge stage, which merges the struct buffers again.
+query
+SELECT g, count(DISTINCT s), max(struct(coalesce(ts, 0L) AS ts, coalesce(s, '') AS s))
+FROM test_mm_struct GROUP BY g ORDER BY g
+
+-- A VALUES input keeps the partial aggregate on Spark, while the final one merges Spark's struct
+-- buffers natively. The plan is not fully native, so only the answer is checked.
+query spark_answer_only
+SELECT k, min(struct(o, v)), max(struct(o, v))
+FROM VALUES (1, 5L, 'b'), (1, 9L, 'ｱ'), (2, -1L, '😀'), (2, 3L, 'a') AS t(k, o, v)
+GROUP BY k ORDER BY k
+
+-- Empty input: one NULL row without grouping, no rows with grouping.
+query
+SELECT max(struct(coalesce(ts, 0L) AS ts, coalesce(s, '') AS s)) FROM test_mm_struct WHERE g < 0
+
+query
+SELECT g, max(struct(coalesce(ts, 0L) AS ts, coalesce(s, '') AS s)) FROM test_mm_struct WHERE g < 0 GROUP BY g
