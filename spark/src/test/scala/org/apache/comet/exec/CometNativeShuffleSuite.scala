@@ -37,10 +37,10 @@ import org.apache.arrow.vector.types.pojo.{Field, Schema}
 import org.apache.hadoop.fs.Path
 import org.apache.spark.{SparkEnv, TaskContext}
 import org.apache.spark.sql.{CometTestBase, DataFrame, Dataset, Row}
-import org.apache.spark.sql.catalyst.expressions.AttributeReference
+import org.apache.spark.sql.catalyst.expressions.{Ascending, AttributeReference, SortOrder}
 import org.apache.spark.sql.catalyst.expressions.aggregate.Final
 import org.apache.spark.sql.catalyst.plans.logical.LocalRelation
-import org.apache.spark.sql.catalyst.plans.physical.HashPartitioning
+import org.apache.spark.sql.catalyst.plans.physical.{HashPartitioning, RangePartitioning}
 import org.apache.spark.sql.comet.{CometExec, CometHashAggregateExec, CometLocalTableScanExec, CometMetricNode, CometNativeExec, CometNativeScanExec, CometScanWrapper, CometSparkToColumnarExec, CometTakeOrderedAndProjectExec}
 import org.apache.spark.sql.comet.execution.arrow.{CometArrowStream, CometNativeArrowSource}
 import org.apache.spark.sql.comet.execution.shuffle.{CometColumnarShuffle, CometNativeShuffle, CometShuffleExchangeExec}
@@ -54,7 +54,7 @@ import org.apache.spark.sql.types.{ArrayType, DataType, IntegerType, LongType, M
 import org.apache.spark.sql.vectorized.{ColumnarBatch, ColumnVector}
 
 import org.apache.comet.{CometConf, CometExecIterator, CometExplainInfo, CometShuffleBlockIterator, CometShuffleSizeLimitException, Native}
-import org.apache.comet.CometSparkSessionExtensions.{isSpark35Plus, isSpark40Plus}
+import org.apache.comet.CometSparkSessionExtensions.{isSpark35Plus, isSpark40Plus, withFallbackReason}
 import org.apache.comet.serde.{OperatorOuterClass, PartitioningOuterClass}
 import org.apache.comet.shuffle.ShufflePartitionPusher
 
@@ -470,6 +470,52 @@ class CometNativeShuffleSuite extends CometTestBase with AdaptiveSparkPlanHelper
             }
           }
         }
+      }
+    }
+  }
+
+  test("range shuffle reports current child failure reasons instead of stale sort-order tags") {
+    withSQLConf(CometConf.COMET_SHUFFLE_NATIVE_RANGE_PARTITIONING_ENABLED.key -> "true") {
+      val attr = AttributeReference("key", LongType)()
+      val leaf = spark.sessionState.planner
+        .plan(LocalRelation(Seq(attr)))
+        .next()
+        .asInstanceOf[LocalTableScanExec]
+      val child = CometScanWrapper(OperatorOuterClass.Operator.getDefaultInstance, leaf)
+      val ordering = SortOrder(attr, Ascending)
+      val tag = CometExplainInfo.FALLBACK_REASONS
+      val stale = "stale sort-order reason from an earlier conversion"
+      val key = CometConf.getExprEnabledConfigKey("AttributeReference")
+      val expected = s"Expression support is disabled. Set $key=true to enable it."
+      ordering.setTagValue(tag, Set(stale))
+
+      def check(): Unit = {
+        val exchange = ShuffleExchangeExec(RangePartitioning(Seq(ordering), 2), child)
+        assert(CometShuffleExchangeExec.shuffleSupported(exchange).isEmpty)
+        val reasons = exchange.getTagValue(tag).getOrElse(Set.empty[String])
+        assert(reasons.contains(expected), reasons.toString)
+        assert(!reasons.contains(stale), reasons.toString)
+        // The failure was on the child, so the root's copied tag really is still present.
+        assert(ordering.getTagValue(tag).contains(Set(stale)))
+        assert(
+          new org.apache.comet.ExtendedExplainInfo()
+            .generateExtendedInfo(exchange)
+            .contains(expected))
+      }
+
+      withSQLConf(key -> "false") {
+        check()
+        CometExplainInfo.withFallbackReasonScope {
+          // A probe must neither consume nor overwrite an enclosing conversion's journal.
+          withFallbackReason(attr, "outer conversion")
+          check()
+          assert(CometExplainInfo.currentFallbackReasons(attr) == Set("outer conversion"))
+        }
+      }
+      withSQLConf(key -> "true") {
+        val exchange = ShuffleExchangeExec(RangePartitioning(Seq(ordering), 2), child)
+        assert(CometShuffleExchangeExec.shuffleSupported(exchange).contains(CometNativeShuffle))
+        assert(exchange.getTagValue(tag).isEmpty)
       }
     }
   }

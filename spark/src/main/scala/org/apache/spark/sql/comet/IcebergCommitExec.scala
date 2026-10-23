@@ -76,6 +76,7 @@ case class IcebergCommitExec(
     // Collect each task's commit message as its task finishes, the way Spark's own V2 write
     // does, so that a job failure still knows which tasks completed. `executeCollect` would
     // only hand back the messages once every task succeeded.
+    val schedulerProbe = IcebergSchedulerTestProbe.current
     val rdd = child.execute()
     val messages = new Array[WriterCommitMessage](rdd.partitions.length)
     try {
@@ -85,6 +86,8 @@ case class IcebergCommitExec(
         (index: Int, payloads: Array[Array[Byte]]) => {
           payloads.foreach { payload =>
             messages(index) = IcebergWriteExec.deserializeMessage(payload)
+            schedulerProbe.foreach(
+              _.accepted(index, IcebergReflection.taskCommitFileLocations(messages(index))))
           }
         })
     } catch {
@@ -112,13 +115,15 @@ case class IcebergCommitExec(
     try {
       messages.foreach(batchWrite.onDataWriterCommit)
       IcebergWriteSummaryShim.commit(batchWrite, messages, child, command)
-      logInfo(s"Iceberg commit succeeded with ${messages.length} task message(s)")
     } catch {
       case cause: Throwable =>
         logError(s"Iceberg commit failed; aborting ${messages.length} task message(s)", cause)
         throw abortAfter(messages, cause)
     }
 
+    logInfo(s"Iceberg commit succeeded with ${messages.length} task message(s)")
+    // A post-commit observer failure must never abort already committed files.
+    schedulerProbe.foreach(_.committed())
     Nil
   }
 

@@ -28,6 +28,7 @@
 mod expand;
 mod explode;
 mod filter;
+mod metric_owning;
 mod projection;
 mod range;
 mod rank_limit;

@@ -39,6 +39,7 @@ import org.apache.spark.{SparkEnv, SparkException}
 import org.apache.spark.internal.Logging
 import org.apache.spark.io.CompressionCodec
 import org.apache.spark.sql.catalyst.expressions.Attribute
+import org.apache.spark.sql.comet.CometBroadcastValue
 import org.apache.spark.sql.comet.execution.arrow.{ArrowReaderIterator, ConstantColumnVectors}
 import org.apache.spark.sql.execution.vectorized.ConstantColumnVector
 import org.apache.spark.sql.types._
@@ -323,10 +324,12 @@ object Utils extends CometTypeShim with Logging {
    * by [[org.apache.comet.CometKryoRegistrator]].
    *
    * Spark registers `ChunkedByteBuffer` itself but not an array of them, and
-   * `CometBroadcastExchangeExec` broadcasts exactly that array, so a native broadcast fails under
-   * `spark.kryo.registrationRequired=true` whichever Comet features are enabled.
+   * `CometBroadcastExchangeExec` broadcasts a [[CometBroadcastValue]], which holds exactly that
+   * array, so a native broadcast fails under `spark.kryo.registrationRequired=true` whichever
+   * Comet features are enabled.
    */
   def arrowBytesKryoClasses: Seq[Class[_]] = Seq(
+    classOf[CometBroadcastValue],
     classOf[ChunkedByteBuffer],
     classOf[Array[ChunkedByteBuffer]],
     // A ChunkedByteBuffer's own chunks. ChunkedByteBufferOutputStream allocates them on heap.
