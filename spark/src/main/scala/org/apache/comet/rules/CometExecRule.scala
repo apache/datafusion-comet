@@ -200,17 +200,16 @@ object CometExecRule {
    */
   private val TEXT_BUILD_SIDE_FALLBACK_REASON: String =
     "Comet converts a Text scan on a broadcast build side to Arrow only when " +
-      s"${CometConf.COMET_CONVERT_BROADCAST_BUILD_SIDE_TEXT_ENABLED.key}=true, because a Text " +
+      s"${CometConf.COMET_CONVERT_FROM_TEXT_ENABLED.key}=true, because a Text " +
       "file can hold bytes that are not valid UTF-8"
 
   /**
    * Tag set on a scan leaf that sits on a broadcast join's build side. When
    * `spark.comet.convert.broadcastBuildSide.enabled` is on, such a scan is bridged to Arrow with
    * `CometSparkToColumnarExec` even when the general sparkToColumnar path is off, so the build
-   * branch and the broadcast join can run natively. A Text scan is bridged only when
-   * `spark.comet.convert.broadcastBuildSide.text.enabled` is also on. The build side is usually
-   * small, so the row to Arrow copy is usually cheap - see `tagBroadcastBuildSideLeaves` for the
-   * caveats. See issues #6008 and #7118.
+   * branch and the broadcast join can run natively. The build side is usually small, so the row
+   * to Arrow copy is usually cheap - see `tagBroadcastBuildSideLeaves` for the caveats. See issue
+   * #6008.
    */
   val BROADCAST_BUILD_SIDE_TAG: org.apache.spark.sql.catalyst.trees.TreeNodeTag[Unit] =
     org.apache.spark.sql.catalyst.trees.TreeNodeTag[Unit]("comet.broadcastBuildSideLeaf")
@@ -1473,7 +1472,7 @@ case class CometExecRule(session: SparkSession, queryStagePrep: Boolean = false)
             case _: ParquetFileFormat => CometConf.COMET_CONVERT_FROM_PARQUET_ENABLED.get(conf)
             case _: TextFileFormat => shouldConvertTextScan(conf, op)
             // Unsupported format (e.g. ORC): bridge it if the general opt-in is on or it feeds a
-            // broadcast build side. The per-format arms above keep honoring their own opt-outs.
+            // broadcast build side. The per-format arms above keep honoring their own switches.
             case _ => shouldBridgeUnsupportedScan(conf, op)
           }
         // Convert Spark DS v2 scan to Arrow format
@@ -1530,34 +1529,27 @@ case class CometExecRule(session: SparkSession, queryStagePrep: Boolean = false)
   /**
    * An unsupported file-source scan is bridged to Arrow when the general sparkToColumnar opt-in
    * covers it, or when it feeds a broadcast join's build side (see issue #6008). This is only
-   * reached from the unsupported-format arms, so the per-format `COMET_CONVERT_FROM_*` opt-outs
-   * for CSV/JSON/Parquet still take precedence, and Text follows `shouldConvertTextScan`.
+   * reached from the unsupported-format arms, so the per-format `COMET_CONVERT_FROM_*` switches
+   * for CSV/JSON/Parquet/Text still take precedence.
    */
   private def shouldBridgeUnsupportedScan(conf: SQLConf, op: SparkPlan): Boolean =
     isSparkToArrowEnabled(conf, op) || isBroadcastBuildSideLeaf(op)
 
   /**
-   * A Text scan is converted when `spark.comet.convert.text.enabled` is on, when the general
-   * sparkToColumnar opt-in covers it (as it did before Text had a config of its own), or when it
-   * feeds a broadcast build side and `spark.comet.convert.broadcastBuildSide.text.enabled` is on.
-   * Unlike the other unsupported formats, a Text build side is not bridged by default: a Text
-   * file can hold bytes that are not valid UTF-8, for example a Latin-1 file, and the conversion
-   * replaces them with U+FFFD, so results that depend on the original bytes would differ from
-   * Spark. A Text build side that the bridge would otherwise convert records why it did not, so
-   * the explain output names the config. See issue #7118.
+   * A Text scan is converted only by `spark.comet.convert.text.enabled`, like CSV, JSON and
+   * Parquet, and so is a Text scan on a broadcast build side: a Text file can hold bytes that are
+   * not valid UTF-8, for example a Latin-1 file, and the conversion replaces them with U+FFFD, so
+   * results that depend on the original bytes would differ from Spark. A Text build side that the
+   * bridge would otherwise convert records why it did not, so the explain output names the config.
+   * See issue #7118.
    */
-  private def shouldConvertTextScan(conf: SQLConf, op: SparkPlan): Boolean = {
-    if (CometConf.COMET_CONVERT_FROM_TEXT_ENABLED.get(conf) || isSparkToArrowEnabled(conf, op)) {
-      true
-    } else if (isBroadcastBuildSideLeaf(op)) {
-      CometConf.COMET_CONVERT_BROADCAST_BUILD_SIDE_TEXT_ENABLED.get(conf) || {
+  private def shouldConvertTextScan(conf: SQLConf, op: SparkPlan): Boolean =
+    isConversionEnabled(conf, op, CometConf.COMET_CONVERT_FROM_TEXT_ENABLED) || {
+      if (isBroadcastBuildSideLeaf(op)) {
         withFallbackReason(op, CometExecRule.TEXT_BUILD_SIDE_FALLBACK_REASON)
-        false
       }
-    } else {
       false
     }
-  }
 
   /**
    * True when the build-side auto-bridge should run: its own config is on and Comet broadcast
@@ -1606,11 +1598,9 @@ case class CometExecRule(session: SparkSession, queryStagePrep: Boolean = false)
    * of shouldApplySparkToColumnar handle. A natively scannable file (e.g. Parquet) is normally
    * already a `CometScanExec` here; if native scan conversion did not take, its
    * `FileSourceScanExec` is still tagged, but the tag is harmless because the per-format arm
-   * decides that scan before isBroadcastBuildSideLeaf is ever consulted. A Text scan is tagged
-   * too, and `shouldConvertTextScan` bridges it only when
-   * `spark.comet.convert.broadcastBuildSide.text.enabled` is on (see issue #7118). DPP subquery
-   * broadcasts live in expressions, not `children`, so `foreach` never reaches them - that scope
-   * is intentional.
+   * decides that scan before isBroadcastBuildSideLeaf is ever consulted. DPP subquery broadcasts
+   * live in expressions, not `children`, so `foreach` never reaches them - that scope is
+   * intentional.
    */
   private def tagBroadcastBuildSideLeaves(plan: SparkPlan): Unit = {
     if (!broadcastBuildSideBridgeEnabled) {

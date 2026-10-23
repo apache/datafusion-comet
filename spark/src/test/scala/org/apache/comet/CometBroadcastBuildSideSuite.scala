@@ -36,15 +36,13 @@ import org.apache.spark.sql.internal.SQLConf
 import org.apache.comet.CometSparkSessionExtensions.isSpark35Plus
 
 // Tests for the broadcast build-side bridge, spark.comet.convert.broadcastBuildSide.enabled (issue
-// #6008). A build-side scan that Comet cannot read natively, such as ORC, Text or an Iceberg table
+// #6008). A build-side scan that Comet cannot read natively, such as ORC or an Iceberg table
 // the native reader declines, is converted to Arrow so that the broadcast join runs natively. Each
 // query is compared with Spark, and the tests assert where the bridge must and must not appear.
 class CometBroadcastBuildSideSuite extends CometTestBase with CometIcebergTestBase {
 
-  // Most tests use a Text build side. Text is bridged only with its own opt-in, which is off by
-  // default because a Text file can hold bytes that are not valid UTF-8 (see issue #7118).
-  override protected def sparkConf: SparkConf =
-    super.sparkConf.set(CometConf.COMET_CONVERT_BROADCAST_BUILD_SIDE_TEXT_ENABLED.key, "true")
+  // Most tests use an ORC build side. Text, Parquet, JSON and CSV scans are converted only by their
+  // own spark.comet.convert configs, so they would not exercise the bridge (see issue #7118).
 
   /** Every node, descending through AQE, stages and subqueries, but not into reused exchanges. */
   private def allNodes(p: SparkPlan): Seq[SparkPlan] = {
@@ -217,11 +215,11 @@ class CometBroadcastBuildSideSuite extends CometTestBase with CometIcebergTestBa
     }
   }
 
-  test("Spark 3.4: native Iceberg fact, text dimension, AQE DPP (#6008)") {
+  test("Spark 3.4: native Iceberg fact, ORC dimension, AQE DPP (#6008)") {
     assume(icebergAvailable, "Iceberg not available in classpath")
     withTempIcebergDir { warehouseDir =>
       withTempDir { dir =>
-        val dim = s"${dir.getAbsolutePath}/dim.txt"
+        val dim = s"${dir.getAbsolutePath}/dim.orc"
         withSQLConf(
           "spark.sql.catalog.pc" -> "org.apache.iceberg.spark.SparkCatalog",
           "spark.sql.catalog.pc.type" -> "hadoop",
@@ -234,9 +232,9 @@ class CometBroadcastBuildSideSuite extends CometTestBase with CometIcebergTestBa
               .selectExpr("id AS v", "CAST(id % 10 AS STRING) AS fk")
               .writeTo("pc.db.fact")
               .append()
-            spark.range(0, 10).selectExpr("CAST(id AS STRING) AS value").write.text(dim)
+            spark.range(0, 10).selectExpr("CAST(id AS STRING) AS value").write.orc(dim)
           }
-          spark.read.text(dim).createOrReplaceTempView("ice_dim")
+          spark.read.orc(dim).createOrReplaceTempView("ice_dim")
           val query =
             """SELECT /*+ BROADCAST(d) */ f.v FROM pc.db.fact f JOIN
               |(SELECT value FROM ice_dim WHERE CAST(value AS INT) % 3 = 0) d
@@ -263,16 +261,15 @@ class CometBroadcastBuildSideSuite extends CometTestBase with CometIcebergTestBa
     }
   }
 
-  test("broadcast build side with unsupported text source goes native (#6008)") {
-    // A tiny lookup table read from a Text file (which Comet cannot scan natively) sits on the
+  test("broadcast build side with unsupported ORC source goes native (#6008)") {
+    // A tiny lookup table read from an ORC file (which Comet cannot scan natively) sits on the
     // build side of a broadcast join over a large native probe. Without the auto-bridge the whole
-    // join stays on Spark. With spark.comet.convert.broadcastBuildSide.enabled (default on) and
-    // its Text opt-in (on for this suite) the text leaf is bridged to Arrow so the broadcast and
-    // the join run natively.
+    // join stays on Spark. With spark.comet.convert.broadcastBuildSide.enabled (default on) the
+    // ORC leaf is bridged to Arrow so the broadcast and the join run natively.
     assert(CometConf.COMET_CONVERT_BROADCAST_BUILD_SIDE_ENABLED.defaultValue.contains(true))
     withTempDir { dir =>
       val probePath = s"${dir.getAbsolutePath}/probe.parquet"
-      val allowPath = s"${dir.getAbsolutePath}/allow.txt"
+      val allowPath = s"${dir.getAbsolutePath}/allow.orc"
       withSQLConf(CometConf.COMET_ENABLED.key -> "false") {
         spark
           .range(0, 100)
@@ -283,24 +280,24 @@ class CometBroadcastBuildSideSuite extends CometTestBase with CometIcebergTestBa
           .range(0, 5)
           .selectExpr("CAST(id AS STRING) AS value")
           .write
-          .text(allowPath)
+          .orc(allowPath)
       }
 
       // Cover both the AQE and non-AQE planning paths - the tag pre-pass runs per stage under AQE.
       for (aqe <- Seq(false, true)) {
         withSQLConf(SQLConf.ADAPTIVE_EXECUTION_ENABLED.key -> aqe.toString) {
           spark.read.parquet(probePath).createOrReplaceTempView("probe_6008")
-          spark.read.text(allowPath).createOrReplaceTempView("allow_6008")
+          spark.read.orc(allowPath).createOrReplaceTempView("allow_6008")
           val query =
             "SELECT /*+ BROADCAST(a) */ p.v FROM probe_6008 p JOIN allow_6008 a ON p.key = a.value"
 
-          // Default: the text build side is bridged to Arrow and the join goes native. The plan is
+          // Default: the ORC build side is bridged to Arrow and the join goes native. The plan is
           // fully native (the bridge counts as a native leaf), so use checkSparkAnswerAndOperator -
           // checkSparkAnswer would fail under COMET_STRICT_TESTING on a fully-native plan.
           val (_, cometPlan) = checkSparkAnswerAndOperator(sql(query))
           assert(
             collect(cometPlan) { case s: CometSparkToColumnarExec => s }.nonEmpty,
-            s"aqe=$aqe: expected a CometSparkToColumnarExec on the text build side:\n" +
+            s"aqe=$aqe: expected a CometSparkToColumnarExec on the ORC build side:\n" +
               cometPlan.treeString)
           assert(
             collect(cometPlan) { case b: CometBroadcastExchangeExec => b }.nonEmpty,
@@ -309,7 +306,7 @@ class CometBroadcastBuildSideSuite extends CometTestBase with CometIcebergTestBa
             collect(cometPlan) { case j: CometBroadcastHashJoinExec => j }.nonEmpty,
             s"aqe=$aqe: expected a CometBroadcastHashJoinExec:\n${cometPlan.treeString}")
 
-          // Off: the unsupported text leaf blocks native execution of the broadcast and the join.
+          // Off: the unsupported ORC leaf blocks native execution of the broadcast and the join.
           withSQLConf(CometConf.COMET_CONVERT_BROADCAST_BUILD_SIDE_ENABLED.key -> "false") {
             val (_, cometPlanOff) = checkSparkAnswer(sql(query))
             assert(
@@ -330,13 +327,13 @@ class CometBroadcastBuildSideSuite extends CometTestBase with CometIcebergTestBa
     }
   }
 
-  test("a Text build side keeps Spark's bytes unless its opt-in is on (#7118)") {
-    // The bridge is on by default, but a Text build side also needs
-    // spark.comet.convert.broadcastBuildSide.text.enabled. A Text file can hold bytes that are not
-    // valid UTF-8, here a Latin-1 "é" (0xE9) and "ï" (0xEF), and converting them to Arrow replaces
-    // each ill-formed sequence with U+FFFD. Without the opt-in the join stays on Spark and keeps
+  test("a Text build side keeps Spark's bytes unless Text conversion is on (#7118)") {
+    // The bridge is on by default, but a Text scan is converted only by
+    // spark.comet.convert.text.enabled, like Parquet, JSON and CSV. A Text file can hold bytes that
+    // are not valid UTF-8, here a Latin-1 "é" (0xE9) and "ï" (0xEF), and converting them to Arrow
+    // replaces each ill-formed sequence with U+FFFD. By default the join stays on Spark and keeps
     // the bytes, as in 1.1.0, and the scan records why it was not converted.
-    assert(CometConf.COMET_CONVERT_BROADCAST_BUILD_SIDE_TEXT_ENABLED.defaultValue.contains(false))
+    assert(CometConf.COMET_CONVERT_BROADCAST_BUILD_SIDE_ENABLED.defaultValue.contains(true))
     assert(CometConf.COMET_CONVERT_FROM_TEXT_ENABLED.defaultValue.contains(false))
     withTempDir { dir =>
       val factPath = s"${dir.getAbsolutePath}/fact.parquet"
@@ -370,30 +367,21 @@ class CometBroadcastBuildSideSuite extends CometTestBase with CometIcebergTestBa
           spark.read.text(dimFile.getAbsolutePath).createOrReplaceTempView("dim_7118")
           val ctx = s"aqe=$aqe v1=$v1List"
 
-          withSQLConf(CometConf.COMET_CONVERT_BROADCAST_BUILD_SIDE_TEXT_ENABLED.key -> "false") {
-            checkSparkAnswerAndFallbackReason(
-              sql(query),
-              "Comet converts a Text scan on a broadcast build side to Arrow only when")
-            val df = sql(query)
-            assert(hexAndLength(df) == Set(Row("3120636166E9", 6), Row("32206E61EF7665", 5)), ctx)
-            assert(!bridged(df), s"$ctx: the Text build side must stay on Spark")
-          }
+          checkSparkAnswerAndFallbackReason(
+            sql(query),
+            "Comet converts a Text scan on a broadcast build side to Arrow only when")
+          val kept = sql(query)
+          assert(hexAndLength(kept) == Set(Row("3120636166E9", 6), Row("32206E61EF7665", 5)), ctx)
+          assert(!bridged(kept), s"$ctx: the Text build side must stay on Spark")
 
-          // With the opt-in the bridge converts the Text build side, and each ill-formed byte comes
-          // back as U+FFFD (EF BF BD), which changes `hex` and `length`. The compatibility guide
-          // quotes these values.
-          val df = sql(query)
-          assert(
-            hexAndLength(df) == Set(Row("3120636166EFBFBD", 6), Row("32206E61EFBFBD7665", 7)),
-            ctx)
-          assert(bridged(df), s"$ctx: expected the Text build side to be bridged")
-
-          // spark.comet.convert.text.enabled converts every Text scan, the build side included.
-          withSQLConf(
-            CometConf.COMET_CONVERT_BROADCAST_BUILD_SIDE_TEXT_ENABLED.key -> "false",
-            CometConf.COMET_CONVERT_FROM_TEXT_ENABLED.key -> "true") {
+          // With spark.comet.convert.text.enabled the build side is converted, and each
+          // ill-formed byte comes back as U+FFFD (EF BF BD), which changes `hex` and `length`.
+          // The compatibility guide quotes these values.
+          withSQLConf(CometConf.COMET_CONVERT_FROM_TEXT_ENABLED.key -> "true") {
             val df = sql(query)
-            assert(hexAndLength(df).size == 2, ctx)
+            assert(
+              hexAndLength(df) == Set(Row("3120636166EFBFBD", 6), Row("32206E61EFBFBD7665", 7)),
+              ctx)
             assert(bridged(df), s"$ctx: expected spark.comet.convert.text.enabled to convert")
           }
         }
@@ -403,25 +391,25 @@ class CometBroadcastBuildSideSuite extends CometTestBase with CometIcebergTestBa
 
   test("broadcast build side bridge is gated on broadcast-exchange conversion (#6008)") {
     // The bridge is pointless when Comet broadcast exchange conversion is off: the broadcast (and
-    // so the join) cannot go native. With COMET_EXEC_BROADCAST_EXCHANGE_ENABLED=false the text
+    // so the join) cannot go native. With COMET_EXEC_BROADCAST_EXCHANGE_ENABLED=false the ORC
     // build side must not be bridged even though broadcastBuildSide is on.
     withTempDir { dir =>
       val probePath = s"${dir.getAbsolutePath}/probe.parquet"
-      val allowPath = s"${dir.getAbsolutePath}/allow.txt"
+      val allowPath = s"${dir.getAbsolutePath}/allow.orc"
       withSQLConf(CometConf.COMET_ENABLED.key -> "false") {
         spark
           .range(0, 100)
           .selectExpr("CAST(id AS STRING) AS key", "id AS v")
           .write
           .parquet(probePath)
-        spark.range(0, 5).selectExpr("CAST(id AS STRING) AS value").write.text(allowPath)
+        spark.range(0, 5).selectExpr("CAST(id AS STRING) AS value").write.orc(allowPath)
       }
       withSQLConf(
         SQLConf.ADAPTIVE_EXECUTION_ENABLED.key -> "false",
         CometConf.COMET_CONVERT_BROADCAST_BUILD_SIDE_ENABLED.key -> "true",
         CometConf.COMET_EXEC_BROADCAST_EXCHANGE_ENABLED.key -> "false") {
         spark.read.parquet(probePath).createOrReplaceTempView("probe_gate_6008")
-        spark.read.text(allowPath).createOrReplaceTempView("allow_gate_6008")
+        spark.read.orc(allowPath).createOrReplaceTempView("allow_gate_6008")
         val (_, cometPlan) = checkSparkAnswer(sql("""
             |SELECT /*+ BROADCAST(a) */ p.v
             |FROM probe_gate_6008 p JOIN allow_gate_6008 a ON p.key = a.value
@@ -435,22 +423,22 @@ class CometBroadcastBuildSideSuite extends CometTestBase with CometIcebergTestBa
   }
 
   test("broadcast build side scan below an aggregate is bridged, shuffle stage is not (#6008)") {
-    // A file scan can sit BELOW build-side operators. Broadcasting an aggregated Text table puts a
-    // Text FileSourceScanExec under a partial aggregate + shuffle on the build side. The tag
-    // pre-pass walks the whole broadcast subtree, so the deep text scan must be bridged to Arrow,
+    // A file scan can sit BELOW build-side operators. Broadcasting an aggregated ORC table puts a
+    // ORC FileSourceScanExec under a partial aggregate + shuffle on the build side. The tag
+    // pre-pass walks the whole broadcast subtree, so the deep ORC scan must be bridged to Arrow,
     // yet no query stage (e.g. the build-side shuffle under AQE) may be wrapped in the bridge.
     withTempDir { dir =>
-      val allowPath = s"${dir.getAbsolutePath}/allow.txt"
+      val allowPath = s"${dir.getAbsolutePath}/allow.orc"
       val probePath = s"${dir.getAbsolutePath}/probe.parquet"
       withSQLConf(CometConf.COMET_ENABLED.key -> "false") {
-        spark.range(0, 20).selectExpr("CAST(id % 5 AS STRING) AS value").write.text(allowPath)
+        spark.range(0, 20).selectExpr("CAST(id % 5 AS STRING) AS value").write.orc(allowPath)
         spark
           .range(0, 100)
           .selectExpr("CAST(id % 5 AS STRING) AS key", "id AS v")
           .write
           .parquet(probePath)
       }
-      spark.read.text(allowPath).createOrReplaceTempView("allow_agg_6008")
+      spark.read.orc(allowPath).createOrReplaceTempView("allow_agg_6008")
       spark.read.parquet(probePath).createOrReplaceTempView("probe_agg_6008")
       val query = """
           |SELECT /*+ BROADCAST(d) */ p.v, d.n
@@ -462,18 +450,18 @@ class CometBroadcastBuildSideSuite extends CometTestBase with CometIcebergTestBa
         withSQLConf(
           SQLConf.ADAPTIVE_EXECUTION_ENABLED.key -> aqe.toString,
           SQLConf.AUTO_BROADCASTJOIN_THRESHOLD.key -> (10 * 1024 * 1024).toString) {
-          // The plan is fully native (the bridged text scan under the aggregate is a native leaf),
-          // so checkSparkAnswerAndOperator also pins that the text scan did get bridged - an
+          // The plan is fully native (the bridged ORC scan under the aggregate is a native leaf),
+          // so checkSparkAnswerAndOperator also pins that the ORC scan did get bridged - an
           // un-bridged Spark scan would read as non-native and fail here. It is also strict-testing
           // safe, unlike checkSparkAnswer on a fully-native plan.
           val (_, cometPlan) = checkSparkAnswerAndOperator(sql(query))
-          // `collect` descends AQE query stages, so the bridge on the deep text scan is reachable
+          // `collect` descends AQE query stages, so the bridge on the deep ORC scan is reachable
           // under AQE too (it lives in the build-side shuffle stage). Assert it in both modes - and
           // because checkSparkAnswerAndOperator only inspects the initial plan under AQE, this is
           // the only thing that checks the final AQE plan.
           assert(
             collect(cometPlan) { case s: CometSparkToColumnarExec => s }.nonEmpty,
-            s"aqe=$aqe: expected the build-side text scan to be bridged:\n${cometPlan.treeString}")
+            s"aqe=$aqe: expected the build-side ORC scan to be bridged:\n${cometPlan.treeString}")
           // A query stage (the build-side shuffle) must never be wrapped in the bridge.
           collect(cometPlan) { case s: CometSparkToColumnarExec => s.child }.foreach { child =>
             assert(
@@ -520,15 +508,14 @@ class CometBroadcastBuildSideSuite extends CometTestBase with CometIcebergTestBa
   }
 
   test("broadcast build side with an unsupported DSv2 scan goes native (#6008)") {
-    // Exercises the BatchScanExec arm for Text: a Text scan read as DSv2 on the build side is
-    // bridged so the join goes native (the ORC test covers the arm for other formats). Keep parquet
-    // on the V1 list so the probe stays a native CometScan; drop text from the list so it is read
-    // as a DSv2 BatchScan/TextScan.
+    // Exercises the BatchScanExec arm: an ORC scan read as DSv2 on the build side is bridged so
+    // the join goes native. Keep parquet on the V1 list so the probe stays a native CometScan;
+    // drop orc from the list so it is read as a DSv2 BatchScan/OrcScan.
     withTempDir { dir =>
-      val allowPath = s"${dir.getAbsolutePath}/allow.txt"
+      val allowPath = s"${dir.getAbsolutePath}/allow.orc"
       val probePath = s"${dir.getAbsolutePath}/probe.parquet"
       withSQLConf(CometConf.COMET_ENABLED.key -> "false") {
-        spark.range(0, 5).selectExpr("CAST(id AS STRING) AS value").write.text(allowPath)
+        spark.range(0, 5).selectExpr("CAST(id AS STRING) AS value").write.orc(allowPath)
         spark
           .range(0, 100)
           .selectExpr("CAST(id AS STRING) AS key", "id AS v")
@@ -538,9 +525,9 @@ class CometBroadcastBuildSideSuite extends CometTestBase with CometIcebergTestBa
       withSQLConf(
         SQLConf.ADAPTIVE_EXECUTION_ENABLED.key -> "false",
         SQLConf.USE_V1_SOURCE_LIST.key -> "parquet") {
-        spark.read.text(allowPath).createOrReplaceTempView("allow_v2_6008")
+        spark.read.orc(allowPath).createOrReplaceTempView("allow_v2_6008")
         spark.read.parquet(probePath).createOrReplaceTempView("probe_v2_6008")
-        // Fully native (bridged DSv2 text build side + native parquet probe + native join), so use
+        // Fully native (bridged DSv2 ORC build side + native parquet probe + native join), so use
         // checkSparkAnswerAndOperator - strict-testing safe, unlike checkSparkAnswer here.
         val (_, cometPlan) = checkSparkAnswerAndOperator(sql("""
             |SELECT /*+ BROADCAST(a) */ p.v
@@ -548,7 +535,7 @@ class CometBroadcastBuildSideSuite extends CometTestBase with CometIcebergTestBa
             |""".stripMargin))
         assert(
           collect(cometPlan) { case s: CometSparkToColumnarExec => s }.nonEmpty,
-          s"expected the DSv2 text build side to be bridged:\n${cometPlan.treeString}")
+          s"expected the DSv2 ORC build side to be bridged:\n${cometPlan.treeString}")
         assert(
           collect(cometPlan) { case j: CometBroadcastHashJoinExec => j }.nonEmpty,
           s"expected the join to go native over the DSv2 build side:\n${cometPlan.treeString}")
@@ -557,24 +544,24 @@ class CometBroadcastBuildSideSuite extends CometTestBase with CometIcebergTestBa
   }
 
   test("broadcast join with an unsupported probe stays on Spark (#6008)") {
-    // Both sides are unsupported Text sources. The probe is not natively scannable, so the join
+    // Both sides are unsupported ORC sources. The probe is not natively scannable, so the join
     // cannot go native - and because the probe is not native, the build side must NOT be bridged
     // either (bridging it would be useless and would break Spark's broadcast/DPP reuse). This pins
     // the probe-native gate that fixed the DynamicPartitionPruningV2 regression.
     withTempDir { dir =>
-      val probePath = s"${dir.getAbsolutePath}/probe.txt"
-      val allowPath = s"${dir.getAbsolutePath}/allow.txt"
+      val probePath = s"${dir.getAbsolutePath}/probe.orc"
+      val allowPath = s"${dir.getAbsolutePath}/allow.orc"
       withSQLConf(CometConf.COMET_ENABLED.key -> "false") {
-        spark.range(0, 100).selectExpr("CAST(id AS STRING) AS value").write.text(probePath)
-        spark.range(0, 5).selectExpr("CAST(id AS STRING) AS value").write.text(allowPath)
+        spark.range(0, 100).selectExpr("CAST(id AS STRING) AS value").write.orc(probePath)
+        spark.range(0, 5).selectExpr("CAST(id AS STRING) AS value").write.orc(allowPath)
       }
       for (aqe <- Seq(false, true)) {
         withSQLConf(SQLConf.ADAPTIVE_EXECUTION_ENABLED.key -> aqe.toString) {
-          spark.read.text(probePath).createOrReplaceTempView("probe_txt_6008")
-          spark.read.text(allowPath).createOrReplaceTempView("allow_txt_6008")
+          spark.read.orc(probePath).createOrReplaceTempView("probe_orc_6008")
+          spark.read.orc(allowPath).createOrReplaceTempView("allow_orc_6008")
           val (_, cometPlan) = checkSparkAnswer(sql("""
               |SELECT /*+ BROADCAST(a) */ p.value
-              |FROM probe_txt_6008 p JOIN allow_txt_6008 a ON p.value = a.value
+              |FROM probe_orc_6008 p JOIN allow_orc_6008 a ON p.value = a.value
               |""".stripMargin))
           // The non-native probe must leave the build side un-bridged (the probe-native gate).
           assert(
@@ -594,22 +581,22 @@ class CometBroadcastBuildSideSuite extends CometTestBase with CometIcebergTestBa
     }
   }
 
-  test("broadcast build side on the left (BuildLeft) with a text source goes native (#6008)") {
-    // All other tests broadcast the right table (BuildRight). Put the small text table first and
+  test("broadcast build side on the left (BuildLeft) with an ORC source goes native (#6008)") {
+    // All other tests broadcast the right table (BuildRight). Put the small ORC table first and
     // hint it so it becomes the left build side, exercising the BuildLeft arm of tagBuildIfProbeNative.
     withTempDir { dir =>
       val probePath = s"${dir.getAbsolutePath}/probe.parquet"
-      val allowPath = s"${dir.getAbsolutePath}/allow.txt"
+      val allowPath = s"${dir.getAbsolutePath}/allow.orc"
       withSQLConf(CometConf.COMET_ENABLED.key -> "false") {
         spark
           .range(0, 100)
           .selectExpr("CAST(id AS STRING) AS key", "id AS v")
           .write
           .parquet(probePath)
-        spark.range(0, 5).selectExpr("CAST(id AS STRING) AS value").write.text(allowPath)
+        spark.range(0, 5).selectExpr("CAST(id AS STRING) AS value").write.orc(allowPath)
       }
       withSQLConf(SQLConf.ADAPTIVE_EXECUTION_ENABLED.key -> "false") {
-        spark.read.text(allowPath).createOrReplaceTempView("allow_bl_6008")
+        spark.read.orc(allowPath).createOrReplaceTempView("allow_bl_6008")
         spark.read.parquet(probePath).createOrReplaceTempView("probe_bl_6008")
         val (_, cometPlan) = checkSparkAnswerAndOperator(sql("""
             |SELECT /*+ BROADCAST(a) */ p.v
@@ -617,7 +604,7 @@ class CometBroadcastBuildSideSuite extends CometTestBase with CometIcebergTestBa
             |""".stripMargin))
         assert(
           collect(cometPlan) { case s: CometSparkToColumnarExec => s }.nonEmpty,
-          s"expected the text build side to be bridged:\n${cometPlan.treeString}")
+          s"expected the ORC build side to be bridged:\n${cometPlan.treeString}")
         assert(
           collect(cometPlan) { case j: CometBroadcastHashJoinExec => j }.nonEmpty,
           s"expected a CometBroadcastHashJoinExec:\n${cometPlan.treeString}")
@@ -625,18 +612,18 @@ class CometBroadcastBuildSideSuite extends CometTestBase with CometIcebergTestBa
     }
   }
 
-  test("broadcast nested loop join build side with a text source goes native (#6008)") {
+  test("broadcast nested loop join build side with an ORC source goes native (#6008)") {
     // Exercises the BroadcastNestedLoopJoinExec arm of tagBroadcastBuildSideLeaves: an inequality
-    // join forces a BNLJ; the text build side is bridged so the BNLJ runs natively.
+    // join forces a BNLJ; the ORC build side is bridged so the BNLJ runs natively.
     withTempDir { dir =>
       val probePath = s"${dir.getAbsolutePath}/probe.parquet"
-      val allowPath = s"${dir.getAbsolutePath}/allow.txt"
+      val allowPath = s"${dir.getAbsolutePath}/allow.orc"
       withSQLConf(CometConf.COMET_ENABLED.key -> "false") {
         spark.range(0, 100).selectExpr("id AS v", "CAST(id AS INT) AS k").write.parquet(probePath)
-        spark.range(0, 5).selectExpr("CAST(id AS STRING) AS value").write.text(allowPath)
+        spark.range(0, 5).selectExpr("CAST(id AS STRING) AS value").write.orc(allowPath)
       }
       withSQLConf(SQLConf.ADAPTIVE_EXECUTION_ENABLED.key -> "false") {
-        spark.read.text(allowPath).createOrReplaceTempView("allow_bnlj_6008")
+        spark.read.orc(allowPath).createOrReplaceTempView("allow_bnlj_6008")
         spark.read.parquet(probePath).createOrReplaceTempView("probe_bnlj_6008")
         val (_, cometPlan) = checkSparkAnswer(sql("""
             |SELECT /*+ BROADCAST(a) */ p.v
@@ -644,7 +631,7 @@ class CometBroadcastBuildSideSuite extends CometTestBase with CometIcebergTestBa
             |""".stripMargin))
         assert(
           collect(cometPlan) { case s: CometSparkToColumnarExec => s }.nonEmpty,
-          s"expected the text build side to be bridged:\n${cometPlan.treeString}")
+          s"expected the ORC build side to be bridged:\n${cometPlan.treeString}")
         assert(
           collect(cometPlan) { case j: CometBroadcastNestedLoopJoinExec => j }.nonEmpty,
           s"expected a CometBroadcastNestedLoopJoinExec:\n${cometPlan.treeString}")
@@ -652,10 +639,10 @@ class CometBroadcastBuildSideSuite extends CometTestBase with CometIcebergTestBa
     }
   }
 
-  test("AQE DPP with a text dimension on the broadcast build side runs natively (#6008)") {
-    // A Text dimension on a broadcast build side joined to a PARTITIONED Parquet fact triggers DPP.
+  test("AQE DPP with an ORC dimension on the broadcast build side runs natively (#6008)") {
+    // An ORC dimension on a broadcast build side joined to a PARTITIONED Parquet fact triggers DPP.
     // The build-side bridge makes the join a CometBroadcastHashJoinExec; the DPP subquery's own
-    // build (the text scan) is not bridged, so CometPlanAdaptiveDynamicPruningFilters must NOT wrap
+    // build (the ORC scan) is not bridged, so CometPlanAdaptiveDynamicPruningFilters must NOT wrap
     // it in a CometBroadcastExchangeExec (that crashed with "Comet execution only takes Arrow
     // Arrays"). It falls back to a Spark DPP broadcast while the join stays native. See issue #6008.
     assume(isSpark35Plus, "Native AQE DPP requires Spark 3.5+")
@@ -666,7 +653,7 @@ class CometBroadcastBuildSideSuite extends CometTestBase with CometIcebergTestBa
       SQLConf.DYNAMIC_PARTITION_PRUNING_REUSE_BROADCAST_ONLY.key -> "true") {
       withTempDir { dir =>
         val factPath = s"${dir.getAbsolutePath}/fact.parquet"
-        val dimPath = s"${dir.getAbsolutePath}/dim.txt"
+        val dimPath = s"${dir.getAbsolutePath}/dim.orc"
         withSQLConf(CometConf.COMET_ENABLED.key -> "false") {
           spark
             .range(0, 100)
@@ -674,16 +661,16 @@ class CometBroadcastBuildSideSuite extends CometTestBase with CometIcebergTestBa
             .write
             .partitionBy("fk")
             .parquet(factPath)
-          spark.range(0, 10).selectExpr("CAST(id AS STRING) AS value").write.text(dimPath)
+          spark.range(0, 10).selectExpr("CAST(id AS STRING) AS value").write.orc(dimPath)
         }
-        spark.read.parquet(factPath).createOrReplaceTempView("dpp_fact_txt")
-        spark.read.text(dimPath).createOrReplaceTempView("dpp_dim_txt")
+        spark.read.parquet(factPath).createOrReplaceTempView("dpp_fact_orc")
+        spark.read.orc(dimPath).createOrReplaceTempView("dpp_dim_orc")
         // CAST(d.value AS INT) % 2 = 0 is a filter Spark cannot infer onto f.fk, so the fact is
         // pruned only via a live DPP subquery (a filter Spark can push, like d.value < '5', would
         // prune the fact statically and the test would pass even with DPP disabled).
         val df = sql("""
             |SELECT /*+ BROADCAST(d) */ f.v
-            |FROM dpp_fact_txt f JOIN dpp_dim_txt d ON f.fk = d.value
+            |FROM dpp_fact_orc f JOIN dpp_dim_orc d ON f.fk = d.value
             |WHERE CAST(d.value AS INT) % 2 = 0
             |""".stripMargin)
         // Must not crash, and must match Spark.
@@ -693,7 +680,7 @@ class CometBroadcastBuildSideSuite extends CometTestBase with CometIcebergTestBa
           collect(cometPlan) { case j: CometBroadcastHashJoinExec => j }.nonEmpty,
           s"expected the join to run natively:\n${cometPlan.treeString}")
         // DPP is still live - the fact scan keeps a broadcast pruning subquery (Spark-side here,
-        // because the unbridged text dimension build is not native).
+        // because the unbridged ORC dimension build is not native).
         val dppSubqueries = collectWithSubqueries(cometPlan) {
           case s: SubqueryBroadcastExec => s
           case s: CometSubqueryBroadcastExec => s
@@ -708,21 +695,21 @@ class CometBroadcastBuildSideSuite extends CometTestBase with CometIcebergTestBa
   test("broadcast join that stays on Spark leaves no build-side bridge (#6008)") {
     // A non-equi FULL OUTER broadcast join is a BroadcastNestedLoopJoinExec whose join type Comet
     // declines (getSupportLevel is Unsupported for FullOuter). The probe is native Parquet, so the
-    // build-side gate still tags and bridges the text build - but because the join cannot go
+    // build-side gate still tags and bridges the ORC build - but because the join cannot go
     // native, clearWastedBuildSideBridges must undo that bridge after the transform, leaving the
     // plan exactly as it would be without the feature: a Spark BNLJ over a Spark broadcast with no
     // CometSparkToColumnarExec. Regression test for the first-round revert that never fired. #6008.
     withTempDir { dir =>
       val probePath = s"${dir.getAbsolutePath}/probe.parquet"
-      val buildPath = s"${dir.getAbsolutePath}/build.txt"
+      val buildPath = s"${dir.getAbsolutePath}/build.orc"
       withSQLConf(CometConf.COMET_ENABLED.key -> "false") {
         spark.range(0, 100).selectExpr("CAST(id AS INT) AS k", "id AS v").write.parquet(probePath)
-        spark.range(0, 5).selectExpr("CAST(id AS STRING) AS value").write.text(buildPath)
+        spark.range(0, 5).selectExpr("CAST(id AS STRING) AS value").write.orc(buildPath)
       }
       for (aqe <- Seq(false, true)) {
         withSQLConf(SQLConf.ADAPTIVE_EXECUTION_ENABLED.key -> aqe.toString) {
           spark.read.parquet(probePath).createOrReplaceTempView("probe_fo_6008")
-          spark.read.text(buildPath).createOrReplaceTempView("build_fo_6008")
+          spark.read.orc(buildPath).createOrReplaceTempView("build_fo_6008")
           val (_, cometPlan) = checkSparkAnswer(sql("""
               |SELECT /*+ BROADCAST(a) */ p.v, a.value
               |FROM probe_fo_6008 p
@@ -745,21 +732,21 @@ class CometBroadcastBuildSideSuite extends CometTestBase with CometIcebergTestBa
   }
 
   test("Spark-staying broadcast join with an aggregate build side leaves no bridge (#6008)") {
-    // Same declined FULL OUTER BNLJ, but the text build side is aggregated. The bridge is inserted
+    // Same declined FULL OUTER BNLJ, but the ORC build side is aggregated. The bridge is inserted
     // under the aggregate (and its CometSinkPlaceHolder) and then cleared. The first-round revert
     // rebuilt the Spark nodes from originalPlan and crashed here with a ClassCastException; the
     // tag-clear-and-retransform approach must give a clean Spark plan and the right answer. #6008.
     withTempDir { dir =>
       val probePath = s"${dir.getAbsolutePath}/probe.parquet"
-      val buildPath = s"${dir.getAbsolutePath}/build.txt"
+      val buildPath = s"${dir.getAbsolutePath}/build.orc"
       withSQLConf(CometConf.COMET_ENABLED.key -> "false") {
         spark.range(0, 100).selectExpr("CAST(id AS INT) AS k", "id AS v").write.parquet(probePath)
-        spark.range(0, 20).selectExpr("CAST(id % 5 AS STRING) AS value").write.text(buildPath)
+        spark.range(0, 20).selectExpr("CAST(id % 5 AS STRING) AS value").write.orc(buildPath)
       }
       for (aqe <- Seq(false, true)) {
         withSQLConf(SQLConf.ADAPTIVE_EXECUTION_ENABLED.key -> aqe.toString) {
           spark.read.parquet(probePath).createOrReplaceTempView("probe_foa_6008")
-          spark.read.text(buildPath).createOrReplaceTempView("build_foa_6008")
+          spark.read.orc(buildPath).createOrReplaceTempView("build_foa_6008")
           val (_, cometPlan) = checkSparkAnswer(sql("""
               |SELECT /*+ BROADCAST(a) */ p.v, a.n
               |FROM probe_foa_6008 p
@@ -780,23 +767,23 @@ class CometBroadcastBuildSideSuite extends CometTestBase with CometIcebergTestBa
   }
 
   test("Spark-staying broadcast join with a union build side leaves no bridge (#6008)") {
-    // Same declined FULL OUTER BNLJ, but the build side is a UNION ALL of two text scans. The
+    // Same declined FULL OUTER BNLJ, but the build side is a UNION ALL of two ORC scans. The
     // first-round revert rebuilt each Comet node from originalPlan and failed here with "Incorrect
     // number of children"; tag-clear-and-retransform must produce a clean Spark plan. See #6008.
     withTempDir { dir =>
       val probePath = s"${dir.getAbsolutePath}/probe.parquet"
-      val buildPath1 = s"${dir.getAbsolutePath}/build1.txt"
-      val buildPath2 = s"${dir.getAbsolutePath}/build2.txt"
+      val buildPath1 = s"${dir.getAbsolutePath}/build1.orc"
+      val buildPath2 = s"${dir.getAbsolutePath}/build2.orc"
       withSQLConf(CometConf.COMET_ENABLED.key -> "false") {
         spark.range(0, 100).selectExpr("CAST(id AS INT) AS k", "id AS v").write.parquet(probePath)
-        spark.range(0, 5).selectExpr("CAST(id AS STRING) AS value").write.text(buildPath1)
-        spark.range(5, 10).selectExpr("CAST(id AS STRING) AS value").write.text(buildPath2)
+        spark.range(0, 5).selectExpr("CAST(id AS STRING) AS value").write.orc(buildPath1)
+        spark.range(5, 10).selectExpr("CAST(id AS STRING) AS value").write.orc(buildPath2)
       }
       for (aqe <- Seq(false, true)) {
         withSQLConf(SQLConf.ADAPTIVE_EXECUTION_ENABLED.key -> aqe.toString) {
           spark.read.parquet(probePath).createOrReplaceTempView("probe_fou_6008")
-          spark.read.text(buildPath1).createOrReplaceTempView("build_fou1_6008")
-          spark.read.text(buildPath2).createOrReplaceTempView("build_fou2_6008")
+          spark.read.orc(buildPath1).createOrReplaceTempView("build_fou1_6008")
+          spark.read.orc(buildPath2).createOrReplaceTempView("build_fou2_6008")
           val (_, cometPlan) = checkSparkAnswer(sql("""
               |SELECT /*+ BROADCAST(a) */ p.v, a.value
               |FROM probe_fou_6008 p
@@ -817,23 +804,23 @@ class CometBroadcastBuildSideSuite extends CometTestBase with CometIcebergTestBa
 
   test("a native broadcast join nested in a Spark-staying join keeps its bridge (#6008)") {
     // The outer FULL OUTER BNLJ stays on Spark, but its build side is itself a broadcast hash join
-    // of a native Parquet table with a bridged text table. clearWastedBuildSideBridges must stop at
+    // of a native Parquet table with a bridged ORC table. clearWastedBuildSideBridges must stop at
     // the inner CometBroadcastExchangeExec so that native join keeps its bridge, rather than walk
     // through it and revert the inner scan. Pins the stop-at-CometBroadcastExchangeExec case.
     withTempDir { dir =>
       val probePath = s"${dir.getAbsolutePath}/probe.parquet"
       val factPath = s"${dir.getAbsolutePath}/fact.parquet"
-      val dimPath = s"${dir.getAbsolutePath}/dim.txt"
+      val dimPath = s"${dir.getAbsolutePath}/dim.orc"
       withSQLConf(CometConf.COMET_ENABLED.key -> "false") {
         spark.range(0, 20).selectExpr("CAST(id AS INT) AS ok", "id AS x").write.parquet(probePath)
         spark.range(0, 100).selectExpr("CAST(id AS INT) AS k", "id AS v").write.parquet(factPath)
-        spark.range(0, 5).selectExpr("CAST(id AS STRING) AS value").write.text(dimPath)
+        spark.range(0, 5).selectExpr("CAST(id AS STRING) AS value").write.orc(dimPath)
       }
       for (aqe <- Seq(false, true)) {
         withSQLConf(SQLConf.ADAPTIVE_EXECUTION_ENABLED.key -> aqe.toString) {
           spark.read.parquet(probePath).createOrReplaceTempView("nest_outer")
           spark.read.parquet(factPath).createOrReplaceTempView("nest_fact")
-          spark.read.text(dimPath).createOrReplaceTempView("nest_dim")
+          spark.read.orc(dimPath).createOrReplaceTempView("nest_dim")
           val (_, cometPlan) = checkSparkAnswer(sql("""
               |SELECT /*+ BROADCAST(ib) */ o.x, ib.v
               |FROM nest_outer o
@@ -843,14 +830,14 @@ class CometBroadcastBuildSideSuite extends CometTestBase with CometIcebergTestBa
               |) ib
               |ON o.ok > ib.k
               |""".stripMargin))
-          // Inner join runs natively and keeps its text bridge.
+          // Inner join runs natively and keeps its ORC bridge.
           assert(
             collect(cometPlan) { case j: CometBroadcastHashJoinExec => j }.nonEmpty,
             s"aqe=$aqe: the inner join should be a CometBroadcastHashJoinExec:\n" +
               cometPlan.treeString)
           assert(
             collect(cometPlan) { case s: CometSparkToColumnarExec => s }.nonEmpty,
-            s"aqe=$aqe: the inner join must keep its text bridge:\n${cometPlan.treeString}")
+            s"aqe=$aqe: the inner join must keep its ORC bridge:\n${cometPlan.treeString}")
           // Outer full outer join stays on Spark.
           assert(
             collect(cometPlan) { case j: BroadcastNestedLoopJoinExec => j }.nonEmpty,
@@ -860,7 +847,7 @@ class CometBroadcastBuildSideSuite extends CometTestBase with CometIcebergTestBa
     }
   }
 
-  test("Spark 3.4 AQE DPP with a V1 Parquet fact and a text dimension (#6008)") {
+  test("Spark 3.4 AQE DPP with a V1 Parquet fact and an ORC dimension (#6008)") {
     // On Spark 3.4, CometScanRule.transformV1Scan has an "AQE Dynamic Partition Pruning requires
     // Spark 3.5+" fallback that keeps a V1 scan with an AQE DPP filter on Spark. So this Parquet
     // fact is not native, hasOnlyNativeScans is false, and the build side is never tagged or
@@ -875,7 +862,7 @@ class CometBroadcastBuildSideSuite extends CometTestBase with CometIcebergTestBa
       SQLConf.DYNAMIC_PARTITION_PRUNING_REUSE_BROADCAST_ONLY.key -> "true") {
       withTempDir { dir =>
         val factPath = s"${dir.getAbsolutePath}/fact.parquet"
-        val dimPath = s"${dir.getAbsolutePath}/dim.txt"
+        val dimPath = s"${dir.getAbsolutePath}/dim.orc"
         withSQLConf(CometConf.COMET_ENABLED.key -> "false") {
           spark
             .range(0, 100)
@@ -883,22 +870,22 @@ class CometBroadcastBuildSideSuite extends CometTestBase with CometIcebergTestBa
             .write
             .partitionBy("fk")
             .parquet(factPath)
-          spark.range(0, 10).selectExpr("CAST(id AS STRING) AS value").write.text(dimPath)
+          spark.range(0, 10).selectExpr("CAST(id AS STRING) AS value").write.orc(dimPath)
         }
-        spark.read.parquet(factPath).createOrReplaceTempView("dpp34_fact_txt")
-        spark.read.text(dimPath).createOrReplaceTempView("dpp34_dim_txt")
+        spark.read.parquet(factPath).createOrReplaceTempView("dpp34_fact_orc")
+        spark.read.orc(dimPath).createOrReplaceTempView("dpp34_dim_orc")
         // CAST(d.value AS INT) % 2 = 0 is a filter Spark cannot infer onto f.fk, so the fact is
         // pruned only via a live DPP subquery.
         val df = sql("""
             |SELECT /*+ BROADCAST(d) */ f.v
-            |FROM dpp34_fact_txt f JOIN dpp34_dim_txt d ON f.fk = d.value
+            |FROM dpp34_fact_orc f JOIN dpp34_dim_orc d ON f.fk = d.value
             |WHERE CAST(d.value AS INT) % 2 = 0
             |""".stripMargin)
         val (_, cometPlan) = checkSparkAnswer(df)
         // The non-native V1 fact means the build side is never tagged, so nothing is bridged.
         assert(
           collect(cometPlan) { case s: CometSparkToColumnarExec => s }.isEmpty,
-          s"3.4: the text dimension must not be bridged:\n${cometPlan.treeString}")
+          s"3.4: the ORC dimension must not be bridged:\n${cometPlan.treeString}")
         // DPP is still live - the fact scan keeps a broadcast pruning subquery.
         val dppSubqueries = collectWithSubqueries(cometPlan) {
           case s: SubqueryBroadcastExec => s

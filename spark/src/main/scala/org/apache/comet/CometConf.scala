@@ -1269,10 +1269,11 @@ object CometConf extends ShimCometConf {
           s"`${COMET_SPARK_TO_ARROW_ENABLED.key}` is true, each named by its Spark class name " +
           "without the `Exec` suffix. It is for operators that have no `spark.comet.convert` " +
           "config of their own, such as `BatchScan` for a Data Source V2 connector, or " +
-          "`FileSourceScan` for file formats other than Parquet, JSON and CSV. Naming `Range`, " +
-          "`InMemoryTableScan`, `RDDScan`, `OneRowRelation` or `RowDataSourceScan` is " +
-          "deprecated and will stop working in a future major release. Use their " +
-          "`spark.comet.convert` configs instead.")
+          "`FileSourceScan` for file formats other than Parquet, JSON, CSV and Text. Naming " +
+          "`Range`, `InMemoryTableScan`, `RDDScan`, `OneRowRelation` or `RowDataSourceScan`, " +
+          "or naming `FileSourceScan` or `BatchScan` to convert a Text scan, is deprecated " +
+          "and will stop working in a future major release. Use their `spark.comet.convert` " +
+          "configs instead.")
       .stringConf
       .toSequence
       .createWithDefault(Nil)
@@ -1287,27 +1288,10 @@ object CometConf extends ShimCometConf {
         "the broadcast threshold), so the row to Arrow copy is usually cheap - though an " +
         "explicit BROADCAST hint or a selective filter above the scan can make it larger. With " +
         "dynamic partition pruning the dimension is also read a second time for the pruning " +
-        "subquery. Parquet, JSON and CSV scans are converted only by their own " +
-        "`spark.comet.convert` configs. A Text scan is converted only when " +
-        "`spark.comet.convert.broadcastBuildSide.text.enabled` is also enabled, because Text " +
-        "files can hold bytes that are not valid UTF-8. Set this to false to keep such build " +
-        "sides on Spark.")
+        "subquery. Parquet, JSON, CSV and Text scans are converted only by their own " +
+        "`spark.comet.convert` configs. Set this to false to keep such build sides on Spark.")
       .booleanConf
       .createWithDefault(true)
-
-  val COMET_CONVERT_BROADCAST_BUILD_SIDE_TEXT_ENABLED: ConfigEntry[Boolean] =
-    conf("spark.comet.convert.broadcastBuildSide.text.enabled")
-      .category(CATEGORY_EXEC)
-      .doc(
-        s"When enabled along with `${COMET_CONVERT_BROADCAST_BUILD_SIDE_ENABLED.key}`, Comet " +
-          "also converts a Text scan on a broadcast join's build side to Arrow. Arrow strings " +
-          "must be valid UTF-8, so Comet replaces bytes that are not valid UTF-8, for example " +
-          "in a Latin-1 file, with U+FFFD, and results that depend on the original bytes can " +
-          "differ from Spark. Enable this only for Text sources that are UTF-8. " +
-          s"`${COMET_CONVERT_FROM_TEXT_ENABLED.key}` converts every Text scan instead. See the " +
-          "compatibility guide.")
-      .booleanConf
-      .createWithDefault(false)
 
   val COMET_CASE_CONVERSION_ENABLED: ConfigEntry[Boolean] =
     conf("spark.comet.caseConversion.enabled")

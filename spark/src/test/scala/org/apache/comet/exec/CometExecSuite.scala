@@ -5084,7 +5084,7 @@ class CometExecSuite extends CometTestBase {
           withSQLConf(CometConf.COMET_CONVERT_FROM_TEXT_ENABLED.key -> "true") {
             checkSparkAnswerAndOperator(query)
           }
-          // The general switch still converts Text, as it did before Text had a config.
+          // The general switch still converts Text, as it did before Text had a config (deprecated).
           val operatorList = CometConf.COMET_SPARK_TO_ARROW_SUPPORTED_OPERATOR_LIST.key
           withSQLConf(
             CometConf.COMET_SPARK_TO_ARROW_ENABLED.key -> "true",
