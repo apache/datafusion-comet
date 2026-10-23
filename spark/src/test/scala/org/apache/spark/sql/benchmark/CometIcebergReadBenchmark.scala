@@ -32,7 +32,7 @@ import org.apache.comet.CometConf
  * `SPARK_GENERATE_BENCHMARK_FILES=1 make
  * benchmark-org.apache.spark.sql.benchmark.CometIcebergReadBenchmark` Results will be written to
  * "spark/benchmarks/CometIcebergReadBenchmark-**results.txt". Pass `--nested-only` to run only
- * the nested column cases.
+ * the nested column cases, or `--filter-only` to run only the partial filter cases.
  */
 object CometIcebergReadBenchmark extends CometBenchmarkBase {
 
@@ -171,15 +171,100 @@ object CometIcebergReadBenchmark extends CometBenchmarkBase {
     }
   }
 
+  /**
+   * Filters that pair a null check on an array column, which iceberg-rust cannot evaluate, with
+   * an `INT` range or a `BIGINT` equality it can. The native scan pushes that predicate and
+   * leaves the null check to the filter above the scan. On `clustered`, sorted within each file,
+   * and `clustered_long`, which holds the same values as `BIGINT`, row-group and page statistics
+   * skip most of the file. On `scattered`, hashed over the same range, they skip nothing, so the
+   * pushed range is evaluated row by row during decode. That drops rows before the filter above
+   * the scan, which evaluates the range again. Every file covers the whole range of every
+   * filtered column, so file pruning in Iceberg's planning skips nothing either.
+   */
+  def icebergPartialFilterBenchmark(values: Int): Unit = {
+    withTempPath { dir =>
+      configureIcebergHadoopCatalog(new File(dir, "iceberg-warehouse"))
+      val table = s"$defaultIcebergCatalog.db.partial_filter"
+      spark.sql(s"""
+        CREATE TABLE $table (
+          clustered INT, clustered_long BIGINT, scattered INT, l ARRAY<INT>, payload STRING)
+        USING iceberg
+        TBLPROPERTIES ('format-version' = '2', 'write.parquet.compression-codec' = 'zstd')
+      """)
+      spark
+        .range(values.toLong)
+        .selectExpr(
+          "CAST(id AS INT) AS clustered",
+          "id AS clustered_long",
+          s"CAST(pmod(xxhash64(id), $values) AS INT) AS scattered",
+          "array(CAST(id AS INT)) AS l",
+          "sha2(CAST(id AS STRING), 256) AS payload")
+        .repartition(8)
+        .sortWithinPartitions("clustered")
+        .writeTo(table)
+        .append()
+
+      val cometIceberg = Seq(
+        CometConf.COMET_ENABLED.key -> "true",
+        CometConf.COMET_EXEC_ENABLED.key -> "true",
+        CometConf.COMET_ICEBERG_NATIVE_ENABLED.key -> "true")
+
+      Seq(
+        "1% of a clustered column" -> s"clustered < ${values / 100}",
+        "1% of a scattered column" -> s"scattered < ${values / 100}",
+        "90% of a scattered column" -> s"scattered < ${values / 10 * 9}",
+        "one value of a clustered BIGINT column" -> s"clustered_long = ${values / 2}")
+        .foreach { case (name, range) =>
+          val query = s"SELECT sum(length(payload)) FROM $table WHERE l IS NOT NULL AND $range"
+          val benchmark =
+            new Benchmark(s"Iceberg filter on $name", values.toLong, output = output)
+
+          benchmark.addCase("SQL Iceberg - Spark") { _ =>
+            spark.sql(query).noop()
+          }
+          benchmark.addCase("SQL Iceberg - Comet Iceberg-Rust") { _ =>
+            withSQLConf(cometIceberg: _*) {
+              spark.sql(query).noop()
+            }
+          }
+
+          withSQLConf(cometIceberg: _*) {
+            val df = spark.sql(query)
+            df.collect()
+            val scans = collect(df.queryExecution.executedPlan) {
+              case scan: CometIcebergNativeScanExec => scan
+            }
+            val bytes = scans.map(_.metrics("bytes_scanned").value).sum
+            val rows = scans.map(_.metrics("output_rows").value).sum
+            warn(
+              benchmark,
+              f"Comet native scan: ${bytes / 1024.0 / 1024.0}%.1f MiB scanned, $rows rows output")
+          }
+          benchmark.run()
+        }
+
+      spark.sql(s"DROP TABLE $table")
+    }
+  }
+
   override def runCometBenchmark(mainArgs: Array[String]): Unit = {
-    if (!mainArgs.contains("--nested-only")) {
+    val filterOnly = mainArgs.contains("--filter-only")
+    val nestedOnly = mainArgs.contains("--nested-only")
+    if (!filterOnly && !nestedOnly) {
       runBenchmarkWithTable("SQL Single Numeric Iceberg Column Scan", 1024 * 1024 * 128) { v =>
         Seq(BooleanType, ByteType, ShortType, IntegerType, LongType, FloatType, DoubleType)
           .foreach(icebergScanBenchmark(v, _))
       }
     }
-    runBenchmark("SQL Nested Iceberg Column Scan") {
-      icebergNestedProjectionBenchmark(1024 * 1024 * 4)
+    if (!filterOnly) {
+      runBenchmark("SQL Nested Iceberg Column Scan") {
+        icebergNestedProjectionBenchmark(1024 * 1024 * 4)
+      }
+    }
+    if (!nestedOnly) {
+      runBenchmark("SQL Iceberg Partial Filter") {
+        icebergPartialFilterBenchmark(1024 * 1024 * 16)
+      }
     }
   }
 }
