@@ -429,23 +429,6 @@ fn is_string_or_binary(dt: &DataType) -> bool {
     )
 }
 
-/// Whether `cast` reconciles a column's Parquet (file) type with its table-schema type, as opposed
-/// to being part of the pushed-down expression itself.
-///
-/// DataFusion's `DefaultPhysicalExprAdapter` builds the former with
-/// `CastExpr::new_with_target_field`, passing the table schema's field, so the target is named
-/// after the column (or nested field). Comet's planner builds the latter with `CastExpr::new`, for
-/// example to coerce a scalar function's arguments to the types the function requires:
-/// `substring(s, 1, 2)` casts its Int32 literals to Int64. `CastExpr::new` produces an unnamed
-/// target field.
-///
-/// Only the former are Parquet read conversions that Spark's vectorized reader validates. Applying
-/// those rules to the latter rejects valid queries, for example as a disallowed `INT32 -> bigint`
-/// promotion on Spark 3.x when row-level filter pushdown evaluates the predicate.
-fn is_schema_adaptation_cast(cast: &datafusion::physical_expr::expressions::CastExpr) -> bool {
-    !cast.target_field().name().is_empty()
-}
-
 /// Build a Spark-shaped `SchemaColumnConvertNotSupportedException` carrier for a
 /// rejected Parquet -> Spark conversion. `column` is the Spark-style column path (`a`, or
 /// `s, x` for a nested leaf); the bracketed wrapping mirrors
@@ -1405,9 +1388,13 @@ impl SparkPhysicalExprAdapter {
 
     /// Replace CastExpr (DataFusion's cast) with Spark's Cast expression.
     ///
-    /// Only casts that reconcile a file column with its table-schema type are rewritten (see
-    /// [`is_schema_adaptation_cast`]). Any other `CastExpr` is part of the predicate itself and is
-    /// left as the planner built it.
+    /// Only the casts that reconcile a file column with its table-schema type are Parquet read
+    /// conversions, which Spark's vectorized reader validates. DataFusion's default adapter builds
+    /// them with `CastExpr::new_with_target_field`, so `has_explicit_metadata()` is true, also for a
+    /// column named `""`. Any other `CastExpr` is part of the predicate itself and is left as the
+    /// planner built it. Comet's planner uses `CastExpr::new`, for example to coerce `substring`'s
+    /// Int32 literals to Int64, and applying the read rules to that cast rejected valid queries as
+    /// a disallowed `INT32 -> bigint` promotion on Spark 3.x.
     fn replace_with_spark_cast(
         &self,
         expr: Arc<dyn PhysicalExpr>,
@@ -1415,7 +1402,7 @@ impl SparkPhysicalExprAdapter {
         // Check for CastExpr and replace with spark_expr::Cast
         if let Some(cast) = expr.downcast_ref::<datafusion::physical_expr::expressions::CastExpr>()
         {
-            if !is_schema_adaptation_cast(cast) {
+            if !cast.has_explicit_metadata() {
                 return Ok(Transformed::no(expr));
             }
 
@@ -2094,6 +2081,36 @@ pub(crate) mod test {
         Ok(err.to_string())
     }
 
+    /// Spark allows a Parquet column named `""`, and reading one goes through the same conversion
+    /// check as any other column: an `INT64` column named `""` read as `int` is rejected, whether or
+    /// not type promotion is allowed, even when every value would fit.
+    #[tokio::test]
+    async fn empty_named_column_long_read_as_int_errors() -> Result<(), DataFusionError> {
+        let file_schema = Arc::new(Schema::new(vec![Field::new("", DataType::Int64, true)]));
+        let batch = RecordBatch::try_new(
+            Arc::clone(&file_schema),
+            vec![Arc::new(Int64Array::from(vec![1i64, 2]))],
+        )?;
+        let required_schema = Arc::new(Schema::new(vec![Field::new("", DataType::Int32, true)]));
+        for allow_type_promotion in [false, true] {
+            let mut options = default_options();
+            options.allow_type_promotion = allow_type_promotion;
+            let mut stream = scan_parquet(&batch, Arc::clone(&required_schema), options)?;
+            let msg = match stream.next().await {
+                Some(Err(e)) => e.to_string(),
+                other => panic!(
+                    "allow_type_promotion={allow_type_promotion}: expected ParquetSchemaConvert, \
+                     got {other:?}"
+                ),
+            };
+            assert!(
+                msg.contains("Found: INT64") && msg.contains("Expected: int"),
+                "allow_type_promotion={allow_type_promotion}: {msg}"
+            );
+        }
+        Ok(())
+    }
+
     /// `INT64 -> INT32` truncates to the lower 32 bits in DataFusion's cast.
     /// Spark's vectorized reader rejects this. See #4297.
     #[tokio::test]
@@ -2375,13 +2392,13 @@ pub(crate) mod test {
         Ok(())
     }
 
-    /// `is_schema_adaptation_cast` tells the casts DataFusion's default adapter inserts apart from
-    /// the casts Comet's planner puts in a predicate by whether the target field is named. If a
-    /// DataFusion upgrade changes how `CastExpr::new` names its target, this fails and the check
-    /// has to be revisited (newer DataFusion versions also expose an explicit-target marker).
+    /// `replace_with_spark_cast` tells the casts DataFusion's default adapter inserts apart from the
+    /// casts Comet's planner puts in a predicate by `CastExpr::has_explicit_metadata()`. This pins
+    /// what that relies on: `new_with_target_field` sets it, also for a field named `""`, which
+    /// Spark allows as a column name. `CastExpr::new` doesn't set it, and `with_new_children` keeps
+    /// it.
     #[test]
-    fn schema_adaptation_cast_is_told_apart_by_target_field_name() {
-        use super::is_schema_adaptation_cast;
+    fn schema_casts_are_told_apart_by_explicit_target() -> Result<(), DataFusionError> {
         use datafusion::physical_expr::expressions::CastExpr;
 
         // Built by the planner, from a bare type.
@@ -2390,54 +2407,37 @@ pub(crate) mod test {
             DataType::Int64,
             None,
         );
-        assert!(!is_schema_adaptation_cast(&planner_cast));
+        assert!(!planner_cast.has_explicit_metadata());
 
         // Built by the default adapter, from the table schema's field.
-        let adapter_cast = CastExpr::new_with_target_field(
-            Arc::new(Column::new("a", 0)),
-            Arc::new(Field::new("a", DataType::Int64, true)),
-            None,
-        );
-        assert!(is_schema_adaptation_cast(&adapter_cast));
+        for name in ["a", ""] {
+            let adapter_cast: Arc<dyn PhysicalExpr> = Arc::new(CastExpr::new_with_target_field(
+                Arc::new(Column::new(name, 0)),
+                Arc::new(Field::new(name, DataType::Int64, true)),
+                None,
+            ));
+            let rebuilt = Arc::clone(&adapter_cast)
+                .with_new_children(vec![Arc::new(Column::new(name, 0))])?;
+            for cast in [adapter_cast, rebuilt] {
+                let cast = cast.downcast_ref::<CastExpr>().expect("a CastExpr");
+                assert!(cast.has_explicit_metadata(), "target field {name:?}");
+            }
+        }
+        Ok(())
     }
 
-    /// Scans a Parquet file with a pushed-down `substring(s, 1, 2) = 'ab'` data filter, the way
-    /// `CometNativeScan` sends it, and returns the values the scan produced.
-    ///
-    /// The file schema is identical to the requested schema, so there is no schema evolution of any
-    /// kind. The predicate comes from the real planner, fed the proto `CometSubstring` emits (Int32
-    /// literals for the position and length). `SparkSubstring` takes Int64 positions, so the planner
-    /// coerces those literals with `CastExpr::new`.
-    async fn scan_with_substring_filter(
-        row_filter_pushdown: bool,
-        allow_type_promotion: bool,
-    ) -> Result<Vec<String>, String> {
+    /// The pushed-down `substring(s, 1, 2) = 'ab'` data filter over `schema`, the way
+    /// `CometNativeScan` sends it: built by the real planner from the proto `CometSubstring` emits,
+    /// with Int32 literals for the position and length. `SparkSubstring` takes Int64 positions, so
+    /// the planner coerces those literals with `CastExpr::new`.
+    fn substring_filter(schema: SchemaRef) -> Result<Arc<dyn PhysicalExpr>, DataFusionError> {
         use crate::execution::planner::PhysicalPlanner;
         use datafusion::common::tree_node::{TreeNode, TreeNodeRecursion};
-        use datafusion::config::{ConfigOptions, TableParquetOptions};
-        use datafusion::datasource::physical_plan::FileSource;
         use datafusion::logical_expr::ScalarUDF;
         use datafusion::physical_expr::expressions::CastExpr;
-        use datafusion::physical_plan::common::collect;
         use datafusion::prelude::SessionContext;
         use datafusion_comet_proto::spark_expression::{self, expr::ExprStruct, literal, Expr};
         use datafusion_spark::function::string::substring::SparkSubstring;
-
-        let schema = Arc::new(Schema::new(vec![Field::new("s", DataType::Utf8, true)]));
-        let batch = RecordBatch::try_new(
-            Arc::clone(&schema),
-            vec![Arc::new(StringArray::from(vec![
-                "abc", "xyz", "abd", "qrs",
-            ]))],
-        )
-        .map_err(|e| e.to_string())?;
-        let filename = get_temp_filename();
-        let filename = filename.as_path().as_os_str().to_str().unwrap().to_string();
-        let file = File::create(&filename).map_err(|e| e.to_string())?;
-        let mut writer =
-            ArrowWriter::try_new(file, Arc::clone(&schema), None).map_err(|e| e.to_string())?;
-        writer.write(&batch).map_err(|e| e.to_string())?;
-        writer.close().map_err(|e| e.to_string())?;
 
         let session_ctx = Arc::new(SessionContext::new());
         session_ctx.register_udf(ScalarUDF::new_from_impl(SparkSubstring::default()));
@@ -2473,120 +2473,90 @@ pub(crate) mod test {
             fail_on_error: false,
             null_short_circuit: false,
         }));
-        let predicate = planner
-            .create_expr(
-                &proto_expr(ExprStruct::Eq(Box::new(spark_expression::BinaryExpr {
-                    left: Some(Box::new(substring)),
-                    right: Some(Box::new(proto_expr(ExprStruct::Literal(
-                        spark_expression::Literal {
-                            value: Some(literal::Value::StringVal("ab".to_string())),
-                            datatype: Some(proto_type(7)),
-                            is_null: false,
-                        },
-                    )))),
-                }))),
-                Arc::clone(&schema),
-            )
-            .map_err(|e| e.to_string())?;
+        let predicate = planner.create_expr(
+            &proto_expr(ExprStruct::Eq(Box::new(spark_expression::BinaryExpr {
+                left: Some(Box::new(substring)),
+                right: Some(Box::new(proto_expr(ExprStruct::Literal(
+                    spark_expression::Literal {
+                        value: Some(literal::Value::StringVal("ab".to_string())),
+                        datatype: Some(proto_type(7)),
+                        is_null: false,
+                    },
+                )))),
+            }))),
+            schema,
+        )?;
 
         // Guard the premise: the planner really does leave DataFusion `CastExpr`s in the predicate.
         let mut casts = 0;
-        predicate
-            .apply(|e| {
-                if e.downcast_ref::<CastExpr>().is_some() {
-                    casts += 1;
-                }
-                Ok(TreeNodeRecursion::Continue)
-            })
-            .map_err(|e| e.to_string())?;
+        predicate.apply(|e| {
+            if e.downcast_ref::<CastExpr>().is_some() {
+                casts += 1;
+            }
+            Ok(TreeNodeRecursion::Continue)
+        })?;
         assert!(casts >= 2, "expected planner-inserted casts in {predicate}");
+        Ok(predicate)
+    }
 
-        // Configure the scan the way the native scan does when
-        // `spark.comet.parquet.rowFilterPushdown.enabled` is set, and push the filter the way
-        // `init_datasource_exec` does.
-        let mut table_options = TableParquetOptions::new();
-        table_options.global.pushdown_filters = row_filter_pushdown;
-        table_options.global.reorder_filters = row_filter_pushdown;
-        let mut config = ConfigOptions::default();
-        config.execution.parquet.pushdown_filters = row_filter_pushdown;
-        config.execution.parquet.reorder_filters = row_filter_pushdown;
-        let parquet_source =
-            ParquetSource::new(Arc::clone(&schema)).with_table_parquet_options(table_options);
-        let file_source: Arc<dyn FileSource> = parquet_source
-            .try_pushdown_filters(vec![predicate], &config)
-            .map_err(|e| e.to_string())?
-            .updated_node
-            .unwrap_or_else(|| Arc::new(parquet_source));
+    /// The casts Comet's planner puts in a pushed-down predicate are not Parquet read conversions.
+    /// The file's schema equals the requested schema, so there is no schema evolution of any kind.
+    #[tokio::test]
+    async fn pushed_substring_filter_keeps_planner_casts() -> Result<(), DataFusionError> {
+        let schema = Arc::new(Schema::new(vec![Field::new("s", DataType::Utf8, true)]));
+        let batch = RecordBatch::try_new(
+            Arc::clone(&schema),
+            vec![Arc::new(StringArray::from(vec![
+                "abc", "xyz", "abd", "qrs",
+            ]))],
+        )?;
+        let filename = get_temp_filename().to_str().unwrap().to_string();
+        let mut writer = ArrowWriter::try_new(File::create(&filename)?, Arc::clone(&schema), None)?;
+        writer.write(&batch)?;
+        writer.close()?;
+        let predicate = substring_filter(Arc::clone(&schema))?;
 
-        let mut spark_parquet_options = SparkParquetOptions::new(EvalMode::Legacy, "UTC");
-        spark_parquet_options.allow_type_promotion = allow_type_promotion;
-        let expr_adapter_factory: Arc<dyn PhysicalExprAdapterFactory> = Arc::new(
-            SparkPhysicalExprAdapterFactory::new(spark_parquet_options, None),
-        );
-        let files = FileGroup::new(vec![
-            PartitionedFile::from_path(filename).map_err(|e| e.to_string())?
-        ]);
-        let file_scan_config =
-            FileScanConfigBuilder::new(ObjectStoreUrl::local_filesystem(), file_source)
-                .with_file_groups(vec![files])
-                .with_expr_adapter(Some(expr_adapter_factory))
-                .build();
-
-        let scan = DataSourceExec::new(Arc::new(file_scan_config));
-        let stream = scan
-            .execute(0, Arc::new(TaskContext::default()))
-            .map_err(|e| e.to_string())?;
-        let batches = collect(stream).await.map_err(|e| e.to_string())?;
-        let mut values = vec![];
-        for batch in &batches {
-            let column = arrow::compute::cast(batch.column(0), &DataType::Utf8)
-                .map_err(|e| e.to_string())?;
-            values.extend(
-                column
-                    .as_string::<i32>()
-                    .iter()
-                    .flatten()
-                    .map(str::to_string),
+        let every_row: &[&str] = &["abc", "xyz", "abd", "qrs"];
+        let matching: &[&str] = &["abc", "abd"];
+        for (row_filters, allow_type_promotion, expected) in [
+            // Control: without row-level filter pushdown (the default) the predicate is only used
+            // for row-group and page pruning, so the scan returns every row and leaves the
+            // filtering to the Spark `Filter` above it.
+            (false, false, every_row),
+            // With `spark.comet.parquet.rowFilterPushdown.enabled=true` the predicate is evaluated
+            // on every decoded batch. On Spark 3.x (`allow_type_promotion = false`) the planner's
+            // Int32 -> Int64 coercion was taken for a disallowed `INT32 -> bigint` promotion, which
+            // failed the scan with `ParquetSchemaConvert { column: "[]", .. }`.
+            (true, false, matching),
+            // Control: Spark 4.x allows that promotion, so this case passed before the fix too.
+            (true, true, matching),
+        ] {
+            let mut options = default_options();
+            options.allow_type_promotion = allow_type_promotion;
+            let mut stream = scan_parquet_file(
+                filename.clone(),
+                Arc::clone(&schema),
+                options,
+                Some(Arc::clone(&predicate)),
+                row_filters,
+            )?;
+            let mut values: Vec<String> = vec![];
+            while let Some(batch) = stream.next().await {
+                let column = arrow::compute::cast(batch?.column(0), &DataType::Utf8)?;
+                values.extend(
+                    column
+                        .as_string::<i32>()
+                        .iter()
+                        .flatten()
+                        .map(str::to_string),
+                );
+            }
+            assert_eq!(
+                values, expected,
+                "row_filters={row_filters} allow_type_promotion={allow_type_promotion}"
             );
         }
-        Ok(values)
-    }
-
-    /// Control: without row-level filter pushdown (the default) the predicate is only used for
-    /// row-group and page pruning, so it is never evaluated against a decoded batch. The scan
-    /// returns every row and leaves the filtering to the Spark `Filter` above it.
-    #[tokio::test]
-    async fn pushed_substring_filter_without_row_filter_pushdown() {
-        assert_eq!(
-            scan_with_substring_filter(false, false).await,
-            Ok(["abc", "xyz", "abd", "qrs"]
-                .iter()
-                .map(|s| s.to_string())
-                .collect::<Vec<_>>())
-        );
-    }
-
-    /// With `spark.comet.parquet.rowFilterPushdown.enabled=true` the predicate is evaluated on every
-    /// decoded batch. On Spark 3.x (`allow_type_promotion = false`) the planner's `Int32 -> Int64`
-    /// coercion of the `substring` literals must not be mistaken for a Parquet schema promotion,
-    /// which failed the scan with `ParquetSchemaConvert { column: "[]", physical_type: "INT32",
-    /// spark_type: "bigint" }`.
-    #[tokio::test]
-    async fn pushed_substring_filter_with_row_filter_pushdown() {
-        assert_eq!(
-            scan_with_substring_filter(true, false).await,
-            Ok(vec!["abc".to_string(), "abd".to_string()])
-        );
-    }
-
-    /// Same as above for Spark 4.x (`allow_type_promotion = true`), which accepts `Int32 -> Int64`
-    /// and so never exposed the problem for this particular cast.
-    #[tokio::test]
-    async fn pushed_substring_filter_with_row_filter_pushdown_and_type_promotion() {
-        assert_eq!(
-            scan_with_substring_filter(true, true).await,
-            Ok(vec!["abc".to_string(), "abd".to_string()])
-        );
+        Ok(())
     }
 
     #[tokio::test]
