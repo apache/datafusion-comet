@@ -38,6 +38,7 @@ if __name__ == "__main__":
         "org.apache.comet.csv.CsvReadFromS3Suite", # manual test suite
         "org.apache.comet.parquet.ParquetReadFromFakeHadoopFsSuite", # manual test suite (loads libhdfs, see #5023)
         "org.apache.comet.IcebergReadFromS3Suite", # manual test suite
+        "org.apache.comet.CometIcebergSchedulerFailureSuite", # manual, multiple hosts + SIGKILL
         "org.apache.comet.cloud.s3.CometS3CredentialBridgeSuite", # manual test suite
         "org.apache.comet.cloud.s3.HadoopS3ACredentialProviderAdapterBridgeSuite", # manual test suite
         "org.apache.comet.cloud.s3.HadoopProfileCredentialsProviderSuite", # manual test suite
