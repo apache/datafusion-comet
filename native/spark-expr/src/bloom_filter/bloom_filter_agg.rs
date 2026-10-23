@@ -191,8 +191,8 @@ impl Accumulator for SparkBloomFilter {
             states.len()
         );
         let states = downcast_value!(states[0], BinaryArray);
-        // Spill replay can supply multiple states for a group. Use each row's
-        // slice so that sliced arrays also honor their offsets.
+        // A final aggregate can pass several partial states in one batch. Merge each
+        // row's byte slice because the backing buffer can also contain other groups' states.
         for state in states.iter().flatten() {
             self.merge_filter(state)?;
         }
