@@ -27,15 +27,15 @@ import org.scalatest.Tag
 import org.apache.hadoop.fs.Path
 import org.apache.spark.sql.{CometTestBase, DataFrame, Row}
 import org.apache.spark.sql.catalyst.expressions.{Alias, Cast, Divide, Expression, MakeDecimal, WindowExpression}
-import org.apache.spark.sql.comet.{CometSortExec, CometWindowExec, CometWindowGroupLimitExec}
-import org.apache.spark.sql.execution.SparkPlan
+import org.apache.spark.sql.comet.{CometColumnarToRowExec, CometNativeExec, CometSortExec, CometWindowExec, CometWindowGroupLimitExec}
+import org.apache.spark.sql.execution.{InputAdapter, SparkPlan, WholeStageCodegenExec}
 import org.apache.spark.sql.execution.window.{WindowExec => SparkWindowExec}
 import org.apache.spark.sql.expressions.Window
 import org.apache.spark.sql.functions.{count, expr, lead, sum}
 import org.apache.spark.sql.internal.SQLConf
 import org.apache.spark.sql.types.DecimalType
 
-import org.apache.comet.CometConf
+import org.apache.comet.{CometConf, CometExplainInfo, ExtendedExplainInfo}
 import org.apache.comet.CometSparkSessionExtensions.{isSpark35Plus, isSpark40Plus}
 
 class CometWindowExecSuite extends CometTestBase {
@@ -800,6 +800,52 @@ class CometWindowExecSuite extends CometTestBase {
       val df =
         sql("SELECT a, b, c, AVG(c) OVER (PARTITION BY a ORDER BY b) as avg_c FROM window_test")
       checkSparkAnswerAndOperator(df)
+    }
+  }
+
+  Seq("Sum", "Average").foreach { name =>
+    test(s"issue #5499: rewritten decimal window $name retains fallback reasons") {
+      withTempView("decimal_window_fallback") {
+        Seq((1, "10.10"), (1, "20.25"), (2, "30.33"))
+          .toDF("g", "raw_v")
+          .selectExpr("g", "CAST(raw_v AS DECIMAL(8,2)) AS v")
+          .createOrReplaceTempView("decimal_window_fallback")
+        val key = CometConf.getExprEnabledConfigKey(name)
+        withSQLConf(
+          key -> "false",
+          SQLConf.ADAPTIVE_EXECUTION_ENABLED.key -> "false",
+          CometConf.COMET_EXEC_TRANSITION_REVERT_ENABLED.key -> "false",
+          CometConf.COMET_STRICT_FALLBACK_REASONS.key -> "true") {
+          val function = if (name == "Sum") "SUM" else "AVG"
+          val df = sql(s"""SELECT $function(v) OVER (
+            PARTITION BY g ORDER BY v
+            ROWS BETWEEN UNBOUNDED PRECEDING AND CURRENT ROW)
+            FROM decimal_window_fallback""")
+          val plan = df.queryExecution.executedPlan
+          if (name == "Sum") assertSparkPlanHasDecimalSumRewrite(plan)
+          else if (isSpark40Plus) assertSparkPlanHasDecimalAvgRewrite(plan)
+          val window = collect(plan) { case w: SparkWindowExec => w }.head
+          // Spark inserts the row transition after Comet conversion. The strict fallback check
+          // saw this native child before that transition was added.
+          def unwrapTransitions(child: SparkPlan): SparkPlan = child match {
+            case stage: WholeStageCodegenExec => unwrapTransitions(stage.child)
+            case adapter: InputAdapter => unwrapTransitions(adapter.child)
+            case transition: CometColumnarToRowExec => unwrapTransitions(transition.child)
+            case other => other
+          }
+          assert(unwrapTransitions(window.child).isInstanceOf[CometNativeExec], plan.toString)
+          val expected = Set(s"Expression support is disabled. Set $key=true to enable it.")
+          assert(window.getTagValue(CometExplainInfo.FALLBACK_REASONS).contains(expected))
+          // The original owner must carry the reason from the reconstructed window expression.
+          if (name == "Sum" || isSpark40Plus) {
+            assert(
+              window.windowExpression.head
+                .getTagValue(CometExplainInfo.FALLBACK_REASONS)
+                .contains(expected))
+          }
+          assert(new ExtendedExplainInfo().generateExtendedInfo(plan).contains(expected.head))
+        }
+      }
     }
   }
 
