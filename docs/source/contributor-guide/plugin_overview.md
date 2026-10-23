@@ -74,9 +74,13 @@ none of the driver plugin's steps run for them.
 
 ## CometSparkSessionExtensions
 
-On initialization, this class registers one physical plan optimization rule with Spark: `CometRule`. It runs whenever
-a query stage is being planned during Adaptive Query Execution, and runs once for the entire plan when Adaptive Query
-Execution is disabled.
+On initialization, this class registers Comet's rules with Spark. The main one is `CometRule`, which converts the
+plan. When Adaptive Query Execution is disabled, it runs once for the entire plan, before Spark inserts columnar
+transitions. When Adaptive Query Execution is enabled, it runs as a query stage preparation rule on the initial plan.
+The class also registers rules that run after the transitions are inserted, such as
+`RevertNativeForTransitionHeavyStages` and `EliminateRedundantTransitions`, Adaptive Query Execution stage optimizer
+rules, and the `IcebergWriteStrategy` planner strategy. The comment on `CometSparkSessionExtensions` lists them in
+order.
 
 `CometRule` is two phases, applied in order: scan conversion (`CometScanRule`), then operator conversion
 (`CometExecRule`). The order matters, because operator conversion builds its native plan up from the nodes that scan
