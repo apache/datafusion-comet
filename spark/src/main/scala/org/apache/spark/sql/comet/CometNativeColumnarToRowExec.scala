@@ -237,6 +237,7 @@ object CometNativeColumnarToRowExec {
    *   - Date and Timestamp (microseconds)
    *   - Decimal (both inline and variable-length)
    *   - String and Binary
+   *   - Top-level Variant (Spark 4.x)
    *   - Struct, Array, Map (nested types)
    */
   def supportsSchema(schema: StructType): Boolean = {
@@ -255,6 +256,6 @@ object CometNativeColumnarToRowExec {
       case _ => false
     }
 
-    schema.fields.forall(f => isSupported(f.dataType))
+    schema.fields.forall(f => CometUtils.isVariantType(f.dataType) || isSupported(f.dataType))
   }
 }
