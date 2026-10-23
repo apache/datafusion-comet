@@ -576,6 +576,8 @@ every row.
 including zero rows for an empty batch. This gives its consumers the same shape as a struct
 column and keeps whole-batch `IF` shortcuts from passing an unexpected scalar into a kernel.
 Kernels that also accept plain scalar subqueries or literals still need their scalar path.
+Planning-time consumers such as Bloom-filter construction evaluate a constant on a single row
+with no input columns and accept its single-element array as well as a scalar.
 
 #### Producing strings from arbitrary bytes
 

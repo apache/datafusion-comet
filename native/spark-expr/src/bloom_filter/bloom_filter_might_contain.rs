@@ -15,7 +15,7 @@
 // specific language governing permissions and limitations
 // under the License.
 
-use arrow::array::{Array, Int64Array, RecordBatch};
+use arrow::array::{Array, Int64Array, RecordBatch, RecordBatchOptions};
 use arrow::datatypes::{DataType, Schema};
 use datafusion::common::{internal_err, Result, ScalarValue};
 use datafusion::error::DataFusionError;
@@ -50,9 +50,18 @@ fn evaluate_bloom_filter(
     bloom_filter_expr: &Arc<dyn PhysicalExpr>,
 ) -> Result<Option<SparkBloomFilter>> {
     // bloom_filter_expr must be a literal/scalar subquery expression, so we can evaluate it
-    // with an empty batch with empty schema
-    let batch = RecordBatch::new_empty(Arc::new(Schema::empty()));
-    let bloom_filter_bytes = bloom_filter_expr.evaluate(&batch)?;
+    // on one row with no input columns. Merged subquery fields return batch-sized arrays.
+    let batch = RecordBatch::try_new_with_options(
+        Arc::new(Schema::empty()),
+        vec![],
+        &RecordBatchOptions::new().with_row_count(Some(1)),
+    )?;
+    let bloom_filter_bytes = match bloom_filter_expr.evaluate(&batch)? {
+        ColumnarValue::Array(array) if array.len() == 1 => {
+            ColumnarValue::Scalar(ScalarValue::try_from_array(array.as_ref(), 0)?)
+        }
+        value => value,
+    };
     match bloom_filter_bytes {
         ColumnarValue::Scalar(ScalarValue::Binary(v)) => {
             Ok(v.map(|v| SparkBloomFilter::from(v.as_slice())))
@@ -122,7 +131,11 @@ fn execute_might_contain(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use arrow::array::BooleanArray;
+    use crate::bloom_filter::spark_bloom_filter::SparkBloomFilterVersion;
+    use crate::{GetStructField, ScalarSubqueryConsumer};
+    use arrow::array::{BinaryArray, BooleanArray, StructArray};
+    use arrow::buffer::NullBuffer;
+    use arrow::datatypes::Field;
     use datafusion::physical_expr::expressions::Literal;
 
     fn assert_result_eq<T: Into<Option<bool>>>(result: ColumnarValue, expected: Vec<T>) {
@@ -194,6 +207,59 @@ mod tests {
         let bloom_filter_expr: Arc<dyn PhysicalExpr> = Arc::new(Literal::new(ScalarValue::Null));
         let expr = BloomFilterMightContain::try_new(bloom_filter_expr).unwrap();
         assert!(expr.bloom_filter.is_none());
+    }
+
+    #[test]
+    fn test_merged_scalar_bloom_filter() {
+        for version in [SparkBloomFilterVersion::V1, SparkBloomFilterVersion::V2] {
+            let mut filter = SparkBloomFilter::new(version, 4, 256, 0);
+            filter.put_long(123);
+            let bytes = filter.spark_serialization();
+            for (value, parent_null) in [
+                (Some(bytes.as_slice()), false),
+                (None, false),
+                (Some(bytes.as_slice()), true),
+            ] {
+                let structure = StructArray::new(
+                    vec![Arc::new(Field::new("bloomFilter", DataType::Binary, true))].into(),
+                    vec![Arc::new(BinaryArray::from(vec![value]))],
+                    parent_null.then(|| NullBuffer::new_null(1)),
+                );
+                let field: Arc<dyn PhysicalExpr> = Arc::new(GetStructField::new(
+                    Arc::new(Literal::new(ScalarValue::Struct(Arc::new(structure)))),
+                    0,
+                ));
+                let field = ScalarSubqueryConsumer::wrap(field);
+                let expr = BloomFilterMightContain::try_new(field).unwrap();
+                let expected = if value.is_none() || parent_null {
+                    None
+                } else {
+                    Some(true)
+                };
+                let args = [ColumnarValue::Scalar(ScalarValue::Int64(Some(123)))];
+                assert_result_eq(
+                    execute_might_contain(&expr.bloom_filter, &args).unwrap(),
+                    vec![expected],
+                );
+                // Direct binary scalar subqueries retain the same result.
+                let direct = Arc::new(Literal::new(ScalarValue::Binary(if parent_null {
+                    None
+                } else {
+                    value.map(<[u8]>::to_vec)
+                })));
+                let direct = BloomFilterMightContain::try_new(direct).unwrap();
+                assert_eq!(expr.bloom_filter, direct.bloom_filter);
+            }
+        }
+    }
+
+    #[test]
+    fn test_non_binary_bloom_filter() {
+        let value = Arc::new(Literal::new(ScalarValue::Int64(Some(123))));
+        assert!(BloomFilterMightContain::try_new(value)
+            .unwrap_err()
+            .to_string()
+            .contains("scalar binary value"));
     }
 
     #[test]

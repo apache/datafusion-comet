@@ -3396,6 +3396,58 @@ class CometExecSuite extends CometTestBase {
     }
   }
 
+  test("merged scalar subquery supplies a runtime Bloom filter") {
+    withSQLConf(
+      SQLConf.ADAPTIVE_EXECUTION_ENABLED.key -> "false",
+      SQLConf.SUBQUERY_REUSE_ENABLED.key -> "true",
+      SQLConf.AUTO_BROADCASTJOIN_THRESHOLD.key -> "-1",
+      "spark.sql.optimizer.runtime.bloomFilter.enabled" -> "true",
+      "spark.sql.optimizer.runtime.bloomFilter.applicationSideScanSizeThreshold" -> "0",
+      "spark.sql.optimizer.runtime.bloomFilter.creationSideThreshold" -> "10485760",
+      SQLConf.SHUFFLE_PARTITIONS.key -> "1") {
+      withTempPath { dir =>
+        withTempView("dim", "fact") {
+          val dim = s"${dir.getCanonicalPath}/dim"
+          val fact = s"${dir.getCanonicalPath}/fact"
+          spark
+            .range(100)
+            .selectExpr("id", "IF(id < 2, 'keep', 'drop') AS v")
+            .coalesce(1)
+            .write
+            .parquet(dim)
+          spark.range(1000).coalesce(1).write.parquet(fact)
+          spark.read.parquet(dim).createOrReplaceTempView("dim")
+          spark.read.parquet(fact).createOrReplaceTempView("fact")
+          val df = sql("""
+            |SELECT fact.id,
+            |       (SELECT percentile(id, 0.5) FROM dim
+            |        WHERE v = 'keep' AND id IS NOT NULL) AS p
+            |FROM fact JOIN dim ON fact.id = dim.id WHERE dim.v = 'keep'
+            |""".stripMargin)
+          val mergedFilters = df.queryExecution.optimizedPlan.collect { case p =>
+            p.expressions.flatMap(_.collect {
+              case b: org.apache.spark.sql.catalyst.expressions.BloomFilterMightContain
+                  if b.left.isInstanceOf[GetStructField] =>
+                b
+            })
+          }.flatten
+          assert(mergedFilters.nonEmpty, df.queryExecution.optimizedPlan.toString)
+          val (_, plan) = checkSparkAnswerAndOperator(df, Seq(classOf[CometFilterExec]))
+          assert(
+            stripAQEPlan(plan)
+              .collect { case p: CometFilterExec => p }
+              .exists(_.condition.exists {
+                case b: org.apache.spark.sql.catalyst.expressions.BloomFilterMightContain =>
+                  b.left.isInstanceOf[GetStructField]
+                case _ => false
+              }),
+            plan.toString)
+          checkAnswer(df, Seq(Row(0L, 0.5), Row(1L, 0.5)))
+        }
+      }
+    }
+  }
+
   test("large merged scalar fields are consumed before broadcast") {
     val numRows = 8192
     val bytes = 262144
