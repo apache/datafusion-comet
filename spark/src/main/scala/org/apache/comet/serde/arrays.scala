@@ -1333,6 +1333,13 @@ object CometSequence extends CometExpressionSerde[Sequence] with CodegenDispatch
   override def getUnsupportedReasons(): Seq[String] =
     Seq(temporalUnsupportedReason, unsafeArgUnsupportedReason)
 
+  override def getCompatibleNotes(): Seq[String] = Seq(
+    "When `stop - start` overflows a long but the sequence is short, Spark 4.0.5, 4.1.4, 4.2.1 " +
+      "and later return its elements (SPARK-58821), and earlier releases raise " +
+      "`INTERNAL_ERROR`. Comet chooses the behavior by the Spark version number. On a vendor " +
+      "build that reports an older version but includes SPARK-58821, Comet raises the error " +
+      "where Spark returns the elements.")
+
   /**
    * The native variant for a Spark version. Where SparkFixes.sequenceRecomputesOverflowedLength
    * holds (SPARK-58821), Spark returns the exact length when `stop - start` overflows a long but

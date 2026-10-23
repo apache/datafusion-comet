@@ -1777,17 +1777,8 @@ class CometArrayExpressionSuite extends CometTestBase with AdaptiveSparkPlanHelp
     }
   }
 
-  test("sequence native variant by Spark version") {
-    // SPARK-58821 is in 4.0.5, 4.1.4 and 4.2.1.
-    Seq("3.4.3", "3.5.9", "4.0.4", "4.1.3", "4.2.0", "4.2.0-SNAPSHOT").foreach { version =>
-      assert(!SparkFixes.sequenceRecomputesOverflowedLength(version), version)
-      assert(CometSequence.nativeFunction(version) == "spark_sequence", version)
-    }
-    Seq("4.0.5", "4.1.4", "4.2.1", "4.3.0", "5.0.0").foreach { version =>
-      assert(SparkFixes.sequenceRecomputesOverflowedLength(version), version)
-      assert(CometSequence.nativeFunction(version) == "spark_sequence_recomputed", version)
-    }
-    // convert asks for the variant of the Spark version it runs on.
+  // SparkFixesSuite covers the variant for each Spark version.
+  test("sequence asks for the native variant of the Spark version it runs on") {
     val start = AttributeReference("start", LongType)()
     val stop = AttributeReference("stop", LongType)()
     val step = AttributeReference("step", LongType)()

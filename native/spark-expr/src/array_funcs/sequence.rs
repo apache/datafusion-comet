@@ -476,7 +476,8 @@ mod tests {
 
     /// SPARK-58821's cases: `stop - start` overflows a long but a large step keeps the exact
     /// length small, so `spark_sequence_recomputed` returns the elements instead of the internal
-    /// error. Overflows whose length really is too large still raise the limit error.
+    /// error. `length_limit_and_overflow_edges` covers `spark_sequence`'s internal error, and
+    /// `checked_length_matches_exact_released_spark_arithmetic` both variants' limit errors.
     #[test]
     fn recomputed_length_after_overflow() {
         let args = vec![
@@ -508,23 +509,6 @@ mod tests {
             vec![i64::MIN, -4611686018427387904, 0]
         );
         assert_eq!(row_values(&list, 2), vec![i64::MAX, 0, -i64::MAX]);
-
-        // The released behaviour, on the same rows, is the internal error.
-        let err = spark_sequence(&args, &list_of(DataType::Int64))
-            .unwrap_err()
-            .to_string();
-        assert!(err.contains("Unreachable code reached."), "{err}");
-
-        // Math.addExact overflow: the exact length is 2^63, over the limit in both variants.
-        let too_long = vec![
-            ColumnarValue::Scalar(ScalarValue::Int64(Some(0))),
-            ColumnarValue::Scalar(ScalarValue::Int64(Some(i64::MAX))),
-            ColumnarValue::Scalar(ScalarValue::Int64(Some(1))),
-        ];
-        let err = spark_sequence_recomputed(&too_long, &list_of(DataType::Int64))
-            .unwrap_err()
-            .to_string();
-        assert!(err.contains("9223372036854775808"), "{err}");
     }
 
     #[test]

@@ -1438,16 +1438,9 @@ class CometNativeCastSuite
       castTest(values, DataTypes.createDecimalType(38, 10), testAnsi = ansiEnabled))
   }
 
-  test("cast StringType to DecimalType zero with any exponent by Spark version") {
-    // SPARK-60118 is in 4.0.5, 4.1.4 and 4.2.1. The tests above compare the cast with the Spark
-    // they run on.
-    Seq("3.4.3", "3.5.9", "4.0.4", "4.1.3", "4.2.0").foreach { version =>
-      assert(!SparkFixes.castsZeroWithAnyExponentToDecimal(version), version)
-    }
-    Seq("4.0.5", "4.1.4", "4.2.1", "4.3.0", "5.0.0").foreach { version =>
-      assert(SparkFixes.castsZeroWithAnyExponentToDecimal(version), version)
-    }
-    // The cast carries the setting for the Spark version it runs on.
+  // The tests above compare the cast with the Spark they run on, and SparkFixesSuite covers the
+  // setting for each Spark version.
+  test("cast StringType to DecimalType sets the zero option for the running Spark version") {
     val a = AttributeReference("a", StringType)()
     val proto = CometCast.convert(Cast(a, DecimalType(38, 10)), Seq(a), binding = false)
     assert(
