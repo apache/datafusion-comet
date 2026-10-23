@@ -16,6 +16,7 @@
 // under the License.
 
 use crate::execution::operators::ExecutionError;
+use crate::parquet::field_resolver::FieldResolver;
 use crate::parquet::name_fold::fold_names;
 use arrow::array::{
     make_array, FixedSizeBinaryArray, GenericListViewArray, MapArray, OffsetSizeTrait, StringArray,
@@ -39,7 +40,6 @@ use datafusion::execution::object_store::{
 };
 use datafusion::execution::runtime_env::RuntimeEnv;
 use datafusion::physical_plan::ColumnarValue;
-use datafusion_comet_common::SparkError;
 use datafusion_comet_spark_expr::EvalMode;
 use log::debug;
 use object_store::path::Path;
@@ -430,28 +430,12 @@ pub(crate) fn field_id(field: &arrow::datatypes::Field) -> Option<i32> {
         .and_then(|v| v.parse::<i32>().ok())
 }
 
-/// Names of the fields carrying `id`, for the duplicate-id error message. Bracketed and
-/// comma-joined the way Spark's `matchIdField` renders the list, so the message reads
-/// `Found duplicate field(s) "1": [x, y] in id mapping mode` on both sides.
-pub(crate) fn field_names_with_id(fields: &[FieldRef], id: i32) -> String {
-    let names = fields
-        .iter()
-        .filter(|f| field_id(f) == Some(id))
-        .map(|f| f.name().as_str())
-        .collect::<Vec<_>>()
-        .join(", ");
-    format!("[{names}]")
-}
-
 /// Resolve each requested (`to`) struct field to the index of the file (`from`) field it reads
-/// from, or `None` when the file holds no such field. Mirrors Spark's `clipParquetGroupFields`:
-/// when the requested struct carries Parquet field IDs anywhere (and `use_field_id` is set),
-/// ID-bearing requested fields match ONLY by ID (a missing ID is a missing column, never a name
-/// fallback); other fields match by name, folded with the same `toLowerCase(Locale.ROOT)` fold
-/// the top-level schema adapter uses when `case_sensitive` is false. A requested field whose
-/// folded name matches more than one file field is rejected. Case-insensitive matching retains
-/// Spark's `foundDuplicateFieldInCaseInsensitiveModeError`, and a requested ID that more than
-/// one file field carries raises Spark's `_LEGACY_ERROR_TEMP_2094` (`matchIdField`).
+/// from, or `None` when the file holds no such field, with Spark's `clipParquetGroupFields` rules
+/// as [`FieldResolver::resolve`] applies them: an id-bearing requested field matches only by id
+/// when `use_field_id` is set, and every other field matches by name, folded with the same
+/// `toLowerCase(Locale.ROOT)` fold the top-level schema adapter uses when `case_sensitive` is
+/// false. A requested field that selects more than one file field is rejected.
 ///
 /// Shared by the runtime convert (`parquet_convert_struct_to_struct`) and the plan-time
 /// conversion check in `schema_adapter`, so both resolve nested fields identically.
@@ -460,22 +444,6 @@ pub(crate) fn match_struct_fields(
     to_fields: &[FieldRef],
     parquet_options: &SparkParquetOptions,
 ) -> DataFusionResult<Vec<Option<usize>>> {
-    let should_match_by_id =
-        parquet_options.use_field_id && to_fields.iter().any(|f| field_id(f).is_some());
-
-    // `None` marks an id that more than one file field carries.
-    let from_id_to_index: HashMap<i32, Option<usize>> = if should_match_by_id {
-        let mut map = HashMap::with_capacity(from_fields.len());
-        for (i, field) in from_fields.iter().enumerate() {
-            if let Some(id) = field_id(field) {
-                map.entry(id).and_modify(|m| *m = None).or_insert(Some(i));
-            }
-        }
-        map
-    } else {
-        HashMap::new()
-    };
-
     // Fold the file (`from`) and requested (`to`) field names once via the JVM's
     // `toLowerCase(Locale.ROOT)` (the same fold the top-level schema adapter uses), so
     // nested case-insensitive matching is byte-for-byte consistent with the top level.
@@ -485,51 +453,16 @@ pub(crate) fn match_struct_fields(
     let all_folded = fold_names(&all_names, parquet_options.case_sensitive)?;
     let (from_folded, to_folded) = all_folded.split_at(from_fields.len());
 
-    // Group file field indices by folded name so a case-insensitive collision is detected
-    // (Spark's `caseInsensitiveParquetFieldMap`) rather than silently overwritten.
-    let mut folded_to_indices: HashMap<&str, Vec<usize>> =
-        HashMap::with_capacity(from_folded.len());
-    for (i, folded) in from_folded.iter().enumerate() {
-        folded_to_indices
-            .entry(folded.as_str())
-            .or_default()
-            .push(i);
-    }
-
-    to_fields
-        .iter()
-        .enumerate()
-        .map(
-            |(to_pos, to_field)| match (should_match_by_id, field_id(to_field)) {
-                // Spark treats a missing ID match as a missing column rather than
-                // falling back to name match.
-                (true, Some(id)) => match from_id_to_index.get(&id) {
-                    Some(None) => Err(SparkError::DuplicateFieldByFieldId {
-                        required_id: id,
-                        matched_fields: field_names_with_id(from_fields, id),
-                    }
-                    .into()),
-                    index => Ok(index.copied().flatten()),
-                },
-                _ => match folded_to_indices.get(to_folded[to_pos].as_str()) {
-                    // Reject selected ambiguity before a decoder can multiply rows.
-                    Some(indices) if indices.len() > 1 => {
-                        if parquet_options.case_sensitive {
-                            return Err(duplicate_parquet_field_error(to_field.name()));
-                        }
-                        let matched: Vec<&str> = indices
-                            .iter()
-                            .map(|&i| from_fields[i].name().as_str())
-                            .collect();
-                        Err(DataFusionError::External(Box::new(
-                            SparkError::duplicate_field_case_insensitive(to_field.name(), &matched),
-                        )))
-                    }
-                    Some(indices) => Ok(Some(indices[0])),
-                    None => Ok(None),
-                },
-            },
-        )
+    let resolver = FieldResolver::new(
+        to_fields,
+        to_folded,
+        from_fields,
+        from_folded,
+        parquet_options.case_sensitive,
+        parquet_options.use_field_id,
+    );
+    (0..to_fields.len())
+        .map(|to_pos| resolver.resolve(to_pos))
         .collect()
 }
 
@@ -2554,7 +2487,9 @@ mod tests {
     }
 
     /// Companion to `requested_duplicate_field_id_errors`: a duplicated file id that no
-    /// requested field looks up stays harmless, as Spark only raises inside `matchIdField`.
+    /// requested field looks up stays harmless, as Spark only raises inside `matchIdField`. So
+    /// does a name that two file fields share once folded, here `f` and `F`, when the requested
+    /// field of that name resolves by id, since `matchIdField` never compares names.
     #[test]
     fn unrequested_duplicate_field_id_reads_fine() {
         use crate::parquet::parquet_support::{parquet_convert_array, SparkParquetOptions};
@@ -2568,6 +2503,8 @@ mod tests {
             ("x", DataType::Int32, 1),
             ("y", DataType::Int32, 1),
             ("z", DataType::Int32, 2),
+            ("f", DataType::Int32, 3),
+            ("F", DataType::Int32, 4),
         ]) else {
             unreachable!()
         };
@@ -2577,6 +2514,8 @@ mod tests {
                 Arc::new(Int32Array::from(vec![42])),
                 Arc::new(Int32Array::from(vec![43])),
                 Arc::new(Int32Array::from(vec![44])),
+                Arc::new(Int32Array::from(vec![45])),
+                Arc::new(Int32Array::from(vec![46])),
             ],
             None,
         ));

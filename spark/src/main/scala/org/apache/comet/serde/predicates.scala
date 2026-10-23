@@ -21,7 +21,7 @@ package org.apache.comet.serde
 
 import scala.jdk.CollectionConverters._
 
-import org.apache.spark.sql.catalyst.expressions.{Alias, And, Attribute, BinaryExpression, CaseWhen, CreateNamedStruct, EqualNullSafe, EqualTo, Expression, GetStructField, GreaterThan, GreaterThanOrEqual, If, In, InSet, IsNaN, IsNotNull, IsNull, KnownFloatingPointNormalized, LessThan, LessThanOrEqual, Literal, Not, Or}
+import org.apache.spark.sql.catalyst.expressions.{Alias, And, AtLeastNNonNulls, Attribute, BinaryExpression, CaseWhen, CreateNamedStruct, EqualNullSafe, EqualTo, Expression, GetStructField, GreaterThan, GreaterThanOrEqual, If, In, InSet, IsNaN, IsNotNull, IsNull, KnownFloatingPointNormalized, LessThan, LessThanOrEqual, Literal, Not, Or}
 import org.apache.spark.sql.catalyst.expressions.objects.AssertNotNull
 import org.apache.spark.sql.catalyst.optimizer.NormalizeNaNAndZero
 import org.apache.spark.sql.catalyst.trees.TreePattern.NULL_CHECK
@@ -31,7 +31,7 @@ import org.apache.spark.sql.types.{BooleanType, DoubleType, FloatType}
 import com.google.protobuf.Message
 
 import org.apache.comet.CometConf
-import org.apache.comet.CometSparkSessionExtensions.{isSpark35Plus, isSpark40Plus}
+import org.apache.comet.CometSparkSessionExtensions.{isSpark35Plus, isSpark40Plus, withFallbackReason}
 import org.apache.comet.serde.ExprOuterClass.Expr
 import org.apache.comet.serde.QueryPlanSerde._
 
@@ -541,6 +541,38 @@ object CometAssertNotNull extends CometExpressionSerde[AssertNotNull] {
             .setChild(child)
             .setWalkedTypePath(expr.walkedTypePath.mkString("\n", "\n", "\n")))
         .build()
+    }
+  }
+}
+
+object CometAtLeastNNonNulls extends CometExpressionSerde[AtLeastNNonNulls] {
+  override def convert(
+      expr: AtLeastNNonNulls,
+      inputs: Seq[Attribute],
+      binding: Boolean): Option[Expr] = {
+    // Native evaluation, like Spark's, stops counting a row once it reaches n, which takes at
+    // least the first n children. So it may skip the children after those, which a shared
+    // subexpression that Spark eliminates would evaluate for every row.
+    val skippable = if (expr.n <= 0) expr.children else expr.children.drop(expr.n)
+    if (!canSkipEvaluation(skippable)) {
+      withFallbackReason(
+        expr,
+        "AtLeastNNonNulls would skip a subexpression that Spark evaluates for every row")
+      return None
+    }
+    val children = expr.children.map(exprToProtoInternal(_, inputs, binding))
+    if (children.forall(_.isDefined)) {
+      Some(
+        Expr
+          .newBuilder()
+          .setAtLeastNNonNulls(
+            ExprOuterClass.AtLeastNNonNulls
+              .newBuilder()
+              .setN(expr.n)
+              .addAllChildren(children.map(_.get).asJava))
+          .build())
+    } else {
+      None
     }
   }
 }

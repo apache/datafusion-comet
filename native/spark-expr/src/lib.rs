@@ -37,7 +37,7 @@ mod unbound;
 pub use unbound::UnboundColumn;
 mod predicate_funcs;
 pub mod utils;
-pub use predicate_funcs::{spark_isnan, AssertNotNull, RLike};
+pub use predicate_funcs::{spark_isnan, AssertNotNull, AtLeastNNonNulls, RLike};
 
 mod agg_funcs;
 mod array_funcs;
