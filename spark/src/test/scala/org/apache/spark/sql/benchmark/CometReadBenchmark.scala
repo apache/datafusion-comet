@@ -35,6 +35,7 @@ import org.apache.spark.benchmark.Benchmark
 import org.apache.spark.sql.{DataFrame, SparkSession}
 import org.apache.spark.sql.execution.datasources.parquet.VectorizedParquetRecordReader
 import org.apache.spark.sql.execution.metric.SQLMetrics
+import org.apache.spark.sql.internal.SQLConf
 import org.apache.spark.sql.types._
 import org.apache.spark.sql.vectorized.ColumnVector
 
@@ -422,9 +423,49 @@ class CometReadBaseBenchmark extends CometBenchmarkBase {
     }
   }
 
+  /**
+   * Spark-written strings carry the UTF8 annotation. With `spark.sql.parquet.binaryAsString`, the
+   * native scan still reads them as binary and decodes them, and only `=`, `IN` and `IS [NOT]
+   * NULL` on them reach the reader. This compares a full scan and a selective filter with the
+   * setting off and on.
+   */
+  def binaryAsStringScanBenchmark(values: Int): Unit = {
+    withTempPath { dir =>
+      withTempTable("parquetV1Table") {
+        // Sorted values in small row groups, so `c1 = '500'` can skip most of them.
+        withSQLConf("parquet.block.size" -> (1024 * 1024).toString) {
+          prepareTable(
+            dir,
+            spark.sql(s"SELECT CAST(value % 1000 AS STRING) AS c1 FROM $tbl ORDER BY c1"))
+        }
+        Seq(
+          "Annotated String Scan" -> "SELECT sum(length(c1)) FROM parquetV1Table",
+          "Annotated String Filter" ->
+            "SELECT sum(length(c1)) FROM parquetV1Table WHERE c1 = '500'").foreach {
+          case (name, query) =>
+            val benchmark = new Benchmark(name, values.toLong, output = output)
+            Seq("false", "true").foreach { binaryAsString =>
+              addParquetScanCases(
+                benchmark,
+                query,
+                s"binaryAsString=$binaryAsString",
+                Map(SQLConf.PARQUET_BINARY_AS_STRING.key -> binaryAsString))
+            }
+            benchmark.run()
+        }
+      }
+    }
+  }
+
   override def runCometBenchmark(mainArgs: Array[String]): Unit = {
     if (mainArgs.contains("--scan-metric-overhead")) {
       scanMetricAccumulatorBenchmark(mainArgs.contains("--reverse-cases"))
+      return
+    }
+    if (mainArgs.contains("--binary-as-string")) {
+      runBenchmarkWithTable("binaryAsString Scan", 1024 * 1024 * 10) { v =>
+        binaryAsStringScanBenchmark(v)
+      }
       return
     }
     runBenchmarkWithTable("Parquet Reader", 1024 * 1024 * 15) { v =>
@@ -498,6 +539,10 @@ class CometReadBaseBenchmark extends CometBenchmarkBase {
       for (fractionOfZeros <- List(0.0, 0.50, 0.999)) {
         sortedLgStrFilterScanBenchmark(v, fractionOfZeros)
       }
+    }
+
+    runBenchmarkWithTable("binaryAsString Scan", 1024 * 1024 * 10) { v =>
+      binaryAsStringScanBenchmark(v)
     }
   }
 }

@@ -98,7 +98,9 @@ underlying bytes rather than on the rendered text:
   such as `contains` can therefore disagree with Spark when non-UTF-8 bytes are involved.
 
 Both differences require string data that is not valid UTF-8, which does not occur for text read from
-Parquet or produced by string expressions. Consistent handling of invalid UTF-8 across all native
+UTF8-annotated Parquet columns or produced by string expressions. A Parquet BINARY column without
+that annotation can hold it when it is read as a string, through the read schema or
+`spark.sql.parquet.binaryAsString=true`. Consistent handling of invalid UTF-8 across all native
 string paths is tracked by
 [#4764](https://github.com/apache/datafusion-comet/issues/4764).
 
