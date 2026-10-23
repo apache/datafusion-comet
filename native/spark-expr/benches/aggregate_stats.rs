@@ -30,6 +30,7 @@ use arrow::datatypes::{DataType, Field, Schema};
 use criterion::{criterion_group, criterion_main, Criterion};
 use datafusion::datasource::memory::MemorySourceConfig;
 use datafusion::datasource::source::DataSourceExec;
+use datafusion::execution::context::SessionConfig;
 use datafusion::execution::TaskContext;
 use datafusion::logical_expr::AggregateUDF;
 use datafusion::physical_expr::aggregate::AggregateExprBuilder;
@@ -38,8 +39,8 @@ use datafusion::physical_expr::PhysicalExpr;
 use datafusion::physical_plan::aggregates::{AggregateExec, AggregateMode, PhysicalGroupBy};
 use datafusion::physical_plan::ExecutionPlan;
 use datafusion_comet_spark_expr::{
-    ApproxPercentile, Avg, Correlation, Covariance, EvalMode, HllPlusPlus, SparkPercentile,
-    Variance,
+    ApproxPercentile, Avg, Correlation, Covariance, EvalMode, HllPlusPlus, Regr, RegrType,
+    SparkPercentile, Variance,
 };
 use futures::StreamExt;
 use std::hint::black_box;
@@ -172,6 +173,131 @@ fn criterion_benchmark(c: &mut Criterion) {
     group.finish();
 }
 
+// Measure Partial aggregation (update + state emission), including the DataFusion
+// grouping path. Full-query Spark benchmarks also cover finalization and shuffle.
+fn regression_benchmark(c: &mut Criterion) {
+    let rt = Runtime::new().unwrap();
+    let mut group = c.benchmark_group("regr_partial");
+    for (groups, null_every) in [(1024, 0), (1024, 101), (1024, 2), (65536, 0), (1, 0)] {
+        let batches = regression_batches(groups, null_every);
+        let partitions = &[batches];
+        for (name, kind) in [
+            ("regr_sxx", RegrType::SXX),
+            ("regr_syy", RegrType::SYY),
+            ("regr_sxy", RegrType::SXY),
+            ("regr_slope", RegrType::Slope),
+            ("regr_intercept", RegrType::Intercept),
+            ("regr_r2", RegrType::R2),
+        ] {
+            // Cover every function with and without nulls, and the two compound
+            // state families for the high-cardinality and single-group controls.
+            if groups != 1024 && !matches!(kind, RegrType::Slope | RegrType::R2) {
+                continue;
+            }
+            let udf = Arc::new(AggregateUDF::new_from_impl(Regr::new(
+                kind,
+                name,
+                true,
+                true,
+                EvalMode::Legacy,
+                None,
+                datafusion_comet_spark_expr::create_query_context_map(),
+            )));
+            let group_col: Arc<dyn PhysicalExpr> = Arc::new(Column::new("c0", 0));
+            // Spark rewrites SXX/SYY to the pair-null-filtered selected column,
+            // which Comet's serde passes twice to the native moment accumulator.
+            let indices = match kind {
+                RegrType::SXX => [4, 4],
+                RegrType::SYY => [3, 3],
+                _ => [1, 2],
+            };
+            let inputs: Vec<Arc<dyn PhysicalExpr>> = indices
+                .map(|i| Arc::new(Column::new(&format!("c{i}"), i)) as Arc<dyn PhysicalExpr>)
+                .to_vec();
+            // Check actual cardinality outside timing. Batches use successive row
+            // offsets, so the high-cardinality case really contains 64k groups.
+            let (rows, aggregate) = rt.block_on(agg_test(
+                partitions,
+                group_col.clone(),
+                inputs.clone(),
+                udf.clone(),
+                name,
+            ));
+            assert_eq!(rows, groups);
+            let skipped = aggregate
+                .metrics()
+                .unwrap()
+                .sum_by_name("skipped_aggregation_rows")
+                .map(|metric| metric.as_usize())
+                .unwrap_or(0);
+            assert_eq!(skipped, 0);
+            let nulls = match null_every {
+                0 => "no_null",
+                2 => "half_null",
+                _ => "sparse_null",
+            };
+            group.bench_function(format!("{name}/{groups}_groups/{nulls}"), |b| {
+                b.to_async(&rt).iter(|| {
+                    agg_test(
+                        partitions,
+                        group_col.clone(),
+                        inputs.clone(),
+                        udf.clone(),
+                        name,
+                    )
+                })
+            });
+        }
+    }
+    group.finish();
+}
+
+fn regression_batches(groups: usize, null_every: usize) -> Vec<RecordBatch> {
+    let schema = Arc::new(Schema::new(vec![
+        Field::new("c0", DataType::Utf8, false),
+        Field::new("c1", DataType::Float64, true),
+        Field::new("c2", DataType::Float64, false),
+        Field::new("c3", DataType::Float64, true),
+        Field::new("c4", DataType::Float64, true),
+    ]));
+    (0..32)
+        .map(|batch| {
+            let mut keys = StringBuilder::new();
+            let mut y = Float64Builder::new();
+            let mut x = Float64Builder::new();
+            let mut paired_x = Float64Builder::new();
+            for row in 0..8192 {
+                let i = batch * 8192 + row;
+                let xv = i as f64 * 0.25 + 1.0;
+                let yv = xv * 1.5 + (i % 17) as f64;
+                let valid = match null_every {
+                    0 => true,
+                    2 => !(i / groups).is_multiple_of(2),
+                    // Coprime to the group count and batch size: every batch
+                    // contains sparse nulls and every group still has valid rows.
+                    _ => !i.is_multiple_of(null_every),
+                };
+                keys.append_value(format!("group_{}", i % groups));
+                y.append_option(valid.then_some(yv));
+                x.append_value(xv);
+                paired_x.append_option(valid.then_some(xv));
+            }
+            let y: ArrayRef = Arc::new(y.finish());
+            RecordBatch::try_new(
+                schema.clone(),
+                vec![
+                    Arc::new(keys.finish()),
+                    y.clone(),
+                    Arc::new(x.finish()),
+                    y,
+                    Arc::new(paired_x.finish()),
+                ],
+            )
+            .unwrap()
+        })
+        .collect()
+}
+
 fn comet_variance(stats_type: StatsType) -> Arc<AggregateUDF> {
     Arc::new(AggregateUDF::new_from_impl(Variance::new(
         "variance",
@@ -207,18 +333,26 @@ async fn agg_test(
     input_exprs: Vec<Arc<dyn PhysicalExpr>>,
     aggregate_udf: Arc<AggregateUDF>,
     alias: &str,
-) {
+) -> (usize, Arc<AggregateExec>) {
     let schema = &partitions[0][0].schema();
     let scan: Arc<dyn ExecutionPlan> = Arc::new(DataSourceExec::new(Arc::new(
         MemorySourceConfig::try_new(partitions, Arc::clone(schema), None).unwrap(),
     )));
     let aggregate = create_aggregate(scan, group_col, input_exprs, schema, aggregate_udf, alias);
-    let mut stream = aggregate
-        .execute(0, Arc::new(TaskContext::default()))
-        .unwrap();
+    // Match Comet's eligibility gate: regression aggregates cannot skip partial
+    // aggregation (convert_to_state is unsupported by the grouped kernels).
+    let mut config = SessionConfig::new();
+    config
+        .options_mut()
+        .execution
+        .skip_partial_aggregation_probe_ratio_threshold = 1.1;
+    let context = TaskContext::default().with_session_config(config);
+    let mut stream = aggregate.execute(0, Arc::new(context)).unwrap();
+    let mut rows = 0;
     while let Some(batch) = stream.next().await {
-        let _batch = batch.unwrap();
+        rows += black_box(batch.unwrap()).num_rows();
     }
+    (rows, aggregate)
 }
 
 fn create_aggregate(
@@ -286,6 +420,6 @@ fn config() -> Criterion {
 criterion_group! {
     name = benches;
     config = config();
-    targets = criterion_benchmark
+    targets = criterion_benchmark, regression_benchmark
 }
 criterion_main!(benches);
