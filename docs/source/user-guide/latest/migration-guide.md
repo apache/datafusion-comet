@@ -86,6 +86,9 @@ it. `spark.comet.convert.oneRowRelation.enabled` is on by default, so such a que
 without either setting, and logs no warning. The list remains the way to convert other leaf
 operators, such as the scan of a Data Source V2 connector.
 
+Converting a Text scan with `FileSourceScan` or `BatchScan` in the list is deprecated in the same
+way, and logs the same warning. Use `spark.comet.convert.text.enabled` instead.
+
 ### Iceberg Writes
 
 Comet's Iceberg write path is now switched by one setting, `spark.comet.write.iceberg.enabled`,

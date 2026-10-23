@@ -76,9 +76,12 @@ because the row it converts has no columns.
   such as JDBC tables, which Spark scans with `RowDataSourceScanExec`.
 
 To convert any other leaf operator, such as the scan of a Data Source V2 connector or of a file
-format other than Parquet, JSON and CSV, set `spark.comet.sparkToColumnar.enabled=true` and name the
-operator in `spark.comet.sparkToColumnar.supportedOperatorList` by its Spark class name without the
-`Exec` suffix, such as `BatchScan` or `FileSourceScan`.
+format other than Parquet, JSON, CSV and Text, set `spark.comet.sparkToColumnar.enabled=true` and name
+the operator in `spark.comet.sparkToColumnar.supportedOperatorList` by its Spark class name without the
+`Exec` suffix, such as `BatchScan` or `FileSourceScan`. Naming either to convert a Text scan still
+works but is deprecated, like naming `Range`, `InMemoryTableScan`, `RDDScan`, `OneRowRelation` or
+`RowDataSourceScan`, and will stop working in a future major release. Use
+`spark.comet.convert.text.enabled` instead.
 
 One case is converted automatically: when the build (broadcast) side of a broadcast join is a file
 or V2 scan Comet cannot read natively - for example a small ORC lookup table - and every scan on
@@ -90,10 +93,9 @@ the scan can make the copied volume larger, and with dynamic partition pruning t
 a second time for the pruning subquery. Set `spark.comet.convert.broadcastBuildSide.enabled=false` to
 keep such build sides on Spark.
 
-Parquet, JSON and CSV build sides are converted only by their own switches above. A Text build side
-is converted only when `spark.comet.convert.broadcastBuildSide.text.enabled=true`, because a Text
-file can hold bytes that are not valid UTF-8 (see [Text](#text)). `spark.comet.convert.text.enabled`
-converts every Text scan instead, including those on a build side.
+Parquet, JSON, CSV and Text build sides are converted only by their own switches above. A Text file
+can hold bytes that are not valid UTF-8 (see [Text](#text)), so a Text lookup table stays on Spark
+unless `spark.comet.convert.text.enabled` is set.
 
 ### Spark-to-Comet conversion types
 

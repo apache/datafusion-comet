@@ -104,10 +104,9 @@ reach Comet in these ways, which are the ones to check before relying on a resul
 - **Text files.** Spark's Text reader keeps the bytes of each line as they are, so a Text file in an
   encoding other than UTF-8, such as Latin-1, holds strings that are not valid UTF-8. Comet decodes
   them when it converts a Text scan to Arrow, which it does only when
-  `spark.comet.convert.text.enabled=true`, when the scan is on a broadcast build side and
-  `spark.comet.convert.broadcastBuildSide.text.enabled=true`, or when
-  `spark.comet.sparkToColumnar.enabled=true` and `spark.comet.sparkToColumnar.supportedOperatorList`
-  names the scan (see [Data sources](../datasources.md#text)). For example, with a build-side file
+  `spark.comet.convert.text.enabled=true` (see [Data sources](../datasources.md#text)), or, as a
+  deprecated alternative, when `spark.comet.sparkToColumnar.enabled=true` and
+  `spark.comet.sparkToColumnar.supportedOperatorList` names the scan. For example, with a Text file
   holding the bytes `1 caf\xE9`, `hex(value)` returns `3120636166EFBFBD` instead of Spark's
   `3120636166E9`, and `length` of `2 na\xEFve` is 7 instead of 5. Spark decodes CSV files as it reads
   them, so they never hold such strings, and its JSON reader treats a line with such bytes as
