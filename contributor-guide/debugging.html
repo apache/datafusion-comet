@@ -686,6 +686,10 @@ Eventually it will be cleaned up when you reboot possibly after a software updat
 <li><p>The backtrace coverage in DataFusion is still improving. So there is a chance the error still not covered, if so feel free to file a <a class="reference external" href="https://github.com/apache/arrow-datafusion/issues">ticket</a></p></li>
 <li><p>The backtrace evaluation comes with performance cost and intended mostly for debugging purposes</p></li>
 </ul>
+<p>A panic in native code is different: it is always logged, with its location and backtrace, to the
+stderr of the executor where it happened, on a line starting with <code class="docutils literal notranslate"><span class="pre">Comet</span> <span class="pre">native</span> <span class="pre">panic:</span></code>. The
+<code class="docutils literal notranslate"><span class="pre">CometNativeException</span></code> it surfaces as carries the panic message only, because a panic can reach the
+JVM on a different thread than the one that raised it.</p>
 </section>
 <section id="native-log-configuration">
 <h3>Native log configuration<a class="headerlink" href="#native-log-configuration" title="Link to this heading">#</a></h3>
