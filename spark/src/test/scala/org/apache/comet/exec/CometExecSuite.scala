@@ -3451,6 +3451,120 @@ class CometExecSuite extends CometTestBase {
     }
   }
 
+  test("scalar struct comparisons retain NULL and shared ANSI evaluation") {
+    withSQLConf(
+      SQLConf.ANSI_ENABLED.key -> "true",
+      SQLConf.ADAPTIVE_EXECUTION_ENABLED.key -> "false") {
+      withTempPath { source =>
+        withTempPath { outer =>
+          withSQLConf(CometConf.COMET_ENABLED.key -> "false") {
+            Seq("7").toDF("s").write.parquet(source.getCanonicalPath)
+            Seq((0L, "invalid"), (1L, "7"))
+              .toDF("id", "bad")
+              .coalesce(1)
+              .write
+              .parquet(outer.getCanonicalPath)
+          }
+          withParquetTable(source.getCanonicalPath, "scalar_comparison_source") {
+            withParquetTable(outer.getCanonicalPath, "scalar_comparison_outer") {
+              val empty = "(SELECT max(named_struct('s', s, 'd', 0D)) AS empty_struct " +
+                "FROM scalar_comparison_source WHERE length(s) < 0)"
+              val right = "named_struct('s', CAST(CAST(bad AS INT) AS STRING), 'd', 0D)"
+              Seq("=", "!=", "<", "<=", ">", ">=").foreach { op =>
+                val df = sql(s"SELECT $empty $op $right AS result FROM scalar_comparison_outer")
+                checkSparkAnswerAndOperator(df, Seq(classOf[CometProjectExec]))
+                checkAnswer(df, Seq(Row(null), Row(null)))
+              }
+              val present = "(SELECT max(named_struct('s', s, 'd', 0D)) AS present_struct " +
+                "FROM scalar_comparison_source)"
+              val mixed = sql(s"SELECT id, IF(id = 0, $empty, $present) = $right AS result " +
+                "FROM scalar_comparison_outer")
+              val (_, mixedPlan) =
+                checkSparkAnswerAndOperator(mixed, Seq(classOf[CometProjectExec]))
+              checkAnswer(mixed, Seq(Row(0L, null), Row(1L, true)))
+              val mixedProjects = stripAQEPlan(mixedPlan).collect {
+                case p: CometProjectExec if p.output.exists(_.name == "result") => p
+              }
+              assert(mixedProjects.nonEmpty)
+              mixedProjects.foreach { project =>
+                val sizes = project
+                  .executeColumnar()
+                  .mapPartitions(batches => batches.map(_.numRows()))
+                  .collect()
+                assert(sizes.toSeq == Seq(2), sizes.toSeq)
+              }
+              val shared =
+                s"SELECT $empty = $right AS a, $empty < $right AS b FROM scalar_comparison_outer"
+              withSQLConf(SQLConf.SUBEXPRESSION_ELIMINATION_ENABLED.key -> "false") {
+                val df = sql(shared)
+                checkSparkAnswerAndOperator(df, Seq(classOf[CometProjectExec]))
+                checkAnswer(df, Seq(Row(null, null), Row(null, null)))
+              }
+              Seq(false, true).foreach { comet =>
+                withSQLConf(
+                  CometConf.COMET_ENABLED.key -> comet.toString,
+                  SQLConf.SUBEXPRESSION_ELIMINATION_ENABLED.key -> "true") {
+                  val error = intercept[Exception](sql(shared).collect())
+                  assert(error.getMessage.contains("invalid"), error)
+                  val nullSafe = sql(s"SELECT $empty <=> $right FROM scalar_comparison_outer")
+                  val nullSafeError = intercept[Exception](nullSafe.collect())
+                  assert(nullSafeError.getMessage.contains("invalid"), nullSafeError)
+                }
+              }
+            }
+          }
+        }
+      }
+    }
+  }
+
+  test("constant scalar struct membership retains shared ANSI evaluation") {
+    withSQLConf(
+      SQLConf.ANSI_ENABLED.key -> "true",
+      SQLConf.ADAPTIVE_EXECUTION_ENABLED.key -> "false") {
+      withTempPath { good =>
+        withTempPath { bad =>
+          withSQLConf(CometConf.COMET_ENABLED.key -> "false") {
+            Seq("x").toDF("s").write.parquet(good.getCanonicalPath)
+            Seq("invalid").toDF("s").write.parquet(bad.getCanonicalPath)
+          }
+          withParquetTable(good.getCanonicalPath, "constant_membership_good") {
+            withParquetTable(bad.getCanonicalPath, "constant_membership_bad") {
+              val value = "(SELECT max(named_struct('s', s, 'f', 0D)) AS good_struct " +
+                "FROM constant_membership_good)"
+              val invalid = "named_struct('s', CAST(CAST((SELECT " +
+                "max(named_struct('s', s, 'f', 0D)) AS bad_struct " +
+                "FROM constant_membership_bad).s AS INT) AS STRING), 'f', 0D)"
+              // Keep the matching candidate dynamic: a folded struct literal has no native serde.
+              val matching = s"named_struct('s', substring($value.s, 1, 1), 'f', 0D)"
+              val query = s"SELECT $value IN ($matching, $invalid) AS a, " +
+                s"$value IN ($value, $invalid) AS b FROM range(2)"
+              withSQLConf(SQLConf.SUBEXPRESSION_ELIMINATION_ENABLED.key -> "false") {
+                val df = sql(query)
+                checkSparkAnswerAndOperator(df, Seq(classOf[CometProjectExec]))
+                checkAnswer(df, Seq(Row(true, true), Row(true, true)))
+              }
+              Seq(false, true).foreach { comet =>
+                withSQLConf(
+                  CometConf.COMET_ENABLED.key -> comet.toString,
+                  SQLConf.SUBEXPRESSION_ELIMINATION_ENABLED.key -> "true") {
+                  val df = sql(query)
+                  if (comet) {
+                    val reason = new ExtendedExplainInfo().generateExtendedInfo(
+                      df.queryExecution.executedPlan)
+                    assert(reason.contains("Nested membership"), reason)
+                  }
+                  val error = intercept[Exception](df.collect())
+                  assert(error.getMessage.contains("invalid"), error)
+                }
+              }
+            }
+          }
+        }
+      }
+    }
+  }
+
   test("whole struct scalar consumers bound intermediate strings") {
     val numRows = 8192
     val bytes = 524288

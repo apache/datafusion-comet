@@ -179,6 +179,7 @@ object CometScalarSubquery extends CometExpressionSerde[ScalarSubquery] {
   private def containsVariableWidth(dt: DataType): Boolean = dt match {
     case StringType | BinaryType => true
     case s: StructType => s.fields.exists(f => containsVariableWidth(f.dataType))
+    case ArrayType(elementType, _) => containsVariableWidth(elementType)
     case _ => false
   }
 
@@ -267,6 +268,22 @@ object CometScalarSubquery extends CometExpressionSerde[ScalarSubquery] {
     if (!expr.deterministic && hasVariableWidthStructSubquery(expr)) {
       return Some(
         "Nondeterministic consumers of variable-width struct scalar subqueries require Spark")
+    }
+
+    expr match {
+      // Dynamic nested IN stops after a batch-wide match in native execution. Keep row-dependent
+      // candidates on Spark rather than change ANSI/shared-expression evaluation by slicing.
+      // Literal candidates use the separate static IN implementation. Constant membership also
+      // needs sharing authorization: Spark may eagerly evaluate a shared, failing candidate.
+      case in: In
+          if hasStructSubqueryContext(in) &&
+            (in.value.dataType.isInstanceOf[StructType] ||
+              in.value.dataType.isInstanceOf[ArrayType]) &&
+            containsVariableWidth(in.value.dataType) &&
+            in.list.exists(!_.isInstanceOf[Literal]) &&
+            (in.references.nonEmpty || !QueryPlanSerde.canSkipEvaluation(in.list)) =>
+        return Some("Nested membership of struct scalar subqueries requires Spark")
+      case _ =>
     }
 
     val touchesCalendar =

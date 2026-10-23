@@ -475,6 +475,8 @@ message PreciseTimestampConversion {
 message BinaryExpr {
   Expr left = 1;
   Expr right = 2;
+  // Only ordinary comparisons may use this; Spark's shared-expression analysis authorizes it.
+  bool null_short_circuit = 3;
 }
 
 message UnaryExpr {

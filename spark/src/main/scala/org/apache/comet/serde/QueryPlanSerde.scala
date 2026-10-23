@@ -1210,8 +1210,8 @@ object QueryPlanSerde extends Logging with CometExprShim with CometTypeShim {
       right: Expression,
       inputs: Seq[Attribute],
       binding: Boolean,
-      f: (ExprOuterClass.Expr.Builder, ExprOuterClass.BinaryExpr) => ExprOuterClass.Expr.Builder)
-      : Option[ExprOuterClass.Expr] = {
+      f: (ExprOuterClass.Expr.Builder, ExprOuterClass.BinaryExpr) => ExprOuterClass.Expr.Builder,
+      nullShortCircuit: Boolean = false): Option[ExprOuterClass.Expr] = {
     val leftExpr = exprToProtoInternal(left, inputs, binding)
     val rightExpr = exprToProtoInternal(right, inputs, binding)
     if (leftExpr.isDefined && rightExpr.isDefined) {
@@ -1220,6 +1220,7 @@ object QueryPlanSerde extends Logging with CometExprShim with CometTypeShim {
         .newBuilder()
         .setLeft(leftExpr.get)
         .setRight(rightExpr.get)
+        .setNullShortCircuit(nullShortCircuit)
         .build()
       // call the user-supplied function to wrap BinaryExpr in a top-level Expr
       // such as Expr.And or Expr.Or

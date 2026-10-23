@@ -15,9 +15,12 @@
 // specific language governing permissions and limitations
 // under the License.
 
+use crate::array_funcs::NestedPredicate;
 use crate::{
-    CaseWhenExpr, Cast, CheckedBinaryExpr, CreateNamedStruct, GetStructField, IfExpr, ListExtract,
-    NegativeExpr, NullShortCircuit, RLike, SparkComparison, Subquery, ToJson,
+    ArrayInsert, AtLeastNNonNulls, CaseWhenExpr, Cast, CheckedBinaryExpr, CreateNamedStruct,
+    FromJson, GetArrayStructFields, GetStructField, IfExpr, ListExtract, NegativeExpr,
+    NormalizeNestedFloats, NullShortCircuit, RLike, SparkArraysZipFunc, SparkComparison, Subquery,
+    ToCsv, ToJson,
 };
 use arrow::array::{new_empty_array, Array, ArrayData, ArrayRef};
 use arrow::compute::concat;
@@ -132,7 +135,15 @@ fn consumer_properties(expr: &Arc<dyn PhysicalExpr>) -> Option<ConsumerPropertie
         if fun.fun().signature().volatility != Volatility::Immutable {
             return None;
         }
-    } else if !(expr.is::<GetStructField>()
+    } else if !(expr.is::<AtLeastNNonNulls>()
+        || expr.is::<ArrayInsert>()
+        || expr.is::<GetArrayStructFields>()
+        || expr.is::<SparkArraysZipFunc>()
+        || expr.is::<NestedPredicate>()
+        || expr.is::<NormalizeNestedFloats>()
+        || expr.is::<FromJson>()
+        || expr.is::<ToCsv>()
+        || expr.is::<GetStructField>()
         || expr.is::<CastExpr>()
         || expr.is::<Cast>()
         || expr.is::<BinaryExpr>()
@@ -163,6 +174,15 @@ fn consumer_properties(expr: &Arc<dyn PhysicalExpr>) -> Option<ConsumerPropertie
         properties.constant &= child.constant;
         properties.has_scalar_struct |= child.has_scalar_struct;
         properties.bytes = properties.bytes.saturating_add(child.bytes);
+    }
+    // Membership stops when the entire batch has matched. Only constant membership can
+    // change batch boundaries without changing evaluation of later ANSI-error candidates.
+    if !properties.constant
+        && expr
+            .downcast_ref::<NestedPredicate>()
+            .is_some_and(NestedPredicate::is_membership)
+    {
+        return None;
     }
     properties.has_scalar_struct |= expr.is::<GetStructField>() && properties.constant;
     Some(properties)

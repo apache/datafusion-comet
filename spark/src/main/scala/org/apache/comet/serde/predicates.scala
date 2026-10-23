@@ -51,7 +51,8 @@ object CometNot extends CometExpressionSerde[Not] {
           inner.right,
           inputs,
           binding,
-          (builder, binaryExpr) => builder.setNeq(binaryExpr))
+          (builder, binaryExpr) => builder.setNeq(binaryExpr),
+          nullShortCircuit = canShortCircuitNulls(inner))
       case inner: EqualNullSafe if hasNativePath(CometEqualNullSafe, inner) =>
         createBinaryExpr(
           inner.left,
@@ -124,7 +125,8 @@ object CometEqualTo extends CollationAwareBinaryPredicate[EqualTo] {
       expr.right,
       inputs,
       binding,
-      (builder, binaryExpr) => builder.setEq(binaryExpr))
+      (builder, binaryExpr) => builder.setEq(binaryExpr),
+      nullShortCircuit = canShortCircuitNulls(expr))
   }
 }
 
@@ -152,7 +154,8 @@ object CometGreaterThan extends CollationAwareBinaryPredicate[GreaterThan] {
       expr.right,
       inputs,
       binding,
-      (builder, binaryExpr) => builder.setGt(binaryExpr))
+      (builder, binaryExpr) => builder.setGt(binaryExpr),
+      nullShortCircuit = canShortCircuitNulls(expr))
   }
 }
 
@@ -166,7 +169,8 @@ object CometGreaterThanOrEqual extends CollationAwareBinaryPredicate[GreaterThan
       expr.right,
       inputs,
       binding,
-      (builder, binaryExpr) => builder.setGtEq(binaryExpr))
+      (builder, binaryExpr) => builder.setGtEq(binaryExpr),
+      nullShortCircuit = canShortCircuitNulls(expr))
   }
 }
 
@@ -180,7 +184,8 @@ object CometLessThan extends CollationAwareBinaryPredicate[LessThan] {
       expr.right,
       inputs,
       binding,
-      (builder, binaryExpr) => builder.setLt(binaryExpr))
+      (builder, binaryExpr) => builder.setLt(binaryExpr),
+      nullShortCircuit = canShortCircuitNulls(expr))
   }
 }
 
@@ -194,7 +199,8 @@ object CometLessThanOrEqual extends CollationAwareBinaryPredicate[LessThanOrEqua
       expr.right,
       inputs,
       binding,
-      (builder, binaryExpr) => builder.setLtEq(binaryExpr))
+      (builder, binaryExpr) => builder.setLtEq(binaryExpr),
+      nullShortCircuit = canShortCircuitNulls(expr))
   }
 }
 

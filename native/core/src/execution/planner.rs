@@ -3877,6 +3877,7 @@ mod tests {
 
         let expr = spark_expression::Expr {
             expr_struct: Some(Eq(Box::new(spark_expression::BinaryExpr {
+                null_short_circuit: false,
                 left: Some(Box::new(left)),
                 right: Some(Box::new(right)),
             }))),
@@ -3926,6 +3927,7 @@ mod tests {
             expr_id: None,
         };
         let expr = operand(Gt(Box::new(spark_expression::BinaryExpr {
+            null_short_circuit: false,
             left: Some(Box::new(operand(Bound(spark_expression::BoundReference {
                 index: 0,
                 datatype: Some(double.clone()),
@@ -3971,6 +3973,7 @@ mod tests {
         };
         let column_and = |value: f64| {
             Box::new(spark_expression::BinaryExpr {
+                null_short_circuit: false,
                 left: Some(Box::new(operand(Bound(spark_expression::BoundReference {
                     index: 0,
                     datatype: Some(double.clone()),

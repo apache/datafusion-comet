@@ -289,6 +289,18 @@ fn octet(child: Arc<dyn PhysicalExpr>) -> Arc<dyn PhysicalExpr> {
     ))
 }
 
+fn array_size(child: Arc<dyn PhysicalExpr>) -> Arc<dyn PhysicalExpr> {
+    Arc::new(ScalarFunctionExpr::new(
+        "size",
+        Arc::new(ScalarUDF::new_from_impl(
+            datafusion_comet_spark_expr::SparkSizeFunc::new(),
+        )),
+        vec![child],
+        Arc::new(Field::new("size", DataType::Int32, true)),
+        Arc::new(ConfigOptions::default()),
+    ))
+}
+
 #[test]
 fn row_dependent_conditionals_reduce_bounded_inputs_in_row_order() {
     use datafusion::logical_expr::{Operator, Volatility};
@@ -377,6 +389,425 @@ fn ordinary_struct_columns_are_not_scalar_subquery_consumers() {
         &ScalarSubqueryConsumer::wrap(expr.clone()),
         &expr
     ));
+}
+
+#[test]
+fn non_null_count_consumes_scalar_fields_and_whole_structs_before_broadcast() {
+    use arrow::array::BooleanArray;
+    use datafusion_comet_spark_expr::AtLeastNNonNulls;
+    let large = ScalarValue::Utf8(Some("x".repeat(1024)));
+    let structure = ScalarValue::Struct(Arc::new(StructArray::new(
+        vec![Field::new("s", DataType::Utf8, true)].into(),
+        vec![large.to_array().unwrap()],
+        None,
+    )));
+    for (child, valid) in [
+        (field(large), true),
+        (field(ScalarValue::Utf8(None)), false),
+        (
+            Arc::new(Literal::new(structure)) as Arc<dyn PhysicalExpr>,
+            true,
+        ),
+        (field(ScalarValue::Float64(Some(f64::NAN))), false),
+    ] {
+        for n in [-1, 0, 1, 2, 3] {
+            let expr = ScalarSubqueryConsumer::wrap(Arc::new(AtLeastNNonNulls::new(
+                n,
+                vec![
+                    child.clone(),
+                    Arc::new(Literal::new(ScalarValue::Float64(Some(f64::NAN)))),
+                    Arc::new(Literal::new(ScalarValue::Int32(None))),
+                ],
+            )));
+            // Assert the allocation guard before evaluating even this safely sized input.
+            assert!(expr.is::<ScalarSubqueryConsumer>());
+            for rows in [0, 1, 2048] {
+                let output = expr
+                    .evaluate(&batch(rows))
+                    .unwrap()
+                    .into_array(rows)
+                    .unwrap();
+                assert_eq!(
+                    output.as_ref(),
+                    &BooleanArray::from(vec![n <= i32::from(valid); rows])
+                );
+            }
+        }
+    }
+}
+
+#[test]
+fn non_null_count_preserves_row_selection_across_bounded_slices() {
+    use arrow::array::BooleanArray;
+    use datafusion::logical_expr::{Operator, Volatility};
+    use datafusion::physical_expr::expressions::{BinaryExpr, Column};
+    use datafusion_comet_spark_expr::{AtLeastNNonNulls, IfExpr};
+    let value = field(ScalarValue::Utf8(Some("x".repeat(4096))));
+    let checked = udf(
+        "bounded_non_null_input",
+        vec![value.clone()],
+        DataType::Utf8,
+        Volatility::Immutable,
+        Arc::new(|args| {
+            let ColumnarValue::Array(array) = &args[0] else {
+                panic!("expected field array")
+            };
+            let array = array.as_any().downcast_ref::<StringArray>().unwrap();
+            assert!(array.value_data().len() <= 1024 * 1024);
+            Ok(args[0].clone())
+        }),
+    );
+    let conditional = Arc::new(IfExpr::new(
+        Arc::new(BinaryExpr::new(
+            Arc::new(Column::new("id", 0)),
+            Operator::Lt,
+            Arc::new(Literal::new(ScalarValue::Int64(Some(513)))),
+        )),
+        checked,
+        Arc::new(Literal::new(ScalarValue::Utf8(None))),
+    ));
+    let input = batch(1050).slice(9, 1041);
+    for n in [0, 1, 2, 3, 4] {
+        let expr = ScalarSubqueryConsumer::wrap(Arc::new(AtLeastNNonNulls::new(
+            n,
+            vec![
+                value.clone(),
+                conditional.clone(),
+                Arc::new(Literal::new(ScalarValue::Float64(Some(f64::NAN)))),
+            ],
+        )));
+        assert!(expr.is::<ScalarSubqueryConsumer>());
+        let output = expr.evaluate(&input).unwrap().into_array(1041).unwrap();
+        assert_eq!(
+            output.as_ref(),
+            &BooleanArray::from(
+                (9..1050)
+                    .map(|id| n <= 1 + i32::from(id < 513))
+                    .collect::<Vec<_>>()
+            )
+        );
+    }
+}
+
+#[test]
+fn non_null_count_keeps_threshold_and_ansi_short_circuiting() {
+    use arrow::array::BooleanArray;
+    use datafusion::physical_expr::expressions::CastExpr;
+    use datafusion_comet_spark_expr::AtLeastNNonNulls;
+    let invalid: Arc<dyn PhysicalExpr> = Arc::new(CastExpr::new(
+        Arc::new(Literal::new(ScalarValue::Utf8(Some("invalid".into())))),
+        DataType::Int32,
+        Some(arrow::compute::CastOptions {
+            safe: false,
+            ..Default::default()
+        }),
+    ));
+    for valid in [false, true] {
+        for n in [0, 1, 2, 3] {
+            let expr = ScalarSubqueryConsumer::wrap(Arc::new(AtLeastNNonNulls::new(
+                n,
+                vec![
+                    field(ScalarValue::Utf8(valid.then(|| "x".repeat(1024)))),
+                    invalid.clone(),
+                    Arc::new(Literal::new(ScalarValue::Int32(Some(1)))),
+                ],
+            )));
+            assert!(expr.is::<ScalarSubqueryConsumer>());
+            assert_eq!(
+                expr.evaluate(&batch(0))
+                    .unwrap()
+                    .into_array(0)
+                    .unwrap()
+                    .len(),
+                0
+            );
+            let output = expr.evaluate(&batch(2048));
+            if n <= i32::from(valid) {
+                assert_eq!(
+                    output.unwrap().into_array(2048).unwrap().as_ref(),
+                    &BooleanArray::from(vec![true; 2048])
+                );
+            } else {
+                assert!(
+                    output.is_err(),
+                    "an unreached threshold must evaluate the ANSI error"
+                );
+            }
+        }
+    }
+}
+
+#[test]
+fn array_insert_keeps_ancestor_reduction_bounded_and_preserves_row_positions() {
+    use datafusion::logical_expr::Operator;
+    use datafusion::physical_expr::expressions::{BinaryExpr, Column};
+    use datafusion_comet_spark_expr::{ArrayInsert, IfExpr};
+    for row_dependent in [false, true] {
+        let position: Arc<dyn PhysicalExpr> = if row_dependent {
+            Arc::new(IfExpr::new(
+                Arc::new(BinaryExpr::new(
+                    Arc::new(Column::new("id", 0)),
+                    Operator::Lt,
+                    Arc::new(Literal::new(ScalarValue::Int64(Some(1033)))),
+                )),
+                Arc::new(Literal::new(ScalarValue::Int32(Some(2)))),
+                Arc::new(Literal::new(ScalarValue::Int32(Some(3)))),
+            ))
+        } else {
+            Arc::new(Literal::new(ScalarValue::Int32(Some(2))))
+        };
+        let insertion = ScalarSubqueryConsumer::wrap(Arc::new(ArrayInsert::new(
+            Arc::new(Literal::new(ScalarValue::List(ScalarValue::new_list(
+                &[ScalarValue::Utf8(Some("tiny".into()))],
+                &DataType::Utf8,
+                true,
+            )))),
+            position,
+            field(ScalarValue::Utf8(Some("x".repeat(1024)))),
+            false,
+        )));
+        assert!(insertion.is::<ScalarSubqueryConsumer>());
+        let size = ScalarSubqueryConsumer::wrap(array_size(insertion));
+        assert!(size.is::<ScalarSubqueryConsumer>());
+        let input = batch(2057).slice(9, 2048);
+        let output = size.evaluate(&input).unwrap().into_array(2048).unwrap();
+        assert_eq!(
+            output.as_ref(),
+            &Int32Array::from_iter_values((9..2057).map(|id| {
+                if row_dependent && id >= 1033 {
+                    3
+                } else {
+                    2
+                }
+            }))
+        );
+        assert_eq!(
+            size.evaluate(&batch(0))
+                .unwrap()
+                .into_array(0)
+                .unwrap()
+                .len(),
+            0
+        );
+    }
+}
+
+#[test]
+fn array_insert_keeps_null_source_and_position_short_circuiting() {
+    use arrow::array::ListArray;
+    use datafusion::physical_expr::expressions::CastExpr;
+    use datafusion_comet_spark_expr::ArrayInsert;
+    let invalid: Arc<dyn PhysicalExpr> = Arc::new(CastExpr::new(
+        field(ScalarValue::Utf8(Some("invalid".repeat(128)))),
+        DataType::Int32,
+        Some(arrow::compute::CastOptions {
+            safe: false,
+            ..Default::default()
+        }),
+    ));
+    let array_field = Arc::new(Field::new("item", DataType::Int32, true));
+    for null_source in [true, false] {
+        let source = if null_source {
+            ScalarValue::List(Arc::new(ListArray::new_null(array_field.clone(), 1)))
+        } else {
+            ScalarValue::List(ScalarValue::new_list(
+                &[ScalarValue::Int32(Some(1))],
+                &DataType::Int32,
+                true,
+            ))
+        };
+        let expr = ScalarSubqueryConsumer::wrap(Arc::new(ArrayInsert::new(
+            Arc::new(Literal::new(source)),
+            if null_source {
+                invalid.clone()
+            } else {
+                Arc::new(Literal::new(ScalarValue::Int32(None)))
+            },
+            invalid.clone(),
+            false,
+        )));
+        assert!(expr.is::<ScalarSubqueryConsumer>());
+        let output = expr
+            .evaluate(&batch(2048))
+            .unwrap()
+            .into_array(2048)
+            .unwrap();
+        assert_eq!(output.null_count(), 2048);
+    }
+}
+
+#[test]
+fn array_struct_selection_and_zip_preserve_ancestor_bounds() {
+    use datafusion::functions_nested::make_array::MakeArray;
+    use datafusion_comet_spark_expr::{GetArrayStructFields, SparkArraysZipFunc};
+    let value = ScalarValue::Struct(Arc::new(StructArray::new(
+        vec![Field::new("s", DataType::Utf8, true)].into(),
+        vec![Arc::new(StringArray::from(vec!["x".repeat(4096)]))],
+        None,
+    )));
+    let list_type = DataType::List(Arc::new(Field::new("item", value.data_type(), true)));
+    let array = ScalarSubqueryConsumer::wrap(Arc::new(ScalarFunctionExpr::new(
+        "make_array",
+        Arc::new(ScalarUDF::new_from_impl(MakeArray::new())),
+        vec![field(value)],
+        Arc::new(Field::new("array", list_type, true)),
+        Arc::new(ConfigOptions::default()),
+    )));
+    let zipped = ScalarSubqueryConsumer::wrap(Arc::new(SparkArraysZipFunc::new(
+        vec![array],
+        vec!["a".into()],
+    )));
+    assert!(zipped.is::<ScalarSubqueryConsumer>());
+    let structs = ScalarSubqueryConsumer::wrap(Arc::new(GetArrayStructFields::new(zipped, 0)));
+    assert!(structs.is::<ScalarSubqueryConsumer>());
+    let strings = ScalarSubqueryConsumer::wrap(Arc::new(GetArrayStructFields::new(structs, 0)));
+    assert!(strings.is::<ScalarSubqueryConsumer>());
+    let size = ScalarSubqueryConsumer::wrap(array_size(strings));
+    assert!(size.is::<ScalarSubqueryConsumer>());
+    for rows in [0, 1, 513] {
+        let output = size
+            .evaluate(&batch(rows))
+            .unwrap()
+            .into_array(rows)
+            .unwrap();
+        assert_eq!(output.as_ref(), &Int32Array::from(vec![1; rows]));
+    }
+}
+
+#[test]
+fn nested_float_comparison_and_membership_preserve_ancestor_bounds() {
+    use arrow::array::BooleanArray;
+    use datafusion::logical_expr::Operator;
+    use datafusion_comet_spark_expr::{spark_comparison, spark_in_list, FloatOperands};
+    let value = ScalarValue::Struct(Arc::new(StructArray::new(
+        vec![
+            Field::new("s", DataType::Utf8, true),
+            Field::new("f", DataType::Float64, true),
+        ]
+        .into(),
+        vec![
+            Arc::new(StringArray::from(vec!["x".repeat(4096)])),
+            ScalarValue::Float64(Some(f64::NAN)).to_array().unwrap(),
+        ],
+        None,
+    )));
+    let schema = batch(0).schema();
+    let expressions = vec![
+        spark_comparison(
+            field(value.clone()),
+            Operator::Eq,
+            Arc::new(Literal::new(value.clone())),
+            &schema,
+            FloatOperands::Normalize,
+        )
+        .unwrap(),
+        spark_in_list(
+            field(value.clone()),
+            vec![Arc::new(Literal::new(value.clone()))],
+            false,
+            &schema,
+        )
+        .unwrap(),
+        spark_in_list(field(value.clone()), vec![field(value)], false, &schema).unwrap(),
+    ];
+    for expression in expressions {
+        let expression = ScalarSubqueryConsumer::wrap(expression);
+        assert!(expression.is::<ScalarSubqueryConsumer>());
+        for rows in [0, 1, 513] {
+            let output = expression
+                .evaluate(&batch(rows))
+                .unwrap()
+                .into_array(rows)
+                .unwrap();
+            assert_eq!(output.as_ref(), &BooleanArray::from(vec![true; rows]));
+        }
+    }
+    // Dynamic membership has batch-wide early stopping. The JVM serializer keeps this
+    // row-dependent form on Spark; do not silently alter its ANSI evaluation by slicing.
+    let dt = DataType::Struct(
+        vec![
+            Field::new("s", DataType::Utf8, true),
+            Field::new("f", DataType::Float64, true),
+        ]
+        .into(),
+    );
+    let schema = Schema::new(vec![
+        Field::new("value", dt.clone(), true),
+        Field::new("candidate", dt, true),
+    ]);
+    let dynamic = spark_in_list(
+        Arc::new(datafusion::physical_expr::expressions::Column::new(
+            "value", 0,
+        )),
+        vec![Arc::new(
+            datafusion::physical_expr::expressions::Column::new("candidate", 1),
+        )],
+        false,
+        &schema,
+    )
+    .unwrap();
+    assert!(Arc::ptr_eq(
+        &ScalarSubqueryConsumer::wrap(dynamic.clone()),
+        &dynamic
+    ));
+}
+
+#[test]
+fn native_json_and_csv_opt_in_consumers_preserve_ancestor_bounds() {
+    use datafusion_comet_spark_expr::{CsvWriteOptions, FromJson, ToCsv};
+    let parsed_type = DataType::Struct(vec![Field::new("n", DataType::Int32, true)].into());
+    let parsed = ScalarSubqueryConsumer::wrap(Arc::new(FromJson::new(
+        field(ScalarValue::Utf8(Some(format!(
+            "{}{{\"n\":7}}",
+            " ".repeat(4096)
+        )))),
+        parsed_type,
+        "UTC",
+    )));
+    assert!(parsed.is::<ScalarSubqueryConsumer>());
+    let number = ScalarSubqueryConsumer::wrap(Arc::new(GetStructField::new(parsed, 0)));
+    assert!(number.is::<ScalarSubqueryConsumer>());
+    let value = ScalarValue::Struct(Arc::new(StructArray::new(
+        vec![Field::new("s", DataType::Utf8, true)].into(),
+        vec![Arc::new(StringArray::from(vec!["x".repeat(4096)]))],
+        None,
+    )));
+    let csv = ScalarSubqueryConsumer::wrap(Arc::new(ToCsv::new(
+        field(value),
+        "UTC",
+        CsvWriteOptions::new(
+            ",".into(),
+            "\"".into(),
+            "\\".into(),
+            "".into(),
+            false,
+            false,
+            false,
+        ),
+    )));
+    assert!(csv.is::<ScalarSubqueryConsumer>());
+    let length = ScalarSubqueryConsumer::wrap(octet(csv));
+    assert!(length.is::<ScalarSubqueryConsumer>());
+    for rows in [0, 1, 513] {
+        assert_eq!(
+            number
+                .evaluate(&batch(rows))
+                .unwrap()
+                .into_array(rows)
+                .unwrap()
+                .as_ref(),
+            &Int32Array::from(vec![7; rows])
+        );
+        assert_eq!(
+            length
+                .evaluate(&batch(rows))
+                .unwrap()
+                .into_array(rows)
+                .unwrap()
+                .as_ref(),
+            &Int32Array::from(vec![4096; rows])
+        );
+    }
 }
 
 #[test]
