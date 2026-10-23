@@ -21,10 +21,12 @@ package org.apache.comet.serde
 
 import scala.jdk.CollectionConverters._
 
+import org.apache.spark.SPARK_VERSION
 import org.apache.spark.sql.catalyst.expressions.{Attribute, Cast, Divide, Expression, Literal}
 import org.apache.spark.sql.catalyst.expressions.aggregate.{AggregateExpression, AggregateFunction, ApproximatePercentile, Average, BitAndAgg, BitOrAgg, BitXorAgg, BloomFilterAggregate, CentralMomentAgg, CollectList, CollectSet, Complete, Corr, Count, Covariance, CovPopulation, CovSample, DeclarativeAggregate, First, HyperLogLogPlusPlus, Last, Max, MaxBy, MaxMinBy, Min, MinBy, Mode, Partial, Percentile, PivotFirst, RegrIntercept, RegrR2, RegrReplacement, RegrSlope, RegrSXY, StddevPop, StddevSamp, Sum, VariancePop, VarianceSamp}
 import org.apache.spark.sql.catalyst.util.ArrayData
 import org.apache.spark.sql.comet.CometExecUtils
+import org.apache.spark.sql.comet.util.Utils
 import org.apache.spark.sql.internal.SQLConf
 import org.apache.spark.sql.types.{ArrayType, BinaryType, BooleanType, ByteType, DataType, DateType, DayTimeIntervalType, DecimalType, DoubleType, FloatType, IntegerType, LongType, MapType, NullType, NumericType, ShortType, StringType, StructType, TimestampNTZType, TimestampType, YearMonthIntervalType}
 
@@ -1389,7 +1391,27 @@ object CometMode extends CometAggregateExpressionSerde[Mode] with CometTypeShim 
       " iteration order); Comet returns the smallest of the tied values instead" +
       " (https://github.com/apache/datafusion-comet/issues/3970)"
 
+  private val nanKeysReason =
+    "Before Spark 3.5.2 (SPARK-45599), mode counts each NaN as a key of its own, because its" +
+      " frequency map matches keys with == but hashes their bits; native mode counts all NaNs" +
+      " as one value, so FLOAT and DOUBLE input falls back to Spark"
+
   override def getIncompatibleReasons(): Seq[String] = Seq(tieBreakReason)
+
+  override def getUnsupportedReasons(): Seq[String] = Seq(nanKeysReason)
+
+  /**
+   * Whether Spark's frequency map matches float keys with `Double.equals`, so that all NaNs are
+   * one key. That holds from 3.5.2 and 4.0.0 (SPARK-45599). Every 3.4 release, 3.5.0 and 3.5.1
+   * match with `==` but hash the bits, so two NaNs never match.
+   */
+  private[comet] def keysNaNsTogether(version: String): Boolean =
+    Utils.majorMinorPatchVersion(version).exists {
+      case (3, 5, patch) => patch >= 2
+      case (major, minor, _) => major > 3 || (major == 3 && minor > 5)
+    }
+
+  private def isFloat(dt: DataType): Boolean = dt == FloatType || dt == DoubleType
 
   private def isSupportedType(dt: DataType): Boolean = dt match {
     case BooleanType => true
@@ -1419,6 +1441,9 @@ object CometMode extends CometAggregateExpressionSerde[Mode] with CometTypeShim 
             "(https://github.com/apache/datafusion-comet/issues/2190)"))
     } else if (!isSupportedType(expr.child.dataType)) {
       Unsupported(Some(s"mode does not support input type ${expr.child.dataType}"))
+    } else if (isFloat(expr.child.dataType) && !keysNaNsTogether(SPARK_VERSION)) {
+      // The answer differs from Spark even without a tie, so allowIncompatible does not apply.
+      Unsupported(Some(nanKeysReason))
     } else {
       Incompatible(Some(tieBreakReason))
     }
@@ -1440,7 +1465,9 @@ object CometMode extends CometAggregateExpressionSerde[Mode] with CometTypeShim 
       builder.setDatatype(dataType.get)
       // Spark 4.2.0 (SPARK-57329) normalizes `-0.0` to `0.0` before keying the frequency map;
       // earlier versions key the raw boxed value, where `java.lang.Double.equals` keeps `-0.0`
-      // and `0.0` apart. The native side has to match whichever Spark we are running against.
+      // and `0.0` apart. Float input only reaches here from Spark 3.5.2 and 4.0.0 on, where the
+      // map matches keys with `equals` (see `keysNaNsTogether`). The native side has to match
+      // whichever Spark we are running against.
       builder.setNormalizeNegZero(isSpark42Plus)
       Some(
         ExprOuterClass.AggExpr
