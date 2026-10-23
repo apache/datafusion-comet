@@ -458,8 +458,7 @@ fn reader_peak_bytes(selectors: usize, num_row_groups: usize) -> Result<usize, E
 /// page-level selection without the offset index to locate pages by, so there are no
 /// page-pruning selectors to bound. The offset index is fetched with
 /// `PageIndexPolicy::Optional` from the same `FileMetadataCache` entry the scan's reader later
-/// reopens (see [`attach_access_plan`]'s footer-fetch comment), so this function observes
-/// exactly what the reader will see.
+/// reopens (see [`fetch_footer`]), so this function observes exactly what the reader will see.
 ///
 /// Uses checked arithmetic throughout for the same reason as [`admission_bound_bytes`].
 fn page_selection_bound_selectors(metadata: &ParquetMetaData) -> Result<usize, ExecutionError> {
@@ -553,15 +552,18 @@ fn admission_bound_bytes(
     Ok(construction_bytes.max(reader_bytes))
 }
 
-/// Upper bound on concurrent DV-blob and footer fetches per partition. Both
-/// are small ranged reads, so a modest fan-out hides object-store latency
-/// without flooding the store client.
+/// Upper bound on files resolved concurrently per partition. A file with an
+/// on-disk DV reads its DV blob and its footer at the same time, so up to 8
+/// files and two small ranged reads each are in flight: enough fan-out to hide
+/// object-store latency without flooding the store client.
 const DV_FETCH_CONCURRENCY: usize = 8;
 
 /// Called via `block_on` at plan-creation time on the executor task: DV blobs
 /// are small ranged reads and footers are needed to learn row-group
 /// boundaries. Files are fetched concurrently (bounded by
-/// [`DV_FETCH_CONCURRENCY`]) with input order preserved. Footer fetches go
+/// [`DV_FETCH_CONCURRENCY`]) with input order preserved, and an on-disk DV's
+/// blob read overlaps its file's footer read. When both reads of a file fail,
+/// the first error to complete is returned. Footer fetches go
 /// through the scan's shared FileMetadataCache, so the scan's subsequent open
 /// of the same file is served from cache. That reuse relies on each input
 /// [`PartitionedFile`] being returned as-is (only `with_extension` applied),
@@ -599,6 +601,39 @@ pub async fn attach_access_plans(
         .buffered(DV_FETCH_CONCURRENCY)
         .try_collect()
         .await
+}
+
+/// Decode a deletion vector's bitmap bytes and check them against the descriptor's cardinality.
+fn decode_dv(
+    file_path: &str,
+    data: &[u8],
+    cardinality: i64,
+) -> Result<RoaringTreemap, ExecutionError> {
+    let deleted = deserialize_dv_bitmap(data)
+        .map_err(|e| GeneralError(format!("Invalid deletion vector for {file_path}: {e}")))?;
+    validate_cardinality(file_path, cardinality, &deleted)?;
+    Ok(deleted)
+}
+
+/// Fetch the data file's footer through the scan's shared FileMetadataCache, with the page
+/// index loaded eagerly and the scan's metadata size hint (mirroring
+/// EagerPageIndexReaderFactory): the one fetch here also serves the subsequent data-file open,
+/// so DV files pay no extra footer round-trip. Keyed by `file.object_meta`, the exact
+/// ObjectMeta the scan's reader factory will look up.
+async fn fetch_footer(
+    runtime_env: &RuntimeEnv,
+    data_store: &dyn ObjectStore,
+    file: &PartitionedFile,
+    file_path: &str,
+) -> Result<Arc<ParquetMetaData>, ExecutionError> {
+    let metadata_cache = runtime_env.cache_manager.get_file_metadata_cache();
+    DFParquetMetadata::new(data_store, &file.object_meta)
+        .with_file_metadata_cache(Some(metadata_cache))
+        .with_page_index_policy(Some(PageIndexPolicy::Optional))
+        .with_metadata_size_hint(Some(crate::parquet::parquet_exec::METADATA_SIZE_HINT))
+        .fetch_metadata()
+        .await
+        .map_err(|e| GeneralError(format!("Failed to read parquet footer of {file_path}: {e}")))
 }
 
 /// Resolve one file's deletion vector into an attached [`ParquetAccessPlan`];
@@ -641,9 +676,12 @@ async fn attach_access_plan(
         )));
     }
 
-    let data: Vec<u8> = if let Some(inline) = dv.inline_data {
+    let (metadata, deleted) = if let Some(inline) = dv.inline_data {
+        // No bitmap read to overlap: a corrupt payload fails before the footer is read.
         check_inline_payload_size(&file_path, &inline, dv.size_in_bytes)?;
-        inline
+        let deleted = decode_dv(&file_path, &inline, dv.cardinality)?;
+        let metadata = fetch_footer(&runtime_env, data_store.as_ref(), &file, &file_path).await?;
+        (metadata, deleted)
     } else if let Some(dv_path) = &dv.absolute_path {
         let offset = dv
             .offset
@@ -661,33 +699,30 @@ async fn attach_access_plan(
                 "Deletion vector for {file_path} has an absolute path but no pre-resolved object store"
             ))
         })?;
-        let blob = store
-            .get_range(&dv_store_path, offset..offset + framed_len)
-            .await
-            .map_err(|e| GeneralError(format!("Failed to read deletion vector {dv_path}: {e}")))?;
-        unframe_dv_blob(&blob, dv.size_in_bytes as usize)?.to_vec()
+        let dv_read = async {
+            let blob = store
+                .get_range(&dv_store_path, offset..offset + framed_len)
+                .await
+                .map_err(|e| {
+                    GeneralError(format!("Failed to read deletion vector {dv_path}: {e}"))
+                })?;
+            decode_dv(
+                &file_path,
+                unframe_dv_blob(&blob, dv.size_in_bytes as usize)?,
+                dv.cardinality,
+            )
+        };
+        // The footer needs nothing from the DV, so both reads are in flight at once. The
+        // footer is polled first so its request goes out first.
+        futures::try_join!(
+            fetch_footer(&runtime_env, data_store.as_ref(), &file, &file_path),
+            dv_read
+        )?
     } else {
         return Err(GeneralError(
             "Deletion vector descriptor has neither inline data nor a path".into(),
         ));
     };
-    let deleted = deserialize_dv_bitmap(&data)
-        .map_err(|e| GeneralError(format!("Invalid deletion vector for {file_path}: {e}")))?;
-    validate_cardinality(&file_path, dv.cardinality, &deleted)?;
-
-    // Row-group boundaries come from the data file's footer, fetched through the scan's
-    // shared FileMetadataCache with the page index loaded eagerly and the scan's metadata
-    // size hint (mirroring EagerPageIndexReaderFactory): the one fetch here also serves the
-    // subsequent data-file open, so DV files pay no extra footer round-trip. Keyed by
-    // `file.object_meta`, the exact ObjectMeta the scan's reader factory will look up.
-    let metadata_cache = runtime_env.cache_manager.get_file_metadata_cache();
-    let metadata = DFParquetMetadata::new(data_store.as_ref(), &file.object_meta)
-        .with_file_metadata_cache(Some(metadata_cache))
-        .with_page_index_policy(Some(PageIndexPolicy::Optional))
-        .with_metadata_size_hint(Some(crate::parquet::parquet_exec::METADATA_SIZE_HINT))
-        .fetch_metadata()
-        .await
-        .map_err(|e| GeneralError(format!("Failed to read parquet footer of {file_path}: {e}")))?;
     let row_counts: Vec<i64> = metadata
         .row_groups()
         .iter()
@@ -2744,5 +2779,399 @@ mod tests {
             data.len() * 8,
             "every single-bit flip of the inline payload must have been exercised"
         );
+    }
+
+    /// An `InMemory` store that counts the reads of each path. Reads of the path set by
+    /// `with_gate` wait until `release` is called.
+    #[derive(Debug)]
+    struct TestStore {
+        inner: object_store::memory::InMemory,
+        reads: std::sync::Mutex<std::collections::HashMap<Path, usize>>,
+        gated: Option<Path>,
+        gate: tokio::sync::watch::Sender<bool>,
+    }
+
+    impl TestStore {
+        fn new() -> Self {
+            Self {
+                inner: object_store::memory::InMemory::new(),
+                reads: std::sync::Mutex::new(std::collections::HashMap::new()),
+                gated: None,
+                gate: tokio::sync::watch::channel(false).0,
+            }
+        }
+
+        fn with_gate(mut self, gated: &str) -> Self {
+            self.gated = Some(Path::from(gated));
+            self
+        }
+
+        fn release(&self) {
+            self.gate.send_replace(true);
+        }
+
+        /// Reads of `location` issued so far, including held ones.
+        fn reads(&self, location: &str) -> usize {
+            let location = Path::from(location);
+            self.reads
+                .lock()
+                .unwrap()
+                .get(&location)
+                .copied()
+                .unwrap_or(0)
+        }
+
+        async fn put_bytes(&self, location: &str, bytes: Vec<u8>) {
+            self.inner
+                .put(&Path::from(location), bytes::Bytes::from(bytes).into())
+                .await
+                .unwrap();
+        }
+
+        async fn before_read(&self, location: &Path) {
+            *self
+                .reads
+                .lock()
+                .unwrap()
+                .entry(location.clone())
+                .or_default() += 1;
+            if self.gated.as_ref() == Some(location) {
+                let mut gate = self.gate.subscribe();
+                gate.wait_for(|released| *released).await.unwrap();
+            }
+        }
+    }
+
+    impl std::fmt::Display for TestStore {
+        fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+            write!(f, "test-store")
+        }
+    }
+
+    #[async_trait::async_trait]
+    impl ObjectStore for TestStore {
+        async fn put_opts(
+            &self,
+            p: &Path,
+            v: object_store::PutPayload,
+            o: object_store::PutOptions,
+        ) -> object_store::Result<object_store::PutResult> {
+            self.inner.put_opts(p, v, o).await
+        }
+
+        async fn put_multipart_opts(
+            &self,
+            p: &Path,
+            o: object_store::PutMultipartOptions,
+        ) -> object_store::Result<Box<dyn object_store::MultipartUpload>> {
+            self.inner.put_multipart_opts(p, o).await
+        }
+
+        async fn get_opts(
+            &self,
+            p: &Path,
+            o: object_store::GetOptions,
+        ) -> object_store::Result<object_store::GetResult> {
+            self.before_read(p).await;
+            self.inner.get_opts(p, o).await
+        }
+
+        async fn get_ranges(
+            &self,
+            p: &Path,
+            ranges: &[std::ops::Range<u64>],
+        ) -> object_store::Result<Vec<bytes::Bytes>> {
+            self.before_read(p).await;
+            self.inner.get_ranges(p, ranges).await
+        }
+
+        fn delete_stream(
+            &self,
+            paths: futures::stream::BoxStream<'static, object_store::Result<Path>>,
+        ) -> futures::stream::BoxStream<'static, object_store::Result<Path>> {
+            self.inner.delete_stream(paths)
+        }
+
+        fn list(
+            &self,
+            p: Option<&Path>,
+        ) -> futures::stream::BoxStream<'static, object_store::Result<object_store::ObjectMeta>>
+        {
+            self.inner.list(p)
+        }
+
+        async fn list_with_delimiter(
+            &self,
+            p: Option<&Path>,
+        ) -> object_store::Result<object_store::ListResult> {
+            self.inner.list_with_delimiter(p).await
+        }
+
+        async fn copy_opts(
+            &self,
+            from: &Path,
+            to: &Path,
+            options: object_store::CopyOptions,
+        ) -> object_store::Result<()> {
+            self.inner.copy_opts(from, to, options).await
+        }
+
+        async fn rename_opts(
+            &self,
+            from: &Path,
+            to: &Path,
+            options: object_store::RenameOptions,
+        ) -> object_store::Result<()> {
+            self.inner.rename_opts(from, to, options).await
+        }
+    }
+
+    const DATA_PATH: &str = "data.parquet";
+    const DV_PATH: &str = "dv.bin";
+    const OVERLAP_WAIT: std::time::Duration = std::time::Duration::from_secs(10);
+
+    /// Parquet bytes for rows `0..num_rows` in row groups of `rows_per_group`.
+    fn parquet_bytes(num_rows: i64, rows_per_group: usize) -> Vec<u8> {
+        let (schema, batch) = sequential_int64_batch(num_rows);
+        let props = WriterProperties::builder()
+            .set_max_row_group_row_count(Some(rows_per_group))
+            .build();
+        let mut out = Vec::new();
+        let mut writer = ArrowWriter::try_new(&mut out, schema, Some(props)).unwrap();
+        writer.write(&batch).unwrap();
+        writer.close().unwrap();
+        out
+    }
+
+    /// A DV file body: one version byte, then `framed` at offset 1.
+    fn dv_file_bytes(framed: &[u8]) -> Vec<u8> {
+        let mut bytes = vec![1u8];
+        bytes.extend_from_slice(framed);
+        bytes
+    }
+
+    /// A scan file whose data file and on-disk DV (at offset 1) both live in `store`.
+    fn on_disk_scan_file(
+        store: &Arc<TestStore>,
+        data_path: &str,
+        data_size: u64,
+        dv_path: &str,
+        deleted: &RoaringTreemap,
+    ) -> DvScanFile {
+        let store: Arc<dyn ObjectStore> = Arc::clone(store) as Arc<dyn ObjectStore>;
+        DvScanFile {
+            file: PartitionedFile::new(data_path, data_size),
+            file_path: format!("memory:///{data_path}"),
+            dv: Some(DeltaSparkDvDescriptor {
+                storage_type: "p".to_string(),
+                absolute_path: Some(format!("memory:///{dv_path}")),
+                inline_data: None,
+                offset: Some(1),
+                size_in_bytes: portable_bytes(deleted).len() as i32,
+                cardinality: deleted.len() as i64,
+            }),
+            data_store: Arc::clone(&store),
+            dv_store: Some((store, Path::from(dv_path))),
+        }
+    }
+
+    /// Stages a 10-row data file and an on-disk DV whose framed blob is `framed`, and returns
+    /// the scan file for them.
+    async fn stage_small_on_disk_file(
+        store: &Arc<TestStore>,
+        deleted: &RoaringTreemap,
+        framed: Vec<u8>,
+    ) -> DvScanFile {
+        let parquet = parquet_bytes(10, 10);
+        let size = parquet.len() as u64;
+        store.put_bytes(DATA_PATH, parquet).await;
+        store.put_bytes(DV_PATH, dv_file_bytes(&framed)).await;
+        on_disk_scan_file(store, DATA_PATH, size, DV_PATH, deleted)
+    }
+
+    fn rows_1_and_3_deleted() -> RoaringTreemap {
+        [1u64, 3].into_iter().collect()
+    }
+
+    /// The single row group's selectors for [`rows_1_and_3_deleted`] over 10 rows.
+    fn assert_rows_1_and_3_skipped(file: &PartitionedFile) {
+        let plan = file
+            .extensions
+            .get::<ParquetAccessPlan>()
+            .expect("the file should carry an access plan");
+        match &plan.inner()[0] {
+            RowGroupAccess::Selection(sel) => {
+                let selectors: Vec<RowSelector> = sel.clone().into();
+                assert_eq!(
+                    selectors,
+                    vec![
+                        RowSelector::select(1),
+                        RowSelector::skip(1),
+                        RowSelector::select(1),
+                        RowSelector::skip(1),
+                        RowSelector::select(6),
+                    ]
+                );
+            }
+            other => panic!("expected a selection, got {other:?}"),
+        }
+    }
+
+    /// Waits until `store` has seen a read of `path`, panicking after [`OVERLAP_WAIT`].
+    async fn wait_for_read(store: &TestStore, path: &str) {
+        tokio::time::timeout(OVERLAP_WAIT, async {
+            while store.reads(path) == 0 {
+                tokio::task::yield_now().await;
+            }
+        })
+        .await
+        .unwrap_or_else(|_| panic!("no read of {path} was issued within {OVERLAP_WAIT:?}"));
+    }
+
+    /// Holds the DV blob read and drives `attach_access_plans` until the data file's footer
+    /// read is issued: the footer must not wait for the DV.
+    #[tokio::test]
+    async fn footer_read_is_issued_while_the_dv_read_is_held() {
+        let store = Arc::new(TestStore::new().with_gate(DV_PATH));
+        let deleted = rows_1_and_3_deleted();
+        let file =
+            stage_small_on_disk_file(&store, &deleted, frame(&portable_bytes(&deleted))).await;
+        let runtime_env = Arc::new(RuntimeEnv::default());
+
+        let attach = attach_access_plans(Arc::clone(&runtime_env), vec![file]);
+        tokio::pin!(attach);
+        tokio::select! {
+            res = &mut attach => panic!("finished while the DV read was held: {:?}", res.err()),
+            _ = wait_for_read(&store, DATA_PATH) => {}
+        }
+        assert_eq!(
+            store.reads(DV_PATH),
+            1,
+            "the DV read should be the one held"
+        );
+        store.release();
+
+        let out = attach.await.unwrap();
+        assert_eq!(out.len(), 1);
+        assert_rows_1_and_3_skipped(&out[0]);
+    }
+
+    /// Mirror of `footer_read_is_issued_while_the_dv_read_is_held`: holds the footer read and
+    /// expects the DV read to be issued.
+    #[tokio::test]
+    async fn dv_read_is_issued_while_the_footer_read_is_held() {
+        let store = Arc::new(TestStore::new().with_gate(DATA_PATH));
+        let deleted = rows_1_and_3_deleted();
+        let file =
+            stage_small_on_disk_file(&store, &deleted, frame(&portable_bytes(&deleted))).await;
+        let runtime_env = Arc::new(RuntimeEnv::default());
+
+        let attach = attach_access_plans(Arc::clone(&runtime_env), vec![file]);
+        tokio::pin!(attach);
+        tokio::select! {
+            res = &mut attach => panic!("finished while the footer read was held: {:?}", res.err()),
+            _ = wait_for_read(&store, DV_PATH) => {}
+        }
+        assert!(
+            store.reads(DATA_PATH) > 0,
+            "the footer read should be the one held"
+        );
+        store.release();
+
+        let out = attach.await.unwrap();
+        assert_eq!(out.len(), 1);
+        assert_rows_1_and_3_skipped(&out[0]);
+    }
+
+    fn runtime_env_with_pool(pool: &Arc<dyn MemoryPool>) -> Arc<RuntimeEnv> {
+        Arc::new(
+            RuntimeEnvBuilder::new()
+                .with_memory_pool(Arc::clone(pool))
+                .build()
+                .unwrap(),
+        )
+    }
+
+    /// A bad CRC fails the file while its footer read is still held, and reserves nothing.
+    #[tokio::test]
+    async fn corrupt_dv_fails_without_waiting_for_a_slow_footer() {
+        let store = Arc::new(TestStore::new().with_gate(DATA_PATH));
+        let deleted = rows_1_and_3_deleted();
+        let mut framed = frame(&portable_bytes(&deleted));
+        let last = framed.len() - 1;
+        framed[last] ^= 0xff;
+        let file = stage_small_on_disk_file(&store, &deleted, framed).await;
+        let pool: Arc<dyn MemoryPool> = Arc::new(GreedyMemoryPool::new(1 << 20));
+        let runtime_env = runtime_env_with_pool(&pool);
+
+        let err = tokio::time::timeout(
+            OVERLAP_WAIT,
+            attach_access_plans(Arc::clone(&runtime_env), vec![file]),
+        )
+        .await
+        .expect("a corrupt DV should fail without waiting for the held footer read")
+        .unwrap_err();
+        store.release();
+
+        let msg = err.to_string();
+        assert!(msg.contains("checksum mismatch"), "{msg}");
+        assert_eq!(pool.reserved(), 0);
+    }
+
+    /// A valid DV next to a missing data file reports the footer error and reserves nothing.
+    #[tokio::test]
+    async fn missing_data_file_reports_the_footer_error() {
+        let store = Arc::new(TestStore::new());
+        let deleted = rows_1_and_3_deleted();
+        store
+            .put_bytes(DV_PATH, dv_file_bytes(&frame(&portable_bytes(&deleted))))
+            .await;
+        let file = on_disk_scan_file(&store, DATA_PATH, 1024, DV_PATH, &deleted);
+        let pool: Arc<dyn MemoryPool> = Arc::new(GreedyMemoryPool::new(1 << 20));
+        let runtime_env = runtime_env_with_pool(&pool);
+
+        let err = attach_access_plans(Arc::clone(&runtime_env), vec![file])
+            .await
+            .unwrap_err();
+
+        let msg = err.to_string();
+        assert!(
+            msg.contains("Failed to read parquet footer of memory:///data.parquet"),
+            "{msg}"
+        );
+        assert_eq!(pool.reserved(), 0);
+    }
+
+    /// A corrupt inline DV fails before the data file's footer is read.
+    #[tokio::test]
+    async fn corrupt_inline_dv_fails_without_reading_the_footer() {
+        let store = Arc::new(TestStore::new());
+        let parquet = parquet_bytes(10, 10);
+        let size = parquet.len() as u64;
+        store.put_bytes(DATA_PATH, parquet).await;
+        let mut payload = portable_bytes(&rows_1_and_3_deleted());
+        payload[0] ^= 0xff;
+        let file = DvScanFile {
+            file: PartitionedFile::new(DATA_PATH, size),
+            file_path: format!("memory:///{DATA_PATH}"),
+            dv: Some(DeltaSparkDvDescriptor {
+                storage_type: "i".to_string(),
+                absolute_path: None,
+                inline_data: Some(payload.clone()),
+                offset: None,
+                size_in_bytes: payload.len() as i32,
+                cardinality: 2,
+            }),
+            data_store: Arc::clone(&store) as Arc<dyn ObjectStore>,
+            dv_store: None,
+        };
+        let runtime_env = Arc::new(RuntimeEnv::default());
+
+        let err = attach_access_plans(runtime_env, vec![file])
+            .await
+            .unwrap_err();
+
+        assert!(err.to_string().contains("Invalid deletion vector"), "{err}");
+        assert_eq!(store.reads(DATA_PATH), 0, "no footer read should be issued");
     }
 }
