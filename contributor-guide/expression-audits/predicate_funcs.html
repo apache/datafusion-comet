@@ -644,6 +644,20 @@ under the License.
 <li><p>Spark 4.1.1 (audited 2026-05-27): identical to 4.0.1.</p></li>
 </ul>
 </section>
+<section id="atleastnnonnulls-dataframe-api">
+<h2>AtLeastNNonNulls (DataFrame API)<a class="headerlink" href="#atleastnnonnulls-dataframe-api" title="Link to this heading">#</a></h2>
+<ul class="simple">
+<li><p>Spark 3.4.3 (audited 2026-09-24): non-nullable Boolean predicate used by <code class="docutils literal notranslate"><span class="pre">DataFrame.na.drop</span></code>. Counts non-null, non-NaN children and stops evaluating a row once the threshold is reached. Non-positive thresholds return true without evaluating children.</p></li>
+<li><p>Spark 3.5.9 (audited 2026-09-24): identical to 3.4.3.</p></li>
+<li><p>Spark 4.0.4 (audited 2026-09-24): identical to 3.4.3.</p></li>
+<li><p>Spark 4.1.3 (audited 2026-09-24): identical to 3.4.3.</p></li>
+</ul>
+<p>Comet uses a native physical expression to preserve per-row short-circuit evaluation. Non-floating types use outer logical nullability; nested nulls and empty collections remain non-null values. Rust tests cover thresholds, sliced and empty batches, dictionary values, literals, and required and skipped child errors. DataFrame tests cover native routing, disabled-expression fallback, complex types and ANSI casts. This internal predicate has no SQL function name.</p>
+<p>Native evaluation, like Spark’s, may skip the children after the first <code class="docutils literal notranslate"><span class="pre">n</span></code> on a row. When subexpression elimination shares a subexpression with one of those children, Spark evaluates it for every row, so Comet falls back to Spark rather than skip an error Spark would raise. Plain <code class="docutils literal notranslate"><span class="pre">DataFrame.na.drop</span></code> children are columns and stay native.</p>
+<ul class="simple">
+<li><p>The <a class="reference download internal" download="" href="../../_downloads/14318334ebe5917d02aab2d6566d7f60/at_least_n_non_nulls.rs"><span class="xref download myst">Criterion benchmark</span></a> covers batch sizes around the 64-row bitmap word boundary and NULL/NaN densities.</p></li>
+</ul>
+</section>
 <section id="between">
 <h2>between<a class="headerlink" href="#between" title="Link to this heading">#</a></h2>
 <ul class="simple">
@@ -786,6 +800,7 @@ under the License.
 <li class="toc-h2 nav-item toc-entry"><a class="reference internal nav-link" href="#id7"><code class="docutils literal notranslate"><span class="pre">&gt;</span></code></a></li>
 <li class="toc-h2 nav-item toc-entry"><a class="reference internal nav-link" href="#id8"><code class="docutils literal notranslate"><span class="pre">&gt;=</span></code></a></li>
 <li class="toc-h2 nav-item toc-entry"><a class="reference internal nav-link" href="#and">and</a></li>
+<li class="toc-h2 nav-item toc-entry"><a class="reference internal nav-link" href="#atleastnnonnulls-dataframe-api">AtLeastNNonNulls (DataFrame API)</a></li>
 <li class="toc-h2 nav-item toc-entry"><a class="reference internal nav-link" href="#between">between</a></li>
 <li class="toc-h2 nav-item toc-entry"><a class="reference internal nav-link" href="#ilike">ilike</a></li>
 <li class="toc-h2 nav-item toc-entry"><a class="reference internal nav-link" href="#in">in</a></li>

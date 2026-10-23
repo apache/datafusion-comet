@@ -766,9 +766,10 @@ so <code class="docutils literal notranslate"><span class="pre">spark.comet.debu
 <p>In <code class="docutils literal notranslate"><span class="pre">WindowBuilder::build</span></code> in <code class="docutils literal notranslate"><span class="pre">native/core/src/execution/planner/window.rs</span></code>,
 the window operator builds <code class="docutils literal notranslate"><span class="pre">window_agg</span></code>, either a <code class="docutils literal notranslate"><span class="pre">BoundedWindowAggExec</span></code> or a
 <code class="docutils literal notranslate"><span class="pre">WindowAggExec</span></code> depending on whether every window expression runs with bounded
-memory. It then optionally wraps <code class="docutils literal notranslate"><span class="pre">window_agg</span></code> in a casting <code class="docutils literal notranslate"><span class="pre">ProjectionExec</span></code> as
-<code class="docutils literal notranslate"><span class="pre">final_plan</span></code> and hands <code class="docutils literal notranslate"><span class="pre">final_plan</span></code> to <code class="docutils literal notranslate"><span class="pre">SparkPlan::new</span></code>. To see the raw window
-output, wrap <code class="docutils literal notranslate"><span class="pre">window_agg</span></code> right after it is built, before the cast projection:</p>
+memory. It then optionally wraps <code class="docutils literal notranslate"><span class="pre">window_agg</span></code> in a casting <code class="docutils literal notranslate"><span class="pre">ProjectionExec</span></code> and
+builds the <code class="docutils literal notranslate"><span class="pre">SparkPlan</span></code> from either the projection or <code class="docutils literal notranslate"><span class="pre">window_agg</span></code>. To see the raw
+window output, wrap <code class="docutils literal notranslate"><span class="pre">window_agg</span></code> right after it is built, before the cast
+projection:</p>
 <div class="highlight-rust notranslate"><div class="highlight"><pre><span></span><span class="kd">let</span><span class="w"> </span><span class="n">window_agg</span><span class="p">:</span><span class="w"> </span><span class="nc">Arc</span><span class="o">&lt;</span><span class="k">dyn</span><span class="w"> </span><span class="n">ExecutionPlan</span><span class="o">&gt;</span><span class="w"> </span><span class="o">=</span><span class="w"> </span><span class="k">if</span><span class="w"> </span><span class="n">all_bounded</span><span class="w"> </span><span class="p">{</span>
 <span class="w">    </span><span class="n">Arc</span><span class="p">::</span><span class="n">new</span><span class="p">(</span><span class="n">BoundedWindowAggExec</span><span class="p">::</span><span class="n">try_new</span><span class="p">(</span>
 <span class="w">        </span><span class="n">window_expr</span><span class="p">,</span>
@@ -790,14 +791,15 @@ output, wrap <code class="docutils literal notranslate"><span class="pre">window
 <span class="w">    </span><span class="n">Arc</span><span class="p">::</span><span class="n">new</span><span class="p">(</span><span class="n">DebugExecutionDataStream</span><span class="p">::</span><span class="n">new</span><span class="p">(</span><span class="s">"window-output"</span><span class="p">,</span><span class="w"> </span><span class="n">window_agg</span><span class="p">))</span>
 <span class="p">};</span>
 
-<span class="c1">// ... `final_plan` is built from `window_agg`, and</span>
-<span class="c1">// `SparkPlan::new(spark_plan.plan_id, final_plan, vec![child])` wraps it.</span>
+<span class="c1">// ... the casting `ProjectionExec` is built from `window_agg`, and</span>
+<span class="c1">// `SparkPlan::new_with_additional(spark_plan.plan_id, projection, vec![child],</span>
+<span class="c1">// vec![window_agg])` wraps it. Without a cast, `SparkPlan::new` wraps `window_agg`.</span>
 </pre></div>
 </div>
 <p>Wrapping <code class="docutils literal notranslate"><span class="pre">window_agg</span></code> leaves the rest of the builder unchanged. To see the
-output after the cast, wrap <code class="docutils literal notranslate"><span class="pre">final_plan</span></code> the same way just before the
-<code class="docutils literal notranslate"><span class="pre">SparkPlan::new</span></code> call. The <code class="docutils literal notranslate"><span class="pre">let</span></code> rebinding is only compiled in when
-<code class="docutils literal notranslate"><span class="pre">debug_assertions</span></code> is on, so release builds use the original binding.</p>
+output after the cast, wrap <code class="docutils literal notranslate"><span class="pre">projection</span></code> the same way just before the
+<code class="docutils literal notranslate"><span class="pre">SparkPlan::new_with_additional</span></code> call. The <code class="docutils literal notranslate"><span class="pre">let</span></code> rebinding is only compiled in
+when <code class="docutils literal notranslate"><span class="pre">debug_assertions</span></code> is on, so release builds use the original binding.</p>
 <p>Rebuild with <code class="docutils literal notranslate"><span class="pre">make</span> <span class="pre">core</span></code> and run a window test, for example:</p>
 <div class="highlight-sh notranslate"><div class="highlight"><pre><span></span>./mvnw<span class="w"> </span><span class="nb">test</span><span class="w"> </span>-Dsuites<span class="o">=</span><span class="s2">"org.apache.comet.exec.CometWindowExecSuite window query with rangeBetween"</span><span class="w"> </span>-Dtest<span class="o">=</span>none
 </pre></div>

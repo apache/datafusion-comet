@@ -278,6 +278,7 @@ them like any other production setting.
 | `spark.comet.expression.Ascii.enabled` | Enable Comet acceleration for `Ascii` | true |
 | `spark.comet.expression.Asin.enabled` | Enable Comet acceleration for `Asin` | true |
 | `spark.comet.expression.Asinh.enabled` | Enable Comet acceleration for `Asinh` | true |
+| `spark.comet.expression.AtLeastNNonNulls.enabled` | Enable Comet acceleration for `AtLeastNNonNulls` | true |
 | `spark.comet.expression.Atan.enabled` | Enable Comet acceleration for `Atan` | true |
 | `spark.comet.expression.Atan2.enabled` | Enable Comet acceleration for `Atan2` | true |
 | `spark.comet.expression.Atanh.enabled` | Enable Comet acceleration for `Atanh` | true |
