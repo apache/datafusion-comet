@@ -25,7 +25,7 @@ import org.apache.spark.sql.catalyst.expressions.{Alias, Attribute, AttributeSet
 import org.apache.spark.sql.catalyst.expressions.aggregate.{AggregateExpression, Average, Complete, Count, First, Last, Max, Min, Sum}
 import org.apache.spark.sql.catalyst.plans.physical.Partitioning
 import org.apache.spark.sql.execution.SparkPlan
-import org.apache.spark.sql.execution.metric.{SQLMetric, SQLMetrics}
+import org.apache.spark.sql.execution.metric.SQLMetric
 import org.apache.spark.sql.execution.window.WindowExec
 import org.apache.spark.sql.internal.SQLConf
 import org.apache.spark.sql.types.{ArrayType, DataType, DateType, Decimal, DecimalType, DoubleType, LongType, MapType, NumericType, StructType}
@@ -196,9 +196,9 @@ object CometWindowExec extends CometOperatorSerde[WindowExec] {
   /**
    * Whether a decimal AVG keeps its running sum at DecimalType.MAX_PRECISION, which Spark does
    * for input precision 28 and up. Spark's window buffer keeps that sum unbounded, while the
-   * native AVG skips the row that takes it out of the precision, so DECIMAL(38,38) inputs 0.6,
-   * 0.6, -0.6 average to 0 over the whole partition rather than Spark's 0.2, and to 0.6 rather
-   * than 0.2 in a running frame, where ANSI mode raises instead.
+   * native AVG latches once the sum leaves the precision. DECIMAL(38,38) inputs 0.6, 0.6,
+   * -0.6 therefore return NULL, or raise under ANSI, where Spark returns 0.2 over the whole
+   * partition and for the last running frame.
    * https://github.com/apache/datafusion-comet/issues/5418
    */
   private def hasMaxPrecisionDecimalSum(avg: Average): Boolean = avg.sumDataType match {
@@ -768,9 +768,8 @@ case class CometWindowExec(
   override def nodeName: String = "CometWindowExec"
   override def producedAttributes: AttributeSet = outputSet ++ AttributeSet(windowExpression)
 
-  override lazy val metrics: Map[String, SQLMetric] = Map(
-    "dataSize" -> SQLMetrics.createSizeMetric(sparkContext, "data size"),
-    "numPartitions" -> SQLMetrics.createMetric(sparkContext, "number of partitions"))
+  override lazy val metrics: Map[String, SQLMetric] =
+    CometMetricNode.baselineMetrics(sparkContext)
 
   override def outputOrdering: Seq[SortOrder] = child.outputOrdering
 

@@ -39,6 +39,17 @@ set, else `spark.sql.shuffle.partitions`). When broadcasts are disabled with a n
 threshold of 10 MB is used instead. Set `spark.comet.exec.forceShuffledHashJoin.maxBuildSize` to a size in bytes to use a fixed
 limit, or to a non-positive value to convert every eligible join regardless of size.
 
+### Broadcast Joins
+
+Comet broadcasts the build side of a broadcast join as Arrow IPC batches, which each task that reads the broadcast
+decodes before building its hash table. By default, the tasks of an executor that read a broadcast at the same time
+share one decoded copy of it. The first of them decodes the broadcast, and the others wait for that decode and read the
+same buffers. The copy is freed when the last of these tasks completes, so a task that starts after that decodes the
+broadcast again. Each task still builds its own hash table.
+
+Set `spark.comet.exec.broadcastExchange.shareDecoded.enabled=false` to have every task decode the whole broadcast for
+itself.
+
 ### Join Runtime Filters
 
 Set `spark.comet.exec.join.dynamicFilter.enabled=true` to try experimental native hash join runtime

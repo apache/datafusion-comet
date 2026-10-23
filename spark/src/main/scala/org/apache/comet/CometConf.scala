@@ -531,6 +531,16 @@ object CometConf extends ShimCometConf {
       .booleanConf
       .createWithDefault(false)
 
+  val COMET_NATIVE_ARROW_PYTHON_UDF_ENABLED: ConfigEntry[Boolean] =
+    conf("spark.comet.exec.nativeArrowPythonUDF.enabled")
+      .category(CATEGORY_EXEC)
+      .doc(
+        "Experimental: execute Spark 4.1+ scalar @arrow_udf functions inside the Comet native " +
+          "pipeline via PyO3. Requires a native library built with the python-udf Cargo feature " +
+          "and a compatible Python/PyArrow installation on every executor.")
+      .booleanConf
+      .createWithDefault(false)
+
   val COMET_TRACING_ENABLED: ConfigEntry[Boolean] = conf("spark.comet.tracing.enabled")
     .category(CATEGORY_TUNING)
     .doc(s"Enable fine-grained tracing of events and memory usage. $TRACING_GUIDE.")
@@ -608,6 +618,18 @@ object CometConf extends ShimCometConf {
       .internal()
       .booleanConf
       .createWithDefault(false)
+
+  val COMET_EXEC_BROADCAST_SHARE_DECODED_ENABLED: ConfigEntry[Boolean] =
+    conf(s"$COMET_EXEC_CONFIG_PREFIX.broadcastExchange.shareDecoded.enabled")
+      .category(CATEGORY_EXEC)
+      .doc(
+        "Whether the tasks of an executor that read a Comet broadcast at the same time share " +
+          "one decoded copy of it. The first of them decodes the broadcast, and the others " +
+          "wait for it instead of decoding it themselves. The copy is freed when the last of " +
+          "them completes. When disabled, every task decodes the whole broadcast for itself. " +
+          s"$TUNING_GUIDE.")
+      .booleanConf
+      .createWithDefault(true)
 
   val COMET_FORCE_SHJ: ConfigEntry[Boolean] =
     conf(s"$COMET_EXEC_CONFIG_PREFIX.forceShuffledHashJoin")
@@ -1257,9 +1279,10 @@ object CometConf extends ShimCometConf {
           "leave room in spark.memory.offHeap.size for native memory that Comet's memory " +
           "pools do not track, because Spark hands out the whole off-heap pool whatever this " +
           "is set to. Size spark.executor.memoryOverhead for that memory instead. Only applies " +
-          "to off-heap mode, where the fair_unified pool limits each memory consumer in a task " +
-          "to this fraction of the off-heap size divided by the task's consumers, and the " +
-          s"greedy_unified pool ignores it. $TUNING_GUIDE.")
+          "to off-heap mode, where the fair_unified pool limits each task to this fraction " +
+          "of the off-heap size, which is tighter than Spark's own limit of an even share of " +
+          "the pool per running task only when it is below one over the number of running " +
+          s"tasks, and the greedy_unified pool ignores it. $TUNING_GUIDE.")
       .doubleConf
       .createWithDefault(1.0)
 
