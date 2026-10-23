@@ -100,6 +100,9 @@ object IcebergWriteProtoTranslation {
       }
     }
 
+  /** True when the write compresses with brotli. Unlike `resolveCompression`, never throws. */
+  def compressesWithBrotli(props: Map[String, String]): Boolean = codecName(props) == "brotli"
+
   /** Builds the parquet settings message. Pure: no SparkWrite or Iceberg `Table` access. */
   def buildParquetSettings(
       props: Map[String, String],
@@ -176,12 +179,8 @@ object IcebergWriteProtoTranslation {
    * Iceberg accepts `uncompressed`, `none` (treated as uncompressed), `snappy`, `gzip`, `lz4`,
    * `zstd`, `brotli`. Defaults to `zstd` (since Iceberg 1.4).
    */
-  private def resolveCompression(props: Map[String, String]): CompressionCodec = {
-    val raw = props
-      .get(Keys.ParquetCompression)
-      .map(_.trim.toLowerCase(Locale.ROOT))
-      .getOrElse(Keys.ParquetCompressionDefaultSince14)
-    raw match {
+  private def resolveCompression(props: Map[String, String]): CompressionCodec =
+    codecName(props) match {
       case "uncompressed" | "none" => CompressionCodec.None
       case "snappy" => CompressionCodec.Snappy
       case "gzip" => CompressionCodec.Gzip
@@ -191,7 +190,13 @@ object IcebergWriteProtoTranslation {
       case other =>
         throw new IllegalArgumentException(s"Unsupported parquet codec '$other'")
     }
-  }
+
+  /** The codec name, trimmed and lowercased, or Iceberg's default when the write sets none. */
+  private def codecName(props: Map[String, String]): String =
+    props
+      .get(Keys.ParquetCompression)
+      .map(_.trim.toLowerCase(Locale.ROOT))
+      .getOrElse(Keys.ParquetCompressionDefaultSince14)
 
   /**
    * Iceberg leaves `write.parquet.compression-level` null by default and lets each parquet writer
