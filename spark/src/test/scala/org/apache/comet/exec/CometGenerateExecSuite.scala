@@ -224,17 +224,74 @@ class CometGenerateExecSuite extends CometTestBase {
     }
   }
 
-  test("explode with map input falls back") {
-    withSQLConf(
-      CometConf.COMET_EXEC_LOCAL_TABLE_SCAN_ENABLED.key -> "true",
-      CometConf.COMET_EXEC_EXPLODE_ENABLED.key -> "true") {
-      val df = Seq((1, Map("a" -> 1, "b" -> 2)), (2, Map("c" -> 3)))
-        .toDF("id", "map")
-        .selectExpr("id", "explode(map) as (key, value)")
-      checkSparkAnswerAndFallbackReason(
-        df,
-        "Comet only supports explode/explode_outer for arrays, not maps")
+  for (generator <- Seq("explode", "explode_outer", "posexplode", "posexplode_outer")) {
+    test(s"$generator with JVM-fed map input") {
+      withSQLConf(
+        CometConf.COMET_EXEC_LOCAL_TABLE_SCAN_ENABLED.key -> "true",
+        CometConf.COMET_EXEC_EXPLODE_ENABLED.key -> "true") {
+        val input = Seq(
+          (1, Map("b" -> Integer.valueOf(20), "a" -> Integer.valueOf(10))),
+          (2, Map.empty[String, Integer]),
+          (3, null.asInstanceOf[Map[String, Integer]]),
+          (4, Map("null" -> null.asInstanceOf[Integer])))
+          .toDF("id", "m")
+        checkMapGenerator(input, "m", generator)
+      }
     }
+
+    test(s"$generator with map input across batch boundaries") {
+      withSQLConf(
+        CometConf.COMET_EXEC_EXPLODE_ENABLED.key -> "true",
+        CometConf.COMET_BATCH_SIZE.key -> "4") {
+        val rows = (0 until 16).map { i =>
+          val m = i % 4 match {
+            case 0 => null.asInstanceOf[Map[Int, java.lang.Integer]]
+            case 1 => Map.empty[Int, java.lang.Integer]
+            case _ =>
+              (0 until 13).map { j =>
+                j -> (if (j % 3 == 0) null else java.lang.Integer.valueOf(i * 100 + j))
+              }.toMap
+          }
+          val booleans = Option(m)
+            .map(_.map { case (key, value) =>
+              // A period of five cannot hide a wrong bitmap offset at four-row batch boundaries.
+              key -> (if (value == null) null else java.lang.Boolean.valueOf((i + key) % 5 < 2))
+            })
+            .orNull
+          (i, m, booleans)
+        }
+        withParquetDataFrame(rows) { input =>
+          // One map exceeds the output batch size. Carry the map through too, so
+          // outer padding cannot accidentally replace the original empty map.
+          val maps = input.toDF("id", "ints", "booleans")
+          Seq("ints", "booleans").foreach { name =>
+            withClue(s"$name: ") { checkMapGenerator(maps, name, generator) }
+          }
+        }
+      }
+    }
+  }
+
+  for (generator <- Seq("explode_outer", "posexplode_outer")) {
+    test(s"$generator with batches containing only null and empty maps") {
+      withSQLConf(
+        CometConf.COMET_EXEC_EXPLODE_ENABLED.key -> "true",
+        CometConf.COMET_BATCH_SIZE.key -> "4") {
+        val rows = (0 until 16).map { i =>
+          val m = if (i % 2 == 0) null else Map.empty[Int, java.lang.Boolean]
+          (i, m)
+        }
+        withParquetDataFrame(rows) { input =>
+          checkMapGenerator(input.toDF("id", "m"), "m", generator)
+        }
+      }
+    }
+  }
+
+  private def checkMapGenerator(input: DataFrame, name: String, generator: String): Unit = {
+    val query = input.selectExpr("id", name, s"$generator($name)")
+    checkSparkAnswerAndOperator(query, Seq(classOf[CometExplodeExec]))
+    checkSparkSchema(query)
   }
 
   test("explode with nullable projected column") {
@@ -390,16 +447,16 @@ class CometGenerateExecSuite extends CometTestBase {
     }
   }
 
-  test("posexplode with map input falls back") {
+  test("posexplode with map input falls back when disabled") {
     withSQLConf(
       CometConf.COMET_EXEC_LOCAL_TABLE_SCAN_ENABLED.key -> "true",
-      CometConf.COMET_EXEC_EXPLODE_ENABLED.key -> "true") {
+      CometConf.COMET_EXEC_EXPLODE_ENABLED.key -> "false") {
       val df = Seq((1, Map("a" -> 1, "b" -> 2)), (2, Map("c" -> 3)))
         .toDF("id", "map")
         .selectExpr("id", "posexplode(map) as (pos, key, value)")
       checkSparkAnswerAndFallbackReason(
         df,
-        "Comet only supports explode/explode_outer for arrays, not maps")
+        "Native support for operator GenerateExec is disabled")
     }
   }
 

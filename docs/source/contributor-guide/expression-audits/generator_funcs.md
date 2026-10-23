@@ -23,18 +23,18 @@
 
 ## explode
 
-- Handled at the operator level as a `GenerateExec` (`CometExplodeExec`), not via the expression serde maps, so it is not auto-detected by the function-registry checkbox logic. Compatible for array inputs; map inputs fall back ([#2837](https://github.com/apache/datafusion-comet/issues/2837)).
+- Handled at the operator level as a `GenerateExec` (`CometExplodeExec`), not via the expression serde maps, so it is not auto-detected by the function-registry checkbox logic. Compatible for array and map inputs. Maps emit key/value columns, with a position column for `posexplode`.
 
 ## explode_outer
 
-- Same `CometExplodeExec` path as `explode`. Compatible for array inputs; empty and NULL arrays both emit one null-valued row per Spark's `outer` semantics, which the planner requests as DataFusion's `NullHandling::PreserveAndExpandEmpty`. Map inputs fall back.
+- Same `CometExplodeExec` path as `explode`. Compatible for array and map inputs; empty and NULL collections both emit one null-valued row per Spark's `outer` semantics, which the planner requests as DataFusion's `NullHandling::PreserveAndExpandEmpty`. Map entries reuse the list unnest path and expand into key/value columns.
 
 ## posexplode
 
-- Handled at the operator level as a `GenerateExec` (`CometExplodeExec`), like `explode`. Compatible for array inputs; map inputs fall back ([#2837](https://github.com/apache/datafusion-comet/issues/2837)).
+- Handled at the operator level as a `GenerateExec` (`CometExplodeExec`), like `explode`. Compatible for array and map inputs. Maps emit key/value columns, with a position column for `posexplode`.
 
 ## posexplode_outer
 
-- Same `CometExplodeExec` path as `posexplode`. Compatible for array inputs; empty and NULL arrays both emit one row with null `pos` and null `value` per Spark's `outer` semantics, which the planner requests as DataFusion's `NullHandling::PreserveAndExpandEmpty`.
+- Same `CometExplodeExec` path as `posexplode`. Compatible for array and map inputs; empty and NULL collections both emit one row with null `pos` and null generated columns per Spark's `outer` semantics, which the planner requests as DataFusion's `NullHandling::PreserveAndExpandEmpty`.
 
 [Spark Expression Support]: ../../user-guide/latest/expressions.md
