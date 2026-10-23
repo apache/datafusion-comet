@@ -487,6 +487,7 @@ object CometLocalExecutionSuite {
       memory.offHeapMode,
       memory.memoryPoolType,
       memory.memoryLimit,
+      memory.offHeapSize,
       context.taskAttemptId(),
       1L,
       Long.MaxValue)

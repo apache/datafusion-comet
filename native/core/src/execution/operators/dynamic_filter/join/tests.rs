@@ -670,6 +670,9 @@ fn parquet_probe(
         false,
         false,
         false,
+        false,
+        "CORRECTED",
+        "CORRECTED",
     )
     .unwrap();
     (file, scan)
@@ -681,6 +684,52 @@ fn filtered_probe(scan: &Arc<DataSourceExec>) -> Arc<CometFilterExec> {
     Arc::new(CometFilterExec::from_datafusion(
         FilterExec::try_new(predicate, Arc::clone(scan) as Arc<dyn ExecutionPlan>).unwrap(),
     ))
+}
+
+#[tokio::test]
+async fn deterministic_residual_opt_in_skips_errors_only_on_pruned_rows() {
+    for (allowed, build_key) in [(false, 3), (true, 3), (true, 0)] {
+        let session = Arc::new(SessionContext::new_with_config(
+            SessionConfig::new().with_target_partitions(1),
+        ));
+        let (_file, scan) = parquet_probe((0..4).collect(), &session, 1);
+        let predicate = Arc::new(BinaryExpr::new(
+            Arc::new(BinaryExpr::new(
+                lit(10_i32),
+                Operator::Divide,
+                Arc::new(Column::new("key", 0)),
+            )),
+            Operator::Gt,
+            lit(0_i32),
+        ));
+        let filter = Arc::new(
+            CometFilterExec::from_datafusion(FilterExec::try_new(predicate, scan).unwrap())
+                .with_runtime_filter_pushdown(allowed),
+        );
+        let build = memory_exec(vec![RecordBatch::try_new(
+            Arc::new(Schema::new(vec![Field::new("key", DataType::Int32, false)])),
+            vec![Arc::new(Int32Array::from(vec![build_key]))],
+        )
+        .unwrap()]);
+        let join = single_key_join_plans(build, filter, PartitionMode::Partitioned);
+        let wrapper =
+            DynamicFilterJoinExec::new(&join, session.copied_config().options().as_ref().clone())
+                .unwrap();
+        assert_eq!(
+            wrapper.build_runtime_join().unwrap().reader_filter_attached,
+            allowed
+        );
+        let result = collect(Arc::new(wrapper), session.task_ctx()).await;
+        if allowed && build_key != 0 {
+            assert_eq!(row_count(&result.unwrap()), 1);
+        } else {
+            assert!(result
+                .unwrap_err()
+                .to_string()
+                .to_lowercase()
+                .contains("divide by zero"));
+        }
+    }
 }
 
 fn find_dynamic_filter(expr: &Arc<dyn PhysicalExpr>) -> Option<&DynamicFilterPhysicalExpr> {
@@ -775,6 +824,9 @@ async fn reader_filter_crosses_null_check_conjunction_and_retains_residual() {
             false,
             false,
             false,
+            false,
+            "CORRECTED",
+            "CORRECTED",
         )
         .unwrap();
         let checks = [("key", 0), ("payload", 1), ("other", 2)].map(|(name, index)| {

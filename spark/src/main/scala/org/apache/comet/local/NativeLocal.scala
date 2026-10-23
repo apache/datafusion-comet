@@ -46,6 +46,7 @@ private[local] class NativeLocal extends NativeBase {
       offHeapMode: Boolean,
       memoryPoolType: String,
       memoryLimit: Long,
+      offHeapSize: Long,
       taskAttemptId: Long,
       taskCpus: Long,
       readAheadBytes: Long): Long

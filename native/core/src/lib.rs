@@ -134,7 +134,7 @@ pub extern "system" fn Java_org_apache_comet_NativeBase_init(
     log_conf_path: JString,
     log_level: JString,
 ) {
-    // Initialize the error handling to capture panic backtraces
+    // Install the panic hook, which logs each native panic with its backtrace
     errors::init();
 
     try_unwrap_or_throw(&e, |env| {
@@ -181,6 +181,14 @@ fn logger_config(log_conf_path: &str, log_level: &str) -> CometResult<Config> {
         load_config_file(log_conf_path, Deserializers::default())
             .map_err(|err| CometError::Config(err.to_string()))
     }
+}
+
+#[no_mangle]
+pub extern "system" fn Java_org_apache_comet_NativeBase_nativeSupportsPythonUdf(
+    _: EnvUnowned,
+    _: JClass,
+) -> jni::sys::jboolean {
+    cfg!(feature = "python-udf")
 }
 
 #[no_mangle]

@@ -101,6 +101,8 @@ fn place(
                 }
             }
         } else if let Some(filter) = input.downcast_ref::<CometFilterExec>() {
+            // Runtime-filter pushdown permission controls reader pruning only;
+            // it must not relax the expression barriers for early consumers.
             // Once below a join, leave the terminal consumer above Spark's
             // inferred null checks. Rejected nulls otherwise make an unselective
             // ancestor look selective and prevent adaptive bypass. Early consumers

@@ -60,6 +60,7 @@ private[local] class LocalQueryIterator(spec: LocalQuerySpec, context: TaskConte
       memory.offHeapMode,
       memory.memoryPoolType,
       memory.memoryLimit,
+      memory.offHeapSize,
       context.taskAttemptId(),
       context.cpus().toLong,
       if (maxResultSize > 0) maxResultSize else Long.MaxValue)
