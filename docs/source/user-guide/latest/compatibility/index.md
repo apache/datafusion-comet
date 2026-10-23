@@ -123,9 +123,13 @@ reach Comet in these ways, which are the ones to check before relying on a resul
   With `b` holding `X'80'` and `X'C3A9'`, Spark returns `min(CAST(b AS STRING))` = the `0x80` string
   and `max` = `é`, whereas Comet returns `min` = `é` and `max` = `U+FFFD`. This is the ordering
   difference above. If the cast input can hold bytes that are not valid UTF-8, disable Comet for the
-  query, or set `spark.comet.expression.Min.enabled=false`, `spark.comet.expression.Max.enabled=false`
-  and `spark.comet.shuffle.mode=native`. All three are needed: with only the first two, the aggregate
-  runs in Spark, but Comet's columnar shuffle still decodes its partial results.
+  query. When the cast is the direct argument of `min` or `max`, a narrower alternative is to set
+  `spark.comet.expression.Min.enabled=false`, `spark.comet.expression.Max.enabled=false` and
+  `spark.comet.shuffle.mode=native`. All three are needed: with only the first two, the aggregate
+  runs in Spark, but Comet's columnar shuffle still decodes its partial results. These settings are
+  not enough when the cast is in a projection below the aggregate, for example
+  `SELECT min(s) FROM (SELECT CAST(b AS STRING) AS s FROM t)`, because Comet runs that projection
+  natively and decodes the bytes before the aggregate sees them.
 
 Consistent handling of invalid UTF-8 across all native string paths is tracked by
 [#4764](https://github.com/apache/datafusion-comet/issues/4764).

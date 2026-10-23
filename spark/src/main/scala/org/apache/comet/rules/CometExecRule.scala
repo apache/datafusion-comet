@@ -1540,8 +1540,8 @@ case class CometExecRule(session: SparkSession, queryStagePrep: Boolean = false)
    * Parquet, and so is a Text scan on a broadcast build side: a Text file can hold bytes that are
    * not valid UTF-8, for example a Latin-1 file, and the conversion replaces them with U+FFFD, so
    * results that depend on the original bytes would differ from Spark. A Text build side that the
-   * bridge would otherwise convert records why it did not, so the explain output names the config.
-   * See issue #7118.
+   * bridge would otherwise convert records why it did not, so the explain output names the
+   * config. See issue #7118.
    */
   private def shouldConvertTextScan(conf: SQLConf, op: SparkPlan): Boolean =
     isConversionEnabled(conf, op, CometConf.COMET_CONVERT_FROM_TEXT_ENABLED) || {
