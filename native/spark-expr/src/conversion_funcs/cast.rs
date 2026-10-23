@@ -46,7 +46,7 @@ use arrow::array::{
     new_null_array, BinaryBuilder, GenericByteArray, GenericStringArray, ListArray, MapArray,
     StringArray, StructArray,
 };
-use arrow::buffer::{Buffer, OffsetBuffer};
+use arrow::buffer::{BooleanBuffer, Buffer, NullBuffer, OffsetBuffer};
 use arrow::datatypes::{format_decimal_str, DataType, GenericBinaryType, Schema};
 use arrow::error::ArrowError;
 use arrow::{
@@ -914,7 +914,8 @@ fn cast_binary_to_string<O: OffsetSizeTrait>(
                     // Reuse a buffer only when the rows fill at least half of its allocation. A
                     // slice of a large array shares the whole allocation, and memory accounting
                     // such as a sort's charges all of it to every batch that holds it, so the
-                    // values are copied then, without decoding them again.
+                    // offsets, values and validity bitmap are copied then, without decoding the
+                    // values again.
                     let fills = |buffer: &Buffer, used: usize| 2 * used >= buffer.capacity();
                     let offset_buffer = input.offsets().inner().inner();
                     let offsets = if start == 0 && fills(offset_buffer, offset_buffer.len()) {
@@ -928,15 +929,19 @@ fn cast_binary_to_string<O: OffsetSizeTrait>(
                     } else {
                         Buffer::from_slice_ref(&data[start..end])
                     };
+                    let nulls = input.nulls().map(|nulls| {
+                        if fills(nulls.buffer(), nulls.len().div_ceil(8)) {
+                            nulls.clone()
+                        } else {
+                            // `sliced` shares the bitmap when the slice starts on a byte boundary.
+                            let bits = Buffer::from_slice_ref(&nulls.inner().sliced());
+                            NullBuffer::new(BooleanBuffer::new(bits, 0, nulls.len()))
+                        }
+                    });
                     // SAFETY: the value buffer is valid UTF-8 and every offset falls on a char
                     // boundary, which is what `GenericStringArray::try_new` checks.
-                    let strings = unsafe {
-                        GenericStringArray::<O>::new_unchecked(
-                            offsets,
-                            values,
-                            input.nulls().cloned(),
-                        )
-                    };
+                    let strings =
+                        unsafe { GenericStringArray::<O>::new_unchecked(offsets, values, nulls) };
                     return Ok(Arc::new(strings));
                 }
                 valid_prefix = valid;
@@ -1371,6 +1376,41 @@ mod tests {
         let strings = result.as_string::<i32>();
         assert_eq!(strings.values().as_ptr(), large.value(0).as_ptr());
         assert_eq!(strings.value_data().len(), 40 * payload.len());
+    }
+
+    #[test]
+    fn test_cast_binary_to_string_small_slice_gets_compact_nulls() {
+        let cast_options = SparkCastOptions::new(EvalMode::Legacy, "UTC");
+        // One null row in every eight, like a nullable grouped key that is emitted in slices.
+        let parent = BinaryArray::from_opt_vec(
+            (0..4096)
+                .map(|i| (i % 8 != 3).then_some(b"ab".as_slice()))
+                .collect(),
+        );
+        let parent_nulls = parent.nulls().unwrap().buffer();
+
+        // The slice's bits fill a thirty-second of the parent's bitmap, so they are copied,
+        // whether or not the slice starts on a byte boundary.
+        for offset in [1024, 1027] {
+            let small = parent.slice(offset, 128);
+            let result = cast_binary_to_string::<i32>(&small, &cast_options).unwrap();
+            let strings = result.as_string::<i32>();
+            let nulls = strings.nulls().unwrap();
+            assert_ne!(nulls.buffer().as_ptr(), parent_nulls.as_ptr());
+            assert!(2 * nulls.buffer().capacity() < parent_nulls.capacity());
+            assert_eq!(strings.nulls(), small.nulls());
+            assert_eq!(strings.null_count(), 16);
+        }
+
+        // A slice whose bits fill at least half of the bitmap shares it.
+        let large = parent.slice(1024, 3072);
+        let result = cast_binary_to_string::<i32>(&large, &cast_options).unwrap();
+        let strings = result.as_string::<i32>();
+        assert_eq!(
+            strings.nulls().unwrap().buffer().as_ptr(),
+            large.nulls().unwrap().buffer().as_ptr()
+        );
+        assert_eq!(strings.nulls(), large.nulls());
     }
 
     #[test]
