@@ -213,7 +213,7 @@ object CometDriverPlugin extends Logging {
   // Comet hands Spark's serializer classes that Kryo has not been told about, so with
   // spark.kryo.registrationRequired=true it rejects them with "Class is not registered", which
   // names neither Comet nor the operation that failed. Two paths reach it: a native broadcast,
-  // which broadcasts an Array[ChunkedByteBuffer], and any cached block Spark serializes -- the
+  // which broadcasts a CometBroadcastValue, and any cached block Spark serializes -- the
   // disk half of MEMORY_AND_DISK, the _SER levels, replication, a cross-executor fetch.
   // CometKryoRegistrator covers both, but spark.kryo.registrator is read when SparkEnv builds the
   // serializer, before any plugin runs, so it cannot be set from here. Say so while the
