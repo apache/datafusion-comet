@@ -440,7 +440,38 @@ Comet's S3 support has the following limitations:
 
 2. **Custom credential providers**: Custom credential provider classes named in `fs.s3a.aws.credentials.provider` are not supported; only the standard providers listed in the table above are. To route credential requests through your own Java code, implement Comet's `CometS3CredentialProvider` SPI; see [S3 Credential Providers](s3-credential-providers.md). Broader Hadoop S3A integration is tracked in [#1829](https://github.com/apache/datafusion-comet/issues/1829).
 
-3. **Settings that Hadoop's S3A client resolves differently**: The native scans resolve storage settings with their own client rather than with Hadoop's. Where the two disagree, a native read can use a different identity or route than Spark and fail where Spark succeeds. Examples are JCEKS-backed secrets and the precedence of per-bucket settings, which the native Parquet scan forwards without checking for a difference ([#5662](https://github.com/apache/datafusion-comet/issues/5662)).
+3. **S3 settings that Hadoop and Comet resolve differently**: Comet does not run Hadoop's `S3AFileSystem`, so some
+   settings take effect differently in the native client than they do for Spark's reader. To keep a scan from
+   silently reading under a different identity or endpoint than Spark would, the native Parquet, CSV and Delta scans
+   decline, and Spark reads the table, when one of these applies to an `s3://` or `s3a://` bucket the scan reads. The
+   fallback reason names the setting and the bucket, never a credential or other value. The cases are:
+   - a credential or endpoint setting that Hadoop resolves differently than the plain `fs.s3a.*` value Comet
+     forwards, for example a long-form `fs.s3a.bucket.<bucket>.fs.s3a.access.key` alias, a `${...}` reference whose
+     target a bucket override shadows, or a plaintext value hidden by
+     `hadoop.security.credential.clear-text-fallback=false`;
+   - a Hadoop credential provider path: any `fs.s3a.security.credential.provider.path` or
+     `fs.s3a.bucket.<bucket>.security.credential.provider.path`, or a `hadoop.security.credential.provider.path`
+     with an entry other than a local keystore (for example `jceks://hdfs/...`), whose contents Comet cannot read;
+   - `fs.s3a.proxy.host`, because the native client has no HTTP proxy support;
+   - `fs.s3a.assumed.role.policy`, whose session policy the native assume-role provider does not apply;
+   - a scheme-less `fs.s3a.endpoint` together with `fs.s3a.connection.ssl.enabled=false`, or an
+     `fs.s3a.assumed.role.sts.endpoint` setting, which the native client resolves differently;
+   - an encryption algorithm other than `AES256`, `SSE-KMS` or `DSSE-KMS` (for example SSE-C);
+   - a credential provider class the native client does not recognize (see item 2).
+
+   Buckets whose credentials come from a Comet `CometS3CredentialProvider` (`fs.s3a.comet.credential.provider.class`)
+   are exempt from the credential provider class and assumed-role policy checks, because the native client never reads
+   those settings for them. Their credential keys and STS endpoint are still compared with what the provider receives:
+   Comet forwards `${...}` references already expanded, so a reference whose target a bucket override shadows resolves
+   differently than in Hadoop. A local keystore named by `fs.s3a.security.credential.provider.path` is read the same
+   way on both sides and is accepted. A `hadoop.security.credential.provider.path`, a keystore that is not a local
+   file, a long-form bucket provider path or a disabled clear-text fallback is not visible to the provider, so such a
+   bucket still declines. Schemes routed through libhdfs (`fs.comet.libhdfs.schemes`) are not checked, since Hadoop's own filesystem
+   reads them. Run `explain` with Comet's extended explain info enabled to see the fallback reason.
+
+   The native Iceberg scan, native writes, and `fs.comet.s3Compliant.schemes` aliases forward `fs.s3a.*` options
+   without this check, so they can still read or write under a different identity or endpoint than Spark
+   ([#5662](https://github.com/apache/datafusion-comet/issues/5662) asks for the check on every native read).
 
 4. **AWS profile credential providers**: The native scans ignore `fs.s3a.auth.profile.name` and `fs.s3a.auth.profile.file` ([#4245](https://github.com/apache/datafusion-comet/issues/4245)), and resolve some profiles differently from Hadoop 3.4 and later, for example profiles that use `credential_process` or chains of assumed roles ([#6575](https://github.com/apache/datafusion-comet/issues/6575)).
 
