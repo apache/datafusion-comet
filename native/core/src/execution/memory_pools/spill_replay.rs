@@ -43,6 +43,11 @@
 //!   is for memory that already exists.
 //! - The replay emits every finished group after each batch, so it holds about one batch of groups,
 //!   and releasing memory repays the overcommit first.
+//! - `OrderedFinalAggregateStream` registers as able to spill even when its input is sorted on
+//!   every grouping key, where it has no spill path, to work around apache/datafusion#17334.
+//!   `CometFairMemoryPool` checks its requests only against the pool for that reason (see
+//!   `limited_to_its_share` in `fair_pool.rs`). Drop that exception once #17334 is fixed and the
+//!   stream registers as able to spill only when it can.
 //!
 //! Remove this, as #6583 describes, once Comet's DataFusion has apache/datafusion#25383, which
 //! leaves the replay room when the merge picks its files. The #6254 tests in `CometAggregateSuite`
@@ -176,17 +181,21 @@ pub(super) fn unwrap_spill_replay(pool: &Arc<dyn MemoryPool>) -> Option<&Arc<dyn
         .map(|replay| &replay.inner)
 }
 
+/// The prefix of the name DataFusion gives the consumer of an `OrderedFinalAggregateStream`.
+pub(super) const ORDERED_FINAL_AGGREGATE: &str = "OrderedFinalAggregateStream[";
+
 /// Whether `consumer` belongs to a final or single aggregate, whose spill replay can't spill.
 fn is_final_aggregate(consumer: &MemoryConsumer) -> bool {
     let name = consumer.name();
     name.starts_with("FinalHashAggregateStream[")
-        || name.starts_with("OrderedFinalAggregateStream[")
+        || name.starts_with(ORDERED_FINAL_AGGREGATE)
         || name.starts_with("SingleHashAggregateStream[")
 }
 
 #[cfg(test)]
 mod tests {
     use super::super::spark_memory::fake::FakeSpark;
+    use super::super::testing::spillable;
     use super::super::{create_pool, overcommit, MemoryPoolConfig, MemoryPoolType, RunningTasks};
     use super::*;
     use datafusion::execution::memory_pool::UnboundedMemoryPool;
@@ -225,13 +234,6 @@ mod tests {
             fake.memory()
         });
         (pool, fake)
-    }
-
-    /// A consumer that can spill, as DataFusion registers a sort's and a spilling aggregate's.
-    fn spillable(name: &str, pool: &Arc<dyn MemoryPool>) -> MemoryReservation {
-        MemoryConsumer::new(name)
-            .with_can_spill(true)
-            .register(pool)
     }
 
     #[test]

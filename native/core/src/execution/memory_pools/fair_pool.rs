@@ -21,6 +21,7 @@ use std::{
 };
 
 use super::spark_memory::SparkMemory;
+use super::spill_replay::ORDERED_FINAL_AGGREGATE;
 use super::task_shared::RunningTasks;
 use datafusion::common::resources_err;
 use datafusion::execution::memory_pool::MemoryConsumer;
@@ -153,16 +154,20 @@ impl Display for CometFairMemoryPool {
     }
 }
 
-/// Whether the pool limits `consumer` as one that can spill.
+/// Whether a request from `consumer` is held to its fair limit and the task's share.
 ///
-/// That is what the consumer declares, with one exception. DataFusion 55.2 registers
-/// `OrderedFinalAggregateStream` as able to spill even when its input is sorted on every grouping
-/// key, to work around apache/datafusion#17334, but it builds a spill path only for partially
-/// sorted input. Fully sorted, as in a `CometSortAggregateExec` over a native sort, a refused
-/// request fails the query. So it takes what Spark grants, like the other consumers that cannot
-/// spill. The partially sorted stream still spills when Spark refuses it.
-fn limited_as_spillable(consumer: &MemoryConsumer) -> bool {
-    consumer.can_spill() && !consumer.name().starts_with("OrderedFinalAggregateStream[")
+/// That is the case for every consumer that can spill, with one exception. DataFusion 55.2
+/// registers `OrderedFinalAggregateStream` as able to spill even when its input is sorted on every
+/// grouping key, to work around apache/datafusion#17334, but it builds a spill path only for
+/// partially sorted input. Fully sorted, as in a `CometSortAggregateExec` over a native sort, a
+/// refused request fails the query. So its requests are checked only against the pool, like those
+/// of a consumer that cannot spill. The partially sorted stream still spills when Spark refuses it.
+///
+/// Only the check differs. The aggregate still counts as a consumer that can spill everywhere
+/// else, so it is one of `num_spill` and its bytes are not `unspillable`. A sort below it then
+/// stays limited to its fair share and leaves the aggregate the rest.
+fn limited_to_its_share(consumer: &MemoryConsumer) -> bool {
+    consumer.can_spill() && !consumer.name().starts_with(ORDERED_FINAL_AGGREGATE)
 }
 
 impl MemoryPool for CometFairMemoryPool {
@@ -173,7 +178,7 @@ impl MemoryPool for CometFairMemoryPool {
     fn register(&self, consumer: &MemoryConsumer) {
         let mut state = self.state.lock();
         state.consumers.insert(consumer.id(), 0);
-        if limited_as_spillable(consumer) {
+        if consumer.can_spill() {
             state.num_spill += 1;
         }
     }
@@ -182,7 +187,7 @@ impl MemoryPool for CometFairMemoryPool {
         // DataFusion unregisters a consumer after its last reservation has dropped and released
         // its bytes. If a release panicked, this runs while unwinding, so it must not panic too.
         let mut state = self.state.lock();
-        if state.consumers.remove(&consumer.id()).is_some() && limited_as_spillable(consumer) {
+        if state.consumers.remove(&consumer.id()).is_some() && consumer.can_spill() {
             state.num_spill = state.num_spill.saturating_sub(1);
         }
     }
@@ -197,7 +202,7 @@ impl MemoryPool for CometFairMemoryPool {
         let mut state = self.state.lock();
         self.spark.acquire(additional);
         state.used = state.used.saturating_add(additional);
-        if !limited_as_spillable(reservation.consumer()) {
+        if !reservation.consumer().can_spill() {
             state.unspillable = state.unspillable.saturating_add(additional);
         }
         let consumer_used = state.consumer_used(reservation);
@@ -217,7 +222,7 @@ impl MemoryPool for CometFairMemoryPool {
                 .release(subtractive)
                 .unwrap_or_else(|_| panic!("Failed to release {subtractive} bytes"));
             state.used = state.used.checked_sub(subtractive).unwrap();
-            if !limited_as_spillable(reservation.consumer()) {
+            if !reservation.consumer().can_spill() {
                 state.unspillable = state.unspillable.saturating_sub(subtractive);
             }
             *state.consumer_used(reservation) -= subtractive;
@@ -231,9 +236,9 @@ impl MemoryPool for CometFairMemoryPool {
     ) -> Result<(), DataFusionError> {
         if additional > 0 {
             let mut state = self.state.lock();
-            let can_spill = limited_as_spillable(reservation.consumer());
+            let can_spill = reservation.consumer().can_spill();
             let used = state.used;
-            if can_spill {
+            if limited_to_its_share(reservation.consumer()) {
                 let (task_share, tasks) = self.task_share();
                 // `num_spill` counts this consumer.
                 let limit = task_share.saturating_sub(state.unspillable) / state.num_spill.max(1);
@@ -295,6 +300,7 @@ impl MemoryPool for CometFairMemoryPool {
 mod tests {
     use super::super::spark_memory::fake::FakeSpark;
     use super::super::task_shared::RunningTask;
+    use super::super::testing::spillable;
     use super::*;
     use std::sync::Arc;
 
@@ -321,13 +327,6 @@ mod tests {
     /// Starts `n` tasks, which run until the returned guards drop.
     fn start(tasks: &RunningTasks, n: usize) -> Vec<RunningTask> {
         (0..n).map(|_| tasks.start()).collect()
-    }
-
-    /// A consumer that can spill, like a sort's buffer.
-    fn spillable(name: &str, pool: &Arc<dyn MemoryPool>) -> MemoryReservation {
-        MemoryConsumer::new(name)
-            .with_can_spill(true)
-            .register(pool)
     }
 
     #[test]
@@ -491,6 +490,22 @@ mod tests {
         // Its bytes come out of the sort's share instead.
         assert!(sort.try_grow(41).is_err());
         sort.try_grow(40).unwrap();
+    }
+
+    #[test]
+    fn a_sort_below_an_ordered_final_aggregate_leaves_it_a_share() {
+        // In a `CometSortAggregateExec` over a native sort, the sort reads all of its input before
+        // the aggregate asks for anything, and keeps what it holds while it emits.
+        let fake = FakeSpark::with(usize::MAX);
+        let pool = pool(&fake, 100);
+        let sort = spillable("ExternalSorter[0]", &pool);
+        let aggregate = spillable("OrderedFinalAggregateStream[0]", &pool);
+
+        // The aggregate counts as a consumer that can spill, so the sort gets half.
+        assert!(sort.try_grow(51).is_err());
+        sort.try_grow(50).unwrap();
+        // And the aggregate has the other half.
+        aggregate.try_grow(50).unwrap();
     }
 
     #[test]

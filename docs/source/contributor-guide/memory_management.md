@@ -377,9 +377,11 @@ The pool goes by what a consumer declares, with one exception. DataFusion 55.2 r
 `OrderedFinalAggregateStream` as able to spill even when its input is sorted on every grouping key,
 as a workaround for [apache/datafusion#17334](https://github.com/apache/datafusion/issues/17334), but
 builds a spill path only for partially sorted input. Fully sorted, as in a `CometSortAggregateExec`
-over a native sort, a refusal fails the query, so the pool treats it as a consumer that cannot
-spill (`limited_as_spillable` in `fair_pool.rs`). The partially sorted stream still spills when
-Spark refuses it.
+over a native sort, a refusal fails the query, so the pool checks its requests only against the
+pool, as it does those of a consumer that cannot spill (`limited_to_its_share` in `fair_pool.rs`).
+It still counts as a consumer that can spill when the pool divides the task's share, so a sort
+below it stays at half of the share and leaves the aggregate the other half. The partially sorted
+stream still spills when Spark refuses it.
 
 Three details matter for tuning:
 

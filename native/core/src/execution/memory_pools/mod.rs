@@ -152,6 +152,7 @@ pub(crate) fn create_memory_pool_with_fake_spark(
 
 #[cfg(test)]
 mod tests {
+    use super::testing::spillable;
     use super::*;
     use datafusion::execution::memory_pool::MemoryConsumer;
 
@@ -179,42 +180,19 @@ mod tests {
         }
     }
 
-    #[test]
-    fn a_task_shares_the_pool_with_the_other_tasks_running_native_plans() {
-        let tasks = RunningTasks::default();
-        let fake = spark_memory::fake::FakeSpark::with(usize::MAX);
-        let fair = MemoryPoolConfig::new(MemoryPoolType::FairUnified, 100);
-        let greedy = MemoryPoolConfig::new(MemoryPoolType::GreedyUnified, 0);
-        let pool = create_pool(&fair, -3004, &tasks, || fake.memory());
-        let other_task = create_pool(&greedy, -3005, &tasks, || fake.memory());
-        let sort = MemoryConsumer::new("ExternalSorter[0]")
-            .with_can_spill(true)
-            .register(&pool);
-
-        // A task with the other pool type counts too.
-        sort.try_grow(50).unwrap();
-        assert!(sort.try_grow(1).is_err());
-
-        // Once it finishes, the task has the pool to itself.
-        drop(other_task);
-        sort.try_grow(50).unwrap();
-        assert!(sort.try_grow(1).is_err());
-    }
-
     /// The tasks of an executor share one count, which `create_memory_pool` takes from
     /// [`RunningTasks::of_executor`]. A pool created with a count of its own would see only its
     /// own task and give it the whole pool. No other test counts tasks in the executor's count.
     #[test]
     fn the_tasks_of_an_executor_share_one_count() {
         let fake = spark_memory::fake::FakeSpark::with(usize::MAX);
-        let config = MemoryPoolConfig::with_off_heap_size(MemoryPoolType::FairUnified, 100, 100);
-        let pool = create_executor_pool(&config, -3007, || fake.memory());
-        let other_task = create_executor_pool(&config, -3008, || fake.memory());
-        let sort = MemoryConsumer::new("ExternalSorter[0]")
-            .with_can_spill(true)
-            .register(&pool);
+        let fair = MemoryPoolConfig::with_off_heap_size(MemoryPoolType::FairUnified, 100, 100);
+        let greedy = MemoryPoolConfig::new(MemoryPoolType::GreedyUnified, 0);
+        let pool = create_executor_pool(&fair, -3007, || fake.memory());
+        let other_task = create_executor_pool(&greedy, -3008, || fake.memory());
+        let sort = spillable("ExternalSorter[0]", &pool);
 
-        // Two tasks share the 100-byte pool.
+        // Two tasks share the 100-byte pool, the other one's pool type notwithstanding.
         sort.try_grow(50).unwrap();
         assert!(sort.try_grow(1).is_err());
 
@@ -233,9 +211,7 @@ mod tests {
         let fake = spark_memory::fake::FakeSpark::with(usize::MAX);
         let config = MemoryPoolConfig::with_off_heap_size(MemoryPoolType::FairUnified, 100, 1000);
         let pool = create_pool(&config, -3006, &tasks, || fake.memory());
-        let sort = MemoryConsumer::new("ExternalSorter[0]")
-            .with_can_spill(true)
-            .register(&pool);
+        let sort = spillable("ExternalSorter[0]", &pool);
         let merge = MemoryConsumer::new("ExternalSorterMerge[0]").register(&pool);
 
         // The task's share of the off-heap pool is 500 bytes, but the fraction limits it to 100.
