@@ -288,6 +288,14 @@ impl PhysicalExpr for CometCastColumnExpr {
                 ColumnarValue::Array(array) => Ok(ColumnarValue::Array(normalize_variant_array(
                     &array,
                     &self.target_field,
+                    self.parquet_options
+                        .as_ref()
+                        .ok_or_else(|| {
+                            DataFusionError::Plan(
+                                "Variant scan requires Parquet options".to_string(),
+                            )
+                        })?
+                        .variant_size_limit,
                 )?)),
                 ColumnarValue::Scalar(_) => Err(DataFusionError::Execution(
                     "Variant Parquet projection requires an array".to_string(),

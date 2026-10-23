@@ -1550,6 +1550,7 @@ mod tests {
                 false,
                 "",
                 "",
+                128 * 1024 * 1024,
             )
             .unwrap();
             let batches: Vec<_> = scan

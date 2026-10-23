@@ -105,6 +105,7 @@ pub(crate) fn init_datasource_exec(
     rebase_from_file_metadata: bool,
     datetime_rebase_mode_in_read: &str,
     int96_rebase_mode_in_read: &str,
+    variant_size_limit: usize,
 ) -> Result<Arc<DataSourceExec>, ExecutionError> {
     // Computed once and reused below for `try_pushdown_filters`. `copied_config()` clones only
     // `SessionConfig` (an `Arc<ConfigOptions>` plus a small extensions map); `SessionContext::
@@ -122,6 +123,7 @@ pub(crate) fn init_datasource_exec(
         &session_config.options().execution.parquet,
     );
     spark_parquet_options.use_field_id = use_field_id;
+    spark_parquet_options.variant_size_limit = variant_size_limit;
     // Spark can discard filtered-out values before timestamp conversion using statistics,
     // dictionary, and row-level filters. Comet cannot mirror every pruning path, so applying
     // checked conversion in a filtered scan can fail on values Spark never reads. Preserve the
@@ -572,6 +574,7 @@ mod tests {
             false,
             "",
             "",
+            128 * 1024 * 1024,
         )
         .unwrap()
     }
@@ -709,6 +712,7 @@ mod tests {
             rebase_from_file_metadata,
             "",
             "",
+            128 * 1024 * 1024,
         )
         .unwrap();
 
@@ -785,6 +789,7 @@ mod tests {
             true,
             datetime_rebase_mode,
             datetime_rebase_mode,
+            128 * 1024 * 1024,
         )
         .unwrap();
 
@@ -905,6 +910,7 @@ mod tests {
             true,
             datetime_rebase_mode,
             int96_rebase_mode,
+            128 * 1024 * 1024,
         )
         .unwrap();
 
@@ -1052,6 +1058,7 @@ mod tests {
             true,
             datetime_rebase_mode,
             int96_rebase_mode,
+            128 * 1024 * 1024,
         )
         .unwrap();
 
@@ -1321,6 +1328,7 @@ mod tests {
             false,
             "",
             "",
+            128 * 1024 * 1024,
         )
         .unwrap();
 

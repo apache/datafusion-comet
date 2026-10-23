@@ -108,6 +108,7 @@ async fn assert_timestamp_overflow_preserved(nested: bool) {
             false,
             "CORRECTED",
             "CORRECTED",
+            128 * 1024 * 1024,
         )
         .unwrap();
         let join = single_key_join_plans(

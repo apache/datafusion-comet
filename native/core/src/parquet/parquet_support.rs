@@ -132,6 +132,8 @@ pub struct SparkParquetOptions {
     /// Effective `spark.sql.parquet.int96RebaseModeInRead`; same semantics as
     /// `datetime_rebase_mode_in_read` for the INT96 timestamp spec.
     pub int96_rebase_mode_in_read: String,
+    /// Spark's Variant constructor limit, supplied by the JVM for native scans.
+    pub variant_size_limit: usize,
 }
 
 impl SparkParquetOptions {
@@ -150,6 +152,7 @@ impl SparkParquetOptions {
             rebase_from_file_metadata: false,
             datetime_rebase_mode_in_read: String::new(),
             int96_rebase_mode_in_read: String::new(),
+            variant_size_limit: 128 * 1024 * 1024,
         }
     }
 
@@ -168,6 +171,7 @@ impl SparkParquetOptions {
             rebase_from_file_metadata: false,
             datetime_rebase_mode_in_read: String::new(),
             int96_rebase_mode_in_read: String::new(),
+            variant_size_limit: 128 * 1024 * 1024,
         }
     }
 }

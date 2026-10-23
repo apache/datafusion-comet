@@ -673,6 +673,7 @@ fn parquet_probe(
         false,
         "CORRECTED",
         "CORRECTED",
+        128 * 1024 * 1024,
     )
     .unwrap();
     (file, scan)
@@ -827,6 +828,7 @@ async fn reader_filter_crosses_null_check_conjunction_and_retains_residual() {
             false,
             "CORRECTED",
             "CORRECTED",
+            128 * 1024 * 1024,
         )
         .unwrap();
         let checks = [("key", 0), ("payload", 1), ("other", 2)].map(|(name, index)| {
