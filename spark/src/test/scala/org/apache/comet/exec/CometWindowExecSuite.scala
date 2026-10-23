@@ -531,18 +531,14 @@ class CometWindowExecSuite extends CometTestBase {
         .parquet(dir.toString)
       withTempView("window_metrics") {
         spark.read.parquet(dir.toString).createOrReplaceTempView("window_metrics")
-        // `row_number` returns a type Spark does not expect, so the planner casts it in a
-        // projection above the native window, while `max` needs no cast.
-        val (_, plan) = checkSparkAnswerAndOperator(sql("""
-            |SELECT max(v) OVER (PARTITION BY k ORDER BY v),
-            |  row_number() OVER (PARTITION BY v % 3 ORDER BY v)
-            |FROM window_metrics""".stripMargin))
+        // `max` needs no cast projection. The planner test in `planner.rs` covers the window
+        // that does, such as `row_number`.
+        val (_, plan) = checkSparkAnswerAndOperator(
+          sql("SELECT max(v) OVER (PARTITION BY k ORDER BY v) FROM window_metrics"))
         val windows = collect(plan) { case w: CometWindowExec => w }
-        assert(windows.length == 2)
-        windows.foreach { w =>
-          assert(w.metrics("output_rows").value == 1000)
-          assert(w.metrics("elapsed_compute").value > 0)
-        }
+        assert(windows.length == 1)
+        assert(windows.head.metrics("output_rows").value == 1000)
+        assert(windows.head.metrics("elapsed_compute").value > 0)
       }
     }
   }
