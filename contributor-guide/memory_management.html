@@ -683,12 +683,23 @@ for both at once, and raises the pod’s memory request by the same amount.</p>
 <p><strong>Comet’s JVM-side Arrow allocator is unbounded and accounted by nobody.</strong> <code class="docutils literal notranslate"><span class="pre">CometArrowAllocator</span></code>
 (<code class="docutils literal notranslate"><span class="pre">spark/src/main/scala/org/apache/comet/package.scala</span></code>) is a single process-wide
 <code class="docutils literal notranslate"><span class="pre">new</span> <span class="pre">RootAllocator(Long.MaxValue)</span></code>. Child allocators are cut from it for FFI stream export
-(<code class="docutils literal notranslate"><span class="pre">CometNativeArrowSource</span></code>), broadcast coalescing, and <code class="docutils literal notranslate"><span class="pre">CometSparkToColumnarExec</span></code>. These are real
-off-heap bytes in container RSS that neither Spark’s <code class="docutils literal notranslate"><span class="pre">TaskMemoryManager</span></code> nor Comet’s native memory
-pool sees. In practice the volume is modest, a batch at a time per stream, but there is no
-ceiling and no backpressure. The executor’s memory usage log reports the allocator’s total, and
-the part of it charged to the import allocator described below, so that the overhead can be sized
-for it.</p>
+(<code class="docutils literal notranslate"><span class="pre">CometNativeArrowSource</span></code>), broadcast coalescing, the decoded broadcasts that an executor’s tasks
+share (<code class="docutils literal notranslate"><span class="pre">SharedDecode</span></code>), and <code class="docutils literal notranslate"><span class="pre">CometSparkToColumnarExec</span></code>. These are real off-heap bytes in
+container RSS that neither Spark’s <code class="docutils literal notranslate"><span class="pre">TaskMemoryManager</span></code> nor Comet’s native memory pool sees. In
+practice the volume is modest, a batch at a time per stream, but there is no ceiling and no
+backpressure. A broadcast is the largest case: a task that reads one holds all of it decoded, and
+the tasks of an executor that read it at the same time share one such copy. The executor’s memory
+usage log reports the allocator’s total, and the part of it charged to the import allocator
+described below, so that the overhead can be sized for it.</p>
+<p>Sharing lowers the bytes that are resident, not the bytes that are reserved. Each task’s native
+join reserves its whole build side, because DataFusion skips only the buffers that the same plan
+has already counted, so with N tasks sharing one copy the pool holds N times the bytes that are
+resident, and spilling behaves as it did before. The memory usage log’s untracked figure,
+<code class="docutils literal notranslate"><span class="pre">allocated</span> <span class="pre">+</span> <span class="pre">jvmArrow.allocatedByJvm</span> <span class="pre">-</span> <span class="pre">reserved</span></code>, subtracts all N reservations while counting the
+one copy in <code class="docutils literal notranslate"><span class="pre">jvmArrow</span></code>, so it undercounts by the difference while tasks share a broadcast. With 8
+tasks sharing a 100 MB build side the shared copy is 100 MB and <code class="docutils literal notranslate"><span class="pre">reserved</span></code> includes 800 MB for
+it, and the figure falls by 700 MB, which can hide other untracked memory in the log and in the
+limit warning, or clamp it to zero.</p>
 <p>Charging these buffers to Spark’s off-heap pool instead was tried in
 <a class="reference external" href="https://github.com/apache/datafusion-comet/pull/5998">#5998</a> and dropped. Spark cannot make
 Comet’s native consumer release anything, and native operators fill a task’s share before they
@@ -712,7 +723,7 @@ memory can wake up to find the task’s entry gone from Spark’s execution pool
 retries it, and after three attempts throws <code class="docutils literal notranslate"><span class="pre">SparkOutOfMemoryError</span></code>, which the shuffle writers
 handle like any other refused page.</p>
 <p>Which allocator each call site uses, and who ends up charged for the bytes:</p>
-<object data="../_images/mermaid-24951e49e88a2a575316ecedeb5309d49a140d7a.svg" type="image/svg+xml">
+<object data="../_images/mermaid-e30b867231ee4d48ad79b91335f29580f46febae.svg" type="image/svg+xml">
             <p class="warning">flowchart LR
   subgraph SITES[&quot;JVM Arrow allocation sites&quot;]
     NU[&quot;NativeUtil&lt;br&gt;FFI structs, imports, exports&quot;]
@@ -723,6 +734,7 @@ handle like any other refused page.</p>
     CACHE[&quot;ArrowCachedBatchSerializer&quot;]
     PY[&quot;CometArrowPythonRunnerBase&quot;]
     BC[&quot;Utils broadcast-coalesce&quot;]
+    DBC[&quot;SharedDecode&lt;br&gt;broadcasts shared by tasks&quot;]
   end
 
   ROOT[&quot;CometArrowAllocator&lt;br&gt;RootAllocator, no limit&lt;br&gt;no allocation listener&quot;]
@@ -739,6 +751,7 @@ handle like any other refused page.</p>
   CACHE --&gt; ROOT
   PY --&gt; ROOT
   BC --&gt; ROOT
+  DBC --&gt; ROOT
   ROOT --&gt; NOBODY
   SHUF --&gt; TMM
   NPOOL --&gt;|&quot;CometTaskMemoryManager over JNI&quot;| TMM</p></object>
@@ -1084,8 +1097,9 @@ outstanding. The executor’s memory usage log leaves it out of the <code class=
 so that the log counts it as untracked: like an undeclared allocation, it needs room beyond what
 Spark has handed out. Tracing’s <code class="docutils literal notranslate"><span class="pre">comet_memory_reserved_total</span></code> still includes it.</p></li>
 </ul>
-<p>The practical consequence is that <code class="docutils literal notranslate"><span class="pre">reserved()</span></code> is a lower bound on Comet’s real footprint, and the
-gap is workload-dependent. The margin that covers it has to come from
+<p>The practical consequence is that <code class="docutils literal notranslate"><span class="pre">reserved()</span></code> is a lower bound on Comet’s real footprint, except
+while tasks share a decoded broadcast, which they reserve once each, and the gap is
+workload-dependent. The margin that covers it has to come from
 <code class="docutils literal notranslate"><span class="pre">spark.executor.memoryOverhead</span></code>. The deprecated <code class="docutils literal notranslate"><span class="pre">spark.comet.exec.memoryPool.fraction</span></code> cannot provide
 one; see <a class="reference internal" href="#where-comet-s-budget-comes-from">Where Comet’s budget comes from</a>.</p>
 <p>To measure the gap on a real workload, read the executor’s periodic memory usage log, which
