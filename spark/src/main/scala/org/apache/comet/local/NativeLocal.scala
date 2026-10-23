@@ -31,7 +31,8 @@ private[local] class NativeLocal extends NativeBase {
   /**
    * Creates and starts a local query over `partitions` partitions of a serialized Comet plan
    * without JVM inputs, with the memory pool and session that `Native.createPlan` creates for the
-   * calling Spark task. Returns its handle.
+   * calling Spark task. Its running partitions read ahead of delivery up to `readAheadBytes`.
+   * Returns its handle.
    */
   // scalastyle:off argcount
   @native def createQuery(
@@ -46,7 +47,8 @@ private[local] class NativeLocal extends NativeBase {
       memoryPoolType: String,
       memoryLimit: Long,
       taskAttemptId: Long,
-      taskCpus: Long): Long
+      taskCpus: Long,
+      readAheadBytes: Long): Long
   // scalastyle:on argcount
 
   /** Exports the next batch; returns its row count, -1 at EOF, or -2 while none is ready. */

@@ -96,6 +96,7 @@ fn repartition(
 #[derive(Debug, Default)]
 struct Observations {
     executions: Mutex<Vec<usize>>,
+    batches: Mutex<BTreeMap<usize, usize>>,
     key_partitions: Mutex<BTreeMap<i64, BTreeSet<usize>>>,
 }
 
@@ -167,6 +168,12 @@ impl ExecutionPlan for ObserveExec {
                 .as_any()
                 .downcast_ref::<Int64Array>()
                 .unwrap();
+            *observations
+                .batches
+                .lock()
+                .unwrap()
+                .entry(partition)
+                .or_default() += 1;
             let mut locations = observations.key_partitions.lock().unwrap();
             for key in keys.values() {
                 locations.entry(*key).or_default().insert(partition);
@@ -460,7 +467,7 @@ async fn partition_order_delivers_partitions_in_turn() {
     let batches: Vec<RecordBatch> = timeout(
         DEADLINE,
         LocalQuery::new(plan, context())
-            .in_partition_order(usize::MAX)
+            .in_partition_order(usize::MAX, usize::MAX)
             .execute()
             .unwrap()
             .try_collect(),
@@ -496,7 +503,7 @@ fn failing() -> Arc<dyn ExecutionPlan> {
 async fn partition_order_reports_a_later_failure_in_its_turn() {
     let plan = UnionExec::try_new(vec![ordered_input(1, 3), failing()]).unwrap();
     let mut stream = LocalQuery::new(plan, context())
-        .in_partition_order(usize::MAX)
+        .in_partition_order(usize::MAX, usize::MAX)
         .execute()
         .unwrap();
     // The earlier partition's batches come first, even though the later one failed at once.
@@ -522,7 +529,7 @@ async fn partition_order_never_reports_the_failure_of_a_partition_not_reached() 
     let refs = blocking.refs();
     let plan = UnionExec::try_new(vec![Arc::new(blocking), failing()]).unwrap();
     let mut stream = LocalQuery::new(plan, context())
-        .in_partition_order(usize::MAX)
+        .in_partition_order(usize::MAX, usize::MAX)
         .execute()
         .unwrap();
     // A consumer that stops in the first partition, as a limit does, sees no error.
@@ -540,7 +547,7 @@ async fn partition_order_cancel_releases_running_partitions() {
     let refs = blocking.refs();
     let (blocking, observations) = observe(Arc::new(blocking));
     let mut stream = LocalQuery::new(blocking, context())
-        .in_partition_order(usize::MAX)
+        .in_partition_order(usize::MAX, usize::MAX)
         .execute()
         .unwrap();
     wait_started(&observations, 3).await;
@@ -555,7 +562,7 @@ async fn partition_order_runs_at_most_the_given_number_of_partitions() {
     let (plan, observations) = observe(ordered_input(6, 3));
     let executed = || observations.executions.lock().unwrap().clone();
     let mut stream = LocalQuery::new(plan, context())
-        .in_partition_order(2)
+        .in_partition_order(2, usize::MAX)
         .execute()
         .unwrap();
     // The first two partitions start with the query; the rest wait for their turn.
@@ -581,4 +588,45 @@ async fn partition_order_runs_at_most_the_given_number_of_partitions() {
         .unwrap();
     assert_eq!(rest.len(), 6 * 3 - 4);
     assert_executed_once(&observations, 6);
+}
+
+/// A first partition that never delivers, and a second one of ten batches.
+fn behind_a_blocked_partition() -> (Arc<dyn ExecutionPlan>, Arc<Observations>) {
+    let blocking = Arc::new(BlockingExec::new(schema(), 1));
+    observe(UnionExec::try_new(vec![blocking, ordered_input(1, 10)]).unwrap())
+}
+
+fn produced(observations: &Observations, partition: usize) -> usize {
+    let batches = observations.batches.lock().unwrap();
+    batches.get(&partition).copied().unwrap_or(0)
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn partition_order_runs_later_partitions_ahead_within_the_limit() {
+    let (plan, observations) = behind_a_blocked_partition();
+    let mut stream = LocalQuery::new(plan, context())
+        .in_partition_order(2, usize::MAX)
+        .execute()
+        .unwrap();
+    // The second partition runs to its end while the first has delivered nothing.
+    timeout(DEADLINE, async {
+        while produced(&observations, 1) < 10 {
+            tokio::task::yield_now().await;
+        }
+    })
+    .await
+    .expect("the second partition did not run ahead");
+    stream.cancel();
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn partition_order_holds_a_few_batches_beyond_the_limit() {
+    let (plan, observations) = behind_a_blocked_partition();
+    let mut stream = LocalQuery::new(plan, context())
+        .in_partition_order(2, 0)
+        .execute()
+        .unwrap();
+    tokio::time::sleep(Duration::from_millis(200)).await;
+    assert_eq!(produced(&observations, 1), 2);
+    stream.cancel();
 }

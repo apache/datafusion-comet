@@ -26,7 +26,7 @@ pub mod handle;
 use std::collections::VecDeque;
 use std::panic::AssertUnwindSafe;
 use std::pin::Pin;
-use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
 use std::sync::{Arc, Mutex, MutexGuard};
 use std::task::{Context, Poll};
 
@@ -41,18 +41,20 @@ use datafusion::physical_plan::{
 };
 use futures::future::poll_fn;
 use futures::{FutureExt, Stream, StreamExt};
+use tokio::sync::Notify;
 use tokio::task::JoinHandle;
 
-/// Batches each root partition may run ahead of the one being delivered, when results are
-/// delivered in partition order.
+/// Batches each root partition may always hold ahead of delivery, when results are delivered in
+/// partition order, whatever the read-ahead limit.
 const PARTITION_BUFFER: usize = 2;
 
 /// One execution's graph and resources. Consumed when execution starts; not a plan cache.
 pub struct LocalQuery {
     plan: Arc<dyn ExecutionPlan>,
     context: Arc<TaskContext>,
-    /// Delivers the partitions in order, with at most this many running at once.
-    in_partition_order: Option<usize>,
+    /// Delivers the partitions in order, with at most this many running at once and this many
+    /// bytes read ahead.
+    in_partition_order: Option<(usize, usize)>,
 }
 
 impl LocalQuery {
@@ -69,14 +71,17 @@ impl LocalQuery {
     }
 
     /// Delivers the root partitions one after another, in partition order, as Spark returns
-    /// the partitions of a result. Up to `max_running` partitions run at once, each up to a few
-    /// batches ahead, and the next one starts when the first is delivered, as Spark runs at most
-    /// as many tasks as it has cores. A partition's operators register their memory consumers
-    /// when it starts, so this also bounds how many share the memory pool. Only for roots whose
-    /// partitions do not share an exchange: a partition that waits to be delivered would
-    /// otherwise leave its exchange buffering for the others.
-    pub fn in_partition_order(mut self, max_running: usize) -> Self {
-        self.in_partition_order = Some(max_running.max(1));
+    /// the partitions of a result. Up to `max_running` partitions run at once, and the next one
+    /// starts when the first is delivered, as Spark runs at most as many tasks as it has cores.
+    /// A partition's operators register their memory consumers when it starts, so this also
+    /// bounds how many share the memory pool.
+    ///
+    /// The running partitions do not wait for their turn: each runs ahead of delivery while the
+    /// batches they all hold total less than `read_ahead` bytes, and up to a few batches beyond
+    /// that. Only for roots whose partitions do not share an exchange: a partition that waits to
+    /// be delivered would otherwise leave its exchange buffering for the others.
+    pub fn in_partition_order(mut self, max_running: usize, read_ahead: usize) -> Self {
+        self.in_partition_order = Some((max_running.max(1), read_ahead));
         self
     }
 
@@ -90,8 +95,8 @@ impl LocalQuery {
             DataFusionError::Execution("LocalQuery requires an active Tokio runtime".into())
         })?;
         let schema = self.plan.schema();
-        let stream = if let Some(max_running) = self.in_partition_order {
-            in_partition_order(&self.plan, &self.context, max_running)?
+        let stream = if let Some((max_running, read_ahead)) = self.in_partition_order {
+            in_partition_order(&self.plan, &self.context, max_running, read_ahead)?
         } else {
             execute_stream(Arc::clone(&self.plan), Arc::clone(&self.context))?
         };
@@ -107,6 +112,7 @@ fn in_partition_order(
     plan: &Arc<dyn ExecutionPlan>,
     context: &Arc<TaskContext>,
     max_running: usize,
+    read_ahead: usize,
 ) -> Result<SendableRecordBatchStream> {
     let mut order = PartitionOrder {
         plan: Arc::clone(plan),
@@ -114,6 +120,11 @@ fn in_partition_order(
         runtime: tokio::runtime::Handle::current(),
         next: 0,
         max_running,
+        read_ahead: Arc::new(ReadAhead {
+            limit: read_ahead,
+            held: AtomicUsize::new(0),
+            delivered: Notify::new(),
+        }),
         running: VecDeque::new(),
     };
     // Start the first partitions now, so that a failure to start them fails here.
@@ -124,9 +135,22 @@ fn in_partition_order(
     )))
 }
 
-/// One root partition running on its own Tokio task, a few batches ahead of delivery.
+/// What the running partitions hold ahead of delivery, shared by them.
+struct ReadAhead {
+    /// Bytes the partitions may hold before each waits at `PARTITION_BUFFER` batches.
+    limit: usize,
+    /// Bytes of the batches sent and not yet delivered.
+    held: AtomicUsize,
+    /// Notified whenever a batch is delivered.
+    delivered: Notify,
+}
+
+/// One root partition running on its own Tokio task, ahead of delivery.
 struct Partition {
-    batches: tokio::sync::mpsc::Receiver<Result<RecordBatch>>,
+    /// Each batch with its size in bytes.
+    batches: tokio::sync::mpsc::UnboundedReceiver<Result<(RecordBatch, usize)>>,
+    /// Batches sent and not yet delivered.
+    queued: Arc<AtomicUsize>,
     /// Set once the task has sent the stream's last batch. The channel closes whenever the
     /// task ends, and a runtime that shuts down cancels its tasks, so only this tells that
     /// every batch arrived.
@@ -138,23 +162,51 @@ struct Partition {
 }
 
 impl Partition {
-    fn spawn(runtime: &tokio::runtime::Handle, stream: SendableRecordBatchStream) -> Self {
-        let (sender, batches) = tokio::sync::mpsc::channel(PARTITION_BUFFER);
+    fn spawn(
+        runtime: &tokio::runtime::Handle,
+        stream: SendableRecordBatchStream,
+        read_ahead: &Arc<ReadAhead>,
+    ) -> Self {
+        let (sender, batches) = tokio::sync::mpsc::unbounded_channel();
+        let queued = Arc::new(AtomicUsize::new(0));
         let ended = Arc::new(AtomicBool::new(false));
         let stream = Arc::new(Mutex::new(Some(stream)));
-        let (task_ended, polled) = (Arc::clone(&ended), Arc::clone(&stream));
+        let (task_queued, task_ended, polled) =
+            (Arc::clone(&queued), Arc::clone(&ended), Arc::clone(&stream));
+        let read_ahead = Arc::clone(read_ahead);
         let task = runtime.spawn(async move {
             let result = AssertUnwindSafe(async {
-                // Reserve before polling, so at most `PARTITION_BUFFER` batches are held.
-                while let Ok(permit) = sender.reserve().await {
+                loop {
+                    // Wait before polling while this partition holds `PARTITION_BUFFER` batches
+                    // and the partitions together hold the read-ahead limit. The first partition
+                    // is being delivered, so it never waits for long.
+                    loop {
+                        let delivered = read_ahead.delivered.notified();
+                        if task_queued.load(Ordering::Acquire) < PARTITION_BUFFER
+                            || read_ahead.held.load(Ordering::Acquire) < read_ahead.limit
+                        {
+                            break;
+                        }
+                        delivered.await;
+                    }
                     let next = poll_fn(|cx| match lock(&polled).as_mut() {
                         Some(stream) => stream.poll_next_unpin(cx),
                         None => Poll::Ready(None),
                     })
                     .await;
                     match next {
-                        Some(Ok(batch)) => permit.send(Ok(batch)),
-                        Some(Err(error)) => return permit.send(Err(error)),
+                        Some(Ok(batch)) => {
+                            let size = batch.get_array_memory_size();
+                            task_queued.fetch_add(1, Ordering::AcqRel);
+                            read_ahead.held.fetch_add(size, Ordering::AcqRel);
+                            if sender.send(Ok((batch, size))).is_err() {
+                                return;
+                            }
+                        }
+                        Some(Err(error)) => {
+                            let _ = sender.send(Err(error));
+                            return;
+                        }
                         None => {
                             // A taken stream also ends here, but then nobody reads the flag.
                             task_ended.store(true, Ordering::Release);
@@ -166,15 +218,14 @@ impl Partition {
             .catch_unwind()
             .await;
             if result.is_err() {
-                let _ = sender
-                    .send(Err(DataFusionError::Execution(
-                        "Local query partition panicked".into(),
-                    )))
-                    .await;
+                let _ = sender.send(Err(DataFusionError::Execution(
+                    "Local query partition panicked".into(),
+                )));
             }
         });
         Self {
             batches,
+            queued,
             ended,
             stream,
             task,
@@ -202,6 +253,7 @@ struct PartitionOrder {
     /// The first partition not started yet.
     next: usize,
     max_running: usize,
+    read_ahead: Arc<ReadAhead>,
     /// Started partitions, the first of which is being delivered.
     running: VecDeque<Partition>,
 }
@@ -211,8 +263,8 @@ impl PartitionOrder {
         let partitions = self.plan.output_partitioning().partition_count();
         while self.running.len() < self.max_running && self.next < partitions {
             let stream = self.plan.execute(self.next, Arc::clone(&self.context))?;
-            self.running
-                .push_back(Partition::spawn(&self.runtime, stream));
+            let partition = Partition::spawn(&self.runtime, stream, &self.read_ahead);
+            self.running.push_back(partition);
             self.next += 1;
         }
         Ok(())
@@ -237,7 +289,12 @@ impl Stream for PartitionOrder {
                 return Poll::Ready(None);
             };
             match partition.batches.poll_recv(cx) {
-                Poll::Ready(Some(Ok(batch))) => return Poll::Ready(Some(Ok(batch))),
+                Poll::Ready(Some(Ok((batch, size)))) => {
+                    partition.queued.fetch_sub(1, Ordering::AcqRel);
+                    self.read_ahead.held.fetch_sub(size, Ordering::AcqRel);
+                    self.read_ahead.delivered.notify_waiters();
+                    return Poll::Ready(Some(Ok(batch)));
+                }
                 Poll::Ready(Some(Err(error))) => return self.fail(error),
                 Poll::Ready(None) if partition.ended.load(Ordering::Acquire) => {
                     self.running.pop_front();

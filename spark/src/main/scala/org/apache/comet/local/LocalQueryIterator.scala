@@ -47,6 +47,8 @@ private[local] class LocalQueryIterator(spec: LocalQuerySpec, context: TaskConte
     checkCancellation()
     // The memory pool, spill directories and session settings of any Comet plan in this task.
     val memory = CometExecIterator.getMemoryConfig(SparkEnv.get.conf)
+    // Partitions may run ahead holding as much of the result as the driver may collect.
+    val maxResultSize = SparkEnv.get.conf.getSizeAsBytes("spark.driver.maxResultSize", "1g")
     id = native.createQuery(
       spec.plan,
       CometExecIterator.serializeCometSQLConfs(),
@@ -59,7 +61,8 @@ private[local] class LocalQueryIterator(spec: LocalQuerySpec, context: TaskConte
       memory.memoryPoolType,
       memory.memoryLimit,
       context.taskAttemptId(),
-      context.cpus().toLong)
+      context.cpus().toLong,
+      if (maxResultSize > 0) maxResultSize else Long.MaxValue)
   } catch {
     case failure: Throwable =>
       throw executionFailure(failure)

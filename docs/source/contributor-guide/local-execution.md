@@ -59,11 +59,15 @@ single partition. That partition's task creates the native graph:
   for partition `i`, so per-partition state such as a range slice is the same as with ordinary
   Comet execution.
 - `native/local` runs the partitions on Comet's Tokio runtime and delivers them in partition
-  order. At most `spark.executor.cores` partitions (N for `local[N]`) run at once, each up to two
-  batches ahead, and the next starts when the first is delivered, as Spark runs at most that
-  many tasks. A partition's operators register their memory consumers when it starts, so this
-  also bounds how many share the task's memory pool. The result therefore has Spark's row order.
-  A partition's error is reported when its turn comes.
+  order. At most `spark.executor.cores` partitions (N for `local[N]`) run at once, and the next
+  starts when the first is delivered, as Spark runs at most that many tasks. A partition's
+  operators register their memory consumers when it starts, so this also bounds how many share
+  the task's memory pool. The result therefore has Spark's row order. A partition's error is
+  reported when its turn comes.
+- The running partitions do not wait for their turn to produce batches, so they all make
+  progress, as Spark's tasks do. What they hold ahead of delivery is bounded by
+  `spark.driver.maxResultSize`, the most a collect may bring to the driver; past it, each holds
+  at most two batches until the earlier partitions are delivered.
 
 `CometLocalExec` reports `UnknownPartitioning(1)`: the result is one partition, but its rows
 are not clustered by anything, so a query over a cached local result still gets the exchange
@@ -125,7 +129,7 @@ cd ..
 ./mvnw test -Dsuites=org.apache.comet.local.CometLocalExecutionSuite
 ```
 
-The native tests cover partition-order delivery, the bound on running partitions, errors reported in a partition's turn, cancellation with busy workers,
+The native tests cover partition-order delivery, the bound on running partitions, read-ahead, errors reported in a partition's turn, cancellation with busy workers,
 the one-batch handoff and runtime shutdown. `CometLocalExecutionSuite` compares admitted queries
 with Spark's results and order, and covers ranges Spark would overflow, declined expressions,
 AQE, reported orderings, takes and limits, iterators, tails, many partitions with sorts in a small memory pool, caching, the result size limit, job and task cancellation, and native errors. After

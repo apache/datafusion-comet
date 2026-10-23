@@ -488,7 +488,8 @@ object CometLocalExecutionSuite {
       memory.memoryPoolType,
       memory.memoryLimit,
       context.taskAttemptId(),
-      1L)
+      1L,
+      Long.MaxValue)
   }
 
   private def fails(f: => Any): Boolean =

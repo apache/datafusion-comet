@@ -78,7 +78,8 @@ fn partition_order_is_preserved_through_the_handoff() {
     let plan = ranges(&[(0, 10), (10, 10), (10, 25), (25, 26)], 3);
     let refs = Arc::downgrade(&plan);
     let query = QueryHandle::start(
-        LocalQuery::new(plan, Arc::new(TaskContext::default())).in_partition_order(usize::MAX),
+        LocalQuery::new(plan, Arc::new(TaskContext::default()))
+            .in_partition_order(usize::MAX, usize::MAX),
         runtime.handle(),
     )
     .unwrap();
@@ -190,7 +191,7 @@ fn backpressured_query_does_not_starve_other_queries_and_cancel_releases_graph()
         let refs = Arc::downgrade(&stalled);
         let stalled = QueryHandle::start(
             LocalQuery::new(stalled, Arc::new(TaskContext::default()))
-                .in_partition_order(usize::MAX),
+                .in_partition_order(usize::MAX, usize::MAX),
             runtime.handle(),
         )
         .unwrap();
@@ -200,7 +201,7 @@ fn backpressured_query_does_not_starve_other_queries_and_cancel_releases_graph()
                 ranges(&[(100, 150), (150, 200), (200, 237)], 3),
                 Arc::new(TaskContext::default()),
             )
-            .in_partition_order(usize::MAX),
+            .in_partition_order(usize::MAX, usize::MAX),
             runtime.handle(),
         )
         .unwrap();
@@ -278,7 +279,7 @@ fn cancel_releases_the_graph_while_every_worker_is_busy() {
     let refs = plan.refs();
     let query = QueryHandle::start(
         LocalQuery::new(Arc::new(plan), Arc::new(TaskContext::default()))
-            .in_partition_order(usize::MAX),
+            .in_partition_order(usize::MAX, usize::MAX),
         runtime.handle(),
     )
     .unwrap();
