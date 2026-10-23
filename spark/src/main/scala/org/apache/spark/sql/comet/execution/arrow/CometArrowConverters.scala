@@ -24,7 +24,6 @@ import scala.util.control.NonFatal
 import org.apache.arrow.memory.BufferAllocator
 import org.apache.arrow.vector.VectorSchemaRoot
 import org.apache.arrow.vector.types.pojo.Schema
-import org.apache.spark.internal.Logging
 import org.apache.spark.sql.catalyst.InternalRow
 import org.apache.spark.sql.comet.util.Utils
 import org.apache.spark.sql.types.StructType
@@ -44,7 +43,7 @@ import org.apache.comet.vector.NativeUtil
  * before consuming). Buffers come from the caller-provided `BufferAllocator`, whose lifecycle the
  * caller owns.
  */
-object CometArrowConverters extends Logging {
+object CometArrowConverters {
 
   /**
    * Convert an iterator of Spark `InternalRow`s into an iterator of Arrow `ColumnarBatch`es.
