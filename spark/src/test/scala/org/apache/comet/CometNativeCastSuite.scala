@@ -29,7 +29,7 @@ import scala.util.Random
 import org.apache.hadoop.fs.Path
 import org.apache.spark.SparkConf
 import org.apache.spark.sql.{CometTestBase, DataFrame, Row, SaveMode}
-import org.apache.spark.sql.catalyst.expressions.Cast
+import org.apache.spark.sql.catalyst.expressions.{AttributeReference, Cast, EvalMode}
 import org.apache.spark.sql.catalyst.parser.ParseException
 import org.apache.spark.sql.execution.adaptive.AdaptiveSparkPlanHelper
 import org.apache.spark.sql.functions.{col, monotonically_increasing_id}
@@ -2445,43 +2445,37 @@ class CometNativeCastSuite
 
   test("TRY cast of a map key that can fail is Unsupported") {
     // https://github.com/apache/datafusion-comet/issues/5995
+    def level(from: DataType, to: DataType, mode: EvalMode.Value = EvalMode.TRY) =
+      CometCast.getSupportLevel(Cast(AttributeReference("m", from)(), to, None, mode))
     val narrowing = (MapType(LongType, IntegerType), MapType(IntegerType, IntegerType))
     val expected = Unsupported(Some(CometCast.tryCastNullMapKeyReason))
-    assert(CometCast.isSupported(narrowing._1, narrowing._2, None, CometEvalMode.TRY) == expected)
+    assert(level(narrowing._1, narrowing._2) == expected)
     // Only TRY nulls a failing key. Legacy wraps and ANSI raises.
-    Seq(CometEvalMode.LEGACY, CometEvalMode.ANSI).foreach { mode =>
-      assert(
-        CometCast.isSupported(narrowing._1, narrowing._2, None, mode).isInstanceOf[Compatible])
+    Seq(EvalMode.LEGACY, EvalMode.ANSI).foreach { mode =>
+      assert(level(narrowing._1, narrowing._2, mode).isInstanceOf[Compatible])
     }
     // A widening key cast cannot fail.
     assert(
-      CometCast
-        .isSupported(
-          MapType(IntegerType, IntegerType),
-          MapType(LongType, LongType),
-          None,
-          CometEvalMode.TRY)
+      level(MapType(IntegerType, IntegerType), MapType(LongType, LongType))
         .isInstanceOf[Compatible])
     // Date to timestamp is an upcast in Spark, but it overflows for extreme dates.
+    assert(level(MapType(DateType, IntegerType), MapType(TimestampType, IntegerType)) == expected)
+    // A map nested in an array and in a map value.
+    assert(level(ArrayType(narrowing._1), ArrayType(narrowing._2)) == expected)
     assert(
-      CometCast.isSupported(
-        MapType(DateType, IntegerType),
-        MapType(TimestampType, IntegerType),
-        None,
-        CometEvalMode.TRY) == expected)
-    // A map nested in an array and in a map value is reached through the recursion.
-    assert(
-      CometCast.isSupported(
-        ArrayType(narrowing._1),
-        ArrayType(narrowing._2),
-        None,
-        CometEvalMode.TRY) == expected)
-    assert(
-      CometCast.isSupported(
-        MapType(IntegerType, narrowing._1),
-        MapType(IntegerType, narrowing._2),
-        None,
-        CometEvalMode.TRY) == expected)
+      level(MapType(IntegerType, narrowing._1), MapType(IntegerType, narrowing._2)) == expected)
+    // An earlier Incompatible struct field does not hide it (#6200).
+    var negScaleType: DecimalType = null
+    withSQLConf("spark.sql.legacy.allowNegativeScaleOfDecimal" -> "true") {
+      negScaleType = DecimalType(7, -2)
+    }
+    withSQLConf("spark.sql.legacy.allowNegativeScaleOfDecimal" -> "false") {
+      assert(
+        level(
+          StructType(Seq(StructField("a", negScaleType), StructField("m", narrowing._1))),
+          StructType(Seq(StructField("a", StringType), StructField("m", narrowing._2)))) ==
+          expected)
+    }
   }
 
   test("cast MapType propagates Incompatible from inner value cast") {

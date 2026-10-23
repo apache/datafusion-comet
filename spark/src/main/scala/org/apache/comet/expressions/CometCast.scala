@@ -131,6 +131,10 @@ object CometCast
       Compatible()
     } else if (CometTimeZone.nativeId(cast.timeZoneId).isEmpty) {
       CometTimeZone.supportLevel(cast.timeZoneId)
+    } else if (canProduceNullMapKey(cast)) {
+      // A failing key cast under TRY leaves a null key, which an Arrow map cannot hold. Checked
+      // here at every depth, so a sibling's support level in `isSupported` cannot hide it.
+      Unsupported(Some(tryCastNullMapKeyReason))
     } else {
       isSupported(cast.child.dataType, cast.dataType, cast.timeZoneId, evalMode(cast))
     }
@@ -308,16 +312,6 @@ object CometCast
           }
         }
         Compatible()
-      case (from_map: MapType, to_map: MapType)
-          if evalMode == CometEvalMode.TRY && !keyCastCannotFail(
-            from_map.keyType,
-            to_map.keyType) =>
-        // Under TRY a key cast that throws becomes a null key, and Spark keeps the row. Arrow's map
-        // format requires a non-nullable key field, so neither the native cast nor the codegen
-        // dispatcher can hold that result, and `canHandle` refuses the dispatch. Key casts that
-        // cannot throw stay on the native path. Maps nested in the value are checked when the
-        // value cast recurses back into this arm.
-        Unsupported(Some(tryCastNullMapKeyReason))
       case (from_map: MapType, to_map: MapType) =>
         // Native cast_map_to_map recursively casts keys and values, so support is
         // determined by whether both inner casts are individually supported. As with struct
