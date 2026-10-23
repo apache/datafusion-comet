@@ -28,9 +28,36 @@ use std::sync::Arc;
 mod common;
 use common::{string_array, NULL_RATIOS, ROW_COUNTS};
 
+/// Scalar used as the haystack in the scalar/array shape. The matching needle
+/// values below are chosen so the scalar/array shape performs real work.
+const HAYSTACK_SCALAR: &str = "datafusion-comet";
+
+/// Scalar used as the needle in the array/scalar shape.
+const NEEDLE_SCALAR: &str = "comet";
+
+fn build_args(
+    haystack: ColumnarValue,
+    needle: ColumnarValue,
+    number_rows: usize,
+) -> ScalarFunctionArgs {
+    ScalarFunctionArgs {
+        args: vec![haystack, needle],
+        arg_fields: vec![],
+        number_rows,
+        return_field: Arc::new(Field::new("result", DataType::Boolean, true)),
+        config_options: Arc::new(ConfigOptions::default()),
+    }
+}
+
 fn criterion_benchmark(c: &mut Criterion) {
     let udf = SparkContains::new();
-    let mut group = c.benchmark_group("spark_contains");
+
+    // ------------------------------------------------------------------
+    // Shape 1: array haystack vs scalar needle (`contains_array_scalar`).
+    // This path already used a scalar representation on `main`; included as a
+    // regression control since this PR touches it incidentally.
+    // ------------------------------------------------------------------
+    let mut group = c.benchmark_group("spark_contains/array_scalar");
     for rows in ROW_COUNTS {
         for (null_ratio, tag) in NULL_RATIOS {
             let haystack = string_array(rows, null_ratio, |_| "datafusion-comet".to_string());
@@ -40,22 +67,80 @@ fn criterion_benchmark(c: &mut Criterion) {
                 |b, haystack| {
                     b.iter(|| {
                         black_box(
-                            udf.invoke_with_args(ScalarFunctionArgs {
-                                args: vec![
-                                    ColumnarValue::Array(Arc::clone(haystack)),
-                                    ColumnarValue::Scalar(ScalarValue::Utf8(Some(
-                                        "comet".to_string(),
-                                    ))),
-                                ],
-                                arg_fields: vec![],
-                                number_rows: haystack.len(),
-                                return_field: Arc::new(Field::new(
-                                    "result",
-                                    DataType::Boolean,
-                                    true,
-                                )),
-                                config_options: Arc::new(ConfigOptions::default()),
-                            })
+                            udf.invoke_with_args(build_args(
+                                ColumnarValue::Array(Arc::clone(haystack)),
+                                ColumnarValue::Scalar(ScalarValue::Utf8(Some(
+                                    NEEDLE_SCALAR.to_string(),
+                                ))),
+                                haystack.len(),
+                            ))
+                            .unwrap(),
+                        )
+                    })
+                },
+            );
+        }
+    }
+    group.finish();
+
+    // ------------------------------------------------------------------
+    // Shape 2: scalar haystack vs array needle (`contains_scalar_array`).
+    // This is the path the PR actually optimizes (it replaced
+    // `to_array_of_size(N)` with an O(1) broadcast), so it must be measured.
+    // The needle array is varied per row so the kernel does non-trivial work.
+    // ------------------------------------------------------------------
+    let mut group = c.benchmark_group("spark_contains/scalar_array");
+    for rows in ROW_COUNTS {
+        for (null_ratio, tag) in NULL_RATIOS {
+            let needle = string_array(rows, null_ratio, |i| {
+                if i % 2 == 0 {
+                    "comet".to_string()
+                } else {
+                    format!("comet-{i}")
+                }
+            });
+            group.bench_with_input(
+                BenchmarkId::from_parameter(format!("{rows}/{tag}")),
+                &needle,
+                |b, needle| {
+                    b.iter(|| {
+                        black_box(
+                            udf.invoke_with_args(build_args(
+                                ColumnarValue::Scalar(ScalarValue::Utf8(Some(
+                                    HAYSTACK_SCALAR.to_string(),
+                                ))),
+                                ColumnarValue::Array(Arc::clone(needle)),
+                                needle.len(),
+                            ))
+                            .unwrap(),
+                        )
+                    })
+                },
+            );
+        }
+    }
+    group.finish();
+
+    // ------------------------------------------------------------------
+    // Shape 3: array haystack vs array needle (`arrow_contains` directly).
+    // Regression control for the straight-through path the PR does not touch.
+    // ------------------------------------------------------------------
+    let mut group = c.benchmark_group("spark_contains/array_array");
+    for rows in ROW_COUNTS {
+        for (null_ratio, tag) in NULL_RATIOS {
+            let haystack = string_array(rows, null_ratio, |_| "datafusion-comet".to_string());
+            let needle = string_array(rows, null_ratio, |_| "comet".to_string());
+            group.bench_with_input(
+                BenchmarkId::from_parameter(format!("{rows}/{tag}")),
+                &(haystack, needle),
+                |b, (haystack, needle)| {
+                    b.iter(|| {
+                        black_box(
+                            udf.invoke_with_args(build_args(
+                                ColumnarValue::Array(Arc::clone(haystack)),
+                                ColumnarValue::Array(Arc::clone(needle)),
+                                haystack.len(),
+                            ))
                             .unwrap(),
                         )
                     })

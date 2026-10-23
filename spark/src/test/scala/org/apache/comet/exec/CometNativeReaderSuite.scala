@@ -36,7 +36,7 @@ import org.apache.spark.sql.functions.{array, col}
 import org.apache.spark.sql.internal.SQLConf
 import org.apache.spark.sql.types._
 
-import org.apache.comet.CometConf
+import org.apache.comet.{CometConf, CometNativeException, ExtendedExplainInfo}
 import org.apache.comet.CometSparkSessionExtensions.isSpark41Plus
 
 class CometNativeReaderSuite extends CometTestBase with AdaptiveSparkPlanHelper {
@@ -50,6 +50,240 @@ class CometNativeReaderSuite extends CometTestBase with AdaptiveSparkPlanHelper 
         CometConf.COMET_ENABLED.key -> "true",
         CometConf.COMET_EXPLAIN_FALLBACK_ENABLED.key -> "false") {
         testFun
+      }
+    }
+  }
+
+  private def causeMessages(error: Throwable): String =
+    causeChain(error).flatMap(e => Option(e.getMessage)).mkString("\n")
+
+  test("duplicate Parquet field names - Spark logical schema legality") {
+    withTempPath { path =>
+      withSQLConf(CometConf.COMET_ENABLED.key -> "false") {
+        spark.range(3).coalesce(1).write.parquet(path.toString)
+        Seq(
+          "s struct<dup: bigint, dup: bigint>",
+          "s array<struct<dup: bigint, dup: bigint>>",
+          "s map<string, struct<dup: bigint, dup: bigint>>",
+          "s struct<t: struct<dup: bigint, dup: bigint>>").foreach { schema =>
+          val error = intercept[org.apache.spark.sql.AnalysisException] {
+            spark.read.schema(schema).parquet(path.toString).collect()
+          }
+          assert(error.getMessage.contains("COLUMN_ALREADY_EXISTS"), error.getMessage)
+        }
+      }
+    }
+  }
+
+  Seq(
+    ("two children", "named_struct('dup', id, 'dup', id + 100)", "struct<dup: bigint>"),
+    (
+      "three children",
+      "named_struct('dup', id, 'dup', id + 100, 'dup', id + 200)",
+      "struct<dup: bigint>"),
+    (
+      "distinct sibling",
+      "named_struct('dup', id, 'dup', id + 100, 'other', id + 900)",
+      "struct<dup: bigint, other: bigint>"),
+    (
+      "array element",
+      "array(named_struct('dup', id, 'dup', id + 100))",
+      "array<struct<dup: bigint>>"),
+    (
+      "map value",
+      "map('key', named_struct('dup', id, 'dup', id + 100))",
+      "map<string, struct<dup: bigint>>")).foreach { case (shape, expression, readType) =>
+    Seq(1, 4096).foreach { batchSize =>
+      test(s"duplicate Parquet field names fail clearly - $shape batch $batchSize") {
+        withSQLConf(
+          SQLConf.CASE_SENSITIVE.key -> "true",
+          CometConf.COMET_BATCH_SIZE.key -> batchSize.toString) {
+          withTempPath { path =>
+            withSQLConf(CometConf.COMET_ENABLED.key -> "false") {
+              spark
+                .range(3)
+                .coalesce(1)
+                .selectExpr(s"$expression as s")
+                .write
+                .parquet(path.toString)
+              // The file is readable by Spark with an explicit schema.
+              assert(
+                spark.read.schema(s"s $readType").parquet(path.toString).collect().length == 3)
+            }
+            val df = spark.read.schema(s"s $readType").parquet(path.toString)
+            assert(
+              find(df.queryExecution.executedPlan)(_.isInstanceOf[CometNativeScanExec]).isDefined)
+            val error = intercept[Exception](df.collect())
+            val messages = causeMessages(error)
+            assert(messages.contains("duplicate Parquet field name 'dup'"), messages)
+            assert(!messages.toLowerCase.contains("case-insensitive"), messages)
+            // The refusal is Comet's own execution error, the class the root duplicate check
+            // raises too, and never Spark's INTERNAL_ERROR, which is reserved for engine bugs.
+            val chain = causeChain(error)
+            assert(chain.exists(_.isInstanceOf[CometNativeException]), messages)
+            assert(!messages.contains("INTERNAL_ERROR"), messages)
+          }
+        }
+      }
+    }
+  }
+
+  test("duplicate Parquet field names - multiple files and schema merge") {
+    withTempPath { cleanPath =>
+      withTempPath { duplicatePath =>
+        withSQLConf(CometConf.COMET_ENABLED.key -> "false") {
+          spark
+            .range(3)
+            .coalesce(1)
+            .selectExpr("named_struct('dup', id, 'other', id + 900) as s")
+            .write
+            .parquet(cleanPath.toString)
+          spark
+            .range(3)
+            .coalesce(1)
+            .selectExpr("named_struct('dup', id, 'dup', id + 100, 'other', id + 900) as s")
+            .write
+            .parquet(duplicatePath.toString)
+        }
+        val paths = Seq(cleanPath.toString, duplicatePath.toString)
+        Seq("true", "false").foreach { mergeSchema =>
+          Seq(true, false).foreach { caseSensitive =>
+            withSQLConf(SQLConf.CASE_SENSITIVE.key -> caseSensitive.toString) {
+              // mergeSchema only affects inference; an explicit schema reads the unique sibling.
+              val unique = spark.read
+                .option("mergeSchema", mergeSchema)
+                .schema("s struct<other: bigint>")
+                .parquet(paths: _*)
+              assert(find(unique.queryExecution.executedPlan)(
+                _.isInstanceOf[CometNativeScanExec]).isDefined)
+              checkSparkAnswerAndOperator(unique)
+              checkAnswer(unique, Seq(900L, 901L, 902L, 900L, 901L, 902L).map(n => Row(Row(n))))
+              checkAnswer(
+                unique.where("s.other >= 901"),
+                Seq(901L, 902L, 901L, 902L).map(n => Row(Row(n))))
+              val duplicate = spark.read
+                .option("mergeSchema", mergeSchema)
+                .schema("s struct<dup: bigint>")
+                .parquet(paths: _*)
+              assert(find(duplicate.queryExecution.executedPlan)(
+                _.isInstanceOf[CometNativeScanExec]).isDefined)
+              val error = intercept[Exception](duplicate.collect())
+              assert(causeMessages(error).toLowerCase.contains("duplicate"), causeMessages(error))
+            }
+          }
+        }
+        withSQLConf(CometConf.COMET_ENABLED.key -> "false") {
+          val inferred = intercept[org.apache.spark.sql.AnalysisException] {
+            spark.read.parquet(duplicatePath.toString).schema
+          }
+          assert(inferred.getMessage.contains("COLUMN_ALREADY_EXISTS"), inferred.getMessage)
+        }
+      }
+    }
+  }
+
+  test("duplicate Parquet field names - unprojected fields and repeated reads") {
+    withTempPath { path =>
+      withSQLConf(CometConf.COMET_ENABLED.key -> "false", SQLConf.CASE_SENSITIVE.key -> "true") {
+        spark
+          .range(3)
+          .selectExpr("id", "named_struct('dup', id, 'dup', id + 100) as s")
+          .write
+          .parquet(path.toString)
+      }
+      Seq(true, false).foreach { caseSensitive =>
+        withSQLConf(SQLConf.CASE_SENSITIVE.key -> caseSensitive.toString) {
+          val name = if (caseSensitive) "id" else "ID"
+          val df = spark.read
+            .schema(s"$name bigint, s struct<dup: bigint>")
+            .parquet(path.toString)
+            .select(name)
+          assert(
+            find(df.queryExecution.executedPlan)(_.isInstanceOf[CometNativeScanExec]).isDefined)
+          (1 to 2).foreach { _ =>
+            checkAnswer(df, Seq(Row(0L), Row(1L), Row(2L)))
+            checkAnswer(df.where("id > 1000"), Seq.empty)
+            checkAnswer(df.selectExpr("count(*)"), Seq(Row(3L)))
+          }
+        }
+      }
+    }
+  }
+
+  test("duplicate Parquet field names - root group and unprojected root duplicates") {
+    withSQLConf(SQLConf.CASE_SENSITIVE.key -> "true") {
+      withTempPath { path =>
+        writeDirect(
+          path.toString,
+          "message spark_schema { optional int64 a = 1; optional int64 a = 2; optional int64 b = 3; }",
+          { rc =>
+            rc.startMessage()
+            Seq(("a", 0, 1L), ("a", 1, 2L), ("b", 2, 3L)).foreach { case (name, index, value) =>
+              rc.startField(name, index)
+              rc.addLong(value)
+              rc.endField(name, index)
+            }
+            rc.endMessage()
+          })
+        withSQLConf(CometConf.COMET_ENABLED.key -> "false") {
+          checkAnswer(spark.read.schema("a bigint").parquet(path.toString), Seq(Row(1L)))
+        }
+        val selected = spark.read.schema("a bigint").parquet(path.toString)
+        assert(
+          find(selected.queryExecution.executedPlan)(
+            _.isInstanceOf[CometNativeScanExec]).isDefined)
+        val error = intercept[Exception](selected.collect())
+        val messages = causeMessages(error)
+        assert(messages.contains("duplicate Parquet field name 'a'"), messages)
+        val valid = spark.read.schema("b bigint").parquet(path.toString)
+        assert(
+          find(valid.queryExecution.executedPlan)(_.isInstanceOf[CometNativeScanExec]).isDefined)
+        (1 to 2).foreach { _ => checkAnswer(valid, Seq(Row(3L))) }
+        withSQLConf(SQLConf.PARQUET_FIELD_ID_READ_ENABLED.key -> "true") {
+          val schema = new StructType().add(
+            "renamed_b",
+            LongType,
+            nullable = true,
+            new MetadataBuilder().putLong("parquet.field.id", 3L).build())
+          val byId = spark.read.schema(schema).parquet(path.toString)
+          assert(
+            find(byId.queryExecution.executedPlan)(_.isInstanceOf[CometNativeScanExec]).isDefined)
+          (1 to 2).foreach { _ => checkAnswer(byId, Seq(Row(3L))) }
+          for (id <- Seq(1L, 2L); name <- Seq("a", "renamed_a")) {
+            val duplicateSchema = new StructType().add(
+              name,
+              LongType,
+              nullable = true,
+              new MetadataBuilder().putLong("parquet.field.id", id).build())
+            val duplicate = spark.read.schema(duplicateSchema).parquet(path.toString)
+            val error = intercept[Exception](duplicate.collect())
+            val messages = causeMessages(error)
+            assert(messages.contains("duplicate Parquet field name 'a'"), messages)
+          }
+        }
+      }
+    }
+  }
+
+  test(
+    "duplicate Parquet field names - distinct siblings and repeated names in separate groups") {
+    withSQLConf(SQLConf.CASE_SENSITIVE.key -> "true") {
+      withTempPath { path =>
+        withSQLConf(CometConf.COMET_ENABLED.key -> "false") {
+          spark
+            .range(3)
+            .selectExpr(
+              "named_struct('dup', id, 'Dup', id + 100) as s",
+              "named_struct('dup', id + 200) as t")
+            .write
+            .parquet(path.toString)
+        }
+        def read = spark.read
+          .schema("s struct<dup: bigint, Dup: bigint>, t struct<dup: bigint>")
+          .parquet(path.toString)
+        assert(
+          find(read.queryExecution.executedPlan)(_.isInstanceOf[CometNativeScanExec]).isDefined)
+        checkSparkAnswer(read)
       }
     }
   }
@@ -248,6 +482,105 @@ class CometNativeReaderSuite extends CometTestBase with AdaptiveSparkPlanHelper 
       }
     }
   }
+
+  test("duplicate Parquet field names - exact-name projection works in both resolver modes") {
+    withTempPath { path =>
+      withSQLConf(CometConf.COMET_ENABLED.key -> "false") {
+        spark
+          .range(3)
+          .coalesce(1)
+          .selectExpr("named_struct('dup', id, 'dup', id + 100, 'other', id + 900) as s")
+          .write
+          .parquet(path.toString)
+      }
+      Seq(true, false).foreach { caseSensitive =>
+        withSQLConf(SQLConf.CASE_SENSITIVE.key -> caseSensitive.toString) {
+          val df = spark.read.schema("s struct<other: bigint>").parquet(path.toString)
+          assert(
+            find(df.queryExecution.executedPlan)(_.isInstanceOf[CometNativeScanExec]).isDefined)
+          checkSparkAnswerAndOperator(df)
+          checkAnswer(df, Seq(Row(Row(900L)), Row(Row(901L)), Row(Row(902L))))
+        }
+      }
+    }
+  }
+
+  Seq(
+    (
+      "map",
+      "map('k', named_struct('dup', id, 'dup', id + 100, 'other', id + 900))",
+      "s map<string, struct<other: bigint>>"),
+    (
+      "case",
+      "named_struct('dup', id, 'dup', id + 100, 'other', id + 900)",
+      "S struct<OTHER: bigint>")).foreach { case (shape, expression, schema) =>
+    test(s"duplicate Parquet field names - non-pruning $shape fails clearly") {
+      withTempPath { path =>
+        withSQLConf(CometConf.COMET_ENABLED.key -> "false") {
+          spark.range(3).coalesce(1).selectExpr(s"$expression as s").write.parquet(path.toString)
+          assert(spark.read.schema(schema).parquet(path.toString).collect().length == 3)
+        }
+        withSQLConf(SQLConf.CASE_SENSITIVE.key -> "false") {
+          val df = spark.read.schema(schema).parquet(path.toString)
+          assert(
+            find(df.queryExecution.executedPlan)(_.isInstanceOf[CometNativeScanExec]).isDefined)
+          val error = intercept[Exception](df.collect())
+          val messages = causeMessages(error)
+          assert(messages.contains("duplicate Parquet field name 'dup'"), messages)
+        }
+      }
+    }
+  }
+
+  Seq(
+    (
+      "struct",
+      "named_struct('dup', id, 'dup', id + 100, 'other', id + 900)",
+      "struct<other: bigint>",
+      "s.other",
+      (n: Long) => Row(Row(n))),
+    (
+      "deeper",
+      "named_struct('t', named_struct('dup', id, 'dup', id + 100, 'other', id + 900))",
+      "struct<t: struct<other: bigint>>",
+      "s.t.other",
+      (n: Long) => Row(Row(Row(n)))),
+    (
+      "array",
+      "array(named_struct('dup', id, 'dup', id + 100, 'other', id + 900))",
+      "array<struct<other: bigint>>",
+      "s[0].other",
+      (n: Long) => Row(Seq(Row(n)))))
+    .foreach { case (shape, expression, readType, predicate, expected) =>
+      test(s"duplicate Parquet field names - $shape projection and positive filter") {
+        withTempPath { path =>
+          withSQLConf(CometConf.COMET_ENABLED.key -> "false") {
+            spark
+              .range(3)
+              .coalesce(1)
+              .selectExpr(s"$expression as s")
+              .write
+              .parquet(path.toString)
+          }
+          Seq(1, 4096).foreach { batchSize =>
+            withSQLConf(
+              SQLConf.CASE_SENSITIVE.key -> "true",
+              CometConf.COMET_BATCH_SIZE.key -> batchSize.toString,
+              CometConf.COMET_PARQUET_ROW_FILTER_PUSHDOWN_ENABLED.key -> "true") {
+              val df = spark.read.schema(s"s $readType").parquet(path.toString)
+              assert(
+                find(df.queryExecution.executedPlan)(
+                  _.isInstanceOf[CometNativeScanExec]).isDefined)
+              checkAnswer(df, Seq(900L, 901L, 902L).map(expected))
+              checkSparkAnswer(df)
+              val filtered = df.where(s"$predicate >= 901")
+              checkAnswer(filtered, Seq(901L, 902L).map(expected))
+              checkSparkAnswer(filtered)
+            }
+          }
+        }
+      }
+    }
 
   test("native reader - read simple STRUCT fields") {
     testSingleLineQuery(
@@ -1035,6 +1368,52 @@ class CometNativeReaderSuite extends CometTestBase with AdaptiveSparkPlanHelper 
       StructType(Seq(withFieldId("x", 1), withFieldId("y", 1))))
   }
 
+  test("native scan declines a nested struct whose field names collide case-insensitively") {
+    // #6136: `s` in the file has the requested type, so the native scan read it positionally
+    // instead of raising like Spark. `writeDirect` reproduces the issue's metadata-free file.
+    withTempPath { dir =>
+      writeDirect(
+        new Path(dir.getCanonicalPath, "case-colliding-names.parquet").toString,
+        """message spark_schema {
+          |  optional group s {
+          |    optional int64 x;
+          |    optional int64 X;
+          |  }
+          |}
+        """.stripMargin,
+        { rc: RecordConsumer =>
+          rc.startMessage()
+          rc.startField("s", 0)
+          rc.startGroup()
+          rc.startField("x", 0)
+          rc.addLong(10L)
+          rc.endField("x", 0)
+          rc.startField("X", 1)
+          rc.addLong(20L)
+          rc.endField("X", 1)
+          rc.endGroup()
+          rc.endField("s", 0)
+          rc.endMessage()
+        })
+
+      // Spark's analyzer rejects this schema case-insensitively, so analyze case-sensitively and
+      // plan and run case-insensitively.
+      withSQLConf(SQLConf.CASE_SENSITIVE.key -> "true") {
+        val df = spark.read.schema("s struct<x: bigint, X: bigint>").parquet(dir.getCanonicalPath)
+        withSQLConf(SQLConf.CASE_SENSITIVE.key -> "false") {
+          val plan = df.queryExecution.executedPlan
+          val reasons = new ExtendedExplainInfo().getFallbackReasons(plan)
+          assert(reasons.exists(_.contains("collide case-insensitively")), s"$reasons\n$plan")
+          val messages = causeMessages(intercept[Exception](df.collect()))
+          assert(
+            messages.contains(
+              """Found duplicate field(s) "x": [x, X] in case-insensitive mode"""),
+            messages)
+        }
+      }
+    }
+  }
+
   /** Write a Parquet file using a raw RecordConsumer for full schema control. */
   private def writeDirect(
       path: String,
@@ -1199,6 +1578,92 @@ class CometNativeReaderSuite extends CometTestBase with AdaptiveSparkPlanHelper 
           "Row-group statistics pruning did not fire " +
             s"(pruned=$pruned, matched=$matched of $numRowGroups total)")
       }
+    }
+  }
+
+  test("row-group statistics pruning fires for a floating-point comparison") {
+    // Native comparisons normalize float operands to follow Spark's ordering, which pruning
+    // cannot see through. A scan's data filters are built without that normalization, so they
+    // still prune, and the Filter above the scan applies Spark's semantics to the rows. Spark
+    // orders NaN above every other value, so `d > 500.0D` matches the NaN in the first row
+    // group even though every other value there is smaller: pruning must keep that row group.
+    withTempPath { dir =>
+      withSQLConf(SQLConf.LEAF_NODE_DEFAULT_PARALLELISM.key -> "1") {
+        spark
+          .range(0, 1000)
+          .selectExpr("IF(id = 10, double('NaN'), CAST(id AS DOUBLE)) AS d")
+          .repartition(1)
+          .write
+          .option("parquet.block.size", "1024")
+          .format("parquet")
+          .save(dir.toString)
+
+        val parquetFile = dir
+          .listFiles()
+          .find(_.getName.endsWith(".parquet"))
+          .getOrElse(fail("No parquet file was written"))
+        val reader = ParquetFileReader.open(
+          org.apache.parquet.hadoop.util.HadoopInputFile
+            .fromPath(new Path(parquetFile.getAbsolutePath), spark.sessionState.newHadoopConf()))
+        val numRowGroups =
+          try reader.getRowGroups.size()
+          finally reader.close()
+        assert(numRowGroups > 1, s"Test setup needs >1 row groups, got $numRowGroups")
+
+        val df = spark.read.parquet(dir.toString).where("d > 500.0D")
+        val (_, cometPlan) = checkSparkAnswerAndOperator(df)
+        val nativeScans = cometPlan.collect { case n: CometNativeScanExec => n }
+        assert(nativeScans.nonEmpty, "Expected a CometNativeScanExec")
+        val metrics = nativeScans.head.metrics
+        val pruned = metrics("row_groups_pruned_statistics").value
+        val matched = metrics("row_groups_matched_statistics").value
+        assert(
+          pruned > 0 && pruned + matched == numRowGroups,
+          "Row-group statistics pruning did not fire " +
+            s"(pruned=$pruned, matched=$matched of $numRowGroups total)")
+        assert(df.collect().exists(_.getDouble(0).isNaN), "The NaN row was filtered out")
+      }
+    }
+  }
+
+  test("bloom filter pruning matches either signed zero for a floating-point equality") {
+    // A bloom filter holds the bits of each value, so `-0.0` and `0.0` are separate entries,
+    // while Spark's `=` matches either zero. The scan's data filter probes for both, so the file
+    // holding `-0.0` and the file holding `0.0` are both read for either zero. Spark's own reader
+    // probes with the literal's bits and skips the file holding the other zero, so the expected
+    // rows are written out instead of compared with Spark's.
+    import testImplicits._
+    withTempPath { dir =>
+      val path = dir.getCanonicalPath
+      Seq(Seq(-1.0, -0.0, 1.0), Seq(-2.0, 0.0, 2.0)).foreach { values =>
+        values
+          .toDF("d")
+          .coalesce(1)
+          .write
+          .mode("append")
+          .option("parquet.bloom.filter.enabled#d", "true")
+          .option("parquet.enable.dictionary", "false")
+          .parquet(path)
+      }
+
+      def bloomFilterPruning(df: DataFrame): (Long, Long) = {
+        val scans = collect(df.queryExecution.executedPlan) { case s: CometNativeScanExec => s }
+        assert(scans.size == 1, s"Expected one CometNativeScanExec:\n${df.queryExecution}")
+        val metrics = scans.head.metrics
+        (
+          metrics("row_groups_pruned_bloom_filter").value,
+          metrics("row_groups_matched_bloom_filter").value)
+      }
+
+      Seq("-0.0D", "0.0D").foreach { zero =>
+        val df = spark.read.parquet(path).where(s"d = $zero")
+        checkAnswer(df, Seq(Row(-0.0), Row(0.0)))
+        assert(bloomFilterPruning(df) == ((0L, 2L)), s"d = $zero")
+      }
+      // The statistics of both files cover 0.5, so only their bloom filters prune them.
+      val df = spark.read.parquet(path).where("d = 0.5D")
+      checkAnswer(df, Seq.empty[Row])
+      assert(bloomFilterPruning(df) == ((2L, 0L)), "d = 0.5D")
     }
   }
 

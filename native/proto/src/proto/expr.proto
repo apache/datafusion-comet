@@ -94,6 +94,8 @@ message Expr {
     Shuffle shuffle = 72;
     RandStr rand_str = 73;
     Uuid uuid = 74;
+    NativeScalarUdf native_scalar_udf = 75;
+    AtLeastNNonNulls at_least_n_non_nulls = 76;
   }
 
   reserved 20;
@@ -167,6 +169,9 @@ message AggExpr {
     MaxBy maxBy = 24;
     MinBy minBy = 25;
     ListAgg listAgg = 26;
+    HllSketchAgg hllSketchAgg = 27;
+    HllUnionAgg hllUnionAgg = 28;
+    PivotFirst pivotFirst = 29;
   }
 
   // Optional filter expression for SQL FILTER (WHERE ...) clause.
@@ -266,6 +271,9 @@ message Correlation {
   Expr child2 = 2;
   bool null_on_divide_by_zero = 3;
   DataType datatype = 4;
+  // The mode of the division in Spark's `ck / sqrt(xMk * yMk)`. A zero
+  // denominator returns null in LEGACY mode and raises DIVIDE_BY_ZERO in ANSI mode.
+  EvalMode eval_mode = 5;
 }
 
 // Simple linear regression aggregates (regr_slope, regr_intercept, regr_r2,
@@ -296,6 +304,9 @@ message Regr {
   // Comet builds against for 3.5 and later (3.5.9, 4.0.3+, 4.1, 4.2) but not
   // in 3.4.
   bool r2_constant_dependent_is_perfect_fit = 6;
+  // Only consulted for R2. Division by an underflowed moment product returns
+  // null in LEGACY mode and raises DIVIDE_BY_ZERO in ANSI mode.
+  EvalMode eval_mode = 7;
 }
 
 message Percentile {
@@ -337,6 +348,20 @@ enum BloomFilterVersion {
   BLOOM_FILTER_VERSION_UNSPECIFIED = 0;
   BLOOM_FILTER_VERSION_V1 = 1;
   BLOOM_FILTER_VERSION_V2 = 2;
+}
+
+message HllSketchAgg {
+  // Child value expression (integral, string, or binary).
+  Expr child = 1;
+  // DataSketches lgConfigK (log2 of the number of buckets), Spark default 12.
+  int32 lg_config_k = 2;
+}
+
+message HllUnionAgg {
+  // Child sketch expression (Binary column of serialized HLL sketches).
+  Expr child = 1;
+  // When false, Spark errors if input sketches have differing lgConfigK.
+  bool allow_different_lg_config_k = 2;
 }
 
 message CollectSet {
@@ -393,6 +418,21 @@ message Mode {
   bool normalize_neg_zero = 3;
 }
 
+// Optimized Pivot second-phase aggregate. Given a `pivot_column` and a
+// pre-computed list of `pivot_values`, buckets the incoming `value_column`
+// into an array whose length is `pivot_values.size()`. Rows whose pivot
+// value is not in `pivot_values` are ignored; if multiple rows in the same
+// group map to the same bucket, the last non-null value wins (matches
+// Spark's `PivotFirst.update`/`merge`). Output type is
+// ArrayType(value_datatype). The pivot_values are serialized as Literal
+// Exprs so the value bytes and data type reach native code faithfully.
+message PivotFirst {
+  Expr pivot_column = 1;
+  Expr value_column = 2;
+  repeated Expr pivot_values = 3;
+  DataType value_datatype = 4;
+}
+
 enum EvalMode {
   LEGACY = 0;
   TRY = 1;
@@ -417,7 +457,8 @@ message Cast {
   DataType datatype = 2;
   string timezone = 3;
   EvalMode eval_mode = 4;
-  bool allow_incompat = 5;
+  reserved 5;
+  reserved "allow_incompat";
   // True when running against Spark 4.0+. Controls version-specific cast behaviour
   // such as the handling of leading whitespace before T-prefixed time-only strings.
   bool is_spark4_plus = 6;
@@ -540,6 +581,10 @@ message ScalarFunc {
   repeated Expr args = 2;
   DataType return_type = 3;
   bool fail_on_error = 4;
+  // Evaluate each argument after the first only for the rows where no earlier argument is NULL,
+  // as Spark does for a null-intolerant BinaryExpression or TernaryExpression. See
+  // QueryPlanSerde.withNullShortCircuit.
+  bool null_short_circuit = 5;
 }
 
 message CaseWhen {
@@ -580,6 +625,11 @@ message TruncTimestamp {
   Expr format = 1;
   Expr child = 2;
   string timezone = 3;
+  // Whether SECOND and MILLISECOND truncation wraps when the result would fall below the
+  // smallest timestamp. Spark before 4.2.0 wraps the Long subtraction; 4.2.0 and later
+  // (SPARK-56663) raise `long overflow` like every other unit. This tracks the Spark version Comet is
+  // running against.
+  bool wrap_second_millisecond_overflow = 4;
 }
 
 message Subquery {
@@ -608,6 +658,8 @@ message ListExtract {
   Expr default_value = 3;
   bool one_based = 4;
   bool fail_on_error = 5;
+  // Evaluate the ordinal only for the rows where the child is not NULL, as in ScalarFunc
+  bool null_short_circuit = 6;
 }
 
 message GetArrayStructFields {
@@ -689,4 +741,36 @@ message JvmScalarUdf {
   DataType return_type = 3;
   // Whether the result column may contain nulls.
   bool return_nullable = 4;
+}
+
+// Call to a user-supplied native UDF loaded from a shared library.
+//
+// The native side resolves (library_path, name) against its loaded-library
+// cache, looks up the kernel by name, and invokes it through the Comet UDF
+// C ABI. That ABI is parameterized only by the Arrow C Data Interface, so
+// the message says nothing about the language the library was written in;
+// the Rust SDK is the only supported way to produce one today.
+message NativeScalarUdf {
+  // Function name as registered through CometNativeUDF.register on the JVM
+  // side; matched against names exposed by the cdylib.
+  string name = 1;
+  // Filesystem path of the cdylib.
+  string library_path = 2;
+  // Argument expressions, evaluated before invocation.
+  repeated Expr args = 3;
+  // Expected return type, declared at register time on the JVM side.
+  DataType return_type = 4;
+  // Whether the call is deterministic (mirrors Spark's deterministic flag).
+  //
+  // Always true today: registration rejects deterministic = false, because the
+  // native side plans every native UDF with Volatility::Immutable and has no way
+  // to express a volatile one. The field is carried so that honoring it later
+  // does not need a wire change.
+  bool deterministic = 5;
+}
+
+// Counts non-null and non-NaN children, with per-row short-circuit evaluation.
+message AtLeastNNonNulls {
+  int32 n = 1;
+  repeated Expr children = 2;
 }

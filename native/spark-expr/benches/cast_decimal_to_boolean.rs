@@ -59,7 +59,7 @@ fn criterion_benchmark(c: &mut Criterion) {
     let cast_to_bool = Cast::new(
         expr,
         DataType::Boolean,
-        SparkCastOptions::new(EvalMode::Legacy, "UTC", false),
+        SparkCastOptions::new(EvalMode::Legacy, "UTC"),
         None,
         None,
     );

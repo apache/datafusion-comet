@@ -43,8 +43,10 @@ JVM shuffle (`CometColumnarExchange`) is used instead of native shuffle (`CometE
 1. **Shuffle mode is explicitly set to "jvm"**: When `spark.comet.shuffle.mode` is set to `jvm`.
 
 2. **Child plan is not a Comet native operator**: When the child plan is a Spark row-based operator
-   (not a `CometPlan`), JVM shuffle is the only option since native shuffle requires columnar input
-   from Comet operators.
+   (not a `CometPlan`), JVM shuffle is used, since native shuffle requires columnar input from
+   Comet operators. The exception is `spark.comet.convert.shuffleInput.enabled`, which converts
+   the child's rows to Arrow with `CometSparkToColumnarExec` so that native shuffle can take the
+   shuffle instead. See [When Native Shuffle is Used](native_shuffle.md#when-native-shuffle-is-used).
 
 3. **Unsupported partition key types**: `RangePartitioning` keys must be primitive, so a complex
    range key always falls back here. `HashPartitioning` keys must be primitive only by default:
@@ -143,18 +145,19 @@ to protobuf and implements the partitioning logic in native code.
 
 Selection logic in `CometShuffleManager.shouldBypassMergeSort()`:
 
-- Uses bypass if partitions < threshold AND partitions × cores ≤ max threads
+- Uses bypass if partitions ≤ threshold AND partitions × cores ≤ max threads
 - Otherwise uses sort-based to avoid OOM from many concurrent writers
 
 ### Writers
 
-| Class                               | Location                                             | Description                                                                                                         |
-| ----------------------------------- | ---------------------------------------------------- | ------------------------------------------------------------------------------------------------------------------- |
-| `CometBypassMergeSortShuffleWriter` | `.../shuffle/CometBypassMergeSortShuffleWriter.java` | Hash-based writer. Creates one `CometDiskBlockWriter` per partition. Supports async writes.                         |
-| `CometUnsafeShuffleWriter`          | `.../shuffle/CometUnsafeShuffleWriter.java`          | Sort-based writer. Uses `CometShuffleExternalSorter` to buffer and sort records, then merges spill files.           |
-| `CometDiskBlockWriter`              | `.../shuffle/CometDiskBlockWriter.java`              | Buffers rows in memory pages for a single partition. Spills to disk via native encoding. Used by bypass writer.     |
-| `CometShuffleExternalSorter`        | `.../shuffle/sort/CometShuffleExternalSorter.java`   | Buffers records across all partitions, sorts by partition ID, spills sorted data. Used by unsafe writer.            |
-| `SpillWriter`                       | `.../shuffle/SpillWriter.java`                       | Base class for spill logic. Manages memory pages and calls `Native.writeSortedFileNative()` for Arrow IPC encoding. |
+| Class                               | Location                                             | Description                                                                                                                                           |
+| ----------------------------------- | ---------------------------------------------------- | ----------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `CometBypassMergeSortShuffleWriter` | `.../shuffle/CometBypassMergeSortShuffleWriter.java` | Hash-based writer. Creates one `CometDiskBlockWriter` per partition. Supports async writes.                                                           |
+| `CometUnsafeShuffleWriter`          | `.../shuffle/CometUnsafeShuffleWriter.java`          | Sort-based writer. Uses `CometShuffleExternalSorter` to buffer and sort records, then merges spill files.                                             |
+| `CometDiskBlockWriter`              | `.../shuffle/CometDiskBlockWriter.java`              | Buffers rows in memory pages for a single partition. Spills to disk via native encoding. Used by bypass writer.                                       |
+| `CometShuffleExternalSorter`        | `.../shuffle/sort/CometShuffleExternalSorter.java`   | Buffers records across all partitions, sorts by partition ID, spills sorted data. Used by unsafe writer.                                              |
+| `SpillSorter`                       | `.../shuffle/sort/SpillSorter.java`                  | Holds one spill's records for `CometShuffleExternalSorter`. Writes every partition of the spill with one `Native.writeSortedPartitionsNative()` call. |
+| `SpillWriter`                       | `.../shuffle/SpillWriter.java`                       | Base class for spill logic. Manages memory pages. `doSpilling()` encodes one partition's rows with `Native.writeSortedFileNative()`.                  |
 
 ### Reader
 
@@ -170,8 +173,17 @@ Selection logic in `CometShuffleManager.shouldBypassMergeSort()`:
 1. `ShuffleWriteProcessor` calls `CometShuffleManager.getWriter()`
 2. Writer receives `Iterator[Product2[K, V]]` where V is `UnsafeRow`
 3. Rows are serialized and buffered in off-heap memory pages
-4. When memory threshold or batch size is reached, `SpillWriter.doSpilling()` is called
-5. Native code (`Native.writeSortedFileNative()`) converts rows to Arrow arrays and writes IPC format
+4. When memory threshold or batch size is reached, the buffered rows are written. `CometDiskBlockWriter`
+   calls `SpillWriter.doSpilling()` for its partition. `CometShuffleExternalSorter` calls
+   `SpillSorter.writeSortedPartitions()` once for each spill and once more for the final file, and each
+   call writes every partition
+5. Native code converts the rows to Arrow arrays and writes them as Arrow IPC blocks. `doSpilling()`
+   passes one partition's row addresses and sizes to `Native.writeSortedFileNative()`. `SpillSorter`
+   sorts its record pointers by partition with `Native.sortRowPartitionsNative()`, a radix sort that
+   uses the half of the pointer array `ShuffleInMemorySorter` keeps free as scratch space, then
+   passes them, with the address of each data page, to `Native.writeSortedPartitionsNative()`. That
+   call reads the rows in place, writes every partition of the spill, and returns each partition's
+   length and checksum
 6. For bypass writer: partition files are concatenated into final output
 7. For sort writer: spill files are merged
 
@@ -190,15 +202,37 @@ writes the same Arrow IPC block format as native shuffle, so direct read applies
 
 ## Memory Management
 
-- `CometShuffleMemoryAllocator`: Custom allocator for off-heap memory pages
-- Memory is allocated in pages; when allocation fails, writers spill to disk
+- `CometShuffleMemoryAllocator.getInstance` returns the allocator for the task. Pages are always
+  `Unsafe`-allocated, because their addresses are handed to native code, but what bounds them
+  depends on Spark's memory mode.
+- Off-heap mode gets `CometUnifiedShuffleMemoryAllocator`, an ordinary Spark `MemoryConsumer`
+  drawing from `spark.memory.offHeap.size`. When it cannot acquire a page the writer spills to
+  disk. An allocation that loses the task's entry in Spark's execution pool while it waits
+  ([SPARK-59444](https://issues.apache.org/jira/browse/SPARK-59444)) is retried a few times before
+  it counts as a page that could not be acquired.
+- On-heap mode gets `CometUnboundedShuffleMemoryAllocator`, which keeps no budget and so never
+  refuses a page. Nothing bounds these allocations, and memory pressure never triggers a spill.
+  That mode exists only so the Spark SQL tests can run against Comet. See
+  [Memory Management](memory_management.md).
+- Row count still triggers spilling in either mode. `CometDiskBlockWriter` spills at
+  `min(spark.comet.shuffle.jvm.spillThreshold, batch size)`, where the batch size is
+  `spark.comet.shuffle.jvm.batchSize` capped at `spark.comet.batchSize`.
+  `CometShuffleExternalSorter` spills at `spark.comet.shuffle.jvm.spillThreshold` alone, which
+  defaults to `Int.MaxValue`, so on the sort path that trigger is effectively off by default.
 - `CometDiskBlockWriter` coordinates spilling across all partition writers (largest first)
+- The bypass writer's partition writers each hold a page as soon as they buffer a row. Each one
+  starts a batch on a 64 KiB page and doubles each further page, up to Spark's page size
+  (`spark.buffer.pageSize`, capped at 128 MB). Spark sizes its page so that a task fits only 16 to
+  32 of them, so pages of that size would make the writers spill each other about one row at a
+  time once a shuffle has more partitions than that. The sort-based writer has a single sorter per
+  task, and uses Spark's page size from the first page.
 
 ## Configuration
 
-| Config                                   | Description                                       |
-| ---------------------------------------- | ------------------------------------------------- |
-| `spark.comet.shuffle.jvm.batchSize`      | Rows per Arrow batch                              |
-| `spark.comet.shuffle.jvm.spillThreshold` | Row count threshold for spill                     |
-| `spark.comet.shuffle.compression.codec`  | Compression codec, `lz4` by default               |
-| `spark.comet.shuffle.directRead.enabled` | Decode blocks natively on read, `true` by default |
+| Config                                                     | Description                                                                                   |
+| ---------------------------------------------------------- | --------------------------------------------------------------------------------------------- |
+| `spark.comet.shuffle.jvm.batchSize`                        | Rows per Arrow batch                                                                          |
+| `spark.comet.shuffle.jvm.spillThreshold`                   | Row count threshold for spill                                                                 |
+| `spark.comet.shuffle.compression.codec`                    | Compression codec, `lz4` by default                                                           |
+| `spark.comet.shuffle.compression.offsetsAsLengths.enabled` | Store offsets as lengths in zstd blocks without dictionary-encoded columns, `true` by default |
+| `spark.comet.shuffle.directRead.enabled`                   | Decode blocks natively on read, `true` by default                                             |

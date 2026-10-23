@@ -112,6 +112,174 @@ def _assert_plan_matches_mode(
         )
 
 
+def test_scalar_arrow_udf_uses_native_path_and_spark_batch_limit(spark):
+    # This must use PySpark's real UDF wrapper: it populates the default
+    # PYTHONHASHSEED entry that a hand-built SimplePythonFunction omits.
+    from pyspark.sql.pandas import functions as pandas_functions
+
+    if not hasattr(pandas_functions, "arrow_udf"):
+        pytest.skip("scalar arrow_udf requires Spark 4.1 or later")
+
+    @pandas_functions.arrow_udf("long")
+    def batch_length(values):
+        return pa.array([len(values)] * len(values), type=pa.int64())
+
+    @pandas_functions.arrow_udf("long")
+    def string_hash(values):
+        return pa.array([hash(value) for value in values.to_pylist()], type=pa.int64())
+
+    previous_comet_enabled = spark.conf.get("spark.comet.enabled")
+    spark.conf.set("spark.sql.adaptive.enabled", "false")
+    spark.conf.set("spark.sql.execution.arrow.maxRecordsPerBatch", "2")
+    spark.conf.set("spark.comet.sparkToColumnar.enabled", "true")
+    try:
+        # Spark 4.2's columnar Python input does not apply the row limit.
+        # Disable Comet so the reference uses Spark's row-based Arrow writer.
+        spark.conf.set("spark.comet.enabled", "false")
+        spark_source = spark.range(1, 5, 1, 1)
+        spark_reference = spark_source.select(batch_length("id"))
+        assert "Comet" not in _executed_plan(spark_reference)
+        spark_rows = spark_reference.collect()
+
+        spark.conf.set("spark.comet.enabled", "true")
+        spark.conf.set("spark.comet.exec.nativeArrowPythonUDF.enabled", "true")
+        source = spark.range(1, 5, 1, 1)
+        result = source.select(batch_length("id"))
+        assert "CometArrowEvalPython" in _executed_plan(result)
+        assert result.collect() == spark_rows
+        assert [row[0] for row in spark_rows] == [2, 2, 2, 2]
+
+        spark.conf.set("spark.comet.enabled", "false")
+        spark_strings = spark.range(1, 5, 1, 1).selectExpr("cast(id as string) as value")
+        spark_hashes = spark_strings.select(string_hash("value")).collect()
+        spark.conf.set("spark.comet.enabled", "true")
+        strings = source.selectExpr("cast(id as string) as value")
+        native_hashes = strings.select(string_hash("value"))
+        assert "CometArrowEvalPython" in _executed_plan(native_hashes)
+        assert native_hashes.collect() == spark_hashes
+    finally:
+        spark.conf.set("spark.comet.exec.nativeArrowPythonUDF.enabled", "false")
+        spark.conf.set("spark.comet.enabled", previous_comet_enabled)
+        spark.conf.unset("spark.sql.execution.arrow.maxRecordsPerBatch")
+        spark.conf.unset("spark.comet.sparkToColumnar.enabled")
+        spark.conf.unset("spark.sql.adaptive.enabled")
+
+
+def test_scalar_arrow_udf_respects_spark_byte_batch_limit(spark):
+    from pyspark.sql.pandas import functions as pandas_functions
+
+    if not hasattr(pandas_functions, "arrow_udf"):
+        pytest.skip("scalar arrow_udf requires Spark 4.1 or later")
+
+    @pandas_functions.arrow_udf("long")
+    def checked_batch_size(values):
+        if values.nbytes > 16:
+            raise ValueError(f"configured byte cap exceeded: {values.nbytes} > 16")
+        return pa.array([values.nbytes] * len(values), type=pa.int64())
+
+    previous_comet_enabled = spark.conf.get("spark.comet.enabled")
+    spark.conf.set("spark.sql.adaptive.enabled", "false")
+    spark.conf.set("spark.sql.execution.arrow.maxRecordsPerBatch", "10000")
+    spark.conf.set("spark.sql.execution.arrow.maxBytesPerBatch", "16")
+    spark.conf.set("spark.comet.sparkToColumnar.enabled", "true")
+    try:
+        spark.conf.set("spark.comet.enabled", "false")
+        spark_reference = spark.range(1, 5, 1, 1).select(checked_batch_size("id"))
+        assert "Comet" not in _executed_plan(spark_reference)
+        spark_rows = spark_reference.collect()
+
+        spark.conf.set("spark.comet.enabled", "true")
+        spark.conf.set("spark.comet.exec.nativeArrowPythonUDF.enabled", "true")
+        native_rows = spark.range(1, 5, 1, 1).select(checked_batch_size("id"))
+        assert "CometArrowEvalPython" in _executed_plan(native_rows)
+        assert native_rows.collect() == spark_rows
+        assert [row[0] for row in spark_rows] == [16, 16, 16, 16]
+    finally:
+        spark.conf.set("spark.comet.exec.nativeArrowPythonUDF.enabled", "false")
+        spark.conf.set("spark.comet.enabled", previous_comet_enabled)
+        spark.conf.unset("spark.sql.execution.arrow.maxRecordsPerBatch")
+        spark.conf.unset("spark.sql.execution.arrow.maxBytesPerBatch")
+        spark.conf.unset("spark.comet.sparkToColumnar.enabled")
+        spark.conf.unset("spark.sql.adaptive.enabled")
+
+
+def test_scalar_arrow_udf_accumulator_uses_spark_worker(spark):
+    from pyspark.sql.pandas import functions as pandas_functions
+
+    if not hasattr(pandas_functions, "arrow_udf"):
+        pytest.skip("scalar arrow_udf requires Spark 4.1 or later")
+
+    def counting_udf(counter):
+        @pandas_functions.arrow_udf("long")
+        def count_rows(values):
+            counter.add(len(values))
+            return values
+
+        return count_rows
+
+    previous_comet_enabled = spark.conf.get("spark.comet.enabled")
+    spark.conf.set("spark.sql.adaptive.enabled", "false")
+    spark.conf.set("spark.comet.sparkToColumnar.enabled", "true")
+    try:
+        spark.conf.set("spark.comet.enabled", "false")
+        spark_counter = spark.sparkContext.accumulator(0)
+        spark_result = spark.range(4, numPartitions=2).select(
+            counting_udf(spark_counter)("id")
+        )
+        expected = spark_result.collect()
+        assert spark_counter.value == 4
+
+        spark.conf.set("spark.comet.enabled", "true")
+        spark.conf.set("spark.comet.exec.nativeArrowPythonUDF.enabled", "true")
+        comet_counter = spark.sparkContext.accumulator(0)
+        result = spark.range(4, numPartitions=2).select(
+            counting_udf(comet_counter)("id")
+        )
+        plan = _executed_plan(result)
+        assert "ArrowEvalPython" in plan
+        assert "CometArrowEvalPython" not in plan
+        assert result.collect() == expected
+        assert comet_counter.value == 4
+    finally:
+        spark.conf.set("spark.comet.exec.nativeArrowPythonUDF.enabled", "false")
+        spark.conf.set("spark.comet.enabled", previous_comet_enabled)
+        spark.conf.unset("spark.comet.sparkToColumnar.enabled")
+        spark.conf.unset("spark.sql.adaptive.enabled")
+
+
+def test_scalar_arrow_udf_skips_empty_input_batches(spark):
+    from pyspark.sql.pandas import functions as pandas_functions
+
+    if not hasattr(pandas_functions, "arrow_udf"):
+        pytest.skip("scalar arrow_udf requires Spark 4.1 or later")
+
+    @pandas_functions.arrow_udf("long")
+    def reject_empty(values):
+        if len(values) == 0:
+            raise ValueError("scalar Arrow UDF received an empty batch")
+        return values
+
+    previous_comet_enabled = spark.conf.get("spark.comet.enabled")
+    spark.conf.set("spark.sql.adaptive.enabled", "false")
+    spark.conf.set("spark.comet.sparkToColumnar.enabled", "true")
+    try:
+        spark.conf.set("spark.comet.enabled", "false")
+        spark_reference = spark.range(1, 5, 1, 1).sample(False, 0.01, 42)
+        assert spark_reference.select(reject_empty("id")).collect() == []
+
+        spark.conf.set("spark.comet.enabled", "true")
+        spark.conf.set("spark.comet.exec.nativeArrowPythonUDF.enabled", "true")
+        native_source = spark.range(1, 5, 1, 1).sample(False, 0.01, 42)
+        native_result = native_source.select(reject_empty("id"))
+        assert "CometArrowEvalPython" in _executed_plan(native_result)
+        assert native_result.collect() == []
+    finally:
+        spark.conf.set("spark.comet.exec.nativeArrowPythonUDF.enabled", "false")
+        spark.conf.set("spark.comet.enabled", previous_comet_enabled)
+        spark.conf.unset("spark.comet.sparkToColumnar.enabled")
+        spark.conf.unset("spark.sql.adaptive.enabled")
+
+
 def test_map_in_arrow_doubles_value(spark, tmp_path, accelerated):
     data = [(i, float(i * 1.5), f"name_{i}") for i in range(100)]
     src = str(tmp_path / "src.parquet")
@@ -313,6 +481,150 @@ def test_map_in_arrow_python_exception_propagates(spark, tmp_path, accelerated):
     assert sentinel in str(exc_info.value), (
         f"expected sentinel {sentinel!r} in exception, got: {exc_info.value}"
     )
+
+
+# PySpark does not cast mapInArrow output to the declared schema. The accelerated path checks
+# the returned Arrow schema before reading it and raises Spark's ARROW_TYPE_MISMATCH error
+# (a plain SparkException with the same message on Spark 4.0).
+_OUTPUT_TYPE_MISMATCH = "Invalid schema from SQL_MAP_ARROW_ITER_UDF"
+
+
+def _collect_error(df) -> str:
+    with pytest.raises(Exception) as exc_info:
+        df.collect()
+    return str(exc_info.value)
+
+
+@pytest.mark.parametrize(
+    "returned_type,declared_type",
+    [(pa.int64(), T.IntegerType()), (pa.int32(), T.LongType())],
+    ids=["int64_as_int", "int32_as_bigint"],
+)
+def test_map_in_arrow_integer_width_mismatch_raises(
+    spark, tmp_path, accelerated, returned_type, declared_type
+):
+    """
+    Spark raises when it reads an integer column whose Arrow width differs from the declared
+    type. Reading the buffer at the declared width instead returns wrong values (int64 read as
+    int) or reads past the end of the buffer (int32 read as bigint).
+    """
+    src = str(tmp_path / "src.parquet")
+    spark.range(64).write.parquet(src)
+
+    def cast_id(iterator):
+        for batch in iterator:
+            yield pa.RecordBatch.from_arrays(
+                [batch.column(0).cast(returned_type)], ["id"]
+            )
+
+    schema = T.StructType([T.StructField("id", declared_type)])
+    result_df = spark.read.parquet(src).mapInArrow(cast_id, schema)
+    _assert_plan_matches_mode(_executed_plan(result_df), accelerated)
+
+    message = _collect_error(result_df)
+    if accelerated:
+        assert _OUTPUT_TYPE_MISMATCH in message, message
+
+
+def test_map_in_arrow_decimal_scale_mismatch(spark, tmp_path, accelerated):
+    """
+    Spark rescales a returned decimal(4, 3) value to a declared decimal(10, 2), so 1.234 reads
+    as 1.23. The accelerated path does not rescale; it raises rather than reading the unscaled
+    value at the declared scale (12.34).
+    """
+    src = str(tmp_path / "src.parquet")
+    spark.range(1).write.parquet(src)
+
+    def to_decimal(iterator):
+        for batch in iterator:
+            amounts = pa.array([Decimal("1.234")] * batch.num_rows, pa.decimal128(4, 3))
+            yield pa.RecordBatch.from_arrays([amounts], ["amount"])
+
+    schema = T.StructType([T.StructField("amount", T.DecimalType(10, 2))])
+    result_df = spark.read.parquet(src).mapInArrow(to_decimal, schema)
+    _assert_plan_matches_mode(_executed_plan(result_df), accelerated)
+
+    if accelerated:
+        message = _collect_error(result_df)
+        assert _OUTPUT_TYPE_MISMATCH in message, message
+    else:
+        assert [r["amount"] for r in result_df.collect()] == [Decimal("1.23")]
+
+
+def test_map_in_arrow_dictionary_encoded_output_raises(spark, tmp_path, accelerated):
+    """
+    Spark cannot read a dictionary-encoded column returned for a declared string column. The
+    accelerated path used to fail with a NullPointerException; it now reports the mismatch.
+    """
+    src = str(tmp_path / "src.parquet")
+    spark.range(10).write.parquet(src)
+
+    def encode(iterator):
+        for batch in iterator:
+            names = [f"name_{i % 3}" for i in batch.column(0).to_pylist()]
+            yield pa.RecordBatch.from_arrays(
+                [pa.array(names).dictionary_encode()], ["name"]
+            )
+
+    schema = T.StructType([T.StructField("name", T.StringType())])
+    result_df = spark.read.parquet(src).mapInArrow(encode, schema)
+    _assert_plan_matches_mode(_executed_plan(result_df), accelerated)
+
+    message = _collect_error(result_df)
+    if accelerated:
+        assert _OUTPUT_TYPE_MISMATCH in message, message
+        assert "dictionary" in message, message
+
+
+def test_map_in_arrow_output_differences_that_read_the_same(
+    spark, tmp_path, accelerated
+):
+    """
+    Output that differs from the declared schema only in ways that do not change the values
+    read is accepted on both paths: column names, nullability, 64-bit string and binary offsets,
+    the time zone label of a timestamp, and an all-null column that PyArrow types as `null`.
+    """
+    schema_in = T.StructType(
+        [
+            T.StructField("id", T.LongType()),
+            T.StructField("ts", T.TimestampType()),
+        ]
+    )
+    rows = [(1, dt.datetime(2024, 1, 1, 12, 30, 45)), (2, None)]
+    src = str(tmp_path / "src.parquet")
+    spark.createDataFrame(rows, schema_in).write.parquet(src)
+
+    def relabel(iterator):
+        for batch in iterator:
+            ids = batch.column(0).to_pylist()
+            yield pa.RecordBatch.from_arrays(
+                [
+                    batch.column(0),
+                    batch.column(1).cast(pa.timestamp("us", tz="America/Los_Angeles")),
+                    pa.array([f"s{i}" for i in ids], pa.large_string()),
+                    pa.array([str(i).encode() for i in ids], pa.large_binary()),
+                    pa.nulls(batch.num_rows),
+                ],
+                ["key", "ts", "s", "b", "missing"],
+            )
+
+    schema_out = T.StructType(
+        [
+            T.StructField("id", T.LongType(), nullable=False),
+            T.StructField("ts", T.TimestampType()),
+            T.StructField("s", T.StringType()),
+            T.StructField("b", T.BinaryType()),
+            T.StructField("missing", T.StringType()),
+        ]
+    )
+    result_df = spark.read.parquet(src).mapInArrow(relabel, schema_out)
+    _assert_plan_matches_mode(_executed_plan(result_df), accelerated)
+
+    out = {
+        (r["id"], r["ts"], r["s"], bytes(r["b"]), r["missing"])
+        for r in result_df.collect()
+    }
+    assert out == {(i, ts, f"s{i}", str(i).encode(), None) for i, ts in rows}
 
 
 def test_map_in_arrow_decimal_type(spark, tmp_path, accelerated):

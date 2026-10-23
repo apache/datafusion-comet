@@ -43,15 +43,9 @@ const SETTLE_THRESHOLD: isize = 64 * 1024;
 static BALANCE: AtomicIsize = AtomicIsize::new(0);
 
 thread_local! {
-    /// Set while this thread is inside [`track`], so an allocation made *by* `track` settles
-    /// directly instead of recursing. The only such allocation today is the one some platforms
-    /// make when registering `LOCAL_DRIFT`'s destructor on first touch.
-    ///
-    /// Const-initialized and destructor-free, so reading it never allocates and never fails,
-    /// which is what makes it safe to consult before touching `LOCAL_DRIFT`.
-    static IN_TRACK: Cell<bool> = const { Cell::new(false) };
-
-    /// This thread's un-flushed delta.
+    /// This thread's un-flushed delta, and the only thread-local [`track`] touches. `libcomet` is
+    /// loaded with `dlopen`, so each thread-local an allocation touches costs a call into the
+    /// dynamic loader.
     static LOCAL_DRIFT: ThreadDrift = const { ThreadDrift(Cell::new(0)) };
 }
 
@@ -100,13 +94,9 @@ fn track(delta: isize) {
         return;
     }
 
-    // A re-entrant call is one made by `track` itself; the outer frame owns the flag and will
-    // clear it, so this frame must only settle and return.
-    if IN_TRACK.with(|in_track| in_track.replace(true)) {
-        BALANCE.fetch_add(delta, Ordering::Relaxed);
-        return;
-    }
-
+    // `thread_local!` never allocates through the global allocator (a `GlobalAlloc` guarantee
+    // since Rust 1.93), so first touching `LOCAL_DRIFT` cannot re-enter `track`.
+    //
     // `try_with` rather than `with`: during thread teardown `LOCAL_DRIFT`'s destructor has already
     // run, and any allocation after that point must not panic inside the allocator.
     if LOCAL_DRIFT
@@ -115,8 +105,6 @@ fn track(delta: isize) {
     {
         BALANCE.fetch_add(delta, Ordering::Relaxed);
     }
-
-    IN_TRACK.with(|in_track| in_track.set(false));
 }
 
 /// Wraps a global allocator, accounting the `Layout` bytes it hands out.
@@ -135,7 +123,7 @@ impl<A: GlobalAlloc> AccountingAllocator<A> {
 }
 
 // SAFETY: every method delegates to `inner`, which upholds the `GlobalAlloc` contract. The
-// accounting is pure bookkeeping over an `AtomicIsize` and thread-local `Cell`s: it does not
+// accounting is pure bookkeeping over an `AtomicIsize` and a thread-local `Cell`: it does not
 // inspect, retain, or alter any pointer, and it cannot unwind.
 unsafe impl<A: GlobalAlloc> GlobalAlloc for AccountingAllocator<A> {
     unsafe fn alloc(&self, layout: Layout) -> *mut u8 {

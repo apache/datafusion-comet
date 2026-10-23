@@ -169,6 +169,11 @@ Note:
 - The backtrace coverage in DataFusion is still improving. So there is a chance the error still not covered, if so feel free to file a [ticket](https://github.com/apache/arrow-datafusion/issues)
 - The backtrace evaluation comes with performance cost and intended mostly for debugging purposes
 
+A panic in native code is different: it is always logged, with its location and backtrace, to the
+stderr of the executor where it happened, on a line starting with `Comet native panic:`. The
+`CometNativeException` it surfaces as carries the panic message only, because a panic can reach the
+JVM on a different thread than the one that raised it.
+
 ### Native log configuration
 
 By default, Comet emits native-side logs at the `INFO` level to `stderr`.
@@ -221,6 +226,17 @@ Example log output:
 
 When backtraces are enabled (see earlier section) then backtraces will be included for failed allocations.
 
+Under memory pressure, Spark often grants a native memory pool less than it asked for, so Comet
+logs this only at `DEBUG`. The operator that needed the memory usually spills and carries on. If it
+cannot, the task fails with an error that says how much Spark granted and lists the largest memory
+consumers. To log every partial grant, set this logger to `DEBUG`, for example in
+`log4j2.properties`:
+
+```properties
+logger.cometTaskMemoryManager.name = org.apache.spark.CometTaskMemoryManager
+logger.cometTaskMemoryManager.level = debug
+```
+
 ### Dumping native stream output with the `debug` module
 
 The `native/core/src/debug/` module ships small wrappers that print every
@@ -243,36 +259,45 @@ so `spark.comet.debug.enabled` and `COMET_LOG_LEVEL` do not affect it.
 
 #### Example: dumping window operator output
 
-In `PhysicalPlanner::create_plan` in `native/core/src/execution/planner.rs`,
-the `OpStruct::Window` arm builds a `BoundedWindowAggExec` and hands it to
-`SparkPlan::new`. Wrap the node between those two steps:
+In `WindowBuilder::build` in `native/core/src/execution/planner/window.rs`,
+the window operator builds `window_agg`, either a `BoundedWindowAggExec` or a
+`WindowAggExec` depending on whether every window expression runs with bounded
+memory. It then optionally wraps `window_agg` in a casting `ProjectionExec` and
+builds the `SparkPlan` from either the projection or `window_agg`. To see the raw
+window output, wrap `window_agg` right after it is built, before the cast
+projection:
 
 ```rust
-let window_agg = Arc::new(BoundedWindowAggExec::try_new(
-    window_expr?,
-    Arc::clone(&child.native_plan),
-    InputOrderMode::Sorted,
-    !partition_exprs.is_empty(),
-)?);
+let window_agg: Arc<dyn ExecutionPlan> = if all_bounded {
+    Arc::new(BoundedWindowAggExec::try_new(
+        window_expr,
+        Arc::clone(&child.native_plan),
+        InputOrderMode::Sorted,
+        !partition_exprs.is_empty(),
+    )?)
+} else {
+    Arc::new(WindowAggExec::try_new(
+        window_expr,
+        Arc::clone(&child.native_plan),
+        !partition_exprs.is_empty(),
+    )?)
+};
 
 #[cfg(debug_assertions)]
-let window_agg: Arc<dyn datafusion::physical_plan::ExecutionPlan> = {
+let window_agg: Arc<dyn ExecutionPlan> = {
     use crate::debug::DebugExecutionDataStream;
     Arc::new(DebugExecutionDataStream::new("window-output", window_agg))
 };
 
-Ok((
-    scans,
-    shuffle_scans,
-    Arc::new(SparkPlan::new(spark_plan.plan_id, window_agg, vec![child])),
-))
+// ... the casting `ProjectionExec` is built from `window_agg`, and
+// `SparkPlan::new_with_additional(spark_plan.plan_id, projection, vec![child],
+// vec![window_agg])` wraps it. Without a cast, `SparkPlan::new` wraps `window_agg`.
 ```
 
-The `let` rebinding keeps the original `window_agg` typed concretely on release
-builds (where the `cfg` block is compiled out) and re-binds it to
-`Arc<dyn ExecutionPlan>` when the debug module is active. No annotation is
-needed on the first `let` because release builds use the original binding
-directly.
+Wrapping `window_agg` leaves the rest of the builder unchanged. To see the
+output after the cast, wrap `projection` the same way just before the
+`SparkPlan::new_with_additional` call. The `let` rebinding is only compiled in
+when `debug_assertions` is on, so release builds use the original binding.
 
 Rebuild with `make core` and run a window test, for example:
 

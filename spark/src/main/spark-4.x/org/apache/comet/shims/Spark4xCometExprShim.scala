@@ -20,16 +20,15 @@
 package org.apache.comet.shims
 
 import org.apache.spark.sql.catalyst.expressions._
-import org.apache.spark.sql.catalyst.expressions.aggregate.ListAgg
+import org.apache.spark.sql.catalyst.expressions.aggregate.{HllSketchAgg, HllUnionAgg, ListAgg}
 import org.apache.spark.sql.catalyst.expressions.json.{JsonExpressionUtils, StructsToJsonEvaluator}
 import org.apache.spark.sql.catalyst.expressions.objects.{Invoke, StaticInvoke}
 import org.apache.spark.sql.catalyst.expressions.url.ParseUrlEvaluator
 
-import org.apache.comet.CometExplainInfo
 import org.apache.comet.expressions.CometEvalMode
-import org.apache.comet.serde.{CometAggregateExpressionSerde, CometExpressionSerde, CometListAgg, CometMapSort, CometRandStr, CometToPrettyString}
+import org.apache.comet.serde.{CometAggregateExpressionSerde, CometExpressionSerde, CometHllSketchAgg, CometHllSketchEstimate, CometHllUnion, CometHllUnionAgg, CometListAgg, CometMapSort, CometRandStr, CometToPrettyString}
 import org.apache.comet.serde.ExprOuterClass.Expr
-import org.apache.comet.serde.QueryPlanSerde.exprToProtoInternal
+import org.apache.comet.serde.QueryPlanSerde.{exprToProtoInternal, liftFallbackReasons}
 
 /**
  * Shared trait body for the Spark 4.x `CometExprShim` traits (4.0/4.1/4.2). Holds the parts that
@@ -46,11 +45,17 @@ trait Spark4xCometExprShim extends CometExprShim4x {
   def sparkVersionSpecificMathExpressions: Map[Class[_ <: Expression], CometExpressionSerde[_]] =
     Map.empty
   def sparkVersionSpecificMiscExpressions: Map[Class[_ <: Expression], CometExpressionSerde[_]] =
-    Map(classOf[ToPrettyString] -> CometToPrettyString)
+    Map(
+      classOf[ToPrettyString] -> CometToPrettyString,
+      classOf[HllSketchEstimate] -> CometHllSketchEstimate,
+      classOf[HllUnion] -> CometHllUnion)
   def sparkVersionSpecificMapExpressions: Map[Class[_ <: Expression], CometExpressionSerde[_]] =
     Map(classOf[MapSort] -> CometMapSort)
   def sparkVersionSpecificAggregates: Map[Class[_], CometAggregateExpressionSerde[_]] =
-    Map(classOf[ListAgg] -> CometListAgg)
+    Map(
+      classOf[HllSketchAgg] -> CometHllSketchAgg,
+      classOf[HllUnionAgg] -> CometHllUnionAgg,
+      classOf[ListAgg] -> CometListAgg)
 
   def sparkVersionSpecificExprToProtoInternal(
       expr: Expression,
@@ -80,18 +85,14 @@ trait Spark4xCometExprShim extends CometExprShim4x {
             val toJson = StructsToJson(evaluator.options, child, evaluator.timeZoneId)
             val exprProto = exprToProtoInternal(toJson, inputs, binding)
             if (exprProto.isEmpty) {
-              toJson
-                .getTagValue(CometExplainInfo.FALLBACK_REASONS)
-                .foreach(reasons => i.setTagValue(CometExplainInfo.FALLBACK_REASONS, reasons))
+              liftFallbackReasons(toJson, i)
             }
             exprProto
           case (Literal(evaluator: ParseUrlEvaluator, _), "evaluate", args) =>
             val parseUrl = ParseUrl(args, evaluator.failOnError)
             val result = exprToProtoInternal(parseUrl, inputs, binding)
             if (result.isEmpty) {
-              parseUrl
-                .getTagValue(CometExplainInfo.FALLBACK_REASONS)
-                .foreach(reasons => i.setTagValue(CometExplainInfo.FALLBACK_REASONS, reasons))
+              liftFallbackReasons(parseUrl, i)
             }
             result
           case _ => None
@@ -103,9 +104,7 @@ trait Spark4xCometExprShim extends CometExprShim4x {
             val lengthOfJsonArray = LengthOfJsonArray(child)
             val exprProto = exprToProtoInternal(lengthOfJsonArray, inputs, binding)
             if (exprProto.isEmpty) {
-              lengthOfJsonArray
-                .getTagValue(CometExplainInfo.FALLBACK_REASONS)
-                .foreach(reasons => s.setTagValue(CometExplainInfo.FALLBACK_REASONS, reasons))
+              liftFallbackReasons(lengthOfJsonArray, s)
             }
             exprProto
           case _ => None

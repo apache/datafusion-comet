@@ -116,7 +116,7 @@ macro_rules! hash_array_primitive {
 
 #[macro_export]
 macro_rules! hash_array_primitive_float {
-    ($array_type: ident, $column: ident, $ty: ident, $ty2: ident, $hashes: ident, $hash_method: ident) => {
+    ($array_type: ident, $column: ident, $hashes: ident, $hash_method: ident) => {
         let array = $column
             .as_any()
             .downcast_ref::<$array_type>()
@@ -132,25 +132,62 @@ macro_rules! hash_array_primitive_float {
         if array.null_count() == 0 {
             // Fast path: no nulls, use direct indexing
             for i in 0..values.len() {
-                let value = values[i];
-                // Spark uses 0 as hash for -0.0, see `Murmur3Hash` expression.
-                if value == 0.0 && value.is_sign_negative() {
-                    $hashes[i] = $hash_method((0 as $ty2).to_le_bytes(), $hashes[i]);
-                } else {
-                    $hashes[i] = $hash_method((value as $ty).to_le_bytes(), $hashes[i]);
-                }
+                let value = $crate::float_semantics::hash_input(values[i]);
+                $hashes[i] = $hash_method(value.to_le_bytes(), $hashes[i]);
             }
         } else {
             // Slow path: check nulls
             for i in 0..values.len() {
                 if !array.is_null(i) {
-                    let value = values[i];
-                    // Spark uses 0 as hash for -0.0, see `Murmur3Hash` expression.
-                    if value == 0.0 && value.is_sign_negative() {
-                        $hashes[i] = $hash_method((0 as $ty2).to_le_bytes(), $hashes[i]);
-                    } else {
-                        $hashes[i] = $hash_method((value as $ty).to_le_bytes(), $hashes[i]);
-                    }
+                    let value = $crate::float_semantics::hash_input(values[i]);
+                    $hashes[i] = $hash_method(value.to_le_bytes(), $hashes[i]);
+                }
+            }
+        }
+    };
+}
+
+#[macro_export]
+macro_rules! hash_array_interval_month_day_nano {
+    ($column: ident, $hashes: ident, $hash_method: ident) => {
+        let array = $column
+            .as_any()
+            .downcast_ref::<IntervalMonthDayNanoArray>()
+            .unwrap_or_else(|| {
+                panic!(
+                    "Failed to downcast column to {}. Actual data type: {:?}.",
+                    stringify!(IntervalMonthDayNanoArray),
+                    $column.data_type()
+                )
+            });
+
+        // The `nanoseconds / 1_000` below is exact: Spark's `CalendarInterval` is
+        // microsecond-based, and both JVM-to-Arrow producers
+        // (`ArrowWriters.CalendarIntervalWriter` and the codegen dispatch kernel) convert
+        // with `Math.multiplyExact(microseconds, 1000L)`, so the nanoseconds field is
+        // always an exact multiple of 1000 and out-of-range intervals throw at
+        // conversion time instead of reaching this hasher.
+        if array.null_count() == 0 {
+            // Fast path: no nulls, use direct indexing
+            for i in 0..$hashes.len() {
+                let value = array.value(i);
+                // Match Spark 4.2 generated code, which omits the days field:
+                // https://github.com/apache/spark/blob/v4.2.0/sql/catalyst/src/main/scala/org/apache/spark/sql/catalyst/expressions/hash.scala#L428-L431
+                // SPARK-58236 includes days starting in Spark 4.3; the version
+                // switch for that is tracked in
+                // https://github.com/apache/datafusion-comet/issues/5498.
+                $hashes[i] =
+                    $hash_method((value.nanoseconds / 1_000).to_le_bytes(), $hashes[i]);
+                $hashes[i] = $hash_method(value.months.to_le_bytes(), $hashes[i]);
+            }
+        } else {
+            // Slow path: check nulls
+            for i in 0..$hashes.len() {
+                if !array.is_null(i) {
+                    let value = array.value(i);
+                    $hashes[i] =
+                        $hash_method((value.nanoseconds / 1_000).to_le_bytes(), $hashes[i]);
+                    $hashes[i] = $hash_method(value.months.to_le_bytes(), $hashes[i]);
                 }
             }
         }
@@ -197,33 +234,25 @@ macro_rules! hash_array_small_decimal {
     };
 }
 
+/// Hash one wide decimal without allocating BigInteger's signed byte representation.
+#[macro_export]
+macro_rules! hash_decimal {
+    ($value:expr, $seed:expr, $hash_method:ident) => {{
+        let value: i128 = $value;
+        let bytes = value.to_be_bytes();
+        // Match BigInteger.toByteArray(): drop redundant sign bytes, retaining
+        // one sign bit. Zero and -1 still occupy one byte.
+        let sign_bits = value.leading_zeros().max(value.leading_ones());
+        let start = (sign_bits.saturating_sub(1) / 8) as usize;
+        $hash_method(&bytes[start..], $seed)
+    }};
+}
+
 #[macro_export]
 macro_rules! hash_array_decimal {
     ($array_type:ident, $column: ident, $hashes: ident, $hash_method: ident) => {
-        let array = $column
-            .as_any()
-            .downcast_ref::<$array_type>()
-            .unwrap_or_else(|| {
-                panic!(
-                    "Failed to downcast column to {}. Actual data type: {:?}.",
-                    stringify!($array_type),
-                    $column.data_type()
-                )
-            });
-
-        if array.null_count() == 0 {
-            // Fast path: no nulls, use direct indexing
-            for i in 0..$hashes.len() {
-                $hashes[i] = $hash_method(array.value(i).to_le_bytes(), $hashes[i]);
-            }
-        } else {
-            // Slow path: check nulls
-            for i in 0..$hashes.len() {
-                if !array.is_null(i) {
-                    $hashes[i] = $hash_method(array.value(i).to_le_bytes(), $hashes[i]);
-                }
-            }
-        }
+        let hash_decimal = |value: &i128, seed| $crate::hash_decimal!(*value, seed, $hash_method);
+        $crate::hash_array!($array_type, $column, $hashes, hash_decimal);
     };
 }
 
@@ -315,12 +344,12 @@ macro_rules! hash_list_with_primitive_elements {
             DataType::Float32 => {
                 let elem_array = $values.as_any().downcast_ref::<Float32Array>().unwrap();
                 $crate::hash_list_primitive!(offsets: $offsets, $list_array, elem_array, $hashes_buffer, $hash_method,
-                    |v: f32| if v == 0.0 && v.is_sign_negative() { (0_i32).to_le_bytes() } else { v.to_le_bytes() });
+                    |v: f32| $crate::float_semantics::hash_input(v).to_le_bytes());
             }
             DataType::Float64 => {
                 let elem_array = $values.as_any().downcast_ref::<Float64Array>().unwrap();
                 $crate::hash_list_primitive!(offsets: $offsets, $list_array, elem_array, $hashes_buffer, $hash_method,
-                    |v: f64| if v == 0.0 && v.is_sign_negative() { (0_i64).to_le_bytes() } else { v.to_le_bytes() });
+                    |v: f64| $crate::float_semantics::hash_input(v).to_le_bytes());
             }
             DataType::Boolean => {
                 let elem_array = $values.as_any().downcast_ref::<BooleanArray>().unwrap();
@@ -386,6 +415,12 @@ macro_rules! hash_list_with_primitive_elements {
                 let elem_array = $values.as_any().downcast_ref::<Time64NanosecondArray>().unwrap();
                 $crate::hash_list_primitive!(offsets: $offsets, $list_array, elem_array, $hashes_buffer, $hash_method, |v: i64| v.to_le_bytes());
             }
+            DataType::Decimal128(precision, _) if *precision > 18 => {
+                // Downcast once per list column instead of slicing and dispatching each element.
+                let elem_array = $values.as_any().downcast_ref::<Decimal128Array>().unwrap();
+                let hash_decimal = |value: i128, seed| $crate::hash_decimal!(value, seed, $hash_method);
+                $crate::hash_list_primitive!(offsets: $offsets, $list_array, elem_array, $hashes_buffer, hash_decimal, |v| v);
+            }
             _ => {
                 // Fall back to recursive approach for complex element types
                 $crate::hash_list_array!($list_array_type, $fallback_offset_type, $col, $hashes_buffer, $recursive_hash_method);
@@ -414,12 +449,12 @@ macro_rules! hash_list_with_primitive_elements {
             DataType::Float32 => {
                 let elem_array = $values.as_any().downcast_ref::<Float32Array>().unwrap();
                 $crate::hash_list_primitive!(fixed_size: $list_size, $list_array, elem_array, $hashes_buffer, $hash_method,
-                    |v: f32| if v == 0.0 && v.is_sign_negative() { (0_i32).to_le_bytes() } else { v.to_le_bytes() });
+                    |v: f32| $crate::float_semantics::hash_input(v).to_le_bytes());
             }
             DataType::Float64 => {
                 let elem_array = $values.as_any().downcast_ref::<Float64Array>().unwrap();
                 $crate::hash_list_primitive!(fixed_size: $list_size, $list_array, elem_array, $hashes_buffer, $hash_method,
-                    |v: f64| if v == 0.0 && v.is_sign_negative() { (0_i64).to_le_bytes() } else { v.to_le_bytes() });
+                    |v: f64| $crate::float_semantics::hash_input(v).to_le_bytes());
             }
             DataType::Boolean => {
                 let elem_array = $values.as_any().downcast_ref::<BooleanArray>().unwrap();
@@ -480,6 +515,11 @@ macro_rules! hash_list_with_primitive_elements {
             DataType::Time64(TimeUnit::Nanosecond) => {
                 let elem_array = $values.as_any().downcast_ref::<Time64NanosecondArray>().unwrap();
                 $crate::hash_list_primitive!(fixed_size: $list_size, $list_array, elem_array, $hashes_buffer, $hash_method, |v: i64| v.to_le_bytes());
+            }
+            DataType::Decimal128(precision, _) if *precision > 18 => {
+                let elem_array = $values.as_any().downcast_ref::<Decimal128Array>().unwrap();
+                let hash_decimal = |value: i128, seed| $crate::hash_decimal!(value, seed, $hash_method);
+                $crate::hash_list_primitive!(fixed_size: $list_size, $list_array, elem_array, $hashes_buffer, hash_decimal, |v| v);
             }
             _ => {
                 // Fall back to recursive approach for complex element types
@@ -789,7 +829,7 @@ macro_rules! hash_list_array {
 #[macro_export]
 macro_rules! create_hashes_internal {
     ($arrays: ident, $hashes_buffer: ident, $hash_method: ident, $create_dictionary_hash_method: ident, $recursive_hash_method: ident) => {
-        use arrow::datatypes::{DataType, TimeUnit};
+        use arrow::datatypes::{DataType, IntervalUnit, TimeUnit};
         use arrow::array::{types::*, *};
         use datafusion_comet_common::children_with_parent_nulls;
 
@@ -854,8 +894,6 @@ macro_rules! create_hashes_internal {
                     $crate::hash_array_primitive_float!(
                         Float32Array,
                         col,
-                        f32,
-                        i32,
                         $hashes_buffer,
                         $hash_method
                     );
@@ -864,8 +902,6 @@ macro_rules! create_hashes_internal {
                     $crate::hash_array_primitive_float!(
                         Float64Array,
                         col,
-                        f64,
-                        i64,
                         $hashes_buffer,
                         $hash_method
                     );
@@ -929,6 +965,13 @@ macro_rules! create_hashes_internal {
                         Time64NanosecondArray,
                         col,
                         i64,
+                        $hashes_buffer,
+                        $hash_method
+                    );
+                }
+                DataType::Interval(IntervalUnit::MonthDayNano) => {
+                    $crate::hash_array_interval_month_day_nano!(
+                        col,
                         $hashes_buffer,
                         $hash_method
                     );
@@ -1281,5 +1324,212 @@ pub(crate) mod test_utils {
                 expected_with_nulls
             );
         };
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::super::{spark_murmur3_hash, spark_xxhash64};
+    use arrow::array::{Array, ArrayRef, BinaryArray, Decimal128Array, Int32Array};
+    use datafusion::common::{Result, ScalarValue};
+    use datafusion::logical_expr::ColumnarValue;
+    use num::BigInt;
+    use std::sync::Arc;
+
+    type HashFunction = fn(&[ColumnarValue]) -> Result<ColumnarValue>;
+
+    #[test]
+    fn wide_decimal_hashes_match_signed_big_endian_bytes() {
+        for precision in 19..=38 {
+            let max = 10_i128.pow(precision as u32) - 1;
+            let mut values = vec![Some(0), Some(max), Some(-max), None];
+            // Both sides of every signed byte-length boundary, including 127/128
+            // and -128/-129, as well as values that fit in i64 despite the type.
+            for bit in (7..127).step_by(8) {
+                for value in [(1_i128 << bit) - 1, 1_i128 << bit, (1_i128 << bit) + 1] {
+                    if value <= max {
+                        values.extend([Some(value), Some(-value)]);
+                    }
+                }
+            }
+            let bytes: Vec<_> = values
+                .iter()
+                .map(|v| v.map(|v| BigInt::from(v).to_signed_bytes_be()))
+                .collect();
+            let binary: ArrayRef =
+                Arc::new(BinaryArray::from_iter(bytes.iter().map(|v| v.as_deref())));
+            for scale in [0, 2, precision as i8] {
+                let decimal: ArrayRef = Arc::new(
+                    Decimal128Array::from(values.clone())
+                        .with_precision_and_scale(precision, scale)
+                        .unwrap(),
+                );
+                // Exercise both null-aware and null-free loops, including a slice.
+                for (offset, len) in [(0, values.len()), (4, values.len() - 4)] {
+                    let decimal = decimal.slice(offset, len);
+                    let binary = binary.slice(offset, len);
+                    let prefix: ArrayRef = Arc::new(Int32Array::from_iter_values(0..len as i32));
+                    for seed in [0_i64, 42, -1, i32::MIN as i64] {
+                        for chained in [false, true] {
+                            let args = |value: ArrayRef, seed: ScalarValue| {
+                                let mut args = vec![ColumnarValue::Array(value)];
+                                if chained {
+                                    args.insert(0, ColumnarValue::Array(Arc::clone(&prefix)));
+                                    args.push(ColumnarValue::Array(Arc::clone(&prefix)));
+                                }
+                                args.push(ColumnarValue::Scalar(seed));
+                                args
+                            };
+                            for (hash, seed) in [
+                                (
+                                    spark_murmur3_hash as HashFunction,
+                                    ScalarValue::Int32(Some(seed as i32)),
+                                ),
+                                (
+                                    spark_xxhash64 as HashFunction,
+                                    ScalarValue::Int64(Some(seed)),
+                                ),
+                            ] {
+                                let actual = hash(&args(Arc::clone(&decimal), seed.clone()))
+                                    .unwrap()
+                                    .into_array(len)
+                                    .unwrap();
+                                let expected = hash(&args(Arc::clone(&binary), seed))
+                                    .unwrap()
+                                    .into_array(len)
+                                    .unwrap();
+                                assert_eq!(
+                                    actual.to_data(),
+                                    expected.to_data(),
+                                    "precision={precision}, scale={scale}, chained={chained}"
+                                );
+                            }
+                        }
+                    }
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn decimal_lists_match_independent_binary_encoding() {
+        use arrow::array::{FixedSizeListArray, LargeListArray, ListArray};
+        use arrow::buffer::{NullBuffer, OffsetBuffer};
+        use arrow::datatypes::Field;
+
+        for precision in [18, 19, 38] {
+            let max = 10_i128.pow(precision as u32) - 1;
+            let values = vec![
+                0, -1, 127, 128, -128, -129, max, -max, 255, 256, -256, -257, 32767, 32768, -32768,
+                -32769,
+            ];
+            for scale in [0, 2] {
+                for parent_nulls in [false, true] {
+                    for child_nulls in [false, true] {
+                        let nulls = child_nulls
+                            .then(|| NullBuffer::from_iter((0..values.len()).map(|i| i % 3 != 1)));
+                        // Keep nonzero values under null slots, and values under null parents.
+                        let decimal: ArrayRef = Arc::new(
+                            Decimal128Array::new(values.clone().into(), nulls.clone())
+                                .with_precision_and_scale(precision, scale)
+                                .unwrap(),
+                        );
+                        let bytes: Vec<_> = values
+                            .iter()
+                            .map(|&v| {
+                                if precision <= 18 {
+                                    (v as i64).to_le_bytes().to_vec()
+                                } else {
+                                    BigInt::from(v).to_signed_bytes_be()
+                                }
+                            })
+                            .collect();
+                        let binary: ArrayRef = Arc::new(BinaryArray::from_iter(
+                            bytes.iter().enumerate().map(|(i, v)| {
+                                if nulls.as_ref().is_some_and(|n| n.is_null(i)) {
+                                    None
+                                } else {
+                                    Some(v.as_slice())
+                                }
+                            }),
+                        ));
+                        for kind in ["list", "large_list", "fixed_list"] {
+                            let wrap = |values: ArrayRef| -> ArrayRef {
+                                let field =
+                                    Arc::new(Field::new("item", values.data_type().clone(), true));
+                                let nulls = parent_nulls
+                                    .then(|| NullBuffer::from_iter((0..8).map(|i| i % 3 != 1)));
+                                match kind {
+                                    "list" => Arc::new(ListArray::new(
+                                        field,
+                                        OffsetBuffer::new(
+                                            vec![0_i32, 2, 2, 5, 8, 11, 12, 14, 16].into(),
+                                        ),
+                                        values,
+                                        nulls,
+                                    )),
+                                    "large_list" => Arc::new(LargeListArray::new(
+                                        field,
+                                        OffsetBuffer::new(
+                                            vec![0_i64, 2, 2, 5, 8, 11, 12, 14, 16].into(),
+                                        ),
+                                        values,
+                                        nulls,
+                                    )),
+                                    _ => Arc::new(FixedSizeListArray::new(field, 2, values, nulls)),
+                                }
+                            };
+                            let decimal = wrap(Arc::clone(&decimal));
+                            let binary = wrap(Arc::clone(&binary));
+                            for (offset, len) in [(0, 8), (1, 6), (3, 1), (8, 0)] {
+                                let prefix: ArrayRef =
+                                    Arc::new(Int32Array::from_iter_values(0..len as i32));
+                                for seed in [0_i64, 42, -1, i32::MIN as i64] {
+                                    for chained in [false, true] {
+                                        let args = |array: &ArrayRef, seed: ScalarValue| {
+                                            let mut args = vec![ColumnarValue::Array(
+                                                array.slice(offset, len),
+                                            )];
+                                            if chained {
+                                                args.insert(
+                                                    0,
+                                                    ColumnarValue::Array(Arc::clone(&prefix)),
+                                                );
+                                                args.push(ColumnarValue::Array(Arc::clone(
+                                                    &prefix,
+                                                )));
+                                            }
+                                            args.push(ColumnarValue::Scalar(seed));
+                                            args
+                                        };
+                                        for (hash, seed) in [
+                                            (
+                                                spark_murmur3_hash as HashFunction,
+                                                ScalarValue::Int32(Some(seed as i32)),
+                                            ),
+                                            (
+                                                spark_xxhash64 as HashFunction,
+                                                ScalarValue::Int64(Some(seed)),
+                                            ),
+                                        ] {
+                                            let actual = hash(&args(&decimal, seed.clone()))
+                                                .unwrap()
+                                                .into_array(len)
+                                                .unwrap();
+                                            let expected = hash(&args(&binary, seed))
+                                                .unwrap()
+                                                .into_array(len)
+                                                .unwrap();
+                                            assert_eq!(actual.to_data(), expected.to_data(),
+                                                "{kind}, precision={precision}, scale={scale}, parent_nulls={parent_nulls}, child_nulls={child_nulls}, offset={offset}, len={len}, chained={chained}");
+                                        }
+                                    }
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+        }
     }
 }

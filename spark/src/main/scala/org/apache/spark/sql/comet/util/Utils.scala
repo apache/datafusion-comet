@@ -24,10 +24,11 @@ import java.nio.ByteBuffer
 import java.nio.channels.Channels
 
 import scala.jdk.CollectionConverters._
+import scala.util.control.NonFatal
 
 import org.apache.arrow.c.CDataDictionaryProvider
 import org.apache.arrow.vector._
-import org.apache.arrow.vector.complex.{ListVector, MapVector, StructVector}
+import org.apache.arrow.vector.complex.{BaseRepeatedValueVector, ListVector, MapVector, StructVector}
 import org.apache.arrow.vector.dictionary.{Dictionary, DictionaryProvider}
 import org.apache.arrow.vector.dictionary.DictionaryProvider.MapDictionaryProvider
 import org.apache.arrow.vector.ipc.{ArrowStreamReader, ArrowStreamWriter}
@@ -38,6 +39,7 @@ import org.apache.spark.{SparkEnv, SparkException}
 import org.apache.spark.internal.Logging
 import org.apache.spark.io.CompressionCodec
 import org.apache.spark.sql.catalyst.expressions.Attribute
+import org.apache.spark.sql.comet.CometBroadcastValue
 import org.apache.spark.sql.comet.execution.arrow.{ArrowReaderIterator, ConstantColumnVectors}
 import org.apache.spark.sql.execution.vectorized.ConstantColumnVector
 import org.apache.spark.sql.types._
@@ -50,6 +52,9 @@ import org.apache.comet.vector.CometVector
 
 object Utils extends CometTypeShim with Logging {
   private val VariantExtensionName = "arrow.parquet.variant"
+
+  def majorMinorPatchVersion(version: String): Option[(Int, Int, Int)] =
+    org.apache.spark.util.VersionUtils.majorMinorPatchVersion(version)
 
   def getConfPath(confFileName: String): String = {
     sys.env
@@ -257,18 +262,37 @@ object Utils extends CometTypeShim with Logging {
       val out = new DataOutputStream(codec.compressedOutputStream(cbbos))
 
       val (fieldVectors, batchProviderOpt) = getBatchFieldVectors(batch)
-      val root = new VectorSchemaRoot(fieldVectors.asJava)
-      if (fieldVectors.isEmpty) {
-        // VSR cannot infer rowCount without field vectors
-        root.setRowCount(batch.numRows())
-      }
-      val provider = batchProviderOpt.getOrElse(dictionaryProvider)
+      try {
+        val root = new VectorSchemaRoot(fieldVectors.asJava)
+        if (fieldVectors.isEmpty) {
+          // VSR cannot infer rowCount without field vectors
+          root.setRowCount(batch.numRows())
+        }
+        val provider = batchProviderOpt.getOrElse(dictionaryProvider)
 
-      val writer = new ArrowStreamWriter(root, provider, Channels.newChannel(out))
-      writer.start()
-      writer.writeBatch()
-      root.clear()
-      writer.close()
+        // VectorSchemaRootAppender, which coalesces broadcast batches, assumes offsets that start
+        // at zero, and Arrow Java writes the bytes before the first offset too. A slice of the root
+        // rebases the offsets to zero and leaves those bytes out.
+        val written =
+          if (fieldVectors.forall(offsetsStartAtZero)) root else root.slice(0, root.getRowCount)
+        try {
+          val writer = new ArrowStreamWriter(written, provider, Channels.newChannel(out))
+          writer.start()
+          writer.writeBatch()
+          root.clear()
+          writer.close()
+        } finally {
+          // The slice holds its own references on the batch's buffers, so it is closed even when
+          // the write fails, as it does when a cancelled broadcast interrupts the task.
+          if (written ne root) written.close()
+        }
+      } catch {
+        case NonFatal(e) =>
+          // The batch's own vectors stay with their owner. The ones made for this write are held
+          // by nothing else, and a narrowed copy can be close to 2 GiB.
+          closeAfterFailure(allocatedFor(batch, fieldVectors), e)
+          throw e
+      }
 
       if (out.size() > 0) {
         (batch.numRows().toLong, cbbos.toChunkedByteBuffer)
@@ -279,47 +303,33 @@ object Utils extends CometTypeShim with Logging {
   }
 
   /**
-   * Serializes each column of `batch` into its own compressed Arrow IPC stream, in column order.
+   * Whether every offset buffer in `vector`, its children included, starts at zero.
    *
-   * [[serializeBatches]] writes one stream covering every column, so a reader has to inflate all
-   * of them before it can project. Comet's in-memory cache stores columns separately instead, so
-   * a scan decodes only the ones it selected. Each stream is self-contained, including its schema
-   * and any dictionaries the column needs.
-   *
-   * The row count is not recoverable from the result when `batch` has no columns, so callers keep
-   * it alongside. As with [[serializeBatches]], the batch's vectors are cleared once written.
+   * arrow-rs slices a string, binary, list or map array by moving the start of its offsets, and
+   * the C Data import keeps them, so a vector imported from a sliced native array has offsets
+   * that start past zero. The rows before the slice stay at the front of its data buffer, or of
+   * its child vector for a list or map.
    */
-  def serializeBatchColumns(batch: ColumnarBatch): Array[ChunkedByteBuffer] = {
-    val codec = CompressionCodec.createCodec(SparkEnv.get.conf)
-
-    // Each column is written with the provider it was decoded with, not the batch's first one:
-    // columns decoded from separate streams have independent dictionary ID namespaces.
-    getBatchFieldVectorsWithProviders(batch).map { case (fieldVector, providerOpt) =>
-      val provider = providerOpt.getOrElse(new CDataDictionaryProvider)
-      val cbbos = new ChunkedByteBufferOutputStream(1024 * 1024, ByteBuffer.allocate)
-      val out = new DataOutputStream(codec.compressedOutputStream(cbbos))
-
-      val root = new VectorSchemaRoot(Seq(fieldVector).asJava)
-      val writer = new ArrowStreamWriter(root, provider, Channels.newChannel(out))
-      writer.start()
-      writer.writeBatch()
-      root.clear()
-      writer.close()
-
-      cbbos.toChunkedByteBuffer
-    }.toArray
+  private def offsetsStartAtZero(vector: FieldVector): Boolean = {
+    val firstOffset = vector match {
+      case v: BaseVariableWidthVector if v.getValueCount > 0 => v.getOffsetBuffer.getInt(0)
+      case v: BaseRepeatedValueVector if v.getValueCount > 0 => v.getOffsetBuffer.getInt(0)
+      case _ => 0
+    }
+    firstOffset == 0 && vector.getChildrenFromFields.asScala.forall(offsetsStartAtZero)
   }
 
   /**
-   * The classes that carry the output of [[serializeBatches]] and [[serializeBatchColumns]] out
-   * of Comet, for Kryo registration by [[org.apache.comet.CometKryoRegistrator]].
+   * The classes that carry the output of [[serializeBatches]] out of Comet, for Kryo registration
+   * by [[org.apache.comet.CometKryoRegistrator]].
    *
    * Spark registers `ChunkedByteBuffer` itself but not an array of them, and
-   * `CometBroadcastExchangeExec` broadcasts exactly that array, so a native broadcast fails under
-   * `spark.kryo.registrationRequired=true` whichever Comet features are enabled. Comet's cache
-   * format stores one buffer per column and so needs the same registrations.
+   * `CometBroadcastExchangeExec` broadcasts a [[CometBroadcastValue]], which holds exactly that
+   * array, so a native broadcast fails under `spark.kryo.registrationRequired=true` whichever
+   * Comet features are enabled.
    */
   def arrowBytesKryoClasses: Seq[Class[_]] = Seq(
+    classOf[CometBroadcastValue],
     classOf[ChunkedByteBuffer],
     classOf[Array[ChunkedByteBuffer]],
     // A ChunkedByteBuffer's own chunks. ChunkedByteBufferOutputStream allocates them on heap.
@@ -410,6 +420,7 @@ object Utils extends CometTypeShim with Logging {
                 targetRoot.allocateNew()
               }
               try {
+                // Appending needs offsets that start at zero, which serializeBatches writes.
                 VectorSchemaRootAppender.append(targetRoot, sourceRoot)
               } catch {
                 case e: IllegalArgumentException =>
@@ -480,31 +491,68 @@ object Utils extends CometTypeShim with Logging {
   def isArrowBacked(batch: ColumnarBatch): Boolean =
     (0 until batch.numCols()).forall { i =>
       batch.column(i) match {
-        // Not every CometVector can be handed to getFieldVector: a CometPlainVector can wrap a
+        // Not every CometVector is handed out as it stands: a CometPlainVector can wrap a
         // LargeVarCharVector or LargeVarBinaryVector (an accelerated mapInArrow returning
-        // pa.large_string(), for instance), which it rejects. Answering true for those would
-        // send a batch down the direct write path that then fails, so check the vector itself
-        // and let the caller convert instead.
+        // pa.large_string(), for instance), which getFieldVector rejects and
+        // getBatchFieldVectorsWithProviders replaces with a 32-bit copy. So check the vector
+        // itself and let the caller convert such a batch.
         case v: CometVector => isSupportedFieldVector(v.getValueVector)
         case _ => false
       }
     }
 
+  /**
+   * Field vectors of `batch` and the dictionaries they refer to, as one provider.
+   *
+   * Some of the vectors may have been allocated here rather than taken from `batch`; see
+   * [[getBatchFieldVectorsWithProviders]]. They are released with the rest when the caller clears
+   * the vectors it wrote, or by [[closeAfterFailure]] if the write fails.
+   */
   def getBatchFieldVectors(
       batch: ColumnarBatch): (Seq[FieldVector], Option[DictionaryProvider]) = {
     val columns = getBatchFieldVectorsWithProviders(batch)
-    (columns.map(_._1), combineDictionaryProviders(columns))
+    val vectors = columns.map(_._1)
+    try {
+      (vectors, combineDictionaryProviders(columns))
+    } catch {
+      case NonFatal(e) =>
+        closeAfterFailure(allocatedFor(batch, vectors), e)
+        throw e
+    }
   }
+
+  /**
+   * The vectors of `vectors`, which were returned for `batch`, that were allocated for it rather
+   * than taken from it: a 32-bit copy of a large-offset column, or a materialized
+   * `ConstantColumnVector`. Whoever holds the returned vectors is the only one who can release
+   * them, and `batch` still owns the rest.
+   */
+  def allocatedFor(batch: ColumnarBatch, vectors: Seq[FieldVector]): Seq[FieldVector] = {
+    val borrowed = (0 until batch.numCols()).flatMap { i =>
+      batch.column(i) match {
+        case v: CometVector => Some(v.getValueVector)
+        case _ => None
+      }
+    }
+    vectors.filterNot(v => borrowed.exists(_ eq v))
+  }
+
+  /** Closes `vectors` for a caller that is failing with `failure`, which keeps any error. */
+  def closeAfterFailure(vectors: Seq[ValueVector], failure: Throwable): Unit =
+    vectors.foreach { v =>
+      try v.close()
+      catch { case NonFatal(closeError) => failure.addSuppressed(closeError) }
+    }
 
   /**
    * The dictionaries every dictionary-encoded column of `columns` refers to, as one provider.
    *
-   * Columns of a batch need not share a provider. Comet's cache decodes each column from its own
-   * Arrow stream, so a dictionary-backed column arrives carrying the provider its reader built,
-   * and a batch that reaches [[serializeBatches]] -- a native broadcast of a cache scan, say --
-   * can hold several. Writing the whole batch emits one schema covering every column and resolves
-   * each column's dictionary ID against the single provider the writer was given, so handing it
-   * any one column's provider fails with "Could not find dictionary with ID n" for the others.
+   * Columns of a batch need not share a provider. A batch assembled from several upstream readers
+   * -- a shuffle reader's output, or a broadcast that coalesces many blocks -- carries a
+   * dictionary-backed column with whichever provider its own reader built, so one batch can hold
+   * several. Writing the whole batch emits one schema covering every column and resolves each
+   * column's dictionary ID against the single provider the writer was given, so handing it any
+   * one column's provider fails with "Could not find dictionary with ID n" for the others.
    */
   private def combineDictionaryProviders(
       columns: Seq[(FieldVector, Option[DictionaryProvider])]): Option[DictionaryProvider] = {
@@ -514,12 +562,7 @@ object Utils extends CometTypeShim with Logging {
       val encoding = vector.getField.getDictionary
       if (encoding != null) {
         val id = encoding.getId
-        val dictionary = providerOpt.map(_.lookup(id)).orNull
-        if (dictionary == null) {
-          throw new SparkException(
-            s"Column ${vector.getField.getName} is dictionary encoded with ID $id, but no " +
-              "dictionary with that ID was provided")
-        }
+        val dictionary = lookupDictionary(vector, providerOpt)
         dictionaries.get(id) match {
           // Every provider seen here descends from one upstream reader, which numbers the
           // dictionaries it hands out, so two columns sharing an ID share the dictionary itself.
@@ -538,50 +581,163 @@ object Utils extends CometTypeShim with Logging {
   }
 
   /**
+   * The dictionary a dictionary-encoded column refers to, or a failure naming the column.
+   *
+   * Shared with the cache serializer, which decodes dictionary-encoded columns rather than
+   * folding their providers together, so that both report a missing dictionary the same way.
+   */
+  def lookupDictionary(
+      vector: FieldVector,
+      providerOpt: Option[DictionaryProvider]): Dictionary = {
+    val id = vector.getField.getDictionary.getId
+    val dictionary = providerOpt.map(_.lookup(id)).orNull
+    if (dictionary == null) {
+      throw new SparkException(
+        s"Column ${vector.getField.getName} is dictionary encoded with ID $id, but no " +
+          "dictionary with that ID was provided")
+    }
+    dictionary
+  }
+
+  /**
    * Field vectors of `batch` paired with the dictionary provider each column was decoded with.
    *
    * [[getBatchFieldVectors]] folds these into one provider covering the whole batch, which is
-   * what a single stream over every column needs. Comet's cache decodes each column from its own
-   * stream and writes it back the same way, so it keeps the pairing instead: each column is
-   * written with the provider it was decoded with.
+   * what a single stream over every column needs. Comet's cache serializer keeps the pairing
+   * instead: its payload has no schema message to describe a dictionary encoding, so it decodes
+   * each such column against the provider that column arrived with.
+   *
+   * Not every returned vector is `batch`'s own. A large-offset column is replaced by a 32-bit
+   * copy and a `ConstantColumnVector` by a materialized one, and the caller releases those, as
+   * [[allocatedFor]] tells them apart. A caller that only unloads or closes the vectors it
+   * decoded itself would leak them. If a later column fails, the ones already made are closed
+   * here before the failure is rethrown.
    */
   def getBatchFieldVectorsWithProviders(
       batch: ColumnarBatch): Seq[(FieldVector, Option[DictionaryProvider])] = {
     val rows = batch.numRows()
-    (0 until batch.numCols()).map { index =>
-      batch.column(index) match {
-        case a: CometVector =>
-          val valueVector = a.getValueVector
-          val provider =
-            if (valueVector.getField.getDictionary != null) Some(a.getDictionaryProvider)
-            else None
+    // Vectors made here rather than taken from `batch`. The caller releases them with the rest of
+    // what it writes, but if a later column fails it never gets them, so they are closed here.
+    val made = scala.collection.mutable.ArrayBuffer.empty[FieldVector]
+    def keep(vector: FieldVector): FieldVector = {
+      made += vector
+      vector
+    }
 
-          (getFieldVector(valueVector, "serialize"), provider)
+    try {
+      (0 until batch.numCols()).map { index =>
+        batch.column(index) match {
+          case a: CometVector =>
+            val valueVector = a.getValueVector
+            val provider =
+              if (valueVector.getField.getDictionary != null) Some(a.getDictionaryProvider)
+              else None
 
-        case cv: ConstantColumnVector =>
-          // Spark wraps file-source partition columns and other per-batch constants in
-          // `ConstantColumnVector`. Materialise to an Arrow vector so the serialisation path
-          // doesn't reject the batch. "UTC" is intentional -- see `ConstantColumnVectors`.
-          val materialized = ConstantColumnVectors.materialize(
-            cv,
-            cv.dataType(),
-            rows,
-            s"_const_$index",
-            org.apache.comet.CometArrowAllocator,
-            "UTC")
-          (materialized, None)
+            val fieldVector = valueVector match {
+              case v: LargeVarCharVector => keep(narrowOffsets(v, ArrowType.Utf8.INSTANCE))
+              case v: LargeVarBinaryVector => keep(narrowOffsets(v, ArrowType.Binary.INSTANCE))
+              case v => getFieldVector(v, "serialize")
+            }
+            (fieldVector, provider)
 
-        case c =>
-          throw new SparkException(
-            s"Comet execution only takes Arrow Arrays, but got ${c.getClass}. " +
-              "This typically happens when a Comet scan falls back to Spark due to unsupported " +
-              "data types (e.g., complex types like structs, arrays, or maps). " +
-              "To resolve this, you can: " +
-              "(1) enable spark.comet.scan.allowIncompatible=true to use a compatible native " +
-              "scan variant, or " +
-              "(2) enable spark.comet.convert.parquet.enabled=true to convert Spark Parquet " +
-              "data to Arrow format automatically.")
+          case cv: ConstantColumnVector =>
+            // Spark wraps file-source partition columns and other per-batch constants in
+            // `ConstantColumnVector`. Materialise to an Arrow vector so the serialisation path
+            // doesn't reject the batch. "UTC" is intentional -- see `ConstantColumnVectors`.
+            val materialized = keep(
+              ConstantColumnVectors.materialize(
+                cv,
+                cv.dataType(),
+                rows,
+                s"_const_$index",
+                org.apache.comet.CometArrowAllocator,
+                "UTC"))
+            (materialized, None)
+
+          case c =>
+            throw new SparkException(
+              s"Comet execution only takes Arrow Arrays, but got ${c.getClass}. " +
+                "This typically happens when a Comet scan falls back to Spark due to " +
+                "unsupported data types (e.g., complex types like structs, arrays, or maps). " +
+                "To resolve this, you can: " +
+                "(1) enable spark.comet.scan.allowIncompatible=true to use a compatible native " +
+                "scan variant, or " +
+                "(2) enable spark.comet.convert.parquet.enabled=true to convert Spark Parquet " +
+                "data to Arrow format automatically.")
+        }
       }
+    } catch {
+      case NonFatal(e) =>
+        closeAfterFailure(made.toSeq, e)
+        throw e
+    }
+  }
+
+  /**
+   * A copy of `large` with 32-bit offsets, as a vector of `narrowType`.
+   *
+   * A PyArrow UDF can hand back a `large_string` or `large_binary` column, which Comet reads but
+   * [[getFieldVector]] does not accept. The column is still `StringType` or `BinaryType`, which
+   * Comet otherwise carries as `Utf8` or `Binary`, so it is written in that form. Whatever reads
+   * the bytes back then gets the type it plans for, and the batches of one broadcast share a
+   * schema whichever offset width each arrived with: [[coalesceBroadcastBatches]] appends them to
+   * a root built from the first one's schema, and a native plan reading them takes its input
+   * stream's schema from the first one too. Only a column holding more data than 32-bit offsets
+   * can address is refused.
+   *
+   * Only top-level columns are narrowed. A `large_string` or `large_binary` child of a struct,
+   * list or map column passes [[getFieldVector]] with its parent and keeps its 64-bit offsets
+   * (#6933).
+   *
+   * Like a materialized `ConstantColumnVector`, the copy is released when the caller clears the
+   * vectors it wrote. `large` itself stays with its owner.
+   */
+  private def narrowOffsets(
+      large: BaseLargeVariableWidthVector,
+      narrowType: ArrowType): FieldVector = {
+    val numValues = large.getValueCount
+    val largeOffsets = large.getOffsetBuffer
+    val largeWidth = BaseLargeVariableWidthVector.OFFSET_WIDTH.toLong
+    // An empty vector need not have an offset buffer to read.
+    val start = if (numValues == 0) 0L else largeOffsets.getLong(0)
+    val dataLength =
+      if (numValues == 0) 0L else largeOffsets.getLong(numValues * largeWidth) - start
+    if (dataLength > Int.MaxValue) {
+      throw new SparkException(
+        s"Column ${large.getField.getName} holds $dataLength bytes of data, more than 32-bit " +
+          "offsets can address")
+    }
+
+    val fieldType = large.getField.getFieldType
+    val narrow = new Field(
+      large.getField.getName,
+      new FieldType(fieldType.isNullable, narrowType, null, fieldType.getMetadata),
+      null)
+      .createVector(org.apache.comet.CometArrowAllocator)
+      .asInstanceOf[BaseVariableWidthVector]
+    try {
+      narrow.allocateNew(dataLength, numValues)
+      if (numValues > 0) {
+        // An Arrow Java vector has no array offset, so validity bit i belongs to value i even when
+        // the offsets start past zero, and the bitmap is copied from bit 0.
+        val validityBytes = BitVectorHelper.getValidityBufferSize(numValues).toLong
+        narrow.getValidityBuffer.setBytes(0, large.getValidityBuffer, 0, validityBytes)
+        val offsets = narrow.getOffsetBuffer
+        (0 to numValues).foreach { i =>
+          val offset = largeOffsets.getLong(i * largeWidth) - start
+          offsets.setInt(i.toLong * BaseVariableWidthVector.OFFSET_WIDTH, offset.toInt)
+        }
+        narrow.getDataBuffer.setBytes(0, large.getDataBuffer, start, dataLength)
+      }
+      // setValueCount overwrites every value after lastSet with an empty one, so mark them all
+      // as written.
+      narrow.setLastSet(numValues - 1)
+      narrow.setValueCount(numValues)
+      narrow
+    } catch {
+      case NonFatal(e) =>
+        narrow.close()
+        throw e
     }
   }
 

@@ -26,7 +26,7 @@ keys, in `try_element_at`, and in other contexts where map ordering must be dete
 runs `MapSort` natively, so map shuffle and group-by-on-map stay on Comet under Spark 4.0.
 
 When `spark.comet.exec.strictFloatingPoint=true`, `MapSort` falls back to Spark for maps whose
-keys contain `Float` or `Double` (consistent with `SortOrder` and `SortArray`). Arrow's sort uses
+keys contain `Float` or `Double`. Arrow's sort uses
 IEEE total ordering for floating-point, which differs from Spark's `Double.compare` semantics for
 `NaN` and `-0.0`.
 
