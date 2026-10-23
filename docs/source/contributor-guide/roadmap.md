@@ -28,7 +28,7 @@ Native window execution runs by default (`spark.comet.exec.window.enabled`). The
 `dense_rank`, `row_number`, `percent_rank`, `cume_dist`, `ntile`), value functions (`lag`, `lead`, `nth_value`,
 `first_value`, `last_value`), and the `count`, `min`, `max`, `sum`, and `avg` aggregates are accelerated.
 Remaining work is to close the gaps that still fall back to Spark: statistical aggregates (`stddev`, `variance`,
-`corr`, `covar`) and `collect_list` / `collect_set` as window functions ([#4766]), `RANGE` frames with explicit date or
+`corr`, `covar`) and `collect_list` / `collect_set` as window functions ([#4766]), `RANGE` frames with explicit
 decimal offsets ([#4834]), `first_value` / `last_value` on `RANGE` frames with a literal offset ([#4835]), and
 non-literal `lag` / `lead` default values ([#4268]). See the
 [window function compatibility guide](../user-guide/latest/compatibility/operators.md) for the complete list of
@@ -67,7 +67,10 @@ would remove JVM round-trips beyond those the lambda work above addresses.
 Comet's native Iceberg scans read V3 tables, including encrypted tables ([#4991]) and tables with deletion vectors
 ([#5853]). We want to add the remaining V3 features so that these scans don't fall back to Spark: row lineage
 metadata columns, column default values, and the new V3 types (`variant`, `geometry`, `geography`, and `unknown`).
-The work is tracked in [#3376], and upstream `iceberg-rust` support in [iceberg-rust #2411].
+The work is tracked in [#3376], and upstream `iceberg-rust` support in [iceberg-rust #2411]. Native Iceberg scans
+also don't support HDFS-backed tables today: Comet's native Iceberg storage layer handles only local files, S3 and
+S3-compatible stores, GCS, and OSS, and would need an HDFS `StorageFactory` upstream in `iceberg-storage-opendal`.
+We're scoping what that work would take.
 
 [#3376]: https://github.com/apache/datafusion-comet/issues/3376
 [#4991]: https://github.com/apache/datafusion-comet/pull/4991
@@ -134,14 +137,14 @@ enabled by default ([#1625]).
 
 ## Iceberg Table Writes
 
-Comet can now write Iceberg tables natively. The feature is experimental, disabled by default, and controlled by two
-settings, the second of which requires the first. The first splits Spark's Iceberg V2 write operator into separate
-writer and committer operators, so the query feeding the write becomes visible to AQE and to Comet's columnar rules
-([#4658]). The second delegates each task's Parquet write to `iceberg-rust` when the write passes an eligibility
-check ([#5361]); writes that don't pass keep Iceberg Java's writer. Merge-on-read writes are not intercepted yet
-([#6240]). The remaining work toward the original goal of [#4322], an ETL job that runs end to end in native code, is
-tracked in [#5649]: correctness fixes, failure handling that matches Iceberg Java, broader coverage, and enabling
-both settings by default ([#5644]). See [Iceberg Writes](iceberg-writes.md) for how the write path works.
+Comet can write Iceberg tables natively, controlled by one setting, `spark.comet.write.iceberg.enabled`, which is
+off by default. Comet splits Spark's Iceberg V2 write operator into separate writer and committer operators, so the
+query feeding the write becomes visible to AQE and to Comet's columnar rules ([#4658]), and delegates each task's
+Parquet write to `iceberg-rust` when the write passes an eligibility check ([#5361]); writes that don't pass keep
+Iceberg Java's writer. Merge-on-read writes keep Spark's write operator until the native writer can write them
+([#6240]). The remaining work toward the original goal of [#4322], an ETL job that runs end to end in native code,
+is tracked in [#5649]: correctness fixes, failure handling that matches Iceberg Java, broader coverage, and enabling
+the setting by default ([#5644]). See [Iceberg Writes](iceberg-writes.md) for how the write path works.
 
 [#4322]: https://github.com/apache/datafusion-comet/issues/4322
 [#4658]: https://github.com/apache/datafusion-comet/pull/4658

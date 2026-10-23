@@ -202,9 +202,45 @@ jobs:
           restore-keys: |
             ${{ runner.os }}-java-maven-
 
+      # Split a Maven Central hiccup from a real lint violation. When the
+      # scalafix plugin fails to download (Central has answered 403, 429 and
+      # 404), Maven stops with "No plugin found for prefix 'scalafix'" and the
+      # red lint looks exactly like a violation. A scala-compiler jar that did
+      # not download shows up as "ClassNotFoundException: scala.tools.nsc.Main".
+      # The scalafix-syntactic job above lints offline after a retried
+      # download. Maven has no equally safe offline mode here, because the
+      # build resolves plugin and compiler artifacts as it goes, so this step
+      # retries the whole build instead, and only when Maven's error names a
+      # download. A lint violation or a compile error still fails on the first
+      # attempt. Maven caches a 404 in the local repository and will not ask
+      # again on its own, so the retries pass -U. Backoff matches
+      # .github/actions/maven-bootstrap: 10s, 20s, 40s plus 0-4s of jitter.
       - name: Run scalafix check
+        # Bash rather than the container default `sh`: the retry below needs
+        # pipefail, $RANDOM, and shell arithmetic.
+        shell: bash
         run: |
-          ./mvnw -B package -DskipTests scalafix:scalafix -Dscalafix.mode=CHECK -Psemanticdb ${{ matrix.profile.maven_opts }}
+          set -o pipefail
+          log=$(mktemp)
+          update=
+          for attempt in 1 2 3 4; do
+            if ./mvnw -B $update package -DskipTests scalafix:scalafix -Dscalafix.mode=CHECK \
+                 -Psemanticdb ${{ matrix.profile.maven_opts }} 2>&1 | tee "$log"; then
+              exit 0
+            fi
+            if ! grep -qE '^\[ERROR\] .*(No plugin found for prefix|could not be resolved|Could not transfer|ClassNotFoundException: scala\.tools\.nsc\.Main)' "$log"; then
+              echo "::error::Maven failed for a reason other than a download, such as a lint violation or a compile error; not retrying."
+              exit 1
+            fi
+            if [ "$attempt" -eq 4 ]; then
+              echo "::error::Maven could not download a plugin or dependency after $attempt attempts; this is not a lint violation."
+              exit 1
+            fi
+            delay=$((10 * (1 << (attempt - 1)) + RANDOM % 5))
+            echo "::warning::Maven failed to download a plugin or dependency (attempt $attempt of 4); retrying in ${delay}s with -U."
+            sleep "$delay"
+            update=-U
+          done
 
       - name: Setup Node.js
         uses: actions/setup-node@v7
@@ -242,8 +278,10 @@ jobs:
 
   # Compiles main and test sources with -Pstrict-warnings, which promotes scalac warnings to
   # errors, so a change that reintroduces a cleared warning (an Int widened into a Long metric,
-  # a discarded builder result) fails here rather than accumulating. Spark 3.5 only: the profile
-  # passes on the Scala 2.12 profiles, and the Scala 2.13 remainder is tracked in
+  # a discarded builder result) fails here rather than accumulating. It also compiles the Delta
+  # contrib (-Pdelta) against Spark 3.5, so a change that breaks the contrib build on Spark 3.5
+  # fails on its own pull request rather than in the nightly Delta suites. Spark 3.5 only: the
+  # profile passes on the Scala 2.12 profiles, and the Scala 2.13 remainder is tracked in
   # https://github.com/apache/datafusion-comet/issues/5893.
   strict-scala-warnings:
     needs: lint
@@ -273,7 +311,7 @@ jobs:
             ${{ runner.os }}-java-maven-
 
       - name: Compile with strict warnings
-        run: ./mvnw -B test-compile -Pspark-3.5 -Pstrict-warnings -DskipTests
+        run: ./mvnw -B test-compile -Pspark-3.5,delta -Pstrict-warnings -DskipTests
 
       # Saved only on main: an entry written from a pull request or a
       # `gh-readonly-queue/*` branch cannot be restored by any later run, and
@@ -468,7 +506,7 @@ jobs:
               org.apache.comet.CometVariantProjectionSuite
               org.apache.spark.sql.CometVariantShreddingSuite
               org.apache.comet.CometIcebergNativeSuite
-              org.apache.comet.CometIcebergHdfsSuite
+              org.apache.comet.CometBroadcastBuildSideSuite
               org.apache.comet.CometIcebergEncryptionSuite
               org.apache.comet.CometIcebergRewriteActionSuite
               org.apache.comet.CometIcebergWriteActionSuite
@@ -487,6 +525,7 @@ jobs:
               org.apache.comet.exec.CometShuffleSuite
               org.apache.comet.exec.CometShuffle4_0Suite
               org.apache.comet.exec.CometNativeColumnarToRowSuite
+              org.apache.comet.exec.CometDirectColumnarToRowSuite
               org.apache.comet.exec.CometNativeShuffleSuite
               org.apache.comet.exec.CometShuffleInputConversionSuite
               org.apache.comet.shuffle.CelebornShufflePartitionPusherSuite
@@ -528,8 +567,10 @@ jobs:
               org.apache.comet.exec.CometJoinSuite
               org.apache.comet.exec.CometTypedDatasetSuite
               org.apache.spark.sql.comet.CometMapInBatchSuite
+              org.apache.spark.sql.comet.CometArrowPythonUdfSuite
               org.apache.spark.sql.execution.python.CometArrowPythonRunnerSuite
               org.apache.comet.CometNativeSuite
+              org.apache.comet.DirectColumnarToRowConverterSuite
               org.apache.comet.CometConfSuite
               org.apache.comet.CometPublicApiSuite
               org.apache.comet.QueryContextInternerSuite
@@ -550,6 +591,7 @@ jobs:
               org.apache.comet.rules.CometScanRuleSuite
               org.apache.comet.rules.CometScanContribSuite
               org.apache.comet.rules.CometScanSchemeFallbackSuite
+              org.apache.comet.rules.CometMultiStoreScanSuite
               org.apache.comet.rules.CometExecRuleSuite
               org.apache.spark.sql.comet.CometPlanEqualitySuite
               org.apache.comet.rules.CometEmptyRelationExecRuleSuite
@@ -561,6 +603,7 @@ jobs:
               org.apache.spark.sql.comet.CometTPCDSV1_4_PlanStabilitySuite
               org.apache.spark.sql.comet.CometTPCDSV2_7_PlanStabilitySuite
               org.apache.spark.sql.comet.CometTaskMetricsSuite
+              org.apache.spark.sql.comet.CometUnsafeProjectionSuite
               org.apache.spark.sql.comet.CometDppFallbackRepro3949Suite
               org.apache.spark.sql.comet.CometShuffleFallbackStickinessSuite
               org.apache.spark.sql.comet.PlanDataInjectorSuite
@@ -570,10 +613,14 @@ jobs:
               org.apache.spark.sql.comet.DecimalPrecisionSuite
               org.apache.spark.sql.comet.CometScanWithPlanDataSuite
               org.apache.spark.sql.comet.util.UtilsSuite
+              org.apache.spark.sql.comet.CometBroadcastValueSuite
               org.apache.comet.vector.NativeUtilSuite
               org.apache.comet.vector.CometVectorUtilsSuite
               org.apache.comet.udf.CometUdfBridgeSuite
               org.apache.comet.objectstore.NativeConfigSuite
+              org.apache.comet.objectstore.AbfsAuthResolverSuite
+              org.apache.comet.objectstore.AbfsAuthParitySuite
+              org.apache.comet.objectstore.AbfsScanFallbackSuite
               org.apache.comet.serde.operator.CometIcebergNativeScanSuite
               org.apache.comet.serde.operator.CometNativeScanSuite
               org.apache.spark.sql.CometToPrettyStringSuite

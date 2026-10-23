@@ -35,7 +35,8 @@ use datafusion::physical_plan::metrics::{
     BaselineMetrics, Count, ExecutionPlanMetricsSet, MetricBuilder, MetricsSet,
 };
 use datafusion::physical_plan::{
-    DisplayAs, DisplayFormatType, ExecutionPlan, Partitioning, PlanProperties,
+    DisplayAs, DisplayFormatType, EmptyRecordBatchStream, ExecutionPlan, Partitioning,
+    PlanProperties,
 };
 use futures::{Stream, StreamExt, TryStreamExt};
 use iceberg::arrow::ScanMetrics;
@@ -178,6 +179,11 @@ impl IcebergScanExec {
         context: Arc<TaskContext>,
     ) -> DFResult<SendableRecordBatchStream> {
         let output_schema = Arc::clone(&self.output_schema);
+        // DPP can leave an empty execution partition so that global aggregates still run.
+        // No files need reading, so do not initialize storage or request catalog credentials.
+        if tasks.is_empty() {
+            return Ok(Box::pin(EmptyRecordBatchStream::new(output_schema)));
+        }
         let file_io = load_file_io(
             &self.catalog_properties,
             &self.metadata_location,
@@ -337,7 +343,7 @@ impl IcebergScanExec {
                 .deletes()
                 .iter()
                 .map(|delete| match size_map.get(delete.file_path()) {
-                    Some(&size) => Self::with_file_size(delete, size),
+                    Some(&size) => Self::sized_delete_file(delete, size),
                     None => Ok(delete.clone()),
                 })
                 .collect::<Result<Vec<_>, Error>>()?;
@@ -346,15 +352,19 @@ impl IcebergScanExec {
         Ok(())
     }
 
-    /// A copy of `delete` with its file size set. `FileScanTaskDeleteFile`'s fields are private
-    /// with no mutator, so the copy is built through its builder, which re-runs its validation.
-    fn with_file_size(
+    /// Copies a delete file with its size set to `size`.
+    ///
+    /// `FileScanTaskDeleteFile`'s fields are private with no mutator, so, as for the task in
+    /// [`Self::rebuild_task_with_deletes`], the copy goes through the builder, forwarding every
+    /// other field through its public accessors. The builder repeats the delete file's validation
+    /// on `build()`.
+    fn sized_delete_file(
         delete: &FileScanTaskDeleteFile,
-        file_size_in_bytes: u64,
+        size: u64,
     ) -> Result<FileScanTaskDeleteFile, Error> {
         FileScanTaskDeleteFile::builder()
             .with_file_path(delete.file_path().to_string())
-            .with_file_size_in_bytes(file_size_in_bytes)
+            .with_file_size_in_bytes(size)
             .with_file_type(delete.file_type())
             .with_file_format(delete.file_format())
             .with_partition_spec_id(delete.partition_spec_id())
@@ -363,7 +373,7 @@ impl IcebergScanExec {
             .with_content_offset(delete.content_offset())
             .with_content_size_in_bytes(delete.content_size_in_bytes())
             .with_record_count(delete.record_count())
-            .with_key_metadata(delete.key_metadata().map(Box::<[u8]>::from))
+            .with_key_metadata(delete.key_metadata().map(Box::from))
             .build()
     }
 
@@ -716,6 +726,34 @@ mod tests {
             .with_partition_spec_id(0)
             .build()
             .unwrap()
+    }
+
+    // The sized copy differs from the original in its size alone. Every optional field is set, so
+    // one the copy failed to forward would show up as a difference.
+    #[test]
+    fn sized_delete_file_keeps_every_other_field() {
+        let original = FileScanTaskDeleteFile::builder()
+            .with_file_path("s3://bucket/eq-delete.parquet".to_string())
+            .with_file_type(DataContentType::EqualityDeletes)
+            .with_file_format(DataFileFormat::Parquet)
+            .with_file_size_in_bytes(0)
+            .with_partition_spec_id(3)
+            .with_equality_ids(Some(vec![1, 4]))
+            .with_referenced_data_file(Some("s3://bucket/data.parquet".to_string()))
+            .with_content_offset(Some(4))
+            .with_content_size_in_bytes(Some(40))
+            .with_record_count(Some(7))
+            .with_key_metadata(Some(Box::from(&b"key"[..])))
+            .build()
+            .unwrap();
+
+        let sized = IcebergScanExec::sized_delete_file(&original, 1234).unwrap();
+
+        assert_eq!(sized.file_size_in_bytes(), 1234);
+        assert_eq!(
+            IcebergScanExec::sized_delete_file(&sized, 0).unwrap(),
+            original
+        );
     }
 
     // A delete file we cannot stat must fail the scan, not be silently read with a missing/0 size.

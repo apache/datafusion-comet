@@ -34,6 +34,7 @@
 - Spark 3.5.8 (audited 2026-05-27): identical to 3.4.3.
 - Spark 4.0.1 (audited 2026-05-27): now `RuntimeReplaceable` and rewritten to `ArrayInsert(arr, Literal(-1), elem)`. `CometArrayAppend` is therefore unreachable; dispatch goes through `CometArrayInsert` (which carries its own `Incompatible` notes documented at the `array_insert` entry).
 - Spark 4.1.1 (audited 2026-05-27): identical to 4.0.1.
+- Spark 3.4, 3.5 (2026-10-15, [#6086](https://github.com/apache/datafusion-comet/issues/6086)): Spark disagrees with itself here. Interpreted `ArrayAppend.eval` returns NULL for a NULL array without evaluating the item, but `doGenCode` emits the item's code outside `nullSafeExec`, so generated code evaluates the item on every row, including rows whose array is `NULL`, and an item that raises under ANSI raises there. Comet follows the generated code, which is what runs under whole-stage codegen. Its `CASE WHEN <array> IS NOT NULL THEN array_append(...) ELSE null` guard skipped the item on those rows; the `ELSE` branch now evaluates it too, when it is not a literal or a column read, and returns a NULL typed as the list. A nondeterministic array or item with a nullable array falls back to Spark, because the guard serializes the operands more than once. A non-nullable array gets no guard at all, so each operand is evaluated once over the whole batch.
 
 ## array_compact
 
@@ -56,7 +57,7 @@
 - Spark 3.5.8 (audited 2026-05-27): baseline. `ArrayDistinct(child)` over `ArraySetLike`; uses `SQLOpenHashSet`, which merges NaNs but keeps `+0.0` and `-0.0` distinct. Wired as `CometScalarFunction("array_distinct")`.
 - Spark 4.0.1 (audited 2026-05-27): `NullIntolerant` -> `nullIntolerant` field refactor.
 - Spark 4.1.1 (audited 2026-05-27): identical to 4.0.1.
-- Float/double element types run natively only on Spark 4.2.0, which normalizes the arguments in the plan (SPARK-54918); every other version falls back by default. See [Array distinct and union](../../user-guide/latest/compatibility/floating-point.md#array-distinct-and-union).
+- Float/double element types run natively on Spark 4.0.5+, 4.1.4+, and 4.2+ through `spark_array_distinct`, which normalizes the elements as those releases do (SPARK-54918 in the plan on 4.2.0, SPARK-59602 during evaluation from 4.0.5, 4.1.4, and 4.2.1); earlier versions fall back by default. See [Array distinct and union](../../user-guide/latest/compatibility/floating-point.md#array-distinct-and-union).
 
 ## array_except
 
@@ -141,7 +142,7 @@
 - Spark 3.5.8 (audited 2026-05-27): baseline. `ArrayUnion(left, right) extends ArrayBinaryLike with ComplexTypeMergingExpression`; result is left-side distinct elements followed by new right-side elements. Wired as `CometScalarFunction("array_union")`.
 - Spark 4.0.1 (audited 2026-05-27): `nullIntolerant = true` moves into `ArrayBinaryLike`; overflow path uses `arrayFunctionWithElementsExceedLimitError`.
 - Spark 4.1.1 (audited 2026-05-27): identical to 4.0.1.
-- Float/double element types follow the same Spark 4.2.0-only gate as `array_distinct`. Result element ordering matches Spark (left-side distinct elements followed by new right-side elements).
+- Float/double element types follow the same gate as `array_distinct`, through `spark_array_union`. Result element ordering matches Spark (left-side distinct elements followed by new right-side elements).
 
 ## arrays_overlap
 
@@ -149,6 +150,7 @@
 - Spark 3.5.8 (audited 2026-05-27): baseline. `ArraysOverlap(left, right)`; three-valued logic (TRUE if any common non-null element, NULL if a null is present and no overlap is found in non-nulls, FALSE otherwise). Comet routes via `CometArraysOverlap` to the native `spark_arrays_overlap` UDF, which implements the same three-valued logic.
 - Spark 4.0.1 (audited 2026-05-27): `NullIntolerant` -> `nullIntolerant` field refactor.
 - Spark 4.1.1 (audited 2026-05-27): identical to 4.0.1.
+- Spark 4.0.5, 4.1.4 and 4.2.1 (release candidates, 2026-10-14): `fastEval` and its generated code normalize each flat `FLOAT` or `DOUBLE` element with `NormalizeFloatingNumbers.FLOAT_NORMALIZER` / `DOUBLE_NORMALIZER` before the `java.util.HashSet` lookup (SPARK-59602), so `-0.0` and `0.0` are one value. Spark 4.2.0 normalizes the arguments in the plan instead (SPARK-54918). Earlier releases keep the zeros apart, and every release treats all NaNs as one value. On the versions where `ArraySetSupport.normalizesFloats` holds, `CometArraysOverlap.nativeFunction` picks `spark_arrays_overlap_normalized`, which keys flat floats by `normalize_float`; otherwise `spark_arrays_overlap`, which keys them by `canonicalize_nan`. Nested elements compare in Spark's SQL ordering in both.
 
 ## arrays_zip
 
@@ -180,6 +182,7 @@
 
 ## sequence
 
+- Performance (tuned 2026-10-09): checked i64 length arithmetic, borrowed scalar inputs, bulk validity union, and vectorisable child-buffer stores; approximately 5× faster than the previous native kernel for column-valued inputs producing 365-element and 10,000-element sequences on arm64, with short/null-heavy shapes also improved. Benchmark: `benches/sequence.rs`.
 - Spark 3.4.3 (audited 2026-08-29): `Sequence(start, stop, stepOpt, timeZoneId)`; `Sequence.impl` selects the implementation from `dataType.elementType`, so the integral/temporal split is knowable at plan time. Codegen for the integral path checks boundaries with a plain `IllegalArgumentException("Illegal sequence boundaries: ...")`, then calls the static `Sequence.sequenceLength`, which raises `SparkRuntimeException(_LEGACY_ERROR_TEMP_2161)` past `MAX_ROUNDED_ARRAY_LENGTH` and `internalError("Unreachable code reached.")` when `stop - start` overflows Long but the exact length is within the limit. Default step is per-row `start <= stop ? 1 : -1`.
 - Spark 3.5.8 (audited 2026-08-29): internal refactors only (`DataTypeUtils.sameType`, `PhysicalIntegralType.integral`); runtime semantics identical to 3.4.3.
 - Spark 4.0.1 (audited 2026-08-29): boundary error becomes `SparkIllegalArgumentException(_LEGACY_ERROR_TEMP_3243)` and the length error becomes `COLLECTION_SIZE_LIMIT_EXCEEDED.PARAMETER` (now carrying the function name); adds `throwable` optimizer hint. `sequenceLength` itself is unchanged.

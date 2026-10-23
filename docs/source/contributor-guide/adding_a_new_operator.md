@@ -357,6 +357,29 @@ case class CometProjectExec(
 }
 ```
 
+#### Reporting an Output Ordering
+
+An operator that overrides `outputOrdering`, as `CometFilterExec` does above with
+`child.outputOrdering`, makes a claim that Spark acts on: it drops a sort above the operator that
+the order satisfies. Report what the Spark operator reports and nothing more. `SampleExec`, for
+example, reports no order, so `CometSampleExec` must not report its child's.
+
+The claim has to hold at run time as well. A native hash join declares the order Spark reports for
+its streamed side to DataFusion, and an aggregate above the join may then run in sorted mode, or a
+top-k sort may stop reading early, on the strength of that order. If the order is false, the
+result is wrong groups or wrong rows, not only rows out of order. So an operator that reports an
+ordering must keep it natively, and the native operator must say so by returning `true` from
+`maintains_input_order` for that child, as DataFusion's filter and projection do. The planner
+declares the order through an operator only when the operator says it keeps it. An operator that
+cannot keep the order natively must not report it, or has to be added to `mayReportFalseOrder` in
+`operators.scala`, which makes the hash join serde send no order over it.
+
+A leaf that reports an ordering is where the order starts, so the planner has to know that the
+native operator produces its rows in that order. It knows that of an input from the JVM and of a
+scan of files, which reads the files of each partition one after the other, and the native range
+declares its order itself through `SortedInputExec`. A new leaf that reports an ordering must
+declare it natively the same way.
+
 #### Plan Identity and Exchange Reuse
 
 Spark's `ReuseExchangeAndSubquery` identifies equivalent plans through canonicalization and may
@@ -383,8 +406,17 @@ The examples above follow the implementations in
   rather than serialization state; this method does not define equality.
 
 Some operators use a different convention. `CometNativeScanExec` compares `originalPlan` to retain
-scan identity, and its `doCanonicalize` canonicalizes that plan while removing unused dynamic
-pruning filters. `CometBroadcastExchangeExec` also compares `originalPlan` before canonicalization,
+scan identity. Its `doCanonicalize` passes `originalPlan` to
+`CometScanUtils.canonicalizeOriginalPlan`, which strips every dynamic pruning filter from that copy
+before canonicalizing it, because the copy is stale and no DPP rule rewrites it. The scan's DPP
+identity comes from its top-level `partitionFilters` instead, where
+`CometScanUtils.filterUnusedDynamicPruningExpressions` drops only
+`DynamicPruningExpression(TrueLiteral)`, as Spark's `FileSourceScanExec` does. A new scan with DPP
+support should call both helpers (the second when it keeps a `FileSourceScanExec` as
+`originalPlan`): a filter that still holds the adaptive broadcast placeholder must
+stay in the canonical form, because AQE canonicalizes a query stage as its exchange was before that
+placeholder was converted, and dropping it lets AQE reuse one stage for scans with different
+filters. `CometBroadcastExchangeExec` also compares `originalPlan` before canonicalization,
 but its `doCanonicalize` clears that reference and retains the canonicalized child. Follow each
 operator's equality and canonicalization together rather than copying an exclusion in isolation.
 
@@ -468,22 +500,75 @@ Run `make` to update the user guide. The new configuration option will be added 
 
 #### Update the Planner
 
-In `native/core/src/execution/planner.rs`, add a match case in the operator deserialization logic to handle your new protobuf message:
+Plan the operator in an `OperatorBuilder`, not in a match arm in `PhysicalPlanner::create_plan`.
+`create_plan` dispatches to `OperatorRegistry` first and only falls through to its own `match` for
+operators that have not moved yet, so new operators should not add code there.
 
-```rust
-use datafusion_comet_proto::spark_operator::operator::OpStruct;
+1. Create a module under `native/core/src/execution/planner/`, for example `your_operator.rs`, and
+   declare it in `native/core/src/execution/planner.rs`. Implement `OperatorBuilder` for a unit
+   struct. The builder plans the child operators through `planner.create_plan` and wraps the result
+   in a `SparkPlan`:
 
-// In the create_plan or similar method:
-match op.op_struct.as_ref() {
-    Some(OpStruct::Scan(scan)) => {
-        // ... existing cases ...
-    }
-    Some(OpStruct::YourNewOperator(your_op)) => {
-        create_your_operator_exec(your_op, children, session_ctx)
-    }
-    // ... other cases ...
-}
-```
+   ```rust
+   use std::sync::Arc;
+
+   use datafusion::physical_plan::ExecutionPlan;
+   use datafusion_comet_proto::spark_operator::Operator;
+   use jni::objects::{Global, JObject};
+
+   use super::{operator_registry::OperatorBuilder, PhysicalPlanner, PlanCreationResult};
+   use crate::{execution::spark_plan::SparkPlan, extract_op};
+
+   /// Builder for `YourNewOperator`.
+   pub struct YourNewOperatorBuilder;
+
+   impl OperatorBuilder for YourNewOperatorBuilder {
+       fn build(
+           &self,
+           spark_plan: &Operator,
+           inputs: &mut Vec<Arc<Global<JObject<'static>>>>,
+           partition_count: usize,
+           planner: &PhysicalPlanner,
+       ) -> PlanCreationResult {
+           let your_op = extract_op!(spark_plan, YourNewOperator);
+           let (scans, shuffle_scans, child) =
+               planner.create_plan(&spark_plan.children[0], inputs, partition_count)?;
+
+           // Deserialize expressions and configuration, then create the execution plan.
+           let exec = create_your_operator_exec(your_op, Arc::clone(&child.native_plan))?;
+
+           Ok((
+               scans,
+               shuffle_scans,
+               Arc::new(SparkPlan::new(spark_plan.plan_id, exec, vec![child])),
+           ))
+       }
+   }
+   ```
+
+   See `explode.rs` for a small builder and `window.rs` for one that rewrites its output.
+
+2. In `native/core/src/execution/planner/operator_registry.rs`, add a variant to `OperatorType`,
+   map the `OpStruct` variant to it in `get_operator_type`, and add a `register_*_operators` method
+   that inserts the builder, called from `register_all_operators`:
+
+   ```rust
+   OpStruct::YourNewOperator(_) => Some(OperatorType::YourNewOperator),
+   ```
+
+   ```rust
+   fn register_your_operator_operators(&mut self) {
+       use super::your_operator::YourNewOperatorBuilder;
+
+       self.builders.insert(
+           OperatorType::YourNewOperator,
+           Box::new(YourNewOperatorBuilder),
+       );
+   }
+   ```
+
+   Keep the helpers that only your operator uses in the same module, as `aggregate.rs` and
+   `join.rs` do.
 
 `ProjectionBuilder` prunes a DataFusion filter's output for column-only projections, including
 empty projections such as the input to `count(*)`. Each required output column is filtered once,
@@ -493,7 +578,7 @@ plan ID. Computed projections and projections that use every input column are un
 
 #### Implement the Operator
 
-Create the operator implementation, either in an existing file or a new file in `native/core/src/execution/operators/`:
+Create the operator implementation that the builder calls, either in an existing file or a new file in `native/core/src/execution/operators/`:
 
 ```rust
 use datafusion::physical_plan::{ExecutionPlan, ...};
@@ -501,8 +586,7 @@ use datafusion_comet_proto::spark_operator::YourNewOperator;
 
 pub fn create_your_operator_exec(
     op: &YourNewOperator,
-    children: Vec<Arc<dyn ExecutionPlan>>,
-    session_ctx: &SessionContext,
+    child: Arc<dyn ExecutionPlan>,
 ) -> Result<Arc<dyn ExecutionPlan>, ExecutionError> {
     // Deserialize expressions and configuration
     // Create and return the execution plan

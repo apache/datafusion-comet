@@ -71,9 +71,9 @@ converts the child's rows to Arrow, as the `spark.comet.convert.*` settings do f
 batches natively. With hash partitioning that is usually faster than columnar shuffle, while with range partitioning
 the two come out about even. This applies only where native shuffle supports the partitioning and Comet can convert
 all of the child's columns, which rules out calendar intervals, and arrays and maps other than `array<string>` and
-`map<string,string>`. A shuffle that hashes a decimal wider than 18 digits, or a string or a value computed from a
-string, stays on columnar shuffle, so that it partitions rows as Spark does. The converted batches are allocated on
-the JVM outside Comet's memory pools. The setting is disabled by default.
+`map<string,string>`. A shuffle that hashes a string or a value computed from a string stays on columnar shuffle, so
+that it partitions rows as Spark does. The converted batches are allocated on the JVM outside Comet's memory pools.
+The setting is disabled by default.
 
 ### Automatic Revert to Spark Shuffle
 
@@ -103,6 +103,15 @@ both Comet's native shuffle and the JVM columnar shuffle writer. Supported value
 `zstd`, and `snappy`. LZ4 favors CPU efficiency; ZSTD produces smaller shuffle files at higher CPU cost —
 useful when shuffle I/O or network bandwidth is the bottleneck. When ZSTD is selected, the level is
 controlled by `spark.comet.shuffle.compression.zstd.level` (default `1`).
+
+With zstd, Comet also stores the offsets of string, binary, array and map columns as lengths before
+compressing each shuffle block. Lengths compress much better than offsets: in our measurements, shuffle
+files with such columns were 10% to 40% smaller, and zstd was no slower. This applies to native shuffle
+and to JVM shuffle blocks without dictionary-encoded columns. A JVM shuffle block in which
+`spark.comet.shuffle.jvm.preferDictionary.ratio` dictionary-encodes a column keeps the offsets of all
+its columns, and Celeborn shuffle blocks keep theirs too.
+`spark.comet.shuffle.compression.offsetsAsLengths.enabled` turns this off. LZ4 and snappy shuffle blocks
+are written as before.
 
 `spark.shuffle.compress=false` disables compression for Comet's native shuffle only. It has no effect on
 the JVM columnar shuffle writer, which always compresses spill files with the codec above. Disabling

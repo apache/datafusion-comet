@@ -53,7 +53,6 @@ class CometIcebergWriteDetectionSuite extends CometTestBase with CometIcebergTes
 
   override protected def sparkConf: SparkConf = {
     super.sparkConf
-      .set(CometConf.COMET_ICEBERG_WRITE_SPLIT_OPERATOR_ENABLED.key, "true")
       .set(CometConf.COMET_ICEBERG_NATIVE_WRITE_ENABLED.key, "true")
   }
 
@@ -65,16 +64,45 @@ class CometIcebergWriteDetectionSuite extends CometTestBase with CometIcebergTes
     }
   }
 
+  test("Hadoop configurations are built lazily and share the session configuration") {
+    var sessionBuilds = 0
+    var effectiveBuilds = 0
+    val sessionConf = new Configuration(false)
+    val hadoopConfs = new CometIcebergNativeWrite.LazyHadoopConfs(
+      () => {
+        sessionBuilds += 1
+        sessionConf
+      },
+      conf => {
+        effectiveBuilds += 1
+        assert(conf eq sessionConf)
+        new Configuration(conf)
+      })
+
+    assert(sessionBuilds == 0)
+    assert(effectiveBuilds == 0)
+    assert(hadoopConfs.session eq sessionConf)
+    assert(sessionBuilds == 1)
+    assert(effectiveBuilds == 0)
+    assert(hadoopConfs.effective ne sessionConf)
+    assert(sessionBuilds == 1)
+    assert(effectiveBuilds == 1)
+    assert(hadoopConfs.session eq sessionConf)
+    assert(hadoopConfs.effective ne sessionConf)
+    assert(sessionBuilds == 1)
+    assert(effectiveBuilds == 1)
+  }
+
   test("clean parquet V2 table planned as AppendData yields Compatible") {
-    withDetectionCatalog { dir =>
-      createTable(dir, "ok", partitionSpec = "")
+    withDetectionCatalog { _ =>
+      createTable("ok", partitionSpec = "")
       assertSupportLevelIs[Compatible]("ok")
     }
   }
 
   test("registration tags a fall-back reason on the write exec") {
-    withDetectionCatalog { dir =>
-      createTable(dir, "tagged", partitionSpec = "")
+    withDetectionCatalog { _ =>
+      createTable("tagged", partitionSpec = "")
       val writeExec = insertWriteExec("tagged")
       val reasons = writeExec.getTagValue(CometExplainInfo.FALLBACK_REASONS)
       assert(
@@ -84,8 +112,8 @@ class CometIcebergWriteDetectionSuite extends CometTestBase with CometIcebergTes
   }
 
   test("plan-only mode leaves the write with Spark") {
-    withDetectionCatalog { dir =>
-      createTable(dir, "plan_only", partitionSpec = "")
+    withDetectionCatalog { _ =>
+      createTable("plan_only", partitionSpec = "")
       // IcebergWriteStrategy runs before CometRule, so it needs its own plan-only guard.
       // withSQLConf returns Unit on Spark 3.4/3.5, hence the var.
       var plan: SparkPlan = null
@@ -104,8 +132,8 @@ class CometIcebergWriteDetectionSuite extends CometTestBase with CometIcebergTes
   }
 
   test("SparkWrite reflection helpers all resolve on the current Iceberg runtime") {
-    withDetectionCatalog { dir =>
-      createTable(dir, "refl_probe", partitionSpec = "")
+    withDetectionCatalog { _ =>
+      createTable("refl_probe", partitionSpec = "")
       val sparkWrite = IcebergReflection
         .getOuterSparkWrite(insertWriteExec("refl_probe").batchWrite)
         .getOrElse(fail("could not unwrap outer SparkWrite from BatchWrite"))
@@ -141,8 +169,8 @@ class CometIcebergWriteDetectionSuite extends CometTestBase with CometIcebergTes
   }
 
   test("Compatible when a session conf overrides the compression codec") {
-    withDetectionCatalog { dir =>
-      createTable(dir, "session_codec", partitionSpec = "")
+    withDetectionCatalog { _ =>
+      createTable("session_codec", partitionSpec = "")
       withSQLConf("spark.sql.iceberg.compression-codec" -> "gzip") {
         assertSupportLevelIs[Compatible]("session_codec")
       }
@@ -150,9 +178,8 @@ class CometIcebergWriteDetectionSuite extends CometTestBase with CometIcebergTes
   }
 
   test("fall-back: write.format.default=orc") {
-    withDetectionCatalog { dir =>
+    withDetectionCatalog { _ =>
       createTable(
-        dir,
         "fmt_orc",
         partitionSpec = "",
         properties = Some("'write.format.default'='orc'"))
@@ -161,8 +188,8 @@ class CometIcebergWriteDetectionSuite extends CometTestBase with CometIcebergTes
   }
 
   test("fall-back: per-write write-format option overrides parquet default") {
-    withDetectionCatalog { dir =>
-      createTable(dir, "fmt_orc_opt", partitionSpec = "")
+    withDetectionCatalog { _ =>
+      createTable("fmt_orc_opt", partitionSpec = "")
       assertUnsupportedContains(
         dfWriteExec("fmt_orc_opt", "write-format" -> "orc"),
         "fmt_orc_opt",
@@ -172,9 +199,8 @@ class CometIcebergWriteDetectionSuite extends CometTestBase with CometIcebergTes
   }
 
   test("fall-back: write.object-storage.enabled=true") {
-    withDetectionCatalog { dir =>
+    withDetectionCatalog { _ =>
       createTable(
-        dir,
         "obj_store",
         partitionSpec = "",
         properties = Some("'write.object-storage.enabled'='true'"))
@@ -183,9 +209,8 @@ class CometIcebergWriteDetectionSuite extends CometTestBase with CometIcebergTes
   }
 
   test("fall-back: write.location-provider.impl set") {
-    withDetectionCatalog { dir =>
+    withDetectionCatalog { _ =>
       createTable(
-        dir,
         "loc_provider",
         partitionSpec = "",
         properties = Some("'write.location-provider.impl'='com.example.MyProvider'"))
@@ -223,16 +248,16 @@ class CometIcebergWriteDetectionSuite extends CometTestBase with CometIcebergTes
 
   test("Compatible for a format-version=3 append") {
     assume(isSpark35Plus, "V3 tables require Iceberg 1.8.1+ (Spark 3.5 profile)")
-    withDetectionCatalog { dir =>
-      createTable(dir, "v3", partitionSpec = "", properties = Some("'format-version'='3'"))
+    withDetectionCatalog { _ =>
+      createTable("v3", partitionSpec = "", properties = Some("'format-version'='3'"))
       assertSupportLevelIs[Compatible]("v3")
     }
   }
 
   test("fall-back: format-version=4") {
     assume(icebergVersionAtLeast(1, 10), "V4 tables require Iceberg 1.10+")
-    withDetectionCatalog { dir =>
-      createTable(dir, "v4", partitionSpec = "", properties = Some("'format-version'='4'"))
+    withDetectionCatalog { _ =>
+      createTable("v4", partitionSpec = "", properties = Some("'format-version'='4'"))
       assertUnsupportedContains("v4", "format-version=4")
     }
   }
@@ -254,14 +279,10 @@ class CometIcebergWriteDetectionSuite extends CometTestBase with CometIcebergTes
 
   test("fall-back: unknown column in the write schema") {
     assume(icebergVersionAtLeast(1, 10), "The unknown type requires Iceberg 1.10+")
-    withDetectionCatalog { dir =>
+    withDetectionCatalog { _ =>
       // Spark DDL cannot declare `unknown` (Iceberg plans it as Spark's NullType), so evolve the
       // schema through the Iceberg API.
-      createTable(
-        dir,
-        "unknown_col",
-        partitionSpec = "",
-        properties = Some("'format-version'='3'"))
+      createTable("unknown_col", partitionSpec = "", properties = Some("'format-version'='3'"))
       addIcebergColumn(
         loadIcebergTable(spark, catalog, ns, "unknown_col"),
         "u",
@@ -275,9 +296,8 @@ class CometIcebergWriteDetectionSuite extends CometTestBase with CometIcebergTes
   }
 
   test("fall-back: encryption.kms-client-impl set") {
-    withDetectionCatalog { dir =>
+    withDetectionCatalog { _ =>
       createTable(
-        dir,
         "enc",
         partitionSpec = "",
         properties = Some("'encryption.kms-client-impl'='com.example.MyKms'"))
@@ -288,10 +308,9 @@ class CometIcebergWriteDetectionSuite extends CometTestBase with CometIcebergTes
   // Metrics modes are not gated: manifest metrics are re-derived on the JVM with Iceberg's
   // own MetricsConfig logic before commit, so every mode behaves as it does on the java path.
   test("Compatible for every write.metadata.metrics mode") {
-    withDetectionCatalog { dir =>
+    withDetectionCatalog { _ =>
       Seq("counts", "none", "full", "truncate(32)").zipWithIndex.foreach { case (mode, i) =>
         createTable(
-          dir,
           s"metrics_mode_$i",
           partitionSpec = "",
           properties = Some(s"'write.metadata.metrics.default'='$mode'"))
@@ -301,9 +320,8 @@ class CometIcebergWriteDetectionSuite extends CometTestBase with CometIcebergTes
   }
 
   test("Compatible for per-column metrics modes") {
-    withDetectionCatalog { dir =>
+    withDetectionCatalog { _ =>
       createTable(
-        dir,
         "metrics_col_modes",
         partitionSpec = "",
         properties = Some(
@@ -316,9 +334,8 @@ class CometIcebergWriteDetectionSuite extends CometTestBase with CometIcebergTes
   // The JVM path fails such a write inside parquet-mr's codec setup, so allow the write failure
   // and pin only the fall-back reason.
   test("fall-back: non-integer write.parquet.compression-level") {
-    withDetectionCatalog { dir =>
+    withDetectionCatalog { _ =>
       createTable(
-        dir,
         "bad_level",
         partitionSpec = "",
         properties = Some("'write.parquet.compression-level'='fast'"))
@@ -334,13 +351,12 @@ class CometIcebergWriteDetectionSuite extends CometTestBase with CometIcebergTes
     // codec-specific parquet-mr writer properties -- so these values write fine on the stock
     // path but parquet-rs rejects them at writer construction (zstd 1..=22, gzip 0..=9,
     // brotli 0..=11). They must decline up front rather than fail the task.
-    withDetectionCatalog { dir =>
+    withDetectionCatalog { _ =>
       val cases =
         Seq("zstd" -> "0", "zstd" -> "-3", "zstd" -> "23", "gzip" -> "-1", "brotli" -> "12")
       cases.zipWithIndex.foreach { case ((codec, level), i) =>
         val table = s"bad_level_range_$i"
         createTable(
-          dir,
           table,
           partitionSpec = "",
           properties = Some(
@@ -353,7 +369,6 @@ class CometIcebergWriteDetectionSuite extends CometTestBase with CometIcebergTes
       }
       // A boundary level parquet-rs accepts stays Compatible.
       createTable(
-        dir,
         "good_level",
         partitionSpec = "",
         properties = Some(
@@ -363,9 +378,8 @@ class CometIcebergWriteDetectionSuite extends CometTestBase with CometIcebergTes
   }
 
   test("fall-back: write.parquet.bloom-filter-max-bytes set") {
-    withDetectionCatalog { dir =>
+    withDetectionCatalog { _ =>
       createTable(
-        dir,
         "bloom_max",
         partitionSpec = "",
         properties = Some("'write.parquet.bloom-filter-max-bytes'='524288'"))
@@ -374,9 +388,8 @@ class CometIcebergWriteDetectionSuite extends CometTestBase with CometIcebergTes
   }
 
   test("fall-back: per-column bloom filter enabled") {
-    withDetectionCatalog { dir =>
+    withDetectionCatalog { _ =>
       createTable(
-        dir,
         "bloom_col",
         partitionSpec = "",
         properties = Some("'write.parquet.bloom-filter-enabled.column.id'='true'"))
@@ -388,9 +401,8 @@ class CometIcebergWriteDetectionSuite extends CometTestBase with CometIcebergTes
   }
 
   test("Compatible when the schema exceeds max-inferred-column-defaults") {
-    withDetectionCatalog { dir =>
+    withDetectionCatalog { _ =>
       createTable(
-        dir,
         "too_many_cols",
         partitionSpec = "",
         properties = Some("'write.metadata.metrics.max-inferred-column-defaults'='2'"))
@@ -399,9 +411,8 @@ class CometIcebergWriteDetectionSuite extends CometTestBase with CometIcebergTes
   }
 
   test("fall-back: row-group-check-min-record-count non-default") {
-    withDetectionCatalog { dir =>
+    withDetectionCatalog { _ =>
       createTable(
-        dir,
         "rg_min",
         partitionSpec = "",
         properties = Some("'write.parquet.row-group-check-min-record-count'='500'"))
@@ -410,9 +421,8 @@ class CometIcebergWriteDetectionSuite extends CometTestBase with CometIcebergTes
   }
 
   test("Compatible when row-group-check-min-record-count is at default (100)") {
-    withDetectionCatalog { dir =>
+    withDetectionCatalog { _ =>
       createTable(
-        dir,
         "rg_min_default",
         partitionSpec = "",
         properties = Some("'write.parquet.row-group-check-min-record-count'='100'"))
@@ -421,9 +431,8 @@ class CometIcebergWriteDetectionSuite extends CometTestBase with CometIcebergTes
   }
 
   test("fall-back: row-group-check-max-record-count non-default") {
-    withDetectionCatalog { dir =>
+    withDetectionCatalog { _ =>
       createTable(
-        dir,
         "rg_max",
         partitionSpec = "",
         properties = Some("'write.parquet.row-group-check-max-record-count'='50000'"))
@@ -432,9 +441,8 @@ class CometIcebergWriteDetectionSuite extends CometTestBase with CometIcebergTes
   }
 
   test("fall-back: write.parquet.page-version=v2") {
-    withDetectionCatalog { dir =>
+    withDetectionCatalog { _ =>
       createTable(
-        dir,
         "page_v2",
         partitionSpec = "",
         properties = Some("'write.parquet.page-version'='v2'"))
@@ -443,9 +451,8 @@ class CometIcebergWriteDetectionSuite extends CometTestBase with CometIcebergTes
   }
 
   test("fall-back: parquet.enable.dictionary set") {
-    withDetectionCatalog { dir =>
+    withDetectionCatalog { _ =>
       createTable(
-        dir,
         "enable_dict",
         partitionSpec = "",
         properties = Some("'parquet.enable.dictionary'='false'"))
@@ -454,9 +461,8 @@ class CometIcebergWriteDetectionSuite extends CometTestBase with CometIcebergTes
   }
 
   test("fall-back: per-column write.parquet.stats-enabled.<col> set") {
-    withDetectionCatalog { dir =>
+    withDetectionCatalog { _ =>
       createTable(
-        dir,
         "col_stats",
         partitionSpec = "",
         properties = Some("'write.parquet.stats-enabled.column.region'='false'"))
@@ -465,9 +471,8 @@ class CometIcebergWriteDetectionSuite extends CometTestBase with CometIcebergTes
   }
 
   test("fall-back: unvetted write.parquet.* property") {
-    withDetectionCatalog { dir =>
+    withDetectionCatalog { _ =>
       createTable(
-        dir,
         "unvetted",
         partitionSpec = "",
         properties = Some("'write.parquet.bloom-filter-adaptive-enabled'='true'"))
@@ -479,9 +484,8 @@ class CometIcebergWriteDetectionSuite extends CometTestBase with CometIcebergTes
   }
 
   test("fall-back: parquet.* table property other than enable.dictionary") {
-    withDetectionCatalog { dir =>
+    withDetectionCatalog { _ =>
       createTable(
-        dir,
         "pq_mr_prop",
         partitionSpec = "",
         properties = Some("'parquet.columnindex.truncate.length'='32'"))
@@ -490,9 +494,8 @@ class CometIcebergWriteDetectionSuite extends CometTestBase with CometIcebergTes
   }
 
   test("Compatible when a codec level side-channel property is set") {
-    withDetectionCatalog { dir =>
+    withDetectionCatalog { _ =>
       createTable(
-        dir,
         "codec_level",
         partitionSpec = "",
         properties = Some("'zlib.compress.level'='9'"))
@@ -501,8 +504,8 @@ class CometIcebergWriteDetectionSuite extends CometTestBase with CometIcebergTes
   }
 
   test("fall-back: parquet.* key in the session Hadoop configuration") {
-    withDetectionCatalog { dir =>
-      createTable(dir, "hadoop_conf", partitionSpec = "")
+    withDetectionCatalog { _ =>
+      createTable("hadoop_conf", partitionSpec = "")
       withSQLConf("parquet.block.size" -> "1048576") {
         assertUnsupportedContains("hadoop_conf", "parquet.block.size", "Hadoop configuration")
       }
@@ -515,8 +518,8 @@ class CometIcebergWriteDetectionSuite extends CometTestBase with CometIcebergTes
   // disable native Iceberg writes when it happens to be present in the session
   // Hadoop configuration.
   test("Compatible when only parquet.hadoop.vectored.io.enabled is set in Hadoop configuration") {
-    withDetectionCatalog { dir =>
-      createTable(dir, "vectored_io_only", partitionSpec = "")
+    withDetectionCatalog { _ =>
+      createTable("vectored_io_only", partitionSpec = "")
       withSQLConf("parquet.hadoop.vectored.io.enabled" -> "true") {
         assertSupportLevelIs[Compatible]("vectored_io_only")
       }
@@ -524,9 +527,8 @@ class CometIcebergWriteDetectionSuite extends CometTestBase with CometIcebergTes
   }
 
   test("fall-back: io-impl set") {
-    withDetectionCatalog { dir =>
+    withDetectionCatalog { _ =>
       createTable(
-        dir,
         "io_impl",
         partitionSpec = "",
         properties = Some("'io-impl'='com.example.MyFileIO'"))
@@ -535,96 +537,20 @@ class CometIcebergWriteDetectionSuite extends CometTestBase with CometIcebergTes
   }
 
   test("fall-back: data location URI scheme not supported by the native writer") {
-    withDetectionCatalog { dir =>
+    withDetectionCatalog { _ =>
       createTable(
-        dir,
         "bad_scheme",
         partitionSpec = "",
-        // abfss: object_store reads it, but iceberg-rust's OpenDAL factory has no arm for it.
-        properties =
-          Some("'write.data.path'='abfss://c@nonexistent.invalid/iceberg/db/bad_scheme'"))
-      assertUnsupportedContainsAllowingWriteFailure("bad_scheme", "storage scheme", "abfss")
-    }
-  }
-
-  test("Compatible when the data location scheme is hdfs") {
-    withDetectionCatalog { dir =>
-      createTable(
-        dir,
-        "hdfs_scheme",
-        partitionSpec = "",
-        properties =
-          Some("'write.data.path'='hdfs://nonexistent.invalid:8020/iceberg/db/hdfs_scheme'"))
-      assertSupportLevelIs[Compatible]("hdfs_scheme", allowWriteFailure = true)
-    }
-  }
-
-  test("fall-back: authority-less hdfs data location") {
-    // iceberg-rust would need `hdfs.name-node`, `hdfs.host`/`hdfs.port` or `hadoop.fs.defaultFS`
-    // for it, which Comet never relies on; the scheme rule declines it before the NameNode rule.
-    // Planned only, never executed: no filesystem on this classpath reaches it.
-    withDetectionCatalog { dir =>
-      createTable(
-        dir,
-        "hdfs_no_authority",
-        partitionSpec = "",
-        properties = Some("'write.data.path'='hdfs:///iceberg/db/hdfs_no_authority'"))
-      assertUnsupportedContains(
-        planInsertWriteExec(s"$catalog.$ns.hdfs_no_authority"),
-        "hdfs_no_authority",
-        "hdfs data location has no NameNode or nameservice in its authority",
-        "hdfs:///")
-    }
-  }
-
-  test("fall-back: hdfs data location in a nameservice that does not resolve to NameNodes") {
-    // `ns1` is a nameservice, not a host: without rpc-addresses to declare
-    // `hdfs.name-node.ns1` from, iceberg-rust could not resolve it and the task would fail on an
-    // executor.
-    withDetectionCatalog { dir =>
-      withSQLConf("dfs.nameservices" -> "ns1", "dfs.ha.namenodes.ns1" -> "nn1,nn2") {
-        createTable(
-          dir,
-          "hdfs_unresolved_ns",
-          partitionSpec = "",
-          properties = Some("'write.data.path'='hdfs://ns1/iceberg/db/hdfs_unresolved_ns'"))
-        assertUnsupportedContains(
-          planInsertWriteExec(s"$catalog.$ns.hdfs_unresolved_ns"),
-          "hdfs_unresolved_ns",
-          "nameservice 'ns1' but Comet could not resolve it",
-          "hdfs.name-node.ns1")
-      }
-    }
-  }
-
-  test("Compatible when the hdfs nameservice resolves to NameNodes") {
-    withDetectionCatalog { dir =>
-      // Planned only, never executed: running the INSERT would make the JVM client dial `ns1`
-      // (a host name to it without a failover proxy provider, which some resolvers answer) or,
-      // with one, retry the unreachable NameNodes with backoff for minutes.
-      withSQLConf(
-        "dfs.nameservices" -> "ns1",
-        "dfs.ha.namenodes.ns1" -> "nn1,nn2",
-        "dfs.namenode.rpc-address.ns1.nn1" -> "nn1.nonexistent.invalid:8020",
-        "dfs.namenode.rpc-address.ns1.nn2" -> "nn2.nonexistent.invalid:8020") {
-        createTable(
-          dir,
-          "hdfs_resolved_ns",
-          partitionSpec = "",
-          properties = Some("'write.data.path'='hdfs://ns1/iceberg/db/hdfs_resolved_ns'"))
-        val support = CometIcebergNativeWrite.getSupportLevel(
-          planInsertWriteExec(s"$catalog.$ns.hdfs_resolved_ns"))
-        assert(support.isInstanceOf[Compatible], s"expected Compatible, got $support")
-      }
+        properties = Some("'write.data.path'='hdfs://nonexistent.invalid/iceberg/db/bad_scheme'"))
+      assertUnsupportedContainsAllowingWriteFailure("bad_scheme", "storage scheme", "hdfs")
     }
   }
 
   test("fall-back: mixed-case data location scheme (native opens the location verbatim)") {
     // OpenDAL strips the scheme prefix from a path case-sensitively, so `S3://` cannot be opened
     // natively even though `s3://` can. The gate must match the scheme verbatim and decline it.
-    withDetectionCatalog { dir =>
+    withDetectionCatalog { _ =>
       createTable(
-        dir,
         "mixed_case_scheme",
         partitionSpec = "",
         properties =
@@ -635,24 +561,21 @@ class CometIcebergWriteDetectionSuite extends CometTestBase with CometIcebergTes
 
   test("fall-back: hostless hdfs:/ data location is read as hdfs, not file") {
     // Hadoop normalises `hdfs:///p` to `hdfs:/p`; with no `://` the gate used to call it `file`.
-    // hdfs is a supported scheme on this branch, so the missing authority is what declines it.
-    withDetectionCatalog { dir =>
+    withDetectionCatalog { _ =>
       createTable(
-        dir,
         "hostless_hdfs",
         partitionSpec = "",
         properties = Some("'write.data.path'='hdfs:/iceberg/db/hostless_hdfs'"))
       assertUnsupportedContains(
         planInsertWriteExec(s"$catalog.$ns.hostless_hdfs"),
         "hostless_hdfs",
-        "hdfs data location has no NameNode or nameservice in its authority")
+        "unsupported storage scheme: hdfs")
     }
   }
 
   test("fall-back: s3 data location without a bucket in its authority") {
-    withDetectionCatalog { dir =>
+    withDetectionCatalog { _ =>
       createTable(
-        dir,
         "hostless_s3",
         partitionSpec = "",
         properties = Some("'write.data.path'='s3:/nonexistent-bucket/iceberg/db/hostless_s3'"))
@@ -692,9 +615,8 @@ class CometIcebergWriteDetectionSuite extends CometTestBase with CometIcebergTes
   }
 
   test("Compatible when the data location scheme is s3") {
-    withDetectionCatalog { dir =>
+    withDetectionCatalog { _ =>
       createTable(
-        dir,
         "s3_scheme",
         partitionSpec = "",
         properties = Some("'write.data.path'='s3://nonexistent-bucket/iceberg/db/s3_scheme'"))
@@ -1104,9 +1026,8 @@ class CometIcebergWriteDetectionSuite extends CometTestBase with CometIcebergTes
   test("fall-back: unsupported Hadoop S3A setting on an S3 data location") {
     val secret = "SECRET_VALUE_MUST_NOT_APPEAR"
     withSQLConf("fs.s3a.encryption.algorithm" -> secret) {
-      withDetectionCatalog { dir =>
+      withDetectionCatalog { _ =>
         createTable(
-          dir,
           "s3a_hadoop_unsupported",
           partitionSpec = "",
           properties =
@@ -1129,8 +1050,8 @@ class CometIcebergWriteDetectionSuite extends CometTestBase with CometIcebergTes
   }
 
   test("S3-only setting gates do not affect a local data location") {
-    withDetectionCatalog { dir =>
-      createTable(dir, "local_with_s3_conf", partitionSpec = "")
+    withDetectionCatalog { _ =>
+      createTable("local_with_s3_conf", partitionSpec = "")
       withSQLConf("fs.s3a.encryption.algorithm" -> "SSE-KMS") {
         assertSupportLevelIs[Compatible]("local_with_s3_conf")
       }
@@ -1219,9 +1140,8 @@ class CometIcebergWriteDetectionSuite extends CometTestBase with CometIcebergTes
   }
 
   test("Compatible when the data location scheme is memory") {
-    withDetectionCatalog { dir =>
+    withDetectionCatalog { _ =>
       createTable(
-        dir,
         "memory_scheme",
         partitionSpec = "",
         properties = Some("'write.data.path'='memory://nonexistent/iceberg/db/memory_scheme'"))
@@ -1232,9 +1152,8 @@ class CometIcebergWriteDetectionSuite extends CometTestBase with CometIcebergTes
   test("fall-back: gs data location under HadoopFileIO (fs.gs.* is not forwarded)") {
     // The hadoop catalog's table.io() is a HadoopFileIO. Planned only, never executed: running
     // the write would have the Hadoop GCS connector look for credentials over the network.
-    withDetectionCatalog { dir =>
+    withDetectionCatalog { _ =>
       createTable(
-        dir,
         "gs_hadoop_io",
         partitionSpec = "",
         properties = Some("'write.data.path'='gs://nonexistent/iceberg/db/gs_hadoop_io'"))
@@ -1371,9 +1290,8 @@ class CometIcebergWriteDetectionSuite extends CometTestBase with CometIcebergTes
   }
 
   test("fall-back: oss data location scheme (oss.* properties are not forwarded)") {
-    withDetectionCatalog { dir =>
+    withDetectionCatalog { _ =>
       createTable(
-        dir,
         "oss_scheme",
         partitionSpec = "",
         properties = Some("'write.data.path'='oss://nonexistent/iceberg/db/oss_scheme'"))
@@ -1386,7 +1304,7 @@ class CometIcebergWriteDetectionSuite extends CometTestBase with CometIcebergTes
     // no values past Int.MaxValue, and parquet-mr rejects non-positive results at write time.
     // Each such value must fall back so the failure happens on the stock path, never be
     // silently normalised by the native translation.
-    withDetectionCatalog { dir =>
+    withDetectionCatalog { _ =>
       val keys = Seq(
         "write.parquet.row-group-size-bytes",
         "write.parquet.page-size-bytes",
@@ -1396,13 +1314,12 @@ class CometIcebergWriteDetectionSuite extends CometTestBase with CometIcebergTes
       keys.zipWithIndex.foreach { case (key, ki) =>
         badValues.zipWithIndex.foreach { case (value, vi) =>
           val table = s"bad_int_${ki}_$vi"
-          createTable(dir, table, partitionSpec = "", properties = Some(s"'$key'='$value'"))
+          createTable(table, partitionSpec = "", properties = Some(s"'$key'='$value'"))
           assertUnsupportedContainsAllowingWriteFailure(table, key)
         }
       }
       // A positive Java int is Compatible, pinning that the gate is not over-broad.
       createTable(
-        dir,
         "good_int",
         partitionSpec = "",
         properties = Some("'write.parquet.page-size-bytes'='1048576'"))
@@ -1418,7 +1335,7 @@ class CometIcebergWriteDetectionSuite extends CometTestBase with CometIcebergTes
     // sessionState.newHadoopConf(), so plain fs.s3a.* keys set here are what the gate and
     // proto assembly see. LocalTableScan conversion is enabled the same way the write action
     // suite does, so the VALUES insert converts and the built proto is inspectable.
-    withDetectionCatalog { dir =>
+    withDetectionCatalog { _ =>
       val conf = spark.sessionState.conf
       conf.setConfString(CometConf.COMET_EXEC_LOCAL_TABLE_SCAN_ENABLED.key, "true")
       conf.setConfString("fs.s3a.endpoint", "http://localhost:9000")
@@ -1426,7 +1343,6 @@ class CometIcebergWriteDetectionSuite extends CometTestBase with CometIcebergTes
       conf.setConfString("fs.s3a.path.style.access", "true")
       try {
         createTable(
-          dir,
           "s3a_props",
           partitionSpec = "",
           properties = Some("'write.data.path'='s3a://probe-bucket/iceberg/db/s3a_props'"))
@@ -1491,7 +1407,6 @@ class CometIcebergWriteDetectionSuite extends CometTestBase with CometIcebergTes
   test("Compatible when the data location is an explicit file:// path") {
     withDetectionCatalog { dir =>
       createTable(
-        dir,
         "file_scheme",
         partitionSpec = "",
         properties = Some(s"'write.data.path'='file://${dir.getAbsolutePath}/file_scheme_data'"))
@@ -1500,9 +1415,8 @@ class CometIcebergWriteDetectionSuite extends CometTestBase with CometIcebergTes
   }
 
   test("fall-back: write.parquet.shred-variants=true") {
-    withDetectionCatalog { dir =>
+    withDetectionCatalog { _ =>
       createTable(
-        dir,
         "shred",
         partitionSpec = "",
         properties = Some("'write.parquet.shred-variants'='true'"))
@@ -1514,9 +1428,8 @@ class CometIcebergWriteDetectionSuite extends CometTestBase with CometIcebergTes
     // Iceberg-Java's MetricsConfig is lenient: it warns and falls back to the default mode on
     // both paths, so the gate has nothing to protect; the JVM-side metrics assembly goes
     // through the same lenient parse.
-    withDetectionCatalog { dir =>
+    withDetectionCatalog { _ =>
       createTable(
-        dir,
         "metrics_typo",
         partitionSpec = "",
         properties = Some("'write.metadata.metrics.default'='truncat(16)'"))
@@ -1525,9 +1438,8 @@ class CometIcebergWriteDetectionSuite extends CometTestBase with CometIcebergTes
   }
 
   test("Compatible when write.spark.fanout.enabled=true") {
-    withDetectionCatalog { dir =>
+    withDetectionCatalog { _ =>
       createTable(
-        dir,
         "fanout",
         partitionSpec = "PARTITIONED BY (bucket(4, id))",
         properties = Some("'write.spark.fanout.enabled'='true'"))
@@ -1536,9 +1448,8 @@ class CometIcebergWriteDetectionSuite extends CometTestBase with CometIcebergTes
   }
 
   test("Compatible when write.target-file-size-bytes is non-default") {
-    withDetectionCatalog { dir =>
+    withDetectionCatalog { _ =>
       createTable(
-        dir,
         "target_size",
         partitionSpec = "",
         properties = Some("'write.target-file-size-bytes'='1048576'"))
@@ -1546,10 +1457,13 @@ class CometIcebergWriteDetectionSuite extends CometTestBase with CometIcebergTes
     }
   }
 
+  // With the native writer off, only the testing split flag still plans an `IcebergWriteExec`.
   test("no fall-back reason is recorded when the iceberg write feature is disabled") {
-    withDetectionCatalog { dir =>
-      createTable(dir, "flag_off", partitionSpec = "")
-      withSQLConf(CometConf.COMET_ICEBERG_NATIVE_WRITE_ENABLED.key -> "false") {
+    withDetectionCatalog { _ =>
+      createTable("flag_off", partitionSpec = "")
+      withSQLConf(
+        CometConf.COMET_ICEBERG_WRITE_SPLIT_OPERATOR_ENABLED.key -> "true",
+        CometConf.COMET_ICEBERG_NATIVE_WRITE_ENABLED.key -> "false") {
         val writeExec = insertWriteExec("flag_off")
         assert(
           writeExec.getTagValue(CometExplainInfo.FALLBACK_REASONS).isEmpty,
@@ -1559,8 +1473,8 @@ class CometIcebergWriteDetectionSuite extends CometTestBase with CometIcebergTes
   }
 
   test("fall-back: BatchWrite that is not an Iceberg SparkWrite") {
-    withDetectionCatalog { dir =>
-      createTable(dir, "plain_write", partitionSpec = "")
+    withDetectionCatalog { _ =>
+      createTable("plain_write", partitionSpec = "")
       val stub = new org.apache.spark.sql.connector.write.BatchWrite {
         override def createBatchWriterFactory(
             info: org.apache.spark.sql.connector.write.PhysicalWriteInfo)
@@ -1579,105 +1493,26 @@ class CometIcebergWriteDetectionSuite extends CometTestBase with CometIcebergTes
   }
 
   test("Compatible when partitioned by a bucket transform") {
-    withDetectionCatalog { dir =>
-      createTable(dir, "part_bucket", partitionSpec = "PARTITIONED BY (bucket(4, id))")
+    withDetectionCatalog { _ =>
+      createTable("part_bucket", partitionSpec = "PARTITIONED BY (bucket(4, id))")
       assertSupportLevelIs[Compatible]("part_bucket")
     }
   }
 
   test("Compatible when partitioned by identity on a string column") {
-    withDetectionCatalog { dir =>
-      createTable(dir, "part_string", partitionSpec = "PARTITIONED BY (region)")
+    withDetectionCatalog { _ =>
+      createTable("part_string", partitionSpec = "PARTITIONED BY (region)")
       assertSupportLevelIs[Compatible]("part_string")
     }
   }
 
-  test("fall-back: identity partition on a float or double column") {
-    // iceberg-rust groups float partition values with an equality that treats -0.0 and 0.0 as one
-    // value, where iceberg-java keeps them apart (#6138).
+  test("Compatible when partitioned by identity on a double column") {
+    // iceberg-rust grouped float partition values with an equality that treated -0.0 and 0.0 as
+    // one value, so these writes fell back (#6138) until apache/iceberg-rust#3327 kept the two
+    // apart as iceberg-java does.
     withDetectionCatalog { _ =>
-      Seq("float" -> "FLOAT", "double" -> "DOUBLE").foreach { case (typeName, sqlType) =>
-        val table = s"part_$typeName"
-        spark.sql(s"""
-          CREATE TABLE $catalog.$ns.$table (id INT, v $sqlType)
-          USING iceberg PARTITIONED BY (v)
-        """)
-        val writeExec = captureWriteExec(table, allowWriteFailure = false) {
-          spark.sql(s"INSERT INTO $catalog.$ns.$table VALUES (1, CAST(1.5 AS $sqlType))")
-        }
-        assertUnsupportedContains(writeExec, table, "partition field v", typeName, "-0.0")
-      }
-    }
-  }
-
-  test("fall-back: identity partition on a nested double field") {
-    // The source of a partition field can be nested inside a struct. `Schema.findField` resolves
-    // a nested id too, so the rule must not fail open for it.
-    withDetectionCatalog { _ =>
-      spark.sql(s"""
-        CREATE TABLE $catalog.$ns.part_nested (id INT, s STRUCT<v: DOUBLE>)
-        USING iceberg PARTITIONED BY (s.v)
-      """)
-      val writeExec = captureWriteExec("part_nested", allowWriteFailure = false) {
-        spark.sql(s"INSERT INTO $catalog.$ns.part_nested VALUES (1, named_struct('v', 1.5D))")
-      }
-      assertUnsupportedContains(writeExec, "part_nested", "partition field s.v", "double", "-0.0")
-    }
-  }
-
-  test("fall-back: double identity partition beside a dropped partition field") {
-    // A format-version-1 spec keeps a dropped partition field as a `void` transform, and that
-    // field's source column can be dropped afterwards. The surviving double field must still be
-    // found, whatever the dropped one does to the spec's partition type.
-    withDetectionCatalog { dir =>
-      createTable(
-        dir,
-        "part_dropped",
-        partitionSpec = "PARTITIONED BY (region, amount)",
-        properties = Some("'format-version'='1'"))
-      // Loaded afresh for each change: the insert in between commits through another handle.
-      def table: org.apache.iceberg.Table =
-        loadIcebergTable(spark, catalog, ns, "part_dropped")
-          .asInstanceOf[org.apache.iceberg.Table]
-      table.updateSpec().removeField("region").commit()
-      spark.sql(s"REFRESH TABLE $catalog.$ns.part_dropped")
-      assertUnsupportedContains("part_dropped", "partition field amount", "double", "-0.0")
-
-      // Iceberg before 1.11 cannot plan a write once the `void` field's source column is gone.
-      // On 1.11 iceberg-java plans it but cannot build a partition key for a spec that mixes that
-      // field with a live one, so the write itself fails on either path; only the gate's decision
-      // is checked.
-      if (icebergVersionAtLeast(1, 11)) {
-        table.updateSchema().deleteColumn("region").commit()
-        spark.sql(s"REFRESH TABLE $catalog.$ns.part_dropped")
-        val writeExec = captureWriteExec("part_dropped", allowWriteFailure = true) {
-          spark.sql(s"INSERT INTO $catalog.$ns.part_dropped VALUES (2, 2.0)")
-        }
-        assertUnsupportedContains(
-          writeExec,
-          "part_dropped",
-          "partition field amount",
-          "double",
-          "-0.0")
-      }
-    }
-  }
-
-  test("Compatible when a dropped double partition field remains as void") {
-    // The `void` field only ever holds null, so there are no signed zeros to keep apart.
-    withDetectionCatalog { dir =>
-      createTable(
-        dir,
-        "part_void",
-        partitionSpec = "PARTITIONED BY (amount)",
-        properties = Some("'format-version'='1'"))
-      loadIcebergTable(spark, catalog, ns, "part_void")
-        .asInstanceOf[org.apache.iceberg.Table]
-        .updateSpec()
-        .removeField("amount")
-        .commit()
-      spark.sql(s"REFRESH TABLE $catalog.$ns.part_void")
-      assertSupportLevelIs[Compatible]("part_void")
+      createTable("part_double", partitionSpec = "PARTITIONED BY (amount)")
+      assertSupportLevelIs[Compatible]("part_double")
     }
   }
 
@@ -1689,9 +1524,8 @@ class CometIcebergWriteDetectionSuite extends CometTestBase with CometIcebergTes
   // an insert that is planned but not run.
   // https://github.com/apache/datafusion-comet/issues/6141
   test("fall-back: void partition field whose source column was dropped, beside a live field") {
-    withDetectionCatalog { dir =>
+    withDetectionCatalog { _ =>
       createTable(
-        dir,
         "void_dropped",
         partitionSpec = "PARTITIONED BY (region, id)",
         properties = Some("'format-version'='1'"))
@@ -1712,9 +1546,8 @@ class CometIcebergWriteDetectionSuite extends CometTestBase with CometIcebergTes
     // Iceberg 1.8 neither writer can write to this table, since iceberg-java cannot bind the
     // original spec on the executors once its source column is gone, so only the gate's decision
     // is checked, on an insert that is planned but not run.
-    withDetectionCatalog { dir =>
+    withDetectionCatalog { _ =>
       createTable(
-        dir,
         "all_void_dropped",
         partitionSpec = "PARTITIONED BY (region)",
         properties = Some("'format-version'='1'"))
@@ -1731,11 +1564,11 @@ class CometIcebergWriteDetectionSuite extends CometTestBase with CometIcebergTes
   }
 
   test("fall-back: uuid column in the write schema") {
-    withDetectionCatalog { dir =>
+    withDetectionCatalog { _ =>
       // Spark DDL cannot declare `uuid`, so evolve the schema through the Iceberg API. Spark
       // plans the column as StringType, but the native writer's target Arrow schema demands
       // FixedSizeBinary(16) with no cast from Utf8 -- detection must decline before execution.
-      createTable(dir, "uuid_col", partitionSpec = "")
+      createTable("uuid_col", partitionSpec = "")
       addIcebergColumn(loadIcebergTable(spark, catalog, ns, "uuid_col"), "u", icebergUuidType())
       spark.sql(s"REFRESH TABLE $catalog.$ns.uuid_col")
       val writeExec = captureWriteExec("uuid_col", allowWriteFailure = false) {
@@ -1763,7 +1596,6 @@ class CometIcebergWriteDetectionSuite extends CometTestBase with CometIcebergTes
   }
 
   private def createTable(
-      warehouseDir: File,
       tableName: String,
       partitionSpec: String,
       properties: Option[String] = None): Unit = {

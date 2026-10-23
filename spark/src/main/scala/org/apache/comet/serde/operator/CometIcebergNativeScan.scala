@@ -609,388 +609,6 @@ object CometIcebergNativeScan extends CometOperatorSerde[CometBatchScanExec] wit
   }
 
   /**
-   * Declares the NameNodes of an HDFS location's authority to iceberg-rust's `hdfs-native`
-   * backend, from the session Hadoop configuration.
-   *
-   * The pinned iceberg-rust (apache/iceberg-rust#3111) dials an authority that carries a port
-   * (`hdfs://nn.example.com:8020/...`) as is. An authority without one is a logical name that
-   * resolves only through its declaration: `hdfs.name-node.<authority>`, a comma-separated
-   * `host:port` list (`hdfs://` optional), or Hadoop's own `dfs.ha.namenodes.<authority>` keys
-   * passed as `hadoop.*`. The global `hdfs.name-node` serves authority-less paths only, and there
-   * is no default port. Without a declaration an HA table therefore fails on its first read or
-   * write, after the planner has committed to the native path.
-   *
-   * Resolution follows the JVM client:
-   *   - an HA nameservice (`dfs.ha.namenodes.<ns>`) maps to every
-   *     `dfs.namenode.rpc-address.<ns>.<nn>`, all-or-nothing, since a partial list would turn a
-   *     failover into an outage. Each must be `host:port`: the JVM rejects a portless
-   *     rpc-address, so one leaves the nameservice unresolved;
-   *   - a portless authority that is not a configured nameservice (not in `dfs.nameservices`) is
-   *     a plain host, which the JVM dials on the default NameNode RPC port, 8020
-   *     (`DFSUtilClient.getNNAddress`);
-   *   - an authority with a port, an unresolved nameservice, a nameservice whose NameNodes are
-   *     found through DNS (`dfs.client.failover.resolve-needed.<ns>`) and an authority-less
-   *     location yield nothing; [[hdfsNameNodeFallbackReason]] declines all but the first.
-   *
-   * Call sites order this before the catalog properties, so an explicit
-   * `spark.sql.catalog.<cat>.hdfs.name-node.<authority>` still wins.
-   *
-   * @param uri
-   *   the data (scan and write) location whose authority names the NameNode
-   * @param hadoopConf
-   *   the configuration from [[hdfsResolutionConf]]
-   */
-  def hadoopToIcebergHdfsProperties(
-      uri: java.net.URI,
-      hadoopConf: org.apache.hadoop.conf.Configuration): Map[String, String] = {
-    if (!NativeConfig.lowerScheme(uri).contains("hdfs")) return Map.empty
-    // The RAW authority, not `getHost`, which answers null for a nameservice carrying an
-    // underscore.
-    val authority = Option(uri.getRawAuthority).filter(_.nonEmpty).getOrElse(return Map.empty)
-    if (!isLogicalHdfsAuthority(authority)) return Map.empty
-
-    val nnIds = haNameNodeIds(hadoopConf, authority)
-    val nameNodes = if (resolvesNameNodesThroughDns(hadoopConf, authority)) {
-      // The native client dials each rpc-address once and never expands a DNS name to its
-      // addresses, so declaring the names would silently drop the failover targets.
-      None
-    } else if (nnIds.nonEmpty) {
-      val endpoints = nnIds.flatMap { nnId =>
-        Option(hadoopConf.getTrimmed(s"dfs.namenode.rpc-address.$authority.$nnId"))
-          .flatMap(hdfsNameNode)
-      }
-      if (endpoints.size == nnIds.size) Some(endpoints.mkString(",")) else None
-    } else if (isConfiguredNameservice(hadoopConf, authority)) {
-      None
-    } else {
-      hdfsNameNode(s"$authority:$DefaultNameNodeRpcPort")
-    }
-    nameNodes.map(nameNodeDeclarationKey(authority) -> _).toMap
-  }
-
-  /**
-   * Why iceberg-rust's `hdfs-native` backend could not reach the NameNode of an HDFS location, or
-   * None when it can. Shared by the scan and write planners, which pass the catalog properties
-   * exactly as they hand them to native (the Hadoop-derived declaration first, an explicit
-   * catalog value winning), so the decision and the executed configuration agree. Declining here
-   * replaces a task failure on an executor with a fallback.
-   *
-   * It mirrors the pinned iceberg-rust's resolver (`hdfs_native_effective_name_node`):
-   *   - an authority-less `hdfs:///...` location falls back even when `hdfs.name-node`,
-   *     `hdfs.host`, `hdfs.port` or `hadoop.fs.defaultFS` is set: Comet does not rely on them;
-   *   - every `hdfs.name-node` and `hdfs.name-node.<nameservice>` entry must be `host:port`,
-   *     because iceberg-rust parses them all when it builds the storage, so one bad entry fails
-   *     every read and write through it;
-   *   - an authority with userinfo, port 0 or an otherwise malformed port is rejected;
-   *   - an authority with a valid port is dialed as is;
-   *   - a portless authority needs a declaration, `hdfs.name-node.<authority>` or
-   *     `hadoop.dfs.ha.namenodes.<authority>` with a `host:port` rpc-address per NameNode;
-   *   - the rest of the HDFS storage configuration must parse (`hdfs.host`, `hdfs.port`, no bare
-   *     `hadoop.` key, every declared nameservice complete, and a forwarded `fs.defaultFS` an
-   *     HDFS `host:port` unless the global `hdfs.name-node` is set), and no nameservice may be
-   *     declared under the name opendal gives its own synthetic one, `nameservice`, unless it is
-   *     the location's own.
-   *
-   * Known limits it cannot see: Kerberos delegation tokens (the native client presents the
-   * synthetic service `ha-hdfs:nameservice`) and NameNodes that stop answering without refusing
-   * connections (the native client has no NameNode connect or RPC timeout).
-   *
-   * Mirrors `hdfs_native_config_parse_with` and `hdfs_native_effective_name_node` in
-   * iceberg-storage-opendal at the pinned revision; re-check it when the pin moves.
-   *
-   * @param uri
-   *   the location whose authority names the NameNode (the data location when known)
-   * @param hadoopConf
-   *   the Hadoop configuration the declaration was derived from, used only to word the reason
-   * @param catalogProperties
-   *   the effective catalog properties handed to native
-   * @return
-   *   Some(reason) to decline the native path; always None for a non-hdfs location
-   */
-  def hdfsNameNodeFallbackReason(
-      uri: java.net.URI,
-      hadoopConf: org.apache.hadoop.conf.Configuration,
-      catalogProperties: Map[String, String]): Option[String] = {
-    if (!NativeConfig.lowerScheme(uri).contains("hdfs")) return None
-
-    val authority = Option(uri.getRawAuthority).filter(_.nonEmpty).getOrElse {
-      return Some(
-        s"authority-less hdfs location '$uri': Comet requires the NameNode or nameservice in " +
-          "the location itself, even when hdfs.name-node, hdfs.host, hdfs.port or " +
-          "hadoop.fs.defaultFS is set")
-    }
-
-    // The Hadoop options iceberg-rust builds from the properties, declarations expanded.
-    lazy val options = hdfsNativeOptions(catalogProperties)
-    invalidNameNodeProperty(catalogProperties)
-      .orElse(invalidHdfsStorageProperty(catalogProperties))
-      .orElse(invalidHdfsDeclaration(catalogProperties, options))
-      .orElse(syntheticNameserviceCollision(options, authority))
-      .orElse {
-        if (authority.contains("@")) {
-          Some(
-            s"HDFS location authority '$authority' carries userinfo, which Comet's native HDFS " +
-              "client does not support")
-        } else if (hdfsNameNode(authority).isDefined) {
-          None
-        } else if (!isLogicalHdfsAuthority(authority)) {
-          Some(
-            s"HDFS location authority '$authority' is neither host:port (port 1-65535) nor a " +
-              "nameservice name")
-        } else if (options.contains(s"dfs.ha.namenodes.$authority")) {
-          None
-        } else {
-          val source = if (resolvesNameNodesThroughDns(hadoopConf, authority)) {
-            "its NameNodes are found through DNS " +
-              s"(dfs.client.failover.resolve-needed.$authority), which the native client does " +
-              "not expand, so it would lose every failover target but one"
-          } else if (isConfiguredNameservice(hadoopConf, authority)) {
-            s"the Hadoop configuration declares nameservice '$authority' but Comet " +
-              s"could not resolve it: it needs dfs.ha.namenodes.$authority and a host:port " +
-              s"dfs.namenode.rpc-address.$authority.<nn> for every NameNode listed there"
-          } else {
-            s"no declaration for '$authority' was found"
-          }
-          Some(s"HDFS location authority '$authority' has no port, so Comet's native HDFS client " +
-            s"resolves it only through hdfs.name-node.$authority, and $source. Set the catalog " +
-            s"property hdfs.name-node.$authority=<host:port>[,<host:port>]; it reaches Comet " +
-            "only from catalogs that initialize their FileIO with the catalog properties (for " +
-            "example hadoop or REST catalogs)")
-        }
-      }
-  }
-
-  /**
-   * The Hadoop configuration HDFS NameNodes are resolved from: the session's `dfs.*` settings
-   * overlaid with those of the table's FileIO when it has a Hadoop configuration. The FileIO's
-   * carry the catalog's `hadoop.*` overrides the JVM reader honours; the session's carry what was
-   * set after the catalog built its FileIO. A nameservice either one names must not be mistaken
-   * for a plain host on port 8020 because the other does not.
-   */
-  def hdfsResolutionConf(
-      sessionConf: org.apache.hadoop.conf.Configuration,
-      fileIOConf: Option[org.apache.hadoop.conf.Configuration])
-      : org.apache.hadoop.conf.Configuration = {
-    val resolution = new org.apache.hadoop.conf.Configuration(false)
-    (Seq(sessionConf) ++ fileIOConf).foreach { conf =>
-      conf.getPropsWithPrefix("dfs.").asScala.foreach { case (key, value) =>
-        resolution.set(s"dfs.$key", value)
-      }
-    }
-    resolution
-  }
-
-  // iceberg-rust's global NameNode key; a `.<nameservice>` suffix declares that nameservice.
-  private val HdfsNameNodeKey = "hdfs.name-node"
-
-  // The name opendal's `hdfs-native` service gives the HA nameservice it synthesizes for every
-  // client; forwarded options declaring a real nameservice of that name replace its NameNodes.
-  private val OpendalSyntheticNameservice = "nameservice"
-
-  private def nameNodeDeclarationKey(nameservice: String): String =
-    s"$HdfsNameNodeKey.$nameservice"
-
-  // Hadoop's DFS_NAMENODE_RPC_PORT_DEFAULT, which the JVM client applies to a portless
-  // `hdfs://host` URI (DFSUtilClient.getNNAddress). It does NOT apply it to a portless
-  // rpc-address, which it rejects.
-  private val DefaultNameNodeRpcPort = 8020
-
-  // An ASCII host name (letters, digits, '.', '-', '_') or IPv4 literal. Conservative on purpose:
-  // the url crate iceberg-rust parses with re-encodes non-ASCII and canonicalizes IPv6 hosts, so
-  // a declaration keyed by anything else could miss the name iceberg-rust looks up.
-  private val HdfsHostName = """[A-Za-z0-9._-]+"""
-  // `host:port`, the host also allowed as a bracketed IPv6 literal.
-  private val HdfsHostPortPattern = s"""($HdfsHostName|\\[[0-9A-Fa-f:.]+\\]):(\\d{1,5})""".r
-  // A portless authority, which iceberg-rust treats as a logical nameservice name.
-  private val HdfsLogicalAuthorityPattern = s"""($HdfsHostName)""".r
-
-  /**
-   * One NameNode spelling as iceberg-rust's `hdfs_native_name_node` accepts it, normalized to
-   * `hdfs://host:port`: trimmed, a trailing `/` and an `hdfs://` prefix optional, port 1-65535,
-   * no userinfo or path. None for anything else, a logical name included.
-   */
-  private def hdfsNameNode(entry: String): Option[String] = {
-    val hostPort = entry.trim.stripSuffix("/").stripPrefix("hdfs://")
-    hostPort match {
-      case _ if hostPort.contains("://") => None
-      case HdfsHostPortPattern(host, port) if port.toInt >= 1 && port.toInt <= 65535 =>
-        Some(s"hdfs://$host:${port.toInt}")
-      case _ => None
-    }
-  }
-
-  /** A portless authority, which iceberg-rust treats as a logical nameservice name. */
-  private def isLogicalHdfsAuthority(authority: String): Boolean =
-    HdfsLogicalAuthorityPattern.pattern.matcher(authority).matches()
-
-  private def resolvesNameNodesThroughDns(
-      hadoopConf: org.apache.hadoop.conf.Configuration,
-      nameservice: String): Boolean =
-    hadoopConf.getBoolean(s"dfs.client.failover.resolve-needed.$nameservice", false)
-
-  /**
-   * The other HDFS settings iceberg-rust's parser rejects for every path when it builds the
-   * storage: a bare `hadoop.` key, an `hdfs.port` that is not a port, and an `hdfs.host` that
-   * with that port (default 8020) does not form `host:port`.
-   */
-  private def invalidHdfsStorageProperty(
-      catalogProperties: Map[String, String]): Option[String] = {
-    def nonBlank(key: String) = catalogProperties.get(key).map(_.trim).filter(_.nonEmpty)
-    val port = nonBlank("hdfs.port")
-    if (catalogProperties.contains("hadoop.")) {
-      Some("the property 'hadoop.' names no Hadoop key")
-    } else if (port.exists(p => !p.matches("""\d{1,5}""") || p.toInt > 65535)) {
-      Some(s"hdfs.port '${port.get}' is not a port")
-    } else {
-      nonBlank("hdfs.host").flatMap { host =>
-        val bracketed = if (host.contains(":") && !host.startsWith("[")) s"[$host]" else host
-        // Composed as iceberg-rust does, so a host that itself carries a scheme fails here too.
-        val composed = s"hdfs://$bracketed:${port.getOrElse(DefaultNameNodeRpcPort.toString)}"
-        if (hdfsNameNode(composed).isDefined) None
-        else Some(s"hdfs.host '$host' with hdfs.port does not form a host:port NameNode")
-      }
-    }
-  }
-
-  /** A declaration of opendal's synthetic nameservice name for a location that is not it. */
-  private def syntheticNameserviceCollision(
-      options: Map[String, String],
-      authority: String): Option[String] = {
-    val declared = options.contains(s"dfs.ha.namenodes.$OpendalSyntheticNameservice")
-    if (declared && authority != OpendalSyntheticNameservice) {
-      Some(
-        s"a nameservice named '$OpendalSyntheticNameservice' is declared, the name Comet's " +
-          "native HDFS client gives its own synthetic nameservice, so it would route " +
-          s"'$authority' to that nameservice's NameNodes")
-    } else {
-      None
-    }
-  }
-
-  private def haNameNodeIds(
-      hadoopConf: org.apache.hadoop.conf.Configuration,
-      nameservice: String): Seq[String] =
-    Option(hadoopConf.getTrimmedStrings(s"dfs.ha.namenodes.$nameservice"))
-      .map(_.toSeq)
-      .getOrElse(Seq.empty)
-      .filter(_.nonEmpty)
-
-  private def isConfiguredNameservice(
-      hadoopConf: org.apache.hadoop.conf.Configuration,
-      authority: String): Boolean =
-    hadoopConf.getTrimmedStringCollection("dfs.nameservices").contains(authority) ||
-      haNameNodeIds(hadoopConf, authority).nonEmpty
-
-  /**
-   * The first `hdfs.name-node` or `hdfs.name-node.<nameservice>` property iceberg-rust would
-   * reject when it parses the storage configuration, as a fallback reason.
-   */
-  private def invalidNameNodeProperty(catalogProperties: Map[String, String]): Option[String] =
-    catalogProperties.toSeq
-      .sortBy(_._1)
-      .iterator
-      .flatMap { case (key, value) =>
-        val isGlobal = key == HdfsNameNodeKey
-        if (!isGlobal && !key.startsWith(s"$HdfsNameNodeKey.")) {
-          None
-        } else {
-          val nameservice = key.stripPrefix(HdfsNameNodeKey).stripPrefix(".")
-          val entries = value.split(",").toSeq.map(_.trim).filter(_.nonEmpty)
-          if (!isGlobal && (nameservice.isEmpty || nameservice.exists(_.isWhitespace))) {
-            Some(s"$key does not name a nameservice")
-          } else if (!isGlobal && entries.isEmpty) {
-            Some(s"$key lists no NameNodes")
-          } else {
-            entries.find(hdfsNameNode(_).isEmpty).map { entry =>
-              s"$key entry '$entry' is not host:port: Comet's native HDFS client needs every " +
-                "entry as host:port (for example nn1.example.com:8020) and fails at the first " +
-                "read or write otherwise"
-            }
-          }
-        }
-      }
-      .toSeq
-      .headOption
-
-  /**
-   * The Hadoop options iceberg-rust builds from the catalog properties
-   * (`hdfs_native_config_parse_with`): the `hadoop.*` keys with the prefix stripped, then each
-   * well-formed `hdfs.name-node.<ns>` expanded into `dfs.ha.namenodes.<ns>` = `nn0,nn1,..` and a
-   * `dfs.namenode.rpc-address.<ns>.nn<i>` per entry, an explicit key winning over the expansion
-   * key by key. A malformed declaration is reported by [[invalidNameNodeProperty]] first.
-   */
-  private def hdfsNativeOptions(catalogProperties: Map[String, String]): Map[String, String] = {
-    val options = mutable.Map[String, String]()
-    catalogProperties.foreach { case (key, value) =>
-      if (key.startsWith("hadoop.") && key.length > "hadoop.".length) {
-        options(key.stripPrefix("hadoop.")) = value
-      }
-    }
-    catalogProperties.toSeq.sortBy(_._1).foreach { case (key, value) =>
-      if (key.startsWith(s"$HdfsNameNodeKey.")) {
-        val nameservice = key.stripPrefix(s"$HdfsNameNodeKey.")
-        val entries = value.split(",").toSeq.map(_.trim).filter(_.nonEmpty).flatMap(hdfsNameNode)
-        if (nameservice.nonEmpty && entries.nonEmpty) {
-          val ids = entries.indices.map(i => s"nn$i")
-          options.getOrElseUpdate(s"dfs.ha.namenodes.$nameservice", ids.mkString(","))
-          ids.zip(entries).foreach { case (id, entry) =>
-            options.getOrElseUpdate(
-              s"dfs.namenode.rpc-address.$nameservice.$id",
-              entry.stripPrefix("hdfs://"))
-          }
-        }
-      }
-    }
-    options.toMap
-  }
-
-  /**
-   * What iceberg-rust validates in the expanded options when it builds the storage, failing every
-   * path through it: each declared nameservice must list NameNodes, each with a `host:port`
-   * rpc-address, and a forwarded `fs.defaultFS` must be an HDFS `host:port` unless the global
-   * `hdfs.name-node` is set (a logical one is rejected even when declared).
-   */
-  private def invalidHdfsDeclaration(
-      catalogProperties: Map[String, String],
-      options: Map[String, String]): Option[String] = {
-    val declarations = options.toSeq.sortBy(_._1).iterator.flatMap { case (key, ids) =>
-      val nameservice = key.stripPrefix("dfs.ha.namenodes.")
-      if (!key.startsWith("dfs.ha.namenodes.") || nameservice.isEmpty) {
-        None
-      } else {
-        val nnIds = ids.split(",").toSeq.map(_.trim).filter(_.nonEmpty)
-        if (nnIds.isEmpty) {
-          Some(s"HDFS nameservice '$nameservice' is declared with no NameNodes")
-        } else {
-          nnIds
-            .find { nnId =>
-              options
-                .get(s"dfs.namenode.rpc-address.$nameservice.$nnId")
-                .flatMap(hdfsNameNode)
-                .isEmpty
-            }
-            .map { nnId =>
-              s"HDFS nameservice '$nameservice' declares NameNode '$nnId' but " +
-                s"dfs.namenode.rpc-address.$nameservice.$nnId is missing or not host:port"
-            }
-        }
-      }
-    }
-    val hasGlobalNameNode = catalogProperties
-      .get(HdfsNameNodeKey)
-      .exists(_.split(",").exists(_.trim.nonEmpty))
-    def defaultFs = options
-      .get("fs.defaultFS")
-      .map(_.trim)
-      .filter(defaultFs => defaultFs.nonEmpty && hdfsNameNode(defaultFs).isEmpty)
-      .map { defaultFs =>
-        s"the forwarded fs.defaultFS '$defaultFs' is not an HDFS host:port, which Comet's " +
-          "native HDFS client rejects for every path unless the catalog sets hdfs.name-node"
-      }
-    declarations.toSeq.headOption.orElse(if (hasGlobalNameNode) None else defaultFs)
-  }
-
-  /**
    * Transforms Hadoop S3A configuration keys to Iceberg FileIO property keys.
    *
    * Iceberg-rust's FileIO expects Iceberg-format keys (e.g., s3.access-key-id), not Hadoop keys
@@ -1362,10 +980,8 @@ object CometIcebergNativeScan extends CometOperatorSerde[CometBatchScanExec] wit
     val commonBuilder = OperatorOuterClass.IcebergScanCommon.newBuilder()
 
     // Deduplication structures - map unique values to pool indices
-    val schemaToPoolIndex = mutable.HashMap[AnyRef, Int]()
     val partitionSpecToPoolIndex = mutable.HashMap[String, Int]()
     val nameMappingToPoolIndex = mutable.HashMap[String, Int]()
-    val projectFieldIdsToPoolIndex = mutable.HashMap[Seq[Int], Int]()
     val partitionDataToPoolIndex = mutable.HashMap[String, Int]()
     // Individual delete files are interned into a flat pool; deleteFilesToPoolIndex then dedups
     // the per-task sets as lists of indices into it, so a delete file that applies to many data
@@ -1388,25 +1004,38 @@ object CometIcebergNativeScan extends CometOperatorSerde[CometBatchScanExec] wit
           idx
         })
     val residualToPoolIndex = mutable.HashMap[OperatorOuterClass.IcebergPredicate, Int]()
-    // Field-id mappings are read out of an Iceberg schema by reflection, one lookup per column, so
-    // memoize them. Keyed like schemaToPoolIndex above: a task schema that Iceberg materializes
-    // fresh per task misses, but the table/scan schema shared by every task hits.
-    val fieldIdMappingCache = mutable.HashMap[AnyRef, Map[String, Int]]()
-    def fieldIdMapping(schema: AnyRef): Map[String, Int] =
-      fieldIdMappingCache.getOrElseUpdate(schema, IcebergReflection.buildFieldIdMapping(schema))
-    // Whether the scan schema references field ids the current table schema no longer has (a
-    // dropped column read through VERSION AS OF). Loop-invariant, and lazy so a scan whose tasks
-    // all carry deletes never walks the table schema at all.
-    lazy val hasHistoricalColumns = {
-      val tableSchemaFieldIds =
-        fieldIdMapping(metadata.tableSchema.asInstanceOf[AnyRef]).values.toSet
-      metadata.globalFieldIdMapping.values.exists(id => !tableSchemaFieldIds.contains(id))
-    }
     // Columns whose Iceberg type iceberg-rust cannot use for page-index pruning; residual
     // predicates over them are dropped (see icebergExprToProto). Computed once from the full table
     // schema so a filter column projected out of the scan output is still recognized.
     val pageIndexUnsupportedColumns =
       IcebergReflection.pageIndexUnsupportedColumns(metadata.tableSchema)
+
+    // iceberg-rust reads every leaf of a projected column that the task schema holds. Reading with
+    // the pruned task schema skips the nested fields Spark's schema pruning removed, which the
+    // full schema would read and decode only to drop later. Every task reads with the same schema
+    // (see IcebergReflection.nativeTaskSchemas), so its pool entry and the projected field ids are
+    // the same for every task too.
+    val taskSchema: AnyRef = metadata.taskSchema
+      .getOrElse(
+        throw new IllegalStateException(
+          "No native Iceberg task schema. CometScanRule should have fallen back to Spark."))
+      .asInstanceOf[AnyRef]
+    val nameToFieldId = IcebergReflection.buildFieldIdMapping(taskSchema)
+    val projectFieldIds = OperatorOuterClass.ProjectFieldIdList.newBuilder()
+    output.foreach { attr =>
+      projectFieldIds.addFieldIds(
+        nameToFieldId
+          .get(attr.name)
+          .orElse(metadata.globalFieldIdMapping.get(attr.name))
+          .orElse(CometIcebergNativeScan.MetadataFieldIds.get(attr.name))
+          .getOrElse {
+            throw new IllegalStateException(
+              s"Column '${attr.name}' not found in task schema, global schema, " +
+                "or metadata field IDs. This indicates a bug in CometScanRule " +
+                "validation -- all output columns should be resolvable.")
+          })
+    }
+    commonBuilder.addProjectFieldIdsPool(projectFieldIds.build())
 
     val perPartitionBuilders = mutable.ArrayBuffer[OperatorOuterClass.IcebergScan]()
 
@@ -1451,9 +1080,9 @@ object CometIcebergNativeScan extends CometOperatorSerde[CometBatchScanExec] wit
     // keyMetadata() is declared on ContentFile (present across all supported Iceberg versions).
     // For encrypted tables it returns the plaintext StandardKeyMetadata blob; null otherwise.
     val keyMetadataMethod = IcebergReflection.getMethod(contentFileClass, "keyMetadata")
-    val taskSchemaMethod = IcebergReflection.getMethod(fileScanTaskClass, "schema")
     val toJsonMethod =
       IcebergReflection.getMethod(schemaParserClass, "toJson", schemaClass)
+    commonBuilder.addSchemaPool(toJsonMethod.invoke(null, taskSchema).asInstanceOf[String])
 
     // Access inputRDD - safe now, DPP is resolved
     scanExec.inputRDD match {
@@ -1512,83 +1141,9 @@ object CometIcebergNativeScan extends CometOperatorSerde[CometBatchScanExec] wit
                 // verbatim for iceberg-rust to decode. Unencrypted files leave the field unset.
                 keyMetadataBytes(keyMetadataMethod, dataFile).foreach(taskBuilder.setKeyMetadata)
 
-                val taskSchema = taskSchemaMethod.invoke(task)
-
-                val deletes =
-                  IcebergReflection.getDeleteFilesFromTask(task, fileScanTaskClass)
-                val hasDeletes = !deletes.isEmpty
-
-                val baseSchema: AnyRef =
-                  if (hasDeletes) {
-                    // An equality delete may be keyed on a column dropped from the current schema
-                    // (schema evolution). iceberg-rust must read that column to apply the delete,
-                    // so union the equality-delete field ids into the task schema, resolving any
-                    // dropped ones from the table's schema history (mirrors Iceberg-Java's
-                    // DeleteFilter.fileProjection).
-                    val equalityFieldIds = deletes.asScala.flatMap { df =>
-                      requiredEqualityFieldIds(deleteFileClass, df).asScala.map(_.intValue())
-                    }.toSeq
-                    if (equalityFieldIds.nonEmpty) {
-                      IcebergReflection
-                        .schemaWithRequiredFields(taskSchema, metadata.table, equalityFieldIds)
-                        .asInstanceOf[AnyRef]
-                    } else {
-                      taskSchema
-                    }
-                  } else {
-                    if (hasHistoricalColumns) {
-                      metadata.scanSchema.asInstanceOf[AnyRef]
-                    } else {
-                      metadata.tableSchema.asInstanceOf[AnyRef]
-                    }
-                  }
-
-                // iceberg-rust validates a FileScanTask by resolving its partition spec against
-                // the task schema, so a task carrying a partition spec needs that spec's source
-                // columns present even when the query projects them out (e.g. selecting only
-                // _spec_id / _partition). Union them in. project_field_ids still drives the read,
-                // so these columns are not materialized into the output.
-                val schema: AnyRef =
-                  IcebergReflection
-                    .schemaWithRequiredFields(
-                      baseSchema,
-                      metadata.table,
-                      IcebergReflection.partitionSourceFieldIds(task, fileScanTaskClass))
-                    .asInstanceOf[AnyRef]
-
-                val schemaIdx = schemaToPoolIndex.getOrElseUpdate(
-                  schema, {
-                    val idx = schemaToPoolIndex.size
-                    val schemaJson = toJsonMethod.invoke(null, schema).asInstanceOf[String]
-                    commonBuilder.addSchemaPool(schemaJson)
-                    idx
-                  })
-                taskBuilder.setSchemaIdx(schemaIdx)
-
-                val nameToFieldId = fieldIdMapping(schema)
-
-                val projectFieldIds = output.map { attr =>
-                  nameToFieldId
-                    .get(attr.name)
-                    .orElse(metadata.globalFieldIdMapping.get(attr.name))
-                    .orElse(CometIcebergNativeScan.MetadataFieldIds.get(attr.name))
-                    .getOrElse {
-                      throw new IllegalStateException(
-                        s"Column '${attr.name}' not found in task schema, global schema, " +
-                          "or metadata field IDs. This indicates a bug in CometScanRule " +
-                          "validation -- all output columns should be resolvable.")
-                    }
-                }
-
-                val projectFieldIdsIdx = projectFieldIdsToPoolIndex.getOrElseUpdate(
-                  projectFieldIds, {
-                    val idx = projectFieldIdsToPoolIndex.size
-                    val listBuilder = OperatorOuterClass.ProjectFieldIdList.newBuilder()
-                    projectFieldIds.foreach(id => listBuilder.addFieldIds(id))
-                    commonBuilder.addProjectFieldIdsPool(listBuilder.build())
-                    idx
-                  })
-                taskBuilder.setProjectFieldIdsIdx(projectFieldIdsIdx)
+                // One task schema and one projection for the whole scan, both at pool index 0.
+                taskBuilder.setSchemaIdx(0)
+                taskBuilder.setProjectFieldIdsIdx(0)
 
                 val deleteFilesList =
                   extractDeleteFilesList(
@@ -1662,17 +1217,24 @@ object CometIcebergNativeScan extends CometOperatorSerde[CometBatchScanExec] wit
           perPartitionBuilders += partitionBuilder.build()
         }
       case other if other.getClass.getName == "org.apache.spark.rdd.ParallelCollectionRDD" =>
-        // Spark's BatchScanExec.inputRDD returns sparkContext.parallelize(empty, 1) when
-        // DPP filtering removes all input partitions. That ParallelCollectionRDD is the only
-        // non-DataSourceRDD shape its inputRDD produces, so reaching this branch means "DPP
-        // pruned everything"; emit no per-partition data and let native execution return empty.
+        // Spark 3.4's BatchScanExec.inputRDD returns sparkContext.parallelize(empty, 1) when
+        // DPP removes every split of a scan that reports SinglePartition. Among supported
+        // versions, only Spark 3.4 infers SinglePartition from one execution partition,
+        // which may be a single split or a group of splits. Other fully pruned scans take
+        // the DataSourceRDD branch above: ungrouped scans have no partitions, while grouped
+        // scans may retain empty partitions. Preserve Spark's empty
+        // execution partition so global aggregates still run and scans in the same native block
+        // retain matching partition counts when no exchange separates them.
         // Re-querying scan.toBatch.planInputPartitions() to verify is unreliable because
         // Iceberg's Scan state after filter() doesn't always reflect post-DPP partitions on
         // a re-call (V2 scan state is one-shot for the materialized inputRDD). Matched by class
         // name because ParallelCollectionRDD is private[spark].
         logDebug(
           "BatchScanExec.inputRDD is ParallelCollectionRDD (DPP pruned all partitions); " +
-            "skipping per-partition serialization")
+            "preserving empty execution partitions")
+        other.partitions.foreach { _ =>
+          perPartitionBuilders += OperatorOuterClass.IcebergScan.getDefaultInstance
+        }
       case other =>
         throw new IllegalStateException(
           "Expected DataSourceRDD or ParallelCollectionRDD from BatchScanExec, " +
@@ -1681,10 +1243,10 @@ object CometIcebergNativeScan extends CometOperatorSerde[CometBatchScanExec] wit
 
     // Log deduplication summary
     val allPoolSizes = Seq(
-      schemaToPoolIndex.size,
+      commonBuilder.getSchemaPoolCount,
       partitionSpecToPoolIndex.size,
       nameMappingToPoolIndex.size,
-      projectFieldIdsToPoolIndex.size,
+      commonBuilder.getProjectFieldIdsPoolCount,
       partitionDataToPoolIndex.size,
       deleteFileToPoolIndex.size,
       deleteFilesToPoolIndex.size,

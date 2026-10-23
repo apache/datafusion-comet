@@ -547,9 +547,10 @@ impl ExecutionPlan for ParquetWriterExec {
                     // the placeholder Scan. Both schemas use the same Catalyst data types, and
                     // disabling field-name matching still recursively validates nested nullability;
                     // only nested field names and metadata are ignored.
+                    let (_, columns, _) = batch.into_parts();
                     RecordBatch::try_new_with_options(
                         Arc::clone(&schema_for_write),
-                        batch.columns().to_vec(),
+                        columns,
                         &RecordBatchOptions::new().with_match_field_names(false),
                     )
                     .map_err(|e| {
