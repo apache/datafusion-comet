@@ -948,12 +948,18 @@ rows in place, so the join does not need the rest. An outer join whose first sor
 express falls back to Spark and records a fallback reason (see
 <a class="reference internal" href="../understanding-comet-plans.html"><span class="std std-doc">Understanding Comet Plans</span></a>), because Comet cannot tell whether
 an operator above the join relies on the order.</p>
-<p>Where the order Spark reports might not hold, Comet declares nothing and an outer join can return
-its unmatched rows out of order. The output of a nested loop join
-(<a class="reference external" href="https://github.com/apache/datafusion-comet/issues/6898">#6898</a>) is one such case, and so is a
-cache or checkpoint that one wrote. Comet also declares nothing when it cannot follow the
-order back to its source, as with an RDD checkpoint, and over some caches written by an outer hash
-join whose order does hold (<a class="reference external" href="https://github.com/apache/datafusion-comet/issues/6922">#6922</a>).</p>
+<p>An outer join falls back to Spark when Comet cannot check the order Spark reports and that order
+reaches the join through an input from the JVM or through a nested loop join. Spark keeps the rows
+in the order they arrive. One such input is an RDD checkpoint. It reaches a native join only with
+<code class="docutils literal notranslate"><span class="pre">spark.comet.convert.rdd.enabled=true</span></code>, which defaults to <code class="docutils literal notranslate"><span class="pre">false</span></code>. Without that setting the
+checkpoint stays a Spark input and the join stays in Spark anyway. Another is a cache written by an
+outer hash join whose own probe input was not a scan
+(<a class="reference external" href="https://github.com/apache/datafusion-comet/issues/6922">#6922</a>). The output of a nested loop
+join can already be out of order when it reaches the join
+(<a class="reference external" href="https://github.com/apache/datafusion-comet/issues/6898">#6898</a>).</p>
+<p>When the order Comet cannot check comes only from another native hash join in the same plan, the
+join does not fall back. It runs natively and declares no order, since DataFusion keeps the order
+it can see there.</p>
 </section>
 </section>
 <section id="window-functions">
