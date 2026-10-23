@@ -142,12 +142,22 @@ class NativeUtil extends AutoCloseable {
           // Don't need to deallocate them here.
           val arrowSchema = ArrowSchema.wrap(schemaAddrs(index))
           val arrowArray = ArrowArray.wrap(arrayAddrs(index))
-          Data.exportVector(
-            allocator,
-            getFieldVector(valueVector, "export"),
-            provider,
-            arrowArray,
-            arrowSchema)
+          narrowLargeOffsets(valueVector) match {
+            case Some(narrow) =>
+              // A PyArrow UDF can return large_string or large_binary, which the native side
+              // does not plan for. Export a 32-bit copy instead, as serialization does. The
+              // export retains the copy's buffers, so the copy itself is closed here and its
+              // memory is freed when native releases the array.
+              try Data.exportVector(allocator, narrow, provider, arrowArray, arrowSchema)
+              finally narrow.close()
+            case None =>
+              Data.exportVector(
+                allocator,
+                getFieldVector(valueVector, "export"),
+                provider,
+                arrowArray,
+                arrowSchema)
+          }
         case cv: ConstantColumnVector =>
           // Spark uses ConstantColumnVector for partition columns / per-batch constants (e.g.
           // partition values, synthetic columns). Materialise to a fresh Arrow vector so Comet's
