@@ -48,7 +48,7 @@ and skips the remaining steps. Otherwise it:
 - Appends `CometSparkSessionExtensions` to `spark.sql.extensions`, unless it is already listed.
 - Sets `spark.sql.cache.serializer` to Comet's `ArrowCachedBatchSerializer` when
   `spark.comet.exec.inMemoryCache.enabled=true`, unless the application has chosen a different serializer.
-  It leaves Spark's serializer in place where Comet could not scan its format natively or Kryo would
+  It leaves Spark's serializer in place where Comet could not scan its format or Kryo would
   reject it; see [In-Memory Cache](../user-guide/latest/in-memory-cache.md).
 - Registers `CometSource` with Spark's metrics system and adds `CometMetricsListener` to
   `spark.sql.queryExecutionListeners` when `spark.comet.metrics.enabled=true`.
@@ -57,7 +57,7 @@ and skips the remaining steps. Otherwise it:
 The plugin does not change any executor memory setting. The [Memory Tuning](../user-guide/latest/tuning/memory.md) guide covers how
 to size them.
 
-When the driver or an executor stops, the plugin shuts down Comet's native tokio runtime in that JVM.
+When the driver or an executor stops, the plugin shuts down Comet's tokio runtime in that JVM.
 
 When `spark.eventLog.enabled` is `true`, the executor plugin also carries each sample of the executor's native memory
 usage log to the driver plugin. For each executor, the driver plugin keeps the sample with the most untracked memory
@@ -84,20 +84,21 @@ conversion produces. Each phase is described below.
 
 ### Phase 1: CometScanRule
 
-`CometScanRule` replaces any Parquet scans with Comet operators. There are different paths for Spark v1 and v2 data sources.
+`CometScanRule` replaces the scans that Comet supports with marker nodes, which `CometExecRule` then converts to
+scans that read the data in Rust. There are different paths for Spark v1 and v2 data sources.
 
-When reading from Parquet v1 data sources, Comet replaces `FileSourceScanExec` with a `CometScanExec`, and for v2
-data sources, `BatchScanExec` is replaced with `CometBatchScanExec`. In both cases, Comet replaces Spark's Parquet
-reader with a custom vectorized Parquet reader. This is similar to Spark's vectorized Parquet reader used by the v2
-Parquet data source but leverages native code for decoding Parquet row groups directly into Arrow format.
+When reading from Parquet v1 data sources, Comet replaces `FileSourceScanExec` with a `CometScanExec`, which
+`CometExecRule` converts to `CometNativeScanExec`. For v2 data sources, Comet replaces `BatchScanExec` with
+`CometBatchScanExec` for Iceberg tables and, when `spark.comet.scan.csv.v2.enabled=true`, for CSV files.
+`CometExecRule` converts these to `CometIcebergNativeScanExec` and `CometCsvNativeScanExec`.
 
 Comet only supports a subset of data types and will fall back to Spark's scan if unsupported types
 exist. Comet can still accelerate the rest of the query execution in this case because `CometSparkToColumnarExec` will
 convert the output from Spark's scan to Arrow arrays. Note that both `spark.comet.exec.enabled=true` and
 `spark.comet.convert.parquet.enabled=true` must be set to enable this conversion.
 
-Refer to the [Supported Spark Data Types](https://datafusion.apache.org/comet/user-guide/datatypes.html) section
-in the contributor guide to see a list of currently supported data types.
+Refer to [Spark Data Type Support](../user-guide/latest/datatypes.md) in the user guide to see a list of currently
+supported data types.
 
 ### Phase 2: CometExecRule
 
@@ -108,13 +109,15 @@ When replacing a node, various checks are performed to determine if Comet can su
 If an operator, expression, or data type is not supported by Comet then the reason will be stored in a tag on the
 underlying Spark node and the plan will not be converted.
 
-Comet does not support partially replacing subsets of the plan within a query stage because this would involve adding
-transitions to convert between row-based and columnar data between Spark operators and Comet operators and the overhead
-of this could outweigh the benefits of running parts of the query stage natively in Comet.
+Comet can replace part of a query stage. Where a Spark operator reads the output of a Comet operator, Comet adds a
+transition, such as `CometColumnarToRowExec`, to convert Arrow batches to Spark rows. The overhead of these transitions
+can outweigh the benefits of running parts of the query stage in Comet, so when
+`spark.comet.exec.transitionRevert.enabled=true`, Comet reverts a query stage to Spark if it has more columnar-to-row
+transitions than `spark.comet.exec.transitionRevert.maxTransitions`.
 
 ## Query Execution
 
-Once the plan has been transformed, any consecutive native Comet operators are combined into a `CometNativeExec` which contains
+Once the plan has been transformed, any consecutive Rust-implemented Comet operators are combined into a `CometNativeExec` which contains
 a protocol buffer serialized version of the plan (the serialization code can be found in `QueryPlanSerde`).
 
 Spark serializes the physical plan and sends it to the executors when executing tasks. The executors deserialize the
@@ -127,10 +130,11 @@ In the native code there is a `PhysicalPlanner` struct (in `planner.rs`) which c
 Apache DataFusion `ExecutionPlan`. In some cases, Comet provides specialized physical operators and expressions to
 override the DataFusion versions to ensure compatibility with Apache Spark.
 
-The leaf nodes in the physical plan are always `ScanExec`. Each JVM-sourced input is exported once as an
+A leaf node in the physical plan that reads input from the JVM is a `ScanExec`. Each JVM-sourced input is exported once as an
 [Arrow C Stream](https://arrow.apache.org/docs/format/CStreamInterface.html) (`org.apache.arrow.c.ArrowArrayStream`),
 and `ScanExec` pulls each input batch through a single C callback rather than making a JNI call per batch. The
-input could be a Comet native Parquet scan, a Spark exchange, or another native plan.
+input could be a Spark exchange or another native plan. Other leaf nodes, such as the Parquet and Iceberg scans,
+read their data in Rust.
 
 `CometNativeExec` creates a `CometExecIterator` and applies this iterator to the input RDD
 partitions. Each call to `CometExecIterator.next()` will invoke `Native.executePlan`. Once the plan finishes
@@ -155,7 +159,7 @@ Comet has two shuffle implementations, native shuffle and JVM columnar shuffle.
 [When Native Shuffle is Used](native_shuffle.md#when-native-shuffle-is-used) describes how Comet chooses between them.
 
 For native shuffle, `CometNativeShuffleWriter` runs one native plan per task, with a `ShuffleWriter` operator at the
-root. When the exchange's child is a native Comet subtree, that subtree becomes the writer's child, so the operators
+root. When the exchange's child is a Rust-implemented Comet subtree, that subtree becomes the writer's child, so the operators
 that produce the shuffle input and the writer run in the same native plan, and no batch crosses into the JVM between
 them. Otherwise, for example when the exchange's child is `CometSparkToColumnarExec`, the writer's child is a scan that
 reads batches from the JVM. The writer partitions the batches and writes them in Arrow IPC format. See
