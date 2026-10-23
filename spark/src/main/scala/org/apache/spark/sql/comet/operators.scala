@@ -2574,10 +2574,10 @@ object CometHashAggregateExec extends CometBaseAggregate[HashAggregateExec] {
           "Ungrouped decimal SUM at maximum precision without codegen cannot match Spark's " +
             "latching UnsafeRow buffer"))
     }
-    // The native ungrouped AVG neither keeps its running sum unbounded, as Spark does with
-    // codegen, nor latches it, as Spark does without: it skips the row that takes the sum out of
-    // the precision and goes on, so DECIMAL(38,38) inputs 0.6, 0.6, -0.6 average to 0, not 0.2.
-    // Its merge latches, so partials of 0.6 and 0.6 give NULL, where Spark's codegen gives 0.6.
+    // Native AVG latches once its sum leaves the precision, while Spark's ungrouped codegen
+    // can retain a wider sum until division. For DECIMAL(38,38), inputs 0.6, 0.6, -0.6 return
+    // NULL (or raise under ANSI) natively, where Spark returns 0.2. Partials of 0.6 and 0.6
+    // likewise overflow during the native merge while Spark's codegen returns 0.6.
     // The grouped accumulator latches like Spark's UnsafeRow buffer and stays native.
     // https://github.com/apache/datafusion-comet/issues/5418
     if (op.groupingExpressions.isEmpty && hasMaxPrecisionDecimalAvg(op)) {
@@ -2618,8 +2618,8 @@ object CometObjectHashAggregateExec extends CometBaseAggregate[ObjectHashAggrega
           "Grouped decimal SUM at maximum precision cannot match Spark's unbounded object " +
             "aggregation buffer"))
     }
-    // Decimal AVG has the same gap when grouped. Ungrouped, the native AVG skips the row that
-    // takes its running sum out of the precision, so it declines either way.
+    // Decimal AVG latches its running sum on overflow in both grouped and ungrouped native
+    // accumulators, so both decline Spark's unbounded object aggregation buffer.
     // https://github.com/apache/datafusion-comet/issues/5509
     if (hasMaxPrecisionDecimalAvg(op)) {
       return Unsupported(
