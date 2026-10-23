@@ -946,8 +946,10 @@ one line every 10 seconds for the whole executor:</p>
 </pre></div>
 </div>
 <ul class="simple">
-<li><p><code class="docutils literal notranslate"><span class="pre">allocated</span></code> is the memory that Comet’s native code has allocated and not yet freed, whether or not
-a pool tracks it.</p></li>
+<li><p><code class="docutils literal notranslate"><span class="pre">allocated</span></code> is the memory allocated through Comet’s Rust global allocator and not yet freed,
+whether or not a pool tracks it. It excludes allocations made by native libraries outside that
+allocator, including the embedded Python interpreter and PyArrow when native Arrow UDFs are
+enabled.</p></li>
 <li><p><code class="docutils literal notranslate"><span class="pre">reserved</span></code> is the part that Comet’s memory pools have reserved from Spark’s off-heap memory. It is
 charged against <code class="docutils literal notranslate"><span class="pre">spark.memory.offHeap.size</span></code>, so the container already has room for it. A pool
 sometimes has to track memory that Spark could not grant, such as a spilled batch read back from
@@ -977,7 +979,11 @@ makes a short-lived peak less likely to fall between samples.</p></li>
 non-heap memory, and add the most untracked memory seen on any executor.</p></li>
 <li><p>Add a margin on top. The log can miss the true peak between samples, and none of the figures
 includes the allocator’s fragmentation and retained pages, or memory allocated by native C
-libraries such as zstd.</p></li>
+libraries such as zstd. With native Arrow UDFs, budget the embedded Python interpreter and
+PyArrow allocations in addition to the untracked memory calculated from the log. A PyArrow
+result buffer later imported into the JVM can appear in the <code class="docutils literal notranslate"><span class="pre">imported</span> <span class="pre">from</span> <span class="pre">native</span></code> figure that
+the estimate subtracts, even though Rust’s <code class="docutils literal notranslate"><span class="pre">allocated</span></code> does not count it. Use the executor’s
+peak resident memory to size this additional overhead.</p></li>
 </ol>
 <p>For example, a 16 GiB executor derives an overhead of 1638 MiB. If the line above has the most
 untracked memory in its log, that is 5412.3 + (310.4 - 96.2) - 3890.0 = 1736.5 MiB. The overhead

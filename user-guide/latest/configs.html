@@ -1044,71 +1044,75 @@ under the License.
 <td><p>Experimental opt-in: use a completed native hash join build’s key domain to prune eligible native Parquet row groups and filter probe batches before the hash probe. Supports inner joins with one direct signed integer key and one native partition per input, including both Spark build sides. The probe filter remains active when reader pruning is unavailable. Unsupported joins retain their existing execution path. Filters do not cross Spark exchanges or JVM/Arrow boundaries.</p></td>
 <td><p>false</p></td>
 </tr>
-<tr class="row-odd"><td><p><code class="docutils literal notranslate"><span class="pre">spark.comet.exec.pyarrowUDF.enabled</span></code></p></td>
+<tr class="row-odd"><td><p><code class="docutils literal notranslate"><span class="pre">spark.comet.exec.nativeArrowPythonUDF.enabled</span></code></p></td>
+<td><p>Experimental: execute Spark 4.1+ scalar &#64;arrow_udf functions inside the Comet native pipeline via PyO3. Requires a native library built with the python-udf Cargo feature and a compatible Python/PyArrow installation on every executor.</p></td>
+<td><p>false</p></td>
+</tr>
+<tr class="row-even"><td><p><code class="docutils literal notranslate"><span class="pre">spark.comet.exec.pyarrowUDF.enabled</span></code></p></td>
 <td><p>Experimental: whether to enable optimized execution of PyArrow UDFs (mapInArrow/mapInPandas). When enabled, Comet passes Arrow columnar data directly to Python UDFs without the intermediate Arrow-to-Row-to-Arrow conversion that Spark normally performs. Disabled by default while the feature stabilizes.</p></td>
 <td><p>false</p></td>
 </tr>
-<tr class="row-even"><td><p><code class="docutils literal notranslate"><span class="pre">spark.comet.exec.scalaUDF.codegen.enabled</span></code></p></td>
+<tr class="row-odd"><td><p><code class="docutils literal notranslate"><span class="pre">spark.comet.exec.scalaUDF.codegen.enabled</span></code></p></td>
 <td><p>Whether to route Spark <code class="docutils literal notranslate"><span class="pre">ScalaUDF</span></code> expressions through Comet’s Arrow-direct codegen dispatcher. When enabled, a supported ScalaUDF is compiled into a per-batch kernel that reads and writes Arrow vectors directly from native execution. When disabled, plans containing a ScalaUDF fall back to Spark for the enclosing operator. The same dispatcher backs the regex family (<code class="docutils literal notranslate"><span class="pre">rlike</span></code>, <code class="docutils literal notranslate"><span class="pre">regexp_replace</span></code>, <code class="docutils literal notranslate"><span class="pre">split</span></code>, <code class="docutils literal notranslate"><span class="pre">regexp_extract</span></code>, <code class="docutils literal notranslate"><span class="pre">regexp_extract_all</span></code>, <code class="docutils literal notranslate"><span class="pre">regexp_instr</span></code>) so those route through it by default as well.</p></td>
 <td><p>true</p></td>
 </tr>
-<tr class="row-odd"><td><p><code class="docutils literal notranslate"><span class="pre">spark.comet.exec.strictFloatingPoint</span></code></p></td>
+<tr class="row-even"><td><p><code class="docutils literal notranslate"><span class="pre">spark.comet.exec.strictFloatingPoint</span></code></p></td>
 <td><p>When enabled, fall back to Spark for floating-point operations that may differ from Spark, such as comparing -0.0 and 0.0. <code class="docutils literal notranslate"><span class="pre">ORDER</span> <span class="pre">BY</span></code>, window ordering and range partitioning keys are unaffected, including floating-point values nested in arrays and structs, because Comet normalizes those comparison keys to match Spark. <code class="docutils literal notranslate"><span class="pre">sort_array</span></code> is unaffected too, because it follows Spark’s ordering. For more information, refer to the <a class="reference external" href="https://datafusion.apache.org/comet/user-guide/latest/compatibility/index.html">Comet Compatibility Guide</a>.</p></td>
 <td><p>false</p></td>
 </tr>
-<tr class="row-even"><td><p><code class="docutils literal notranslate"><span class="pre">spark.comet.exec.topK.dynamicFilter.enabled</span></code></p></td>
+<tr class="row-odd"><td><p><code class="docutils literal notranslate"><span class="pre">spark.comet.exec.topK.dynamicFilter.enabled</span></code></p></td>
 <td><p>Experimental opt-in: use a local TopK heap’s improving threshold to prune eligible native Parquet input. Requires spark.comet.exec.topK.fusion.enabled. Supports one direct signed integer sort key. Thresholds are local to each native execution and do not cross Spark exchanges or JVM/Arrow boundaries. Unsupported readers retain ordinary TopK execution.</p></td>
 <td><p>false</p></td>
 </tr>
-<tr class="row-odd"><td><p><code class="docutils literal notranslate"><span class="pre">spark.comet.exec.topK.fusion.enabled</span></code></p></td>
+<tr class="row-even"><td><p><code class="docutils literal notranslate"><span class="pre">spark.comet.exec.topK.fusion.enabled</span></code></p></td>
 <td><p>Experimental opt-in: run an eligible local TopK in the same native execution as its Parquet scan. Supports one direct signed integer sort key. This changes the local execution pipeline and can reduce scan/TopK overlap, so it may be slower for some workloads.</p></td>
 <td><p>false</p></td>
 </tr>
-<tr class="row-even"><td><p><code class="docutils literal notranslate"><span class="pre">spark.comet.exec.transitionRevert.enabled</span></code></p></td>
+<tr class="row-odd"><td><p><code class="docutils literal notranslate"><span class="pre">spark.comet.exec.transitionRevert.enabled</span></code></p></td>
 <td><p>When enabled, Comet reverts a query stage to Spark row-based execution if the number of columnar-to-row (C2R) transitions in the stage exceeds the configured threshold. This avoids the overhead of repeated format conversions in stages where many operators fall back to row-based execution.</p></td>
 <td><p>false</p></td>
 </tr>
-<tr class="row-odd"><td><p><code class="docutils literal notranslate"><span class="pre">spark.comet.exec.transitionRevert.maxTransitions</span></code></p></td>
+<tr class="row-even"><td><p><code class="docutils literal notranslate"><span class="pre">spark.comet.exec.transitionRevert.maxTransitions</span></code></p></td>
 <td><p>The maximum number of columnar-to-row (C2R) transitions allowed in a single query stage before Comet reverts the entire stage to Spark row-based execution. When columnar shuffle is enabled, each such C2R typically implies a corresponding row-to-columnar conversion to feed back into the columnar shuffle, so each counted C2R is a useful proxy for the conversion overhead in the stage. Set to 0 to revert any stage with transitions. Only effective when spark.comet.exec.transitionRevert.enabled is true.</p></td>
 <td><p>2</p></td>
 </tr>
-<tr class="row-even"><td><p><code class="docutils literal notranslate"><span class="pre">spark.comet.metrics.enabled</span></code></p></td>
+<tr class="row-odd"><td><p><code class="docutils literal notranslate"><span class="pre">spark.comet.metrics.enabled</span></code></p></td>
 <td><p>Whether to enable Comet metrics reporting through Spark’s external monitoring system. When enabled, Comet exposes metrics such as native operators, Spark operators, queries planned, transitions, and acceleration ratio. These metrics can be visualized through tools like Grafana when a metrics sink (e.g., Prometheus) is configured. Disabled by default because Spark plan traversal adds overhead and metrics require a sink to be useful. This config must be set before the SparkSession is created to take effect.</p></td>
 <td><p>false</p></td>
 </tr>
-<tr class="row-odd"><td><p><code class="docutils literal notranslate"><span class="pre">spark.comet.metrics.updateInterval</span></code></p></td>
+<tr class="row-even"><td><p><code class="docutils literal notranslate"><span class="pre">spark.comet.metrics.updateInterval</span></code></p></td>
 <td><p>The interval in milliseconds to update metrics. If interval is negative, metrics will be updated upon task completion.</p></td>
 <td><p>3000</p></td>
 </tr>
-<tr class="row-even"><td><p><code class="docutils literal notranslate"><span class="pre">spark.comet.nativeLoadRequired</span></code></p></td>
+<tr class="row-odd"><td><p><code class="docutils literal notranslate"><span class="pre">spark.comet.nativeLoadRequired</span></code></p></td>
 <td><p>Whether to require Comet native library to load successfully when Comet is enabled. If not, Comet will silently fallback to Spark when it fails to load the native lib. Otherwise, an error will be thrown and the Spark job will be aborted.</p></td>
 <td><p>false</p></td>
 </tr>
-<tr class="row-odd"><td><p><code class="docutils literal notranslate"><span class="pre">spark.comet.nativeUdf.allowedPaths</span></code></p></td>
+<tr class="row-even"><td><p><code class="docutils literal notranslate"><span class="pre">spark.comet.nativeUdf.allowedPaths</span></code></p></td>
 <td><p>A comma-separated list of directories that native UDF libraries may be loaded from. When set, a library is loaded only if its path is absolute and, after symlinks and <code class="docutils literal notranslate"><span class="pre">..</span></code> are resolved, lies under one of these directories, which are themselves resolved the same way. A path outside them fails on the driver at registration and again on the executor. When empty, any path is allowed. This limits which files Comet will load, not what the code in them does, and it cannot protect against a file that is replaced after the check, so the directories should be writable only by trusted users. Like any session config, it can be changed by a user who can set Spark configs.</p></td>
 <td><p></p></td>
 </tr>
-<tr class="row-even"><td><p><code class="docutils literal notranslate"><span class="pre">spark.comet.nativeUdf.enabled</span></code></p></td>
+<tr class="row-odd"><td><p><code class="docutils literal notranslate"><span class="pre">spark.comet.nativeUdf.enabled</span></code></p></td>
 <td><p>Whether native UDF libraries may be loaded. A native UDF is a shared library that runs with the full privileges of the JVM process, so an operator who does not want any can turn the feature off. When false, <code class="docutils literal notranslate"><span class="pre">CometNativeUDF.register</span></code> fails on the driver, and a plan that names a native UDF library fails on the executor rather than loading it.</p></td>
 <td><p>true</p></td>
 </tr>
-<tr class="row-odd"><td><p><code class="docutils literal notranslate"><span class="pre">spark.comet.operator.DataWritingCommandExec.allowIncompatible</span></code></p></td>
+<tr class="row-even"><td><p><code class="docutils literal notranslate"><span class="pre">spark.comet.operator.DataWritingCommandExec.allowIncompatible</span></code></p></td>
 <td><p>Whether to allow incompatibility for operator: DataWritingCommandExec. False by default. Can be overridden with SPARK_COMET_OPERATOR_DATAWRITINGCOMMANDEXEC_ALLOWINCOMPATIBLE env variable It can be overridden by the environment variable <code class="docutils literal notranslate"><span class="pre">SPARK_COMET_OPERATOR_DATAWRITINGCOMMANDEXEC_ALLOWINCOMPATIBLE</span></code>.</p></td>
 <td><p>false</p></td>
 </tr>
-<tr class="row-even"><td><p><code class="docutils literal notranslate"><span class="pre">spark.comet.operator.WriteFilesExec.allowIncompatible</span></code></p></td>
+<tr class="row-odd"><td><p><code class="docutils literal notranslate"><span class="pre">spark.comet.operator.WriteFilesExec.allowIncompatible</span></code></p></td>
 <td><p>Whether to allow incompatibility for operator: WriteFilesExec. False by default. Can be overridden with SPARK_COMET_OPERATOR_WRITEFILESEXEC_ALLOWINCOMPATIBLE env variable It can be overridden by the environment variable <code class="docutils literal notranslate"><span class="pre">SPARK_COMET_OPERATOR_WRITEFILESEXEC_ALLOWINCOMPATIBLE</span></code>.</p></td>
 <td><p>false</p></td>
 </tr>
-<tr class="row-odd"><td><p><code class="docutils literal notranslate"><span class="pre">spark.comet.sparkToColumnar.enabled</span></code></p></td>
+<tr class="row-even"><td><p><code class="docutils literal notranslate"><span class="pre">spark.comet.sparkToColumnar.enabled</span></code></p></td>
 <td><p>Whether to convert the output of the leaf operators named in <code class="docutils literal notranslate"><span class="pre">spark.comet.sparkToColumnar.supportedOperatorList</span></code> to Arrow format. Ranges, in-memory cached tables, RDDs and queries without a FROM clause have <code class="docutils literal notranslate"><span class="pre">spark.comet.convert</span></code> configs of their own. When the list is not set, this converts those four instead, which is deprecated and will be removed in a future major release.</p></td>
 <td><p>false</p></td>
 </tr>
-<tr class="row-even"><td><p><code class="docutils literal notranslate"><span class="pre">spark.comet.sparkToColumnar.supportedOperatorList</span></code></p></td>
+<tr class="row-odd"><td><p><code class="docutils literal notranslate"><span class="pre">spark.comet.sparkToColumnar.supportedOperatorList</span></code></p></td>
 <td><p>A comma-separated list of leaf operators to convert to Arrow format when <code class="docutils literal notranslate"><span class="pre">spark.comet.sparkToColumnar.enabled</span></code> is true, each named by its Spark class name without the <code class="docutils literal notranslate"><span class="pre">Exec</span></code> suffix. It is for operators that have no <code class="docutils literal notranslate"><span class="pre">spark.comet.convert</span></code> config of their own, such as <code class="docutils literal notranslate"><span class="pre">BatchScan</span></code> for a Data Source V2 connector, or <code class="docutils literal notranslate"><span class="pre">FileSourceScan</span></code> for file formats other than Parquet, JSON and CSV. Naming <code class="docutils literal notranslate"><span class="pre">Range</span></code>, <code class="docutils literal notranslate"><span class="pre">InMemoryTableScan</span></code>, <code class="docutils literal notranslate"><span class="pre">RDDScan</span></code>, <code class="docutils literal notranslate"><span class="pre">OneRowRelation</span></code> or <code class="docutils literal notranslate"><span class="pre">RowDataSourceScan</span></code> is deprecated and will stop working in a future major release. Use their <code class="docutils literal notranslate"><span class="pre">spark.comet.convert</span></code> configs instead.</p></td>
 <td><p></p></td>
 </tr>
-<tr class="row-odd"><td><p><code class="docutils literal notranslate"><span class="pre">spark.comet.write.iceberg.enabled</span></code></p></td>
+<tr class="row-even"><td><p><code class="docutils literal notranslate"><span class="pre">spark.comet.write.iceberg.enabled</span></code></p></td>
 <td><p>Whether Comet plans Iceberg writes and writes their data files natively. When enabled, Comet replaces Spark’s combined V2 write operator with a file writer (inside AQE) under a committer (outside AQE), and writes the data files of each eligible write with its native (iceberg-rust) writer. Other writes use Iceberg’s own writer, and Iceberg commits every write. Merge-on-read writes keep Spark’s operator. When disabled, Spark plans its own V2 write operator.</p></td>
 <td><p>false</p></td>
 </tr>

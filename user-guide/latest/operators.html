@@ -1170,11 +1170,15 @@ combined with <code class="docutils literal notranslate"><span class="pre">OR</s
 </tr>
 </thead>
 <tbody>
-<tr class="row-even"><td><p><code class="docutils literal notranslate"><span class="pre">MapInArrowExec</span></code>, <code class="docutils literal notranslate"><span class="pre">MapInPandasExec</span></code></p></td>
+<tr class="row-even"><td><p><code class="docutils literal notranslate"><span class="pre">ArrowEvalPythonExec</span></code> for scalar <code class="docutils literal notranslate"><span class="pre">&#64;arrow_udf</span></code> (Spark 4.1+)</p></td>
+<td><p>⚠️</p></td>
+<td><p>Experimental native PyO3 path, requires the <code class="docutils literal notranslate"><span class="pre">python-udf</span></code> feature and <code class="docutils literal notranslate"><span class="pre">spark.comet.exec.nativeArrowPythonUDF.enabled</span></code>. See <a class="reference internal" href="pyarrow-udfs.html"><span class="std std-doc">PyArrow UDF Acceleration</span></a>.</p></td>
+</tr>
+<tr class="row-odd"><td><p><code class="docutils literal notranslate"><span class="pre">MapInArrowExec</span></code>, <code class="docutils literal notranslate"><span class="pre">MapInPandasExec</span></code></p></td>
 <td><p>⚠️</p></td>
 <td><p>Spark 4.0 and later. Experimental, disabled by default (<code class="docutils literal notranslate"><span class="pre">spark.comet.exec.pyarrowUDF.enabled</span></code>). See <a class="reference internal" href="pyarrow-udfs.html"><span class="std std-doc">PyArrow UDF Acceleration</span></a>.</p></td>
 </tr>
-<tr class="row-odd"><td><p><code class="docutils literal notranslate"><span class="pre">ArrowEvalPythonExec</span></code>, <code class="docutils literal notranslate"><span class="pre">FlatMapGroupsInPandasExec</span></code></p></td>
+<tr class="row-even"><td><p>Other <code class="docutils literal notranslate"><span class="pre">ArrowEvalPythonExec</span></code> types, <code class="docutils literal notranslate"><span class="pre">FlatMapGroupsInPandasExec</span></code></p></td>
 <td><p>🔜</p></td>
 <td><p>Scalar <code class="docutils literal notranslate"><span class="pre">&#64;pandas_udf</span></code> (<a class="reference external" href="https://github.com/apache/datafusion-comet/issues/5386">#5386</a>) and grouped <code class="docutils literal notranslate"><span class="pre">applyInPandas</span></code> (<a class="reference external" href="https://github.com/apache/datafusion-comet/issues/5123">#5123</a>) fall back to Spark.</p></td>
 </tr>

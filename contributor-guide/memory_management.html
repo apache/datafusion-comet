@@ -656,6 +656,11 @@ page:</p>
 <td><p><code class="docutils literal notranslate"><span class="pre">spark.memory.offHeap.size</span></code> via <code class="docutils literal notranslate"><span class="pre">TaskMemoryManager</span></code></p></td>
 <td><p>Yes</p></td>
 </tr>
+<tr class="row-odd"><td><p>Embedded Python and PyArrow (<code class="docutils literal notranslate"><span class="pre">python-udf</span></code> feature)</p></td>
+<td><p>Native heap</p></td>
+<td><p><strong>Nothing</strong>: CPython’s and PyArrow’s own allocators</p></td>
+<td><p>No</p></td>
+</tr>
 </tbody>
 </table>
 </div>
@@ -1079,11 +1084,14 @@ Freeing memory does not necessarily return pages to the OS.</p></li>
 allocation counters (<code class="docutils literal notranslate"><span class="pre">native_allocated</span></code>, <code class="docutils literal notranslate"><span class="pre">jemalloc_allocated</span></code>) see it. In a default build the C
 dependencies are libzstd (<code class="docutils literal notranslate"><span class="pre">zstd-sys</span></code>, behind the Parquet <code class="docutils literal notranslate"><span class="pre">zstd</span></code> codec), libhdfs (<code class="docutils literal notranslate"><span class="pre">hdfs-sys</span></code>,
 pulled in by the default <code class="docutils literal notranslate"><span class="pre">hdfs-opendal</span></code> feature), and the TLS stack used for cloud object stores
-(<code class="docutils literal notranslate"><span class="pre">aws-lc-sys</span></code>). Building with the <code class="docutils literal notranslate"><span class="pre">jemalloc</span></code> or <code class="docutils literal notranslate"><span class="pre">mimalloc</span></code> feature adds the allocator itself
-(<code class="docutils literal notranslate"><span class="pre">tikv-jemalloc-sys</span></code>, <code class="docutils literal notranslate"><span class="pre">libmimalloc-sys</span></code>). It is worth knowing which dependencies are <em>not</em> C,
-because several names suggest otherwise: the other Parquet codecs are pure Rust in this build,
-<code class="docutils literal notranslate"><span class="pre">snap</span></code> for Snappy, <code class="docutils literal notranslate"><span class="pre">lz4_flex</span></code> for LZ4 and <code class="docutils literal notranslate"><span class="pre">zlib-rs</span></code> for gzip, as is <code class="docutils literal notranslate"><span class="pre">libbz2-rs-sys</span></code> despite its
-name, so those allocations do pass through <code class="docutils literal notranslate"><span class="pre">GlobalAlloc</span></code> and are counted.</p></li>
+(<code class="docutils literal notranslate"><span class="pre">aws-lc-sys</span></code>). With the <code class="docutils literal notranslate"><span class="pre">python-udf</span></code> feature, the embedded Python interpreter and PyArrow also
+allocate outside <code class="docutils literal notranslate"><span class="pre">GlobalAlloc</span></code>; their memory is absent from the executor’s native <code class="docutils literal notranslate"><span class="pre">allocated</span></code>
+figure, and Python working allocations are not reserved in Comet’s pool. Building with the
+<code class="docutils literal notranslate"><span class="pre">jemalloc</span></code> or <code class="docutils literal notranslate"><span class="pre">mimalloc</span></code> feature adds the allocator itself (<code class="docutils literal notranslate"><span class="pre">tikv-jemalloc-sys</span></code>,
+<code class="docutils literal notranslate"><span class="pre">libmimalloc-sys</span></code>). It is worth knowing which dependencies are <em>not</em> C, because several names
+suggest otherwise: the other Parquet codecs are pure Rust in this build, <code class="docutils literal notranslate"><span class="pre">snap</span></code> for Snappy,
+<code class="docutils literal notranslate"><span class="pre">lz4_flex</span></code> for LZ4 and <code class="docutils literal notranslate"><span class="pre">zlib-rs</span></code> for gzip, as is <code class="docutils literal notranslate"><span class="pre">libbz2-rs-sys</span></code> despite its name, so those
+allocations do pass through <code class="docutils literal notranslate"><span class="pre">GlobalAlloc</span></code> and are counted.</p></li>
 <li><p><strong>Batches in flight across the FFI boundary.</strong> Reservations stop at the operator that made them.
 Imported JVM batches are reserved only while a reserving operator holds them, and exported native
 batches have usually been released by the time the JVM receives them yet stay resident until the
