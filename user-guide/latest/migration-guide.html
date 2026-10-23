@@ -944,6 +944,31 @@ that still sets it to <code class="docutils literal notranslate"><span class="pr
 on Spark 3.5+ it now also plans merge-on-read writes as the split plan. Unset it to plan Spark’s
 own operator.</p>
 </section>
+<section id="memory-pool-limits">
+<h3>Memory Pool Limits<a class="headerlink" href="#memory-pool-limits" title="Link to this heading">#</a></h3>
+<p>The <code class="docutils literal notranslate"><span class="pre">fair_unified</span></code> memory pool, which is the default for <code class="docutils literal notranslate"><span class="pre">spark.comet.exec.memoryPool</span></code>, limited each
+of a task’s operators to a share of all of <code class="docutils literal notranslate"><span class="pre">spark.memory.offHeap.size</span></code>, while Spark limits each task
+to an even share of it among the running tasks. Whenever more than one task was running, the share
+was the looser limit, so one operator could take all of its task’s memory, and another operator
+that cannot spill, such as the final merge of a sort, then failed the task
+(<a class="reference external" href="https://github.com/apache/datafusion-comet/issues/7088">#7088</a>). Spark retried such tasks, and the
+retries usually succeeded. Comet 1.2.0 divides <code class="docutils literal notranslate"><span class="pre">spark.memory.offHeap.size</span></code> among the tasks running
+native plans, as Spark does, and within a task limits only the operators that can spill, each to an
+even share of what the operators that cannot spill leave. So sorts, aggregations and the shuffle
+writer can spill sooner when several of them run in one task, and the operators that cannot spill
+are limited only by Spark, unless the deprecated <code class="docutils literal notranslate"><span class="pre">spark.comet.exec.memoryPool.fraction</span></code> is below
+<code class="docutils literal notranslate"><span class="pre">1.0</span></code>. The native Iceberg fanout writer is one of the operators that can spill: it closes files
+rather than take memory from the others, so it can write more files.</p>
+<p>An operator’s limit can now be well below what Spark would grant its task, and a sort can fail
+where it used to run. A sort fails with “Not enough memory to continue external sort” instead of
+spilling when a single batch is larger than its share, which wide rows, many cores per executor, a
+small <code class="docutils literal notranslate"><span class="pre">spark.memory.offHeap.size</span></code> and several operators that can spill in one task make likelier.
+It can also fail when operators that cannot spill, such as the build side of a shuffled hash join,
+hold the whole of the task’s share. To avoid either, give the executors more off-heap memory,
+lower <code class="docutils literal notranslate"><span class="pre">spark.comet.batchSize</span></code>, or leave every limit to Spark by setting
+<code class="docutils literal notranslate"><span class="pre">spark.comet.exec.memoryPool=greedy_unified</span></code>. See
+<a class="reference internal" href="tuning/memory.html#configuring-comet-memory"><span class="std std-ref">Configuring Comet Memory</span></a>.</p>
+</section>
 <section id="native-iceberg-scan-file-concurrency">
 <h3>Native Iceberg Scan File Concurrency<a class="headerlink" href="#native-iceberg-scan-file-concurrency" title="Link to this heading">#</a></h3>
 <p><code class="docutils literal notranslate"><span class="pre">spark.comet.scan.icebergNative.dataFileConcurrencyLimit</span></code> now defaults to 2, where Comet <code class="docutils literal notranslate"><span class="pre">1.1.0</span></code>
@@ -991,8 +1016,8 @@ fails the query instead of being replaced by the default. <code class="docutils 
 <code class="docutils literal notranslate"><span class="pre">spark.comet.explain.native.enabled</span></code> and <code class="docutils literal notranslate"><span class="pre">spark.comet.tracing.enabled</span></code> now also take effect in
 Comet’s native code when they are written in upper case, such as <code class="docutils literal notranslate"><span class="pre">TRUE</span></code>.</p>
 </section>
-<section id="memory-pool-limits">
-<h3>Memory Pool Limits<a class="headerlink" href="#memory-pool-limits" title="Link to this heading">#</a></h3>
+<section id="id1">
+<h3>Memory Pool Limits<a class="headerlink" href="#id1" title="Link to this heading">#</a></h3>
 <p>In Comet 0.15.0 through 1.0.0, the <code class="docutils literal notranslate"><span class="pre">fair_unified</span></code> memory pool, which is the default for
 <code class="docutils literal notranslate"><span class="pre">spark.comet.exec.memoryPool</span></code>, capped the memory of all of a task’s operators combined at one
 operator’s share, because of a bug (<a class="reference external" href="https://github.com/apache/datafusion-comet/issues/5961">#5961</a>).
@@ -1032,8 +1057,8 @@ credential chain for a catalog, set
 <code class="docutils literal notranslate"><span class="pre">spark.sql.catalog.&lt;catalog&gt;.s3.comet.credential.webIdentity.enabled=false</span></code>. A table loaded by path
 has no catalog to set that on, so for it set <code class="docutils literal notranslate"><span class="pre">spark.comet.scan.icebergNative.enabled=false</span></code>.</p>
 </section>
-<section id="id1">
-<h3>Deprecated and Removed Settings<a class="headerlink" href="#id1" title="Link to this heading">#</a></h3>
+<section id="id2">
+<h3>Deprecated and Removed Settings<a class="headerlink" href="#id2" title="Link to this heading">#</a></h3>
 <p><code class="docutils literal notranslate"><span class="pre">spark.comet.exec.memoryPool.fraction</span></code> is deprecated and will be removed in a future major release.
 It was documented as leaving room in <code class="docutils literal notranslate"><span class="pre">spark.memory.offHeap.size</span></code> for the native memory that Comet’s
 memory pools do not track, but it cannot: Spark hands out the whole off-heap pool whatever it is set
@@ -1110,15 +1135,16 @@ release, review the release notes for the versions in between.</p>
 <li class="toc-h2 nav-item toc-entry"><a class="reference internal nav-link" href="#upgrading-to-comet-1-2-0">Upgrading to Comet 1.2.0</a><ul class="nav section-nav flex-column">
 <li class="toc-h3 nav-item toc-entry"><a class="reference internal nav-link" href="#deprecated-and-removed-settings">Deprecated and Removed Settings</a></li>
 <li class="toc-h3 nav-item toc-entry"><a class="reference internal nav-link" href="#iceberg-writes">Iceberg Writes</a></li>
+<li class="toc-h3 nav-item toc-entry"><a class="reference internal nav-link" href="#memory-pool-limits">Memory Pool Limits</a></li>
 <li class="toc-h3 nav-item toc-entry"><a class="reference internal nav-link" href="#native-iceberg-scan-file-concurrency">Native Iceberg Scan File Concurrency</a></li>
 </ul>
 </li>
 <li class="toc-h2 nav-item toc-entry"><a class="reference internal nav-link" href="#upgrading-to-comet-1-1-0">Upgrading to Comet 1.1.0</a><ul class="nav section-nav flex-column">
 <li class="toc-h3 nav-item toc-entry"><a class="reference internal nav-link" href="#settings-that-now-take-effect-as-documented">Settings That Now Take Effect as Documented</a></li>
-<li class="toc-h3 nav-item toc-entry"><a class="reference internal nav-link" href="#memory-pool-limits">Memory Pool Limits</a></li>
+<li class="toc-h3 nav-item toc-entry"><a class="reference internal nav-link" href="#id1">Memory Pool Limits</a></li>
 <li class="toc-h3 nav-item toc-entry"><a class="reference internal nav-link" href="#conditions-for-enabling-comet">Conditions for Enabling Comet</a></li>
 <li class="toc-h3 nav-item toc-entry"><a class="reference internal nav-link" href="#native-iceberg-reads-on-eks-with-irsa">Native Iceberg Reads on EKS with IRSA</a></li>
-<li class="toc-h3 nav-item toc-entry"><a class="reference internal nav-link" href="#id1">Deprecated and Removed Settings</a></li>
+<li class="toc-h3 nav-item toc-entry"><a class="reference internal nav-link" href="#id2">Deprecated and Removed Settings</a></li>
 </ul>
 </li>
 <li class="toc-h2 nav-item toc-entry"><a class="reference internal nav-link" href="#upgrading-to-comet-1-0-0">Upgrading to Comet 1.0.0</a></li>

@@ -882,7 +882,7 @@ while Comet runs; see <a class="reference internal" href="#sizing-the-overhead-f
 <p><code class="docutils literal notranslate"><span class="pre">spark.comet.exec.memoryPool.fraction</span></code> is deprecated and does not leave room for it. Spark hands out all of
 <code class="docutils literal notranslate"><span class="pre">spark.memory.offHeap.size</span></code> to the tasks that ask for it, whatever the fraction. The <code class="docutils literal notranslate"><span class="pre">fair_unified</span></code> pool applies the
 fraction to each task separately, where Spark’s own limit of an even share of the pool per running task is tighter
-whenever more than one task is running, and the <code class="docutils literal notranslate"><span class="pre">greedy_unified</span></code> pool ignores it.</p>
+unless the fraction is below one over the number of running tasks, and the <code class="docutils literal notranslate"><span class="pre">greedy_unified</span></code> pool ignores it.</p>
 <p>For more details about Spark off-heap memory mode, please refer to <a class="reference external" href="https://spark.apache.org/docs/latest/configuration.html">Spark documentation</a>.</p>
 <p>Comet implements multiple memory pool implementations. The type of pool can be specified with <code class="docutils literal notranslate"><span class="pre">spark.comet.exec.memoryPool</span></code>.</p>
 <p>The valid pool types are:</p>
@@ -893,11 +893,16 @@ whenever more than one task is running, and the <code class="docutils literal no
 <p>Both pool types are shared by all the native plans in the same Spark task. A task can run more than
 one native plan at a time, for example the native operators on either side of a union or a
 coalesce. The shared pool ensures that their combined memory usage stays within the per-task limit.</p>
-<p>The <code class="docutils literal notranslate"><span class="pre">fair_unified</span></code> pool prevents operators from using more than an even fraction of the available memory
-(i.e. <code class="docutils literal notranslate"><span class="pre">pool_size</span> <span class="pre">/</span> <span class="pre">num_consumers</span></code>, where <code class="docutils literal notranslate"><span class="pre">num_consumers</span></code> counts the memory consumers registered by all of the task’s
-native plans). This pool works best when you know beforehand
-the query has multiple operators that will likely all need to spill. Sometimes it will cause spills even
-when there is sufficient memory in order to leave enough memory for other operators.</p>
+<p>The <code class="docutils literal notranslate"><span class="pre">fair_unified</span></code> pool keeps memory for the operators that cannot spill, such as the final merge of a sort or the
+build side of a hash join. Spark limits each task to an even share of <code class="docutils literal notranslate"><span class="pre">spark.memory.offHeap.size</span></code> among the tasks
+using it, and the pool divides <code class="docutils literal notranslate"><span class="pre">spark.memory.offHeap.size</span></code> the same way among the tasks running native plans. Within
+a task, it limits each operator that can spill to an even share of what the operators that cannot spill leave of the
+task’s share, counting the operators of all of the task’s native plans. The operators that cannot spill take what
+Spark grants. So an operator that can spill sometimes spills even when there is memory to spare, in order to leave it
+for the task’s other operators. A limit that small can be less than one batch of wide rows, and a sort cannot spill a
+batch it has not yet reserved, so it then fails with “Not enough memory to continue external sort”. Give the
+executors more off-heap memory, lower <code class="docutils literal notranslate"><span class="pre">spark.comet.batchSize</span></code>, or use <code class="docutils literal notranslate"><span class="pre">greedy_unified</span></code>, which leaves every limit to
+Spark.</p>
 <p>The <code class="docutils literal notranslate"><span class="pre">greedy_unified</span></code> pool type implements a greedy first-come first-serve limit. This pool works well for queries that do not
 need to spill or have a single spillable operator.</p>
 </section>

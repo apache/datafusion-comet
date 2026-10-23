@@ -816,8 +816,9 @@ the same task see correspondingly less headroom and can spill earlier than they 
 <section id="where-comet-s-budget-comes-from">
 <h2>Where Comet’s budget comes from<a class="headerlink" href="#where-comet-s-budget-comes-from" title="Link to this heading">#</a></h2>
 <p><code class="docutils literal notranslate"><span class="pre">CometExecIterator.getMemoryConfig</span></code> computes the budget once per executor and passes it across JNI
-to <code class="docutils literal notranslate"><span class="pre">Java_org_apache_comet_Native_createPlan</span></code> as <code class="docutils literal notranslate"><span class="pre">memory_limit</span></code>. Comet shares Spark’s off-heap pool
-rather than asking for a separate allocation:</p>
+to <code class="docutils literal notranslate"><span class="pre">Java_org_apache_comet_Native_createPlan</span></code> as <code class="docutils literal notranslate"><span class="pre">memory_limit</span></code>, along with
+<code class="docutils literal notranslate"><span class="pre">spark.memory.offHeap.size</span></code> itself as <code class="docutils literal notranslate"><span class="pre">off_heap_size</span></code>. Comet shares Spark’s off-heap pool rather
+than asking for a separate allocation:</p>
 <div class="highlight-text notranslate"><div class="highlight"><pre><span></span>memory_limit = spark.memory.offHeap.size * spark.comet.exec.memoryPool.fraction
 </pre></div>
 </div>
@@ -826,10 +827,10 @@ the workaround for Comet’s under-accounting (see <a class="reference internal"
 back a slice of the off-heap pool for the memory Comet does not reserve, but it cannot do that:</p>
 <ul class="simple">
 <li><p><code class="docutils literal notranslate"><span class="pre">greedy_unified</span></code> ignores <code class="docutils literal notranslate"><span class="pre">memory_limit</span></code>. It asks Spark for every byte it reserves.</p></li>
-<li><p><code class="docutils literal notranslate"><span class="pre">fair_unified</span></code> applies it to each task’s pool, limiting each memory consumer in the task to
-<code class="docutils literal notranslate"><span class="pre">memory_limit</span> <span class="pre">/</span> <span class="pre">num_consumers</span></code>. Spark’s execution pool already limits each of N running tasks to
-<code class="docutils literal notranslate"><span class="pre">spark.memory.offHeap.size</span> <span class="pre">/</span> <span class="pre">N</span></code>, which is the tighter limit whenever more than one task is
-running, and the tasks together can still acquire the whole pool.</p></li>
+<li><p><code class="docutils literal notranslate"><span class="pre">fair_unified</span></code> caps each task at it (see <a class="reference internal" href="#the-unified-pools">The unified pools</a>). Spark’s
+execution pool already limits each of N running tasks to <code class="docutils literal notranslate"><span class="pre">spark.memory.offHeap.size</span> <span class="pre">/</span> <span class="pre">N</span></code>, which
+is the tighter cap unless the fraction is below <code class="docutils literal notranslate"><span class="pre">1</span> <span class="pre">/</span> <span class="pre">N</span></code>, and the tasks together can still acquire
+the whole pool.</p></li>
 <li><p>Spark’s own off-heap consumers, non-Comet operators and off-heap storage, draw on the same pool
 with no Comet limit at all.</p></li>
 </ul>
@@ -847,7 +848,7 @@ string and the limit into a <code class="docutils literal notranslate"><span cla
 </thead>
 <tbody>
 <tr class="row-even"><td><p><code class="docutils literal notranslate"><span class="pre">fair_unified</span></code> (default)</p></td>
-<td><p><code class="docutils literal notranslate"><span class="pre">memory_limit</span></code></p></td>
+<td><p><code class="docutils literal notranslate"><span class="pre">memory_limit</span></code> and <code class="docutils literal notranslate"><span class="pre">off_heap_size</span></code></p></td>
 <td><p>Delegates to Spark’s <code class="docutils literal notranslate"><span class="pre">TaskMemoryManager</span></code>; task-shared</p></td>
 </tr>
 <tr class="row-odd"><td><p><code class="docutils literal notranslate"><span class="pre">greedy_unified</span></code></p></td>
@@ -899,34 +900,93 @@ granted. While overcommit is outstanding, <code class="docutils literal notransl
 is refused unless Spark can cover both, so operators spill until the debt is repaid. Both pools’
 <code class="docutils literal notranslate"><span class="pre">Display</span></code> output and their <code class="docutils literal notranslate"><span class="pre">try_grow</span></code> errors report the current overcommit.</p></li>
 </ul>
-<p><code class="docutils literal notranslate"><span class="pre">CometFairMemoryPool</span></code> additionally applies two local checks before it asks Spark, and refuses the
+<p><code class="docutils literal notranslate"><span class="pre">CometFairMemoryPool</span></code> exists because Spark cannot ask a native operator to spill. Spark limits each
+task to an even share of its off-heap pool among the tasks that hold memory from it. Once one
+operator holds its task’s share, Spark refuses the task’s other operators, and one that cannot
+spill, such as a sort’s merge or the build side of a hash join, fails the task. The pool keeps
+memory for those operators by limiting the ones that can spill to a share of the task’s, as
+DataFusion’s <code class="docutils literal notranslate"><span class="pre">FairSpillPool</span></code> does over its whole pool
+(<a class="reference external" href="https://github.com/apache/datafusion-comet/issues/7088">issue #7088</a>).</p>
+<p>The task’s share is <code class="docutils literal notranslate"><span class="pre">off_heap_size</span></code> divided by the number of tasks on the executor that are running
+native plans, that is, that hold a task-shared pool of either type, or <code class="docutils literal notranslate"><span class="pre">pool_size</span></code> if that is
+smaller, which it is only while the deprecated fraction is below <code class="docutils literal notranslate"><span class="pre">1</span> <span class="pre">/</span> <span class="pre">N</span></code>. A consumer that can
+spill is limited to an even share of what the consumers that cannot spill leave of that:</p>
+<div class="highlight-text notranslate"><div class="highlight"><pre><span></span>task_share = min(off_heap_size / running_tasks, pool_size)
+limit      = (task_share - unspillable) / num_spill
+</pre></div>
+</div>
+<p>Here <code class="docutils literal notranslate"><span class="pre">unspillable</span></code> is the bytes held by consumers that cannot spill, and <code class="docutils literal notranslate"><span class="pre">num_spill</span></code> is the number
+of registered consumers that can.</p>
+<p>Like Spark’s own divisor, the number of running tasks follows tasks as they start and finish, so a
+task that runs alone has the whole pool. It is still not Spark’s number or Spark’s pool, and the
+differences go in these directions:</p>
+<ul class="simple">
+<li><p>Spark counts a task from its first acquire until its balance returns to zero, whether or not it
+runs a native plan. Tasks that run no native plan but hold off-heap memory, such as the JVM
+operators of a mixed stage, are in Spark’s count and not Comet’s. Comet then divides by fewer
+tasks than Spark does, the task’s share is more than Spark will grant it, and the shares of its
+consumers that can spill can add up to more than Spark grants. That is
+<a class="reference external" href="https://github.com/apache/datafusion-comet/issues/7088">issue #7088</a> again, so look here first
+when a stage that mixes JVM and native operators still fails a sort’s merge.</p></li>
+<li><p>A task that holds a native pool but no memory, such as a native scan that feeds a JVM shuffle,
+is in Comet’s count and not Spark’s. Comet then divides by more tasks than Spark does, and its
+consumers that can spill spill earlier than Spark requires. Look here when a mixed workload
+spills more under <code class="docutils literal notranslate"><span class="pre">fair_unified</span></code> than under <code class="docutils literal notranslate"><span class="pre">greedy_unified</span></code>.</p></li>
+<li><p>Spark divides the pool minus the off-heap storage in use, up to the storage region, which is
+<code class="docutils literal notranslate"><span class="pre">spark.memory.storageFraction</span></code> of the pool. With <code class="docutils literal notranslate"><span class="pre">StorageLevel.OFF_HEAP</span></code> caching, Spark’s limit
+on a task can be about half of <code class="docutils literal notranslate"><span class="pre">off_heap_size</span> <span class="pre">/</span> <span class="pre">running_tasks</span></code> at the default fraction, while
+<code class="docutils literal notranslate"><span class="pre">task_share</span></code> divides all of <code class="docutils literal notranslate"><span class="pre">off_heap_size</span></code>, so the shares can add up to more than Spark grants.</p></li>
+</ul>
+<p>Before it asks Spark for a consumer that can spill, the pool makes two checks, and refuses the
 request without calling Spark if either fails:</p>
 <ul class="simple">
-<li><p><strong>The requesting consumer against its share.</strong> The share is <code class="docutils literal notranslate"><span class="pre">pool_size</span></code> divided by the number of
-consumers currently registered with the pool. What the consumer already holds plus the request
-must not exceed it. That counts all of the consumer’s reservations, including the sibling
-reservations that <code class="docutils literal notranslate"><span class="pre">new_empty()</span></code>, <code class="docutils literal notranslate"><span class="pre">split()</span></code> and <code class="docutils literal notranslate"><span class="pre">take()</span></code> create, so an operator that holds several
-reservations still gets one share. A sort’s streaming merge, for example, creates one for each
-batch it reads. The pool keeps a running total for each consumer, because <code class="docutils literal notranslate"><span class="pre">reservation.size()</span></code>
-covers only one reservation. With an 8 GiB pool and two registered consumers, each share is
-4 GiB, so once one consumer holds 3 GiB the other can still reserve up to 4 GiB.</p></li>
-<li><p><strong>The pool’s total against <code class="docutils literal notranslate"><span class="pre">pool_size</span></code>.</strong> The shares alone do not bound the total, because a
-consumer keeps what it reserved while fewer consumers were registered. <code class="docutils literal notranslate"><span class="pre">pool_size</span></code> is computed
-for the executor but applied to each task’s pool, so Spark’s own limit on the task is at least as
-tight unless the deprecated <code class="docutils literal notranslate"><span class="pre">spark.comet.exec.memoryPool.fraction</span></code> is below <code class="docutils literal notranslate"><span class="pre">1.0</span></code>.</p></li>
+<li><p><strong>The consumer against its share.</strong> The share is what the consumers that cannot spill leave of
+the task’s share, divided by the number of registered consumers that can spill. What the
+consumer already holds plus the request must not exceed it. That counts all of the consumer’s
+reservations, including the sibling reservations that <code class="docutils literal notranslate"><span class="pre">new_empty()</span></code>, <code class="docutils literal notranslate"><span class="pre">split()</span></code> and <code class="docutils literal notranslate"><span class="pre">take()</span></code>
+create, so an operator that holds several reservations still gets one share. A sort’s streaming
+merge, for example, creates one for each batch it reads. The pool keeps a running total for each
+consumer, because <code class="docutils literal notranslate"><span class="pre">reservation.size()</span></code> covers only one reservation. With eight running tasks, a
+16 GiB pool and two registered consumers that can spill, the task’s share is 2 GiB and each
+consumer’s is 1 GiB, or 768 MiB while a merge holds 512 MiB.</p></li>
+<li><p><strong>The task’s total against the task’s share.</strong> The shares alone do not bound the total, because
+a consumer keeps what it reserved while fewer consumers were registered or fewer tasks were
+running.</p></li>
 </ul>
-<p>Two details matter for tuning:</p>
+<p>A consumer that cannot spill takes what Spark grants. The pool refuses it only when the task’s
+total plus the request would exceed <code class="docutils literal notranslate"><span class="pre">pool_size</span></code>, which Spark’s own limit on the task is at least as
+tight as unless the deprecated fraction is below <code class="docutils literal notranslate"><span class="pre">1</span> <span class="pre">/</span> <span class="pre">N</span></code>.</p>
+<p>The pool goes by what a consumer declares, with one exception. DataFusion 55.2 registers
+<code class="docutils literal notranslate"><span class="pre">OrderedFinalAggregateStream</span></code> as able to spill even when its input is sorted on every grouping key,
+as a workaround for <a class="reference external" href="https://github.com/apache/datafusion/issues/17334">apache/datafusion#17334</a>, but
+builds a spill path only for partially sorted input. Fully sorted, as in a <code class="docutils literal notranslate"><span class="pre">CometSortAggregateExec</span></code>
+over a native sort, a refusal fails the query, so the pool checks its requests only against the
+pool, as it does those of a consumer that cannot spill (<code class="docutils literal notranslate"><span class="pre">limited_to_its_share</span></code> in <code class="docutils literal notranslate"><span class="pre">fair_pool.rs</span></code>).
+It still counts as a consumer that can spill when the pool divides the task’s share, so a sort
+below it stays at half of the share and leaves the aggregate the other half. The partially sorted
+stream still spills when Spark refuses it.</p>
+<p>Three details matter for tuning:</p>
 <ul class="simple">
-<li><p>The pool is task-shared (see below), so <code class="docutils literal notranslate"><span class="pre">num_consumers</span></code> counts every registered consumer across
-every native plan in the task, not just the plan making the request. Registering a consumer
-lowers every other consumer’s share, but does not take back memory they already hold.</p></li>
-<li><p>Every registered consumer gets a share, whether or not it can spill. DataFusion’s
-<code class="docutils literal notranslate"><span class="pre">FairSpillPool</span></code> divides the pool among spillable consumers only.
-<a class="reference external" href="https://github.com/apache/datafusion-comet/issues/5465">Issue #5465</a> tracks doing the same here.</p></li>
+<li><p>The pool is task-shared (see below), so the consumers that divide the task’s share include those
+of every native plan in the task, not just the plan making the request. Registering a consumer
+that can spill lowers the share of every other one, but does not take back memory they already
+hold. Registering one that cannot spill changes no share until it holds memory.</p></li>
+<li><p>A consumer at its share is refused, and spills, even when the rest of the task’s share is free.
+That keeps the memory for the task’s other consumers, and is why <code class="docutils literal notranslate"><span class="pre">fair_unified</span></code> can spill earlier
+than <code class="docutils literal notranslate"><span class="pre">greedy_unified</span></code>.</p></li>
+<li><p>A consumer’s limit can be well below what Spark would grant the task, and some operators fail
+where a consumer that can spill is refused. In DataFusion 55.2 an <code class="docutils literal notranslate"><span class="pre">ExternalSorter</span></code> returns “Not
+enough memory to continue external sort” instead of spilling when it cannot reserve a batch while
+it holds nothing, when it cannot reserve it again after spilling, and when it cannot resize its
+reservation for a sorted batch. A sort can therefore fail when one batch is larger than its
+share, as can happen with wide rows, many cores, little off-heap memory and several consumers
+that can spill in the task. It can also fail on its first request when consumers that cannot
+spill, such as the build side of a shuffled hash join or a sort-merge join’s buffered rows, hold
+the task’s whole share, because the limit is then zero. Spark lets such a consumer hold more than
+<code class="docutils literal notranslate"><span class="pre">off_heap_size</span> <span class="pre">/</span> <span class="pre">running_tasks</span></code> while other tasks have not yet asked for memory. A larger
+<code class="docutils literal notranslate"><span class="pre">spark.memory.offHeap.size</span></code>, a smaller <code class="docutils literal notranslate"><span class="pre">spark.comet.batchSize</span></code> or <code class="docutils literal notranslate"><span class="pre">spark.comet.exec.memoryPool=greedy_unified</span></code>
+avoids it, and the migration guide says so too.</p></li>
 </ul>
-<p>This is why <code class="docutils literal notranslate"><span class="pre">fair_unified</span></code> can spill earlier than <code class="docutils literal notranslate"><span class="pre">greedy_unified</span></code>: a consumer at its share is
-refused even when the rest of the pool is free, which keeps that memory for the task’s other
-consumers.</p>
 </section>
 <section id="task-shared-pools-and-their-lifetime">
 <h3>Task-shared pools and their lifetime<a class="headerlink" href="#task-shared-pools-and-their-lifetime" title="Link to this heading">#</a></h3>
@@ -1019,9 +1079,12 @@ The reservation does not cover what parquet-rs holds beyond the encoded size: di
 tables, unencoded dictionary indices and buffer capacity. Native writes decline Bloom filters
 today, and neither figure would include them.</p></li>
 </ul>
-<p>The writers register one consumer per task rather than one per open file because every consumer
-registered with <code class="docutils literal notranslate"><span class="pre">fair_unified</span></code> lowers the share of every other consumer in the task. A consumer per
-partition would shrink the task’s other operators’ shares as a fanout write widened.</p>
+<p>The writers register one consumer per task rather than one per open file. A fanout write registers
+it as a consumer that can spill, because the writer answers a refusal by closing partitions, so
+<code class="docutils literal notranslate"><span class="pre">fair_unified</span></code> holds it to a share and it ends with more files rather than take memory from the
+task’s sorts. The unpartitioned and clustered writers keep their one file open, so a refusal fails
+the task. They cannot spill, <code class="docutils literal notranslate"><span class="pre">fair_unified</span></code> does not hold them to a share, and what they hold comes
+out of the share that the task’s operators that can spill divide.</p>
 </section>
 </section>
 <section id="crossing-the-ffi-boundary">
