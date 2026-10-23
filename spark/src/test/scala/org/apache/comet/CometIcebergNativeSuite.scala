@@ -4201,6 +4201,17 @@ class CometIcebergNativeSuite
     }
   }
 
+  /**
+   * Compares `SELECT id FROM table WHERE predicate` with Spark for each predicate, alone and
+   * after `l IS NOT NULL AND`. That array null check is a conjunct the serde never pushes, as in
+   * the queries that found these bugs, so each predicate is also checked in a residual left
+   * unpushed.
+   */
+  private def checkResidualPredicates(table: String, predicates: Seq[String]): Unit =
+    for (predicate <- predicates; prefix <- Seq("", "l IS NOT NULL AND ")) {
+      checkIcebergNativeScan(s"SELECT id FROM $table WHERE $prefix($predicate)")
+    }
+
   test("floating-point residuals preserve signed zeros in native scans") {
     assume(icebergAvailable, "Iceberg not available in classpath")
 
@@ -4263,10 +4274,7 @@ class CometIcebergNativeSuite
               s"NOT ($column = $zero AND id > 1)",
               s"$column IS NULL",
               s"$column IS NOT NULL")
-            for (predicate <- predicates;
-              prefix <- Seq("", "l IS NOT NULL AND ")) {
-              checkIcebergNativeScan(s"SELECT id FROM $table WHERE $prefix($predicate)")
-            }
+            checkResidualPredicates(table, predicates)
           }
         } finally {
           spark.sql(s"DROP TABLE $table")
@@ -4316,19 +4324,23 @@ class CometIcebergNativeSuite
             "id IS NOT NULL AND NOT (id <=> 1)",
             "NOT (id = 1)",
             "id != 1")
-          for (predicate <- predicates;
-            prefix <- Seq("", "l IS NOT NULL AND ")) {
-            checkIcebergNativeScan(s"SELECT id FROM $table WHERE $prefix($predicate)")
-          }
-          // Spark writes `b = false` as `b IS NOT NULL AND NOT b`, so it is still pushed.
+          checkResidualPredicates(table, predicates)
+          // `id != 1` reaches Iceberg as a not-equal, and `b = false` as `b IS NOT NULL AND NOT b`,
+          // whose null check covers the negated equality, so both are still pushed. A negated
+          // `<=>` has no such check and stays out.
           // Planning commonData leaks manifest streams on Iceberg versions before 1.8.0.
           if (icebergVersionAtLeast(1, 8)) {
-            for (predicate <- Seq("b = false", "id IS NOT NULL AND NOT (id <=> 1)")) {
+            for ((predicate, pushed) <- Seq(
+                "b = false" -> true,
+                "id != 1" -> true,
+                "id IS NOT NULL AND NOT (id <=> 1)" -> true,
+                "NOT (id <=> 1)" -> false,
+                "b IS NOT TRUE" -> false)) {
               val (_, cometPlan) = checkSparkAnswer(s"SELECT id FROM $table WHERE $predicate")
               val scans = collectIcebergNativeScans(cometPlan)
               assert(scans.length == 1, s"$cometPlan")
               val common = OperatorOuterClass.IcebergScanCommon.parseFrom(scans.head.commonData)
-              assert(common.getResidualPoolCount == 1, s"expected a pushed residual: $predicate")
+              assert(common.getResidualPoolCount == (if (pushed) 1 else 0), s"$predicate")
             }
           }
         } finally {
@@ -4370,12 +4382,7 @@ class CometIcebergNativeSuite
             "f IN (0.5D, 4.5D)",
             "f = 0.5D",
             "f = 0.1D")
-          def checkPredicates(): Unit =
-            for (predicate <- predicates;
-              prefix <- Seq("", "l IS NOT NULL AND ")) {
-              checkIcebergNativeScan(s"SELECT id FROM $table WHERE $prefix($predicate)")
-            }
-          checkPredicates()
+          checkResidualPredicates(table, predicates)
 
           // The native reader narrows 0.1D to the FLOAT 0.1, which Spark does not consider equal
           // to it. The first file's bounds, 0.05 to 2.5, keep it in the scan for that.
@@ -4408,7 +4415,7 @@ class CometIcebergNativeSuite
               .schemas()
             assert(schemas.size == 1 && !schemas.containsKey(0))
             assert(spark.sql(s"SELECT * FROM $table").count() == 6)
-            checkPredicates()
+            checkResidualPredicates(table, predicates)
           }
         } finally {
           spark.sql(s"DROP TABLE $table")

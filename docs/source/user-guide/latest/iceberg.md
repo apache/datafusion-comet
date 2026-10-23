@@ -129,8 +129,9 @@ Some predicates are left to the filter above the scan because iceberg-rust would
 different rows than Spark:
 
 - Range comparisons on `FLOAT` and `DOUBLE` columns, and comparisons with `0.0`, `-0.0` or NaN.
-- `NOT` over equality on a nullable column, unless it is ANDed with an `IS NOT NULL` check on that
-  column, written in the query or inferred by Spark as for `b = false`.
+- `NOT` over equality on a nullable column, as in `NOT (id <=> 1)`, unless it is ANDed with an
+  `IS NOT NULL` check on that column, written in the query or inferred by Spark as for `b = false`.
+  `!=` reaches iceberg-rust as a separate comparison and is not affected.
 - Comparisons other than `=` on a column whose type was promoted. This applies to every `BIGINT`
   and `DOUBLE` column when expiring snapshots removed older schemas.
 

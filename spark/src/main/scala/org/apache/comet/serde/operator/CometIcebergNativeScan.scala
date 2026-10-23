@@ -76,7 +76,7 @@ object CometIcebergNativeScan extends CometOperatorSerde[CometBatchScanExec] wit
       val OR = "Or"
       val NOT = "Not"
       // The only UnboundTerm shape this serde converts. The others, UnboundTransform and (on
-      // Iceberg versions that have it) UnboundExtract, are declined; see icebergExprToProto.
+      // Iceberg versions that have it) UnboundExtract, are declined; see referencedColumn.
       val NAMED_REFERENCE = "NamedReference"
     }
   }
@@ -719,20 +719,8 @@ object CometIcebergNativeScan extends CometOperatorSerde[CometBatchScanExec] wit
 
     if (exprClass.getName.endsWith(Constants.ExpressionTypes.UNBOUND_PREDICATE)) {
       val operation = call("op").toString
-      val term = call("term")
 
-      // Only a bare column reference converts. UnboundTransform (and UnboundExtract, on Iceberg
-      // versions that have it) answers ref() with its *source* column, so reading the name off
-      // it would push `bucket(4, id) = 2` as `id = 2` and drop every matching row whose id is
-      // not 2. CometScanRule declines a non-identity transform at planning time, but only when
-      // the residual is a bare predicate rather than one under AND/OR/NOT, so the term shape is
-      // checked here too rather than assumed.
-      if (!term.getClass.getName.endsWith(Constants.ExpressionTypes.NAMED_REFERENCE)) {
-        None
-      } else {
-        val columnName =
-          IcebergReflection.getMethod(term.getClass, "name").invoke(term).asInstanceOf[String]
-
+      referencedColumn(call("term")).flatMap { columnName =>
         // Iceberg names a nested reference by its dotted path ("struct.field"), which never matches
         // a top-level scan output attribute, so a residual on a nested field drops here. That miss
         // is also why the top-level-only pageIndexUnsupportedColumns gate below stays sound.
@@ -812,23 +800,33 @@ object CometIcebergNativeScan extends CometOperatorSerde[CometBatchScanExec] wit
     }
   }
 
+  /**
+   * The column a predicate term names, if the term is a bare column reference. UnboundTransform
+   * (and UnboundExtract, on Iceberg versions that have it) answers ref() with its *source*
+   * column, so reading the name off it would push `bucket(4, id) = 2` as `id = 2` and drop every
+   * matching row whose id is not 2. CometScanRule declines a non-identity transform at planning
+   * time, but only when the residual is a bare predicate rather than one under AND/OR/NOT, so the
+   * term shape is checked here too rather than assumed.
+   */
+  private def referencedColumn(term: Any): Option[String] =
+    if (term.getClass.getName.endsWith(Constants.ExpressionTypes.NAMED_REFERENCE)) {
+      Some(IcebergReflection.getMethod(term.getClass, "name").invoke(term).asInstanceOf[String])
+    } else {
+      None
+    }
+
   /** Columns that a `NOT_NULL` conjunct of this AND chain checks by bare reference. */
   private def notNullColumns(icebergExpr: Any): Set[String] = {
+    import Constants.Operations._
     val exprClass = icebergExpr.getClass
     def call(method: String): Any =
       IcebergReflection.getMethod(exprClass, method).invoke(icebergExpr)
-    val className = exprClass.getName
-    if (className.endsWith(Constants.ExpressionTypes.AND)) {
+    if (exprClass.getName.endsWith(Constants.ExpressionTypes.AND)) {
       notNullColumns(call("left")) ++ notNullColumns(call("right"))
-    } else if (className.endsWith(Constants.ExpressionTypes.UNBOUND_PREDICATE)) {
-      val term = call("term")
-      val operation = call("op").toString
-      if ((operation == Constants.Operations.NOT_NULL ||
-          operation == Constants.Operations.IS_NOT_NULL) &&
-        term.getClass.getName.endsWith(Constants.ExpressionTypes.NAMED_REFERENCE)) {
-        Set(IcebergReflection.getMethod(term.getClass, "name").invoke(term).asInstanceOf[String])
-      } else {
-        Set.empty
+    } else if (exprClass.getName.endsWith(Constants.ExpressionTypes.UNBOUND_PREDICATE)) {
+      call("op").toString match {
+        case IS_NOT_NULL | NOT_NULL => referencedColumn(call("term")).toSet
+        case _ => Set.empty
       }
     } else {
       Set.empty
