@@ -609,6 +609,18 @@ object CometConf extends ShimCometConf {
       .booleanConf
       .createWithDefault(false)
 
+  val COMET_EXEC_BROADCAST_SHARE_DECODED_ENABLED: ConfigEntry[Boolean] =
+    conf(s"$COMET_EXEC_CONFIG_PREFIX.broadcastExchange.shareDecoded.enabled")
+      .category(CATEGORY_EXEC)
+      .doc(
+        "Whether the tasks of an executor that read a Comet broadcast at the same time share " +
+          "one decoded copy of it. The first of them decodes the broadcast, and the others " +
+          "wait for it instead of decoding it themselves. The copy is freed when the last of " +
+          "them completes. When disabled, every task decodes the whole broadcast for itself. " +
+          s"$TUNING_GUIDE.")
+      .booleanConf
+      .createWithDefault(true)
+
   val COMET_FORCE_SHJ: ConfigEntry[Boolean] =
     conf(s"$COMET_EXEC_CONFIG_PREFIX.forceShuffledHashJoin")
       .withAlternative(s"$COMET_EXEC_CONFIG_PREFIX.replaceSortMergeJoin")
