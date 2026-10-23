@@ -31,6 +31,7 @@ extern crate datafusion_comet_jni_bridge;
 
 use jni::{
     objects::{JClass, JString},
+    sys::{jboolean, jstring, JNI_FALSE},
     EnvUnowned,
 };
 use log::info;
@@ -51,6 +52,9 @@ pub mod jvm_bridge {
 }
 
 use errors::{try_unwrap_or_throw, CometError, CometResult};
+
+use crate::cloud::s3::credential_bridge::AccessMode;
+use crate::execution::operators::iceberg_common::builtin_storage_schemes;
 
 pub mod alloc_accounting;
 pub mod cloud;
@@ -129,7 +133,7 @@ pub extern "system" fn Java_org_apache_comet_NativeBase_init(
     log_conf_path: JString,
     log_level: JString,
 ) {
-    // Initialize the error handling to capture panic backtraces
+    // Install the panic hook, which logs each native panic with its backtrace
     errors::init();
 
     try_unwrap_or_throw(&e, |env| {
@@ -176,6 +180,14 @@ fn logger_config(log_conf_path: &str, log_level: &str) -> CometResult<Config> {
         load_config_file(log_conf_path, Deserializers::default())
             .map_err(|err| CometError::Config(err.to_string()))
     }
+}
+
+#[no_mangle]
+pub extern "system" fn Java_org_apache_comet_NativeBase_nativeSupportsPythonUdf(
+    _: EnvUnowned,
+    _: JClass,
+) -> jni::sys::jboolean {
+    cfg!(feature = "python-udf")
 }
 
 #[no_mangle]
@@ -268,6 +280,27 @@ pub extern "system" fn Java_org_apache_comet_NativeBase_getTzdataVersion(
 /// `NativeBase.getTzdataVersion`.
 pub fn tzdata_version() -> &'static str {
     chrono_tz::IANA_TZDB_VERSION
+}
+
+/// JNI: the comma-joined built-in storage schemes the native Iceberg scan (`for_write` false) or
+/// write (`for_write` true) path admits. This is the source of truth the JVM read and write gates
+/// load. Opt-in S3-compliant alias schemes are not answered here; the JVM adds them from catalog
+/// properties.
+#[no_mangle]
+pub extern "system" fn Java_org_apache_comet_NativeBase_icebergStorageSchemes(
+    env: EnvUnowned,
+    _: JClass,
+    for_write: jboolean,
+) -> jstring {
+    try_unwrap_or_throw(&env, |env| {
+        let access_mode = if for_write != JNI_FALSE {
+            AccessMode::Write
+        } else {
+            AccessMode::Read
+        };
+        let joined = builtin_storage_schemes(access_mode).join(",");
+        Ok(env.new_string(joined)?.into_raw())
+    })
 }
 
 // Creates a default log4rs config, which logs to console with log level.

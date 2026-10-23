@@ -20,6 +20,7 @@
 package org.apache.comet.exec
 
 import java.{util => ju}
+import java.io.ByteArrayInputStream
 import java.nio.charset.StandardCharsets
 
 import scala.concurrent.{Await, Future}
@@ -29,19 +30,21 @@ import scala.jdk.CollectionConverters._
 
 import org.apache.arrow.compression.ZstdCompressionCodec
 import org.apache.arrow.memory.{ArrowBuf, BufferAllocator}
-import org.apache.arrow.vector.{BitVector, FixedSizeBinaryVector, IntVector, VarBinaryVector, VarCharVector}
+import org.apache.arrow.vector.{BitVector, FixedSizeBinaryVector, IntVector, LargeVarCharVector, VarBinaryVector, VarCharVector}
 import org.apache.arrow.vector.compression.{CompressionCodec, CompressionUtil, NoCompressionCodec}
 import org.apache.arrow.vector.types.pojo.ArrowType
+import org.apache.spark.{SparkConf, SparkException}
 import org.apache.spark.CometDriverPlugin
-import org.apache.spark.SparkConf
 import org.apache.spark.sql.{CometTestBase, DataFrame, Observation, QueryTest, Row}
-import org.apache.spark.sql.catalyst.expressions.{And, Attribute, AttributeReference, EqualTo, Expression, GreaterThan, GreaterThanOrEqual, LessThan, Literal}
+import org.apache.spark.sql.catalyst.expressions.{And, Ascending, Attribute, AttributeReference, EqualTo, Expression, GreaterThan, GreaterThanOrEqual, LessThan, Literal}
+import org.apache.spark.sql.catalyst.optimizer.{BuildLeft, BuildRight, BuildSide}
+import org.apache.spark.sql.catalyst.plans.LeftOuter
 import org.apache.spark.sql.columnar.{CachedBatch, SimpleMetricsCachedBatch}
-import org.apache.spark.sql.comet.{CometBroadcastHashJoinExec, CometInMemoryTableScanExec, CometSortAggregateExec, CometSortExec, CometSortMergeJoinExec}
+import org.apache.spark.sql.comet.{CometBroadcastHashJoinExec, CometHashAggregateExec, CometHashJoinExec, CometInMemoryTableScanExec, CometSortAggregateExec, CometSortExec, CometSortMergeJoinExec}
 import org.apache.spark.sql.comet.execution.arrow.{ArrowCachedBatchSerializer, CometCachedBatchHelper}
 import org.apache.spark.sql.comet.execution.shuffle.CometCelebornShuffleManager
 import org.apache.spark.sql.comet.util.Utils
-import org.apache.spark.sql.execution.{ColumnarToRowExec, CometSparkPlanInfoHelper, FilterExec, FormattedMode, RowToColumnarExec, SortExec, SparkPlanInfo}
+import org.apache.spark.sql.execution.{ColumnarToRowExec, CometSparkPlanInfoHelper, FilterExec, FormattedMode, RowToColumnarExec, SortExec, SparkPlan, SparkPlanInfo}
 import org.apache.spark.sql.execution.adaptive.{AdaptiveSparkPlanExec, AQEShuffleReadExec, QueryStageExec, ShuffleQueryStageExec}
 import org.apache.spark.sql.execution.columnar.{CometInMemoryRelationHelper, InMemoryRelation, InMemoryTableScanExec}
 import org.apache.spark.sql.execution.exchange.{Exchange, ReusedExchangeExec, ShuffleExchangeLike}
@@ -56,6 +59,8 @@ import org.apache.comet.{CometArrowAllocator, CometConf, CometKryoRegistrator, E
 import org.apache.comet.CometSparkSessionExtensions.{isSpark35Plus, isSpark40Plus}
 import org.apache.comet.rules.CometCacheColumnarRule
 import org.apache.comet.vector.{CometPlainVector, CometVector}
+
+import net.jpountz.lz4.LZ4FrameInputStream
 
 class CometInMemoryCacheSuite extends CometTestBase {
 
@@ -93,6 +98,7 @@ class CometInMemoryCacheSuite extends CometTestBase {
     conf.set("spark.comet.exec.enabled", "true")
     conf.set("spark.comet.exec.onHeap.enabled", "true")
     conf.set("spark.comet.metrics.enabled", "true")
+    conf.set(CometConf.COMET_EXEC_IN_MEMORY_CACHE_ENABLED.key, "true")
     conf.set(
       "spark.sql.cache.serializer",
       "org.apache.spark.sql.comet.execution.arrow.ArrowCachedBatchSerializer")
@@ -1214,6 +1220,57 @@ class CometInMemoryCacheSuite extends CometTestBase {
     }
   }
 
+  test("Comet in-memory cache counts the partitions and batches a scan reads") {
+    // Spark's PartitionBatchPruningSuite reads these accumulators to check that pruning skipped
+    // the batches it should have; the answer alone cannot tell a pruned batch from a decoded and
+    // filtered one.
+    // With AQE the scan sits inside a table cache stage on Spark 3.5+, and the instance that ran
+    // has to be the one the final plan holds.
+    Seq(false, true).foreach { adaptive =>
+      withSQLConf(
+        SQLConf.ADAPTIVE_EXECUTION_ENABLED.key -> adaptive.toString,
+        SQLConf.IN_MEMORY_TABLE_SCAN_STATISTICS_ENABLED.key -> "true",
+        SQLConf.COLUMN_BATCH_SIZE.key -> "50",
+        CometConf.COMET_EXEC_IN_MEMORY_CACHE_ENABLED.key -> "true") {
+        try {
+          // 10 partitions of 2 batches each.
+          spark
+            .range(0, 1000, 1, 10)
+            .selectExpr("id as key", "id % 7 as value")
+            .createOrReplaceTempView("counted_cache")
+          spark.catalog.cacheTable("counted_cache")
+          spark.table("counted_cache").count()
+
+          // withSQLConf returns Unit on Spark 3.x, so the counts leave it through a local.
+          def readCounts(query: String, pruning: Boolean): (Long, Long) = {
+            var counts: (Long, Long) = null
+            withSQLConf(SQLConf.IN_MEMORY_PARTITION_PRUNING.key -> pruning.toString) {
+              val df = spark.sql(query)
+              df.collect()
+              val scans = collect(df.queryExecution.executedPlan) {
+                case s: CometInMemoryTableScanExec => s
+              }
+              assert(scans.size == 1, df.queryExecution.executedPlan)
+              counts = (scans.head.readPartitions.value, scans.head.readBatches.value)
+            }
+            counts
+          }
+
+          val narrow = "SELECT key FROM counted_cache WHERE key >= 900 AND key < 905"
+          assert(readCounts(narrow, pruning = true) == ((1L, 1L)))
+          assert(readCounts(narrow, pruning = false) == ((10L, 20L)))
+          assert(
+            readCounts("SELECT key FROM counted_cache WHERE key < 0", pruning = true) == ((
+              0L,
+              0L)))
+          assert(readCounts("SELECT key FROM counted_cache", pruning = true) == ((10L, 20L)))
+        } finally {
+          spark.catalog.clearCache()
+        }
+      }
+    }
+  }
+
   test("Comet in-memory cache honors inMemoryColumnarStorage.partitionPruning=false") {
     // CometInMemoryTableScanExec applies the serializer's stats filter before decoding, the same
     // way Spark's InMemoryTableScanExec.filteredCachedBatches does. Spark gates that on
@@ -1435,6 +1492,11 @@ class CometInMemoryCacheSuite extends CometTestBase {
     CometDriverPlugin.maybeSetCacheSerializer(conf, extraConfs)
     assert(conf.contains(serializerKey) == extraConfs.containsKey(serializerKey))
     extraConfs.containsKey(serializerKey)
+  }
+
+  test("Comet's cache format is opt-in") {
+    // Native joins can lose the order a sorted cached relation reports (#6787, #6898, #6922).
+    assert(!CometConf.COMET_EXEC_IN_MEMORY_CACHE_ENABLED.defaultValue.get)
   }
 
   test("Comet plugin installs its cache serializer only if Comet can scan the cache natively") {
@@ -2123,7 +2185,7 @@ class CometInMemoryCacheSuite extends CometTestBase {
     // Every codec the config accepts, not just the default. `none` takes a different path on read
     // -- the payload records no codec, so nothing is decompressed -- and shipped broken for a
     // while because the only tests that ran were on the default codec.
-    Seq("none", "zstd").foreach { codec =>
+    Seq("none", "zstd", "lz4").foreach { codec =>
       withConversions(
         SQLConf.ADAPTIVE_EXECUTION_ENABLED.key -> "false",
         SQLConf.CACHE_VECTORIZED_READER_ENABLED.key -> "true",
@@ -2167,6 +2229,103 @@ class CometInMemoryCacheSuite extends CometTestBase {
 
         spark.catalog.clearCache()
       }
+    }
+  }
+
+  test("Comet in-memory cache writes lz4 buffers as standard LZ4 frames") {
+    // Arrow's LZ4_FRAME codec is the standard LZ4 frame format, so check what the codec writes
+    // against lz4-java's own frame reader rather than against the codec that wrote it. The inputs
+    // span the codec's 4 MiB block: a buffer of one block, and one of three whose first block is
+    // incompressible, which a frame stores verbatim.
+    val random = new scala.util.Random(7)
+    def compressible(n: Int): Array[Byte] = Array.tabulate[Byte](n)(i => (i / 16).toByte)
+    val inputs = Seq(
+      "one block" -> compressible(100 * 1000),
+      "three blocks" ->
+        (Array.fill[Byte](4 << 20)(random.nextInt().toByte) ++ compressible(5 << 20)))
+    val codec = CometCachedBatchHelper.compressionCodec("lz4")
+    assert(codec.getCodecType == CompressionUtil.CodecType.LZ4_FRAME)
+
+    val allocator = CometArrowAllocator.newChildAllocator("lz4-frames", 0, Long.MaxValue)
+    try {
+      inputs.foreach { case (label, data) =>
+        val plain = allocator.buffer(data.length.toLong)
+        plain.setBytes(0, data)
+        plain.writerIndex(data.length.toLong)
+        // Takes ownership of `plain`.
+        val packed = codec.compress(allocator, plain)
+        try {
+          // Arrow prefixes a compressed buffer with its uncompressed length, and a buffer it
+          // stored verbatim with -1.
+          assert(packed.getLong(0) == data.length, s"$label was stored verbatim")
+          val frame = new Array[Byte]((packed.writerIndex() - 8).toInt)
+          packed.getBytes(8, frame)
+          val in = new LZ4FrameInputStream(new ByteArrayInputStream(frame))
+          val decoded =
+            try in.readAllBytes()
+            finally in.close()
+          assert(decoded.sameElements(data), s"lz4-java read $label back differently")
+        } finally {
+          packed.close()
+        }
+      }
+      assert(allocator.getAllocatedMemory == 0)
+    } finally {
+      allocator.close()
+    }
+  }
+
+  test("Comet in-memory cache rejects a corrupt lz4 frame without leaking") {
+    // A corrupt frame has to fail as itself, naming the codec, and release the buffer it was
+    // decoding into. Offsets are from the LZ4 frame format behind Arrow's 8-byte
+    // uncompressed-length prefix: the frame's 4-byte magic number at 8, then a 3-byte frame
+    // descriptor, then the first block's 4-byte length at 15. A frame ends with a 4-byte end
+    // mark. Truncated frames are decoded from copies of exactly their length, so reading past
+    // one is an error of its own rather than a read of the bytes that follow.
+    val data = Array.tabulate[Byte](100 * 1000)(i => (i / 16).toByte)
+    val codec = CometCachedBatchHelper.compressionCodec("lz4")
+
+    val allocator = CometArrowAllocator.newChildAllocator("lz4-corrupt", 0, Long.MaxValue)
+    try {
+      def truncated(frame: ArrowBuf, length: Long): ArrowBuf = {
+        val copy = allocator.buffer(length)
+        copy.setBytes(0, frame, 0, length)
+        copy.writerIndex(length)
+        copy
+      }
+      // Each corruption returns the buffer to decode: the frame itself, or a truncated copy.
+      val corruptions: Seq[(String, ArrowBuf => ArrowBuf)] = Seq(
+        "a buffer that is not an LZ4 frame" -> { b => b.setInt(8, 0); b },
+        "a frame cut off inside its header" -> (b => truncated(b, 12)),
+        "a frame cut off before its end mark" -> (b => truncated(b, b.writerIndex() - 4)),
+        "a block that runs past the end of the frame" -> { b => b.setInt(15, 0x7fffff00); b },
+        "a frame that decodes to less than its recorded length" -> { b =>
+          b.setLong(0, data.length + 1L); b
+        },
+        "a frame that decodes to more than its recorded length" -> { b =>
+          b.setLong(0, data.length - 1L); b
+        })
+
+      corruptions.foreach { case (label, corrupt) =>
+        val plain = allocator.buffer(data.length.toLong)
+        plain.setBytes(0, data)
+        plain.writerIndex(data.length.toLong)
+        val packed = codec.compress(allocator, plain)
+        assert(packed.getLong(0) == data.length, "the test needs a compressed buffer")
+        val input = corrupt(packed)
+        try {
+          val thrown = intercept[SparkException](codec.decompress(allocator, input).close())
+          assert(thrown.getMessage.contains("LZ4"), s"$label failed with: $thrown")
+        } finally {
+          // A failed decompress leaves its input to the caller, as Arrow's own codecs do.
+          Seq(packed, input).distinct.foreach { b =>
+            if (b.getReferenceManager.getRefCount > 0) b.close()
+          }
+        }
+        assert(allocator.getAllocatedMemory == 0, s"$label leaked")
+      }
+    } finally {
+      allocator.close()
     }
   }
 
@@ -2765,8 +2924,12 @@ class CometInMemoryCacheSuite extends CometTestBase {
     // reachable from nothing the failure path can see. The second is the one that catches a leak
     // in `VectorLoader`; the first is the one that catches a cleanup path releasing the shared
     // body twice. Both run over a multi-chunk payload too, where the copy into the body walks
-    // several chunks before the failure.
-    chunkSizes.foreach { case (_, chunkSize) =>
+    // several chunks before the failure, and under each codec that compresses, since each fails
+    // in a decoder of its own.
+    for {
+      codec <- Seq("zstd", "lz4")
+      (_, chunkSize) <- chunkSizes
+    } withSQLConf(CometConf.COMET_EXEC_IN_MEMORY_CACHE_COMPRESSION_CODEC.key -> codec) {
       withProjectionCache(chunkSize) { (relation, batches) =>
         val cacheSchema = Utils.fromAttributes(relation.output)
         val pristine = CometCachedBatchHelper.snapshotPayloads(batches)
@@ -2795,7 +2958,7 @@ class CometInMemoryCacheSuite extends CometTestBase {
           }
           assert(
             CometArrowAllocator.getAllocatedMemory == before,
-            s"everything allocated before a failure in $where must be released")
+            s"everything allocated before a failure in $where under $codec must be released")
         }
       }
     }
@@ -2876,6 +3039,57 @@ class CometInMemoryCacheSuite extends CometTestBase {
       ints.close()
       strings.close()
     }
+  }
+
+  test("Comet in-memory cache releases the 32-bit copy it makes of a large-offset column") {
+    // A large-offset column is written as a copy with 32-bit offsets, which nothing outside the
+    // writer ever holds. It has to be closed whether the write succeeds or fails, and a copy can
+    // be close to 2 GiB.
+    val rows = 16
+    // Returns the failure of the write, if any, once the batch's own vectors are closed and the
+    // allocator is back where it started.
+    def write(codec: CompressionCodec): Option[Throwable] = {
+      val baseline = CometArrowAllocator.getAllocatedMemory
+      val ints = new IntVector("i", CometArrowAllocator)
+      val large = new LargeVarCharVector("s", CometArrowAllocator)
+      val failure =
+        try {
+          ints.allocateNew(rows)
+          (0 until rows).foreach(i => ints.set(i, i))
+          ints.setValueCount(rows)
+          large.allocateNew(rows)
+          (0 until rows).foreach(i => large.setSafe(i, s"value_$i".getBytes("UTF-8")))
+          large.setValueCount(rows)
+
+          val batch = new ColumnarBatch(
+            Array[ColumnVector](new CometPlainVector(ints), new CometPlainVector(large)),
+            rows)
+          try {
+            CometCachedBatchHelper.serialize(batch, codec, CometArrowAllocator)
+            None
+          } catch {
+            case e: Exception => Some(e)
+          }
+        } finally {
+          ints.close()
+          large.close()
+        }
+      assert(
+        CometArrowAllocator.getAllocatedMemory == baseline,
+        "the copy of the large-offset column must be released")
+      failure
+    }
+
+    assert(write(new ZstdCompressionCodec(1)).isEmpty)
+
+    // The int column's two buffers compress, then the copy's first one fails.
+    val codec = new FailAfterCompressionCodec(succeedFor = 2)
+    val thrown = write(codec).getOrElse(fail("the injected failure must surface"))
+    assert(
+      causeChain(thrown).exists(t =>
+        Option(t.getMessage).contains(FailAfterCompressionCodec.Message)),
+      s"a compression failure must surface as itself: $thrown")
+    assert(codec.compressed == 2, "the failure must come after some buffers were compressed")
   }
 
   test("Comet in-memory cache keeps no compressed bytes alive behind a buffer stored raw") {
@@ -3125,6 +3339,212 @@ class CometInMemoryCacheSuite extends CometTestBase {
       assert(collect(plain.queryExecution.executedPlan) { case s: CometInMemoryTableScanExec =>
         s
       }.nonEmpty)
+    }
+  }
+
+  test("hash joins over a sorted cache keep the streamed side's order") {
+    // CometInMemoryTableScan reports the cached plan's sort order, so Spark drops the sort it
+    // would otherwise plan above a join that keeps that order. DataFusion's hash join keeps the
+    // unmatched probe rows of a left outer join built on the right, or of a right outer join built
+    // on the left, in place only when the probe input declares an order, which the native scan
+    // over the cache does not, so the native join declares the cache's order on its probe input.
+    // An inner join never moves probe rows.
+    withSQLConf(
+      SQLConf.ADAPTIVE_EXECUTION_ENABLED.key -> "false",
+      SQLConf.AUTO_BROADCASTJOIN_THRESHOLD.key -> "-1",
+      SQLConf.SHUFFLE_PARTITIONS.key -> "2",
+      CometConf.COMET_EXEC_IN_MEMORY_CACHE_ENABLED.key -> "true") {
+      withParquetTable((0 until 10000).map(i => (i % 100, i)), "big") {
+        withParquetTable((0 until 10).map(i => (i * 10, i)), "small") {
+          try {
+            val streamed =
+              spark.table("big").repartition(2, $"_1").sortWithinPartitions("_1").cache()
+            streamed.count()
+            val build = spark.table("small")
+
+            def query(hint: String, joinType: String): DataFrame = {
+              val joined = if (joinType == "right_outer") {
+                build.hint(hint).join(streamed, build("_1") === streamed("_1"), joinType)
+              } else {
+                streamed.join(build.hint(hint), streamed("_1") === build("_1"), joinType)
+              }
+              joined
+                .select(streamed("_1").as("k"), streamed("_2").as("v"), build("_2").as("w"))
+                .sortWithinPartitions("k")
+            }
+
+            def joins(plan: SparkPlan): Seq[(Class[_], BuildSide)] = collect(plan) {
+              case j: CometHashJoinExec => (j.getClass, j.buildSide)
+              case j: CometBroadcastHashJoinExec => (j.getClass, j.buildSide)
+            }
+
+            def sorts(plan: SparkPlan): Seq[SparkPlan] =
+              collect(plan) { case s @ (_: CometSortExec | _: SortExec) => s }
+
+            val outerRows = (0 until 10000).map { i =>
+              val k = i % 100
+              Row(k, i, if (k % 10 == 0) k / 10 else null)
+            }
+            val innerRows = outerRows.filter(_.get(2) != null)
+
+            Seq(
+              "shuffle_hash" -> classOf[CometHashJoinExec],
+              "broadcast" -> classOf[CometBroadcastHashJoinExec]).foreach {
+              case (hint, joinClass) =>
+                Seq("left_outer" -> BuildRight, "right_outer" -> BuildLeft).foreach {
+                  case (joinType, buildSide) =>
+                    val outer = query(hint, joinType)
+                    val outerPlan = outer.queryExecution.executedPlan
+                    assert(joins(outerPlan) == Seq((joinClass, buildSide)), outerPlan)
+                    assert(collect(outerPlan) { case s: CometInMemoryTableScanExec =>
+                      s
+                    }.size == 1)
+                    assert(sorts(outerPlan).isEmpty, outerPlan)
+                    QueryTest.sameRows(outerRows, outer.collect().toSeq).foreach(fail(_))
+                    assert(partitionsInOrder(outer, keyOrder(Ascending)), outerPlan)
+                }
+
+                val inner = query(hint, "inner")
+                val innerPlan = inner.queryExecution.executedPlan
+                assert(joins(innerPlan) == Seq((joinClass, BuildRight)), innerPlan)
+                assert(sorts(innerPlan).isEmpty, innerPlan)
+                QueryTest.sameRows(innerRows, inner.collect().toSeq).foreach(fail(_))
+                assert(partitionsInOrder(inner, keyOrder(Ascending)), innerPlan)
+            }
+          } finally {
+            spark.catalog.clearCache()
+          }
+        }
+      }
+    }
+  }
+
+  test("a broadcast outer hash join over a sorted cache keeps its order with default settings") {
+    // A cache written with no exchange in its plan is not adaptive, so with AQE on, as it is by
+    // default, the scan reports the cached plan's order just as it does with AQE off. Only the
+    // native cache scan is switched on here, and the broadcast join is the one Spark plans for
+    // a small build side.
+    withSQLConf(CometConf.COMET_EXEC_IN_MEMORY_CACHE_ENABLED.key -> "true") {
+      withParquetTable((0 until 10000).map(i => (i % 100, i)), "big") {
+        withParquetTable((0 until 10).map(i => (i * 10, i)), "small") {
+          try {
+            val streamed = spark.table("big").sortWithinPartitions("_1").cache()
+            streamed.count()
+            val build = spark.table("small")
+            val df = streamed
+              .join(build, streamed("_1") === build("_1"), "left_outer")
+              .select(streamed("_1").as("k"), streamed("_2").as("v"), build("_2").as("w"))
+              .sortWithinPartitions("k")
+            val expected = (0 until 10000).map { i =>
+              val k = i % 100
+              Row(k, i, if (k % 10 == 0) k / 10 else null)
+            }
+            QueryTest.sameRows(expected, df.collect().toSeq).foreach(fail(_))
+            // The plan AQE chose is final once the query has run.
+            val plan = df.queryExecution.executedPlan
+            assert(plan.isInstanceOf[AdaptiveSparkPlanExec], plan)
+            val joins = collect(plan) { case j: CometBroadcastHashJoinExec => j }
+            assert(joins.size == 1 && joins.head.joinType == LeftOuter, plan)
+            assert(joins.head.nativeOp.getHashJoin.getStreamedSortOrdersCount > 0, plan)
+            assert(collect(plan) { case s @ (_: CometSortExec | _: SortExec) => s }.isEmpty, plan)
+            assert(collect(plan) { case s: CometInMemoryTableScanExec => s }.size == 1, plan)
+            assert(partitionsInOrder(df, keyOrder(Ascending)), plan)
+          } finally {
+            spark.catalog.clearCache()
+          }
+        }
+      }
+    }
+  }
+
+  test("an aggregate on the key above a hash join over a sorted cache groups each key once") {
+    // The order the join declares on its probe input reaches past the join, so the aggregate
+    // above it in the same native plan groups in sorted, streaming mode. That is right while
+    // Spark's reported order holds, and a wrong order would split a key across groups, which only
+    // a comparison of the rows as a multiset catches. With 40 keys and 8-row batches each group
+    // spans several batches. With 1000 keys a batch holds four keys, alternately matched and
+    // unmatched, so a join that moved its unmatched rows would also change the order in which the
+    // aggregate first sees the keys, and its output would not come back sorted.
+    withSQLConf(
+      SQLConf.ADAPTIVE_EXECUTION_ENABLED.key -> "false",
+      SQLConf.AUTO_BROADCASTJOIN_THRESHOLD.key -> "-1",
+      SQLConf.SHUFFLE_PARTITIONS.key -> "2",
+      SQLConf.COLUMN_BATCH_SIZE.key -> "8",
+      CometConf.COMET_BATCH_SIZE.key -> "8",
+      CometConf.COMET_EXEC_IN_MEMORY_CACHE_ENABLED.key -> "true") {
+      Seq(40, 1000).foreach { keys =>
+        val data = (0 until 2000).map(i => ((i % keys) * 1000, i))
+        withParquetTable(data, "big") {
+          withParquetTable((0 until keys by 2).map(m => (m * 1000, m)), "small") {
+            try {
+              val streamed =
+                spark.table("big").repartition(2, $"_1").sortWithinPartitions("_1").cache()
+              streamed.count()
+              val build = spark.table("small")
+
+              // A match in the build side for every even key.
+              val expected = data.groupBy(_._1).toSeq.map { case (k, rows) =>
+                Row(
+                  k,
+                  rows.size.toLong,
+                  rows.map(_._2.toLong).sum,
+                  if ((k / 1000) % 2 == 0) {
+                    rows.size.toLong
+                  } else 0L)
+              }
+
+              for {
+                (hint, joinClass) <- Seq(
+                  "shuffle_hash" -> classOf[CometHashJoinExec],
+                  "broadcast" -> classOf[CometBroadcastHashJoinExec])
+                (joinType, buildSide) <- Seq(
+                  "left_outer" -> BuildRight,
+                  "right_outer" -> BuildLeft)
+              } {
+                val joined = if (joinType == "right_outer") {
+                  build.hint(hint).join(streamed, build("_1") === streamed("_1"), joinType)
+                } else {
+                  streamed.join(build.hint(hint), streamed("_1") === build("_1"), joinType)
+                }
+                val df = joined
+                  .groupBy(streamed("_1"))
+                  .agg(count(lit(1)), sum(streamed("_2")), count(build("_2")))
+                val plan = df.queryExecution.executedPlan
+                val joins: Seq[(SparkPlan, BuildSide)] = collect(plan) {
+                  case j: CometHashJoinExec => (j, j.buildSide)
+                  case j: CometBroadcastHashJoinExec => (j, j.buildSide)
+                }
+                assert(
+                  joins.map { case (j, side) => (j.getClass, side) } == Seq(
+                    (joinClass, buildSide)),
+                  plan)
+                // The serde sent the order, which is what lets the aggregates above run in
+                // sorted mode, and a sorted aggregate emits its groups in key order.
+                assert(
+                  collect(plan) {
+                    case j: CometHashJoinExec => j.nativeOp
+                    case j: CometBroadcastHashJoinExec => j.nativeOp
+                  }.forall(_.getHashJoin.getStreamedSortOrdersCount > 0),
+                  plan)
+                assert(partitionsInOrder(df, keyOrder(Ascending)), plan)
+                // A final aggregate after a shuffle would merge a key a partial aggregate split,
+                // so both aggregates have to sit above the join with no exchange in between.
+                def aboveJoin(p: SparkPlan): Boolean = p.find(_ eq joins.head._1).isDefined
+                assert(
+                  collect(plan) { case a: CometHashAggregateExec => a }.count(aboveJoin) == 2,
+                  plan)
+                assert(
+                  !collect(plan) { case e: ShuffleExchangeLike => e }.exists(aboveJoin),
+                  plan)
+                assert(collect(plan) { case s: CometInMemoryTableScanExec => s }.size == 1, plan)
+                QueryTest.sameRows(expected, df.collect().toSeq).foreach(fail(_))
+              }
+            } finally {
+              spark.catalog.clearCache()
+            }
+          }
+        }
+      }
     }
   }
 }

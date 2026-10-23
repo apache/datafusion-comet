@@ -167,6 +167,36 @@ trait CometIcebergTestBase { this: CometTestBase =>
       .getMethod("ofLength", classOf[Int])
       .invoke(null, Integer.valueOf(length))
 
+  /**
+   * Whether the Iceberg runtime on the classpath can report an output ordering. Not all releases
+   * can, so ordering-dependent tests must gate on this capability rather than on a version
+   * number. We probe for SortOrderAnalyzer, which ships in exactly the builds whose
+   * SparkPartitioningAwareScan reports an ordering. Returns false if the class is missing so
+   * those tests skip rather than fail.
+   */
+  protected lazy val icebergReportsOrdering: Boolean =
+    try {
+      IcebergReflection.loadClass("org.apache.iceberg.spark.source.SortOrderAnalyzer")
+      true
+    } catch {
+      case _: Exception => false
+    }
+
+  /**
+   * Sets a single ASC sort order on an Iceberg table via the Java API. The SQL form (ALTER TABLE
+   * ... WRITE ORDERED BY) needs Iceberg's SQL extensions, which the test session does not
+   * register, so we go through Spark3Util.loadIcebergTable and replaceSortOrder instead.
+   */
+  protected def setIcebergSortOrderAsc(tableName: String, column: String): Unit = {
+    val table = IcebergReflection
+      .loadClass("org.apache.iceberg.spark.Spark3Util")
+      .getMethod("loadIcebergTable", classOf[SparkSession], classOf[String])
+      .invoke(null, SparkSession.active, tableName)
+    val replace = table.getClass.getMethod("replaceSortOrder").invoke(table)
+    val withAsc = replace.getClass.getMethod("asc", classOf[String]).invoke(replace, column)
+    withAsc.getClass.getMethod("commit").invoke(withAsc)
+  }
+
   protected def withTempIcebergDir(f: File => Unit): Unit = {
     val dir = Files.createTempDirectory("comet-iceberg-test").toFile
     try f(dir)
@@ -237,6 +267,9 @@ trait CometIcebergTestBase { this: CometTestBase =>
       override def onFailure(funcName: String, qe: QueryExecution, exception: Exception): Unit =
         if (includeFailures) captured += qe.executedPlan
     }
+    // Events from earlier queries may still be queued; drain them so they do not reach the
+    // listener.
+    CometListenerBusUtils.waitUntilEmpty(spark.sparkContext)
     spark.listenerManager.register(listener)
     try {
       action
@@ -259,6 +292,7 @@ trait CometIcebergTestBase { this: CometTestBase =>
       override def onFailure(funcName: String, qe: QueryExecution, exception: Exception): Unit =
         captured += qe.executedPlan
     }
+    CometListenerBusUtils.waitUntilEmpty(spark.sparkContext)
     spark.listenerManager.register(listener)
     try {
       val error =

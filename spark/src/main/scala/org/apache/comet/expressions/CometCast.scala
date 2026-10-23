@@ -19,11 +19,12 @@
 
 package org.apache.comet.expressions
 
+import scala.util.Try
+
 import org.apache.spark.sql.catalyst.expressions.{Attribute, Cast, Expression, Literal}
 import org.apache.spark.sql.internal.SQLConf
 import org.apache.spark.sql.types.{ArrayType, DataType, DataTypes, DecimalType, MapType, NullType, StructType, TimestampNTZType, TimestampType}
 
-import org.apache.comet.CometConf
 import org.apache.comet.CometSparkSessionExtensions.{isSpark40Plus, withFallbackReason}
 import org.apache.comet.DataTypeSupport.isComplexType
 import org.apache.comet.serde.{CodegenDispatchFallback, CometExpressionSerde, CometTimeZone, Compatible, ExprOuterClass, Incompatible, SupportLevel, Unsupported}
@@ -40,6 +41,20 @@ object CometCast
   // Shared with CometNativeCastSuite so the asserted reason cannot drift from production.
   private[comet] val negativeScaleDecimalToStringReason: String =
     "Negative-scale decimal requires spark.sql.legacy.allowNegativeScaleOfDecimal=true"
+
+  // The native decimal to integral kernels divide by 10^scale, which overflows for a negative
+  // scale. A debug build panics on any batch with a value and a release build wraps the divisor,
+  // so the cast is left to Spark. Shared with CometNativeCastSuite like the reason above.
+  private[comet] val negativeScaleDecimalToIntegralReason: String =
+    "Cast from a negative-scale decimal to an integral type is not supported"
+
+  // `cast_decimal_to_timestamp` scale-aligns through 10^|scale| and overflows the same way.
+  private[comet] val negativeScaleDecimalToTimestampReason: String =
+    "Cast from a negative-scale decimal to TimestampType is not supported"
+
+  // The integer to decimal kernels multiply by 10^|scale|, which overflows for a negative scale.
+  private[comet] val negativeScaleDecimalFromIntegralReason: String =
+    "Cast from an integral type to a negative-scale decimal is not supported"
 
   // When `spark.sql.legacy.castComplexTypesToString.enabled` is true, Spark wraps maps and
   // structs with `[]` (instead of `{}`) when casting to string, and omits NULL elements of
@@ -106,6 +121,13 @@ object CometCast
       if (isVariantType(cast.child.dataType) || isVariantType(cast.dataType)) {
         return unsupported(cast.child.dataType, cast.dataType)
       }
+      if (Try(cast.eval()).isFailure) {
+        // The cast fails for this literal, and Spark's `ConstantFolding` kept it because it sits
+        // in a conditional branch that may never run. Spark's own `Cast` must raise the error
+        // only when a row reaches it, so route it through the JVM codegen dispatcher (or fall
+        // back to Spark) rather than a native cast whose parsing could accept the literal.
+        return Unsupported(Some(failedLiteralCastReason))
+      }
       Compatible()
     } else if (CometTimeZone.nativeId(cast.timeZoneId).isEmpty) {
       CometTimeZone.supportLevel(cast.timeZoneId)
@@ -135,6 +157,9 @@ object CometCast
         }
     }
   }
+
+  private val failedLiteralCastReason: String =
+    "Cast of a literal that fails to evaluate runs Spark's Cast so it fails only if reached"
 
 //  Some casts like date -> int/byte / long are always null. Terminate early in planning
   private def isAlwaysCastToNull(
@@ -167,10 +192,6 @@ object CometCast
         castBuilder.setChild(childExpr)
         castBuilder.setDatatype(dataType)
         castBuilder.setEvalMode(evalModeToProto(evalMode))
-        castBuilder.setAllowIncompat(
-          SQLConf.get
-            .getConfString(CometConf.getExprAllowIncompatConfigKey(classOf[Cast]), "false")
-            .toBoolean)
         castBuilder.setTimezone(timeZone)
         castBuilder.setIsSpark4Plus(isSpark40Plus)
         Some(
@@ -248,13 +269,13 @@ object CometCast
       case (_: DecimalType, _: DecimalType) =>
         Compatible()
       case (DataTypes.StringType, _) =>
-        canCastFromString(toType, timeZoneId, evalMode)
+        canCastFromString(toType)
       case (_, DataTypes.StringType) =>
         canCastToString(fromType, timeZoneId, evalMode)
       case (DataTypes.TimestampType, _) =>
         canCastFromTimestamp(toType)
-      case (_: DecimalType, _) =>
-        canCastFromDecimal(toType)
+      case (d: DecimalType, _) =>
+        canCastFromDecimal(d, toType)
       case (DataTypes.BooleanType, _) =>
         canCastFromBoolean(toType, evalMode)
       case (DataTypes.ByteType, _) =>
@@ -306,10 +327,7 @@ object CometCast
     }
   }
 
-  private def canCastFromString(
-      toType: DataType,
-      timeZoneId: Option[String],
-      evalMode: CometEvalMode.Value): SupportLevel = {
+  private def canCastFromString(toType: DataType): SupportLevel = {
     toType match {
       case DataTypes.BooleanType =>
         Compatible()
@@ -420,6 +438,8 @@ object CometCast
         Compatible()
       case DataTypes.ShortType | DataTypes.IntegerType | DataTypes.LongType =>
         Compatible()
+      case d: DecimalType if d.scale < 0 =>
+        Unsupported(Some(negativeScaleDecimalFromIntegralReason))
       case DataTypes.FloatType | DataTypes.DoubleType | _: DecimalType =>
         Compatible()
       case DataTypes.BinaryType if (evalMode == CometEvalMode.LEGACY) =>
@@ -436,6 +456,8 @@ object CometCast
         Compatible()
       case DataTypes.ByteType | DataTypes.IntegerType | DataTypes.LongType =>
         Compatible()
+      case d: DecimalType if d.scale < 0 =>
+        Unsupported(Some(negativeScaleDecimalFromIntegralReason))
       case DataTypes.FloatType | DataTypes.DoubleType | _: DecimalType =>
         Compatible()
       case DataTypes.BinaryType if (evalMode == CometEvalMode.LEGACY) =>
@@ -454,6 +476,8 @@ object CometCast
         Compatible()
       case DataTypes.FloatType | DataTypes.DoubleType =>
         Compatible()
+      case d: DecimalType if d.scale < 0 =>
+        Unsupported(Some(negativeScaleDecimalFromIntegralReason))
       case _: DecimalType =>
         Compatible()
       case DataTypes.BinaryType if (evalMode == CometEvalMode.LEGACY) => Compatible()
@@ -471,6 +495,8 @@ object CometCast
         Compatible()
       case DataTypes.FloatType | DataTypes.DoubleType =>
         Compatible()
+      case d: DecimalType if d.scale < 0 =>
+        Unsupported(Some(negativeScaleDecimalFromIntegralReason))
       case _: DecimalType =>
         Compatible()
       case DataTypes.BinaryType if (evalMode == CometEvalMode.LEGACY) => Compatible()
@@ -499,13 +525,30 @@ object CometCast
     case _ => unsupported(DataTypes.DoubleType, toType)
   }
 
-  private def canCastFromDecimal(toType: DataType): SupportLevel = toType match {
-    case DataTypes.FloatType | DataTypes.DoubleType | DataTypes.ByteType | DataTypes.ShortType |
-        DataTypes.IntegerType | DataTypes.LongType | DataTypes.BooleanType |
-        DataTypes.TimestampType =>
-      Compatible()
-    case _ => Unsupported(Some(s"Cast from DecimalType to $toType is not supported"))
-  }
+  private def canCastFromDecimal(fromType: DecimalType, toType: DataType): SupportLevel =
+    toType match {
+      // The integral and timestamp kernels scale-align through a power of ten that overflows for
+      // a negative scale. Matching each target group once keeps the scale check next to the list
+      // it applies to. See issue #5013.
+      case DataTypes.ByteType | DataTypes.ShortType | DataTypes.IntegerType |
+          DataTypes.LongType =>
+        if (fromType.scale < 0) {
+          Unsupported(Some(negativeScaleDecimalToIntegralReason))
+        } else {
+          Compatible()
+        }
+      case DataTypes.TimestampType =>
+        if (fromType.scale < 0) {
+          Unsupported(Some(negativeScaleDecimalToTimestampReason))
+        } else {
+          Compatible()
+        }
+      // Float and double are not gated on scale: `decimal128_to_f64` / `decimal128_to_f32`
+      // round the exact decimal value once and handle a negative scale deliberately (#5684).
+      case DataTypes.FloatType | DataTypes.DoubleType | DataTypes.BooleanType =>
+        Compatible()
+      case _ => Unsupported(Some(s"Cast from DecimalType to $toType is not supported"))
+    }
 
   private def canCastFromDate(toType: DataType, evalMode: CometEvalMode.Value): SupportLevel =
     toType match {

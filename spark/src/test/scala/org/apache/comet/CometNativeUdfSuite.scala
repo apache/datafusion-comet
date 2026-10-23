@@ -20,6 +20,7 @@
 package org.apache.comet
 
 import java.io.File
+import java.nio.file.Files
 import java.util.Locale
 
 import org.apache.spark.sql.{AnalysisException, CometTestBase}
@@ -27,7 +28,7 @@ import org.apache.spark.sql.comet.CometProjectExec
 import org.apache.spark.sql.functions.{col, expr, struct}
 import org.apache.spark.sql.types._
 
-import org.apache.comet.udf.{CometNativeUDF, CometNativeUdfAbiException, CometNativeUdfLoadException}
+import org.apache.comet.udf.{CometNativeUDF, CometNativeUdfAbiException, CometNativeUdfLoadException, CometNativeUdfNotAllowedException}
 
 /**
  * End-to-end integration suite: register a native UDF, run a Spark query, verify the result.
@@ -191,6 +192,73 @@ class CometNativeUdfSuite extends CometTestBase {
     assert(row.map(_.getLong(0)).toSeq == Seq(1L, 2L, 3L))
     assert(row.map(_.getLong(1)).toSeq == Seq(0L, 1L, 2L))
     assert(row.forall(r => Option(r.getString(2)).exists(_.nonEmpty)))
+  }
+
+  test("registration is refused when native UDFs are disabled") {
+    withSQLConf(CometConf.COMET_NATIVE_UDF_ENABLED.key -> "false") {
+      val e = intercept[CometNativeUdfNotAllowedException] {
+        CometNativeUDF.register(spark, "add_one_c", libPath, Seq(LongType), LongType)
+      }
+      assert(e.getMessage.contains(CometConf.COMET_NATIVE_UDF_ENABLED.key), e.getMessage)
+    }
+  }
+
+  test("registration is refused for a library outside allowedPaths") {
+    val elsewhere = Files.createTempDirectory("comet-udf-elsewhere")
+    try {
+      withSQLConf(CometConf.COMET_NATIVE_UDF_ALLOWED_PATHS.key -> elsewhere.toString) {
+        val e = intercept[CometNativeUdfNotAllowedException] {
+          CometNativeUDF.register(spark, "add_one_c", libPath, Seq(LongType), LongType)
+        }
+        assert(e.getMessage.contains(CometConf.COMET_NATIVE_UDF_ALLOWED_PATHS.key), e.getMessage)
+      }
+    } finally {
+      Files.delete(elsewhere)
+    }
+  }
+
+  test("a library under allowedPaths registers and runs") {
+    val libDir = new File(libPath).getAbsoluteFile.getParent
+    val elsewhere = Files.createTempDirectory("comet-udf-elsewhere")
+    try {
+      withSQLConf(
+        CometConf.COMET_NATIVE_UDF_ALLOWED_PATHS.key -> s"${elsewhere.toString},$libDir") {
+        CometNativeUDF.register(spark, "add_one_c", libPath, Seq(LongType), LongType)
+        val out = spark.range(0, 3).selectExpr("add_one_c(id) AS y").collect().map(_.getLong(0))
+        assert(out.toSeq == Seq(1L, 2L, 3L))
+      }
+    } finally {
+      Files.delete(elsewhere)
+    }
+  }
+
+  test("the executor applies the policy to a plan that was built without it") {
+    // Registered under the default policy, as a plan built by another driver would be. The policy
+    // in force when the query runs is what the native side enforces.
+    CometNativeUDF.register(spark, "add_one_c", libPath, Seq(LongType), LongType)
+    withSQLConf(CometConf.COMET_NATIVE_UDF_ENABLED.key -> "false") {
+      val e = intercept[Exception] {
+        spark.range(0, 3).selectExpr("add_one_c(id) AS y").collect()
+      }
+      assert(
+        stackTraceContains(e, s"${CometConf.COMET_NATIVE_UDF_ENABLED.key}=false"),
+        s"unexpected error: $e")
+    }
+    val elsewhere = Files.createTempDirectory("comet-udf-elsewhere")
+    try {
+      withSQLConf(CometConf.COMET_NATIVE_UDF_ALLOWED_PATHS.key -> elsewhere.toString) {
+        val e = intercept[Exception] {
+          spark.range(0, 3).selectExpr("add_one_c(id) AS y").collect()
+        }
+        assert(
+          stackTraceContains(e, CometConf.COMET_NATIVE_UDF_ALLOWED_PATHS.key),
+          s"unexpected error: $e")
+      }
+    } finally {
+      Files.delete(elsewhere)
+    }
+    val out = spark.range(0, 3).selectExpr("add_one_c(id) AS y").collect().map(_.getLong(0))
+    assert(out.toSeq == Seq(1L, 2L, 3L))
   }
 
   test("a missing library is reported as a load failure") {
@@ -444,6 +512,41 @@ class CometNativeUdfSuite extends CometTestBase {
         stackTraceContains(e, "UDF 'add_one_c' is registered with Comet"),
         s"unhelpful error: $e")
     }
+  }
+
+  test("Spark evaluating a native UDF while planning fails the query") {
+    // Spark's optimizer evaluates a projection over local data itself, so this fails even though
+    // Comet would take every operator.
+    CometNativeUDF.register(spark, "add_one_c", libPath, Seq(LongType), LongType)
+    val e = intercept[Exception] {
+      sql("SELECT add_one_c(x) FROM VALUES (1L), (2L) AS t(x)").collect()
+    }
+    assert(
+      stackTraceContains(e, "Spark evaluated the call itself while planning"),
+      s"unhelpful error: $e")
+  }
+
+  test("a global sort on a native UDF's result runs when the sort is on a column") {
+    // Spark evaluates a global sort's keys on a sample of rows to choose range bounds, so the
+    // sort has to be on a column holding the result rather than on the call itself.
+    CometNativeUDF.register(spark, "add_one_c", libPath, Seq(LongType), LongType)
+    val df = spark.range(0, 20, 1, 4).selectExpr("add_one_c(19 - id) AS y").orderBy("y")
+    assert(df.collect().map(_.getLong(0)).toSeq == (1L to 20L))
+  }
+
+  test("a type Comet cannot carry natively is refused at registration") {
+    // Earlier tests register `echo_c`, so drop it first to see that the refusal installs nothing.
+    sql("DROP TEMPORARY FUNCTION IF EXISTS echo_c")
+    val e = intercept[IllegalArgumentException] {
+      CometNativeUDF.register(
+        spark,
+        "echo_c",
+        libPath,
+        Seq(ObjectType(classOf[String])),
+        LongType)
+    }
+    assert(e.getMessage.contains("Comet has no native representation"), e.getMessage)
+    assert(!spark.catalog.functionExists("echo_c"))
   }
 
   // A native UDF call has to reach its serde wherever Comet converts expressions, not just in a

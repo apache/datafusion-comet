@@ -40,8 +40,10 @@ import org.apache.spark.sql.comet.execution.arrow.{CometArrowStream, CometNative
 import org.apache.spark.sql.comet.execution.shuffle.CometShuffleExchangeExec
 import org.apache.spark.sql.comet.util.Utils
 import org.apache.spark.sql.execution._
-import org.apache.spark.sql.execution.adaptive.{AQEShuffleReadExec, BroadcastQueryStageExec, QueryStageExec, ShuffleQueryStageExec}
+import org.apache.spark.sql.execution.adaptive.{AdaptiveSparkPlanExec, AQEShuffleReadExec, BroadcastQueryStageExec, QueryStageExec, ShuffleQueryStageExec}
 import org.apache.spark.sql.execution.aggregate.{BaseAggregateExec, HashAggregateExec, ObjectHashAggregateExec, SortAggregateExec}
+import org.apache.spark.sql.execution.columnar.InMemoryTableScanExec
+import org.apache.spark.sql.execution.datasources.v2.DataSourceV2ScanExecBase
 import org.apache.spark.sql.execution.exchange.ReusedExchangeExec
 import org.apache.spark.sql.execution.joins.{BroadcastHashJoinExec, BroadcastNestedLoopJoinExec, HashJoin, ShuffledHashJoinExec, SortMergeJoinExec}
 import org.apache.spark.sql.execution.metric.{SQLMetric, SQLMetrics}
@@ -62,7 +64,7 @@ import org.apache.comet.rules.CometExecRule
 import org.apache.comet.serde.{CometCollectBuffer, CometOperatorSerde, Compatible, OperatorOuterClass, QueryContextInterner, SupportLevel, Unsupported}
 import org.apache.comet.serde.OperatorOuterClass.{AggregateMode => CometAggregateMode, Operator}
 import org.apache.comet.serde.QueryPlanSerde
-import org.apache.comet.serde.QueryPlanSerde.{aggExprToProto, exprToProto, isStringCollationType, supportedSortType}
+import org.apache.comet.serde.QueryPlanSerde.{aggExprToProto, exprToProto, hasNonDefaultStringCollation, isStringCollationType, supportedSortType}
 import org.apache.comet.serde.operator.CometSink
 import org.apache.comet.shims.MergeRowsMetricsShim
 
@@ -661,6 +663,30 @@ abstract class CometExec extends CometPlan {
   /** The original Spark operator from which this Comet operator is converted from */
   def originalPlan: SparkPlan
 
+  /**
+   * Rebuilds the Spark operator represented by this Comet operator with reverted children.
+   *
+   * Operators whose Comet representation changes the Spark plan shape or whose live state differs
+   * from the original Spark plan must override this method.
+   */
+  def sparkFallback(newChildren: Seq[SparkPlan]): SparkPlan = {
+    val sparkPlan = originalPlan
+    if (sparkPlan == null) {
+      throw new CometExec.InvalidSparkFallbackException(
+        s"${getClass.getSimpleName} has no original Spark plan")
+    }
+    if (newChildren.exists(_ eq sparkPlan)) {
+      throw new CometExec.InvalidSparkFallbackException(
+        s"${getClass.getSimpleName} aliases its original Spark plan with a child")
+    }
+    if (sparkPlan.children.size != newChildren.size) {
+      throw new CometExec.InvalidSparkFallbackException(
+        s"${getClass.getSimpleName} cannot restore ${sparkPlan.getClass.getSimpleName}: " +
+          s"expected ${sparkPlan.children.size} children but received ${newChildren.size}")
+    }
+    sparkPlan.withNewChildren(newChildren)
+  }
+
   /** Comet always support columnar execution */
   override def supportsColumnar: Boolean = true
 
@@ -711,6 +737,9 @@ abstract class CometExec extends CometPlan {
 }
 
 object CometExec {
+  final class InvalidSparkFallbackException(message: String)
+      extends IllegalArgumentException(message)
+
   // An unique id for each CometExecIterator, used to identify the native query execution.
   private val curId = new java.util.concurrent.atomic.AtomicLong()
 
@@ -774,7 +803,8 @@ object CometExec {
       numOutputCols: Int,
       serializedPlan: Array[Byte],
       numParts: Int,
-      partitionIdx: Int): CometExecIterator = {
+      partitionIdx: Int,
+      outputTypes: Seq[DataType] = Seq.empty): CometExecIterator = {
     new CometExecIterator(
       newIterId,
       inputObjects,
@@ -784,7 +814,8 @@ object CometExec {
       numParts,
       partitionIdx,
       broadcastedHadoopConfForEncryption = None,
-      encryptedFilePaths = Seq.empty)
+      encryptedFilePaths = Seq.empty,
+      outputTypes = outputTypes)
   }
 
   def getCometIterator(
@@ -923,7 +954,8 @@ abstract class CometNativeExec extends CometExec {
       ctx.broadcastedHadoopConfForEncryption,
       ctx.encryptedFilePaths,
       ctx.shuffleScanIndices,
-      perPartitionFilePaths = ctx.perPartitionFilePaths) {
+      perPartitionFilePaths = ctx.perPartitionFilePaths,
+      outputTypes = output.map(_.dataType)) {
       override def compute(split: Partition, context: TaskContext): Iterator[ColumnarBatch] = {
         // Register before super.compute creates the CometExecIterator, so this listener runs
         // after the iterator's close has published the final scan metrics.
@@ -1080,6 +1112,13 @@ abstract class CometNativeExec extends CometExec {
     // broadcast plan.
     val (firstNonBroadcastPlanRDD, firstNonBroadcastPlanNumPartitions) =
       firstNonBroadcastPlan.get._1 match {
+        // Plan-data scans, Iceberg included, are sized from perPartitionData, which
+        // findAllPlanData above has resolved. A bucketed scan has one entry per bucket, after any
+        // bucket coalescing, so the count still matches its HashPartitioning.
+        case scan: CometScanWithPlanData =>
+          (null.asInstanceOf[RDD[Any]], scan.perPartitionData.length)
+        case scan: CometIcebergNativeScanExec =>
+          (null.asInstanceOf[RDD[Any]], scan.numPartitions)
         case plan: CometNativeExec =>
           (null.asInstanceOf[RDD[Any]], plan.outputPartitioning.numPartitions)
         case plan =>
@@ -1142,9 +1181,10 @@ abstract class CometNativeExec extends CometExec {
       commonByKey = commonByKey,
       perPartitionByKey = perPartitionByKey,
       shuffleScanIndices = shuffleScanIndices,
-      // A leaf Comet scan (`CometNativeScanExec`, `CometIcebergNativeScanExec`) can
-      // contribute `bytes_scanned` / `output_rows` to Spark's task-level input metrics,
-      // which drive the Input column on the UI's Stages and Executors tabs.
+      // A leaf Comet scan (`CometNativeScanExec`, `CometIcebergNativeScanExec`, or a contrib
+      // leaf such as `CometDeltaNativeScanExec`) can contribute `bytes_scanned` /
+      // `output_rows` to Spark's task-level input metrics, which drive the Input column on
+      // the UI's Stages and Executors tabs.
       // Matching on `CometLeafExec` rather than `CometNativeScanExec` keeps every scan
       // reported once the scan is fused into a larger native block, where only the block
       // root's `compute` runs. `reportScanInputMetrics` self-filters on the `bytes_scanned`
@@ -1319,6 +1359,17 @@ abstract class CometLeafExec extends CometNativeExec with LeafExecNode {
  * parent's native execution receives an empty input. (`CometIcebergNativeScanExec` does NOT use
  * this trait; it has a dedicated `findAllPlanData` case.)
  *
+ * `perPartitionData.length` is the partition count the native block runs with:
+ * `CometNativeExec.buildNativeContext` sizes the native RDD from it at execution, and the count
+ * in `outputPartitioning` is not used for that.
+ *
+ * `outputPartitioning` must not read `perPartitionData`, or anything else that evaluates the
+ * scan's DPP subqueries. AQE calls it while optimizing a stage, before
+ * `CometPlanAdaptiveDynamicPruningFilters` has converted the adaptive DPP placeholders, so
+ * computing it from those runs a placeholder subquery. A scan that cannot report a real
+ * partitioning without them should report `UnknownPartitioning(0)`, as `CometNativeScanExec` does
+ * for a non-bucketed scan.
+ *
  * Each implementation also resolves its own DPP subqueries via `ensureSubqueriesResolved` before
  * `commonData`/`perPartitionData` are read. That method lives on [[CometLeafExec]], so the `self:
  * CometLeafExec` self-type below makes "is a leaf scan" a compile-time requirement: an
@@ -1450,6 +1501,10 @@ object CometFilterExec extends CometOperatorSerde[FilterExec] {
       val filterBuilder = OperatorOuterClass.Filter
         .newBuilder()
         .setPredicate(cond.get)
+        .setAllowRuntimeFilterPushdown(
+          op.condition.deterministic &&
+            CometConf.COMET_EXEC_JOIN_DYNAMIC_FILTER_ALLOW_DETERMINISTIC_FILTER_PUSHDOWN
+              .get(op.conf))
       Some(builder.setFilter(filterBuilder).build())
     } else {
       None
@@ -1714,6 +1769,13 @@ object CometExpandExec extends CometOperatorSerde[ExpandExec] {
       op: ExpandExec,
       builder: Operator.Builder,
       childOp: OperatorOuterClass.Operator*): Option[OperatorOuterClass.Operator] = {
+    // The native Expand regroups the flattened expressions by their count per projection, so a
+    // projection with no columns, which column pruning leaves when nothing above the Expand reads
+    // its output, would reach it as no projections at all.
+    if (op.projections.isEmpty || op.projections.head.isEmpty) {
+      withFallbackReason(op, "Expand without output columns is not supported")
+      return None
+    }
     val projExprs = op.projections.flatMap(_.map(e => exprToProto(e, op.child.output)))
 
     if (projExprs.forall(_.isDefined) && childOp.nonEmpty) {
@@ -2209,11 +2271,6 @@ trait CometBaseAggregate[T <: BaseAggregateExec] extends CometOperatorSerde[T] {
     val resultExpressions = aggregate.resultExpressions
     val child = aggregate.child
 
-    if (groupingExpressions.isEmpty && aggregateExpressions.isEmpty) {
-      withFallbackReason(aggregate, "No group by or aggregation")
-      return None
-    }
-
     if (groupingExpressions.exists(expr =>
         SupportLevel.containsType(expr.dataType, classOf[MapType]))) {
       withFallbackReason(aggregate, "Grouping on map-containing types is not supported")
@@ -2258,6 +2315,10 @@ trait CometBaseAggregate[T <: BaseAggregateExec] extends CometOperatorSerde[T] {
     //              +- FileScan parquet spark_catalog.default.test[col1#6, col2#7] ......
     // If the aggregateExpressions is empty, we only want to build groupingExpressions,
     // and skip processing of aggregateExpressions.
+    //
+    // The groupingExpressions can be empty too, for the `Aggregate(Nil, Nil, child)` that
+    // ColumnPruning leaves when nothing reads a global aggregate's output. The native planner
+    // handles that shape.
     if (aggregateExpressions.isEmpty) {
       val hashAggBuilder = OperatorOuterClass.HashAggregate.newBuilder()
       hashAggBuilder.addAllGroupingExprs(groupingExprs.map(_.get).asJava)
@@ -2513,6 +2574,18 @@ object CometHashAggregateExec extends CometBaseAggregate[HashAggregateExec] {
           "Ungrouped decimal SUM at maximum precision without codegen cannot match Spark's " +
             "latching UnsafeRow buffer"))
     }
+    // Native AVG latches once its sum leaves the precision, while Spark's ungrouped codegen
+    // can retain a wider sum until division. For DECIMAL(38,38), inputs 0.6, 0.6, -0.6 return
+    // NULL (or raise under ANSI) natively, where Spark returns 0.2. Partials of 0.6 and 0.6
+    // likewise overflow during the native merge while Spark's codegen returns 0.6.
+    // The grouped accumulator latches like Spark's UnsafeRow buffer and stays native.
+    // https://github.com/apache/datafusion-comet/issues/5418
+    if (op.groupingExpressions.isEmpty && hasMaxPrecisionDecimalAvg(op)) {
+      return Unsupported(
+        Some(
+          "Ungrouped decimal AVG with a maximum-precision sum cannot match Spark's " +
+            "aggregation buffer"))
+    }
     Compatible()
   }
 
@@ -2538,11 +2611,20 @@ object CometObjectHashAggregateExec extends CometBaseAggregate[ObjectHashAggrega
   override protected def operatorSupportLevel(op: ObjectHashAggregateExec): SupportLevel = {
     // Spark's object aggregation buffers the intermediate decimal sum unbounded, while Comet's
     // grouped accumulator latches to null once a running sum leaves the precision, so the
-    // grouped case declines. Decimal AVG has the same gap and is tracked separately.
+    // grouped case declines.
     if (op.groupingExpressions.nonEmpty && hasMaxPrecisionDecimalSum(op)) {
       return Unsupported(
         Some(
           "Grouped decimal SUM at maximum precision cannot match Spark's unbounded object " +
+            "aggregation buffer"))
+    }
+    // Decimal AVG latches its running sum on overflow in both grouped and ungrouped native
+    // accumulators, so both decline Spark's unbounded object aggregation buffer.
+    // https://github.com/apache/datafusion-comet/issues/5509
+    if (hasMaxPrecisionDecimalAvg(op)) {
+      return Unsupported(
+        Some(
+          "Decimal AVG with a maximum-precision sum cannot match Spark's unbounded object " +
             "aggregation buffer"))
     }
     Compatible()
@@ -2777,6 +2859,18 @@ trait CometHashJoin {
       return None
     }
 
+    // DataFusion builds a null-aware anti join on Spark's streamed side, and on its hash map path
+    // it emits the build batches last to first, so the output loses the ordering Spark reports
+    // for the join. Remove this fallback once Comet uses a DataFusion release that fixes
+    // https://github.com/apache/datafusion/issues/26226.
+    if (isNullAwareAntiJoin && join.outputOrdering.nonEmpty) {
+      withFallbackReason(
+        join,
+        "null-aware anti-join over an ordered streamed side is not supported natively, " +
+          "because the native join does not keep that order")
+      return None
+    }
+
     val condition = join.condition.map { cond =>
       val condProto = exprToProto(cond, join.left.output ++ join.right.output)
       if (condProto.isEmpty) {
@@ -2830,6 +2924,55 @@ trait CometHashJoin {
     val leftKeys = join.leftKeys.map(exprToProto(_, join.left.output))
     val rightKeys = join.rightKeys.map(exprToProto(_, join.right.output))
 
+    // Spark reports the streamed side's order as the join's, and drops a sort above the join
+    // that it satisfies. DataFusion's hash join keeps the unmatched probe rows of a right outer
+    // join in place only when the probe input declares an order, and otherwise moves them after
+    // the matched rows of each batch. Comet builds on the build side, so a left outer join built
+    // on the right and a right outer join built on the left both run as that right outer join,
+    // and an input sorted outside the native plan, a relation sorted before it was cached for
+    // instance, declares no order to DataFusion. Send the order so the native join declares it
+    // on the probe input; see SortedInputExec. Every other join type keeps the probe order as
+    // it is. The null-aware anti join is the exception, as Comet builds that one on its streamed
+    // side, but it runs natively only when that side reports no order, so it reports none.
+    //
+    // The order Spark reports can be false to begin with. A Comet join that may move its
+    // streamed rows reports it all the same: a right outer join like this one whose probe input
+    // declared no order, and the nested loop join, which keeps the order of neither input. A
+    // cache reports the order of the plan that wrote it, so the rows of such a join can reach
+    // this one through a cache, as a JVM input that the native planner cannot look behind.
+    // Declaring the order there would let an operator above rely on it, an
+    // aggregate in sorted mode for instance, which then splits groups. So nothing is declared
+    // when such a join feeds the streamed side with no sort in between, or when a leaf reports
+    // an order that cannot be checked; see mayReportFalseOrder.
+    //
+    // Declaring any order makes DataFusion keep the probe rows in place, so the longest prefix
+    // of the order that Comet can express is enough. A key that exprToProto takes counts as
+    // expressible, unless it holds a collated string, at the top level or nested, which Spark
+    // orders by its collation but the native side would declare in raw byte order. That is the
+    // check `supportedSortType` makes for a sort. Nothing here can tell whether an operator above
+    // relies on the order, so a join whose first key Comet cannot express stays in Spark.
+    val (streamed, _) = streamedSide(join.buildSide, join.left, join.right)
+    val streamedSortOrders =
+      if (runsAsRightOuterJoin(join.joinType, join.buildSide) &&
+        join.outputOrdering.nonEmpty && !mayReportFalseOrder(streamed)) {
+        val orders = join.outputOrdering.iterator
+          .takeWhile(order => !hasNonDefaultStringCollation(order.dataType))
+          .map(exprToProto(_, streamed.output))
+          .takeWhile(_.isDefined)
+          .flatten
+          .toSeq
+        if (orders.isEmpty) {
+          withFallbackReason(
+            join,
+            "the streamed side's sort order, which this outer join has to keep, cannot be " +
+              "expressed natively")
+          return None
+        }
+        orders
+      } else {
+        Nil
+      }
+
     if (leftKeys.forall(_.isDefined) &&
       rightKeys.forall(_.isDefined) &&
       childOp.nonEmpty) {
@@ -2842,12 +2985,103 @@ trait CometHashJoin {
         else OperatorOuterClass.BuildSide.BuildRight)
         .setNullAwareAntiJoin(isNullAwareAntiJoin)
         .setDynamicFilterEnabled(CometConf.COMET_EXEC_JOIN_DYNAMIC_FILTER_ENABLED.get(join.conf))
+        .addAllStreamedSortOrders(streamedSortOrders.asJava)
       condition.foreach(joinBuilder.setCondition)
       Some(builder.setHashJoin(joinBuilder).build())
     } else {
       None
     }
   }
+
+  // Whether the order that `plan` reports may be false, because something that feeds it with no
+  // sort in between cannot be relied on to keep it. Comet's hash joins report the order of their
+  // streamed side, which Spark's own joins keep, but two Comet joins do not always: an outer join
+  // that runs as DataFusion's right outer join, which keeps its probe rows in place only if the
+  // planner declared an order on its probe input; and the nested loop join, which DataFusion runs
+  // build row by build row. So does a leaf that reports an order from state this walk cannot
+  // check, an RDD checkpointed from a plan that is gone for one.
+  //
+  // The walk follows the order, so a hash join, which passes on only its streamed side's, is
+  // walked through that side alone. A cache reports the order of the plan that wrote it, and the
+  // walk goes on into that plan, picked as Spark's scan picks it: an adaptive plan reports no
+  // order, but the scan reads the final plan behind it once there is one. While CometExecRule
+  // converts a plan, a native plan's JVM inputs sit behind a CometScanWrapper, a leaf, so the
+  // walk looks through that too.
+  private def mayReportFalseOrder(plan: SparkPlan): Boolean = plan match {
+    case adaptive: AdaptiveSparkPlanExec if adaptive.isFinalPlan =>
+      mayReportFalseOrder(adaptive.executedPlan)
+    case _ if plan.outputOrdering.isEmpty => false
+    case _: SortExec | _: CometSortExec => false
+    case _: CometBroadcastNestedLoopJoinExec => true
+    case join: CometBroadcastHashJoinExec =>
+      hashJoinMayReportFalseOrder(
+        join.nativeOp,
+        join.joinType,
+        join.buildSide,
+        join.left,
+        join.right)
+    case join: CometHashJoinExec =>
+      hashJoinMayReportFalseOrder(
+        join.nativeOp,
+        join.joinType,
+        join.buildSide,
+        join.left,
+        join.right)
+    case join: HashJoin =>
+      mayReportFalseOrder(streamedSide(join.buildSide, join.left, join.right)._1)
+    case wrapper: CometScanWrapper => mayReportFalseOrder(wrapper.originalPlan)
+    case scan: CometInMemoryTableScanExec =>
+      mayReportFalseOrder(scan.originalPlan.relation.cachedPlan)
+    case scan: InMemoryTableScanExec => mayReportFalseOrder(scan.relation.cachedPlan)
+    case stage: QueryStageExec => mayReportFalseOrder(stage.plan)
+    // A scan reports an order that Spark already relies on.
+    case _: DataSourceScanExec | _: DataSourceV2ScanExecBase | _: RangeExec | _: CometLeafExec =>
+      false
+    case _ if plan.children.isEmpty => true
+    case _ => plan.children.exists(mayReportFalseOrder)
+  }
+
+  // Whether a Comet hash join that reports an order may not keep it. Only the streamed side's
+  // order reaches the join's output, so a false order on the build side is of no concern, and an
+  // outer join of the two shapes has to have declared the order on its probe input as well.
+  private def hashJoinMayReportFalseOrder(
+      nativeOp: Operator,
+      joinType: JoinType,
+      buildSide: BuildSide,
+      left: SparkPlan,
+      right: SparkPlan): Boolean = {
+    val (streamed, streamedIndex) = streamedSide(buildSide, left, right)
+    mayReportFalseOrder(streamed) ||
+    (runsAsRightOuterJoin(joinType, buildSide) && !declaresStreamedOrder(nativeOp, streamedIndex))
+  }
+
+  // Whether the native planner declares the streamed order on the probe input of the join that
+  // `nativeOp` describes. It does so when the serde sent the order and the probe input reads from
+  // the JVM, which is the case when the join's plan has a scan there. A native operator over that
+  // scan is declared as well, as far as the native walk goes, but that is for the planner to say,
+  // so it counts as not declared.
+  private def declaresStreamedOrder(nativeOp: Operator, streamedIndex: Int): Boolean =
+    nativeOp.getHashJoin.getStreamedSortOrdersCount > 0 &&
+      nativeOp.getChildrenCount > streamedIndex && {
+        val probe = nativeOp.getChildren(streamedIndex)
+        probe.hasScan || probe.hasShuffleScan
+      }
+
+  // The streamed side of a hash join, which is the side it is not built on, and its child index.
+  private def streamedSide(
+      buildSide: BuildSide,
+      left: SparkPlan,
+      right: SparkPlan): (SparkPlan, Int) =
+    if (buildSide == BuildRight) (left, 0) else (right, 1)
+
+  // A left outer join built on the right and a right outer join built on the left both run as
+  // DataFusion's right outer join, which keeps its unmatched probe rows in place only when the
+  // probe input declares an order.
+  private def runsAsRightOuterJoin(joinType: JoinType, buildSide: BuildSide): Boolean =
+    (joinType, buildSide) match {
+      case (LeftOuter, BuildRight) | (RightOuter, BuildLeft) => true
+      case _ => false
+    }
 }
 
 case class CometBroadcastNestedLoopJoinExec(

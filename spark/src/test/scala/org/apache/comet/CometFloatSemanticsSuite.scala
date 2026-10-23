@@ -334,26 +334,6 @@ object CometFloatSemanticsSuite {
 
   val knownGaps: Seq[KnownGap] = Seq(
     KnownGap(
-      issue(6385),
-      "A comparison outside Project and Filter compares raw Arrow values, where a sign-bit NaN " +
-        "sorts below every other value. Equi-join conditions already match.",
-      c =>
-        in("comparison", "aggregate argument", "aggregate FILTER", "sort key", "Generate")(c) ||
-          (c.group == "comparison" && c.context.endsWith("join condition") &&
-            !Set("=", "<=>").contains(c.variant))),
-    KnownGap(
-      issue(6385),
-      "A data filter pushed into the Parquet reader compares a stored column with a sign-bit " +
-        "NaN literal raw, and drops rows that Spark keeps.",
-      c => in("literal comparison", "scan filter")(c) && c.variant != "!="),
-    KnownGap(
-      issue(6157),
-      "Ordering and null-safe comparisons of arrays and structs compare float leaves raw.",
-      c =>
-        c.group == "comparison" &&
-          (c.context.startsWith("array operands") || c.context.startsWith("struct operands")) &&
-          !Set("=", "!=").contains(c.variant)),
-    KnownGap(
       issue(5312),
       "collect_set before Spark 4.2 treats -0.0 and 0.0 as one value and NaNs as distinct.",
       c => in("aggregate", "collect_set")(c) && !CometSparkSessionExtensions.isSpark42Plus))

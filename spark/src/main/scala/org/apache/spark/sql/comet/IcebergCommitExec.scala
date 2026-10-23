@@ -28,7 +28,7 @@ import org.apache.spark.sql.execution.{SparkPlan, SQLExecution, UnaryExecNode}
 import org.apache.spark.sql.execution.datasources.v2.V2CommandExec
 import org.apache.spark.sql.execution.metric.{SQLMetric, SQLMetrics}
 
-import org.apache.comet.iceberg.{IcebergDriverMetricsShim, IcebergReflection}
+import org.apache.comet.iceberg.{DeltaCommand, IcebergDriverMetricsShim, IcebergReflection}
 
 /**
  * Driver-side committer for Comet's split-operator Iceberg V2 write.
@@ -38,7 +38,8 @@ case class IcebergCommitExec(
     @transient batchWrite: BatchWrite,
     @transient write: Write,
     @transient refreshCache: IcebergCommitExec.RefreshCache,
-    child: SparkPlan)
+    child: SparkPlan,
+    command: Option[DeltaCommand] = None)
     extends V2CommandExec
     with UnaryExecNode
     with Logging {
@@ -75,6 +76,7 @@ case class IcebergCommitExec(
     // Collect each task's commit message as its task finishes, the way Spark's own V2 write
     // does, so that a job failure still knows which tasks completed. `executeCollect` would
     // only hand back the messages once every task succeeded.
+    val schedulerProbe = IcebergSchedulerTestProbe.current
     val rdd = child.execute()
     val messages = new Array[WriterCommitMessage](rdd.partitions.length)
     try {
@@ -84,6 +86,8 @@ case class IcebergCommitExec(
         (index: Int, payloads: Array[Array[Byte]]) => {
           payloads.foreach { payload =>
             messages(index) = IcebergWriteExec.deserializeMessage(payload)
+            schedulerProbe.foreach(
+              _.accepted(index, IcebergReflection.taskCommitFileLocations(messages(index))))
           }
         })
     } catch {
@@ -95,9 +99,9 @@ case class IcebergCommitExec(
           cause)
         // The BatchWrite contract expects a job-level abort. Iceberg's own `SparkWrite.abort`
         // only deletes files after a cleanable *commit* failure and skips cleanup otherwise, so
-        // the data files of tasks that completed before the job failed would stay behind even
-        // though nothing can reference them (no commit was attempted). Delete them here; the
-        // failed task's own files are cleaned up by the task itself.
+        // the files of tasks that completed before the job failed would stay behind even though
+        // nothing can reference them (no commit was attempted). Delete newly written data/delete
+        // files here; the failed task's own files are cleaned up by the task itself.
         val failure = abortAfter(completed, cause)
         try deleteCompletedTaskFiles(completed)
         catch {
@@ -110,14 +114,16 @@ case class IcebergCommitExec(
 
     try {
       messages.foreach(batchWrite.onDataWriterCommit)
-      IcebergWriteSummaryShim.commit(batchWrite, messages, child)
-      logInfo(s"Iceberg commit succeeded with ${messages.length} task message(s)")
+      IcebergWriteSummaryShim.commit(batchWrite, messages, child, command)
     } catch {
       case cause: Throwable =>
         logError(s"Iceberg commit failed; aborting ${messages.length} task message(s)", cause)
         throw abortAfter(messages, cause)
     }
 
+    logInfo(s"Iceberg commit succeeded with ${messages.length} task message(s)")
+    // A post-commit observer failure must never abort already committed files.
+    schedulerProbe.foreach(_.committed())
     Nil
   }
 
@@ -143,7 +149,7 @@ case class IcebergCommitExec(
     if (locations.nonEmpty) {
       val io = IcebergReflection
         .getOuterSparkWrite(batchWrite)
-        .flatMap(IcebergReflection.getTableFromSparkWrite)
+        .flatMap(IcebergReflection.getTableFromIcebergWrite)
         .flatMap(IcebergReflection.getTableIO)
       io match {
         case Some(fileIO) =>
@@ -153,7 +159,7 @@ case class IcebergCommitExec(
             s"job abort, ${completed.length} completed task(s)")
         case None =>
           logWarning(
-            s"Could not resolve the table FileIO; leaving ${locations.size} data file(s) from " +
+            s"Could not resolve the table FileIO; leaving ${locations.size} written file(s) from " +
               "completed tasks of a failed write job for remove_orphan_files")
       }
     }

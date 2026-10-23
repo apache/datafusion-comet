@@ -215,6 +215,9 @@ pub enum SparkError {
         group_index: i32,
     },
 
+    #[error("[INVALID_URL] The url is invalid: {url}. If necessary set \"spark.sql.ansi.enabled\" to \"false\" to bypass this error.")]
+    InvalidUrl { url: String },
+
     #[error("[DATATYPE_CANNOT_ORDER] Cannot order by type: {data_type}.")]
     DatatypeCannotOrder { data_type: String },
 
@@ -379,6 +382,7 @@ impl SparkError {
             SparkError::UnexpectedPositiveValue { .. } => "UnexpectedPositiveValue",
             SparkError::UnexpectedNegativeValue { .. } => "UnexpectedNegativeValue",
             SparkError::InvalidRegexGroupIndex { .. } => "InvalidRegexGroupIndex",
+            SparkError::InvalidUrl { .. } => "InvalidUrl",
             SparkError::DatatypeCannotOrder { .. } => "DatatypeCannotOrder",
             SparkError::ScalarSubqueryTooManyRows => "ScalarSubqueryTooManyRows",
             SparkError::MergeCardinalityViolation => "MergeCardinalityViolation",
@@ -613,6 +617,11 @@ impl SparkError {
                     "groupIndex": group_index,
                 })
             }
+            SparkError::InvalidUrl { url } => {
+                serde_json::json!({
+                    "url": url,
+                })
+            }
             SparkError::DatatypeCannotOrder { data_type } => {
                 serde_json::json!({
                     "dataType": data_type,
@@ -742,6 +751,7 @@ impl SparkError {
 
             // IllegalArgumentException
             SparkError::DatatypeCannotOrder { .. }
+            | SparkError::InvalidUrl { .. }
             | SparkError::InvalidUtf8String { .. }
             | SparkError::IllegalDayOfWeek { .. }
             | SparkError::SequenceIllegalBoundaries { .. } => {
@@ -852,6 +862,9 @@ impl SparkError {
 
             // Regex errors
             SparkError::InvalidRegexGroupIndex { .. } => Some("INVALID_PARAMETER_VALUE"),
+
+            // URL errors
+            SparkError::InvalidUrl { .. } => Some("INVALID_URL"),
 
             // Unsupported operation errors
             SparkError::DatatypeCannotOrder { .. } => Some("DATATYPE_CANNOT_ORDER"),
