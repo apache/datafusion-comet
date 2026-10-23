@@ -24,7 +24,7 @@ use arrow::array::{make_array, Array, ArrayRef};
 use arrow::datatypes::DataType;
 use arrow::error::{ArrowError, Result};
 use arrow::ffi::{from_ffi, FFI_ArrowArray, FFI_ArrowSchema};
-use datafusion_comet_common::decode_string_arrays;
+use datafusion_comet_common::{decode_string_arrays, SparkError};
 use pyo3::ffi::Py_uintptr_t;
 use pyo3::prelude::*;
 use pyo3::sync::MutexExt;
@@ -391,9 +391,10 @@ fn python_error(error: impl std::fmt::Display) -> ArrowError {
     ArrowError::ComputeError(format!("Arrow UDF Python error: {error}"))
 }
 
-/// Formats an exception raised by user code with its Python traceback, as Spark's
-/// `PythonException` message does. Before Python 3.12, PyO3 keeps the traceback
-/// apart from the exception value, so pass the type, value and traceback explicitly.
+/// Reports an exception raised by user code as a [`SparkError::PythonException`], which the
+/// JVM raises as Spark's `PythonException`. The traceback is formatted as a Spark Python worker
+/// reports it. Before Python 3.12, PyO3 keeps the traceback apart from the exception value, so
+/// pass the type, value and traceback explicitly.
 fn python_traceback_error(py: Python<'_>, error: PyErr) -> ArrowError {
     let formatted = py.import("traceback").and_then(|traceback| {
         traceback
@@ -403,13 +404,11 @@ fn python_traceback_error(py: Python<'_>, error: PyErr) -> ArrowError {
             )?
             .extract::<Vec<String>>()
     });
-    match formatted {
-        Ok(lines) => ArrowError::ComputeError(format!(
-            "Arrow UDF Python error: {}",
-            lines.concat().trim_end()
-        )),
-        Err(_) => python_error(error),
-    }
+    let traceback = match formatted {
+        Ok(lines) => lines.concat().trim_end().to_string(),
+        Err(_) => error.to_string(),
+    };
+    ArrowError::ExternalError(Box::new(SparkError::PythonException { traceback }))
 }
 
 #[cfg(test)]
@@ -590,13 +589,21 @@ mod tests {
                 ArrowPythonUdf::from_command(&command, DataType::Int64, true, true, false, "")
                     .unwrap();
             let input: ArrayRef = Arc::new(Int64Array::from(vec![1]));
-            let error = udf.evaluate(&[input], 1).unwrap_err().to_string();
+            let error = udf.evaluate(&[input], 1).unwrap_err();
+            let traceback = match &error {
+                ArrowError::ExternalError(external) => match external.downcast_ref() {
+                    Some(SparkError::PythonException { traceback }) => traceback,
+                    _ => panic!("expected a PythonException, got {error}"),
+                },
+                _ => panic!("expected a PythonException, got {error}"),
+            };
+            // Spark's PythonException carries the traceback exactly as Python formats it.
             assert!(
-                error.contains("Traceback (most recent call last)"),
-                "{error}"
+                traceback.starts_with("Traceback (most recent call last)"),
+                "{traceback}"
             );
-            assert!(error.contains("line 1"), "{error}");
-            assert!(error.contains("ZeroDivisionError"), "{error}");
+            assert!(traceback.contains("line 1"), "{traceback}");
+            assert!(traceback.contains("ZeroDivisionError"), "{traceback}");
         });
     }
 
