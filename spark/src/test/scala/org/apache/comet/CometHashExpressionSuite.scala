@@ -153,6 +153,25 @@ class CometHashExpressionSuite extends CometTestBase with AdaptiveSparkPlanHelpe
     }
   }
 
+  Seq("STRING", "BINARY").foreach { payloadType =>
+    test(s"sha2 - NULL $payloadType payload short-circuits ANSI numBits cast") {
+      withSQLConf("spark.sql.ansi.enabled" -> "true") {
+        withTable("t") {
+          sql(s"CREATE TABLE t(payload $payloadType, bits STRING) USING parquet")
+          val payload = if (payloadType == "BINARY") "X'0080FF'" else "'hello'"
+          sql(
+            s"INSERT INTO t VALUES (NULL, 'invalid'), ($payload, '256'), " +
+              s"($payload, NULL), (NULL, '256')")
+          Seq("true", "false").foreach { enabled =>
+            withSQLConf(CometConf.COMET_SCALA_UDF_CODEGEN_ENABLED.key -> enabled) {
+              assertNativeHash("SELECT sha2(payload, CAST(bits AS INT)) FROM t")
+            }
+          }
+        }
+      }
+    }
+  }
+
   test("sha2 - literal numBits stays native") {
     withTable("t") {
       sql("CREATE TABLE t(payload STRING) USING parquet")
