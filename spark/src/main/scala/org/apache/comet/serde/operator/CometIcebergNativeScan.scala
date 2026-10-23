@@ -26,11 +26,13 @@ import java.util.{Base64, UUID}
 
 import scala.collection.mutable
 import scala.jdk.CollectionConverters._
+import scala.util.control.NonFatal
 
 import org.json4s.JsonDSL._
 import org.json4s.jackson.JsonMethods._
 
 import org.apache.hadoop.conf.Configuration
+import org.apache.hadoop.fs.Path
 import org.apache.spark.internal.Logging
 import org.apache.spark.sql.catalyst.expressions._
 import org.apache.spark.sql.comet.{CometBatchScanExec, CometNativeExec}
@@ -693,6 +695,36 @@ object CometIcebergNativeScan extends CometOperatorSerde[CometBatchScanExec] wit
 
   private def hdfsNameservices(authorities: Set[String]): Seq[String] =
     authorities.filterNot(hasPort).toSeq.sorted
+
+  /**
+   * The first of `directories`, HDFS directories of data and delete files, that lies in an HDFS
+   * encryption zone, or whose status could not be read. iceberg-rust's HDFS client is built
+   * without KMS support and rejects every file of a zone, so such a scan must not be claimed. The
+   * NameNode flags each path inside a zone as encrypted, directories included, so one
+   * `getFileStatus` per directory decides. It is only asked on a cluster that can hold a zone at
+   * all: one whose NameNode advertises a key provider (a client-cached call) or whose session
+   * configures one.
+   */
+  def hdfsEncryptedDirectory(
+      hadoopConf: Configuration,
+      directories: Set[String]): Option[String] = {
+    val configuredProvider =
+      Seq("hadoop.security.key.provider.path", "dfs.encryption.key.provider.uri")
+        .exists(key => hadoopConf.getTrimmed(key, "").nonEmpty)
+    directories.toSeq.sorted.find { dir =>
+      try {
+        val path = new Path(dir)
+        val fs = path.getFileSystem(hadoopConf)
+        val nameNodeProvider =
+          Option(fs.getServerDefaults(path).getKeyProviderUri).exists(_.trim.nonEmpty)
+        (configuredProvider || nameNodeProvider) && fs.getFileStatus(path).isEncrypted
+      } catch {
+        case NonFatal(e) =>
+          logWarning(s"Could not tell whether HDFS directory $dir is encrypted", e)
+          true
+      }
+    }
+  }
 
   private def hasPort(address: String): Boolean =
     address != null && {

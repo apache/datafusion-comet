@@ -206,7 +206,10 @@ Hadoop configuration declares for `ns1` with `dfs.ha.namenodes.ns1` and
 A scan of HDFS files falls back to Spark when `hadoop.security.authentication` is not `simple`,
 because the client cannot authenticate with the delegation tokens that Spark executors use on a
 Kerberos cluster. It also falls back when a file location has no port and names a nameservice that
-the Hadoop configuration does not declare, or when it has no authority (`hdfs:///path`).
+the Hadoop configuration does not declare, or when it has no authority (`hdfs:///path`), and when a
+data or delete file lies in an HDFS encryption zone: the client is built without KMS support and
+cannot decrypt it. Comet checks that at planning with one `getFileStatus` per data directory, on
+clusters whose NameNode advertises a key provider.
 
 On a cluster without Kerberos, the client connects as `HADOOP_USER_NAME`, or as the executor's
 operating system user when that variable is unset, rather than as the Spark user. Writes to HDFS
@@ -228,8 +231,12 @@ The following scenarios will fall back to the JVM Iceberg reader:
 - Queries that use `input_file_name()`, `input_file_block_start()` or `input_file_block_length()`
 - Scans whose data or delete files span more than one S3 bucket (the native reader uses one
   object-store configuration per scan)
-- HDFS scans on a cluster with Kerberos, and HDFS file locations without a port that name an
-  undeclared nameservice or that have no authority (see [HDFS](#hdfs))
+- HDFS scans on a cluster with Kerberos, HDFS file locations without a port that name an
+  undeclared nameservice or that have no authority, and HDFS files in an encryption zone (see
+  [HDFS](#hdfs))
+- Scans whose data or delete files are on a different storage backend than the table metadata, for
+  example a local or REST-served metadata location with `write.data.path` on S3 or HDFS. The native
+  reader opens every file of a scan through one storage, chosen from the metadata location
 - Scans that read a list or map column of a table with a name mapping (`schema.name-mapping.default`,
   which the `migrate`, `snapshot` and `add_files` procedures set). The native reader cannot open the
   Parquet list layouts that Hive and Spark's `writeLegacyFormat` write through a name mapping, and a
@@ -864,8 +871,6 @@ The physical differences that every native data file has, and why they are safe,
 - **Iceberg tables whose metadata location has no host.** The native Iceberg scan skips the
   credential provider configured with `s3.comet.credential.provider.class`
   ([#6536](https://github.com/apache/datafusion-comet/issues/6536)).
-- **Files in an HDFS encryption zone.** The native reader's HDFS client is built without KMS
-  support, so it cannot decrypt them.
 
 ### Writes that fail where Spark succeeds
 

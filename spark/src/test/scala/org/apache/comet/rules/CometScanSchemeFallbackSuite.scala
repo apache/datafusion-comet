@@ -762,18 +762,32 @@ class CometScanSchemeFallbackSuite extends CometTestBase with CometIcebergTestBa
    * `CometScanRule` with native Iceberg scans enabled and `hadoopConf` set on the session, and
    * returns the scans the rule claimed plus the fallback reasons it left on the ones it declined.
    * `catalogProps` are set on the catalog before its first use, so its FileIO is built with them.
+   * The warehouse, and so the table metadata, sits on the fake `hdfs://` filesystem
+   * (`metadataPrefix`): the native reader opens every file through one storage chosen from the
+   * metadata location, so `hdfs://` data files are claimed only under `hdfs://` metadata. An
+   * empty prefix leaves the metadata on the local filesystem.
    */
   private def planIcebergScanOverHdfs(
       dataFiles: Seq[String],
       hadoopConf: Seq[(String, String)] = Seq.empty,
-      catalogProps: Seq[(String, String)] = Seq.empty): (Seq[CometBatchScanExec], Set[String]) = {
+      catalogProps: Seq[(String, String)] = Seq.empty,
+      metadataPrefix: String = FakeHdfsSchemeFileSystem.PREFIX)
+      : (Seq[CometBatchScanExec], Set[String]) = {
     // A catalog of its own, so no test reads another's cached catalog or warehouse.
     val catalog = s"hdfs_gate_${UUID.randomUUID().toString.take(8)}"
     var claimed = Seq.empty[CometBatchScanExec]
     var reasons = Set.empty[String]
     val catalogConfs = catalogProps.map { case (k, v) => s"spark.sql.catalog.$catalog.$k" -> v }
-    withHadoopCatalog(catalog) {
-      withSQLConf(catalogConfs: _*) {
+    withTempIcebergDir { dir =>
+      val confs = Seq(
+        s"spark.sql.catalog.$catalog" -> "org.apache.iceberg.spark.SparkCatalog",
+        s"spark.sql.catalog.$catalog.type" -> "hadoop",
+        s"spark.sql.catalog.$catalog.warehouse" ->
+          s"$metadataPrefix${dir.getAbsolutePath}/warehouse",
+        // Iceberg fetches block locations of `hdfs://` data files when the table is on HDFS;
+        // the files here exist only in the manifests.
+        "spark.sql.iceberg.locality.enabled" -> "false") ++ catalogConfs
+      withSQLConf(confs: _*) {
         spark.sql(s"CREATE TABLE $catalog.db.t (id INT) USING iceberg")
         val table = loadIcebergTable(spark, catalog, "db", "t").asInstanceOf[Table]
         val append = table.newAppend()
@@ -826,11 +840,19 @@ class CometScanSchemeFallbackSuite extends CometTestBase with CometIcebergTestBa
 
   private val undeclaredReason = "which has no port and which the Hadoop configuration does not"
 
+  private val mixedStorageReason = "through one storage backend"
+
   test("iceberg scan: an HDFS nameservice the Hadoop configuration declares is claimed") {
     assume(icebergAvailable, "Iceberg not available in classpath")
     val (claimed, reasons) =
       planIcebergScanOverHdfs(Seq("hdfs://ns1/warehouse/db/t/a.parquet"), declaredNs1)
     assert(claimed.size == 1, s"expected the scan to be claimed, fell back with: $reasons")
+    // The fixture must really put the metadata on hdfs://, or these tests would exercise the
+    // mixed-storage gate instead of the nameservice declaration.
+    assert(
+      claimed.head.nativeIcebergScanMetadata.get.metadataLocation
+        .startsWith(FakeHdfsSchemeFileSystem.PREFIX),
+      s"metadata location: ${claimed.head.nativeIcebergScanMetadata.get.metadataLocation}")
     // The per-nameservice key, with the NameNodes in `dfs.ha.namenodes` order; iceberg-rust
     // reads the global `hdfs.name-node` only for authority-less paths.
     assert(
@@ -927,6 +949,40 @@ class CometScanSchemeFallbackSuite extends CometTestBase with CometIcebergTestBa
     val properties = claimed.head.nativeIcebergScanMetadata.get.catalogProperties
     assert(properties.get("hadoop.dfs.ha.namenodes.nsb") == Some("nn1,nn2"), s"$properties")
     assert(!properties.contains("hdfs.name-node.nsb"), s"$properties")
+  }
+
+  test("iceberg scan: HDFS data files of a table whose metadata is local are declined") {
+    assume(icebergAvailable, "Iceberg not available in classpath")
+    // The native scan builds its one storage from the metadata location, a local path here, and
+    // would open the `hdfs://` file through it; declined at planning rather than failing at open.
+    val (claimed, reasons) = planIcebergScanOverHdfs(
+      Seq("hdfs://nn.example.com:8020/warehouse/db/t/a.parquet"),
+      metadataPrefix = "")
+    assert(claimed.isEmpty, "a local-metadata table with HDFS data files must not be claimed")
+    assert(
+      reasons.exists(r => r.contains("'hdfs'") && r.contains(mixedStorageReason)),
+      s"expected the mixed-storage fall-back reason, got: $reasons")
+  }
+
+  test("iceberg scan: a local data file of a table whose metadata is on HDFS is declined") {
+    assume(icebergAvailable, "Iceberg not available in classpath")
+    val (claimed, reasons) =
+      planIcebergScanOverHdfs(Seq(s"file://${fakeRootDir.getAbsolutePath}/t/a.parquet"))
+    assert(claimed.isEmpty, "an HDFS-metadata table with a local data file must not be claimed")
+    assert(
+      reasons.exists(r => r.contains("'file'") && r.contains(mixedStorageReason)),
+      s"expected the mixed-storage fall-back reason, got: $reasons")
+  }
+
+  test("iceberg scan: S3 data files of a table whose metadata is local are declined") {
+    assume(icebergAvailable, "Iceberg not available in classpath")
+    // Not an HDFS matter: the single storage fails the same way for an object store.
+    val (claimed, reasons) =
+      planIcebergScanOverHdfs(Seq("s3://bucket/warehouse/db/t/a.parquet"), metadataPrefix = "")
+    assert(claimed.isEmpty, "a local-metadata table with S3 data files must not be claimed")
+    assert(
+      reasons.exists(r => r.contains("'s3'") && r.contains(mixedStorageReason)),
+      s"expected the mixed-storage fall-back reason, got: $reasons")
   }
 
   test("iceberg scan: HDFS data files on a Kerberos cluster are declined") {

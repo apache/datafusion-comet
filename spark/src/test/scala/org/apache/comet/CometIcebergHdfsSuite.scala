@@ -29,8 +29,10 @@ import org.scalatest.Tag
 
 import org.apache.commons.io.FileUtils
 import org.apache.hadoop.conf.Configuration
+import org.apache.hadoop.crypto.key.{KeyProvider, KeyProviderFactory}
 import org.apache.hadoop.fs.{FileSystem, Path}
 import org.apache.hadoop.hdfs.{MiniDFSCluster, MiniDFSNNTopology}
+import org.apache.hadoop.hdfs.client.HdfsAdmin
 import org.apache.hadoop.util.VersionInfo
 import org.apache.spark.sql.CometTestBase
 import org.apache.spark.sql.comet.CometIcebergNativeScanExec
@@ -126,8 +128,11 @@ class CometIcebergHdfsSuite
   override def afterAll(): Unit = {
     try stopHaCluster()
     finally {
-      try stopHdfsCluster()
-      finally super.afterAll()
+      try stopEncryptedCluster()
+      finally {
+        try stopHdfsCluster()
+        finally super.afterAll()
+      }
     }
   }
 
@@ -350,5 +355,79 @@ class CometIcebergHdfsSuite
       catch { case _: Exception => () }
       stopHaCluster()
     }
+  }
+
+  private var ezCluster: MiniDFSCluster = _
+  private var ezBaseDir: File = _
+
+  private def stopEncryptedCluster(): Unit = {
+    try if (ezCluster != null) ezCluster.shutdown(true)
+    finally {
+      ezCluster = null
+      if (ezBaseDir != null) FileUtils.deleteQuietly(ezBaseDir)
+      ezBaseDir = null
+    }
+  }
+
+  /**
+   * Starts a cluster whose NameNode has a key provider (a `jceks` keystore on the local disk, as
+   * Hadoop's own encryption tests use), with one key and an encryption zone at `/ez`. The key is
+   * created before the NameNode starts, since it loads the keystore once.
+   */
+  private def startEncryptedCluster(): Unit = {
+    val conf = new Configuration()
+    conf.set("dfs.namenode.metrics.logger.period.seconds", "0")
+    conf.set("dfs.datanode.metrics.logger.period.seconds", "0")
+    conf.setIfUnset("dfs.namenode.rpc-bind-host", "localhost")
+    ezBaseDir = Files.createTempDirectory("comet_ez_dfs_").toFile
+    conf.set(MiniDFSCluster.HDFS_MINIDFS_BASEDIR, ezBaseDir.getAbsolutePath)
+    val providerUri = s"jceks://file${new File(ezBaseDir, "ez.jceks").toURI.getPath}"
+    conf.set("hadoop.security.key.provider.path", providerUri)
+    val provider = KeyProviderFactory.get(new URI(providerUri), conf)
+    provider.createKey("ez-key", new KeyProvider.Options(conf))
+    provider.flush()
+
+    ezCluster = new MiniDFSCluster.Builder(conf).numDataNodes(1).build()
+    val fs = ezCluster.getFileSystem
+    fs.mkdirs(new Path("/ez"))
+    new HdfsAdmin(fs.getUri, ezCluster.getConfiguration(0))
+      .createEncryptionZone(new Path("/ez"), "ez-key")
+  }
+
+  test("native Iceberg scan falls back for a table in an HDFS encryption zone") {
+    startEncryptedCluster()
+    try {
+      val ezUri = s"hdfs://localhost:${ezCluster.getNameNodePort}"
+      // Iceberg's own writer encrypts through the key provider the NameNode advertises; the
+      // native reader cannot decrypt, so the scan must be declined at planning, not fail on an
+      // executor.
+      withHdfsIcebergCatalog(baseUri = s"$ezUri/ez", cleanup = false) { catalog =>
+        spark.sql(s"CREATE TABLE $catalog.db.enc (id INT, name STRING) USING iceberg")
+        spark.sql(s"INSERT INTO $catalog.db.enc VALUES (1, 'a'), (2, 'b')")
+        val dataLocation = IcebergReflection
+          .getDataLocation(loadIcebergTable(spark, catalog, "db", "enc"))
+          .getOrElse(fail("could not resolve the Iceberg data location"))
+        // The fixture really is a zone: the NameNode flags the data directory as encrypted.
+        assert(
+          ezCluster.getFileSystem.getFileStatus(new Path(dataLocation)).isEncrypted,
+          s"$dataLocation is not in the encryption zone")
+
+        val (_, cometPlan) = checkSparkAnswerAndFallbackReason(
+          s"SELECT * FROM $catalog.db.enc ORDER BY id",
+          "encryption zone")
+        val scans = collect(cometPlan) { case scan: CometIcebergNativeScanExec => scan }
+        assert(
+          scans.isEmpty,
+          s"an encryption-zone table must fall back, but was claimed:\n$cometPlan")
+      }
+      // The gate is per location, not per cluster: a table outside the zone on the same
+      // NameNode still scans natively.
+      withHdfsIcebergCatalog(baseUri = ezUri, cleanup = false) { catalog =>
+        spark.sql(s"CREATE TABLE $catalog.db.plain (id INT) USING iceberg")
+        spark.sql(s"INSERT INTO $catalog.db.plain VALUES (1), (2)")
+        val (_, cometPlan) = checkSparkAnswer(s"SELECT * FROM $catalog.db.plain ORDER BY id")
+        assertSingleNativeScan(cometPlan)
+      }
+    } finally stopEncryptedCluster()
   }
 }

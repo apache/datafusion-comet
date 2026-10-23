@@ -710,6 +710,22 @@ case class CometScanRule(session: SparkSession)
             false
           }
 
+        // The native scan opens every data and delete file through one storage, built from the
+        // metadata location's scheme (`load_file_io` in iceberg_scan.rs), so a file on another
+        // backend fails at open time: an `hdfs://` file handed to the local storage, a local path
+        // to the S3 one. Declined here instead; the multi-bucket check above is the same idea one
+        // level down.
+        val metadataFamily = CometScanRule.storageFamily(metadataUri.getScheme)
+        val foreignFamilies =
+          taskValidation.fileSchemes.map(CometScanRule.storageFamily) - metadataFamily
+        val storageFamiliesConsistent = foreignFamilies.isEmpty || {
+          fallbackReasons += "Iceberg scan reads data/delete files on storage " +
+            s"${foreignFamilies.toSeq.sorted.map(f => s"'$f'").mkString(", ")} while the table " +
+            s"metadata is on '$metadataFamily'; Comet's native Iceberg reader opens every file " +
+            "of a scan through one storage backend, chosen from the metadata location"
+          false
+        }
+
         // Now perform all validation using the pre-extracted metadata
         // Check if table uses a FileIO implementation compatible with iceberg-rust.
         // Comet's native reader bypasses Iceberg Java's FileIO entirely and reads through
@@ -925,7 +941,22 @@ case class CometScanRule(session: SparkSession)
               s"(dfs.ha.namenodes.$ns, and a host:port dfs.namenode.rpc-address.$ns.<id> for " +
               "each NameNode)"
           }
-          !secure && undeclared.isEmpty
+          // The client is built without KMS support and rejects every file of an encryption
+          // zone. Probed only once the scan is otherwise eligible, so an undeclared nameservice
+          // is not also dialed.
+          val encryptedDirectory =
+            if (secure || undeclared.nonEmpty) None
+            else {
+              CometIcebergNativeScan.hdfsEncryptedDirectory(
+                hadoopConf,
+                taskValidation.hdfsDirectories)
+            }
+          encryptedDirectory.foreach { dir =>
+            fallbackReasons += s"Iceberg scan reads HDFS directory '$dir', which is in an " +
+              "encryption zone or whose status could not be read; Comet's native Iceberg reader " +
+              "cannot decrypt HDFS encryption zones"
+          }
+          !secure && undeclared.isEmpty && encryptedDirectory.isEmpty
         }
 
         // iceberg-rust reads a data file that has no field ids through the table's name mapping
@@ -1162,7 +1193,8 @@ case class CometScanRule(session: SparkSession)
         if (schemaSupported && fileIOCompatible && formatVersionSupported &&
           defaultValuesSupported && schemaTypesSupported && encryptionKeyLengthSupported &&
           taskValidation.allParquet && allSupportedFilesystems && allLocationsOpenable &&
-          metadataSchemeSupported && partitionTypesSupported && unifiedPartitionTypeSupported &&
+          metadataSchemeSupported && storageFamiliesConsistent && partitionTypesSupported &&
+          unifiedPartitionTypeSupported &&
           transformFunctionsSupported && deleteFileTypesSupported && dppSubqueriesSupported &&
           nestedFieldsSupported && taskSchemaNamesSupported && hdfsSupported &&
           nameMappedContainersSupported) {
@@ -1510,8 +1542,13 @@ object CometScanRule extends Logging {
     // Buckets the native FileIO must read (data + delete files), for the single-config check in
     // CometScanRule; only S3-family locations contribute (see NativeConfig.bucketForUri).
     val dataFileBuckets = mutable.Set[String]()
-    // HDFS authorities of the data/delete files, for the HDFS checks in CometScanRule.
+    // Schemes of the data/delete files the native FileIO opens, for the storage-family check in
+    // CometScanRule; a schemeless path is local, as iceberg-rust's `scheme_of` reads it.
+    val fileSchemes = mutable.Set[String]()
+    // HDFS authorities and directories of the data/delete files, for the HDFS checks in
+    // CometScanRule.
     val hdfsAuthorities = mutable.Set[String]()
+    val hdfsDirectories = mutable.Set[String]()
     // First data/delete location with a readable scheme but no URL host (see
     // hasOpenableAuthority); non-empty => decline. One example suffices for the message.
     var hostlessLocation: Option[String] = None
@@ -1525,16 +1562,24 @@ object CometScanRule extends Logging {
         catch { case _: java.net.URISyntaxException => return }
       // A schemeless local path routes to iceberg-rust's LocalFs and needs no host.
       val scheme = uri.getScheme
-      if (scheme == null) return
+      if (scheme == null) {
+        fileSchemes += "file"
+        return
+      }
       if (!isAdmittedIcebergScheme(scheme, s3CompliantSchemes)) {
         unsupportedSchemes += scheme
       } else if (!hasOpenableAuthority(uri, s3CompliantSchemes)) {
         if (hostlessLocation.isEmpty) hostlessLocation = Some(rawPath)
-      } else if (scheme == "hdfs") {
-        hdfsAuthorities += uri.getRawAuthority
       } else {
-        // bucketForUri yields None for non-S3-family URIs, so no scheme re-check is needed here.
-        NativeConfig.bucketForUri(uri, s3CompliantSchemes).foreach(dataFileBuckets += _)
+        fileSchemes += scheme
+        if (scheme == "hdfs") {
+          hdfsAuthorities += uri.getRawAuthority
+          val slash = rawPath.lastIndexOf('/')
+          if (slash > 0) hdfsDirectories += rawPath.substring(0, slash)
+        } else {
+          // bucketForUri yields None for non-S3-family URIs, so no scheme re-check is needed.
+          NativeConfig.bucketForUri(uri, s3CompliantSchemes).foreach(dataFileBuckets += _)
+        }
       }
     }
 
@@ -1606,9 +1651,22 @@ object CometScanRule extends Logging {
       nonIdentityTransform,
       deleteFiles,
       dataFileBuckets.toSet,
+      fileSchemes.toSet,
       hdfsAuthorities.toSet,
+      hdfsDirectories.toSet,
       hostlessLocation,
       requiredFieldIds)
+  }
+
+  /**
+   * The native storage backend a data/delete file scheme routes to (`storage_factory_for` in
+   * iceberg_common.rs): `s3` and `s3a` share one, a schemeless path is local, and every other
+   * scheme, an S3-compliant alias included, is its own.
+   */
+  private[rules] def storageFamily(scheme: String): String = scheme match {
+    case null | "file" => "file"
+    case "s3" | "s3a" => "s3"
+    case other => other
   }
 }
 
@@ -1621,6 +1679,8 @@ case class IcebergTaskValidationResult(
     nonIdentityTransform: Option[String],
     deleteFiles: java.util.List[_],
     dataFileBuckets: Set[String],
+    fileSchemes: Set[String],
     hdfsAuthorities: Set[String],
+    hdfsDirectories: Set[String],
     hostlessLocation: Option[String],
     requiredFieldIds: Set[Int])
