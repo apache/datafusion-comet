@@ -2728,10 +2728,11 @@ class CometIcebergNativeSuite
     }
   }
 
-  // Data files written without Iceberg field ids and read with no name mapping: iceberg-rust then
-  // projects whole top-level columns by position, and a by-name struct cast narrows each one to
-  // the pruned type. Spark's own reader returns NULL nested fields for such a table, so the pruned
-  // read is checked against the native read of every nested field instead.
+  // Data files written without Iceberg field ids and read with no name mapping: iceberg-rust can
+  // only match such a file's struct fields to the table's by position, and only when the counts
+  // agree. Spark's own reader returns NULL nested fields for such a table, so the unpruned native
+  // read is checked for the file's values instead; the pruned read, which asks for fewer fields
+  // than the file holds, is refused rather than guessed at.
   test("nested schema pruning on data files without field ids") {
     assume(icebergAvailable, "Iceberg not available in classpath")
 
@@ -2803,13 +2804,19 @@ class CometIcebergNativeSuite
             }
             rows
           }
-          // `s.b` is the struct's last field, so a positional cast would read `s.a` instead.
+          // `s.b` is the struct's last field, so a positional read of a pruned struct would hand
+          // back `s.a`; iceberg-rust refuses it instead.
           Seq(
             s"SELECT id, s.b FROM $table ORDER BY id",
             s"SELECT id, items.x FROM $table ORDER BY id").foreach { query =>
             val full = nativeRows(query, pruneNestedFields = false)
             assert(full.length == 100 && full.forall(!_.isNullAt(1)), s"$query: $full")
-            assert(nativeRows(query, pruneNestedFields = true) == full, query)
+            val e = intercept[org.apache.spark.SparkException] {
+              nativeRows(query, pruneNestedFields = true)
+            }
+            assert(
+              e.getMessage.contains("cannot reconcile struct fields by id"),
+              s"$query: ${e.getMessage}")
           }
 
           spark.sql(s"DROP TABLE $table")

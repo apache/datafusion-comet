@@ -87,7 +87,10 @@ under the License.
     <protobuf.version>3.25.5</protobuf.version>
     <parquet.version>1.16.0</parquet.version>
     <parquet.maven.scope>provided</parquet.maven.scope>
-    <hadoop.version>3.3.4</hadoop.version>
+    <!-- hadoop-client-minicluster, test scope. Follows each Spark profile's Hadoop line below, as
+         hadoop-azure.version does: MiniDFSCluster cannot start when the minicluster is older than
+         the hadoop-client-api/runtime Spark supplies. The default matches spark-4.1. -->
+    <hadoop.version>3.4.2</hadoop.version>
     <arrow.version>18.3.0</arrow.version>
     <codehaus.jackson.version>1.9.13</codehaus.jackson.version>
     <spotless.version>2.43.0</spotless.version>
@@ -106,7 +109,7 @@ under the License.
     <!-- hadoop-aws, provided scope, to compile the built-in S3 credential adapters against the S3A
          provider factory. Default tracks the default shim source set (spark-4.x -> SDK v2, needs
          Hadoop 3.4.x's CredentialProviderListFactory); the spark-3.4 / spark-3.5 profiles override
-         it down to 3.3.x (SDK v1). hadoop.version itself (hadoop-client) is not changed. -->
+         it down to 3.3.x (SDK v1). -->
     <hadoop-aws.version>3.4.1</hadoop-aws.version>
     <!-- Delta Lake pairing for the contrib/delta-spark module (-Pdelta). Each Spark profile
          in this pom sets delta.spark.version to its matching Delta release. Only spark-3.4
@@ -731,6 +734,7 @@ under the License.
         <spark.version>3.4.3</spark.version>
         <spark.version.short>3.4</spark.version.short>
         <hadoop-aws.version>3.3.4</hadoop-aws.version>
+        <hadoop.version>3.3.4</hadoop.version>
         <hadoop-azure.version>3.3.4</hadoop-azure.version>
         <parquet.version>1.13.1</parquet.version>
         <semanticdb.version>4.8.8</semanticdb.version>
@@ -757,6 +761,7 @@ under the License.
         <spark.version>3.5.9</spark.version>
         <spark.version.short>3.5</spark.version.short>
         <hadoop-aws.version>3.3.4</hadoop-aws.version>
+        <hadoop.version>3.3.4</hadoop.version>
         <hadoop-azure.version>3.3.4</hadoop-azure.version>
         <parquet.version>1.13.1</parquet.version>
         <semanticdb.version>4.8.8</semanticdb.version>
@@ -778,6 +783,7 @@ under the License.
         <scala.binary.version>2.13</scala.binary.version>
         <spark.version>4.0.4</spark.version>
         <spark.version.short>4.0</spark.version.short>
+        <hadoop.version>3.4.1</hadoop.version>
         <hadoop-azure.version>3.4.1</hadoop-azure.version>
         <parquet.version>1.15.2</parquet.version>
         <semanticdb.version>4.13.10</semanticdb.version>
@@ -802,6 +808,7 @@ under the License.
         <scala.binary.version>2.13</scala.binary.version>
         <spark.version>4.1.3</spark.version>
         <spark.version.short>4.1</spark.version.short>
+        <hadoop.version>3.4.2</hadoop.version>
         <hadoop-azure.version>3.4.2</hadoop-azure.version>
         <parquet.version>1.16.0</parquet.version>
         <semanticdb.version>4.13.10</semanticdb.version>
@@ -826,6 +833,7 @@ under the License.
         <scala.binary.version>2.13</scala.binary.version>
         <spark.version>4.2.0</spark.version>
         <spark.version.short>4.2</spark.version.short>
+        <hadoop.version>3.5.0</hadoop.version>
         <hadoop-azure.version>3.5.0</hadoop-azure.version>
         <parquet.version>1.17.0</parquet.version>
         <semanticdb.version>4.13.10</semanticdb.version>
