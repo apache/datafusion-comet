@@ -45,24 +45,10 @@ These settings can be used to determine which parts of the plan are accelerated 
 
 ## Shuffle Configuration Settings
 
-For native remote shuffle, `spark.comet.shuffle.rss.maxFrameBytes` limits one complete
-encoded frame, while `spark.comet.shuffle.rss.maxInFlightBytes` limits the memory reserved
-by map attempts sharing an executor's remote shuffle client. The reservation includes
-encoding workspace and overlapping frame copies. An ordinary uncompressed frame needs
-approximately seven times its size plus schema and transport overhead. The default 512 MiB
-reservation budget accommodates ordinary frames up to the default 64 MiB frame limit.
-Compressed frames still need workspace for their uncompressed data. Increase the reservation
-budget when larger rows or schemas need more workspace.
-
-If a row cannot fit the remote limits, Comet materializes a replacement shuffle using its
-local writer before publishing the exchange to downstream tasks. The replacement has a separate
-shuffle and scheduling identity, so late remote results or failures cannot affect local output.
-Independent exchanges can materialize concurrently, and runtime output statistics describe only
-the selected destination. Subsequent fetch failures retain Spark's normal recovery behavior.
-With dynamic allocation enabled, native Celeborn shuffle also requires either
-`spark.shuffle.service.enabled=true` or `spark.dynamicAllocation.shuffleTracking.enabled=true`
-(the Spark default) to preserve fallback files. Otherwise exchanges retain ordinary Spark/Celeborn
-shuffle, including applications that rely only on remote reliable storage or decommissioning.
+For Celeborn client compatibility and setup, see the [Celeborn guide](celeborn.md).
+The [native remote shuffle tuning reference](tuning/celeborn.md) explains how
+`spark.comet.shuffle.rss.maxFrameBytes` and `spark.comet.shuffle.rss.maxInFlightBytes`
+interact, including encoding workspace and local fallback for oversized rows.
 
 <!--BEGIN:CONFIG_TABLE[shuffle]-->
 <!--END:CONFIG_TABLE-->

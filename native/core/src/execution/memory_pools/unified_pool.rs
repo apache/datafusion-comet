@@ -17,10 +17,7 @@
 
 use std::{
     fmt::{Debug, Display, Formatter, Result as FmtResult},
-    sync::{
-        atomic::{AtomicUsize, Ordering::Relaxed},
-        Arc,
-    },
+    sync::atomic::{AtomicUsize, Ordering::Relaxed},
 };
 
 use super::spark_memory::SparkMemory;
@@ -28,7 +25,6 @@ use datafusion::{
     common::{resources_datafusion_err, DataFusionError},
     execution::memory_pool::{MemoryPool, MemoryReservation},
 };
-use jni::objects::{Global, JObject};
 use log::warn;
 
 /// A DataFusion `MemoryPool` implementation for Comet that delegates to
@@ -49,21 +45,16 @@ impl Debug for CometUnifiedMemoryPool {
 }
 
 impl CometUnifiedMemoryPool {
-    pub fn new(
-        task_memory_manager_handle: Arc<Global<JObject<'static>>>,
-        task_attempt_id: i64,
-    ) -> CometUnifiedMemoryPool {
-        Self::with_spark(SparkMemory::new(
-            task_memory_manager_handle,
-            task_attempt_id,
-        ))
-    }
-
-    fn with_spark(spark: SparkMemory) -> CometUnifiedMemoryPool {
+    pub(super) fn with_spark(spark: SparkMemory) -> CometUnifiedMemoryPool {
         Self {
             spark,
             used: AtomicUsize::new(0),
         }
+    }
+
+    /// The part of [`MemoryPool::reserved`] that Spark has not granted; see [`SparkMemory`].
+    pub(super) fn overcommit(&self) -> usize {
+        self.spark.overcommit()
     }
 }
 
@@ -102,8 +93,7 @@ impl MemoryPool for CometUnifiedMemoryPool {
         }
         self.spark.acquire(additional);
         self.used
-            .fetch_update(Relaxed, Relaxed, |old| Some(old.saturating_add(additional)))
-            .unwrap();
+            .update(Relaxed, Relaxed, |old| old.saturating_add(additional));
     }
 
     fn shrink(&self, _: &MemoryReservation, size: usize) {
@@ -115,7 +105,7 @@ impl MemoryPool for CometUnifiedMemoryPool {
         }
         if let Err(prev) = self
             .used
-            .fetch_update(Relaxed, Relaxed, |old| old.checked_sub(size))
+            .try_update(Relaxed, Relaxed, |old| old.checked_sub(size))
         {
             panic!(
                 "Task {} overflow when releasing {size} of {prev} bytes",
@@ -139,7 +129,7 @@ impl MemoryPool for CometUnifiedMemoryPool {
             }
             if let Err(prev) = self
                 .used
-                .fetch_update(Relaxed, Relaxed, |old| old.checked_add(additional))
+                .try_update(Relaxed, Relaxed, |old| old.checked_add(additional))
             {
                 return Err(resources_datafusion_err!(
                     "Task {} failed to acquire {} bytes due to overflow. Reserved: {}",
@@ -162,6 +152,7 @@ mod tests {
     use super::super::spark_memory::fake::FakeSpark;
     use super::*;
     use datafusion::execution::memory_pool::MemoryConsumer;
+    use std::sync::Arc;
 
     #[test]
     fn grow_past_spark_is_recorded_and_refuses_try_grow_until_repaid() {

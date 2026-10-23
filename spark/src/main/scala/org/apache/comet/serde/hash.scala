@@ -20,15 +20,14 @@
 package org.apache.comet.serde
 
 import org.apache.spark.sql.catalyst.expressions.{Attribute, Expression, Murmur3Hash, Sha1, Sha2, XxHash64}
-import org.apache.spark.sql.types.{ArrayType, DataType, DecimalType, IntegerType, LongType, MapType, StringType, StructType}
+import org.apache.spark.sql.types.{ArrayType, DataType, IntegerType, LongType, MapType, StringType, StructType}
 
 import org.apache.comet.CometSparkSessionExtensions.withFallbackReason
 import org.apache.comet.serde.QueryPlanSerde.{exprToProtoInternal, isTimeType, scalarFunctionExprToProtoWithReturnType, serializeDataType, supportedDataType}
 
-// Native-unsupported, Spark-codegen-compatible cases (`DecimalType` precision > 18, including
-// nested, and `sha2` with a non-foldable `numBits`) stay in the Comet pipeline via
-// `CodegenDispatchFallback` on the applicable hash serdes below. `TimeType` is out of scope for
-// that dispatcher enrollment: `getSupportLevel` reports `Compatible` so the mixin does not
+// Native-unsupported, Spark-codegen-compatible `sha2` with a non-foldable `numBits` stays
+// in the Comet pipeline via `CodegenDispatchFallback`. Wide decimals, including nested
+// decimals, hash natively. `TimeType` is out of scope for that dispatcher enrollment: `getSupportLevel` reports `Compatible` so the mixin does not
 // intercept, and `convert` declines the native path so the projection falls back to Spark.
 object CometXxHash64 extends CometExpressionSerde[XxHash64] with CodegenDispatchFallback {
 
@@ -130,13 +129,11 @@ object CometSha1 extends CometExpressionSerde[Sha1] {
 
 private object HashUtils {
 
-  private val unsupportedDecimalReason =
-    "`DecimalType` with precision > 18 is not supported (Spark hashes via Java `BigDecimal`)"
   private val unsupportedTimeTypeReason = "`TimeType` is not supported"
 
   // `TimeType` is omitted: `CodegenDispatchFallback` documents this list as JVM-dispatch cases.
   val unsupportedReasons: Seq[String] =
-    Seq(unsupportedDecimalReason, "Unsupported child data type")
+    Seq("Unsupported child data type")
 
   def containsTimeTypeInChildren(expr: Expression): Boolean =
     expr.children.exists(c => containsTimeType(c.dataType))
@@ -175,7 +172,6 @@ private object HashUtils {
   }
 
   private def unsupportedReasonFor(dt: DataType): Option[String] = dt match {
-    case d: DecimalType if d.precision > 18 => Some(unsupportedDecimalReason)
     case s: StructType =>
       s.fields.iterator.flatMap(f => unsupportedReasonFor(f.dataType).iterator).toSeq.headOption
     case a: ArrayType => unsupportedReasonFor(a.elementType)

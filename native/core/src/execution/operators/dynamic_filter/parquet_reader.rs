@@ -31,7 +31,7 @@ use datafusion::physical_expr::utils::collect_columns;
 use datafusion::physical_expr::PhysicalExpr;
 use datafusion::physical_plan::ExecutionPlan;
 
-use super::super::CometFilterExec;
+use datafusion_comet_operators::CometFilterExec;
 
 mod schema_adapter;
 
@@ -41,7 +41,7 @@ use schema_adapter::RuntimeFilterSchemaAdapterFactory;
 /// or changing the predicate. Every accepted leaf is deterministic, infallible,
 /// and only discards rows, so reader pruning cannot suppress expression errors
 /// or alter stateful evaluation. All other expressions remain a boundary.
-fn is_direct_column_null_checks(predicate: &Arc<dyn PhysicalExpr>) -> bool {
+pub(super) fn is_direct_column_null_checks(predicate: &Arc<dyn PhysicalExpr>) -> bool {
     if let Some(binary) = predicate.downcast_ref::<BinaryExpr>() {
         return binary.op() == &Operator::And
             && is_direct_column_null_checks(binary.left())
@@ -62,11 +62,19 @@ pub(super) fn try_attach_parquet_reader_filter(
         log::debug!("Join dynamic filter reader pushdown skipped: probe has a fetch limit");
         return Ok(None);
     }
+    // An ancestor join may already filter decoded batches below this join. Keep
+    // that consumer while attaching this join's own predicate to its reader.
+    if let Some(filter) = input.downcast_ref::<super::DynamicFilterExec>() {
+        return Ok(
+            try_attach_parquet_reader_filter(&filter.input, predicate, config)?
+                .map(|reader| filter.with_execution_input(reader)),
+        );
+    }
     // Spark inserts IS NOT NULL residuals above equijoin inputs, including AND
     // chains of inferred null checks. A reader predicate can cross those direct
-    // checks because both operations only discard rows. Keep every other filter
-    // as a boundary: reader pruning would change which rows reach stateful
-    // expressions and can suppress expression errors.
+    // checks because both operations only discard rows. Broader deterministic
+    // residuals require explicit permission from Spark: pruning earlier can skip
+    // their errors on rows that cannot join. Stateful predicates remain barriers.
     if let Some(filter) = input.downcast_ref::<CometFilterExec>() {
         if filter.has_projection() {
             log::debug!(
@@ -74,9 +82,11 @@ pub(super) fn try_attach_parquet_reader_filter(
             );
             return Ok(None);
         }
-        if !is_direct_column_null_checks(filter.predicate()) {
+        if !filter.allows_runtime_filter_pushdown()
+            && !is_direct_column_null_checks(filter.predicate())
+        {
             log::debug!(
-                "Join dynamic filter reader pushdown skipped: probe filter is not direct column IS NOT NULL checks"
+                "Join dynamic filter reader pushdown skipped: probe residual has no pushdown permission and is not direct column IS NOT NULL checks"
             );
             return Ok(None);
         }

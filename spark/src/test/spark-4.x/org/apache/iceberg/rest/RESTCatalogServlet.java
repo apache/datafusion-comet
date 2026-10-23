@@ -29,9 +29,6 @@ import java.util.Optional;
 import java.util.function.Consumer;
 import java.util.function.Function;
 import java.util.stream.Collectors;
-import jakarta.servlet.http.HttpServlet;
-import jakarta.servlet.http.HttpServletRequest;
-import jakarta.servlet.http.HttpServletResponse;
 
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
@@ -46,10 +43,14 @@ import org.apache.iceberg.util.Pair;
 
 import static java.lang.String.format;
 
+import jakarta.servlet.http.HttpServlet;
+import jakarta.servlet.http.HttpServletRequest;
+import jakarta.servlet.http.HttpServletResponse;
+
 /**
  * The RESTCatalogServlet provides a servlet implementation used in combination with a
- * RESTCatalogAdaptor to proxy the REST Spec to any Catalog implementation.
- * Modified version of Iceberg's org/apache/iceberg/rest/RESTCatalogServlet.java
+ * RESTCatalogAdaptor to proxy the REST Spec to any Catalog implementation. Modified version of
+ * Iceberg's org/apache/iceberg/rest/RESTCatalogServlet.java
  */
 public class RESTCatalogServlet extends HttpServlet {
   private static final Logger LOG = LoggerFactory.getLogger(RESTCatalogServlet.class);

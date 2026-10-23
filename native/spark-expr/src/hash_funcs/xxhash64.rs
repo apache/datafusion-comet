@@ -47,7 +47,12 @@ const SPARK_DEFAULT_SEED: i64 = 42;
 /// - `Struct` (and anything containing one): `SparkXxhash64` does not push a parent null
 ///   mask into children, so hidden values of a NULL struct would affect the hash
 /// - a `Dictionary` nested in a list/map: `SparkXxhash64` restarts those hashes from 42
+/// - wide decimals: `SparkXxhash64` hashes fixed-width little-endian bytes instead
+///   of Spark's minimal signed big-endian representation
 /// - `Time64`, which `SparkXxhash64` does not dispatch
+/// - `Float32`/`Float64` (and anything containing one): `SparkXxhash64` hashes the raw bits of a
+///   NaN, where Spark hashes every NaN as the canonical NaN
+///   (<https://github.com/apache/datafusion/issues/25913>)
 pub fn spark_xxhash64(args: &[ColumnarValue]) -> Result<ColumnarValue, DataFusionError> {
     let length = args.len();
     let seed = &args[length - 1];
@@ -126,10 +131,10 @@ fn invoke_spark_xxhash64(
 fn type_compatible_with_spark_xxhash64(dt: &DataType, in_list_or_map: bool) -> bool {
     use DataType::*;
     match dt {
-        Boolean | Int8 | Int16 | Int32 | Int64 | Float32 | Float64 => true,
+        Boolean | Int8 | Int16 | Int32 | Int64 => true,
         Utf8 | LargeUtf8 | Binary | LargeBinary | FixedSizeBinary(_) => true,
         Date32 | Date64 | Timestamp(_, _) => true,
-        Decimal128(_, _) => true,
+        Decimal128(precision, _) => *precision <= 18,
         Dictionary(_, value) if !in_list_or_map => {
             type_compatible_with_spark_xxhash64(value.as_ref(), true)
         }
@@ -143,7 +148,8 @@ fn type_compatible_with_spark_xxhash64(dt: &DataType, in_list_or_map: bool) -> b
             _ => false,
         },
         // Struct: `SparkXxhash64` hashes child buffers without applying the parent null
-        // mask. Time64 is a Comet-only dispatch arm.
+        // mask. Time64 is a Comet-only dispatch arm. Float32/Float64: `SparkXxhash64` does not
+        // canonicalize NaN.
         _ => false,
     }
 }
@@ -403,6 +409,10 @@ mod tests {
                 Some(-1.0),
                 Some(99999999999.99999999999),
                 Some(-99999999999.99999999999),
+                // Every NaN hashes as the canonical NaN, whatever its sign or payload.
+                Some(f32::NAN),
+                Some(f32::from_bits(0xffc0_0000)),
+                Some(f32::from_bits(0x7f80_0001)),
             ],
             vec![
                 0x9b92689757fcdbd,
@@ -411,6 +421,9 @@ mod tests {
                 0xa2becc0e61bb3823,
                 0x8f20ab82d4f3687f,
                 0xdce4982d97f7ac4,
+                0x255d1be3831088f8,
+                0x255d1be3831088f8,
+                0x255d1be3831088f8,
             ],
         )
     }
@@ -425,6 +438,10 @@ mod tests {
                 Some(-1.0),
                 Some(99999999999.99999999999),
                 Some(-99999999999.99999999999),
+                // Every NaN hashes as the canonical NaN, whatever its sign or payload.
+                Some(f64::NAN),
+                Some(f64::from_bits(0xfff8_0000_0000_0000)),
+                Some(f64::from_bits(0x7ff0_0000_0000_0001)),
             ],
             vec![
                 0xe1fd6e07fee8ad53,
@@ -433,6 +450,9 @@ mod tests {
                 0x8cdde022746f8f1f,
                 0x793c5c88d313eac7,
                 0xc5e60e7b75d9b232,
+                0xd4974f72d7833f32,
+                0xd4974f72d7833f32,
+                0xd4974f72d7833f32,
             ],
         )
     }

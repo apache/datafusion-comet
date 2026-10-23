@@ -25,8 +25,7 @@ import java.io.FilenameFilter;
 import java.io.IOException;
 import java.io.InputStream;
 import java.io.InputStreamReader;
-import java.nio.file.Files;
-import java.nio.file.StandardCopyOption;
+import java.time.zone.ZoneRulesProvider;
 import java.util.concurrent.atomic.AtomicBoolean;
 
 import org.slf4j.Logger;
@@ -48,6 +47,10 @@ public abstract class NativeBase {
 
   private static final String libraryToLoad = System.mapLibraryName(NATIVE_LIB_NAME);
   private static boolean loaded = false;
+  // The bundled libcomet this class loader unpacked and loaded, or null. Unlike `loaded`, never
+  // reset: unpacking it again yields a new temporary file, which the JVM loads as a second
+  // library with its own uninitialized native state, and JNI methods can then bind to either copy.
+  private static File bundledLibrary = null;
   private static volatile Throwable loadErr = null;
   private static final String searchPattern = "libcomet-";
   private static final AtomicBoolean released = new AtomicBoolean(false);
@@ -73,6 +76,11 @@ public abstract class NativeBase {
   // Only for testing
   static synchronized void setLoaded(boolean b) {
     loaded = b;
+  }
+
+  // Only for testing
+  static synchronized File bundledLibrary() {
+    return bundledLibrary;
   }
 
   static synchronized void load() {
@@ -101,6 +109,7 @@ public abstract class NativeBase {
     }
 
     initWithLogConf();
+    warnOnTzdataMismatch();
     // Only set the Arrow properties when debugging mode is off
     if (!(boolean) CometConf.COMET_DEBUG_ENABLED().get()) {
       setArrowProperties();
@@ -111,6 +120,11 @@ public abstract class NativeBase {
    * Use the bundled native libraries. Functionally equivalent to <code>System.loadLibrary</code>.
    */
   private static void bundleLoadLibrary() {
+    if (bundledLibrary != null) {
+      loaded = true;
+      return;
+    }
+
     String resourceName = resourceName();
     InputStream is = NativeBase.class.getResourceAsStream(resourceName);
     if (is == null) {
@@ -120,37 +134,14 @@ public abstract class NativeBase {
               + ". Please try building from source.");
     }
 
-    File tempLib = null;
-    File tempLibLock = null;
-    try {
-      // Create the .lck file first to avoid a race condition
-      // with other concurrently running Java processes using Comet.
-      tempLibLock = File.createTempFile(searchPattern, "." + os().libExtension + ".lck");
-      tempLib = new File(tempLibLock.getAbsolutePath().replaceFirst(".lck$", ""));
-      // copy to tempLib
-      Files.copy(is, tempLib.toPath(), StandardCopyOption.REPLACE_EXISTING);
-      System.load(tempLib.getAbsolutePath());
+    try (InputStream resource = is;
+        NativeLibrary library = NativeLibrary.extract(resource, "libcomet." + os().libExtension)) {
+      System.load(library.path().toString());
+      library.deleteOnExit();
+      bundledLibrary = library.path().toFile();
       loaded = true;
     } catch (IOException e) {
-      throw new IllegalStateException("Cannot unpack libcomet: " + e);
-    } finally {
-      if (!loaded) {
-        if (tempLib != null && tempLib.exists()) {
-          if (!tempLib.delete()) {
-            LOG.error(
-                "Cannot unpack libcomet / cannot delete a temporary native library " + tempLib);
-          }
-        }
-        if (tempLibLock != null && tempLibLock.exists()) {
-          if (!tempLibLock.delete()) {
-            LOG.error(
-                "Cannot unpack libcomet / cannot delete a temporary lock file " + tempLibLock);
-          }
-        }
-      } else {
-        tempLib.deleteOnExit();
-        tempLibLock.deleteOnExit();
-      }
+      throw new IllegalStateException("Cannot unpack libcomet", e);
     }
   }
 
@@ -175,6 +166,35 @@ public abstract class NativeBase {
       LOG.info("Using {} for native library logging", logConfPath);
     }
     init(logConfPath, logLevel);
+  }
+
+  /**
+   * Native code converts between instants and local time with the IANA timezone database that
+   * chrono-tz compiles into libcomet, while Spark uses the JVM's. When the two versions differ,
+   * local times in timezones whose rules changed between them can differ from Spark's.
+   */
+  private static void warnOnTzdataMismatch() {
+    try {
+      String warning =
+          tzdataMismatchWarning(getTzdataVersion(), ZoneRulesProvider.getVersions("UTC").lastKey());
+      if (warning != null) {
+        LOG.warn(warning);
+      }
+    } catch (Throwable t) {
+      LOG.debug("Could not compare timezone database versions", t);
+    }
+  }
+
+  /** The warning to log when native code and the JVM use different tzdata versions, or null. */
+  static String tzdataMismatchWarning(String nativeVersion, String jvmVersion) {
+    if (nativeVersion.equals(jvmVersion)) {
+      return null;
+    }
+    return String.format(
+        "Comet's native library uses timezone database %s, but the JVM uses %s. Local times that "
+            + "Comet computes natively can differ from Spark's in timezones whose rules changed "
+            + "between these versions.",
+        nativeVersion, jvmVersion);
   }
 
   private static void cleanupOldTempLibs() {
@@ -331,4 +351,23 @@ public abstract class NativeBase {
    * @return true if object_store can construct both a store and an object key for this URL
    */
   public static native boolean isObjectStoreSchemeSupported(String url);
+
+  /**
+   * The version of the IANA timezone database that native code uses, such as "2025b".
+   *
+   * @return the version compiled into libcomet
+   */
+  public static native String getTzdataVersion();
+
+  /**
+   * The comma-joined URL schemes the native Iceberg storage factory can open, for reads ({@code
+   * forWrite} false) or writes ({@code forWrite} true). This is the authoritative list the JVM
+   * Iceberg scan and write gates load, so the planner never hardcodes (and drifts from) the set the
+   * native factory actually builds. Opt-in S3-compliant alias schemes are not included; the JVM
+   * adds them from {@code fs.comet.s3Compliant.schemes}.
+   *
+   * @param forWrite true for the write path's schemes, false for the scan path's
+   * @return the supported schemes joined by commas, e.g. "file,memory,gs,s3,s3a"
+   */
+  public static native String icebergStorageSchemes(boolean forWrite);
 }

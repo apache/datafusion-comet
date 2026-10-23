@@ -45,14 +45,14 @@ use arrow::array::builder::{GenericStringBuilder, StringBuilder};
 use arrow::array::{
     new_null_array, BinaryBuilder, GenericByteArray, ListArray, MapArray, StringArray, StructArray,
 };
-use arrow::datatypes::{DataType, GenericBinaryType, Schema};
+use arrow::datatypes::{format_decimal_str, DataType, GenericBinaryType, Schema};
 use arrow::error::ArrowError;
 use arrow::{
     array::{
-        cast::AsArray, Array, ArrayRef, Int16Array, Int32Array, Int64Array, Int8Array,
-        OffsetSizeTrait,
+        cast::AsArray, types::Decimal128Type, Array, ArrayRef, Int16Array, Int32Array, Int64Array,
+        Int8Array, OffsetSizeTrait,
     },
-    compute::{cast_with_options, CastOptions},
+    compute::{cast_with_options, rescale_decimal, CastOptions},
     record_batch::RecordBatch,
     util::display::FormatOptions,
 };
@@ -118,6 +118,41 @@ impl Cast {
             query_context,
         }
     }
+
+    /// Whether the cast cannot fail for any value, in any eval mode, and costs little more than
+    /// reading its input: a cast to the child's own type, from NULL, or to a wider number.
+    /// `cast_array` rejects a dictionary target first.
+    pub(crate) fn is_infallible(&self, input_schema: &Schema) -> bool {
+        use DataType::*;
+        let Ok(from) = self.child.data_type(input_schema) else {
+            return false;
+        };
+        !matches!(self.data_type, Dictionary(_, _))
+            && (from == self.data_type
+                || from == Null
+                || matches!(
+                    (&from, &self.data_type),
+                    (Int8, Int16 | Int32 | Int64 | Float32 | Float64)
+                        | (Int16, Int32 | Int64 | Float32 | Float64)
+                        | (Int32, Int64 | Float32 | Float64)
+                        | (Int64, Float32 | Float64)
+                        | (Float32, Float64)
+                ))
+    }
+
+    /// Whether the cast cannot fail for any value: what [`Self::is_infallible`] accepts, and a cast
+    /// from a string to an integer in LEGACY or TRY mode, which returns NULL for a string it cannot
+    /// parse. Parsing costs far more per row than those casts.
+    pub(crate) fn cannot_fail(&self, input_schema: &Schema) -> bool {
+        use DataType::*;
+        self.is_infallible(input_schema)
+            || (self
+                .child
+                .data_type(input_schema)
+                .is_ok_and(|from| matches!(from, Utf8 | LargeUtf8))
+                && matches!(self.data_type, Int8 | Int16 | Int32 | Int64)
+                && self.cast_options.eval_mode != EvalMode::Ansi)
+    }
 }
 
 /// Spark cast options
@@ -129,8 +164,6 @@ pub struct SparkCastOptions {
     /// session local timezone by an analyzer in Spark.
     // TODO we should change timezone to Tz to avoid repeated parsing
     pub timezone: String,
-    /// Allow casts that are supported but not guaranteed to be 100% compatible
-    pub allow_incompat: bool,
     /// True when running against Spark 4.0+. Enables version-specific cast behaviour
     /// such as the handling of leading whitespace before T-prefixed time-only strings.
     pub is_spark4_plus: bool,
@@ -146,11 +179,10 @@ pub struct SparkCastOptions {
 }
 
 impl SparkCastOptions {
-    pub fn new(eval_mode: EvalMode, timezone: &str, allow_incompat: bool) -> Self {
+    pub fn new(eval_mode: EvalMode, timezone: &str) -> Self {
         Self {
             eval_mode,
             timezone: timezone.to_string(),
-            allow_incompat,
             is_spark4_plus: false,
             allow_cast_unsigned_ints: false,
             is_adapting_schema: false,
@@ -159,11 +191,10 @@ impl SparkCastOptions {
         }
     }
 
-    pub fn new_without_timezone(eval_mode: EvalMode, allow_incompat: bool) -> Self {
+    pub fn new_without_timezone(eval_mode: EvalMode) -> Self {
         Self {
             eval_mode,
             timezone: "".to_string(),
-            allow_incompat,
             is_spark4_plus: false,
             allow_cast_unsigned_ints: false,
             is_adapting_schema: false,
@@ -172,15 +203,10 @@ impl SparkCastOptions {
         }
     }
 
-    pub fn new_with_version(
-        eval_mode: EvalMode,
-        timezone: &str,
-        allow_incompat: bool,
-        is_spark4_plus: bool,
-    ) -> Self {
+    pub fn new_with_version(eval_mode: EvalMode, timezone: &str, is_spark4_plus: bool) -> Self {
         Self {
             is_spark4_plus,
-            ..Self::new(eval_mode, timezone, allow_incompat)
+            ..Self::new(eval_mode, timezone)
         }
     }
 }
@@ -280,6 +306,38 @@ pub(crate) fn cast_array(
         }
         (Utf8 | LargeUtf8, Decimal256(precision, scale)) => {
             cast_string_to_decimal(&array, to_type, precision, scale, eval_mode)
+        }
+        (Decimal128(input_precision, input_scale), Decimal128(output_precision, output_scale))
+            if eval_mode == EvalMode::Ansi =>
+        {
+            cast_with_options(&array, to_type, &native_cast_options).map_err(|error| {
+                array
+                    .as_primitive::<Decimal128Type>()
+                    .iter()
+                    .flatten()
+                    .find(|value| {
+                        rescale_decimal::<Decimal128Type, Decimal128Type>(
+                            *value,
+                            *input_precision,
+                            *input_scale,
+                            *output_precision,
+                            *output_scale,
+                        )
+                        .is_none()
+                    })
+                    .map_or_else(
+                        || error.into(),
+                        |value| SparkError::NumericValueOutOfRange {
+                            value: format_decimal_str(
+                                &value.to_string(),
+                                *input_precision as usize,
+                                *input_scale,
+                            ),
+                            precision: *output_precision,
+                            scale: *output_scale,
+                        },
+                    )
+            })
         }
         (Int64, Int32)
         | (Int64, Int16)
@@ -718,8 +776,12 @@ impl PhysicalExpr for Cast {
     }
 
     fn evaluate(&self, batch: &RecordBatch) -> DataFusionResult<ColumnarValue> {
-        let arg = self.child.evaluate(batch)?;
-        let result = spark_cast(arg, &self.data_type, &self.cast_options);
+        // `CometIntegralDivide` builds its inner `CheckOverflow` without an expression id, so a
+        // bare child `SparkError` deliberately inherits the outer Cast's query context here.
+        let result = self
+            .child
+            .evaluate(batch)
+            .and_then(|arg| spark_cast(arg, &self.data_type, &self.cast_options));
 
         // If there's an error and we have query_context, wrap it
         match result {
@@ -874,7 +936,9 @@ fn cast_binary_to_string<O: OffsetSizeTrait>(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use arrow::array::{BinaryArray, ListArray, NullArray, PrimitiveArray, StringArray};
+    use arrow::array::{
+        BinaryArray, Decimal128Array, ListArray, NullArray, PrimitiveArray, StringArray,
+    };
     use arrow::buffer::OffsetBuffer;
     use arrow::datatypes::{Field, Fields, Int32Type, TimestampMicrosecondType};
 
@@ -883,13 +947,64 @@ mod tests {
         let error = cast_array(
             Arc::new(StringArray::from(vec!["a"])),
             &DataType::Dictionary(Box::new(DataType::Int32), Box::new(DataType::Utf8)),
-            &SparkCastOptions::new(EvalMode::Legacy, "UTC", false),
+            &SparkCastOptions::new(EvalMode::Legacy, "UTC"),
         )
         .unwrap_err();
 
         assert!(error
             .to_string()
             .contains("Spark cannot specify dictionary types as cast targets"));
+    }
+
+    #[test]
+    fn test_cast_decimal_to_decimal_ansi_overflow_returns_spark_error() {
+        let cases = [
+            (
+                vec![None, Some(1), Some(-123_456_789)],
+                DataType::Decimal128(10, 4),
+                DataType::Decimal128(6, 2),
+                "-12345.6789",
+                6,
+                2,
+            ),
+            (
+                vec![None, Some(1), Some(-999)],
+                DataType::Decimal128(3, 0),
+                DataType::Decimal128(3, 2),
+                "-999",
+                3,
+                2,
+            ),
+        ];
+
+        for (values, input_type, output_type, expected_value, expected_precision, expected_scale) in
+            cases
+        {
+            let input: ArrayRef =
+                Arc::new(Decimal128Array::from(values).with_data_type(input_type));
+            let error = cast_array(
+                input,
+                &output_type,
+                &SparkCastOptions::new_without_timezone(EvalMode::Ansi),
+            )
+            .unwrap_err();
+
+            match error {
+                DataFusionError::External(error) => match error.downcast_ref::<SparkError>() {
+                    Some(SparkError::NumericValueOutOfRange {
+                        value,
+                        precision,
+                        scale,
+                    }) => {
+                        assert_eq!(value, expected_value);
+                        assert_eq!(*precision, expected_precision);
+                        assert_eq!(*scale, expected_scale);
+                    }
+                    other => panic!("expected NumericValueOutOfRange, got {other:?}"),
+                },
+                other => panic!("expected external SparkError, got {other:?}"),
+            }
+        }
     }
 
     #[test]
@@ -905,7 +1020,7 @@ mod tests {
             Some(&[0xEDu8, 0xA0, 0x80][..]),
         ]);
         // binary_output_style defaults to None, i.e. the plain (non-ToPrettyString) cast path.
-        let cast_options = SparkCastOptions::new(EvalMode::Legacy, "UTC", false);
+        let cast_options = SparkCastOptions::new(EvalMode::Legacy, "UTC");
 
         let result = cast_binary_to_string::<i32>(&input, &cast_options).unwrap();
 
@@ -929,7 +1044,7 @@ mod tests {
             Some("abc".as_bytes()),
             Some(&[0xEDu8, 0xA0, 0x80][..]),
         ]);
-        let mut cast_options = SparkCastOptions::new(EvalMode::Legacy, "UTC", false);
+        let mut cast_options = SparkCastOptions::new(EvalMode::Legacy, "UTC");
         cast_options.binary_output_style = Some(BinaryOutputStyle::Utf8);
 
         let result = cast_binary_to_string::<i32>(&input, &cast_options).unwrap();
@@ -951,7 +1066,7 @@ mod tests {
             Some(b"hi".as_slice()),
         ]));
         let cast = |style: Option<BinaryOutputStyle>| {
-            let mut options = SparkCastOptions::new(EvalMode::Legacy, "UTC", false);
+            let mut options = SparkCastOptions::new(EvalMode::Legacy, "UTC");
             options.binary_output_style = style;
             let result = spark_cast(
                 ColumnarValue::Array(Arc::clone(&input)),
@@ -1015,7 +1130,7 @@ mod tests {
             None,
             Some("héllo".as_bytes()),
         ]));
-        let options = SparkCastOptions::new(EvalMode::Legacy, "UTC", false);
+        let options = SparkCastOptions::new(EvalMode::Legacy, "UTC");
         let result = spark_cast(
             ColumnarValue::Array(Arc::clone(&input)),
             &DataType::Utf8,
@@ -1034,7 +1149,7 @@ mod tests {
     fn test_cast_unsupported_timestamp_to_date() {
         // Since datafusion uses chrono::Datetime internally not all dates representable by TimestampMicrosecondType are supported
         let timestamps: PrimitiveArray<TimestampMicrosecondType> = vec![i64::MAX].into();
-        let cast_options = SparkCastOptions::new(EvalMode::Legacy, "UTC", false);
+        let cast_options = SparkCastOptions::new(EvalMode::Legacy, "UTC");
         let result = cast_array(
             Arc::new(timestamps.with_timezone("Europe/Copenhagen")),
             &DataType::Date32,
@@ -1046,7 +1161,7 @@ mod tests {
     #[test]
     fn test_cast_invalid_timezone() {
         let timestamps: PrimitiveArray<TimestampMicrosecondType> = vec![i64::MAX].into();
-        let cast_options = SparkCastOptions::new(EvalMode::Legacy, "Not a valid timezone", false);
+        let cast_options = SparkCastOptions::new(EvalMode::Legacy, "Not a valid timezone");
         let result = cast_array(
             Arc::new(timestamps.with_timezone("Europe/Copenhagen")),
             &DataType::Date32,
@@ -1072,7 +1187,7 @@ mod tests {
         let string_array = cast_array(
             c,
             &DataType::Utf8,
-            &SparkCastOptions::new(EvalMode::Legacy, "UTC", false),
+            &SparkCastOptions::new(EvalMode::Legacy, "UTC"),
         )
         .unwrap();
         let string_array = string_array.as_string::<i32>();
@@ -1106,7 +1221,7 @@ mod tests {
         let cast_array = spark_cast(
             ColumnarValue::Array(c),
             &DataType::Struct(fields),
-            &SparkCastOptions::new(EvalMode::Legacy, "UTC", false),
+            &SparkCastOptions::new(EvalMode::Legacy, "UTC"),
         )
         .unwrap();
         if let ColumnarValue::Array(cast_array) = cast_array {
@@ -1144,7 +1259,7 @@ mod tests {
         let result = spark_cast(
             ColumnarValue::Array(outer),
             &DataType::Struct(to_fields),
-            &SparkCastOptions::new(EvalMode::Ansi, "UTC", false),
+            &SparkCastOptions::new(EvalMode::Ansi, "UTC"),
         );
 
         assert!(result.is_err());
@@ -1169,7 +1284,7 @@ mod tests {
         let cast_array = spark_cast(
             ColumnarValue::Array(c),
             &DataType::Struct(fields),
-            &SparkCastOptions::new(EvalMode::Legacy, "UTC", false),
+            &SparkCastOptions::new(EvalMode::Legacy, "UTC"),
         )
         .unwrap();
         if let ColumnarValue::Array(cast_array) = cast_array {
@@ -1195,11 +1310,9 @@ mod tests {
             Arc::new(values_array),
             None,
         ));
-        let string_array = cast_array_to_string(
-            &list_array,
-            &SparkCastOptions::new(EvalMode::Legacy, "UTC", false),
-        )
-        .unwrap();
+        let string_array =
+            cast_array_to_string(&list_array, &SparkCastOptions::new(EvalMode::Legacy, "UTC"))
+                .unwrap();
         let string_array = string_array.as_string::<i32>();
         assert_eq!(r#"[a, b, c]"#, string_array.value(0));
         assert_eq!(r#"[a, null]"#, string_array.value(1));
@@ -1218,11 +1331,9 @@ mod tests {
             Arc::new(values_array),
             None,
         ));
-        let string_array = cast_array_to_string(
-            &list_array,
-            &SparkCastOptions::new(EvalMode::Legacy, "UTC", false),
-        )
-        .unwrap();
+        let string_array =
+            cast_array_to_string(&list_array, &SparkCastOptions::new(EvalMode::Legacy, "UTC"))
+                .unwrap();
         let string_array = string_array.as_string::<i32>();
         assert_eq!(r#"[1, 2, 3]"#, string_array.value(0));
         assert_eq!(r#"[1, null]"#, string_array.value(1));
@@ -1245,7 +1356,7 @@ mod tests {
         let to_array = cast_array(
             from_array,
             &to_type,
-            &SparkCastOptions::new(EvalMode::Legacy, "UTC", false),
+            &SparkCastOptions::new(EvalMode::Legacy, "UTC"),
         )
         .unwrap();
 
@@ -1259,7 +1370,7 @@ mod tests {
         assert!(values.iter().all(|value| value.is_none()));
     }
     fn legacy_opts() -> SparkCastOptions {
-        SparkCastOptions::new(EvalMode::Legacy, "UTC", false)
+        SparkCastOptions::new(EvalMode::Legacy, "UTC")
     }
 
     /// Build a `Map<Utf8, Int32>` MapArray (Parquet-style "key_value" field names).
@@ -1423,7 +1534,7 @@ mod tests {
         let casted = cast_array(
             map_array,
             &to_type,
-            &SparkCastOptions::new(EvalMode::Legacy, "UTC", false),
+            &SparkCastOptions::new(EvalMode::Legacy, "UTC"),
         )
         .unwrap();
 

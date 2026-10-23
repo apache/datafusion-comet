@@ -83,10 +83,13 @@ pub fn create_store(
         source: "Missing bucket name in S3 URL".into(),
     })?;
 
-    // Parquet path: catalog_properties is empty; vendors here read from Hadoop conf.
-    let empty_props: HashMap<String, String> = HashMap::new();
     let credentials = match lookup_provider_class(configs, bucket) {
         Some(provider_class) => {
+            // Parquet path: forward the full fs.s3a.* config subset so the SPI provider sees the
+            // same config Spark would (e.g. the built-in adapters read fs.s3a.aws.credentials.provider
+            // and any static keys a chain resolves through). Only built when a bridge is actually
+            // configured. See s3-credential-provider-design.md.
+            let forwarded_props = forward_catalog_properties(configs);
             // Fail rather than fall back to the default chain, which could resolve to the wrong
             // identity for a user who explicitly named a provider.
             let bridge = CometS3CredentialBridge::new(
@@ -95,7 +98,7 @@ pub fn create_store(
                 bucket,
                 url.path(),
                 AccessMode::Read,
-                &empty_props,
+                &forwarded_props,
             )
             .map_err(|e| object_store::Error::Generic {
                 store: "S3",
@@ -186,7 +189,8 @@ impl S3StoreTemplate {
     fn build(&self, credentials: S3Credentials) -> Result<AmazonS3, object_store::Error> {
         let builder = AmazonS3Builder::new()
             .with_url(self.url.clone())
-            .with_allow_http(true);
+            .with_allow_http(true)
+            .with_http_connector(super::http_metrics::ScanHttpConnector);
         let mut builder = match credentials {
             S3Credentials::Provider(provider) => builder.with_credentials(provider),
             S3Credentials::SkipSignature => builder.with_skip_signature(true),
@@ -433,6 +437,32 @@ pub(super) fn get_config_trimmed<'a>(
     get_config(configs, bucket, property).map(|s| s.trim())
 }
 
+/// Every `fs.s3a.*` property suffix (without the `fs.s3a.` prefix) this module resolves via
+/// [`get_config`]/[`get_config_trimmed`], i.e. every Hadoop S3A config key native's S3 client
+/// actually reads. `#[cfg(test)]`-only.
+///
+/// SYNC NOTE: a new call site means adding its property here and `fs.s3a.<property>` to
+/// `S3ConfigKeyConsumers` in
+/// `contrib/delta-spark/src/main/scala/org/apache/comet/contrib/delta/DeltaScanSupport.scala`.
+/// `native_s3a_config_properties_matches_call_sites` keeps this list equal to the call sites,
+/// `delta_contrib_compares_every_native_s3a_property` checks the Scala block covers it, and
+/// `DeltaScanContribSuite` checks it against the compiled `AllS3ConfigKeys`.
+#[cfg(test)]
+pub(super) const NATIVE_S3A_CONFIG_PROPERTIES: &[&str] = &[
+    "endpoint.region",
+    "path.style.access",
+    "endpoint",
+    "requester.pays.enabled",
+    "comet.credential.provider.class",
+    "aws.credentials.provider",
+    "access.key",
+    "secret.key",
+    "session.token",
+    "assumed.role.credentials.provider",
+    "assumed.role.arn",
+    "assumed.role.session.name",
+];
+
 /// Activation key (without `fs.s3a.` prefix) naming the vendor `CometS3CredentialProvider` FQCN.
 /// Per-bucket override is honored via [`get_config_trimmed`].
 const PROVIDER_CLASS_PROPERTY: &str = "comet.credential.provider.class";
@@ -442,6 +472,22 @@ fn lookup_provider_class<'a>(
     bucket: &str,
 ) -> Option<&'a str> {
     get_config_trimmed(configs, bucket, PROVIDER_CLASS_PROPERTY).filter(|s| !s.is_empty())
+}
+
+/// Builds the `catalog_properties` map forwarded to the SPI on the Parquet path: the full
+/// `fs.s3a.*` subset. This matches the Iceberg path, which forwards its full property bag, so an
+/// adapter delegating to Hadoop's provider construction sees exactly the config Spark would --
+/// including the static keys a provider chain may resolve through. Stripping them would let a
+/// chain like `SimpleAWSCredentialsProvider,customProvider` silently resolve through a different
+/// entry than Spark, reading data as a different principal. These keys already cross JNI for the
+/// non-adapter path (see `build_credential_provider`). HashMap equality is order-independent, so
+/// the dispatcher instance-cache key stays stable regardless of iteration order.
+fn forward_catalog_properties(configs: &HashMap<String, String>) -> HashMap<String, String> {
+    configs
+        .iter()
+        .filter(|(k, _)| k.starts_with("fs.s3a."))
+        .map(|(k, v)| (k.clone(), v.clone()))
+        .collect()
 }
 
 // Hadoop S3A credential provider constants
@@ -983,9 +1029,160 @@ impl CredentialProviderMetadata {
 
 #[cfg(test)]
 mod tests {
+    use std::collections::BTreeSet;
     use std::sync::atomic::{AtomicI32, Ordering};
 
     use super::*;
+
+    /// Discovery-harness test (see `NATIVE_S3A_CONFIG_PROPERTIES`'s doc): mechanically re-derives
+    /// the set of `fs.s3a.*` property suffixes this file actually resolves by scanning this
+    /// file's OWN source text (via `include_str!`) for every `get_config(configs, bucket, ...)`/
+    /// `get_config_trimmed(configs, bucket, ...)` call site, resolving an identifier argument
+    /// (e.g. `PROVIDER_CLASS_PROPERTY`) through its own `const NAME: &str = "..."` definition, and
+    /// asserts the result is EXACTLY `NATIVE_S3A_CONFIG_PROPERTIES`. This fails loudly the moment
+    /// a call site is added, removed, or its literal changes without updating that constant.
+    /// It guards against a config key read on one side of the Scala/Rust boundary but not
+    /// compared on the other, which lets Hadoop and native resolve that key differently.
+    ///
+    /// The `configs, property` call inside `get_config_trimmed`'s own body (a passthrough of its
+    /// own `property` parameter, not a call site naming a fixed config key) is deliberately
+    /// excluded by name.
+    #[test]
+    fn native_s3a_config_properties_matches_call_sites() {
+        let full_source = include_str!("s3.rs");
+        // Scan only the non-test portion of this file: the test module below (this very test)
+        // necessarily contains the pattern strings themselves as strings, which would otherwise
+        // make the scan match itself and capture garbage.
+        let test_mod_start = full_source
+            .find("#[cfg(test)]\nmod tests {")
+            .expect("this file must contain a `#[cfg(test)] mod tests {` block");
+        let source = &full_source[..test_mod_start];
+        let mut found: BTreeSet<String> = BTreeSet::new();
+
+        for pattern in [
+            "get_config_trimmed(configs, bucket, ",
+            "get_config(configs, bucket, ",
+        ] {
+            let mut search_start = 0usize;
+            while let Some(rel_idx) = source[search_start..].find(pattern) {
+                let start = search_start + rel_idx + pattern.len();
+                let end = start
+                    + source[start..]
+                        .find(')')
+                        .expect("unterminated get_config(_trimmed) call in source scan");
+                let arg = source[start..end].trim();
+                search_start = end + 1;
+
+                if arg == "property" {
+                    // get_config_trimmed's own passthrough of its `property` parameter -- not a
+                    // call site naming a fixed config key.
+                    continue;
+                }
+
+                let literal = if let Some(stripped) = arg.strip_prefix('"') {
+                    stripped
+                        .strip_suffix('"')
+                        .unwrap_or_else(|| panic!("malformed string literal argument: {arg}"))
+                        .to_string()
+                } else {
+                    // Identifier argument (e.g. PROVIDER_CLASS_PROPERTY): resolve via its own
+                    // `const NAME: &str = "value";` definition elsewhere in this file.
+                    let const_decl = format!("const {arg}: &str = \"");
+                    let decl_start = source.find(&const_decl).unwrap_or_else(|| {
+                        panic!(
+                            "no `const {arg}: &str = \"...\";` definition found for identifier \
+                             argument passed to get_config/get_config_trimmed -- update this \
+                             test's resolution logic or the source"
+                        )
+                    }) + const_decl.len();
+                    let decl_end = source[decl_start..]
+                        .find('"')
+                        .expect("unterminated const string literal")
+                        + decl_start;
+                    source[decl_start..decl_end].to_string()
+                };
+                found.insert(literal);
+            }
+        }
+
+        let expected: BTreeSet<String> = NATIVE_S3A_CONFIG_PROPERTIES
+            .iter()
+            .map(|s| s.to_string())
+            .collect();
+
+        assert_eq!(
+            found, expected,
+            "NATIVE_S3A_CONFIG_PROPERTIES must exactly match every property name passed to \
+             get_config/get_config_trimmed in this file -- update the constant (and keep \
+             DeltaScanSupport.scala's AllS3ConfigKeys in sync, see that constant's SYNC NOTE) \
+             when a call site changes"
+        );
+    }
+
+    /// Checks that the Delta contrib's `S3ConfigKeyConsumers` (`DeltaScanSupport.scala`) compares
+    /// every property in `NATIVE_S3A_CONFIG_PROPERTIES`, on every PR that touches native code
+    /// (the contrib suites do not). Parses the Scala block as text: each `"fs.s3a.<key>"`
+    /// literal followed by `->` up to the first `)`. `DeltaScanContribSuite` checks the same
+    /// parse against the compiled `AllS3ConfigKeys`.
+    #[test]
+    fn delta_contrib_compares_every_native_s3a_property() {
+        let path = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join(
+            "../../contrib/delta-spark/src/main/scala/org/apache/comet/contrib/delta/\
+             DeltaScanSupport.scala",
+        );
+        let scala = std::fs::read_to_string(&path)
+            .unwrap_or_else(|e| panic!("cannot read {}: {e}", path.display()));
+
+        let marker = "S3ConfigKeyConsumers: Seq[(String, S3ConfigConsumer)] = Seq(";
+        let start = scala.find(marker).unwrap_or_else(|| {
+            panic!(
+                "{} no longer declares `{marker}`: the block was renamed or reformatted, \
+                 update this parser and the matching one in DeltaScanContribSuite",
+                path.display()
+            )
+        }) + marker.len();
+        // No key literal contains a parenthesis, so the first `)` closes the `Seq(`.
+        let end = start
+            + scala[start..]
+                .find(')')
+                .expect("unterminated S3ConfigKeyConsumers Seq(");
+        let block = &scala[start..end];
+
+        let mut compared: BTreeSet<&str> = BTreeSet::new();
+        let opening = "\"fs.s3a.";
+        let mut pos = 0usize;
+        while let Some(rel) = block[pos..].find(opening) {
+            let key_start = pos + rel + 1;
+            let key_end = key_start
+                + block[key_start..]
+                    .find('"')
+                    .expect("unterminated key literal in S3ConfigKeyConsumers");
+            if block[key_end + 1..].trim_start().starts_with("->") {
+                compared.insert(&block[key_start..key_end]);
+            }
+            pos = key_end + 1;
+        }
+        assert!(
+            !compared.is_empty(),
+            "parsed no `\"fs.s3a.<key>\" -> <Tier>` pairs out of S3ConfigKeyConsumers in {}",
+            path.display()
+        );
+
+        let missing: Vec<String> = NATIVE_S3A_CONFIG_PROPERTIES
+            .iter()
+            .map(|p| format!("fs.s3a.{p}"))
+            .filter(|k| !compared.contains(k.as_str()))
+            .collect();
+        assert!(
+            missing.is_empty(),
+            "native reads {missing:?} but S3ConfigKeyConsumers in {} does not compare them. Add \
+             each with the tier matching how hadoop-aws reads it (LookupPasswordConsumer for \
+             S3AUtils#lookupPassword credentials, PropagatedOptionConsumer for a plain \
+             Configuration#get after propagateBucketOptions); a wrong tier compares the wrong \
+             Hadoop value.",
+            path.display()
+        );
+    }
 
     /// Test configuration builder for easier setup Hadoop configurations
     #[derive(Debug, Default)]
@@ -1151,6 +1348,71 @@ mod tests {
         assert_eq!(secret_key, Some("test_secret_key"));
         let session_token = get_config_trimmed(&configs, "test-bucket-2", "session.token");
         assert_eq!(session_token, Some("test_session_token"));
+    }
+
+    #[test]
+    fn test_forward_catalog_properties_forwards_fs_s3a_subset() {
+        let mut configs: HashMap<String, String> = HashMap::new();
+        configs.insert(
+            "fs.s3a.aws.credentials.provider".to_string(),
+            "com.amazonaws.auth.DefaultAWSCredentialsProviderChain".to_string(),
+        );
+        configs.insert("fs.s3a.endpoint".to_string(), "s3.example.com".to_string());
+        // The activation key itself must survive forwarding.
+        configs.insert(
+            format!("fs.s3a.{PROVIDER_CLASS_PROPERTY}"),
+            "org.apache.comet.cloud.s3.HadoopS3ACredentialProviderAdapter".to_string(),
+        );
+        // Static keys are forwarded too: a Hadoop provider chain may resolve through them, and
+        // stripping them would change which principal wins vs Spark.
+        configs.insert("fs.s3a.access.key".to_string(), "AK".to_string());
+        configs.insert("fs.s3a.secret.key".to_string(), "SK".to_string());
+        configs.insert("fs.s3a.session.token".to_string(), "ST".to_string());
+        configs.insert(
+            "fs.s3a.bucket.b.secret.key".to_string(),
+            "bucket-secret".to_string(),
+        );
+        // A non-fs.s3a key that can actually reach this bag (extractObjectStoreOptions also passes
+        // the fs.comet.* scheme keys) is dropped: the adapters read fs.s3a.* only.
+        configs.insert(
+            "fs.comet.s3Compliant.schemes".to_string(),
+            "blob".to_string(),
+        );
+
+        let forwarded = forward_catalog_properties(&configs);
+
+        assert!(forwarded.contains_key("fs.s3a.aws.credentials.provider"));
+        assert!(forwarded.contains_key("fs.s3a.endpoint"));
+        assert!(forwarded.contains_key(&format!("fs.s3a.{PROVIDER_CLASS_PROPERTY}")));
+        assert!(forwarded.contains_key("fs.s3a.access.key"));
+        assert!(forwarded.contains_key("fs.s3a.secret.key"));
+        assert!(forwarded.contains_key("fs.s3a.session.token"));
+        assert!(forwarded.contains_key("fs.s3a.bucket.b.secret.key"));
+        assert!(!forwarded.contains_key("fs.comet.s3Compliant.schemes"));
+    }
+
+    #[test]
+    fn test_empty_per_bucket_provider_class_opts_out() {
+        let adapter = "org.apache.comet.cloud.s3.HadoopS3ACredentialProviderAdapter";
+        let mut configs: HashMap<String, String> = HashMap::new();
+        configs.insert(
+            format!("fs.s3a.{PROVIDER_CLASS_PROPERTY}"),
+            adapter.to_string(),
+        );
+
+        // A bucket with no per-bucket override uses the globally configured adapter.
+        assert_eq!(
+            lookup_provider_class(&configs, "other-bucket"),
+            Some(adapter)
+        );
+
+        // An empty per-bucket value opts that bucket out, even though the global adapter is set, so
+        // the native reader resolves it directly (this is the documented anonymous opt-out).
+        configs.insert(
+            format!("fs.s3a.bucket.public-data.{PROVIDER_CLASS_PROPERTY}"),
+            "".to_string(),
+        );
+        assert_eq!(lookup_provider_class(&configs, "public-data"), None);
     }
 
     #[test]

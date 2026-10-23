@@ -21,9 +21,8 @@ package org.apache.comet
 
 import scala.util.Random
 
-import org.apache.spark.sql.{CometTestBase, Row}
+import org.apache.spark.sql.CometTestBase
 import org.apache.spark.sql.execution.adaptive.AdaptiveSparkPlanHelper
-import org.apache.spark.sql.types.{IntegerType, StructField, StructType}
 
 import org.apache.comet.CometSparkSessionExtensions.isSpark41Plus
 import org.apache.comet.testing.{DataGenOptions, FuzzDataGenerator, ParquetGenerator, SchemaGenOptions}
@@ -32,107 +31,23 @@ import org.apache.comet.udf.codegen.CometScalaUDFCodegen
 /**
  * Test suite for Spark `hash` (murmur3) and `xxhash64` compatibility between Spark and Comet.
  *
- * Native kernels are asserted for supported input shapes. Cases the native path declines
- * (`DecimalType` precision > 18, including nested, and `sha2` with a non-foldable `numBits`) must
- * stay in the Comet pipeline via the JVM codegen dispatcher. `TimeType` is out of scope for that
- * enrollment and falls the projection back to Spark.
+ * Native kernels are asserted for supported input shapes, including wide and nested decimals.
+ * `sha2` with a non-foldable `numBits` stays in the Comet pipeline via the JVM codegen dispatcher.
+ * `TimeType` is out of scope for that enrollment and falls the projection back to Spark.
  */
 class CometHashExpressionSuite
     extends CometTestBase
     with AdaptiveSparkPlanHelper
     with CometCodegenAssertions {
 
-  test("hash - boolean") {
-    withTable("t") {
-      sql("CREATE TABLE t(c BOOLEAN) USING parquet")
-      sql("INSERT INTO t VALUES (true), (false), (null)")
-      checkSparkAnswerAndOperator("SELECT c, hash(c), xxhash64(c) FROM t ORDER BY c")
-    }
-  }
-
-  test("hash - byte/tinyint") {
-    withTable("t") {
-      sql("CREATE TABLE t(c TINYINT) USING parquet")
-      sql("INSERT INTO t VALUES (1), (0), (-1), (127), (-128), (null)")
-      checkSparkAnswerAndOperator("SELECT c, hash(c), xxhash64(c) FROM t ORDER BY c")
-    }
-  }
-
-  test("hash - short/smallint") {
-    withTable("t") {
-      sql("CREATE TABLE t(c SMALLINT) USING parquet")
-      sql("INSERT INTO t VALUES (1), (0), (-1), (32767), (-32768), (null)")
-      checkSparkAnswerAndOperator("SELECT c, hash(c), xxhash64(c) FROM t ORDER BY c")
-    }
-  }
-
-  test("hash - int") {
-    withTable("t") {
-      sql("CREATE TABLE t(c INT) USING parquet")
-      sql("INSERT INTO t VALUES (1), (0), (-1), (2147483647), (-2147483648), (null)")
-      checkSparkAnswerAndOperator("SELECT c, hash(c), xxhash64(c) FROM t ORDER BY c")
-    }
-  }
-
-  test("hash - long/bigint") {
-    withTable("t") {
-      sql("CREATE TABLE t(c BIGINT) USING parquet")
-      sql(
-        "INSERT INTO t VALUES (1), (0), (-1), (9223372036854775807), (-9223372036854775808), (null)")
-      checkSparkAnswerAndOperator("SELECT c, hash(c), xxhash64(c) FROM t ORDER BY c")
-    }
-  }
-
-  test("hash - float") {
-    withTable("t") {
-      sql("CREATE TABLE t(c FLOAT) USING parquet")
-      sql("INSERT INTO t VALUES (1.0), (0.0), (-0.0), (-1.0), (3.14159), (null)")
-      checkSparkAnswerAndOperator("SELECT c, hash(c), xxhash64(c) FROM t ORDER BY c")
-    }
-  }
-
-  test("hash - double") {
-    withTable("t") {
-      sql("CREATE TABLE t(c DOUBLE) USING parquet")
-      sql("INSERT INTO t VALUES (1.0), (0.0), (-0.0), (-1.0), (3.14159265358979), (null)")
-      checkSparkAnswerAndOperator("SELECT c, hash(c), xxhash64(c) FROM t ORDER BY c")
-    }
-  }
-
-  test("hash - string") {
-    withTable("t") {
-      sql("CREATE TABLE t(c STRING) USING parquet")
-      sql("INSERT INTO t VALUES ('hello'), (''), ('Spark SQL'), ('苹果手机'), (null)")
-      checkSparkAnswerAndOperator("SELECT c, hash(c), xxhash64(c) FROM t ORDER BY c")
-    }
-  }
-
-  test("hash - binary") {
-    withTable("t") {
-      sql("CREATE TABLE t(c BINARY) USING parquet")
-      sql("INSERT INTO t VALUES (X''), (X'00'), (X'0102030405'), (null)")
-      checkSparkAnswerAndOperator("SELECT c, hash(c), xxhash64(c) FROM t ORDER BY c")
-    }
-  }
-
-  test("hash - date") {
-    withTable("t") {
-      sql("CREATE TABLE t(c DATE) USING parquet")
-      sql(
-        "INSERT INTO t VALUES (DATE '2023-01-01'), (DATE '1970-01-01'), (DATE '2000-12-31'), (null)")
-      checkSparkAnswerAndOperator("SELECT c, hash(c), xxhash64(c) FROM t ORDER BY c")
-    }
-  }
-
-  test("hash - timestamp") {
-    withTable("t") {
-      sql("CREATE TABLE t(c TIMESTAMP) USING parquet")
-      sql("""INSERT INTO t VALUES
-            (TIMESTAMP '2023-01-01 12:00:00'),
-            (TIMESTAMP '1970-01-01 00:00:00'),
-            (TIMESTAMP '2000-12-31 23:59:59'),
-            (null)""")
-      checkSparkAnswerAndOperator("SELECT c, hash(c), xxhash64(c) FROM t ORDER BY c")
+  private def checkNativeHashes(query: String): Unit = {
+    withSQLConf(CometConf.COMET_SCALA_UDF_CODEGEN_ENABLED.key -> "true") {
+      CometScalaUDFCodegen.resetStats()
+      checkSparkAnswerAndImpl(sql(query), native = Seq("hash", "xxhash64"))
+      val stats = CometScalaUDFCodegen.stats()
+      assert(
+        stats.compileCount + stats.cacheHitCount == 0,
+        s"unexpected dispatcher activity: $stats")
     }
   }
 
@@ -141,97 +56,64 @@ class CometHashExpressionSuite
       withTable("t") {
         sql(s"CREATE TABLE t(c DECIMAL($precision, $scale)) USING parquet")
         sql("INSERT INTO t VALUES (1.23), (-1.23), (0.0), (null)")
-        assertNativeHash("SELECT c, hash(c), xxhash64(c) FROM t ORDER BY c")
+        checkNativeHashes("SELECT c, hash(c), xxhash64(c) FROM t ORDER BY c")
       }
     }
   }
 
-  test("hash - decimal (precision 20, unscaled > 64-bit) routes through the codegen dispatcher") {
-    withTable("t") {
-      sql("CREATE TABLE t(c DECIMAL(20, 2)) USING parquet")
-      sql("""INSERT INTO t VALUES
-            (CAST('999999999999999999.99' AS DECIMAL(20, 2))),
-            (CAST('-999999999999999999.99' AS DECIMAL(20, 2))),
-            (0.0),
-            (null)""")
-      assertDispatchedHash("SELECT hash(c) FROM t")
-      assertDispatchedHash("SELECT xxhash64(c) FROM t")
-    }
-  }
-
-  test("hash - decimal (precision 38, unscaled > 64-bit) routes through the codegen dispatcher") {
-    withTable("t") {
-      sql("CREATE TABLE t(c DECIMAL(38, 10)) USING parquet")
-      sql("""INSERT INTO t VALUES
-            (CAST('9999999999999999999999999999.9999999999' AS DECIMAL(38, 10))),
-            (CAST('-9999999999999999999999999999.9999999999' AS DECIMAL(38, 10))),
-            (0.0),
-            (null)""")
-      assertDispatchedHash("SELECT hash(c) FROM t")
-      assertDispatchedHash("SELECT xxhash64(c) FROM t")
-    }
-  }
-
-  test("hash - multiple columns with a wide decimal uses split dispatcher codegen") {
-    withMultiArgumentWideDecimalTable {
-      // Spark checks the accumulated source length before adding each child to a code block.
-      // With threshold 1, the first materialized child already exceeds the threshold, so four
-      // children force HashExpression.doGenCode to emit helper methods that take InternalRow row.
-      // Scope the setting to this SELECT so fixture creation uses normal Spark codegen settings.
-      withSQLConf("spark.sql.codegen.methodSplitThreshold" -> "1") {
-        assertDispatchedHash(
-          "SELECT hash(c_str, c_int, c_ts, c_wide_dec) FROM multi_arg_wide_decimal_t")
+  test("hash - decimal (precision > 18)") {
+    Seq((19, 0), (20, 2), (38, 0), (38, 10), (38, 38)).foreach { case (precision, scale) =>
+      withTable("t") {
+        sql(s"CREATE TABLE t(c DECIMAL($precision, $scale)) USING parquet")
+        val max = BigInt(10).pow(precision) - 1
+        val unscaled = Seq(BigInt(0), max, -max) ++
+          Seq(1, 127, 128, 129, 255, 256, 32767, 32768).flatMap(v =>
+            Seq(BigInt(v), -BigInt(v))) ++
+          Seq(
+            BigInt(Long.MaxValue),
+            BigInt(Long.MaxValue) + 1,
+            BigInt(Long.MinValue),
+            BigInt(Long.MinValue) - 1)
+        val values = unscaled.map { v =>
+          val decimal = new java.math.BigDecimal(v.bigInteger, scale).toPlainString
+          s"(CAST('$decimal' AS DECIMAL($precision, $scale)))"
+        }
+        sql(s"INSERT INTO t VALUES ${(values :+ "(null)").mkString(",")}")
+        checkNativeHashes("SELECT c, hash(c), xxhash64(c) FROM t")
+        checkNativeHashes("SELECT hash(1, c, c), xxhash64(1, c, c) FROM t")
       }
     }
   }
 
-  test("xxhash64 - multiple columns with a wide decimal uses split dispatcher codegen") {
-    withMultiArgumentWideDecimalTable {
-      // See the hash test above. Successful execution also proves Janino compiled the split
-      // helpers with the dispatcher's `row` alias in both Spark 3.x and Spark 4.x profiles.
-      withSQLConf("spark.sql.codegen.methodSplitThreshold" -> "1") {
-        assertDispatchedHash(
-          "SELECT xxhash64(c_str, c_int, c_ts, c_wide_dec) FROM multi_arg_wide_decimal_t")
-      }
-    }
-  }
-
-  test("hash - array of decimal (precision > 18) routes through the codegen dispatcher") {
+  test("hash - array of decimal (precision > 18)") {
     withTable("t") {
-      sql("CREATE TABLE t(c ARRAY<DECIMAL(20, 2)>) USING parquet")
-      sql("""INSERT INTO t VALUES
-            (array(
-              CAST('999999999999999999.99' AS DECIMAL(20, 2)),
-              CAST(NULL AS DECIMAL(20, 2)),
-              CAST('-999999999999999999.99' AS DECIMAL(20, 2)))),
-            (null)""")
-      assertDispatchedHash("SELECT hash(c) FROM t")
-      assertDispatchedHash("SELECT xxhash64(c) FROM t")
+      sql("CREATE TABLE t(c ARRAY<DECIMAL(38, 0)>) USING parquet")
+      sql("""INSERT INTO t VALUES (array(127, 128, -128, -129)),
+          (array(99999999999999999999999999999999999999BD, null, -1)),
+          (array()), (array(null)), (null)""")
+      checkNativeHashes("SELECT hash(c), xxhash64(c), hash(1, c, c), xxhash64(1, c, c) FROM t")
     }
   }
 
-  test("hash - struct with decimal (precision > 18) routes through the codegen dispatcher") {
+  test("hash - struct with decimal (precision > 18)") {
     withTable("t") {
-      sql("CREATE TABLE t(c STRUCT<a: INT, b: DECIMAL(20, 2)>) USING parquet")
-      sql("""INSERT INTO t VALUES
-            (named_struct('a', 1, 'b', CAST('999999999999999999.99' AS DECIMAL(20, 2)))),
-            (named_struct('a', 1, 'b', CAST(NULL AS DECIMAL(20, 2)))),
-            (null)""")
-      assertDispatchedHash("SELECT hash(c) FROM t")
-      assertDispatchedHash("SELECT xxhash64(c) FROM t")
+      sql("CREATE TABLE t(c STRUCT<a: INT, b: DECIMAL(38, 2)>) USING parquet")
+      sql("""INSERT INTO t VALUES (named_struct('a', 1, 'b', 1.28)),
+          (named_struct('a', 2, 'b', -1.29)), (named_struct('a', null, 'b', null)),
+          (named_struct('a', 3, 'b', 999999999999999999999999999999999999.99BD)), (null)""")
+      checkNativeHashes("SELECT hash(c), xxhash64(c), hash(1, c, c), xxhash64(1, c, c) FROM t")
+      checkNativeHashes("SELECT hash(array(c, c)), xxhash64(array(c, c)) FROM t")
     }
   }
 
-  test("hash - map with decimal (precision > 18) value routes through the codegen dispatcher") {
+  test("hash - map with decimal (precision > 18) keys and values") {
     withSQLConf("spark.sql.legacy.allowHashOnMapType" -> "true") {
       withTable("t") {
-        sql("CREATE TABLE t(c MAP<STRING, DECIMAL(20, 2)>) USING parquet")
-        sql("""INSERT INTO t VALUES
-              (map('a', CAST('999999999999999999.99' AS DECIMAL(20, 2)))),
-              (map('a', CAST(NULL AS DECIMAL(20, 2)))),
-              (null)""")
-        assertDispatchedHash("SELECT hash(c) FROM t")
-        assertDispatchedHash("SELECT xxhash64(c) FROM t")
+        sql("CREATE TABLE t(c MAP<DECIMAL(38, 0), DECIMAL(38, 0)>) USING parquet")
+        sql("""INSERT INTO t VALUES (map(128, -129, -128, 127)),
+            (map(99999999999999999999999999999999999999BD, null)),
+            (map()), (null)""")
+        checkNativeHashes("SELECT hash(c), xxhash64(c), hash(1, c, c), xxhash64(1, c, c) FROM t")
       }
     }
   }
@@ -248,20 +130,6 @@ class CometHashExpressionSuite
         checkSparkAnswerAndFallbackReasons(
           "SELECT xxhash64(to_time(c)) FROM t",
           Set("`TimeType` is not supported"))
-      }
-    }
-  }
-
-  test("hash - wide decimal falls back when codegen dispatcher is disabled") {
-    withSQLConf(CometConf.COMET_SCALA_UDF_CODEGEN_ENABLED.key -> "false") {
-      withTable("t") {
-        sql("CREATE TABLE t(c DECIMAL(20, 2)) USING parquet")
-        sql("INSERT INTO t VALUES (1.23), (-1.23), (0.0), (null)")
-        checkSparkAnswerAndFallbackReasons(
-          "SELECT c, hash(c), xxhash64(c) FROM t ORDER BY c",
-          Set(
-            s"hash: ${CometConf.COMET_SCALA_UDF_CODEGEN_ENABLED.key}=false",
-            s"xxhash64: ${CometConf.COMET_SCALA_UDF_CODEGEN_ENABLED.key}=false"))
       }
     }
   }
@@ -383,100 +251,6 @@ class CometHashExpressionSuite
     }
   }
 
-  test("hash - null struct with a required child field") {
-    // `c` is nullable but its child is REQUIRED, so Spark writes
-    // `optional group c { required int32 a; }`. On read the child leaf has nowhere to record a
-    // null of its own, so its buffer holds a value at exactly the rows where the struct is null.
-    // That is the shape where the parent's null mask has to reach the children; a struct built in
-    // the plan, or one whose child is also nullable, has null children there and hides the bug.
-    withTempPath { dir =>
-      val schema = StructType(
-        Seq(
-          StructField(
-            "c",
-            StructType(Seq(StructField("a", IntegerType, nullable = false))),
-            nullable = true)))
-      withSQLConf(CometConf.COMET_ENABLED.key -> "false") {
-        val rows = Seq(Row(Row(1)), Row(null), Row(Row(3)), Row(null))
-        spark
-          .createDataFrame(spark.sparkContext.parallelize(rows), schema)
-          .coalesce(1)
-          .write
-          .parquet(dir.toString)
-      }
-      spark.read.parquet(dir.toString).createOrReplaceTempView("null_struct_t")
-      checkSparkAnswerAndOperator("SELECT hash(c), xxhash64(c) FROM null_struct_t ORDER BY 1, 2")
-    }
-  }
-
-  test("hash - null struct whose child is itself a struct") {
-    // The union has to recurse: the outer struct's nulls reach the inner struct, whose own
-    // children are required and so carry values under the null.
-    withTempPath { dir =>
-      val inner = StructType(Seq(StructField("x", IntegerType, nullable = false)))
-      val schema = StructType(
-        Seq(
-          StructField(
-            "c",
-            StructType(Seq(StructField("b", inner, nullable = false))),
-            nullable = true)))
-      withSQLConf(CometConf.COMET_ENABLED.key -> "false") {
-        val rows = Seq(Row(Row(Row(1))), Row(null), Row(Row(Row(3))), Row(null))
-        spark
-          .createDataFrame(spark.sparkContext.parallelize(rows), schema)
-          .coalesce(1)
-          .write
-          .parquet(dir.toString)
-      }
-      spark.read.parquet(dir.toString).createOrReplaceTempView("null_nested_struct_t")
-      checkSparkAnswerAndOperator(
-        "SELECT hash(c), xxhash64(c) FROM null_nested_struct_t ORDER BY 1, 2")
-    }
-  }
-
-  test("hash - list element wrapping a null struct with a required child field") {
-    // The per-element path in `hash_list_array!`, which #5567 made usable as a shuffle key.
-    //
-    // Wrapping the struct rather than using it as the element directly is what makes this
-    // reachable: `array(named_struct('tag', 1, 'b', c))` produces an element that is itself
-    // valid, so it is copied rather than rebuilt, and the null `c` inside it keeps the child
-    // values Parquet wrote under it. Using `c` as the element directly does not reproduce,
-    // because a null element is rebuilt on the way in and the hidden values go with it.
-    //
-    // So this covers a null struct nested inside a valid element. The unit test in murmur3.rs
-    // covers the complementary shape, where the element itself is the null struct.
-    withTempPath { dir =>
-      val schema = StructType(
-        Seq(
-          StructField(
-            "c",
-            StructType(Seq(StructField("a", IntegerType, nullable = false))),
-            nullable = true)))
-      withSQLConf(CometConf.COMET_ENABLED.key -> "false") {
-        val rows = Seq(Row(Row(1)), Row(null), Row(Row(3)), Row(null))
-        spark
-          .createDataFrame(spark.sparkContext.parallelize(rows), schema)
-          .coalesce(1)
-          .write
-          .parquet(dir.toString)
-      }
-      spark.read.parquet(dir.toString).createOrReplaceTempView("wrapped_null_struct_t")
-
-      checkSparkAnswerAndOperator("""
-        SELECT
-          hash(array(named_struct('tag', 1, 'b', c))),
-          xxhash64(array(named_struct('tag', 1, 'b', c)))
-        FROM wrapped_null_struct_t ORDER BY 1, 2""")
-
-      // Two elements, so the hash of the second chains onto the first.
-      checkSparkAnswerAndOperator("""
-        SELECT
-          hash(array(named_struct('tag', 1, 'b', c), named_struct('tag', 2, 'b', c))),
-          xxhash64(array(named_struct('tag', 1, 'b', c), named_struct('tag', 2, 'b', c)))
-        FROM wrapped_null_struct_t ORDER BY 1, 2""")
-    }
-  }
-
   test("hash - struct with array field") {
     withTable("t") {
       sql("CREATE TABLE t(c STRUCT<a: INT, b: ARRAY<STRING>>) USING parquet")
@@ -531,19 +305,6 @@ class CometHashExpressionSuite
     }
   }
 
-  test("hash - multiple primitive columns") {
-    withTable("t") {
-      sql("CREATE TABLE t(a INT, b STRING, c DOUBLE) USING parquet")
-      sql("""INSERT INTO t VALUES
-            (1, 'hello', 3.14),
-            (2, '', 0.0),
-            (null, null, null),
-            (-1, 'test', -1.5)""")
-      checkSparkAnswerAndOperator(
-        "SELECT hash(a, b, c), xxhash64(a, b, c), hash(c, b, a), xxhash64(c, b, a), hash(a), xxhash64(a), hash(b), xxhash64(b), hash(c), xxhash64(c) FROM t")
-    }
-  }
-
   test("hash - multiple columns with arrays") {
     withTable("t") {
       sql("CREATE TABLE t(a INT, b ARRAY<INT>, c STRING) USING parquet")
@@ -588,16 +349,6 @@ class CometHashExpressionSuite
     }
   }
 
-  test("hash - with custom seed") {
-    withTable("t") {
-      sql("CREATE TABLE t(c INT) USING parquet")
-      sql("INSERT INTO t VALUES (1), (2), (3), (null)")
-      // Extra integer arguments are hashed as additional children, not as the Spark seed.
-      checkSparkAnswerAndOperator(
-        "SELECT hash(c), xxhash64(c), hash(c, 0), xxhash64(c, 0), hash(c, 42), xxhash64(c, 42), hash(c, -1), xxhash64(c, -1) FROM t ORDER BY c")
-    }
-  }
-
   test("hash - large array") {
     withTable("t") {
       sql("CREATE TABLE t(c ARRAY<INT>) USING parquet")
@@ -622,19 +373,6 @@ class CometHashExpressionSuite
               array(named_struct('p', 10, 'q', 'foo'), named_struct('p', 20, 'q', 'bar'))))),
             (null)""")
       checkSparkAnswerAndOperator("SELECT c, hash(c), xxhash64(c) FROM t")
-    }
-  }
-
-  test("hash - with dictionary encoding") {
-    Seq(true, false).foreach { dictionary =>
-      withSQLConf("parquet.enable.dictionary" -> dictionary.toString) {
-        withTable("t") {
-          sql("CREATE TABLE t(c STRING) USING parquet")
-          // Repeated values to trigger dictionary encoding
-          sql("INSERT INTO t VALUES ('a'), ('b'), ('a'), ('b'), ('a'), ('c'), (null)")
-          checkSparkAnswerAndOperator("SELECT c, hash(c), xxhash64(c) FROM t ORDER BY c")
-        }
-      }
     }
   }
 
@@ -724,31 +462,4 @@ class CometHashExpressionSuite
     assert(
       CometScalaUDFCodegen.stats().totalLookups == 0,
       s"expected native hash execution for $query, got ${CometScalaUDFCodegen.stats()}")
-  }
-
-  private def assertDispatchedHash(query: String): Unit = {
-    assertCodegenRan {
-      checkSparkAnswerAndOperator(query)
-    }
-  }
-
-  private def withMultiArgumentWideDecimalTable(f: => Unit): Unit = {
-    withTable("multi_arg_wide_decimal_t") {
-      sql("""CREATE TABLE multi_arg_wide_decimal_t(
-            c_str STRING,
-            c_int INT,
-            c_ts TIMESTAMP,
-            c_wide_dec DECIMAL(38, 10))
-            USING parquet""")
-      sql("""INSERT INTO multi_arg_wide_decimal_t VALUES
-            ('alpha', 1, TIMESTAMP '2023-01-01 12:00:00',
-              CAST('9999999999999999999999999999.9999999999' AS DECIMAL(38, 10))),
-            ('beta', -7, TIMESTAMP '1970-01-01 00:00:01',
-              CAST('-9999999999999999999999999999.9999999999' AS DECIMAL(38, 10))),
-            ('gamma', 42, TIMESTAMP '2000-12-31 23:59:59',
-              CAST('12345678901234567890.1234567890' AS DECIMAL(38, 10))),
-            (NULL, NULL, NULL, NULL)""")
-      f
-    }
-  }
-}
+  }}

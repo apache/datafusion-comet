@@ -82,7 +82,7 @@ Native aggregates with grouping keys report these additional metrics:
 | `number of spills`                   | Number of times the aggregate spilled to disk.                                                                                               |
 | `total spilled bytes`                | Bytes written to aggregate spill files.                                                                                                      |
 | `number of spilled rows`             | Rows written to aggregate spill files.                                                                                                       |
-| `peak native aggregate memory`       | Peak memory used by the native aggregate.                                                                                                    |
+| `peak native aggregate memory`       | Peak memory used by the native aggregate. Not currently reported ([#5703](https://github.com/apache/datafusion-comet/issues/5703)).          |
 
 Spill bytes from native sorts, aggregates, and sort-merge joins are also added to Spark's task-level
 `diskBytesSpilled` metric in every stage, not only in shuffle stages.
@@ -93,19 +93,50 @@ With `spark.comet.exec.join.dynamicFilter.enabled=true`, native broadcast and sh
 report these additional metric keys. See [Join Runtime Filters](tuning/operators.md#join-runtime-filters) for
 eligibility and reader restrictions.
 
-| Metric                                 | Description                                                       |
-| -------------------------------------- | ----------------------------------------------------------------- |
-| `dynamic_filter_join_rows_evaluated`   | Probe rows evaluated by the runtime filter.                       |
-| `dynamic_filter_join_rows_pruned`      | Probe rows rejected by that filter before the hash probe.         |
-| `dynamic_filter_join_rows_bypassed`    | Probe rows passed through while the runtime filter is inactive.   |
-| `dynamic_filter_join_eval_time`        | Time evaluating the runtime filter.                               |
-| `dynamic_filter_join_filters_attached` | Executions that attach their runtime filter to a native reader.   |
-| `dynamic_filter_join_filters_skipped`  | Executions whose probe input is ineligible for reader attachment. |
+| Metric                                 | Description                                                                                                   |
+| -------------------------------------- | ------------------------------------------------------------------------------------------------------------- |
+| `dynamic_filter_join_rows_evaluated`   | Probe rows evaluated by the runtime filter.                                                                   |
+| `dynamic_filter_join_rows_pruned`      | Probe rows rejected by that filter before the hash probe.                                                     |
+| `dynamic_filter_join_rows_bypassed`    | Probe rows passed through while the runtime filter is inactive.                                               |
+| `dynamic_filter_join_eval_time`        | Time evaluating the runtime filter.                                                                           |
+| `dynamic_filter_join_filters_attached` | Executions that attach their runtime filter to a native reader.                                               |
+| `dynamic_filter_join_filters_skipped`  | Executions whose probe input is ineligible for reader attachment.                                             |
+| `dynamic_filter_early_rows_evaluated`  | Rows evaluated before an intermediate join on this join's probe path.                                         |
+| `dynamic_filter_early_rows_pruned`     | Rows rejected there before the intermediate join does its probe work.                                         |
+| `dynamic_filter_early_rows_bypassed`   | Rows passed through while early filtering is inactive or has stopped after two nonempty all-matching batches. |
+| `dynamic_filter_early_eval_time`       | Time evaluating that early filter.                                                                            |
+
+See [early filtering in join chains](tuning/operators.md#early-filtering-in-join-chains)
+for placement and adaptive bypass behavior.
 
 The row counters measure residual filtering of decoded probe batches. They exclude rows skipped
 by the reader. An attached filter does not guarantee that any row groups are pruned: compare the
 probe scan's `bytes_scanned` and `row_groups_pruned_statistics` with filtering disabled to assess
 reader savings. Existing join, scan, and intervening filter metrics retain their own meanings.
+
+### Local TopK
+
+With `spark.comet.exec.topK.dynamicFilter.enabled=true`, eligible fused local TopK operators report
+these counters. See [TopK Reader Pruning](tuning/operators.md#topk-reader-pruning) for the required
+fusion option and reader restrictions.
+
+| Metric                                 | Description                                                                  |
+| -------------------------------------- | ---------------------------------------------------------------------------- |
+| `dynamic_filter_topk_filters_attached` | Executions that attach their live TopK threshold to a native Parquet reader. |
+| `dynamic_filter_topk_filters_skipped`  | Eligible TopK executions whose input cannot accept reader attachment.        |
+
+These counters belong to the local TopK. An attached predicate may prune nothing, and a file's
+schema adaptation can disable it to preserve conversion errors. Reader work remains on the scan:
+`output_rows` counts rows emitted by the scan, `bytes_scanned` measures requested data/Bloom-filter
+ranges (excluding footer and page-index reads), and page and decoder filtering use the existing
+`page_index_rows_pruned` and `pushdown_rows_pruned` counters.
+
+Row groups skipped by runtime pruning within a file increment `row_groups_pruned_dynamic_filter`.
+When later files open, the reader can prune using the TopK threshold already available; those groups
+increment `row_groups_pruned_statistics`. With one row group per file, the dynamic counter can remain
+zero even when TopK skips most later groups. The statistics counter also includes pruning by other
+predicates, so compare both counters and `bytes_scanned` with filtering disabled to assess TopK savings.
+This feature adds no separate decoded-batch filter or evaluated/pruned row counters to the TopK.
 
 ### Exchange
 
@@ -141,10 +172,24 @@ contributes again. Whether input slices arrive in one batch or separate batches 
 the accounting for identical spill boundaries. Other operators may still own the same buffers,
 so this measures memory released from shuffle buffering, not necessarily a drop in process memory.
 
+### Celeborn Shuffle
+
+With the currently released Celeborn 0.6.x and 0.7.x clients, shuffle uses Celeborn's existing
+Spark integration and reports its shuffle metrics in the Spark UI. Comet's operator metrics
+still apply to the other parts of the query that run in Comet.
+
+Spark's remote-read counters do not identify the storage destination: local shuffle files
+fetched from another executor also count as remote reads. See
+[Verifying the Shuffle Path](celeborn.md#verifying-the-shuffle-path) for plan and storage checks.
+
 ## Native Metrics
 
 Setting `spark.comet.explain.native.enabled=true` will cause native plans to be logged in each executor. Metrics are
-logged for each native plan (and there is one plan per task, so this is very verbose).
+logged for each native plan (and there is usually one plan per task, so this is very verbose).
+
+The SQL metrics that native plans report accumulate per task. When one task runs several native plans, such as a
+coalesce without a shuffle that reads several partitions, each metric reports their sum, while the two memory
+high-water marks, `peak_mem_used` and `build_mem_used`, report the largest value among them.
 
 Here is a guide to some of the native metrics.
 
@@ -185,11 +230,17 @@ execution metrics. Counters accumulate per scan operator; they do not instrument
 | `scan_io_object_store_response_bytes_read` | Response bytes actually consumed at that API, including bytes fetched between coalesced ranges. Not HTTP wire bytes.                                                                                                         |
 | `scan_io_metadata_cache_hits`              | Successful, cache-eligible metadata opens requiring no storage reads.                                                                                                                                                        |
 | `scan_io_metadata_cache_misses`            | Successful, cache-eligible metadata opens requiring storage reads. Failed opens and encrypted opens, which bypass this shared cache, increment neither cache counter.                                                        |
+| `scan_io_metadata_prefetches`              | Opens that used a load which read storage ahead of them, started when the previous file opened (`spark.comet.parquet.prefetchNextFileMetadata.enabled`). Each also counts as a cache miss.                                   |
+| `row_groups_pruned_dynamic_filter`         | Row groups skipped by a runtime predicate whose value changes during execution, such as a local TopK threshold.                                                                                                              |
 
 Reader-level and object-store bytes are two views of the same reads; do not add them together.
 Likewise, footer bytes are a subset of metadata bytes, not a third reader-level category. A warm
-metadata-cache hit contributes no new metadata or footer I/O. A valid plaintext footer followed by
-a page-index failure still contributes footer bytes; an invalid plaintext footer does not.
+metadata-cache hit contributes no new metadata or footer I/O. A prefetched load's footer and
+metadata bytes count when the prefetch reads them, so a prefetch that no open uses, because the
+scan stopped early or pruned the file before opening it, adds bytes with no matching cache miss and
+no `scan_io_metadata_prefetches`.
+A valid plaintext footer followed by a page-index failure still contributes footer bytes; an
+invalid plaintext footer does not.
 
 Remote counters follow the backend selected during object-store construction, including native
 S3 (`s3`/`s3a`), GCS (`gs`), Azure (`az`, `adl`, `azure`, `abfs`, `abfss`), and HTTP(S) stores.
@@ -204,6 +255,30 @@ coalescing and metadata overhead. For a metadata-only scan, data bytes are zero:
 metadata and remote totals instead of dividing by zero. Cancellation can leave late asynchronous
 work outside the final metric snapshot; these counters are not a guarantee of complete network
 traffic accounting after cancellation.
+
+### S3 HTTP attempts and retries
+
+Native Parquet scans of S3 paths also count the GETs observed by the HTTP connector and their
+retries, after range coalescing, without changing the retry policy:
+
+| Metric suffix        | Meaning                                              |
+| -------------------- | ---------------------------------------------------- |
+| `http_observed_gets` | GETs reaching the instrumented HTTP connector.       |
+| `http_retries`       | Calls after the first attempt for each observed GET. |
+
+The total number of HTTP attempts is `scan_io_http_observed_gets` plus `scan_io_http_retries`.
+Each scan counts only its own requests, even when scans share an S3 client.
+Retries include HTTP-status retries, interrupted-body resumes, and Comet's location-scoped
+re-routing after a permission error refreshes the credential locations. A nonzero retry count
+can therefore reflect stale location credentials as well as S3 throttling or network failures.
+HEAD requests, credential requests, bucket-region lookups, and redirects or protocol retries
+handled inside reqwest are not counted.
+
+Only scans using the native S3 connector fill these counters. GCS, Azure, HTTP(S), local, and
+HDFS scans always report zero, which does not mean their requests were never retried. This also
+applies to S3 paths routed through HDFS by `fs.comet.libhdfs.schemes`. For a native S3 scan,
+`scan_io_http_observed_gets` normally matches `scan_io_object_store_get_calls`, the number of
+GETs after range coalescing.
 
 ## Task-Level Input Metrics on Spark 4.1+
 

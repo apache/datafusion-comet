@@ -111,7 +111,7 @@ impl SparkMemory {
     pub(super) fn try_acquire(&self, size: usize) -> CometResult<Result<(), Refusal>> {
         let debt = self.overcommit.load(Relaxed);
         let request = size.saturating_add(debt);
-        let granted = granted(request, self.manager.acquire(request)?);
+        let granted = granted(request, self.ask_spark(request)?);
         if granted < request {
             if granted > 0 {
                 self.manager.release(granted)?;
@@ -135,7 +135,7 @@ impl SparkMemory {
     /// Acquires what Spark will grant toward `size` bytes and carries the rest as overcommit.
     /// Never fails; a failed call to Spark counts as a zero grant.
     pub(super) fn acquire(&self, size: usize) {
-        let granted = match self.manager.acquire(size) {
+        let granted = match self.ask_spark(size) {
             Ok(acquired) => granted(size, acquired),
             Err(e) => {
                 warn!(
@@ -163,12 +163,21 @@ impl SparkMemory {
         self.overcommit.load(Relaxed)
     }
 
+    /// Asks Spark for `size` bytes and returns how many it granted.
+    ///
+    /// Spark can block the call until other tasks release memory, so it runs in `block_in_place`.
+    /// On a Tokio worker that hands the worker's other tasks to another thread while the call
+    /// blocks, so they keep running. One of them may be what would release the memory, such as a
+    /// task of a released plan that only needs to be cancelled.
+    fn ask_spark(&self, size: usize) -> CometResult<i64> {
+        tokio::task::block_in_place(|| self.manager.acquire(size))
+    }
+
     /// Takes up to `size` bytes off the overcommit in one atomic step and returns how many.
     fn repay(&self, size: usize) -> usize {
         let debt = self
             .overcommit
-            .fetch_update(Relaxed, Relaxed, |debt| Some(debt.saturating_sub(size)))
-            .unwrap();
+            .update(Relaxed, Relaxed, |debt| debt.saturating_sub(size));
         debt.min(size)
     }
 }
@@ -362,5 +371,36 @@ mod tests {
         assert_eq!(granted(100, 40), 40);
         assert_eq!(granted(100, 150), 100);
         assert_eq!(granted(100, -1), 0);
+    }
+
+    /// Spark can block an acquire until another task releases memory, and Comet acquires on Tokio
+    /// workers. The worker's other tasks have to keep running meanwhile, since one of them may be
+    /// what would release the memory.
+    #[test]
+    fn a_blocked_acquire_leaves_its_worker_running_other_tasks() {
+        let runtime = tokio::runtime::Builder::new_multi_thread()
+            .worker_threads(1)
+            .build()
+            .unwrap();
+        let fake = FakeSpark::with(100);
+        let spark = Arc::new(fake.memory());
+        let (blocked_tx, blocked_rx) = std::sync::mpsc::channel();
+        let (released_tx, released_rx) = std::sync::mpsc::channel::<()>();
+        // Spark waits until a task that needs the only worker releases memory.
+        fake.during_next_acquire(move || {
+            blocked_tx.send(()).unwrap();
+            released_rx
+                .recv_timeout(std::time::Duration::from_secs(10))
+                .expect("the worker ran nothing else while the acquire blocked");
+        });
+        let acquiring = {
+            let spark = Arc::clone(&spark);
+            runtime.spawn(async move { spark.try_acquire(10) })
+        };
+        blocked_rx.recv().unwrap();
+        runtime.spawn(async move { released_tx.send(()).unwrap() });
+
+        assert_eq!(runtime.block_on(acquiring).unwrap().unwrap(), Ok(()));
+        assert_eq!(fake.held(), 10);
     }
 }

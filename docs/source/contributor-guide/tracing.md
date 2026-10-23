@@ -134,6 +134,7 @@ Arrow memory on the JVM side is reported separately, because it is off-heap and 
 `jvm_heap_used`. Comet imports batches from native over the Arrow C Data Interface, and Arrow
 charges a buffer to whichever allocator owns it, so those imports are taken against a dedicated
 child allocator and reported as `jvm_arrow_imported`, within the `jvm_arrow_allocated` total.
+The executor's periodic memory usage log reports the same two figures.
 
 Both are allocator charges. They report what each allocator is accountable for, not where the bytes
 were allocated, and their difference is not a bound on the Arrow memory the JVM allocated itself.

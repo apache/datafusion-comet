@@ -33,6 +33,9 @@ Cast operations in Comet fall into three levels of support:
 Incompatible and unsupported casts fall back to Spark only when Comet's codegen dispatcher cannot handle them (for
 example, casts involving `VariantType`) or when `spark.comet.exec.scalaUDF.codegen.enabled=false`.
 
+The tables at the end of this page cover casts between primitive types. See [Complex Types](#complex-types) for
+casts involving arrays, structs, and maps.
+
 ## ANSI Mode Support
 
 Enabling ANSI mode does not by itself make a cast fall back to Spark or require
@@ -42,21 +45,18 @@ level as in legacy mode. See the [ANSI Mode](#ansi-mode) table below for per-pai
 
 ## Whitespace Trimming in Casts from String
 
-Spark uses two different notions of whitespace when casting from string. Comet reproduces both,
-with one known exception noted below:
+Spark uses two different notions of whitespace when casting from string, and Comet reproduces
+both:
 
-| Trim set                               | Cast targets                                                              |
-| -------------------------------------- | ------------------------------------------------------------------------- |
-| Bytes `0x00`-`0x20` and `0x7F` (`DEL`) | `BOOLEAN`, `TINYINT`, `SMALLINT`, `INT`, `BIGINT`, `DATE`, `TIMESTAMP` \* |
-| Bytes `0x00`-`0x20` only               | `FLOAT`, `DOUBLE`, `DECIMAL`                                              |
+| Trim set                               | Cast targets                                                                            |
+| -------------------------------------- | --------------------------------------------------------------------------------------- |
+| Bytes `0x00`-`0x20` and `0x7F` (`DEL`) | `BOOLEAN`, `TINYINT`, `SMALLINT`, `INT`, `BIGINT`, `DATE`, `TIMESTAMP`, `TIMESTAMP_NTZ` |
+| Bytes `0x00`-`0x20` only               | `FLOAT`, `DOUBLE`, `DECIMAL`                                                            |
 
 Neither set includes any non-ASCII whitespace, so padding a value with `U+0085`, `U+00A0`,
 `U+1680`, `U+2000`-`U+200A`, `U+2028`, `U+2029`, `U+202F`, `U+205F` or `U+3000` produces `NULL`
 (or raises under ANSI mode), even though those codepoints are whitespace to Unicode. Whitespace
 inside a value is never trimmed.
-
-\* `CAST(string AS TIMESTAMP)` and `CAST(string AS TIMESTAMP_NTZ)` still trim Unicode whitespace
-in Comet; see [#5149](https://github.com/apache/datafusion-comet/issues/5149).
 
 ## String to Decimal
 
@@ -67,8 +67,11 @@ including:
   `java.lang.String.trim` that Spark applies before handing the value to `BigDecimal`.
 - Null bytes (`\u0000`) at the start or end of a string are therefore trimmed. Null bytes
   embedded in the middle of a string produce `NULL`.
-- Fullwidth Unicode digits (U+FF10–U+FF19, e.g. `１２３.４５`) are treated as their ASCII
-  equivalents, so `CAST('１２３.４５' AS DECIMAL(10,2))` returns `123.45`.
+- Non-ASCII decimal digits that Java's `BigDecimal` accepts, i.e. every Unicode `Nd` digit in
+  the Basic Multilingual Plane (fullwidth `１２３.４５`, Arabic-Indic `١٢٣`, Devanagari `१२३`,
+  ...), are treated as their ASCII equivalents in both the mantissa and the exponent, so
+  `CAST('١٢٣.٤٥' AS DECIMAL(10,2))` returns `123.45`. Digits outside the Basic Multilingual
+  Plane, such as U+1D7CE MATHEMATICAL BOLD DIGIT ZERO, are rejected as they are by Spark.
 - Scientific notation (e.g. `1.23E+5`) is supported.
 - Special values (`inf`, `infinity`, `nan`) produce `NULL`.
 
@@ -108,7 +111,8 @@ In Legacy mode, `CAST(date AS INT)`, `CAST(date AS LONG)`, and casts to all othe
 types (Boolean, Byte, Short, Float, Double, Decimal) always return `NULL`. Comet handles
 this by short-circuiting to a null literal during query planning, so no native execution
 is needed. In ANSI and Try modes, Spark rejects these casts at analysis time (before
-execution reaches Comet).
+execution reaches Comet). The short-circuit applies only to a top-level cast. See
+[Complex Types](#complex-types) for `DATE` values inside structs and maps.
 
 ## String to Timestamp
 
@@ -160,6 +164,65 @@ When `spark.sql.legacy.allowNegativeScaleOfDecimal=true`, the cast is compatible
 Spark's behavior of using Java `BigDecimal.toString()` semantics, which produces scientific
 notation (e.g. a value of 12300 stored as `Decimal(7,-2)` with unscaled value 123 is rendered
 as `"1.23E+4"`).
+
+## Decimal with Negative Scale to Integer and Timestamp
+
+Casting a `DecimalType` with a negative scale to `ByteType`, `ShortType`, `IntegerType`,
+`LongType` or `TimestampType` has no native implementation, and neither does casting any of the
+integer types to a negative-scale `DecimalType`. Comet reports these as unsupported, which
+routes them through the JVM codegen dispatcher (Spark's own generated code) inside the Comet
+pipeline, so the results match Spark exactly.
+
+The native kernels align scale by computing `10^|scale|` in fixed-point arithmetic, which
+overflows when the scale is negative. See
+[#5013](https://github.com/apache/datafusion-comet/issues/5013).
+
+All other cast directions to and from negative-scale decimals run natively: `FloatType` and
+`DoubleType`, `StringType` in both directions (subject to the config gate described above),
+casts from a negative-scale decimal to `BooleanType`, and widening to another `DecimalType`.
+Casts from `BooleanType` to a `DecimalType` route through the dispatcher at any scale, which is
+not specific to a negative one.
+
+## Complex Types
+
+Comet casts arrays, structs, and maps by casting each element, field, key, and value with the
+rules for primitive types, using the table for the same eval mode. A complex-type cast is
+therefore compatible only when every cast it contains is compatible. For example, casting
+`ARRAY<INT>` to `ARRAY<BIGINT>` has the same support level as casting `INT` to `BIGINT`, and a
+struct cast with one unsupported field cast is unsupported. The rules apply at every level of
+nesting, so casting `ARRAY<STRUCT<a: INT>>` to `ARRAY<STRUCT<a: BIGINT>>` also has the same
+support level as casting `INT` to `BIGINT`.
+
+| From        | To            | Support level                                                                |
+| ----------- | ------------- | ---------------------------------------------------------------------------- |
+| `ARRAY<T>`  | `ARRAY<U>`    | Same as `T` to `U`                                                           |
+| `ARRAY<T>`  | `STRING`      | Same as `T` to `STRING`                                                      |
+| `STRUCT`    | `STRUCT`      | Compatible if every field cast is compatible. Fields are matched by position |
+| `STRUCT`    | `STRING`      | Compatible if the cast from every field to `STRING` is compatible            |
+| `MAP<K, V>` | `MAP<K2, V2>` | Compatible if `K` to `K2` and `V` to `V2` are both compatible                |
+| `MAP<K, V>` | `STRING`      | Unsupported                                                                  |
+
+The following casts are exceptions to these rules:
+
+- `ARRAY<DATE>` can only be cast natively to `ARRAY<INT>` or `ARRAY<STRING>`. Casts to other array
+  types are unsupported.
+- A cast from a `DATE` struct field or map value to a numeric or boolean type is unsupported. In
+  Legacy mode these casts always return `NULL` (see [Date to Numeric Types](#date-to-numeric-types)).
+- When `spark.sql.legacy.castComplexTypesToString.enabled=true`, casts from arrays, structs, and
+  maps to `STRING` are unsupported, because Comet's native cast only produces Spark's default
+  string format.
+
+In Try mode, a cast between maps fails with an error when a key cannot be cast, where Spark returns
+a result ([#5995](https://github.com/apache/datafusion-comet/issues/5995)). This only affects key
+casts that Spark accepts under `TRY_CAST`, such as narrowing `BIGINT` to `INT`. Spark rejects a
+`STRING` key cast at analysis.
+
+## Decimal with Negative Scale to Integral Types
+
+Casting a `DecimalType` with a negative scale, which Spark only creates when
+`spark.sql.legacy.allowNegativeScaleOfDecimal=true`, to `ByteType`, `ShortType`, `IntegerType`
+or `LongType` is not supported natively in any eval mode. The native kernels divide by
+`10^scale`, which overflows for a negative scale, so Comet leaves the cast to Spark.
 
 ## Legacy Mode
 

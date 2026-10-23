@@ -15,7 +15,7 @@
 // specific language governing permissions and limitations
 // under the License.
 
-use crate::{arithmetic_overflow_error, EvalMode};
+use crate::{EvalMode, SparkError};
 use arrow::array::{
     as_primitive_array, cast::AsArray, Array, ArrayRef, ArrowNativeTypeOp, ArrowPrimitiveType,
     BooleanArray, Int64Array, PrimitiveArray,
@@ -30,6 +30,17 @@ use datafusion::logical_expr::{
     Accumulator, AggregateUDFImpl, EmitTo, GroupsAccumulator, ReversedUDAF, Signature,
 };
 use std::sync::Arc;
+
+/// Spark's integral `SUM` always returns `LONG` and adds through `Add` in both its update and
+/// merge expressions, so an ANSI overflow is reported by `MathUtils.addExact(Long, Long)` as a
+/// `long` overflow carrying the `try_add` suggestion.
+fn sum_overflow_error() -> DataFusionError {
+    SparkError::ArithmeticOverflow {
+        from_type: "long".to_string(),
+        function_name: "try_add".to_string(),
+    }
+    .into()
+}
 
 #[derive(Debug, PartialEq, Eq, Hash)]
 pub struct SumInteger {
@@ -199,9 +210,7 @@ impl Accumulator for SumIntegerAccumulatorAnsi {
                             int_array.value(i)
                         ))
                     })?;
-                    sum = v
-                        .add_checked(sum)
-                        .map_err(|_| DataFusionError::from(arithmetic_overflow_error("integer")))?;
+                    sum = v.add_checked(sum).map_err(|_| sum_overflow_error())?;
                 }
             }
             Ok(sum)
@@ -532,7 +541,7 @@ impl GroupsAccumulator for SumIntGroupsAccumulatorLegacy {
     }
 
     fn size(&self) -> usize {
-        std::mem::size_of_val(self)
+        self.sums.capacity() * std::mem::size_of::<Option<i64>>()
     }
 }
 
@@ -574,10 +583,12 @@ impl GroupsAccumulator for SumIntGroupsAccumulatorAnsi {
                     let v = int_array.value(i).to_i64().ok_or_else(|| {
                         DataFusionError::Internal("Failed to convert value to i64".to_string())
                     })?;
-                    sums[group_index] =
-                        Some(sums[group_index].unwrap_or(0).add_checked(v).map_err(|_| {
-                            DataFusionError::from(arithmetic_overflow_error("integer"))
-                        })?);
+                    sums[group_index] = Some(
+                        sums[group_index]
+                            .unwrap_or(0)
+                            .add_checked(v)
+                            .map_err(|_| sum_overflow_error())?,
+                    );
                 }
             }
             Ok(())
@@ -669,7 +680,7 @@ impl GroupsAccumulator for SumIntGroupsAccumulatorAnsi {
                     self.sums[group_index]
                         .unwrap()
                         .add_checked(that_sum)
-                        .map_err(|_| DataFusionError::from(arithmetic_overflow_error("integer")))?,
+                        .map_err(|_| sum_overflow_error())?,
                 );
             }
         }
@@ -685,7 +696,7 @@ impl GroupsAccumulator for SumIntGroupsAccumulatorAnsi {
     }
 
     fn size(&self) -> usize {
-        std::mem::size_of_val(self)
+        self.sums.capacity() * std::mem::size_of::<Option<i64>>()
     }
 }
 
@@ -893,7 +904,8 @@ impl GroupsAccumulator for SumIntGroupsAccumulatorTry {
     }
 
     fn size(&self) -> usize {
-        std::mem::size_of_val(self)
+        self.sums.capacity() * std::mem::size_of::<Option<i64>>()
+            + self.has_all_nulls.capacity() * std::mem::size_of::<bool>()
     }
 }
 
@@ -1016,5 +1028,78 @@ mod tests {
         ]));
         acc.merge_batch(&[states]).unwrap();
         assert_eq!(acc.evaluate().unwrap(), ScalarValue::Int64(Some(60)));
+    }
+
+    /// DataFusion sizes a grouped aggregate's memory reservation from `GroupsAccumulator::size()`,
+    /// so it has to include the per-group state, not just the struct holding the `Vec` headers.
+    fn assert_size_covers_group_state(acc: &mut dyn GroupsAccumulator, bytes_per_group: usize) {
+        const NUM_GROUPS: usize = 1_000_000;
+        let values: ArrayRef = Arc::new(Int64Array::from_iter_values(0..NUM_GROUPS as i64));
+        let group_indices: Vec<usize> = (0..NUM_GROUPS).collect();
+        acc.update_batch(&[values], &group_indices, None, NUM_GROUPS)
+            .unwrap();
+        assert!(
+            acc.size() >= NUM_GROUPS * bytes_per_group,
+            "size() reported {} bytes for {NUM_GROUPS} groups",
+            acc.size()
+        );
+    }
+
+    #[test]
+    fn test_legacy_size_counts_group_state() {
+        assert_size_covers_group_state(
+            &mut SumIntGroupsAccumulatorLegacy::new(),
+            std::mem::size_of::<Option<i64>>(),
+        );
+    }
+
+    #[test]
+    fn test_ansi_size_counts_group_state() {
+        assert_size_covers_group_state(
+            &mut SumIntGroupsAccumulatorAnsi::new(),
+            std::mem::size_of::<Option<i64>>(),
+        );
+    }
+
+    #[test]
+    fn test_try_size_counts_group_state() {
+        assert_size_covers_group_state(
+            &mut SumIntGroupsAccumulatorTry::new(),
+            std::mem::size_of::<Option<i64>>() + std::mem::size_of::<bool>(),
+        );
+    }
+
+    /// Spark reports an integral SUM overflow as `long overflow` with the `try_add` suggestion,
+    /// on the update and merge paths of both the scalar and the grouped ANSI accumulators.
+    #[test]
+    fn test_ansi_overflow_matches_spark_long_add() {
+        fn assert_spark_long_add_overflow(error: DataFusionError) {
+            let DataFusionError::External(error) = error else {
+                panic!("Expected structured Spark error, got {error:?}")
+            };
+            let error = error.downcast_ref::<SparkError>().unwrap();
+            let json: serde_json::Value = serde_json::from_str(&error.to_json()).unwrap();
+            assert_eq!(json["errorClass"], "ARITHMETIC_OVERFLOW");
+            assert_eq!(
+                json["params"],
+                serde_json::json!({"fromType": "long", "functionName": "try_add"})
+            );
+        }
+
+        for (first, second) in [(i64::MAX, 1), (i64::MIN, -1)] {
+            let batch = || -> ArrayRef { Arc::new(Int64Array::from(vec![first, second])) };
+
+            let mut acc = SumIntegerAccumulatorAnsi::new();
+            assert_spark_long_add_overflow(acc.update_batch(&[batch()]).unwrap_err());
+            let mut acc = SumIntegerAccumulatorAnsi::new();
+            assert_spark_long_add_overflow(acc.merge_batch(&[batch()]).unwrap_err());
+
+            let mut acc = SumIntGroupsAccumulatorAnsi::new();
+            assert_spark_long_add_overflow(
+                acc.update_batch(&[batch()], &[0, 0], None, 1).unwrap_err(),
+            );
+            let mut acc = SumIntGroupsAccumulatorAnsi::new();
+            assert_spark_long_add_overflow(acc.merge_batch(&[batch()], &[0, 0], 1).unwrap_err());
+        }
     }
 }

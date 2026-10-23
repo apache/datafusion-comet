@@ -154,6 +154,7 @@ $SPARK_HOME/bin/spark-submit \
     --conf spark.comet.enabled=true \
     --conf spark.comet.shuffle.enabled=true \
     --conf spark.comet.exec.forceShuffledHashJoin=true \
+    --conf spark.comet.exec.forceShuffledHashJoin.maxBuildSize=-1 \
     $DF_BENCH/runners/datafusion-comet/tpcbench.py \
     --benchmark tpch \
     --data $BENCH_DATA/ \
