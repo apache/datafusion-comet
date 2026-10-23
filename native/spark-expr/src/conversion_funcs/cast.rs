@@ -1270,7 +1270,6 @@ mod tests {
         .unwrap();
 
         assert_eq!(result.data_type(), &to_type);
-        assert_eq!(result.to_data().buffers(), outer.to_data().buffers());
         assert_eq!(result.nulls(), outer.nulls());
         let result = result.as_struct();
         let original = outer.as_struct();

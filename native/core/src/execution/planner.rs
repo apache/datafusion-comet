@@ -3662,27 +3662,6 @@ impl PhysicalPlanner {
         }
     }
 
-    /// Cast a min/max input to the aggregate's declared type. Native expressions such as
-    /// `struct(...)` can report nullable fields where Spark declares them non-nullable, and
-    /// DataFusion's `CastExpr` rejects that narrowing. Comet's `Cast` relabels the fields
-    /// instead, so the input matches the state that shuffle and scans stamp with Spark's type.
-    fn cast_min_max_child(
-        child: Arc<dyn PhysicalExpr>,
-        datatype: &DataType,
-    ) -> Arc<dyn PhysicalExpr> {
-        if matches!(datatype, DataType::Struct(_)) {
-            Arc::new(Cast::new(
-                child,
-                datatype.clone(),
-                SparkCastOptions::new_without_timezone(EvalMode::Legacy),
-                None,
-                None,
-            ))
-        } else {
-            Arc::new(CastExpr::new(child, datatype.clone(), None))
-        }
-    }
-
     /// Create a DataFusion windows physical expression from Spark physical expression
     fn create_window_expr<'a>(
         &'a self,
@@ -4262,6 +4241,27 @@ impl PhysicalPlanner {
             Ok(child)
         } else {
             Ok(Arc::new(CastExpr::new(child, widened, None)))
+        }
+    }
+
+    /// Cast a min/max input to the aggregate's declared type. Native expressions such as
+    /// `struct(...)` can report nullable fields where Spark declares them non-nullable, and
+    /// DataFusion's `CastExpr` rejects that narrowing. Comet's `Cast` relabels the fields
+    /// instead, so the input matches the state that shuffle and scans stamp with Spark's type.
+    fn cast_min_max_child(
+        child: Arc<dyn PhysicalExpr>,
+        datatype: &DataType,
+    ) -> Arc<dyn PhysicalExpr> {
+        if matches!(datatype, DataType::Struct(_)) {
+            Arc::new(Cast::new(
+                child,
+                datatype.clone(),
+                SparkCastOptions::new_without_timezone(EvalMode::Legacy),
+                None,
+                None,
+            ))
+        } else {
+            Arc::new(CastExpr::new(child, datatype.clone(), None))
         }
     }
 

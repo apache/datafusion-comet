@@ -1437,7 +1437,7 @@ object CometMode extends CometAggregateExpressionSerde[Mode] with CometTypeShim 
   }
 }
 
-object AggSerde {
+object AggSerde extends CometTypeShim {
   import org.apache.spark.sql.types._
 
   def minMaxDataTypeSupported(dt: DataType): Boolean = {
@@ -1493,19 +1493,34 @@ object AggSerde {
   }
 
   /**
-   * Why a leaf type of a struct cannot be compared natively, or None if it can. DataFusion orders
-   * floats with IEEE rules (NaN compares false) while Spark treats NaN as the largest value.
+   * DataFusion orders float NaN with IEEE rules while Spark treats NaN as the largest value. It
+   * also skips a null field when comparing two structs, while Spark orders null as the smallest
+   * value, so a struct is only Compatible when none of its fields (at any depth) can be null.
    */
-  private def structLeafUnsupportedReason(dt: DataType): Option[String] = dt match {
-    case FloatType | DoubleType =>
-      Some("a float or double field, which DataFusion orders differently for NaN")
-    case _: StringType if isStringCollationType(dt) =>
-      Some("a string field with a non-default collation")
-    case _: StringType | BinaryType => None
+  private def minMaxStructSupportLevel(st: StructType): SupportLevel = {
+    if (hasNonDefaultStringCollation(st)) {
+      Unsupported(Some(ComparisonUtils.nonDefaultCollationReason("min/max")))
+    } else if (SupportLevel.containsType(st, classOf[FloatType], classOf[DoubleType])) {
+      Unsupported(
+        Some(
+          "Struct min/max over a float or double field, which DataFusion orders differently" +
+            " for NaN"))
+    } else {
+      unsupportedStructLeaf(st) match {
+        case Some(dt) => Unsupported(Some(s"Struct min/max over a field of type $dt"))
+        case None if structHasNullableField(st) => Incompatible(Some(minMaxNullableStructReason))
+        case None => Compatible()
+      }
+    }
+  }
+
+  /** The first leaf type of a struct that native min/max cannot compare, if any. */
+  private def unsupportedStructLeaf(dt: DataType): Option[DataType] = dt match {
     case st: StructType =>
-      st.fields.toSeq.view.flatMap(f => structLeafUnsupportedReason(f.dataType)).headOption
+      st.fields.view.flatMap(f => unsupportedStructLeaf(f.dataType)).headOption
+    case _: StringType | BinaryType => None
     case _ if minMaxDataTypeSupported(dt) => None
-    case _ => Some(s"a field of type $dt")
+    case _ => Some(dt)
   }
 
   private def structHasNullableField(dt: DataType): Boolean = dt match {
@@ -1513,27 +1528,13 @@ object AggSerde {
     case _ => false
   }
 
-  /**
-   * DataFusion skips a null field when comparing two structs, while Spark orders null as the
-   * smallest value. The two can pick different rows, so a struct is only Compatible when none of
-   * its fields (at any depth) can be null. Otherwise it is opt-in.
-   */
-  private def minMaxStructSupportLevel(st: StructType): SupportLevel =
-    structLeafUnsupportedReason(st) match {
-      case Some(reason) => Unsupported(Some(s"Struct min/max over $reason"))
-      case None if structHasNullableField(st) =>
-        Incompatible(
-          Some(
-            "Struct min/max with nullable fields: DataFusion skips null fields when comparing," +
-              " Spark orders null as the smallest value"))
-      case None => Compatible()
-    }
+  private val minMaxNullableStructReason =
+    "Struct min/max with nullable fields (at any depth). DataFusion skips a null field when" +
+      " comparing structs, while Spark orders null as the smallest value, so the two can pick" +
+      " different rows when the deciding field is null."
 
   /** Reasons a struct min/max is not Compatible, for the generated compatibility guide. */
-  val minMaxIncompatibleReasons: Seq[String] = Seq(
-    "A struct with a nullable field (at any depth). DataFusion skips a null field when" +
-      " comparing structs, while Spark orders null as the smallest value, so the two can pick" +
-      " different rows when the deciding field is null.")
+  val minMaxIncompatibleReasons: Seq[String] = Seq(minMaxNullableStructReason)
 
   /** The inputs that `minMaxSupportLevel` rejects, for the generated compatibility guide. */
   val minMaxUnsupportedReasons: Seq[String] = Seq(
