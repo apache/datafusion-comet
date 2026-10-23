@@ -970,11 +970,14 @@ impl PhysicalPlanner {
                     Arc::clone(&input_schema),
                 )?;
 
+                let filter = BloomFilterMightContain::try_new(bloom_filter_expr)?;
+                if expr.null_short_circuit && filter.is_null() {
+                    return Ok(Arc::new(DataFusionLiteral::new(ScalarValue::Boolean(None))));
+                }
                 // We only provide the values as argument, the bloom filter is created only in plan time.
                 let value_expr = self.create_expr(expr.value.as_ref().unwrap(), input_schema)?;
                 let args = vec![value_expr];
-                let udf =
-                    ScalarUDF::new_from_impl(BloomFilterMightContain::try_new(bloom_filter_expr)?);
+                let udf = ScalarUDF::new_from_impl(filter);
 
                 let field_ref = Arc::new(Field::new("might_contain", DataType::Boolean, true));
                 let expr: ScalarFunctionExpr = ScalarFunctionExpr::new(
@@ -3908,6 +3911,68 @@ mod tests {
         assert_eq!("FilterExec", filter_exec.native_plan.name());
         assert_eq!(1, filter_exec.children.len());
         assert_eq!(0, filter_exec.additional_native_plans.len());
+    }
+
+    #[test]
+    fn null_bloom_filter_respects_shared_evaluation_authorization() {
+        use spark_expression::expr::ExprStruct;
+        let operand = |value| Expr {
+            expr_struct: Some(value),
+            ..Default::default()
+        };
+        let datatype = |type_id| spark_expression::DataType {
+            type_id,
+            ..Default::default()
+        };
+        let filter = operand(ExprStruct::Literal(spark_expression::Literal {
+            datatype: Some(datatype(
+                spark_expression::data_type::DataTypeId::Bytes as i32,
+            )),
+            is_null: true,
+            ..Default::default()
+        }));
+        let value = operand(ExprStruct::Cast(Box::new(spark_expression::Cast {
+            child: Some(Box::new(operand(ExprStruct::Literal(
+                spark_expression::Literal {
+                    value: Some(literal::Value::StringVal("bad".into())),
+                    datatype: Some(datatype(STRING_TYPE_ID)),
+                    ..Default::default()
+                },
+            )))),
+            datatype: Some(datatype(
+                spark_expression::data_type::DataTypeId::Int64 as i32,
+            )),
+            timezone: "UTC".into(),
+            eval_mode: spark_expression::EvalMode::Ansi as i32,
+            ..Default::default()
+        })));
+        for authorized in [false, true] {
+            let expression = operand(ExprStruct::BloomFilterMightContain(Box::new(
+                spark_expression::BloomFilterMightContain {
+                    bloom_filter: Some(Box::new(filter.clone())),
+                    value: Some(Box::new(value.clone())),
+                    null_short_circuit: authorized,
+                },
+            )));
+            let schema = Arc::new(Schema::empty());
+            let expression = PhysicalPlanner::default()
+                .create_expr(&expression, Arc::clone(&schema))
+                .unwrap();
+            let batch = RecordBatch::try_new_with_options(
+                schema,
+                vec![],
+                &arrow::record_batch::RecordBatchOptions::new().with_row_count(Some(1)),
+            )
+            .unwrap();
+            let output = expression.evaluate(&batch);
+            if authorized {
+                let array = output.unwrap().into_array(1).unwrap();
+                assert_eq!(array.null_count(), 1);
+                assert_eq!(array.data_type(), &DataType::Boolean);
+            } else {
+                assert!(output.is_err(), "Spark evaluates the shared failing cast");
+            }
+        }
     }
 
     /// Comparisons follow Spark's float ordering without normalizing their operands, except in the

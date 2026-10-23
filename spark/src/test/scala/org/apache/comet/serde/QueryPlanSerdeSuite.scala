@@ -21,7 +21,7 @@ package org.apache.comet.serde
 
 import org.scalatest.funsuite.AnyFunSuite
 
-import org.apache.spark.sql.catalyst.expressions.{ArrayContains, ArrayPosition, AttributeReference, Cast, Divide}
+import org.apache.spark.sql.catalyst.expressions.{ArrayContains, ArrayPosition, AttributeReference, BloomFilterMightContain, Cast, Divide, Literal}
 import org.apache.spark.sql.comet.DecimalPrecision
 import org.apache.spark.sql.internal.SQLConf
 import org.apache.spark.sql.types._
@@ -121,6 +121,31 @@ class QueryPlanSerdeSuite extends AnyFunSuite {
     withSharedSubexpressions(Seq(contains, position)) {
       assert(!canShortCircuitNulls(contains))
       assert(!canShortCircuitNulls(position))
+    }
+  }
+
+  test("Bloom NULL short circuit preserves shared ANSI evaluation") {
+    val input = AttributeReference("s", StringType)()
+    val cast = Cast(input, LongType)
+    val first = BloomFilterMightContain(Literal.create(null, BinaryType), cast)
+    val second = BloomFilterMightContain(Literal.create(null, NullType), cast)
+    def serialized = CometBloomFilterMightContain
+      .convert(first, Seq(input), binding = true)
+      .get
+      .getBloomFilterMightContain
+    assert(!serialized.getNullShortCircuit)
+    for (enabled <- Seq(false, true)) {
+      val conf = new SQLConf
+      conf.setConf(SQLConf.SUBEXPRESSION_ELIMINATION_ENABLED, enabled)
+      conf.setConf(SQLConf.ANSI_ENABLED, true)
+      SQLConf.withExistingConf(conf) {
+        withSharedSubexpressions(Seq(first)) {
+          assert(serialized.getNullShortCircuit)
+        }
+        withSharedSubexpressions(Seq(first, second)) {
+          assert(serialized.getNullShortCircuit == !enabled)
+        }
+      }
     }
   }
 

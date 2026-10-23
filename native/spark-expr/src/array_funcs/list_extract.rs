@@ -74,6 +74,10 @@ impl PartialEq for ListExtract {
 impl Eq for ListExtract {}
 
 impl ListExtract {
+    pub(crate) fn default_value(&self) -> Option<&Arc<dyn PhysicalExpr>> {
+        self.default_value.as_ref()
+    }
+
     pub fn new(
         child: Arc<dyn PhysicalExpr>,
         ordinal: Arc<dyn PhysicalExpr>,

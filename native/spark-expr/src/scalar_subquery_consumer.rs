@@ -65,11 +65,17 @@ impl ScalarSubqueryConsumer {
             return inner;
         }
         if let Some(properties) = consumer_properties(&inner) {
-            if properties.has_scalar_struct && (properties.constant || properties.bytes != 0) {
+            if properties.has_scalar_struct
+                && (properties.constant || properties.bytes != 0 || properties.unbounded_output)
+            {
                 return Arc::new(Self {
                     inner,
                     constant: properties.constant,
-                    max_rows: (SCALAR_INPUT_BYTES / properties.bytes.max(1)).max(1),
+                    max_rows: if properties.unbounded_output {
+                        1
+                    } else {
+                        (SCALAR_INPUT_BYTES / properties.bytes.max(1)).max(1)
+                    },
                 });
             }
         }
@@ -81,6 +87,7 @@ struct ConsumerProperties {
     constant: bool,
     has_scalar_struct: bool,
     bytes: usize,
+    unbounded_output: bool,
 }
 
 /// Explicitly recognize pure row-local trees. Unknown nodes and volatile functions cannot safely
@@ -94,6 +101,7 @@ fn consumer_properties(expr: &Arc<dyn PhysicalExpr>) -> Option<ConsumerPropertie
             constant: true,
             has_scalar_struct: true,
             bytes: variable_bytes(&value.to_data()),
+            unbounded_output: false,
         });
     }
     if let Some(literal) = expr.downcast_ref::<Literal>() {
@@ -107,6 +115,7 @@ fn consumer_properties(expr: &Arc<dyn PhysicalExpr>) -> Option<ConsumerPropertie
             constant: true,
             has_scalar_struct: matches!(literal.value(), ScalarValue::Struct(_)),
             bytes,
+            unbounded_output: false,
         });
     }
     // Spark materializes and registers this execution-context value before native execution.
@@ -116,6 +125,7 @@ fn consumer_properties(expr: &Arc<dyn PhysicalExpr>) -> Option<ConsumerPropertie
             constant: true,
             has_scalar_struct: false,
             bytes: 0,
+            unbounded_output: false,
         });
     }
     if expr.is::<Column>() {
@@ -123,6 +133,7 @@ fn consumer_properties(expr: &Arc<dyn PhysicalExpr>) -> Option<ConsumerPropertie
             constant: false,
             has_scalar_struct: false,
             bytes: 0,
+            unbounded_output: false,
         });
     }
     if let Some(expr) = expr.downcast_ref::<ScalarSubqueryConsumer>() {
@@ -168,12 +179,43 @@ fn consumer_properties(expr: &Arc<dyn PhysicalExpr>) -> Option<ConsumerPropertie
         constant: true,
         has_scalar_struct: false,
         bytes: 0,
+        // Input payload does not bound outputs such as repeat, padding, JSON or growing lists.
+        // Propagate this even from constant children: a row-dependent IF can select them for
+        // a whole batch before its parent reduces the result.
+        unbounded_output: expr
+            .downcast_ref::<ScalarFunctionExpr>()
+            .map(ScalarFunctionExpr::return_type)
+            .or_else(|| expr.downcast_ref::<Cast>().map(|cast| &cast.data_type))
+            .or_else(|| expr.downcast_ref::<CastExpr>().map(CastExpr::cast_type))
+            .is_some_and(|dt| {
+                matches!(
+                    dt,
+                    DataType::Utf8
+                        | DataType::LargeUtf8
+                        | DataType::Utf8View
+                        | DataType::Binary
+                        | DataType::LargeBinary
+                        | DataType::BinaryView
+                ) || dt.is_nested()
+            })
+            || expr.is::<ToJson>()
+            || expr.is::<ToCsv>()
+            || expr.is::<FromJson>()
+            || expr.is::<ArrayInsert>()
+            || expr.is::<SparkArraysZipFunc>()
+            || expr
+                .downcast_ref::<ListExtract>()
+                .is_some_and(|e| e.default_value().is_some()),
     };
-    for child in expr.children() {
+    let default_value = expr
+        .downcast_ref::<ListExtract>()
+        .and_then(ListExtract::default_value);
+    for child in expr.children().into_iter().chain(default_value) {
         let child = consumer_properties(child)?;
         properties.constant &= child.constant;
         properties.has_scalar_struct |= child.has_scalar_struct;
         properties.bytes = properties.bytes.saturating_add(child.bytes);
+        properties.unbounded_output |= child.unbounded_output;
     }
     // Membership stops when the entire batch has matched. Only constant membership can
     // change batch boundaries without changing evaluation of later ANSI-error candidates.

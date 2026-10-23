@@ -38,6 +38,7 @@ object CometBloomFilterMightContain extends CometExpressionSerde[BloomFilterMigh
       val builder = ExprOuterClass.BloomFilterMightContain.newBuilder()
       builder.setBloomFilter(bloomFilterExpr.get)
       builder.setValue(valueExpr.get)
+      builder.setNullShortCircuit(QueryPlanSerde.canShortCircuitNulls(expr))
       Some(
         ExprOuterClass.Expr
           .newBuilder()

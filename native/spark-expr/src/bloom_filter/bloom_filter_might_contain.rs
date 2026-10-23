@@ -33,6 +33,10 @@ pub struct BloomFilterMightContain {
 }
 
 impl BloomFilterMightContain {
+    pub fn is_null(&self) -> bool {
+        self.bloom_filter.is_none()
+    }
+
     pub fn try_new(bloom_filter_expr: Arc<dyn PhysicalExpr>) -> Result<Self> {
         // early evaluate the bloom_filter_expr to get the actual bloom filter
         let bloom_filter = evaluate_bloom_filter(&bloom_filter_expr)?;

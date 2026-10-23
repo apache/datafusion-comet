@@ -3448,6 +3448,76 @@ class CometExecSuite extends CometTestBase {
     }
   }
 
+  test("NULL merged scalar Bloom filter skips an ANSI join key") {
+    withSQLConf(
+      SQLConf.ADAPTIVE_EXECUTION_ENABLED.key -> "false",
+      SQLConf.SUBQUERY_REUSE_ENABLED.key -> "true",
+      SQLConf.AUTO_BROADCASTJOIN_THRESHOLD.key -> "-1",
+      SQLConf.ANSI_ENABLED.key -> "true",
+      "spark.sql.optimizer.runtime.bloomFilter.enabled" -> "true",
+      "spark.sql.optimizer.runtime.bloomFilter.applicationSideScanSizeThreshold" -> "0",
+      "spark.sql.optimizer.runtime.bloomFilter.creationSideThreshold" -> "10485760",
+      SQLConf.SHUFFLE_PARTITIONS.key -> "1") {
+      withTempPath { dir =>
+        withTempView("dim", "fact") {
+          val dim = s"${dir.getCanonicalPath}/dim"
+          val fact = s"${dir.getCanonicalPath}/fact"
+          spark.range(100).selectExpr("id", "'drop' AS v").coalesce(1).write.parquet(dim)
+          Seq("bad").toDF("s").coalesce(1).write.parquet(fact)
+          spark.read.parquet(dim).createOrReplaceTempView("dim")
+          spark.read.parquet(fact).createOrReplaceTempView("fact")
+          Seq(false, true).foreach { shared =>
+            withSQLConf(SQLConf.SUBEXPRESSION_ELIMINATION_ENABLED.key -> shared.toString) {
+              val query = """
+                |SELECT fact.s,
+                |       (SELECT percentile(id, 0.5) FROM dim
+                |        WHERE v = 'keep' AND id IS NOT NULL) AS p
+                |FROM fact JOIN dim ON COALESCE(CAST(fact.s AS BIGINT), 0L) = dim.id
+                |WHERE dim.v = 'keep'
+                |""".stripMargin
+              withSQLConf(CometConf.COMET_ENABLED.key -> "false") {
+                checkAnswer(sql(query), Seq.empty)
+              }
+              checkSparkAnswerAndOperator(sql(query), Seq(classOf[CometFilterExec]))
+            }
+          }
+        }
+      }
+    }
+  }
+
+  test("scalar struct expanding intermediate remains bounded through IF") {
+    withSQLConf(
+      SQLConf.ADAPTIVE_EXECUTION_ENABLED.key -> "false",
+      SQLConf.SUBQUERY_REUSE_ENABLED.key -> "true",
+      CometConf.COMET_BATCH_SIZE.key -> "8192") {
+      withTempPath { dir =>
+        withTempView("src", "outer_rows") {
+          val src = s"${dir.getCanonicalPath}/src"
+          val outer = s"${dir.getCanonicalPath}/outer"
+          Seq("x").toDF("s").coalesce(1).write.parquet(src)
+          spark.range(8192).coalesce(1).write.parquet(outer)
+          spark.read.parquet(src).createOrReplaceTempView("src")
+          spark.read.parquet(outer).createOrReplaceTempView("outer_rows")
+          val df = sql("""
+            |SELECT id,
+            |       octet_length(IF(id >= 0, repeat((SELECT max(s) FROM src), 262144),
+            |                       'small')) AS l,
+            |       (SELECT min(s) FROM src) AS lo
+            |FROM outer_rows
+            |""".stripMargin)
+          assert(
+            df.queryExecution.optimizedPlan.exists(_.expressions.exists(_.exists {
+              case GetStructField(_: LogicalScalarSubquery, _, _) => true
+              case _ => false
+            })),
+            df.queryExecution.optimizedPlan.toString)
+          checkSparkAnswerAndOperator(df, Seq(classOf[CometProjectExec]))
+        }
+      }
+    }
+  }
+
   test("large merged scalar fields are consumed before broadcast") {
     val numRows = 8192
     val bytes = 262144

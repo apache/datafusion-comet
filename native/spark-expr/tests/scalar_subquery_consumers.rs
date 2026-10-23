@@ -60,6 +60,47 @@ fn large_scalar_struct_field_is_consumed_before_broadcast() {
     assert_eq!(result.as_ref(), &Int32Array::from(vec![bytes as i32; 8192]));
 }
 
+#[test]
+fn expanding_constant_child_is_consumed_before_its_conditional_broadcasts() {
+    use datafusion::logical_expr::Operator;
+    use datafusion::physical_expr::expressions::{BinaryExpr, Column};
+    use datafusion_comet_spark_expr::IfExpr;
+    use datafusion_functions::string::repeat::RepeatFunc;
+
+    let repeated = ScalarSubqueryConsumer::wrap(Arc::new(ScalarFunctionExpr::new(
+        "repeat",
+        Arc::new(ScalarUDF::new_from_impl(RepeatFunc::new())),
+        vec![
+            field(ScalarValue::Utf8(Some("x".into()))),
+            Arc::new(Literal::new(ScalarValue::Int64(Some(262144)))),
+        ],
+        Arc::new(Field::new("repeat", DataType::Utf8, true)),
+        Arc::new(ConfigOptions::default()),
+    )));
+    for threshold in [0, 4096, 8192] {
+        let predicate = Arc::new(BinaryExpr::new(
+            Arc::new(Column::new("id", 0)),
+            Operator::GtEq,
+            Arc::new(Literal::new(ScalarValue::Int64(Some(threshold)))),
+        ));
+        let selected = ScalarSubqueryConsumer::wrap(Arc::new(IfExpr::new(
+            predicate,
+            Arc::clone(&repeated),
+            Arc::new(Literal::new(ScalarValue::Utf8(Some("small".into())))),
+        )));
+        let output = ScalarSubqueryConsumer::wrap(octet(selected))
+            .evaluate(&batch(8192))
+            .unwrap()
+            .into_array(8192)
+            .unwrap();
+        let expected =
+            Int32Array::from_iter_values(
+                (0..8192).map(|id| if id >= threshold { 262144 } else { 5 }),
+            );
+        assert_eq!(output.as_ref(), &expected);
+    }
+}
+
 fn field(value: ScalarValue) -> Arc<dyn PhysicalExpr> {
     let fields = vec![Field::new("value", value.data_type(), true)].into();
     Arc::new(GetStructField::new(
