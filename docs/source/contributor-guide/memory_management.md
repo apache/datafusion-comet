@@ -110,12 +110,24 @@ for both at once, and raises the pod's memory request by the same amount.
 **Comet's JVM-side Arrow allocator is unbounded and accounted by nobody.** `CometArrowAllocator`
 (`spark/src/main/scala/org/apache/comet/package.scala`) is a single process-wide
 `new RootAllocator(Long.MaxValue)`. Child allocators are cut from it for FFI stream export
-(`CometNativeArrowSource`), broadcast coalescing, and `CometSparkToColumnarExec`. These are real
-off-heap bytes in container RSS that neither Spark's `TaskMemoryManager` nor Comet's native memory
-pool sees. In practice the volume is modest, a batch at a time per stream, but there is no
-ceiling and no backpressure. The executor's memory usage log reports the allocator's total, and
-the part of it charged to the import allocator described below, so that the overhead can be sized
-for it.
+(`CometNativeArrowSource`), broadcast coalescing, the decoded broadcasts that an executor's tasks
+share (`SharedDecode`), and `CometSparkToColumnarExec`. These are real off-heap bytes in
+container RSS that neither Spark's `TaskMemoryManager` nor Comet's native memory pool sees. In
+practice the volume is modest, a batch at a time per stream, but there is no ceiling and no
+backpressure. A broadcast is the largest case: a task that reads one holds all of it decoded, and
+the tasks of an executor that read it at the same time share one such copy. The executor's memory
+usage log reports the allocator's total, and the part of it charged to the import allocator
+described below, so that the overhead can be sized for it.
+
+Sharing lowers the bytes that are resident, not the bytes that are reserved. Each task's native
+join reserves its whole build side, because DataFusion skips only the buffers that the same plan
+has already counted, so with N tasks sharing one copy the pool holds N times the bytes that are
+resident, and spilling behaves as it did before. The memory usage log's untracked figure,
+`allocated + jvmArrow.allocatedByJvm - reserved`, subtracts all N reservations while counting the
+one copy in `jvmArrow`, so it undercounts by the difference while tasks share a broadcast. With 8
+tasks sharing a 100 MB build side the shared copy is 100 MB and `reserved` includes 800 MB for
+it, and the figure falls by 700 MB, which can hide other untracked memory in the log and in the
+limit warning, or clamp it to zero.
 
 Charging these buffers to Spark's off-heap pool instead was tried in
 [#5998](https://github.com/apache/datafusion-comet/pull/5998) and dropped. Spark cannot make
@@ -155,6 +167,7 @@ flowchart LR
     CACHE["ArrowCachedBatchSerializer"]
     PY["CometArrowPythonRunnerBase"]
     BC["Utils broadcast-coalesce"]
+    DBC["SharedDecode<br>broadcasts shared by tasks"]
   end
 
   ROOT["CometArrowAllocator<br>RootAllocator, no limit<br>no allocation listener"]
@@ -171,6 +184,7 @@ flowchart LR
   CACHE --> ROOT
   PY --> ROOT
   BC --> ROOT
+  DBC --> ROOT
   ROOT --> NOBODY
   SHUF --> TMM
   NPOOL -->|"CometTaskMemoryManager over JNI"| TMM
@@ -521,8 +535,9 @@ diverge for several structural reasons:
   so that the log counts it as untracked: like an undeclared allocation, it needs room beyond what
   Spark has handed out. Tracing's `comet_memory_reserved_total` still includes it.
 
-The practical consequence is that `reserved()` is a lower bound on Comet's real footprint, and the
-gap is workload-dependent. The margin that covers it has to come from
+The practical consequence is that `reserved()` is a lower bound on Comet's real footprint, except
+while tasks share a decoded broadcast, which they reserve once each, and the gap is
+workload-dependent. The margin that covers it has to come from
 `spark.executor.memoryOverhead`. The deprecated `spark.comet.exec.memoryPool.fraction` cannot provide
 one; see [Where Comet's budget comes from](#where-comets-budget-comes-from).
 

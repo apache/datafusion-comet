@@ -43,7 +43,6 @@ import org.apache.spark.sql.execution.vectorized.{ConstantColumnVector, Writable
 import org.apache.spark.sql.types._
 import org.apache.spark.sql.vectorized.{ColumnarBatch, ColumnVector}
 import org.apache.spark.util.{SparkFatalException, Utils}
-import org.apache.spark.util.io.ChunkedByteBuffer
 
 import org.apache.comet.{CometConf, DirectColumnarToRowConverter}
 
@@ -126,7 +125,7 @@ case class CometColumnarToRowExec(child: SparkPlan)
         val numInputBatches = longMetric("numInputBatches")
         val localOutput = this.output
         val broadcastColumnar = child.executeBroadcast[Any]()
-        val serializedBatches = broadcastColumnar.value.asInstanceOf[Array[ChunkedByteBuffer]]
+        val serializedBatches = broadcastColumnar.value.asInstanceOf[CometBroadcastValue].chunks
         val batches = serializedBatches.iterator
           .flatMap(CometUtils.decodeBatches(_, this.getClass.getSimpleName))
         val rows = CometColumnarToRowExec.convertBatches(
