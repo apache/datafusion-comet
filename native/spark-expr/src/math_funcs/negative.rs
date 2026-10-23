@@ -99,32 +99,11 @@ impl NegativeExpr {
         if !data_type.is_signed_integer() {
             return false;
         }
-        match signed_integer_min(&data_type) {
-            // A null lower bound is unbounded below, so it reaches the minimum.
-            Some(min) => range.lower().is_null() || range.lower() <= &min,
-            // A signed integer width `signed_integer_min` does not list yet. Assume it wraps
-            // rather than claim an ordering the kernel could violate.
-            None => true,
-        }
+        // A null lower bound is unbounded below, so it reaches the minimum, where two's-complement
+        // negation maps the type onto itself.
+        ScalarValue::min(&data_type)
+            .is_none_or(|min| range.lower().is_null() || range.lower() <= &min)
     }
-}
-
-/// Two's-complement negation maps the minimum of a signed integer type onto itself, so
-/// wrapping negation is non-monotone over any range that reaches it. `None` for every other
-/// type: `neg_wrapping` wraps only the eight integer types and hands the rest to `neg`, which
-/// negates a float exactly and raises an error rather than wrapping for decimal, duration and
-/// interval.
-///
-/// Callers reach this only after `DataType::is_signed_integer`, so the arms below must stay in
-/// step with that predicate. A signed width missing from here is treated as wrapping.
-fn signed_integer_min(data_type: &DataType) -> Option<ScalarValue> {
-    Some(match data_type {
-        DataType::Int8 => ScalarValue::Int8(Some(i8::MIN)),
-        DataType::Int16 => ScalarValue::Int16(Some(i16::MIN)),
-        DataType::Int32 => ScalarValue::Int32(Some(i32::MIN)),
-        DataType::Int64 => ScalarValue::Int64(Some(i64::MIN)),
-        _ => return None,
-    })
 }
 
 impl std::fmt::Display for NegativeExpr {
@@ -603,64 +582,74 @@ mod tests {
         NegativeExpr::new(Arc::new(Column::new("a", 0)), fail_on_error).get_properties(&[child])
     }
 
-    /// Nulls are not moved by negation, so `nulls_first` carries over unflipped.
+    /// One `Int32` child per row. Nulls are not moved by negation, so `nulls_first` carries over
+    /// unflipped. In legacy mode a range reaching `i32::MIN` wraps and keeps neither claim, except
+    /// `Singleton`, since negation is a function. ANSI raises an error there instead of wrapping,
+    /// so it keeps the reversed ordering, though the reflection is not representable.
     #[test]
-    fn test_get_properties_reverses_child_ordering() {
-        for (child, expected) in [
-            (ordered(false, true), ordered(true, true)),
-            (ordered(true, false), ordered(false, false)),
-        ] {
-            let props =
-                negate_properties(child_properties(child, int32_interval(1, 10)), false).unwrap();
-            assert_eq!(props.sort_properties, expected);
-        }
-    }
-
-    #[test]
-    fn test_get_properties_negates_child_range() {
-        let props = negate_properties(
-            child_properties(SortProperties::Unordered, int32_interval(1, 10)),
-            false,
-        )
-        .unwrap();
-        assert_eq!(props.range, int32_interval(-10, -1));
-        assert!(!props.preserves_lex_ordering);
-    }
-
-    #[test]
-    fn test_legacy_get_properties_drops_ordering_when_range_holds_int_min() {
-        let props = negate_properties(
-            child_properties(ordered(false, true), int32_interval(i32::MIN, i32::MIN + 1)),
-            false,
-        )
-        .unwrap();
-        assert_eq!(props.sort_properties, SortProperties::Unordered);
-        assert_eq!(props.range, unbounded(&DataType::Int32));
-    }
-
-    #[test]
-    fn test_legacy_get_properties_reverses_ordering_when_range_excludes_int_min() {
-        let props = negate_properties(
-            child_properties(ordered(false, true), int32_interval(i32::MIN + 1, 10)),
-            false,
-        )
-        .unwrap();
-        assert_eq!(props.sort_properties, ordered(true, true));
-        assert_eq!(props.range, int32_interval(-10, i32::MAX));
-    }
-
-    #[test]
-    fn test_legacy_get_properties_keeps_a_singleton_child_singleton() {
-        let props = negate_properties(
-            child_properties(
-                SortProperties::Singleton,
-                int32_interval(i32::MIN, i32::MIN),
+    fn test_get_properties_over_int32_ranges() {
+        let unordered = SortProperties::Unordered;
+        let singleton = SortProperties::Singleton;
+        let full = unbounded(&DataType::Int32);
+        let cases = [
+            // (child sort, child range, ansi, sort, range)
+            (
+                ordered(false, true),
+                int32_interval(1, 10),
+                false,
+                ordered(true, true),
+                int32_interval(-10, -1),
             ),
-            false,
-        )
-        .unwrap();
-        assert_eq!(props.sort_properties, SortProperties::Singleton);
-        assert_eq!(props.range, unbounded(&DataType::Int32));
+            (
+                ordered(true, false),
+                int32_interval(1, 10),
+                false,
+                ordered(false, false),
+                int32_interval(-10, -1),
+            ),
+            (
+                unordered,
+                int32_interval(1, 10),
+                false,
+                unordered,
+                int32_interval(-10, -1),
+            ),
+            (
+                ordered(false, true),
+                int32_interval(i32::MIN, i32::MIN + 1),
+                false,
+                unordered,
+                full.clone(),
+            ),
+            (
+                ordered(false, true),
+                int32_interval(i32::MIN + 1, 10),
+                false,
+                ordered(true, true),
+                int32_interval(-10, i32::MAX),
+            ),
+            (
+                singleton,
+                int32_interval(i32::MIN, i32::MIN),
+                false,
+                singleton,
+                full.clone(),
+            ),
+            (
+                ordered(false, true),
+                int32_interval(i32::MIN, 10),
+                true,
+                ordered(true, true),
+                full.clone(),
+            ),
+        ];
+        for (child_sort, child_range, ansi, sort, range) in cases {
+            let case = format!("{child_sort:?} {child_range} ansi={ansi}");
+            let props = negate_properties(child_properties(child_sort, child_range), ansi).unwrap();
+            assert_eq!(props.sort_properties, sort, "{case}");
+            assert_eq!(props.range, range, "{case}");
+            assert!(!props.preserves_lex_ordering, "{case}");
+        }
     }
 
     /// `ExprProperties::new_unknown` reports a `Null` range whatever the expression's real
@@ -676,19 +665,6 @@ mod tests {
             assert_eq!(props.sort_properties, SortProperties::Unordered);
             assert_eq!(props.range, unbounded(&DataType::Null));
         }
-    }
-
-    /// ANSI mode raises an overflow error instead of wrapping, so a range reaching down to
-    /// `i32::MIN` still reverses the ordering. Its reflection is not representable.
-    #[test]
-    fn test_ansi_get_properties_reverses_ordering_when_range_holds_int_min() {
-        let props = negate_properties(
-            child_properties(ordered(false, true), int32_interval(i32::MIN, 10)),
-            true,
-        )
-        .unwrap();
-        assert_eq!(props.sort_properties, ordered(true, true));
-        assert_eq!(props.range, unbounded(&DataType::Int32));
     }
 
     /// `evaluate` routes an unsigned integer to `neg_wrapping` even under ANSI, so `0` negates
@@ -748,37 +724,6 @@ mod tests {
             assert_eq!(props.sort_properties, SortProperties::Singleton);
             assert_eq!(props.range, float_interval(-1.5, -1.5));
         }
-    }
-
-    /// An unbounded decimal range is made of null decimal bounds, which
-    /// `ScalarValue::arithmetic_negate` returns unchanged, so the range stays the full range and
-    /// the ordering claim survives without turning a decimal negation into a planning error:
-    /// `EquivalenceProperties::discover_new_orderings` propagates an error out of this hook with
-    /// `?`, so `add_equal_conditions` below would fail the plan instead.
-    #[test]
-    fn test_get_properties_widens_a_decimal_range_rather_than_failing_a_plan() {
-        let decimal = DataType::Decimal128(10, 2);
-        let schema = Arc::new(Schema::new(vec![
-            Field::new("c", decimal.clone(), true),
-            Field::new("a", decimal.clone(), true),
-        ]));
-        let c = Arc::new(Column::new("c", 0)) as Arc<dyn PhysicalExpr>;
-        let a = Arc::new(Column::new("a", 1)) as Arc<dyn PhysicalExpr>;
-        let mut eq_properties = EquivalenceProperties::new(schema);
-        eq_properties.add_ordering([
-            PhysicalSortExpr::new(Arc::clone(&c), SortOptions::default()),
-            PhysicalSortExpr::new(Arc::clone(&a), SortOptions::default()),
-        ]);
-        let negated: Arc<dyn PhysicalExpr> = Arc::new(NegativeExpr::new(a, true));
-        assert!(eq_properties.add_equal_conditions(c, negated).is_ok());
-
-        let props = negate_properties(
-            child_properties(ordered(false, true), unbounded(&decimal)),
-            true,
-        )
-        .unwrap();
-        assert_eq!(props.sort_properties, ordered(true, true));
-        assert_eq!(props.range, unbounded(&decimal));
     }
 
     /// `EquivalenceProperties` is the caller that actually reaches `get_properties`.
@@ -854,13 +799,13 @@ mod tests {
         }
     }
 
-    /// The `None` arm of `signed_integer_min` claims a reversed ordering for duration and
-    /// interval, which holds only because negation cannot wrap for them. Both halves are
-    /// asserted: the reversal this hook reports, and the premise it rests on -- `evaluate`
-    /// raises an error at the type minimum instead of wrapping. Without the second half, adding
-    /// a wrapping path to `evaluate` for one of these types would silently turn the first into a
-    /// false claim. Decimal takes the same `None` arm but is pinned separately below, because
-    /// its type minimum is not a representable value.
+    /// `negation_can_wrap` returns false at its `is_signed_integer` gate for duration and
+    /// interval, so this hook claims a reversed ordering for them, which holds only because
+    /// negation cannot wrap for them. Both halves are asserted: the reversal this hook reports,
+    /// and the premise it rests on -- `evaluate` raises an error at the type minimum instead of
+    /// wrapping. Without the second half, adding a wrapping path to `evaluate` for one of these
+    /// types would silently turn the first into a false claim. Decimal takes the same branch but
+    /// is pinned separately below, because its type minimum is not a representable value.
     #[test]
     fn test_get_properties_reverses_ordering_for_the_non_wrapping_types() {
         let cases: Vec<(DataType, ArrayRef)> = vec![
@@ -931,7 +876,7 @@ mod tests {
     /// `Decimal128(38, 0)` value -- the type admits `|v| <= 10^38 - 1` -- and
     /// `with_precision_and_scale` rewrites the `DataType` without validating the values, so
     /// asserting an error on it would probe kernel dispatch over a value no real column can
-    /// hold. The premise the `None` arm actually needs is that negation does not wrap anywhere
+    /// hold. The premise that branch actually needs is that negation does not wrap anywhere
     /// in the representable domain, so negate the largest magnitude the type admits and pin the
     /// exact result.
     #[test]
@@ -949,6 +894,9 @@ mod tests {
                 ordered(true, true),
                 "ansi={fail_on_error}"
             );
+            // Null decimal bounds negate to themselves, so the unbounded range comes back
+            // unchanged.
+            assert_eq!(props.range, unbounded(&data_type), "ansi={fail_on_error}");
 
             let at_maximum: ArrayRef = Arc::new(
                 Decimal128Array::from(vec![max_magnitude])
