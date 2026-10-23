@@ -159,6 +159,19 @@ fn make_python_symbols_global() -> Result<()> {
     Ok(())
 }
 
+/// The `major.minor` version of the linked Python library, such as `3.11`. `Py_GetVersion` may be
+/// called before the interpreter is initialized, so this does not start it.
+pub fn embedded_python_version() -> String {
+    // SAFETY: Py_GetVersion returns a pointer to a static, null-terminated string.
+    let version = unsafe { std::ffi::CStr::from_ptr(pyo3::ffi::Py_GetVersion()) }.to_string_lossy();
+    // The string starts with the full version, such as "3.11.9 (main, ...)".
+    version
+        .split(['.', ' '])
+        .take(2)
+        .collect::<Vec<_>>()
+        .join(".")
+}
+
 /// A scalar Arrow UDF loaded from Spark's pickled `(function, returnType)` command.
 /// Spark serializes the return type for its worker; Comet uses the separately
 /// serialized Arrow type from the physical plan instead.
@@ -644,6 +657,17 @@ mod tests {
             output.status,
             String::from_utf8_lossy(&output.stderr)
         );
+    }
+
+    #[test]
+    fn reports_embedded_python_version_without_initializing() {
+        let version = embedded_python_version();
+        initialize_python().unwrap();
+        let expected = Python::attach(|py| {
+            let info = py.version_info();
+            format!("{}.{}", info.major, info.minor)
+        });
+        assert_eq!(version, expected);
     }
 
     #[test]
