@@ -21,18 +21,23 @@ package org.apache.comet.parquet
 
 import java.io.{File, IOException}
 import java.util.UUID
+import java.util.concurrent.atomic.AtomicInteger
 
 import scala.collection.mutable.ArrayBuffer
 import scala.jdk.CollectionConverters._
 import scala.util.{Random, Using}
 
+import org.apache.hadoop.conf.Configuration
 import org.apache.hadoop.fs.{FileSystem, Path}
-import org.apache.hadoop.mapreduce.TaskAttemptContext
+import org.apache.hadoop.fs.s3a.commit.S3ACommitterFactory
+import org.apache.hadoop.fs.s3a.commit.magic.MagicS3GuardCommitterFactory
+import org.apache.hadoop.mapreduce.{JobContext, TaskAttemptContext}
 import org.apache.parquet.hadoop.ParquetFileReader
 import org.apache.parquet.hadoop.metadata.CompressionCodecName
 import org.apache.parquet.hadoop.util.HadoopInputFile
 import org.apache.parquet.schema.{MessageType, Type}
-import org.apache.spark.internal.io.FileCommitProtocol
+import org.apache.spark.internal.io.{FileCommitProtocol, FileNameSpec}
+import org.apache.spark.internal.io.cloud.{BindingParquetOutputCommitter, PathOutputCommitProtocol}
 import org.apache.spark.memory.MemoryMode
 import org.apache.spark.sql.{AnalysisException, DataFrame, Row, SaveMode}
 import org.apache.spark.sql.catalyst.{CatalystTypeConverters, InternalRow, TableIdentifier}
@@ -49,6 +54,7 @@ import org.apache.spark.sql.vectorized.{ColumnarBatch, ColumnVector}
 
 import org.apache.comet.CometConf
 import org.apache.comet.CometSparkSessionExtensions.{isSpark35Plus, isSpark40Plus}
+import org.apache.comet.hadoop.fs.RecordingFileSystem
 import org.apache.comet.rules.RevertNativeForTransitionHeavyStages
 import org.apache.comet.serde.operator.NativeWriteUtils
 import org.apache.comet.testing.{DataGenOptions, FuzzDataGenerator, SchemaGenOptions}
@@ -1997,6 +2003,259 @@ class CometParquetWriterSuite extends CometParquetWriterTestBase {
     }
   }
 
+  test("a task file the native writer cannot create is created through Hadoop") {
+    // The native writer creates only local and HDFS files. Every other file is created through
+    // Hadoop's FileSystem API (see HadoopFileOutput) and the native writer only supplies the
+    // bytes. RecordingFileSystemCommitProtocol puts task files on a scheme the native writer
+    // cannot open at all, so the write can only succeed that way.
+    withRecordingFileSystem(rows = 1000, partitions = 3) { (df, outputPath) =>
+      val plan = captureWritePlan(p => df.write.parquet(p), outputPath)
+      assertHasCometNativeWriteExec(plan)
+
+      val created = RecordingFileSystem.created.asScala.toSeq
+      assert(created.size == 3, s"Expected one file per task, got $created")
+      assert(created.forall(_.startsWith(RecordingFileSystem.PREFIX)), created)
+      // Closed, which is where a FileSystem such as S3A completes or records the upload, and
+      // only once the native writer had written all of it.
+      assert(RecordingFileSystem.closed.asScala.toSet == created.toSet)
+      assert(RecordingFileSystem.aborted.isEmpty)
+
+      checkAnswer(spark.read.parquet(outputPath), df)
+      assert(listPartFileNames(outputPath).size == 3)
+      assert(new File(outputPath, "_SUCCESS").exists())
+    }
+  }
+
+  test("a failed write through Hadoop aborts the file and fails with what its stream threw") {
+    // A file the JVM created is discarded when the native write fails: aborted, so that S3A
+    // abandons the upload rather than completing a truncated file. The native writer fails with
+    // the exception the stream threw, which the JVM rethrows as it was, and the task fails with
+    // it as the cause of TASK_WRITE_FAILED, as Spark's writer fails it.
+    withRecordingFileSystem(rows = 100, partitions = 1) { (df, outputPath) =>
+      RecordingFileSystem.failWrites = true
+      val (plan, error) = captureFailedWritePlan(df.write.parquet(outputPath))
+      assertHasCometNativeWriteExec(plan)
+      assertWriteFailedWith(error, RecordingFileSystem.WRITE_FAILURE)
+
+      assert(RecordingFileSystem.created.size == 1)
+      assert(RecordingFileSystem.aborted.asScala == RecordingFileSystem.created.asScala)
+      assert(RecordingFileSystem.closed.isEmpty)
+      assertNoTaskOutput(outputPath)
+    }
+  }
+
+  /**
+   * Checks that `error` is Spark's TASK_WRITE_FAILED for a cause chain that holds the
+   * `IOException` with `message` that the stream threw.
+   */
+  private def assertWriteFailedWith(error: Throwable, message: String): Unit = {
+    val chain = causeChain(error)
+    assert(
+      chain.exists(e => Option(e.getMessage).exists(_.contains("[TASK_WRITE_FAILED]"))),
+      s"Expected Spark's TASK_WRITE_FAILED, got: $error")
+    assert(
+      chain.exists {
+        case e: IOException => e.getMessage == message
+        case _ => false
+      },
+      s"Expected the stream's own IOException, got: $error")
+  }
+
+  /** Checks that a failed write left neither a part file nor a staging directory. */
+  private def assertNoTaskOutput(outputPath: String): Unit = {
+    assert(
+      listPartFileNames(outputPath).isEmpty,
+      s"A failed write must not leave part files: ${listPartFileNames(outputPath)}")
+    assert(!new File(outputPath, "_temporary").exists())
+  }
+
+  /**
+   * `rows` rows of random strings of 100 two-byte UTF-8 characters, in one partition. Neither
+   * dictionary encoding nor a codec shrinks them much, so a file of them is about 200 bytes a
+   * row.
+   */
+  private def randomNonAsciiStrings(rows: Int): DataFrame = {
+    val random = new Random(42)
+    (1 to rows)
+      .map(i => (i, Seq.fill(100)((0x0400 + random.nextInt(256)).toChar).mkString))
+      .toDF("id", "name")
+      .repartition(1)
+  }
+
+  test("a file of several MiB is written through Hadoop in writes of at most 1 MiB") {
+    // The native writer hands the JVM at most 1 MiB at a time, through one Java array it reuses,
+    // so only a file larger than that sends more than one write.
+    withRecordingFileSystem(randomNonAsciiStrings(30000)) { (df, outputPath) =>
+      val plan =
+        captureWritePlan(p => df.write.option("compression", "none").parquet(p), outputPath)
+      assertHasCometNativeWriteExec(plan)
+      checkAnswer(spark.read.parquet(outputPath), df)
+
+      val parts = new File(outputPath).listFiles().filter(_.getName.startsWith("part-"))
+      assert(parts.length == 1, parts.mkString(", "))
+      val fileSize = parts.head.length()
+      assert(fileSize > 4 * 1024 * 1024, s"Expected a file of several MiB, got $fileSize bytes")
+      val lengths = RecordingFileSystem.writeLengths.asScala.map(_.intValue).toSeq
+      assert(lengths.forall(_ <= 1024 * 1024), lengths)
+      assert(lengths.size >= fileSize / (1024 * 1024), lengths)
+      assert(lengths.map(_.toLong).sum == fileSize)
+    }
+  }
+
+  test("a write that fails partway through a file aborts what it already wrote") {
+    // The third write fails, after two MiB of the file have reached the stream.
+    withRecordingFileSystem(randomNonAsciiStrings(30000)) { (df, outputPath) =>
+      RecordingFileSystem.failAtWrite = 3
+      val (plan, error) =
+        captureFailedWritePlan(df.write.option("compression", "none").parquet(outputPath))
+      assertHasCometNativeWriteExec(plan)
+      assertWriteFailedWith(error, RecordingFileSystem.WRITE_FAILURE)
+
+      assert(RecordingFileSystem.writeLengths.size == 2, RecordingFileSystem.writeLengths)
+      assert(RecordingFileSystem.created.size == 1)
+      assert(RecordingFileSystem.aborted.asScala == RecordingFileSystem.created.asScala)
+      assert(RecordingFileSystem.closed.isEmpty)
+      assertNoTaskOutput(outputPath)
+    }
+  }
+
+  test("a file whose close fails fails its task, which is aborted") {
+    // With S3A, closing a file uploads its last part and records the pending upload, so this is
+    // where a write through S3A is most likely to fail. The file is not aborted after a failed
+    // close, as Spark's writer does not abort it either, and the commit protocol's abortTask
+    // removes what is left of it.
+    withRecordingFileSystem(rows = 100, partitions = 1) { (df, outputPath) =>
+      RecordingFileSystem.failCloses = true
+      val (plan, error) = captureFailedWritePlan(df.write.parquet(outputPath))
+      assertHasCometNativeWriteExec(plan)
+      assertWriteFailedWith(error, RecordingFileSystem.CLOSE_FAILURE)
+
+      assert(RecordingFileSystem.created.size == 1)
+      assert(RecordingFileSystem.closed.isEmpty)
+      assert(RecordingFileSystem.aborted.isEmpty)
+      assert(RecordingFileSystemCommitProtocol.abortedTasks.get == 1)
+      assertNoTaskOutput(outputPath)
+    }
+  }
+
+  test("a failed write closes a file whose stream cannot abort") {
+    // As Spark's writer closes its file when a write fails. The commit protocol's abortTask then
+    // removes it.
+    withRecordingFileSystem(rows = 100, partitions = 1) { (df, outputPath) =>
+      RecordingFileSystem.abortable = false
+      RecordingFileSystem.failWrites = true
+      val (plan, error) = captureFailedWritePlan(df.write.parquet(outputPath))
+      assertHasCometNativeWriteExec(plan)
+      assertWriteFailedWith(error, RecordingFileSystem.WRITE_FAILURE)
+
+      assert(RecordingFileSystem.created.size == 1)
+      assert(RecordingFileSystem.closed.asScala == RecordingFileSystem.created.asScala)
+      assert(RecordingFileSystem.aborted.isEmpty)
+      assert(RecordingFileSystemCommitProtocol.abortedTasks.get == 1)
+      assertNoTaskOutput(outputPath)
+    }
+  }
+
+  test("S3 writes plan natively when S3A's magic committer commits them") {
+    // Planning admits an S3 destination only when the magic committer will commit it, as
+    // `PathOutputCommitterFactory` and `S3ACommitterFactory` resolve the committer. Other S3
+    // writes stay on Spark's writer for now, see `NativeWriteUtils.unsupportedFileSystem`.
+    val pathOutput = NativeWriteUtils.PathOutputCommitProtocolClass
+    val defaultProtocol = SQLConf.FILE_COMMIT_PROTOCOL_CLASS.defaultValueString
+    val bindingCommitter =
+      SQLConf.PARQUET_OUTPUT_COMMITTER_CLASS.key -> NativeWriteUtils.BindingParquetOutputCommitterClass
+    val s3aFactory = S3ACommitterFactory.CLASSNAME
+    val magicFactory = MagicS3GuardCommitterFactory.CLASSNAME
+    // Main code names spark-hadoop-cloud's classes rather than linking them.
+    assert(pathOutput == classOf[PathOutputCommitProtocol].getName)
+    assert(
+      NativeWriteUtils.BindingParquetOutputCommitterClass ==
+        classOf[BindingParquetOutputCommitter].getName)
+    val s3aSchemeFactory = "mapreduce.outputcommitter.factory.scheme.s3a" -> s3aFactory
+    val magicName = "fs.s3a.committer.name" -> "magic"
+
+    def usesMagic(protocol: String, settings: (String, String)*)(
+        path: String = "s3a://bucket/warehouse/table"): Boolean = {
+      val conf = new Configuration(false)
+      settings.foreach { case (key, value) => conf.set(key, value) }
+      NativeWriteUtils.usesS3AMagicCommitter(path, protocol, conf)
+    }
+
+    // What Spark 4.1 configures when spark-hadoop-cloud is on the classpath (SPARK-47618).
+    assert(usesMagic(pathOutput, s3aSchemeFactory, magicName, bindingCommitter)())
+    // Either binding asks the committer factory on its own.
+    assert(usesMagic(pathOutput, s3aSchemeFactory, magicName)())
+    assert(usesMagic(defaultProtocol, s3aSchemeFactory, magicName, bindingCommitter)())
+    // Without one, the committer is Spark's own FileOutputCommitter, whatever S3A's settings.
+    assert(!usesMagic(defaultProtocol, s3aSchemeFactory, magicName)())
+    // A protocol Comet does not know may never instantiate the binding committer.
+    assert(
+      !usesMagic("com.example.CommitProtocol", s3aSchemeFactory, magicName, bindingCommitter)())
+    // A subclass of PathOutputCommitProtocol asks the factory as PathOutputCommitProtocol does.
+    assert(
+      usesMagic(classOf[FailingPathOutputCommitProtocol].getName, s3aSchemeFactory, magicName)())
+    assert(
+      !usesMagic(
+        classOf[RecordingFileSystemCommitProtocol].getName,
+        s3aSchemeFactory,
+        magicName)())
+
+    // The global factory key wins over the destination scheme's, in either direction.
+    val globalFactory = "mapreduce.outputcommitter.factory.class"
+    assert(usesMagic(pathOutput, globalFactory -> magicFactory)())
+    assert(
+      !usesMagic(
+        pathOutput,
+        globalFactory -> "org.apache.hadoop.mapreduce.lib.output.FileOutputCommitterFactory",
+        s3aSchemeFactory,
+        magicName)())
+    // The scheme key is the destination's own, for any scheme S3A serves.
+    assert(!usesMagic(pathOutput, s3aSchemeFactory, magicName)("s3://bucket/warehouse/table"))
+    assert(
+      usesMagic(
+        pathOutput,
+        "mapreduce.outputcommitter.factory.scheme.s3" -> s3aFactory,
+        magicName)("s3://bucket/warehouse/table"))
+    // No factory means FileOutputCommitterFactory.
+    assert(!usesMagic(pathOutput, magicName)())
+
+    // MagicS3GuardCommitterFactory creates the magic committer whatever the name says, while
+    // S3ACommitterFactory creates the one named, matched as exactly as S3A matches it.
+    assert(
+      usesMagic(pathOutput, "mapreduce.outputcommitter.factory.scheme.s3a" -> magicFactory)())
+    Seq("file", "directory", "partitioned", "staging", "Magic", "").foreach { name =>
+      assert(
+        !usesMagic(pathOutput, s3aSchemeFactory, "fs.s3a.committer.name" -> name)(),
+        s"committer name '$name'")
+    }
+    // A bucket's own committer name never decides it. S3ACommitterFactory reads the job's name
+    // first, and Spark's Hadoop configuration always has one, `file` from core-default.xml.
+    assert(new Configuration().getTrimmed("fs.s3a.committer.name") == "file")
+    def usesMagicWithDefaults(settings: (String, String)*): Boolean = {
+      val conf = new Configuration()
+      conf.set("mapreduce.outputcommitter.factory.scheme.s3a", s3aFactory)
+      settings.foreach { case (key, value) => conf.set(key, value) }
+      NativeWriteUtils.usesS3AMagicCommitter("s3a://bucket/warehouse/table", pathOutput, conf)
+    }
+    assert(!usesMagicWithDefaults())
+    assert(!usesMagicWithDefaults("fs.s3a.bucket.bucket.committer.name" -> "magic"))
+    assert(usesMagicWithDefaults(magicName))
+    assert(usesMagicWithDefaults(magicName, "fs.s3a.bucket.bucket.committer.name" -> "file"))
+    assert(
+      !usesMagicWithDefaults(
+        "fs.s3a.committer.name" -> "directory",
+        "fs.s3a.bucket.bucket.committer.name" -> "magic"))
+
+    // Each task then decides by the path its committer returned: the magic committer's own files
+    // are created through S3A, while local and HDFS files are created natively.
+    assert(
+      !NativeWriteUtils.nativeWriterCreatesFile(
+        "s3a://bucket/warehouse/table/__magic_job-0001/job-0001/tasks/" +
+          "attempt_0001_m_000000_0/__base/part-00000-0001-c000.snappy.parquet"))
+    assert(NativeWriteUtils.nativeWriterCreatesFile("file:/tmp/table/part-00000.parquet"))
+    assert(NativeWriteUtils.nativeWriterCreatesFile("hdfs://ns/table/part-00000.parquet"))
+  }
+
   test("a row group the pool cannot hold fails its task with a native out-of-memory error") {
     // The native writer reserves its in-progress row group from the task's memory pool, so a row
     // group that outgrows the pool fails the task, which Spark can retry, instead of growing in
@@ -2106,15 +2365,6 @@ class CometParquetWriterSuite extends CometParquetWriterTestBase {
       df.write.parquet(inputPath)
     }
     inputPath
-  }
-
-  // Persist `df` to `sourcePath` with Comet disabled and return a DataFrame that reads it back,
-  // so the source plan is a Comet scan (satisfying CometExecRule.requiresNativeChildren).
-  private def materializeAsCometSource(df: DataFrame, sourcePath: String): DataFrame = {
-    withSQLConf(CometConf.COMET_ENABLED.key -> "false") {
-      df.write.parquet(sourcePath)
-    }
-    spark.read.parquet(sourcePath)
   }
 
   private def listPartFileNames(dir: String): Set[String] = {
@@ -2403,6 +2653,85 @@ object FailingCommitProtocol {
   def reset(): Unit = {
     failOnCommitTask = false
     abortTaskCalled = false
+  }
+}
+
+/**
+ * A commit protocol that hands out its task files on [[RecordingFileSystem]] rather than on the
+ * local file system the write is committed to, as S3A's staging committers hand out task files on
+ * a different file system from the destination.
+ *
+ * Both name the same local files, so Spark's `FileOutputCommitter` commits them as usual. But the
+ * native writer can only create local and HDFS files itself, so it has to have each one created
+ * through Hadoop's FileSystem API, which the recording file system observes.
+ */
+class RecordingFileSystemCommitProtocol(
+    jobId: String,
+    path: String,
+    dynamicPartitionOverwrite: Boolean)
+    extends SQLHadoopMapReduceCommitProtocol(jobId, path, dynamicPartitionOverwrite) {
+
+  override def newTaskTempFile(
+      taskContext: TaskAttemptContext,
+      dir: Option[String],
+      spec: FileNameSpec): String = {
+    val localFile = new Path(super.newTaskTempFile(taskContext, dir, spec))
+    RecordingFileSystem.PREFIX + localFile.toUri.getPath
+  }
+
+  override def abortTask(taskContext: TaskAttemptContext): Unit = {
+    RecordingFileSystemCommitProtocol.abortedTasks.incrementAndGet()
+    super.abortTask(taskContext)
+  }
+}
+
+object RecordingFileSystemCommitProtocol {
+
+  /** How many task attempts were aborted. Static, since the tests run in local mode. */
+  val abortedTasks = new AtomicInteger(0)
+
+  def reset(): Unit = abortedTasks.set(0)
+}
+
+/**
+ * `PathOutputCommitProtocol` that can fail task or job commit before it commits anything, as a
+ * driver or executor failing there would. The switches are static, since the tests run in local
+ * mode.
+ */
+class FailingPathOutputCommitProtocol(
+    jobId: String,
+    dest: String,
+    dynamicPartitionOverwrite: Boolean)
+    extends PathOutputCommitProtocol(jobId, dest, dynamicPartitionOverwrite) {
+
+  override def commitTask(
+      taskContext: TaskAttemptContext): FileCommitProtocol.TaskCommitMessage = {
+    if (FailingPathOutputCommitProtocol.failCommitTask) {
+      throw new IOException(FailingPathOutputCommitProtocol.CommitTaskFailure)
+    }
+    super.commitTask(taskContext)
+  }
+
+  override def commitJob(
+      jobContext: JobContext,
+      taskCommits: Seq[FileCommitProtocol.TaskCommitMessage]): Unit = {
+    if (FailingPathOutputCommitProtocol.failCommitJob) {
+      throw new IOException(FailingPathOutputCommitProtocol.CommitJobFailure)
+    }
+    super.commitJob(jobContext, taskCommits)
+  }
+}
+
+object FailingPathOutputCommitProtocol {
+  val CommitTaskFailure = "injected task commit failure"
+  val CommitJobFailure = "injected job commit failure"
+
+  @volatile var failCommitTask: Boolean = false
+  @volatile var failCommitJob: Boolean = false
+
+  def reset(): Unit = {
+    failCommitTask = false
+    failCommitJob = false
   }
 }
 
