@@ -54,6 +54,7 @@ instructions on each step.
   - [ ] Generate release documentation
   - [ ] Update Maven version in release branch
   - [ ] Update version in main for next development cycle
+  - [ ] Refresh the native dependencies in main
 - [ ] Find and fix regressions:
   - [ ] Review expression support status and the user guide
   - [ ] Benchmark against the previous release
@@ -174,7 +175,8 @@ targeting the release branch.
 
 Open a PR targeting the release branch that changes the Maven version from `0.13.0-SNAPSHOT` to `0.13.0` in:
 
-- the `pom.xml` files: `pom.xml`, `common/pom.xml`, `spark/pom.xml`, and `spark-integration/pom.xml`
+- the `pom.xml` files: `pom.xml`, `common/pom.xml`, `spark/pom.xml`, `spark-integration/pom.xml`, and
+  `contrib/delta-spark/pom.xml`
 - the `<comet.version>` property in the Spark test diffs under `dev/diffs`
 - the `comet` version in the Iceberg test diffs under `dev/diffs/iceberg`, which use a Gradle version
   catalog entry (`comet = "0.13.0"`) rather than a Maven property
@@ -187,7 +189,8 @@ Once the version is bumped, verify that no references to the old version remain:
 git grep -n '0.13.0-SNAPSHOT' -- . ':!docs/source/changelog'
 ```
 
-Any hit outside the change log is a place that will break on the release branch. Note that dropping the
+Any hit outside the change log is a place that will break on the release branch. This also catches a module
+added since the last release that the list above doesn't name yet. Note that dropping the
 `-SNAPSHOT` qualifier changes the built artifact file names, so anything that locates the jar by glob must
 match a bare version too. Prefer patterns such as `comet-spark-spark3.5_2.12-*.jar` over
 `comet-spark-spark3.5_2.12-*-SNAPSHOT.jar`, and prefer resolving the jar by glob over hardcoding a version.
@@ -205,6 +208,30 @@ Create a PR against the main branch to prepare for developing the next release:
   `cargo update --workspace` in `native/` and in each contrib crate that has its own `Cargo.lock`.
 - Update the Maven version to `0.14.0-SNAPSHOT` in the same set of files listed above (the `pom.xml` files,
   the Spark test diffs under `dev/diffs`, and the Iceberg test diffs under `dev/diffs/iceberg`).
+
+### Refresh Dependencies in main
+
+Once the version bump has merged, refresh the native dependencies in a separate PR against the main branch. Doing
+it at the start of the cycle gives the new versions the full cycle of nightly and merge queue runs before the next
+release branch is cut. The release branch keeps the lockfile it was cut with, so it ships the dependency set that CI
+has been testing. Keep this PR apart from the version bump so that a regression is easy to bisect and revert.
+
+Run `cargo update` in `native/` and in each contrib crate that has its own `Cargo.lock`, then check the build:
+
+```shell
+cd native && cargo update && cargo check --all-targets --locked
+cd ../contrib/delta/native && cargo update && cargo check --all-targets --locked
+```
+
+Dependabot already opens weekly PRs for `native/`, but it ignores major `arrow*`, `parquet` and `datafusion*` bumps,
+which are handled manually, and it does not cover the contrib crates or transitive dependencies that `cargo update`
+moves within their semver range. It also does not move git-pinned dependencies such as `iceberg-rust`, whose `rev` in
+`native/Cargo.toml` needs a deliberate bump.
+
+List what moved in the PR description (`git diff` of `Cargo.lock` shows the version changes). A dependency refresh
+can change the build on every platform and what the Spark and Iceberg suites exercise, so apply the labels that opt
+the PR into the suites its tier skips, such as `run-all-spark-profiles`, `run-iceberg-tests` and `run-delta-tests`.
+See [Opting a pull request into a suite the PR tier skips](ci.md#opting-a-pull-request-into-a-suite-the-pr-tier-skips).
 
 ## Finding and Fixing Regressions
 
