@@ -26,5 +26,7 @@ pub mod util;
 mod cast_column;
 mod datetime_rebase;
 mod field_resolver;
+mod footer_rewrite;
+mod int96_coercion;
 mod name_fold;
 pub(crate) mod objectstore;

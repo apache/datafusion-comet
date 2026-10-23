@@ -101,9 +101,10 @@ use datafusion::physical_expr::expressions::Column;
 use datafusion::physical_expr::PhysicalExpr;
 use datafusion::physical_plan::ColumnarValue;
 use parquet::basic::Type as ParquetPhysicalType;
-use parquet::file::metadata::{FileMetaData, KeyValue, ParquetMetaData};
+use parquet::file::metadata::{KeyValue, ParquetMetaData};
 use parquet::schema::types::SchemaDescriptor;
 
+use super::footer_rewrite::with_key_values;
 use super::name_fold::fold_names;
 use super::parquet_support::field_id;
 
@@ -383,21 +384,7 @@ pub(crate) fn stamp_int96_leaves(metadata: &ParquetMetaData) -> Option<ParquetMe
         })
         .unwrap_or_default();
     key_values.push(KeyValue::new(INT96_LEAVES_METADATA_KEY.to_string(), stamp));
-    let stamped_file_metadata = FileMetaData::new(
-        file_metadata.version(),
-        file_metadata.num_rows(),
-        file_metadata.created_by().map(str::to_string),
-        Some(key_values),
-        file_metadata.schema_descr_ptr(),
-        file_metadata.column_orders().cloned(),
-    );
-    Some(
-        ParquetMetaData::new(stamped_file_metadata, metadata.row_groups().to_vec())
-            .into_builder()
-            .set_column_index(metadata.column_index().cloned())
-            .set_offset_index(metadata.offset_index().cloned())
-            .build(),
-    )
+    Some(with_key_values(metadata, key_values))
 }
 
 /// Per-file rebase policies for the three affected column classes, plus the INT96

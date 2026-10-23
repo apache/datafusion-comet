@@ -72,6 +72,11 @@
 //! the stamped copy too; nothing outside the rebase path reads the key, and the copy is otherwise
 //! identical.
 //!
+//! The fourth is the INT96 coercion hint, `coerce_int96_for_open`: DataFusion's coercion misses an
+//! INT96 leaf in a legacy list layout, so the factory gives the opener an `ARROW:schema` hint that
+//! already coerces it (see `int96_coercion`). The hinted copy is rebuilt on every open of an
+//! affected file and never enters the cache, and an encrypted open is left as read.
+//!
 //! Conversion checks also use the raw footer to preserve legacy LIST clipping failures. With
 //! row filters enabled, a deferred conversion failure is raised on the first data-page request.
 //! Footer, Bloom-filter and page-index reads still proceed, so format pruning can discard a file
@@ -93,6 +98,8 @@
 //! bring it back.
 
 use crate::parquet::datetime_rebase::stamp_int96_leaves;
+use crate::parquet::footer_rewrite::with_key_values;
+use crate::parquet::int96_coercion::coerce_missed_int96_leaves;
 use crate::parquet::parquet_support::SparkParquetOptions;
 use crate::parquet::schema_adapter::{
     check_file_conversions, RejectOnNonEmpty, REPEATED_PRIMITIVE_KEY,
@@ -129,7 +136,7 @@ use parquet::arrow::{encode_arrow_schema, parquet_to_arrow_schema, ARROW_SCHEMA_
 use parquet::basic::{ConvertedType, LogicalType};
 use parquet::encryption::decrypt::FileDecryptionProperties;
 use parquet::errors::{ParquetError, Result as ParquetResult};
-use parquet::file::metadata::{FileMetaData, KeyValue, ParquetMetaDataBuilder};
+use parquet::file::metadata::KeyValue;
 use parquet::file::metadata::{
     FooterTail, PageIndexPolicy, ParquetMetaData, ParquetMetaDataReader,
 };
@@ -510,21 +517,7 @@ fn with_spark_arrow_schema(metadata: Arc<ParquetMetaData>) -> ParquetResult<Arc<
         });
     }
 
-    let file = FileMetaData::new(
-        file.version(),
-        file.num_rows(),
-        file.created_by().map(str::to_owned),
-        Some(key_values),
-        file.schema_descr_ptr(),
-        file.column_orders().cloned(),
-    );
-    Ok(Arc::new(
-        ParquetMetaDataBuilder::new(file)
-            .set_row_groups(metadata.row_groups().to_vec())
-            .set_column_index(metadata.column_index().cloned())
-            .set_offset_index(metadata.offset_index().cloned())
-            .build(),
-    ))
+    Ok(Arc::new(with_key_values(&metadata, key_values)))
 }
 
 /// Arrow normalizes both standard and legacy LISTs to the same type. Carry the repeated
@@ -756,7 +749,7 @@ impl AsyncFileReader for EagerPageIndexReader {
                             == parquet::basic::Repetition::REPEATED
                     });
                 if !needs_check {
-                    return Ok(metadata);
+                    return coerce_int96_for_open(metadata, cache_enabled);
                 }
                 let schema =
                     parquet_to_arrow_schema(file.schema_descr(), file.key_value_metadata())?;
@@ -782,10 +775,25 @@ impl AsyncFileReader for EagerPageIndexReader {
                     self.deferred_rejection = rejection;
                 }
             }
-            Ok(metadata)
+            coerce_int96_for_open(metadata, cache_enabled)
         }
         .boxed()
     }
+}
+
+/// Hands the opener an `ARROW:schema` hint that coerces the INT96 leaves its own coercion would
+/// miss (see `int96_coercion`), so a timestamp outside the nanosecond range does not wrap. Runs
+/// last, so the conversion check and the Variant rewrite see the footer as read. The rebuilt
+/// copy is per open and never written back to the shared cache. An encrypted open is left
+/// as read, because the parquet API cannot carry a file decryptor across the rebuild.
+fn coerce_int96_for_open(
+    metadata: Arc<ParquetMetaData>,
+    cache_enabled: bool,
+) -> ParquetResult<Arc<ParquetMetaData>> {
+    if !cache_enabled {
+        return Ok(metadata);
+    }
+    Ok(coerce_missed_int96_leaves(&metadata)?.map_or(metadata, Arc::new))
 }
 
 /// Loads a file's metadata through `metadata_cache`, with the page index as `page_index_policy`
