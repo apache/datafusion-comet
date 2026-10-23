@@ -120,9 +120,6 @@ public class CometTaskMemoryManager {
     if (logger.isTraceEnabled()) {
       logger.trace("Task {} released {} bytes", taskAttemptId, size);
     }
-    // Spark first, so a release that throws leaves the bytes counted as held on both sides, in
-    // `used` and in the native pool.
-    internal.releaseExecutionMemory(size, nativeMemoryConsumer);
     long newUsed = used.addAndGet(-size);
     if (newUsed < 0) {
       logger.error(
@@ -131,12 +128,9 @@ public class CometTaskMemoryManager {
           newUsed,
           size);
     }
+    internal.releaseExecutionMemory(size, nativeMemoryConsumer);
   }
 
-  /**
-   * Bytes Comet's memory pools hold from Spark through this manager. A non-zero value once the
-   * task's last native plan has been released is a reservation that was never freed.
-   */
   public long getUsed() {
     return used.get();
   }
