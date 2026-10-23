@@ -98,6 +98,7 @@
 //! bring it back.
 
 use crate::parquet::datetime_rebase::stamp_int96_leaves;
+use crate::parquet::footer_rewrite::with_key_values;
 use crate::parquet::int96_coercion::coerce_missed_int96_leaves;
 use crate::parquet::parquet_support::SparkParquetOptions;
 use crate::parquet::schema_adapter::{
@@ -135,7 +136,7 @@ use parquet::arrow::{encode_arrow_schema, parquet_to_arrow_schema, ARROW_SCHEMA_
 use parquet::basic::{ConvertedType, LogicalType};
 use parquet::encryption::decrypt::FileDecryptionProperties;
 use parquet::errors::{ParquetError, Result as ParquetResult};
-use parquet::file::metadata::{FileMetaData, KeyValue, ParquetMetaDataBuilder};
+use parquet::file::metadata::KeyValue;
 use parquet::file::metadata::{
     FooterTail, PageIndexPolicy, ParquetMetaData, ParquetMetaDataReader,
 };
@@ -516,21 +517,7 @@ fn with_spark_arrow_schema(metadata: Arc<ParquetMetaData>) -> ParquetResult<Arc<
         });
     }
 
-    let file = FileMetaData::new(
-        file.version(),
-        file.num_rows(),
-        file.created_by().map(str::to_owned),
-        Some(key_values),
-        file.schema_descr_ptr(),
-        file.column_orders().cloned(),
-    );
-    Ok(Arc::new(
-        ParquetMetaDataBuilder::new(file)
-            .set_row_groups(metadata.row_groups().to_vec())
-            .set_column_index(metadata.column_index().cloned())
-            .set_offset_index(metadata.offset_index().cloned())
-            .build(),
-    ))
+    Ok(Arc::new(with_key_values(&metadata, key_values)))
 }
 
 /// Arrow normalizes both standard and legacy LISTs to the same type. Carry the repeated
